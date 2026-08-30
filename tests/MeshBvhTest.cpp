@@ -7,8 +7,6 @@
 
 #include <boost/ut.hpp>
 
-#include <glm/geometric.hpp>
-
 #include <cmath>
 #include <limits>
 #include <numbers>
@@ -29,7 +27,7 @@ float BruteForceDistance(std::span<const Vertex> vertices, std::span<const uint3
             for (int v = 0; u + v <= Steps; ++v) {
                 const float wu = float(u) / Steps, wv = float(v) / Steps;
                 const vec3 p = a * (1 - wu - wv) + b * wu + c * wv;
-                best = std::min(best, glm::length(p - point));
+                best = std::min(best, numeric::Length(p - point));
             }
         }
     }
@@ -44,7 +42,7 @@ vec3 Blend(std::span<const Vertex> vertices, const SurfacePoint &hit) {
 
 // How far `point` sits from a hit's surface point, measured through the weights so they are pinned too.
 float HitDistance(std::span<const Vertex> vertices, const SurfacePoint &hit, vec3 point) {
-    return glm::length(Blend(vertices, hit) - point);
+    return numeric::Length(Blend(vertices, hit) - point);
 }
 
 struct Soup {
@@ -125,14 +123,14 @@ int main() {
         std::mt19937 rng{7};
         std::uniform_real_distribution<float> coord{-1.f, 1.f}, radius{1.5f, 4.f};
         for (int i = 0; i < 100; ++i) {
-            const vec3 direction = glm::normalize(vec3{coord(rng), coord(rng), coord(rng)} + vec3{1e-3f});
+            const vec3 direction = numeric::Normalize(vec3{coord(rng), coord(rng), coord(rng)} + vec3{1e-3f});
             const vec3 query = direction * radius(rng);
             const auto hit = bvh.ClosestPoint(sphere.Vertices, sphere.Triangles, query);
             // A tessellated sphere sits just inside the true one, so the chord sagitta is the tolerance.
-            expect(std::abs(HitDistance(sphere.Vertices, hit, query) - (glm::length(query) - 1.f)) < 0.005f);
+            expect(std::abs(HitDistance(sphere.Vertices, hit, query) - (numeric::Length(query) - 1.f)) < 0.005f);
             // The nearest point on a facet is the foot of the perpendicular to its plane, and a coarse tessellation
             // tilts that plane away from the radius by up to the ring half-angle, the more so the further out the query sits.
-            expect(glm::dot(glm::normalize(Blend(sphere.Vertices, hit)), direction) > 0.98f);
+            expect(numeric::Dot(numeric::Normalize(Blend(sphere.Vertices, hit)), direction) > 0.98f);
         }
     };
 

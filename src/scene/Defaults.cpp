@@ -1,10 +1,9 @@
 #include "scene/Defaults.h"
-
-#include <glm/trigonometric.hpp>
+#include "numeric/Angles.h"
 
 namespace {
-vec3 Shade(vec3 c, int offset) { return glm::clamp(c + float(offset) / 255.f, 0.f, 1.f); }
-vec3 BlendShade(vec3 c1, vec3 c2, float fac, int offset = 0) { return glm::clamp(glm::mix(c1, c2, fac) + float(offset) / 255.f, 0.f, 1.f); }
+vec3 Shade(vec3 c, int offset) { return numeric::Clamp(c + float(offset) / 255.f, 0.f, 1.f); }
+vec3 BlendShade(vec3 c1, vec3 c2, float fac, int offset = 0) { return numeric::Clamp(numeric::Mix(c1, c2, fac) + float(offset) / 255.f, 0.f, 1.f); }
 } // namespace
 
 void UpdateDerivedColors(ViewportTheme &theme) {
@@ -28,7 +27,7 @@ ViewCamera Defaults::ViewCamera{
     {Perspective{.FieldOfViewRad = 2.f * std::atan(0.72f * 9.f / 16.f), .FarClip = 1000.f, .NearClip = DefaultPerspectiveNearClip}},
 };
 
-constexpr float DefaultPerspectiveFieldOfViewRad{glm::radians(60.f)};
+constexpr float DefaultPerspectiveFieldOfViewRad{numeric::Radians(60.f)};
 Perspective Defaults::PerspectiveCamera = {.FieldOfViewRad = DefaultPerspectiveFieldOfViewRad, .FarClip = DefaultPerspectiveFarClip, .NearClip = DefaultPerspectiveNearClip};
 
 // Blender's default BKE_studiolight_default values (studiolight.cc)

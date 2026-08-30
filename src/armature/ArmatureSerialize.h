@@ -1,6 +1,6 @@
 #pragma once
 
-#include "action/SerializeGlm.h" // glm hooks for Transform/mat4 members
+#include "action/SerializeNumeric.h"
 #include "armature/Armature.h"
 
 // Serialize only the Armature's canonical data, rebuilding the derived caches (BoneIdToIndex, dense topology, RestWorld, JointOrderToBoneIndex) on load.

@@ -4,6 +4,7 @@
 #include "PhysicsSystem.h"
 #include "action/Physics.h"
 #include "animation/AnimationTimeline.h"
+#include "numeric/Angles.h"
 #include "numeric/vec2.h"
 #include "scene/SceneGraph.h"
 #include "ui/FieldEdit.h"
@@ -100,15 +101,6 @@ const Target *RenderEntityCombo(entt::registry &r, entt::entity entity, const ch
 
 std::string SystemDisplayName(const entt::registry &r, entt::entity e) {
     return !r.all_of<const CollisionSystem>(e) ? "<invalid>" : DisplayName(r.get<const CollisionSystem>(e).Name, "{:x}", uint32_t(e));
-}
-
-template<typename T>
-void ToggleInVector(std::vector<T> &v, T e, bool add) {
-    if (add) {
-        if (std::find(v.begin(), v.end(), e) == v.end()) v.push_back(e);
-    } else {
-        std::erase(v, e);
-    }
 }
 
 // Multi-select combo over all CollisionSystem entities. `on_toggle(system, now_member)` returns
@@ -548,9 +540,9 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
             }
             if (edit.InertiaDiagonal) {
                 motion_changed |= ui::DragFloat3("Inertia diagonal", &edit.InertiaDiagonal->x, 0.01f, 0.001f, 1e6f);
-                vec3 euler_deg = glm::degrees(glm::eulerAngles(edit.InertiaOrientation.value_or(quat{1, 0, 0, 0})));
+                vec3 euler_deg = numeric::Degrees(numeric::EulerAngles(edit.InertiaOrientation.value_or(quat{1, 0, 0, 0})));
                 if (ui::DragFloat3("Inertia orientation", &euler_deg.x, 0.1f)) {
-                    edit.InertiaOrientation = quat{glm::radians(euler_deg)};
+                    edit.InertiaOrientation = quat{numeric::Radians(euler_deg)};
                     motion_changed = true;
                 }
             }

@@ -12,10 +12,10 @@
 // Note: Aspect ratio of the provided data is ignored, as the ViewCamera follows the viewport aspect ratio.
 struct ViewCamera {
     ViewCamera(vec3 position, vec3 target, Camera data)
-        : Data{data}, Target{target}, Distance{glm::length(position - target)}, Orientation{OrientationFromAway(position - target)} {}
+        : Data{data}, Target{target}, Distance{numeric::Length(position - target)}, Orientation{OrientationFromAway(position - target)} {}
 
     ViewCamera(vec3 position, quat orientation, Camera data)
-        : Data{data}, Distance{1.f}, Orientation{glm::normalize(orientation)} {
+        : Data{data}, Distance{1.f}, Orientation{numeric::Normalize(orientation)} {
         Target = position - Orientation * vec3{0, 0, 1}; // Distance 1, so Position() == position.
     }
 

@@ -107,7 +107,6 @@ include_directories(
     ${ImplotDir}
     ${CMAKE_BINARY_DIR}
     SYSTEM lib/imspinner
-    SYSTEM lib/glm
     SYSTEM lib/entt/src
     SYSTEM lib/spectra/include
     SYSTEM lib/tinyobjloader
@@ -229,7 +228,7 @@ if(MESHEDITOR_APP)
 endif()
 
 add_definitions(-DTETLIBRARY)
-add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS -DGLM_ENABLE_EXPERIMENTAL -DZPP_BITS_AUTODETECT_MEMBERS_MODE=1)
+add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS -DZPP_BITS_AUTODETECT_MEMBERS_MODE=1)
 add_definitions(-DMA_NO_ENGINE) # Reduce MA build size
 
 add_subdirectory(tests)

@@ -1,24 +1,23 @@
 #include "scene/RotationUi.h"
 #include "Variant.h"
-
-#include <glm/gtc/quaternion.hpp>
-#include <glm/gtx/euler_angles.hpp>
-#include <glm/gtx/quaternion.hpp>
+#include "numeric/Angles.h"
+#include "numeric/mat4.h"
 
 #include <cmath>
 
 quat ToRotation(const RotationUiVariant &v) {
     return std::visit(
         overloaded{
-            [](const RotationQuat &q) { return glm::normalize(q.Value); },
+            [](const RotationQuat &q) { return numeric::Normalize(q.Value); },
             [](const RotationEuler &e) {
-                const auto rads = glm::radians(e.Value);
-                return glm::normalize(glm::quat_cast(glm::eulerAngleXYZ(rads.x, rads.y, rads.z)));
+                const auto rads = numeric::Radians(e.Value);
+                const auto rotation = numeric::AngleAxis(rads.z, {0, 0, 1}) * numeric::AngleAxis(rads.y, {0, 1, 0}) * numeric::AngleAxis(rads.x, {1, 0, 0});
+                return numeric::Normalize(numeric::ToQuat(numeric::ToMat4(rotation)));
             },
             [](const RotationAxisAngle &a) {
-                const auto axis = glm::normalize(vec3{a.Value});
-                const auto angle = glm::radians(a.Value.w);
-                return glm::normalize(quat{std::cos(angle / 2), axis * std::sin(angle / 2)});
+                const auto axis = numeric::Normalize(vec3{a.Value});
+                const auto angle = numeric::Radians(a.Value.w);
+                return numeric::Normalize(quat{std::cos(angle / 2), axis * std::sin(angle / 2)});
             },
         },
         v
@@ -28,13 +27,12 @@ quat ToRotation(const RotationUiVariant &v) {
 RotationUiVariant ToUiVariant(quat rotation, size_t mode) {
     switch (mode) {
         case 1: {
-            float x, y, z;
-            glm::extractEulerAngleXYZ(glm::mat4_cast(rotation), x, y, z);
-            return RotationEuler{glm::degrees(vec3{x, y, z})};
+            const auto euler = numeric::EulerAngles(numeric::ToQuat(numeric::ToMat4(rotation)));
+            return RotationEuler{numeric::Degrees(euler)};
         }
         case 2: {
-            const auto q = glm::normalize(rotation);
-            return RotationAxisAngle{{glm::axis(q), glm::degrees(glm::angle(q))}};
+            const auto q = numeric::Normalize(rotation);
+            return RotationAxisAngle{{numeric::Axis(q), numeric::Degrees(numeric::Angle(q))}};
         }
         default: return RotationQuat{rotation};
     }

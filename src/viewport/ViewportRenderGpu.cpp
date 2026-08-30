@@ -36,6 +36,7 @@
 #include "mesh/MeshStore.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
+#include "numeric/Angles.h"
 #include "physics/PhysicsTypes.h"
 #include "render/Encoding.h"
 #include "render/GpuSceneState.h"
@@ -116,7 +117,7 @@ ExtrasLine ExtrasGizmoParams(const entt::registry &r, entt::entity object, Objec
     }
     constexpr float SpotDepth{2.f};
     const auto angle_from_cos = [](float c) { return std::acos(std::clamp(c, -1.f, 1.f)); };
-    const float outer_angle = std::min(angle_from_cos(light.OuterConeCos), glm::radians(89.f));
+    const float outer_angle = std::min(angle_from_cos(light.OuterConeCos), numeric::Radians(89.f));
     const float inner_angle = std::min(angle_from_cos(light.InnerConeCos), outer_angle);
     const float outer_radius = SpotDepth * std::tan(outer_angle), inner_radius = SpotDepth * std::tan(inner_angle);
     const uint32_t inner_lines = inner_radius > 0.f ? SpotSegments : 0;
@@ -310,7 +311,8 @@ void RecordMotionBlurPostFx(entt::registry &r, mtl::PassChain &chain, const mtl:
     // The second half of each motion vector is stored pointing backward, which the negative y undoes.
     constexpr vec2 MotionScale{1.f, -1.f};
     // Golden-ratio stepping decorrelates the gather's dither across steps and frames.
-    const float noise_offset = glm::fract(playback_frame * std::numbers::phi_v<float>);
+    const float noise_phase = playback_frame * std::numbers::phi_v<float>;
+    const float noise_offset = noise_phase - std::floor(noise_phase);
 
     const auto &buffers = r.ctx().get<const GpuBuffers>();
     auto *encoder = chain.BeginCompute("BlurTiles", MTL::StageFragment);

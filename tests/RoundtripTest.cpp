@@ -29,12 +29,11 @@
 #include "snapshot/SnapshotRoles.h"
 #include "viewport/Viewport.h"
 
+#include "numeric/FastGltf.h"
 #include <boost/ut.hpp>
 #include <entt/entity/registry.hpp>
 #include <fastgltf/core.hpp>
-#include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
-#include <glm/geometric.hpp>
 #include <simdjson.h>
 
 #include <cstring>
@@ -331,7 +330,7 @@ bool NumberEq(double a, double b) {
 }
 
 template<typename V> bool VecEq(const V &a, const V &b) {
-    for (glm::length_t i = 0; i < V::length(); ++i) {
+    for (size_t i = 0; i < V::ComponentCount; ++i) {
         if (!NumberEq(a[i], b[i])) return false;
     }
     return true;
@@ -465,17 +464,17 @@ std::vector<uint32_t> CornerIndices(const fastgltf::Asset &asset, const fastgltf
 // Unit-direction compare: normalize both and accept a small angle.
 // Faceted-face normals re-derive from positions on export, so exact equality is too strict for them.
 bool DirectionEq(vec3 a, vec3 b) {
-    const auto la = glm::length(a), lb = glm::length(b);
+    const auto la = numeric::Length(a), lb = numeric::Length(b);
     if (la < 1e-6f || lb < 1e-6f) return VecEq(a, b);
     constexpr float CosTol = 0.999998f; // ~2 milliradians
-    return glm::dot(a / la, b / lb) >= CosTol;
+    return numeric::Dot(a / la, b / lb) >= CosTol;
 }
 
 // Joint influences compare as (joint, weight) pair sets: import may merge multiple influence sets and reorder by weight, and zero-weight joint slots carry arbitrary indices.
 bool InfluencesEq(uvec4 ja, vec4 wa, uvec4 jb, vec4 wb) {
     const auto collect = [](uvec4 j, vec4 w) {
         std::vector<std::pair<uint32_t, float>> out;
-        for (glm::length_t i = 0; i < 4; ++i) {
+        for (size_t i = 0; i < 4; ++i) {
             if (w[i] > 1e-6f) out.emplace_back(j[i], w[i]);
         }
         std::ranges::sort(out);
@@ -626,7 +625,7 @@ std::optional<std::vector<double>> NumberArray(simdjson::dom::array arr) {
     return out;
 }
 
-// q and -q describe the same rotation; `glm::decompose` doesn't preserve source sign so this
+// q and -q describe the same rotation; matrix decomposition doesn't preserve source sign so this
 // surfaces as a per-component diff on `nodes[*].rotation`. Accept either sign within tolerance.
 bool QuaternionsEqual(simdjson::dom::array a, simdjson::dom::array b) {
     const auto va = NumberArray(a), vb = NumberArray(b);

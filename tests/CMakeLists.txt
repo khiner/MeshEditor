@@ -1,6 +1,6 @@
 # The warnings and defines every test target builds with. Anything a single target needs goes on its own line beside the call.
 function(mesheditor_test_defaults target)
-    target_compile_definitions(${target} PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
+    target_compile_definitions(${target} PRIVATE DEBUG_BUILD)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 endfunction()
 
@@ -76,7 +76,6 @@ target_include_directories(MeshEditorTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
     ${EIGEN3_INCLUDE_DIR}
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/simdjson/include
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/libwebp/src
@@ -108,7 +107,6 @@ add_dependencies(MeshEditorActionSerializeTest generate_gpu_schema)
 target_include_directories(MeshEditorActionSerializeTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
 )
 target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
@@ -130,7 +128,6 @@ function(mesheditor_solve_target target)
     target_include_directories(${target} PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${EIGEN3_INCLUDE_DIR}
-        SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
         SYSTEM ${CMAKE_SOURCE_DIR}/lib/spectra/include
         SYSTEM ${CMAKE_SOURCE_DIR}/lib/tinyobjloader
     )
@@ -193,7 +190,6 @@ add_dependencies(MeshEditorContactCollectTest generate_gpu_schema)
 target_include_directories(MeshEditorContactCollectTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/metal-cpp
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics
@@ -212,7 +208,6 @@ add_dependencies(MeshEditorClusterLodTest generate_gpu_schema)
 target_include_directories(MeshEditorClusterLodTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
 )
 target_link_libraries(MeshEditorClusterLodTest PRIVATE Boost::ut meshoptimizer)
 mesheditor_test_defaults(MeshEditorClusterLodTest)
@@ -222,7 +217,6 @@ add_dependencies(MeshEditorMeshBvhTest generate_gpu_schema)
 target_include_directories(MeshEditorMeshBvhTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
 )
 target_link_libraries(MeshEditorMeshBvhTest PRIVATE Boost::ut)
 mesheditor_test_defaults(MeshEditorMeshBvhTest)
@@ -234,7 +228,6 @@ function(mesheditor_render_target target source)
     target_include_directories(${target} PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/tests
-        SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
         SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
     )
     target_link_libraries(${target} PRIVATE Boost::ut "-framework Accelerate")
@@ -248,7 +241,6 @@ mesheditor_render_target(MeshEditorModalRenderTest ModalRenderTest.cpp)
 add_executable(MeshEditorContactModelTest ContactModelTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp)
 target_include_directories(MeshEditorContactModelTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
 )
 target_link_libraries(MeshEditorContactModelTest PRIVATE Boost::ut)
 mesheditor_test_defaults(MeshEditorContactModelTest)

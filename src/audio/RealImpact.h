@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 

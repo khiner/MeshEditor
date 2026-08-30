@@ -151,7 +151,7 @@ constexpr vec3 ScaleVecForOp(InteractionOp op, float v) {
     return vec3{v};
 }
 
-constexpr vec4 BuildPlane(vec3 p, const vec4 &p_normal) { return {vec3{p_normal}, glm::dot(p_normal, vec4{p, 1})}; }
+constexpr vec4 BuildPlane(vec3 p, const vec4 &p_normal) { return {vec3{p_normal}, numeric::Dot(p_normal, vec4{p, 1})}; }
 
 constexpr ImVec2 ImMin(ImVec2 lhs, ImVec2 rhs) { return {lhs.x < rhs.x ? lhs.x : rhs.x, lhs.y < rhs.y ? lhs.y : rhs.y}; }
 constexpr ImVec2 ImMax(ImVec2 lhs, ImVec2 rhs) { return {lhs.x > rhs.x ? lhs.x : rhs.x, lhs.y > rhs.y ? lhs.y : rhs.y}; }
@@ -171,12 +171,12 @@ constexpr float SizeToPx(const ViewFrame &f, float size = 1.f) { return f.Screen
 
 // World units per (signed) NDC at world point `p`, sampling along camera-right (2xNDC spans screen width).
 float WorldPerNdcAt(const mat4 &vp, vec3 cam_right_ws, vec3 p) {
-    return 2 * Style.SizeUv / glm::length(CsToNdc(vp * vec4{p + cam_right_ws, 1}) - CsToNdc(vp * vec4{p, 1}));
+    return 2 * Style.SizeUv / numeric::Length(CsToNdc(vp * vec4{p + cam_right_ws, 1}) - CsToNdc(vp * vec4{p, 1}));
 }
 
 constexpr float IntersectPlane(const ray &r, vec4 plane) {
-    const float num = glm::dot(vec3{plane}, r.o) - plane.w;
-    const float den = glm::dot(vec3{plane}, r.d);
+    const float num = numeric::Dot(vec3{plane}, r.o) - plane.w;
+    const float den = numeric::Dot(vec3{plane}, r.d);
     return fabsf(den) < FLT_EPSILON ? -1 : -num / den; // if normal is orthogonal to vector, can't intersect
 }
 
@@ -204,16 +204,16 @@ vec4 GetPlaneNormal(const Interaction &interaction, const GizmoTransform &transf
     if (interaction.Type == Rotate) return transform.Mode == Mode::Local ? vec4{transform.AxisDirWs(i), 0} : vec4{I3[i], 0};
 
     const auto n = transform.AxisDirWs(i);
-    const auto v = glm::normalize(transform.P - cam_ray.o);
-    return vec4{v - n * glm::dot(n, v), 0};
+    const auto v = numeric::Normalize(transform.P - cam_ray.o);
+    return vec4{v - n * numeric::Dot(n, v), 0};
 };
 
 constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
 
 ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
     const auto vec = std::bit_cast<vec2>(s2 - s1);
-    const auto v = glm::normalize(vec);
-    const float t = glm::dot(v, std::bit_cast<vec2>(p - s1));
+    const auto v = numeric::Normalize(vec);
+    const float t = numeric::Dot(v, std::bit_cast<vec2>(p - s1));
     if (t <= 0) return s1;
     if (t * t > Length2(vec)) return s2;
     return s1 + std::bit_cast<ImVec2>(v) * t;
@@ -226,9 +226,9 @@ constexpr float AxisAlphaForDistSqPx(const ViewFrame &f, float dist_sq_px) {
 }
 
 float PlaneAlpha(uint32_t axis_i, const GizmoTransform &transform, const ray cam_ray) {
-    const auto n_ws = glm::normalize(transform.AxisDirWs(axis_i));
-    const auto v_ws = glm::normalize(transform.P - cam_ray.o);
-    const float c = fabsf(glm::dot(n_ws, v_ws)); // [0=edge-on, 1=face-on]
+    const auto n_ws = numeric::Normalize(transform.AxisDirWs(axis_i));
+    const auto v_ws = numeric::Normalize(transform.P - cam_ray.o);
+    const float c = fabsf(numeric::Dot(n_ws, v_ws)); // [0=edge-on, 1=face-on]
     const float opaque = sinf(Style.PlaneOpaqueAngleRad);
     const float transparent = sinf(Style.PlaneTransparentAngleRad);
     return std::clamp((c - transparent) / (opaque - transparent), 0.f, 1.f);
@@ -277,8 +277,8 @@ std::optional<Interaction> FindHoveredInteraction(const ViewFrame &f, const Gizm
             const auto plane_x_world = transform.AxisDirWs(ui);
             const auto plane_y_world = transform.AxisDirWs(vi);
             const auto delta_world = (pos_plane - o_ws) / f.WorldPerNdc;
-            const float dx = glm::dot(delta_world, plane_x_world);
-            const float dy = glm::dot(delta_world, plane_y_world);
+            const float dx = numeric::Dot(delta_world, plane_x_world);
+            const float dy = numeric::Dot(delta_world, plane_y_world);
             const float PlaneQuadUVMin = 0.5f - Style.PlaneQuadSize * 0.5f;
             const float PlaneQuadUVMax = 0.5f + Style.PlaneQuadSize * 0.5f;
             if (dx >= PlaneQuadUVMin && dx <= PlaneQuadUVMax && dy >= PlaneQuadUVMin && dy <= PlaneQuadUVMax) {
@@ -296,10 +296,10 @@ std::optional<Interaction> FindHoveredInteraction(const ViewFrame &f, const Gizm
         const auto o_ws = transform.P;
         for (uint32_t i = 0; i < 3; ++i) {
             const auto intersect_pos_world = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(o_ws, vec4{transform.AxisDirWs(i), 0})));
-            if (glm::dot(intersect_pos_world - o_ws, -cam_ray.d) > FLT_EPSILON) continue;
+            if (numeric::Dot(intersect_pos_world - o_ws, -cam_ray.d) > FLT_EPSILON) continue;
 
             // Project intersection direction into gizmo-local and back to screen
-            const auto dir_local = glm::normalize(transform.WorldDirToLocal(intersect_pos_world - o_ws));
+            const auto dir_local = numeric::Normalize(transform.WorldDirToLocal(intersect_pos_world - o_ws));
             const auto circle_ws = o_ws + transform.LocalDirToWorld(dir_local * f.WorldPerNdc * Style.RotationCircleSize);
             if (const auto circle_pos = WsToPx(f, circle_ws); ImLengthSqr(circle_pos - mouse_px) < SelectDist * SelectDist) {
                 return Interaction{TransformType::Rotate, AxisOp(i)};
@@ -348,7 +348,7 @@ std::string ValueLabel(Interaction i, vec3 v, TransformGizmo::Mode mode, const N
 
     switch (i.Type) {
         case Translate: {
-            const float dist = glm::length(v);
+            const float dist = numeric::Length(v);
             auto d = [&](float val) { return std::format("D: {} ({:.4f}){}", NumericDisplayStr(num, val, "{:.4f}"), dist, con); };
             switch (i.Op) {
                 case AxisX:
@@ -396,13 +396,12 @@ void Label(const ViewFrame &f, std::string_view label) {
 // For a half circle, pass `step_mult = 0.5`.
 void FastEllipse(std::span<ImVec2> out, ImVec2 o, ImVec2 u, ImVec2 v, bool clockwise = true, float step_mult = 1.f) {
     const uint32_t count = out.size();
-    const float d = (clockwise ? -2.f : 2.f) * step_mult * M_PI / float(count - 1);
+    const float d = (clockwise ? -2.f : 2.f) * step_mult * std::numbers::pi_v<float> / float(count - 1);
     const float cos_d = cosf(d), sin_d = sinf(d);
-    const glm::mat2 rot{cos_d, -sin_d, sin_d, cos_d};
     vec2 cs{1, 0}; // (cos0, sin0)
     for (uint32_t i = 0; i < count; ++i) {
         out[i] = o + u * cs.x + v * cs.y;
-        cs = rot * cs;
+        cs = {cos_d * cs.x + sin_d * cs.y, -sin_d * cs.x + cos_d * cs.y};
     }
 }
 
@@ -576,7 +575,7 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
         const auto DrawAxisHandle = [&](HandleType handle_type, bool is_active, bool ghost, uint32_t axis_i, float size, std::optional<float> line_begin_size) {
             const auto &m = ghost ? g.Start->Transform : transform;
             const auto o_ws = m.P;
-            const auto axis_dir_ws = glm::normalize(m.AxisDirWs(axis_i));
+            const auto axis_dir_ws = numeric::Normalize(m.AxisDirWs(axis_i));
 
             const auto w2s = ghost ? g.Start->WorldPerNdc : f.WorldPerNdc;
             const auto end_ws = o_ws + axis_dir_ws * w2s * size;
@@ -591,8 +590,8 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
                 // Build a single cone silhouette polygon: triangle + outer half of ellipse
 
                 // Endpoints/basis
-                const auto u_ws = glm::normalize((cam_ray.o - end_ws) - glm::dot(cam_ray.o - end_ws, axis_dir_ws) * axis_dir_ws);
-                const auto v_ws = glm::cross(axis_dir_ws, u_ws);
+                const auto u_ws = numeric::Normalize((cam_ray.o - end_ws) - numeric::Dot(cam_ray.o - end_ws, axis_dir_ws) * axis_dir_ws);
+                const auto v_ws = numeric::Cross(axis_dir_ws, u_ws);
                 const auto p_tip = WsToPx(f, end_ws + axis_dir_ws * w2s * Style.TranslationArrowSize);
                 const auto p_b1 = WsToPx(f, end_ws + v_ws * w2s * Style.TranslationArrowRadSize);
                 const auto p_b2 = WsToPx(f, end_ws - v_ws * w2s * Style.TranslationArrowRadSize);
@@ -623,8 +622,8 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
                 dl.AddConvexPolyFilled(poly, n, color); // Winding already CW
             } else if (handle_type == HandleType::Cube) {
                 const auto [ui, vi] = PerpendicularAxes(axis_i);
-                const auto u_ws = glm::normalize(m.AxisDirWs(ui));
-                const auto v_ws = glm::normalize(m.AxisDirWs(vi));
+                const auto u_ws = numeric::Normalize(m.AxisDirWs(ui));
+                const auto v_ws = numeric::Normalize(m.AxisDirWs(vi));
                 const float half_ws = w2s * Style.CubeHalfExtentSize;
                 const auto A = axis_dir_ws * half_ws, U = u_ws * half_ws, V = v_ws * half_ws;
                 const auto C = end_ws + A; // inner (−A) face touches the endpoint
@@ -642,10 +641,10 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
                     adj[b][deg[b]++] = a;
                 };
 
-                const auto view_dir = glm::normalize(cam_ray.o - C);
-                const bool sU = glm::dot(u_ws, view_dir) < 0;
-                const bool sV = glm::dot(v_ws, view_dir) < 0;
-                const bool sA = glm::dot(axis_dir_ws, view_dir) < 0;
+                const auto view_dir = numeric::Normalize(cam_ray.o - C);
+                const bool sU = numeric::Dot(u_ws, view_dir) < 0;
+                const bool sV = numeric::Dot(v_ws, view_dir) < 0;
+                const bool sA = numeric::Dot(axis_dir_ws, view_dir) < 0;
                 for (uint8_t i = 0; i < NumCorners; ++i) {
                     const bool bU = i & 1, bV = i & 2, bA = i & 4;
                     int j = i ^ 1;
@@ -740,14 +739,14 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
             {
                 const auto o_start_ws = g.Start->Transform.P;
                 const auto plane = BuildPlane(o_start_ws, GetPlaneNormal(*g.Current, g.Start->Transform, cam_ray));
-                const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - o_ws);
-                const auto v = glm::cross(vec3{plane}, u);
+                const auto u = numeric::Normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - o_ws);
+                const auto v = numeric::Cross(vec3{plane}, u);
                 const float r = f.WorldPerNdc * (g.Current->Op == Screen ? Style.OuterCircleRadSize : Style.RotationCircleSize);
                 const auto u_px = WsToPx(f, o_ws + u * r) - o_px;
                 const auto v_px = WsToPx(f, o_ws + v * r) - o_px;
                 FastEllipse(CirclePositions, o_px, u_px, v_px, dt.RotationAngle >= 0);
             }
-            const uint32_t angle_i = float(FullCircleSegmentCount - 1) * fabsf(dt.RotationAngle) / (2 * M_PI);
+            const uint32_t angle_i = float(FullCircleSegmentCount - 1) * fabsf(dt.RotationAngle) / (2 * std::numbers::pi_v<float>);
             const auto angle_circle_pos = CirclePositions[angle_i + 1]; // save
             CirclePositions[angle_i + 1] = o_px;
             dl.AddConvexPolyFilled(CirclePositions, angle_i + 2, Color.RotationActiveFill);
@@ -760,9 +759,9 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
         } else if (!g.Start) {
             // Half-circles facing the camera
             const float r = f.WorldPerNdc * Style.RotationCircleSize;
-            const auto cam_to_model = glm::normalize(transform.WorldDirToLocal(o_ws - cam_ray.o));
+            const auto cam_to_model = numeric::Normalize(transform.WorldDirToLocal(o_ws - cam_ray.o));
             for (uint32_t axis = 0; axis < 3; ++axis) {
-                const float angle_start = M_PI_2 + atan2f(cam_to_model[(4 - axis) % 3], cam_to_model[(3 - axis) % 3]);
+                const float angle_start = std::numbers::pi_v<float> / 2.f + atan2f(cam_to_model[(4 - axis) % 3], cam_to_model[(3 - axis) % 3]);
                 const vec4 axis_start{cosf(angle_start), sinf(angle_start), 0.f, 0.f};
                 const vec4 axis_offset{-axis_start.y, axis_start.x, 0.f, 0.f};
                 const auto [ui, vi] = PerpendicularAxes(axis);
@@ -804,7 +803,7 @@ LocalTransformDelta GetLocalTransformDelta(const ViewFrame &f, const GizmoIntera
     const auto [type, op] = interaction;
     if (type == TransformType::Scale) {
         const auto o_px = std::bit_cast<vec2>(WsToPx(f, ts.P));
-        const auto scale = glm::distance(f.MousePx, o_px) / glm::max(0.001f, glm::distance(g.Start->MousePx, o_px));
+        const auto scale = numeric::Distance(f.MousePx, o_px) / numeric::Max(0.001f, numeric::Distance(g.Start->MousePx, o_px));
         return {.S = ScaleVecForOp(op, scale)};
     }
 
@@ -815,9 +814,9 @@ LocalTransformDelta GetLocalTransformDelta(const ViewFrame &f, const GizmoIntera
     if (op == Trackball) return {.RotationYawPitch = (f.MousePx - g.Start->MousePx) / SizeToPx(f, Style.RotationCircleSize)};
 
     // Axis/Screen rotation on plane
-    const auto a0 = glm::normalize(mouse_plane_start - ts.P);
-    const auto t_ws = glm::normalize(mouse_plane - ts.P);
-    return {.RotationAngle = acosf(glm::clamp(glm::dot(t_ws, a0), -1.f, 1.f)) * -glm::sign(glm::dot(t_ws, glm::cross(a0, vec3{plane})))};
+    const auto a0 = numeric::Normalize(mouse_plane_start - ts.P);
+    const auto t_ws = numeric::Normalize(mouse_plane - ts.P);
+    return {.RotationAngle = acosf(numeric::Clamp(numeric::Dot(t_ws, a0), -1.f, 1.f)) * -numeric::Sign(numeric::Dot(t_ws, numeric::Cross(a0, vec3{plane})))};
 }
 
 Transform GetDeltaTransform(const GizmoTransform &ts, const LocalTransformDelta &dt, Interaction interaction, const vec4 &plane, const mat3 &cam_basis, bool snap, vec3 snap_value) {
@@ -827,7 +826,7 @@ Transform GetDeltaTransform(const GizmoTransform &ts, const LocalTransformDelta 
         auto p = dt.P;
         if (op == AxisX || op == AxisY || op == AxisZ) {
             const auto axis = ts.AxisDirWs(AxisIndex(op));
-            p = axis * glm::dot(axis, dt.P);
+            p = axis * numeric::Dot(axis, dt.P);
         }
         if (snap) {
             p = mode == Mode::Local || op == Screen ? ts.LocalDirToWorld(Snap(ts.WorldDirToLocal(dt.P), snap_value), true) : Snap(dt.P, snap_value);
@@ -835,23 +834,24 @@ Transform GetDeltaTransform(const GizmoTransform &ts, const LocalTransformDelta 
         return {.P = p};
     }
     if (type == TransformType::Scale) {
-        auto s = glm::max(snap ? Snap(dt.S, snap_value) : dt.S, 0.001f);
+        auto s = numeric::Max(snap ? Snap(dt.S, snap_value) : dt.S, 0.001f);
         if (mode == Mode::World) {
             // World mode: per-local-axis scale induced by a world diag scale
-            const auto Rm = glm::mat3_cast(ts.R);
-            s = glm::sqrt(glm::transpose(glm::matrixCompMult(Rm, Rm)) * (s * s));
+            const auto Rm = numeric::ToMat3(ts.R);
+            const mat3 squared{Rm[0] * Rm[0], Rm[1] * Rm[1], Rm[2] * Rm[2]};
+            s = numeric::Sqrt(numeric::Transpose(squared) * (s * s));
         }
         return {.S = s};
     }
     // Rotation
     if (op == InteractionOp::Trackball) {
         if (Length2(dt.RotationYawPitch) < 1e-12f) return {};
-        const float angle = glm::length(dt.RotationYawPitch);
-        const vec3 axis_ws = glm::normalize(dt.RotationYawPitch.y * cam_basis[0] + dt.RotationYawPitch.x * cam_basis[1]);
-        return {.R = glm::angleAxis(angle, axis_ws)};
+        const float angle = numeric::Length(dt.RotationYawPitch);
+        const vec3 axis_ws = numeric::Normalize(dt.RotationYawPitch.y * cam_basis[0] + dt.RotationYawPitch.x * cam_basis[1]);
+        return {.R = numeric::AngleAxis(angle, axis_ws)};
     }
-    const float a = snap ? Snap(dt.RotationAngle, snap_value.x * M_PI / 180.f) : dt.RotationAngle;
-    return {.R = glm::angleAxis(a, glm::normalize(mode == TransformGizmo::Mode::Local ? vec3{plane} : ts.WorldDirToLocal(vec3{plane})))};
+    const float a = snap ? Snap(dt.RotationAngle, snap_value.x * std::numbers::pi_v<float> / 180.f) : dt.RotationAngle;
+    return {.R = numeric::AngleAxis(a, numeric::Normalize(mode == TransformGizmo::Mode::Local ? vec3{plane} : ts.WorldDirToLocal(vec3{plane})))};
 }
 } // namespace
 
@@ -952,10 +952,10 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
             g.Delta.RotationAngle = value * std::numbers::pi_v<float> / 180.f;
             if (op == Trackball) {
                 g.Delta.RotationYawPitch = {g.Delta.RotationAngle, 0};
-                return Result{ts, {.R = glm::angleAxis(g.Delta.RotationAngle, cam_basis[1])}};
+                return Result{ts, {.R = numeric::AngleAxis(g.Delta.RotationAngle, cam_basis[1])}};
             }
             const auto plane = vec3{BuildPlane(ts.P, GetPlaneNormal(*g.Current, ts, cam_ray))};
-            return Result{ts, {.R = glm::angleAxis(g.Delta.RotationAngle, glm::normalize(ts.Mode == Mode::Local ? plane : ts.WorldDirToLocal(plane)))}};
+            return Result{ts, {.R = numeric::AngleAxis(g.Delta.RotationAngle, numeric::Normalize(ts.Mode == Mode::Local ? plane : ts.WorldDirToLocal(plane)))}};
         }
 
         const auto plane = BuildPlane(ts.P, GetPlaneNormal(*g.Current, ts, cam_ray));

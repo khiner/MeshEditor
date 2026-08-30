@@ -4,6 +4,7 @@
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 
+#include <optional>
 #include <vector>
 
 struct PhysicsSimulationSettings {

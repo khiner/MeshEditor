@@ -188,7 +188,7 @@ renders the whole corpus into `render_candidates/` with `FLAGS` handed to every 
 ## Stack
 
 - [Metal](https://developer.apple.com/metal/) via [metal-cpp](https://developer.apple.com/metal/cpp/) + [AppKit](https://developer.apple.com/documentation/appkit) + [ImGui](https://github.com/ocornut/imgui): Graphics + immediate-mode UI/UX
-- [glm](https://github.com/g-truc/glm): Small numeric vector/matrix types + math
+- Apple SIMD: Numeric vector/matrix types + math
 - [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
 - macOS Core Audio: HAL output and native audio-file I/O
 - [Spectra](https://github.com/yixuan/spectra) Estimate eigenvalues/vectors for modal analysis

@@ -238,26 +238,26 @@ std::optional<PixelRect> ObjectQueryRect(const ObjectSelectQuery &query, mtl::Ex
     const uvec2 limit{target.Width, target.Height};
     uvec2 lo{}, hi{}; // Exclusive high bound.
     if (query.BoxResultSlot != InvalidSlot) {
-        lo = glm::min(uvec2{query.Box.x, query.Box.y}, limit);
-        hi = glm::min(uvec2{
-                          uint32_t(std::min<uint64_t>(uint64_t{query.Box.z} + 1u, target.Width)),
-                          uint32_t(std::min<uint64_t>(uint64_t{query.Box.w} + 1u, target.Height)),
-                      },
-                      limit);
+        lo = numeric::Min(uvec2{query.Box.x, query.Box.y}, limit);
+        hi = numeric::Min(uvec2{
+                              uint32_t(std::min<uint64_t>(uint64_t{query.Box.z} + 1u, target.Width)),
+                              uint32_t(std::min<uint64_t>(uint64_t{query.Box.w} + 1u, target.Height)),
+                          },
+                          limit);
     } else if (query.BestKeySlot != InvalidSlot) {
         const uint32_t radius = uint32_t(std::ceil(std::sqrt(float(query.RadiusSq))));
-        lo = glm::min(uvec2{
-                          query.TargetPx.x > radius ? query.TargetPx.x - radius : 0u,
-                          query.TargetPx.y > radius ? query.TargetPx.y - radius : 0u,
-                      },
-                      limit);
-        hi = glm::min(uvec2{
-                          uint32_t(std::min<uint64_t>(uint64_t{query.TargetPx.x} + radius + 1u, target.Width)),
-                          uint32_t(std::min<uint64_t>(uint64_t{query.TargetPx.y} + radius + 1u, target.Height)),
-                      },
-                      limit);
+        lo = numeric::Min(uvec2{
+                              query.TargetPx.x > radius ? query.TargetPx.x - radius : 0u,
+                              query.TargetPx.y > radius ? query.TargetPx.y - radius : 0u,
+                          },
+                          limit);
+        hi = numeric::Min(uvec2{
+                              uint32_t(std::min<uint64_t>(uint64_t{query.TargetPx.x} + radius + 1u, target.Width)),
+                              uint32_t(std::min<uint64_t>(uint64_t{query.TargetPx.y} + radius + 1u, target.Height)),
+                          },
+                          limit);
     }
-    if (glm::any(glm::lessThanEqual(hi, lo))) return {};
+    if (hi.x <= lo.x || hi.y <= lo.y) return {};
     return PixelRect{lo, hi - lo};
 }
 

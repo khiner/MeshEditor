@@ -3,8 +3,6 @@
 #include "MeshAttributes.h"
 #include "PrimitiveType.h"
 
-#include <glm/geometric.hpp>
-
 #include <numbers>
 #include <ranges>
 
@@ -66,7 +64,7 @@ inline MeshData CreateMesh(const IcoSphere &p) {
         {0, -1, t}, {0, 1, t}, {0, -1, -t}, {0, 1, -t},
         {t, 0, -1}, {t, 0, 1}, {-t, 0, -1}, {-t, 0, 1},
     };
-    for (auto &v : vertices) v = glm::normalize(v);
+    for (auto &v : vertices) v = numeric::Normalize(v);
 
     std::vector<std::vector<uint32_t>> indices{
         {0, 11, 5}, {0, 5, 1},  {0, 1, 7},   {0, 7, 10}, {0, 10, 11},
@@ -81,7 +79,7 @@ inline MeshData CreateMesh(const IcoSphere &p) {
         const uint32_t key = (std::min(p1, p2) << 16) + std::max(p1, p2);
         if (const auto found = cache.find(key); found != cache.end()) return found->second;
 
-        vertices.emplace_back(glm::normalize((vertices[p1] + vertices[p2]) / 2.f));
+        vertices.emplace_back(numeric::Normalize((vertices[p1] + vertices[p2]) / 2.f));
 
         const uint32_t i = vertices.size() - 1;
         cache[key] = i;

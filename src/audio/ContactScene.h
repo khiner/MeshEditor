@@ -15,7 +15,6 @@
 #include "scene/WorldTransform.h"
 
 #include <entt/entity/registry.hpp>
-#include <glm/geometric.hpp>
 
 #include <algorithm>
 #include <optional>
@@ -102,13 +101,13 @@ inline float UniformScaleRatio(const entt::registry &r, entt::entity e, const Mo
 
 // Unit direction of `v`, or zero when `v` has no length.
 inline vec3 UnitOrZero(vec3 v) {
-    const float len = glm::length(v);
+    const float len = numeric::Length(v);
     return len > 0 ? v / len : vec3{0};
 }
 
 // The sample point nearest `local_point`.
 inline uint32_t NearestSamplePoint(const std::vector<vec3> &positions, vec3 local_point) {
-    const auto dist2 = [local_point](vec3 p) { const auto d = p - local_point; return glm::dot(d, d); };
+    const auto dist2 = [local_point](vec3 p) { const auto d = p - local_point; return numeric::Dot(d, d); };
     return uint32_t(std::ranges::distance(positions.begin(), std::ranges::min_element(positions, {}, dist2)));
 }
 
@@ -117,6 +116,6 @@ inline uint32_t NearestSamplePoint(const std::vector<vec3> &positions, vec3 loca
 inline float PeakModalDrive(const ModalModes &modes, uint32_t p, vec3 j) {
     if (p >= modes.Shapes.size()) return 0;
     float peak = 0;
-    for (const auto &shape : modes.Shapes[p]) peak = std::max(peak, std::abs(glm::dot(shape, j)));
+    for (const auto &shape : modes.Shapes[p]) peak = std::max(peak, std::abs(numeric::Dot(shape, j)));
     return peak;
 }

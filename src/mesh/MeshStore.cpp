@@ -2,14 +2,13 @@
 
 #include "MeshAttributes.h"
 #include "Profile.h"
-#include "action/SerializeGlm.h" // glm hooks for the entry's authored-normal stash
+#include "action/SerializeNumeric.h"
 #include "gpu/CornerClass.h"
 #include "gpu/CornerClassEncoding.h"
 #include "gpu/EditSelectionSummary.h"
 #include "gpu/FanItemEncoding.h"
 #include "metal/BufferArena.h"
 
-#include <glm/geometric.hpp>
 #include <zpp_bits.h>
 
 #define TINYOBJLOADER_IMPLEMENTATION
@@ -49,7 +48,7 @@ ObjPlyMaterial ToObjPlyMaterial(const tinyobj::material_t &material, uint32_t in
     const auto roughness = std::clamp(std::sqrt(2.f / (shininess + 2.f)), 0.04f, 1.f);
     const auto specular_strength = std::max({ks.x, ks.y, ks.z});
     const auto metallic = std::clamp((specular_strength - 0.04f) / (1.f - 0.04f), 0.f, 1.f);
-    const auto base_color = glm::mix(kd, ks, metallic);
+    const auto base_color = numeric::Mix(kd, ks, metallic);
     const auto alpha = std::clamp(material.dissolve, 0.f, 1.f);
     auto name = material.name.empty() ? "Material" + std::to_string(index) : material.name;
     return {
@@ -111,9 +110,9 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
     std::unordered_map<ObjVertexKey, uint32_t, ObjVertexKeyHash> vertex_cache;
     // Append the strided source element at `index` (when valid), else `fallback`.
     const auto append_attr = [](auto &dst, const auto &src, int index, auto fallback) {
-        constexpr auto N = decltype(fallback)::length();
+        constexpr auto N = decltype(fallback)::ComponentCount;
         if (index >= 0 && size_t(index) * N + (N - 1) < src.size()) {
-            for (glm::length_t c = 0; c < N; ++c) fallback[c] = src[size_t(index) * N + c];
+            for (size_t c = 0; c < N; ++c) fallback[c] = src[size_t(index) * N + c];
         }
         dst->emplace_back(fallback);
     };
@@ -657,9 +656,9 @@ constexpr float AuthoredMatchDot{0.99999962f};
 // Whether `normal` matches the unit-or-zero `reference` within the authored match gate.
 // Nullopt when `normal` is degenerate. A zero reference matches nothing.
 std::optional<bool> NormalsMatch(vec3 normal, vec3 reference) {
-    const auto len = glm::length(normal);
+    const auto len = numeric::Length(normal);
     if (len < 1e-6f) return {};
-    return glm::dot(normal / len, reference) >= AuthoredMatchDot;
+    return numeric::Dot(normal / len, reference) >= AuthoredMatchDot;
 }
 
 // Orthonormal frame anchoring a corner's authored-normal offset.
@@ -670,28 +669,28 @@ struct CornerNormalFrame {
     vec3 Normal, Ref, Ortho;
 };
 CornerNormalFrame ComputeCornerFrame(vec3 normal, std::span<const uint32_t> indices, std::span<const Vertex> vertices, uint32_t ci) {
-    const auto n = glm::length(normal) > 0.f ? normal : vec3{0, 0, 1};
+    const auto n = numeric::Length(normal) > 0.f ? normal : vec3{0, 0, 1};
     const auto tri = ci / 3 * 3;
     const auto k = ci - tri;
     const auto p0 = vertices[indices[tri + k]].Position;
     const auto ref = [&]() -> vec3 {
         for (uint32_t other = 1; other < 3; ++other) {
             const auto edge = vertices[indices[tri + (k + other) % 3]].Position - p0;
-            const auto rejected = edge - n * glm::dot(edge, n);
-            const auto len = glm::length(rejected);
+            const auto rejected = edge - n * numeric::Dot(edge, n);
+            const auto len = numeric::Length(rejected);
             // An edge nearly parallel to the normal rejects to cancellation noise, so its perpendicular part must be a meaningful fraction of its length to anchor the frame.
-            if (len > 1e-3f * glm::length(edge)) return rejected / len;
+            if (len > 1e-3f * numeric::Length(edge)) return rejected / len;
         }
         const auto axis = std::abs(n.x) < 0.5f ? vec3{1, 0, 0} : vec3{0, 1, 0};
-        return glm::normalize(glm::cross(n, axis));
+        return numeric::Normalize(numeric::Cross(n, axis));
     }();
-    return {n, ref, glm::cross(n, ref)};
+    return {n, ref, numeric::Cross(n, ref)};
 }
 
 // A custom normal as (polar, azimuth) angles in the corner frame.
 vec2 EncodeNormalOffset(vec3 custom, const CornerNormalFrame &frame) {
-    const auto polar = std::acos(std::clamp(glm::dot(custom, frame.Normal), -1.f, 1.f));
-    const auto azimuth = std::atan2(glm::dot(custom, frame.Ortho), glm::dot(custom, frame.Ref));
+    const auto polar = std::acos(std::clamp(numeric::Dot(custom, frame.Normal), -1.f, 1.f));
+    const auto azimuth = std::atan2(numeric::Dot(custom, frame.Ortho), numeric::Dot(custom, frame.Ref));
     return {polar, azimuth};
 }
 
@@ -891,7 +890,7 @@ void MeshStore::EncodeAuthoredCornerNormals(const Mesh &mesh) {
         const auto authored_normal = authored[i];
         if (NormalsMatch(authored_normal, derived[i]).value_or(true)) continue;
         masks[i / 32].x |= 1u << (i % 32);
-        packed.emplace_back(EncodeNormalOffset(authored_normal / glm::length(authored_normal), ComputeCornerFrame(derived[i], indices, vertices, i)));
+        packed.emplace_back(EncodeNormalOffset(authored_normal / numeric::Length(authored_normal), ComputeCornerFrame(derived[i], indices, vertices, i)));
     }
     if (packed.empty()) return;
     uint32_t rank = 0;
@@ -932,7 +931,7 @@ void MeshStore::UpdateMorphShadingAuthored(const Mesh &mesh, std::span<const Cor
         if (rest_normal == vec3{0}) continue;
         for (const auto &pose : poses) {
             const auto posed = compose(pose, ci);
-            if (posed != vec3{0} && glm::dot(rest_normal, posed) < AuthoredMatchDot) {
+            if (posed != vec3{0} && numeric::Dot(rest_normal, posed) < AuthoredMatchDot) {
                 entry.MorphShadingAuthored = true;
                 return;
             }
@@ -952,7 +951,7 @@ void MeshStore::SetEdgeSharpnessByAngle(const Mesh &mesh, float angle) {
         const auto p0 = vertices[**it].Position;
         const auto p1 = vertices[**++it].Position;
         const auto p2 = vertices[**++it].Position;
-        face_normals[*fh] = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+        face_normals[*fh] = numeric::Normalize(numeric::Cross(p1 - p0, p2 - p0));
     }
     const auto &c = mesh.GetConnectivity();
     const float cos_angle = std::cos(angle);
@@ -961,7 +960,7 @@ void MeshStore::SetEdgeSharpnessByAngle(const Mesh &mesh, float angle) {
         const auto face = mesh.GetFace(hh);
         const auto opposite = c.Opposites[*hh];
         const auto opposite_face = opposite ? c.FaceOf(opposite) : Mesh::FH{};
-        sharp[ei] = face && opposite_face && glm::dot(face_normals[*face], face_normals[*opposite_face]) < cos_angle ? 1 : 0;
+        sharp[ei] = face && opposite_face && numeric::Dot(face_normals[*face], face_normals[*opposite_face]) < cos_angle ? 1 : 0;
     }
 }
 
@@ -1472,8 +1471,8 @@ CreatedMesh MeshStore::CreateMesh(uint32_t id, MeshData &&data, MeshVertexAttrib
             const auto face = corners.subspan(data.FaceStart(fi), data.FaceSize(fi));
             const uint32_t corner_count = (face.size() - 2) * 3;
             const auto p0 = source_vertices[face[0]].Position;
-            const auto cross = glm::cross(source_vertices[face[1]].Position - p0, source_vertices[face[2]].Position - p0);
-            const auto cross_len = glm::length(cross);
+            const auto cross = numeric::Cross(source_vertices[face[1]].Position - p0, source_vertices[face[2]].Position - p0);
+            const auto cross_len = numeric::Length(cross);
             bool flat = cross_len > 0.f;
             if (flat) {
                 const auto face_normal = cross / cross_len;
@@ -1514,7 +1513,7 @@ CreatedMesh MeshStore::CreateMesh(uint32_t id, MeshData &&data, MeshVertexAttrib
             const auto ka = vertex_position(fa, vh), kb = vertex_position(fb, vh);
             if (!ka || !kb) return false;
             const auto nb = authored_at(fb, *kb);
-            const auto lb = glm::length(nb);
+            const auto lb = numeric::Length(nb);
             if (lb < 1e-6f) return false;
             return NormalsMatch(authored_at(fa, *ka), nb / lb) == false;
         };

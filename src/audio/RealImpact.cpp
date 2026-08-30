@@ -1,5 +1,6 @@
 #include "RealImpact.h"
 #include "npy.h"
+#include "numeric/Angles.h"
 #include "numeric/mat4.h"
 #include "numeric/vec4.h"
 
@@ -82,7 +83,7 @@ const std::unordered_map<std::string_view, std::string_view> MaterialNameForObje
 } // namespace
 
 namespace RealImpact {
-const quat ObjectRotationToYUp = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(std::numbers::pi_v<float>, vec3{0, 0, 1});
+const quat ObjectRotationToYUp = numeric::AngleAxis(-std::numbers::pi_v<float> / 2.f, vec3{1, 0, 0}) * numeric::AngleAxis(std::numbers::pi_v<float>, vec3{0, 0, 1});
 
 std::expected<std::string, std::string> ValidateDirectory(const fs::path &directory) {
     if (!fs::is_directory(directory)) return std::unexpected(std::format("RealImpact directory does not exist: {}", directory.string()));
@@ -185,7 +186,7 @@ The only difference is we use Y-up instead of Z-up.
         return pos_meters
 */
 vec3 ListenerPoint::GetPosition(vec3 world_up, bool mic_center) const {
-    const float angle = glm::radians(float(AngleDeg)), dist = float(DistanceMm);
+    const float angle = numeric::Radians(float(AngleDeg)), dist = float(DistanceMm);
     const vec3 pos{
         // 230 I believe is for the gantry (where the object is placed)
         230 + dist + (mic_center ? MicLengthMm / 2 : 0),
@@ -194,6 +195,6 @@ vec3 ListenerPoint::GetPosition(vec3 world_up, bool mic_center) const {
         // You can see the same offsets in https://samuelpclarke.com/realimpact/ and https://www.youtube.com/watch?v=OeZMeze-oIs
         ((45.f / 2.f) + 20.95f),
     };
-    return vec3{glm::rotate(mat4{1}, angle, world_up) * vec4{pos, 1}} / 1000.f;
+    return vec3{numeric::Rotate(mat4{1}, angle, world_up) * vec4{pos, 1}} / 1000.f;
 }
 } // namespace RealImpact

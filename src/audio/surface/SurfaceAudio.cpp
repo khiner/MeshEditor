@@ -13,8 +13,6 @@
 #include "viewport/ViewportEvents.h"
 
 #include <entt/entity/registry.hpp>
-#include <glm/common.hpp>
-#include <glm/geometric.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -60,9 +58,9 @@ vec3 SampleNormal(const DecodedImage &image, float x, float y) {
         const auto *p = pixels + (size_t(py) * size_t(w) + size_t(px)) * 4;
         return vec3{float(p[0]), float(p[1]), float(p[2])} / 127.5f - 1.f;
     };
-    const vec3 top = glm::mix(texel(x0, y0), texel(x1, y0), fx);
-    const vec3 bottom = glm::mix(texel(x0, y1), texel(x1, y1), fx);
-    return glm::mix(top, bottom, fy);
+    const vec3 top = numeric::Mix(texel(x0, y0), texel(x1, y0), fx);
+    const vec3 bottom = numeric::Mix(texel(x0, y1), texel(x1, y1), fx);
+    return numeric::Mix(top, bottom, fy);
 }
 } // namespace
 
@@ -104,7 +102,7 @@ void UpdateSurfaceRelief(entt::registry &r, entt::entity node_entity, entt::enti
     // A texel step covers different distances across a map whose sides differ, so the path's length comes from where it lands in texture coordinates.
     // Its direction there is what the sampled gradient projects onto.
     const vec2 step_uv{dir_x / float(image->Width), dir_y / float(image->Height)};
-    const float step_uv_length = glm::length(step_uv);
+    const float step_uv_length = numeric::Length(step_uv);
     const float step_length = length_per_uv * step_uv_length;
     const vec2 travel = step_uv / step_uv_length;
     const float leak = std::exp(-step_length / ReliefLeakLength);
@@ -165,7 +163,7 @@ void MergeCrests(std::vector<float> &into, std::span<const float> part) {
 
 SamplePointBlend NearestSamplePoints(const std::vector<vec3> &positions, vec3 local_point) {
     if (positions.size() < 2) return {};
-    const auto dist2 = [&](uint32_t i) { const auto d = positions[i] - local_point; return glm::dot(d, d); };
+    const auto dist2 = [&](uint32_t i) { const auto d = positions[i] - local_point; return numeric::Dot(d, d); };
     uint32_t first = 0, second = 0;
     float d_first = std::numeric_limits<float>::max(), d_second = d_first;
     for (uint32_t i = 0; i < positions.size(); ++i) {
@@ -196,7 +194,7 @@ SamplePointBlend ShapeBlendAt(const ModalModes &modes, vec3 local_point) {
         const std::array tri{modes.Indices[i], modes.Indices[i + 1], modes.Indices[i + 2]};
         const auto hit = ClosestPointOnTriangle(local_point, modes.Positions[tri[0]], modes.Positions[tri[1]], modes.Positions[tri[2]]);
         const vec3 offset = hit.Position - local_point;
-        if (const float distance2 = glm::dot(offset, offset); distance2 < best_distance2) {
+        if (const float distance2 = numeric::Dot(offset, offset); distance2 < best_distance2) {
             best_distance2 = distance2;
             best = {tri, hit.Weights};
         }
@@ -222,7 +220,7 @@ SideTracks ResolveSideTracks(const entt::registry &r, ModalAudio &m, const Susta
     const auto *node_transform = r.try_get<const WorldTransform>(node);
     const float node_scale = node_transform ? MeanScale(node_transform->S) : 0.f;
     // Both tracks are read at the sweep speed, so a sample advances the same surface distance whatever their spacings are.
-    const float step = glm::length(side.SweepVelocity) / sample_rate;
+    const float step = numeric::Length(side.SweepVelocity) / sample_rate;
 
     SideTracks out;
     // `size` converts the track's stored lengths to meters: 1 for the finish, whose lengths are already absolute, and the node's world scale for the relief, whose lengths are in the mesh's own coordinates.
@@ -405,9 +403,9 @@ ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const Sus
         // A contact below the slip threshold takes a deterministic resting tangent basis rather than the slip noise direction, so the interface junction holds pressed modes on a stable axis (CONTACT_SPRINGS).
         // The junction's second axis is the render's normal cross tangent.
         vec3 slip_world = UnitOrZero(c.Slip);
-        if (Gate.ContactSprings && glm::length(c.Slip) < controls.MinSlipSpeed) {
+        if (Gate.ContactSprings && numeric::Length(c.Slip) < controls.MinSlipSpeed) {
             const vec3 axis = std::abs(c.Normal.x) < 0.5f ? vec3{1, 0, 0} : vec3{0, 1, 0};
-            slip_world = glm::normalize(glm::cross(c.Normal, axis));
+            slip_world = numeric::Normalize(numeric::Cross(c.Normal, axis));
         }
         side.SlipDir = InverseTransformDir(wt, toward * slip_world);
         // Both surfaces' sweep directions land in this body's frame, since its mode shapes are what they project onto.
@@ -1076,7 +1074,7 @@ ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const Sus
             double modal_response = 0;
             for (uint32_t k = 0; k < count; ++k) {
                 const auto shape = BlendedShape(bank, base0, base1, base2, {w0, w1, w2}, k);
-                const double normal = glm::dot(shape, side.Normal);
+                const double normal = numeric::Dot(shape, side.Normal);
                 modal_response += normal * normal * bank.QuadCompliance[k0 + k];
             }
             const double response = modal_response * surface.Coupling.load(std::memory_order_relaxed) * bank.DeflectionScale[o] * surface.SustainLevel.load(std::memory_order_relaxed) / sample_rate + dt * dt * bank.RigidInvMass[o];
@@ -1161,13 +1159,13 @@ ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const Sus
         vec3 axis{0};
         float speed = 0;
         for (const auto &cs : c.Sides) {
-            if (const float s = glm::length(cs.SweepVelocity); s > speed) {
+            if (const float s = numeric::Length(cs.SweepVelocity); s > speed) {
                 speed = s;
                 axis = cs.SweepVelocity / s;
             }
         }
         if (speed <= 0) axis = UnitOrZero(c.Slip);
-        if (half_extent > 0 && glm::dot(axis, axis) > 0) {
+        if (half_extent > 0 && numeric::Dot(axis, axis) > 0) {
             constexpr uint32_t bin_count = std::min(8u, MaxSpringBins);
             for (uint32_t i = 0; i < c.Sides.size(); ++i) {
                 auto &side = out.Sides[i];
@@ -1184,13 +1182,13 @@ ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const Sus
                 // Only a contact two faces fix the area of takes it: rotating a curved body takes its gap profile along unchanged, which is rolling rather than rocking, so its footprint sees no tilt and Hess and Soom's flat block does not describe it.
                 const auto *dynamics = r.try_get<const ContactDynamics>(side.ModelEntity);
                 const auto *motion = r.try_get<const PhysicsMotion>(side.ModelEntity);
-                const vec3 pitch = glm::cross(side.Normal, UnitOrZero(InverseTransformDir(*transform, axis)));
-                if (Gate.ContactTilt && c.NominalArea > 0 && dynamics && motion && IsAuthoritativeDynamicBody(*motion) && glm::dot(pitch, pitch) > 0) {
-                    const vec3 pitch_axis = glm::normalize(pitch);
+                const vec3 pitch = numeric::Cross(side.Normal, UnitOrZero(InverseTransformDir(*transform, axis)));
+                if (Gate.ContactTilt && c.NominalArea > 0 && dynamics && motion && IsAuthoritativeDynamicBody(*motion) && numeric::Dot(pitch, pitch) > 0) {
+                    const vec3 pitch_axis = numeric::Normalize(pitch);
                     // The inertia is stated at the baked size, and a scaled node's grows as the fifth power, its mass with the volume and its arms with the length squared.
                     const float scale = UniformScaleRatio(r, side.ModelEntity, *modes);
                     const double sizing = motion->InertiaDiagonal ? 1.0 : std::pow(double(scale), 5.0);
-                    const double inv = double(glm::dot(pitch_axis, dynamics->InverseInertia * pitch_axis)) / sizing;
+                    const double inv = double(numeric::Dot(pitch_axis, dynamics->InverseInertia * pitch_axis)) / sizing;
                     side.InverseAngularInertia = float(std::max(inv, 0.0));
                     side.SpringHalfExtent = half_extent;
                 }
@@ -1199,13 +1197,13 @@ ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const Sus
         }
         // The moving-load sweep table, for a side whose footprint is fixed on its surface: the anchored element forces swept through that side's mode shapes, tabulated over the spring position.
         // Mode m at frequency w is driven by the force field's spatial component at wavenumber w over speed, so falling roughness spectra put more power on each resonance as speed rises, the coincidence the bins' footprint-slice boxcar filters out.
-        if (glm::dot(axis, axis) > 0 && speed > 0 && half_extent > 0) {
+        if (numeric::Dot(axis, axis) > 0 && speed > 0 && half_extent > 0) {
             const auto &bank = LiveBank(m);
             for (uint32_t i = 0; i < c.Sides.size(); ++i) {
                 auto &side = out.Sides[i];
                 if (side.ModelEntity == null_entity) continue;
                 // A side whose own contact point sweeps its surface has no fixed footprint to tabulate over, so only the near-stationary side takes the channel.
-                if (glm::length(c.Sides[i].SweepVelocity) > 0.01f * speed) continue;
+                if (numeric::Length(c.Sides[i].SweepVelocity) > 0.01f * speed) continue;
                 const auto *modes = r.try_get<const ModalModes>(side.ModelEntity);
                 const auto *transform = r.try_get<const WorldTransform>(side.ModelEntity);
                 const auto slot = FindModalObject(bank, side.ModelEntity);
@@ -1233,7 +1231,7 @@ ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const Sus
                         const auto bl = ShapeBlendAt(*modes, InverseTransformPoint(*transform, c.Point + u * axis));
                         const auto b0 = shape0 + bl.Points[0] * stride, b1 = shape0 + bl.Points[1] * stride, b2 = shape0 + bl.Points[2] * stride;
                         for (uint32_t k = 0; k < mode_count; ++k) {
-                            phi[size_t(w) * mode_count + k] = glm::dot(BlendedShape(bank, b0, b1, b2, bl.Weights, k), side.Normal);
+                            phi[size_t(w) * mode_count + k] = numeric::Dot(BlendedShape(bank, b0, b1, b2, bl.Weights, k), side.Normal);
                         }
                     }
                     // The anchored element forces, whose stiffness the rows' conformity projections read.
@@ -1313,9 +1311,9 @@ std::optional<VoiceSet::Voice> BuildContactVoice(ModalAudio &m, const SustainedC
             .SweepDir = own_resolved.SweepDir,
             .NormalForce = c.NormalForce,
             .Friction = c.Friction,
-            .SlipSpeed = glm::length(c.Slip),
+            .SlipSpeed = numeric::Length(c.Slip),
             // The solver's tangential force on this side along its slip direction, acting on body 1 with each side's SlipDir signed toward the other, so a positive value is the drag the sliding surface exerts.
-            .SolverFriction = glm::dot(c.FrictionForce, (side == 0 ? -1.f : 1.f) * UnitOrZero(c.Slip)),
+            .SolverFriction = numeric::Dot(c.FrictionForce, (side == 0 ? -1.f : 1.f) * UnitOrZero(c.Slip)),
             .Stiffness = float(own_resolved.Stiffness),
             .StaticPenetration = own_resolved.StaticPenetration,
             .SpotCount = resolved.SpotCount,
@@ -1433,8 +1431,8 @@ void SurfaceUpdateContacts(entt::registry &r) {
     for (const auto &c : active) {
         // A contact whose surfaces are not moving over one another generates nothing, while a loaded frictional interface still holds and damps the modes pressed against it.
         // Under CONTACT_SPRINGS it therefore keeps a voice for its junction (Akay 2002 Sec. IV).
-        const bool moving = glm::length(c.Slip) >= controls.MinSlipSpeed ||
-            std::max(glm::length(c.Sides.front().SweepVelocity), glm::length(c.Sides.back().SweepVelocity)) >= controls.MinSweepSpeed;
+        const bool moving = numeric::Length(c.Slip) >= controls.MinSlipSpeed ||
+            std::max(numeric::Length(c.Sides.front().SweepVelocity), numeric::Length(c.Sides.back().SweepVelocity)) >= controls.MinSweepSpeed;
         if (!moving && !(Gate.ContactSprings && c.Friction > 0)) continue;
         const std::array nodes{
             ResolveContactNodes(r, c.Sides.front().ColliderEntity, c.Sides.front().Entity),

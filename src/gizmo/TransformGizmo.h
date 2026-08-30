@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "gizmo/TransformGizmoTypes.h"
 #include "numeric/rect.h"
 

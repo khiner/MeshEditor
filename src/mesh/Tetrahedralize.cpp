@@ -18,8 +18,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <glm/geometric.hpp>
-
 namespace tetra {
 namespace {
 
@@ -349,7 +347,7 @@ inline double distance(const dvec3 &a, const dvec3 &b) {
     const double x = b.x - a.x, y = b.y - a.y, z = b.z - a.z;
     return std::sqrt(x * x + y * y + z * z);
 }
-inline dvec3 cross(const dvec3 &a, const dvec3 &b) { return glm::cross(a, b); }
+inline dvec3 cross(const dvec3 &a, const dvec3 &b) { return numeric::Cross(a, b); }
 
 // The normal of [pa, pb, pc].
 // With pivot set it picks the two shortest edge vectors by Burdakov's rule, which keeps the cross product accurate on a thin triangle.
@@ -382,7 +380,7 @@ inline void facenormal(const dvec3 &pa, const dvec3 &pb, const dvec3 &pc, dvec3 
 }
 
 inline double triarea(const dvec3 &pa, const dvec3 &pb, const dvec3 &pc) {
-    return 0.5 * glm::length(cross(pb - pa, pc - pa));
+    return 0.5 * numeric::Length(cross(pb - pa, pc - pa));
 }
 
 inline double orient3dfast(const dvec3 &pa, const dvec3 &pb, const dvec3 &pc, const dvec3 &pd) {
@@ -395,7 +393,7 @@ inline double facedihedral(const dvec3 &pa, const dvec3 &pb, const dvec3 &pc1, c
     dvec3 n1, n2;
     facenormal(pa, pb, pc1, n1, 1, nullptr);
     facenormal(pa, pb, pc2, n2, 1, nullptr);
-    const double n1len = glm::length(n1), n2len = glm::length(n2);
+    const double n1len = numeric::Length(n1), n2len = numeric::Length(n2);
     double costheta = dot(n1, n2) / (n1len * n2len);
     if (costheta > 1.0) costheta = 1.0;
     else if (costheta < -1.0) costheta = -1.0;
@@ -409,7 +407,7 @@ inline double facedihedral(const dvec3 &pa, const dvec3 &pb, const dvec3 &pc1, c
 // With a normal supplied, the reflex angle is returned when p1 and p2 turn the other way about it.
 inline double interiorangle(const dvec3 &o, const dvec3 &p1, const dvec3 &p2, const dvec3 *n) {
     const dvec3 v1 = p1 - o, v2 = p2 - o;
-    const double l1 = glm::length(v1), l2 = glm::length(v2);
+    const double l1 = numeric::Length(v1), l2 = numeric::Length(v2);
     double cosAngle = dot(v1, v2) / (l1 * l2);
     if (cosAngle > 1.0) cosAngle = 1.0;
     else if (cosAngle < -1.0) cosAngle = -1.0;
@@ -423,7 +421,7 @@ inline double interiorangle(const dvec3 &o, const dvec3 &p1, const dvec3 &p2, co
 inline void projpt2face(const dvec3 &p, const dvec3 &f1, const dvec3 &f2, const dvec3 &f3, dvec3 &prj) {
     dvec3 fnormal;
     facenormal(f1, f2, f3, fnormal, 1, nullptr);
-    fnormal /= glm::length(fnormal);
+    fnormal /= numeric::Length(fnormal);
     prj = p - dot(fnormal, p - f1) * fnormal;
 }
 
@@ -2201,7 +2199,7 @@ struct Mesh {
 
     bool is_collinear_at(int mid, int left, int right) const {
         const dvec3 v1 = P(left) - P(mid), v2 = P(right) - P(mid);
-        const double L1 = glm::length(v1), L2 = glm::length(v2);
+        const double L1 = numeric::Length(v1), L2 = numeric::Length(v2);
         return dot(v1, v2) / (L1 * L2) < CosCollinearAngTol;
     }
 
@@ -9917,8 +9915,8 @@ struct Mesh {
             if (i == 0) {
                 BoxMin = BoxMax = q;
             } else {
-                BoxMin = glm::min(BoxMin, q);
-                BoxMax = glm::max(BoxMax, q);
+                BoxMin = numeric::Min(BoxMin, q);
+                BoxMax = numeric::Max(BoxMax, q);
             }
         }
 

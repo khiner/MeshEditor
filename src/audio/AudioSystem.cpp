@@ -238,7 +238,7 @@ void UpdateListenerGains(const entt::registry &r, ModalBank &b, entt::entity vie
     for (uint32_t slot = 0; slot < uint32_t(b.Entities.size()); ++slot) {
         const auto e = b.Entities[slot];
         const auto *world = r.valid(e) ? r.try_get<const WorldTransform>(e) : nullptr;
-        const float distance = world ? glm::distance(listener_pos, world->P) : ListenerDistance;
+        const float distance = world ? numeric::Distance(listener_pos, world->P) : ListenerDistance;
         std::atomic_ref{b.ListenerGain[slot]}.store(ListenerDistance / std::max(distance, ListenerDistance), std::memory_order_relaxed);
     }
 }
@@ -354,11 +354,11 @@ namespace {
 vec2 ImpulseAngle{0, 0};
 
 // Unit surface normal at a mesh vertex.
-vec3 VertexNormal(const Mesh &mesh, uint32_t vertex) { return glm::normalize(mesh.GetNormal(Mesh::VH{vertex})); }
+vec3 VertexNormal(const Mesh &mesh, uint32_t vertex) { return numeric::Normalize(mesh.GetNormal(Mesh::VH{vertex})); }
 
 // Tilt a unit normal toward the surface by a joystick position in the unit disk (center leaves it along n).
 vec3 TiltAlongNormal(vec3 n, vec2 joy) {
-    const float r = glm::length(joy);
+    const float r = numeric::Length(joy);
     if (r < 1e-6f) return n;
     // Orthonormal tangent basis from the normal (Duff et al. 2017).
     const float s = n.z >= 0 ? 1.f : -1.f;
@@ -406,7 +406,7 @@ void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_in
 
     const auto &modes = r.get<const ModalModes>(e);
     if (excitable_index >= std::min(modes.Vertices.size(), modes.Positions.size())) return;
-    const vec3 dir = physics ? glm::normalize(physics->Direction) : ExciteDirection(r, e, modes.Vertices[excitable_index]);
+    const vec3 dir = physics ? numeric::Normalize(physics->Direction) : ExciteDirection(r, e, modes.Vertices[excitable_index]);
 
     const auto *cd = r.try_get<const ContactDynamics>(e);
     const auto *mat = r.try_get<const AcousticMaterial>(e);
@@ -1450,7 +1450,7 @@ bool ImpulseJoystick(vec2 &pos) {
     if (IsItemActive() && IsMouseDown(ImGuiMouseButton_Left)) {
         const auto m = GetIO().MousePos;
         pos = {(m.x - center.x) / radius, -(m.y - center.y) / radius};
-        if (const float len = glm::length(pos); len > 1.f) pos /= len;
+        if (const float len = numeric::Length(pos); len > 1.f) pos /= len;
         changed = true;
     } else if (IsItemClicked(ImGuiMouseButton_Right)) {
         pos = {0, 0};
@@ -1595,7 +1595,7 @@ void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::ent
         const auto active_gains = [&]() -> std::vector<float> {
             if (active_vi >= modes.Shapes.size()) return {};
             const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), r.ctx().get<const MeshStore>().GetSoundVertices(excitable->Vertices)[active_vi]), ImpulseAngle);
-            return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(glm::dot(s, j)); }) | to<std::vector<float>>();
+            return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(numeric::Dot(s, j)); }) | to<std::vector<float>>();
         }();
         if (!active_gains.empty()) {
             if (auto hovered = PlotModeData(active_gains, "Mode gains", "Mode index", "Gain", hovered_mode_index)) new_hovered_index = hovered;

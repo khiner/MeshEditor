@@ -19,6 +19,7 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
+#include "numeric/Angles.h"
 #include "physics/PhysicsUi.h"
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"
@@ -311,32 +312,32 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             const float bone_length = r.get<BoneDisplayScale>(active_bone_entity).Value;
 
             vec3 head = wt.P;
-            vec3 tail = head + glm::rotate(wt.R, vec3{0, bone_length, 0});
+            vec3 tail = head + numeric::Rotate(wt.R, vec3{0, bone_length, 0});
             vec3 dir;
             float roll;
-            BoneMat3ToVecRoll(glm::mat3_cast(wt.R), dir, roll);
-            float roll_deg = glm::degrees(roll);
+            BoneMat3ToVecRoll(numeric::ToMat3(wt.R), dir, roll);
+            float roll_deg = numeric::Degrees(roll);
             float length = bone_length;
 
             bool changed = ui::DragFloat3("Head", &head[0], 0.01f);
             changed |= ui::DragFloat3("Tail", &tail[0], 0.01f);
             if (ui::DragFloat("Roll", &roll_deg, 1.f)) {
-                roll = glm::radians(roll_deg);
+                roll = numeric::Radians(roll_deg);
                 changed = true;
             }
             if (ui::DragFloat("Length", &length, 0.01f, 0.001f, 0.f)) {
-                tail = head + glm::normalize(tail - head) * std::max(length, 1e-4f);
+                tail = head + numeric::Normalize(tail - head) * std::max(length, 1e-4f);
                 changed = true;
             }
 
             if (changed) {
                 const auto new_dir = tail - head;
-                if (const auto new_length = glm::length(new_dir); new_length > 1e-6f) {
-                    const auto new_rot = glm::quat_cast(BoneVecRollToMat3(new_dir, roll));
+                if (const auto new_length = numeric::Length(new_dir); new_length > 1e-6f) {
+                    const auto new_rot = numeric::ToQuat(BoneVecRollToMat3(new_dir, roll));
                     const auto pd = ToTransform(GetParentDelta(r, active_bone_entity));
                     action::Emit(action::bone::SetEditHeadTailRoll{
-                        .LocalP = glm::conjugate(pd.R) * ((head - pd.P) / pd.S),
-                        .LocalR = glm::conjugate(pd.R) * new_rot,
+                        .LocalP = numeric::Conjugate(pd.R) * ((head - pd.P) / pd.S),
+                        .LocalR = numeric::Conjugate(pd.R) * new_rot,
                         .DisplayScale = new_length,
                     });
                 }
@@ -679,7 +680,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
     if (const auto *cd = r.try_get<const Camera>(active_entity)) {
         if (CollapsingHeader("Camera")) {
             // Use the camera's distance from world origin as the conversion distance.
-            const float distance = std::max(glm::length(r.get<WorldTransform>(active_entity).P), 1.f);
+            const float distance = std::max(numeric::Length(r.get<WorldTransform>(active_entity).P), 1.f);
             auto edited = *cd;
             ui::Gesture(RenderCameraLensEditor(edited, distance), [&, scope = ui::ScopeFromAlt()] { return action::Replace<Camera>{.Scope = scope, .Value = edited}; });
             Separator();
@@ -1023,7 +1024,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
             {
                 auto color = settings.ClearColor;
                 if (ColorEdit3("Background color", &color.x)) {
-                    color.a = 1.f;
+                    color.w = 1.f;
                     f.Set<&ViewportDisplay::ClearColor>(color);
                 }
             }

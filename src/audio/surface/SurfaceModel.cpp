@@ -2,10 +2,6 @@
 
 #include "audio/Fft.h"
 
-#include <glm/geometric.hpp>
-#include <glm/mat3x3.hpp>
-#include <glm/matrix.hpp>
-
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -3039,7 +3035,7 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
     uint32_t transverse_rows = 0;
     for (size_t t = 0; t < voices.size(); ++t) {
         const auto &st = surface.VoiceState[voices[t]];
-        const bool candidate = st.SpringIndex >= 0 && st.Friction > 0 && glm::dot(st.SlipDir, st.SlipDir) > 0;
+        const bool candidate = st.SpringIndex >= 0 && st.Friction > 0 && numeric::Dot(st.SlipDir, st.SlipDir) > 0;
         w.TransverseRow[t] = candidate ? extra_base + bin_rows + transverse_rows++ : NoTransverseRow;
     }
     const uint32_t drives = extra_base + bin_rows + transverse_rows;
@@ -3118,10 +3114,10 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
         const float w0 = st.Blend.Weights.x, w1 = st.Blend.Weights.y, w2 = st.Blend.Weights.z;
         // A tangent direction marks the junction: the slip direction while sliding, the resting basis of a spring contact at rest.
         // Voices without one read a zero direction.
-        const bool tangent_candidate = st.Friction > 0 && glm::dot(st.SlipDir, st.SlipDir) > 0;
+        const bool tangent_candidate = st.Friction > 0 && numeric::Dot(st.SlipDir, st.SlipDir) > 0;
         // A spring voice's junction holds the transverse direction too, so pressed modes meet the interface on both in-plane axes.
-        const vec3 transverse_raw = glm::cross(st.N, st.SlipDir);
-        const float transverse_len2 = glm::dot(transverse_raw, transverse_raw);
+        const vec3 transverse_raw = numeric::Cross(st.N, st.SlipDir);
+        const float transverse_len2 = numeric::Dot(transverse_raw, transverse_raw);
         const bool transverse_candidate = w.TransverseRow[t] != NoTransverseRow && transverse_len2 > 1e-12f;
         const vec3 transverse_dir = transverse_candidate ? transverse_raw / std::sqrt(transverse_len2) : vec3{0};
         auto *gain_transverse = w.TransverseRow[t] != NoTransverseRow ? drive_row(w.TransverseRow[t]) : nullptr;
@@ -3134,13 +3130,13 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
             const auto shape = BlendedShape(b, base0, base1, base2, {w0, w1, w2}, k);
             // Every drive takes the radiation gain here, so the sample loop does not.
             const float radiation = b.RadiationGain[k0 + k];
-            const float normal = glm::dot(shape, st.N);
+            const float normal = numeric::Dot(shape, st.N);
             gain_n[k] = radiation * normal;
             cn_modal += normal * normal * b.QuadCompliance[k0 + k];
             // Each surface's geometric force acts along the contact's travel over it, and the frictional one along the slip.
-            gain_geo0[k] = radiation * glm::dot(shape, st.SweepDir[0]);
-            gain_geo1[k] = radiation * glm::dot(shape, st.SweepDir[1]);
-            gain_fric[k] = radiation * glm::dot(shape, st.SlipDir);
+            gain_geo0[k] = radiation * numeric::Dot(shape, st.SweepDir[0]);
+            gain_geo1[k] = radiation * numeric::Dot(shape, st.SweepDir[1]);
+            gain_fric[k] = radiation * numeric::Dot(shape, st.SlipDir);
             // The separation is modulated by the object's vibration along the same normal, which is a displacement.
             // The state holds the drive's radiation gain and the mode's angular frequency, so both come back out.
             // Impulses land on integer steps and contribute no displacement at their own instant, so the energy-neutral collocation reads displacement on half steps, each mode's state rotated to the middle of the coming sample.
@@ -3151,13 +3147,13 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
             if (!binned) w.NormalShape[size_t(ch0) * count + k] = normal;
             // The stiction solve reads the tangential contact point through the same collocations and solves against the modes' tangential compliance, plus the cross compliance the modes with both projections couple the channels with.
             if (tangent_candidate) {
-                const float slip = glm::dot(shape, st.SlipDir);
+                const float slip = numeric::Dot(shape, st.SlipDir);
                 w.TangentRead.Fill(t * count + k, coupling * slip * b.DeflectionGain[k0 + k], c_re, c_im);
                 ct_modal += slip * slip * b.QuadCompliance[k0 + k];
                 cnt_modal += normal * slip * b.QuadCompliance[k0 + k];
             }
             if (transverse_candidate) {
-                const float across = glm::dot(shape, transverse_dir);
+                const float across = numeric::Dot(shape, transverse_dir);
                 w.TransverseRead.Fill(t * count + k, coupling * across * b.DeflectionGain[k0 + k], c_re, c_im);
                 ct_tr_modal += across * across * b.QuadCompliance[k0 + k];
                 cnt_tr_modal += normal * across * b.QuadCompliance[k0 + k];
@@ -3180,7 +3176,7 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
             const float bw0 = bl.Weights.x, bw1 = bl.Weights.y, bw2 = bl.Weights.z;
             for (uint32_t k = 0; k < count; ++k) {
                 const auto shape = BlendedShape(b, bin0, bin1, bin2, {bw0, bw1, bw2}, k);
-                const float normal_bin = glm::dot(shape, st.N);
+                const float normal_bin = numeric::Dot(shape, st.N);
                 gain_bin[k] = b.RadiationGain[k0 + k] * normal_bin * b.QuadDriveScale[k0 + k];
                 const float read_bin = coupling * normal_bin * b.DeflectionGain[k0 + k];
                 w.BinRead.Fill(rel + k, read_bin, b.CoeffRe[k0 + k], b.CoeffIm[k0 + k]);
@@ -3193,13 +3189,13 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
         const float ct = coupling * sustain_level * ct_modal + body_ct;
         w.QuadTangent[t] = tangent_candidate && ct > 0 ? 1 : 0;
         w.QuadCt[t] = ct;
-        w.QuadCnt[t] = coupling * sustain_level * cnt_modal + body_ct * glm::dot(st.N, st.SlipDir);
+        w.QuadCnt[t] = coupling * sustain_level * cnt_modal + body_ct * numeric::Dot(st.N, st.SlipDir);
         // The solver applies its tangential mean, so the modes and the body receive the fluctuation about it and the mean's displacement share enters the free part as a constant.
         w.QuadFeT[t] = -ct * st.SolverFriction;
         const float ct_tr = coupling * sustain_level * ct_tr_modal + body_ct;
         w.QuadTransverse[t] = transverse_candidate && ct_tr > 0 ? 1 : 0;
         w.QuadCtTr[t] = ct_tr;
-        w.QuadCntTr[t] = coupling * sustain_level * cnt_tr_modal + body_ct * glm::dot(st.N, transverse_dir);
+        w.QuadCntTr[t] = coupling * sustain_level * cnt_tr_modal + body_ct * numeric::Dot(st.N, transverse_dir);
         w.TransverseDir[t] = transverse_dir;
     }
     for (size_t t = 0; t < impacts.size(); ++t) {
@@ -3234,7 +3230,7 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
                 float fe_defl = 0;
                 for (size_t u = coupled ? 0 : v, u_end = coupled ? nv : v + 1; u < u_end; ++u) {
                     const auto &su = surface.VoiceState[voices[u]];
-                    const float body = inv_mass_q > 0 ? dtq * dtq * inv_mass_q * glm::dot(sv.N, su.N) : 0.f;
+                    const float body = inv_mass_q > 0 ? dtq * dtq * inv_mass_q * numeric::Dot(sv.N, su.N) : 0.f;
                     for (uint32_t cu = 0; cu < (coupled ? w.ChannelCount[u] : 1u); ++cu) {
                         const auto chu = size_t(w.ChannelBase[u]) + cu;
                         float cross = 0;
@@ -3304,7 +3300,7 @@ void RenderObjectCoupled(
     const auto recoil_a1 = b.RecoilA1[o], recoil_a2 = b.RecoilA2[o];
     vec3 normal_sum{0};
     for (const auto v : voices) normal_sum += surface.VoiceState[v].N;
-    const float normal_len = glm::length(normal_sum);
+    const float normal_len = numeric::Length(normal_sum);
     const vec3 accel_axis = normal_len > 0 ? normal_sum / normal_len : vec3{0};
     auto rad_z1 = b.RadiatorZ1[o], rad_z2 = b.RadiatorZ2[o];
     auto air_z1 = b.AirZ1[o], air_z2 = b.AirZ2[o];
@@ -3330,7 +3326,7 @@ void RenderObjectCoupled(
             float air_force = 0.f;
             vec3 ext_force{0};
             if (mobile) {
-                const float air_in = glm::dot(rigid_vel, accel_axis);
+                const float air_in = numeric::Dot(rigid_vel, accel_axis);
                 air_force = air_b0 * air_in + air_z1;
                 air_z1 = air_b1 * air_in - recoil_a1 * air_force + air_z2;
                 air_z2 = air_b2 * air_in - recoil_a2 * air_force;
@@ -3402,7 +3398,7 @@ void RenderObjectCoupled(
                 const auto q = StepVoiceQuad(stv, &w.Tracks[t * SustainedState::TrackCount], w.TurnoverTracks[t], w.SpringSets[t], w.VoiceBlocks[t], carry, defl1, std::span{defl_bins.data(), nb_defl}, sample_rate);
                 const float sc = stv.SurfaceCompliance;
                 const float dprev = q.Rebased ? 0.f : (carry.RigidNormal - carry.PrevRigidNormal) + (defl1 - carry.PrevDeflection);
-                const float body_free = mobile ? dt * glm::dot(rigid_vel, stv.N) + dt * dt * inv_mass * glm::dot(ext_force, stv.N) : 0.f;
+                const float body_free = mobile ? dt * numeric::Dot(rigid_vel, stv.N) + dt * dt * inv_mass * numeric::Dot(ext_force, stv.N) : 0.f;
                 const float defl_free = (defl2 - defl1) + w.QuadFeDefl[ch0] + point.Arrival;
                 // The tangential contact point's free step relative to the surface sliding by at SlipSpeed: its motion over the previous two-step span plus its free advance, each measured against the surface's own travel.
                 // The normal reaction's same-sample kick enters through the cross compliance once it is solved.
@@ -3412,7 +3408,7 @@ void RenderObjectCoupled(
                     defl_t1 = tangent.Now;
                     const float slip_dt = stv.SlipSpeed * dt;
                     const float dprev_t = q.Rebased ? 0.f : (carry.RigidTangent - carry.PrevRigidTangent) + (defl_t1 - carry.PrevTangentDefl) - slip_dt;
-                    const float body_free_t = mobile ? dt * glm::dot(rigid_vel, stv.SlipDir) + dt * dt * inv_mass * glm::dot(ext_force, stv.SlipDir) : 0.f;
+                    const float body_free_t = mobile ? dt * numeric::Dot(rigid_vel, stv.SlipDir) + dt * dt * inv_mass * numeric::Dot(ext_force, stv.SlipDir) : 0.f;
                     rhs_t = dprev_t + (tangent.Next - defl_t1) + body_free_t + w.QuadFeT[t] + tangent.Arrival - slip_dt;
                 }
                 w.QuadRhsT[t] = rhs_t;
@@ -3425,7 +3421,7 @@ void RenderObjectCoupled(
                     defl_tr1 = across.Now;
                     const vec3 tr = w.TransverseDir[t];
                     const float dprev_tr = q.Rebased ? 0.f : (carry.RigidTransverse - carry.PrevRigidTransverse) + (defl_tr1 - carry.PrevTransverseDefl);
-                    const float body_free_tr = mobile ? dt * glm::dot(rigid_vel, tr) + dt * dt * inv_mass * glm::dot(ext_force, tr) : 0.f;
+                    const float body_free_tr = mobile ? dt * numeric::Dot(rigid_vel, tr) + dt * dt * inv_mass * numeric::Dot(ext_force, tr) : 0.f;
                     rhs_tr = dprev_tr + (across.Next - defl_tr1) + body_free_tr + across.Arrival;
                 }
                 w.QuadRhsTr[t] = rhs_tr;
@@ -3632,11 +3628,11 @@ void RenderObjectCoupled(
                 rigid_vel += dt * inv_mass * (rigid_force - air_force * accel_axis);
                 for (size_t t = 0; t < nv; ++t) {
                     auto &carry = surface.VoiceCarry[voices[t]];
-                    carry.RigidNormal += glm::dot(rigid_vel, surface.VoiceState[voices[t]].N) * dt;
-                    if (w.QuadTangent[t] != 0) carry.RigidTangent += glm::dot(rigid_vel, surface.VoiceState[voices[t]].SlipDir) * dt;
-                    if (w.QuadTransverse[t] != 0) carry.RigidTransverse += glm::dot(rigid_vel, w.TransverseDir[t]) * dt;
+                    carry.RigidNormal += numeric::Dot(rigid_vel, surface.VoiceState[voices[t]].N) * dt;
+                    if (w.QuadTangent[t] != 0) carry.RigidTangent += numeric::Dot(rigid_vel, surface.VoiceState[voices[t]].SlipDir) * dt;
+                    if (w.QuadTransverse[t] != 0) carry.RigidTransverse += numeric::Dot(rigid_vel, w.TransverseDir[t]) * dt;
                 }
-                const float rad_in = glm::dot(rigid_vel, accel_axis);
+                const float rad_in = numeric::Dot(rigid_vel, accel_axis);
                 const float pressure = rad_b0 * rad_in + rad_z1;
                 rad_z1 = -2 * rad_b0 * rad_in - recoil_a1 * pressure + rad_z2;
                 rad_z2 = rad_b0 * rad_in - recoil_a2 * pressure;

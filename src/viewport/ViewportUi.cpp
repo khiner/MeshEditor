@@ -42,12 +42,12 @@ using std::views::transform;
 using namespace ImGui;
 
 namespace {
-constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
+constexpr vec2 ToVec2(ImVec2 v) { return std::bit_cast<vec2>(v); }
 constexpr float WheelOrbitRadPerUnit{0.05f}, WheelZoomStep{1.04f};
 
 std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, uvec2 logical_extent, uvec2 render_extent) {
     static constexpr float DragThresholdSq{2 * 2};
-    if (glm::distance2(start, end) <= DragThresholdSq) return {};
+    if (numeric::Distance2(start, end) <= DragThresholdSq) return {};
 
     const vec2 logical_size{float(logical_extent.x), float(logical_extent.y)};
     const vec2 render_scale{
@@ -55,16 +55,16 @@ std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 e
         logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.f
     };
     // Intersect the drag with the viewport. A drag that ends up wholly outside it selects nothing.
-    const auto local_min = glm::max(glm::min(start, end) - window_pos, vec2{0});
-    const auto local_max = glm::min(glm::max(start, end) - window_pos, logical_size);
+    const auto local_min = numeric::Max(numeric::Min(start, end) - window_pos, vec2{0});
+    const auto local_max = numeric::Min(numeric::Max(start, end) - window_pos, logical_size);
     if (local_min.x > local_max.x || local_min.y > local_max.y) return {};
 
     // The box names pixels, so its maximum is the last one, not one past it.
-    const auto last_px = glm::max(render_extent, uvec2{1}) - 1u;
+    const auto last_px = numeric::Max(render_extent, uvec2{1}) - uvec2{1};
     const auto render_min = local_min * render_scale;
     const auto render_max = local_max * render_scale;
-    const auto box_min_px = glm::min(uvec2{glm::floor(render_min.x), glm::floor(render_min.y)}, last_px);
-    const auto box_max_px = glm::min(uvec2{glm::ceil(render_max.x), glm::ceil(render_max.y)}, last_px);
+    const auto box_min_px = numeric::Min(uvec2{std::floor(render_min.x), std::floor(render_min.y)}, last_px);
+    const auto box_max_px = numeric::Min(uvec2{std::ceil(render_max.x), std::ceil(render_max.y)}, last_px);
     return std::pair{box_min_px, box_max_px};
 }
 
@@ -84,7 +84,7 @@ void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
         }
     }
     if (mouse_delta != ImVec2{0, 0}) {
-        accumulated_wrap_mouse_delta -= ToGlm(mouse_delta);
+        accumulated_wrap_mouse_delta -= ToVec2(mouse_delta);
         TeleportMousePos(g.IO.MousePos + mouse_delta);
     }
 }
@@ -352,12 +352,12 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
     if (r.get<const BoxSelectState>(viewport).Gesture == SelectionGesture::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
-            frame.BoxSelectStart = frame.BoxSelectEnd = ToGlm(GetMousePos());
+            frame.BoxSelectStart = frame.BoxSelectEnd = ToVec2(GetMousePos());
             frame.BoxSelectStaged = false;
             if (IsKeyDown(ImGuiMod_Shift)) action::Emit(action::selection::SnapshotBoxSelectBaseline{});
         } else if (IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
-            frame.BoxSelectEnd = ToGlm(GetMousePos());
-            if (const auto box_px = ComputeBoxSelectPixels(*frame.BoxSelectStart, *frame.BoxSelectEnd, ToGlm(GetCursorScreenPos()), logical_extent, render_extent); box_px) {
+            frame.BoxSelectEnd = ToVec2(GetMousePos());
+            if (const auto box_px = ComputeBoxSelectPixels(*frame.BoxSelectStart, *frame.BoxSelectEnd, ToVec2(GetCursorScreenPos()), logical_extent, render_extent); box_px) {
                 const bool is_additive = r.all_of<AdditiveBoxSelectBaseline>(viewport);
                 frame.BoxSelectStaged = true;
                 // The hit set (object/bone instances or edit-mode elements) is resolved later.
@@ -378,11 +378,11 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
         logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.0f
     };
     const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
-    const auto mouse_pos_render = ToGlm(mouse_pos_rel) * render_scale;
+    const auto mouse_pos_render = ToVec2(mouse_pos_rel) * render_scale;
     const float max_x = float(std::max(render_extent.x, 1u) - 1u);
     const float max_y = float(std::max(render_extent.y, 1u) - 1u);
     // ImGui's origin and the picking pass's pixel rows both start at the top left.
-    const uvec2 mouse_px{glm::clamp(mouse_pos_render.x, 0.0f, max_x), glm::clamp(mouse_pos_render.y, 0.0f, max_y)};
+    const uvec2 mouse_px{numeric::Clamp(mouse_pos_render.x, 0.0f, max_x), numeric::Clamp(mouse_pos_render.y, 0.0f, max_y)};
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -416,7 +416,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
 void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
     const profile::CpuScope scope{"ViewportOverlayUi"};
     const auto &icons = r.ctx().get<const ViewportIcons>();
-    const rect viewport_rect{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
+    const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
     const bool active_transform = TransformGizmo::IsUsing(r, viewport);
     static constexpr float OrientationGizmoSize{84};
     const OverlayIconButtonStyle overlay_button_style{};
@@ -577,8 +577,8 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                     }
                     // Light colors are stored in linear space. Display/edit as sRGB.
                     static const auto linear_color_edit = [](const char *label, vec3 &linear) -> bool {
-                        if (auto srgb = glm::pow(linear, vec3{1.f / 2.2f}); ColorEdit3(label, &srgb[0])) {
-                            linear = glm::pow(srgb, vec3{2.2f});
+                        if (auto srgb = numeric::Pow(linear, vec3{1.f / 2.2f}); ColorEdit3(label, &srgb[0])) {
+                            linear = numeric::Pow(srgb, vec3{2.2f});
                             return true;
                         }
                         return false;
@@ -792,7 +792,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                 if (!stats || stats->SelectedVertexCount == 0) continue;
                 const auto &world = r.get<const WorldTransform>(instance_entity);
                 pivot += float(stats->SelectedVertexCount) * world.P +
-                    glm::rotate(world.R, world.S * stats->SelectedVertexPositionSum);
+                    numeric::Rotate(world.R, world.S * stats->SelectedVertexPositionSum);
                 vertex_count += stats->SelectedVertexCount;
             }
             if (vertex_count > 0) pivot /= float(vertex_count);
@@ -815,7 +815,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                     }
                     if (parts && parts->Tip) {
                         const float bl = r.get<BoneDisplayScale>(e).Value;
-                        pivot_sum += wt.P + glm::rotate(wt.R, vec3{0, bl, 0});
+                        pivot_sum += wt.P + numeric::Rotate(wt.R, vec3{0, bl, 0});
                         ++pivot_count;
                     }
                 }
@@ -833,7 +833,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         auto interact_result = TransformGizmo::Interact(
             gizmo,
             gizmo_transform,
-            gizmo_state.Config, camera, viewport_rect, ToGlm(GetMousePos()) + frame.AccumulatedWrapMouseDelta,
+            gizmo_state.Config, camera, viewport_rect, ToVec2(GetMousePos()) + frame.AccumulatedWrapMouseDelta,
             start_screen ? std::optional{start_screen->Value} : std::nullopt
         );
         if (interact_result) {
@@ -858,7 +858,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
 }
 
 void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
-    const rect viewport_rect{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
+    const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
     const auto axes = colors::MakeAxes(r.get<const ViewportTheme>(viewport).AxisColors);
     const auto &camera = r.get<const ViewCamera>(viewport);
 
@@ -888,8 +888,8 @@ void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
 
     if (frame.BoxSelectStart && frame.BoxSelectEnd) {
         auto &dl = *GetWindowDrawList();
-        const auto box_min = glm::min(*frame.BoxSelectStart, *frame.BoxSelectEnd);
-        const auto box_max = glm::max(*frame.BoxSelectStart, *frame.BoxSelectEnd);
+        const auto box_min = numeric::Min(*frame.BoxSelectStart, *frame.BoxSelectEnd);
+        const auto box_max = numeric::Max(*frame.BoxSelectStart, *frame.BoxSelectEnd);
         dl.AddRectFilled(std::bit_cast<ImVec2>(box_min), std::bit_cast<ImVec2>(box_max), IM_COL32(255, 255, 255, 30));
 
         // Dashed outline: dashes step from `a` toward `b` along their one differing axis.
@@ -900,7 +900,7 @@ void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
             for (float v = a[axis]; v < b[axis]; v += dash_size + gap_size) {
                 auto d0 = a, d1 = b;
                 d0[axis] = v;
-                d1[axis] = glm::min(v + dash_size, b[axis]);
+                d1[axis] = numeric::Min(v + dash_size, b[axis]);
                 dl.AddLine(std::bit_cast<ImVec2>(d0), std::bit_cast<ImVec2>(d1), outline_color, 1.f);
             }
         };

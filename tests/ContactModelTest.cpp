@@ -24,7 +24,7 @@ constexpr AcousticMaterialProperties Ceramic{.Density = 2700, .YoungModulus = 7.
 
 // A body struck at one point, with `arm` from its center of mass to that point.
 // A unit inverse inertia lets the arm shorten the contact, a zero one holds the effective mass at the body's own.
-ContactDynamics Body(double mass, glm::mat3 inverse_inertia, vec3 arm = vec3{0}) {
+ContactDynamics Body(double mass, mat3 inverse_inertia, vec3 arm = vec3{0}) {
     ContactDynamics d;
     d.Mass = mass;
     d.InverseInertia = inverse_inertia;
@@ -43,31 +43,31 @@ int main() {
         MassProperties mp;
         mp.Mass = 1.0;
         mp.InertiaDiagonal = {2.f, 5.f, 9.f};
-        mp.InertiaOrientation = glm::normalize(glm::quat(0.3f, 0.1f, -0.5f, 0.8f)); // arbitrary orientation
-        const auto rot = glm::mat3_cast(mp.InertiaOrientation);
-        const glm::mat3 diag{glm::vec3{2, 0, 0}, glm::vec3{0, 5, 0}, glm::vec3{0, 0, 9}};
-        const glm::mat3 inertia = rot * diag * glm::transpose(rot);
-        const glm::mat3 product = inertia * InverseInertiaTensor(mp);
+        mp.InertiaOrientation = numeric::Normalize(quat(0.3f, 0.1f, -0.5f, 0.8f)); // arbitrary orientation
+        const auto rot = numeric::ToMat3(mp.InertiaOrientation);
+        const mat3 diag{vec3{2, 0, 0}, vec3{0, 5, 0}, vec3{0, 0, 9}};
+        const mat3 inertia = rot * diag * numeric::Transpose(rot);
+        const mat3 product = inertia * InverseInertiaTensor(mp);
         for (int c = 0; c < 3; ++c)
             for (int r = 0; r < 3; ++r) expect(Near(product[c][r], c == r ? 1.0 : 0.0, 1e-4));
     };
 
     "contact time matches the Hertz formula"_test = [] {
         // Strike through the center of mass: effective mass is the total mass.
-        const double tau = ContactTime(Body(1.0, glm::mat3{1.f}), Polymer, 100);
+        const double tau = ContactTime(Body(1.0, mat3{1.f}), Polymer, 100);
         // Hand-computed: 2.87 * ((1*(1-0.09)/1e9)^2 * 100)^0.2 ~= 1.744e-3 s.
         expect(Near(tau, 1.744e-3, 2e-2));
     };
 
     "effective mass drops with an off-center strike"_test = [] {
-        const double tau_center = ContactTime(Body(1.0, glm::mat3{1.f}), Polymer, 100);
-        const double tau_offset = ContactTime(Body(1.0, glm::mat3{1.f}, vec3{0.2f, 0, 0}), Polymer, 100); // lever arm perpendicular to a z-strike
+        const double tau_center = ContactTime(Body(1.0, mat3{1.f}), Polymer, 100);
+        const double tau_offset = ContactTime(Body(1.0, mat3{1.f}, vec3{0.2f, 0, 0}), Polymer, 100); // lever arm perpendicular to a z-strike
         // Lower effective mass shortens the contact.
         expect(tau_offset < tau_center);
     };
 
     "scale ratio and clamping"_test = [] {
-        const auto d = Body(1.0, glm::mat3{1.f});
+        const auto d = Body(1.0, mat3{1.f});
         const auto tau = [&d](double scale) { return ContactTime(d, Polymer, 100, 0, 1, scale); };
         expect(Near(tau(2.0), 2 * tau(1.0), 1e-6)); // tau scales linearly with size, in range
 
@@ -79,7 +79,7 @@ int main() {
     // Both closed forms are limits of the one collision integral, so it has to land on each of them where that limit applies.
     // A patch that never fills its polygon is Hertz, and one that fills it at once is the punch.
     "the contact time reaches both of its limits"_test = [] {
-        const auto d = Body(1.0, glm::mat3{0.f});
+        const auto d = Body(1.0, mat3{0.f});
         constexpr double InvModulus = 0.91 / 1e9; // NullStriker's own compliance is 1e-30 of this
         const auto tau = [&d](double curvature, double area, double speed) { return ContactTime(d, Polymer, curvature, area, speed); };
 
@@ -100,7 +100,7 @@ int main() {
     // A patch that fills its polygon partway through the collision is in neither limit.
     // It stops stiffening where Hertz would go on stiffening, so it outlasts Hertz, and it spent its first part softer than the punch, so it outlasts that too.
     "filling the patch stops the contact stiffening"_test = [] {
-        const auto d = Body(0.5, glm::mat3{0.f});
+        const auto d = Body(0.5, mat3{0.f});
         constexpr double Curvature = 10; // 1/m, a 10 cm radius
         constexpr double Area = 1e-5; // a polygon the patch reaches only at the higher speeds
         const auto tau = [&d](double area, double speed) { return ContactTime(d, Ceramic, Curvature, area, speed); };
@@ -125,7 +125,7 @@ int main() {
     };
 
     "a lighter striker shortens the contact against a heavy object"_test = [] {
-        const auto d = Body(1000.0, glm::mat3{0.f}); // heavy object, so the striker's mass dominates the reduced mass
+        const auto d = Body(1000.0, mat3{0.f}); // heavy object, so the striker's mass dominates the reduced mass
         Striker light; // same material and tip, a longer capsule is only heavier
         light.Length = 0.05f;
         Striker heavy = light;

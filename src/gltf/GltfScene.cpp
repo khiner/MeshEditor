@@ -36,10 +36,10 @@
 
 #include "meshoptimizer.h"
 
+#include "numeric/FastGltf.h"
 #include <entt/entity/registry.hpp>
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>
-#include <fastgltf/glm_element_traits.hpp>
 #include <simdjson.h>
 
 #include <map>
@@ -216,7 +216,7 @@ vec2 ToVec2(const fastgltf::math::nvec2 &v) { return {v.x(), v.y()}; }
 vec3 ToVec3(const fastgltf::math::nvec3 &v) { return {v.x(), v.y(), v.z()}; }
 vec4 ToVec4(const fastgltf::math::nvec4 &v) { return {v.x(), v.y(), v.z(), v.w()}; }
 quat ToQuat(const fastgltf::math::fquat &q) { return {q.w(), q.x(), q.y(), q.z()}; }
-Transform TrsToTransform(const fastgltf::TRS &trs) { return {.P = ToVec3(trs.translation), .R = glm::normalize(ToQuat(trs.rotation)), .S = ToVec3(trs.scale)}; }
+Transform TrsToTransform(const fastgltf::TRS &trs) { return {.P = ToVec3(trs.translation), .R = numeric::Normalize(ToQuat(trs.rotation)), .S = ToVec3(trs.scale)}; }
 
 // Slot = glTF texture index (resolved to a bindless slot later in Scene.cpp). Pass `meta` for
 // top-level material textures that need texCoord-override round-trip; nested extension textures
@@ -1123,7 +1123,7 @@ std::vector<Transform> ReadInstanceTransforms(const fastgltf::Asset &asset, cons
     if (r_attr != node.instancingAttributes.end()) {
         const auto &accessor = asset.accessors[r_attr->accessorIndex];
         fastgltf::iterateAccessorWithIndex<vec4>(asset, accessor, [&](const vec4 &v, auto i) {
-            transforms[i].R = glm::normalize(quat{v.w, v.x, v.y, v.z});
+            transforms[i].R = numeric::Normalize(quat{v.w, v.x, v.y, v.z});
         });
     }
     if (s_attr != node.instancingAttributes.end()) {
@@ -1316,7 +1316,7 @@ std::optional<ImageBasedLight> ConvertIBL(const fastgltf::Asset &asset, size_t s
     if (!ibl_idx) return std::nullopt;
     const auto &src_ibl = asset.imageBasedLights[*ibl_idx];
     ImageBasedLight ibl{
-        .Rotation = glm::normalize(quat{src_ibl.rotation[3], src_ibl.rotation[0], src_ibl.rotation[1], src_ibl.rotation[2]}),
+        .Rotation = numeric::Normalize(quat{src_ibl.rotation[3], src_ibl.rotation[0], src_ibl.rotation[1], src_ibl.rotation[2]}),
         .SpecularImageSize = src_ibl.specularImageSize,
         .Intensity = std::max(0.f, src_ibl.intensity),
         .Name = src_ibl.name.empty() ? std::format("ImageBasedLight{}", *ibl_idx) : std::string{src_ibl.name},
@@ -1615,7 +1615,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             fastgltf::math::fvec3 scale, translation;
             fastgltf::math::fquat rotation;
             fastgltf::math::decomposeTransformMatrix(fm, scale, rotation, translation);
-            local_transforms[node_index] = Transform{ToVec3(translation), glm::normalize(ToQuat(rotation)), ToVec3(scale)};
+            local_transforms[node_index] = Transform{ToVec3(translation), numeric::Normalize(ToQuat(rotation)), ToVec3(scale)};
         }
     }
     // Union all scenes so every scene's objects get created.
@@ -2611,7 +2611,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                     float nearest_d2 = -1.f;
                     for (uint32_t v = 0; v < mesh.VertexCount(); ++v) {
                         const auto d = model.Positions[i] - mesh.GetPosition(Mesh::VH{v});
-                        if (const float d2 = glm::dot(d, d); nearest_d2 < 0.f || d2 < nearest_d2) {
+                        if (const float d2 = numeric::Dot(d, d); nearest_d2 < 0.f || d2 < nearest_d2) {
                             nearest_d2 = d2;
                             nearest = v;
                         }
@@ -2630,7 +2630,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                         .Mass = mp->mass,
                         .CenterOfMass = ToVec3(mp->centerOfMass),
                         .InertiaDiagonal = ToVec3(mp->inertiaDiagonal),
-                        .InertiaOrientation = glm::quat(q[3], q[0], q[1], q[2]),
+                        .InertiaOrientation = quat(q[3], q[0], q[1], q[2]),
                     }
                 );
                 // A dynamic rigid body is authoritative for contact dynamics (see UpdateContactDynamics), so its
@@ -2836,7 +2836,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                             .Stack = {BoneConstraint{
                                 .TargetEntity = target,
                                 .Influence = 1.f,
-                                .Data = ChildOfData{.InverseMatrix = glm::inverse(ToMatrix(r.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
+                                .Data = ChildOfData{.InverseMatrix = numeric::Inverse(ToMatrix(r.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
                             }}
                         }
                     );
@@ -3459,8 +3459,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (!with_bounds || vcount == 0) return AddDataAccessor(data, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, target);
         vec3 lo = data[0], hi = data[0];
         for (const auto &p : data) {
-            lo = glm::min(lo, p);
-            hi = glm::max(hi, p);
+            lo = numeric::Min(lo, p);
+            hi = numeric::Max(hi, p);
         }
         const uint32_t off = AppendAligned<vec3>(bin, data);
         const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, target);
@@ -3482,8 +3482,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (vcount == 0) return AddFieldAccessor.template operator()<vec3>(data, field, fastgltf::AccessorType::Vec3, target);
         vec3 lo = data[0].*field, hi = lo;
         for (const auto &v : data) {
-            lo = glm::min(lo, v.*field);
-            hi = glm::max(hi, v.*field);
+            lo = numeric::Min(lo, v.*field);
+            hi = numeric::Max(hi, v.*field);
         }
         const uint32_t off = AppendField<vec3>(bin, data, field);
         const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, target);
@@ -4379,7 +4379,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             if (const auto pit = spi ? source_to_dense.find(spi->Value) : source_to_dense.end(); pit != source_to_dense.end()) {
                 const auto src_parent = node_to_entity[pit->second];
                 if (src_parent != entt::null && (!node || node->Parent != src_parent)) {
-                    return ToTransform(glm::inverse(rest_world_of(src_parent)) * rest_world_of(entity));
+                    return ToTransform(numeric::Inverse(rest_world_of(src_parent)) * rest_world_of(entity));
                 }
             }
             if (const auto it = bone_rest.find(entity); it != bone_rest.end()) return it->second;
@@ -4395,7 +4395,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         std::pmr::vector<fastgltf::Attribute> instancing;
         if (needs_instancing) {
             const uint32_t count = instance_worlds.size();
-            const mat4 node_world_inv = glm::inverse(ToMatrix(world_transform));
+            const mat4 node_world_inv = numeric::Inverse(ToMatrix(world_transform));
 
             std::vector<vec3> translations(count);
             std::vector<vec4> rotations(count); // xyzw

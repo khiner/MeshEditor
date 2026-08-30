@@ -2,7 +2,6 @@
 #include "ModalModes.h"
 
 #include <entt/entity/entity.hpp>
-#include <glm/geometric.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -321,15 +320,15 @@ uint32_t AddModalObject(ModalBank &b, entt::entity e, const ModalModes &modes) {
     b.RadiationArea.resize(area_offset + count, 0.f);
     for (size_t t = 0; t + 2 < modes.Indices.size(); t += 3) {
         const auto i = modes.Indices[t], j = modes.Indices[t + 1], l = modes.Indices[t + 2];
-        const vec3 cr = glm::cross(modes.Positions[j] - modes.Positions[i], modes.Positions[l] - modes.Positions[i]);
-        const float doubled = glm::length(cr);
+        const vec3 cr = numeric::Cross(modes.Positions[j] - modes.Positions[i], modes.Positions[l] - modes.Positions[i]);
+        const float doubled = numeric::Length(cr);
         if (doubled <= 0.f) continue;
         const vec3 n = cr / doubled;
         const float area = doubled / 2;
         total_area += area;
         for (uint32_t k = 0; k < count; ++k) {
             const vec3 shape = (modes.Shapes[i][k] + modes.Shapes[j][k] + modes.Shapes[l][k]) / 3.f;
-            const float normal = glm::dot(shape, n);
+            const float normal = numeric::Dot(shape, n);
             b.RadiationArea[area_offset + k] += area * normal * normal;
         }
     }

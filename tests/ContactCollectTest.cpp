@@ -168,8 +168,8 @@ int main() {
         expect(Near(c->NormalForce, 2.f * 9.81f, 0.1f));
         expect(c->Friction > 0.f); // The pair's combined coefficient.
         // Neither surface travels under a body at rest.
-        expect(glm::length(c->Sides.front().SweepVelocity) < 1e-3f);
-        expect(glm::length(c->Sides.back().SweepVelocity) < 1e-3f);
+        expect(numeric::Length(c->Sides.front().SweepVelocity) < 1e-3f);
+        expect(numeric::Length(c->Sides.back().SweepVelocity) < 1e-3f);
     };
 
     "a sliding box sweeps the floor and not itself"_test = [] {
@@ -183,11 +183,11 @@ int main() {
         if (!c) return;
         const auto [own, floor] = SidesOf(*c, box);
         // The same material region of the box stays in contact while the floor streams past it.
-        expect(glm::length(own.SweepVelocity) < 0.05f);
-        expect(glm::length(floor.SweepVelocity) > 0.5f);
-        expect(glm::length(c->Slip) > 0.5f);
+        expect(numeric::Length(own.SweepVelocity) < 0.05f);
+        expect(numeric::Length(floor.SweepVelocity) > 0.5f);
+        expect(numeric::Length(c->Slip) > 0.5f);
         // The floor's sweep runs along the direction of travel, which a speed alone could not give.
-        const auto floor_dir = glm::normalize(floor.SweepVelocity);
+        const auto floor_dir = numeric::Normalize(floor.SweepVelocity);
         expect(std::abs(floor_dir.x) > 0.99f);
         expect(std::abs(floor_dir.y) < 0.05f);
     };
@@ -209,7 +209,7 @@ int main() {
         const auto &a = s.Contacts().front();
         const auto &b = s.Contacts().back();
         expect(a.Id != b.Id);
-        expect(std::abs(glm::dot(a.Normal, b.Normal) + 1.f) < 0.01f);
+        expect(std::abs(numeric::Dot(a.Normal, b.Normal) + 1.f) < 0.01f);
         expect(a.NormalForce > 0.f);
         expect(b.NormalForce > 0.f);
     };

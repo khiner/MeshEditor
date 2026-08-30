@@ -1,10 +1,9 @@
 #pragma once
 
 #include "AcousticMaterial.h"
+#include "numeric/mat3.h"
+#include "numeric/quat.h"
 #include "numeric/vec3.h"
-
-#include <glm/gtc/quaternion.hpp>
-#include <glm/mat3x3.hpp>
 
 #include <cstdint>
 #include <vector>
@@ -17,7 +16,7 @@ struct MassProperties {
     double Mass{0}; // kg
     vec3 CenterOfMass{0}; // node-local units
     vec3 InertiaDiagonal{0}; // principal moments, kg·m²
-    glm::quat InertiaOrientation{1, 0, 0, 0}; // principal inertia axes -> node-local
+    quat InertiaOrientation{1, 0, 0, 0}; // principal inertia axes -> node-local
 
     bool operator==(const MassProperties &) const = default;
 };
@@ -26,7 +25,7 @@ struct MassProperties {
 // Drives the Hertz contact time of each strike. Aligned with ModalModes::Vertices/Positions.
 struct ContactDynamics {
     double Mass{0}; // kg
-    glm::mat3 InverseInertia{1}; // kg⁻¹·m⁻², about the center of mass
+    mat3 InverseInertia{1}; // kg⁻¹·m⁻², about the center of mass
     std::vector<vec3> ContactArm; // per excitable vertex: contact point minus center of mass, meters
 };
 
@@ -54,7 +53,7 @@ double StrikerMass(const Striker &);
 Impactor StrikerImpactor(const Striker &);
 
 // Inverse inertia tensor (kg⁻¹·m⁻²) reconstructed from the principal moments and orientation.
-glm::mat3 InverseInertiaTensor(const MassProperties &);
+mat3 InverseInertiaTensor(const MassProperties &);
 
 // Reduced mass (kg) at the contact: the object's translational and rotational response to an off-center
 // impulse, combined with the impactor. Drives the Hertz contact time and the impulse magnitude.

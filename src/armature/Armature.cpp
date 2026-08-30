@@ -21,7 +21,7 @@ uint32_t FindKeyframe(const std::vector<float> &times, float t) {
 }
 
 vec3 ReadVec3(const float *data) { return {data[0], data[1], data[2]}; }
-quat ReadQuat(const float *data) { return {data[3], data[0], data[1], data[2]}; } // glTF: xyzw -> glm: wxyz
+quat ReadQuat(const float *data) { return {data[3], data[0], data[1], data[2]}; }
 
 // Cubic Hermite interpolation
 vec3 CubicHermite(vec3 p0, vec3 m0, vec3 p1, vec3 m1, float t) {
@@ -32,7 +32,7 @@ vec3 CubicHermite(vec3 p0, vec3 m0, vec3 p1, vec3 m1, float t) {
 quat CubicHermiteQuat(quat p0, quat m0, quat p1, quat m1, float t) {
     const float t2 = t * t, t3 = t2 * t;
     const quat result = (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * m1;
-    return glm::normalize(result);
+    return numeric::Normalize(result);
 }
 } // namespace
 
@@ -149,7 +149,7 @@ void Armature::RecomputeRestWorld() {
         const auto local = ToMatrix(Bones[i].RestLocal);
         const auto parent = Bones[i].ParentIndex;
         Bones[i].RestWorld = parent == InvalidBoneIndex ? local : Bones[parent].RestWorld * local;
-        Bones[i].InvRestWorld = glm::inverse(Bones[i].RestWorld);
+        Bones[i].InvRestWorld = numeric::Inverse(Bones[i].RestWorld);
     }
 }
 
@@ -185,7 +185,7 @@ void EvaluateMorphWeights(const MorphWeightClip &clip, float time_seconds, std::
             const float alpha = (t1 > t0) ? std::clamp((time_seconds - t0) / (t1 - t0), 0.f, 1.f) : 0.f;
             const float *v0 = channel.Values.data() + k * target_count;
             const float *v1 = channel.Values.data() + k1 * target_count;
-            for (uint32_t t = 0; t < target_count; ++t) weights[t] = glm::mix(v0[t], v1[t], alpha);
+            for (uint32_t t = 0; t < target_count; ++t) weights[t] = numeric::Mix(v0[t], v1[t], alpha);
         } else { // CubicSpline
             const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
             const float dt = t1 - t0;
@@ -236,9 +236,9 @@ void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<
             const float *v0 = channel.Values.data() + k * comp;
             const float *v1 = channel.Values.data() + k1 * comp;
             switch (channel.Target) {
-                case AnimationPath::Translation: pose.P = glm::mix(ReadVec3(v0), ReadVec3(v1), alpha); break;
-                case AnimationPath::Rotation: pose.R = glm::slerp(ReadQuat(v0), ReadQuat(v1), alpha); break;
-                case AnimationPath::Scale: pose.S = glm::mix(ReadVec3(v0), ReadVec3(v1), alpha); break;
+                case AnimationPath::Translation: pose.P = numeric::Mix(ReadVec3(v0), ReadVec3(v1), alpha); break;
+                case AnimationPath::Rotation: pose.R = numeric::Slerp(ReadQuat(v0), ReadQuat(v1), alpha); break;
+                case AnimationPath::Scale: pose.S = numeric::Mix(ReadVec3(v0), ReadVec3(v1), alpha); break;
                 default: break;
             }
         } else { // CubicSpline
@@ -271,12 +271,12 @@ void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<
 }
 
 Transform ComposeWithDelta(const Transform &rest, const Transform &delta) {
-    return {.P = rest.P + rest.R * delta.P, .R = glm::normalize(rest.R * delta.R), .S = rest.S * delta.S};
+    return {.P = rest.P + rest.R * delta.P, .R = numeric::Normalize(rest.R * delta.R), .S = rest.S * delta.S};
 }
 
 Transform AbsoluteToDelta(const Transform &rest, const Transform &absolute) {
-    const auto inv_r = glm::conjugate(rest.R); // inverse for unit quaternion
-    return {.P = inv_r * (absolute.P - rest.P), .R = glm::normalize(inv_r * absolute.R), .S = absolute.S / rest.S};
+    const auto inv_r = numeric::Conjugate(rest.R); // inverse for unit quaternion
+    return {.P = inv_r * (absolute.P - rest.P), .R = numeric::Normalize(inv_r * absolute.R), .S = absolute.S / rest.S};
 }
 
 void EvaluateAnimationDeltas(const AnimationClip &clip, float time, std::span<const ArmatureBone> bones, std::span<Transform> deltas) {
@@ -288,8 +288,8 @@ void EvaluateAnimationDeltas(const AnimationClip &clip, float time, std::span<co
         const auto &rest = bones[channel.BoneIndex].RestLocal;
         auto &d = deltas[channel.BoneIndex]; // the animated component currently holds the clip's absolute value
         switch (channel.Target) {
-            case AnimationPath::Translation: d.P = glm::conjugate(rest.R) * (d.P - rest.P); break;
-            case AnimationPath::Rotation: d.R = glm::normalize(glm::conjugate(rest.R) * d.R); break;
+            case AnimationPath::Translation: d.P = numeric::Conjugate(rest.R) * (d.P - rest.P); break;
+            case AnimationPath::Rotation: d.R = numeric::Normalize(numeric::Conjugate(rest.R) * d.R); break;
             case AnimationPath::Scale: d.S = d.S / rest.S; break;
             default: break;
         }
@@ -299,7 +299,7 @@ void EvaluateAnimationDeltas(const AnimationClip &clip, float time, std::span<co
 namespace {
 // Zero-roll rotation: maps +Y to `nor` with a well-defined, smooth reference frame.
 // Uses Blender's formula (armature.cc vec_roll_to_mat3_normalized) which handles the
-// -Y singularity stably, unlike glm::rotation which is discontinuous there.
+// -Y singularity stably, unlike numeric::Rotation which is discontinuous there.
 quat ZeroRollQuat(vec3 nor) {
     const float x = nor.x, y = nor.y, z = nor.z;
     constexpr float SafeThreshold = 6.1e-3f, CriticalThresholdSq = 2.5e-4f * 2.5e-4f;
@@ -315,20 +315,20 @@ quat ZeroRollQuat(vec3 nor) {
     } else {
         m = {-1, 0, 0, 0, -1, 0, 0, 0, 1};
     }
-    return glm::quat_cast(m);
+    return numeric::ToQuat(m);
 }
 } // namespace
 
 mat3 BoneVecRollToMat3(vec3 direction, float roll) {
-    const vec3 nor = glm::normalize(direction);
-    return glm::mat3_cast(glm::angleAxis(roll, nor) * ZeroRollQuat(nor));
+    const vec3 nor = numeric::Normalize(direction);
+    return numeric::ToMat3(numeric::AngleAxis(roll, nor) * ZeroRollQuat(nor));
 }
 
 void BoneMat3ToVecRoll(const mat3 &m, vec3 &direction, float &roll) {
     direction = m[1]; // Y column is the bone axis.
-    const vec3 nor = glm::normalize(direction);
-    const quat twist = glm::quat_cast(m) * glm::conjugate(ZeroRollQuat(nor));
-    roll = 2.f * std::atan2(glm::dot(vec3{twist.x, twist.y, twist.z}, nor), twist.w);
+    const vec3 nor = numeric::Normalize(direction);
+    const quat twist = numeric::ToQuat(m) * numeric::Conjugate(ZeroRollQuat(nor));
+    roll = 2.f * std::atan2(numeric::Dot(vec3{twist.x, twist.y, twist.z}, nor), twist.w);
 }
 
 // One deform buffer per skin is shared across mesh instances, so a skinned mesh moved off its armature shifts rigidly instead of stretching.
@@ -362,10 +362,10 @@ Transform ApplyBoneConstraint(
         },
         c.Data
     );
-    const mat4 constrained_local = glm::inverse(parent_pose_world) * (armature_world_inv * effective_target);
-    const Transform tl{vec3(constrained_local[3]), glm::normalize(glm::quat_cast(mat3(constrained_local))), pre_local.S};
+    const mat4 constrained_local = numeric::Inverse(parent_pose_world) * (armature_world_inv * effective_target);
+    const Transform tl{vec3(constrained_local[3]), numeric::Normalize(numeric::ToQuat(mat3(constrained_local))), pre_local.S};
     if (c.Influence >= 1.f) return tl;
-    return {glm::mix(pre_local.P, tl.P, c.Influence), glm::slerp(pre_local.R, tl.R, c.Influence), pre_local.S};
+    return {numeric::Mix(pre_local.P, tl.P, c.Influence), numeric::Slerp(pre_local.R, tl.R, c.Influence), pre_local.S};
 }
 
 float ComputeBoneDisplayScale(const Armature &armature, uint32_t bone_index) {
@@ -373,7 +373,7 @@ float ComputeBoneDisplayScale(const Armature &armature, uint32_t bone_index) {
     float min_child_dist = std::numeric_limits<float>::max();
     for (uint32_t j = 0; j < armature.Bones.size(); ++j) {
         if (armature.Bones[j].ParentIndex == bone_index) {
-            const float d = glm::length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[bone_index].RestWorld[3]});
+            const float d = numeric::Length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[bone_index].RestWorld[3]});
             if (d > MinBoneLength) min_child_dist = std::min(min_child_dist, d);
         }
     }

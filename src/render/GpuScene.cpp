@@ -480,14 +480,14 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
                         const uint32_t vertex = line_topology ? edge_indices[element * 2u + endpoint] : element;
                         sink.Vertices.push_back(vertex);
                         const vec3 position = vertices[vertex].Position;
-                        lo = glm::min(lo, position);
-                        hi = glm::max(hi, position);
+                        lo = numeric::Min(lo, position);
+                        hi = numeric::Max(hi, position);
                     }
                 }
                 const vec3 center = (lo + hi) * 0.5f;
                 float radius = 0.0f;
                 for (uint32_t i = first_vertex; i < uint32_t(sink.Vertices.size()); ++i) {
-                    radius = std::max(radius, glm::distance(center, vec3(vertices[sink.Vertices[i]].Position)));
+                    radius = std::max(radius, numeric::Distance(center, vec3(vertices[sink.Vertices[i]].Position)));
                 }
                 sink.Records.emplace_back(MeshletRecord{
                     .TriangleOffset = first_element_id,

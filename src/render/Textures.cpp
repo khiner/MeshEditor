@@ -73,12 +73,12 @@ MTL::PixelFormat ToTextureFormat(TextureColorSpace color_space) {
 
 vec3 CubemapFaceDirection(uint32_t face, float u, float v) {
     switch (face) {
-        case 0: return glm::normalize(vec3{1.f, -v, -u}); // +X
-        case 1: return glm::normalize(vec3{-1.f, -v, u}); // -X
-        case 2: return glm::normalize(vec3{u, 1.f, v}); // +Y
-        case 3: return glm::normalize(vec3{u, -1.f, -v}); // -Y
-        case 4: return glm::normalize(vec3{u, -v, 1.f}); // +Z
-        default: return glm::normalize(vec3{-u, -v, -1.f}); // -Z
+        case 0: return numeric::Normalize(vec3{1.f, -v, -u}); // +X
+        case 1: return numeric::Normalize(vec3{-1.f, -v, u}); // -X
+        case 2: return numeric::Normalize(vec3{u, 1.f, v}); // +Y
+        case 3: return numeric::Normalize(vec3{u, -1.f, -v}); // -Y
+        case 4: return numeric::Normalize(vec3{u, -v, 1.f}); // +Z
+        default: return numeric::Normalize(vec3{-u, -v, -1.f}); // -Z
     }
 }
 
@@ -95,7 +95,7 @@ vec3 EvaluateIrradianceSH(const std::array<vec3, 9> &l, vec3 n) {
         c3 * (3.f * n.z * n.z - 1.f) * l[6] -
         c2 * n.x * n.z * l[7] +
         c4 * (n.x * n.x - n.y * n.y) * l[8];
-    return glm::max(irradiance, vec3{0});
+    return numeric::Max(irradiance, vec3{0});
 }
 
 using CubemapMipFacesF32 = std::array<DecodedImageF32, 6>;
@@ -113,9 +113,9 @@ CubemapMipFacesF32 BuildDiffuseCubemapFromIrradiance(const std::array<vec3, 9> &
                 const auto v = 2.f * (y + 0.5f) / float(size) - 1.f;
                 const auto rgb = EvaluateIrradianceSH(coefficients, CubemapFaceDirection(face, u, v));
                 const auto offset = (size_t(y) * size + x) * 4u;
-                image.Pixels[offset + 0] = rgb.r;
-                image.Pixels[offset + 1] = rgb.g;
-                image.Pixels[offset + 2] = rgb.b;
+                image.Pixels[offset + 0] = rgb.x;
+                image.Pixels[offset + 1] = rgb.y;
+                image.Pixels[offset + 2] = rgb.z;
                 image.Pixels[offset + 3] = 1.f;
             }
         }
@@ -390,7 +390,7 @@ EnvironmentPrefiltered BuildFlatColorEnvironment(
     for (uint32_t f = 0; f < 6u; ++f) {
         face[f].Width = 1;
         face[f].Height = 1;
-        face[f].Pixels = {color.r, color.g, color.b, 1.f};
+        face[f].Pixels = {color.x, color.y, color.z, 1.f};
     }
     const std::vector<CubemapMipFacesF32> mips{face};
     const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(slots);

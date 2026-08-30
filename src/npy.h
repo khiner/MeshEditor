@@ -11,6 +11,7 @@ Copied and heavily modified the bits needed for reading .npy files from
 #include <fstream>
 #include <numeric>
 #include <ranges>
+#include <unordered_map>
 
 namespace npy {
 /*

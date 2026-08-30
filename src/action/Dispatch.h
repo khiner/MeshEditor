@@ -4,7 +4,6 @@
 #include "action/Core.h"
 
 #include <entt/entity/registry.hpp>
-#include <glm/common.hpp>
 
 #include <cassert>
 #include <concepts>
@@ -72,8 +71,8 @@ void ClampField(void *value) {
     using F = last_field<Ms...>;
     using L = FieldLimits<Ms...>;
     F &v = *static_cast<F *>(value);
-    if constexpr (HasMin<Ms...>) v = glm::max(v, F(L::Min));
-    if constexpr (HasMax<Ms...>) v = glm::min(v, F(L::Max));
+    if constexpr (HasMin<Ms...>) v = numeric::Max(v, F(L::Min));
+    if constexpr (HasMax<Ms...>) v = numeric::Min(v, F(L::Max));
 }
 // Clamps one scalar component of a vec field to the field's (componentwise) FieldLimits.
 template<auto... Ms>
@@ -81,8 +80,8 @@ void ClampComponent(void *value) {
     using E = typename last_field<Ms...>::value_type;
     using L = FieldLimits<Ms...>;
     E &v = *static_cast<E *>(value);
-    if constexpr (HasMin<Ms...>) v = glm::max(v, E(L::Min));
-    if constexpr (HasMax<Ms...>) v = glm::min(v, E(L::Max));
+    if constexpr (HasMin<Ms...>) v = numeric::Max(v, E(L::Min));
+    if constexpr (HasMax<Ms...>) v = numeric::Min(v, E(L::Max));
 }
 template<auto... Ms>
 struct LimitsRegistrar {
@@ -92,9 +91,9 @@ struct LimitsRegistrar {
         const auto base = uint16_t((MemPtrOffset(Ms) + ...));
         LimitsTable().insert_or_assign(LimitsKey(comp, base, sizeof(F)), &ClampField<Ms...>);
         // A vec field can also be patched one component at a time, so register the same bounds per component.
-        if constexpr (requires { F::length(); }) {
+        if constexpr (requires { F::ComponentCount; }) {
             using E = typename F::value_type;
-            for (typename F::length_type i = 0; i < F::length(); ++i)
+            for (size_t i = 0; i < F::ComponentCount; ++i)
                 LimitsTable().insert_or_assign(LimitsKey(comp, uint16_t(base + i * sizeof(E)), sizeof(E)), &ClampComponent<Ms...>);
         }
     }

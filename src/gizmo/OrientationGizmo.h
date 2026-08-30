@@ -51,10 +51,10 @@ std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &came
         Ctx.DragEndPos = std::nullopt;
     }
     const auto hover_r = size * HoverCircleRad;
-    Ctx.Hovered = interactive && glm::dot(mouse_pos - center, mouse_pos - center) <= hover_r * hover_r;
+    Ctx.Hovered = interactive && numeric::Dot(mouse_pos - center, mouse_pos - center) <= hover_r * hover_r;
 
     // Precompute per-axis layout for both Interact and Render.
-    const auto cam_basis = glm::transpose(camera.Basis());
+    const auto cam_basis = numeric::Transpose(camera.Basis());
     for (size_t i = 0; i < 6; ++i) {
         Ctx.AxisCam[i] = SignedAxis(cam_basis, i);
         auto dir = Ctx.AxisCam[i] * size * (0.5f - CircleRad);
@@ -67,7 +67,7 @@ std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &came
     if (interactive && Ctx.Hovered && !Ctx.DragEndPos) {
         Ctx.HoveredAxis = std::ranges::min(Ctx.SortedIndices, {}, [&](size_t i) {
             const auto mouse_delta = mouse_pos - (center + Ctx.AxisScreen[i]);
-            return glm::dot(mouse_delta, mouse_delta) + Ctx.AxisCam[i].z;
+            return numeric::Dot(mouse_delta, mouse_delta) + Ctx.AxisCam[i].z;
         });
     }
 
@@ -81,7 +81,7 @@ std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &came
             // since we don't want to wait for that long of a drag to switch into drag behavior.
             const auto click_threshold = 0.5f * size * CircleRad;
             if (const auto mouse_delta = mouse_pos - *Ctx.MouseDownPos;
-                glm::dot(mouse_delta, mouse_delta) > click_threshold * click_threshold) {
+                numeric::Dot(mouse_delta, mouse_delta) > click_threshold * click_threshold) {
                 Ctx.DragEndPos = mouse_pos;
             }
         } else { // Dragging

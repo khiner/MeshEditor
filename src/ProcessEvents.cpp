@@ -61,8 +61,6 @@
 #include "viewport/ViewportOps.h"
 #include "viewport/ViewportRenderGpu.h"
 
-#include <glm/gtx/euler_angles.hpp>
-
 #include <iostream>
 #include <numeric>
 #include <print>
@@ -115,7 +113,7 @@ vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t han
 vec3 ComputeElementWorldPosition(const entt::registry &r, entt::entity instance_entity, Element element, uint32_t handle) {
     const auto &mesh = GetMesh(r, r.get<Instance>(instance_entity).Entity);
     const auto &wt = r.get<WorldTransform>(instance_entity);
-    return {wt.P + glm::rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle))};
+    return {wt.P + numeric::Rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle))};
 }
 
 void RederiveCollider(entt::registry &r, entt::entity e) {
@@ -164,7 +162,8 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
                 vec3 best = from;
                 float best_d2 = 0;
                 for (const auto &v : verts) {
-                    const float d2 = glm::length2(v.Position - from);
+                    const vec3 delta = v.Position - from;
+                    const float d2 = numeric::Dot(delta, delta);
                     if (d2 > best_d2) {
                         best_d2 = d2;
                         best = v.Position;
@@ -175,9 +174,9 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
             const vec3 q = farthest_from(verts[0].Position);
             const vec3 ru = farthest_from(q);
             vec3 c = (q + ru) * 0.5f;
-            float radius = glm::length(ru - c);
+            float radius = numeric::Length(ru - c);
             for (const auto &v : verts) {
-                const float d = glm::length(v.Position - c);
+                const float d = numeric::Length(v.Position - c);
                 if (d > radius) {
                     const float new_r = (radius + d) * 0.5f;
                     c = c + ((d - radius) / (2.f * d)) * (v.Position - c);
@@ -190,7 +189,7 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
         const auto xz_radius = [&] {
             const vec2 c{aabb_center.x, aabb_center.z};
             float r = 0;
-            for (const auto &v : verts) r = glm::max(r, glm::length(vec2{v.Position.x, v.Position.z} - c));
+            for (const auto &v : verts) r = numeric::Max(r, numeric::Length(vec2{v.Position.x, v.Position.z} - c));
             return r;
         };
 
@@ -208,14 +207,14 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
                 [&](physics::Cylinder &s) {
                     const float radius = xz_radius();
                     s.RadiusTop = s.RadiusBottom = radius;
-                    s.Height = glm::max(physics::MinShapeHeight, aabb_extents.y);
+                    s.Height = numeric::Max(physics::MinShapeHeight, aabb_extents.y);
                     local_offset = aabb_center;
                 },
                 [&](physics::Capsule &s) {
                     const float radius = xz_radius();
                     s.RadiusTop = s.RadiusBottom = radius;
                     // 2r >= aabb.y degenerates toward a sphere, so clamp height to keep it spec-valid.
-                    s.Height = glm::max(physics::MinShapeHeight, aabb_extents.y - 2.f * radius);
+                    s.Height = numeric::Max(physics::MinShapeHeight, aabb_extents.y - 2.f * radius);
                     local_offset = aabb_center;
                 },
                 [](auto &) {}, // Plane, ConvexHull, TriangleMesh: no fittable dims, offset stays 0
@@ -713,7 +712,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     ReleaseCubeSamplerSlot(slots, env.ImportedSceneWorld->SpecularEnv.SamplerSlot);
                 }
                 env.ImportedSceneWorld = std::move(*pre);
-                env.SceneWorldRotation = glm::mat3_cast(pending_env->Source.Rotation);
+                env.SceneWorldRotation = numeric::ToMat3(pending_env->Source.Rotation);
                 env.SceneWorld = {.Ibl = MakeIblSamplers(*env.ImportedSceneWorld, env), .Name = env.ImportedSceneWorld->Name};
             } else {
                 std::cerr << std::format("Warning: Failed to materialize EXT_lights_image_based '{}': {}\n", pending_env->Source.Name, pre.error());
@@ -1172,8 +1171,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         if (!r.get<const OrbitToActive>(viewport).Value) return;
         const auto world_pos = ComputeElementWorldPosition(r, instance_entity, element, handle);
         r.patch<ViewCamera>(viewport, [&](auto &camera) {
-            if (const auto dir = world_pos - camera.Target; glm::dot(dir, dir) >= 1e-6f) {
-                camera.SetTargetDirection(glm::normalize(dir));
+            if (const auto dir = world_pos - camera.Target; numeric::Dot(dir, dir) >= 1e-6f) {
+                camera.SetTargetDirection(numeric::Normalize(dir));
             }
         });
     };
@@ -1564,7 +1563,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     if (!has_dirty) continue;
                 }
 
-                const mat4 armature_world_inv = has_any_constraint ? glm::inverse(ToMatrix(r.get<const WorldTransform>(arm_obj_entity))) : I4;
+                const mat4 armature_world_inv = has_any_constraint ? numeric::Inverse(ToMatrix(r.get<const WorldTransform>(arm_obj_entity))) : I4;
 
                 bool need_sync = has_any_constraint || pose_state_created;
                 bool rest_pose_edited = false;
@@ -1592,8 +1591,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                         const auto grab_delta = AbsoluteToDelta(
                             rest,
                             {
-                                .P = glm::conjugate(pd.R) * ((st->T.P - pd.P) / pd.S),
-                                .R = glm::conjugate(pd.R) * st->T.R,
+                                .P = numeric::Conjugate(pd.R) * ((st->T.P - pd.P) / pd.S),
+                                .R = numeric::Conjugate(pd.R) * st->T.R,
                                 .S = st->T.S / pd.S,
                             }
                         );
@@ -1653,12 +1652,12 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                             armature.Bones[i].RestWorld = parent_world * ToMatrix(armature.Bones[i].RestLocal);
                         } else {
                             // Preserve old world position, adjust RestLocal to compensate for parent change.
-                            const mat4 new_local_mat = glm::inverse(parent_world) * armature.Bones[i].RestWorld;
+                            const mat4 new_local_mat = numeric::Inverse(parent_world) * armature.Bones[i].RestWorld;
                             armature.Bones[i].RestLocal.P = vec3(new_local_mat[3]);
-                            armature.Bones[i].RestLocal.R = glm::normalize(glm::quat_cast(mat3(new_local_mat)));
+                            armature.Bones[i].RestLocal.R = numeric::Normalize(numeric::ToQuat(mat3(new_local_mat)));
                             r.patch<Transform>(b, [&](auto &t) { t.P = armature.Bones[i].RestLocal.P; t.R = armature.Bones[i].RestLocal.R; });
                         }
-                        armature.Bones[i].InvRestWorld = glm::inverse(armature.Bones[i].RestWorld);
+                        armature.Bones[i].InvRestWorld = numeric::Inverse(armature.Bones[i].RestWorld);
                     }
                     armature.RecomputeInverseBindMatrices();
                 }

@@ -116,7 +116,7 @@ void SetParentKeepWorld(entt::registry &r, entt::entity child, entt::entity pare
     EnsureWorldTransform(r, child);
     EnsureWorldTransform(r, parent);
     const auto child_world = ToMatrix(r.get<const WorldTransform>(child));
-    const auto parent_world_inv = glm::inverse(ToMatrix(r.get<const WorldTransform>(parent)));
+    const auto parent_world_inv = numeric::Inverse(ToMatrix(r.get<const WorldTransform>(parent)));
     LinkChildToParent(r, child, parent);
     r.emplace<ParentInverse>(child, I4);
     r.emplace_or_replace<Transform>(child, ToTransform(parent_world_inv * child_world));

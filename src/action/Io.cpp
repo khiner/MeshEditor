@@ -13,6 +13,7 @@
 #include "gltf/GltfScene.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
+#include "numeric/Angles.h"
 #include "object/ObjectOps.h"
 #include "render/GpuBufferOps.h"
 #include "render/MeshBatch.h"
@@ -23,6 +24,7 @@
 
 #include <entt/entity/registry.hpp>
 #include <format>
+#include <numbers>
 
 #include <fstream>
 
@@ -116,14 +118,14 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const auto created = CreateMesh(r, {.Data = primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}), .FlatShaded = true});
                 const auto [listener_mesh_entity, _] = ::AddMesh(r, created.StoreId);
                 for (const auto &listener_point : listener_points) {
-                    static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
+                    static const auto rot_z = numeric::AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
                     const auto listener_instance_entity = ::AddMeshInstance(
                         r, listener_mesh_entity,
                         {
                             .Name = std::format("RealImpact Microphone: {}", listener_point.Index),
                             .Transform = {
                                 .P = listener_point.GetPosition(Defaults::WorldUp, true),
-                                .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), Defaults::WorldUp) * rot_z,
+                                .R = numeric::AngleAxis(numeric::Radians(float(listener_point.AngleDeg)), Defaults::WorldUp) * rot_z,
                             },
                             .Select = MeshInstanceCreateInfo::SelectBehavior::None,
                         }

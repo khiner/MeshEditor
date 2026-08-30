@@ -930,13 +930,13 @@ void BuildJoint(PhysicsState &s, const entt::registry &r, entt::entity entity) {
     Vec3 axis_x2 = Vec3::sAxisX(), axis_y2 = Vec3::sAxisY();
     RVec3 pos1 = RVec3::sZero(), pos2 = RVec3::sZero();
     if (const auto *jt = r.try_get<const WorldTransform>(entity)) {
-        const auto rot_mat = glm::mat3_cast(glm::normalize(jt->R));
+        const auto rot_mat = numeric::ToMat3(numeric::Normalize(jt->R));
         pos1 = pos2 = ToJolt(jt->P);
         axis_x1 = axis_x2 = ToJolt(rot_mat[0]);
         axis_y1 = axis_y2 = ToJolt(rot_mat[1]);
     }
     if (const auto *ct = r.try_get<const WorldTransform>(joint.ConnectedNode)) {
-        const auto rot_mat = glm::mat3_cast(glm::normalize(ct->R));
+        const auto rot_mat = numeric::ToMat3(numeric::Normalize(ct->R));
         pos2 = ToJolt(ct->P);
         axis_x2 = ToJolt(rot_mat[0]);
         axis_y2 = ToJolt(rot_mat[1]);
@@ -1139,7 +1139,7 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
             return out;
         }
         const auto *bt = r.try_get<const WorldTransform>(entity);
-        const auto inv_parent = bt ? glm::inverse(glm::translate(mat4{1}, bt->P) * glm::mat4_cast(glm::normalize(bt->R))) : mat4{1};
+        const auto inv_parent = bt ? numeric::Inverse(numeric::Translate(mat4{1}, bt->P) * numeric::ToMat4(numeric::Normalize(bt->R))) : mat4{1};
         StaticCompoundShapeSettings compound;
         // Pull friction/restitution from the first child collider's material.
         // Otherwise compound bodies fall back to Jolt's BCS default instead of material value.
@@ -1153,7 +1153,7 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
             else {
                 const auto *wt = r.try_get<const WorldTransform>(ce);
                 const auto rel = inv_parent * (wt ? ToMatrix(*wt) : mat4{1});
-                compound.AddShape(ToJolt(vec3{rel[3]}), ToJolt(glm::normalize(glm::quat_cast(glm::mat3{rel}))), sub);
+                compound.AddShape(ToJolt(vec3{rel[3]}), ToJolt(numeric::Normalize(numeric::ToQuat(mat3{rel}))), sub);
             }
         }
         if (!compound.mSubShapes.empty())
@@ -1457,7 +1457,7 @@ void OnPoseChange(PhysicsState &s, entt::registry &r, entt::entity e) {
         if (scale_changed) ApplyShape(s, r, b);
         const BodyID id{r.get<const PhysicsBodyHandle>(b).BodyId};
         const auto activation = bi.GetMotionType(id) == EMotionType::Static ? EActivation::DontActivate : EActivation::Activate;
-        bi.SetPositionAndRotation(id, ToJolt(t->P), ToJolt(glm::normalize(t->R)), activation);
+        bi.SetPositionAndRotation(id, ToJolt(t->P), ToJolt(numeric::Normalize(t->R)), activation);
     }
 }
 
@@ -1690,7 +1690,7 @@ void CollectSustainedContacts(PhysicsState &s, entt::registry &r, float sim_dt) 
 
             // A manifold's normal is one direction, so this only degenerates if it reversed within the frame.
             const vec3 normal_sum = FromJolt(m.Normal / m.Impulse);
-            if (glm::length(normal_sum) < 1e-6f) continue;
+            if (numeric::Length(normal_sum) < 1e-6f) continue;
 
             sustained.Active.emplace_back(SustainedContact{
                 .Id = id,
@@ -1699,7 +1699,7 @@ void CollectSustainedContacts(PhysicsState &s, entt::registry &r, float sim_dt) 
                     SustainedContactSide{.Entity = e2, .ColliderEntity = last.Collider2, .SweepVelocity = sweep2},
                 },
                 .Point = FromJolt(m.Point / m.Impulse),
-                .Normal = glm::normalize(normal_sum),
+                .Normal = numeric::Normalize(normal_sum),
                 .Slip = FromJolt(m.Slip / m.Impulse),
                 .NormalForce = m.Impulse * inv_dt,
                 .FrictionForce = FromJolt(m.FrictionImpulse) * inv_dt,
@@ -1871,7 +1871,7 @@ void SamplePosesAtFrame(entt::registry &r, float frame) {
         if (lo_idx >= cache.Frames.size() || !cache.Frames[lo_idx]) continue; // Body not simulated at this frame.
         const auto &a = *cache.Frames[lo_idx];
         const auto &b = hi_idx < cache.Frames.size() && cache.Frames[hi_idx] ? *cache.Frames[hi_idx] : a;
-        SyncBodyWorldTransform(r, entity, glm::mix(a.P, b.P, t), glm::slerp(a.R, b.R, t));
+        SyncBodyWorldTransform(r, entity, numeric::Mix(a.P, b.P, t), numeric::Slerp(a.R, b.R, t));
     }
 }
 

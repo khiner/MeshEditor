@@ -22,7 +22,7 @@ struct GizmoTransform : Transform {
         if (apply_scale) d_local *= S;
         return Mode == World ? d_local : R * d_local;
     }
-    vec3 WorldDirToLocal(vec3 d_ws) const { return Mode == World ? d_ws : glm::conjugate(R) * d_ws; }
+    vec3 WorldDirToLocal(vec3 d_ws) const { return Mode == World ? d_ws : numeric::Conjugate(R) * d_ws; }
 };
 
 namespace TransformGizmo {

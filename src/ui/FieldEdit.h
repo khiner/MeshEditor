@@ -15,6 +15,7 @@
 
 #include "action/Build.h"
 #include "action/Emit.h"
+#include "numeric/Angles.h"
 #include "scene/Entity.h" // FindActiveEntity
 #include "selection/SelectionComponents.h" // Selected
 
@@ -180,7 +181,7 @@ struct Edit {
                     const Field start = gesture_start();
                     const auto w = update(v); // resolves scope + target entity + component type + base offset
                     const bool delta = w.Scope == action::Scope::SelectedDelta;
-                    for (typename Field::length_type i = 0; i < Field::length(); ++i) {
+                    for (size_t i = 0; i < Field::ComponentCount; ++i) {
                         if (v[i] == start[i]) continue;
                         const uint16_t off = uint16_t(w.Offset + i * sizeof(float));
                         action::EmitStaged(action::Update<float>{w.Scope, w.Entity, w.ComponentType, off, delta ? v[i] - start[i] : v[i]});
@@ -271,7 +272,7 @@ struct Edit {
     bool SliderAngle(const char *label, const char *fmt = "%.0f deg") {
         static_assert(HasMin<Prefix..., Ms...> && HasMax<Prefix..., Ms...>, "Edit::SliderAngle: field must declare FieldLimits with both Min and Max");
         using L = FieldLimits<Prefix..., Ms...>;
-        return Run<Ms...>([&](float &v) { return ImGui::SliderAngle(label, &v, glm::degrees(float(L::Min)), glm::degrees(float(L::Max)), fmt); },
+        return Run<Ms...>([&](float &v) { return ImGui::SliderAngle(label, &v, numeric::Degrees(float(L::Min)), numeric::Degrees(float(L::Max)), fmt); },
                           /*delta_capable=*/true);
     }
 

@@ -2,6 +2,7 @@
 
 #include "numeric/vec3.h"
 
+#include <array>
 #include <span>
 #include <vector>
 

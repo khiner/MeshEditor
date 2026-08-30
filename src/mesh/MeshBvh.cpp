@@ -1,13 +1,11 @@
 #include "MeshBvh.h"
 
-#include <glm/geometric.hpp>
-
 #include <algorithm>
 #include <limits>
 #include <numeric>
 
 namespace {
-AABB Union(const AABB &a, const AABB &b) { return {glm::min(a.Min, b.Min), glm::max(a.Max, b.Max)}; }
+AABB Union(const AABB &a, const AABB &b) { return {numeric::Min(a.Min, b.Min), numeric::Max(a.Max, b.Max)}; }
 vec3 Center(const AABB &b) { return (b.Min + b.Max) * 0.5f; }
 
 uint32_t LongestAxis(const AABB &b) {
@@ -18,8 +16,8 @@ uint32_t LongestAxis(const AABB &b) {
 
 // Squared distance from a point to a box, zero for a point inside it.
 float DistanceSquared(const AABB &b, vec3 p) {
-    const vec3 outside = glm::max(glm::max(b.Min - p, p - b.Max), vec3{0});
-    return glm::dot(outside, outside);
+    const vec3 outside = numeric::Max(numeric::Max(b.Min - p, p - b.Max), vec3{0});
+    return numeric::Dot(outside, outside);
 }
 
 // Split `indices` at the median box centre along the enclosing box's longest axis, emitting children before their parent.
@@ -49,9 +47,9 @@ uint32_t Build(MeshBvh &bvh, std::span<const AABB> boxes, std::span<uint32_t> in
 TrianglePoint ClosestPointOnTriangle(vec3 p, vec3 a, vec3 b, vec3 c) {
     const vec3 ab = b - a, ac = c - a;
     const vec3 ap = p - a, bp = p - b, cp = p - c;
-    const float d1 = glm::dot(ab, ap), d2 = glm::dot(ac, ap);
-    const float d3 = glm::dot(ab, bp), d4 = glm::dot(ac, bp);
-    const float d5 = glm::dot(ab, cp), d6 = glm::dot(ac, cp);
+    const float d1 = numeric::Dot(ab, ap), d2 = numeric::Dot(ac, ap);
+    const float d3 = numeric::Dot(ab, bp), d4 = numeric::Dot(ac, bp);
+    const float d5 = numeric::Dot(ab, cp), d6 = numeric::Dot(ac, cp);
 
     if (d1 <= 0 && d2 <= 0) return {a, {1, 0, 0}};
     if (d3 >= 0 && d4 <= d3) return {b, {0, 1, 0}};
@@ -91,7 +89,7 @@ MeshBvh BuildMeshBvh(std::span<const Vertex> vertices, std::span<const uint32_t>
         AABB box;
         for (size_t k = 0; k < 3; ++k) {
             const auto p = vertices[triangle_indices[i * 3 + k]].Position;
-            box = {glm::min(box.Min, p), glm::max(box.Max, p)};
+            box = {numeric::Min(box.Min, p), numeric::Max(box.Max, p)};
         }
         boxes.push_back(box);
     }
@@ -120,7 +118,7 @@ SurfacePoint MeshBvh::ClosestPoint(std::span<const Vertex> vertices, std::span<c
             const std::array tri{triangle_indices[node.Left * 3], triangle_indices[node.Left * 3 + 1], triangle_indices[node.Left * 3 + 2]};
             const auto hit = ClosestPointOnTriangle(point, vertices[tri[0]].Position, vertices[tri[1]].Position, vertices[tri[2]].Position);
             const vec3 offset = hit.Position - point;
-            if (const float distance2 = glm::dot(offset, offset); distance2 < best_distance2) {
+            if (const float distance2 = numeric::Dot(offset, offset); distance2 < best_distance2) {
                 best_distance2 = distance2;
                 best = {tri, hit.Weights};
             }

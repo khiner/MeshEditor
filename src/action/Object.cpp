@@ -276,7 +276,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const auto active_index = r.get<const PrimitiveShape>(active).index();
                 auto clamp_field = [&](Field v) {
                     if constexpr (std::integral<Field>) return std::clamp(v, a.Min, a.Max);
-                    else return glm::clamp(v, a.Min, a.Max);
+                    else return numeric::Clamp(v, a.Min, a.Max);
                 };
                 auto write = [&](entt::entity e, Field value) {
                     if (::selection::HasScaleLockedInstance(r, e)) return;

@@ -1,7 +1,5 @@
 #include "ContactModel.h"
 
-#include <glm/geometric.hpp>
-
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -14,12 +12,12 @@ double StrikerMass(const Striker &s) {
 
 Impactor StrikerImpactor(const Striker &s) { return {.Material = s.Material.Properties, .Curvature = 1.0 / s.TipRadius, .InvMass = 1.0 / StrikerMass(s)}; }
 
-glm::mat3 InverseInertiaTensor(const MassProperties &mp) {
-    const glm::mat3 r = glm::mat3_cast(mp.InertiaOrientation);
-    glm::vec3 inv{0};
+mat3 InverseInertiaTensor(const MassProperties &mp) {
+    const mat3 r = numeric::ToMat3(mp.InertiaOrientation);
+    vec3 inv{0};
     for (int i = 0; i < 3; ++i) inv[i] = mp.InertiaDiagonal[i] > 0 ? 1.f / mp.InertiaDiagonal[i] : 0.f;
-    const glm::mat3 inv_diag{glm::vec3{inv.x, 0, 0}, glm::vec3{0, inv.y, 0}, glm::vec3{0, 0, inv.z}};
-    return r * inv_diag * glm::transpose(r);
+    const mat3 inv_diag{vec3{inv.x, 0, 0}, vec3{0, inv.y, 0}, vec3{0, 0, inv.z}};
+    return r * inv_diag * numeric::Transpose(r);
 }
 
 double ReducedContactMass(const ContactDynamics &d, uint32_t i, vec3 impact_direction, const Impactor &impactor) {
@@ -27,9 +25,9 @@ double ReducedContactMass(const ContactDynamics &d, uint32_t i, vec3 impact_dire
 
     // The object's translation and the rotational leverage of an off-center impulse, combined with the impactor.
     // A light impactor dominates, so the reduced mass stays small even against a heavy object.
-    const vec3 n = glm::normalize(impact_direction);
-    const glm::vec3 arm_cross_n = glm::cross(d.ContactArm[i], n);
-    const double inv_effective_mass = 1.0 / d.Mass + glm::dot(arm_cross_n, d.InverseInertia * arm_cross_n) + impactor.InvMass;
+    const vec3 n = numeric::Normalize(impact_direction);
+    const vec3 arm_cross_n = numeric::Cross(d.ContactArm[i], n);
+    const double inv_effective_mass = 1.0 / d.Mass + numeric::Dot(arm_cross_n, d.InverseInertia * arm_cross_n) + impactor.InvMass;
     return 1.0 / inv_effective_mass;
 }
 

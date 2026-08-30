@@ -9,8 +9,6 @@
 
 #include <boost/ut.hpp>
 
-#include <glm/geometric.hpp>
-
 #include <cmath>
 #include <numbers>
 #include <span>
@@ -373,7 +371,7 @@ int main() {
         const auto junction_rate = [&springs](float load) {
             const auto fit = [&](bool frictional) {
                 const auto levels = SeatedRingLevels(
-                    PolarizedMode(glm::normalize(ContactNormal + ContactTangent), RingFreq, RingT60), springs,
+                    PolarizedMode(numeric::Normalize(ContactNormal + ContactTangent), RingFreq, RingT60), springs,
                     [&springs, load, frictional](int32_t slot) {
                         auto seated = SeatedTangentContact(slot, *springs, load);
                         if (!frictional) seated.Friction = 0.f;

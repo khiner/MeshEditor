@@ -1,6 +1,6 @@
 #pragma once
 
-#include "action/SerializeGlm.h" // glm hooks for the vec/Camera members
+#include "action/SerializeNumeric.h"
 #include "viewport/ViewCamera.h"
 
 // A plain memcpy of ViewCamera/LookingThrough would serialize garbage from the Camera variant's inactive alternative and disengaged optionals.

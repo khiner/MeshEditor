@@ -10,8 +10,6 @@
 
 #include <boost/ut.hpp>
 
-#include <glm/geometric.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -229,7 +227,7 @@ uint32_t ChildGroup(const ClusterLodBuild &build, uint32_t cluster) {
 
 // The screen-space error a group projects to, which must grow toward the coarse end for a cut to hold.
 float ProjectedError(const ClusterLodGroup &group, vec3 camera, float proj, float znear) {
-    const float distance = glm::length(group.Center - camera) - group.Radius;
+    const float distance = numeric::Length(group.Center - camera) - group.Radius;
     return group.Error / std::max(distance, znear) * (proj * 0.5f);
 }
 
@@ -265,7 +263,7 @@ std::vector<SpanRecord> SpanRecords(const ClusterLodBuild &build, const ClusterL
 }
 
 bool Held(vec3 center, float radius, const LodNode &node) {
-    return glm::length(center - node.Center) + radius <= node.Radius + 1e-4f * std::max(node.Radius, 1.f);
+    return numeric::Length(center - node.Center) + radius <= node.Radius + 1e-4f * std::max(node.Radius, 1.f);
 }
 
 std::vector<std::vector<uint32_t>> ProducedBy(const ClusterLodBuild &build) {
@@ -405,7 +403,7 @@ int main() {
                     const uint32_t id = build->GroupClusters[group.FirstCluster + i];
                     if (id < build->Level0Count()) continue;
                     const auto &child = build->Groups[build->Clusters[id - build->Level0Count()].RefinedGroup];
-                    const float slack = glm::length(child.Center - group.Center) + child.Radius - group.Radius;
+                    const float slack = numeric::Length(child.Center - group.Center) + child.Radius - group.Radius;
                     expect(slack <= 1e-4f * std::max(group.Radius, 1.f));
                 }
             }

@@ -90,7 +90,7 @@ Family Classify(const ModalModes &modes, uint32_t mode, const Bar &bar, int nx) 
         axial += double(u.x) * u.x;
         lateral_y += double(u.y) * u.y;
         lateral_z += double(u.z) * u.z;
-        total += glm::dot(u, u);
+        total += numeric::Dot(u, u);
         auto &[circulation, r2] = slices[int(std::lround(p.x * nx / bar.Length))];
         circulation += ry * u.z - rz * u.y;
         r2 += ry * ry + rz * rz;
@@ -177,13 +177,13 @@ Surface Sphere(int subdivisions, double noise, unsigned seed) {
     std::vector<std::array<uint32_t, 3>> tris{
         {0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8}, {3, 9, 4}, {3, 4, 2}, {3, 2, 6}, {3, 6, 8}, {3, 8, 9}, {4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1}
     };
-    for (auto &p : pts) p = glm::normalize(p);
+    for (auto &p : pts) p = numeric::Normalize(p);
     for (int s = 0; s < subdivisions; ++s) {
         std::map<uint64_t, uint32_t> mid;
         const auto midpoint = [&](uint32_t a, uint32_t b) {
             const uint64_t key = (uint64_t(std::min(a, b)) << 32) | std::max(a, b);
             const auto [it, inserted] = mid.try_emplace(key, uint32_t(pts.size()));
-            if (inserted) pts.push_back(glm::normalize(0.5 * (pts[a] + pts[b])));
+            if (inserted) pts.push_back(numeric::Normalize(0.5 * (pts[a] + pts[b])));
             return it->second;
         };
         std::vector<std::array<uint32_t, 3>> next;

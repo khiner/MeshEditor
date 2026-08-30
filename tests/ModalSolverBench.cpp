@@ -186,7 +186,7 @@ const AcousticMaterial &MaterialForSample(const Corpus &corpus, const std::strin
 // RMS shape magnitude of one mode across excitation positions (mode shape signs are arbitrary).
 double RmsGain(const ModalModes &modes, size_t m) {
     double gain_sq = 0;
-    for (const auto &shape : modes.Shapes) gain_sq += double(glm::dot(shape[m], shape[m]));
+    for (const auto &shape : modes.Shapes) gain_sq += double(numeric::Dot(shape[m], shape[m]));
     return std::sqrt(gain_sq / modes.Shapes.size());
 }
 
@@ -210,10 +210,10 @@ std::optional<LoadedSample> LoadSample(const Corpus &corpus, const fs::path &obj
     if (corpus.TargetDiagonal > 0) {
         vec3 lo = surface->Positions.front(), hi = lo;
         for (const auto &p : surface->Positions) {
-            lo = glm::min(lo, p);
-            hi = glm::max(hi, p);
+            lo = numeric::Min(lo, p);
+            hi = numeric::Max(hi, p);
         }
-        const double diagonal = glm::length(dvec3{hi - lo});
+        const double diagonal = numeric::Length(dvec3{hi - lo});
         scale = diagonal > 0 ? corpus.TargetDiagonal / diagonal : 1;
     }
     const auto num_verts = surface->Positions.size();

@@ -11,13 +11,12 @@
 #include "mesh/TetMesh.h"
 #include <Eigen/Eigenvalues>
 #include <Spectra/SymGEigsShiftSolver.h>
-#include <glm/gtc/quaternion.hpp>
-#include <glm/gtx/norm.hpp>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <random>
 #include <unordered_map>
@@ -46,12 +45,12 @@ TetMesh FilterDegenerate(const TetMesh &tets) {
     for (const auto &t : tets.Tets) {
         const dvec3 &a = tets.Points[t[0]];
         const dvec3 r0 = tets.Points[t[1]] - a, r1 = tets.Points[t[2]] - a, r2 = tets.Points[t[3]] - a;
-        const double det = std::abs(glm::dot(r0, glm::cross(r1, r2)));
+        const double det = std::abs(numeric::Dot(r0, numeric::Cross(r1, r2)));
         double lmax_sq = 0;
         for (uint i = 0; i < 4; ++i) {
             for (uint j = i + 1; j < 4; ++j) {
                 const dvec3 d = tets.Points[t[i]] - tets.Points[t[j]];
-                lmax_sq = std::max(lmax_sq, glm::dot(d, d));
+                lmax_sq = std::max(lmax_sq, numeric::Dot(d, d));
             }
         }
         if (det > 1e-12 * lmax_sq * std::sqrt(lmax_sq)) clean.Tets.push_back(t);
@@ -62,7 +61,7 @@ TetMesh FilterDegenerate(const TetMesh &tets) {
 const dvec3 &GetVertex(const TetMesh &tets, uint element, uint vertex) { return tets.Points[tets.Tets[element][vertex]]; }
 
 double GetTetDeterminant(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d) {
-    return glm::dot(d - a, glm::cross(b - a, c - a));
+    return numeric::Dot(d - a, numeric::Cross(b - a, c - a));
 }
 double GetTetVolume(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d) {
     return (1.f / 6.f) * fabs(GetTetDeterminant(a, b, c, d));
@@ -96,7 +95,7 @@ MassProperties ComputeMassProperties(const TetMesh &tets, double density, vec3 s
     Eigen::Matrix3d inertia = Eigen::Matrix3d::Zero();
     for (size_t i = 0; i < nverts; ++i) {
         const dvec3 r = pos[i] - com;
-        const double rr = glm::dot(r, r);
+        const double rr = numeric::Dot(r, r);
         inertia(0, 0) += vol[i] * (rr - r.x * r.x);
         inertia(1, 1) += vol[i] * (rr - r.y * r.y);
         inertia(2, 2) += vol[i] * (rr - r.z * r.z);
@@ -112,16 +111,16 @@ MassProperties ComputeMassProperties(const TetMesh &tets, double density, vec3 s
     const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(inertia);
     const auto &evals = es.eigenvalues();
     const auto &evecs = es.eigenvectors();
-    glm::mat3 axes;
+    mat3 axes;
     for (int c = 0; c < 3; ++c)
         for (int r = 0; r < 3; ++r) axes[c][r] = float(evecs(r, c));
-    if (glm::determinant(axes) < 0) axes[0] = -axes[0]; // ensure a proper rotation for the quaternion
+    if (numeric::Determinant(axes) < 0) axes[0] = -axes[0]; // ensure a proper rotation for the quaternion
 
     return {
         density * total * s * s * s,
         vec3{com},
         vec3{float(evals[0]), float(evals[1]), float(evals[2])},
-        glm::normalize(glm::quat_cast(axes)),
+        numeric::Normalize(numeric::ToQuat(axes)),
     };
 }
 
@@ -157,7 +156,7 @@ std::vector<ElementBasis> ComputeElementBases(const TetMesh &tets) {
                     ++ni;
                 }
                 const int sign = (i + j) % 2 == 0 ? -1 : 1;
-                element.Phig[i][j] = sign * dot(dvec3{1}, cross(columns[0], columns[1])) / det;
+                element.Phig[i][j] = sign * numeric::Dot(dvec3{1}, numeric::Cross(columns[0], columns[1])) / det;
             }
         }
     }
@@ -457,7 +456,7 @@ ModalModes ComputeModes(
     const uint basis_size = std::min(std::max(fem_n_modes + 20, 20u), n); // Lanczos basis vector count (ncv)
     // Negative shift: K - sigma*M is positive definite, and the smallest
     // eigenvalues sit nearest the shift, so they still converge first.
-    const double sigma = -pow(2 * M_PI * config.MinModeFreq, 2);
+    const double sigma = -pow(2 * std::numbers::pi * config.MinModeFreq, 2);
     auto *monitor = opts.Monitor;
     if (monitor && monitor->Cancelled()) return {};
     OpType op{K, M, profile.Factorize, profile.OpSolve};
@@ -517,7 +516,7 @@ ModalModes modal::PostprocessModes(std::span<const double> eigenvalues, const st
     std::vector<float> mode_freqs(fem_n_modes), mode_t60s(fem_n_modes);
     std::vector<double> omega_undamped(fem_n_modes);
     // Scale-aware near-zero cutoff, relative to the eigensolver shift.
-    const double lambda_eps = pow(2 * M_PI * config.MinModeFreq, 2) * 1e-10;
+    const double lambda_eps = pow(2 * std::numbers::pi * config.MinModeFreq, 2) * 1e-10;
     for (uint mode = 0; mode < fem_n_modes; ++mode) {
         const double lambda_i = eigenvalues[mode];
         omega_undamped[mode] = lambda_i > lambda_eps ? std::sqrt(lambda_i) : 0;
@@ -526,7 +525,7 @@ ModalModes modal::PostprocessModes(std::span<const double> eigenvalues, const st
     const auto c_from_omega = [&material](double omega) { return material.Alpha + material.Beta * (omega * omega); };
     const auto damped_hz = [&](double omega, double c) {
         const double omega_d_sq = omega * omega - 0.25 * c * c;
-        return omega_d_sq > 0 ? std::sqrt(omega_d_sq) / (2 * M_PI) : 0;
+        return omega_d_sq > 0 ? std::sqrt(omega_d_sq) / (2 * std::numbers::pi) : 0;
     };
 
     uint lowest_mode_i = fem_n_modes;
@@ -629,7 +628,7 @@ modal::ModalResult modal::mesh2modes(const TetMesh &input_tets, const AcousticMa
             uint nearest = 0;
             for (uint v = 0; v < uint(tets.Points.size()); ++v) {
                 const auto &q = tets.Points[v];
-                if (const double d = glm::distance2(p, q); d < best) {
+                if (const double d = numeric::Distance2(p, q); d < best) {
                     best = d;
                     nearest = v;
                 }

@@ -4,9 +4,6 @@
 
 #include "meshoptimizer.h"
 
-#include <glm/common.hpp>
-#include <glm/geometric.hpp>
-
 #include <algorithm>
 #include <cmath>
 #include <numbers>
@@ -71,7 +68,7 @@ struct Grid {
     static int64_t Key(int64_t x, int64_t y, int64_t z) { return (x * 73856093) ^ (y * 19349663) ^ (z * 83492791); }
 
     void ForCellsIn(const dvec3 &lo, const dvec3 &hi, auto &&visit) {
-        const dvec3 c0 = glm::floor((lo - Min) / Cell), c1 = glm::floor((hi - Min) / Cell);
+        const dvec3 c0 = numeric::Floor((lo - Min) / Cell), c1 = numeric::Floor((hi - Min) / Cell);
         for (auto x = int64_t(c0.x); x <= int64_t(c1.x); ++x) {
             for (auto y = int64_t(c0.y); y <= int64_t(c1.y); ++y) {
                 for (auto z = int64_t(c0.z); z <= int64_t(c1.z); ++z) visit(Cells[Key(x, y, z)]);
@@ -88,7 +85,7 @@ struct Defect {
 
 // A triangle, centred on its centroid and measured by its longest edge.
 Defect TriangleDefect(const dvec3 &v0, const dvec3 &v1, const dvec3 &v2) {
-    return {(v0 + v1 + v2) / 3.0, std::max({glm::length(v1 - v0), glm::length(v2 - v1), glm::length(v0 - v2)})};
+    return {(v0 + v1 + v2) / 3.0, std::max({numeric::Length(v1 - v0), numeric::Length(v2 - v1), numeric::Length(v0 - v2)})};
 }
 
 // Triangles that pass through each other.
@@ -102,14 +99,14 @@ void FindFolds(const std::vector<dvec3> &points, const std::vector<uint32_t> &tr
     for (uint32_t t = 0; t < n; ++t) {
         dvec3 lo = points[tris[t * 3]], hi = lo;
         for (uint32_t k = 1; k < 3; ++k) {
-            lo = glm::min(lo, points[tris[t * 3 + k]]);
-            hi = glm::max(hi, points[tris[t * 3 + k]]);
+            lo = numeric::Min(lo, points[tris[t * 3 + k]]);
+            hi = numeric::Max(hi, points[tris[t * 3 + k]]);
         }
         tri_min[t] = vec3{lo};
         tri_max[t] = vec3{hi};
-        min = glm::min(min, lo);
-        max = glm::max(max, hi);
-        diagonal_sum += glm::length(hi - lo);
+        min = numeric::Min(min, lo);
+        max = numeric::Max(max, hi);
+        diagonal_sum += numeric::Length(hi - lo);
     }
     // Cells the size of an average triangle keep each bucket to a handful of candidates.
     Grid grid{std::max(diagonal_sum / n, 1e-12), min, {}};
@@ -154,8 +151,8 @@ void FindVerticesInsideEdges(const std::vector<dvec3> &points, const std::vector
     double edge_sum = 0;
     for (const uint64_t e : edges) {
         const dvec3 &a = points[uint32_t(e >> 32)], &b = points[uint32_t(e)];
-        min = glm::min(min, glm::min(a, b));
-        edge_sum += glm::length(b - a);
+        min = numeric::Min(min, numeric::Min(a, b));
+        edge_sum += numeric::Length(b - a);
     }
     // Cells the size of an average edge keep each bucket to a handful of candidates.
     Grid grid{std::max(edge_sum / double(edges.size()), 1e-12), min, {}};
@@ -169,16 +166,16 @@ void FindVerticesInsideEdges(const std::vector<dvec3> &points, const std::vector
     for (const uint64_t e : edges) {
         const uint32_t a = uint32_t(e >> 32), b = uint32_t(e);
         const dvec3 &pa = points[a], &pb = points[b];
-        grid.ForCellsIn(glm::min(pa, pb), glm::max(pa, pb), [&](std::vector<uint32_t> &bucket) {
+        grid.ForCellsIn(numeric::Min(pa, pb), numeric::Max(pa, pb), [&](std::vector<uint32_t> &bucket) {
             for (const uint32_t v : bucket) {
                 if (v == a || v == b) continue;
                 // A negative dot puts the vertex between the two ends, where the sine of the angle
                 // it makes there falls as that angle approaches straight.
                 const dvec3 u = pa - points[v], w = pb - points[v];
-                if (glm::dot(u, w) >= 0) continue;
-                if (glm::length(glm::cross(u, w)) <= glm::length(u) * glm::length(w) * SinStraightTol) {
+                if (numeric::Dot(u, w) >= 0) continue;
+                if (numeric::Length(numeric::Cross(u, w)) <= numeric::Length(u) * numeric::Length(w) * SinStraightTol) {
                     // Half the edge length around its midpoint reaches every vertex the edge was collapsed over.
-                    out.emplace_back(0.5 * (pa + pb), glm::length(pb - pa));
+                    out.emplace_back(0.5 * (pa + pb), numeric::Length(pb - pa));
                 }
             }
         });
@@ -198,11 +195,11 @@ std::vector<Defect> FindDefects(const std::vector<dvec3> &points, const std::vec
 std::vector<uint32_t> SimplifyWithoutDefects(const std::vector<dvec3> &points, const std::vector<vec3> &positions, const std::vector<uint32_t> &triangle_indices, float ratio) {
     dvec3 min = points[0], max = points[0];
     for (const auto &p : points) {
-        min = glm::min(min, p);
-        max = glm::max(max, p);
+        min = numeric::Min(min, p);
+        max = numeric::Max(max, p);
     }
     double edge_sum = 0;
-    for (size_t i = 0; i < triangle_indices.size(); i += 3) edge_sum += glm::length(points[triangle_indices[i]] - points[triangle_indices[i + 1]]);
+    for (size_t i = 0; i < triangle_indices.size(); i += 3) edge_sum += numeric::Length(points[triangle_indices[i]] - points[triangle_indices[i + 1]]);
     Grid vertex_grid{std::max(edge_sum * 3 / double(triangle_indices.size()), 1e-12), min, {}};
     for (uint32_t v = 0; v < points.size(); ++v) {
         vertex_grid.ForCellsIn(points[v], points[v], [&](std::vector<uint32_t> &bucket) { bucket.push_back(v); });
@@ -232,7 +229,7 @@ std::vector<uint32_t> SimplifyWithoutDefects(const std::vector<dvec3> &points, c
                 const double r = radius * scale;
                 vertex_grid.ForCellsIn(center - dvec3{r}, center + dvec3{r}, [&](std::vector<uint32_t> &bucket) {
                     for (const uint32_t v : bucket) {
-                        if (glm::length(points[v] - center) <= r) locks[v] = 1;
+                        if (numeric::Length(points[v] - center) <= r) locks[v] = 1;
                     }
                 });
             }

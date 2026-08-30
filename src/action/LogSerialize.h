@@ -2,7 +2,7 @@
 
 #include "PathSerialize.h"
 #include "action/Action.h"
-#include "action/SerializeGlm.h"
+#include "action/SerializeNumeric.h"
 
 #include <cstring>
 #include <istream>
