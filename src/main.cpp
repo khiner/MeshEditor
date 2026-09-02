@@ -1403,7 +1403,7 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
             }
             const bool empty = job->SceneArg == "--empty";
             const char *initial_file = !empty && !job->SceneArg.empty() ? job->SceneArg.c_str() : nullptr;
-            RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename, .Overlays = harness.Overlays, .EditMode = harness.EditMode, .SelectAll = harness.SelectAll, .LodErrorPixels = harness.LodErrorPixels});
+            RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename, .Overlays = harness.Overlays, .EditMode = harness.EditMode, .SelectAll = harness.SelectAll, .LodErrorPixels = harness.LodErrorPixels, .NormalOverlays = harness.NormalOverlays, .BoundingBoxes = harness.BoundingBoxes, .TetWireframe = harness.TetWireframe});
             // Reset for the next job, finalizing any in-progress recording.
             QuiesceScene(r, viewport);
             ClearScene(r, viewport);

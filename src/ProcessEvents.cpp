@@ -421,10 +421,13 @@ void BuildBoneMeshletsNow(entt::registry &r, std::span<const entt::entity> entit
 // Edge and vertex index buffers feed the wireframe, the edit and excite mode overlays, and line and
 // point meshes. A face mesh draws none of those in solid shading outside those modes, so it goes
 // without until something asks.
+// The vertex normal indicator reads a vertex's incident edges for its length, so that overlay draws them too.
 bool DrawsElementIndices(const entt::registry &r, entt::entity viewport) {
     const auto mode = r.get<const Interaction>(viewport).Mode;
-    return r.get<const ViewportDisplay>(viewport).ViewportShading == ViewportShadingMode::Wireframe ||
-        mode == InteractionMode::Edit || mode == InteractionMode::Excite;
+    const auto &display = r.get<const ViewportDisplay>(viewport);
+    return display.ViewportShading == ViewportShadingMode::Wireframe ||
+        mode == InteractionMode::Edit || mode == InteractionMode::Excite ||
+        ElementMaskContains(display.NormalOverlays, Element::Vertex);
 }
 
 // Every face of a triangle mesh is one triangle, so its draws index the store's corner array straight
@@ -443,6 +446,8 @@ void WriteElementIndices(GpuBuffers &buffers, const Mesh &mesh, MeshBuffers &mb)
         auto [sr, dest] = buffers.AllocateIndices(mesh.EdgeCount() * 2, IndexKind::Edge);
         mesh.WriteEdgeIndices(dest);
         mb.EdgeIndices = sr;
+        // The meshlet build captured the edge indices into the mesh's primitive records, so records built before the indices existed take them now.
+        for (auto &record : buffers.Primitives.Buffer.GetMutableSpan<PrimitiveRecord>(mb.Primitives)) record.AuxIndices = mb.EdgeIndices;
     }
     if (mesh.VertexCount() > 0 && mb.VertexIndices.Count == 0) {
         auto [sr, dest] = buffers.AllocateIndices(mesh.VertexCount(), IndexKind::Vertex);
