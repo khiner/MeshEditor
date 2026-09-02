@@ -278,6 +278,7 @@ public:
     // splits the impulse into a per-body impact. Filled from multiple threads during PhysicsSystem::Update.
     struct RawContact {
         uint32_t Body1Index, Body2Index;
+        uint64_t SubShapeKey; // The touching sub-shapes, identifying the manifold within its body pair.
         entt::entity Collider1, Collider2; // The touching collider node of each body.
         Vec3 Point, Direction; // world space; Direction is the unit impulse on body 2 (body 1 gets its negation)
         Vec3 ResultantPoint; // world space, the manifold's load-weighted centre, shared by all its points
@@ -493,6 +494,7 @@ private:
         }
         const PendingImpact pi = it->second;
         ErasePendingImpact(it);
+        const uint64_t sub_shape_key = (uint64_t(pair.GetSubShapeID1().GetValue()) << 32) | pair.GetSubShapeID2().GetValue();
 
         const float excess = normal_impulse - pi.SupportForce * SubstepDt;
         if (excess <= 1e-6f) return; // pure support: the body settled rather than struck
@@ -518,7 +520,7 @@ private:
             const float impulse = j.Length();
             if (impulse < 1e-6f) continue; // a point of the manifold carrying no load
             RawContacts.emplace_back(
-                pi.Body1Index, pi.Body2Index, pi.Collider1, pi.Collider2,
+                pi.Body1Index, pi.Body2Index, sub_shape_key, pi.Collider1, pi.Collider2,
                 Vec3{pi.COMTransform1 * p.mPosition1}, j / impulse, resultant, impulse, speed, pi.InvMass1, pi.InvMass2, pi.NominalArea
             );
         }
@@ -1609,6 +1611,8 @@ void CollectContactImpacts(PhysicsState &s, entt::registry &r) {
         const std::scoped_lock lock{s.ContactListener.ContactMutex};
         raw.swap(s.ContactListener.RawContacts);
     }
+    // The collision jobs run in parallel, so order the manifolds they recorded before audio sums them.
+    std::ranges::stable_sort(raw, {}, [](const auto &c) { return std::pair{BodyPairKey(c.Body1Index, c.Body2Index), c.SubShapeKey}; });
     auto &out = r.ctx().get<PhysicsContactImpacts>().Events;
     for (const auto &c : raw) {
         const vec3 dir = FromJolt(c.Direction), point = FromJolt(c.Point), resultant = FromJolt(c.ResultantPoint);
