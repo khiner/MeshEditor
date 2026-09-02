@@ -1,3 +1,3 @@
 #!/bin/bash
 # Load this scene in the app. Run from the repository root.
-exec ./build/MeshEditor $'external/glTF-Sample-Assets/Models/Unicode‚\235§‚\231ªTest/glTF/Unicode‚\235§‚\231ªTest.gltf'
+exec ./build/MeshEditor 'external/glTF-Sample-Assets/Models/Unicode‚ù§‚ôªTest/glTF/Unicode‚ù§‚ôªTest.gltf'

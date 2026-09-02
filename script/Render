@@ -1,254 +1,169 @@
-#!/bin/bash
-
-# (Re-)generate the committed `render/` corpus — see the "Render corpus" section in README.md for what each
+#!/usr/bin/env python3
+# (Re-)generate the committed `render/` corpus. See the "Render corpus" section in README.md for what each
 # scene's leaf contains. Covers Empty, Default, res/examples, the full-experience audio scenes at the root of
 # glTF_PhysicalAudio/samples/, and all glTF samples under external/. Run from anywhere.
-# Scenes render headless (no window) in a pool of persistent worker processes: each worker initializes the
-# engine once and pulls scenes from a shared job spool (`--render-queue`), clearing the scene between jobs.
-# `--out` renders the same corpus into a side directory and `--app-args` hands every worker extra app flags,
-# which together produce a candidate tree for script/CompareRenders to judge against the committed one.
-# Set JOBS to change the worker count, and COMPARE_VIDEOS=1 to restore videos that differ from HEAD
-# only by GPU render noise.
+# Scenes render headless in a pool of persistent worker processes that pull from a shared job spool
+# (`--render-queue`), clearing the scene between jobs. `--out` renders into a side directory and `--app-args`
+# hands every worker extra app flags, producing a candidate tree for script/CompareRenders to judge.
+# JOBS sets the worker count. COMPARE_VIDEOS=1 restores videos that differ from HEAD only by GPU render noise.
+from __future__ import annotations
 
-set -uo pipefail
+import argparse
+import os
+from pathlib import Path
+import queue
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
 
-ScriptDir="$(cd "$(dirname "${0}")" && pwd)"
-ProjectRootDir="$(dirname "${ScriptDir}")"
-cd "${ProjectRootDir}"
+ScriptDir = Path(__file__).resolve().parent
+CorpusDir = Path("render")
+Exe = "./build/MeshEditor"
+SceneTimeoutSecs = 120  # Catches hangs. Renders are GPU-paced, not real-time, and parallel renders contend for the GPU.
+GltfRoots = [Path("external/glTF-Sample-Assets"), Path("external/glTF_Physics")]
+# glTF_Physics/tests/ are conformance unit tests that render empty or hang the physics solver. Every model in
+# a glTF-Binary or glTF-Embedded dir also ships a glTF variant that renders identically.
+ExcludedDirs = ("/glTF_Physics/tests/", "/glTF-Binary/", "/glTF-Embedded/")
 
-CorpusDir="render"
-RenderDir="${CorpusDir}"
-ExtraArgs=()
+# A scene is its output basename under the render dir (no extension) and the app arg selecting it:
+# a scene file, "--empty", or empty for the default scene.
+Scene = tuple[Path, str]
 
-while [ $# -gt 0 ]; do
-    case "$1" in
-        -h|--help)
-            cat <<'EOF'
-Usage: script/Render [--out DIR] [--app-args "FLAGS"]
 
-Rebuild MeshEditor and regenerate the render corpus.
+def has_output(out: Path) -> bool:
+    return Path(f"{out}.webp").is_file() or Path(f"{out}.mp4").is_file()
 
-Options:
-  --out DIR           Render into DIR instead of render/, leaving the committed corpus alone
-  --app-args "FLAGS"  Extra MeshEditor flags for every render worker (word split on spaces)
 
-Environment:
-  JOBS=N              Number of headless render workers (default: 8)
-  COMPARE_VIDEOS=1    Restore videos that differ from HEAD only by render noise
-EOF
-            exit 0
-            ;;
-        --out)
-            [ $# -ge 2 ] || { echo "--out needs a directory" >&2; exit 2; }
-            RenderDir="${2%/}"
-            shift 2
-            ;;
-        --app-args)
-            [ $# -ge 2 ] || { echo "--app-args needs a flag string" >&2; exit 2; }
-            read -r -a ExtraArgs <<< "$2"
-            shift 2
-            ;;
-        *)
-            echo "Unknown argument: $1" >&2
-            echo "Usage: script/Render [--out DIR] [--app-args \"FLAGS\"]" >&2
-            exit 2
-            ;;
-    esac
-done
+def scene_files(root: Path) -> list[Path]:
+    return sorted(
+        Path(d) / f for d, _, files in os.walk(root) if not any(x in f"/{d}/" for x in ExcludedDirs)
+        for f in files if f.lower().endswith((".gltf", ".glb"))
+    )
 
-Exe="build/MeshEditor"
-Jobs="${JOBS:-8}"
-CompareVideos="${COMPARE_VIDEOS:-}"
 
-SceneTimeoutSecs=120 # Catches hangs. Renders are GPU-paced, not real-time, and parallel renders contend for the GPU.
+def discover_scenes() -> list[Scene]:
+    scenes = [(Path("Empty/Empty"), "--empty"), (Path("Default/Default"), "")]
+    # The isolation corpus under samples/test/ is measured by script/AudioCorpus, so only the root scenes render.
+    scenes += [(p.with_suffix(""), str(p)) for p in sorted(Path("glTF_PhysicalAudio/samples").glob("*.gltf"))]
+    files = scene_files(Path("res/examples"))
+    for root in GltfRoots:
+        if found := scene_files(root): files += found
+        else: print(f"WARNING: '{root}' has no glTF samples (run: git submodule update --init {root}). Skipping it.", file=sys.stderr)
+    # A model shipping both .gltf and .glb in one directory is one scene, rendered once.
+    by_out = {}
+    for p in sorted(files): by_out.setdefault(p.with_suffix(""), p)
+    return scenes + [(out, str(p)) for out, p in by_out.items()]
 
-# True if the scene with output basename $1 produced its visual artifact.
-has_output() {
-    [ -f "$1.webp" ] || [ -f "$1.mp4" ]
-}
 
-# Build the Debug executable first (never release, per repo policy).
-"${ScriptDir}/Build"
+def prepare_leaf(out: Path, arg: str, extra_args: list[str]) -> None:
+    """Clear the leaf of prior artifacts and write its one-command reproducer, which loads the source scene directly."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    for f in out.parent.iterdir():
+        if f.name != "run.sh": f.unlink()
+    run_sh = out.parent / "run.sh"
+    run_sh.write_text(f"#!/bin/bash\n# Load this scene in the app. Run from the repository root.\nexec {shlex.join([Exe, *([arg] if arg else []), *extra_args])}\n")
+    run_sh.chmod(run_sh.stat().st_mode | 0o111)
 
-# The glTF portion of the corpus needs the sample submodules. Warn but continue if they're missing.
-GltfRoots=()
-for root in external/glTF-Sample-Assets external/glTF_Physics; do
-    if [ -d "${root}" ] && [ -n "$(find "${root}" -type f \( -iname '*.gltf' -o -iname '*.glb' \) -print -quit 2>/dev/null)" ]; then
-        GltfRoots+=("${root}")
-    else
-        echo "WARNING: '${root}' has no glTF samples (run: git submodule update --init ${root}). Skipping it." >&2
-    fi
-done
 
-# Prepare one scene's leaf and queue it for rendering. $1: output basename under render/ (no extension).
-# $2 (optional): MeshEditor arg selecting the scene. Leaf prep stays in this (serial) parent so the
-# committed run.sh files are deterministic regardless of worker completion order.
-entries=()
-costs=()
-prepare_scene() {
-    local out="$1" arg="${2-}"
-    mkdir -p "$(dirname "${out}")"
-    # The committed artifact's size estimates render cost, for scheduling expensive scenes first.
-    local committed="${CorpusDir}/${out#"${RenderDir}"/}" cost=0 f
-    for f in "${committed}.mp4" "${committed}.webp" "${committed}.png"; do
-        [ -f "${f}" ] && cost=$(($(stat -f%z "${f}") + cost))
-    done
-    costs+=("${cost}")
-    # Clear prior artifacts so failure detection is accurate and stale files never linger.
-    # The glob covers per-material-variant images ("<name>.<variant>.webp").
-    # A scene killed mid-render leaves the mux inputs (`.video.mp4` and `.audio.wav`) behind.
-    rm -f "${out}.webp" "${out}".*.webp "${out}.png" "${out}".*.png "${out}.jpg" "${out}.mp4" "${out}.video.mp4" "${out}.audio.wav" "${out}.actions" "${out}.log"
-    # Always write the one-command reproducer, even if the render later fails, so the leaf is self-documenting.
-    # It loads the source scene directly (no capture, no project-file regeneration — that's this script's job).
-    {
-        echo '#!/bin/bash'
-        echo '# Load this scene in the app. Run from the repository root.'
-        printf 'exec ./%s' "${Exe}"
-        [ -n "${arg}" ] && printf ' %q' "${arg}"
-        [ "${#ExtraArgs[@]}" -gt 0 ] && printf ' %q' "${ExtraArgs[@]}"
-        printf '\n'
-    } > "$(dirname "${out}")/run.sh"
-    chmod +x "$(dirname "${out}")/run.sh"
-    entries+=("${out}"$'\t'"${arg}")
-}
+def committed_bytes(render_dir: Path, out: Path) -> int:
+    """Size of the scene's committed artifacts, estimating its render cost."""
+    committed = CorpusDir / out.relative_to(render_dir)
+    return sum(f.stat().st_size for e in (".mp4", ".webp", ".png") if (f := Path(f"{committed}{e}")).is_file())
 
-# Built-in scenes (no source file).
-prepare_scene "${RenderDir}/Empty/Empty" --empty
-prepare_scene "${RenderDir}/Default/Default"
 
-# The full-experience audio scenes at the samples root. The isolation corpus under samples/test/
-# is measured by script/AudioCorpus instead, so only the root scenes join the render corpus.
-while IFS= read -r P; do
-    [ -n "${P}" ] || continue
-    prepare_scene "${RenderDir}/${P%.*}" "${P}"
-done < <(find glTF_PhysicalAudio/samples -maxdepth 1 -type f -iname '*.gltf' 2>/dev/null | sort)
+def spool_jobs(spool: Path, scenes: list[Scene]) -> None:
+    for i, (out, arg) in enumerate(scenes): (spool / f"{i:04d}.job").write_text(f"{out}\t{arg}\n")
 
-# res/examples and every glTF sample, mirrored 1:1 under render/.
-# glTF_Physics/tests/ are conformance unit tests (not demo samples): they render empty/degenerate and some
-# hang the physics solver, so they're excluded.
-prev_out=""
-while IFS= read -r P; do
-    [ -n "${P}" ] || continue
-    out="${RenderDir}/${P%.*}"
-    # A model with both .gltf and .glb in one directory collides on a single output leaf (the sort makes them
-    # adjacent): they're the same scene, so render it once.
-    [ "${out}" = "${prev_out}" ] && continue
-    prev_out="${out}"
-    prepare_scene "${out}" "${P}"
-done < <(
-    # Skip the redundant `glTF-Binary` and `glTF-Embedded` variant dirs: every such model also ships a
-    # `glTF` variant that renders identically (same asset, just a different container/encoding), so those
-    # renders would be duplicates.
-    find res/examples ${GltfRoots[@]+"${GltfRoots[@]}"} -type f \( -iname '*.gltf' -o -iname '*.glb' \) \
-        -not -path '*/glTF_Physics/tests/*' -not -path '*/glTF-Binary/*' -not -path '*/glTF-Embedded/*' 2>/dev/null | sort
-)
 
-echo "Rendering corpus into ${RenderDir}/ (${#entries[@]} scenes, ${Jobs} headless workers)..."
+def count_jobs(spool: Path) -> int:
+    return sum(1 for _ in spool.glob("*.job"))
 
-# Spool one `.job` file per scene. Workers claim jobs by atomic rename, so the pool load-balances itself.
-Spool="$(mktemp -d "${TMPDIR:-/tmp}/MeshEditorRenderSpool.XXXXXX")"
-trap 'rm -rf "${Spool}"' EXIT
 
-# Write one numbered `.job` file per argument into the spool.
-spool_jobs() {
-    local i=0 entry
-    for entry; do
-        printf '%s\n' "${entry}" > "$(printf '%s/%04d.job' "${Spool}" "${i}")"
-        i=$((i + 1))
-    done
-}
+def run_worker(spool: Path, extra_args: list[str], skipped: set[str]) -> None:
+    """Run the app on the spool until it drains, killing and respawning it when a scene hangs.
+    `skipped` collects the scenes the app reports finishing without output."""
+    while (remaining := count_jobs(spool)) > 0:
+        proc = subprocess.Popen([Exe, "--render-queue", str(spool), "-q", *extra_args], stdout=subprocess.PIPE, text=True)
+        lines: queue.Queue[str | None] = queue.Queue()
+        threading.Thread(target=lambda: ([lines.put(l.rstrip("\n")) for l in proc.stdout], lines.put(None)), daemon=True).start()
+        while True:
+            try: line = lines.get(timeout=SceneTimeoutSecs)
+            except queue.Empty:
+                proc.kill()
+                break
+            if line is None: break
+            print(f"  {line}")
+            if line.startswith("SKIP "): skipped.add(line[len("SKIP "):].split(" (", 1)[0])
+        proc.wait()
+        # An exit that claimed no job means the app can't start, so don't respawn into a crash loop.
+        if count_jobs(spool) == remaining: break
 
-# Unclaimed jobs left in the spool.
-count_jobs() { find "${Spool}" -maxdepth 1 -name '*.job' | wc -l; }
 
-# Spool expensive scenes first so the longest renders overlap the rest of the queue.
-# New scenes (no prior artifact) go last.
-ordered=()
-while IFS= read -r line; do ordered+=("${line#*$'\t'}"); done < <(
-    for i in "${!entries[@]}"; do printf '%s\t%s\n' "${costs[${i}]}" "${entries[${i}]}"; done | sort -rn
-)
-spool_jobs "${ordered[@]}"
+def restore_noise_only_videos(spool: Path) -> None:
+    """Restore committed videos that differ only by GPU render noise (see script/VideosEquivalent)."""
+    changed = subprocess.run(["git", "diff", "--name-only", "--", str(CorpusDir)], capture_output=True, text=True).stdout.splitlines()
+    for f in (f for f in changed if f.endswith(".mp4")):
+        blob = subprocess.run(["git", "cat-file", "--filters", f"HEAD:{f}"], capture_output=True)
+        if blob.returncode: continue
+        committed = spool / "committed.mp4"
+        committed.write_bytes(blob.stdout)
+        result = subprocess.run([ScriptDir / "VideosEquivalent", committed, f], stdout=subprocess.PIPE, text=True)
+        stats = result.stdout.rstrip("\n").replace("\n", "; ")
+        if result.returncode == 0:
+            subprocess.run(["git", "checkout", "--", f])
+            print(f"Render noise only ({stats}): restored {f}")
+        else:
+            print(f"Content changed ({stats}): {f}")
 
-# Run the app on the spool, killing and respawning it when a scene hangs.
-run_worker() {
-    local fifo="${Spool}/worker$1.fifo" pid line read_status remaining
-    mkfifo "${fifo}"
-    while :; do
-        remaining="$(count_jobs)"
-        [ "${remaining}" -gt 0 ] || break
-        "./${Exe}" --render-queue "${Spool}" -q ${ExtraArgs[@]+"${ExtraArgs[@]}"} >"${fifo}" &
-        pid=$!
-        exec 3<"${fifo}"
-        while :; do
-            IFS= read -r -t "${SceneTimeoutSecs}" -u 3 line
-            read_status=$?
-            [ "${read_status}" -eq 0 ] || break
-            echo "  ${line}"
-            # The app reports a scene it finished without output, so a retry would fail the same way.
-            [[ "${line}" == "SKIP "* ]] && { line="${line#SKIP }"; printf '%s\n' "${line%% (*}" >> "${Spool}/skipped"; }
-        done
-        exec 3<&-
-        [ "${read_status}" -gt 128 ] && kill -9 "${pid}" 2>/dev/null
-        wait "${pid}" 2>/dev/null
-        # An exit that claimed no job means the app can't start (or the queue drained meanwhile), so don't respawn into a crash loop.
-        [ "$(count_jobs)" -eq "${remaining}" ] && break
-    done
-}
 
-worker=1
-while [ "${worker}" -le "${Jobs}" ]; do
-    run_worker "${worker}" &
-    worker=$((worker + 1))
-done
-wait
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Rebuild MeshEditor and regenerate the render corpus.",
+        epilog="environment:\n  JOBS=N            headless render workers (default: 8)\n  COMPARE_VIDEOS=1  restore videos that differ from HEAD only by render noise",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--out", metavar="DIR", help="render into DIR instead of render/, leaving the committed corpus alone")
+    parser.add_argument("--app-args", metavar="FLAGS", default="", help="extra MeshEditor flags for every render worker (word split on spaces)")
+    args = parser.parse_args()
+    render_dir = Path(args.out) if args.out else CorpusDir
+    extra_args = args.app_args.split()
+    jobs = int(os.environ.get("JOBS", "8"))
 
-# Retry once, through a single fresh worker, the scenes no worker reported: a crash (Metal device-loss) or a hang kill left them behind.
-retries=()
-for entry in "${entries[@]}"; do
-    out="${entry%%$'\t'*}"
-    has_output "${out}" && continue
-    grep -qxF -- "${out}" "${Spool}/skipped" 2>/dev/null && continue
-    retries+=("${entry}")
-done
-if [ "${#retries[@]}" -gt 0 ]; then
-    rm -f "${Spool}"/*.job "${Spool}"/*.job.claimed
-    for entry in "${retries[@]}"; do echo "  retrying ${entry%%$'\t'*}"; done
-    spool_jobs "${retries[@]}"
-    run_worker retry
-fi
+    sys.stdout.reconfigure(line_buffering=True)
+    os.chdir(ScriptDir.parent)
+    if status := subprocess.run([ScriptDir / "Build"]).returncode: sys.exit(status)
 
-# Restore committed videos that differ only by GPU render noise (see script/VideosEquivalent).
-# A side directory holds a candidate to judge, not the corpus, so nothing there is restored from HEAD.
-if [ -n "${CompareVideos}" ] && [ "${RenderDir}" = "${CorpusDir}" ]; then
-    while IFS= read -r f; do
-        committed="${Spool}/committed.mp4"
-        git cat-file --filters "HEAD:${f}" > "${committed}" 2>/dev/null || continue
-        if stats="$("${ScriptDir}/VideosEquivalent" "${committed}" "${f}")"; then
-            git checkout -- "${f}"
-            echo "Render noise only (${stats//$'\n'/; }): restored ${f}"
-        else
-            echo "Content changed (${stats//$'\n'/; }): ${f}"
-        fi
-    done < <(git diff --name-only -- "${RenderDir}" | grep '\.mp4$')
-fi
+    scenes = [(render_dir / out, arg) for out, arg in discover_scenes()]
+    # Expensive scenes first, so the longest renders overlap the rest of the queue. Measured before the leaves clear.
+    scenes.sort(key=lambda s: committed_bytes(render_dir, s[0]), reverse=True)
+    for out, arg in scenes: prepare_leaf(out, arg, extra_args)
+    print(f"Rendering corpus into {render_dir}/ ({len(scenes)} scenes, {jobs} headless workers)...")
+    spool = Path(tempfile.mkdtemp(prefix="MeshEditorRenderSpool."))
+    try:
+        spool_jobs(spool, scenes)
+        skipped: set[str] = set()
+        workers = [threading.Thread(target=run_worker, args=(spool, extra_args, skipped)) for _ in range(jobs)]
+        for w in workers: w.start()
+        for w in workers: w.join()
 
-# Tally from the artifacts (worker output order is nondeterministic under parallelism).
-rendered=0
-skipped=0
-skips=()
-for entry in "${entries[@]}"; do
-    out="${entry%%$'\t'*}"
-    if has_output "${out}"; then
-        rendered=$((rendered + 1))
-    else
-        skipped=$((skipped + 1))
-        skips+=("${out}")
-    fi
-done
+        # A scene no worker reported was lost to a crash (Metal device-loss) or a hang kill, so retry it once.
+        if retries := [(out, arg) for out, arg in scenes if not has_output(out) and str(out) not in skipped]:
+            for f in spool.iterdir(): f.unlink()
+            for out, _ in retries: print(f"  retrying {out}")
+            spool_jobs(spool, retries)
+            run_worker(spool, extra_args, skipped)
 
-echo
-echo "Done: ${rendered} rendered, ${skipped} skipped."
-if [ "${skipped}" -gt 0 ]; then
-    echo "Skipped:"
-    for s in "${skips[@]}"; do echo "  ${s}"; done
-fi
+        if os.environ.get("COMPARE_VIDEOS") and render_dir == CorpusDir: restore_noise_only_videos(spool)
+    finally:
+        shutil.rmtree(spool, ignore_errors=True)
+
+    skips = [out for out, _ in scenes if not has_output(out)]
+    print(f"\nDone: {len(scenes) - len(skips)} rendered, {len(skips)} skipped.")
+    if skips: print("Skipped:\n" + "\n".join(f"  {out}" for out in skips))
+
+
+if __name__ == "__main__":
+    main()
