@@ -55,7 +55,6 @@ void SubmitAndWait(MTL::CommandBuffer *command_buffer) {
 struct ElementPickTarget {
     uvec2 Px;
     uint32_t RadiusSq;
-    bool ResolveId; // The second raster, which takes the lowest id reporting the winning key.
 };
 
 // A face resolves at the cursor pixel, and vertices and edges snap from within their radius.
@@ -64,8 +63,9 @@ uint32_t ElementPickRadiusSq(Element element) {
     return radius * radius;
 }
 
+// A pick rasters twice. The first raster finds the winning key, and the second takes the lowest id reporting it.
 ElementSelectQuery MakeElementQuery(
-    const SelectionSlots &sel_slots, uvec4 box, uint32_t box_result_slot, const std::optional<ElementPickTarget> &pick
+    const SelectionSlots &sel_slots, uvec4 box, uint32_t box_result_slot, const std::optional<ElementPickTarget> &pick, bool resolve_id
 ) {
     return {
         box,
@@ -73,7 +73,7 @@ ElementSelectQuery MakeElementQuery(
         pick ? pick->Px : uvec2{},
         pick ? pick->RadiusSq : 0u,
         pick ? sel_slots.ElementPickKey : InvalidSlot,
-        pick && pick->ResolveId ? sel_slots.ElementPickId : InvalidSlot,
+        pick && resolve_id ? sel_slots.ElementPickId : InvalidSlot,
     };
 }
 
@@ -96,9 +96,12 @@ uint32_t MaxElementBound(auto &&ranges) {
     return std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &r) { return std::max(total, r.Offset + r.Count); });
 }
 
+// The silhouette depth decodes the frame's visibility ids against the visible list that rasterized
+// them, so it records before the selection cull rewrites that list. Depth and cull record once, and
+// a pick then rasters twice over them while a box rasters once.
 void RunSelectionPass(
     entt::registry &r, mtl::PassChain &chain, bool render_depth, bool render_silhouette,
-    std::optional<MeshletCullConfig> meshlet_cull, auto &&record_draws
+    std::optional<MeshletCullConfig> meshlet_cull, bool pick, auto &&record_draws
 ) {
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
@@ -110,12 +113,17 @@ void RunSelectionPass(
     }
 
     const auto extent = pipelines.Silhouette.Resources->DepthImage.Extent;
-    const auto pass = mtl::MakePassDescriptor({}, mtl::LoadDepth(*pipelines.Silhouette.Resources->DepthImage, MTL::StoreActionDontCare));
-    pass->setRenderTargetWidth(extent.Width);
-    pass->setRenderTargetHeight(extent.Height);
-    // The pick resolve reads the key an earlier raster wrote, and bindless buffers carry no tracked hazard.
-    auto *encoder = encode::BeginScenePass(chain, pass, "SelectionPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageBlit | MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers);
-    record_draws(encoder, extent);
+    const uint32_t raster_passes = pick ? 2u : 1u;
+    for (uint32_t index = 0; index < raster_passes; ++index) {
+        // The selection raster tests depth without writing it, so the first pass hands the second the same depth.
+        const auto store = index + 1u < raster_passes ? MTL::StoreActionStore : MTL::StoreActionDontCare;
+        const auto pass = mtl::MakePassDescriptor({}, mtl::LoadDepth(*pipelines.Silhouette.Resources->DepthImage, store));
+        pass->setRenderTargetWidth(extent.Width);
+        pass->setRenderTargetHeight(extent.Height);
+        // The pick resolve reads the key an earlier raster wrote, and bindless buffers carry no tracked hazard.
+        auto *encoder = encode::BeginScenePass(chain, pass, "SelectionPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageBlit | MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers);
+        record_draws(encoder, extent, index == 1u);
+    }
 }
 
 void RenderElementSelectionPass(
@@ -144,8 +152,9 @@ void RenderElementSelectionPass(
             .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::ElementSelection),
             .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
         },
-        [&](auto *encoder, mtl::Extent2D) {
-            const SelectionElementPushConstants element_pc{MakeElementQuery(sel_slots, {box_min.x, box_min.y, box_max.x, box_max.y}, meshes.GetSelectionBitsSlot(), pick)};
+        pick.has_value(),
+        [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
+            const SelectionElementPushConstants element_pc{MakeElementQuery(sel_slots, {box_min.x, box_min.y, box_max.x, box_max.y}, meshes.GetSelectionBitsSlot(), pick, resolve_id)};
             if (write_bitset) {
                 const auto extent = pipelines.Silhouette.Resources->DepthImage.Extent;
                 const auto min_x = std::min(box_min.x, extent.Width);
@@ -209,13 +218,10 @@ std::optional<std::pair<entt::entity, uint32_t>> RunEditElementClick(
     auto *command_buffer = ctx.Queue->commandBuffer();
     { // The chain closes its last pass as it goes out of scope, which the submit below needs.
         mtl::PassChain chain{command_buffer};
-        const auto radius_sq = ElementPickRadiusSq(element);
-        for (const bool resolve_id : {false, true}) {
-            RenderElementSelectionPass(
-                r, chain, viewport, ranges, element, false, {}, {},
-                ElementPickTarget{mouse_px, radius_sq, resolve_id}
-            );
-        }
+        RenderElementSelectionPass(
+            r, chain, viewport, ranges, element, false, {}, {},
+            ElementPickTarget{mouse_px, ElementPickRadiusSq(element)}
+        );
     }
     RecordSelectionPrepare(r, command_buffer, transactions);
     RecordSelectionDerive(r, command_buffer, transactions);
@@ -298,18 +304,15 @@ void RenderSelectionPickPass(entt::registry &r, mtl::PassChain &chain, std::opti
         RecordVisibilityObjectSelection(r, chain, *object);
         RecordOverlayJobCull(chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers, true);
     }
-    if (sound_instance) {
-        RecordMeshletCull(
-            chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers,
-            {
-                .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::SoundPoint),
-                .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
-            }
-        );
-    }
-    RunSelectionPass(r, chain, true, sound_instance.has_value(), std::nullopt, [&](auto *encoder, mtl::Extent2D) {
+    const auto sound_cull = sound_instance ?
+        std::optional{MeshletCullConfig{
+            .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::SoundPoint),
+            .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
+        }} :
+        std::nullopt;
+    RunSelectionPass(r, chain, true, sound_instance.has_value(), sound_cull, pick.has_value(), [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
         if (sound_instance) {
-            const SelectionElementPushConstants point_pc{MakeElementQuery(sel_slots, {}, InvalidSlot, pick)};
+            const SelectionElementPushConstants point_pc{MakeElementQuery(sel_slots, {}, InvalidSlot, pick, resolve_id)};
             selection.ElementRaster(Element::Vertex, false, false).Bind(encoder);
             encoder->setFragmentBytes(&point_pc, sizeof(point_pc), BufferIndex_PushConstants);
             DrawMeshlets(
@@ -381,9 +384,7 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
     auto *command_buffer = ctx.Queue->commandBuffer();
     {
         mtl::PassChain chain{command_buffer};
-        for (const bool resolve_id : {false, true}) {
-            RenderSelectionPickPass(r, chain, std::nullopt, model_index, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex), resolve_id});
-        }
+        RenderSelectionPickPass(r, chain, std::nullopt, model_index, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex)});
     }
     SubmitAndWait(command_buffer);
     return ReadNearestPickedElement(buffers, vertex_count);
