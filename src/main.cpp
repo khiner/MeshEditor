@@ -898,6 +898,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/false);
 
     bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
+#ifdef VALIDATE_ACTIONS
+    uint64_t validated_action_index{0}; // The log position the last validation covered.
+#endif
     bool done{false};
     MTL::CommandBuffer *last_frame{nullptr}; // Resize waits for resources sampled by the last submitted UI frame.
     WindowsState windows;
@@ -1179,6 +1182,14 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             viewport_resizing = false;
         }
 
+#ifdef VALIDATE_ACTIONS
+        // The previous frame's committed actions have settled through their derives and render, the state the replay tick reproduces per action.
+        // A staged gesture is not in the log yet, so it waits for its commit.
+        if (const auto *index = r.try_get<const ActionIndex>(viewport); index && index->Index != validated_action_index) {
+            ValidateRoundTrip(r, viewport);
+            validated_action_index = r.get<const ActionIndex>(viewport).Index;
+        }
+#endif
         action::ApplyEmitted(r, viewport);
         ReportActionErrors(r);
 
@@ -1244,6 +1255,9 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     int bench_frames = capture.BenchFrames;
     BenchmarkDriver benchmark{r, capture};
     bool profile_cleared{false};
+#ifdef VALIDATE_ACTIONS
+    uint64_t validated_action_index{0}; // The log position the last validation covered.
+#endif
     bool submitted{false};
     bool done{false};
     // When the scene first drew anything. A capture run waits for its meshlets, so this lands with the settle.
@@ -1271,6 +1285,13 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             const profile::CpuScope scope{"Frame"};
             if (bench_frames > 0 && settled) benchmark.Apply(r, viewport, extent);
             driver.EmitFrameActions(r, viewport, settled, extent);
+#ifdef VALIDATE_ACTIONS
+            // A recording spans frames and would not survive the validation's scene reset, so only still renders and plays validate.
+            if (const auto *index = r.try_get<const ActionIndex>(viewport); index && index->Index != validated_action_index && !driver.RecordingMode()) {
+                ValidateRoundTrip(r, viewport);
+                validated_action_index = r.get<const ActionIndex>(viewport).Index;
+            }
+#endif
             action::ApplyEmitted(r, viewport);
             ReportActionErrors(r);
             // An audio-only recording consumes no images, so once it is underway the tick drops its render request and the sim still steps through SubmitViewport's event processing while the offline audio renders in CaptureRecordFrame with no GPU frame behind it.

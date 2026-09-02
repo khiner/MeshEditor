@@ -271,6 +271,13 @@ for the entry points the core modal path reaches it through.
 $ SURFACE_AUDIO=1 script/Build
 ```
 
+`VALIDATE_ACTIONS=1` builds the app to run File->[Debug] Roundtrip after every committed action: the log
+replays into a fresh session and the scene saves, clears and restores, aborting on the first divergence.
+
+```sh
+$ VALIDATE_ACTIONS=1 script/Build
+```
+
 * `MeshEditorModalSolverTest` reads `external/RealImpact`, and skips its dataset cases when that submodule isn't initialized.
 * `MeshEditorModalSolverBench` runs the corpora under `external/TetCorpus`, built by `script/SetupTetCorpus`: `realimpact` links the 50 scans out of the submodule, `thingi10k` downloads 60 models with `--thingi10k`.
 

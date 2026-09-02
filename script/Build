@@ -19,13 +19,22 @@ done
 # SURFACE_AUDIO=1 builds the surface-contact audio model alongside the core modal path.
 surface_audio="${SURFACE_AUDIO:-OFF}"
 [ "$surface_audio" = "1" ] && surface_audio=ON
+# VALIDATE_ACTIONS=1 or 0 sets whether the replay and round-trip validation runs after every committed action.
+# Unset keeps the configured choice, which starts from the CMakeLists default.
+validate_args=()
+if [ -n "${VALIDATE_ACTIONS:-}" ]; then
+    validate_actions=OFF
+    [ "$VALIDATE_ACTIONS" = "1" ] && validate_actions=ON
+    validate_args=(-DMESHEDITOR_VALIDATE_ACTIONS="$validate_actions")
+fi
 
 echo "Building $target in $build_type mode..."
 BuildDir="${ProjectRootDir}/build"
 # Configure only when unconfigured or a cached choice changed. Ninja reconfigures on CMake file changes.
 if [ ! -f "${BuildDir}/build.ninja" ] ||
     ! grep -qx "CMAKE_BUILD_TYPE:STRING=${build_type}" "${BuildDir}/CMakeCache.txt" ||
-    ! grep -qx "MESHEDITOR_SURFACE_AUDIO:BOOL=${surface_audio}" "${BuildDir}/CMakeCache.txt"; then
-    CC=clang CXX=clang++ cmake -G Ninja -S "${ProjectRootDir}" -B "${BuildDir}" -DCMAKE_BUILD_TYPE="$build_type" -DMESHEDITOR_SURFACE_AUDIO="$surface_audio"
+    ! grep -qx "MESHEDITOR_SURFACE_AUDIO:BOOL=${surface_audio}" "${BuildDir}/CMakeCache.txt" ||
+    { [ "${#validate_args[@]}" -gt 0 ] && ! grep -qx "MESHEDITOR_VALIDATE_ACTIONS:BOOL=${validate_actions}" "${BuildDir}/CMakeCache.txt"; }; then
+    CC=clang CXX=clang++ cmake -G Ninja -S "${ProjectRootDir}" -B "${BuildDir}" -DCMAKE_BUILD_TYPE="$build_type" -DMESHEDITOR_SURFACE_AUDIO="$surface_audio" ${validate_args[@]+"${validate_args[@]}"}
 fi
 cmake --build "${BuildDir}" --config "$build_type" --target "$target"

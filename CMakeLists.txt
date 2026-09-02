@@ -209,6 +209,16 @@ if(MESHEDITOR_APP)
         target_compile_definitions(${PROJECT_NAME} PRIVATE RELEASE_BUILD)
     endif()
 
+    # Run the replay and round-trip validation behind File->[Debug] Roundtrip after every committed action.
+    # Selected by `VALIDATE_ACTIONS=1` in the environment at configure time, or by setting the cache variable directly.
+    option(MESHEDITOR_VALIDATE_ACTIONS "Validate replay and round-trip after every committed action" $ENV{VALIDATE_ACTIONS})
+    if(MESHEDITOR_VALIDATE_ACTIONS)
+        if(NOT CMAKE_BUILD_TYPE MATCHES Debug)
+            message(FATAL_ERROR "MESHEDITOR_VALIDATE_ACTIONS needs a Debug build")
+        endif()
+        set_property(SOURCE src/main.cpp APPEND PROPERTY COMPILE_DEFINITIONS VALIDATE_ACTIONS)
+    endif()
+
     option(QUIET "Disable Timer prints" OFF)
     if(QUIET)
         target_compile_definitions(${PROJECT_NAME} PRIVATE QUIET)
