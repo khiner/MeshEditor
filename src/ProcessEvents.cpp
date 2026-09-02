@@ -758,8 +758,10 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     // Selection resolves on the GPU through SceneViewUBO.ViewProj, and replay does not log view-camera navigation,
     // so each pending selection carries the view-projection it was recorded with and stamps it for the resolve.
     // The UBO ends the frame live either way, since the rebuild below runs after selection and re-fills it on a view change.
-    // Stamping a recorded view invalidates the selection buffer, so mark it stale to force a re-render against it.
+    // A stamp that changes the view leaves the frame's visibility ids rasterized under another one, so it marks them stale and the resolve rasterizes them again.
     const auto stamp_view_proj = [&buffers](const mat4 &view_proj) {
+        const auto &frame_view_proj = reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data())->ViewProj;
+        if (std::memcmp(&frame_view_proj, &view_proj, sizeof(mat4)) != 0) buffers.VisibilityIdGeneration = InvalidOffset;
         buffers.SceneViewUBO.Update(as_bytes(view_proj), offsetof(SceneViewUBO, ViewProj));
     };
     if (const auto *pending = r.try_get<const PendingEditElementClick>(viewport)) {
