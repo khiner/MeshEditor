@@ -184,6 +184,8 @@ run_worker() {
             read_status=$?
             [ "${read_status}" -eq 0 ] || break
             echo "  ${line}"
+            # The app reports a scene it finished without output, so a retry would fail the same way.
+            [[ "${line}" == "SKIP "* ]] && { line="${line#SKIP }"; printf '%s\n' "${line%% (*}" >> "${Spool}/skipped"; }
         done
         exec 3<&-
         [ "${read_status}" -gt 128 ] && kill -9 "${pid}" 2>/dev/null
@@ -200,10 +202,13 @@ while [ "${worker}" -le "${Jobs}" ]; do
 done
 wait
 
-# Retry failures once through a single fresh worker (Metal device-loss).
+# Retry once, through a single fresh worker, the scenes no worker reported: a crash (Metal device-loss) or a hang kill left them behind.
 retries=()
 for entry in "${entries[@]}"; do
-    has_output "${entry%%$'\t'*}" || retries+=("${entry}")
+    out="${entry%%$'\t'*}"
+    has_output "${out}" && continue
+    grep -qxF -- "${out}" "${Spool}/skipped" 2>/dev/null && continue
+    retries+=("${entry}")
 done
 if [ "${#retries[@]}" -gt 0 ]; then
     rm -f "${Spool}"/*.job "${Spool}"/*.job.claimed
