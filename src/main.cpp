@@ -280,13 +280,13 @@ void QuiesceScene(entt::registry &r, entt::entity viewport) {
 constexpr std::string_view SessionLogName{"session.actions"}, ProjectStateName{"project.state"}, ProjectExt{".project"}, ActionsExt{".actions"};
 fs::path CurrentProjectPath;
 
-// Replay action log, restore the current viewport extent and camera, and present.
-void ReplayPreservingView(entt::registry &r, entt::entity viewport, const fs::path &log_path, uint64_t skip = 0) {
+// Replay the action log, restore the given view cameras and the current viewport extent, and present.
+// View navigation is not recorded, so the caller captures the cameras it wants to survive the replay.
+void ReplayPreservingView(entt::registry &r, entt::entity viewport, const fs::path &log_path, ViewCameraState view_cameras, uint64_t skip = 0) {
     const auto live_extent = r.ctx().get<ViewportExtent>().Value;
-    auto live_view_cameras = GetViewCameraState(r, viewport);
     if (action::ReplayLog(r, viewport, log_path, &PresentViewport, skip)) {
         if (live_extent != uvec2{}) r.ctx().get<ViewportExtent>().Value = live_extent;
-        SetViewCameraState(r, viewport, std::move(live_view_cameras));
+        SetViewCameraState(r, viewport, std::move(view_cameras));
         PresentViewport(r, viewport);
     }
 }
@@ -306,10 +306,11 @@ void NewScene(entt::registry &r, entt::entity viewport, bool empty) {
     if (!empty) action::Emit(action::io::LoadDefaultScene{});
 }
 
-// Replay a standalone `.actions` log into a fresh scratch session.
+// Replay a standalone `.actions` log into a fresh scratch session, keeping the live view.
 void ReplayLogIntoNewSession(entt::registry &r, entt::entity viewport, const fs::path &log_path) {
+    auto live_view_cameras = GetViewCameraState(r, viewport);
     StartScratchSession(r, viewport);
-    ReplayPreservingView(r, viewport, log_path);
+    ReplayPreservingView(r, viewport, log_path, std::move(live_view_cameras));
 }
 
 // Load a snapshot file and return its action-log position.
@@ -332,7 +333,8 @@ void OpenProjectDir(entt::registry &r, entt::entity viewport, const fs::path &wo
     uint64_t skip = 0;
     if (std::error_code ec; fs::exists(state_path, ec)) skip = LoadStateBase(r, viewport, state_path);
     else ClearScene(r, viewport);
-    ReplayPreservingView(r, viewport, log_path, skip);
+    // The snapshot's cameras are the project's saved view, which the replayed actions must not disturb.
+    ReplayPreservingView(r, viewport, log_path, GetViewCameraState(r, viewport), skip);
     action::StartLog(log_path, /*append=*/true);
 }
 
