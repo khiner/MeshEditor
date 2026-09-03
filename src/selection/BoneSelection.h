@@ -2,14 +2,12 @@
 
 #include <cstdint>
 
-// Bone selection part identifier.
 enum class BoneSel : uint8_t {
     Root,
     Tip,
     Body
 };
 
-// Presence means the bone is selected. Fields indicate which parts are selected.
 struct BoneSelection {
     bool Root{true}, Tip{true}, Body{true};
 

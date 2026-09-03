@@ -208,7 +208,7 @@ TextureUploadBatch BeginTextureUploadBatch(const mtl::Context &ctx, mtl::Library
 void SubmitTextureUploadBatch(TextureUploadBatch &batch) {
     if (!batch.Cb) return;
     batch.Cb->commit();
-    // Materialization reads back and binds immediately after, so the batch settles before returning.
+    // Complete uploads before immediate readback and binding.
     batch.Cb->waitUntilCompleted();
     batch.Cb = nullptr;
 }
@@ -473,7 +473,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
         }
         compute->endEncoding();
     }
-    // The temporaries above go out of scope on return, so the work settles first.
+    // Complete GPU work before releasing temporary textures.
     command_buffer->commit();
     command_buffer->waitUntilCompleted();
 

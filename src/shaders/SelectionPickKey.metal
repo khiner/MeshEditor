@@ -4,17 +4,13 @@
 #include "Bindless.metal"
 #include "ElementSelectQuery.metal"
 
-// Nearest first, then shallowest. One atomic minimum folds every covering fragment into this key
-// the same way whatever order they arrive in, and the id pass breaks the remaining ties.
-// Depth keeps its float bit pattern, which orders like the value it holds and keeps its precision
-// where geometry sits.
+// Orders candidates by radial distance, depth bits, and then ID through atomic minimum operations.
 inline uint PackElementPickKey(uint distance_sq, float depth) {
     const uint depth_bits = as_type<uint>(metal::clamp(depth, 0.0f, 1.0f)) >> 13u;
     return (distance_sq << 19) | depth_bits;
 }
 
-// One fragment's contribution to a pick, run twice over the same raster: with no id slot it reduces
-// to the winning key, and with one it takes the lowest id that reported that key.
+// Reduces the first pass to a key and the second pass to the lowest ID with that key.
 inline void WriteElementPick(
     device const BindlessSet &bindless, constant ElementSelectQuery &q, uint2 pixel, float depth, uint id
 ) {

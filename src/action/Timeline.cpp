@@ -10,8 +10,7 @@
 namespace action::timeline {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     const auto enter_presentation = [&] {
-        // Present the scene as authored: Rendered mode when the scene defines its own lighting
-        // (punctual lights or IBL), else material preview showing the default world at full opacity.
+// Uses Rendered mode for scene lighting and material preview with the default world otherwise.
         const auto *source_assets = r.try_get<const gltf::SourceAssets>(viewport);
         const bool explicit_ibl = source_assets && source_assets->ImageBasedLight.has_value();
         const bool authored_lighting = explicit_ibl || !r.storage<LightIndex>().empty();

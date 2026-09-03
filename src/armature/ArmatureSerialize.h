@@ -3,8 +3,7 @@
 #include "action/SerializeNumeric.h"
 #include "armature/Armature.h"
 
-// Serialize only the Armature's canonical data, rebuilding the derived caches (BoneIdToIndex, dense topology, RestWorld, JointOrderToBoneIndex) on load.
-// This keeps the snapshot deterministic, since BoneIdToIndex is an unordered_map with unstable iteration order.
+// Excludes derived caches because unordered-map iteration would make snapshots nondeterministic.
 
 constexpr auto serialize(auto &archive, const ArmatureBone &b) { return archive(b.Id, b.ParentBoneId, b.JointNodeIndex, b.Name, b.RestLocal); }
 constexpr auto serialize(auto &archive, ArmatureBone &b) { return archive(b.Id, b.ParentBoneId, b.JointNodeIndex, b.Name, b.RestLocal); }

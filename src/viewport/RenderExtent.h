@@ -4,5 +4,4 @@
 
 #include <entt/entity/fwd.hpp>
 
-// Physical pixel render extent for the viewport
 uvec2 RenderExtentPx(const entt::registry &);

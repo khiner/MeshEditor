@@ -14,7 +14,7 @@
 #include <span>
 #include <vector>
 
-namespace he { // half-edge
+namespace he {
 constexpr uint32_t null{std::numeric_limits<uint32_t>::max()};
 
 constexpr uint8_t ElementMask(Element element) { return uint8_t(element); }
@@ -102,29 +102,26 @@ static constexpr uint32_t InvalidStoreId{~0u};
 
 struct MeshStore;
 
-// Half-edge connectivity for one mesh, as views into the store's arena, which is where it is built.
-// Obtain one via MeshStore::GetConnectivity(StoreId).
 struct MeshConnectivity {
     struct Face {
-        he::HH Halfedge; // One of the boundary halfedges
+        he::HH Halfedge;
     };
 
     uint32_t VertexCount{0};
     std::span<const he::HH> OutgoingHalfedges;
-    std::span<const he::HH> Opposites; // Each halfedge's opposite, one per corner
-    // One bit per halfedge, set when it is the first halfedge of its edge, with a running count of the
-    // bits before each word. Edges number by ascending first halfedge, so an edge index is a bit rank.
+    std::span<const he::HH> Opposites;
+    // Edge IDs are ranks in the bitset of first halfedges.
     std::span<const uint32_t> EdgeFirstBits, EdgeFirstRanks;
-    // Holds each halfedge's edge instead when a halfedge's first is neither itself nor its opposite,
-    // which only a non-manifold edge produces.
+    // Non-manifold edges require an explicit halfedge-to-edge mapping.
     std::span<const he::EH> HalfedgeToEdge;
     uint32_t EdgeCount{0};
-    // Each edge's first halfedge. Empty when the bits answer, where a sample every 32 edges bounds
-    // the scan that finds the n-th set bit.
+    // Non-manifold meshes store each edge's first halfedge.
+    // Manifold meshes use sampled bit ranks.
     std::span<const he::HH> Edges;
-    std::span<const uint32_t> EdgeSamples; // Word index holding every 32nd edge's first halfedge
+    std::span<const uint32_t> EdgeSamples;
     uint32_t FaceCount{0};
-    // Each face's first halfedge. Empty for a triangle mesh, whose face f starts at halfedge 3f.
+    // Stores each face's first halfedge.
+    // Triangle meshes omit this array because face f starts at halfedge 3f.
     std::span<const Face> Faces;
 
     he::HH FaceHalfedge(uint32_t face) const { return Faces.empty() ? he::HH(face * 3u) : Faces[face].Halfedge; }
@@ -147,9 +144,7 @@ struct MeshConnectivity {
         return he::EH(EdgeFirstRanks[word] + uint32_t(std::popcount(EdgeFirstBits[word] & ((1u << (first % 32u)) - 1u))));
     }
 
-    // A face's halfedges are the contiguous run its first halfedge starts, in face order, so a
-    // halfedge's face is the run containing it. An edge-only mesh has no faces, so its halfedges
-    // belong to none.
+    // Returns the face whose contiguous halfedge range contains `hh`, or empty for edge-only meshes.
     he::FH FaceOf(he::HH hh) const {
         if (FaceCount == 0) return {};
         if (Faces.empty()) return he::FH(*hh / 3u);
@@ -178,11 +173,9 @@ struct MeshConnectivity {
 struct ConnectivityStorage {
     std::span<he::HH> OutgoingHalfedges, Opposites;
     std::span<uint32_t> EdgeFirstBits, EdgeFirstRanks, EdgeSamples;
-    std::span<MeshConnectivity::Face> Faces; // Empty for a triangle mesh
+    std::span<MeshConnectivity::Face> Faces;
 };
 
-// What a build returns for the caller to place: the edge count, and the edge list plus its inverse
-// where a non-manifold edge produced one.
 struct BuiltConnectivity {
     uint32_t EdgeCount{0};
     std::vector<he::HH> Edges;
@@ -195,16 +188,13 @@ struct BuiltConnectivity {
 BuiltConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std::span<const uint32_t> face_corners, uint32_t vertex_count, const ConnectivityStorage &);
 BuiltConnectivity BuildConnectivity(std::span<const std::array<uint32_t, 2>> edges, uint32_t vertex_count, const ConnectivityStorage &);
 
-// CSR incidence over a mesh's vertices: Offsets holds one entry per vertex plus a terminator, and Incident(v) spans vertex v's items.
 struct VertexAdjacency {
     std::span<const uint32_t> Offsets;
     std::span<const uint32_t> Items;
     std::span<const uint32_t> Incident(uint32_t v) const { return Items.subspan(Offsets[v], Offsets[v + 1] - Offsets[v]); }
 };
 
-// Lightweight, copyable view over a mesh: its connectivity (owned by MeshStore) plus its vertex data (read via StoreId).
-// Holds no ownership, the MeshStore entry is released when the entity's MeshHandle is destroyed.
-// Obtain one via MeshStore::GetMesh(StoreId).
+// Borrows connectivity and vertex data from MeshStore.
 struct Mesh {
     using VH = he::VH;
     using HH = he::HH;
@@ -213,7 +203,6 @@ struct Mesh {
 
     Mesh() = default;
     Mesh(const MeshStore &store, uint32_t store_id);
-    // The mesh's corner vertex indices, one per halfedge, from the store's canonical arena.
     std::span<const uint32_t> CornerVertices() const { return Corners; }
 
     uint32_t VertexCount() const { return C.VertexCount; }
@@ -225,14 +214,14 @@ struct Mesh {
     const vec3 &GetNormal(VH) const;
     vec3 GetNormal(FH) const;
     std::span<const Vertex> GetVerticesSpan() const;
-    AABB CalcAABB() const; // Local-space
+    AABB CalcAABB() const;
 
     uint32_t GetStoreId() const { return StoreId; }
     const MeshConnectivity &GetConnectivity() const { return C; }
-    uint32_t TriangleIndexCount() const; // Cached triangle count * 3
+    uint32_t TriangleIndexCount() const;
 
     // CSR vertex-to-edge incidence, empty when the mesh has no edges.
-    VertexAdjacency GetVertexEdgeAdjacency() const; // Items are edge indices
+    VertexAdjacency GetVertexEdgeAdjacency() const;
 
     HH GetHalfedge(EH eh, uint32_t i) const {
         const auto h0 = C.EdgeHalfedge(*eh);
@@ -252,8 +241,9 @@ struct Mesh {
     // `edge_sharpness` is the mesh's canonical per-edge sharpness, 1 where shading is discontinuous.
     // A sharp edge is where the surface turns rather than curves, so it has no curvature.
     float CalcMeanCurvature(VH, std::span<const uint8_t> edge_sharpness) const;
-    std::vector<float> CalcMeanCurvatures(std::span<const uint8_t> edge_sharpness) const; // The above for every vertex, in vertex order.
-    // Volume the surface encloses, in the mesh's own units. Empty unless it is closed and manifold.
+    std::vector<float> CalcMeanCurvatures(std::span<const uint8_t> edge_sharpness) const;
+    // Returns the enclosed volume in the mesh's coordinate units.
+    // Returns empty unless the surface is closed and manifold.
     std::optional<double> CalcEnclosedVolume() const;
     VH FindNearestVertex(vec3) const;
 
@@ -345,10 +335,9 @@ struct Mesh {
         const Mesh *Mesh;
         HH StartHalfedge;
         FaceVertexIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
-        FaceVertexIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
+        FaceVertexIterator end() const { return {Mesh, HH{}, StartHalfedge}; }
     };
     FaceVertexRange fv_range(FH fh) const { return {this, C.FaceHalfedge(*fh)}; }
-    // Iterator positioned at the first vertex of a face.
     FaceVertexIterator cfv_iter(FH fh) const { return {this, C.FaceHalfedge(*fh), C.FaceHalfedge(*fh)}; }
 
     struct VertexOutgoingHalfedgeIterator : CirculatorBase {
@@ -366,7 +355,7 @@ struct Mesh {
         const Mesh *Mesh;
         HH StartHalfedge;
         VertexOutgoingHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
-        VertexOutgoingHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
+        VertexOutgoingHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; }
     };
     VertexOutgoingHalfedgeRange voh_range(VH vh) const {
         return {this, vh && *vh < C.OutgoingHalfedges.size() ? C.OutgoingHalfedges[*vh] : HH{}};
@@ -382,10 +371,10 @@ struct Mesh {
         HH advance() const { return M->C.Next(CurrentHalfedge); }
     };
     struct FaceHalfedgeRange {
-        const Mesh *Mesh; // Always valid, never null
+        const Mesh *Mesh;
         HH StartHalfedge;
         FaceHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
-        FaceHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
+        FaceHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; }
     };
     FaceHalfedgeRange fh_range(FH fh) const { return {this, C.FaceHalfedge(*fh)}; }
 
@@ -396,12 +385,11 @@ private:
     std::span<const uint32_t> Corners{};
 };
 
-// Resolve an entity's MeshHandle to a Mesh view via the registry's MeshStore.
-// GetMesh asserts the entity has a mesh, TryGetMesh returns nullopt when it doesn't.
+// GetMesh requires a mesh entity.
+// TryGetMesh returns empty for other entities.
 Mesh GetMesh(const entt::registry &, entt::entity);
 std::optional<Mesh> TryGetMesh(const entt::registry &, entt::entity);
 bool HasMesh(const entt::registry &, entt::entity);
 
-// Surface length per texture coordinate unit, mesh-local, from its summed triangle area against the same triangles' area in texture coordinates.
-// A node instancing the mesh multiplies by its world scale to get meters. Zero when the mesh carries no coordinates for that set.
+// Returns mesh-local surface length per texture-coordinate unit, or zero when the set is absent.
 float LocalLengthPerUv(const entt::registry &, entt::entity mesh_entity, uint32_t uv_set);

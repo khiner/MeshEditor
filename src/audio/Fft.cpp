@@ -11,14 +11,14 @@
 #include <numbers>
 
 namespace {
-// vDSP runs a complex transform of 2^k, and of 3, 5 or 15 times 2^k from eight up.
+// vDSP supports complex lengths 2^k and {3, 5, 15}*2^k when the power-of-two factor is at least eight.
 bool VdspComplexLength(uint32_t n) {
     if (n == 0) return false;
     uint32_t rest = n, twos = 0;
     for (; rest % 2 == 0; rest /= 2) ++twos;
     return rest == 1 || ((rest == 3 || rest == 5 || rest == 15) && twos >= 3);
 }
-// Its real transform takes the same lengths from sixteen up, and only even ones, which makes it the stricter of the two.
+// Real transforms require even lengths and a power-of-two factor of at least sixteen.
 bool VdspRealLength(uint32_t n) {
     if (n == 0 || n % 2 != 0) return false;
     uint32_t rest = n, twos = 0;
@@ -26,7 +26,6 @@ bool VdspRealLength(uint32_t n) {
     return rest == 1 || ((rest == 3 || rest == 5 || rest == 15) && twos >= 4);
 }
 
-// A setup holds read-only tables that any number of transforms may execute against at once, so only building and releasing one takes the lock.
 std::mutex SetupMutex;
 vDSP_DFT_Setup MakeComplexSetup(uint32_t n, vDSP_DFT_Direction direction) {
     const std::lock_guard lock{SetupMutex};
@@ -41,7 +40,6 @@ void DestroySetup(vDSP_DFT_Setup setup) {
     vDSP_DFT_DestroySetup(setup);
 }
 
-// vDSP picks its kernel from the alignment of the arrays it is handed and the kernels round differently, so every buffer it reads or writes lands on the same boundary.
 template<class T> struct TransformAllocator {
     using value_type = T;
     static constexpr std::align_val_t Alignment{64};
@@ -60,8 +58,7 @@ struct Split {
     std::vector<float, TransformAllocator<float>> Re, Im;
 };
 
-// A complex-to-complex transform of one length and direction.
-// A length vDSP does not run goes through Bluestein's chirp convolution, which reads the transform off a cyclic convolution of the next power of two.
+// Performs a complex transform directly or through Bluestein convolution for unsupported vDSP lengths.
 struct ComplexDft {
     ComplexDft(uint32_t n, vDSP_DFT_Direction direction) : N(n) {
         if (VdspComplexLength(n)) Direct = MakeComplexSetup(n, direction);
@@ -70,7 +67,7 @@ struct ComplexDft {
         M = std::max(8u, std::bit_ceil(2 * n - 1));
         Forward = MakeComplexSetup(M, vDSP_DFT_FORWARD);
         Inverse = MakeComplexSetup(M, vDSP_DFT_INVERSE);
-        // The chirp e^(sign*i*pi*j^2/n), taken over j^2 modulo 2n so the angle stays exact at any length.
+        // Compute e^(sign*i*pi*j^2/n) with j^2 modulo 2n to preserve angle precision.
         const double sign = direction == vDSP_DFT_FORWARD ? -1. : 1.;
         Chirp = std::make_unique<Split>(n);
         Split cyclic{M};
@@ -127,8 +124,6 @@ struct ComplexDft {
     std::unique_ptr<Split> Chirp, Kernel;
 };
 
-// vDSP packs a real signal as the even samples against the odd, and its spectrum as the first half of the bins with the Nyquist bin in the imaginary part of the first.
-// The forward direction comes out scaled by two.
 struct RealDft {
     RealDft(uint32_t n, vDSP_DFT_Direction direction) : N(n) {
         if (VdspRealLength(n)) Packed = MakeRealSetup(n, direction);
@@ -221,7 +216,7 @@ uint32_t DirectLength(uint32_t n) {
 void ComplexToReal2d(std::span<const std::complex<float>> in, uint32_t columns, uint32_t rows, std::span<float> out) {
     if (columns == 0 || rows == 0) return;
 
-    // The columns transform first, which leaves every row holding the bins of its own real signal.
+    // Transform columns first so each row contains one real signal's bins.
     const uint32_t bins = rows / 2 + 1;
     std::vector<std::complex<float>> mixed(size_t(columns) * bins);
     {

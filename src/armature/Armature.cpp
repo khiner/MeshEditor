@@ -10,7 +10,7 @@
 #include <format>
 
 namespace {
-// Binary search for the keyframe interval containing `t`. Returns the index of the left keyframe.
+// Returns the left endpoint of the keyframe interval containing `t`.
 uint32_t FindKeyframe(const std::vector<float> &times, float t) {
     if (times.size() <= 1 || t <= times.front()) return 0;
     if (t >= times.back()) return times.size() - 2;
@@ -23,7 +23,6 @@ uint32_t FindKeyframe(const std::vector<float> &times, float t) {
 vec3 ReadVec3(const float *data) { return {data[0], data[1], data[2]}; }
 quat ReadQuat(const float *data) { return {data[3], data[0], data[1], data[2]}; }
 
-// Cubic Hermite interpolation
 vec3 CubicHermite(vec3 p0, vec3 m0, vec3 p1, vec3 m1, float t) {
     const float t2 = t * t, t3 = t2 * t;
     return (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * m1;
@@ -67,8 +66,7 @@ bool Armature::RemoveBone(BoneId bone_id) {
 
     const auto index = it->second;
 
-    // Reparent children of the removed bone to its parent, adjusting RestLocal
-    // to preserve world position: new_local = deleted.RestLocal * child.RestLocal.
+    // Preserve each child's world rest pose while reparenting it to the removed bone's parent.
     const auto parent_id = Bones[index].ParentBoneId;
     const auto &deleted_rest = Bones[index].RestLocal;
     for (auto &bone : Bones) {
@@ -105,7 +103,6 @@ void Armature::RebuildCaches() {
         Bones[parent].FirstChild = i;
     }
 
-    // Precompute per-skin joint order -> bone array index (avoids hash lookups in ComputeDeformMatrices).
     JointOrderToBoneIndex.assign(Skins.size(), {});
     for (uint32_t s = 0; s < Skins.size(); ++s) {
         const auto &joints = Skins[s].OrderedJointNodeIndices;
@@ -186,12 +183,12 @@ void EvaluateMorphWeights(const MorphWeightClip &clip, float time_seconds, std::
             const float *v0 = channel.Values.data() + k * target_count;
             const float *v1 = channel.Values.data() + k1 * target_count;
             for (uint32_t t = 0; t < target_count; ++t) weights[t] = numeric::Mix(v0[t], v1[t], alpha);
-        } else { // CubicSpline
+        } else {
             const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
             const float dt = t1 - t0;
             const float alpha = (dt > 0) ? std::clamp((time_seconds - t0) / dt, 0.f, 1.f) : 0.f;
             const float t2 = alpha * alpha, t3 = t2 * alpha;
-            // CubicSpline: each keyframe stores [in-tangent, value, out-tangent], each of size target_count
+            // glTF cubic-spline keyframes store the in tangent, value, and out tangent.
             const uint32_t stride = target_count * 3;
             const float *kf0 = channel.Values.data() + k * stride;
             const float *kf1 = channel.Values.data() + k1 * stride;
@@ -209,7 +206,7 @@ void EvaluateMorphWeights(const MorphWeightClip &clip, float time_seconds, std::
 
 void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<Transform> bone_pose_local) {
     for (const auto &channel : clip.Channels) {
-        if (channel.Target == AnimationPath::Weights) continue; // Handled by EvaluateMorphWeights
+        if (channel.Target == AnimationPath::Weights) continue;
         if (channel.BoneIndex >= bone_pose_local.size() || channel.BoneIndex == InvalidBoneIndex) continue;
         if (channel.TimesSeconds.empty()) continue;
 
@@ -241,15 +238,14 @@ void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<
                 case AnimationPath::Scale: pose.S = numeric::Mix(ReadVec3(v0), ReadVec3(v1), alpha); break;
                 default: break;
             }
-        } else { // CubicSpline
+        } else {
             const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
             const float dt = t1 - t0;
             const float alpha = (dt > 0) ? std::clamp((time_seconds - t0) / dt, 0.f, 1.f) : 0.f;
-            // CubicSpline: each keyframe stores [in-tangent, value, out-tangent], each of size `comp`
+            // glTF cubic-spline keyframes store the in tangent, value, and out tangent.
             const uint32_t stride = comp * 3;
             const float *kf0 = channel.Values.data() + k * stride;
             const float *kf1 = channel.Values.data() + k1 * stride;
-            // in0 = kf0[0..comp-1], val0 = kf0[comp..2*comp-1], out0 = kf0[2*comp..3*comp-1]
             const float *val0 = kf0 + comp;
             const float *out0 = kf0 + 2 * comp;
             const float *in1 = kf1;
@@ -275,18 +271,18 @@ Transform ComposeWithDelta(const Transform &rest, const Transform &delta) {
 }
 
 Transform AbsoluteToDelta(const Transform &rest, const Transform &absolute) {
-    const auto inv_r = numeric::Conjugate(rest.R); // inverse for unit quaternion
+    const auto inv_r = numeric::Conjugate(rest.R);
     return {.P = inv_r * (absolute.P - rest.P), .R = numeric::Normalize(inv_r * absolute.R), .S = absolute.S / rest.S};
 }
 
 void EvaluateAnimationDeltas(const AnimationClip &clip, float time, std::span<const ArmatureBone> bones, std::span<Transform> deltas) {
-    // Evaluate the clip in place, then convert only the components it animated back to delta-from-rest.
+    // Preserve unanimated rest-relative components while converting keyed absolute values.
     EvaluateAnimation(clip, time, deltas);
     for (const auto &channel : clip.Channels) {
-        if (channel.Target == AnimationPath::Weights) continue; // morph weights, not a bone Transform
+        if (channel.Target == AnimationPath::Weights) continue;
         if (channel.BoneIndex >= deltas.size() || channel.BoneIndex == InvalidBoneIndex || channel.TimesSeconds.empty()) continue;
         const auto &rest = bones[channel.BoneIndex].RestLocal;
-        auto &d = deltas[channel.BoneIndex]; // the animated component currently holds the clip's absolute value
+        auto &d = deltas[channel.BoneIndex];
         switch (channel.Target) {
             case AnimationPath::Translation: d.P = numeric::Conjugate(rest.R) * (d.P - rest.P); break;
             case AnimationPath::Rotation: d.R = numeric::Normalize(numeric::Conjugate(rest.R) * d.R); break;
@@ -297,10 +293,8 @@ void EvaluateAnimationDeltas(const AnimationClip &clip, float time, std::span<co
 }
 
 namespace {
-// Zero-roll rotation: maps +Y to `nor` with a well-defined, smooth reference frame.
-// Uses Blender's formula (armature.cc vec_roll_to_mat3_normalized) which handles the
-// -Y singularity stably, unlike numeric::Rotation which is discontinuous there.
 quat ZeroRollQuat(vec3 nor) {
+    // Blender's armature.cc vec_roll_to_mat3_normalized formula is continuous at the -Y singularity.
     const float x = nor.x, y = nor.y, z = nor.z;
     constexpr float SafeThreshold = 6.1e-3f, CriticalThresholdSq = 2.5e-4f * 2.5e-4f;
     const float theta = 1.f + y;
@@ -325,7 +319,7 @@ mat3 BoneVecRollToMat3(vec3 direction, float roll) {
 }
 
 void BoneMat3ToVecRoll(const mat3 &m, vec3 &direction, float &roll) {
-    direction = m[1]; // Y column is the bone axis.
+    direction = m[1];
     const vec3 nor = numeric::Normalize(direction);
     const quat twist = numeric::ToQuat(m) * numeric::Conjugate(ZeroRollQuat(nor));
     roll = 2.f * std::atan2(numeric::Dot(vec3{twist.x, twist.y, twist.z}, nor), twist.w);

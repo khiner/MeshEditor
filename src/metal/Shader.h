@@ -10,22 +10,17 @@
 #include <vector>
 
 namespace mtl {
-// The most threadgroups a mesh grid may hold in total, declared to every mesh pipeline.
 inline constexpr uint32_t MaxMeshThreadgroupsPerGrid{1'048'575};
 
 struct FunctionConstant {
     uint32_t Index;
     MTL::DataType Type;
-    uint32_t Value; // Holds a bool, uint, or float bit pattern, read according to Type.
+    uint32_t Value; // Stores a bool, uint, or float bit pattern interpreted according to Type.
 };
 
-// Recompiles a cached library when its source or an include changes.
-// Pipelines build through an MTL4 compiler whose task options look up `pipeline_archive`, so a warm
-// archive returns the identical binary every run instead of rolling the Metal compiler's
-// scheduling dice. The attached serializer captures every pipeline the compiler touches (archive
-// hits included), and the destructor flushes that full set back to the archive file.
-// On devices without Metal 4, PipelineCompiler() is null and pipelines build through the classic
-// device APIs with no archive caching.
+// Caches shader libraries until their source or included files change.
+// Uses `pipeline_archive` for deterministic MTL4 pipeline binaries when the device supports Metal 4.
+// PipelineCompiler() returns null on older devices, which use the classic APIs without archive caching.
 struct LibraryCache {
     LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive = {});
     ~LibraryCache();
@@ -36,7 +31,7 @@ struct LibraryCache {
     MTL::Library *Get(const std::filesystem::path &relative_path, const std::vector<std::string> &defines = {});
     void Clear() { Entries.clear(); }
 
-    // The archived pipeline for `descriptor`, or null when the archive is absent or misses.
+    // Returns the archived pipeline for `descriptor`, or null after an archive miss.
     MTL::RenderPipelineState *ArchivedRenderPipeline(const MTL4::PipelineDescriptor *) const;
     MTL::ComputePipelineState *ArchivedComputePipeline(const MTL4::ComputePipelineDescriptor *) const;
 
@@ -159,4 +154,4 @@ private:
     NS::SharedPtr<MTL::ComputePipelineState> PipelineState;
 };
 
-} // namespace mtl
+}

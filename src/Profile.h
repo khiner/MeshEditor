@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <string_view>
 
-// CPU and GPU timings gathered over a run and reported as a summary.
+// Store CPU and GPU samples for the next report.
 namespace profile {
 inline bool Enabled{false};
 inline std::filesystem::path JsonPath{};
@@ -13,7 +13,7 @@ inline std::filesystem::path JsonPath{};
 void Init(const mtl::Context &);
 void Deinit();
 
-// Bracket a command buffer recording for per-pass timing.
+// Begin per-pass timing for a command buffer.
 void BeginRecording();
 mtl::PassTimer *RecordingTimer();
 void EndRecording();
@@ -22,15 +22,15 @@ void BeginCpu(std::string_view name);
 void EndCpu();
 void RecordCounter(std::string_view name, double value);
 
-// Call after the command buffer completes.
+// Resolve timing after the command buffer completes.
 void Resolve(MTL::CommandBuffer *);
-// Drop every collected sample. Call with no scope open and no recording active.
+// Clear samples while no scope or recording is active.
 void ClearStats();
-// Print the CPU scopes collected so far under `title`, for a phase the frame report clears.
+// Report the current CPU scopes under title.
 void ReportCpuPhase(std::string_view title);
 void Report();
 
-// Times work on the CPU while in scope, including any GPU waits.
+// Time CPU work and GPU waits for this scope.
 struct CpuScope {
     CpuScope(std::string_view name) { BeginCpu(name); }
     ~CpuScope() { EndCpu(); }

@@ -17,22 +17,19 @@ constexpr uint32_t MaxWeldUvSets{4};
 // The widest key: vertex id and corner class, four UV sets, tangents, and colors.
 constexpr uint32_t MaxWeldKeyWords{18};
 
-// Every corner attribute the render-equivalence weld reads. The meshlet build and the cluster LOD
-// DAG both weld on this key, which is what lets a coarse cluster's vertices carry the same
-// equivalence as the level-0 clusters it replaces.
+// Defines identical render-vertex equivalence for level-zero and coarse clusters.
 struct CornerWeldSource {
     uint32_t CornerClassOffset{};
-    std::span<const uint32_t> CornerClasses; // empty gives every corner the class CornerClassOffset names
-    std::span<const uint32_t> TriangleFaceIds; // one-based face id per triangle
-    std::span<const uvec2> CustomCornerMasks; // one bit per corner in the x word
+    std::span<const uint32_t> CornerClasses;
+    std::span<const uint32_t> TriangleFaceIds;
+    std::span<const uvec2> CustomCornerMasks;
     std::array<std::span<const vec2>, MaxWeldUvSets> CornerUvs;
     std::span<const vec4> CornerTangents;
     std::span<const vec4> CornerColors;
     bool MorphShadingAuthored{};
 };
 
-// One primitive's weld keys. Corner and triangle indices are local to the primitive, which starts
-// at corner `first_corner` of the mesh.
+// Uses primitive-local corner and triangle indices relative to `first_corner`.
 struct CornerWeldKey {
     CornerWeldKey(const CornerWeldSource &source, uint32_t first_corner)
         : Source(source), FirstCorner(first_corner),
@@ -47,8 +44,7 @@ struct CornerWeldKey {
 
     uint32_t WordCount() const { return Words; }
 
-    // A triangle whose corners all take their face normal shades flat, which both folds the face id
-    // out of the key and makes the cluster's geometric cone exact.
+    // All-Face triangles omit the face ID because their primitive stores one common normal.
     bool FlatFaceTriangle(uint32_t triangle) const {
         if (Source.MorphShadingAuthored) return false;
         for (uint32_t c = 0; c < 3u; ++c) {
@@ -72,9 +68,7 @@ struct CornerWeldKey {
         words = {};
         words[0] = source_vertex;
         uint32_t corner_class = ClassWord(corner);
-        // All-Face triangles carry their common face normal per primitive. A Face corner in any
-        // other triangle still reads the source face normal in the vertex transform, so that
-        // otherwise-implicit input remains part of its render-equivalence key.
+        // Preserve the source face normal in the key for Face corners outside All-Face triangles.
         if (!flat_face && corner_class >> uint32_t(CornerClassEncoding::TagShift) == uint32_t(CornerClass::Face)) {
             corner_class |= (Source.TriangleFaceIds[global / 3u] - 1u) & uint32_t(CornerClassEncoding::IndexMask);
         }

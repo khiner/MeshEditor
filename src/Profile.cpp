@@ -15,16 +15,15 @@
 namespace profile {
 namespace {
 struct CpuSpan {
-    uint32_t Stat; // Index into CpuStats.
+    uint32_t Stat;
     std::chrono::steady_clock::time_point Start;
 };
-// One scope's samples, keyed by its position in the tree so the same scope reached from two call
-// chains stays two separate measurements.
+// Key samples by tree position to distinguish identical scopes reached through different call chains.
 struct Stat {
     std::string_view Name;
-    uint32_t Parent; // Index into the same table, or NoParent
+    uint32_t Parent;
     uint32_t Depth;
-    std::string Path; // Names from the root down, slash-separated, which is what a consumer keys on
+    std::string Path;
     std::vector<float> Ms;
 };
 constexpr uint32_t NoParent{~0u};
@@ -33,9 +32,8 @@ struct Summary {
 };
 
 bool Recording{false};
-std::unique_ptr<mtl::PassTimer> Timer; // Null when the device cannot sample counters.
-std::vector<CpuSpan> OpenCpu; // Innermost last.
-// First-seen order, which is the order the work runs in.
+std::unique_ptr<mtl::PassTimer> Timer;
+std::vector<CpuSpan> OpenCpu;
 std::vector<Stat> GpuStats, CpuStats, Counters;
 
 float Total(const std::vector<float> &ms) { return std::accumulate(ms.begin(), ms.end(), 0.f); }
@@ -48,7 +46,7 @@ Summary Summarize(std::vector<float> sorted) {
     return {total, total / float(sorted.size()), percentile(0.5f), percentile(0.95f), percentile(0.99f), sorted.front(), sorted.back()};
 }
 
-// Index of `name`'s samples under `parent`, created on first mention so report order follows opening order.
+// Return a scope index, preserving first-opened report order.
 uint32_t StatIndex(std::vector<Stat> &stats, std::string_view name, uint32_t parent) {
     const auto it = std::ranges::find_if(stats, [&](const Stat &stat) { return stat.Parent == parent && stat.Name == name; });
     if (it != stats.end()) return uint32_t(it - stats.begin());
@@ -66,12 +64,10 @@ void PrintSubtree(const std::vector<Stat> &stats, const std::vector<std::vector<
         PrintSubtree(stats, children, child, print_gaps, row, gap_row);
         claimed += Total(stats[child].Ms);
     }
-    // Setup, teardown, and any gap the children did not claim.
     if (print_gaps && !children[i].empty()) gap_row(stats[i].Depth + 1u, Total(stats[i].Ms) - claimed);
 }
 
-// `children_run_inside_parent` says whether a parent's time contains its children's, which is what
-// makes the difference between them a gap worth printing.
+// Print unattributed parent time when child scopes are nested inside the parent.
 void ReportTable(std::string_view title, const std::vector<Stat> &stats, bool children_run_inside_parent) {
     if (stats.empty()) return;
     std::vector<uint32_t> roots;
@@ -80,7 +76,6 @@ void ReportTable(std::string_view title, const std::vector<Stat> &stats, bool ch
         if (stats[i].Parent == NoParent) roots.emplace_back(i);
         else children[stats[i].Parent].emplace_back(i);
     }
-    // The roots together span everything timed, so their total is what a share is taken of.
     float wall = 0;
     for (const auto root : roots) wall += Total(stats[root].Ms);
     const auto share = [&](float ms) { return wall > 0 ? 100.f * ms / wall : 0.f; };
@@ -159,7 +154,7 @@ void Deinit() {
 
 void BeginRecording() {
     if (!Enabled) return;
-    // A recording that never reached a submit leaves its claims behind.
+    // Discard timer state from an interrupted recording.
     if (Timer) Timer->Reset();
     Recording = true;
 }
@@ -173,7 +168,7 @@ void EndRecording() {
 
 void BeginCpu(std::string_view name) {
     if (!Enabled) return;
-    // Claim the report slot now, since an inner scope closes first.
+    // Allocate the report slot before nested scopes close.
     OpenCpu.emplace_back(StatIndex(CpuStats, name, OpenCpu.empty() ? NoParent : OpenCpu.back().Stat), std::chrono::steady_clock::now());
 }
 
@@ -213,8 +208,7 @@ void ReportCpuPhase(std::string_view title) {
 }
 
 void Report() {
-    // A GPU pass can overlap the passes beside it and the submit it sits under, so its siblings and
-    // its parent do not divide one span up the way nested CPU scopes do.
+    // GPU pass intervals can overlap siblings and submission parents, so the report does not partition them like nested CPU scopes.
     ReportTable("GPU pass timings (hardware timestamps)", GpuStats, false);
     ReportTable("CPU timings", CpuStats, true);
     ReportCounterTable(Counters);

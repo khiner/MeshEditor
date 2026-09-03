@@ -1,18 +1,15 @@
 #ifndef WIRERESOLVE_MSL
 #define WIRERESOLVE_MSL
 
-// Turns the wire raster's per-class coverage counters into the overlay layer's wire color, and
-// reports the nearest wire's depth so later overlay draws depth-test against the wires.
+// Resolves per-class coverage to premultiplied overlay color and nearest wire depth.
 #include "Bindless.metal"
 #include "SceneUBO.metal"
 #include "Varyings.metal"
 #include "WireCoverage.metal"
 #include "WireResolvePushConstants.metal"
 
-// The raster scales each line's coverage by this before summing.
 constant float WireResolveScale = 1.0f / 255.0f;
 
-// The theme color each coverage class stands for.
 inline float4 WireClassColor(const thread Scene &scene, uint wire_class) {
     constant ViewportThemeColors &colors = scene.Theme.Colors;
     if (scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u) {
@@ -40,7 +37,7 @@ fragment OverlayTargetsDepth WireResolveFragment(
     device const uint *words = BindlessBuffer(uint, bindless.Buffer, pc.CoverageSlot);
     const uint base = (pixel.y * extent.x + pixel.x) * WireCoverage_WordsPerPixel;
 
-    // The most covered class wins the pixel's color, and every class adds to how covered it is.
+    // Select color from the highest-coverage class and alpha from total coverage.
     float total = 0.0f;
     float4 color = float4(0.0f);
     float best = 0.0f;
@@ -57,7 +54,6 @@ fragment OverlayTargetsDepth WireResolveFragment(
 
     const float alpha = saturate(total) * color.a;
     OverlayTargetsDepth out;
-    // The overlay layer is premultiplied, and the composite's line pass leaves these lines alone.
     out.Color = float4(color.rgb * alpha, alpha);
     out.LineData = float4(0.0f);
     out.Depth = as_type<float>(~words[base + WireCoverage_DepthWord]);

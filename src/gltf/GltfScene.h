@@ -1,20 +1,13 @@
-// Round-trip gaps (see tests/RoundtripTest.cpp for the per-path exception list):
-//
-// Lossy:
+// Round-trip limitations are tested in tests/RoundtripTest.cpp.
+// Lossy conversions:
 // - Additional skin influence sets (JOINTS_1+, WEIGHTS_1+) are compressed at import to the top 4 weights per vertex (sorted, renormalized).
-//  (The spec does permit this single set of 4 - see glTF 2.0 §3.7.3.1.)
-// - KHR_mesh_quantization: quantized attributes decode to FLOAT at import, save always emits FLOAT
-// - EXT_meshopt_compression: compressed bufferViews decode to plain data at import, save always emits uncompressed
-// - EXT_mesh_gpu_instancing: per-instance TRS round-trips, but custom instancing attributes (`_FOO`) beyond TRANSLATION/ROTATION/SCALE aren't retained
-// - EXT_lights_image_based: per-scene IBL assignments collapse to a single source IBL on the default scene
-//
-// Unsupported (neither imported nor re-emitted):
-// - KHR_draco_mesh_compression: files relying on this to carry geometry
-//   will load with empty/missing vertex data, or fail entirely if the extension is listed as required.
-// - KHR_animation_pointer: animation channels targeting extension pointer paths are silently dropped at import (along with their samplers).
-//   The static value the pointer targets still round-trips. E.g. KHR_node_visibility per-node `visible` flags persist - only their animation is lost.
-//
-// Source-form fields preserved across round-trip but not consumed by the runtime live on per-entity ECS components.
+// - KHR_mesh_quantization attributes decode to FLOAT and save as FLOAT.
+// - EXT_meshopt_compression buffer views decode and save uncompressed.
+// - EXT_mesh_gpu_instancing retains TRS attributes only.
+// - EXT_lights_image_based retains one source IBL on the default scene.
+// Unsupported conversions:
+// - KHR_draco_mesh_compression does not provide geometry to the importer.
+// - KHR_animation_pointer channels are omitted while their static values remain.
 
 #pragma once
 
@@ -37,18 +30,16 @@ struct TextureStore;
 namespace fastgltf {
 class Asset;
 } // namespace fastgltf
-// Per-entity source-index sidecars for stable round-trip ordering / referencing. Build uses these
-// rather than `SceneNode` (which has been mutated by skinning/armature re-parenting) and rather
-// than entt iteration order (which doesn't track source array order).
+// Source indices preserve glTF ordering and references independently of runtime hierarchy and ECS iteration.
 struct SourceNodeIndex {
     uint32_t Value{};
 };
 struct SourceParentNodeIndex {
     uint32_t Value{};
-}; // absent on scene roots
+};
 struct SourceSiblingIndex {
     uint32_t Value{};
-}; // position in parent's `ChildrenNodeIndices`
+};
 struct SourceMeshIndex {
     uint32_t Value{};
 };
@@ -68,15 +59,14 @@ struct SourcePhysicsJointDefIndex {
     uint32_t Value{};
 };
 
-// If present, object was created by a glTF import.
 struct GltfObject {};
 
-// A `Scene`'s index in the source `scenes` array, kept to preserve scene order on save.
+// Preserves source scene order during saves.
 struct SourceSceneIndex {
     uint32_t Value{};
 };
 
-// Source mesh slot — Triangles/Lines/Points entities sharing a `SourceMeshIndex` distinguished by this.
+// Distinguishes topology entities that share a SourceMeshIndex.
 enum class MeshKind : uint8_t {
     Triangles,
     Lines,
@@ -86,11 +76,7 @@ struct SourceMeshKind {
     MeshKind Value{MeshKind::Triangles};
 };
 
-// Source-form names that don't survive the runtime model:
-// Camera/Light: `::Camera`/`PunctualLight` are inlined on the object entity, whose `Name` is the
-//   *object* name, not the definition's name in `cameras[]`/`lights[]`.
-// Skin/Object: `CreateName` uniquifies via `_N` suffixes when source had collisions; we keep the raw value.
-// Mesh: mesh-data entities don't appear in the object name registry.
+// Retains source names that runtime naming transforms or omits.
 struct CameraName {
     std::string Value;
 };
@@ -104,29 +90,24 @@ struct MeshName {
     std::string Value;
 };
 
-// Source-side glTF node transform stored as a 4x4 matrix — engine uses TRS at runtime.
+// Retains a source matrix while runtime state uses TRS.
 struct SourceMatrixTransform {
     mat4 Value{1.f};
 };
 
-// Source name was empty; populate auto-synthesizes one for usability, build skips emit.
+// Marks a synthesized runtime name that must be omitted during save.
 struct SourceEmptyName {};
 
-// Edit-stable glTF provenance not re-derivable from runtime state.
-// Covers round-trip ordering, referencing, and source-form names and transforms.
-
-// Source per-primitive layout retained on the Triangles entity after `CreateMesh` flattens primitives.
-// Drives runtime material-variant resolution, carries morph tangent deltas the arena doesn't store, and preserves the structure for faithful glTF re-export.
+// Retains per-primitive source layout after CreateMesh flattens primitives.
 struct MeshSourceLayout {
     std::vector<uint32_t> AttributeFlags;
     std::vector<uint8_t> HasSourceIndices;
-    // No KHR_materials_variants variant is active, or the active variant doesn't override this primitive.
+    // Materials used without a matching active variant override.
     std::vector<uint32_t> DefaultMaterials;
-    // Outer indexed by primitive. inner size == variant count (empty when primitive has no mappings).
-    // nullopt means variant has no override (falls back to DefaultMaterials).
+    // Primitive-major optional material overrides indexed by variant.
     std::vector<std::vector<std::optional<uint32_t>>> VariantMappings;
     uint8_t Colors0ComponentCount{};
-    // target-major: target0[v0..vN], ...; `MorphTargetVertex` only carries position+normal deltas.
+    // Target-major tangent deltas omitted from MorphTargetVertex.
     std::vector<vec3> MorphTangentDeltas;
 };
 
@@ -147,11 +128,10 @@ struct LoadResult {
 };
 
 struct SaveOptions {
-    uint8_t LossyImageQuality{75}; // 1–100, ignored for PNG (lossless)
+    uint8_t LossyImageQuality{75}; // Range 1-100; ignored for PNG.
 };
 
-// GPU context and buffers are only consulted when an image is dirty or external-URI fallback fires.
-// For plain passthrough saves they may be null.
+// Ctx and BufCtx may be null when no image requires GPU readback.
 struct SaveContext {
     const entt::registry &R;
     entt::entity Viewport;
@@ -166,14 +146,13 @@ struct SaveContext {
 std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &, LoadContext);
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const SaveContext &);
 
-// Parse a glTF file as import does: the importer's extension set, external buffers loaded, and meshopt-compressed buffer views decoded to plain data.
+// Parses with import extensions, loads external buffers, and decodes meshopt buffer views.
 std::expected<fastgltf::Asset, std::string> ParseGltfAsset(const std::filesystem::path &);
 
-// Make `scene` the active scene shown in the viewport. No-op if it's already active or not a scene.
+// Activates `scene` when it names an inactive scene.
 void SwitchActiveScene(entt::registry &, entt::entity scene);
 
-// Mirrors fastgltf::Category bit values (asserted in .cpp). Used as the category half of
-// `SourceAssets::ExtrasByEntity` keys, which the loader writes via fastgltf's parse callback.
+// Mirrors fastgltf::Category bits used in SourceAssets::ExtrasByEntity keys.
 enum class ExtrasCategory : uint32_t {
     Images = 1u << 3,
     Samplers = 1u << 4,

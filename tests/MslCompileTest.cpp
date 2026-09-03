@@ -1,5 +1,5 @@
-// Compile all shaders, or only the file names passed on the command line. Generated layout
-// assertions catch CPU/MSL schema drift; hand-written sources catch the remaining compiler errors.
+// Compiles all shaders or the file names supplied on the command line.
+// Generated assertions verify CPU and MSL layouts.
 #include "TestPaths.h"
 #include "metal/MetalCpp.h"
 #include "metal/MslSource.h"
@@ -16,8 +16,7 @@ namespace {
 struct Failure {
     std::string Name, Message;
 };
-} // namespace
-
+}
 int main(int argc, char **argv) {
     auto *pool = NS::AutoreleasePool::alloc()->init();
     auto *device = MTL::CreateSystemDefaultDevice();

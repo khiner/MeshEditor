@@ -85,7 +85,6 @@ inline float3 VisibilityApplyNormalOffset(
     return cos(offset.x) * n + sin(offset.x) * (cos(offset.y) * ref + sin(offset.y) * cross(n, ref));
 }
 
-// `coarse_normal` replaces the source face normal on a coarse cluster.
 inline float3 VisibilityCornerNormal(
     const thread Scene &scene, DrawData draw, uint vertex_id, uint idx, uint face_id,
     bool coarse, float3 coarse_normal
@@ -425,7 +424,7 @@ inline DecodedVisibility DecodeVisibilityId(
         result.V.Position = float4(pixel, 0.0f, 1.0f);
         result.V.WorldNormal = PerspectiveValue(weights.Value, corners[0].WorldNormal, corners[1].WorldNormal, corners[2].WorldNormal);
         result.V.WorldPosition = PerspectiveValue(weights.Value, corners[0].WorldPosition, corners[1].WorldPosition, corners[2].WorldPosition);
-        // A selected object's fill recolors in the shading, so alpha zero marks an unselected instance.
+        // Alpha zero marks an unselected instance for fill recoloring during shading.
         result.V.Color = view.InteractionMode == InteractionMode_Object && view.ShowOverlays != 0u ?
             scene.ObjectSelectionColor(scene.InstanceState(draw), float4(0.0f)) : float4(0.0f);
         result.V.VertexColor = draw.CornerColorOffset != INVALID_OFFSET ?

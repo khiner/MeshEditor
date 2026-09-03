@@ -1,9 +1,8 @@
 #!/bin/bash
 
-# Render the whole corpus into a side directory with extra app flags, then judge it against the
-# committed corpus with script/CompareRenders. The committed render/ tree is never touched, so this
-# answers "what does this flag do to every rendered pixel" without disturbing the byte gate.
-# Exits 0 when every scene stays inside its budget (script/render_budgets.json), 1 otherwise.
+# Renders the corpus with additional application flags and compares it with the committed corpus.
+# Writes to a separate directory and leaves render/ unchanged.
+# Returns zero when every scene satisfies script/render_budgets.json.
 
 set -uo pipefail
 
@@ -77,7 +76,7 @@ OutDir="render_candidates/${Name}"
 Report="render_candidates/${Name}.json"
 
 if [ "${Render}" -eq 1 ]; then
-    # A stale leaf would otherwise show up as an extra file the committed corpus has no counterpart for.
+    # Remove stale candidate files before comparison.
     rm -rf "${OutDir}"
     "${ScriptDir}/Render" --out "${OutDir}" --app-args "${AppArgs}" || exit $?
 fi

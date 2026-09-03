@@ -103,8 +103,8 @@ std::string SystemDisplayName(const entt::registry &r, entt::entity e) {
     return !r.all_of<const CollisionSystem>(e) ? "<invalid>" : DisplayName(r.get<const CollisionSystem>(e).Name, "{:x}", uint32_t(e));
 }
 
-// Multi-select combo over all CollisionSystem entities. `on_toggle(system, now_member)` returns
-// the action for that change. Renders a disabled combo with "No systems defined" when none exist.
+// Renders a CollisionSystem multi-select combo and calls on_toggle for membership changes.
+// Renders a disabled combo when no systems exist.
 template<typename Fn>
 void RenderSystemMultiSelect(const entt::registry &r, const char *label, const std::vector<entt::entity> &selection, Fn on_toggle) {
     const auto view = r.view<const CollisionSystem>();
@@ -140,8 +140,7 @@ size_t CountFilterUses(const entt::registry &r, entt::entity filter) {
     return n;
 }
 
-// Editor for a collision filter's body: membership, Mode, CollideSystems. Sole editing surface —
-// per-entity panels only reference filters by combo; property edits happen here in the Physics tab.
+// Edits collision-filter membership, mode, and collision systems in the Physics tab.
 void RenderCollisionFilterBody(entt::registry &r, entt::entity filter_e) {
     const auto &filter = r.get<const CollisionFilter>(filter_e);
     RenderSystemMultiSelect(r, "Member of", filter.Systems, [&](entt::entity se, bool add) {
@@ -170,10 +169,9 @@ void RenderCollisionFilterBody(entt::registry &r, entt::entity filter_e) {
     }
 }
 
-// Split a cell along the '/' diagonal (TR→BL). Upper-left triangle shows row→col direction;
-// lower-right triangle shows col→row. Blocked directions are unpainted; allowed directions paint
-// green when both directions agree (effective collide) and red when the other direction vetoes
-// (effective blocked — the allow is overridden).
+// Split each cell along the top-right to bottom-left diagonal.
+// The upper-left triangle shows row-to-column permission, and the lower-right shows column-to-row permission.
+// Green indicates mutual permission, red indicates a one-way permission, and an unpainted triangle indicates denial.
 void DrawMatrixCell(ImDrawList *dl, ImVec2 p_min, ImVec2 p_max, bool a_to_b, bool b_to_a) {
     const auto collide = IM_COL32(60, 200, 60, 220);
     const auto overridden = IM_COL32(200, 60, 60, 220);
@@ -496,8 +494,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         Spacing();
         SeparatorText("Motion");
 
-        // Velocity is an authored initial condition (KHR_physics_rigid_bodies). Locked once
-        // sim has produced any baked frames; JumpToStart unlocks it.
+        // Velocity is an authored initial condition (KHR_physics_rigid_bodies). Locked once sim has produced any baked frames; JumpToStart unlocks it.
         const auto &range = r.get<const TimelineRange>(viewport);
         const auto &playback = r.get<const TimelinePlayback>(viewport);
         const bool velocity_locked = playback.Playing || physics::BakedThrough(r) >= range.StartFrame;

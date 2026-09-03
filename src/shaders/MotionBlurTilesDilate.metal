@@ -31,9 +31,7 @@ kernel void MotionBlurTilesDilateKernel(
     const uint payload_prev = MotionTilePack(max_motion.xy, uint2(src_tile));
     const uint payload_next = MotionTilePack(max_motion.zw, uint2(src_tile));
 
-    // Conservatively rasterize each motion vector's line and claim every tile it crosses, so a
-    // pixel far from this one still learns that fast motion reaches it. Both halves claim both
-    // planes: a tile touched by either direction is a candidate for both, which weights better.
+    // Conservatively mark every tile intersected by either motion half for both gather directions.
     for (int half_i = 0; half_i < 2; ++half_i) {
         const float2 motion = half_i == 0 ? max_motion.xy : max_motion.zw;
         const int2 far_tile = src_tile + int2(sign(motion) * ceil(abs(motion) / float(MotionBlurTileSize)));
@@ -42,7 +40,7 @@ kernel void MotionBlurTilesDilateKernel(
 
         const float2 dir = SafeNormalize(motion);
         const float2 origin = float2(src_tile);
-        const float2 normal = float2(-dir.y, dir.x); // The line's perpendicular, rotated 90 degrees.
+        const float2 normal = float2(-dir.y, dir.x);
 
         for (int x = min_tile.x; x <= max_tile.x; ++x) {
             for (int y = min_tile.y; y <= max_tile.y; ++y) {

@@ -16,12 +16,12 @@ struct AnimationClip;
 
 struct ArmatureBone {
     BoneId Id;
-    BoneId ParentBoneId; // Stable
-    std::optional<uint32_t> JointNodeIndex; // Optional imported glTF joint node binding
+    BoneId ParentBoneId;
+    std::optional<uint32_t> JointNodeIndex;
     std::string Name;
     Transform RestLocal;
     mat4 RestWorld{I4}, InvRestWorld{I4};
-    uint32_t ParentIndex{InvalidBoneIndex}, FirstChild{InvalidBoneIndex}, NextSibling{InvalidBoneIndex}; // Dense runtime caches
+    uint32_t ParentIndex{InvalidBoneIndex}, FirstChild{InvalidBoneIndex}, NextSibling{InvalidBoneIndex};
 };
 
 struct ArmatureImportedSkin {
@@ -33,34 +33,30 @@ struct ArmatureImportedSkin {
 };
 
 struct Armature {
-    uint32_t Version{1}; // Increments when structure changes
-    BoneId NextBoneId{1}; // Monotonic allocator state
-    bool Dirty{false}; // True when structural edits need finalization.
+    uint32_t Version{1};
+    BoneId NextBoneId{1};
+    bool Dirty{false};
 
     std::vector<ArmatureBone> Bones;
     std::unordered_map<BoneId, uint32_t> BoneIdToIndex;
-    std::vector<std::vector<uint32_t>> JointOrderToBoneIndex; // Precomputed per skin: joint order -> bone array index (InvalidBoneIndex if unmapped).
+    std::vector<std::vector<uint32_t>> JointOrderToBoneIndex;
     std::vector<ArmatureImportedSkin> Skins;
 
     BoneId AllocateBoneId();
     std::optional<uint32_t> FindBoneIndex(BoneId) const;
     BoneId AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index = {});
-    bool RemoveBone(BoneId bone_id); // Returns true if bone was found and removed.
-    void FinalizeStructure(); // Rebuild derived caches and increment version. Call after AddBone/RemoveBone.
-    void RebuildCaches(); // Rebuild derived caches (BoneIdToIndex, dense topology, RestWorld) from canonical bone data. No version bump.
-    void ResolveAnimationIndices(AnimationClip &) const; // Resolve TargetBoneId -> BoneIndex for all bone channels.
-    void RecomputeRestWorld(); // Recompute RestWorld/InvRestWorld from RestLocal (no reordering).
-    void RecomputeInverseBindMatrices(); // Update IBMs from current RestWorld after rest pose edits.
+    bool RemoveBone(BoneId bone_id);
+    void FinalizeStructure();
+    void RebuildCaches();
+    void ResolveAnimationIndices(AnimationClip &) const;
+    void RecomputeRestWorld();
+    void RecomputeInverseBindMatrices();
 };
-
-// Canonical bone structure, rest pose, and imported skin (not the pose itself, which lives in the bone entity Transforms).
 
 std::vector<uint32_t> CollectBonesForDeletion(const entt::registry &, entt::entity arm_obj_entity);
 
-// Compose a rest-pose transform with a delta
 Transform ComposeWithDelta(const Transform &rest, const Transform &delta);
 
-// Absolute local transform to delta relative to rest
 Transform AbsoluteToDelta(const Transform &rest, const Transform &absolute);
 
 // For each keyed channel, interpolate the absolute glTF keyframe value and convert to rest-relative delta.
@@ -70,12 +66,14 @@ void EvaluateAnimationDeltas(const AnimationClip &, float time, std::span<const 
 void ComputeDeformMatrices(const Armature &, uint32_t skin_slot, std::span<const mat4> bone_pose_world, std::span<mat4> out);
 
 // Blend `pre_local` toward the transform implied by `target_world` at `c.Influence`.
-// Math is armature-local; `armature_world_inv` converts target from world. Scale is preserved from `pre_local`.
+// Performs calculations in armature-local space after `armature_world_inv` converts the target from world space.
+// Preserves scale from `pre_local`.
 Transform ApplyBoneConstraint(const BoneConstraint &, const Transform &pre_local, const mat4 &parent_pose_world, const mat4 &armature_world_inv, const mat4 &target_world);
 
-// Non-leaf: minimum distance to any child (ignoring near-zero). Leaf: inherit parent's scale, or 1.0.
+// Returns the minimum nonzero distance to a child for non-leaf bones.
+// Returns the parent scale or 1.0 for leaf bones.
 float ComputeBoneDisplayScale(const Armature &, uint32_t bone_index);
 
-// Direction is the normalized bone Y axis (head->tail). Roll is twist around that axis.
+// Returns a basis whose Y axis follows `direction` with `roll` radians of axial rotation.
 mat3 BoneVecRollToMat3(vec3 direction, float roll);
 void BoneMat3ToVecRoll(const mat3 &m, vec3 &direction, float &roll);

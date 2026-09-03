@@ -4,9 +4,7 @@
 #include "Bindless.metal"
 #include "Varyings.metal"
 
-// Lay down the transmission prepass as the scene's plain-opaque and background pixels.
-// The prepass holds unexposed radiance premultiplied by its coverage alpha, so exposing is a
-// straight multiply and the pipeline blends premultiplied.
+// Applies exposure to premultiplied opaque-scene radiance before transmission compositing.
 fragment float4 TransmissionCompositeFragment(
     QuadVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],

@@ -1,15 +1,13 @@
 #ifndef BONESPHERE_MSL
 #define BONESPHERE_MSL
 
-// Billboard sphere for bone joints: the vertex stage orients a disc toward the camera, and the
-// fragment stage ray-traces the sphere it stands for.
+// Renders bone joints by ray tracing a sphere through a camera-facing disc.
 #include "Bindless.metal"
 #include "BoneUtils.metal"
 #include "MeshletResolve.metal"
 #include "Varyings.metal"
 #include "OverlayDispatch.metal"
 
-// One emitted vertex of a bone's BoneSphereMesh.
 inline BoneSphereVaryings BoneSphereMeshVertexAt(
     const thread Scene &scene, DrawData draw, uint object_id, uint vertex_id
 ) {
@@ -20,14 +18,12 @@ inline BoneSphereVaryings BoneSphereMeshVertexAt(
     BoneSphereVaryings out;
     out.ObjectId = object_id;
 
-    // Object mode: neutral shadow, no selection tint.
     const bool is_object_mode = scene.View.InteractionMode == InteractionMode_Object;
     const float3 bone_solid = float3(scene.Theme.Colors.BoneSolid);
     const float3 hint_color = is_object_mode ? bone_solid : bone_joint_wire_color(scene, load_bone_instance_state(scene, draw));
     out.BoneColor = float4(bone_solid, 1.0f);
     out.StateColor = float4(hint_color * hint_color * 0.1f, 1.0f);
 
-    // View-space data for the fragment's ray trace.
     const float3 cam_pos = float3(scene.View.CameraPosition);
     const float3x3 VR = scene.View.ViewRotation.Unpack();
     const float4x4 view_matrix = float4x4(
@@ -42,8 +38,6 @@ inline BoneSphereVaryings BoneSphereMeshVertexAt(
     return out;
 }
 
-// One routed meshlet per joint, emitting that joint's shared unit primitive.
-// The color and selection-id pipelines both draw this emission, differing only in fragment.
 using BoneSphereMeshOutput = metal::mesh<BoneSphereVaryings, void, OverlayDispatch_BoneSphereVertices, 32u, metal::topology::triangle>;
 
 [[mesh]] void BoneSphereMesh(
@@ -81,7 +75,7 @@ fragment OverlayTargetsDepth BoneSphereFragment(
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    // Ray-sphere intersection in view space.
+    // Solve the ray-sphere intersection in view space.
     const float3 ray_dir = normalize(in.ViewPos);
     const float3 oc = in.ViewPos - in.SphereCenter;
 
@@ -94,20 +88,18 @@ fragment OverlayTargetsDepth BoneSphereFragment(
     const float3 hit_view = in.ViewPos + ray_dir * t;
     const float3 normal = normalize(hit_view - in.SphereCenter);
 
-    // Blender-style angled lighting, matching the bone fill.
     const float3 light = normalize(float3(0.1f, 0.1f, 0.8f));
     const float fac = clamp(dot(normal, light) * 0.8f + 0.2f, 0.0f, 1.0f);
     const float3 color = mix(in.StateColor.rgb, in.BoneColor.rgb, fac * fac);
 
     OverlayTargetsDepth out;
     out.Color = float4(color, view.BoneXRay != 0u ? 0.4f : 1.0f);
-    out.LineData = float4(0); // Not a line.
+    out.LineData = float4(0);
 
-    // The hit transformed back to world space, then projected, gives the correct depth.
+    // Project the view-space intersection to preserve sphere depth.
     const float3 world_hit = transpose(view.ViewRotation.Unpack()) * hit_view + float3(view.CameraPosition);
     const float4 clip = scene.ViewProj() * float4(world_hit, 1.0f);
-    // X-ray writes near-far-plane depth so fills do not occlude wires, while still passing the
-    // less-than test against the cleared 1.0.
+    // X-ray depth passes the cleared 1.0 depth test without occluding wires.
     out.Depth = view.BoneXRay != 0u ? 0.999999f : clip.z / clip.w;
     return out;
 }

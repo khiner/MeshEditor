@@ -56,8 +56,7 @@ inline bool InstanceDeformed(InstanceRecord instance) {
         instance.PosedPositionOffset != INVALID_OFFSET || instance.HasPendingVertexTransform != 0u;
 }
 
-// An edited or deformed instance draws original geometry, so its elements stay exact and its posed
-// bounds cover every cluster it draws.
+// Edited and deformed instances use original geometry covered by their posed bounds.
 inline bool InstancePinsFinest(InstanceRecord instance) {
     return (instance.Flags & (MeshletInstanceFlag_LodPinFinest | MeshletInstanceFlag_Wire |
         MeshletInstanceFlag_FaceNormal | MeshletInstanceFlag_VertexNormal |
@@ -66,18 +65,17 @@ inline bool InstancePinsFinest(InstanceRecord instance) {
         InstanceDeformed(instance);
 }
 
-// The meshlets a primitive presents to the cull. Original geometry leads each primitive's run, so an
-// instance that draws nothing coarser never materializes a coarse work item.
+// Returns the primitive's full meshlet range or its original-geometry prefix.
 inline uint PrimitiveWorkCount(PrimitiveRecord primitive, bool finest_only) {
     return finest_only ? primitive.Level0Count : primitive.MeshletCount;
 }
 
-// A threshold at or below zero asks for original geometry alone.
+// Nonpositive thresholds select original geometry.
 inline bool InstanceFinestOnly(const thread Scene &scene, InstanceRecord instance) {
     return scene.View.LodErrorPixels <= 0.0f || InstancePinsFinest(instance);
 }
 
-// A group's simplification error where it stands, in pixels of the current view.
+// Returns a cluster group's projected simplification error in pixels.
 inline float LodGroupErrorPixels(const thread Scene &scene, ClusterGroup group, Transform world) {
     const float3 scale = abs(float3(world.S));
     const float max_scale = max(scale.x, max(scale.y, scale.z));
@@ -90,8 +88,7 @@ inline float LodGroupErrorPixels(const thread Scene &scene, ClusterGroup group, 
     return error / (distance * scene.View.ScreenPixelScale);
 }
 
-// Whether a cluster is the one level of its group chain this view's error budget asks for: its own
-// group is still too coarse to accept, and the group refining it is fine enough.
+// Selects the cluster when its group exceeds the error threshold and its refining group does not.
 inline bool LodClusterVisible(
     const thread Scene &scene, MeshletCullPushConstants pc, MeshletRecord meshlet, Transform world, bool finest_only
 ) {
@@ -138,8 +135,7 @@ inline OrientedBounds InstanceBounds(const thread Scene &scene, MeshletCullPushC
     return TransformBounds(bounds, scene.Models(pc.ModelSlot)[instance_slot]);
 }
 
-// Posed bounds cover the mesh's original clusters alone, concatenated in primitive order, since a
-// deformed instance draws nothing coarser.
+// Posed bounds cover original clusters in primitive order.
 inline OrientedBounds DeformedMeshletBounds(
     const thread Scene &scene, MeshletCullPushConstants pc, VisibleMeshlet candidate,
     InstanceRecord instance, MeshletRecord meshlet, Transform world
@@ -153,13 +149,12 @@ inline OrientedBounds DeformedMeshletBounds(
     return TransformBounds(bounds, world);
 }
 
-// A meshlet's world bounds: posed OBB for deformed instances (instance OBB when no posed bounds
-// exist), the scaled bounding sphere as axis vectors otherwise. Invalid means no bounds are
-// available and the meshlet must be treated as visible and unoccludable.
+// Returns a posed OBB for deformed instances and a scaled sphere for static instances.
+// Invalid bounds require visible, unoccludable treatment.
 struct MeshletBounds {
     float3 Center;
     float3 Ax, Ay, Az;
-    float Radius; // Set when Sphere, for the tighter sphere frustum test.
+    float Radius;
     bool Sphere;
     bool Valid;
 };
@@ -223,16 +218,12 @@ inline bool MeshletOccluded(
     return min_depth > occluder;
 }
 
-// 0 rejects the instance, 1 expands its meshlets in phase 1, and 2 defers the whole instance range
-// to the current-pyramid phase.
-// Deferring one instance id avoids materializing every meshlet behind a previous-frame occluder.
+// Returns 0 to reject, 1 to expand in phase 1, or 2 to defer the complete instance to the current-pyramid phase.
 inline uint ClassifyInstanceRange(
     const thread Scene &scene, MeshletCullPushConstants pc, uint instance_slot, InstanceRecord instance
 ) {
     if (instance.PrimitiveCount == 0u || (instance.Flags & pc.RequiredInstanceFlags) != pc.RequiredInstanceFlags) return 0u;
-    // Posed meshlet bounds are the authoritative deformed bounds.
-    // The instance AABB may belong to another blur step, so it must not reject the range before
-    // per-meshlet classification.
+    // Posed meshlet bounds supersede the instance AABB, which may represent another motion-blur step.
     if (instance.PosedMeshletBoundsOffset != INVALID_OFFSET) return 1u;
     const OrientedBounds bounds = InstanceBounds(scene, pc, instance_slot);
     if (!bounds.Valid) return 1u;
@@ -240,8 +231,7 @@ inline uint ClassifyInstanceRange(
     if ((instance.Flags & MeshletInstanceFlag_OverlayOnly) != 0u) return 1u;
     if (pc.PyramidSamplerSlot == INVALID_SLOT ||
         !MeshletOccluded(scene, pc.PyramidSamplerSlot, pc.OcclusionViewProj.Unpack(), bounds.Center, bounds.Ax, bounds.Ay, bounds.Az)) return 1u;
-    // Blend routes are intentionally single-phase. Expand this instance so their meshlets can
-    // remain in phase 1 while opaque meshlets are deferred independently.
+    // Keep blend routes in phase 1 while opaque meshlets defer independently.
     if (pc.TwoPhase != 0u && pc.BlendBlockSlot != INVALID_SLOT) return 1u;
     return pc.TwoPhase != 0u ? 2u : 0u;
 }
@@ -261,8 +251,7 @@ inline RoutedMeshlet ClassifyMeshlet(
 
     const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, scene.B.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
     const bool triangle_topology = PrimitiveTopology(meshlet) == MeshPrimitiveTopology_Triangle;
-    // A one-meshlet instance already passed the conservative instance query. Repeating the
-    // eight-corner pyramid query for its tighter sphere is optional extra rejection, not correctness.
+    // A one-meshlet instance already passed the conservative instance query.
     const bool can_occlude = bounds.Valid && !(instance.PrimitiveCount == 1u && primitive.MeshletCount == 1u);
     PBRMaterial material{};
     if (pc.RouteMode != 0u) material = scene.Materials(scene.View.MaterialSlot)[PrimitiveMaterialIndex(scene, primitive)];
@@ -313,8 +302,7 @@ inline RoutedMeshlet ClassifyMeshlet(
     if (result.Routes == 0u) return result;
     if (occluded) {
         if (pc.TwoPhase != 0u) {
-            // Discard-free opaque routes move to the current-pyramid phase. Coverage and blend
-            // remain in phase 1 and draw exactly once.
+            // Defer discard-free opaque routes; keep coverage and blend routes in phase 1.
             const uint fast = RouteBit(MeshletRoute_OpaqueCullBack) | RouteBit(MeshletRoute_OpaqueCullFront) |
                 RouteBit(MeshletRoute_OpaqueDoubleSided) | RouteBit(MeshletRoute_EditOverlay) |
                 RouteBit(MeshletRoute_Overlay);
@@ -347,10 +335,9 @@ inline VisibleMeshlet ResolveMeshlet(
     return {range.Instance, range.MeshletOffset + work_index - range.WorkOffset};
 }
 
-// A span node's own projected error bounds every covered record's, and its sphere holds every
-// covered cluster sphere, so pruning here rejects only records the classification would reject too.
+// Node error and bounds conservatively cover every record in the span, so pruning preserves classification results.
 inline bool LodNodeVisible(const thread Scene &scene, LodNode node, Transform world) {
-    // An infinite error marks a run the cut never rejects, whose bounds carry no meaning.
+    // Infinite error disables span pruning because the associated bounds are undefined.
     if (isinf(node.Error)) return true;
     const ClusterGroup bound{node.Center, node.Radius, node.Error};
     if (LodGroupErrorPixels(scene, bound, world) <= scene.View.LodErrorPixels) return false;
@@ -359,8 +346,7 @@ inline bool LodNodeVisible(const thread Scene &scene, LodNode node, Transform wo
     return sphere_in_frustum(scene.ViewProj(), trs_transform_point(world, float3(node.Center)), radius);
 }
 
-// What one traversal entry contributes to the next level: the child nodes it expands to, the records
-// its range covers on the last level, and the whole-instance ranges the seed level defers to phase 2.
+// Stores one entry's child nodes, final-level record range, and phase-2 deferred instance range.
 struct LodWork {
     uint Instance;
     uint Node;
@@ -369,8 +355,7 @@ struct LodWork {
     uint Phase2RangeCount;
 };
 
-// The seed level reads no frontier. It takes one entry per instance id, expanding a drawn instance
-// into its primitives' span-tree roots and deferring an occluded one to phase 2 whole.
+// Seeds traversal from instance IDs and writes primitive roots or complete phase-2 deferred ranges.
 inline LodWork ResolveLodSeed(const thread Scene &scene, MeshletCullPushConstants pc, uint id) {
     if (id >= pc.InstanceCount) return {};
     const uint instance_slot = BindlessBuffer(uint, scene.B.Buffer, pc.InstanceMapSlot)[id];
@@ -388,8 +373,7 @@ inline LodWork ResolveLodSeed(const thread Scene &scene, MeshletCullPushConstant
     return {id, INVALID_OFFSET, count, 0u, 0u};
 }
 
-// An expansion level reads one frontier entry, tests its node, and either descends to the node's
-// children or, on the last level, claims the records its run covers.
+// Expands one frontier node into child nodes or its final-level record range.
 inline LodWork ResolveLodNode(const thread Scene &scene, MeshletCullPushConstants pc, uint index) {
     device const LodFrontierState *states = BindlessBuffer(LodFrontierState, scene.B.Buffer, pc.LodFrontierStateSlot);
     if (index >= states[pc.LodFrontierIndex].NodeCount) return {};
@@ -398,10 +382,9 @@ inline LodWork ResolveLodNode(const thread Scene &scene, MeshletCullPushConstant
     if (instance_slot == INVALID_OFFSET) return {};
     const LodNode node = BindlessBuffer(LodNode, scene.B.Buffer, pc.LodNodeSlot)[entry.Node];
     if (!LodNodeVisible(scene, node, scene.Models(pc.ModelSlot)[instance_slot])) return {};
-    // The last level turns whatever it holds into one range, so a node deeper than the recorded
-    // depth still draws its whole run.
+    // The final level emits the complete range of nodes deeper than the recorded depth.
     if (pc.LodFinalLevel != 0u) return {entry.Instance, entry.Node, 1u, node.MeshletCount, 0u};
-    // A leaf carries itself down to the last level, which keeps every level's frontier in record order.
+    // Repeat leaves through later levels to preserve frontier order.
     return {entry.Instance, entry.Node, max(node.ChildCount, 1u), 0u, 0u};
 }
 
@@ -409,7 +392,7 @@ inline LodWork ResolveLodWork(const thread Scene &scene, MeshletCullPushConstant
     return pc.LodSeedLevel != 0u ? ResolveLodSeed(scene, pc, index) : ResolveLodNode(scene, pc, index);
 }
 
-// Each simdgroup's three totals, left in its lane of the threadgroup's three prefix rows.
+// Writes each simdgroup's three totals into the corresponding prefix-row lane.
 inline void WriteLodSimdGroupSums(
     threadgroup uint *group_prefixes, LodWork work, uint simd_lane, uint simd_group
 ) {
@@ -566,7 +549,7 @@ kernel void LodFrontierEmit(
         return;
     }
     const LodNode node = BindlessBuffer(LodNode, bindless.Buffer, pc.LodNodeSlot)[work.Node];
-    // A leaf reproduces itself, so leaves of shallower trees reach the last level in step.
+    // Repeat shallow leaves until the final level.
     if (node.ChildCount == 0u) {
         next[output] = {work.Instance, work.Node};
         return;
@@ -605,7 +588,7 @@ kernel void MeshletCullBlockCount(
             coarse = routed.Routes != 0u && routed.Coarse ? 1u : 0u;
         }
     }
-    // One add per simdgroup, since the profile reports the total alone.
+    // Accumulate one value per simdgroup because profiling records only the total.
     if (pc.CoarseCountSlot != INVALID_SLOT) {
         const uint coarse_count = simd_sum(coarse);
         if (simd_lane == 0u && coarse_count != 0u) {
@@ -799,8 +782,7 @@ inline bool Phase2ExpandedMeshletVisible(
         const bool triangle_topology = PrimitiveTopology(meshlet) == MeshPrimitiveTopology_Triangle;
         if (pc.RouteMode == 3u && !triangle_topology) return false;
         const PBRMaterial material = scene.Materials(scene.View.MaterialSlot)[PrimitiveMaterialIndex(scene, primitive)];
-        // Rendered blend stays in phase 1. Solid visibility treats it as opaque, matching the
-        // primary Visibility route. The conservative phase-2 raster itself remains two-sided.
+        // Solid visibility classifies rendered blend as opaque to match the primary visibility route.
         const bool edit_overlay = (instance.Flags & MeshletInstanceFlag_EditOverlay) != 0u;
         if (!edit_overlay && pc.RouteMode == 1u && material.AlphaMode == MaterialAlphaMode_Blend) return false;
         if (!edit_overlay && material.DoubleSided == 0u &&
@@ -812,9 +794,7 @@ inline bool Phase2ExpandedMeshletVisible(
     return !MeshletOccluded(scene, pc.PyramidSamplerSlot, scene.ViewProj(), bounds.Center, bounds.Ax, bounds.Ay, bounds.Az);
 }
 
-// Both phase-2 cull kernels run twice over 32-lane groups: a count pass writes survivor counts,
-// MeshletPhase2Prefix turns them into offsets, and an emit pass writes each survivor at its
-// deterministic rank. Emission order is candidate order, independent of GPU scheduling.
+// The phase-2 count, prefix, and emit passes preserve candidate order independently of GPU scheduling.
 kernel void MeshletPhase2Cull(
     uint lane [[thread_index_in_threadgroup]], uint block_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -865,7 +845,7 @@ kernel void MeshletPhase2RangeCull(
     device MeshletWorkRange *ranges = BindlessBufferMutable(MeshletWorkRange, bindless.Buffer, pc.Phase2RangeCandidateSlot);
     const MeshletWorkRange range = ranges[range_id];
     const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[range.Instance];
-    // Every lane evaluates the whole-instance test identically, so no broadcast is needed.
+    // Every lane evaluates the same complete-instance predicate.
     bool range_visible = instance_slot != INVALID_OFFSET;
     InstanceRecord instance{};
     if (range_visible) {
@@ -877,12 +857,11 @@ kernel void MeshletPhase2RangeCull(
         );
     }
     if (!range_visible) {
-        // The prefix reads every range, so the count pass writes a zero for an occluded one.
+        // Write zero because the prefix reads every range.
         if (pc.Phase2Emit == 0u && lane == 0u) ranges[range_id].WorkOffset = 0u;
         return;
     }
-    // The count pass accumulates the range's survivors into its WorkOffset, which the prefix turns
-    // into the emit pass's base offset.
+    // Store survivor counts in WorkOffset for conversion to emit offsets by the prefix pass.
     uint total = 0u;
     uint output = range.WorkOffset;
     for (uint base = 0u; base < range.MeshletCount; base += Phase2GroupSize) {

@@ -19,9 +19,8 @@ struct MeshMaterialSlotSelection {
     uint32_t PrimitiveIndex{0};
 };
 
-// Present iff a loaded glTF declared variants.
-// Empty Active means no variant active - each primitive shows its source-default material
-// (per spec, also applied per-primitive when the active variant has no mapping).
+// Presence indicates declared glTF variants.
+// An empty Active value selects each primitive's default material.
 struct MaterialVariants {
     std::vector<std::string> Names;
     std::optional<uint32_t> Active;

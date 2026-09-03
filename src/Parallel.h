@@ -4,8 +4,8 @@
 #include <dispatch/dispatch.h>
 #include <utility>
 
-// Runs `body(i)` for every i in [0, count), spreading the work over the machine's cores.
-// The caller owns ordering: `body` must touch only what belongs to its own index.
+// Run `body(i)` concurrently for every i in [0, count).
+// Each invocation must access only state assigned to its index.
 template<typename BodyT> void ParallelFor(uint32_t count, BodyT &&body) {
     if (count == 0) return;
     if (count == 1) {

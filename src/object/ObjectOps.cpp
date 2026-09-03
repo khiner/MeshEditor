@@ -249,8 +249,7 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
             r.remove<BoneJointEntities>(bone_entity);
         }
 
-        // Destroy children before parents (reverse of topological order) so ClearParent
-        // can access the parent's SceneNode to unlink the child.
+        // Destroy children before parents (reverse of topological order) so ClearParent can access the parent's SceneNode to unlink the child.
         for (auto it = arm.BoneEntities.rbegin(); it != arm.BoneEntities.rend(); ++it) {
             ClearParent(r, *it);
             destroy_visible(*it);
@@ -277,8 +276,8 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
         }
     }
 
-    // If no instances remain, release all imported textures and reset to the default material. The texture
-    // manifest (Persistent restore input) tracks the released imported textures, so clear it in lockstep.
+    // Release imported textures and reset the material when the final instance is removed.
+    // Clear the persistent texture manifest at the same time.
     if (r.view<Instance>().empty()) {
         ResetImportedTexturesAndMaterials(r);
         r.remove<MaterializedTextures>(viewport);

@@ -65,9 +65,6 @@ struct SetTransformRotationFromUi {
     RotationUiVariant UiVariant;
     Scope Scope{Scope::Active};
 };
-// Gizmo drag intent: the gizmo's start pivot and delta (heap-held to keep the variant small, as in
-// DragGizmoMeshEdit). Apply recomputes each selected entity's transform from the current selection
-// and its StartTransform/StartBoneLength snapshot.
 struct DragGizmo {
     std::unique_ptr<PendingTransform> Value;
 };
@@ -76,8 +73,7 @@ struct DragGizmoMeshEdit {
 };
 struct EndGizmoDrag {};
 
-// Toolbar viewport-tool selection. Tools are mutually exclusive: picking a select tool clears the
-// transform type; picking a transform tool keeps the selection gesture but suppresses it visually.
+// Select tools clear the transform type, while transform tools retain the hidden selection gesture.
 struct SetActiveTool {
     enum class Tool : uint8_t {
         SelectBox,
@@ -90,8 +86,8 @@ struct SetActiveTool {
     Tool Value;
 };
 
-// Latch a transform-type for the next gizmo drag, reverting any in-progress drag to its start (the
-// mid-drag G/R/S switch). Aborts the staged gesture; live-only, not recorded.
+// Latches a transform type for the next gizmo drag and restores any active drag to its initial state.
+// This live-only action aborts the staged gesture and is excluded from recording.
 struct LatchScreenTransform {
     TransformGizmo::TransformType Value;
 };

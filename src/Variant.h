@@ -12,12 +12,11 @@ template<typename V> V CreateVariantByIndex(size_t i) {
     constexpr auto N = std::variant_size_v<V>;
     return [&]<size_t... Is>(std::index_sequence<Is...>) -> V {
         static constexpr V table[]{V{std::in_place_index<Is>}...};
-        return table[i]; // copy out
+        return table[i];
     }(std::make_index_sequence<N>{});
 }
 
-// Concatenate alternatives into a single std::variant. Each argument may be either a
-// `std::variant<...>` (its alternatives are spliced in) or a bare type (becomes one alternative).
+// Concatenate variant alternatives and bare types into one std::variant.
 namespace detail {
 template<typename T> struct as_variant {
     using type = std::variant<T>;

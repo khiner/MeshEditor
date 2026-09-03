@@ -18,38 +18,34 @@
 namespace {
 using namespace TransformGizmo;
 
-// Per-frame view parameters, derived fresh from the camera/viewport/mouse each Interact and Render.
 struct ViewFrame {
     rect ScreenRect;
     vec2 MousePx;
-    float WorldPerNdc; // World units per (signed) NDC at the gizmo origin (sampled along screen-x).
+    float WorldPerNdc;
     mat4 Vp;
     ray CamRay;
 };
 
 namespace state {
 struct Style {
-    float SizeUv{0.08}; // Size of the gizmo as a ratio of screen width
+    float SizeUv{0.08};
 
-    // `Size` vars are relative to gizmo size. To convert to screen-relative, multiply by SizeUv.
-
-    // `AxisHandle`s are the lines for translate/scale
+    // Sizes are fractions of the gizmo width unless named otherwise.
     float TranslationArrowSize{0.18}, TranslationArrowRadSize{0.3f * TranslationArrowSize};
-    float TranslationArrowPosSizeUniversal{1 + TranslationArrowSize}; // Translation arrows in Universal mode are the only thing "outside" the gizmo
-    float AxisHandleSize{1.f - TranslationArrowSize}; // Tip is exactly at the gizmo size
-    float UniversalAxisHandleSize{AxisHandleSize - TranslationArrowSize}; // For scale handles in Universal mode
-    float PlaneQuadSize{0.12}; // Translate/scale plane quads
-    float CenterCircleRadSize{0.06}; // Radius of circle at the center of the translate/scale gizmo
-    float CubeHalfExtentSize{0.75f * CenterCircleRadSize}; // Half extent of scale cube handles
-    float InnerCircleRadSize{0.18}; // Radius of the inner selection circle at the center for translate/scale selection
-    float OuterCircleRadSize{1.0}; // Outer circle is exactly the size of the gizmo
-    float RotationCircleSize{AxisHandleSize}; // Rotation axes and trackball circles
-    // Axes/planes fade from opaque to transparent between these ranges
+    float TranslationArrowPosSizeUniversal{1 + TranslationArrowSize};
+    float AxisHandleSize{1.f - TranslationArrowSize};
+    float UniversalAxisHandleSize{AxisHandleSize - TranslationArrowSize};
+    float PlaneQuadSize{0.12};
+    float CenterCircleRadSize{0.06};
+    float CubeHalfExtentSize{0.75f * CenterCircleRadSize};
+    float InnerCircleRadSize{0.18};
+    float OuterCircleRadSize{1.0};
+    float RotationCircleSize{AxisHandleSize};
     float AxisOpaqueRadSize{2.5f * InnerCircleRadSize}, AxisTransparentRadSize{InnerCircleRadSize};
-    float PlaneOpaqueAngleRad{0.4}, PlaneTransparentAngleRad{0.2}; // facing camera -> opaque; more edge-on -> transparent
+    float PlaneOpaqueAngleRad{0.4}, PlaneTransparentAngleRad{0.2};
 
-    float LineWidth{2}; // Used for axis handle/guide and inner/outer circle lines
-    float RotationLineWidth{2.5}; // Thickness of rotation gizmo lines
+    float LineWidth{2};
+    float RotationLineWidth{2.5};
 };
 
 struct Color {
@@ -108,7 +104,7 @@ constexpr InteractionOp AxisOp(uint32_t axis_i) {
     return AxisX;
 }
 
-constexpr InteractionOp TranslatePlanes[]{InteractionOp::YZ, InteractionOp::ZX, InteractionOp::XY}; // In axis order
+constexpr InteractionOp TranslatePlanes[]{InteractionOp::YZ, InteractionOp::ZX, InteractionOp::XY};
 
 constexpr std::optional<uint32_t> TranslatePlaneIndex(InteractionOp plane) {
     if (plane == YZ) return 0;
@@ -135,7 +131,6 @@ constexpr std::optional<std::pair<InteractionOp, InteractionOp>> PlaneAxes(Inter
 
 constexpr std::pair<uint32_t, uint32_t> PerpendicularAxes(uint32_t axis_i) { return {(axis_i + 1) % 3, (axis_i + 2) % 3}; }
 
-// Per-axis scale vector for `op`: the op's axis or plane axes get `v`, the rest stay 1 (uniform for Screen/XYZ).
 constexpr vec3 ScaleVecForOp(InteractionOp op, float v) {
     if (op == AxisX || op == AxisY || op == AxisZ) {
         vec3 s{1};
@@ -158,15 +153,12 @@ constexpr ImVec2 ImMax(ImVec2 lhs, ImVec2 rhs) { return {lhs.x > rhs.x ? lhs.x :
 constexpr ImVec2 ImClamp(ImVec2 v, ImVec2 mn, ImVec2 mx) { return ImMin(ImMax(v, mn), mx); }
 constexpr float ImLengthSqr(ImVec2 v) { return (v.x * v.x) + (v.y * v.y); }
 
-// Homogeneous clip space to signed NDC in [-1,+1]
 constexpr vec3 CsToNdc(vec4 cs) { return {fabsf(cs.w) > FLT_EPSILON ? vec3{cs} / cs.w : vec3{cs}}; }
-// UV to pixels in window rect
 constexpr ImVec2 UvToPx(const ViewFrame &f, vec2 uv) { return std::bit_cast<ImVec2>(f.ScreenRect.pos + uv * f.ScreenRect.size); }
 constexpr vec4 WsToCs(vec3 ws, const mat4 &vp) { return vp * vec4{ws, 1}; }
 constexpr vec3 WsToNdc(vec3 ws, const mat4 &vp) { return CsToNdc(WsToCs(ws, vp)); }
 constexpr vec2 WsToUv(vec3 ws, const mat4 &vp) { return NdcToUv(vec2{WsToNdc(ws, vp)}); }
 constexpr ImVec2 WsToPx(const ViewFrame &f, vec3 ws) { return UvToPx(f, WsToUv(ws, f.Vp)); }
-// `size` is ratio of gizmo width
 constexpr float SizeToPx(const ViewFrame &f, float size = 1.f) { return f.ScreenRect.size.x * Style.SizeUv * size; }
 
 // World units per (signed) NDC at world point `p`, sampling along camera-right (2xNDC spans screen width).
@@ -177,7 +169,7 @@ float WorldPerNdcAt(const mat4 &vp, vec3 cam_right_ws, vec3 p) {
 constexpr float IntersectPlane(const ray &r, vec4 plane) {
     const float num = numeric::Dot(vec3{plane}, r.o) - plane.w;
     const float den = numeric::Dot(vec3{plane}, r.d);
-    return fabsf(den) < FLT_EPSILON ? -1 : -num / den; // if normal is orthogonal to vector, can't intersect
+    return fabsf(den) < FLT_EPSILON ? -1 : -num / den;
 }
 
 constexpr float Snap(float v, float snap) {
@@ -298,7 +290,6 @@ std::optional<Interaction> FindHoveredInteraction(const ViewFrame &f, const Gizm
             const auto intersect_pos_world = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(o_ws, vec4{transform.AxisDirWs(i), 0})));
             if (numeric::Dot(intersect_pos_world - o_ws, -cam_ray.d) > FLT_EPSILON) continue;
 
-            // Project intersection direction into gizmo-local and back to screen
             const auto dir_local = numeric::Normalize(transform.WorldDirToLocal(intersect_pos_world - o_ws));
             const auto circle_ws = o_ws + transform.LocalDirToWorld(dir_local * f.WorldPerNdc * Style.RotationCircleSize);
             if (const auto circle_pos = WsToPx(f, circle_ws); ImLengthSqr(circle_pos - mouse_px) < SelectDist * SelectDist) {
@@ -333,15 +324,12 @@ std::string ConstraintText(InteractionOp op, TransformGizmo::Mode mode) {
     }
 }
 
-// "[-(text|)] = value" or just "value" if not active.
 std::string NumericDisplayStr(const NumericInput &num, float computed_value, std::string_view value_fmt) {
     auto val = std::vformat(value_fmt, std::make_format_args(computed_value));
     if (!num.Active()) return val;
     return num.Negate ? std::format("[-({}|)] = {}", num.Str, val) : std::format("[{}|] = {}", num.Str, val);
 }
 
-// Blender-style value label for active transforms.
-// For Rotate, v[0] holds rotation angle (rad), or v[0]/v[1] yaw/pitch (rad) for Trackball.
 std::string ValueLabel(Interaction i, vec3 v, TransformGizmo::Mode mode, const NumericInput &num) {
     using enum TransformType;
     const auto con = ConstraintText(i.Op, mode);
@@ -392,13 +380,11 @@ void Label(const ViewFrame &f, std::string_view label) {
     dl.AddText({x, y}, Color.Text, label.data());
 }
 
-// Fast approximation of an ellipse by stepping a 2D rotation matrix instead of using sin/cos.
-// For a half circle, pass `step_mult = 0.5`.
 void FastEllipse(std::span<ImVec2> out, ImVec2 o, ImVec2 u, ImVec2 v, bool clockwise = true, float step_mult = 1.f) {
     const uint32_t count = out.size();
     const float d = (clockwise ? -2.f : 2.f) * step_mult * std::numbers::pi_v<float> / float(count - 1);
     const float cos_d = cosf(d), sin_d = sinf(d);
-    vec2 cs{1, 0}; // (cos0, sin0)
+    vec2 cs{1, 0};
     for (uint32_t i = 0; i < count; ++i) {
         out[i] = o + u * cs.x + v * cs.y;
         cs = {cos_d * cs.x + sin_d * cs.y, -sin_d * cs.x + cos_d * cs.y};
@@ -409,14 +395,13 @@ constexpr ImU32 SelectionColor(ImU32 color, bool selected) {
     return selected ? color : colors::MultAlpha(color, 0.75f);
 }
 
-// Clip ray `p + t*d` to rect `r` using Liang–Barsky algorithm.
 // Returns line endpoints, or empty if no rect intersection.
 std::optional<std::pair<ImVec2, ImVec2>> ClipRayToRect(const rect &r, ImVec2 p, ImVec2 d) {
+    // Liang–Barsky clipping.
     static constexpr float eps = 1e-6f;
     if (ImLengthSqr(d) <= eps) return {};
 
     const auto r_min = std::bit_cast<ImVec2>(r.pos), r_max = std::bit_cast<ImVec2>(r.max());
-    // Check if parallel and outside (shouldn't happen in practice for axis guide lines)
     if (const auto pc = ImClamp(p, r_min, r_max);
         (fabsf(d.x) < eps && pc.x != p.x) || (fabsf(d.y) < eps && pc.y != p.y)) return {};
 
@@ -426,18 +411,17 @@ std::optional<std::pair<ImVec2, ImVec2>> ClipRayToRect(const rect &r, ImVec2 p, 
     const auto tmin = ImMin(t0, t1), tmax = ImMax(t0, t1);
     const float t_enter = std::max(tmin.x, tmin.y);
     const float t_exit = std::min(tmax.x, tmax.y);
-    if (t_enter > t_exit) return {}; // No intersection
+    if (t_enter > t_exit) return {};
 
     return {{p + d * t_enter, p + d * t_exit}};
 }
 
-// Dashed center->mouse guide line + double arrow cursor
 void RenderMouseGuid(const ViewFrame &f, TransformGizmo::TransformType type, ImVec2 o_px) {
     if (type == TransformGizmo::TransformType::Translate) return;
 
     const auto mouse_px = std::bit_cast<ImVec2>(f.MousePx);
 
-    // Same as ImDrawList::AddLine but w/o half-px offset
+    // Avoid ImDrawList::AddLine's half-pixel offset.
     static const auto AddLine = [](ImDrawList &dl, ImVec2 p1, ImVec2 p2, ImU32 col, float thickness) {
         dl.PathLineTo(p1);
         dl.PathLineTo(p2);
@@ -470,7 +454,6 @@ void RenderMouseGuid(const ViewFrame &f, TransformGizmo::TransformType type, ImV
 
         const auto head = base + dir * (ShaftLength * 0.5f - HeadLength);
         const ImVec2 points[]{
-            // tip -> +head -> +base -> -base -> -head
             base + dir * ShaftLength * 0.5f,
             head + lat * HeadWidth,
             base + lat * CursorThickness,
@@ -483,7 +466,6 @@ void RenderMouseGuid(const ViewFrame &f, TransformGizmo::TransformType type, ImV
         dl.AddPolyline(points, 5, OutlineColor, 1.f, ImDrawFlags_Closed);
     };
 
-    // Two arrows pointing in opposite directions, either along or perpendicular to `line_dir`
     static const auto DrawCursorDoubleArrow = [](ImDrawList &dl, ImVec2 center, ImVec2 line_dir, bool perpendicular = true) {
         static constexpr float CenterGap{10};
 
@@ -499,7 +481,7 @@ void RenderMouseGuid(const ViewFrame &f, TransformGizmo::TransformType type, ImV
         DrawCursorArrow(dl, center - gap, -dir, lat);
     };
 
-    ImGui::SetMouseCursor(ImGuiMouseCursor_None); // Custom cursor
+    ImGui::SetMouseCursor(ImGuiMouseCursor_None);
     DrawCursorDoubleArrow(dl, mouse_px, mouse_px - o_px, type == TransformType::Rotate);
 }
 
@@ -511,7 +493,6 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
     const auto &cam_ray = f.CamRay;
     const auto o_px = WsToPx(f, transform.P);
 
-    // Transform label at top-center of viewport during active interaction
     if (g.Start) {
         const auto v = g.Current->Type == Rotate ?
             (g.Current->Op == Trackball ? vec3{dt.RotationYawPitch, 0} : vec3{dt.RotationAngle}) :
@@ -524,8 +505,7 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
         RenderMouseGuid(f, g.Current->Type, o_px);
         return;
     }
-    // Full-screen axis guide lines during active axis/plane interactions,
-    // even when the gizmo itself is not visible (Type::None, e.g. keyboard-initiated transforms).
+    // Draw active axis guides even when keyboard interaction hides the gizmo.
     if (g.Start && g.Current->Op != InteractionOp::Screen && g.Current->Op != InteractionOp::Trackball) {
         auto &dl = *ImGui::GetWindowDrawList();
         const auto o_ws = g.Start->Transform.P;
@@ -554,14 +534,12 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
 
     auto &dl = *ImGui::GetWindowDrawList();
 
-    // Center filled circle
     if (g.Start && g.Current->Type != Rotate && g.Current->Op != Screen) {
         const auto axis_i = AxisIndex(g.Current->Op);
         const auto color = SelectionColor(Axes[axis_i], true);
         dl.AddCircleFilled(o_px, SizeToPx(f, Style.CenterCircleRadSize), color);
         dl.AddCircleFilled(WsToPx(f, g.Start->Transform.P), SizeToPx(f, Style.CenterCircleRadSize), Color.StartGhost);
     }
-    // Ghost inner circle
     if (g.Start && g.Current->Op == Screen && g.Current->Type != Rotate) {
         const auto center = g.Current->Type == Translate ? WsToPx(f, g.Start->Transform.P) : o_px;
         dl.AddCircle(center, SizeToPx(f, Style.InnerCircleRadSize), Color.StartGhost, 0, Style.LineWidth);
@@ -569,8 +547,8 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
 
     if (type != Type::Rotate) {
         enum class HandleType {
-            Arrow, // Arrow cone silhouette (triangle + half-ellipse)
-            Cube, // Cube silhouette
+            Arrow,
+            Cube,
         };
         const auto DrawAxisHandle = [&](HandleType handle_type, bool is_active, bool ghost, uint32_t axis_i, float size, std::optional<float> line_begin_size) {
             const auto &m = ghost ? g.Start->Transform : transform;
@@ -587,9 +565,6 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
             }
 
             if (handle_type == HandleType::Arrow) {
-                // Build a single cone silhouette polygon: triangle + outer half of ellipse
-
-                // Endpoints/basis
                 const auto u_ws = numeric::Normalize((cam_ray.o - end_ws) - numeric::Dot(cam_ray.o - end_ws, axis_dir_ws) * axis_dir_ws);
                 const auto v_ws = numeric::Cross(axis_dir_ws, u_ws);
                 const auto p_tip = WsToPx(f, end_ws + axis_dir_ws * w2s * Style.TranslationArrowSize);
@@ -597,39 +572,35 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
                 const auto p_b2 = WsToPx(f, end_ws - v_ws * w2s * Style.TranslationArrowRadSize);
                 const auto p_u = WsToPx(f, end_ws + u_ws * w2s * Style.TranslationArrowRadSize);
 
-                // Ellipse frame
                 const auto c = (p_b1 + p_b2) * 0.5f;
-                const auto b = p_b2 - c; // base semi-axis vector (c -> p_b2)
+                const auto b = p_b2 - c;
                 const float b_len2 = ImLengthSqr(b);
                 if (b_len2 <= 1e-12f) return;
 
-                // Unit outward normal to the base (perp(b)), flipped to point away from tip
                 const float inv_b_len = 1.f / std::sqrt(b_len2);
                 auto n_hat = ImVec2{-b.y, b.x} * inv_b_len;
                 if (const auto tip_dir = p_tip - c; tip_dir.x * n_hat.x + tip_dir.y * n_hat.y > 0) n_hat = -n_hat;
 
-                // Minor radius
                 const auto u = p_u - c;
                 const float r2 = ImLengthSqr(u);
                 if (r2 <= 1e-12f) return;
 
-                // Half-ellipse
-                static constexpr uint32_t n{16 + 1}; // ellipse + tip
+                static constexpr uint32_t n{16 + 1};
                 ImVec2 poly[n];
                 poly[0] = p_tip;
                 FastEllipse(std::span<ImVec2>{poly}.subspan(1, n - 1), c, -b, n_hat * std::sqrt(r2), true, 0.5f);
 
-                dl.AddConvexPolyFilled(poly, n, color); // Winding already CW
+                dl.AddConvexPolyFilled(poly, n, color);
             } else if (handle_type == HandleType::Cube) {
                 const auto [ui, vi] = PerpendicularAxes(axis_i);
                 const auto u_ws = numeric::Normalize(m.AxisDirWs(ui));
                 const auto v_ws = numeric::Normalize(m.AxisDirWs(vi));
                 const float half_ws = w2s * Style.CubeHalfExtentSize;
                 const auto A = axis_dir_ws * half_ws, U = u_ws * half_ws, V = v_ws * half_ws;
-                const auto C = end_ws + A; // inner (−A) face touches the endpoint
+                const auto C = end_ws + A;
 
                 static constexpr uint8_t NumCorners{8};
-                vec3 P[NumCorners]; // (bits: x=U, y=V, z=A)
+                vec3 P[NumCorners];
                 for (uint8_t i = 0; i < NumCorners; ++i) {
                     P[i] = C + ((i & 1) ? U : -U) + ((i & 2) ? V : -V) + ((i & 4) ? A : -A);
                 }
@@ -648,17 +619,16 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
                 for (uint8_t i = 0; i < NumCorners; ++i) {
                     const bool bU = i & 1, bV = i & 2, bA = i & 4;
                     int j = i ^ 1;
-                    if (i < j && ((bV ^ bA) ^ (sV ^ sA))) link(i, j); // along U
+                    if (i < j && ((bV ^ bA) ^ (sV ^ sA))) link(i, j);
                     j = i ^ 2;
-                    if (i < j && ((bU ^ bA) ^ (sU ^ sA))) link(i, j); // along V
+                    if (i < j && ((bU ^ bA) ^ (sU ^ sA))) link(i, j);
                     j = i ^ 4;
-                    if (i < j && ((bU ^ bV) ^ (sU ^ sV))) link(i, j); // along A
+                    if (i < j && ((bU ^ bV) ^ (sU ^ sV))) link(i, j);
                 }
 
                 const uint8_t start = std::ranges::find_if_not(deg, [](auto d) { return d == 0; }) - std::begin(deg);
                 if (start == NumCorners) return;
 
-                // Walk the polygon loop
                 uint8_t loop_idx[NumCorners], n = 0;
                 uint8_t cur = start;
                 std::optional<uint8_t> prev;
@@ -671,7 +641,7 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
                             break;
                         }
                     }
-                    if (!next) return; // shouldn't happen - safety
+                    if (!next) return;
                     prev = cur;
                     cur = *next;
                 } while (cur != start && n < NumCorners);
@@ -680,7 +650,7 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
                 static ImVec2 hull[NumCorners];
                 for (uint8_t i = 0; i < n; ++i) hull[i] = WsToPx(f, P[loop_idx[i]]);
 
-                // CW winding for outward AA in ImGui
+                // ImGui antialiasing requires clockwise winding.
                 float area2{0};
                 for (uint8_t i = 0, j = n - 1; i < n; j = i++) area2 += hull[j].x * hull[i].y - hull[i].x * hull[j].y;
                 if (area2 < 0) std::reverse(hull, hull + n);
@@ -691,7 +661,7 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
 
         for (uint32_t i = 0; i < 3; ++i) {
             if (const bool any_active = g.Current && g.Current->Type == Translate;
-                type != Type::Scale && (!g.Start || any_active)) { // Draw all translation handles when any are active
+                type != Type::Scale && (!g.Start || any_active)) {
                 const bool is_active = g.Current == Interaction{Translate, AxisOp(i)};
                 const float size = type == Type::Universal ? Style.TranslationArrowPosSizeUniversal : Style.AxisHandleSize;
                 const auto line_begin_size = type != Type::Universal || g.Start ?
@@ -747,11 +717,11 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
                 FastEllipse(CirclePositions, o_px, u_px, v_px, dt.RotationAngle >= 0);
             }
             const uint32_t angle_i = float(FullCircleSegmentCount - 1) * fabsf(dt.RotationAngle) / (2 * std::numbers::pi_v<float>);
-            const auto angle_circle_pos = CirclePositions[angle_i + 1]; // save
+            const auto angle_circle_pos = CirclePositions[angle_i + 1];
             CirclePositions[angle_i + 1] = o_px;
             dl.AddConvexPolyFilled(CirclePositions, angle_i + 2, Color.RotationActiveFill);
 
-            CirclePositions[angle_i + 1] = angle_circle_pos; // restore
+            CirclePositions[angle_i + 1] = angle_circle_pos;
             const auto color = g.Current->Op == Screen ? IM_COL32_WHITE : Axes[AxisIndex(g.Current->Op)];
             dl.AddPolyline(CirclePositions, FullCircleSegmentCount, color, Style.RotationLineWidth);
             dl.AddLine(o_px, CirclePositions[0], color, Style.RotationLineWidth / 2);
@@ -779,14 +749,12 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
         }
     }
 
-    // Inner circle
     if ((!g.Start && type != Type::Rotate) ||
         (g.Start && g.Current->Type != Rotate && g.Current->Op == Screen)) {
         const auto color = SelectionColor(IM_COL32_WHITE, g.Current && g.Current->Op == Screen);
         const auto scale = g.Start && g.Current->Type == Scale ? dt.S[0] : 1.f;
         dl.AddCircle(o_px, SizeToPx(f, scale * Style.InnerCircleRadSize), color, 0, Style.LineWidth);
     }
-    // Outer circle
     if (type != Type::Translate && (!g.Start || g.Current == Interaction{Rotate, Screen})) {
         dl.AddCircle(
             o_px,
@@ -813,7 +781,6 @@ LocalTransformDelta GetLocalTransformDelta(const ViewFrame &f, const GizmoIntera
 
     if (op == Trackball) return {.RotationYawPitch = (f.MousePx - g.Start->MousePx) / SizeToPx(f, Style.RotationCircleSize)};
 
-    // Axis/Screen rotation on plane
     const auto a0 = numeric::Normalize(mouse_plane_start - ts.P);
     const auto t_ws = numeric::Normalize(mouse_plane - ts.P);
     return {.RotationAngle = acosf(numeric::Clamp(numeric::Dot(t_ws, a0), -1.f, 1.f)) * -numeric::Sign(numeric::Dot(t_ws, numeric::Cross(a0, vec3{plane})))};
@@ -836,14 +803,13 @@ Transform GetDeltaTransform(const GizmoTransform &ts, const LocalTransformDelta 
     if (type == TransformType::Scale) {
         auto s = numeric::Max(snap ? Snap(dt.S, snap_value) : dt.S, 0.001f);
         if (mode == Mode::World) {
-            // World mode: per-local-axis scale induced by a world diag scale
+            // Convert the world-axis scale to the object's local axes.
             const auto Rm = numeric::ToMat3(ts.R);
             const mat3 squared{Rm[0] * Rm[0], Rm[1] * Rm[1], Rm[2] * Rm[2]};
             s = numeric::Sqrt(numeric::Transpose(squared) * (s * s));
         }
         return {.S = s};
     }
-    // Rotation
     if (op == InteractionOp::Trackball) {
         if (Length2(dt.RotationYawPitch) < 1e-12f) return {};
         const float angle = numeric::Length(dt.RotationYawPitch);
@@ -860,7 +826,6 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
     g.MousePx = mouse_px;
     g.Delta = {};
 
-    // Behind-camera cull
     if (!g.Start && !camera.IsInFront(transform.P)) {
         return {};
     }
@@ -875,7 +840,6 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
     const ViewFrame f{viewport, mouse_px, world_per_ndc, vp, cam_ray};
 
     if (g.Start && start_screen_transform && *start_screen_transform != g.Current->Type) {
-        // Cancel the current transform and start the requested transform.
         const auto start_transform = g.Start->Transform;
         g.Current = {*start_screen_transform, InteractionOp::Action};
         g.Start = {.Transform = start_transform, .MousePx = mouse_px, .MouseRayWs = mouse_ray_ws, .WorldPerNdc = world_per_ndc};
@@ -884,7 +848,6 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
     }
 
     if (g.Start && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-        // Cancel - revert back to start transform
         Result ret{g.Start->Transform, {}};
         g.Start = {};
         g.Current = {};
@@ -892,14 +855,14 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
         return ret;
     }
     if (g.Start && (ImGui::IsMouseReleased(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) {
-        // Commit - end interaction
         g.Start = {};
         g.Current = {};
         g.NumInput.Reset();
         return {};
     }
 
-    // During an active transform, pressing axis key constrains to that axis. Pressing it again toggles back to unconstrained.
+    // During an active transform, pressing an axis key constrains the transform to that axis.
+    // Pressing the same key again removes the constraint.
     if (g.Start) {
         const auto check_axis_key = [&](ImGuiKey key, InteractionOp axis_op) -> bool {
             if (!ImGui::IsKeyPressed(key, false)) return false;
@@ -932,14 +895,13 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
         const auto &ts = g.Start->Transform;
 
         if (g.NumInput.Active()) {
-            // Numeric input overrides mouse-based delta.
             const float value = g.NumInput.Value();
             const auto [type, op] = *g.Current;
             if (type == TransformType::Translate) {
                 const auto p = [&]() -> vec3 {
                     if (op == AxisX || op == AxisY || op == AxisZ) return ts.AxisDirWs(AxisIndex(op)) * value;
                     if (auto pa = PlaneAxes(op)) return ts.AxisDirWs(AxisIndex(pa->first)) * value;
-                    return ts.AxisDirWs(0) * value; // Default to X axis
+                    return ts.AxisDirWs(0) * value;
                 }();
                 g.Delta.P = p;
                 return Result{ts, {.P = p}};

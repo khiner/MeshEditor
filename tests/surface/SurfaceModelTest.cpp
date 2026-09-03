@@ -17,7 +17,6 @@
 using namespace boost::ut;
 
 namespace {
-// The machined finish of the sample scenes, and ceramic on ceramic, so the bed cases below are the contact the corpus actually renders rather than an invented one.
 constexpr float MachinedCorrelation = 5e-5f, MachinedSlope = -2.4f, MachinedRoughness = 2e-6f;
 const double CeramicInvModulus = InvEffectiveModulus(materials::acoustic::Ceramic.Properties, materials::acoustic::Ceramic.Properties);
 
@@ -28,13 +27,9 @@ struct BedCase {
     double RealArea{0};
 };
 
-// Two identical machined faces sharing `bound_area` under `load`, assembled exactly as ResolveContact does.
-// A machined face is flat to a couple of microns over a couple of millimetres (ISO 4287 separates roughness from waviness for exactly this reason), and that waviness is what holds most of the face apart, so the asperities stand over what it leaves rather than over the whole shared polygon.
 BedCase MachinedBed(double load, double bound_area) {
     constexpr double Roughness = MachinedRoughness, Waviness = 2e-6, WavinessLength = 2e-3;
     const double inv_modulus = CeramicInvModulus;
-    // The preset finish's band, and the spacing that resolves its short-wavelength end, exactly as a surface and SynthesizedFinishSpacing give them to ResolveContact.
-    // The band is fixed, so the track it synthesizes to is built once and every case reads the same one.
     constexpr double cutoff = MachinedCorrelation / PresetBandRatio;
     const double spacing = double(FinishTrackSpacing(float(cutoff)));
     static const auto track = SynthesizeRoughness(MachinedCorrelation, MachinedSlope, float(cutoff), float(spacing), TrackSamples);
@@ -43,7 +38,6 @@ BedCase MachinedBed(double load, double bound_area) {
     // Two identical surfaces, so every quantity of the gap is the single surface's times sqrt(2).
     const double gap_gradient = std::numbers::sqrt2 * gradient;
     const double real_area = RealContactArea(load, bound_area, inv_modulus, gap_gradient);
-    // The same area law one scale up: waviness holds most of a nominally flat face apart, and the asperities are available over what it leaves.
     const double meso_gradient = std::numbers::sqrt2 * Waviness / WavinessLength;
     const double confined = RealContactArea(load, bound_area, inv_modulus, meso_gradient);
     const double patch_width = 2 * std::sqrt(confined / std::numbers::pi);
@@ -63,8 +57,6 @@ BedCase MachinedBed(double load, double bound_area) {
 double MachinedConformalLength(double gap_roughness) {
     return gap_roughness / PerssonSeparationCoefficients(HurstExponent(MachinedSlope), RoughnessBandRatio).Alpha;
 }
-// A cell's force with the sub-population fluctuation its mean leaves out, given the cell's separation in units of its own spread and a unit-variance draw.
-// The spots a cell stands for bear independently, so the sum's variance is their count times one spot's, and a contact never pulls.
 double CellForce(const AsperityBed &bed, double lambda, double draw) {
     const double one_spot = bed.SpotStiffness * bed.CellSpread * std::sqrt(bed.CellSpread);
     const double mean = bed.SpotWeight * one_spot * BedLoadFactor(float(lambda));
@@ -80,7 +72,6 @@ std::vector<float> RoughHeights(float correlation, float slope, float cutoff, fl
     return heights;
 }
 
-// The transverse gap a curved body holds open, as a parabola of `curvature` about the middle row.
 std::vector<float> TransverseGap(uint32_t rows, double spacing, double curvature) {
     std::vector<float> gap(rows);
     for (uint32_t r = 0; r < rows; ++r) {
@@ -99,8 +90,6 @@ std::vector<float> FoldGap(const std::vector<float> &heights, uint32_t columns, 
     return folded;
 }
 
-// Rms height step between neighbouring samples of a patch, along its columns or across its rows.
-// A spectrum with no preferred direction reads the same either way, which is what lets one patch serve a sweep in any direction over it.
 double PatchStepRms(const RoughnessField &patch, bool along) {
     double energy = 0;
     size_t count = 0;
@@ -116,8 +105,7 @@ double PatchStepRms(const RoughnessField &patch, bool along) {
     return std::sqrt(energy / double(count));
 }
 
-} // namespace
-
+}
 int main() {
     "the Hurst exponent inverts the spectral slope"_test = [] {
         expect(Near(HurstExponent(-2.4), 0.7, 1e-12)); // machined
@@ -205,7 +193,6 @@ int main() {
     /***** The asperity bed *****/
 
     "the bed height integral reaches its unclamped limit"_test = [] {
-        // Far above the height spread every spot bears, the clamp at zero never binds, and the integral is the mean of a power of a variable that is lambda plus a fluctuation small against it.
         for (const double power : {0.5, 1.0, 1.5}) {
             expect(Near(BedHeightIntegral(40, power) / std::pow(40.0, power), 1.0, 0.01));
         }
@@ -227,8 +214,6 @@ int main() {
     };
 
     "the bed reproduces Persson's stiffness"_test = [] {
-        // Persson's exponential pressure-separation law is the mean of a bed, so the bed's own stiffness at the separation it carries its load at has to come back as Alpha*N/h_rms.
-        // The two are independent theories of one interface, so they are asked to agree in magnitude rather than to a digit.
         for (const double load : {0.5, 4.905, 50.0}) {
             const auto machined = MachinedBed(load, 8.1e-3);
             const auto coeffs = PerssonSeparationCoefficients(HurstExponent(MachinedSlope), RoughnessBandRatio);
@@ -239,7 +224,6 @@ int main() {
     };
 
     "the bed's mean law is exponential in separation"_test = [] {
-        // What makes a bed reproduce Persson is that its load rises by e over one conformal length, and it has to do that over the load range rather than at one point.
         auto machined = MachinedBed(4.905, 8.1e-3);
         const double u0 = MachinedConformalLength(machined.GapRoughness);
         const double step = u0 / machined.Bed.HeightRms;
@@ -253,8 +237,6 @@ int main() {
     };
 
     "the bed touches over the area the area law gives"_test = [] {
-        // The bed implies its own real contact area, and the erf law is what the rest of the model uses.
-        // One sums Hertz spots over a height distribution and the other is Pastewka and Robbins' closed form in load and surface gradient, so the two are independent accounts of one area and agree on it.
         std::array<double, 3> ratios{};
         const std::array loads{0.5, 4.905, 50.0};
         for (size_t i = 0; i < loads.size(); ++i) {
@@ -263,17 +245,11 @@ int main() {
         }
         for (const double ratio : ratios) {
             expect(Near(ratio / ratios[0], 1.0, 1e-3)) << "the load dependence has to be the same";
-            // 1.031 at the current parameters.
-            // The band holds it well inside the factor near two that separates asperity models from Persson theory.
             expect(ratio > 0.7 && ratio < 1.5) << "bed area over the erf law's" << ratio;
         }
     };
 
     "the asperity radius is the one Pastewka and Robbins state"_test = [] {
-        // Pastewka and Robbins 2016 Eq. (6) states it in a surface's own quantities as rho = lambda_s / (2 pi h'_rms) sqrt(2(2-H)/(1-H)), so the radius is proportional to the band's short-wavelength end.
-        // A surface authors that end and the track carries nothing below it, so both sides move together and the law is tested rather than one point of it.
-        // Their h'_rms is the two-dimensional gradient <|grad h|^2>^(1/2), which for an isotropic surface is sqrt(2) times what one cut through it measures, and a track measures the cut.
-        // The comparison holds only where the surface is self-affine over a wide band and the second difference resolves the cutoff: sampled AT the cutoff the difference reads about 40 percent of the true curvature, and a band of one octave is not self-affine at all.
         for (const double slope : {-1.4, -1.8, -2.0, -2.4}) {
             const double hurst = HurstExponent(slope);
             for (const float cutoff : {8.f, 16.f, 32.f}) {
@@ -288,13 +264,10 @@ int main() {
     };
 
     "the gradient at a width falls as the self-affine spectrum says"_test = [] {
-        // The flank tilt is read at the width of the contact bearing on it, so the track measures its gradient at each boxcar width.
-        // The narrowest width is the adjacent difference itself, which is what makes the wider reads a coarsening of the same quantity rather than a second convention.
         for (const double slope : {-1.8, -2.0, -2.4}) {
             const auto track = SynthesizeRoughness(64.f, float(slope), 2.f, 1.f, TrackSamples);
             expect(Near(double(track.SlopeWindowRms[0]) / track.SlopeRms, 1.0, 1e-4))
                 << "the width-one gradient is the adjacent difference, at slope" << slope;
-            // A self-affine profile's gradient falls with the scale it is read at, monotonically and without a plateau, which is why the scale has to be chosen rather than converged to.
             for (uint32_t i = 1; i < 8; ++i) {
                 expect(track.SlopeWindowRms[i] < track.SlopeWindowRms[i - 1])
                     << "the gradient falls with width, at slope" << slope << "octave" << i;
@@ -306,7 +279,6 @@ int main() {
     };
 
     "one spot is one Hertz spring"_test = [] {
-        // A bed of a single spot pressed well past its height spread is Hertz outright, which is what makes the spot count a property of the surface rather than a setting that changes the law.
         const auto bed = ResolveAsperityBed(1.0, 1e-4, 1e-4, 1 / 7.2e10, 0.0, 1e-4, [](double) { return 1e4; }, [](double) { return 1e-7; });
         expect(bed.SpotCount == 1u);
         expect(Near(bed.TotalSpots, 1.0, 1e-12));
@@ -319,8 +291,6 @@ int main() {
     };
 
     "a vanishing cell spread is Hertz outright"_test = [] {
-        // The bed factors carry their closed-form asymptotes outside the tabulated range, so the statistical cell force collapses continuously onto the bare Hertz spot as its spread vanishes.
-        // The two force branches therefore agree across the CellSpread boundary, and a bed sitting on it is not a special case of the law but only of its evaluation.
         AsperityBed bed{.SpotWeight = 0.37, .SpotStiffness = 2.4e9, .CellSpread = 1e-9};
         for (const double engaged : {5e-8, 2e-7, 1e-6, 5e-6}) {
             const double statistical = CellForce(bed, engaged / bed.CellSpread, 0.0);
@@ -330,14 +300,11 @@ int main() {
             const double deviation = CellForce(bed, engaged / bed.CellSpread, 1.0) - statistical;
             expect(deviation / hertz < 5.0 * bed.CellSpread / engaged) << "deviation share at engagement" << engaged;
         }
-        // Separated, both branches carry nothing.
+        // Both branches produce zero force after separation.
         expect(CellForce(bed, -5e-7 / bed.CellSpread, 0.0) == 0.0);
     };
 
     "the potential tables integrate the mean law exactly"_test = [] {
-        // The energy-quadratised exchange stores each cell's elastic potential.
-        // The mean-law part's derivative in the separation must recover the load factor, which is what makes psi = sqrt(2 * Phi) and the force one coherent object rather than a law plus a patch.
-        // The sites' own potentials are closed-form Hertz and need no table.
         const float h = 0.05f;
         for (const float lam : {-4.f, -1.f, 0.f, 1.f, 3.f, 6.f}) {
             expect(Near((BedPotentialFactor(lam + h) - BedPotentialFactor(lam - h)) / (2 * h), BedLoadFactor(lam), 2e-2)) << "load at" << lam;
@@ -349,8 +316,6 @@ int main() {
     };
 
     "the asperity pressure carries Pastewka and Robbins' own constant"_test = [] {
-        // They write the pressure the asperities bear the load at as E*|grad h|_rms/kappa and put 1/kappa near 1/2 in the continuum hard-wall limit.
-        // Ours takes the gradient along one profile, which for an isotropic surface is the full gradient over sqrt(2), so the same constant has to come back out.
         constexpr double inv_modulus = 1 / 7.2e10, profile_slope = 0.04;
         const double full_gradient = std::numbers::sqrt2 * profile_slope;
         const double kappa = full_gradient / (inv_modulus * AsperityPressure(inv_modulus, profile_slope));
@@ -358,9 +323,6 @@ int main() {
     };
 
     "the bed's potential integrates its load law"_test = [] {
-        // The psi exchange meters energy through the potential while the load drives the modes, so the pair must satisfy F = dU/d(engagement) at every operating point or the meter drifts silently at each advance.
-        // Central differences across half a table cell cover the spread branches, the beyond-table asymptotes, and the Hertz-outright limit at zero spread.
-        // Any future force law added to the bed extends this gate before it renders.
         for (const float spread : {1e-7f, 1e-6f, 1e-5f}) {
             for (const float lambda : {-6.f, -3.f, -1.f, 0.f, 1.f, 3.f, 6.f, 12.f}) {
                 const float e = lambda * spread;
@@ -406,7 +368,6 @@ int main() {
 
 // Andersson and Kropp's element springs: each element's own bearing curve, counted from its own crest, with the potential the curve's exact integral.
 suite<"element springs"> _element_springs = [] {
-    // A rough patch with a self-affine flavour: enough structure that elements differ from one another and crests sit well above their own means, which is where a closure would fail.
     struct Field {
         std::vector<float> Heights;
         std::vector<float> Gap;
@@ -416,7 +377,7 @@ suite<"element springs"> _element_springs = [] {
         Field f{.Heights = std::vector<float>(size_t(columns) * rows), .Gap = std::vector<float>(rows), .Columns = columns, .Rows = rows};
         std::mt19937 rng{12345};
         std::normal_distribution<float> draw{0.f, 1.f};
-        // A short moving average across both axes gives neighbouring points correlation, so an element's population is clustered rather than independent draws.
+        // A short two-axis moving average gives neighboring points correlated rather than independent populations.
         std::vector<float> white(f.Heights.size());
         for (auto &v : white) v = draw(rng);
         for (uint32_t c = 0; c < columns; ++c) {
@@ -445,12 +406,8 @@ suite<"element springs"> _element_springs = [] {
         field.Heights, field.Columns, field.Rows, field.Gap, ElementColumns, ColumnSpacing, CeramicInvModulus, {}, EngagementMax, Knots
     );
 
-    // The direct per-asperity sum the springs stand in for: the field's own summits, each at the constant its own curvature gives it, flank samples belonging to their neighbouring summit.
     const auto folded = FoldGap(field.Heights, field.Columns, field.Rows, field.Gap);
     const auto summit = MarkFieldSummits(folded, field.Columns, field.Rows);
-    // The depth a summit's own contact takes once the roughness inside that contact has taken the rest.
-    // A contact 1.5 k sqrt(x) / E* wide holds (3/H) times its own separation open by the time it carries the load, so the two depths add (Pastewka et al. 2013 Eqs. B17 to B21).
-    // Bisected here, where the springs invert a tabulated curve, so the two answers are independent.
     const auto hertz_depth = [](double depth, double stiffness, const SubCutoffRoughness &sub) {
         const auto total = [&](double x) {
             return x + (sub.Hurst > 0 ? 3 / sub.Hurst : 0.0) * SubCutoffSeparation(sub, 1.5 * stiffness * std::sqrt(x) * CeramicInvModulus);
@@ -529,7 +486,6 @@ suite<"element springs"> _element_springs = [] {
     };
 
     "the roughness inside a contact takes its own share of every summit's depth"_test = [&] {
-        // A band half a micron tall at the widest contact it is read at, which is the scale a machined finish carries below the wavelength it is described over.
         constexpr SubCutoffRoughness SubCutoff{.Amplitude = 6e-4, .Hurst = 0.7, .MaxWidth = 4e-5};
         const auto rough = BuildElementSprings(
             field.Heights, field.Columns, field.Rows, field.Gap, ElementColumns, ColumnSpacing, CeramicInvModulus, SubCutoff, EngagementMax, Knots
@@ -562,7 +518,6 @@ suite<"element springs"> _element_springs = [] {
     };
 };
 
-// The patch the element springs are built from carries the same surface a track does.
 suite<"roughness patch"> _roughness_patch = [] {
     constexpr float Correlation = 1e-3f, Slope = -3.f;
     constexpr float Cutoff = Correlation / PresetBandRatio, Spacing = Cutoff / SurfaceSamplesPerCutoff;
@@ -583,7 +538,6 @@ suite<"roughness patch"> _roughness_patch = [] {
     };
 
     "the thread count leaves every height byte the same"_test = [&] {
-        // The column ranges jump the phase state past every draw before them, so a parallel fill makes the same draws as a serial pass and the transform is loop-split over unchanged rows.
         SetTransformThreads(1);
         const auto serial_patch = SynthesizeRoughnessPatch(Correlation, Slope, Cutoff, Spacing, 2048, 64, 7);
         std::vector<float> trace(serial_patch.Heights.begin(), serial_patch.Heights.begin() + 2048);
@@ -603,7 +557,6 @@ suite<"roughness patch"> _roughness_patch = [] {
     };
 
     "a cut through the patch carries the track's own slope"_test = [&] {
-        // The springs and the datum have to describe one surface, so the patch a spring is built from and the track a contact sweeps must agree on how steep that surface is.
         const auto patch = SynthesizeRoughnessPatch(Correlation, Slope, Cutoff, Spacing, 4096, 128, 0);
         const auto track = SynthesizeRoughness(Correlation, Slope, Cutoff, Spacing, 4096);
         const double patch_slope = PatchStepRms(patch, true);
@@ -611,13 +564,10 @@ suite<"roughness patch"> _roughness_patch = [] {
     };
 };
 
-// A measured trace reaches the same elements a parametric finish does, carrying its own heights along the sweep and the surface its own spectrum implies across it.
 suite<"profile patch"> _profile_patch = [] {
     constexpr float Correlation = 1e-3f, Slope = -3.f;
     constexpr float Cutoff = Correlation / PresetBandRatio, Spacing = Cutoff / SurfaceSamplesPerCutoff;
-    // A strip four correlation lengths across, which is what a ribbon samples.
     constexpr uint32_t Columns = 4096, Rows = 256;
-    // A synthesized track stands in for a measurement, which is how the corpus authors one, and it enters the way one does: as heights with no parameters beside them.
     const auto trace = MakeProfileTrack(SynthesizeRoughness(Correlation, Slope, Cutoff, Spacing, Columns).Heights, Spacing);
 
     "a track reads back the band it was drawn from"_test = [&] {
@@ -654,7 +604,6 @@ suite<"profile patch"> _profile_patch = [] {
     };
 };
 
-// The whole stack of springs a contact bears on, which is what the render path reads.
 suite<"crest envelope"> _crest_envelope = [] {
     // The envelope is the highest crest a body's own gap lets it reach over its window, compared here against a direct walk of that window at every element.
     // The gaps run from flat, where the envelope is a running maximum, to steep, where every element keeps its own crest.
@@ -697,7 +646,6 @@ suite<"crest block skip"> _crest_block_skip = [] {
     const auto heights = RoughHeights(Correlation, Slope, Cutoff, Spacing, Columns, Rows, 3, 1e-4f);
     const std::vector<float> gap(Rows, 0.f);
     auto springs = BuildElementSprings(heights, Columns, Rows, gap, ElementColumns, Spacing, 9.1e-12, {}, 6e-4, Knots);
-    // A flat body and a curved one, since the gap parabola is what bounds a skipped block's reach.
     for (const double curvature : {0.0, 400.0}) {
         for (const uint32_t reach : {8u, 40u}) {
             auto walked = springs;
@@ -721,8 +669,6 @@ suite<"crest block skip"> _crest_block_skip = [] {
         }
     }
 
-    // A count that is not a multiple of the block size leaves a last block running past the end, so a skip there spans elements from the array's head too and the block's crest must bound them.
-    // A towering crest in that head is what such a skip would wrongly drop.
     {
         constexpr uint32_t WrapColumns = 90 * ElementColumns;
         const auto wrap_heights = RoughHeights(Correlation, Slope, Cutoff, Spacing, WrapColumns, Rows, 5, 1e-4f);
@@ -778,7 +724,6 @@ suite<"sweep mode drives"> _sweep_mode_drives = [] {
 };
 
 suite<"element summit gather"> _element_summit_gather = [] {
-    // The gather walks a three-column window of the folded field, which must produce exactly the populations the materialized construction does: fold the whole field, mark its summits, and read them element by element.
     constexpr float Correlation = 1e-3f, Slope = -3.f;
     constexpr float Cutoff = Correlation / PresetBandRatio, Spacing = Cutoff / SurfaceSamplesPerCutoff;
     // A column count that is not a multiple of the element width leaves trailing columns that neighbour the gathered ones without being gathered themselves.
@@ -829,7 +774,6 @@ suite<"contact springs"> _contact_springs = [] {
 
     const auto heights = RoughHeights(Correlation, Slope, Cutoff, Spacing, Columns, Rows, 0, Roughness);
     const auto gap = TransverseGap(Rows, Spacing, Curvature);
-    // The transverse extent the patch spans bounds how deep the springs can be trusted: past it the body reaches off the patch, so the table stops where its own geometry does.
     const double half_width = 0.5 * double(Rows) * double(Spacing);
     const double engagement_max = 0.9 * 0.5 * Curvature * half_width * half_width;
     const auto springs = BuildElementSprings(
@@ -885,9 +829,7 @@ suite<"contact springs"> _contact_springs = [] {
     };
 
     "the stack's force is the exact derivative of the stack's potential"_test = [&] {
-        // The quadratised exchange differentiates the whole contact's stored energy, not one element's, so the property has to survive the sum over elements and their gap offsets.
         const float anchor = SolveSpringEngagement(springs, envelope, Load, Curvature, reach);
-        // The step keeps the finite difference above float cancellation: the noise scales as eps * U / (2 h F), and U / F grows with engagement, so the deep probes set the floor.
         constexpr float h = 1e-8f;
         for (const float scale : {0.5f, 1.f, 2.f, 6.f}) {
             double worst = 0;

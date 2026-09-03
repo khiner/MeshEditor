@@ -57,8 +57,7 @@ inline float albedoSheenScalingLUT(const thread SceneT<SetT> &scene, float NdotV
     return scene.SampleTex(scene.View.Ibl.SheenELutSamplerSlot, clamp(float2(NdotV, sheen_roughness), float2(0.0f), float2(1.0f))).r;
 }
 
-// KHR_materials_anisotropy: bends the reflection vector toward the anisotropic specular lobe
-// direction, then samples the prefiltered env map at that direction.
+// KHR_materials_anisotropy bends the reflection vector toward the anisotropic lobe before environment sampling.
 template<typename SetT>
 inline float3 getIBLRadianceAnisotropy(const thread SceneT<SetT> &scene, float3 n, float3 v, float roughness, float anisotropy, float3 anisotropy_dir) {
     const float3 anisotropic_tangent = cross(anisotropy_dir, v);
@@ -72,14 +71,12 @@ inline float3 getIBLRadianceAnisotropy(const thread SceneT<SetT> &scene, float3 
     return getSpecularSample(scene, reflection, lod).rgb;
 }
 
-// KHR_materials_ior / KHR_materials_transmission helpers.
 inline float applyIorToRoughness(float roughness, float ior) {
     // IOR=1 gives no microfacet roughening, IOR=1.5 gives full roughness, per the glTF Sample Renderer.
     return roughness * clamp(ior * 2.0f - 2.0f, 0.0f, 1.0f);
 }
 
-// Sample the transmission framebuffer (mip chain of the pre-rendered scene without transmission objects)
-// at the projected refracted exit point. LOD scales with applyIorToRoughness, matching the glTF Sample Renderer.
+// Samples the opaque-scene mip chain at the projected refracted exit point.
 template<typename SetT>
 inline float3 sampleTransmissionFramebuffer(const thread SceneT<SetT> &scene, float3 refracted_dir, float3 world_pos, float world_thickness, float perceptual_roughness, float ior) {
     const float4 clip = scene.ViewProj() * float4(world_pos + refracted_dir * world_thickness, 1.0f);
@@ -89,16 +86,15 @@ inline float3 sampleTransmissionFramebuffer(const thread SceneT<SetT> &scene, fl
     return scene.SampleTexLod(scene.View.TransmissionFramebufferSamplerSlot, uv, lod).rgb;
 }
 
-// Sample the prefiltered specular env at the refracted direction (IBL approximation).
+// Samples the prefiltered specular environment along the refracted direction.
 template<typename SetT>
 inline float3 sampleIblRefraction(const thread SceneT<SetT> &scene, float3 refracted_dir, float perceptual_roughness, float ior) {
     const float lod = applyIorToRoughness(perceptual_roughness, ior) * float(max(scene.View.Ibl.SpecularEnvMipCount, 1u) - 1u);
     return getSpecularSample(scene, refracted_dir, lod).rgb;
 }
 
-// Sample environment at the refracted ray direction. When `real`, samples the pre-rendered transmission
-// framebuffer at the projected exit point, otherwise samples the prefiltered IBL.
-// KHR_materials_dispersion: for dispersion>0, split IOR across RGB channels and sample each per-channel.
+// Samples either the opaque-scene framebuffer or prefiltered environment along the refracted direction.
+// Positive KHR_materials_dispersion splits the IOR into per-channel samples.
 template<typename SetT>
 inline float3 getVolumeRefraction(const thread SceneT<SetT> &scene, float3 n, float3 v, float3 world_pos, float world_thickness, float perceptual_roughness, float ior, float dispersion, bool real) {
     if (dispersion > 0.0f) {

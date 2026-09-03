@@ -1,12 +1,9 @@
 #ifndef VARYINGS_MSL
 #define VARYINGS_MSL
 
-// Vertex-to-fragment interfaces, shared because several vertex shaders feed the same fragment
-// shader. Metal matches these by `user` name, and a fragment may declare a subset of what the
-// vertex wrote, so each fragment names only the members it reads.
+// Metal matches shared vertex-fragment fields by `user` name and permits fragment-stage subsets.
 #include "ScreenSpace.metal"
 
-// The mesh transform's full output. WorkspaceLighting, VertexColor, and pbr each read a subset.
 struct MeshVaryings {
     float4 Position [[position]];
     float PointSize [[point_size]]; // Point draws render as round sprites.
@@ -23,10 +20,8 @@ struct MeshVaryings {
     float4 VertexColor [[user(VertexColor)]];
     float4 WorldTangent [[user(WorldTangent)]];
     float WorldScale [[user(WorldScale)]] [[flat]];
-    // Screen-space endpoints driving overlay line antialiasing.
     float2 EdgeStart [[user(EdgeStart)]] [[flat]];
     float2 EdgePos [[user(EdgePos)]];
-    // Screen motion across the shutter, written only by the velocity variants.
     float3 MotionPrev [[user(MotionPrev)]];
     float3 MotionNext [[user(MotionNext)]];
 };
@@ -44,9 +39,7 @@ struct MeshletVertexVaryings {
     float4 WorldTangent [[user(WorldTangent)]];
     float3 MotionPrev [[user(MotionPrev)]];
     float3 MotionNext [[user(MotionNext)]];
-    // Per-face values ride each unshared corner vertex. Sharing output vertices across primitives
-    // (indexed mesh output) makes attribute interpolation nondeterministic on this driver, so the
-    // attribute-carrying entries emit one vertex per corner with flat values in the vertex stream.
+    // Emit flat per-face attributes on unshared corner vertices because indexed output is nondeterministic on this driver.
     float3 FlatWorldNormal [[user(FlatWorldNormal)]] [[flat]];
     uint FaceOverlayFlags [[user(FaceOverlayFlags)]] [[flat]];
     uint MaterialIndex [[user(MaterialIndex)]] [[flat]];
@@ -98,7 +91,7 @@ inline MeshVaryings FromMeshletVertexVaryings(MeshletVertexVaryings v) {
     return out;
 }
 
-// What the VertexColor fragment reads, whichever vertex shader produced it.
+// VertexColor fragment input shared by its vertex producers.
 struct LineVaryings {
     float4 Position [[position]];
     float4 Color [[user(Color)]];
@@ -106,7 +99,7 @@ struct LineVaryings {
     float2 EdgePos [[user(EdgePos)]];
 };
 
-// A line emission shared by the visible overlay and object-selection fragment pipelines.
+// Line output shared by overlay and object-selection pipelines.
 struct ObjectLineVaryings {
     float4 Position [[position]];
     float4 Color [[user(Color)]];
@@ -115,25 +108,23 @@ struct ObjectLineVaryings {
     uint ObjectId [[user(ObjectId)]] [[flat]];
 };
 
-// Full-screen triangle strip with a [0,1] texture coordinate.
 struct QuadVaryings {
     float4 Position [[position]];
     float2 TexCoord [[user(TexCoord)]];
 };
 
-// Full-screen triangle strip carrying its NDC position, for the background passes.
 struct NdcVaryings {
     float4 Position [[position]];
     float2 Ndc [[user(Ndc)]];
 };
 
-// The grid plane, whose outer vertices sit at infinity so w carries the projection.
+// Grid-plane output with infinite outer vertices represented through homogeneous w.
 struct GridVaryings {
     float4 Position [[position]];
     float4 PlanePos [[user(PlanePos)]];
 };
 
-// Object id alone, for the depth and selection pre-passes. Point draws size their sprites here too.
+// Object ID output for depth and selection prepasses.
 struct ObjectIdVaryings {
     float4 Position [[position]];
     float PointSize [[point_size]];
@@ -145,14 +136,13 @@ struct ObjectIdFragmentVaryings {
     uint ObjectId [[user(ObjectId)]] [[flat]];
 };
 
-// A colored point sprite.
 struct PointVaryings {
     float4 Position [[position]];
     float PointSize [[point_size]];
     float4 Color [[user(Color)]];
 };
 
-// The edge-quad band: a screen-space distance from the edge center, plus its core and mark colors.
+// Edge-quad coverage and color output.
 struct EdgeQuadVaryings {
     float4 Position [[position]];
     float EdgeCoord [[user(EdgeCoord)]] [[center_no_perspective]];
@@ -160,14 +150,14 @@ struct EdgeQuadVaryings {
     float4 OuterColor [[user(OuterColor)]] [[flat]];
 };
 
-// The bone fill: a shaded color plus the winding sign, so a mirrored instance culls the right face.
+// Bone-fill output includes the winding sign for mirrored-instance culling.
 struct BoneSolidVaryings {
     float4 Position [[position]];
     float4 Color [[user(Color)]];
     int Inverted [[user(Inverted)]] [[flat]];
 };
 
-// The bone joint billboard, carrying the view-space sphere the fragment ray-traces against.
+// Bone-joint billboard output includes its view-space sphere.
 struct BoneSphereVaryings {
     float4 Position [[position]];
     float3 SphereCenter [[user(SphereCenter)]] [[flat]];
@@ -178,7 +168,7 @@ struct BoneSphereVaryings {
     float SphereRadius [[user(SphereRadius)]] [[flat]];
 };
 
-// Element id alone, for the element selection passes. Point topologies size their sprites here.
+// Element ID output for selection passes.
 struct ElementIdVaryings {
     float4 Position [[position]];
     float PointSize [[point_size]];
@@ -190,32 +180,28 @@ struct ElementIdFragmentVaryings {
     uint ElementId [[user(ElementId)]] [[flat]];
 };
 
-// The two color targets every overlay fragment writes: color, and the packed line AA data.
 struct OverlayTargets {
     float4 Color [[color(0)]];
     float4 LineData [[color(1)]];
 };
 
-// The overlay targets plus an explicit depth, for the passes that place their own fragment.
 struct OverlayTargetsDepth {
     float4 Color [[color(0)]];
     float4 LineData [[color(1)]];
     float Depth [[depth(any)]];
 };
 
-// Clip space to the pixel coordinates a fragment reports, which pack_line_data measures against.
+// Converts clip space to top-down pixel coordinates.
 inline float2 clip_to_frag_co(float4 clip, float2 viewport_size) {
     return ndc_to_uv(clip.xy / clip.w) * viewport_size;
 }
 
-// A line vertex whose flat edge start and interpolated edge position both begin at its own screen position.
 inline LineVaryings MakeLineVertex(float4 clip, float4 color, float2 viewport_size) {
     const float2 screen_pos = clip_to_frag_co(clip, viewport_size);
     return {clip, color, screen_pos, screen_pos};
 }
 
-// Pack line edge data for the AA composite pass: the perpendicular direction and the signed
-// distance to the line, encoded into [0,1].
+// Packs perpendicular direction and signed line distance into [0, 1] for composite antialiasing.
 inline float4 pack_line_data(float2 frag_co, float2 edge_start, float2 edge_pos) {
     float2 edge = edge_start - edge_pos;
     const float len = length(edge);
@@ -225,7 +211,7 @@ inline float4 pack_line_data(float2 frag_co, float2 edge_start, float2 edge_pos)
         const float dist = dot(perp, frag_co - edge_start);
         return float4(perp * 0.5f + 0.5f, dist * 0.25f + 0.6f, 1.0f);
     }
-    // Zero-length edge: a stable default, perpendicular pointing right at zero distance.
+    // Use a fixed perpendicular for zero-length edges.
     return float4(1.0f, 0.0f, 0.6f, 1.0f);
 }
 

@@ -1,13 +1,10 @@
 #ifndef MORPH_DEFORM_MSL
 #define MORPH_DEFORM_MSL
 
-// Apply morph target (blend shape) deformation in mesh-local space.
-// A no-op when the draw has no morph data.
-// Positions only: shading normals rederive from the morphed positions.
+// Applies morph-target position deformation in mesh-local space and returns the input when no morph data exists.
 #include "Bindless.metal"
 
-// `weights_slot` selects which pose to deform against, so the velocity pass can reach the
-// shutter-open and shutter-close poses using the current frame's per-draw offsets.
+// `weights_slot` selects current, shutter-open, or shutter-close pose weights.
 template<typename SetT>
 inline void ApplyMorphDeform(const thread SceneT<SetT> &scene, DrawData draw, thread float3 &position, uint vertex_index, uint weights_slot) {
     if (draw.MorphDeformOffset == INVALID_OFFSET) return;
@@ -21,8 +18,7 @@ inline void ApplyMorphDeform(const thread SceneT<SetT> &scene, DrawData draw, th
     }
 }
 
-// Like ApplyMorphDeform, fetching each target vertex once.
-// Authored-morph draws also accumulate the weighted authored normal deltas.
+// Applies position deformation and accumulates weighted authored normal deltas with one fetch per target vertex.
 template<typename SetT>
 inline void ApplyMorphDeform(const thread SceneT<SetT> &scene, DrawData draw, thread float3 &position, thread float3 &normal_delta, uint vertex_index) {
     if (draw.MorphDeformOffset == INVALID_OFFSET) return;

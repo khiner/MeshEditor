@@ -17,12 +17,9 @@ struct MeshData {
     }
 
     std::vector<vec3> Positions;
-    // Face vertex-index loops (triangles/polygons) concatenated. Every face being a triangle is the
-    // common case, and then FaceOffsets stays empty and face `f` spans [3f, 3f + 3) of FaceCorners.
-    // A face of any other size spells the offsets out, where face `f` spans
-    // [FaceOffsets[f], FaceOffsets[f + 1]) and FaceOffsets leads with a zero.
+    // FaceOffsets stays empty for all-triangle meshes and otherwise delimits concatenated FaceCorners loops.
     std::vector<uint32_t> FaceOffsets{}, FaceCorners{};
-    std::vector<std::array<uint32_t, 2>> Edges{}; // Line segment vertex index pairs
+    std::vector<std::array<uint32_t, 2>> Edges{};
 
     uint32_t FaceCount() const { return Faces; }
     uint32_t FaceStart(uint32_t face) const { return FaceOffsets.empty() ? 3u * face : FaceOffsets[face]; }
@@ -37,7 +34,7 @@ struct MeshData {
         if (!FaceOffsets.empty()) FaceOffsets.emplace_back(uint32_t(FaceCorners.size()));
         ++Faces;
     }
-    // Take room for `corner_count` corners of triangle faces and hand the span back for the caller to fill.
+    // Appends `corner_count` triangle corners and returns their writable span.
     std::span<uint32_t> AddTriangleCorners(uint32_t corner_count) {
         const auto first = uint32_t(FaceCorners.size());
         FaceCorners.resize(first + corner_count);
@@ -53,7 +50,6 @@ struct MeshData {
     }
 
 private:
-    // Face count in either form, which stays correct once the corners move into the arenas.
     uint32_t Faces{0};
 
     // Materialize the offsets a mesh of triangles computes arithmetically, so a face of another size can follow.

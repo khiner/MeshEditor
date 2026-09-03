@@ -1,10 +1,9 @@
 #!/bin/bash
 
-# Runs clang-tidy over src/ using the checks configured in .clang-tidy.
-# Pass a file or directory to lint just that target; defaults to all of src/.
+# Runs clang-tidy with the repository configuration over src/ or one supplied path.
 #   script/Tidy
 #   script/Tidy src/physics/PhysicsSystem.cpp
-# Exits non-zero if any findings remain.
+# Returns nonzero when findings remain.
 
 set -uo pipefail
 

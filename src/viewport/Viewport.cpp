@@ -82,7 +82,7 @@ SceneUpdate RequestedSceneUpdate(RenderRequest request, bool force_rebuild = fal
     return SceneUpdate::Reuse;
 }
 
-// Drain changes and render. Returns false while the viewport has no non-zero extent.
+// Processes changes and renders, or returns false for a zero-sized viewport.
 bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full) {
     ProcessComponentEvents(r, viewport);
     if (!ViewportImageReady(r)) return false;
@@ -91,7 +91,7 @@ bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full)
     return true;
 }
 
-// Point view-UBO instance `instance` at the captured shutter poses, so the velocity pass reads them.
+// Binds the captured shutter poses to view-UBO instance `instance`.
 void StampShutterPoses(GpuBuffers &buffers, uint32_t instance, const GpuBuffers::VelocityPose &open, const GpuBuffers::VelocityPose &close) {
     const auto stamp = [&](const auto &value, size_t field_offset) {
         buffers.UpdateSceneViewUboField(instance, field_offset, as_bytes(value));
@@ -115,8 +115,7 @@ bool MotionBlurActive(const entt::registry &r, entt::entity viewport) {
     return r.get<const TimelinePlayback>(viewport).Playing || frame_state.Scrubbing || frame_state.Capturing;
 }
 
-// Render the frame with motion blur across the shutter, centered on the current frame.
-// Overlays stay sharp over the blur, and the settled frame is restored afterward.
+// Renders shutter samples with sharp overlays and restores the current frame afterward.
 void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &pipelines = r.ctx().get<Pipelines>();
@@ -131,7 +130,7 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     const int current_frame = playback.CurrentFrame;
     const float settled_pf = r.get<const PlaybackFrame>(viewport).Value;
 
-    // Shutter centered on the current frame (Blender's default), clamped to the timeline range.
+    // Match Blender's centered shutter and clamp it to the timeline.
     const float half = mb.Shutter * 0.5f;
     const float lo = std::max(float(range.StartFrame), float(current_frame) - half);
     const float hi = std::min(float(range.EndFrame), float(current_frame) + half);
@@ -145,7 +144,7 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
         auto &slots = r.ctx().get<mtl::BindlessSet>();
         const auto &sel_slots = r.ctx().get<const SelectionSlots>();
         const auto &main = pipelines.Main;
-        // The tile grid the targets were built around decides how many entries the table holds.
+        // Size the indirection table from the target tile grid.
         buffers.ResizeMotionBlurTileIndirection(main.MotionBlur->TileImage.Extent);
         const auto accum = main.MotionBlurAccumSampler();
         const auto velocity = main.VelocitySampler();
@@ -157,8 +156,7 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
         slots.SetBuffer({SlotType::Buffer, sel_slots.MotionBlurTileIndirection}, *buffers.MotionBlurTileIndirection);
     }
 
-    // Evaluate the scene at `pf` (animation + physics, which also moves the view when looking
-    // through an animated camera). Each evaluation rewrites the mapped pose buffers in place.
+    // Evaluate animation, physics, and an animated look-through camera at `pf` into mapped pose buffers.
     const auto evaluate_at = [&](float pf) {
         {
             const profile::CpuScope scope{"SamplePoses"};
@@ -172,11 +170,9 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
 
     const auto render_at = [&](float pf, RenderPhase phase) {
         evaluate_at(pf);
-        // Point the velocity pass at the captured shutter poses. ProcessComponentEvents rewrites the
-        // whole UBO, so these have to land after it and before recording.
+        // Bind shutter poses after ProcessComponentEvents rewrites the UBO and before recording.
         StampShutterPoses(buffers, 0, buffers.ShutterOpen, buffers.ShutterClose);
-        // Poses and view state reach the GPU through buffers the recorded commands already read,
-        // so the recording goes stale only when the persistent scene or the phase changes.
+        // Buffer updates preserve the recording until the persistent scene or phase changes.
         std::ignore = TakeRenderRequest(r);
         auto *command_buffer = ctx.Queue->commandBuffer();
         RecordRenderCommandBuffer(r, viewport, command_buffer, SceneUpdate::Rebuild, phase);
@@ -185,28 +181,23 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
         WaitForRender(r);
     };
 
-    // Evaluate the shutter's ends first so the velocity pass can reach them, then render between
-    // them. Blender evaluates in this same open, close, render order.
+    // Match Blender's open, close, then render evaluation order.
     if (steps == 1) {
-        // One step spans the whole shutter, so its blur is the finished frame: the gather output
-        // goes straight to the composite, with no accumulation target to sum into and average.
-        // The scene renders at the current frame, which is where the overlays draw, so both fit in
-        // one recording. The shutter's ends still bound the blur, including where they clamp.
+        // A single step composites the gather output directly without accumulation.
+        // Record the current-frame scene and overlays together while using the clamped shutter endpoints for velocity.
         evaluate_at(lo);
         buffers.CaptureVelocityPose(buffers.ShutterOpen);
         evaluate_at(hi);
         buffers.CaptureVelocityPose(buffers.ShutterClose);
         render_at(float(current_frame), RenderPhase::BlurredFull);
     } else {
-        // Each step owns a slice of the shutter and blurs across it, rendering its centre once.
+        // Each step renders the center of one shutter interval.
         // The first step clears the target it sums into, so the accumulation starts from it alone.
-        // Every step's poses are captured up front, so all steps and the resolve record and submit
-        // as one command buffer, each step reading its own view UBO instance and captured pose buffers.
+        // Capture all poses first so every step and the resolve can share one command buffer.
         const auto step_count = std::min(uint32_t(steps), GpuBuffers::MaxBlurSteps);
         const float step_span = (hi - lo) / float(step_count);
         buffers.EnsureBlurPoses(2 * size_t(step_count) + 1);
-        // Shutter boundaries at [2i]: step i opens at [2i] and closes at [2i+2], sharing each
-        // interior boundary with its neighbor.
+        // Step i uses shutter boundaries [2i] and [2i+2], sharing interior boundaries.
         for (uint32_t i = 0; i <= step_count; ++i) {
             evaluate_at(lo + step_span * float(i));
             buffers.CaptureVelocityPose(buffers.BlurPoses[2 * i]);
@@ -222,7 +213,7 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
             const uint32_t instance = i + 1;
             buffers.SnapshotSceneViewUbo(instance);
             StampShutterPoses(buffers, instance, buffers.BlurPoses[2 * i], buffers.BlurPoses[2 * i + 2]);
-            // The step's own pose reads through the captured buffers, keeping draw data step-agnostic.
+            // Captured buffers provide each step's pose while draw data remains independent of the step.
             const auto stamp = [&](const auto &value, size_t field_offset) {
                 buffers.UpdateSceneViewUboField(instance, field_offset, as_bytes(value));
             };
@@ -230,19 +221,19 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
             stamp(centre_pose.ArmatureDeform.Slot, offsetof(SceneViewUBO, ArmatureDeformSlot));
             stamp(centre_pose.MorphWeights.Slot, offsetof(SceneViewUBO, MorphWeightsSlot));
         }
-        // The resolve and the overlays read the live, settled state.
+        // Resolve and overlays use the current-frame state.
         evaluate_at(float(current_frame));
-        std::ignore = TakeRenderRequest(r); // The recording below is always a full rebuild.
+        std::ignore = TakeRenderRequest(r);
         auto *command_buffer = ctx.Queue->commandBuffer();
         RecordBlurStepsCommandBuffer(r, viewport, command_buffer, step_frames);
-        // Not a single-phase recording: any later single-phase render must re-record.
+        // Force the next single-phase render to record its own command buffer.
         resources.RecordedPhase = RenderPhase::BlurAccumulate;
         SubmitRecordedFrame(r, command_buffer);
         WaitForRender(r);
     }
 
     r.get<PlaybackFrame>(viewport).Value = settled_pf;
-    frame_state.RenderPending = false; // All motion blur submits were waited on internally.
+    frame_state.RenderPending = false;
 }
 } // namespace
 
@@ -262,7 +253,7 @@ void SubmitViewport(entt::registry &r, entt::entity viewport, MTL::CommandBuffer
     if (MotionBlurActive(r, viewport)) {
         // A blurred frame costs several scene evaluations, so only run one when something changed.
         if (const auto request = TakeRenderRequest(r); request != RenderRequest::None) {
-            // Leave the request pending so the per-step render sees any re-record demand, like a resize recreating framebuffers.
+            // Preserve the request for the per-step render and any required framebuffer recreation.
             r.ctx().get<PendingRenderRequest>().Value = request;
             RenderMotionBlurredFrame(r, viewport);
             frame_state.MotionBlurred = true;
@@ -328,7 +319,7 @@ entt::entity InitEngine(entt::registry &r) {
 
     const auto viewport = WireRegistry(r);
     auto &buffers = r.ctx().get<GpuBuffers>();
-    // Engine-owned context singletons (process-lifetime). Document state lives in SetupScene.
+    // These engine resources outlive documents.
     r.ctx().emplace<ViewportExtent>();
     r.ctx().emplace<ViewportConsumerFence>();
     const auto &sel_slots = r.ctx().emplace<SelectionSlots>(slots);
@@ -354,8 +345,7 @@ entt::entity InitEngine(entt::registry &r) {
     // Blender's default world background color (linear RGB), a flat ambient-only IBL when no scene world is provided.
     environments.EmptySceneWorld = BuildFlatColorEnvironment(ctx, slots, vec3{0.05f}, "EmptySceneWorld");
     SubmitTextureUploadBatch(init_batch);
-    // Default scene world (no imported EXT-IBL). The reactive SceneWorld pass swaps in an imported world when
-    // a glTF with EXT_lights_image_based is loaded or restored, and ClearScene restores this default.
+    // SceneWorld uses this default until reactive EXT_lights_image_based loading replaces it.
     environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
     // Safe placeholder until the reactive StudioEnvironment pass prefilters the selected HDRI on the first tick.
     environments.StudioWorld = environments.SceneWorld;
@@ -366,7 +356,7 @@ entt::entity InitEngine(entt::registry &r) {
             environments.Hdris.emplace_back(HdriEntry{.Name = entry.path().stem().string(), .Path = entry.path(), .Prefiltered = {}});
         }
     }
-    std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name); // SetupScene selects the active one.
+    std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name);
 
     return viewport;
 }
@@ -391,14 +381,13 @@ void SetupScene(entt::registry &r, entt::entity viewport) {
 }
 
 void AddDefaultSceneContent(entt::registry &r) {
-    // Default scene: a cube, a light, and a camera (startup.blend layout).
     auto &meshes = r.ctx().get<MeshStore>();
     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
     const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(default_shape), .FlatShaded = true});
     const auto [mesh_entity, _] = ::AddMesh(r, created.StoreId, MeshInstanceCreateInfo{.Name = ToString(default_shape)});
     r.emplace<PrimitiveShape>(mesh_entity, default_shape);
 
-    // startup.blend data, in Blender's frame (Z-up, -Y forward)
+    // Match Blender's startup scene in its Z-up, negative-Y-forward frame.
     constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};
     constexpr float Lens{50}, SensorX{36}, RenderW{16}, RenderH{9};
     // Blender Z-up -> MeshEditor Y-up is a -90° rotation about +X: (x, y, z) -> (x, z, -y)
@@ -417,8 +406,7 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     physics::Clear(r);
     ClearMeshes(r, viewport);
 
-    // Release any imported (EXT-IBL) scene world and restore the empty default, so a subsequent restore starts
-    // bare and its reactive SceneWorld pass rebuilds the imported world from the restored SourceAssets.
+    // Restore the default world so reactive loading can rebuild imported lighting from restored source assets.
     auto &environments = r.ctx().get<EnvironmentStore>();
     if (environments.ImportedSceneWorld) {
         auto &slots = r.ctx().get<mtl::BindlessSet>();
@@ -429,12 +417,10 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
         environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
     }
 
-    // Reset imported textures + materials to the default. ClearMeshes does this only when the last instance is
-    // destroyed, which skinned scenes never reach (bone-visual instances outlive the mesh), so do it explicitly.
+    // Reset imported materials explicitly because bone visualization keeps skinned-scene mesh storage alive.
     ResetImportedTexturesAndMaterials(r);
 
-    // Lights live in a Derived GPU buffer keyed by LightIndex (also Derived). Clear it so restored lights are
-    // re-registered from their (Persistent) PunctualLight starting at slot 0, with no stale entries.
+    // Clear derived light slots so restored persistent lights register from slot zero.
     r.ctx().get<GpuBuffers>().Lights.SetCount(0);
 
     // Destroy instances before the buffer entities they reference.
@@ -450,13 +436,13 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
         for (const auto &handler : clear_handlers->Handlers) handler(r);
     }
 
-    // Reset the entity, mesh-store, and GPU-arena allocators to their fresh-start state, so replaying a scene from this
-    // baseline re-allocates identical ids and GPU handles. Bindless slots need no reset because their allocator is order-independent.
+    // Reset ordered allocators so scene replay reproduces entity IDs and GPU handles.
+    // Bindless allocation is order-independent and requires no reset.
     r.storage<entt::entity>().clear();
     r.storage<entt::entity>().start_from(entt::entity{0});
     r.ctx().get<MeshStore>().Clear();
     r.ctx().get<GpuBuffers>().ResetSceneArenas();
-    // The depth pyramid still holds the cleared scene, so the next scene's first cull must not test against it.
+    // Disable occlusion until the new scene has produced a depth pyramid.
     if (auto &resources = r.ctx().get<Pipelines>().Main.Resources) resources->DepthPyramidValid = false;
 
     [[maybe_unused]] const auto recreated = r.create();

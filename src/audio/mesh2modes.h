@@ -60,30 +60,19 @@ struct ModalResult {
     std::vector<uint32_t> SamplePointOfExcitation;
 };
 
-// A prior solve's eigenvector basis over the same tet inputs seeds the eigensolver, which
-// re-converges it in a few block iterations (WarmTolerance) instead of solving from scratch.
+// An eigenvector basis from identical tetrahedral inputs initializes block iteration with WarmTolerance.
 struct SolveReuse {
     const Eigen::MatrixXf *SeedBasis{};
     bool KeepBasis{}; // Fill ModalResult::Basis
 };
 
-// FEM modal analysis over quadratic (10-node) tetrahedral elements.
-// Tet geometry is in SI meters, so frequencies are in Hz and eigenvectors are mass-normalized.
-// Each excitation position (SI) is sampled at its nearest tet point, and positions reaching the same point become one.
-// The result therefore holds one position and one shape row per distinct point, and leaves ModalModes::Vertices empty.
-// `baked_scale` (the node's world scale) recovers node-local sample positions.
-// `monitor` (optional) receives solve progress and is polled for cooperative cancellation
-// between stages and eigensolver iterations. A cancelled solve returns an empty result.
 ModalResult mesh2modes(const TetMesh &, const AcousticMaterialProperties &, const std::vector<vec3> &excite_positions, vec3 baked_scale, SolverConfig config = {}, SolveReuse reuse = {}, JobMonitor *monitor = nullptr);
 
-// Mode frequencies, T60s, and shapes from raw eigenpairs: filter to the audible window, apply
-// damping and optional fundamental scaling. `shapes` holds each excitation position's mode-shape
-// vector per eigenpair, scaled by `shape_scale` into the result. ModalModes::Vertices is left empty.
 ModalModes PostprocessModes(std::span<const double> eigenvalues, const std::vector<std::vector<vec3>> &shapes, float shape_scale, const AcousticMaterialProperties &, const SolverConfig &, std::vector<vec3> positions);
 
-// Exact re-derivation of the modal model under a material edit at unchanged tet inputs: Young's
-// modulus and density scale the FEM matrices linearly, so eigenvalues scale by (E'/E)/(rho'/rho)
-// and mass-normalized shapes by 1/sqrt(rho'/rho). Vertices, positions, and baked scale carry over
+// Re-derives a modal model after Young's modulus or density changes with fixed tetrahedral inputs.
+// FEM eigenvalues scale by (E'/E)/(rho'/rho).
+// Mass-normalized shapes scale by 1/sqrt(rho'/rho), while vertices, positions, and baked scale remain unchanged.
 // from `current`. Empty when the edit is not exactly scalable (Poisson ratio differs).
 std::optional<ModalModes> RescaleModes(const ModalEigenSummary &, const ModalModes &current, const AcousticMaterialProperties &, SolverConfig config = {});
 } // namespace modal

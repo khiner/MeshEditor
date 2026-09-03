@@ -4,10 +4,9 @@
 
 #include <memory>
 
-// Shift-invert operator for Spectra, y = (K - sigma*M)^-1 x, backed by Accelerate's sparse Cholesky.
-// The shift must be negative: K is positive semidefinite and M is positive definite, so
-// K - sigma*M is then positive definite as Cholesky requires. Reads the lower triangles of K and M.
-// Accumulates factorization and solve wall-clock time into the provided references.
+// Applies y = (K - sigma*M)^-1 x for Spectra through Accelerate sparse Cholesky.
+// Requires negative sigma because K is positive semidefinite and M is positive definite.
+// Reads the lower triangles and accumulates factorization and solve times into the supplied references.
 class CholeskyShiftInvert {
 public:
     using Scalar = double;

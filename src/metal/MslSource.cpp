@@ -39,8 +39,8 @@ void Append(Source &out, const std::filesystem::path &root, const std::filesyste
     out.Files.emplace_back(relative);
 
     const auto text = ReadFile(path);
-    // `#line` keeps compiler diagnostics pointing at the file the text came from. Metal reports the
-    // string name as the file, so the name goes in as a comment the numbering follows.
+    // Use `#line` to map compiler diagnostics to included source files.
+    // Metal accepts line numbers but represents the file name through the preceding marker comment.
     out.Text += std::format("\n// ---- {} ----\n", relative.string());
     size_t line_number = 0;
     for (size_t pos = 0; pos <= text.size();) {
@@ -49,7 +49,7 @@ void Append(Source &out, const std::filesystem::path &root, const std::filesyste
         ++line_number;
         if (const auto target = IncludeTarget(line)) {
             Append(out, root, *target);
-            // Resume numbering after the include so later lines still line up with the file.
+            // Resume parent-file numbering after each include.
             out.Text += std::format("#line {}\n", line_number + 1);
         } else {
             out.Text.append(line);
@@ -59,7 +59,7 @@ void Append(Source &out, const std::filesystem::path &root, const std::filesyste
         pos = end + 1;
     }
 }
-} // namespace
+}
 
 Source Load(const std::filesystem::path &root, const std::filesystem::path &relative_path, const std::vector<std::string> &defines) {
     Source out;
@@ -67,4 +67,4 @@ Source Load(const std::filesystem::path &root, const std::filesystem::path &rela
     Append(out, root, relative_path);
     return out;
 }
-} // namespace msl
+}

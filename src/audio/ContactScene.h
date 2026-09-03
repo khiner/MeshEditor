@@ -20,10 +20,7 @@
 #include <optional>
 #include <vector>
 
-// What a contact looks up in the scene: which node carries the model, the surface and the geometry it reads, and where on the modal model a strike lands.
-// Shared by the collision path and, where the surface-contact model is compiled in, by the sustained contacts it renders.
 
-// The viewport's modal synthesis controls, or their defaults where no viewport carries any.
 inline const ModalSoundControls &ModalControls(const entt::registry &r) {
     static constexpr ModalSoundControls Defaults{};
     const auto view = r.view<const ModalSoundControls>();
@@ -61,8 +58,6 @@ inline std::optional<double> SurfaceCurvature(const entt::registry &r, entt::ent
     return scale > 0 ? local / scale : 0.0;
 }
 
-// The node a contact takes something from: the collider node it touched, or the nearest ancestor of it that has one.
-// Falls back to the body when no collider along the way carries one.
 inline entt::entity NearestNodeWith(const entt::registry &r, entt::entity collider, entt::entity body, auto &&has) {
     for (auto e = collider; e != null_entity && r.valid(e) && e != body; e = ParentOrNull(r, e)) {
         if (has(e)) return e;
@@ -80,12 +75,10 @@ inline ContactNodes ResolveContactNodes(const entt::registry &r, entt::entity co
         // A body has one model however many colliders it has.
         NearestNodeWith(r, collider, body, [&r](entt::entity e) { return r.all_of<ModalModes>(e); }),
         ContactSurfaceNode(r, collider, body),
-        // The mesh the contact reads its shape from, independent of which node carries the surface.
         NearestNodeWith(r, collider, body, [&r](entt::entity e) { return AssetOf<MeshBvh>(r, e) != nullptr; }),
     };
 }
 
-// A contact's elastic constants come from the material of the surface it touches, or from the one the node's modal model was derived from when that surface has none.
 inline const AcousticMaterialProperties &MaterialOf(const entt::registry &r, entt::entity surface_node, entt::entity model_node) {
     const auto *mat = r.try_get<const AcousticMaterial>(surface_node);
     if (!mat) mat = r.try_get<const AcousticMaterial>(model_node);

@@ -37,7 +37,6 @@ inline EdgeQuadVaryings EditEdgeQuadCorner(
 
     EdgeQuadVaryings out;
     out.Position = line_quad_position(scene, clip0, clip1, corner, half_width);
-    // Keep sharp marks slightly in front of the wire core.
     if (sharp) out.Position.z -= 5e-7f * abs(out.Position.w);
     out.Color = color;
     out.OuterColor = sharp ? float4(float3(colors.EdgeSharp), 1.0f) : float4(0.0f);

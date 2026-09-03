@@ -6,76 +6,66 @@
 #include <array>
 #include <vector>
 
-// Marks a body whose contacts the step reports in detail, in ContactImpact and SustainedContact.
-// A pair with neither body marked skips the contact solve entirely.
+// Enables ContactImpact and SustainedContact reporting for a body.
 struct ReportContacts {};
 
-// A discrete impact on one rigid body from a new solid contact, one event per contact point per body in a qualifying pair,
-// each carrying the load its own point took. All quantities are world space at the impact frame.
-// Impulses are the solver's applied impulses in excess of the settled support, read one substep after the strike, so a body coming to rest on a surface lands as silence.
+// Describes one body's world-space response at one point of a new solid contact.
+// Impulse excludes static support and is sampled one substep after impact.
 struct ContactImpact {
     entt::entity Entity{null_entity}; // Owning entity of the struck body.
     entt::entity ColliderEntity{null_entity}; // The collider node of this body that was struck.
     entt::entity Other{null_entity}; // The body that struck it.
     entt::entity OtherColliderEntity{null_entity}; // The collider node of the other body that did the striking.
     vec3 Point{0}; // Contact point.
-    // The load-weighted centre of the manifold this point belongs to, where one resultant reproduces both the force and the moment.
-    // The whole manifold lands as one collision, so its duration turns on the body's response here, while each point excites the modes where it touches.
+    // Load-weighted manifold center that preserves resultant force and moment.
     vec3 ResultantPoint{0};
     vec3 Direction{0}; // Unit impulse direction into this body.
     float Impulse{0}; // Contact impulse magnitude, kg·m/s.
     float Speed{0}; // Normal approach speed the manifold's strike arrested, derived from its impulse, m/s.
     float OtherInvMass{0}; // Inverse mass of the other body, kg⁻¹; 0 = immovable.
-    // Area of the manifold's contact polygon, m^2, zero where the touch is a point or an edge, which is every contact whose patch grows with load rather than being fixed by two faces meeting.
-    // Every point of one manifold reports the whole polygon, since they land as one collision.
+    // Manifold polygon area in square meters, or zero for point and edge contacts.
     float NominalArea{0};
 };
 
-// Registry-context queue: the physics step appends this frame's impacts, the audio system drains it.
+// Physics appends impacts and audio drains them once per frame.
 struct PhysicsContactImpacts {
     std::vector<ContactImpact> Events;
 };
 
-// What one body of a persisting contact contributes on its own (KHR_audio_rigid_bodies contact state).
+// Stores one body's state in a persistent contact as specified by KHR_audio_rigid_bodies.
 // The two sweep velocities are independent: a box sliding on a fixed floor has zero sweep on the box and full sweep on the floor.
 struct SustainedContactSide {
     entt::entity Entity{null_entity}; // The body this side describes.
-    // The collider node of this body that is touching. A compound body carries one per sub-shape.
+    // Collider node for this sub-shape.
     entt::entity ColliderEntity{null_entity};
-    // Velocity of the contact position over this body's own surface, m/s.
-    // A full velocity rather than a speed, since the tangential contact force acts along its direction.
+    // Contact-point velocity over this surface in meters per second.
     vec3 SweepVelocity{0};
 };
 
 // A contact that persists, one per contact manifold.
-// A manifold covers every touching point sharing a contact normal, so a box resting on four corners is a single contact.
-// A body wedged between two faces is two, each acting along the direction its own face pushes.
-// All quantities are world space, and directions are oriented toward Sides[1], so Sides[0] sees their negation.
+// A manifold contains all contact points sharing a normal.
+// Directions use world space and point toward Sides[1].
 struct SustainedContact {
     uint64_t Id{0}; // Stable while the contact lasts, and never reused by another.
     std::array<SustainedContactSide, 2> Sides;
     vec3 Point{0}; // Contact position, one point shared by both bodies.
     vec3 Normal{0}; // Unit contact normal, directed into Sides[1].
-    // Tangential velocity of Sides[0]'s material point relative to Sides[1]'s, m/s.
-    // Friction opposes a body's own motion, so it acts along this for Sides[1] and against it for Sides[0].
+    // Tangential velocity of Sides[0] relative to Sides[1] in meters per second.
     vec3 Slip{0};
     float NormalForce{0}; // N, non-negative.
-    // N, world space, the tangential force the solver applied to body 1: kinetic friction on a slide, and whatever constraint force holds a roll.
+    // World-space tangential force applied to Sides[1] in newtons.
     vec3 FrictionForce{0};
-    // Area of the manifold's contact polygon, m^2. Zero where the touch is a point or an edge, which is every contact whose patch grows with load rather than being fixed by two faces meeting.
+    // Manifold polygon area in square meters, or zero for point and edge contacts.
     float NominalArea{0};
-    // Extent of the manifold's contact polygon along the slide, m, its width across the track.
-    // A face meeting a thin or degenerate strip bears load across the strip's whole length while the polygon's area collapses, so the extent still measures the region confining the contact.
+    // Manifold extent along the slide in meters.
     float NominalExtent{0};
     float Restitution{0}; // Combined restitution of the pair.
     float Friction{0}; // Combined friction coefficient of the pair.
 };
 
-// The contacts touching as of the last step, rebuilt by every step.
-// Level-triggered: a contact this stops naming is over.
+// Contains the contacts from the latest simulation step.
 struct PhysicsSustainedContacts {
     std::vector<SustainedContact> Active;
-    // The simulation step this set was collected from, which advances only when the simulation does.
-    // Reading the same value twice means the set is unchanged.
+    // Simulation step that produced Active.
     uint64_t Step{0};
 };

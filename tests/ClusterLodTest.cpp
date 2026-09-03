@@ -1,6 +1,4 @@
-// Pins the cluster LOD DAG builder against the properties runtime selection depends on: the same
-// bytes every run, errors that never shrink toward the coarse end, and a cut that covers each
-// level-0 cluster exactly once at every threshold.
+// Requires deterministic output, nondecreasing coarse-level error, and exact level-0 coverage at every threshold.
 
 #include "render/ClusterLod.h"
 
@@ -38,8 +36,6 @@ struct Fixture {
     uint32_t TriangleCount() const { return uint32_t(CornerVertices.size() / 3u); }
 };
 
-// A UV sphere with its seam column duplicated, so the two copies share a position and disagree on u.
-// Pole quads emit a single triangle each, which keeps every triangle non-degenerate.
 void AppendSphere(Fixture &fixture, uint32_t rings, uint32_t segments, vec3 origin, float radius) {
     const uint32_t base_vertex = uint32_t(fixture.Positions.size());
     for (uint32_t r = 0; r <= rings; ++r) {
@@ -63,12 +59,10 @@ void AppendSphere(Fixture &fixture, uint32_t rings, uint32_t segments, vec3 orig
     }
 }
 
-// A flat grid whose middle column is duplicated with a one-unit jump in u, which is the sharp seam
-// permissive simplification must not collapse across.
 void AppendSeamGrid(Fixture &fixture, uint32_t cells) {
     const uint32_t base_vertex = uint32_t(fixture.Positions.size());
     const uint32_t seam = cells / 2u;
-    const uint32_t columns = cells + 2u; // the seam column appears twice
+    const uint32_t columns = cells + 2u;
     const auto column_x = [&](uint32_t column) { return column <= seam ? column : column - 1u; };
     for (uint32_t y = 0; y <= cells; ++y) {
         for (uint32_t column = 0; column <= columns - 1u; ++column) {
@@ -86,7 +80,6 @@ void AppendSeamGrid(Fixture &fixture, uint32_t cells) {
     };
     for (uint32_t y = 0; y < cells; ++y) {
         for (uint32_t x = 0; x < cells; ++x) {
-            // The column left of the seam pairs with the second copy, so no triangle spans the jump.
             const uint32_t left = x < seam ? x : x + 1u;
             const uint32_t right = left + 1u;
             triangle(left, y, right, y, right, y + 1u);
@@ -225,7 +218,6 @@ uint32_t ChildGroup(const ClusterLodBuild &build, uint32_t cluster) {
     return cluster < build.Level0Count() ? ClusterLodInvalid : build.Clusters[cluster - build.Level0Count()].RefinedGroup;
 }
 
-// The screen-space error a group projects to, which must grow toward the coarse end for a cut to hold.
 float ProjectedError(const ClusterLodGroup &group, vec3 camera, float proj, float znear) {
     const float distance = numeric::Length(group.Center - camera) - group.Radius;
     return group.Error / std::max(distance, znear) * (proj * 0.5f);
@@ -237,8 +229,7 @@ bool Selected(const ClusterLodBuild &build, uint32_t cluster, vec3 camera, float
     return child == ClusterLodInvalid || ProjectedError(build.Groups[child], camera, proj, znear) <= threshold;
 }
 
-// One render record's own sphere and the group the cut reads for it, in the order the render arena
-// lays a mesh's primitives out.
+// One render record's own sphere and the group the cut reads for it, in the order the render arena lays a mesh's primitives out.
 struct SpanRecord {
     vec3 Center;
     float Radius;
@@ -283,8 +274,7 @@ void ReportLevels(const ClusterLodBuild &build, std::string_view title) {
         std::println("           wall {:.1f} ms (partition {:.1f}, lock {:.1f}, merge {:.1f}), group cpu: simplify {:.1f}, clusterize {:.1f}, emit {:.1f}", stats.LevelMs, stats.PartitionMs, stats.LockMs, stats.MergeMs, stats.SimplifyMs, stats.ClusterizeMs, stats.EmitMs);
     }
 }
-} // namespace
-
+}
 int main() {
     const auto small_sphere = SphereFixture(32u, 64u);
     const auto medium_sphere = SphereFixture(128u, 256u);
@@ -475,8 +465,7 @@ int main() {
             for (const vec3 camera : {vec3{0, 0, 3}, vec3{0, 0, 30}, vec3{0, 0, 300}}) {
                 for (const float threshold : {1e-4f, 1e-3f, 1e-2f, 1e-1f}) {
                     for (uint32_t start = 0; start < build->Level0Count(); ++start) {
-                        // A chain follows one level-0 cluster's geometry up the DAG, taking the
-                        // first cluster each group simplified it into.
+                        // A chain follows one level-0 cluster's geometry up the DAG, taking the first cluster each group simplified it into.
                         uint32_t chain = start, selected = 0, length = 0;
                         while (true) {
                             selected += Selected(*build, chain, camera, 1.7320508f, 1e-2f, threshold);

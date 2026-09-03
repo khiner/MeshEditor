@@ -9,12 +9,9 @@
 #include "Varyings.metal"
 #include "NormalIndicatorConstant.metal"
 
-// Normal indicators for the overlay pass, generated from the posed positions and normals of the frame.
-// Each threadgroup emits a line group of indicators, one thread and two dedicated vertices apiece.
-// An indicator's length follows local geometry size, so it stays readable at any mesh density.
+// Emits normal-indicator line groups scaled to local geometry size.
 constant float NormalIndicatorLengthScale = 0.25f;
-// Faces are fan-triangulated from their first corner, so a walk over a face's triangles visits
-// its distinct vertices as the first triangle's three, then the last vertex of each triangle after.
+// Fan-triangulated faces enumerate distinct vertices from the first triangle, then each later triangle's final corner.
 constant uint NormalIndicatorMaxFaceCorners = 256u;
 constant uint NormalIndicatorThreads = MeshletLimit_MaxVertices;
 constant uint NormalIndicatorSimdGroups = NormalIndicatorThreads / 32u;
@@ -39,7 +36,7 @@ inline float MeanIncidentEdgeLength(const thread Scene &scene, DrawData draw, ui
     return total / float(last - first);
 }
 
-// Local-space start and end of one indicator, its length scaled by the element's own size.
+// Returns a local-space indicator segment scaled to its element.
 inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uint element, thread float3 &start, thread float3 &end) {
     if (!NormalIndicatorFaces) {
         start = scene.GetLocalPosition(draw, element);
@@ -138,7 +135,7 @@ inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uin
     for (uint endpoint = 0u; endpoint < 2u; ++endpoint) {
         const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, endpoint == 0u ? start : end));
         float4 clip = scene.ViewProj() * float4(world_pos, 1.0f);
-        clip.z -= NdcOffsetFactor(scene); // Push indicators in front of faces.
+        clip.z -= NdcOffsetFactor(scene);
         const uint slot = compact.x * 2u + endpoint;
         output.set_vertex(slot, MakeLineVertex(clip, color, float2(scene.View.ViewportSize)));
         output.set_index(slot, slot);

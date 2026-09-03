@@ -12,12 +12,11 @@ namespace fs = std::filesystem;
 
 namespace {
 constexpr int CompressionLevel{5};
-constexpr size_t ChunkSize{1 << 20}; // 1 MiB file-read buffer.
+constexpr size_t ChunkSize{1 << 20}; // 1 MiB streaming buffer.
 
-// The archive is one zstd stream of entries, each: [uint32 path length][path][uint64 data length][data].
-// Both sides stream through fixed buffers, so memory stays flat regardless of archive size.
+// Encode each archive entry as [uint32 path length][path][uint64 data length][data] in one zstd stream.
 
-// Compress `in` to `out`, writing produced bytes. `mode` is ZSTD_e_end for the final flush.
+// Compress `in` to `out`; use ZSTD_e_end for the final flush.
 bool Feed(ZSTD_CCtx *cctx, std::ostream &out, std::vector<char> &buf, ZSTD_inBuffer in, ZSTD_EndDirective mode) {
     for (bool done = false; !done;) {
         ZSTD_outBuffer o{buf.data(), buf.size(), 0};
@@ -79,11 +78,11 @@ bool Decompress(const fs::path &src, const fs::path &dst) {
     if (!dctx) return false;
 
     std::error_code ec;
-    std::ofstream cur; // The file currently being written.
-    uint64_t data_left = 0; // Bytes still owed to `cur`.
-    std::vector<char> header; // Accumulates the next entry header between files.
+    std::ofstream cur;
+    uint64_t data_left = 0;
+    std::vector<char> header;
 
-    // Route decompressed bytes into the current file, or accumulate and parse the next entry header.
+    // Parse entry headers across buffer boundaries and stream entry data to the current file.
     const auto consume = [&](const char *buf, size_t n) {
         for (size_t off = 0; off < n;) {
             if (data_left > 0) {

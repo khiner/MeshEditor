@@ -1,10 +1,9 @@
 #pragma once
 
-// A field's value range. Unbounded by default, specialize with an optional Min and/or Max.
-// Read by the UI (widget bounds) and by action apply (clamp).
+// Specializations define optional bounds for UI controls and action values.
 template<auto... Ms> struct FieldLimits {};
 
-// Bases for terse specializations: `template<> struct FieldLimits<&T::F> : Within<lo, hi> {};`.
+// Use `template<> struct FieldLimits<&T::F> : Within<lo, hi> {};` for bounded fields.
 template<auto Lo, auto Hi> struct Within {
     static constexpr auto Min = Lo, Max = Hi;
 };

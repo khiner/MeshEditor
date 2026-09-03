@@ -4,10 +4,8 @@
 #include "VisibilityId.metal"
 #include "VertexTransform.metal"
 
-// The transparent attribute-carrying entry emits one output vertex per corner with identity indices.
-// Sharing output vertices across primitives (indexed mesh output) delivers nondeterministic
-// attribute values on this driver, while the position stream stays exact. Opaque meshlets use
-// the welded position-only visibility entry below and fetch their attributes during shading.
+// Emit one attribute-carrying vertex per corner because indexed mesh output produces nondeterministic attributes on this driver.
+// Opaque meshlets emit welded positions and fetch attributes during shading.
 using MeshletOutput = metal::mesh<MeshletVertexVaryings, void, MeshletLimit_MaxTriangles * 3u, MeshletLimit_MaxTriangles, metal::topology::triangle>;
 using MeshletVisibilityOutput = metal::mesh<MeshletPositionVaryings, MeshletVisibilityPrimitiveVaryings, MeshletLimit_MaxVertices, MeshletLimit_MaxTriangles, metal::topology::triangle>;
 
@@ -54,7 +52,7 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         device const uchar *triangles = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot);
         const bool coarse = MeshletCoarse(work.Meshlet);
         const uint local_triangle = thread_index / 3u;
-        // A coarse cluster's triangles are its own, so it names no source triangle.
+        // Coarse triangles have no source-triangle identity.
         const uint triangle = coarse ? 0u : triangle_ids[work.Meshlet.TriangleOffset + local_triangle];
         const MeshletTriangleCorners corners = ResolveMeshletCorners(
             scene, work.Draw, pc.MeshletVertexSlot, pc.MeshletLocalTriangleSlot, work.Meshlet, work.Primitive, triangle, local_triangle
@@ -97,7 +95,7 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         out.ElementId = work.Instance.ElementIdOffset + element + 1u;
         out.Topology = topology;
         out.PointCoord = PointQuadCorners[corner] * 0.5f + 0.5f;
-        // A selected object's fill recolors in the shading, so alpha zero marks an unselected instance.
+        // Alpha zero marks an unselected instance for fill recoloring during shading.
         out.Color = scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u ?
             scene.ObjectSelectionColor(scene.InstanceState(work.Draw), float4(0.0f)) : float4(0.0f);
         output.set_vertex(thread_index, out);

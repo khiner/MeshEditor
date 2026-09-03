@@ -16,8 +16,8 @@ enum class InteractionOp : uint8_t {
     ZX,
     XY,
     Screen,
-    Trackball, // Rotate only
-    Action, // Action-initiated (currently only for translate)
+    Trackball,
+    Action,
 };
 
 struct Interaction {
@@ -27,15 +27,13 @@ struct Interaction {
     bool operator==(const Interaction &) const = default;
 };
 
-// Local, non-snapped delta from interaction start.
-// The Transform delta is derived from this and the start Transform.
+// Stores the local, unsnapped delta from the interaction start.
 struct LocalTransformDelta {
     vec3 P{0}, S{1};
     float RotationAngle{0};
     vec2 RotationYawPitch{0};
 };
 
-// Captured when an Interaction starts
 struct StartContext {
     GizmoTransform Transform;
     vec2 MousePx;
@@ -44,7 +42,7 @@ struct StartContext {
 };
 
 struct NumericInput {
-    std::string Str; // Typed characters (digits and '.')
+    std::string Str;
     bool Negate{false};
 
     bool Active() const { return !Str.empty() || Negate; }
@@ -56,18 +54,16 @@ struct NumericInput {
 };
 } // namespace TransformGizmo
 
-// Live gizmo interaction state. Component on the viewport entity.
 struct GizmoInteraction {
-    // Cross-frame: persist for the duration of a drag.
-    std::optional<TransformGizmo::Interaction> Current; // Hovered (no Start) or active (with Start) handle.
-    std::optional<TransformGizmo::StartContext> Start; // Captured at drag start.
-    TransformGizmo::NumericInput NumInput; // Numeric keyboard entry during a drag.
+    std::optional<TransformGizmo::Interaction> Current;
+    std::optional<TransformGizmo::StartContext> Start;
+    TransformGizmo::NumericInput NumInput;
 
-    // Interact -> Render handoff for the current frame.
-    std::optional<GizmoTransform> RenderTransform; // Live gizmo pose (with drag P-override) to render; cleared by Render.
+    // Interact writes these fields for Render and Render clears RenderTransform.
+    std::optional<GizmoTransform> RenderTransform;
     TransformGizmo::LocalTransformDelta Delta;
-    vec2 MousePx{}; // Mouse position Interact used; consumed by Render (recompute is wrong after wrap-delta reset).
+    // Preserve the position used by Interact because pointer wrapping resets the mouse delta before Render.
+    vec2 MousePx{};
 
     bool IsUsing() const { return Start.has_value(); }
 };
-// Live, transient hover/drag handoff state.

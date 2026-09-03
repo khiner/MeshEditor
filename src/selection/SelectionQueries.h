@@ -16,20 +16,16 @@
 
 struct ElementRange;
 
-// A logical selection target: an entity, plus (in bone mode) which part of a bone was hit.
 struct SelectionHit {
     entt::entity Entity;
     std::optional<BoneSel> Part{};
     bool operator==(const SelectionHit &) const = default;
 };
 
-// Map raw GPU pick/box-select instances to logical selection targets.
-// In bone mode, body + joint spheres collapse to one entry per bone.
-// merge_parts true merges multiple parts to nullopt (= all parts), and false keeps the first (closest) part.
-// In object mode, bones fall through to SubElementOf like any other sub-element, collapsing to the armature.
+// Resolves raw GPU hits to logical targets, collapsing bone parts and object sub-elements.
 std::vector<SelectionHit> ResolveHits(entt::registry &, const std::vector<entt::entity> &raw, bool bone_mode, bool merge_parts = false);
 
-// Box selection: returns object-id-sorted entities hit by the box.
+// Returns box hits in object-id order.
 std::vector<entt::entity> RunBoxSelect(entt::registry &, std::pair<uvec2, uvec2> box_px);
 
 // Element-level box selection: renders IDs into the authoritative masks and derives the other domains on the GPU.
@@ -37,13 +33,14 @@ void RunBoxSelectElements(entt::registry &, entt::entity viewport, std::span<con
 void PublishBoxSelectElementStats(entt::registry &, entt::entity viewport);
 void FinalizeBoxSelectElements(entt::registry &, entt::entity viewport);
 
-// Object click pick. Returns hit entities sorted by (distance, depth, object id). Advances `object_pick_epoch_tag` (8-bit, wraps with periodic key reset).
+// Returns click hits sorted by distance, depth, and object id, then advances the 8-bit epoch tag.
 std::vector<entt::entity> RunObjectPick(entt::registry &, uint32_t &object_pick_epoch_tag, uvec2 mouse_px, uint32_t radius_px = 0);
 
 // Pick the nearest sound-vertex of an instance under the cursor.
 std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &, entt::entity instance_entity, uvec2 mouse_px);
 
-// Element-level click transaction: pick, mutate, derive, and summarize on the GPU; returns the hit only for CPU editor mirrors.
+// Runs an element-level pick, mutation, derivation, and summary on the GPU.
+// Returns the hit only for CPU editor mirrors.
 std::optional<std::pair<entt::entity, uint32_t>> RunEditElementClick(entt::registry &, entt::entity viewport, std::span<const ElementRange> ranges, Element, uvec2 mouse_px, bool toggle);
 
 void ApplyEditSelectionCommand(entt::registry &, entt::entity viewport, std::span<const ElementRange>, Element, EditSelectionOperation);

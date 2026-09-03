@@ -1,18 +1,10 @@
 #!/usr/bin/env python3
 
-# Render every glTF_PhysicalAudio sample scene headless to a lossless wav and report each render's
-# health: exit code, finiteness, silence, rms, and peak. Covers the full-experience scenes at the
-# samples root and the isolation corpus under test/. Run from anywhere.
-#
+# Renders every glTF_PhysicalAudio sample to lossless WAV and reports exit status, finiteness, silence, RMS, and peak.
 # Usage: script/AudioCorpus [outdir]
-#   outdir defaults to build/audio-corpus. Each scene writes <outdir>/<scene path>.wav and its .log
-#   beside it (the render's stderr, where CONTACT_REPORT and STICK lines land when set).
-#
-# Scenes render in a pool of JOBS parallel processes (default 8). The audio path is deterministic,
-# so parallel and serial sweeps produce bit-identical wavs. Environment flags (CONTACT_REPORT,
-# CONTACT_SPRINGS, AUDIO_SAMPLE_RATE, ...) pass through to every render.
-#
-# Exits nonzero if any scene fails to render, produces a non-finite sample, or renders silence.
+# The output defaults to build/audio-corpus and includes one WAV and stderr log per scene.
+# JOBS defaults to eight, and environment flags pass through to every render.
+# Returns nonzero for render failures, non-finite samples, or silent output.
 
 import os
 import struct
@@ -35,8 +27,7 @@ def render(scene):
     wav = Out / f"{name}.wav"
     wav.parent.mkdir(parents=True, exist_ok=True)
     with open(Out / f"{name}.log", "w") as log:
-        # Each render sizes its synthesis threads from the cores its own realization workers leave, so a scene whose ribbon runs on one worker uses the cores the rest of the pool leaves free.
-        # The thread count leaves every byte of the surface the same, so the wavs stay bit-identical to a serial sweep's.
+        # Each process sizes synthesis threads from the cores unused by its realization workers.
         code = subprocess.run(
             [str(Exe), str(scene), "--headless", "--play", str(PlaySeconds), "--timeline-end", str(PlaySeconds + 1), "--record", str(wav)],
             stdout=subprocess.DEVNULL, stderr=log, cwd=Root,

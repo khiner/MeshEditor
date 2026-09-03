@@ -1,10 +1,7 @@
 #ifndef BOUNDSREDUCE_MSL
 #define BOUNDSREDUCE_MSL
 
-// Reduces each 256-vertex tile of an entry's positions to a partial AABB.
-// Reads the pose pre-pass's current-pose positions when the entry has them.
-// One threadgroup per tile.
-// The bounds combine pass folds the partials into each entry's instance bounds.
+// Writes one partial AABB per 256-vertex tile for the bounds-combine pass.
 #include "Bindless.metal"
 #include "AABB.metal"
 #include "BoundsShared.metal"
@@ -32,7 +29,7 @@ kernel void BoundsReduceKernel(
         lo = pos;
         hi = pos;
     }
-    // A tile with no vertices leaves Min > Max, the empty state the combine's min and max ignore.
+    // Min > Max represents an empty tile and is neutral under the combine pass's min/max operations.
     FoldSharedAabb(shared_min, shared_max, BoundsFoldLanes, tid, lo, hi);
     if (tid == 0u) {
         device AABB *partials = BindlessBufferMutable(AABB, bindless.Buffer, pc.PartialBoundsSlot);

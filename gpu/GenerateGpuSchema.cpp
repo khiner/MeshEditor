@@ -21,7 +21,7 @@ struct Field {
 
 struct StructDef {
     std::string Name;
-    std::string Binding; // References a binding name (for uniforms)
+    std::string Binding;
     bool IsPushConstant = false;
     std::vector<Field> Fields;
 };
@@ -40,7 +40,7 @@ struct ConstantGroup {
 };
 
 struct EnumDef {
-    std::string Name, Type; // Underlying type (e.g. u32)
+    std::string Name, Type;
     std::vector<EnumValue> Values;
 };
 
@@ -356,7 +356,6 @@ bool IsEnumType(std::string_view type, const std::vector<EnumDef> &enums) {
     return any_of(enums, [&](const auto &def) { return def.Name == type; });
 }
 
-// Packed MSL types match the schema's scalar block layout.
 std::optional<std::string_view> MslBuiltinTypeFor(std::string_view type) {
     if (type == "u8") return "uchar";
     if (type == "u32") return "uint";
@@ -510,7 +509,6 @@ std::string ToIdentifier(std::string_view name) {
     return out;
 }
 
-// Assert the same computed layout in both generated languages.
 void EmitLayoutAsserts(std::ostream &out, std::string_view name, const StructLayout &layout, std::string_view offset_of) {
     for (const auto &field : layout.Fields) {
         out << "static_assert(" << offset_of << "(" << name << ", " << field.Name << ") == " << field.Offset
@@ -553,7 +551,6 @@ void EmitEnum(
     cpp_out << "};\n";
 }
 
-// Generate matching specialization-constant indices for MSL and C++.
 void EmitFunctionConstants(
     const ConstantGroup &def,
     const std::filesystem::path &msl_dir,
@@ -586,7 +583,6 @@ void EmitFunctionConstants(
     cpp_out << "};\n";
 }
 
-// args: <binary_dir> <source_dir> <schema_relative_path>
 int main(int argc, char **argv) {
     if (argc != 4) return 1;
 
@@ -640,8 +636,8 @@ int main(int argc, char **argv) {
             Fail("Unknown binding kind: " + binding.Kind);
         }
     }
-    // Shared capacities keep slot indices identical on the CPU and GPU. Corpus peaks are 40 buffers,
-    // 85 samplers, and 14 images; arena-backed resources do not scale these counts with scene size.
+    // Shared capacities keep CPU and GPU slot indices identical.
+    // Corpus peaks are 40 buffers, 85 samplers, and 14 images; arena-backed resources do not scale with scene size.
     struct KindCapacity {
         std::string_view Kind;
         uint32_t Capacity;
@@ -661,7 +657,6 @@ int main(int argc, char **argv) {
 
     bindless_header << "}};\n";
 
-    // Buffers and textures use one 64-bit handle; samplers use a texture/sampler pair.
     struct EntryLayout {
         uint32_t Offset, Stride, Capacity;
     };
@@ -704,7 +699,6 @@ int main(int argc, char **argv) {
     for (const auto &c : Capacities) bindless_header << "        case BindKind::" << c.Kind << ": return " << c.Capacity << ";\n";
     bindless_header << "    }\n    return 0;\n}\n";
 
-    // The CPU writes the Tier-2 argument buffer as GPU addresses and resource IDs.
     std::ofstream bindless_msl{msl_dir / "BindlessBindings.metal", std::ios::binary};
     if (!bindless_msl) return 1;
     bindless_msl << "#ifndef BINDLESS_BINDINGS_MSL\n"
@@ -714,7 +708,6 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < bindings.size(); ++i) {
         bindless_msl << "constant uint BINDING_" << bindings[i].Name << " = " << i << ";\n";
     }
-    // Parameterize the storage-image view because its shaders use incompatible access formats.
     bindless_msl << "\nconstant uint BufferIndex_Bindless = 0;\n"
                  << "constant uint BufferIndex_PushConstants = 1;\n";
     uniform_index = 2;
@@ -761,7 +754,7 @@ int main(int argc, char **argv) {
         std::ofstream msl_out{msl_path, std::ios::binary}, cpp_out{cpp_path, std::ios::binary};
         if (!msl_out || !cpp_out) return 1;
 
-        // A drift from this shared layout fails compilation in either language.
+        // Compile-time assertions keep the generated C++ and MSL layouts identical.
         const auto layout = ComputeLayout(def, structs, enums);
         const auto msl_guard = ToMacroName(def.Name, "MSL");
         msl_out << "#ifndef " << msl_guard << "\n"
@@ -817,7 +810,7 @@ int main(int argc, char **argv) {
 
         cpp_out << "#pragma once\n\n"
                 << GeneratedComment(schema_relative_path);
-        cpp_out << "#include <cstddef>\n"; // offsetof, for the layout assertions below
+        cpp_out << "#include <cstddef>\n";
         if (needs_array) cpp_out << "#include <array>\n";
         if (needs_cstdint) cpp_out << "#include <cstdint>\n";
         if (needs_limits) cpp_out << "#include <limits>\n";

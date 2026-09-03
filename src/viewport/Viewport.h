@@ -16,52 +16,46 @@ struct Context;
 entt::entity InitEngine(entt::registry &);
 void DeinitViewport(entt::registry &, entt::entity viewport);
 
-// App-only presentation/media layered on InitEngine.
 void InitViewportMedia(entt::registry &);
 void DeinitViewportMedia(entt::registry &);
 
-// Run ProcessComponentEvents, then record and submit the GPU render (nonblocking).
+// Processes component events and submits a nonblocking render.
 // `viewport_consumer_fence`, if set, is waited on before old resources are destroyed on an extent change.
 // Call WaitForRender() before the ImGui frame samples the final image.
 void SubmitViewport(entt::registry &, entt::entity viewport, MTL::CommandBuffer *viewport_consumer = nullptr);
 
-// Reset all per-document viewport state to defaults, leaving the scene empty.
+// Reset all per-document viewport state to defaults and clear the scene.
 void SetupScene(entt::registry &, entt::entity viewport);
 
 void AddDefaultSceneContent(entt::registry &);
 void ClearScene(entt::registry &, entt::entity viewport);
 
-// Draw the recorded viewport image into the current ImGui window, then draw overlays.
 // Call after SubmitViewport, inside the viewport's Begin block.
 void DisplayViewport(entt::registry &, entt::entity viewport);
-// Wait for pending viewport render to complete. No-op if no render pending.
+// Waits for a pending viewport render.
 void WaitForRender(entt::registry &);
 
 // Resume on-screen display after a headless replay: render the current scene at the current ViewportExtent and present synchronously.
 void PresentViewport(entt::registry &, entt::entity viewport);
 
-// True once the viewport's color image has been built and rendered at a valid extent.
 bool ViewportImageReady(const entt::registry &);
 
-// Record the viewport to an H.264 mp4 by piping frames to an `ffmpeg` subprocess.
-// When a look-through camera is active, captures only the framed sub-region matching
-// what the user sees inside the dimmed overlay. Locks to the initial capture extent;
-// any resize or look-through change stops recording.
+// Starts H.264 recording through an `ffmpeg` subprocess.
+// A look-through camera records only the framed region inside the dimmed overlay.
+// Resizing or changing look-through state after capture begins stops recording.
 // `with_audio` also captures the master output and muxes it in when the recording stops.
 void StartRecording(entt::registry &, entt::entity viewport, const std::filesystem::path &, int fps, bool with_audio = false);
-// Copy the current FinalColorImage to the recorder. No-op if not recording.
 // Call after WaitForRender() so the source image is coherent.
 void CaptureRecordFrame(entt::registry &, entt::entity viewport);
 bool IsRecording(const entt::registry &, entt::entity viewport);
 uint64_t CapturedFrameCount(const entt::registry &, entt::entity viewport);
 
-// Tightly-packed RGBA8 pixels read back from the viewport's final color image.
 struct ViewportImageRgba8 {
     std::vector<std::byte> Pixels;
     uint32_t Width, Height;
 };
-// Read back the current FinalColorImage as RGBA8 (the framed sub-region matching recording).
-// Call after WaitForRender() so the source image is coherent. Returns an error message on failure.
+// Requires WaitForRender() to complete before reading the source image.
+// Returns an error message on failure.
 std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(entt::registry &);
 
 std::string DebugBufferHeapUsage(const entt::registry &);

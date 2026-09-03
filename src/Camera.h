@@ -13,7 +13,7 @@ inline float AspectRatio(const Camera &camera) {
     return mag.x / mag.y;
 }
 
-// P<->O round-trips when both directions are called with the same `distance`.
+// Convert projections so applying the inverse conversion at the same distance restores the original projection.
 inline Perspective PerspectiveFromOrthographic(const Orthographic &orthographic, float distance) {
     return {
         .FieldOfViewRad = numeric::Clamp(2.f * std::atan(orthographic.Mag.y / distance), numeric::Radians(1.f), numeric::Radians(179.f)),

@@ -59,8 +59,6 @@ double PunchStiffness(double inv_effective_modulus, double nominal_area) {
 }
 
 namespace {
-// Work done against the contact by pressing it to `penetration`, in J.
-// Below saturation this integrates Hertz's k delta^(3/2), and above it the constant stiffness the filled patch leaves, whose force starts from the load Hertz had reached.
 double ContactWork(double penetration, double hertz_stiffness, double sat_penetration, double punch_stiffness) {
     if (penetration <= 0) return 0;
     const auto hertz = [hertz_stiffness](double x) { return 0.4 * hertz_stiffness * x * x * std::sqrt(x); };
@@ -94,8 +92,6 @@ double EstimateContactTime(const ContactDynamics &d, uint32_t i, vec3 impact_dir
         return sat_penetration + (std::sqrt(sat_force * sat_force + 2 * punch_stiffness * (energy - sat_work)) - sat_force) / punch_stiffness;
     }();
 
-    // The bodies part with the speed they met at, so the collision is twice the approach.
-    // At depth x the energy left over the work done gives the speed, and integrating in s with x = max*(1 - s^2) removes the turning point's inverse-square-root singularity, leaving an integrand the midpoint rule resolves.
     constexpr int Steps = 64;
     double sum = 0;
     for (int n = 0; n < Steps; ++n) {
@@ -104,8 +100,6 @@ double EstimateContactTime(const ContactDynamics &d, uint32_t i, vec3 impact_dir
         if (left > 0) sum += 2 * s / std::sqrt(left);
     }
     const double bulk_time = 2 * max_penetration / speed * sum / Steps * scale_ratio;
-    // The surfaces meet on their asperities before the bulk engages, a rough interface carrying the load on an exponential cushion whose stiffness is F/u0 at u0 = 0.4 * combined rms roughness, with the nominal area cancelling (Pastewka et al. 2013, confirmed against Berthoud and Baumberger's measurements).
-    // The self-consistent arrest on that cushion takes pi*sqrt(2)*u0/v, and stiffnesses in series add contact times in quadrature.
     const double u0 = 0.4 * combined_roughness;
     const double bed_time = std::numbers::sqrt2 * std::numbers::pi * u0 / speed;
     return std::clamp(std::sqrt(bulk_time * bulk_time + bed_time * bed_time), MinContactTime, MaxContactTime);

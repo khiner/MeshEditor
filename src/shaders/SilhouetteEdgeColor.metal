@@ -18,8 +18,7 @@ fragment float4 SilhouetteEdgeColorFragment(
     const uint object_id = uint(scene.FetchTex(pc.ObjectSamplerIndex, texel, 0).r);
     if (object_id == 0u) discard_fragment();
 
-    // An ActiveObjectId of UINT32_MAX means every object is active, which armatures use: they have
-    // no single object id of their own, so all bone instance pixels show as active.
+    // UINT32_MAX marks every armature bone instance active because an armature has no single object ID.
     const bool is_active = pc.ActiveObjectId == 0xFFFFFFFFu || (pc.ActiveObjectId != 0u && object_id == pc.ActiveObjectId);
     constant ViewportThemeColors &colors = scene.Theme.Colors;
     return pc.Manipulating != 0u ? float4(float3(colors.Transform), 1.0f) :

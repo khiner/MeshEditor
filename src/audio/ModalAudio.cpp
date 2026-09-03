@@ -54,7 +54,7 @@ void SilenceObject(ModalAudio &m, ModalBank &b, uint32_t o) {
     std::fill_n(b.StateRe.begin() + k0, count, 0.f);
     std::fill_n(b.StateIm.begin() + k0, count, 0.f);
     b.Ringing[o] = 0;
-    // The next strike starts from the whole tuned set again.
+    // Restore the full tuned-mode prefix for the next impact.
     b.LiveModeCount[o] = b.TunedModeCount[o];
     for (uint32_t i = uint32_t(b.Impacts.size()); i-- > 0;) {
         if (b.Impacts[i].Object == o) RemoveImpact(b, i);
@@ -84,16 +84,16 @@ void DrainEvents(ModalAudio &m, ModalBank &b) {
 // Excitation gains hoist out of the sample loop, which a coupled voice cannot do.
 void RenderObjectFast(ModalAudio &m, ModalRenderScratch &w, ModalBank &b, uint32_t o, std::span<const uint32_t> impacts, float *out, uint32_t frame_count) {
     // A shape row is `stride` wide, and only the leading `count` of it still sounds.
-    // An impact drives every mode the tuning left, so being struck restores the whole set.
+    // An impact restores all tuned modes.
     const auto k0 = b.ModeOffset[o], stride = b.ModeCount[o];
     const auto count = impacts.empty() ? b.LiveModeCount[o] : b.TunedModeCount[o];
     const auto shape0 = b.ShapeOffset[o];
     const auto out_gain = std::atomic_ref{b.OutGain[o]}.load(std::memory_order_relaxed);
-    // The listener attenuation scales the output alone, audibility culling staying on the 1 m level, so the bank's live set does not depend on where the camera sits.
+    // Apply listener attenuation after one-meter audibility culling.
     const auto mix_gain = out_gain * std::atomic_ref{b.ListenerGain[o]}.load(std::memory_order_relaxed);
     w.Gains.resize(impacts.size() * Lanes);
     float energy = 0.f;
-    // The end of the last chunk still carrying audible state.
+    // Track the end of the final audible chunk.
     uint32_t live = 0;
     for (uint32_t k = 0; k < count; k += Lanes) {
         const auto width = std::min(Lanes, count - k);
@@ -158,11 +158,11 @@ void ReleaseWorkgroup([[maybe_unused]] void *workgroup) {
 #endif
 }
 
-// Holds a render thread in the host's scheduling group for as long as it lives, so the scheduler holds it to the same deadline as the callback it renders alongside.
+// Associates a render thread with the host scheduling group for the worker lifetime.
 struct WorkgroupMembership {
     explicit WorkgroupMembership([[maybe_unused]] void *workgroup) {
 #ifdef __APPLE__
-        // The membership outlives the device that published the group, so hold a reference of its own.
+        // Retain the scheduling-group reference beyond device lifetime.
         if (workgroup && os_workgroup_join(static_cast<os_workgroup_t>(workgroup), &Token) == 0) Workgroup = RetainWorkgroup(workgroup);
 #endif
     }
@@ -208,7 +208,7 @@ void ModalRenderPool::ApplyLocked(uint32_t size, void *workgroup) {
     // A worker reads the workgroup once, when it starts, so a new group is only picked up by a new worker.
     if (workgroup != Workgroup) {
         StopWorkers(0);
-        // The pool can start a worker in the group at any time, so it holds a reference while it names one.
+        // Retain the scheduling-group reference while workers may start.
         ReleaseWorkgroup(Workgroup);
         Workgroup = RetainWorkgroup(workgroup);
     } else if (size < Active) {
@@ -216,7 +216,7 @@ void ModalRenderPool::ApplyLocked(uint32_t size, void *workgroup) {
     }
     Active = size;
 
-    // Workers start from the ticket as it stands now, so a run that lands before one is scheduled still wakes it.
+    // Initialize workers from the current ticket so pending work wakes newly scheduled threads.
     const auto start = Ticket.load(std::memory_order_acquire);
     for (auto i = uint32_t(Threads.size()) + 1; i < size; ++i) {
         Threads.emplace_back([this, i, start](const std::stop_token &stop) {
@@ -282,7 +282,7 @@ void InstallModalBank(ModalAudio &m, ModalBank &next) {
     if (const auto seq = m.ReaderSeq.load(std::memory_order_seq_cst); seq & 1) {
         while (m.ReaderSeq.load(std::memory_order_seq_cst) == seq) std::this_thread::yield();
     }
-    // The new bank holds no sustained contacts, and the wait above leaves no callback reading their pools.
+    // The new bank has no sustained contacts after callbacks finish reading the old pools.
     m.ActiveVoices.store(0, std::memory_order_relaxed);
     SurfaceInstallBank(m);
 }
@@ -298,7 +298,7 @@ uint32_t AddModalObject(ModalBank &b, entt::entity e, const ModalModes &modes) {
     b.ShapeOffset.push_back(uint32_t(b.ShapeX.size()));
     b.Ringing.push_back(0);
     b.RigidVel.emplace_back(0.f);
-    // Per-object columns, by what an untuned object stands at.
+    // Allocate columns from each object's untuned mode count.
     for (auto *col : {&b.OutGain, &b.RigidInvMass, &b.RadiatorB0, &b.AirB0, &b.AirB1, &b.AirB2, &b.RecoilA1, &b.RecoilA2, &b.RadiatorZ1, &b.RadiatorZ2, &b.AirZ1, &b.AirZ2}) col->push_back(0.f);
     for (auto *col : {&b.ListenerGain, &b.DeflectionScale}) col->push_back(1.f);
     // Per-mode columns, which the object's own modes extend.
@@ -357,13 +357,9 @@ void TuneModalObject(ModalBank &b, uint32_t object, std::span<const float> freqs
             continue;
         }
         const auto omega = 2 * std::numbers::pi_v<float> * freq / sr;
-        // Every drive enters as the impulse one sample carries, so the state holds mass-normalized modal velocity times this gain.
-        // The gain is the mode's far-field pressure per unit of that velocity, rho0*c0*sqrt(sigma*A/(4pi))/r, with radiation efficiency sigma = (ka)^2/(1+(ka)^2) about the body's radiant radius, so the sum over modes leaves the output in Pa at the listener distance.
         const float omega_si = 2 * std::numbers::pi_v<float> * freq;
         const float ka = omega_si * radius / SpeedOfSound;
         const float sigma = ka * ka / (1 + ka * ka);
-        // The radiated power drains the mode alongside its structural loss, so the energy leaving as sound is bounded by the energy the mode holds.
-        // The surface-intensity balance gives the amplitude rate rho0*c0*sigma*A/2, with the baked-size area brought to the world size, the squared shape carrying scale^-3 and the surface scale^2.
         const float area = b.RadiationArea[k0 + k] / radius_scale;
         const float radiation_rate = AirDensity * SpeedOfSound * sigma * area * 0.5f;
         const auto decay = std::exp(-(Ln1000 / t60 + radiation_rate) / sr);
@@ -376,13 +372,12 @@ void TuneModalObject(ModalBank &b, uint32_t object, std::span<const float> freqs
         b.OutPhaseIm[k0 + k] = std::cos(spread);
         b.OutPhaseRe[k0 + k] = std::sin(spread);
         b.DeflectionGain[k0 + k] = gain > 0.f ? 1.f / (gain * omega_si) : 0.f;
-        // The central scheme's full-step response, and the drive scale that makes the bank deliver it, the bank's own full-step response being dt * decay * sin(theta) / omega.
         const float dt = 1.f / sr;
         const float central = dt * (1 + decay * decay + 2 * decay * std::cos(omega)) / 4;
         b.QuadCompliance[k0 + k] = central;
         b.QuadDriveScale[k0 + k] = central * omega_si / (decay * std::sin(omega));
     }
-    // Written after the coefficients, so a callback that sees a longer bank also sees what fills it.
+    // Publish the length after initializing its coefficients.
     // Only the trailing muted block is dropped, since a muted mode in the middle still has live modes behind it.
     uint32_t live = b.ModeCount[object];
     while (live > 0 && b.CoeffRe[k0 + live - 1] == 0.f && b.CoeffIm[k0 + live - 1] == 0.f) --live;
@@ -424,13 +419,13 @@ void EnqueueModalEvent(ModalAudio &m, const ModalEvent &e) {
 }
 
 namespace {
-// Deal this block's ringing objects between the renderers, heaviest first onto whichever is carrying least.
-// The deal is a pure function of the bank, so the same block always splits the same way however the renderers are run.
+// Assign ringing objects by descending cost to the least-loaded renderer.
+// The bank state determines a stable assignment for each block.
 void DealObjects(ModalAudio &m, const ModalBank &b, uint32_t count) {
     m.Renderers.resize(count);
     for (auto &renderer : m.Renderers) renderer.Objects.clear();
 
-    // A sustained contact roughly doubles what an object costs, since the coupled kernel gathers over its modes every sample.
+    // Weight sustained-contact objects twice because their coupled kernel processes every mode per sample.
     auto &order = m.RenderOrderScratch;
     order.clear();
     for (uint32_t o = 0; o < uint32_t(b.Entities.size()); ++o) {
@@ -441,12 +436,12 @@ void DealObjects(ModalAudio &m, const ModalBank &b, uint32_t count) {
         const bool excited = voices > 0 || std::ranges::contains(b.Impacts, o, &ModalBank::ActiveImpact::Object);
         order.emplace_back(uint64_t(excited ? b.TunedModeCount[o] : b.LiveModeCount[o]) * (1 + voices), o);
     }
-    // One renderer takes every object in bank order, which is what the deal below produces anyway.
+    // A single renderer processes objects in bank order.
     if (count == 1) {
         for (const auto &[cost, o] : order) m.Renderers.front().Objects.push_back(o);
         return;
     }
-    // Heaviest first, and by object for equal weights, so the deal never depends on the sort's own tie-breaking.
+    // Break equal-cost ties by object index for deterministic assignment.
     std::ranges::sort(order, [](const auto &a, const auto &c) { return a.first != c.first ? a.first > c.first : a.second < c.second; });
     auto &load = m.RenderLoadScratch;
     load.assign(count, 0);
@@ -455,18 +450,18 @@ void DealObjects(ModalAudio &m, const ModalBank &b, uint32_t count) {
         load[least] += cost;
         m.Renderers[least].Objects.push_back(o);
     }
-    // Each renderer takes its objects in bank order, which is the order a single renderer would use.
+    // Render assigned objects in bank order.
     for (auto &renderer : m.Renderers) std::ranges::sort(renderer.Objects);
 }
 
-// What one renderer needs to find its own work, handed to the pool as one pointer.
+// Work descriptor passed to one renderer.
 struct RenderJob {
     ModalAudio &Audio;
     ModalBank &Bank;
     uint32_t FrameCount;
 };
 
-// Render the objects assigned to this renderer into its own share of the mix.
+// Renders assigned objects into one renderer-local mix.
 void RenderObjects(ModalAudio &m, ModalRenderScratch &w, ModalBank &b, uint32_t frame_count) {
     const auto impact_count = uint32_t(b.Impacts.size());
     for (const auto o : w.Objects) {
@@ -474,7 +469,6 @@ void RenderObjects(ModalAudio &m, ModalRenderScratch &w, ModalBank &b, uint32_t 
         for (uint32_t i = 0; i < impact_count; ++i) {
             if (b.Impacts[i].Object == o) w.Impacts.push_back(i);
         }
-        // An object holding a sustained contact takes the surface model's coupled kernel, which renders that object's impacts too, and anything else takes the hoisted-gain kernel here.
         if (!SurfaceRenderObject(m, w, b, o, w.Impacts, w.Out.data(), frame_count)) {
             RenderObjectFast(m, w, b, o, w.Impacts, w.Out.data(), frame_count);
         }
@@ -486,8 +480,8 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
     if (frame_count == 0) return;
 
     const auto render_start = std::chrono::steady_clock::now();
-    // Mark this callback's generation, then load the live bank. The main thread waits for this generation
-    // to advance before freeing a replaced bank, so the pointer is always valid and the audio thread never blocks.
+    // Mark the callback generation before loading the live bank.
+    // The main thread delays bank reclamation until this generation advances.
     const auto seq = m.ReaderSeq.load(std::memory_order_relaxed);
     m.ReaderSeq.store(seq + 1, std::memory_order_seq_cst);
     ModalBank &b = *m.Published.load(std::memory_order_seq_cst);
@@ -499,7 +493,6 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
     SurfaceAdoptVoices(m, b, frame_count);
     const auto click_gain = m.ClickGain.load(std::memory_order_relaxed);
 
-    // Per-impact raised-cosine force curves for this block, plus the acceleration-noise click, the coupled recoil filter driven by the pulse as a force in Newtons (see ActiveImpact::ClickB0).
     const auto impact_count = uint32_t(b.Impacts.size());
     m.ForceScratch.resize(size_t(impact_count) * frame_count);
     for (uint32_t i = 0; i < impact_count; ++i) {
@@ -536,7 +529,7 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
         im.ClickZ2 = z2;
     }
 
-    // One width for the whole block, so the deal below and the dispatch under it name the same renderers.
+    // Fix the renderer count for assignment and dispatch across the block.
     ModalRenderPool::Session session{m.RenderPool};
     DealObjects(m, b, session.Width());
     for (auto &renderer : m.Renderers) renderer.Out.assign(frame_count, 0.f);
@@ -558,7 +551,7 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
         const auto &im = b.Impacts[i];
         if (im.SamplesLeft == 0 && std::abs(im.ClickZ1) + std::abs(im.ClickZ2) < 1e-12f) RemoveImpact(b, i);
     }
-    // The energy standing in the banks, read back through each mode's own radiation gain so a state in pressure units returns the mechanical energy behind it.
+    // Convert pressure-domain mode state through radiation gain to estimate mechanical energy.
     // A peak that climbs with nothing striking means a channel is feeding the modes rather than damping them.
     double energy = 0;
     for (size_t o = 0; o < b.Entities.size(); ++o) {
@@ -578,7 +571,6 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
     m.ActiveImpacts.store(uint32_t(b.Impacts.size()), std::memory_order_relaxed);
     m.ReaderSeq.store(seq + 2, std::memory_order_release);
 
-    // What the block cost against the time it had. Past one the device underruns.
     const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - render_start).count();
     const float share = b.SampleRate > 0 ? seconds * b.SampleRate / float(frame_count) : 0.f;
     m.RenderSeconds.store(seconds, std::memory_order_relaxed);

@@ -1,7 +1,5 @@
 #pragma once
 
-// The modal render harness the audio cases share: one bank of identical objects ready to render, the strike that drives them, and the metrics a comparison reads off two renders.
-// Nothing here reaches the surface-contact model, so it builds however SURFACE_AUDIO was configured.
 
 #include "audio/ModalAudio.h"
 #include "audio/ModalModes.h"

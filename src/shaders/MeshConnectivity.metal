@@ -1,19 +1,15 @@
 #ifndef MESHCONNECTIVITY_MSL
 #define MESHCONNECTIVITY_MSL
 
-// Builds a triangle mesh's half-edge connectivity into its arena run: each vertex's first outgoing
-// halfedge, each halfedge's opposite, and the edge-first bits, ranks and samples that rank an edge index.
-// Halfedges group by their lower endpoint, so both halfedges of an edge land in one bucket: count the
-// buckets, scan them, scatter, sort each bucket ascending, then pair within it.
-// Pairing joins a halfedge to the first one in its bucket running the other way, which is the store's own rule.
+// Builds vertex-outgoing halfedges, opposites, and ranked edge-first bits for one triangle mesh.
+// Pairing uses the first reverse halfedge in ascending index order to match the CPU store.
 #include "Bindless.metal"
 #include "BlockScan.metal"
 #include "MeshConnectivityJob.metal"
 #include "MeshConnectivityPushConstants.metal"
 
 constant uint ConnNullHalfedge = 0xffffffffu;
-// The endpoint that is not the bucket's, with the top bit set when the halfedge runs from the higher
-// endpoint to the lower. Two halfedges of one edge share the endpoint and differ in the bit.
+// Packs the non-bucket endpoint with a high-to-low direction bit.
 constant uint ConnReverseBit = 1u << 31;
 
 struct ConnContext {
@@ -25,7 +21,6 @@ struct ConnContext {
     device uint *Scratch() const { return BindlessBufferMutable(uint, B.Buffer, Pc.ScratchSlot); }
     device atomic_uint *AtomicScratch() const { return BindlessBufferMutable(atomic_uint, B.Buffer, Pc.ScratchSlot); }
     device const uint *Corners(MeshConnectivityJob job) const { return BindlessBuffer(uint, B.IndexBuffer, job.Corners.Slot) + job.Corners.Offset; }
-    // The run's sub-spans, in the order the store lays them out.
     device uint *Run(MeshConnectivityJob job) const { return BindlessBufferMutable(uint, B.Buffer, job.Connectivity.Slot) + job.Connectivity.Offset; }
     device uint *Outgoing(MeshConnectivityJob job) const { return Run(job); }
     device atomic_uint *AtomicOutgoing(MeshConnectivityJob job) const {
@@ -45,7 +40,6 @@ inline uint ConnPrevious(uint h) {
     return first + (h - first + 2u) % 3u;
 }
 
-// The halfedge's endpoints, from-vertex first.
 inline uint2 ConnEndpoints(device const uint *corners, uint h) { return uint2(corners[ConnPrevious(h)], corners[h]); }
 
 // The key a bucket scan pairs on: the endpoint away from the bucket, marked with the direction.
@@ -84,10 +78,9 @@ kernel void MeshConnectivityCount(
     if (h >= job.HalfedgeCount) return;
     device const uint *corners = ctx.Corners(job);
     const uint2 ends = ConnEndpoints(corners, h);
-    // A halfedge with no partner keeps this null through the pairing pass.
     ctx.Opposites(job)[h] = ConnNullHalfedge;
     atomic_fetch_add_explicit(&ctx.AtomicScratch()[job.CountsOffset + min(ends.x, ends.y)], 1u, memory_order_relaxed);
-    // A vertex takes the first halfedge leaving it, which is the lowest since the walk runs in order.
+    // Select the lowest outgoing halfedge to match the CPU store.
     atomic_fetch_min_explicit(&ctx.AtomicOutgoing(job)[ends.x], h, memory_order_relaxed);
 }
 
@@ -175,8 +168,7 @@ kernel void MeshConnectivityPair(
     device const uint *offsets = scratch + job.CountsOffset;
     device uint *items = scratch + job.ItemsOffset;
     const uint first = offsets[v], last = offsets[v + 1u];
-    // The bucket holds both halfedges of every edge whose lower endpoint is this vertex, so one pass
-    // over it settles them. A bucket is a vertex's incident halfedges, which its valence bounds.
+    // Vertex valence bounds the in-thread sort and pairing scan.
     for (uint i = first + 1u; i < last; ++i) {
         const uint key = items[i];
         uint j = i;
@@ -194,8 +186,7 @@ kernel void MeshConnectivityPair(
             if (other == (key ^ ConnReverseBit) && opposite == ConnNullHalfedge) opposite = items[j];
             sharing += (other & ~ConnReverseBit) == (key & ~ConnReverseBit) ? 1u : 0u;
         }
-        // Three halfedges on one edge leave a first that is neither a halfedge nor its opposite, which
-        // the bit ranks cannot express, so the store rebuilds that mesh itself.
+        // Three halfedges on one edge cannot be represented by one halfedge/opposite pair, so the CPU rebuilds this mesh.
         if (sharing > 2u) atomic_fetch_or_explicit(&ctx.AtomicScratch()[job.StateOffset + 1u], 1u, memory_order_relaxed);
         if (opposite < h) {
             opposites[h] = opposite;
@@ -215,7 +206,6 @@ kernel void MeshConnectivityBits(
     const uint word = tile.y * ScanTileSize + lane;
     if (word > job.WordCount) return;
     if (word == job.WordCount) {
-        // The scan runs over one more entry than there are words, so its total lands past the last one.
         ctx.Scratch()[job.PopcountOffset + word] = 0u;
         return;
     }
@@ -224,7 +214,7 @@ kernel void MeshConnectivityBits(
     for (uint b = 0u; b < 32u; ++b) {
         const uint h = word * 32u + b;
         if (h >= job.HalfedgeCount) break;
-        // An edge numbers from the first of its halfedges, which is the one with no opposite below it.
+        // Assign the edge index to the lowest halfedge in each opposite pair.
         const uint opposite = opposites[h];
         if (opposite == ConnNullHalfedge || opposite > h) bits |= 1u << b;
     }
@@ -280,7 +270,7 @@ kernel void MeshConnectivityRanks(
     for (uint k = 0u; k < ScanPerThread; ++k) {
         const uint word = base + k;
         if (word > job.WordCount) break;
-        // Past the last word the running total is the edge count, which is what the state keeps.
+        // Store the final prefix total as the edge count.
         if (word < job.WordCount) ranks[word] = start;
         else ctx.Scratch()[job.StateOffset] = start;
         start += local[k];
@@ -298,7 +288,7 @@ kernel void MeshConnectivitySamples(
     const uint sample = tile.y * ScanTileSize + lane;
     const uint edge_count = ctx.Scratch()[job.StateOffset];
     if (sample * 32u >= edge_count) return;
-    // A sample bounds the search for an edge's bit: the word holding edge 32 * sample.
+    // Each sample records the word containing edge 32 * sample to bound rank lookup.
     device const uint *ranks = ctx.EdgeFirstRanks(job);
     const uint edge = sample * 32u;
     uint low = 0u, high = job.WordCount - 1u;

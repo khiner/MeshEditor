@@ -9,17 +9,16 @@
 #include <span>
 #include <vector>
 
-// A cluster's vertex and triangle limits, fixed by the visibility id's six triangle bits and the
-// mesh shader's output contract.
+// The visibility ID encoding and mesh-shader output contract fix these cluster limits.
 inline constexpr uint32_t ClusterLodMaxVertices{uint32_t(MeshletLimit::MaxVertices)};
 inline constexpr uint32_t ClusterLodMaxTriangles{uint32_t(MeshletLimit::MaxTriangles)};
-// A cluster below this triangle count merges into a neighbour instead of standing on its own.
+// Merge clusters below this triangle count into a neighbor.
 inline constexpr uint32_t ClusterLodMinTriangles{16};
-// Clusters per DAG group. A mesh with no more clusters than this has no coarser level to reach.
+// Maximum clusters per DAG group.
+// A mesh at or below this count has no coarser level.
 inline constexpr uint32_t ClusterLodPartitionSize{16};
 // Render records one span-tree leaf covers, which the frontier buffers size themselves against.
 inline constexpr uint32_t ClusterLodSpanLeafRecords{64};
-// Marks an absent cluster, group or node.
 inline constexpr uint32_t ClusterLodInvalid{~0u};
 
 struct ClusterLodPrimitive {
@@ -27,47 +26,45 @@ struct ClusterLodPrimitive {
     uint32_t FirstCluster{}, ClusterCount{};
 };
 
-// One level-0 cluster. Its render record carries this bounding sphere, which the span tree's leaves
-// contain.
+// Describes one level-zero cluster and its render-record bounding sphere.
 struct ClusterLodSourceCluster {
-    uint32_t FirstVertex{}, VertexCount{}; // range in ClusterLodMesh::SourceVertexCorners
-    uint32_t FirstLocalTriangle{}, TriangleCount{}; // three bytes per triangle in SourceLocalTriangles
+    uint32_t FirstVertex{}, VertexCount{};
+    uint32_t FirstLocalTriangle{}, TriangleCount{};
     vec3 Center{};
     float Radius{};
     bool ConeCullSafe{};
 };
 
-// A mesh's geometry as the DAG build reads it. Every span is borrowed for the call.
+// Provides mesh geometry to the DAG build.
+// Every span is borrowed for the duration of the call.
 struct ClusterLodMesh {
-    // Three source vertex ids per triangle.
     std::span<const uint32_t> CornerVertices;
     // Vertex positions, float3 in the first twelve bytes of each vertex.
     const float *Positions{};
     size_t PositionStride{};
-    // Resolved shading normal per corner. Empty derives area-weighted normals from the geometry.
+    // Resolved shading normal per corner.
+    // An empty span requests area-weighted normals derived from geometry.
     std::span<const vec3> CornerNormals;
 
     CornerWeldSource Weld;
 
     std::span<const ClusterLodPrimitive> Primitives;
     std::span<const ClusterLodSourceCluster> Clusters;
-    // The level-zero meshlets' native geometry. Vertex corners and local triangle bytes may carry the
-    // render encoding's high flag bits; the DAG reads only their corner and local-index fields.
+    // DAG construction masks render-encoding flags from level-zero vertex corners and local triangle bytes.
     std::span<const uint32_t> SourceVertexCorners;
     std::span<const uint8_t> SourceLocalTriangles;
 };
 
-// A coarse cluster in engine record form. Offsets are local to the build, and integration rebases
-// them into the mesh arenas.
+// Contains build-local offsets that integration rebases into mesh arenas.
 struct ClusterLodCluster {
-    uint32_t VertexOffset{}, VertexCount{}; // range in ClusterLodBuild::VertexCorners
-    uint32_t LocalTriangleOffset{}, TriangleCount{}; // three local indices per triangle in ClusterLodBuild::LocalTriangles
-    uint32_t Primitive{}; // primitive index within the mesh
+    uint32_t VertexOffset{}, VertexCount{};
+    uint32_t LocalTriangleOffset{}, TriangleCount{};
+    uint32_t Primitive{};
     uint32_t ConeAxisCutoff{}; // four packed s8, cutoff 127 never culls
     vec3 Center{};
     float Radius{};
-    uint32_t GroupIndex{}; // the group whose simplification replaces this cluster
-    uint32_t RefinedGroup{}; // the group this cluster was simplified from, ClusterLodInvalid at level 0
+    uint32_t GroupIndex{};
+    uint32_t RefinedGroup{};
 };
 
 // A DAG group: the merged bounds of its members and the error its simplification introduces.
@@ -76,12 +73,12 @@ struct ClusterLodGroup {
     vec3 Center{};
     float Radius{};
     float Error{};
-    uint32_t FirstCluster{}, ClusterCount{}; // range in ClusterLodBuild::GroupClusters
+    uint32_t FirstCluster{}, ClusterCount{};
     uint32_t Primitive{};
 };
 
-// Partition, lock and merge are wall time over the level, and the three per-group phases sum the
-// time each group spent.
+// Partition, lock, and merge measure level wall time.
+// Per-group phases accumulate group durations.
 struct ClusterLodLevelStats {
     uint32_t Groups{}, Clusters{}, Triangles{};
     uint32_t StuckClusters{}, StuckTriangles{}, SingletonGroups{};
@@ -94,37 +91,35 @@ struct ClusterLodStats {
     std::vector<ClusterLodLevelStats> Levels;
 };
 
-// One primitive's share of the build. Coarse clusters and groups of a primitive are contiguous.
+// Describes one primitive's part of the build.
+// Coarse clusters and groups for a primitive are contiguous.
 struct ClusterLodPrimitiveRange {
     uint32_t FirstCluster{}, ClusterCount{};
     uint32_t FirstGroup{}, GroupCount{};
-    // Where a traversal of this primitive starts: the span tree over its whole record run, and the
-    // leaf covering the original-geometry prefix a pinned instance draws.
+    // RootNode covers the full record run.
+    // FinestNode covers the original-geometry prefix.
     uint32_t RootNode{}, FinestNode{};
 };
 
-// A mesh's cluster LOD DAG. A build cluster id below Level0Count() names an input level-0 cluster,
-// and above it names Clusters[id - Level0Count()].
+// Cluster IDs below Level0Count identify inputs.
+// Higher IDs index Clusters after subtracting Level0Count.
 struct ClusterLodBuild {
-    std::vector<ClusterLodCluster> Clusters; // coarse clusters, in group order
-    std::vector<uint32_t> VertexCorners; // primitive-local source corner id per cluster vertex
-    std::vector<uint8_t> LocalTriangles; // three cluster-local vertex indices per triangle
+    std::vector<ClusterLodCluster> Clusters;
+    std::vector<uint32_t> VertexCorners;
+    std::vector<uint8_t> LocalTriangles;
     std::vector<ClusterLodGroup> Groups;
-    std::vector<uint32_t> GroupClusters; // build cluster ids, grouped by group
-    // Every primitive's span tree, in primitive order, each node covering a contiguous run of the
-    // primitive's render records. A node's bounds contain the run's cluster and group spheres and its
-    // error is the run's worst, and a zero child count marks a leaf.
+    std::vector<uint32_t> GroupClusters;
+    // Stores one primitive-ordered span tree per primitive with contiguous record ranges and conservative bounds and error.
+    // A zero child count marks a leaf.
     std::vector<LodNode> Nodes;
-    std::vector<uint32_t> Level0Groups; // the group each input level-0 cluster belongs to
+    std::vector<uint32_t> Level0Groups;
     std::vector<ClusterLodPrimitiveRange> PrimitiveRanges;
     uint32_t LevelCount{};
-    uint32_t NodeDepth{}; // the deepest primitive's expansions from root to leaf
+    uint32_t NodeDepth{};
     ClusterLodStats Stats;
 
     uint32_t Level0Count() const { return uint32_t(Level0Groups.size()); }
 };
 
-// Builds a mesh's cluster LOD DAG from its level-0 clusters.
-// `serial` uses the reference position remap and runs each level's groups one at a time, producing the
-// same bytes as the parallel run.
+// `serial` uses the reference remap and processes groups sequentially while preserving parallel-run output bytes.
 ClusterLodBuild BuildClusterLod(const ClusterLodMesh &, bool serial = false);

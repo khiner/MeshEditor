@@ -26,8 +26,7 @@ fragment VisibilitySilhouetteTarget VisibilitySilhouetteFragment(
     return {{z, float(decoded.ObjectId)}, z};
 }
 
-// Selection consumes the same visibility ids as shading. The host limits this grid to the pick or
-// box rectangle, so a click decodes only the pixels that can contribute.
+// Decodes visibility IDs only within the host-provided pick or box rectangle.
 kernel void VisibilityObjectSelectionKernel(
     uint2 gid [[thread_position_in_grid]],
     texture2d<uint, access::read> visibility [[texture(0)]],

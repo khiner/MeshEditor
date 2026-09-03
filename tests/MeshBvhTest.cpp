@@ -1,5 +1,4 @@
-// Pins the mesh closest-point query against brute force over every triangle, the one oracle that does not
-// reimplement the hierarchy's pruning.
+// Pins the mesh closest-point query against brute force over every triangle, the one oracle that does not reimplement the hierarchy's pruning.
 
 #include "mesh/MeshBvh.h"
 
@@ -83,8 +82,7 @@ Soup UnitSphere(uint32_t rings, uint32_t segments) {
     }
     return soup;
 }
-} // namespace
-
+}
 int main() {
     "the nearest point agrees with a scan over every triangle"_test = [] {
         std::mt19937 rng{12345};
@@ -128,8 +126,7 @@ int main() {
             const auto hit = bvh.ClosestPoint(sphere.Vertices, sphere.Triangles, query);
             // A tessellated sphere sits just inside the true one, so the chord sagitta is the tolerance.
             expect(std::abs(HitDistance(sphere.Vertices, hit, query) - (numeric::Length(query) - 1.f)) < 0.005f);
-            // The nearest point on a facet is the foot of the perpendicular to its plane, and a coarse tessellation
-            // tilts that plane away from the radius by up to the ring half-angle, the more so the further out the query sits.
+        // Bound coarse-facet error by the ring half-angle and query radius.
             expect(numeric::Dot(numeric::Normalize(Blend(sphere.Vertices, hit)), direction) > 0.98f);
         }
     };
@@ -144,8 +141,7 @@ int main() {
     };
 
     "a degenerate triangle answers without diverging"_test = [] {
-        // A collinear triangle and a sliver, which the interior solve divides by zero on, then coincident corners
-        // and a triangle collapsed to a point, each leaving an edge region with no length to divide by.
+        // Cover collinear, sliver, coincident-corner, and point-degenerate triangles.
         const std::vector<Vertex> vertices{
             Vertex{{0, 0, 0}}, Vertex{{1, 0, 0}}, Vertex{{2, 0, 0}},
             Vertex{{0, 1, 0}}, Vertex{{1e-9f, 1, 0}}, Vertex{{0.5f, 1, 0}},

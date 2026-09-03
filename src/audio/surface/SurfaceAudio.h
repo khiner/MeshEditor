@@ -7,7 +7,6 @@
 
 #include <memory>
 
-// The surface-contact model's scene-facing half: what a contact reads out of the registry, and the mesoscale relief derived from a mesh's normal map.
 
 // The viewport's sustained-contact controls, or their defaults where no viewport has any.
 inline const SurfaceSoundControls &SurfaceControls(const entt::registry &r) {

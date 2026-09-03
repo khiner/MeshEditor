@@ -16,27 +16,25 @@ static_assert(MaxWeldUvSets == MeshStore::MaxUvSets);
 struct GpuBuffers;
 struct MeshBuffers;
 
-// Everything one mesh's meshlet build reads, gathered before any of the batch's builds run.
-// The spans point into the mesh store's arenas and the shared face-index arena, which hold still
-// until the whole batch commits.
+// Borrows stable arena spans until the batch commits.
 struct MeshletBuildInputs {
-    std::span<const uint32_t> Indices; // One corner index per triangle corner
+    std::span<const uint32_t> Indices;
     std::span<const Vertex> Vertices;
     std::span<const uint32_t> ElementPrimitives;
-    std::vector<uint32_t> TriangleEditEdges; // Three canonical edge ids per source triangle; InvalidOffset for triangulation diagonals
+    std::vector<uint32_t> TriangleEditEdges;
     std::vector<PrimitiveTriangleRange> PrimitiveTriangleRanges;
     // The corner attributes the render-vertex weld keys on, shared with the cluster LOD build.
     CornerWeldSource Weld;
-    uint32_t TriangleCount{}; // Triangles across every primitive
-    uint32_t ElementCount{}; // Edges of a line mesh, vertices of a point mesh, zero with faces
+    uint32_t TriangleCount{};
+    uint32_t ElementCount{};
     uint32_t EdgeCount{};
-    uint32_t SourcePrimitiveCount{}; // Primitives a face-less mesh groups its elements into
+    uint32_t SourcePrimitiveCount{};
     bool FaceTopology{}, LineTopology{};
-    SlotOffset AuxIndices{}; // Mesh-wide auxiliary topology, currently canonical edges.
+    SlotOffset AuxIndices{};
     // Derived from the topology fields above.
-    std::vector<DrawData> PrimitiveDraws{}; // One per entry of PrimitiveTriangleRanges
-    DrawData ElementDraw{}; // Every line or point primitive of a face-less mesh draws through this
-    std::vector<uint32_t> EdgeIndices{}; // Endpoint pairs of a line mesh's edges
+    std::vector<DrawData> PrimitiveDraws{};
+    DrawData ElementDraw{};
+    std::vector<uint32_t> EdgeIndices{};
 };
 
 // One mesh's finished meshlets, in the arena layout the commit places them at.
@@ -51,16 +49,14 @@ struct MeshletBuild {
     uint32_t TriangleIdCount{}, LocalTriangleCount{};
 };
 
-// Read every input the build needs while the arenas hold still.
+// Captures stable input spans for the duration of the batch.
 MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &, const MeshBuffers &, const Mesh &, const MeshStore &);
-// Clusterize into plain vectors, consuming TriangleEditEdges but touching no arena, so this runs on any thread.
+// Builds meshlets in host vectors and consumes TriangleEditEdges.
 MeshletBuild BuildMeshlets(MeshletBuildInputs &);
-// Build the DAG over a finished level-0 build, on the same inputs and the same thread.
 // A face-less mesh, and one whose clusters fit a single partition, returns an empty build.
 ClusterLodBuild BuildMeshletClusterLod(const MeshletBuildInputs &, const MeshletBuild &);
 // Release the mesh's previous meshlet ranges, place the finished build, and rebase its offsets.
 // Serial, because arena offsets follow call order.
 void CommitMeshlets(GpuBuffers &, MeshBuffers &, MeshletBuild &);
-// Place a finished DAG: its groups and nodes in their arenas, and its coarse clusters behind each
-// primitive's original geometry in a rewritten meshlet run. Serial, like the meshlet commit.
+// Places a finished DAG serially and appends coarse clusters after each primitive's original geometry.
 void CommitClusterLod(GpuBuffers &, MeshBuffers &, const ClusterLodBuild &);

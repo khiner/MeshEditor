@@ -9,25 +9,25 @@
 
 namespace snapshot {
 enum class Encoding : uint8_t {
-    Tag, // Empty component: presence only, no value bytes (the entity id carries the info).
-    Bytes, // Trivially copyable: memcpy `Size` bytes.
-    Serialized, // Holds heap data (string/vector/...): call `Serialize`.
+    Tag,
+    Bytes,
+    Serialized,
 };
 
 struct SnapshotEntry {
     Encoding How;
-    uint32_t Size; // value bytes for Encoding::Bytes
-    void (*Serialize)(const void *component, std::vector<std::byte> &out); // for Encoding::Serialized
-    void (*Emplace)(entt::registry &, entt::entity, std::span<const std::byte>); // inverse: decode + emplace_or_replace
-    bool (*SkipEntity)(const entt::registry &, entt::entity); // optional: skip entities whose value is derived (null = serialize all)
+    uint32_t Size;
+    void (*Serialize)(const void *component, std::vector<std::byte> &out);
+    void (*Emplace)(entt::registry &, entt::entity, std::span<const std::byte>);
+    bool (*SkipEntity)(const entt::registry &, entt::entity);
 };
 
-// Persistent-component serializer table, built lazily from the hardcoded Persistent list on first use.
+// Returns the serializer table for Persistent components.
 const std::unordered_map<entt::id_type, SnapshotEntry> &SnapshotTable();
 
-// Throws if any live component pool is classified neither Persistent nor Derived.
+// Throws if a live component pool is absent from Persistent and Derived.
 void VerifyCoverage(const entt::registry &);
 
-// Equality for two component values of the provided type. Returns nullopt if the type can't be compared.
+// Compares two component values or returns nullopt for unsupported types.
 std::optional<bool> ComponentValuesEqual(entt::id_type, const void *, const void *);
 } // namespace snapshot

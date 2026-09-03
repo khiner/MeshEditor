@@ -9,9 +9,8 @@ struct SceneNode {
     entt::entity NextSibling{null_entity};
 };
 
-// Blender-style "parent inverse": absorbs any residual between local `Transform` and the
-// child's world-relative-to-parent. Always identity in current callers; kept for the formula
-// WorldTransform = decompose(ParentMatrix * ParentInverse * LocalMatrix).
+// Stores the Blender-style parent inverse used by WorldTransform = decompose(ParentMatrix * ParentInverse * LocalMatrix).
+// Current callers initialize it to identity.
 struct ParentInverse {
     mat4 M{I4};
 };

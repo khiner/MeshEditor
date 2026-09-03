@@ -8,9 +8,8 @@ struct Mesh;
 
 namespace selection {
 
-// Every function here takes one mesh's own selection-bit words, where element `handle` is bit
-// `handle % 32` of word `handle / 32`, and `count`, the element count of the current edit mode.
-// Each store range is sized to its own element domain, so `count` never exceeds it.
+// Each function uses one mesh's selection words and the active element-domain count.
+// Store ranges guarantee capacity for `count` elements.
 
 void ForEachSelected(std::span<const uint32_t> bits, uint32_t count, auto &&fn) {
     const uint32_t last_word = (count + 31) / 32;

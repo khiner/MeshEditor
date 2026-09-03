@@ -5,10 +5,8 @@
 
 #include <filesystem>
 
-// Reactive tags and deferred requests, consumed and cleared once per frame.
-
-struct MeshGeometryDirty {}; // Request meshlet, overlay, and selection refresh after geometry changes.
-struct MeshShadingDirty {}; // Request corner-normal rederivation after a sharpness store write
+struct MeshGeometryDirty {};
+struct MeshShadingDirty {};
 struct LightWireframeDirty {};
 
 struct PendingSetEditMode {
@@ -16,7 +14,6 @@ struct PendingSetEditMode {
 };
 struct PendingShaderRecompile {};
 
-// Pending mesh import (file load + texture uploads), consumed once the GPU work completes.
 struct PendingImportMesh {
     std::filesystem::path Path;
     MeshInstanceCreateInfo Info;

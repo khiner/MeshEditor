@@ -28,13 +28,11 @@ void InitStoreCtx(entt::registry &r, const mtl::Context &ctx) {
 }
 
 namespace {
-// on_construct hook: default-create C, but only if absent, so a snapshot-restored C isn't clobbered or double-emplaced.
 template<typename C>
 void EmplaceIfAbsent(entt::registry &r, entt::entity e) {
     if (!r.all_of<C>(e)) r.emplace<C>(e);
 }
 
-// on_construct hook: build the entity's MeshBuffers from its store handle's vertex range. Index ranges fill in afterward.
 template<typename Handle, auto GetRange>
 void EmplaceMeshBuffers(entt::registry &r, entt::entity e) {
     const auto &meshes = r.ctx().get<const MeshStore>();
@@ -64,7 +62,7 @@ entt::entity WireRegistry(entt::registry &r) {
     r.on_destroy<Name>().connect<[](entt::registry &r, entt::entity e) {
         if (auto *registry = r.ctx().find<NameRegistry>()) registry->Names.erase(r.get<const Name>(e).Value);
     }>();
-    // Assign a stable ObjectId (0 means unassigned) on RenderInstance construction.
+    // Assign stable nonzero object identifiers to new render instances.
     r.on_construct<RenderInstance>().connect<[](entt::registry &r, entt::entity e) {
         if (r.get<const RenderInstance>(e).ObjectId != 0) return;
         if (auto *counter = r.ctx().find<ObjectIdCounter>()) {
@@ -81,19 +79,16 @@ entt::entity WireRegistry(entt::registry &r) {
                 buffers->GpuInstanceSlots.Release({ri.GpuId, 1});
             }
         }
-        if (ri.BufferIndex == UINT32_MAX) return; // Same-frame show+hide — never synced to GPU.
+        if (ri.BufferIndex == UINT32_MAX) return;
         r.get_or_emplace<PendingHide>(ri.Entity).BufferIndices.push_back(ri.BufferIndex);
     }>();
-    // An instance renders unless Hidden: create its RenderInstance on construction, drop it when Hidden appears.
-    // Together these keep RenderInstance in lockstep with Instance + !Hidden, including on snapshot restore
-    // (which emplaces Instance and Hidden in either order).
+    // Keep RenderInstance synchronized with Instance and Hidden regardless of snapshot insertion order.
     r.on_construct<Instance>().connect<[](entt::registry &r, entt::entity e) {
         if (!r.all_of<Hidden>(e) && !r.all_of<RenderInstance>(e)) r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX, 0u);
     }>();
     r.on_construct<Hidden>().connect<[](entt::registry &r, entt::entity e) {
         if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
     }>();
-    // Build MeshBuffers when a vertex handle is constructed (MeshHandle = full meshes, VertexStoreId = vertex-only extras).
     r.on_construct<MeshHandle>().connect<&EmplaceMeshBuffers<MeshHandle, &MeshStore::GetVerticesRange>>();
     r.on_construct<MeshHandle>().connect<&EmplaceMeshShadingSummary>();
     r.on_construct<VertexStoreId>().connect<&EmplaceMeshBuffers<VertexStoreId, &MeshStore::GetVerticesRange>>();
@@ -154,7 +149,7 @@ void TearDownStoreCtx(entt::registry &r) {
     r.ctx().erase<EnvironmentStore>();
     r.ctx().erase<TextureStore>();
     r.ctx().erase<MeshStore>();
-    r.ctx().erase<GpuBuffers>(); // Drops BufferContext, releasing every retired buffer.
+    r.ctx().erase<GpuBuffers>();
     r.ctx().erase<MaterialStore>();
     r.ctx().erase<ObjectIdCounter>();
     r.ctx().erase<NameRegistry>();

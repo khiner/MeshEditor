@@ -20,7 +20,6 @@ struct MeshSource {
     bool FlatShaded{false};
 };
 
-// Every mesh the store makes comes through here.
 // The arena work of each phase runs in source order, so a batch lays out the same way every run.
 std::vector<CreatedMesh> CreateMeshes(entt::registry &, std::span<MeshSource>);
 CreatedMesh CreateMesh(entt::registry &, MeshSource);

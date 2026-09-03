@@ -8,9 +8,7 @@ struct MotionBlurAccumulatePushConstants {
     uint GatherSamplerSlot;
 };
 
-// Sum this step's blurred scene into the accumulation target through the additive blend. The gather
-// output is premultiplied, so alpha sums alongside color and a blurred edge keeps its partial
-// coverage of the backdrop.
+// Adds premultiplied color and coverage for one blurred step to the accumulation target.
 fragment float4 MotionBlurAccumulateFragment(
     QuadVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],

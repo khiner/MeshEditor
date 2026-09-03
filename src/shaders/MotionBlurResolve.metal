@@ -6,7 +6,7 @@
 
 struct MotionBlurResolvePushConstants {
     uint AccumSamplerSlot;
-    float InvSteps; // 1 / step count.
+    float InvSteps;
 };
 
 // Average the summed steps. Color and coverage are both premultiplied, so both scale together.

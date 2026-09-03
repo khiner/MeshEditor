@@ -31,8 +31,8 @@ uint32_t TableSize(uint32_t count) { return std::bit_ceil(count + count / 2u + 1
 struct WeldChannels {
     SlottedRange Deform{}, Morph{};
     uint32_t TargetCount{};
-    uint32_t TangentWordsPerVertex{}; // Zero when no target authors tangent deltas.
-    uint32_t RecordWords{}; // Words one welded vertex takes in the compaction staging.
+    uint32_t TangentWordsPerVertex{};
+    uint32_t RecordWords{};
 };
 
 WeldChannels Channels(const MeshStore &meshes, const WeldTarget &target) {
@@ -47,8 +47,7 @@ WeldChannels Channels(const MeshStore &meshes, const WeldTarget &target) {
     return c;
 }
 
-// Scratch words a mesh of `count` vertices takes: its hash table, per-vertex slots, marks, block sums,
-// the plan the compaction reads, its staging, and the tangent deltas no arena holds.
+// Returns scratch words for welding `count` vertices with the selected channels.
 uint32_t ScratchWords(uint32_t count, const WeldChannels &c) {
     const uint32_t marks = count + 1;
     return TableSize(count) + count + marks + TileCount(marks, BlockElements) + 2 * count +
@@ -122,8 +121,7 @@ void SubmitChunk(entt::registry &r, std::span<const WeldTarget> chunk, WeldBuffe
     reused.Jobs.Update(as_bytes(jobs));
     reused.Tiles.Update(as_bytes(tiles));
 
-    // The morph tangent deltas are the one key channel no arena holds, so they stage in the scratch,
-    // where the same passes compare and compact them.
+    // Stage host-owned tangent deltas so the same passes compare and compact them.
     for (uint32_t i = 0; i < chunk.size(); ++i) {
         if (jobs[i].TangentOffset == InvalidOffset) continue;
         const auto &deltas = chunk[i].Prepared->MorphTangentDeltas;

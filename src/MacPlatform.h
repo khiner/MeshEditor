@@ -33,7 +33,7 @@ public:
 
     void InitImGui();
     void NewImGuiFrame();
-    // Warps the OS cursor to a position ImGui requested this frame.
+    // Move the OS cursor to ImGui's requested position.
     void HonorMouseWarp();
     void ShutdownImGui();
 

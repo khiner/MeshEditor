@@ -46,7 +46,7 @@ float Finish(RoughnessTrack &t) {
     t.Sum[0] = 0;
     std::partial_sum(t.Heights.begin(), t.Heights.end(), t.Sum.begin() + 1);
     if (n > 1) {
-        // The seam where a measured profile wraps is a join rather than a surface feature, so the slope skips it.
+        // Exclude the cyclic boundary because measured profile endpoints are not adjacent samples.
         double slope_energy = 0;
         for (size_t i = 1; i < n; ++i) {
             const double d = double(t.Heights[i]) - double(t.Heights[i - 1]);
@@ -62,7 +62,7 @@ float Finish(RoughnessTrack &t) {
         }
         t.CurvatureRms = float(std::sqrt(curvature_energy / double(n - 2)));
     }
-    // The boxcar mean at each width, read cyclically off the running integral as a contact reads it.
+    // Compute cyclic boxcar means from the running integral.
     for (uint32_t i = 0; i < TrackWidthCount; ++i) {
         const size_t width = size_t{1} << i;
         if (width >= n) {
@@ -78,7 +78,6 @@ float Finish(RoughnessTrack &t) {
         }
         t.WindowRms[i] = float(std::sqrt(energy / double(n)));
     }
-    // The gradient at each width, as the second difference of the running sum: two adjacent boxcar means of `width` samples, differenced across the `width` between their centres.
     float widest = 0;
     for (uint32_t i = 0; i < TrackWidthCount; ++i) {
         const size_t width = size_t{1} << i;
@@ -98,7 +97,7 @@ float Finish(RoughnessTrack &t) {
     return rms;
 }
 
-// A spectrum averaged into cells holding a fixed share of an octave each, giving the bin each cell is centred on and the mean power over it.
+// Returns fixed fractional-octave cells with each center bin and mean power.
 // One realization scatters exponentially about its expected spectrum bin by bin, so the low end stays as measured and the high end averages down.
 struct SpectrumCells {
     std::vector<double> At, Power; // The bin a cell is centred on, and the mean power over it.
@@ -172,10 +171,6 @@ double SpectrumAt(std::span<const double> curve, double at) {
     return curve[lo] + (at - double(lo)) * (curve[lo + 1] - curve[lo]);
 }
 
-// The radial power spectrum whose cuts reproduce a measured trace's spectrum.
-// A cut integrates the radial spectrum over the perpendicular wavenumber, so reading one off a trace inverts that integral, which is ill posed like Abel's inversion.
-// The smooth shape is inverted instead, on cells of a fixed share of an octave, from the closed-form power-law relation one power shallower than the cut and flat below the corner.
-// The integral's constant is sqrt(pi) G(-p/2) / G((1-p)/2), finite only where the cut falls.
 constexpr double RadialCellsPerOctave{16}, BandCellsPerOctave{8};
 constexpr uint32_t RadialPasses{64};
 std::vector<double> RadialSpectrum(std::span<const double> power, uint32_t rows, double rho) {
@@ -186,7 +181,7 @@ std::vector<double> RadialSpectrum(std::span<const double> power, uint32_t rows,
     const auto count = cells.At.size();
     if (count < 4) return radial;
     const auto corner = FitBand(cells).Corner;
-    // Held on the cells and read onto the bins.
+    // Interpolate cell values onto bins.
     std::vector<double> held(count, 0.0);
     std::vector<size_t> cell(bins, 0);
     std::vector<double> share(bins, 0.0);
@@ -285,8 +280,6 @@ RoughnessTrack SynthesizeRoughness(float correlation_length, float spectral_slop
     const uint32_t bins = count / 2 + 1;
     std::vector<std::complex<float>> spectrum(bins);
     const float q0 = 1.f / std::max(correlation_length, 1e-9f);
-    // The surface's shortest stated wavelength, floored at the one this sampling can be measured over, so the track states the band its heights hold.
-    // The floor is SurfaceSamplesPerCutoff rather than the two spacings representation ends at: a second difference reads about 40 percent of the true curvature at two spacings and converges by eight.
     track.Cutoff = std::max(short_wavelength, SurfaceSamplesPerCutoff * spacing);
     const float qs = 1.f / track.Cutoff;
     const float dq = 1.f / (float(count) * spacing);
@@ -356,7 +349,6 @@ RoughnessField SynthesizeRoughnessPatch(float correlation_length, float spectral
 LatticeCovariance RoughnessLatticeCovariance(float correlation_length, float spectral_slope, float short_wavelength, float spacing, uint32_t columns, uint32_t rows) {
     LatticeCovariance cov{};
     if (columns < 2 || rows < 2 || spacing <= 0) return cov;
-    // The same envelope SynthesizeRoughnessPatch fills: the radial slope one power shallower than the track's, the cutoff floored at the sampling, mirrored wavenumbers past either Nyquist.
     const double radial_slope = double(spectral_slope) - 1;
     const double q0 = 1 / std::max(double(correlation_length), 1e-9);
     const double qs = 1 / std::max(double(short_wavelength), 2.0 * spacing);
@@ -390,7 +382,7 @@ LatticeCovariance RoughnessLatticeCovariance(float correlation_length, float spe
 RoughnessTrack SynthesizeTurnover(float spacing, uint32_t count, uint64_t seed) {
     RoughnessTrack track;
     track.Spacing = spacing;
-    track.Cutoff = SurfaceSamplesPerCutoff * spacing; // White at the asperity spacing, so its band is what its sampling resolves.
+    track.Cutoff = SurfaceSamplesPerCutoff * spacing; // Sampling determines the white-noise cutoff.
     track.Heights.resize(count);
     uint64_t state = SurfaceDraw(seed);
     for (float &h : track.Heights) h = float(SplitMix64(state) >> 40) / float(1 << 24) - 0.5f;
@@ -401,7 +393,7 @@ RoughnessTrack SynthesizeTurnover(float spacing, uint32_t count, uint64_t seed) 
 RoughnessTrack MakeProfileTrack(std::span<const float> heights, float spacing) {
     RoughnessTrack track;
     track.Spacing = spacing;
-    track.Cutoff = SurfaceSamplesPerCutoff * spacing; // A measurement's band is what its sampling resolves.
+    track.Cutoff = SurfaceSamplesPerCutoff * spacing; // Sampling determines the measured cutoff.
     track.Heights.assign(heights.begin(), heights.end());
     track.Rms = Finish(track);
     if (heights.size() >= 8 && spacing > 0) {
@@ -422,7 +414,6 @@ RoughnessField SynthesizeProfileField(std::span<const float> heights, float spac
     if (columns < 8 || rows < 2 || spacing <= 0) return field;
 
     const uint32_t bins_x = columns / 2 + 1, bins_y = rows / 2 + 1;
-    // Wavenumbers are carried in bins of the sweep, which is the grid the radial spectrum is tabulated on, so the rows step by the ratio of the two axes' lengths.
     const double rho = double(columns) / rows;
     const auto trace = fft::RealToComplex(heights);
     // The transform's inverse includes the sample count, so the cut the field is conditioned on is the trace's spectrum over that count.
@@ -452,7 +443,6 @@ RoughnessField SynthesizeProfileField(std::span<const float> heights, float spac
             }
         }
     });
-    // The two rows across the sweep that mirror onto themselves carry conjugate symmetry along it, which leaves the field real and its row zero the plain sum of the stored bins.
     const auto symmetrize = [&](uint32_t j) {
         spectrum[at(0, j)].imag(0.f);
         if (columns % 2 == 0) spectrum[at(columns / 2, j)].imag(0.f);
@@ -461,9 +451,6 @@ RoughnessField SynthesizeProfileField(std::span<const float> heights, float spac
     symmetrize(0);
     if (rows % 2 == 0) symmetrize(rows / 2);
 
-    // The trace is one linear functional of the field's independent bins, so the draw conditioned on it is this draw plus the share of the miss each bin holds of the cut's variance.
-    // The row the trace is placed on comes out of the transform as the trace itself, and every other row is the surface the spectrum implies around it.
-    // Every miss is read off the same unconditioned draw, so the two halves of the sweep stay each other's conjugate and the correction lands on both alike.
     const uint32_t mirrored = rows % 2 == 0 ? bins_y - 2 : bins_y - 1;
     std::vector<std::complex<double>> miss(columns);
     std::vector<double> held(columns);
@@ -532,9 +519,6 @@ float HermiteForce(float f0, float f1, float d0, float d1, float h, float t, flo
         f1 * (-2 * t3 + 3 * t2) + h * d1 * (t3 - t2);
 }
 
-// The knot at or below `engagement`, the index std::upper_bound less one finds.
-// The knots are geometric, so the scan starts at the engagement's own power of two.
-// An exponent below the table's floor lands on index zero, which covers engagements under the first knot and subnormal engagements alike.
 uint32_t KnotBelow(const ElementSprings &s, float engagement) {
     const auto *z = s.Engagement.data();
     if (s.KnotByExponent.empty()) {
@@ -547,7 +531,6 @@ uint32_t KnotBelow(const ElementSprings &s, float engagement) {
     return i;
 }
 
-// One element's tabulated value at an engagement, linear between knots and held past the last.
 float ElementTableAt(const ElementSprings &s, std::span<const float> table, uint32_t element, float engagement) {
     const uint32_t k = s.Knots;
     if (k < 2 || engagement <= 0) return 0.f;
@@ -559,9 +542,6 @@ float ElementTableAt(const ElementSprings &s, std::span<const float> table, uint
     return h > 0 ? v[i] + (v[i + 1] - v[i]) * (engagement - z[i]) / h : v[i];
 }
 
-// The tallest any crest in the block starting at `at` can stand once the body's gap has lifted it: the block's tallest crest, less the smallest lift any of its elements takes.
-// Nothing in the block reaches a body at or above this.
-// The gap grows away from the contact, so the smallest lift is at whichever end of the block sits nearest the contact, and zero where the block straddles it.
 double BlockReachTop(const ElementSprings &s, uint32_t block, int64_t at, double position, double combined_curvature) {
     const double near = (double(at) + 0.5 - position) * double(s.Width);
     const double far = (double(at + ElementSprings::CrestBlock - 1) + 0.5 - position) * double(s.Width);
@@ -569,9 +549,6 @@ double BlockReachTop(const ElementSprings &s, uint32_t block, int64_t at, double
     return double(s.BlockCrest[block]) - 0.5 * combined_curvature * closest * closest;
 }
 
-// Every element a footprint centred at `position` spans, wrapped into the surface they tile.
-// `visit(at, element, lift)` takes each one with the height the body's gap lifts it by.
-// Skipping a block whose reach top stands at or below `bound()` is exact, every element in it bearing zero force.
 void WalkFootprintElements(const ElementSprings &s, double position, double combined_curvature, uint32_t reach, auto &&bound, auto &&visit) {
     constexpr auto Block = int64_t(ElementSprings::CrestBlock);
     const uint32_t count = s.Count();
@@ -600,10 +577,6 @@ struct SummitDepth {
     double Share{1}; // Share of a step of approach the contact takes, the roughness taking the rest.
 };
 
-// How one summit's depth divides between the contact it makes and the roughness inside that contact.
-// A summit pressed to Hertz depth x makes a contact 2a = 1.5 k sqrt(x) / E* wide, and the band below the surface's stated cutoff holds gamma A (2a)^H of separation open inside it.
-// That interface follows Persson's law at the patch's own pressure, so dF/d(depth) = F / u, which integrates to (3/H) u of depth by the time the contact bears F.
-// The roughness therefore takes B x^(H/2) while the contact takes x, and scaling the depth by S = B^(2/(2-H)) leaves y + y^(H/2) = d/S, one curve for a whole population.
 class DepthSplit {
 public:
     DepthSplit(const SubCutoffRoughness &sub, double inv_modulus)
@@ -641,8 +614,6 @@ public:
         double x = scale *
             (u <= LogMin ? std::pow(t, 2 / Hurst) : u >= LogMax ? t - std::pow(t, 0.5 * Hurst) :
                                                                   Interpolate(u));
-        // A contact wider than the field's cutoff has resolved summits inside it, so the band stops widening and holds one separation open however deep the contact presses.
-        // The interface then follows Persson's law at that separation alone, so this summit re-solves against the logarithm that law leaves.
         if (const double clamp_depth = ClampDepth(stiffness); x > clamp_depth) {
             for (uint32_t step = 0; step < 4; ++step) {
                 const double held = ClampSeparation * (3 / Hurst + 1.5 * std::log(x / clamp_depth));
@@ -683,7 +654,6 @@ void FillEngagementKnots(ElementSprings &out, double engagement_max, uint32_t kn
         const double t = double(j - 1) / double(knots - 2);
         out.Engagement[j] = float(ToeEngagement * std::pow(engagement_max / ToeEngagement, t));
     }
-    // The knots are geometric, so one octave of engagement holds only a few.
     if (out.Engagement[1] > 0 && out.Engagement[knots - 1] >= out.Engagement[1] && knots <= 256) {
         out.KnotExponentFloor = std::ilogb(out.Engagement[1]);
         const int32_t top = std::ilogb(out.Engagement[knots - 1]);
@@ -737,7 +707,6 @@ void FillCurveTail(ElementSprings &out, uint32_t curve) {
 SubCutoffRoughness UnresolvedBand(double roughness, double correlation_length, double short_wavelength, double slope) {
     const double hurst = 0.5 * (-slope - 1);
     if (roughness <= 0 || hurst <= 0 || hurst >= 1 || short_wavelength <= 0 || short_wavelength >= correlation_length) return {};
-    // The variance a whole finish holds, in units of its flat band's, so the tail below the cutoff is a share of the surface's stated height.
     const double whole = 0.5 + (1 - std::pow(correlation_length / short_wavelength, -2 * hurst)) / (2 * hurst);
     return {
         .Amplitude = roughness / (std::sqrt(2 * hurst * whole) * std::pow(correlation_length, hurst)),
@@ -787,7 +756,6 @@ void RefreshCrestBlocks(ElementSprings &s) {
     const uint32_t count = s.Count();
     const uint32_t blocks = (count + ElementSprings::CrestBlock - 1) / ElementSprings::CrestBlock;
     s.BlockCrest.assign(blocks, -std::numeric_limits<float>::max());
-    // A skip spans a full block of consecutive slots, so a last block running past the end wraps into the array's start and its crest bounds those elements too.
     for (uint32_t i = 0; i < blocks * ElementSprings::CrestBlock; ++i) {
         float &top = s.BlockCrest[i / ElementSprings::CrestBlock];
         top = std::max(top, s.Crest[i % count]);
@@ -842,7 +810,7 @@ std::pair<float, float> ElementForceSlope(const ElementSprings &s, uint32_t elem
     return {HermiteForce(f[i], f[i + 1], d[i], d[i + 1], h, t, t2, t3), slope};
 }
 
-// One pass over the footprint at `position`: what the body first touches there, what its elements carry with that body's surface at `surface`, and how fast that force grows as the surface descends.
+// Returns first contact, force, and stiffness over the footprint at `position`.
 struct FootprintWalk {
     double Touch{-std::numeric_limits<double>::max()}; // Highest crest under the body's gap, m.
     double Force{0}; // N
@@ -880,10 +848,7 @@ BinShare BinSplit(double coord, int64_t bins, double window) {
 std::vector<float> BearingDatum(const ElementSprings &s, double combined_curvature, uint32_t reach, double load) {
     const uint32_t count = s.Count();
     if (count == 0 || !(load > 0)) return ElementEnvelope(s, combined_curvature, reach);
-    // Solved at every element, as the envelopment procedure it stands for is (Winroth 2010 ch 2.5-3.4, after Andersson and Kropp 2008).
-    // The height a contact seats at is the output of a load balance, so sub-element detail belongs to the force law rather than to this geometry.
     std::vector<double> seat(count), touch(count);
-    // The seat moves by one element's share of the bearing population between neighbours, so each position starts from the one behind it and usually closes in a single Newton step.
     double held = 0;
     uint32_t unseated = 0;
     double worst = 0;
@@ -896,7 +861,6 @@ std::vector<float> BearingDatum(const ElementSprings &s, double combined_curvatu
         for (uint32_t step = 0; step < 24 && !seated; ++step) {
             const auto walk = WalkFootprint(s, y, position, combined_curvature, reach);
             residual = std::abs(walk.Force - load) / load;
-            // The stack's force is a sum of single-precision curves, so a balance closes to about a part in a million and a tighter target only spends iterations on rounding.
             if (residual <= 1e-6) {
                 seated = true;
                 break;
@@ -906,7 +870,6 @@ std::vector<float> BearingDatum(const ElementSprings &s, double combined_curvatu
                 y = std::min(y, top) - 0.25 * double(s.EngagementMax);
                 continue;
             }
-            // The force law stiffens fast enough that a full step from far out overshoots past the crests, so a step is held to the engagement the tabulation covers.
             y += std::clamp((walk.Force - load) / walk.Stiffness, -double(s.EngagementMax), double(s.EngagementMax));
         }
         seat[e] = y;
@@ -934,7 +897,6 @@ std::vector<float> BearingDatum(const ElementSprings &s, double combined_curvatu
 float EnvelopeAt(std::span<const float> envelope, double position) {
     const auto n = int64_t(envelope.size());
     if (n == 0) return 0.f;
-    // Element e's stored envelope stands at its centre e + 0.5.
     const double p = position - 0.5;
     const double base = std::floor(p);
     const auto i0 = uint64_t(((int64_t(base) % n) + n) % n);
@@ -942,8 +904,6 @@ float EnvelopeAt(std::span<const float> envelope, double position) {
     return envelope[i0] + float(p - base) * (envelope[i1] - envelope[i0]);
 }
 
-// The height the slower side's crest deviation adds at one element, taken where that side stands.
-// Zero slip cancels the pair exactly.
 float Reregister(const SlidingRegistration &slide, double at) {
     if (slide.SlowCrestDev.empty()) return 0.f;
     return EnvelopeAt(slide.SlowCrestDev, at + 0.5 - slide.Slip) - EnvelopeAt(slide.SlowCrestDev, at + 0.5);
@@ -960,8 +920,6 @@ SpringRead ReadContactSpringBins(
     const auto bins = int64_t(bin_force.size());
     const bool modulated = bin_engagement.size() >= bin_force.size() && !bin_force.empty();
     const double window = double(2 * reach + 1);
-    // The deepest a bin's offset takes an element, which is how far above the body a crest can still stand and bear.
-    // A run of crests below that reaches nothing and is skipped whole.
     float deepest = 0;
     for (const float off : bin_engagement) deepest = std::max(deepest, off);
     const double reaches = surface - double(deepest);
@@ -975,7 +933,6 @@ SpringRead ReadContactSpringBins(
             total.Force += read.Force;
             total.Potential += read.Potential;
             if (bins > 0) {
-                // The element's bin coordinate is continuous in the contact's travel, so its share slides between the two nearest bins instead of hopping at element crossings.
                 const auto [b0, b1, w1] = BinSplit(double(at) + 0.5 - position + double(reach) + 0.5, bins, window);
                 const float off = (1.f - w1) * (modulated ? bin_engagement[b0] : 0.f) + w1 * (modulated ? bin_engagement[b1] : 0.f);
                 const float f = modulated ? ReadElementSpring(s, e, eng + off).Force : read.Force;
@@ -1008,7 +965,6 @@ SpringRead ReadContactSpringChannels(
         s, position, combined_curvature, reach,
         [reaches] { return reaches; },
         [&](int64_t at, uint32_t e, double lift) {
-            // The element's bin coordinate slides between the two nearest bins as the contact travels, and its engagement offset interpolates theirs the same way.
             const auto [b0, b1, w1] = BinSplit(double(at) + 0.5 - position + double(reach) + 0.5, bins, window);
             const float off = bin_engagement.empty() ? 0.f : (1.f - w1) * bin_engagement[b0] + w1 * bin_engagement[b1];
             const float eng = float(double(s.Crest[e]) - surface - lift) + off;
@@ -1107,7 +1063,6 @@ float SolveSpringEngagement(const ElementSprings &s, std::span<const float> enve
         return sum / double(count);
     };
     float low = 0, high = s.EngagementMax;
-    // A load heavier than the table reaches is carried past its end, where the curve continues at its final slope, so the bracket grows instead of clamping into a false equilibrium.
     while (mean_force(high) < normal_force && high < 1e3f * s.EngagementMax) high *= 2;
     for (uint32_t i = 0; i < 60; ++i) {
         const float mid = 0.5f * (low + high);
@@ -1136,7 +1091,6 @@ void SweepModeDrives(std::span<const float> field, std::span<const float> phi, u
             for (uint32_t k = 0; k < modes; ++k) acc[k] += f * ph[k];
             return true;
         };
-        // The window reads elements cyclically from `first`, so a pass takes the index's tail then its head, and a window longer than the array continues with further passes.
         const auto begin = std::ranges::lower_bound(bearing, first);
         bool inside = true;
         for (uint32_t base = 0; inside && base < window; base += count) {
@@ -1148,7 +1102,6 @@ void SweepModeDrives(std::span<const float> field, std::span<const float> phi, u
 }
 
 namespace {
-// Whether row `r` of `cur` stands at or above all eight of its neighbours across the three columns.
 bool IsSummit(const float *prev, const float *cur, const float *next, uint32_t r, uint32_t rows) {
     const float h = cur[r];
     for (const float *col : {prev, cur, next}) {
@@ -1219,8 +1172,6 @@ void GatherElementSummits(
     out.InvModulus = inv_effective_modulus;
     out.Crest.resize(count, -std::numeric_limits<float>::max());
 
-    // The field with the body's transverse gap folded in, so a crest is the first point of an element the body reaches, and its summits are marked across element boundaries.
-    // A summit and its curvature read only their own and both neighbouring columns, so one pass holds a three-column window of the folded field.
     std::vector<float> window(size_t(3) * rows);
     auto *prev = window.data();
     auto *cur = prev + rows;
@@ -1370,9 +1321,6 @@ ElementSprings BuildEnsembleSprings(
     }
     const double sigma = std::sqrt(variance);
 
-    // Each element's population anchors at and truncates below its own crest, the ceilings binned so the shared curve is the element-weighted mean of a small family.
-    // The deep-knot population is convex in the crest height, so a single curve at the mean crest reads tens of percent low there.
-    // The per-ceiling truncation starts every element's share of the curve at zero force on first contact.
     double crest_sum = 0, crest_min = 1e300, crest_max = -1e300;
     for (const float c : crests) {
         crest_sum += c;
@@ -1416,8 +1364,6 @@ ElementSprings BuildEnsembleSprings(
     const double rho_axial = rho[0] + rho[1] + rho[2] + rho[3];
     const double kappa_scale = sigma / (double(spacing) * spacing);
 
-    // The population sampled once: conditioning on the centre height x lets one deviate set serve every height node, a draw clearing the summit condition for every x at or above its own threshold max_i e_i / (1 - rho_i).
-    // The samples land in height-by-curvature cells with their own weight and mean curvature, so the force math below runs per cell with the curvature's first moment held exactly.
     const double x_hi = crest_max / sigma;
     const auto nodes = uint32_t(std::ceil((x_hi - XLo) / 0.02));
     const double dx = (x_hi - XLo) / nodes;
@@ -1475,8 +1421,6 @@ ElementSprings BuildEnsembleSprings(
     InitSpringTables(out, crests, float(element_columns) * spacing, engagement_max, 1, knots);
     out.Crest = std::move(crests);
 
-    // The per-site expectation on a dense engagement grid: the knot grid with two geometric points inserted per interval, so a row whose gap shifts it between knots interpolates between neighbours a few percent apart.
-    // The spectrum is held at quarter-octave resolution relative to the grid engagement, so the gap's shift of a row's bins is a sub-bin slide.
     constexpr uint32_t QuarterBins{FlankSpectrumBins * 4};
     std::vector<double> ugrid;
     ugrid.reserve(size_t(knots) * 3);
@@ -1533,7 +1477,6 @@ ElementSprings BuildEnsembleSprings(
         }
     }
 
-    // The crest summit itself: one asperity per element entering at engagement zero, at the population's expected curvature at the crest height, which makes an element's onset stiffness its tallest asperity's.
     const double crest_kappa = [&] {
         const auto node = std::min(nodes - 1, uint32_t(std::max((xi_crest - XLo) / dx - 0.5, 0.0)));
         double w = 0, ks = 0;
@@ -1547,8 +1490,6 @@ ElementSprings BuildEnsembleSprings(
     const double crest_stiffness = ContactStiffness(inv_effective_modulus, CombinedCurvature(crest_kappa, 0));
     const double crest_scale = split.Scale(crest_stiffness);
 
-    // Each row bears from its own plane, the gap below the crest, so the shared curve composes the per-site law across the strip's rows with the crest term on top.
-    // A flat gap makes every row the same read at the knot itself.
     const bool flat = body_curvature == 0 && std::ranges::all_of(transverse_gap, [](float g) { return g == 0.f; });
     const double site_scale = double(element_columns) * strip_realizations;
     const auto read_site = [&](uint32_t cb, double u, uint32_t j, double row_scale) {
@@ -1568,7 +1509,6 @@ ElementSprings BuildEnsembleSprings(
         out.FlankMoment[j] += float(row_scale * m);
         out.BearingWidth[j] += float(row_scale * w);
         out.BearingCount[j] += float(row_scale * c);
-        // The row's bins slide by the gap's share of the knot engagement, in quarter octaves, and the population spectrum holds every element's share.
         const auto slide = uint32_t(std::lround(4 * std::log2(double(out.Engagement[j]) / u)));
         const double spectrum_scale = row_scale * count;
         for (uint32_t q = 0; q < QuarterBins; ++q) {
@@ -1691,8 +1631,6 @@ double FullContactPressure(double roughness, double roll_off_wavevector, double 
 SeparationCoefficients PerssonSeparationCoefficients(double hurst, double band_ratio, double gamma) {
     if (band_ratio <= 1 || hurst <= 0 || hurst >= 1 || gamma <= 0) return {};
     const double t_max = std::sqrt(band_ratio - 1);
-    // Both integrands carry an inverse-square-root endpoint at t = 0, and one a logarithm over it, which fixed-step and Gauss-Legendre rules converge on slowly.
-    // Tanh-sinh converges double-exponentially there, reaching five decimals in 97 nodes.
     constexpr int Half = 48;
     constexpr double HalfWidth = 3.2, Step = HalfWidth / Half;
     double weight_sum = 0, log_sum = 0;
@@ -1732,7 +1670,7 @@ double ConformalStiffness(double normal_force, double roughness, const Separatio
 }
 
 double BedHeightIntegral(double lambda, double power) {
-    // Heights beyond eight standard deviations carry no weight, and starting at -lambda excludes the clamp at zero, so a midpoint rule resolves the integrand.
+    // Integrate from -lambda to eight standard deviations with the midpoint rule.
     constexpr int Steps = 256;
     constexpr double Limit = 8;
     const double lo = std::max(-lambda, -Limit);
@@ -1901,9 +1839,6 @@ void RemoveVoice(SurfaceAudioState &surface, uint32_t i) {
 }
 } // namespace
 
-// Bring the bank's voices in line with the newest published set.
-// A contact already open keeps its carried state, one the set omits is over, and a new one opens.
-// Once publishing stops for MaxVoiceIdleSeconds the set is treated as empty, silencing the scene.
 void SurfaceAdoptVoices(ModalAudio &m, ModalBank &b, uint32_t frame_count) {
     auto &surface = Surface(m);
     const auto *set = surface.PublishedVoices.load(std::memory_order_acquire);
@@ -1926,14 +1861,10 @@ void SurfaceAdoptVoices(ModalAudio &m, ModalBank &b, uint32_t frame_count) {
             if (voice.Object >= b.Entities.size()) continue;
             if (const auto v = FindIndex(surface.VoiceId, voice.Id)) {
                 surface.VoiceObject[*v] = voice.Object;
-                // A published state can move a live voice's anchors farther than its engagement range, when the contact re-forms on another triangle or its confinement changes regime.
-                // The solver applied no impulse for such a move, so the carry re-anchors at the new state instead of rendering the jump as surface motion.
                 const auto &prev = surface.VoiceState[*v];
                 const auto &next = voice.State;
                 const float prev_depth = prev.CellSpread > 0 ? prev.CellSpread : std::abs(prev.StaticPenetration);
                 const float next_depth = next.CellSpread > 0 ? next.CellSpread : std::abs(next.StaticPenetration);
-                // The sweep table is an additive modal drive whose rows are zero-mean and load-scaled, so a slot change swaps the drive without moving any anchor the reads depend on.
-                // A parting body drops and re-adopts its table, and rebasing on that would render each landing as a surface jump.
                 bool rebase = next.SpotCount != prev.SpotCount || next.SpringIndex != prev.SpringIndex || next.SpringBins != prev.SpringBins ||
                     std::abs(next.StaticPenetration - prev.StaticPenetration) > std::max(prev_depth, next_depth);
                 for (uint32_t i = 0; i < SustainedState::TrackCount && !rebase; ++i) {
@@ -1969,9 +1900,6 @@ void SurfaceAdoptVoices(ModalAudio &m, ModalBank &b, uint32_t frame_count) {
 }
 
 namespace {
-// The excitation a sustained voice contributes this sample (KHR_audio_rigid_bodies Appendix B).
-// The normal part is the contact force's fluctuation about the load.
-// The tangential part has two mechanisms acting along different directions: the load projected onto each surface's tilt, along the direction the contact travels over it, and Coulomb traction along the slip.
 struct VoiceForce {
     float Normal; // The fluctuation about the load, which drives the modes and accelerates the body alike.
     std::array<float, 2> Geometric; // Per surface, in the contact's surface order, matching SustainedState::SweepDir.
@@ -1985,10 +1913,7 @@ struct ContactReport {
     std::atomic<uint64_t> Samples{0}, Free{0}, Shocks{0}, CellSamples{0}, CellBearing{0};
     // Junction engagements the turnover shot process spawned, summed over bins and voices.
     std::atomic<uint64_t> TurnoverEvents{0};
-    // Peaks a completed engagement carried, against the load the contact reports, the reference Dang 2013 Fig. 12 uses: 30% of peaks under one slider weight, 57% under ten and 100% under a hundred.
-    // Only completed engagements count, so one still bearing at the end is dropped.
     std::atomic<uint64_t> Peaks{0}, UnderLoad{0}, UnderTen{0}, UnderHundred{0};
-    // The stiction channel: samples a sliding voice solved the tangential branch on, how many took the stick branch, and how often a voice crossed between stick and slip.
     std::atomic<uint64_t> TangentSamples{0}, StickSamples{0}, StickTransitions{0};
     float SampleRate{0};
 
@@ -2040,16 +1965,9 @@ void ReportCell(SustainedCarry &carry, const SustainedState &st, uint32_t k, flo
     Report.CellSamples.fetch_add(1, std::memory_order_relaxed);
 }
 
-// The energy-quadratised sustained exchange (van Walstijn et al. 2024, Ducceschi et al. 2021).
-// One auxiliary variable psi = sqrt(2 * stored contact energy) per voice steps the contact explicitly, with passivity at any stiffness.
-// The datum's advance enters as a rebase of psi at frozen body state, which is the work the moving surface does on the contact.
-// The exchange solves one body's voices as a coupled system in O(V^2) + O(V^3), so past this count the pairwise terms drop and each voice solves against its own diagonal, still coupled through the shared mode state and the body's velocity one sample later.
 constexpr size_t MaxCoupledVoices{16};
-// Lanes of the turnover track a bed cell's asperity sites stand on, each an independent stretch representing one row of the patch across the sweep.
 constexpr uint32_t SampledLanes{8};
 
-// The integral of the voice's elastic force law over the approach, from first touch, N*m, for the beds without a height spread: the smooth Hertz spring and the bare-cell bed.
-// A spread bed's potential is assembled from its sampled sites instead.
 float BedPotentialIntegral(const SustainedState &st, float approach, const float *heights, const float *means) {
     const uint32_t spots = st.SpotCount;
     if (spots == 0) {
@@ -2064,13 +1982,10 @@ float BedPotentialIntegral(const SustainedState &st, float approach, const float
     }
     return sum;
 }
-// One cell's site sums: the mean force and elastic-potential factors of the clamped spot law over the surface-fixed sites inside the cell's footprint, edges tapered over the fold-back width.
-// Sites are the turnover track's samples, one per asperity spacing on each lane, and a site's height never changes: entry and exit at the edges are the turnover.
 struct SiteSums {
     float Force; // mean of [engaged + spread * h]^(3/2) over the footprint's site population, m^(3/2)
     float Potential; // mean of 0.4 [engaged + spread * h]^(5/2), the spot law's integral, m^(5/2)
 };
-// `engaged` is the cell's absolute engagement in meters and the track's unit-variance site heights scale by `spread`, so the sums stay finite at any spread down to zero.
 SiteSums SampleCellSites(const RoughnessTrack &t, double centre, float footprint, float taper, float engaged, float spread) {
     // A cell whose engagement cannot reach the track's tallest site bears nothing, the same result the full sum gives.
     if (engaged + spread * t.HeightMax <= 0) return {0.f, 0.f};
@@ -2095,7 +2010,6 @@ SiteSums SampleCellSites(const RoughnessTrack &t, double centre, float footprint
     return {force / wsum, pot / wsum};
 }
 
-// What one voice contributes to the quadratised solve, resolved before the coupled step is known.
 struct QuadInputs {
     float PsiTilde; // The auxiliary variable after the datum's metered rebase.
     float GNominal; // The analytic gradient dpsi/dw at the current state.
@@ -2118,10 +2032,9 @@ bool BearsOnSprings(const SustainedState &st, const ContactSpringSet *set) {
     return st.SpringIndex >= 0 && set != nullptr && set->Springs.Count() > 0;
 }
 
-// A voice's block-fixed constants: the slip-turnover channel's refresh, cascade poles, event amplitude (Campbell's theorem) and mean-blocker coefficient, and the sampled bed's cell weight, site share, Gaussian tail cutoff and site taper.
 VoiceBlock BlockConstants(const SustainedState &st, const ContactSpringSet *spring_set, const RoughnessTrack *turnover, float sample_rate) {
     VoiceBlock out;
-    // A frozen sweep holds the junction forces it left, which would stand as a static offset, so each bin subtracts a sub-audio one-pole mean.
+    // A sub-audio one-pole mean removes static junction-force offsets after sweep motion stops.
     // The 10 Hz corner sits below the channel's band.
     out.Dcn = std::min(2 * std::numbers::pi_v<float> * 10.f / sample_rate, 1.f);
     const uint32_t spots = st.SpotCount;
@@ -2135,15 +2048,13 @@ VoiceBlock BlockConstants(const SustainedState &st, const ContactSpringSet *spri
         out.TaperS = std::max(2.f * st.Turnover.Rate, 1.f);
     }
     if (!spring_read) return out;
-    // The population's draws refresh when a junction's pairing redraws (the slip) and, under the ensemble curve family, when the footprint advances onto fresh elements, whose realization scatter the curve collapse dropped.
-    // A realized build sweeps that scatter through its per-element curves, so its rate is the slip alone, and a rolling contact refreshes at the advance.
     const uint32_t fast = 1 - (st.SlowSide & 1), slow = st.SlowSide & 1;
     const double redraw = std::abs(double(st.Tracks[fast].Step) - double(st.Tracks[slow].Step));
     out.Refresh = spring_set->Springs.Curves == 1 ? std::max(redraw, std::abs(double(st.Tracks[fast].Step))) : redraw;
     out.Shot = st.JunctionSpacing > 0 && st.JunctionTransit > 0 &&
         st.FootprintLength > 4 * st.JunctionTransit && st.NoiseStiffness > 0;
     if (!out.Shot) return out;
-    // A stopped sweep spawns nothing and freezes both poles, so the junctions stand where they are and the blocker drains what they held.
+    // A stopped sweep freezes both poles while the blocker removes residual offsets.
     out.Moving = out.Refresh > 0;
     out.P = out.Moving ? float(out.Refresh / double(st.JunctionSpacing)) : 0.f;
     double sum_h2 = 1;
@@ -2170,8 +2081,6 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
         carry.NoisePos = 0;
     }
     const uint32_t spots = st.SpotCount;
-    // Bearing on the pool's springs leaves the finish tracks their slope channel alone and the statistical bed's cells, sites and recruitment unused.
-    // A relief track keeps its height, the springs taking the mesoscale as bearing across a footprint whose field repeats over a length a wide contact can span.
     const bool spring_read = BearsOnSprings(st, spring_set);
     float relief = 0, distance = 0;
     std::array<float, 2> slope{};
@@ -2186,12 +2095,9 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
         if (t.Step > 0 && t.Spacing > 0) slope[i & 1] += t.Sigma * reading.Slope / t.Spacing;
         distance = std::max(distance, t.Step);
     }
-    // The position along the springs and the support envelope's height there.
-    // Engagement is measured from the envelope rather than an element's crest, since a crest is a maximum and a taller neighbour already bears when the centre first touches.
     double spring_pos = 0;
     float env_here = 0;
-    // The slower side's crests, read back at the slip it stands behind the array.
-    // Both surfaces advancing together leaves the slip at zero and the composite untouched.
+    // Register slower-surface crests at the relative slip offset.
     SlidingRegistration slide, prev_slide;
     if (spring_read) {
         carry.SpringPos += st.SpringRate;
@@ -2207,15 +2113,12 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
     }
     const float compliance_share = std::max(st.SurfaceCompliance, 1e-12f);
     const float body_side = st.SurfaceCompliance * (carry.RigidNormal + deflection);
-    // The spread bed is the sampled-asperity form: the Hertz spot law's mean blended with the surface-fixed sites at the counted weight that makes the population variance exact, its Gaussian tail cut at the finite population's tallest reach.
-    // A voice whose turnover track failed to adopt renders the mean law alone.
-    // Engagements and site heights are held in meters, so the law is continuous in the spread down to and including zero, where it is the bare Hertz cell.
     const bool sampled = spots > 0 && st.CellSpread > 0 && !spring_read;
     const bool sites_live = sampled && turnover && st.Turnover.Index >= 0;
     const float load_w = block.LoadW, csite = block.CSite, cutoff_m = block.CutoffM, pot_cut_m = block.PotCutM, taper_s = block.TaperS;
     // The stored energy of the given readings at the given body state, and each cell's site force into `force_out`.
     // The psi rebase differences this at two states, so the site share is evaluated fresh both times.
-    // A stored site potential would carry the previous body state into the difference.
+    // Recompute site potential to exclude previous-body state from the difference.
     const auto sampled_potential = [&](float approach_v, const float *heights, double turnover_pos, float *force_out = nullptr) {
         const double stride_t = double(st.Turnover.Window) / double(spots);
         const double base_t = turnover_pos - 0.5 * double(st.Turnover.Window);
@@ -2230,13 +2133,8 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
         }
         return sum * load_w;
     };
-    // Each bin's elements deepen by the body's deflection at that bin's place, less the centre's, which the approach already holds.
-    // This conformity term lets an elastic body's local forces fluctuate at modal rates while their sum stays near constant.
     std::array<float, MaxSpringBins> bin_engagement{};
     const uint32_t bins = spring_read ? std::min({st.SpringBins, MaxSpringBins, uint32_t(bin_defl.size())}) : 0;
-    // The body's rigid rocking.
-    // The separation across the footprint varies linearly with the tilt (Hess and Soom 1992, Eq. 6c), so each bin deepens by its own lever arm and a crest arriving under one edge tips the face instead of lifting all of it.
-    // The previous sample's solved reactions turn the body, and the tilt is read about its settled orientation through a sub-audio mean, so a standing lever-weighted imbalance in the bins' shares causes no lasting rotation.
     const bool tilt_live = spring_read && bins > 0 && st.InverseAngularInertia > 0 && st.SpringHalfExtent > 0;
     carry.PrevTilt = carry.Tilt - carry.TiltMean;
     if (rebase) {
@@ -2248,16 +2146,14 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
         carry.TiltMean += (carry.Tilt - carry.TiltMean) * std::min(2 * std::numbers::pi_v<float> * 10.f / sample_rate, 1.f);
     }
     const float tilt_now = carry.Tilt - carry.TiltMean;
-    // The engagement a tilt of `tilt` leaves at one bin's lever arm, the interface taking its share of the body's motion there as it does of the deflection below.
+    // Convert rigid tilt at a bin lever arm into interface engagement.
     const auto bin_tilt = [&](uint32_t bb, float tilt) {
         return tilt_live ? st.SurfaceCompliance * tilt * SpringBinOffset(bb, st.SpringBins, st.SpringHalfExtent) : 0.f;
     };
-    // The previous sample's turnover injection and tilt join the conformity term here, so the old-state read below stands on the surface that sample read.
+    // Include prior turnover injection and tilt in the old-state conformity term.
     for (uint32_t bb = 0; bb < bins; ++bb) {
         bin_engagement[bb] = -st.SurfaceCompliance * (bin_defl[bb] - deflection) + carry.NoiseEngageBin[bb] + bin_tilt(bb, carry.PrevTilt);
     }
-    // The stored energy under the previous sample's readings at the current body state, so the change the surface's advance makes enters psi as the work that advance does.
-    // A binned voice keeps the account per channel, at the same body state both reads share.
     float potential_old = 0;
     std::array<float, MaxSpringBins> bin_pot_old{};
     if (!rebase) {
@@ -2291,21 +2187,14 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
     carry.ReliefMean += (relief - carry.ReliefMean) * dc;
     for (uint32_t k = 0; k < spots; ++k) carry.SpotMean[k] += (spot_height[k] - carry.SpotMean[k]) * dc;
     if (spring_read) carry.SpringDatum += (env_here - carry.SpringDatum) * dc;
-    // The sampled bed's sites stand still on the surface while the footprints advance over them.
+    // Asperity sites remain surface-fixed while footprints advance.
     if (sampled) carry.TurnoverPos += st.Turnover.Rate;
-    // Under the springs the approach is the engagement below the envelope at the element under the contact, so the envelope's variation is the excitation the surface-fixed elements carry.
     float approach = st.StaticPenetration + st.SurfaceCompliance * (relief - carry.ReliefMean) - body_side +
         (spring_read ? st.SurfaceCompliance * (env_here - carry.SpringDatum) : 0.f) + carry.NoiseEngage;
-    // A rebase moves the carry's anchors without any solver impulse, so the body's normal travel absorbs the jump and the approach carries over from the previous sample.
-    // Re-reading the anchor's seated engagement would render a parted body's clearance as instant engagement.
     if (rebase && !priming && st.SurfaceCompliance > 0) {
         carry.RigidNormal += (approach - carry.RawApproach) / st.SurfaceCompliance;
         approach = carry.RawApproach;
     }
-    // The slip-turnover channel: sliding one surface past the other redraws each bearing junction independently, so the footprint's force fluctuates about the coherent read with the population's summed squared-force variance.
-    // Roughness contact sound is a micro-shock process, discrete junction engagements ringing the system's modes (Ananthapadmanaban and Radhakrishnan 1982, Ben Abdelounis et al. 2011), so the pool renders as filtered shot noise.
-    // Poisson junction arrivals come at the refresh rate over the junction spacing, each decaying over the footprint's residence (Gray and Johnson 1972) and smoothed over the junction's own Hertz patch transit, with Campbell's theorem setting the event amplitude.
-    // The fluctuation is a surface-height process, so it enters as engagement through the anchored bearing stiffness, and the curve moves force and potential together.
     std::array<float, MaxSpringBins> turnover_bin{};
     float turnover_total = 0;
     carry.NoiseEngagePrev = carry.NoiseEngage;
@@ -2321,8 +2210,6 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
                 if (carry.NoiseRng == 0) {
                     carry.NoiseRng = 0x51f2c3a496b8d7e5ull ^ (uint64_t(uint32_t(st.SpringIndex + 1)) << 32) ^ std::bit_cast<uint32_t>(st.JunctionSpacing);
                 }
-                // Junction arrivals follow each bin's own bearing population, so a bin's rate takes its share and every arrival bears the same junction-scale force.
-                // The process's mean is deterministic, so a second cascade driven by the expected arrival rate subtracts it exactly and the blocker takes only residual drift.
                 const bool moving = block.Moving;
                 const float p = block.P, a = block.A;
                 const double p1 = block.P1, p2 = block.P2;
@@ -2346,7 +2233,6 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
                     expected_smooth += (expected_pool - expected_smooth) * float(1 - p2);
                     carry.NoiseMean[bb] += (smooth - expected_smooth - carry.NoiseMean[bb]) * dcn;
                     const float fluct = smooth - expected_smooth - carry.NoiseMean[bb];
-                    // The conversion stiffness is the anchor's static per-bin split rather than the live share, which would loop the injection through its own force response and run away.
                     if (bins > 0) {
                         const float dd = fluct * float(nb) / st.NoiseStiffness;
                         carry.NoiseEngageBin[bb] = dd;
@@ -2372,12 +2258,9 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
         }
     }
     if (!bin_injected) carry.NoiseEngageBin.fill(0.f);
-    // The new read stands at the tilt this sample turned to and the old read above at the previous one, so the rocking's work enters psi as the surface's advance does.
-    // The injected path already rebuilt the offsets at the new tilt.
     if (tilt_live && !bin_injected) {
         for (uint32_t bb = 0; bb < bins; ++bb) bin_engagement[bb] += bin_tilt(bb, tilt_now) - bin_tilt(bb, carry.PrevTilt);
     }
-    // Under the sampled bed one fused pass per cell serves the potential and the force, the spot law's 5/2 integral being its 3/2 value times the engagement, so each site costs one square root.
     std::array<float, MaxBedSpots> site_force{};
     float potential_new;
     SpringRead stack{};
@@ -2431,8 +2314,6 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
         const float a = std::clamp(approach, 0.f, MaxEngagement);
         raw_elastic += st.Stiffness * a * std::sqrt(a);
     }
-    // Each bin's share of the stack, its slow mean tracked like the datum.
-    // Seeding and convex updates both preserve a unit sum over the bins, so the shares split the solver's support across the bin channels without moving its total.
     if (bins > 0) {
         float bin_sum = 0;
         for (uint32_t bb = 0; bb < bins; ++bb) bin_sum += bin_force[bb];
@@ -2450,11 +2331,7 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
     } else if (ReportContacts && spots > 0) {
         for (uint32_t k = 0; k < spots; ++k) ReportCell(carry, st, k, report_load[k]);
     }
-    // The constrained Hunt-Crossley factorisation: h stays finite and rho = v * h(v) never falls below -1, so the damping stays non-adhesive however fast the surfaces part.
     const float v_rel = rebase ? 0.f : (approach - carry.RawApproach) * sample_rate;
-    // The damping constant is the state's factor read as s/m, quoted at a 1 m/s approach.
-    // ETA_LANDING sizes it per engagement instead: the constant tracks the approach rate while the contact is open, so an engagement takes the constant its own landing speed implies and holds it while it bears (van Walstijn et al. 2024, Eqs 38-39).
-    // A primed or rebased engagement never landed, so it takes the reference constant.
     static const bool landing_sized = std::getenv("ETA_LANDING") != nullptr;
     if (!carry.PrevContact) {
         carry.EngagementDamping = landing_sized && !rebase ? st.DampingFactor / std::max(v_rel, ImpactVelocityChi / (sample_rate * sample_rate)) : st.DampingFactor;
@@ -2472,7 +2349,6 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
         carry.PrevSlipPos = carry.SlipPos;
     }
     for (uint32_t k = 0; k < spots; ++k) carry.PrevSpotHeight[k] = spot_height[k];
-    // The bin channels' exchange quantities, the scalar scheme per bin: psi from the bin's stored energy with the datum's work metered per channel, the analytic gradient from the bin's force, and the constrained damping at the bin's relative rate.
     QuadInputs out{
         .PsiTilde = psi,
         .GNominal = potential_new > 0 ? raw_elastic / (compliance_share * psi_new) : 0.f,
@@ -2508,8 +2384,6 @@ QuadInputs StepVoiceQuad(const SustainedState &st, const RoughnessTrack *const *
     return out;
 }
 
-// What the stiction solve needs from the sample loop: the tangential free step relative to the sliding surface, the tangential and cross compliances, and the deflection read the carry keeps.
-// The transverse mirror covers the second in-plane direction (normal cross slip) for spring voices, whose interface junction holds both directions whether the contact slides or rests.
 struct TangentInputs {
     float Rhs; // The contact point's free step relative to the surface, before any friction force.
     float Ct; // Tangential displacement response per newton of friction force, modal plus body.
@@ -2540,10 +2414,6 @@ DahlRelax DahlRelaxation(float x) {
     return {(1.f - e) / x, (e * (x + 1.f) - 1.f) / (x * x)};
 }
 
-// The path-averaged Dahl step along one direction: the force is -kt times the mean stretch of the exact Dahl solution over the junction step du, so the discrete work equals the continuous path's and the step inherits its pointwise dissipation at any state and step size.
-// The stretch relaxes toward the cone edge as the junction drags, which is the sub-cone micro-slip loss (Mindlin and Deresiewicz 1953, Dahl 1976) that a pure stick spring cannot render.
-// Its limits are a half-step stick spring as zmax grows and the cone edge as |du| does.
-// The junction step depends on the force through the compliance, so Newton solves ft = -kt * zbar(du(ft)), monotone with derivative at least one.
 DahlStep SolveDahlDirection(float z, float kt, float zmax, float rhs, float compliance) {
     // The linear stick solution starts the iteration and is exact in the small-step limit.
     float ft = -kt * (z + 0.25f * rhs) / (1 + 0.25f * kt * compliance);
@@ -2564,9 +2434,6 @@ DahlStep SolveDahlDirection(float z, float kt, float zmax, float rhs, float comp
     return {ft, std::clamp(zn, -zmax, zmax)};
 }
 
-// The same path-averaged step over a spread of Jenkins elements sharing one displacement and one contact compliance, each with its own stiffness and cone, so each relaxes at its own rate and the Newton solves the one total force.
-// Where one element dissipates as the cube of the amplitude at any drive, a growing drive reaches further into the spread and renders the exponent the population's own density implies (Segalman 2005 Eqs. 12 and 18).
-// The stretches commit in `z`, and the single-element limit is SolveDahlDirection exactly.
 float SolveDahlSpread(std::span<const FlankJunctionBin> bins, std::span<float> z, float cone, float rhs, float compliance) {
     std::array<float, MaxFlankBins> zmax;
     float stiffness = 0, stretch = 0;
@@ -2599,10 +2466,6 @@ float SolveDahlSpread(std::span<const FlankJunctionBin> bins, std::span<float> z
 
 } // namespace
 
-// Two rough surfaces touch where their composite gap peaks, which is where they lie locally parallel, so the interface there is tilted and the approach itself slides each bearing flank against its own Coulomb cone.
-// That is a hysteresis in the normal direction with no gross tangential motion, the only channel a normal-polarized mode presents to a junction.
-// The bearing population collapses to one Dahl element at the resolved flank stiffness under the contact's cone, whose loop area is cubic in the approach amplitude where Hunt-Crossley's is quadratic.
-// With bins that population keeps its own spread of breakaway strengths, and the exponent falls below the cube as the drive reaches the strengths the spread holds.
 float FlankJunctionStep(const SustainedState &st, SustainedCarry &carry, float load, float step, float cn) {
     const float kt = st.FlankStiffness;
     const float fmax = st.Friction * load;
@@ -2615,8 +2478,6 @@ float FlankJunctionStep(const SustainedState &st, SustainedCarry &carry, float l
     // The spread replaces the single element with the population's own strengths, and its stick stiffness is the sum over its bins.
     const std::span bins{st.FlankBin.data(), st.FlankBins};
     const std::span stretches{carry.PatchFlankBin.data(), st.FlankBins};
-    // `cn` is the junction's displacement response per newton, of which the element's approach takes the surface's own share.
-    // Pushing the surfaces apart reduces the approach `step` covers, so the normal force the contact applies is the negative of the solved one and resists the approach.
     float force = 0;
     if (st.FlankBins > 0) {
         force = SolveDahlSpread(bins, stretches, fmax, step, compliance);
@@ -2634,14 +2495,6 @@ void ResetRelaxation(SustainedCarry &carry) {
     carry.RelaxTangentPos = 0;
 }
 
-// A contact oscillating in both the normal and the tangential direction dissipates even at infinite friction and in a purely elastic material (Popov, Popov and Pohrt 2015).
-// The springs at the contact's edge engage unsheared, are dragged tangentially for as long as they bear, and lose the shear they hold the moment the receding contact drops them.
-// Their Eq. (10) is the loss per cycle, (G*/c) times the integral over the shed depths of the shear s(u) of each, and the shape factor 1/c = (d2F/dd2) / (2 E*) of their Eq. (6) leaves the moduli cancelling into RelaxScale.
-//
-// The loss lives on the phase between the two motions: their Eq. (7) takes s as the tangential travel between engaging at a depth and being released at it, which goes as the sine of that phase.
-// A contact whose normal and tangential motion share one phase releases every annulus at the tangential position it engaged at and releases nothing, which is the case of a single vibration mode with a real shape, so this channel does work only where two independent phases meet at one contact.
-// The shear a released annulus took on depends on when it engaged and varies across the annulus, which is why the history is a polyline of engagement points interpolated in both the engagement tangent and the tangent this step retreats along.
-// That leaves s linear across each shed piece, which integrates in closed form and vanishes identically wherever the tangent is a linear function of the depth.
 float RelaxationRelease(const SustainedState &st, SustainedCarry &carry, float approach_step, float tangent_step) {
     if (st.RelaxScale <= 0) return 0.f;
     const float d_prev = carry.RelaxDepth, x_prev = carry.RelaxTangentPos;
@@ -2667,7 +2520,6 @@ float RelaxationRelease(const SustainedState &st, SustainedCarry &carry, float a
         ++carry.RelaxEdges;
         return 0.f;
     }
-    // Shrinking: every annulus standing above the new depth is shed, each carrying the shear between where it engaged and where this step releases it, both linear in the depth across one piece.
     const float release_slope = d != d_prev ? (x - x_prev) / (d - d_prev) : 0.f;
     double energy = 0;
     while (carry.RelaxEdges > 1 && d < carry.RelaxApproach[carry.RelaxEdges - 1]) {
@@ -2687,9 +2539,6 @@ float RelaxationRelease(const SustainedState &st, SustainedCarry &carry, float a
         }
     }
     if (d < carry.RelaxApproach[0]) {
-        // Past the shallowest depth on record the contact is smaller than it has ever been, so what it gives up there has borne throughout and has never been released.
-        // Popov Eq. (9) counts only the springs that spend part of a cycle out of contact, and the cone and the Dahl law take the shear the core holds.
-        // The core therefore releases nothing here and re-anchors where it would next engage, which keeps both integrated positions measured from within the excursion.
         carry.RelaxApproach[0] = 0;
         carry.RelaxTangent[0] = 0;
         carry.RelaxDepth = 0;
@@ -2706,10 +2555,6 @@ struct FrictionForces {
     float Transverse;
 };
 
-// Coulomb friction with stiction: the tangential force that would hold the contact point on the sliding surface, clamped to the cone of the y-form contact force `fy` (Eq 49's centered-rate form, whose 1 + rho factor stays non-negative by the constrained damping).
-// Inside the cone the point sticks, outside it slides at the cone edge opposing the relative slip.
-// The solver applies the kinetic mean, so the row and the body receive the fluctuation about it, which is Friction * reaction whenever the contact slides without sticking.
-// A spring voice's junction runs the path-averaged Dahl law on both in-plane axes under the shared cone, so sub-cone motion dissipates through interface micro-slip while pressed.
 FrictionForces SolveVoiceFriction(const SustainedState &st, SustainedCarry &carry, float reaction, float fy, const TangentInputs &tan, float approach_step) {
     float frictional = st.Friction * reaction;
     float transverse = 0.f;
@@ -2719,7 +2564,6 @@ FrictionForces SolveVoiceFriction(const SustainedState &st, SustainedCarry &carr
         const float kt = st.ShearStiffness;
         float ft;
         bool stick = false;
-        // A cone below the float-normal floor holds nothing and slides, where the Dahl solve's relaxation ratio would overflow on its stretch bound.
         if (const float zmax = fmax / kt; kt > 0 && fmax > 0 && zmax >= std::numeric_limits<float>::min() && st.SpringIndex >= 0) {
             // Both stretches live on half-steps like psi.
             // The shared cone couples the axes, the vector force projecting back to the cone, which only releases stretch.
@@ -2748,8 +2592,6 @@ FrictionForces SolveVoiceFriction(const SustainedState &st, SustainedCarry &carr
             }
             stick = norm < fmax;
         } else if (kt > 0) {
-            // Friction acts through the patch shear spring, whose stretch lives on half-steps like psi.
-            // Stick holds the junction and stretches the spring with half the relative step, slide clamps the midpoint force at the cone edge, and a parted or unloaded contact releases its shear.
             const float z = carry.PatchShear;
             const float f_stick = -kt * (z + 0.25f * rhs) / (1 + 0.25f * kt * tan.Ct);
             if (fmax <= 0) {
@@ -2761,13 +2603,11 @@ FrictionForces SolveVoiceFriction(const SustainedState &st, SustainedCarry &carr
                 stick = true;
                 carry.PatchShear = z + 0.5f * (rhs + tan.Ct * ft);
             } else {
-                // The slide branch is a return map, firing only past the cone and moving the stretch to the cone edge, so the spring only releases energy here.
-                // A growing cone lands in the stick branch instead, holding the stretch it has.
                 ft = std::copysign(fmax, f_stick);
                 carry.PatchShear = -ft / kt;
             }
         } else {
-            // A smooth pair's junction binds the contact point directly, the holding force being what zeroes the point's step relative to the surface, clamped to the cone.
+            // Clamp the force that cancels relative contact-point motion to the Coulomb cone.
             const float hold = -rhs / tan.Ct;
             float hold_tr = tan.ActiveTr ? -(tan.RhsTr + tan.CntTr * reaction) / tan.CtTr : 0.f;
             const float norm = std::sqrt(hold * hold + hold_tr * hold_tr);
@@ -2776,13 +2616,11 @@ FrictionForces SolveVoiceFriction(const SustainedState &st, SustainedCarry &carr
             ft = hold * scale;
             transverse = hold_tr * scale;
         }
-        // The relaxation channel takes its loss out of the shear the junction is holding, which only releases stored energy.
-        // The annuli a receding contact drops carry their shear away, and it never returns to the modes.
+        // Relaxation removes energy only from stored junction shear.
+    // Remove shear energy from annuli released by a receding contact.
         if (kt > 0 && fmax <= 0) {
             ResetRelaxation(carry); // A parted contact has no edge, so its history no longer applies.
         } else if (kt > 0) {
-            // Both channels read the junction's relative displacement over the same interval: the normal side takes the solve's approach step, so the tangential side takes its own free step plus its response to the force just solved.
-            // Differencing the deflection read alone spans the interval one sample earlier, and that offset is exactly the phase the mechanism keys on.
             const float tangent_step = rhs + tan.Ct * ft;
             const float released = RelaxationRelease(st, carry, approach_step, tangent_step);
             const float stored = 0.5f * kt * (carry.PatchShear * carry.PatchShear + carry.PatchShearTransverse * carry.PatchShearTransverse);
@@ -2807,10 +2645,6 @@ FrictionForces SolveVoiceFriction(const SustainedState &st, SustainedCarry &carr
     return {frictional, transverse};
 }
 
-// One channel's advance under its solved step: the psi it lands on, the contact force the scheme implies, and the tangential force on it.
-// A parted channel only drains, pushing outward and releasing stored psi while the energy an approaching free step would store is discarded as dissipation.
-// The Hunt-Crossley damping term does not apply there, its non-adhesion constraint assuming the in-contact psi advance (van Walstijn et al. 2024 IFAC, Eq. 50).
-// The drain's exponential tail flushes to exactly zero at the subnormal floor, so a parted channel ends with no contact energy rather than a denormal that downstream cones divide by.
 struct ChannelAdvance {
     float Psi, Force, Fy;
 };
@@ -2850,7 +2684,6 @@ VoiceJunctions SolveVoiceJunctions(const SustainedState &st, SustainedCarry &car
     return {{reaction + flank, {load * slope0, load * slope1}, junction.Frictional, junction.Transverse}, flank};
 }
 
-// Apply the solved shared step to one voice: advance psi, form the contact force the scheme implies, and solve the frictional force with stiction (vw2024 Eq 43).
 VoiceForce FinishVoiceQuad(const SustainedState &st, SustainedCarry &carry, float psi_tilde, float hx, bool in_contact, float g, float step, float cn, float slope0, float slope1, float sample_rate, const TangentInputs &tan) {
     const auto advance = AdvanceChannel(psi_tilde, g, step, hx, in_contact, st.SurfaceCompliance, carry.EngagementDamping, sample_rate, tan.Active);
     carry.Psi = advance.Psi;
@@ -2860,9 +2693,6 @@ VoiceForce FinishVoiceQuad(const SustainedState &st, SustainedCarry &carry, floa
     return SolveVoiceJunctions(st, carry, advance.Force - st.NormalForce, advance.Fy, step, cn, slope0, slope1, tan).Force;
 }
 
-// FinishVoiceQuad for a binned spring voice: each bin channel advances its own psi under its solved step and contributes its force, while the voice-level friction works on the totals.
-// Each channel's reaction lands in `bin_reaction`.
-// The scalar Psi holds the channel total, so a voice losing its bins resumes the scalar account continuously.
 VoiceForce FinishBinnedVoiceQuad(
     const SustainedState &st, SustainedCarry &carry, uint32_t channels, uint32_t contact_mask,
     const float *psi, const float *hx, const float *g, const float *step,
@@ -2884,7 +2714,6 @@ VoiceForce FinishBinnedVoiceQuad(
     carry.PrevContact = contact_mask != 0;
     carry.PrevRigidNormal = carry.RigidNormal;
     if (ReportContacts) ReportSample(force, sample_rate);
-    // The bins are parallel channels across one footprint sharing one approach, so the junctions on that approach take the bins' steps averaged at the shares they bear the load at.
     std::array<float, MaxSpringBins> share{};
     float support_total = 0.f;
     for (uint32_t bb = 0; bb < channels; ++bb) support_total += support[bb];
@@ -2905,9 +2734,6 @@ float SolveChannelStep(float cross, float free_step, float psi, float gamma, flo
     return (free_step - cross * psi * g) / (1 + cross * (gamma * g + 0.25f * g * g));
 }
 
-// The object's modal displacement along a voice's contact normal, predicted for the sample the force it feeds will act on.
-// The state a read sees lags that force's effect by two samples and a delayed resonant loop through the contact injects negative damping, so each mode is read through its own two-sample advance, both state components rotated by c^2 in the gains.
-// The drives of the two samples ahead are unknown here and contribute O(dt^2) displacement, which is the whole approximation.
 float ReadDeflection(const float *__restrict gains_im, const float *__restrict gains_re, const float *__restrict state_im, const float *__restrict state_re, uint32_t count) {
 #pragma clang fp reassociate(on)
     float sum = 0.f;
@@ -2920,8 +2746,7 @@ void AccumulateDot(float &acc, const float *__restrict gains, const float *__res
     for (uint32_t k = 0; k < count; ++k) acc += gains[k] * excite[k];
 }
 
-// One read row's displacement now, its free advance two steps on, and what this sample's known arrivals add through it.
-// A null arrival is one this row does not take.
+// Returns current displacement, two-step free displacement, and known-arrival displacement for one row.
 struct RowRead {
     float Now, Next, Arrival;
 };
@@ -2948,7 +2773,6 @@ constexpr uint32_t NoTransverseRow{~0u};
 void GatherExcitation(const float *__restrict gains, const float *__restrict forces, uint32_t voice_drives, uint32_t drives, float *__restrict excite, uint32_t count) {
     bool seeded = false;
     const auto row = [&](uint32_t d) { return gains + size_t(d) * count; };
-    // A voice's four rows all stand behind the same contact, so they enter together in one pass.
     for (uint32_t d = VoiceDrives; d < voice_drives; d += VoiceDrives) {
         const float f0 = forces[d], f1 = forces[d + 1], f2 = forces[d + 2], f3 = forces[d + 3];
         const float *__restrict g0 = row(d), *__restrict g1 = row(d + 1), *__restrict g2 = row(d + 2), *__restrict g3 = row(d + 3);
@@ -2959,7 +2783,6 @@ void GatherExcitation(const float *__restrict gains, const float *__restrict for
             seeded = true;
         }
     }
-    // An impact stands on its own row, and drives no force once its pulse is over.
     for (uint32_t d = voice_drives; d < drives; ++d) {
         const float force = forces[d];
         if (force == 0.f) continue;
@@ -2974,7 +2797,7 @@ void GatherExcitation(const float *__restrict gains, const float *__restrict for
     if (!seeded) std::fill_n(excite, count, 0.f);
 }
 
-// Advance every mode one sample and return what the object radiates.
+// Advances every mode by one sample and returns the radiated pressure.
 // The first voice's drive rows enter here directly, and the sum runs the length of the mode count, so it reassociates into independent partial sums.
 float AdvanceModes(
     float *__restrict state_re, float *__restrict state_im, const float *__restrict coeff_re, const float *__restrict coeff_im,
@@ -3005,19 +2828,14 @@ struct RenderBlock {
     vec3 SupportForce{0};
 };
 
-// Everything one block of an object's render stands on, resolved before its first sample.
+// Block-constant object render state resolved before the first sample.
 RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch &w, ModalBank &b, uint32_t o, std::span<const uint32_t> impacts, std::span<const uint32_t> voices) {
-    // A shape row is `stride` wide, and only the leading `count` of it still sounds.
-    // A voice drives the object every sample, so it holds every mode the tuning left.
     const auto k0 = b.ModeOffset[o], stride = b.ModeCount[o], count = b.TunedModeCount[o];
     const auto shape0 = b.ShapeOffset[o];
     const auto listener_gain = std::atomic_ref{b.ListenerGain[o]}.load(std::memory_order_relaxed);
     const auto out_gain = std::atomic_ref{b.OutGain[o]}.load(std::memory_order_relaxed) * listener_gain;
     const auto sample_rate = b.SampleRate;
-    // The bank's shapes are at the baked size and the deflection loop reads two of them per mode, so the read and the compliance size by the object's own scale, both linear in this factor.
     const auto coupling = surface.Coupling.load(std::memory_order_relaxed) * b.DeflectionScale[o];
-    // The impact path drives the bank with force * dt worth of impulse per sample, so a sustained force enters the same way.
-    // The two channels then stand in the physical ratio the spec makes normative, which SustainLevel departs from.
     const auto sustain = surface.SustainLevel.load(std::memory_order_relaxed);
     const auto sustain_level = sustain / sample_rate;
 
@@ -3039,7 +2857,7 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
         w.TransverseRow[t] = candidate ? extra_base + bin_rows + transverse_rows++ : NoTransverseRow;
     }
     const uint32_t drives = extra_base + bin_rows + transverse_rows;
-    // Where bin `bb` of voice `t` keeps its read gains, the bin rows being indexed from the first of them.
+    // Locate the read gains for bin `bb` of voice `t`.
     const auto bin_read_at = [&w, extra_base, count](size_t t, uint32_t bb) { return size_t(w.BinRowBase[t] - extra_base + bb) * count; };
     w.DriveGains.resize(size_t(drives) * count);
     w.BinRead.Resize(size_t(bin_rows) * count);
@@ -3051,8 +2869,6 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
     const size_t nv = voices.size();
     // Past MaxCoupledVoices only each voice's own diagonal is built and solved against.
     const bool coupled = nv <= MaxCoupledVoices;
-    // The exchange's channels: a binned spring voice exchanges through one channel per bin, its stack split so a body's local deflection moves local force instead of the whole footprint.
-    // Past the coupling cap the channels collapse to the scalar per-voice solve.
     w.ChannelBase.resize(nv);
     w.ChannelCount.resize(nv);
     uint32_t nch = 0;
@@ -3095,8 +2911,6 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
         w.SpringSets[t] = st.SpringIndex < 0 ? nullptr : surface.ContactSprings[uint32_t(st.SpringIndex)].Live.load(std::memory_order_seq_cst);
         w.SweepSets[t] = st.SweepIndex < 0 ? nullptr : surface.SweepTables[uint32_t(st.SweepIndex)].Live.load(std::memory_order_seq_cst);
         w.VoiceBlocks[t] = BlockConstants(st, w.SpringSets[t], w.TurnoverTracks[t], sample_rate);
-        // The sweep read's conformity gain: the swept elements push back on the locally deflected body, so the mode's response takes its own stiffness plus the footprint's projection, w^2 / (w^2 + K).
-        // Nothing in it moves within the block, so each mode's gain is formed once.
         if (const auto *sweep = w.SweepSets[t]) {
             auto *conformity = &w.SweepConformity[t * count];
             const auto rows = std::min(count, sweep->Modes);
@@ -3115,14 +2929,12 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
         // A tangent direction marks the junction: the slip direction while sliding, the resting basis of a spring contact at rest.
         // Voices without one read a zero direction.
         const bool tangent_candidate = st.Friction > 0 && numeric::Dot(st.SlipDir, st.SlipDir) > 0;
-        // A spring voice's junction holds the transverse direction too, so pressed modes meet the interface on both in-plane axes.
         const vec3 transverse_raw = numeric::Cross(st.N, st.SlipDir);
         const float transverse_len2 = numeric::Dot(transverse_raw, transverse_raw);
         const bool transverse_candidate = w.TransverseRow[t] != NoTransverseRow && transverse_len2 > 1e-12f;
         const vec3 transverse_dir = transverse_candidate ? transverse_raw / std::sqrt(transverse_len2) : vec3{0};
         auto *gain_transverse = w.TransverseRow[t] != NoTransverseRow ? drive_row(w.TransverseRow[t]) : nullptr;
         if (gain_transverse && !transverse_candidate) std::fill_n(gain_transverse, count, 0.f);
-        // A binned voice's exchange channels are its bins, so its channel shapes come from the bin loop below and the point normal serves only the rows and the tangential compliances.
         const auto ch0 = w.ChannelBase[t];
         const bool binned = w.ChannelCount[t] > 1;
         float cn_modal = 0, ct_modal = 0, cnt_modal = 0, ct_tr_modal = 0, cnt_tr_modal = 0;
@@ -3137,15 +2949,10 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
             gain_geo0[k] = radiation * numeric::Dot(shape, st.SweepDir[0]);
             gain_geo1[k] = radiation * numeric::Dot(shape, st.SweepDir[1]);
             gain_fric[k] = radiation * numeric::Dot(shape, st.SlipDir);
-            // The separation is modulated by the object's vibration along the same normal, which is a displacement.
-            // The state holds the drive's radiation gain and the mode's angular frequency, so both come back out.
-            // Impulses land on integer steps and contribute no displacement at their own instant, so the energy-neutral collocation reads displacement on half steps, each mode's state rotated to the middle of the coming sample.
             const float read = coupling * normal * b.DeflectionGain[k0 + k];
-            // The exchange reads integer-step displacement and its free advance, one and two rotations ahead, and drives the modes at the central scheme's own gain.
             const float c_re = b.CoeffRe[k0 + k], c_im = b.CoeffIm[k0 + k];
             w.PointRead.Fill(t * count + k, read, c_re, c_im);
             if (!binned) w.NormalShape[size_t(ch0) * count + k] = normal;
-            // The stiction solve reads the tangential contact point through the same collocations and solves against the modes' tangential compliance, plus the cross compliance the modes with both projections couple the channels with.
             if (tangent_candidate) {
                 const float slip = numeric::Dot(shape, st.SlipDir);
                 w.TangentRead.Fill(t * count + k, coupling * slip * b.DeflectionGain[k0 + k], c_re, c_im);
@@ -3166,8 +2973,6 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
             gain_fric[k] *= scale;
             if (transverse_candidate) gain_transverse[k] *= scale;
         }
-        // The distributed rows: the normal drive projected at each bin's own position on the surface, so a redistribution of force across the footprint excites the modes the total cannot.
-        // Each bin also reads the deflection at its own position, through the same half-step collocation the centre read uses, which brings the local conformity into the shares.
         for (uint32_t bb = 0, nb = std::min(st.SpringBins, MaxSpringBins); bb < nb; ++bb) {
             auto *gain_bin = drive_row(w.BinRowBase[t] + bb);
             const auto rel = bin_read_at(t, bb);
@@ -3190,7 +2995,6 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
         w.QuadTangent[t] = tangent_candidate && ct > 0 ? 1 : 0;
         w.QuadCt[t] = ct;
         w.QuadCnt[t] = coupling * sustain_level * cnt_modal + body_ct * numeric::Dot(st.N, st.SlipDir);
-        // The solver applies its tangential mean, so the modes and the body receive the fluctuation about it and the mean's displacement share enters the free part as a constant.
         w.QuadFeT[t] = -ct * st.SolverFriction;
         const float ct_tr = coupling * sustain_level * ct_tr_modal + body_ct;
         w.QuadTransverse[t] = transverse_candidate && ct_tr > 0 ? 1 : 0;
@@ -3201,14 +3005,10 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
     for (size_t t = 0; t < impacts.size(); ++t) {
         ImpactGainRow(b, impacts[t], shape0, stride, k0, 0, count, drive_row(voices.size() * VoiceDrives + t));
     }
-    // The channels' pairwise step response and their free response to the block's constant support forces.
-    // Every channel presses the same body and rings the same modes, so the coupled solve takes modal cross terms through the shared shapes and the rigid body through its inverse mass.
-    // A scalar channel is its voice, a bin channel one bin of it.
     vec3 support_force{0};
     {
         const float dtq = 1.f / sample_rate;
         const float inv_mass_q = b.RigidInvMass[o];
-        // Each channel's share of its voice's solver support: the slow force shares for bins, uniform until they seed, and the whole support for a scalar channel.
         for (size_t t = 0; t < nv; ++t) {
             const auto &stv = surface.VoiceState[voices[t]];
             const auto base = w.ChannelBase[t];
@@ -3259,9 +3059,6 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
     };
 }
 
-// An object holding a sustained voice.
-// A voice reads out of and writes into the mode bank at the same sample, so the loop runs sample-outer.
-// A sample reads each voice's deflection back, steps its force model, gathers the excitation, then advances the modes, each a flat pass over the modes that vectorizes.
 void RenderObjectCoupled(
     ModalAudio &m, SurfaceAudioState &surface, SurfaceRenderScratch &w, ModalBank &b, uint32_t o,
     std::span<const uint32_t> impacts, std::span<const uint32_t> voices,
@@ -3283,17 +3080,12 @@ void RenderObjectCoupled(
     auto *gains = w.DriveGains.data();
     auto *forces = w.Forces.data();
     auto *excite = w.Excite.data();
-    // With no drive past the first voice's the gather never runs, so the buffer holds this zero for the whole block.
     const bool gather = drives > VoiceDrives;
     if (!gather) std::fill_n(excite, count, 0.f);
-    // The object's rigid motion, integrated once for the body every contact pushes, so their stiffnesses add and the resulting rate is independent of how many bear the load.
-    // A body of no mass stays in place, and its contacts' effect on it is skipped.
     const auto inv_mass = b.RigidInvMass[o];
     const bool mobile = inv_mass > 0;
     auto rigid_vel = b.RigidVel[o];
     const float dt = 1.f / sample_rate;
-    // The rigid recoil radiates through the translating-sphere transfer on the body's velocity, projected on the contacts' mean normal for a signed on-axis pressure (see ModalBank::RadiatorB0).
-    // A settled body has a constant velocity and radiates nothing, the numerator going as s^2.
     const auto accel_noise_gain = surface.AccelNoiseGain.load(std::memory_order_relaxed) * listener_gain;
     const auto rad_b0 = b.RadiatorB0[o];
     const auto air_b0 = b.AirB0[o], air_b1 = b.AirB1[o], air_b2 = b.AirB2[o];
@@ -3318,11 +3110,9 @@ void RenderObjectCoupled(
             for (size_t t = 0; t < impacts.size(); ++t) forces[nv * VoiceDrives + t] = m.ForceScratch[size_t(impacts[t]) * frame_count + s];
             if (impact_drive) {
                 std::fill(forces + VoiceDrives, forces + nv * VoiceDrives, 0.f);
-                // The bin rows still hold the previous sample's redistribution, where only the impacts' arrival belongs in the free prediction.
                 std::fill(forces + nv * VoiceDrives + impacts.size(), forces + drives, 0.f);
                 GatherExcitation(gains, forces, uint32_t(nv) * VoiceDrives, drives, excite, count);
             }
-            // The air load reacts from the previous sample's body velocity and the solver's support stands in for gravity, so both are known drives the free prediction includes.
             float air_force = 0.f;
             vec3 ext_force{0};
             if (mobile) {
@@ -3332,10 +3122,6 @@ void RenderObjectCoupled(
                 air_z2 = air_b2 * air_in - recoil_a2 * air_force;
                 ext_force = -air_force * accel_axis - support_force;
             }
-            // The moving-load sweep channel, computed before the channels' solve so every free prediction includes its arrival and the passivity cap accounts the reaction it induces, as impact rows do.
-            // Each mode's tabulated drive at the current spring position scales by the quasi-static load against the anchored force the table was built at, never the solved force, which carries the modes' own oscillation and would close a parametric loop.
-            // The per-mode radiation and drive scales apply here, so a retune never stales a table.
-            // A parted contact silences the channel through the load gate, at one sample's lag.
             bool sweep_live = false;
             {
                 const float sweep_level = drive_level;
@@ -3354,7 +3140,6 @@ void RenderObjectCoupled(
                     const auto imq = i0q > 0 ? i0q - 1 : P - 1;
                     const auto i2q = i1q + 1 < P ? i1q + 1 : 0;
                     const float frq = float(p - double(i0q));
-                    // Catmull-Rom weights: the C1 read keeps the row values exact and suppresses the images a linear read's derivative breaks spread across the audible band at slow sweeps.
                     const float wm = frq * (-0.5f + frq * (1.f - 0.5f * frq));
                     const float w0 = 1.f + frq * frq * (-2.5f + 1.5f * frq);
                     const float w1 = frq * (0.5f + frq * (2.f - 1.5f * frq));
@@ -3381,7 +3166,6 @@ void RenderObjectCoupled(
                 auto &carry = surface.VoiceCarry[v];
                 const auto point = ReadRow(w.PointRead, t * count, state_im, state_re, count, impact_arrival, sweep_arrival);
                 const float defl1 = point.Now, defl2 = point.Next;
-                // Each bin channel reads its deflection at its own position: the one- and two-step collocations and the impact arrival, mirroring the point read's three.
                 const auto ch0 = w.ChannelBase[t];
                 const uint32_t nchv = w.ChannelCount[t];
                 const bool binned = nchv > 1;
@@ -3400,8 +3184,6 @@ void RenderObjectCoupled(
                 const float dprev = q.Rebased ? 0.f : (carry.RigidNormal - carry.PrevRigidNormal) + (defl1 - carry.PrevDeflection);
                 const float body_free = mobile ? dt * numeric::Dot(rigid_vel, stv.N) + dt * dt * inv_mass * numeric::Dot(ext_force, stv.N) : 0.f;
                 const float defl_free = (defl2 - defl1) + w.QuadFeDefl[ch0] + point.Arrival;
-                // The tangential contact point's free step relative to the surface sliding by at SlipSpeed: its motion over the previous two-step span plus its free advance, each measured against the surface's own travel.
-                // The normal reaction's same-sample kick enters through the cross compliance once it is solved.
                 float rhs_t = 0, defl_t1 = 0;
                 if (w.QuadTangent[t] != 0) {
                     const auto tangent = ReadRow(w.TangentRead, t * count, state_im, state_re, count, impact_arrival, nullptr);
@@ -3453,7 +3235,6 @@ void RenderObjectCoupled(
                 w.QuadDefl[t] = defl1;
                 w.QuadSlope[2 * t] = q.Slope[0];
                 w.QuadSlope[2 * t + 1] = q.Slope[1];
-                // A slam sample's junction makes and breaks within the sample and stores nothing, so its channels part with no exchange and the closure below resolves the event.
                 w.QuadSlam[t] = q.SlamSpeed;
                 if (q.SlamSpeed > 0) {
                     for (uint32_t c = 0; c < nchv; ++c) {
@@ -3465,9 +3246,6 @@ void RenderObjectCoupled(
                     }
                 }
             }
-            // The nominal gradient capped by the passivity constraint that psi stay non-negative, which is the whole stability argument (van Walstijn et al. 2024 IFAC, Eq. 60).
-            // A footprint bin parts by redistribution with bearing-order psi still stored, so draining that residual in one step through the cap is an audible click at each exit.
-            // Their remark allows any gradient in [0, cap] without affecting stability, so a parted channel drains at the gradient it last bore at, its own contact stiffness, until its psi reaches zero.
             for (size_t t = 0; t < nv; ++t) {
                 auto &vc = surface.VoiceCarry[voices[t]];
                 const uint32_t nchv = w.ChannelCount[t];
@@ -3485,8 +3263,6 @@ void RenderObjectCoupled(
                     w.QuadG[ch] = bearing ? std::min(gn, gp) : (draining ? std::min(vc.LastBearingG[c], gp) : 0.f);
                 }
             }
-            // Past the coupling cap each voice's step is its own scalar solve whose clamp resolves locally, reducing the gradient once at the crossing and then zeroing it, which is always feasible.
-            // No shared re-solve, so the sample stays O(V).
             if (!coupled) {
                 for (size_t t = 0; t < nv; ++t) {
                     const float C = w.QuadCross[t];
@@ -3522,8 +3298,6 @@ void RenderObjectCoupled(
                         for (size_t u = 0; u < nch; ++u) rhs -= double(w.QuadCross[v * nch + u]) * double(w.QuadPsi[u]) * double(w.QuadG[u]);
                         w.QuadRhs[v] = rhs;
                     }
-                    // Gaussian elimination with partial pivoting, in double.
-                    // The matrix is a positive perturbation of the identity, but a channel at the passivity-cap gradient puts 4/float-eps on its column, so float rows lose the identity and two such channels make the float matrix singular at any pivot order.
                     for (size_t p = 0; p < nch; ++p) {
                         size_t pivot = p;
                         for (size_t r = p + 1; r < nch; ++r) {
@@ -3594,8 +3368,6 @@ void RenderObjectCoupled(
                     if (w.QuadTangent[t] != 0) rigid_force += f.Frictional * stv.SlipDir;
                     if (w.QuadTransverse[t] != 0) rigid_force += f.Transverse * w.TransverseDir[t];
                 }
-                // A binned voice's normal force plays through its bin rows, each bin's reaction at its own position, so the total row stays silent and the reactions hold the redistribution.
-                // The rows keep their layout, zeroed when the exchange runs scalar.
                 forces[t * VoiceDrives] = nchv > 1 ? 0.f : drive_level * f.Normal;
                 forces[t * VoiceDrives + 1] = geo_level * f.Geometric[0];
                 forces[t * VoiceDrives + 2] = geo_level * f.Geometric[1];
@@ -3603,8 +3375,6 @@ void RenderObjectCoupled(
                 if (w.TransverseRow[t] != NoTransverseRow) forces[w.TransverseRow[t]] = fric_level * f.Transverse;
                 if (const uint32_t nb = std::min(stv.SpringBins, MaxSpringBins); nb > 0) {
                     for (uint32_t bb = 0; bb < nb; ++bb) forces[w.BinRowBase[t] + bb] = nchv > 1 && bb < nchv ? drive_level * bin_reaction[bb] : 0.f;
-                    // The reactions turn the body about its pitch axis, each at its own lever arm.
-                    // A bin bearing more than its share past the centre tips the face away from it, so the moment on the tilt coordinate is minus their lever-weighted sum, and the contact's damping enters through the reactions the exchange solved.
                     float moment = 0;
                     if (stv.InverseAngularInertia > 0 && stv.SpringHalfExtent > 0 && nchv > 1) {
                         for (uint32_t bb = 0; bb < nb && bb < nchv; ++bb) {
@@ -3614,8 +3384,6 @@ void RenderObjectCoupled(
                     carry.TiltMoment = moment;
                 }
                 w.SolvedForce[t] = f.Normal + stv.NormalForce;
-                // The slam closure: the junction's relative approach reverses at the crush law's restitution, e = 1 - (2/3) eta v on the landing's engagement rate, clamped at zero.
-                // One force over this sample delivers the impulse through the same paths the exchange drives, the body through its inverse mass and the modes through the normal drive row, so each side takes its effective-mass share of the reversal.
                 if (w.QuadSlam[t] > 0 && w.QuadCn[t] > 0 && stv.SurfaceCompliance > 0) {
                     const float v_in = w.QuadSlam[t];
                     const float e = std::max(1.f - (2.f / 3.f) * carry.EngagementDamping * v_in, 0.f);
@@ -3639,7 +3407,6 @@ void RenderObjectCoupled(
                 out[s] += accel_noise_gain * pressure;
             }
             if (gather) GatherExcitation(gains, forces, uint32_t(nv) * VoiceDrives, drives, excite, count);
-            // The sweep drive lands on the modes here, already accounted in every channel's free prediction above.
             if (sweep_live) {
                 if (!gather) std::fill_n(excite, count, 0.f);
                 const float *se = w.SweepExcite.data();
@@ -3659,7 +3426,7 @@ void RenderObjectCoupled(
 
 } // namespace
 
-/***** What the core modal path calls (see audio/SurfaceContact.h) *****/
+/***** Core modal interface from audio/SurfaceContact.h *****/
 
 void SurfaceAudioStateDelete::operator()(SurfaceAudioState *s) const { delete s; }
 void SurfaceRenderScratchDelete::operator()(SurfaceRenderScratch *s) const { delete s; }
@@ -3702,7 +3469,6 @@ bool SurfaceRenderObject(ModalAudio &m, ModalRenderScratch &mw, ModalBank &b, ui
 
 void SurfaceInstallBank(ModalAudio &m) {
     auto &surface = Surface(m);
-    // The new bank holds no voices, and the caller has waited for any callback reading the pool to finish.
     surface.VoiceId.clear();
     surface.VoiceObject.clear();
     surface.VoiceState.clear();

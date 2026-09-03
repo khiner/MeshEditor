@@ -9,59 +9,59 @@ Real-time mesh viewer and editor supporting conversion of meshes to rigid body a
 ![](screenshots/CeramicPitcherAudioPanel.png)
 ![](screenshots/HighlightedModeIndex.png)
 
-### Features
+## Features
 
-General features:
-* Create/delete meshes and mesh instances
+### General
+
+* Create and delete meshes and mesh instances
   - Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
   - Load `.obj` and `.ply` mesh files (via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply))
-* Select meshes or mesh elements (vertices, edges, or faces), with click or box-select, and optional x-ray mode (to ignore occlusion), in real-time with fast GPU acceleration
+* Select meshes, vertices, edges, or faces by clicking or box selection, with optional x-ray selection
 * Flat/smooth/wireframe mesh rendering
-* Translate / rotate / (nonuniformly) scale meshes and instances with numeric inputs or a custom transform gizmo designed to look and behave just like Blender's
-* Edit camera with mouse wheel, numeric inputs, or with a custom orientation gizmo designed to look and behave just like Blender's
-* Simple camera + scene lighting model, roughly matching Blender visually
-* Edit lighting parameters
+* Translate, rotate, and nonuniformly scale meshes and instances with numeric inputs or a Blender-style transform gizmo
+* Edit the camera with the mouse wheel, numeric inputs, or a Blender-style orientation gizmo
+* Edit cameras and scene lighting
 * Render face/vertex normals as lines for debugging
 * Render bounding box wireframes for debugging
-* Edge-detection-based silhouette outline of active mesh/instance, embedded into the scene with accurate per-pixel depth
-* Fast infinite grid with horizon fade
+* Depth-aware silhouette outlines for active meshes and instances
+* Infinite grid with horizon fade
 
-Audio-specific features:
+### Audio
+
 * Enable/disable audio output and change device and native format/sample rate
 * Volume / Mute
-* Generate an efficient physical audio model for any mesh. (See [Physical audio modeling](#physical-audio-modeling).)
+* Generate a physical audio model for any mesh; see [Physical audio modeling](#physical-audio-modeling)
   - Click on an audio mesh to excite the nearest vertex, or trigger a selected vertex in the audio menu
   - Strike any number of objects and vertices concurrently (polyphonic modal synthesis)
   - Edit synth params (gain, fundamental frequency, decay scale, click level) in real-time
-* Load [RealImpact](https://samuelpclarke.com/realimpact/) datasets, including the object mesh and instanced cylinders for each microphone position.
+* Load [RealImpact](https://samuelpclarke.com/realimpact/) object meshes and microphone positions
 
-Noteworthy dev bits:
+### Rendering and architecture
+
 * Native Metal rendering through [metal-cpp](https://developer.apple.com/metal/cpp/). **Note: This used to be a Vulkan project.** For reference, dae664bd0f2bbdfcf309ba7d000ce9890edbcb38 is the last commit SHA using Vulkan.
 * Bindless Tier-2 argument-buffer access and GPU-address vertex pulling from contiguous arenas for mesh data (vertices, indices, attributes, selection state, etc.)
 * Batched indirect indexed draws with GPU-written instance counts and visibility remaps
 * Directly mapped CPU/GPU storage on unified-memory Apple Silicon
-* GPU-accelerated mouse interactions (no CPU acceleration structures like BVH)
+* GPU-accelerated mouse interactions
 * Half-edge iterators for mesh topology operations
 * Shader hot reloading: edit and recompile MSL at runtime from the UI
 * Matching C++/MSL structs and function-constant indices generated from YAML
 
-### Physical audio modeling
+## Physical audio modeling
 
-This project supports generating an efficient physical audio model for any mesh using Linear Modal Analysis/Synthesis
-
-The physical audio modeling was originally implemented as a final project for PHYS-6260 - Computational Physics at Georgia Tech during my Master's.
-It's gotten a lot of work since then. The basics of the model generation process laid out in [the final report](paper/PAMofPassiveRigidBodies.pdf) and this 36X48 poster still hold, but the synthesis architecture has since been replaced (see below).
+MeshEditor generates physical audio models from meshes using linear modal analysis and synthesis.
+The original implementation was a Georgia Tech PHYS-6260 Computational Physics project documented in the [final report](paper/PAMofPassiveRigidBodies.pdf) and poster below.
 
 ![](paper/ProjectPoster36X48.png)
 
-The report and poster describe rendering modal models with [Faust](https://github.com/grame-cncm/faust): MeshEditor generated Faust DSP code from the modal analysis results and JIT-compiled it to a native audio graph with LLVM.
-Faust has since been replaced with a custom modal resonator bank to support many simultaneously sounding objects with physics collision impacts.
+The report and poster describe a previous [Faust](https://github.com/grame-cncm/faust) synthesis path.
+The current modal resonator bank supports concurrent sounding objects and physics collision impacts.
 The last commit using Faust code generation is [31a817dd](https://github.com/khiner/MeshEditor/commit/31a817ddf1fd28d1b7aa1724e3e166b9c0eb58e4).
 
 #### Impact audio experiments
 
-Below are audio examples synthesized by "striking" modal audio models (by injecting a short wideband pulse at the selected vertex) for various meshes, with comparisons to impact recordings of their real-world counterparts being struck at the same position.
-The audio recordings and 3D-scanned meshes come from the [RealImpact](https://samuelpclarke.com/realimpact/) dataset.
+These examples compare synthesized modal impacts with [RealImpact](https://samuelpclarke.com/realimpact/) recordings and scanned meshes.
+Each synthesized impact injects a short wideband pulse at the selected vertex.
 See [the blog post](https://karlhiner.com/mesh_audio_editor) for embedded audio players.
 
 _The cylinders shown in the images represent recorded microphone positions, but all recordings come from a single microphone centered near the impacted object, and the modal audio model does not implement any audio wave radiation modeling. All modal audio samples are generated by extracting estimated surface vibrations, as if recorded from a contact microphone._
@@ -76,16 +76,16 @@ _The cylinders shown in the images represent recorded microphone positions, but 
 | Plastic Scoop | ![Mesh](paper/images/impacts/PlasticScoopMesh.png) | [Impact](audio_samples/PlasticScoopImpact.wav) | [Modal](audio_samples/PlasticScoopModal.wav) |
 | Small Swan Ceramic | ![Mesh](paper/images/impacts/SwanSmallCeramicMesh.png) | [Impact](audio_samples/SmallSwanCeramicImpact.wav) | [Modal](audio_samples/SmallSwanCeramicModal.wav) |
 
-### glTF viewer
+## glTF viewer
 
-MeshEditor is also a fully featured glTF 2.0 viewer/editor/exporter.
+MeshEditor is a glTF 2.0 viewer, editor, and exporter.
 glTF scene nodes are mapped to corresponding MeshEditor objects (meshes, armatures, cameras, lights, empty objects), with the scene parenting hierarchy mirroring the glTF node hierarchy.
-All Khronos ratified extensions that visually impact the scene are supported (imported, rendered, fully editable).
-Load/save roundtrips almost all glTF losslessly, with known exceptions listed in `tests/RoundtripTest.cpp`.
+Khronos-ratified extensions that affect scene appearance are imported, rendered, and editable.
+Load and save preserve glTF data except for cases listed in `tests/RoundtripTest.cpp`.
 PBR BRDF/lighting equations are taken directly from the reference [glTF-Sample-Renderer shaders](https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/main/source/Renderer/shaders/).
 
-PBR render features that are not needed by the scene (because the feature isn't enabled on any current object's materials, scene lights are not present or enabled, or IBL environment not present (in Solid render mode)) are not compiled. This is updated dynamically as the scene changes or edits are made.
-Metal function constants specialize the PBR variants. Changing the feature mask rebuilds the affected pipeline states from cached MSL libraries without recompiling the source.
+Metal function constants specialize PBR variants for the current materials, lights, and image-based lighting.
+Feature-mask changes rebuild affected pipeline states from cached MSL libraries.
 
 #### glTF supported extensions
 
@@ -143,7 +143,7 @@ $ cd build && ./MeshEditor [file|--empty] [--quiet|-q] [--headless] [--play [sec
 * `file` can be a `.gltf`, `.glb`, `.obj`, `.ply`, `.state` (scene snapshot), or `.actions` (replayed action log). No file loads the default scene.
 * `--empty` starts with an empty scene instead of the default scene.
 * `--quiet` / `-q` suppresses timer output.
-All of `--play`, `--record`, and `--screenshot` use the presentation look (material preview shading, overlays hidden). `--play` and `--record` also run the animation/physics; `--screenshot` holds the first frame.
+All of `--play`, `--record`, and `--screenshot` use the presentation look with material preview shading and hidden overlays. `--play` and `--record` run animation and physics; `--screenshot` captures the first frame.
 
 * `--play [seconds]` starts playback. Optional `[seconds]` auto-exits after the given duration. See `--record` below for how the duration is interpreted.
 * `--record path.mp4` runs playback and writes the viewport as an H.264 `.mp4` via a `ffmpeg` subprocess (must be on `PATH`).
@@ -160,9 +160,9 @@ The flags can be combined freely, except `--render` excludes `--record` and `--s
 
 ### Render corpus
 
-`render/` holds committed demo output for every scene in the corpus, mirroring the source layout: the built-in Empty and Default scenes, the `res/examples/` projects, the full-experience audio scenes at the root of `glTF_PhysicalAudio/samples/` (the isolation corpus under `samples/test/` is measured by `script/AudioCorpus` instead), and the glTF samples under `external/`. (The redundant `glTF-Binary` and `glTF-Embedded` variants are skipped since they render identically.)
+`render/` contains committed demo output for every scene in the corpus and mirrors the source layout. It covers the built-in scenes, `res/examples/`, root audio samples, and glTF samples under `external/`. Isolation audio samples under `samples/test/` use `script/AudioCorpus`; redundant glTF format variants are skipped.
 Each leaf has a visual (lossless `.webp` for static scenes, plus one per material variant, `.mp4` for animated ones - one timeline loop per animation clip, back-to-back), the `.actions` replay log, a `.log` of console output, and a `run.sh` that opens that scene in the app.
-A scene holding sound objects renders its audio alongside the video and muxes it into the `.mp4`.
+A scene with sound objects renders its audio and muxes it into the `.mp4`.
 
 Binary artifacts are stored in [git-lfs](https://git-lfs.com); fetch them after cloning:
 ```shell
@@ -288,7 +288,7 @@ $ ./build/tests/MeshEditorModalSolverBench --dataset realimpact --dataset thingi
 
 * `--dataset realimpact|thingi10k` selects a corpus, and repeats to run several. Defaults to `realimpact`.
   - thingi10k object modes are solved as ceramic objects 0.30 m across.
-* `--snapshot check` compares each case against `tests/fixtures/TetCorpusSnapshot.txt`, catching a change that still tetrahedralizes validly but differently. `--snapshot write` regenerates that file. Both run each corpus through the base and quality arms, and skip the solve unless `--modes` asks for it.
+* `--snapshot check` compares each case against `tests/fixtures/TetCorpusSnapshot.txt`; `--snapshot write` regenerates that file. Both run the base and quality configurations and solve modes only with `--modes`.
 * `--no-modes` stops after tetrahedralizing, and `--no-tets` reports the surfaces alone.
 * `--corpus` prints a block per model instead of a timing row.
 * `--edit-loop` compares cold against warm-started re-solves.

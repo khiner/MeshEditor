@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-# (Re-)generate the committed `render/` corpus. See the "Render corpus" section in README.md for what each
-# scene's leaf contains. Covers Empty, Default, res/examples, the full-experience audio scenes at the root of
-# glTF_PhysicalAudio/samples/, and all glTF samples under external/. Run from anywhere.
-# Scenes render headless in a pool of persistent worker processes that pull from a shared job spool
-# (`--render-queue`), clearing the scene between jobs. `--out` renders into a side directory and `--app-args`
-# hands every worker extra app flags, producing a candidate tree for script/CompareRenders to judge.
-# JOBS sets the worker count. COMPARE_VIDEOS=1 restores videos that differ from HEAD only by GPU render noise.
+# Regenerates the committed render corpus from Empty, Default, examples, audio samples, and external glTF samples.
+# Persistent headless workers consume a shared --render-queue and clear the scene between jobs.
+# Use --out for a separate result tree, --app-args for additional application flags, and JOBS for worker count.
+# COMPARE_VIDEOS=1 restores videos whose differences from HEAD satisfy the GPU-noise tolerance.
 from __future__ import annotations
 
 import argparse
@@ -24,12 +21,10 @@ CorpusDir = Path("render")
 Exe = "./build/MeshEditor"
 SceneTimeoutSecs = 120  # Catches hangs. Renders are GPU-paced, not real-time, and parallel renders contend for the GPU.
 GltfRoots = [Path("external/glTF-Sample-Assets"), Path("external/glTF_Physics")]
-# glTF_Physics/tests/ are conformance unit tests that render empty or hang the physics solver. Every model in
-# a glTF-Binary or glTF-Embedded dir also ships a glTF variant that renders identically.
+# Exclude glTF_Physics conformance tests and duplicate binary or embedded variants.
 ExcludedDirs = ("/glTF_Physics/tests/", "/glTF-Binary/", "/glTF-Embedded/")
 
-# A scene is its output basename under the render dir (no extension) and the app arg selecting it:
-# a scene file, "--empty", or empty for the default scene.
+# Each scene specifies an output basename and an application argument.
 Scene = tuple[Path, str]
 
 
@@ -46,20 +41,20 @@ def scene_files(root: Path) -> list[Path]:
 
 def discover_scenes() -> list[Scene]:
     scenes = [(Path("Empty/Empty"), "--empty"), (Path("Default/Default"), "")]
-    # The isolation corpus under samples/test/ is measured by script/AudioCorpus, so only the root scenes render.
+    # AudioCorpus processes the isolation corpus under samples/test/.
     scenes += [(p.with_suffix(""), str(p)) for p in sorted(Path("glTF_PhysicalAudio/samples").glob("*.gltf"))]
     files = scene_files(Path("res/examples"))
     for root in GltfRoots:
         if found := scene_files(root): files += found
         else: print(f"WARNING: '{root}' has no glTF samples (run: git submodule update --init {root}). Skipping it.", file=sys.stderr)
-    # A model shipping both .gltf and .glb in one directory is one scene, rendered once.
+    # Render one variant when a directory contains both glTF and GLB files.
     by_out = {}
     for p in sorted(files): by_out.setdefault(p.with_suffix(""), p)
     return scenes + [(out, str(p)) for out, p in by_out.items()]
 
 
 def prepare_leaf(out: Path, arg: str, extra_args: list[str]) -> None:
-    """Clear the leaf of prior artifacts and write its one-command reproducer, which loads the source scene directly."""
+    """Clear prior artifacts and write a reproducer that loads the source scene."""
     out.parent.mkdir(parents=True, exist_ok=True)
     for f in out.parent.iterdir():
         if f.name != "run.sh": f.unlink()
@@ -69,7 +64,7 @@ def prepare_leaf(out: Path, arg: str, extra_args: list[str]) -> None:
 
 
 def committed_bytes(render_dir: Path, out: Path) -> int:
-    """Size of the scene's committed artifacts, estimating its render cost."""
+    """Estimate render cost from committed artifact size."""
     committed = CorpusDir / out.relative_to(render_dir)
     return sum(f.stat().st_size for e in (".mp4", ".webp", ".png") if (f := Path(f"{committed}{e}")).is_file())
 
@@ -83,8 +78,7 @@ def count_jobs(spool: Path) -> int:
 
 
 def run_worker(spool: Path, extra_args: list[str], skipped: set[str]) -> None:
-    """Run the app on the spool until it drains, killing and respawning it when a scene hangs.
-    `skipped` collects the scenes the app reports finishing without output."""
+    """Process the spool, restarting after timeouts and recording scenes completed without output."""
     while (remaining := count_jobs(spool)) > 0:
         proc = subprocess.Popen([Exe, "--render-queue", str(spool), "-q", *extra_args], stdout=subprocess.PIPE, text=True)
         lines: queue.Queue[str | None] = queue.Queue()
@@ -98,7 +92,7 @@ def run_worker(spool: Path, extra_args: list[str], skipped: set[str]) -> None:
             print(f"  {line}")
             if line.startswith("SKIP "): skipped.add(line[len("SKIP "):].split(" (", 1)[0])
         proc.wait()
-        # An exit that claimed no job means the app can't start, so don't respawn into a crash loop.
+        # Stop respawning when a worker exits before claiming a job.
         if count_jobs(spool) == remaining: break
 
 
@@ -137,7 +131,7 @@ def main() -> None:
     if status := subprocess.run([ScriptDir / "Build"]).returncode: sys.exit(status)
 
     scenes = [(render_dir / out, arg) for out, arg in discover_scenes()]
-    # Expensive scenes first, so the longest renders overlap the rest of the queue. Measured before the leaves clear.
+    # Schedule measured expensive scenes first.
     scenes.sort(key=lambda s: committed_bytes(render_dir, s[0]), reverse=True)
     for out, arg in scenes: prepare_leaf(out, arg, extra_args)
     print(f"Rendering corpus into {render_dir}/ ({len(scenes)} scenes, {jobs} headless workers)...")
@@ -149,7 +143,7 @@ def main() -> None:
         for w in workers: w.start()
         for w in workers: w.join()
 
-        # A scene no worker reported was lost to a crash (Metal device-loss) or a hang kill, so retry it once.
+        # Retry once when no worker reports a scene after a crash or timeout.
         if retries := [(out, arg) for out, arg in scenes if not has_output(out) and str(out) not in skipped]:
             for f in spool.iterdir(): f.unlink()
             for out, _ in retries: print(f"  retrying {out}")

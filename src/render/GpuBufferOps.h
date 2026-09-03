@@ -15,10 +15,8 @@ struct BufferContext;
 struct MeshBuffers;
 struct Mesh;
 
-// Lightweight GPU-storage views for consumers that do not need the full GpuBuffers definition.
 std::span<PBRMaterial> GetMaterials(entt::registry &);
-// A mesh's triangulated face indices. A triangle mesh's draws index the store's corner array, so the
-// corners are its indices. An n-gon mesh fans into a triangulated buffer in the index arena.
+// Returns store corners for triangle meshes or the triangulated index-arena range for n-gons.
 std::span<const uint32_t> GetFaceIndices(const entt::registry &, const Mesh &, const MeshBuffers &);
 std::span<const PunctualLight> GetLights(entt::registry &);
 PunctualLight GetLight(entt::registry &, uint32_t index);

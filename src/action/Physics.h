@@ -5,7 +5,7 @@
 #include "physics/PhysicsTypes.h"
 
 namespace action {
-// Heap-allocate big types to keep the variant small.
+// Shared ownership bounds the action variant size.
 template<>
 struct Replace<PhysicsMotion> {
     Scope Scope{Scope::Entity};
@@ -15,8 +15,8 @@ struct Replace<PhysicsMotion> {
 } // namespace action
 
 namespace action::physics {
-// AddTrigger / RemoveTriggerNodes target the active entity. SetMotionType / SetColliderShape target the
-// active or selected entities per Scope.
+// AddTrigger and RemoveTriggerNodes target the active entity.
+// SetMotionType and SetColliderShape use Scope.
 struct SetMotionType {
     enum class Type : uint8_t {
         None,
@@ -28,7 +28,7 @@ struct SetMotionType {
     Scope Scope{Scope::Active};
 };
 
-// `LockKind=true` locks `ColliderPolicy.LockedKind`; set it when the variant alternative changed.
+// Set `LockKind` when changing the collider-shape alternative.
 struct SetColliderShape {
     PhysicsShape Shape;
     bool LockKind;
@@ -38,7 +38,7 @@ struct SetColliderShape {
 struct AddTrigger {};
 struct RemoveTriggerNodes {};
 
-// `Add=true` appends iff not present; `Add=false` erases all occurrences.
+// `Add` appends a missing node or removes all occurrences.
 struct ToggleFilterEntity {
     enum class List : uint8_t { Systems,
                                 CollideSystems };
@@ -48,7 +48,7 @@ struct ToggleFilterEntity {
     bool Add;
 };
 
-// Maps a joint-vec-item element type to the PhysicsJointDef vector it targets.
+// Maps a joint item type to its PhysicsJointDef vector.
 template<typename T> inline constexpr std::vector<T> PhysicsJointDef::*JointVecMember = nullptr;
 template<> inline constexpr std::vector<PhysicsJointLimit> PhysicsJointDef::*JointVecMember<PhysicsJointLimit> = &PhysicsJointDef::Limits;
 template<> inline constexpr std::vector<PhysicsJointDrive> PhysicsJointDef::*JointVecMember<PhysicsJointDrive> = &PhysicsJointDef::Drives;

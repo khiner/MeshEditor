@@ -5,7 +5,6 @@
 #include "Bindless.metal"
 #include "Varyings.metal"
 
-// Triangle strip covering the full screen.
 constant float2 BackgroundPositions[4] = {float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1)};
 
 vertex NdcVaryings BackgroundVertex(uint vertex_id [[vertex_id]]) {

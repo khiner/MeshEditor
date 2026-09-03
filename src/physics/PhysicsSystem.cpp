@@ -56,8 +56,7 @@ inline quat FromJolt(Quat q) { return std::bit_cast<quat>(q); }
 
 inline bool HasNonUnitScale(const Transform &t) { return t.S.x != 1 || t.S.y != 1 || t.S.z != 1; }
 
-// A Shape's UserData packs the collider node it was built for in the high half and that collider's collision filter in the low half.
-// Each is offset by 1 so 0 means none, and both are read back per sub-shape.
+// Shape UserData packs one-based collider and collision-filter IDs into separate 32-bit halves.
 inline uint64_t ShapeUserData(entt::entity collider, entt::entity filter) {
     const auto pack = [](entt::entity e) { return e != null_entity ? uint64_t(uint32_t(e)) + 1 : 0; };
     return (pack(collider) << 32) | pack(filter);
@@ -114,7 +113,7 @@ class ObjectLayerPairFilterImpl : public ObjectLayerPairFilter {
 public:
     bool ShouldCollide(ObjectLayer l1, ObjectLayer l2) const override {
         if (l1 == Layers::NonMoving) return l2 == Layers::Moving;
-        return true; // Moving collides with everything
+        return true;
     }
 };
 
@@ -126,20 +125,19 @@ public:
     }
 };
 
-// Custom GroupFilter implementing KHR_physics_rigid_bodies collision semantics.
-// Collision filtering using bitmasks, matching the Babylon reference implementation.
-// Each collision system name maps to a bit. A filter's membershipMask encodes which systems
-// the body belongs to, and collideMask encodes which systems it can collide with.
+// Implements KHR_physics_rigid_bodies collision masks following the Babylon reference implementation.
+// Map each collision-system name to a bit.
+// membershipMask identifies body systems, while collideMask identifies permitted systems.
 // Two bodies collide iff (A.membership & B.collide) != 0 && (B.membership & A.collide) != 0.
 struct CollisionMask {
-    uint32_t Membership = 0, Collide = ~0u; // default: collide with everything
+    uint32_t Membership = 0, Collide = ~0u;
 };
 
-// Filter storage is keyed by the CollisionFilter entity's raw value (uint32_t),
-// stored directly in Body/Shape UserData. UINT32_MAX (== null_entity) means "no filter".
+// Keys filters by the CollisionFilter entity value stored in Body or Shape UserData.
+// UINT32_MAX denotes no filter.
 class KHRCollisionFilter : public GroupFilter {
     std::unordered_map<uint32_t, CollisionMask> Masks; // filter entity value → mask
-    // Each body gets a unique SubGroupID via RegisterBody(). Maps SubGroupID → filter entity value.
+    // Maps each unique SubGroupID to a filter entity.
     std::vector<uint32_t> BodyFilterByGroup; // UINT32_MAX = no KHR filter
     // Pairs of SubGroupIDs that should not collide (from joints with EnableCollision=false).
     std::vector<std::pair<uint32_t, uint32_t>> DisabledPairs; // sorted after FinalizeDisabledPairs()
@@ -191,7 +189,7 @@ public:
         DisabledPairs.clear();
     }
 
-    // Wipe DisabledPairs without invalidating SubGroupIDs of existing bodies.
+    // Preserves existing SubGroupIDs.
     void ResetDisabledPairs() { DisabledPairs.clear(); }
     // Mark a pair of bodies (by SubGroupID) as non-colliding. Call FinalizeDisabledPairs() when done.
     void DisableCollision(uint32_t a, uint32_t b) { DisabledPairs.emplace_back(std::min(a, b), std::max(a, b)); }
@@ -238,9 +236,7 @@ float ApplyCombineMode(PhysicsCombineMode mode, float a, float b) {
     return (a + b) * 0.5f;
 }
 
-// The tangential impulse the solver applied, resolved along the tangent basis its own cached normal implies.
-// Friction lambdas act along that basis, so reading them needs the normal they were solved against, cached in body 2's frame.
-// A cache entry holding no normal keeps `fallback_normal`.
+// Resolves the tangential impulse using the cached solver normal in body 2 space.
 struct SolverFriction {
     Vec3 Normal, Impulse;
 };
@@ -259,12 +255,7 @@ public:
     }
 };
 
-// Contact listener that:
-// 1. Per-sub-shape collision filtering for compound bodies — Shape::mUserData stores filter index + 1
-//    (0 = no filter), looked up in the KHRCollisionFilter's mask table. Jolt's CollisionGroup handles
-//    body-level filtering; this covers compound bodies where sub-shapes have different filters.
-// 2. KHR_physics_rigid_bodies friction/restitution combine modes.
-// 3. Detailed reporting of new solid contacts and persisting ones (see RawContact, RawSustained).
+// Applies per-sub-shape collision masks, KHR material combination, and detailed contact reporting.
 class KHRContactListener : public ContactListener {
 public:
     const entt::registry *R{nullptr};
@@ -274,8 +265,7 @@ public:
     // Rebuilt from the ReportContacts tag before each step.
     std::vector<uint8_t> Reporting;
 
-    // One qualifying new contact. Bodies are stored by index; the drain resolves them to entities and
-    // splits the impulse into a per-body impact. Filled from multiple threads during PhysicsSystem::Update.
+// Stores one new contact from PhysicsSystem::Update for later entity resolution and per-body impulse splitting.
     struct RawContact {
         uint32_t Body1Index, Body2Index;
         uint64_t SubShapeKey; // The touching sub-shapes, identifying the manifold within its body pair.
@@ -286,16 +276,13 @@ public:
         float InvMass1, InvMass2; // inverse masses, kg⁻¹, 0 for static/kinematic bodies
         float NominalArea; // area of the manifold's contact polygon, m^2
     };
-    // A new manifold awaiting the solver's receipt.
-    // OnContactAdded records it, and the first step boundary whose applied normal impulse is nonzero turns it into RawContacts, or OnContactRemoved retires it.
-    // OnContactRemoved runs with no body access, so everything geometric is captured here at add time.
+    // Retains new manifold geometry until a nonzero solver impulse or removal resolves the impact.
     struct PendingImpact {
         uint32_t Body1Index, Body2Index;
         entt::entity Collider1, Collider2; // The touching collider node of each body.
         RMat44 COMTransform1; // Body 1's centre-of-mass transform, mapping cached contact points to world.
         Quat Rotation2; // Body 2's rotation, mapping the cached contact normal to world.
         Vec3 Normal; // world space, unit, into body 2.
-        // The load this manifold carries once settled, N: the weight component each dynamic body presses along the normal.
         float SupportForce;
         float InvMass1, InvMass2; // inverse masses, kg⁻¹, 0 for static/kinematic bodies
         float Restitution; // Combined restitution of the pair.
@@ -358,17 +345,17 @@ private:
         const auto index = b.GetID().GetIndex();
         return index < Reporting.size() && Reporting[index] != 0;
     }
-    // A pair is worth solving for detail when at least one of its bodies reports contacts.
+    // Detailed solving requires at least one reporting body.
     bool PairReports(const Body &b1, const Body &b2) const { return Reports(b1) || Reports(b2); }
 
-    // The collider node a sub-shape was built for, which a compound body has one of per sub-shape.
+    // Returns the collider node encoded for a sub-shape.
     static entt::entity ColliderOf(const Body &b, const SubShapeID &sub) { return ShapeColliderEntity(b.GetShape()->GetSubShapeUserData(sub)); }
 
-    // Reports where a persisting contact sits on each body, how hard it presses, and how fast the surfaces slide.
+    // Reports persistent-contact position, load, and surface velocity.
     // Fires once per collision step, so the drain sums the impulses over the frame's simulated time.
     // Area of the manifold's contact polygon, m^2.
     // Jolt clips the touching faces into an ordered convex polygon, so fanning it from its first point gives the area two faces share.
-    // A point or an edge spans none, which is what separates a load-set patch from a geometry-set one.
+    // Point and edge contacts have zero polygon area.
     static float ManifoldArea(const ContactManifold &manifold) {
         const auto &points = manifold.mRelativeContactPointsOn1;
         if (points.size() < 3) return 0;
@@ -380,7 +367,7 @@ private:
     }
 
     // Extent of the manifold's contact polygon along the slide, m.
-    // The polygon's points carry the solver's load across their whole spread, so the spread measures the region confining the contact even where the polygon's area collapses to a line.
+    // Polygon extent remains defined when a degenerate polygon has zero area.
     // A contact that is not sliding has no track direction, so it takes the widest spread the points have.
     static float ManifoldExtent(const ContactManifold &manifold, Vec3Arg slip) {
         const auto &points = manifold.mRelativeContactPointsOn1;
@@ -405,8 +392,7 @@ private:
     void CollectSustained(const Body &b1, const Body &b2, const ContactManifold &manifold, const ContactSettings &s) {
         if (!PairReports(b1, b2) || b1.IsSensor() || b2.IsSensor() || manifold.mRelativeContactPointsOn1.empty()) return;
 
-        // The normal (Hertz) impulses the solver applied, which carry the load every other contact presses into this pair.
-        // They are the previous collision step's, since this fires before the one that is about to be solved.
+        // Read normal impulses from the previous collision step.
         ContactConstraintManager::AppliedContactImpulses applied;
         if (!System->GetAppliedContactImpulses(SubShapeIDPair{b1.GetID(), manifold.mSubShapeID1, b2.GetID(), manifold.mSubShapeID2}, applied)) return;
 
@@ -427,7 +413,7 @@ private:
         const Vec3 relative_velocity = b1.GetPointVelocity(world_point) - b2.GetPointVelocity(world_point);
         const Vec3 normal = manifold.mWorldSpaceNormal;
         const Vec3 slip = relative_velocity - normal * relative_velocity.Dot(normal);
-        // The tangential force the solver applied, kinetic on a slide and whatever holds a roll.
+        // Resolve the solver's tangential force.
         const Vec3 friction_impulse = ResolveSolverFriction(applied, b2.GetRotation(), normal).Impulse;
 
         const uint64_t sub_shape_key = (uint64_t(manifold.mSubShapeID1.GetValue()) << 32) | manifold.mSubShapeID2.GetValue();
@@ -449,8 +435,6 @@ private:
         const Vec3 gravity = System->GetGravity();
         const float inv_mass1 = b1.IsDynamic() ? b1.GetMotionProperties()->GetInverseMass() : 0.f;
         const float inv_mass2 = b2.IsDynamic() ? b2.GetMotionProperties()->GetInverseMass() : 0.f;
-        // The weight component each dynamic body presses along the normal, the load the manifold carries once settled.
-        // A body settling onto several manifolds at once presses its weight into each estimate, which biases toward silence.
         float support = 0;
         if (inv_mass2 > 0) support += std::max(0.f, -gravity.Dot(normal)) / inv_mass2;
         if (inv_mass1 > 0) support += std::max(0.f, gravity.Dot(normal)) / inv_mass1;
@@ -468,15 +452,12 @@ private:
         PendingImpactCount.store(uint32_t(PendingImpacts.size()), std::memory_order_relaxed);
     }
 
-    // Removes a pending entry, keeping the lock-free count in step. ContactMutex must be held.
+    // Removes a pending entry while ContactMutex is locked and updates the lock-free count.
     void ErasePendingImpact(decltype(PendingImpacts)::iterator it) {
         PendingImpacts.erase(it);
         PendingImpactCount.store(uint32_t(PendingImpacts.size()), std::memory_order_relaxed);
     }
 
-    // Reports a pending manifold's strike from the impulses the solver applied, one report per cached contact point.
-    // The settled share of the boundary impulse is support, and the strike is the transient excess over it, so a resting contact's first impulse renders silence.
-    // `final` marks the manifold's removal, until which a pending contact the solver has not loaded stays pending, a speculative manifold being reported one boundary before it presses.
     void ConsumePendingImpact(const SubShapeIDPair &pair, bool final) {
         if (PendingImpactCount.load(std::memory_order_relaxed) == 0) return;
         const std::scoped_lock lock{ContactMutex};
@@ -497,7 +478,7 @@ private:
         const uint64_t sub_shape_key = (uint64_t(pair.GetSubShapeID1().GetValue()) << 32) | pair.GetSubShapeID2().GetValue();
 
         const float excess = normal_impulse - pi.SupportForce * SubstepDt;
-        if (excess <= 1e-6f) return; // pure support: the body settled rather than struck
+        if (excess <= 1e-6f) return;
         const float excess_scale = excess / normal_impulse;
 
         // The strike substep's normal and tangential impulse, against the add-time normal as fallback.
@@ -506,10 +487,9 @@ private:
         const Vec3 normal = solved.Normal;
         const Vec3 friction = solved.Impulse * excess_scale;
         // The approach speed the strike arrested, v = J/(m_eff*(1+e)), exact for a point contact and a rolloff corner for a manifold.
-        // This drives the Hertz contact time.
         const float speed = excess * (pi.InvMass1 + pi.InvMass2) / (1 + pi.Restitution);
 
-        // The whole manifold lands as one collision, so every point of it carries the polygon the faces share and the load-weighted centre the collision's resultant acts through.
+        // Share manifold geometry and resultant center across its point impacts.
         Vec3 resultant = Vec3::sZero();
         for (const auto &p : applied.mPoints) resultant += Vec3{pi.COMTransform1 * p.mPosition1} * p.mNormalImpulse;
         resultant /= normal_impulse;
@@ -518,7 +498,7 @@ private:
             const float share = p.mNormalImpulse * excess_scale;
             const Vec3 j = share * normal + friction * (p.mNormalImpulse / normal_impulse);
             const float impulse = j.Length();
-            if (impulse < 1e-6f) continue; // a point of the manifold carrying no load
+            if (impulse < 1e-6f) continue;
             RawContacts.emplace_back(
                 pi.Body1Index, pi.Body2Index, sub_shape_key, pi.Collider1, pi.Collider2,
                 Vec3{pi.COMTransform1 * p.mPosition1}, j / impulse, resultant, impulse, speed, pi.InvMass1, pi.InvMass2, pi.NominalArea
@@ -532,7 +512,7 @@ private:
         return R->valid(e) ? R->try_get<const ::PhysicsMaterial>(e) : nullptr;
     }
 
-    // The material of the sub-shape actually touching, falling back to the body's when that sub-shape names none.
+    // Returns the sub-shape material or the body material.
     const ::PhysicsMaterial *MaterialOf(const Body &b, const SubShapeID &sub) const {
         if (const auto collider = ColliderOf(b, sub); R && collider != null_entity && R->valid(collider)) {
             if (const auto *cm = R->try_get<const ColliderMaterial>(collider); cm && cm->PhysicsMaterialEntity != null_entity && R->valid(cm->PhysicsMaterialEntity)) {
@@ -560,7 +540,7 @@ private:
             return 1;
         };
         const auto pick = [&](PhysicsCombineMode a, PhysicsCombineMode b) { return priority(a) >= priority(b) ? a : b; };
-        // A sub-shape naming its own material overrides what the body settings resolved.
+        // Sub-shape material overrides body material.
         const auto friction = [](const ::PhysicsMaterial *m, const Body &b) { return m ? m->DynamicFriction : b.GetFriction(); };
         const auto restitution = [](const ::PhysicsMaterial *m, const Body &b) { return m ? m->Restitution : b.GetRestitution(); };
         s.mCombinedFriction = ApplyCombineMode(pick(fc(m1), fc(m2)), friction(m1, b1), friction(m2, b2));
@@ -568,8 +548,6 @@ private:
     }
 };
 
-// One contact manifold's entries for a frame, accumulated with impulse weights.
-// A manifold is reported once per collision step, so a frame holds one entry per step for the same manifold.
 struct ManifoldMerge {
     Vec3 Point{Vec3::sZero()}, Normal{Vec3::sZero()}, Slip{Vec3::sZero()};
     Vec3 Local1{Vec3::sZero()}, Local2{Vec3::sZero()}; // Contact position in each body's own frame, for differencing into a sweep velocity.
@@ -577,8 +555,7 @@ struct ManifoldMerge {
     float Impulse{0};
 };
 
-// All Jolt-side physics state. Lives in the registry context (see physics::Init); the physics:: free
-// functions resolve it from the registry. Plain data holder — behavior lives in the functions below.
+// Jolt state stored in the registry context.
 struct PhysicsState {
     TempAllocatorImpl TempAllocator{64 * 1024 * 1024};
     JobSystemThreadPool JobSystem{cMaxPhysicsJobs, cMaxPhysicsBarriers, int(std::max(1u, std::thread::hardware_concurrency() - 1))};
@@ -599,13 +576,10 @@ struct PhysicsState {
     std::unordered_map<uint32_t, entt::entity> EntityByBodyIndex; // BodyID index -> owning entity, for contact-impact routing.
     std::vector<KHRContactListener::RawContact> ContactDrainScratch; // reused each step so the swap doesn't free the accumulator
     std::vector<KHRContactListener::RawSustained> SustainedDrainScratch;
-    // The (packed body-index key, manifold key, raw index) tuples this step's contacts are gathered by,
-    // and the body pairs that gather covered. Both come out sorted, so the ended-pair sweep binary-searches.
+// Stores sorted contact tuples and covered body pairs for ended-pair binary search.
     std::vector<std::tuple<uint64_t, uint64_t, uint32_t>> SustainedOrderScratch;
     std::vector<uint64_t> SustainedPairScratch;
-    // Live manifolds, in lists keyed by the packed body-index pair.
-    // Each carries its own id and the previous step's contact point in each body's own frame, so the sweep measures
-    // surfaces travelling rather than load moving between manifolds.
+    // Active manifolds keyed by body pair retain prior body-local points for surface-velocity calculation.
     struct SustainedManifold {
         uint64_t Key{0}; // Sub-shape pair, identifying the manifold within its body pair.
         uint64_t Id{0};
@@ -627,8 +601,7 @@ struct PhysicsState {
         ContactListener.Filter = FilterRef.GetPtr();
     }
 
-    // Recreate the Jolt system so its BodyManager restarts clean and a scene's body ids are deterministic.
-    // emplace() reinits in place, keeping JobSystem / TempAllocator alive.
+    // Recreate BodyManager for deterministic scene body IDs while retaining JobSystem and TempAllocator.
     void ResetSystem() {
         auto &system = System.emplace();
         system.Init(
@@ -656,8 +629,7 @@ struct PhysicsState {
     }
 };
 
-// The two bodies a sustained contact is between, packed so one key orders the contacts by pair and indexes
-// PhysicsState::SustainedManifolds. Only these two functions know the packing.
+// Packs a sorted body pair for PhysicsState::SustainedManifolds.
 uint64_t BodyPairKey(uint32_t body1_index, uint32_t body2_index) { return (uint64_t{body1_index} << 32) | body2_index; }
 std::array<uint32_t, 2> BodyPairIndices(uint64_t key) { return {uint32_t(key >> 32), uint32_t(key)}; }
 
@@ -794,7 +766,6 @@ void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJoi
         }
     }
 
-    // Apply drives as motor settings.
     for (const auto &drive : def.Drives) {
         const auto axis_index = (drive.Type == PhysicsDriveType::Linear ? 0 : 3) + drive.Axis;
         const auto axis = SixDOFConstraintSettings::EAxis(axis_index);
@@ -808,10 +779,8 @@ void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJoi
     }
 }
 
-// Returns the angular drive axis (0/1/2) for hinge-like joints, -1 otherwise. Hinge-like = one
-// continuous-spin angular drive + all 3 linear axes locked at 0 + the other 2 angular axes locked
-// within ±5°. These route to HingeConstraint, which is continuous through ±π, rather than SixDOF,
-// whose swing-twist decomposition is ill-conditioned there and jumps the bodies as it passes through.
+// Returns the continuous angular axis for a hinge-compatible joint, or -1.
+// HingeConstraint avoids the SixDOF swing-twist singularity near pi.
 int DetectHingeAxis(const PhysicsJointDef &def) {
     int spin_axis = -1;
     for (const auto &drive : def.Drives) {
@@ -838,7 +807,7 @@ int DetectHingeAxis(const PhysicsJointDef &def) {
     return spin_axis;
 }
 
-// After constraint creation, set motor states and targets from drives.
+// Applies motor states and targets after constraint creation.
 void ApplyDriveTargets(SixDOFConstraint &constraint, const PhysicsJointDef &def) {
     auto target_pos = Vec3::sZero(), target_vel = Vec3::sZero();
     auto target_ang_vel = Vec3::sZero();
@@ -902,7 +871,7 @@ void RecomputeSceneScale(PhysicsState &s, const entt::registry &r) {
             collider.Shape
         );
     }
-    // Shrink for small colliders, and grow back (capped at default) when they're removed or embiggened.
+    // Bound tolerances by collider size and the defaults.
     auto settings = s.System->GetPhysicsSettings();
     settings.mPenetrationSlop = (min_dim < std::numeric_limits<float>::max()) ?
         std::min(s.DefaultPenetrationSlop, min_dim * 0.02f) :
@@ -979,8 +948,7 @@ void BuildJoint(PhysicsState &s, const entt::registry &r, entt::entity entity) {
     } else {
         SixDOFConstraintSettings settings;
         settings.mSpace = EConstraintSpace::WorldSpace;
-        // Default Cone swing couples Y/Z into an ellipse, which degenerates when one
-        // axis is locked. Pyramid gives independent per-axis angular limits.
+        // Default Cone swing couples Y/Z into an ellipse, which degenerates when one axis is locked. Pyramid gives independent per-axis angular limits.
         settings.mSwingType = ESwingType::Pyramid;
         settings.mPosition1 = pos1;
         settings.mPosition2 = pos2;
@@ -1075,7 +1043,7 @@ Ref<Shape> BuildLeafShape(const entt::registry &r, entt::entity entity, const Co
     return js;
 }
 
-// Walk descendants of `owner`, stopping at any descendant PhysicsMotion, collecting ColliderShape entities.
+// Collects collider descendants without crossing another PhysicsMotion.
 void GatherCompoundChildren(const entt::registry &r, entt::entity owner, std::vector<entt::entity> &out) {
     const auto walk = [&](this auto &self, entt::entity e) -> void {
         for (auto child : Children{&r, e}) {
@@ -1096,8 +1064,7 @@ struct BodyShape {
     entt::entity FilterEntity{null_entity}; // resolved collision-filter entity (null = no KHR filter)
 };
 
-// Build the body's complete shape (single collider, compound, or sensor). Does NOT apply CoM wrap.
-// Skips child colliders whose parent motion-owner builds them as compound children.
+// Builds a single, compound, or sensor body shape before center-of-mass wrapping.
 BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHRCollisionFilter *filter) {
     BodyShape out;
     const auto *motion = r.try_get<const PhysicsMotion>(entity);
@@ -1228,13 +1195,11 @@ void AddBody(PhysicsState &s, entt::registry &r, entt::entity entity) {
     s.JointsDirty = true;
 }
 
-// on_destroy<PhysicsBodyHandle>: captures the BodyId before the component is erased (on component removal or
-// full entity destroy), so the body can be dropped in the next batched flush.
+// Captures BodyId before PhysicsBodyHandle removal for the next batched destruction flush.
 void OnDestroyPhysicsBody(entt::registry &r, entt::entity entity) {
     auto *s = r.ctx().find<PhysicsState>();
     if (!s) return; // registry teardown after physics::Deinit erased the state
-    // Reported contacts are refilled only while stepping, so drop this body's records rather than let them
-    // outlive it while the playhead is parked.
+    // Remove cached contact records immediately when playback is stationary.
     if (auto *sustained = r.ctx().find<PhysicsSustainedContacts>()) {
         std::erase_if(sustained->Active, [entity](const SustainedContact &c) {
             return c.Sides.front().Entity == entity || c.Sides.back().Entity == entity;
@@ -1254,7 +1219,7 @@ void OnDestroyPhysicsBody(entt::registry &r, entt::entity entity) {
     s->JointsDirty = true;
 }
 
-// Batched removal of bodies queued by OnDestroyPhysicsBody. See PendingBodyRemovals.
+// Removes bodies queued by OnDestroyPhysicsBody as one batch.
 void FlushPendingBodyRemovals(PhysicsState &s) {
     auto &ids = s.PendingBodyRemovals;
     if (ids.empty()) return;
@@ -1264,7 +1229,7 @@ void FlushPendingBodyRemovals(PhysicsState &s) {
     ids.clear();
 }
 
-// Drops the entity's body; the on_destroy hook queues the Jolt removal.
+// Removes the handle and queues its Jolt body for batched removal.
 void RemoveBody(entt::registry &r, entt::entity entity) {
     r.remove<PhysicsBodyHandle>(entity);
     r.remove<BodyPoseCache>(entity);
@@ -1296,8 +1261,7 @@ void ApplyShape(PhysicsState &s, const entt::registry &r, entt::entity entity) {
     const auto *t = r.try_get<const WorldTransform>(entity);
     const auto world_scale = t ? t->S : vec3{1};
     const auto shape = WrapCenterOfMass(built.Shape, built.IsSensor ? nullptr : r.try_get<const PhysicsMotion>(entity), world_scale, inner_mass_props);
-    // updateMassProperties=false: preserves explicit Mass/Inertia overrides and avoids
-    // GetMassProperties() on shapes that return zero inertia (TriangleMesh, MeshShape).
+    // Preserve explicit mass and inertia overrides and skip zero-inertia shape queries.
     // ApplyMassPropertiesFromShape re-derives mass props with the right guards.
     s.System->GetBodyInterface().SetShape(BodyID{handle->BodyId}, shape, /*updateMassProperties=*/false, EActivation::Activate);
     ApplyMassPropertiesFromShape(s, r, entity);
@@ -1311,7 +1275,7 @@ void ApplyMotion(PhysicsState &s, const entt::registry &r, entt::entity entity) 
     auto &bi = s.System->GetBodyInterface();
     const BodyID id{handle->BodyId};
 
-    // Kinematic toggle is a motion-type flip (Dynamic ↔ Kinematic, both stay in Layers::Moving).
+    // Dynamic and kinematic bodies share Layers::Moving.
     if (const auto desired_type = motion->IsKinematic ? EMotionType::Kinematic : EMotionType::Dynamic;
         bi.GetMotionType(id) != desired_type) bi.SetMotionType(id, desired_type, EActivation::Activate);
 
@@ -1344,7 +1308,7 @@ void ApplyMaterial(PhysicsState &s, const entt::registry &r, entt::entity entity
     if (!material) return;
 
     if (const auto owner = FindCompoundParentBody(r, entity); owner != entt::null) {
-        // Child collider: leaf UserData lives inside the parent compound shape — rebuild it.
+        // Rebuild the compound shape to update child UserData.
         ApplyShape(s, r, owner);
         return;
     }
@@ -1405,8 +1369,7 @@ void OnMotionChange(PhysicsState &s, entt::registry &r, entt::entity e) {
         if (r.all_of<ColliderShape>(e)) AddBody(s, r, e); // demote: rebuild as static
         return;
     }
-    // Object layer is fixed at body creation. Static lives in NonMoving; Dynamic/Kinematic in Moving.
-    // Crossing that boundary needs a full recreate; Dynamic↔Kinematic within Moving can cheap-apply.
+    // Recreate bodies when their fixed object layer changes between NonMoving and Moving.
     if (has_body) {
         const auto *handle = r.try_get<const PhysicsBodyHandle>(e);
         const bool is_static = s.System->GetBodyInterface().GetMotionType(BodyID{handle->BodyId}) == EMotionType::Static;
@@ -1429,14 +1392,10 @@ void OnMaterialChange(PhysicsState &s, entt::registry &r, entt::entity e) {
 void OnTriggerChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     if (!r.valid(e)) return;
     // Body's sensor flag (part of BodyCreationSettings) is baked at create, so any transition requires a full rebuild.
-    // AddBody is a no-op when no shape is available.
     if (r.all_of<PhysicsBodyHandle>(e)) RemoveBody(r, e);
     AddBody(s, r, e);
 }
 
-// Authored Transform edit: mirror the new world pose onto e's body and any descendant bodies.
-// Scale is baked into the shape, so a scale change rebuilds every descendant's shape.
-// The simulator never writes WorldTransform::S, so it still holds the scale the shapes were built at.
 void OnPoseChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     if (!r.valid(e)) return;
     std::vector<entt::entity> bodies;
@@ -1495,7 +1454,7 @@ void OnPhysicsMaterialDefChange(PhysicsState &s, entt::registry &r, entt::entity
         ClearDanglingRefs<&ColliderMaterial::PhysicsMaterialEntity>(r, e);
         return;
     }
-    // Jolt friction is per-body: direct colliders update in place. Compound leaves require a parent rebuild.
+    // Compound child material changes require rebuilding the parent body.
     const auto &mat = r.get<const ::PhysicsMaterial>(e);
     auto &bi = s.System->GetBodyInterface();
     for (auto [ce, cm] : r.view<const ColliderMaterial>().each()) {
@@ -1545,8 +1504,7 @@ void OnPhysicsJointDefChange(PhysicsState &s, entt::registry &r, entt::entity e)
 void ClearSimulation(PhysicsState &s, entt::registry &r) {
     for (auto &[_, c] : s.ConstraintsByJoint) s.System->RemoveConstraint(c);
     s.ConstraintsByJoint.clear();
-    // Every live contact goes with its bodies.
-    // Advancing the step alongside the clear publishes the empty set at once.
+    // Publish an empty contact set with the cleared bodies.
     r.ctx().get<PhysicsContactImpacts>().Events.clear();
     auto &sustained = r.ctx().get<PhysicsSustainedContacts>();
     sustained.Active.clear();
@@ -1585,11 +1543,11 @@ void Rebuild(entt::registry &r) {
     s.System->OptimizeBroadPhase();
 }
 
-// Drops the bake frontier. The cached slots keep their contents and are overwritten on the next bake.
+// Invalidates the bake frontier while retaining allocated cache slots.
 void ClearCache(entt::registry &r) { r.ctx().get<PhysicsState>().Baked = {}; }
 bool HasBodies(const entt::registry &r) { return r.ctx().get<PhysicsState>().System->GetNumBodies() > 0; }
 
-// The entity whose body carries this index, or null once the body is gone.
+// Returns the entity for a live body index.
 entt::entity EntityForBody(const PhysicsState &s, uint32_t body_index) {
     const auto it = s.EntityByBodyIndex.find(body_index);
     return it != s.EntityByBodyIndex.end() ? it->second : null_entity;
@@ -1636,8 +1594,7 @@ void CollectSustainedContacts(PhysicsState &s, entt::registry &r, float sim_dt) 
     auto &sustained = r.ctx().get<PhysicsSustainedContacts>();
     sustained.Active.clear();
 
-    // Gather this step's entries by body pair and then by manifold, which is the level a contact is reported at.
-    // The collision jobs run in parallel, so a manifold's entries arrive interleaved with other manifolds'.
+    // Group parallel listener output by body pair and manifold.
     auto &order = s.SustainedOrderScratch;
     order.clear();
     order.reserve(raw.size());
@@ -1651,7 +1608,7 @@ void CollectSustainedContacts(PhysicsState &s, entt::registry &r, float sim_dt) 
     sustained.Step = ++s.SustainedStep;
     auto &pairs_seen = s.SustainedPairScratch;
     pairs_seen.clear();
-    // The gather is sorted, so a pair's entries are one run of it and a manifold's are one run of that.
+    // Sorted entries make each body pair and manifold contiguous.
     static constexpr auto same_pair = [](const auto &a, const auto &b) { return std::get<0>(a) == std::get<0>(b); };
     static constexpr auto same_manifold = [](const auto &a, const auto &b) { return std::get<1>(a) == std::get<1>(b); };
     for (const auto pair_group : order | std::views::chunk_by(same_pair)) {
@@ -1678,15 +1635,14 @@ void CollectSustainedContacts(PhysicsState &s, entt::registry &r, float sim_dt) 
                 m.Impulse += c.NormalImpulse;
             }
             if (m.Impulse <= 0) continue;
-            // The colliders and the combined constants belong to the manifold rather than to one of its reports,
-            // so they come from the last step to report it.
+            // The colliders and the combined constants belong to the manifold rather than to one of its reports, so they come from the last step to report it.
             const auto &last = raw[std::get<2>(manifold_group.back())];
 
-            // Each surface traverses the contact at its own rate, differenced in that body's frame and rotated into world.
+            // Compute each surface velocity from body-local displacement and rotate it to world space.
             const vec3 local1 = FromJolt(m.Local1 / m.Impulse), local2 = FromJolt(m.Local2 / m.Impulse);
             auto prev = std::ranges::find(tracked, manifold_key, &PhysicsState::SustainedManifold::Key);
             const bool is_new = prev == tracked.end();
-            // A manifold seen for the first time has no previous position to difference, so it reports no travel this step.
+            // New manifolds report zero surface velocity for their first step.
             const vec3 sweep1 = is_new ? vec3{0} : rot1 * (local1 - prev->Local1) * inv_dt;
             const vec3 sweep2 = is_new ? vec3{0} : rot2 * (local2 - prev->Local2) * inv_dt;
             const uint64_t id = is_new ? s.NextSustainedId++ : prev->Id;
@@ -1714,12 +1670,12 @@ void CollectSustainedContacts(PhysicsState &s, entt::registry &r, float sim_dt) 
                 .Friction = last.Friction,
             });
         }
-        // A manifold the step didn't report has stopped touching.
+        // Remove manifolds absent from the current step.
         std::erase_if(tracked, [&](const auto &manifold) { return manifold.LastStep != s.SustainedStep; });
     }
     raw.clear();
 
-    // A pair the step didn't report has stopped touching entirely.
+    // Remove body pairs absent from the current step.
     std::erase_if(s.SustainedManifolds, [&](const auto &pair) { return !std::ranges::binary_search(pairs_seen, pair.first); });
 }
 
@@ -1745,8 +1701,7 @@ void StepSimulation(PhysicsState &s, const entt::registry &r, float sim_dt, uint
     s.System->Update(sim_dt, collision_steps, &s.TempAllocator, &s.JobSystem);
 }
 
-// Step the sim one frame, collect contacts, record `frame`'s poses into the cache, and sync active
-// bodies to WorldTransform. Advances the bake frontier.
+// Step the sim one frame, collect contacts, record `frame`'s poses into the cache, and sync active bodies to WorldTransform. Advances the bake frontier.
 void BakeFrame(entt::registry &r, entt::entity viewport, PhysicsState &s, uint32_t frame, float fps) {
     // Each collision step integrates (dt * TimeScale) / SubstepsPerFrame seconds of sim time.
     const auto &settings = r.get<const PhysicsSimulationSettings>(viewport);
@@ -1755,8 +1710,7 @@ void BakeFrame(entt::registry &r, entt::entity viewport, PhysicsState &s, uint32
     StepSimulation(s, r, sim_dt, settings.SubstepsPerFrame);
     CollectContactImpacts(s, r);
     CollectSustainedContacts(s, r, sim_dt);
-    // Sync Jolt -> ECS WorldTransform only. PhysicsVelocity is authored-only; live velocity stays in Jolt.
-    // WT is owned by the simulator during sim; local Transform is the authored pose, restored on Rebuild.
+    // Sync simulated poses to WorldTransform while retaining authored Transform and PhysicsVelocity.
     const auto &bi = s.System->GetBodyInterface();
     const bool record = frame >= s.CacheStartFrame && frame <= s.CacheEndFrame;
     const auto idx = frame - s.CacheStartFrame;
@@ -1849,7 +1803,7 @@ bool AdvancePlayback(entt::registry &r, entt::entity viewport, int from_frame, i
     } else if (to_frame == range_start_frame) {
         Rebuild(r); // Reset sim: covers wrap-after-play and user-initiated jump-to-start.
     } else {
-        return false; // scrub past the bake frontier — hold current pose until play resumes baking
+        return false; // Preserve the current pose beyond the bake frontier.
     }
     return true;
 }
@@ -1857,7 +1811,7 @@ bool AdvancePlayback(entt::registry &r, entt::entity viewport, int from_frame, i
 void BakeThrough(entt::registry &r, entt::entity viewport, int through_frame, float fps) {
     if (!HasBodies(r)) return;
     auto &s = r.ctx().get<PhysicsState>();
-    if (!s.Baked) return; // Bake ahead only from a contiguous frontier, where the live sim matches Baked.
+    if (!s.Baked) return; // Baking requires a contiguous frontier matching the simulation state.
     const uint32_t target = std::min(uint32_t(std::max(through_frame, 1)), s.CacheEndFrame);
     while (*s.Baked < target) BakeFrame(r, viewport, s, *s.Baked + 1, fps);
 }
@@ -1917,8 +1871,7 @@ void Init(entt::registry &r) {
         for (auto e : reactive<changes::PhysicsTrigger>(r)) OnTriggerChange(s, r, e);
         for (auto e : reactive<changes::PhysicsPose>(r)) OnPoseChange(s, r, e);
         FlushJoints(s, r, joint_events);
-        // Destroy bodies queued by OnDestroyPhysicsBody together, after FlushJoints has cleared the
-        // constraints that referenced them (Jolt asserts on destroying a body still in a constraint).
+    // Destroy queued bodies after FlushJoints removes their constraints.
         FlushPendingBodyRemovals(s);
     });
 }

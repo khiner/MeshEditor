@@ -1,9 +1,9 @@
 #include "selection/SelectionOps.h"
 
-#include "armature/ArmatureComponents.h" // BoneActive, BoneIndex, BoneSubPartOf
-#include "scene/Entity.h" // Selected, Active, SubElementOf
-#include "selection/BoneSelection.h" // BoneSelection
-#include "selection/SelectionQueries.h" // SelectionHit, ResolveHits
+#include "armature/ArmatureComponents.h"
+#include "scene/Entity.h"
+#include "selection/BoneSelection.h"
+#include "selection/SelectionQueries.h"
 
 #include <entt/entity/registry.hpp>
 

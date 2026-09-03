@@ -5,7 +5,6 @@
 using namespace metal;
 
 // Y-up cubemap face convention (layer order: +X, -X, +Y, -Y, +Z, -Z).
-// uv is in [-1, 1] for the face's s/t axes.
 inline float3 FaceDirection(uint face, float2 uv) {
     switch (face) {
         case 0: return normalize(float3(1.0f, -uv.y, -uv.x));

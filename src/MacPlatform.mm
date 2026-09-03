@@ -160,7 +160,7 @@ void Window::HonorMouseWarp() {
     // Cocoa screen origin is the primary screen's bottom left, global display origin its top left.
     const CGFloat primary_height = NSScreen.screens.firstObject.frame.size.height;
     CGWarpMouseCursorPosition(CGPointMake(screen_rect.origin.x, primary_height - screen_rect.origin.y));
-    // Keep events flowing after the warp instead of waiting out the suppression interval.
+    // Disable post-warp event suppression.
     CGAssociateMouseAndMouseCursorPosition(true);
 }
 

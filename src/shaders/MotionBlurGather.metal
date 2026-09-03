@@ -13,10 +13,9 @@ constant int GatherSampleCount = 8;
 struct Accumulator {
     float4 Fg;
     float4 Bg;
-    float3 Weight; // x background, y foreground, z direction
+    float3 Weight; // Components represent background, foreground, and direction weights.
 };
 
-// Everything the gather reads, resolved once per fragment.
 struct GatherContext {
     Scene S;
     constant MotionBlurGatherPushConstants &Pc;
@@ -33,19 +32,17 @@ struct GatherContext {
         return velocity * float2(S.TexSize(Pc.VelocitySamplerSlot, 0)).xyxy * float2(Pc.MotionScale).xxyy;
     }
 
-    // Whether each streak is long enough to reach across `offset_len`. The +1 gives the streak's
-    // tip a one pixel ramp rather than a hard edge.
+    // Add one pixel to produce a continuous ramp at each streak endpoint.
     float2 SpreadCompare(float center_len, float sample_len, float offset_len) const {
         return clamp(float2(center_len, sample_len) - offset_len + 1.0f, 0.0f, 1.0f);
     }
 
-    // Classify the sample as behind (x) or in front of (y) the center.
     float2 DepthCompare(float center_depth, float sample_depth) const {
         const float2 depth_scale = float2(-Pc.DepthScale, Pc.DepthScale);
         return clamp(0.5f + depth_scale * (sample_depth - center_depth), 0.0f, 1.0f);
     }
 
-    // Keep only samples travelling the way we are gathering. Barely-moving samples always count.
+    // Accept samples moving in the current gather direction and include subpixel motion in both directions.
     float DirCompare(float2 offset, float2 sample_motion, float sample_len) const {
         if (sample_len < 0.5f) return 1.0f;
         return dot(offset, sample_motion) > 0.0f ? 1.0f : 0.0f;
@@ -72,7 +69,7 @@ struct GatherContext {
     void GatherBlur(float2 screen_uv, float2 center_motion, float center_depth, float2 max_motion, float ofs, bool next, thread Accumulator &accum) const {
         const float center_len = length(center_motion);
         float max_len = length(max_motion);
-        // Jittering the tile lookup can land on a quieter tile than this pixel deserves.
+        // Include the center tile to prevent jitter from selecting a lower-motion tile.
         if (max_len < center_len) {
             max_len = center_len;
             max_motion = center_motion;
@@ -85,7 +82,7 @@ struct GatherContext {
             GatherSample(screen_uv, center_depth, center_len, max_motion * t, max_len * t, next, accum);
         }
         if (center_len < 0.5f) return;
-        // Walk our own motion too, which recovers detail where foreground and background disagree.
+        // Sample center motion to preserve detail across foreground-background discontinuities.
         t = ofs * inc;
         for (int i = 0; i < GatherSampleCount; ++i, t += inc) {
             GatherSample(screen_uv, center_depth, center_len, center_motion * t, center_len * t, next, accum);
@@ -121,13 +118,12 @@ fragment float4 MotionBlurGatherFragment(
         InterleavedGradientNoise(float2(texel), 1, pc.NoiseOffset)
     );
 
-    // Jitter the tile lookup by up to a quarter tile so tile edges do not show as banding.
+    // Jitter tile lookup by at most one quarter tile to suppress tile-edge banding.
     rand.x = rand.x * 2.0f - 1.0f;
     const int2 tile_extent = int2(bindless.Image[pc.TileImageSlot].get_width(), bindless.Image[pc.TileImageSlot].get_height());
     int2 tile = (texel + int2(int(rand.x * float(MotionBlurTileSize) * 0.25f))) / MotionBlurTileSize;
     tile = clamp(tile, int2(0), tile_extent - 1);
 
-    // Tile motion is already in pixels with both halves pointing forward.
     device const uint *indirections = BindlessBuffer(uint, bindless.Buffer, pc.TileIndirectionSlot);
     const int2 tile_prev = MotionTileUnpack(indirections[MotionTileIndex(MotionPrev, uint2(tile), uint2(tile_extent))]);
     const int2 tile_next = MotionTileUnpack(indirections[MotionTileIndex(MotionNext, uint2(tile), uint2(tile_extent))]);
@@ -139,26 +135,23 @@ fragment float4 MotionBlurGatherFragment(
     Accumulator accum;
     accum.Fg = float4(0.0f);
     accum.Bg = float4(0.0f);
-    accum.Weight = float3(0.0f, 0.0f, 1.0f); // The direction weight starts at one, which normalizes below.
+    accum.Weight = float3(0.0f, 0.0f, 1.0f);
 
-    ctx.GatherBlur(uv, center_motion.xy, center_depth, max_motion.xy, rand.y, false, accum); // [T - delta, T]
-    ctx.GatherBlur(uv, center_motion.zw, center_depth, max_motion.zw, rand.y, true, accum);  // [T, T + delta]
+    ctx.GatherBlur(uv, center_motion.xy, center_depth, max_motion.xy, rand.y, false, accum);
+    ctx.GatherBlur(uv, center_motion.zw, center_depth, max_motion.zw, rand.y, true, accum);
 
-    // A sliver of center weight keeps the division defined. A still pixel surrounded by fast
-    // motion takes its full center color back, which keeps the background crisp.
+    // A small center weight keeps normalization defined and preserves stationary background detail.
     float w = 1.0f / (50.0f * float(GatherSampleCount) * 4.0f);
     const bool no_motion = length(center_motion.xy) + length(center_motion.zw) < 0.5f;
     if (accum.Weight.x < 1.0f && no_motion) w = 1.0f;
     accum.Bg += center_color * w;
     accum.Weight.x += w;
-    // The reconstructed background carries more information than the center sample for foreground
-    // pixels that gathered too little weight.
+    // Prefer reconstructed background when foreground samples have insufficient weight.
     center_color = accum.Bg / accum.Weight.x;
 
     accum.Fg += accum.Bg;
     accum.Weight.y += accum.Weight.x;
-    // Samples that passed the direction test but failed depth or spread leave a weight deficit.
-    // Fill it with the background rather than darkening the pixel.
+    // Fill the rejected-sample weight with background color to preserve brightness.
     const float blend_fac = clamp(1.0f - accum.Weight.y / accum.Weight.z, 0.0f, 1.0f);
     return (accum.Fg / accum.Weight.z) + center_color * blend_fac;
 }

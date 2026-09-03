@@ -29,13 +29,10 @@ struct MeshBuffers {
     SlottedRange Vertices;
     SlottedRange FaceIndices, EdgeIndices, VertexIndices;
     Range Primitives, Meshlets, MeshletTriangles, MeshletVertices, MeshletLocalTriangles, MeshletEditEdges;
-    // The cluster LOD DAG, whose coarse clusters take their own ranges in the meshlet geometry arenas.
-    // A mesh whose clusters fit one partition carries no groups or coarse geometry, and its nodes are
-    // one never-pruned span per primitive.
+    // Meshes without coarse geometry use one unpruned span node per primitive.
     Range ClusterGroups, LodNodes, CoarseVertices, CoarseLocalTriangles;
 };
 
-// Adjacency indices for bone silhouette edge detection (stored on armature object entities).
 struct BoneAdjacencyIndices {
     SlottedRange Indices;
 };

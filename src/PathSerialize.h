@@ -5,8 +5,7 @@
 #include <filesystem>
 #include <string>
 
-// zpp::bits can't reflect std::filesystem::path, so it gets two ADL hooks (in std::filesystem so ADL finds them):
-// a members<1> count to stop zpp structured-binding its private members, plus a serialize through its native string.
+// zpp::bits requires ADL hooks because std::filesystem::path is not reflectable.
 namespace std::filesystem {
 auto serialize(const path &) -> zpp::bits::members<1>;
 constexpr auto serialize(auto &archive, const path &p) { return archive(p.string()); }

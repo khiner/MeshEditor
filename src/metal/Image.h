@@ -15,9 +15,9 @@ inline constexpr auto Depth = MTL::PixelFormatDepth32Float;
 inline constexpr auto Float = MTL::PixelFormatR32Float;
 inline constexpr auto Float2 = MTL::PixelFormatRG32Float;
 inline constexpr auto LineData = MTL::PixelFormatRGBA8Unorm;
-inline constexpr auto Velocity = MTL::PixelFormatRGBA16Float; // (prev->current, current->next) screen motion
+inline constexpr auto Velocity = MTL::PixelFormatRGBA16Float;
 inline constexpr auto Uint = MTL::PixelFormatR32Uint;
-} // namespace Format
+}
 
 struct Extent2D {
     uint32_t Width, Height;
@@ -38,7 +38,6 @@ Texture CreateTexture2D(const Context &, MTL::PixelFormat, Extent2D, MTL::Textur
 Texture CreateTextureCube(const Context &, MTL::PixelFormat, uint32_t size, MTL::TextureUsage, uint32_t mip_levels = 1);
 Texture CreateTexture2DArray(const Context &, MTL::PixelFormat, Extent2D, uint32_t layers, MTL::TextureUsage, uint32_t mip_levels = 1);
 NS::SharedPtr<MTL::Texture> CreateMipView(const Texture &, uint32_t mip);
-// Cube faces are writable through a six-layer array view of one mip.
 NS::SharedPtr<MTL::Texture> CreateCubeMipView(const Texture &, uint32_t mip);
 
 constexpr uint32_t MipLevelCount(uint32_t width, uint32_t height) {
@@ -60,6 +59,5 @@ NS::SharedPtr<MTL::SamplerState> CreateSampler(const Context &, MTL::SamplerMinM
 bool CopyTextureRegion(const Context &, const Texture &source, uint32_t x, uint32_t y, Extent2D, const Texture &destination);
 bool CopyTextureRegion(const Context &, const Texture &source, uint32_t x, uint32_t y, Extent2D, MTL::Buffer *destination, uint32_t bytes_per_row);
 
-// Upload one mip directly into CPU-visible storage.
 void Upload(const Texture &, uint32_t mip, std::span<const std::byte> bytes, uint32_t bytes_per_row, uint32_t layer = 0);
-} // namespace mtl
+}

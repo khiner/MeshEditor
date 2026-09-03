@@ -1,7 +1,6 @@
 #ifndef BONE_UTILS_MSL
 #define BONE_UTILS_MSL
 
-// Shared utilities for bone overlay shaders.
 #include "Bindless.metal"
 
 template<typename SetT>
@@ -46,8 +45,7 @@ struct BoneBillboard {
     float radius;
 };
 
-// Build a camera-facing billboard from a disc mesh vertex and a sphere Transform.
-// Disc vertices are expected in the XY plane with radius 0.05.
+// Returns a camera-facing billboard position for an XY-plane disc with radius 0.05.
 template<typename SetT>
 inline BoneBillboard bone_sphere_billboard(const thread SceneT<SetT> &scene, Transform world, float3 vert_pos) {
     const float3 center = float3(world.P);

@@ -32,8 +32,8 @@ static constexpr uint32_t NumListenerPoints = 600; // Number of unique listener 
 static constexpr uint32_t NumImpactVertices = 5; // Number of recorded impact points on each object
 static constexpr uint32_t NumMics = 15; // Number of microphones in the vertical microphone array
 static constexpr float MicBarLengthMm = 1890 - 70; // Height of the microphone array, in mm
-// Authors use a Dayton Audio EMM6 calibrated measurement microphone.
-// Measurements from https://www.amazon.com/Dayton-Audio-EMM-6-Measurement-Microphone/dp/B002KI8X40
+// Measurements use a calibrated Dayton Audio EMM6 microphone.
+// Reference: https://www.amazon.com/Dayton-Audio-EMM-6-Measurement-Microphone/dp/B002KI8X40.
 static constexpr float MicLengthMm = 190.5, MicWidthMm = 22.352;
 // Listener point closest to the front-center of the object's hemisphere of microphone positions.
 static constexpr uint32_t CenteredListenerIndex = 263;
@@ -46,8 +46,7 @@ struct ListenerPoint {
     const long DistanceMm; // Distance from the microphone to the object, in (whole) mm
     const long AngleDeg; // Angle of the listener relative to the object, in (whole) degrees
 
-    // Optionally add half the mic length to the distance so that placing a mic mesh with its origin
-    // at the returned point results in the front of the mic head at the correct distance.
+// Optionally offsets the microphone origin by half its length to place the head at the requested distance.
     // Pass `false` to get the mic head position (listener position) instead of the mic center.
     vec3 GetPosition(vec3 world_up = {0, 1, 0}, bool mic_center = false) const;
 };

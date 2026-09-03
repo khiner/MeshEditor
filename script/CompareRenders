@@ -36,18 +36,17 @@ IMAGE_SUFFIXES = (".webp", ".png", ".jpg")
 VIDEO_SUFFIXES = (".mp4",)
 FFMPEG = "ffmpeg"
 
-# Budget keys, in report column order. Each is an upper bound: a scene passes when every one of its
-# files stays at or below every bound.
+# Budget keys are upper bounds listed in report-column order.
 BUDGET_KEYS = ("changedPixelPercent", "maxDelta", "p99Delta", "meanDelta")
 
 
 def comparable(name: str) -> bool:
-    """True for the visual artifacts. Logs, action replays and run.sh reproducers are not pixels."""
+    """Return true for visual artifacts."""
     return name.endswith(IMAGE_SUFFIXES + VIDEO_SUFFIXES)
 
 
 class Tree:
-    """A set of render artifacts addressed by path relative to the tree root."""
+    """Store render artifacts by paths relative to the tree root."""
 
     def __init__(self, root: Path | None, label: str, names: list[str]):
         self.root, self.label, self.names = root, label, sorted(names)
@@ -71,7 +70,7 @@ class DirTree(Tree):
 
 
 class GitTree(Tree):
-    """The corpus as committed, read through the git-lfs smudge filter."""
+    """Read the committed corpus through the git-lfs smudge filter."""
 
     def __init__(self, ref: str, prefix: str):
         self.ref, self.prefix = ref, prefix
@@ -97,8 +96,7 @@ class GitTree(Tree):
 
 
 class Delta:
-    """Absolute per-channel differences, accumulated as a 256-bin histogram so a long video never
-    holds more than one frame pair in memory and every percentile stays exact."""
+    """Accumulate exact channel differences in 256 bins using one frame pair at a time."""
 
     def __init__(self):
         self.histogram = np.zeros(256, dtype=np.int64)
@@ -128,8 +126,7 @@ class Delta:
             "changedPixelPercent": 100 * self.changed_pixels / self.pixels if self.pixels else 0.0,
             "maxDelta": int(np.max(np.nonzero(self.histogram)[0])) if samples else 0,
             "p99Delta": self.quantile(0.99, self.histogram),
-            # Over the differing channels alone: how large a typical moved sample is, which p99Delta
-            # cannot show while the moved samples are a small fraction of the frame.
+            # Measure typical error over differing channels when they occupy less than one percent of the frame.
             "p99ChangedDelta": self.quantile(0.99, changed) if changed.sum() else None,
             "meanDelta": float((self.histogram * values).sum() / samples) if samples else 0.0,
         }
@@ -152,8 +149,7 @@ def compare_images(reference: bytes, candidate: bytes, name: str) -> dict:
 
 
 def video_info(path: Path) -> tuple[int, int, int]:
-    """Return (width, height, frame count). The container's declared count is authoritative for these
-    recordings, and counting decoded frames covers a container that declines to declare one."""
+    """Return width, height, and declared or decoded frame count."""
     def probe(count_field: str, *extra: str) -> list[str]:
         result = subprocess.run(
             ("ffprobe", "-v", "error", "-select_streams", "v:0", *extra,
@@ -172,7 +168,7 @@ def video_info(path: Path) -> tuple[int, int, int]:
 
 
 def audio_hash(path: Path) -> str | None:
-    """md5 of the decoded audio, or None when the file carries no audio stream."""
+    """Return decoded-audio MD5 or None when no audio stream exists."""
     result = subprocess.run(
         (FFMPEG, "-nostdin", "-loglevel", "error", "-i", str(path), "-vn", "-f", "md5", "-"),
         capture_output=True, text=True,
@@ -191,8 +187,7 @@ def frame_reader(path: Path, indices: list[int]) -> subprocess.Popen:
 
 
 def compare_videos(reference: Path, candidate: Path, name: str, sample: int) -> dict:
-    """Compare decoded frames rather than container bytes: the encoder is deterministic but the
-    driver renders an occasional pixel one LSB off, which flips a file hash and no pixel budget."""
+    """Compare decoded frames under the one-LSB driver-noise budget."""
     a, b = video_info(reference), video_info(candidate)
     if a != b:
         raise RuntimeError(f"{name}: video geometry differs ({a[0]}x{a[1]}, {a[2]} frames vs {b[0]}x{b[1]}, {b[2]} frames)")
@@ -232,7 +227,7 @@ def compare_item(name: str, reference: Tree, candidate: Tree, sample: int, scrat
                 if tree.root is not None:
                     paths.append(tree.root / name)
                 else:
-                    # A git-held video has to land on disk for ffmpeg to seek it.
+                    # Materialize repository video data for ffmpeg seeking.
                     temporary = scratch / f"{tag}-{name.replace('/', '_')}"
                     temporary.write_bytes(tree.read(name))
                     paths.append(temporary)
@@ -265,8 +260,7 @@ def scene_budget(budgets: dict, scene: str) -> dict:
 
 
 def scene_of(name: str) -> str:
-    """A scene is one corpus leaf directory: it holds one visual per material variant plus its
-    reproducer, so a budget belongs to the directory and not to each variant image."""
+    """Return the scene directory that shares one budget across material variants."""
     parent = str(Path(name).parent)
     return "" if parent == "." else parent
 

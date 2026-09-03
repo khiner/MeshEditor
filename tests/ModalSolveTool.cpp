@@ -1,11 +1,3 @@
-// Solve a surface mesh's modal model and print it as JSON on stdout.
-// The sample generator calls this so its scenes carry modes from the real solver chain (tetrahedralize + FEM eigensolve) rather than hand-written mode tables.
-// Usage: MeshEditorModalSolve <mesh.obj> [options]
-//   --young E --poisson v --density rho --alpha a --beta b   material (SI)
-//   --min-freq f --max-freq f --modes n                      solve window
-//   --quality                                                tet quality refinement
-// The mesh is in meters.
-// Every welded vertex becomes an excitation position, so the output holds one sample point per distinct tet point the vertices land on, with the mesh's triangles relabeled onto those points.
 
 #include "LoadObj.h"
 #include "audio/AcousticMaterialProperties.h"
@@ -42,8 +34,7 @@ void PrintScalars(std::string_view key, const auto &values) {
     for (size_t i = 0; i < values.size(); ++i) std::print("{}{}", i ? "," : "", values[i]);
     std::println("],");
 }
-} // namespace
-
+}
 int main(int argc, char **argv) {
     if (argc < 2) {
         std::println(stderr, "Usage: {} <mesh.obj> [--young E] [--poisson v] [--density rho] [--alpha a] [--beta b] [--min-freq f] [--max-freq f] [--modes n] [--quality]", argv[0]);

@@ -1,17 +1,8 @@
 #pragma once
 
-// ui::Edit — terse, single-line wrappers around ImGui controls that read a field, run the widget,
-// and feed any change into action gesture grouping: a drag stages each frame and commits one
-// `action::UpdateOf<Ms...>` on release, and an instantaneous edit stages and commits in a single frame.
-//
-// Bound to a registry, optionally an entity:
-//   `ui::Edit{R}`     — reads/writes target the registry's active entity (reads resolve via
-//                       FindActiveEntity(R) at Run time). Emits Update<T> with Scope::Active. While Alt is
-//                       held a number drag deltas every selected entity (Scope::SelectedDelta) and a discrete
-//                       or click-to-edit typed value copies the value (Scope::Selected).
-//   `ui::Edit{R, E}`  — reads from E and writes carry E. Emits Update<T> with Scope::Entity.
-//
-// `HasEntity` is a template bool (deduced via the constructor) so only the relevant code path instantiates.
+// Wrap ImGui field controls in one action gesture per edit.
+// Edit{R} targets the active entity and applies Alt-modified edits to the selection.
+// Edit{R, E} targets E explicitly.
 
 #include "action/Build.h"
 #include "action/Emit.h"
@@ -23,8 +14,7 @@
 
 namespace ui {
 
-// House drag widgets — use instead of ImGui::DragFloat* so the modifiers are consistent: Alt stays free for
-// app use (not ImGui's fine-control) and Shift is fine control (Blender-style 0.05x).
+// Reserve Alt for selection edits and use Shift for 0.05x drag precision.
 inline bool DragFloat(const char *label, float *v, float speed = 1.f, float lo = 0.f, float hi = 0.f, const char *fmt = "%.3f") {
     return ImGui::DragFloat(label, v, ImGui::GetIO().KeyShift ? speed * 0.05f : speed, lo, hi, fmt, ImGuiSliderFlags_NoSpeedTweaks);
 }
@@ -38,30 +28,23 @@ inline bool DragFloat4(const char *label, float *v, float speed = 1.f, float lo 
     return ImGui::DragFloat4(label, v, ImGui::GetIO().KeyShift ? speed * 0.05f : speed, lo, hi, fmt, ImGuiSliderFlags_NoSpeedTweaks);
 }
 
-// Resolve the active-form scope from the Alt modifier. No Alt → the active entity. Alt → apply to all
-// selected, where a delta-capable number drag deltas each from its own start and anything else copies.
+// Apply Alt-modified drags as per-entity deltas and other Alt-modified edits as copied values.
 inline action::Scope ScopeFromAlt(bool delta_capable = false) {
     if (!ImGui::GetIO().KeyAlt) return action::Scope::Active;
     return delta_capable ? action::Scope::SelectedDelta : action::Scope::Selected;
 }
 
 namespace detail {
-// State for the one in-progress widget gesture (ImGui has a single active item, so one slot each).
-// GestureScope is captured at gesture start and frozen so a mid-drag Alt toggle doesn't flip it.
+// Preserve gesture state because ImGui permits one active item.
 inline action::Scope GestureScope{action::Scope::Active};
-// Field value at gesture start (type-erased, ≤16 bytes covers any Update field), so a SelectedDelta drag deltas from it.
 inline std::array<std::byte, 16> GestureStartValue{};
-// Set once the gesture entered a click-to-edit text input: its value applies only on commit, and an Alt edit copies it rather than deltaing.
 inline bool GestureTyped{false};
-// Reverts to the start value on an aborted edit (Escape / no-op release); set when the widget activates.
 inline std::function<void()> GestureCancel;
 
-// A composite gesture (several sub-widgets emitting one action) is staging an uncommitted value.
 inline bool CompositeGestureOpen{false};
 } // namespace detail
 
-// Group a composite editor (several sub-widgets emitting one whole-value action, so ui::Edit's per-field
-// grouping doesn't apply) into one record per drag: stage while editing, commit when the drag releases.
+// Group a composite editor into one recorded action per drag.
 template<typename MakeAction>
 void Gesture(bool changed, MakeAction &&make) {
     if (changed) {
@@ -73,7 +56,6 @@ void Gesture(bool changed, MakeAction &&make) {
     }
 }
 
-// Walk a chain Ms... from the outermost object down to the leaf field.
 template<auto M, auto... Rest>
 decltype(auto) ReadChain(const auto &obj) {
     if constexpr (sizeof...(Rest) == 0) return obj.*M;
@@ -95,8 +77,7 @@ consteval ImGuiDataType ImGuiDt() {
     else static_assert(false, "ImGuiDt: unsupported scalar type");
 }
 
-// Map a field's FieldLimits to ImGui drag bounds. Unbounded → (0,0), ImGui's "no clamp". A one-sided limit
-// uses ±FLT_MAX on the open side so ImGui still clamps the bounded side.
+// Map FieldLimits to ImGui bounds, using (0,0) for an unbounded field and FLT_MAX for an open endpoint.
 template<auto... Ms>
 constexpr std::pair<float, float> DragBounds() {
     if constexpr (!HasLimits<Ms...>) return {0.f, 0.f};
@@ -114,7 +95,7 @@ struct Edit {
     entt::registry &R;
     [[no_unique_address]] std::conditional_t<HasEntity, entt::entity, std::monostate> E{};
 
-    // Edit for a nested field, so callers don't repeat the outer member on each call.
+    // Return an editor with additional nested field members.
     template<auto... More>
     Edit<HasEntity, Prefix..., More...> Sub() const {
         if constexpr (HasEntity) return {R, E};
@@ -129,9 +110,7 @@ struct Edit {
     template<typename T, typename Reg>
     const T &GetConst(Reg &r, entt::entity e) { return r.template get<const T>(e); }
 
-    // Read field, hand a mutable copy to `widget`, and feed the result into gesture grouping: a drag stages
-    // each frame and commits one record on release, an instantaneous edit stages+commits in one frame, and
-    // an aborted edit (Escape) reverts to the gesture's start value.
+    // Run a widget and group its staged values into one committed action or one cancellation.
     template<auto... Ms, typename Widget>
     bool Run(Widget widget, bool delta_capable = false) {
         using Field = action::detail::last_field<Prefix..., Ms...>;
@@ -143,13 +122,13 @@ struct Edit {
             if (ImGui::IsItemHovered() && R.template view<Selected>().size() > 1) ImGui::SetItemTooltip("Hold Alt to apply to all selected");
         }
 
-        // Capture the scope + start value once at gesture begin, so all of its steps share one target.
+        // Freeze the scope and initial value for the full gesture.
         auto capture_gesture = [&] {
             detail::GestureTyped = false;
             std::memcpy(detail::GestureStartValue.data(), &original, sizeof(Field));
             if constexpr (!HasEntity) {
                 detail::GestureScope = ScopeFromAlt(delta_capable && action::DeltaField<Field>);
-                // Drop any baseline an interrupted prior drag left. Mutation outside an Apply handler.
+                // Clear the transient baseline from an interrupted selection drag.
                 if (detail::GestureScope == action::Scope::SelectedDelta) R.template clear<action::DragFieldStart>();
             }
         };
@@ -160,32 +139,29 @@ struct Edit {
             if constexpr (HasEntity) return action::UpdateOf<Prefix..., Ms...>(E, val);
             else {
                 if constexpr (action::DeltaField<Field>) {
-                    // Alt+drag records each selected entity's delta from its own start. A click-to-edit
-                    // typed value is an absolute copy instead, so it falls through to the scope below.
+                    // Apply Alt-drag values as offsets from each selected entity's initial value.
                     if (detail::GestureScope == action::Scope::SelectedDelta && !detail::GestureTyped) {
                         return action::UpdateOf<Prefix..., Ms...>(action::Scope::SelectedDelta, Field(val - gesture_start()));
                     }
                 }
-                // A typed value over an Alt+drag gesture copies the absolute value to every selected entity.
+                // Apply typed Alt-edits as absolute values to the selection.
                 const auto scope = detail::GestureScope == action::Scope::SelectedDelta ? action::Scope::Selected : detail::GestureScope;
                 return action::UpdateOf<Prefix..., Ms...>(scope, val);
             }
         };
 
-        // Stage the value as action(s).
-        // A numeric vector widget edits one component at a time, so it stages only the touched component(s).
-        // A delta drag adds each from its start. Anything else sets it absolutely.
+        // Stage only the vector components modified by the widget.
         auto stage = [&] {
             if constexpr (std::same_as<Field, vec2> || std::same_as<Field, vec3> || std::same_as<Field, vec4>) {
                 if (delta_capable) {
                     const Field start = gesture_start();
-                    const auto w = update(v); // resolves scope + target entity + component type + base offset
+                    const auto w = update(v);
                     const bool delta = w.Scope == action::Scope::SelectedDelta;
                     for (size_t i = 0; i < Field::ComponentCount; ++i) {
                         if (v[i] == start[i]) continue;
                         const uint16_t off = uint16_t(w.Offset + i * sizeof(float));
                         action::EmitStaged(action::Update<float>{w.Scope, w.Entity, w.ComponentType, off, delta ? v[i] - start[i] : v[i]});
-                        // Revert a delta step (Escape) by re-zeroing the component on each selected entity.
+                        // Cancel a selection delta by applying a zero offset.
                         if (delta) detail::GestureCancel = [c = w.ComponentType, e = w.Entity, off] { action::EmitCancel(action::Update<float>{action::Scope::SelectedDelta, e, c, off, 0.f}); };
                     }
                     return;
@@ -194,22 +170,21 @@ struct Edit {
             action::EmitStaged(update(v));
         };
 
-        // Capture the gesture's start update so an aborted edit can revert.
+        // Capture the initial update for cancellation.
         if (ImGui::IsItemActivated()) {
             capture_gesture();
             detail::GestureCancel = [revert = update(original)] { action::EmitCancel(revert); };
         }
-        // Latch a click-to-edit text input (vs a drag): its value applies only when the edit commits,
-        // not per keypress, and an Alt edit copies it to the selection rather than deltaing.
+        // Apply click-to-edit text only when the edit commits.
         if (ImGui::TempInputIsActive(ImGui::GetItemID())) detail::GestureTyped = true;
 
-        if (ImGui::IsItemDeactivatedAfterEdit()) { // Gesture committed: release / Enter / instantaneous widget.
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
             if (changed) stage();
             action::Commit();
             detail::GestureCancel = nullptr;
             return changed;
         }
-        if (ImGui::IsItemDeactivated()) { // Gesture aborted (Escape / no-op release): revert to start, record nothing.
+        if (ImGui::IsItemDeactivated()) {
             if (detail::GestureCancel) {
                 detail::GestureCancel();
                 detail::GestureCancel = nullptr;
@@ -217,14 +192,12 @@ struct Edit {
             return false;
         }
         if (changed) {
-            // A click-to-edit text input applies only when it commits (handled above), not per keypress.
+            // Delay typed edits until commit.
             if (ImGui::IsItemActive() && detail::GestureTyped) return changed;
-            // An instantaneous widget (combo selection) may change without a prior activation this frame.
-            // Capture the scope now so its single emit honors the modifier.
+            // Capture the modifier scope for instantaneous widgets.
             if (!ImGui::IsItemActive()) capture_gesture();
             stage();
-            // An edit on an item that isn't held (e.g. a combo selection) is instantaneous: commit now
-            // rather than waiting for a deactivation event that may not come.
+            // Commit instantaneous widget changes immediately.
             if (!ImGui::IsItemActive()) action::Commit();
         }
         return changed;

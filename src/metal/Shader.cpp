@@ -61,7 +61,6 @@ bool DepsUnchanged(const std::vector<std::pair<std::filesystem::path, std::files
     return true;
 }
 
-// Classic-path attachments. Classic pipelines carry the depth format, so it configures that too.
 template<typename Descriptor>
 void ConfigureAttachments(Descriptor *descriptor, const PassFormats &formats, const std::vector<BlendState> &blends) {
     for (size_t i = 0; i < formats.Color.size(); ++i) {
@@ -96,7 +95,6 @@ void ConfigureAttachments(MTL4::RenderPipelineColorAttachmentDescriptorArray *at
         attachment->setDestinationAlphaBlendFactor(blend.DestAlpha);
         attachment->setAlphaBlendOperation(MTL::BlendOperationAdd);
     }
-    // MTL4 pipelines carry no depth format. The pass's depth attachment binds it at encode time.
 }
 
 NS::SharedPtr<MTL::DepthStencilState> MakeDepthState(LibraryCache &cache, const std::optional<DepthState> &depth) {
@@ -106,7 +104,6 @@ NS::SharedPtr<MTL::DepthStencilState> MakeDepthState(LibraryCache &cache, const 
     return NS::TransferPtr(cache.Ctx.Device->newDepthStencilState(descriptor.get()));
 }
 
-// Materializes `ref` for the classic pipeline descriptors, compiling its library through the cache.
 NS::SharedPtr<MTL::Function> MakeFunction(LibraryCache &cache, const FunctionRef &ref) {
     auto *library = cache.Get(ref.Path, ref.Defines);
     if (ref.Constants.empty()) {
@@ -131,7 +128,6 @@ NS::SharedPtr<MTL::Function> MakeFunction(LibraryCache &cache, const FunctionRef
     return function;
 }
 
-// Describes `ref` for the MTL4 compiler, compiling its library through the cache.
 NS::SharedPtr<MTL4::FunctionDescriptor> MakeFunctionDescriptor(LibraryCache &cache, const FunctionRef &ref) {
     auto *library = cache.Get(ref.Path, ref.Defines);
     auto function = NS::TransferPtr(MTL4::LibraryFunctionDescriptor::alloc()->init());
@@ -153,11 +149,10 @@ NS::SharedPtr<MTL4::FunctionDescriptor> MakeFunctionDescriptor(LibraryCache &cac
     specialized->setConstantValues(values.get());
     return specialized;
 }
-} // namespace
+}
 
 LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive)
     : Ctx(ctx), ShadersDir(std::move(shaders_dir)), ArchivePath(std::move(pipeline_archive)) {
-    // Without a compiler, pipelines build through the classic device APIs and skip archive caching.
     if (!Ctx.Device->supportsFamily(MTL::GPUFamilyMetal4)) return;
     const auto compiler_descriptor = NS::TransferPtr(MTL4::CompilerDescriptor::alloc()->init());
     if (!ArchivePath.empty()) {
@@ -182,14 +177,13 @@ LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir
     std::ifstream fingerprint_input(FingerprintPath(ArchivePath), std::ios::binary);
     fingerprint_input.read(reinterpret_cast<char *>(&archived_fingerprint), sizeof(archived_fingerprint));
     if (!fingerprint_input || archived_fingerprint != *SourceFingerprint) return;
-    // A stale or corrupt archive only costs fresh compiles, so a failed load proceeds without one.
+    // Continue without the archive when loading fails; pipeline compilation remains available.
     if (auto archive = NS::TransferPtr(Ctx.Device->newArchive(NS::URL::fileURLWithPath(Str(ArchivePath.string())), &error))) {
         LoadedArchive = std::move(archive);
     }
 }
 
-// Flush every pipeline this session compiled or looked up back to the archive file.
-// The temporary-and-rename keeps concurrent processes from reading a half-written archive.
+// Writes captured pipelines atomically to prevent concurrent readers from opening a partial archive.
 LibraryCache::~LibraryCache() {
     if (ArchivePath.empty() || !Serializer || !PipelineCreated) return;
     std::error_code ec;
@@ -377,4 +371,4 @@ void ComputePipeline::Compile(LibraryCache &cache) {
     }
     cache.NotePipelineCreated();
 }
-} // namespace mtl
+}

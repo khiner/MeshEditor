@@ -30,14 +30,12 @@ void FillPool(ModalAudio &m) {
     expect(FilledSlots(m) == size_t(SurfaceAudioState::MaxSurfaceTracks));
 }
 
-// Publish one contact naming one pool slot, so a test can hold a slot the audio thread has not adopted yet.
 void PublishContactOn(ModalAudio &m, int32_t slot) {
     auto &set = NextVoiceSet(Surface(m));
     set.Voices.emplace_back(1, 0).State.Tracks[0].Index = slot;
     PublishVoiceSet(Surface(m));
 }
 
-// Publish nothing until every set the audio thread could hold has rotated out.
 void PublishNothing(ModalAudio &m) {
     for (size_t i = 0; i < Surface(m).VoiceSets.size(); ++i) {
         NextVoiceSet(Surface(m));
@@ -61,8 +59,7 @@ void ExpectPinnedSlotSurvives(auto &&pin) {
     expect(Surface(m).SurfaceTracks[pinned].Owned.get() == pinned_track);
     expect(Surface(m).SurfaceTracks[pinned].Key == 1u);
 }
-} // namespace
-
+}
 int main() {
     "surfaces with the same finish share one track"_test = [] {
         ModalAudio m;

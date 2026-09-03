@@ -1,7 +1,6 @@
 #ifndef TRANSFORMUTILS_MSL
 #define TRANSFORMUTILS_MSL
 
-// Shared pending-transform and instance-bounds helpers.
 #include "AABB.metal"
 #include "Bindless.metal"
 #include "Frustum.metal"
@@ -20,8 +19,7 @@ inline float3 trs_inverse_transform_point(Transform t, float3 pos) {
     return quat_rotate(quat_conjugate(float4(t.R)), pos - float3(t.P)) / float3(t.S);
 }
 
-// Object-mode gizmo preview: selected instances' world positions follow the pending transform.
-// The pose pre-pass bakes edit-mode vertex previews into posed positions.
+// Applies the pending object-mode transform to selected instances.
 template<typename SetT>
 inline float3 apply_object_pending_transform(const thread SceneT<SetT> &scene, DrawData draw, float3 world_pos) {
     if (scene.View.IsTransforming == 0u || scene.View.InteractionMode == InteractionMode_Edit || draw.InstanceStateSlot == INVALID_SLOT) return world_pos;
@@ -30,15 +28,14 @@ inline float3 apply_object_pending_transform(const thread SceneT<SetT> &scene, D
     return apply_pending_transform_world(scene, world_pos);
 }
 
-// Clip position of the draw's vertex: local position through the world transform, any pending
-// object transform, and the view projection.
+// Returns clip position after world, pending-object, and view-projection transforms.
 template<typename SetT>
 inline float4 MeshletPosition(const thread SceneT<SetT> &scene, DrawData draw, Transform world, uint vertex_id) {
     const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, scene.GetLocalPosition(draw, vertex_id)));
     return scene.ViewProj() * float4(world_pos, 1.0f);
 }
 
-// An instance's local AABB carried into world space as an oriented box.
+// Returns the instance's local AABB as a world-space oriented box.
 struct OrientedBounds {
     float3 Center;
     float3 Ax, Ay, Az;
@@ -60,8 +57,7 @@ inline OrientedBounds TransformBounds(AABB bounds, Transform world) {
     };
 }
 
-// True unless the draw's instance bounds lie wholly outside the view frustum.
-// A pending transform previews instances beyond their recorded bounds, so it suspends the test.
+// Returns true for frustum intersections and pending-transform previews with stale recorded bounds.
 template<typename SetT>
 inline bool InstanceInFrustum(const thread SceneT<SetT> &scene, DrawData draw) {
     if (scene.View.InstanceBoundsSlot == INVALID_SLOT || scene.View.IsTransforming != 0u) return true;

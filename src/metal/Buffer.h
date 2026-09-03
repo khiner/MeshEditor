@@ -79,7 +79,7 @@ private:
 
     SlotType Type{};
 };
-} // namespace mtl
+}
 
 template<typename T>
 struct TypedBuffer : mtl::Buffer {

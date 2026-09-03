@@ -12,25 +12,23 @@
 using namespace action;
 
 namespace {
-std::optional<Action> Held; // Last staged step of the in-progress gesture, awaiting commit.
+std::optional<Action> Held; // Latest uncommitted gesture step.
 
 std::optional<std::ofstream> LogStream;
 std::optional<WriteBehindLog<Action>> Log;
-std::filesystem::path LogPath; // Currently-open `.actions` log, empty when none.
+std::filesystem::path LogPath; // Empty when no `.actions` log is open.
 
-// Advance the action index and append the committed change to the .actions log (when one is open).
+// Advances the action index and appends the change to an open `.actions` log.
 void RecordCommitted(entt::registry &r, entt::entity viewport, Action &&a) {
     if (!IsRecordable(a)) return;
     ++r.get_or_emplace<ActionIndex>(viewport).Index;
     if (Log) Log->Enqueue(std::move(a));
 }
 
-// Route the action to its domain's Apply.
 void ApplyAction(entt::registry &r, entt::entity viewport, const Action &action) {
     std::visit([&](const auto &dv) { Apply(r, viewport, dv); }, action);
 }
 
-// Apply and record as one committed action.
 void ApplyRecord(entt::registry &r, entt::entity viewport, Action &&a) {
     ApplyAction(r, viewport, a);
     RecordCommitted(r, viewport, std::move(a));
@@ -57,11 +55,11 @@ void StartLog(std::filesystem::path path, bool append) {
 std::filesystem::path StopLog() {
     if (Log) Log->Stop();
     Log.reset();
-    LogStream.reset(); // flush and close before checking the file on disk
+    LogStream.reset();
     auto path = std::exchange(LogPath, {});
     if (path.empty()) return {};
 
-    // Drop the just-closed log if nothing was recorded.
+    // Remove empty logs.
     std::error_code ec;
     if (std::filesystem::file_size(path, ec) == 0 && !ec) {
         std::filesystem::remove(path, ec);
@@ -96,7 +94,7 @@ void ApplyEmitted(entt::registry &r, entt::entity viewport) {
         CommitHeld(r, viewport);
         r.clear<DragFieldStart>();
     }
-    // System-generated actions apply in addition to the user action, without touching any open gesture.
+    // System-generated actions preserve any open gesture.
     for (auto &a : drained.System) ApplyRecord(r, viewport, std::move(a));
 }
 
@@ -104,7 +102,7 @@ bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::
     std::ifstream in{replay_path, std::ios::binary};
     if (!in) return false;
 
-    // Skip records already captured by the base snapshot.
+    // The base snapshot already contains earlier records.
     for (uint64_t i = 0; i < skip; ++i) {
         uint32_t len;
         if (!in.read(reinterpret_cast<char *>(&len), sizeof len)) return true;
@@ -114,7 +112,7 @@ bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::
     tick(r, viewport);
     StreamActions(in, [&](Action &&a) {
         ApplyRecord(r, viewport, std::move(a));
-        r.clear<DragFieldStart>(); // Each replayed action is one committed gesture.
+        r.clear<DragFieldStart>();
         tick(r, viewport);
     });
     return true;
@@ -122,7 +120,7 @@ bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::
 } // namespace action
 
 namespace {
-// Force instantiation of ApplyNow for every leaf action type so call sites in other TUs link.
+// Explicit instantiation provides definitions to other translation units.
 using ApplyNowPtr = void (*)();
 template<typename DV> constexpr auto DomainApplyNows() {
     return []<size_t... I>(std::index_sequence<I...>) {

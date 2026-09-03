@@ -11,8 +11,6 @@ namespace fft {
 // The `n / 2 + 1` bins an `n`-sample real signal determines: `X[k] = sum(x[j] * e^(-2*pi*i*j*k/n), 0 <= j < n)`.
 std::vector<std::complex<float>> RealToComplex(std::span<const float> in);
 
-// The real signal those bins came from: `x[j] = sum(X[k] * e^(2*pi*i*j*k/n), 0 <= k < n)`, over the conjugate the upper half holds.
-// Reads `out.size() / 2 + 1` bins and takes the imaginary part of the first, and at even lengths the last, as zero.
 void ComplexToReal(std::span<const std::complex<float>> in, std::span<float> out);
 
 // The same inverse over a `columns` by `rows` field, reading `columns * (rows / 2 + 1)` bins in row-major order.

@@ -94,8 +94,7 @@ std::vector<entt::entity> RootSelectedForTransform(const entt::registry &r, entt
         return bone_mode ? r.all_of<BoneSelection>(node->Parent) : r.all_of<Selected>(node->Parent);
     };
     std::vector<entt::entity> root_selected;
-    // Edit mode: all selected bones are roots (rest-pose edits don't propagate during drag).
-    // Pose/object mode: drop children whose parent is also selected (the parent's transform propagates).
+    // Rest-pose edits do not propagate during a drag, so every selected edit-mode bone is a root.
     if (bone_edit_mode) {
         for (const auto e : r.view<const BoneSelection>()) root_selected.emplace_back(e);
     } else if (bone_mode) {

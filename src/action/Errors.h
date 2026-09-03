@@ -4,8 +4,7 @@
 #include <vector>
 
 namespace action {
-// Side channel for action handlers to report failures, since an action's Apply returns nothing.
-// Stored in the registry context, appended to by handlers, and drained/surfaced by the app each frame.
+// Stores action-handler failures for the application to drain each frame.
 struct Errors {
     std::vector<std::string> Messages;
 };

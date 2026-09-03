@@ -5,7 +5,6 @@
 #include <span>
 
 namespace mtl {
-// One color attachment at record time, with the load and store actions Metal picks per pass.
 struct ColorAttachment {
     MTL::Texture *Texture{nullptr};
     MTL::LoadAction Load{MTL::LoadActionLoad};
@@ -38,4 +37,4 @@ inline DepthAttachment ClearDepth(MTL::Texture *texture, double clear = 1.0) {
 inline DepthAttachment LoadDepth(MTL::Texture *texture, MTL::StoreAction store = MTL::StoreActionStore) {
     return {texture, MTL::LoadActionLoad, store};
 }
-} // namespace mtl
+}

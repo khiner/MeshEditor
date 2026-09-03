@@ -5,7 +5,7 @@
 #include "Varyings.metal"
 #include "SelectionElementPushConstants.metal"
 
-// Box selection: every element covering a pixel inside the box sets its bit. It writes no color.
+// Sets the bit for every element covering a pixel inside the selection box.
 [[early_fragment_tests]]
 fragment void SelectionElementBitsetBoxFragment(
     ElementIdFragmentVaryings in [[stage_in]],

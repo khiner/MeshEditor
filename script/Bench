@@ -18,17 +18,16 @@ import tempfile
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCENES = ROOT / "res" / "benchmarks"
 DEFAULT_EXE = ROOT / "build" / "MeshEditor"
-# Headline metrics, keyed by the profile path a scope reports under: names repeat across the tree,
-# paths do not. Every other path is swept in `compare`.
+# Headline metrics use full profile paths because scope names can repeat.
 METRICS = (
     ("cpuMs", "Frame/SubmitViewport/ProcessEvents", "CPU update", 1.0),
     ("cpuMs", "Frame/SubmitViewport/RecordRenderCommandBuffer", "CPU record", 1.0),
     ("gpuMs", "Submit", "GPU", 1.0),
     ("counters", "DeviceAllocatedBytes", "memory MiB", 1 / (1024 * 1024)),
 )
-# A time metric moving by less than this cannot matter against a frame budget, whatever its percentage.
+# Ignore time changes below this absolute frame-budget threshold.
 MATERIAL_MS = 0.05
-# The narrowest bar a change has to clear, for a scope whose samples barely spread at all.
+# Require this minimum change when within-run sample spread is smaller.
 MIN_THRESHOLD_PERCENT = 1.0
 
 
@@ -331,8 +330,7 @@ def metric_entries(case: dict, section: str, path: str) -> list[dict]:
     return [entry for repetition in case["repetitions"] if (entry := stat_entry(repetition, section, path)) is not None]
 
 
-# How far a scope's own samples spread above its median, in percent, taken at p95 so one hitch does
-# not stand for the whole distribution. A scope cannot be reproduced tighter than it varies.
+# Measure within-run spread as the p95 distance above the median.
 def sample_spread(entries: list[dict]) -> float:
     return max((100 * (entry["p95"] - entry["median"]) / entry["median"] if entry["median"] else 0.0) for entry in entries)
 
@@ -344,11 +342,9 @@ def metric_change(before: dict, after: dict, section: str, path: str) -> tuple[f
     am, bm = statistics.median([entry["median"] for entry in a]), statistics.median([entry["median"] for entry in b])
     change = 100 * (bm - am) / am if am else 0.0
 
-    # The bar a change clears is the noisier side's own spread, floored so a scope that never moves
-    # within a run still needs a real difference. A scope sampled once reports no spread and takes the
-    # floor. Repeated runs would add a between-run term this does not measure.
+    # Use the larger within-run spread with a fixed floor; this excludes between-run variation.
     threshold = max(MIN_THRESHOLD_PERCENT, 2 * max(sample_spread(a), sample_spread(b)))
-    # A time metric also has to move by something that matters, which a percentage of a tiny scope does not.
+    # Require time changes to exceed the absolute frame-budget threshold.
     material = abs(bm - am) >= MATERIAL_MS or not section.endswith("Ms")
     status = "inconclusive" if not material or abs(change) <= threshold else "better" if change < 0 else "worse"
     return am, bm, change, status
@@ -389,7 +385,7 @@ def compare(args: argparse.Namespace) -> None:
     if changed_images:
         print("\nChanged validation images: " + ", ".join(changed_images))
 
-    # Every timed scope, not just the headline four: a regression in a scope nobody listed still shows.
+    # Compare every timed scope in addition to the headline set.
     headline = {(section, path) for section, path, _, _ in METRICS}
     changed_timings = []
     for case_id in before_cases:

@@ -91,8 +91,8 @@ AudioDeviceID RefreshDevices(std::vector<std::string> &names, std::string_view r
 
 std::vector<uint32_t> SampleRates(AudioDeviceID device, uint32_t current_rate) {
     const auto ranges = GetPropertyVector<AudioValueRange>(device, SampleRatesAddress, "reading device sample rates");
-    // Discrete devices publish one zero-width range per rate. For devices publishing a continuous
-    // range, expose the conventional audio rates that the HAL says are valid, plus its endpoints.
+    // Discrete devices publish one zero-width range per rate.
+    // For continuous ranges, expose valid conventional rates and the endpoints.
     constexpr std::array<uint32_t, 16> ConventionalRates{
         8'000, 11'025, 16'000, 22'050, 24'000, 32'000, 44'100, 48'000,
         64'000, 88'200, 96'000, 128'000, 176'400, 192'000, 352'800, 384'000

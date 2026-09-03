@@ -49,7 +49,7 @@ constexpr ImU32 Blend(ImU32 color1, ImU32 color2, float factor) {
 
 constexpr ImU32 RgbToU32(const vec3 in) { return ImGui::ColorConvertFloat4ToU32({in.x, in.y, in.z, 1.f}); }
 
-// Build [X, Y, Z, -X, -Y, -Z] ImU32 array from Axis theme colors.
+// Return [X, Y, Z, -X, -Y, -Z] ImU32 values from the axis theme colors.
 struct AxesArray {
     ImU32 Values[6];
     const ImU32 &operator[](size_t i) const { return Values[i]; }

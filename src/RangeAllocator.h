@@ -41,12 +41,12 @@ struct RangeAllocator {
         FreeBlocks.insert(it, {start, end - start});
     }
 
-    // Carve a specific range out of the free space (inverse of Free for a known offset). False if any of it is already allocated.
+    // Reserve a specific free range and return false if any part is allocated.
     bool Reserve(Range r) {
         if (r.Count == 0) return true;
         const auto r_end = r.Offset + r.Count;
         if (r.Offset >= EndOffset) {
-            // Beyond the high-water: extend, leaving any skipped gap free.
+            // Extend the high-water mark and add any skipped indices to the free list.
             const auto old_end = EndOffset;
             EndOffset = r_end;
             if (r.Offset > old_end) Free({old_end, r.Offset - old_end});
@@ -55,7 +55,7 @@ struct RangeAllocator {
         const auto it = std::ranges::find_if(FreeBlocks, [&](const Range &b) {
             return b.Offset <= r.Offset && r_end <= b.Offset + b.Count;
         });
-        if (it == FreeBlocks.end()) return false; // (partially) allocated already
+        if (it == FreeBlocks.end()) return false;
         const Range left{it->Offset, r.Offset - it->Offset}, right{r_end, it->Offset + it->Count - r_end};
         if (left.Count && right.Count) {
             *it = left;

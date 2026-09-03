@@ -1,4 +1,4 @@
-# The warnings and defines every test target builds with. Anything a single target needs goes on its own line beside the call.
+# Applies common warnings and definitions to test targets.
 function(mesheditor_test_defaults target)
     target_compile_definitions(${target} PRIVATE DEBUG_BUILD)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
@@ -103,7 +103,6 @@ target_link_libraries(MeshEditorTests PRIVATE
 mesheditor_test_defaults(MeshEditorTests)
 target_compile_definitions(MeshEditorTests PRIVATE MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
-# Serializes every Action alternative through zpp::bits.
 add_executable(MeshEditorActionSerializeTest ActionSerializeTest.cpp)
 add_dependencies(MeshEditorActionSerializeTest generate_gpu_schema)
 target_include_directories(MeshEditorActionSerializeTest PRIVATE
@@ -117,8 +116,7 @@ mesheditor_test_defaults(MeshEditorActionSerializeTest)
 set(REALIMPACT_DATASET_DIR "${CMAKE_SOURCE_DIR}/external/RealImpact/dataset" CACHE PATH "RealImpact dataset directory")
 set(TET_CORPUS_DIR "${CMAKE_SOURCE_DIR}/external/TetCorpus" CACHE PATH "Tetrahedralizer mesh corpora directory")
 
-# Everything driving the solve chain (tetrahedralize, assemble, eigensolve) links the same sources.
-# Extra sources for one target follow its own file.
+# Links the shared tetrahedralization, assembly, and eigensolver sources.
 function(mesheditor_solve_target target)
     add_executable(${target} ${ARGN}
         ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp
@@ -142,7 +140,6 @@ endfunction()
 mesheditor_solve_target(MeshEditorModalSolverTest ModalSolverTest.cpp)
 target_compile_definitions(MeshEditorModalSolverTest PRIVATE REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
 
-# The tool the sample generator solves its scenes' modal models with.
 mesheditor_solve_target(MeshEditorModalSolve ModalSolveTool.cpp)
 
 mesheditor_solve_target(MeshEditorModalSolverBench ModalSolverBench.cpp ${CMAKE_SOURCE_DIR}/src/audio/RealImpact.cpp)
@@ -170,8 +167,7 @@ target_include_directories(MeshEditorContactCollectBench SYSTEM PRIVATE ${CMAKE_
 target_link_libraries(MeshEditorContactCollectBench PRIVATE Jolt)
 mesheditor_test_defaults(MeshEditorContactCollectBench)
 
-# Physics reaches the mesh layer for mesh-backed colliders, and that layer reads geometry from the
-# GPU-backed mesh store, so the store and its buffers link in even though these scenes use primitives.
+# Physics tests link the GPU-backed mesh store required by mesh collider support.
 add_executable(MeshEditorContactCollectTest ContactCollectTest.cpp
     ${CMAKE_SOURCE_DIR}/src/physics/PhysicsSystem.cpp
     ${CMAKE_SOURCE_DIR}/src/scene/SceneGraph.cpp
@@ -204,7 +200,6 @@ target_include_directories(MeshEditorContactManifoldTest SYSTEM PRIVATE ${CMAKE_
 target_link_libraries(MeshEditorContactManifoldTest PRIVATE Boost::ut Jolt)
 mesheditor_test_defaults(MeshEditorContactManifoldTest)
 
-# The cluster LOD DAG builder, which runs over one mesh's level-0 clusters with no registry behind it.
 add_executable(MeshEditorClusterLodTest ClusterLodTest.cpp ${CMAKE_SOURCE_DIR}/src/render/ClusterLod.cpp)
 add_dependencies(MeshEditorClusterLodTest generate_gpu_schema)
 target_include_directories(MeshEditorClusterLodTest PRIVATE
@@ -224,7 +219,7 @@ target_link_libraries(MeshEditorMeshBvhTest PRIVATE Boost::ut)
 mesheditor_test_defaults(MeshEditorMeshBvhTest)
 
 
-# Everything pressing the audio render directly, off the registry, links the same three sources.
+# Direct audio-render tests link the shared modal sources.
 function(mesheditor_render_target target source)
     add_executable(${target} ${source} ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp ${CMAKE_SOURCE_DIR}/src/audio/Fft.cpp ${SURFACE_MODEL_SOURCES})
     target_include_directories(${target} PRIVATE
@@ -236,10 +231,8 @@ function(mesheditor_render_target target source)
     mesheditor_test_defaults(${target})
 endfunction()
 
-# Properties of the audio-thread render that hold whatever a collision's force pulse is shaped like.
 mesheditor_render_target(MeshEditorModalRenderTest ModalRenderTest.cpp)
 
-# The Hertz contact a collision resolves against: its constants, and the duration they imply.
 add_executable(MeshEditorContactModelTest ContactModelTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp)
 target_include_directories(MeshEditorContactModelTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -247,7 +240,7 @@ target_include_directories(MeshEditorContactModelTest PRIVATE
 target_link_libraries(MeshEditorContactModelTest PRIVATE Boost::ut)
 mesheditor_test_defaults(MeshEditorContactModelTest)
 
-# The surface-contact audio model's own tests, which build only with the model.
+# Builds surface-contact tests only when the model is enabled.
 if(MESHEDITOR_SURFACE_AUDIO)
     mesheditor_render_target(MeshEditorSurfaceModelTest surface/SurfaceModelTest.cpp)
     mesheditor_render_target(MeshEditorSurfaceRenderTest surface/SurfaceRenderTest.cpp)
@@ -255,7 +248,7 @@ if(MESHEDITOR_SURFACE_AUDIO)
     mesheditor_render_target(MeshEditorContactSpringsScore surface/ContactSpringsScore.cpp)
 endif()
 
-# Compile every shader source, including generated layout assertions.
+# Compiles every shader source, including generated layout assertions.
 add_executable(MeshEditorMslCompileTest
     MslCompileTest.cpp
     ${CMAKE_SOURCE_DIR}/src/metal/MslSource.cpp

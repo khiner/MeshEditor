@@ -111,8 +111,8 @@ private:
 
 struct GpuBuffers {
     static constexpr uint32_t MaxSelectableObjects{100'000};
-    // Motion blur records every step into one submission, each step reading its own view UBO
-    // instance by dynamic offset. Instance 0 is the live UBO.
+    // Motion-blur steps use separate dynamic view-UBO offsets in one submission.
+    // Instance zero remains active.
     static constexpr uint32_t MaxBlurSteps{64};
 
     // Metal requires aligned dynamic buffer offsets.
@@ -206,7 +206,6 @@ struct GpuBuffers {
     }
 
     void Release(MeshBuffers &buffers) {
-        // A triangle mesh draws straight from the store's corner arena, which the store releases.
         if (buffers.FaceIndices.Slot == FaceIndexBuffer.Buffer.Slot) FaceIndexBuffer.Release(buffers.FaceIndices);
         buffers.FaceIndices = {};
         EdgeIndexBuffer.Release(buffers.EdgeIndices);
@@ -247,8 +246,7 @@ struct GpuBuffers {
         }
     }
 
-    // Motion blur's tile indirection table: one entry per tile, per motion direction. Sized alongside
-    // the blur's other targets, so it costs nothing until a frame is blurred.
+    // Allocate two motion-blur indirection entries per tile only after blur targets exist.
     void ResizeMotionBlurTileIndirection(mtl::Extent2D tile_extent) {
         MotionBlurTileIndirection.SetCount(2 * tile_extent.Width * tile_extent.Height);
     }
@@ -259,7 +257,7 @@ struct GpuBuffers {
         if (words != WireCoverageBuffer.Count<uint32_t>()) WireCoverageBuffer.SetCount<uint32_t>(uint32_t(words));
     }
 
-    // The next load's derived handles rebuild from a clean baseline rather than a prior scene's residue.
+    // Reset derived handles to a deterministic scene-load baseline.
     void ResetSceneArenas() {
         VertexBuffer.Reset();
         FaceIndexBuffer.Reset();
@@ -283,8 +281,7 @@ struct GpuBuffers {
         OverlayJobBlocks.UsedSize = 0;
         VisibleOverlayJobs.UsedSize = 0;
         DrewElementIndices = false;
-        // Occlusion feedback state, so the next scene's phase-1/phase-2 split replays identically
-        // regardless of what rendered before the clear.
+        // Reset occlusion feedback for deterministic two-phase culling after a scene clear.
         PreviousFullCullViewProj = mat4{1};
         ArmatureDeformBuffer.Reset();
         MorphWeightBuffer.Reset();
@@ -293,7 +290,6 @@ struct GpuBuffers {
 
     mtl::BufferContext Ctx;
 
-    // Per-scene arenas
     BufferArena<Vertex> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
     BufferArena<MeshletRecord> Meshlets;
@@ -311,8 +307,7 @@ struct GpuBuffers {
     InstanceArena Instances;
 
     mtl::Buffer MeshletWorkRanges, MeshletWorkBlocks, MeshletWorkState, MeshletWorkDispatchArgs;
-    // The span-tree traversal: two frontiers it alternates between, each level's size and per-block
-    // prefixes, and the indirect args covering the level a dispatch reads.
+    // Span-tree traversal alternates frontiers and stores each level's size, block prefixes, and indirect arguments.
     std::array<mtl::Buffer, 2> LodFrontiers;
     mtl::Buffer LodFrontierStates, LodFrontierBlockStates, LodExpandArgs;
     mtl::Buffer VisibleMeshlets, MeshletClassifications, MeshletCullBlocks, MeshletBlendBlocks, MeshletRoutes, MeshletDispatchArgs;
@@ -324,13 +319,12 @@ struct GpuBuffers {
     mtl::Buffer OverlayJobs, OverlayJobBlocks, VisibleOverlayJobs, OverlayJobDispatchArgs;
     uint64_t MeshletRangeCount{0};
     uint64_t MeshletInstanceCount{0};
-    // The deepest span tree any resident mesh landed, which sets how many levels a traversal runs.
+    // Maximum traversal depth among resident mesh span trees.
     uint32_t MeshletLodDepth{0};
     uint32_t MeshletTopologyMask{0};
     uint32_t MeshletDispatchChunkCount{0};
 
-    // What a cull restricted to one instance flag covers, so sizing its buffers costs no scene walk.
-    // The unflagged totals above are the same quantities over every instance.
+    // Maintained totals for culls restricted to one instance flag.
     struct MeshletFlagWork {
         uint64_t Ranges{0}, Meshlets{0};
     };
@@ -367,9 +361,8 @@ struct GpuBuffers {
         VisibleMeshlets.UsedSize = bytes;
         const auto instance_count = GpuInstanceSlots.Buffer.Count<uint32_t>();
         const auto block_count = (work_meshlet_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
-        // A leaf covers ClusterLodSpanLeafRecords records of one primitive, and a level's frontier holds at most
-        // one entry per node of every instance's trees. Doubling the leaf count covers the levels
-        // above them, and the per-primitive term covers each tree's partial leaf, finest leaf and spine.
+        // Two entries per leaf cover interior levels.
+        // Per-range padding covers partial leaves and paths to the root.
         const auto node_count = 2u * (work_meshlet_count / ClusterLodSpanLeafRecords) + 8u * work_range_count + 64u;
         const auto frontier_count = std::max<uint64_t>(node_count, instance_count);
         const auto frontier_block_count = (frontier_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
@@ -395,8 +388,7 @@ struct GpuBuffers {
 
     mat4 PreviousFullCullViewProj{1};
 
-    // Poses at the shutter's open and close, for motion blur's velocity pass. Each is a whole-buffer
-    // copy of its live counterpart, so the per-draw offsets index them unchanged.
+    // Full-buffer shutter poses preserve live per-draw offsets for the velocity pass.
     struct VelocityPose {
         VelocityPose(mtl::BufferContext &ctx)
             : Transforms(ctx, 0, SlotType::ModelBuffer),
@@ -409,8 +401,7 @@ struct GpuBuffers {
     };
     VelocityPose ShutterOpen{Ctx}, ShutterClose{Ctx};
 
-    // Multi-step blur's pose captures: step i's shutter boundaries at [2i] and [2i+2], its centre
-    // at [2i+1]. Grown on demand and kept for reuse.
+    // Blur step i uses boundaries [2i] and [2i+2] and center [2i+1].
     std::vector<VelocityPose> BlurPoses;
     void EnsureBlurPoses(size_t count) {
         BlurPoses.reserve(count);
@@ -425,7 +416,7 @@ struct GpuBuffers {
     }
     uint32_t SceneViewUboOffset(uint32_t instance) const { return uint32_t(ViewUboStride() * instance); }
 
-    // Call once the scene is evaluated at the wanted time.
+    // Requires the scene evaluated at the capture time.
     void CaptureVelocityPose(VelocityPose &dst) const {
         static constexpr auto copy_whole = [](const mtl::Buffer &src, mtl::Buffer &dst) {
             dst.Reserve(src.UsedSize);
@@ -442,8 +433,7 @@ struct GpuBuffers {
     TypedBuffer<PunctualLight> Lights;
     TypedBuffer<PBRMaterial> Materials;
 
-    // Per-frame uniforms. SceneViewUBO holds MaxBlurSteps+1 instances at ViewUboStride(),
-    // with the live state at instance 0.
+    // SceneViewUBO stores the live state at instance zero and one aligned instance per blur step.
     mtl::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
 
     // One entry per run of mesh instance slots sharing a deform state.
@@ -462,10 +452,10 @@ struct GpuBuffers {
     mtl::Buffer PosedMeshletBoundsTiles{Ctx, 0, SlotType::Buffer};
     mtl::Buffer PosedMeshletBounds{Ctx, 0, SlotType::Buffer};
     // One entry per normal-derive dispatch item.
-    // A frame holds one per posed bounds entry with triangles, and a base one-shot holds one per mesh.
+    // Contains one entry per posed triangle range or one per mesh during base derivation.
     mtl::Buffer NormalDeriveEntries{Ctx, 0, SlotType::Buffer};
     // Per-instance derived normals, one range per posed derive entry.
-    // The three buffers hold per-vertex smooth normals, seam-corner sector normals, and per-face fan sums.
+    // Stores smooth vertex normals, corner-sector normals, and face fan sums in separate buffers.
     mtl::Buffer PosedVertexNormals{Ctx, 0, SlotType::Buffer};
     mtl::Buffer PosedSeamNormals{Ctx, 0, SlotType::Buffer};
     mtl::Buffer PosedFaceNormals{Ctx, 0, SlotType::Buffer};
@@ -477,25 +467,21 @@ struct GpuBuffers {
         static constexpr uint32_t PassCount{6};
         uint32_t PosePrepass{0}, PosedMeshletBounds{0}, DeriveFaces{0}, BoundsReduce{0}, DeriveGather{0}, BoundsCombine{0};
 
-        // The gather and combine passes follow the pass they gather, so they add no work of their own.
+        // Gather and combine reuse the preceding stage's dispatch count.
         bool HasWork() const { return PosePrepass > 0 || PosedMeshletBounds > 0 || DeriveFaces > 0 || BoundsReduce > 0; }
     };
     PreludeGroups Prelude{};
-    // Holds the recorded group counts, or zeros when deform inputs are unchanged since the last submit.
+    // Stores recorded group counts or zeros for unchanged deform inputs.
     mtl::Buffer PreludeDispatchArgs{Ctx, PreludeGroups::PassCount * sizeof(MTL::DispatchThreadgroupsIndirectArguments)};
     // A deform input was written since the last submit wrote live prelude counts.
     // Deform inputs are morph weights, armature poses, transform gestures, geometry edits, and scene refreshes.
     bool PreludeStale{true};
-    // Scene state changed since the previous submitted Full frame. This includes visibility and
-    // material changes that do not need the posed prelude but can still reveal geometry.
+    // Tracks visibility or material changes that can reveal geometry without requiring the posed prelude.
     bool MeshletOcclusionStale{true};
-    // Whether the last frame drew from edge or vertex indices. Meshes that skipped building them
-    // build them when a wireframe or edit overlay first asks.
+    // Tracks whether edge or vertex indices require lazy construction for overlay rendering.
     bool DrewElementIndices{false};
 
-    // A visibility id carries a meshlet's position in the visible list, not a stable meshlet id, so it
-    // resolves correctly only against the list the raster that wrote it saw. Every cull bumps the
-    // generation, the visibility raster stamps the ids it wrote with it, and decoding compares the two.
+    // Visibility IDs index the visible list and require matching cull and raster generations for decoding.
     uint32_t MeshletVisibleGeneration{0};
     uint32_t VisibilityIdGeneration{InvalidOffset};
 

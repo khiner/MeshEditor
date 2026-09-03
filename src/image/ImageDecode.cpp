@@ -2,7 +2,7 @@
 
 #include <format>
 
-// Decode imported image bytes (PNG/JPEG/WebP/HDR/etc.) to fixed RGBA layouts for GPU uploads.
+// Decode imported image bytes to fixed RGBA layouts for GPU upload.
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #include <plutovg-stb-image.h>
@@ -37,7 +37,7 @@ std::expected<void, std::string> ValidateDimensions(int width, int height, std::
     return {};
 }
 
-// Run `load` (fills width/height, returns stb-allocated pixels or null), validate dims, copy into Result.
+// Validate and copy pixels allocated by load into a Result.
 template<typename Result, typename Pixel, typename Load>
 std::expected<Result, std::string> DecodeImage(std::string_view image_name, Load &&load) {
     int width{0}, height{0}, channels{0};

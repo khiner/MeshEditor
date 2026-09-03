@@ -1,7 +1,5 @@
 #include "SurfaceContact.h"
 
-// The surface-contact model's entry points where the model itself is absent: each does nothing and reports nothing, so a scene sounds by collision alone.
-// src/audio/surface/ holds the implementations these stand in for, which SURFACE_AUDIO=1 at configure time selects instead.
 
 void SurfaceAudioStateDelete::operator()(SurfaceAudioState *) const {}
 void SurfaceRenderScratchDelete::operator()(SurfaceRenderScratch *) const {}

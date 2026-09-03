@@ -1,8 +1,7 @@
 #ifndef IBLPREFILTER_MSL
 #define IBLPREFILTER_MSL
 
-// The environment prefilter kernels, which bind their own source and destination directly instead of
-// going through the bindless table.
+// Environment prefilter kernels bind source and destination textures directly.
 #include <metal_stdlib>
 #include "CubemapFace.metal"
 using namespace metal;
@@ -33,7 +32,6 @@ kernel void EquirectToCubemapKernel(
     const float2 uv = (float2(px) + 0.5f) / float(pc.FaceSize) * 2.0f - 1.0f;
     const float3 dir = FaceDirection(face, uv);
 
-    // Direction to equirectangular UV.
     const float lon = atan2(dir.z, dir.x) / (2.0f * PI) + 0.5f;
     const float lat = asin(clamp(dir.y, -1.0f, 1.0f)) / PI + 0.5f;
 
@@ -56,12 +54,10 @@ kernel void DiffuseIrradianceKernel(
     const float2 uv = (float2(px) + 0.5f) / float(pc.FaceSize) * 2.0f - 1.0f;
     const float3 normal = FaceDirection(face, uv);
 
-    // Orthonormal tangent frame around the normal.
     const float3 up = abs(normal.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
     const float3 right = normalize(cross(up, normal));
     const float3 fwd = cross(normal, right);
 
-    // Cosine-weighted Riemann sum over the hemisphere.
     float3 irradiance = float3(0.0f);
     float sample_count = 0.0f;
     const float delta = 0.025f;
@@ -120,7 +116,7 @@ kernel void SpecularPrefilterKernel(
 
     const float2 uv = (float2(px) + 0.5f) / float(pc.FaceSize) * 2.0f - 1.0f;
     const float3 N = FaceDirection(face, uv);
-    const float3 V = N; // Prefiltering assumes the view direction equals the normal.
+    const float3 V = N;
 
     const uint SAMPLE_COUNT = 1024u;
     const float src_size = float(max(pc.SourceSize, 1u));

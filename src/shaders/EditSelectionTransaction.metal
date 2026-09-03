@@ -1,8 +1,7 @@
 #ifndef EDITSELECTIONTRANSACTION_MSL
 #define EDITSELECTIONTRANSACTION_MSL
 
-// One GPU-owned edit derivation. Every output gathers directly from the current element-domain
-// mask, so no output is an input and the whole topology conversion needs no grid-wide barrier.
+// Every output reads the current element-domain mask directly, so topology conversion requires no grid-wide barrier.
 #include "Bindless.metal"
 #include "ConnectivityRead.metal"
 #include "EditSelectionSummary.metal"

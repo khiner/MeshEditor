@@ -1,9 +1,7 @@
 #ifndef MOTION_BLUR_SHARED_MSL
 #define MOTION_BLUR_SHARED_MSL
 
-// Shared by the motion blur tile passes and the gather.
-// Ported from Blender EEVEE (eevee_motion_blur.bsl.hh), which follows
-// "A Fast and Stable Feature-Aware Motion Blur Filter" by Guertin, McGuire, and Nowrouzezahrai.
+// Ported from Blender EEVEE's eevee_motion_blur.bsl.hh and Guertin, McGuire, and Nowrouzezahrai's feature-aware motion-blur filter.
 
 #include <metal_stdlib>
 using namespace metal;
@@ -13,12 +11,9 @@ constant int MotionBlurTileSize = 32;
 constant uint MotionPrev = 0u;
 constant uint MotionNext = 1u;
 
-// Each entry holds the coordinates of the tile whose motion covers this one, with the motion's
-// length in the high bits so an atomic max picks the fastest contributor.
-//   bits 31..18: length in pixels, clamped to 16383
-//   bits 17..9 : tile x
-//   bits 8..0  : tile y
-// Nine bits reach 512 tiles a side, which at 32 pixels per tile covers renders up to 16384 across.
+// Pack source-tile coordinates below motion length so atomic max selects the fastest contributor.
+// Bits 31..18 store clamped pixel length, bits 17..9 store tile X, and bits 8..0 store tile Y.
+// Nine coordinate bits cover 512 tiles or 16,384 pixels per dimension.
 inline uint MotionTilePack(float2 motion, uint2 tile) {
     const uint velocity = min(uint(ceil(length(motion))), 0x3FFFu);
     return (velocity << 18u) | ((tile.x & 0x1FFu) << 9u) | (tile.y & 0x1FFu);
@@ -26,12 +21,11 @@ inline uint MotionTilePack(float2 motion, uint2 tile) {
 inline int2 MotionTileUnpack(uint data) {
     return int2(int((data >> 9u) & 0x1FFu), int(data & 0x1FFu));
 }
-// The table holds one entry per tile, per motion direction, sized to the render's own tile grid.
 inline uint MotionTileIndex(uint motion_step, uint2 tile, uint2 tile_extent) {
     return tile.x + tile.y * tile_extent.x + motion_step * tile_extent.x * tile_extent.y;
 }
 
-// Distance along `line_direction` at which a ray from `line_origin` leaves the [-1,1] square.
+// Returns the distance along `line_direction` at which the ray exits the [-1, 1] square.
 inline float LineUnitSquareIntersectDist(float2 line_origin, float2 line_direction) {
     const float2 first_plane = (float2(1.0f) - line_origin) / line_direction;
     const float2 second_plane = (float2(-1.0f) - line_origin) / line_direction;

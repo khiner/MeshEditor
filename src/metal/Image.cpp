@@ -5,7 +5,6 @@
 
 namespace mtl {
 namespace {
-// CPU-visible textures use shared storage; GPU-only textures stay private.
 MTL::StorageMode StorageFor(MTL::TextureUsage usage) {
     return (usage & MTL::TextureUsageRenderTarget) != 0 ? MTL::StorageModePrivate : MTL::StorageModeShared;
 }
@@ -38,7 +37,7 @@ bool Blit(const Context &ctx, auto &&encode) {
     command_buffer->waitUntilCompleted();
     return command_buffer->error() == nullptr;
 }
-} // namespace
+}
 
 Texture CreateTexture2D(const Context &ctx, MTL::PixelFormat format, Extent2D extent, MTL::TextureUsage usage, uint32_t mip_levels, std::optional<MTL::StorageMode> storage) {
     return Create(ctx, MTL::TextureType2D, format, extent, usage, mip_levels, storage.value_or(StorageFor(usage)));
@@ -74,7 +73,7 @@ NS::SharedPtr<MTL::SamplerState> CreateSampler(const Context &ctx, const Sampler
     descriptor->setTAddressMode(desc.AddressT);
     descriptor->setRAddressMode(desc.AddressR);
     descriptor->setMaxAnisotropy(NS::UInteger(desc.MaxAnisotropy));
-    // The samplers live in the argument buffer, which needs their resource IDs.
+    // Argument-buffer samplers require resource IDs.
     descriptor->setSupportArgumentBuffers(true);
     auto sampler = NS::TransferPtr(ctx.Device->newSamplerState(descriptor.get()));
     if (!sampler) throw std::runtime_error("Failed to create a Metal sampler.");
@@ -111,4 +110,4 @@ void Upload(const Texture &texture, uint32_t mip, std::span<const std::byte> byt
     const auto height = std::max(texture.Extent.Height >> mip, 1u);
     texture.Handle->replaceRegion(MTL::Region::Make2D(0, 0, width, height), mip, layer, bytes.data(), bytes_per_row, 0);
 }
-} // namespace mtl
+}

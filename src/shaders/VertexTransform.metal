@@ -9,12 +9,10 @@
 #include "MorphDeform.metal"
 #include "ArmatureDeform.metal"
 #include "TransformUtils.metal"
-// VelocityOutput writes the shutter-open and shutter-close motion the velocity pass reads.
 #include "MeshVertexConstant.metal"
 #include "EditSelection.metal"
 
-// World position of `vert` under one pose. The per-draw offsets are shared across poses,
-// so a pose is selected purely by its buffer slots.
+// Returns the vertex's world position under the pose selected by buffer slots.
 inline float3 PoseWorldPos(const thread Scene &scene, DrawData draw, Vertex vert, uint idx, uint model_slot, uint armature_slot, uint morph_slot) {
     float3 normal = float3(0);
     float3 pos = float3(vert.Position);
@@ -24,19 +22,16 @@ inline float3 PoseWorldPos(const thread Scene &scene, DrawData draw, Vertex vert
     return trs_transform_point(world, local_pos);
 }
 
-// Rotate the derived corner normal by the stored (polar, azimuth) offset.
-// The corner frame mirrors MeshStore::ComputeCornerFrame and must stay in lockstep with it.
-// Its axes: the derived normal, the first non-degenerate outgoing edge projected off it, and their cross.
-// The frame rebuilds from current local positions, so authored offsets follow every deformation.
+// Applies the stored polar and azimuth offsets in the frame defined by MeshStore::ComputeCornerFrame.
+// Rebuild the frame from current local positions so authored offsets follow deformation.
 inline float3 ApplyNormalOffset(const thread Scene &scene, DrawData draw, uint vertex_id, float3 normal, float2 offset) {
     const float3 n = dot(normal, normal) > 0.0f ? normal : float3(0, 0, 1);
     const uint tri = (vertex_id / 3u) * 3u;
     const uint k = vertex_id - tri;
     device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
     const float3 p0 = scene.GetLocalPosition(draw, indices[draw.IndexSlotOffset.Offset + tri + k]);
-    // An edge nearly parallel to the normal rejects to cancellation noise, so its perpendicular part
-    // must be a meaningful fraction of its length to anchor the frame.
-    // The two edge candidates stay unrolled: a loop here costs ~5% frame time on vertex-bound scenes.
+    // Require a significant perpendicular component to avoid cancellation for edges nearly parallel to the normal.
+    // Keep both candidates unrolled; a loop increases frame time by about 5% in vertex-bound scenes.
     float3 ref;
     const float3 e1 = scene.GetLocalPosition(draw, indices[draw.IndexSlotOffset.Offset + tri + (k + 1u) % 3u]) - p0;
     const float3 r1 = e1 - n * dot(e1, n);
@@ -58,10 +53,7 @@ inline float3 ApplyNormalOffset(const thread Scene &scene, DrawData draw, uint v
     return cos(offset.x) * n + sin(offset.x) * (cos(offset.y) * ref + sin(offset.y) * ortho);
 }
 
-// Corner shading normal for a face draw, composed from the corner classification.
-// Each class reads the posed store when derived this frame, else the base store.
-// A uniform mesh stores no class buffer, so the offset value itself carries the class.
-// `coarse_normal` replaces the source face normal on a coarse cluster.
+// Returns a face corner's shading normal from its class, posed state, and optional coarse normal.
 inline float3 CornerNormal(
     const thread Scene &scene, DrawData draw, uint vertex_id, uint idx, uint face_id,
     bool coarse, float3 coarse_normal
@@ -95,7 +87,6 @@ inline float3 CornerNormal(
         }
     }
     // glTF morphed normal: normalize(N0 + sum(w_t * NormalDelta_t)).
-    // The pose pre-pass accumulates the per-vertex delta sum.
     if (draw.MorphShadingAuthored != 0u) {
         normal = NormalizeOrZero(normal + float3(scene.PosedMorphNormalDeltas(scene.View.PosedMorphNormalDeltaSlot)[draw.PosedPositionOffset + idx]));
     }
@@ -110,7 +101,7 @@ inline MeshVaryings TransformVertex(
     MeshVaryings out;
     device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
-    // Motion blur steps read their captured transforms through the override, keeping DrawData step-agnostic.
+    // Motion-blur steps use captured transforms without modifying DrawData.
     const uint model_slot = scene.View.ModelSlotOverride != INVALID_SLOT ? scene.View.ModelSlotOverride : draw.ModelSlot;
     const Transform world = scene.Models(model_slot)[draw.FirstInstance];
 
@@ -121,7 +112,7 @@ inline MeshVaryings TransformVertex(
     const bool is_face_draw = draw.ObjectIdSlot != INVALID_SLOT;
     float3 normal = is_face_draw ? float3(0) : scene.GetVertexNormal(draw, idx);
     if (is_face_draw && (face_attributes || shading_normal)) {
-        // A coarse cluster's corners come from all over the primitive, so none of them names its face.
+        // Coarse-cluster corners have no source-face identity.
         if (!coarse) face_id = scene.ObjectIds(draw.ObjectIdSlot)[draw.FaceIdOffset + vertex_index / 3u];
         if (shading_normal) normal = CornerNormal(scene, draw, vertex_id, idx, face_id, coarse, coarse_normal);
         if (face_attributes && face_id != 0u) element_state = EditFaceState(scene, draw, face_id - 1u);
@@ -133,7 +124,6 @@ inline MeshVaryings TransformVertex(
     out.WorldNormal = shading_normal ? trs_transform_normal(world, normal) : float3(0.0f);
     out.FlatWorldNormal = float3(0.0f);
     out.WorldPosition = world_pos;
-    // Face draws hold one color per corner, point and line draws one per vertex.
     const uint color_index = is_face_draw ? vertex_index : idx;
     out.VertexColor = draw.CornerColorOffset != INVALID_OFFSET ?
         float4(scene.CornerColors(scene.View.CornerColorSlot)[draw.CornerColorOffset + color_index]) :
@@ -143,7 +133,7 @@ inline MeshVaryings TransformVertex(
     const bool is_edit_mode = scene.View.InteractionMode == InteractionMode_Edit;
     const bool is_edit_edge = is_edit_mode && scene.View.EditElement == Element_Edge;
     const float4 edge_color = is_edit_mode ? float4(float3(colors.WireEdit), 1.0f) : float4(float3(colors.Wire), 1.0f);
-    const float4 object_base_color = float4(0.8f, 0.8f, 0.8f, 1.0f); // Blender's View3DShading.single_color default
+    const float4 object_base_color = float4(0.8f, 0.8f, 0.8f, 1.0f); // Matches Blender's View3DShading.single_color default.
     const float4 base_color = draw.ObjectIdSlot != INVALID_SLOT ? object_base_color : edge_color;
     const bool is_edge_draw = !is_face_draw && draw.Selection.Summary.Slot != INVALID_SLOT;
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
@@ -158,7 +148,6 @@ inline MeshVaryings TransformVertex(
             float4(float3(colors.EdgeSelectedIncidental), 1.0f);
     }
 
-    // Face draws index the primitive table per face, point and line draws per vertex.
     if (face_attributes && draw.ElementPrimitiveOffset != INVALID_OFFSET && draw.PrimitiveMaterialOffset != INVALID_OFFSET && (!is_face_draw || face_id != 0u)) {
         const uint element = is_face_draw ? face_id - 1u : idx;
         const uint primitive_index = scene.ElementPrimitives(scene.View.ElementPrimitiveSlot)[draw.ElementPrimitiveOffset + element];

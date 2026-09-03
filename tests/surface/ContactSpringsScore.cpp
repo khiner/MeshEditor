@@ -1,6 +1,3 @@
-// Scores the element-spring contact path against the exact per-summit solve: a 0.5 kg steel sphere slides over a 100 um, 1 mm correlation surface at three speeds and lands at three approach rates, and every observable is compared against the direct per-asperity sum over the same synthesized field.
-// The springs, envelope, reach, stack read, and field are all the model's own, so a divergence here is a defect of the model rather than of the harness.
-// Reference anchors over the same field: engine flight fraction 0.700 against exact 0.747 at 0.7 m/s, band speed exponent +1.43 against +1.45, landing loads and durations within about 2 percent.
 
 #include "audio/surface/SurfaceModel.h"
 
@@ -224,11 +221,10 @@ LandStats Land(bool engine, double v0, double xc0) {
     }
     return {peak / Load, ms, corner};
 }
-} // namespace
-
+}
 int main() {
     // The engine's own patch, cuts one power steeper than the radial spectrum by construction.
-    // The field is radial q^-3 (Hurst 0.5), whose cuts carry 1D slope -2.
+    // A radial q^-3 field with Hurst exponent 0.5 has one-dimensional slope -2.
     auto patch = SynthesizeRoughnessPatch(float(Correlation), -2.f, Cutoff, Spacing, Nx, Ny, 0);
     Field.resize(patch.Heights.size());
     for (size_t i = 0; i < Field.size(); ++i) Field[i] = float(SigmaPair) * patch.Heights[i];
@@ -254,8 +250,6 @@ int main() {
     }
     Springs = BuildElementSprings(Field, Nx, Ny, GapY, ElementColumns, Spacing, InvModulus, {}, zeta_max, Knots);
     Reach = ElementReach(Springs, Curvature);
-    // The datum the engine measures engagement from: first touch, which is a maximum over the reach, or the height the elements there actually carry the load at.
-    // The exact arm below is truth for both, since its own resting height IS that load balance taken summit by summit.
     const bool first_touch = std::getenv("MUTE_BEARING_DATUM") != nullptr;
     Envelope = first_touch ? ElementEnvelope(Springs, Curvature, Reach) : BearingDatum(Springs, Curvature, Reach, Load);
     std::printf(
@@ -264,7 +258,6 @@ int main() {
         first_touch ? "first touch" : "bearing"
     );
 
-    // The resting anchor both ways: the exact arm's bisected height against the engine's, plus the spread of the per-position anchors, which is what the pooled anchor table averages over.
     {
         double dsum = 0, dmax = 0;
         for (int i = 0; i < 6; ++i) {

@@ -6,11 +6,9 @@
 
 #include <map>
 
-// Source-form glTF data preserved across round-trip but not consumed by the runtime, stored on ECS
-// components. Lives apart from the loader (GltfScene.h) so consumers that only read/write these
-// components don't pull in the glTF import/export machinery.
+// Source-form glTF data retained for round-trip serialization.
 
-// Material texture slots, in the order they appear on `MaterialSourceMeta::TextureSlots`.
+// Material texture slots in MaterialSourceMeta::TextureSlots order.
 enum MaterialTextureSlot : uint8_t {
     MTS_BaseColor,
     MTS_MetallicRoughness,
@@ -49,18 +47,14 @@ enum class Wrap : uint16_t {
     Repeat,
 };
 
-// TextureInfo.TexCoord is the effective value (override if present, else base).
+// TexCoord contains the extension override or base value.
 struct TextureTransformMeta {
     bool SourceHadExtension{};
     uint32_t SourceBaseTexCoord{};
     std::optional<uint32_t> SourceTexCoordOverride{};
 };
 
-// Per-material delta of fields `buffers.Materials` can't recover:
-// emissive_strength split, KHR_texture_transform meta on the 5 base textures, source texture
-// indices per slot (PBRMaterial holds bindless slots), optional extension-block presence.
-// Save reads `PBRMaterial` from the GPU buffer, then uses this to gate which extension blocks
-// to emit, restore source texture indices, and un-fold the EmissiveFactor *= strength split.
+// Retains per-material source data unavailable from buffers.Materials.
 struct MaterialSourceMeta {
     std::optional<float> EmissiveStrength;
     std::array<TextureTransformMeta, 5> BaseSlotMeta{}; // BaseColor..Emissive
@@ -89,7 +83,7 @@ struct Texture {
     std::string Name;
 };
 
-// The first image a texture resolves to.
+// Returns the first available image for a texture.
 inline std::optional<uint32_t> ResolveImageIndex(const Texture &t) {
     if (t.ImageIndex) return t.ImageIndex;
     if (t.WebpImageIndex) return t.WebpImageIndex;
@@ -103,21 +97,19 @@ struct Sampler {
     std::string Name;
 };
 
-// Source-form scene-level data on the viewport — encoded image bytes, sampler-config collapse, asset.* metadata, etc.
-// Cameras/lights round-trip via per-entity components above.
+// Source-form scene data retained on the viewport.
 struct SourceAssets {
     std::string Copyright, Generator, MinVersion;
-    std::string AssetExtras, AssetExtensions; // raw minified JSON
+    std::string AssetExtras, AssetExtensions; // Minified JSON.
     std::vector<std::string> ExtensionsRequired;
-    std::map<uint64_t, std::string> ExtrasByEntity; // ordered so the snapshot serializes deterministically
+    std::map<uint64_t, std::string> ExtrasByEntity; // Ordered for deterministic snapshots.
     std::vector<MaterialSourceMeta> MaterialMetas;
     std::vector<Texture> Textures;
     std::vector<Image> Images;
     std::vector<Sampler> Samplers;
-    std::vector<std::string> AnimationOrder; // engine merges per-entity clips by name; build needs source order
-    std::optional<ImageBasedLight> ImageBasedLight; // source IBL definition; runtime keeps the prefiltered cubemap
+    std::vector<std::string> AnimationOrder; // Source animation order.
+    std::optional<ImageBasedLight> ImageBasedLight; // Source IBL definition.
 };
 } // namespace gltf
 
-// Canonical source-form glTF assets on the viewport (image bytes, IBL, material/texture/sampler metadata).
-// Not re-derivable from runtime/GPU state, the source of truth for re-export and texture/IBL restore.
+// Canonical source assets required for re-export and texture or IBL restoration.

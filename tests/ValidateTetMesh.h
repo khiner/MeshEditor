@@ -1,10 +1,7 @@
 #pragma once
 
-// Structural validation of a tetrahedralization against the exact surface it was built from:
-// input vertices unmoved, every tet positively oriented, faces paired (manifold), the boundary
-// lying on the input surface, every input triangle present (possibly refined), and — for clean
-// manifold input — the filled volume matching the surface. Returns an empty string when valid,
-// otherwise the first defect found.
+// Returns the first vertex, orientation, manifold, boundary, input-coverage, or volume defect.
+// Returns an empty string when every invariant passes.
 
 #include "mesh/TetMesh.h"
 #include "numeric/Predicates.h"
@@ -47,8 +44,7 @@ inline std::string ValidateTetMesh(std::span<const dvec3> in_points, std::span<c
     for (uint32_t i = 0; i < n; ++i) {
         if (mesh.Points[i] != in_points[i]) return "input vertex moved";
     }
-    // Every face of every tet, each triple sorted and the whole list sorted, so equal faces sit
-    // together and a run of them is the tets sharing that face.
+    // Every face of every tet, each triple sorted and the whole list sorted, so equal faces sit together and a run of them is the tets sharing that face.
     std::vector<std::array<uint32_t, 3>> faces;
     faces.reserve(mesh.Tets.size() * 4);
     for (const auto &t : mesh.Tets) {
@@ -57,8 +53,7 @@ inline std::string ValidateTetMesh(std::span<const dvec3> in_points, std::span<c
         for (const auto &f : fc) faces.push_back(SortedTri(t[f[0]], t[f[1]], t[f[2]]));
     }
     std::ranges::sort(faces);
-    // A triangle the input gives twice is a zero-thickness flap enclosing no volume, so no tet
-    // mesh can carry it.
+    // Treat duplicated input triangles as zero-thickness internal flaps.
     std::vector<std::array<uint32_t, 3>> input_faces, flaps;
     input_faces.reserve(in_tris.size() / 3);
     for (size_t i = 0; i < in_tris.size(); i += 3) input_faces.push_back(SortedTri(in_tris[i], in_tris[i + 1], in_tris[i + 2]));
@@ -74,7 +69,6 @@ inline std::string ValidateTetMesh(std::span<const dvec3> in_points, std::span<c
     const auto inside_some_input = [&](const std::array<uint32_t, 3> &tri) {
         return std::ranges::any_of(input_faces, [&](const auto &it) { return tri_within(in_points[it[0]], in_points[it[1]], in_points[it[2]], tri); });
     };
-    // The faces held by one tet are the mesh boundary.
     std::vector<std::array<uint32_t, 3>> boundary;
     for (size_t i = 0; i < faces.size();) {
         size_t j = i;
@@ -87,22 +81,13 @@ inline std::string ValidateTetMesh(std::span<const dvec3> in_points, std::span<c
         }
         i = j;
     }
-    // An input triangle interior to the solid (an internal membrane) legitimately has tets on
-    // both sides, so presence is required but boundary-ness is not. A refined triangle is
-    // instead evidenced by a boundary face inside it.
+    // Require internal input triangles to be present without requiring boundary membership.
+    // A boundary sub-triangle can establish the presence of a refined input triangle.
     for (const auto &tri : input_faces) {
         if (std::ranges::binary_search(faces, tri) || std::ranges::binary_search(flaps, tri)) continue;
         const dvec3 &a = in_points[tri[0]], &b = in_points[tri[1]], &c = in_points[tri[2]];
         if (!std::ranges::any_of(boundary, [&](const auto &mtri) { return tri_within(a, b, c, mtri); })) return "input triangle missing from tet mesh";
     }
-    // The tets must fill exactly the volume the surface encloses. Face pairing proves the mesh is
-    // a combinatorially closed manifold, but two tets can overlap or leave a gap while every face
-    // still pairs, since the pairing matches vertex triples and does not see geometry. A volume
-    // that does not close catches that. The surface's volume is well defined only when the input
-    // is a watertight consistently-wound manifold: every edge shared by exactly two triangles
-    // that traverse it in opposite directions. Some scanned inputs are non-manifold (73_PlasticBin
-    // has edges shared by three faces), where the divergence sum is not the enclosed volume, so
-    // the check is skipped and the remaining checks stand alone.
     std::vector<std::pair<uint64_t, int>> edges;
     edges.reserve(in_tris.size());
     for (size_t i = 0; i < in_tris.size(); i += 3)
@@ -120,10 +105,8 @@ inline std::string ValidateTetMesh(std::span<const dvec3> in_points, std::span<c
         i = j;
     }
     if (clean_manifold) {
-        // Both sums are six times the enclosed volume up to a sign, the tet sum consistently
-        // signed because every tet is positively oriented and the surface sum signed by its
-        // winding, and refined surface triangles are coplanar so their sub-triangles sum to the
-        // original. So magnitudes are compared.
+        // Both sums equal six times enclosed volume up to surface winding sign.
+        // Coplanar refinements preserve the original surface-volume sum.
         double mesh_vol = 0;
         for (const auto &t : mesh.Tets) {
             const dvec3 &a = mesh.Points[t[0]];

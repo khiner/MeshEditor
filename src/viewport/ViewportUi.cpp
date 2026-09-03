@@ -101,7 +101,7 @@ bool IsSingleClicked(ImGuiMouseButton button) {
     return IsMouseReleased(button) && !IsMouseDragPastThreshold(button);
 }
 
-// Nav isn't recorded, so the look-through exit can't ride on it. While looking through, the first nav input emits the recorded exit instead.
+// Navigation actions are not recorded. During look-through, the first navigation input emits the recorded exit action.
 void EmitViewNav(const entt::registry &r, auto &&nav) {
     if (LookThroughCameraEntity(r) != entt::null) action::Emit(action::view::ExitLookThroughCamera{});
     else action::Emit(std::forward<decltype(nav)>(nav));
@@ -151,10 +151,6 @@ std::optional<size_t> DrawOverlayIconButtonGroup(
             PushID(int(i));
             if (InvisibleButton("##icon", style.ButtonSize) && button.Enabled) clicked_index = i;
             hovered = IsItemHovered();
-            // todo - better tooltips and add them to all viewport buttons.
-            //  - anchor, don't follow mouse
-            //  - padding, border
-            // if (hovered && button.Tooltip) SetTooltip("%s", button.Tooltip);
             PopID();
             if (!button.Enabled) EndDisabled();
         }
@@ -177,9 +173,7 @@ std::optional<size_t> DrawOverlayIconButtonGroup(
     return clicked_index;
 }
 
-// Dropdown-arrow companion to an overlay icon-button group, spanning `size` at `pos`.
-// Opens `popup_id` on press (not release) so the popup is still in the stack and the open-check
-// gates correctly, matching how ImGui's own BeginCombo works (PressedOnClick).
+// Opens `popup_id` with ImGui's PressedOnClick boundary.
 void DrawOverlayDropdownArrow(ImVec2 pos, ImVec2 size, const OverlayIconButtonStyle &style, const char *id, const char *popup_id, bool &any_hovered) {
     const auto saved_cursor = GetCursorScreenPos();
     SetCursorScreenPos(pos);
@@ -235,10 +229,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
         any_of(selection::GetSelectedMeshEntities(r), [&](entt::entity mesh_entity) { return selection::HasScaleLockedInstance(r, mesh_entity); });
     const bool transform_shortcuts_enabled = !edit_transform_locked;
     const bool scale_shortcut_enabled = transform_shortcuts_enabled && !has_frozen_selected;
-    // Keyboard shortcuts use ImGui's Shortcut() routing system with RouteGlobal so they fire from any
-    // focused window in the dockspace. RouteGlobal yields to active items (sliders mid-drag, focused
-    // InputText, etc.) and ImGui's Nav (Tab/arrows) via key-ownership, so widget editing and tree/list
-    // navigation in panels keep working. char-input keys (G/A/etc.) are auto-filtered while WantTextInput.
+    // Route shortcuts globally while preserving ImGui ownership for active widgets, navigation, and text input.
     constexpr auto VKey = ImGuiInputFlags_RouteGlobal;
     if (TransformGizmo::IsUsing(r, viewport)) {
         // During an active transform, only allow transform switching shortcuts.
@@ -341,8 +332,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     if (OrientationGizmo::IsActive() || frame.OverlayControlsHovered) return;
 
     const auto render_extent = RenderExtentPx(r);
-    // View-projection of the currently displayed view, recorded into pixel-selection actions so replay
-    // (which doesn't log navigation) resolves the stored pixels against the same view.
+    // Record the displayed projection with pixel selections because replay excludes camera navigation.
     const auto &view_camera = r.get<const ViewCamera>(viewport);
     const float selection_aspect = render_extent.y == 0u ? 1.f : float(render_extent.x) / float(render_extent.y);
     const mat4 selection_view_proj = view_camera.Projection(selection_aspect) * view_camera.View();
@@ -427,7 +417,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         .IconScale = overlay_button_style.IconScale,
         .CornerRounding = overlay_button_style.CornerRounding * 0.75f,
     };
-    // Hold through the press-release cycle so IsSingleClicked (which fires on release) is still guarded.
+    // Preserve the guard through release because IsSingleClicked fires on release.
     if (!IsMouseDown(ImGuiMouseButton_Left)) frame.OverlayControlsHovered = false;
     const bool any_popup_open = IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 
@@ -769,8 +759,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         return false;
     }();
     if (has_transform_target) { // Transform gizmo
-        // Transform all root selected entities (whose parent is not also selected) around their average
-        // position, using the active entity's rotation/scale.
+        // Transform root selections around their average position using the active entity's rotation and scale.
         const auto gizmo_active_entity = bone_mode ? FindActiveBone(r) : active_entity;
         const auto active_transform = [&]() -> Transform {
             if (gizmo_active_entity == entt::null) return {};
@@ -910,9 +899,7 @@ void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
         dash_line({box_max.x, box_min.y}, {box_max.x, box_max.y});
     }
 
-    // Camera look-through frame overlay: show the looked-through camera's view as a centered frame.
-    // The ViewCamera's FOV is widened so the camera's view fits inside with padding.
-    // The frame marks exactly what the camera captures.
+    // Match the centered frame to the captured look-through region.
     if (const auto look_through_entity = LookThroughCameraEntity(r); look_through_entity != entt::null && !camera.IsAnimating()) {
         if (const auto *cd = r.try_get<Camera>(look_through_entity)) {
             const float cam_aspect = AspectRatio(*cd);

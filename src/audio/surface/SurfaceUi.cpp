@@ -17,7 +17,6 @@
 
 #include "ui/HelpMarker.h" // depends on imgui
 
-// The surface-contact model's controls: an object's acoustic surface, the viewport's sustained-contact levels, and how its pools stand against demand.
 
 // Surface finish. Ranges cover the finish presets with headroom (see surfaces::acoustic::All).
 template<> struct FieldLimits<&ContactSurface::Roughness> : Within<1e-9, 1e-2> {};

@@ -1,20 +1,18 @@
 #ifndef BLOCKSCAN_MSL
 #define BLOCKSCAN_MSL
 
-// Exclusive prefix sum over a run of uints, in three passes: sum each block, scan the block sums,
-// then start each block from its scanned sum.
-// A pass covers one block per threadgroup, except the block-sum scan, which covers one run per threadgroup.
+// Computes an exclusive prefix sum over a uint range.
 // Every kernel using these declares ScanSimdGroups + 1 threadgroup words for the scratch.
 
 #include "MslPrelude.metal"
 
-constant uint ScanTileSize = 256u; // Threads per threadgroup.
-constant uint ScanPerThread = 4u; // Contiguous values one thread scans.
+constant uint ScanTileSize = 256u;
+constant uint ScanPerThread = 4u;
 constant uint ScanBlockElements = ScanTileSize * ScanPerThread;
 constant uint ScanSimdGroups = ScanTileSize / 32u;
 
-// Exclusive scan of `value` across the threadgroup, leaving the threadgroup total in sums[ScanSimdGroups].
-// `sums` is free to reuse once the caller barriers again.
+// Returns the exclusive prefix of `value` and writes the group total to sums[ScanSimdGroups].
+// The caller may reuse `sums` after another threadgroup barrier.
 inline uint ThreadgroupExclusiveScan(uint value, uint lane, uint simd_lane, uint simd_group, threadgroup uint *sums) {
     const uint rank = simd_prefix_exclusive_sum(value);
     const uint simd_total = simd_sum(value);
@@ -33,7 +31,6 @@ inline uint ThreadgroupExclusiveScan(uint value, uint lane, uint simd_lane, uint
     return sums[simd_group] + rank;
 }
 
-// Entries past `count` read as zero, so a partial block sums to the same total.
 inline void ScanBlockLoad(device const uint *values, uint count, uint block, uint lane, thread uint *local) {
     const uint base = block * ScanBlockElements + lane * ScanPerThread;
     for (uint k = 0u; k < ScanPerThread; ++k) {
@@ -69,8 +66,7 @@ inline void ScanBlockPrefix(
     }
 }
 
-// Where this thread's first value starts in the scan, with its values left in `local`.
-// The caller writes the running offsets out, since each scan puts them somewhere different.
+// Returns the prefix for this thread's first value and stores its local prefixes in `local`.
 inline uint ScanBlockStart(
     device const uint *values, uint count, uint block, device const uint *blocks,
     uint lane, uint simd_lane, uint simd_group, threadgroup uint *sums, thread uint *local

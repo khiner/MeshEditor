@@ -6,68 +6,55 @@
 #include <memory>
 #include <span>
 
-// The surface-contact audio model, as the core modal path calls it.
-//
-// Two bodies resting or sliding on one another sound from the roughness of the surfaces in contact, which is a separate model from the force pulse a collision drives the modes with.
-// That model lives entirely in src/audio/surface/, and SURFACE_AUDIO=1 at configure time selects it.
-// Every declaration here has two implementations and the link takes exactly one: the model itself, or SurfaceContactAbsent.cpp, whose entry points do nothing and report nothing.
+// SURFACE_AUDIO selects either the surface-contact model or inert entry points at link time.
 
 struct ModalAudio;
 struct ModalBank;
 struct ModalRenderScratch;
 
-// The model's state, held by ModalAudio for as long as the audio system lives.
-// The deleter is defined alongside whichever implementation is linked, so the core never needs the type.
+// The selected implementation defines the deleter for this opaque state.
 struct SurfaceAudioState;
 struct SurfaceAudioStateDelete {
     void operator()(SurfaceAudioState *) const;
 };
 using SurfaceAudioStatePtr = std::unique_ptr<SurfaceAudioState, SurfaceAudioStateDelete>;
 
-// One renderer's working memory for the coupled kernel, allocated on its first sustained contact.
+// Per-renderer scratch allocated on the first sustained contact.
 struct SurfaceRenderScratch;
 struct SurfaceRenderScratchDelete {
     void operator()(SurfaceRenderScratch *) const;
 };
 using SurfaceRenderScratchPtr = std::unique_ptr<SurfaceRenderScratch, SurfaceRenderScratchDelete>;
 
-// Null without the model.
 SurfaceAudioStatePtr MakeSurfaceAudioState();
 
 /***** Audio thread *****/
 
-// Bring the bank's voices in line with the newest published contact set, once per callback.
+// Synchronizes bank voices with the latest contact set once per callback.
 void SurfaceAdoptVoices(ModalAudio &, ModalBank &, uint32_t frame_count);
-// Sustained contacts object `o` holds.
+// Returns the sustained-contact count for object `o`.
 uint32_t SurfaceVoiceCount(const ModalAudio &, uint32_t object);
-// Render object `o` with its sustained contacts, its impacts included.
-// False when it holds none, leaving it to the modal-only kernel.
+// Renders object `o` and returns false when modal-only rendering is sufficient.
 bool SurfaceRenderObject(ModalAudio &, ModalRenderScratch &, ModalBank &, uint32_t object, std::span<const uint32_t> impacts, float *out, uint32_t frame_count);
-// Drop every voice on an object that has fallen silent.
+// Removes all voices for an inactive object.
 void SurfaceSilenceObject(ModalAudio &, uint32_t object);
-// Sustained contacts live across the whole bank, for display.
+// Returns the active sustained-contact count across the bank.
 uint32_t SurfaceActiveVoices(const ModalAudio &);
 
 /***** Main thread *****/
 
-// Release the pools and published sets, which address the bank being replaced.
+// Releases state that references the replaced bank.
 void SurfaceInstallBank(ModalAudio &);
-// Register the model's components, reactive tracking, and viewport controls.
 void RegisterSurfaceContactHandlers(entt::registry &);
-// Re-derive whatever the frame's edits changed, then publish this step's contacts as voices.
+// Recomputes edited surface state and publishes the current contacts.
 void SurfaceUpdateContacts(entt::registry &);
-// Combined rms asperity height of a node's acoustic surface, m.
-// Zero is ideally smooth, which is every surface without the model.
+// Returns combined RMS asperity height in meters, or zero without the model.
 float SurfaceRoughnessOf(const entt::registry &, entt::entity node);
-// The node whose acoustic surface a contact reads: the collider node it touched, or the nearest ancestor of it carrying one.
-// The body itself when none does, which is every contact without the model.
+// Returns the collider or nearest ancestor with an acoustic surface, otherwise the body.
 entt::entity ContactSurfaceNode(const entt::registry &, entt::entity collider, entt::entity body);
 
 /***** User interface *****/
 
-// An object's acoustic surface, inside its modal model editor.
 void DrawContactSurfaceControls(entt::registry &, entt::entity sound_entity);
-// The viewport-global sustained-contact controls, inside the modal synthesis section.
 void DrawSurfaceSynthControls(entt::registry &, entt::entity viewport);
-// Where the surface model's fixed-size pools stand against demand, inside the audio debug view.
 void DrawSurfaceContactDebug(const entt::registry &);

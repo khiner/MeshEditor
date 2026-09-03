@@ -5,7 +5,7 @@
 #include "Varyings.metal"
 #include "ObjectSelectionPushConstants.metal"
 
-// The object selection pass folds every covered fragment into the query's keys and bits. It writes no color.
+// Accumulates each covered fragment into the object-selection query.
 fragment void SelectionFragment(
     ObjectIdFragmentVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],

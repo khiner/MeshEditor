@@ -1,12 +1,7 @@
 #ifndef VERTEXWELD_MSL
 #define VERTEXWELD_MSL
 
-// Merges the vertices of a mesh identical in every vertex-domain channel, in ten passes over one
-// job list, each pass reading its own tiles at the push constant's FirstTile: clear the table,
-// insert every vertex, mark the vertices that represent a key, scan the marks, read out each
-// vertex's welded index, then compact the channels and rewrite the corners through it.
-// A key's table slot depends on arrival order, but its entry settles at the lowest vertex index
-// holding that key, so the welded numbering follows first appearance whatever order the inserts ran in.
+// Welds vertices identical in every vertex-domain channel and numbers them by first source occurrence.
 #include "Bindless.metal"
 #include "BlockScan.metal"
 #include "VertexWeldJob.metal"
@@ -14,8 +9,6 @@
 
 constant uint WeldEmptySlot = 0xffffffffu;
 
-// Words each channel takes per vertex: a position, a joint index and weight per bone slot, one
-// target's position and normal deltas, and one target's tangent delta.
 constant uint WeldPositionWords = 3u;
 constant uint WeldDeformWords = 8u;
 constant uint WeldMorphWords = 6u;
@@ -34,12 +27,10 @@ struct WeldContext {
     device uint *DeformWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.BoneDeformBuffer, job.Deform.Slot) + job.Deform.Offset * WeldDeformWords; }
     device uint *MorphWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.MorphTargetBuffer, job.Morph.Slot) + job.Morph.Offset * WeldMorphWords; }
 
-    // The tile this threadgroup runs: its job and the tile's place within that job's pass.
     uint2 Tile(uint group_id) const { return Tiles()[Pc.FirstTile + group_id]; }
 };
 
-// A channel the mesh lacks aliases the positions and stays unread, since MSL has no null pointer to
-// hand a buffer that was never bound.
+// Missing channels alias the position buffer because MSL cannot represent an unbound buffer pointer.
 struct WeldKeys {
     device uint *Positions;
     device uint *Deform;
@@ -102,8 +93,7 @@ inline bool WeldKeysEqual(thread const WeldKeys &k, uint a, uint b) {
     return true;
 }
 
-// Moves `count` words between a welded vertex's record in the compaction staging and one channel,
-// advancing the record cursor past them.
+// Copies `count` words between a staged welded record and one channel, then advances the record cursor.
 inline void WeldMoveWords(device uint *record, thread uint &w, device uint *channel, uint first, uint count, bool to_channels) {
     for (uint p = 0u; p < count; ++p) {
         if (to_channels) channel[first + p] = record[w + p];
@@ -112,7 +102,7 @@ inline void WeldMoveWords(device uint *record, thread uint &w, device uint *chan
     w += count;
 }
 
-// Moves one welded vertex's channels to or from its record, at `stride` vertices per morph target.
+// Copies one welded vertex's channels with `stride` vertices per morph target.
 inline void WeldMoveRecord(thread const WeldKeys &k, device uint *record, uint vertex_index, uint stride, bool to_channels) {
     uint w = 0u;
     WeldMoveWords(record, w, k.Positions, vertex_index * WeldPositionWords, WeldPositionWords, to_channels);
@@ -150,13 +140,12 @@ kernel void VertexWeldInsert(
     if (i >= job.Count) return;
     const WeldKeys keys = MakeWeldKeys(ctx, job);
     device atomic_uint *table = ctx.AtomicScratch() + job.TableOffset;
-    // Equal keys probe the same slots in the same order, so they meet at the first slot that is
-    // empty or already theirs, and the lowest index among them wins the entry.
+    // Equal keys share a probe sequence, and atomic min selects their lowest source index.
     uint slot = WeldKeyHash(keys, i) & job.TableMask;
     for (;;) {
         uint occupant = WeldEmptySlot;
         if (atomic_compare_exchange_weak_explicit(&table[slot], &occupant, i, memory_order_relaxed, memory_order_relaxed)) break;
-        if (occupant == WeldEmptySlot) continue; // The exchange can fail without the slot being taken.
+        if (occupant == WeldEmptySlot) continue;
         if (WeldKeysEqual(keys, occupant, i)) {
             atomic_fetch_min_explicit(&table[slot], i, memory_order_relaxed);
             break;
@@ -177,7 +166,7 @@ kernel void VertexWeldMarkReps(
     const uint i = tile.y * ScanTileSize + lane;
     if (i > job.Count) return;
     device uint *scratch = ctx.Scratch();
-    // The terminator carries no mark, so the scan leaves the welded count in its slot.
+    // The unmarked terminator receives the welded count from the exclusive scan.
     const bool represents = i < job.Count && scratch[job.TableOffset + scratch[job.SlotOffset + i]] == i;
     scratch[job.FlagsOffset + i] = represents ? 1u : 0u;
 }
@@ -225,7 +214,7 @@ kernel void VertexWeldScan(
     uint start = ScanBlockStart(
         flags, job.Count + 1u, tile.y, ctx.Scratch() + job.BlockOffset, lane, simd_lane, simd_group, sums, local
     );
-    // Each thread rewrites only the marks it read, so the scan lands in place.
+    // Each thread overwrites only its source marks, permitting an in-place scan.
     const uint base = tile.y * ScanBlockElements + lane * ScanPerThread;
     for (uint k = 0u; k < ScanPerThread; ++k) {
         const uint i = base + k;
@@ -262,7 +251,7 @@ kernel void VertexWeldCompact(
     const VertexWeldJob job = ctx.Jobs()[tile.x];
     device const uint *scratch = ctx.Scratch();
     const uint welded = scratch[job.FlagsOffset + job.Count];
-    // A mesh that merges nothing represents every vertex by itself, so its channels already stand welded.
+    // Skip channel compaction when every source vertex is retained.
     if (welded == job.Count) return;
     const uint n = tile.y * ScanTileSize + lane;
     if (n >= welded) return;
@@ -284,7 +273,7 @@ kernel void VertexWeldWriteBack(
     if (welded == job.Count) return;
     const uint n = tile.y * ScanTileSize + lane;
     if (n >= welded) return;
-    // Each target's deltas restride to the welded count, which is where the shrunk arena reads them.
+    // Repack each target's deltas with welded-count stride for the resized arena.
     const WeldKeys keys = MakeWeldKeys(ctx, job);
     WeldMoveRecord(keys, ctx.Scratch() + job.CompactOffset + n * job.RecordWords, n, welded, true);
 }
@@ -297,7 +286,7 @@ kernel void VertexWeldRemapCorners(
     const WeldContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
     const VertexWeldJob job = ctx.Jobs()[tile.x];
-    // A kept-vertex total equal to the input count means the mesh merged nothing, so its corners already point right.
+    // Skip corner remapping when every source vertex is retained.
     if (ctx.Scratch()[job.FlagsOffset + job.Count] == job.Count) return;
     const uint c = tile.y * ScanTileSize + lane;
     if (c >= job.CornerCount) return;

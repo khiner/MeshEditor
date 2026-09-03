@@ -18,19 +18,17 @@
 #include <unordered_map>
 #include <vector>
 
-// The surface-contact audio model: how two bodies resting or sliding on one another sound.
-// SURFACE_AUDIO=1 at configure time selects it, behind the audio/SurfaceContact.h interface.
+// SURFACE_AUDIO selects this surface-contact model through audio/SurfaceContact.h.
 
-/***** Roughness tracks: the height field under a contact *****/
+/***** Roughness tracks *****/
 
-// Samples in a roughness track, which is read cyclically.
+// Number of cyclic roughness-track samples.
 constexpr uint32_t TrackSamples{131072};
 
 // Distance a contact travels before a synthesized field repeats, m.
 constexpr float SurfaceRepeatLength{0.1f};
 
-// Thread count a synthesis splits its columns over.
-// SURFACE_FFT_THREADS overrides it.
+// SURFACE_FFT_THREADS overrides the synthesis thread count.
 void SetTransformThreads(uint32_t threads);
 
 uint64_t HashParams(uint64_t seed, auto... values) {
@@ -45,8 +43,7 @@ constexpr uint32_t TrackWidthCount{18};
 // Track samples one short-wavelength cutoff spans (Pastewka and Robbins arXiv:1508.02154).
 constexpr float SurfaceSamplesPerCutoff{4};
 
-// Sample spacing a track resolves `short_wavelength` at, m.
-// SURFACE_SAMPLES_PER_CUTOFF refines or coarsens it against that cutoff.
+// Returns sample spacing for `short_wavelength` in meters.
 inline float FinishTrackSpacing(float short_wavelength) {
     static const float per_cutoff = [] {
         const char *v = std::getenv("SURFACE_SAMPLES_PER_CUTOFF");
@@ -58,8 +55,7 @@ inline float FinishTrackSpacing(float short_wavelength) {
 // Distance a contact travels over which a track's local mean is removed, m.
 constexpr float ReliefDcLength{1e-2f};
 
-// The band a track's heights hold: the wavelength its spectrum turns over at, and the exponent it falls with above that.
-// Fit as flat below the corner and a power law above it, by least squares on the track's power spectrum.
+// Least-squares fit of a flat spectrum below its corner and a power law above it.
 struct MeasuredBand {
     float CorrelationLength{0}, SpectralSlope{0};
 };
@@ -69,9 +65,9 @@ struct RoughnessTrack {
     std::vector<float> Heights; // Zero-mean, unit root-mean-square.
     std::vector<float> Sum; // Running integral, one entry longer than Heights.
     float Spacing{0}; // Distance along the surface between samples, m.
-    float Cutoff{0}; // Shortest wavelength these heights hold, m.
+    float Cutoff{0};
     float Rms{1}; // Root-mean-square height of the source, m.
-    MeasuredBand Band{}; // Band measured from these heights. Zero on a track synthesized from stated parameters.
+    MeasuredBand Band{}; // Zero for tracks synthesized from parameters.
     float HeightMax{0}; // The tallest height, over the unit root-mean-square heights.
     // Root-mean-square height difference between adjacent samples, over the unit root-mean-square heights.
     // Divided by the spacing and scaled by the height scale, this is the surface gradient.
@@ -81,7 +77,7 @@ struct RoughnessTrack {
     // Root-mean-square of the boxcar mean height at width 2^i samples, over the unit root-mean-square heights.
     std::array<float, TrackWidthCount> WindowRms{};
     // Root-mean-square gradient per sample at boxcar width 2^i, over the unit root-mean-square heights.
-    // The width-one entry is SlopeRms itself, and widths past what the track resolves repeat the widest measured one.
+    // Width one equals SlopeRms; unresolved widths repeat the widest measured value.
     std::array<float, TrackWidthCount> SlopeWindowRms{};
 };
 
@@ -112,12 +108,9 @@ inline float TrackHalfVarianceWidth(const RoughnessTrack &t) {
     return std::exp2(float(TrackWidthCount - 1));
 }
 
-// Synthesize a self-affine roughness track: flat below the spatial frequency the correlation length sets, falling as q^p above it, and empty below the wavelength `short_wavelength`.
-// Deterministic in its arguments, and a different spacing draws a different realization.
+// Returns a deterministic self-affine track with spectrum q^p above the correlation-length corner.
 RoughnessTrack SynthesizeRoughness(float correlation_length, float spectral_slope, float short_wavelength, float spacing, uint32_t count);
 
-// A patch of surface synthesized from the same spectrum as a track, row-major with `columns` along the sweep and `rows` across it, zero mean and unit root-mean-square.
-// Rows and columns share one spacing.
 struct RoughnessField {
     std::vector<float> Heights;
     uint32_t Columns{0}, Rows{0};
@@ -141,27 +134,22 @@ inline float FieldHeightAt(const RoughnessField &f, double x, double y) {
     return at_y0 + ty * (at_y1 - at_y0);
 }
 
-// Synthesize a patch whose radial spectrum is flat below the corner the correlation length sets, falls as q^slope above it, and stops at the same short-wavelength cutoff.
-// Deterministic in its arguments, and `realization` draws an independent patch of the same surface.
+// Returns a deterministic patch with radial spectrum q^slope above the correlation-length corner.
 RoughnessField SynthesizeRoughnessPatch(float correlation_length, float spectral_slope, float short_wavelength, float spacing, uint32_t columns, uint32_t rows, uint32_t realization);
 
-// The covariance of a synthesized patch's field at lattice lags up to two samples either way, indexed [column lag + 2][row lag + 2] and normalized to unit variance.
-// Every realization of one surface has the same covariance.
 using LatticeCovariance = std::array<std::array<double, 5>, 5>;
 LatticeCovariance RoughnessLatticeCovariance(float correlation_length, float spectral_slope, float short_wavelength, float spacing, uint32_t columns, uint32_t rows);
 
-// Synthesize a white track, one independent unit-variance draw per sample, deterministic in its seed.
+// Returns a deterministic unit-variance white-noise track.
 RoughnessTrack SynthesizeTurnover(float spacing, uint32_t count, uint64_t seed);
 
-// Heights measured off a real surface, with Band measured from them.
+// Constructs a track and measures its spectral band.
 RoughnessTrack MakeProfileTrack(std::span<const float> heights, float spacing);
 
-// A patch built around a measured trace: the trace's own heights along the sweep, and across the sweep the surface an isotropic reading of its spectrum implies.
-// The trace is row zero of the field exactly, and SURFACE_SEED redraws the across-sweep surface alone.
-// The field spans the trace, so a measured surface repeats over the length it was measured on.
+// Synthesizes an isotropic patch whose first row exactly matches a measured trace.
 RoughnessField SynthesizeProfileField(std::span<const float> heights, float spacing, uint32_t rows, uint32_t realization);
 
-// A read position wrapped into the track: the sample, the fraction past it, and whole traversals from the start.
+// Cyclic track position with sample index, fraction, and traversal count.
 struct TrackPos {
     size_t Index;
     float Frac;
@@ -192,7 +180,7 @@ struct TrackReading {
     float Height, Slope;
 };
 
-// Height and per-sample slope of the surface reconstructed through the four samples around `pos`, a Hermite cubic (Dang 2013 Eqs. 30-31).
+// Reconstructs height and slope from four samples with the Hermite cubic in Dang 2013 Eqs. 30-31.
 // Continuous in both, so a read narrower than one sample crosses sample edges without a step.
 inline TrackReading ReadTrackSmooth(const RoughnessTrack &t, double pos) {
     const auto p = WrapTrackPos(t, pos);
@@ -213,7 +201,7 @@ inline TrackReading TrackBoxcar(const RoughnessTrack &t, double pos, float windo
     return {(TrackIntegral(t, hi) - TrackIntegral(t, lo)) / window, (TrackHeight(t, hi) - TrackHeight(t, lo)) / window};
 }
 
-// The same mean, following the reconstructed surface where the window narrows below one sample.
+// Uses smooth reconstruction for windows narrower than one sample.
 inline TrackReading ReadTrackSloped(const RoughnessTrack &t, double pos, float window) {
     return window <= 1.f ? ReadTrackSmooth(t, pos) : TrackBoxcar(t, pos, window);
 }
@@ -238,35 +226,31 @@ inline TrackReading ReadTrackSpots(const RoughnessTrack &t, double pos, float wi
     return TrackBoxcar(t, pos, window);
 }
 
-/***** Element springs: a surface tiled into contact springs *****/
+/***** Element springs *****/
 
-// A surface tiled into elements, each with the non-linear contact spring its sub-element roughness implies (Andersson and Kropp 2008, J. Sound Vib. 318:296-312, section 2.6).
-// An element's force is the bearing area below its crest: zero at first touch, stiffening as more summits bear, approaching the bulk at saturation.
-// Elements interact only through the bulk.
 
-// The roughness below the shortest wavelength a surface states, present inside every bearing contact.
-// It is the second elastic energy of Pastewka et al. 2013 Appendix B: the microcontacts inside a bearing patch hold the load over a mean separation, and their compliance adds in series with the contact's (their Eq. B27).
+// Sub-cutoff roughness compliance from Pastewka et al. 2013 Appendix B.
 struct SubCutoffRoughness {
     // Root-mean-square height of the band inside a contact one meter wide, m.
-    // A contact of width w holds Amplitude * w^Hurst of it (Pastewka et al. 2013 Eq. B19).
+    // A width w has RMS height Amplitude * w^Hurst per Pastewka et al. 2013 Eq. B19.
     double Amplitude{0};
     double Hurst{0}; // Self-affine exponent the height is extrapolated along.
-    double MaxWidth{0}; // Widest contact the band is read at, m. Above it the field's summits resolve the roughness.
+    double MaxWidth{0}; // Maximum width in meters for applying this band.
 };
 
-// The band a self-affine finish holds below the shortest wavelength it states (Pastewka et al. 2013 Eqs. B2 and B19).
+// Returns the sub-cutoff band from Pastewka et al. 2013 Eqs. B2 and B19.
 // `slope` is the one-dimensional spectral exponent p, whose Hurst exponent is -(1 + p)/2.
 // Zero for a finish whose cutoff falls outside its correlation length, or whose exponent falls outside the self-affine range.
 SubCutoffRoughness UnresolvedBand(double roughness, double correlation_length, double short_wavelength, double slope);
 
-// Mean separation that band holds open inside a contact of width `width`, m.
+// Returns mean separation within a contact of width `width` in meters.
 // Persson's interface separation at the contact pressure, gamma times the roughness inside it (Pastewka et al. 2013 Eq. B17).
 inline double SubCutoffSeparation(const SubCutoffRoughness &s, double width) {
     constexpr double PerssonGamma{0.4};
     return s.Amplitude > 0 ? PerssonGamma * s.Amplitude * std::pow(std::min(width, s.MaxWidth), s.Hurst) : 0.0;
 }
 
-// Bins the oblique-flank spectrum splits a population into, each holding half the depth of the one above it.
+// Number of octave bins in the oblique-flank spectrum.
 constexpr uint32_t FlankSpectrumBins{16};
 
 // Which bin a contact of depth `depth` falls in under an engagement of `engagement`, counting halvings down from the engagement.
@@ -279,8 +263,7 @@ struct ElementSprings {
     float Width{0}; // Along-track extent of one element, m
     float EngagementMax{0}; // Deepest engagement the curves are tabulated to, m
     uint32_t Knots{0}; // Engagement knots per element
-    // Distinct curve sets, which the crests tile over.
-    // Equal to the element count where nothing tiles.
+    // Number of distinct curve sets tiled across Crest.
     uint32_t Curves{0};
     float CrestRange{0}; // Spread of the crests the curves were gathered from, m.
     std::vector<float> Engagement; // Knots shared by every element, ascending from 0.
@@ -297,21 +280,18 @@ struct ElementSprings {
     // Per element: the widths those bearing contacts span, summed, m.
     // A contact's width is its Hertz stiffness over the modulus, dF/dd = 2 a E*.
     std::vector<float> BearingWidth;
-    // The population's flank moment at each knot, split by how deep each summit's own contact sits.
-    // A summit's breakaway stretch is a fixed multiple of its normal interference (Zhan and Huang 2018), so a bin's moment is the stiffness at that slider strength, which is the junction's Iwan density.
-    // Knots * FlankSpectrumBins entries, knot-major.
     std::vector<float> FlankSpectrum;
     // The population's normal force at each knot, split into the same bins.
     // A bin's breakaway strength is its Coulomb cone over its stiffness, so force and moment together fix both.
     std::vector<float> FlankSpectrumForce;
 
-    // Tallest crest in each aligned run of CrestBlock elements, so reads can skip runs that cannot reach the body.
+    // Maximum crest per aligned CrestBlock range.
     // A final run past the array's end wraps into its start.
     // RefreshCrestBlocks rebuilds it after any change to the crests.
     static constexpr uint32_t CrestBlock{64};
     std::vector<float> BlockCrest;
     // Last knot below each power of two of engagement, from KnotExponentFloor up.
-    // Empty leaves reads bisecting the knots for the same index.
+    // Empty selects knot bisection.
     int32_t KnotExponentFloor{0};
     std::vector<uint8_t> KnotByExponent;
 
@@ -335,94 +315,73 @@ struct SpringRead {
 };
 
 // The spring of `element` compressed by `engagement` meters below its crest, zero at and above the crest.
-// Between knots the force is a monotone cubic (Fritsch-Carlson) and the potential is that cubic's integral, so Force is exactly dPotential/dEngagement.
+// Interpolates force with a Fritsch-Carlson cubic and potential with its integral.
 SpringRead ReadElementSpring(const ElementSprings &, uint32_t element, float engagement);
 
 // One element's slip-turnover force variance at `engagement` below its crest, N^2, linear between knots.
 // Zero at and above the crest, like the force it fluctuates about.
 float ElementForceVariance(const ElementSprings &, uint32_t element, float engagement);
 
-// Rebuild the block maxima reads skip on. Call after any change to the crests.
+// Rebuilds block maxima after crest changes.
 void RefreshCrestBlocks(ElementSprings &);
 
 // How far either side of a footprint an element can still reach the body, in elements.
-// A curved body lifts away as the square of the distance, so the reach is where that lift exceeds the tallest crest's height above the deepest engagement.
+// Returns the distance where quadratic body lift exceeds the tallest crest above deepest engagement.
 uint32_t ElementReach(const ElementSprings &, double combined_curvature);
 
-// The support envelope of a body over the springs: the body's height at first touch above each element, from its gap.
-// One entry per element, at that element's centre.
+// Returns the first-contact body height at each element center.
 std::vector<float> ElementEnvelope(const ElementSprings &, double combined_curvature, uint32_t reach);
 
-// The same envelope over a bare crest array.
+// Returns the first-contact envelope over a crest array.
 std::vector<float> CrestEnvelope(std::span<const float> crest, float width, double combined_curvature, uint32_t reach);
 
-// The height at which the elements under a contact bear `load`, one entry per element, indexed as the envelope is.
-// The array holds the mean height at first touch plus the surface excitation about it.
-// Solved every eighth of the reach and interpolated between, since a footprint averages away anything shorter than itself.
+// Returns the load-bearing height at each element, interpolated at one-eighth of the contact reach.
 std::vector<float> BearingDatum(const ElementSprings &, double combined_curvature, uint32_t reach, double load);
 
-// The envelope at a fractional position along the elements, in element units, cyclically.
-// Linear between element centres.
+// Returns the cyclic envelope at a fractional element position.
 float EnvelopeAt(std::span<const float> envelope, double position);
 
-// One side's crest deviations read at its slip behind the other, for a contact whose two surfaces move at different rates.
-// The composite array is swept at the faster side's rate, and the slower side's share of the datum is read where that side stands.
-// The correction moves the support envelope and every element's engagement together, never one element against another.
+// Registers the slower surface's crest deviation against the composite element array.
 struct SlidingRegistration {
     std::span<const float> SlowCrestDev; // The slower side's zero-mean crest deviation, m, one per element. Empty applies none.
-    double Slip{0}; // How far that side stands behind the array, in elements.
+    double Slip{0}; // Offset behind the array in elements.
 };
 
-// The height the slower side's crest deviation adds at a fractional element position, zero without a registration to apply.
+// Returns the registered crest deviation at a fractional element position.
 float Reregister(const SlidingRegistration &, double at);
 
-// Total force and stored energy of the elements a body bears on, with the body's along-track gap applied at each element's distance from `position` (fractional, in element units).
-// `engagement` is how far the body has descended below the envelope at that position, so zero is first touch and a body at or above it bears no force.
 SpringRead ReadContactSprings(const ElementSprings &, std::span<const float> envelope, double position, float engagement, double combined_curvature, uint32_t reach, const SlidingRegistration &slide = {});
 
-// ReadContactSprings, additionally accumulating each position bin's share of the force into `bin_force`, the bins slicing the reach window evenly along the track.
-// `bin_engagement` deepens each bin's elements by its own body deflection, modulating the bin sums alone (empty applies none).
 SpringRead ReadContactSpringBins(
     const ElementSprings &, std::span<const float> envelope, double position, float engagement, double combined_curvature, uint32_t reach,
     std::span<float> bin_force, std::span<const float> bin_engagement = {}, const SlidingRegistration &slide = {}
 );
 
-// The bins as engagement channels: every element is read at its bin's modulated engagement, and the returned totals are the sums of the per-bin forces and potentials.
-// A body's local deflection then moves local force instead of the whole footprint.
 SpringRead ReadContactSpringChannels(
     const ElementSprings &, std::span<const float> envelope, double position, float engagement, double combined_curvature, uint32_t reach,
     std::span<float> bin_force, std::span<float> bin_potential, std::span<const float> bin_engagement, const SlidingRegistration &slide = {}
 );
 
-// The engagement at which the springs carry `normal_force`, averaged over every element the contact could sit at.
+// Returns the engagement whose position-averaged spring force equals `normal_force`.
 float SolveSpringEngagement(const ElementSprings &, std::span<const float> envelope, double normal_force, double combined_curvature, uint32_t reach);
 
-// The moving-load sweep accumulation: at every element position, the window of `2 * reach + 1` anchored forces centred there projected through the footprint's mode shapes.
-// `field` holds one anchored force per element, read cyclically.
-// `phi` is window-major, one row of `modes` shape projections per window slot.
-// `table` receives the sums mode-major, `modes` rows of one column per element position.
 void SweepModeDrives(std::span<const float> field, std::span<const float> phi, uint32_t modes, uint32_t reach, std::span<float> table);
 
 // The bearing population's oblique-flank moment and normal stiffness at one engagement.
 struct SpringFlankRead {
-    // Sum of slope^2 / force over the bearing contacts, N/m^2, the population's whole contribution to oblique-flank micro-slip.
-    // Each bearing contact dissipates (4/3) kt^2 (a sin theta)^3 / (mu F) per cycle of normal approach amplitude a, and the per-contact sum collapses to this moment.
     double Modulus{0};
     // Sum of slope over the same elements, N/m: each bearing contact's own stiffness in series with the roughness inside it.
     double Stiffness{0};
-    double Bearing{0}; // Summits carrying load, which the moment runs over.
+    double Bearing{0}; // Number of load-bearing summits.
     double Width{0}; // Sum of those contacts' own widths, m.
 };
 SpringFlankRead SpringFlankMoments(const ElementSprings &, std::span<const float> envelope, double position, float engagement, double combined_curvature, uint32_t reach);
 
-// Width the mean bearing contact spans, m, over the summits carrying load.
-// A contact's incremental stiffness is its radius, dF/dd = 2 a E* for any axisymmetric shape (Pastewka and Robbins 2016).
-// This is the length the flank tilt is read over: components longer than a contact tilt it, components shorter act as roughness inside it (Pastewka et al. 2013 Eqs. B6 and B18).
 inline double SpringBearingWidth(const SpringFlankRead &read) {
     return read.Bearing > 0 ? read.Width / read.Bearing : 0.0;
 }
 
-// Mark the summits of a gap-folded height field: samples at or above every neighbour in their 8-neighbourhood, with columns wrapping and rows clamped.
+// Marks samples at or above all eight neighbors, with wrapped columns and clamped rows.
 // `folded` is row-major with `columns` along the track and `rows` across it.
 std::vector<uint8_t> MarkFieldSummits(std::span<const float> folded, uint32_t columns, uint32_t rows);
 
@@ -431,44 +390,39 @@ std::vector<uint8_t> MarkFieldSummits(std::span<const float> folded, uint32_t co
 // Columns wrap and rows clamp, and an edge row is read along the track alone and taken isotropic.
 double FieldSummitCurvature(std::span<const float> folded, uint32_t columns, uint32_t rows, float column_spacing, uint32_t column, uint32_t row);
 
-// The summits a contact bears on, gathered into the elements they stand in.
-// One strip narrow enough to synthesize holds too few bearing asperities for a statistical share of the load, so a ribbon gathers several independent realizations of the same surface across the sweep.
+// Summit population grouped by element across several independent surface realizations.
 struct ElementSummits {
     float Width{0}; // Along-sweep extent of one element, m.
-    double InvModulus{0}; // 1/E* of the pair the summits were gathered for, which sizes their contacts.
+    double InvModulus{0}; // Pair compliance 1/E* used for contact sizing.
     std::vector<float> Crest; // Highest point of each element over every realization, m. One per element.
-    std::vector<uint32_t> Element; // Element each summit stands in.
+    std::vector<uint32_t> Element; // Element index for each summit.
     std::vector<float> Height; // Summit height under the body's gap, m.
     std::vector<float> Stiffness; // Hertz constant the summit's own curvature gives it, N/m^(3/2).
 };
 
 // Gather one realization's summits into `out`, tiling the field into elements `element_columns` wide.
-// `heights` is row-major with `columns` along the track and `rows` across it, in meters, and `transverse_gap` is the body's gap at each row.
-// `element_lift` raises each element bodily, one entry per element, for bands too long to vary within an element (empty applies none).
+// Requires row-major metre-valued heights with columns along the track and rows across it.
+// element_lift supplies one rigid offset per element for bands longer than an element.
 void GatherElementSummits(
     ElementSummits &out, std::span<const float> heights, uint32_t columns, uint32_t rows,
     std::span<const float> transverse_gap, std::span<const float> element_lift,
     uint32_t element_columns, float column_spacing, double inv_effective_modulus
 );
 
-// Merge one gathered population into another: the summits append and each element keeps the taller crest.
+// Appends a population and retains the maximum crest per element.
 void MergeElementSummits(ElementSummits &into, const ElementSummits &from);
 
-// The crest of each element over one side's field alone, gathered and merged as GatherElementSummits does, growing `out` to the element count.
+// Merges per-element crests from one surface field into `out`.
 void GatherElementCrests(
     std::vector<float> &out, std::span<const float> heights, uint32_t columns, uint32_t rows,
     std::span<const float> transverse_gap, std::span<const float> element_lift, uint32_t element_columns
 );
 
 // Build the springs of a gathered summit population.
-// Each element's curve is the Hertz sum over its summits, each at the constant its curvature gives it, and every summit's contact is in series with `sub`.
+// Sums Hertz summit forces per element and places each summit contact in series with sub.
 // `engagement_max` bounds the tabulated engagement and `knots` sets the resolution, spaced geometrically from a sub-asperity toe.
 ElementSprings BuildElementSprings(const ElementSummits &, const SubCutoffRoughness &, double engagement_max, uint32_t knots);
 
-// Tile a height field into elements and build each one's spring.
-// `heights` is row-major with `columns` along the track and `rows` across it, in meters.
-// `transverse_gap` is the body's gap at each row (meters, one entry per row), which folds into the springs, so a set of springs holds for one contact curvature.
-// `column_spacing` is the surface distance one column spans, which sizes an element.
 ElementSprings BuildElementSprings(
     std::span<const float> heights, uint32_t columns, uint32_t rows, std::span<const float> transverse_gap,
     uint32_t element_columns, float column_spacing, double inv_effective_modulus,
@@ -483,11 +437,6 @@ struct EnsembleBand {
     float Sigma{0}; // Height the unit-variance draw is scaled by, m.
 };
 
-// Build the springs from the population law of the summed bands rather than from realized summits.
-// The per-knot sums are quadrature over the joint law of a lattice sample and its eight neighbours, so every element reads the one resulting curve (Curves is one).
-// The crests stay realized and the curves anchor to their mean: the crest summit enters at engagement zero with the population's expected curvature at that height.
-// The body's transverse gap shifts each row's bearing plane and adds the body's curvature to every summit's, and the interior law also covers the strip's first and last rows.
-// Measured-profile bands are not Gaussian, and take the realized build.
 ElementSprings BuildEnsembleSprings(
     std::span<const EnsembleBand> bands, float spacing, uint32_t columns, uint32_t rows,
     std::span<const float> transverse_gap, double body_curvature, uint32_t element_columns,
@@ -495,32 +444,27 @@ ElementSprings BuildEnsembleSprings(
     const SubCutoffRoughness &, double engagement_max, uint32_t knots, std::vector<float> crests
 );
 
-/***** Interface junctions (Mindlin 1949, Mindlin and Deresiewicz 1953) *****/
+/***** Interface junctions *****/
 
 // Tangential-to-normal stiffness of a contact patch, Mindlin's 2*(1-nu)/(2-nu) near nu = 0.3.
 constexpr double MindlinShearRatio{0.82};
 
-// Mean cube of the sine of a surface's flank tilt, for tilts arctan(x) over a Gaussian slope x of rms `slope`.
-// The oblique-flank loop area depends on the tilt only through this moment.
+// Returns the cubic sine moment for Gaussian surface slopes.
 double FlankSineCube(double slope);
 
-// The oblique-flank junction's Dahl stiffness, N/m: one element for the whole bearing population's tilted flanks, at its slope^2/force moment and the load it bears.
 inline double FlankJunctionStiffness(double sine_cube, double normal_force, double flank_modulus) {
     return MindlinShearRatio * std::sqrt(sine_cube * normal_force * flank_modulus);
 }
 
-// Jenkins elements the junction is discretised over, at most one per bin of the bearing population's strength spectrum.
+// Maximum Jenkins elements used to discretize a junction.
 constexpr uint32_t MaxFlankBins{16};
 
-// One Jenkins element of that spread: the stiffness its share of the population presents and the share of the contact's Coulomb cone it breaks away at.
+// One Jenkins element with stiffness and Coulomb breakaway force.
 struct FlankJunctionBin {
     float Stiffness{0}; // N/m
     float ConeShare{0};
 };
 
-// Discretise the junction over the bearing population's spectrum, writing the occupied bins into `out` and returning how many.
-// Each bin takes its share of the contact's normal force and flank moment through the same law the whole junction uses.
-// The bins' slip forces sum to the whole cone exactly (Segalman 2005 Eqs. 51 to 53), and their stiffnesses sum to less than the single element's, so a spread junction is softer at full stick.
 uint32_t FlankJunctionSpread(
     double sine_cube, double normal_force, double flank_modulus,
     std::span<const float> moment_share, std::span<const float> force_share, std::span<FlankJunctionBin> out
@@ -528,22 +472,14 @@ uint32_t FlankJunctionSpread(
 
 /***** Conformal contact (Persson 2007) *****/
 
-// A face resting on a face bears its load over an area geometry fixes, so its stiffness comes from the roughness flattening against the counterface rather than from a radius.
 
 // Pressure the asperities bear the load at, p = E*|grad h|_rms/2, in Pa.
 // Independent of both load and area, which makes the real contact area proportional to load.
-// `profile_slope_rms` is the gradient along one cut of the surface, and an isotropic surface's full gradient has twice that variance.
+// profile_slope_rms measures one cut; isotropy doubles its variance for the full gradient.
 double AsperityPressure(double inv_effective_modulus, double profile_slope_rms);
 
-// Area the asperities actually touch over, in m^2, across every regime a contact can be in (Pastewka and Robbins 2016, arXiv:1508.02154, Eq. 4):
-//
-//     A = A0 * erf(sqrt(pi) * N / (2 * A0 * p))
-//
-// `bound_area` is A0, the region the contact is confined to: the Hertz patch a point or an edge grows under load, or the polygon two faces share, whichever is smaller.
-// Light load linearizes to A = N/p and full contact saturates at A0.
 double RealContactArea(double normal_force, double bound_area, double inv_effective_modulus, double profile_slope_rms);
 
-// Hurst exponent H = -(1 + p)/2 from the one-dimensional roughness power-spectrum exponent p, held inside the open interval the separation theory is defined on.
 double HurstExponent(double spectral_slope);
 
 // Roll-off wavevector q0 = 2*pi/l, in rad/m, from the correlation length in meters.
@@ -574,8 +510,6 @@ double ConformalPressure(double separation, double roughness, double roll_off_wa
 // Zero once the pressure reaches the full-contact value, where the surfaces have flattened.
 double ConformalSeparation(double pressure, double roughness, double roll_off_wavevector, double inv_effective_modulus, const SeparationCoefficients &);
 
-// Standard deviation of the Gaussian pressure profile a rough curved contact bears its load over once roughness dominates, in meters (Tiwari and Persson 2020, s^2 = R*u0 with u0 = roughness/Alpha).
-// Zero curvature is a flat face, whose patch is its nominal area.
 double ConformalPatchWidth(double combined_curvature, double roughness, const SeparationCoefficients &);
 
 // Normal stiffness dN/du of a conformal contact under load N, in N/m.
@@ -584,20 +518,12 @@ double ConformalStiffness(double normal_force, double roughness, const Separatio
 
 /***** The asperity bed (Greenwood and Williamson 1966) *****/
 
-// Two nominally flat rough faces bear on discrete asperities rather than over the whole patch they share.
-// Persson's exponential pressure-separation relation is the mean of that, and holds where the patch spans many roll-off lengths.
-// A patch approaching one roll-off length bears on the first asperities to touch and responds as Hertz does (Pastewka et al. 2013, arXiv:1210.4635), the regime these patches are in, so each spot takes Hertz's law.
 
 // Most spots a bed resolves.
 inline constexpr uint32_t MaxBedSpots = 32;
 
-// Expected value of max(lambda + z, 0)^power over a standard normal z, Greenwood and Williamson's integral.
-// Power 3/2 gives the load a bed of Hertzian spots bears at separation lambda (in units of the spread of spot heights), 1/2 its stiffness, and 1 the area it touches over, a Hertz spot's area being pi*R*delta.
 double BedHeightIntegral(double lambda, double power);
 
-// Separation, in units of the spread of spot heights, at which a bed of `spot_count` spots of stiffness `spot_stiffness` (N/m^(3/2)) and height spread `height_rms` (m) bears `normal_force`.
-// Negative where the load rests on the peaks alone, which is the ordinary case at light load.
-// `power` is the spot law's exponent in approach, 3/2 for Hertz and 1 for a linear spot.
 double SolveBedSeparation(double normal_force, double spot_count, double spot_stiffness, double height_rms, double power = 1.5);
 
 // BedHeightIntegral at the two powers a cell needs every sample, read off a table.
@@ -615,22 +541,18 @@ float BedLinearLoadFactor(float lambda);
 float BedPotentialFactor(float lambda);
 float BedLinearPotentialFactor(float lambda);
 
-// The Hertz mean law and its potential at absolute engagement `engagement` (m) over a cell whose asperity heights spread `spread` (m) about their mean: spread^p * Factor(engagement / spread), with the beyond-table branches evaluated in meters.
-// Continuous down to and including spread = 0, where both are the bare Hertz cell's own law and potential.
 float BedLoadAt(float engagement, float spread);
 float BedPotentialAt(float engagement, float spread);
 
-// The bed of Hertz spots two rough faces bear on across the area they share.
-// The patch holds more asperities than the track resolves along its length, so a rendered spot is a cell: the asperities across the patch at one position along the sweep, sharing the local mean height the track gives and spread about it at their own scale.
 struct AsperityBed {
     uint32_t SpotCount{0}; // Cells rendered along the track
     double TotalSpots{0}; // Asperities bearing across the whole patch, which grows with the load
-    double SpotWeight{0}; // Asperities one rendered cell stands for, TotalSpots over SpotCount
+    double SpotWeight{0};
     double SpotStiffness{0}; // k of one asperity, N/m^(3/2)
     double SpotRadius{0}; // Radius of curvature at one asperity, m
     double HeightRms{0}; // Spread of gap height at the asperity scale, m
     double CellSpread{0}; // Spread of asperity heights about their cell's local mean, m
-    double Separation{0}; // Separation the bed carries its load at, in units of HeightRms
+    double Separation{0};
 };
 
 // Load the bed bears, N, averaged over the height distribution its spots are drawn from.
@@ -647,13 +569,10 @@ double BedContactArea(const AsperityBed &);
 // Near one where the geometry fixes a wide patch, and well below one where the load presses out a small one.
 double BedSurfaceShare(double inv_effective_modulus, double bound_area, const AsperityBed &);
 
-// Cells rendered along the region: one per asperity site the region holds, capped at MaxBedSpots.
 inline uint32_t BedCellCount(double patch_width, double region_width, double peak_density) {
     return uint32_t(std::clamp(std::max(region_width, patch_width) * peak_density, 1.0, double(MaxBedSpots)));
 }
 
-// The width a cell's datum is measured over: the contact's bearing share of the sweep, floored at the pair's half-variance width, and never wider than the stretch the cell's asperities span.
-// The cap lets a sparse cell follow geometry its asperities cannot bridge.
 inline double BedCellWindow(double patch_width, double region_width, double peak_density, double half_variance_width) {
     const auto cells = BedCellCount(patch_width, region_width, peak_density);
     const double share = patch_width / cells;
@@ -662,14 +581,7 @@ inline double BedCellWindow(double patch_width, double region_width, double peak
     return std::max(share, std::min(half_variance_width, population_span));
 }
 
-// The bed a contact of `patch_width` meters bears its load on.
-// `region_width` is the extent of the region confining the contact along the sweep, which the rendered cells sample, while the bearing population the patch holds divides among them as their weight.
-// `peak_density` is how densely asperities stand along the profile (1/m), which fixes their number.
-// `cell_window` is the width (m) a cell's local mean height is measured over: geometry wider than it moves the cell's datum, geometry narrower stays in the cell's spread for the force law to carry.
-// `spot_curvature(width)` and `spot_height_rms(width)` give the gap's curvature (1/m) and height spread (m) under a patch that wide.
-// A spot bears at the curvature its surface has at the shortest wavelength that surface resolves, where Pastewka and Robbins 2016 Eq. (6) reads the asperity radius.
 AsperityBed ResolveAsperityBed(double normal_force, double patch_width, double region_width, double inv_effective_modulus, double peak_density, double cell_window, auto &&spot_curvature, auto &&spot_height_rms) {
-    // Asperities stand across the patch as well as along it, so the patch holds the square of what one cut of it crosses.
     const double across = std::max(patch_width * peak_density, 1.0);
     const double total = across * across;
     // The cells sample the sites along the region, so a cell's weight can fall below one asperity.
@@ -686,7 +598,6 @@ AsperityBed ResolveAsperityBed(double normal_force, double patch_width, double r
         .SpotStiffness = ContactStiffness(inv_effective_modulus, curvature),
         .SpotRadius = 1 / curvature,
         .HeightRms = height_rms,
-        // What a cell's asperities keep once the height shared by the whole cell is removed.
         .CellSpread = std::sqrt(std::max(height_rms * height_rms - cell_mean_rms * cell_mean_rms, 0.0)),
     };
     bed.Separation = SolveBedSeparation(normal_force, bed.TotalSpots, bed.SpotStiffness, bed.HeightRms);
@@ -694,10 +605,10 @@ AsperityBed ResolveAsperityBed(double normal_force, double patch_width, double r
 }
 
 // Regularizer on the approach speed an engagement's Hunt-Crossley constant is sized from.
-// The divisor is floored at Chi * dt^2, which vanishes with the time step so the constant converges to the continuous law (van Walstijn et al. 2024, Eq 38).
+// Floors the divisor at Chi*dt^2 for convergence to van Walstijn et al. 2024 Eq. 38 as dt approaches zero.
 inline constexpr float ImpactVelocityChi = 1e7f;
 
-/***** Sustained contacts: what one voice carries and renders *****/
+/***** Sustained contact voice state *****/
 
 // Sample points a contact reads its mode shapes from, barycentric over a triangle of the sample surface.
 struct SamplePointBlend {
@@ -741,38 +652,30 @@ struct SustainedState {
     float NormalForce{0}; // N, the load the excitation fluctuates about.
     float Friction{0}; // Combined friction coefficient.
     float SlipSpeed{0}; // m/s, the pair's relative tangential speed. Zero when nothing slides.
-    // N, the tangential force the solver applied to this body along SlipDir, which the stiction channel's fluctuation is measured about.
+    // Applied tangential force along SlipDir in newtons, used as the stiction fluctuation baseline.
     float SolverFriction{0};
     float Stiffness{0}; // k, N/m^(3/2). Zero for a contact two faces fix the area of, which bears on a bed of asperities.
     // The approach the contact bears its load at, m.
-    // Hertz's delta0 for a point contact, and for a bed the separation its spots bear the load at, negative wherever the load rests on the peaks alone.
+    // Hertz delta0 for point contact or loaded-spot separation for a bed.
     float StaticPenetration{0};
     // Cells of the asperity bed rendered along the track, from the density of peaks over the contact's width.
     // Positive selects the bed over the single Hertz spring a point contact takes.
     uint32_t SpotCount{0};
-    float SpotWeight{0}; // Asperities one cell stands for, the patch being wider than the track's one cut.
+    float SpotWeight{0};
     float SpotStiffness{0}; // k of one asperity, N/m^(3/2), from the radius of curvature at one.
     float CellSpread{0}; // Spread of asperity heights about their cell's local mean, m.
     float SurfaceCompliance{1}; // Share of a surface excursion the bed takes, the bulk taking the rest.
     // Hunt-Crossley dissipation, dimensionless: 1.5 * (1 - restitution).
-    // Read as the damping constant in s/m at a 1 m/s approach, and under ETA_LANDING as the numerator each engagement's landing speed divides.
+    // Damping in s/m at 1 m/s approach, or the ETA_LANDING numerator divided by engagement speed.
     float DampingFactor{0};
     // N/m, the patch shear spring the frictional force acts through (interfacial stiffness at Mindlin's shear ratio).
     // Zero binds the junction to the contact point rigidly.
     float ShearStiffness{0};
-    // N/m, the oblique-flank micro-slip spring the normal channel acts through: the bearing population's tilted flanks collapsed to one Dahl element on the approach.
-    // Zero leaves the normal channel purely viscous.
     float FlankStiffness{0};
-    // The same junction with the bearing population's spread of breakaway strengths, one Jenkins element per occupied bin of its spectrum.
-    // A single strength dissipates as the cube of the amplitude whatever the drive, where the spread reads between 2.5 and 3 as measured joints do (Segalman 2005).
-    // Zero bins run the single element above.
     uint32_t FlankBins{0};
     std::array<FlankJunctionBin, MaxFlankBins> FlankBin{};
-    // N/m^2, the relaxation channel's coefficient: (G*/E*) / 2 times the contact's second force derivative d2F/dd2 (Popov, Popov and Pohrt 2015 Eqs. 11 and 12).
-    // It scales the energy carried away by each annulus a shrinking contact drops.
-    // Zero leaves the channel inert.
     float RelaxScale{0};
-    // Contact-spring pool slot (CONTACT_SPRINGS), where the contact bears on per-element springs instead of the statistical bed's cells.
+    // CONTACT_SPRINGS pool slot for per-element spring contact.
     // Negative leaves the bed path in place.
     int32_t SpringIndex{-1};
     float SpringRate{0}; // Elements the contact advances per output sample.
@@ -781,14 +684,10 @@ struct SustainedState {
     float SlipRate{0};
     uint32_t SlowSide{0};
     float SpringScale{1}; // This side's force scale on the shared springs, from the stiffness cap.
-    // The distributed-excitation bins, each slice of the footprint driving the modes at its own position as a zero-sum fluctuation about its mean share of the contact force.
     uint32_t SpringBins{0}; // Position bins across the footprint. Zero leaves the channel off.
     std::array<SamplePointBlend, MaxSpringBins> SpringBinBlend{};
-    // Half the footprint's extent along the sweep, m: where the outermost bin centre sits and the lever arm the bins' forces act through.
+    // Half the sweep footprint in metres, used for outer-bin centers and force moment arms.
     float SpringHalfExtent{0};
-    // kg^-1 m^-2 about the contact's pitch axis, which the normal and the slip direction span.
-    // The separation across the footprint varies linearly with the tilt (Hess and Soom 1992, Eq. 6c), and the bins' forces turn the body about this axis.
-    // Zero holds the body flat, which turns the channel off.
     float InverseAngularInertia{0};
     // The moving-load sweep channel's pool slot, for a side whose footprint is fixed on its surface.
     // Negative leaves the channel off.
@@ -796,9 +695,8 @@ struct SustainedState {
     // Root of the footprint's slip-turnover force variance at the anchor, N, before SpringScale.
     // Slip redraws each bearing junction independently, so this fluctuation is incoherent across the footprint.
     float NoiseRms{0};
-    // The footprint's bearing stiffness at the same anchor, N/m after the side's scale, which converts the turnover pool between force and engagement units.
+    // Scaled bearing stiffness at the anchor in N/m for turnover force-engagement conversion.
     float NoiseStiffness{0};
-    // The turnover shot process's geometry: junctions stand a Rice peak spacing apart along the sweep, engage over their Hertz patch diameter, and persist for the footprint's length, all m.
     float JunctionSpacing{0};
     float JunctionTransit{0};
     float FootprintLength{0};
@@ -815,33 +713,26 @@ struct SustainedCarry {
     std::array<double, SustainedState::TrackCount> Pos{};
     double TurnoverPos{0};
     double SpringPos{0}; // Position along the element springs, in elements. Pair-level, so both voices read one gap.
-    double SlipPos{0}; // How far the slower surface stands behind the array, in elements.
+    double SlipPos{0};
     double NoisePos{0}; // Position along the fast side's finish track the slip-turnover noise reads, in track samples.
     std::array<float, MaxSpringBins> NoiseMean{}; // Each turnover read's sub-audio mean, the channel's DC blocker.
-    // The turnover shot process per bin: the junction pool, its patch-transit smoothing, and a deterministic copy driven by the expected arrival rate, subtracted to leave the fluctuation zero-mean.
-    // One RNG stream serves the voice, seeded so both sides of a pair draw one event train.
     std::array<float, MaxSpringBins> NoisePool{};
     std::array<float, MaxSpringBins> NoiseSmooth{};
     std::array<float, MaxSpringBins> NoiseExpectedPool{};
     std::array<float, MaxSpringBins> NoiseExpectedSmooth{};
     uint64_t NoiseRng{0};
-    // The engagement injection each bin reads, m, held one sample so its work is metered with the rest.
-    // The scalar pair serves an unbinned voice.
     std::array<float, MaxSpringBins> NoiseEngageBin{};
     float NoiseEngage{0};
     float NoiseEngagePrev{0};
     float ReliefMean{0};
-    float SpringDatum{0}; // The envelope height the contact has settled about, m.
+    float SpringDatum{0};
     double PrevSpringPos{0}; // The position along the springs at the previous sample, in elements.
     double PrevSlipPos{0}; // The slip the slower surface stood at the previous sample, in elements.
-    // Each bin's slow mean share of the contact force, seeded from the first sample's shares so the shares sum to one and the fluctuations to zero.
+    // Slow mean contact-force share per bin, initialized to sum to one with zero fluctuation.
     std::array<float, MaxSpringBins> SpringShareMean{};
-    // The bin channels' exchange state: per-bin psi, the previous sample's deflection read at the bin's place, and the previous engagement for the damping's relative rate.
     std::array<float, MaxSpringBins> PsiBins{};
     std::array<float, MaxSpringBins> PrevBinDefl{};
     std::array<float, MaxSpringBins> RawApproachBins{};
-    // The nominal gradient each channel last bore at, which is the rate a parted channel's residual psi drains at.
-    // Index 0 holds the scalar channel's.
     std::array<float, MaxSpringBins> LastBearingG{};
     bool BinsPrimed{false}; // Set once the bin channels seed their psi, so a voice gaining bins mid-life seeds cleanly.
     // The body's rigid tilt about the contact's pitch axis, rad, and its rate.
@@ -850,44 +741,34 @@ struct SustainedCarry {
     float PrevTilt{0}; // The tilt at the previous sample, so its work is metered the same way.
     float TiltRate{0}; // rad/s
     float TiltMoment{0}; // N*m, the previous sample's reactions about the pitch axis.
-    // The orientation the contact has settled about, rad.
-    // The bins read their tilt about this mean, so a standing imbalance in their shares causes no lasting rotation.
     float TiltMean{0};
-    // Local mean height under each spot of the bed, seeded per spot so a voice starting mid-surface sits at equilibrium on every spot at once.
+    // Per-spot local mean height initialized for equilibrium when a voice starts mid-surface.
     std::array<float, MaxBedSpots> SpotMean{};
-    // Which cells bore at the previous sample, one bit each, and the largest load each carried while bearing.
-    // Maintained only under CONTACT_REPORT.
     uint32_t SpotBearing{0};
     std::array<float, MaxBedSpots> SpotPeak{};
     // The approach at the previous sample, so the damping's relative rate measures one sample's true motion.
     float RawApproach{0};
-    // The Hunt-Crossley damping constant of the current engagement, s/m, sized while the contact is open and held for as long as it bears.
     float EngagementDamping{0};
     float PrevDeflection{0}; // The modal deflection read at the previous sample, m, so the datum's motion is separable.
     // How far the body has travelled along this contact's normal, m.
     float RigidNormal{0};
     float PrevRigidNormal{0}; // The same, as of the previous sample, so the body's travel is separable.
-    // The body's travel along the slip direction and the previous sample's tangential state, from which the stiction solve measures the contact point's motion relative to the sliding surface.
     float RigidTangent{0};
     float PrevRigidTangent{0};
     float PrevTangentDefl{0};
-    float PatchShear{0}; // The patch shear spring's stored stretch, m, carried on half-steps.
-    // The same tangential state along the transverse direction (normal cross slip), the second in-plane axis of a spring voice's interface junction.
+    float PatchShear{0};
+    // Tangential state along the transverse in-plane axis.
     float RigidTransverse{0};
     float PrevRigidTransverse{0};
     float PrevTransverseDefl{0};
     float PatchShearTransverse{0};
     // The oblique-flank junction's stored stretch, m, on the normal channel's own displacement.
     float PatchFlank{0};
-    // Each Jenkins element's stretch where the junction holds a spread of strengths, m.
-    // They share one displacement and one contact compliance, so they differ only in when each breaks away.
     std::array<float, MaxFlankBins> PatchFlankBin{};
-    // The relaxation channel's memory of the contact's growing edge, an ascending polyline of engagement points: the approach each point engaged at and the tangential position it engaged with, interpolated between neighbours.
-    // A shrinking contact drops the annuli above its new depth, each taking away the shear it took on since it engaged.
     std::array<float, MaxRelaxEdges> RelaxApproach{};
     std::array<float, MaxRelaxEdges> RelaxTangent{};
     uint32_t RelaxEdges{0};
-    // The approach and tangential position the channel has integrated to, m, both measured from the point the contact last shrank past everything on record.
+    // Integrated approach and tangential position in metres from the last fully released state.
     float RelaxDepth{0};
     float RelaxTangentPos{0};
     bool PrevStick{false}; // Whether the previous sample took the stick branch, for the transition count.
@@ -901,7 +782,6 @@ struct SustainedCarry {
     bool PrevContact{false};
 };
 
-// The energy a shrinking contact releases with the annuli it drops, J, over one step of the contact's approach and of its tangential position (Popov, Popov and Pohrt 2015).
 float RelaxationRelease(const SustainedState &, SustainedCarry &, float approach_step, float tangent_step);
 // Clear the channel's history, which no longer applies once a contact parts or moves its datum.
 void ResetRelaxation(SustainedCarry &);
@@ -915,7 +795,7 @@ float FlankJunctionStep(const SustainedState &, SustainedCarry &, float load, fl
 // A contact missing from the newest set has ended.
 struct VoiceSet {
     struct Voice {
-        uint64_t Id; // Contact identity, which carries a voice's state across frames.
+        uint64_t Id;
         uint32_t Object; // Bank object slot, valid only against the bank live when this was published.
         SustainedState State;
     };
@@ -928,7 +808,7 @@ struct VoiceSet {
 // The audio thread loads Live without synchronizing, and the main thread repoints a slot only once no voice reads it.
 template<typename T> struct PoolSlot {
     std::atomic<const T *> Live{nullptr};
-    std::shared_ptr<const T> Owned; // Main thread only. Shared with whatever else holds the value.
+    std::shared_ptr<const T> Owned;
     uint64_t Key{0}; // Content key of Owned. Main thread only.
 };
 
@@ -942,8 +822,6 @@ struct ContactSpringSet {
     std::vector<float> AnchorForce; // Mean stack force over sampled contact centres at each engagement knot, N.
     double Curvature{0}; // The bucketed combined curvature the set was built for. Zero for a face.
     uint32_t Reach{0}; // Elements either side of centre the body can reach.
-    // Across-sweep extent the elements were tiled over, m.
-    // A contact wider than one strip scales these springs by the number of strips its bearing width holds.
     float StripWidth{0};
     // The band below the pair's stated cutoffs, in series with every contact these springs make.
     SubCutoffRoughness SubCutoff;
@@ -952,8 +830,6 @@ struct ContactSpringSet {
     std::array<std::vector<float>, 2> SideCrestDev;
 };
 
-// One ribbon's strip-level product: the springs built from the gathered summits and each side's crests, before the long bands and the footprint's span are applied.
-// Independent of the footprint and load buckets.
 struct SpringStrips {
     ElementSprings Springs;
     std::array<std::vector<float>, 2> SideCrests;
@@ -977,9 +853,6 @@ inline SpringFlankTotals SpringFlankSum(const ContactSpringSet &set, float ancho
     return out;
 }
 
-// What a set seated at `engagement` bears, summed over every element.
-// Each element is read at the engagement the anchor leaves it under its envelope, the stiffness is that read's slope, and the variance is the slip turnover of the bearing ones.
-// Force and stiffness take the side's spring `scale`, and `field_out`, where it has room, takes each element's scaled force.
 struct AnchoredSums {
     double Force{0}, Variance{0}, Stiffness{0};
 };
@@ -1001,8 +874,6 @@ inline AnchoredSums AnchoredElementSums(const ContactSpringSet &set, double enga
     return out;
 }
 
-// The resting anchor: the stack force at each engagement knot averaged over sampled contact centres.
-// Every `stride`th element stands for the population.
 inline void FillAnchorForce(ContactSpringSet &set, uint32_t stride = 1) {
     const auto knots = uint32_t(set.Springs.Engagement.size());
     const auto count = set.Springs.Count();
@@ -1017,7 +888,6 @@ inline void FillAnchorForce(ContactSpringSet &set, uint32_t stride = 1) {
     }
 }
 
-// The engagement at which the set's anchored mean force reaches `normal_force`, interpolated in the anchor table and continued past its last knot at the final slope.
 inline float SolveSpringAnchor(const ContactSpringSet &set, double normal_force) {
     const auto &z = set.Springs.Engagement;
     const auto &f = set.AnchorForce;
@@ -1036,19 +906,15 @@ inline float SolveSpringAnchor(const ContactSpringSet &set, double normal_force)
 // One spring set in the pool, shared by every contact whose pair spectra and curvature bucket hash to the same key.
 using ContactSpringSlot = PoolSlot<ContactSpringSet>;
 
-// The moving-load sweep channel of one (spring set, object) pair: each mode's drive from the anchored element forces swept through its shape, tabulated over the spring position.
-// The element forces are static on the surface while their positions in the body's frame sweep at the sliding speed, so mode m at frequency w is driven by the force field's spatial component at wavenumber w over speed.
 struct SweepTableSet {
     uint32_t Modes{0}; // Rows, the object's tuned mode count when the table was built.
     uint32_t Positions{0}; // Columns, one per element along the springs.
     std::vector<float> Table; // Mode-major, Modes rows of Positions, N per unit mass-normalized shape.
     float ForceTotal{0}; // The anchored footprint force the table was built at, N.
-    // The footprint's slip-turnover force variance at the same anchor, N^2, before the side's spring scale, which enters it linearly as a count of independent strips.
     float NoiseVariance{0};
-    // The footprint's bearing stiffness at the same anchor, N/m after the side's spring scale, which converts the turnover pool between force and engagement units.
     float NoiseStiffness{0};
-    // Per row: the bearing elements' mean stiffness projected through the mode's squared shape across the footprint, 1/s^2 at the baked scale.
-    // The elements the drive sweeps also push back on the locally deflected body, so the read scales each row by w^2 / (w^2 + projection), the conformity gain.
+    // Per-row mean bearing stiffness projected through squared mode shape in s^-2 at baked scale.
+    // Apply conformity gain w^2/(w^2 + projection) for local body deflection.
     // Applied at read with the current mode frequency and world scale.
     std::vector<float> ModeStiffness;
 };
@@ -1058,8 +924,6 @@ using SweepTableSlot = PoolSlot<SweepTableSet>;
 
 /***** The model's own state *****/
 
-// Everything the surface-contact model owns, held by ModalAudio for as long as the audio system lives.
-// The audio thread reads the pools without synchronizing, and the main thread repoints a slot only once the published masks show no voice reads it.
 struct SurfaceAudioState {
     std::atomic<float> SustainLevel{1}; // Level of the sustained-contact excitation
     std::atomic<float> AccelNoiseGain{1}; // Level of the acceleration noise a body's rigid recoil radiates
@@ -1067,8 +931,6 @@ struct SurfaceAudioState {
     std::atomic<float> Coupling{1};
     // Silence one modal drive row each, for isolating a feedback loop.
     std::atomic<bool> MuteGeometricDrive{false}, MuteFrictionDrive{false};
-    // What the contact meter has seen since the render began: shocks per second, the share of samples every cell stood free, and the share of cell-samples that bore.
-    // All three read zero except under CONTACT_REPORT.
     std::atomic<float> ContactShockRate{0}, ContactFreeShare{0}, ContactBearingShare{0};
 
     uint64_t SurfaceTracksRefused{0}, VoicesRefused{0}; // Main thread only.
@@ -1098,8 +960,6 @@ struct SurfaceAudioState {
     std::atomic<uint64_t> VoiceTrackMask{0};
     uint64_t ReusableSlots{0}; // Slots free to repoint this frame, cleared as each is claimed. Main thread only.
 
-    // Element springs sustained voices read (CONTACT_SPRINGS), pooled exactly as the tracks are.
-    // A set is a few megabytes, so the pool holds a handful.
     static constexpr uint32_t MaxContactSprings{8};
     std::array<ContactSpringSlot, MaxContactSprings> ContactSprings;
     std::unordered_map<uint64_t, uint32_t> ContactSpringSlotByKey; // Content key to slot. Main thread only.
@@ -1124,7 +984,6 @@ static_assert(SurfaceAudioState::MaxSurfaceTracks == 8 * sizeof(decltype(Surface
 static_assert(SurfaceAudioState::MaxContactSprings <= 8 * sizeof(decltype(SurfaceAudioState::VoiceSpringMask)::value_type));
 static_assert(SurfaceAudioState::MaxSweepTables <= 8 * sizeof(decltype(SurfaceAudioState::VoiceSweepMask)::value_type));
 
-// One voice's block-fixed constants: the slip-turnover channel's refresh, cascade poles, arrival rate, event amplitude and mean-blocker coefficient, and the sampled bed's cell weight, site share, tail cutoff and taper.
 struct VoiceBlock {
     double Refresh{0}, P1{1}, P2{1};
     float P{0}, A{0}, Dcn{0};
@@ -1132,8 +991,6 @@ struct VoiceBlock {
     float LoadW{0}, CSite{0}, CutoffM{0}, PotCutM{0}, TaperS{1};
 };
 
-// One direction's deflection read-out gains, a row of `count` per voice or per bin.
-// The pairs hold each mode's one- and two-step rotations.
 struct ModeReadGains {
     std::vector<float> Im, Re, Im2, Re2;
 
@@ -1162,7 +1019,7 @@ struct SurfaceRenderScratch {
     ModeReadGains PointRead;
     std::vector<float> Forces; // This sample's force behind each drive row.
     std::vector<float> Excite; // This sample's excitation of each mode.
-    // The moving-load sweep drive of each mode this sample, computed before the channel solve so every channel's free prediction includes it.
+    // Per-mode moving-load drive computed before channel prediction.
     std::vector<float> SweepExcite;
     std::vector<const RoughnessTrack *> Tracks; // Each voice's surface tracks, resolved once per block.
     std::vector<const RoughnessTrack *> TurnoverTracks; // Each voice's turnover noise track, likewise.
@@ -1171,9 +1028,9 @@ struct SurfaceRenderScratch {
     std::vector<float> SweepConformity; // Each voice's per-mode sweep conformity gain, fixed for the block.
     std::vector<VoiceBlock> VoiceBlocks; // Each voice's block-fixed constants, likewise.
     std::vector<uint32_t> BinRowBase; // Each voice's first distributed-excitation drive row.
-    // Per-bin deflection read-out, indexed like the bin drive rows, so each bin's local conformity is read at its own position on the surface.
+    // Per-bin deflection indexed with bin drive rows for local conformity.
     ModeReadGains BinRead;
-    // The exchange's channel layout: a binned spring voice exchanges through one channel per bin, anything else through one channel.
+    // Binned spring voices use one exchange channel per bin; other voices use one channel.
     // Channel-indexed arrays size by the total channel count.
     std::vector<uint32_t> ChannelBase, ChannelCount;
     std::vector<float> ChSupport; // Each channel's share of its voice's solver support force.
@@ -1184,12 +1041,9 @@ struct SurfaceRenderScratch {
     std::vector<float> QuadFeDefl; // Per-voice modal free response to the block's constant support forces.
     std::vector<float> QuadPsi, QuadG, QuadGamma, QuadFree, QuadPrevW, QuadS, QuadHx, QuadGNominal;
     std::vector<float> QuadDefl, QuadSlope;
-    // Coupled-solve scratch, in double because a channel at the passivity-cap gradient puts 4/float-eps on its column, past where a float row keeps the identity.
     std::vector<double> QuadMat, QuadRhs;
     std::vector<uint8_t> QuadContact;
-    // The impulsive slam closure's per-voice state: the landing's engagement rate when the sample slams (zero otherwise) and the junction's normal displacement response per newton.
     std::vector<float> QuadSlam, QuadCn;
-    // The stiction channel's per-voice state: the tangential deflection read, tangential and cross compliance, the constant free-part share, and the assembled free step.
     ModeReadGains TangentRead;
     std::vector<float> QuadCt, QuadCnt, QuadFeT, QuadRhsT, QuadDeflT;
     std::vector<uint8_t> QuadTangent;
@@ -1209,7 +1063,6 @@ inline void BeginSurfaceTrackFrame(SurfaceAudioState &s) {
     auto named = s.VoiceTrackMask.load(std::memory_order_acquire);
     auto named_springs = s.VoiceSpringMask.load(std::memory_order_acquire);
     auto named_sweeps = s.VoiceSweepMask.load(std::memory_order_acquire);
-    // The main thread cannot tell which of the three sets a callback still holds, so all three count.
     for (const auto &set : s.VoiceSets) {
         for (const auto &v : set.Voices) {
             for (const auto &t : v.State.Tracks) {
@@ -1225,7 +1078,7 @@ inline void BeginSurfaceTrackFrame(SurfaceAudioState &s) {
     s.ReusableSweepSlots = ~named_sweeps;
 }
 
-// The pool slot holding `key`, or -1 when every slot is taken and a voice reads each. Main thread only.
+// Returns the main-thread pool slot for `key`, or -1 when all slots are occupied and referenced by voices.
 // `make` returns a shared_ptr to the value.
 template<typename T, size_t N>
 int32_t AdoptPoolSlot(std::array<PoolSlot<T>, N> &slots, std::unordered_map<uint64_t, uint32_t> &by_key, uint64_t &reusable, uint64_t key, auto &&make) {
@@ -1238,7 +1091,6 @@ int32_t AdoptPoolSlot(std::array<PoolSlot<T>, N> &slots, std::unordered_map<uint
     uint32_t index = 0;
     while (index < N && slots[index].Owned) ++index;
     if (index == N) {
-        // Every slot holds a value, so take over one no voice reads.
         constexpr uint64_t Occupiable = N >= 64 ? ~0ull : (1ull << (N & 63)) - 1;
         const auto free_slots = reusable & Occupiable;
         if (free_slots == 0) return -1;

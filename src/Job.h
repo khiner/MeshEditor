@@ -7,9 +7,7 @@
 #include <optional>
 #include <string>
 
-// Progress and cancellation state shared between a background job and the UI.
-// The worker writes Progress and polls CancelRequested at its checkpoints, so a cancel
-// takes effect at the next checkpoint.
+// The worker updates Progress and polls CancelRequested at its cancellation checkpoints.
 struct JobMonitor {
     std::atomic<float> Progress{0.f}; // Fraction complete. 0 while indeterminate.
     std::atomic<bool> CancelRequested{false};
@@ -26,7 +24,7 @@ struct Job {
         : Title(std::move(title)), Monitor(std::make_shared<JobMonitor>()),
           ResultFuture(std::async(std::launch::async, [monitor = Monitor, work = std::forward<decltype(work)>(work)]() mutable { return work(*monitor); })) {}
 
-    // The result once ready, nullopt while still running. Never blocks.
+    // Return the completed result or nullopt without blocking.
     std::optional<Result> Poll() {
         if (!ResultFuture.valid() || ResultFuture.wait_for(std::chrono::seconds{0}) != std::future_status::ready) return {};
         return ResultFuture.get();

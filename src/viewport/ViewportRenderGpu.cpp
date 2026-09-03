@@ -128,8 +128,7 @@ ExtrasLine ExtrasGizmoParams(const entt::registry &r, entt::entity object, Objec
     };
 }
 
-// Stable one-threadgroup chunks for every procedural line source. Settings and selection state stay
-// out of this table; the GPU filters them each use, so camera motion and selection never rebuild it.
+// Stores stable threadgroup chunks while the GPU filters dynamic settings and selection state at use time.
 std::vector<OverlayJob> BuildOverlayJobs(const entt::registry &r) {
     constexpr uint32_t LinesPerJob{uint32_t(OverlayDispatch::LineGroupLines)};
     std::vector<OverlayJob> jobs;
@@ -225,8 +224,7 @@ void RecordSceneCounters(const GpuBuffers &buffers) {
     profile::RecordCounter("DeviceAllocatedBytes", buffers.Ctx.Ctx.Device->currentAllocatedSize());
 }
 
-// Running signature of the values an instance record is built from. A frame whose signature matches
-// the last rebuild's reads records the arena already holds, so the per-instance rebuild is skipped.
+// Hashes every input that lacks explicit invalidation so matching records can be reused.
 struct RecordInputs {
     uint64_t Value{0xcbf29ce484222325ull};
     void Mix(uint64_t v) { Value = (Value ^ v) * 0x100000001b3ull; }
@@ -251,7 +249,7 @@ struct DeformSlots {
     std::unordered_map<uint32_t, uint32_t> MorphWeightsByBufferIndex;
 };
 
-// `inputs` takes the per-instance deform offsets, which the records read and no per-mesh field carries.
+// `inputs` includes per-instance deform offsets absent from per-mesh fields.
 std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::registry &r, const MeshStore &meshes, RecordInputs &inputs) {
     std::unordered_map<entt::entity, DeformSlots> result;
     for (const auto [instance_entity, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
@@ -299,9 +297,7 @@ void PatchInstanceDeform(std::span<DrawData> draws, const DeformSlots &deform) {
         }
     }
 }
-// Reduce this step's screen motion to tiles, spread each tile's motion over the tiles it crosses,
-// then gather the scene along it. Leaves the blurred scene in GatherImage. The scene pass already
-// wrote the motion into the velocity attachment.
+// Reduces and dilates tiled screen motion, then writes the blurred scene to GatherImage.
 void RecordMotionBlurPostFx(entt::registry &r, mtl::PassChain &chain, const mtl::BindlessSet &slots, entt::entity viewport, mtl::Extent2D extent, uint32_t ubo_offset, float playback_frame) {
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &main = pipelines.Main;
@@ -379,7 +375,7 @@ void DispatchPrelude(MTL::ComputeCommandEncoder *encoder, const GpuBuffers &buff
     encoder->dispatchThreadgroups(*buffers.PreludeDispatchArgs, PreludeArgsOffset(slot), ThreadgroupSize::Linear256);
 }
 
-// The input fields of a mesh's normal-derive entry, with the position source and output offsets left unset.
+// The input fields of a mesh's normal-derive entry before assigning the position source and output offsets.
 // Empty when the mesh has no triangles or adjacency.
 std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &meshes, uint32_t store_id, SlottedRange face_indices) {
     if (face_indices.Count == 0) return {};
@@ -574,8 +570,7 @@ void ForEachMeshletVisibilityList(const GpuBuffers &buffers, bool two_phase, F &
 void DrawPhase2Meshlets(
     MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const MainPipeline &main
 ) {
-    // Coarse whole-instance candidates have not yet seen material classification, so phase 2 stays on
-    // one conservative two-sided, coverage-capable route.
+    // Use one conservative two-sided coverage route before coarse candidates receive material classification.
     // Splitting its inner cull by route makes the serial prefix proportional to route count and regresses disocclusion-heavy scenes.
     encoder->setCullMode(MTL::CullModeNone);
     main.MeshletVisibilityCoverage.Bind(encoder);
@@ -585,8 +580,7 @@ void DrawPhase2Meshlets(
     );
 }
 
-// Every route encodes every frame. The cull's prefix writes each route's dispatch args, zero-sized
-// for a route it sent no meshlet to, so an unused route's draw launches no threadgroups.
+// Encodes every route with zero-sized dispatch arguments for routes without visible meshlets.
 void DrawVisibilityMeshlets(
     MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const MainPipeline &main,
     bool transmission
@@ -646,8 +640,7 @@ void RecordDepthPyramid(
     const auto &mips = main.Resources->DepthPyramidMips;
     const auto scene_extent = main.Resources->DepthImage.Extent;
     for (uint32_t base = 0; base < uint32_t(mips.size()); base += 6) {
-        // Each group reads the mip the previous group wrote, through bindless images the encoder
-        // cannot see, so the groups need an explicit edge.
+        // Add an explicit barrier between bindless mip dependencies.
         if (base > 0) encoder->memoryBarrier(MTL::BarrierScopeTextures);
         const auto src_extent = base == 0 ? scene_extent : mips[base - 1].Extent;
         const DepthPyramidReducePushConstants pc{
@@ -674,8 +667,7 @@ void RecordDepthPyramid(
 // `ubo_offset` selects the view UBO instance every bind in the phase reads.
 void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain, SceneUpdate update, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
     const profile::CpuScope scope{"RecordRenderCommandBuffer"};
-    // The multi-step blur splits the scene and its overlays across two phases so the overlays stay
-    // sharp over the averaged steps. Full and BlurredFull draw both in one.
+    // Multi-step blur separates scene accumulation from sharp overlay rendering.
     const bool draw_scene = phase != RenderPhase::BlurResolve;
     const bool draw_overlays = !IsBlurAccumulate(phase);
 
@@ -777,8 +769,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             std::optional<uint32_t> PrimaryEditBufferIndex;
         };
 
-        // Draw order resolves coincident surfaces, and pool iteration order varies with scene-load
-        // history, so draw in descending entity id order (a fresh registry's iteration order).
+        // Sort by descending entity ID for deterministic coincident-surface ordering across scene loads.
         auto mesh_entity_order = r.view<const MeshBuffers, const ModelsBuffer>() | to<std::vector>();
         std::ranges::sort(mesh_entity_order, std::ranges::greater{});
 
@@ -836,7 +827,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 record_inputs.Mix(e.Buf.Meshlets.Offset);
                 record_inputs.Mix(e.Buf.Meshlets.Count);
                 record_inputs.Mix(e.Buf.Vertices.Count);
-                // A mesh with faces is what makes its instances silhouette-eligible.
+                // Face presence controls silhouette eligibility.
                 record_inputs.Mix(e.Buf.FaceIndices.Count);
                 record_inputs.Mix(e.Mod.InstanceRange.Offset);
                 record_inputs.Mix(e.Mod.InstanceCount);
@@ -942,7 +933,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     entry.HasPendingVertexTransform = 1u;
                     entry.PrimaryEditInstanceIndex = spec.PendingPrimary->BufferIndex;
                 }
-                // PosedRanges owns the posed-buffer layout: bases here, per-instance offsets via its accessors.
+                // PosedRanges defines bases and per-instance offsets for the posed-buffer layout.
                 PosedRanges pr{};
                 NormalDeriveEntry derive_entry = spec.Entry;
                 if (spec.Posed) {
@@ -1002,8 +993,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
         }
 
-        // A frame that read the same inputs as the last rebuild leaves the records the arena holds,
-        // topology mask included, so the per-instance rebuild costs nothing on a settled scene.
+        // Reuse records and the topology mask when all hashed inputs match the previous rebuild.
         if (record_inputs.Value != scene_state.InstanceRecordInputs) {
             scene_state.InstanceRecordInputs = record_inputs.Value;
             MarkInstanceRecordsStale(scene_state);
@@ -1086,8 +1076,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
         }
         scene_state.InstanceFlagsStale = true;
-        // Overlay jobs retain instance-arena indices, so publish them only after this rebuild has
-        // finalized every RenderInstance slot.
+        // Publish overlay jobs only after all RenderInstance slots are final.
         buffers.SetOverlayJobs(BuildOverlayJobs(r));
     }
     // Object ids and silhouette flags, with the silhouette cull's work totalled as the flags land.
@@ -1196,7 +1185,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 mesh->FaceCount() == 0u && mesh->EdgeCount() == 0u &&
                 !primary_edit_instances.contains(instance->Entity) && !shaded_face_less;
             if (point_overlay) mark(MeshletInstanceFlag::PointOverlay);
-            // An instance reaches a cull only through its meshlet slot, which it holds when it has meshlets.
             if (silhouette && ri.GpuId != InvalidOffset) {
                 silhouette_work.Ranges += ri.MeshletRangeCount;
                 silhouette_work.Meshlets += ri.MeshletCount;
@@ -1213,8 +1201,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     const bool render_silhouette = (show_overlays && settings.ShowOutlineSelected) && !is_excite_mode &&
         (is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection);
 
-    // A rebuild is the authoritative active-topology scan. Specialize forward PBR here so scene
-    // loading needs no second registry scan and the first mixed-topology frame is correct.
+    // Specialize forward PBR during the authoritative rebuild scan to avoid a second registry traversal.
     if (show_rendered && update != SceneUpdate::Reuse) {
         pipelines.Main.Compiler.CompileTopologyPipelines(
             pipelines.Libraries, (buffers.MeshletTopologyMask & ~1u) != 0u
@@ -1223,9 +1210,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     if (update != SceneUpdate::Reuse || phase == RenderPhase::Full) RecordSceneCounters(buffers);
 
     const bool transmission_active = real_transmission && pipelines.Main.Transmission;
-    // The transmission composite path lays the prepass down as the scene's background and
-    // plain-opaque pixels, loading the prepass's depth. Edit mode re-rasterizes for face tints,
-    // blur steps for velocity, and debug channels carry values the composite's exposure would corrupt.
+    // Composite transmission only when edit tint, velocity, and debug output do not require rerasterization.
     const bool composite_transmission = transmission_active && phase == RenderPhase::Full && !is_edit_mode && settings.DebugChannel == DebugChannel::None;
     const bool meshlet_fill = buffers.MeshletInstanceCount > 0;
 
@@ -1237,14 +1222,11 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     if (buffers.Prelude.HasWork()) {
         const auto &prelude = buffers.Prelude;
         const bool record_bounds = phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve;
-        // A derive entry always holds at least one face tile and one gather tile, so one count decides both phases.
+        // Every derive entry contributes at least one face tile and one gather tile.
         const bool record_derive = draw_scene && prelude.DeriveFaces > 0;
         const bool bounds_work = record_bounds && prelude.BoundsCombine > 0;
         auto *compute = chain.BeginCompute("Prelude", MTL::StageVertex | MTL::StageFragment | MTL::StageDispatch);
-        // The prelude's outputs flow through bindless buffers the encoder cannot see, so every
-        // producing dispatch needs an explicit edge before its consumer: the pose pre-pass feeds
-        // posed bounds, the derives, and the bounds reduce, the face derive feeds the gather, and
-        // the bounds reduce feeds the combine.
+        // Bindless dependencies require explicit barriers between pose, bounds, derive, gather, and combine dispatches.
         if (prelude.PosePrepass > 0) {
             RecordPosePrepass(compute, slots, pipelines, buffers, ubo_offset);
             compute->memoryBarrier(MTL::BarrierScopeBuffers);
@@ -1273,8 +1255,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     const auto &main = pipelines.Main;
     const auto main_extent = main.Resources->SceneColorImage.Extent;
     const bool has_silhouette = render_silhouette && meshlet_fill;
-    // Wireframe can still show selection outlines. Populate visibility for silhouette decode even
-    // when face fill is hidden, then leave its depth out of the wireframe scene pass below.
+    // Populate visibility for wireframe selection outlines without loading its depth into the scene pass.
     const bool need_visibility = meshlet_fill && (show_fill || has_silhouette);
     const bool wire_meshlets = draw_overlays &&
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::Wire)).Meshlets > 0u;
@@ -1304,8 +1285,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     const auto &current_view_proj = reinterpret_cast<const SceneViewUBO *>(view_bytes.data())->ViewProj;
     const bool disocclusion_possible = update != SceneUpdate::Reuse || buffers.PreludeStale || buffers.MeshletOcclusionStale ||
         std::memcmp(&current_view_proj, &buffers.PreviousFullCullViewProj, sizeof(mat4)) != 0;
-    // Real transmission stays single-phase because phase-2 visibility does not run its per-pixel
-    // textured transmission-hole coverage test.
+    // Keep real transmission single-phase because phase two omits textured transmission-hole coverage.
     const bool two_phase_meshlets = show_fill && cull_scene_meshlets && phase == RenderPhase::Full && !real_transmission &&
         main.Resources->DepthPyramidValid && disocclusion_possible;
     if (cull_scene_meshlets) {
@@ -1365,12 +1345,10 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         }
     }
 
-    // Real-transmission pre-pass: render the background and opaque faces into TransmissionImage mip 0,
-    // sampled by the scene pass at the refracted exit point. TRANSMISSION_PREPASS variants skip
-    // exposure and drop transmission materials (no self-sampling).
+    // Render background and opaque faces without exposure into TransmissionImage for refracted sampling.
     if (transmission_active && draw_scene) {
-        // Refraction sees the world, and nothing where there is no world. The viewport backdrop is
-        // display-referred UI drawn with the overlays, so it never reaches this buffer.
+        // Refraction samples only the world buffer.
+        // The overlay composite adds the display-referred viewport backdrop.
         const std::array colors{mtl::ClearColor(main.Transmission->Mip0View.get())};
         const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*main.Resources->DepthImage));
         encoder = encode::BeginScenePass(chain, pass, "TransmissionPrepass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
@@ -1390,8 +1368,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         }
     }
 
-    // Blurred steps render the scene through the velocity render pass variant, so opaque geometry
-    // writes its screen motion alongside its color.
+    // The blur variant writes opaque color and screen motion together.
     const bool blur = phase == RenderPhase::BlurredFull || IsBlurAccumulate(phase);
 
     { // Scene pass: shaded scene into its own color target, and the depth the overlay pass occludes against.
@@ -1411,8 +1388,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             main_extent, slots, buffers, ubo_offset
         );
 
-        // Screen motion for every pixel geometry leaves uncovered. The background sits at infinity,
-        // so only view rotation moves it. Geometry overwrites it wherever it lands.
+        // Initialize uncovered pixels with rotational background motion before geometry overwrites them.
         if (blur) {
             scene_renderer.Bind(encoder, SPT::BackgroundVelocity);
             draw_quad();
@@ -1422,7 +1398,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             scene_renderer.Bind(encoder, SPT::TransmissionComposite);
             draw_quad();
         } else if (show_rendered && draw_scene) {
-            // Background environment (PBR modes only). The shader discards with no world opacity or env slot.
+            // Draw the background environment only in PBR modes.
+            // The shader discards when world opacity is zero or no environment slot exists.
             scene_renderer.Bind(encoder, SPT::Background);
             draw_quad();
         }
@@ -1447,7 +1424,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             draw_quad();
         }
 
-        // Solid faces. BlurResolve writes depth only, for overlays to occlude against (blend faces never wrote depth).
+        // Draw solid faces.
+        // BlurResolve writes depth for overlay occlusion because blended faces omit depth writes.
         if (show_fill) {
             if (meshlet_fill && draw_scene && show_rendered) {
                 const auto opaque_variant = blur ? PbrCompiler::Variant::OpaqueVelocity : PbrCompiler::Variant::Opaque;
@@ -1469,8 +1447,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         }
     }
 
-    // Phase 2 needs the meshlet-only pyramid above. The persistent next-frame pyramid is rebuilt
-    // after the scene pass so indexed opaque draw items contribute occlusion too.
+    // Rebuild the persistent pyramid after indexed opaque draws while phase two uses the meshlet-only pyramid.
     if (show_fill && phase == RenderPhase::Full && cull_scene_meshlets) {
         auto *compute = chain.BeginCompute("DepthPyramidFinal", MTL::StageFragment);
         RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
@@ -1479,7 +1456,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
 
     if (blur) RecordMotionBlurPostFx(r, chain, slots, viewport, main_extent, ubo_offset, playback_frame);
 
-    if (!draw_overlays) { // BlurAccumulate sums this step's blurred scene in. It draws no overlays to composite.
+    if (!draw_overlays) { // BlurAccumulate adds this step's blurred scene without overlays.
         {
             const std::array colors{
                 phase == RenderPhase::BlurAccumulateFirst ? mtl::ClearColor(*main.MotionBlur->AccumImage) : mtl::LoadColor(*main.MotionBlur->AccumImage)
@@ -1528,11 +1505,10 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     }
     if (overlay_jobs) RecordOverlayJobCull(chain, slots, pipelines, buffers, false, ubo_offset);
 
-    // The layer clears transparent, so an untouched one composites to nothing. Track whether anything
-    // reaches it, and the composite skips reading it and its line data at all. Every draw in the pass
-    // below goes through here or sets the flag itself.
+    // Skip transparent overlay color and line data when no overlay draw writes them.
     bool overlay_layer_drawn = false;
-    // Everything the pass could draw. With nothing to draw, the composite reads neither overlay layer.
+    // List every drawable category for this pass.
+    // An empty list prevents the composite from reading either overlay layer.
     const bool overlay_pass_needed = has_silhouette ||
         (show_overlays && settings.ShowGrid) ||
         meshlet_edit_overlay_drawn || element_overlay_meshlets > 0u || wire_raster_drawn ||
@@ -1657,8 +1633,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         }
 
         { // Bone X-ray: depth clears so bones are never occluded by scene meshes, only by each other.
-            // Metal clears an attachment at pass start alone, so the bones take a second pass that
-            // loads the overlay colors and clears the depth.
+            // Use a second pass to preserve overlay color while clearing bone depth at pass start.
             if (bone_meshlets > 0u) {
                 const std::array bone_colors{
                     mtl::LoadColor(*main.Resources->OverlayColorImage),
@@ -1703,7 +1678,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         // Debug channels write their own already-viewable values, so they pass through untransformed.
         const uint32_t view_transform = settings.DebugChannel != DebugChannel::None ? 2u : show_rendered ? 1u :
                                                                                                            0u;
-        // BlurredFull leaves the finished scene in the gather target, which holds the scene color it blurred.
+        // BlurredFull composites the finished scene from the gather target.
         const uint32_t scene_sampler = phase == RenderPhase::BlurredFull ? sel_slots.MotionBlurGatherSampler : sel_slots.SceneColorSampler;
         const struct {
             uint32_t SceneColorSamplerSlot, OverlayColorSamplerSlot, LineDataSamplerSlot, ViewTransform, HasOverlay;
@@ -1790,8 +1765,7 @@ void RecordMeshletCull(
     ++buffers.MeshletVisibleGeneration;
     auto *encoder = chain.BeginCompute("MeshletCull", MTL::StageMesh | MTL::StageFragment);
     const bool transmission = config.Mode == MeshletRouteMode::Transmission;
-    // Totals the flag bookkeeping maintains as instances gain and lose flags. Every caller asks for
-    // one flag bit, whose totals cover exactly the instances that bit admits.
+    // The requested flag's maintained totals bound this cull.
     const auto primary = config.RequiredInstanceFlags == 0u ?
         GpuBuffers::MeshletFlagWork{buffers.MeshletRangeCount, buffers.MeshletInstanceCount} :
         buffers.FlagWork(config.RequiredInstanceFlags);
@@ -1822,9 +1796,7 @@ void RecordMeshletCull(
         encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(prefix_bytes + blend_bytes), 0);
         encoder->dispatchThreadgroups(*buffers.MeshletWorkDispatchArgs, 0, MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
     };
-    // The traversal descends every span tree in lockstep: a seed level over the instance ids, one
-    // expansion per tree level, and a last level turning surviving runs into meshlet work ranges.
-    // Each level counts, prefixes, and emits, so its output order follows the frontier it read.
+    // Descends every span tree in lockstep and emits surviving record runs in frontier order.
     const uint32_t level_count = buffers.MeshletLodDepth + 2u;
     for (uint32_t level = 0; level < level_count; ++level) {
         const uint32_t index = level & 1u;
@@ -1835,8 +1807,7 @@ void RecordMeshletCull(
         level_pc.LodSeedLevel = level == 0u;
         level_pc.LodFinalLevel = level + 1u == level_count;
         encode::SetPushConstants(encoder, level_pc);
-        // The seed level covers the instance ids, whose count the host knows. Every level below it
-        // sizes its grid from the frontier the level above wrote.
+        // Seed from the host-known instance count and size later grids from the preceding frontier.
         const auto dispatch_level = [&](const mtl::ComputePipeline &pipeline) {
             if (level == 0u && pc.WorkBlockCount == 0u) return;
             encoder->setComputePipelineState(pipeline.State());
@@ -1975,8 +1946,8 @@ void DeriveBaseNormalsNow(entt::registry &r, std::span<const entt::entity> mesh_
 }
 
 namespace {
-// Decide whether the listed mesh entities keep their authored shading normals under morphing.
-// Targets authoring normal deltas decide on the CPU alone.
+// Returns whether the listed mesh entities retain authored shading normals under morphing.
+// The CPU resolves targets with authored normal deltas.
 // Position-only targets derive their full-weight poses in one batched submit-and-wait.
 // The derived pose tests whether derivation moves the normals authored shading would pin.
 // Runs after the base derive, since the pin test compares against the base normal stores.
@@ -2001,13 +1972,13 @@ void UpdateAuthoredMorphShadingNow(entt::registry &r, std::span<const entt::enti
         if (target_count == 0 || !meshes.HasAuthoredNormals(store_id)) continue;
         const auto entry_inputs = MakeDeriveEntryInputs(meshes, store_id, mesh_buffers->FaceIndices);
         if (!entry_inputs) continue;
-        // Targets authoring normal deltas settle the gate here.
+        // Resolve the authored-normal gate from every morph target.
         meshes.UpdateMorphShadingAuthored(*mesh, {});
         if (meshes.GetMorphShadingAuthored(store_id)) continue;
         const auto vertex_count = entry_inputs->VertexCount;
         const auto targets = meshes.GetMorphTargets(store_id);
         for (uint32_t t = 0; t < target_count; ++t) {
-            // A target without position deltas leaves the pose at rest, pinning nothing.
+            // Targets without position deltas use the rest pose and require no normal pinning.
             const auto deltas = targets.subspan(size_t{t} * vertex_count, vertex_count);
             if (std::ranges::all_of(deltas, [](const auto &d) { return d.PositionDelta == vec3{0}; })) continue;
             auto entry = *entry_inputs;
@@ -2065,8 +2036,7 @@ void FinalizeNewMeshShadingNow(entt::registry &r, std::span<const entt::entity> 
     UpdateAuthoredMorphShadingNow(r, mesh_entities);
 }
 
-// Commit the last fenced poses into the canonical GPU stores with one submit, then read back one
-// changed flag per mesh for the CPU invalidation boundary.
+// Commits fenced poses and returns meshes whose GPU changed flag requires CPU invalidation.
 std::vector<entt::entity> CommitPosedGeometry(
     entt::registry &r, std::span<const entt::entity> mesh_entities
 ) {

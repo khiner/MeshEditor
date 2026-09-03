@@ -24,12 +24,10 @@ constexpr float SloppyErrorFactor{2.f};
 constexpr float NormalWeight{0.25f};
 constexpr float ClusterConeWeight{0.5f};
 constexpr float ClusterSplitFactor{2.f};
-// An internal span-tree node covers this many children. The traversal spends one node test per
-// pruned run, so a wider tree trades cut granularity for depth.
+// A wider tree reduces depth while increasing the granularity of pruned record runs.
 constexpr uint32_t SpanNodeWidth{64};
 constexpr float SpanNodeSlack{1.f + 1e-5f};
-// Smaller primitives already build in parallel with their peers; nested dispatch only pays off for a
-// weld large enough to occupy the machine by itself.
+// Use nested parallelism only when one weld can occupy the machine independently.
 constexpr uint32_t ParallelPositionRemapVertices{256u * 1024u};
 
 using Clock = std::chrono::steady_clock;
@@ -65,8 +63,7 @@ void GeneratePositionRemap(std::vector<uint32_t> &remap, const std::vector<std::
             for (uint32_t i = block * BlockSize; i < last; ++i) function(i);
         });
     };
-    // Collision placement may race, but equal positions follow the same probe sequence and atomically
-    // settle their slot on the lowest input index. The read pass therefore emits the serial canonical id.
+    // Equal positions follow the same probe sequence and atomically select the lowest input index.
     for_each_position([&](uint32_t i) {
         size_t bucket = PositionHash(positions[i]) & mask;
         for (size_t probe = 0; probe <= mask; ++probe) {
@@ -104,8 +101,7 @@ uint32_t PackCone(const meshopt_Bounds &bounds, bool cone_cull_safe) {
         uint32_t(uint8_t(cone_cull_safe ? bounds.cone_cutoff_s8 : int8_t{127})) << 24u;
 }
 
-// A sphere and its simplification error. Center leads and radius follows, which is the layout
-// meshopt's sphere merge reads.
+// Preserves meshopt's center-then-radius sphere layout and adds simplification error.
 struct Bounds {
     vec3 Center{};
     float Radius{};
@@ -125,8 +121,7 @@ Bounds MergeBounds(std::span<const Bounds> bounds) {
     return result;
 }
 
-// A run's bounds, holding every member sphere and error. The radius grows to exact containment, so a
-// node the traversal prunes covers no record whose own test would still pass.
+// Produces bounds that contain every member sphere and error.
 Bounds MergeSpanBounds(std::span<const Bounds> members) {
     const auto merged = meshopt_computeSphereBounds(&members.front().Center.x, members.size(), sizeof(Bounds), &members.front().Radius, sizeof(Bounds));
     Bounds result{.Center = std::bit_cast<vec3>(merged.center)};
@@ -137,8 +132,7 @@ Bounds MergeSpanBounds(std::span<const Bounds> members) {
         result.Radius = std::max(result.Radius, std::sqrt(dx * dx + dy * dy + dz * dz) + member.Radius);
         result.Error = std::max(result.Error, member.Error);
     }
-    // Rounding in the node's own projected error must not prune a record whose error still clears
-    // the budget, so both quantities carry a little slack.
+    // Add rounding slack so a node cannot prune a record that exceeds the projected-error budget.
     result.Radius *= SpanNodeSlack;
     result.Error *= SpanNodeSlack;
     return result;
@@ -157,8 +151,7 @@ struct PrimitiveWeld {
     uint32_t VertexCount() const { return uint32_t(Representative.size()); }
 };
 
-// Welds every corner of one primitive on the shared render-equivalence key, so a coarse cluster's
-// vertices carry the same equivalence as the clusters it replaces.
+// Uses the shared render-equivalence key for both source and coarse cluster vertices.
 void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive, PrimitiveWeld &weld, bool serial) {
     const uint32_t first_index = primitive.FirstTriangle * 3u;
     const uint32_t corner_count = primitive.TriangleCount * 3u;
@@ -257,12 +250,10 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
         GeneratePositionRemap(weld.Remap, weld.Positions);
     }
 
-    // Attribute weights rank against position deltas in mesh units, so the normalized normal weight
-    // multiplies by the primitive's extent, as meshopt_simplifyScale documents.
+    // Scale normalized normal weights by primitive extent to compare them with mesh-unit position deltas.
     weld.Scale = meshopt_simplifyScale(weld.Positions.front().data(), weld_count, sizeof(weld.Positions.front()));
 
-    // Permissive simplification collapses across attribute discontinuities, so a weld vertex whose
-    // first UV set disagrees with the vertex it shares a position with keeps its seam.
+    // Protect first-UV discontinuities from permissive simplification.
     weld.Locks.assign(weld_count, 0u);
     if (const auto uvs = mesh.Weld.CornerUvs[0]; !uvs.empty()) {
         for (uint32_t v = 0; v < weld_count; ++v) {
@@ -281,13 +272,13 @@ struct WorkCluster {
     std::vector<uint8_t> LocalTriangles;
     Bounds Sphere;
     uint32_t Refined{ClusterLodInvalid}; // the group this cluster was simplified from
-    uint32_t Level0Id{ClusterLodInvalid}; // the input cluster this holds, for level-0 clusters
+    uint32_t Level0Id{ClusterLodInvalid};
     bool ConeSafe{};
 
     uint32_t TriangleCount() const { return uint32_t(LocalTriangles.size() / 3u); }
 };
 
-// Locks every weld vertex two groups share, so simplifying one group leaves no gap against another.
+// Lock every weld vertex shared by two groups to preserve their boundary during simplification.
 void LockBoundary(PrimitiveWeld &weld, const std::vector<WorkCluster> &clusters, const std::vector<std::vector<uint32_t>> &groups) {
     constexpr uint8_t SeenBit{1u << 7u};
     constexpr uint8_t PersistentBits{uint8_t(meshopt_SimplifyVertex_Protect)};
@@ -302,7 +293,7 @@ void LockBoundary(PrimitiveWeld &weld, const std::vector<WorkCluster> &clusters,
     });
 
     for (const auto &group : groups) {
-        // A vertex a prior group already used sits on a boundary.
+        // A vertex already used by a prior group belongs to a boundary.
         for (const auto member : group) {
             for (const auto vertex : clusters[member].Vertices) {
                 const uint32_t canonical = weld.Remap[vertex];
@@ -370,8 +361,8 @@ void SimplifySloppy(std::vector<uint32_t> &lod, const PrimitiveWeld &weld, const
     for (auto &index : lod) index = subset[index].Id;
 }
 
-// Halves a group's triangle count, keeping the boundary and the UV seams in place. The error comes
-// back in mesh units, with no edge-length limit applied.
+// Halves a group's triangle count while protecting its boundary and UV discontinuities.
+// Returns error in mesh units without an edge-length limit.
 std::vector<uint32_t> SimplifyGroup(const PrimitiveWeld &weld, const std::vector<uint32_t> &indices, size_t target_count, float *error) {
     if (target_count > indices.size()) return indices;
 
@@ -428,8 +419,7 @@ struct GroupScratch {
     double SimplifyMs{}, ClusterizeMs{}, EmitMs{};
 };
 
-// Writes one cluster in engine record form, with indices local to the sink's own vertex and triangle
-// arrays, which are a group's scratch during a level and the build itself for a terminal group.
+// Appends one cluster with indices local to `sink`.
 void EmitCluster(auto &&sink, const PrimitiveWeld &weld, const WorkCluster &cluster, uint32_t primitive, uint32_t group) {
     const uint32_t vertex_count = uint32_t(cluster.Vertices.size());
     const uint32_t triangle_count = cluster.TriangleCount();
@@ -455,7 +445,6 @@ void EmitCluster(auto &&sink, const PrimitiveWeld &weld, const WorkCluster &clus
     sink.LocalTriangles.insert(sink.LocalTriangles.end(), cluster.LocalTriangles.begin(), cluster.LocalTriangles.end());
 }
 
-// Merges, simplifies and re-clusterizes one group. Everything it writes is its own.
 void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, const std::vector<WorkCluster> &clusters, const std::vector<uint32_t> &members, uint32_t primitive, uint32_t group) {
     std::vector<Bounds> member_bounds(members.size());
     std::vector<uint32_t> merged;
@@ -469,15 +458,13 @@ void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, const std::vecto
         scratch.Triangles += cluster.TriangleCount();
         scratch.RadiusSum += cluster.Sphere.Radius;
     }
-    // Precise bounds of the merged or simplified geometry would break monotonicity, so the group
-    // keeps the merge of what its members already claimed.
+    // Reuse merged member bounds to preserve monotonic containment across levels.
     scratch.Sphere = MergeBounds(member_bounds);
 
     const size_t target_size = size_t(float(merged.size() / 3u) * SimplifyRatio) * 3u;
     const auto simplify_start = Clock::now();
     float error = 0.f;
-    // A group of a single triangle has no target to reach, and simplifying it to nothing would
-    // leave a hole at every coarser level.
+    // Preserve single-triangle groups to keep every coarser level complete.
     const auto simplified = target_size == 0 ? merged : SimplifyGroup(weld, merged, target_size, &error);
     scratch.SimplifyMs = MillisecondsSince(simplify_start);
     scratch.Stuck = float(simplified.size()) > float(merged.size()) * SimplifyThreshold;
@@ -501,8 +488,7 @@ void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, const std::vecto
     const auto clusterize_start = Clock::now();
     scratch.NewClusters = Clusterize(weld, simplified);
     scratch.ClusterizeMs = MillisecondsSince(clusterize_start);
-    // Inheriting the group's bounds and error keeps a new cluster conservative in whatever group it
-    // lands in next.
+    // Inherit group bounds and error to preserve conservative tests at the next level.
     for (auto &cluster : scratch.NewClusters) {
         cluster.Sphere = scratch.Sphere;
         cluster.Refined = group;
@@ -510,9 +496,7 @@ void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, const std::vecto
     }
 }
 
-// One primitive's render records, each as the sphere its record carries and the sphere and error of
-// the group the cut reads for it. A node holding both stays conservative for the frustum test and
-// for the projected-error test at once.
+// Emits both record and group bounds so each span node remains conservative for frustum and error tests.
 void CollectSpanRecords(
     const ClusterLodBuild &build, const ClusterLodMesh &mesh, uint32_t primitive, std::vector<Bounds> &records
 ) {
@@ -533,8 +517,7 @@ void CollectSpanRecords(
     }
 }
 
-// Chunks one primitive's records into leaves and merges them upward, so a traversal that prunes by a
-// node's projected error and bounds reaches the surviving runs in ascending record order.
+// Builds a span tree whose surviving record runs retain ascending order after bounds and error pruning.
 void BuildSpanTree(
     ClusterLodBuild &build, const ClusterLodMesh &mesh, uint32_t primitive, uint32_t first_record,
     std::vector<Bounds> &records, std::vector<uint32_t> &row, std::vector<uint32_t> &next
@@ -747,7 +730,7 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
             ++depth;
         }
 
-        // The last cluster standing has nothing left to merge with, so it forms a terminal group.
+        // A single remaining cluster forms a terminal group.
         if (pending.size() == 1u) {
             if (build.Stats.Levels.size() <= depth) build.Stats.Levels.emplace_back();
             auto &level_stats = build.Stats.Levels[depth];

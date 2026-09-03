@@ -139,8 +139,7 @@ static PipelineRenderer CreateSceneRenderer(mtl::LibraryCache &libraries) {
 static PipelineRenderer CreateSceneVelocityRenderer(mtl::LibraryCache &libraries) {
     const auto formats = SceneVelocityFormats();
     std::unordered_map<SPT, RenderPipeline> pipelines;
-    // Screen motion for every pixel geometry leaves uncovered. Drawn first, so geometry overwrites
-    // it wherever it lands, and the scene color stays untouched through the write mask.
+    // Initialize uncovered pixels with background motion before geometry overwrites them.
     pipelines.emplace(SPT::BackgroundVelocity, RenderPipeline{libraries, {"Background.metal", "BackgroundVertex"}, FunctionRef{"BackgroundVelocity.metal", "BackgroundVelocityFragment"}, formats, {NoWrite, NoBlend}, DepthOff});
     pipelines.emplace(SPT::Background, CreateBackgroundPipeline(libraries, formats, {Blend, NoWrite}, false));
     pipelines.emplace(SPT::SilhouetteEdgeDepth, RenderPipeline{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"SampleDepth.metal", "SampleDepthFragment"}, formats, {NoWrite, NoWrite}, DepthTestWrite});
@@ -353,8 +352,7 @@ SilhouettePipeline::SilhouettePipeline(mtl::LibraryCache &libraries)
 SilhouettePipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent)
     : DepthImage{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       OffscreenImage{mtl::CreateTexture2D(ctx, Format::Float2, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      // Clamping keeps edge detection from wrapping around to the image's other side: it reads the
-      // pixel value at the nearest edge instead.
+      // Clamp edge-detection samples to the nearest image edge.
       ImageSampler{mtl::CreateSampler(ctx, MTL::SamplerMinMagFilterNearest, MTL::SamplerMipFilterNearest, MTL::SamplerAddressModeClampToEdge)} {}
 
 void SilhouettePipeline::SetExtent(const mtl::Context &ctx, mtl::Extent2D extent) {

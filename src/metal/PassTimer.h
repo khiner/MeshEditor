@@ -15,12 +15,12 @@ struct PassTimer {
 
     static std::unique_ptr<PassTimer> Create(const Context &, uint32_t max_passes = 64);
 
-    // Returns the start/end sample-pair index, or nothing when full.
+    // Returns the start/end sample-pair index, or nullopt when full.
     std::optional<uint32_t> Claim(std::string_view name);
 
     MTL::CounterSampleBuffer *Buffer() const { return SampleBuffer.get(); }
 
-    // Call after completion; unwritten samples are omitted.
+    // Resolves completed sample pairs and omits unwritten pairs.
     std::vector<Pass> Resolve();
 
     void Reset() { Names.clear(); }
@@ -33,4 +33,4 @@ private:
     uint32_t MaxPasses;
     std::vector<std::string_view> Names;
 };
-} // namespace mtl
+}

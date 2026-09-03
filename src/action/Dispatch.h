@@ -19,7 +19,7 @@ namespace detail {
 struct ComponentPatcher {
     void (*Patch)(entt::registry &, entt::entity, uint16_t offset, const void *src, uint16_t size);
     void (*Read)(const entt::registry &, entt::entity, uint16_t offset, void *dst, uint16_t size); // for SelectedDelta baselines
-    bool (*Has)(const entt::registry &, entt::entity); // filters Active/Selected targets to those carrying C
+    bool (*Has)(const entt::registry &, entt::entity); // Filters Active or Selected targets by component C.
     std::string_view Name; // entt::type_name<C> — for a startup manifest / debugging
 };
 inline auto &PatchTable() {
@@ -58,8 +58,7 @@ struct TagRegistrar {
     TagRegistrar() { TagTable().insert_or_assign(entt::type_hash<Tag>::value(), &SetTagPresence<Tag>); }
 };
 
-// Field-value clamping, keyed by (component, field-offset, field-size). Size separates a whole-field clamp
-// from a per-component clamp at the same offset.
+// Field-value clamping, keyed by (component, field-offset, field-size). Size separates a whole-field clamp from a per-component clamp at the same offset.
 inline uint64_t LimitsKey(entt::id_type comp, uint16_t offset, uint16_t size) { return (uint64_t(comp) << 32) | (uint64_t(offset) << 16) | size; }
 inline auto &LimitsTable() {
     static std::unordered_map<uint64_t, void (*)(void *)> table;
@@ -153,7 +152,7 @@ void ApplyUpdate(entt::registry &r, entt::entity e, entt::id_type component_type
     it->second.Patch(r, e, offset, &value, sizeof(Field));
 }
 
-// Resolve `scope` to its targets and patch each (Active/Selected hit only entities carrying the component).
+// Resolves scope and patches Active or Selected targets that contain the component.
 void ApplyUpdateScoped(entt::registry &, entt::entity viewport, Scope, entt::entity, entt::id_type component_type, uint16_t offset, const void *value, uint16_t size);
 void ApplyTagScoped(entt::registry &, entt::entity viewport, Scope, entt::entity, entt::id_type tag_type, bool present);
 void ForEachSelectedWith(entt::registry &, entt::id_type component_type, const std::function<void(entt::entity)> &);

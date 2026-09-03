@@ -1,13 +1,12 @@
 #ifndef BONESPHEREWIRE_MSL
 #define BONESPHEREWIRE_MSL
 
-// Billboard sphere outline for bone joints, drawn as a line list around the camera-facing disc.
+// Renders bone-joint outlines around a camera-facing disc.
 #include "Bindless.metal"
 #include "BoneUtils.metal"
 #include "MeshletResolve.metal"
 #include "Varyings.metal"
 
-// One emitted vertex of a bone's BoneSphereWireMesh.
 inline LineVaryings BoneSphereWireMeshVertexAt(const thread Scene &scene, DrawData draw, uint vertex_id) {
     const uint idx = scene.Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + vertex_id];
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
@@ -33,7 +32,6 @@ inline LineVaryings BoneSphereWireMeshVertexAt(const thread Scene &scene, DrawDa
     return out;
 }
 
-// One threadgroup per bone, emitting that bone's BoneSphereWireMesh from the shared unit primitive.
 using BoneSphereWireMeshOutput = metal::mesh<LineVaryings, void, 64u, 32u, metal::topology::line>;
 
 [[mesh]] void BoneSphereWireMesh(

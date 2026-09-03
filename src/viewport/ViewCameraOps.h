@@ -10,7 +10,8 @@
 void SetLookThrough(entt::registry &, entt::entity viewport, entt::entity target);
 // Exit look-through, restoring the saved pre-look-through view camera. No-op if not looking through.
 void ClearLookThrough(entt::registry &, entt::entity viewport);
-entt::entity LookThroughCameraEntity(const entt::registry &); // entt::null if none.
+// Returns null when no look-through camera is active.
+entt::entity LookThroughCameraEntity(const entt::registry &);
 
 // The active view camera plus any look-through camera's saved view.
 // Replay doesn't record navigation, so this is captured before a clear/replay and restored afterward.

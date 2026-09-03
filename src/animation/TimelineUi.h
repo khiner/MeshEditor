@@ -7,5 +7,5 @@
 
 struct AnimationIcons;
 
-// Sets `scrubbing` true while the frame marker is held (mouse down in the header).
+// Sets `scrubbing` while the frame marker is pressed.
 std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &, const TimelinePlayback &, const AnimationTimelineView &, const AnimationIcons &, bool &scrubbing);

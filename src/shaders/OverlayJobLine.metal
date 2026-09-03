@@ -15,21 +15,18 @@
 #include "OverlayJobDrawPushConstants.metal"
 #include "OverlayJobKind.metal"
 
-// Each job emits a bounded line group, two dedicated vertices per line. Extras generate their
-// geometry procedurally; bounds and tetrahedral jobs read persistent scene buffers.
+// Emits two dedicated vertices per line from procedural extras or persistent bounds and tetrahedral buffers.
 constant uint OverlayJobGroupLines = OverlayDispatch_LineGroupLines;
 constant uint LightRangeSegments = OverlayDispatch_LightRangeSegments;
 constant uint SpotConeSegments = OverlayDispatch_SpotConeSegments;
 constant float SpotConeDepth = 2.0f;
 constant uint ColliderCircleSegments = OverlayDispatch_ColliderCircleSegments;
 constant uint ColliderArcSegments = ColliderCircleSegments / 2u;
-// A hemisphere reads as its base circle plus four quarter arcs rising to the pole.
 constant uint ColliderCapLines = ColliderCircleSegments + 4u * ColliderArcSegments;
 using OverlayJobLineOutput = metal::mesh<ObjectLineVaryings, void, OverlayJobGroupLines * 2u, OverlayJobGroupLines, metal::topology::line>;
 
 inline bool IsColliderKind(uint kind) { return kind >= ExtrasLineKind_ColliderBox; }
 
-// A local-space line vertex and the class that decides how it reaches world space.
 struct ExtrasLineVertex {
     float3 Position;
     uint Class;
@@ -40,13 +37,13 @@ inline float3 CirclePoint(uint segment, uint end, uint segments, float radius, f
     return float3(radius * cos(angle), radius * sin(angle), z);
 }
 
-// Corner `corner` of a diamond of `radius` spanned by two axes, in the order the wireframe walks them.
+// Returns a diamond corner in wireframe order.
 inline float3 DiamondPoint(uint corner, float radius, float3 axis1, float3 axis2) {
     const float3 axes[4] = {axis1, axis2, -axis1, -axis2};
     return axes[corner % 4u] * radius;
 }
 
-// The halo every light carries: a diamond, two dashed rings, and the drop line to its ground diamond.
+// Returns one endpoint of a light halo containing a diamond, two dashed rings, and a ground line.
 inline ExtrasLineVertex LightHaloVertex(uint line, uint end) {
     if (line < 4u) return {DiamondPoint(line + end, 2.7f, float3(1, 0, 0), float3(0, 1, 0)), VCLASS_SCREENSPACE};
     if (line < 12u) return {CirclePoint((line - 4u) * 2u, end, 16u, 9.0f, 0.0f), VCLASS_SCREENSPACE};
@@ -55,7 +52,6 @@ inline ExtrasLineVertex LightHaloVertex(uint line, uint end) {
     return {DiamondPoint(line - 23u + end, 3.0f, float3(1, 0, 0), float3(0, 0, 1)), VCLASS_GROUNDPOINT};
 }
 
-// One endpoint of a unit hemisphere's wireframe, radius 1 and opening in +Y.
 inline float3 ColliderCapPoint(uint line, uint end) {
     if (line < ColliderCircleSegments) {
         const float angle = 2.0f * Pi * float(line + end) / float(ColliderCircleSegments);
@@ -70,13 +66,12 @@ inline float3 ColliderCapPoint(uint line, uint end) {
     return axis * cos(angle) + float3(0, 1, 0) * sin(angle);
 }
 
-// One endpoint of a ring of `radius` at `height`, in the XZ plane.
 inline float3 ColliderRingPoint(uint segment, uint end, float radius, float height) {
     const float angle = 2.0f * Pi * float(segment + end) / float(ColliderCircleSegments);
     return float3(cos(angle) * radius, height, sin(angle) * radius);
 }
 
-// One endpoint of a collision shape's `line`, in the shape's own space.
+// Returns a collision-shape line endpoint in local space.
 inline float3 ColliderWirePoint(OverlayJob job, uint line, uint end) {
     const float4 params = job.Params;
     if (job.ExtrasKind == ExtrasLineKind_ColliderBox) {
@@ -85,14 +80,12 @@ inline float3 ColliderWirePoint(OverlayJob job, uint line, uint end) {
         return mix(-half_size, half_size, float3(float(corner & 1u), float((corner >> 1u) & 1u), float((corner >> 2u) & 1u)));
     }
     if (job.ExtrasKind == ExtrasLineKind_ColliderSphere) {
-        // Three great circles, one per axis plane.
         const uint circle = line / ColliderCircleSegments;
         const float angle = 2.0f * Pi * float(line % ColliderCircleSegments + end) / float(ColliderCircleSegments);
         const float c = cos(angle) * params.x, s = sin(angle) * params.x;
         return circle == 0u ? float3(c, s, 0) : circle == 1u ? float3(c, 0, s) : float3(0, c, s);
     }
 
-    // Cylinders and capsules share a top and bottom profile joined by four side lines.
     const float radius_top = params.x, radius_bottom = params.y, half_height = params.z * 0.5f;
     const uint profile_lines = job.ExtrasKind == ExtrasLineKind_ColliderCapsule ? ColliderCapLines : ColliderCircleSegments;
     if (line >= profile_lines * 2u) {
@@ -107,17 +100,15 @@ inline float3 ColliderWirePoint(OverlayJob job, uint line, uint end) {
     const float radius = top ? radius_top : radius_bottom;
     const float height = top ? half_height : -half_height;
     if (job.ExtrasKind == ExtrasLineKind_ColliderCylinder) return ColliderRingPoint(profile_line, end, radius, height);
-    // The bottom cap mirrors the top one through the XZ plane.
     const float3 point = ColliderCapPoint(profile_line, end) * radius;
     return float3(point.x, height + (top ? point.y : -point.y), point.z);
 }
 
-// One endpoint of the extras `line`, in the object's local space.
+// Returns an object-extra line endpoint in local space.
 inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end) {
     if (IsColliderKind(job.ExtrasKind)) return {float3(job.LocalOffset) + ColliderWirePoint(job, line, end), VCLASS_NONE};
     const float4 params = job.Params;
     if (job.ExtrasKind == ExtrasLineKind_Empty) {
-        // Three axis line segments: +X, +Y, -Z from the origin.
         if (end == 0u) return {float3(0), VCLASS_NONE};
         return {line == 0u ? float3(1, 0, 0) : line == 1u ? float3(0, 1, 0) : float3(0, 0, -1), VCLASS_NONE};
     }
@@ -129,8 +120,7 @@ inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end) 
             float3(-half_w, -half_h, -depth), float3(half_w, -half_h, -depth),
             float3(half_w, half_h, -depth), float3(-half_w, half_h, -depth)
         };
-        // The frame loop, then a wire from each corner to its far endpoint, then the up triangle.
-        // Looking through the camera collapses everything but the frame, leaving the lens rect alone.
+        // Preserve the frame when projection collapses the remaining camera geometry.
         if (line < 4u) return {frame[(line + end) % 4u], VCLASS_NONE};
         if (line < 8u) {
             const uint corner = line - 4u;
@@ -143,8 +133,7 @@ inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end) 
         return {look_through ? frame[0] : tria[(line - 8u + end) % 3u], VCLASS_NONE};
     }
 
-    // Lights lay out their type-specific geometry first, then the shared halo.
-    // A point or spot light rings its range; a directional light has no range to show.
+    // Append the shared halo after type-specific light geometry.
     const float range = params.x, outer_radius = params.y, inner_radius = params.z;
     const bool rings_range = job.ExtrasKind != ExtrasLineKind_LightDirectional && range > 0.0f;
     const uint range_lines = rings_range ? LightRangeSegments : 0u;
@@ -152,7 +141,6 @@ inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end) 
 
     uint local = line - range_lines;
     if (job.ExtrasKind == ExtrasLineKind_LightDirectional) {
-        // Eight rays, each a pair of dashes along its direction.
         const uint ray_count = 8u;
         if (local < ray_count * 2u) {
             const uint ray = local / 2u;
@@ -170,7 +158,6 @@ inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end) 
         if (local < inner_lines) return {CirclePoint(local, end, SpotConeSegments, inner_radius, -SpotConeDepth), VCLASS_NONE};
         local -= inner_lines;
         if (local < SpotConeSegments) {
-            // Spokes from the apex, whose base ends resolve to a silhouette in the transform.
             if (end == 0u) return {float3(0), VCLASS_NONE};
             const float angle = 2.0f * Pi * float(local) / float(SpotConeSegments);
             return {float3(outer_radius * cos(angle), outer_radius * sin(angle), -SpotConeDepth), VCLASS_SPOT_CONE};
@@ -180,8 +167,7 @@ inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end) 
     return LightHaloVertex(local, end);
 }
 
-// Clip position of one extras line endpoint, and the class that placed it.
-// Collision shapes hug their object's surface, so their lines push in front of faces.
+// Returns one extra-line endpoint in clip space and applies collision-shape depth bias.
 inline ExtrasLineVertex ExtrasLineClipVertex(
     const thread Scene &scene, constant OverlayJobDrawPushConstants &pc,
     OverlayJob job, uint line, uint end, thread float4 &clip
@@ -262,7 +248,7 @@ inline float4 OverlayJobClipVertex(
             1.0f
         );
     }
-    // The ground line and diamond keep a fixed theme colour, unaffected by selection state.
+    // Use a fixed theme color for the ground line and diamond.
     if (vertex_class == VCLASS_GROUNDPOINT) color = float4(scene.Theme.Colors.Light);
 
     const LineVaryings line = MakeLineVertex(clip, color, float2(scene.View.ViewportSize));

@@ -5,7 +5,6 @@
 #include <entt/entity/fwd.hpp>
 
 #include <array>
-// RAII for the bindless-slot leases used by the selection compute/render pipeline.
 struct SelectionSlots {
     uint32_t ObjectPickKey{}, ElementPickKey{}, ElementPickId{}, ObjectPickSeenBits{}, ObjectBoxBitset{};
     uint32_t MotionBlurTileImage{}, MotionBlurTileIndirection{};

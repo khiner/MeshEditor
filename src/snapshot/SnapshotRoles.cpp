@@ -59,12 +59,9 @@
 #include <unordered_map>
 #include <unordered_set>
 
-// Single source of truth for the snapshot partition: every registry component is listed as exactly one of Persistent or Derived.
-// Persistent components are serialized, and the table is folded from this list.
-// Derived components are rebuilt by ProcessComponentEvents, not serialized but listed so VerifyCoverage knows it's intentional.
-// Anything in neither list hard-fails at save.
+// Every registry component must appear in exactly one of Persistent or Derived.
 namespace {
-// ViewCamera/LookingThrough aren't default-constructible, so seed via constructor then let serialize-in overwrite it.
+// ViewCamera and LookingThrough require constructor seeds before deserialization.
 void EmplaceViewCamera(entt::registry &r, entt::entity e, std::span<const std::byte> bytes) {
     ViewCamera v{vec3{0, 0, 1}, vec3{0}, Camera{}};
     if (zpp::bits::failure(zpp::bits::in{bytes}(v))) return;
@@ -76,22 +73,18 @@ void EmplaceLookingThrough(entt::registry &r, entt::entity e, std::span<const st
     r.emplace_or_replace<LookingThrough>(e, std::move(l));
 }
 
-// A component that zpp can serialize but can't default-construct specializes this to a custom emplacer,
-// which the table builder uses instead of EmplaceSerialized.
+// Non-default-constructible serialized types specialize this emplacer.
 template<typename C>
 inline constexpr void (*CustomEmplace)(entt::registry &, entt::entity, std::span<const std::byte>) = nullptr;
 template<> inline constexpr auto CustomEmplace<ViewCamera> = &EmplaceViewCamera;
 template<> inline constexpr auto CustomEmplace<LookingThrough> = &EmplaceLookingThrough;
 
-// Specialized to skip entities whose value is derived (a bone's Transform comes from RestLocal + ArmaturePose).
+// Bone transforms are derived from RestLocal and ArmaturePose.
 template<typename C>
 inline constexpr bool (*SkipEntityFor)(const entt::registry &, entt::entity) = nullptr;
 template<> inline constexpr auto SkipEntityFor<Transform> = [](const entt::registry &r, entt::entity e) { return r.all_of<BoneIndex>(e); };
 
-// Per-encoding (de)serialization thunks the table dispatches through.
-
-// Trivially-copyable (or empty-tag) component, restored by memcpy.
-// Aligned storage (not `C value;`) so non-default-constructible trivially-copyable types work, since memcpy creates the object (implicit-lifetime).
+// Aligned storage supports non-default-constructible implicit-lifetime types.
 template<typename C>
 void EmplaceTrivial(entt::registry &r, entt::entity e, std::span<const std::byte> bytes) {
     if constexpr (std::is_empty_v<C>) {
@@ -108,8 +101,7 @@ void SerializeThunk(const void *component, std::vector<std::byte> &out) {
     thread_local std::vector<std::byte> buffer;
     buffer.clear();
     zpp::bits::out archive{buffer};
-    // zpp's aggregate reflection mis-encodes a const aggregate above ~12 members, so serialize through a non-const ref (the out archive only reads it).
-    // This matches the type EmplaceSerialized reads back into.
+    // zpp aggregate reflection mis-encodes large const aggregates, while the output archive only reads this reference.
     if (zpp::bits::failure(archive(const_cast<C &>(*static_cast<const C *>(component))))) return;
     out.insert(out.end(), buffer.begin(), buffer.begin() + archive.position());
 }
@@ -123,7 +115,7 @@ void EmplaceSerialized(entt::registry &r, entt::entity e, std::span<const std::b
 
 using entt::type_list;
 
-// Canonical input state, serialized (per-type encoding auto-selected by MakeEntry below).
+// Canonical serialized state.
 using Persistent = type_list<
     Transform, ViewportTheme, WorkspaceLights, PunctualLight,
     Name, Selected, Active, ObjectKind, MeshActiveElement, Scene, ActiveScene, SceneMembership, SubElementOf,
@@ -143,8 +135,7 @@ using Persistent = type_list<
     SourceSceneIndex, SourceMeshKind, GltfObject, CameraName, LightName, SourceObjectName, MeshName,
     SourceMatrixTransform, SourceEmptyName, MeshSourceLayout, gltf::SourceAssets>;
 
-// Reconstructed from the Persistent set by ProcessComponentEvents, on_construct, and reactive handlers.
-// Never serialized, listed only so VerifyCoverage treats them as intentionally excluded.
+// Reconstructed from Persistent state.
 using Derived = type_list<
     RenderInstance, WorldTransform, PosedLocal, MeshBuffers, MeshShadingSummary, BoneAdjacencyIndices, ModelsBuffer,
     MaterialDirty, LightIndex, EnabledInteractionModes, LastEvaluatedFrame,
@@ -157,19 +148,16 @@ using Derived = type_list<
 #endif
     SoundVertices, ContactDynamics, ReportContacts, MeshBvh>;
 
-// Trivially copyable, but the raw object bytes are nondeterministic: a std::variant's inactive alternative or a
-// std::optional's disengaged storage holds uninitialized memory, and struct padding is never written. memcpy would
-// capture those bytes and make the snapshot image differ run-to-run, so serialize these field-wise via zpp instead.
-// (ViewCamera/LookingThrough have the same problem but are already serialized through their CustomEmplace above.)
+// Field-wise serialization excludes indeterminate variant, optional, and padding bytes from snapshots.
 using ForceSerialize = type_list<
     Camera, PrimitiveShape, ColliderShape, PhysicsMotion, // variant / optional
     ViewportDisplay, MaterialPreviewLighting, RenderedLighting, TransformGizmoState, AudioOutputMix, // padding
     TimelinePlayback, PhysicsJoint, BoneSubPartOf, ModalSolveSettings>; // padding
 
-// Derived components that are memcmp-unsafe (variant/optional/padding), compared field-wise instead of by memcmp.
+// Derived types requiring field-wise comparison.
 using ForceFieldwise = type_list<RotationUiVariant>;
 
-// True when memcmp would be wrong for C (heap-backed, or a variant/optional/padded type), so compare it field-wise.
+// Selects field-wise comparison for heap-backed or indeterminate object representations.
 template<typename C>
 inline constexpr bool NeedsFieldwise =
     CustomEmplace<C> != nullptr ||
@@ -177,8 +165,7 @@ inline constexpr bool NeedsFieldwise =
     entt::type_list_contains_v<ForceFieldwise, C> ||
     (entt::type_list_contains_v<Persistent, C> && !std::is_trivially_copyable_v<C>);
 
-// Guard: a trivially-copyable component with a variant/optional has indeterminate bytes, so it must be field-wise (NeedsFieldwise), not memcpy'd.
-// Padding-only cases aren't statically detectable and stay listed by hand in ForceSerialize.
+// Padding-only cases require explicit ForceSerialize entries because they cannot be detected statically.
 template<typename> inline constexpr bool IsVariantOrOptional = false;
 template<typename... Ts> inline constexpr bool IsVariantOrOptional<std::variant<Ts...>> = true;
 template<typename T> inline constexpr bool IsVariantOrOptional<std::optional<T>> = true;
@@ -208,16 +195,14 @@ bool ValuesEqual(const void *a, const void *b) {
     }
 }
 
-// nullptr => incomparable: a non-trivially-copyable derived component with no serializer, so it's skipped.
+// Returns nullptr for derived types without a valid comparator.
 template<typename C>
 constexpr bool (*MakeComparator())(const void *, const void *) {
     if constexpr (std::is_empty_v<C> || NeedsFieldwise<C> || std::is_trivially_copyable_v<C>) return &ValuesEqual<C>;
     else return nullptr;
 }
 
-// Encoding deduced from the type: empty -> Tag, CustomEmplace or ForceSerialize -> Serialized (zpp),
-// trivially copyable -> Bytes (memcpy), and everything else -> Serialized.
-// CustomEmplace handles non-default-constructible types.
+// Selects Tag, Bytes, or Serialized encoding from the component traits and overrides.
 template<typename C>
 snapshot::SnapshotEntry MakeEntry() {
     using snapshot::Encoding;
@@ -247,11 +232,11 @@ const std::unordered_map<entt::id_type, SnapshotEntry> &SnapshotTable() {
 }
 
 void VerifyCoverage(const entt::registry &r) {
-    std::set<std::string> unclassified; // sorted + deduped for a stable message
+    std::set<std::string> unclassified; // Stable diagnostic ordering.
     for (auto [id, set] : r.storage()) {
         if (set.empty()) continue;
         const auto &info = set.info();
-        if (!std::string_view{info.name()}.starts_with("entt::")) { // skip entt:: entity / reactive storages, not components
+        if (!std::string_view{info.name()}.starts_with("entt::")) {
             if (!ClassifiedHashes.contains(info.hash())) unclassified.emplace(info.name());
         }
     }

@@ -23,7 +23,7 @@ inline OverlayTargets ShadeEdgeQuad(EdgeQuadVaryings in, const thread Scene &sce
     } else {
         color.a *= 1.0f - mix_w;
     }
-    // Opt out of composite AA: edge quads handle their own.
+    // Edge quads apply antialiasing before the composite pass.
     return OverlayTargets{color, float4(0.0f)};
 }
 

@@ -26,8 +26,9 @@ struct VideoRecording {
     std::vector<float> Drained{}; // Scratch the captured audio is drained through each frame.
     // Set for a recording to be played back, which takes the master mix at the monitor's level rather than in pascals.
     bool Monitor{false};
-    MonitorLimiter Limiter{}; // This recording's own envelope, so monitoring never touches the device's.
-    // Set when no device produces audio, so each captured frame renders its own share on this thread.
+    MonitorLimiter Limiter{}; // Recording-specific envelope that does not modify the device envelope.
+    // Set when no device produces audio.
+    // Each captured frame then renders its share on this thread.
     uint32_t OfflineRate{0};
     double OfflineCarry{0}; // Fractional frames owed, so a non-integral rate over fps stays in step.
     int Fps{0};
@@ -81,13 +82,14 @@ void StartRecording(entt::registry &r, entt::entity viewport, const std::filesys
     }
     const auto region = GetCaptureRegion(r);
     const auto &ctx = r.ctx().get<const mtl::Context>();
-    // Zero means video only, which leaves the encode byte-identical to a recording made without audio.
-    // With no device to capture, the audio is rendered here instead, one frame's worth per captured frame.
+    // Zero selects video-only encoding, identical to a recording made without audio.
+    // Render one audio frame per captured video frame when live device capture is unavailable.
     const auto device_rate = with_audio ? BeginAudioCapture(r) : 0u;
     // The offline render follows the same rate the modal bank was built at, so a headless capture and the bank agree at any AUDIO_SAMPLE_RATE.
     const auto offline_rate = with_audio && device_rate == 0 ? DeviceSampleRate(r) : 0u;
     const auto audio_rate = device_rate ? device_rate : offline_rate;
-    // A video is played back, so its track is in device units. A wav is a measurement and stays in pascals.
+    // Video playback uses device units.
+    // WAV measurement output remains in pascals.
     const bool monitor = with_audio && path.extension() != ".wav";
     r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(ctx, path, region.first.x, region.first.y, region.second, fps, audio_rate), .Region = region, .Monitor = monitor, .OfflineRate = offline_rate, .Fps = fps});
 }
@@ -111,7 +113,7 @@ void CaptureRecordFrame(entt::registry &r, entt::entity viewport) {
         r.remove<VideoRecording>(viewport); // Intentional direct registry mutation outside Apply
         return;
     }
-    // Hand over whatever the device produced since the last captured frame, so the muxed track runs at wall-clock length rather than at one buffer per video frame.
+    // Drain all device audio produced since the last frame to preserve wall-clock duration.
     // A no-op when recording without audio.
     rec->Drained.clear();
     if (rec->OfflineRate > 0) {

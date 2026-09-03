@@ -45,8 +45,7 @@ fragment uint MeshletVisibilityPrimitiveFragment(
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant MeshletDrawPushConstants &draw_pc [[buffer(BufferIndex_PushConstants)]]
 ) {
-    // Raster-time coverage decodes the ID against the list this mesh draw is emitting. Alias both
-    // phase slots so the encoded phase bit deliberately has no effect in this fragment.
+    // Alias both phase slots because raster-time coverage decodes IDs against the current draw's list.
     const VisibilityShadingPushConstants pc{
         .PrimitiveSlot = draw_pc.PrimitiveSlot,
         .InstanceSlot = draw_pc.InstanceSlot,

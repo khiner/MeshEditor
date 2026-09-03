@@ -7,13 +7,13 @@
 
 namespace TransformGizmo {
 enum class Mode : uint8_t {
-    Local, // Align to object’s orientation
-    World // Align to global axes (no rotation)
+    Local,
+    World
 };
 } // namespace TransformGizmo
 
 struct GizmoTransform : Transform {
-    TransformGizmo::Mode Mode; // Local/World
+    TransformGizmo::Mode Mode;
 
     using enum TransformGizmo::Mode;
 
@@ -34,7 +34,6 @@ enum class Type : uint8_t {
     Universal,
 };
 
-// Subset `Type` without `Universal`. (need better names)
 enum class TransformType : uint8_t {
     Translate,
     Rotate,
@@ -47,6 +46,6 @@ struct Config {
     bool Snap{false};
 };
 
-// Defined in viewport/ViewportOps.cpp, without imgui included so non-UI code can query gizmo state headless.
+// Available to headless callers without including imgui.
 bool IsUsing(const entt::registry &, entt::entity viewport);
 } // namespace TransformGizmo

@@ -1,4 +1,3 @@
-// Designed to look and behave just like Blender's orientation gizmo.
 // imgui.h must be included before this header.
 
 #pragma once
@@ -8,21 +7,20 @@
 #include <bit>
 
 namespace OrientationGizmo {
-// Radii are relative to rect size.
 static constexpr float CircleRad = .095f, HoverCircleRad = .5f;
 
 inline constexpr vec3 SignedAxis(const mat3 &m, uint32_t i) { return i < 3 ? m[i] : -m[i - 3]; }
 
 struct Context {
-    std::optional<vec2> MouseDownPos; // Present if mouse was pressed in hover circle.
-    std::optional<vec2> DragEndPos; // Present if mouse was dragged past click threshold.
+    std::optional<vec2> MouseDownPos;
+    std::optional<vec2> DragEndPos;
     bool Hovered;
     std::optional<size_t> HoveredAxis;
-    // Cached per-frame layout computed by Interact, consumed by Render.
+    // Interact computes this layout for Render.
     vec2 Center;
     float Size;
-    vec3 AxisCam[6]; // Camera-space axis directions
-    vec2 AxisScreen[6]; // Screen-space axis endpoints (relative to center)
+    vec3 AxisCam[6];
+    vec2 AxisScreen[6];
     size_t SortedIndices[6]{0, 1, 2, 3, 4, 5};
     bool Aligned[6];
 };
@@ -31,7 +29,6 @@ static Context Ctx;
 bool IsActive() { return Ctx.Hovered || Ctx.MouseDownPos || Ctx.DragEndPos; }
 bool IsUsing() { return Ctx.MouseDownPos.has_value() || Ctx.DragEndPos.has_value(); }
 
-// User-intent emitted by Interact for the caller to dispatch.
 struct RotateBy {
     vec2 Delta;
 };
@@ -55,12 +52,11 @@ std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &came
     const auto hover_r = size * HoverCircleRad;
     Ctx.Hovered = interactive && numeric::Dot(mouse_pos - center, mouse_pos - center) <= hover_r * hover_r;
 
-    // Precompute per-axis layout for both Interact and Render.
     const auto cam_basis = numeric::Transpose(camera.Basis());
     for (size_t i = 0; i < 6; ++i) {
         Ctx.AxisCam[i] = SignedAxis(cam_basis, i);
         auto dir = Ctx.AxisCam[i] * size * (0.5f - CircleRad);
-        dir.y = -dir.y; // Flip for ImGui
+        dir.y = -dir.y;
         Ctx.AxisScreen[i] = dir;
         Ctx.Aligned[i] = camera.IsAligned(SignedAxis(I3, i));
     }
@@ -79,14 +75,13 @@ std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &came
         Ctx.MouseDownPos = mouse_pos;
     } else if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && Ctx.MouseDownPos) {
         if (!Ctx.DragEndPos) {
-            // Click threshold is an arbitrary smaller amount than a hovered circle,
-            // since we don't want to wait for that long of a drag to switch into drag behavior.
+            // Start dragging while the pointer remains inside the hovered axis circle.
             const auto click_threshold = 0.5f * size * CircleRad;
             if (const auto mouse_delta = mouse_pos - *Ctx.MouseDownPos;
                 numeric::Dot(mouse_delta, mouse_delta) > click_threshold * click_threshold) {
                 Ctx.DragEndPos = mouse_pos;
             }
-        } else { // Dragging
+        } else {
             const auto drag_delta = mouse_pos - *Ctx.DragEndPos;
             Ctx.DragEndPos = mouse_pos;
             return Interaction{RotateBy{drag_delta * 0.02f}};
@@ -94,7 +89,6 @@ std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &came
     } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         std::optional<Interaction> out;
         if (auto hovered_i = Ctx.HoveredAxis; !Ctx.DragEndPos && hovered_i) {
-            // If selecting the same axis, switch to the opposite axis.
             if (Ctx.Aligned[*hovered_i]) hovered_i = (*hovered_i + 3) % 6;
             out = Interaction{AlignTo{SignedAxis(I3, *hovered_i)}};
         }
@@ -114,7 +108,6 @@ void Render(const colors::AxesArray &Axes) {
         dl.AddCircleFilled(std::bit_cast<ImVec2>(center), size * HoverCircleRad, IM_COL32(120, 120, 120, 130));
     }
 
-    // Draw back to front
     for (auto i : Ctx.SortedIndices) {
         const auto t = 1.f - 0.5f * (Ctx.AxisCam[i].z + 1); // [0, 1], 0 faces camera
         const bool positive = i < 3;
@@ -126,7 +119,7 @@ void Render(const colors::AxesArray &Axes) {
         const auto line_end = std::bit_cast<ImVec2>(center + Ctx.AxisScreen[i]);
         if (positive) dl.AddLine(std::bit_cast<ImVec2>(center), line_end, fill_color, 2.f);
         dl.AddCircleFilled(line_end, positive ? r : r - .5f, fill_color);
-        if (!positive) { // Outline
+        if (!positive) {
             const auto color = aligned ? colors::Lighten(Axes[i - 3], .8f) : colors::Blend(Axes[i], Axes[i - 3], t);
             dl.AddCircle(line_end, r, color, 32, 1.f);
         }

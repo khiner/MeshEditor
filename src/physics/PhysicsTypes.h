@@ -30,8 +30,7 @@ struct PhysicsMaterial {
     std::string Name{};
 };
 
-// Named collision system. Document-level resource; each entity gets a bit position
-// (assigned by iteration order over view<CollisionSystem>) in the Jolt collision mask.
+// Defines a document-level collision system assigned a Jolt mask bit by registry iteration order.
 struct CollisionSystem {
     std::string Name{};
 };
@@ -148,8 +147,7 @@ struct PhysicsMotion {
     float LinearDamping{0.04f}, AngularDamping{0.1f};
 };
 
-// A force-driven, positive-mass rigid body, whose mass properties are authoritative for the object's
-// contact dynamics. A kinematic or zero-mass (infinite) body is not.
+// Defines a force-driven positive-mass body whose mass properties control contact dynamics.
 inline bool IsAuthoritativeDynamicBody(const PhysicsMotion &m) { return !m.IsKinematic && m.Mass.value_or(DefaultMass) > 0; }
 
 // Present iff PhysicsMotion is present.

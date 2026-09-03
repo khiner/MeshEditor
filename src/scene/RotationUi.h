@@ -6,8 +6,6 @@
 
 #include <variant>
 
-// Mutually exclusive structs to track rotation representation.
-// `Transform.R` is the source of truth, these hold slider values only.
 struct RotationQuat {
     quat Value; // xyzw
 };

@@ -21,8 +21,8 @@ struct PosedRanges {
     uint32_t PositionBase{InvalidOffset};
     uint32_t VertexCount{0};
     uint32_t MeshletBoundsBase{InvalidOffset};
-    uint32_t Level0Count{0}; // Original clusters across the mesh's primitives, which is what posed bounds cover.
-    std::optional<NormalRanges> Normals{}; // Instance 0's offsets.
+    uint32_t Level0Count{0};
+    std::optional<NormalRanges> Normals{};
 
     uint32_t PositionOffset(uint32_t i) const { return PositionBase + i * VertexCount; }
     uint32_t MeshletBoundsOffset(uint32_t i) const { return MeshletBoundsBase + i * Level0Count; }
@@ -43,9 +43,9 @@ struct GpuSceneState {
     std::unordered_map<entt::entity, PosedRanges> PosedByEntity;
     std::unordered_set<entt::entity> MeshletEditOverlayMeshes;
     bool MeshletEditHasSharpEdges{};
-    bool InstanceRecordsStale{true}; // A record field other than the object id or flags needs a rewrite.
-    bool InstanceFlagsStale{true}; // Object ids and silhouette flags need a rewrite.
-    uint64_t InstanceRecordInputs{0}; // Signature of the mesh-keyed inputs the records read.
+    bool InstanceRecordsStale{true};
+    bool InstanceFlagsStale{true};
+    uint64_t InstanceRecordInputs{0};
 };
 
 // Mark every instance record for a rewrite, for a change the record-input signature does not see.

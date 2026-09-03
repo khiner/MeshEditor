@@ -5,7 +5,7 @@
 #include "Varyings.metal"
 #include "SelectionElementPushConstants.metal"
 
-// Element picking from the id raster: points, lines and X-ray faces all resolve through one key.
+// Resolves point, line, and X-ray face IDs through one selection key.
 [[early_fragment_tests]]
 fragment void SelectionElementPickFragment(
     ElementIdFragmentVaryings in [[stage_in]],

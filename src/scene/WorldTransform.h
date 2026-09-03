@@ -2,7 +2,6 @@
 
 #include "gpu/Transform.h"
 
-// Distinct component type so an entity can hold both local and world transforms.
 struct WorldTransform : Transform {
     using Transform::Transform;
     WorldTransform(const Transform &t) : Transform{t} {}

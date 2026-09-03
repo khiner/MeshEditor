@@ -20,9 +20,7 @@
 namespace {
 constexpr size_t MeshletMaxVertices{size_t(MeshletLimit::MaxVertices)};
 constexpr size_t MeshletMaxTriangles{size_t(MeshletLimit::MaxTriangles)};
-// A primitive with more triangles than this is split into spatial chunks that clusterize on their
-// own. The split comes from the triangle count alone, so a mesh's meshlets never depend on how many
-// cores ran the build.
+// Split large primitives deterministically into independently clustered spatial chunks.
 constexpr uint32_t ChunkTriangles{128u * 1024u};
 
 std::array<uint32_t, 3> CanonicalTriangle(std::array<uint32_t, 3> triangle) {
@@ -70,7 +68,7 @@ uint32_t PackCone(const meshopt_Bounds &bounds, bool cone_cull_safe) {
         uint32_t(uint8_t(bounds.cone_axis_s8[2])) << 16u |
         uint32_t(uint8_t(cone_cull_safe ? bounds.cone_cutoff_s8 : int8_t{127})) << 24u;
 }
-// One spatial chunk of a primitive's triangles, holding the meshlets its own clusterization made.
+// Stores meshlets for one spatial chunk of a primitive.
 // Vertex offsets stay relative to the chunk's vertex list until the merge places them.
 struct MeshletChunk {
     uint32_t FirstTriangle{}, TriangleCount{}, TriangleIdBase{};
@@ -78,8 +76,7 @@ struct MeshletChunk {
     std::vector<uint32_t> Vertices{};
 };
 
-// Split a triangle range at the median of the widest axis, the axis meshopt's own kd-tree picks, so
-// every chunk stays one compact spatial region.
+// Splits at the median of meshopt's widest centroid axis.
 void SplitTriangleChunks(std::span<uint32_t> triangles, std::span<const std::array<float, 3>> centroids, uint32_t first, std::vector<MeshletChunk> &chunks) {
     if (triangles.size() <= ChunkTriangles) {
         chunks.emplace_back(MeshletChunk{.FirstTriangle = first, .TriangleCount = uint32_t(triangles.size())});
@@ -154,8 +151,7 @@ DrawData PrimitiveDrawData(const GpuBuffers &buffers, const MeshBuffers &mb, con
 
 MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &buffers, const MeshBuffers &mb, const Mesh &mesh, const MeshStore &meshes) {
     const uint32_t store_id = mesh.GetStoreId();
-    // A triangle mesh's draws index the store's corner array, so the clusterizer reads it there. An
-    // n-gon mesh fans into a triangulated buffer of its own, written before this build.
+    // Triangle meshes use store corners; n-gons use the prebuilt triangulated index buffer.
     const auto corners = mesh.CornerVertices();
     const auto indices = corners.size() == mesh.TriangleIndexCount() ? corners : buffers.FaceIndexBuffer.Get(mb.FaceIndices);
     assert(indices.size() == mesh.TriangleIndexCount());
@@ -224,9 +220,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
 
     const bool face_topology = in.FaceTopology;
     const bool line_topology = in.LineTopology;
-    // Forward shading keeps six deterministic unshared corners per element. Visibility is
-    // position-only, so it safely shares four quad vertices and fits sixteen elements in the
-    // triangle entry's 64-vertex output contract.
+    // Position-only visibility shares four quad vertices and fits sixteen elements under the 64-vertex output limit.
     constexpr uint32_t ElementsPerMeshlet{16u};
     const uint32_t element_count = in.ElementCount;
     const auto &edge_indices = in.EdgeIndices;
@@ -244,8 +238,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
         }
     }
 
-    // One meshlet triangle carries one source triangle id and three local indices, so both lists are
-    // sized exactly from the source ranges and written in place.
+    // Allocate one source ID and three local indices per meshlet triangle.
     MeshletBuild sink{
         .TriangleIds = std::vector<uint32_t>(face_topology ? in.TriangleCount : element_count),
         .LocalTriangles = std::vector<uint8_t>(face_topology ? size_t(in.TriangleCount) * 3 : 0),
@@ -255,8 +248,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
     std::vector<uint8_t> flat_face_triangles;
     std::vector<uint32_t> chunk_triangles;
     std::vector<MeshletChunk> chunks;
-    // One chunk's clusterization. It welds only its own corners and fills only the list range its
-    // triangle count already fixed, so every chunk of a primitive runs at once.
+    // Each chunk uses disjoint input and output ranges and can run concurrently.
     const auto build_chunk = [&](const PrimitiveTriangleRange &primitive, std::span<const uint32_t> primitive_indices, uint32_t primitive_record, MeshletChunk &chunk) {
         if (chunk.TriangleCount == 0u) return;
 
@@ -264,8 +256,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
         const uint32_t corner_count = chunk.TriangleCount * 3u;
         const auto chunk_triangle_ids = std::span{chunk_triangles}.subspan(chunk.FirstTriangle, chunk.TriangleCount);
 
-        // Meshlets are built inside one source-primitive range. Coverage classification therefore
-        // remains uniform across every resulting meshlet and can be done once in the meshlet cull.
+        // Source-primitive confinement makes coverage classification uniform per meshlet.
 #ifndef NDEBUG
         const auto face_ids = in.Weld.TriangleFaceIds;
         for (const auto triangle : chunk_triangle_ids) {
@@ -388,7 +379,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
                 .Radius = bounds.radius,
             });
         }
-        // Every source triangle lands in exactly one meshlet, which is what fixes each chunk's range.
+        // Every source triangle belongs to exactly one meshlet.
         assert(triangle_id_count == chunk.TriangleCount);
     };
 
@@ -429,8 +420,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
         const uint32_t primitive_record = uint32_t(sink.Primitives.size());
         ParallelFor(uint32_t(chunks.size()), [&](uint32_t i) { build_chunk(primitive, primitive_indices, primitive_record, chunks[i]); });
 
-        // Chunks merge in split order, so the meshlets a mesh produces never depend on which chunk
-        // finished first.
+        // Merge chunks in split order for deterministic meshlet ordering.
         const uint32_t first_meshlet = uint32_t(sink.Records.size());
         size_t record_total = 0, vertex_total = 0;
         for (const auto &chunk : chunks) {
@@ -515,8 +505,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
         }
     }
 
-    // Choose one meshlet per canonical vertex. Finest-LOD edit routing skips cone culling, and
-    // conservative bounds rejection means a culled owner cannot contain a visible element.
+    // Assign one finest-LOD meshlet to each canonical vertex for edit routing.
     std::vector<uint8_t> vertex_owned(vertices.size());
     for (const auto &record : sink.Records) {
         const auto topology = MeshPrimitiveTopology(record.LocalTriangleOffset >> uint32_t(MeshletGeometryEncoding::TopologyShift));
@@ -535,7 +524,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
     }
 
     if (face_topology) {
-        // Choose one meshlet per canonical edge.
+        // Select one meshlet per canonical edge.
         std::vector<uint8_t> edge_owned(in.EdgeCount);
         for (const auto &record : sink.Records) {
             for (uint32_t t = 0u; t < record.TriangleCount; ++t) {
@@ -553,8 +542,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
     return sink;
 }
 
-// Reads the same captured inputs the level-0 build read, plus that build's own lists, so this runs
-// on the thread that produced them.
+// Requires the captured inputs and finished level-zero build from the producing thread.
 ClusterLodBuild BuildMeshletClusterLod(const MeshletBuildInputs &in, const MeshletBuild &build) {
     // A face-less mesh clusters line or point elements, which carry no coarser level.
     if (!in.FaceTopology || build.Records.size() <= ClusterLodPartitionSize) return {};
@@ -587,7 +575,7 @@ ClusterLodBuild BuildMeshletClusterLod(const MeshletBuildInputs &in, const Meshl
         .CornerVertices = in.Indices,
         .Positions = &in.Vertices.front().Position.x,
         .PositionStride = sizeof(Vertex),
-        // Empty normals derive geometric ones, which is what the simplifier weighs its collapses by.
+        // Empty normals make simplification weight collapses from derived geometric normals.
         .CornerNormals = {},
         .Weld = in.Weld,
         .Primitives = primitives,
@@ -598,8 +586,7 @@ ClusterLodBuild BuildMeshletClusterLod(const MeshletBuildInputs &in, const Meshl
     return BuildClusterLod(mesh);
 }
 
-// Take every arena the finished build needs, and rebase the offsets it left relative to its own ranges.
-// Serial, because arena offsets follow call order.
+// Places a finished build and rebases its relative offsets; call serially to preserve arena order.
 void CommitMeshlets(GpuBuffers &buffers, MeshBuffers &mb, MeshletBuild &build) {
     buffers.ReleaseMeshlets(mb);
 
@@ -620,8 +607,7 @@ void CommitMeshlets(GpuBuffers &buffers, MeshBuffers &mb, MeshletBuild &build) {
     }
     mb.Primitives = buffers.Primitives.Allocate(build.Primitives);
     for (auto &record : buffers.Meshlets.GetMutable(mb.Meshlets)) record.Primitive += mb.Primitives.Offset;
-    // Every primitive presents one never-pruned span node, which is the whole traversal a mesh
-    // without a DAG needs. A DAG commit replaces these with the real trees.
+    // Give each non-DAG primitive one unpruned span node until a DAG commit replaces it.
     auto placed_primitives = buffers.Primitives.GetMutable(mb.Primitives);
     std::vector<LodNode> nodes;
     nodes.reserve(placed_primitives.size());
@@ -646,7 +632,7 @@ void CommitClusterLod(GpuBuffers &buffers, MeshBuffers &mb, const ClusterLodBuil
     assert(build.PrimitiveRanges.size() == mb.Primitives.Count);
     // The meshlet commit that produced this DAG's input dropped whatever DAG came before it.
     assert(mb.ClusterGroups.Count == 0);
-    // The DAG's span trees replace the whole-run nodes the meshlet commit left.
+    // The DAG's span trees replace the whole-run nodes retained by the meshlet commit.
     buffers.LodNodes.Release(mb.LodNodes);
 
     std::vector<ClusterGroup> groups(build.Groups.size());
@@ -663,8 +649,7 @@ void CommitClusterLod(GpuBuffers &buffers, MeshBuffers &mb, const ClusterLodBuil
     mb.CoarseVertices = buffers.MeshletVertexCorners.Allocate(build.VertexCorners);
     mb.CoarseLocalTriangles = buffers.MeshletLocalTriangles.Allocate(build.LocalTriangles);
 
-    // Each primitive keeps its original clusters in their existing order and gains its coarse ones
-    // behind them, so a pinned instance still draws exactly the first Level0Count records.
+    // Append coarse clusters after original clusters so pinned instances retain the Level0Count prefix.
     std::vector<MeshletRecord> records;
     records.reserve(mb.Meshlets.Count + build.Clusters.size());
     {

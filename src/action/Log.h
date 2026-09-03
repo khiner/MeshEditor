@@ -11,13 +11,10 @@
 #include <vector>
 
 namespace action {
-// Poison pill enqueued last at shutdown:
-// Wakes the writer and tells it to exit after it has drained every real record ahead of it in the FIFO.
+// A final sentinel stops the writer after earlier FIFO records are written.
 struct Stop {};
 
-// SPSC write-behind log:
-// Producer calls Enqueue with no IO or serialization.
-// Writer thread serializes each record and appends it to `out`.
+// Single-producer, single-consumer asynchronous log.
 template<typename RecordType>
 class WriteBehindLog {
 public:
@@ -30,10 +27,10 @@ public:
     WriteBehindLog(const WriteBehindLog &) = delete;
     WriteBehindLog &operator=(const WriteBehindLog &) = delete;
 
-    // Push a record onto the queue and return immediately: no IO, no serialization, no blocking.
+    // Enqueues without I/O, serialization, or blocking.
     void Enqueue(RecordType &&record) { Queue.enqueue(Record{std::move(record)}); }
 
-    // Enqueue the poison pill and join the writer, which drains all prior records first. Idempotent.
+    // Enqueues the stop sentinel and joins after prior records are written.
     void Stop() {
         if (!Writer.joinable()) return;
         Queue.enqueue(Record{action::Stop{}});
@@ -43,7 +40,7 @@ public:
 private:
     using Record = std::variant<RecordType, action::Stop>;
 
-    // Block for a record, drain the rest of the burst, then flush.
+    // Waits for a record, writes the available batch, and flushes.
     void Run() {
         Record item;
         for (bool stopping = false; !stopping;) {
@@ -69,20 +66,19 @@ struct RestoreSession {
     std::filesystem::path Path;
     uint32_t UnixSeconds;
 };
-// Working restore directories, sorted most-recent first.
+// Returns working restore directories in descending modification order.
 std::vector<RestoreSession> ListRestoreSessions();
-// Create and return a new working restore directory, pruning old ones.
+// Creates a working restore directory and prunes old directories.
 std::filesystem::path ReserveRestoreSession();
 
-// Open the action log and start its writer thread. Truncates unless `append`.
+// Opens the action log and starts its writer thread.
 void StartLog(std::filesystem::path, bool append = false);
-// Flush and join the writer. Returns the log path, or empty if nothing was recorded (an empty new log is dropped).
+// Flushes and joins the writer, returning an empty path when no records were written.
 std::filesystem::path StopLog();
 
-// Advance the viewport between actions so actions read updated derived state.
+// Advances derived viewport state between replayed actions.
 using ReplayTick = void (*)(entt::registry &, entt::entity viewport);
 
-// Apply each action to the current scene after the first `skip` records, ticking between them.
-// False if the log can't be opened.
+// Replays records after `skip` and returns false when the log cannot be opened.
 bool ReplayLog(entt::registry &, entt::entity viewport, const std::filesystem::path &, ReplayTick, uint64_t skip = 0);
 } // namespace action

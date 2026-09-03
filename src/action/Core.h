@@ -63,7 +63,7 @@ struct SetName {
     std::string Name;
 };
 
-// Create a new entity carrying the component identified by `ComponentType`, named "<Prefix> <ordinal>".
+// Creates an entity with ComponentType and the name "<Prefix> <ordinal>".
 struct CreateNamed {
     entt::id_type ComponentType;
     std::string Prefix;

@@ -1,4 +1,4 @@
-// Times the contact reporting the audio system needs, against the physics step it rides on.
+// Measures audio contact collection relative to physics stepping.
 // Two ways of obtaining a contact's impulses, compared on the same scene.
 
 #include "Jolt/Jolt.h"
@@ -26,7 +26,6 @@
 using namespace JPH;
 
 namespace {
-// What the drain consumes, matching the fields the collectors append per sub-shape entry.
 struct RawSustained {
     uint32 Body1Index, Body2Index;
     uint64 SubShapeKey;
@@ -37,7 +36,6 @@ struct RawSustained {
 // Tags a body whose contacts are reported in detail, standing in for the real component of the same name.
 struct ReportContacts {};
 
-// How a callback decides whether a pair is worth reporting: an array indexed by body, or the body's entity.
 enum class Gate { Array,
                   Entity };
 
@@ -53,7 +51,6 @@ public:
     std::vector<RawSustained> Raw;
     size_t Entries{0};
 
-    // A pair is worth solving for detail when at least one of its bodies reports contacts.
     bool PairReports(const Body &b1, const Body &b2) const { return Reports(b1) || Reports(b2); }
 
     void Reset() {
@@ -98,7 +95,6 @@ public:
     }
 };
 
-// Read back what the solver applied, which already carries the per-point positions.
 class AppliedCollector final : public CollectorBase {
 public:
     void OnContactPersisted(const Body &b1, const Body &b2, const ContactManifold &manifold, ContactSettings &s) override {
@@ -166,15 +162,14 @@ double Bench(uint32 rows, CollectorBase *collector, uint32 frames) {
         if (collector != nullptr) collector->Reset();
         system.Update(1.0f / 60.0f, 10, &temp_allocator, &job_system);
     };
-    for (uint32 i = 0; i < 60; ++i) frame(); // let the pile settle and the solver warm start
+    for (uint32 i = 0; i < 60; ++i) frame();
 
     const auto start = std::chrono::steady_clock::now();
     for (uint32 i = 0; i < frames; ++i) frame();
     const auto elapsed = std::chrono::duration<double, std::micro>{std::chrono::steady_clock::now() - start}.count();
     return elapsed / double(frames);
 }
-} // namespace
-
+}
 int main() {
     RegisterDefaultAllocator();
     Factory::sInstance = new Factory();

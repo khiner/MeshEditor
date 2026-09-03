@@ -5,8 +5,6 @@
 #include <cmath>
 #include <memory>
 
-// Exact evaluation uses floating-point expansions: nonoverlapping doubles in increasing magnitude, so the last component carries the sign.
-// Filter bounds are conservative multiples of the machine epsilon, so the expansion path runs only near degeneracy.
 namespace {
 constexpr double Eps = 0x1p-53;
 
@@ -312,9 +310,6 @@ void TwoTwoDiff(Two a, Two b, double *x) {
     x[3] = top.Hi;
 }
 
-// The two refinement stages between the filter and the exact determinant.
-// Stage B evaluates the determinant exactly in the rounded differences, and stage C adds what the difference tails contribute.
-// The permanent is the one the filter already computed.
 double Orient3DAdapt(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d, double permanent) {
     const double adx = a.x - d.x, bdx = b.x - d.x, cdx = c.x - d.x;
     const double ady = a.y - d.y, bdy = b.y - d.y, cdy = c.y - d.y;
@@ -340,7 +335,6 @@ double Orient3DAdapt(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3
     const double adxtail = TwoDiff(a.x, d.x).Lo, bdxtail = TwoDiff(b.x, d.x).Lo, cdxtail = TwoDiff(c.x, d.x).Lo;
     const double adytail = TwoDiff(a.y, d.y).Lo, bdytail = TwoDiff(b.y, d.y).Lo, cdytail = TwoDiff(c.y, d.y).Lo;
     const double adztail = TwoDiff(a.z, d.z).Lo, bdztail = TwoDiff(b.z, d.z).Lo, cdztail = TwoDiff(c.z, d.z).Lo;
-    // Every difference was exact, so stage B already held the whole determinant.
     if (adxtail == 0 && bdxtail == 0 && cdxtail == 0 && adytail == 0 && bdytail == 0 && cdytail == 0 &&
         adztail == 0 && bdztail == 0 && cdztail == 0) {
         return det;
@@ -357,10 +351,6 @@ double Orient3DAdapt(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3
     return Orient3DExact(a, b, c, d);
 }
 
-// The two refinement stages between the filter and the exact determinant.
-// Stage B is exact in the rounded differences, and stage C adds what the difference tails contribute.
-// Each returns as soon as its own error bound clears, so the exact expansion runs only for points that really are cospherical.
-// The permanent is the one the filter already computed.
 double InSphereAdapt(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d, const dvec3 &e, double permanent) {
     const double aex = a.x - e.x, bex = b.x - e.x, cex = c.x - e.x, dex = d.x - e.x;
     const double aey = a.y - e.y, bey = b.y - e.y, cey = c.y - e.y, dey = d.y - e.y;
@@ -377,9 +367,6 @@ double InSphereAdapt(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3
 
     double temp8a[8], temp8b[8], temp8c[8], temp16[16], temp24[24], temp48[48];
     double xdet[96], ydet[96], zdet[96], xydet[192];
-    // One row's contribution: the 3x3 minor of the other three rows, times that row's lift.
-    // The lift is a pair of scalings by each of the row's own coordinates, so the product stays a single expansion.
-    // The lift carries the cofactor sign, alternating down the rows.
     const auto row = [&](const double *m1, double s1, const double *m2, double s2, const double *m3, double s3,
                          double x, double y, double z, double lift_sign, double *out) {
         const int n8a = ExpScale(4, m1, s1, temp8a);
@@ -413,7 +400,6 @@ double InSphereAdapt(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3
     const double bextail = TwoDiff(b.x, e.x).Lo, beytail = TwoDiff(b.y, e.y).Lo, beztail = TwoDiff(b.z, e.z).Lo;
     const double cextail = TwoDiff(c.x, e.x).Lo, ceytail = TwoDiff(c.y, e.y).Lo, ceztail = TwoDiff(c.z, e.z).Lo;
     const double dextail = TwoDiff(d.x, e.x).Lo, deytail = TwoDiff(d.y, e.y).Lo, deztail = TwoDiff(d.z, e.z).Lo;
-    // Every difference was exact, so stage B already held the whole determinant.
     if (aextail == 0 && aeytail == 0 && aeztail == 0 && bextail == 0 && beytail == 0 && beztail == 0 &&
         cextail == 0 && ceytail == 0 && ceztail == 0 && dextail == 0 && deytail == 0 && deztail == 0) {
         return det;
@@ -590,7 +576,6 @@ double Orient4DAdapt(
     const double dextail = TwoDiff(d.x, e.x).Lo, deytail = TwoDiff(d.y, e.y).Lo, deztail = TwoDiff(d.z, e.z).Lo;
     const double aeheighttail = TwoDiff(aheight, eheight).Lo, beheighttail = TwoDiff(bheight, eheight).Lo;
     const double ceheighttail = TwoDiff(cheight, eheight).Lo, deheighttail = TwoDiff(dheight, eheight).Lo;
-    // Every difference was exact, so stage B already held the whole determinant.
     if (aextail == 0 && aeytail == 0 && aeztail == 0 && bextail == 0 && beytail == 0 && beztail == 0 &&
         cextail == 0 && ceytail == 0 && ceztail == 0 && dextail == 0 && deytail == 0 && deztail == 0 &&
         aeheighttail == 0 && beheighttail == 0 && ceheighttail == 0 && deheighttail == 0) {

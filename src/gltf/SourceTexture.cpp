@@ -34,7 +34,7 @@ std::optional<DecodedImage> DecodeImageRgba8(const entt::registry &r, uint32_t i
         return decoded ? std::optional{std::move(*decoded)} : std::nullopt;
     };
     if (!image.Bytes.empty()) return decode(image.Bytes);
-    // An external source drops its bytes once the texture uploads, and its path is what persists.
+    // Reload external sources from their retained path.
     const auto bytes = File::Read(image.SourceAbsPath);
     return bytes ? decode(*bytes) : std::nullopt;
 }
@@ -45,14 +45,14 @@ std::optional<NormalMapRef> MeshMaterialNormalMap(const entt::registry &r, entt:
     const auto materials = r.ctx().get<const MeshStore>().GetPrimitiveMaterialIndices(mesh->GetStoreId());
     if (materials.empty()) return {};
 
-    // Materials index the GPU buffer, which the import remaps source indices into, so read the binding rather than the source metadata.
+    // Material bindings contain the remapped GPU indices.
     const auto &buffers = r.ctx().get<const GpuBuffers>();
     const uint32_t material = materials.front();
     if (material >= buffers.Materials.Count()) return {};
     const auto &pbr = buffers.Materials.Data()[material];
     if (pbr.NormalTexture.Slot == InvalidSlot) return {};
 
-    // The sampler slot the material samples names the source image that was uploaded into it.
+    // Resolve the uploaded source image through the sampler slot.
     for (auto [_, manifest] : r.view<const MaterializedTextures>().each()) {
         for (const auto &t : manifest.Items) {
             if (t.SamplerSlot != pbr.NormalTexture.Slot) continue;

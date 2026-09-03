@@ -3,8 +3,7 @@
 
 #include "Varyings.metal"
 
-// Each destination texel centre lands on the corner four source texels share, so the linear filter
-// weights them evenly and the level is their average.
+// Sample the shared corner of four source texels to obtain their linear-filtered average.
 fragment float4 MipDownsampleFragment(
     QuadVaryings in [[stage_in]],
     texture2d<float> source [[texture(0)]],

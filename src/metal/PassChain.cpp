@@ -9,7 +9,7 @@ PassChain::~PassChain() { ClosePass(); }
 template<typename AttachmentT> void PassChain::SampleInto(AttachmentT *attachment, std::string_view name) {
     if (!Timer) return;
     const auto pass = Timer->Claim(name);
-    if (!pass) return; // The sample buffer is full, so this pass goes untimed.
+    if (!pass) return;
     attachment->setSampleBuffer(Timer->Buffer());
     attachment->setStartOfEncoderSampleIndex(*pass * 2);
     attachment->setEndOfEncoderSampleIndex(*pass * 2 + 1);
@@ -41,8 +41,7 @@ MTL::RenderCommandEncoder *PassChain::BeginRender(MTL::RenderPassDescriptor *pas
     }
     ClosePass();
     auto *encoder = CommandBuffer->renderCommandEncoder(pass);
-    // Imported and generated geometry both wind front faces counter-clockwise, which Metal's
-    // clockwise default would report inverted to [[front_facing]].
+    // Use counter-clockwise front faces for imported and generated geometry.
     encoder->setFrontFacingWinding(MTL::WindingCounterClockwise);
     OpenPass(encoder, barriers);
     return encoder;
@@ -66,4 +65,4 @@ MTL::BlitCommandEncoder *PassChain::BeginBlit(std::string_view name, MTL::Stages
     OpenPass(encoder, {{after, MTL::StageBlit}});
     return encoder;
 }
-} // namespace mtl
+}

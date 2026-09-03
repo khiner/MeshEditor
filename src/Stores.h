@@ -6,10 +6,10 @@ namespace mtl {
 struct Context;
 } // namespace mtl
 
-// Create the registry stores and allocate TextureStore's white-texture sampler slot.
+// Create registry stores and allocate the white-texture sampler slot.
 void InitStoreCtx(entt::registry &, const mtl::Context &);
 
-// InitStoreCtx must run first.
+// Require InitStoreCtx to run first.
 entt::entity WireRegistry(entt::registry &);
 
 void TearDownStoreCtx(entt::registry &);

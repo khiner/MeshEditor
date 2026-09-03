@@ -17,12 +17,10 @@ void Append(std::vector<std::byte> &out, const T &value) {
 } // namespace
 
 std::vector<std::byte> SnapshotSceneState(const entt::registry &r) {
-    VerifyCoverage(r); // hard fail if any present component is unclassified, before it silently drops from the image
+    VerifyCoverage(r);
     const auto &table = SnapshotTable();
 
-    // Collect the Persistent pools, sorted by type hash so section order doesn't depend on storage creation order.
-    // Skip empty pools: once entt creates a pool it lingers even when empty, so its presence reflects registry history, not state.
-    // Including it would make the byte image history-dependent.
+    // Sort nonempty Persistent pools by type hash for history-independent output.
     std::vector<std::pair<entt::id_type, const entt::sparse_set *>> pools;
     for (auto [id, set] : r.storage()) {
         if (!set.empty() && table.contains(id)) pools.emplace_back(id, &set);
@@ -32,8 +30,7 @@ std::vector<std::byte> SnapshotSceneState(const entt::registry &r) {
     std::vector<std::byte> out;
     for (const auto [id, set] : pools) {
         const auto &entry = table.at(id);
-        // Skip tombstones (in-place-delete leaves them in iteration) and omit pools with no live entities, since both
-        // reflect deletion history, not state. Sort by integral id so byte order doesn't depend on insertion order.
+        // Exclude tombstones and sort by integral entity ID for history-independent output.
         std::vector<entt::entity> ents;
         for (const auto e : *set) {
             if (e != entt::tombstone && !(entry.SkipEntity && entry.SkipEntity(r, e))) ents.emplace_back(e);
@@ -54,7 +51,7 @@ std::vector<std::byte> SnapshotSceneState(const entt::registry &r) {
                     break;
                 }
                 case Encoding::Serialized: {
-                    // Length-prefix so the restore reader can advance past a variable-length value.
+                    // Length-prefix variable-size values for sequential restoration.
                     const auto len_pos = out.size();
                     Append(out, uint32_t(0));
                     entry.Serialize(set->value(e), out);

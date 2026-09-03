@@ -1,5 +1,5 @@
 bindings:
-  # Dynamic: motion blur binds a per-step instance of the view UBO by dynamic offset.
+  # Motion blur binds each step through a dynamic UBO offset.
   - name: SceneViewUBO
     kind: UniformDynamic
   - name: ViewportThemeUBO
@@ -176,19 +176,14 @@ enums:
       - name: IridescenceThickness
       - name: AnisotropyStrength
       - name: AnisotropyDirection
-  # Corner shading-normal source, carried in a corner-class value's top two bits.
-  # Vertex reads the smooth vertex normal and Face reads the face normal.
-  # Seam reads a sector normal indexed by the value's low 30 bits.
+  # The top two bits select vertex, face, or normal-sector shading; the low 30 bits index the sector.
   - name: CornerClass
     type: u32
     values:
       - name: Vertex
       - name: Face
       - name: Seam
-  # Bit layout of a corner-class value: the CornerClass tag above the seam index.
-  # Uniform meshes store no class buffer.
-  # UniformFaceOffset in DrawData.CornerClassOffset means every corner classifies Face.
-  # InvalidOffset there means every corner classifies Vertex.
+  # UniformFaceOffset and InvalidOffset encode uniform Face and Vertex classification without a class buffer.
   - name: CornerClassEncoding
     type: u32
     values:
@@ -198,10 +193,8 @@ enums:
         value: 0x3fffffffu
       - name: UniformFaceOffset
         value: 0xfffffffeu
-  # Bit layout of a fan-adjacency item: the loop position above the face index.
-  # Vertex and seam fans gather one item per incident face.
-  # Each item contributes the face's unit normal weighted by its corner angle (Blender's weighting).
-  # Bounds: 4.2M faces per mesh, face valence up to 1024.
+  # Packs loop position above face index for Blender-style corner-angle-weighted normal accumulation.
+  # Supports up to 4.2 million faces per mesh and face valence up to 1024.
   - name: FanItemEncoding
     type: u32
     values:
@@ -209,14 +202,12 @@ enums:
         value: 22
       - name: FaceMask
         value: 0x3fffffu
-  # Which CSR table a vertex-adjacency job builds.
   - name: VertexAdjacencyKind
     type: u32
     values:
       - name: Fan
       - name: Edge
-  # How a visibility id divides: the triangle within its meshlet in the low bits, the meshlet's place
-  # in the visible list above that, and the phase whose list to read in the top bit.
+  # Packs local triangle, visible-list meshlet index, and phase into low, middle, and top bits.
   - name: VisibilityId
     type: u32
     values:
@@ -224,7 +215,7 @@ enums:
         value: 6
       - name: IndexBits
         value: 25
-  # Layout of the wire coverage buffer: one counter per color class, then the nearest line's depth.
+  # Stores one counter per color class followed by nearest-line depth.
   - name: WireCoverage
     type: u32
     values:
@@ -247,16 +238,16 @@ enums:
         value: 1u
       - name: ElementSelection
         value: 2u
-      # The instance renders only clusters with no refining group, so edits and deforms see exact source elements.
+      # Restrict edited and deformed instances to original source geometry.
       - name: LodPinFinest
         value: 4u
-      # The primary edit instance emits its visible source edges and points from fine meshlets.
+      # Emit source edges and points from original meshlets for the primary edit instance.
       - name: EditOverlay
         value: 8u
-      # Wire rasterization consumes canonical source edges from finest meshlets.
+      # Provide canonical source edges from original meshlets for wire rasterization.
       - name: Wire
         value: 16u
-      # Procedural/editor-only geometry never enters the material visibility routes.
+      # Route procedural and editor-only geometry outside material visibility.
       - name: OverlayOnly
         value: 32u
       - name: Bone
@@ -275,7 +266,7 @@ enums:
         value: 4096u
       - name: PointOverlay
         value: 8192u
-      # Excite-mode points consume the mesh's persistent vertex-selection mask.
+      # Use the persistent vertex-selection mask for excite-mode points.
       - name: SoundPoint
         value: 16384u
   - name: MeshPrimitiveTopology
@@ -287,8 +278,7 @@ enums:
         value: 1
       - name: Point
         value: 2
-  # Deterministic compaction routes. Material visibility separates fixed-function winding and
-  # discard-capable coverage.
+  # Defines deterministic compaction routes with separate fixed-function and discard-capable material visibility.
   - name: MeshletRoute
     type: u32
     values:
@@ -321,15 +311,13 @@ enums:
         value: 64u
       - name: MaxTriangles
         value: 48u
-  # Bit layout of the meshlet-local geometry streams.
-  # A meshlet vertex packs its flat-only bit and canonical edit-owner bit over the representative corner index.
-  # A local triangle byte packs its all-flat bit over the first local vertex index.
+  # Meshlet vertices pack flat-only and canonical-owner bits above the representative corner index.
+  # Local triangle bytes pack all-flat above the first local vertex index.
   - name: MeshletGeometryEncoding
     type: u32
     values:
       - name: FlatVertexBit
         value: 0x80000000u
-      # First meshlet occurrence of the canonical vertex.
       - name: EditVertexOwnerBit
         value: 0x40000000u
       - name: CornerMask
@@ -338,15 +326,13 @@ enums:
         value: 0x80u
       - name: LocalIndexMask
         value: 0x3fu
-      # Local triangle offsets occupy the low 30 bits. Non-triangle meshlets use no local-triangle
-      # stream, so the high two bits carry MeshPrimitiveTopology without enlarging a hot record.
+      # Triangle offsets use 30 bits; non-triangle records reuse the top two bits for MeshPrimitiveTopology.
       - name: LocalTriangleOffsetMask
         value: 0x3fffffffu
       - name: TopologyShift
         value: 30u
-  # Canonical edit edge behind a source-triangle edge. The high bit records whether the triangle's
-  # winding runs opposite the canonical edge endpoint order; all bits set means an internal diagonal.
-  # Only the first meshlet occurrence of each canonical edge remains after the build.
+  # Packs canonical edit edge and reversed-winding flag; all bits set denotes an internal diagonal.
+  # Stores only the first meshlet occurrence of each canonical edge.
   - name: MeshletEditEdgeEncoding
     type: u32
     values:
@@ -354,8 +340,7 @@ enums:
         value: 0x80000000u
       - name: EdgeMask
         value: 0x7fffffffu
-# Shader function constants. The index is the position in the group, so a reorder moves both
-# the shader declaration and the host's named index together.
+# Function-constant order defines matching shader and host indices.
 function_constants:
   - name: PbrConstant
     constants:
@@ -434,10 +419,8 @@ structs:
       - name: CornerClassOffset
         type: u32
         default: InvalidOffset
-      # Sparse authored corner-normal layer.
-      # The mask offset holds a (presence word, exclusive rank) pair per 32 mesh corners.
-      # The normal offset holds one packed offset per present corner.
-      # CornerBase is the draw's first corner within its mesh, locating a range draw in the masks.
+      # Sparse corner normals use one presence/rank pair per 32 corners and one packed offset per present corner.
+      # CornerBase locates the draw's first corner in the masks.
       - name: CustomCornerMaskOffset
         type: u32
         default: InvalidOffset
@@ -446,7 +429,7 @@ structs:
         default: InvalidOffset
       - name: CornerBase
         type: u32
-      # Composed sector normal per seam corner, indexed by a Seam class value's low bits.
+      # Sector normals use the low bits of a Seam class value as the index.
       - name: BaseSeamNormalOffset
         type: u32
         default: InvalidOffset
@@ -461,7 +444,7 @@ structs:
         default: InvalidOffset
       - name: FaceIdOffset
         type: u32
-      # Derived face normal per face, indexed by face id. The base copy mirrors the face arena.
+      # Base face normals mirror face-arena indexing.
       - name: BaseFaceNormalOffset
         type: u32
         default: InvalidOffset
@@ -520,11 +503,11 @@ structs:
         default: InvalidOffset
       - name: MorphTargetCount
         type: u32
-      # Authored morph shading: corner normals compose from base normals plus weighted authored deltas.
-      # Edit mode builds no deform slots, so edit-mode draws (including drags) derive normals.
+      # Authored morph normals combine base normals with weighted authored deltas.
+      # Edit-mode draws derive normals because edit mode creates no deform slots.
       - name: MorphShadingAuthored
         type: u32
-      # Current-pose vertex positions in mesh-local space, with the derived per-vertex and seam-sector normals alongside.
+      # Current-pose mesh-local positions and their derived vertex and sector normals.
       - name: PosedPositionOffset
         type: u32
         default: InvalidOffset
@@ -543,8 +526,7 @@ structs:
       - name: ElementPrimitiveOffset
         type: u32
         default: InvalidOffset
-  # One persistent, one-threadgroup chunk of procedural line geometry. All kinds share instance
-  # identity, visibility, selection state, deterministic compaction, and indirect submission.
+  # Defines one persistent single-threadgroup procedural-line chunk with common visibility and indirect submission.
   - name: OverlayJob
     fields:
       - name: Kind
@@ -565,8 +547,8 @@ structs:
         type: vec3
       - name: Params
         type: vec4
-  # Immutable topology shared by every instance of a mesh. For non-triangle meshlets the triangle
-  # offset/count fields identify logical line or point elements; local triangles remain triangle-only.
+  # Stores immutable mesh topology shared by all instances.
+  # Non-triangle meshlets use triangle offset and count for logical line or point elements.
   - name: MeshletRecord
     fields:
       - name: TriangleOffset
@@ -581,31 +563,28 @@ structs:
         type: u32
       - name: Primitive
         type: u32
-      # LOD identity: the group this cluster was emitted in, and the finer group it was simplified
-      # from. A cluster renders when its own group's error is over threshold and its refining
-      # group's error is at or under it. RefinedGroup is InvalidOffset for original geometry.
+      # A cluster renders when its group exceeds the error threshold and its refining group does not.
+      # RefinedGroup is InvalidOffset for original geometry.
       - name: GroupIndex
         type: u32
         default: InvalidOffset
       - name: RefinedGroup
         type: u32
         default: InvalidOffset
-      # The meshopt cone follows geometric winding. It is exact for the material shader only when
-      # every triangle uses its derived flat face normal, so mixed meshlets store cutoff 127,
-      # which never culls.
+      # Meshopt cone culling is exact only when every triangle uses its derived flat face normal.
+      # Mixed-normal meshlets use cutoff 127 to disable cone culling.
       - name: ConeAxisCutoff
         type: u32
       - name: Center
         type: vec3
       - name: Radius
         type: float
-  # One mesh-owned record replaces the topology and shading fields formerly copied into
-  # DrawData for each instance. The instance record supplies the mutable fields.
+  # Stores immutable topology and shading once per mesh; instance records contain mutable state.
   - name: PrimitiveRecord
     fields:
       - name: Draw
         type: DrawData
-      # Optional kind-specific index stream; bone outlines use adjacency or ring indices here.
+      # Optional kind-specific indices for bone adjacency and ring geometry.
       - name: AuxIndices
         type: SlotOffset
       - name: PrimitiveIndex
@@ -616,21 +595,18 @@ structs:
         type: u32
       - name: MeshletCount
         type: u32
-      # The primitive's meshlet run places original-geometry clusters first, so a pinned instance
-      # draws exactly the first Level0Count records.
+      # Original clusters form the first Level0Count records for pinned-instance drawing.
       - name: Level0Count
         type: u32
-      # Where the cull's traversal starts: the span tree over the whole run, and the leaf covering
-      # the original-geometry prefix a pinned instance draws.
+      # Identifies the full-run span root and the leaf covering the original-geometry prefix.
       - name: LodRootNode
         type: u32
         default: InvalidOffset
       - name: LodFinestNode
         type: u32
         default: InvalidOffset
-  # One cluster group's conservative bounds and accumulated simplification error in mesh space.
-  # Group spheres contain their member cluster spheres, and error never decreases coarser-ward,
-  # which is what makes the projected-error cut crack-free.
+  # Stores conservative mesh-space bounds and monotonic accumulated simplification error for one cluster group.
+  # Contained member spheres and monotonic error produce a crack-free projected-error cut.
   - name: ClusterGroup
     fields:
       - name: Center
@@ -639,10 +615,8 @@ structs:
         type: float
       - name: Error
         type: float
-  # One node of a primitive's cluster span tree, covering a contiguous run of its meshlet records.
-  # Bounds contain the run's cluster and group spheres, and Error is the run's worst group error,
-  # so a node whose projected error clears the budget covers no cluster the cut selects.
-  # A leaf carries the run it emits and an internal node carries its child run.
+  # Covers a contiguous meshlet-record range with conservative bounds and maximum group error.
+  # Leaves reference meshlet ranges; internal nodes reference child ranges.
   - name: LodNode
     fields:
       - name: Center
@@ -723,8 +697,7 @@ structs:
         type: u32
       - name: Meshlet
         type: u32
-  # A producer-neutral meshlet range in the compact per-frame work stream.
-  # WorkOffset preserves the deterministic flattened order across ranges.
+  # Defines a producer-independent meshlet range with deterministic flattened WorkOffset ordering.
   - name: MeshletWorkRange
     fields:
       - name: Instance
@@ -745,22 +718,21 @@ structs:
         type: u32
       - name: Phase2RangeCount
         type: u32
-  # One entry of the traversal frontier: a work instance and the span node it is visiting.
+  # Associates a work instance with one span-tree node in the traversal frontier.
   - name: LodFrontierEntry
     fields:
       - name: Instance
         type: u32
       - name: Node
         type: u32
-  # A traversal level's frontier size and the block count its dispatch covers.
+  # Stores traversal frontier size and dispatch block count for one level.
   - name: LodFrontierState
     fields:
       - name: NodeCount
         type: u32
       - name: BlockCount
         type: u32
-  # One traversal block's surviving child nodes, the meshlet records their leaves cover, and the
-  # whole-instance ranges the seed level deferred to phase 2.
+  # Stores one traversal block's child nodes, leaf meshlet records, and phase-2 deferred instance ranges.
   - name: LodFrontierBlockState
     fields:
       - name: NodeCount
@@ -793,9 +765,8 @@ structs:
         type: u32[10]
       - name: BlendOffsets
         type: u32[256]
-  # One CSR table a vertex-adjacency dispatch builds, over one mesh.
-  # The counts scratch holds VertexCount + 1 words, first the per-vertex counts, then the scatter cursors.
-  # An edge job also reads the mesh's edge-first bit words, whose set bits rank an edge index.
+  # Defines one mesh's vertex-adjacency CSR build and its count/scatter scratch.
+  # Edge jobs use edge-first bit ranks to derive edge indices.
   - name: VertexAdjacencyJob
     fields:
       - name: Corners
@@ -806,12 +777,11 @@ structs:
         type: u32
       - name: Kind
         type: VertexAdjacencyKind
-      # CSR range start in the adjacency arena: (VertexCount + 1) item-start offsets, then the items.
+      # CSR storage contains VertexCount + 1 item offsets followed by items.
       - name: CsrOffset
         type: u32
       - name: CountsOffset
         type: u32
-      # Scan-block sums for this job's counts, one per AdjacencyBlockElements.
       - name: BlockOffset
         type: u32
       - name: BlockCount
@@ -822,29 +792,25 @@ structs:
       - name: EdgeFirstRanksOffset
         type: u32
         default: InvalidOffset
-  # One mesh's vertex weld: the arenas it rewrites and the scratch layout its passes read and write.
-  # The flags run holds one mark per vertex plus a terminator, and the scan turns it into each vertex's welded index.
+  # Defines one mesh's vertex-weld inputs, outputs, and scratch layout.
+  # Flags contain one mark per vertex plus a terminator for exclusive-scan index generation.
   - name: VertexWeldJob
     fields:
-      # The arena range holding the mesh's positions, the first channel of the key the weld compares,
-      # and which the compaction rewrites to the welded vertices.
+      # Position range used as the first weld-key channel and compacted output.
       - name: Positions
         type: SlotOffset
-      # The corner array the remap rewrites through the welded numbering.
+      # Corner array remapped to welded indices.
       - name: Corners
         type: SlotOffset
-      # The skin joints and weights, at the mesh's source vertex count. Slot is InvalidSlot when the
-      # mesh carries no skin.
+      # Source-vertex skin joints and weights; InvalidSlot denotes no skin.
       - name: Deform
         type: SlotOffset
-      # The morph position and normal deltas, target-major over the source vertex count.
-      # Slot is InvalidSlot when the mesh carries no morph targets.
+      # Target-major morph position and normal deltas; InvalidSlot denotes no morph targets.
       - name: Morph
         type: SlotOffset
       - name: TargetCount
         type: u32
-      # The morph tangent deltas, which no arena holds, staged target-major in the scratch as three
-      # words each. InvalidOffset when no target authors them.
+      # Target-major three-word morph tangent deltas staged in scratch; InvalidOffset denotes no authored tangents.
       - name: TangentOffset
         type: u32
         default: InvalidOffset
@@ -868,16 +834,14 @@ structs:
         type: u32
       - name: RepsOffset
         type: u32
-      # Each welded vertex's channels land here first, since a thread compacting in place could
-      # overwrite a value another thread has yet to read.
+      # Stage welded channels to prevent in-place compaction from overwriting unread source data.
       - name: CompactOffset
         type: u32
-      # Words one welded vertex takes in that staging: its position, its joints and weights, and each
-      # target's position, normal and tangent deltas.
+      # Word stride of one staged welded vertex across all vertex-domain channels.
       - name: RecordWords
         type: u32
-  # One mesh's half-edge connectivity build: the arena run it fills and the scratch its passes use.
-  # The run holds the outgoing halfedges, the opposites, then the edge-first bits, ranks and samples.
+  # Defines one mesh's halfedge-connectivity output and scratch layout.
+  # Output order is outgoing halfedges, opposites, edge-first bits, ranks, and samples.
   - name: MeshConnectivityJob
     fields:
       - name: Corners
@@ -890,7 +854,7 @@ structs:
         type: u32
       - name: WordCount
         type: u32
-      # Halfedges bucketed by their lower endpoint: the per-bucket counts, the scan's cursors, and the items.
+      # Lower-endpoint buckets with counts, scatter cursors, and halfedge items.
       - name: CountsOffset
         type: u32
       - name: CursorsOffset
@@ -901,19 +865,16 @@ structs:
         type: u32
       - name: BlockCount
         type: u32
-      # One popcount per bit word, scanned into the ranks.
       - name: PopcountOffset
         type: u32
       - name: WordBlockOffset
         type: u32
       - name: WordBlockCount
         type: u32
-      # Two words: the edge count the ranks total, and a mark set when an edge carries three halfedges.
+      # Stores total edge count and a non-manifold edge marker.
       - name: StateOffset
         type: u32
-  # One entry per normal-derive dispatch item.
-  # Entries without a posed range read base positions from the vertex arena.
-  # The output offsets index the dispatch's push-constant output slots.
+  # Defines one normal-derivation item with optional posed positions and push-constant-selected outputs.
   - name: NormalDeriveEntry
     fields:
       - name: PosedPositionOffset
@@ -925,15 +886,15 @@ structs:
         type: SlotOffset
       - name: VertexCount
         type: u32
-      # Vertex-fan CSR range start: (VertexCount + 1) item-start offsets, then FanItemEncoding items.
+      # Vertex-fan CSR storage contains VertexCount + 1 offsets followed by FanItemEncoding values.
       - name: VertexAdjacencyOffset
         type: u32
-      # Seam-sector CSR range start: (SeamCount + 1) item-start offsets, then FanItemEncoding items.
+      # Normal-sector CSR storage contains SeamCount + 1 offsets followed by FanItemEncoding values.
       - name: SeamFanOffset
         type: u32
       - name: SeamCount
         type: u32
-      # Face fan ranges: per-face first-triangle offsets in the face arena, bounded by TriangleCount.
+      # Per-face first-triangle offsets bounded by TriangleCount.
       - name: FaceDataOffset
         type: u32
       - name: FaceCount
@@ -1014,7 +975,7 @@ structs:
         type: float
       - name: ViewportSize
         type: vec2
-      # Screen-space error budget for the cluster LOD cut, in pixels. Zero renders original geometry alone.
+      # Cluster LOD error threshold in pixels; zero selects original geometry.
       - name: LodErrorPixels
         type: float
       - name: CornerTangentSlot
@@ -1033,7 +994,7 @@ structs:
         type: u32
       - name: BaseSeamNormalSlot
         type: u32
-      # Derived base normals: a vec3 per vertex-arena slot and per face-arena slot, indexed by the draw's vertex and face offsets.
+      # Derived base normals indexed by draw vertex and face offsets.
       - name: BaseVertexNormalSlot
         type: u32
       - name: BaseFaceNormalSlot
@@ -1058,21 +1019,18 @@ structs:
         type: u32
       - name: PosedFaceNormalSlot
         type: u32
-      # Weight-summed authored morph normal deltas, one vec3 per posed vertex slot, present for authored-morph entries.
+      # Weighted authored morph-normal deltas indexed by posed vertex slot.
       - name: PosedMorphNormalDeltaSlot
         type: u32
-      # Local-space instance bounds from the GPU bounds reduction, for emission-side frustum culling.
+      # GPU-reduced local-space instance bounds for emission-side frustum culling.
       - name: InstanceBoundsSlot
         type: u32
         default: InvalidSlot
-      # Motion blur steps read their captured model transforms through this instead of the
-      # per-draw ModelSlot, so the draw data stays step-agnostic.
+      # Motion-blur steps use captured model transforms while preserving step-independent draw data.
       - name: ModelSlotOverride
         type: u32
         default: InvalidSlot
-      # Poses at the shutter's open and close, for the velocity pass. The current-frame
-      # per-draw offsets index these, so only the buffer slots differ. The view moves too
-      # when looking through an animated camera, so each pose carries its own projection.
+      # Shutter-open and shutter-close poses share current draw offsets but use separate buffer slots and view projections.
       - name: PrevViewProj
         type: mat4
       - name: NextViewProj
@@ -1097,7 +1055,7 @@ structs:
         type: u32
       - name: BoneXRay
         type: u32
-      # Wires and points take selection colors only while overlays show.
+      # Apply wire and point selection colors only when overlays are visible.
       - name: ShowOverlays
         type: u32
       - name: ShowExtras
@@ -1136,7 +1094,7 @@ structs:
         type: vec3
       - name: UseSpecular
         type: u32
-  - name: AxisThemeColors # Blender:Themes:Axis & Gizmo Colors
+  - name: AxisThemeColors
     fields:
       - name: X
         type: vec3
@@ -1144,65 +1102,65 @@ structs:
         type: vec3
       - name: Z
         type: vec3
-  - name: ViewportThemeColors # Mirrors Blender: Preferences -> Themes -> 3D Viewport -> ...
+  - name: ViewportThemeColors # Mirrors Blender's 3D Viewport theme settings.
     fields:
-      - name: Grid # Grid
+      - name: Grid
         type: vec4
-      - name: GridLine # Derived from Grid
+      - name: GridLine
         type: vec4
-      - name: GridEmphasis # Derived from Grid
+      - name: GridEmphasis
         type: vec4
-      - name: GridAxisX # Derived from Grid
+      - name: GridAxisX
         type: vec3
-      - name: GridAxisZ # Derived from Grid
+      - name: GridAxisZ
         type: vec3
-      - name: Wire # Wire
+      - name: Wire
         type: vec3
-      - name: WireEdit # Wire Edit
+      - name: WireEdit
         type: vec3
-      - name: ObjectActive # Active Object
+      - name: ObjectActive
         type: vec3
-      - name: ObjectSelected # Object Selected
+      - name: ObjectSelected
         type: vec3
-      - name: Light # Light
+      - name: Light
         type: vec4
-      - name: Vertex # Vertex
+      - name: Vertex
         type: vec3
-      - name: VertexSelected # Vertex Select
+      - name: VertexSelected
         type: vec3
-      - name: EdgeSelectedIncidental # Edge Selection
+      - name: EdgeSelectedIncidental
         type: vec3
-      - name: EdgeSelected # Edge Mode Selection
+      - name: EdgeSelected
         type: vec3
-      - name: EdgeSharp # Edge Sharp
+      - name: EdgeSharp
         type: vec3
-      - name: FaceSelectedIncidental # Face Selection
+      - name: FaceSelectedIncidental
         type: vec4
-      - name: FaceSelected # Face Mode Selection
+      - name: FaceSelected
         type: vec4
-      - name: ElementActive # Active Vertex/Edge/Face
+      - name: ElementActive
         type: vec4
-      - name: ElementExcited # Excite mode, mouse down on excitable vertex
+      - name: ElementExcited
         type: vec4
-      - name: FaceNormal # Face Normal
+      - name: FaceNormal
         type: vec3
-      - name: VertexNormal # Vertex Normal
+      - name: VertexNormal
         type: vec3
-      - name: BoneSolid # Bone solid fill base color
+      - name: BoneSolid
         type: vec3
-      - name: BoneActive # Derived: Edit mode active+selected wire
+      - name: BoneActive
         type: vec3
-      - name: BoneActiveUnsel # Derived: Edit mode active-only wire (faded)
+      - name: BoneActiveUnsel
         type: vec3
-      - name: BoneSelect # Derived: Edit mode selected wire
+      - name: BoneSelect
         type: vec3
-      - name: BonePose # Pose mode selected wire
+      - name: BonePose
         type: vec3
-      - name: BonePoseActive # Pose mode active+selected wire
+      - name: BonePoseActive
         type: vec3
-      - name: BonePoseActiveUnsel # Derived: Pose mode active-only wire (faded)
+      - name: BonePoseActiveUnsel
         type: vec3
-      - name: Transform # Transform
+      - name: Transform
         type: vec3
   - name: ViewportTheme
     binding: ViewportThemeUBO
@@ -1215,9 +1173,7 @@ structs:
         type: float
       - name: SilhouetteEdgeWidth
         type: u32
-  # Position and the point-domain color used by line/point meshes.
-  # Derived normals live in the base-normal mirrors and posed scratch buffers.
-  # Triangle-mesh tangent/color/UV attributes live in per-corner arenas.
+  # Stores positions and point-domain colors; triangle tangent, color, and UV attributes use per-corner arenas.
   - name: Vertex
     fields:
       - name: Position
@@ -1244,7 +1200,7 @@ structs:
       - name: S
         type: vec3
         default: "1, 1, 1"
-  # Local-space bounds. Defaults to empty (Min > Max), which readers treat as always-visible.
+  # Min > Max denotes empty local-space bounds and disables culling.
   - name: AABB
     fields:
       - name: Min
@@ -1595,7 +1551,7 @@ structs:
         type: u32
       - name: WorkBlockSlot
         type: u32
-      # The traversal's node arena, ping-pong frontiers, per-level sizes and per-block prefixes.
+      # Traversal node arena, ping-pong frontiers, per-level sizes, and per-block prefixes.
       - name: LodNodeSlot
         type: u32
       - name: LodFrontierSlot
@@ -1608,13 +1564,13 @@ structs:
         type: u32
       - name: LodExpandArgsSlot
         type: u32
-      # Which of the two frontier buffers and states the level reads.
+      # Selects the input frontier buffer and state.
       - name: LodFrontierIndex
         type: u32
-      # The seed level derives its frontier from the instance ids instead of reading one.
+      # Marks the seed level, which derives its frontier from instance IDs.
       - name: LodSeedLevel
         type: u32
-      # The last level emits meshlet work ranges instead of child nodes.
+      # Marks the final level, which emits meshlet ranges.
       - name: LodFinalLevel
         type: u32
       - name: WorkStateSlot
@@ -1659,7 +1615,6 @@ structs:
         type: u32
       - name: RequiredInstanceFlags
         type: u32
-      # Routes this invocation may emit.
       - name: RouteMask
         type: u32
         default: 0x3ffu
@@ -1688,19 +1643,18 @@ structs:
       - name: Phase2RangeCullArgsSlot
         type: u32
         default: InvalidSlot
-      # Coarse clusters the cut selected this pass, accumulated across the classification's blocks.
+      # Counts coarse clusters selected across classification blocks.
       - name: CoarseCountSlot
         type: u32
         default: InvalidSlot
-      # Per-32-candidate survivor counts, prefixed into deterministic emission offsets.
+      # Per-32-candidate survivor counts for deterministic emission offsets.
       - name: Phase2BlockCountSlot
         type: u32
         default: InvalidSlot
-      # The phase-2 cull kernels run twice: a count pass, then an emit pass at prefixed offsets.
+      # Selects phase-2 count or emit operation.
       - name: Phase2Emit
         type: u32
-  # Push constants shared by the pose pre-pass, the bounds reduce, and the bounds combine.
-  # Posed-buffer slots come from SceneViewUBO.
+  # Push constants shared by pose and bounds passes; posed-buffer slots are in SceneViewUBO.
   - name: BoundsReducePushConstants
     push_constant: true
     fields:
@@ -1714,7 +1668,7 @@ structs:
         type: u32
       - name: EntryFirstTileSlot
         type: u32
-  # One threadgroup per (posed entry, meshlet) tile, reducing posed positions to a local AABB.
+  # Configures one posed-entry meshlet AABB reduction.
   - name: PosedMeshletBoundsPushConstants
     push_constant: true
     fields:
@@ -1730,11 +1684,9 @@ structs:
         type: u32
       - name: PosedMeshletBoundsSlot
         type: u32
-  # One threadgroup per 256-element tile of a derive entry, in two phases.
-  # Phase 0 derives face normals over the tile map's leading face-tile prefix.
-  # Phase 1 gathers vertex and seam normals over the remaining tiles, reading phase 0 through FaceNormalSlot.
-  # FirstTile locates the dispatch's tile range.
-  # The position and output-buffer slots are per dispatch, targeting posed scratch or the base normal stores.
+  # Configures two-phase normal derivation over 256-element tiles.
+  # Phase 0 derives face normals; phase 1 gathers vertex and normal-sector values through FaceNormalSlot.
+  # FirstTile and the buffer slots select the dispatch's tile range and posed or base storage.
   - name: NormalDerivePushConstants
     push_constant: true
     fields:
@@ -1758,7 +1710,7 @@ structs:
         type: u32
       - name: FaceNormalSlot
         type: u32
-  # The vertex-adjacency passes' shared slots. Each pass reads its own tiles at FirstTile.
+  # Shared vertex-adjacency slots with per-pass tiles beginning at FirstTile.
   - name: VertexAdjacencyPushConstants
     push_constant: true
     fields:
@@ -1776,7 +1728,7 @@ structs:
         default: InvalidSlot
       - name: FirstTile
         type: u32
-  # The vertex-weld passes' shared slots. Each pass reads its own tiles at FirstTile.
+  # Shared vertex-weld slots with per-pass tiles beginning at FirstTile.
   - name: VertexWeldPushConstants
     push_constant: true
     fields:
@@ -1791,7 +1743,7 @@ structs:
         default: InvalidSlot
       - name: FirstTile
         type: u32
-  # The connectivity passes' shared slots. Each pass reads its own tiles at FirstTile.
+  # Shared connectivity slots with per-pass tiles beginning at FirstTile.
   - name: MeshConnectivityPushConstants
     push_constant: true
     fields:
@@ -1820,7 +1772,7 @@ structs:
       - name: CoverageSlot
         type: u32
         default: InvalidSlot
-  # Deterministically compact the enabled persistent procedural line jobs.
+  # Configures deterministic compaction of enabled persistent procedural-line jobs.
   - name: OverlayJobCullPushConstants
     push_constant: true
     fields:
@@ -1862,7 +1814,7 @@ structs:
     fields:
       - name: SilhouetteSamplerIndex
         type: u32
-  # MotionScale.y is negative, which un-inverts the next-motion the velocity pass stores backward.
+  # Negative MotionScale.y converts backward-stored next motion to forward time.
   - name: MotionBlurTilesFlattenPushConstants
     push_constant: true
     fields:

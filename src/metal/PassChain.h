@@ -10,9 +10,8 @@ struct Barrier {
     MTL::Stages After, Before;
 };
 
-// Bindless resources are invisible to Metal's automatic hazard tracking, so callers declare their
-// cross-pass stage dependencies. Directly bound resources remain tracked by Metal. Opening a pass
-// closes the previous encoder; destruction closes the last one.
+// Callers must declare cross-pass dependencies for bindless resources because Metal cannot track them automatically.
+// Opening a pass closes the previous encoder, and destruction closes the final encoder.
 struct PassChain {
     PassChain(MTL::CommandBuffer *, PassTimer * = nullptr);
     ~PassChain();
@@ -21,8 +20,7 @@ struct PassChain {
     PassChain &operator=(const PassChain &) = delete;
 
     MTL::RenderCommandEncoder *BeginRender(MTL::RenderPassDescriptor *, std::string_view name, std::initializer_list<Barrier> = {});
-    // Concurrent dispatch drops the barrier Metal puts between a pass's dispatches, and suits a pass
-    // whose dispatches write results that do not depend on each other.
+    // Use concurrent dispatch only when dispatches have no data dependencies.
     MTL::ComputeCommandEncoder *BeginCompute(std::string_view name, MTL::Stages after = {}, MTL::DispatchType dispatch = MTL::DispatchTypeSerial);
     MTL::BlitCommandEncoder *BeginBlit(std::string_view name, MTL::Stages after = {});
 
@@ -37,4 +35,4 @@ private:
     MTL::CommandEncoder *Open{nullptr};
     bool Encoded{false};
 };
-} // namespace mtl
+}

@@ -3,7 +3,6 @@
 
 #include "Varyings.metal"
 
-// Triangle strip covering the target, carrying the texture coordinate of each fragment's own texel.
 constant float2 QuadPositions[4] = {float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1)};
 
 vertex QuadVaryings TexQuadVertex(uint vertex_id [[vertex_id]]) {

@@ -1,20 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the KHR_audio_rigid_bodies sample scenes.
+"""Generate KHR_audio_rigid_bodies sample scenes.
 
-The root of samples/ holds the full-experience scenes, each a complete listening experience with
-every mechanism sounding at once. Pile is the first: five bodies of stepped geometric complexity
-dropped together onto a radiating platform.
-
-test/ holds the isolation corpus. Each phenomenon there is a directory of sibling scenes, one
-configuration sounding per scene, named in a/b/c ladder order, so every effect is heard and measured
-in isolation rather than superimposed in one mix. Each scene isolates one prediction the extension
-makes, so that what you hear either matches it or does not. Bodies start just above a static ground
-and are dropped, giving an impact followed by the settling and resting the contact model governs.
-
-Written against the extension text rather than exported from any implementation, so a renderer that
-disagrees with these is disagreeing with the specification.
-
-Run with scene name fragments as arguments to regenerate only the scenes naming them.
+The samples/ root contains full-experience scenes with multiple simultaneous mechanisms. The test/
+tree isolates one prediction per scene in a/b/c comparison order. Run with scene-name fragments to
+regenerate matching scenes only.
 """
 
 import base64
@@ -31,28 +20,25 @@ from pathlib import Path
 
 OUT = Path(__file__).parent
 
-# Scene name fragments to regenerate, empty regenerating everything.
-# Set from the command line when run as a script, so an edit to one scene's authoring re-emits that scene alone.
+# An empty filter regenerates every scene.
 Only = frozenset()
 
 
 def selected(name):
-    """Whether this run regenerates the scene called `name`."""
+    """Return whether the current filter selects `name`."""
     return not Only or any(o in name for o in Only)
 
 
-# Ceramic, matching the extension's own example, and steel for a body stiff enough to ring past hearing.
-# Their Rayleigh constants differ, so a scene using both hears the damping the material carries.
+# Ceramic matches the specification example; steel provides ultrasonic modes and distinct Rayleigh damping.
 CERAMIC = {"name": "Ceramic", "density": 2700, "youngsModulus": 7.2e10, "poissonRatio": 0.19, "alpha": 6, "beta": 1e-7}
 STEEL = {"name": "Steel", "density": 7850, "youngsModulus": 2.0e11, "poissonRatio": 0.29, "alpha": 5, "beta": 3e-8}
-# Low-loss glass for bodies whose free ring must outlast contact-borne dissipation, so a scene can hear the contact choke the ring.
-# Loss factor ~4e-4 at 5 kHz, the measured range for glass.
+# Low-loss glass isolates contact damping from free decay.
+# Its loss factor is approximately 4e-4 at 5 kHz, within the measured range for glass.
 GLASS = {"name": "Glass", "density": 2500, "youngsModulus": 7.0e10, "poissonRatio": 0.22, "alpha": 3, "beta": 1e-8}
 ACOUSTIC_MATERIALS = [CERAMIC, STEEL]
 
-# The extension's representative finishes, matching the table in its Authoring Notes.
-# Roughness sets the rate a body oscillates on its contact at, so these are the ladder the second scene sweeps.
-# Each carries the waviness of its own process, the mould's form for a casting and the tool path for a cut face, within the ordering the extension requires of the two scales.
+# These representative finishes match the Authoring Notes table.
+# Their process-specific waviness satisfies the required scale ordering.
 FINISHES = {
     "Polished": {"roughness": 1e-7, "correlationLength": 1e-5, "spectralSlope": -2.8,
                  "waviness": 2e-7, "wavinessLength": 5e-3},
@@ -61,37 +47,31 @@ FINISHES = {
     "Cast": {"roughness": 1e-4, "correlationLength": 1e-3, "spectralSlope": -2.0,
              "waviness": 2e-4, "wavinessLength": 2e-2},
 }
-# Where each finish lands in the surface table a scene carries by default.
+# Maps finish names to default surface indices.
 FinishIndex = {name: i for i, name in enumerate(FINISHES)}
 
 
-# A body at rest on a surface it is not moving over excites nothing, which the extension requires, so these scenes slide instead of settling.
-# Each body starts barely touching its lane and holds its speed, giving one continuous contact at one operating point.
-# Contact is a train of shocks between opposing asperities arriving at the sliding speed over the correlation length, so the speed decides whether the mechanism is audible at all.
-# This is Dang 2013's middle speed, which on the Machined finish's 50 um correlation length puts that rate at 2 kHz.
-# The lanes are frictionless because the rate has to hold: a body slowing under a realistic friction coefficient sweeps its own operating point, and one that holds an audible rate for even half a second has to start above hearing.
-# The lanes' own material: frictionless so a sliding body holds its speed, and dead so it does not bounce.
+# Sliding maintains continuous excitation at one operating point while satisfying silence at rest.
+# Dang 2013's middle speed produces a 2 kHz event rate over the Machined finish's 50 um correlation length.
+# Frictionless, inelastic lanes preserve speed and suppress bounce.
 Frictionless = {"staticFriction": 0.0, "dynamicFriction": 0.0, "restitution": 0.0}
 SlideSpeed = 0.1  # m/s
 StartX = -0.45
 LaneZ = (-0.4, 0.0, 0.4, 0.8)
 
 
-# Every box body is this bar, whose solved bending modes land in the audible band (first near 1.8 kHz in ceramic at reference scale).
-# Only what the scene is varying differs between bodies, so the modal model, the geometry, and the sample points are shared and cannot explain any difference you hear.
-# A body's mass picks its node scale on the shared model: mass = BarMass * scale^3, and the engine retunes frequencies by 1/scale and shape amplitudes by scale^(-3/2) from there.
+# The reference bar's first ceramic bending mode is near 1.8 kHz.
+# Comparison bodies share geometry, modal data, and sample points.
+# Node scale follows mass = BarMass * scale^3; frequency and mode-shape amplitude scale by 1/scale and scale^(-3/2).
 BarHalf = (0.12, 0.03, 0.01)
 SphereR = 0.045  # Bodies whose scene needs a point contact stay spheres at this radius.
 GroundHalf = (0.6, 0.04, 0.12)  # A lane long enough for the whole skid.
-# The lane a body that keeps its speed for the whole render needs: a rolling sphere is not slowed by friction, and a decelerating one has to start fast.
+# The long lane supports constant-speed rolling and extended deceleration scenes.
 LongLane = {"lane_half": (4.0, 0.04, 0.12), "start_x": -3.6}
 
 
 def box(hx, hy, hz):
-    """Positions, normals, texture coordinates, and triangle indices for a box, with flat-shaded faces.
-
-    Each face carries the unit square, so a mesoscale relief map tiles once per face and its lengths in
-    mesh coordinates are the face's own."""
+    """Return flat-shaded box geometry with one unit-square UV tile per face."""
     faces = [((1, 0, 0), (0, 1, 0), (0, 0, 1)), ((-1, 0, 0), (0, 0, 1), (0, 1, 0)),
              ((0, 1, 0), (0, 0, 1), (1, 0, 0)), ((0, -1, 0), (1, 0, 0), (0, 0, 1)),
              ((0, 0, 1), (1, 0, 0), (0, 1, 0)), ((0, 0, -1), (0, 1, 0), (1, 0, 0))]
@@ -108,15 +88,11 @@ def box(hx, hy, hz):
 
 
 def sphere(r, segments=24, rings=12):
-    """Positions, normals, and triangle indices for a closed UV sphere, smooth shaded.
-
-    Each pole is a single vertex and the seam column appears once, so every position is unique and
-    every edge carries two faces."""
+    """Return a smooth closed UV sphere with unique positions and two incident faces per edge."""
     def unit(theta, phi):
         st = math.sin(theta)
         return (st * math.cos(phi), math.cos(theta), st * math.sin(phi))
 
-    # Poles first, then one block of `segments` vertices per interior ring.
     pos, nrm = [], []
     def add(n):
         nrm.append(n)
@@ -139,16 +115,16 @@ def sphere(r, segments=24, rings=12):
             a, b = ring(i, j), ring(i, j + 1)
             c, d = ring(i + 1, j), ring(i + 1, j + 1)
             idx += [a, b, c, b, d, c]
-    # Poles take the seam's coordinate, which is enough for a relief map the sphere never carries.
+    # Pole UVs suffice because generated sphere samples do not use relief maps.
     uvs = [(0.5 * (1 + n[0]), 0.5 * (1 + n[2])) for n in nrm]
     return pos, nrm, uvs, idx
 
 
 def normal_map_png(size=64, bumps=4, slope=0.25):
-    """A tangent-space normal map of a sinusoidal egg-crate, as a PNG data URI.
+    """Return a sinusoidal tangent-space normal map as a PNG data URI.
 
-    The height is slope/(2*pi*bumps) times sin(2*pi*bumps*u)*sin(2*pi*bumps*v) over the unit square, so
-    `slope` is the peak surface gradient the map describes."""
+    `slope` specifies the peak gradient over the unit-square height field.
+    """
     pixels = []
     for y in range(size):
         for x in range(size):
@@ -172,7 +148,7 @@ def normal_map_png(size=64, bumps=4, slope=0.25):
 
 
 def _fft(values):
-    """Iterative radix-2 Cooley-Tukey over python complex, for the profile synthesis alone."""
+    """Return the radix-2 Cooley-Tukey transform used for profile synthesis."""
     n = len(values)
     out = list(values)
     j = 0
@@ -198,13 +174,10 @@ def _fft(values):
 
 
 def measured_profile(count=65536, correlation=5e-5, slope=-2.4, roughness=2e-6, seed=12345):
-    """A stored height track, in meters, standing in for a profilometer trace of the machined finish.
+    """Return a deterministic meter-valued height track for the machined finish.
 
-    Drawn from the same spectrum the synthesized track carries, flat below the corner the correlation
-    length sets and falling as q^slope above it, at the same lc/64 spacing, with independent phases.
-    So a scene shipping this shares the statistics of one synthesized from the parameters and not the
-    realization. Deterministic, so every renderer reading this file reads exactly the same surface,
-    which is the whole point of shipping a profile rather than three statistics."""
+    The track shares synthesized-profile statistics while fixing one realization for renderer comparison.
+    """
     spacing = correlation / 64
     q0 = 1.0 / correlation
     dq = 1.0 / (count * spacing)
@@ -216,7 +189,7 @@ def measured_profile(count=65536, correlation=5e-5, slope=-2.4, roughness=2e-6, 
         q = i * dq
         amplitude = (q / q0) ** (slope * 0.5) if q > q0 else 1.0
         bin = amplitude * cmath.exp(1j * phase)
-        # The top bin is its own mirror, so it must be real for the heights to be.
+        # Keep the self-conjugate top bin real to produce real heights.
         spectrum[i] = complex(bin.real, 0.0) if i == count // 2 else bin
         if i != count // 2:
             spectrum[count - i] = bin.conjugate()
@@ -228,10 +201,7 @@ def measured_profile(count=65536, correlation=5e-5, slope=-2.4, roughness=2e-6, 
 
 
 class GridSurface:
-    """A surface mesh gathered off a grid, welding each grid corner the first time a face names it.
-
-    `position` places a corner (i, j, k), and quads are emitted as the triangle pair their corner
-    order winds. A face's corners run outward, toward the missing neighbour on its far side."""
+    """Build a welded grid surface with outward-wound triangle pairs."""
 
     def __init__(self, position):
         self.position = position
@@ -250,10 +220,7 @@ class GridSurface:
 
 
 def _grid_box(hx, hy, hz, spacing):
-    """A welded box surface mesh with each face gridded near `spacing`, as (vertices, triangles).
-
-    The solver samples its excitation positions at these vertices, so the grid pitch decides how densely
-    the surface carries sample points for contact blending and the radiating-area quadrature."""
+    """Return a welded box surface gridded near `spacing` for modal sampling and area quadrature."""
     nx, ny, nz = (max(1, round(2 * h / spacing)) for h in (hx, hy, hz))
     s = GridSurface(lambda i, j, k: (2 * hx * i / nx - hx, 2 * hy * j / ny - hy, 2 * hz * k / nz - hz))
     v, quad = s.v, s.quad
@@ -281,8 +248,8 @@ def _solve_obj(obj_path, material, modes, min_freq, max_freq):
             "--density", str(material["density"]), "--young", str(material["youngsModulus"]),
             "--poisson", str(material["poissonRatio"]), "--alpha", str(material["alpha"]), "--beta", str(material["beta"]),
             "--min-freq", str(min_freq), "--max-freq", str(max_freq), "--modes", str(modes)]
-    # The solve runs single-threaded so its output is bit-identical run to run.
-    # Threaded Accelerate varies summation order, and near-degenerate mode pairs rotate under that noise (shapes moved up to 1.3% between runs at bit-identical frequencies), which broke the harnesses' bit-reproducibility across invocations.
+    # Use one Accelerate thread for bit-identical mode shapes across runs.
+    # Parallel summation rotated near-degenerate mode pairs by up to 1.3% despite bit-identical frequencies.
     env = dict(os.environ, VECLIB_MAXIMUM_THREADS="1")
     out = subprocess.run(args, capture_output=True, text=True, env=env)
     if out.returncode != 0:
@@ -295,9 +262,7 @@ def _material_key(material):
 
 
 def _cached_solve(key, material, modes, min_freq, max_freq, build):
-    """Solves the mesh `build` returns as (vertices, zero-based triangles), memoized on `key`.
-
-    The build runs only on a miss, so a repeated configuration costs neither a mesh nor a solve."""
+    """Return the memoized modal solve for the mesh produced by `build`."""
     if key in _solve_cache:
         return _solve_cache[key]
     verts, tris = build()
@@ -353,7 +318,7 @@ class Buffers:
         return len(self.views) - 1
 
     def _accessor(self, data, component_type, count, kind, columns):
-        """One accessor over `data`, its bounds taken per component from `columns`."""
+        """Append an accessor over `data` with per-component bounds from `columns`."""
         self.accessors.append({"bufferView": self._view(data), "componentType": component_type, "count": count,
                                "type": kind, "min": [min(c) for c in columns], "max": [max(c) for c in columns]})
         return len(self.accessors) - 1
@@ -365,7 +330,7 @@ class Buffers:
         return self._accessor(struct.pack(f"<{len(values)}H", *values), 5123, len(values), "SCALAR", [values])
 
     def vecs(self, values):
-        """Vectors of as many components as the first one carries."""
+        """Append vectors with the first value's component count."""
         n = len(values[0])
         flat = [c for v in values for c in v]
         return self._accessor(struct.pack(f"<{len(flat)}f", *flat), 5126, len(values), f"VEC{n}",
@@ -377,26 +342,19 @@ class Buffers:
 
 def body(label, mass, lane, surface, shape="box", *, physics_material=0, rolls=False, drop=0.0,
          speed=None, driven=False, drive_damping=1000.0, on=None, silent=False):
-    """One dynamic body. Its mass picks its size on the scene's solved model, mass = solved mass * s^3.
-    `rolls` spins it to match its travel, so its contact slips not at all.
-    `drop` is how far it falls before touching, which sets the impulse of the impact that starts the scene.
-    A body with no drop is authored resting on its surface and starts in silence.
-    `on` is the index of the body this one stands on rather than the ground, which is what strikes a
-    body that is already seated: the tap presses it into its support instead of landing it.
-    `silent` gives the body its finish and no modal model, which the extension allows, so a striker
-    carries its contact into the sound without adding a ring of its own.
-    `speed` overrides the scene's, so one scene can hold a ladder of sliding speeds.
-    `driven` holds the body's speed against friction with a velocity motor jointed to its lane, and locks
-    its rotation, so a sphere can keep sliding where friction would otherwise spin it up into rolling.
-    `drive_damping` is the motor's velocity gain. Friction droops the held speed by force over gain,
-    so a drive at millimeters per second takes a far stiffer hold than the default."""
+    """Describe one dynamic body sized by mass = solved mass * scale^3.
+
+    `rolls` sets zero-slip angular velocity, `drop` sets initial clearance, and `on` selects a body
+    support. `silent` omits the modal model. `speed` overrides scene speed. `driven` uses a lane joint
+    to maintain sliding speed, with `drive_damping` as its velocity gain.
+    """
     return {"label": label, "mass": mass, "lane": lane, "surface": surface, "shape": shape,
             "physics_material": physics_material, "rolls": rolls, "drop": drop, "speed": speed,
             "driven": driven, "drive_damping": drive_damping, "on": on, "silent": silent}
 
 
 def ground(label, surface, lane, *, probe=None):
-    """`probe` gives the ground its own modal model, so it radiates as well as being scraped."""
+    """Describe a ground with an optional radiating modal model in `probe`."""
     return {"label": label, "surface": surface, "lane": lane, "probe": probe}
 
 
@@ -409,12 +367,12 @@ def sphere_shape(radius):
 
 
 def finish_ground(finish, lane=1, *, probe=None):
-    """The ground of a scene pairing one of the preset finishes against itself."""
+    """Return a ground using the named preset finish."""
     return ground(finish, FinishIndex[finish], lane, probe=probe)
 
 
 def _modal_model(buf, label, solved, material=0):
-    """One modal model entry, with its arrays landed in `buf`."""
+    """Append modal arrays to `buf` and return their model entry."""
     return {
         "name": label,
         "frequencies": buf.scalars(solved["frequencies"]),
@@ -423,8 +381,7 @@ def _modal_model(buf, label, solved, material=0):
         "shapes": buf.vecs(solved["shapes"]),
         "indices": buf.ushorts(solved["indices"]),
         "material": material,
-        # The mass distribution the model was solved at.
-        # A body of another mass sizes itself on the model as a scale change, mass = solved mass * scale^3.
+        # Record the solve mass for node scaling by mass = solved mass * scale^3.
         "massProperties": {
             "mass": solved["mass"],
             "centerOfMass": solved["centerOfMass"],
@@ -434,7 +391,7 @@ def _modal_model(buf, label, solved, material=0):
 
 
 def _add_mesh(buf, meshes, pos, nrm, uvs, idx):
-    """Appends one primitive to `meshes`, with its attributes landed in `buf`."""
+    """Append one buffered primitive to `meshes`."""
     attributes = {"POSITION": buf.vecs(pos), "NORMAL": buf.vecs(nrm), "TEXCOORD_0": buf.vecs(uvs)}
     meshes.append({"primitives": [{"attributes": attributes, "indices": buf.ushorts(idx)}]})
     return len(meshes) - 1
@@ -442,14 +399,10 @@ def _add_mesh(buf, meshes, pos, nrm, uvs, idx):
 
 def _write_doc(name, description, buf, *, nodes, scene_nodes, meshes, shapes, physics_materials,
                acoustic_materials, surfaces, models, physics_joints=(), relief_surfaces=()):
-    """Assembles the document those parts make, finalizes `buf`, and writes the scene.
-
-    `relief_surfaces` names the surface indices carrying the shared relief map."""
-    # A stored profile is an accessor, so it lands in the same buffer as everything else.
+    """Write a scene document and attach the shared relief map to `relief_surfaces`."""
     for surface in surfaces:
         if "profileHeights" in surface:
             surface["profile"] = buf.scalars(surface.pop("profileHeights"))
-    # The buffer and its views are only final once every accessor above has been added.
     doc = {
         "asset": {"version": "2.0", "generator": "KHR_audio_rigid_bodies samples", "copyright": description},
         "extensionsUsed": ["KHR_implicit_shapes", "KHR_physics_rigid_bodies", "KHR_audio_rigid_bodies"],
@@ -485,11 +438,7 @@ def _write_doc(name, description, buf, *, nodes, scene_nodes, meshes, shapes, ph
 def scene(name, description, bodies, grounds, *, lane_half=None, start_x=None, speed=None,
           probe=None, probe_material=0, physics_materials=None, surfaces=None, relief_surfaces=(),
           bar_half=None, acoustic_materials=None):
-    """Each scene owns its lane, probe, materials, and surfaces, so a default that suits one cannot
-    silently constrain another. `relief_surfaces` names surface indices that carry the shared relief map.
-    `bar_half` is the box bodies' half extents, defaulting to the corpus bar.
-    `acoustic_materials` overrides the scene's material table, and `probe_material` indexes the body
-    models' material in it, so a probe solved on another material can reference that material."""
+    """Write one scene with explicit lane, modal probe, material, surface, and box-size overrides."""
     if not selected(name):
         return
     lane_half = lane_half or GroundHalf
@@ -499,9 +448,7 @@ def scene(name, description, bodies, grounds, *, lane_half=None, start_x=None, s
     physics_materials = physics_materials or [Frictionless]
     buf = Buffers()
     body_shapes = list(dict.fromkeys(b["shape"] for b in bodies))
-    # One solved model per body shape the scene uses.
-    # `probe` overrides them all when a scene needs a solve of its own (another material or frequency window).
-    # A ground carrying its own solve appends one and refers to it by index.
+    # `probe` replaces the default solve for every body shape.
     body_solved = {g: probe or (solved_modes(bar_half, CERAMIC) if g == "box" else solved_modes_sphere(SphereR, CERAMIC, max_freq=60000.0)) for g in body_shapes}
     models, body_model = [], {}
     for g in body_shapes:
@@ -513,7 +460,6 @@ def scene(name, description, bodies, grounds, *, lane_half=None, start_x=None, s
             models.append(_modal_model(buf, f"Ground {g['label']}", g["probe"]))
             ground_model[i] = len(models) - 1
 
-    # One mesh per distinct size, so a body's own geometry is never a variable between scenes.
     meshes = []
 
     def add_mesh(*args):
@@ -523,7 +469,6 @@ def scene(name, description, bodies, grounds, *, lane_half=None, start_x=None, s
 
     nodes, scene_nodes = [], []
     shapes_decl = [box_shape(lane_half)]
-    # A body's mesh and its collider, one pair per shape and scale the scene actually uses.
     body_mesh, body_shape = {}, {}
     for g in body_shapes:
         if g == "box":
@@ -547,21 +492,19 @@ def scene(name, description, bodies, grounds, *, lane_half=None, start_x=None, s
                 "KHR_audio_rigid_bodies": audio,
             },
         })
-    # Every body's own half height, so one standing on another is placed on top of it.
     body_half = [(bar_half[1] if b["shape"] == "box" else SphereR) * (b["mass"] / body_solved[b["shape"]]["mass"]) ** (1.0 / 3.0)
                  for b in bodies]
     physics_joints = []
     for b_index, b in enumerate(bodies):
         geom, mass = b["shape"], b["mass"]
         solved = body_solved[geom]
-        # The body's mass picks its size on the solved model, mass = solved mass * s^3, so the engine's scale retuning keeps the modes, the shapes, and the rigid dynamics of one body of this mass.
+        # Scale geometry and modal data through mass = solved mass * s^3.
         s = (mass / solved["mass"]) ** (1.0 / 3.0)
         inertia = [i * (mass / solved["mass"]) ** (5.0 / 3.0) for i in solved["inertiaDiagonal"]]
         y_half = body_half[b_index]
-        # A body standing on another rests on its top face, and its drop is measured from there.
         stand = 2 * body_half[b["on"]] if b["on"] is not None else 0.0
         body_speed = speed if b["speed"] is None else b["speed"]
-        # A body that rolls carries the spin its travel implies, so the contact point stands still.
+        # Set angular velocity for zero-slip rolling.
         motion = {"mass": mass, "inertiaDiagonal": inertia, "linearVelocity": [body_speed, 0.0, 0.0]}
         if b["rolls"]:
             motion["angularVelocity"] = [0.0, 0.0, -body_speed / y_half]
@@ -569,8 +512,8 @@ def scene(name, description, bodies, grounds, *, lane_half=None, start_x=None, s
             "motion": motion,
             "collider": {"geometry": {"shape": body_shape[geom]}, "physicsMaterial": b["physics_material"]},
         }
-        # A driven body is jointed to its lane: a velocity motor along the travel holds its speed against friction, its rotation is locked, and every other axis stays free so it follows the contact.
-        # The drive targets the connected node's velocity in joint space per the KHR spec, so holding this body at +v against its lane takes a target of -v.
+        # Constrain rotation and drive lane-relative velocity while leaving the remaining axes free.
+        # KHR joint-space convention requires target -v for body velocity +v relative to the lane.
         if b["driven"]:
             physics_joints.append({
                 "limits": [{"angularAxes": [0, 1, 2], "min": 0.0, "max": 0.0}],
@@ -586,7 +529,7 @@ def scene(name, description, bodies, grounds, *, lane_half=None, start_x=None, s
             "translation": [start_x, stand + y_half + b["drop"], LaneZ[b["lane"]]],
             "extensions": {
                 "KHR_physics_rigid_bodies": rigid_body,
-                # A silent body carries its finish and no modal model, which the extension allows.
+                # Silent bodies retain their acoustic surface while omitting a modal model.
                 "KHR_audio_rigid_bodies": ({} if b["silent"] else {"modalModel": body_model[geom]})
                     | {"acousticSurface": b["surface"], "gain": 1.0},
             },
@@ -605,26 +548,17 @@ def scene(name, description, bodies, grounds, *, lane_half=None, start_x=None, s
 
 
 def test_scene(name, *args, **kwargs):
-    """One phenomenon scene of the isolation corpus, under test/.
-
-    The root of samples/ holds the full-experience scenes, and test/ holds the ladder corpus whose
-    scenes each isolate one prediction."""
+    """Write one isolated prediction scene under test/."""
     scene(f"test/{name}", *args, **kwargs)
 
 
 def surface_scene(name, *args, **kwargs):
-    """One scene of the isolation corpus whose prediction is a sustained contact's, under test/surface/.
-
-    These sound only where the surface-contact model renders them, so they are kept apart from the
-    scenes a collision alone voices."""
+    """Write one sustained-contact prediction scene under test/surface/."""
     test_scene(f"surface/{name}", *args, **kwargs)
 
 
 def union_surface(boxes, spacing):
-    """Welded watertight surface mesh of a union of axis-aligned boxes, gridded near `spacing`.
-
-    `boxes` is a list of (center, half) pairs. Grid cells count as solid where their centre falls in
-    any box, and every solid cell face against the outside is emitted, so any union closes."""
+    """Return a welded watertight union of axis-aligned boxes gridded near `spacing`."""
     lo = [min(c[i] - h[i] for c, h in boxes) for i in range(3)]
     hi = [max(c[i] + h[i] for c, h in boxes) for i in range(3)]
     counts = [max(1, round((hi[i] - lo[i]) / spacing)) for i in range(3)]
@@ -659,10 +593,7 @@ def union_surface(boxes, spacing):
 
 
 def flat_mesh(verts, tris):
-    """Flat-shaded positions, normals, texture coordinates, and indices from a welded surface.
-
-    Each face's texture coordinates are its positions in its own plane, so a relief map keeps mesh
-    lengths, as the box builder's faces do."""
+    """Return flat-shaded geometry with face-plane texture coordinates preserving mesh lengths."""
     pos, nrm, uvs, idx = [], [], [], []
     for a, b, c in tris:
         pa, pb, pc = verts[a], verts[b], verts[c]
@@ -704,19 +635,12 @@ def _quat_mul(a, b):
     )
 
 
-# The bracket body: a steel angle of two boxes, sharing a corner, so its surface is concave.
+# A two-box steel angle provides concave geometry.
 BracketBoxes = (((0.0, 0.01, 0.0), (0.05, 0.01, 0.02)), ((-0.04, 0.035, 0.0), (0.01, 0.035, 0.02)))
 
 
 def pile():
-    """The full-experience scene: five bodies of stepped geometric complexity dropped together onto
-    one platform, with every major audio mechanism sounding at once.
-
-    Unlike the test corpus this isolates nothing: it is the qualitative listening scene and the
-    performance target, cluttered and rich, with natural collision and surface-settling noise.
-    Ceramic, steel, and glass bodies from a plain cube up to a concave bracket land under gravity
-    with friction and restitution, on a radiating cast platform carrying the relief map, one body
-    reading a stored profile, and every body carrying its own solved modal model."""
+    """Write the full-experience five-body collision and sustained-contact scene."""
     if not selected("Pile"):
         return
     buf = Buffers()
@@ -743,10 +667,7 @@ def pile():
     def add_mesh(*args):
         return _add_mesh(buf, meshes, *args)
 
-    # Every body at its own solved geometry and mass, so nothing is a scaled stand-in.
-    # Compact bodies ring above hearing, so their windows run ultrasonic and the engine's own audibility gate decides what sounds: a small hard cube clicks through what it strikes.
-    # (label, solve, material index, surface index, mesh, implicit shape or None for the bracket,
-    #  clear radius about the origin, drop, x, z, rotation)
+    # Use each body's solved geometry and mass; include ultrasonic modes for audibility-gate coverage.
     bodies = [
         ("Cube", solved_modes(cube_half, CERAMIC, spacing=0.01, max_freq=60000.0), 0, 2,
          add_mesh(*box(*cube_half)), box_shape(cube_half),
@@ -802,7 +723,7 @@ def pile():
             shapes_decl.append(shape)
             rigid_body["collider"] = {"geometry": {"shape": len(shapes_decl) - 1}, "physicsMaterial": 0}
         else:
-            # The bracket's contact geometry is the union its surface is: one box collider per arm on child nodes, which the engine composes into one compound body.
+            # Use one child collider per bracket arm to form the compound contact geometry.
             children = []
             for center, half in BracketBoxes:
                 shapes_decl.append(box_shape(half))
@@ -820,7 +741,6 @@ def pile():
         scene_nodes.append(len(nodes))
         nodes.append(node)
 
-    # The cast ground carries the relief map.
     _write_doc(
         "Pile",
         "Five bodies, a cube through a concave bracket, dropped together into a pile on a radiating platform. Every major audio mechanism sounds at once.",
@@ -837,11 +757,9 @@ def _surfaces():
 def main():
     pile()
 
-    # Each phenomenon is a directory of sibling scenes, one configuration sounding per scene, named in a/b/c ladder order.
-    # Siblings put their body and ground on the centre lane and share their lane geometry, so every one frames identically and their levels compare across files.
+    # Sibling scenes use identical framing for cross-file level comparison.
 
-    # Every body oscillates on its contact at sqrt(K/m), and K is proportional to the load, so the rate is the same for all three however much they weigh.
-    # They should settle onto one shared pitch.
+    # Contact stiffness and mass scale together, producing a shared oscillation rate.
     for tag, label, mass in (("a_Light5g", "Light 5 g", 0.005),
                              ("b_Middling500g", "Middling 500 g", 0.5),
                              ("c_Heavy50kg", "Heavy 50 kg", 50.0)):
@@ -852,18 +770,16 @@ def main():
             grounds=[finish_ground("Machined")],
         )
 
-    # A contact excites both solids that make it.
-    # Every other scene leaves its ground silent, so this is the one where the scraped surface rings back, in a band of its own so it can be heard doing it.
+    # Give the scraped ground a separate modal band to verify radiation from both bodies.
     surface_scene(
         "SurfaceRadiates/a_Scrape",
         "A body scraping a surface that rings back. Both solids of a contact radiate.",
-        # 2 kg keeps the scraper bearing on the bed (~11% flight) rather than skipping off it, which is the difference between a grainy scrape and sparse plucks.
+        # Use 2 kg to keep bed flight near 11% and preserve continuous scrape texture.
         bodies=[body("Scraper", 2.0, 1, FinishIndex["Machined"])],
         grounds=[finish_ground("Machined", probe=solved_modes(GroundHalf, CERAMIC, spacing=0.04))],
     )
 
-    # The same body on three finishes.
-    # The rate goes as one over the square root of the roughness, so these should sit roughly five octaves apart, roughest lowest.
+    # Vary only finish roughness; predicted rate scales as roughness^(-1/2).
     for tag, finish in (("a_Polished", "Polished"), ("b_Machined", "Machined"), ("c_Cast", "Cast")):
         surface_scene(
             f"FinishLadder/{tag}",
@@ -872,11 +788,8 @@ def main():
             grounds=[finish_ground(finish)],
         )
 
-    # Asperity shocks arrive at the sliding speed over the correlation length, and that rate is what decides whether contact is heard as separate events or as hiss.
-    # Sliding speed cannot reach the band where the difference is audible: on a machined finish even a crawl arrives at hundreds of events a second, and bodies overlap them faster than the modes decay.
-    # The surface's own length scale can, so these three lanes hold the sliding speed and step the correlation length instead, putting the rate at 100, 500 and 2000 events a second.
-    # Roughness is scaled with the correlation length so every lane carries the same surface gradient, which is what sets the asperity pressure and so the real contact area.
-    # Only the length scale differs, so the three lanes differ in the rate their shocks arrive at and in nothing else.
+    # Keep speed and surface gradient constant while correlation length sets rates of 100, 500, and 2000 shocks per second.
+    # This isolates discrete shocks from overlapping hiss.
     for tag, label, lc in (("a_100PerSecond", "100 shocks/s", 1e-3),
                            ("b_500PerSecond", "500 shocks/s", 2e-4),
                            ("c_2000PerSecond", "2000 shocks/s", 5e-5)):
@@ -885,18 +798,14 @@ def main():
             "One body at one speed over one of three finishes of the same gradient and different length scale. Asperity shocks arrive at the speed over the correlation length, so the coarsest scene is heard as separate events and the finest as hiss.",
             bodies=[body(label, 2.0, 1, 0, drop=0.0)],
             grounds=[ground(label, 0, 1)],
-            # Scaled with the finish so every scene keeps one waviness-to-roughness ratio too.
             surfaces=[{"name": label, "material": 0, "roughness": 0.04 * lc,
                        "correlationLength": lc, "spectralSlope": -2.4,
                        "waviness": 0.04 * lc, "wavinessLength": 40 * lc}],
             lane_half=(2.5, 0.04, 0.12), start_x=-2.3,
         )
 
-    # Coulomb traction acts on the same force fluctuation the normal direction carries, scaled by the friction coefficient and applied along the slip.
-    # It is the one term of the contact force no other scene can catch the absence of, since every other lane in the corpus is frictionless so that its sliding speed holds.
-    # Here the coefficient is the only thing that differs, and a renderer that leaves traction out renders the second and third lanes as quiet as the first while they slide.
-    # Friction also slows a body, so the lanes stop at different times.
-    # What discriminates is the level over the window they are all still moving, which the fastest to stop holds for about half a second.
+    # Vary only friction to isolate Coulomb traction during the shared sliding interval.
+    # Bodies decelerate at different rates, so compare levels over the first half second.
     for tag, label, static, dynamic in (("a_Frictionless", "Frictionless", 0.0, 0.0),
                                         ("b_LightGrip", "Light grip", 0.055, 0.05),
                                         ("c_FullGrip", "Full grip", 0.16, 0.15)):
@@ -905,7 +814,7 @@ def main():
             "One body on one finish at one of three friction coefficients. Coulomb traction drives the surface along the slip in proportion to the coefficient, so a frictionless scene and a gripping one differ while both still slide.",
             bodies=[body(label, 2.0, 1, 0, drop=0.0, physics_material=1)],
             grounds=[ground("Coarse", 0, 1)],
-            # A coarse finish so the shocks land in the band at the speed a decelerating body needs to start at.
+            # Use a coarse finish to keep shocks audible during deceleration.
             surfaces=[{"name": "Coarse", "material": 0, "roughness": 4e-5,
                        "correlationLength": 1e-3, "spectralSlope": -2.4,
                        "waviness": 4e-5, "wavinessLength": 4e-2}],
@@ -913,9 +822,8 @@ def main():
             speed=1.0, **LongLane,
         )
 
-    # At millimeters per second the shock rate collapses and the frictional channel carries the scene: the patch shear spring sticks, loads with the travel, and slips in audio-band cycles.
-    # Three speeds ladder the slip-event rate.
-    # The stiff drive holds the creep against friction, whose droop at the default gain would swamp a millimeter-per-second target.
+    # Millimeter-per-second motion suppresses asperity shocks and isolates patch stick-slip.
+    # A high motor gain limits velocity droop under friction.
     for tag, label, creep_speed in (("a_Creep", "Creep", 0.001), ("b_Slow", "Slow", 0.003), ("c_Fast", "Fast", 0.010)):
         surface_scene(
             f"Squeak/{tag}",
@@ -926,9 +834,7 @@ def main():
             start_x=0.0,
         )
 
-    # Two faces meeting share an area their geometry fixes, while a sphere touches at a point whose patch grows with the load instead.
-    # The extension makes that a difference of contact law, not of degree.
-    # Each body carries its own solved model, since each is its own geometry, at one mass and one finish.
+    # Compare geometry-fixed face contact with load-dependent point contact at equal mass and finish.
     for tag, label, shape in (("a_Face", "Box on a face", "box"), ("b_Point", "Sphere on a point", "sphere")):
         surface_scene(
             f"FaceVsPoint/{tag}",
@@ -938,11 +844,8 @@ def main():
             **LongLane,
         )
 
-    # A rolling body has no slip at all, and the literature's habit of classifying a contact by its slip routes it out of the surface model entirely and silences it.
-    # These two scenes hold one sphere each at one speed over one finish and the same real friction, and the only difference is the spin.
-    # Rolling's sphere carries the spin its travel implies and friction keeps it locked there, so its frictional channel is silent by physics rather than by an authored material.
-    # Sliding's sphere is motor-held at the same speed with its rotation locked, so friction excites it the whole way.
-    # Listen to them one after the other rather than mixed.
+    # Compare rolling and motor-driven sliding at equal speed, finish, and friction.
+    # Rolling has zero slip but retains surface traversal.
     sphere_friction = [{"staticFriction": 0.4, "dynamicFriction": 0.3, "restitution": 0.0}]
     surface_scene(
         "RollingVsSliding/a_Rolling",
@@ -960,10 +863,8 @@ def main():
         physics_materials=sphere_friction,
         **LongLane,
     )
-    # Rolling is the limit where both surfaces are traversed at one rate, and that is the only limit in which a single composite of the pair's roughness swept at a single rate is exact.
-    # Reading it off Rolling above does not work: the rate a contact point traverses a sphere is its spin times the radius it stands at, which the load presses inside the sphere's own, so that scene's two rates part by about a tenth of a percent and walk tens of elements of relative slip over a render.
-    # This one holds them together instead, by making that depth a smaller share of the radius it is taken from.
-    # Friction is what keeps a rolling body rolling, so it keeps the same real friction the two above carry.
+    # A large radius reduces the sweep-rate mismatch caused by contact penetration.
+    # Retain physical friction to sustain rolling.
     surface_scene(
         "RollingVsSliding/c_Locked",
         "A large sphere rolling, the limit where both surfaces are traversed at one rate. Its two sweeps hold together where a smaller sphere's part.",
@@ -973,9 +874,7 @@ def main():
         **LongLane,
     )
 
-    # Which side of a pair carries the roughness decides how much of the gap fluctuates, because only a surface the contact travels along brings fresh material under it.
-    # A body sliding flat on a ground sweeps the ground's surface and sits at one place on its own face, so the same pair roughness sweeps when it is on the ground and stands still when it is on the body.
-    # Every other scene pairs a finish against itself, where the two sides split the fluctuation evenly and the contrast cannot appear.
+    # Move identical pair roughness between the swept and stationary surfaces to isolate traversal indexing.
     for tag, label, sliding_face, swept in (("a_Even", "Even", "Machined", "Machined"),
                                             ("b_SweptRough", "Swept rough", "Polished", "Cast"),
                                             ("c_UnsweptRough", "Unswept rough", "Cast", "Polished")):
@@ -986,8 +885,8 @@ def main():
             grounds=[finish_ground(swept)],
         )
 
-    # A rolling body on a coarse ground has two regimes in speed: at a crawl its footprint always finds the next supporting crest and it follows the surface quasi-statically, and as the speed rises the terrain launches it faster than gravity can return it, so contact gives way to ballistic hops and bounce trains.
-    # The middle rung rolls at the corpus speed, so it doubles as the standing sphere-on-cast probe scene.
+    # Sweep rolling speed from quasi-static tracking to ballistic loss of contact on a coarse ground.
+    # Use the middle speed as the sphere-on-cast reference scene.
     for tag, label, v in (("a_Creep", "Creep", 0.02), ("b_Reference", "Reference", 0.1), ("c_Brisk", "Brisk", 0.7)):
         surface_scene(
             f"BounceOnset/{tag}",
@@ -998,8 +897,7 @@ def main():
             **LongLane,
         )
 
-    # A dropped body's bounces arrive as discrete impacts, so this pair voices the strike channel's surface response: the finish sets each landing's contact time and with it the strike's brightness.
-    # The drop and restitution are sized so the bounce train sweeps the heavy landing class from hundreds of millimeters per second down.
+    # Compare finish-dependent impact duration across otherwise identical bounce trains.
     landing_material = [{"staticFriction": 0.4, "dynamicFriction": 0.3, "restitution": 0.5}]
     for tag, label, finish in (("a_Machined", "On machined", "Machined"), ("b_Cast", "On cast", "Cast")):
         surface_scene(
@@ -1010,8 +908,7 @@ def main():
             physics_materials=landing_material,
         )
 
-    # Node scale sizes the mesoscale relief, which lives in mesh coordinates, and leaves the microscale finish alone, which is absolute.
-    # Three copies of one body at three scales therefore detune together while their relief stretches and their polish does not.
+    # Scale mesoscale relief with node geometry while preserving absolute microscale finish.
     for tag, label, mass in (("a_HalfSize", "Half size", 0.0972),
                              ("b_Reference", "Reference", 0.7776),
                              ("c_DoubleSize", "Double size", 6.2208)):
@@ -1020,14 +917,13 @@ def main():
             "One body at one of three scales on a ground carrying a relief map. Scale sizes the relief and detunes the model, and leaves the absolute finish alone.",
             bodies=[body(label, mass, 1, 1)],
             grounds=[ground("Relief", 0, 1)],
-            # Built fresh per scene: the writer annotates these dicts with the relief texture.
+            # Use per-scene dictionaries because document assembly inserts relief texture indices.
             surfaces=[{"name": "Relief", "material": 0, **FINISHES["Machined"]},
                       {"name": "Machined", "material": 0, **FINISHES["Machined"]}],
             relief_surfaces=(0,),
         )
 
-    # Restitution is the only authored input to the contact's dissipation, so it is the one control over how sharply a contact rings.
-    # Everything else here is held.
+    # Vary only restitution to isolate contact dissipation.
     for tag, label, restitution in (("a_Dead", "Dead", 0.0), ("b_Middling", "Middling", 0.5), ("c_Lively", "Lively", 0.9)):
         surface_scene(
             f"RestitutionLadder/{tag}",
@@ -1037,9 +933,8 @@ def main():
             physics_materials=[{"staticFriction": 0.0, "dynamicFriction": 0.0, "restitution": restitution}],
         )
 
-    # A small stiff body's modes lie above hearing, so the extension's Nyquist rule culls every one of them and the recoil is the whole sound.
-    # A renderer that has not implemented acceleration noise produces silence here, which is the point: nothing else in the corpus separates the two.
-    # It is dropped rather than slid, because the recoil comes from an impact.
+    # Ultrasonic modes trigger Nyquist culling and isolate rigid-body acceleration noise.
+    # Use an impact because acceleration noise is impulsive.
     test_scene(
         "AccelerationNoise/a_SteelBead",
         "A small steel body whose modes are all ultrasonic, dropped. Every mode is culled, so what remains is the rigid-body recoil alone.",
@@ -1050,8 +945,7 @@ def main():
         speed=0.0,
     )
 
-    # A contact that separates applies no force, and that clamp at zero is what turns a bounce into a train of impacts rather than one soft landing.
-    # Two bodies dropped from one height, differing only in the restitution of the material they land on.
+    # Compare restitution while verifying zero contact force after separation.
     for tag, label, restitution in (("a_Bouncing", "Bouncing", 0.9), ("b_Dead", "Dead", 0.0)):
         test_scene(
             f"Separation/{tag}",
@@ -1062,11 +956,9 @@ def main():
             speed=0.0,
         )
 
-    # A loaded frictional interface damps the modes pressed against it: sub-cone micro-slip at the asperity junction bleeds each ring cycle, so grip shortens the decay of a struck body at rest where a frictionless support leaves it ringing free.
-    # One strike, one finish, one load, and only the friction coefficient steps, so the ring's decay is the one thing that moves.
-    # The body is low-loss glass: its free ring must outlast contact-borne dissipation by several times for the choke to read, and the ceramic bar's own material damping consumes its ring first.
-    # The ring is authored already resting and a small striker is dropped onto it, which is what lets the body carry glass's own restitution: a landing at that restitution bounces for the whole render and re-excites the ring it is supposed to be choking, where a tap from above presses the body into its support and leaves the seated junction the only thing acting on the decay.
-    # The striker carries a finish and no modal model, which the extension allows for exactly this, so it sounds only through the contact it makes, and its junction is frictionless and dead, so it neither rings nor grips and only the ground junction steps across the ladder.
+    # Vary support friction to isolate contact-dependent damping of a resting low-loss glass body.
+    # Drop a silent, inelastic striker onto the seated body to avoid repeated free bounces.
+    # Keep the striker junction frictionless so only support friction changes.
     for tag, label, friction in (("a_NoGrip", "No grip", 0.0), ("b_Grip", "Grip", 0.3), ("c_FullGrip", "Full grip", 0.9)):
         surface_scene(
             f"PressedRing/{tag}",
@@ -1082,9 +974,8 @@ def main():
             speed=0.0,
         )
 
-    # One modal model, three instances, and only one of them struck.
-    # Each instance carries its own resonator state, so the two at rest must stay silent however hard their neighbour is hit.
-    # The silent co-present instances are the phenomenon, so this scene keeps all three bodies.
+    # Strike one of three modal-model instances to verify independent resonator state.
+    # Retain the two stationary instances as silence checks.
     test_scene(
         "StrikeOne/a_ThreeInstances",
         "Three instances of one model, one dropped and two already at rest. Only the struck instance rings.",
@@ -1097,10 +988,8 @@ def main():
         speed=0.0,
     )
 
-    # A contact applies its force over a finite time, and each mode is excited by that pulse's spectrum at its own frequency, so a mode well above one over the contact time is barely reached.
-    # The Hertz contact time goes as mass^(2/5) and only as speed^(-1/5), so mass is the lever that moves it: a thousandfold in mass is sixteenfold in contact time, where a thousandfold in drop height is under fourfold.
-    # The heavy body should land duller as well as louder.
-    # Every variant drops from one height, so the contact time answers to the mass alone.
+    # Vary mass at fixed drop height to test Hertz contact duration proportional to mass^(2/5).
+    # The heavier body should sound louder and darker.
     for tag, label, mass in (("a_5g", "5 g", 0.005), ("b_500g", "500 g", 0.5), ("c_5kg", "5 kg", 5.0)):
         test_scene(
             f"ContactDuration/{tag}",
@@ -1110,11 +999,8 @@ def main():
             speed=0.0,
         )
 
-    # The contact time answers to the approach speed only while the patch is still growing under the load.
-    # A sphere's grows for the whole collision, so its contact goes as speed^(-1/5).
-    # A box lands on its face, which fills the patch at first touch, so its contact is a flat punch of fixed stiffness and lasts the same however hard it lands.
-    # This is why ContactDuration reaches for mass instead of drop height: on a face, drop height moves nothing at all.
-    # Two heights a hundredfold apart, which is tenfold in speed.
+    # Compare speed-dependent Hertz point contact with fixed-stiffness face contact.
+    # Use drop heights differing by 100x, or speeds differing by 10x.
     for tag, label, shape, drop in (("a_SphereLight", "Sphere, light landing", "sphere", 0.005),
                                     ("b_SphereHard", "Sphere, hard landing", "sphere", 0.5),
                                     ("c_BoxLight", "Box, light landing", "box", 0.005),
@@ -1127,8 +1013,7 @@ def main():
             speed=0.0,
         )
 
-    # A stored profile is the only way two renderers read the same surface sample for sample.
-    # The two lanes carry one roughness by two routes, so what they share is the statistics and what they do not share is the realization.
+    # Compare one stored realization with a synthesized profile having the same statistics.
     measured, spacing = measured_profile()
     surface_scene(
         "MeasuredProfile/a_Stored",

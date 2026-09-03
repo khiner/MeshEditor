@@ -4,11 +4,11 @@
 using namespace action;
 
 namespace {
-std::optional<std::pair<Action, Phase>> Emitted; // This frame's first emitted user action and its phase
-std::vector<Action> SystemEmitted; // This frame's system-generated actions
-bool CommitRequested = false; // Standalone commit request
+std::optional<std::pair<Action, Phase>> Emitted;
+std::vector<Action> SystemEmitted;
+bool CommitRequested = false;
 
-// First user action emitted in the frame wins; the rest are ignored.
+// Retains the first user action emitted during the frame.
 template<typename ActionType> void Buffer(ActionType a, Phase phase) {
     if (!Emitted) Emitted.emplace(MakeAction(std::move(a)), phase);
 }
@@ -27,7 +27,7 @@ Drained Drain() { return {std::exchange(Emitted, {}), std::exchange(SystemEmitte
 } // namespace action
 
 namespace {
-// Force instantiation of every Emit* entry point for every leaf action type so call sites in other TUs link.
+// Explicit instantiation provides definitions to other translation units.
 using EmitPtr = void (*)();
 template<typename DV> constexpr auto DomainEmits() {
     return []<size_t... I>(std::index_sequence<I...>) {

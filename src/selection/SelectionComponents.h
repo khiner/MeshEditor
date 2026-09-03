@@ -10,44 +10,35 @@
 
 #include <vector>
 
-// Selection and activation bits shared by object, bone, and edit overlays.
 constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
-// Marks a mesh whose elements are individually selectable: the store holds its selection bits,
-// and it keeps them across edit-mode switches.
 struct MeshElementSelection {};
 
-// Derived on the GPU whenever a mesh selection changes.
 struct MeshElementSelectionStats {
     uint32_t SelectedCount{}, SelectedVertexCount{};
     vec3 SelectedVertexPositionSum{};
     bool AnySharp{}, AnySmooth{};
 };
 
-// A mesh's elements (vertices/edges/faces) in the store's selection bits: its first bit, and the
-// element count of the current edit mode.
 struct ElementRange {
     entt::entity MeshEntity;
     uint32_t Offset, Count;
 };
 
-// Snapshot of selection state at the start of a shift+box-drag.
-// Presence on viewport means an additive box-drag is active.
 struct AdditiveBoxSelectBaseline {
     std::vector<entt::entity> SelectedEntities;
     std::vector<std::pair<entt::entity, BoneSelection>> BoneSelections;
     bool ElementSelectionCaptured{};
 };
 
-// Excite temporarily publishes its sparse vertex mask through the edit-selection storage.
-// Preserve the authoritative edit domain so returning to Edit restores the remembered selection.
+// Excite uses edit-selection storage temporarily and restores this authoritative edit domain on return to Edit mode.
 struct ExciteSelectionBaseline {
     Element Mode{Element::None};
 };
 
-struct EditSelectionDirty {}; // GPU selection changed; the viewport needs a reuse submit.
+struct EditSelectionDirty {};
 
-// ViewProj is the record-time view-projection, stamped into SceneViewUBO so replay resolves pixels against it.
+// Preserve the record-time projection so replay resolves pixels in the recorded coordinate system.
 struct PendingEditElementClick {
     uvec2 MousePx;
     bool Toggle;
@@ -63,7 +54,8 @@ struct PendingBoxSelect {
 struct PendingBoxSelectFinalize {};
 struct BoxSelectStatsDirty {};
 
-// Object/bone click pick awaiting GPU resolution. Cycle advances to the next overlapping hit.
+// Object or bone click-pick awaiting GPU resolution.
+// Cycle advances to the next overlapping hit.
 struct PendingPick {
     uvec2 MousePx;
     bool Shift;
@@ -71,7 +63,6 @@ struct PendingPick {
     mat4 ViewProj;
 };
 
-// Selection ignores occlusion when true.
 struct SelectionXRay {
     bool Value{false};
 };

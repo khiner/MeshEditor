@@ -77,12 +77,10 @@ inline uint MeshletPrimitiveTopology(MeshletRecord meshlet) {
     return meshlet.LocalTriangleOffset >> MeshletGeometryEncoding_TopologyShift;
 }
 
-// A cluster simplified from finer geometry. Its triangles are its own, so it names no source triangle
-// and no source face.
+// Returns true for clusters with independent triangles and no source-triangle or source-face identity.
 inline bool MeshletCoarse(MeshletRecord meshlet) { return meshlet.RefinedGroup != INVALID_OFFSET; }
 
-// The three primitive-local corners a rendered triangle reads its attributes from. A coarse cluster
-// names them through its own vertex list, and original geometry through its source triangle.
+// Returns attribute corners from the cluster vertex list or original source triangle.
 inline uint3 MeshletCornerIds(
     device const BindlessSet &bindless, uint vertex_slot, uint local_triangle_slot,
     MeshletRecord meshlet, PrimitiveRecord primitive, uint triangle, uint local_triangle
@@ -102,8 +100,7 @@ inline uint3 MeshletCornerIds(
     return corners;
 }
 
-// The face normal a coarse triangle's Face-class corners shade from, in mesh-local space and wound
-// like the source geometry it replaces.
+// Returns a coarse triangle's mesh-local face normal under source-geometry winding.
 inline float3 MeshletCoarseNormal(const thread Scene &scene, DrawData draw, uint3 vertex_ids) {
     const float3 p0 = scene.GetLocalPosition(draw, vertex_ids.x);
     return NormalizeOrZero(cross(
@@ -131,8 +128,7 @@ inline MeshletTriangleCorners ResolveMeshletCorners(
     return result;
 }
 
-// A coarse cluster's face values: no source face, so no edit selection and no face normal, and the
-// material its primitive carries.
+// Returns coarse face values with primitive material and no source-face selection state.
 inline MeshletFaceValues MeshletCoarseFace(
     const thread Scene &scene, PrimitiveRecord primitive, InstanceRecord instance, Transform world
 ) {

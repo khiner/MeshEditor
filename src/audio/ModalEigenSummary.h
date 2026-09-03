@@ -6,9 +6,8 @@
 #include <cstddef>
 #include <vector>
 
-// A modal solve's raw eigenpairs sampled at the excitation positions, kept on the sound entity.
-// With the solved material, this exactly re-derives ModalModes under material edits that scale
-// the FEM matrices (see modal::RescaleModes), so those edits need no solve.
+// Stores raw eigenpairs sampled at excitation positions and the material used for the solve.
+// modal::RescaleModes re-derives ModalModes for material edits that scale the FEM matrices.
 struct ModalEigenSummary {
     std::vector<double> Eigenvalues; // ascending, all solved eigenpairs
     std::vector<std::vector<vec3>> Shapes; // mass-normalized, by [excitation position][eigenpair]
@@ -16,7 +15,6 @@ struct ModalEigenSummary {
     float SolvedMinModeFreq{20}, SolvedMaxModeFreq{16'000}; // The synthesized band the eigenpairs were solved for
     uint32_t SolvedNumModes{30}; // The mode count the eigenpairs were solved for
     size_t TetInputsHash{}; // The tet inputs the eigenpairs were solved over
-    // The excitation vertices the solve was asked for. Several can land on one sample point.
     std::vector<uint32_t> SolvedVertices;
 
     bool operator==(const ModalEigenSummary &) const = default;

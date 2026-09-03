@@ -22,7 +22,7 @@ add_compile_options(-Wno-missing-field-initializers)
 add_subdirectory(lib)
 target_compile_options(meshoptimizer PRIVATE -O3)
 
-# Full zstd (compress + decompress).
+# Link full zstd compression and decompression support.
 add_library(basisu_transcoder STATIC
     lib/basis_universal/transcoder/basisu_transcoder.cpp
     lib/basis_universal/zstd/zstd.c
@@ -30,7 +30,7 @@ add_library(basisu_transcoder STATIC
 target_include_directories(basisu_transcoder SYSTEM PUBLIC lib/basis_universal/transcoder)
 target_compile_options(basisu_transcoder PRIVATE -w -fno-strict-aliasing $<$<COMPILE_LANGUAGE:CXX>:-include exception>)
 
-# Ignore lib warnings
+# Suppress warnings from bundled libraries.
 file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
 set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 
@@ -43,7 +43,7 @@ add_executable(gpu_schema_gen gpu/GenerateGpuSchema.cpp)
 target_include_directories(gpu_schema_gen PRIVATE src)
 
 set(GPU_SCHEMA_FILE "${CMAKE_SOURCE_DIR}/gpu/GpuSchema.yaml")
-# Regenerate build graph when schema shape changes (e.g. added/removed struct names).
+# Regenerate the build graph when schema types change.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GPU_SCHEMA_FILE}")
 
 set(GPU_SCHEMA_GENERATED_HEADERS
@@ -149,15 +149,11 @@ foreach(src IN LISTS SHADER_SOURCE_FILES)
     endif()
 endforeach()
 
-# The surface-contact audio model (src/audio/surface/): two bodies resting or sliding on one another
-# sounding from the roughness of the surfaces they slide over. Selected by `SURFACE_AUDIO=1` in the
-# environment at configure time, or by setting the cache variable directly. Without it the build takes
-# the core modal path alone - a collision driving the modes with one force pulse - and links the entry
-# points in src/audio/SurfaceContactAbsent.cpp. See src/audio/SurfaceContact.h.
+# Enable sustained-contact audio with `SURFACE_AUDIO=1` or the cache variable.
+# The default links the modal-impact entry points in src/audio/SurfaceContactAbsent.cpp.
 option(MESHEDITOR_SURFACE_AUDIO "Build the surface-contact audio model" $ENV{SURFACE_AUDIO})
 
-# The .cpp files whichever way the option went, in three nested sets, so a target links only as far up
-# as it reaches: the model off the registry, what reads the scene, and what draws the controls.
+# Split sustained-contact sources into model, scene-integration, and control layers.
 if(MESHEDITOR_SURFACE_AUDIO)
     set(SURFACE_MODEL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/surface/SurfaceModel.cpp)
     set(SURFACE_SCENE_SOURCES ${SURFACE_MODEL_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/surface/SurfaceAudio.cpp)
@@ -171,8 +167,7 @@ endif()
 
 option(MESHEDITOR_APP "Build the MeshEditor app" ON)
 if(MESHEDITOR_APP)
-    # The surface model and its stand-in both live under src/, so take whichever the option selected
-    # and leave the other out.
+    # Link the selected sustained-contact implementation.
     file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp src/*.mm)
     list(FILTER SOURCES EXCLUDE REGEX "src/audio/(surface/.*|SurfaceContactAbsent)\\.cpp$")
     list(APPEND SOURCES ${SURFACE_AUDIO_SOURCES})
@@ -209,8 +204,7 @@ if(MESHEDITOR_APP)
         target_compile_definitions(${PROJECT_NAME} PRIVATE RELEASE_BUILD)
     endif()
 
-    # Run the replay and round-trip validation behind File->[Debug] Roundtrip after every committed action.
-    # Selected by `VALIDATE_ACTIONS=1` in the environment at configure time, or by setting the cache variable directly.
+    # Enable per-action replay and round-trip validation through the environment or cache variable.
     option(MESHEDITOR_VALIDATE_ACTIONS "Validate replay and round-trip after every committed action" $ENV{VALIDATE_ACTIONS})
     if(MESHEDITOR_VALIDATE_ACTIONS)
         if(NOT CMAKE_BUILD_TYPE MATCHES Debug)
@@ -224,12 +218,11 @@ if(MESHEDITOR_APP)
         target_compile_definitions(${PROJECT_NAME} PRIVATE QUIET)
     endif()
 
-    # Max number of scratch sessions to retain in the restore/ dir.
+    # Limit retained scratch sessions in restore/.
     set(RESTORE_SESSION_RETAIN 5 CACHE STRING "Max number of scratch sessions to keep")
     target_compile_definitions(${PROJECT_NAME} PRIVATE RESTORE_SESSION_RETAIN=${RESTORE_SESSION_RETAIN})
 
-    # glTF sample repos populate File submenus with their models. The first two are git submodules
-    # under external/, and the physical audio scenes are authored in this repo alongside the extension.
+    # Populate File submenus from external glTF samples and this repository's physical-audio scenes.
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         GLTF_SAMPLE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/external/glTF-Sample-Assets"
         GLTF_PHYSICS_DIR="${CMAKE_SOURCE_DIR}/external/glTF_Physics"

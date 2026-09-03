@@ -36,4 +36,4 @@ private:
     std::array<RangeAllocator, SlotTypeCount> Allocators;
     std::array<std::vector<MTL::Resource *>, SlotTypeCount> Resources;
 };
-} // namespace mtl
+}

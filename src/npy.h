@@ -93,12 +93,10 @@ constexpr std::string_view get_value_from_map(std::string_view mapstr) {
     return trim(mapstr.substr(sep_pos + 1));
 }
 
-// Parse the string representation of a Python dict.
-// The keys need to be known and may not appear anywhere else in the data.
+// Parse a Python dictionary with known keys that do not occur in its values.
 std::unordered_map<std::string_view, std::string_view> parse_dict(std::string_view in, const std::vector<std::string_view> &keys) {
     if (keys.size() == 0) return {};
 
-    // Unwrap dictionary
     in = trim(in);
     if (in.front() != '{' || in.back() != '}') throw std::runtime_error("Not a Python dictionary.");
 
@@ -126,7 +124,7 @@ std::unordered_map<std::string_view, std::string_view> parse_dict(std::string_vi
     return map;
 }
 
-// Parse the string representation of a Python boolean
+// Parse a Python boolean.
 constexpr bool parse_bool(std::string_view in) {
     if (in == "True") return true;
     if (in == "False") return false;
@@ -134,14 +132,14 @@ constexpr bool parse_bool(std::string_view in) {
     throw std::runtime_error("Invalid python boolan.");
 }
 
-// Parse the string representation of a Python str
+// Parse a Python string.
 constexpr std::string_view parse_str(std::string_view in) {
     if (in.front() != '\'' || in.back() != '\'') throw std::runtime_error("Invalid python string.");
 
     return in.substr(1, in.length() - 2);
 }
 
-// Parse the string represenatation of a Python tuple into a vector of its items
+// Parse a Python tuple into its items.
 inline std::vector<std::string> parse_tuple(std::string_view in) {
     in = trim(in);
     if (in.front() != '(' || in.back() != ')') throw std::runtime_error("Invalid Python tuple.");
@@ -228,7 +226,7 @@ constexpr dtype_t dtype_for() {
     else return {byteorder, 'u', sizeof(T)};
 }
 
-// `in` stream position will be after the header after returning.
+// Leave in positioned after the header.
 template<typename Scalar> inline header_t read_header(std::istream &in) {
     auto header = parse_header(read_header(in));
     if (const auto dtype = dtype_for<Scalar>(); header.dtype != dtype) throw std::runtime_error("Formatting error: typestrings do not match.");
@@ -236,8 +234,7 @@ template<typename Scalar> inline header_t read_header(std::istream &in) {
     return header;
 }
 
-// `advance` is relative to the current `in` read position.
-// `in` stream position will be after the read data after returning.
+// Read data after advancing from the current input position and leave in after the data.
 template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, const header_t &header, size_t advance = 0, size_t size = 0) {
     const auto &shape = header.shape;
     size_t total_size = std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies());

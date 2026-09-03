@@ -47,9 +47,7 @@
 #include <numbers>
 #include <numeric>
 
-// Load-only intermediate carrier. Holds parsed-but-not-yet-uploaded geometry.
-// Load builds it from fastgltf accessors, hands the whole batch to `CreateMeshes`, which reserves the
-// arenas once for all of it, and then drains into ECS.
+// Batches parsed geometry for one arena reservation before ECS insertion.
 namespace gltf {
 namespace {
 struct MeshData {
@@ -61,7 +59,7 @@ struct MeshData {
     std::string Name;
 };
 
-// All per-node KHR_physics_rigid_bodies data that isn't read directly from fastgltf.
+// Per-node KHR_physics_rigid_bodies staging data.
 struct NodePhysics {
     std::optional<PhysicsMotion> Motion{};
     std::optional<PhysicsVelocity> Velocity{};
@@ -128,7 +126,7 @@ std::optional<uint32_t> ToIndex(const fastgltf::Optional<size_t> &index, size_t 
     return ToIndex(*index, upper_bound);
 }
 
-// Bidirectional fastgltf↔engine enum mapping over a pair table. Unmapped values return `fallback`.
+// Maps enums in either direction and returns `fallback` for unmapped values.
 template<typename A, typename B, size_t N>
 constexpr B MapEnum(const std::pair<A, B> (&table)[N], A from, B fallback) {
     for (const auto &[a, b] : table) {
@@ -200,7 +198,7 @@ MimeType ToMimeType(fastgltf::MimeType m) { return MapEnum(MimeTypeMap, m, MimeT
 AnimationInterpolation ToInterp(fastgltf::AnimationInterpolation i) { return MapEnum(InterpMap, i, AnimationInterpolation::Linear); }
 PhysicsCombineMode ToCombineMode(fastgltf::CombineMode m) { return MapEnum(CombineMap, m, PhysicsCombineMode::Average); }
 
-// Identify an encoded image by its magic bytes, or None if unrecognized.
+// Identifies an encoded image from its magic bytes.
 MimeType SniffMimeType(std::span<const std::byte> bytes) {
     const auto *u8 = reinterpret_cast<const uint8_t *>(bytes.data());
     if (bytes.size() >= 4 && u8[0] == 0x89 && u8[1] == 0x50 && u8[2] == 0x4E && u8[3] == 0x47) return MimeType::PNG;
@@ -219,9 +217,8 @@ vec4 ToVec4(const fastgltf::math::nvec4 &v) { return std::bit_cast<vec4>(v); }
 quat ToQuat(const fastgltf::math::fquat &q) { return std::bit_cast<quat>(q); }
 Transform TrsToTransform(const fastgltf::TRS &trs) { return {.P = ToVec3(trs.translation), .R = numeric::Normalize(ToQuat(trs.rotation)), .S = ToVec3(trs.scale)}; }
 
-// Slot = glTF texture index (resolved to a bindless slot later in Scene.cpp). Pass `meta` for
-// top-level material textures that need texCoord-override round-trip; nested extension textures
-// can omit it.
+// Slot initially contains a glTF texture index and later contains a bindless Scene.cpp slot.
+// Supply meta for top-level material textures that require texCoord override round trips.
 template<typename OptT>
 ::TextureInfo ToTextureIndex(const OptT &opt, const fastgltf::Asset &asset, TextureTransformMeta *meta = nullptr) {
     if (!opt) return {};
@@ -317,8 +314,7 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
                 image_path = image_path.lexically_normal();
                 auto bytes = File::Read(image_path);
                 if (!bytes) return std::unexpected{std::move(bytes.error())};
-                // Hold bytes only until upload — they're cleared once the texture materializes,
-                // since SourceAbsPath is the persistence for external URIs.
+                // External images reload from SourceAbsPath after upload.
                 image_result.Bytes = std::move(*bytes);
                 image_result.MimeType = ToMimeType(uri.mimeType);
                 image_result.SourceHadMimeType = uri.mimeType != fastgltf::MimeType::None;
@@ -343,9 +339,7 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
     return image_result;
 }
 
-// Appends positions/edges from a non-triangle primitive into `target`, merging with prior
-// primitives of the same topology. NORMAL and COLOR_0 are backfilled with zeros where absent
-// so the merged vertex range stays channel-aligned.
+// Appends a non-triangle primitive while preserving channel alignment across merged primitives.
 // Append `count` vertices of the optional `name` attribute, backfilling with `fill` where absent.
 // Sets `bit` in `flags` when present. With `check_count`, a count mismatch with POSITION is an error.
 template<typename T>
@@ -555,8 +549,8 @@ std::expected<void, std::string> AppendPrimitive(
             }
 
             // Multiple influence sets: merge all, keep top 4 by weight, renormalize.
-            // glTF 2.0 §3.7.3.1: implementations MAY support only 4 influences.
-            // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#skinned-mesh-attributes
+// glTF 2.0 section 3.7.3.1 permits implementations to support four influences.
+// Reference: https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#skinned-mesh-attributes.
             const auto total_influences = sets.size() * 4u;
             std::vector<std::pair<uint32_t, float>> all(total_influences);
             const auto top4_end = all.begin() + 4;
@@ -581,8 +575,7 @@ std::expected<void, std::string> AppendPrimitive(
         }
     }
 
-    // Morph targets (blend shapes). Deltas are packed primitive-interleaved here, then repacked
-    // into per-target-contiguous layout after all primitives have been appended.
+// Packs morph deltas by primitive before conversion to per-target contiguous layout.
     if (!primitive.targets.empty()) {
         const uint32_t target_count = primitive.targets.size();
         const uint32_t prim_vertex_count = position_accessor.count;
@@ -654,9 +647,7 @@ std::expected<void, std::string> AppendPrimitive(
         }
     }
 
-    // A triangle list's corner stream is its index stream shifted by the primitive's first vertex, so
-    // it reads as one block rather than a face at a time. A count that is not whole triangles takes
-    // the loop below, which drops the remainder.
+    // Process complete triangle lists as one shifted index block.
     if (primitive.type == fastgltf::PrimitiveType::Triangles) {
         const auto index_count = primitive.indicesAccessor ? asset.accessors[*primitive.indicesAccessor].count : position_accessor.count;
         if (index_count >= 3 && index_count % 3 == 0) {
@@ -712,8 +703,7 @@ std::optional<std::span<const std::byte>> BufferBytes(const fastgltf::Buffer &bu
     );
 }
 
-// Expands each EXT_meshopt_compression bufferView into a fresh buffer of decoded bytes and repoints the
-// view at it, so accessor reads see ordinary uncompressed data.
+// Decodes each EXT_meshopt_compression bufferView into a new buffer for ordinary accessor reads.
 std::expected<void, std::string> DecodeMeshoptCompression(fastgltf::Asset &asset) {
     using fastgltf::MeshoptCompressionMode, fastgltf::MeshoptCompressionFilter;
     for (auto &view : asset.bufferViews) {
@@ -782,8 +772,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     auto parsed = parser.loadGltf(gltf_file.get(), path.parent_path(), ParseOptions);
     if (parsed.error() != fastgltf::Error::None) {
         if (parsed.error() == fastgltf::Error::MissingExtensions) {
-            // Re-parse with all extensions enabled to recover the full `extensionsRequired` list
-            // for the diagnostic - fastgltf bails before populating it on the first pass.
+// Reparse with all extensions to recover extensionsRequired after fastgltf aborts the first pass.
             gltf_file.get().reset();
             fastgltf::Parser probe{fastgltf::Extensions(~0U)};
             if (auto probed = probe.loadGltf(gltf_file.get(), path.parent_path(), Options::DontRequireValidAssetMember | Options::AllowDouble);
@@ -809,8 +798,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     return std::move(asset);
 }
 
-// Always emplaces a MeshData so meshes stays index-aligned with asset.meshes; callers
-// check Triangles/Lines/Points presence before referencing the mesh.
+// Preserves asset.meshes index alignment with an entry for empty meshes.
 std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset, uint32_t source_mesh_index, std::vector<MeshData> &meshes, std::unordered_map<uint32_t, uint32_t> &mesh_index_map, size_t material_count) {
     if (const auto it = mesh_index_map.find(source_mesh_index); it != mesh_index_map.end()) return it->second;
 
@@ -899,7 +887,6 @@ std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset
         repack_channel(mesh_morph->TangentDeltas);
     }
 
-    // Read default morph target weights from mesh
     if (mesh_morph && !source_mesh.weights.empty()) {
         mesh_morph->DefaultWeights.resize(mesh_morph->TargetCount, 0.f);
         const auto copy_count = std::min(source_mesh.weights.size(), size_t(mesh_morph->TargetCount));
@@ -1109,7 +1096,6 @@ std::vector<Transform> ReadInstanceTransforms(const fastgltf::Asset &asset, cons
     const auto r_attr = node.findInstancingAttribute("ROTATION");
     const auto s_attr = node.findInstancingAttribute("SCALE");
 
-    // Determine instance count from the first present accessor
     const uint32_t instance_count = t_attr != node.instancingAttributes.end() ? asset.accessors[t_attr->accessorIndex].count :
         r_attr != node.instancingAttributes.end()                             ? asset.accessors[r_attr->accessorIndex].count :
         s_attr != node.instancingAttributes.end()                             ? asset.accessors[s_attr->accessorIndex].count :
@@ -1234,8 +1220,8 @@ uint32_t AppendAligned(std::vector<std::byte> &buffer, std::span<const T> data) 
     return AppendAligned(buffer, reinterpret_cast<const std::byte *>(data.data()), data.size() * sizeof(T));
 }
 
-// Strided variant: copy field `field` of each element in `data` into the binary blob (4-byte
-// aligned), no intermediate vector materialized. Returns the starting byte offset.
+// Copies one field from each strided element into a four-byte-aligned binary blob without an intermediate vector.
+// Returns the starting byte offset.
 template<typename T, typename V>
 uint32_t AppendField(std::vector<std::byte> &buffer, std::span<const V> data, T V::*field) {
     const uint32_t offset = buffer.size();
@@ -1372,13 +1358,11 @@ void ApplySceneVisibility(entt::registry &r) {
     }
 }
 
-// Pick an Active entity by source-node order, with type priority Camera > Mesh > Armature > root Empty > any object.
-// Clear prior Active/Selected and re-apply over entities in the active scene.
-// Operates over the `GltfObject` view so pre-existing (non-glTF) entities are untouched.
+// Selects an active imported entity by source order and camera, mesh, armature, root-empty, then object priority.
 void ApplyActiveSceneSelection(entt::registry &r) {
     const auto active_scene = ActiveSceneEntity(r);
 
-    // Armatures (no SourceNodeIndex) fall to the end via uint max.
+    // Armatures sort after source-indexed objects.
     std::vector<std::pair<uint32_t, entt::entity>> ordered;
     for (const auto e : r.view<const GltfObject, const ObjectKind>()) {
         if (EntityInActiveScene(r, active_scene, e)) {
@@ -1471,9 +1455,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         });
     }
 
-    // Parallel per-material arrays (+ a trailing fallback entry, below): the render PBRMaterial, and
-    // the source data lost in conversion that lets save rebuild the original. PBRMaterial texture
-    // slots are gltf indices here, remapped to bindless slots in the emit loop below.
+    // Store render materials and source metadata in parallel arrays with a trailing fallback entry.
+    // Texture slots contain glTF indices until the emit loop maps them to bindless slots.
     std::vector<PBRMaterial> source_materials;
     source_materials.reserve(asset.materials.size() + 1u);
     std::vector<MaterialSourceMeta> material_metas;
@@ -1594,7 +1577,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         material_metas.emplace_back(std::move(meta));
         source_materials.emplace_back(std::move(pbr));
     }
-    // Synthetic fallback used as the default material when a primitive references no material.
+    // Supply the required default for primitives without a material.
     source_materials.emplace_back();
     material_metas.emplace_back();
 
@@ -1616,9 +1599,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             local_transforms[node_index] = Transform{ToVec3(translation), numeric::Normalize(ToQuat(rotation)), ToVec3(scale)};
         }
     }
-    // Union all scenes so every scene's objects get created.
-    // The default scene goes first so its hierarchy wins for nodes shared across scenes.
-    // node_to_scene_mask (bit s = scene s) later hides objects outside the active scene.
+    // Process the default scene first to resolve shared-node hierarchy consistently.
     SceneTraversalData traversal{.InScene = std::vector(asset.nodes.size(), false), .WorldTransforms = std::vector(asset.nodes.size(), I4)};
     std::vector<uint32_t> node_to_scene_mask(asset.nodes.size(), 0u);
     const auto merge_scene = [&](uint32_t si) {
@@ -1643,9 +1624,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         if (const auto skin_index = ToIndex(asset.nodes[node_index].skinIndex, asset.skins.size())) used_skin[*skin_index] = true;
     }
 
-    // Parse KHR_physics_rigid_bodies document-level resources. Create entt entities directly —
-    // no intermediate staging vectors. Collision filters resolve names later (need the dedupe map),
-    // so they're emitted in the consumer block below.
+// Parses KHR_physics_rigid_bodies document resources directly into entities.
+// Defers collision filters until the consumer block can use the shared name-deduplication map.
     std::vector<entt::entity> physics_material_entities, physics_jointdef_entities;
     {
         physics_material_entities.reserve(asset.physicsMaterials.size());
@@ -1690,8 +1670,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
     }
 
-    // Convert implicit shapes for physics geometry references.
-    // Mesh-backed shapes leave MeshEntity as null_entity here - SceneGltf.cpp resolves it via node-to-entity mapping.
+    // Mesh-backed shapes resolve MeshEntity after node-to-entity mapping.
     const auto ToPhysicsShape = [&](const fastgltf::Geometry &geom) -> PhysicsShape {
         if (geom.shape && *geom.shape < asset.shapes.size()) {
             return std::visit(
@@ -1709,10 +1688,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         return physics::TriangleMesh{};
     };
 
-    // A bone node is any node on a path from a skin joint up to the skin's armature root.
-    // The armature root is the deepest common ancestor of the skin's joints and skeleton, walked up past bone nodes so hierarchy-connected skins share one root.
-    // Marking paths can turn a root into a bone, so iterate to a fixed point.
-    // Non-joint path nodes carrying object payloads stay objects, and bone rest locals rebase across them.
     std::vector<bool> is_bone(asset.nodes.size(), false);
     std::vector<std::optional<uint32_t>> skin_arma_node(asset.skins.size()); // Armature-root node per skin. Nullopt = scene root.
     std::vector<std::vector<uint32_t>> skin_joint_nodes(asset.skins.size()); // Valid joint nodes per used skin, deduped, source order.
@@ -1759,8 +1734,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
     }
 
-    // Load meshes in index order so source_meshes[i] aligns with asset.meshes[i], preserving node.meshIndex on round-trip.
-    // Empty-geometry meshes still get a slot (all nullopt), so node traversal below checks for geometry before pointing a Node at one.
+    // Preserve asset.meshes index alignment, including empty meshes.
     std::unordered_map<uint32_t, uint32_t> mesh_index_map;
     std::vector<MeshData> source_meshes;
     source_meshes.reserve(asset.meshes.size());
@@ -1833,7 +1807,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     std::vector<bool> is_object_emitted(asset.nodes.size(), false);
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         if (traversal.InScene[node_index]) {
-            // Bone nodes are bone-only unless they also carry renderable mesh data.
+            // Bone nodes render only when they also contain mesh data.
             const bool has_mesh = ToIndex(asset.nodes[node_index].meshIndex, asset.meshes.size()).has_value();
             is_object_emitted[node_index] = has_mesh || !is_bone[node_index];
         }
@@ -1950,7 +1924,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     ImportRollbackGuard import_rollback_guard{rollback_import_side_effects};
 
     // Fill in the remaining SourceAssets fields (extensions, IBL, MaterialMetas), then emplace and bind a const ref.
-    // Downstream lookups read through that ref, so it must outlive the rest of the load.
+    // The source-assets reference must outlive all subsequent load operations.
     auto source_ibl = ConvertIBL(asset, scene_index);
     source_assets.ImageBasedLight = source_ibl;
     source_assets.ExtensionsRequired.reserve(asset.extensionsRequired.size());
@@ -1969,8 +1943,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
 
     std::vector<PendingTextureUpload> new_pending_textures;
     std::unordered_map<uint64_t, uint32_t> texture_slot_cache;
-    // Cache on the resolved (image_index, sampler_index, color_space) rather than glTF texture index,
-    // so that multiple glTF textures referencing the same image+sampler share a single TextureEntry and sampler slot.
+// Caches by resolved image, sampler, and color space so equivalent glTF textures share one TextureEntry.
     const auto texture_cache_key = [](uint32_t image_index, uint32_t sampler_index, TextureColorSpace color_space) {
         return (uint64_t(image_index) << 33u) | (uint64_t(sampler_index) << 1u) | (color_space == TextureColorSpace::Srgb ? 1u : 0u);
     };
@@ -2054,8 +2027,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             );
             return 3u;
         };
-        // Resolves a texture slot in-place: tex.Slot starts as a glTF texture index (stored by GltfLoader),
-        // and is replaced with the bindless sampler slot. UV fields are already correct from the loader.
+// Replaces a GltfLoader texture index in tex.Slot with its bindless sampler slot.
+// UV fields remain unchanged.
         const auto resolve_texture = [&](TextureInfo &tex, TextureColorSpace color_space, std::string_view texture_label) -> std::expected<void, std::string> {
             if (tex.Slot == InvalidSlot) return {};
             const uint32_t gltf_index = tex.Slot;
@@ -2109,7 +2082,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     struct NonTriangleEntities {
         entt::entity Lines{entt::null}, Points{entt::null};
     };
-    // Where a source mesh's parts landed in the batch, since one mesh contributes up to three meshes.
+    // Maps each source mesh to its triangle, line, and point batch entries.
     static constexpr uint32_t NoPart{UINT32_MAX};
     struct SourceParts {
         uint32_t Triangles{NoPart}, Lines{NoPart}, Points{NoPart};
@@ -2139,7 +2112,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             }
             pbr_masks[mi] = mesh_pbr_mask;
             for (auto &local_material_index : scene_mesh.TrianglePrimitives.MaterialIndices) local_material_index = remap_material(local_material_index);
-            // KHR_materials_variants mappings carry source gltf material indices.
+            // KHR_materials_variants mappings contain source glTF material indices.
             // Remap to match post-load PrimitiveMaterialBuffer indices so the runtime can apply a variant by writing entries straight to that buffer.
             for (auto &prim_mappings : scene_mesh.TrianglePrimitives.VariantMappings) {
                 for (auto &m : prim_mappings) {
@@ -2191,8 +2164,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         parts[mi].Points = add_non_triangle(scene_mesh.Points, scene_mesh.PointAttrs, scene_mesh.PointPrimitives);
     }
 
-    // Deriving a mesh reads only its own source, so the batch derives every mesh at once and the arena
-    // work stays in source order.
+    // Derive the batch in source order.
     auto created = CreateMeshes(r, sources);
 
     std::vector<entt::entity> mesh_entities;
@@ -2272,7 +2244,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         } else {
             object_entity = ::AddEmpty(r, ctx.Meshes, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
         }
-        // Companion instances for non-triangle primitives, parented under primary with identity local.
+        // Parent non-triangle instances under the primary instance with identity transforms.
         if (object.ObjectType == gltf::Object::Type::Mesh && object.MeshIndex && *object.MeshIndex < non_triangle_entities_per_mesh.size()) {
             const auto &non_triangle = non_triangle_entities_per_mesh[*object.MeshIndex];
             for (const auto extra_entity : {non_triangle.Lines, non_triangle.Points}) {
@@ -2289,8 +2261,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
 
         object_entities_by_node[object.NodeIndex] = object_entity;
         r.emplace<SourceNodeIndex>(object_entity, object.NodeIndex);
-        // `object.Name` was already synthesized by the loader's MakeNodeName when source was
-        // empty; `asset.nodes[i].name` preserves the raw value. Capture source-empty / collision-renamed.
+// Compare synthesized object.Name with the raw source name to record empty or collision-renamed values.
         if (object.NodeIndex < asset.nodes.size()) {
             const std::string raw_name(asset.nodes[object.NodeIndex].name);
             if (raw_name.empty()) r.emplace<SourceEmptyName>(object_entity);
@@ -2318,9 +2289,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
     }
 
-    // Stubs for out-of-scene nodes (referenced only by non-default scenes) so build emits them
-    // like the file round-trip does. They carry only what build needs and aren't in
-    // `object_entities_by_node`, so runtime systems that walk the scene tree don't see them.
+    // Create serialization-only stubs for nodes referenced exclusively by non-default scenes.
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         if (traversal.InScene[node_index]) continue;
         const auto &source_node = asset.nodes[node_index];
@@ -2336,8 +2305,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         else r.emplace<Name>(e, std::string{source_node.name});
     }
 
-    // KHR_physics_rigid_bodies: collision filter entities are created here (the system-name dedupe
-    // map needs to live across all filters). Materials/joint-defs were already promoted above.
+// Creates collision-filter entities with one system-name deduplication map shared across all filters.
     {
         // Dedupe system names across all filters into CollisionSystem entities.
         std::unordered_map<std::string, entt::entity> system_entity_by_name;
@@ -2414,8 +2382,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             if (node.Trigger) {
                 const auto &td = *node.Trigger;
                 if (td.Shape) {
-                    // GeometryTrigger: reuse ColliderShape + TriggerTag. Skip if a solid collider
-                    // already took this entity — KHR declares nodes as one-or-the-other.
+// Represents GeometryTrigger with ColliderShape and TriggerTag.
+// Skip entities already used by a solid collider because KHR makes the two forms exclusive.
                     if (!r.all_of<ColliderShape>(entity)) {
                         const auto trigger_mesh_entity = (td.GeometryMeshIndex && *td.GeometryMeshIndex < mesh_entities.size()) ? mesh_entities[*td.GeometryMeshIndex] : null_entity;
                         r.emplace<ColliderShape>(entity, ColliderShape{.Shape = *td.Shape, .MeshEntity = trigger_mesh_entity});
@@ -2450,11 +2418,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     if (!asset.modalModels.empty() || !asset.acousticSurfaces.empty()) {
         std::vector<AcousticMaterial> acoustic_materials;
         acoustic_materials.reserve(asset.acousticMaterials.size());
-        // Every field is optional, and a zero modulus or density would divide through the contact model, so an absent one falls back to the engine's default material.
         static constexpr auto MaterialDefaults = materials::acoustic::All.front().Properties;
-        // An out-of-range value is taken the same way an absent one is. Poisson's ratio at 0.5 divides by zero in
-        // Lame's lambda, a zero density or modulus divides through the contact model, and a negative damping
-        // coefficient turns a decay into growth.
+// Treat out-of-range acoustic values as absent.
+// Reject Poisson ratio 0.5, zero density or modulus, and negative damping to keep derived equations finite and decaying.
         const auto validated = [](const auto &value, double fallback, auto &&ok, std::string_view field, std::string_view name) {
             const double v = value.value_or(fallback);
             if (std::isfinite(v) && ok(v)) return v;
@@ -2575,9 +2541,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             if (it == object_entities_by_node.end()) continue;
             const auto entity = it->second;
 
-            // A node may name a surface without sounding itself, and without a mesh of its own, which is how a floor supplies both its finish and the material contacts against it read.
             const auto surface_index = ToIndex(instance.acousticSurface, asset.acousticSurfaces.size());
-            // A finish belongs to a node, so two nodes sharing one mesh each carry their own.
+            // Store a separate finish on each node that shares a mesh.
             if (surface_index) r.emplace_or_replace<ContactSurface>(entity, surfaces[*surface_index]);
 
             const auto model_index = [&]() -> std::optional<uint32_t> {
@@ -2596,7 +2561,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
 
             if (!model_index) continue;
             auto model = models[*model_index];
-            // A model's data is node-local like every other glTF datum: frequencies and shapes describe the solved geometry at unit scale, and the node's placement scale retunes the instance from there.
             model.BakedScale = vec3{1.f};
             // Map each sample point to its nearest render-mesh vertex so the model stays excitable.
             const auto *inst = r.try_get<const Instance>(entity);
@@ -2630,8 +2594,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                         .InertiaOrientation = std::bit_cast<quat>(q),
                     }
                 );
-                // A dynamic rigid body is authoritative for contact dynamics (see UpdateContactDynamics), so its
-                // mass, not the model's, drives the sound. Warn when the two disagree; agreement needs no report.
+// Uses dynamic rigid-body mass for sound contact dynamics; see UpdateContactDynamics.
+// Warn when modal and rigid-body masses differ.
                 // The node's scale sizes the model, so the mass it implies at this size is the solved mass times scale cubed.
                 if (const auto *motion = r.try_get<const PhysicsMotion>(entity); motion && IsAuthoritativeDynamicBody(*motion)) {
                     const auto *trs = std::get_if<fastgltf::TRS>(&source_node.transform);
@@ -2806,8 +2770,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             }
         }
 
-        // Auto-wire Child Of on bones whose joint node has a physics-driven ancestor object,
-        // so the skin follows simulated motion when an asset pairs rigid bodies with skinning via the scene graph.
+// Adds Child Of to bones under a physics-driven ancestor so skinned geometry follows simulation.
         // Target is the nearest ancestor object with PhysicsMotion; InverseMatrix bakes the rest offset.
         {
             const auto find_physics_ancestor_entity = [&](uint32_t node_index) -> entt::entity {
@@ -2932,9 +2895,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         );
     };
 
-    // Parse + resolve animations in a single pass: each source channel goes straight from
-    // fastgltf accessors into the per-entity ECS clip it targets. AnimationOrder records the
-    // source-form names of animations that produced at least one valid channel.
+    // Parse source channels directly into target ECS clips in one pass.
+    // AnimationOrder records source names for animations with at least one valid channel.
     std::vector<std::string> animation_order;
     animation_order.reserve(asset.animations.size());
     struct ChannelTargetSpec {
@@ -3109,7 +3071,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     const auto &meshes = sc.Meshes;
 
     // Order entities in `view` by their `TIndex` sidecar value. Entities without `TIndex`
-    // (runtime-added) land after the source range. Used for cameras, lights, physics resources.
+    // Runtime-added entries follow the source range for cameras, lights, and physics resources.
     const auto ordered_by_source = [&]<typename TIndex>(auto view) {
         std::vector<std::pair<uint32_t, entt::entity>> ordered;
         uint32_t next = 0;
@@ -3126,27 +3088,19 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return ordered;
     };
 
-    // Source-form scene metadata + texture/image/sampler arrays come from the gltf::SourceAssets
-    // sidecar — encoded image bytes, sampler-config collapse, and asset.* metadata aren't
-    // recoverable from registry/GPU state. Cameras and lights emit below from per-entity
-    // components (see CameraName/LightName). Materials emit directly from PBRMaterial (GPU buffer)
-    // + per-material `MaterialSourceMeta` delta, no intermediate type.
+    // Read source metadata and texture, image, and sampler arrays from gltf::SourceAssets.
+    // Encoded images, sampler details, and asset metadata cannot be reconstructed from registry or GPU state.
+    // Emit cameras and lights from entity components and materials from PBRMaterial plus MaterialSourceMeta.
     const auto *src_assets = r.try_get<const gltf::SourceAssets>(sc.Viewport);
-    // Source-form scene-level metadata (Copyright/Generator/MinVersion/Asset.*, DefaultScene,
-    // ExtensionsRequired/MaterialVariants/ExtrasByEntity, Textures/Images/Samplers/IBL) is read
-    // directly from `src_assets` at each emit site below (no intermediate aggregate).
+    // Read source-form scene metadata directly from src_assets at each emission site.
     static const gltf::SourceAssets EmptySourceAssets{};
     const auto &sa = src_assets ? *src_assets : EmptySourceAssets;
-    // Materials: skip the engine "Default" at registry index 0; loaded gltf materials live at
-    // [1, count). `MaterialSourceMeta` carries the round-trip-only deltas (ext-block presence,
-    // source texture indices, KHR_texture_transform meta, KHR_materials_emissive_strength split).
     const auto &names = r.ctx().get<const MaterialStore>().Names;
     const auto material_count = sc.Buffers.Materials.Count();
     const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
 
-    // Mesh entities → MeshIndex. Source meshes use SourceMeshIndex for stable round-trip ordering;
-    // runtime-created meshes (AddMesh / primitives) lack SourceMeshIndex and get fresh indices
-    // appended after the source range so they round-trip through save.
+    // Preserve source mesh ordering through SourceMeshIndex.
+    // Append runtime-created meshes after the source range.
     std::unordered_map<entt::entity, uint32_t> mesh_entity_to_index;
     uint32_t mesh_count = 0;
     for (const auto [e, _, smi] : r.view<const MeshHandle, const SourceMeshIndex>().each()) {
@@ -3157,9 +3111,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (!mesh_entity_to_index.contains(e)) mesh_entity_to_index[e] = mesh_count++;
     }
 
-    // Group mesh entities by mesh index (one Triangles/Lines/Points entity per slot).
-    // The fastgltf::Mesh emit pass below reads vertex/face/skin/morph data straight from
-    // MeshStore for each grouped entity — no per-mesh `gltf::MeshData` aggregate is needed.
+    // Group triangle, line, and point entities by mesh index.
+    // The emit pass reads vertex, face, skin, and morph data directly from MeshStore.
     struct MeshEntitySet {
         entt::entity Triangles{entt::null}, Lines{entt::null}, Points{entt::null};
         std::string Name;
@@ -3177,8 +3130,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Cameras / lights: one entry per component-bearing entity, in source-aligned order. Per the
-    // Khronos sample set source cameras/lights aren't shared across nodes, so 1:1 matches source counts.
+// Emits one camera or light per component-bearing entity in source order.
+// Khronos samples do not share source cameras or lights across nodes.
     // Store the entities here; emit to fastgltf::Asset later (when `asset` exists).
     std::unordered_map<entt::entity, uint32_t> camera_entity_to_index, light_entity_to_index;
     std::vector<entt::entity> camera_entities_ordered, light_entities_ordered;
@@ -3195,11 +3148,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Scene tree: source-derived entities use `SourceNodeIndex` (hierarchy comes from
-    // `SourceParentNodeIndex`, not `SceneNode` which gets mutated by skinning/armature
-    // re-parenting at populate). Runtime-created object entities (AddMesh / primitives) lack
-    // SourceNodeIndex and get fresh indices appended after the source range; they emit as scene
-    // roots since they have no SourceParentNodeIndex.
+    // Use SourceNodeIndex and SourceParentNodeIndex to preserve the imported hierarchy after runtime reparenting.
+    // Append runtime-created objects as scene roots after the source range.
     // Compact live source node indices to a dense [0, k) range so deleted / out-of-scene nodes leave no gaps.
     std::unordered_map<uint32_t, uint32_t> source_to_dense;
     {
@@ -3216,8 +3166,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (kind.Value == ObjectType::Armature) continue; // Armatures aren't gltf nodes — they round-trip via skins.
         if (!entity_to_node_index.contains(e)) entity_to_node_index[e] = total_node_count++;
     }
-    // Children paired with sibling position so we sort in source order. A source parent with no
-    // entity (deleted) drops the link, so the child emits as a root.
+    // Children paired with sibling position so we sort in source order. A source parent with no entity (deleted) drops the link, so the child emits as a root.
     std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> children_by_parent;
     for (const auto [e, sni, spi] : r.view<const SourceNodeIndex, const SourceParentNodeIndex>().each()) {
         const auto pit = source_to_dense.find(spi.Value);
@@ -3234,10 +3183,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (node_index < node_to_entity.size()) node_to_entity[node_index] = entity;
     }
 
-    // KHR_physics_rigid_bodies §167: an offset collider must live on a child node with the
-    // corresponding translation. Allocate a synthetic child for every ColliderShape with nonzero
-    // LocalOffset; the owner node retains motion/joint/triggerNodes, the synthetic node carries
-    // the collider (or geometry-trigger) extension.
     std::unordered_map<entt::entity, uint32_t> entity_to_offset_child;
     std::unordered_map<uint32_t, entt::entity> offset_child_to_owner;
     for (auto [e, cs] : r.view<const ColliderShape>().each()) {
@@ -3262,8 +3207,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     entt::entity active_scene = entt::null;
     for (const auto e : r.view<const ActiveScene>()) active_scene = e;
 
-    // Roots of `scene` (all roots when null): live nodes with no live source parent, restricted to
-    // `scene` via SceneMembership. Ascending order — glTF scene node order is non-semantic.
+// Returns live nodes without a live source parent, restricted by SceneMembership when scene is nonnull.
+// Sorts roots because glTF scene-node order is nonsemantic.
     const auto compute_roots = [&](entt::entity scene) {
         std::vector<uint32_t> roots;
         for (uint32_t ni = 0; ni < total_node_count; ++ni) {
@@ -3284,8 +3229,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // KHR_node_visibility: node is hidden iff it has no RenderInstance and every child is hidden too.
     // Stubs are unreachable from scene roots, so they default to not-hidden and don't emit spurious visible:false.
     // Post-order DFS populates `fully_hidden` so parents can check children without recursion or multi-pass.
-    // Nodes only in non-active scenes are treated as not-hidden — their missing RenderInstance is
-    // a switch-time artifact, not a user-set hide.
+    // Nodes only in non-active scenes are treated as not-hidden — their missing RenderInstance is a switch-time artifact, not a user-set hide.
     const auto node_in_active_scene = [&](uint32_t ni) {
         const auto entity = ni < node_to_entity.size() ? node_to_entity[ni] : entt::null;
         const auto *sm = entity != entt::null ? r.try_get<const SceneMembership>(entity) : nullptr;
@@ -3313,8 +3257,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Per node: world transforms of every Object that targets that node — used for
-    // EXT_mesh_gpu_instancing fan-in (multi-object → single node).
+    // Group object world transforms by source node for EXT_mesh_gpu_instancing.
     std::vector<std::vector<Transform>> node_instance_worlds(total_node_count);
     auto object_view = r.view<const Transform, const ObjectKind>();
     for (const auto entity : object_view) {
@@ -3325,13 +3268,10 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Asset is declared early so collision filters can be emitted directly into
-    // `asset.collisionFilters` (their pmr allocator binds to the asset).
+    // Construct the asset before allocator-bound collision filters.
     fastgltf::Asset asset;
 
-    // Physics document-level resources, source-aligned via the per-resource index sidecars.
-    // Emit fastgltf entries directly into asset.* — the per-entity index map lets node fan-in
-    // resolve refs without a parallel staging vector.
+    // Emit source-aligned physics resources directly into the asset.
     std::unordered_map<entt::entity, uint32_t> physics_material_to_index, physics_jointdef_to_index, collision_filter_to_index;
     {
         auto mat_view = r.view<const PhysicsMaterial>();
@@ -3467,8 +3407,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         );
     };
 
-    // Strided variant: copy `field` of each element in `data` into `bin` and register a
-    // single-attribute accessor — no per-mesh contiguous vector materialized.
+    // Write a strided field directly into one attribute accessor.
     const auto AddFieldAccessor = [&]<typename T, typename V>(std::span<const V> data, T V::*field, fastgltf::AccessorType type, fastgltf::BufferTarget target) {
         const uint32_t off = AppendField<T>(bin, data, field);
         const uint32_t bv = AddBufferView(off, data.size() * sizeof(T), {}, target);
@@ -3506,10 +3445,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     };
 
-    // Animations: merge per-entity engine clips back into source-side clips by (Name, Duration).
-    // Engine splits each source clip into N entity clips (one per affected entity); reverse here.
-    // Pre-seed `asset.animations` in source-name order from `gltf::SourceAssets::AnimationOrder` so
-    // animations[*] indices match source; clips not in the source list (runtime-added) are appended.
+    // Merge per-entity clips by name and duration, preserving source animation order.
     std::unordered_map<std::string, size_t> clip_index_by_name;
     std::vector<float> clip_duration_by_index;
     if (src_assets) {
@@ -3605,8 +3541,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         });
     }
 
-    // Images: dirty → re-encode from GPU readback; external URI not dirty → re-read source +
-    // magic-byte validate, fall back to embed-as-PNG on miss; embedded → passthrough Bytes.
+    // Re-encode dirty images, reload clean external images, and pass through embedded bytes.
     asset.images.reserve(sa.Images.size());
 
     std::unordered_map<uint32_t, const TextureEntry *> texture_for_image;
@@ -3626,7 +3561,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         } else if (target == gltf::MimeType::PNG) {
             return std::unexpected{std::move(enc.error())};
         } else {
-            // Encoding failed: fall back to PNG.
+            // PNG provides the encoder fallback.
             std::cerr << std::format("Warning: image '{}': {} — falling back to PNG.\n", name, enc.error());
             auto png = EncodeImagePngRgba8(*rgba8, w, h, name);
             if (!png) return std::unexpected{std::move(png.error())};
@@ -3636,8 +3571,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
     for (uint32_t i = 0; i < sa.Images.size(); ++i) {
         const auto &img = sa.Images[i];
-        // Default: passthrough embedded Bytes. Branches below override when re-encoding or when
-        // emitting as external URI (which uses no bytes).
+        // Embedded bytes are the default source unless re-encoding or external URI emission applies.
         std::vector<std::byte> owned; // backs `view` when we re-encode
         std::span<const std::byte> view = img.Bytes;
         auto emit_mime = img.MimeType;
@@ -3651,13 +3585,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             emit_mime = re->second;
             view = owned;
         } else if (img.IsDirty) {
-            // KTX2/DDS dirty: no encoder dep. Passthrough with a warning.
+            // KTX2 and DDS lack an encoder, so retain their source bytes.
             std::cerr << std::format("Warning: image '{}' is dirty but {} re-encoding isn't supported; emitting original bytes.\n", img.Name, img.MimeType == gltf::MimeType::KTX2 ? "KTX2" : "DDS");
         } else if (!img.Uri.empty()) {
             std::error_code ec;
             const bool exists = !img.SourceAbsPath.empty() && std::filesystem::is_regular_file(img.SourceAbsPath, ec);
-            // Unknown mimes (HDR / IBL panoramas) have no magic check or RGBA8 re-encode path —
-            // existence-only.
+            // Unknown image types support external-file existence checks only.
             const bool validate = img.MimeType == gltf::MimeType::PNG || img.MimeType == gltf::MimeType::JPEG ||
                 img.MimeType == gltf::MimeType::WEBP || img.MimeType == gltf::MimeType::KTX2;
             bool ok = false;
@@ -3673,7 +3606,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 emit_mime = gltf::MimeType::PNG;
                 view = owned;
             } else {
-                // Best-effort: no GPU readback available — emit URI as-is so the save still completes.
+                // Preserve the URI when GPU readback is unavailable.
                 std::cerr << std::format("Warning: image '{}' fallback re-encode failed ({}); emitting URI as-is.\n", img.Name, re.error());
                 emit_external_uri = true;
             }
@@ -3698,7 +3631,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             if (!view.empty()) {
                 bv = AddBufferView(AppendAligned(bin, view.data(), view.size()), view.size());
             } else {
-                // Placeholder empty bufferView.
+                // Preserve the required bufferView slot.
                 const uint32_t offset = bin.size();
                 bin.emplace_back(std::byte{0});
                 while (bin.size() % 4 != 0) bin.emplace_back(std::byte{0});
@@ -3723,11 +3656,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         });
     }
 
-    // Materials: skip the engine "Default" at registry index 0 and the trailing synthetic
-    // "DefaultMaterial" the loader appends — emit i in [1, material_count - 1). Build
-    // fastgltf::Material directly from the GPU PBRMaterial; `MaterialSourceMeta` carries the
-    // round-trip-only deltas (ext-block presence, source texture indices, KHR_texture_transform
-    // meta, EmissiveFactor*=strength split).
     const uint32_t save_material_count = material_count > 1 ? material_count - 2u : 0u;
     asset.materials.reserve(save_material_count);
     using M = MaterialSourceMeta;
@@ -3737,7 +3665,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         auto pbr = sc.Buffers.Materials.Get(i);
         const auto &meta = source_idx < material_metas.size() ? material_metas[source_idx] : DefaultMeta;
         const auto bits = meta.ExtensionPresence;
-        // Restore source texture slots — PBRMaterial holds bindless slots; emit needs gltf indices.
         for (uint32_t s = 0; s < MTS_Count; ++s) MaterialTextureSlots[s].Get(pbr).Slot = meta.TextureSlots[s];
 
         const std::string name = (!meta.NameWasEmpty && i < names.size()) ? names[i] : std::string{};
@@ -3825,8 +3752,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     }
 
     asset.meshes.reserve(mesh_groups.size());
-    // For non-triangle (Lines/Points) primitives: emit NORMAL from the authored point normals.
-    // Point and line meshes hold one color per vertex, present only when the source authored COLOR_0.
     const auto emit_non_triangle_attrs = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, uint32_t store_id) {
         if (const auto point_normals = meshes.GetPointNormals(store_id); !point_normals.empty()) {
             out.emplace_back(fastgltf::Attribute{"NORMAL", AddDataAccessor(point_normals, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
@@ -3839,7 +3764,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto &group = mesh_groups[mi];
         fastgltf::pmr::MaybeSmallVector<fastgltf::Primitive, 2> primitives;
         fastgltf::pmr::MaybeSmallVector<fastgltf::num> default_weights;
-        // Non-triangle primitives carry no targets/material/mappings.
+        // Non-triangle primitives omit targets, materials, and mappings.
         const auto push_prim = [&](fastgltf::PrimitiveType type, auto &&attrs, const fastgltf::Optional<size_t> &indices = {}) {
             primitives.emplace_back(fastgltf::Primitive{
                 .attributes = std::forward<decltype(attrs)>(attrs),
@@ -3852,7 +3777,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             });
         };
 
-        // --- Triangle primitives ---
         // Each fan corner pairs its mesh vertex index with its index into the corner-domain arenas.
         // Every distinct corner tuple over the emitted channels becomes one export vertex, so vertices split exactly where corner attributes diverge.
         if (group.Triangles != entt::null) {
@@ -3866,8 +3790,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const auto corner_tangents = meshes.GetCornerTangents(store_id);
             const auto corner_colors = meshes.GetCornerColors(store_id);
             const std::array corner_uv_sets{meshes.GetCornerUvs(store_id, 0), meshes.GetCornerUvs(store_id, 1), meshes.GetCornerUvs(store_id, 2), meshes.GetCornerUvs(store_id, 3)};
-            // Runtime-created meshes have no MeshSourceLayout.
-            // Synthesize a single-primitive layout from the present channels so attribute emission matches what's there.
+            // Derive one primitive layout for runtime-created meshes.
             const auto *layout_ptr = r.try_get<const MeshSourceLayout>(group.Triangles);
             const MeshSourceLayout synthesized_layout = layout_ptr ? MeshSourceLayout{} : [&] {
                 MeshSourceLayout out;
@@ -3886,7 +3809,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const auto &layout = layout_ptr ? *layout_ptr : synthesized_layout;
             const auto prim_count = layout.AttributeFlags.size();
 
-            // One faces walk gathers each primitive's corners in fan-triangulation order.
+            // Gather primitive corners in fan-triangulation order.
             struct CornerRef {
                 uint32_t Vertex, Corner;
             };
@@ -3924,15 +3847,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const bool has_normal_deltas = std::ranges::any_of(mt_span, [](const auto &m) { return m.NormalDelta != vec3{0}; });
             const bool has_tangent_deltas = !layout.MorphTangentDeltas.empty();
 
-            // OR of per-prim AttributeFlags; channel emitted iff any primitive set the bit
-            // (matches old behavior of populating the merged TriangleAttrs slot).
+            // Emit channels present in at least one primitive.
             uint32_t any_flags = 0;
             for (const auto f : layout.AttributeFlags) any_flags |= f;
             const bool have_flags = layout.AttributeFlags.size() == prim_count;
 
             for (uint32_t prim_idx = 0; prim_idx < prim_count; ++prim_idx) {
                 auto &prim_corners = corners_per_prim[prim_idx];
-                if (prim_corners.empty()) continue; // non-triangle primitive
+                if (prim_corners.empty()) continue;
                 const auto flags = have_flags ? layout.AttributeFlags[prim_idx] : ~0u;
 
                 const bool emit_normal = (any_flags & MeshAttributeBit_Normal) && (flags & MeshAttributeBit_Normal) && !corner_normals.empty();
@@ -4099,7 +4021,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
         }
 
-        // --- Line primitive ---
         if (group.Lines != entt::null) {
             const auto &mesh = GetMesh(r, group.Lines);
             const auto vertices = meshes.GetVertices(mesh.GetStoreId());
@@ -4118,7 +4039,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
         }
 
-        // --- Point primitive ---
         if (group.Points != entt::null) {
             const auto &mesh = GetMesh(r, group.Points);
             const auto vertices = meshes.GetVertices(mesh.GetStoreId());
@@ -4272,7 +4192,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     };
 
-    // A bone's Transform is the live pose; its joint node TRS must be the rest (animation channels carry the motion).
+    // A bone Transform contains the live pose, while its joint node TRS contains the rest pose.
     // The rest lives in the Armature, so map each bone to it. (Non-bone nodes keep their authored local in Transform.)
     std::unordered_map<entt::entity, Transform> bone_rest;
     for (const auto [ao_entity, ao] : r.view<const ArmatureObject>().each()) {
@@ -4282,8 +4202,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Pose-independent world transform: bones use their rest pose (RestLocal), everything else its authored
-    // Transform. Keeps the flattened-bone export below stable regardless of the current animation frame.
+    // Use bone rest poses and authored object transforms for frame-independent export.
     std::unordered_map<entt::entity, mat4> rest_world;
     const auto rest_world_of = [&](this const auto &self, entt::entity e) -> mat4 {
         if (const auto it = rest_world.find(e); it != rest_world.end()) return it->second;
@@ -4295,17 +4214,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return world;
     };
 
-    // Nodes — each fastgltf::Node is emitted directly from per-entity registry components,
-    // no parallel staging struct. `entity == null` slots fall through with default fields
-    // (gaps in the source SourceNodeIndex sequence).
+    // Emit nodes directly from registry components while retaining gaps in SourceNodeIndex.
     asset.nodes.reserve(total_node_count);
     bool uses_gpu_instancing = false;
     bool uses_physics_rigid_bodies = false;
     // KHR_audio_rigid_bodies acoustic materials and surfaces, deduped by value across node instances.
     std::vector<AcousticMaterial> audio_rigid_body_materials;
     std::vector<ContactSurface> audio_rigid_body_surfaces;
-    // Index of an emitted resource, reusing an identical one already emitted, with `mirror` holding the engine-side values in the emitted order.
-    // A null `value` is nothing to emit, so the node names no resource.
+    // Returns a deduplicated resource index and preserves emitted order in `mirror`.
     const auto dedupe = [](auto &mirror, const auto *value, auto &&emit) -> fastgltf::Optional<size_t> {
         if (!value) return {};
         const auto it = std::ranges::find(mirror, *value);
@@ -4323,8 +4239,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             for (const auto &[_, child_idx] : cit->second) children.emplace_back(child_idx);
         }
 
-        // Synthetic offset-collider child (KHR_physics_rigid_bodies §167): carries only the
-        // owner's collider/trigger extension at translation = LocalOffset.
         if (const auto sit = offset_child_to_owner.find(ni); sit != offset_child_to_owner.end()) {
             const auto owner = sit->second;
             const auto &cs = r.get<const ColliderShape>(owner);
@@ -4366,9 +4280,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
         const auto &world_transform = r.get<const WorldTransform>(entity);
 
-        // Bones with non-joint source ancestors are flattened on import (EnTT parent is the previous joint/armature),
-        // but the emitted node tree keeps them via SourceParentNodeIndex. When the source parent differs from the
-        // EnTT parent, derive the local from rest-world transforms so it doesn't drift with the animation frame.
+        // SourceParentNodeIndex restores non-joint ancestors removed from the runtime bone hierarchy.
+        // Derive local transforms from rest-world transforms when source and runtime parents differ.
         const Transform local_transform = [&] {
             if (r.all_of<ArmatureModifier>(entity)) return Transform{}; // Skinned mesh node transform is spec-ignored.
             const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
@@ -4478,7 +4391,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
         }
 
-        // Matrix-form source round-trips as matrix; TRS-form emits from LocalTransform.
+        // Preserve matrix-form sources and emit TRS-form sources from LocalTransform.
         const auto *source_matrix = r.try_get<const SourceMatrixTransform>(entity);
         const auto fg_transform = [&]() -> std::variant<fastgltf::TRS, fastgltf::math::fmat4x4> {
             if (source_matrix) {
@@ -4530,7 +4443,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 out.profile = AddDataAccessor(std::span<const float>(contact_surface->Profile), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float);
                 out.sampleSpacing = contact_surface->SampleSpacing;
             }
-            // The texture the surface points at may have gone with an edited scene.
+            // Omit texture references removed by scene edits.
             if (const auto &nt = contact_surface->NormalTexture; nt && nt->Texture < asset.textures.size()) {
                 out.normalTexture = ToFgNormalTexInfo({.Slot = nt->Texture, .TexCoord = nt->TexCoord}, nt->Scale);
             }
@@ -4562,8 +4475,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .name = ToFgStr(node_name),
             };
             if (const auto *mp = r.try_get<const MassProperties>(entity)) {
-                // Mass properties are stored at the solved material's density. The emitted model
-                // references the mesh's current material, so mass and inertia scale to match it.
+// Scales stored mass and inertia from solved density to the mesh's current material density.
                 const double rho_ratio = ModalDensityRatio(r, entity);
                 const auto &q = mp->InertiaOrientation;
                 const vec3 inertia = mp->InertiaDiagonal * float(rho_ratio);
@@ -4610,8 +4522,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         });
     }
 
-    // EXT_lights_image_based: a single IBL is preserved across round-trip, attached to the
-    // default scene (per-scene IBL preservation isn't modeled — see header round-trip gaps).
+// Preserves one EXT_lights_image_based resource on the default scene.
+// Per-scene IBL assignment remains outside the round-trip model.
     fastgltf::Optional<size_t> default_scene_ibl_index;
     if (sa.ImageBasedLight) {
         const auto &src_ibl = *sa.ImageBasedLight;
@@ -4694,9 +4606,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         for (const auto &v : mv->Names) asset.materialVariants.emplace_back(v);
         asset.extensionsUsed.emplace_back("KHR_materials_variants");
     }
-    // KHR_texture_transform: emitted per-texture when non-identity or when source had it at all.
-    // Each emit site (`ToFgTexInfo` / `ToFgNormalTexInfo` / `ToFgOcclusionTexInfo`) attaches the
-    // unique_ptr<TextureTransform> exactly when those conditions hold, so checking it here matches.
     {
         const auto has_xf = [](const auto &opt) { return opt.has_value() && opt->transform != nullptr; };
         const auto material_has_xf = [&](const fastgltf::Material &m) {

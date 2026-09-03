@@ -43,8 +43,7 @@ jobs:
           ./build/tests/MeshEditorActionSerializeTest
           ./build/tests/MeshEditorTests
 
-  # Solves the full RealImpact mesh corpus and publishes the per-sample modes and profile
-  # as a text artifact, tracking how commits change mode values and solve timing.
+  # Solve the RealImpact corpus and publish mode values and solve timing.
   modal-corpus:
     runs-on: macos-26
     timeout-minutes: 300
@@ -68,7 +67,7 @@ jobs:
       - name: Fetch RealImpact meshes
         run: git -C external/RealImpact lfs pull
 
-      # The selection lives in the script, so a hit skips the HuggingFace download.
+      # Use the script hash as the cache key for downloaded corpus data.
       - name: Cache Thingi10K meshes
         uses: actions/cache@v4
         with:
@@ -102,7 +101,7 @@ jobs:
       - name: Run modal solver test
         run: ./build/tests/MeshEditorModalSolverTest
 
-      # Catches a change that still produces a valid mesh but not the same one.
+      # Require the generated tetrahedral meshes to match the stored snapshot.
       - name: Check the tet corpus snapshot
         run: ./build/tests/MeshEditorModalSolverBench --dataset realimpact --dataset thingi10k --snapshot check
 

@@ -21,7 +21,7 @@ struct ModalModes;
 // One-shot events the main thread queues for the audio thread.
 enum class ModalEventKind : uint32_t {
     Impact, // Start a raised-cosine contact-force pulse on an object.
-    Silence, // Clear an object's ringing state and drop its active pulses.
+    Silence, // Clear object state and active pulses.
 };
 
 // One queued modal synthesis event.
@@ -45,9 +45,6 @@ constexpr float ListenerDistance{1.f}; // m
 // A T60 is the time to fall 60 dB, so the decay rate it states is this over it.
 constexpr float Ln1000 = 3 * std::numbers::ln10_v<float>;
 
-// The rigid-recoil radiation filters, bilinear at the bank rate, from the exact translating-sphere solution at the body's volume-equivalent radius (Rienstra and Hirschberg Eq. 6.19-6.20).
-// Both share the denominator D(s) = s^2 + 2*wc*s + 2*wc^2 at the corner wc = c0/a.
-// Below the corner the radiator is the compact-dipole jerk law 3*rho0*V/(8*pi*c0*r) (Qu and James 2019), and above it the pressure saturates at rho0*c0*(a/r) times the velocity, which bounds the radiated energy by the work done.
 
 // The bilinear denominator both filters share, s^2 + B*wc*s + B*wc^2 at the corner wc.
 // B is 2 for a body radiating against the air alone, and 2 + md/m once the body's own inertia is in the loop.
@@ -84,8 +81,6 @@ inline RecoilFilter RecoilObjectFilter(double radius, double volume, double samp
         .A2 = poles.A2,
     };
 }
-// The click's transfer folds the body's inertia into the same solution: pressure per unit contact force rho0*c0*a/(r*m) * s / (s^2 + B*wc*s + B*wc^2) with B = 2 + rho0*V/m.
-// A body light for its volume then responds against the air's own load rather than radiating an unbounded jerk.
 struct ClickFilter {
     float B0{0}, A1{0}, A2{0};
 };
@@ -105,19 +100,16 @@ struct ModalBank {
     std::vector<float> CoeffRe, CoeffIm; // Resonator coefficient c = decay * exp(i*2*pi*freq/SR). Zero mutes the mode.
     std::vector<float> StateRe, StateIm; // Resonator state z
     // The mode's far-field radiation gain in Pa per unit of mass-normalized modal velocity, zero for a muted mode.
-    // A drive scaled by this leaves the state holding the mode's pressure at the listener distance.
+    // Converts drive state to pressure at the listener distance.
     std::vector<float> RadiationGain;
     // Surface integral of the squared normal shape, m^2/kg at the baked size. Zero when the model has no sample surface.
     std::vector<float> RadiationArea;
     // One over the radiation gain times the angular frequency, which reads modal displacement back out of the state.
     std::vector<float> DeflectionGain;
-    // Each mode's far-field phase at the listener, as the cos/sin pair its output contribution is rotated by.
-    // Distinct modes of a body larger than the wavelength radiate through their own directivity lobes, so their pressures at any one listener have independent phases and the sum decoheres, while a compact body's modes stay in phase.
-    // The phase is deterministic per mode and engages with (ka)^2/(1+(ka)^2), so a small body's coherent onset is untouched.
     std::vector<float> OutPhaseIm, OutPhaseRe;
     // The energy-quadratised exchange's per-mode constants (van Walstijn et al. 2024 Eqs. 28-33).
     // QuadCompliance is the mode's full-step displacement response coefficient dt*(1 + rho^2 + 2*rho*cos(theta))/4.
-    // QuadDriveScale converts the bank's impulse-invariant drive to the central scheme's, so a sustained force scaled by it lands exactly the response the quadratised solve assumes.
+    // Converts impulse-invariant drive to the central-difference response used by the quadratized solve.
     std::vector<float> QuadCompliance, QuadDriveScale;
     // Mass-normalized mode shapes. Object o, excitation position p, mode k: index = ShapeOffset[o] + p*ModeCount[o] + k.
     std::vector<float> ShapeX, ShapeY, ShapeZ;
@@ -132,16 +124,15 @@ struct ModalBank {
     // Pressure attenuation to the view camera, ListenerDistance/max(distance, ListenerDistance), scaling an object's three output legs.
     std::vector<float> ListenerGain;
     std::vector<float> RadiantRadius; // Radius of the disc holding the sample surface's area, m at the baked size
-    // Sizes the deflection read and the modal compliance to the object's world scale: mass-normalized shapes go as scale^(-3/2) and the loop uses two of them, so this is scale^(-3).
     std::vector<float> DeflectionScale;
     std::vector<uint8_t> Ringing; // Nonzero while the object has audible state
-    // The object's motion on its own contact springs, as a fluctuation about the trajectory the physics step gives it.
-    // A body resting on a contact of stiffness K bounces at sqrt(K/m), which lands in the audio band and which a physics step of 60 to 240 Hz cannot carry.
+    // Object motion on contact springs relative to the physics trajectory.
+    // Models contact oscillation sqrt(K/m) above the physics update bandwidth.
     // The contacts of one object share this velocity, so summing each contact's stiffness makes the rate independent of how the load divides among them.
     std::vector<float> RigidInvMass; // kg^-1, zero for an object the contact cannot move
     std::vector<vec3> RigidVel; // m/s, fluctuation only, in the object's own frame
     // A body recoiling without changing volume radiates as a compact dipole, through the recoil filters above.
-    // All coefficients are zero for a body the world holds in place.
+    // Fixed bodies use zero coefficients.
     std::vector<float> RadiatorB0; // Radiator numerator b0. Its b1 = -2*b0 and b2 = b0 (a pure s^2 numerator).
     std::vector<float> AirB0, AirB1, AirB2; // Air-load numerator, N per m/s of rigid velocity.
     std::vector<float> RecoilA1, RecoilA2; // Shared denominator of both recoil filters.
@@ -168,7 +159,7 @@ struct ModalBank {
 // Modes are rendered in fixed-width lanes so the sample loop vectorizes across modes.
 constexpr uint32_t Lanes{8};
 
-// Mode `k`'s shape where a contact lands, blended over the three sample points of its own triangle.
+// Interpolates mode `k` at a contact from its sample-surface triangle.
 // Each base is that point's first mode in the bank's shape columns, and `w` the point's weight.
 inline vec3 BlendedShape(const ModalBank &b, uint32_t base0, uint32_t base1, uint32_t base2, vec3 w, uint32_t k) {
     return {
@@ -199,7 +190,7 @@ struct ModalRenderPool {
     void SetWorkgroup(void *workgroup);
 
     // Audio thread. One block's use of the pool.
-    // Blocks a resize for as long as it lives, and reports a width of one when a resize already holds the pool.
+    // Prevents resize overlap and reports width one during an active resize.
     struct Session {
         explicit Session(ModalRenderPool &);
         ~Session();
@@ -224,20 +215,19 @@ private:
     void ApplyLocked(uint32_t size, void *workgroup);
 
     std::vector<std::jthread> Threads;
-    // Held by a resize, try-locked by a session, so a resize never overlaps a dispatch and audio never waits on one.
     std::mutex ResizeMutex;
     uint32_t Active{1}; // Renderers a session dispatches to. Guarded by ResizeMutex.
     void *Workgroup{nullptr};
     void (*Render)(void *, uint32_t){nullptr};
     void *Context{nullptr};
     // Workers below this index render on the next ticket, written before the ticket bump and read after the wait.
-    // Zero leaves every worker parked.
+    // Zero disables worker participation on the next ticket.
     uint32_t Dispatch{0};
-    std::atomic<uint64_t> Ticket{0}; // Bumped once per run to wake the workers.
+    std::atomic<uint64_t> Ticket{0}; // Changes once per run to release waiting workers.
     std::atomic<uint32_t> Remaining{0}; // Workers yet to finish this run.
 };
 
-// One renderer's working memory, held per renderer so objects can be rendered independently of one another.
+// Per-renderer scratch for independent object rendering.
 // Kept across blocks, so a steady state allocates nothing.
 struct ModalRenderScratch {
     std::vector<uint32_t> Objects; // The objects assigned to this renderer, in ascending order.
@@ -249,7 +239,7 @@ struct ModalRenderScratch {
 };
 
 // All modal synthesis state.
-// The audio thread reads the live bank via Published under a ReaderSeq generation.
+// The audio thread reads Published under a ReaderSeq generation.
 // The main thread publishes a replacement and frees the old bank once that generation advances, never blocking audio.
 // Coefficient writes stay plain: in a contracting one-pole a torn read is a one-buffer transient.
 struct ModalAudio {
@@ -262,9 +252,9 @@ struct ModalAudio {
     std::atomic<float> ClickGain{1}; // Level of the rigid-body acceleration-noise click
     std::atomic<uint32_t> MaxImpacts{1024}; // Cap on simultaneous in-flight contact pulses
     std::atomic<uint32_t> ActiveImpacts{0}; // Published by the audio thread for display
-    std::atomic<uint32_t> ActiveVoices{0}; // Sustained contacts the surface model holds, likewise
-    // The energy standing in the mode banks, J, and the largest it has reached.
-    // A passive scene loses energy between strikes, so a peak that climbs while nothing strikes is a channel feeding the modes.
+    std::atomic<uint32_t> ActiveVoices{0}; // Active sustained contacts.
+    // Current and peak mode-bank energy in joules.
+    // Passive scenes must lose energy between impacts.
     std::atomic<double> ModalEnergy{0}, PeakModalEnergy{0};
     // How long the last block took against how long it had, and the worst share since the last reset.
     std::atomic<float> RenderSeconds{0}, RenderShare{0}, PeakRenderShare{0};
@@ -275,36 +265,36 @@ struct ModalAudio {
     static constexpr uint32_t EventCapacity{256}; // Power of two
     std::array<ModalEvent, EventCapacity> Events;
     std::atomic<uint32_t> EventWrite{0}, EventRead{0};
-    std::atomic<bool> FlushEvents{false}; // Main thread sets on publish. The audio thread drops events that targeted the old layout.
+    std::atomic<bool> FlushEvents{false}; // Discards events targeting the prior layout after publication.
 
     // Audio-thread scratch shared by every object, kept across blocks.
     std::vector<float> ForceScratch; // Each impact's force curve for the block
 
     std::vector<ModalRenderScratch> Renderers;
     ModalRenderPool RenderPool;
-    // Cost of each ringing object paired with its index, sorted so the heaviest is dealt first. Audio thread only.
+    // Audio-thread rendering cost and object index, sorted by descending cost.
     std::vector<std::pair<uint64_t, uint32_t>> RenderOrderScratch;
-    std::vector<uint64_t> RenderLoadScratch; // Work already dealt to each renderer, so the next object goes to the lightest.
+    std::vector<uint64_t> RenderLoadScratch; // Accumulated work per renderer.
 
     // The surface-contact model's state, null in a build without it (see SurfaceContact.h).
     SurfaceAudioStatePtr Surface;
 };
 
-// The live bank, for main-thread reads and in-place writes.
+// Returns the published bank for main-thread access.
 inline ModalBank &LiveBank(ModalAudio &m) { return *m.Live; }
 
 // Append an object slot with zeroed state, coefficients, and gain and return its index.
 uint32_t AddModalObject(ModalBank &, entt::entity, const ModalModes &);
-// Publish a freshly built bank as the live one and free the previous one.
+// Publishes a new bank and frees the previous bank.
 void InstallModalBank(ModalAudio &, ModalBank &next);
 // Set an object's resonator coefficients from per-mode frequencies (Hz) and T60s (s).
 // Out-of-range and undamped modes are muted. Safe against concurrent rendering.
-// `radius_scale` sizes the radiant radius with the object, so the radiation corner stays where the physical body has it.
+// `radius_scale` preserves the physical radiation corner under object scaling.
 void TuneModalObject(ModalBank &, uint32_t object, std::span<const float> freqs, std::span<const float> t60s, float radius_scale = 1.f);
 // Overwrite an object's mode shapes in place. Returns false when the mode or shape layout differs.
 // Safe against concurrent rendering.
 bool SetModalObjectShapes(ModalBank &, uint32_t object, const ModalModes &);
-// The object slot holding this entity, if any.
+// Returns the object slot for an entity.
 std::optional<uint32_t> FindModalObject(const ModalBank &, entt::entity);
 
 // Enqueue an event from the main thread. Dropped when the queue is full.

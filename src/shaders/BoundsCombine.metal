@@ -1,8 +1,7 @@
 #ifndef BOUNDSCOMBINE_MSL
 #define BOUNDSCOMBINE_MSL
 
-// Folds the bounds reduce's per-tile partial AABBs into each entry's instance bounds.
-// One threadgroup per bounds entry.
+// Combines partial AABBs into each entry's instance bounds.
 #include "Bindless.metal"
 #include "AABB.metal"
 #include "BoundsShared.metal"
@@ -22,7 +21,6 @@ kernel void BoundsCombineKernel(
     const Scene scene{bindless, view, theme, workspace};
     const DrawData draw = scene.Draws(pc.DrawDataSlot)[group_id];
     const uint first_tile = BindlessBuffer(uint, bindless.Buffer, pc.EntryFirstTileSlot)[group_id];
-    // Every entry has at least one tile, so an entry with no vertices still writes empty bounds.
     const uint tile_count = max((draw.VertexCountOrHeadImageSlot + 255u) / 256u, 1u);
     device const AABB *partials = BindlessBuffer(AABB, bindless.Buffer, pc.PartialBoundsSlot);
     float3 lo = AabbEmptyMin;
@@ -32,8 +30,7 @@ kernel void BoundsCombineKernel(
         lo = min(lo, float3(partial.Min));
         hi = max(hi, float3(partial.Max));
     }
-    // An entry with no vertices leaves Min > Max, the same empty state a fresh slot holds.
-    // ElementIdOffset is the run of consecutive instance slots sharing this entry's deform state.
+    // Min > Max represents an empty entry and matches a newly allocated bounds slot.
     FoldSharedAabb(shared_min, shared_max, BoundsFoldLanes, tid, lo, hi);
     const AABB bounds{packed_float3(shared_min[0]), packed_float3(shared_max[0])};
     device AABB *out_bounds = BindlessBufferMutable(AABB, bindless.Buffer, pc.BoundsSlot);

@@ -188,11 +188,8 @@ The only difference is we use Y-up instead of Z-up.
 vec3 ListenerPoint::GetPosition(vec3 world_up, bool mic_center) const {
     const float angle = numeric::Radians(float(AngleDeg)), dist = float(DistanceMm);
     const vec3 pos{
-        // 230 I believe is for the gantry (where the object is placed)
         230 + dist + (mic_center ? MicLengthMm / 2 : 0),
         -(MicBarLengthMm / 2) + (float(MicId) / (NumMics - 1)) * MicBarLengthMm,
-        // I believe these offsets are to accurately reflect the mic positions attached to _one side_ of microphone array bar.
-        // You can see the same offsets in https://samuelpclarke.com/realimpact/ and https://www.youtube.com/watch?v=OeZMeze-oIs
         ((45.f / 2.f) + 20.95f),
     };
     return vec3{numeric::Rotate(mat4{1}, angle, world_up) * vec4{pos, 1}} / 1000.f;

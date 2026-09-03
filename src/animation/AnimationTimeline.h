@@ -2,13 +2,13 @@
 
 #include "entt_fwd.h"
 
-// Timeline configuration. Changes here invalidate baked physics frames.
+// Changes invalidate baked physics frames.
 struct TimelineRange {
     int StartFrame{1}, EndFrame{250};
     float Fps{24.f};
 };
 
-// Per-tick playback state. Mutated every play frame; does not affect physics cache.
+// Per-tick state that does not invalidate the physics cache.
 struct TimelinePlayback {
     int CurrentFrame{1};
     bool Playing{false};
@@ -16,22 +16,21 @@ struct TimelinePlayback {
 
 struct AnimationTimelineView {
     float PixelsPerFrame{4.5f};
-    float ViewCenterFrame{125.f}; // Frame at horizontal center of visible scroll region
+    float ViewCenterFrame{125.f};
 };
 
-// Smooth float frame position for playback, advanced by Render. Singleton on viewport.
+// Fractional playback position advanced by Render.
 struct PlaybackFrame {
     float Value{1.f};
 };
 
-// Frame the current armature/morph/node poses were evaluated at. Singleton on viewport.
+// Frame used to evaluate the current armature, morph, and node poses.
 struct LastEvaluatedFrame {
     int Value{-1};
 };
 
-// Forces a fresh Rebuild on the next tick even if the start frame is cached.
-// Emitted by JumpToStart and LoadGltf; cleared after the cache is cleared.
+// Forces Rebuild on the next tick even when the start frame is cached.
 struct PhysicsCacheInvalid {};
 
-// Reset playback to the timeline's start frame and invalidate the physics cache.
+// Resets playback to the start frame and invalidates the physics cache.
 void JumpToStartFrame(entt::registry &, entt::entity viewport);

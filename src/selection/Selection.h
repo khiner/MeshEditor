@@ -15,17 +15,16 @@ bool CanDuplicateLinked(const entt::registry &, entt::entity viewport);
 bool CanDelete(const entt::registry &, entt::entity viewport);
 std::vector<ElementRange> GetElementRangesForSelected(const entt::registry &, entt::entity viewport);
 
-// Returns armature entity if entity is an armature or a sub-element of one
+// Returns the containing armature, or null if the entity is unrelated to an armature.
 entt::entity FindArmatureObject(const entt::registry &, entt::entity);
-// Returns entt::null if no bone is active
+// Returns null if no bone is active.
 entt::entity FindActiveBone(const entt::registry &);
 
-// Selected entities that drive a gizmo transform: bones in pose/edit mode else objects, excluding any
-// whose parent is also selected (the parent's transform already propagates to them).
+// Returns selected transform roots, using bones in pose or edit mode and objects otherwise.
 std::vector<entt::entity> RootSelectedForTransform(const entt::registry &, entt::entity viewport);
 
 struct EditTransformContext {
-    std::unordered_map<entt::entity, entt::entity> TransformInstances; // excludes frozen, for transforms
+    std::unordered_map<entt::entity, entt::entity> TransformInstances;
 };
 
 namespace selection {
@@ -34,8 +33,7 @@ struct PrimaryEditInstanceMaps {
     PrimaryEditInstanceMap All, Transformable;
 };
 
-// Returns representative edit instance per selected mesh: active instance if selected, else first selected instance.
-// Only includes Mesh-type objects (excludes Cameras, etc.).
+// Returns one selected mesh instance per mesh, preferring the active instance.
 PrimaryEditInstanceMap ComputePrimaryEditInstances(const entt::registry &, bool include_scale_locked = true);
 PrimaryEditInstanceMaps ComputePrimaryEditInstanceMaps(const entt::registry &);
 

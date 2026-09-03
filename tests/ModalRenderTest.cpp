@@ -1,5 +1,3 @@
-// Properties the audio-thread render must hold whatever a collision's force pulse is shaped like.
-// Each case compares two configurations rendered in one run, so no case is written against a stored signal and changing the model does not invalidate them.
 
 #include "ModalBench.h"
 #include "Near.h"
@@ -16,8 +14,6 @@
 using namespace boost::ut;
 
 int main() {
-    // KHR_audio_rigid_bodies Synthesis makes linear superposition a MUST, and hearing it needs the same excitations rendered apart and summed, which is a comparison rather than a recording.
-    // Two strikes differ in position, strength, and contact duration, so nothing cancels.
     "excitations superpose linearly"_test = [] {
         const auto render = [](std::span<const ModalEvent> events) {
             ModalScene scene{1, 64, 0.2f, 1};
@@ -36,7 +32,6 @@ int main() {
         expect(MaxDifference(together, sum) <= Peak(together) * 1e-5) << MaxDifference(together, sum);
     };
 
-    // A strike's own modes are the same signal however the block is cut, and the impact-only kernel's audible prefix is the one thing a block length could move.
     "a strike does not depend on how many threads share it"_test = [] {
         const auto render = [](uint32_t renderers) {
             ModalScene scene{16, 64, 0.2f, renderers};

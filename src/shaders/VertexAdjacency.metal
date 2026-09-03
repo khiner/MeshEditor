@@ -1,14 +1,7 @@
 #ifndef VERTEXADJACENCY_MSL
 #define VERTEXADJACENCY_MSL
 
-// Builds a mesh's vertex CSR incidence tables: (VertexCount + 1) item-start offsets, then the items.
-// A fan job lists every incident corner of a vertex, and an edge job every incident edge.
-// Seven passes run in order over one job list, each pass reading its own tiles at the push constant's FirstTile:
-// zero the counts, count per vertex, sum each scan block, scan the block sums, write the offsets and
-// the scatter cursors, scatter the items, then sort each vertex's run.
-// The scatter claims item slots by atomic increment, so the sort is what fixes the item order: a fan
-// job scatters halfedge indices and encodes them once sorted, and an edge job scatters edge indices.
-// Both ascend with the halfedge index, which is the order the CPU builder emits.
+// Builds deterministic vertex-fan or vertex-edge CSR incidence tables matching CPU halfedge order.
 #include "Bindless.metal"
 #include "BlockScan.metal"
 #include "FanItemEncoding.metal"
@@ -27,7 +20,6 @@ struct AdjacencyContext {
     device uint *Csr() const { return BindlessBufferMutable(uint, B.Buffer, Pc.AdjacencySlot); }
     device const uint *Corners(VertexAdjacencyJob job) const { return BindlessBuffer(uint, B.IndexBuffer, job.Corners.Slot) + job.Corners.Offset; }
 
-    // The tile this threadgroup runs: its job and the tile's place within that job's pass.
     uint2 Tile(uint group_id) const { return Tiles()[Pc.FirstTile + group_id]; }
 };
 
@@ -37,10 +29,10 @@ inline uint PreviousHalfedge(uint h) {
     return first + (h - first + 2u) % 3u;
 }
 
-// True when `h` is the first halfedge of its edge, which is the bit the edge ranks count.
+// Returns true when `h` is the first halfedge counted by the edge ranks.
 inline bool IsEdgeFirst(device const uint *bits, uint h) { return (bits[h / 32u] & (1u << (h % 32u))) != 0u; }
 
-// The edge index of an edge-first halfedge: the set bits before it, which the per-word ranks accumulate.
+// Returns the number of edge-first bits preceding `h`.
 inline uint EdgeIndex(device const uint *bits, device const uint *ranks, uint h) {
     const uint word = h / 32u;
     return ranks[word] + popcount(bits[word] & ((1u << (h % 32u)) - 1u));
@@ -128,7 +120,7 @@ kernel void VertexAdjacencyOffsets(
     for (uint k = 0u; k < ScanPerThread; ++k) {
         const uint i = base + k;
         if (i > job.VertexCount) break;
-        // The offsets answer every later read, and the scatter claims item slots from the counts copy.
+        // Preserve counts as scatter cursors after writing the immutable CSR offsets.
         offsets[i] = start;
         counts[i] = start;
         start += local[k];
@@ -172,7 +164,7 @@ kernel void VertexAdjacencySort(
     device const uint *offsets = ctx.Csr() + job.CsrOffset;
     device uint *items = ctx.Csr() + job.CsrOffset + job.VertexCount + 1u;
     const uint start = offsets[v], end = offsets[v + 1u];
-    // A vertex's items ascend in the CPU builder's emission order, and its valence bounds the sort.
+    // Sort each vertex range into CPU emission order; vertex valence bounds the in-thread sort.
     for (uint i = start + 1u; i < end; ++i) {
         const uint key = items[i];
         uint j = i;
@@ -180,7 +172,6 @@ kernel void VertexAdjacencySort(
         items[j] = key;
     }
     if (job.Kind != VertexAdjacencyKind_Fan) return;
-    // A fan item carries the halfedge's face and its position in that face's loop.
     for (uint i = start; i < end; ++i) {
         const uint h = items[i];
         items[i] = (h / 3u) | ((h % 3u) << FanItemEncoding_LoopShift);

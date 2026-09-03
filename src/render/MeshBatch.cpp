@@ -22,7 +22,7 @@ std::vector<CreatedMesh> CreateMeshes(entt::registry &r, std::span<MeshSource> s
             prepared[i] = PrepareMeshSources(sources[i].Data, sources[i].Attrs, sources[i].Primitives);
         });
     }
-    // The host position and corner copies are released, so nothing reads what the weld is about to change.
+    // Release host copies before in-place GPU welding.
     std::vector<uint32_t> ids(sources.size());
     {
         const profile::CpuScope scope{"CreateMeshSource"};
@@ -30,8 +30,7 @@ std::vector<CreatedMesh> CreateMeshes(entt::registry &r, std::span<MeshSource> s
             auto &source = sources[i];
             ids[i] = meshes.CreateMeshSource(source.Data);
             meshes.CreateDeformSource(ids[i], source.Deform, source.Morph);
-            // The tangent deltas are the one vertex-domain channel no arena holds, so the weld reads
-            // them here and hands them back compacted.
+            // Keep tangent deltas on the host so welding can return them compacted.
             if (source.Morph) prepared[i].MorphTangentDeltas = std::move(source.Morph->TangentDeltas);
             source.Data.Positions = std::vector<vec3>{};
             if (source.Data.FaceCount() > 0) source.Data.FaceCorners = std::vector<uint32_t>{};
@@ -40,7 +39,7 @@ std::vector<CreatedMesh> CreateMeshes(entt::registry &r, std::span<MeshSource> s
         }
     }
     {
-        // Only a source that asks welds, and every mesh's connectivity reads the corners the weld rewrote.
+        // Complete all requested welds before connectivity reads the rewritten corners.
         std::vector<WeldTarget> weld_targets;
         weld_targets.reserve(sources.size());
         for (uint32_t i = 0; i < sources.size(); ++i) {
@@ -49,7 +48,7 @@ std::vector<CreatedMesh> CreateMeshes(entt::registry &r, std::span<MeshSource> s
         WeldMeshesNow(r, weld_targets);
     }
     {
-        // The storage each build fills is allocated in source order, and the builds then run at once.
+        // Allocate connectivity in source order before parallel construction.
         const profile::CpuScope scope{"BuildConnectivity"};
         for (uint32_t i = 0; i < sources.size(); ++i) {
             const auto &data = sources[i].Data;

@@ -1,5 +1,3 @@
-// Pins what the physics step reports to the audio system: one sustained contact per manifold, with the identity,
-// geometry, and load each carries. ContactManifoldTest pins Jolt's input to that step, this its output.
 
 #include "Reactive.h"
 #include "RunSuites.h"
@@ -25,8 +23,7 @@ namespace {
 constexpr float Fps{60};
 constexpr int RangeEnd{240};
 
-// Just enough scene for physics: a viewport carrying the simulation settings, and bodies built by the
-// reactive handlers physics::Init registers.
+// Just enough scene for physics: a viewport carrying the simulation settings, and bodies built by the reactive handlers physics::Init registers.
 struct Scene {
     entt::registry R;
     entt::entity Viewport{};
@@ -100,7 +97,7 @@ entt::entity AddRestingBox(Scene &s, PhysicsMotion motion = {}) {
     return box;
 }
 
-// Give a collider its own physics material, as a compound's feet each carry.
+// Assign a distinct physics material to a collider.
 void SetMaterial(Scene &s, entt::entity collider, const PhysicsMaterial &material) {
     const auto e = s.R.create();
     s.R.emplace<PhysicsMaterial>(e, material);
@@ -124,14 +121,12 @@ std::vector<ContactImpact> ImpactsOn(const Scene &s, entt::entity e) {
     return s.Impacts() | std::views::filter([e](const auto &c) { return c.Entity == e; }) | std::ranges::to<std::vector>();
 }
 
-// The side belonging to `e` first, the other second, since which side a body lands on is up to the pair.
 std::pair<const SustainedContactSide &, const SustainedContactSide &> SidesOf(const SustainedContact &c, entt::entity e) {
     const bool first = c.Sides.front().Entity == e;
     return {first ? c.Sides.front() : c.Sides.back(), first ? c.Sides.back() : c.Sides.front()};
 }
 
-} // namespace
-
+}
 int main() {
     "a box resting on a floor is one contact"_test = [] {
         Scene s;
@@ -217,7 +212,6 @@ int main() {
     "a box landing flat is struck at every corner it lands on"_test = [] {
         Scene s;
         AddFloor(s);
-        // Dropped from just clear of the floor, so it lands within the first few frames and nothing drains it first.
         const auto box = s.AddBody({0, 0.6f, 0}, Box({1, 1, 1}), PhysicsMotion{.Mass = 2.f});
         s.Sync();
         for (int i = 0; i < 30 && s.Impacts().empty(); ++i) s.Step();
@@ -332,7 +326,6 @@ int main() {
         AddRestingBox(s);
         expect(s.Contacts().size() == 1_ul);
 
-        // The set stands, since only a step rebuilds it, but its step number does not move.
         const auto step = s.ContactStep();
         s.Hold(5);
         expect(s.Contacts().size() == 1_ul);

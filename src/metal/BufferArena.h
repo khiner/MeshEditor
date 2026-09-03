@@ -48,12 +48,11 @@ struct BufferArena {
 
     void Release(Range range) { Allocator.Free(range); }
 
-    // Give back a range's unused tail, keeping the head allocated.
     void Shrink(Range &range, uint32_t used) {
         if (used >= range.Count) return;
         const Range tail{range.Offset + used, range.Count - used};
         Allocator.Free(tail);
-        // Reporting and binding read UsedSize, so a tail at the high-water gives its bytes back too.
+        // Keep UsedSize equal to the highest allocated byte because reporting and binding use it.
         if (const uint64_t tail_end = uint64_t(tail.Offset + tail.Count) * sizeof(T); Buffer.UsedSize == tail_end) {
             Buffer.UsedSize = uint64_t(range.Offset + used) * sizeof(T);
         }
@@ -66,18 +65,15 @@ struct BufferArena {
         return {reinterpret_cast<T *>(bytes.data()), range.Count};
     }
 
-    // Deep-copy an existing range into a new allocation.
     Range Clone(Range src) { return src.Count > 0 ? Allocate(Get(src)) : Range{}; }
 
     SlottedRange Slotted(Range r) const { return {r, Buffer.Slot}; }
 
-    // Reset to empty: used size and allocator go to zero, keeping the GPU allocation for reuse.
     void Reset() {
         Buffer.UsedSize = 0;
         Allocator = {};
     }
 
-    // Capture/restore the whole arena (see ArenaState).
     ArenaState Save() const {
         const auto used = size_t(Buffer.UsedSize);
         const auto mapped = Buffer.Contents();

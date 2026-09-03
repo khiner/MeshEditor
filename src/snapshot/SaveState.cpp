@@ -11,10 +11,7 @@
 
 namespace snapshot {
 namespace {
-// The PBRMaterial GPU array (GpuBuffers::Materials) is canonical material state with no per-entity
-// Persistent backing, and is not re-derivable from SourceAssets. Persist it wholesale, like the MeshStore
-// arenas, so every primitive's MeshMaterialAssignment index and every baked bindless texture slot stays
-// valid on restore. MaterialStore::Names rides along (the parallel CPU name list).
+// Persist the canonical GPU material array and parallel names because SourceAssets cannot reconstruct them.
 std::vector<std::byte> SerializeMaterials(const entt::registry &r) {
     const auto &materials = r.ctx().get<const GpuBuffers>().Materials;
     const auto mapped = materials.Contents();
@@ -49,8 +46,7 @@ void AppendLengthPrefixed(std::vector<std::byte> &out, std::span<const std::byte
     out.append_range(section);
 }
 
-// Reads a length-prefixed section from the front of `bytes`, advancing it past the section. Returns the
-// section bytes, or empty + an unadvanced `bytes` on truncation.
+// Returns and consumes the next length-prefixed section, or returns empty without consuming truncated input.
 std::span<const std::byte> TakeLengthPrefixed(std::span<const std::byte> &bytes) {
     if (bytes.size() < sizeof(uint64_t)) return {};
     uint64_t len;
@@ -71,7 +67,7 @@ std::vector<std::byte> SaveState(const entt::registry &r) {
     out.reserve(2 * sizeof(uint64_t) + scene.size() + materials.size() + mesh.size());
     AppendLengthPrefixed(out, scene);
     AppendLengthPrefixed(out, materials);
-    out.append_range(mesh); // trailing section, no length prefix
+    out.append_range(mesh);
     return out;
 }
 
@@ -79,13 +75,13 @@ void LoadState(entt::registry &r, std::span<const std::byte> bytes) {
     const auto scene = TakeLengthPrefixed(bytes);
     const auto materials = TakeLengthPrefixed(bytes);
 
-    // MeshStore first: restoring its arenas and entries keeps every Range/StoreId offset valid before the components that reference them are restored.
+    // Restore MeshStore offsets before components that reference them.
     auto &meshes = r.ctx().get<MeshStore>();
     meshes.Deserialize(bytes);
     DeserializeMaterials(r, materials);
     RestoreSceneState(r, scene);
 
-    // The derived mesh arenas rebuild from the restored connectivity and sharpness stores.
+    // Rebuild derived arenas from restored connectivity and sharpness.
     std::vector<Mesh> restored;
     for (const auto e : r.view<const MeshHandle>()) restored.emplace_back(GetMesh(r, e));
     meshes.RebuildDerived(restored);

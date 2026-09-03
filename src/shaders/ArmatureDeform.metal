@@ -1,12 +1,10 @@
 #ifndef ARMATURE_DEFORM_MSL
 #define ARMATURE_DEFORM_MSL
 
-// Deform position and normal in mesh-local space using armature deform matrices.
-// A no-op when the draw has no deform data.
+// Applies armature deformation in mesh-local space and returns the input when no deform data exists.
 #include "Bindless.metal"
 
-// `deform_slot` selects which pose to deform against, so the velocity pass can reach the
-// shutter-open and shutter-close poses using the current frame's per-draw offsets.
+// `deform_slot` selects current, shutter-open, or shutter-close pose matrices.
 template<typename SetT>
 inline float3 ApplyArmatureDeform(const thread SceneT<SetT> &scene, DrawData draw, float3 position, uint vertex_index, thread float3 &normal, uint deform_slot) {
     if (draw.BoneDeformOffset == INVALID_OFFSET) return position;

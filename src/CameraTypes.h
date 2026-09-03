@@ -10,13 +10,13 @@ inline constexpr float DefaultPerspectiveNearClip{0.1f}, DefaultPerspectiveFarCl
 inline constexpr float MinNearClip{0.01f}, MaxFarClip{DefaultPerspectiveFarClip}, MinNearFarDelta{MinNearClip};
 
 struct Orthographic {
-    vec2 Mag; // x/y half-extents of the view volume in world units
+    vec2 Mag; // World-space half-extents of the view volume.
     float FarClip, NearClip;
 };
 
 struct Perspective {
     float FieldOfViewRad;
-    std::optional<float> FarClip; // If omitted, use an infinite projection matrix
+    std::optional<float> FarClip; // An empty value selects an infinite projection matrix.
     float NearClip;
     std::optional<float> AspectRatio{};
 };

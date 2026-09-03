@@ -6,12 +6,10 @@
 
 #include <string_view>
 
-// Viewport/camera-state operations: applied imperatively (not via PendingX components).
-
-// Switches interaction mode, seeding/clearing per-mesh selection ranges as needed. Returns false if the switch is disallowed.
+// Returns false if the requested interaction mode is unavailable.
 bool SetInteractionMode(entt::registry &, entt::entity viewport, InteractionMode);
 
-// Prefilter (once) and activate the studio HDRI environment at `index`, or by source name resolved against EnvironmentStore::Hdris.
+// Activates and lazily prefilters the studio HDRI at `index`.
 // Falls back to index 0 if the name is not found.
 void SetStudioEnvironment(entt::registry &, uint32_t index);
 void SetStudioEnvironment(entt::registry &, std::string_view name);

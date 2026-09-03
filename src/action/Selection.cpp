@@ -21,8 +21,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
         const auto *cur = r.try_get<BoneSelection>(e);
         r.emplace_or_replace<BoneSelection>(e, additive && cur ? *cur | sel : sel);
     };
-    // AdditiveBoxSelectBaseline is meaningful only during an active box-select drag.
-    // A click-selection always ends one, so its handler owns the cleanup.
+    // Click selection ends an active box-select drag.
     auto end_box_select_interaction = [&] { r.remove<AdditiveBoxSelectBaseline>(viewport); };
 
     std::visit(
@@ -75,7 +74,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const bool active_is_armature = FindArmatureObject(r, active_entity) != entt::null;
                 AdditiveBoxSelectBaseline baseline;
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
-                    // The first GPU box transaction snapshots every current domain mask in-place.
+                    // Preserve the initial domain masks throughout the drag.
                 } else if (interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature)) {
                     for (const auto e : r.view<BoneSelection>()) baseline.BoneSelections.emplace_back(e, r.get<BoneSelection>(e));
                 } else if (interaction_mode == InteractionMode::Object) {
@@ -87,9 +86,9 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.remove<AdditiveBoxSelectBaseline>(viewport);
                 r.emplace_or_replace<PendingBoxSelectFinalize>(viewport);
             },
-            // Box-select stores only the rectangle, the GPU pick and hit resolution run later.
+            // GPU selection resolves the rectangle after action application.
             [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(viewport, a.BoxPx, a.Additive, *a.ViewProj); },
-            // Click pick stores only the pixel, the GPU pick and selection resolution run later.
+            // GPU selection resolves the pixel after action application.
             [&](const Pick &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, false, *a.ViewProj); },
             [&](const PickCycle &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, true, *a.ViewProj); },
             [&](const ApplyEditElementClick &a) {

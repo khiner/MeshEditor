@@ -11,9 +11,7 @@
 #include <print>
 
 namespace encode {
-// Everything a pass needs to resolve a visibility id back to its meshlet, instance and primitive.
-// A cull that rewrote the visible list after the raster wrote these ids resolves every id to
-// whatever meshlet now sits at its index, so the generations must match.
+// Returns visibility-decode inputs only when the raster and visible-list generations match.
 inline VisibilityShadingPushConstants VisibilityDecodePc(const GpuBuffers &buffers) {
     if (buffers.VisibilityIdGeneration != buffers.MeshletVisibleGeneration) {
         static bool reported = false;
@@ -107,9 +105,7 @@ inline void BindCompute(
     BindScene(encoder, slots, buffers, view_offset);
 }
 
-// One pass of a tiled job batch, covering `groups` threadgroups from `first_tile` of the pass's tile map.
-// Each pass reads what the pass before it wrote through the bindless table, which the encoder cannot
-// see, so every pass barriers behind the last.
+// Dispatches one tiled stage after an explicit barrier for bindless-buffer dependencies.
 inline void DispatchTiledPass(
     MTL::ComputeCommandEncoder *encoder, const mtl::ComputePipeline &pipeline, const mtl::BindlessSet &slots,
     const GpuBuffers &buffers, auto pc, size_t groups, uint32_t first_tile

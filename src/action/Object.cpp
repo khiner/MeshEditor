@@ -150,7 +150,6 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
         r.emplace<MeshHandle>(e, MeshHandle{created.StoreId});
         r.emplace_or_replace<MeshGeometryDirty>(e);
     };
-    // `fn` for each mesh entity a scope targets (the carried entity, the active mesh, or each selected mesh).
     auto for_each_mesh_target = [&](Scope scope, entt::entity entity, auto &&fn) {
         switch (scope) {
             case Scope::Entity: fn(entity); break;

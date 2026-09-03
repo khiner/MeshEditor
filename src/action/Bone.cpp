@@ -19,8 +19,7 @@
 #include <format>
 
 namespace {
-// Finalize armature structure after AddBone/RemoveBone. Resets pose state, re-resolves animation indices,
-// and forces a re-evaluation of the current frame.
+// Finalize armature structure after AddBone/RemoveBone. Resets pose state, re-resolves animation indices, and forces a re-evaluation of the current frame.
 void RebuildBoneStructure(entt::registry &r, entt::entity viewport, entt::entity arm_data_entity) {
     auto &armature = r.get<Armature>(arm_data_entity);
     armature.FinalizeStructure();

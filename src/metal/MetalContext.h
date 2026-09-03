@@ -27,4 +27,4 @@ struct Context {
 private:
     mutable bool ResidencyDirty{false};
 };
-} // namespace mtl
+}

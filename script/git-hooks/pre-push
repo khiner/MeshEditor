@@ -1,18 +1,10 @@
 #!/bin/bash
 
-# Keeps the committed render corpus and the published site in lockstep with every push,
-# making `git push` the only publish command.
-#
-# COMPARE_VIDEOS has script/Render restore GPU-noise-only diffs (script/VideosEquivalent), so any
-# surviving render/ diff is a real content change. Real changes are amended into HEAD and
-# pushed from inside the hook (the inner push re-runs the hook and takes the clean path),
-# then the original pre-amend push is aborted — git's rejection error for it is expected.
-# On a clean tree, outgoing render/ changes are published via the blog repo's
-# deploy_render_data.sh before the push proceeds. A publish failure aborts the push.
-#
-# RENDER_PREPUSH_INNER guards the recursion: a dirty render/ on the inner push means
-# regeneration drifted beyond the accepted noise envelope. Fail loudly.
-#
+# Synchronizes the committed render corpus with the published site during each push.
+# script/Render restores video changes within the GPU-noise tolerance before the hook inspects render/.
+# Remaining render changes are amended into HEAD and pushed recursively before the original push aborts.
+# Clean outgoing render changes are published through deploy_render_data.sh before the push proceeds.
+# RENDER_PREPUSH_INNER detects render changes produced by the recursive push.
 # Install after a fresh clone: cp script/git-hooks/pre-push-dispatch .git/hooks/pre-push
 
 set -uo pipefail
@@ -24,15 +16,15 @@ cd "${RepoRoot}"
 
 DeployScript="${RepoRoot}/../blog/scripts/deploy_render_data.sh"
 
-# Outgoing-ref lines: "<local_ref> <local_sha> <remote_ref> <remote_sha>".
+# Read outgoing refs as local ref, local SHA, remote ref, and remote SHA.
 RefLines=()
 while IFS= read -r line; do
     [ -n "${line}" ] && RefLines+=("${line}")
 done
-# Bash before 4.4 (macOS's /bin/bash) errors on expanding an empty array under set -u.
+# macOS Bash requires an explicit nonempty-array check under set -u.
 [ "${#RefLines[@]}" -gt 0 ] || exit 0
 
-# Pure deletions push no commits.
+# Skip deleted refs because they contain no outgoing commits.
 outgoing=0
 for line in "${RefLines[@]}"; do
     read -r _ local_sha _ _ <<<"${line}"
@@ -73,8 +65,7 @@ if [ -n "$(git status --porcelain -- render/)" ]; then
     exit 1
 fi
 
-# A brand-new remote ref has no diff base, so publish to be safe — the deploy rsyncs by
-# checksum, so a false positive costs a comparison pass, not a re-upload.
+# Publish new remote refs because they have no diff base and deployment uses checksum comparison.
 publish=0
 for line in "${RefLines[@]}"; do
     read -r _ local_sha _ remote_sha <<<"${line}"

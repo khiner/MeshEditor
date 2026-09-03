@@ -1,11 +1,7 @@
 #ifndef WIRERASTER_MSL
 #define WIRERASTER_MSL
 
-// Software line rasterization for the wireframe overlay. Each thread walks one edge and accumulates
-// its coverage into a screen-sized buffer, so cost follows covered pixels rather than primitives.
-// Coverage accumulates as integers, so a pixel's total does not depend on the order edges land.
-// Hidden lines are rejected once per pixel: the resolve reports the nearest wire's depth and the
-// overlay pass depth-tests it against the scene.
+// Rasterizes each wire edge into order-independent integer coverage and nearest-depth buffers.
 #include "Bindless.metal"
 #include "SceneUBO.metal"
 #include "TransformUtils.metal"
@@ -15,12 +11,10 @@
 #include "WireRasterPushConstants.metal"
 #include "EditSelection.metal"
 
-// Fixed-point coverage per line, summed per class. A 32-bit counter holds any realistic line count.
+// Fixed-point coverage uses a 32-bit counter per class.
 constant float WireCoverageScale = 255.0f;
-// How far a line's antialiased edge reaches, matching the composite's line smoothing.
 constant float WireDiscRadius = 0.5641895835477563f * 1.05f;
 
-// The class a halfedge's color comes from. The resolve turns these back into theme colors.
 inline uint WireClassOf(const thread Scene &scene, DrawData draw, uint edit_selection_color, uint edge, uint vertex_id) {
     if (scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u) {
         const uint instance_state = scene.InstanceState(draw);
@@ -37,8 +31,7 @@ inline uint WireClassOf(const thread Scene &scene, DrawData draw, uint edit_sele
         WireCoverage_Incidental;
 }
 
-// The depth word holds the IEEE bits complemented, so a maximum keeps the nearest line and a
-// zero-filled buffer starts out empty.
+// Complemented positive-float depth bits permit nearest-depth selection with atomic max from zero initialization.
 inline void WireAccumulate(
     device atomic_uint *words, uint2 extent, int2 pixel, uint wire_class, float coverage, float depth
 ) {
@@ -96,7 +89,7 @@ kernel void WireRasterKernel(
 
     float4 clip0 = geometry.Clip0;
     float4 clip1 = geometry.Clip1;
-    // Push lines in front of faces, matching the hardware wire emission.
+    // Match the hardware wire path's face depth bias.
     clip0.z -= NdcOffsetFactor(scene);
     clip1.z -= NdcOffsetFactor(scene);
     if (!WireClipNear(clip0, clip1)) return;
@@ -108,7 +101,7 @@ kernel void WireRasterKernel(
     const float2 p1 = ndc_to_uv(clip1.xy / clip1.w) * viewport;
     const float z0 = clip0.z / clip0.w, z1 = clip1.z / clip1.w;
 
-    // Each halfedge reads its own selection, so the class comes from the endpoint the pixel is nearer.
+    // Select the coverage class from the nearer endpoint's halfedge state.
     const uint edit_selection_color = topology == MeshPrimitiveTopology_Line ||
         scene.View.InteractionMode == InteractionMode_Edit ? 1u : 0u;
     const uint class0 = WireClassOf(
@@ -124,8 +117,7 @@ kernel void WireRasterKernel(
     const float length_px = length(delta);
     const float2 direction = length_px > 0.0f ? delta / length_px : float2(1.0f, 0.0f);
 
-    // Walk the major axis one pixel at a time, covering the line's width along the minor axis.
-    // A sub-pixel line's endpoints land in one pixel, so the walk splats each center once.
+    // Step along the major axis and cover line width along the minor axis.
     const bool x_major = abs(delta.x) >= abs(delta.y);
     const int steps = int(min(max(abs(x_major ? delta.x : delta.y), 1.0f), 4096.0f));
     const int spread = int(ceil(reach));
@@ -139,7 +131,7 @@ kernel void WireRasterKernel(
         for (int offset = -spread; offset <= spread; ++offset) {
             const int2 pixel = x_major ? int2(center.x, center.y + offset) : int2(center.x + offset, center.y);
             const float2 sample_point = float2(pixel) + 0.5f;
-            // Distance to the segment, so an endpoint pixel does not leak coverage past the line's end.
+            // Use segment distance to limit endpoint coverage.
             const float along = clamp(dot(sample_point - p0, direction), 0.0f, length_px);
             const float2 closest = p0 + direction * along;
             const float distance = length(sample_point - closest);

@@ -11,12 +11,10 @@
 using std::ranges::distance;
 
 namespace {
-// The edge endpoint that is not the bucket's vertex, with the top bit set when the halfedge runs
-// from the higher endpoint to the lower one. Two halfedges of one edge share the endpoint and differ
-// in the bit, so a bucket scan pairs them.
+// Packs the opposite endpoint with a high bit indicating descending halfedge direction for bucket pairing.
 constexpr uint32_t ReverseBit{1u << 31};
 
-// `edges` holds each edge's first halfedge in ascending order, which is what makes the running count correct.
+// Requires first halfedges in ascending order for the running rank count.
 void BuildEdgeRanks(const ConnectivityStorage &storage, uint32_t halfedge_count, std::span<const he::HH> edges) {
     const auto words = (halfedge_count + 31u) / 32u;
     auto bits_out = storage.EdgeFirstBits.first(words);
@@ -44,7 +42,6 @@ BuiltConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std:
     auto outgoing = storage.OutgoingHalfedges.first(vertex_count);
     std::ranges::fill(outgoing, he::HH{});
 
-    // One halfedge per face corner, in corner order, so a corner's index is its halfedge's index.
     const auto total_halfedges = face_corners.size();
     auto opposites = storage.Opposites.first(total_halfedges);
     std::ranges::fill(opposites, he::HH{});
@@ -56,7 +53,6 @@ BuiltConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std:
         }
     };
 
-    // A triangle mesh's face f always starts at halfedge 3f, so its face table is arithmetic.
     const bool all_triangles = total_halfedges == 3 * size_t(face_count);
     if (!all_triangles) {
         auto faces = storage.Faces.first(face_count);
@@ -65,8 +61,7 @@ BuiltConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std:
             faces[f] = {he::HH(face_first(f))};
         }
     }
-    // Group halfedges by their lower endpoint with a counting sort. Both halfedges of an edge land in
-    // the same bucket, in ascending halfedge order, so one sequential scan of a bucket finds every pair.
+    // Counting-sort halfedges by lower endpoint while preserving ascending halfedge order for pair scans.
     const auto halfedge_count = uint32_t(total_halfedges);
     std::vector<uint32_t> bucket_offsets(size_t(vertex_count) + 1, 0u);
     for_each_halfedge([&](uint32_t h, uint32_t from_v, uint32_t to_v) {
@@ -80,7 +75,6 @@ BuiltConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std:
         for_each_halfedge([&](uint32_t h, uint32_t from_v, uint32_t to_v) { bucket_halfedges[cursor[std::min(from_v, to_v)]++] = h; });
     }
 
-    // A halfedge's endpoints come back from its own index, so a bucket holds only the index.
     const auto bucket_key = [&](uint32_t h) {
         const auto f = all_triangles ? h / 3u : uint32_t(std::upper_bound(face_offsets.begin(), face_offsets.end(), h) - face_offsets.begin()) - 1u;
         const auto first = face_first(f), last = face_first(f + 1);
@@ -88,9 +82,7 @@ BuiltConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std:
         return std::max(from_v, to_v) | (from_v > to_v ? ReverseBit : 0u);
     };
 
-    // A halfedge joins the edge of the first halfedge that runs the other way, and starts one of its
-    // own when there is none before it. On a manifold edge, carrying exactly two halfedges, that
-    // first one is the lower of the pair, so only a wider bucket needs its edges written down.
+    // Pair opposite directions and store explicit edge IDs only for non-manifold buckets.
     constexpr uint32_t VertexBlock{4u * 1024u};
     const auto block_count = (vertex_count + VertexBlock - 1u) / VertexBlock;
     std::vector<uint8_t> block_shares_an_edge(block_count, 0u);
@@ -132,7 +124,7 @@ BuiltConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std:
             if (const auto opposite = opposites[h]; !opposite || *opposite > h) edges.emplace_back(he::HH(h));
         }
     } else {
-        // A shared edge leaves a halfedge whose first is neither itself nor its opposite.
+        // A shared edge has a halfedge whose first is neither itself nor its opposite.
         edge_representative.assign(halfedge_count, 0u);
         std::vector<uint32_t> keys;
         for (uint32_t v = 0; v < vertex_count; ++v) {
@@ -148,7 +140,7 @@ BuiltConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std:
     const auto edge_count = uint32_t(edges.size());
     if (ranks_answer) return {edge_count, {}, {}};
 
-    // A shared edge leaves the ranks unable to answer, so the edge list and its inverse stand in.
+    // Use the edge list and its inverse when a shared edge makes the ranks ambiguous.
     std::vector<he::EH> halfedge_to_edge(halfedge_count);
     uint32_t edge = 0;
     for (uint32_t h = 0; h < halfedge_count; ++h) {

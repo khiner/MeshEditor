@@ -19,11 +19,9 @@ constant uint INVALID_OFFSET = 0xffffffffu;
 constant uint STATE_SELECTED = 1u << 0;
 constant uint STATE_ACTIVE = 1u << 1;
 
-// What a shader reaches beyond its own parameters. MSL has no global resource bindings, so a shader
-// builds one of these at its entry point and passes it down.
-// The table is reached in the device address space: it outgrows the constant-space limit, and its
-// entries are device addresses, which cannot be cast into constant space. The set type is a
-// parameter so a shader writing storage images picks that view over the same layout.
+// Provides resources outside an entry point's explicit parameters because MSL has no global resource bindings.
+// The table uses device address space because it exceeds constant-space limits and contains device addresses.
+// Image-writing shaders instantiate the same layout with a writable image type.
 template<typename SetT>
 struct SceneT {
     device const SetT &B;
@@ -31,7 +29,7 @@ struct SceneT {
     constant ViewportTheme &Theme;
     constant WorkspaceLights &Workspace;
 
-    // The projections put +Y up in clip space, which is what Metal rasterizes against directly.
+    // Projection matrices use Metal's positive-Y-up clip space.
     float4x4 ViewProj() const { return View.ViewProj.Unpack(); }
     float4x4 PrevViewProj() const { return View.PrevViewProj.Unpack(); }
     float4x4 NextViewProj() const { return View.NextViewProj.Unpack(); }
@@ -59,14 +57,10 @@ struct SceneT {
     device const uint *CornerClasses(uint slot) const { return BindlessBuffer(uint, B.Buffer, slot); }
     // Authored corner-normal (polar, azimuth) offsets from the derived normal, packed to the corners the mask marks present.
     device const packed_float2 *CustomCornerNormals(uint slot) const { return BindlessBuffer(packed_float2, B.Buffer, slot); }
-    // One (bitset word, exclusive rank) pair per 32 mesh corners.
     device const packed_uint2 *CustomCornerMasks(uint slot) const { return BindlessBuffer(packed_uint2, B.Buffer, slot); }
-    // Composed sector normal per seam corner, for static face draws.
     device const packed_float3 *BaseSeamNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
-    // Derived smooth normals for triangle meshes, authored normals for face-less meshes.
     device const packed_float3 *BaseVertexNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
     device const packed_float3 *BaseFaceNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
-    // One element per threadgroup, (entry index, tile index) over 256-element tiles.
     device const packed_uint2 *TileMap(uint slot) const { return BindlessBuffer(packed_uint2, B.Buffer, slot); }
     // Current-pose vertex positions in mesh-local space, and the normals derived from them.
     device const packed_float3 *PosedPositions(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
@@ -76,7 +70,7 @@ struct SceneT {
     // Weight-summed authored morph normal deltas, indexed like the posed positions.
     device const packed_float3 *PosedMorphNormalDeltas(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
 
-    // A sampler slot holds the texture and the sampler, so each read names the slot once.
+    // A sampler slot combines its texture and sampler IDs.
     float4 SampleTex(uint slot, float2 uv) const { return B.Sampler[slot].Texture.sample(B.Sampler[slot].Sampler, uv); }
     float4 SampleTexGrad(uint slot, float2 uv, float2 dx, float2 dy) const {
         return B.Sampler[slot].Texture.sample(B.Sampler[slot].Sampler, uv, gradient2d(dx, dy));
@@ -108,14 +102,12 @@ struct SceneT {
             float3(BaseFaceNormals(View.BaseFaceNormalSlot)[draw.BaseFaceNormalOffset + face]);
     }
 
-    // Selection state of the instance this draw renders.
     uint InstanceState(DrawData draw) const {
         return draw.InstanceStateSlot != INVALID_SLOT ?
             uint(InstanceStates(draw.InstanceStateSlot)[draw.FirstInstance]) :
             0u;
     }
 
-    // An object's selection color, falling back to `unselected` while it is not selected.
     float4 ObjectSelectionColor(uint instance_state, float4 unselected) const {
         if ((instance_state & STATE_SELECTED) == 0u) return unselected;
         const bool is_active = (instance_state & STATE_ACTIVE) != 0u;
@@ -127,7 +119,6 @@ using Scene = SceneT<BindlessSet>;
 using SceneImageWrite = SceneT<BindlessSetImageWrite>;
 using SceneImageUint = SceneT<BindlessSetImageUint>;
 
-// Normalized direction of `n`, or zero when `n` has no length.
 inline float3 NormalizeOrZero(float3 n) {
     const float len = length(n);
     return len > 0.0f ? n / len : float3(0.0f);

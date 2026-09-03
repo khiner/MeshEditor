@@ -10,7 +10,7 @@ MTL::CounterSet *TimestampCounterSet(const Context &ctx) {
     }
     return nullptr;
 }
-} // namespace
+}
 
 std::unique_ptr<PassTimer> PassTimer::Create(const Context &ctx, uint32_t max_passes) {
     if (!ctx.Device->supportsCounterSampling(MTL::CounterSamplingPointAtStageBoundary)) return nullptr;
@@ -19,7 +19,7 @@ std::unique_ptr<PassTimer> PassTimer::Create(const Context &ctx, uint32_t max_pa
 
     const auto descriptor = NS::TransferPtr(MTL::CounterSampleBufferDescriptor::alloc()->init());
     descriptor->setCounterSet(counter_set);
-    descriptor->setSampleCount(max_passes * 2); // Start and end per pass.
+    descriptor->setSampleCount(max_passes * 2);
     descriptor->setStorageMode(MTL::StorageModeShared);
     NS::Error *error = nullptr;
     auto buffer = NS::TransferPtr(ctx.Device->newCounterSampleBuffer(descriptor.get(), &error));
@@ -51,4 +51,4 @@ std::vector<PassTimer::Pass> PassTimer::Resolve() {
     }
     return passes;
 }
-} // namespace mtl
+}

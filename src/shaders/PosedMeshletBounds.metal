@@ -1,8 +1,7 @@
 #ifndef POSED_MESHLET_BOUNDS_MSL
 #define POSED_MESHLET_BOUNDS_MSL
 
-// One threadgroup per (posed entry, meshlet) pair. The meshlet-local render-vertex list
-// resolves representative corners to canonical vertex ids, then reduces their posed positions.
+// Writes one posed AABB per meshlet by resolving representative corners to canonical vertices.
 #include "AABB.metal"
 #include "BoundsShared.metal"
 #include "MeshletShared.metal"

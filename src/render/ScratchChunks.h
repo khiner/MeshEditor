@@ -17,7 +17,7 @@ constexpr uint32_t TileCount(uint32_t count, uint32_t per_tile) { return (count 
 struct ScratchChunks {
     std::vector<Range> Chunks;
     uint32_t WidestWords{}; // Scratch words the widest chunk takes
-    uint32_t MostJobs{}; // Items the fullest chunk holds
+    uint32_t MostJobs{};
 };
 
 // Split `count` items into budgeted chunks, `words_of(i)` giving item i's scratch demand.

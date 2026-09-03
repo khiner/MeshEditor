@@ -83,7 +83,7 @@ using SteadyClock = std::chrono::steady_clock;
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
 namespace {
-// Skip rather than block when every drawable is in flight.
+// Skip a frame when every drawable is in flight.
 MTL::CommandBuffer *RenderAndPresentFrame(const mtl::Context &ctx, CA::MetalLayer *layer, ImDrawData *draw_data) {
     const profile::CpuScope scope{"ImGuiRenderSubmit"};
     auto *drawable = layer->nextDrawable();
@@ -112,11 +112,10 @@ enum class FontFamily {
     Count
 };
 
-constexpr float FontAtlasScale = 2; // Rasterize to a scaled-up texture and scale down the font size globally, for sharper text.
+constexpr float FontAtlasScale = 2; // Supersample the font atlas for sharper text.
 void AddFont(FontFamily family, const std::string_view font_file) {
     static const auto FontsPath = Paths::Res() / "fonts";
     static constexpr auto PixelsForFamily = [] {
-        // These are eyeballed.
         std::array<uint, size_t(FontFamily::Count)> v{};
         v[size_t(FontFamily::Main)] = 15;
         v[size_t(FontFamily::Monospace)] = 17;
@@ -136,7 +135,7 @@ namespace {
 struct GltfSample {
     std::string Label;
     fs::path Path;
-    std::set<std::string> Extensions; // top-level "extensionsUsed"
+    std::set<std::string> Extensions;
 };
 
 struct GltfSampleTree {
@@ -144,9 +143,7 @@ struct GltfSampleTree {
     std::vector<GltfSample> Files;
 };
 
-// Read a glTF/glb file's top-level "extensionsUsed" array without constructing a full Asset.
-// Scans the JSON portion of the file (whole .gltf, or the JSON chunk of a .glb) for
-// `"extensionsUsed":[ ... ]` and pulls each quoted name. Cheap enough to run on every sample at scan time.
+// Return a glTF or GLB file's top-level extensionsUsed names without constructing an Asset.
 std::set<std::string> ReadExtensionsUsed(const fs::path &path) {
     std::ifstream f{path, std::ios::binary};
     if (!f) return {};
@@ -181,9 +178,7 @@ std::set<std::string> ReadExtensionsUsed(const fs::path &path) {
     return result;
 }
 
-// Recursively collect every .glb/.gltf under `root`. No stem-dedupe so variant subdirs
-// (e.g. glTF-Sample-Assets `Models/<Name>/glTF-IBL/<Name>.gltf`) round-trip into the tree
-// and contribute their own `extensionsUsed` to the filter set.
+// Collect every .glb and .gltf under root, preserving files with duplicate stems in variant directories.
 std::vector<GltfSample> CollectGltfSamples(const fs::path &root) {
     if (!fs::is_directory(root)) return {};
     std::vector<GltfSample> samples;
@@ -197,11 +192,10 @@ std::vector<GltfSample> CollectGltfSamples(const fs::path &root) {
     return samples;
 }
 
-// Tree mirroring the directory structure under `root`. Leaves always show the real filename, after collapsing
-// redundant levels (in order):
-//   - Merge a dir with no files and a single child into that child (AnimatedCube/glTF/ -> AnimatedCube/).
-//   - Flatten a dir holding one file whose stem repeats the dir name (AnimatedCube/AnimatedCube.gltf -> AnimatedCube.gltf).
-// So a single-variant model flattens fully, while a multi-variant model (Box/{glTF,glTF-Binary,...}) keeps its variants.
+// Mirror root while collapsing redundant directory levels:
+// Merge an empty directory with its single child (AnimatedCube/glTF/ -> AnimatedCube/).
+// Flatten a directory with one file whose stem repeats the directory name (AnimatedCube/AnimatedCube.gltf -> AnimatedCube.gltf).
+// Preserve directories that contain multiple format variants.
 GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
     GltfSampleTree tree;
     for (auto &s : CollectGltfSamples(root)) {
@@ -264,13 +258,13 @@ GltfSampleTrees BuildSampleTrees() {
 
 std::future<GltfSampleTrees> SampleTreesFuture;
 
-// Apply `action` now and settle the scene's derived state, for actions that must take effect outside the main loop.
+// Apply an action and update derived scene state outside the main loop.
 template<typename ActionType> void Perform(entt::registry &r, entt::entity viewport, ActionType action) {
     action::ApplyNow(r, viewport, std::move(action));
     ProcessComponentEvents(r, viewport);
 }
 
-// Finish in-flight GPU work and stop playback, so scene structure can be safely torn down.
+// Finish GPU work and stop playback before modifying scene structure.
 void QuiesceScene(entt::registry &r, entt::entity viewport) {
     WaitForRender(r);
     const auto &playback = r.get<const TimelinePlayback>(viewport);
@@ -280,8 +274,7 @@ void QuiesceScene(entt::registry &r, entt::entity viewport) {
 constexpr std::string_view SessionLogName{"session.actions"}, ProjectStateName{"project.state"}, ProjectExt{".project"}, ActionsExt{".actions"};
 fs::path CurrentProjectPath;
 
-// Replay the action log, restore the given view cameras and the current viewport extent, and present.
-// View navigation is not recorded, so the caller captures the cameras it wants to survive the replay.
+// Replay the action log while preserving the supplied cameras and current viewport extent.
 void ReplayPreservingView(entt::registry &r, entt::entity viewport, const fs::path &log_path, ViewCameraState view_cameras, uint64_t skip = 0) {
     const auto live_extent = r.ctx().get<ViewportExtent>().Value;
     if (action::ReplayLog(r, viewport, log_path, &PresentViewport, skip)) {
@@ -300,13 +293,13 @@ void StartScratchSession(entt::registry &r, entt::entity viewport) {
     CurrentProjectPath.clear();
 }
 
-// Reset to a fresh scratch session with the default scene, or an empty one.
+// Start a scratch session with the default or empty scene.
 void NewScene(entt::registry &r, entt::entity viewport, bool empty) {
     StartScratchSession(r, viewport);
     if (!empty) action::Emit(action::io::LoadDefaultScene{});
 }
 
-// Clear and replay an action log without changing the current project's directory.
+// Clear the scene and replay an action log in the current project directory.
 void ReplayLogInPlace(entt::registry &r, entt::entity viewport, const fs::path &log_path) {
     auto live_view_cameras = GetViewCameraState(r, viewport);
     QuiesceScene(r, viewport);
@@ -331,7 +324,7 @@ uint64_t LoadStateBase(entt::registry &r, entt::entity viewport, const fs::path 
     return r.all_of<ActionIndex>(viewport) ? r.get<ActionIndex>(viewport).Index : 0;
 }
 
-// Load the base snapshot (if any), replay the session log past the base's action index, and re-open the log for appending.
+// Restore a session from its base snapshot and subsequent action log.
 void OpenProjectDir(entt::registry &r, entt::entity viewport, const fs::path &working_dir) {
     QuiesceScene(r, viewport);
     action::StopLog();
@@ -341,12 +334,12 @@ void OpenProjectDir(entt::registry &r, entt::entity viewport, const fs::path &wo
     uint64_t skip = 0;
     if (std::error_code ec; fs::exists(state_path, ec)) skip = LoadStateBase(r, viewport, state_path);
     else ClearScene(r, viewport);
-    // The snapshot's cameras are the project's saved view, which the replayed actions must not disturb.
+    // Preserve the project's saved cameras across action replay.
     ReplayPreservingView(r, viewport, log_path, GetViewCameraState(r, viewport), skip);
     action::StartLog(log_path, /*append=*/true);
 }
 
-// Decompress a `.project` archive into a fresh working directory and open it.
+// Open a .project archive in a new working directory.
 void OpenProjectFile(entt::registry &r, entt::entity viewport, const fs::path &archive_path) {
     const auto working_dir = action::ReserveRestoreSession();
     if (!Decompress(archive_path, working_dir)) {
@@ -363,11 +356,11 @@ void OpenFile(entt::registry &r, entt::entity viewport, const fs::path &path) {
     else action::Emit(action::io::Load{.Path = path});
 }
 
-// Snapshot the scene and compress the working directory into `archive_path`.
+// Save a scene snapshot and project archive at archive_path.
 void SaveProjectFile(entt::registry &r, entt::entity viewport, const fs::path &archive_path) {
     Perform(r, viewport, action::io::SaveState{.Path = Paths::Project() / ProjectStateName});
     const auto log_path = Paths::Project() / SessionLogName;
-    action::StopLog(); // flush the log before archiving
+    action::StopLog(); // Flush the log before archiving.
     const bool ok = Compress(Paths::Project(), archive_path);
     action::StartLog(log_path, /*append=*/true);
     if (!ok) {
@@ -377,9 +370,9 @@ void SaveProjectFile(entt::registry &r, entt::entity viewport, const fs::path &a
     CurrentProjectPath = archive_path;
 }
 
-// Drop the session log and modal media, keeping the current scene as a fresh snapshot.
+// Replace the session history with a snapshot of the current scene.
 void ClearHistory(entt::registry &r, entt::entity viewport) {
-    r.emplace_or_replace<ActionIndex>(viewport); // reset log position (write outside Apply: session bookkeeping)
+    r.emplace_or_replace<ActionIndex>(viewport); // Reset session bookkeeping outside action Apply.
     Perform(r, viewport, action::io::SaveState{.Path = Paths::Project() / ProjectStateName});
     action::StopLog();
     std::error_code ec;
@@ -389,9 +382,7 @@ void ClearHistory(entt::registry &r, entt::entity viewport) {
 }
 
 #ifdef DEBUG_BUILD
-// Validate replay then snapshot correctness, aborting on the first divergence:
-// - Replay: replaying the current log onto a fresh scene must reproduce the saved image (writes a replay-test fixture on failure).
-// - Round-trip: save, clear, restore must reproduce the saved image.
+// Require action replay and snapshot restoration to reproduce the current rendered image.
 void ValidateRoundTrip(entt::registry &r, entt::entity viewport) {
     QuiesceScene(r, viewport);
 
@@ -423,8 +414,7 @@ void ValidateRoundTrip(entt::registry &r, entt::entity viewport) {
 }
 #endif
 
-// Read back the viewport and write it to `path`, choosing the encoder by extension (defaulting to .webp).
-// Returns the resolved output path on success.
+// Write the viewport to path and return the resolved output path on success.
 std::expected<fs::path, std::string> SaveScreenshot(entt::registry &r, const fs::path &path) {
     auto image = ReadbackViewportImage(r);
     if (!image) return std::unexpected{std::move(image.error())};
@@ -444,14 +434,12 @@ std::expected<fs::path, std::string> SaveScreenshot(entt::registry &r, const fs:
     return out_path;
 }
 
-// Fit the scene into the middle half of the view without changing camera orientation.
-// Returns false while instance bounds are still pending from the GPU.
+// Fit the scene into the middle half of the view and return false while GPU bounds are pending.
 bool FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     const auto &cam = r.get<const ViewCamera>(viewport);
-    const auto *persp = std::get_if<Perspective>(&cam.Data); // The launch view camera is always perspective.
+    const auto *persp = std::get_if<Perspective>(&cam.Data);
     if (!persp) return true;
 
-    // Keep the current orientation; measure each vertex against this camera's basis.
     const vec3 right = cam.Orientation * vec3{1, 0, 0}, up = cam.Orientation * vec3{0, 1, 0}, away = cam.Forward();
     // Half the real frustum tangents, so a vertex reaching the (narrower) edge only fills the middle half of the true view.
     const float ty = 0.5f * std::tan(persp->FieldOfViewRad * 0.5f), tx = aspect_ratio * ty;
@@ -463,7 +451,7 @@ bool FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     for (const auto [e, ri, wt] : r.view<const RenderInstance, const WorldTransform>().each()) {
         if (ri.BufferIndex == UINT32_MAX) continue;
         any_bounded_instance = true;
-        // Extras (gizmo/wireframe) instances hold an empty AABB and fail the validity check.
+        // Exclude empty bounds from gizmo and wireframe instances.
         const auto &local = buffers.Instances.GetBounds(ri.BufferIndex);
         if (local.Min.x > local.Max.x || local.Min.y > local.Max.y || local.Min.z > local.Max.z) continue;
 
@@ -484,7 +472,7 @@ bool FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     const auto center = (scene.Min + scene.Max) * 0.5f;
     const float ca = numeric::Dot(center, right), cb = numeric::Dot(center, up), cf = numeric::Dot(center, away);
     const float distance = std::max({top - cb / ty, bottom + cb / ty, rgt - ca / tx, lft + ca / tx}) - cf;
-    if (distance <= 0.f) return true; // Framing cannot help a scene the camera already sits inside.
+    if (distance <= 0.f) return true;
 
     // Clip planes bracket the scene depth so nothing is z-clipped.
     const float plane_reach = 6 * numeric::Length(scene.Max - scene.Min);
@@ -496,7 +484,7 @@ bool FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     return true;
 }
 
-// The default window size, doubling as the headless viewport extent.
+// Use the default window extent for headless rendering.
 constexpr uvec2 DefaultWindowSize{1280, 800};
 
 constexpr std::string_view Usage{
@@ -538,7 +526,7 @@ Other:
   --help, -h                  Show this message)"
 };
 
-// Capture options from the CLI. `--render` is a preset for the full scene corpus; `--screenshot`/`--record` target one output.
+// Capture options parsed from the command line.
 struct CaptureRequest {
     enum class BenchmarkAction { Steady,
                                  Orbit,
@@ -547,23 +535,23 @@ struct CaptureRequest {
                                  BoxSelect };
 
     bool Play{false};
-    float PlayDuration{0}; // 0 = run until playback completes one loop.
+    float PlayDuration{0};
     int Fps{60};
     bool RecordAudio{false}; // Mux the master output into the recording. Off so the render corpus stays video only.
     fs::path RecordPath{}, ScreenshotPath{};
-    fs::path RenderBasename{}; // Output basename, no extension.
-    std::optional<uint8_t> MotionBlurSteps{}; // Disengaged = leave the viewport's own setting alone.
+    fs::path RenderBasename{};
+    std::optional<uint8_t> MotionBlurSteps{};
     float TimelineEnd{0}; // Seconds. Positive: set the timeline's end frame, so a long play runs without looping.
-    int BenchFrames{0}; // Headless: re-render every tick and exit after this many frames.
+    int BenchFrames{0};
     BenchmarkAction BenchAction{BenchmarkAction::Steady};
     uint32_t BenchActionCount{64};
     std::string CameraName{};
-    std::optional<ViewportShadingMode> Shading{}; // Disengaged = leave the viewport's own setting alone.
+    std::optional<ViewportShadingMode> Shading{};
     bool Overlays{false}; // Keep overlays on through a capture, which presentation otherwise turns off.
     std::optional<Element> EditMode{}; // Engaged: select mesh objects and enter this element edit mode.
-    bool SelectAll{false}; // Select everything the current interaction mode selects.
+    bool SelectAll{false};
     float LodErrorPixels{-1.f}; // Screen-space error budget override for the cluster LOD cut. Negative leaves the viewport setting untouched.
-    uint8_t NormalOverlays{0}; // Bitmask of Element, for the normal indicator overlays.
+    uint8_t NormalOverlays{0};
     bool BoundingBoxes{false}, TetWireframe{false};
 };
 
@@ -635,7 +623,7 @@ bool SelectSceneCamera(entt::registry &r, entt::entity viewport, std::string_vie
     return false;
 }
 
-// Surface and clear any failures action handlers reported this frame. Returns true if there were any.
+// Report and clear action failures, returning whether any occurred.
 bool ReportActionErrors(entt::registry &r) {
     auto &errors = r.ctx().get<action::Errors>().Messages;
     if (errors.empty()) return false;
@@ -644,7 +632,7 @@ bool ReportActionErrors(entt::registry &r) {
     return true;
 }
 
-// Seed this run's initial scene and session log. Returns false if the initial file failed to load.
+// Initialize the scene and session log, returning false when the initial file fails to load.
 bool SeedScene(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty) {
     const fs::path path = initial_file ? initial_file : "";
     bool loaded{true};
@@ -668,13 +656,9 @@ bool SeedScene(entt::registry &r, entt::entity viewport, const CaptureRequest &c
     return loaded && SelectSceneCamera(r, viewport, capture.CameraName);
 }
 
-// Per-frame capture orchestration shared by the windowed and headless run loops: scene framing,
-// playback start, the screenshot + material-variant sequence, video recording (with render mode's
-// per-clip loops), and run completion.
+// Coordinate scene framing, playback, screenshots, recording, and completion for both run loops.
 struct CaptureDriver {
-    // `fixed_step` runs the sim on a fixed-step, GPU-paced clock: one timeline frame per tick, every
-    // tick captured, video fps = timeline fps. Render mode is always fixed-step and headless runs pass
-    // true. Otherwise the sim runs at wall-clock rate and recording samples it every `1/Fps` seconds.
+    // Fixed-step mode captures one timeline frame per GPU-paced tick; wall-clock mode samples at 1/Fps seconds.
     CaptureDriver(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, bool play, bool fixed_step)
         : Play(play), PlayDuration(capture.PlayDuration),
           FixedStep(fixed_step || !capture.RenderBasename.empty()),
@@ -691,14 +675,14 @@ struct CaptureDriver {
         const float timeline_fps = r.get<const TimelineRange>(viewport).Fps;
         RenderDt = 1.f / timeline_fps;
         RecordFps = FixedStep ? int(std::lround(timeline_fps)) : capture.Fps;
-        // A render records the scene's own audio, so a scene with sound objects gets a track and every other stays video only.
+        // Include audio in corpus videos only for scenes with sound objects.
         RecordAudio = capture.RecordAudio || (RenderMode() && !r.view<const ModalModes>().empty());
     }
 
     bool RenderMode() const { return !RenderBasename.empty(); }
     bool RecordingMode() const { return !RecordPath.empty(); }
     bool ScreenshotMode() const { return !ScreenshotPath.empty(); }
-    // A wav recording consumes no images, so its run can skip GPU frames once recording is underway.
+    // Skip GPU frames after audio-only recording begins.
     bool AudioOnly() const { return RecordPath.extension() == ".wav" && !ScreenshotMode(); }
     bool Presenting() const { return Play || ScreenshotMode() || RecordingMode(); }
     bool Framed(bool settled) const { return settled && (ViewFramed || !Presenting()); }
@@ -709,16 +693,15 @@ struct CaptureDriver {
         return elapsed >= PlayDuration;
     }
 
-    // Emit this frame's capture-driven actions. Call before ApplyEmitted, with `settled` true once
-    // the viewport is at its final extent with the image built.
+    // Emit capture actions before ApplyEmitted after the viewport reaches its final extent.
     void EmitFrameActions(entt::registry &r, entt::entity viewport, bool settled, uvec2 extent) {
         if (!ViewFramed && Presenting() && extent != uvec2{}) {
-            // The launch camera waits for GPU-produced bounds; a scene camera frames itself.
+            // Wait for GPU bounds before framing the launch camera.
             const bool framed = !r.view<const Camera>().empty() ||
                 FrameScene(r, viewport, float(extent.x) / float(extent.y));
             ViewFramed = settled && framed;
         }
-        // Fixed-step recording waits one more tick, until recording has begun, so the start frame is captured.
+        // Start fixed-step playback after recording begins so the first frame is captured.
         const bool ready = RenderMode() || (FixedStep && RecordingMode()) ? IsRecording(r, viewport) : (Play || RecordingMode());
         if (!PlaybackStarted && Framed(settled) && ready) {
             action::Emit(action::timeline::StartPresentation{});
@@ -726,15 +709,13 @@ struct CaptureDriver {
         }
     }
 
-    // Save/record the frame. Call after WaitForRender so the source image is coherent.
-    // Returns true when capture is complete and the run should end.
+    // Capture a completed render and return whether the run should end.
     bool CaptureFrame(entt::registry &r, entt::entity viewport, bool settled) {
         bool done = false;
-        // Save the image, then finish unless recording or a play duration is still running.
         if (ScreenshotMode() && !ScreenshotSaved && settled) {
             if (auto saved = SaveScreenshot(r, ScreenshotPath); saved) std::println("Saved screenshot: {}", saved->string());
             else std::println(stderr, "Screenshot: {}", saved.error());
-            // After the default, save one image per material variant.
+            // Save the default image before each material variant.
             const auto *mv = RenderMode() ? r.try_get<const MaterialVariants>(viewport) : nullptr;
             if (mv && NextRenderVariant < mv->Names.size()) {
                 auto name = mv->Names[NextRenderVariant].empty() ? std::format("Variant {}", NextRenderVariant) : mv->Names[NextRenderVariant];
@@ -747,8 +728,7 @@ struct CaptureDriver {
                 if (!RecordingMode() && PlayDuration <= 0) done = true;
             }
         }
-        // The recording starts once.
-        // An encoder that fails under it takes the recording with it, and starting another would fail the same way, so the run ends instead.
+        // End the run if the single recording startup fails.
         if (RecordingMode() && settled) {
             if (!RecordingStarted) {
                 RecordingStarted = true;
@@ -760,8 +740,7 @@ struct CaptureDriver {
         const bool loop_end = r.get<const TimelinePlayback>(viewport).CurrentFrame == r.get<const TimelineRange>(viewport).EndFrame;
         if (IsRecording(r, viewport)) {
             if (FixedStep) {
-                // Fixed step: every tick is one timeline frame and each is captured.
-                // Clip switches are Emitted, not Performed: a mid-loop Perform would advance playback an extra tick.
+                // Emit clip switches to avoid an extra playback tick from mid-loop Perform calls.
                 CaptureRecordFrame(r, viewport);
                 if (loop_end) {
                     if (RenderMode()) {
@@ -788,28 +767,28 @@ struct CaptureDriver {
                 NextCapture += std::chrono::nanoseconds{1'000'000'000 / RecordFps};
             }
         } else if (FixedStep && !RecordingMode() && PlaybackStarted && PlayDuration <= 0 && loop_end) {
-            // A duration-less fixed-step play run (headless --play) ends after one timeline loop.
+            // End duration-less fixed-step playback after one timeline loop.
             done = true;
         }
         return done;
     }
 
     bool Play;
-    bool SeedFailed{false}; // The initial scene failed to load, so a headless run has nothing to render.
+    bool SeedFailed{false};
     float PlayDuration;
     bool FixedStep;
     fs::path RecordPath, ScreenshotPath, RenderBasename;
     float RenderDt; // Fixed-step seconds per tick (one timeline frame).
     int RecordFps;
     bool RecordAudio;
-    SteadyClock::time_point NextCapture; // Wall-clock recording: next capture time, initialized when recording starts.
+    SteadyClock::time_point NextCapture;
     float ElapsedPlayTime{0}; // Caller-accumulated sim seconds, for the play-duration cap.
     uint32_t NextRenderClip{1}; // Next clip to capture once the current loop finishes.
     uint32_t NextRenderVariant{0}; // Next material variant to capture once the default image saves.
     bool PlaybackStarted{false}, ScreenshotSaved{false}, ViewFramed{false}, RecordingStarted{false};
 };
 
-// Seed the scene and its session log, then enter presentation mode so the first rendered frame matches the capture.
+// Initialize a capture session and configure its presentation state.
 CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty, bool fixed_step) {
     const bool seeded = SeedScene(r, viewport, capture, initial_file, empty);
     if (seeded && capture.EditMode) {
@@ -837,15 +816,15 @@ CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, cons
     }
     CaptureDriver driver{r, viewport, capture, play, fixed_step};
     driver.SeedFailed = !seeded;
-    // A benchmark run keeps the editor view, so frames and screenshots cover what the editor draws.
+    // Preserve the editor view for benchmark frames and screenshots.
     if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, viewport, action::timeline::EnterPresentation{});
-    // Presentation disables overlays unless --overlays restores them.
+    // Apply the explicit overlay override after enabling presentation mode.
     if (capture.Overlays) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, true));
     if (capture.LodErrorPixels >= 0.f) {
         Perform(r, viewport, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(viewport, capture.LodErrorPixels));
     }
     r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
-    // Force motion blur on for the whole recording run, leaving still-screenshot renders and audio-only recordings, whose frames nothing reads, alone.
+    // Enable motion blur for video recording and preserve the current setting for still or audio-only captures.
     r.ctx().get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
     if (capture.MotionBlurSteps) {
         Perform(r, viewport, action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, std::optional{MotionBlur{.Steps = *capture.MotionBlurSteps}}));
@@ -869,8 +848,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     auto *const layer = window.Layer();
     layer->setDevice(ctx.Device.get());
     layer->setPixelFormat(mtl::Format::Color);
-    // Render mode is GPU-paced: content is fixed-step per tick, so present pacing only affects
-    // wall time. Benchmark frames measure throughput, which vsync pacing would hide.
+    // Disable present pacing for fixed-step rendering and throughput benchmarks.
     layer->setDisplaySyncEnabled(capture.RenderBasename.empty() && capture.BenchFrames == 0);
 
     IMGUI_CHECKVERSION();
@@ -880,7 +858,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     auto &io = GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Enable Multi-Viewport / Platform Windows
-    io.IniFilename = nullptr; // Disable ImGui's .ini file saving
+    io.IniFilename = nullptr;
     io.ConfigDebugIgnoreFocusLoss = true; // Keep input state across Cmd+Tab so in-flight gizmo drags survive focus loss.
     io.ConfigDragClickToInputText = true; // A click-release without dragging turns a Drag field into a text input.
 
@@ -894,11 +872,11 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     const auto viewport = InitEngine(r);
     InitAudioSystem(r);
     InitViewportMedia(r);
-    SetupScene(r, viewport); // Before the first frame reads viewport state.
-    // Capture the DPI scale (only set during NewFrame) before priming DPI-scaled GPU state like edge-line width.
+    SetupScene(r, viewport);
+    // Read the DPI scale from NewFrame before initializing DPI-scaled GPU state.
     window.NewImGuiFrame();
     r.ctx().get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(io.DisplayFramebufferScale);
-    ProcessComponentEvents(r, viewport); // Prime derived state before the first frame reads it.
+    ProcessComponentEvents(r, viewport);
 
     auto &audio_device = r.ctx().emplace<AudioDeviceResource>(r, viewport);
     ReconcileAudioDevice(audio_device, r.get<const AudioOutputConfig>(viewport), r.get<const AudioOutputMix>(viewport));
@@ -907,16 +885,16 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/false);
 
-    bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
+    bool viewport_resizing{false};
 #ifdef VALIDATE_ACTIONS
-    uint64_t validated_action_index{0}; // The log position the last validation covered.
+    uint64_t validated_action_index{0};
 #endif
     bool done{false};
     MTL::CommandBuffer *last_frame{nullptr}; // Resize waits for resources sampled by the last submitted UI frame.
     WindowsState windows;
     int bench_ticks{0};
     while (!done) {
-        // Scene-load work (mesh and texture upload) dwarfs a frame: report it on its own, then keep it out of the frame profile.
+        // Report scene loading separately from frame timing.
         if (bench_ticks == 1) {
             profile::ReportCpuPhase("Scene load CPU timings");
             profile::ClearStats();
@@ -1137,7 +1115,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             End();
         }
 
-        bool scrubbing = false; // Timeline frame marker held this frame; gates motion blur.
+        bool scrubbing = false; // Disable motion blur while the timeline marker is active.
         if (windows.Animation.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Animation.Name, &windows.Animation.Visible, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
@@ -1179,22 +1157,19 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             if (capture.BenchAction == CaptureRequest::BenchmarkAction::Orbit) action::Emit(action::view::OrbitViewCamera{{0.01f, 0.f}});
             if (++bench_ticks >= capture.BenchFrames) done = true;
         }
-        // Remaining emits go after Interact so it wins the single-action buffer.
+        // Give interaction actions priority in the single-action buffer.
         driver.EmitFrameActions(r, viewport, viewport_settled, new_logical_extent);
-        // Record viewport resizes so replay restores the same render extent.
-        // A resize drag spans many frames: stage it and commit on mouse-up so the drag records a single SetExtent.
-        // Staged after the frame's other emits so those win the single-action buffer.
+        // Stage resize drags and commit one SetExtent on mouse-up for deterministic replay.
         if (new_logical_extent != uvec2{} && r.ctx().get<const ViewportExtent>().Value != new_logical_extent) {
             action::EmitStaged(action::view::SetExtent{new_logical_extent});
             viewport_resizing = true;
         } else if (viewport_resizing && !IsMouseDown(ImGuiMouseButton_Left)) {
-            action::Commit(); // Drag finished: flush the gesture's final staged SetExtent.
+            action::Commit();
             viewport_resizing = false;
         }
 
 #ifdef VALIDATE_ACTIONS
-        // The previous frame's committed actions have settled through their derives and render, the state the replay tick reproduces per action.
-        // A staged gesture is not in the log yet, so it waits for its commit.
+        // Validate committed actions after their derived state and render complete.
         if (const auto *index = r.try_get<const ActionIndex>(viewport); index && index->Index != validated_action_index) {
             ValidateRoundTrip(r, viewport);
             validated_action_index = r.get<const ActionIndex>(viewport).Index;
@@ -1203,11 +1178,10 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         action::ApplyEmitted(r, viewport);
         ReportActionErrors(r);
 
-        // Derive this frame's applied actions and submit the GPU render (nonblocking). WaitForRender() runs later, before RenderFrame() samples the image.
+        // Submit derived state and rendering before the later WaitForRender synchronizes image sampling.
         SubmitViewport(r, viewport, GetFrameCount() > 1 ? last_frame : nullptr);
 
         if (viewport_open) {
-            // Draw the rendered image and overlays into the open viewport window.
             DisplayViewport(r, viewport);
             ImGui::GetWindowDrawList()->ChannelsMerge();
         }
@@ -1220,7 +1194,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         window.HonorMouseWarp();
         auto *draw_data = GetDrawData();
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
-            WaitForRender(r); // ImGui samples final image
+            WaitForRender(r); // Synchronize before ImGui samples the final image.
             if (driver.CaptureFrame(r, viewport, driver.Framed(viewport_settled))) done = true;
             if (auto *frame = RenderAndPresentFrame(ctx, layer, draw_data)) last_frame = frame;
         }
@@ -1229,11 +1203,11 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     action::StopLog();
     if (last_frame) last_frame->waitUntilCompleted();
 
-    r.ctx().erase<AudioDeviceResource>(); // Stops and uninitializes the output device.
+    r.ctx().erase<AudioDeviceResource>();
     DeinitAudioSystem(r);
 
     // GpuBuffers must outlive MeshStore allocations retired during teardown.
-    DeinitViewportMedia(r); // App-only media (icons/ImGui texture), while GpuBuffers are alive.
+    DeinitViewportMedia(r);
     DeinitViewport(r, viewport);
 
     ImGui_ImplMetal_Shutdown();
@@ -1242,17 +1216,16 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     ImGui::DestroyContext();
 }
 
-// Seed the scene, run the fixed-step capture loop, and finish the session log.
+// Run one fixed-step capture session and finalize its action log.
 bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *initial_file, bool empty, const CaptureRequest &capture) {
     const auto scene_start = std::chrono::steady_clock::now();
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/true);
-    // A scene that failed to load has nothing to render, so the run ends here with the failure already on stderr rather than recording silence and reporting a clean exit.
+    // Stop after reporting an initial scene-load failure.
     if (driver.SeedFailed) {
         action::StopLog();
         return false;
     }
-    // Emitted, not Performed: the resize must happen inside the first tick's SubmitViewport for that
-    // frame to render the recreated images correctly.
+    // Emit the resize so the first SubmitViewport recreates images before rendering.
     action::Emit(action::view::SetExtent{DefaultWindowSize});
     if (capture.NormalOverlays != 0) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::NormalOverlays>(viewport, capture.NormalOverlays));
     if (capture.BoundingBoxes) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::ShowBoundingBoxes>(viewport, true));
@@ -1265,15 +1238,14 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     bool profile_cleared{false};
     bool submitted{false};
     bool done{false};
-    // When the scene first drew anything. A capture run waits for its meshlets, so this lands with the settle.
+    // Record readiness after the first submitted frame has complete meshlet data.
     std::chrono::steady_clock::time_point first_frame_at{};
     while (!done) {
         if (driver.DurationElapsed(r, viewport)) break;
         const auto extent = r.ctx().get<const ViewportExtent>().Value;
-        // Queue workers keep render resources across scenes, so an image can be ready before this scene has rendered.
-        // Settling also requires this scene's first submit, which fills the instance bounds FrameScene reads.
+        // Require this scene's first submit because queue workers preserve ready images across scenes.
         const bool settled = submitted && ViewportImageReady(r);
-        // Scene-load work (mesh and texture upload) dwarfs a frame: report it on its own, then keep it out of the frame profile.
+        // Report scene loading separately from frame timing.
         if (settled && !profile_cleared) {
             if (profile::Enabled) {
                 const auto ms_since_start = [scene_start](auto point) { return std::chrono::duration<float, std::milli>(point - scene_start).count(); };
@@ -1292,8 +1264,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             driver.EmitFrameActions(r, viewport, settled, extent);
             action::ApplyEmitted(r, viewport);
             ReportActionErrors(r);
-            // An audio-only recording consumes no images, so once it is underway the tick drops its render request and the sim still steps through SubmitViewport's event processing while the offline audio renders in CaptureRecordFrame with no GPU frame behind it.
-            // The first frames still render, since settling and the scene framing read the built image.
+            // Continue event processing while audio-only capture suppresses GPU rendering after initial framing.
             if (driver.AudioOnly() && driver.RecordingStarted) r.ctx().get<PendingRenderRequest>().Value = RenderRequest::None;
             SubmitViewport(r, viewport);
             WaitForRender(r);
@@ -1301,7 +1272,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             submitted = true;
         }
         if (bench_frames > 0) {
-            // Benchmark: force a render every settled tick (direct request write) and exit after the requested count.
+            // Render every ready benchmark tick and stop after the requested count.
             if (settled && --bench_frames == 0) {
                 if (driver.ScreenshotMode()) {
                     if (auto saved = SaveScreenshot(r, driver.ScreenshotPath); saved) std::println("Saved screenshot: {}", saved->string());
@@ -1313,7 +1284,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             pending = std::max(pending, RenderRequest::Reuse);
         } else {
             if (driver.CaptureFrame(r, viewport, driver.Framed(settled))) done = true;
-            // Headless has no window to close: without anything to capture or play, one settled frame is the whole run.
+            // End an idle headless run after one completed frame.
             if (!driver.Presenting() && settled) done = true;
         }
         driver.ElapsedPlayTime += frame_state.DeltaTime;
@@ -1322,9 +1293,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     return true;
 }
 
-// Run without a window, ImGui, audio, or file dialogs. The viewport renders offscreen
-// on a fixed-step, GPU-paced clock, and capture reads it back. Initializes the engine, runs `scenes`,
-// and tears down.
+// Run scenes offscreen on a fixed-step, GPU-paced clock.
 void RunHeadlessEngine(bool quiet, auto &&scenes) {
     LogEnabled = !quiet;
 
@@ -1336,7 +1305,7 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     InitAudioSystem(r);
     SetupScene(r, viewport);
     r.ctx().get<FrameState>().DisplayFramebufferScale = {2, 2}; // Match the app's retina rendering (pixel density and DPI-scaled GPU state like edge-line width).
-    ProcessComponentEvents(r, viewport); // Prime derived state before the first frame reads it.
+    ProcessComponentEvents(r, viewport);
 
     scenes(r, viewport);
 
@@ -1345,8 +1314,7 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     DeinitViewport(r, viewport);
 }
 
-// Headless single-scene run.
-// Exits after one rendered frame when there is nothing to capture or play, and reports failure when the scene itself failed to load.
+// Run one headless scene and return its capture or load status.
 bool RunHeadless(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
     bool ok = true;
     RunHeadlessEngine(quiet, [&](entt::registry &r, entt::entity viewport) {
@@ -1355,15 +1323,13 @@ bool RunHeadless(const char *initial_file, bool quiet, bool empty, const Capture
     return ok;
 }
 
-// A corpus render job spooled by `script/Render`: one `.job` file per scene, holding
-// "<output basename>\t<scene arg>" (scene arg: a file path, "--empty", or empty for the default scene).
+// Parse a corpus job containing "<output basename>\t<scene argument>".
 struct RenderJob {
     fs::path OutBasename;
     std::string SceneArg;
 };
 
-// Claim the next pending job by renaming it to `.claimed`. The rename is atomic, so parallel
-// workers pulling from one spool never render the same scene twice.
+// Atomically rename and return the next pending job.
 std::optional<RenderJob> ClaimRenderJob(const fs::path &spool) {
     std::vector<fs::path> pending;
     std::error_code ec;
@@ -1376,7 +1342,7 @@ std::optional<RenderJob> ClaimRenderJob(const fs::path &spool) {
         claimed += ".claimed";
         std::error_code rename_ec;
         fs::rename(path, claimed, rename_ec);
-        if (rename_ec) continue; // Another worker claimed it first.
+        if (rename_ec) continue;
         std::ifstream in{claimed};
         std::string line;
         if (!std::getline(in, line)) continue;
@@ -1387,8 +1353,7 @@ std::optional<RenderJob> ClaimRenderJob(const fs::path &spool) {
     return std::nullopt;
 }
 
-// Render every job in the spool with one engine, clearing the scene between jobs.
-// Each scene's console output goes to its `.log`, and stdout gets one line per finished scene.
+// Render every queued job with one engine and write each scene's console output to its log.
 void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &harness) {
     RunHeadlessEngine(quiet, [&](entt::registry &r, entt::entity viewport) {
         const int launcher_out = ::dup(STDOUT_FILENO), launcher_err = ::dup(STDERR_FILENO);
@@ -1404,17 +1369,17 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
             const bool empty = job->SceneArg == "--empty";
             const char *initial_file = !empty && !job->SceneArg.empty() ? job->SceneArg.c_str() : nullptr;
             RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename, .Overlays = harness.Overlays, .EditMode = harness.EditMode, .SelectAll = harness.SelectAll, .LodErrorPixels = harness.LodErrorPixels, .NormalOverlays = harness.NormalOverlays, .BoundingBoxes = harness.BoundingBoxes, .TetWireframe = harness.TetWireframe});
-            // Reset for the next job, finalizing any in-progress recording.
+            // Finalize capture and restore engine state between jobs.
             QuiesceScene(r, viewport);
             ClearScene(r, viewport);
-            ProcessComponentEvents(r, viewport); // Settle the reset so the next scene loads from the same baseline as a fresh engine.
+            ProcessComponentEvents(r, viewport);
             std::fflush(stdout);
             std::fflush(stderr);
             ::dup2(launcher_out, STDOUT_FILENO);
             ::dup2(launcher_err, STDERR_FILENO);
             if (fs::exists(out + ".webp") || fs::exists(out + ".mp4")) std::println("ok   {}", out);
             else std::println("SKIP {} (no output; load failed or unsupported encoding)", out);
-            std::fflush(stdout); // Stdout is typically a block-buffered pipe, so make the line visible now.
+            std::fflush(stdout);
         }
         ::close(launcher_out);
         ::close(launcher_err);
@@ -1425,7 +1390,7 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
 int main(int argc, char **argv) {
     const auto autorelease_pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
 
-    // VideoRecorder pipes frames to ffmpeg via popen; ignore SIGPIPE so writes return EPIPE instead of killing us.
+    // Convert ffmpeg pipe closure into EPIPE for VideoRecorder error handling.
     std::signal(SIGPIPE, SIG_IGN);
 
     std::set_terminate([]() {
@@ -1533,14 +1498,14 @@ int main(int argc, char **argv) {
         } else if (!initial_file) initial_file = *it;
     }
     if (capture.Fps <= 0) capture.Fps = 60;
-    // A wav target records audio only, so the audio flag is implied.
+    // Enable audio capture for WAV output.
     if (capture.RecordPath.extension() == ".wav") capture.RecordAudio = true;
-    // Render mode derives its own output paths from the basename.
+    // Derive corpus output paths from the render basename.
     if (!capture.RenderBasename.empty() && (!capture.RecordPath.empty() || !capture.ScreenshotPath.empty())) {
         std::println(stderr, "--render cannot be combined with --record or --screenshot");
         return 1;
     }
-    // Queue mode is headless and derives everything from each job.
+    // Derive queue capture options from each job.
     if (!render_queue.empty() && (initial_file || !capture.RenderBasename.empty() || !capture.RecordPath.empty() || !capture.ScreenshotPath.empty())) {
         std::println(stderr, "--render-queue cannot be combined with a scene file or capture flags");
         return 1;
@@ -1550,6 +1515,6 @@ int main(int argc, char **argv) {
     if (!render_queue.empty()) RunHeadlessQueue(render_queue, quiet, capture);
     else if (headless) headless_ok = RunHeadless(initial_file, quiet, empty, capture);
     else run(initial_file, quiet, empty, capture);
-    // A capture that ffmpeg rejected leaves a truncated or missing file, and a headless scene that failed to load rendered nothing, so a clean status would hide either.
+    // Report failed captures and headless scene loads through the process status.
     return !headless_ok || VideoRecorder::AnyFailed() ? 1 : 0;
 }

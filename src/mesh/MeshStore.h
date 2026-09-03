@@ -46,7 +46,7 @@ struct SharpnessSummary {
     bool Any, All;
 };
 
-// One pose's per-class corner-normal sources, each span entry-relative: the base stores for the rest pose, or the normals derived from a morph target's full-weight pose.
+// Contains entry-relative corner-normal sources for one pose.
 struct CornerNormalSources {
     std::span<const vec3> VertexNormals;
     std::span<const vec3> SeamNormals;
@@ -73,28 +73,23 @@ struct MeshDataWithMaterials {
 
 std::expected<MeshDataWithMaterials, std::string> ReadMeshFile(const std::filesystem::path &);
 
-// What creating a mesh derives from the source alone. Deriving it touches no arena and no store
-// state, so a batch derives every mesh at once and the arena work stays in source order.
+// Contains source-derived data without arena or store ownership.
 struct PreparedMesh {
     std::vector<vec4> CornerTangents, CornerColors;
     std::array<std::vector<vec2>, 4> CornerUvs;
     std::vector<vec3> AuthoredCornerNormals;
-    // Target-major morph tangent deltas, the one vertex-domain channel no arena holds.
-    // The weld compares and compacts them alongside the arena channels, and CreateMesh hands them back.
+    // Target-major morph tangent deltas remain host-owned through welding.
     std::vector<vec3> MorphTangentDeltas;
 };
 
-// Order the faces by primitive and gather the corner-domain channels out of `attrs`, leaving the
-// vertex domain to the weld. `data`, `attrs` and `primitives` are left in the state CreateMesh expects.
+// Orders faces by primitive and gathers corner channels while preserving CreateMesh inputs.
 // Welding recovers authored normals as face sharpness on faceted faces and as a custom corner-normal layer where they deviate from derivation.
 PreparedMesh PrepareMeshSources(MeshData &, MeshVertexAttributes &, MeshPrimitives &);
 BuiltConnectivity BuildPreparedConnectivity(const MeshStore &, uint32_t id, const MeshData &, const ConnectivityStorage &);
 
-// Whether a mesh's vertex-fan CSR fills on the GPU rather than in the store.
-// Every face being a triangle is what makes a halfedge's face and loop position arithmetic.
+// Returns true when triangle topology permits GPU vertex-fan construction.
 bool BuildsFanAdjacencyOnGpu(const Mesh &);
-// Whether a mesh's vertex-edge CSR fills on the GPU rather than in the store.
-// It also takes every edge carrying at most two halfedges, which is what ranks an edge index from the edge-first bits.
+// Returns true when triangle-manifold topology permits GPU vertex-edge construction.
 bool BuildsEdgeAdjacencyOnGpu(const Mesh &);
 
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
@@ -104,43 +99,32 @@ struct MeshStore {
     MeshStore(MeshStore &&) noexcept;
     MeshStore &operator=(MeshStore &&) noexcept;
 
-    // Call PlanCreate or PlanClone per mesh, then CommitReserves once, before the operations themselves.
+    // Call once after all PlanCreate and PlanClone calls and before their corresponding operations.
     void PlanCreate(const MeshData &, const MeshPrimitives & = {}, bool has_deform = false, uint32_t morph_target_count = 0, const MeshVertexAttributes & = {});
     void PlanClone(const Mesh &);
-    // Reserve all arenas for accumulated plans, then reset.
     void CommitReserves();
 
-    // Take the mesh's source positions and corner array into the arenas, where every derive reads them,
-    // and return the store id the mesh keeps. CreateMesh finishes the same entry.
-    // A weld compacts the vertex range to its front, so it ends with ShrinkMeshSource.
+    // Takes source positions and corners into the arenas and returns their store ID.
     uint32_t CreateMeshSource(const MeshData &);
-    // Take the mesh's skin and morph channels into their arenas at the source vertex count, where the
-    // weld compares them alongside the positions and compacts them in place.
+    // Takes skin and morph channels into arenas at the source vertex count for in-place welding.
     void CreateDeformSource(uint32_t id, const std::optional<ArmatureDeformData> &, const std::optional<MorphTargetData> &);
-    // Trim every vertex-domain arena run to what a weld left: the positions, the skin channels, and
-    // each morph target's deltas at their new stride.
+    // Trims all vertex-domain arena ranges to `welded_vertices`.
     void ShrinkMeshSource(uint32_t id, uint32_t welded_vertices);
-    // The mesh's half-edge connectivity, as views into the arena that holds it.
     MeshConnectivity GetConnectivity(uint32_t id) const;
-    // Take the storage a connectivity build fills, sized from the source counts, and place what the
-    // build hands back. Both run in source order, with the build itself free to run alongside others.
+    // Allocates connectivity storage from source counts in call order.
     void AllocateConnectivity(uint32_t id, uint32_t vertex_count, uint32_t halfedge_count, uint32_t face_count, bool face_starts);
     ConnectivityStorage GetConnectivityStorage(uint32_t id);
-    // The arena run holding the mesh's connectivity, which a GPU build fills in place.
     SlottedRange GetConnectivityRange(uint32_t id) const;
     SlottedRange GetConnectivityHalfedgeToEdgeRange(uint32_t id) const;
     SlottedRange GetConnectivityEdgeRange(uint32_t id) const;
-    // Record the edge count a GPU build's ranks totalled.
     void SetConnectivityEdgeCount(uint32_t id, uint32_t edge_count);
     void PlaceConnectivity(uint32_t id, const BuiltConnectivity &);
 
-    // Takes what PrepareMeshSources derived, and everything it left in place, into the arenas.
-    // `id` comes from CreateMeshSource, which already took the vertex and corner arrays into the arenas.
+    // Completes the store entry created by CreateMeshSource using the prepared source data.
     CreatedMesh CreateMesh(uint32_t id, MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, PreparedMesh &&, bool flat_shaded = false);
     CreatedMesh CloneMesh(const Mesh &);
 
-    // Allocate vertex-only store entry (no topology, no face/edge/primitive/material buffers).
-    // Returns the store id, released via Release(storeId).
+    // Returns a vertex-only store ID that must be released with Release.
     uint32_t AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs);
 
     std::span<const Vertex> GetVertices(uint32_t id) const;
@@ -153,11 +137,10 @@ struct MeshStore {
     std::span<const float> GetDefaultMorphWeights(uint32_t id) const { return Entries.at(id).DefaultMorphWeights; }
     bool MorphTargetsAuthorNormalDeltas(uint32_t id) const;
 
-    // Source-form readback used by glTF export. Empty span when the mesh lacks the channel.
+    // Returns an empty span when the source lacks bone deformation.
     std::span<const BoneDeformVertex> GetBoneDeform(uint32_t id) const;
     std::span<const MorphTargetVertex> GetMorphTargets(uint32_t id) const;
 
-    // Base bindless slots of the per-mesh GPU buffers (for shader push constants).
     uint32_t GetCornerTangentSlot() const;
     uint32_t GetCornerColorSlot() const;
     uint32_t GetCornerUvSlot() const;
@@ -177,7 +160,7 @@ struct MeshStore {
     uint32_t GetFaceFirstTriangleSlot() const;
     uint32_t GetTetPositionSlot() const;
     uint32_t GetTetEdgeIndexSlot() const;
-    // Copies tet wireframe geometry into the canonical arenas. Nothing on the host reads it back.
+    // Copies tetrahedral wireframe geometry into GPU-only canonical arenas.
     TetBuffers AllocateTets(std::span<const vec3> positions, std::span<const uint32_t> edge_indices);
     void ReleaseTets(TetBuffers);
     uint32_t GetSoundVertexSlot() const;
@@ -191,17 +174,15 @@ struct MeshStore {
     std::span<uint8_t> GetMutableFaceSharpness(uint32_t id);
     std::span<const uint8_t> GetEdgeSharpness(uint32_t id) const;
     std::span<uint8_t> GetMutableEdgeSharpness(uint32_t id);
-    // Any/all summary of the face sharpness bytes.
     SharpnessSummary GetFaceSharpnessSummary(uint32_t id) const;
-    // Compose per-corner shading normals from the classification and the base normal stores, in triangulated face-fan order, with authored corner offsets applied where non-identity.
+    // Returns composed corner normals in triangulated face-fan order until the next call.
     // Requires current base stores (the derive pass ran since the last position/sharpness write).
     // Returns scratch storage valid until the next call.
     std::span<const vec3> GetCornerNormals(const Mesh &) const;
     // Encode the stashed authored corner normals as offsets from the derived corner normals, filling the custom corner-normal layer.
     // Consumes the stash, so it runs once, after the base normals derive.
     void EncodeAuthoredCornerNormals(const Mesh &);
-    // Decide whether the mesh keeps its authored shading normals under morphing.
-    // True when any target authors normal deltas, or when any listed full-weight pose derives corner normals beyond the authored match gate from the rest normals it would pin.
+    // Preserves authored shading when targets include normal deltas or materially change derived corner normals.
     // Requires derived base normals.
     void UpdateMorphShadingAuthored(const Mesh &, std::span<const CornerNormalSources>);
     // CSR vertex-to-edge incidence, edge items in edge order.
@@ -210,7 +191,7 @@ struct MeshStore {
     std::string CheckVertexAdjacency(const Mesh &) const;
     Range GetVertexFanAdjacencyRange(uint32_t id) const { return Entries.at(id).VertexFanAdjacency; }
     Range GetVertexEdgeAdjacencyRange(uint32_t id) const { return Entries.at(id).VertexEdgeAdjacency; }
-    // The class-buffer offset, or a sentinel when the mesh stores none (InvalidOffset = every corner Vertex, UniformFaceOffset = every corner Face).
+    // Returns the class-buffer offset or a uniform-class sentinel.
     uint32_t GetCornerClassOffset(uint32_t id) const;
     std::span<const uint32_t> GetCornerClasses(uint32_t id) const;
     Range GetCustomCornerMaskRange(uint32_t id) const { return Entries.at(id).CustomCornerMasks; }
@@ -232,14 +213,14 @@ struct MeshStore {
     SlottedRange GetBaseSeamNormalSlottedRange(uint32_t id) const;
     std::span<const vec3> GetBaseSeamNormals(uint32_t id) const;
     std::span<vec3> GetBaseSeamNormals(uint32_t id);
-    // Authored normals of face-less meshes, in vertex order (empty when the mesh has none).
+    // Returns face-less authored normals in vertex order.
     std::span<const vec3> GetPointNormals(uint32_t id) const;
     Range GetEdgeSharpnessRange(uint32_t id) const;
     SlottedRange GetFaceSharpnessRange(uint32_t id) const;
     SlottedRange GetEdgeSharpnessSlottedRange(uint32_t id) const;
     // Corner-domain attribute layers (one value per triangulated face corner, fan order).
     // Empty range/span when the mesh lacks the channel.
-    static constexpr uint32_t MaxUvSets{4}; // Texture coordinate sets an entry stores, so a higher glTF TEXCOORD_n has nowhere to land.
+    static constexpr uint32_t MaxUvSets{4};
     Range GetCornerTangentRange(uint32_t id) const;
     Range GetCornerColorRange(uint32_t id) const;
     Range GetCornerUvRange(uint32_t id, uint32_t set) const;
@@ -252,12 +233,10 @@ struct MeshStore {
     SlottedRange GetPrimitiveMaterialRange(uint32_t id) const;
 
     std::span<const uint32_t> GetTriangleFaceIds(uint32_t id) const;
-    // The mesh's corner vertex indices, one per halfedge. Canonical: the connectivity and the face
-    // index buffer both read this, and a triangle mesh's draws index it directly.
+    // Returns canonical corner vertex indices shared by connectivity and face drawing.
     std::span<const uint32_t> GetFaceCorners(uint32_t id) const;
     SlottedRange GetFaceCornerRange(uint32_t id) const;
-    // Take compact selection masks for all three element domains. Exactly one
-    // selection domain is authoritative; the GPU derives the other two after every edit command.
+    // Allocates compact masks for every element domain; the GPU derives two from the authoritative domain.
     void EnsureSelectionBits(const Mesh &);
     std::span<const uint32_t> GetSelectionBits(uint32_t id, Element) const;
     uint32_t GetSelectionBitsSlot() const;
@@ -284,8 +263,7 @@ struct MeshStore {
     void Release(uint32_t id);
 
     // Reset all arenas and the StoreId table to empty, keeping GPU allocations for reuse.
-    // Call only on a full scene clear, where no live entity references a StoreId, so StoreId and offset
-    // allocation restarts deterministically.
+    // Requires a full scene clear without live StoreId references so allocation restarts deterministically.
     void Clear();
 
     // Serialize the source mesh arenas and the StoreId->Range entry table to a self-contained blob, and restore from one.
@@ -293,13 +271,12 @@ struct MeshStore {
     // The derived arenas (adjacency CSRs, corner classes, seam normals) rebuild via RebuildDerived after restore.
     std::vector<std::byte> Serialize() const;
     void Deserialize(std::span<const std::byte>);
-    // Rebuild the meshes' derived adjacency, corner classification, and seam normals after Deserialize.
-    // Runs in store-id order so the arena layout is deterministic (the span is sorted in place).
+    // Rebuilds derived data in store-ID order and sorts the input span in place.
     void RebuildDerived(std::span<Mesh>);
 
 private:
     struct Buffers;
-    std::unique_ptr<Buffers> B; // Owns all GPU buffer storage (vertex/index/state/deform arenas)
+    std::unique_ptr<Buffers> B;
 
     struct Entry {
         Range Vertices{};
@@ -313,13 +290,13 @@ private:
         Range TriangleFaceIds{}, ElementPrimitives{}, PrimitiveMaterials{}, FaceCorners{};
         std::array<Range, 3> SelectionBits{}; // vertex, edge, face masks
         Range SelectionBaseline{}, SelectionSummary{};
-        // CSR vertex incidence, each range holding (vertex count + 1) offsets followed by the items
+        // CSR ranges contain vertex-count-plus-one offsets followed by incident items.
         Range VertexFanAdjacency{}, VertexEdgeAdjacency{};
         // The mesh's half-edge connectivity, laid out in the order SliceConnectivity reads it.
         Range Connectivity{}, ConnectivityEdges{}, ConnectivityHalfedgeToEdge{};
         uint32_t ConnectivityVertices{}, ConnectivityHalfedges{}, ConnectivityEdgeCount{}, ConnectivityFaces{};
         bool ConnectivityFaceStarts{false}; // An n-gon mesh stores each face's first halfedge.
-        // Seam-corner sector CSR: (SeamCornerCount + 1) offsets, then fan items (FanItemEncoding)
+        // Seam-fan CSR contains SeamCornerCount-plus-one offsets followed by encoded fan items.
         Range SeamFans{};
         Range BaseSeamNormals{}; // Composed sector normal per seam corner
         Range PointNormals{}; // Authored normals of face-less meshes, in vertex order
@@ -334,7 +311,7 @@ private:
         bool MorphShadingAuthored{false};
         std::vector<float> DefaultMorphWeights{};
         std::vector<PrimitiveTriangleRange> PrimitiveTriangleRanges{};
-        // Authored corner normals held until EncodeAuthoredCornerNormals consumes them once the base normal stores are derived
+        // Retained until base-normal derivation permits offset encoding.
         std::vector<vec3> AuthoredCornerNormals{};
         bool Alive{false};
     };
@@ -352,9 +329,7 @@ private:
     } Pending{};
 
     uint32_t AcquireId(Entry &&);
-    // The entry's connectivity sub-spans, in the order its run lays them out. Sliced when a build or
-    // a read runs rather than when the range is taken, since a later allocation can grow the arena
-    // out from under a span.
+    // Slices connectivity at access time because later arena growth invalidates prior spans.
     ConnectivityStorage SliceConnectivity(const Entry &) const;
     // GetCornerNormals with the mesh's triangulated index stream already at hand.
     std::span<const vec3> GetCornerNormals(const Mesh &, std::span<const uint32_t> indices) const;

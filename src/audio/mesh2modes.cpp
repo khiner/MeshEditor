@@ -36,8 +36,7 @@ auto Timed(double &seconds, auto &&compute) {
     return result;
 }
 
-// Degenerate elements contribute nothing physically, but their inverse-determinant basis
-// gradients poison the stiffness matrix. Copy the mesh without them.
+// Degenerate elements contribute nothing physically, but their inverse-determinant basis gradients poison the stiffness matrix. Copy the mesh without them.
 TetMesh FilterDegenerate(const TetMesh &tets) {
     TetMesh clean;
     clean.Points = tets.Points;
@@ -67,8 +66,8 @@ double GetTetVolume(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 
     return (1.f / 6.f) * fabs(GetTetDeterminant(a, b, c, d));
 }
 
-// Lumped-vertex rigid-body mass properties in SI at the baked size: each tet's volume splits evenly onto its four
-// vertices as point masses. `scale` maps tet coordinates to node-local, `length_to_si` maps node-local lengths to meters.
+// Computes SI rigid-body mass properties by distributing each tetrahedron's volume equally across its vertices.
+// scale maps tetrahedral coordinates to node-local space, and length_to_si converts node-local lengths to metres.
 MassProperties ComputeMassProperties(const TetMesh &tets, double density, vec3 scale, double length_to_si) {
     const size_t nverts = tets.Points.size();
     const dvec3 inv_scale{1.0 / scale.x, 1.0 / scale.y, 1.0 / scale.z};
@@ -198,8 +197,8 @@ constexpr uint NumQuadNodes{10};
 // Local edge nodes 4-9 sit at the midpoints of these corner pairs.
 constexpr uint EdgeCorners[6][2]{{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
 
-// Exact unit-volume integrals of the 10-node shape functions: corners N_i = l_i(2l_i - 1),
-// edges N_ij = 4 l_i l_j. All integrals are polynomial, so the factorial formula is exact.
+// Integrates quadratic corner functions N_i = l_i(2l_i - 1) and edge functions N_ij = 4*l_i*l_j over unit volume.
+// The factorial formula is exact for these polynomials.
 struct QuadBasis {
     double Mass[NumQuadNodes][NumQuadNodes]; // int N_a N_b dV / V
     double Grad[NumQuadNodes][4][NumQuadNodes][4]; // int (dN_a/dl_k)(dN_b/dl_l) dV / V
@@ -235,8 +234,8 @@ const QuadBasis &GetQuadBasis() {
     return basis;
 }
 
-// Global node ids of each element's 10 nodes: the 4 corners, then unique midside ids per edge,
-// numbered after all corner nodes. Midside coordinates stay implicit (straight-sided elements).
+// Numbers four corner nodes followed by unique midside edge nodes after all corners.
+// Straight-sided elements keep midside coordinates implicit.
 struct QuadMesh {
     std::vector<std::array<uint, NumQuadNodes>> ElementNodes;
     uint NodeCount;
@@ -266,8 +265,8 @@ struct MassStiffness {
     Eigen::SparseMatrix<double> Mass, Stiffness;
 };
 
-// Isotropic linear-elastic mass and stiffness over 10-node elements. Basis gradients in physical
-// coordinates are dN_a/dx = sum_k (dN_a/dl_k) grad(l_k), with grad(l_k) the linear-tet gradients (Phig).
+// Assembles isotropic linear-elastic mass and stiffness for ten-node elements.
+// Physical gradients satisfy dN_a/dx = sum_k (dN_a/dl_k)*grad(l_k), where Phig contains linear-tetrahedron gradients.
 // Only the lower triangle is filled (the eigensolver reads matrices as self-adjoint).
 MassStiffness AssembleQuadratic(const TetMesh &tets, const QuadMesh &quad, const AcousticMaterialProperties &material) {
     const auto &basis = GetQuadBasis();
@@ -325,10 +324,9 @@ MassStiffness AssembleQuadratic(const TetMesh &tets, const QuadMesh &quad, const
     return ms;
 }
 
-// Block subspace iteration on the shifted pencil, seeded with a prior solve's eigenvector basis.
-// Each iteration solves (K - sigma*M) Xbar = M X across the whole panel in one pass over the
-// Cholesky factor, then Rayleigh-Ritz projects the pencil onto span(Xbar). Ritz vectors are
-// M-orthonormal by construction. Converges the leading `nev` pairs, ascending.
+// Applies block subspace iteration to a shifted pencil from an optional prior eigenvector basis.
+// Each iteration solves (K - sigma*M) Xbar = M X and applies Rayleigh-Ritz projection over span(Xbar).
+// Returns the leading nev M-orthonormal eigenpairs in ascending order.
 struct SubspaceResult {
     Eigen::VectorXd Eigenvalues; // ascending, size nev, empty when convergence failed
     Eigen::MatrixXd Eigenvectors; // n x nev, M-orthonormal
@@ -344,8 +342,6 @@ SubspaceResult SubspaceIterate(
     const uint n = M.rows();
     const auto Msa = M.selfadjointView<Eigen::Lower>();
 
-    // The iteration carries M X rather than X itself: the panel solve, the projections, and the
-    // deflation all consume M-products, and Ritz vectors are only materialized when locked.
     Eigen::MatrixXd MX(n, p);
     {
         Eigen::MatrixXd X(n, p);
@@ -359,8 +355,8 @@ SubspaceResult SubspaceIterate(
     }
 
     SubspaceResult result;
-    // Locked (converged) leading Ritz pairs, ascending. Locked vectors leave the iterated
-    // panel: the active block is deflated against them instead of re-solved.
+    // Store converged leading Ritz pairs in ascending order.
+    // Deflate the active block against stored vectors.
     Eigen::MatrixXd XL(n, nev), MXL(n, nev);
     Eigen::VectorXd theta_locked(nev);
     uint c = 0; // locked count
@@ -378,8 +374,7 @@ SubspaceResult SubspaceIterate(
         Eigen::MatrixXd Kr = Xbar.transpose() * MX;
         Eigen::MatrixXd MXbar = Msa * Xbar;
 
-        // Deflate against locked pairs. Locked pairs satisfy (K - sigma*M) x = theta M x to
-        // within tol, which reduces the deflated projection to the -C^T theta C correction.
+        // Deflate using the correction -C^T*theta*C from (K - sigma*M)*x = theta*M*x.
         if (c > 0) {
             const Eigen::MatrixXd C = XL.leftCols(c).transpose() * MXbar;
             Xbar.noalias() -= XL.leftCols(c) * C;
@@ -399,7 +394,6 @@ SubspaceResult SubspaceIterate(
 
         const Eigen::MatrixXd q = dscale.asDiagonal() * es.eigenvectors();
 
-        // Lock the leading prefix of active pairs whose eigenvalue settled, keeping ascending order.
         uint newly_locked = 0;
         for (uint i = 0; i < w && c + i < nev; ++i) {
             const double lambda = es.eigenvalues()[i] + sigma;
@@ -454,8 +448,7 @@ ModalModes ComputeModes(
     const uint n = num_vertices * vertex_dim;
     const uint fem_n_modes = std::min(config.NumFemModes, n - 1);
     const uint basis_size = std::min(std::max(fem_n_modes + 20, 20u), n); // Lanczos basis vector count (ncv)
-    // Negative shift: K - sigma*M is positive definite, and the smallest
-    // eigenvalues sit nearest the shift, so they still converge first.
+    // Negative shift: K - sigma*M is positive definite, and the smallest eigenvalues sit nearest the shift, so they still converge first.
     const double sigma = -pow(2 * std::numbers::pi * config.MinModeFreq, 2);
     auto *monitor = opts.Monitor;
     if (monitor && monitor->Cancelled()) return {};
@@ -501,7 +494,6 @@ ModalModes ComputeModes(
             for (uint vi = 0; vi < vertex_dim; ++vi) shapes[ex_pos][mode][vi] = eigenvectors(ev_i + vi, mode);
         }
     }
-    // The caller fills in the rest, which records what the solve was asked for.
     summary_out.Eigenvalues = {eigenvalues.begin(), eigenvalues.end()};
     summary_out.Shapes = shapes;
     summary_out.SolvedMaterial = opts.Material;
@@ -537,8 +529,7 @@ ModalModes modal::PostprocessModes(std::span<const double> eigenvalues, const st
             continue;
         }
         mode_freqs[mode] = damped_hz(omega_i, c_from_omega(omega_i));
-        // Rigid-body modes carry numerically tiny but nonzero eigenvalues, so a mode is valid
-        // only at or above the audible floor.
+        // Rigid-body modes can have numerically tiny positive eigenvalues, so a mode is valid only at or above the audible floor.
         if (lowest_mode_i == fem_n_modes && mode_freqs[mode] >= config.MinModeFreq) {
             lowest_mode_i = mode;
             lowest_mode_freq_orig = mode_freqs[mode];
@@ -546,8 +537,7 @@ ModalModes modal::PostprocessModes(std::span<const double> eigenvalues, const st
     }
     if (lowest_mode_i == fem_n_modes) return {};
 
-    // Scale all modes so the lowest valid mode is at the configured fundamental frequency,
-    // and calculate T60s from the scaled frequencies.
+    // Scale all modes so the lowest valid mode is at the configured fundamental frequency, and calculate T60s from the scaled frequencies.
     static const double ln_1000 = std::log(1000);
     const float freq_scale = config.FundamentalFreq ? *config.FundamentalFreq / lowest_mode_freq_orig : 1.f;
     for (uint mode = lowest_mode_i; mode < fem_n_modes; ++mode) {
@@ -614,8 +604,6 @@ modal::ModalResult modal::mesh2modes(const TetMesh &input_tets, const AcousticMa
     profile.StiffnessNonZeros = K.nonZeros();
     if (monitor && monitor->Cancelled()) return {};
 
-    // Sample each excitation position at its nearest tet point, recovering node-local coordinates.
-    // A point reached by more than one position carries one shape vector, so those positions become one sample point.
     auto [excite_points, positions, sample_point_of] = Timed(profile.SampleExcite, [&] {
         const dvec3 inv_scale{1.0 / baked_scale.x, 1.0 / baked_scale.y, 1.0 / baked_scale.z};
         std::vector<uint> points;

@@ -355,14 +355,16 @@ struct MeshStore::Buffers {
     // Canonical tetrahedral wireframe geometry, one range per mesh that carries a modal solve.
     BufferArena<vec3> TetPositionBuffer;
     BufferArena<uint32_t> TetEdgeIndexBuffer; // Two indices per tet edge
-    // Excitable vertex handles per sounding mesh. Derived from the sound model, so Serialize skips it.
+    // Excitable vertex handles per sounding mesh.
+    // Rebuild this data from the sound model after serialization.
     BufferArena<uint32_t> SoundVertexBuffer;
     BufferArena<uvec2> CustomCornerMaskBuffer; // Custom corner-normal presence: a (bitset word, exclusive rank) pair per 32 corners
     BufferArena<vec2> CustomCornerNormalBuffer; // Authored corner-normal (polar, azimuth) offsets from the derived normal, packed to the masked corners
     BufferArena<vec4> CornerTangentBuffer; // Corner-domain attribute layers, one value per corner in fan order
     BufferArena<vec4> CornerColorBuffer;
     BufferArena<vec2> CornerUvBuffer; // Up to four ranges per mesh, one per UV set
-    BufferArena<uint32_t> AdjacencyBuffer; // CSR incidence tables, each (bucket count + 1) offsets then items: vertex-to-triangle, vertex-to-edge, and seam-corner-to-triangle ranges
+    // Stores CSR offsets followed by items for vertex-triangle, vertex-edge, and corner-sector incidence.
+    BufferArena<uint32_t> AdjacencyBuffer;
 
     // Visit every serialized BufferArena in a fixed order, so Serialize/Deserialize stay in lockstep.
     // The derived arenas rebuild from connectivity and the sharpness stores after Deserialize.
@@ -650,11 +652,13 @@ VertexAdjacency SliceAdjacency(std::span<const uint32_t> words, uint32_t bucket_
 }
 
 // An authored corner normal within 0.05 degrees of the derived one counts as derivable and is dropped.
-// Export-pipeline rounding sits below this angle and deliberate normal authoring sits well above it.
+// Export-pipeline rounding remains below this angle.
+// Deliberate normal authoring remains well above it.
 constexpr float AuthoredMatchDot{0.99999962f};
 
 // Whether `normal` matches the unit-or-zero `reference` within the authored match gate.
-// Nullopt when `normal` is degenerate. A zero reference matches nothing.
+// Returns nullopt when `normal` is degenerate.
+// A zero reference matches nothing.
 std::optional<bool> NormalsMatch(vec3 normal, vec3 reference) {
     const auto len = numeric::Length(normal);
     if (len < 1e-6f) return {};
@@ -664,7 +668,7 @@ std::optional<bool> NormalsMatch(vec3 normal, vec3 reference) {
 // Orthonormal frame anchoring a corner's authored-normal offset.
 // Axes: the derived normal, the corner's first non-degenerate outgoing triangle edge projected off it, and their cross.
 // Degenerate inputs take fixed fallback axes, deterministic from the same inputs, so encode and decode rebuild the same frame.
-// The vertex shader rebuilds the frame from current local positions, so offsets ride the deformation.
+// The vertex shader rebuilds the frame from current local positions, so offsets follow the deformation.
 struct CornerNormalFrame {
     vec3 Normal, Ref, Ortho;
 };
@@ -678,7 +682,7 @@ CornerNormalFrame ComputeCornerFrame(vec3 normal, std::span<const uint32_t> indi
             const auto edge = vertices[indices[tri + (k + other) % 3]].Position - p0;
             const auto rejected = edge - n * numeric::Dot(edge, n);
             const auto len = numeric::Length(rejected);
-            // An edge nearly parallel to the normal rejects to cancellation noise, so its perpendicular part must be a meaningful fraction of its length to anchor the frame.
+            // Require a stable perpendicular component before using an edge to anchor the frame.
             if (len > 1e-3f * numeric::Length(edge)) return rejected / len;
         }
         const auto axis = std::abs(n.x) < 0.5f ? vec3{1, 0, 0} : vec3{0, 1, 0};
@@ -698,7 +702,6 @@ vec3 DecodeNormalOffset(vec2 offset, const CornerNormalFrame &frame) {
     return std::cos(offset.x) * frame.Normal + std::sin(offset.x) * (std::cos(offset.y) * frame.Ref + std::sin(offset.y) * frame.Ortho);
 }
 
-// The corner's class normal from the given per-class sources: its vertex's smooth normal, its face's normal, or its seam sector's normal.
 vec3 ComposeCornerNormal(std::span<const uint32_t> classes, CornerClass uniform_class, uint32_t ci, std::span<const uint32_t> indices, std::span<const uint32_t> face_ids, const CornerNormalSources &sources) {
     const auto value = classes.empty() ? uint32_t(uniform_class) << ClassTagShift : classes[ci];
     switch (CornerClass(value >> ClassTagShift)) {
@@ -719,8 +722,7 @@ void MeshStore::UpdateCornerClassification(const Mesh &mesh) {
     const auto is_set = [](uint8_t s) { return s != 0; };
     const auto [any_face_sharp, all_faces_sharp] = GetFaceSharpnessSummary(id);
     const bool any_sharp = any_face_sharp || std::ranges::any_of(sharp_edges, is_set);
-    // A mesh classifying every corner the same stores just the uniform tag.
-    // No sharpness means every corner Vertex, and all-sharp faces mean every corner Face.
+    // Uniform classification avoids allocating a per-corner class buffer.
     if (!any_sharp || all_faces_sharp) {
         entry.UniformCornerClass = all_faces_sharp ? CornerClass::Face : CornerClass::Vertex;
         B->CornerClassBuffer.Release(entry.CornerClasses);
@@ -736,7 +738,7 @@ void MeshStore::UpdateCornerClassification(const Mesh &mesh) {
     const auto face_sharp = [&](Mesh::FH fh) { return *fh < sharp_faces.size() && sharp_faces[*fh] != 0; };
     const auto edge_sharp = [&](Mesh::HH hh) { const auto eh = mesh.GetEdge(hh); return *eh < sharp_edges.size() && sharp_edges[*eh] != 0; };
 
-    // Vertices touching a discontinuity get seam sectors, and all others take the vertex normal.
+    // Assign seam sectors to vertices at a discontinuity and the vertex normal to all other vertices.
     static thread_local std::vector<uint8_t> touched;
     touched.assign(mesh.VertexCount(), 0);
     for (uint32_t ei = 0; ei < sharp_edges.size(); ++ei) {
@@ -768,7 +770,7 @@ void MeshStore::UpdateCornerClassification(const Mesh &mesh) {
         bool full_loop = false;
         auto h = h_in;
         for (uint32_t i = 0; i < MaxFan; ++i) {
-            const auto out = c.Next(h); // Leaves the corner vertex within the current face.
+            const auto out = c.Next(h); // Advances within the current face while retaining the corner vertex.
             if (edge_sharp(out)) break;
             const auto opp = c.Opposites[*out];
             if (!opp) break;
@@ -845,7 +847,6 @@ void MeshStore::UpdateCornerClassification(const Mesh &mesh) {
     }
 }
 
-// Vertex corners take the vertex's smooth normal, Face corners their face's normal, and Seam corners their composed sector normal.
 std::span<const vec3> MeshStore::GetCornerNormals(const Mesh &mesh) const {
     return GetCornerNormals(mesh, mesh.CreateTriangleIndices());
 }
@@ -1054,7 +1055,8 @@ uint32_t MeshStore::CreateMeshSource(const MeshData &data) {
     const auto vertices = AllocateVertices(data.Positions.size());
     WriteVertices(B->VerticesBuffer.GetMutable(vertices), data.Positions);
     const auto id = AcquireId({.Vertices = vertices, .Alive = true});
-    // A face mesh's corners are its face loops. An edge mesh has no weld and takes its corners in CreateMesh.
+    // A face mesh's corners are its face loops.
+    // An edge mesh has no weld and receives its corners in CreateMesh.
     if (data.FaceCount() > 0) Entries[id].FaceCorners = B->FaceCornerBuffer.Allocate(std::span<const uint32_t>{data.FaceCorners});
     return id;
 }
@@ -1130,7 +1132,7 @@ void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitive
             if (*uvs) Pending.CornerUvs += corners;
         }
     } else if (attrs.Colors0) {
-        Pending.CornerColors += vertices; // Point and line meshes hold one color per vertex.
+        Pending.CornerColors += vertices;
     }
 }
 
@@ -1197,9 +1199,7 @@ bool BuildsEdgeAdjacencyOnGpu(const Mesh &mesh) {
 }
 
 namespace {
-// Call `add(vertex, item)` once per vertex-fan incidence, in the order the table records it.
-// A face's halfedges are the contiguous run starting at its first, so a halfedge's index gives its
-// loop position too.
+// Calls `add(vertex, item)` once per vertex-fan incidence in table order.
 void EmitFanIncidence(const Mesh &mesh, auto &&add) {
     const auto &c = mesh.GetConnectivity();
     const auto corners = mesh.CornerVertices();
@@ -1339,7 +1339,7 @@ PreparedMesh PrepareMeshSources(MeshData &data, MeshVertexAttributes &attrs, Mes
         .CornerColors = std::move(corner_colors),
         .CornerUvs = std::move(corner_uvs),
         .AuthoredCornerNormals = std::move(authored_corner_normals),
-        .MorphTangentDeltas = {}, // Taken from the source once the arenas hold the rest of the vertex domain.
+        .MorphTangentDeltas = {},
     };
 }
 
@@ -1358,8 +1358,7 @@ CreatedMesh MeshStore::CreateMesh(uint32_t id, MeshData &&data, MeshVertexAttrib
     auto &corner_uvs = prepared.CornerUvs;
     auto &authored_corner_normals = prepared.AuthoredCornerNormals;
 
-    // CreateMeshSource and CreateDeformSource already took the positions, corners, skin and morph
-    // channels into the arenas, and a weld has trimmed every one of those ranges to what it left.
+    // Source creation and welding completed the vertex-domain arena ranges.
     auto &entry = Entries[id];
     const auto vertices = entry.Vertices;
     // A face-less mesh keeps its authored normals as primary point normals, mirrored for shader reads.
@@ -1432,8 +1431,7 @@ CreatedMesh MeshStore::CreateMesh(uint32_t id, MeshData &&data, MeshVertexAttrib
         write_primitive_tables(primitives.ElementPrimitiveIndices.size(), primitive_count);
     }
 
-    // One corner vertex index per halfedge, canonical for the connectivity and for a triangle mesh's
-    // draws. A face mesh's corners are its face loops, and an edge mesh's are each edge's endpoints.
+    // Store face loops or edge endpoints as the canonical halfedge corner indices.
     if (face_count == 0 && !data.Edges.empty()) {
         entry.FaceCorners = B->FaceCornerBuffer.Allocate(uint32_t(data.Edges.size()) * 2u);
         auto corners = B->FaceCornerBuffer.GetMutable(entry.FaceCorners);
@@ -1531,7 +1529,7 @@ CreatedMesh MeshStore::CreateMesh(uint32_t id, MeshData &&data, MeshVertexAttrib
 
     UpdateCornerClassification(mesh);
 
-    // Authored corner normals the sharpness stores can't reproduce land in the custom layer, encoded as offsets from the derived normal so they follow every deformation of the surface.
+    // Encode irreducible authored corner normals relative to derived normals so they follow surface deformation.
     // The encode needs the derived base normals, so the stream stashes here until EncodeAuthoredCornerNormals consumes it.
     if (!authored_corner_normals.empty() && entry.TriangleCount > 0) {
         entry.HasAuthoredNormals = true;

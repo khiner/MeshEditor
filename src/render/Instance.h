@@ -2,7 +2,6 @@
 
 #include <entt/entity/fwd.hpp>
 
-// Link to the entity holding shared GPU buffers
 struct Instance {
     entt::entity Entity;
 };

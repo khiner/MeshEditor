@@ -4,19 +4,18 @@
 
 namespace action {
 enum class Phase {
-    Record, // Apply, commit any open gesture, and record this as a committed action.
-    Stage, // Apply and hold as the gesture's latest step, recording only on commit.
-    Cancel, // Apply a revert and discard the held step, recording nothing.
+    Record, // Apply and record after committing an open gesture.
+    Stage, // Apply and retain until commit.
+    Cancel, // Apply a revert and discard the pending step.
 };
 
-// This frame's drained emission: the winning user action + its phase (first emit wins, empty if none),
-// the system-generated actions, and the standalone commit-request flag.
+// Contains the first user action, all system actions, and the standalone commit request for a frame.
 struct Drained {
     std::optional<std::pair<Action, Phase>> Emitted;
     std::vector<Action> System;
     bool CommitRequested;
 };
 
-// Return and reset this frame's user action, system actions, and commit-request flag.
+// Returns and resets the frame's buffered actions and commit request.
 Drained Drain();
 } // namespace action

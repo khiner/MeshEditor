@@ -9,8 +9,7 @@ enum class On : uint8_t {
 };
 constexpr On operator|(On a, On b) { return On(uint8_t(a) | uint8_t(b)); }
 
-// Like the default `basic_reactive_mixin::emplace_element`, but erases a stale-version
-// slot entry first so a recycled id doesn't collide with the prior version.
+// Erase stale versions before inserting recycled entity identifiers.
 inline void EmplaceSafe(entt::storage_for_t<entt::reactive> &s, const entt::registry &, entt::entity e) {
     if (s.contains(e)) return;
     using traits = entt::entt_traits<entt::entity>;
@@ -36,21 +35,18 @@ ReactiveTracker track(entt::registry &r) { return {r.storage<entt::reactive>(ent
 template<typename Change>
 auto &reactive(entt::registry &r) { return r.storage<entt::reactive>(entt::type_hash<Change>::value()); }
 
-// Lets domain systems (e.g. audio) register per-frame reactive handlers without coupling to the viewport.
 using ComponentEventHandler = std::function<void(entt::registry &)>;
 
 inline void RegisterComponentEventHandler(entt::registry &r, ComponentEventHandler handler) {
-    // emplace is a no-op if the type already exists (try_emplace semantics).
     r.ctx().emplace<std::vector<ComponentEventHandler>>().emplace_back(std::move(handler));
 }
 
-// Domain-registered handlers SetupScene runs on the viewport entity to emplace per-scene default components.
+// Run domain setup handlers on the viewport entity.
 struct SceneSetupHandlers {
     std::vector<std::function<void(entt::registry &, entt::entity viewport)>> Handlers;
 };
 
-// Domain-registered handlers ClearScene runs after destroying all scene entities and before resetting the
-// entity allocator, to drop derived caches keyed by the destroyed scene's entity ids.
+// Run domain clear handlers after scene destruction and before resetting entity identifiers.
 struct SceneClearHandlers {
     std::vector<std::function<void(entt::registry &)>> Handlers;
 };

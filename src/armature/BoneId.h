@@ -2,5 +2,6 @@
 
 #include <cstdint>
 
-using BoneId = uint32_t; // Stable identifier - never reused
+// Bone IDs are stable and never reused.
+using BoneId = uint32_t;
 inline constexpr BoneId InvalidBoneId{0};

@@ -8,7 +8,7 @@
 
 constant float LIGHT_EPSILON = 1e-4f;
 
-// Guard zero-length vectors / zero distance to avoid NaN/Inf.
+// Avoid NaN and infinity for zero-length vectors and zero distance.
 inline float3 safeNormalize(float3 v, float3 fallback) {
     const float len = length(v);
     return len > LIGHT_EPSILON ? (v / len) : fallback;
@@ -35,13 +35,11 @@ inline float getSpotAttenuation(float3 point_to_light, float3 spot_direction, fl
 }
 
 inline float3 getLightEmissionDirection(Transform wt) {
-    // Emission axis is transform local -Z.
     const float3 local_plus_z = quat_rotate(float4(wt.R), float3(0.0f, 0.0f, 1.0f));
     return -safeNormalize(local_plus_z, float3(0.0f, 0.0f, 1.0f));
 }
 
 inline float3 getPointToLight(PunctualLight light, Transform wt, float3 world_position, float3 emission_direction) {
-    // Directional point-to-light vectors are opposite emission direction.
     if (light.Type == PunctualLightType_Directional) return -emission_direction;
     return float3(wt.P) - world_position;
 }

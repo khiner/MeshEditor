@@ -14,8 +14,8 @@ struct SetModel {
     SoundVerticesModel Model;
 };
 struct SetExciteVertex {
-    uint32_t VertexIndex; // Indexes `SoundVertices::Vertices`
-    uint32_t MeshVertex; // Mesh handle stored at `SoundVertices::Vertices[VertexIndex]`
+    uint32_t VertexIndex;
+    uint32_t MeshVertex;
 };
 struct StartExcite {
     uint32_t Vertex;
@@ -25,31 +25,29 @@ struct DeleteSoundObject {};
 struct StartRecording {
     uint32_t FrameCount;
 };
-// Give the active sound entity default modal solve settings, and its mesh entity a default
-// acoustic material when missing.
+// Adds missing default solve settings and acoustic material to the active sound object.
 struct SetupModalModel {};
-// Apply a completed modal solve from its result file.
-// `Path` is relative to the modal results dir (see audio/ModalModelFile.h).
+// Applies a completed modal solve from a path relative to the modal results directory.
 struct ApplyModalModel {
     entt::entity SoundEntity;
     std::filesystem::path Path;
 };
-// Frames are loaded from Path when applied, not stored.
+// Loads frames from Path during application.
 struct AssignVertexSamples {
     std::vector<uint32_t> MeshVertices;
     std::filesystem::path Path;
 };
-// Load samples for the target sound entity from `MicrophoneEntity` and mark that mic active.
+// Loads microphone samples into the target sound entity and activates the microphone.
 struct ActivateRealImpactMicrophone {
     entt::entity TargetSoundEntity, MicrophoneEntity;
 };
 struct RemoveVertexSamples {
     std::vector<uint32_t> MeshVertices;
 };
-// Apply an impulse at a mesh vertex (RealImpact excitation).
+// Applies a RealImpact impulse at a mesh vertex.
 struct ApplyExciteImpact {
     entt::entity InstanceEntity;
-    uint32_t VertexIndex; // Mesh vertex handle, as the excitable vertex pick returns
+    uint32_t VertexIndex;
 };
 struct ClearExciteImpacts {};
 

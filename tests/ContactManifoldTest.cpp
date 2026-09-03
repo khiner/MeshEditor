@@ -1,7 +1,3 @@
-// Pins the contact reporting Jolt delivers, which the sustained-contact audio path consumes.
-// Every assertion is a property of the engine rather than of this repo, and the audio design rests on all of them:
-// manifolds per body pair, points per manifold, what the per-point impulses sum to, and whether a manifold's
-// sub-shape identity holds while the contact does.
 
 #include "RunSuites.h"
 
@@ -102,7 +98,6 @@ struct World {
         Listener.Manifolds.clear();
         System.Update(Dt, CollisionSteps, &TempAllocator, &JobSystem);
     }
-    // Settle the contact and warm start the solver, then return what the last frame reported.
     const std::vector<Manifold> &Settle(uint frames = 120) {
         for (uint i = 0; i < frames; ++i) Step();
         return Listener.Manifolds;
@@ -129,7 +124,6 @@ Ref<Shape> TriangleFloor(float extent, float cell) {
     return MeshShapeSettings{triangles}.Create().Get();
 }
 
-// The load the solver carried over one collision step, which every manifold's impulses must add up to.
 float SupportedImpulse(float mass) { return mass * 9.81f * World::Dt / float(World::CollisionSteps); }
 
 // The manifolds' impulse-weighted mean normal, which is the direction a merge over a body pair excites along.
@@ -143,8 +137,6 @@ Vec3 MergedNormal(const std::vector<Manifold> &manifolds) {
     return impulse > 0 ? sum / impulse : Vec3::sZero();
 }
 
-// The sub-shape keys a box settled on `floor` reports over 30 steps, which says whether that identity is
-// stable enough to track a region across steps.
 std::set<uint64> KeysWhileResting(const Ref<Shape> &floor, RVec3 floor_position) {
     World w;
     w.AddStatic(floor, floor_position);
@@ -158,8 +150,7 @@ std::set<uint64> KeysWhileResting(const Ref<Shape> &floor, RVec3 floor_position)
     }
     return keys;
 }
-} // namespace
-
+}
 int main() {
     RegisterDefaultAllocator();
     Factory::sInstance = new Factory();
@@ -187,7 +178,6 @@ int main() {
         const auto &manifolds = w.Settle();
 
         expect(manifolds.size() == 1_ul);
-        // Weights summing to the resultant are what make any partition of the manifold conservative.
         expect(Near(manifolds[0].TotalImpulse, SupportedImpulse(1000.f), 0.1f));
     };
 
@@ -220,7 +210,7 @@ int main() {
         const auto &manifolds = w.Settle();
 
         // MaxContactPoints is four, so a sixth region cannot be represented however the load is distributed.
-        // The reported points still carry the whole load: the resultant stays right, the distribution does not.
+        // The reported points preserve the total resultant with limited spatial resolution.
         expect(manifolds.size() == 1_ul);
         expect(manifolds[0].Points.size() <= 4_ul);
         expect(manifolds[0].Points.size() < six.size());

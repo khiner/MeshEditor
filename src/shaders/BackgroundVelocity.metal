@@ -5,14 +5,12 @@
 #include "Varyings.metal"
 #include "Velocity.metal"
 
-// The background sits at infinity, so only view rotation moves it. Projecting the view ray as a
-// direction lands on the point at infinity along it, which is what the background shows.
+// The infinitely distant background contains only rotational view motion.
 inline float2 ProjectDirToNdc(float4x4 view_proj, float3 dir) {
     const float4 clip = view_proj * float4(dir, 0.0f);
     return clip.xy / clip.w;
 }
 
-// The scene pass's velocity attachment. The scene color at index 0 is masked off.
 struct VelocityTarget {
     float4 Motion [[color(1)]];
 };

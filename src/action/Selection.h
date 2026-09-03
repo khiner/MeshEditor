@@ -40,9 +40,6 @@ struct SelectAll {};
 struct SnapshotBoxSelectBaseline {};
 struct ClearBoxSelectBaseline {};
 
-// Box rectangle in render pixels; the hit entities are resolved against current scene state when applied.
-// ViewProj is the view-projection at record time (heap-held to keep the Action variant small),
-// so replay resolves pixels against the recorded view.
 struct ApplyBoxSelect {
     std::pair<uvec2, uvec2> BoxPx;
     bool Additive;

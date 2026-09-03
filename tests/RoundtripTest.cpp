@@ -50,10 +50,8 @@ std::vector<fs::path> CollectGltfSamples(const fs::path &root) {
     if (!fs::exists(root)) return out;
     for (const auto &entry : fs::directory_iterator{root}) {
         if (!entry.is_directory()) continue;
-        // Khronos samples split variants into subdirectories: `glTF/` for the base form, plus
-        // optional feature-specific variants like `glTF-IBL/`, `glTF-Draco/`, `glTF-Quantized/`.
-        // Collect from every subdirectory prefixed with "glTF"; fall back to the sample root
-        // when none exist (e.g. glTF_Physics samples, which put the .gltf at the top level).
+        // Collect all Khronos variant directories prefixed with glTF.
+        // Use the sample root when no variant directory exists.
         std::vector<fs::path> search_dirs;
         for (const auto &sub : fs::directory_iterator{entry.path()}) {
             if (sub.is_directory() && sub.path().filename().string().starts_with("glTF")) {
@@ -90,9 +88,7 @@ fs::path MakeRoundtripDir() {
     return dir;
 }
 
-// Sample assets live in submodules under external/. Anchor every sample path at
-// MESHEDITOR_SOURCE_DIR (the repo root, baked in by CMake) so the test finds them regardless of the
-// working directory it's launched from.
+// Resolve submodule samples from the CMake-provided repository root.
 constexpr std::string_view SampleRoots[]{
     "external/glTF-Sample-Assets/Models",
     "external/glTF_Physics/samples",
@@ -100,52 +96,32 @@ constexpr std::string_view SampleRoots[]{
 
 fs::path SamplePath(std::string_view relative_to_repo_root) { return fs::path{MESHEDITOR_SOURCE_DIR} / relative_to_repo_root; }
 
-// --- Expected-divergence list ---
-// Each entry documents a JSON path where re-export is known to diverge from source,
-// along with the specific detail of the divergence. Array indices in the pattern are written
-// as `[*]` to match any position.
-//
-// Entries are grouped by topic so a single rationale applies to the whole block; each entry's
-// `Why` only notes the specific default/field being filtered.
-//
-// Matching modes:
-//   - Exact{}   matches the path literally (no descendants filtered).
-//   - Subtree{} matches that path and any descendant path (e.g. `buffers` matches
-//               `buffers[0].byteLength` but not `buffersInternal`).
-// Prefer exact matches when filtering a specific JSON leaf; reserve Subtree for cases where
-// the whole sub-tree is legitimately encoding-dependent so we don't mask unexpected semantic
-// regressions deeper inside.
+// Exact patterns match one JSON path, while subtree patterns include descendants.
+// Use subtree patterns only for encoding-dependent structures.
 struct Exception {
     std::string_view Pattern;
     std::string_view Why;
 };
 
 constexpr Exception SubtreeExceptions[]{
-    // --- Buffer / accessor layout: re-packed on export; semantic content preserved via accessor refs. ---
+    // Export repacks buffer and accessor layout while preserving referenced values.
     {"buffers", "re-packed into a single buffer on export"},
     {"bufferViews", "bufferView layout and order depend on our emission order"},
     {"accessors", "accessor order depends on our emission choices; position-indexed JSON compare can't tell semantically equivalent accessors apart (semantic shape is verified indirectly via mesh/primitive/animation references)"},
 
-    // --- extensions we don't import or re-emit yet. ---
+    // These extensions are omitted during import or export.
     {"extensionsUsed", "extensionsUsed is computed from what we re-emit; membership/order diverges when extension data isn't fully re-emitted"},
     {"extensions.KHR_xmp_json_ld", "not imported"},
     {"extensions.KHR_xmp", "not imported"},
     {"materials[*].extensions.KHR_materials_volume_scatter", "not imported"},
 
-    // --- Unsupported animation channels. ---
     {"animations[*].channels", "channels using KHR_animation_pointer are dropped on import"},
     {"animations[*].samplers", "samplers for dropped channels (e.g. KHR_animation_pointer) are also dropped"},
 
-    // Lights aren't shared across nodes on import, so the lights table and per-node `light`
-    // indices diverge when source had multiple nodes pointing at the same `lights[i]`.
+    // Import duplicates lights shared by source nodes, changing table and node indices.
     {"extensions.KHR_lights_punctual.lights", "per-node PunctualLight components aren't deduped on save"},
 };
 
-// --- Exact-path exceptions, in four groups ---
-//
-// Default-value omission: fastgltf's writer omits spec-default field values.
-// Several source writers emit defaults explicitly (notably COLLADA2GLTF, glTF Tools for Unity, hand-written samples with no generator, and the Blender v5.0.21 glTF I/O for physics samples).
-// Each entry below filters one such path.
 constexpr Exception ExactExceptions[]{
     {"scene", "default scene index 0 omitted"},
     {"animations", "empty animations array omitted"},
@@ -168,8 +144,7 @@ constexpr Exception ExactExceptions[]{
     {"materials[*].extensions.KHR_materials_clearcoat.clearcoatTexture.texCoord", "default 0 omitted"},
     {"materials[*].extensions.KHR_materials_iridescence.iridescenceThicknessMaximum", "default 400 omitted"},
     {"materials[*].pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform.offset", "default [0,0] offset omitted"},
-    // fastgltf's writer omits default KHR_texture_transform fields on the 5 base material textures
-    // whenever the extension block is emitted (see TextureTransformMeta.SourceHadExtension).
+    // fastgltf omits default KHR_texture_transform fields from base material textures.
     {"materials[*].pbrMetallicRoughness.metallicRoughnessTexture.extensions.KHR_texture_transform.offset", "default [0,0] offset omitted"},
     {"materials[*].pbrMetallicRoughness.metallicRoughnessTexture.extensions.KHR_texture_transform.scale", "default [1,1] scale omitted"},
     {"materials[*].pbrMetallicRoughness.metallicRoughnessTexture.extensions.KHR_texture_transform.rotation", "default 0 rotation omitted"},
@@ -201,18 +176,15 @@ constexpr Exception ExactExceptions[]{
     {"nodes[*].extensions.KHR_physics_rigid_bodies.motion.centerOfMass", "default [0,0,0] omitted"},
     {"nodes[*].extensions.KHR_node_visibility", "extension block only emitted for visible:false (default true is omitted)"},
     {"meshes[*].primitives[*].mode", "default 4 (triangles) omitted"},
-    // fastgltf's writer omits TRS fields equal to defaults on TRS-form nodes.
-    // Matrix-form nodes now re-emit as matrix (see SourceMatrixTransform handling).
+    // fastgltf omits default TRS fields and preserves matrix-form nodes as matrices.
     {"nodes[*].translation", "default [0,0,0] omitted"},
     {"nodes[*].rotation", "default [0,0,0,1] omitted"},
     {"nodes[*].scale", "default [1,1,1] omitted"},
-    // Empty-string / empty-object emissions the source carried explicitly:
     {"asset.copyright", "empty source copyright string omitted by fastgltf's writer"},
     {"extensions", "empty root-level extensions block omitted by fastgltf's writer (source emits `\"extensions\":{}`)"},
     {"materials[*].extensions", "empty material-level extensions block omitted"},
     {"nodes[*].extensions", "empty per-node extensions block omitted"},
 
-    // Always-emitted, symmetric to the above: fastgltf's writer always emits these fields, so source files that legitimately omit them see a "present in roundtripped only" diff.
     {"materials[*].normalTexture.scale", "fastgltf always emits scale on NormalTextureInfo"},
     {"materials[*].occlusionTexture.strength", "fastgltf always emits strength on OcclusionTextureInfo"},
     {"materials[*].extensions.KHR_materials_clearcoat.clearcoatNormalTexture.scale", "fastgltf always emits scale on NormalTextureInfo"},
@@ -222,19 +194,10 @@ constexpr Exception ExactExceptions[]{
     {"extensions.KHR_physics_rigid_bodies.physicsJoints[*].drives[*].maxForce", "always-emitted even when float::max ('no limit')"},
     {"materials[*].pbrMetallicRoughness", "emitted even for extension-only / specular-glossiness materials"},
 
-    // BufferView indexing.
-    // Accessor references compare semantically (see IsMeshGeometryRefPath / IsShapeAccessorRefPath), so bufferView refs outside the accessor path (just images[*].bufferView today) are the only ones left to except.
-    //
-    // bufferView index depends on our emission order; only fires for images embedded as bufferView
-    // (source form preserved: URI-form images emit URIs, no bufferView ref).
     {"images[*].bufferView", "bufferView index depends on emission order"},
-    // Indexed vs non-indexed round-trips cleanly for Triangles (see HasSourceIndices on
-    // MeshPrimitives). Non-triangle modes (TriangleStrip/Fan, LineStrip/Loop, Points) are
-    // unfolded to TriangleList / LineList / Points at save and the indices accessor count
-    // (or presence) diverges from source accordingly.
+    // Export converts strip, fan, and loop primitives to list form and changes their index accessors.
     {"meshes[*].primitives[*].indices", "strip/fan/loop primitive modes are unfolded to list mode on save; source Points with indices lose them"},
 
-    // Everything else.
     {"meshes[*].primitives[*].material", "line/point primitives lose per-primitive material on import (merged across primitives without retaining material refs)"},
     {"meshes[*].extensions", "mesh-level extensions (e.g. KHR_xmp_json_ld) not re-emitted"},
     {"scenes[*].extras", "not tracked on Scene"},
@@ -242,7 +205,7 @@ constexpr Exception ExactExceptions[]{
     {"nodes[*].extensions.KHR_lights_punctual.light", "renumbered to match the un-deduped lights table"},
 };
 
-// The first entity carrying `C`, or null. These scenes author at most one of each.
+// Return the sole entity with C or null.
 template<typename C> entt::entity NodeWith(entt::registry &r) {
     for (auto e : r.view<const C>()) return e;
     return entt::null;
@@ -260,7 +223,6 @@ bool AccessorShapeIs(simdjson::dom::element root, simdjson::dom::element model, 
         acc["count"].get_uint64().get(c) == simdjson::SUCCESS && c == count;
 }
 
-// The one entry of a KHR_audio_rigid_bodies table, or nullopt when the table is missing or does not hold exactly one.
 std::optional<simdjson::dom::element> OnlyAudioEntry(simdjson::dom::element doc, std::string_view key) {
     simdjson::dom::array table;
     if (doc["extensions"]["KHR_audio_rigid_bodies"][key].get_array().get(table) != simdjson::SUCCESS || table.size() != 1) return std::nullopt;
@@ -316,9 +278,7 @@ struct Diff {
     std::string Path, Message;
 };
 
-// Float-ish tolerance: glTF numbers round-trip through JSON text, so small loss is expected.
-// Some source files truncate to 3-4 significant digits (e.g. a quaternion component "0.688"),
-// so relative tolerance has to be loose enough to absorb that.
+// Allow relative error from JSON conversion and source values truncated to three or four significant digits.
 constexpr double AbsEps = 1e-6;
 constexpr double RelEps = 1e-3;
 
@@ -399,12 +359,8 @@ std::optional<simdjson::dom::element> ResolveAccessor(simdjson::dom::element roo
     return accessors.at(index);
 }
 
-// Compare only the semantic fields of an accessor: type and count. Encoding-level fields
-// (componentType, normalized, bufferView, byteOffset, sparse, name) are intentionally skipped -
-// our importer normalizes componentType (indices widen to uint32, joints narrow to uint16,
-// quantized attributes decode to FLOAT), and `normalized` is a semantic pair with componentType
-// that changes with it. bufferView layout is an emission choice; min/max are omitted by some
-// source writers selectively.
+// Compare accessor type and count after import normalizes component types and buffer layout.
+// Indices widen to uint32, joints narrow to uint16, and quantized attributes decode to float.
 void CompareAccessorShape(simdjson::dom::element src, simdjson::dom::element out, std::string_view ref_path, std::vector<Diff> &diffs) {
     std::string_view src_type, out_type;
     const bool src_has_type = src["type"].get_string().get(src_type) == simdjson::SUCCESS;
@@ -421,9 +377,6 @@ void CompareAccessorShape(simdjson::dom::element src, simdjson::dom::element out
     }
 }
 
-// --- Mesh geometry content compare ---
-// Mesh-geometry accessor references (primitive attributes, indices, morph targets) compare by dereferenced content: both sides expand to per-corner streams in the importer's triangulation order and zip corner-by-corner.
-// This makes the contract independent of vertex count, vertex order, index-buffer layout, and accessor encoding, while verifying the actual geometry values.
 
 template<typename T>
 std::vector<T> DecodeAccessor(const fastgltf::Asset &asset, size_t accessor_index) {
@@ -470,7 +423,6 @@ bool DirectionEq(vec3 a, vec3 b) {
     return numeric::Dot(a / la, b / lb) >= CosTol;
 }
 
-// Joint influences compare as (joint, weight) pair sets: import may merge multiple influence sets and reorder by weight, and zero-weight joint slots carry arbitrary indices.
 bool InfluencesEq(uvec4 ja, vec4 wa, uvec4 jb, vec4 wb) {
     const auto collect = [](uvec4 j, vec4 w) {
         std::vector<std::pair<uint32_t, float>> out;
@@ -625,8 +577,7 @@ std::optional<std::vector<double>> NumberArray(simdjson::dom::array arr) {
     return out;
 }
 
-// q and -q describe the same rotation; matrix decomposition doesn't preserve source sign so this
-// surfaces as a per-component diff on `nodes[*].rotation`. Accept either sign within tolerance.
+// Accept q and -q because matrix decomposition does not preserve quaternion sign.
 bool QuaternionsEqual(simdjson::dom::array a, simdjson::dom::array b) {
     const auto va = NumberArray(a), vb = NumberArray(b);
     if (!va || !vb || va->size() != 4 || vb->size() != 4) return false;
@@ -639,8 +590,7 @@ bool QuaternionsEqual(simdjson::dom::array a, simdjson::dom::array b) {
     return eq_signed(1.0) || eq_signed(-1.0);
 }
 
-// glTF `scene.nodes` is an unordered set (schema: uniqueItems), so compare the root indices as a
-// multiset — we emit them ascending, source order is arbitrary.
+// glTF `scene.nodes` is an unordered set (schema: uniqueItems), so compare the root indices as a multiset — we emit them ascending, source order is arbitrary.
 bool SameNumberMultiset(simdjson::dom::array a, simdjson::dom::array b) {
     auto va = NumberArray(a), vb = NumberArray(b);
     if (!va || !vb || va->size() != vb->size()) return false;
@@ -732,8 +682,8 @@ void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string
     }
 }
 
-// Compares two parsed gltf JSON files A and B with the existing exception list. Reports up to
-// 20 unexpected diffs to stderr. Returns the count of unexpected diffs.
+// Compares parsed glTF JSON with known exceptions and reports up to 20 unexpected differences.
+// Returns the total unexpected-difference count.
 size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::string_view sample_name) {
     using namespace boost::ut;
     simdjson::dom::parser pa, pb;
@@ -771,8 +721,7 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
     return unexpected.size();
 }
 
-// Assert two registries match: same components per entity, and equal values for every comparable component.
-// Even allocation handles (GPU slots, Jolt body ids) reconstruct identically from a clean per-scene baseline — nothing is exempt.
+// Require identical component presence and comparable values for every entity.
 void CompareRegistries(std::string_view name, entt::registry &a, entt::registry &b) {
     using namespace boost::ut;
     const auto components_by_entity = [](entt::registry &r) {
@@ -812,8 +761,7 @@ void CompareRegistries(std::string_view name, entt::registry &a, entt::registry 
         }
     }
 
-    // ComponentValuesEqual handles the per-type compare (field-wise where memcmp is unsafe). nullopt means the type
-    // can't be compared (a derived component with no serializer, e.g. MeshBuffers), so it's skipped.
+    // ComponentValuesEqual returns nullopt for derived components without serializers.
     std::map<entt::id_type, entt::sparse_set *> b_set;
     for (auto [id, set] : b.storage()) b_set[set.info().hash()] = &set;
     std::map<std::string, int> value_diffs;
@@ -832,7 +780,7 @@ void CompareRegistries(std::string_view name, entt::registry &a, entt::registry 
         }
     }
 
-    // Presence must match exactly - no exclusions, unlike the value check below.
+    // Require exact component presence, including types excluded from value comparison.
     const auto present_detail = [&] {
         std::string s;
         const auto dump = [&](const char *label, const std::map<std::string, int> &h) {
@@ -849,7 +797,6 @@ void CompareRegistries(std::string_view name, entt::registry &a, entt::registry 
         << name << "presence diverged - only-in-fx=" << only_a << " only-in-restore=" << only_b
         << " comp-set-diffs=" << diffs << present_detail();
 
-    // Every comparable component must hold an identical value in both registries.
     std::string value_detail;
     for (const auto &[type, n] : value_diffs) value_detail += std::format(" {}({})", type, n);
     expect(value_diffs.empty()) << name << "value diverged for component(s):" << value_detail;
@@ -874,15 +821,14 @@ const ModalModelData SampleModal{
         .SolvedVertices = {0, 1, 2},
     },
 };
-} // namespace
-
+}
 int main(int argc, const char **argv) {
     using namespace boost::ut;
 
-    // Optional test-name filter, e.g. `MeshEditorTests BoxTextured`.
+    // Accept a Boost.UT test-name filter.
     if (argc > 1) cfg<override> = {.filter = argv[1]};
 
-    // res/ and shaders/ are symlinked into the CMake build dir. InitEngine compiles shaders and loads LUTs from there.
+    // Resolve symlinked resources and shaders from the build directory.
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
 
     const auto tmp_root = MakeRoundtripDir();
@@ -901,8 +847,7 @@ int main(int argc, const char **argv) {
         ~SceneFixture() { DeinitViewport(R, Viewport); }
     };
 
-    // SaveState → restore into a fresh registry->SaveState again must match byte-for-byte, exercising every
-    // encoding (Tag/Bytes/Serialized), the mesh arena blob, and exact entity-handle recreation.
+    // Require byte-identical state after restoring into a fresh registry and saving again.
     "snapshot save/restore round trip"_test = [&] {
         std::vector<std::byte> before;
         {
@@ -910,35 +855,33 @@ int main(int argc, const char **argv) {
             auto &meshes = f.R.ctx().get<MeshStore>();
             const auto created = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cuboid{})});
             const auto e = f.R.create();
-            f.R.emplace<MeshHandle>(e, MeshHandle{created.StoreId}); // Bytes
-            f.R.emplace<Name>(e, "Cube"); // Serialized (string)
-            f.R.emplace<ObjectKind>(e, ObjectType::Mesh); // Bytes
-            f.R.emplace<MeshActiveElement>(e, 7u); // Bytes
-            f.R.emplace<Selected>(e); // Tag
-            f.R.emplace<Path>(e, "/tmp/scene.gltf"); // Serialized (std::filesystem::path)
+            f.R.emplace<MeshHandle>(e, MeshHandle{created.StoreId});
+            f.R.emplace<Name>(e, "Cube");
+            f.R.emplace<ObjectKind>(e, ObjectType::Mesh);
+            f.R.emplace<MeshActiveElement>(e, 7u);
+            f.R.emplace<Selected>(e);
+            f.R.emplace<Path>(e, "/tmp/scene.gltf");
 
             const auto light = f.R.create();
-            f.R.emplace<PunctualLight>(light, PunctualLight{.Range = 12.f, .Color = {0.2f, 0.4f, 0.6f}, .Intensity = 3.f}); // Bytes (generated POD)
+            f.R.emplace<PunctualLight>(light, PunctualLight{.Range = 12.f, .Color = {0.2f, 0.4f, 0.6f}, .Intensity = 3.f});
             f.R.emplace<Name>(light, "Lamp");
 
-            // A modal sound object on the cube, exercising the audio component serializers.
             const auto sound = f.R.create();
             f.R.emplace<Instance>(sound, Instance{e});
-            f.R.emplace<ModalModes>(sound, SampleModal.Modes); // Serialized (nested vectors)
-            f.R.emplace<MassProperties>(sound, SampleModal.Mass); // Bytes
-            f.R.emplace<ModalEigenSummary>(sound, SampleModal.Summary); // Serialized (nested vectors)
-            f.R.emplace<SoundVerticesModel>(sound, SoundVerticesModel::Modal); // Bytes (enum)
-            f.R.emplace<ModalGain>(sound, ModalGain{0.6f}); // Bytes
-            f.R.emplace<ModalTuning>(sound, ModalTuning{440.f, 1.2f}); // Bytes
-            f.R.emplace<AcousticMaterial>(e, materials::acoustic::Ceramic); // Serialized (string)
-            f.R.emplace<TetBuffers>(e, meshes.AllocateTets(SampleModal.Tets.Positions, SampleModal.Tets.EdgeIndices)); // Bytes (tet arena ranges)
+            f.R.emplace<ModalModes>(sound, SampleModal.Modes);
+            f.R.emplace<MassProperties>(sound, SampleModal.Mass);
+            f.R.emplace<ModalEigenSummary>(sound, SampleModal.Summary);
+            f.R.emplace<SoundVerticesModel>(sound, SoundVerticesModel::Modal);
+            f.R.emplace<ModalGain>(sound, ModalGain{0.6f});
+            f.R.emplace<ModalTuning>(sound, ModalTuning{440.f, 1.2f});
+            f.R.emplace<AcousticMaterial>(e, materials::acoustic::Ceramic);
+            f.R.emplace<TetBuffers>(e, meshes.AllocateTets(SampleModal.Tets.Positions, SampleModal.Tets.EdgeIndices));
 
             ProcessComponentEvents(f.R, f.Viewport);
             before = snapshot::SaveState(f.R);
             expect(before.size() > sizeof(uint64_t));
         }
 
-        // Restore into a fresh registry - the re-saved image must match byte-for-byte.
         SceneFixture f;
         snapshot::LoadState(f.R, before);
         ProcessComponentEvents(f.R, f.Viewport);
@@ -947,8 +890,7 @@ int main(int argc, const char **argv) {
         expect(diff.Equal) << "round-trip diverged at byte" << diff.FirstDifferingByte << "of" << before.size() << "/" << after.size();
     };
 
-    // Modal solve result files must round-trip exactly (they are the replayed source of modal
-    // components) and be write-once (identical content reuses the stored file).
+    // Require exact modal-result round trips and reuse of identical content-addressed files.
     "modal model file round trip"_test = [] {
         const auto relative = SaveModalModelFile(SampleModal);
         expect(!relative.empty());
@@ -959,8 +901,7 @@ int main(int argc, const char **argv) {
         expect(SaveModalModelFile(SampleModal) == relative);
     };
 
-    // A destroyed entity leaves deletion history in the pools it belonged to, and SaveState excludes it so the byte
-    // image reflects state alone.
+    // A destroyed entity leaves deletion history in the pools it belonged to, and SaveState excludes it so the byte image reflects state alone.
     // An in-place-delete pool yields a tombstone during iteration and value() asserts on one, so SaveState skips them.
     "snapshot save omits destroyed mesh entities"_test = [&] {
         SceneFixture f;
@@ -1007,8 +948,7 @@ int main(int argc, const char **argv) {
         };
     };
 
-    // Load/save with an expect-and-skip guard. The result value is only ever used for the guard —
-    // reloaded data is re-fetched from the registry.
+    // Load/save with an expect-and-skip guard. The result value is only ever used for the guard — reloaded data is re-fetched from the registry.
     const auto load_or_skip = [&](SceneFixture &f, const fs::path &p, const char *msg) {
         const auto result = gltf::LoadGltf(p, load_ctx(f.R, f.Viewport));
         expect(result.has_value()) << msg;
@@ -1027,17 +967,14 @@ int main(int argc, const char **argv) {
         return {entt::null, entt::null};
     };
 
-    // The test never renders, so WaitForRender (the only caller of ReclaimRetiredBuffers) never runs and retired arena
-    // buffers would pile up until the GPU OOMs. Reclaim at each clear - safe since no frame is ever in flight here.
+    // Reclaim retired arena buffers after each clear because this test has no render frames in flight.
     const auto clear_scene = [](entt::registry &r, entt::entity vp) {
         ClearScene(r, vp);
         r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     };
 
-    // Each sample is loaded once, then checked two ways:
-    // - gltf JSON round-trip: SaveGltf -> CompareGltfJson against source.
-    // - snapshot round-trip: SaveState -> restore -> SaveState again, byte-compared, plus
-    //   CompareRegistries for derived components the byte image omits.
+    // Check each sample through JSON comparison and byte-identical snapshot restoration.
+    // Compare registries for derived components omitted from the snapshot bytes.
     SceneFixture fx;
     SceneFixture restore_fx;
     for (const auto &src : samples) {
@@ -1071,8 +1008,7 @@ int main(int argc, const char **argv) {
         };
     }
 
-    // Drains PendingTextureUploads onto the GPU — ProcessComponentEvents minus the env /
-    // sync passes — so the edit tests below can read texture pixels back.
+    // Drains PendingTextureUploads onto the GPU — ProcessComponentEvents minus the env / sync passes — so the edit tests below can read texture pixels back.
     const auto materialize_textures = [&](entt::registry &r, entt::entity scene) {
         const auto *pending = r.try_get<const PendingTextureUploads>(scene);
         const auto *src = r.try_get<const gltf::SourceAssets>(scene);
@@ -1165,8 +1101,7 @@ int main(int argc, const char **argv) {
         };
     }
 
-    // KHR_audio_rigid_bodies: attach a modal model to a loaded mesh node, export, and re-import. The modes,
-    // shapes, positions, gain, and acoustic material must survive, and the emitted JSON must match the schema.
+    // Require KHR_audio_rigid_bodies modal data and schema shape to survive export and re-import.
     if (const fs::path box = SamplePath("external/glTF-Sample-Assets/Models/Box/glTF/Box.gltf"); fs::exists(box)) {
         test("audio_modal_round_trip") = [&] {
             SceneFixture fx;
@@ -1217,7 +1152,6 @@ int main(int argc, const char **argv) {
                 expect(AccessorShapeIs(doc, *model0, "shapes", "VEC3", 9)) << "shapes accessor shape (mode-major M*P)";
                 expect(AccessorShapeIs(doc, *model0, "indices", "SCALAR", 3)) << "indices accessor shape";
 
-                // A node carries the extension referencing the model.
                 const auto instanced = NodeAudioIndex(doc, "modalModel");
                 expect(instanced.has_value()) << "no node instances the modal model";
                 if (instanced) expect(*instanced == 0u) << "node model index";
@@ -1274,8 +1208,7 @@ int main(int argc, const char **argv) {
         };
     }
 
-    // Decode-only lock: a hand-authored KHR_audio_rigid_bodies file (mesh-less node, spec-allowed) must import
-    // to the exact modal values, independent of our own encoder.
+    // Require exact import of a hand-authored meshless KHR_audio_rigid_bodies node.
     if (const fs::path fixture = SamplePath("tests/fixtures/KHR_audio_rigid_bodies.gltf"); fs::exists(fixture)) {
         test("audio_modal_decode_fixture") = [&] {
             SceneFixture fx;
@@ -1295,7 +1228,6 @@ int main(int argc, const char **argv) {
             const auto *gain = fx.R.try_get<const ModalGain>(node);
             expect(gain != nullptr && NumberEq(gain->Value, 0.75)) << "gain";
 
-            // A second node supplies only its finish, which lands on that node.
             const auto floor_node = NodeWith<ContactSurface>(fx.R);
             expect(floor_node != entt::null) << "fixture produced no contact surface";
             if (floor_node == entt::null) return;
@@ -1306,7 +1238,6 @@ int main(int argc, const char **argv) {
             if (cs.NormalTexture) {
                 expect(cs.NormalTexture->Texture == 0u && cs.NormalTexture->TexCoord == 0u && NumberEq(cs.NormalTexture->Scale, 0.8)) << "normal texture info";
             }
-            // The surface's acoustic material lands on the same node.
             const auto *floor_material = fx.R.try_get<const AcousticMaterial>(floor_node);
             expect(floor_material != nullptr && floor_material->Name == "TestMat") << "surface material";
         };
@@ -1337,7 +1268,6 @@ int main(int argc, const char **argv) {
                 .WavinessLength = 6e-3f,
                 .Profile = {0.f, 1e-6f, -1e-6f, 0.5e-6f},
                 .SampleSpacing = 5e-6f,
-                // BoxTextured's material carries no normal map, so naming one is the override case, and its base color map stands in as the pixel source.
                 .NormalTexture = SurfaceNormalTexture{.Texture = 0, .TexCoord = 0, .Scale = 0.8f},
             };
             fx.R.emplace_or_replace<ContactSurface>(node, surface);
@@ -1348,12 +1278,8 @@ int main(int argc, const char **argv) {
             const auto *relief = fx.R.try_get<const SurfaceRelief>(node);
             expect(relief != nullptr) << "no mesoscale relief derived from the normal map";
             if (relief) {
-                // The unit box carries one UV unit per face, so a texel of its 256-wide image spans about 4 mm of mesh-local surface.
-                // Texel size follows from the parameterization and the image width alone, so the stand-in map serves here.
                 expect(relief->Track->Spacing > 1e-3f && relief->Track->Spacing < 1e-2f) << "texel size";
             }
-            // The track is mesh-local, so one derivation serves every node instancing the mesh and resizing a node leaves it alone.
-            // A contact scales it by the world scale of the node it is on, which is what lets two instances at different sizes share the track.
             if (relief) {
                 const auto spacing = relief->Track->Spacing, rms = relief->Track->Rms;
                 for (auto e : fx.R.view<const Instance>()) {
@@ -1384,7 +1310,6 @@ int main(int argc, const char **argv) {
                 expect(AccessorShapeIs(doc, *surface0, "profile", "SCALAR", 4)) << "profile accessor shape";
                 uint64_t texture_index = ~0ull;
                 expect((*surface0)["normalTexture"]["index"].get_uint64().get(texture_index) == simdjson::SUCCESS && texture_index == 0u) << "normal texture index";
-                // A body with no modal model still carries the extension, referencing only its surface.
                 const auto instanced = NodeAudioIndex(doc, "acousticSurface");
                 expect(instanced.has_value()) << "no node instances the acoustic surface";
                 if (instanced) expect(*instanced == 0u) << "node surface index";
@@ -1414,8 +1339,6 @@ int main(int argc, const char **argv) {
     }
 
 #ifdef SURFACE_AUDIO
-    // A surface with no normal map of its own inherits the one its material already carries, so an asset
-    // that renders with mesoscale structure sounds like it without the author restating the reference.
     if (const fs::path normal_tangent = SamplePath("external/glTF-Sample-Assets/Models/NormalTangentTest/glTF/NormalTangentTest.gltf"); fs::exists(normal_tangent)) {
         test("audio_surface_inherits_material_normal_map") = [&] {
             const auto stage_dir = edit_root / "audio-surface-inherit";
@@ -1447,7 +1370,6 @@ int main(int argc, const char **argv) {
                 expect(relief->Track->Heights.size() == relief->Track->Sum.size() - 1) << "relief track integral";
             }
 
-            // Inheriting authors nothing: the emitted surface carries no normalTexture of its own.
             const auto out_path = stage_dir / "audio_surface_inherit.gltf";
             if (!save_or_skip(fx, out_path)) return;
 

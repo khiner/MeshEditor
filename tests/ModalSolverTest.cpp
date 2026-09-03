@@ -21,11 +21,11 @@
 using namespace boost::ut;
 
 namespace {
-// Free-free rectangular prism whose mode families have closed forms (with Poisson's ratio 0):
-//   Longitudinal: f_n = n*sqrt(E/rho)/(2L)
-//   Torsional (square section): f_n = n*sqrt(G*J/(rho*Ip))/(2L), G = E/2, J = 0.140577*a^4, Ip = a^4/6
-//   Bending (Euler-Bernoulli): f_i = (bL)_i^2/(2*pi) * sqrt(E/rho)*r_g/L^2, (bL) = {4.73004, 7.85320, 10.99561},
-//     with r_g the section's radius of gyration about the bending axis (thickness/sqrt(12)).
+// Closed forms for a free rectangular prism with Poisson ratio zero follow.
+// Longitudinal: f_n = n*sqrt(E/rho)/(2L).
+// Torsional: f_n = n*sqrt(G*J/(rho*Ip))/(2L), with G = E/2, J = 0.140577*a^4, and Ip = a^4/6.
+// Bending: f_i = (bL)_i^2*sqrt(E/rho)*r_g/(2*pi*L^2), with bL = {4.73004, 7.85320, 10.99561}.
+// The section radius of gyration is thickness/sqrt(12).
 struct Bar {
     double Length, Width, Thickness; // x, y, z extents, meters
     AcousticMaterialProperties Material;
@@ -33,8 +33,7 @@ struct Bar {
 
 constexpr double BendingBL[]{4.73004074, 7.85320462, 10.9956078};
 
-// Structured tet mesh of the bar: (nx+1)*(ny+1)*(nz+1) vertices, each grid cell split
-// into six tetrahedra around its main diagonal (Kuhn subdivision).
+// Structured tet mesh of the bar: (nx+1)*(ny+1)*(nz+1) vertices, each grid cell split into six tetrahedra around its main diagonal (Kuhn subdivision).
 TetMesh MakeBarTets(const Bar &bar, int nx, int ny, int nz) {
     TetMesh tets;
     const int vx = nx + 1, vy = ny + 1, vz = nz + 1;
@@ -77,9 +76,8 @@ enum class Family {
     Other,
 };
 
-// Classify a mode by its shape's kinetic-energy fractions. Torsion is measured as the energy of the
-// best-fit rigid rotation of each cross-section slice about the bar axis, so lateral translation
-// (which also moves tangentially relative to the axis) does not read as torsion.
+// Classify modes by kinetic-energy fractions.
+// Measure torsion from best-fit cross-section rotation to exclude lateral translation.
 Family Classify(const ModalModes &modes, uint32_t mode, const Bar &bar, int nx) {
     double axial = 0, lateral_y = 0, lateral_z = 0, total = 0;
     std::map<int, std::pair<double, double>> slices; // x index -> (sum of r x u along the axis, sum of r^2)
@@ -104,7 +102,6 @@ Family Classify(const ModalModes &modes, uint32_t mode, const Bar &bar, int nx) 
     }
     if (axial / total > 0.85) return Family::Longitudinal;
     if (rotation / total > 0.85) return Family::Torsional;
-    // Bending carries some axial rotary motion for stubby sections, so the lateral threshold stays loose.
     if (const double lateral = lateral_y + lateral_z; lateral / total > 0.6 && rotation / total < 0.5) {
         if (lateral_y / lateral > 0.8) return Family::BendingY;
         if (lateral_z / lateral > 0.8) return Family::BendingZ;
@@ -220,11 +217,9 @@ void CheckFamily(std::string_view name, const std::vector<double> &fem, const st
         expect(std::abs(ratio - 1.0) < tolerance);
     }
 }
-} // namespace
-
+}
 int main() {
-    // Square section: longitudinal validates the E/rho/assembly/eigensolve chain end to end,
-    // torsion and bending validate shear response.
+    // Square section: longitudinal validates the E/rho/assembly/eigensolve chain end to end, torsion and bending validate shear response.
     "square bar modes match closed forms"_test = [] {
         const Bar bar{.Length = 0.3, .Width = 0.05, .Thickness = 0.05, .Material = {.Density = 1000, .YoungModulus = 1e7, .PoissonRatio = 0, .Alpha = 0, .Beta = 0}};
         const double speed = std::sqrt(bar.Material.YoungModulus / bar.Material.Density);
@@ -238,22 +233,19 @@ int main() {
         std::ranges::sort(bending);
         CheckFamily("longitudinal", fem[Family::Longitudinal], HarmonicSeries(speed / (2 * bar.Length)), 0.01);
         CheckFamily("torsional", fem[Family::Torsional], HarmonicSeries(torsion_f1), 0.05);
-        // Euler-Bernoulli overestimates higher modes of a stubby bar (no shear/rotary inertia), so
-        // compare only the first degenerate pair.
+        // Euler-Bernoulli overestimates higher modes of a stubby bar (no shear/rotary inertia), so compare only the first degenerate pair.
         bending.resize(std::min<size_t>(bending.size(), 2));
         CheckFamily("bending", bending, BendingTheory(bar, bar.Thickness, 2), 0.10);
     };
 
-    // Thin section with a single element through the thickness, matching how thin-walled objects
-    // tetrahedralize in practice. Quadratic elements capture the bending strain through one element.
+    // Use one quadratic element through the thickness to represent thin-wall bending strain.
     "thin bar bending matches closed forms"_test = [] {
         const Bar bar{.Length = 0.3, .Width = 0.05, .Thickness = 0.01, .Material = {.Density = 1000, .YoungModulus = 1e9, .PoissonRatio = 0, .Alpha = 0, .Beta = 0}};
         const double speed = std::sqrt(bar.Material.YoungModulus / bar.Material.Density);
         std::println("--- thin bar 30x5x1 ---");
         auto fem = SolveBar(bar, 30, 5, 1);
         CheckFamily("longitudinal", fem[Family::Longitudinal], HarmonicSeries(speed / (2 * bar.Length)), 0.01);
-        // Euler-Bernoulli overestimates the stiff plane's higher modes (no shear/rotary inertia), so
-        // compare only its first mode.
+        // Euler-Bernoulli overestimates the stiff plane's higher modes (no shear/rotary inertia), so compare only its first mode.
         auto bending_y_theory = BendingTheory(bar, bar.Width, 1);
         bending_y_theory.resize(1);
         CheckFamily("bending-y", fem[Family::BendingY], bending_y_theory, 0.10, 1);
@@ -283,8 +275,7 @@ int main() {
         }
     };
 
-    // Real-world complexity: a thin-walled RealImpact scan through the app's tet generation,
-    // timing the solve. Skipped when the dataset is not present.
+    // Real-world complexity: a thin-walled RealImpact scan through the app's tet generation, timing the solve. Skipped when the dataset is not present.
     "RealImpact bowl solves in reasonable time"_test = [] {
         const auto path = DatasetDir() / "9_BowlCeramic/preprocessed/transformed.obj";
         if (!std::filesystem::exists(path)) {
@@ -311,9 +302,8 @@ int main() {
         std::println("{:6.2f} s, {} modes, f1 {:8.1f} Hz", seconds, result.Modes.Freqs.size(), result.Modes.Freqs.empty() ? 0.0 : double(result.Modes.Freqs.front()));
     };
 
-    // Every RealImpact object must tetrahedralize to a structurally valid mesh at every
-    // resolution the app's simplification slider offers: simplifying a watertight, non-self-
-    // intersecting surface should keep it tetrahedralizable. Skipped when the dataset is absent.
+    // Require structurally valid RealImpact tetrahedralization at every application resolution.
+    // Skip the corpus check when the dataset is absent.
     "RealImpact meshes tetrahedralize to valid meshes across resolutions"_test = [] {
         const auto dataset = DatasetDir();
         if (!std::filesystem::exists(dataset)) {

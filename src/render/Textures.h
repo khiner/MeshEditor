@@ -40,8 +40,9 @@ struct TextureEntry {
     SamplerConfig Config;
     MTL::SamplerAddressMode WrapS, WrapT;
     std::string Name;
-    // Index into `gltf::SourceAssets::Images` for textures materialized from a `GltfImageRef`;
-    // UINT32_MAX for raw-pixel uploads (LUTs, SVG bitmaps). Used by SaveGltf for re-encode lookup.
+    // Index into `gltf::SourceAssets::Images` for textures materialized from a `GltfImageRef`.
+    // UINT32_MAX denotes raw-pixel uploads such as LUTs and SVG bitmaps.
+    // SaveGltf uses this value for re-encode lookup.
     uint32_t SourceImageIndex{UINT32_MAX};
 };
 
@@ -86,7 +87,7 @@ struct EnvironmentStore {
     TextureEntry BrdfLut, SheenELut, CharlieLut;
     std::optional<EnvironmentPrefiltered> ImportedSceneWorld;
     mat3 SceneWorldRotation{1.f}; // From EXT_lights_image_based rotation quaternion.
-    EnvironmentPrefiltered EmptySceneWorld; // 1x1 flat-color cubemap; used when no EXT_lights_image_based asset is loaded.
+    EnvironmentPrefiltered EmptySceneWorld; // 1x1 flat-color cubemap used without an EXT_lights_image_based asset.
     EnvironmentSelection SceneWorld, StudioWorld;
 
     EnvironmentStore() = default;
@@ -102,9 +103,8 @@ enum class TextureColorSpace : uint8_t {
 };
 
 struct PendingTextureUpload {
-    // Index into a `gltf::Image` vector supplied at materialization (typically
-    // `gltf::SourceAssets::Images` on the viewport entity). Caller must keep the storage alive
-    // until the drain pass runs.
+    // Indexes the glTF image array supplied at materialization.
+    // The caller retains that array through the drain pass.
     struct GltfImageRef {
         uint32_t ImageIndex;
     };
@@ -124,11 +124,10 @@ struct PendingTextureUploads {
     std::vector<PendingTextureUpload> Items;
 };
 
-// An imported texture upload, recording the bindless slot baked into its PBRMaterial.
-// The pixel source lives in gltf::SourceAssets::Images, keyed by SourceImageIndex.
+// Records an imported texture's material slot and glTF source image.
 struct MaterializedTexture {
     uint32_t SamplerSlot;
-    uint32_t SourceImageIndex; // index into gltf::SourceAssets::Images
+    uint32_t SourceImageIndex;
     TextureColorSpace ColorSpace;
     MTL::SamplerAddressMode WrapS, WrapT;
     SamplerConfig Sampler;

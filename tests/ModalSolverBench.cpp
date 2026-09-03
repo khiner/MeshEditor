@@ -35,8 +35,6 @@ struct Corpus {
     const AcousticMaterial *DefaultMaterial;
 };
 
-// RealImpact scans are in metres with a per-object material.
-// Thingi10K models have neither, so they stand in as ceramic objects 0.30 m across, mid-range of RealImpact's 0.14 m to 0.48 m.
 constexpr Corpus Corpora[]{
     {"realimpact", 0.f, &materials::acoustic::Ceramic},
     {"thingi10k", 0.30f, &materials::acoustic::Ceramic},
@@ -58,8 +56,6 @@ constexpr std::string_view DefaultSamples[]{
 constexpr uint32_t NumExcitePositions{10}; // Matches the app's default excitable vertex count.
 constexpr modal::SolverConfig SolveConfig{};
 
-// What a change is checked against.
-// The corpora are not in the repo, so an unrecorded case is reported rather than assumed new.
 const fs::path SnapshotPath{fs::path{MESHEDITOR_SOURCE_DIR} / "tests" / "fixtures" / "TetCorpusSnapshot.txt"};
 
 // One case as a line: the mesh hash is the gate, and the counts say which phase moved when it trips.
@@ -301,7 +297,6 @@ ObjectResult RunObject(const Corpus &corpus, const fs::path &obj_path, const Run
             .MissingFaces = uint32_t(p.MissingFaceCount),
             .Hash = MeshHash(tets->Mesh),
         });
-        // The timing table carries these sizes in its own row, so it only wants what went wrong.
         if (opts.Blocks || !opts.Modes || !error.empty()) {
             Line(r.Out, "{:<28} {:>6} pts {:>6} tris -> {:>7} tets, {:>5} steiner | {:>8.5f} s | flips {:>6} splits {:>4} missE {:>4} missF {:>4} | {}", name + (arm_opts.Quality ? " q" : ""), points.size(), tris.size() / 3, p.TetCount, p.SteinerCount, tets_seconds, p.FlipCount, p.SplitCount, p.MissingEdgeCount, p.MissingFaceCount, error.empty() ? "OK" : ("INVALID: " + error));
         }
@@ -340,9 +335,7 @@ ObjectResult RunObject(const Corpus &corpus, const fs::path &obj_path, const Run
     return r;
 }
 
-// Synthetic interactive-edit loop. Solve once cold keeping the eigenpairs, then compare a cold
-// re-solve against a reusing one for a Poisson ratio edit (warm-started subspace iteration) and
-// a Young's modulus and density edit (analytically scaled eigenpairs, no eigensolve).
+// Compares cold and reused eigenpairs for Poisson-ratio, Young-modulus, and density edits.
 bool RunEditLoop(const Corpus &corpus, const fs::path &obj_path, float ratio) {
     std::string out;
     const auto name = obj_path.stem().string();
@@ -521,8 +514,7 @@ const Corpus *FindCorpus(std::string_view name) {
     }
     return nullptr;
 }
-} // namespace
-
+}
 int main(int argc, char **argv) {
     // Line buffering so a redirected run shows every object that finished before a hang.
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
@@ -553,7 +545,6 @@ int main(int argc, char **argv) {
         std::println("--snapshot takes 'write' or 'check'");
         return 1;
     }
-    // A signature holds nothing the solve produces, so a snapshot run skips modes unless asked, and records both quality arms.
     if (snap_write || snap_check) {
         opts.Tets = opts.QualityArm = true;
         opts.Modes = explicit_modes;
@@ -569,8 +560,6 @@ int main(int argc, char **argv) {
         std::println("corpus root not found: {} (run script/SetupTetCorpus)", root.string());
         return 1;
     }
-    // Each build carries its own random state, so an object reaches the same mesh whatever runs beside it.
-    // A solve is memory-heavy and its timings are what the corpus output tracks, so modes run one at a time.
     const unsigned threads = jobs > 0 ? jobs : (opts.Modes ? 1u : std::max(1u, std::thread::hardware_concurrency()));
 
     if (opts.Blocks) {

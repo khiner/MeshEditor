@@ -8,8 +8,7 @@
 #include <filesystem>
 #include <optional>
 
-// A modal solve's results. Stored in a write-once, content-hashed file, so a path's contents never
-// change and replaying an action log reproduces the same bytes.
+// Stores modal solve results in write-once, content-addressed files for deterministic replay.
 struct ModalModelData {
     ModalModes Modes;
     MassProperties Mass;
@@ -22,8 +21,8 @@ struct ModalModelData {
 // The modal results store.
 std::filesystem::path ModalModelsDir();
 
-// Writes `data` to a content-addressed file under ModalModelsDir() and returns its path relative
-// to it, reusing the existing file when identical content is already stored. Empty on IO failure.
+// Writes data under ModalModelsDir and returns its relative content-addressed path.
+// Reuses identical stored content and returns an empty path on I/O failure.
 std::filesystem::path SaveModalModelFile(const ModalModelData &);
 
 std::optional<ModalModelData> LoadModalModelFile(const std::filesystem::path &relative);

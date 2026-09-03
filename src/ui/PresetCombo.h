@@ -5,11 +5,11 @@
 #include <string>
 
 namespace ui {
-// A preset names itself, as either a literal or a string.
+// Return a preset's literal or string name.
 inline const char *PresetLabel(const char *name) { return name; }
 inline const char *PresetLabel(const std::string &name) { return name.c_str(); }
 
-// Picker listing `choices` by name, calling `pick` with the one the user chooses when it is not already current.
+// Display named choices and call pick when the selection changes.
 void PresetCombo(const char *label, const std::string &current, const auto &choices, auto &&pick) {
     if (!ImGui::BeginCombo(label, current.c_str())) return;
     for (const auto &choice : choices) {

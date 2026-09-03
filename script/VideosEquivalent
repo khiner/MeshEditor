@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
-# Exit 0 when two videos decode identically except for GPU render noise: at most MaxDiffFrames
-# frames, each with a tiny summed pixel difference. Anything beyond that exits 1. Prints
-# per-frame difference stats. Audio is compared too, with no tolerance: an offline render produces
-# the same samples every run.
-#
-# The corpus should be byte-identical across runs, and everything we control provably is:
-# with identical inputs and bit-identical Metal command streams, Apple's driver still renders
-# an occasional pixel one LSB off on sub-pixel-thin geometry. This tolerance absorbs exactly
-# that defect and nothing else. Delete it once ~16 VirtualCity renders produce one hash.
-#
+# Returns zero when videos differ only within MaxDiffFrames and the pixel-error threshold.
+# Requires audio samples to match exactly and prints per-frame difference statistics.
+# Apple's driver can vary one least-significant bit on occasional subpixel geometry despite identical Metal command streams.
+# Remove the tolerance after approximately 16 VirtualCity renders produce one hash.
 # Usage: VideosEquivalent <a> <b>
 import subprocess
 import sys
@@ -21,7 +15,7 @@ FFMPEG = "ffmpeg"
 
 def frame_hashes(path):
     """Return (dimensions, [per-frame md5]) from a single decode pass, as a completion callback."""
-    # `-an`: audio packet hashes would interleave with the frame hashes the differing indices address.
+    # Exclude audio packets so indices refer only to frame hashes.
     proc = subprocess.Popen(
         [FFMPEG, "-nostdin", "-loglevel", "error", "-i", path, "-an", "-f", "framemd5", "-"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,

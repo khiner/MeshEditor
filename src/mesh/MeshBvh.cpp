@@ -56,8 +56,7 @@ TrianglePoint ClosestPointOnTriangle(vec3 p, vec3 a, vec3 b, vec3 c) {
     if (d6 >= 0 && d5 <= d6) return {c, {0, 0, 1}};
 
     const float va = d3 * d6 - d5 * d4, vb = d5 * d2 - d1 * d6, vc = d1 * d4 - d3 * d2;
-    // Each edge region divides by that edge's squared length, so a zero-length edge cedes its region to whichever
-    // edge still has length, and a triangle collapsed to a point falls through to the degenerate case below.
+    // Zero-length edges defer to a nonzero edge; a point-degenerate triangle reaches the fallback below.
     const float ab_len2 = d1 - d3, ac_len2 = d2 - d6, bc_len2 = (d4 - d3) + (d5 - d6);
     if (vc <= 0 && d1 >= 0 && d3 <= 0 && ab_len2 > 0) {
         const float v = d1 / ab_len2;
@@ -105,7 +104,7 @@ SurfacePoint MeshBvh::ClosestPoint(std::span<const Vertex> vertices, std::span<c
     SurfacePoint best;
     float best_distance2 = std::numeric_limits<float>::max();
     // A median split halves the triangle count at every level, so the depth cannot exceed the width of a triangle index.
-    // The descent holds at most one node per level plus the sibling it deferred.
+    // The descent stores at most one node per level plus one deferred sibling.
     // Each entry carries the distance its box was ordered by, which the running best prunes against.
     std::array<std::pair<uint32_t, float>, 64> stack;
     uint32_t top = 0;

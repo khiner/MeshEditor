@@ -236,7 +236,7 @@ struct Pipelines {
     mtl::ComputePipeline MeshletPhase2Cull, MeshletPhase2RangeCull, MeshletPhase2Prefix;
     mtl::ComputePipeline OverlayJobBlockCount, OverlayJobPrefix, OverlayJobEmit;
     mtl::ComputePipeline DepthPyramidReduce;
-    // Finds each tile's largest motion, then marks every tile its streak crosses.
+    // Marks each tile intersected by the largest motion from every source tile.
     mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
     IblPrefilterPipelines IblPrefilter;
     // Mesh creation runs these three.

@@ -44,26 +44,22 @@ void ResetObjectPickKeys(GpuBuffers &buffers) {
     std::fill_n(buffers.ObjectPickKeys.Data(), GpuBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
 
-// Selection queries complete synchronously for immediate readback.
 void SubmitAndWait(MTL::CommandBuffer *command_buffer) {
     const profile::CpuScope scope{"SelectionSubmit"};
     command_buffer->commit();
     command_buffer->waitUntilCompleted();
 }
 
-// Where a click landed, and how far from it the raster may resolve an element.
 struct ElementPickTarget {
     uvec2 Px;
     uint32_t RadiusSq;
 };
 
-// A face resolves at the cursor pixel, and vertices and edges snap from within their radius.
 uint32_t ElementPickRadiusSq(Element element) {
     const uint32_t radius = element == Element::Face ? 0u : ElementSelectRadiusPx;
     return radius * radius;
 }
 
-// A pick rasters twice. The first raster finds the winning key, and the second takes the lowest id reporting it.
 ElementSelectQuery MakeElementQuery(
     const SelectionSlots &sel_slots, uvec4 box, uint32_t box_result_slot, const std::optional<ElementPickTarget> &pick, bool resolve_id
 ) {
@@ -85,7 +81,6 @@ void ResetElementPick(GpuBuffers &buffers) {
     *buffers.ElementPickId.Data() = EmptyElementPick;
 }
 
-// The element the two raster passes agreed on, or nothing when the cursor missed.
 std::optional<uint32_t> ReadNearestPickedElement(const GpuBuffers &buffers, uint32_t max_element_id) {
     const uint32_t id = *buffers.ElementPickId.Data();
     if (id == EmptyElementPick || id == 0 || id > max_element_id) return {};
@@ -96,9 +91,8 @@ uint32_t MaxElementBound(auto &&ranges) {
     return std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &r) { return std::max(total, r.Offset + r.Count); });
 }
 
-// The silhouette depth decodes the frame's visibility ids against the visible list that rasterized
-// them, so it records before the selection cull rewrites that list. Depth and cull record once, and
-// a pick then rasters twice over them while a box rasters once.
+// Records silhouette depth before selection culling rewrites the visible list used for ID decoding.
+// Picks raster twice over the shared depth and cull state; boxes raster once.
 void RunSelectionPass(
     entt::registry &r, mtl::PassChain &chain, bool render_depth, bool render_silhouette,
     std::optional<MeshletCullConfig> meshlet_cull, bool pick, auto &&record_draws
@@ -115,7 +109,7 @@ void RunSelectionPass(
     const auto extent = pipelines.Silhouette.Resources->DepthImage.Extent;
     const uint32_t raster_passes = pick ? 2u : 1u;
     for (uint32_t index = 0; index < raster_passes; ++index) {
-        // The selection raster tests depth without writing it, so the first pass hands the second the same depth.
+        // Preserve depth between the two read-only selection passes.
         const auto store = index + 1u < raster_passes ? MTL::StoreActionStore : MTL::StoreActionDontCare;
         const auto pass = mtl::MakePassDescriptor({}, mtl::LoadDepth(*pipelines.Silhouette.Resources->DepthImage, store));
         pass->setRenderTargetWidth(extent.Width);
@@ -216,7 +210,7 @@ std::optional<std::pair<entt::entity, uint32_t>> RunEditElementClick(
     );
     ctx.CommitResidency();
     auto *command_buffer = ctx.Queue->commandBuffer();
-    { // The chain closes its last pass as it goes out of scope, which the submit below needs.
+    { // End the final pass before submission.
         mtl::PassChain chain{command_buffer};
         RenderElementSelectionPass(
             r, chain, viewport, ranges, element, false, {}, {},
@@ -243,7 +237,7 @@ struct PixelRect {
 
 std::optional<PixelRect> ObjectQueryRect(const ObjectSelectQuery &query, mtl::Extent2D target) {
     const auto limit = std::bit_cast<uvec2>(target);
-    uvec2 lo{}, hi{}; // Exclusive high bound.
+    uvec2 lo{}, hi{};
     if (query.BoxResultSlot != InvalidSlot) {
         lo = numeric::Min(uvec2{query.Box.x, query.Box.y}, limit);
         hi = numeric::Min(uvec2{
@@ -322,7 +316,6 @@ void RenderSelectionPickPass(entt::registry &r, mtl::PassChain &chain, std::opti
         }
         if (object) {
             const ObjectSelectionPushConstants sel_pc{*object};
-            // Bone joints pick from the same persistent route and emission as the overlay.
             if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::BoneJoint)).Meshlets > 0u) {
                 selection.BoneSphere.Bind(encoder);
                 encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
@@ -395,12 +388,12 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, uint32_t &object_pick
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     const uint32_t next_object_id = r.ctx().get<const ObjectIdCounter>().Next;
-    if (next_object_id <= 1) return {}; // No objects have been assigned IDs yet
+    if (next_object_id <= 1) return {};
     const uint32_t max_object_id = std::min(next_object_id - 1, GpuBuffers::MaxSelectableObjects);
     if (max_object_id == 0) return {};
 
     const profile::CpuScope scope{"RunObjectPick"};
-    // ObjectPickKeys persists across clicks, with the high 8 bits of each packed key holding a per-click epoch tag.
+    // The high byte rejects stale persistent keys and a wrapped epoch clears the buffer.
     // A full reset runs only when the 8-bit epoch wraps, and readback filters stale keys by epoch.
     if (object_pick_epoch_tag == 0) {
         ResetObjectPickKeys(buffers);
@@ -410,7 +403,7 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, uint32_t &object_pick
 
     std::fill_n(buffers.ObjectPickSeenBitset.Data(), (max_object_id + 31) / 32, 0u);
     auto *command_buffer = ctx.Queue->commandBuffer();
-    { // The chain closes its last pass as it goes out of scope, which the submit below needs.
+    { // End the final pass before submission.
         mtl::PassChain chain{command_buffer};
         RenderSelectionPickPass(
             r, chain,
@@ -433,7 +426,7 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, uint32_t &object_pick
 
     struct SortedHit {
         uint32_t DistSq;
-        uint32_t Layer; // 0 = bone (on top in main pass), 1 = other
+        uint32_t Layer;
         uint32_t Depth;
         entt::entity Entity;
         auto operator<=>(const SortedHit &) const = default;
@@ -466,7 +459,7 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, std::pair<uvec2, uvec2
     if (box_min.x > box_max.x || box_min.y > box_max.y) return {};
     auto &buffers = r.ctx().get<GpuBuffers>();
     const uint32_t next_object_id = r.ctx().get<const ObjectIdCounter>().Next;
-    if (next_object_id <= 1) return {}; // No objects have been assigned IDs yet
+    if (next_object_id <= 1) return {};
 
     const uint32_t max_object_id = std::min(next_object_id - 1, GpuBuffers::MaxSelectableObjects);
 
@@ -474,7 +467,7 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, std::pair<uvec2, uvec2
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     memset(buffers.ObjectBoxBitset.Data(), 0, ((max_object_id + 31) / 32) * sizeof(uint32_t));
     auto *command_buffer = r.ctx().get<const mtl::Context>().Queue->commandBuffer();
-    { // The chain closes its last pass as it goes out of scope, which the submit below needs.
+    { // End the final pass before submission.
         mtl::PassChain chain{command_buffer};
         RenderSelectionPickPass(
             r, chain,

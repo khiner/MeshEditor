@@ -18,12 +18,12 @@ struct Recording {
 };
 
 // Render the master mix, which is far-field pressure in pascals at 1 m.
-// `monitor` converts the result to device units as the final stage, mapping 20 Pa (120 dB SPL) to full scale and soft-limiting what still crests past it.
-// Capture paths leave it unset and convert the pressure themselves.
+// `monitor` maps 20 Pa to full scale and soft-limits higher pressures for device output.
+// Capture paths pass null and convert pressure separately.
 void ProcessAudio(entt::registry &, entt::entity viewport, float *output, uint32_t frame_count, bool monitor = false);
 
 // Convert captured pressure to device units in place, at the monitor level.
-// `limiter` holds the envelope across calls, one per stream monitored.
+// `limiter` preserves the envelope across calls for one monitored stream.
 void MonitorFrames(entt::registry &, std::span<float>, MonitorLimiter &);
 
 // Capture of the master output, for muxing into a video recording.
@@ -34,7 +34,6 @@ void EndAudioCapture(entt::registry &);
 // Append everything the device has produced since the last call.
 void DrainAudioCapture(entt::registry &, std::vector<float> &);
 
-// Render exactly `frame_count` frames of the master output on the calling thread, for capture with no device, where the result is deterministic and aligned to whatever advanced the simulation.
 void RenderAudioOffline(entt::registry &, entt::entity viewport, std::vector<float> &, uint32_t frame_count);
 
 void RegisterAudioComponentHandlers(entt::registry &);
@@ -50,15 +49,15 @@ void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 // Draw the viewport-global audio synthesis controls.
 void DrawGlobalSynthControls(entt::registry &, entt::entity viewport);
 
-// Draw a live view of the audio model: what the bank holds, and where the fixed-size pools stand against demand.
+// Draws audio bank and fixed-pool utilization.
 void DrawAudioDebug(const entt::registry &);
 
 // Rebuild the entity's ContactDynamics from its MassProperties, ModalModes, and mesh (surface curvature).
 // Removes ContactDynamics when the inputs are missing.
 void UpdateContactDynamics(entt::registry &, entt::entity sound_entity);
 
-// Density ratio of the mesh's current acoustic material to the density the entity's modal model was
-// solved at. Mass properties are stored at the solved density and scale linearly by this. 1 when unknown.
+    // Ratio of current acoustic density to solved modal density, or one when unknown.
+    // Stored mass properties scale linearly by this ratio.
 double ModalDensityRatio(const entt::registry &, entt::entity sound_entity);
 
 // Apply a modal solve result file (relative to ModalModelsDir()) to the sound entity.
@@ -67,13 +66,11 @@ void ApplyModalModel(entt::registry &, entt::entity sound_entity, const std::fil
 // Draw the Audio controls for a sound object entity (has SoundVerticesModel).
 void DrawObjectAudioControls(entt::registry &, entt::entity viewport, entt::entity sound_entity, entt::entity mesh_entity);
 
-// Draw the in-flight modal solve jobs as a progress overlay anchored to the current window's
-// lower-left corner. Call inside the viewport window.
+// Draw the in-flight modal solve jobs as a progress overlay anchored to the current window's lower-left corner. Call inside the viewport window.
 void DrawModalJobsOverlay(entt::registry &);
 
 // {path, frames} pair, where path is the dedup key in the scene-level sample store.
-// On-disk audio uses its absolute file path. A synthetic source (e.g. RealImpact) uses a URI-style
-// virtual key that cannot be mistaken for a real file.
+// On-disk audio uses its absolute file path. A synthetic source (e.g. RealImpact) uses a URI-style virtual key that cannot be mistaken for a real file.
 using LoadedSample = std::pair<std::filesystem::path, std::vector<float>>;
 
 // Assign sample[i] to mesh_vertices[i]. Used by RealImpact initial load and mic swap.

@@ -8,7 +8,8 @@
 #include <optional>
 #include <vector>
 
-// Per-vertex attributes. Absent channels use GPU defaults.
+// Per-vertex attributes.
+// Absent channels use GPU defaults.
 struct MeshVertexAttributes {
     std::optional<std::vector<vec3>> Normals{};
     std::optional<std::vector<vec4>> Tangents{}, Colors0{};
