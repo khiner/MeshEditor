@@ -387,10 +387,9 @@ void ClearHistory(entt::registry &r, entt::entity viewport) {
 void ValidateRoundTrip(entt::registry &r, entt::entity viewport) {
     QuiesceScene(r, viewport);
 
+    // A headless capture logs beside its render rather than in the project, so only the round trip checks it.
     const auto current_log = Paths::Project() / SessionLogName;
-    if (std::error_code ec; !fs::exists(current_log, ec)) {
-        std::println(stderr, "[snapshot] replay SKIPPED (no log)");
-    } else {
+    if (std::error_code ec; fs::exists(current_log, ec)) {
         const auto expected = snapshot::SnapshotSceneState(r);
         ReplayLogIntoNewSession(r, viewport, current_log);
         const auto actual = snapshot::SnapshotSceneState(r);
@@ -1255,9 +1254,6 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     int bench_frames = capture.BenchFrames;
     BenchmarkDriver benchmark{r, capture};
     bool profile_cleared{false};
-#ifdef VALIDATE_ACTIONS
-    uint64_t validated_action_index{0}; // The log position the last validation covered.
-#endif
     bool submitted{false};
     bool done{false};
     // When the scene first drew anything. A capture run waits for its meshlets, so this lands with the settle.
@@ -1285,13 +1281,6 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             const profile::CpuScope scope{"Frame"};
             if (bench_frames > 0 && settled) benchmark.Apply(r, viewport, extent);
             driver.EmitFrameActions(r, viewport, settled, extent);
-#ifdef VALIDATE_ACTIONS
-            // A recording spans frames and would not survive the validation's scene reset, so only still renders and plays validate.
-            if (const auto *index = r.try_get<const ActionIndex>(viewport); index && index->Index != validated_action_index && !driver.RecordingMode()) {
-                ValidateRoundTrip(r, viewport);
-                validated_action_index = r.get<const ActionIndex>(viewport).Index;
-            }
-#endif
             action::ApplyEmitted(r, viewport);
             ReportActionErrors(r);
             // An audio-only recording consumes no images, so once it is underway the tick drops its render request and the sim still steps through SubmitViewport's event processing while the offline audio renders in CaptureRecordFrame with no GPU frame behind it.
