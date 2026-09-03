@@ -306,11 +306,19 @@ void NewScene(entt::registry &r, entt::entity viewport, bool empty) {
     if (!empty) action::Emit(action::io::LoadDefaultScene{});
 }
 
-// Replay a standalone `.actions` log into a fresh scratch session, keeping the live view.
-void ReplayLogIntoNewSession(entt::registry &r, entt::entity viewport, const fs::path &log_path) {
+// Clear and replay an action log without changing the current project's directory.
+void ReplayLogInPlace(entt::registry &r, entt::entity viewport, const fs::path &log_path) {
     auto live_view_cameras = GetViewCameraState(r, viewport);
-    StartScratchSession(r, viewport);
+    QuiesceScene(r, viewport);
+    const auto session_log = action::StopLog();
+    ClearScene(r, viewport);
+    const auto resumed_log = session_log.empty() ? Paths::Project() / SessionLogName : session_log;
+    std::error_code ec;
+    const bool replaying_session_log = fs::equivalent(log_path, resumed_log, ec);
+    if (!replaying_session_log) action::StartLog(resumed_log);
     ReplayPreservingView(r, viewport, log_path, std::move(live_view_cameras));
+    if (!replaying_session_log) action::StopLog();
+    action::StartLog(resumed_log, /*append=*/true);
 }
 
 // Load a snapshot file and return its action-log position.
@@ -351,7 +359,7 @@ void OpenProjectFile(entt::registry &r, entt::entity viewport, const fs::path &a
 
 void OpenFile(entt::registry &r, entt::entity viewport, const fs::path &path) {
     if (const auto ext = path.extension(); ext == ProjectExt) OpenProjectFile(r, viewport, path);
-    else if (ext == ActionsExt) ReplayLogIntoNewSession(r, viewport, path);
+    else if (ext == ActionsExt) ReplayLogInPlace(r, viewport, path);
     else action::Emit(action::io::Load{.Path = path});
 }
 
@@ -391,7 +399,7 @@ void ValidateRoundTrip(entt::registry &r, entt::entity viewport) {
     const auto current_log = Paths::Project() / SessionLogName;
     if (std::error_code ec; fs::exists(current_log, ec)) {
         const auto expected = snapshot::SnapshotSceneState(r);
-        ReplayLogIntoNewSession(r, viewport, current_log);
+        ReplayLogInPlace(r, viewport, current_log);
         const auto actual = snapshot::SnapshotSceneState(r);
         if (const auto diff = snapshot::Compare(expected, actual); !diff.Equal) {
             std::println(stderr, "[snapshot] replay DIVERGED at byte {} (expected {} / actual {})", diff.FirstDifferingByte, expected.size(), actual.size());
@@ -641,8 +649,10 @@ bool SeedScene(entt::registry &r, entt::entity viewport, const CaptureRequest &c
     const fs::path path = initial_file ? initial_file : "";
     bool loaded{true};
     if (path.extension() == ProjectExt) OpenProjectFile(r, viewport, path);
-    else if (path.extension() == ActionsExt) ReplayLogIntoNewSession(r, viewport, path);
-    else {
+    else if (path.extension() == ActionsExt) {
+        Paths::SetProject(path.parent_path());
+        ReplayLogInPlace(r, viewport, path);
+    } else {
         if (capture.RenderBasename.empty()) {
             Paths::SetProject(action::ReserveRestoreSession());
             action::StartLog(Paths::Project() / SessionLogName);
@@ -882,6 +892,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     InitFonts();
 
     const auto viewport = InitEngine(r);
+    InitAudioSystem(r);
     InitViewportMedia(r);
     SetupScene(r, viewport); // Before the first frame reads viewport state.
     // Capture the DPI scale (only set during NewFrame) before priming DPI-scaled GPU state like edge-line width.
@@ -1219,9 +1230,10 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     if (last_frame) last_frame->waitUntilCompleted();
 
     r.ctx().erase<AudioDeviceResource>(); // Stops and uninitializes the output device.
+    DeinitAudioSystem(r);
 
     // GpuBuffers must outlive MeshStore allocations retired during teardown.
-    DeinitViewportMedia(r); // App-only media (icons/modal audio/ImGui texture), while the device + GpuBuffers are alive.
+    DeinitViewportMedia(r); // App-only media (icons/ImGui texture), while GpuBuffers are alive.
     DeinitViewport(r, viewport);
 
     ImGui_ImplMetal_Shutdown();
@@ -1232,9 +1244,6 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
 // Seed the scene, run the fixed-step capture loop, and finish the session log.
 bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *initial_file, bool empty, const CaptureRequest &capture) {
-    // Headless has no output device, so the audio system is created only for runs that may capture audio, keeping other renders free of the modal render pool's threads.
-    // A render decides that from the scene it loads, and the load fills the bank, so it is created first.
-    if (capture.RecordAudio || !capture.RenderBasename.empty()) InitAudioSystem(r);
     const auto scene_start = std::chrono::steady_clock::now();
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/true);
     // A scene that failed to load has nothing to render, so the run ends here with the failure already on stderr rather than recording silence and reporting a clean exit.
@@ -1324,6 +1333,7 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     entt::registry r;
     r.ctx().emplace<mtl::Context>();
     const auto viewport = InitEngine(r);
+    InitAudioSystem(r);
     SetupScene(r, viewport);
     r.ctx().get<FrameState>().DisplayFramebufferScale = {2, 2}; // Match the app's retina rendering (pixel density and DPI-scaled GPU state like edge-line width).
     ProcessComponentEvents(r, viewport); // Prime derived state before the first frame reads it.
@@ -1331,6 +1341,7 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     scenes(r, viewport);
 
     WaitForRender(r);
+    DeinitAudioSystem(r);
     DeinitViewport(r, viewport);
 }
 

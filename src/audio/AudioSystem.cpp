@@ -1163,6 +1163,8 @@ void InitAudioSystem(entt::registry &r) {
     RegisterAudioComponentHandlers(r);
 }
 
+void DeinitAudioSystem(entt::registry &r) { r.ctx().erase<ModalAudio>(); }
+
 void RenderAudioOffline(entt::registry &r, entt::entity viewport, std::vector<float> &out, uint32_t frame_count) {
     const auto first = out.size();
     out.resize(first + frame_count);

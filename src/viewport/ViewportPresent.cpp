@@ -3,7 +3,6 @@
 #include "Camera.h"
 #include "VideoRecorder.h"
 #include "audio/AudioSystem.h"
-#include "audio/ModalAudio.h"
 #include "metal/ImGuiTexture.h"
 #include "render/GpuBuffers.h"
 #include "render/Pipelines.h"
@@ -52,12 +51,10 @@ std::pair<uvec2, mtl::Extent2D> GetCaptureRegion(const entt::registry &r) {
 
 void InitViewportMedia(entt::registry &r) {
     LoadViewportIcons(r);
-    InitAudioSystem(r);
 }
 
 void DeinitViewportMedia(entt::registry &r) {
     r.ctx().erase<ViewportIcons>();
-    r.ctx().erase<ModalAudio>();
 }
 
 void DisplayViewport(entt::registry &r, entt::entity viewport) {

@@ -43,6 +43,8 @@ void RegisterAudioComponentHandlers(entt::registry &);
 // Must run before a scene loads, so that loading one populates the bank.
 // The output device is separate, and capture works without it.
 void InitAudioSystem(entt::registry &);
+// Destroy the modal audio context after any output device has stopped.
+void DeinitAudioSystem(entt::registry &);
 void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 
 // Draw the viewport-global audio synthesis controls.
