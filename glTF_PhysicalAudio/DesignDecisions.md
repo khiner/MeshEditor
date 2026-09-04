@@ -56,7 +56,7 @@ Scalar per-position gains make tangential and normal impulses at one point produ
 
 **Storage.** Vectors require three times the scalar storage. Langlois et al. 2014 report approximately 100:1 transparent compression of mode-shape fields; a later extension can define compression if needed.
 
-**Implication.** MeshEditor's `mesh2modes` must be upgraded to retain eigenvector 3-vectors (known follow-up).
+**Implication.** MeshEditor's FastFEM integration retains eigenvector 3-vectors.
 
 ## Self-contained sample positions
 
@@ -528,4 +528,4 @@ Everything excluded *composes with* the modal core rather than replacing it:
 - Friction-induced vibration (stick-slip squeal) as an additional force term on the same contact.
 - Mode-shape compression (Langlois-style) if asset sizes demand it.
 - Add a `KHR_interactivity` excitation node for impact and sustained-contact state after that ecosystem stabilizes.
-- MeshEditor conformance: retain eigenvector 3-vectors in `mesh2modes`, import/export of the extension, direction-aware excitation, sustained-contact rendering.
+- MeshEditor conformance: retain FastFEM eigenvector 3-vectors, import and export the extension, apply direction-aware excitation, and render sustained contact.

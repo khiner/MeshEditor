@@ -4,7 +4,7 @@
 
 #include "audio/ContactSurface.h"
 
-#include "ModalBench.h"
+#include "ModalRenderFixture.h"
 
 #include <cmath>
 #include <memory>

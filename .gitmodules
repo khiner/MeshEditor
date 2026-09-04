@@ -15,9 +15,6 @@
 [submodule "lib/lunasvg"]
 	path = lib/lunasvg
 	url = git@github.com:sammycage/lunasvg.git
-[submodule "lib/spectra"]
-	path = lib/spectra
-	url = git@github.com:yixuan/spectra.git
 [submodule "lib/tinyobjloader"]
 	path = lib/tinyobjloader
 	url = git@github.com:tinyobjloader/tinyobjloader.git
@@ -64,3 +61,6 @@
 [submodule "lib/metal-cpp"]
 	path = lib/metal-cpp
 	url = https://github.com/apple/metal-cpp.git
+[submodule "lib/FastFEM"]
+	path = lib/FastFEM
+	url = git@github.com:khiner/FastFEM.git

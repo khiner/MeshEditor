@@ -1,46 +1,12 @@
 #pragma once
 
+#include <FastFEM/Surface2Modes.h>
+
 #include "numeric/vec2.h"
 
-struct uvec3 {
-    using value_type = uint32_t;
-    static constexpr size_t ComponentCount = 3;
-    uint32_t x{}, y{}, z{};
-    constexpr uvec3() = default;
-    constexpr uvec3(uint32_t v) : x(v), y(v), z(v) {}
-    template<typename X, typename Y, typename Z> constexpr uvec3(X x, Y y, Z z) : x(uint32_t(x)), y(uint32_t(y)), z(uint32_t(z)) {}
-    constexpr uint32_t &operator[](size_t i) { return (&x)[i]; }
-    constexpr const uint32_t &operator[](size_t i) const { return (&x)[i]; }
-};
-
-struct vec3 {
-    using value_type = float;
-    static constexpr size_t ComponentCount = 3;
-    float x{}, y{}, z{};
-    constexpr vec3() = default;
-    constexpr vec3(float v) : x(v), y(v), z(v) {}
-    template<typename X, typename Y, typename Z> constexpr vec3(X x, Y y, Z z) : x(float(x)), y(float(y)), z(float(z)) {}
-    constexpr vec3(vec2 xy, float z) : x(xy.x), y(xy.y), z(z) {}
-    template<typename V> constexpr explicit vec3(const V &v)
-        requires requires { v.x; v.y; v.z; }
-        : x(v.x), y(v.y), z(v.z) {}
-    constexpr float &operator[](size_t i) { return (&x)[i]; }
-    constexpr const float &operator[](size_t i) const { return (&x)[i]; }
-};
-
-struct dvec3 {
-    using value_type = double;
-    static constexpr size_t ComponentCount = 3;
-    double x{}, y{}, z{};
-    constexpr dvec3() = default;
-    constexpr dvec3(double v) : x(v), y(v), z(v) {}
-    constexpr dvec3(double x, double y, double z) : x(x), y(y), z(z) {}
-    template<typename V> constexpr explicit dvec3(const V &v)
-        requires requires { v.x; v.y; v.z; }
-        : x(v.x), y(v.y), z(v.z) {}
-    constexpr double &operator[](size_t i) { return (&x)[i]; }
-    constexpr const double &operator[](size_t i) const { return (&x)[i]; }
-};
+using uvec3 = fastfem::UVec3;
+using vec3 = fastfem::Vec3;
+using dvec3 = fastfem::DVec3;
 
 namespace numeric {
 using ::dvec3;

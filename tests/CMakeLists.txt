@@ -113,37 +113,10 @@ target_include_directories(MeshEditorActionSerializeTest SYSTEM PRIVATE ${CMAKE_
 target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
 mesheditor_test_defaults(MeshEditorActionSerializeTest)
 
-set(REALIMPACT_DATASET_DIR "${CMAKE_SOURCE_DIR}/external/RealImpact/dataset" CACHE PATH "RealImpact dataset directory")
-set(TET_CORPUS_DIR "${CMAKE_SOURCE_DIR}/external/TetCorpus" CACHE PATH "Tetrahedralizer mesh corpora directory")
-
-# Links the shared tetrahedralization, assembly, and eigensolver sources.
-function(mesheditor_solve_target target)
-    add_executable(${target} ${ARGN}
-        ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp
-        ${CMAKE_SOURCE_DIR}/src/audio/CholeskyShiftInvert.cpp
-        ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp
-        ${CMAKE_SOURCE_DIR}/src/mesh/Tetrahedralize.cpp
-        ${CMAKE_SOURCE_DIR}/src/numeric/Predicates.cpp
-    )
-    target_include_directories(${target} PRIVATE
-        ${CMAKE_SOURCE_DIR}/src
-    )
-    target_include_directories(${target} SYSTEM PRIVATE
-        ${EIGEN3_INCLUDE_DIR}
-        ${CMAKE_SOURCE_DIR}/lib/spectra/include
-        ${CMAKE_SOURCE_DIR}/lib/tinyobjloader
-    )
-    target_link_libraries(${target} PRIVATE Boost::ut meshoptimizer tinyobjloader "-framework Accelerate")
-    mesheditor_test_defaults(${target})
-endfunction()
-
-mesheditor_solve_target(MeshEditorModalSolverTest ModalSolverTest.cpp)
-target_compile_definitions(MeshEditorModalSolverTest PRIVATE REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
-
-mesheditor_solve_target(MeshEditorModalSolve ModalSolveTool.cpp)
-
-mesheditor_solve_target(MeshEditorModalSolverBench ModalSolverBench.cpp ${CMAKE_SOURCE_DIR}/src/audio/RealImpact.cpp)
-target_compile_definitions(MeshEditorModalSolverBench PRIVATE TET_CORPUS_DIR="${TET_CORPUS_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_executable(MeshEditorModalSolveIntegrationTest ModalSolveIntegrationTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ModalSolve.cpp)
+target_include_directories(MeshEditorModalSolveIntegrationTest PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(MeshEditorModalSolveIntegrationTest PRIVATE Boost::ut FastFEM::FastFEM)
+mesheditor_test_defaults(MeshEditorModalSolveIntegrationTest)
 
 add_executable(MeshEditorCompressTest CompressTest.cpp ${CMAKE_SOURCE_DIR}/src/Compress.cpp)
 target_include_directories(MeshEditorCompressTest PRIVATE

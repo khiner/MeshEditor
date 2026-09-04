@@ -40,7 +40,7 @@ inline ModalEvent ImpactEvent(uint32_t object, float impulse, uint32_t ex_pos = 
     return {.Kind = ModalEventKind::Impact, .Object = object, .ExPos = ex_pos, .Jx = impulse, .Jy = 0.5f * impulse, .Jz = 0.f, .PulseStep = pulse_step, .PulseGamma = 20.f, .AccelAmp = 0.f};
 }
 
-// One bank of identical objects, ready to render.
+// A bank of identical objects, ready to render.
 struct ModalScene {
     ModalAudio Audio;
     std::vector<uint32_t> Objects;

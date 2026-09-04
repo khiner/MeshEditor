@@ -36,11 +36,12 @@ jobs:
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build tests
-        run: cmake --build build --target MeshEditorTests MeshEditorActionSerializeTest
+        run: cmake --build build --target MeshEditorTests MeshEditorActionSerializeTest MeshEditorModalSolveIntegrationTest
 
       - name: Run tests
         run: |
           ./build/tests/MeshEditorActionSerializeTest
+          ./build/tests/MeshEditorModalSolveIntegrationTest
           ./build/tests/MeshEditorTests
 
   # Solve the RealImpact corpus and publish mode values and solve timing.
@@ -78,7 +79,7 @@ jobs:
         run: python3 script/SetupTetCorpus --thingi10k
 
       - name: Install dependencies
-        run: brew install llvm ninja eigen
+        run: brew install llvm ninja
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -87,27 +88,24 @@ jobs:
 
       - name: Configure
         run: >
-          cmake -B build -G Ninja
-          -DMESHEDITOR_APP=OFF
-          -DCMAKE_BUILD_TYPE=Debug
+          cmake -S lib/FastFEM -B build-fastfem -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DFASTFEM_REALIMPACT_DATASET_DIR="$PWD/external/RealImpact/dataset"
+          -DFASTFEM_TET_CORPUS_DIR="$PWD/external/TetCorpus"
           -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang
           -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++
           -DCMAKE_C_COMPILER_LAUNCHER=ccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
-        run: cmake --build build --target MeshEditorModalSolverTest MeshEditorModalSolverBench
+        run: cmake --build build-fastfem --target FastFEMModalSolverTest FastFEMFiniteCellRealMeshTest FastFEMTetCorpusTest FastFEMFiniteCellAudioCorpus
 
-      - name: Run modal solver test
-        run: ./build/tests/MeshEditorModalSolverTest
-
-      # Require the generated tetrahedral meshes to match the stored snapshot.
-      - name: Check the tet corpus snapshot
-        run: ./build/tests/MeshEditorModalSolverBench --dataset realimpact --dataset thingi10k --snapshot check
+      - name: Run modal solver tests
+        run: ctest --test-dir build-fastfem -R 'FastFEMModalSolver|FastFEMFiniteCellRealMesh|FastFEMTetCorpus' --output-on-failure -j1
 
       - name: Run modal corpus
         shell: bash
-        run: ./build/tests/MeshEditorModalSolverBench --corpus | tee modal-corpus.txt
+        run: ./build-fastfem/FastFEMFiniteCellAudioCorpus 6 128 all | tee modal-corpus.txt
 
       - name: Upload corpus artifact
         uses: actions/upload-artifact@v4

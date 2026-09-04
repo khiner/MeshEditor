@@ -191,14 +191,14 @@ renders the whole corpus into `render_candidates/` with `FLAGS` handed to every 
 - Apple SIMD: Numeric vector/matrix types + math
 - [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
 - macOS Core Audio: HAL output and native audio-file I/O
-- [Spectra](https://github.com/yixuan/spectra) Estimate eigenvalues/vectors for modal analysis
+- [FastFEM](https://github.com/khiner/FastFEM): Tetrahedralization, finite-element assembly, and modal eigensolves
 - [fastgltf](https://github.com/spnda/fastgltf) glTF 2.0 scene loading
 - [JoltPhysics](https://github.com/jrouwe/JoltPhysics): Rigid body physics
 - [basis_universal](https://github.com/BinomialLLC/basis_universal) KTX2 texture transcoding (`KHR_texture_basisu`)
 - [libwebp](https://github.com/webmproject/libwebp) WebP texture decoding and lossless snapshot/texture encoding (`EXT_texture_webp`)
 - [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply): `.obj` and `.ply` mesh loading
 - [lunasvg](https://github.com/sammycage/lunasvg): Render SVG icons to bitmaps
-- [Accelerate](https://developer.apple.com/documentation/accelerate): vDSP Fourier transforms behind the spectrum plots, and BLAS/sparse Cholesky behind the modal solve
+- [Accelerate](https://developer.apple.com/documentation/accelerate): vDSP Fourier transforms behind the spectrum plots and FastFEM's BLAS/LAPACK/sparse kernels
 - [ImPlot](https://github.com/epezent/implot): Plotting
 - [boost-ext/ut](https://github.com/boost-ext/ut): Testing
 
@@ -261,7 +261,7 @@ $ ./build/tests/MeshEditorTests
 | `MeshEditorContactModelTest` | Hertz contact time, effective mass, inertia decomposition |
 | `MeshEditorModalRenderTest` | Superposition, thread independence, and the click's rate independence |
 | `MeshEditorCompressTest` | `.project` archive round trip |
-| `MeshEditorModalSolverTest` | Check some closed forms against computed modes. Synthetic shapes and every RealImpact object tetrahedralized and structurally validated at simplification ratios. |
+| `MeshEditorModalSolveIntegrationTest` | FastFEM surface solves, modal-component conversion, warm-start retention, and material rescaling |
 
 `SURFACE_AUDIO=1` builds the surface-contact audio model (`src/audio/surface/`) and its own tests,
 benches and scores under `tests/surface/`. See [src/audio/SurfaceContact.h](src/audio/SurfaceContact.h)
@@ -278,20 +278,7 @@ replays into a fresh session and the scene saves, clears and restores, aborting 
 $ VALIDATE_ACTIONS=1 script/Build
 ```
 
-* `MeshEditorModalSolverTest` reads `external/RealImpact`, and skips its dataset cases when that submodule isn't initialized.
-* `MeshEditorModalSolverBench` runs the corpora under `external/TetCorpus`, built by `script/SetupTetCorpus`: `realimpact` links the 50 scans out of the submodule, `thingi10k` downloads 60 models with `--thingi10k`.
-
-```sh
-$ script/SetupTetCorpus --thingi10k
-$ ./build/tests/MeshEditorModalSolverBench --dataset realimpact --dataset thingi10k --snapshot check
-```
-
-* `--dataset realimpact|thingi10k` selects a corpus, and repeats to run several. Defaults to `realimpact`.
-  - thingi10k object modes are solved as ceramic objects 0.30 m across.
-* `--snapshot check` compares each case against `tests/fixtures/TetCorpusSnapshot.txt`; `--snapshot write` regenerates that file. Both run the base and quality configurations and solve modes only with `--modes`.
-* `--no-modes` stops after tetrahedralizing, and `--no-tets` reports the surfaces alone.
-* `--corpus` prints a block per model instead of a timing row.
-* `--edit-loop` compares cold against warm-started re-solves.
+FastFEM owns the analytical, tetrahedralization, real-mesh, and performance corpora documented in [`lib/FastFEM/README.md`](lib/FastFEM/README.md).
 
 ### Update submodules
 

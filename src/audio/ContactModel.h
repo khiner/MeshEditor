@@ -8,15 +8,7 @@
 #include <cstdint>
 #include <vector>
 
-// KHR_audio_modal mass properties use the baked size and solved material density.
-struct MassProperties {
-    double Mass{0}; // kg
-    vec3 CenterOfMass{0}; // node-local units
-    vec3 InertiaDiagonal{0}; // principal moments, kg·m²
-    quat InertiaOrientation{1, 0, 0, 0}; // principal inertia axes -> node-local
-
-    bool operator==(const MassProperties &) const = default;
-};
+using MassProperties = fastfem::MassProperties;
 
 // Precomputed SI contact dynamics aligned with ModalModes::Vertices and Positions.
 struct ContactDynamics {

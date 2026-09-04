@@ -802,23 +802,25 @@ void CompareRegistries(std::string_view name, entt::registry &a, entt::registry 
 }
 
 const ModalModelData SampleModal{
-    .Modes = {
-        .Freqs = {110.f, 275.5f},
-        .T60s = {1.5f, 0.8f},
-        .Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}, {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}}},
-        .Vertices = {0, 1, 2},
-        .Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}, {-0.1f, 0.5f, 0.3f}},
-        .Indices = {0, 1, 2},
-    },
+    .Modes = [] {
+        ModalModes modes;
+        modes.Freqs = {110.f, 275.5f};
+        modes.T60s = {1.5f, 0.8f};
+        modes.Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}, {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}}};
+        modes.Vertices = {0, 1, 2};
+        modes.Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}, {-0.1f, 0.5f, 0.3f}};
+        modes.Indices = {0, 1, 2};
+        return modes; }(),
     .Mass = {2.5, {0.1f, 0.2f, 0.3f}, {0.4f, 0.5f, 0.6f}, {1.f, 0.f, 0.f, 0.f}},
     .Tets = {{{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}}, {0, 1}},
-    .Summary = {
-        .Eigenvalues = {4.7e5, 3.0e6},
-        .Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}, {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}}},
-        .SolvedMaterial = materials::acoustic::Ceramic.Properties,
-        .TetInputsHash = 0x1234abcd,
-        .SolvedVertices = {0, 1, 2},
-    },
+    .Summary = [] {
+        ModalEigenSummary summary;
+        summary.Eigenvalues = {4.7e5, 3.0e6};
+        summary.Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}, {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}}};
+        summary.SolvedMaterial = materials::acoustic::Ceramic.Properties;
+        summary.TetInputsHash = 0x1234abcd;
+        summary.SolvedVertices = {0, 1, 2};
+        return summary; }(),
 };
 } // namespace
 int main(int argc, const char **argv) {

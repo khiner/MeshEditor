@@ -10,7 +10,6 @@
 #include "action/Audio.h"
 #include "audio/WavWriter.h"
 #include "mesh/MeshStore.h"
-#include "mesh/Tets.h"
 #include "physics/PhysicsContact.h"
 #include "physics/PhysicsTypes.h"
 #include "selection/SelectionBitset.h"
@@ -18,13 +17,14 @@
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCamera.h"
 #include "viewport/ViewportEvents.h"
+#include <FastFEM/SolveMonitor.h>
 #include <atomic>
 
 #include "ModalModelFile.h"
+#include "ModalSolve.h"
 #include "ModalWarmStart.h"
 #include "implot.h"
 #include "imspinner.h"
-#include "mesh2modes.h"
 
 #include "ui/HelpMarker.h" // depends on imgui
 #include "ui/PresetCombo.h"
@@ -548,7 +548,7 @@ FFTData ComputeFft(const std::vector<float> &frames, uint32_t sample_rate) {
 
 struct ModalGenerationResult {
     std::filesystem::path ModelPath; // Result file, relative to ModalModelsDir(). Empty when the solve failed or was cancelled
-    std::shared_ptr<const Eigen::MatrixXf> Basis; // Full eigenvector basis, seeding the next solve
+    fastfem::ModeBasis Basis; // Full eigenvector basis, seeding the next solve
     size_t TetInputsHash;
 };
 
@@ -805,7 +805,7 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
         }
     }
     const auto &settings = r.get<const ModalSolveSettings>(e);
-    const modal::SolverConfig solver_config{
+    const fastfem::SolverConfig solver_config{
         .MinModeFreq = settings.MinModeFreq,
         .MaxModeFreq = settings.MaxModeFreq,
         .NumModes = settings.NumModes,
@@ -814,31 +814,37 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
     };
     auto excite_positions = inputs.Vertices | transform([&](uint32_t v) { return inputs.Positions[v]; }) | to<std::vector<vec3>>();
     // The most recent solve's basis seeds this one when it was over the same tets.
-    std::shared_ptr<const Eigen::MatrixXf> warm_basis;
+    fastfem::ModeBasis warm_basis;
     if (const auto &warm = r.ctx().get<const ModalWarmStart>(); warm.Basis && warm.TetInputsHash == inputs.Hash) warm_basis = warm.Basis;
     auto work = [inputs = std::move(inputs), material_props = material->Properties, excite_positions = std::move(excite_positions), solver_config, warm_basis = std::move(warm_basis)](JobMonitor &monitor) mutable -> ModalGenerationResult {
         // Capture sample-surface triangulation before simplification.
         auto sample_triangles = SampleSurfaceTriangles(inputs.TriangleIndices, uint32_t(inputs.Positions.size()), inputs.Vertices);
-        SimplifySurface(inputs.Positions, inputs.TriangleIndices, inputs.TetOptions.SimplifyRatio);
-        auto tets = GenerateTets(std::move(inputs.Positions), std::move(inputs.TriangleIndices), {.Quality = inputs.TetOptions.Quality});
-        if (monitor.Cancelled()) return {};
-        if (!tets) {
-            std::cerr << "Tetrahedralization failed: " << tets.error() << ".\n";
+        const fastfem::SurfaceSolveConfig config{
+            .Modal = solver_config,
+            .Tetrahedralization = {.Quality = inputs.TetOptions.Quality, .MaxVolume = 0, .Holes = {}},
+            .SurfaceSimplificationRatio = inputs.TetOptions.SimplifyRatio,
+        };
+        fastfem::SolveMonitor solve_monitor{monitor.Progress, monitor.CancelRequested};
+        auto result = modal::SolveSurfaceModes(
+            inputs.Positions, inputs.TriangleIndices, material_props, excite_positions, inputs.NodeScale,
+            fastfem::Discretization::Tet10, config,
+            {.SeedBasis = warm_basis ? &warm_basis : nullptr, .KeepBasis = true}, &solve_monitor
+        );
+        if (!result) {
+            std::cerr << "Modal solve failed: " << result.error() << ".\n";
             return {};
         }
-        auto result = modal::mesh2modes(tets->Mesh, material_props, excite_positions, inputs.NodeScale, solver_config, {.SeedBasis = warm_basis.get(), .KeepBasis = true}, &monitor);
         // Remap vertices and the sample surface to deduplicated tet sample points.
-        result.Modes.Vertices = CompactExcitationVertices(inputs.Vertices, result.SamplePointOfExcitation);
-        result.Modes.Indices = RelabelSampleTriangles(sample_triangles, result.SamplePointOfExcitation);
-        result.Modes.BakedScale = inputs.NodeScale;
-        result.Summary.SolvedVertices = std::move(inputs.Vertices);
-        result.Summary.TetInputsHash = inputs.Hash;
-        result.Summary.SolvedMinModeFreq = solver_config.MinModeFreq;
-        result.Summary.SolvedMaxModeFreq = solver_config.MaxModeFreq;
-        result.Summary.SolvedNumModes = solver_config.NumModes;
-        auto basis = result.Basis.size() > 0 ? std::make_shared<Eigen::MatrixXf>(std::move(result.Basis)) : nullptr;
-        auto model_path = result.Modes.Freqs.empty() ? fs::path{} : SaveModalModelFile({std::move(result.Modes), result.MassProps, BuildTetMeshData(tets->Mesh, inputs.NodeScale), std::move(result.Summary)});
-        return {std::move(model_path), std::move(basis), inputs.Hash};
+        result->Modes.Vertices = CompactExcitationVertices(inputs.Vertices, result->SamplePointOfExcitation);
+        result->Modes.Indices = RelabelSampleTriangles(sample_triangles, result->SamplePointOfExcitation);
+        result->Modes.BakedScale = inputs.NodeScale;
+        result->Summary.SolvedVertices = std::move(inputs.Vertices);
+        result->Summary.TetInputsHash = inputs.Hash;
+        result->Summary.SolvedMinModeFreq = solver_config.MinModeFreq;
+        result->Summary.SolvedMaxModeFreq = solver_config.MaxModeFreq;
+        result->Summary.SolvedNumModes = solver_config.NumModes;
+        auto model_path = result->Modes.Freqs.empty() ? fs::path{} : SaveModalModelFile({std::move(result->Modes), result->Mass, std::move(result->Tetrahedra), std::move(result->Summary)});
+        return {std::move(model_path), std::move(result->Basis), inputs.Hash};
     };
     // Intentional registry-ctx write outside Apply: transient background-job bookkeeping.
     r.ctx().get<ModalSolveJobs>().Jobs.push_back(std::make_shared<ModalSolveJob>(e, viewport, Job<ModalGenerationResult>{GetName(r, e), std::move(work)}));

@@ -810,7 +810,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                 }
                 pivot = pivot_count > 0 ? pivot_sum / float(pivot_count) : vec3{};
             } else {
-                pivot = fold_left(root_selected | transform([&](auto e) { return r.get<WorldTransform>(e).P; }), vec3{}, std::plus{}) / float(root_count);
+                pivot = fold_left(root_selected | transform([&](auto e) { return r.get<WorldTransform>(e).P; }), vec3{}, [](vec3 sum, vec3 position) { return sum + position; }) / float(root_count);
             }
         }
 

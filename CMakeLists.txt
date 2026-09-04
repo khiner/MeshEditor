@@ -34,8 +34,6 @@ target_compile_options(basisu_transcoder PRIVATE -w -fno-strict-aliasing $<$<COM
 file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
 set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 
-set(EIGEN3_INCLUDE_DIR /opt/homebrew/include/eigen3)
-
 set(ImguiDir lib/imgui)
 set(ImplotDir lib/implot)
 
@@ -112,7 +110,6 @@ include_directories(SYSTEM
     ${ImplotDir}
     lib/imspinner
     lib/entt/src
-    lib/spectra/include
     lib/tinyobjloader
     lib/tinyply/source
     lib/lunasvg/plutovg/source
@@ -123,6 +120,7 @@ include_directories(SYSTEM
     lib/libwebp/src
     lib/basis_universal/zstd
     lib/metal-cpp
+    lib/FastFEM/include
 )
 
 # Symlink resources next to the executable.
@@ -191,10 +189,9 @@ if(MESHEDITOR_APP)
     set_source_files_properties(src/FileDialog.mm src/MacPlatform.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     target_compile_definitions(${PROJECT_NAME} PRIVATE IMGUI_IMPL_METAL_CPP)
 
-    target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${EIGEN3_INCLUDE_DIR})
     target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate" "-framework AppKit" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio" "-framework CoreFoundation" "-framework GameController" "-framework Metal" "-framework Foundation" "-framework QuartzCore" "-framework UniformTypeIdentifiers")
 
-    target_link_libraries(${PROJECT_NAME} PRIVATE meshoptimizer lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE FastFEM::FastFEM meshoptimizer lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
 
     if(CMAKE_BUILD_TYPE MATCHES Debug)
         target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
@@ -232,7 +229,6 @@ if(MESHEDITOR_APP)
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enum-base -fno-rtti)
 endif()
 
-add_definitions(-DTETLIBRARY)
 add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS -DZPP_BITS_AUTODETECT_MEMBERS_MODE=1)
 add_definitions(-DMA_NO_ENGINE) # Reduce MA build size
 

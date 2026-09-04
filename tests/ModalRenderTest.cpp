@@ -1,5 +1,5 @@
 
-#include "ModalBench.h"
+#include "ModalRenderFixture.h"
 #include "Near.h"
 #include "RunSuites.h"
 

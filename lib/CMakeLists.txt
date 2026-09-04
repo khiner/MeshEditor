@@ -7,6 +7,10 @@ add_subdirectory(meshoptimizer)
 add_subdirectory(tinyobjloader)
 add_subdirectory(tinyply)
 
+set(FASTFEM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(FASTFEM_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+add_subdirectory(FastFEM)
+
 # fastgltf links this simdjson::simdjson target
 add_subdirectory(simdjson)
 target_compile_options(simdjson PRIVATE -w)

@@ -6,19 +6,8 @@
 #include <limits>
 #include <numbers>
 
-struct quat {
-    float x{}, y{}, z{}, w{1.f};
-    constexpr quat() = default;
-    constexpr quat(float real, float imag_x, float imag_y, float imag_z) : x(imag_x), y(imag_y), z(imag_z), w(real) {}
-    constexpr quat(float real, vec3 imaginary) : x(imaginary.x), y(imaginary.y), z(imaginary.z), w(real) {}
-    explicit quat(vec3 euler_xyz);
-    explicit constexpr quat(vec4 xyzw);
-    constexpr float &operator[](size_t i) { return (&x)[i]; }
-    constexpr const float &operator[](size_t i) const { return (&x)[i]; }
-};
-constexpr quat::quat(vec4 xyzw) { *this = std::bit_cast<quat>(xyzw); }
+using quat = fastfem::Quat;
 constexpr quat operator-(quat q) { return {-q.w, -q.x, -q.y, -q.z}; }
-constexpr bool operator==(quat a, quat b) { return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w; }
 constexpr quat operator+(quat a, quat b) { return {a.w + b.w, a.x + b.x, a.y + b.y, a.z + b.z}; }
 constexpr quat operator-(quat a, quat b) { return {a.w - b.w, a.x - b.x, a.y - b.y, a.z - b.z}; }
 constexpr quat operator*(quat q, float s) { return {q.w * s, q.x * s, q.y * s, q.z * s}; }
@@ -93,13 +82,4 @@ inline quat Rotation(vec3 from, vec3 to) {
 }
 } // namespace numeric
 inline vec3 operator*(quat q, vec3 v) { return numeric::Rotate(q, v); }
-inline quat::quat(vec3 e) {
-    const vec3 cosine{std::cos(e.x * .5f), std::cos(e.y * .5f), std::cos(e.z * .5f)};
-    const vec3 sine{std::sin(e.x * .5f), std::sin(e.y * .5f), std::sin(e.z * .5f)};
-    w = cosine.x * cosine.y * cosine.z + sine.x * sine.y * sine.z;
-    x = sine.x * cosine.y * cosine.z - cosine.x * sine.y * sine.z;
-    y = cosine.x * sine.y * cosine.z + sine.x * cosine.y * sine.z;
-    z = cosine.x * cosine.y * sine.z - sine.x * sine.y * cosine.z;
-}
-
 static_assert(sizeof(quat) == 16);
