@@ -25,20 +25,35 @@ struct Extent2D {
 };
 
 struct Texture {
+    Texture() = default;
+    Texture(const Context &, NS::SharedPtr<MTL::Texture>, Extent2D, uint32_t mip_levels = 1, bool track_residency = true);
+    Texture(const Texture &) = delete;
+    Texture &operator=(const Texture &) = delete;
+    Texture(Texture &&) noexcept;
+    Texture &operator=(Texture &&) noexcept;
+    ~Texture();
+
     NS::SharedPtr<MTL::Texture> Handle;
     Extent2D Extent{};
     uint32_t MipLevels{1};
 
     MTL::Texture *operator*() const { return Handle.get(); }
     explicit operator bool() const { return bool(Handle); }
+
+private:
+    friend Texture CreateMipView(const Texture &, uint32_t);
+    friend Texture CreateCubeMipView(const Texture &, uint32_t);
+    const Context *ResidencyContext{};
 };
 
 // `storage` disambiguates CPU-visible textures from private attachments with the same usage.
 Texture CreateTexture2D(const Context &, MTL::PixelFormat, Extent2D, MTL::TextureUsage, uint32_t mip_levels = 1, std::optional<MTL::StorageMode> storage = {});
+// Directly encoded short-lived textures do not belong in the queue-wide residency set.
+Texture CreateUntrackedTexture2D(const Context &, MTL::PixelFormat, Extent2D, MTL::TextureUsage, std::optional<MTL::StorageMode> storage = {});
 Texture CreateTextureCube(const Context &, MTL::PixelFormat, uint32_t size, MTL::TextureUsage, uint32_t mip_levels = 1);
 Texture CreateTexture2DArray(const Context &, MTL::PixelFormat, Extent2D, uint32_t layers, MTL::TextureUsage, uint32_t mip_levels = 1);
-NS::SharedPtr<MTL::Texture> CreateMipView(const Texture &, uint32_t mip);
-NS::SharedPtr<MTL::Texture> CreateCubeMipView(const Texture &, uint32_t mip);
+Texture CreateMipView(const Texture &, uint32_t mip);
+Texture CreateCubeMipView(const Texture &, uint32_t mip);
 
 constexpr uint32_t MipLevelCount(uint32_t width, uint32_t height) {
     const auto max_dim = std::max(width, height);

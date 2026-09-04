@@ -297,6 +297,15 @@ void SaveWorkspace(entt::registry &r, entt::entity viewport, bool force = true) 
     CachedWorkspaceBytes = std::move(bytes);
 }
 
+bool UiGestureSettled() {
+    if (GImGui->MovingWindow || GImGui->DragDropActive) return false;
+    const auto &io = GetIO();
+    for (int button = 0; button < ImGuiMouseButton_COUNT; ++button) {
+        if (io.MouseDown[button] || io.MouseReleased[button]) return false;
+    }
+    return true;
+}
+
 void StartScratchSession(entt::registry &r, entt::entity viewport) {
     QuiesceScene(r, viewport);
     SaveWorkspace(r, viewport);
@@ -567,9 +576,9 @@ ValidationImage RenderAppImage(const mtl::Context &ctx, ImDrawData *draw_data) {
     const auto pixel_height = uint32_t(std::ceil(draw_data->DisplaySize.y * draw_data->FramebufferScale.y));
     if (pixel_width == 0 || pixel_height == 0) return {};
 
-    auto target = mtl::CreateTexture2D(
+    auto target = mtl::CreateUntrackedTexture2D(
         ctx, mtl::Format::Color, {pixel_width, pixel_height},
-        MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead
+        MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead, MTL::StorageModeShared
     );
     const std::array colors{mtl::ClearColor(*target, {0.45, 0.55, 0.60, 1.0})};
     auto *pass = mtl::MakePassDescriptor(colors);
@@ -581,21 +590,40 @@ ValidationImage RenderAppImage(const mtl::Context &ctx, ImDrawData *draw_data) {
     encoder->endEncoding();
     command_buffer->commit();
     command_buffer->waitUntilCompleted();
+    if (const auto *error = command_buffer->error()) {
+        throw std::runtime_error(std::format("Failed to render the validation image: {}", error->localizedDescription()->utf8String()));
+    }
     return {ReadbackImageRgba8(ctx, target, 0, 0, target.Extent), pixel_width, pixel_height};
 }
 
+struct ValidationInputs {
+    fs::path WorkingDir;
+    uint64_t ActionEnd{};
+    workspace::State Workspace;
+    CA::MetalLayer *Layer{};
+    ImVec2 DisplaySize{}, FramebufferScale{}, MousePos{};
+    ImGuiID HoveredIdPreviousFrame{};
+    float HoveredIdTimer{}, HoveredIdNotActiveTimer{};
+    std::string FocusedWindow;
+};
+
 ValidationImage RenderValidationApp(
-    entt::registry &r, entt::entity viewport, CA::MetalLayer *layer,
-    ImVec2 display_size, ImVec2 framebuffer_scale
+    entt::registry &r, entt::entity viewport, const ValidationInputs &inputs
 ) {
     auto &ctx = r.ctx().get<const mtl::Context>();
     auto &io = GetIO();
     auto &windows = r.ctx().get<WindowsState>();
-    const auto render_frame = [&] {
-        io.DisplaySize = display_size;
-        io.DisplayFramebufferScale = framebuffer_scale;
+    io.MousePos = {-FLT_MAX, -FLT_MAX};
+    const auto render_frame = [&](bool restore_hover = false) {
+        io.DisplaySize = inputs.DisplaySize;
+        io.DisplayFramebufferScale = inputs.FramebufferScale;
         io.DeltaTime = 1.f / 60.f;
         NewFrame();
+        if (restore_hover) {
+            GImGui->HoveredIdPreviousFrame = inputs.HoveredIdPreviousFrame;
+            GImGui->HoveredIdTimer = inputs.HoveredIdTimer;
+            GImGui->HoveredIdNotActiveTimer = inputs.HoveredIdNotActiveTimer;
+        }
 
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
         if (!windows.LayoutLoaded) {
@@ -607,18 +635,22 @@ ValidationImage RenderValidationApp(
             if (BeginMenu("Windows")) EndMenu();
             EndMainMenuBar();
         }
-        const auto frame = BeginEditorWindows(r, viewport, ctx, layer, windows, io, /*interactive=*/false);
+        const auto frame = BeginEditorWindows(r, viewport, ctx, inputs.Layer, windows, io, /*interactive=*/false);
         if (frame.ViewportOpen) {
             DisplayViewport(r, viewport);
             GetWindowDrawList()->ChannelsMerge();
         }
         EndEditorViewport(frame);
+        workspace::ApplyPendingTabs(windows);
         Render();
     };
 
     render_frame(); // Instantiate the windows referenced by the restored dock layout.
+    SetWindowFocus(inputs.FocusedWindow.empty() ? nullptr : inputs.FocusedWindow.c_str());
     render_frame(); // Bind those windows to their dock nodes.
-    render_frame(); // Capture after docked child sizes and scrollbars settle.
+    render_frame(); // Settle docked child sizes and scrollbars.
+    io.MousePos = inputs.MousePos;
+    render_frame(/*restore_hover=*/true); // Apply live hover history after the restored hit regions settle.
     return RenderAppImage(ctx, GetDrawData());
 }
 
@@ -631,9 +663,7 @@ struct ValidationResult {
 };
 
 ValidationResult RestoreForValidation(
-    const std::vector<std::byte> *snapshot_state, const fs::path &working_dir,
-    uint64_t action_end, const workspace::State &workspace_state,
-    CA::MetalLayer *layer, ImVec2 display_size, ImVec2 framebuffer_scale
+    const ValidationInputs &inputs, const std::vector<std::byte> *snapshot_state
 ) {
     entt::registry restored;
     restored.ctx().emplace<mtl::Context>();
@@ -656,19 +686,19 @@ ValidationResult RestoreForValidation(
     ImGui_ImplMetal_Init(restored.ctx().get<const mtl::Context>().Device.get());
     InitViewportMedia(restored);
     SetupScene(restored, restored_viewport);
-    restored.ctx().get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(framebuffer_scale);
+    restored.ctx().get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale);
     ProcessComponentEvents(restored, restored_viewport);
 
     const auto begin = SteadyClock::now();
     if (snapshot_state) {
         snapshot::LoadState(restored, *snapshot_state);
         ProcessComponentEvents(restored, restored_viewport);
-        workspace::Apply(restored, restored_viewport, restored.ctx().get<WindowsState>(), workspace_state);
+        workspace::Apply(restored, restored_viewport, restored.ctx().get<WindowsState>(), inputs.Workspace);
         PresentViewport(restored, restored_viewport);
     } else {
-        RestoreProject(restored, restored_viewport, working_dir, action_end, &workspace_state);
+        RestoreProject(restored, restored_viewport, inputs.WorkingDir, inputs.ActionEnd, &inputs.Workspace);
     }
-    auto app_image = RenderValidationApp(restored, restored_viewport, layer, display_size, framebuffer_scale);
+    auto app_image = RenderValidationApp(restored, restored_viewport, inputs);
     const auto elapsed = std::chrono::duration<float, std::milli>(SteadyClock::now() - begin).count();
     auto state = snapshot::SaveState(restored);
     auto scene_state = snapshot::SnapshotSceneState(restored);
@@ -729,16 +759,24 @@ void ValidateRoundTrip(
     QuiesceScene(r, viewport);
     action::FlushLog();
 
-    const auto action_end = r.get_or_emplace<ActionIndex>(viewport).Index;
     const auto live_state = snapshot::SaveState(r);
     const auto live_scene_state = snapshot::SnapshotSceneState(r);
-    const auto live_workspace = CaptureWorkspace(r, viewport);
-    const auto working_dir = Paths::Project();
+    const ValidationInputs inputs{
+        .WorkingDir = Paths::Project(),
+        .ActionEnd = r.get_or_emplace<ActionIndex>(viewport).Index,
+        .Workspace = CaptureWorkspace(r, viewport),
+        .Layer = layer,
+        .DisplaySize = display_size,
+        .FramebufferScale = framebuffer_scale,
+        .MousePos = GetIO().MousePos,
+        .HoveredIdPreviousFrame = GImGui->HoveredIdPreviousFrame,
+        .HoveredIdTimer = GImGui->HoveredIdTimer,
+        .HoveredIdNotActiveTimer = GImGui->HoveredIdNotActiveTimer,
+        .FocusedWindow = GImGui->NavWindow ? std::string{GImGui->NavWindow->Name} : std::string{},
+    };
 
-    const auto replay = RestoreForValidation(nullptr, working_dir, action_end, live_workspace, layer, display_size, framebuffer_scale);
-    const auto restored = RestoreForValidation(
-        &live_state, working_dir, action_end, live_workspace, layer, display_size, framebuffer_scale
-    );
+    const auto replay = RestoreForValidation(inputs, nullptr);
+    const auto restored = RestoreForValidation(inputs, &live_state);
 
     if (const auto diff = snapshot::Compare(live_scene_state, replay.SceneState); !diff.Equal) {
         std::println(
@@ -746,7 +784,7 @@ void ValidateRoundTrip(
             diff.FirstDifferingByte, live_scene_state.size(), replay.SceneState.size()
         );
         if (const auto fixture_dir = snapshot::WriteReplayTestFixture(
-                working_dir / SessionLogName, live_scene_state, replay.SceneState
+                inputs.WorkingDir / SessionLogName, live_scene_state, replay.SceneState
             );
             !fixture_dir.empty()) {
             std::println(stderr, "[validation] wrote replay-test fixture to {}", fixture_dir.string());
@@ -1458,10 +1496,12 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             GetWindowDrawList()->ChannelsMerge();
         }
         EndEditorViewport(editor_windows);
+        workspace::ApplyPendingTabs(windows);
 
         ImGui::Render();
         window.HonorMouseWarp();
         auto *draw_data = GetDrawData();
+        const bool ui_gesture_settled = UiGestureSettled();
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // Synchronize before ImGui samples the final image.
             if (driver.CaptureFrame(r, viewport, driver.Framed(viewport_settled))) done = true;
@@ -1477,7 +1517,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             const bool ui_matches_scene =
                 ui_action_index == r.get<const ActionIndex>(viewport).Index &&
                 ui_restore_generation == RestoreGeneration;
-            const bool present_frame = !validate || ui_matches_scene;
+            const bool validation_ready = validate && ui_gesture_settled;
+            const bool present_frame = !validation_ready || ui_matches_scene;
 #else
             constexpr bool present_frame{true};
 #endif
@@ -1495,7 +1536,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             }
 
 #ifdef DEBUG_BUILD
-            if (validate && presented_frame && GetFrameCount() > 1 && viewport_settled && ViewportImageReady(r)) {
+            if (validation_ready && presented_frame && GetFrameCount() > 1 && viewport_settled && ViewportImageReady(r)) {
                 presented_frame->waitUntilCompleted();
                 const auto live_app = RenderAppImage(ctx, draw_data);
                 ValidateRoundTrip(r, viewport, layer, draw_data->DisplaySize, draw_data->FramebufferScale, live_app);
@@ -1509,7 +1550,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         }
 
         static auto next_workspace_save = SteadyClock::now();
-        if (io.WantSaveIniSettings || SteadyClock::now() >= next_workspace_save) {
+        if (ui_gesture_settled && (io.WantSaveIniSettings || SteadyClock::now() >= next_workspace_save)) {
             SaveWorkspace(r, viewport, /*force=*/false);
             io.WantSaveIniSettings = false;
             next_workspace_save = SteadyClock::now() + std::chrono::milliseconds{250};

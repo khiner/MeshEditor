@@ -283,7 +283,7 @@ MainPipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D exte
       }()},
       NearestSampler{mtl::CreateSampler(ctx, MTL::SamplerMinMagFilterNearest, MTL::SamplerMipFilterNearest, MTL::SamplerAddressModeClampToEdge)},
       Slots{slots} {
-    for (const auto &mip : DepthPyramidMips) slots.SetTexture(mip.Slot, mip.View.get());
+    for (const auto &mip : DepthPyramidMips) slots.SetTexture(mip.Slot, *mip.View);
 }
 
 MainPipeline::ResourcesT::~ResourcesT() {

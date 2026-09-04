@@ -6,14 +6,15 @@
 #include "viewport/ViewportDisplay.h"
 
 #include <entt/entity/registry.hpp>
-#include <imgui.h>
+#include <imgui_internal.h>
 #include <zpp_bits.h>
 
+#include <algorithm>
 #include <fstream>
 
 namespace workspace {
 namespace {
-constexpr uint32_t Version = 1;
+constexpr uint32_t Version = 2;
 
 constexpr auto SerializeWindowVisibility(auto &archive, auto &visibility) {
     return archive(
@@ -26,6 +27,27 @@ constexpr auto SerializeWindowVisibility(auto &archive, auto &visibility) {
         visibility.Debug
     );
 }
+
+std::vector<TabSelection> CaptureTabs(const WindowsState &windows) {
+    std::vector<TabSelection> tabs;
+    if (ImGui::GetCurrentContext()) {
+        auto &pool = GImGui->TabBars;
+        tabs.reserve(size_t(pool.GetAliveCount()) + windows.PendingTabs.size());
+        for (int i = 0; i < pool.GetMapSize(); ++i) {
+            const auto *bar = pool.TryGetMapData(i);
+            if (bar && !(bar->Flags & ImGuiTabBarFlags_DockNode) && bar->SelectedTabId) {
+                tabs.push_back({bar->ID, bar->SelectedTabId});
+            }
+        }
+    }
+    for (const auto pending : windows.PendingTabs) {
+        const auto existing = std::ranges::find(tabs, pending.Bar, &TabSelection::Bar);
+        if (existing == tabs.end()) tabs.push_back(pending);
+        else *existing = pending;
+    }
+    std::ranges::sort(tabs, {}, &TabSelection::Bar);
+    return tabs;
+}
 } // namespace
 
 State Capture(const entt::registry &r, entt::entity viewport, const WindowsState &windows) {
@@ -36,6 +58,7 @@ State Capture(const entt::registry &r, entt::entity viewport, const WindowsState
         .ViewportExtent = r.ctx().get<const ViewportExtent>().Value,
         .Windows = GetWindowVisibility(windows),
         .ImGuiIni = ini ? std::string{ini, ini_size} : std::string{},
+        .Tabs = CaptureTabs(windows),
     };
 }
 
@@ -47,6 +70,20 @@ void Apply(entt::registry &r, entt::entity viewport, WindowsState &windows, cons
         ImGui::LoadIniSettingsFromMemory(state.ImGuiIni.data(), state.ImGuiIni.size());
         windows.LayoutLoaded = true;
     }
+    windows.PendingTabs = state.Tabs;
+    ApplyPendingTabs(windows);
+}
+
+void ApplyPendingTabs(WindowsState &windows) {
+    if (!ImGui::GetCurrentContext()) return;
+    std::erase_if(windows.PendingTabs, [](const TabSelection &selection) {
+        auto *bar = ImGui::TabBarFindByID(selection.Bar);
+        if (!bar) return false;
+        if (!ImGui::TabBarFindTabByID(bar, selection.Tab)) return true;
+        if (bar->SelectedTabId == selection.Tab) return true;
+        bar->NextSelectedTabId = selection.Tab;
+        return false;
+    });
 }
 
 std::vector<std::byte> Serialize(const State &state) {
@@ -57,7 +94,8 @@ std::vector<std::byte> Serialize(const State &state) {
         (has_saved_view && zpp::bits::failure(archive(*state.ViewCamera.LookThroughSaved))) ||
         zpp::bits::failure(archive(state.ViewportExtent)) ||
         zpp::bits::failure(SerializeWindowVisibility(archive, state.Windows)) ||
-        zpp::bits::failure(archive(state.ImGuiIni))) {
+        zpp::bits::failure(archive(state.ImGuiIni)) ||
+        zpp::bits::failure(archive(state.Tabs))) {
         return {};
     }
     bytes.resize(archive.position());
@@ -72,9 +110,10 @@ std::optional<State> Deserialize(std::span<const std::byte> bytes) {
         .ViewportExtent = {},
         .Windows = {},
         .ImGuiIni = {},
+        .Tabs = {},
     };
     bool has_saved_view{};
-    if (zpp::bits::failure(archive(version, state.ViewCamera.Active, has_saved_view)) || version != Version) {
+    if (zpp::bits::failure(archive(version, state.ViewCamera.Active, has_saved_view)) || version == 0 || version > Version) {
         return std::nullopt;
     }
     if (has_saved_view) {
@@ -86,6 +125,7 @@ std::optional<State> Deserialize(std::span<const std::byte> bytes) {
         zpp::bits::failure(archive(state.ImGuiIni))) {
         return std::nullopt;
     }
+    if (version >= 2 && zpp::bits::failure(archive(state.Tabs))) return std::nullopt;
     return state;
 }
 

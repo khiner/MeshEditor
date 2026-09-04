@@ -20,10 +20,12 @@ struct State {
     uvec2 ViewportExtent{};
     WindowVisibility Windows;
     std::string ImGuiIni;
+    std::vector<TabSelection> Tabs;
 };
 
 State Capture(const entt::registry &, entt::entity viewport, const WindowsState &);
 void Apply(entt::registry &, entt::entity viewport, WindowsState &, const State &);
+void ApplyPendingTabs(WindowsState &);
 
 std::vector<std::byte> Serialize(const State &);
 std::optional<State> Deserialize(std::span<const std::byte>);

@@ -1349,7 +1349,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     if (transmission_active && draw_scene) {
         // Refraction samples only the world buffer.
         // The overlay composite adds the display-referred viewport backdrop.
-        const std::array colors{mtl::ClearColor(main.Transmission->Mip0View.get())};
+        const std::array colors{mtl::ClearColor(*main.Transmission->Mip0View)};
         const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*main.Resources->DepthImage));
         encoder = encode::BeginScenePass(chain, pass, "TransmissionPrepass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
         main.PrepassBackground.Bind(encoder);

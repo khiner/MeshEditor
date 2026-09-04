@@ -1,5 +1,13 @@
 #pragma once
 
+#include <cstdint>
+#include <vector>
+
+struct TabSelection {
+    uint32_t Bar{}, Tab{};
+    bool operator==(const TabSelection &) const = default;
+};
+
 struct Window {
     const char *Name{""};
     bool Visible{true};
@@ -14,6 +22,7 @@ struct WindowsState {
         ImSpinnerDemo{"ImSpinner Demo", false},
         ImPlotDemo{"ImPlot Demo", false},
         Debug{"Debug", false};
+    std::vector<TabSelection> PendingTabs;
     bool LayoutLoaded{false};
 };
 

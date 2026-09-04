@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <iostream>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace {
@@ -60,7 +61,7 @@ void GenerateMipChain(TextureUploadBatch &batch, const mtl::Texture &image, MTL:
         auto *encoder = batch.Cb->renderCommandEncoder(pass);
         state.Bind(encoder);
         const auto source = mtl::CreateMipView(image, mip - 1);
-        encoder->setFragmentTexture(source.get(), 0);
+        encoder->setFragmentTexture(*source, 0);
         encoder->setFragmentSamplerState(batch.MipSampler.get(), 0);
         encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
         encoder->endEncoding();
@@ -426,7 +427,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
 
     const uint32_t spec_size = 256, spec_mips = mtl::MipLevelCount(spec_size, spec_size);
     auto spec_cube = mtl::CreateTextureCube(ctx, rgba32f, spec_size, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite, spec_mips);
-    std::vector<NS::SharedPtr<MTL::Texture>> spec_writes;
+    std::vector<mtl::Texture> spec_writes;
     spec_writes.reserve(spec_mips);
     for (uint32_t mip = 0; mip < spec_mips; ++mip) {
         spec_writes.emplace_back(mtl::CreateCubeMipView(spec_cube, mip));
@@ -450,7 +451,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
     auto *command_buffer = ctx.Queue->commandBuffer();
     {
         auto *compute = command_buffer->computeCommandEncoder();
-        prefilter_faces(compute, prefilter.EquirectToCubemap, *equirect, equirect_sampler.get(), raw_cube_write.get(), raw_size, raw_size);
+        prefilter_faces(compute, prefilter.EquirectToCubemap, *equirect, equirect_sampler.get(), *raw_cube_write, raw_size, raw_size);
         compute->endEncoding();
     }
     {
@@ -460,7 +461,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
     }
     {
         auto *compute = command_buffer->computeCommandEncoder();
-        prefilter_faces(compute, prefilter.DiffuseIrradiance, *raw_cube, raw_cube_sampler.get(), diff_write.get(), diff_size, diff_size);
+        prefilter_faces(compute, prefilter.DiffuseIrradiance, *raw_cube, raw_cube_sampler.get(), *diff_write, diff_size, diff_size);
 
         for (uint32_t mip = 0; mip < spec_mips; ++mip) {
             const uint32_t mip_face_size = std::max(1u, spec_size >> mip);
@@ -469,7 +470,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
                 float Roughness;
             };
             const SpecPC pc{.FaceSize = mip_face_size, .SourceSize = raw_size, .Roughness = float(mip) / float(spec_mips - 1)};
-            prefilter_faces(compute, prefilter.SpecularPrefilter, *raw_cube, raw_cube_sampler.get(), spec_writes[mip].get(), pc, mip_face_size);
+            prefilter_faces(compute, prefilter.SpecularPrefilter, *raw_cube, raw_cube_sampler.get(), *spec_writes[mip], pc, mip_face_size);
         }
         compute->endEncoding();
     }
@@ -508,8 +509,10 @@ std::vector<std::byte> ReadbackImageRgba8(const mtl::Context &ctx, const mtl::Te
     std::vector<std::byte> out(byte_size);
     // A private attachment cannot be read directly, so it blits into a shared texture first.
     if (texture.Handle->storageMode() == MTL::StorageModePrivate) {
-        const auto staging = mtl::CreateTexture2D(ctx, texture.Handle->pixelFormat(), extent, MTL::TextureUsageShaderRead);
-        mtl::CopyTextureRegion(ctx, texture, x, y, extent, staging);
+        const auto staging = mtl::CreateUntrackedTexture2D(ctx, texture.Handle->pixelFormat(), extent, MTL::TextureUsageShaderRead);
+        if (!mtl::CopyTextureRegion(ctx, texture, x, y, extent, staging)) {
+            throw std::runtime_error("Failed to read back a private Metal texture.");
+        }
         staging.Handle->getBytes(out.data(), extent.Width * 4u, MTL::Region::Make2D(0, 0, extent.Width, extent.Height), 0);
         return out;
     }

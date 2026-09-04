@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <utility>
 
 namespace mtl {
 namespace {
@@ -11,7 +12,8 @@ MTL::StorageMode StorageFor(MTL::TextureUsage usage) {
 
 Texture Create(
     const Context &ctx, MTL::TextureType type, MTL::PixelFormat format, Extent2D extent,
-    MTL::TextureUsage usage, uint32_t mip_levels, MTL::StorageMode storage, uint32_t layers = 1
+    MTL::TextureUsage usage, uint32_t mip_levels, MTL::StorageMode storage,
+    uint32_t layers = 1, bool track_residency = true
 ) {
     const auto descriptor = NS::TransferPtr(MTL::TextureDescriptor::alloc()->init());
     descriptor->setTextureType(type);
@@ -24,8 +26,7 @@ Texture Create(
     descriptor->setStorageMode(storage);
     auto handle = NS::TransferPtr(ctx.Device->newTexture(descriptor.get()));
     if (!handle) throw std::runtime_error("Failed to allocate a Metal texture.");
-    ctx.AddResident(handle.get());
-    return {std::move(handle), extent, mip_levels};
+    return {ctx, std::move(handle), extent, mip_levels, track_residency};
 }
 
 bool Blit(const Context &ctx, auto &&encode) {
@@ -39,8 +40,35 @@ bool Blit(const Context &ctx, auto &&encode) {
 }
 } // namespace
 
+Texture::Texture(const Context &ctx, NS::SharedPtr<MTL::Texture> handle, Extent2D extent, uint32_t mip_levels, bool track_residency)
+    : Handle{std::move(handle)}, Extent{extent}, MipLevels{mip_levels}, ResidencyContext{track_residency ? &ctx : nullptr} {
+    if (ResidencyContext) ResidencyContext->AddResident(Handle.get());
+}
+
+Texture::Texture(Texture &&other) noexcept
+    : Handle{std::move(other.Handle)}, Extent{other.Extent}, MipLevels{other.MipLevels},
+      ResidencyContext{std::exchange(other.ResidencyContext, nullptr)} {}
+
+Texture &Texture::operator=(Texture &&other) noexcept {
+    if (this == &other) return *this;
+    if (ResidencyContext && Handle) ResidencyContext->RemoveResident(Handle.get());
+    Handle = std::move(other.Handle);
+    Extent = other.Extent;
+    MipLevels = other.MipLevels;
+    ResidencyContext = std::exchange(other.ResidencyContext, nullptr);
+    return *this;
+}
+
+Texture::~Texture() {
+    if (ResidencyContext && Handle) ResidencyContext->RemoveResident(Handle.get());
+}
+
 Texture CreateTexture2D(const Context &ctx, MTL::PixelFormat format, Extent2D extent, MTL::TextureUsage usage, uint32_t mip_levels, std::optional<MTL::StorageMode> storage) {
     return Create(ctx, MTL::TextureType2D, format, extent, usage, mip_levels, storage.value_or(StorageFor(usage)));
+}
+
+Texture CreateUntrackedTexture2D(const Context &ctx, MTL::PixelFormat format, Extent2D extent, MTL::TextureUsage usage, std::optional<MTL::StorageMode> storage) {
+    return Create(ctx, MTL::TextureType2D, format, extent, usage, 1, storage.value_or(StorageFor(usage)), 1, false);
 }
 
 Texture CreateTextureCube(const Context &ctx, MTL::PixelFormat format, uint32_t size, MTL::TextureUsage usage, uint32_t mip_levels) {
@@ -51,17 +79,19 @@ Texture CreateTexture2DArray(const Context &ctx, MTL::PixelFormat format, Extent
     return Create(ctx, MTL::TextureType2DArray, format, extent, usage, mip_levels, StorageFor(usage), layers);
 }
 
-NS::SharedPtr<MTL::Texture> CreateMipView(const Texture &texture, uint32_t mip) {
-    return NS::TransferPtr(texture.Handle->newTextureView(
+Texture CreateMipView(const Texture &texture, uint32_t mip) {
+    auto handle = NS::TransferPtr(texture.Handle->newTextureView(
         texture.Handle->pixelFormat(), texture.Handle->textureType(),
         NS::Range::Make(mip, 1), NS::Range::Make(0, texture.Handle->arrayLength())
     ));
+    return {*texture.ResidencyContext, std::move(handle), {std::max(texture.Extent.Width >> mip, 1u), std::max(texture.Extent.Height >> mip, 1u)}};
 }
 
-NS::SharedPtr<MTL::Texture> CreateCubeMipView(const Texture &texture, uint32_t mip) {
-    return NS::TransferPtr(texture.Handle->newTextureView(
+Texture CreateCubeMipView(const Texture &texture, uint32_t mip) {
+    auto handle = NS::TransferPtr(texture.Handle->newTextureView(
         texture.Handle->pixelFormat(), MTL::TextureType2DArray, NS::Range::Make(mip, 1), NS::Range::Make(0, 6)
     ));
+    return {*texture.ResidencyContext, std::move(handle), {std::max(texture.Extent.Width >> mip, 1u), std::max(texture.Extent.Height >> mip, 1u)}};
 }
 
 NS::SharedPtr<MTL::SamplerState> CreateSampler(const Context &ctx, const SamplerDesc &desc) {

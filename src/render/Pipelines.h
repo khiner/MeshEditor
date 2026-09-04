@@ -78,7 +78,7 @@ struct MainPipeline {
         ~ResourcesT();
 
         struct PyramidMip {
-            NS::SharedPtr<MTL::Texture> View;
+            mtl::Texture View;
             uint32_t Slot;
             mtl::Extent2D Extent;
         };
@@ -97,7 +97,7 @@ struct MainPipeline {
         TransmissionResourcesT(const mtl::Context &, mtl::Extent2D);
 
         mtl::Texture Image;
-        NS::SharedPtr<MTL::Texture> Mip0View;
+        mtl::Texture Mip0View;
         NS::SharedPtr<MTL::SamplerState> Sampler;
     };
 
