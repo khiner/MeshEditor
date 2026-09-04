@@ -94,7 +94,7 @@ double RelaxationPerCycle(float scale, float approach_amp, float tangent_amp, do
     }
     return shed / (cycles - settle / per_cycle);
 }
-}
+} // namespace
 int main() {
     "a contact at rest excites nothing"_test = [] {
         Scene scene{1, 64, 0.2f, 1};

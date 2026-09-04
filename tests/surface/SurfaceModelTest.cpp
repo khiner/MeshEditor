@@ -105,7 +105,7 @@ double PatchStepRms(const RoughnessField &patch, bool along) {
     return std::sqrt(energy / double(count));
 }
 
-}
+} // namespace
 int main() {
     "the Hurst exponent inverts the spectral slope"_test = [] {
         expect(Near(HurstExponent(-2.4), 0.7, 1e-12)); // machined

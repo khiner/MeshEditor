@@ -45,7 +45,7 @@ entt::entity CreateArmatureObject(entt::registry &r, MeshStore &meshes, entt::en
     r.emplace<ObjectKind>(entity, ObjectType::Armature);
     r.emplace<ArmatureObject>(entity, data_entity);
     r.emplace<Transform>(entity, transform);
-    r.emplace<Name>(entity, ::CreateName(r, name.empty() ? "Armature" : name));
+    EmplaceUniqueName(r, entity, name.empty() ? "Armature" : name);
     ::ApplySelectBehavior(r, entity, select);
     ::CreateBoneInstances(r, meshes, entity, data_entity);
     return entity;
@@ -112,7 +112,7 @@ entt::entity DuplicateLinkedOne(entt::registry &r, entt::entity e) {
         for (const auto [_, instance] : r.view<Instance>().each()) {
             if (instance.Entity == mesh_entity) ++instance_count;
         }
-        r.emplace<Name>(e_new, ::CreateName(r, std::format("{}_{}", GetName(r, e), instance_count)));
+        EmplaceUniqueName(r, e_new, std::format("{}_{}", GetName(r, e), instance_count));
     }
     r.emplace<Instance>(e_new, mesh_entity);
     r.emplace<ObjectKind>(e_new, ObjectType::Mesh);

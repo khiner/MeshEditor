@@ -11,8 +11,6 @@
 struct Armature;
 struct MeshStore;
 
-std::string CreateName(entt::registry &, std::string_view prefix);
-
 // These operations are idempotent.
 void Show(entt::registry &, entt::entity);
 void Hide(entt::registry &, entt::entity);

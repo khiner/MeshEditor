@@ -1,6 +1,5 @@
 #include "SurfaceContact.h"
 
-
 void SurfaceAudioStateDelete::operator()(SurfaceAudioState *) const {}
 void SurfaceRenderScratchDelete::operator()(SurfaceRenderScratch *) const {}
 

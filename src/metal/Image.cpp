@@ -37,7 +37,7 @@ bool Blit(const Context &ctx, auto &&encode) {
     command_buffer->waitUntilCompleted();
     return command_buffer->error() == nullptr;
 }
-}
+} // namespace
 
 Texture CreateTexture2D(const Context &ctx, MTL::PixelFormat format, Extent2D extent, MTL::TextureUsage usage, uint32_t mip_levels, std::optional<MTL::StorageMode> storage) {
     return Create(ctx, MTL::TextureType2D, format, extent, usage, mip_levels, storage.value_or(StorageFor(usage)));
@@ -110,4 +110,4 @@ void Upload(const Texture &texture, uint32_t mip, std::span<const std::byte> byt
     const auto height = std::max(texture.Extent.Height >> mip, 1u);
     texture.Handle->replaceRegion(MTL::Region::Make2D(0, 0, width, height), mip, layer, bytes.data(), bytes_per_row, 0);
 }
-}
+} // namespace mtl

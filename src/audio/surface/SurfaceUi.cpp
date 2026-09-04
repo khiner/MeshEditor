@@ -17,7 +17,6 @@
 
 #include "ui/HelpMarker.h" // depends on imgui
 
-
 // Surface finish. Ranges cover the finish presets with headroom (see surfaces::acoustic::All).
 template<> struct FieldLimits<&ContactSurface::Roughness> : Within<1e-9, 1e-2> {};
 template<> struct FieldLimits<&ContactSurface::CorrelationLength> : Within<1e-7, 1e-1> {};

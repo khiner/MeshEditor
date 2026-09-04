@@ -16,7 +16,7 @@ namespace {
 struct Failure {
     std::string Name, Message;
 };
-}
+} // namespace
 int main(int argc, char **argv) {
     auto *pool = NS::AutoreleasePool::alloc()->init();
     auto *device = MTL::CreateSystemDefaultDevice();

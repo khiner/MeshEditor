@@ -37,7 +37,7 @@ std::map<std::string, std::vector<std::byte>> Snapshot(const fs::path &dir) {
     }
     return files;
 }
-}
+} // namespace
 int main() {
     "compress/decompress round trip"_test = [] {
         const auto root = fs::temp_directory_path() / "MeshEditor-compress-test";

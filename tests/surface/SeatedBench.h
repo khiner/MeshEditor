@@ -1,6 +1,5 @@
 #pragma once
 
-
 #include "audio/surface/SurfaceModel.h"
 
 #include "audio/ContactSurface.h"
@@ -159,7 +158,6 @@ inline float SeatedFlankStiffness(const ContactSpringSet &set, float load) {
     const auto read = SeatedFlank(set, load);
     return float(FlankJunctionStiffness(read.SineCube, double(load), read.Modulus));
 }
-
 
 constexpr uint32_t RingWindowSamples{1200}; // 25 ms, the pressed-ring envelope's own window
 constexpr uint32_t RingBlocks{94}; // About one second past the strike

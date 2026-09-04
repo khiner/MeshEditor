@@ -20,7 +20,6 @@
 #include <optional>
 #include <vector>
 
-
 inline const ModalSoundControls &ModalControls(const entt::registry &r) {
     static constexpr ModalSoundControls Defaults{};
     const auto view = r.view<const ModalSoundControls>();

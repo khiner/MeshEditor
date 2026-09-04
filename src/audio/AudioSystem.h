@@ -56,8 +56,8 @@ void DrawAudioDebug(const entt::registry &);
 // Removes ContactDynamics when the inputs are missing.
 void UpdateContactDynamics(entt::registry &, entt::entity sound_entity);
 
-    // Ratio of current acoustic density to solved modal density, or one when unknown.
-    // Stored mass properties scale linearly by this ratio.
+// Ratio of current acoustic density to solved modal density, or one when unknown.
+// Stored mass properties scale linearly by this ratio.
 double ModalDensityRatio(const entt::registry &, entt::entity sound_entity);
 
 // Apply a modal solve result file (relative to ModalModelsDir()) to the sound entity.

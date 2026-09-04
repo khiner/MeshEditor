@@ -169,7 +169,7 @@ double Bench(uint32 rows, CollectorBase *collector, uint32 frames) {
     const auto elapsed = std::chrono::duration<double, std::micro>{std::chrono::steady_clock::now() - start}.count();
     return elapsed / double(frames);
 }
-}
+} // namespace
 int main() {
     RegisterDefaultAllocator();
     Factory::sInstance = new Factory();

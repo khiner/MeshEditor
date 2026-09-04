@@ -150,7 +150,7 @@ std::set<uint64> KeysWhileResting(const Ref<Shape> &floor, RVec3 floor_position)
     }
     return keys;
 }
-}
+} // namespace
 int main() {
     RegisterDefaultAllocator();
     Factory::sInstance = new Factory();

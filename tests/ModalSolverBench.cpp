@@ -514,7 +514,7 @@ const Corpus *FindCorpus(std::string_view name) {
     }
     return nullptr;
 }
-}
+} // namespace
 int main(int argc, char **argv) {
     // Line buffering so a redirected run shows every object that finished before a hang.
     std::setvbuf(stdout, nullptr, _IOLBF, 0);

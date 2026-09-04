@@ -346,8 +346,8 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             // In Pose mode, edit the active bone rather than the armature.
             const bool is_pose_bone = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && active_bone_entity != entt::null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
-// Object mode resolves the active entity during replay and applies Alt-drag to the selection.
-// Pose mode records the target entity explicitly.
+            // Object mode resolves the active entity during replay and applies Alt-drag to the selection.
+            // Pose mode records the target entity explicitly.
             if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&Transform::P>("Position", 0.01f);
             else ui::Edit{r}.Drag<&Transform::P>("Position", 0.01f);
             // RotationUiVariant is reactively created and may not exist yet on the first frame.
@@ -971,7 +971,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                         std::views::filter([&](entt::entity me) { return GetMesh(r, me).FaceCount() > 0; }) |
                         to<std::vector>();
                     if (!face_mesh_entities.empty()) {
-// A fully smooth mesh has no sharp faces, while partial sharpness produces a mixed checkbox.
+                        // A fully smooth mesh has no sharp faces, while partial sharpness produces a mixed checkbox.
                         bool any_smooth = false, any_sharp = false, any_partial = false;
                         for (const auto me : face_mesh_entities) {
                             const auto &summary = r.get<const MeshShadingSummary>(me);

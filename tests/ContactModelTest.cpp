@@ -33,7 +33,7 @@ ContactDynamics Body(double mass, mat3 inverse_inertia, vec3 arm = vec3{0}) {
 double ContactTime(const ContactDynamics &d, const AcousticMaterialProperties &material, double curvature, double area = 0, double speed = 1, double scale = 1, const Striker &striker = NullStriker) {
     return EstimateContactTime(d, 0, vec3{0, 0, 1}, speed, material, curvature, area, StrikerImpactor(striker), scale);
 }
-}
+} // namespace
 int main() {
     "inverse inertia round-trips a principal decomposition"_test = [] {
         MassProperties mp;

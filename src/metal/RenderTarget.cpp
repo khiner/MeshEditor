@@ -22,4 +22,4 @@ MTL::RenderPassDescriptor *MakePassDescriptor(std::span<const ColorAttachment> c
     }
     return descriptor;
 }
-}
+} // namespace mtl

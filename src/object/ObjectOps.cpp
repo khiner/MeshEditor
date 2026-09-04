@@ -7,7 +7,6 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
-#include "object/ObjectComponents.h"
 #include "object/PendingSync.h"
 #include "physics/PhysicsTypes.h"
 #include "render/GpuBufferOps.h"
@@ -31,19 +30,6 @@
 #include <format>
 
 using std::ranges::any_of, std::ranges::find, std::ranges::to;
-
-std::string CreateName(entt::registry &r, std::string_view prefix) {
-    auto &registry = r.ctx().get<NameRegistry>();
-    std::string prefix_str{prefix};
-    for (uint32_t i = 0; i < std::numeric_limits<uint32_t>::max(); ++i) {
-        if (auto name = i == 0 ? prefix_str : std::format("{}_{}", prefix, i); !registry.Names.contains(name)) {
-            registry.Names.insert(name);
-            return name;
-        }
-    }
-    assert(false);
-    return prefix_str;
-}
 
 namespace {
 // RenderInstance is derived from Instance + !Hidden.
@@ -81,7 +67,7 @@ entt::entity AddMeshInstance(entt::registry &r, entt::entity mesh_entity, const 
     r.emplace<Instance>(e, mesh_entity);
     r.emplace<ObjectKind>(e, ObjectType::Mesh);
     r.emplace<Transform>(e, info.Transform);
-    r.emplace<Name>(e, CreateName(r, info.Name));
+    EmplaceUniqueName(r, e, info.Name);
     Show(r, e);
     if (!info.Visible) Hide(r, e);
     ApplySelectBehavior(r, e, info.Select);
@@ -102,7 +88,7 @@ entt::entity CreateExtrasObject(entt::registry &r, ObjectType type, const Object
     r.emplace<ObjectKind>(e, type);
     r.emplace<Instance>(e, buffer_entity);
     r.emplace<Transform>(e, info.Transform);
-    r.emplace<Name>(e, CreateName(r, info.Name.empty() ? default_name : info.Name));
+    EmplaceUniqueName(r, e, info.Name.empty() ? default_name : info.Name);
     Show(r, e);
     ApplySelectBehavior(r, e, info.Select);
     return e;
@@ -124,7 +110,7 @@ entt::entity CreateBoneEntity(entt::registry &r, entt::entity arm_obj_entity, co
     r.emplace<BoneIndex>(bone_entity, bone_index);
     r.emplace<SubElementOf>(bone_entity, arm_obj_entity);
     r.emplace<Instance>(bone_entity, arm_obj_entity);
-    r.emplace<Name>(bone_entity, CreateName(r, bone.Name));
+    EmplaceUniqueName(r, bone_entity, bone.Name);
     r.emplace<BoneDisplayScale>(bone_entity, ComputeBoneDisplayScale(armature, bone_index));
     const Transform bone_transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
     r.emplace<Transform>(bone_entity, bone_transform);

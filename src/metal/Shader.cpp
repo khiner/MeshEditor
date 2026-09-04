@@ -149,7 +149,7 @@ NS::SharedPtr<MTL4::FunctionDescriptor> MakeFunctionDescriptor(LibraryCache &cac
     specialized->setConstantValues(values.get());
     return specialized;
 }
-}
+} // namespace
 
 LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive)
     : Ctx(ctx), ShadersDir(std::move(shaders_dir)), ArchivePath(std::move(pipeline_archive)) {
@@ -371,4 +371,4 @@ void ComputePipeline::Compile(LibraryCache &cache) {
     }
     cache.NotePipelineCreated();
 }
-}
+} // namespace mtl

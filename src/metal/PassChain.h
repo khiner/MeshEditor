@@ -35,4 +35,4 @@ private:
     MTL::CommandEncoder *Open{nullptr};
     bool Encoded{false};
 };
-}
+} // namespace mtl

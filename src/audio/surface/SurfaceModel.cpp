@@ -2617,7 +2617,7 @@ FrictionForces SolveVoiceFriction(const SustainedState &st, SustainedCarry &carr
             transverse = hold_tr * scale;
         }
         // Relaxation removes energy only from stored junction shear.
-    // Remove shear energy from annuli released by a receding contact.
+        // Remove shear energy from annuli released by a receding contact.
         if (kt > 0 && fmax <= 0) {
             ResetRelaxation(carry); // A parted contact has no edge, so its history no longer applies.
         } else if (kt > 0) {

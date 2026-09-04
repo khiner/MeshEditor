@@ -2,12 +2,22 @@
 
 #include <entt/entity/fwd.hpp>
 
+#include <cstddef>
 #include <string>
+#include <string_view>
 #include <vector>
 
 struct Name {
     std::string Value;
 };
+
+// Initialize/tear down the derived index of live entity names.
+void InitEntityNames(entt::registry &);
+void DeinitEntityNames(entt::registry &);
+void ReserveEntityNames(entt::registry &, size_t additional);
+
+// Choose an unused editor name and attach it to an entity.
+Name &EmplaceUniqueName(entt::registry &, entt::entity, std::string_view prefix);
 
 // A scene: a named, possibly empty grouping of objects.
 struct Scene {

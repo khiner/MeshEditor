@@ -59,7 +59,7 @@ void Append(Source &out, const std::filesystem::path &root, const std::filesyste
         pos = end + 1;
     }
 }
-}
+} // namespace
 
 Source Load(const std::filesystem::path &root, const std::filesystem::path &relative_path, const std::vector<std::string> &defines) {
     Source out;
@@ -67,4 +67,4 @@ Source Load(const std::filesystem::path &root, const std::filesystem::path &rela
     Append(out, root, relative_path);
     return out;
 }
-}
+} // namespace msl

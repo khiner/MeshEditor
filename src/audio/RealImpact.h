@@ -46,7 +46,7 @@ struct ListenerPoint {
     const long DistanceMm; // Distance from the microphone to the object, in (whole) mm
     const long AngleDeg; // Angle of the listener relative to the object, in (whole) degrees
 
-// Optionally offsets the microphone origin by half its length to place the head at the requested distance.
+    // Optionally offsets the microphone origin by half its length to place the head at the requested distance.
     // Pass `false` to get the mic head position (listener position) instead of the mic center.
     vec3 GetPosition(vec3 world_up = {0, 1, 0}, bool mic_center = false) const;
 };

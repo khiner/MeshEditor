@@ -45,7 +45,6 @@ constexpr float ListenerDistance{1.f}; // m
 // A T60 is the time to fall 60 dB, so the decay rate it states is this over it.
 constexpr float Ln1000 = 3 * std::numbers::ln10_v<float>;
 
-
 // The bilinear denominator both filters share, s^2 + B*wc*s + B*wc^2 at the corner wc.
 // B is 2 for a body radiating against the air alone, and 2 + md/m once the body's own inertia is in the loop.
 struct RecoilPoles {

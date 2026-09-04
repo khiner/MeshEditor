@@ -847,7 +847,7 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
 
 void RegisterAudioComponentHandlers(entt::registry &r) {
     RegisterSceneClearHandler(r, [](entt::registry &r) {
-    // Clear bank slots before entity IDs can be reused by the next scene.
+        // Clear bank slots before entity IDs can be reused by the next scene.
         auto &m = r.ctx().get<ModalAudio>();
         ModalBank empty;
         InstallModalBank(m, empty);
@@ -1048,8 +1048,8 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 }
                 if (!r.all_of<AcousticMaterial>(e)) r.emplace<AcousticMaterial>(e, materials::acoustic::All.front());
             }
-    // Retune and reshape same-layout model replacements in place.
-    // Rebuild the bank for structural layout changes.
+            // Retune and reshape same-layout model replacements in place.
+            // Rebuild the bank for structural layout changes.
             auto &m = r.ctx().get<ModalAudio>();
             bool rebuild = false;
             for (auto e : modal_tracker) {

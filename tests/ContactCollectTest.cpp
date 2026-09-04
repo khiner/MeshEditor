@@ -126,7 +126,7 @@ std::pair<const SustainedContactSide &, const SustainedContactSide &> SidesOf(co
     return {first ? c.Sides.front() : c.Sides.back(), first ? c.Sides.back() : c.Sides.front()};
 }
 
-}
+} // namespace
 int main() {
     "a box resting on a floor is one contact"_test = [] {
         Scene s;

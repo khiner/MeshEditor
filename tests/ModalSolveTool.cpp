@@ -34,7 +34,7 @@ void PrintScalars(std::string_view key, const auto &values) {
     for (size_t i = 0; i < values.size(); ++i) std::print("{}{}", i ? "," : "", values[i]);
     std::println("],");
 }
-}
+} // namespace
 int main(int argc, char **argv) {
     if (argc < 2) {
         std::println(stderr, "Usage: {} <mesh.obj> [--young E] [--poisson v] [--density rho] [--alpha a] [--beta b] [--min-freq f] [--max-freq f] [--modes n] [--quality]", argv[0]);

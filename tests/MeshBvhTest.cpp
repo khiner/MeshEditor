@@ -82,7 +82,7 @@ Soup UnitSphere(uint32_t rings, uint32_t segments) {
     }
     return soup;
 }
-}
+} // namespace
 int main() {
     "the nearest point agrees with a scan over every triangle"_test = [] {
         std::mt19937 rng{12345};
@@ -126,7 +126,7 @@ int main() {
             const auto hit = bvh.ClosestPoint(sphere.Vertices, sphere.Triangles, query);
             // A tessellated sphere sits just inside the true one, so the chord sagitta is the tolerance.
             expect(std::abs(HitDistance(sphere.Vertices, hit, query) - (numeric::Length(query) - 1.f)) < 0.005f);
-        // Bound coarse-facet error by the ring half-angle and query radius.
+            // Bound coarse-facet error by the ring half-angle and query radius.
             expect(numeric::Dot(numeric::Normalize(Blend(sphere.Vertices, hit)), direction) > 0.98f);
         }
     };

@@ -10,7 +10,7 @@ MTL::CounterSet *TimestampCounterSet(const Context &ctx) {
     }
     return nullptr;
 }
-}
+} // namespace
 
 std::unique_ptr<PassTimer> PassTimer::Create(const Context &ctx, uint32_t max_passes) {
     if (!ctx.Device->supportsCounterSampling(MTL::CounterSamplingPointAtStageBoundary)) return nullptr;
@@ -51,4 +51,4 @@ std::vector<PassTimer::Pass> PassTimer::Resolve() {
     }
     return passes;
 }
-}
+} // namespace mtl

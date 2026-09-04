@@ -17,7 +17,7 @@ void ForEachResource(const auto &resources, auto use) {
         }
     }
 }
-}
+} // namespace
 
 BindlessSet::BindlessSet(const Context &ctx) : Ctx(ctx) {
     ArgumentBuffer = NS::TransferPtr(ctx.Device->newBuffer(BindlessTableSize, MTL::ResourceStorageModeShared));
@@ -100,4 +100,4 @@ void BindlessSet::UseResources(MTL::ComputeCommandEncoder *encoder) const {
     if (Ctx.Residency) return;
     ForEachResource(Resources, [&](auto *resource, auto usage) { encoder->useResource(resource, usage); });
 }
-}
+} // namespace mtl

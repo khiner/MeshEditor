@@ -17,7 +17,7 @@ inline constexpr auto Float2 = MTL::PixelFormatRG32Float;
 inline constexpr auto LineData = MTL::PixelFormatRGBA8Unorm;
 inline constexpr auto Velocity = MTL::PixelFormatRGBA16Float;
 inline constexpr auto Uint = MTL::PixelFormatR32Uint;
-}
+} // namespace Format
 
 struct Extent2D {
     uint32_t Width, Height;
@@ -60,4 +60,4 @@ bool CopyTextureRegion(const Context &, const Texture &source, uint32_t x, uint3
 bool CopyTextureRegion(const Context &, const Texture &source, uint32_t x, uint32_t y, Extent2D, MTL::Buffer *destination, uint32_t bytes_per_row);
 
 void Upload(const Texture &, uint32_t mip, std::span<const std::byte> bytes, uint32_t bytes_per_row, uint32_t layer = 0);
-}
+} // namespace mtl

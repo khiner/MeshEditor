@@ -6,7 +6,6 @@
 #include <string>
 #include <vector>
 
-
 // Tangent-space normal map giving a surface's mesoscale structure, mirroring glTF's normalTextureInfo.
 struct SurfaceNormalTexture {
     uint32_t Texture{0}; // Index into gltf::SourceAssets::Textures.

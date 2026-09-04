@@ -59,9 +59,7 @@ entt::entity WireRegistry(entt::registry &r) {
     r.on_construct<ColliderShape>().connect<&EmplaceIfAbsent<ColliderMaterial>>();
     r.on_destroy<ColliderShape>().connect<&entt::registry::remove<ColliderMaterial>>();
 
-    r.on_destroy<Name>().connect<[](entt::registry &r, entt::entity e) {
-        if (auto *registry = r.ctx().find<NameRegistry>()) registry->Names.erase(r.get<const Name>(e).Value);
-    }>();
+    InitEntityNames(r);
     // Assign stable nonzero object identifiers to new render instances.
     r.on_construct<RenderInstance>().connect<[](entt::registry &r, entt::entity e) {
         if (r.get<const RenderInstance>(e).ObjectId != 0) return;
@@ -101,7 +99,6 @@ entt::entity WireRegistry(entt::registry &r) {
     auto &buffers = r.ctx().emplace<GpuBuffers>(ctx, slots);
     r.ctx().emplace<MeshStore>(buffers.Ctx);
 
-    r.ctx().emplace<NameRegistry>();
     r.ctx().emplace<ObjectIdCounter>();
     r.ctx().emplace<action::Errors>();
     auto &materials = r.ctx().emplace<MaterialStore>();
@@ -152,6 +149,6 @@ void TearDownStoreCtx(entt::registry &r) {
     r.ctx().erase<GpuBuffers>();
     r.ctx().erase<MaterialStore>();
     r.ctx().erase<ObjectIdCounter>();
-    r.ctx().erase<NameRegistry>();
+    DeinitEntityNames(r);
     r.ctx().erase<mtl::BindlessSet>();
 }

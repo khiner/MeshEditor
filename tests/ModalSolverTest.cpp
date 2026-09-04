@@ -217,7 +217,7 @@ void CheckFamily(std::string_view name, const std::vector<double> &fem, const st
         expect(std::abs(ratio - 1.0) < tolerance);
     }
 }
-}
+} // namespace
 int main() {
     // Square section: longitudinal validates the E/rho/assembly/eigensolve chain end to end, torsion and bending validate shear response.
     "square bar modes match closed forms"_test = [] {

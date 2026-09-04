@@ -265,7 +265,7 @@ public:
     // Rebuilt from the ReportContacts tag before each step.
     std::vector<uint8_t> Reporting;
 
-// Stores one new contact from PhysicsSystem::Update for later entity resolution and per-body impulse splitting.
+    // Stores one new contact from PhysicsSystem::Update for later entity resolution and per-body impulse splitting.
     struct RawContact {
         uint32_t Body1Index, Body2Index;
         uint64_t SubShapeKey; // The touching sub-shapes, identifying the manifold within its body pair.
@@ -576,7 +576,7 @@ struct PhysicsState {
     std::unordered_map<uint32_t, entt::entity> EntityByBodyIndex; // BodyID index -> owning entity, for contact-impact routing.
     std::vector<KHRContactListener::RawContact> ContactDrainScratch; // reused each step so the swap doesn't free the accumulator
     std::vector<KHRContactListener::RawSustained> SustainedDrainScratch;
-// Stores sorted contact tuples and covered body pairs for ended-pair binary search.
+    // Stores sorted contact tuples and covered body pairs for ended-pair binary search.
     std::vector<std::tuple<uint64_t, uint64_t, uint32_t>> SustainedOrderScratch;
     std::vector<uint64_t> SustainedPairScratch;
     // Active manifolds keyed by body pair retain prior body-local points for surface-velocity calculation.
@@ -1871,7 +1871,7 @@ void Init(entt::registry &r) {
         for (auto e : reactive<changes::PhysicsTrigger>(r)) OnTriggerChange(s, r, e);
         for (auto e : reactive<changes::PhysicsPose>(r)) OnPoseChange(s, r, e);
         FlushJoints(s, r, joint_events);
-    // Destroy queued bodies after FlushJoints removes their constraints.
+        // Destroy queued bodies after FlushJoints removes their constraints.
         FlushPendingBodyRemovals(s);
     });
 }

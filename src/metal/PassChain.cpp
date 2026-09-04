@@ -65,4 +65,4 @@ MTL::BlitCommandEncoder *PassChain::BeginBlit(std::string_view name, MTL::Stages
     OpenPass(encoder, {{after, MTL::StageBlit}});
     return encoder;
 }
-}
+} // namespace mtl

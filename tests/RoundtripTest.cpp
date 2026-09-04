@@ -377,7 +377,6 @@ void CompareAccessorShape(simdjson::dom::element src, simdjson::dom::element out
     }
 }
 
-
 template<typename T>
 std::vector<T> DecodeAccessor(const fastgltf::Asset &asset, size_t accessor_index) {
     const auto &accessor = asset.accessors[accessor_index];
@@ -821,7 +820,7 @@ const ModalModelData SampleModal{
         .SolvedVertices = {0, 1, 2},
     },
 };
-}
+} // namespace
 int main(int argc, const char **argv) {
     using namespace boost::ut;
 

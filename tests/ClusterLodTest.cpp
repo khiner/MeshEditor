@@ -274,7 +274,7 @@ void ReportLevels(const ClusterLodBuild &build, std::string_view title) {
         std::println("           wall {:.1f} ms (partition {:.1f}, lock {:.1f}, merge {:.1f}), group cpu: simplify {:.1f}, clusterize {:.1f}, emit {:.1f}", stats.LevelMs, stats.PartitionMs, stats.LockMs, stats.MergeMs, stats.SimplifyMs, stats.ClusterizeMs, stats.EmitMs);
     }
 }
-}
+} // namespace
 int main() {
     const auto small_sphere = SphereFixture(32u, 64u);
     const auto medium_sphere = SphereFixture(128u, 256u);

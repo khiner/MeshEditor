@@ -6,4 +6,4 @@
 
 namespace mtl {
 inline ImTextureID ImGuiTextureId(MTL::Texture *texture) { return reinterpret_cast<ImTextureID>(texture); }
-}
+} // namespace mtl

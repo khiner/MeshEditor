@@ -59,7 +59,7 @@ void ExpectPinnedSlotSurvives(auto &&pin) {
     expect(Surface(m).SurfaceTracks[pinned].Owned.get() == pinned_track);
     expect(Surface(m).SurfaceTracks[pinned].Key == 1u);
 }
-}
+} // namespace
 int main() {
     "surfaces with the same finish share one track"_test = [] {
         ModalAudio m;

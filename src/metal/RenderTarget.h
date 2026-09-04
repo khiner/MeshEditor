@@ -37,4 +37,4 @@ inline DepthAttachment ClearDepth(MTL::Texture *texture, double clear = 1.0) {
 inline DepthAttachment LoadDepth(MTL::Texture *texture, MTL::StoreAction store = MTL::StoreActionStore) {
     return {texture, MTL::LoadActionLoad, store};
 }
-}
+} // namespace mtl

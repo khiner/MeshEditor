@@ -57,7 +57,7 @@ void EnsureSerializable(Action &a) {
 }
 
 std::stringstream MakeStream() { return std::stringstream{std::ios::in | std::ios::out | std::ios::binary}; }
-}
+} // namespace
 int main(int argc, const char **argv) {
     using namespace boost::ut;
 

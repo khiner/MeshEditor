@@ -221,7 +221,7 @@ LandStats Land(bool engine, double v0, double xc0) {
     }
     return {peak / Load, ms, corner};
 }
-}
+} // namespace
 int main() {
     // The engine's own patch, cuts one power steeper than the radial spectrum by construction.
     // A radial q^-3 field with Hurst exponent 0.5 has one-dimensional slope -2.

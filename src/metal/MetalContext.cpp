@@ -49,4 +49,4 @@ void Context::CommitResidency() const {
     if (!Residency || !std::exchange(ResidencyDirty, false)) return;
     Residency->commit();
 }
-}
+} // namespace mtl

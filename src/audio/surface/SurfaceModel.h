@@ -228,7 +228,6 @@ inline TrackReading ReadTrackSpots(const RoughnessTrack &t, double pos, float wi
 
 /***** Element springs *****/
 
-
 // Sub-cutoff roughness compliance from Pastewka et al. 2013 Appendix B.
 struct SubCutoffRoughness {
     // Root-mean-square height of the band inside a contact one meter wide, m.
@@ -472,7 +471,6 @@ uint32_t FlankJunctionSpread(
 
 /***** Conformal contact (Persson 2007) *****/
 
-
 // Pressure the asperities bear the load at, p = E*|grad h|_rms/2, in Pa.
 // Independent of both load and area, which makes the real contact area proportional to load.
 // profile_slope_rms measures one cut; isotropy doubles its variance for the full gradient.
@@ -517,7 +515,6 @@ double ConformalPatchWidth(double combined_curvature, double roughness, const Se
 double ConformalStiffness(double normal_force, double roughness, const SeparationCoefficients &);
 
 /***** The asperity bed (Greenwood and Williamson 1966) *****/
-
 
 // Most spots a bed resolves.
 inline constexpr uint32_t MaxBedSpots = 32;

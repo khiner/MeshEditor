@@ -33,4 +33,4 @@ private:
     uint32_t MaxPasses;
     std::vector<std::string_view> Names;
 };
-}
+} // namespace mtl

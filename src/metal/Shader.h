@@ -154,4 +154,4 @@ private:
     NS::SharedPtr<MTL::ComputePipelineState> PipelineState;
 };
 
-}
+} // namespace mtl

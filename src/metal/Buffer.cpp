@@ -19,7 +19,7 @@ uint64_t NextPowerOfTwo(uint64_t x) {
     x |= x >> 32;
     return x + 1;
 }
-}
+} // namespace
 
 NS::SharedPtr<MTL::Buffer> NewBuffer(const Context &ctx, uint64_t size) {
     if (size == 0) return {};
@@ -127,4 +127,4 @@ void Buffer::Update(std::span<const std::byte> data, uint64_t offset) {
     UsedSize = std::max(UsedSize, required_size);
     std::memcpy(static_cast<std::byte *>(DeviceBuffer->contents()) + offset, data.data(), data.size());
 }
-}
+} // namespace mtl
