@@ -5,7 +5,9 @@
 #include <entt/entity/fwd.hpp>
 
 #include <filesystem>
+#include <limits>
 #include <ostream>
+#include <semaphore>
 #include <thread>
 #include <variant>
 #include <vector>
@@ -13,6 +15,9 @@
 namespace action {
 // A final sentinel stops the writer after earlier FIFO records are written.
 struct Stop {};
+struct Flush {
+    std::binary_semaphore *Done;
+};
 
 // Single-producer, single-consumer asynchronous log.
 template<typename RecordType>
@@ -30,6 +35,14 @@ public:
     // Enqueues without I/O, serialization, or blocking.
     void Enqueue(RecordType &&record) { Queue.enqueue(Record{std::move(record)}); }
 
+    // Waits until every earlier record is durable without closing the log.
+    void Flush() {
+        if (!Writer.joinable()) return;
+        std::binary_semaphore done{0};
+        Queue.enqueue(Record{action::Flush{&done}});
+        done.acquire();
+    }
+
     // Enqueues the stop sentinel and joins after prior records are written.
     void Stop() {
         if (!Writer.joinable()) return;
@@ -38,7 +51,7 @@ public:
     }
 
 private:
-    using Record = std::variant<RecordType, action::Stop>;
+    using Record = std::variant<RecordType, action::Flush, action::Stop>;
 
     // Waits for a record, writes the available batch, and flushes.
     void Run() {
@@ -49,6 +62,11 @@ private:
                 if (std::holds_alternative<action::Stop>(item)) {
                     stopping = true;
                     break;
+                }
+                if (const auto *flush = std::get_if<action::Flush>(&item)) {
+                    Out.flush();
+                    flush->Done->release();
+                    continue;
                 }
                 Serialize(std::get<RecordType>(item), Out);
             } while (Queue.try_dequeue(item));
@@ -73,6 +91,7 @@ std::filesystem::path ReserveRestoreSession();
 
 // Opens the action log and starts its writer thread.
 void StartLog(std::filesystem::path, bool append = false);
+void FlushLog();
 // Flushes and joins the writer, returning an empty path when no records were written.
 std::filesystem::path StopLog();
 
@@ -80,5 +99,8 @@ std::filesystem::path StopLog();
 using ReplayTick = void (*)(entt::registry &, entt::entity viewport);
 
 // Replays records after `skip` and returns false when the log cannot be opened.
-bool ReplayLog(entt::registry &, entt::entity viewport, const std::filesystem::path &, ReplayTick, uint64_t skip = 0);
+bool ReplayLog(
+    entt::registry &, entt::entity viewport, const std::filesystem::path &, ReplayTick,
+    uint64_t skip = 0, uint64_t count = std::numeric_limits<uint64_t>::max(), bool record = false
+);
 } // namespace action

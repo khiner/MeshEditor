@@ -52,6 +52,9 @@ void StartLog(std::filesystem::path path, bool append) {
     LogStream.emplace(LogPath, std::ios::binary | (append ? std::ios::app : std::ios::trunc));
     Log.emplace(*LogStream, &SerializeAction);
 }
+void FlushLog() {
+    if (Log) Log->Flush();
+}
 std::filesystem::path StopLog() {
     if (Log) Log->Stop();
     Log.reset();
@@ -98,7 +101,10 @@ void ApplyEmitted(entt::registry &r, entt::entity viewport) {
     for (auto &a : drained.System) ApplyRecord(r, viewport, std::move(a));
 }
 
-bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::path &replay_path, ReplayTick tick, uint64_t skip) {
+bool ReplayLog(
+    entt::registry &r, entt::entity viewport, const std::filesystem::path &replay_path,
+    ReplayTick tick, uint64_t skip, uint64_t count, bool record
+) {
     std::ifstream in{replay_path, std::ios::binary};
     if (!in) return false;
 
@@ -110,10 +116,17 @@ bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::
     }
 
     tick(r, viewport);
+    uint64_t replayed = 0;
     StreamActions(in, [&](Action &&a) {
-        ApplyRecord(r, viewport, std::move(a));
+        if (replayed >= count) return;
+        if (record) ApplyRecord(r, viewport, std::move(a));
+        else {
+            ApplyAction(r, viewport, a);
+            if (IsRecordable(a)) ++r.get_or_emplace<ActionIndex>(viewport).Index;
+        }
         r.clear<DragFieldStart>();
         tick(r, viewport);
+        ++replayed;
     });
     return true;
 }

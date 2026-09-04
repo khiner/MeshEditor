@@ -6,6 +6,7 @@
 #include "Profile.h"
 #include "Reactive.h"
 #include "Stores.h"
+#include "Window.h"
 #include "animation/AnimationTimeline.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
@@ -313,7 +314,6 @@ entt::entity InitEngine(entt::registry &r) {
     auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &libraries = r.ctx().emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a");
     r.ctx().emplace<Pipelines>(ctx, libraries);
-    profile::Init(ctx);
     physics::Init(r);
     RegisterSceneComponentHandlers(r);
 
@@ -333,6 +333,7 @@ entt::entity InitEngine(entt::registry &r) {
     r.ctx().emplace<FrameState>();
     r.ctx().emplace<PendingRenderRequest>();
     r.ctx().emplace<ViewportRenderResources>();
+    r.ctx().emplace<WindowsState>();
 
     ResetObjectPickKeys(buffers);
 
@@ -460,8 +461,6 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     r.ctx().erase<std::vector<ComponentEventHandler>>();
     r.ctx().erase<EntityDestroyTracker>();
     physics::Deinit(r);
-    profile::Report();
-    profile::Deinit();
     r.ctx().erase<Pipelines>();
     if (r.valid(viewport)) r.destroy(viewport);
     TearDownStoreCtx(r);

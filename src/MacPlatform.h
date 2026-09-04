@@ -30,6 +30,7 @@ public:
 
     CA::MetalLayer *Layer() const;
     Events PollEvents();
+    void Show();
 
     void InitImGui();
     void NewImGuiFrame();

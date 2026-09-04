@@ -119,8 +119,9 @@ Window::Window() : Data{std::make_unique<Impl>()} {
     Data->NativeWindow.delegate = Data->View;
     app.delegate = Data->View;
     [Data->NativeWindow setFrame:screen.visibleFrame display:NO];
-    [Data->NativeWindow makeKeyAndOrderFront:nil];
     [app finishLaunching];
+    Data->NativeWindow.alphaValue = 0;
+    [Data->NativeWindow makeKeyAndOrderFront:nil];
     [app activateIgnoringOtherApps:YES];
 }
 
@@ -130,6 +131,10 @@ Window::~Window() {
 }
 
 CA::MetalLayer *Window::Layer() const { return (__bridge CA::MetalLayer *)Data->View.layer; }
+
+void Window::Show() {
+    Data->NativeWindow.alphaValue = 1;
+}
 
 Events Window::PollEvents() {
     @autoreleasepool {

@@ -9,6 +9,7 @@
 #include "TransformMath.h"
 #include "VideoRecorder.h"
 #include "Window.h"
+#include "WorkspaceState.h"
 #include "action/ActionApply.h"
 #include "action/ActionIndex.h"
 #include "action/Build.h"
@@ -29,6 +30,7 @@
 #include "gltf/GltfScene.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
+#include "metal/Image.h"
 #include "metal/MetalContext.h"
 #include "metal/RenderTarget.h"
 #include "object/ObjectOps.h"
@@ -36,6 +38,7 @@
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/Textures.h"
 #include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
@@ -273,22 +276,34 @@ void QuiesceScene(entt::registry &r, entt::entity viewport) {
 
 constexpr std::string_view SessionLogName{"session.actions"}, ProjectStateName{"project.state"}, ProjectExt{".project"}, ActionsExt{".actions"};
 fs::path CurrentProjectPath;
+uint64_t RestoreGeneration{};
+fs::path CachedWorkspacePath;
+std::vector<std::byte> CachedWorkspaceBytes;
 
-// Replay the action log while preserving the supplied cameras and current viewport extent.
-void ReplayPreservingView(entt::registry &r, entt::entity viewport, const fs::path &log_path, ViewCameraState view_cameras, uint64_t skip = 0) {
-    const auto live_extent = r.ctx().get<ViewportExtent>().Value;
-    if (action::ReplayLog(r, viewport, log_path, &PresentViewport, skip)) {
-        if (live_extent != uvec2{}) r.ctx().get<ViewportExtent>().Value = live_extent;
-        SetViewCameraState(r, viewport, std::move(view_cameras));
-        PresentViewport(r, viewport);
+workspace::State CaptureWorkspace(entt::registry &r, entt::entity viewport) {
+    return workspace::Capture(r, viewport, r.ctx().get<const WindowsState>());
+}
+
+void SaveWorkspace(entt::registry &r, entt::entity viewport, bool force = true) {
+    if (Paths::Project().empty()) return;
+    const auto path = Paths::Project() / workspace::FileName;
+    auto bytes = workspace::Serialize(CaptureWorkspace(r, viewport));
+    if (!force && path == CachedWorkspacePath && bytes == CachedWorkspaceBytes) return;
+    if (!workspace::Save(path, bytes)) {
+        std::println(stderr, "Failed to save workspace state.");
+        return;
     }
+    CachedWorkspacePath = path;
+    CachedWorkspaceBytes = std::move(bytes);
 }
 
 void StartScratchSession(entt::registry &r, entt::entity viewport) {
     QuiesceScene(r, viewport);
+    SaveWorkspace(r, viewport);
     action::StopLog();
     Paths::SetProject(action::ReserveRestoreSession());
     ClearScene(r, viewport);
+    ++RestoreGeneration;
     action::StartLog(Paths::Project() / SessionLogName);
     CurrentProjectPath.clear();
 }
@@ -301,17 +316,19 @@ void NewScene(entt::registry &r, entt::entity viewport, bool empty) {
 
 // Clear the scene and replay an action log in the current project directory.
 void ReplayLogInPlace(entt::registry &r, entt::entity viewport, const fs::path &log_path) {
-    auto live_view_cameras = GetViewCameraState(r, viewport);
+    auto live_workspace = CaptureWorkspace(r, viewport);
     QuiesceScene(r, viewport);
-    const auto session_log = action::StopLog();
+    action::FlushLog();
     ClearScene(r, viewport);
-    const auto resumed_log = session_log.empty() ? Paths::Project() / SessionLogName : session_log;
     std::error_code ec;
-    const bool replaying_session_log = fs::equivalent(log_path, resumed_log, ec);
-    if (!replaying_session_log) action::StartLog(resumed_log);
-    ReplayPreservingView(r, viewport, log_path, std::move(live_view_cameras));
-    if (!replaying_session_log) action::StopLog();
-    action::StartLog(resumed_log, /*append=*/true);
+    const bool replaying_session_log = fs::equivalent(log_path, Paths::Project() / SessionLogName, ec);
+    action::ReplayLog(
+        r, viewport, log_path, &PresentViewport, 0, std::numeric_limits<uint64_t>::max(),
+        /*record=*/!replaying_session_log
+    );
+    workspace::Apply(r, viewport, r.ctx().get<WindowsState>(), live_workspace);
+    PresentViewport(r, viewport);
+    ++RestoreGeneration;
 }
 
 // Load a snapshot file and return its action-log position.
@@ -324,19 +341,34 @@ uint64_t LoadStateBase(entt::registry &r, entt::entity viewport, const fs::path 
     return r.all_of<ActionIndex>(viewport) ? r.get<ActionIndex>(viewport).Index : 0;
 }
 
-// Restore a session from its base snapshot and subsequent action log.
-void OpenProjectDir(entt::registry &r, entt::entity viewport, const fs::path &working_dir) {
-    QuiesceScene(r, viewport);
-    action::StopLog();
-    CurrentProjectPath.clear();
-    Paths::SetProject(working_dir);
+// Restore a project from its base snapshot and a bounded suffix of its action log.
+void RestoreProject(
+    entt::registry &r, entt::entity viewport, const fs::path &working_dir,
+    uint64_t action_end = std::numeric_limits<uint64_t>::max(), const workspace::State *workspace_override = nullptr
+) {
     const auto state_path = working_dir / ProjectStateName, log_path = working_dir / SessionLogName;
     uint64_t skip = 0;
     if (std::error_code ec; fs::exists(state_path, ec)) skip = LoadStateBase(r, viewport, state_path);
     else ClearScene(r, viewport);
-    // Preserve the project's saved cameras across action replay.
-    ReplayPreservingView(r, viewport, log_path, GetViewCameraState(r, viewport), skip);
-    action::StartLog(log_path, /*append=*/true);
+
+    const auto fallback_workspace = CaptureWorkspace(r, viewport);
+    const auto count = action_end > skip ? action_end - skip : 0;
+    action::ReplayLog(r, viewport, log_path, &PresentViewport, skip, count);
+    const auto stored_workspace = workspace_override ? std::optional<workspace::State>{*workspace_override} : workspace::Load(working_dir / workspace::FileName);
+    workspace::Apply(r, viewport, r.ctx().get<WindowsState>(), stored_workspace.value_or(fallback_workspace));
+    PresentViewport(r, viewport);
+}
+
+// Restore a session from its base snapshot and subsequent action log.
+void OpenProjectDir(entt::registry &r, entt::entity viewport, const fs::path &working_dir) {
+    QuiesceScene(r, viewport);
+    SaveWorkspace(r, viewport);
+    action::StopLog();
+    CurrentProjectPath.clear();
+    Paths::SetProject(working_dir);
+    RestoreProject(r, viewport, working_dir);
+    ++RestoreGeneration;
+    action::StartLog(working_dir / SessionLogName, /*append=*/true);
 }
 
 // Open a .project archive in a new working directory.
@@ -359,6 +391,7 @@ void OpenFile(entt::registry &r, entt::entity viewport, const fs::path &path) {
 // Save a scene snapshot and project archive at archive_path.
 void SaveProjectFile(entt::registry &r, entt::entity viewport, const fs::path &archive_path) {
     Perform(r, viewport, action::io::SaveState{.Path = Paths::Project() / ProjectStateName});
+    SaveWorkspace(r, viewport);
     const auto log_path = Paths::Project() / SessionLogName;
     action::StopLog(); // Flush the log before archiving.
     const bool ok = Compress(Paths::Project(), archive_path);
@@ -374,6 +407,7 @@ void SaveProjectFile(entt::registry &r, entt::entity viewport, const fs::path &a
 void ClearHistory(entt::registry &r, entt::entity viewport) {
     r.emplace_or_replace<ActionIndex>(viewport); // Reset session bookkeeping outside action Apply.
     Perform(r, viewport, action::io::SaveState{.Path = Paths::Project() / ProjectStateName});
+    SaveWorkspace(r, viewport);
     action::StopLog();
     std::error_code ec;
     fs::remove(Paths::Project() / SessionLogName, ec);
@@ -381,36 +415,350 @@ void ClearHistory(entt::registry &r, entt::entity viewport) {
     action::StartLog(Paths::Project() / SessionLogName);
 }
 
-#ifdef DEBUG_BUILD
-// Require action replay and snapshot restoration to reproduce the current rendered image.
-void ValidateRoundTrip(entt::registry &r, entt::entity viewport) {
-    QuiesceScene(r, viewport);
+void BuildDefaultDockLayout(const WindowsState &windows, ImGuiID dockspace_id) {
+    auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.3f, nullptr, &dockspace_id);
+    auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
+    auto animation_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
+    DockBuilderDockWindow(windows.Debug.Name, extra_node_id);
+    DockBuilderDockWindow(windows.ImGuiDemo.Name, extra_node_id);
+    DockBuilderDockWindow(windows.ImSpinnerDemo.Name, extra_node_id);
+    DockBuilderDockWindow(windows.ImPlotDemo.Name, extra_node_id);
+    DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
+    DockBuilderDockWindow(windows.Animation.Name, animation_node_id);
+    DockBuilderDockWindow(windows.Viewport.Name, dockspace_id);
+}
 
-    // A headless capture logs beside its render rather than in the project, so only the round trip checks it.
-    const auto current_log = Paths::Project() / SessionLogName;
-    if (std::error_code ec; fs::exists(current_log, ec)) {
-        const auto expected = snapshot::SnapshotSceneState(r);
-        ReplayLogInPlace(r, viewport, current_log);
-        const auto actual = snapshot::SnapshotSceneState(r);
-        if (const auto diff = snapshot::Compare(expected, actual); !diff.Equal) {
-            std::println(stderr, "[snapshot] replay DIVERGED at byte {} (expected {} / actual {})", diff.FirstDifferingByte, expected.size(), actual.size());
-            if (const auto fixture_dir = snapshot::WriteReplayTestFixture(current_log, expected, actual); !fixture_dir.empty()) {
-                std::println(stderr, "[snapshot] wrote replay-test fixture to {}", fixture_dir.string());
+void RenderDebugWindow(entt::registry &r, const mtl::Context &ctx, CA::MetalLayer *layer, WindowsState &windows, const ImGuiIO &io) {
+    if (!windows.Debug.Visible) return;
+    if (Begin(windows.Debug.Name, &windows.Debug.Visible)) {
+        if (BeginTabBar("Debug")) {
+            if (BeginTabItem("ImGui")) {
+                Text("Dear ImGui %s (%d)", IMGUI_VERSION, IMGUI_VERSION_NUM);
+                Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+                Text("%d vertices, %d indices (%d triangles)", io.MetricsRenderVertices, io.MetricsRenderIndices, io.MetricsRenderIndices / 3);
+                const auto &g = *GImGui;
+                Text("%d visible windows, %d current allocations", io.MetricsRenderWindows, g.DebugAllocInfo.TotalAllocCount - g.DebugAllocInfo.TotalFreeCount);
+                Separator();
+                Text("See [Windows->%s] for more details.", windows.ImGuiDemo.Name);
+                EndTabItem();
             }
-            std::abort();
+            if (BeginTabItem("Metal")) {
+                SeparatorText("Device");
+                Text("Name: %s", ctx.Device->name()->utf8String());
+                Text("Unified memory: %s", ctx.Device->hasUnifiedMemory() ? "yes" : "no");
+                Text("Argument buffer tier: %ld", long(ctx.Device->argumentBuffersSupport()) + 1);
+                Text("BC texture compression: %s", ctx.Device->supportsBCTextureCompression() ? "yes" : "no");
+                Text("Max buffer length: %llu MB", (unsigned long long)(ctx.Device->maxBufferLength() / (1024 * 1024)));
+                SeparatorText("Window surface");
+                const auto drawable_size = layer->drawableSize();
+                Text("Drawable: %.0fx%.0f", drawable_size.width, drawable_size.height);
+                Text("Display sync: %s", layer->displaySyncEnabled() ? "on" : "off");
+                EndTabItem();
+            }
+            if (BeginTabItem("Engine")) {
+                SeparatorText("Buffer memory");
+                TextUnformatted(DebugBufferHeapUsage(r).c_str());
+                SeparatorText("Action");
+                Text("sizeof(Action): %zu bytes", action::ActionSize());
+                EndTabItem();
+            }
+            if (BeginTabItem("Audio")) {
+                DrawAudioDebug(r);
+                EndTabItem();
+            }
+            EndTabBar();
         }
     }
+    End();
+}
 
-    const auto before = snapshot::SaveState(r);
-    ClearScene(r, viewport);
-    snapshot::LoadState(r, before);
-    ProcessComponentEvents(r, viewport);
-    const auto after = snapshot::SaveState(r);
-    if (const auto diff = snapshot::Compare(before, after); !diff.Equal) {
-        std::println(stderr, "[snapshot] round-trip DIVERGED at byte {} (before {} / after {})", diff.FirstDifferingByte, before.size(), after.size());
+struct EditorWindowsFrame {
+    uvec2 ViewportExtent{};
+    bool ViewportBegun{false};
+    bool ViewportOpen{false};
+};
+
+EditorWindowsFrame BeginEditorWindows(
+    entt::registry &r, entt::entity viewport, const mtl::Context &ctx, CA::MetalLayer *layer,
+    WindowsState &windows, const ImGuiIO &io, bool interactive
+) {
+    RenderDebugWindow(r, ctx, layer, windows, io);
+    if (windows.ImGuiDemo.Visible) ShowDemoWindow(&windows.ImGuiDemo.Visible);
+    if (windows.ImSpinnerDemo.Visible) {
+        if (Begin(windows.ImSpinnerDemo.Name, &windows.ImSpinnerDemo.Visible)) ImSpinner::demoSpinners();
+        End();
+    }
+    if (windows.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&windows.ImPlotDemo.Visible);
+    if (windows.SceneControls.Visible) {
+        if (Begin(windows.SceneControls.Name, &windows.SceneControls.Visible)) RenderControls(r, viewport);
+        End();
+    }
+
+    bool scrubbing = false;
+    if (windows.Animation.Visible) {
+        PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
+        if (Begin(windows.Animation.Name, &windows.Animation.Visible, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+            PushStyleVar(ImGuiStyleVar_FramePadding, {6, 4});
+            Indent(6);
+            Spacing();
+            RenderClipPickers(r);
+            Unindent(6);
+            PopStyleVar();
+            if (auto action = RenderAnimationTimeline(
+                    r.get<const TimelineRange>(viewport), r.get<const TimelinePlayback>(viewport),
+                    r.get<const AnimationTimelineView>(viewport), r.ctx().get<const ViewportIcons>().Anim, scrubbing
+                );
+                interactive && action) {
+                std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*action));
+            }
+        }
+        End();
+        PopStyleVar();
+    }
+    r.ctx().get<FrameState>().Scrubbing = scrubbing;
+
+    EditorWindowsFrame frame;
+    if (windows.Viewport.Visible) {
+        frame.ViewportBegun = true;
+        PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
+        frame.ViewportOpen = Begin(windows.Viewport.Name, &windows.Viewport.Visible);
+        if (frame.ViewportOpen) {
+            if (interactive) Interact(r, viewport, r.ctx().get<FrameState>());
+            auto &draw_list = *GetWindowDrawList();
+            draw_list.ChannelsSplit(2);
+            draw_list.ChannelsSetCurrent(1);
+            InteractOverlay(r, viewport, r.ctx().get<FrameState>());
+            DrawModalJobsOverlay(r);
+            const auto content_region = GetContentRegionAvail();
+            frame.ViewportExtent = {
+                uint32_t(std::max(content_region.x, 0.f)),
+                uint32_t(std::max(content_region.y, 0.f)),
+            };
+        }
+    }
+    return frame;
+}
+
+void EndEditorViewport(const EditorWindowsFrame &frame) {
+    if (!frame.ViewportBegun) return;
+    End();
+    PopStyleVar();
+}
+
+#ifdef DEBUG_BUILD
+struct ValidationImage {
+    std::vector<std::byte> Pixels;
+    uint32_t Width{}, Height{};
+};
+
+fs::path WriteValidationImage(std::string_view name, const ValidationImage &image) {
+    auto rgba = image.Pixels;
+    for (size_t i = 0; i < rgba.size(); i += 4) std::swap(rgba[i], rgba[i + 2]);
+    const auto encoded = EncodeImagePngRgba8(rgba, image.Width, image.Height, name);
+    if (!encoded) return {};
+    const auto path = fs::temp_directory_path() / std::format("MeshEditor-validation-{}.png", name);
+    std::ofstream out{path, std::ios::binary};
+    out.write(reinterpret_cast<const char *>(encoded->data()), std::streamsize(encoded->size()));
+    return out ? path : fs::path{};
+}
+
+ValidationImage RenderAppImage(const mtl::Context &ctx, ImDrawData *draw_data) {
+    const auto pixel_width = uint32_t(std::ceil(draw_data->DisplaySize.x * draw_data->FramebufferScale.x));
+    const auto pixel_height = uint32_t(std::ceil(draw_data->DisplaySize.y * draw_data->FramebufferScale.y));
+    if (pixel_width == 0 || pixel_height == 0) return {};
+
+    auto target = mtl::CreateTexture2D(
+        ctx, mtl::Format::Color, {pixel_width, pixel_height},
+        MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead
+    );
+    const std::array colors{mtl::ClearColor(*target, {0.45, 0.55, 0.60, 1.0})};
+    auto *pass = mtl::MakePassDescriptor(colors);
+    ImGui_ImplMetal_NewFrame(pass);
+
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    auto *encoder = command_buffer->renderCommandEncoder(pass);
+    ImGui_ImplMetal_RenderDrawData(draw_data, command_buffer, encoder);
+    encoder->endEncoding();
+    command_buffer->commit();
+    command_buffer->waitUntilCompleted();
+    return {ReadbackImageRgba8(ctx, target, 0, 0, target.Extent), pixel_width, pixel_height};
+}
+
+ValidationImage RenderValidationApp(
+    entt::registry &r, entt::entity viewport, CA::MetalLayer *layer,
+    ImVec2 display_size, ImVec2 framebuffer_scale
+) {
+    auto &ctx = r.ctx().get<const mtl::Context>();
+    auto &io = GetIO();
+    auto &windows = r.ctx().get<WindowsState>();
+    const auto render_frame = [&] {
+        io.DisplaySize = display_size;
+        io.DisplayFramebufferScale = framebuffer_scale;
+        io.DeltaTime = 1.f / 60.f;
+        NewFrame();
+
+        auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
+        if (!windows.LayoutLoaded) {
+            BuildDefaultDockLayout(windows, dockspace_id);
+            windows.LayoutLoaded = true;
+        }
+        if (BeginMainMenuBar()) {
+            if (BeginMenu("File")) EndMenu();
+            if (BeginMenu("Windows")) EndMenu();
+            EndMainMenuBar();
+        }
+        const auto frame = BeginEditorWindows(r, viewport, ctx, layer, windows, io, /*interactive=*/false);
+        if (frame.ViewportOpen) {
+            DisplayViewport(r, viewport);
+            GetWindowDrawList()->ChannelsMerge();
+        }
+        EndEditorViewport(frame);
+        Render();
+    };
+
+    render_frame(); // Instantiate the windows referenced by the restored dock layout.
+    render_frame(); // Bind those windows to their dock nodes.
+    render_frame(); // Capture after docked child sizes and scrollbars settle.
+    return RenderAppImage(ctx, GetDrawData());
+}
+
+struct ValidationResult {
+    std::vector<std::byte> State;
+    std::vector<std::byte> SceneState;
+    std::vector<std::byte> Workspace;
+    ValidationImage App;
+    float Milliseconds{};
+};
+
+ValidationResult RestoreForValidation(
+    const std::vector<std::byte> *snapshot_state, const fs::path &working_dir,
+    uint64_t action_end, const workspace::State &workspace_state,
+    CA::MetalLayer *layer, ImVec2 display_size, ImVec2 framebuffer_scale
+) {
+    entt::registry restored;
+    restored.ctx().emplace<mtl::Context>();
+    const auto restored_viewport = InitEngine(restored);
+    InitAudioSystem(restored);
+
+    auto *live_imgui = ImGui::GetCurrentContext();
+    auto *live_implot = ImPlot::GetCurrentContext();
+    auto *live_fonts = GetIO().Fonts;
+    const auto live_font_scale = GetIO().FontGlobalScale;
+    auto *validation_imgui = ImGui::CreateContext(live_fonts);
+    ImGui::SetCurrentContext(validation_imgui);
+    auto *validation_implot = ImPlot::CreateContext();
+    ImPlot::SetCurrentContext(validation_implot);
+    auto &io = GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
+    io.IniFilename = nullptr;
+    io.FontGlobalScale = live_font_scale;
+    StyleColorsDark();
+    ImGui_ImplMetal_Init(restored.ctx().get<const mtl::Context>().Device.get());
+    InitViewportMedia(restored);
+    SetupScene(restored, restored_viewport);
+    restored.ctx().get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(framebuffer_scale);
+    ProcessComponentEvents(restored, restored_viewport);
+
+    const auto begin = SteadyClock::now();
+    if (snapshot_state) {
+        snapshot::LoadState(restored, *snapshot_state);
+        ProcessComponentEvents(restored, restored_viewport);
+        workspace::Apply(restored, restored_viewport, restored.ctx().get<WindowsState>(), workspace_state);
+        PresentViewport(restored, restored_viewport);
+    } else {
+        RestoreProject(restored, restored_viewport, working_dir, action_end, &workspace_state);
+    }
+    auto app_image = RenderValidationApp(restored, restored_viewport, layer, display_size, framebuffer_scale);
+    const auto elapsed = std::chrono::duration<float, std::milli>(SteadyClock::now() - begin).count();
+    auto state = snapshot::SaveState(restored);
+    auto scene_state = snapshot::SnapshotSceneState(restored);
+    auto restored_workspace = workspace::Serialize(CaptureWorkspace(restored, restored_viewport));
+
+    WaitForRender(restored);
+    DeinitViewportMedia(restored);
+    DeinitAudioSystem(restored);
+    DeinitViewport(restored, restored_viewport);
+    ImGui_ImplMetal_Shutdown();
+    ImPlot::DestroyContext(validation_implot);
+    ImGui::DestroyContext(validation_imgui);
+    ImGui::SetCurrentContext(live_imgui);
+    ImPlot::SetCurrentContext(live_implot);
+
+    return {
+        std::move(state), std::move(scene_state), std::move(restored_workspace),
+        std::move(app_image), elapsed
+    };
+}
+
+void RequireEqual(std::string_view what, std::span<const std::byte> expected, std::span<const std::byte> actual) {
+    if (const auto diff = snapshot::Compare(expected, actual); !diff.Equal) {
+        std::println(
+            stderr, "[validation] {} DIVERGED at byte {} (expected {} / actual {})",
+            what, diff.FirstDifferingByte, expected.size(), actual.size()
+        );
         std::abort();
     }
-    PresentViewport(r, viewport);
+}
+
+void RequireEqualImage(std::string_view what, const ValidationImage &expected, const ValidationImage &actual) {
+    if (expected.Width != actual.Width || expected.Height != actual.Height) {
+        std::println(stderr, "[validation] {} extent DIVERGED ({}x{} / {}x{})", what, expected.Width, expected.Height, actual.Width, actual.Height);
+        std::abort();
+    }
+    if (const auto diff = snapshot::Compare(expected.Pixels, actual.Pixels); !diff.Equal) {
+        const auto pixel = diff.FirstDifferingByte / 4;
+        std::println(
+            stderr, "[validation] {} DIVERGED at pixel ({}, {}), channel {} (byte {} of {})",
+            what, pixel % expected.Width, pixel / expected.Width, diff.FirstDifferingByte % 4,
+            diff.FirstDifferingByte, expected.Pixels.size()
+        );
+        const auto expected_path = WriteValidationImage("live", expected);
+        const auto actual_path = WriteValidationImage(what, actual);
+        if (!expected_path.empty() && !actual_path.empty()) {
+            std::println(stderr, "[validation] wrote {} and {}", expected_path.string(), actual_path.string());
+        }
+        std::abort();
+    }
+}
+
+// Require independent replay and snapshot restoration to reproduce canonical state and the live composited app image.
+void ValidateRoundTrip(
+    entt::registry &r, entt::entity viewport, CA::MetalLayer *layer,
+    ImVec2 display_size, ImVec2 framebuffer_scale, const ValidationImage &live_app
+) {
+    QuiesceScene(r, viewport);
+    action::FlushLog();
+
+    const auto action_end = r.get_or_emplace<ActionIndex>(viewport).Index;
+    const auto live_state = snapshot::SaveState(r);
+    const auto live_scene_state = snapshot::SnapshotSceneState(r);
+    const auto live_workspace = CaptureWorkspace(r, viewport);
+    const auto working_dir = Paths::Project();
+
+    const auto replay = RestoreForValidation(nullptr, working_dir, action_end, live_workspace, layer, display_size, framebuffer_scale);
+    const auto restored = RestoreForValidation(
+        &live_state, working_dir, action_end, live_workspace, layer, display_size, framebuffer_scale
+    );
+
+    if (const auto diff = snapshot::Compare(live_scene_state, replay.SceneState); !diff.Equal) {
+        std::println(
+            stderr, "[validation] replay scene DIVERGED at byte {} (expected {} / actual {})",
+            diff.FirstDifferingByte, live_scene_state.size(), replay.SceneState.size()
+        );
+        if (const auto fixture_dir = snapshot::WriteReplayTestFixture(
+                working_dir / SessionLogName, live_scene_state, replay.SceneState
+            );
+            !fixture_dir.empty()) {
+            std::println(stderr, "[validation] wrote replay-test fixture to {}", fixture_dir.string());
+        }
+        std::abort();
+    }
+    RequireEqual("replay state", live_state, replay.State);
+    RequireEqual("snapshot state", live_state, restored.State);
+    RequireEqual("replay/snapshot workspace", replay.Workspace, restored.Workspace);
+    RequireEqualImage("replay app", live_app, replay.App);
+    RequireEqualImage("snapshot app", live_app, restored.App);
+    std::println("[validation] replay restore {:.1f} ms; snapshot restore {:.1f} ms", replay.Milliseconds, restored.Milliseconds);
 }
 #endif
 
@@ -638,8 +986,25 @@ bool SeedScene(entt::registry &r, entt::entity viewport, const CaptureRequest &c
     bool loaded{true};
     if (path.extension() == ProjectExt) OpenProjectFile(r, viewport, path);
     else if (path.extension() == ActionsExt) {
-        Paths::SetProject(path.parent_path());
-        ReplayLogInPlace(r, viewport, path);
+        const auto imported = File::Read(path);
+        if (!imported) {
+            std::println(stderr, "{}", imported.error());
+            loaded = false;
+        } else {
+            Paths::SetProject(action::ReserveRestoreSession());
+            const auto session_log = Paths::Project() / SessionLogName;
+            {
+                std::ofstream out{session_log, std::ios::binary | std::ios::trunc};
+                out.write(reinterpret_cast<const char *>(imported->data()), std::streamsize(imported->size()));
+                loaded = bool(out);
+            }
+            if (loaded) {
+                ReplayLogInPlace(r, viewport, session_log);
+                action::StartLog(session_log, /*append=*/true);
+            } else {
+                std::println(stderr, "Failed to import action log '{}'.", path.string());
+            }
+        }
     } else {
         if (capture.RenderBasename.empty()) {
             Paths::SetProject(action::ReserveRestoreSession());
@@ -870,6 +1235,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     InitFonts();
 
     const auto viewport = InitEngine(r);
+    profile::Init(ctx);
     InitAudioSystem(r);
     InitViewportMedia(r);
     SetupScene(r, viewport);
@@ -886,12 +1252,17 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/false);
 
     bool viewport_resizing{false};
+#ifdef DEBUG_BUILD
+    bool validate_requested{false};
+#endif
 #ifdef VALIDATE_ACTIONS
     uint64_t validated_action_index{0};
+    uint64_t validated_restore_generation{RestoreGeneration};
 #endif
     bool done{false};
+    uint8_t startup_frames_remaining{2};
     MTL::CommandBuffer *last_frame{nullptr}; // Resize waits for resources sampled by the last submitted UI frame.
-    WindowsState windows;
+    auto &windows = r.ctx().get<WindowsState>();
     int bench_ticks{0};
     while (!done) {
         // Report scene loading separately from frame timing.
@@ -906,6 +1277,11 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         done = events.Quit;
         if (driver.DurationElapsed(r, viewport)) done = true;
 
+#ifdef DEBUG_BUILD
+        const auto ui_action_index = r.get_or_emplace<ActionIndex>(viewport).Index;
+        const auto ui_restore_generation = RestoreGeneration;
+#endif
+
         window.NewImGuiFrame();
         driver.ElapsedPlayTime += io.DeltaTime;
         // Scene-affecting code reads FrameState::DeltaTime. `io.DeltaTime` is wall-clock, UI-only.
@@ -913,17 +1289,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         NewFrame();
 
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
-        if (GetFrameCount() == 1) {
-            auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.3f, nullptr, &dockspace_id);
-            auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
-            auto animation_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
-            DockBuilderDockWindow(windows.Debug.Name, extra_node_id);
-            DockBuilderDockWindow(windows.ImGuiDemo.Name, extra_node_id);
-            DockBuilderDockWindow(windows.ImSpinnerDemo.Name, extra_node_id);
-            DockBuilderDockWindow(windows.ImPlotDemo.Name, extra_node_id);
-            DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
-            DockBuilderDockWindow(windows.Animation.Name, animation_node_id);
-            DockBuilderDockWindow(windows.Viewport.Name, dockspace_id);
+        if (!windows.LayoutLoaded) {
+            BuildDefaultDockLayout(windows, dockspace_id);
+            windows.LayoutLoaded = true;
         }
 
         if (BeginMainMenuBar()) {
@@ -1043,7 +1411,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                     FileDialog::ShowSave("gltf;glb", "scene.gltf", [](const fs::path &path) { action::Emit(action::io::SaveGltf{.Path = path}); });
                 }
 #ifdef DEBUG_BUILD
-                if (MenuItem("[Debug] Roundtrip")) ValidateRoundTrip(r, viewport);
+                if (MenuItem("[Debug] Roundtrip")) validate_requested = true;
 #endif
                 EndMenu();
             }
@@ -1060,98 +1428,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             EndMainMenuBar();
         }
 
-        if (windows.Debug.Visible) {
-            if (Begin(windows.Debug.Name, &windows.Debug.Visible)) {
-                if (BeginTabBar("Debug")) {
-                    if (BeginTabItem("ImGui")) {
-                        Text("Dear ImGui %s (%d)", IMGUI_VERSION, IMGUI_VERSION_NUM);
-                        Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
-                        Text("%d vertices, %d indices (%d triangles)", io.MetricsRenderVertices, io.MetricsRenderIndices, io.MetricsRenderIndices / 3);
-                        const auto &g = *GImGui;
-                        Text("%d visible windows, %d current allocations", io.MetricsRenderWindows, g.DebugAllocInfo.TotalAllocCount - g.DebugAllocInfo.TotalFreeCount);
-                        Separator();
-                        Text("See [Windows->%s] for more details.", windows.ImGuiDemo.Name);
-                        EndTabItem();
-                    }
-                    if (BeginTabItem("Metal")) {
-                        SeparatorText("Device");
-                        Text("Name: %s", ctx.Device->name()->utf8String());
-                        Text("Unified memory: %s", ctx.Device->hasUnifiedMemory() ? "yes" : "no");
-                        Text("Argument buffer tier: %ld", long(ctx.Device->argumentBuffersSupport()) + 1);
-                        Text("BC texture compression: %s", ctx.Device->supportsBCTextureCompression() ? "yes" : "no");
-                        Text("Max buffer length: %llu MB", (unsigned long long)(ctx.Device->maxBufferLength() / (1024 * 1024)));
-
-                        SeparatorText("Window surface");
-                        const auto drawable_size = layer->drawableSize();
-                        Text("Drawable: %.0fx%.0f", drawable_size.width, drawable_size.height);
-                        Text("Display sync: %s", layer->displaySyncEnabled() ? "on" : "off");
-                        EndTabItem();
-                    }
-                    if (BeginTabItem("Engine")) {
-                        SeparatorText("Buffer memory");
-                        TextUnformatted(DebugBufferHeapUsage(r).c_str());
-                        SeparatorText("Action");
-                        Text("sizeof(Action): %zu bytes", action::ActionSize());
-                        EndTabItem();
-                    }
-                    if (BeginTabItem("Audio")) {
-                        DrawAudioDebug(r);
-                        EndTabItem();
-                    }
-                    EndTabBar();
-                }
-            }
-            End();
-        }
-        if (windows.ImGuiDemo.Visible) ImGui::ShowDemoWindow(&windows.ImGuiDemo.Visible);
-        if (windows.ImSpinnerDemo.Visible) {
-            if (Begin(windows.ImSpinnerDemo.Name, &windows.ImSpinnerDemo.Visible)) ImSpinner::demoSpinners();
-            End();
-        }
-        if (windows.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&windows.ImPlotDemo.Visible);
-
-        if (windows.SceneControls.Visible) {
-            if (Begin(windows.SceneControls.Name, &windows.SceneControls.Visible)) RenderControls(r, viewport);
-            End();
-        }
-
-        bool scrubbing = false; // Disable motion blur while the timeline marker is active.
-        if (windows.Animation.Visible) {
-            PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
-            if (Begin(windows.Animation.Name, &windows.Animation.Visible, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
-                PushStyleVar(ImGuiStyleVar_FramePadding, {6, 4});
-                Indent(6);
-                Spacing();
-                RenderClipPickers(r);
-                Unindent(6);
-                PopStyleVar();
-                const auto scene_e = viewport;
-                if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), r.ctx().get<const ViewportIcons>().Anim, scrubbing)) {
-                    std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*a));
-                }
-            }
-            End();
-            PopStyleVar();
-        }
-        r.ctx().get<FrameState>().Scrubbing = scrubbing;
-
-        // Keep the viewport window open across the apply/derive/render below so the image draws back into it before End().
-        uvec2 new_logical_extent{};
-        bool viewport_open = false;
-        if (windows.Viewport.Visible) {
-            PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
-            viewport_open = Begin(windows.Viewport.Name, &windows.Viewport.Visible);
-            if (viewport_open) {
-                Interact(r, viewport, r.ctx().get<FrameState>());
-                auto &dl = *ImGui::GetWindowDrawList();
-                dl.ChannelsSplit(2);
-                dl.ChannelsSetCurrent(1);
-                InteractOverlay(r, viewport, r.ctx().get<FrameState>());
-                DrawModalJobsOverlay(r);
-                const auto content_region = ImGui::GetContentRegionAvail();
-                new_logical_extent = {uint32_t(std::max(content_region.x, 0.f)), uint32_t(std::max(content_region.y, 0.f))};
-            }
-        }
+        // Keep the viewport window open across apply/derive/render so its image is inserted before End().
+        const auto editor_windows = BeginEditorWindows(r, viewport, ctx, layer, windows, io, /*interactive=*/true);
+        const auto new_logical_extent = editor_windows.ViewportExtent;
         const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == r.ctx().get<const ViewportExtent>().Value;
         if (capture.BenchFrames > 0 && viewport_settled) {
             if (capture.BenchAction == CaptureRequest::BenchmarkAction::Orbit) action::Emit(action::view::OrbitViewCamera{{0.01f, 0.f}});
@@ -1168,27 +1447,17 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             viewport_resizing = false;
         }
 
-#ifdef VALIDATE_ACTIONS
-        // Validate committed actions after their derived state and render complete.
-        if (const auto *index = r.try_get<const ActionIndex>(viewport); index && index->Index != validated_action_index) {
-            ValidateRoundTrip(r, viewport);
-            validated_action_index = r.get<const ActionIndex>(viewport).Index;
-        }
-#endif
         action::ApplyEmitted(r, viewport);
         ReportActionErrors(r);
 
         // Submit derived state and rendering before the later WaitForRender synchronizes image sampling.
         SubmitViewport(r, viewport, GetFrameCount() > 1 ? last_frame : nullptr);
 
-        if (viewport_open) {
+        if (editor_windows.ViewportOpen) {
             DisplayViewport(r, viewport);
-            ImGui::GetWindowDrawList()->ChannelsMerge();
+            GetWindowDrawList()->ChannelsMerge();
         }
-        if (windows.Viewport.Visible) {
-            End();
-            PopStyleVar();
-        }
+        EndEditorViewport(editor_windows);
 
         ImGui::Render();
         window.HonorMouseWarp();
@@ -1196,10 +1465,58 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // Synchronize before ImGui samples the final image.
             if (driver.CaptureFrame(r, viewport, driver.Framed(viewport_settled))) done = true;
-            if (auto *frame = RenderAndPresentFrame(ctx, layer, draw_data)) last_frame = frame;
+
+#ifdef DEBUG_BUILD
+            bool validate = validate_requested;
+#ifdef VALIDATE_ACTIONS
+            if (const auto *index = r.try_get<const ActionIndex>(viewport);
+                index && (index->Index != validated_action_index || RestoreGeneration != validated_restore_generation)) {
+                validate = true;
+            }
+#endif
+            const bool ui_matches_scene =
+                ui_action_index == r.get<const ActionIndex>(viewport).Index &&
+                ui_restore_generation == RestoreGeneration;
+            const bool present_frame = !validate || ui_matches_scene;
+#else
+            constexpr bool present_frame{true};
+#endif
+
+            MTL::CommandBuffer *presented_frame{nullptr};
+            if (present_frame) {
+                if (auto *frame = RenderAndPresentFrame(ctx, layer, draw_data)) {
+                    // ImGui makes newly bound dock nodes visible on the following frame.
+                    if (startup_frames_remaining > 0 && --startup_frames_remaining == 0) {
+                        frame->waitUntilCompleted();
+                        window.Show();
+                    }
+                    last_frame = presented_frame = frame;
+                }
+            }
+
+#ifdef DEBUG_BUILD
+            if (validate && presented_frame && GetFrameCount() > 1 && viewport_settled && ViewportImageReady(r)) {
+                presented_frame->waitUntilCompleted();
+                const auto live_app = RenderAppImage(ctx, draw_data);
+                ValidateRoundTrip(r, viewport, layer, draw_data->DisplaySize, draw_data->FramebufferScale, live_app);
+                validate_requested = false;
+#ifdef VALIDATE_ACTIONS
+                validated_action_index = r.get<const ActionIndex>(viewport).Index;
+                validated_restore_generation = RestoreGeneration;
+#endif
+            }
+#endif
+        }
+
+        static auto next_workspace_save = SteadyClock::now();
+        if (io.WantSaveIniSettings || SteadyClock::now() >= next_workspace_save) {
+            SaveWorkspace(r, viewport, /*force=*/false);
+            io.WantSaveIniSettings = false;
+            next_workspace_save = SteadyClock::now() + std::chrono::milliseconds{250};
         }
     }
 
+    SaveWorkspace(r, viewport);
     action::StopLog();
     if (last_frame) last_frame->waitUntilCompleted();
 
@@ -1208,6 +1525,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     // GpuBuffers must outlive MeshStore allocations retired during teardown.
     DeinitViewportMedia(r);
+    profile::Report();
+    profile::Deinit();
     DeinitViewport(r, viewport);
 
     ImGui_ImplMetal_Shutdown();
@@ -1300,8 +1619,9 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     MacPlatform::InitPaths();
 
     entt::registry r;
-    r.ctx().emplace<mtl::Context>();
+    const auto &ctx = r.ctx().emplace<mtl::Context>();
     const auto viewport = InitEngine(r);
+    profile::Init(ctx);
     InitAudioSystem(r);
     SetupScene(r, viewport);
     r.ctx().get<FrameState>().DisplayFramebufferScale = {2, 2}; // Match the app's retina rendering (pixel density and DPI-scaled GPU state like edge-line width).
@@ -1311,6 +1631,8 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
 
     WaitForRender(r);
     DeinitAudioSystem(r);
+    profile::Report();
+    profile::Deinit();
     DeinitViewport(r, viewport);
 }
 
