@@ -818,7 +818,8 @@ const ModalModelData SampleModal{
         summary.Eigenvalues = {4.7e5, 3.0e6};
         summary.Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}, {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}}};
         summary.SolvedMaterial = materials::acoustic::Ceramic.Properties;
-        summary.TetInputsHash = 0x1234abcd;
+        summary.OperatorHash = 1;
+        summary.ModalConfigHash = 2;
         summary.SolvedVertices = {0, 1, 2};
         return summary; }(),
 };

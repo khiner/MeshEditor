@@ -31,6 +31,7 @@
 
 #include <iostream>
 #include <numbers>
+#include <string_view>
 
 namespace fs = std::filesystem;
 
@@ -42,10 +43,20 @@ template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialPr
 template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::PoissonRatio> : Within<0., 0.49> {};
 template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::Alpha> : Within<0., 200.> {};
 template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::Beta> : Within<1e-9, 1e-4> {};
-template<> struct FieldLimits<&ModalSolveSettings::SolveResolution> : Within<0.25, 1.> {};
-template<> struct FieldLimits<&ModalSolveSettings::NumModes> : Within<1., 128.> {};
-template<> struct FieldLimits<&ModalSolveSettings::MinModeFreq> : Within<20., 20000.> {};
-template<> struct FieldLimits<&ModalSolveSettings::MaxModeFreq> : Within<20., 20000.> {};
+using SurfaceSolveConfig = fastfem::SurfaceSolveConfig;
+using ModalSolverConfig = fastfem::SolverConfig;
+using TetConfig = fastfem::TetrahedralizationConfig;
+using FiniteCellConfig = fastfem::FiniteCellConfig;
+template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::SurfaceSimplificationRatio> : Within<0.25, 1.> {};
+template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::NumModes> : Within<1., 512.> {};
+template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::NumFemModes> : Within<1., 512.> {};
+template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::MinModeFreq> : Within<20., 20000.> {};
+template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::MaxModeFreq> : Within<20., 20000.> {};
+template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::Tolerance> : Within<1e-12, 1e-3> {};
+template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::MaxRestarts> : Within<1., 1000.> {};
+template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::CutDepth> : Within<0., 8.> {};
+template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::FictitiousScale> : Within<1e-12, 1e-2> {};
+template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::PaddingCells> : Within<0., 2.> {};
 
 // Striker capsule dimensions, in meters.
 template<> struct FieldLimits<&Striker::TipRadius> : Within<0.0005, 0.1> {};
@@ -548,14 +559,13 @@ FFTData ComputeFft(const std::vector<float> &frames, uint32_t sample_rate) {
 
 struct ModalGenerationResult {
     std::filesystem::path ModelPath; // Result file, relative to ModalModelsDir(). Empty when the solve failed or was cancelled
-    fastfem::ModeBasis Basis; // Full eigenvector basis, seeding the next solve
-    size_t TetInputsHash;
+    ModalWarmStart WarmStart;
 };
 
 // An in-flight modal solve, at most one per sound entity.
 struct ModalSolveJob {
     entt::entity Entity, Viewport;
-    Job<ModalGenerationResult> Work;
+    Job<ModalGenerationResult, fastfem::SolveMonitor> Work;
 };
 struct ModalSolveJobs {
     std::vector<std::shared_ptr<ModalSolveJob>> Jobs;
@@ -568,7 +578,7 @@ bool IsSolving(const entt::registry &r, entt::entity e) {
 // The cancelled job thread exits at its next checkpoint, and its result is discarded on arrival.
 void CancelModalSolves(entt::registry &r, entt::entity e) {
     for (auto &job : r.ctx().get<ModalSolveJobs>().Jobs) {
-        if (job->Entity == e) job->Work.Monitor->RequestCancel();
+        if (job->Entity == e) job->Work.RequestCancel();
     }
 }
 
@@ -597,7 +607,9 @@ AcousticMaterialProperties EffectiveModalMaterial(const entt::registry &r, entt:
 std::optional<ModalModes> RescaledModes(const ModalEigenSummary &summary, const ModalModes &modes, const AcousticMaterialProperties &props, const ModalSolveSettings &settings) {
     std::optional<float> fundamental;
     if (!modes.Freqs.empty() && modes.OriginalFundamentalFreq > 0 && modes.Freqs.front() != modes.OriginalFundamentalFreq) fundamental = modes.Freqs.front();
-    return modal::RescaleModes(summary, modes, props, {.MinModeFreq = settings.MinModeFreq, .MaxModeFreq = settings.MaxModeFreq, .NumModes = settings.NumModes, .FundamentalFreq = fundamental});
+    auto config = settings.Solve.Modal;
+    config.FundamentalFreq = fundamental;
+    return modal::RescaleModes(summary, modes, props, config);
 }
 
 // A synth tuning still at its default (fundamental == the old model's lowest mode) follows the new model, while a user-set tuning stays pinned.
@@ -624,23 +636,33 @@ void RescaleModalObject(entt::registry &r, entt::entity e) {
 
 /***** Modal solve inputs *****/
 
-struct TetOptions {
-    // Insert interior points until tets meet a circumradius-to-shortest-edge ratio of 2, where the fixed surface allows.
-    bool Quality{false};
-    // Fraction of surface triangles kept for tetrahedralization.
-    // Below 1, the surface is quadric-simplified first.
-    float SimplifyRatio{1};
-};
+void HashCombine(size_t &seed, const auto &...values) {
+    const auto combine = [&](const auto &value) {
+        seed ^= std::hash<std::remove_cvref_t<decltype(value)>>{}(value) + 0x9e3779b97f4a7c15 + (seed << 6) + (seed >> 2);
+    };
+    (combine(values), ...);
+}
 
-// Identifies tetrahedral mesh inputs for reuse of a compatible solved eigenvector basis.
-size_t HashTetInputs(const std::vector<vec3> &positions, const std::vector<uint32_t> &triangle_indices, TetOptions opts) {
+size_t HashOperatorInputs(const std::vector<vec3> &positions, const std::vector<uint32_t> &triangle_indices, const ModalSolveSettings &settings) {
     const auto bytes = [](const auto &v) { return std::string_view{reinterpret_cast<const char *>(v.data()), v.size() * sizeof(v[0])}; };
     const std::hash<std::string_view> hash;
     size_t seed = hash(bytes(positions));
-    const auto combine = [&seed](size_t v) { seed ^= v + 0x9e3779b97f4a7c15 + (seed << 6) + (seed >> 2); };
-    combine(hash(bytes(triangle_indices)));
-    combine(std::hash<bool>{}(opts.Quality));
-    combine(std::hash<float>{}(opts.SimplifyRatio));
+    HashCombine(seed, hash(bytes(triangle_indices)), settings.Discretization);
+    if (settings.Discretization == fastfem::Discretization::Tet10) {
+        const auto &tet = settings.Solve.Tetrahedralization;
+        HashCombine(seed, settings.Solve.SurfaceSimplificationRatio, tet.Quality, tet.MaxVolume);
+        for (const auto &hole : tet.Holes) HashCombine(seed, hole.x, hole.y, hole.z);
+    } else {
+        const auto &finite = settings.Solve.FiniteCell;
+        for (const auto cells : finite.Cells) HashCombine(seed, cells);
+        HashCombine(seed, finite.CutDepth, finite.FictitiousScale, finite.PaddingCells, finite.GridOffsetCells.x, finite.GridOffsetCells.y, finite.GridOffsetCells.z);
+    }
+    return seed;
+}
+
+size_t HashModalConfig(const fastfem::SolverConfig &config) {
+    size_t seed{};
+    HashCombine(seed, config.MinModeFreq, config.MaxModeFreq, config.NumModes, config.NumFemModes, config.Tolerance, config.MaxRestarts, config.FundamentalFreq);
     return seed;
 }
 
@@ -752,9 +774,10 @@ struct SolveInputs {
     std::vector<vec3> Positions; // Mesh positions at the node's world scale (SI meters)
     std::vector<uint32_t> TriangleIndices;
     std::vector<uint32_t> Vertices; // Excitation vertices
-    TetOptions TetOptions;
+    fastfem::SurfaceSolveConfig Config;
+    fastfem::Discretization Discretization;
     vec3 NodeScale;
-    size_t Hash;
+    size_t OperatorHash, ModalConfigHash;
 };
 
 SolveInputs BuildSolveInputs(const entt::registry &r, entt::entity e, entt::entity mesh_entity, const ModalSolveSettings &settings) {
@@ -764,24 +787,22 @@ SolveInputs BuildSolveInputs(const entt::registry &r, entt::entity e, entt::enti
     std::vector<vec3> positions(num_vertices);
     for (uint32_t i = 0; i < num_vertices; ++i) positions[i] = mesh.GetPosition(Mesh::VH{i}) * node_scale;
     auto triangle_indices = mesh.CreateTriangleIndices();
-    const TetOptions tet_options{.Quality = settings.QualityTets, .SimplifyRatio = settings.SolveResolution};
-    const auto hash = HashTetInputs(positions, triangle_indices, tet_options);
-    return {std::move(positions), std::move(triangle_indices), DesiredSolveVertices(r, e, settings, num_vertices), tet_options, node_scale, hash};
+    const auto operator_hash = HashOperatorInputs(positions, triangle_indices, settings);
+    return {
+        std::move(positions), std::move(triangle_indices), DesiredSolveVertices(r, e, settings, num_vertices), settings.Solve,
+        settings.Discretization, node_scale, operator_hash, HashModalConfig(settings.Solve.Modal)
+    };
 }
 
 // True when the baked model no longer matches the current solve inputs.
-bool ModalModelStale(const entt::registry &r, entt::entity e, const SolveInputs &inputs, const ModalSolveSettings &settings, const AcousticMaterial &material) {
+bool ModalModelStale(const entt::registry &r, entt::entity e, const SolveInputs &inputs, const AcousticMaterial &material) {
     const auto *summary = r.try_get<const ModalEigenSummary>(e);
     if (!summary) return true;
-    if (summary->TetInputsHash != inputs.Hash) return true;
+    if (summary->OperatorHash != inputs.OperatorHash || summary->ModalConfigHash != inputs.ModalConfigHash) return true;
     // Compare against the prior solve request because coincident tet points produce one sample point.
     if (inputs.Vertices != summary->SolvedVertices) return true;
-    if (settings.NumModes != summary->SolvedNumModes || settings.MinModeFreq != summary->SolvedMinModeFreq || settings.MaxModeFreq != summary->SolvedMaxModeFreq) return true;
     return material.Properties.PoissonRatio != summary->SolvedMaterial.PoissonRatio;
 }
-
-// Extra eigenpairs cover rigid-body and out-of-band modes removed during post-processing.
-constexpr uint32_t FemModeMargin{15};
 
 // Launch an async solve unless one is already running or the baked model matches the inputs.
 void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e, const ModalSolveSettings &settings, const AcousticMaterial &material) {
@@ -789,40 +810,27 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e, 
     const auto *inst = r.try_get<const Instance>(e);
     if (!inst || !TryGetMesh(r, inst->Entity)) return;
     auto inputs = BuildSolveInputs(r, e, inst->Entity, settings);
-    if (r.all_of<ModalModes>(e) && !ModalModelStale(r, e, inputs, settings, material)) return;
+    if (r.all_of<ModalModes>(e) && !ModalModelStale(r, e, inputs, material)) return;
 
-    std::optional<float> fundamental;
-    if (const auto path = ActiveSamplePath(r, e)) {
-        const auto &frames = GetSampleFrames(r, viewport, *path);
-        if (!frames.empty()) {
-            const auto sr = DeviceSampleRate(r);
-            fundamental = EstimateFundamentalFrequency(ComputeFft(frames, sr), sr);
+    if (!inputs.Config.Modal.FundamentalFreq) {
+        if (const auto path = ActiveSamplePath(r, e)) {
+            const auto &frames = GetSampleFrames(r, viewport, *path);
+            if (!frames.empty()) {
+                const auto sr = DeviceSampleRate(r);
+                inputs.Config.Modal.FundamentalFreq = EstimateFundamentalFrequency(ComputeFft(frames, sr), sr);
+            }
         }
     }
-    const fastfem::SolverConfig solver_config{
-        .MinModeFreq = settings.MinModeFreq,
-        .MaxModeFreq = settings.MaxModeFreq,
-        .NumModes = settings.NumModes,
-        .NumFemModes = settings.NumModes + FemModeMargin,
-        .FundamentalFreq = fundamental,
-    };
     auto excite_positions = inputs.Vertices | transform([&](uint32_t v) { return inputs.Positions[v]; }) | to<std::vector<vec3>>();
-    // The most recent solve's basis seeds this one when it was over the same tets.
     fastfem::ModeBasis warm_basis;
-    if (const auto &warm = r.ctx().get<const ModalWarmStart>(); warm.Basis && warm.TetInputsHash == inputs.Hash) warm_basis = warm.Basis;
-    auto work = [inputs = std::move(inputs), material_props = material.Properties, excite_positions = std::move(excite_positions), solver_config, warm_basis = std::move(warm_basis)](JobMonitor &monitor) mutable -> ModalGenerationResult {
+    if (const auto &warm = r.ctx().get<const ModalWarmStart>(); inputs.Discretization == fastfem::Discretization::Tet10 && warm.Basis && warm.OperatorHash == inputs.OperatorHash) warm_basis = warm.Basis;
+    auto work = [inputs = std::move(inputs), material_props = material.Properties, excite_positions = std::move(excite_positions), warm_basis = std::move(warm_basis)](fastfem::SolveMonitor &monitor) mutable -> ModalGenerationResult {
         // Capture sample-surface triangulation before simplification.
         auto sample_triangles = SampleSurfaceTriangles(inputs.TriangleIndices, uint32_t(inputs.Positions.size()), inputs.Vertices);
-        const fastfem::SurfaceSolveConfig config{
-            .Modal = solver_config,
-            .Tetrahedralization = {.Quality = inputs.TetOptions.Quality, .MaxVolume = 0, .Holes = {}},
-            .SurfaceSimplificationRatio = inputs.TetOptions.SimplifyRatio,
-        };
-        fastfem::SolveMonitor solve_monitor{monitor.Progress, monitor.CancelRequested};
         auto result = modal::SolveSurfaceModes(
             inputs.Positions, inputs.TriangleIndices, material_props, excite_positions, inputs.NodeScale,
-            fastfem::Discretization::Tet10, config,
-            {.SeedBasis = warm_basis ? &warm_basis : nullptr, .KeepBasis = true}, &solve_monitor
+            inputs.Discretization, inputs.Config,
+            {.SeedBasis = warm_basis ? &warm_basis : nullptr, .KeepBasis = inputs.Discretization == fastfem::Discretization::Tet10}, &monitor
         );
         if (!result) {
             std::cerr << "Modal solve failed: " << result.error() << ".\n";
@@ -833,15 +841,15 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e, 
         result->Modes.Indices = RelabelSampleTriangles(sample_triangles, result->SamplePointOfExcitation);
         result->Modes.BakedScale = inputs.NodeScale;
         result->Summary.SolvedVertices = std::move(inputs.Vertices);
-        result->Summary.TetInputsHash = inputs.Hash;
-        result->Summary.SolvedMinModeFreq = solver_config.MinModeFreq;
-        result->Summary.SolvedMaxModeFreq = solver_config.MaxModeFreq;
-        result->Summary.SolvedNumModes = solver_config.NumModes;
+        result->Summary.OperatorHash = inputs.OperatorHash;
+        result->Summary.ModalConfigHash = inputs.ModalConfigHash;
+        monitor.Stage.store(fastfem::SolveStage::Finalizing, std::memory_order_relaxed);
         auto model_path = result->Modes.Freqs.empty() ? fs::path{} : SaveModalModelFile({std::move(result->Modes), result->Mass, std::move(result->Tetrahedra), std::move(result->Summary)});
-        return {std::move(model_path), std::move(result->Basis), inputs.Hash};
+        monitor.Stage.store(fastfem::SolveStage::Complete, std::memory_order_relaxed);
+        return {std::move(model_path), {inputs.OperatorHash, std::move(result->Basis)}};
     };
     // Intentional registry-ctx write outside Apply: transient background-job bookkeeping.
-    r.ctx().get<ModalSolveJobs>().Jobs.push_back(std::make_shared<ModalSolveJob>(e, viewport, Job<ModalGenerationResult>{GetName(r, e), std::move(work)}));
+    r.ctx().get<ModalSolveJobs>().Jobs.push_back(std::make_shared<ModalSolveJob>(e, viewport, Job<ModalGenerationResult, fastfem::SolveMonitor>{GetName(r, e), std::move(work)}));
 }
 } // namespace
 
@@ -854,7 +862,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         // Clear warm-start data associated with the removed scene.
         r.ctx().get<ModalWarmStart>() = {};
         // In-flight solves target entities from the cleared scene. Their results are discarded on arrival.
-        for (auto &job : r.ctx().get<ModalSolveJobs>().Jobs) job->Work.Monitor->RequestCancel();
+        for (auto &job : r.ctx().get<ModalSolveJobs>().Jobs) job->Work.RequestCancel();
     });
 
     // Create modal solve context slots once because ProcessAudio reads the registry context concurrently.
@@ -894,9 +902,9 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 ++it;
                 continue;
             }
-            if (!job.Work.Monitor->Cancelled()) {
+            if (!job.Work.Cancelled()) {
                 // Intentional registry-ctx write outside Apply: the warm-start slot is a derived memo, not scene input.
-                if (result->Basis) r.ctx().get<ModalWarmStart>() = {result->TetInputsHash, std::move(result->Basis)};
+                if (result->WarmStart.Basis) r.ctx().get<ModalWarmStart>() = std::move(result->WarmStart);
                 if (result->ModelPath.empty()) std::cerr << "Modal model computation failed.\n";
                 else if (r.valid(job.Entity) && r.all_of<ModalSolveSettings>(job.Entity)) action::ApplyNow(r, job.Viewport, action::audio::ApplyModalModel{job.Entity, std::move(result->ModelPath)});
             }
@@ -1040,11 +1048,12 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             // Ensure every modal object has tuning, gain, solve settings, and acoustic material.
             // Intentional registry writes outside Apply: derived defaults for a new model.
             for (auto e : modal_tracker) {
-                const auto &modes = r.get<const ::ModalModes>(e);
-                if (!r.all_of<ModalTuning>(e)) r.emplace<ModalTuning>(e, modes.Freqs.empty() ? 0.f : modes.Freqs.front(), 1.f);
+                const auto *modes = r.try_get<const ::ModalModes>(e);
+                if (!modes) continue;
+                if (!r.all_of<ModalTuning>(e)) r.emplace<ModalTuning>(e, modes->Freqs.empty() ? 0.f : modes->Freqs.front(), 1.f);
                 if (!r.all_of<ModalGain>(e)) r.emplace<ModalGain>(e);
                 if (!r.all_of<ModalSolveSettings>(e)) {
-                    r.emplace<ModalSolveSettings>(e, modes.Vertices.empty() ? ModalSolveSettings{} : ModalSolveSettings{.NumVertices = uint32_t(modes.Vertices.size())});
+                    r.emplace<ModalSolveSettings>(e, modes->Vertices.empty() ? ModalSolveSettings{} : ModalSolveSettings{.NumVertices = uint32_t(modes->Vertices.size())});
                 }
                 if (!r.all_of<AcousticMaterial>(e)) r.emplace<AcousticMaterial>(e, materials::acoustic::All.front());
             }
@@ -1300,19 +1309,44 @@ std::optional<size_t> PlotModeData(
     return hovered_index;
 }
 
-void DrawModalModelHeader(const entt::registry &r, entt::entity e) {
+bool DrawModalModelActions(
+    entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity,
+    const ModalSolveSettings &settings, const AcousticMaterial &material
+) {
     const bool present = r.all_of<ModalModes>(e);
     const bool solving = IsSolving(r, e);
-    const char *status = present ? (solving ? "present, updating" : "present") : (solving ? "solving" : "not created");
-    SeparatorText(std::format("Modal model ({})", status).c_str());
+    bool has_action = false;
+    if (r.all_of<SoundVerticesModel>(e)) {
+        if (Button(present ? "Delete sound object ●" : "Delete sound object")) {
+            action::Emit(action::audio::DeleteSoundObject{});
+            return true;
+        }
+        has_action = true;
+    }
+    if (!present) {
+        if (has_action) SameLine();
+        if (solving) BeginDisabled();
+        if (Button("Create modal model ○")) {
+            action::Emit(action::audio::ConfigureModalModel{settings, material});
+            LaunchModalSolve(r, viewport, e, settings, material);
+        }
+        if (solving) EndDisabled();
+    }
+    if (present && !solving && r.all_of<ModalSolveSettings, AcousticMaterial>(e) &&
+        ModalModelStale(r, e, BuildSolveInputs(r, e, mesh_entity, settings), material)) {
+        if (has_action) SameLine();
+        if (Button("Update modal model")) LaunchModalSolve(r, viewport, e, settings, material);
+    }
+    return false;
 }
 
-void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity) {
-    const ModalSolveSettings default_settings;
+void DrawModalModelSettings(
+    entt::registry &r, entt::entity e, entt::entity mesh_entity,
+    const ModalSolveSettings &settings, const AcousticMaterial &material
+) {
     const ContactSurface default_surface = WithPreset({}, surfaces::acoustic::Default);
-    const auto &settings = r.all_of<ModalSolveSettings>(e) ? r.get<const ModalSolveSettings>(e) : default_settings;
-    const auto &material = r.all_of<AcousticMaterial>(e) ? r.get<const AcousticMaterial>(e) : materials::acoustic::All.front();
     const auto &surface = r.all_of<ContactSurface>(e) ? r.get<const ContactSurface>(e) : default_surface;
+    ui::Edit fs{r, e, ui::Replace{settings}};
 
     SeparatorText("Material properties");
     ui::PresetCombo("Presets", material.Name, materials::acoustic::All, [&](const auto &choice) {
@@ -1323,40 +1357,89 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
     fm.Slider<&AcousticMaterial::Properties, &Props::Density>("Density (kg/m^3)", "%.0f");
     fm.Slider<&AcousticMaterial::Properties, &Props::YoungModulus>("Young's modulus (Pa)", "%.3g", ImGuiSliderFlags_Logarithmic);
     fm.Slider<&AcousticMaterial::Properties, &Props::PoissonRatio>("Poisson's ratio", "%.2f");
-    fm.Slider<&AcousticMaterial::Properties, &Props::Alpha>("Rayleigh alpha", "%.2f", ImGuiSliderFlags_Logarithmic);
-    {
-        // Beta's range in seconds sits below the logarithmic slider's zero epsilon, so edit it in microseconds.
+    fm.Run<&AcousticMaterial::Properties>([](Props &props) {
+        using AlphaLimits = FieldLimits<&AcousticMaterial::Properties, &Props::Alpha>;
         using BetaLimits = FieldLimits<&AcousticMaterial::Properties, &Props::Beta>;
-        static constexpr double MinUs{BetaLimits::Min * 1e6}, MaxUs{BetaLimits::Max * 1e6};
-        const auto slider = [&](double &beta) {
-            double beta_us = beta * 1e6;
-            const bool changed = SliderScalar("Rayleigh beta (us)", ImGuiDataType_Double, &beta_us, &MinUs, &MaxUs, "%.3f", ImGuiSliderFlags_Logarithmic);
-            beta = beta_us * 1e-6;
-            return changed;
-        };
-        fm.Run<&AcousticMaterial::Properties, &Props::Beta>(slider);
-    }
+        double coefficients[]{props.Alpha, props.Beta * 1e6};
+        if (!InputScalarN("Rayleigh damping alpha / beta (1/s, µs)", ImGuiDataType_Double, coefficients, 2, nullptr, nullptr, "%.3g")) return false;
+        props.Alpha = std::clamp(coefficients[0], AlphaLimits::Min, AlphaLimits::Max);
+        props.Beta = std::clamp(coefficients[1] * 1e-6, BetaLimits::Min, BetaLimits::Max);
+        return true;
+    });
+    MeshEditor::HelpMarker("Mass-proportional alpha primarily damps low frequencies. Stiffness-proportional beta primarily damps high frequencies.");
 
     DrawContactSurfaceControls(r, e, surface, material);
 
-    SeparatorText("Tet mesh");
-    ui::Edit fs{r, e, ui::Replace{settings}};
-    fs.Check<&ModalSolveSettings::QualityTets>("Quality");
-    MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
-    fs.Slider<&ModalSolveSettings::SolveResolution>("Solve resolution");
-    MeshEditor::HelpMarker("Fraction of surface triangles used for the modal solve. Lower is faster and less accurate.");
-
     SeparatorText("Modes");
-    fs.Slider<&ModalSolveSettings::NumModes>("Count##modes");
-    MeshEditor::HelpMarker("Modes kept from the solve. More modes are richer and costlier.");
+    fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::NumModes>("Retained modes");
+    fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::NumFemModes>("FEM eigenpairs");
+    MeshEditor::HelpMarker("The eigensolver computes this many eigenpairs before filtering the retained frequency band and mode count.");
+    fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal>([](ModalSolverConfig &config) {
+        return DragFloatRange2("Frequency band (Hz)", &config.MinModeFreq, &config.MaxModeFreq, 1.f, 20.f, 20000.f, "%.0f", "%.0f");
+    });
+    fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::Tolerance>("Residual tolerance", "%.1e", ImGuiSliderFlags_Logarithmic);
+    fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::MaxRestarts>("Restart limit");
     {
-        float lo = settings.MinModeFreq, hi = settings.MaxModeFreq;
-        const bool changed = DragFloatRange2("Frequency band (Hz)", &lo, &hi, 1.f, 20.f, 20000.f, "%.0f", "%.0f");
-        ui::Gesture(changed, [&] {
-            auto replacement = settings;
-            replacement.MinModeFreq = lo;
-            replacement.MaxModeFreq = hi;
-            return action::Replace<ModalSolveSettings>{.Entity = e, .Value = replacement};
+        const bool had_fundamental = settings.Solve.Modal.FundamentalFreq.has_value();
+        bool enabled = had_fundamental;
+        if (Checkbox("Fundamental override", &enabled)) {
+            fs.Set<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::FundamentalFreq>(enabled ? std::optional{440.f} : std::nullopt);
+        }
+        if (had_fundamental) {
+            SameLine();
+            fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::FundamentalFreq>([](std::optional<float> &fundamental) {
+                return SliderFloat("##fundamental", &*fundamental, 20.f, 20000.f, "%.0f Hz", ImGuiSliderFlags_Logarithmic);
+            });
+        }
+        MeshEditor::HelpMarker("Overrides the output fundamental. Without an override, an active impact recording supplies its estimated fundamental when available.");
+    }
+
+    SeparatorText("Discretization");
+    int discretization = int(settings.Discretization);
+    bool discretization_changed = RadioButton("Tet10", &discretization, int(fastfem::Discretization::Tet10));
+    SameLine();
+    discretization_changed |= RadioButton("Finite cell", &discretization, int(fastfem::Discretization::FiniteCell));
+    if (discretization_changed) fs.Set<&ModalSolveSettings::Discretization>(fastfem::Discretization(discretization));
+
+    if (settings.Discretization == fastfem::Discretization::Tet10) {
+        SeparatorText("Tet10 mesh");
+        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::SurfaceSimplificationRatio>("Surface ratio");
+        MeshEditor::HelpMarker("Fraction of surface triangles retained before tetrahedralization.");
+        fs.Check<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::Quality>("Quality tetrahedra");
+        fs.Input<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::MaxVolume>("Maximum volume (m^3)", "%.3g");
+        MeshEditor::HelpMarker("Zero disables the tetrahedron volume constraint.");
+        fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::Holes>([](std::vector<fastfem::DVec3> &holes) {
+            bool changed = false;
+            for (size_t i = 0; i < holes.size(); ++i) {
+                PushID(int(i));
+                changed |= InputScalarN("Hole seed", ImGuiDataType_Double, &holes[i].x, 3);
+                SameLine();
+                if (Button("Remove")) {
+                    holes.erase(holes.begin() + i);
+                    changed = true;
+                    PopID();
+                    break;
+                }
+                PopID();
+            }
+            if (Button("Add hole seed")) {
+                holes.emplace_back();
+                changed = true;
+            }
+            return changed;
+        });
+        MeshEditor::HelpMarker("Tetrahedralization excludes the connected tetrahedral region containing each point, bounded by the input surface. Coordinates use scaled local space (m).");
+    } else {
+        SeparatorText("Finite-cell grid");
+        fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::Cells>([](std::array<uint32_t, 3> &cells) {
+            constexpr uint32_t MinCells{1}, MaxCells{256};
+            return ui::LinkedSlider("Cells", cells, MinCells, MaxCells);
+        });
+        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::CutDepth>("Cut depth");
+        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::FictitiousScale>("Fictitious scale", "%.1e", ImGuiSliderFlags_Logarithmic);
+        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::PaddingCells>("Padding (cells)", "%.2f");
+        fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::GridOffsetCells>([](fastfem::DVec3 &offset) {
+            return InputScalarN("Grid offset (cells)", ImGuiDataType_Double, &offset.x, 3);
         });
     }
 
@@ -1381,30 +1464,6 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
         SliderScalar("Count", ImGuiDataType_U32, &v, &min_vertices, &max_vertices))
         fs.Set<&ModalSolveSettings::NumVertices>(v);
     if (reuse) EndDisabled();
-
-    if (!r.all_of<ModalModes>(e)) {
-        if (IsSolving(r, e)) TextDisabled("Solving...");
-        else if (Button("Create modal model")) {
-            action::Emit(action::audio::ConfigureModalModel{settings, material});
-            LaunchModalSolve(r, viewport, e, settings, material);
-        }
-    }
-}
-
-void DrawModalUpdateButton(entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity) {
-    if (!r.all_of<ModalSolveSettings>(e) || !r.all_of<ModalModes>(e)) return;
-    const auto *material = r.try_get<const AcousticMaterial>(e);
-    if (!material) return;
-    if (IsSolving(r, e)) {
-        SameLine();
-        TextDisabled("Solving...");
-        return;
-    }
-    const auto &settings = r.get<const ModalSolveSettings>(e);
-    if (!ModalModelStale(r, e, BuildSolveInputs(r, e, mesh_entity, settings), settings, *material)) return;
-
-    SameLine();
-    if (Button("Update modal model")) LaunchModalSolve(r, viewport, e, settings, *material);
 }
 
 // Returns the active vertex in Excite mode or selected vertices in Edit mode.
@@ -1456,16 +1515,18 @@ bool ImpulseJoystick(vec2 &pos) {
 void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity) {
     if (e == entt::null || mesh_entity == entt::null) return;
 
+    const ModalSolveSettings default_settings;
+    const auto &settings = r.all_of<ModalSolveSettings>(e) ? r.get<const ModalSolveSettings>(e) : default_settings;
+    const auto &material = r.all_of<AcousticMaterial>(e) ? r.get<const AcousticMaterial>(e) : materials::acoustic::All.front();
+    if (DrawModalModelActions(r, viewport, e, mesh_entity, settings, material)) return;
+
     // Sample ops (Add/Replace/Remove) are only available in Edit / Excite mode.
     const auto mode = r.get<const Interaction>(viewport).Mode;
     const bool sample_ops_available = mode == InteractionMode::Edit || mode == InteractionMode::Excite;
     const auto op_vertices = sample_ops_available ? GetSampleOpVertices(r, viewport, e) : std::vector<uint32_t>{};
 
     const bool has_model = r.all_of<SoundVerticesModel>(e);
-    if (!has_model) {
-        DrawModalModelHeader(r, e);
-        DrawModalModelSection(r, viewport, e, mesh_entity);
-    }
+    if (!has_model) DrawModalModelSettings(r, e, mesh_entity, settings, material);
 
     const auto *samples = r.try_get<const VertexSamples>(e);
     const auto *modal_modes = r.try_get<const ModalModes>(e);
@@ -1491,13 +1552,6 @@ void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::ent
     if (has_model && excitable) {
         const auto excitable_vertices = r.ctx().get<const MeshStore>().GetSoundVertices(excitable->Vertices);
         const auto active_vertex = excitable_vertices[active_vi];
-        if (BeginCombo("Vertex", std::to_string(active_vertex).c_str())) {
-            for (uint32_t vi = 0; vi < excitable_vertices.size(); ++vi) {
-                if (const auto vertex = excitable_vertices[vi]; Selectable(std::to_string(vertex).c_str(), vi == active_vi))
-                    action::Emit(action::audio::SetExciteVertex{vi, vertex});
-            }
-            EndCombo();
-        }
         const bool can_excite =
             (model == SoundVerticesModel::Samples) ||
             (model == SoundVerticesModel::Modal && (!recording || recording->Complete()));
@@ -1506,6 +1560,14 @@ void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::ent
         if (IsItemActivated()) action::Emit(action::audio::StartExcite{active_vertex});
         else if (IsItemDeactivated()) action::Emit(action::audio::StopExcite{});
         if (!can_excite) EndDisabled();
+        SameLine();
+        if (BeginCombo("Vertex", std::to_string(active_vertex).c_str())) {
+            for (uint32_t vi = 0; vi < excitable_vertices.size(); ++vi) {
+                if (const auto vertex = excitable_vertices[vi]; Selectable(std::to_string(vertex).c_str(), vi == active_vi))
+                    action::Emit(action::audio::SetExciteVertex{vi, vertex});
+            }
+            EndCombo();
+        }
 
         if (model == SoundVerticesModel::Modal) {
             TextUnformatted("Impact angle");
@@ -1554,15 +1616,7 @@ void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::ent
 
     if (!has_model) return;
 
-    DrawModalModelHeader(r, e);
-    DrawModalModelSection(r, viewport, e, mesh_entity);
-
-    Spacing();
-    if (Button("Delete sound object")) {
-        action::Emit(action::audio::DeleteSoundObject{});
-        return;
-    }
-    DrawModalUpdateButton(r, viewport, e, mesh_entity);
+    DrawModalModelSettings(r, e, mesh_entity, settings, material);
 
     if (model != SoundVerticesModel::Modal) return;
 
@@ -1733,6 +1787,23 @@ void DrawAudioDebug(const entt::registry &r) {
     DrawSurfaceContactDebug(r);
 }
 
+std::string_view SolveStageLabel(fastfem::SolveStage stage) {
+    using enum fastfem::SolveStage;
+    switch (stage) {
+        case PreparingSurface: return "Preparing surface";
+        case GeneratingTetrahedra: return "Generating tetrahedra";
+        case BuildingFiniteCellGrid: return "Building finite-cell grid";
+        case ComputingMassProperties: return "Computing mass properties";
+        case BuildingTopology: return "Building topology";
+        case AssemblingOperators: return "Assembling operators";
+        case Factorizing: return "Factorizing";
+        case SolvingEigenproblem: return "Solving eigenproblem";
+        case SamplingModes: return "Sampling modes";
+        case Finalizing: return "Finalizing modal model";
+        case Complete: return "Complete";
+    }
+}
+
 void DrawModalJobsOverlay(entt::registry &r) {
     const auto &jobs = r.ctx().get<const ModalSolveJobs>().Jobs;
     if (jobs.empty()) return;
@@ -1760,11 +1831,12 @@ void DrawModalJobsOverlay(entt::registry &r) {
             AlignTextToFramePadding();
             ImSpinner::SpinnerRotateSegmentsPulsar("##spinner", GetTextLineHeight() * 0.5f, 2.f, GetColorU32(ImGuiCol_Text), 1.1f, 3, 3);
             SameLine();
-            TextUnformatted(job->Work.Title.c_str());
+            const auto stage = SolveStageLabel(monitor.Stage.load(std::memory_order_relaxed));
+            Text("%s: %.*s", job->Work.Title.c_str(), int(stage.size()), stage.data());
             SameLine(0.f, GetStyle().ItemSpacing.x * 3.f);
-            const bool cancelled = monitor.Cancelled();
+            const bool cancelled = job->Work.Cancelled();
             if (cancelled) BeginDisabled();
-            if (Button("Cancel")) monitor.RequestCancel();
+            if (Button("Cancel")) job->Work.RequestCancel();
             if (cancelled) EndDisabled();
             EndGroup();
             const float progress = monitor.Progress.load(std::memory_order_relaxed);

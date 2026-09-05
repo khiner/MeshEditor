@@ -1,5 +1,7 @@
 #pragma once
 
+#include <FastFEM/Surface2Modes.h>
+
 #include <cstdint>
 #include <string>
 
@@ -37,16 +39,14 @@ struct ModalSoundControls {
 enum class SoundVerticesModel {
     // Plays impact recordings sampled at supplied object vertices.
     Samples,
-    // Synthesizes impacts from finite-element modes of a tetrahedral volume mesh.
+    // Synthesizes impacts from finite-element modes.
     Modal,
 };
 
-// Modal solve inputs beyond the mesh and its acoustic material: tet meshing options and the excitation vertex selection. Per sound entity.
+// Modal solve inputs beyond the surface mesh and its acoustic material. Per sound entity.
 struct ModalSolveSettings {
+    fastfem::Discretization Discretization{fastfem::Discretization::Tet10};
+    fastfem::SurfaceSolveConfig Solve{};
     uint32_t NumVertices{10};
-    float SolveResolution{1}; // Fraction of surface triangles used for the modal solve. Lower is faster and less accurate.
     bool CopySoundVertices{true}; // Solve at the existing excitable vertices when present.
-    bool QualityTets{false};
-    uint32_t NumModes{30}; // Modes kept from the solve.
-    float MinModeFreq{20}, MaxModeFreq{16'000}; // Synthesized frequency band, Hz.
 };

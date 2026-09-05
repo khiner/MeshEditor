@@ -4,9 +4,9 @@
 
 #include <cstddef>
 
-// Stores the latest full eigenvector basis for modal::SolveReuse with matching tetrahedral inputs.
+// Stores the latest full eigenvector basis for matching Tet10 operator inputs.
 // One scene-level slot supports the object under active editing.
 struct ModalWarmStart {
-    size_t TetInputsHash{};
+    size_t OperatorHash{};
     fastfem::ModeBasis Basis{};
 };

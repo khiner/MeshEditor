@@ -77,6 +77,36 @@ consteval ImGuiDataType ImGuiDt() {
     else static_assert(false, "ImGuiDt: unsupported scalar type");
 }
 
+template<typename T, size_t N>
+bool LinkedSlider(const char *label, std::array<T, N> &values, T lo, T hi, const char *fmt = nullptr, ImGuiSliderFlags flags = 0) {
+    const bool uniform = std::ranges::all_of(values, [&](T value) { return value == values.front(); });
+    ImGui::PushID(label);
+    ImGuiStorage *storage = ImGui::GetStateStorage();
+    const ImGuiID linked_id = ImGui::GetID("Linked");
+    bool linked = storage->GetBool(linked_id, uniform);
+    bool changed = false;
+    if (ImGui::Button(linked ? "Unlink" : "Link")) {
+        linked = !linked;
+        storage->SetBool(linked_id, linked);
+        if (linked && !uniform) {
+            values.fill(values.front());
+            changed = true;
+        }
+    }
+    ImGui::SameLine();
+    if (linked) {
+        T value = values.front();
+        if (ImGui::SliderScalar(label, ImGuiDt<T>(), &value, &lo, &hi, fmt, flags)) {
+            values.fill(value);
+            changed = true;
+        }
+    } else {
+        changed |= ImGui::SliderScalarN(label, ImGuiDt<T>(), values.data(), N, &lo, &hi, fmt, flags);
+    }
+    ImGui::PopID();
+    return changed;
+}
+
 // Map FieldLimits to ImGui bounds, using (0,0) for an unbounded field and FLT_MAX for an open endpoint.
 template<auto... Ms>
 constexpr std::pair<float, float> DragBounds() {

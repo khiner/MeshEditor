@@ -7,21 +7,12 @@
 #include <optional>
 #include <string>
 
-// The worker updates Progress and polls CancelRequested at its cancellation checkpoints.
-struct JobMonitor {
-    std::atomic<float> Progress{0.f}; // Fraction complete. 0 while indeterminate.
-    std::atomic<bool> CancelRequested{false};
-
-    void RequestCancel() { CancelRequested.store(true, std::memory_order_relaxed); }
-    bool Cancelled() const { return CancelRequested.load(std::memory_order_relaxed); }
-};
-
 // A background task with a monitor for progress display and cooperative cancellation.
 // `work` runs on its own thread and receives the monitor.
-template<typename Result>
+template<typename Result, typename MonitorType>
 struct Job {
     Job(std::string title, auto &&work)
-        : Title(std::move(title)), Monitor(std::make_shared<JobMonitor>()),
+        : Title(std::move(title)), Monitor(std::make_shared<MonitorType>()),
           ResultFuture(std::async(std::launch::async, [monitor = Monitor, work = std::forward<decltype(work)>(work)]() mutable { return work(*monitor); })) {}
 
     // Return the completed result or nullopt without blocking.
@@ -30,7 +21,10 @@ struct Job {
         return ResultFuture.get();
     }
 
+    void RequestCancel() { Monitor->CancelRequested.store(true, std::memory_order_relaxed); }
+    bool Cancelled() const { return Monitor->CancelRequested.load(std::memory_order_relaxed); }
+
     std::string Title;
-    std::shared_ptr<JobMonitor> Monitor;
+    std::shared_ptr<MonitorType> Monitor;
     std::future<Result> ResultFuture;
 };
