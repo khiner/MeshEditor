@@ -30,8 +30,6 @@ jobs:
           cmake -B build -G Ninja
           -DMESHEDITOR_APP=OFF
           -DCMAKE_BUILD_TYPE=Debug
-          -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang
-          -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++
           -DCMAKE_C_COMPILER_LAUNCHER=ccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
@@ -44,7 +42,7 @@ jobs:
           ./build/tests/MeshEditorModalSolveIntegrationTest
           ./build/tests/MeshEditorTests
 
-  # Solve the RealImpact corpus and publish mode values and solve timing.
+  # Validate mesh corpora and benchmark production surface solves.
   modal-corpus:
     runs-on: macos-26
     timeout-minutes: 300
@@ -92,23 +90,27 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DFASTFEM_REALIMPACT_DATASET_DIR="$PWD/external/RealImpact/dataset"
           -DFASTFEM_TET_CORPUS_DIR="$PWD/external/TetCorpus"
-          -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang
-          -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++
           -DCMAKE_C_COMPILER_LAUNCHER=ccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
-        run: cmake --build build-fastfem --target FastFEMModalSolverTest FastFEMFiniteCellRealMeshTest FastFEMTetCorpusTest FastFEMFiniteCellAudioCorpus
+        run: cmake --build build-fastfem
 
-      - name: Run modal solver tests
-        run: ctest --test-dir build-fastfem -R 'FastFEMModalSolver|FastFEMFiniteCellRealMesh|FastFEMTetCorpus' --output-on-failure -j1
+      - name: Run FastFEM tests
+        run: ctest --test-dir build-fastfem --output-on-failure -j1
 
-      - name: Run modal corpus
-        shell: bash
-        run: ./build-fastfem/FastFEMFiniteCellAudioCorpus 6 128 all | tee modal-corpus.txt
+      - name: Benchmark surface solves
+        run: >
+          python3 lib/FastFEM/script/BenchmarkSurface lib/FastFEM/tests/fixtures/cube.obj
+          --solver build-fastfem/FastFEMModalSolve
+          --resolution 12 --fem-modes 45 --repetitions 3
+          > surface-comparison.json
 
       - name: Upload corpus artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: modal-corpus
-          path: modal-corpus.txt
+          path: |
+            surface-comparison.json
+            build-fastfem/Testing/Temporary/LastTest.log

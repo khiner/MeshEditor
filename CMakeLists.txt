@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 4.4)
 
+include(lib/FastFEM/cmake/Compiler.cmake)
 project(MeshEditor LANGUAGES C CXX OBJCXX)
 
 if(NOT APPLE)

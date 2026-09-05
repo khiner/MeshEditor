@@ -35,6 +35,6 @@ if [ ! -f "${BuildDir}/build.ninja" ] ||
     ! grep -qx "CMAKE_BUILD_TYPE:STRING=${build_type}" "${BuildDir}/CMakeCache.txt" ||
     ! grep -qx "MESHEDITOR_SURFACE_AUDIO:BOOL=${surface_audio}" "${BuildDir}/CMakeCache.txt" ||
     { [ "${#validate_args[@]}" -gt 0 ] && ! grep -qx "MESHEDITOR_VALIDATE_ACTIONS:BOOL=${validate_actions}" "${BuildDir}/CMakeCache.txt"; }; then
-    CC=clang CXX=clang++ cmake -G Ninja -S "${ProjectRootDir}" -B "${BuildDir}" -DCMAKE_BUILD_TYPE="$build_type" -DMESHEDITOR_SURFACE_AUDIO="$surface_audio" ${validate_args[@]+"${validate_args[@]}"}
+    cmake -G Ninja -S "${ProjectRootDir}" -B "${BuildDir}" -DCMAKE_BUILD_TYPE="$build_type" -DMESHEDITOR_SURFACE_AUDIO="$surface_audio" ${validate_args[@]+"${validate_args[@]}"}
 fi
 cmake --build "${BuildDir}" --config "$build_type" --target "$target"
