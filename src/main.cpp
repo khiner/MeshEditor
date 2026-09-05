@@ -1507,15 +1507,15 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             if (driver.CaptureFrame(r, viewport, driver.Framed(viewport_settled))) done = true;
 
 #ifdef DEBUG_BUILD
+            const auto action_index = r.get_or_emplace<ActionIndex>(viewport).Index;
             bool validate = validate_requested;
 #ifdef VALIDATE_ACTIONS
-            if (const auto *index = r.try_get<const ActionIndex>(viewport);
-                index && (index->Index != validated_action_index || RestoreGeneration != validated_restore_generation)) {
+            if (action_index != validated_action_index || RestoreGeneration != validated_restore_generation) {
                 validate = true;
             }
 #endif
             const bool ui_matches_scene =
-                ui_action_index == r.get<const ActionIndex>(viewport).Index &&
+                ui_action_index == action_index &&
                 ui_restore_generation == RestoreGeneration;
             const bool validation_ready = validate && ui_gesture_settled;
             const bool present_frame = !validation_ready || ui_matches_scene;
@@ -1542,7 +1542,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 ValidateRoundTrip(r, viewport, layer, draw_data->DisplaySize, draw_data->FramebufferScale, live_app);
                 validate_requested = false;
 #ifdef VALIDATE_ACTIONS
-                validated_action_index = r.get<const ActionIndex>(viewport).Index;
+                validated_action_index = action_index;
                 validated_restore_generation = RestoreGeneration;
 #endif
             }
