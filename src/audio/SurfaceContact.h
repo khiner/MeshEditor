@@ -11,6 +11,8 @@
 struct ModalAudio;
 struct ModalBank;
 struct ModalRenderScratch;
+struct AcousticMaterial;
+struct ContactSurface;
 
 // The selected implementation defines the deleter for this opaque state.
 struct SurfaceAudioState;
@@ -55,6 +57,6 @@ entt::entity ContactSurfaceNode(const entt::registry &, entt::entity collider, e
 
 /***** User interface *****/
 
-void DrawContactSurfaceControls(entt::registry &, entt::entity sound_entity);
+void DrawContactSurfaceControls(entt::registry &, entt::entity sound_entity, const ContactSurface &, const AcousticMaterial &);
 void DrawSurfaceSynthControls(entt::registry &, entt::entity viewport);
 void DrawSurfaceContactDebug(const entt::registry &);

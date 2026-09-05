@@ -33,10 +33,10 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](StopExcite) { r.remove<VertexForce>(FindActiveEntity(r)); },
             [&](DeleteSoundObject) { RemoveAudioComponents(r, FindActiveEntity(r)); },
             [&](const StartRecording &a) { r.emplace_or_replace<Recording>(FindActiveEntity(r), a.FrameCount); },
-            [&](SetupModalModel) {
+            [&](const ConfigureModalModel &a) {
                 const auto e = FindActiveEntity(r);
-                if (!r.all_of<ModalSolveSettings>(e)) r.emplace<ModalSolveSettings>(e);
-                if (!r.all_of<AcousticMaterial>(e)) r.emplace<AcousticMaterial>(e, materials::acoustic::All.front());
+                r.emplace_or_replace<ModalSolveSettings>(e, a.Settings);
+                r.emplace_or_replace<AcousticMaterial>(e, a.Material);
                 if (!r.all_of<ContactSurface>(e)) r.emplace<ContactSurface>(e, WithPreset({}, surfaces::acoustic::Default));
             },
             [&](const ApplyModalModel &a) { ::ApplyModalModel(r, a.SoundEntity, a.Path); },

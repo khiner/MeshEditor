@@ -32,16 +32,12 @@ template<> struct FieldLimits<&SurfaceSoundControls::MinSweepSpeed> : Within<0.,
 
 using namespace ImGui;
 
-void DrawContactSurfaceControls(entt::registry &r, entt::entity e) {
-    const auto *surface = r.try_get<const ContactSurface>(e);
-    const auto *material = r.try_get<const AcousticMaterial>(e);
-    if (!surface || !material) return;
-
+void DrawContactSurfaceControls(entt::registry &r, entt::entity e, const ContactSurface &surface, const AcousticMaterial &material) {
     SeparatorText("Surface finish");
-    ui::PresetCombo("Presets##finish", surface->Name, surfaces::acoustic::All, [&](const auto &choice) {
-        action::Emit(action::Replace<ContactSurface>{.Entity = e, .Value = WithPreset(*surface, choice)});
+    ui::PresetCombo("Presets##finish", surface.Name, surfaces::acoustic::All, [&](const auto &choice) {
+        action::Emit(action::Replace<ContactSurface>{.Entity = e, .Value = WithPreset(surface, choice)});
     });
-    ui::Edit fsurf{r, e};
+    ui::Edit fsurf{r, e, ui::Replace{surface}};
     fsurf.Slider<&ContactSurface::Roughness>("Roughness (m)", "%.3g", ImGuiSliderFlags_Logarithmic);
     MeshEditor::HelpMarker("Root-mean-square asperity height. A physical length measured with a profilometer, unrelated to a render material's roughness.");
     fsurf.Slider<&ContactSurface::CorrelationLength>("Correlation length (m)", "%.3g", ImGuiSliderFlags_Logarithmic);
@@ -50,7 +46,7 @@ void DrawContactSurfaceControls(entt::registry &r, entt::entity e) {
     MeshEditor::HelpMarker("Exponent of the roughness power spectrum. More negative is smoother-sounding.");
 
     // Derived contact constants, for a contact against a like body at the object's own weight.
-    const auto &props = material->Properties;
+    const auto &props = material.Properties;
     const auto *cd = r.try_get<const ContactDynamics>(e);
     const auto *modes = r.try_get<const ModalModes>(e);
     const auto sample_curvature = modes && !modes->Positions.empty() ? SurfaceCurvature(r, e, TransformPoint(r.get<const WorldTransform>(e), modes->Positions.front())) : std::nullopt;

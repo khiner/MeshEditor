@@ -17,6 +17,6 @@ void SurfaceUpdateContacts(entt::registry &) {}
 float SurfaceRoughnessOf(const entt::registry &, entt::entity) { return 0.f; }
 entt::entity ContactSurfaceNode(const entt::registry &, entt::entity, entt::entity body) { return body; }
 
-void DrawContactSurfaceControls(entt::registry &, entt::entity) {}
+void DrawContactSurfaceControls(entt::registry &, entt::entity, const ContactSurface &, const AcousticMaterial &) {}
 void DrawSurfaceSynthControls(entt::registry &, entt::entity) {}
 void DrawSurfaceContactDebug(const entt::registry &) {}

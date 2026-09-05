@@ -57,7 +57,7 @@ void Gesture(bool changed, MakeAction &&make) {
 }
 
 template<auto M, auto... Rest>
-decltype(auto) ReadChain(const auto &obj) {
+decltype(auto) ReadChain(auto &obj) {
     if constexpr (sizeof...(Rest) == 0) return obj.*M;
     else return ReadChain<Rest...>(obj.*M);
 }
@@ -90,16 +90,36 @@ constexpr std::pair<float, float> DragBounds() {
     }
 }
 
-template<bool HasEntity, auto... Prefix>
+template<auto... Ms, typename Field>
+bool SliderField(const char *label, Field &value, const char *fmt, ImGuiSliderFlags flags) {
+    static_assert(HasMin<Ms...> && HasMax<Ms...>, "SliderField: field must declare FieldLimits with both Min and Max");
+    using L = FieldLimits<Ms...>;
+    using F = std::remove_cvref_t<Field>;
+    if constexpr (std::same_as<F, float>) return ImGui::SliderFloat(label, &value, F(L::Min), F(L::Max), fmt ? fmt : "%.3f", flags);
+    else if constexpr (std::same_as<F, vec3>) return ImGui::SliderFloat3(label, &value.x, F(L::Min), F(L::Max), fmt ? fmt : "%.3f", flags);
+    else if constexpr (std::same_as<F, double> || std::integral<F>) {
+        F lo = F(L::Min), hi = F(L::Max);
+        return ImGui::SliderScalar(label, ImGuiDt<F>(), &value, &lo, &hi, fmt, flags);
+    } else static_assert(false, "SliderField: unsupported field type");
+}
+
+template<typename Component>
+struct Replace {
+    const Component &Current;
+};
+
+struct UpdateFields {};
+
+template<bool HasEntity, typename Policy = UpdateFields, auto... Prefix>
 struct Edit {
     entt::registry &R;
     [[no_unique_address]] std::conditional_t<HasEntity, entt::entity, std::monostate> E{};
+    [[no_unique_address]] Policy Write{};
 
     // Return an editor with additional nested field members.
     template<auto... More>
-    Edit<HasEntity, Prefix..., More...> Sub() const {
-        if constexpr (HasEntity) return {R, E};
-        else return {R};
+    Edit<HasEntity, Policy, Prefix..., More...> Sub() const {
+        return {R, E, Write};
     }
 
     entt::entity ReadFrom() const {
@@ -112,7 +132,7 @@ struct Edit {
 
     // Run a widget and group its staged values into one committed action or one cancellation.
     template<auto... Ms, typename Widget>
-    bool Run(Widget widget, bool delta_capable = false) {
+    bool RunUpdate(Widget widget, bool delta_capable) {
         using Field = action::detail::last_field<Prefix..., Ms...>;
         Field v = ReadChain<Prefix..., Ms...>(GetConst<action::detail::first_class<Prefix..., Ms...>>(R, ReadFrom()));
         const Field original = v;
@@ -203,6 +223,26 @@ struct Edit {
         return changed;
     }
 
+    template<auto... Ms, typename Widget>
+    bool RunReplace(Widget widget) const {
+        using Component = action::detail::first_class<Prefix..., Ms...>;
+        static_assert(HasEntity && std::same_as<Policy, Replace<Component>>);
+        auto value = ReadChain<Prefix..., Ms...>(Write.Current);
+        const bool changed = widget(value);
+        Gesture(changed, [&] {
+            auto replacement = Write.Current;
+            ReadChain<Prefix..., Ms...>(replacement) = std::move(value);
+            return action::Replace<Component>{.Entity = E, .Value = std::move(replacement)};
+        });
+        return changed;
+    }
+
+    template<auto... Ms, typename Widget>
+    bool Run(Widget widget, bool delta_capable = false) {
+        if constexpr (std::same_as<Policy, UpdateFields>) return RunUpdate<Ms...>(std::move(widget), delta_capable);
+        else return RunReplace<Ms...>(std::move(widget));
+    }
+
     template<auto... Ms>
     bool Check(const char *label) {
         return Run<Ms...>([&](bool &v) { return ImGui::Checkbox(label, &v); });
@@ -225,18 +265,7 @@ struct Edit {
     // Slider bounds come from the field's FieldLimits, which must declare both Min and Max.
     template<auto... Ms>
     bool Slider(const char *label, const char *fmt = nullptr, ImGuiSliderFlags flags = 0) {
-        static_assert(HasMin<Prefix..., Ms...> && HasMax<Prefix..., Ms...>, "Edit::Slider: field must declare FieldLimits with both Min and Max");
-        using L = FieldLimits<Prefix..., Ms...>;
-        return Run<Ms...>([&](auto &v) {
-            using F = std::remove_reference_t<decltype(v)>;
-            if constexpr (std::same_as<F, float>) return ImGui::SliderFloat(label, &v, F(L::Min), F(L::Max), fmt ? fmt : "%.3f", flags);
-            else if constexpr (std::same_as<F, vec3>) return ImGui::SliderFloat3(label, &v.x, F(L::Min), F(L::Max), fmt ? fmt : "%.3f", flags);
-            else if constexpr (std::same_as<F, double> || std::integral<F>) {
-                F lof = F(L::Min), hif = F(L::Max);
-                return ImGui::SliderScalar(label, ImGuiDt<F>(), &v, &lof, &hif, fmt, flags);
-            } else static_assert(false, "Edit::Slider: unsupported field type");
-        },
-                          /*delta_capable=*/true);
+        return Run<Ms...>([&](auto &value) { return SliderField<Prefix..., Ms...>(label, value, fmt, flags); }, /*delta_capable=*/true);
     }
 
     // Slider over an angle field stored in radians, displayed in degrees.
@@ -286,13 +315,23 @@ struct Edit {
     // Write a value the caller has already produced (e.g. from a bitmask widget, optional toggle).
     // Skips the read-widget step; useful where a simple read/widget mapping doesn't fit.
     template<auto... Ms>
-    void Set(action::detail::last_field<Ms...> v) const {
-        if constexpr (HasEntity) action::Emit(action::UpdateOf<Ms...>(E, std::move(v)));
-        else action::Emit(action::UpdateOf<Ms...>(ScopeFromAlt(false), std::move(v)));
+    void Set(action::detail::last_field<Prefix..., Ms...> value) const {
+        if constexpr (std::same_as<Policy, UpdateFields>) {
+            if constexpr (HasEntity) action::Emit(action::UpdateOf<Prefix..., Ms...>(E, std::move(value)));
+            else action::Emit(action::UpdateOf<Prefix..., Ms...>(ScopeFromAlt(false), std::move(value)));
+        } else {
+            using Component = action::detail::first_class<Prefix..., Ms...>;
+            static_assert(HasEntity && std::same_as<Policy, Replace<Component>>);
+            auto replacement = Write.Current;
+            ReadChain<Prefix..., Ms...>(replacement) = std::move(value);
+            action::Emit(action::Replace<Component>{.Entity = E, .Value = std::move(replacement)});
+        }
     }
 };
 
 Edit(entt::registry &) -> Edit<false>;
 Edit(entt::registry &, entt::entity) -> Edit<true>;
+template<typename Component>
+Edit(entt::registry &, entt::entity, Replace<Component>) -> Edit<true, Replace<Component>>;
 
 } // namespace ui

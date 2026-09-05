@@ -757,8 +757,7 @@ struct SolveInputs {
     size_t Hash;
 };
 
-SolveInputs BuildSolveInputs(const entt::registry &r, entt::entity e, entt::entity mesh_entity) {
-    const auto &settings = r.get<const ModalSolveSettings>(e);
+SolveInputs BuildSolveInputs(const entt::registry &r, entt::entity e, entt::entity mesh_entity, const ModalSolveSettings &settings) {
     const auto &mesh = GetMesh(r, mesh_entity);
     const uint32_t num_vertices = mesh.VertexCount();
     const vec3 node_scale = r.get<const WorldTransform>(e).S;
@@ -771,30 +770,26 @@ SolveInputs BuildSolveInputs(const entt::registry &r, entt::entity e, entt::enti
 }
 
 // True when the baked model no longer matches the current solve inputs.
-bool ModalModelStale(const entt::registry &r, entt::entity e, const SolveInputs &inputs) {
+bool ModalModelStale(const entt::registry &r, entt::entity e, const SolveInputs &inputs, const ModalSolveSettings &settings, const AcousticMaterial &material) {
     const auto *summary = r.try_get<const ModalEigenSummary>(e);
     if (!summary) return true;
     if (summary->TetInputsHash != inputs.Hash) return true;
     // Compare against the prior solve request because coincident tet points produce one sample point.
     if (inputs.Vertices != summary->SolvedVertices) return true;
-    const auto &settings = r.get<const ModalSolveSettings>(e);
     if (settings.NumModes != summary->SolvedNumModes || settings.MinModeFreq != summary->SolvedMinModeFreq || settings.MaxModeFreq != summary->SolvedMaxModeFreq) return true;
-    const auto *mat = r.try_get<const AcousticMaterial>(e);
-    return mat && mat->Properties.PoissonRatio != summary->SolvedMaterial.PoissonRatio;
+    return material.Properties.PoissonRatio != summary->SolvedMaterial.PoissonRatio;
 }
 
 // Extra eigenpairs cover rigid-body and out-of-band modes removed during post-processing.
 constexpr uint32_t FemModeMargin{15};
 
-// Launch an async solve for the entity from its current components, unless one is already running or the baked model matches the inputs.
-void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) {
-    if (!r.valid(e) || !r.all_of<ModalSolveSettings>(e) || IsSolving(r, e)) return;
+// Launch an async solve unless one is already running or the baked model matches the inputs.
+void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e, const ModalSolveSettings &settings, const AcousticMaterial &material) {
+    if (!r.valid(e) || IsSolving(r, e)) return;
     const auto *inst = r.try_get<const Instance>(e);
     if (!inst || !TryGetMesh(r, inst->Entity)) return;
-    const auto *material = r.try_get<const AcousticMaterial>(e);
-    if (!material) return;
-    auto inputs = BuildSolveInputs(r, e, inst->Entity);
-    if (r.all_of<ModalModes>(e) && !ModalModelStale(r, e, inputs)) return;
+    auto inputs = BuildSolveInputs(r, e, inst->Entity, settings);
+    if (r.all_of<ModalModes>(e) && !ModalModelStale(r, e, inputs, settings, material)) return;
 
     std::optional<float> fundamental;
     if (const auto path = ActiveSamplePath(r, e)) {
@@ -804,7 +799,6 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
             fundamental = EstimateFundamentalFrequency(ComputeFft(frames, sr), sr);
         }
     }
-    const auto &settings = r.get<const ModalSolveSettings>(e);
     const fastfem::SolverConfig solver_config{
         .MinModeFreq = settings.MinModeFreq,
         .MaxModeFreq = settings.MaxModeFreq,
@@ -816,7 +810,7 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
     // The most recent solve's basis seeds this one when it was over the same tets.
     fastfem::ModeBasis warm_basis;
     if (const auto &warm = r.ctx().get<const ModalWarmStart>(); warm.Basis && warm.TetInputsHash == inputs.Hash) warm_basis = warm.Basis;
-    auto work = [inputs = std::move(inputs), material_props = material->Properties, excite_positions = std::move(excite_positions), solver_config, warm_basis = std::move(warm_basis)](JobMonitor &monitor) mutable -> ModalGenerationResult {
+    auto work = [inputs = std::move(inputs), material_props = material.Properties, excite_positions = std::move(excite_positions), solver_config, warm_basis = std::move(warm_basis)](JobMonitor &monitor) mutable -> ModalGenerationResult {
         // Capture sample-surface triangulation before simplification.
         auto sample_triangles = SampleSurfaceTriangles(inputs.TriangleIndices, uint32_t(inputs.Positions.size()), inputs.Vertices);
         const fastfem::SurfaceSolveConfig config{
@@ -1305,20 +1299,27 @@ std::optional<size_t> PlotModeData(
 
     return hovered_index;
 }
+
+void DrawModalModelHeader(const entt::registry &r, entt::entity e) {
+    const bool present = r.all_of<ModalModes>(e);
+    const bool solving = IsSolving(r, e);
+    const char *status = present ? (solving ? "present, updating" : "present") : (solving ? "solving" : "not created");
+    SeparatorText(std::format("Modal model ({})", status).c_str());
+}
+
 void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity) {
-    const auto *settings = r.try_get<const ModalSolveSettings>(e);
-    const auto *material = r.try_get<const AcousticMaterial>(e);
-    if (!settings || !material) {
-        if (Button("Create modal model")) action::Emit(action::audio::SetupModalModel{});
-        return;
-    }
+    const ModalSolveSettings default_settings;
+    const ContactSurface default_surface = WithPreset({}, surfaces::acoustic::Default);
+    const auto &settings = r.all_of<ModalSolveSettings>(e) ? r.get<const ModalSolveSettings>(e) : default_settings;
+    const auto &material = r.all_of<AcousticMaterial>(e) ? r.get<const AcousticMaterial>(e) : materials::acoustic::All.front();
+    const auto &surface = r.all_of<ContactSurface>(e) ? r.get<const ContactSurface>(e) : default_surface;
 
     SeparatorText("Material properties");
-    ui::PresetCombo("Presets", material->Name, materials::acoustic::All, [&](const auto &choice) {
+    ui::PresetCombo("Presets", material.Name, materials::acoustic::All, [&](const auto &choice) {
         action::Emit(action::Replace<AcousticMaterial>{.Entity = e, .Value = choice});
     });
     using Props = AcousticMaterialProperties;
-    ui::Edit fm{r, e};
+    ui::Edit fm{r, e, ui::Replace{material}};
     fm.Slider<&AcousticMaterial::Properties, &Props::Density>("Density (kg/m^3)", "%.0f");
     fm.Slider<&AcousticMaterial::Properties, &Props::YoungModulus>("Young's modulus (Pa)", "%.3g", ImGuiSliderFlags_Logarithmic);
     fm.Slider<&AcousticMaterial::Properties, &Props::PoissonRatio>("Poisson's ratio", "%.2f");
@@ -1327,15 +1328,19 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
         // Beta's range in seconds sits below the logarithmic slider's zero epsilon, so edit it in microseconds.
         using BetaLimits = FieldLimits<&AcousticMaterial::Properties, &Props::Beta>;
         static constexpr double MinUs{BetaLimits::Min * 1e6}, MaxUs{BetaLimits::Max * 1e6};
-        double beta_us = material->Properties.Beta * 1e6;
-        const bool changed = SliderScalar("Rayleigh beta (us)", ImGuiDataType_Double, &beta_us, &MinUs, &MaxUs, "%.3f", ImGuiSliderFlags_Logarithmic);
-        ui::Gesture(changed, [&] { return action::UpdateOf<&AcousticMaterial::Properties, &Props::Beta>(e, beta_us * 1e-6); });
+        const auto slider = [&](double &beta) {
+            double beta_us = beta * 1e6;
+            const bool changed = SliderScalar("Rayleigh beta (us)", ImGuiDataType_Double, &beta_us, &MinUs, &MaxUs, "%.3f", ImGuiSliderFlags_Logarithmic);
+            beta = beta_us * 1e-6;
+            return changed;
+        };
+        fm.Run<&AcousticMaterial::Properties, &Props::Beta>(slider);
     }
 
-    DrawContactSurfaceControls(r, e);
+    DrawContactSurfaceControls(r, e, surface, material);
 
     SeparatorText("Tet mesh");
-    ui::Edit fs{r, e};
+    ui::Edit fs{r, e, ui::Replace{settings}};
     fs.Check<&ModalSolveSettings::QualityTets>("Quality");
     MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
     fs.Slider<&ModalSolveSettings::SolveResolution>("Solve resolution");
@@ -1345,16 +1350,20 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
     fs.Slider<&ModalSolveSettings::NumModes>("Count##modes");
     MeshEditor::HelpMarker("Modes kept from the solve. More modes are richer and costlier.");
     {
-        float lo = settings->MinModeFreq, hi = settings->MaxModeFreq;
+        float lo = settings.MinModeFreq, hi = settings.MaxModeFreq;
         const bool changed = DragFloatRange2("Frequency band (Hz)", &lo, &hi, 1.f, 20.f, 20000.f, "%.0f", "%.0f");
-        if (changed) action::EmitStaged(action::UpdateOf<&ModalSolveSettings::MinModeFreq>(e, lo));
-        ui::Gesture(changed, [&] { return action::UpdateOf<&ModalSolveSettings::MaxModeFreq>(e, hi); });
+        ui::Gesture(changed, [&] {
+            auto replacement = settings;
+            replacement.MinModeFreq = lo;
+            replacement.MaxModeFreq = hi;
+            return action::Replace<ModalSolveSettings>{.Entity = e, .Value = replacement};
+        });
     }
 
     SeparatorText("Excitation vertices");
     const uint32_t num_vertices = GetMesh(r, mesh_entity).VertexCount();
     const bool has_excitable = r.all_of<SoundVertices>(e);
-    const bool reuse = has_excitable && settings->CopySoundVertices;
+    const bool reuse = has_excitable && settings.CopySoundVertices;
     if (has_excitable) {
         PushID("ExcitationVertices");
         int source = reuse ? 0 : 1;
@@ -1368,28 +1377,34 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
     if (reuse) BeginDisabled();
     const uint32_t min_vertices = 1, max_vertices = num_vertices;
     // Reuse shows the actual count of existing excitation vertices, else the editable target count.
-    if (uint32_t v = reuse ? r.get<const SoundVertices>(e).Vertices.Count : std::clamp(settings->NumVertices, 1u, num_vertices);
+    if (uint32_t v = reuse ? r.get<const SoundVertices>(e).Vertices.Count : std::clamp(settings.NumVertices, 1u, num_vertices);
         SliderScalar("Count", ImGuiDataType_U32, &v, &min_vertices, &max_vertices))
         fs.Set<&ModalSolveSettings::NumVertices>(v);
     if (reuse) EndDisabled();
 
     if (!r.all_of<ModalModes>(e)) {
         if (IsSolving(r, e)) TextDisabled("Solving...");
-        else if (Button("Create modal model")) LaunchModalSolve(r, viewport, e);
+        else if (Button("Create modal model")) {
+            action::Emit(action::audio::ConfigureModalModel{settings, material});
+            LaunchModalSolve(r, viewport, e, settings, material);
+        }
     }
 }
 
 void DrawModalUpdateButton(entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity) {
     if (!r.all_of<ModalSolveSettings>(e) || !r.all_of<ModalModes>(e)) return;
+    const auto *material = r.try_get<const AcousticMaterial>(e);
+    if (!material) return;
     if (IsSolving(r, e)) {
         SameLine();
         TextDisabled("Solving...");
         return;
     }
-    if (!ModalModelStale(r, e, BuildSolveInputs(r, e, mesh_entity))) return;
+    const auto &settings = r.get<const ModalSolveSettings>(e);
+    if (!ModalModelStale(r, e, BuildSolveInputs(r, e, mesh_entity, settings), settings, *material)) return;
 
     SameLine();
-    if (Button("Update modal model")) LaunchModalSolve(r, viewport, e);
+    if (Button("Update modal model")) LaunchModalSolve(r, viewport, e, settings, *material);
 }
 
 // Returns the active vertex in Excite mode or selected vertices in Edit mode.
@@ -1448,7 +1463,7 @@ void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::ent
 
     const bool has_model = r.all_of<SoundVerticesModel>(e);
     if (!has_model) {
-        SeparatorText("Modal model");
+        DrawModalModelHeader(r, e);
         DrawModalModelSection(r, viewport, e, mesh_entity);
     }
 
@@ -1539,7 +1554,7 @@ void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::ent
 
     if (!has_model) return;
 
-    SeparatorText("Modal model");
+    DrawModalModelHeader(r, e);
     DrawModalModelSection(r, viewport, e, mesh_entity);
 
     Spacing();
