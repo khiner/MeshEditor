@@ -47,6 +47,7 @@ using SurfaceSolveConfig = fastfem::SurfaceSolveConfig;
 using ModalSolverConfig = fastfem::SolverConfig;
 using TetConfig = fastfem::TetrahedralizationConfig;
 using FiniteCellConfig = fastfem::FiniteCellConfig;
+template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Resolution> : Within<1., 256.> {};
 template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::SurfaceSimplificationRatio> : Within<0.25, 1.> {};
 template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::NumModes> : Within<1., 512.> {};
 template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::NumFemModes> : Within<1., 512.> {};
@@ -650,11 +651,12 @@ size_t HashOperatorInputs(const std::vector<vec3> &positions, const std::vector<
     HashCombine(seed, hash(bytes(triangle_indices)), settings.Discretization);
     if (settings.Discretization == fastfem::Discretization::Tet10) {
         const auto &tet = settings.Solve.Tetrahedralization;
-        HashCombine(seed, settings.Solve.SurfaceSimplificationRatio, tet.Quality, tet.MaxVolume);
+        HashCombine(seed, settings.Solve.SurfaceSimplificationRatio, tet.Refinement);
+        if (tet.Refinement == fastfem::TetRefinement::QualityAndResolution) HashCombine(seed, settings.Solve.Resolution);
         for (const auto &hole : tet.Holes) HashCombine(seed, hole.x, hole.y, hole.z);
     } else {
         const auto &finite = settings.Solve.FiniteCell;
-        for (const auto cells : finite.Cells) HashCombine(seed, cells);
+        HashCombine(seed, settings.Solve.Resolution);
         HashCombine(seed, finite.CutDepth, finite.FictitiousScale, finite.PaddingCells, finite.GridOffsetCells.x, finite.GridOffsetCells.y, finite.GridOffsetCells.z);
     }
     return seed;
@@ -1403,11 +1405,21 @@ void DrawModalModelSettings(
 
     if (settings.Discretization == fastfem::Discretization::Tet10) {
         SeparatorText("Tet10 mesh");
-        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::SurfaceSimplificationRatio>("Surface ratio");
-        MeshEditor::HelpMarker("Fraction of surface triangles retained before tetrahedralization.");
-        fs.Check<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::Quality>("Quality tetrahedra");
-        fs.Input<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::MaxVolume>("Maximum volume (m^3)", "%.3g");
-        MeshEditor::HelpMarker("Zero disables the tetrahedron volume constraint.");
+        fs.Enum<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::Refinement>("Refinement", "None\0Quality\0Quality + resolution\0");
+        MeshEditor::HelpMarker("None: basic tetrahedralization and repair. Quality: improve element shapes. Quality + resolution: also refine to the target resolution.");
+        fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::SurfaceSimplificationRatio>([](float &ratio) {
+            using Limits = FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::SurfaceSimplificationRatio>;
+            float percent = ratio * 100;
+            if (!SliderFloat("Surface detail", &percent, float(Limits::Min * 100), float(Limits::Max * 100), "%.1f%%", ImGuiSliderFlags_AlwaysClamp)) return false;
+            ratio = percent / 100;
+            return true;
+        },
+                                                                                            /*delta_capable=*/true);
+        MeshEditor::HelpMarker("Target percentage of surface triangles to retain before refinement. 100% keeps the original mesh.");
+        if (settings.Solve.Tetrahedralization.Refinement == fastfem::TetRefinement::QualityAndResolution) {
+            fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Resolution>("Target resolution", nullptr, ImGuiSliderFlags_AlwaysClamp);
+            MeshEditor::HelpMarker("Target divisions along the object's longest scaled axis. Higher values request finer tetrahedra. Refines the surface triangles and tetrahedron volume together.");
+        }
         fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::Holes>([](std::vector<fastfem::DVec3> &holes) {
             bool changed = false;
             for (size_t i = 0; i < holes.size(); ++i) {
@@ -1431,10 +1443,8 @@ void DrawModalModelSettings(
         MeshEditor::HelpMarker("Tetrahedralization excludes the connected tetrahedral region containing each point, bounded by the input surface. Coordinates use scaled local space (m).");
     } else {
         SeparatorText("Finite-cell grid");
-        fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::Cells>([](std::array<uint32_t, 3> &cells) {
-            constexpr uint32_t MinCells{1}, MaxCells{256};
-            return ui::LinkedSlider("Cells", cells, MinCells, MaxCells);
-        });
+        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Resolution>("Target resolution", nullptr, ImGuiSliderFlags_AlwaysClamp);
+        MeshEditor::HelpMarker("Target divisions along the object's longest scaled axis. The other axes use the same target spacing.");
         fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::CutDepth>("Cut depth");
         fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::FictitiousScale>("Fictitious scale", "%.1e", ImGuiSliderFlags_Logarithmic);
         fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::PaddingCells>("Padding (cells)", "%.2f");
