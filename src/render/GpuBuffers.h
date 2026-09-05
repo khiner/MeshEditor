@@ -175,7 +175,6 @@ struct GpuBuffers {
           MotionBlurTileIndirection{Ctx, 0},
           ElementPickKey{Ctx, sizeof(uint32_t)},
           ElementPickId{Ctx, sizeof(uint32_t)},
-          GeometryCommitChanged{Ctx, sizeof(uint32_t)},
           WireCoverageBuffer{Ctx, 0, SlotType::Buffer} {
     }
 
@@ -265,6 +264,9 @@ struct GpuBuffers {
         VertexIndexBuffer.Reset();
         Meshlets.Reset();
         MeshletTriangleIds.Reset();
+        GeometryWork.Reset();
+        ElementMeshlets.Reset();
+        BoundsParents.Reset();
         MeshletVertexCorners.Reset();
         MeshletLocalTriangles.Reset();
         MeshletEditEdgeIds.Reset();
@@ -487,6 +489,9 @@ struct GpuBuffers {
 
     TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, ObjectBoxBitset, MotionBlurTileIndirection;
     TypedBuffer<uint32_t> ElementPickKey, ElementPickId;
-    TypedBuffer<uint32_t> GeometryCommitChanged;
+    BufferArena<uint32_t> GeometryWork{Ctx, SlotType::Buffer};
+    mtl::Buffer GeometryNormalEntries{Ctx, 0, SlotType::Buffer};
+    BufferArena<uint32_t> ElementMeshlets{Ctx, SlotType::Buffer};
+    BufferArena<AABB> BoundsParents{Ctx, SlotType::Buffer};
     mtl::Buffer WireCoverageBuffer;
 };

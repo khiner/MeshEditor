@@ -435,11 +435,13 @@ Pipelines::Pipelines(const mtl::Context &ctx, mtl::LibraryCache &libraries)
       DeriveEditSelection{libraries, {"EditSelectionTransaction.metal", "DeriveEditSelectionKernel"}},
       EditSharpness{libraries, {"EditSharpness.metal", "EditSharpnessKernel"}},
       CommitPosedGeometry{libraries, {"CommitPosedGeometry.metal", "CommitPosedGeometryKernel"}},
+      GeometryWorkArgs{libraries, {"CommitPosedGeometry.metal", "GeometryWorkArgsKernel"}},
       PosePrepass{libraries, {"PosePrepass.metal", "PosePrepassKernel"}},
       PosedMeshletBounds{libraries, {"PosedMeshletBounds.metal", "PosedMeshletBoundsKernel"}},
       VertexNormalDerive{libraries, {"VertexNormalDerive.metal", "VertexNormalDeriveKernel"}},
       BoundsReduce{libraries, {"BoundsReduce.metal", "BoundsReduceKernel"}},
       BoundsCombine{libraries, {"BoundsCombine.metal", "BoundsCombineKernel"}},
+      BoundsTree{libraries, {"BoundsTree.metal", "BoundsTreeKernel"}},
       WireRaster{libraries, {"WireRaster.metal", "WireRasterKernel"}},
       LodFrontierCount{libraries, {"MeshletCull.metal", "LodFrontierCount"}},
       LodFrontierPrefix{libraries, {"MeshletCull.metal", "LodFrontierPrefix"}},
@@ -502,7 +504,8 @@ void Pipelines::CompileShaders() {
     FillEditSelectionList.Compile(Libraries);
     EditSharpness.Compile(Libraries);
     CommitPosedGeometry.Compile(Libraries);
-    for (auto *compute : {&VisibilityObjectSelection, &ResetEditSelectionSummary, &DeriveEditSelection, &PosePrepass, &PosedMeshletBounds, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &WireRaster, &LodFrontierCount, &LodFrontierPrefix, &LodFrontierEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &MeshletPhase2Cull, &MeshletPhase2RangeCull, &MeshletPhase2Prefix, &OverlayJobBlockCount, &OverlayJobPrefix, &OverlayJobEmit, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter, &VertexAdjacency.Zero, &VertexAdjacency.Count, &VertexAdjacency.BlockSum, &VertexAdjacency.BlockPrefix, &VertexAdjacency.Offsets, &VertexAdjacency.Scatter, &VertexAdjacency.Sort, &VertexWeld.TableInit, &VertexWeld.Insert, &VertexWeld.MarkReps, &VertexWeld.BlockSum, &VertexWeld.BlockPrefix, &VertexWeld.Scan, &VertexWeld.Emit, &VertexWeld.Compact, &VertexWeld.WriteBack, &VertexWeld.RemapCorners, &MeshConnectivity.Zero, &MeshConnectivity.Count, &MeshConnectivity.BlockSum, &MeshConnectivity.BlockPrefix, &MeshConnectivity.Offsets, &MeshConnectivity.Scatter, &MeshConnectivity.Pair, &MeshConnectivity.Bits, &MeshConnectivity.WordBlockSum, &MeshConnectivity.WordBlockPrefix, &MeshConnectivity.Ranks, &MeshConnectivity.Samples}) {
+    GeometryWorkArgs.Compile(Libraries);
+    for (auto *compute : {&VisibilityObjectSelection, &ResetEditSelectionSummary, &DeriveEditSelection, &PosePrepass, &PosedMeshletBounds, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &BoundsTree, &WireRaster, &LodFrontierCount, &LodFrontierPrefix, &LodFrontierEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &MeshletPhase2Cull, &MeshletPhase2RangeCull, &MeshletPhase2Prefix, &OverlayJobBlockCount, &OverlayJobPrefix, &OverlayJobEmit, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter, &VertexAdjacency.Zero, &VertexAdjacency.Count, &VertexAdjacency.BlockSum, &VertexAdjacency.BlockPrefix, &VertexAdjacency.Offsets, &VertexAdjacency.Scatter, &VertexAdjacency.Sort, &VertexWeld.TableInit, &VertexWeld.Insert, &VertexWeld.MarkReps, &VertexWeld.BlockSum, &VertexWeld.BlockPrefix, &VertexWeld.Scan, &VertexWeld.Emit, &VertexWeld.Compact, &VertexWeld.WriteBack, &VertexWeld.RemapCorners, &MeshConnectivity.Zero, &MeshConnectivity.Count, &MeshConnectivity.BlockSum, &MeshConnectivity.BlockPrefix, &MeshConnectivity.Offsets, &MeshConnectivity.Scatter, &MeshConnectivity.Pair, &MeshConnectivity.Bits, &MeshConnectivity.WordBlockSum, &MeshConnectivity.WordBlockPrefix, &MeshConnectivity.Ranks, &MeshConnectivity.Samples}) {
         compute->Compile(Libraries);
     }
 }

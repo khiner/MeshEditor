@@ -1658,6 +1658,12 @@ structs:
   - name: BoundsReducePushConstants
     push_constant: true
     fields:
+      - name: Work
+        type: ElementWork
+      - name: NextWork
+        type: ElementWork
+      - name: EntryIndex
+        type: u32
       - name: DrawDataSlot
         type: u32
       - name: BoundsSlot
@@ -1668,10 +1674,31 @@ structs:
         type: u32
       - name: EntryFirstTileSlot
         type: u32
+  - name: BoundsTreePushConstants
+    push_constant: true
+    fields:
+      - name: Work
+        type: ElementWork
+      - name: NextWork
+        type: ElementWork
+      - name: Input
+        type: SlotOffset
+      - name: Output
+        type: SlotOffset
+      - name: InputCount
+        type: u32
+      - name: InstanceBounds
+        type: SlotOffset
+      - name: InstanceCount
+        type: u32
   # Configures one posed-entry meshlet AABB reduction.
   - name: PosedMeshletBoundsPushConstants
     push_constant: true
     fields:
+      - name: Work
+        type: ElementWork
+      - name: FirstTile
+        type: u32
       - name: DrawDataSlot
         type: u32
       - name: TileMapSlot
@@ -1690,6 +1717,10 @@ structs:
   - name: NormalDerivePushConstants
     push_constant: true
     fields:
+      - name: Work
+        type: ElementWork
+      - name: EntryIndex
+        type: u32
       - name: EntriesSlot
         type: u32
       - name: AdjacencySlot
@@ -1931,32 +1962,62 @@ structs:
       - name: ActiveHandle
         type: u32
         default: InvalidOffset
+  - name: ElementWork
+    fields:
+      - name: Storage
+        type: SlotOffset
+      - name: Count
+        type: u32
   - name: CommitPosedGeometryPushConstants
     push_constant: true
     fields:
       - name: Vertices
         type: SlotOffset
-      - name: PosedPositions
+      - name: Output
         type: SlotOffset
-      - name: BaseVertexNormals
+      - name: Selection
         type: SlotOffset
-      - name: PosedVertexNormals
-        type: SlotOffset
-      - name: BaseSeamNormals
-        type: SlotOffset
-      - name: PosedSeamNormals
-        type: SlotOffset
-      - name: BaseFaceNormals
-        type: SlotOffset
-      - name: PosedFaceNormals
-        type: SlotOffset
-      - name: Changed
-        type: SlotOffset
-      - name: VertexCount
+      - name: Candidates
+        type: ElementWork
+      - name: ChangedVertices
+        type: ElementWork
+      - name: Faces
+        type: ElementWork
+      - name: Normals
+        type: ElementWork
+      - name: Meshlets
+        type: ElementWork
+      - name: BoundsTiles
+        type: ElementWork
+      - name: Entry
+        type: NormalDeriveEntry
+      - name: Primary
+        type: Transform
+      - name: Delta
+        type: Transform
+      - name: Pivot
+        type: vec3
+      - name: AdjacencySlot
         type: u32
-      - name: SeamCount
+      - name: FaceFirstTriangleSlot
         type: u32
-      - name: FaceCount
+      - name: CornerClassSlot
+        type: u32
+      - name: CornerClassOffset
+        type: u32
+      - name: VertexEdgeAdjacencyOffset
+        type: u32
+        default: InvalidOffset
+      - name: Topology
+        type: u32
+      - name: TriangleMeshlets
+        type: SlotOffset
+      - name: Phase
+        type: u32
+      - name: ApplyTransform
+        type: u32
+        default: 1
+      - name: Commit
         type: u32
   - name: EditSharpnessPushConstants
     push_constant: true

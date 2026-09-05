@@ -7,6 +7,7 @@
 #include "MeshletShared.metal"
 #include "PosedMeshletBoundsPushConstants.metal"
 #include "PrimitiveRecord.metal"
+#include "ElementWorkShared.metal"
 
 kernel void PosedMeshletBoundsKernel(
     uint tid [[thread_position_in_threadgroup]],
@@ -20,7 +21,10 @@ kernel void PosedMeshletBoundsKernel(
     constant PosedMeshletBoundsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    const uint2 tile = uint2(scene.TileMap(pc.TileMapSlot)[group_id]);
+    const uint work_id = pc.Work.Storage.Slot == INVALID_SLOT ? group_id : WorkElement(bindless, pc.Work, group_id);
+    if (work_id == INVALID_OFFSET) return;
+    const uint destination = pc.Work.Storage.Slot == INVALID_SLOT ? group_id : pc.FirstTile + work_id;
+    const uint2 tile = uint2(scene.TileMap(pc.TileMapSlot)[destination]);
     const DrawData entry = scene.Draws(pc.DrawDataSlot)[tile.x];
     const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[tile.y];
     const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
@@ -36,7 +40,7 @@ kernel void PosedMeshletBoundsKernel(
     }
     FoldSharedAabb(shared_min, shared_max, MeshletBoundsFoldLanes, tid, lo, hi);
     if (tid == 0u) {
-        BindlessBufferMutable(AABB, bindless.Buffer, pc.PosedMeshletBoundsSlot)[group_id] = {
+        BindlessBufferMutable(AABB, bindless.Buffer, pc.PosedMeshletBoundsSlot)[destination] = {
             packed_float3(shared_min[0]), packed_float3(shared_max[0])
         };
     }

@@ -82,9 +82,10 @@ void DeriveBaseNormalsNow(entt::registry &, std::span<const entt::entity> mesh_e
 // Call after the meshes' index buffers are written, under DeriveBaseNormalsNow's between-frames constraints.
 void FinalizeNewMeshShadingNow(entt::registry &, std::span<const entt::entity> mesh_entities);
 
-// Commits posed positions and normals with one submission.
+// Evaluates the final pending edit into canonical positions and affected normals in one submission.
 // Returns the meshes whose positions changed.
-std::vector<entt::entity> CommitPosedGeometry(entt::registry &, std::span<const entt::entity> mesh_entities);
+std::vector<entt::entity> CommitPosedGeometry(entt::registry &, entt::entity viewport, std::span<const entt::entity> mesh_entities);
+void ReleaseMeshEditWork(entt::registry &, entt::entity mesh_entity);
 
 // Writes the posed-prelude dispatch counts for the next submission, or zeros when deform inputs are unchanged.
 void SyncPreludeDispatchArgs(GpuBuffers &);

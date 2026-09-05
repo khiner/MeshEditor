@@ -84,6 +84,34 @@ Soup UnitSphere(uint32_t rings, uint32_t segments) {
 }
 } // namespace
 int main() {
+    "sparse refit agrees with rebuilding and leaves unrelated nodes untouched"_test = [] {
+        std::mt19937 rng{51};
+        auto soup = RandomSoup(400, rng);
+        auto bvh = BuildMeshBvh(soup.Vertices, soup.Triangles);
+        const auto original = bvh.Nodes;
+        const std::array<uint32_t, 3> dirty{7, 7, 311};
+        for (const auto triangle : dirty) {
+            for (uint32_t c = 0; c < 3; ++c) soup.Vertices[soup.Triangles[triangle * 3 + c]].Position *= 0.01f;
+        }
+        const auto visited = bvh.Refit(soup.Vertices, soup.Triangles, dirty);
+        expect(visited < bvh.Nodes.size() / 4);
+        const auto rebuilt = BuildMeshBvh(soup.Vertices, soup.Triangles);
+        expect(bvh.Nodes.back().Box == rebuilt.Nodes.back().Box);
+        std::uniform_real_distribution<float> coord{-1.5f, 1.5f};
+        for (int i = 0; i < 100; ++i) {
+            const vec3 q{coord(rng), coord(rng), coord(rng)};
+            const auto a = bvh.ClosestPoint(soup.Vertices, soup.Triangles, q);
+            const auto b = rebuilt.ClosestPoint(soup.Vertices, soup.Triangles, q);
+            expect(a.Vertices == b.Vertices);
+            expect(a.Weights == b.Weights);
+        }
+        for (uint32_t i = 0; i < bvh.Nodes.size(); ++i) {
+            if (bvh.Nodes[i].IsLeaf() && bvh.Nodes[i].Left != 7 && bvh.Nodes[i].Left != 311)
+                expect(bvh.Nodes[i].Box == original[i].Box);
+        }
+        expect(bvh.Refit(soup.Vertices, soup.Triangles, {}) == 0u);
+    };
+
     "the nearest point agrees with a scan over every triangle"_test = [] {
         std::mt19937 rng{12345};
         const auto soup = RandomSoup(400, rng);

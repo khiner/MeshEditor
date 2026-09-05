@@ -9,6 +9,7 @@
 #include "audio/SoundVertices.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "gpu/BoundsReducePushConstants.h"
+#include "gpu/BoundsTreePushConstants.h"
 #include "gpu/CommitPosedGeometryPushConstants.h"
 #include "gpu/DepthPyramidReducePushConstants.h"
 #include "gpu/ExtrasLineKind.h"
@@ -38,13 +39,16 @@
 #include "metal/RenderTarget.h"
 #include "numeric/Angles.h"
 #include "physics/PhysicsTypes.h"
+#include "render/ElementWorkOps.h"
 #include "render/Encoding.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/Pipelines.h"
 #include "scene/Entity.h"
+#include "scene/WorldTransform.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
+#include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCamera.h"
@@ -434,40 +438,38 @@ NormalDerivePushConstants MakeNormalDerivePc(const GpuBuffers &buffers, const Me
     };
 }
 
-void RecordBoundsPass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const mtl::ComputePipeline &pipeline, const GpuBuffers &buffers, PreludeSlot slot, uint32_t ubo_offset) {
-    const BoundsReducePushConstants pc{
-        .DrawDataSlot = buffers.BoundsReduceEntries.Slot,
-        .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
-        .TileMapSlot = buffers.BoundsTiles.Slot,
-        .PartialBoundsSlot = buffers.BoundsPartials.Slot,
-        .EntryFirstTileSlot = buffers.BoundsEntryFirstTiles.Slot,
-    };
+void RecordBoundsPass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const mtl::ComputePipeline &pipeline, const GpuBuffers &buffers, PreludeSlot slot, uint32_t ubo_offset, BoundsReducePushConstants pc = {}) {
+    pc.DrawDataSlot = buffers.BoundsReduceEntries.Slot;
+    pc.BoundsSlot = buffers.Instances.BoundsBuffer.Slot;
+    pc.TileMapSlot = buffers.BoundsTiles.Slot;
+    pc.PartialBoundsSlot = buffers.BoundsPartials.Slot;
+    pc.EntryFirstTileSlot = buffers.BoundsEntryFirstTiles.Slot;
     encode::BindCompute(encoder, pipeline, slots, buffers, ubo_offset);
     encode::SetPushConstants(encoder, pc);
     encoder->setThreadgroupMemoryLength(ThreadgroupMemory::BoundsFoldVector, 0);
     encoder->setThreadgroupMemoryLength(ThreadgroupMemory::BoundsFoldVector, 1);
-    DispatchPrelude(encoder, buffers, slot);
+    if (pc.Work.Storage.Slot == InvalidSlot) DispatchPrelude(encoder, buffers, slot);
+    else encoder->dispatchThreadgroups(*buffers.GeometryWork.Buffer, WorkArgsOffset(pc.Work, true), ThreadgroupSize::Linear256);
 }
 
 void RecordPosedMeshletBounds(
     MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots,
-    const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t ubo_offset
+    const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t ubo_offset,
+    PosedMeshletBoundsPushConstants pc = {}
 ) {
-    const PosedMeshletBoundsPushConstants pc{
-        .DrawDataSlot = buffers.BoundsReduceEntries.Slot,
-        .TileMapSlot = buffers.PosedMeshletBoundsTiles.Slot,
-        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
-        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
-        .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
-        .PosedMeshletBoundsSlot = buffers.PosedMeshletBounds.Slot,
-    };
+    pc.DrawDataSlot = buffers.BoundsReduceEntries.Slot;
+    pc.TileMapSlot = buffers.PosedMeshletBoundsTiles.Slot;
+    pc.MeshletSlot = buffers.Meshlets.Buffer.Slot;
+    pc.PrimitiveSlot = buffers.Primitives.Buffer.Slot;
+    pc.MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot;
+    pc.PosedMeshletBoundsSlot = buffers.PosedMeshletBounds.Slot;
     encode::BindCompute(encoder, pipelines.PosedMeshletBounds, slots, buffers, ubo_offset);
     encode::SetPushConstants(encoder, pc);
     encoder->setThreadgroupMemoryLength(ThreadgroupMemory::MeshletBoundsFoldVector, 0);
     encoder->setThreadgroupMemoryLength(ThreadgroupMemory::MeshletBoundsFoldVector, 1);
-    encoder->dispatchThreadgroups(
-        *buffers.PreludeDispatchArgs, PreludeArgsOffset(PreludeSlot::PosedMeshletBounds), ThreadgroupSize::Linear64
-    );
+    if (pc.Work.Storage.Slot == InvalidSlot)
+        encoder->dispatchThreadgroups(*buffers.PreludeDispatchArgs, PreludeArgsOffset(PreludeSlot::PosedMeshletBounds), ThreadgroupSize::Linear64);
+    else encoder->dispatchThreadgroups(*buffers.GeometryWork.Buffer, WorkArgsOffset(pc.Work, true), ThreadgroupSize::Linear64);
 }
 
 // The cull push constants' buffer-derived fields, shared by the phase-1 and phase-2 records.
@@ -663,6 +665,8 @@ void RecordDepthPyramid(
     }
 }
 
+void RecordSparseEditPrelude(entt::registry &, entt::entity, mtl::PassChain &);
+
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
 // `ubo_offset` selects the view UBO instance every bind in the phase reads.
 void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain, SceneUpdate update, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
@@ -817,6 +821,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             uint32_t posed_tile_count = 0, bounds_tile_count = 0, derive_face_tile_count = 0, derive_gather_tile_count = 0;
             uint32_t posed_meshlet_bounds_count = 0;
             bool authored_morph_any = false;
+            RecordInputs prelude_layout;
             for (size_t mi = 0; mi < mesh_entities.size(); ++mi) {
                 const auto &e = mesh_entities[mi];
                 auto &spec = specs[mi];
@@ -849,7 +854,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 }
                 spec.PerInstanceDeform = !e.Deform.ArmatureDeformByBufferIndex.empty() || !e.Deform.MorphWeightsByBufferIndex.empty();
                 spec.Count = spec.PerInstanceDeform ? e.Mod.InstanceCount : 1u;
-                spec.Posed = e.Deform.BoneDeformOffset != InvalidOffset || e.Deform.MorphDeformOffset != InvalidOffset || spec.PendingPrimary != nullptr;
+                spec.Posed = e.Deform.BoneDeformOffset != InvalidOffset || e.Deform.MorphDeformOffset != InvalidOffset ||
+                    (is_edit_mode && (e.PrimaryEditBufferIndex.has_value() || scene_state.EditWork.contains(e.Entity)));
                 entry_count += spec.Count;
                 bounds_tile_count += spec.Count * TileCountFor(e.Buf.Vertices.Count);
                 if (spec.Posed) {
@@ -872,6 +878,18 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     spec.Level0Count = mesh_level0_count(e);
                     posed_meshlet_bounds_count += spec.Count * spec.Level0Count;
                 }
+                prelude_layout.Mix(entt::to_integral(e.Entity));
+                prelude_layout.Mix(spec.Count);
+                prelude_layout.Mix(uint32_t(spec.Posed) | uint32_t(spec.Derive) << 1u);
+                prelude_layout.Mix(e.Buf.Vertices.Count);
+                prelude_layout.Mix(spec.Entry.FaceCount);
+                prelude_layout.Mix(spec.Entry.SeamCount);
+                prelude_layout.Mix(e.Mod.InstanceRange.Offset);
+                prelude_layout.Mix(e.Mod.InstanceCount);
+                for (const auto &primitive : buffers.Primitives.Get(e.Buf.Primitives)) {
+                    prelude_layout.Mix(primitive.MeshletOffset);
+                    prelude_layout.Mix(primitive.Level0Count);
+                }
                 // The posed-buffer offsets a record reads follow from these, given the mesh order above.
                 record_inputs.Mix(spec.Count);
                 record_inputs.Mix(uint32_t(spec.Posed) | uint32_t(spec.Derive) << 1u | uint32_t(spec.PerInstanceDeform) << 2u);
@@ -880,6 +898,9 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 record_inputs.Mix(spec.Entry.FaceCount);
                 record_inputs.Mix(spec.Entry.VertexCount);
             }
+            const bool tiles_changed = prelude_layout.Value != scene_state.PreludeLayoutInputs;
+            scene_state.PreludeLayoutInputs = prelude_layout.Value;
+            if (tiles_changed) buffers.PreludeStale = true;
             const auto entries = buffers.BoundsReduceEntries.SetCount<DrawData>(entry_count);
             const auto derive_entries = buffers.NormalDeriveEntries.SetCount<NormalDeriveEntry>(derive_entry_count);
             const auto bounds_tiles = buffers.BoundsTiles.SetCount<uvec2>(bounds_tile_count);
@@ -903,8 +924,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 .DeriveGather = derive_gather_tile_count,
                 .BoundsCombine = entry_count,
             };
-            // The rebuild rewrote the buffers the prelude reads and writes, so the next submit re-runs it.
-            buffers.PreludeStale = true;
+
             uint32_t posed_write = 0, unposed_write = posed_entry_count, derive_write = 0;
             uint32_t posed_tile_write = 0, unposed_tile_write = posed_tile_count;
             uint32_t face_tile_write = 0, gather_tile_write = derive_face_tile_count;
@@ -970,16 +990,20 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                         derive_entry.VertexNormalOffset = normals->VertexOffset;
                         derive_entry.SeamNormalOffset = normals->SeamOffset;
                         derive_entry.FaceNormalOffset = normals->FaceOffset;
-                        for (uint32_t t = 0; t < face_tiles_per; ++t) derive_tiles[face_tile_write++] = {derive_write, t};
-                        for (uint32_t t = 0; t < gather_tiles_per; ++t) derive_tiles[gather_tile_write++] = {derive_write, t};
+                        if (tiles_changed) {
+                            for (uint32_t t = 0; t < face_tiles_per; ++t) derive_tiles[face_tile_write++] = {derive_write, t};
+                            for (uint32_t t = 0; t < gather_tiles_per; ++t) derive_tiles[gather_tile_write++] = {derive_write, t};
+                        }
                         derive_entries[derive_write++] = derive_entry;
                     }
                     entry_first_tiles[write] = tile_write;
-                    for (uint32_t t = 0; t < bounds_tiles_per; ++t) bounds_tiles[tile_write++] = {write, t};
+                    if (tiles_changed) {
+                        for (uint32_t t = 0; t < bounds_tiles_per; ++t) bounds_tiles[tile_write++] = {write, t};
+                    } else tile_write += bounds_tiles_per;
                     entries[write++] = entry;
                 }
                 // Shared-pose instances share one entry and one set of meshlet bounds, like positions.
-                if (spec.Posed) {
+                if (spec.Posed && tiles_changed) {
                     const auto mesh_primitives = buffers.Primitives.Get(e.Buf.Primitives);
                     for (uint32_t i = 0; i < spec.Count; ++i) {
                         for (const auto &primitive : mesh_primitives) {
@@ -1107,7 +1131,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             record.Flags = silhouette ? uint32_t(MeshletInstanceFlag::Silhouette) : 0u;
             // Every instance of an edited mesh draws original geometry, since an element pick can land on any of them.
             const auto *instance = r.try_get<const Instance>(instance_entity);
-            if (instance && primary_edit_instances.contains(instance->Entity)) {
+            if (instance && (primary_edit_instances.contains(instance->Entity) || scene_state.EditWork.contains(instance->Entity))) {
                 record.Flags |= uint32_t(MeshletInstanceFlag::LodPinFinest);
             }
             const auto primary = instance ? primary_edit_instances.find(instance->Entity) : primary_edit_instances.end();
@@ -1245,6 +1269,10 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             if (bounds_work) RecordBoundsPass(compute, slots, pipelines.BoundsCombine, buffers, PreludeSlot::BoundsCombine, ubo_offset);
         }
     }
+    if (buffers.PreludeStale) {
+        for (auto &[_, work] : scene_state.EditWork) work.BoundsInitialized = false;
+    }
+    if (is_edit_mode && std::exchange(scene_state.EditPreludePending, false)) RecordSparseEditPrelude(r, viewport, chain);
     MTL::RenderCommandEncoder *encoder = nullptr;
     const auto record_meshlets = [&](uint32_t route, auto &&bind_pipeline) {
         bind_pipeline();
@@ -2036,61 +2064,261 @@ void FinalizeNewMeshShadingNow(entt::registry &r, std::span<const entt::entity> 
     UpdateAuthoredMorphShadingNow(r, mesh_entities);
 }
 
-// Commits fenced poses and returns meshes whose GPU changed flag requires CPU invalidation.
-std::vector<entt::entity> CommitPosedGeometry(
-    entt::registry &r, std::span<const entt::entity> mesh_entities
-) {
-    const auto &posed_by_entity = r.ctx().get<const GpuSceneState>().PosedByEntity;
+namespace {
+void DispatchWork(MTL::ComputeCommandEncoder *encoder, const GpuBuffers &buffers, ElementWork work) {
+    encoder->dispatchThreadgroups(*buffers.GeometryWork.Buffer, WorkArgsOffset(work), ThreadgroupSize::Linear256);
+}
+
+MeshEditWork &PrepareMeshEditWork(entt::registry &r, entt::entity entity) {
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    const auto mesh = GetMesh(r, entity);
+    const auto id = mesh.GetStoreId();
     auto &meshes = r.ctx().get<MeshStore>();
+    auto &mb = r.get<MeshBuffers>(entity);
+    auto &work = r.ctx().get<GpuSceneState>().EditWork;
+    if (const auto it = work.find(entity); it != work.end() && it->second.StoreId != id) ReleaseMeshEditWork(r, entity);
+    auto [it, inserted] = work.try_emplace(entity);
+    auto &w = it->second;
+    if (inserted) {
+        w.StoreId = id;
+        w.Candidates = AllocateElementWork(buffers.GeometryWork, mesh.VertexCount());
+        w.Vertices = AllocateElementWork(buffers.GeometryWork, mesh.VertexCount());
+        w.Faces = AllocateElementWork(buffers.GeometryWork, mesh.FaceCount());
+        w.Normals = AllocateElementWork(buffers.GeometryWork, mesh.VertexCount() + meshes.GetSeamCornerCount(id));
+        uint32_t level0 = 0;
+        for (const auto &primitive : buffers.Primitives.Get(mb.Primitives)) level0 += primitive.Level0Count;
+        w.Meshlets = AllocateElementWork(buffers.GeometryWork, level0);
+        w.BoundsTiles = AllocateElementWork(buffers.GeometryWork, TileCountFor(mesh.VertexCount()));
+        for (uint32_t n = w.BoundsTiles.Count;;) {
+            n = (n + 255u) / 256u;
+            w.BoundsLevels.push_back({AllocateElementWork(buffers.GeometryWork, n), buffers.BoundsParents.Allocate(n)});
+            if (n <= 1u) break;
+        }
+        const uint32_t elements = mesh.FaceCount() ? meshes.GetTriangleCount(id) : mesh.EdgeCount() ? mesh.EdgeCount() :
+                                                                                                      mesh.VertexCount();
+        w.ElementMeshlets = buffers.ElementMeshlets.Allocate(elements);
+        auto map = buffers.ElementMeshlets.GetMutable(w.ElementMeshlets);
+        std::ranges::fill(map, InvalidOffset);
+        uint32_t ordinal = 0;
+        for (const auto &primitive : buffers.Primitives.Get(mb.Primitives)) {
+            for (uint32_t m = 0; m < primitive.Level0Count; ++m, ++ordinal) {
+                const auto index = primitive.MeshletOffset + m;
+                const auto &record = buffers.Meshlets.Get({index, 1}).front();
+                for (const auto element : buffers.MeshletTriangleIds.Get({record.TriangleOffset, record.TriangleCount})) map[element] = ordinal;
+            }
+        }
+    }
+    return w;
+}
+} // namespace
+
+void ReleaseMeshEditWork(entt::registry &r, entt::entity entity) {
+    auto *scene = r.ctx().find<GpuSceneState>();
+    if (!scene) return;
+    auto &work = scene->EditWork;
+    const auto it = work.find(entity);
+    if (it == work.end()) return;
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    const auto &w = it->second;
+    for (auto range : {w.Candidates, w.Vertices, w.Faces, w.Normals, w.Meshlets, w.BoundsTiles}) buffers.GeometryWork.Release(WorkStorageRange(range));
+    for (const auto &level : w.BoundsLevels) {
+        buffers.GeometryWork.Release(WorkStorageRange(level.Work));
+        buffers.BoundsParents.Release(level.Values);
+    }
+    buffers.ElementMeshlets.Release(w.ElementMeshlets);
+    work.erase(it);
+}
+
+namespace {
+CommitPosedGeometryPushConstants PrepareGeometryEdit(entt::registry &r, entt::entity viewport, entt::entity entity, entt::entity primary, const PendingTransform *pending, const PosedRanges *pose = nullptr) {
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &meshes = r.ctx().get<MeshStore>();
+    auto &w = PrepareMeshEditWork(r, entity);
+    const auto mesh = GetMesh(r, entity);
+    const auto id = w.StoreId;
+    if (!w.CandidateReady || (!pose && r.all_of<EditSelectionDirty>(viewport)))
+        SeedElementWork(buffers.GeometryWork, w.Candidates, meshes.GetSelectionBits(id, Element::Vertex), w.PreviewActive);
+    else if (!w.PreviewActive)
+        IntersectElementWork(buffers.GeometryWork, w.Candidates, meshes.GetSelectionBits(id, Element::Vertex));
+    w.CandidateReady = true;
+    for (auto work : {w.Vertices, w.Faces, w.Normals, w.Meshlets, w.BoundsTiles}) ClearElementWork(buffers.GeometryWork, work);
+    auto entry = MakeDeriveEntryInputs(meshes, id, r.get<const MeshBuffers>(entity).FaceIndices).value_or(NormalDeriveEntry{.VertexCount = mesh.VertexCount()});
+    entry.VertexNormalOffset = meshes.GetBaseVertexNormalRange(id).Offset;
+    entry.SeamNormalOffset = meshes.GetBaseSeamNormalRange(id).Offset;
+    entry.FaceNormalOffset = meshes.GetBaseFaceNormalRange(id).Offset;
+    if (pose) {
+        for (const auto &level : w.BoundsLevels) ClearElementWork(buffers.GeometryWork, level.Work);
+        entry.PosedPositionOffset = pose->PositionBase;
+        if (pose->Normals) {
+            entry.VertexNormalOffset = pose->Normals->VertexOffset;
+            entry.SeamNormalOffset = pose->Normals->SeamOffset;
+            entry.FaceNormalOffset = pose->Normals->FaceOffset;
+        }
+        w.PreviewActive = pending != nullptr;
+    }
+    return {
+        .Vertices = meshes.GetVerticesRange(id),
+        .Output = pose ? SlotOffset{buffers.PosedPositions.Slot, pose->PositionBase} : SlotOffset{},
+        .Selection = meshes.GetEditSelectionStorage(id).VertexBits,
+        .Candidates = w.Candidates,
+        .ChangedVertices = w.Vertices,
+        .Faces = w.Faces,
+        .Normals = w.Normals,
+        .Meshlets = w.Meshlets,
+        .BoundsTiles = w.BoundsTiles,
+        .Entry = entry,
+        .Primary = pending ? static_cast<Transform>(r.get<const WorldTransform>(primary)) : Transform{},
+        .Delta = pending ? pending->Delta : Transform{},
+        .Pivot = pending ? pending->Pivot : vec3{},
+        .AdjacencySlot = meshes.GetAdjacencySlot(),
+        .FaceFirstTriangleSlot = meshes.GetFaceFirstTriangleSlot(),
+        .CornerClassSlot = meshes.GetCornerClassSlot(),
+        .CornerClassOffset = meshes.GetCornerClassOffset(id),
+        .VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexEdgeAdjacencyRange(id)),
+        .Topology = mesh.FaceCount() ? 0u : mesh.EdgeCount() ? 1u :
+                                                               2u,
+        .TriangleMeshlets = buffers.ElementMeshlets.Slotted(w.ElementMeshlets),
+        .ApplyTransform = pending ? 1u : 0u,
+        .Commit = pose ? 0u : 1u,
+    };
+}
+
+void RecordGeometryEditBatch(entt::registry &r, MTL::ComputeCommandEncoder *encoder, std::vector<std::pair<entt::entity, CommitPosedGeometryPushConstants>> &commits, bool posed) {
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto entries = buffers.GeometryNormalEntries.SetCount<NormalDeriveEntry>(commits.size());
+    for (uint32_t i = 0; i < commits.size(); ++i) entries[i] = commits[i].second.Entry;
+    r.ctx().get<const mtl::Context>().CommitResidency();
+    for (uint32_t phase = 0; phase < 3; ++phase) {
+        for (auto &[_, pc] : commits) {
+            pc.Phase = phase;
+            encode::BindCompute(encoder, pipelines.CommitPosedGeometry, slots, buffers);
+            encode::SetPushConstants(encoder, pc);
+            DispatchWork(encoder, buffers, phase == 0 ? pc.Candidates : phase == 1 ? pc.Faces :
+                                                                                     pc.Normals);
+        }
+        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+        for (const auto &[_, pc] : commits) {
+            encode::BindCompute(encoder, pipelines.GeometryWorkArgs, slots, buffers);
+            encode::SetPushConstants(encoder, pc);
+            encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
+        }
+        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    }
+    auto derive = MakeNormalDerivePc(buffers, meshes, posed ? buffers.PosedVertexNormals.Slot : meshes.GetBaseVertexNormalSlot(), posed ? buffers.PosedSeamNormals.Slot : meshes.GetBaseSeamNormalSlot(), posed ? buffers.PosedFaceNormals.Slot : meshes.GetBaseFaceNormalSlot());
+    derive.EntriesSlot = buffers.GeometryNormalEntries.Slot;
+    for (uint32_t phase = 0; phase < 2; ++phase) {
+        derive.Phase = phase;
+        for (uint32_t i = 0; i < commits.size(); ++i) {
+            if (commits[i].second.Entry.FaceCount == 0) continue;
+            derive.EntryIndex = i;
+            derive.Work = phase == 0 ? commits[i].second.Faces : commits[i].second.Normals;
+            encode::BindCompute(encoder, pipelines.VertexNormalDerive, slots, buffers);
+            encode::SetPushConstants(encoder, derive);
+            DispatchWork(encoder, buffers, derive.Work);
+        }
+        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    }
+}
+} // namespace
+
+std::vector<entt::entity> CommitPosedGeometry(entt::registry &r, entt::entity viewport, std::span<const entt::entity> mesh_entities) {
+    const profile::CpuScope scope{"CommitGeometry"};
+    const auto *pending = r.try_get<const PendingTransform>(viewport);
+    if (!pending) return {};
+    const auto primaries = selection::ComputePrimaryEditInstances(r, false);
     auto &buffers = r.ctx().get<GpuBuffers>();
     std::vector<std::pair<entt::entity, CommitPosedGeometryPushConstants>> commits;
-    commits.reserve(mesh_entities.size());
-    for (const auto mesh_entity : mesh_entities) {
-        const auto it = posed_by_entity.find(mesh_entity);
-        if (it == posed_by_entity.end()) continue;
-        const auto &pr = it->second;
-        const auto id = r.get<const MeshHandle>(mesh_entity).StoreId;
-        CommitPosedGeometryPushConstants pc{
-            .Vertices = meshes.GetVerticesRange(id),
-            .PosedPositions = {buffers.PosedPositions.Slot, pr.PositionOffset(0)},
-            .Changed = {buffers.GeometryCommitChanged.Slot(), uint32_t(commits.size())},
-            .VertexCount = pr.VertexCount,
-        };
-        if (const auto normals = pr.NormalsAt(0)) {
-            pc.BaseVertexNormals = meshes.GetBaseVertexNormalRange(id);
-            pc.PosedVertexNormals = SlottedRange{{normals->VertexOffset, pr.VertexCount}, buffers.PosedVertexNormals.Slot};
-            pc.BaseSeamNormals = meshes.GetBaseSeamNormalSlottedRange(id);
-            pc.PosedSeamNormals = SlottedRange{{normals->SeamOffset, normals->SeamCount}, buffers.PosedSeamNormals.Slot};
-            pc.BaseFaceNormals = meshes.GetBaseFaceNormalRange(id);
-            pc.PosedFaceNormals = SlottedRange{{normals->FaceOffset, normals->FaceCount}, buffers.PosedFaceNormals.Slot};
-            pc.SeamCount = normals->SeamCount;
-            pc.FaceCount = normals->FaceCount;
-        }
-        commits.emplace_back(mesh_entity, pc);
+    for (const auto entity : mesh_entities) {
+        if (const auto primary = primaries.find(entity); primary != primaries.end())
+            commits.emplace_back(entity, PrepareGeometryEdit(r, viewport, entity, primary->second, pending));
     }
     if (commits.empty()) return {};
-    buffers.GeometryCommitChanged.SetCount(commits.size());
-    std::fill_n(buffers.GeometryCommitChanged.Data(), commits.size(), 0u);
     const auto &ctx = r.ctx().get<const mtl::Context>();
-    ctx.CommitResidency();
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    auto *encoder = command_buffer->computeCommandEncoder();
-    encode::BindCompute(encoder, r.ctx().get<const Pipelines>().CommitPosedGeometry, r.ctx().get<const mtl::BindlessSet>(), buffers);
-    for (const auto &commit : commits) {
-        const auto &pc = commit.second;
-        encode::SetPushConstants(encoder, pc);
-        const uint32_t count = std::max({pc.VertexCount, pc.SeamCount, pc.FaceCount});
-        encoder->dispatchThreadgroups(MTL::Size((count + 255u) / 256u, 1, 1), ThreadgroupSize::Linear256);
+    auto *cb = ctx.Queue->commandBuffer();
+    {
+        mtl::PassChain chain{cb};
+        auto *encoder = chain.BeginCompute("CommitGeometry");
+        RecordGeometryEditBatch(r, encoder, commits, false);
     }
-    encoder->endEncoding();
-    command_buffer->commit();
-    command_buffer->waitUntilCompleted();
+    cb->commit();
+    cb->waitUntilCompleted();
     std::vector<entt::entity> changed;
-    for (uint32_t i = 0; i < commits.size(); ++i) {
-        if (buffers.GeometryCommitChanged.Data()[i] != 0u) changed.push_back(commits[i].first);
+    for (const auto &[entity, pc] : commits) {
+        if (!ElementWorkEmpty(buffers.GeometryWork, pc.ChangedVertices)) {
+            changed.push_back(entity);
+            auto &w = r.ctx().get<GpuSceneState>().EditWork.at(entity);
+            w.Modified = true;
+            w.PreviewActive = true;
+        }
     }
     return changed;
 }
+
+namespace {
+void RecordSparseEditPrelude(entt::registry &r, entt::entity viewport, mtl::PassChain &chain) {
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &state = r.ctx().get<GpuSceneState>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto *pending = r.try_get<const PendingTransform>(viewport);
+    const auto primaries = selection::ComputePrimaryEditInstances(r, false);
+    std::vector<std::pair<entt::entity, CommitPosedGeometryPushConstants>> jobs;
+    for (const auto &[entity, pose] : state.PosedByEntity) {
+        const auto primary = primaries.find(entity);
+        const bool preview = pending && primary != primaries.end();
+        const auto old = state.EditWork.find(entity);
+        if (!preview && (old == state.EditWork.end() || !old->second.PreviewActive)) continue;
+        jobs.emplace_back(entity, PrepareGeometryEdit(r, viewport, entity, preview ? primary->second : entt::null, preview ? pending : nullptr, &pose));
+    }
+    if (jobs.empty()) return;
+    auto *encoder = chain.BeginCompute("EditGeometry", MTL::StageDispatch);
+    RecordGeometryEditBatch(r, encoder, jobs, true);
+    const auto entries = buffers.BoundsReduceEntries.GetSpan<DrawData>({0, buffers.BoundsReduceEntries.Count<DrawData>()});
+    for (const auto &[entity, job] : jobs) {
+        auto &w = state.EditWork.at(entity);
+        const auto &pose = state.PosedByEntity.at(entity);
+        const auto entry_it = std::ranges::find(entries, pose.PositionBase, &DrawData::PosedPositionOffset);
+        assert(entry_it != entries.end());
+        const auto entry_index = uint32_t(entry_it - entries.begin());
+        const auto first_tile = buffers.BoundsEntryFirstTiles.GetSpan<uint32_t>({entry_index, 1}).front();
+        RecordPosedMeshletBounds(encoder, slots, pipelines, buffers, 0, {.Work = w.Meshlets, .FirstTile = pose.MeshletBoundsBase});
+        RecordBoundsPass(encoder, slots, pipelines.BoundsReduce, buffers, PreludeSlot::BoundsReduce, 0, {.Work = w.BoundsTiles, .NextWork = w.BoundsLevels.front().Work, .EntryIndex = entry_index});
+        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+        SlotOffset input{buffers.BoundsPartials.Slot, first_tile};
+        uint32_t input_count = w.BoundsTiles.Count;
+        for (uint32_t i = 0; i < w.BoundsLevels.size(); ++i) {
+            const auto &level = w.BoundsLevels[i];
+            const bool last = i + 1 == w.BoundsLevels.size();
+            const CommitPosedGeometryPushConstants finish{.BoundsTiles = level.Work};
+            encode::BindCompute(encoder, pipelines.GeometryWorkArgs, slots, buffers);
+            encode::SetPushConstants(encoder, finish);
+            encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
+            encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+            const BoundsTreePushConstants tree{
+                .Work = w.BoundsInitialized ? level.Work : ElementWork{.Count = level.Work.Count},
+                .NextWork = last ? ElementWork{} : w.BoundsLevels[i + 1].Work,
+                .Input = input,
+                .Output = buffers.BoundsParents.Slotted(level.Values),
+                .InputCount = input_count,
+                .InstanceBounds = {buffers.Instances.BoundsBuffer.Slot, entry_it->FirstInstance},
+                .InstanceCount = last ? entry_it->ElementIdOffset : 0u,
+            };
+            encode::BindCompute(encoder, pipelines.BoundsTree, slots, buffers);
+            encode::SetPushConstants(encoder, tree);
+            if (w.BoundsInitialized)
+                encoder->dispatchThreadgroups(*buffers.GeometryWork.Buffer, WorkArgsOffset(level.Work, true), ThreadgroupSize::Linear256);
+            else encoder->dispatchThreadgroups(MTL::Size(level.Work.Count, 1, 1), ThreadgroupSize::Linear256);
+            encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+            input = tree.Output;
+            input_count = level.Work.Count;
+        }
+        w.BoundsInitialized = true;
+    }
+}
+} // namespace
 
 void SyncPreludeDispatchArgs(GpuBuffers &buffers) {
     const bool live = std::exchange(buffers.PreludeStale, false);

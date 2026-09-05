@@ -7,6 +7,7 @@
 #include "NormalDeriveEntry.metal"
 #include "FanItemEncoding.metal"
 #include "NormalDerivePushConstants.metal"
+#include "ElementWorkShared.metal"
 
 struct DeriveContext {
     Scene S;
@@ -95,9 +96,11 @@ kernel void VertexNormalDeriveKernel(
 ) {
     const Scene scene{bindless, view, theme, workspace};
     const DeriveContext ctx{scene, pc};
-    const uint2 tile = uint2(scene.TileMap(pc.TileMapSlot)[pc.FirstTile + group_id]);
+    const bool sparse = pc.Work.Storage.Slot != INVALID_SLOT;
+    const uint2 tile = sparse ? uint2(pc.EntryIndex, 0u) : uint2(scene.TileMap(pc.TileMapSlot)[pc.FirstTile + group_id]);
     const NormalDeriveEntry entry = BindlessBuffer(NormalDeriveEntry, bindless.Buffer, pc.EntriesSlot)[tile.x];
-    const uint i = tile.y * 256u + local_id;
+    const uint i = sparse ? WorkElement(bindless, pc.Work, group_id * 256u + local_id) : tile.y * 256u + local_id;
+    if (i == INVALID_OFFSET) return;
     if (pc.Phase == 0u) {
         if (i < entry.FaceCount) {
             ctx.FaceNormals()[entry.FaceNormalOffset + i] = packed_float3(ctx.FaceNormal(entry, i));

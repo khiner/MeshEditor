@@ -8,3 +8,9 @@
 - User actions never mutate registry state outside of an action's `Apply` handler — UI/event code emits actions.
     - Direct writes are only for Apply, derived/reactive systems, engine/GPU write-back, background-worker continuations.
 - A Persistent component must not contain an unordered container.
+
+- Position edits preserve canonical vertices during preview and evaluate final action parameters at commit, including in headless execution.
+    - Changed vertices expand through existing face/fan adjacency into affected normal outputs, level-zero meshlets, and 256-vertex bounds tiles. One UMA mask/active-word representation supplies GPU dispatches and CPU consumers.
+    - Posed storage and bounds partials initialize when their layout changes, then update incrementally across gestures. Edited meshes stay at the finest LOD on every instance until the existing full builder runs when leaving edit mode.
+    - Position-change events reach BVH refit, curvature, physics, and audio before trackers clear. Topology and shading-layout changes invalidate edit work. Volume, hulls, and other global consumers retain their required full calculations.
+    - Snapshots serialize directly from arena spans while preserving the owning snapshot format.

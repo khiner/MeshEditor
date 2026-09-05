@@ -219,7 +219,7 @@ struct Pipelines {
     SilhouettePipeline Silhouette;
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
-    mtl::ComputePipeline VisibilityObjectSelection, PrepareEditSelection, FillEditSelectionList, ResetEditSelectionSummary, DeriveEditSelection, EditSharpness, CommitPosedGeometry;
+    mtl::ComputePipeline VisibilityObjectSelection, PrepareEditSelection, FillEditSelectionList, ResetEditSelectionSummary, DeriveEditSelection, EditSharpness, CommitPosedGeometry, GeometryWorkArgs;
     // Materializes current-pose positions before bounds and normal derivation.
     mtl::ComputePipeline PosePrepass;
     mtl::ComputePipeline PosedMeshletBounds;
@@ -228,6 +228,7 @@ struct Pipelines {
     // Reduce 256-vertex tiles, then fold each entry's partial AABBs.
     mtl::ComputePipeline BoundsReduce;
     mtl::ComputePipeline BoundsCombine;
+    mtl::ComputePipeline BoundsTree;
     // Walks each wire draw's edge list, accumulating per-class coverage into the screen buffer.
     mtl::ComputePipeline WireRaster;
     // Descends every span tree in lockstep, one count/prefix/emit level at a time.

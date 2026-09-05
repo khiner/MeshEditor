@@ -49,6 +49,7 @@
 #include "viewport/ViewCamera.h"
 #include "viewport/ViewCameraSerialize.h"
 #include "viewport/ViewportDisplay.h"
+#include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 
 #include <entt/entity/registry.hpp>
@@ -137,7 +138,7 @@ using Persistent = type_list<
 
 // Reconstructed from Persistent state.
 using Derived = type_list<
-    RenderInstance, WorldTransform, PosedLocal, MeshBuffers, MeshShadingSummary, BoneAdjacencyIndices, ModelsBuffer,
+    MeshPositionsChanged, RenderInstance, WorldTransform, PosedLocal, MeshBuffers, MeshShadingSummary, BoneAdjacencyIndices, ModelsBuffer,
     MaterialDirty, LightIndex, EnabledInteractionModes, LastEvaluatedFrame,
     PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, BoneInstanceStateDirty, ArmaturePoseState,
     MorphWeightGpuRange, MeshElementSelectionStats, AdditiveBoxSelectBaseline, ExciteSelectionBaseline, EditSelectionDirty, PendingEditElementClick,

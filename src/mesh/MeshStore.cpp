@@ -401,12 +401,7 @@ struct MeshStore::Buffers {
 };
 
 namespace {
-// Save/restore a plain mirror buffer (no allocator) by its used byte region.
-std::vector<std::byte> SaveBuffer(const mtl::Buffer &b) {
-    const auto mapped = b.Contents();
-    const auto used = std::min(size_t(b.UsedSize), mapped.size());
-    return {mapped.begin(), mapped.begin() + used};
-}
+// Restore a plain mirror buffer by its used byte region.
 void RestoreBuffer(mtl::Buffer &b, std::span<const std::byte> bytes) {
     b.Reserve(bytes.size());
     if (!bytes.empty()) b.Update(bytes, 0);
@@ -428,10 +423,10 @@ void MeshStore::FillBaseVertexNormalMirror(Range vertices, Range point_normals) 
 }
 
 std::vector<std::byte> MeshStore::Serialize() const {
-    std::vector<ArenaState> arenas;
+    std::vector<ArenaView> arenas;
     arenas.reserve(Buffers::SerializedArenaCount);
-    B->ForEachSerializedArena([&](const auto &a) { arenas.push_back(a.Save()); });
-    const auto face_sharpness = SaveBuffer(B->FaceSharpnessBuffer);
+    B->ForEachSerializedArena([&](const auto &a) { arenas.push_back(a.View()); });
+    const auto face_sharpness = B->FaceSharpnessBuffer.Contents().first(B->FaceSharpnessBuffer.UsedSize);
 
     // Serialize from non-const copies: zpp mis-encodes a const aggregate this large, and these match the types Deserialize reads back into.
     auto entries = Entries;

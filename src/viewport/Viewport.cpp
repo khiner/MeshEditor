@@ -443,6 +443,7 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     r.storage<entt::entity>().start_from(entt::entity{0});
     r.ctx().get<MeshStore>().Clear();
     r.ctx().get<GpuBuffers>().ResetSceneArenas();
+    r.ctx().get<GpuSceneState>() = {};
     // Disable occlusion until the new scene has produced a depth pyramid.
     if (auto &resources = r.ctx().get<Pipelines>().Main.Resources) resources->DepthPyramidValid = false;
 

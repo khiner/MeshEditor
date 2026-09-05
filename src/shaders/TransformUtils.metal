@@ -7,12 +7,16 @@
 
 inline float4 quat_conjugate(float4 q) { return float4(-q.xyz, q.w); }
 
+inline float3 apply_edit_transform(float3 world_pos, float3 pivot, Transform delta) {
+    float3 offset = world_pos - pivot;
+    offset = float3(delta.S) * offset;
+    offset = quat_rotate(float4(delta.R), offset);
+    return pivot + offset + float3(delta.P);
+}
+
 template<typename SetT>
 inline float3 apply_pending_transform_world(const thread SceneT<SetT> &scene, float3 world_pos) {
-    float3 offset = world_pos - float3(scene.View.PendingPivot);
-    offset = float3(scene.View.PendingScale) * offset;
-    offset = quat_rotate(float4(scene.View.PendingRotation), offset);
-    return float3(scene.View.PendingPivot) + offset + float3(scene.View.PendingTranslation);
+    return apply_edit_transform(world_pos, float3(scene.View.PendingPivot), Transform{scene.View.PendingTranslation, scene.View.PendingRotation, scene.View.PendingScale});
 }
 
 inline float3 trs_inverse_transform_point(Transform t, float3 pos) {

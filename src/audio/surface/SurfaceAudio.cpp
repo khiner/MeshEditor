@@ -1223,7 +1223,7 @@ void RegisterSurfaceContactHandlers(entt::registry &r) {
     track<surface_changes::SurfaceMaterial>(r).on<MeshMaterialAssignment>(On::Create | On::Update);
     // The relief's texel size is measured from the mesh, so an edit to the mesh restates it.
     // Tracked separately from the surface edits above so the derivation can tell which of the two it is answering.
-    track<surface_changes::SurfaceGeometry>(r).on<MeshGeometryDirty>(On::Create);
+    track<surface_changes::SurfaceGeometry>(r).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     track<surface_changes::SoundControls>(r).on<SurfaceSoundControls>(On::Create | On::Update);
 }
 

@@ -28,6 +28,7 @@
 #include "physics/PhysicsChanges.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
+#include "render/ElementWorkOps.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
@@ -310,8 +311,10 @@ void RepointMeshInstances(entt::registry &r, std::span<const entt::entity> mesh_
 // Build and place meshlet LOD data in input order to preserve deterministic arena and instance layouts.
 void BuildMeshletsNow(entt::registry &r, std::span<const entt::entity> mesh_entities) {
     if (mesh_entities.empty()) return;
+    for (auto e : mesh_entities) ReleaseMeshEditWork(r, e);
     const profile::CpuScope scope{"BuildMeshlets"};
     auto &buffers = r.ctx().get<GpuBuffers>();
+    buffers.PreludeStale = true;
     const auto &meshes = r.ctx().get<const MeshStore>();
     const uint32_t count = uint32_t(mesh_entities.size());
     // Capture registry inputs before concurrent mesh builds.
@@ -1078,6 +1081,55 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         request(RenderRequest::Rebuild);
     }
 
+    // Commit mesh edit transforms after StartTransform is cleared.
+    if (!reactive<changes::TransformEnd>(r).empty()) {
+        if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == entt::null) {
+            if (const auto *pending = r.try_get<const PendingTransform>(viewport); pending && pending->Delta != Transform{}) {
+                // Evaluate the final edit before geometry and physics consumers run.
+                std::vector<entt::entity> commit_meshes;
+                for (const auto &[mesh_entity, instance_entity] : selection::ComputePrimaryEditInstances(r, false)) {
+                    if (!selection::HasScaleLockedInstance(r, mesh_entity)) commit_meshes.push_back(mesh_entity);
+                }
+                for (const auto mesh_entity : CommitPosedGeometry(r, viewport, commit_meshes)) {
+                    r.remove<PrimitiveShape>(mesh_entity);
+                    r.emplace_or_replace<MeshPositionsChanged>(mesh_entity);
+                }
+            }
+            r.remove<PendingTransform>(viewport);
+        }
+    }
+
+    for (auto entity : reactive<changes::MeshGeometry>(r)) {
+        if (!r.all_of<MeshPositionsChanged>(entity)) continue;
+        const auto &work = r.ctx().get<const GpuSceneState>().EditWork.at(entity);
+        if (auto *bvh = r.try_get<MeshBvh>(entity)) {
+            const auto mesh = GetMesh(r, entity);
+            const auto indices = GetFaceIndices(r, mesh, r.get<const MeshBuffers>(entity));
+            const auto first = meshes.GetFaceFirstTriangles(mesh.GetStoreId());
+            std::vector<uint32_t> triangles;
+            ForEachWorkElement(buffers.GeometryWork, work.Faces, [&](uint32_t f) {
+                const auto end = f + 1 < first.size() ? first[f + 1] : uint32_t(indices.size() / 3);
+                for (auto t = first[f]; t < end; ++t) triangles.push_back(t);
+            });
+            bvh->Refit(mesh.GetVerticesSpan(), indices, triangles);
+            ForEachWorkElement(buffers.GeometryWork, work.Normals, [&](uint32_t v) {
+                if (v < mesh.VertexCount()) bvh->MeanCurvature[v] = mesh.CalcMeanCurvature(VH{v}, meshes.GetEdgeSharpness(mesh.GetStoreId()));
+            });
+            bvh->EnclosedVolume = mesh.CalcEnclosedVolume();
+        }
+    }
+    {
+        std::unordered_set<entt::entity> to_rederive;
+        for (auto e : reactive<changes::ColliderPolicy>(r)) to_rederive.insert(e);
+        if (const auto &mesh_dirty = reactive<changes::MeshGeometry>(r); !mesh_dirty.empty()) {
+            for (auto [ce, cs] : r.view<const ColliderShape>().each()) {
+                const auto me = cs.MeshEntity != null_entity ? cs.MeshEntity : FindMeshEntity(r, ce);
+                if (mesh_dirty.contains(me)) to_rederive.insert(ce);
+            }
+        }
+        for (auto e : to_rederive) RederiveCollider(r, e);
+    }
+
     if (const auto *handlers = r.ctx().find<std::vector<ComponentEventHandler>>()) {
         for (const auto &h : *handlers) h(r);
     }
@@ -1098,6 +1150,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     {
         auto &selected_tracker = reactive<changes::Selected>(r);
         auto &active_tracker = reactive<changes::ActiveInstance>(r);
+        if ((!selected_tracker.empty() || !active_tracker.empty()) && r.get<const Interaction>(viewport).Mode == InteractionMode::Edit)
+            r.ctx().get<GpuSceneState>().EditPreludePending = true;
         if (!selected_tracker.empty()) {
             // Edit-mode selection changes the fill, edge, and point batches.
             const auto mode = r.get<const Interaction>(viewport).Mode;
@@ -1143,7 +1197,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
 
-    const auto edit_transform_context = is_edit_mode ? EditTransformContext{selection::ComputePrimaryEditInstances(r, false)} : EditTransformContext{};
     const auto orbit_to_active = [&](entt::entity instance_entity, Element element, uint32_t handle) {
         if (!r.get<const OrbitToActive>(viewport).Value) return;
         const auto world_pos = ComputeElementWorldPosition(r, instance_entity, element, handle);
@@ -1192,6 +1245,20 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         buffers.WorkspaceLightsUBO.Update(as_bytes(r.get<const WorkspaceLights>(viewport)));
         request(RenderRequest::Reuse);
     }
+    if (!is_edit_mode && !r.ctx().get<GpuSceneState>().EditWork.empty()) {
+        auto &edit_work = r.ctx().get<GpuSceneState>().EditWork;
+        std::vector<entt::entity> edited;
+        for (const auto &[e, work] : edit_work) {
+            if (work.Modified && r.valid(e) && r.all_of<MeshHandle>(e)) edited.push_back(e);
+        }
+        std::ranges::sort(edited);
+        BuildMeshletsNow(r, edited);
+        for (auto e : edited)
+            if (r.all_of<MeshBvh>(e)) UpdateMeshBvh(r, e);
+        while (!edit_work.empty()) ReleaseMeshEditWork(r, edit_work.begin()->first);
+        buffers.PreludeStale = true;
+        request(RenderRequest::Rebuild);
+    }
     if (auto &tracker = reactive<changes::MeshShading>(r); !tracker.empty()) {
         // Reclassify corners and derive base normals after sharpness changes.
         std::vector<entt::entity> reclassified;
@@ -1206,6 +1273,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
         if (!reclassified.empty()) {
             DeriveBaseNormalsNow(r, reclassified);
+            BuildMeshletsNow(r, reclassified);
             // Reclassification can reallocate arenas whose offsets persistent scene descriptors carry.
             request(RenderRequest::Rebuild);
         } else {
@@ -1240,11 +1308,13 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
     if (auto &tracker = reactive<changes::MeshGeometry>(r); !tracker.empty()) {
         // Vertex-arena positions feed the pose pre-pass, so geometry edits re-run the prelude.
-        buffers.PreludeStale = true;
+        if (std::ranges::any_of(tracker, [&](auto e) { return r.all_of<MeshGeometryDirty>(e); })) buffers.PreludeStale = true;
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
         std::vector<ElementRange> geometry_ranges;
         // Rebuild edited meshlets before rendering the same frame.
-        const std::vector<entt::entity> edited{tracker.begin(), tracker.end()};
+        std::vector<entt::entity> edited;
+        for (auto e : tracker)
+            if (r.all_of<MeshGeometryDirty>(e)) edited.push_back(e);
         BuildMeshletsNow(r, edited);
         for (auto mesh_entity : edited) {
             // Rebuild existing closest-point hierarchies after geometry edits.
@@ -1316,6 +1386,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
     }
     if (!reactive<changes::InteractionMode>(r).empty()) {
+        // Entering edit mode replaces animation deformation with the rest pose even when storage is unchanged.
+        buffers.PreludeStale = true;
         request(RenderRequest::Rebuild);
         r.remove<BoxSelectStatsDirty>(viewport);
         if (interaction_mode == InteractionMode::Excite) {
@@ -1325,35 +1397,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
         // Mark all armatures dirty for bone state + pose sync on mode change.
         for (const auto arm : r.view<ArmatureObject>()) r.emplace_or_replace<BoneInstanceStateDirty>(arm);
-    }
-    // Commit mesh edit transforms after StartTransform is cleared.
-    if (!reactive<changes::TransformEnd>(r).empty()) {
-        if (is_edit_mode && FindArmatureObject(r, FindActiveEntity(r)) == entt::null) {
-            if (const auto &pending = r.get<const PendingTransform>(viewport); pending.Delta != Transform{}) {
-                // Copy final posed positions and normals into canonical mesh storage after the previous-frame fence.
-                std::vector<entt::entity> commit_meshes;
-                for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
-                    if (!selection::HasScaleLockedInstance(r, mesh_entity)) commit_meshes.push_back(mesh_entity);
-                }
-                for (const auto mesh_entity : CommitPosedGeometry(r, commit_meshes)) {
-                    r.remove<PrimitiveShape>(mesh_entity);
-                    r.emplace_or_replace<MeshGeometryDirty>(mesh_entity);
-                }
-            }
-            r.remove<PendingTransform>(viewport);
-        }
-    }
-
-    {
-        std::unordered_set<entt::entity> to_rederive;
-        for (auto e : reactive<changes::ColliderPolicy>(r)) to_rederive.insert(e);
-        if (const auto &mesh_dirty = reactive<changes::MeshGeometry>(r); !mesh_dirty.empty()) {
-            for (auto [ce, cs] : r.view<const ColliderShape>().each()) {
-                const auto me = cs.MeshEntity != null_entity ? cs.MeshEntity : FindMeshEntity(r, ce);
-                if (mesh_dirty.contains(me)) to_rederive.insert(ce);
-            }
-        }
-        for (auto e : to_rederive) RederiveCollider(r, e);
     }
 
     const bool mode_changed = !reactive<changes::InteractionMode>(r).empty();
@@ -1748,7 +1791,10 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
 
     // Send pending pose deltas through the view UBO.
-    if (!reactive<changes::TransformPending>(r).empty() || !reactive<changes::TransformEnd>(r).empty()) buffers.PreludeStale = true;
+    if (!reactive<changes::TransformPending>(r).empty() || !reactive<changes::TransformEnd>(r).empty()) {
+        if (is_edit_mode) r.ctx().get<GpuSceneState>().EditPreludePending = true;
+        else buffers.PreludeStale = true;
+    }
 
     const auto render_extent = RenderExtentPx(r);
     if (!reactive<changes::SceneView>(r).empty() ||
@@ -1885,6 +1931,9 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         request(RenderRequest::Reuse);
     }
     if (r.all_of<EditSelectionDirty>(viewport)) {
+        auto &state = r.ctx().get<GpuSceneState>();
+        for (auto &[_, work] : state.EditWork) work.CandidateReady = false;
+        state.EditPreludePending = is_edit_mode;
         r.remove<EditSelectionDirty>(viewport);
         request(RenderRequest::Reuse);
     }
@@ -1892,10 +1941,11 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();
     }
     destroy_tracker.Storage.clear();
-    r.clear<MeshGeometryDirty, MeshShadingDirty, MeshMaterialAssignment, MaterialDirty, LightWireframeDirty>();
+    r.clear<MeshGeometryDirty, MeshPositionsChanged, MeshShadingDirty, MeshMaterialAssignment, MaterialDirty, LightWireframeDirty>();
 }
 
 void RegisterSceneComponentHandlers(entt::registry &r) {
+    r.on_destroy<MeshHandle>().connect<&ReleaseMeshEditWork>();
     track<changes::TimelineRange>(r).on<TimelineRange>(On::Update);
     track<changes::Selected>(r).on<Selected>(On::Create | On::Destroy);
     track<changes::ActiveInstance>(r).on<Active>(On::Create | On::Destroy);
@@ -1907,7 +1957,7 @@ void RegisterSceneComponentHandlers(entt::registry &r) {
         .on<EditMode>(On::Create | On::Update);
     track<changes::MeshShading>(r).on<MeshShadingDirty>(On::Create).on<MeshGeometryDirty>(On::Create);
     track<changes::MeshActiveElement>(r).on<MeshActiveElement>(On::Create | On::Update);
-    track<changes::MeshGeometry>(r).on<MeshGeometryDirty>(On::Create);
+    track<changes::MeshGeometry>(r).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     // Refresh body-mesh reachability after collider or body changes.
     track<changes::PhysicsBodyMesh>(r).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<ColliderShape>(On::Create | On::Update | On::Destroy);
     track<changes::MeshMaterial>(r).on<MeshMaterialAssignment>(On::Create | On::Update);
@@ -1941,7 +1991,7 @@ void RegisterSceneComponentHandlers(entt::registry &r) {
     track<changes::CameraLens>(r).on<Camera>(On::Create | On::Update).on<LookingThrough>(On::Create | On::Destroy);
     track<changes::Rotation>(r).on<Transform>(On::Create | On::Update);
     track<changes::WorldTransform>(r).on<WorldTransform>(On::Create | On::Update);
-    track<changes::TransformPending>(r).on<PendingTransform>(On::Create | On::Update);
+    track<changes::TransformPending>(r).on<PendingTransform>(On::Create | On::Update | On::Destroy);
     track<changes::TransformEnd>(r).on<StartTransform>(On::Destroy);
     track<changes::TransformDirty>(r)
         .on<Transform>(On::Create | On::Update)

@@ -5,6 +5,7 @@
 #include "Bindless.metal"
 #include "AABB.metal"
 #include "BoundsShared.metal"
+#include "ElementWorkShared.metal"
 #include "BoundsReducePushConstants.metal"
 
 kernel void BoundsReduceKernel(
@@ -19,7 +20,11 @@ kernel void BoundsReduceKernel(
     constant BoundsReducePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    const uint2 tile = uint2(scene.TileMap(pc.TileMapSlot)[group_id]);
+    const bool sparse = pc.Work.Storage.Slot != INVALID_SLOT;
+    const uint work_id = sparse ? WorkElement(bindless, pc.Work, group_id) : group_id;
+    if (work_id == INVALID_OFFSET) return;
+    const uint destination = sparse ? BindlessBuffer(uint, bindless.Buffer, pc.EntryFirstTileSlot)[pc.EntryIndex] + work_id : group_id;
+    const uint2 tile = uint2(scene.TileMap(pc.TileMapSlot)[destination]);
     const DrawData draw = scene.Draws(pc.DrawDataSlot)[tile.x];
     const uint i = tile.y * 256u + tid;
     float3 lo = AabbEmptyMin;
@@ -33,7 +38,8 @@ kernel void BoundsReduceKernel(
     FoldSharedAabb(shared_min, shared_max, BoundsFoldLanes, tid, lo, hi);
     if (tid == 0u) {
         device AABB *partials = BindlessBufferMutable(AABB, bindless.Buffer, pc.PartialBoundsSlot);
-        partials[group_id] = AABB{packed_float3(shared_min[0]), packed_float3(shared_max[0])};
+        if (sparse) MarkWork(bindless, pc.NextWork, work_id / 256u);
+        partials[destination] = AABB{packed_float3(shared_min[0]), packed_float3(shared_max[0])};
     }
 }
 

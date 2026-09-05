@@ -100,9 +100,48 @@ MeshBvh BuildMeshBvh(std::span<const Vertex> vertices, std::span<const uint32_t>
     return bvh;
 }
 
+uint32_t MeshBvh::Refit(std::span<const Vertex> vertices, std::span<const uint32_t> indices, std::span<const uint32_t> triangles) {
+    if (triangles.empty() || Nodes.empty()) return 0;
+    if (TriangleLeaves.empty()) {
+        TriangleLeaves.resize(indices.size() / 3);
+        for (uint32_t i = 0; i < Nodes.size(); ++i) {
+            if (Nodes[i].IsLeaf()) TriangleLeaves[Nodes[i].Left] = i;
+        }
+    }
+    std::vector<uint32_t> leaves;
+    leaves.reserve(triangles.size());
+    for (const auto t : triangles) leaves.push_back(TriangleLeaves.at(t));
+    std::ranges::sort(leaves);
+    const auto repeats = std::ranges::unique(leaves);
+    leaves.erase(repeats.begin(), repeats.end());
+    uint32_t visited = 0;
+    const auto refit = [&](auto &&self, uint32_t index, std::span<const uint32_t> dirty) -> void {
+        if (dirty.empty()) return;
+        ++visited;
+        auto &node = Nodes[index];
+        if (node.IsLeaf()) {
+            AABB box;
+            for (uint32_t c = 0; c < 3; ++c) {
+                const auto p = vertices[indices[node.Left * 3 + c]].Position;
+                box = {numeric::Min(box.Min, p), numeric::Max(box.Max, p)};
+            }
+            node.Box = box;
+            return;
+        }
+        // Postorder makes the left child's index the end of its contiguous subtree.
+        const auto split = size_t(std::ranges::upper_bound(dirty, node.Left) - dirty.begin());
+        self(self, node.Left, dirty.first(split));
+        self(self, node.Right, dirty.subspan(split));
+        node.Box = Union(Nodes[node.Left].Box, Nodes[node.Right].Box);
+    };
+    refit(refit, uint32_t(Nodes.size() - 1), leaves);
+    return visited;
+}
+
 SurfacePoint MeshBvh::ClosestPoint(std::span<const Vertex> vertices, std::span<const uint32_t> triangle_indices, vec3 point) const {
     SurfacePoint best;
     float best_distance2 = std::numeric_limits<float>::max();
+    uint32_t best_triangle = ~0u;
     // A median split halves the triangle count at every level, so the depth cannot exceed the width of a triangle index.
     // The descent stores at most one node per level plus one deferred sibling.
     // Each entry carries the distance its box was ordered by, which the running best prunes against.
@@ -111,14 +150,15 @@ SurfacePoint MeshBvh::ClosestPoint(std::span<const Vertex> vertices, std::span<c
     stack[top++] = {uint32_t(Nodes.size() - 1), 0.f};
     while (top > 0) {
         const auto [index, box_distance2] = stack[--top];
-        if (box_distance2 >= best_distance2) continue;
+        if (box_distance2 > best_distance2) continue;
         const auto &node = Nodes[index];
         if (node.IsLeaf()) {
             const std::array tri{triangle_indices[node.Left * 3], triangle_indices[node.Left * 3 + 1], triangle_indices[node.Left * 3 + 2]};
             const auto hit = ClosestPointOnTriangle(point, vertices[tri[0]].Position, vertices[tri[1]].Position, vertices[tri[2]].Position);
             const vec3 offset = hit.Position - point;
-            if (const float distance2 = numeric::Dot(offset, offset); distance2 < best_distance2) {
+            if (const float distance2 = numeric::Dot(offset, offset); distance2 < best_distance2 || (distance2 == best_distance2 && node.Left < best_triangle)) {
                 best_distance2 = distance2;
+                best_triangle = node.Left;
                 best = {tri, hit.Weights};
             }
             continue;

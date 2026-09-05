@@ -6,6 +6,7 @@
 #include <filesystem>
 
 struct MeshGeometryDirty {};
+struct MeshPositionsChanged {};
 struct MeshShadingDirty {};
 struct LightWireframeDirty {};
 

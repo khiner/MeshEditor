@@ -34,6 +34,10 @@ struct MeshBvh {
     };
 
     std::vector<Node> Nodes;
+    std::vector<uint32_t> TriangleLeaves;
+
+    // Refit changed triangles and their ancestor closure. Returns the number of visited nodes.
+    uint32_t Refit(std::span<const Vertex>, std::span<const uint32_t> triangle_indices, std::span<const uint32_t> changed_triangles);
 
     // Mean surface curvature (1/length, in the mesh's own units), one entry per vertex.
     // A SurfacePoint's weights interpolate it at the point.
