@@ -1310,7 +1310,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         }
         const profile::CpuScope frame_scope{"Frame"};
         auto events = window.PollEvents();
-        r.ctx().get<FrameState>().PreciseWheelDelta += vec2{events.ScrollX, events.ScrollY};
+        r.ctx().get<FrameState>().PreciseWheelDelta = vec2{events.ScrollX, events.ScrollY};
         for (const auto &path : events.DroppedFiles) OpenFile(r, viewport, path);
         done = events.Quit;
         if (driver.DurationElapsed(r, viewport)) done = true;
