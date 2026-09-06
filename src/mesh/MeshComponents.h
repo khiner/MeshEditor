@@ -8,7 +8,6 @@ struct RenderInstance {
     entt::entity Entity;
     uint32_t BufferIndex{0};
     uint32_t ObjectId{0};
-    uint32_t GpuId{InvalidOffset};
     uint32_t MeshletRangeCount{0};
     uint32_t MeshletCount{0};
 };

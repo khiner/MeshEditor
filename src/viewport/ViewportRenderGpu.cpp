@@ -485,7 +485,7 @@ MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers) {
         .BlockStateSlot = buffers.MeshletCullBlocks.Slot,
         .ClassificationSlot = buffers.MeshletClassifications.Slot,
         .VisibleSlot = buffers.VisibleMeshlets.Slot,
-        .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
+        .InstanceMapSlot = buffers.GpuInstanceSlots.Slot,
         .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
         .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
         .MeshletSlot = buffers.Meshlets.Buffer.Slot,
@@ -518,7 +518,7 @@ MeshletDrawPushConstants MakeMeshletDrawPc(
     return {
         .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
         .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
-        .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
+        .InstanceMapSlot = buffers.GpuInstanceSlots.Slot,
         .MeshletSlot = buffers.Meshlets.Buffer.Slot,
         .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
         .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
@@ -1023,6 +1023,16 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             MarkInstanceRecordsStale(scene_state);
         }
         if (scene_state.InstanceRecordsStale) {
+            // Coplanar visibility follows entity order, independent of instance-buffer allocation history.
+            auto instance_order = r.view<const RenderInstance>() |
+                std::views::filter([&](auto e) { return r.get<const RenderInstance>(e).MeshletCount > 0; }) |
+                to<std::vector>();
+            std::ranges::sort(instance_order, std::ranges::greater{});
+            auto instance_slots = buffers.GpuInstanceSlots.SetCount<uint32_t>(uint32_t(instance_order.size()));
+            for (uint32_t i = 0; i < instance_slots.size(); ++i) {
+                instance_slots[i] = r.get<const RenderInstance>(instance_order[i]).BufferIndex;
+            }
+
             buffers.MeshletTopologyMask = 0u;
             for (const auto [instance_entity, instance, ri] : r.view<const Instance, const RenderInstance>().each()) {
                 if (ri.BufferIndex == UINT32_MAX) continue;
@@ -1140,7 +1150,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 primary != primary_edit_instances.end() && primary->second == instance_entity &&
                 selection::GetElementCount(GetMesh(r, instance->Entity), edit_mode) > 0u) {
                 record.Flags |= uint32_t(MeshletInstanceFlag::ElementSelection);
-                if (ri.GpuId != InvalidOffset) {
+                if (ri.MeshletCount > 0) {
                     element_selection_work.Ranges += ri.MeshletRangeCount;
                     element_selection_work.Meshlets += ri.MeshletCount;
                 }
@@ -1148,7 +1158,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             if (instance && scene_state.MeshletEditOverlayMeshes.contains(instance->Entity) &&
                 primary != primary_edit_instances.end() && primary->second == instance_entity) {
                 record.Flags |= uint32_t(MeshletInstanceFlag::EditOverlay);
-                if (ri.GpuId != InvalidOffset) {
+                if (ri.MeshletCount > 0) {
                     edit_overlay_work.Ranges += ri.MeshletRangeCount;
                     edit_overlay_work.Meshlets += ri.MeshletCount;
                 }
@@ -1162,7 +1172,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 (mesh_buffers->FaceIndices.Count == 0u || is_wireframe_mode) && !shaded_face_less;
             if (wire) {
                 record.Flags |= uint32_t(MeshletInstanceFlag::Wire);
-                if (ri.GpuId != InvalidOffset) {
+                if (ri.MeshletCount > 0) {
                     wire_work.Ranges += ri.MeshletRangeCount;
                     wire_work.Meshlets += ri.MeshletCount;
                 }
@@ -1172,7 +1182,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             if (bone || joint) record.Flags |= uint32_t(MeshletInstanceFlag::OverlayOnly);
             const auto mark = [&](MeshletInstanceFlag flag) {
                 record.Flags |= uint32_t(flag);
-                if (ri.GpuId != InvalidOffset) {
+                if (ri.MeshletCount > 0) {
                     auto &work = buffers.FlagWork(uint32_t(flag));
                     work.Ranges += ri.MeshletRangeCount;
                     work.Meshlets += ri.MeshletCount;
@@ -1209,7 +1219,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 mesh->FaceCount() == 0u && mesh->EdgeCount() == 0u &&
                 !primary_edit_instances.contains(instance->Entity) && !shaded_face_less;
             if (point_overlay) mark(MeshletInstanceFlag::PointOverlay);
-            if (silhouette && ri.GpuId != InvalidOffset) {
+            if (silhouette && ri.MeshletCount > 0) {
                 silhouette_work.Ranges += ri.MeshletRangeCount;
                 silhouette_work.Meshlets += ri.MeshletCount;
             }
@@ -1808,7 +1818,7 @@ void RecordMeshletCull(
     );
     const auto pc = [&] {
         auto pc = MakeMeshletCullSlotsPc(buffers);
-        pc.InstanceCount = buffers.GpuInstanceSlots.Buffer.Count<uint32_t>();
+        pc.InstanceCount = buffers.GpuInstanceSlots.Count<uint32_t>();
         pc.WorkBlockCount = (pc.InstanceCount + GpuBuffers::MeshletCullBlockSize - 1u) / GpuBuffers::MeshletCullBlockSize;
         pc.LodFrontierStateSlot = buffers.LodFrontierStates.Slot;
         pc.BlendBlockSlot = config.SortBlend ? buffers.MeshletBlendBlocks.Slot : InvalidSlot;

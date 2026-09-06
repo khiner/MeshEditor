@@ -261,22 +261,10 @@ void UpdateMeshletInstance(entt::registry &r, entt::entity instance_entity) {
     buffers.MeshletRangeCount -= instance.MeshletRangeCount;
     buffers.MeshletInstanceCount -= instance.MeshletCount;
     const auto *mesh_buffers = r.valid(instance.Entity) ? r.try_get<const MeshBuffers>(instance.Entity) : nullptr;
-    const uint32_t meshlet_range_count = mesh_buffers ? mesh_buffers->Primitives.Count : 0;
-    const uint32_t meshlet_count = mesh_buffers ? mesh_buffers->Meshlets.Count : 0;
-    if (meshlet_count != instance.MeshletCount || (meshlet_count > 0 && instance.GpuId == InvalidOffset)) {
-        // Slot allocation follows topology finalization order, which work compaction preserves for deterministic routing.
-        if (instance.GpuId != InvalidOffset) {
-            buffers.GpuInstanceSlots.GetMutable({instance.GpuId, 1})[0] = InvalidOffset;
-            buffers.GpuInstanceSlots.Release({instance.GpuId, 1});
-            instance.GpuId = InvalidOffset;
-        }
-        if (meshlet_count > 0) instance.GpuId = buffers.GpuInstanceSlots.Allocate(1).Offset;
-    }
-    instance.MeshletRangeCount = meshlet_range_count;
-    instance.MeshletCount = meshlet_count;
+    instance.MeshletRangeCount = mesh_buffers ? mesh_buffers->Primitives.Count : 0;
+    instance.MeshletCount = mesh_buffers ? mesh_buffers->Meshlets.Count : 0;
     buffers.MeshletRangeCount += instance.MeshletRangeCount;
     buffers.MeshletInstanceCount += instance.MeshletCount;
-    if (instance.GpuId != InvalidOffset) buffers.GpuInstanceSlots.GetMutable({instance.GpuId, 1})[0] = instance.BufferIndex;
 }
 
 // Assign placed primitives to instances while preserving mesh and instance iteration order.
@@ -473,7 +461,6 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
                 if (erased_idx < ri.BufferIndex) ++shift;
             }
             if (shift > 0) ri.BufferIndex -= shift;
-            if (shift > 0 && ri.GpuId != InvalidOffset) buffers.GpuInstanceSlots.GetMutable({ri.GpuId, 1})[0] = ri.BufferIndex;
         }
         r.remove<PendingHide>(buffer_entity);
     }
@@ -512,7 +499,6 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
             for (auto [other_entity, ri] : r.view<RenderInstance>().each()) {
                 if (ri.Entity == buffer_entity && ri.BufferIndex != UINT32_MAX) {
                     ri.BufferIndex = mb.InstanceRange.Offset + (ri.BufferIndex - old_range.Offset);
-                    if (ri.GpuId != InvalidOffset) buffers.GpuInstanceSlots.GetMutable({ri.GpuId, 1})[0] = ri.BufferIndex;
                 }
             }
             buffers.Instances.Free(old_range);

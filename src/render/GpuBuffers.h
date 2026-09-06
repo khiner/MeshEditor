@@ -136,7 +136,7 @@ struct GpuBuffers {
           ClusterGroups{Ctx, SlotType::Buffer},
           LodNodes{Ctx, SlotType::Buffer},
           Primitives{Ctx, SlotType::Buffer},
-          GpuInstanceSlots{Ctx, SlotType::Buffer},
+          GpuInstanceSlots{Ctx, 0, SlotType::Buffer},
           Instances{Ctx},
           MeshletWorkRanges{Ctx, 0, SlotType::Buffer},
           MeshletWorkBlocks{Ctx, 0, SlotType::Buffer},
@@ -273,7 +273,7 @@ struct GpuBuffers {
         ClusterGroups.Reset();
         LodNodes.Reset();
         Primitives.Reset();
-        GpuInstanceSlots.Reset();
+        GpuInstanceSlots.UsedSize = 0;
         MeshletRangeCount = 0;
         MeshletInstanceCount = 0;
         MeshletLodDepth = 0;
@@ -303,7 +303,7 @@ struct GpuBuffers {
     BufferArena<ClusterGroup> ClusterGroups;
     BufferArena<LodNode> LodNodes;
     BufferArena<PrimitiveRecord> Primitives;
-    BufferArena<uint32_t> GpuInstanceSlots;
+    mtl::Buffer GpuInstanceSlots;
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, SlotType::ArmatureDeformBuffer};
     BufferArena<float> MorphWeightBuffer{Ctx, SlotType::MorphWeightBuffer};
     InstanceArena Instances;
@@ -361,7 +361,7 @@ struct GpuBuffers {
         const auto bytes = visible_count * sizeof(VisibleMeshlet);
         VisibleMeshlets.Reserve(bytes);
         VisibleMeshlets.UsedSize = bytes;
-        const auto instance_count = GpuInstanceSlots.Buffer.Count<uint32_t>();
+        const auto instance_count = GpuInstanceSlots.Count<uint32_t>();
         const auto block_count = (work_meshlet_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
         // Two entries per leaf cover interior levels.
         // Per-range padding covers partial leaves and paths to the root.

@@ -1135,6 +1135,7 @@ void MeshStore::PlanClone(const Mesh &mesh) {
     const auto &e = Entries.at(mesh.GetStoreId());
     Pending.Vertices += e.Vertices.Count;
     Pending.Faces += e.FaceData.Count;
+    Pending.FaceCorners += e.FaceCorners.Count;
     Pending.Triangles += e.TriangleFaceIds.Count;
     Pending.Edges += e.EdgeSharpness.Count;
     Pending.Primitives += e.PrimitiveMaterials.Count;
@@ -1557,6 +1558,7 @@ CreatedMesh MeshStore::CloneMesh(const Mesh &mesh) {
         .TriangleFaceIds = B->TriangleFaceIdBuffer.Clone(src_entry.TriangleFaceIds),
         .ElementPrimitives = B->ElementPrimitiveBuffer.Clone(src_entry.ElementPrimitives),
         .PrimitiveMaterials = B->PrimitiveMaterialBuffer.Clone(src_entry.PrimitiveMaterials),
+        .FaceCorners = B->FaceCornerBuffer.Clone(src_entry.FaceCorners),
         .VertexFanAdjacency = B->AdjacencyBuffer.Clone(src_entry.VertexFanAdjacency),
         .VertexEdgeAdjacency = B->AdjacencyBuffer.Clone(src_entry.VertexEdgeAdjacency),
         .Connectivity = B->ConnectivityBuffer.Clone(src_entry.Connectivity),

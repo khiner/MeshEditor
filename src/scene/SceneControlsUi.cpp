@@ -1382,14 +1382,15 @@ static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
         }
     };
 
-    bool has_root = false;
-    for (const auto [entity, _] : r.view<const Name>().each()) {
-        if (const auto *node = r.try_get<SceneNode>(entity); !node || node->Parent == entt::null) {
-            has_root = true;
-            render_entity(render_entity, entity);
-        }
-    }
-    if (!has_root) TextDisabled("No objects");
+    auto roots = r.view<const Name>() |
+        std::views::filter([&](auto e) {
+                     const auto *node = r.try_get<const SceneNode>(e);
+                     return !node || node->Parent == entt::null;
+                 }) |
+        to<std::vector>();
+    std::ranges::sort(roots);
+    for (const auto e : roots) render_entity(render_entity, e);
+    if (roots.empty()) TextDisabled("No objects");
 
     // BeginMultiSelect and EndMultiSelect can produce the same selection update.
     action::selection::ApplyTreeSelection tree_selection;

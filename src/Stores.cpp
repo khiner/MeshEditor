@@ -72,10 +72,6 @@ entt::entity WireRegistry(entt::registry &r) {
         if (auto *buffers = r.ctx().find<GpuBuffers>()) {
             buffers->MeshletRangeCount -= ri.MeshletRangeCount;
             buffers->MeshletInstanceCount -= ri.MeshletCount;
-            if (ri.GpuId != InvalidOffset) {
-                buffers->GpuInstanceSlots.GetMutable({ri.GpuId, 1})[0] = InvalidOffset;
-                buffers->GpuInstanceSlots.Release({ri.GpuId, 1});
-            }
         }
         if (ri.BufferIndex == UINT32_MAX) return;
         r.get_or_emplace<PendingHide>(ri.Entity).BufferIndices.push_back(ri.BufferIndex);

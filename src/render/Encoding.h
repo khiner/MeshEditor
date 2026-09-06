@@ -27,7 +27,7 @@ inline VisibilityShadingPushConstants VisibilityDecodePc(const GpuBuffers &buffe
     return {
         .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
         .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
-        .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
+        .InstanceMapSlot = buffers.GpuInstanceSlots.Slot,
         .MeshletSlot = buffers.Meshlets.Buffer.Slot,
         .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
         .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
