@@ -53,6 +53,7 @@ void DrawMeshlets(
 
 // Which parts of a frame one recording covers.
 enum class RenderPhase {
+    Prepare,
     Full,
     BlurredFull,
     BlurAccumulateFirst,

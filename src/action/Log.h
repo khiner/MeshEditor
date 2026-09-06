@@ -98,8 +98,8 @@ std::filesystem::path StopLog();
 // Advances derived viewport state between replayed actions.
 using ReplayTick = void (*)(entt::registry &, entt::entity viewport);
 
-// Replays records after `skip` and returns false when the log cannot be opened.
-bool ReplayLog(
+// Replays records after `skip` and returns milliseconds spent advancing derived state.
+double ReplayLog(
     entt::registry &, entt::entity viewport, const std::filesystem::path &, ReplayTick,
     uint64_t skip = 0, uint64_t count = std::numeric_limits<uint64_t>::max(), bool record = false
 );

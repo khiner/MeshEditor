@@ -32,6 +32,7 @@
 #include "mesh/MeshComponents.h"
 #include "metal/Image.h"
 #include "metal/MetalContext.h"
+#include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "object/ObjectOps.h"
 #include "physics/PhysicsTypes.h"
@@ -82,6 +83,7 @@ using std::ranges::any_of, std::ranges::all_of;
 
 namespace fs = std::filesystem;
 using SteadyClock = std::chrono::steady_clock;
+double ElapsedMs(SteadyClock::time_point begin) { return std::chrono::duration<double, std::milli>(SteadyClock::now() - begin).count(); }
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
@@ -332,7 +334,7 @@ void ReplayLogInPlace(entt::registry &r, entt::entity viewport, const fs::path &
     std::error_code ec;
     const bool replaying_session_log = fs::equivalent(log_path, Paths::Project() / SessionLogName, ec);
     action::ReplayLog(
-        r, viewport, log_path, &PresentViewport, 0, std::numeric_limits<uint64_t>::max(),
+        r, viewport, log_path, &PrepareViewport, 0, std::numeric_limits<uint64_t>::max(),
         /*record=*/!replaying_session_log
     );
     workspace::Apply(r, viewport, r.ctx().get<WindowsState>(), live_workspace);
@@ -340,32 +342,39 @@ void ReplayLogInPlace(entt::registry &r, entt::entity viewport, const fs::path &
     ++RestoreGeneration;
 }
 
-// Load a snapshot file and return its action-log position.
-uint64_t LoadStateBase(entt::registry &r, entt::entity viewport, const fs::path &path) {
-    const auto bytes = File::Read(path).value_or(std::vector<std::byte>{});
-    WaitForRender(r);
-    ClearScene(r, viewport);
-    snapshot::LoadState(r, bytes);
-    ProcessComponentEvents(r, viewport);
-    return r.all_of<ActionIndex>(viewport) ? r.get<ActionIndex>(viewport).Index : 0;
-}
+struct RestoreTimings {
+    double ResetMs{}, RestoreMs{}, DeriveMs{}, RenderMs{}, CaptureMs{};
+};
 
 // Restore a project from its base snapshot and a bounded suffix of its action log.
-void RestoreProject(
+RestoreTimings RestoreProject(
     entt::registry &r, entt::entity viewport, const fs::path &working_dir,
     uint64_t action_end = std::numeric_limits<uint64_t>::max(), const workspace::State *workspace_override = nullptr
 ) {
     const auto state_path = working_dir / ProjectStateName, log_path = working_dir / SessionLogName;
+    RestoreTimings timings;
+    auto begin = SteadyClock::now();
+    WaitForRender(r);
+    ClearScene(r, viewport);
+    timings.ResetMs = ElapsedMs(begin);
+    begin = SteadyClock::now();
     uint64_t skip = 0;
-    if (std::error_code ec; fs::exists(state_path, ec)) skip = LoadStateBase(r, viewport, state_path);
-    else ClearScene(r, viewport);
-
+    if (std::error_code ec; fs::exists(state_path, ec)) {
+        snapshot::LoadState(r, File::Read(state_path).value_or(std::vector<std::byte>{}));
+        if (const auto *index = r.try_get<ActionIndex>(viewport)) skip = index->Index;
+    }
     const auto fallback_workspace = CaptureWorkspace(r, viewport);
     const auto count = action_end > skip ? action_end - skip : 0;
-    action::ReplayLog(r, viewport, log_path, &PresentViewport, skip, count);
+    timings.DeriveMs = action::ReplayLog(r, viewport, log_path, &PrepareViewport, skip, count);
+    timings.RestoreMs += ElapsedMs(begin) - timings.DeriveMs;
+    begin = SteadyClock::now();
     const auto stored_workspace = workspace_override ? std::optional<workspace::State>{*workspace_override} : workspace::Load(working_dir / workspace::FileName);
     workspace::Apply(r, viewport, r.ctx().get<WindowsState>(), stored_workspace.value_or(fallback_workspace));
+    timings.DeriveMs += ElapsedMs(begin);
+    begin = SteadyClock::now();
     PresentViewport(r, viewport);
+    timings.RenderMs = ElapsedMs(begin);
+    return timings;
 }
 
 // Restore a session from its base snapshot and subsequent action log.
@@ -555,15 +564,17 @@ void EndEditorViewport(const EditorWindowsFrame &frame) {
 }
 
 #ifdef DEBUG_BUILD
+
 struct ValidationImage {
-    std::vector<std::byte> Pixels;
-    uint32_t Width{}, Height{};
+    mtl::Texture Target;
+    NS::SharedPtr<MTL::SharedEvent> Ready;
+    uint64_t Generation{};
 };
 
-fs::path WriteValidationImage(std::string_view name, const ValidationImage &image) {
-    auto rgba = image.Pixels;
+fs::path WriteValidationImage(const mtl::Context &ctx, std::string_view name, const ValidationImage &image) {
+    auto rgba = ReadbackImageRgba8(ctx, image.Target, 0, 0, image.Target.Extent);
     for (size_t i = 0; i < rgba.size(); i += 4) std::swap(rgba[i], rgba[i + 2]);
-    const auto encoded = EncodeImagePngRgba8(rgba, image.Width, image.Height, name);
+    const auto encoded = EncodeImagePngRgba8(rgba, image.Target.Extent.Width, image.Target.Extent.Height, name);
     if (!encoded) return {};
     const auto path = fs::temp_directory_path() / std::format("MeshEditor-validation-{}.png", name);
     std::ofstream out{path, std::ios::binary};
@@ -571,30 +582,103 @@ fs::path WriteValidationImage(std::string_view name, const ValidationImage &imag
     return out ? path : fs::path{};
 }
 
-ValidationImage RenderAppImage(const mtl::Context &ctx, ImDrawData *draw_data) {
-    const auto pixel_width = uint32_t(std::ceil(draw_data->DisplaySize.x * draw_data->FramebufferScale.x));
-    const auto pixel_height = uint32_t(std::ceil(draw_data->DisplaySize.y * draw_data->FramebufferScale.y));
-    if (pixel_width == 0 || pixel_height == 0) return {};
-
-    auto target = mtl::CreateUntrackedTexture2D(
-        ctx, mtl::Format::Color, {pixel_width, pixel_height},
-        MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead, MTL::StorageModeShared
-    );
-    const std::array colors{mtl::ClearColor(*target, {0.45, 0.55, 0.60, 1.0})};
+void RenderAppImage(const mtl::Context &ctx, ImDrawData *draw_data, ValidationImage &image) {
+    const mtl::Extent2D extent{
+        uint32_t(std::ceil(draw_data->DisplaySize.x * draw_data->FramebufferScale.x)),
+        uint32_t(std::ceil(draw_data->DisplaySize.y * draw_data->FramebufferScale.y)),
+    };
+    if (!image.Ready) image.Ready = NS::TransferPtr(ctx.Device->newSharedEvent());
+    if (!image.Target || image.Target.Extent != extent) {
+        image.Target = mtl::CreateUntrackedTexture2D(
+            ctx, mtl::Format::Color, extent,
+            MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead, MTL::StorageModePrivate
+        );
+    }
+    const std::array colors{mtl::ClearColor(*image.Target, {0.45, 0.55, 0.60, 1.0})};
     auto *pass = mtl::MakePassDescriptor(colors);
     ImGui_ImplMetal_NewFrame(pass);
-
     auto *command_buffer = ctx.Queue->commandBuffer();
-    auto *encoder = command_buffer->renderCommandEncoder(pass);
-    ImGui_ImplMetal_RenderDrawData(draw_data, command_buffer, encoder);
-    encoder->endEncoding();
-    command_buffer->commit();
-    command_buffer->waitUntilCompleted();
-    if (const auto *error = command_buffer->error()) {
-        throw std::runtime_error(std::format("Failed to render the validation image: {}", error->localizedDescription()->utf8String()));
+    {
+        mtl::PassChain chain{command_buffer};
+        auto *encoder = chain.BeginRender(pass, "ValidationApp");
+        ImGui_ImplMetal_RenderDrawData(draw_data, command_buffer, encoder);
     }
-    return {ReadbackImageRgba8(ctx, target, 0, 0, target.Extent), pixel_width, pixel_height};
+    command_buffer->encodeSignalEvent(image.Ready.get(), ++image.Generation);
+    command_buffer->addCompletedHandler([](MTL::CommandBuffer *completed) {
+        if (const auto *error = completed->error()) {
+            std::println(stderr, "[validation] app render failed: {}", error->localizedDescription()->utf8String());
+            std::abort();
+        }
+    });
+    command_buffer->commit();
 }
+
+struct ValidationUi {
+    ImGuiContext *LiveImGui{ImGui::GetCurrentContext()}, *Gui{};
+    ImPlotContext *LiveImPlot{ImPlot::GetCurrentContext()}, *Plot{};
+
+    ValidationUi(const mtl::Context &ctx) {
+        auto *fonts = GetIO().Fonts;
+        const auto font_scale = GetIO().FontGlobalScale;
+        Gui = ImGui::CreateContext(fonts);
+        ImGui::SetCurrentContext(Gui);
+        Plot = ImPlot::CreateContext();
+        ImPlot::SetCurrentContext(Plot);
+        auto &io = GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
+        io.IniFilename = nullptr;
+        io.FontGlobalScale = font_scale;
+        StyleColorsDark();
+        ImGui_ImplMetal_Init(ctx.Device.get());
+    }
+    void ActivateLive() const {
+        ImGui::SetCurrentContext(LiveImGui);
+        ImPlot::SetCurrentContext(LiveImPlot);
+    }
+    ~ValidationUi() {
+        ImGui::SetCurrentContext(Gui);
+        ImPlot::SetCurrentContext(Plot);
+        ImGui_ImplMetal_Shutdown();
+        ImPlot::DestroyContext(Plot);
+        ImGui::DestroyContext(Gui);
+        ActivateLive();
+    }
+};
+
+struct ValidationEngine {
+    entt::registry Registry;
+    entt::entity Viewport;
+    ValidationImage App;
+    std::optional<ValidationUi> Ui;
+
+    ValidationEngine() {
+        Registry.ctx().emplace<mtl::Context>();
+        Viewport = InitEngine(Registry);
+        InitAudioSystem(Registry);
+        InitViewportMedia(Registry);
+        SetupScene(Registry, Viewport);
+        ProcessComponentEvents(Registry, Viewport);
+    }
+    ~ValidationEngine() {
+        WaitForRender(Registry);
+        Ui.reset();
+        App = {};
+        DeinitViewportMedia(Registry);
+        DeinitAudioSystem(Registry);
+        DeinitViewport(Registry, Viewport);
+    }
+};
+
+struct ValidationSession {
+    ValidationEngine Replay, Snapshot;
+    ValidationImage Live;
+    mtl::ComputePipeline Compare;
+    NS::SharedPtr<MTL::Buffer> Differences;
+
+    ValidationSession(entt::registry &r)
+        : Compare(r.ctx().get<mtl::LibraryCache>(), {"ValidationCompare.metal", "CompareValidationImages"}),
+          Differences(mtl::NewBuffer(r.ctx().get<const mtl::Context>(), 2 * sizeof(uint32_t))) {}
+};
 
 struct ValidationInputs {
     fs::path WorkingDir;
@@ -607,8 +691,8 @@ struct ValidationInputs {
     std::string FocusedWindow;
 };
 
-ValidationImage RenderValidationApp(
-    entt::registry &r, entt::entity viewport, const ValidationInputs &inputs
+void RenderValidationApp(
+    entt::registry &r, entt::entity viewport, const ValidationInputs &inputs, ValidationImage &image
 ) {
     auto &ctx = r.ctx().get<const mtl::Context>();
     auto &io = GetIO();
@@ -651,102 +735,108 @@ ValidationImage RenderValidationApp(
     render_frame(); // Settle docked child sizes and scrollbars.
     io.MousePos = inputs.MousePos;
     render_frame(/*restore_hover=*/true); // Apply live hover history after the restored hit regions settle.
-    return RenderAppImage(ctx, GetDrawData());
+    RenderAppImage(ctx, GetDrawData(), image);
 }
 
 struct ValidationResult {
-    std::vector<std::byte> State;
-    std::vector<std::byte> SceneState;
-    std::vector<std::byte> Workspace;
-    ValidationImage App;
-    float Milliseconds{};
+    std::vector<std::byte> State, SceneState, Workspace;
+    RestoreTimings Timings;
 };
 
 ValidationResult RestoreForValidation(
-    const ValidationInputs &inputs, const std::vector<std::byte> *snapshot_state
+    ValidationEngine &engine, const ValidationInputs &inputs, const std::vector<std::byte> *snapshot_state
 ) {
-    entt::registry restored;
-    restored.ctx().emplace<mtl::Context>();
-    const auto restored_viewport = InitEngine(restored);
-    InitAudioSystem(restored);
-
-    auto *live_imgui = ImGui::GetCurrentContext();
-    auto *live_implot = ImPlot::GetCurrentContext();
-    auto *live_fonts = GetIO().Fonts;
-    const auto live_font_scale = GetIO().FontGlobalScale;
-    auto *validation_imgui = ImGui::CreateContext(live_fonts);
-    ImGui::SetCurrentContext(validation_imgui);
-    auto *validation_implot = ImPlot::CreateContext();
-    ImPlot::SetCurrentContext(validation_implot);
-    auto &io = GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
-    io.IniFilename = nullptr;
-    io.FontGlobalScale = live_font_scale;
-    StyleColorsDark();
-    ImGui_ImplMetal_Init(restored.ctx().get<const mtl::Context>().Device.get());
-    InitViewportMedia(restored);
-    SetupScene(restored, restored_viewport);
+    auto &restored = engine.Registry;
+    const auto viewport = engine.Viewport;
+    const auto &ctx = restored.ctx().get<const mtl::Context>();
+    ValidationResult result;
+    auto &timings = result.Timings;
+    auto begin = SteadyClock::now();
+    engine.Ui.emplace(ctx);
+    restored.ctx().get<WindowsState>() = {};
+    restored.ctx().get<FrameState>() = {};
     restored.ctx().get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale);
-    ProcessComponentEvents(restored, restored_viewport);
+    if (snapshot_state) ClearScene(restored, viewport);
+    const auto reset_ms = ElapsedMs(begin);
 
-    const auto begin = SteadyClock::now();
+    begin = SteadyClock::now();
     if (snapshot_state) {
         snapshot::LoadState(restored, *snapshot_state);
-        ProcessComponentEvents(restored, restored_viewport);
-        workspace::Apply(restored, restored_viewport, restored.ctx().get<WindowsState>(), inputs.Workspace);
-        PresentViewport(restored, restored_viewport);
+        timings.RestoreMs = ElapsedMs(begin);
+        begin = SteadyClock::now();
+        ProcessComponentEvents(restored, viewport);
+        workspace::Apply(restored, viewport, restored.ctx().get<WindowsState>(), inputs.Workspace);
+        timings.DeriveMs = ElapsedMs(begin);
+        begin = SteadyClock::now();
+        PresentViewport(restored, viewport);
     } else {
-        RestoreProject(restored, restored_viewport, inputs.WorkingDir, inputs.ActionEnd, &inputs.Workspace);
+        timings = RestoreProject(restored, viewport, inputs.WorkingDir, inputs.ActionEnd, &inputs.Workspace);
+        begin = SteadyClock::now();
     }
-    auto app_image = RenderValidationApp(restored, restored_viewport, inputs);
-    const auto elapsed = std::chrono::duration<float, std::milli>(SteadyClock::now() - begin).count();
-    auto state = snapshot::SaveState(restored);
-    auto scene_state = snapshot::SnapshotSceneState(restored);
-    auto restored_workspace = workspace::Serialize(CaptureWorkspace(restored, restored_viewport));
-
-    WaitForRender(restored);
-    DeinitViewportMedia(restored);
-    DeinitAudioSystem(restored);
-    DeinitViewport(restored, restored_viewport);
-    ImGui_ImplMetal_Shutdown();
-    ImPlot::DestroyContext(validation_implot);
-    ImGui::DestroyContext(validation_imgui);
-    ImGui::SetCurrentContext(live_imgui);
-    ImPlot::SetCurrentContext(live_implot);
-
-    return {
-        std::move(state), std::move(scene_state), std::move(restored_workspace),
-        std::move(app_image), elapsed
-    };
+    timings.ResetMs += reset_ms;
+    RenderValidationApp(restored, viewport, inputs, engine.App);
+    timings.RenderMs += ElapsedMs(begin);
+    begin = SteadyClock::now();
+    result.State = snapshot::SaveState(restored);
+    result.SceneState = snapshot::SnapshotSceneState(restored);
+    result.Workspace = workspace::Serialize(CaptureWorkspace(restored, viewport));
+    timings.CaptureMs = ElapsedMs(begin);
+    engine.Ui->ActivateLive();
+    return result;
 }
 
-void RequireEqual(std::string_view what, std::span<const std::byte> expected, std::span<const std::byte> actual) {
+void RequireEqual(std::string_view what, std::span<const std::byte> expected, std::span<const std::byte> actual, const fs::path &replay_log = {}) {
     if (const auto diff = snapshot::Compare(expected, actual); !diff.Equal) {
         std::println(
             stderr, "[validation] {} DIVERGED at byte {} (expected {} / actual {})",
             what, diff.FirstDifferingByte, expected.size(), actual.size()
         );
+        if (!replay_log.empty()) {
+            if (const auto fixture_dir = snapshot::WriteReplayTestFixture(replay_log, expected, actual); !fixture_dir.empty())
+                std::println(stderr, "[validation] wrote replay-test fixture to {}", fixture_dir.string());
+        }
         std::abort();
     }
 }
 
-void RequireEqualImage(std::string_view what, const ValidationImage &expected, const ValidationImage &actual) {
-    if (expected.Width != actual.Width || expected.Height != actual.Height) {
-        std::println(stderr, "[validation] {} extent DIVERGED ({}x{} / {}x{})", what, expected.Width, expected.Height, actual.Width, actual.Height);
-        std::abort();
-    }
-    if (const auto diff = snapshot::Compare(expected.Pixels, actual.Pixels); !diff.Equal) {
-        const auto pixel = diff.FirstDifferingByte / 4;
-        std::println(
-            stderr, "[validation] {} DIVERGED at pixel ({}, {}), channel {} (byte {} of {})",
-            what, pixel % expected.Width, pixel / expected.Width, diff.FirstDifferingByte % 4,
-            diff.FirstDifferingByte, expected.Pixels.size()
-        );
-        const auto expected_path = WriteValidationImage("live", expected);
-        const auto actual_path = WriteValidationImage(what, actual);
-        if (!expected_path.empty() && !actual_path.empty()) {
-            std::println(stderr, "[validation] wrote {} and {}", expected_path.string(), actual_path.string());
+void CompareValidationImages(const mtl::Context &ctx, ValidationSession &session) {
+    const std::array<const ValidationImage *, 2> restored{&session.Replay.App, &session.Snapshot.App};
+    const std::array names{"replay app", "snapshot app"};
+    const auto extent = session.Live.Target.Extent;
+    for (uint32_t i = 0; i < restored.size(); ++i) {
+        if (restored[i]->Target.Extent != extent) {
+            const auto actual = restored[i]->Target.Extent;
+            std::println(stderr, "[validation] {} extent DIVERGED ({}x{} / {}x{})", names[i], extent.Width, extent.Height, actual.Width, actual.Height);
+            std::abort();
         }
+    }
+    auto *differences = static_cast<uint32_t *>(session.Differences->contents());
+    std::fill_n(differences, restored.size(), UINT32_MAX);
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    // Each image has its own event because the three queues can finish in any order.
+    command_buffer->encodeWait(session.Live.Ready.get(), session.Live.Generation);
+    for (const auto *image : restored) command_buffer->encodeWait(image->Ready.get(), image->Generation);
+    {
+        mtl::PassChain chain{command_buffer};
+        auto *encoder = chain.BeginCompute("ValidationCompare");
+        encoder->setComputePipelineState(session.Compare.State());
+        encoder->setTexture(*session.Live.Target, 0);
+        for (uint32_t i = 0; i < restored.size(); ++i) {
+            encoder->setTexture(*restored[i]->Target, 1);
+            encoder->setBuffer(session.Differences.get(), i * sizeof(uint32_t), 0);
+            encoder->dispatchThreads(MTL::Size(extent.Width, extent.Height, 1), MTL::Size(16, 16, 1));
+        }
+    }
+    command_buffer->commit();
+    command_buffer->waitUntilCompleted();
+    if (const auto *error = command_buffer->error()) throw std::runtime_error(error->localizedDescription()->utf8String());
+    for (uint32_t i = 0; i < restored.size(); ++i) {
+        if (differences[i] == UINT32_MAX) continue;
+        const auto byte = differences[i], pixel = byte / 4;
+        std::println(stderr, "[validation] {} DIVERGED at pixel ({}, {}), channel {} (byte {} of {})", names[i], pixel % extent.Width, pixel / extent.Width, byte % 4, byte, uint64_t(extent.Width) * extent.Height * 4);
+        const auto expected_path = WriteValidationImage(ctx, "live", session.Live);
+        const auto actual_path = WriteValidationImage(ctx, names[i], *restored[i]);
+        if (!expected_path.empty() && !actual_path.empty()) std::println(stderr, "[validation] wrote {} and {}", expected_path.string(), actual_path.string());
         std::abort();
     }
 }
@@ -754,8 +844,15 @@ void RequireEqualImage(std::string_view what, const ValidationImage &expected, c
 // Require independent replay and snapshot restoration to reproduce canonical state and the live composited app image.
 void ValidateRoundTrip(
     entt::registry &r, entt::entity viewport, CA::MetalLayer *layer,
-    ImVec2 display_size, ImVec2 framebuffer_scale, const ValidationImage &live_app
+    ImDrawData *draw_data, std::unique_ptr<ValidationSession> &session, MTL::CommandBuffer *presented_frame
 ) {
+    const auto total_begin = SteadyClock::now();
+    auto begin = total_begin;
+    if (!session) session = std::make_unique<ValidationSession>(r);
+    const auto init_ms = ElapsedMs(begin);
+    begin = SteadyClock::now();
+    presented_frame->waitUntilCompleted();
+    RenderAppImage(r.ctx().get<const mtl::Context>(), draw_data, session->Live);
     QuiesceScene(r, viewport);
     action::FlushLog();
 
@@ -766,8 +863,8 @@ void ValidateRoundTrip(
         .ActionEnd = r.get_or_emplace<ActionIndex>(viewport).Index,
         .Workspace = CaptureWorkspace(r, viewport),
         .Layer = layer,
-        .DisplaySize = display_size,
-        .FramebufferScale = framebuffer_scale,
+        .DisplaySize = draw_data->DisplaySize,
+        .FramebufferScale = draw_data->FramebufferScale,
         .MousePos = GetIO().MousePos,
         .HoveredIdPreviousFrame = GImGui->HoveredIdPreviousFrame,
         .HoveredIdTimer = GImGui->HoveredIdTimer,
@@ -775,28 +872,27 @@ void ValidateRoundTrip(
         .FocusedWindow = GImGui->NavWindow ? std::string{GImGui->NavWindow->Name} : std::string{},
     };
 
-    const auto replay = RestoreForValidation(inputs, nullptr);
-    const auto restored = RestoreForValidation(inputs, &live_state);
+    const auto capture_ms = ElapsedMs(begin);
+    const auto replay = RestoreForValidation(session->Replay, inputs, nullptr);
+    const auto restored = RestoreForValidation(session->Snapshot, inputs, &live_state);
+    begin = SteadyClock::now();
 
-    if (const auto diff = snapshot::Compare(live_scene_state, replay.SceneState); !diff.Equal) {
-        std::println(
-            stderr, "[validation] replay scene DIVERGED at byte {} (expected {} / actual {})",
-            diff.FirstDifferingByte, live_scene_state.size(), replay.SceneState.size()
-        );
-        if (const auto fixture_dir = snapshot::WriteReplayTestFixture(
-                inputs.WorkingDir / SessionLogName, live_scene_state, replay.SceneState
-            );
-            !fixture_dir.empty()) {
-            std::println(stderr, "[validation] wrote replay-test fixture to {}", fixture_dir.string());
-        }
-        std::abort();
-    }
+    RequireEqual("replay scene", live_scene_state, replay.SceneState, inputs.WorkingDir / SessionLogName);
     RequireEqual("replay state", live_state, replay.State);
     RequireEqual("snapshot state", live_state, restored.State);
     RequireEqual("replay/snapshot workspace", replay.Workspace, restored.Workspace);
-    RequireEqualImage("replay app", live_app, replay.App);
-    RequireEqualImage("snapshot app", live_app, restored.App);
-    std::println("[validation] replay restore {:.1f} ms; snapshot restore {:.1f} ms", replay.Milliseconds, restored.Milliseconds);
+    CompareValidationImages(r.ctx().get<const mtl::Context>(), *session);
+    const auto compare_ms = ElapsedMs(begin);
+    begin = SteadyClock::now();
+    session->Replay.Ui.reset();
+    session->Snapshot.Ui.reset();
+    const auto cleanup_ms = ElapsedMs(begin);
+    std::println("[validation] total {:.2f} ms (init {:.2f}; capture {:.2f}; compare {:.2f}; cleanup {:.2f})", ElapsedMs(total_begin), init_ms, capture_ms, compare_ms, cleanup_ms);
+    const auto report = [](std::string_view name, const RestoreTimings &v) {
+        std::println("[validation] {} reset {:.2f}; restore {:.2f}; derive {:.2f}; render {:.2f}; capture {:.2f} ms", name, v.ResetMs, v.RestoreMs, v.DeriveMs, v.RenderMs, v.CaptureMs);
+    };
+    report("replay", replay.Timings);
+    report("snapshot", restored.Timings);
 }
 #endif
 
@@ -1291,6 +1387,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     bool viewport_resizing{false};
 #ifdef DEBUG_BUILD
+    std::unique_ptr<ValidationSession> validation_session;
     bool validate_requested{false};
     std::pair previous_ui_revision{uint64_t{0}, RestoreGeneration};
 #endif
@@ -1537,9 +1634,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
 #ifdef DEBUG_BUILD
             if (validation_ready && presented_frame && GetFrameCount() > 1 && viewport_settled && ViewportImageReady(r)) {
-                presented_frame->waitUntilCompleted();
-                const auto live_app = RenderAppImage(ctx, draw_data);
-                ValidateRoundTrip(r, viewport, layer, draw_data->DisplaySize, draw_data->FramebufferScale, live_app);
+                ValidateRoundTrip(r, viewport, layer, draw_data, validation_session, presented_frame);
                 validate_requested = false;
 #ifdef VALIDATE_ACTIONS
                 validated_revision = scene_revision;
@@ -1561,6 +1656,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     if (last_frame) last_frame->waitUntilCompleted();
 
     r.ctx().erase<AudioDeviceResource>();
+#ifdef DEBUG_BUILD
+    validation_session.reset();
+#endif
     DeinitAudioSystem(r);
 
     // GpuBuffers must outlive MeshStore allocations retired during teardown.

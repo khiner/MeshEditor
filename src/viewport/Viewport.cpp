@@ -7,6 +7,7 @@
 #include "Reactive.h"
 #include "Stores.h"
 #include "Window.h"
+#include "action/ActionIndex.h"
 #include "animation/AnimationTimeline.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
@@ -65,12 +66,12 @@ void SubmitRecordedFrame(entt::registry &r, MTL::CommandBuffer *command_buffer) 
     r.ctx().get<FrameState>().RenderPending = true;
 }
 
-void RecordAndSubmitFrame(entt::registry &r, entt::entity viewport, SceneUpdate update) {
+void RecordAndSubmitFrame(entt::registry &r, entt::entity viewport, SceneUpdate update, RenderPhase phase = RenderPhase::Full) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &resources = r.ctx().get<ViewportRenderResources>();
     auto *command_buffer = ctx.Queue->commandBuffer();
-    RecordRenderCommandBuffer(r, viewport, command_buffer, update);
-    resources.RecordedPhase = RenderPhase::Full;
+    RecordRenderCommandBuffer(r, viewport, command_buffer, update, phase);
+    resources.RecordedPhase = phase;
     SubmitRecordedFrame(r, command_buffer);
 }
 
@@ -78,18 +79,15 @@ RenderRequest TakeRenderRequest(entt::registry &r) {
     return std::exchange(r.ctx().get<PendingRenderRequest>().Value, RenderRequest::None);
 }
 
-SceneUpdate RequestedSceneUpdate(RenderRequest request, bool force_rebuild = false) {
-    if (force_rebuild || request == RenderRequest::Rebuild) return SceneUpdate::Rebuild;
-    return SceneUpdate::Reuse;
-}
+SceneUpdate RequestedSceneUpdate(RenderRequest request) { return request == RenderRequest::Rebuild ? SceneUpdate::Rebuild : SceneUpdate::Reuse; }
 
-// Processes changes and renders, or returns false for a zero-sized viewport.
-bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full) {
+void AdvanceViewport(entt::registry &r, entt::entity viewport, RenderPhase phase) {
     ProcessComponentEvents(r, viewport);
-    if (!ViewportImageReady(r)) return false;
-    const auto render_request = TakeRenderRequest(r);
-    RecordAndSubmitFrame(r, viewport, RequestedSceneUpdate(render_request, force_full));
-    return true;
+    if (!ViewportImageReady(r)) return;
+    const auto request = TakeRenderRequest(r);
+    if (phase == RenderPhase::Prepare && request == RenderRequest::None) return;
+    RecordAndSubmitFrame(r, viewport, RequestedSceneUpdate(request), phase);
+    WaitForRender(r);
 }
 
 // Binds the captured shutter poses to view-UBO instance `instance`.
@@ -363,6 +361,7 @@ entt::entity InitEngine(entt::registry &r) {
 }
 
 void SetupScene(entt::registry &r, entt::entity viewport) {
+    r.emplace_or_replace<ActionIndex>(viewport);
     r.emplace_or_replace<ViewportDisplay>(viewport);
     r.emplace_or_replace<Interaction>(viewport);
     r.emplace_or_replace<EditMode>(viewport);
@@ -467,12 +466,8 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     TearDownStoreCtx(r);
 }
 
-void PresentViewport(entt::registry &r, entt::entity viewport) {
-    // Replay may reach this before the viewport has an extent.
-    // Once it has one, record the complete state even if earlier zero-extent ticks consumed its reactive changes.
-    if (!AdvanceAndRecord(r, viewport, /*force_full=*/true)) return;
-    WaitForRender(r);
-}
+void PresentViewport(entt::registry &r, entt::entity viewport) { AdvanceViewport(r, viewport, RenderPhase::Full); }
+void PrepareViewport(entt::registry &r, entt::entity viewport) { AdvanceViewport(r, viewport, RenderPhase::Prepare); }
 
 void WaitForRender(entt::registry &r) {
     auto &frame = r.ctx().get<FrameState>();

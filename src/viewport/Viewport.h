@@ -38,6 +38,9 @@ void WaitForRender(entt::registry &);
 // Resume on-screen display after a headless replay: render the current scene at the current ViewportExtent and present synchronously.
 void PresentViewport(entt::registry &, entt::entity viewport);
 
+// Complete derived GPU state between replayed actions without producing a viewport image.
+void PrepareViewport(entt::registry &, entt::entity viewport);
+
 bool ViewportImageReady(const entt::registry &);
 
 // Starts H.264 recording through an `ffmpeg` subprocess.

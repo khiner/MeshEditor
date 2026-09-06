@@ -6,6 +6,7 @@
 
 #include <entt/entity/registry.hpp>
 
+#include <chrono>
 #include <fstream>
 #include <optional>
 
@@ -101,34 +102,40 @@ void ApplyEmitted(entt::registry &r, entt::entity viewport) {
     for (auto &a : drained.System) ApplyRecord(r, viewport, std::move(a));
 }
 
-bool ReplayLog(
+double ReplayLog(
     entt::registry &r, entt::entity viewport, const std::filesystem::path &replay_path,
     ReplayTick tick, uint64_t skip, uint64_t count, bool record
 ) {
     std::ifstream in{replay_path, std::ios::binary};
-    if (!in) return false;
+    if (!in) return 0;
+    double derive_ms{};
 
     // The base snapshot already contains earlier records.
     for (uint64_t i = 0; i < skip; ++i) {
         uint32_t len;
-        if (!in.read(reinterpret_cast<char *>(&len), sizeof len)) return true;
+        if (!in.read(reinterpret_cast<char *>(&len), sizeof len)) return 0;
         in.seekg(len, std::ios::cur);
     }
 
-    tick(r, viewport);
-    uint64_t replayed = 0;
-    StreamActions(in, [&](Action &&a) {
-        if (replayed >= count) return;
-        if (record) ApplyRecord(r, viewport, std::move(a));
-        else {
-            ApplyAction(r, viewport, a);
-            if (IsRecordable(a)) ++r.get_or_emplace<ActionIndex>(viewport).Index;
-        }
-        r.clear<DragFieldStart>();
+    const auto derive = [&] {
+        const auto begin = std::chrono::steady_clock::now();
         tick(r, viewport);
-        ++replayed;
-    });
-    return true;
+        derive_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+    };
+    derive();
+    StreamActions(
+        in, [&](Action &&a) {
+            if (record) ApplyRecord(r, viewport, std::move(a));
+            else {
+                ApplyAction(r, viewport, a);
+                if (IsRecordable(a)) ++r.get_or_emplace<ActionIndex>(viewport).Index;
+            }
+            r.clear<DragFieldStart>();
+            derive();
+        },
+        count
+    );
+    return derive_ms;
 }
 } // namespace action
 

@@ -1273,6 +1273,11 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         for (auto &[_, work] : scene_state.EditWork) work.BoundsInitialized = false;
     }
     if (is_edit_mode && std::exchange(scene_state.EditPreludePending, false)) RecordSparseEditPrelude(r, viewport, chain);
+    if (phase == RenderPhase::Prepare) {
+        // Selection will rasterize visibility for its recorded camera when it needs depth or IDs.
+        buffers.VisibilityIdGeneration = InvalidOffset;
+        return;
+    }
     MTL::RenderCommandEncoder *encoder = nullptr;
     const auto record_meshlets = [&](uint32_t route, auto &&bind_pipeline) {
         bind_pipeline();

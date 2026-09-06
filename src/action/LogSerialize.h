@@ -6,6 +6,7 @@
 
 #include <cstring>
 #include <istream>
+#include <limits>
 #include <ostream>
 #include <vector>
 
@@ -22,10 +23,10 @@ inline void SerializeAction(const Action &a, std::ostream &out) {
 }
 
 // Streams actions to `on_action` with bounded memory and stops at a truncated or corrupt record.
-void StreamActions(std::istream &in, auto &&on_action) {
+void StreamActions(std::istream &in, auto &&on_action, uint64_t count = std::numeric_limits<uint64_t>::max()) {
     std::vector<std::byte> bytes;
     uint32_t len;
-    while (in.read(reinterpret_cast<char *>(&len), sizeof len)) {
+    for (uint64_t i = 0; i < count && in.read(reinterpret_cast<char *>(&len), sizeof len); ++i) {
         bytes.resize(len);
         if (len && !in.read(reinterpret_cast<char *>(bytes.data()), len)) return;
         Action a;
