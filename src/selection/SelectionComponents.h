@@ -3,7 +3,6 @@
 #include "gpu/Element.h"
 #include "numeric/mat4.h"
 #include "numeric/vec2.h"
-#include "numeric/vec3.h"
 #include "selection/BoneSelection.h"
 
 #include <entt/entity/fwd.hpp>
@@ -13,12 +12,6 @@
 constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
 struct MeshElementSelection {};
-
-struct MeshElementSelectionStats {
-    uint32_t SelectedCount{}, SelectedVertexCount{};
-    vec3 SelectedVertexPositionSum{};
-    bool AnySharp{}, AnySmooth{};
-};
 
 struct ElementRange {
     entt::entity MeshEntity;
@@ -52,7 +45,7 @@ struct PendingBoxSelect {
     mat4 ViewProj;
 };
 struct PendingBoxSelectFinalize {};
-struct BoxSelectStatsDirty {};
+struct BoxSelectGpuPending {};
 
 // Object or bone click-pick awaiting GPU resolution.
 // Cycle advances to the next overlapping hit.

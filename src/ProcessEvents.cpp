@@ -242,7 +242,6 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
         r.remove<MeshActiveElement>(mesh_entity);
         const auto count = selection::GetElementCount(mesh, mode);
         if (count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, mode), count);
-        else r.emplace_or_replace<MeshElementSelectionStats>(mesh_entity);
     }
 
     r.patch<EditMode>(viewport, [mode](auto &edit_mode) { edit_mode.Value = mode; });
@@ -1266,7 +1265,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             if (const auto mesh = TryGetMesh(r, mesh_entity); mesh && r.all_of<MeshShadingDirty>(mesh_entity)) {
                 const auto [any, all] = meshes.GetFaceSharpnessSummary(mesh->GetStoreId());
                 r.emplace_or_replace<MeshShadingSummary>(mesh_entity, any, all);
-                RefreshElementSelectionSharpness(r, mesh_entity);
                 meshes.UpdateCornerClassification(*mesh);
                 reclassified.emplace_back(mesh_entity);
             }
@@ -1326,8 +1324,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 const auto id = mesh.GetStoreId();
                 if (const uint32_t count = selection::GetElementCount(mesh, edit_mode); count > 0) {
                     geometry_ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, edit_mode), count);
-                } else {
-                    r.emplace_or_replace<MeshElementSelectionStats>(mesh_entity);
                 }
             }
         }
@@ -1389,7 +1385,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         // Entering edit mode replaces animation deformation with the rest pose even when storage is unchanged.
         buffers.PreludeStale = true;
         request(RenderRequest::Rebuild);
-        r.remove<BoxSelectStatsDirty>(viewport);
+        r.remove<BoxSelectGpuPending>(viewport);
         if (interaction_mode == InteractionMode::Excite) {
             for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) {
                 dirty_sound_selection_meshes.insert(instance.Entity);

@@ -855,6 +855,8 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e, 
 }
 } // namespace
 
+bool HasPendingModalSolves(const entt::registry &r) { return !r.ctx().get<const ModalSolveJobs>().Jobs.empty(); }
+
 void RegisterAudioComponentHandlers(entt::registry &r) {
     RegisterSceneClearHandler(r, [](entt::registry &r) {
         // Clear bank slots before entity IDs can be reused by the next scene.

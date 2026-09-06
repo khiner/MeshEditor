@@ -91,6 +91,15 @@ uint32_t MaxElementBound(auto &&ranges) {
     return std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &r) { return std::max(total, r.Offset + r.Count); });
 }
 
+void EnsureSelectionVisibility(entt::registry &r, mtl::PassChain &chain) {
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    if (buffers.VisibilityIdGeneration == buffers.MeshletVisibleGeneration) return;
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
+    RecordMeshletCull(chain, slots, pipelines, buffers, {.Mode = MeshletRouteMode::Visibility});
+    RecordMeshletVisibilityPass(chain, slots, pipelines, buffers);
+}
+
 // Records silhouette depth before selection culling rewrites the visible list used for ID decoding.
 // Picks raster twice over the shared depth and cull state; boxes raster once.
 void RunSelectionPass(
@@ -101,7 +110,10 @@ void RunSelectionPass(
     const auto &pipelines = r.ctx().get<const Pipelines>();
     auto &buffers = r.ctx().get<GpuBuffers>();
 
-    if (render_depth) RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, render_silhouette);
+    if (render_depth) {
+        if (render_silhouette) EnsureSelectionVisibility(r, chain);
+        RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, render_silhouette);
+    }
     if (meshlet_cull && buffers.MeshletInstanceCount > 0) {
         RecordMeshletCull(chain, slots, pipelines, buffers, *meshlet_cull);
     }
@@ -220,7 +232,6 @@ std::optional<std::pair<entt::entity, uint32_t>> RunEditElementClick(
     RecordSelectionPrepare(r, command_buffer, transactions);
     RecordSelectionDerive(r, command_buffer, transactions);
     SubmitAndWait(command_buffer);
-    for (const auto &range : ranges) RefreshElementSelectionStats(r, range.MeshEntity);
     r.emplace_or_replace<EditSelectionDirty>(viewport);
     if (const auto index = ReadNearestPickedElement(buffers, element_count)) {
         for (const auto &range : ranges) {
@@ -269,12 +280,7 @@ void RecordVisibilityObjectSelection(
     const auto &pipelines = r.ctx().get<const Pipelines>();
     auto &buffers = r.ctx().get<GpuBuffers>();
 
-    // A cull without a following visibility raster invalidates the id-to-visible-list mapping.
-    // Rebuild that same shared representation on demand instead of maintaining selection geometry.
-    if (buffers.VisibilityIdGeneration != buffers.MeshletVisibleGeneration) {
-        RecordMeshletCull(chain, slots, pipelines, buffers, {.Mode = MeshletRouteMode::Visibility});
-        RecordMeshletVisibilityPass(chain, slots, pipelines, buffers);
-    }
+    EnsureSelectionVisibility(r, chain);
     const auto rect = ObjectQueryRect(query, pipelines.Main.Resources->VisibilityImage.Extent);
     if (!rect) return;
 
@@ -356,7 +362,7 @@ void RunBoxSelectElements(entt::registry &r, entt::entity viewport, std::span<co
     command_buffer->commit();
     if (baseline) baseline->ElementSelectionCaptured = true;
     r.emplace_or_replace<EditSelectionDirty>(viewport);
-    r.emplace_or_replace<BoxSelectStatsDirty>(viewport);
+    r.emplace_or_replace<BoxSelectGpuPending>(viewport);
 }
 
 std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::entity instance_entity, uvec2 mouse_px) {
@@ -610,7 +616,6 @@ void ApplyEditSelectionCommand(
     RecordSelectionPrepare(r, command_buffer, transactions);
     RecordSelectionDerive(r, command_buffer, transactions);
     SubmitAndWait(command_buffer);
-    for (const auto &range : ranges) RefreshElementSelectionStats(r, range.MeshEntity);
     r.emplace_or_replace<EditSelectionDirty>(viewport);
 }
 
@@ -718,40 +723,17 @@ void ApplyEditSharpness(
     for (const auto mesh_entity : edited) r.emplace_or_replace<MeshShadingDirty>(mesh_entity);
 }
 
-void RefreshElementSelectionStats(entt::registry &r, entt::entity mesh_entity) {
-    if (!r.all_of<MeshElementSelection, MeshHandle>(mesh_entity)) return;
+const EditSelectionSummary *GetElementSelectionSummary(const entt::registry &r, entt::entity mesh_entity, Element element) {
+    if (element == Element::None || !r.all_of<MeshElementSelection, MeshHandle>(mesh_entity)) return nullptr;
     const auto &meshes = r.ctx().get<const MeshStore>();
-    const auto mesh = GetMesh(r, mesh_entity);
-    const auto id = mesh.GetStoreId();
+    const auto id = r.get<const MeshHandle>(mesh_entity).StoreId;
     const auto &summary = meshes.GetSelectionSummary(id);
-    MeshElementSelectionStats stats{
-        .SelectedCount = summary.SelectedCount,
-        .SelectedVertexCount = summary.SelectedVertexCount,
-        .SelectedVertexPositionSum = summary.PositionSum,
-        .AnySharp = (summary.SharpnessFlags & 1u) != 0u,
-        .AnySmooth = (summary.SharpnessFlags & 2u) != 0u,
-    };
-    r.emplace_or_replace<MeshElementSelectionStats>(mesh_entity, stats);
-}
-
-void RefreshElementSelectionSharpness(entt::registry &r, entt::entity mesh_entity) {
-    auto *stats = r.try_get<MeshElementSelectionStats>(mesh_entity);
-    if (!stats || !r.all_of<MeshHandle>(mesh_entity)) return;
-    const auto &summary = r.ctx().get<const MeshStore>().GetSelectionSummary(r.get<const MeshHandle>(mesh_entity).StoreId);
-    stats->AnySharp = (summary.SharpnessFlags & 1u) != 0u;
-    stats->AnySmooth = (summary.SharpnessFlags & 2u) != 0u;
-}
-
-void PublishBoxSelectElementStats(entt::registry &r, entt::entity viewport) {
-    if (!r.all_of<BoxSelectStatsDirty>(viewport)) return;
-    r.remove<BoxSelectStatsDirty>(viewport);
-    const profile::CpuScope scope{"RefreshSelectionStatsCpu"};
-    for (const auto &range : GetElementRangesForSelected(r, viewport)) RefreshElementSelectionStats(r, range.MeshEntity);
+    return summary.Mode == element ? &summary : nullptr;
 }
 
 void FinalizeBoxSelectElements(entt::registry &r, entt::entity viewport) {
-    if (!r.all_of<BoxSelectStatsDirty>(viewport)) return;
+    if (!r.all_of<BoxSelectGpuPending>(viewport)) return;
     auto *fence = r.ctx().get<const mtl::Context>().Queue->commandBuffer();
     SubmitAndWait(fence);
-    PublishBoxSelectElementStats(r, viewport);
+    r.remove<BoxSelectGpuPending>(viewport);
 }

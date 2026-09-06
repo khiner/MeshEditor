@@ -141,8 +141,8 @@ using Derived = type_list<
     MeshPositionsChanged, RenderInstance, WorldTransform, PosedLocal, MeshBuffers, MeshShadingSummary, BoneAdjacencyIndices, ModelsBuffer,
     MaterialDirty, LightIndex, EnabledInteractionModes, LastEvaluatedFrame,
     PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, BoneInstanceStateDirty, ArmaturePoseState,
-    MorphWeightGpuRange, MeshElementSelectionStats, AdditiveBoxSelectBaseline, ExciteSelectionBaseline, EditSelectionDirty, PendingEditElementClick,
-    PendingBoxSelect, PendingBoxSelectFinalize, BoxSelectStatsDirty, PendingPick, PendingTextureUploads, BoxSelectState, PlaybackFrame,
+    MorphWeightGpuRange, AdditiveBoxSelectBaseline, ExciteSelectionBaseline, EditSelectionDirty, PendingEditElementClick,
+    PendingBoxSelect, PendingBoxSelectFinalize, BoxSelectGpuPending, PendingPick, PendingTextureUploads, BoxSelectState, PlaybackFrame,
     PhysicsCacheInvalid, RotationUiVariant, RotationUiDriving, GizmoInteraction, PendingTransform, StartScreenTransform,
 #ifdef SURFACE_AUDIO
     SurfaceRelief, SurfaceFinishKey,

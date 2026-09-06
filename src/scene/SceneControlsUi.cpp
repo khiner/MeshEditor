@@ -32,6 +32,7 @@
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
+#include "selection/SelectionQueries.h"
 #include "ui/FieldEdit.h"
 #include "ui/HelpMarker.h"
 #include "viewport/InteractionComponents.h"
@@ -858,13 +859,14 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                     const auto active_entity = FindActiveEntity(r);
                     const auto *active_instance = active_entity != entt::null ? r.try_get<const Instance>(active_entity) : nullptr;
                     const auto active_mesh = active_instance && HasMesh(r, active_instance->Entity) ? active_instance->Entity : entt::null;
-                    const auto *active_stats = active_mesh != entt::null ? r.try_get<const MeshElementSelectionStats>(active_mesh) : nullptr;
+                    const auto *active_stats = active_mesh != entt::null ? GetElementSelectionSummary(r, active_mesh, edit_mode) : nullptr;
                     const uint32_t selected_count = active_stats ? active_stats->SelectedCount : 0u;
                     bool any_sharp = false, any_smooth = false;
-                    for (const auto entity : r.view<const MeshElementSelectionStats>()) {
-                        const auto &stats = r.get<const MeshElementSelectionStats>(entity);
-                        any_sharp |= stats.AnySharp;
-                        any_smooth |= stats.AnySmooth;
+                    for (const auto entity : r.view<const MeshElementSelection, const MeshHandle>()) {
+                        const auto *summary = GetElementSelectionSummary(r, entity, edit_mode);
+                        if (!summary) continue;
+                        any_sharp |= (summary->SharpnessFlags & 1u) != 0u;
+                        any_smooth |= (summary->SharpnessFlags & 2u) != 0u;
                         if (any_sharp && any_smooth) break;
                     }
                     if (active_mesh != entt::null) Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);

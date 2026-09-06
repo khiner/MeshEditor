@@ -10,11 +10,14 @@
 #include <zpp_bits.h>
 
 #include <algorithm>
+#include <bit>
+#include <cstring>
 #include <fstream>
+#include <ranges>
 
 namespace workspace {
 namespace {
-constexpr uint32_t Version = 2;
+constexpr uint32_t Version = 4;
 
 constexpr auto SerializeWindowVisibility(auto &archive, auto &visibility) {
     return archive(
@@ -26,6 +29,15 @@ constexpr auto SerializeWindowVisibility(auto &archive, auto &visibility) {
         visibility.ImPlotDemo,
         visibility.Debug
     );
+}
+
+void MergePending(auto &values, auto &&pending, auto key) {
+    for (const auto &value : pending) {
+        const auto existing = std::ranges::find(values, value.*key, key);
+        if (existing == values.end()) values.push_back(value);
+        else *existing = value;
+    }
+    std::ranges::sort(values, {}, key);
 }
 
 std::vector<TabSelection> CaptureTabs(const WindowsState &windows) {
@@ -40,13 +52,28 @@ std::vector<TabSelection> CaptureTabs(const WindowsState &windows) {
             }
         }
     }
-    for (const auto pending : windows.PendingTabs) {
-        const auto existing = std::ranges::find(tabs, pending.Bar, &TabSelection::Bar);
-        if (existing == tabs.end()) tabs.push_back(pending);
-        else *existing = pending;
-    }
-    std::ranges::sort(tabs, {}, &TabSelection::Bar);
+    MergePending(tabs, windows.PendingTabs, &TabSelection::Bar);
     return tabs;
+}
+
+std::vector<WindowState> CaptureWindows(const WindowsState &windows) {
+    std::vector<WindowState> states;
+    if (ImGui::GetCurrentContext()) {
+        for (const auto *window : GImGui->Windows) {
+            if (window->IsFallbackWindow) continue;
+            if (window->Flags & (ImGuiWindowFlags_Popup | ImGuiWindowFlags_Tooltip)) continue;
+            if ((window->Flags & ImGuiWindowFlags_NoSavedSettings) && !(window->Flags & ImGuiWindowFlags_ChildWindow)) continue;
+            auto &state = states.emplace_back(WindowState{window->ID, window->Scroll.x, window->Scroll.y, {}});
+            for (const auto &entry : window->StateStorage.Data) {
+                // App window storage contains only 32-bit scalars (int, bool, float), never pointers.
+                uint32_t value;
+                std::memcpy(&value, &entry.val_i, sizeof(value));
+                state.Storage.push_back({entry.key, value});
+            }
+        }
+    }
+    MergePending(states, windows.PendingWindows | std::views::transform(&PendingWindowState::Value), &WindowState::Window);
+    return states;
 }
 } // namespace
 
@@ -59,6 +86,7 @@ State Capture(const entt::registry &r, entt::entity viewport, const WindowsState
         .Windows = GetWindowVisibility(windows),
         .ImGuiIni = ini ? std::string{ini, ini_size} : std::string{},
         .Tabs = CaptureTabs(windows),
+        .WindowStates = CaptureWindows(windows),
     };
 }
 
@@ -71,17 +99,38 @@ void Apply(entt::registry &r, entt::entity viewport, WindowsState &windows, cons
         windows.LayoutLoaded = true;
     }
     windows.PendingTabs = state.Tabs;
-    ApplyPendingTabs(windows);
+    windows.PendingWindows.clear();
+    for (const auto &window : state.WindowStates) windows.PendingWindows.push_back({window});
 }
 
-void ApplyPendingTabs(WindowsState &windows) {
+void ApplyPending(WindowsState &windows) {
     if (!ImGui::GetCurrentContext()) return;
     std::erase_if(windows.PendingTabs, [](const TabSelection &selection) {
         auto *bar = ImGui::TabBarFindByID(selection.Bar);
         if (!bar) return false;
-        if (!ImGui::TabBarFindTabByID(bar, selection.Tab)) return true;
-        if (bar->SelectedTabId == selection.Tab) return true;
+        if (!ImGui::TabBarFindTabByID(bar, selection.Tab) || bar->SelectedTabId == selection.Tab) return true;
         bar->NextSelectedTabId = selection.Tab;
+        return false;
+    });
+    std::erase_if(windows.PendingWindows, [](PendingWindowState &pending) {
+        auto *window = ImGui::FindWindowByID(pending.Value.Window);
+        if (!window) return false;
+        if (!pending.StorageApplied) {
+            window->StateStorage.Clear();
+            for (const auto &entry : pending.Value.Storage) {
+                window->StateStorage.SetInt(entry.Key, std::bit_cast<int32_t>(entry.Value));
+            }
+            pending.StorageApplied = true;
+            // Rebuild content from restored widget state before setting scroll targets.
+            return false;
+        }
+        if (!window->Active) return false;
+        if (pending.ScrollApplied) return true;
+        if (window->Hidden || window->Appearing) return false;
+        // Begin() clamps scroll targets using the preceding frame's content size.
+        ImGui::SetScrollX(window, pending.Value.X);
+        ImGui::SetScrollY(window, pending.Value.Y);
+        pending.ScrollApplied = true;
         return false;
     });
 }
@@ -94,8 +143,7 @@ std::vector<std::byte> Serialize(const State &state) {
         (has_saved_view && zpp::bits::failure(archive(*state.ViewCamera.LookThroughSaved))) ||
         zpp::bits::failure(archive(state.ViewportExtent)) ||
         zpp::bits::failure(SerializeWindowVisibility(archive, state.Windows)) ||
-        zpp::bits::failure(archive(state.ImGuiIni)) ||
-        zpp::bits::failure(archive(state.Tabs))) {
+        zpp::bits::failure(archive(state.ImGuiIni, state.Tabs, state.WindowStates))) {
         return {};
     }
     bytes.resize(archive.position());
@@ -111,6 +159,7 @@ std::optional<State> Deserialize(std::span<const std::byte> bytes) {
         .Windows = {},
         .ImGuiIni = {},
         .Tabs = {},
+        .WindowStates = {},
     };
     bool has_saved_view{};
     if (zpp::bits::failure(archive(version, state.ViewCamera.Active, has_saved_view)) || version == 0 || version > Version) {
@@ -126,6 +175,16 @@ std::optional<State> Deserialize(std::span<const std::byte> bytes) {
         return std::nullopt;
     }
     if (version >= 2 && zpp::bits::failure(archive(state.Tabs))) return std::nullopt;
+    if (version == 3) {
+        struct WindowScroll {
+            uint32_t Window{};
+            float X{}, Y{};
+        };
+        std::vector<WindowScroll> scroll;
+        if (zpp::bits::failure(archive(scroll))) return std::nullopt;
+        for (const auto &value : scroll) state.WindowStates.push_back({value.Window, value.X, value.Y, {}});
+    }
+    if (version >= 4 && zpp::bits::failure(archive(state.WindowStates))) return std::nullopt;
     return state;
 }
 

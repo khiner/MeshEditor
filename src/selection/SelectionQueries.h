@@ -2,6 +2,7 @@
 
 #include "SlottedRange.h"
 #include "gpu/EditSelectionOperation.h"
+#include "gpu/EditSelectionSummary.h"
 #include "gpu/EditSharpnessOperation.h"
 #include "gpu/Element.h"
 #include "numeric/vec2.h"
@@ -30,7 +31,6 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &, std::pair<uvec2, uvec2>
 
 // Element-level box selection: renders IDs into the authoritative masks and derives the other domains on the GPU.
 void RunBoxSelectElements(entt::registry &, entt::entity viewport, std::span<const ElementRange> ranges, Element, std::pair<uvec2, uvec2> box_px, bool is_additive);
-void PublishBoxSelectElementStats(entt::registry &, entt::entity viewport);
 void FinalizeBoxSelectElements(entt::registry &, entt::entity viewport);
 
 // Returns click hits sorted by distance, depth, and object id, then advances the 8-bit epoch tag.
@@ -46,6 +46,5 @@ std::optional<std::pair<entt::entity, uint32_t>> RunEditElementClick(entt::regis
 void ApplyEditSelectionCommand(entt::registry &, entt::entity viewport, std::span<const ElementRange>, Element, EditSelectionOperation);
 void ApplyEditSelectionLists(entt::registry &, entt::entity viewport, std::span<const std::pair<entt::entity, SlottedRange>>, Element);
 void ApplyEditSharpness(entt::registry &, entt::entity viewport, std::span<const entt::entity> mesh_entities, EditSharpnessOperation, bool value = false, float angle = 0.f);
-// Publish the mesh-local selection aggregates consumed by UI and transform tools.
-void RefreshElementSelectionStats(entt::registry &, entt::entity mesh_entity);
-void RefreshElementSelectionSharpness(entt::registry &, entt::entity mesh_entity);
+// Read the shared GPU summary after selection work has completed. Other element domains have no current summary.
+const EditSelectionSummary *GetElementSelectionSummary(const entt::registry &, entt::entity mesh_entity, Element);

@@ -21,11 +21,12 @@ struct State {
     WindowVisibility Windows;
     std::string ImGuiIni;
     std::vector<TabSelection> Tabs;
+    std::vector<WindowState> WindowStates;
 };
 
 State Capture(const entt::registry &, entt::entity viewport, const WindowsState &);
 void Apply(entt::registry &, entt::entity viewport, WindowsState &, const State &);
-void ApplyPendingTabs(WindowsState &);
+void ApplyPending(WindowsState &);
 
 std::vector<std::byte> Serialize(const State &);
 std::optional<State> Deserialize(std::span<const std::byte>);

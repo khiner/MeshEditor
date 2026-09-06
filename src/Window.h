@@ -8,6 +8,22 @@ struct TabSelection {
     bool operator==(const TabSelection &) const = default;
 };
 
+struct WindowState {
+    struct StorageValue {
+        uint32_t Key{}, Value{};
+        bool operator==(const StorageValue &) const = default;
+    };
+    uint32_t Window{};
+    float X{}, Y{};
+    std::vector<StorageValue> Storage;
+    bool operator==(const WindowState &) const = default;
+};
+
+struct PendingWindowState {
+    WindowState Value;
+    bool StorageApplied{false}, ScrollApplied{false};
+};
+
 struct Window {
     const char *Name{""};
     bool Visible{true};
@@ -23,6 +39,7 @@ struct WindowsState {
         ImPlotDemo{"ImPlot Demo", false},
         Debug{"Debug", false};
     std::vector<TabSelection> PendingTabs;
+    std::vector<PendingWindowState> PendingWindows;
     bool LayoutLoaded{false};
 };
 

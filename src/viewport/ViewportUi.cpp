@@ -13,6 +13,7 @@
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
 #include "gltf/SourceAssets.h"
+#include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/TextureRefs.h"
 #include "scene/Defaults.h"
@@ -332,10 +333,9 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     if (OrientationGizmo::IsActive() || frame.OverlayControlsHovered) return;
 
     const auto render_extent = RenderExtentPx(r);
-    // Record the displayed projection with pixel selections because replay excludes camera navigation.
-    const auto &view_camera = r.get<const ViewCamera>(viewport);
-    const float selection_aspect = render_extent.y == 0u ? 1.f : float(render_extent.x) / float(render_extent.y);
-    const mat4 selection_view_proj = view_camera.Projection(selection_aspect) * view_camera.View();
+    // Pick against the preceding rendered view; the live camera may already have advanced its animation.
+    const auto &view_ubo = r.ctx().get<const GpuBuffers>().SceneViewUBO;
+    const auto &selection_view_proj = reinterpret_cast<const SceneViewUBO *>(view_ubo.Contents().data())->ViewProj;
     const auto edit_mode = r.get<const EditMode>(viewport).Value;
     const auto arm_obj_entity = FindArmatureObject(r, active_entity);
     const bool active_is_armature = arm_obj_entity != entt::null;
@@ -723,7 +723,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
     }
 
     const auto &camera = r.get<const ViewCamera>(viewport);
-    { // Orientation gizmo (interacted before tick so camera animations it initiates begin this frame)
+    { // Orientation gizmo
         const float shading_group_height = shading_button_style.ButtonSize.y;
         const auto pos = viewport_rect.pos + vec2{GetWindowContentRegionMax().x - OrientationGizmoSize, GetWindowContentRegionMin().y} + vec2{-overlay_corner_gap, overlay_corner_gap * 2 + shading_group_height};
         if (auto interaction = OrientationGizmo::Interact(pos, OrientationGizmoSize, camera, !active_transform && !any_popup_open)) {
@@ -736,11 +736,9 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
             );
         }
     }
-    // Intentionally mutating registry outside of Apply. TODO should all non-saved state be outside the registry?
-    if (r.get<ViewCamera>(viewport).Tick()) r.patch<ViewCamera>(viewport, [](auto &) {});
-
     const auto selected_view = r.view<const Selected>();
     const auto bone_selected_view = r.view<const BoneSelection>();
+    const auto edit_mode = r.get<const EditMode>(viewport).Value;
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const auto active_entity = FindActiveEntity(r);
     const auto arm_obj = FindArmatureObject(r, active_entity);
@@ -753,7 +751,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         if (selected_view.empty()) return false;
         if (!mesh_edit_mode) return true;
         for (const auto [e, instance] : r.view<const Instance, const Selected>(entt::exclude<ScaleLocked>).each()) {
-            const auto *stats = r.try_get<const MeshElementSelectionStats>(instance.Entity);
+            const auto *stats = GetElementSelectionSummary(r, instance.Entity, edit_mode);
             if (stats && stats->SelectedCount > 0) return true;
         }
         return false;
@@ -777,11 +775,11 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         if (mesh_edit_mode) {
             uint32_t vertex_count = 0;
             for (const auto &[mesh_entity, instance_entity] : edit_transform_instances) {
-                const auto *stats = r.try_get<const MeshElementSelectionStats>(mesh_entity);
+                const auto *stats = GetElementSelectionSummary(r, mesh_entity, edit_mode);
                 if (!stats || stats->SelectedVertexCount == 0) continue;
                 const auto &world = r.get<const WorldTransform>(instance_entity);
                 pivot += float(stats->SelectedVertexCount) * world.P +
-                    numeric::Rotate(world.R, world.S * stats->SelectedVertexPositionSum);
+                    numeric::Rotate(world.R, world.S * stats->PositionSum);
                 vertex_count += stats->SelectedVertexCount;
             }
             if (vertex_count > 0) pivot /= float(vertex_count);

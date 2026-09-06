@@ -488,7 +488,5 @@ void WaitForRender(entt::registry &r) {
     r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     frame.RenderPending = false;
 
-    const auto pending_box_stats = r.view<const BoxSelectStatsDirty>();
-    const std::vector<entt::entity> completed_box_selections{pending_box_stats.begin(), pending_box_stats.end()};
-    for (const auto viewport : completed_box_selections) PublishBoxSelectElementStats(r, viewport);
+    r.clear<BoxSelectGpuPending>();
 }

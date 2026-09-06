@@ -641,7 +641,7 @@ ValidationImage RenderValidationApp(
             GetWindowDrawList()->ChannelsMerge();
         }
         EndEditorViewport(frame);
-        workspace::ApplyPendingTabs(windows);
+        workspace::ApplyPending(windows);
         Render();
     };
 
@@ -1292,10 +1292,10 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     bool viewport_resizing{false};
 #ifdef DEBUG_BUILD
     bool validate_requested{false};
+    std::pair previous_ui_revision{uint64_t{0}, RestoreGeneration};
 #endif
 #ifdef VALIDATE_ACTIONS
-    uint64_t validated_action_index{0};
-    uint64_t validated_restore_generation{RestoreGeneration};
+    auto validated_revision = previous_ui_revision;
 #endif
     bool done{false};
     uint8_t startup_frames_remaining{2};
@@ -1314,10 +1314,11 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         for (const auto &path : events.DroppedFiles) OpenFile(r, viewport, path);
         done = events.Quit;
         if (driver.DurationElapsed(r, viewport)) done = true;
+        if (r.get<ViewCamera>(viewport).Tick()) r.patch<ViewCamera>(viewport, [](auto &) {});
 
 #ifdef DEBUG_BUILD
-        const auto ui_action_index = r.get_or_emplace<ActionIndex>(viewport).Index;
-        const auto ui_restore_generation = RestoreGeneration;
+        const auto ui_revision = std::pair{r.get_or_emplace<ActionIndex>(viewport).Index, RestoreGeneration};
+        const bool ui_has_pending_solves = HasPendingModalSolves(r);
 #endif
 
         window.NewImGuiFrame();
@@ -1496,7 +1497,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             GetWindowDrawList()->ChannelsMerge();
         }
         EndEditorViewport(editor_windows);
-        workspace::ApplyPendingTabs(windows);
+        workspace::ApplyPending(windows);
 
         ImGui::Render();
         window.HonorMouseWarp();
@@ -1507,17 +1508,16 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             if (driver.CaptureFrame(r, viewport, driver.Framed(viewport_settled))) done = true;
 
 #ifdef DEBUG_BUILD
-            const auto action_index = r.get_or_emplace<ActionIndex>(viewport).Index;
+            const auto scene_revision = std::pair{r.get_or_emplace<ActionIndex>(viewport).Index, RestoreGeneration};
             bool validate = validate_requested;
 #ifdef VALIDATE_ACTIONS
-            if (action_index != validated_action_index || RestoreGeneration != validated_restore_generation) {
-                validate = true;
-            }
+            validate |= scene_revision != validated_revision;
 #endif
-            const bool ui_matches_scene =
-                ui_action_index == action_index &&
-                ui_restore_generation == RestoreGeneration;
-            const bool validation_ready = validate && ui_gesture_settled;
+            // Scrollbars use the preceding UI frame's content size, so both frames must reflect the scene.
+            const bool ui_matches_scene = ui_revision == scene_revision && previous_ui_revision == scene_revision;
+            previous_ui_revision = ui_revision;
+            // Background progress is transient; compare only frames drawn after it disappears.
+            const bool validation_ready = validate && ui_gesture_settled && !ui_has_pending_solves && !HasPendingModalSolves(r);
             const bool present_frame = !validation_ready || ui_matches_scene;
 #else
             constexpr bool present_frame{true};
@@ -1542,8 +1542,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 ValidateRoundTrip(r, viewport, layer, draw_data->DisplaySize, draw_data->FramebufferScale, live_app);
                 validate_requested = false;
 #ifdef VALIDATE_ACTIONS
-                validated_action_index = action_index;
-                validated_restore_generation = RestoreGeneration;
+                validated_revision = scene_revision;
 #endif
             }
 #endif

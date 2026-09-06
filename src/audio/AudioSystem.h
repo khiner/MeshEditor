@@ -44,6 +44,7 @@ void RegisterAudioComponentHandlers(entt::registry &);
 void InitAudioSystem(entt::registry &);
 // Destroy the modal audio context after any output device has stopped.
 void DeinitAudioSystem(entt::registry &);
+bool HasPendingModalSolves(const entt::registry &);
 void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 
 // Draw the viewport-global audio synthesis controls.
