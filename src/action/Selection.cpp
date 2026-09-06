@@ -87,13 +87,13 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.emplace_or_replace<PendingBoxSelectFinalize>(viewport);
             },
             // GPU selection resolves the rectangle after action application.
-            [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(viewport, a.BoxPx, a.Additive, *a.ViewProj); },
+            [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(viewport, a.BoxPx, a.Additive, *a.View); },
             // GPU selection resolves the pixel after action application.
-            [&](const Pick &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, false, *a.ViewProj); },
-            [&](const PickCycle &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, true, *a.ViewProj); },
+            [&](const Pick &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, false, *a.View); },
+            [&](const PickCycle &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, true, *a.View); },
             [&](const ApplyEditElementClick &a) {
                 end_box_select_interaction();
-                r.emplace_or_replace<PendingEditElementClick>(viewport, a.MousePx, a.Toggle, *a.ViewProj);
+                r.emplace_or_replace<PendingEditElementClick>(viewport, a.MousePx, a.Toggle, *a.View);
             },
             [&](const ApplyTreeSelection &a) {
                 using Clear = ApplyTreeSelection::ClearKind;

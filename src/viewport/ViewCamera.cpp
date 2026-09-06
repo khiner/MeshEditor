@@ -13,20 +13,20 @@ constexpr uint32_t DurationFrames{12}; // ~200ms at 60fps.
 constexpr float Smoothstep(float t) { return t * t * (3.f - 2.f * t); }
 } // namespace
 
-bool ViewCamera::IsAligned(vec3 direction) const { return numeric::Dot(Forward(), numeric::Normalize(direction)) > 0.999f; }
-bool ViewCamera::IsInFront(vec3 p) const { return numeric::Dot(p - Position(), -Forward()) > NearClip(); }
+bool CameraView::IsAligned(vec3 direction) const { return numeric::Dot(Forward(), numeric::Normalize(direction)) > 0.999f; }
+bool CameraView::IsInFront(vec3 p) const { return numeric::Dot(p - Position(), -Forward()) > NearClip(); }
 
-float ViewCamera::NearClip() const {
+float CameraView::NearClip() const {
     if (const auto *perspective = std::get_if<Perspective>(&Data)) return perspective->NearClip;
     return std::get<Orthographic>(Data).NearClip;
 }
 
-float ViewCamera::FarClip() const {
+float CameraView::FarClip() const {
     if (const auto *perspective = std::get_if<Perspective>(&Data)) return perspective->FarClip.value_or(MaxFarClip);
     return std::get<Orthographic>(Data).FarClip;
 }
 
-ray ViewCamera::PixelToWorldRay(vec2 mouse_px, rect viewport) const {
+ray CameraView::PixelToWorldRay(vec2 mouse_px, rect viewport) const {
     const auto rel = (mouse_px - viewport.pos) / viewport.size;
     const auto ndc = UvToNdc(rel);
     if (const auto *perspective = std::get_if<Perspective>(&Data)) {
@@ -53,8 +53,8 @@ quat ViewCamera::OrientationFromAway(vec3 away) {
     return numeric::ToQuat(mat3{right, numeric::Cross(away, right), away});
 }
 
-mat4 ViewCamera::View() const { return numeric::LookAt(Position(), Target, Up()); }
-mat4 ViewCamera::Projection(float aspect_ratio) const {
+mat4 CameraView::View() const { return numeric::LookAt(Position(), Target, Up()); }
+mat4 CameraView::Projection(float aspect_ratio) const {
     if (const auto *perspective = std::get_if<Perspective>(&Data)) {
         if (perspective->FarClip) return numeric::PerspectiveRhZo(perspective->FieldOfViewRad, aspect_ratio, perspective->NearClip, *perspective->FarClip);
         return numeric::InfinitePerspectiveRhZo(perspective->FieldOfViewRad, aspect_ratio, perspective->NearClip);
@@ -64,7 +64,7 @@ mat4 ViewCamera::Projection(float aspect_ratio) const {
     const vec2 mag{orthographic.Mag.y * aspect_ratio, orthographic.Mag.y};
     return numeric::OrthoRhZo(-mag.x, mag.x, -mag.y, mag.y, orthographic.NearClip, orthographic.FarClip);
 }
-mat3 ViewCamera::Basis() const {
+mat3 CameraView::Basis() const {
     const auto m = numeric::ToMat3(Orientation); // {Right, Up, Away}
     return {m[0], m[1], -m[2]}; // {Right, Up, -Forward}
 }

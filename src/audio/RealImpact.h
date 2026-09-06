@@ -1,12 +1,12 @@
 #pragma once
 
-#include <optional>
-
+#include "AudioSamples.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <vector>
 
 /*
@@ -56,11 +56,10 @@ struct ListenerPoint {
 std::expected<std::string, std::string> ValidateDirectory(const fs::path &);
 
 // Per-impact-vertex {synthetic key, audio frames} at 48kHz.
-// Keys use a `realimpact://` URI-style fs::path so they are unique per (directory, listener, impact_idx)
-// and cannot be mistaken for a real on-disk file.
-using LoadedSample = std::pair<fs::path, std::vector<float>>;
-
-std::array<LoadedSample, NumImpactVertices> LoadSamples(const fs::path &directory, long listener_point_index);
+// Keys encode (directory, listener, impact) as realimpact://<directory>/li<listener>_impact<impact>.
+std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamples(const fs::path &directory, long listener_point_index);
+// Resolve the dataset and listener group encoded by a synthetic sample key.
+std::optional<std::pair<fs::path, long>> SampleGroupFromKey(const fs::path &key);
 std::optional<std::string> FindObjectName(const fs::path &start_path);
 std::optional<std::string_view> FindMaterialName(std::string_view);
 std::vector<ListenerPoint> LoadListenerPoints(const fs::path &directory);

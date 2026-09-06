@@ -12,6 +12,8 @@ inline constexpr float MinNearClip{0.01f}, MaxFarClip{DefaultPerspectiveFarClip}
 struct Orthographic {
     vec2 Mag; // World-space half-extents of the view volume.
     float FarClip, NearClip;
+
+    bool operator==(const Orthographic &) const = default;
 };
 
 struct Perspective {
@@ -19,6 +21,8 @@ struct Perspective {
     std::optional<float> FarClip; // An empty value selects an infinite projection matrix.
     float NearClip;
     std::optional<float> AspectRatio{};
+
+    bool operator==(const Perspective &) const = default;
 };
 
 using Camera = std::variant<Perspective, Orthographic>;

@@ -299,8 +299,9 @@ void SaveWorkspace(entt::registry &r, entt::entity viewport, bool force = true) 
     CachedWorkspaceBytes = std::move(bytes);
 }
 
-bool UiGestureSettled() {
-    if (GImGui->MovingWindow || GImGui->DragDropActive) return false;
+bool UiGestureSettled(const ImGuiWindow *frame_focus) {
+    // Dock decorations can still show the old focus when menus or widgets change it during the frame.
+    if (GImGui->NavWindow != frame_focus || !GImGui->OpenPopupStack.empty() || GImGui->MovingWindow || GImGui->DragDropActive) return false;
     const auto &io = GetIO();
     for (int button = 0; button < ImGuiMouseButton_COUNT; ++button) {
         if (io.MouseDown[button] || io.MouseReleased[button]) return false;
@@ -1054,7 +1055,7 @@ struct BenchmarkDriver {
         for (const auto entity : entities) Transforms.emplace_back(entity, r.get<const Transform>(entity));
     }
 
-    void Apply(entt::registry &r, entt::entity viewport, uvec2 extent) {
+    void Apply(entt::registry &r, uvec2 extent) {
         switch (Action) {
             case CaptureRequest::BenchmarkAction::Steady: break;
             case CaptureRequest::BenchmarkAction::Orbit:
@@ -1078,13 +1079,11 @@ struct BenchmarkDriver {
                 break;
             case CaptureRequest::BenchmarkAction::BoxSelect: {
                 if (extent == uvec2{}) break;
-                const auto &camera = r.get<const ViewCamera>(viewport);
-                const float aspect = float(extent.x) / float(extent.y);
                 const uint32_t inset = Frame % 2 == 0 ? 4u : 8u;
                 action::Emit(action::selection::ApplyBoxSelect{
                     .BoxPx = {{inset, inset}, {extent.x - inset - 1, extent.y - inset - 1}},
                     .Additive = false,
-                    .ViewProj = std::make_unique<mat4>(camera.Projection(aspect) * camera.View()),
+                    .View = std::make_unique<RenderView>(r.ctx().get<const GpuBuffers>().FrameView),
                 });
                 break;
             }
@@ -1422,6 +1421,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         driver.ElapsedPlayTime += io.DeltaTime;
         // Scene-affecting code reads FrameState::DeltaTime. `io.DeltaTime` is wall-clock, UI-only.
         r.ctx().get<FrameState>().DeltaTime = driver.FixedStep ? driver.RenderDt : io.DeltaTime;
+        const auto *ui_focus = GImGui->NavWindow;
         NewFrame();
 
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
@@ -1599,7 +1599,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         ImGui::Render();
         window.HonorMouseWarp();
         auto *draw_data = GetDrawData();
-        const bool ui_gesture_settled = UiGestureSettled();
+        const bool ui_gesture_settled = UiGestureSettled(ui_focus);
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // Synchronize before ImGui samples the final image.
             if (driver.CaptureFrame(r, viewport, driver.Framed(viewport_settled))) done = true;
@@ -1717,7 +1717,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
         }
         {
             const profile::CpuScope scope{"Frame"};
-            if (bench_frames > 0 && settled) benchmark.Apply(r, viewport, extent);
+            if (bench_frames > 0 && settled) benchmark.Apply(r, extent);
             driver.EmitFrameActions(r, viewport, settled, extent);
             action::ApplyEmitted(r, viewport);
             ReportActionErrors(r);

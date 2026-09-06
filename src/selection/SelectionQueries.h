@@ -34,7 +34,7 @@ void RunBoxSelectElements(entt::registry &, entt::entity viewport, std::span<con
 void FinalizeBoxSelectElements(entt::registry &, entt::entity viewport);
 
 // Returns click hits sorted by distance, depth, and object id, then advances the 8-bit epoch tag.
-std::vector<entt::entity> RunObjectPick(entt::registry &, uint32_t &object_pick_epoch_tag, uvec2 mouse_px, uint32_t radius_px = 0);
+std::vector<entt::entity> RunObjectPick(entt::registry &, uvec2 mouse_px, uint32_t radius_px = 0);
 
 // Pick the nearest sound-vertex of an instance under the cursor.
 std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &, entt::entity instance_entity, uvec2 mouse_px);

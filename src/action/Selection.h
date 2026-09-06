@@ -1,9 +1,9 @@
 #pragma once
 
 #include "entt_fwd.h"
-#include "numeric/mat4.h"
 #include "numeric/vec2.h"
 #include "selection/BoneSelection.h"
+#include "viewport/RenderView.h"
 
 #include <memory>
 #include <optional>
@@ -43,24 +43,24 @@ struct ClearBoxSelectBaseline {};
 struct ApplyBoxSelect {
     std::pair<uvec2, uvec2> BoxPx;
     bool Additive;
-    std::unique_ptr<mat4> ViewProj;
+    std::unique_ptr<RenderView> View;
 };
 // Object/bone click pick at a pixel; the hit entity is resolved against current scene state when applied.
 struct Pick {
     uvec2 MousePx;
     bool Shift;
-    std::unique_ptr<mat4> ViewProj;
+    std::unique_ptr<RenderView> View;
 };
 // Re-click at the same spot to cycle to the next overlapping hit under the cursor.
 struct PickCycle {
     uvec2 MousePx;
     bool Shift;
-    std::unique_ptr<mat4> ViewProj;
+    std::unique_ptr<RenderView> View;
 };
 struct ApplyEditElementClick {
     uvec2 MousePx;
     bool Toggle;
-    std::unique_ptr<mat4> ViewProj;
+    std::unique_ptr<RenderView> View;
 };
 struct ApplyTreeSelection {
     enum class ClearKind : uint8_t { None,

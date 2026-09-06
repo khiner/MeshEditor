@@ -27,6 +27,7 @@
 #include "render/PbrFeature.h"
 #include "render/TextureRefs.h"
 #include "scene/Defaults.h"
+#include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
@@ -1382,13 +1383,13 @@ static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
         }
     };
 
-    auto roots = r.view<const Name>() |
+    const auto roots = SortedEntities(
+        r.view<const Name>() |
         std::views::filter([&](auto e) {
-                     const auto *node = r.try_get<const SceneNode>(e);
-                     return !node || node->Parent == entt::null;
-                 }) |
-        to<std::vector>();
-    std::ranges::sort(roots);
+            const auto *node = r.try_get<const SceneNode>(e);
+            return !node || node->Parent == entt::null;
+        })
+    );
     for (const auto e : roots) render_entity(render_entity, e);
     if (roots.empty()) TextDisabled("No objects");
 

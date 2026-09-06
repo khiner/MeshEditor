@@ -11,7 +11,6 @@ struct FrameState {
     vec2 DisplayFramebufferScale{1, 1};
     vec2 AccumulatedWrapMouseDelta{0, 0};
     vec2 PreciseWheelDelta{0, 0};
-    uint32_t ObjectPickEpochTag{255};
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
     bool BoxSelectStaged{false};
     bool OverlayControlsHovered{false};

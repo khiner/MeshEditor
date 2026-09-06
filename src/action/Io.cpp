@@ -140,7 +140,12 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                         }
                         r.emplace<ScaleLocked>(instance_entity);
                         r.emplace<RealImpactVertices>(instance_entity, vertex_indices);
-                        SetVertexSamples(r, viewport, instance_entity, vertex_indices, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)));
+                        auto samples = RealImpact::LoadSamples(directory, listener_point.Index);
+                        if (!samples) {
+                            fail(std::move(samples.error()));
+                            return;
+                        }
+                        SetVertexSamples(r, instance_entity, vertex_indices, *samples);
                     }
                 }
             },

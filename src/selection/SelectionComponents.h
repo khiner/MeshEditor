@@ -1,9 +1,9 @@
 #pragma once
 
 #include "gpu/Element.h"
-#include "numeric/mat4.h"
 #include "numeric/vec2.h"
 #include "selection/BoneSelection.h"
+#include "viewport/RenderView.h"
 
 #include <entt/entity/fwd.hpp>
 
@@ -31,18 +31,18 @@ struct ExciteSelectionBaseline {
 
 struct EditSelectionDirty {};
 
-// Preserve the record-time projection so replay resolves pixels in the recorded coordinate system.
+// Preserve the rendered camera so replay resolves pixels with the same rasterization and culling inputs.
 struct PendingEditElementClick {
     uvec2 MousePx;
     bool Toggle;
-    mat4 ViewProj;
+    RenderView View;
 };
 
 // Object/bone box-select awaiting GPU resolution against current scene state.
 struct PendingBoxSelect {
     std::pair<uvec2, uvec2> BoxPx;
     bool Additive;
-    mat4 ViewProj;
+    RenderView View;
 };
 struct PendingBoxSelectFinalize {};
 struct BoxSelectGpuPending {};
@@ -53,7 +53,7 @@ struct PendingPick {
     uvec2 MousePx;
     bool Shift;
     bool Cycle;
-    mat4 ViewProj;
+    RenderView View;
 };
 
 struct SelectionXRay {

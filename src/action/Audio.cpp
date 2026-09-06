@@ -1,5 +1,6 @@
 #include "action/Audio.h"
 #include "Path.h"
+#include "action/Errors.h"
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
 #include "audio/SoundVertices.h"
@@ -7,10 +8,8 @@
 #include "scene/Entity.h"
 #include <entt/entity/registry.hpp>
 
-using std::ranges::to;
-
 namespace action::audio {
-void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
+void Apply(entt::registry &r, entt::entity, const Action &action) {
     std::visit(
         overloaded{
             [&](const ApplyExciteImpact &a) {
@@ -42,16 +41,21 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](const ApplyModalModel &a) { ::ApplyModalModel(r, a.SoundEntity, a.Path); },
             [&](const AssignVertexSamples &a) {
                 auto frames = LoadAudioFrames(a.Path.string(), DeviceSampleRate(r));
-                if (!frames.empty()) ::AssignVertexSample(r, viewport, FindActiveEntity(r), a.MeshVertices, a.Path, std::move(frames));
+                if (!frames.empty()) ::AssignVertexSample(r, FindActiveEntity(r), a.MeshVertices, a.Path, std::move(frames));
             },
             [&](const ActivateRealImpactMicrophone &a) {
                 const auto dir = r.get<const Path>(r.get<const Instance>(a.TargetSoundEntity).Entity).Value.parent_path();
                 const auto &vertex_indices = r.get<const RealImpactVertices>(a.TargetSoundEntity).Vertices;
                 const auto mic_index = r.get<const RealImpactMicrophone>(a.MicrophoneEntity).Index;
-                ::SetVertexSamples(r, viewport, a.TargetSoundEntity, vertex_indices, RealImpact::LoadSamples(dir, mic_index) | to<std::vector>());
+                auto samples = RealImpact::LoadSamples(dir, mic_index);
+                if (!samples) {
+                    r.ctx().get<Errors>().Messages.push_back(std::move(samples.error()));
+                    return;
+                }
+                ::SetVertexSamples(r, a.TargetSoundEntity, vertex_indices, *samples);
                 r.emplace_or_replace<RealImpactActiveMicrophone>(a.TargetSoundEntity, a.MicrophoneEntity);
             },
-            [&](const RemoveVertexSamples &a) { ::RemoveVertexSamples(r, viewport, FindActiveEntity(r), a.MeshVertices); },
+            [&](const RemoveVertexSamples &a) { ::RemoveVertexSamples(r, FindActiveEntity(r), a.MeshVertices); },
             [&]<typename T>(const Replace<T> &a) { r.emplace_or_replace<T>(a.Entity, a.Value); },
         },
         action

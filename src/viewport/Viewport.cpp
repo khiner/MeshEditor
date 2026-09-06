@@ -48,10 +48,6 @@ struct ViewportRenderResources {
     RenderPhase RecordedPhase{RenderPhase::Full};
 };
 
-void ResetObjectPickKeys(GpuBuffers &buffers) {
-    std::fill_n(buffers.ObjectPickKeys.Data(), GpuBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
-}
-
 // Dispatch sizes follow scene recording because the rebuild determines their counts.
 void SubmitRecordedFrame(entt::registry &r, MTL::CommandBuffer *command_buffer) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
@@ -332,8 +328,6 @@ entt::entity InitEngine(entt::registry &r) {
     r.ctx().emplace<PendingRenderRequest>();
     r.ctx().emplace<ViewportRenderResources>();
     r.ctx().emplace<WindowsState>();
-
-    ResetObjectPickKeys(buffers);
 
     auto init_batch = BeginTextureUploadBatch(ctx, libraries);
     auto &environments = r.ctx().get<EnvironmentStore>();

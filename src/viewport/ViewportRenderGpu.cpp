@@ -774,8 +774,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         };
 
         // Sort by descending entity ID for deterministic coincident-surface ordering across scene loads.
-        auto mesh_entity_order = r.view<const MeshBuffers, const ModelsBuffer>() | to<std::vector>();
-        std::ranges::sort(mesh_entity_order, std::ranges::greater{});
+        const auto mesh_entity_order = SortedEntities(r.view<const MeshBuffers, const ModelsBuffer>(), std::ranges::greater{});
 
         std::vector<MeshEntityData> mesh_entities;
         mesh_entities.reserve(mesh_entity_order.size());
@@ -1024,10 +1023,11 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         }
         if (scene_state.InstanceRecordsStale) {
             // Coplanar visibility follows entity order, independent of instance-buffer allocation history.
-            auto instance_order = r.view<const RenderInstance>() |
-                std::views::filter([&](auto e) { return r.get<const RenderInstance>(e).MeshletCount > 0; }) |
-                to<std::vector>();
-            std::ranges::sort(instance_order, std::ranges::greater{});
+            const auto instance_order = SortedEntities(
+                r.view<const RenderInstance>() |
+                    std::views::filter([&](auto e) { return r.get<const RenderInstance>(e).MeshletCount > 0; }),
+                std::ranges::greater{}
+            );
             auto instance_slots = buffers.GpuInstanceSlots.SetCount<uint32_t>(uint32_t(instance_order.size()));
             for (uint32_t i = 0; i < instance_slots.size(); ++i) {
                 instance_slots[i] = r.get<const RenderInstance>(instance_order[i]).BufferIndex;
@@ -1372,6 +1372,10 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             buffers.VisibilityIdGeneration = buffers.MeshletVisibleGeneration;
         }
         buffers.PreviousFullCullViewProj = current_view_proj;
+        // Only geometry may occlude the next frame; scene compositing will add decorative depth.
+        auto *compute = chain.BeginCompute("DepthPyramidFinal", MTL::StageFragment);
+        RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
+        main.Resources->DepthPyramidValid = true;
     }
     if (has_silhouette) { // Silhouette depth/object pass
         RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, true, ubo_offset);
@@ -1488,13 +1492,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 draw_quad();
             }
         }
-    }
-
-    // Rebuild the persistent pyramid after indexed opaque draws while phase two uses the meshlet-only pyramid.
-    if (show_fill && phase == RenderPhase::Full && cull_scene_meshlets) {
-        auto *compute = chain.BeginCompute("DepthPyramidFinal", MTL::StageFragment);
-        RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
-        main.Resources->DepthPyramidValid = true;
     }
 
     if (blur) RecordMotionBlurPostFx(r, chain, slots, viewport, main_extent, ubo_offset, playback_frame);
@@ -1893,7 +1890,6 @@ void RecordSilhouetteDepthPass(
     if (!draw) return;
     silhouette.Visibility.Bind(encoder);
     encoder->setFragmentTexture(*pipelines.Main.Resources->VisibilityImage, 0u);
-    encoder->setFragmentTexture(*pipelines.Main.Resources->DepthImage, 1u);
     encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
     encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
 }

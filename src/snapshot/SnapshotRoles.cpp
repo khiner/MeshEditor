@@ -15,6 +15,7 @@
 #include "armature/ArmatureSerialize.h"
 #include "armature/BoneConstraint.h"
 #include "audio/AcousticMaterial.h"
+#include "audio/AudioSamples.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
 #include "audio/ContactSurface.h"
@@ -123,7 +124,7 @@ using Persistent = type_list<
     ScaleLocked, Instance, Hidden, SceneNode, ParentInverse, MeshHandle, VertexStoreId, ObjectExtrasTag,
     MeshElementSelection, MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
     PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, ShadeSmoothAngle, AudioOutputConfig, AudioOutputMix, Striker, ModalSoundControls, ContactSurface, SurfaceSoundControls,
-    AcousticMaterial, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings, MassProperties, TetBuffers, ModalEigenSummary,
+    AcousticMaterial, VertexSamples, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings, MassProperties, TetBuffers, ModalEigenSummary,
     SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState, ActionIndex,
     TimelineRange, TimelinePlayback, AnimationTimelineView,
     PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
@@ -147,7 +148,7 @@ using Derived = type_list<
 #ifdef SURFACE_AUDIO
     SurfaceRelief, SurfaceFinishKey,
 #endif
-    SoundVertices, ContactDynamics, ReportContacts, MeshBvh>;
+    SoundVertices, SamplePlayback, ContactDynamics, ReportContacts, MeshBvh>;
 
 // Field-wise serialization excludes indeterminate variant, optional, and padding bytes from snapshots.
 using ForceSerialize = type_list<

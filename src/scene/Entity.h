@@ -2,7 +2,9 @@
 
 #include <entt/entity/fwd.hpp>
 
+#include <algorithm>
 #include <cstddef>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -62,6 +64,15 @@ enum class ObjectType : uint8_t {
 struct ObjectKind {
     ObjectType Value{ObjectType::Empty};
 };
+
+// Canonical entity order for consumers whose output depends on traversal order.
+// Component storage order changes with insertion, deletion, and snapshot reconstruction.
+template<typename Compare = std::ranges::less>
+std::vector<entt::entity> SortedEntities(std::ranges::input_range auto &&entities, Compare compare = {}) {
+    auto sorted = entities | std::ranges::to<std::vector<entt::entity>>();
+    std::ranges::sort(sorted, compare);
+    return sorted;
+}
 
 std::string IdString(entt::entity);
 std::string GetName(const entt::registry &, entt::entity); // Returns name if present, otherwise hex ID.

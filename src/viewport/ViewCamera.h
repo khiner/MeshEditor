@@ -1,42 +1,16 @@
 #pragma once
 
-#include "CameraTypes.h"
-#include "numeric/mat3.h"
-#include "numeric/mat4.h"
-#include "numeric/quat.h"
-#include "numeric/ray.h"
-#include "numeric/rect.h"
+#include "viewport/CameraView.h"
 
 // Uses the viewport aspect ratio rather than the source camera's aspect ratio.
-struct ViewCamera {
+struct ViewCamera : CameraView {
     ViewCamera(vec3 position, vec3 target, Camera data)
-        : Data{data}, Target{target}, Distance{numeric::Length(position - target)}, Orientation{OrientationFromAway(position - target)} {}
+        : CameraView{data, target, numeric::Length(position - target), OrientationFromAway(position - target)} {}
 
     ViewCamera(vec3 position, quat orientation, Camera data)
-        : Data{data}, Distance{1.f}, Orientation{numeric::Normalize(orientation)} {
+        : CameraView{data, {}, 1.f, numeric::Normalize(orientation)} {
         Target = position - Orientation * vec3{0, 0, 1};
     }
-
-    Camera Data;
-    vec3 Target;
-    float Distance;
-    quat Orientation;
-
-    float NearClip() const;
-    // Returns a finite fallback for an infinite perspective far plane.
-    float FarClip() const;
-
-    vec3 Forward() const { return Orientation * vec3{0, 0, 1}; }
-    vec3 Up() const { return Orientation * vec3{0, 1, 0}; }
-    mat3 Basis() const;
-    ray Ray() const { return {Position(), Forward()}; }
-    mat4 View() const;
-    mat4 Projection(float aspect_ratio) const;
-    vec3 Position() const { return Target + Distance * Forward(); }
-    ray PixelToWorldRay(vec2 mouse_px, rect viewport) const;
-
-    bool IsAligned(vec3 direction) const;
-    bool IsInFront(vec3) const;
 
     // Interactive changes cancel an active transition.
     void RotateBy(vec2 yaw_pitch_delta);

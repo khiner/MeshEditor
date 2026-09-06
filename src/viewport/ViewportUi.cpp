@@ -17,6 +17,7 @@
 #include "render/Instance.h"
 #include "render/TextureRefs.h"
 #include "scene/Defaults.h"
+#include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
@@ -34,6 +35,9 @@
 #include "viewport/ViewportOps.h"
 
 #include <entt/entity/registry.hpp>
+
+#include <algorithm>
+#include <ranges>
 
 #include "gizmo/OrientationGizmo.h"
 
@@ -334,8 +338,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
 
     const auto render_extent = RenderExtentPx(r);
     // Pick against the preceding rendered view; the live camera may already have advanced its animation.
-    const auto &view_ubo = r.ctx().get<const GpuBuffers>().SceneViewUBO;
-    const auto &selection_view_proj = reinterpret_cast<const SceneViewUBO *>(view_ubo.Contents().data())->ViewProj;
+    const auto selection_view = r.ctx().get<const GpuBuffers>().FrameView;
     const auto edit_mode = r.get<const EditMode>(viewport).Value;
     const auto arm_obj_entity = FindArmatureObject(r, active_entity);
     const bool active_is_armature = arm_obj_entity != entt::null;
@@ -351,7 +354,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
                 const bool is_additive = r.all_of<AdditiveBoxSelectBaseline>(viewport);
                 frame.BoxSelectStaged = true;
                 // The hit set (object/bone instances or edit-mode elements) is resolved later.
-                action::EmitStaged(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = is_additive, .ViewProj = std::make_unique<mat4>(selection_view_proj)});
+                action::EmitStaged(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = is_additive, .View = std::make_unique<RenderView>(selection_view)});
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
             frame.BoxSelectStart.reset();
@@ -376,7 +379,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
-            if (const auto hit_entities = RunObjectPick(r, frame.ObjectPickEpochTag, mouse_px); !hit_entities.empty()) {
+            if (const auto hit_entities = RunObjectPick(r, mouse_px); !hit_entities.empty()) {
                 if (const auto hit_entity = hit_entities.front(); r.all_of<SoundVertices>(hit_entity)) {
                     if (const auto vertex = RunSoundVerticesVertexPick(r, hit_entity, mouse_px)) {
                         action::Emit(action::audio::ApplyExciteImpact{.InstanceEntity = hit_entity, .VertexIndex = *vertex});
@@ -393,13 +396,13 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
 
     if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
         const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
-        action::Emit(action::selection::ApplyEditElementClick{.MousePx = mouse_px, .Toggle = toggle, .ViewProj = std::make_unique<mat4>(selection_view_proj)});
+        action::Emit(action::selection::ApplyEditElementClick{.MousePx = mouse_px, .Toggle = toggle, .View = std::make_unique<RenderView>(selection_view)});
     } else if (interaction_mode == InteractionMode::Object || bone_mode) {
         const bool shift = IsKeyDown(ImGuiMod_Shift);
         // Store only the pixel, the GPU pick and selection resolution run later.
         // A re-click at the same spot cycles to the next overlapping hit.
-        if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) action::Emit(action::selection::Pick{mouse_px, shift, std::make_unique<mat4>(selection_view_proj)});
-        else action::Emit(action::selection::PickCycle{mouse_px, shift, std::make_unique<mat4>(selection_view_proj)});
+        if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) action::Emit(action::selection::Pick{mouse_px, shift, std::make_unique<RenderView>(selection_view)});
+        else action::Emit(action::selection::PickCycle{mouse_px, shift, std::make_unique<RenderView>(selection_view)});
     }
 }
 
@@ -867,10 +870,12 @@ void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
             dl.AddCircleFilled(p_px, 3.5f, colors::RgbToU32(is_active ? theme.Colors.ObjectActive : theme.Colors.ObjectSelected), 10);
             dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
         };
-        // Top-level objects: draw dot at own position.
-        for (const auto [e, wt] : r.view<const WorldTransform>(entt::exclude<SubElementOf>).each()) {
-            if (r.any_of<Active, Selected>(e)) draw_dot(wt.P, r.all_of<Active>(e));
-        }
+        const auto origins = SortedEntities(
+            r.view<const WorldTransform>(entt::exclude<SubElementOf>) |
+                std::views::filter([&](auto e) { return r.any_of<Active, Selected>(e); }),
+            std::ranges::greater{}
+        );
+        for (const auto e : origins) draw_dot(r.get<const WorldTransform>(e).P, r.all_of<Active>(e));
     }
 
     if (frame.BoxSelectStart && frame.BoxSelectEnd) {

@@ -83,6 +83,7 @@ struct MainPipeline {
             mtl::Extent2D Extent;
         };
 
+        // Visibility stores the primitive ID and raster depth together; DepthImage is writable scene/overlay depth.
         // Scene-linear color and display-referred overlays stay separate until compositing.
         mtl::Texture DepthImage, VisibilityImage, SceneColorImage, OverlayColorImage, LineDataImage, FinalColorImage;
         mtl::Texture DepthPyramidImage;

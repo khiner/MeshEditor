@@ -723,17 +723,17 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         r.remove<PendingImportMesh>(viewport);
         ImportMesh(r, path, std::move(info));
     }
-    // Resolve replayed selections with their recorded view projection because view-camera navigation is not logged.
-    // Rerasterize visibility identifiers when the recorded projection differs from the current frame.
-    const auto stamp_view_proj = [&buffers](const mat4 &view_proj) {
-        const auto &frame_view_proj = reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data())->ViewProj;
-        if (std::memcmp(&frame_view_proj, &view_proj, sizeof(mat4)) != 0) buffers.VisibilityIdGeneration = InvalidOffset;
-        buffers.SceneViewUBO.Update(as_bytes(view_proj), offsetof(SceneViewUBO, ViewProj));
+    // Navigation is not logged; selection carries the rendered camera, including culling and LOD inputs.
+    const auto stamp_selection_view = [&buffers](const RenderView &view) {
+        auto &frame_view = *reinterpret_cast<SceneViewUBO *>(buffers.SceneViewUBO.Contents().data());
+        if (buffers.FrameView != view) buffers.VisibilityIdGeneration = InvalidOffset;
+        buffers.FrameView = view;
+        view.ApplyTo(frame_view);
     };
     if (const auto *pending = r.try_get<const PendingEditElementClick>(viewport)) {
         const auto mouse_px = pending->MousePx;
         const bool toggle = pending->Toggle;
-        stamp_view_proj(pending->ViewProj);
+        stamp_selection_view(pending->View);
         r.remove<PendingEditElementClick>(viewport);
 
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
@@ -752,7 +752,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (const auto *pending = r.try_get<const PendingBoxSelect>(viewport)) {
         const auto box_px = pending->BoxPx;
         const bool additive = pending->Additive;
-        stamp_view_proj(pending->ViewProj);
+        stamp_selection_view(pending->View);
         r.remove<PendingBoxSelect>(viewport);
 
         const auto &interaction = r.get<const Interaction>(viewport);
@@ -799,7 +799,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (const auto *pending = r.try_get<const PendingPick>(viewport)) {
         const auto mouse_px = pending->MousePx;
         const bool shift = pending->Shift, cycle = pending->Cycle;
-        stamp_view_proj(pending->ViewProj);
+        stamp_selection_view(pending->View);
         r.remove<PendingPick>(viewport);
 
         const bool bone_mode = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
@@ -811,8 +811,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.f
         );
         const auto radius = std::max(1u, uint32_t(std::lround(float(ObjectSelectRadiusPx) * render_scale)));
-        auto &frame = r.ctx().get<FrameState>();
-        const auto hits = ResolveHits(r, RunObjectPick(r, frame.ObjectPickEpochTag, mouse_px, radius), bone_mode);
+        const auto hits = ResolveHits(r, RunObjectPick(r, mouse_px, radius), bone_mode);
         const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&]() -> std::optional<SelectionHit> {
             if (!cycle) return hits.front();
             // Cycle to the next overlapping result after a repeated click.
@@ -919,37 +918,9 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
 
     std::unordered_set<entt::entity> dirty_sound_selection_meshes;
-    if (const bool draws_element_indices = DrawsElementIndices(r, viewport); draws_element_indices != buffers.DrewElementIndices) {
-        buffers.DrewElementIndices = draws_element_indices;
-        if (draws_element_indices) {
-            uint32_t total_edge = 0, total_vertex = 0;
-            const auto mesh_view = r.view<const MeshBuffers, const MeshHandle>();
-            for (const auto entity : mesh_view) {
-                const auto &mb = mesh_view.get<const MeshBuffers>(entity);
-                const auto &mesh = GetMesh(r, entity);
-                if (mb.EdgeIndices.Count == 0) total_edge += mesh.EdgeCount() * 2;
-                if (mb.VertexIndices.Count == 0) total_vertex += mesh.VertexCount();
-            }
-            if (total_edge > 0 || total_vertex > 0) {
-                buffers.ReserveAdditionalIndices(0, total_edge, total_vertex);
-                for (const auto entity : r.view<const MeshBuffers, const MeshHandle>() | to<std::vector>()) {
-                    const auto &mesh = GetMesh(r, entity);
-                    meshes.EnsureSelectionBits(mesh);
-                    r.patch<MeshBuffers>(entity, [&](auto &mb) { WriteElementIndices(buffers, mesh, mb); });
-                }
-                if (r.get<const Interaction>(viewport).Mode == InteractionMode::Excite) {
-                    // Newly allocated masks must receive the current sparse Excite selection.
-                    for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) {
-                        dirty_sound_selection_meshes.insert(instance.Entity);
-                    }
-                }
-                request(RenderRequest::Rebuild);
-            }
-        }
-    }
 
     if (!sync.NewMeshEntities.empty()) {
-        const bool overlay_indices = buffers.DrewElementIndices;
+        const bool overlay_indices = DrawsElementIndices(r, viewport);
         uint32_t total_face = 0, total_edge = 0, total_vertex = 0;
         for (auto entity : sync.NewMeshEntities) {
             const auto &mesh = GetMesh(r, entity);
@@ -961,7 +932,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         buffers.ReserveAdditionalIndices(total_face, total_edge, total_vertex);
         for (auto entity : sync.NewMeshEntities) {
             const auto &mesh = GetMesh(r, entity);
-            if (overlay_indices) meshes.EnsureSelectionBits(mesh);
             r.patch<MeshBuffers>(entity, [&](auto &mb) {
                 if (DrawsStoredCorners(mesh)) {
                     mb.FaceIndices = meshes.GetFaceCornerRange(mesh.GetStoreId());
@@ -1129,6 +1099,29 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             enabled_modes.insert(InteractionMode::Excite);
             if (interaction_mode == InteractionMode::Excite) request(RenderRequest::Rebuild);
             else SetInteractionMode(r, viewport, InteractionMode::Excite);
+        }
+    }
+
+    // Sound-model changes can enter Excite mode; selection derivation needs its indices in this pass.
+    if (const bool draws_element_indices = DrawsElementIndices(r, viewport); draws_element_indices != buffers.DrewElementIndices) {
+        buffers.DrewElementIndices = draws_element_indices;
+        if (draws_element_indices) {
+            uint32_t total_edge = 0, total_vertex = 0;
+            const auto mesh_view = r.view<const MeshBuffers, const MeshHandle>();
+            for (const auto entity : mesh_view) {
+                const auto &mb = mesh_view.get<const MeshBuffers>(entity);
+                const auto &mesh = GetMesh(r, entity);
+                if (mb.EdgeIndices.Count == 0) total_edge += mesh.EdgeCount() * 2;
+                if (mb.VertexIndices.Count == 0) total_vertex += mesh.VertexCount();
+            }
+            if (total_edge > 0 || total_vertex > 0) {
+                buffers.ReserveAdditionalIndices(0, total_edge, total_vertex);
+                for (const auto entity : r.view<const MeshBuffers, const MeshHandle>() | to<std::vector>()) {
+                    const auto &mesh = GetMesh(r, entity);
+                    r.patch<MeshBuffers>(entity, [&](auto &mb) { WriteElementIndices(buffers, mesh, mb); });
+                }
+                request(RenderRequest::Rebuild);
+            }
         }
     }
 
@@ -1810,16 +1803,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const float background_blur = active_lighting.BackgroundBlur;
         const float world_opacity = is_pbr_mode ? active_lighting.WorldOpacity : 0.f;
         const auto *pending = r.try_get<const PendingTransform>(viewport);
-        // ScreenPixelScale: world-space size per pixel at unit distance (perspective) or absolute (ortho).
-        // Sign encodes camera type: positive = perspective (shader multiplies by distance), negative = orthographic.
-        const float screen_pixel_scale = ScreenPixelScale(camera.Data, std::max(float(render_extent.y), 1.f));
-        const auto proj = camera.Projection(aspect);
-        buffers.SceneViewUBO.Update(as_bytes(SceneViewUBO{
-            .ViewProj = proj * camera.View(),
-            .ViewRotation = mat3(camera.View()),
-            .CameraPosition = camera.Position(),
-            .CameraNear = camera.NearClip(),
-            .CameraFar = camera.FarClip(),
+        buffers.FrameView = {camera, render_extent};
+        SceneViewUBO view{
             .LightCount = buffers.Lights.Count(),
             .LightSlot = buffers.Lights.Slot(),
             .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
@@ -1836,8 +1821,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .PendingTranslation = pending ? pending->Delta.P : vec3{},
             .PendingRotation = pending ? pending->Delta.R : quat{1, 0, 0, 0},
             .PendingScale = pending ? pending->Delta.S : vec3{1},
-            .ScreenPixelScale = screen_pixel_scale,
-            .ViewportSize = render_extent,
             .LodErrorPixels = settings.LodErrorPixels,
             .CornerTangentSlot = meshes.GetCornerTangentSlot(),
             .CornerColorSlot = meshes.GetCornerColorSlot(),
@@ -1869,13 +1852,13 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .ShowExtras = settings.ShowExtras ? 1u : 0u,
             .ShowBoundingBoxes = settings.ShowBoundingBoxes ? 1u : 0u,
             .ShowTetWireframe = settings.ShowTetWireframe ? 1u : 0u,
-            // Polygon offset factor matching Blender's GPU_polygon_offset_calc (viewdist = max ortho extent)
-            .NdcOffsetFactor = std::holds_alternative<Perspective>(camera.Data) ? proj[3][2] * -0.00125f : 0.000005f * std::max(std::abs(1.f / proj[0][0]), std::abs(1.f / proj[1][1])),
             .TransmissionFramebufferSamplerSlot = r.ctx().get<const SelectionSlots>().TransmissionSampler,
             .TransmissionFramebufferMipCount = pipelines.Main.Transmission ? pipelines.Main.Transmission->Image.MipLevels : 1u,
             .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && pipelines.Main.Transmission) ? 1u : 0u,
             .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
-        }));
+        };
+        buffers.FrameView.ApplyTo(view);
+        buffers.SceneViewUBO.Update(as_bytes(view));
         request(transform_render_request);
     }
 

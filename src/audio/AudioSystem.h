@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AudioSamples.h"
 #include "AudioTypes.h"
 #include <entt/entity/fwd.hpp>
 
@@ -70,29 +71,25 @@ void DrawObjectAudioControls(entt::registry &, entt::entity viewport, entt::enti
 // Draw the in-flight modal solve jobs as a progress overlay anchored to the current window's lower-left corner. Call inside the viewport window.
 void DrawModalJobsOverlay(entt::registry &);
 
-// {path, frames} pair, where path is the dedup key in the scene-level sample store.
-// On-disk audio uses its absolute file path. A synthetic source (e.g. RealImpact) uses a URI-style virtual key that cannot be mistaken for a real file.
-using LoadedSample = std::pair<std::filesystem::path, std::vector<float>>;
-
 // Assign sample[i] to mesh_vertices[i]. Used by RealImpact initial load and mic swap.
-// Any existing samples at those vertices are refcount-released.
+// Unreferenced samples are released by the component handler.
 void SetVertexSamples(
-    entt::registry &, entt::entity viewport, entt::entity sound_entity,
-    std::span<const uint32_t> mesh_vertices, std::vector<LoadedSample> &&
+    entt::registry &, entt::entity sound_entity,
+    std::span<const uint32_t> mesh_vertices, std::span<LoadedSample>
 );
 
 // Assign one sample (path + frames) to every mesh vertex in `mesh_vertices`.
 // Creates SoundVertices / VertexSamples / SoundVerticesModel::Samples if missing.
-// The sample store deduplicates by path, reusing and refcounting existing entries.
+// The sample store deduplicates by path.
 void AssignVertexSample(
-    entt::registry &, entt::entity viewport, entt::entity sound_entity,
+    entt::registry &, entt::entity sound_entity,
     std::span<const uint32_t> mesh_vertices, std::filesystem::path, std::vector<float> &&frames
 );
 
 // Remove samples from every mesh vertex in `mesh_vertices`.
 // Removes audio components if the sound object ends up empty and has no modal model.
 void RemoveVertexSamples(
-    entt::registry &, entt::entity viewport, entt::entity sound_entity,
+    entt::registry &, entt::entity sound_entity,
     std::span<const uint32_t> mesh_vertices
 );
 

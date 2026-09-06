@@ -31,6 +31,7 @@
 #include "metal/Image.h"
 #include "render/ClusterLod.h"
 #include "render/MeshBuffers.h"
+#include "viewport/RenderView.h"
 
 #include <algorithm>
 #include <array>
@@ -435,6 +436,7 @@ struct GpuBuffers {
     TypedBuffer<PunctualLight> Lights;
     TypedBuffer<PBRMaterial> Materials;
 
+    RenderView FrameView{};
     // SceneViewUBO stores the live state at instance zero and one aligned instance per blur step.
     mtl::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
 
@@ -488,6 +490,7 @@ struct GpuBuffers {
     uint32_t VisibilityIdGeneration{InvalidOffset};
 
     TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, ObjectBoxBitset, MotionBlurTileIndirection;
+    uint32_t ObjectPickEpochTag{}; // Zero clears the persistent keys before the first pick and after wraparound.
     TypedBuffer<uint32_t> ElementPickKey, ElementPickId;
     BufferArena<uint32_t> GeometryWork{Ctx, SlotType::Buffer};
     mtl::Buffer GeometryNormalEntries{Ctx, 0, SlotType::Buffer};

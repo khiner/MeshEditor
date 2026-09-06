@@ -40,10 +40,6 @@ std::vector<EditSelectionPushConstants> BuildSelectionTransactions(
 void RecordSelectionPrepare(entt::registry &, MTL::CommandBuffer *, std::span<const EditSelectionPushConstants>);
 void RecordSelectionDerive(entt::registry &, MTL::CommandBuffer *, std::span<const EditSelectionPushConstants>);
 
-void ResetObjectPickKeys(GpuBuffers &buffers) {
-    std::fill_n(buffers.ObjectPickKeys.Data(), GpuBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
-}
-
 void SubmitAndWait(MTL::CommandBuffer *command_buffer) {
     const profile::CpuScope scope{"SelectionSubmit"};
     command_buffer->commit();
@@ -287,7 +283,6 @@ void RecordVisibilityObjectSelection(
     auto *encoder = chain.BeginCompute("VisibilityObjectSelection", MTL::StageFragment);
     encode::BindCompute(encoder, pipelines.VisibilityObjectSelection, slots, buffers);
     encoder->setTexture(*pipelines.Main.Resources->VisibilityImage, 0u);
-    encoder->setTexture(*pipelines.Main.Resources->DepthImage, 1u);
     encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{encode::VisibilityDecodePc(buffers), query, rect->Origin, rect->Extent});
     encoder->dispatchThreadgroups(
         MTL::Size((rect->Extent.x + 15u) / 16u, (rect->Extent.y + 15u) / 16u, 1u),
@@ -389,7 +384,7 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
     return ReadNearestPickedElement(buffers, vertex_count);
 }
 
-std::vector<entt::entity> RunObjectPick(entt::registry &r, uint32_t &object_pick_epoch_tag, uvec2 mouse_px, uint32_t radius_px) {
+std::vector<entt::entity> RunObjectPick(entt::registry &r, uvec2 mouse_px, uint32_t radius_px) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
@@ -399,13 +394,12 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, uint32_t &object_pick
     if (max_object_id == 0) return {};
 
     const profile::CpuScope scope{"RunObjectPick"};
-    // The high byte rejects stale persistent keys and a wrapped epoch clears the buffer.
-    // A full reset runs only when the 8-bit epoch wraps, and readback filters stale keys by epoch.
-    if (object_pick_epoch_tag == 0) {
-        ResetObjectPickKeys(buffers);
-        object_pick_epoch_tag = 255;
+    // The high byte rejects stale keys; clear on first use and whenever the 8-bit epoch wraps.
+    if (buffers.ObjectPickEpochTag == 0) {
+        std::fill_n(buffers.ObjectPickKeys.Data(), GpuBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
+        buffers.ObjectPickEpochTag = 255;
     }
-    const uint32_t epoch_inv = object_pick_epoch_tag--;
+    const uint32_t epoch_inv = buffers.ObjectPickEpochTag--;
 
     std::fill_n(buffers.ObjectPickSeenBitset.Data(), (max_object_id + 31) / 32, 0u);
     auto *command_buffer = ctx.Queue->commandBuffer();

@@ -6,8 +6,10 @@
 #include "Job.h"
 #include "ModalAudio.h"
 #include "Reactive.h"
+#include "RealImpact.h"
 #include "action/ActionApply.h"
 #include "action/Audio.h"
+#include "action/Errors.h"
 #include "audio/WavWriter.h"
 #include "mesh/MeshStore.h"
 #include "physics/PhysicsContact.h"
@@ -32,6 +34,7 @@
 #include <iostream>
 #include <numbers>
 #include <string_view>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -91,104 +94,44 @@ uint32_t DeviceSampleRate(const entt::registry &r) {
 }
 
 namespace {
-// Per-sound-object component. Maps mesh vertex handles to sample keys in the scene-level AudioSamples store.
-// Only vertices that have a sample appear in the map.
-struct VertexSamples {
-    std::map<uint32_t, fs::path> PathByVertex;
-    uint32_t Frame{0};
-    bool Stopped{true};
-
-    std::optional<fs::path> FindPath(uint32_t mesh_vertex) const {
-        auto it = PathByVertex.find(mesh_vertex);
-        return it != PathByVertex.end() ? std::optional{it->second} : std::nullopt;
-    }
-    void Stop() { Stopped = true; }
-    void Play() {
-        Frame = 0;
-        Stopped = false;
-    }
-};
-
-// Stores one refcounted sample per path for all vertices and sound objects in a scene.
-struct AudioSamples {
-    struct Entry {
-        std::vector<float> Frames;
-        uint32_t RefCount{0};
-    };
-    std::unordered_map<fs::path, Entry> ByPath;
-};
-
-const std::vector<float> &GetSampleFrames(const entt::registry &r, entt::entity viewport, const fs::path &path) {
+const std::vector<float> &GetSampleFrames(const entt::registry &r, const fs::path &path) {
     static const std::vector<float> EmptyFrames{};
-    if (path.empty()) return EmptyFrames;
-    const auto *store = r.try_get<const AudioSamples>(viewport);
-    if (!store) return EmptyFrames;
-    const auto it = store->ByPath.find(path);
-    return it != store->ByPath.end() ? it->second.Frames : EmptyFrames;
-}
-
-// Inserts frames if `path` is new, otherwise reuses existing frames. Bumps refcount either way.
-void AcquireSample(entt::registry &r, entt::entity viewport, const fs::path &path, std::vector<float> &&frames) {
-    if (path.empty()) return;
-    auto &store = r.get_or_emplace<AudioSamples>(viewport);
-    auto [it, inserted] = store.ByPath.try_emplace(path);
-    if (inserted) it->second.Frames = std::move(frames);
-    ++it->second.RefCount;
-}
-
-// Decrements refcount, erasing the entry (and the component if empty) when it hits 0.
-void ReleaseSample(entt::registry &r, entt::entity viewport, const fs::path &path) {
-    if (path.empty()) return;
-    auto *store = r.try_get<AudioSamples>(viewport);
-    if (!store) return;
-    const auto it = store->ByPath.find(path);
-    if (it == store->ByPath.end()) return;
-    if (--it->second.RefCount == 0) store->ByPath.erase(it);
-    if (store->ByPath.empty()) r.remove<AudioSamples>(viewport);
+    const auto &samples = r.ctx().get<const AudioSamples>().ByPath;
+    const auto it = samples.find(path);
+    return it != samples.end() ? it->second : EmptyFrames;
 }
 } // namespace
 
 void AssignVertexSample(
-    entt::registry &r, entt::entity viewport, entt::entity e,
+    entt::registry &r, entt::entity e,
     std::span<const uint32_t> mesh_vertices, fs::path path, std::vector<float> &&frames
 ) {
     if (mesh_vertices.empty() || path.empty()) return;
     auto &vs = r.get_or_emplace<VertexSamples>(e);
-    vs.Stop();
+    if (auto *playback = r.try_get<SamplePlayback>(e)) playback->Stop();
+    r.ctx().get<AudioSamples>().ByPath.try_emplace(path, std::move(frames));
 
-    // The first new path consumes frames.
-    // Later calls reuse the stored path and ignore the moved-from vector while increasing its reference count.
     bool vs_changed = false;
     for (const uint32_t mv : mesh_vertices) {
-        auto [it, inserted] = vs.PathByVertex.try_emplace(mv, path);
-        if (!inserted) {
-            if (it->second == path) continue;
-            ReleaseSample(r, viewport, it->second);
-            it->second = path;
-        }
-        AcquireSample(r, viewport, path, std::move(frames)); // NOLINT(bugprone-use-after-move) only the first new-path call reads frames
+        auto &assigned = vs.PathByVertex[mv];
+        if (assigned == path) continue;
+        assigned = path;
         vs_changed = true;
     }
-    if (vs_changed) r.patch<VertexSamples>(e, [](auto &) {});
+    if (vs_changed) r.patch<VertexSamples>(e);
     if (!r.all_of<SoundVerticesModel>(e)) r.emplace<SoundVerticesModel>(e, SoundVerticesModel::Samples);
 }
 
 void RemoveVertexSamples(
-    entt::registry &r, entt::entity viewport, entt::entity e,
+    entt::registry &r, entt::entity e,
     std::span<const uint32_t> mesh_vertices
 ) {
     auto *vs = r.try_get<VertexSamples>(e);
     if (!vs || mesh_vertices.empty()) return;
-    vs->Stop();
-    bool vs_changed = false;
-    for (const uint32_t mv : mesh_vertices) {
-        const auto it = vs->PathByVertex.find(mv);
-        if (it == vs->PathByVertex.end()) continue;
-        ReleaseSample(r, viewport, it->second);
-        vs->PathByVertex.erase(it);
-        vs_changed = true;
-    }
-    if (vs_changed) r.patch<VertexSamples>(e, [](auto &) {});
+    if (auto *playback = r.try_get<SamplePlayback>(e)) playback->Stop();
+    size_t removed = 0;
+    for (const uint32_t mv : mesh_vertices) removed += vs->PathByVertex.erase(mv);
+    if (removed) r.patch<VertexSamples>(e);
     if (vs->PathByVertex.empty()) {
         if (r.all_of<ModalModes>(e)) r.remove<VertexSamples>(e);
         else RemoveAudioComponents(r, e);
@@ -196,11 +139,11 @@ void RemoveVertexSamples(
 }
 
 void SetVertexSamples(
-    entt::registry &r, entt::entity viewport, entt::entity e,
-    std::span<const uint32_t> mesh_vertices, std::vector<LoadedSample> &&samples
+    entt::registry &r, entt::entity e,
+    std::span<const uint32_t> mesh_vertices, std::span<LoadedSample> samples
 ) {
     for (size_t i = 0; i < samples.size() && i < mesh_vertices.size(); ++i) {
-        AssignVertexSample(r, viewport, e, {&mesh_vertices[i], 1}, std::move(samples[i].first), std::move(samples[i].second));
+        AssignVertexSample(r, e, {&mesh_vertices[i], 1}, std::move(samples[i].first), std::move(samples[i].second));
     }
 }
 
@@ -222,7 +165,9 @@ std::optional<fs::path> ActiveSamplePath(const entt::registry &r, entt::entity i
     if (!samples) return std::nullopt;
     const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
     const auto *active = r.try_get<const MeshActiveElement>(mesh_entity);
-    return active ? samples->FindPath(active->Handle) : std::nullopt;
+    if (!active) return std::nullopt;
+    const auto it = samples->PathByVertex.find(active->Handle);
+    return it != samples->PathByVertex.end() ? std::optional{it->second} : std::nullopt;
 }
 
 /***** Modal synthesis bank *****/
@@ -335,7 +280,7 @@ void RebuildModalBank(entt::registry &r) {
 /***** Free functions for sound object control *****/
 
 void Stop(entt::registry &r, entt::entity e) {
-    if (auto *samples = r.try_get<VertexSamples>(e)) samples->Stop();
+    if (auto *playback = r.try_get<SamplePlayback>(e)) playback->Stop();
     if (r.all_of<ModalModes>(e)) {
         auto &m = r.ctx().get<ModalAudio>();
         if (auto slot = FindModalObject(LiveBank(m), e)) EnqueueModalEvent(m, {.Kind = ModalEventKind::Silence, .Object = *slot});
@@ -816,7 +761,7 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e, 
 
     if (!inputs.Config.Modal.FundamentalFreq) {
         if (const auto path = ActiveSamplePath(r, e)) {
-            const auto &frames = GetSampleFrames(r, viewport, *path);
+            const auto &frames = GetSampleFrames(r, *path);
             if (!frames.empty()) {
                 const auto sr = DeviceSampleRate(r);
                 inputs.Config.Modal.FundamentalFreq = EstimateFundamentalFrequency(ComputeFft(frames, sr), sr);
@@ -863,13 +808,15 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         auto &m = r.ctx().get<ModalAudio>();
         ModalBank empty;
         InstallModalBank(m, empty);
+        r.ctx().get<AudioSamples>().ByPath.clear();
         // Clear warm-start data associated with the removed scene.
         r.ctx().get<ModalWarmStart>() = {};
         // In-flight solves target entities from the cleared scene. Their results are discarded on arrival.
         for (auto &job : r.ctx().get<ModalSolveJobs>().Jobs) job->Work.RequestCancel();
     });
 
-    // Create modal solve context slots once because ProcessAudio reads the registry context concurrently.
+    // Create audio context slots once because ProcessAudio reads the registry context concurrently.
+    r.ctx().emplace<AudioSamples>();
     r.ctx().emplace<ModalWarmStart>();
     r.ctx().emplace<ModalSolveJobs>();
 
@@ -917,6 +864,28 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         for (auto e : reactive<audio_changes::ModelRescaleEdit>(r)) {
             if (!r.valid(e) || !r.all_of<ModalEigenSummary, ::ModalModes>(e)) continue;
             RescaleModalObject(r, e);
+        }
+        if (!reactive<audio_changes::SoundVerticesDerivation>(r).empty()) {
+            std::unordered_set<fs::path> used_samples;
+            for (const auto &[_, samples] : r.view<const VertexSamples>().each()) {
+                for (const auto &[__, path] : samples.PathByVertex) used_samples.insert(path);
+            }
+            auto &samples = r.ctx().get<AudioSamples>().ByPath;
+            for (const auto &path : used_samples) {
+                if (samples.contains(path)) continue;
+                if (const auto source = RealImpact::SampleGroupFromKey(path)) {
+                    auto group = RealImpact::LoadSamples(source->first, source->second);
+                    if (group) {
+                        for (auto &[key, frames] : *group) samples.try_emplace(std::move(key), std::move(frames));
+                    } else {
+                        r.ctx().get<action::Errors>().Messages.push_back(std::move(group.error()));
+                        samples.try_emplace(path);
+                    }
+                } else {
+                    samples.emplace(path, LoadAudioFrames(path.string(), DeviceSampleRate(r)));
+                }
+            }
+            std::erase_if(samples, [&](const auto &entry) { return !used_samples.contains(entry.first); });
         }
         // Rebuild SoundVertices from VertexSamples/ModalModes, selected by SoundVerticesModel.
         // Runs before any handler that reads SoundVertices.
@@ -985,7 +954,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 if (model == SoundVerticesModel::Modal && r.all_of<ModalModes>(e)) {
                     TriggerModalStrike(r, e, *vi, vf->Force, vf->ContactSpeed);
                 } else if (model == SoundVerticesModel::Samples && r.all_of<VertexSamples>(e)) {
-                    r.patch<VertexSamples>(e, [](auto &s) { s.Play(); });
+                    r.get_or_emplace<SamplePlayback>(e).Play();
                 }
             }
         }
@@ -1196,11 +1165,11 @@ void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint3
     const float sample_gain = (controls ? controls->SampleGain : ModalSoundControls{}.SampleGain) * FullScalePressure;
     for (const auto [entity, model] : r.view<SoundVerticesModel>().each()) {
         if (model == SoundVerticesModel::Samples) {
-            auto *samples = r.try_get<VertexSamples>(entity);
+            auto *samples = r.try_get<SamplePlayback>(entity);
             if (!samples || samples->Stopped) continue;
             const auto path = ActiveSamplePath(r, entity);
             if (!path) continue;
-            const auto &impact_samples = GetSampleFrames(r, viewport, *path);
+            const auto &impact_samples = GetSampleFrames(r, *path);
             for (uint32_t i = 0; i < frame_count; ++i) {
                 output[i] += (samples->Frame < impact_samples.size() ? impact_samples[samples->Frame++] : 0.0f) * sample_gain;
             }
@@ -1618,9 +1587,10 @@ void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::ent
             }
         }
         if (const auto path = ActiveSamplePath(r, e)) {
-            const auto &frames = GetSampleFrames(r, viewport, *path);
+            const auto &frames = GetSampleFrames(r, *path);
             if (!frames.empty()) {
-                PlotFrames(frames, "Waveform", samples->Stopped ? std::optional<uint>{} : std::optional{samples->Frame});
+                const auto *playback = r.try_get<const SamplePlayback>(e);
+                PlotFrames(frames, "Waveform", !playback || playback->Stopped ? std::optional<uint>{} : std::optional{playback->Frame});
                 PlotMagnitudeSpectrum(frames, sample_rate, "Spectrum");
             }
         }
@@ -1695,7 +1665,7 @@ void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::ent
             const auto sr = DeviceSampleRate(r);
             WriteWav(recording->Frames, WavOutDir / std::format("{}-modal", name), sr);
             if (const auto path = ActiveSamplePath(r, e)) {
-                WriteWav(GetSampleFrames(r, viewport, *path), WavOutDir / std::format("{}-impact", name), sr);
+                WriteWav(GetSampleFrames(r, *path), WavOutDir / std::format("{}-impact", name), sr);
             }
         }
     }
@@ -1703,7 +1673,7 @@ void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::ent
 
 void RemoveAudioComponents(entt::registry &r, entt::entity e) {
     CancelModalSolves(r, e);
-    r.remove<ScaleLocked, SoundVertices, Recording, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, MassProperties, ContactDynamics, ModalEigenSummary, VertexSamples, ModalSolveSettings, RealImpactActiveMicrophone, RealImpactVertices>(e);
+    r.remove<ScaleLocked, SoundVertices, Recording, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, MassProperties, ContactDynamics, ModalEigenSummary, VertexSamples, SamplePlayback, ModalSolveSettings, RealImpactActiveMicrophone, RealImpactVertices>(e);
 }
 
 void ApplyModalModel(entt::registry &r, entt::entity e, const fs::path &relative_path) {

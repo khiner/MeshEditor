@@ -144,31 +144,50 @@ std::array<vec3, NumImpactVertices> LoadPositions(const fs::path &directory) {
     return impact_positions;
 }
 
-std::array<LoadedSample, NumImpactVertices> LoadSamples(const fs::path &directory, long listener_point_index) {
+std::optional<std::pair<fs::path, long>> SampleGroupFromKey(const fs::path &key) {
+    static const std::regex pattern{R"(^realimpact://(.+)/li([0-9]+)_impact([0-9]+)$)"};
+    const auto text = key.string();
+    std::smatch match;
+    if (!std::regex_match(text, match, pattern)) return std::nullopt;
+    const auto listener = std::stol(match[2].str()), impact = std::stol(match[3].str());
+    if (listener >= NumListenerPoints || impact >= NumImpactVertices) return std::nullopt;
+    return std::pair{fs::path{match[1].str()}, listener};
+}
+
+std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamples(const fs::path &directory, long listener_point_index) {
     const auto file = directory / "deconvolved_0db.npy";
-    if (!fs::exists(file)) return {};
-
     std::ifstream stream{file, std::ifstream::binary};
-    const auto header = npy::read_header<float>(stream);
+    if (!stream) return std::unexpected(std::format("Failed to open RealImpact audio file: {}", file.string()));
+    try {
+        const auto header = npy::read_header<float>(stream);
 
-    const size_t frames_per_impact = header.shape[1];
-    std::array<LoadedSample, NumImpactVertices> all_samples;
-    float max_sample = 0;
-    for (uint32_t i = 0; i < NumImpactVertices; ++i) {
-        // All listener points are recorded before the vertex moves.
-        // The offset is calculated relative to the current stream read position.
-        const size_t advance_frames = (i == 0 ? listener_point_index : (NumListenerPoints - 1)) * frames_per_impact;
-        auto frames = npy::read_npy<float>(stream, header, advance_frames, frames_per_impact).data;
-        max_sample = std::max(max_sample, std::abs(*max_element(frames, [](auto a, auto b) { return std::abs(a) < std::abs(b); })));
-        // Synthetic key, never opened as a real file, unique per (directory, listener, impact).
-        auto key = fs::path{std::format("realimpact://{}/li{}_impact{}", directory.string(), listener_point_index, i)};
-        all_samples[i] = {std::move(key), std::move(frames)};
+        if (listener_point_index < 0 || listener_point_index >= NumListenerPoints || header.fortran_order ||
+            header.shape.size() != 2 || header.shape[0] != NumListenerPoints * NumImpactVertices || header.shape[1] == 0) {
+            return std::unexpected(std::format("Invalid RealImpact audio layout or listener: {}", file.string()));
+        }
+        const size_t frames_per_impact = header.shape[1];
+        std::array<LoadedSample, NumImpactVertices> all_samples;
+        float max_sample = 0;
+        for (uint32_t i = 0; i < NumImpactVertices; ++i) {
+            // All listener points are recorded before the vertex moves.
+            // The offset is calculated relative to the current stream read position.
+            const size_t advance_frames = (i == 0 ? listener_point_index : (NumListenerPoints - 1)) * frames_per_impact;
+            auto frames = npy::read_npy<float>(stream, header, advance_frames, frames_per_impact).data;
+            if (!stream) return std::unexpected(std::format("Failed to read RealImpact audio file: {}", file.string()));
+            max_sample = std::max(max_sample, std::abs(*max_element(frames, [](auto a, auto b) { return std::abs(a) < std::abs(b); })));
+            // Synthetic key, never opened as a real file, unique per (directory, listener, impact).
+            auto key = fs::path{std::format("realimpact://{}/li{}_impact{}", directory.string(), listener_point_index, i)};
+            all_samples[i] = {std::move(key), std::move(frames)};
+        }
+        // Normalize audio to [-1, 1]
+        if (max_sample > 0)
+            for (auto &[_, samples] : all_samples) {
+                for (float &sample : samples) sample /= max_sample;
+            }
+        return all_samples;
+    } catch (const std::exception &error) {
+        return std::unexpected(std::format("Failed to read RealImpact audio file {}: {}", file.string(), error.what()));
     }
-    // Normalize audio to [-1, 1]
-    for (auto &[_, samples] : all_samples) {
-        for (float &sample : samples) sample /= max_sample;
-    }
-    return all_samples;
 }
 
 /*

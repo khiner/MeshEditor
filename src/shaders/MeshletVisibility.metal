@@ -31,11 +31,11 @@ inline float4 VisibilitySampleTexture(
     return scene.SampleTexGrad(texture.Slot, transformed, dx, dy);
 }
 
-fragment uint MeshletVisibilityOpaqueFragment(uint primitive_id [[primitive_id]]) {
-    return primitive_id;
+fragment uint2 MeshletVisibilityOpaqueFragment(float4 position [[position]], uint primitive_id [[primitive_id]]) {
+    return uint2(primitive_id, as_type<uint>(position.z));
 }
 
-fragment uint MeshletVisibilityPrimitiveFragment(
+fragment uint2 MeshletVisibilityPrimitiveFragment(
     float4 position [[position]],
     uint primitive_id [[primitive_id]],
     bool front_facing [[front_facing]],
@@ -71,7 +71,7 @@ fragment uint MeshletVisibilityPrimitiveFragment(
     const bool transmission_mask = draw_pc.VisibilityTransmission != 0u && material.Unlit == 0u &&
         material.Transmission.Factor > 0.0f;
     const bool point_coverage = topology == MeshPrimitiveTopology_Point;
-    if (!alpha_mask && !transmission_mask && !point_coverage) return primitive_id;
+    if (!alpha_mask && !transmission_mask && !point_coverage) return uint2(primitive_id, as_type<uint>(position.z));
 
     if (!MeshletCoarse(resolved.Meshlet)) {
         const uint logical_element = topology == MeshPrimitiveTopology_Triangle ?
@@ -99,5 +99,5 @@ fragment uint MeshletVisibilityPrimitiveFragment(
         }
         if (transmission > 0.0f) discard_fragment();
     }
-    return primitive_id;
+    return uint2(primitive_id, as_type<uint>(position.z));
 }

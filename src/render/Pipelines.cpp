@@ -245,8 +245,8 @@ MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
       MotionBlurGatherFormats{{Format::HdrColor}, MTL::PixelFormatInvalid},
       MotionBlurGather{CreateQuadPipeline(libraries, MotionBlurGatherFormats, "MotionBlurGather.metal", "MotionBlurGatherFragment", NoBlend)},
       WorkspaceVisibility{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"WorkspaceLighting.metal", "WorkspaceVisibilityFragment"}, SceneFormats(), {Blend}, DepthOff},
-      MeshletVisibilityOpaque{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityOpaqueFragment"}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
-      MeshletVisibilityCoverage{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityPrimitiveFragment"}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
+      MeshletVisibilityOpaque{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityOpaqueFragment"}, {{Format::Uint2}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
+      MeshletVisibilityCoverage{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityPrimitiveFragment"}, {{Format::Uint2}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
       MeshletEditEdges{MeshletEditEdgePipeline(libraries, true)},
       MeshletEditSmoothEdges{MeshletEditEdgePipeline(libraries, false)},
       MeshletEditPoint{CreateMeshPipeline(libraries, FunctionRef{"VertexPoint.metal", "VertexPointFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestLessEqual, {"MeshletEditOverlay.metal", "MeshletEditPointMesh"})},
@@ -263,7 +263,7 @@ MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
 MainPipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots)
     // Depth is sampled as well as attached: the motion blur gather reads it to sort samples.
     : DepthImage{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      VisibilityImage{mtl::CreateTexture2D(ctx, Format::Uint, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
+      VisibilityImage{mtl::CreateTexture2D(ctx, Format::Uint2, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       SceneColorImage{mtl::CreateTexture2D(ctx, Format::HdrColor, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       OverlayColorImage{mtl::CreateTexture2D(ctx, Format::Color, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       LineDataImage{mtl::CreateTexture2D(ctx, Format::LineData, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
