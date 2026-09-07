@@ -5,6 +5,8 @@ build/
 
 # Render corpus never commits the large, regenerable scene snapshots.
 render/**/*.state
+# Overlay capture logs include local validation timings.
+render/Benchmarks/Overlays/**/*.log
 
 # Latex
 paper/**/*.aux
@@ -20,7 +22,8 @@ compile_commands.json
 # Tetrahedralizer mesh corpora, set up by script/SetupTetCorpus.
 external/TetCorpus/
 
-res/benchmarks/
+res/benchmarks/*
+!res/benchmarks/Overlays/
 benchmark_results/
 
 # Python bytecode.

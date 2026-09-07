@@ -162,7 +162,7 @@ The flags can be combined freely, except `--render` excludes `--record` and `--s
 ### Render corpus
 
 `render/` contains committed demo output for every scene in the corpus and mirrors the source layout. It covers the built-in scenes, `res/examples/`, root audio samples, and glTF samples under `external/`. Isolation audio samples under `samples/test/` use `script/AudioCorpus`; redundant glTF format variants are skipped.
-Each leaf has a visual (lossless `.webp` for static scenes, plus one per material variant, `.mp4` for animated ones - one timeline loop per animation clip, back-to-back), the `.actions` replay log, a `.log` of console output, and a `run.sh` that opens that scene in the app.
+Each scene leaf has a visual (lossless `.webp` for static scenes, plus one per material variant, `.mp4` for animated ones - one timeline loop per animation clip, back-to-back), the `.actions` replay log, a `.log` of console output, and a `run.sh` that opens that scene in the app.
 A scene with sound objects renders its audio and muxes it into the `.mp4`.
 
 Binary artifacts are stored in [git-lfs](https://git-lfs.com); fetch them after cloning:
@@ -172,6 +172,15 @@ $ git lfs pull
 ```
 
 Regenerate the corpus with `./script/Render`.
+`render/Benchmarks/Overlays/` adds fixed editor captures using the [overlay benchmark scene and cases](res/benchmarks/Overlays/benchmark.json). Run `script/Render --overlays-only` to update just these captures (`--no-build` uses the existing executable). These leaves contain a lossless `.webp` and a `run.sh` that reproduces the capture headlessly; console logs stay local.
+
+| Overlay cases | Coverage |
+|-|-|
+| `axes` | Grid/axis lines in front of and behind geometry-attached outlines |
+| `overview`, `orthographic` | Dense linked/mirrored meshes, normals, bounds, lines, points, camera/light helpers, animated bones and bone X-ray; perspective and orthographic views |
+| `edit-vertex`, `edit-edge`, `edit-face`, `edit-xray` | GPU box selection followed by an orbit to reveal selected/unselected elements, with and without X-ray |
+| `pick-1` through `pick-4` | Successive picks through overlapping opaque, mirrored and blended objects, a masked hole, and cycle wraparound |
+
 Scenes render headless (no window or display needed) and in parallel (`JOBS` sets the worker count, default 8). It needs the glTF submodules, plus `ffmpeg` on `PATH` for videos.
 Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed extent, so artifacts are deterministic: after regenerating, `git status` shows only scenes whose rendering actually changed.
 
@@ -238,11 +247,19 @@ $ script/GenerateRenderBenchmarks
 $ script/Bench run
 ```
 
-The generated `res/benchmarks/` dataset is ignored by git. It also populates
-`File > Benchmarks`; the menu is absent until the dataset exists. Use
+The large generated datasets under `res/benchmarks/` are ignored by git; the small `Overlays/` scene is committed for the render corpus. These scenes populate `File > Benchmarks`. Use
 `script/GenerateRenderBenchmarks --profile smoke` for a quick tooling check,
 `script/Bench list` to list cases, and `script/Bench compare before.json after.json`
 to compare runs.
+
+The overlay corpus and performance checks share the same scene and case settings:
+
+```sh
+$ script/Bench run --scene-root res/benchmarks/Overlays
+$ script/GenerateRenderBenchmarks --profile overlays --check
+```
+
+`--profile overlays` regenerates only the committed overlay scene, preserving the large local datasets. It contains 192 linked sphere instances (786,432 logical triangles) plus the small coverage fixtures.
 
 ### Tests
 

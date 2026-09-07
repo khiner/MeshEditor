@@ -84,6 +84,12 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.patch<ViewCamera>(viewport, [&](auto &vc) { vc.AnimateToLookThrough(wt.P, wt.R, 1.f); });
             },
             [&](ExitLookThroughCamera) { ClearLookThrough(r, viewport); },
+            [&](const SetLookThroughCamera &a) {
+                if (!r.all_of<Camera, WorldTransform>(a.Entity)) return;
+                SetLookThrough(r, viewport, a.Entity);
+                const auto &wt = r.get<WorldTransform>(a.Entity);
+                r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, r.get<Camera>(a.Entity)});
+            },
             [&](const OrbitViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.RotateBy(a.DeltaRad); }); },
             [&](const ZoomViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.ZoomBy(a.Factor); }); },
             [&](const SetExtent &a) { r.ctx().get<ViewportExtent>().Value = a.Extent; },

@@ -44,10 +44,12 @@
 #include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
+#include "selection/SelectionComponents.h"
 #include "snapshot/ReplayTestFixture.h"
 #include "snapshot/SaveState.h"
 #include "snapshot/SceneSnapshot.h"
 #include "viewport/FrameState.h"
+#include "viewport/RenderExtent.h"
 #include "viewport/ViewCamera.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
@@ -1004,7 +1006,8 @@ Scene:
   --camera NAME               Frame the named camera
   --shading MODE              wireframe | solid | preview | rendered
   --edit ELEMENT              Enter edit mode on vertex | edge | face
-  --select-all                Select every element of the edited mesh
+  --select-all                Select all objects or edited elements
+  --selection-xray            Select occluded mesh elements too
   --overlays                  Draw the editor overlays
   --lod-error PIXELS          Screen-space error budget for the cluster LOD cut
   --display LIST              Comma-separated: vertex-normals, face-normals, bounds, tet-wireframe
@@ -1023,7 +1026,7 @@ Capture:
 Benchmarking:
   --headless                  Run without a window
   --frames N                  Render N frames and exit
-  --bench-action ACTION       steady | orbit | transform | visibility | box-select
+  --bench-action ACTION       steady | orbit | transform | visibility | box-select | box-select-orbit | pick-cycle
   --bench-action-count N      Actions per benchmark run
   --profile                   Print the profile report on exit
   --profile-json PATH         Write the profile report to PATH
@@ -1039,7 +1042,9 @@ struct CaptureRequest {
                                  Orbit,
                                  Transform,
                                  Visibility,
-                                 BoxSelect };
+                                 BoxSelect,
+                                 BoxSelectOrbit,
+                                 PickCycle };
 
     bool Play{false};
     float PlayDuration{0};
@@ -1056,6 +1061,7 @@ struct CaptureRequest {
     std::optional<ViewportShadingMode> Shading{};
     bool Overlays{false}; // Keep overlays on through a capture, which presentation otherwise turns off.
     std::optional<Element> EditMode{}; // Engaged: select mesh objects and enter this element edit mode.
+    bool SelectionXray{false};
     bool SelectAll{false};
     float LodErrorPixels{-1.f}; // Screen-space error budget override for the cluster LOD cut. Negative leaves the viewport setting untouched.
     uint8_t NormalOverlays{0};
@@ -1101,6 +1107,13 @@ struct BenchmarkDriver {
                     else Show(r, entity);
                 }
                 break;
+            case CaptureRequest::BenchmarkAction::BoxSelectOrbit:
+                if (Frame % 2 != 0) {
+                    // Keep both benchmark viewpoints on the scene throughout long runs.
+                    action::Emit(action::view::OrbitViewCamera{{Frame % 4 == 1 ? 0.6f : -0.6f, 0.f}});
+                    break;
+                }
+                [[fallthrough]];
             case CaptureRequest::BenchmarkAction::BoxSelect: {
                 if (extent == uvec2{}) break;
                 const uint32_t inset = Frame % 2 == 0 ? 4u : 8u;
@@ -1109,6 +1122,13 @@ struct BenchmarkDriver {
                     .Additive = false,
                     .View = std::make_unique<RenderView>(r.ctx().get<const GpuBuffers>().FrameView),
                 });
+                break;
+            }
+            case CaptureRequest::BenchmarkAction::PickCycle: {
+                const auto px = extent / 2u;
+                auto view = std::make_unique<RenderView>(r.ctx().get<const GpuBuffers>().FrameView);
+                if (Frame == 0) action::Emit(action::selection::Pick{px, false, std::move(view)});
+                else action::Emit(action::selection::PickCycle{px, false, std::move(view)});
                 break;
             }
         }
@@ -1120,8 +1140,7 @@ bool SelectSceneCamera(entt::registry &r, entt::entity viewport, std::string_vie
     if (name.empty()) return true;
     for (const auto [entity, _, camera_name] : r.view<const Camera, const CameraName>().each()) {
         if (camera_name.Value != name) continue;
-        SetLookThrough(r, viewport, entity);
-        ProcessComponentEvents(r, viewport);
+        Perform(r, viewport, action::view::SetLookThroughCamera{entity});
         return true;
     }
     std::println(stderr, "No scene camera named '{}'.", name);
@@ -1226,7 +1245,8 @@ struct CaptureDriver {
         // Start fixed-step playback after recording begins so the first frame is captured.
         const bool ready = RenderMode() || (FixedStep && RecordingMode()) ? IsRecording(r, viewport) : (Play || RecordingMode());
         if (!PlaybackStarted && Framed(settled) && ready) {
-            action::Emit(action::timeline::StartPresentation{});
+            const auto &playback = r.get<const TimelinePlayback>(viewport);
+            if (!playback.Playing) action::Emit(action::timeline::TogglePlay{playback.CurrentFrame});
             PlaybackStarted = true;
         }
     }
@@ -1329,6 +1349,7 @@ CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, cons
             Perform(r, viewport, action::view::SetEditMode{*capture.EditMode});
         }
     }
+    if (seeded && capture.SelectionXray) Perform(r, viewport, action::UpdateOf<&SelectionXRay::Value>(viewport, true));
     if (seeded && capture.SelectAll) Perform(r, viewport, action::selection::SelectAll{});
     const bool play = seeded && capture.Play;
     // After the load, whose end frame comes from the scene's own animation durations.
@@ -1745,7 +1766,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
         }
         {
             const profile::CpuScope scope{"Frame"};
-            if (bench_frames > 0 && settled) benchmark.Apply(r, extent);
+            if (bench_frames > 0 && settled) benchmark.Apply(r, RenderExtentPx(r));
             driver.EmitFrameActions(r, viewport, settled, extent);
             action::ApplyEmitted(r, viewport);
             ReportActionErrors(r);
@@ -1881,7 +1902,7 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
             }
             const bool empty = job->SceneArg == "--empty";
             const char *initial_file = !empty && !job->SceneArg.empty() ? job->SceneArg.c_str() : nullptr;
-            RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename, .Overlays = harness.Overlays, .EditMode = harness.EditMode, .SelectAll = harness.SelectAll, .LodErrorPixels = harness.LodErrorPixels, .NormalOverlays = harness.NormalOverlays, .BoundingBoxes = harness.BoundingBoxes, .TetWireframe = harness.TetWireframe});
+            RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename, .Overlays = harness.Overlays, .EditMode = harness.EditMode, .SelectionXray = harness.SelectionXray, .SelectAll = harness.SelectAll, .LodErrorPixels = harness.LodErrorPixels, .NormalOverlays = harness.NormalOverlays, .BoundingBoxes = harness.BoundingBoxes, .TetWireframe = harness.TetWireframe});
             // Finalize capture and restore engine state between jobs.
             QuiesceScene(r, viewport);
             ClearScene(r, viewport);
@@ -1961,7 +1982,8 @@ int main(int argc, char **argv) {
             }
         } else if (a == "--lod-error" && std::next(it) != args.end()) {
             capture.LodErrorPixels = std::stof(std::string{*++it});
-        } else if (a == "--select-all") capture.SelectAll = true;
+        } else if (a == "--selection-xray") capture.SelectionXray = true;
+        else if (a == "--select-all") capture.SelectAll = true;
         else if (a == "--display" && std::next(it) != args.end()) {
             const std::string_view names{*++it};
             for (size_t start = 0; start <= names.size();) {
@@ -1990,6 +2012,8 @@ int main(int argc, char **argv) {
             else if (action == "transform") capture.BenchAction = CaptureRequest::BenchmarkAction::Transform;
             else if (action == "visibility") capture.BenchAction = CaptureRequest::BenchmarkAction::Visibility;
             else if (action == "box-select") capture.BenchAction = CaptureRequest::BenchmarkAction::BoxSelect;
+            else if (action == "box-select-orbit") capture.BenchAction = CaptureRequest::BenchmarkAction::BoxSelectOrbit;
+            else if (action == "pick-cycle") capture.BenchAction = CaptureRequest::BenchmarkAction::PickCycle;
             else {
                 std::println(stderr, "Unknown benchmark action '{}'.", action);
                 return 1;

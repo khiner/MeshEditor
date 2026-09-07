@@ -332,7 +332,8 @@ def add_grid_node(asset: dict, name: str, mesh: int, index: int, side: int, spac
 
 
 def finish(asset: dict, buffer: Buffer, name: str, output: Path, metadata: dict) -> dict:
-    asset["scenes"][0]["nodes"] = list(range(len(asset["nodes"])))
+    children = {child for node in asset["nodes"] for child in node.get("children", [])}
+    asset["scenes"][0]["nodes"] = [i for i in range(len(asset["nodes"])) if i not in children]
     asset["bufferViews"] = buffer.views
     asset["accessors"] = buffer.accessors
     asset["buffers"] = [{"uri": f"{name}.bin", "byteLength": len(buffer.data)}]
@@ -523,13 +524,122 @@ def generate_deformation(profile: Profile, output: Path) -> dict:
     })
 
 
+# These cases share one fixed dataset, so corpus images and timings exercise identical geometry.
+OVERLAY_CASES = [
+    {"id": "axes", "camera": "Axes", "selectAll": True},
+    {"id": "overview", "camera": "Overview", "selectAll": True, "display": "bounds,face-normals,vertex-normals", "action": "playback", "captureFrames": 12},
+    {"id": "orthographic", "camera": "Orthographic", "selectAll": True, "shading": "wireframe"},
+    *({"id": f"edit-{element}", "camera": "Axes", "edit": element, "action": "box-select-orbit", "captureFrames": 2} for element in ("vertex", "edge", "face")),
+    {"id": "edit-xray", "camera": "Axes", "edit": "vertex", "selectionXray": True, "action": "box-select-orbit", "captureFrames": 2},
+    *({"id": f"pick-{step}", "camera": "Pick", "shading": "preview", "action": "pick-cycle", "captureFrames": step} for step in range(1, 5)),
+]
+OVERLAY_CASES = [{"scene": "Overlays", "overlays": True, **case} for case in OVERLAY_CASES]
+
+
+def generate_overlays(output: Path) -> dict:
+    asset, buffer = base_asset("Overlays")
+    box = box_geometry(buffer)
+    asset["meshes"].append({"name": "Cube", "primitives": [box]})
+    asset["nodes"].append({"name": "Axis depth crossings", "mesh": 0})
+
+    asset["materials"].extend([
+        {"name": "Blend", "alphaMode": "BLEND", "doubleSided": True, "pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.6, 0.9, 0.4]}},
+        {"name": "Cutout", "alphaMode": "MASK", "doubleSided": True, "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}, "baseColorFactor": [0.8, 0.35, 0.1, 1.0]}},
+    ])
+    asset["images"] = [{"uri": "Cutout.png"}]
+    asset["textures"] = [{"source": 0}]
+    asset["meshes"].extend({"name": name, "primitives": [{**box, "material": material}]} for name, material in (("Blend", 2), ("Cutout", 3)))
+    for i in range(3):
+        asset["nodes"].append({
+            "name": f"Pick {i + 1}", "mesh": 1 if i == 2 else 0,
+            "translation": [-6.7 + i * 0.7, 3.0, -1.5 - i * 0.5],
+            "scale": [-1.5 if i == 1 else 1.5, 1.1, 0.2],
+        })
+    asset["nodes"].append({"name": "Pick through cutout", "mesh": 2, "translation": [-6.0, 3.0, -0.5], "scale": [3.0, 1.8, 0.1]})
+
+    sphere = len(asset["meshes"])
+    asset["meshes"].append({"name": "Linked dense sphere", "primitives": [sphere_geometry(buffer, 64, 32)]})
+    for z in range(12):
+        for x in range(16):
+            asset["nodes"].append({"name": f"Linked sphere {x},{z}", "mesh": sphere,
+                "translation": [(x - 7.5) * 2.0, 0.3 * ((x + z) % 3), -8.0 - z * 2.0],
+                "scale": [-0.7 if x % 2 else 0.7, 0.7, 0.7]})
+
+    positions = [(4.0 + x * 0.18, -0.5 + y * 0.18, -2.0 + x * 0.05) for y in range(17) for x in range(17)]
+    attributes = {"POSITION": buffer.accessor(positions, "VEC3", target=34962, bounds=True)}
+    indices = [v for y in range(17) for x in range(16) for v in (y * 17 + x, y * 17 + x + 1)]
+    for name, mode in (("Lines", 1), ("Points", 0)):
+        primitive = {"attributes": attributes, "mode": mode, "material": 1}
+        if mode == 1:
+            primitive["indices"] = buffer.accessor(indices, "SCALAR", 5125, 34963)
+        asset["nodes"].append({"name": name, "mesh": len(asset["meshes"])})
+        asset["meshes"].append({"name": name, "primitives": [primitive]})
+
+    # Two linked skin instances put bone X-ray behind a cube and exercise mirrored bone winding.
+    skinned = dict(box)
+    skinned["attributes"] = dict(box["attributes"])
+    position_accessor = buffer.accessors[box["attributes"]["POSITION"]]
+    offset = buffer.views[position_accessor["bufferView"]]["byteOffset"]
+    original = list(struct.iter_unpack("<3f", buffer.data[offset:offset + 24 * 12]))
+    skinned["attributes"]["POSITION"] = buffer.accessor([(x * 0.25, (y + 1) * 1.25, z * 0.25) for x, y, z in original], "VEC3", target=34962, bounds=True)
+    skinned["attributes"]["JOINTS_0"] = buffer.accessor([(int(y > 0), 0, 0, 0) for _, y, _ in original], "VEC4", 5123, 34962)
+    skinned["attributes"]["WEIGHTS_0"] = buffer.accessor([(1.0, 0.0, 0.0, 0.0)] * 24, "VEC4", target=34962)
+    skin_mesh = len(asset["meshes"])
+    asset["meshes"].append({"name": "Skinned bar", "primitives": [skinned]})
+    inverse_binds = [1.,0.,0.,0., 0.,1.,0.,0., 0.,0.,1.,0., 0.,0.,0.,1.,
+                     1.,0.,0.,0., 0.,1.,0.,0., 0.,0.,1.,0., 0.,-1.25,0.,1.]
+    ibm = buffer.raw_accessor(struct.pack("<32f", *inverse_binds), 2, "MAT4", 5126, 34962)
+    asset["skins"] = []
+    joints = []
+    for i in range(2):
+        parent = len(asset["nodes"])
+        root, tip, mesh_node = parent + 1, parent + 2, parent + 3
+        asset["nodes"].extend([
+            {"name": f"Rig {i}", "translation": [3.5 + i * 2.0, 0.0, -1.5], "scale": [-1.0 if i else 1.0, 1.0, 1.0], "children": [root, mesh_node]},
+            {"name": f"Root {i}", "children": [tip]},
+            {"name": f"Tip {i}", "translation": [0.0, 1.25, 0.0]},
+            {"name": f"Skin {i}", "mesh": skin_mesh, "skin": i},
+        ])
+        asset["skins"].append({"joints": [root, tip], "skeleton": root, "inverseBindMatrices": ibm})
+        joints.append(tip)
+    asset["nodes"].append({"name": "Bone occluder", "mesh": 0, "translation": [4.5, 0.6, -0.6], "scale": [1.8, 0.4, 0.15]})
+    times = buffer.accessor([0.0, 1.0, 2.0], "SCALAR", bounds=True)
+    rotations = buffer.accessor([(0.,0.,0.,1.), (0.,0.,math.sin(0.5),math.cos(0.5)), (0.,0.,0.,1.)], "VEC4")
+    asset["animations"] = [{"name": "Bone bend", "samplers": [{"input": times, "output": rotations, "interpolation": "LINEAR"}],
+        "channels": [{"sampler": 0, "target": {"node": tip, "path": "rotation"}} for tip in joints]}]
+    asset["extensionsUsed"] = ["KHR_lights_punctual"]
+    asset["extensions"] = {"KHR_lights_punctual": {"lights": [{"name": "Spot", "type": "spot", "intensity": 30, "spot": {"outerConeAngle": 0.55}}]}}
+    asset["nodes"].append({"name": "Spot", "translation": [3, 4, 2], "rotation": camera_rotation((3,4,2), (0,0,0)), "extensions": {"KHR_lights_punctual": {"light": 0}}})
+    add_camera(asset, "Axes", (3.8, 2.4, 5.5), (0, 0, 0), 200.0)
+    add_camera(asset, "Overview", (20, 17, 28), (0, 0, -12), 200.0)
+    add_camera(asset, "Pick", (-6, 3, 8), (-6, 3, -2), 200.0)
+    add_camera(asset, "Orthographic", (20, 17, 28), (0, 0, -12), 200.0)
+    asset["cameras"][-1] = {"name": "Orthographic", "type": "orthographic", "orthographic": {"xmag": 25.0, "ymag": 16.0, "znear": 0.1, "zfar": 200.0}}
+    metadata = finish(asset, buffer, "Overlays", output, {"instances": 192, "logicalTriangles": 192 * 64 * 32 * 2})
+
+    import zlib
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    pixels = b"".join(b"\0" + b"".join(bytes((255, 255, 255, 0 if 4 <= x < 12 and 4 <= y < 12 else 255)) for x in range(16)) for y in range(16))
+    (output / "Overlays" / "Cutout.png").write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 16, 16, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b""))
+    manifest = {"schemaVersion": 2, "profile": "overlays", "generator": "script/GenerateRenderBenchmarks",
+        "scenes": [{**metadata, "path": "Overlays.gltf"}], "cases": OVERLAY_CASES}
+    (output / "Overlays" / "benchmark.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    return metadata
+
+
 def generate(profile_name: str, output: Path) -> None:
+    if profile_name == "overlays":
+        generate_overlays(output)
+        return
     profile = PROFILES[profile_name]
     manifest_path = output / "benchmark.json"
     if output.exists() and any(output.iterdir()):
         generated = (output / MARKER).is_file()
         if not generated:
             try:
+                if not manifest_path.exists() and {p.name for p in output.iterdir()} == {"Overlays"}:
+                    manifest_path = output / "Overlays" / "benchmark.json"
                 generated = json.loads(manifest_path.read_text()).get("generator") == "script/GenerateRenderBenchmarks"
             except (OSError, json.JSONDecodeError):
                 pass
@@ -548,8 +658,9 @@ def generate(profile_name: str, output: Path) -> None:
         generate_editor_geometry(profile, output, "EditorWireframe", profile.editor_wireframe_meshes),
         generate_transparency(profile, output),
         generate_deformation(profile, output),
+        generate_overlays(output),
     ]
-    manifest = {"schemaVersion": 2, "profile": profile_name, "generator": "script/GenerateRenderBenchmarks", "scenes": scenes, "cases": CASES}
+    manifest = {"schemaVersion": 2, "profile": profile_name, "generator": "script/GenerateRenderBenchmarks", "scenes": scenes, "cases": CASES + [{**case, "id": "overlays-" + case["id"]} for case in OVERLAY_CASES]}
     (output / "benchmark.json").write_text(json.dumps(manifest, indent=2) + "\n")
     for scene in scenes:
         print(f"{scene['name']}: {scene['bytes'] / (1024 * 1024):.1f} MiB, {scene.get('logicalTriangles', 0):,} logical triangles")
@@ -557,7 +668,7 @@ def generate(profile_name: str, output: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--profile", choices=PROFILES, default="standard")
+    parser.add_argument("--profile", choices=[*PROFILES, "overlays"], default="standard")
     parser.add_argument("--output", type=Path, default=ROOT / "res" / "benchmarks")
     parser.add_argument("--check", action="store_true", help="verify the generated dataset is current")
     args = parser.parse_args()
@@ -567,12 +678,16 @@ def main() -> None:
         with tempfile.TemporaryDirectory(prefix="MeshEditorRenderBenchmarkCheck.") as temporary:
             generated = Path(temporary)
             generate(args.profile, generated)
+            actual_root = args.output
+            if args.profile == "overlays":
+                generated /= "Overlays"
+                actual_root /= "Overlays"
             expected = {path.relative_to(generated) for path in generated.rglob("*") if path.is_file()}
-            actual = {path.relative_to(args.output) for path in args.output.rglob("*") if path.is_file()}
+            actual = {path.relative_to(actual_root) for path in actual_root.rglob("*") if path.is_file()}
             changed = [
                 relative for relative in sorted(expected | actual)
                 if relative not in expected or relative not in actual
-                or not filecmp.cmp(generated / relative, args.output / relative, shallow=False)
+                or not filecmp.cmp(generated / relative, actual_root / relative, shallow=False)
             ]
             if changed:
                 raise SystemExit("benchmark dataset differs: " + ", ".join(map(str, changed)))

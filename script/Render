@@ -9,6 +9,7 @@ import argparse
 import os
 from pathlib import Path
 import queue
+import runpy
 import shlex
 import shutil
 import subprocess
@@ -113,6 +114,24 @@ def restore_noise_only_videos(spool: Path) -> None:
             print(f"Content changed ({stats}): {f}")
 
 
+def render_overlays(render_dir: Path, extra_args: list[str]) -> None:
+    bench = runpy.run_path(str(ScriptDir / "Bench"))
+    root = Path("res/benchmarks/Overlays")
+    manifest = bench["load_manifest"](root)
+    scenes = {scene["name"]: root / scene["path"] for scene in manifest["scenes"]}
+    for case in manifest["cases"]:
+        out = render_dir / "Benchmarks" / "Overlays" / case["id"] / case["id"]
+        flags = ["--headless", "--quiet", "--frames", str(case.get("captureFrames", 1)),
+                 "--screenshot", str(out) + ".webp", *bench["case_args"](case), *extra_args]
+        scene = str(scenes[case["scene"]])
+        prepare_leaf(out, scene, flags)
+        print(f"  overlay {case['id']}", flush=True)
+        with Path(str(out) + ".log").open("w") as log:
+            result = subprocess.run([Exe, scene, *flags], stdout=log, stderr=subprocess.STDOUT, timeout=SceneTimeoutSecs)
+        if result.returncode or not Path(str(out) + ".webp").is_file():
+            raise SystemExit(f"Overlay capture failed: {out}.log")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Rebuild MeshEditor and regenerate the render corpus.",
@@ -121,6 +140,8 @@ def main() -> None:
     )
     parser.add_argument("--out", metavar="DIR", help="render into DIR instead of render/, leaving the committed corpus alone")
     parser.add_argument("--app-args", metavar="FLAGS", default="", help="extra MeshEditor flags for every render worker (word split on spaces)")
+    parser.add_argument("--overlays-only", action="store_true", help="render only the overlay/selection benchmark cases")
+    parser.add_argument("--no-build", action="store_true", help="use the existing executable")
     args = parser.parse_args()
     render_dir = Path(args.out) if args.out else CorpusDir
     extra_args = args.app_args.split()
@@ -128,7 +149,11 @@ def main() -> None:
 
     sys.stdout.reconfigure(line_buffering=True)
     os.chdir(ScriptDir.parent)
-    if status := subprocess.run([ScriptDir / "Build"]).returncode: sys.exit(status)
+    if not args.no_build:
+        if status := subprocess.run([ScriptDir / "Build"]).returncode: sys.exit(status)
+    render_overlays(render_dir, extra_args)
+    if args.overlays_only:
+        return
 
     scenes = [(render_dir / out, arg) for out, arg in discover_scenes()]
     # Schedule measured expensive scenes first.

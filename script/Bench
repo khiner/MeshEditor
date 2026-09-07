@@ -158,6 +158,24 @@ def load_manifest(scene_root: Path) -> dict:
     return manifest
 
 
+def case_args(case: dict) -> list[str]:
+    """Camera, display and action settings shared by benchmarks and corpus captures."""
+    command: list[str] = []
+    command.extend(("--shading", case.get("shading", "solid")))
+    command.extend(flag for key, flag in (("overlays", "--overlays"), ("selectAll", "--select-all"), ("selectionXray", "--selection-xray")) if case.get(key))
+    if edit := case.get("edit"):
+        command.extend(("--edit", edit))
+    action = case.get("action", "steady")
+    if action == "playback":
+        command.append("--play")
+    else:
+        command.extend(("--bench-action", action))
+    for key, flag in (("camera", "--camera"), ("actionCount", "--bench-action-count"), ("motionBlur", "--motion-blur"), ("display", "--display")):
+        if value := case.get(key):
+            command.extend((flag, str(value)))
+    return command
+
+
 def app_command(
     case: dict,
     scenes: dict[str, Path],
@@ -176,18 +194,7 @@ def app_command(
         "--profile",
         "--quiet",
     ]
-    command.extend(("--shading", case.get("shading", "solid")))
-    command.extend(flag for key, flag in (("overlays", "--overlays"), ("selectAll", "--select-all")) if case.get(key))
-    if edit := case.get("edit"):
-        command.extend(("--edit", edit))
-    action = case.get("action", "steady")
-    if action == "playback":
-        command.append("--play")
-    else:
-        command.extend(("--bench-action", action))
-    for key, flag in (("camera", "--camera"), ("actionCount", "--bench-action-count"), ("motionBlur", "--motion-blur")):
-        if value := case.get(key):
-            command.extend((flag, str(value)))
+    command.extend(case_args(case))
     for value, flag in ((profile, "--profile-json"), (image, "--screenshot")):
         if value is not None:
             command.extend((flag, str(value)))
@@ -453,7 +460,7 @@ def parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--action",
-        choices=("steady", "orbit", "transform", "visibility", "playback"),
+        choices=("steady", "orbit", "transform", "visibility", "box-select", "box-select-orbit", "pick-cycle", "playback"),
         default="steady",
     )
     run_parser.add_argument("--action-count", type=int, default=64)

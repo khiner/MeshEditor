@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 2,
+  "profile": "overlays",
+  "generator": "script/GenerateRenderBenchmarks",
+  "scenes": [
+    {
+      "name": "Overlays",
+      "path": "Overlays.gltf",
+      "instances": 192,
+      "logicalTriangles": 786432,
+      "bytes": 212160
+    }
+  ],
+  "cases": [
+    {
+      "scene": "Overlays",
+      "overlays": true,
+      "id": "axes",
+      "camera": "Axes",
+      "selectAll": true
+    },
+    {
+      "scene": "Overlays",
+      "overlays": true,
+      "id": "overview",
+      "camera": "Overview",
+      "selectAll": true,
+      "display": "bounds,face-normals,vertex-normals",
+      "action": "playback",
+      "captureFrames": 12
+    },
+    {
+      "scene": "Overlays",
+      "overlays": true,
+      "id": "orthographic",
+      "camera": "Orthographic",
+      "selectAll": true,
+      "shading": "wireframe"
+    },
+    {
+      "scene": "Overlays",
+      "overlays": true,
+      "id": "edit-vertex",
+      "camera": "Axes",
+      "edit": "vertex",
+      "action": "box-select-orbit",
+      "captureFrames": 2
+    },
+    {
+      "scene": "Overlays",
+      "overlays": true,
+      "id": "edit-edge",
+      "camera": "Axes",
+      "edit": "edge",
+      "action": "box-select-orbit",
+      "captureFrames": 2
+    },
+    {
+      "scene": "Overlays",
+      "overlays": true,
+      "id": "edit-face",
+      "camera": "Axes",
+      "edit": "face",
+      "action": "box-select-orbit",
+      "captureFrames": 2
+    },
+    {
+      "scene": "Overlays",
+      "overlays": true,
+      "id": "edit-xray",
+      "camera": "Axes",
+      "edit": "vertex",
+      "selectionXray": true,
+      "action": "box-select-orbit",
+      "captureFrames": 2
+    },
+    {
+      "scene": "Overlays",
+      "overlays": true,
+      "id": "pick-1",
+      "camera": "Pick",
+      "shading": "preview",
+      "action": "pick-cycle",
+      "captureFrames": 1
+    },
+    {
+      "scene": "Overlays",
+      "overlays": true,
+      "id": "pick-2",
+      "camera": "Pick",
+      "shading": "preview",
+      "action": "pick-cycle",
+      "captureFrames": 2
+    },
+    {
+      "scene": "Overlays",
+      "overlays": true,
+      "id": "pick-3",
+      "camera": "Pick",
+      "shading": "preview",
+      "action": "pick-cycle",
+      "captureFrames": 3
+    },
+    {
+      "scene": "Overlays",
+      "overlays": true,
+      "id": "pick-4",
+      "camera": "Pick",
+      "shading": "preview",
+      "action": "pick-cycle",
+      "captureFrames": 4
+    }
+  ]
+}

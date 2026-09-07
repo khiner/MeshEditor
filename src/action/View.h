@@ -31,6 +31,9 @@ struct SetEditMode {
 };
 struct EnterLookThroughCamera {};
 struct ExitLookThroughCamera {};
+struct SetLookThroughCamera {
+    entt::entity Entity;
+};
 struct SetViewportShading {
     ViewportShadingMode Mode;
 };
@@ -128,7 +131,7 @@ using Action = MergedVariantT<
     Actions,
     Replace<::Camera>, Replace<WorkspaceLights>,
     Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
-    Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>>;
+    Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>, SetLookThroughCamera>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::view
