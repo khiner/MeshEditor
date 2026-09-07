@@ -1,8 +1,2 @@
-[validation] total 4446.76 ms (init 3742.66; capture 0.46; compare 0.97; cleanup 0.02)
-[validation] replay reset 0.23; restore 1.33; derive 324.89; render 23.04; capture 0.05 ms
-[validation] snapshot reset 0.22; restore 0.14; derive 337.00; render 15.68; capture 0.06 ms
-VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/AnimatedMorphCube/glTF/AnimatedMorphCube.mp4
-[validation] total 22.79 ms (init 0.00; capture 0.14; compare 0.57; cleanup 0.02)
-[validation] replay reset 0.19; restore 0.71; derive 0.98; render 9.68; capture 0.05 ms
-[validation] snapshot reset 0.19; restore 0.03; derive 0.48; render 9.68; capture 0.06 ms
+VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/AnimatedMorphCube/glTF/AnimatedMorphCube.mp4
 VideoRecorder: wrote 101 frames

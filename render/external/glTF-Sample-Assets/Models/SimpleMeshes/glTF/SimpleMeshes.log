@@ -1,4 +1,1 @@
-[validation] total 3668.09 ms (init 3091.29; capture 0.19; compare 1.77; cleanup 0.06)
-[validation] replay reset 0.17; restore 1.36; derive 286.31; render 5.18; capture 0.09 ms
-[validation] snapshot reset 1.12; restore 0.30; derive 270.83; render 9.37; capture 0.05 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SimpleMeshes/glTF/SimpleMeshes.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/SimpleMeshes/glTF/SimpleMeshes.webp

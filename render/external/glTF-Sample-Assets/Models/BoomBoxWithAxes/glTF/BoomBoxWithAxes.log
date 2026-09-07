@@ -1,4 +1,1 @@
-[validation] total 3865.21 ms (init 3053.91; capture 0.52; compare 1.81; cleanup 0.02)
-[validation] replay reset 0.16; restore 6.39; derive 392.38; render 4.84; capture 0.22 ms
-[validation] snapshot reset 0.18; restore 0.86; derive 396.76; render 6.89; capture 0.25 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/BoomBoxWithAxes/glTF/BoomBoxWithAxes.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/BoomBoxWithAxes/glTF/BoomBoxWithAxes.webp

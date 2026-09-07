@@ -1741,7 +1741,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     bool submitted{false};
     bool done{false};
 #ifdef VALIDATE_ACTIONS
-    std::unique_ptr<ValidationSession> validation_session;
+    auto &validation_session = r.ctx().get<std::unique_ptr<ValidationSession>>();
     std::optional<std::pair<uint64_t, uint64_t>> validated_revision;
 #endif
     // Record readiness after the first submitted frame has complete meshlet data.
@@ -1826,6 +1826,7 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     const auto &ctx = r.ctx().emplace<mtl::Context>();
 #ifdef VALIDATE_ACTIONS
     ValidationUi ui{ctx};
+    r.ctx().emplace<std::unique_ptr<ValidationSession>>();
     InitFonts();
     InitViewportMedia(r);
 #endif
@@ -1841,6 +1842,7 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     WaitForRender(r);
     DeinitAudioSystem(r);
 #ifdef VALIDATE_ACTIONS
+    r.ctx().erase<std::unique_ptr<ValidationSession>>();
     DeinitViewportMedia(r);
 #endif
     profile::Report();
@@ -1857,10 +1859,130 @@ bool RunHeadless(const char *initial_file, bool quiet, bool empty, const Capture
     return ok;
 }
 
-// Parse a corpus job containing "<output basename>\t<scene argument>".
+struct LaunchOptions {
+    std::string InitialFile{};
+    bool Empty{false}, Headless{false};
+    fs::path RenderQueue{};
+    CaptureRequest Capture;
+#ifdef QUIET
+    bool Quiet{true};
+#else
+    bool Quiet{false};
+#endif
+};
+
+// Queue jobs and direct launches interpret capture settings identically.
+std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string> args, CaptureRequest capture_defaults = {}) {
+    const auto looks_numeric = [](std::string_view s) {
+        return !s.empty() && std::isdigit(uint8_t(s[0]));
+    };
+
+    LaunchOptions options{.Capture = std::move(capture_defaults)};
+    auto &[initial_file, empty, headless, render_queue, capture, quiet] = options;
+    for (auto it = args.begin(); it != args.end(); ++it) {
+        const std::string_view a{*it};
+        if (a == "--help" || a == "-h") {
+            std::println("{}", Usage);
+            return std::unexpected(0);
+        }
+        if (a == "--quiet" || a == "-q") quiet = true;
+        else if (a == "--play") {
+            capture.Play = true;
+            if (std::next(it) != args.end() && looks_numeric(*std::next(it))) capture.PlayDuration = std::atof((++it)->c_str());
+        } else if (a == "--record" && std::next(it) != args.end()) capture.RecordPath = *++it;
+        else if (a == "--record-audio") capture.RecordAudio = true;
+        else if (a == "--screenshot" && std::next(it) != args.end()) capture.ScreenshotPath = *++it;
+        else if (a == "--render" && std::next(it) != args.end()) capture.RenderBasename = *++it;
+        else if (a == "--render-queue" && std::next(it) != args.end()) render_queue = *++it;
+        else if (a == "--empty") empty = true;
+        else if (a == "--headless") headless = true;
+        else if (a == "--overlays") capture.Overlays = true;
+        else if (a == "--edit" && std::next(it) != args.end()) {
+            const std::string_view mode{*++it};
+            if (mode == "vertex") capture.EditMode = Element::Vertex;
+            else if (mode == "edge") capture.EditMode = Element::Edge;
+            else if (mode == "face") capture.EditMode = Element::Face;
+            else {
+                std::println(stderr, "Unknown edit element '{}'.", mode);
+                return std::unexpected(1);
+            }
+        } else if (a == "--lod-error" && std::next(it) != args.end()) {
+            capture.LodErrorPixels = std::stof(std::string{*++it});
+        } else if (a == "--selection-xray") capture.SelectionXray = true;
+        else if (a == "--select-all") capture.SelectAll = true;
+        else if (a == "--display" && std::next(it) != args.end()) {
+            const std::string_view names{*++it};
+            for (size_t start = 0; start <= names.size();) {
+                const auto end = std::min(names.find(',', start), names.size());
+                const auto item = names.substr(start, end - start);
+                start = end + 1;
+                if (item == "vertex-normals") capture.NormalOverlays |= uint8_t(Element::Vertex);
+                else if (item == "face-normals") capture.NormalOverlays |= uint8_t(Element::Face);
+                else if (item == "bounds") capture.BoundingBoxes = true;
+                else if (item == "tet-wireframe") capture.TetWireframe = true;
+                else {
+                    std::println(stderr, "Unknown display overlay '{}'.", item);
+                    return std::unexpected(1);
+                }
+            }
+        } else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi((++it)->c_str());
+        else if (a == "--timeline-end" && std::next(it) != args.end()) capture.TimelineEnd = std::atof((++it)->c_str());
+        else if (a == "--motion-blur" && std::next(it) != args.end()) {
+            const std::string_view method = *++it;
+            capture.Blur = method == "fast" ? MotionBlur{} : MotionBlur{.Steps = uint8_t(std::clamp(std::atoi(method.data()), 1, 64)), .Method = MotionBlurMethod::FullSampling};
+        } else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi((++it)->c_str());
+        else if (a == "--bench-action" && std::next(it) != args.end()) {
+            const std::string_view action{*++it};
+            if (action == "steady") capture.BenchAction = CaptureRequest::BenchmarkAction::Steady;
+            else if (action == "orbit") capture.BenchAction = CaptureRequest::BenchmarkAction::Orbit;
+            else if (action == "transform") capture.BenchAction = CaptureRequest::BenchmarkAction::Transform;
+            else if (action == "visibility") capture.BenchAction = CaptureRequest::BenchmarkAction::Visibility;
+            else if (action == "box-select") capture.BenchAction = CaptureRequest::BenchmarkAction::BoxSelect;
+            else if (action == "box-select-orbit") capture.BenchAction = CaptureRequest::BenchmarkAction::BoxSelectOrbit;
+            else if (action == "pick-cycle") capture.BenchAction = CaptureRequest::BenchmarkAction::PickCycle;
+            else {
+                std::println(stderr, "Unknown benchmark action '{}'.", action);
+                return std::unexpected(1);
+            }
+        } else if (a == "--bench-action-count" && std::next(it) != args.end()) {
+            capture.BenchActionCount = uint32_t(std::max(1, std::atoi((++it)->c_str())));
+        } else if (a == "--camera" && std::next(it) != args.end()) capture.CameraName = *++it;
+        else if (a == "--shading" && std::next(it) != args.end()) {
+            const std::string_view mode{*++it};
+            capture.Shading = mode == "wireframe" ? ViewportShadingMode::Wireframe :
+                mode == "solid"                   ? ViewportShadingMode::Solid :
+                mode == "preview"                 ? ViewportShadingMode::MaterialPreview :
+                                                    ViewportShadingMode::Rendered;
+        } else if (a == "--profile") profile::Enabled = true;
+        else if (a == "--profile-json" && std::next(it) != args.end()) {
+            profile::Enabled = true;
+            profile::JsonPath = *++it;
+        } else if (a.starts_with('-')) {
+            std::println(stderr, "Unknown option '{}'. Run with --help for the option list.", a);
+            return std::unexpected(1);
+        } else if (initial_file.empty()) initial_file = *it;
+    }
+    if (capture.Fps <= 0) capture.Fps = 60;
+    // Enable audio capture for WAV output.
+    if (capture.RecordPath.extension() == ".wav") capture.RecordAudio = true;
+    // Derive corpus output paths from the render basename.
+    if (!capture.RenderBasename.empty() && (!capture.RecordPath.empty() || !capture.ScreenshotPath.empty())) {
+        std::println(stderr, "--render cannot be combined with --record or --screenshot");
+        return std::unexpected(1);
+    }
+    // Derive queue capture options from each job.
+    if (!render_queue.empty() && (!initial_file.empty() || !capture.RenderBasename.empty() || !capture.RecordPath.empty() || !capture.ScreenshotPath.empty())) {
+        std::println(stderr, "--render-queue cannot be combined with a scene file or capture flags");
+        return std::unexpected(1);
+    }
+
+    return options;
+}
+
+// Each job contains an output basename, then one command-line argument per line.
 struct RenderJob {
     fs::path OutBasename;
-    std::string SceneArg;
+    std::vector<std::string> Args{};
 };
 
 // Atomically rename and return the next pending job.
@@ -1880,9 +2002,9 @@ std::optional<RenderJob> ClaimRenderJob(const fs::path &spool) {
         std::ifstream in{claimed};
         std::string line;
         if (!std::getline(in, line)) continue;
-        const auto tab = line.find('\t');
-        if (tab == std::string::npos) continue;
-        return RenderJob{line.substr(0, tab), line.substr(tab + 1)};
+        RenderJob job{.OutBasename = std::move(line)};
+        while (std::getline(in, line)) job.Args.push_back(std::move(line));
+        return job;
     }
     return std::nullopt;
 }
@@ -1892,6 +2014,7 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
     RunHeadlessEngine(quiet, [&](entt::registry &r, entt::entity viewport) {
         const int launcher_out = ::dup(STDOUT_FILENO), launcher_err = ::dup(STDERR_FILENO);
         while (const auto job = ClaimRenderJob(spool)) {
+            const auto begin = SteadyClock::now();
             const auto out = job->OutBasename.string();
             std::fflush(stdout);
             std::fflush(stderr);
@@ -1900,9 +2023,10 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
                 ::dup2(log_fd, STDERR_FILENO);
                 ::close(log_fd);
             }
-            const bool empty = job->SceneArg == "--empty";
-            const char *initial_file = !empty && !job->SceneArg.empty() ? job->SceneArg.c_str() : nullptr;
-            RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename, .Overlays = harness.Overlays, .EditMode = harness.EditMode, .SelectionXray = harness.SelectionXray, .SelectAll = harness.SelectAll, .LodErrorPixels = harness.LodErrorPixels, .NormalOverlays = harness.NormalOverlays, .BoundingBoxes = harness.BoundingBoxes, .TetWireframe = harness.TetWireframe});
+            if (const auto options = ParseLaunchOptions(job->Args, harness)) {
+                const auto &file = options->InitialFile;
+                RunHeadlessScene(r, viewport, file.empty() ? nullptr : file.c_str(), options->Empty, options->Capture);
+            }
             // Finalize capture and restore engine state between jobs.
             QuiesceScene(r, viewport);
             ClearScene(r, viewport);
@@ -1911,7 +2035,7 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
             std::fflush(stderr);
             ::dup2(launcher_out, STDOUT_FILENO);
             ::dup2(launcher_err, STDERR_FILENO);
-            if (fs::exists(out + ".webp") || fs::exists(out + ".mp4")) std::println("ok   {}", out);
+            if (fs::exists(out + ".webp") || fs::exists(out + ".mp4")) std::println("ok   {} ({:.2f} s)", out, ElapsedMs(begin) / 1000.0);
             else std::println("SKIP {} (no output; load failed or unsupported encoding)", out);
             std::fflush(stdout);
         }
@@ -1938,117 +2062,10 @@ int main(int argc, char **argv) {
         std::abort();
     });
 
-    const std::span args{argv + 1, argv + argc};
-    const auto looks_numeric = [](const char *a) {
-        const std::string_view s{a};
-        return !s.empty() && std::isdigit(uint8_t(s[0]));
-    };
-
-    const char *initial_file = nullptr;
-    bool empty = false, headless = false;
-    fs::path render_queue;
-    CaptureRequest capture;
-#ifdef QUIET
-    bool quiet = true;
-#else
-    bool quiet = false;
-#endif
-    for (auto it = args.begin(); it != args.end(); ++it) {
-        const std::string_view a{*it};
-        if (a == "--help" || a == "-h") {
-            std::println("{}", Usage);
-            return 0;
-        }
-        if (a == "--quiet" || a == "-q") quiet = true;
-        else if (a == "--play") {
-            capture.Play = true;
-            if (std::next(it) != args.end() && looks_numeric(*std::next(it))) capture.PlayDuration = std::atof(*++it);
-        } else if (a == "--record" && std::next(it) != args.end()) capture.RecordPath = *++it;
-        else if (a == "--record-audio") capture.RecordAudio = true;
-        else if (a == "--screenshot" && std::next(it) != args.end()) capture.ScreenshotPath = *++it;
-        else if (a == "--render" && std::next(it) != args.end()) capture.RenderBasename = *++it;
-        else if (a == "--render-queue" && std::next(it) != args.end()) render_queue = *++it;
-        else if (a == "--empty") empty = true;
-        else if (a == "--headless") headless = true;
-        else if (a == "--overlays") capture.Overlays = true;
-        else if (a == "--edit" && std::next(it) != args.end()) {
-            const std::string_view mode{*++it};
-            if (mode == "vertex") capture.EditMode = Element::Vertex;
-            else if (mode == "edge") capture.EditMode = Element::Edge;
-            else if (mode == "face") capture.EditMode = Element::Face;
-            else {
-                std::println(stderr, "Unknown edit element '{}'.", mode);
-                return 1;
-            }
-        } else if (a == "--lod-error" && std::next(it) != args.end()) {
-            capture.LodErrorPixels = std::stof(std::string{*++it});
-        } else if (a == "--selection-xray") capture.SelectionXray = true;
-        else if (a == "--select-all") capture.SelectAll = true;
-        else if (a == "--display" && std::next(it) != args.end()) {
-            const std::string_view names{*++it};
-            for (size_t start = 0; start <= names.size();) {
-                const auto end = std::min(names.find(',', start), names.size());
-                const auto item = names.substr(start, end - start);
-                start = end + 1;
-                if (item == "vertex-normals") capture.NormalOverlays |= uint8_t(Element::Vertex);
-                else if (item == "face-normals") capture.NormalOverlays |= uint8_t(Element::Face);
-                else if (item == "bounds") capture.BoundingBoxes = true;
-                else if (item == "tet-wireframe") capture.TetWireframe = true;
-                else {
-                    std::println(stderr, "Unknown display overlay '{}'.", item);
-                    return 1;
-                }
-            }
-        } else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
-        else if (a == "--timeline-end" && std::next(it) != args.end()) capture.TimelineEnd = std::atof(*++it);
-        else if (a == "--motion-blur" && std::next(it) != args.end()) {
-            const std::string_view method = *++it;
-            capture.Blur = method == "fast" ? MotionBlur{} : MotionBlur{.Steps = uint8_t(std::clamp(std::atoi(method.data()), 1, 64)), .Method = MotionBlurMethod::FullSampling};
-        } else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi(*++it);
-        else if (a == "--bench-action" && std::next(it) != args.end()) {
-            const std::string_view action{*++it};
-            if (action == "steady") capture.BenchAction = CaptureRequest::BenchmarkAction::Steady;
-            else if (action == "orbit") capture.BenchAction = CaptureRequest::BenchmarkAction::Orbit;
-            else if (action == "transform") capture.BenchAction = CaptureRequest::BenchmarkAction::Transform;
-            else if (action == "visibility") capture.BenchAction = CaptureRequest::BenchmarkAction::Visibility;
-            else if (action == "box-select") capture.BenchAction = CaptureRequest::BenchmarkAction::BoxSelect;
-            else if (action == "box-select-orbit") capture.BenchAction = CaptureRequest::BenchmarkAction::BoxSelectOrbit;
-            else if (action == "pick-cycle") capture.BenchAction = CaptureRequest::BenchmarkAction::PickCycle;
-            else {
-                std::println(stderr, "Unknown benchmark action '{}'.", action);
-                return 1;
-            }
-        } else if (a == "--bench-action-count" && std::next(it) != args.end()) {
-            capture.BenchActionCount = uint32_t(std::max(1, std::atoi(*++it)));
-        } else if (a == "--camera" && std::next(it) != args.end()) capture.CameraName = *++it;
-        else if (a == "--shading" && std::next(it) != args.end()) {
-            const std::string_view mode{*++it};
-            capture.Shading = mode == "wireframe" ? ViewportShadingMode::Wireframe :
-                mode == "solid"                   ? ViewportShadingMode::Solid :
-                mode == "preview"                 ? ViewportShadingMode::MaterialPreview :
-                                                    ViewportShadingMode::Rendered;
-        } else if (a == "--profile") profile::Enabled = true;
-        else if (a == "--profile-json" && std::next(it) != args.end()) {
-            profile::Enabled = true;
-            profile::JsonPath = *++it;
-        } else if (a.starts_with('-')) {
-            std::println(stderr, "Unknown option '{}'. Run with --help for the option list.", a);
-            return 1;
-        } else if (!initial_file) initial_file = *it;
-    }
-    if (capture.Fps <= 0) capture.Fps = 60;
-    // Enable audio capture for WAV output.
-    if (capture.RecordPath.extension() == ".wav") capture.RecordAudio = true;
-    // Derive corpus output paths from the render basename.
-    if (!capture.RenderBasename.empty() && (!capture.RecordPath.empty() || !capture.ScreenshotPath.empty())) {
-        std::println(stderr, "--render cannot be combined with --record or --screenshot");
-        return 1;
-    }
-    // Derive queue capture options from each job.
-    if (!render_queue.empty() && (initial_file || !capture.RenderBasename.empty() || !capture.RecordPath.empty() || !capture.ScreenshotPath.empty())) {
-        std::println(stderr, "--render-queue cannot be combined with a scene file or capture flags");
-        return 1;
-    }
+    const auto options = ParseLaunchOptions(std::vector<std::string>{argv + 1, argv + argc});
+    if (!options) return options.error();
+    const auto &[file, empty, headless, render_queue, capture, quiet] = *options;
+    const char *initial_file = file.empty() ? nullptr : file.c_str();
 
     bool headless_ok = true;
     if (!render_queue.empty()) RunHeadlessQueue(render_queue, quiet, capture);

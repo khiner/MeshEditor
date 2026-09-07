@@ -1,4 +1,1 @@
-[validation] total 6079.34 ms (init 216.48; capture 0.39; compare 28.95; cleanup 0.03)
-[validation] replay reset 0.20; restore 2.45; derive 2697.54; render 14.96; capture 0.36 ms
-[validation] snapshot reset 0.25; restore 0.65; derive 3098.67; render 17.93; capture 0.48 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SunglassesKhronos/glTF/SunglassesKhronos.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/SunglassesKhronos/glTF/SunglassesKhronos.webp

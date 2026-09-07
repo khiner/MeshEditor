@@ -1,4 +1,1 @@
-[validation] total 3055.88 ms (init 228.58; capture 0.52; compare 6.71; cleanup 0.03)
-[validation] replay reset 0.17; restore 6.15; derive 1404.16; render 12.42; capture 0.53 ms
-[validation] snapshot reset 0.26; restore 1.97; derive 1378.10; render 15.86; capture 0.43 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/TransmissionOrderTest/glTF/TransmissionOrderTest.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/TransmissionOrderTest/glTF/TransmissionOrderTest.webp

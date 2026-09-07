@@ -1,8 +1,2 @@
-[validation] total 9643.96 ms (init 3531.07; capture 4.15; compare 6.92; cleanup 0.03)
-[validation] replay reset 0.18; restore 22.41; derive 3044.89; render 34.87; capture 3.72 ms
-[validation] snapshot reset 0.19; restore 3.07; derive 2949.46; render 39.35; capture 3.66 ms
-VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CommercialRefrigerator/glTF/CommercialRefrigerator.mp4
-[validation] total 619.30 ms (init 0.00; capture 1.28; compare 1.88; cleanup 0.02)
-[validation] replay reset 0.20; restore 20.81; derive 277.77; render 19.91; capture 1.22 ms
-[validation] snapshot reset 0.20; restore 1.17; derive 263.43; render 29.01; capture 2.39 ms
+VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/CommercialRefrigerator/glTF/CommercialRefrigerator.mp4
 VideoRecorder: wrote 112 frames

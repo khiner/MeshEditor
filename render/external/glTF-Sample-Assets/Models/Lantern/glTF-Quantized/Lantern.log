@@ -1,4 +1,1 @@
-[validation] total 3881.62 ms (init 3049.02; capture 0.44; compare 0.99; cleanup 0.02)
-[validation] replay reset 0.17; restore 5.04; derive 414.27; render 4.32; capture 0.11 ms
-[validation] snapshot reset 0.23; restore 0.53; derive 398.01; render 8.35; capture 0.12 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/Lantern/glTF-Quantized/Lantern.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/Lantern/glTF-Quantized/Lantern.webp

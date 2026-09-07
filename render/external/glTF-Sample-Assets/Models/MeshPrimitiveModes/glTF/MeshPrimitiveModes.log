@@ -1,4 +1,1 @@
-[validation] total 4015.43 ms (init 2892.58; capture 0.47; compare 2.09; cleanup 0.04)
-[validation] replay reset 0.19; restore 1.40; derive 562.95; render 2.24; capture 0.05 ms
-[validation] snapshot reset 0.21; restore 0.11; derive 255.22; render 297.83; capture 0.05 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MeshPrimitiveModes/glTF/MeshPrimitiveModes.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/MeshPrimitiveModes/glTF/MeshPrimitiveModes.webp

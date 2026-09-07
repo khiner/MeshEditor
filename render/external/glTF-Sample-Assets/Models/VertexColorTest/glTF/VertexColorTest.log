@@ -1,4 +1,1 @@
-[validation] total 2198.25 ms (init 1830.88; capture 0.34; compare 1.56; cleanup 0.03)
-[validation] replay reset 0.27; restore 2.00; derive 326.56; render 5.76; capture 0.13 ms
-[validation] snapshot reset 0.33; restore 0.16; derive 18.70; render 11.46; capture 0.07 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/VertexColorTest/glTF/VertexColorTest.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/VertexColorTest/glTF/VertexColorTest.webp

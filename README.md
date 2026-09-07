@@ -152,7 +152,7 @@ When a look-through camera is active, only the camera-frame sub-rect (the area i
 * `--fps N` sets the recording framerate (default 60).
 * `--screenshot path.webp` writes a single image. The format is chosen by extension (`.webp` lossless, `.png`, `.jpg`/`.jpeg`), which is optional and defaults to `.webp`. The captured region matches `--record`. On its own it exits after writing; combined with `--play [seconds]` or `--record` it grabs the frame and keeps running.
 * `--render basename` writes the scene's corpus artifacts under `basename.*` (used by `./script/Render` — see [Render corpus](#render-corpus)).
-* `--render-queue dir` renders one scene per `dir/*.job` file (`basename<TAB>scene arg`) in a single headless process, and parallel workers can safely share one queue. Used by `./script/Render`, combinable only with `-q`.
+* `--render-queue dir` renders one scene per `dir/*.job` file (output basename followed by one command-line argument per line) in a single headless process, and parallel workers can safely share one queue. Used by `./script/Render`; capture settings are parsed the same way as direct launches.
 * `--headless` runs without a window: the viewport renders offscreen at a fixed 1280x800 (2x pixel density) extent, and any capture flags read it back. Without a capture flag it renders one frame and exits, and a duration-less `--play` exits after one timeline loop. With `MESHEDITOR_VALIDATE_ACTIONS` enabled, replay and snapshot validation also compare the complete UI rendered offscreen.
 
 The flags can be combined freely, except `--render` excludes `--record` and `--screenshot` (it derives its own outputs). `--render --play N` caps the video at N seconds.
@@ -172,7 +172,7 @@ $ git lfs pull
 ```
 
 Regenerate the corpus with `./script/Render`.
-`render/Benchmarks/Overlays/` adds fixed editor captures using the [overlay benchmark scene and cases](res/benchmarks/Overlays/benchmark.json). Run `script/Render --overlays-only` to update just these captures (`--no-build` uses the existing executable). These leaves contain a lossless `.webp` and a `run.sh` that reproduces the capture headlessly; console logs stay local.
+`render/Benchmarks/Overlays/` adds fixed editor captures using the [overlay benchmark scene and cases](res/benchmarks/Overlays/benchmark.json). Run `script/Render --overlays-only` to update just these captures (`--no-build` uses the existing executable). These leaves contain a lossless `.webp` and a `run.sh` that reproduces the capture headlessly; console logs stay local. Overlay cases share the corpus queue, worker pool, and retry handling.
 
 | Overlay cases | Coverage |
 |-|-|
@@ -291,7 +291,7 @@ $ SURFACE_AUDIO=1 script/Build
 
 `VALIDATE_ACTIONS=1` builds the app to run File->[Debug] Roundtrip after every committed action: the log
 replays into a fresh session and the scene saves, clears and restores, aborting on the first divergence.
-Validation compares canonical state, the complete viewport texture, and the composed UI at the captured timeline position.
+Validation compares canonical state, the complete viewport texture, and the composed UI at the captured timeline position. An unset `VALIDATE_ACTIONS` (or `0`) disables it on the next `script/Build`; `script/Render` builds with the same rule. `--no-build` retains the existing binary’s setting.
 
 ```sh
 $ VALIDATE_ACTIONS=1 script/Build

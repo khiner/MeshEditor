@@ -1,4 +1,1 @@
-[validation] total 342.57 ms (init 317.69; capture 0.18; compare 0.89; cleanup 0.02)
-[validation] replay reset 0.18; restore 1.32; derive 9.34; render 1.50; capture 0.05 ms
-[validation] snapshot reset 0.28; restore 0.12; derive 5.94; render 4.98; capture 0.05 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CubeVisibility/glTF/CubeVisibility.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/CubeVisibility/glTF/CubeVisibility.webp

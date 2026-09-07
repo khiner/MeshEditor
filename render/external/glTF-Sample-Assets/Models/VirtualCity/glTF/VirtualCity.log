@@ -1,8 +1,2 @@
-[validation] total 443.04 ms (init 245.42; capture 2.31; compare 0.50; cleanup 0.02)
-[validation] replay reset 0.21; restore 5.19; derive 51.37; render 41.94; capture 0.62 ms
-[validation] snapshot reset 0.21; restore 1.06; derive 49.02; render 44.52; capture 0.66 ms
-VideoRecorder: 2304x1294 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/VirtualCity/glTF/VirtualCity.mp4
-[validation] total 179.92 ms (init 0.00; capture 0.55; compare 0.50; cleanup 0.04)
-[validation] replay reset 0.52; restore 4.51; derive 42.86; render 39.89; capture 0.46 ms
-[validation] snapshot reset 0.55; restore 0.58; derive 43.83; render 45.16; capture 0.49 ms
+VideoRecorder: 2304x1294 @ 24fps -> render/external/glTF-Sample-Assets/Models/VirtualCity/glTF/VirtualCity.mp4
 VideoRecorder: wrote 720 frames

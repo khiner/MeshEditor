@@ -1,8 +1,2 @@
-[validation] total 7072.99 ms (init 3321.33; capture 1.97; compare 4.42; cleanup 0.04)
-[validation] replay reset 0.16; restore 23.07; derive 1842.53; render 7.65; capture 2.32 ms
-[validation] snapshot reset 0.19; restore 11.19; derive 1843.91; render 12.86; capture 1.33 ms
-VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/ChronographWatch/glTF-KTX-BasisU/ChronographWatch.mp4
-[validation] total 370.04 ms (init 0.00; capture 0.89; compare 0.86; cleanup 0.03)
-[validation] replay reset 0.26; restore 21.85; derive 168.46; render 2.23; capture 0.72 ms
-[validation] snapshot reset 0.23; restore 7.71; derive 163.86; render 2.19; capture 0.75 ms
+VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/ChronographWatch/glTF-KTX-BasisU/ChronographWatch.mp4
 VideoRecorder: wrote 1440 frames

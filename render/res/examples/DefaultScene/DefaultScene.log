@@ -1,4 +1,1 @@
-[validation] total 1245.41 ms (init 318.44; capture 0.32; compare 1.58; cleanup 0.02)
-[validation] replay reset 0.23; restore 1.12; derive 457.25; render 1.83; capture 0.13 ms
-[validation] snapshot reset 0.28; restore 0.12; derive 456.94; render 7.10; capture 0.06 ms
-Saved screenshot: render_candidates/immutable-visibility-final/res/examples/DefaultScene/DefaultScene.webp
+Saved screenshot: render/res/examples/DefaultScene/DefaultScene.webp

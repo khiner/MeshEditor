@@ -1,8 +1,2 @@
-[validation] total 2003.19 ms (init 1687.43; capture 0.23; compare 1.12; cleanup 0.02)
-[validation] replay reset 0.15; restore 1.49; derive 277.72; render 10.06; capture 0.08 ms
-[validation] snapshot reset 0.18; restore 0.19; derive 5.20; render 19.23; capture 0.08 ms
-VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/RiggedFigure/glTF/RiggedFigure.mp4
-[validation] total 18.83 ms (init 0.00; capture 0.22; compare 0.50; cleanup 0.02)
-[validation] replay reset 0.22; restore 1.01; derive 1.30; render 7.31; capture 0.08 ms
-[validation] snapshot reset 0.20; restore 0.07; derive 0.58; render 7.25; capture 0.08 ms
+VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/RiggedFigure/glTF/RiggedFigure.mp4
 VideoRecorder: wrote 30 frames

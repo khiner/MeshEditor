@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 ScriptDir = Path(__file__).resolve().parent
 CorpusDir = Path("render")
@@ -25,8 +26,8 @@ GltfRoots = [Path("external/glTF-Sample-Assets"), Path("external/glTF_Physics")]
 # Exclude glTF_Physics conformance tests and duplicate binary or embedded variants.
 ExcludedDirs = ("/glTF_Physics/tests/", "/glTF-Binary/", "/glTF-Embedded/")
 
-# Each scene specifies an output basename and an application argument.
-Scene = tuple[Path, str]
+# Each case specifies an output basename, scene argument and optional capture settings.
+Scene = tuple[Path, str, list[str]]
 
 
 def has_output(out: Path) -> bool:
@@ -40,7 +41,7 @@ def scene_files(root: Path) -> list[Path]:
     )
 
 
-def discover_scenes() -> list[Scene]:
+def discover_scenes() -> list[tuple[Path, str]]:
     scenes = [(Path("Empty/Empty"), "--empty"), (Path("Default/Default"), "")]
     # AudioCorpus processes the isolation corpus under samples/test/.
     scenes += [(p.with_suffix(""), str(p)) for p in sorted(Path("glTF_PhysicalAudio/samples").glob("*.gltf"))]
@@ -70,8 +71,10 @@ def committed_bytes(render_dir: Path, out: Path) -> int:
     return sum(f.stat().st_size for e in (".mp4", ".webp", ".png") if (f := Path(f"{committed}{e}")).is_file())
 
 
-def spool_jobs(spool: Path, scenes: list[Scene]) -> None:
-    for i, (out, arg) in enumerate(scenes): (spool / f"{i:04d}.job").write_text(f"{out}\t{arg}\n")
+def spool_jobs(spool: Path, scenes: list[Scene], extra_args: list[str]) -> None:
+    for i, (out, arg, flags) in enumerate(scenes):
+        args = [*([arg] if arg else []), *(flags or ["--render", str(out)]), *extra_args]
+        (spool / f"{i:04d}.job").write_text("\n".join([str(out), *args]) + "\n")
 
 
 def count_jobs(spool: Path) -> int:
@@ -114,22 +117,19 @@ def restore_noise_only_videos(spool: Path) -> None:
             print(f"Content changed ({stats}): {f}")
 
 
-def render_overlays(render_dir: Path, extra_args: list[str]) -> None:
+def overlay_scenes(render_dir: Path) -> list[Scene]:
     bench = runpy.run_path(str(ScriptDir / "Bench"))
     root = Path("res/benchmarks/Overlays")
     manifest = bench["load_manifest"](root)
     scenes = {scene["name"]: root / scene["path"] for scene in manifest["scenes"]}
+    result = []
     for case in manifest["cases"]:
         out = render_dir / "Benchmarks" / "Overlays" / case["id"] / case["id"]
         flags = ["--headless", "--quiet", "--frames", str(case.get("captureFrames", 1)),
-                 "--screenshot", str(out) + ".webp", *bench["case_args"](case), *extra_args]
+                 "--screenshot", str(out) + ".webp", *bench["case_args"](case)]
         scene = str(scenes[case["scene"]])
-        prepare_leaf(out, scene, flags)
-        print(f"  overlay {case['id']}", flush=True)
-        with Path(str(out) + ".log").open("w") as log:
-            result = subprocess.run([Exe, scene, *flags], stdout=log, stderr=subprocess.STDOUT, timeout=SceneTimeoutSecs)
-        if result.returncode or not Path(str(out) + ".webp").is_file():
-            raise SystemExit(f"Overlay capture failed: {out}.log")
+        result.append((out, scene, flags))
+    return result
 
 
 def main() -> None:
@@ -151,36 +151,35 @@ def main() -> None:
     os.chdir(ScriptDir.parent)
     if not args.no_build:
         if status := subprocess.run([ScriptDir / "Build"]).returncode: sys.exit(status)
-    render_overlays(render_dir, extra_args)
-    if args.overlays_only:
-        return
-
-    scenes = [(render_dir / out, arg) for out, arg in discover_scenes()]
+    started = time.monotonic()
+    scenes = overlay_scenes(render_dir)
+    if not args.overlays_only:
+        scenes += [(render_dir / out, arg, []) for out, arg in discover_scenes()]
     # Schedule measured expensive scenes first.
     scenes.sort(key=lambda s: committed_bytes(render_dir, s[0]), reverse=True)
-    for out, arg in scenes: prepare_leaf(out, arg, extra_args)
-    print(f"Rendering corpus into {render_dir}/ ({len(scenes)} scenes, {jobs} headless workers)...")
+    for out, arg, flags in scenes: prepare_leaf(out, arg, [*flags, *extra_args])
+    print(f"Rendering corpus into {render_dir}/ ({len(scenes)} cases, {jobs} headless workers)...")
     spool = Path(tempfile.mkdtemp(prefix="MeshEditorRenderSpool."))
     try:
-        spool_jobs(spool, scenes)
+        spool_jobs(spool, scenes, extra_args)
         skipped: set[str] = set()
         workers = [threading.Thread(target=run_worker, args=(spool, extra_args, skipped)) for _ in range(jobs)]
         for w in workers: w.start()
         for w in workers: w.join()
 
         # Retry once when no worker reports a scene after a crash or timeout.
-        if retries := [(out, arg) for out, arg in scenes if not has_output(out) and str(out) not in skipped]:
+        if retries := [(out, arg, flags) for out, arg, flags in scenes if not has_output(out) and str(out) not in skipped]:
             for f in spool.iterdir(): f.unlink()
-            for out, _ in retries: print(f"  retrying {out}")
-            spool_jobs(spool, retries)
+            for out, _, _ in retries: print(f"  retrying {out}")
+            spool_jobs(spool, retries, extra_args)
             run_worker(spool, extra_args, skipped)
 
         if os.environ.get("COMPARE_VIDEOS") and render_dir == CorpusDir: restore_noise_only_videos(spool)
     finally:
         shutil.rmtree(spool, ignore_errors=True)
 
-    skips = [out for out, _ in scenes if not has_output(out)]
-    print(f"\nDone: {len(scenes) - len(skips)} rendered, {len(skips)} skipped.")
+    skips = [out for out, _, _ in scenes if not has_output(out)]
+    print(f"\nDone: {len(scenes) - len(skips)} rendered, {len(skips)} skipped in {time.monotonic() - started:.1f} s.")
     if skips: print("Skipped:\n" + "\n".join(f"  {out}" for out in skips))
 
 

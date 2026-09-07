@@ -1,8 +1,2 @@
-[validation] total 3865.75 ms (init 3281.15; capture 0.29; compare 1.21; cleanup 0.02)
-[validation] replay reset 0.45; restore 1.93; derive 290.20; render 10.48; capture 0.05 ms
-[validation] snapshot reset 0.28; restore 0.14; derive 267.77; render 11.71; capture 0.05 ms
-VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/AnimatedTriangle/glTF/AnimatedTriangle.mp4
-[validation] total 16.36 ms (init 0.00; capture 0.25; compare 0.52; cleanup 0.02)
-[validation] replay reset 0.30; restore 0.75; derive 0.94; render 6.43; capture 0.04 ms
-[validation] snapshot reset 0.24; restore 0.02; derive 0.55; render 6.26; capture 0.05 ms
+VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/AnimatedTriangle/glTF/AnimatedTriangle.mp4
 VideoRecorder: wrote 24 frames

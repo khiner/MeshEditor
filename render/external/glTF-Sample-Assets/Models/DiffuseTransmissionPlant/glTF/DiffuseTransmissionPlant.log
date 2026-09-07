@@ -1,8 +1,2 @@
-[validation] total 1944.60 ms (init 281.20; capture 2.58; compare 1.83; cleanup 0.02)
-[validation] replay reset 0.45; restore 14.58; derive 772.57; render 61.31; capture 0.86 ms
-[validation] snapshot reset 0.21; restore 1.78; derive 745.83; render 60.49; capture 0.87 ms
-VideoRecorder: 1440x1440 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/DiffuseTransmissionPlant/glTF/DiffuseTransmissionPlant.mp4
-[validation] total 528.59 ms (init 0.00; capture 0.88; compare 1.20; cleanup 0.03)
-[validation] replay reset 0.22; restore 11.38; derive 173.62; render 55.89; capture 0.48 ms
-[validation] snapshot reset 0.21; restore 0.93; derive 170.32; render 112.93; capture 0.50 ms
+VideoRecorder: 1440x1440 @ 24fps -> render/external/glTF-Sample-Assets/Models/DiffuseTransmissionPlant/glTF/DiffuseTransmissionPlant.mp4
 VideoRecorder: wrote 400 frames

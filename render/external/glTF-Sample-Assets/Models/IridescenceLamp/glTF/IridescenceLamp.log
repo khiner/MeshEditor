@@ -1,4 +1,1 @@
-[validation] total 8611.29 ms (init 2965.47; capture 0.64; compare 38.57; cleanup 0.03)
-[validation] replay reset 0.15; restore 5.57; derive 2737.18; render 19.39; capture 0.43 ms
-[validation] snapshot reset 0.16; restore 0.61; derive 2786.02; render 56.59; capture 0.46 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/IridescenceLamp/glTF/IridescenceLamp.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/IridescenceLamp/glTF/IridescenceLamp.webp

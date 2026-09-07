@@ -1,4 +1,1 @@
-[validation] total 3050.51 ms (init 1688.83; capture 0.99; compare 2.31; cleanup 0.04)
-[validation] replay reset 0.16; restore 4.14; derive 1325.94; render 6.12; capture 0.27 ms
-[validation] snapshot reset 0.24; restore 0.78; derive 12.43; render 7.90; capture 0.36 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/IORTestGrid/glTF/IORTestGrid.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/IORTestGrid/glTF/IORTestGrid.webp

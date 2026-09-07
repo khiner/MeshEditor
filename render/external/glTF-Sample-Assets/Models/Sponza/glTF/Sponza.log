@@ -1,4 +1,1 @@
-[validation] total 6056.55 ms (init 3356.71; capture 11.14; compare 10.99; cleanup 0.03)
-[validation] replay reset 0.23; restore 54.89; derive 1288.66; render 5.40; capture 7.79 ms
-[validation] snapshot reset 0.25; restore 13.23; derive 1284.45; render 20.35; capture 2.43 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/Sponza/glTF/Sponza.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/Sponza/glTF/Sponza.webp

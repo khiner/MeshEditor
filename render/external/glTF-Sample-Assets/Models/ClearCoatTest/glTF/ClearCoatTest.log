@@ -1,4 +1,1 @@
-[validation] total 1401.07 ms (init 236.09; capture 0.68; compare 0.93; cleanup 0.03)
-[validation] replay reset 0.18; restore 4.96; derive 570.91; render 1.61; capture 0.60 ms
-[validation] snapshot reset 0.17; restore 1.33; derive 565.26; render 14.59; capture 3.71 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/ClearCoatTest/glTF/ClearCoatTest.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/ClearCoatTest/glTF/ClearCoatTest.webp

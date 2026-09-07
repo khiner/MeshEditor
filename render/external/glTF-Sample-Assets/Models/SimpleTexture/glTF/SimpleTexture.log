@@ -1,4 +1,1 @@
-[validation] total 284.77 ms (init 232.99; capture 0.18; compare 1.44; cleanup 0.02)
-[validation] replay reset 0.20; restore 1.06; derive 24.32; render 1.26; capture 0.05 ms
-[validation] snapshot reset 0.19; restore 0.12; derive 14.89; render 7.99; capture 0.06 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SimpleTexture/glTF/SimpleTexture.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/SimpleTexture/glTF/SimpleTexture.webp

@@ -1,8 +1,2 @@
-[validation] total 1435.75 ms (init 240.83; capture 0.88; compare 1.09; cleanup 0.04)
-[validation] replay reset 0.21; restore 1.48; derive 593.30; render 26.74; capture 0.20 ms
-[validation] snapshot reset 0.36; restore 0.32; derive 540.08; render 29.89; capture 0.33 ms
-VideoRecorder: 2304x1294 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF_Physics/samples/Filtering/Filtering.mp4
-[validation] total 71.18 ms (init 0.00; capture 0.29; compare 1.30; cleanup 0.06)
-[validation] replay reset 0.35; restore 1.13; derive 8.38; render 25.35; capture 0.19 ms
-[validation] snapshot reset 0.35; restore 0.07; derive 6.63; render 26.91; capture 0.15 ms
+VideoRecorder: 2304x1294 @ 24fps -> render/external/glTF_Physics/samples/Filtering/Filtering.mp4
 VideoRecorder: wrote 250 frames

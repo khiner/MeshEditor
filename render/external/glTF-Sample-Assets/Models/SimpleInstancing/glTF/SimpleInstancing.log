@@ -1,4 +1,1 @@
-[validation] total 3901.93 ms (init 3281.67; capture 0.27; compare 1.06; cleanup 0.03)
-[validation] replay reset 0.38; restore 2.21; derive 319.79; render 6.56; capture 0.11 ms
-[validation] snapshot reset 0.38; restore 0.19; derive 280.26; render 8.95; capture 0.08 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SimpleInstancing/glTF/SimpleInstancing.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/SimpleInstancing/glTF/SimpleInstancing.webp

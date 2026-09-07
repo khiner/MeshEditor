@@ -1,4 +1,1 @@
-[validation] total 3649.46 ms (init 3118.23; capture 0.18; compare 1.98; cleanup 0.04)
-[validation] replay reset 0.15; restore 1.35; derive 261.23; render 4.08; capture 0.05 ms
-[validation] snapshot reset 0.25; restore 0.09; derive 256.57; render 5.21; capture 0.05 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/Cameras/glTF/Cameras.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/Cameras/glTF/Cameras.webp

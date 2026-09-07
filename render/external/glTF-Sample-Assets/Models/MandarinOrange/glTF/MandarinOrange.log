@@ -1,4 +1,1 @@
-[validation] total 1317.08 ms (init 220.27; capture 0.47; compare 0.69; cleanup 0.02)
-[validation] replay reset 0.17; restore 6.17; derive 545.10; render 1.78; capture 0.30 ms
-[validation] snapshot reset 0.17; restore 0.93; derive 534.24; render 6.50; capture 0.28 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MandarinOrange/glTF/MandarinOrange.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/MandarinOrange/glTF/MandarinOrange.webp

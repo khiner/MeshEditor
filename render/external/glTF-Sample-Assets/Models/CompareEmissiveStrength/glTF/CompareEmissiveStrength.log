@@ -1,4 +1,1 @@
-[validation] total 2167.49 ms (init 1840.57; capture 0.26; compare 1.65; cleanup 0.02)
-[validation] replay reset 0.16; restore 1.48; derive 292.19; render 3.46; capture 0.11 ms
-[validation] snapshot reset 0.20; restore 0.19; derive 21.23; render 5.89; capture 0.07 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CompareEmissiveStrength/glTF/CompareEmissiveStrength.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/CompareEmissiveStrength/glTF/CompareEmissiveStrength.webp

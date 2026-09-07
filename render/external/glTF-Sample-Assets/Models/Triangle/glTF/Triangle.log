@@ -1,4 +1,1 @@
-[validation] total 301.11 ms (init 267.82; capture 0.15; compare 1.53; cleanup 0.03)
-[validation] replay reset 0.24; restore 2.17; derive 13.22; render 1.90; capture 0.11 ms
-[validation] snapshot reset 0.19; restore 0.13; derive 5.39; render 8.17; capture 0.06 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/Triangle/glTF/Triangle.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/Triangle/glTF/Triangle.webp

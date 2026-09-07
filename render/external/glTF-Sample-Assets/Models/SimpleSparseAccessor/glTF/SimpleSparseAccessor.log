@@ -1,4 +1,1 @@
-[validation] total 434.04 ms (init 383.87; capture 0.19; compare 1.00; cleanup 0.02)
-[validation] replay reset 0.18; restore 3.94; derive 16.85; render 7.24; capture 0.04 ms
-[validation] snapshot reset 0.17; restore 0.11; derive 6.70; render 13.67; capture 0.05 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SimpleSparseAccessor/glTF/SimpleSparseAccessor.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/SimpleSparseAccessor/glTF/SimpleSparseAccessor.webp

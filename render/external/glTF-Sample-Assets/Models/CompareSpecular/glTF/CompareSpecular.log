@@ -1,4 +1,1 @@
-[validation] total 2041.36 ms (init 1667.71; capture 0.23; compare 1.10; cleanup 0.02)
-[validation] replay reset 0.16; restore 2.59; derive 321.09; render 1.79; capture 0.13 ms
-[validation] snapshot reset 0.19; restore 0.30; derive 40.58; render 5.34; capture 0.11 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CompareSpecular/glTF/CompareSpecular.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/CompareSpecular/glTF/CompareSpecular.webp

@@ -1,4 +1,1 @@
-[validation] total 3037.19 ms (init 221.59; capture 0.20; compare 14.21; cleanup 0.04)
-[validation] replay reset 0.17; restore 2.58; derive 1380.58; render 7.22; capture 0.08 ms
-[validation] snapshot reset 0.23; restore 0.26; derive 1384.82; render 25.13; capture 0.09 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CompareIor/glTF/CompareIor.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/CompareIor/glTF/CompareIor.webp

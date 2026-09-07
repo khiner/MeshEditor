@@ -1,4 +1,1 @@
-[validation] total 342.34 ms (init 318.02; capture 0.29; compare 0.93; cleanup 0.02)
-[validation] replay reset 0.16; restore 1.09; derive 8.89; render 1.50; capture 0.05 ms
-[validation] snapshot reset 0.32; restore 0.11; derive 5.85; render 5.05; capture 0.05 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/UnlitTest/glTF/UnlitTest.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/UnlitTest/glTF/UnlitTest.webp

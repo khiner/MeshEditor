@@ -1,4 +1,1 @@
-[validation] total 384.66 ms (init 334.55; capture 0.18; compare 1.00; cleanup 0.03)
-[validation] replay reset 0.20; restore 10.81; derive 14.20; render 3.02; capture 0.05 ms
-[validation] snapshot reset 0.22; restore 0.09; derive 6.56; render 13.69; capture 0.06 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MultipleScenes/glTF/MultipleScenes.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/MultipleScenes/glTF/MultipleScenes.webp

@@ -1,4 +1,1 @@
-[validation] total 1221.75 ms (init 231.35; capture 0.18; compare 0.85; cleanup 0.04)
-[validation] replay reset 0.17; restore 1.34; derive 471.30; render 1.58; capture 0.08 ms
-[validation] snapshot reset 0.19; restore 0.20; derive 509.26; render 5.11; capture 0.09 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/PointLightIntensityTest/glTF/PointLightIntensityTest.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/PointLightIntensityTest/glTF/PointLightIntensityTest.webp

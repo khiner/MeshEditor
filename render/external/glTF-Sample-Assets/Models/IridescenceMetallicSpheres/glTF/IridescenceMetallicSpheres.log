@@ -1,4 +1,1 @@
-[validation] total 1765.00 ms (init 236.69; capture 6.94; compare 6.34; cleanup 0.02)
-[validation] replay reset 0.18; restore 49.92; derive 733.26; render 5.64; capture 8.94 ms
-[validation] snapshot reset 0.23; restore 9.91; derive 688.41; render 11.59; capture 6.91 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/IridescenceMetallicSpheres/glTF/IridescenceMetallicSpheres.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/IridescenceMetallicSpheres/glTF/IridescenceMetallicSpheres.webp

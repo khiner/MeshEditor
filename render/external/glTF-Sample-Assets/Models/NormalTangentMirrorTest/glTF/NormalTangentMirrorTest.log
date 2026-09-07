@@ -1,4 +1,1 @@
-[validation] total 337.10 ms (init 213.22; capture 0.25; compare 1.09; cleanup 0.05)
-[validation] replay reset 0.17; restore 3.29; derive 57.63; render 1.59; capture 0.15 ms
-[validation] snapshot reset 0.19; restore 0.55; derive 48.28; render 10.56; capture 0.09 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/NormalTangentMirrorTest/glTF/NormalTangentMirrorTest.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/NormalTangentMirrorTest/glTF/NormalTangentMirrorTest.webp

@@ -1,12 +1,3 @@
-[validation] total 5779.87 ms (init 273.07; capture 0.42; compare 9.51; cleanup 0.02)
-[validation] replay reset 0.17; restore 7.18; derive 2752.26; render 13.26; capture 0.47 ms
-[validation] snapshot reset 0.24; restore 1.45; derive 2694.37; render 27.08; capture 0.38 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF-KTX-BasisU/StainedGlassLamp.webp
-[validation] total 311.97 ms (init 0.00; capture 0.58; compare 1.22; cleanup 0.02)
-[validation] replay reset 0.29; restore 9.01; derive 142.50; render 8.49; capture 0.41 ms
-[validation] snapshot reset 0.33; restore 0.71; derive 143.87; render 4.31; capture 0.22 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF-KTX-BasisU/StainedGlassLamp.Lamp on.webp
-[validation] total 302.58 ms (init 0.00; capture 0.27; compare 1.36; cleanup 0.02)
-[validation] replay reset 0.19; restore 7.26; derive 144.50; render 1.83; capture 0.21 ms
-[validation] snapshot reset 0.20; restore 0.64; derive 141.35; render 4.53; capture 0.21 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF-KTX-BasisU/StainedGlassLamp.Lamp off.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF-KTX-BasisU/StainedGlassLamp.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF-KTX-BasisU/StainedGlassLamp.Lamp on.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF-KTX-BasisU/StainedGlassLamp.Lamp off.webp

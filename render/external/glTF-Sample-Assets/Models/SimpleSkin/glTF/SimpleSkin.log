@@ -1,8 +1,2 @@
-[validation] total 2361.59 ms (init 1733.42; capture 0.25; compare 1.09; cleanup 0.02)
-[validation] replay reset 0.18; restore 1.25; derive 295.53; render 22.83; capture 0.06 ms
-[validation] snapshot reset 0.17; restore 0.16; derive 284.55; render 22.01; capture 0.06 ms
-VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SimpleSkin/glTF/SimpleSkin.mp4
-[validation] total 23.14 ms (init 0.00; capture 0.15; compare 0.52; cleanup 0.02)
-[validation] replay reset 0.19; restore 2.26; derive 3.95; render 7.45; capture 0.06 ms
-[validation] snapshot reset 0.19; restore 0.04; derive 0.84; render 7.40; capture 0.06 ms
+VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/SimpleSkin/glTF/SimpleSkin.mp4
 VideoRecorder: wrote 132 frames

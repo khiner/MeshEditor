@@ -1,4 +1,1 @@
-[validation] total 1812.39 ms (init 1692.47; capture 0.52; compare 1.95; cleanup 0.03)
-[validation] replay reset 0.17; restore 4.51; derive 58.90; render 3.81; capture 0.39 ms
-[validation] snapshot reset 0.16; restore 0.94; derive 33.18; render 14.97; capture 0.38 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/USDShaderBallForGltf/glTF/USDShaderBallForGltf.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/USDShaderBallForGltf/glTF/USDShaderBallForGltf.webp

@@ -1,8 +1,2 @@
-[validation] total 327.92 ms (init 259.52; capture 0.57; compare 0.71; cleanup 0.02)
-[validation] replay reset 0.20; restore 4.24; derive 20.68; render 10.60; capture 0.15 ms
-[validation] snapshot reset 0.17; restore 0.26; derive 16.23; render 14.45; capture 0.13 ms
-VideoRecorder: 2304x1294 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF_Physics/samples/JointTypes/JointTypes.mp4
-[validation] total 37.13 ms (init 0.00; capture 0.22; compare 0.38; cleanup 0.02)
-[validation] replay reset 0.30; restore 0.87; derive 4.85; render 13.30; capture 0.12 ms
-[validation] snapshot reset 0.24; restore 0.06; derive 4.13; render 12.45; capture 0.16 ms
+VideoRecorder: 2304x1294 @ 24fps -> render/external/glTF_Physics/samples/JointTypes/JointTypes.mp4
 VideoRecorder: wrote 250 frames

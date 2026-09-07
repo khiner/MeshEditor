@@ -1,4 +1,1 @@
-[validation] total 1213.68 ms (init 206.98; capture 0.43; compare 1.93; cleanup 0.02)
-[validation] replay reset 0.17; restore 3.93; derive 495.90; render 3.09; capture 0.27 ms
-[validation] snapshot reset 0.20; restore 0.88; derive 488.89; render 10.70; capture 0.27 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CompareAnisotropy/glTF/CompareAnisotropy.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/CompareAnisotropy/glTF/CompareAnisotropy.webp

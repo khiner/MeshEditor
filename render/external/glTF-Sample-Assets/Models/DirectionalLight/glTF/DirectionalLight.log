@@ -1,4 +1,1 @@
-[validation] total 4028.21 ms (init 3101.68; capture 5.26; compare 1.56; cleanup 0.02)
-[validation] replay reset 0.20; restore 18.73; derive 446.53; render 13.07; capture 0.20 ms
-[validation] snapshot reset 0.18; restore 1.34; derive 431.47; render 7.75; capture 0.20 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/DirectionalLight/glTF/DirectionalLight.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/DirectionalLight/glTF/DirectionalLight.webp

@@ -1,16 +1,4 @@
-[validation] total 9601.59 ms (init 3417.15; capture 9.71; compare 8.15; cleanup 0.04)
-[validation] replay reset 0.18; restore 24.89; derive 2821.83; render 13.70; capture 5.85 ms
-[validation] snapshot reset 0.17; restore 9.08; derive 3268.16; render 17.73; capture 4.95 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CarConcept/glTF-JPG/CarConcept.webp
-[validation] total 285.59 ms (init 0.00; capture 3.79; compare 2.20; cleanup 0.02)
-[validation] replay reset 0.40; restore 25.19; derive 125.29; render 1.75; capture 1.82 ms
-[validation] snapshot reset 0.35; restore 3.82; derive 112.55; render 5.38; capture 3.02 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CarConcept/glTF-JPG/CarConcept.Carmine Candy.webp
-[validation] total 290.22 ms (init 0.00; capture 2.01; compare 2.12; cleanup 0.02)
-[validation] replay reset 0.41; restore 28.49; derive 131.60; render 2.77; capture 1.84 ms
-[validation] snapshot reset 0.38; restore 3.49; derive 109.94; render 5.29; capture 1.84 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CarConcept/glTF-JPG/CarConcept.Pearly Swirly.webp
-[validation] total 271.94 ms (init 0.00; capture 1.92; compare 1.59; cleanup 0.03)
-[validation] replay reset 0.35; restore 23.14; derive 124.27; render 2.36; capture 1.92 ms
-[validation] snapshot reset 0.34; restore 3.36; derive 108.63; render 2.17; capture 1.85 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CarConcept/glTF-JPG/CarConcept.Torched Graphite.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/glTF-JPG/CarConcept.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/glTF-JPG/CarConcept.Carmine Candy.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/glTF-JPG/CarConcept.Pearly Swirly.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/glTF-JPG/CarConcept.Torched Graphite.webp

@@ -1,14 +1,2 @@
-[validation] total 4979.25 ms (init 4156.89; capture 0.30; compare 1.32; cleanup 0.03)
-[validation] replay reset 0.19; restore 3.00; derive 375.62; render 36.98; capture 0.13 ms
-[validation] snapshot reset 0.21; restore 0.22; derive 381.83; render 22.42; capture 0.12 ms
-VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/Fox/glTF/Fox.mp4
-[validation] total 37.50 ms (init 0.00; capture 0.24; compare 0.51; cleanup 0.03)
-[validation] replay reset 0.40; restore 1.10; derive 8.44; render 8.65; capture 0.14 ms
-[validation] snapshot reset 0.44; restore 0.07; derive 8.59; render 8.77; capture 0.12 ms
-[validation] total 41.17 ms (init 0.00; capture 0.25; compare 0.57; cleanup 0.02)
-[validation] replay reset 0.31; restore 1.22; derive 9.08; render 13.35; capture 0.12 ms
-[validation] snapshot reset 0.24; restore 0.07; derive 7.26; render 8.58; capture 0.11 ms
-[validation] total 54.48 ms (init 0.00; capture 0.26; compare 0.51; cleanup 0.02)
-[validation] replay reset 0.24; restore 1.08; derive 20.52; render 16.05; capture 0.10 ms
-[validation] snapshot reset 0.23; restore 0.06; derive 6.96; render 8.32; capture 0.11 ms
+VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/Fox/glTF/Fox.mp4
 VideoRecorder: wrote 246 frames

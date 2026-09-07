@@ -1,4 +1,1 @@
-[validation] total 4128.46 ms (init 3286.88; capture 0.32; compare 3.30; cleanup 0.02)
-[validation] replay reset 0.30; restore 3.25; derive 403.76; render 11.36; capture 0.13 ms
-[validation] snapshot reset 0.26; restore 0.25; derive 408.51; render 10.06; capture 0.07 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/Avocado/glTF/Avocado.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/Avocado/glTF/Avocado.webp

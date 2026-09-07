@@ -1,4 +1,1 @@
-[validation] total 9357.60 ms (init 3252.47; capture 0.64; compare 71.82; cleanup 0.07)
-[validation] replay reset 0.22; restore 5.02; derive 3000.77; render 20.60; capture 0.26 ms
-[validation] snapshot reset 0.39; restore 0.69; derive 2961.15; render 43.02; capture 0.50 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/IridescenceSuzanne/glTF/IridescenceSuzanne.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/IridescenceSuzanne/glTF/IridescenceSuzanne.webp

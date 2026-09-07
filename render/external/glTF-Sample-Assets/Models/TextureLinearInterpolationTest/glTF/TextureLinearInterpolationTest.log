@@ -1,4 +1,1 @@
-[validation] total 3661.21 ms (init 3080.52; capture 0.20; compare 1.10; cleanup 0.02)
-[validation] replay reset 0.18; restore 2.44; derive 277.52; render 5.93; capture 0.06 ms
-[validation] snapshot reset 0.24; restore 0.13; derive 285.80; render 6.94; capture 0.13 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/TextureLinearInterpolationTest/glTF/TextureLinearInterpolationTest.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/TextureLinearInterpolationTest/glTF/TextureLinearInterpolationTest.webp

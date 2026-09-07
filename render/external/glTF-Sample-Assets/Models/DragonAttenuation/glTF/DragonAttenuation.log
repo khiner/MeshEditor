@@ -1,12 +1,3 @@
-[validation] total 3465.27 ms (init 3129.05; capture 2.08; compare 1.73; cleanup 0.03)
-[validation] replay reset 0.17; restore 26.35; derive 146.64; render 5.15; capture 0.95 ms
-[validation] snapshot reset 0.20; restore 6.65; derive 134.36; render 10.52; capture 1.39 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/DragonAttenuation/glTF/DragonAttenuation.webp
-[validation] total 320.57 ms (init 0.00; capture 0.89; compare 1.55; cleanup 0.03)
-[validation] replay reset 0.19; restore 25.23; derive 139.00; render 6.02; capture 0.78 ms
-[validation] snapshot reset 0.19; restore 4.44; derive 137.99; render 3.45; capture 0.80 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/DragonAttenuation/glTF/DragonAttenuation.Attenuation.webp
-[validation] total 285.17 ms (init 0.00; capture 0.84; compare 1.44; cleanup 0.02)
-[validation] replay reset 0.18; restore 20.42; derive 133.72; render 1.77; capture 0.76 ms
-[validation] snapshot reset 0.19; restore 4.21; derive 118.65; render 2.18; capture 0.77 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/DragonAttenuation/glTF/DragonAttenuation.Surface Color.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/DragonAttenuation/glTF/DragonAttenuation.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/DragonAttenuation/glTF/DragonAttenuation.Attenuation.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/DragonAttenuation/glTF/DragonAttenuation.Surface Color.webp

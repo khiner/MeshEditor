@@ -1,4 +1,1 @@
-[validation] total 5810.10 ms (init 218.30; capture 0.28; compare 9.72; cleanup 0.02)
-[validation] replay reset 0.17; restore 6.56; derive 2767.63; render 11.00; capture 0.22 ms
-[validation] snapshot reset 0.21; restore 0.59; derive 2744.95; render 50.15; capture 0.30 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/AnisotropyBarnLamp/glTF/AnisotropyBarnLamp.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/AnisotropyBarnLamp/glTF/AnisotropyBarnLamp.webp

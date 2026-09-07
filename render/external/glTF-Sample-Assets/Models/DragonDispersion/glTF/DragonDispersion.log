@@ -1,4 +1,1 @@
-[validation] total 4622.72 ms (init 1705.29; capture 1.20; compare 8.53; cleanup 0.02)
-[validation] replay reset 0.16; restore 20.95; derive 1453.29; render 8.68; capture 1.44 ms
-[validation] snapshot reset 0.18; restore 6.30; derive 1398.68; render 17.19; capture 0.79 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/DragonDispersion/glTF/DragonDispersion.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/DragonDispersion/glTF/DragonDispersion.webp

@@ -1,4 +1,1 @@
-[validation] total 10583.21 ms (init 3670.05; capture 2.29; compare 3.97; cleanup 0.03)
-[validation] replay reset 0.19; restore 19.09; derive 3795.72; render 7.05; capture 1.19 ms
-[validation] snapshot reset 0.17; restore 4.23; derive 3059.44; render 18.86; capture 0.93 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/ToyCar/glTF/ToyCar.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/ToyCar/glTF/ToyCar.webp

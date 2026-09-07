@@ -1,24 +1,6 @@
-[validation] total 1486.85 ms (init 229.29; capture 0.26; compare 2.23; cleanup 0.03)
-[validation] replay reset 0.19; restore 3.91; derive 625.60; render 2.84; capture 0.09 ms
-[validation] snapshot reset 0.18; restore 0.48; derive 614.37; render 7.24; capture 0.14 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/GlamVelvetSofa/glTF/GlamVelvetSofa.webp
-[validation] total 66.62 ms (init 0.00; capture 0.23; compare 1.45; cleanup 0.02)
-[validation] replay reset 0.24; restore 2.85; derive 28.22; render 3.13; capture 0.09 ms
-[validation] snapshot reset 0.20; restore 0.18; derive 26.86; render 3.07; capture 0.08 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/GlamVelvetSofa/glTF/GlamVelvetSofa.Champagne.webp
-[validation] total 66.56 ms (init 0.00; capture 0.18; compare 1.48; cleanup 0.03)
-[validation] replay reset 0.19; restore 2.79; derive 28.61; render 2.90; capture 0.09 ms
-[validation] snapshot reset 0.19; restore 0.17; derive 26.74; render 3.10; capture 0.09 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/GlamVelvetSofa/glTF/GlamVelvetSofa.Navy.webp
-[validation] total 68.40 ms (init 0.00; capture 0.21; compare 0.55; cleanup 0.02)
-[validation] replay reset 0.23; restore 5.26; derive 29.19; render 1.16; capture 0.09 ms
-[validation] snapshot reset 0.21; restore 0.21; derive 29.44; render 1.73; capture 0.09 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/GlamVelvetSofa/glTF/GlamVelvetSofa.Gray.webp
-[validation] total 65.69 ms (init 0.00; capture 0.18; compare 1.47; cleanup 0.02)
-[validation] replay reset 0.19; restore 2.75; derive 27.33; render 3.12; capture 0.08 ms
-[validation] snapshot reset 0.18; restore 0.17; derive 26.94; render 3.18; capture 0.08 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/GlamVelvetSofa/glTF/GlamVelvetSofa.Black.webp
-[validation] total 64.57 ms (init 0.00; capture 0.17; compare 1.15; cleanup 0.02)
-[validation] replay reset 0.20; restore 2.57; derive 27.80; render 2.51; capture 0.09 ms
-[validation] snapshot reset 0.20; restore 0.17; derive 26.53; render 3.07; capture 0.09 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/GlamVelvetSofa/glTF/GlamVelvetSofa.Pale Pink.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/GlamVelvetSofa/glTF/GlamVelvetSofa.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/GlamVelvetSofa/glTF/GlamVelvetSofa.Champagne.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/GlamVelvetSofa/glTF/GlamVelvetSofa.Navy.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/GlamVelvetSofa/glTF/GlamVelvetSofa.Gray.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/GlamVelvetSofa/glTF/GlamVelvetSofa.Black.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/GlamVelvetSofa/glTF/GlamVelvetSofa.Pale Pink.webp

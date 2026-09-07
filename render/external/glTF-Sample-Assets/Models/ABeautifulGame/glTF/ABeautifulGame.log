@@ -1,4 +1,1 @@
-[validation] total 5657.11 ms (init 287.87; capture 10.71; compare 14.25; cleanup 0.03)
-[validation] replay reset 0.19; restore 73.77; derive 2701.83; render 11.94; capture 4.62 ms
-[validation] snapshot reset 0.27; restore 15.73; derive 2517.17; render 11.70; capture 7.02 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/ABeautifulGame/glTF/ABeautifulGame.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/ABeautifulGame/glTF/ABeautifulGame.webp

@@ -1,4 +1,1 @@
-[validation] total 1454.58 ms (init 237.06; capture 0.24; compare 1.15; cleanup 0.04)
-[validation] replay reset 0.22; restore 1.78; derive 625.73; render 1.59; capture 0.12 ms
-[validation] snapshot reset 0.26; restore 0.35; derive 578.42; render 7.40; capture 0.21 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/DiffuseTransmissionTest/glTF/DiffuseTransmissionTest.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/DiffuseTransmissionTest/glTF/DiffuseTransmissionTest.webp

@@ -1,4 +1,1 @@
-[validation] total 3115.51 ms (init 239.84; capture 0.22; compare 4.57; cleanup 0.03)
-[validation] replay reset 0.17; restore 2.26; derive 1373.20; render 9.79; capture 0.94 ms
-[validation] snapshot reset 0.69; restore 0.30; derive 1472.46; render 10.95; capture 0.10 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/GlassBrokenWindow/glTF/GlassBrokenWindow.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/GlassBrokenWindow/glTF/GlassBrokenWindow.webp

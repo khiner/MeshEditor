@@ -1,8 +1,2 @@
-[validation] total 6852.70 ms (init 228.24; capture 0.76; compare 5.40; cleanup 0.02)
-[validation] replay reset 0.17; restore 6.94; derive 3092.25; render 143.89; capture 0.44 ms
-[validation] snapshot reset 0.32; restore 0.88; derive 3208.33; render 164.68; capture 0.37 ms
-VideoRecorder: 2304x1294 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/IridescentDishWithOlives/glTF/IridescentDishWithOlives.mp4
-[validation] total 518.26 ms (init 0.00; capture 0.42; compare 1.08; cleanup 0.03)
-[validation] replay reset 0.22; restore 8.44; derive 103.76; render 146.55; capture 0.25 ms
-[validation] snapshot reset 0.31; restore 0.24; derive 110.85; render 145.74; capture 0.37 ms
+VideoRecorder: 2304x1294 @ 24fps -> render/external/glTF-Sample-Assets/Models/IridescentDishWithOlives/glTF/IridescentDishWithOlives.mp4
 VideoRecorder: wrote 160 frames

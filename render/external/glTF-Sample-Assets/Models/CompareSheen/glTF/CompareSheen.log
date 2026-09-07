@@ -1,4 +1,1 @@
-[validation] total 1237.38 ms (init 234.52; capture 0.31; compare 2.05; cleanup 0.03)
-[validation] replay reset 0.18; restore 1.70; derive 487.95; render 1.71; capture 0.09 ms
-[validation] snapshot reset 0.18; restore 0.21; derive 496.25; render 12.13; capture 0.07 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CompareSheen/glTF/CompareSheen.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/CompareSheen/glTF/CompareSheen.webp

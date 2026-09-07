@@ -1,8 +1,2 @@
-[validation] total 3758.48 ms (init 3183.26; capture 6.60; compare 1.99; cleanup 0.03)
-[validation] replay reset 0.17; restore 4.23; derive 201.75; render 74.54; capture 3.81 ms
-[validation] snapshot reset 0.16; restore 2.17; derive 198.91; render 76.07; capture 4.79 ms
-VideoRecorder: 2304x1294 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF_Physics/samples/WaterWheel/WaterWheel.mp4
-[validation] total 567.88 ms (init 0.00; capture 3.29; compare 1.84; cleanup 0.02)
-[validation] replay reset 0.36; restore 4.36; derive 197.81; render 81.16; capture 3.13 ms
-[validation] snapshot reset 0.35; restore 0.98; derive 201.48; render 70.37; capture 2.73 ms
+VideoRecorder: 2304x1294 @ 24fps -> render/external/glTF_Physics/samples/WaterWheel/WaterWheel.mp4
 VideoRecorder: wrote 250 frames

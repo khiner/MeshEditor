@@ -1,4 +1,1 @@
-[validation] total 1313.47 ms (init 265.63; capture 0.37; compare 1.11; cleanup 0.04)
-[validation] replay reset 0.17; restore 8.90; derive 516.44; render 3.33; capture 0.23 ms
-[validation] snapshot reset 0.17; restore 0.66; derive 502.87; render 13.33; capture 0.23 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SciFiHelmet/glTF/SciFiHelmet.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/SciFiHelmet/glTF/SciFiHelmet.webp

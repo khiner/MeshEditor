@@ -1,4 +1,1 @@
-[validation] total 3747.15 ms (init 3060.99; capture 24.07; compare 8.84; cleanup 0.02)
-[validation] replay reset 0.16; restore 72.39; derive 141.52; render 4.42; capture 11.04 ms
-[validation] snapshot reset 0.27; restore 27.84; derive 379.08; render 9.08; capture 7.42 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MetalRoughSpheresNoTextures/glTF/MetalRoughSpheresNoTextures.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/MetalRoughSpheresNoTextures/glTF/MetalRoughSpheresNoTextures.webp

@@ -1,4 +1,1 @@
-[validation] total 2950.47 ms (init 230.53; capture 0.62; compare 6.40; cleanup 0.02)
-[validation] replay reset 0.16; restore 6.81; derive 1351.26; render 7.73; capture 0.47 ms
-[validation] snapshot reset 0.27; restore 2.78; derive 1328.94; render 14.07; capture 0.41 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/TransmissionRoughnessTest/glTF/TransmissionRoughnessTest.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/TransmissionRoughnessTest/glTF/TransmissionRoughnessTest.webp

@@ -1,4 +1,1 @@
-[validation] total 3777.63 ms (init 3189.40; capture 0.34; compare 1.02; cleanup 0.03)
-[validation] replay reset 0.18; restore 2.21; derive 284.21; render 2.70; capture 0.10 ms
-[validation] snapshot reset 0.23; restore 0.32; derive 282.78; render 13.97; capture 0.15 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/TextureEncodingTest/glTF/TextureEncodingTest.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/TextureEncodingTest/glTF/TextureEncodingTest.webp

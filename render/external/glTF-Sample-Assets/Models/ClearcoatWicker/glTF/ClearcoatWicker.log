@@ -1,4 +1,1 @@
-[validation] total 319.84 ms (init 224.64; capture 0.22; compare 2.80; cleanup 0.05)
-[validation] replay reset 0.18; restore 1.49; derive 39.62; render 1.62; capture 0.07 ms
-[validation] snapshot reset 0.17; restore 0.41; derive 32.03; render 16.46; capture 0.07 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/ClearcoatWicker/glTF/ClearcoatWicker.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/ClearcoatWicker/glTF/ClearcoatWicker.webp

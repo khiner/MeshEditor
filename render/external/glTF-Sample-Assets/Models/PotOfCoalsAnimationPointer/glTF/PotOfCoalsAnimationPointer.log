@@ -1,4 +1,1 @@
-[validation] total 9077.86 ms (init 3107.85; capture 0.55; compare 34.94; cleanup 0.02)
-[validation] replay reset 0.18; restore 8.37; derive 2820.52; render 22.81; capture 0.53 ms
-[validation] snapshot reset 0.54; restore 1.27; derive 3064.18; render 15.67; capture 0.41 ms
-Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/PotOfCoalsAnimationPointer/glTF/PotOfCoalsAnimationPointer.webp
+Saved screenshot: render/external/glTF-Sample-Assets/Models/PotOfCoalsAnimationPointer/glTF/PotOfCoalsAnimationPointer.webp
