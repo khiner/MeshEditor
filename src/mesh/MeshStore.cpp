@@ -1342,8 +1342,7 @@ PreparedMesh PrepareMeshSources(MeshData &data, MeshVertexAttributes &attrs, Mes
 BuiltConnectivity BuildPreparedConnectivity(const MeshStore &store, uint32_t id, const MeshData &data, const ConnectivityStorage &storage) {
     const uint32_t vertex_count = store.GetVerticesRange(id).Count;
     if (data.FaceCount() > 0) return BuildConnectivity(data.FaceOffsets, store.GetFaceCorners(id), vertex_count, storage);
-    if (!data.Edges.empty()) return BuildConnectivity(data.Edges, vertex_count, storage);
-    return {};
+    return BuildConnectivity(data.Edges, vertex_count, storage);
 }
 
 CreatedMesh MeshStore::CreateMesh(uint32_t id, MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, PreparedMesh &&prepared, bool flat_shaded) {
