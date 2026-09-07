@@ -54,6 +54,8 @@ target_link_libraries(mesheditor_imgui PRIVATE "-framework Metal" "-framework Ap
 add_library(mesheditor_implot STATIC lib/implot/implot.cpp lib/implot/implot_items.cpp lib/implot/implot_demo.cpp)
 target_include_directories(mesheditor_implot SYSTEM PUBLIC lib/implot)
 target_compile_options(mesheditor_implot PRIVATE -O2 -w)
+# Numeric types used by the audio plots and the bundled ImPlot demo.
+target_compile_definitions(mesheditor_implot PRIVATE "IMPLOT_CUSTOM_NUMERIC_TYPES=(ImS8)(ImS32)(ImU32)(float)(double)")
 target_link_libraries(mesheditor_implot PUBLIC mesheditor_imgui)
 
 mesheditor_library(MeshEditorMetal HOT
