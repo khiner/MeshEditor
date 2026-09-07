@@ -98,20 +98,17 @@ void EnsureSelectionVisibility(entt::registry &r, mtl::PassChain &chain) {
     RecordMeshletVisibilityPass(chain, slots, pipelines, buffers);
 }
 
-// Records silhouette depth before selection culling rewrites the visible list used for ID decoding.
-// Picks raster twice over the shared depth and cull state; boxes raster once.
+// Preserve scene depth while selection culling rewrites the visible list used for ID decoding.
+// Picks raster twice; boxes raster once.
 void RunSelectionPass(
-    entt::registry &r, mtl::PassChain &chain, bool render_depth, bool render_silhouette,
+    entt::registry &r, mtl::PassChain &chain, bool test_depth,
     std::optional<MeshletCullConfig> meshlet_cull, bool pick, auto &&record_draws
 ) {
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
     auto &buffers = r.ctx().get<GpuBuffers>();
 
-    if (render_depth) {
-        if (render_silhouette) EnsureSelectionVisibility(r, chain);
-        RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, render_silhouette);
-    }
+    if (test_depth) EnsureSelectionVisibility(r, chain);
     if (meshlet_cull && buffers.MeshletInstanceCount > 0) {
         RecordMeshletCull(chain, slots, pipelines, buffers, *meshlet_cull);
     }
@@ -119,9 +116,10 @@ void RunSelectionPass(
     const auto extent = pipelines.Main.Resources->ScratchDepth.Extent;
     const uint32_t raster_passes = pick ? 2u : 1u;
     for (uint32_t index = 0; index < raster_passes; ++index) {
-        // Preserve depth between the two read-only selection passes.
-        const auto store = index + 1u < raster_passes ? MTL::StoreActionStore : MTL::StoreActionDontCare;
-        const auto pass = mtl::MakePassDescriptor({}, mtl::LoadDepth(*pipelines.Main.Resources->ScratchDepth, store));
+        // Scene depth remains valid for shading and later picks; depth-free queries need no scratch contents.
+        const auto depth = test_depth ? mtl::LoadDepth(*pipelines.Main.Resources->VisibilityDepth) :
+                                        mtl::DepthAttachment{*pipelines.Main.Resources->ScratchDepth, MTL::LoadActionDontCare, MTL::StoreActionDontCare};
+        const auto pass = mtl::MakePassDescriptor({}, depth);
         pass->setRenderTargetWidth(extent.Width);
         pass->setRenderTargetHeight(extent.Height);
         // The pick resolve reads the key an earlier raster wrote, and bindless buffers carry no tracked hazard.
@@ -143,7 +141,6 @@ void RenderElementSelectionPass(
 
     const bool xray_selection = r.get<const SelectionXRay>(viewport).Value;
     const auto &selection = pipelines.SelectionFragment;
-    const bool render_depth = !xray_selection;
     const bool degenerate_point_pass = write_bitset && xray_selection && element != Element::Vertex;
     for (const auto &range : ranges) {
         [[maybe_unused]] const auto &mesh_buffers = r.get<MeshBuffers>(range.MeshEntity);
@@ -151,7 +148,7 @@ void RenderElementSelectionPass(
     }
 
     RunSelectionPass(
-        r, chain, render_depth, true,
+        r, chain, !xray_selection,
         MeshletCullConfig{
             .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::ElementSelection),
             .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
@@ -310,7 +307,7 @@ void RenderSelectionPickPass(entt::registry &r, mtl::PassChain &chain, std::opti
             .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
         }} :
         std::nullopt;
-    RunSelectionPass(r, chain, true, sound_instance.has_value(), sound_cull, pick.has_value(), [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
+    RunSelectionPass(r, chain, sound_instance.has_value(), sound_cull, pick.has_value(), [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
         if (sound_instance) {
             const SelectionElementPushConstants point_pc{MakeElementQuery(sel_slots, {}, InvalidSlot, pick, resolve_id)};
             selection.ElementRaster(Element::Vertex, false, false).Bind(encoder);

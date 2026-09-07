@@ -1749,7 +1749,6 @@ void RecordSilhouetteDepthPass(
     const auto extent = silhouette.Extent;
     const std::array colors{mtl::ClearColor(*silhouette)};
     const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*pipelines.Main.Resources->ScratchDepth));
-    // Element selection loads this cleared depth target even when there is no silhouette to draw.
     auto *encoder = encode::BeginScenePass(
         chain, pass, "SilhouetteDepth", {{MTL::StageFragment, MTL::StageFragment}},
         extent, slots, buffers, ubo_offset

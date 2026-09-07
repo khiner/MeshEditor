@@ -6,6 +6,7 @@ endfunction()
 
 add_executable(MeshEditorTests
     RoundtripTest.cpp
+    SelectionTest.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf/GltfScene.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf/SourceTexture.cpp
     ${CMAKE_SOURCE_DIR}/src/armature/Armature.cpp

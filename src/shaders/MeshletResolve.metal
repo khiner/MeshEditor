@@ -23,6 +23,7 @@ inline DrawData MeshletDraw(PrimitiveRecord primitive, InstanceRecord instance, 
     draw.PosedSeamNormalOffset = instance.PosedSeamNormalOffset;
     draw.PosedFaceNormalOffset = instance.PosedFaceNormalOffset;
     draw.Selection = instance.Selection;
+    draw.ElementIdOffset = instance.ElementIdOffset;
     draw.HasPendingVertexTransform = instance.HasPendingVertexTransform;
     draw.PrimaryEditInstanceIndex = instance.PrimaryEditInstanceIndex;
     return draw;

@@ -33,7 +33,7 @@ struct PrimaryEditInstanceMaps {
     PrimaryEditInstanceMap All, Transformable;
 };
 
-// Returns one selected mesh instance per mesh, preferring the active instance.
+// Returns one selected mesh instance per mesh, preferring the active instance, then the lowest entity ID.
 PrimaryEditInstanceMap ComputePrimaryEditInstances(const entt::registry &, bool include_scale_locked = true);
 PrimaryEditInstanceMaps ComputePrimaryEditInstanceMaps(const entt::registry &);
 
