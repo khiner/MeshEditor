@@ -298,7 +298,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
         }
         if (!r.storage<Selected>().empty()) {
             if (!bone_edit && Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) Duplicate(r, viewport);
-            else if (!bone_edit && Shortcut(ImGuiMod_Alt | ImGuiKey_D, VKey)) action::Emit(action::object::DuplicateLinked{});
+            else if (!bone_edit && Shortcut(ImGuiMod_Alt | ImGuiKey_D, VKey)) action::EmitStaged(action::object::DuplicateLinked{});
             else if (!bone_edit && CanDelete(r, viewport) && (Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey))) Delete(r, viewport);
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_G, VKey)) action::Emit(action::bone::ClearSelectedTransforms{.Position = true});
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_R, VKey)) action::Emit(action::bone::ClearSelectedTransforms{.Rotation = true});
@@ -820,6 +820,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         auto &gizmo = r.get<GizmoInteraction>(viewport);
         const auto gizmo_transform = GizmoTransform{{.P = pivot, .R = active_transform.R, .S = active_transform.S}, gizmo_state.Mode};
         const auto *start_screen = r.try_get<const StartScreenTransform>(viewport);
+        const bool was_using = gizmo.IsUsing();
         auto interact_result = TransformGizmo::Interact(
             gizmo,
             gizmo_transform,
@@ -836,7 +837,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                 // Object/bone mode: store the gizmo pivot + delta. Apply recomputes per-entity transforms.
                 action::EmitStaged(action::view::DragGizmo{std::make_unique<PendingTransform>(ts.P, ts.R, td)});
             }
-        } else if (!start_transform_view.empty()) {
+        } else if (was_using || !start_transform_view.empty()) {
             action::Emit(action::view::EndGizmoDrag{});
         }
 

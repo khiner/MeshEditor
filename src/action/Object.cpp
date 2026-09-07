@@ -51,7 +51,7 @@ entt::entity CreateArmatureObject(entt::registry &r, MeshStore &meshes, entt::en
     return entity;
 }
 
-entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_duplicate) {
+entt::entity DuplicateOne(entt::registry &r, entt::entity e) {
     auto &meshes = r.ctx().get<MeshStore>();
     const ObjectCreateInfo create_info{
         .Name = std::format("{}_copy", GetName(r, e)),
@@ -89,7 +89,6 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_dupl
     if (auto *prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(e_new.first, *prim_shape);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new.second, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new.second, *bone_attachment);
-    was_mesh_duplicate = true;
     return e_new.second;
 }
 
@@ -132,13 +131,32 @@ namespace action::object {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     auto &meshes = r.ctx().get<MeshStore>();
     auto begin_translate = [&] { r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate); };
-    // Hand off Active to the duplicate and drop the source from the selection.
-    auto reselect_duplicate = [&](entt::entity src, entt::entity dup) {
-        if (r.all_of<Active>(src)) {
-            r.remove<Active>(src);
-            r.emplace<Active>(dup);
+    const auto duplicate = [&](bool linked, const PendingTransform *placement = nullptr) {
+        if (!(linked ? CanDuplicateLinked(r, viewport) : CanDuplicate(r, viewport))) return;
+        const profile::CpuScope scope{linked ? "DuplicateLinked" : "Duplicate"};
+        const auto entities = r.view<Selected>() | to<std::vector>();
+        if (!linked) {
+            // Pre-reserve arenas to avoid per-CloneMesh buffer growth.
+            for (const auto e : entities) {
+                if (r.all_of<Instance>(e) && !r.all_of<BoneSubPartOf>(e)) {
+                    const auto mesh_entity = r.get<Instance>(e).Entity;
+                    if (!r.all_of<ObjectExtrasTag>(mesh_entity) && HasMesh(r, mesh_entity)) meshes.PlanClone(GetMesh(r, mesh_entity));
+                }
+            }
+            meshes.CommitReserves();
         }
-        r.remove<Selected>(src);
+        for (const auto src : entities) {
+            const auto dup = linked ? DuplicateLinkedOne(r, src) : DuplicateOne(r, src);
+            // Copies are rooted in world space, so placement needs no parent conversion.
+            if (placement) r.patch<Transform>(dup, [&](auto &t) { t = placement->ApplyTo(t, r.all_of<ScaleLocked>(dup)); });
+            if (r.all_of<Active>(src)) {
+                r.remove<Active>(src);
+                r.emplace<Active>(dup);
+            }
+            r.remove<Selected>(src);
+        }
+        if (placement) r.remove<StartScreenTransform>(viewport);
+        else begin_translate();
     };
     // Rebuild a primitive mesh entity's geometry from its current PrimitiveShape.
     auto regen_primitive = [&](entt::entity e) {
@@ -183,30 +201,9 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 if (!CanDelete(r, viewport)) return;
                 for (const auto e : r.view<Selected>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(r, viewport, e);
             },
-            [&](Duplicate) {
-                if (!CanDuplicate(r, viewport)) return;
-                const profile::CpuScope scope{"Duplicate"};
-                const auto entities = r.view<Selected>() | to<std::vector>();
-
-                // Pre-reserve arenas to avoid per-CloneMesh buffer growth.
-                for (const auto e : entities) {
-                    if (r.all_of<Instance>(e) && !r.all_of<BoneSubPartOf>(e)) {
-                        const auto mesh_entity = r.get<Instance>(e).Entity;
-                        if (!r.all_of<ObjectExtrasTag>(mesh_entity) && HasMesh(r, mesh_entity)) meshes.PlanClone(GetMesh(r, mesh_entity));
-                    }
-                }
-                meshes.CommitReserves();
-
-                bool any_mesh_duplicate = false;
-                for (const auto e : entities) reselect_duplicate(e, DuplicateOne(r, e, any_mesh_duplicate));
-                begin_translate();
-            },
-            [&](DuplicateLinked) {
-                if (!CanDuplicateLinked(r, viewport)) return;
-                const profile::CpuScope scope{"DuplicateLinked"};
-                for (const auto e : r.view<Selected>() | to<std::vector>()) reselect_duplicate(e, DuplicateLinkedOne(r, e));
-                begin_translate();
-            },
+            [&](Duplicate) { duplicate(false); },
+            [&](DuplicateLinked) { duplicate(true); },
+            [&](const DuplicateToPosition &a) { duplicate(a.Linked, a.Placement.get()); },
             [&](ToggleHidden) {
                 for (const auto e : r.view<Selected>()) {
                     if (r.all_of<RenderInstance>(e)) Hide(r, e);

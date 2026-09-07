@@ -46,6 +46,7 @@
 #include "selection/BoneSelection.h"
 #include "selection/SelectionComponents.h"
 #include "snapshot/SnapshotRoles.h"
+#include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/VideoRecording.h"
 #include "viewport/ViewCamera.h"
@@ -138,14 +139,14 @@ using Persistent = type_list<
     SourceSceneIndex, SourceMeshKind, GltfObject, CameraName, LightName, SourceObjectName, MeshName,
     SourceMatrixTransform, SourceEmptyName, MeshSourceLayout, gltf::SourceAssets>;
 
-// Reconstructed from Persistent state.
+// Reconstructed or transient state excluded from snapshots.
 using Derived = type_list<
     MeshPositionsChanged, RenderInstance, WorldTransform, PosedLocal, MeshBuffers, MeshShadingSummary, BoneAdjacencyIndices, ModelsBuffer,
     MaterialDirty, LightIndex, EnabledInteractionModes, LastEvaluatedFrame,
     PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, BoneInstanceStateDirty, ArmaturePoseState,
     MorphWeightGpuRange, AdditiveBoxSelectBaseline, ExciteSelectionBaseline, EditSelectionDirty, PendingEditElementClick,
     PendingBoxSelect, PendingPick, PendingTextureUploads, BoxSelectState, PlaybackFrame,
-    PhysicsCacheInvalid, RotationUiVariant, RotationUiDriving, GizmoInteraction, PendingTransform, StartScreenTransform,
+    PhysicsCacheInvalid, RotationUiVariant, RotationUiDriving, GizmoInteraction, PendingTransform, StartScreenTransform, StartTransform, StartBoneLength,
 #ifdef SURFACE_AUDIO
     SurfaceRelief, SurfaceFinishKey,
 #endif

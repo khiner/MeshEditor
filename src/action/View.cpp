@@ -197,8 +197,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
 
                     // Object mode / non-bone transform.
                     const bool frozen = r.all_of<ScaleLocked>(e);
-                    const auto offset = ts_e.P - ts.P;
-                    make_local(e, {td.P + ts.P + numeric::Rotate(td.R, frozen ? offset : rot * (rT * offset * td.S)), numeric::Normalize(td.R * ts_e.R), frozen ? ts_e.S : td.S * ts_e.S}, start_pd);
+                    make_local(e, a.Value->ApplyTo(ts_e, frozen), start_pd);
                 }
 
                 // Snapshot starts before patching so later patches don't perturb the snapshot, then apply.

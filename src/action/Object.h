@@ -8,6 +8,7 @@
 #include "mesh/PrimitiveType.h"
 #include "object/ObjectCreateInfo.h"
 #include "render/MaterialComponents.h"
+#include "viewport/ViewportInteractionState.h"
 
 #include <filesystem>
 
@@ -15,6 +16,11 @@ namespace action::object {
 struct Delete {};
 struct Duplicate {};
 struct DuplicateLinked {};
+// One committed duplication, including its resolved placement (also supports rotate/scale).
+struct DuplicateToPosition {
+    std::unique_ptr<PendingTransform> Placement;
+    bool Linked{};
+};
 struct ToggleHidden {};
 struct SetSelectedVisible {
     bool Visible;
@@ -86,7 +92,7 @@ using Action = MergedVariantT<
     Actions,
     Replace<PunctualLight>,
     Replace<MaterialDirty>, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
-    Update<std::optional<uint32_t>>>;
+    Update<std::optional<uint32_t>>, DuplicateToPosition>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::object

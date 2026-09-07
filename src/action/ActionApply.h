@@ -3,6 +3,9 @@
 #include <entt/entity/fwd.hpp>
 
 namespace action {
+// True while the scene contains an uncommitted gesture preview.
+bool HasStaged();
+
 // Applies the buffered user transition followed by system-generated actions.
 void ApplyEmitted(entt::registry &, entt::entity viewport);
 

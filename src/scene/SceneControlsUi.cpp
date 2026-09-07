@@ -999,7 +999,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                 if (CanDuplicate(r, viewport) && Button("Duplicate")) Duplicate(r, viewport);
                 if (CanDuplicateLinked(r, viewport)) {
                     SameLine();
-                    if (Button("Duplicate linked")) action::Emit(action::object::DuplicateLinked{});
+                    if (Button("Duplicate linked")) action::EmitStaged(action::object::DuplicateLinked{});
                 }
                 if (CanDelete(r, viewport) && Button("Delete")) Delete(r, viewport);
                 if (r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && !r.view<const BoneSelection>().empty()) {

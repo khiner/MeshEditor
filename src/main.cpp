@@ -1638,7 +1638,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             const bool ui_matches_scene = ui_revision == scene_revision && previous_ui_revision == scene_revision;
             previous_ui_revision = ui_revision;
             // Background progress is transient; compare only frames drawn after it disappears.
-            const bool validation_ready = validate && ui_gesture_settled && !ui_has_pending_solves && !HasPendingModalSolves(r);
+            const bool validation_ready = validate && !action::HasStaged() && ui_gesture_settled && !ui_has_pending_solves && !HasPendingModalSolves(r);
             const bool present_frame = !validation_ready || ui_matches_scene;
 #else
             constexpr bool present_frame{true};
@@ -1758,7 +1758,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
         }
 #ifdef VALIDATE_ACTIONS
         const auto revision = std::pair{r.get_or_emplace<ActionIndex>(viewport).Index, RestoreGeneration};
-        if (settled && revision != validated_revision && !HasPendingModalSolves(r)) {
+        if (settled && revision != validated_revision && !action::HasStaged() && !HasPendingModalSolves(r)) {
             const ValidationInputs inputs{
                 .WorkingDir = Paths::Project(),
                 .LogPath = action::CurrentLogPath(),

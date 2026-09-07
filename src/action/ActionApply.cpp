@@ -35,8 +35,19 @@ void ApplyRecord(entt::registry &r, entt::entity viewport, Action &&a) {
     RecordCommitted(r, viewport, std::move(a));
 }
 
+// Linked status of the open duplication, or nullopt for other gestures.
+std::optional<bool> HeldDuplicate() {
+    const auto *object = Held ? std::get_if<object::Action>(&*Held) : nullptr;
+    if (!object) return std::nullopt;
+    if (const auto *a = std::get_if<object::DuplicateToPosition>(object)) return a->Linked;
+    if (std::holds_alternative<object::DuplicateLinked>(*object)) return true;
+    if (std::holds_alternative<object::Duplicate>(*object)) return false;
+    return std::nullopt;
+}
+
 void CommitHeld(entt::registry &r, entt::entity viewport) {
     if (Held) {
+        if (HeldDuplicate()) ApplyAction(r, viewport, MakeAction(view::EndGizmoDrag{}));
         RecordCommitted(r, viewport, std::move(*Held));
         Held.reset();
     }
@@ -44,6 +55,8 @@ void CommitHeld(entt::registry &r, entt::entity viewport) {
 } // namespace
 
 namespace action {
+bool HasStaged() { return Held.has_value(); }
+
 void StartLog(std::filesystem::path path, bool append) {
     if (const auto parent = path.parent_path(); !parent.empty()) {
         std::error_code ec;
@@ -81,19 +94,28 @@ void ApplyEmitted(entt::registry &r, entt::entity viewport) {
     auto drained = Drain();
     if (drained.Emitted) {
         auto [action, phase] = std::move(*drained.Emitted);
+        auto *view = std::get_if<view::Action>(&action);
+        auto *drag = view ? std::get_if<view::DragGizmo>(view) : nullptr;
+        const auto duplicate = HeldDuplicate();
+        const bool duplicate_end = duplicate && view && std::holds_alternative<view::EndGizmoDrag>(*view);
+        const bool duplicate_restart = duplicate && view && std::holds_alternative<view::LatchScreenTransform>(*view);
+        // A different gesture must not replace an uncommitted duplication.
+        if (phase == Phase::Record || (duplicate && !(phase == Phase::Stage && drag) && !(phase == Phase::Cancel && duplicate_restart))) CommitHeld(r, viewport);
         ApplyAction(r, viewport, action);
         switch (phase) {
-            case Phase::Stage: Held = std::move(action); break;
+            case Phase::Stage:
+                Held = duplicate && drag ? MakeAction(object::DuplicateToPosition{std::move(drag->Value), *duplicate}) : std::move(action);
+                break;
             case Phase::Cancel:
-                Held.reset();
-                r.clear<DragFieldStart>();
+                if (duplicate_restart) {
+                    Held = *duplicate ? MakeAction(object::DuplicateLinked{}) : MakeAction(object::Duplicate{});
+                } else Held.reset();
                 break;
             case Phase::Record:
-                CommitHeld(r, viewport);
-                RecordCommitted(r, viewport, std::move(action));
-                r.clear<DragFieldStart>();
+                if (!duplicate_end) RecordCommitted(r, viewport, std::move(action));
                 break;
         }
+        if (phase != Phase::Stage) r.clear<DragFieldStart>();
     }
     if (drained.CommitRequested) {
         CommitHeld(r, viewport);

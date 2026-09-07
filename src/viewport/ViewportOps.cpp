@@ -100,5 +100,5 @@ void Delete(const entt::registry &r, entt::entity viewport) {
 }
 void Duplicate(const entt::registry &r, entt::entity viewport) {
     if (IsBoneEditMode(r, viewport)) action::Emit(action::bone::DuplicateSelected{});
-    else action::Emit(action::object::Duplicate{});
+    else action::EmitStaged(action::object::Duplicate{});
 }
