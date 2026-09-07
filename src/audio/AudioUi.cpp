@@ -17,6 +17,7 @@
 #include "render/Instance.h"
 #include "scene/Entity.h"
 #include "selection/SelectionBitset.h"
+#include "selection/SelectionComponents.h"
 #include "ui/FieldEdit.h"
 #include "ui/HelpMarker.h"
 #include "ui/PresetCombo.h"

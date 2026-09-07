@@ -33,6 +33,7 @@
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
+#include <imgui_internal.h>
 
 #include <entt/entity/registry.hpp>
 

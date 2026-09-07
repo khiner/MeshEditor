@@ -8,9 +8,9 @@
 #include "action/Emit.h"
 #include "numeric/Angles.h"
 #include "scene/Entity.h" // FindActiveEntity
-#include "selection/SelectionComponents.h" // Selected
 
-#include <imgui_internal.h> // TempInputIsActive
+#include <imgui.h>
+#include <span>
 
 namespace ui {
 
@@ -29,19 +29,26 @@ inline bool DragFloat4(const char *label, float *v, float speed = 1.f, float lo 
 }
 
 // Apply Alt-modified drags as per-entity deltas and other Alt-modified edits as copied values.
-inline action::Scope ScopeFromAlt(bool delta_capable = false) {
-    if (!ImGui::GetIO().KeyAlt) return action::Scope::Active;
-    return delta_capable ? action::Scope::SelectedDelta : action::Scope::Selected;
-}
+action::Scope ScopeFromAlt(bool delta_capable = false);
 
 namespace detail {
 // Preserve gesture state because ImGui permits one active item.
-inline action::Scope GestureScope{action::Scope::Active};
-inline std::array<std::byte, 16> GestureStartValue{};
-inline bool GestureTyped{false};
-inline std::function<void()> GestureCancel;
-
+extern action::Scope GestureScope;
+extern std::array<std::byte, 16> GestureStartValue;
+extern bool GestureTyped;
+extern std::function<void()> GestureCancel;
 inline bool CompositeGestureOpen{false};
+
+struct FieldGesture {
+    entt::registry &R;
+    std::span<const std::byte> Original;
+    bool Selection, DeltaCapable;
+
+    bool Begin();
+    bool ShouldStage(bool changed);
+    bool End(bool changed);
+    void Capture();
+};
 } // namespace detail
 
 // Group a composite editor into one recorded action per drag.
@@ -168,20 +175,7 @@ struct Edit {
         const Field original = v;
         const bool changed = widget(v);
 
-        if constexpr (!HasEntity) {
-            if (ImGui::IsItemHovered() && R.template view<Selected>().size() > 1) ImGui::SetItemTooltip("Hold Alt to apply to all selected");
-        }
-
-        // Freeze the scope and initial value for the full gesture.
-        auto capture_gesture = [&] {
-            detail::GestureTyped = false;
-            std::memcpy(detail::GestureStartValue.data(), &original, sizeof(Field));
-            if constexpr (!HasEntity) {
-                detail::GestureScope = ScopeFromAlt(delta_capable && action::DeltaField<Field>);
-                // Clear the transient baseline from an interrupted selection drag.
-                if (detail::GestureScope == action::Scope::SelectedDelta) R.template clear<action::DragFieldStart>();
-            }
-        };
+        detail::FieldGesture gesture{R, std::as_bytes(std::span{&original, 1}), !HasEntity, delta_capable && action::DeltaField<Field>};
 
         auto gesture_start = [] { Field s; std::memcpy(&s, detail::GestureStartValue.data(), sizeof(Field)); return s; };
 
@@ -220,37 +214,9 @@ struct Edit {
             action::EmitStaged(update(v));
         };
 
-        // Capture the initial update for cancellation.
-        if (ImGui::IsItemActivated()) {
-            capture_gesture();
-            detail::GestureCancel = [revert = update(original)] { action::EmitCancel(revert); };
-        }
-        // Apply click-to-edit text only when the edit commits.
-        if (ImGui::TempInputIsActive(ImGui::GetItemID())) detail::GestureTyped = true;
-
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            if (changed) stage();
-            action::Commit();
-            detail::GestureCancel = nullptr;
-            return changed;
-        }
-        if (ImGui::IsItemDeactivated()) {
-            if (detail::GestureCancel) {
-                detail::GestureCancel();
-                detail::GestureCancel = nullptr;
-            }
-            return false;
-        }
-        if (changed) {
-            // Delay typed edits until commit.
-            if (ImGui::IsItemActive() && detail::GestureTyped) return changed;
-            // Capture the modifier scope for instantaneous widgets.
-            if (!ImGui::IsItemActive()) capture_gesture();
-            stage();
-            // Commit instantaneous widget changes immediately.
-            if (!ImGui::IsItemActive()) action::Commit();
-        }
-        return changed;
+        if (gesture.Begin()) detail::GestureCancel = [revert = update(original)] { action::EmitCancel(revert); };
+        if (gesture.ShouldStage(changed)) stage();
+        return gesture.End(changed);
     }
 
     template<auto... Ms>

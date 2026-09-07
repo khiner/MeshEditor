@@ -191,6 +191,7 @@ mesheditor_library(MeshEditorUi COLD
     src/physics/PhysicsUi.cpp
     src/render/SvgResource.cpp
     src/scene/SceneControlsUi.cpp
+    src/ui/FieldEdit.cpp
     src/ui/MacBackend.mm
     src/viewport/ViewportIcons.cpp
     src/viewport/ViewportPresent.cpp
