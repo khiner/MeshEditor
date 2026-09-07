@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/MosquitoInAmber/glTF/MosquitoInAmber.webp
+[validation] total 4868.21 ms (init 1632.80; capture 0.35; compare 10.15; cleanup 0.02)
+[validation] replay reset 0.17; restore 8.27; derive 1621.50; render 7.77; capture 0.22 ms
+[validation] snapshot reset 0.17; restore 0.64; derive 1574.57; render 11.38; capture 0.21 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MosquitoInAmber/glTF/MosquitoInAmber.webp

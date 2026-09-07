@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/Suzanne/glTF/Suzanne.webp
+[validation] total 1868.21 ms (init 1796.15; capture 0.31; compare 0.74; cleanup 0.02)
+[validation] replay reset 0.17; restore 2.34; derive 34.48; render 3.20; capture 0.08 ms
+[validation] snapshot reset 0.26; restore 0.30; derive 25.60; render 4.46; capture 0.08 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/Suzanne/glTF/Suzanne.webp

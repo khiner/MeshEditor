@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/AnisotropyDiscTest/glTF/AnisotropyDiscTest.webp
+[validation] total 1290.11 ms (init 236.10; capture 0.23; compare 0.97; cleanup 0.04)
+[validation] replay reset 0.24; restore 3.86; derive 522.74; render 2.10; capture 0.14 ms
+[validation] snapshot reset 0.25; restore 0.39; derive 513.23; render 9.55; capture 0.27 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/AnisotropyDiscTest/glTF/AnisotropyDiscTest.webp

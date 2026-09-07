@@ -14,8 +14,6 @@ inline constexpr auto HdrColor = MTL::PixelFormatRGBA16Float;
 inline constexpr auto Depth = MTL::PixelFormatDepth32Float;
 inline constexpr auto Float = MTL::PixelFormatR32Float;
 inline constexpr auto Float2 = MTL::PixelFormatRG32Float;
-inline constexpr auto LineData = MTL::PixelFormatRGBA8Unorm;
-inline constexpr auto Velocity = MTL::PixelFormatRGBA16Float;
 inline constexpr auto Uint = MTL::PixelFormatR32Uint;
 inline constexpr auto Uint2 = MTL::PixelFormatRG32Uint;
 } // namespace Format

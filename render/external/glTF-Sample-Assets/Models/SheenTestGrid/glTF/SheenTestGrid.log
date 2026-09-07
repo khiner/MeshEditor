@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/SheenTestGrid/glTF/SheenTestGrid.webp
+[validation] total 1321.36 ms (init 300.94; capture 0.73; compare 0.95; cleanup 0.05)
+[validation] replay reset 0.21; restore 4.02; derive 552.38; render 1.90; capture 0.31 ms
+[validation] snapshot reset 0.18; restore 0.77; derive 453.12; render 5.54; capture 0.25 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SheenTestGrid/glTF/SheenTestGrid.webp

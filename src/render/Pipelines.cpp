@@ -6,6 +6,7 @@
 #include "gpu/NormalIndicatorConstant.h"
 #include "gpu/PbrConstant.h"
 #include "metal/Bindless.h"
+#include "metal/Buffer.h"
 
 #include <array>
 #include <bit>
@@ -35,9 +36,8 @@ constexpr DepthState DepthTestNoWriteLessEqual{.Write = false, .Compare = MTL::C
 constexpr mtl::FunctionConstant BoolConstant(auto index, bool value) {
     return {uint32_t(index), MTL::DataTypeBool, value ? 1u : 0u};
 }
-std::vector<mtl::FunctionConstant> MeshVertexConstants(bool velocity, bool non_triangle_topology = false) {
+std::vector<mtl::FunctionConstant> MeshVertexConstants(bool non_triangle_topology = false) {
     return {
-        BoolConstant(MeshVertexConstant::VelocityOutput, velocity),
         BoolConstant(MeshVertexConstant::NonTriangleTopology, non_triangle_topology),
     };
 }
@@ -45,10 +45,10 @@ FunctionRef NormalIndicatorMesh(bool faces) {
     return {"NormalIndicator.metal", "NormalIndicatorMesh", {BoolConstant(NormalIndicatorConstant::NormalIndicatorFaces, faces)}};
 }
 
-FunctionRef MeshletVertex(bool velocity = false, bool non_triangle_topology = false) {
+FunctionRef MeshletVertex(bool non_triangle_topology = false) {
     return {
         "MeshletTransform.metal", "MeshletForwardMesh",
-        MeshVertexConstants(velocity, non_triangle_topology)
+        MeshVertexConstants(non_triangle_topology)
     };
 }
 
@@ -63,38 +63,22 @@ mtl::MeshRenderPipeline CreateMeshPipeline(
     return {libraries, std::move(mesh), std::move(fragment), std::move(formats), std::move(blends), depth};
 }
 
-struct PbrPipelineSpec {
-    bool VelocityPass, VelocityOutput;
-    FunctionRef Fragment;
-    std::vector<BlendState> Blends;
-    DepthState Depth;
-};
-
-PbrPipelineSpec MakePbrPipelineSpec(
-    PbrFeatureMask mask, bool prepass, PbrCompiler::Variant variant, const char *fragment,
-    bool non_triangle_topology
-) {
-    const bool velocity_pass = variant == PbrCompiler::Variant::OpaqueVelocity || variant == PbrCompiler::Variant::BlendVelocity;
-    const bool velocity_output = variant == PbrCompiler::Variant::OpaqueVelocity;
+FunctionRef PbrFragment(PbrFeatureMask mask, bool prepass, const char *fragment, bool non_triangle_topology) {
     std::vector<FunctionConstant> constants;
     constants.reserve(PbrSpecFeatures.size() + 2);
     for (const auto &[constant, feature] : PbrSpecFeatures) constants.push_back(BoolConstant(constant, HasFeature(mask, feature)));
     constants.push_back(BoolConstant(PbrConstant::TransmissionPrepass, prepass));
-    constants.push_back(BoolConstant(PbrConstant::VelocityOutput, velocity_output));
     constants.push_back(BoolConstant(PbrConstant::NonTriangleTopology, non_triangle_topology));
-    std::vector<BlendState> blends{Blend};
-    if (velocity_pass) blends.push_back(velocity_output ? NoBlend : NoWrite);
-    return {velocity_pass, velocity_output, {"pbr.metal", fragment, std::move(constants)}, std::move(blends), {.Write = variant != PbrCompiler::Variant::Blend && variant != PbrCompiler::Variant::BlendVelocity}};
+    return {"pbr.metal", fragment, std::move(constants)};
 }
 
 PassFormats SceneFormats() { return {{Format::HdrColor}, Format::Depth}; }
-PassFormats SceneVelocityFormats() { return {{Format::HdrColor, Format::Velocity}, Format::Depth}; }
-PassFormats OverlayFormats() { return {{Format::Color, Format::LineData}, Format::Depth}; }
+PassFormats OverlayFormats() { return {{Format::Color}, Format::Depth}; }
 
-mtl::MeshRenderPipeline MeshletEditEdgePipeline(mtl::LibraryCache &libraries, bool include_outer) {
+mtl::MeshRenderPipeline StrokePipeline(mtl::LibraryCache &libraries, FunctionRef mesh, bool include_outer = false) {
     return CreateMeshPipeline(
-        libraries, FunctionRef{"EdgeQuad.metal", "EdgeQuadFragment", {BoolConstant(EditOverlayConstant::IncludeOuter, include_outer)}}, OverlayFormats(), {Blend, NoWrite}, DepthTestNoWriteLessEqual,
-        {"MeshletEditOverlay.metal", "MeshletEditEdgeMesh"}
+        libraries, FunctionRef{"EdgeQuad.metal", "EdgeQuadFragment", {BoolConstant(EditOverlayConstant::IncludeOuter, include_outer)}}, OverlayFormats(), {PremultipliedBlend}, DepthTestNoWriteLessEqual,
+        std::move(mesh)
     );
 }
 } // namespace
@@ -131,142 +115,76 @@ static PipelineRenderer CreateSceneRenderer(mtl::LibraryCache &libraries) {
     pipelines.emplace(SPT::Background, CreateBackgroundPipeline(libraries, formats, {Blend}, false));
     pipelines.emplace(SPT::TransmissionComposite, CreateQuadPipeline(libraries, formats, "TransmissionComposite.metal", "TransmissionCompositeFragment", PremultipliedBlend));
     pipelines.emplace(SPT::MotionBlurResolve, CreateQuadPipeline(libraries, formats, "MotionBlurResolve.metal", "MotionBlurResolveFragment", NoBlend));
-    // Non-edge texels fail the depth test, preserving prepass depth.
-    pipelines.emplace(SPT::SilhouetteEdgeDepth, RenderPipeline{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"SampleDepth.metal", "SampleDepthFragment"}, formats, {NoWrite}, DepthTestWrite});
-    return {formats, std::move(pipelines)};
-}
-
-static PipelineRenderer CreateSceneVelocityRenderer(mtl::LibraryCache &libraries) {
-    const auto formats = SceneVelocityFormats();
-    std::unordered_map<SPT, RenderPipeline> pipelines;
-    // Initialize uncovered pixels with background motion before geometry overwrites them.
-    pipelines.emplace(SPT::BackgroundVelocity, RenderPipeline{libraries, {"Background.metal", "BackgroundVertex"}, FunctionRef{"BackgroundVelocity.metal", "BackgroundVelocityFragment"}, formats, {NoWrite, NoBlend}, DepthOff});
-    pipelines.emplace(SPT::Background, CreateBackgroundPipeline(libraries, formats, {Blend, NoWrite}, false));
-    pipelines.emplace(SPT::SilhouetteEdgeDepth, RenderPipeline{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"SampleDepth.metal", "SampleDepthFragment"}, formats, {NoWrite, NoWrite}, DepthTestWrite});
     return {formats, std::move(pipelines)};
 }
 
 static PipelineRenderer CreateOverlayRenderer(mtl::LibraryCache &libraries) {
     const auto formats = OverlayFormats();
-    const FunctionRef vertex_color{"VertexColor.metal", "VertexColorFragment"};
     std::unordered_map<SPT, RenderPipeline> pipelines;
-    pipelines.emplace(SPT::Grid, RenderPipeline{libraries, {"GridLines.metal", "GridLinesVertex"}, FunctionRef{"GridLines.metal", "GridLinesFragment"}, formats, {Blend, NoWrite}, DepthState{.Write = false}});
-    pipelines.emplace(SPT::SilhouetteEdgeColor, RenderPipeline{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"SilhouetteEdgeColor.metal", "SilhouetteEdgeColorFragment"}, formats, {Blend, NoWrite}, DepthOff});
+    pipelines.emplace(SPT::Grid, RenderPipeline{libraries, {"GridLines.metal", "GridLinesVertex"}, FunctionRef{"GridLines.metal", "GridLinesFragment"}, formats, {Blend}, DepthState{.Write = false}});
+    pipelines.emplace(SPT::SilhouetteEdgeColor, RenderPipeline{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"SilhouetteEdgeColor.metal", "SilhouetteEdgeColorFragment"}, formats, {NoBlend}, DepthState{.Test = false}});
     return {formats, std::move(pipelines)};
 }
 
-PbrCompiler::PbrCompiler(PassFormats scene, PassFormats scene_velocity)
-    : SceneFormats(std::move(scene)), VelocityFormats(std::move(scene_velocity)) {}
+PbrCompiler::PbrCompiler(PassFormats scene) : SceneFormats(std::move(scene)) {}
 
-std::unique_ptr<mtl::MeshRenderPipeline> PbrCompiler::CreateMeshletPipeline(
-    mtl::LibraryCache &libraries, PbrFeatureMask mask, bool prepass, Variant variant,
-    bool non_triangle_topology
-) const {
-    auto spec = MakePbrPipelineSpec(mask, prepass, variant, "PbrMeshletFragment", non_triangle_topology);
-    return std::make_unique<mtl::MeshRenderPipeline>(
-        libraries, MeshletVertex(spec.VelocityOutput, non_triangle_topology), std::move(spec.Fragment),
-        spec.VelocityPass ? VelocityFormats : SceneFormats, std::move(spec.Blends), spec.Depth
-    );
-}
-
-std::unique_ptr<mtl::RenderPipeline> PbrCompiler::CreateVisibilityPipeline(
-    mtl::LibraryCache &libraries, PbrFeatureMask mask, bool prepass, Variant variant,
-    bool non_triangle_topology
-) const {
-    auto spec = MakePbrPipelineSpec(mask, prepass, variant, "PbrVisibilityFragment", non_triangle_topology);
-    return std::make_unique<mtl::RenderPipeline>(
-        libraries, FunctionRef{"TexQuad.metal", "TexQuadVertex"}, std::move(spec.Fragment),
-        spec.VelocityPass ? VelocityFormats : SceneFormats, std::move(spec.Blends), DepthOff
-    );
-}
-
-bool PbrCompiler::CompilePipelines(
-    mtl::LibraryCache &libraries, PbrFeatureMask mask, bool non_triangle_topology
-) {
-    if (mask == Mask && non_triangle_topology == NonTriangleTopology &&
-        MeshletVariants[size_t(Variant::Opaque)] && MeshletVariants[size_t(Variant::Blend)]) return false;
-    const profile::CpuScope scope{"CompilePbrPipelines"};
-
-    const bool transmission = ::HasFeature(mask, PbrFeature::Transmission);
-    for (size_t v = 0; v < VariantCount; ++v) {
-        const auto variant = Variant(v);
-        if (variant == Variant::OpaquePrepass && !transmission) {
-            MeshletVariants[v].reset();
-        } else {
-            MeshletVariants[v] = CreateMeshletPipeline(
-                libraries, mask, variant == Variant::OpaquePrepass, variant, non_triangle_topology
-            );
-        }
-    }
-    for (auto &pipeline : VisibilityVariants) pipeline.reset();
-    for (const auto variant : {Variant::Opaque, Variant::OpaqueVelocity}) {
-        VisibilityVariants[size_t(variant)] = CreateVisibilityPipeline(
-            libraries, mask, false, variant, non_triangle_topology
-        );
-    }
-    if (transmission) VisibilityVariants[size_t(Variant::OpaquePrepass)] = CreateVisibilityPipeline(
-                          libraries, mask, true, Variant::OpaquePrepass, non_triangle_topology
-                      );
+bool PbrCompiler::CompilePipelines(mtl::LibraryCache &libraries, PbrFeatureMask mask, bool non_triangle_topology) {
+    if (mask == Mask && non_triangle_topology == NonTriangleTopology && Visibility) return false;
+    const auto visibility = [&](bool prepass) {
+        return std::make_unique<mtl::RenderPipeline>(libraries, FunctionRef{"TexQuad.metal", "TexQuadVertex"}, PbrFragment(mask, prepass, "PbrVisibilityFragment", non_triangle_topology), SceneFormats, std::vector<BlendState>{Blend}, DepthOff);
+    };
+    Visibility = visibility(false);
+    Prepass = ::HasFeature(mask, PbrFeature::Transmission) ? visibility(true) : nullptr;
+    Transparent = std::make_unique<mtl::MeshRenderPipeline>(libraries, MeshletVertex(non_triangle_topology), PbrFragment(mask, false, "PbrTransparentFragment", non_triangle_topology), SceneFormats, std::vector<BlendState>{NoWrite}, DepthTestNoWriteLessEqual);
     Mask = mask;
     NonTriangleTopology = non_triangle_topology;
     return true;
 }
 
-void PbrCompiler::BindMeshlets(MTL::RenderCommandEncoder *encoder, Variant variant) const {
-    const auto &pipeline = MeshletVariants[size_t(variant)];
-    if (!pipeline) throw std::runtime_error("PbrCompiler: binding a meshlet variant that was never compiled.");
-    pipeline->Bind(encoder);
-}
-
-void PbrCompiler::BindVisibility(MTL::RenderCommandEncoder *encoder, Variant variant) const {
-    const auto &pipeline = VisibilityVariants[size_t(variant)];
-    if (!pipeline) throw std::runtime_error("PbrCompiler: binding a visibility variant that was never compiled.");
-    pipeline->Bind(encoder);
-}
+void PbrCompiler::BindMeshlets(MTL::RenderCommandEncoder *encoder) const { Transparent->Bind(encoder); }
+void PbrCompiler::BindVisibility(MTL::RenderCommandEncoder *encoder, bool prepass) const { (prepass ? Prepass : Visibility)->Bind(encoder); }
 
 void PbrCompiler::RecompileModules(mtl::LibraryCache &libraries) {
-    for (auto &variant : MeshletVariants) {
-        if (variant) variant->Compile(libraries);
-    }
-    for (auto &variant : VisibilityVariants) {
-        if (variant) variant->Compile(libraries);
-    }
+    if (Transparent) Transparent->Compile(libraries);
+    if (Visibility) Visibility->Compile(libraries);
+    if (Prepass) Prepass->Compile(libraries);
 }
 
 MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
     : SceneRenderer{CreateSceneRenderer(libraries)},
       OverlayRenderer{CreateOverlayRenderer(libraries)},
-      SceneVelocityRenderer{CreateSceneVelocityRenderer(libraries)},
       PrepassBackground{CreateBackgroundPipeline(libraries, SceneFormats(), {Blend}, true)},
-      CompositeFormats{{Format::Color}, MTL::PixelFormatInvalid},
-      ViewportComposite{CreateQuadPipeline(libraries, CompositeFormats, "ViewportComposite.metal", "ViewportCompositeFragment", NoBlend)},
-      MotionBlurAccumFormats{{Format::HdrColor}, MTL::PixelFormatInvalid},
-      MotionBlurAccumulate{CreateQuadPipeline(libraries, MotionBlurAccumFormats, "MotionBlurAccumulate.metal", "MotionBlurAccumulateFragment", AdditiveBlend)},
-      MotionBlurGatherFormats{{Format::HdrColor}, MTL::PixelFormatInvalid},
-      MotionBlurGather{CreateQuadPipeline(libraries, MotionBlurGatherFormats, "MotionBlurGather.metal", "MotionBlurGatherFragment", NoBlend)},
+      ViewportComposite{CreateQuadPipeline(libraries, {{Format::Color}, MTL::PixelFormatInvalid}, "ViewportComposite.metal", "ViewportCompositeFragment", NoBlend)},
+      MotionBlurAccumulate{CreateQuadPipeline(libraries, {{MTL::PixelFormatRGBA32Float}, MTL::PixelFormatInvalid}, "MotionBlurAccumulate.metal", "MotionBlurAccumulateFragment", AdditiveBlend)},
+      MotionBlurGather{CreateQuadPipeline(libraries, {{Format::HdrColor}, MTL::PixelFormatInvalid}, "MotionBlurGather.metal", "MotionBlurGatherFragment", NoBlend)},
+      MotionBlurTilesFlatten{libraries, {"MotionBlurTilesFlatten.metal", "MotionBlurTilesFlattenKernel"}},
+      MotionBlurTilesDilate{libraries, {"MotionBlurTilesDilate.metal", "MotionBlurTilesDilateKernel"}},
       WorkspaceVisibility{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"WorkspaceLighting.metal", "WorkspaceVisibilityFragment"}, SceneFormats(), {Blend}, DepthOff},
-      MeshletVisibilityOpaque{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityOpaqueFragment"}, {{Format::Uint2}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
-      MeshletVisibilityCoverage{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityPrimitiveFragment"}, {{Format::Uint2}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
-      MeshletEditEdges{MeshletEditEdgePipeline(libraries, true)},
-      MeshletEditSmoothEdges{MeshletEditEdgePipeline(libraries, false)},
-      MeshletEditPoint{CreateMeshPipeline(libraries, FunctionRef{"VertexPoint.metal", "VertexPointFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestLessEqual, {"MeshletEditOverlay.metal", "MeshletEditPointMesh"})},
-      FaceNormalMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestLessEqual, NormalIndicatorMesh(true))},
-      VertexNormalMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestLessEqual, NormalIndicatorMesh(false))},
-      OverlayJobLines{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestLessEqual, {"OverlayJobLine.metal", "OverlayJobLineMesh"})},
-      BoneFillMesh{CreateMeshPipeline(libraries, FunctionRef{"BoneSolid.metal", "BoneSolidFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestWrite, {"BoneSolid.metal", "BoneSolidMesh"})},
-      BoneWireMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestNoWriteLessEqual, {"BoneWire.metal", "BoneWireMesh"})},
-      BoneSphereFillMesh{CreateMeshPipeline(libraries, FunctionRef{"BoneSphere.metal", "BoneSphereFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestLessEqual, {"BoneSphere.metal", "BoneSphereMesh"})},
-      BoneSphereWireMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestNoWriteLessEqual, {"BoneSphereWire.metal", "BoneSphereWireMesh"})},
-      WireResolve{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"WireResolve.metal", "WireResolveFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestLessEqual},
-      Compiler{SceneFormats(), SceneVelocityFormats()} {}
+      TransparencyInit{CreateQuadPipeline(libraries, SceneFormats(), "Transparency.metal", "TransparencyInitFragment", NoWrite)},
+      TransparencyResolve{CreateQuadPipeline(libraries, SceneFormats(), "Transparency.metal", "TransparencyResolveFragment", NoBlend)},
+      MeshletVisibilityOpaque{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityOpaqueFragment"}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
+      MeshletVisibilityCoverage{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityPrimitiveFragment"}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
+      MeshletEditEdges{StrokePipeline(libraries, {"MeshletEditOverlay.metal", "MeshletEditEdgeMesh"}, true)},
+      MeshletEditSmoothEdges{StrokePipeline(libraries, {"MeshletEditOverlay.metal", "MeshletEditEdgeMesh"})},
+      MeshletEditPoint{CreateMeshPipeline(libraries, FunctionRef{"VertexPoint.metal", "VertexPointFragment"}, OverlayFormats(), {Blend}, DepthTestNoWriteLessEqual, {"MeshletEditOverlay.metal", "MeshletEditPointMesh"})},
+      FaceNormalMesh{StrokePipeline(libraries, NormalIndicatorMesh(true))},
+      VertexNormalMesh{StrokePipeline(libraries, NormalIndicatorMesh(false))},
+      OverlayJobLines{StrokePipeline(libraries, {"OverlayJobLine.metal", "OverlayJobLineMesh"})},
+      BoneFillMesh{CreateMeshPipeline(libraries, FunctionRef{"BoneSolid.metal", "BoneSolidFragment"}, OverlayFormats(), {Blend}, DepthTestWrite, {"BoneSolid.metal", "BoneSolidMesh"})},
+      BoneWireMesh{StrokePipeline(libraries, {"BoneWire.metal", "BoneWireMesh"})},
+      BoneSphereFillMesh{CreateMeshPipeline(libraries, FunctionRef{"BoneSphere.metal", "BoneSphereFragment"}, OverlayFormats(), {Blend}, DepthTestLessEqual, {"BoneSphere.metal", "BoneSphereMesh"})},
+      BoneSphereWireMesh{StrokePipeline(libraries, {"BoneSphereWire.metal", "BoneSphereWireMesh"})},
+      WireResolve{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"WireResolve.metal", "WireResolveFragment"}, OverlayFormats(), {PremultipliedBlend}, DepthOff},
+      Compiler{SceneFormats()} {}
 
 MainPipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots)
-    // Depth is sampled as well as attached: the motion blur gather reads it to sort samples.
-    : DepthImage{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      VisibilityImage{mtl::CreateTexture2D(ctx, Format::Uint2, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
+    // Visibility depth remains paired with its IDs throughout shading and selection.
+    : VisibilityDepth{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
+      ScratchDepth{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget)},
+      VisibilityImage{mtl::CreateTexture2D(ctx, Format::Uint, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
+      SilhouetteImage{mtl::CreateTexture2D(ctx, Format::Float2, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       SceneColorImage{mtl::CreateTexture2D(ctx, Format::HdrColor, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       OverlayColorImage{mtl::CreateTexture2D(ctx, Format::Color, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      LineDataImage{mtl::CreateTexture2D(ctx, Format::LineData, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       FinalColorImage{mtl::CreateTexture2D(ctx, Format::Color, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       DepthPyramidImage{[&] {
           const mtl::Extent2D padded{std::bit_ceil((extent.Width + 1) / 2), std::bit_ceil((extent.Height + 1) / 2)};
@@ -295,11 +213,14 @@ MainPipeline::TransmissionResourcesT::TransmissionResourcesT(const mtl::Context 
       Mip0View{mtl::CreateMipView(Image, 0)},
       Sampler{mtl::CreateSampler(ctx, MTL::SamplerMinMagFilterLinear, MTL::SamplerMipFilterLinear, MTL::SamplerAddressModeClampToEdge)} {}
 
-MainPipeline::MotionBlurResourcesT::MotionBlurResourcesT(const mtl::Context &ctx, mtl::Extent2D extent)
-    : AccumImage{mtl::CreateTexture2D(ctx, Format::HdrColor, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      VelocityImage{mtl::CreateTexture2D(ctx, Format::Velocity, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      TileImage{mtl::CreateTexture2D(ctx, Format::HdrColor, {(extent.Width + 31) / 32, (extent.Height + 31) / 32}, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite)},
-      GatherImage{mtl::CreateTexture2D(ctx, Format::HdrColor, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)} {}
+MainPipeline::MotionBlurResourcesT::MotionBlurResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, bool fast)
+    : OutputImage{mtl::CreateTexture2D(ctx, fast ? Format::HdrColor : MTL::PixelFormatRGBA32Float, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)} {
+    if (!fast) return;
+    const mtl::Extent2D tiles{(extent.Width + 31u) / 32u, (extent.Height + 31u) / 32u};
+    VelocityImage = mtl::CreateTexture2D(ctx, Format::HdrColor, extent, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
+    TileImage = mtl::CreateTexture2D(ctx, Format::HdrColor, tiles, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
+    TileIndirection = mtl::NewBuffer(ctx, 2u * tiles.Width * tiles.Height * sizeof(uint32_t));
+}
 
 void MainPipeline::SetExtent(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots) {
     Resources = std::make_unique<ResourcesT>(ctx, extent, slots);
@@ -320,9 +241,9 @@ bool MainPipeline::EnsureTransmissionResources(const mtl::Context &ctx, mtl::Ext
     return true;
 }
 
-bool MainPipeline::EnsureMotionBlurResources(const mtl::Context &ctx) {
-    if (MotionBlur || !Resources) return false; // SetExtent drops it, so an allocated target is always at the color extent.
-    MotionBlur = std::make_unique<MotionBlurResourcesT>(ctx, Resources->SceneColorImage.Extent);
+bool MainPipeline::EnsureMotionBlurResources(const mtl::Context &ctx, bool fast) {
+    if (!Resources || (MotionBlur && bool(MotionBlur->VelocityImage) == fast)) return false; // SetExtent drops it, so an allocated target is always at the color extent.
+    MotionBlur = std::make_unique<MotionBlurResourcesT>(ctx, Resources->SceneColorImage.Extent, fast);
     return true;
 }
 
@@ -332,49 +253,13 @@ SampledTexture MainPipeline::Nearest(const mtl::Texture *image) const {
 }
 SampledTexture MainPipeline::SceneColorSampler() const { return Nearest(nullptr); }
 SampledTexture MainPipeline::OverlayColorSampler() const { return Nearest(Resources ? &Resources->OverlayColorImage : nullptr); }
-SampledTexture MainPipeline::SceneDepthSampler() const { return Nearest(Resources ? &Resources->DepthImage : nullptr); }
+SampledTexture MainPipeline::SceneDepthSampler() const { return Nearest(Resources ? &Resources->VisibilityDepth : nullptr); }
 SampledTexture MainPipeline::DepthPyramidSampler() const { return Nearest(Resources ? &Resources->DepthPyramidImage : nullptr); }
-SampledTexture MainPipeline::MotionBlurAccumSampler() const { return Nearest(MotionBlur ? &MotionBlur->AccumImage : nullptr); }
-SampledTexture MainPipeline::VelocitySampler() const { return Nearest(MotionBlur ? &MotionBlur->VelocityImage : nullptr); }
-SampledTexture MainPipeline::MotionBlurGatherSampler() const { return Nearest(MotionBlur ? &MotionBlur->GatherImage : nullptr); }
-MTL::Texture *MainPipeline::MotionBlurTileImage() const { return MotionBlur ? *MotionBlur->TileImage : nullptr; }
+SampledTexture MainPipeline::MotionBlurOutputSampler() const { return Nearest(MotionBlur ? &MotionBlur->OutputImage : nullptr); }
 SampledTexture MainPipeline::TransmissionSampler() const {
     if (!Resources) return {};
     if (!Transmission) return SceneColorSampler();
     return {*Transmission->Image, Transmission->Sampler.get()};
-}
-
-SilhouettePipeline::SilhouettePipeline(mtl::LibraryCache &libraries)
-    : Visibility{
-          libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"VisibilitySelection.metal", "VisibilitySilhouetteFragment"}, PassFormats{{Format::Float2}, Format::Depth}, {NoBlend}, DepthTestWrite
-      } {}
-
-SilhouettePipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent)
-    : DepthImage{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      OffscreenImage{mtl::CreateTexture2D(ctx, Format::Float2, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      // Clamp edge-detection samples to the nearest image edge.
-      ImageSampler{mtl::CreateSampler(ctx, MTL::SamplerMinMagFilterNearest, MTL::SamplerMipFilterNearest, MTL::SamplerAddressModeClampToEdge)} {}
-
-void SilhouettePipeline::SetExtent(const mtl::Context &ctx, mtl::Extent2D extent) {
-    Resources = std::make_unique<ResourcesT>(ctx, extent);
-}
-
-static PipelineRenderer CreateSilhouetteEdgeRenderer(mtl::LibraryCache &libraries) {
-    const PassFormats formats{{Format::Float}, Format::Depth};
-    std::unordered_map<SPT, RenderPipeline> pipelines;
-    pipelines.emplace(SPT::SilhouetteEdgeDepthObject, RenderPipeline{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"SilhouetteEdgeDepthObject.metal", "SilhouetteEdgeDepthObjectFragment"}, formats, {NoBlend}, DepthTestWrite});
-    return {formats, std::move(pipelines)};
-}
-
-SilhouetteEdgePipeline::SilhouetteEdgePipeline(mtl::LibraryCache &libraries) : Renderer{CreateSilhouetteEdgeRenderer(libraries)} {}
-
-SilhouetteEdgePipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent)
-    : DepthImage{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      OffscreenImage{mtl::CreateTexture2D(ctx, Format::Float, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      ImageSampler{mtl::CreateSampler(ctx, MTL::SamplerMinMagFilterNearest, MTL::SamplerMipFilterNearest, MTL::SamplerAddressModeClampToEdge)} {}
-
-void SilhouetteEdgePipeline::SetExtent(const mtl::Context &ctx, mtl::Extent2D extent) {
-    Resources = std::make_unique<ResourcesT>(ctx, extent);
 }
 
 // The element rasters share these formats: depth only, and no color, since ids reach the fragment stage as a varying.
@@ -410,7 +295,7 @@ SelectionFragmentPipeline::SelectionFragmentPipeline(mtl::LibraryCache &librarie
       },
       MeshletFaceXRayPointsBitsetBox{MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectFacePointMesh"}, true, true)},
       MeshletEdgeXRayPointsBitsetBox{MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectEdgePointMesh"}, true, true)},
-      OverlayJobLines{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, SelectionFormats(), {}, DepthOff, {"OverlayJobLine.metal", "OverlayJobLineMesh"})},
+      OverlayJobLines{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionStrokeFragment"}, SelectionFormats(), {}, DepthOff, {"OverlayJobLine.metal", "OverlayJobLineMesh"})},
       BoneSphere{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, SelectionFormats(), {}, DepthOff, {"BoneSphere.metal", "BoneSphereMesh"})} {}
 
 const mtl::MeshRenderPipeline &SelectionFragmentPipeline::ElementRaster(
@@ -421,18 +306,17 @@ const mtl::MeshRenderPipeline &SelectionFragmentPipeline::ElementRaster(
     return variants[uint32_t(bitset_box) + 2u * uint32_t(xray)];
 }
 
-Pipelines::Pipelines(const mtl::Context &ctx, mtl::LibraryCache &libraries)
-    : Ctx(ctx),
-      Libraries(libraries),
+Pipelines::Pipelines(mtl::LibraryCache &libraries)
+    : Libraries(libraries),
       Main{libraries},
-      Silhouette{libraries},
-      SilhouetteEdge{libraries},
+      Silhouette{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"VisibilitySelection.metal", "VisibilitySilhouetteFragment"}, PassFormats{{Format::Float2}, Format::Depth}, {NoBlend}, DepthTestWrite},
       SelectionFragment{libraries},
       VisibilityObjectSelection{libraries, {"VisibilitySelection.metal", "VisibilityObjectSelectionKernel"}},
       PrepareEditSelection{libraries, {"EditSelectionTransaction.metal", "PrepareEditSelectionKernel"}},
       FillEditSelectionList{libraries, {"EditSelectionTransaction.metal", "FillEditSelectionListKernel"}},
       ResetEditSelectionSummary{libraries, {"EditSelectionTransaction.metal", "ResetEditSelectionSummaryKernel"}},
       DeriveEditSelection{libraries, {"EditSelectionTransaction.metal", "DeriveEditSelectionKernel"}},
+      SumEditSelectionPosition{libraries, {"EditSelectionTransaction.metal", "SumEditSelectionPositionKernel"}},
       EditSharpness{libraries, {"EditSharpness.metal", "EditSharpnessKernel"}},
       CommitPosedGeometry{libraries, {"CommitPosedGeometry.metal", "CommitPosedGeometryKernel"}},
       GeometryWorkArgs{libraries, {"CommitPosedGeometry.metal", "GeometryWorkArgsKernel"}},
@@ -449,36 +333,28 @@ Pipelines::Pipelines(const mtl::Context &ctx, mtl::LibraryCache &libraries)
       MeshletCullBlockCount{libraries, {"MeshletCull.metal", "MeshletCullBlockCount"}},
       MeshletCullPrefix{libraries, {"MeshletCull.metal", "MeshletCullPrefix"}},
       MeshletCullEmit{libraries, {"MeshletCull.metal", "MeshletCullEmit"}},
-      MeshletPhase2Cull{libraries, {"MeshletCull.metal", "MeshletPhase2Cull"}},
-      MeshletPhase2RangeCull{libraries, {"MeshletCull.metal", "MeshletPhase2RangeCull"}},
-      MeshletPhase2Prefix{libraries, {"MeshletCull.metal", "MeshletPhase2Prefix"}},
       OverlayJobBlockCount{libraries, {"OverlayJobCull.metal", "OverlayJobBlockCount"}},
       OverlayJobPrefix{libraries, {"OverlayJobCull.metal", "OverlayJobPrefix"}},
       OverlayJobEmit{libraries, {"OverlayJobCull.metal", "OverlayJobEmit"}},
       DepthPyramidReduce{libraries, {"DepthPyramidReduce.metal", "DepthPyramidReduceKernel"}},
-      MotionBlurTilesFlatten{libraries, {"MotionBlurTilesFlatten.metal", "MotionBlurTilesFlattenKernel"}},
-      MotionBlurTilesDilate{libraries, {"MotionBlurTilesDilate.metal", "MotionBlurTilesDilateKernel"}},
       IblPrefilter{libraries},
       VertexAdjacency{libraries},
       VertexWeld{libraries},
       MeshConnectivity{libraries} {}
 
-void Pipelines::SetExtent(mtl::Extent2D extent, mtl::BindlessSet &slots) {
-    Main.SetExtent(Ctx, extent, slots);
-    Silhouette.SetExtent(Ctx, extent);
-    SilhouetteEdge.SetExtent(Ctx, extent);
-}
-
 void Pipelines::CompileShaders() {
     Libraries.Clear();
     Main.SceneRenderer.CompileShaders(Libraries);
     Main.OverlayRenderer.CompileShaders(Libraries);
-    Main.SceneVelocityRenderer.CompileShaders(Libraries);
     Main.PrepassBackground.Compile(Libraries);
     Main.ViewportComposite.Compile(Libraries);
     Main.MotionBlurAccumulate.Compile(Libraries);
     Main.MotionBlurGather.Compile(Libraries);
+    Main.MotionBlurTilesFlatten.Compile(Libraries);
+    Main.MotionBlurTilesDilate.Compile(Libraries);
     Main.WorkspaceVisibility.Compile(Libraries);
+    Main.TransparencyInit.Compile(Libraries);
+    Main.TransparencyResolve.Compile(Libraries);
     Main.MeshletVisibilityOpaque.Compile(Libraries);
     Main.MeshletVisibilityCoverage.Compile(Libraries);
     Main.FaceNormalMesh.Compile(Libraries);
@@ -490,8 +366,7 @@ void Pipelines::CompileShaders() {
     for (auto *bone : {&Main.BoneFillMesh, &Main.BoneWireMesh, &Main.BoneSphereFillMesh, &Main.BoneSphereWireMesh}) bone->Compile(Libraries);
     Main.WireResolve.Compile(Libraries);
     Main.Compiler.RecompileModules(Libraries);
-    Silhouette.Visibility.Compile(Libraries);
-    SilhouetteEdge.Renderer.CompileShaders(Libraries);
+    Silhouette.Compile(Libraries);
     SelectionFragment.OverlayJobLines.Compile(Libraries);
     SelectionFragment.BoneSphere.Compile(Libraries);
     for (auto *variants : {&SelectionFragment.MeshletFaces, &SelectionFragment.MeshletVertices, &SelectionFragment.MeshletEdges}) {
@@ -505,7 +380,7 @@ void Pipelines::CompileShaders() {
     EditSharpness.Compile(Libraries);
     CommitPosedGeometry.Compile(Libraries);
     GeometryWorkArgs.Compile(Libraries);
-    for (auto *compute : {&VisibilityObjectSelection, &ResetEditSelectionSummary, &DeriveEditSelection, &PosePrepass, &PosedMeshletBounds, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &BoundsTree, &WireRaster, &LodFrontierCount, &LodFrontierPrefix, &LodFrontierEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &MeshletPhase2Cull, &MeshletPhase2RangeCull, &MeshletPhase2Prefix, &OverlayJobBlockCount, &OverlayJobPrefix, &OverlayJobEmit, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter, &VertexAdjacency.Zero, &VertexAdjacency.Count, &VertexAdjacency.BlockSum, &VertexAdjacency.BlockPrefix, &VertexAdjacency.Offsets, &VertexAdjacency.Scatter, &VertexAdjacency.Sort, &VertexWeld.TableInit, &VertexWeld.Insert, &VertexWeld.MarkReps, &VertexWeld.BlockSum, &VertexWeld.BlockPrefix, &VertexWeld.Scan, &VertexWeld.Emit, &VertexWeld.Compact, &VertexWeld.WriteBack, &VertexWeld.RemapCorners, &MeshConnectivity.Zero, &MeshConnectivity.Count, &MeshConnectivity.BlockSum, &MeshConnectivity.BlockPrefix, &MeshConnectivity.Offsets, &MeshConnectivity.Scatter, &MeshConnectivity.Pair, &MeshConnectivity.Bits, &MeshConnectivity.WordBlockSum, &MeshConnectivity.WordBlockPrefix, &MeshConnectivity.Ranks, &MeshConnectivity.Samples}) {
+    for (auto *compute : {&VisibilityObjectSelection, &ResetEditSelectionSummary, &DeriveEditSelection, &SumEditSelectionPosition, &PosePrepass, &PosedMeshletBounds, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &BoundsTree, &WireRaster, &LodFrontierCount, &LodFrontierPrefix, &LodFrontierEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &OverlayJobBlockCount, &OverlayJobPrefix, &OverlayJobEmit, &DepthPyramidReduce, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter, &VertexAdjacency.Zero, &VertexAdjacency.Count, &VertexAdjacency.BlockSum, &VertexAdjacency.BlockPrefix, &VertexAdjacency.Offsets, &VertexAdjacency.Scatter, &VertexAdjacency.Sort, &VertexWeld.TableInit, &VertexWeld.Insert, &VertexWeld.MarkReps, &VertexWeld.BlockSum, &VertexWeld.BlockPrefix, &VertexWeld.Scan, &VertexWeld.Emit, &VertexWeld.Compact, &VertexWeld.WriteBack, &VertexWeld.RemapCorners, &MeshConnectivity.Zero, &MeshConnectivity.Count, &MeshConnectivity.BlockSum, &MeshConnectivity.BlockPrefix, &MeshConnectivity.Offsets, &MeshConnectivity.Scatter, &MeshConnectivity.Pair, &MeshConnectivity.Bits, &MeshConnectivity.WordBlockSum, &MeshConnectivity.WordBlockPrefix, &MeshConnectivity.Ranks, &MeshConnectivity.Samples}) {
         compute->Compile(Libraries);
     }
 }

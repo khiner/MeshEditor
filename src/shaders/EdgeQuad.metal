@@ -14,7 +14,8 @@ inline float EdgeQuadSmoothWeight(float distance) {
 
 inline OverlayTargets ShadeEdgeQuad(EdgeQuadVaryings in, const thread Scene &scene, bool include_outer) {
     const float edge_width = scene.Theme.EdgeWidth;
-    const float dist = abs(in.EdgeCoord) - max(edge_width - 0.5f, 0.0f);
+    const float cap = max(max(-in.EdgeCoord.x, in.EdgeCoord.x - in.EdgeLength), 0.0f);
+    const float dist = length(float2(cap, in.EdgeCoord.y)) - max(edge_width - 0.5f, 0.0f);
     const float mix_w = EdgeQuadSmoothWeight(dist);
     float4 color = in.Color;
     if (include_outer && in.OuterColor.a > 0.0f) {
@@ -24,7 +25,8 @@ inline OverlayTargets ShadeEdgeQuad(EdgeQuadVaryings in, const thread Scene &sce
         color.a *= 1.0f - mix_w;
     }
     // Edge quads apply antialiasing before the composite pass.
-    return OverlayTargets{color, float4(0.0f)};
+    if (color.a <= 0.0f) discard_fragment();
+    return OverlayTargets{float4(color.rgb * color.a, color.a)};
 }
 
 fragment OverlayTargets EdgeQuadFragment(

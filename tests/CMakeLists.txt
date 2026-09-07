@@ -221,18 +221,18 @@ if(MESHEDITOR_SURFACE_AUDIO)
     mesheditor_render_target(MeshEditorContactSpringsScore surface/ContactSpringsScore.cpp)
 endif()
 
-# Compiles every shader source, including generated layout assertions.
-add_executable(MeshEditorMslCompileTest
-    MslCompileTest.cpp
-    ${CMAKE_SOURCE_DIR}/src/metal/MslSource.cpp
-    ${CMAKE_SOURCE_DIR}/src/metal/MetalCppImpl.cpp
-)
-add_dependencies(MeshEditorMslCompileTest generate_gpu_schema)
-target_include_directories(MeshEditorMslCompileTest PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_BINARY_DIR}
-)
-target_include_directories(MeshEditorMslCompileTest SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/lib/metal-cpp)
-target_link_libraries(MeshEditorMslCompileTest PRIVATE "-framework Metal" "-framework Foundation" "-framework QuartzCore")
-set_target_properties(MeshEditorMslCompileTest PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-mesheditor_test_defaults(MeshEditorMslCompileTest)
+# Shader compilation and the production tile compositor's analytic reference check.
+foreach(test MslCompile Transparency)
+    set(target MeshEditor${test}Test)
+    add_executable(${target}
+        ${test}Test.cpp
+        ${CMAKE_SOURCE_DIR}/src/metal/MslSource.cpp
+        ${CMAKE_SOURCE_DIR}/src/metal/MetalCppImpl.cpp
+    )
+    add_dependencies(${target} generate_gpu_schema)
+    target_include_directories(${target} PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_BINARY_DIR})
+    target_include_directories(${target} SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/lib/metal-cpp)
+    target_link_libraries(${target} PRIVATE "-framework Metal" "-framework Foundation" "-framework QuartzCore")
+    set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+    mesheditor_test_defaults(${target})
+endforeach()

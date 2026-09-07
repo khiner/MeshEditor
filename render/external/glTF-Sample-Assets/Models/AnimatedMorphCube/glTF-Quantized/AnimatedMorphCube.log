@@ -1,2 +1,8 @@
-VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/AnimatedMorphCube/glTF-Quantized/AnimatedMorphCube.mp4
+[validation] total 4026.67 ms (init 3350.45; capture 0.24; compare 0.89; cleanup 0.03)
+[validation] replay reset 0.23; restore 1.44; derive 320.54; render 17.86; capture 0.07 ms
+[validation] snapshot reset 0.22; restore 0.19; derive 316.58; render 17.87; capture 0.06 ms
+VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/AnimatedMorphCube/glTF-Quantized/AnimatedMorphCube.mp4
+[validation] total 26.85 ms (init 0.00; capture 0.13; compare 0.50; cleanup 0.02)
+[validation] replay reset 0.30; restore 0.75; derive 1.01; render 12.06; capture 0.06 ms
+[validation] snapshot reset 0.30; restore 0.03; derive 0.43; render 11.21; capture 0.05 ms
 VideoRecorder: wrote 101 frames

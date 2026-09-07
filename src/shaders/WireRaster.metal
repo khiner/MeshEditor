@@ -1,7 +1,7 @@
 #ifndef WIRERASTER_MSL
 #define WIRERASTER_MSL
 
-// Rasterizes each wire edge into order-independent integer coverage and nearest-depth buffers.
+// Each byte holds one coverage class; integer maxima make crossing wires deterministic.
 #include "Bindless.metal"
 #include "SceneUBO.metal"
 #include "TransformUtils.metal"
@@ -11,7 +11,7 @@
 #include "WireRasterPushConstants.metal"
 #include "EditSelection.metal"
 
-// Fixed-point coverage uses a 32-bit counter per class.
+// Four 8-bit coverage maxima share one word.
 constant float WireCoverageScale = 255.0f;
 constant float WireDiscRadius = 0.5641895835477563f * 1.05f;
 
@@ -31,31 +31,36 @@ inline uint WireClassOf(const thread Scene &scene, DrawData draw, uint edit_sele
         WireCoverage_Incidental;
 }
 
-// Complemented positive-float depth bits permit nearest-depth selection with atomic max from zero initialization.
-inline void WireAccumulate(
-    device atomic_uint *words, uint2 extent, int2 pixel, uint wire_class, float coverage, float depth
-) {
+// Union coverage within each class; higher-priority classes composite afterward.
+inline void WireAccumulate(device atomic_uint *words, uint2 extent, int2 pixel, uint wire_class, float coverage) {
     if (pixel.x < 0 || pixel.y < 0 || uint(pixel.x) >= extent.x || uint(pixel.y) >= extent.y) return;
-    const uint base = (uint(pixel.y) * extent.x + uint(pixel.x)) * WireCoverage_WordsPerPixel;
-    atomic_fetch_add_explicit(&words[base + wire_class], uint(coverage * WireCoverageScale + 0.5f), memory_order_relaxed);
-    atomic_fetch_max_explicit(&words[base + WireCoverage_DepthWord], ~as_type<uint>(depth), memory_order_relaxed);
+    device atomic_uint *word = &words[uint(pixel.y) * extent.x + uint(pixel.x)];
+    const uint shift = wire_class * 8u;
+    const uint value = uint(coverage * WireCoverageScale + 0.5f);
+    uint previous = atomic_load_explicit(word, memory_order_relaxed);
+    while (((previous >> shift) & 255u) < value) {
+        const uint next = (previous & ~(255u << shift)) | (value << shift);
+        if (atomic_compare_exchange_weak_explicit(word, &previous, next, memory_order_relaxed, memory_order_relaxed)) break;
+    }
 }
 
-// Clip a segment against the near plane so a line crossing behind the eye still draws its visible part.
-constant float WireNearEpsilon = 1e-5f;
-
-inline bool WireClipNear(thread float4 &a, thread float4 &b) {
-    const bool a_in = a.w > WireNearEpsilon, b_in = b.w > WireNearEpsilon;
-    if (!a_in && !b_in) return false;
-    if (a_in && b_in) return true;
-    const float t = (WireNearEpsilon - a.w) / (b.w - a.w);
-    const float4 crossing = a + (b - a) * t;
-    if (a_in) b = crossing;
-    else a = crossing;
-    return true;
+// Clip to Metal's six clip planes before dividing by w. The width guard retains offscreen strokes.
+inline bool WireClip(thread float4 &a, thread float4 &b, float2 guard) {
+    const float4 p = a, q = b;
+    const float pa[6] = {p.z, p.w - p.z, p.w * guard.x + p.x, p.w * guard.x - p.x, p.w * guard.y + p.y, p.w * guard.y - p.y};
+    const float pb[6] = {q.z, q.w - q.z, q.w * guard.x + q.x, q.w * guard.x - q.x, q.w * guard.y + q.y, q.w * guard.y - q.y};
+    float lo = 0.0f, hi = 1.0f;
+    for (uint i = 0u; i < 6u; ++i) {
+        if (pa[i] < 0.0f && pb[i] < 0.0f) return false;
+        if (pa[i] < 0.0f) lo = max(lo, pa[i] / (pa[i] - pb[i]));
+        if (pb[i] < 0.0f) hi = min(hi, pa[i] / (pa[i] - pb[i]));
+    }
+    a = mix(p, q, lo); b = mix(p, q, hi);
+    return lo <= hi && a.w > 0.0f && b.w > 0.0f;
 }
 
 kernel void WireRasterKernel(
+    texture2d<float, access::read> visibility_depth [[texture(0)]],
     uint thread_index [[thread_index_in_threadgroup]],
     uint3 threadgroup_position [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -92,14 +97,15 @@ kernel void WireRasterKernel(
     // Match the hardware wire path's face depth bias.
     clip0.z -= NdcOffsetFactor(scene);
     clip1.z -= NdcOffsetFactor(scene);
-    if (!WireClipNear(clip0, clip1)) return;
+    const float half_width = max(theme.EdgeWidth, 1.0f) * 0.5f;
+    const float reach = half_width + WireDiscRadius;
+    if (!WireClip(clip0, clip1, 1.0f + 2.0f * reach / float2(scene.View.ViewportSize))) return;
 
     const float2 viewport = float2(scene.View.ViewportSize);
     const uint2 extent = uint2(scene.View.ViewportSize);
     device atomic_uint *coverage_words = BindlessBufferMutable(atomic_uint, bindless.Buffer, pc.CoverageSlot);
     const float2 p0 = ndc_to_uv(clip0.xy / clip0.w) * viewport;
     const float2 p1 = ndc_to_uv(clip1.xy / clip1.w) * viewport;
-    const float z0 = clip0.z / clip0.w, z1 = clip1.z / clip1.w;
 
     // Select the coverage class from the nearer endpoint's halfedge state.
     const uint edit_selection_color = topology == MeshPrimitiveTopology_Line ||
@@ -111,23 +117,20 @@ kernel void WireRasterKernel(
         scene, work.Draw, edit_selection_color, geometry.Edge, geometry.Vertex1
     );
 
-    const float half_width = max(theme.EdgeWidth, 1.0f) * 0.5f;
-    const float reach = half_width + WireDiscRadius;
     const float2 delta = p1 - p0;
     const float length_px = length(delta);
     const float2 direction = length_px > 0.0f ? delta / length_px : float2(1.0f, 0.0f);
 
     // Step along the major axis and cover line width along the minor axis.
     const bool x_major = abs(delta.x) >= abs(delta.y);
-    const int steps = int(min(max(abs(x_major ? delta.x : delta.y), 1.0f), 4096.0f));
+    const float major0 = x_major ? p0.x : p0.y, major1 = x_major ? p1.x : p1.y;
+    const int begin = max(0, int(floor(min(major0, major1) - reach)));
+    const int end = min(int(x_major ? extent.x : extent.y) - 1, int(ceil(max(major0, major1) + reach)));
     const int spread = int(ceil(reach));
-    int2 previous = int2(INT_MIN);
-    for (int step = 0; step <= steps; ++step) {
-        const float t = float(step) / float(steps);
-        const float2 at = p0 + delta * t;
-        const int2 center = int2(floor(at));
-        if (all(center == previous)) continue;
-        previous = center;
+    for (int step = begin; step <= end; ++step) {
+        const float t = major0 != major1 ? saturate((float(step) + 0.5f - major0) / (major1 - major0)) : 0.0f;
+        const float2 at = mix(p0, p1, t);
+        const int2 center = x_major ? int2(step, int(floor(at.y))) : int2(int(floor(at.x)), step);
         for (int offset = -spread; offset <= spread; ++offset) {
             const int2 pixel = x_major ? int2(center.x, center.y + offset) : int2(center.x + offset, center.y);
             const float2 sample_point = float2(pixel) + 0.5f;
@@ -138,10 +141,13 @@ kernel void WireRasterKernel(
             const float coverage = smoothstep(half_width + WireDiscRadius, half_width - WireDiscRadius, distance);
             if (coverage <= 0.0f) continue;
             const float u = length_px > 0.0f ? along / length_px : 0.0f;
-            const float depth = mix(z0, z1, u);
-            WireAccumulate(coverage_words, extent, pixel, u < 0.5f ? class0 : class1, coverage, depth);
+            if (pc.TestDepth != 0u) {
+                if (any(pixel < 0) || any(uint2(pixel) >= extent)) continue;
+                const float depth = mix(clip0.z / clip0.w, clip1.z / clip1.w, u);
+                if (depth > visibility_depth.read(uint2(pixel)).r) continue;
+            }
+            WireAccumulate(coverage_words, extent, pixel, u < 0.5f ? class0 : class1, coverage);
         }
-        if (length_px <= 0.0f) break;
     }
 }
 

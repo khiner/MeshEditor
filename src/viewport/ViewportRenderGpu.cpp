@@ -18,7 +18,6 @@
 #include "gpu/MeshletGeometryEncoding.h"
 #include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MotionBlurGatherPushConstants.h"
-#include "gpu/MotionBlurTilesDilatePushConstants.h"
 #include "gpu/MotionBlurTilesFlattenPushConstants.h"
 #include "gpu/NormalDeriveEntry.h"
 #include "gpu/NormalDerivePushConstants.h"
@@ -29,7 +28,6 @@
 #include "gpu/OverlayJobKind.h"
 #include "gpu/PosedMeshletBoundsPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
-#include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "gpu/VisibilityId.h"
 #include "gpu/WireRasterPushConstants.h"
 #include "gpu/WireResolvePushConstants.h"
@@ -218,7 +216,6 @@ void RecordSceneCounters(const GpuBuffers &buffers) {
             profile::RecordCounter("MeshletRoute OpaqueCullBack", count(MeshletRoute::OpaqueCullBack));
             profile::RecordCounter("MeshletRoute Blend", count(MeshletRoute::Blend));
             profile::RecordCounter("MeshletRoute Transmission", count(MeshletRoute::Transmission));
-            profile::RecordCounter("MeshletRoute Phase2Candidate", count(MeshletRoute::Phase2Candidate));
             profile::RecordCounter("MeshletRoute OpaqueCullFront", count(MeshletRoute::OpaqueCullFront));
             profile::RecordCounter("MeshletRoute OpaqueDoubleSided", count(MeshletRoute::OpaqueDoubleSided));
             profile::RecordCounter("MeshletRoute Coverage", count(MeshletRoute::Coverage));
@@ -299,55 +296,6 @@ void PatchInstanceDeform(std::span<DrawData> draws, const DeformSlots &deform) {
         if (auto it = deform.ArmatureDeformByBufferIndex.find(draw.FirstInstance); it != deform.ArmatureDeformByBufferIndex.end()) {
             draw.ArmatureDeformOffset = it->second;
         }
-    }
-}
-// Reduces and dilates tiled screen motion, then writes the blurred scene to GatherImage.
-void RecordMotionBlurPostFx(entt::registry &r, mtl::PassChain &chain, const mtl::BindlessSet &slots, entt::entity viewport, mtl::Extent2D extent, uint32_t ubo_offset, float playback_frame) {
-    const auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto &main = pipelines.Main;
-    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
-    const auto &settings = r.get<const ViewportDisplay>(viewport);
-    const auto mb = EffectiveMotionBlur(settings);
-    // The second half of each motion vector is stored pointing backward, which the negative y undoes.
-    constexpr vec2 MotionScale{1.f, -1.f};
-    // Golden-ratio stepping decorrelates the gather's dither across steps and frames.
-    const float noise_phase = playback_frame * std::numbers::phi_v<float>;
-    const float noise_offset = noise_phase - std::floor(noise_phase);
-
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
-    auto *encoder = chain.BeginCompute("BlurTiles", MTL::StageFragment);
-    const auto dispatch = [&](const mtl::ComputePipeline &compute, auto &&pc, uvec3 groups, MTL::Size threadgroup) {
-        encode::BindCompute(encoder, compute, slots, buffers, ubo_offset);
-        encode::SetPushConstants(encoder, pc);
-        encoder->dispatchThreadgroups(MTL::Size(groups.x, groups.y, groups.z), threadgroup);
-    };
-    static constexpr auto divide_ceil = [](uint32_t v, uint32_t d) { return (v + d - 1) / d; };
-
-    const auto tile_extent = main.MotionBlur->TileImage.Extent;
-    { // One threadgroup per tile, which the flatten shader reduces to that tile's largest motion.
-        encoder->setThreadgroupMemoryLength(ThreadgroupMemory::MotionBlurPayload, 0);
-        encoder->setThreadgroupMemoryLength(ThreadgroupMemory::MotionBlurMaxMotion, 1);
-        dispatch(
-            pipelines.MotionBlurTilesFlatten,
-            MotionBlurTilesFlattenPushConstants{sel_slots.VelocitySampler, sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection, MotionScale},
-            {tile_extent.Width, tile_extent.Height, 1}, ThreadgroupSize::Tile8
-        );
-    }
-    { // One thread per tile.
-        dispatch(
-            pipelines.MotionBlurTilesDilate,
-            MotionBlurTilesDilatePushConstants{sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection},
-            {divide_ceil(tile_extent.Width, 8), divide_ceil(tile_extent.Height, 8), 1}, ThreadgroupSize::Tile8
-        );
-    }
-
-    { // One fullscreen pass, blurring the scene along its motion into the gather attachment.
-        const std::array colors{mtl::DiscardColor(*main.MotionBlur->GatherImage)};
-        const auto pass = mtl::MakePassDescriptor(colors);
-        auto *render = encode::BeginScenePass(chain, pass, "BlurGather", {{MTL::StageFragment | MTL::StageDispatch, MTL::StageFragment}}, extent, slots, buffers, ubo_offset);
-        main.MotionBlurGather.Bind(render);
-        encode::SetPushConstants(render, MotionBlurGatherPushConstants{sel_slots.SceneDepthSampler, sel_slots.VelocitySampler, sel_slots.SceneColorSampler, sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection, MotionScale, mb.BleedingBias, noise_offset});
-        render->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
     }
 }
 
@@ -472,7 +420,7 @@ void RecordPosedMeshletBounds(
     else encoder->dispatchThreadgroups(*buffers.GeometryWork.Buffer, WorkArgsOffset(pc.Work, true), ThreadgroupSize::Linear64);
 }
 
-// The cull push constants' buffer-derived fields, shared by the phase-1 and phase-2 records.
+// Buffer bindings shared by meshlet classification dispatches.
 MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers) {
     return {
         .WorkRangeSlot = buffers.MeshletWorkRanges.Slot,
@@ -497,21 +445,13 @@ MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers) {
         .DispatchArgsSlot = buffers.MeshletDispatchArgs.Slot,
         .DispatchChunkCount = buffers.MeshletDispatchChunkCount,
         .DispatchChunkSize = GpuBuffers::MeshletDispatchChunkSize,
-        .OcclusionViewProj = buffers.PreviousFullCullViewProj,
-        .Phase2VisibleSlot = buffers.MeshletPhase2Visible.Slot,
-        .Phase2RouteStateSlot = buffers.MeshletPhase2Routes.Slot,
-        .Phase2DispatchArgsSlot = buffers.MeshletPhase2DispatchArgs.Slot,
-        .Phase2CullArgsSlot = buffers.MeshletPhase2CullArgs.Slot,
-        .Phase2RangeCandidateSlot = buffers.MeshletPhase2RangeCandidates.Slot,
-        .Phase2RangeCullArgsSlot = buffers.MeshletPhase2RangeCullArgs.Slot,
         .CoarseCountSlot = buffers.MeshletCoarseCount.Slot,
-        .Phase2BlockCountSlot = buffers.MeshletPhase2CullBlockCounts.Slot,
     };
 }
 
 MeshletDrawPushConstants MakeMeshletDrawPc(
-    const GpuBuffers &buffers, const mtl::Buffer &visible, const mtl::Buffer &routes,
-    uint32_t route, uint32_t required_instance_flags, uint32_t visibility_phase,
+    const GpuBuffers &buffers,
+    uint32_t route, uint32_t required_instance_flags,
     bool visibility_transmission, uint32_t edge_sharpness_slot,
     uint32_t edit_edge_corner = 0u, uint32_t instance_filter = InvalidOffset
 ) {
@@ -524,34 +464,32 @@ MeshletDrawPushConstants MakeMeshletDrawPc(
         .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
         .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
         .MeshletEditEdgeSlot = buffers.MeshletEditEdgeIds.Buffer.Slot,
-        .VisibleMeshletSlot = visible.Slot,
-        .RouteStateSlot = routes.Slot,
+        .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
+        .RouteStateSlot = buffers.MeshletRoutes.Slot,
         .Route = route,
         .RequiredInstanceFlags = required_instance_flags,
         .InstanceFilter = instance_filter,
         .EditEdgeCorner = edit_edge_corner,
-        .VisibilityPhase = visibility_phase,
         .VisibilityTransmission = visibility_transmission,
         .EdgeSharpnessSlot = edge_sharpness_slot,
     };
 }
 
 void DrawMeshletList(
-    MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const mtl::Buffer &visible,
-    const mtl::Buffer &routes, const mtl::Buffer &dispatch_args, uint32_t route, uint32_t required_instance_flags,
-    uint32_t visibility_phase = 0u, bool visibility_transmission = false, bool fragment_pc = false,
+    MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, uint32_t route, uint32_t required_instance_flags,
+    bool visibility_transmission = false, bool fragment_pc = false,
     uint32_t edge_sharpness_slot = InvalidSlot,
     uint32_t mesh_threads = 160u, uint32_t edit_edge_corner = 0u,
     uint32_t instance_filter = InvalidOffset
 ) {
-    // Visibility ids reserve 25 bits for the visible-list index, and overflowing aliases the phase bit.
+    // Visibility IDs reserve a fixed bit range for the visible-list index.
     if (fragment_pc) {
-        const auto visible_count = visible.UsedSize / sizeof(VisibleMeshlet);
+        const auto visible_count = buffers.VisibleMeshlets.Count<VisibleMeshlet>();
         constexpr uint64_t index_limit = uint64_t{1} << uint32_t(VisibilityId::IndexBits);
         profile::RecordCounter("VisibleMeshletIndexOverflow", visible_count > index_limit ? double(visible_count - index_limit) : 0.0);
     }
     auto pc = MakeMeshletDrawPc(
-        buffers, visible, routes, route, required_instance_flags, visibility_phase,
+        buffers, route, required_instance_flags,
         visibility_transmission, edge_sharpness_slot, edit_edge_corner, instance_filter
     );
     for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
@@ -559,27 +497,8 @@ void DrawMeshletList(
         if (fragment_pc) encode::SetPushConstants(encoder, pc);
         else encode::SetMeshPushConstants(encoder, pc);
         const auto args_offset = (route * buffers.MeshletDispatchChunkCount + chunk) * sizeof(MeshDispatchArgs);
-        encoder->drawMeshThreadgroups(*dispatch_args, args_offset, MTL::Size(1, 1, 1), MTL::Size(mesh_threads, 1, 1));
+        encoder->drawMeshThreadgroups(*buffers.MeshletDispatchArgs, args_offset, MTL::Size(1, 1, 1), MTL::Size(mesh_threads, 1, 1));
     }
-}
-
-template<typename F>
-void ForEachMeshletVisibilityList(const GpuBuffers &buffers, bool two_phase, F &&f) {
-    f(buffers.VisibleMeshlets, buffers.MeshletRoutes, buffers.MeshletDispatchArgs);
-    if (two_phase) f(buffers.MeshletPhase2Visible, buffers.MeshletPhase2Routes, buffers.MeshletPhase2DispatchArgs);
-}
-
-void DrawPhase2Meshlets(
-    MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const MainPipeline &main
-) {
-    // Use one conservative two-sided coverage route before coarse candidates receive material classification.
-    // Splitting its inner cull by route makes the serial prefix proportional to route count and regresses disocclusion-heavy scenes.
-    encoder->setCullMode(MTL::CullModeNone);
-    main.MeshletVisibilityCoverage.Bind(encoder);
-    DrawMeshletList(
-        encoder, buffers, buffers.MeshletPhase2Visible, buffers.MeshletPhase2Routes,
-        buffers.MeshletPhase2DispatchArgs, uint32_t(MeshletRoute::OpaqueCullBack), 0u, 1u, false, true
-    );
 }
 
 // Encodes every route with zero-sized dispatch arguments for routes without visible meshlets.
@@ -589,8 +508,8 @@ void DrawVisibilityMeshlets(
 ) {
     const auto draw = [&](MeshletRoute route) {
         DrawMeshletList(
-            encoder, buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes, buffers.MeshletDispatchArgs,
-            uint32_t(route), 0u, 0u, transmission, true
+            encoder, buffers,
+            uint32_t(route), 0u, transmission, true
         );
     };
     main.MeshletVisibilityOpaque.Bind(encoder);
@@ -604,35 +523,6 @@ void DrawVisibilityMeshlets(
     draw(MeshletRoute::Coverage);
 }
 
-void RecordMeshletPhase2Cull(
-    mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
-    GpuBuffers &buffers, uint32_t pyramid_sampler, uint32_t ubo_offset, MeshletRouteMode mode
-) {
-    ++buffers.MeshletVisibleGeneration;
-    auto pc = MakeMeshletCullSlotsPc(buffers);
-    pc.RouteMode = uint32_t(mode);
-    pc.PyramidSamplerSlot = pyramid_sampler;
-    pc.TwoPhase = 1u;
-    auto *encoder = chain.BeginCompute("MeshletPhase2Cull", MTL::StageDispatch | MTL::StageFragment);
-    encode::BindScene(encoder, slots, buffers, ubo_offset);
-    const auto group = MTL::Size(GpuBuffers::MeshletPhase2GroupSize, 1, 1);
-    // Count pass, prefix into deterministic offsets, then the emit pass with the same tests.
-    const auto dispatch_culls = [&] {
-        encode::SetPushConstants(encoder, pc);
-        encoder->setComputePipelineState(pipelines.MeshletPhase2Cull.State());
-        encoder->dispatchThreadgroups(*buffers.MeshletPhase2CullArgs, 0, group);
-        encoder->setComputePipelineState(pipelines.MeshletPhase2RangeCull.State());
-        encoder->dispatchThreadgroups(*buffers.MeshletPhase2RangeCullArgs, 0, group);
-    };
-    dispatch_culls();
-    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-    encoder->setComputePipelineState(pipelines.MeshletPhase2Prefix.State());
-    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
-    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-    pc.Phase2Emit = 1u;
-    dispatch_culls();
-}
-
 void RecordDepthPyramid(
     MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers,
     const Pipelines &pipelines, const SelectionSlots &sel_slots, uint32_t ubo_offset
@@ -640,7 +530,7 @@ void RecordDepthPyramid(
     const auto &main = pipelines.Main;
     encode::BindCompute(encoder, pipelines.DepthPyramidReduce, slots, buffers, ubo_offset);
     const auto &mips = main.Resources->DepthPyramidMips;
-    const auto scene_extent = main.Resources->DepthImage.Extent;
+    const auto scene_extent = main.Resources->VisibilityDepth.Extent;
     for (uint32_t base = 0; base < uint32_t(mips.size()); base += 6) {
         // Add an explicit barrier between bindless mip dependencies.
         if (base > 0) encoder->memoryBarrier(MTL::BarrierScopeTextures);
@@ -665,11 +555,55 @@ void RecordDepthPyramid(
     }
 }
 
+// The visibility/depth pair is still intact here; no shading variant needs velocity outputs.
+void RecordMotionBlurPostFx(entt::registry &r, entt::entity viewport, mtl::PassChain &chain, uint32_t ubo_offset) {
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    const auto &main = r.ctx().get<const Pipelines>().Main;
+    const auto &blur = *main.MotionBlur;
+    const auto &samplers = r.ctx().get<const SelectionSlots>();
+    const auto extent = main.Resources->SceneColorImage.Extent;
+    const auto tiles = blur.TileImage.Extent;
+    const auto &view = *reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data() + ubo_offset);
+    auto *compute = chain.BeginCompute("BlurTiles", MTL::StageFragment);
+    encode::BindCompute(compute, main.MotionBlurTilesFlatten, slots, buffers, ubo_offset);
+    const auto &previous = *reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data() + buffers.SceneViewUboOffset(1));
+    const auto &next = *reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data() + buffers.SceneViewUboOffset(2));
+    const uint32_t camera_motion = view.ViewProj != previous.ViewProj || view.ViewProj != next.ViewProj;
+    encode::SetPushConstants(compute, MotionBlurTilesFlattenPushConstants{encode::VisibilityDecodePc(buffers), numeric::Inverse(view.ViewProj), camera_motion});
+    compute->setBuffer(*buffers.SceneViewUBO, buffers.SceneViewUboOffset(1), 5);
+    compute->setBuffer(*buffers.SceneViewUBO, buffers.SceneViewUboOffset(2), 6);
+    compute->setBuffer(blur.TileIndirection.get(), 0, 7);
+    compute->setTexture(*main.Resources->VisibilityImage, 0);
+    compute->setTexture(*main.Resources->VisibilityDepth, 1);
+    compute->setTexture(*blur.VelocityImage, 2);
+    compute->setTexture(*blur.TileImage, 3);
+    compute->setThreadgroupMemoryLength(16, 0);
+    compute->setThreadgroupMemoryLength(16, 1);
+    compute->dispatchThreadgroups(MTL::Size(tiles.Width, tiles.Height, 1), ThreadgroupSize::Tile8);
+    compute->memoryBarrier(MTL::BarrierScopeTextures | MTL::BarrierScopeBuffers);
+    encode::BindCompute(compute, main.MotionBlurTilesDilate, slots, buffers, ubo_offset);
+    compute->setBuffer(blur.TileIndirection.get(), 0, 5);
+    compute->setTexture(*blur.TileImage, 0);
+    compute->dispatchThreadgroups(MTL::Size((tiles.Width + 7) / 8, (tiles.Height + 7) / 8, 1), ThreadgroupSize::Tile8);
+
+    const std::array colors{mtl::DiscardColor(*blur.OutputImage)};
+    const auto pass = mtl::MakePassDescriptor(colors);
+    auto *render = encode::BeginScenePass(chain, pass, "BlurGather", {{MTL::StageDispatch | MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers, ubo_offset);
+    main.MotionBlurGather.Bind(render);
+    render->setFragmentBuffer(blur.TileIndirection.get(), 0, 5);
+    render->setFragmentTexture(*blur.TileImage, 0);
+    const auto inverse_projection = numeric::Inverse(r.get<const ViewCamera>(viewport).Projection(float(extent.Width) / float(extent.Height)));
+    const float noise_phase = r.get<const PlaybackFrame>(viewport).Value * std::numbers::phi_v<float>;
+    encode::SetPushConstants(render, MotionBlurGatherPushConstants{samplers.SceneDepthSampler, samplers.VelocitySampler, samplers.SceneColorSampler, noise_phase - std::floor(noise_phase), {inverse_projection[2].z, inverse_projection[3].z, inverse_projection[2].w, inverse_projection[3].w}});
+    render->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
+}
+
 void RecordSparseEditPrelude(entt::registry &, entt::entity, mtl::PassChain &);
 
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
 // `ubo_offset` selects the view UBO instance every bind in the phase reads.
-void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain, SceneUpdate update, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
+void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain, SceneUpdate update, RenderPhase phase, uint32_t ubo_offset, uint32_t sample_weight = 1u) {
     const profile::CpuScope scope{"RecordRenderCommandBuffer"};
     // Multi-step blur separates scene accumulation from sharp overlay rendering.
     const bool draw_scene = phase != RenderPhase::BlurResolve;
@@ -1244,21 +1178,19 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     if (update != SceneUpdate::Reuse || phase == RenderPhase::Full) RecordSceneCounters(buffers);
 
     const bool transmission_active = real_transmission && pipelines.Main.Transmission;
-    // Composite transmission only when edit tint, velocity, and debug output do not require rerasterization.
+    // Reuse opaque transmission shading when neither edit tint nor debug output needs another shade.
     const bool composite_transmission = transmission_active && phase == RenderPhase::Full && !is_edit_mode && settings.DebugChannel == DebugChannel::None;
     const bool meshlet_fill = buffers.MeshletInstanceCount > 0;
 
     // The posed passes run every phase, since blur steps read their step's captured pose through the phase's UBO instance.
-    // Bounds and cull run once per command buffer, and later blur phases reuse the culled buffers.
     // Derived normals feed only the scene's face-fill draws, so only scene-drawing phases record the derive.
     // Every prelude pass dispatches indirectly.
     // A submit with unchanged deform inputs gets zero group counts, keeping the buffers' current results.
     if (buffers.Prelude.HasWork()) {
         const auto &prelude = buffers.Prelude;
-        const bool record_bounds = phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve;
         // Every derive entry contributes at least one face tile and one gather tile.
-        const bool record_derive = draw_scene && prelude.DeriveFaces > 0;
-        const bool bounds_work = record_bounds && prelude.BoundsCombine > 0;
+        const bool record_derive = prelude.DeriveFaces > 0;
+        const bool bounds_work = prelude.BoundsCombine > 0;
         auto *compute = chain.BeginCompute("Prelude", MTL::StageVertex | MTL::StageFragment | MTL::StageDispatch);
         // Bindless dependencies require explicit barriers between pose, bounds, derive, gather, and combine dispatches.
         if (prelude.PosePrepass > 0) {
@@ -1285,14 +1217,10 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     if (is_edit_mode && std::exchange(scene_state.EditPreludePending, false)) RecordSparseEditPrelude(r, viewport, chain);
     if (phase == RenderPhase::Prepare) {
         // Selection will rasterize visibility for its recorded camera when it needs depth or IDs.
-        buffers.VisibilityIdGeneration = InvalidOffset;
+        buffers.Visibility.Generation = InvalidOffset;
         return;
     }
     MTL::RenderCommandEncoder *encoder = nullptr;
-    const auto record_meshlets = [&](uint32_t route, auto &&bind_pipeline) {
-        bind_pipeline();
-        DrawMeshlets(encoder, buffers, route);
-    };
     auto draw_quad = [&] { encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4)); };
 
     const auto &main = pipelines.Main;
@@ -1315,25 +1243,18 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             buffers.FlagWork(uint32_t(MeshletInstanceFlag::PointOverlay)).Meshlets +
             buffers.FlagWork(uint32_t(MeshletInstanceFlag::SoundPoint)).Meshlets :
         0u;
-    const bool cull_scene_meshlets = draw_scene &&
+    const bool cull_scene_meshlets =
         (need_visibility || wire_meshlets || bone_meshlets > 0u || normal_meshlets > 0u ||
          element_overlay_meshlets > 0u);
-    bool sort_blend = false;
-    if (cull_scene_meshlets && show_rendered) {
-        for (uint32_t i = 0; i < buffers.Materials.Count() && !sort_blend; ++i) {
-            sort_blend = buffers.Materials.Get(i).AlphaMode == MaterialAlphaMode::Blend;
-        }
-    }
+    const bool transparent = show_rendered && (real_transmission || std::ranges::any_of(std::span{buffers.Materials.Data(), buffers.Materials.Count()}, [](const auto &m) { return m.AlphaMode == MaterialAlphaMode::Blend; }));
     const auto view_bytes = buffers.SceneViewUBO.Contents().subspan(ubo_offset, sizeof(SceneViewUBO));
     const auto &current_view_proj = reinterpret_cast<const SceneViewUBO *>(view_bytes.data())->ViewProj;
     const bool disocclusion_possible = update != SceneUpdate::Reuse || buffers.PreludeStale || buffers.MeshletOcclusionStale ||
         std::memcmp(&current_view_proj, &buffers.PreviousFullCullViewProj, sizeof(mat4)) != 0;
-    // Keep real transmission single-phase because phase two omits textured transmission-hole coverage.
-    const bool two_phase_meshlets = show_fill && cull_scene_meshlets && phase == RenderPhase::Full && !real_transmission &&
-        main.Resources->DepthPyramidValid && disocclusion_possible;
+    // Cached occlusion is valid only for the pose that produced it. Reordering opaque
+    // surfaces across temporal phases changes the winner of equal-depth raster ties.
     if (cull_scene_meshlets) {
-        const bool stale_single_phase_transmission = real_transmission && disocclusion_possible;
-        const uint32_t pyramid = show_fill && phase == RenderPhase::Full && main.Resources->DepthPyramidValid && !stale_single_phase_transmission ?
+        const uint32_t pyramid = show_fill && phase == RenderPhase::Full && main.Resources->DepthPyramidValid && !disocclusion_possible ?
             sel_slots.DepthPyramidSampler :
             InvalidSlot;
         RecordMeshletCull(
@@ -1346,63 +1267,32 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     uint32_t(MeshletInstanceFlag::Silhouette),
                 .UboOffset = ubo_offset,
                 .PyramidSamplerSlot = pyramid,
-                .SortBlend = sort_blend,
-                .TwoPhase = two_phase_meshlets,
             }
         );
     }
-    if (need_visibility) {
+    if (need_visibility || phase == RenderPhase::BlurFast) {
         RecordMeshletVisibilityPass(chain, slots, pipelines, buffers, real_transmission, ubo_offset);
     }
     if (show_fill && phase == RenderPhase::Full && cull_scene_meshlets) {
-        if (two_phase_meshlets) {
-            auto *compute = chain.BeginCompute("DepthPyramidPhase1", MTL::StageFragment);
-            RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
-            RecordMeshletPhase2Cull(
-                chain, slots, pipelines, buffers, sel_slots.DepthPyramidSampler, ubo_offset,
-                show_rendered ? MeshletRouteMode::Material : MeshletRouteMode::Visibility
-            );
-            const std::array colors{mtl::LoadColor(*main.Resources->VisibilityImage)};
-            const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*main.Resources->DepthImage));
-            encoder = encode::BeginScenePass(
-                chain, pass, "MeshletVisibilityPhase2", {{MTL::StageDispatch, MTL::StageMesh}}, main_extent,
-                slots, buffers, ubo_offset
-            );
-            DrawPhase2Meshlets(encoder, buffers, main);
-            buffers.VisibilityIdGeneration = buffers.MeshletVisibleGeneration;
-        }
         buffers.PreviousFullCullViewProj = current_view_proj;
-        // Only geometry may occlude the next frame; scene compositing will add decorative depth.
+        // Only visibility surfaces contribute to occlusion.
         auto *compute = chain.BeginCompute("DepthPyramidFinal", MTL::StageFragment);
         RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
         main.Resources->DepthPyramidValid = true;
     }
-    if (has_silhouette) { // Silhouette depth/object pass
-        RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, true, ubo_offset);
-
-        const auto &silhouette_edge = pipelines.SilhouetteEdge;
-        {
-            const auto extent = silhouette_edge.Resources->OffscreenImage.Extent;
-            const std::array colors{mtl::ClearColor(*silhouette_edge.Resources->OffscreenImage)};
-            const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*silhouette_edge.Resources->DepthImage));
-            encoder = encode::BeginScenePass(chain, pass, "SilhouetteEdge", {{MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers, ubo_offset);
-            silhouette_edge.Renderer.Bind(encoder, SPT::SilhouetteEdgeDepthObject);
-            encode::SetPushConstants(encoder, SilhouetteEdgeDepthObjectPushConstants{sel_slots.SilhouetteSampler});
-            draw_quad();
-        }
-    }
+    if (has_silhouette) RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, true, ubo_offset);
 
     // Render background and opaque faces without exposure into TransmissionImage for refracted sampling.
     if (transmission_active && draw_scene) {
         // Refraction samples only the world buffer.
         // The overlay composite adds the display-referred viewport backdrop.
         const std::array colors{mtl::ClearColor(*main.Transmission->Mip0View)};
-        const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*main.Resources->DepthImage));
+        const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*main.Resources->VisibilityDepth));
         encoder = encode::BeginScenePass(chain, pass, "TransmissionPrepass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
         main.PrepassBackground.Bind(encoder);
         draw_quad();
         if (meshlet_fill && show_fill) {
-            main.Compiler.BindVisibility(encoder, PbrCompiler::Variant::OpaquePrepass);
+            main.Compiler.BindVisibility(encoder, true);
             encoder->setFragmentTexture(*main.Resources->VisibilityImage, 0u);
             encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
             draw_quad();
@@ -1415,31 +1305,24 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         }
     }
 
-    // The blur variant writes opaque color and screen motion together.
-    const bool blur = phase == RenderPhase::BlurredFull || IsBlurAccumulate(phase);
-
-    { // Scene pass: shaded scene into its own color target, and the depth the overlay pass occludes against.
-        const auto &scene_renderer = blur ? main.SceneVelocityRenderer : main.SceneRenderer;
-        // The composite path resumes over the transmission prepass's depth rather than clearing it.
-        // Blurred steps add the velocity attachment the opaque geometry writes its screen motion into.
+    { // Shade against immutable visibility depth.
+        const auto &scene_renderer = main.SceneRenderer;
         const std::array colors{
             mtl::ClearColor(*main.Resources->SceneColorImage),
-            blur ? mtl::ClearColor(*main.MotionBlur->VelocityImage) : mtl::ColorAttachment{},
         };
-        const auto attachments = std::span{colors}.first(blur ? 2 : 1);
-        const auto depth = show_fill && meshlet_fill ? mtl::LoadDepth(*main.Resources->DepthImage) : mtl::ClearDepth(*main.Resources->DepthImage);
-        const auto pass = mtl::MakePassDescriptor(attachments, depth);
+        const auto depth = show_fill && meshlet_fill ? mtl::LoadDepth(*main.Resources->VisibilityDepth) : mtl::ClearDepth(*pipelines.Main.Resources->ScratchDepth);
+        const auto pass = mtl::MakePassDescriptor(colors, depth);
+        if (transparent) {
+            pass->setImageblockSampleLength(std::max(main.TransparencyInit.ImageblockSampleLength(), main.TransparencyResolve.ImageblockSampleLength()));
+            pass->setTileWidth(16);
+            pass->setTileHeight(16);
+        }
         encoder = encode::BeginScenePass(
             chain, pass, draw_scene ? "ScenePass" : "SceneDepthPass",
             {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment | MTL::StageBlit, MTL::StageFragment}},
             main_extent, slots, buffers, ubo_offset
         );
 
-        // Initialize uncovered pixels with rotational background motion before geometry overwrites them.
-        if (blur) {
-            scene_renderer.Bind(encoder, SPT::BackgroundVelocity);
-            draw_quad();
-        }
         // The prepass covers the background and plain-opaque geometry, so the composite replaces both.
         if (composite_transmission) {
             scene_renderer.Bind(encoder, SPT::TransmissionComposite);
@@ -1450,41 +1333,35 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             scene_renderer.Bind(encoder, SPT::Background);
             draw_quad();
         }
-        // Fill the scene target with the averaged steps, for the depth and overlays below to draw over.
+        // Resolve shutter samples before drawing sharp overlays.
         if (phase == RenderPhase::BlurResolve) {
             scene_renderer.Bind(encoder, SPT::MotionBlurResolve);
             const struct {
                 uint32_t AccumSamplerSlot;
                 float InvSteps;
-            } resolve_pc{sel_slots.MotionBlurAccumSampler, 1.f / float(MotionBlurSteps(settings))};
+            } resolve_pc{sel_slots.MotionBlurOutputSampler, 1.f / float(MotionBlurSteps(settings))};
             encode::SetPushConstants(encoder, resolve_pc);
             draw_quad();
         }
 
-        // Seed silhouette depth before nearer mesh depth overwrites it.
-        if (has_silhouette) {
-            scene_renderer.Bind(encoder, SPT::SilhouetteEdgeDepth);
-            const struct {
-                uint32_t DepthSamplerIndex;
-            } depth_pc{sel_slots.DepthSampler};
-            encode::SetPushConstants(encoder, depth_pc);
-            draw_quad();
-        }
-
         // Draw solid faces.
-        // BlurResolve writes depth for overlay occlusion because blended faces omit depth writes.
         if (show_fill) {
             if (meshlet_fill && draw_scene && show_rendered) {
-                const auto opaque_variant = blur ? PbrCompiler::Variant::OpaqueVelocity : PbrCompiler::Variant::Opaque;
-                const auto blend_variant = blur ? PbrCompiler::Variant::BlendVelocity : PbrCompiler::Variant::Blend;
                 if (!composite_transmission) {
-                    main.Compiler.BindVisibility(encoder, opaque_variant);
+                    main.Compiler.BindVisibility(encoder);
                     encoder->setFragmentTexture(*main.Resources->VisibilityImage, 0u);
                     encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
                     draw_quad();
                 }
-                if (real_transmission) record_meshlets(uint32_t(MeshletRoute::Transmission), [&] { main.Compiler.BindMeshlets(encoder, opaque_variant); });
-                record_meshlets(uint32_t(MeshletRoute::Blend), [&] { main.Compiler.BindMeshlets(encoder, blend_variant); });
+                if (transparent) {
+                    main.TransparencyInit.Bind(encoder);
+                    draw_quad();
+                    main.Compiler.BindMeshlets(encoder);
+                    if (real_transmission) DrawMeshlets(encoder, buffers, uint32_t(MeshletRoute::Transmission));
+                    DrawMeshlets(encoder, buffers, uint32_t(MeshletRoute::Blend));
+                    main.TransparencyResolve.Bind(encoder);
+                    draw_quad();
+                }
             } else if (meshlet_fill && draw_scene) {
                 main.WorkspaceVisibility.Bind(encoder);
                 encoder->setFragmentTexture(*main.Resources->VisibilityImage, 0u);
@@ -1494,46 +1371,44 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         }
     }
 
-    if (blur) RecordMotionBlurPostFx(r, chain, slots, viewport, main_extent, ubo_offset, playback_frame);
-
-    if (!draw_overlays) { // BlurAccumulate adds this step's blurred scene without overlays.
-        {
-            const std::array colors{
-                phase == RenderPhase::BlurAccumulateFirst ? mtl::ClearColor(*main.MotionBlur->AccumImage) : mtl::LoadColor(*main.MotionBlur->AccumImage)
-            };
-            const auto pass = mtl::MakePassDescriptor(colors);
-            encoder = encode::BeginScenePass(chain, pass, "BlurAccumulate", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
-            main.MotionBlurAccumulate.Bind(encoder);
-            const struct {
-                uint32_t GatherSamplerSlot;
-            } accum_pc{sel_slots.MotionBlurGatherSampler};
-            encode::SetPushConstants(encoder, accum_pc);
-            draw_quad();
-        }
+    if (!draw_overlays) { // Accumulate this shutter sample without overlays.
+        const std::array colors{
+            phase == RenderPhase::BlurAccumulateFirst ? mtl::ClearColor(*main.MotionBlur->OutputImage) : mtl::LoadColor(*main.MotionBlur->OutputImage)
+        };
+        const auto pass = mtl::MakePassDescriptor(colors);
+        encoder = encode::BeginScenePass(chain, pass, "BlurAccumulate", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
+        main.MotionBlurAccumulate.Bind(encoder);
+        const struct {
+            uint32_t SceneSamplerSlot;
+            float Weight;
+        } accum_pc{sel_slots.SceneColorSampler, float(sample_weight)};
+        encode::SetPushConstants(encoder, accum_pc);
+        draw_quad();
         return;
     }
 
-    // Wireframe lines rasterize in compute before the overlay pass that resolves them.
-    const bool wire_raster_drawn = wire_meshlets;
     const bool meshlet_edit_overlay_drawn =
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::EditOverlay)).Meshlets > 0;
     const bool overlay_jobs = show_overlays && buffers.OverlayJobs.UsedSize > 0u &&
         (settings.ShowExtras || settings.ShowBoundingBoxes || settings.ShowTetWireframe);
-    if (wire_raster_drawn) {
-        { // Coverage sums and the complemented depth both start from zero.
+    if (wire_meshlets) {
+        buffers.WireCoverageBuffer.SetCount<uint32_t>(main_extent.Width * main_extent.Height);
+        { // Four independent 8-bit coverage maxima share one word.
             auto *blit = chain.BeginBlit("WireClear", MTL::StageDispatch);
             blit->fillBuffer(*buffers.WireCoverageBuffer, NS::Range::Make(0, buffers.WireCoverageBuffer.UsedSize), 0);
         }
         // Canonical meshlet edge owners accumulate with atomics, so threadgroups need no ordering.
         auto *wire = chain.BeginCompute("WireRaster", MTL::StageBlit | MTL::StageFragment, MTL::DispatchTypeConcurrent);
         encode::BindCompute(wire, pipelines.WireRaster, slots, buffers, ubo_offset);
+        wire->setTexture(*main.Resources->VisibilityDepth, 0u);
         WireRasterPushConstants wire_pc{
             .Meshlet = MakeMeshletDrawPc(
-                buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes,
+                buffers,
                 uint32_t(MeshletRoute::Wire), uint32_t(MeshletInstanceFlag::Wire),
-                0u, false, InvalidSlot
+                false, InvalidSlot
             ),
             .CoverageSlot = buffers.WireCoverageBuffer.Slot,
+            .TestDepth = show_fill && meshlet_fill,
         };
         for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
             wire_pc.Meshlet.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
@@ -1545,98 +1420,24 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     }
     if (overlay_jobs) RecordOverlayJobCull(chain, slots, pipelines, buffers, false, ubo_offset);
 
-    // Skip transparent overlay color and line data when no overlay draw writes them.
-    bool overlay_layer_drawn = false;
-    // List every drawable category for this pass.
-    // An empty list prevents the composite from reading either overlay layer.
+    // Initialize overlays even when no geometry contributes color.
     const bool overlay_pass_needed = has_silhouette ||
         (show_overlays && settings.ShowGrid) ||
-        meshlet_edit_overlay_drawn || element_overlay_meshlets > 0u || wire_raster_drawn ||
+        meshlet_edit_overlay_drawn || element_overlay_meshlets > 0u || wire_meshlets ||
         overlay_jobs ||
         normal_meshlets > 0u || bone_meshlets > 0u;
-    if (overlay_pass_needed) { // Overlay pass: display-referred overlays over transparent, depth-tested against the scene above.
-        // Transparent overlay color is composited over scene color by alpha.
+    if (overlay_pass_needed) { // Display-referred overlays, depth-tested against scene surfaces and outlines.
+        // The outline draw initializes color and scene-plus-outline depth across the target.
         const std::array overlay_colors{
-            mtl::ClearColor(*main.Resources->OverlayColorImage),
-            mtl::ClearColor(*main.Resources->LineDataImage),
+            has_silhouette ? mtl::DiscardColor(*main.Resources->OverlayColorImage) : mtl::ClearColor(*main.Resources->OverlayColorImage),
         };
-        const auto overlay_pass = mtl::MakePassDescriptor(overlay_colors, mtl::LoadDepth(*main.Resources->DepthImage));
+        const auto overlay_depth = has_silhouette ?
+            mtl::DepthAttachment{*main.Resources->ScratchDepth, MTL::LoadActionDontCare, MTL::StoreActionDontCare} :
+            mtl::LoadDepth(show_fill && meshlet_fill ? *main.Resources->VisibilityDepth : *main.Resources->ScratchDepth);
+        const auto overlay_pass = mtl::MakePassDescriptor(overlay_colors, overlay_depth);
         encoder = encode::BeginScenePass(chain, overlay_pass, "OverlayPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
 
-        const auto draw_meshlet_overlay = [&](
-                                              const mtl::MeshRenderPipeline &pipeline, MeshletRoute route, MeshletInstanceFlag flag,
-                                              uint32_t threads, uint32_t corner = 0u, uint32_t sharpness_slot = InvalidSlot
-                                          ) {
-            pipeline.Bind(encoder);
-            ForEachMeshletVisibilityList(
-                buffers, two_phase_meshlets,
-                [&](const auto &visible, const auto &routes, const auto &dispatch_args) {
-                    DrawMeshletList(
-                        encoder, buffers, visible, routes, dispatch_args,
-                        uint32_t(route), uint32_t(flag), 0u, false, false,
-                        sharpness_slot, threads, corner
-                    );
-                }
-            );
-        };
-
-        {
-            if (meshlet_edit_overlay_drawn) {
-                overlay_layer_drawn = true;
-                // Preserve the sharp-free specialization; the all-smooth Meshlets scene is measurably faster with it.
-                const auto &edit_edges = scene_state.MeshletEditHasSharpEdges ? main.MeshletEditEdges : main.MeshletEditSmoothEdges;
-                for (uint32_t corner = 0u; corner < 3u; ++corner) {
-                    draw_meshlet_overlay(
-                        edit_edges, MeshletRoute::EditOverlay, MeshletInstanceFlag::EditOverlay,
-                        160u, corner, meshes.GetEdgeSharpnessSlot()
-                    );
-                }
-            }
-            if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::EdgeOverlay)).Meshlets > 0u) {
-                overlay_layer_drawn = true;
-                for (uint32_t corner = 0u; corner < 3u; ++corner) {
-                    draw_meshlet_overlay(
-                        main.MeshletEditSmoothEdges, MeshletRoute::Overlay,
-                        MeshletInstanceFlag::EdgeOverlay, 160u, corner
-                    );
-                }
-            }
-            if (wire_raster_drawn) {
-                overlay_layer_drawn = true;
-                main.WireResolve.Bind(encoder);
-                encode::SetPushConstants(encoder, WireResolvePushConstants{buffers.WireCoverageBuffer.Slot});
-                encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
-            }
-            // Points follow the wire resolve so selected vertices stay on top in wireframe mode too.
-            if (meshlet_edit_overlay_drawn && edit_mode == Element::Vertex) {
-                draw_meshlet_overlay(
-                    main.MeshletEditPoint, MeshletRoute::EditOverlay,
-                    MeshletInstanceFlag::EditOverlay, 64u
-                );
-            }
-            if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::PointOverlay)).Meshlets > 0u) {
-                overlay_layer_drawn = true;
-                draw_meshlet_overlay(
-                    main.MeshletEditPoint, MeshletRoute::Overlay,
-                    MeshletInstanceFlag::PointOverlay, 64u
-                );
-            }
-            if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::SoundPoint)).Meshlets > 0u) {
-                overlay_layer_drawn = true;
-                draw_meshlet_overlay(
-                    main.MeshletEditPoint, MeshletRoute::Overlay,
-                    MeshletInstanceFlag::SoundPoint, 64u
-                );
-            }
-            if (overlay_jobs) {
-                overlay_layer_drawn = true;
-                main.OverlayJobLines.Bind(encoder);
-                DrawOverlayJobs(encoder, buffers, meshes);
-            }
-        }
-
         if (has_silhouette) {
-            overlay_layer_drawn = true;
             main.OverlayRenderer.Bind(encoder, SPT::SilhouetteEdgeColor);
             // In mesh Edit mode, suppress active silhouette (element selection drives active state differently).
             // In armature Edit/Pose mode, the active bone gets the active-color silhouette.
@@ -1651,12 +1452,60 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             } else if (!is_edit_mode && active_entity != entt::null && r.all_of<RenderInstance>(active_entity)) {
                 active_object_id = r.get<RenderInstance>(active_entity).ObjectId;
             }
-            encode::SetPushConstants(encoder, SilhouetteEdgeColorPushConstants{TransformGizmo::IsUsing(r, viewport) && interaction_mode == InteractionMode::Object, sel_slots.ObjectIdSampler, active_object_id});
+            encode::SetPushConstants(encoder, SilhouetteEdgeColorPushConstants{
+                                                  TransformGizmo::IsUsing(r, viewport) && interaction_mode == InteractionMode::Object,
+                                                  sel_slots.SilhouetteSampler,
+                                                  active_object_id,
+                                                  show_fill && meshlet_fill ? sel_slots.SceneDepthSampler : InvalidSlot,
+                                              });
             draw_quad();
         }
 
+        if (show_overlays && settings.ShowGrid) {
+            main.OverlayRenderer.Bind(encoder, SPT::Grid);
+            encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(9));
+        }
+
+        const auto draw_meshlet_overlay = [&](
+                                              const mtl::MeshRenderPipeline &pipeline, MeshletRoute route, MeshletInstanceFlag flag,
+                                              uint32_t threads, uint32_t corner = 0u, uint32_t sharpness_slot = InvalidSlot
+                                          ) {
+            pipeline.Bind(encoder);
+            DrawMeshletList(
+                encoder, buffers,
+                uint32_t(route), uint32_t(flag), false, false, sharpness_slot, threads, corner
+            );
+        };
+
+        if (meshlet_edit_overlay_drawn) {
+            // Preserve the sharp-free specialization; the all-smooth Meshlets scene is measurably faster with it.
+            const auto &edit_edges = scene_state.MeshletEditHasSharpEdges ? main.MeshletEditEdges : main.MeshletEditSmoothEdges;
+            for (uint32_t corner = 0u; corner < 3u; ++corner) {
+                draw_meshlet_overlay(
+                    edit_edges, MeshletRoute::EditOverlay, MeshletInstanceFlag::EditOverlay,
+                    160u, corner, meshes.GetEdgeSharpnessSlot()
+                );
+            }
+        }
+        if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::EdgeOverlay)).Meshlets > 0u) {
+            for (uint32_t corner = 0u; corner < 3u; ++corner) {
+                draw_meshlet_overlay(
+                    main.MeshletEditSmoothEdges, MeshletRoute::Overlay,
+                    MeshletInstanceFlag::EdgeOverlay, 160u, corner
+                );
+            }
+        }
+        if (wire_meshlets) {
+            main.WireResolve.Bind(encoder);
+            encode::SetPushConstants(encoder, WireResolvePushConstants{buffers.WireCoverageBuffer.Slot});
+            draw_quad();
+        }
+        if (overlay_jobs) {
+            main.OverlayJobLines.Bind(encoder);
+            DrawOverlayJobs(encoder, buffers, meshes);
+        }
+
         if (normal_meshlets > 0u) {
-            overlay_layer_drawn = true;
             const auto draw_normals = [&](const mtl::MeshRenderPipeline &pipeline, MeshletInstanceFlag flag) {
                 if (buffers.FlagWork(uint32_t(flag)).Meshlets == 0u) return;
                 draw_meshlet_overlay(pipeline, MeshletRoute::Overlay, flag, 64u);
@@ -1665,52 +1514,75 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             draw_normals(main.VertexNormalMesh, MeshletInstanceFlag::VertexNormal);
         }
 
-        // Grid plane (drawn before bone depth clear so grid remains depth-tested against scene meshes)
-        if (show_overlays && settings.ShowGrid) {
-            overlay_layer_drawn = true;
-            main.OverlayRenderer.Bind(encoder, SPT::Grid);
-            encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(9));
+        // Selected vertices composite above strokes.
+        if (meshlet_edit_overlay_drawn && edit_mode == Element::Vertex) {
+            draw_meshlet_overlay(
+                main.MeshletEditPoint, MeshletRoute::EditOverlay,
+                MeshletInstanceFlag::EditOverlay, 64u
+            );
         }
+        if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::PointOverlay)).Meshlets > 0u) {
+            draw_meshlet_overlay(
+                main.MeshletEditPoint, MeshletRoute::Overlay,
+                MeshletInstanceFlag::PointOverlay, 64u
+            );
+        }
+        if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::SoundPoint)).Meshlets > 0u) {
+            draw_meshlet_overlay(
+                main.MeshletEditPoint, MeshletRoute::Overlay,
+                MeshletInstanceFlag::SoundPoint, 64u
+            );
+        }
+        // Bone X-ray preserves overlay color and clears scratch depth to order bones against each other.
+        if (bone_meshlets > 0u) {
+            const std::array bone_colors{
+                mtl::LoadColor(*main.Resources->OverlayColorImage),
+            };
+            const auto bone_pass = mtl::MakePassDescriptor(bone_colors, {*pipelines.Main.Resources->ScratchDepth, MTL::LoadActionClear, MTL::StoreActionDontCare});
+            encoder = encode::BeginScenePass(chain, bone_pass, "BoneXRay", {{MTL::StageDispatch, MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
 
-        { // Bone X-ray: depth clears so bones are never occluded by scene meshes, only by each other.
-            // Use a second pass to preserve overlay color while clearing bone depth at pass start.
-            if (bone_meshlets > 0u) {
-                const std::array bone_colors{
-                    mtl::LoadColor(*main.Resources->OverlayColorImage),
-                    mtl::LoadColor(*main.Resources->LineDataImage),
-                };
-                const auto bone_pass = mtl::MakePassDescriptor(bone_colors, mtl::ClearDepth(*main.Resources->DepthImage));
-                encoder = encode::BeginScenePass(chain, bone_pass, "BoneXRay", {{MTL::StageDispatch, MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
+            const auto draw_bones = [&](const mtl::MeshRenderPipeline &pipeline, MeshletInstanceFlag flag, uint32_t threads, float depth_bias = 0.f) {
+                if (buffers.FlagWork(uint32_t(flag)).Meshlets == 0u) return;
+                pipeline.Bind(encoder);
+                encoder->setDepthBias(depth_bias, 0.f, 0.f);
+                DrawMeshlets(encoder, buffers, uint32_t(MeshletRoute::Overlay), uint32_t(flag), threads);
+                if (depth_bias != 0.f) encoder->setDepthBias(0.f, 0.f, 0.f);
+            };
 
-                const auto draw_bones = [&](const mtl::MeshRenderPipeline &pipeline, MeshletInstanceFlag flag, uint32_t threads, float depth_bias = 0.f) {
-                    if (buffers.FlagWork(uint32_t(flag)).Meshlets == 0u) return;
-                    overlay_layer_drawn = true;
-                    pipeline.Bind(encoder);
-                    encoder->setDepthBias(depth_bias, 0.f, 0.f);
-                    DrawMeshlets(encoder, buffers, uint32_t(MeshletRoute::Overlay), uint32_t(flag), threads);
-                    if (depth_bias != 0.f) encoder->setDepthBias(0.f, 0.f, 0.f);
-                };
-
-                // In Object+wireframe mode, show only outlines (no fills).
-                // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader) so wires are never occluded.
-                const bool object_wireframe = is_wireframe_mode && interaction_mode == InteractionMode::Object;
-                if (!object_wireframe) {
-                    draw_bones(main.BoneFillMesh, MeshletInstanceFlag::Bone, 24u, 2.f);
-                    draw_bones(main.BoneSphereFillMesh, MeshletInstanceFlag::BoneJoint, uint32_t(OverlayDispatch::BoneSphereVertices));
-                }
-                // In non-wireframe Object mode, "Outline selected" off suppresses bone wire outlines.
-                // In wireframe+Object mode, wires are the only bone visualization so always show them.
-                const bool hide_bone_outlines = !is_wireframe_mode && interaction_mode == InteractionMode::Object &&
-                    (!show_overlays || !settings.ShowOutlineSelected);
-                if (!hide_bone_outlines) {
-                    draw_bones(main.BoneWireMesh, MeshletInstanceFlag::BoneWire, 24u);
-                    draw_bones(main.BoneSphereWireMesh, MeshletInstanceFlag::BoneJointWire, 64u);
-                }
+            // In Object+wireframe mode, show only outlines (no fills).
+            // Edit/Pose wireframe fills remain translucent; actual depth orders overlapping bones.
+            const bool object_wireframe = is_wireframe_mode && interaction_mode == InteractionMode::Object;
+            if (!object_wireframe) {
+                draw_bones(main.BoneFillMesh, MeshletInstanceFlag::Bone, 24u, 2.f);
+                draw_bones(main.BoneSphereFillMesh, MeshletInstanceFlag::BoneJoint, uint32_t(OverlayDispatch::BoneSphereVertices));
+            }
+            // In non-wireframe Object mode, "Outline selected" off suppresses bone wire outlines.
+            // In wireframe+Object mode, wires are the only bone visualization so always show them.
+            const bool hide_bone_outlines = !is_wireframe_mode && interaction_mode == InteractionMode::Object &&
+                (!show_overlays || !settings.ShowOutlineSelected);
+            if (!hide_bone_outlines) {
+                draw_bones(main.BoneWireMesh, MeshletInstanceFlag::BoneWire, 24u);
+                draw_bones(main.BoneSphereWireMesh, MeshletInstanceFlag::BoneJointWire, 64u);
             }
         }
     }
 
-    { // Composite: anti-alias the overlay layer using LineDataImage, view-transform the scene, merge into FinalColorImage
+    if (phase == RenderPhase::BlurFast) {
+        // Refraction and overlays have finished reading opaque visibility. Include glass in
+        // the ID/depth pair for blur now, without changing the depth used to shade behind it.
+        if (real_transmission && meshlet_fill) {
+            const std::array colors{mtl::LoadColor(*main.Resources->VisibilityImage)};
+            const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*main.Resources->VisibilityDepth));
+            auto *visibility = encode::BeginScenePass(chain, pass, "BlurTransmissionVisibility", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
+            main.MeshletVisibilityCoverage.Bind(visibility);
+            visibility->setCullMode(MTL::CullModeNone);
+            DrawMeshletList(visibility, buffers, uint32_t(MeshletRoute::Transmission), 0u, false, true);
+            buffers.Visibility.ExcludesTransmission = false;
+        }
+        RecordMotionBlurPostFx(r, viewport, chain, ubo_offset);
+    }
+
+    { // View-transform the scene, then composite display-referred overlays.
         const std::array colors{mtl::ClearColor(*main.Resources->FinalColorImage, {0, 0, 0, 1})};
         const auto pass = mtl::MakePassDescriptor(colors);
         encoder = encode::BeginScenePass(chain, pass, "Composite", {{MTL::StageFragment, MTL::StageFragment}}, main.Resources->FinalColorImage.Extent, slots, buffers, ubo_offset);
@@ -1718,12 +1590,11 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         // Debug channels write their own already-viewable values, so they pass through untransformed.
         const uint32_t view_transform = settings.DebugChannel != DebugChannel::None ? 2u : show_rendered ? 1u :
                                                                                                            0u;
-        // BlurredFull composites the finished scene from the gather target.
-        const uint32_t scene_sampler = phase == RenderPhase::BlurredFull ? sel_slots.MotionBlurGatherSampler : sel_slots.SceneColorSampler;
+        const uint32_t scene_sampler = phase == RenderPhase::BlurFast ? sel_slots.MotionBlurOutputSampler : sel_slots.SceneColorSampler;
         const struct {
-            uint32_t SceneColorSamplerSlot, OverlayColorSamplerSlot, LineDataSamplerSlot, ViewTransform, HasOverlay;
+            uint32_t SceneColorSamplerSlot, OverlayColorSamplerSlot, ViewTransform, HasOverlay;
             vec4 Backdrop;
-        } composite_pc{scene_sampler, sel_slots.OverlayColorSampler, sel_slots.LineDataSampler, view_transform, overlay_layer_drawn, settings.ClearColor};
+        } composite_pc{scene_sampler, sel_slots.OverlayColorSampler, view_transform, overlay_pass_needed, settings.ClearColor};
         encode::SetPushConstants(encoder, composite_pc);
         draw_quad();
     }
@@ -1789,13 +1660,13 @@ void RecordMeshletVisibilityPass(
     const std::array colors{
         mtl::ClearColor(*main.Resources->VisibilityImage, MTL::ClearColor{double(UINT32_MAX), 0, 0, 0})
     };
-    const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*main.Resources->DepthImage));
+    const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*main.Resources->VisibilityDepth));
     auto *encoder = encode::BeginScenePass(
         chain, pass, "MeshletVisibility", {{MTL::StageDispatch, MTL::StageMesh}},
         main.Resources->VisibilityImage.Extent, slots, buffers, ubo_offset
     );
     DrawVisibilityMeshlets(encoder, buffers, main, transmission);
-    buffers.VisibilityIdGeneration = buffers.MeshletVisibleGeneration;
+    buffers.Visibility = {buffers.MeshletVisibleGeneration, transmission};
 }
 
 void RecordMeshletCull(
@@ -1810,20 +1681,17 @@ void RecordMeshletCull(
         GpuBuffers::MeshletFlagWork{buffers.MeshletRangeCount, buffers.MeshletInstanceCount} :
         buffers.FlagWork(config.RequiredInstanceFlags);
     buffers.EnsureMeshletVisibilityCapacity(
-        primary.Meshlets * (1u + transmission), primary.Ranges, primary.Meshlets, primary.Meshlets,
-        config.SortBlend, config.TwoPhase
+        primary.Meshlets * (1u + transmission), primary.Ranges, primary.Meshlets
     );
     const auto pc = [&] {
         auto pc = MakeMeshletCullSlotsPc(buffers);
         pc.InstanceCount = buffers.GpuInstanceSlots.Count<uint32_t>();
         pc.WorkBlockCount = (pc.InstanceCount + GpuBuffers::MeshletCullBlockSize - 1u) / GpuBuffers::MeshletCullBlockSize;
         pc.LodFrontierStateSlot = buffers.LodFrontierStates.Slot;
-        pc.BlendBlockSlot = config.SortBlend ? buffers.MeshletBlendBlocks.Slot : InvalidSlot;
         pc.RouteMode = uint32_t(config.Mode);
         pc.RequiredInstanceFlags = config.RequiredInstanceFlags;
         pc.RouteMask = config.RouteMask;
         pc.PyramidSamplerSlot = config.PyramidSamplerSlot;
-        pc.TwoPhase = config.TwoPhase;
         return pc;
     }();
     encode::BindScene(encoder, slots, buffers, config.UboOffset);
@@ -1832,8 +1700,7 @@ void RecordMeshletCull(
     const auto dispatch_meshlets = [&](const mtl::ComputePipeline &pipeline) {
         encoder->setComputePipelineState(pipeline.State());
         const uint32_t prefix_bytes = GpuBuffers::MeshletRouteCount * prefix_stride * sizeof(uint32_t);
-        const uint32_t blend_bytes = config.SortBlend ? simd_groups * 256u * sizeof(uint16_t) : 0u;
-        encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(prefix_bytes + blend_bytes), 0);
+        encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(prefix_bytes), 0);
         encoder->dispatchThreadgroups(*buffers.MeshletWorkDispatchArgs, 0, MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
     };
     // Descends every span tree in lockstep and emits surviving record runs in frontier order.
@@ -1851,7 +1718,7 @@ void RecordMeshletCull(
         const auto dispatch_level = [&](const mtl::ComputePipeline &pipeline) {
             if (level == 0u && pc.WorkBlockCount == 0u) return;
             encoder->setComputePipelineState(pipeline.State());
-            encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(3u * prefix_stride * sizeof(uint32_t)), 0);
+            encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(2u * prefix_stride * sizeof(uint32_t)), 0);
             if (level == 0u) encoder->dispatchThreadgroups(MTL::Size(pc.WorkBlockCount, 1, 1), MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
             else encoder->dispatchThreadgroups(*buffers.LodExpandArgs, index * sizeof(MeshDispatchArgs), MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
         };
@@ -1878,18 +1745,19 @@ void RecordSilhouetteDepthPass(
     GpuBuffers &buffers, bool draw_meshlets, uint32_t ubo_offset
 ) {
     const bool draw = draw_meshlets && buffers.MeshletInstanceCount > 0;
-    const auto &silhouette = pipelines.Silhouette;
-    const auto extent = silhouette.Resources->OffscreenImage.Extent;
-    const std::array colors{mtl::ClearColor(*silhouette.Resources->OffscreenImage)};
-    const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*silhouette.Resources->DepthImage));
+    const auto &silhouette = pipelines.Main.Resources->SilhouetteImage;
+    const auto extent = silhouette.Extent;
+    const std::array colors{mtl::ClearColor(*silhouette)};
+    const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*pipelines.Main.Resources->ScratchDepth));
     // Element selection loads this cleared depth target even when there is no silhouette to draw.
     auto *encoder = encode::BeginScenePass(
         chain, pass, "SilhouetteDepth", {{MTL::StageFragment, MTL::StageFragment}},
         extent, slots, buffers, ubo_offset
     );
     if (!draw) return;
-    silhouette.Visibility.Bind(encoder);
+    pipelines.Silhouette.Bind(encoder);
     encoder->setFragmentTexture(*pipelines.Main.Resources->VisibilityImage, 0u);
+    encoder->setFragmentTexture(*pipelines.Main.Resources->VisibilityDepth, 1u);
     encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
     encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
 }
@@ -1900,8 +1768,8 @@ void DrawMeshlets(
     uint32_t instance_filter
 ) {
     DrawMeshletList(
-        encoder, buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes, buffers.MeshletDispatchArgs,
-        route, required_instance_flags, 0u, false, false, InvalidSlot,
+        encoder, buffers,
+        route, required_instance_flags, false, false, InvalidSlot,
         mesh_threads, edit_edge_corner, instance_filter
     );
 }
@@ -1909,18 +1777,18 @@ void DrawMeshlets(
 void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, SceneUpdate update, RenderPhase phase) {
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
-    RecordPhase(r, viewport, chain, update, phase, 0, r.get<const PlaybackFrame>(viewport).Value);
+    RecordPhase(r, viewport, chain, update, phase, 0);
     profile::EndRecording();
 }
 
-void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, std::span<const float> step_frames) {
+void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, std::span<const uint32_t> sample_weights) {
     const auto &buffers = r.ctx().get<const GpuBuffers>();
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
-    for (uint32_t i = 0; i < step_frames.size(); ++i) {
-        RecordPhase(r, viewport, chain, i == 0 ? SceneUpdate::Rebuild : SceneUpdate::Reuse, i == 0 ? RenderPhase::BlurAccumulateFirst : RenderPhase::BlurAccumulate, buffers.SceneViewUboOffset(i + 1), step_frames[i]);
+    for (uint32_t i = 0; i < sample_weights.size(); ++i) {
+        RecordPhase(r, viewport, chain, i == 0 ? SceneUpdate::Rebuild : SceneUpdate::Reuse, i == 0 ? RenderPhase::BlurAccumulateFirst : RenderPhase::BlurAccumulate, buffers.SceneViewUboOffset(i + 1), sample_weights[i]);
     }
-    RecordPhase(r, viewport, chain, SceneUpdate::Reuse, RenderPhase::BlurResolve, 0, r.get<const PlaybackFrame>(viewport).Value);
+    RecordPhase(r, viewport, chain, SceneUpdate::Reuse, RenderPhase::BlurResolve, 0);
     profile::EndRecording();
 }
 

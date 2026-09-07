@@ -39,6 +39,7 @@
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/Pipelines.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
@@ -350,9 +351,11 @@ struct RestoreTimings {
 // Restore a project from its base snapshot and a bounded suffix of its action log.
 RestoreTimings RestoreProject(
     entt::registry &r, entt::entity viewport, const fs::path &working_dir,
-    uint64_t action_end = std::numeric_limits<uint64_t>::max(), const workspace::State *workspace_override = nullptr
+    uint64_t action_end = std::numeric_limits<uint64_t>::max(), const workspace::State *workspace_override = nullptr,
+    const fs::path &log_override = {}
 ) {
-    const auto state_path = working_dir / ProjectStateName, log_path = working_dir / SessionLogName;
+    const auto state_path = working_dir / ProjectStateName;
+    const auto log_path = log_override.empty() ? working_dir / SessionLogName : log_override;
     RestoreTimings timings;
     auto begin = SteadyClock::now();
     WaitForRender(r);
@@ -372,9 +375,6 @@ RestoreTimings RestoreProject(
     const auto stored_workspace = workspace_override ? std::optional<workspace::State>{*workspace_override} : workspace::Load(working_dir / workspace::FileName);
     workspace::Apply(r, viewport, r.ctx().get<WindowsState>(), stored_workspace.value_or(fallback_workspace));
     timings.DeriveMs += ElapsedMs(begin);
-    begin = SteadyClock::now();
-    PresentViewport(r, viewport);
-    timings.RenderMs = ElapsedMs(begin);
     return timings;
 }
 
@@ -386,6 +386,7 @@ void OpenProjectDir(entt::registry &r, entt::entity viewport, const fs::path &wo
     CurrentProjectPath.clear();
     Paths::SetProject(working_dir);
     RestoreProject(r, viewport, working_dir);
+    PresentViewport(r, viewport);
     ++RestoreGeneration;
     action::StartLog(working_dir / SessionLogName, /*append=*/true);
 }
@@ -468,10 +469,12 @@ void RenderDebugWindow(entt::registry &r, const mtl::Context &ctx, CA::MetalLaye
                 Text("Argument buffer tier: %ld", long(ctx.Device->argumentBuffersSupport()) + 1);
                 Text("BC texture compression: %s", ctx.Device->supportsBCTextureCompression() ? "yes" : "no");
                 Text("Max buffer length: %llu MB", (unsigned long long)(ctx.Device->maxBufferLength() / (1024 * 1024)));
-                SeparatorText("Window surface");
-                const auto drawable_size = layer->drawableSize();
-                Text("Drawable: %.0fx%.0f", drawable_size.width, drawable_size.height);
-                Text("Display sync: %s", layer->displaySyncEnabled() ? "on" : "off");
+                if (layer) {
+                    SeparatorText("Window surface");
+                    const auto drawable_size = layer->drawableSize();
+                    Text("Drawable: %.0fx%.0f", drawable_size.width, drawable_size.height);
+                    Text("Display sync: %s", layer->displaySyncEnabled() ? "on" : "off");
+                }
                 EndTabItem();
             }
             if (BeginTabItem("Engine")) {
@@ -534,7 +537,7 @@ EditorWindowsFrame BeginEditorWindows(
         End();
         PopStyleVar();
     }
-    r.ctx().get<FrameState>().Scrubbing = scrubbing;
+    if (interactive) r.ctx().get<FrameState>().Scrubbing = scrubbing;
 
     EditorWindowsFrame frame;
     if (windows.Viewport.Visible) {
@@ -568,14 +571,14 @@ void EndEditorViewport(const EditorWindowsFrame &frame) {
 
 struct ValidationImage {
     mtl::Texture Target;
-    NS::SharedPtr<MTL::SharedEvent> Ready;
+    NS::SharedPtr<MTL::Event> Ready;
     uint64_t Generation{};
 };
 
-fs::path WriteValidationImage(const mtl::Context &ctx, std::string_view name, const ValidationImage &image) {
-    auto rgba = ReadbackImageRgba8(ctx, image.Target, 0, 0, image.Target.Extent);
+fs::path WriteValidationImage(const mtl::Context &ctx, std::string_view name, const mtl::Texture &image) {
+    auto rgba = ReadbackImageRgba8(ctx, image, 0, 0, image.Extent);
     for (size_t i = 0; i < rgba.size(); i += 4) std::swap(rgba[i], rgba[i + 2]);
-    const auto encoded = EncodeImagePngRgba8(rgba, image.Target.Extent.Width, image.Target.Extent.Height, name);
+    const auto encoded = EncodeImagePngRgba8(rgba, image.Extent.Width, image.Extent.Height, name);
     if (!encoded) return {};
     const auto path = fs::temp_directory_path() / std::format("MeshEditor-validation-{}.png", name);
     std::ofstream out{path, std::ios::binary};
@@ -588,7 +591,7 @@ void RenderAppImage(const mtl::Context &ctx, ImDrawData *draw_data, ValidationIm
         uint32_t(std::ceil(draw_data->DisplaySize.x * draw_data->FramebufferScale.x)),
         uint32_t(std::ceil(draw_data->DisplaySize.y * draw_data->FramebufferScale.y)),
     };
-    if (!image.Ready) image.Ready = NS::TransferPtr(ctx.Device->newSharedEvent());
+    if (!image.Ready) image.Ready = NS::TransferPtr(ctx.Device->newEvent());
     if (!image.Target || image.Target.Extent != extent) {
         image.Target = mtl::CreateUntrackedTexture2D(
             ctx, mtl::Format::Color, extent,
@@ -619,8 +622,8 @@ struct ValidationUi {
     ImPlotContext *LiveImPlot{ImPlot::GetCurrentContext()}, *Plot{};
 
     ValidationUi(const mtl::Context &ctx) {
-        auto *fonts = GetIO().Fonts;
-        const auto font_scale = GetIO().FontGlobalScale;
+        auto *fonts = LiveImGui ? GetIO().Fonts : nullptr;
+        const auto font_scale = LiveImGui ? GetIO().FontGlobalScale : 1.f;
         Gui = ImGui::CreateContext(fonts);
         ImGui::SetCurrentContext(Gui);
         Plot = ImPlot::CreateContext();
@@ -678,11 +681,12 @@ struct ValidationSession {
 
     ValidationSession(entt::registry &r)
         : Compare(r.ctx().get<mtl::LibraryCache>(), {"ValidationCompare.metal", "CompareValidationImages"}),
-          Differences(mtl::NewBuffer(r.ctx().get<const mtl::Context>(), 2 * sizeof(uint32_t))) {}
+          Differences(mtl::NewBuffer(r.ctx().get<const mtl::Context>(), 4 * sizeof(uint32_t))) {}
 };
 
 struct ValidationInputs {
     fs::path WorkingDir;
+    fs::path LogPath;
     uint64_t ActionEnd{};
     workspace::State Workspace;
     CA::MetalLayer *Layer{};
@@ -690,10 +694,13 @@ struct ValidationInputs {
     ImGuiID HoveredIdPreviousFrame{};
     float HoveredIdTimer{}, HoveredIdNotActiveTimer{};
     std::string FocusedWindow;
+    bool Capturing{}, Scrubbing{};
+    float PlaybackFrame{};
+    TimelinePlayback Playback{};
 };
 
-void RenderValidationApp(
-    entt::registry &r, entt::entity viewport, const ValidationInputs &inputs, ValidationImage &image
+ImDrawData *RenderValidationApp(
+    entt::registry &r, entt::entity viewport, const ValidationInputs &inputs
 ) {
     auto &ctx = r.ctx().get<const mtl::Context>();
     auto &io = GetIO();
@@ -736,7 +743,7 @@ void RenderValidationApp(
     render_frame(); // Settle docked child sizes and scrollbars.
     io.MousePos = inputs.MousePos;
     render_frame(/*restore_hover=*/true); // Apply live hover history after the restored hit regions settle.
-    RenderAppImage(ctx, GetDrawData(), image);
+    return GetDrawData();
 }
 
 struct ValidationResult {
@@ -755,8 +762,11 @@ ValidationResult RestoreForValidation(
     auto begin = SteadyClock::now();
     engine.Ui.emplace(ctx);
     restored.ctx().get<WindowsState>() = {};
-    restored.ctx().get<FrameState>() = {};
-    restored.ctx().get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale);
+    auto &frame = restored.ctx().get<FrameState>();
+    frame = {};
+    frame.DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale);
+    frame.Capturing = inputs.Capturing;
+    frame.Scrubbing = inputs.Scrubbing;
     if (snapshot_state) ClearScene(restored, viewport);
     const auto reset_ms = ElapsedMs(begin);
 
@@ -768,14 +778,15 @@ ValidationResult RestoreForValidation(
         ProcessComponentEvents(restored, viewport);
         workspace::Apply(restored, viewport, restored.ctx().get<WindowsState>(), inputs.Workspace);
         timings.DeriveMs = ElapsedMs(begin);
-        begin = SteadyClock::now();
-        PresentViewport(restored, viewport);
     } else {
-        timings = RestoreProject(restored, viewport, inputs.WorkingDir, inputs.ActionEnd, &inputs.Workspace);
-        begin = SteadyClock::now();
+        timings = RestoreProject(restored, viewport, inputs.WorkingDir, inputs.ActionEnd, &inputs.Workspace, inputs.LogPath);
     }
+    begin = SteadyClock::now();
+    if (inputs.Playback.Playing) restored.replace<TimelinePlayback>(viewport, inputs.Playback);
+    restored.get<PlaybackFrame>(viewport).Value = inputs.PlaybackFrame;
+    PresentViewport(restored, viewport);
     timings.ResetMs += reset_ms;
-    RenderValidationApp(restored, viewport, inputs, engine.App);
+    RenderAppImage(ctx, RenderValidationApp(restored, viewport, inputs), engine.App);
     timings.RenderMs += ElapsedMs(begin);
     begin = SteadyClock::now();
     result.State = snapshot::SaveState(restored);
@@ -800,13 +811,20 @@ void RequireEqual(std::string_view what, std::span<const std::byte> expected, st
     }
 }
 
-void CompareValidationImages(const mtl::Context &ctx, ValidationSession &session) {
-    const std::array<const ValidationImage *, 2> restored{&session.Replay.App, &session.Snapshot.App};
-    const std::array names{"replay app", "snapshot app"};
-    const auto extent = session.Live.Target.Extent;
+void CompareValidationImages(entt::registry &r, ValidationSession &session) {
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &live_viewport = r.ctx().get<const Pipelines>().Main.Resources->FinalColorImage;
+    const std::array<const mtl::Texture *, 4> expected{&session.Live.Target, &session.Live.Target, &live_viewport, &live_viewport};
+    const std::array<const mtl::Texture *, 4> restored{
+        &session.Replay.App.Target,
+        &session.Snapshot.App.Target,
+        &session.Replay.Registry.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
+        &session.Snapshot.Registry.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
+    };
+    const std::array names{"replay app", "snapshot app", "replay viewport", "snapshot viewport"};
     for (uint32_t i = 0; i < restored.size(); ++i) {
-        if (restored[i]->Target.Extent != extent) {
-            const auto actual = restored[i]->Target.Extent;
+        if (restored[i]->Extent != expected[i]->Extent) {
+            const auto actual = restored[i]->Extent, extent = expected[i]->Extent;
             std::println(stderr, "[validation] {} extent DIVERGED ({}x{} / {}x{})", names[i], extent.Width, extent.Height, actual.Width, actual.Height);
             std::abort();
         }
@@ -814,17 +832,17 @@ void CompareValidationImages(const mtl::Context &ctx, ValidationSession &session
     auto *differences = static_cast<uint32_t *>(session.Differences->contents());
     std::fill_n(differences, restored.size(), UINT32_MAX);
     auto *command_buffer = ctx.Queue->commandBuffer();
-    // Each image has its own event because the three queues can finish in any order.
-    command_buffer->encodeWait(session.Live.Ready.get(), session.Live.Generation);
-    for (const auto *image : restored) command_buffer->encodeWait(image->Ready.get(), image->Generation);
+    // Each app event follows that engine's viewport render; queues may finish in any order.
+    for (const auto *image : {&session.Live, &session.Replay.App, &session.Snapshot.App}) command_buffer->encodeWait(image->Ready.get(), image->Generation);
     {
         mtl::PassChain chain{command_buffer};
         auto *encoder = chain.BeginCompute("ValidationCompare");
         encoder->setComputePipelineState(session.Compare.State());
-        encoder->setTexture(*session.Live.Target, 0);
         for (uint32_t i = 0; i < restored.size(); ++i) {
-            encoder->setTexture(*restored[i]->Target, 1);
+            encoder->setTexture(**expected[i], 0);
+            encoder->setTexture(**restored[i], 1);
             encoder->setBuffer(session.Differences.get(), i * sizeof(uint32_t), 0);
+            const auto extent = expected[i]->Extent;
             encoder->dispatchThreads(MTL::Size(extent.Width, extent.Height, 1), MTL::Size(16, 16, 1));
         }
     }
@@ -834,8 +852,9 @@ void CompareValidationImages(const mtl::Context &ctx, ValidationSession &session
     for (uint32_t i = 0; i < restored.size(); ++i) {
         if (differences[i] == UINT32_MAX) continue;
         const auto byte = differences[i], pixel = byte / 4;
+        const auto extent = expected[i]->Extent;
         std::println(stderr, "[validation] {} DIVERGED at pixel ({}, {}), channel {} (byte {} of {})", names[i], pixel % extent.Width, pixel / extent.Width, byte % 4, byte, uint64_t(extent.Width) * extent.Height * 4);
-        const auto expected_path = WriteValidationImage(ctx, "live", session.Live);
+        const auto expected_path = WriteValidationImage(ctx, i < 2 ? "live" : "live viewport", *expected[i]);
         const auto actual_path = WriteValidationImage(ctx, names[i], *restored[i]);
         if (!expected_path.empty() && !actual_path.empty()) std::println(stderr, "[validation] wrote {} and {}", expected_path.string(), actual_path.string());
         std::abort();
@@ -845,22 +864,23 @@ void CompareValidationImages(const mtl::Context &ctx, ValidationSession &session
 // Require independent replay and snapshot restoration to reproduce canonical state and the live composited app image.
 void ValidateRoundTrip(
     entt::registry &r, entt::entity viewport, CA::MetalLayer *layer,
-    ImDrawData *draw_data, std::unique_ptr<ValidationSession> &session, MTL::CommandBuffer *presented_frame
+    ImDrawData *draw_data, std::unique_ptr<ValidationSession> &session, MTL::CommandBuffer *presented_frame = nullptr
 ) {
     const auto total_begin = SteadyClock::now();
     auto begin = total_begin;
     if (!session) session = std::make_unique<ValidationSession>(r);
     const auto init_ms = ElapsedMs(begin);
     begin = SteadyClock::now();
-    presented_frame->waitUntilCompleted();
+    if (presented_frame) presented_frame->waitUntilCompleted();
     RenderAppImage(r.ctx().get<const mtl::Context>(), draw_data, session->Live);
-    QuiesceScene(r, viewport);
+    WaitForRender(r);
     action::FlushLog();
 
     const auto live_state = snapshot::SaveState(r);
     const auto live_scene_state = snapshot::SnapshotSceneState(r);
     const ValidationInputs inputs{
         .WorkingDir = Paths::Project(),
+        .LogPath = action::CurrentLogPath(),
         .ActionEnd = r.get_or_emplace<ActionIndex>(viewport).Index,
         .Workspace = CaptureWorkspace(r, viewport),
         .Layer = layer,
@@ -871,6 +891,10 @@ void ValidateRoundTrip(
         .HoveredIdTimer = GImGui->HoveredIdTimer,
         .HoveredIdNotActiveTimer = GImGui->HoveredIdNotActiveTimer,
         .FocusedWindow = GImGui->NavWindow ? std::string{GImGui->NavWindow->Name} : std::string{},
+        .Capturing = r.ctx().get<FrameState>().Capturing,
+        .Scrubbing = r.ctx().get<FrameState>().Scrubbing,
+        .PlaybackFrame = r.get<const PlaybackFrame>(viewport).Value,
+        .Playback = r.get<const TimelinePlayback>(viewport),
     };
 
     const auto capture_ms = ElapsedMs(begin);
@@ -878,11 +902,11 @@ void ValidateRoundTrip(
     const auto restored = RestoreForValidation(session->Snapshot, inputs, &live_state);
     begin = SteadyClock::now();
 
-    RequireEqual("replay scene", live_scene_state, replay.SceneState, inputs.WorkingDir / SessionLogName);
+    RequireEqual("replay scene", live_scene_state, replay.SceneState, inputs.LogPath);
     RequireEqual("replay state", live_state, replay.State);
     RequireEqual("snapshot state", live_state, restored.State);
     RequireEqual("replay/snapshot workspace", replay.Workspace, restored.Workspace);
-    CompareValidationImages(r.ctx().get<const mtl::Context>(), *session);
+    CompareValidationImages(r, *session);
     const auto compare_ms = ElapsedMs(begin);
     begin = SteadyClock::now();
     session->Replay.Ui.reset();
@@ -993,7 +1017,7 @@ Capture:
   --render-queue DIR          Claim jobs from a render spool until it empties (headless)
   --fps N                     Capture frame rate (default 60)
   --timeline-end SECONDS      Stop the captured timeline at SECONDS
-  --motion-blur STEPS         Accumulate STEPS sub-frames per captured frame
+  --motion-blur fast|SAMPLES  Fast velocity blur (default), or 1-64 full shutter samples
   --play [SECONDS]            Play the timeline, optionally for SECONDS
 
 Benchmarking:
@@ -1023,7 +1047,7 @@ struct CaptureRequest {
     bool RecordAudio{false}; // Mux the master output into the recording. Off so the render corpus stays video only.
     fs::path RecordPath{}, ScreenshotPath{};
     fs::path RenderBasename{};
-    std::optional<uint8_t> MotionBlurSteps{};
+    std::optional<MotionBlur> Blur{};
     float TimelineEnd{0}; // Seconds. Positive: set the timeline's end frame, so a long play runs without looping.
     int BenchFrames{0};
     BenchmarkAction BenchAction{BenchmarkAction::Steady};
@@ -1324,8 +1348,8 @@ CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, cons
     r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
     // Enable motion blur for video recording and preserve the current setting for still or audio-only captures.
     r.ctx().get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
-    if (capture.MotionBlurSteps) {
-        Perform(r, viewport, action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, std::optional{MotionBlur{.Steps = *capture.MotionBlurSteps}}));
+    if (capture.Blur) {
+        Perform(r, viewport, action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, capture.Blur));
     }
     if (capture.Shading) {
         Perform(r, viewport, action::view::SetViewportShading{*capture.Shading});
@@ -1695,6 +1719,10 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     bool profile_cleared{false};
     bool submitted{false};
     bool done{false};
+#ifdef VALIDATE_ACTIONS
+    std::unique_ptr<ValidationSession> validation_session;
+    std::optional<std::pair<uint64_t, uint64_t>> validated_revision;
+#endif
     // Record readiness after the first submitted frame has complete meshlet data.
     std::chrono::steady_clock::time_point first_frame_at{};
     while (!done) {
@@ -1728,6 +1756,23 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             if (!submitted) first_frame_at = std::chrono::steady_clock::now();
             submitted = true;
         }
+#ifdef VALIDATE_ACTIONS
+        const auto revision = std::pair{r.get_or_emplace<ActionIndex>(viewport).Index, RestoreGeneration};
+        if (settled && revision != validated_revision && !HasPendingModalSolves(r)) {
+            const ValidationInputs inputs{
+                .WorkingDir = Paths::Project(),
+                .LogPath = action::CurrentLogPath(),
+                .Workspace = CaptureWorkspace(r, viewport),
+                .DisplaySize = {float(DefaultWindowSize.x), float(DefaultWindowSize.y)},
+                .FramebufferScale = std::bit_cast<ImVec2>(frame_state.DisplayFramebufferScale),
+                .MousePos = {-FLT_MAX, -FLT_MAX},
+                .FocusedWindow = {},
+            };
+            auto *draw_data = RenderValidationApp(r, viewport, inputs);
+            ValidateRoundTrip(r, viewport, nullptr, draw_data, validation_session);
+            validated_revision = revision;
+        }
+#endif
         if (bench_frames > 0) {
             // Render every ready benchmark tick and stop after the requested count.
             if (settled && --bench_frames == 0) {
@@ -1758,6 +1803,11 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
 
     entt::registry r;
     const auto &ctx = r.ctx().emplace<mtl::Context>();
+#ifdef VALIDATE_ACTIONS
+    ValidationUi ui{ctx};
+    InitFonts();
+    InitViewportMedia(r);
+#endif
     const auto viewport = InitEngine(r);
     profile::Init(ctx);
     InitAudioSystem(r);
@@ -1769,6 +1819,9 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
 
     WaitForRender(r);
     DeinitAudioSystem(r);
+#ifdef VALIDATE_ACTIONS
+    DeinitViewportMedia(r);
+#endif
     profile::Report();
     profile::Deinit();
     DeinitViewport(r, viewport);
@@ -1926,8 +1979,10 @@ int main(int argc, char **argv) {
             }
         } else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
         else if (a == "--timeline-end" && std::next(it) != args.end()) capture.TimelineEnd = std::atof(*++it);
-        else if (a == "--motion-blur" && std::next(it) != args.end()) capture.MotionBlurSteps = uint8_t(std::max(1, std::atoi(*++it)));
-        else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi(*++it);
+        else if (a == "--motion-blur" && std::next(it) != args.end()) {
+            const std::string_view method = *++it;
+            capture.Blur = method == "fast" ? MotionBlur{} : MotionBlur{.Steps = uint8_t(std::clamp(std::atoi(method.data()), 1, 64)), .Method = MotionBlurMethod::FullSampling};
+        } else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi(*++it);
         else if (a == "--bench-action" && std::next(it) != args.end()) {
             const std::string_view action{*++it};
             if (action == "steady") capture.BenchAction = CaptureRequest::BenchmarkAction::Steady;

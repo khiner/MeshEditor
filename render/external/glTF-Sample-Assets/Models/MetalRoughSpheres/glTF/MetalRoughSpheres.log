@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/MetalRoughSpheres/glTF/MetalRoughSpheres.webp
+[validation] total 2443.02 ms (init 1613.14; capture 4.47; compare 6.75; cleanup 0.03)
+[validation] replay reset 0.18; restore 29.05; derive 373.63; render 3.12; capture 3.31 ms
+[validation] snapshot reset 0.17; restore 5.34; derive 375.29; render 18.78; capture 9.75 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MetalRoughSpheres/glTF/MetalRoughSpheres.webp

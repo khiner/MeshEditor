@@ -267,8 +267,8 @@ def run(args: argparse.Namespace) -> None:
             raise SystemExit("Unknown benchmark cases: " + ", ".join(sorted(unknown)))
     if args.frames <= 0 or args.action_count <= 0:
         raise SystemExit("--frames and --action-count must be positive")
-    if args.motion_blur is not None and args.motion_blur <= 0:
-        raise SystemExit("--motion-blur must be positive")
+    if args.motion_blur is not None and args.motion_blur != "fast" and (not args.motion_blur.isdecimal() or not 1 <= int(args.motion_blur) <= 64):
+        raise SystemExit("--motion-blur must be fast or a sample count from 1 to 64")
     exe = args.exe.resolve()
     if not args.no_build:
         subprocess.run((str(ROOT / "script" / "Build"), "--release"), cwd=ROOT, check=True)
@@ -460,7 +460,7 @@ def parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--overlays", action="store_true")
     run_parser.add_argument("--edit", choices=("vertex", "edge", "face"))
     run_parser.add_argument("--select-all", action="store_true")
-    run_parser.add_argument("--motion-blur", type=int)
+    run_parser.add_argument("--motion-blur", metavar="fast|SAMPLES")
     run_parser.add_argument("--frames", type=int, default=400)
     run_parser.add_argument("--scene-root", type=Path, default=DEFAULT_SCENES)
     run_parser.add_argument("--exe", type=Path, default=DEFAULT_EXE)

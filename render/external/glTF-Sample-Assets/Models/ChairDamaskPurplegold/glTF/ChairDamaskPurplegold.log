@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/ChairDamaskPurplegold/glTF/ChairDamaskPurplegold.webp
+[validation] total 1250.81 ms (init 224.17; capture 0.33; compare 0.59; cleanup 0.02)
+[validation] replay reset 0.17; restore 2.98; derive 513.81; render 1.67; capture 0.13 ms
+[validation] snapshot reset 0.17; restore 0.40; derive 500.15; render 5.86; capture 0.38 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/ChairDamaskPurplegold/glTF/ChairDamaskPurplegold.webp

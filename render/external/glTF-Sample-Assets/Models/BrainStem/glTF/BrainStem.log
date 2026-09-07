@@ -1,2 +1,8 @@
-VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/BrainStem/glTF/BrainStem.mp4
+[validation] total 525.66 ms (init 324.22; capture 1.45; compare 1.61; cleanup 0.03)
+[validation] replay reset 0.30; restore 10.99; derive 55.37; render 44.68; capture 1.02 ms
+[validation] snapshot reset 0.20; restore 1.91; derive 49.32; render 33.25; capture 1.33 ms
+VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/BrainStem/glTF/BrainStem.mp4
+[validation] total 202.66 ms (init 0.00; capture 0.76; compare 3.49; cleanup 0.03)
+[validation] replay reset 0.38; restore 11.24; derive 46.11; render 46.17; capture 0.68 ms
+[validation] snapshot reset 0.24; restore 1.03; derive 45.80; render 46.07; capture 0.64 ms
 VideoRecorder: wrote 838 frames

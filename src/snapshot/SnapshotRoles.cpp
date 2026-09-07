@@ -47,6 +47,7 @@
 #include "selection/SelectionComponents.h"
 #include "snapshot/SnapshotRoles.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/VideoRecording.h"
 #include "viewport/ViewCamera.h"
 #include "viewport/ViewCameraSerialize.h"
 #include "viewport/ViewportDisplay.h"
@@ -143,12 +144,12 @@ using Derived = type_list<
     MaterialDirty, LightIndex, EnabledInteractionModes, LastEvaluatedFrame,
     PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, BoneInstanceStateDirty, ArmaturePoseState,
     MorphWeightGpuRange, AdditiveBoxSelectBaseline, ExciteSelectionBaseline, EditSelectionDirty, PendingEditElementClick,
-    PendingBoxSelect, PendingBoxSelectFinalize, BoxSelectGpuPending, PendingPick, PendingTextureUploads, BoxSelectState, PlaybackFrame,
+    PendingBoxSelect, PendingPick, PendingTextureUploads, BoxSelectState, PlaybackFrame,
     PhysicsCacheInvalid, RotationUiVariant, RotationUiDriving, GizmoInteraction, PendingTransform, StartScreenTransform,
 #ifdef SURFACE_AUDIO
     SurfaceRelief, SurfaceFinishKey,
 #endif
-    SoundVertices, SamplePlayback, ContactDynamics, ReportContacts, MeshBvh>;
+    VideoRecording, SoundVertices, SamplePlayback, ContactDynamics, ReportContacts, MeshBvh>;
 
 // Field-wise serialization excludes indeterminate variant, optional, and padding bytes from snapshots.
 using ForceSerialize = type_list<

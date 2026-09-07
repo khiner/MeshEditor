@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/AnimationPointerUVs/glTF/AnimationPointerUVs.webp
+[validation] total 12765.78 ms (init 3911.44; capture 0.95; compare 4.97; cleanup 0.03)
+[validation] replay reset 0.18; restore 9.50; derive 4090.10; render 9.19; capture 0.78 ms
+[validation] snapshot reset 0.17; restore 1.46; derive 4720.58; render 15.69; capture 0.72 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/AnimationPointerUVs/glTF/AnimationPointerUVs.webp

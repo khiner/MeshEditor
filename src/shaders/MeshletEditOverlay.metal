@@ -50,10 +50,11 @@ inline void EmitMeshletEditEdge(
 
     const uint vertex_base = compact.x * 4u;
     const bool edit_edge = scene.View.EditElement == Element_Edge;
+    const auto color = [&](uint vertex_id) {
+        return EditEdgeColor(scene, EditEdgeEndpointState(scene, work.Draw, geometry.Edge, vertex_id), edit_edge);
+    };
     EditEdgeOverlay edge{
-        geometry.Clip0, geometry.Clip1,
-        EditEdgeColor(scene, EditEdgeEndpointState(scene, work.Draw, geometry.Edge, geometry.Vertex0), edit_edge),
-        EditEdgeColor(scene, EditEdgeEndpointState(scene, work.Draw, geometry.Edge, geometry.Vertex1), edit_edge),
+        geometry.Clip0, geometry.Clip1, color(geometry.Vertex0), color(geometry.Vertex1),
         pc.EdgeSharpnessSlot != INVALID_SLOT &&
             uint(scene.Bytes(pc.EdgeSharpnessSlot)[work.Instance.EditEdgeSharpnessOffset + geometry.Edge]) != 0u,
     };

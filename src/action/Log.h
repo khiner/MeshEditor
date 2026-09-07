@@ -91,6 +91,7 @@ std::filesystem::path ReserveRestoreSession();
 
 // Opens the action log and starts its writer thread.
 void StartLog(std::filesystem::path, bool append = false);
+const std::filesystem::path &CurrentLogPath();
 void FlushLog();
 // Flushes and joins the writer, returning an empty path when no records were written.
 std::filesystem::path StopLog();

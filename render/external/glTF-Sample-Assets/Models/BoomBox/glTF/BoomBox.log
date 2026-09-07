@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/BoomBox/glTF/BoomBox.webp
+[validation] total 1120.29 ms (init 220.75; capture 0.21; compare 1.82; cleanup 0.03)
+[validation] replay reset 0.15; restore 4.13; derive 430.71; render 3.80; capture 0.27 ms
+[validation] snapshot reset 0.39; restore 5.02; derive 440.27; render 12.61; capture 0.13 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/BoomBox/glTF/BoomBox.webp

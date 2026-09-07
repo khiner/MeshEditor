@@ -107,6 +107,7 @@ Window::Window() : Data{std::make_unique<Impl>()} {
                                                       styleMask:style
                                                         backing:NSBackingStoreBuffered
                                                           defer:NO];
+    Data->NativeWindow.releasedWhenClosed = NO; // ARC owns the window through Impl.
     Data->NativeWindow.title = @"MeshEditor";
     Data->NativeWindow.acceptsMouseMovedEvents = YES;
 

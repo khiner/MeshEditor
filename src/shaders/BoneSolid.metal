@@ -57,7 +57,6 @@ using BoneSolidMeshOutput = metal::mesh<BoneSolidVaryings, void, 24u, 8u, metal:
     output.set_index(thread_index, thread_index);
 }
 
-
 fragment OverlayTargetsDepth BoneSolidFragment(
     BoneSolidVaryings in [[stage_in]],
     bool front_facing [[front_facing]],
@@ -70,9 +69,7 @@ fragment OverlayTargetsDepth BoneSolidFragment(
 
     OverlayTargetsDepth out;
     out.Color = in.Color;
-    out.LineData = float4(0);
-    // X-ray depth passes the cleared 1.0 depth test without occluding wires.
-    out.Depth = view.BoneXRay != 0u ? 0.999999f : in.Position.z;
+    out.Depth = in.Position.z;
     return out;
 }
 

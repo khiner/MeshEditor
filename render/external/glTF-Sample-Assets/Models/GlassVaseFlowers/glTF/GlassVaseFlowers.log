@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/GlassVaseFlowers/glTF/GlassVaseFlowers.webp
+[validation] total 3387.76 ms (init 219.92; capture 0.32; compare 6.78; cleanup 0.02)
+[validation] replay reset 0.23; restore 5.62; derive 1509.85; render 5.63; capture 0.15 ms
+[validation] snapshot reset 0.30; restore 0.60; derive 1626.99; render 11.22; capture 0.13 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/GlassVaseFlowers/glTF/GlassVaseFlowers.webp

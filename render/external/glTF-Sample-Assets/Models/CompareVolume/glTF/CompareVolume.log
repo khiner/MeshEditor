@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/CompareVolume/glTF/CompareVolume.webp
+[validation] total 2952.35 ms (init 221.91; capture 0.25; compare 6.52; cleanup 0.03)
+[validation] replay reset 0.17; restore 3.81; derive 1350.58; render 6.36; capture 0.12 ms
+[validation] snapshot reset 0.17; restore 0.58; derive 1334.41; render 27.31; capture 0.12 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CompareVolume/glTF/CompareVolume.webp

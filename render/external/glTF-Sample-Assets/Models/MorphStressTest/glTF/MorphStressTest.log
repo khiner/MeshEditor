@@ -1,2 +1,14 @@
-VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/MorphStressTest/glTF/MorphStressTest.mp4
+[validation] total 297.65 ms (init 226.98; capture 0.39; compare 1.25; cleanup 0.02)
+[validation] replay reset 0.18; restore 1.98; derive 28.60; render 5.35; capture 0.17 ms
+[validation] snapshot reset 0.19; restore 0.26; derive 23.28; render 8.88; capture 0.14 ms
+VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MorphStressTest/glTF/MorphStressTest.mp4
+[validation] total 115.92 ms (init 0.00; capture 0.30; compare 2.42; cleanup 0.04)
+[validation] replay reset 0.22; restore 1.55; derive 9.06; render 45.62; capture 0.10 ms
+[validation] snapshot reset 0.23; restore 0.08; derive 10.01; render 46.19; capture 0.11 ms
+[validation] total 36.77 ms (init 0.00; capture 0.38; compare 1.60; cleanup 0.03)
+[validation] replay reset 0.32; restore 5.15; derive 10.64; render 3.00; capture 0.12 ms
+[validation] snapshot reset 0.21; restore 0.12; derive 12.09; render 2.99; capture 0.12 ms
+[validation] total 30.06 ms (init 0.00; capture 0.34; compare 0.61; cleanup 0.02)
+[validation] replay reset 0.42; restore 4.03; derive 10.76; render 1.25; capture 0.11 ms
+[validation] snapshot reset 0.20; restore 0.08; derive 10.39; render 1.74; capture 0.10 ms
 VideoRecorder: wrote 675 frames

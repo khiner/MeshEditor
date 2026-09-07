@@ -4,7 +4,6 @@
 #include "Bindless.metal"
 #include "Varyings.metal"
 #include "MotionBlurShared.metal"
-#include "Velocity.metal"
 #include "MotionBlurGatherPushConstants.metal"
 
 constant int GatherSampleCount = 8;
@@ -22,14 +21,13 @@ struct GatherContext {
 
     // View-space depth, negative in front of the camera, so a smaller value is farther away.
     float LinearDepth(float ndc_depth) const {
-        const float n = S.View.CameraNear;
-        const float f = S.View.CameraFar;
-        return -(2.0f * n * f) / (f + n - (ndc_depth * 2.0f - 1.0f) * (f - n));
+        const float4 u = Pc.DepthUnproject;
+        return (ndc_depth * u.x + u.y) / max(ndc_depth * u.z + u.w, 1e-8f);
     }
 
     float4 SampleVelocity(float2 uv) const {
         const float4 velocity = UnpackVelocity(S.SampleTex(Pc.VelocitySamplerSlot, uv));
-        return velocity * float2(S.TexSize(Pc.VelocitySamplerSlot, 0)).xyxy * float2(Pc.MotionScale).xxyy;
+        return velocity * float2(S.TexSize(Pc.VelocitySamplerSlot, 0)).xyxy * float2(1.0f, -1.0f).xxyy;
     }
 
     // Add one pixel to produce a continuous ramp at each streak endpoint.
@@ -38,7 +36,7 @@ struct GatherContext {
     }
 
     float2 DepthCompare(float center_depth, float sample_depth) const {
-        const float2 depth_scale = float2(-Pc.DepthScale, Pc.DepthScale);
+        const float2 depth_scale = float2(-100.0f, 100.0f);
         return clamp(0.5f + depth_scale * (sample_depth - center_depth), 0.0f, 1.0f);
     }
 
@@ -101,7 +99,9 @@ fragment float4 MotionBlurGatherFragment(
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant MotionBlurGatherPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant MotionBlurGatherPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
+    device const uint *indirections [[buffer(5)]],
+    texture2d<float, access::read> tiles [[texture(0)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
     const GatherContext ctx{scene, pc};
@@ -120,17 +120,20 @@ fragment float4 MotionBlurGatherFragment(
 
     // Jitter tile lookup by at most one quarter tile to suppress tile-edge banding.
     rand.x = rand.x * 2.0f - 1.0f;
-    const int2 tile_extent = int2(bindless.Image[pc.TileImageSlot].get_width(), bindless.Image[pc.TileImageSlot].get_height());
+    const int2 tile_extent = int2(tiles.get_width(), tiles.get_height());
     int2 tile = (texel + int2(int(rand.x * float(MotionBlurTileSize) * 0.25f))) / MotionBlurTileSize;
     tile = clamp(tile, int2(0), tile_extent - 1);
 
-    device const uint *indirections = BindlessBuffer(uint, bindless.Buffer, pc.TileIndirectionSlot);
     const int2 tile_prev = MotionTileUnpack(indirections[MotionTileIndex(MotionPrev, uint2(tile), uint2(tile_extent))]);
     const int2 tile_next = MotionTileUnpack(indirections[MotionTileIndex(MotionNext, uint2(tile), uint2(tile_extent))]);
     const float4 max_motion = float4(
-        bindless.Image[pc.TileImageSlot].read(uint2(tile_prev)).xy,
-        bindless.Image[pc.TileImageSlot].read(uint2(tile_next)).zw
+        tiles.read(uint2(tile_prev)).xy,
+        tiles.read(uint2(tile_next)).zw
     );
+
+    // With no contributing motion, preserve the source exactly and skip reconstruction.
+    if (max(length(center_motion.xy), length(max_motion.xy)) < 0.5f &&
+        max(length(center_motion.zw), length(max_motion.zw)) < 0.5f) return center_color;
 
     Accumulator accum;
     accum.Fg = float4(0.0f);

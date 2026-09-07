@@ -5,15 +5,12 @@
 #include "Bindless.metal"
 #include "BoneUtils.metal"
 #include "MeshletResolve.metal"
-#include "Varyings.metal"
+#include "LineQuad.metal"
 
-inline LineVaryings BoneSphereWireMeshVertexAt(const thread Scene &scene, DrawData draw, uint vertex_id) {
+inline float4 BoneSphereWirePosition(const thread Scene &scene, DrawData draw, uint vertex_id) {
     const uint idx = scene.Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + vertex_id];
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
-
-    LineVaryings out;
-    out.Color = float4(bone_joint_wire_color(scene, load_bone_instance_state(scene, draw)), 1.0f);
 
     const BoneBillboard bb = bone_sphere_billboard(scene, world, float3(vert.Position));
     const float4x4 view_proj = scene.ViewProj();
@@ -25,14 +22,10 @@ inline LineVaryings BoneSphereWireMeshVertexAt(const thread Scene &scene, DrawDa
     const float2 ofs_dir = normalize(clip_pos.xy / clip_pos.w - center_clip.xy / center_clip.w);
     clip_pos.xy += ofs_dir * (1.0f / viewport_size) * clip_pos.w;
 
-    out.Position = clip_pos;
-    const float2 screen_pos = clip_to_frag_co(clip_pos, viewport_size);
-    out.EdgeStart = screen_pos;
-    out.EdgePos = screen_pos;
-    return out;
+    return clip_pos;
 }
 
-using BoneSphereWireMeshOutput = metal::mesh<LineVaryings, void, 64u, 32u, metal::topology::line>;
+using BoneSphereWireMeshOutput = metal::mesh<EdgeQuadVaryings, void, 128u, 64u, metal::topology::triangle>;
 
 [[mesh]] void BoneSphereWireMesh(
     BoneSphereWireMeshOutput output,
@@ -50,14 +43,15 @@ using BoneSphereWireMeshOutput = metal::mesh<LineVaryings, void, 64u, 32u, metal
         if (thread_index == 0u) output.set_primitive_count(0u);
         return;
     }
-    output.set_primitive_count(32u);
-    if (thread_index >= 64u) return;
+    output.set_primitive_count(64u);
+    if (thread_index >= 32u) return;
 
     DrawData draw = work.Draw;
     draw.IndexSlotOffset = work.Primitive.AuxIndices;
-    output.set_vertex(thread_index, BoneSphereWireMeshVertexAt(scene, draw, thread_index));
-    output.set_index(thread_index, thread_index);
+    const auto a = BoneSphereWirePosition(scene, draw, thread_index * 2u);
+    const auto b = BoneSphereWirePosition(scene, draw, thread_index * 2u + 1u);
+    const float4 color = float4(bone_joint_wire_color(scene, load_bone_instance_state(scene, draw)), 1.0f);
+    EmitStroke(output, thread_index, scene, a, b, color);
 }
-
 
 #endif

@@ -103,6 +103,7 @@ struct RenderPipeline {
     MTL::RenderPipelineState *State() const { return PipelineState.get(); }
     float DepthBias() const { return Bias; }
 
+    uint32_t ImageblockSampleLength() const { return uint32_t(PipelineState->imageblockSampleLength()); }
     void Bind(MTL::RenderCommandEncoder *encoder) const {
         encoder->setRenderPipelineState(PipelineState.get());
         encoder->setDepthStencilState(DepthStencilState.get());

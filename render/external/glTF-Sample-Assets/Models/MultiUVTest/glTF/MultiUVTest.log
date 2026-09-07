@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/MultiUVTest/glTF/MultiUVTest.webp
+[validation] total 362.87 ms (init 314.34; capture 0.16; compare 1.97; cleanup 0.02)
+[validation] replay reset 0.24; restore 1.04; derive 22.40; render 1.26; capture 0.11 ms
+[validation] snapshot reset 0.22; restore 0.12; derive 16.44; render 4.49; capture 0.06 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MultiUVTest/glTF/MultiUVTest.webp

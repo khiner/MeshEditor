@@ -3,7 +3,6 @@
 
 #include "Bindless.metal"
 #include "MotionBlurShared.metal"
-#include "MotionBlurTilesDilatePushConstants.metal"
 
 // A tile's own bounding circle plus the line's, both of radius sqrt(1/2), sum to sqrt(2).
 constant float TileCoverRadius = 1.41421356237309504880f;
@@ -19,15 +18,14 @@ inline bool IsInsideMotionLine(int2 tile, float2 origin, float2 normal) {
 
 kernel void MotionBlurTilesDilateKernel(
     uint2 global_id [[thread_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant MotionBlurTilesDilatePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    texture2d<float, access::read> tiles [[texture(0)]],
+    device atomic_uint *indirections [[buffer(5)]]
 ) {
     const int2 src_tile = int2(global_id);
-    const int2 tile_extent = int2(bindless.Image[pc.TileImageSlot].get_width(), bindless.Image[pc.TileImageSlot].get_height());
+    const int2 tile_extent = int2(tiles.get_width(), tiles.get_height());
     if (any(src_tile >= tile_extent)) return;
 
-    device atomic_uint *indirections = BindlessBufferMutable(atomic_uint, bindless.Buffer, pc.TileIndirectionSlot);
-    const float4 max_motion = bindless.Image[pc.TileImageSlot].read(uint2(src_tile));
+    const float4 max_motion = tiles.read(uint2(src_tile));
     const uint payload_prev = MotionTilePack(max_motion.xy, uint2(src_tile));
     const uint payload_next = MotionTilePack(max_motion.zw, uint2(src_tile));
 

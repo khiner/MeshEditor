@@ -4,6 +4,7 @@
 #include "BackgroundConstant.metal"
 #include "Bindless.metal"
 #include "Varyings.metal"
+#include "SceneUBO.metal"
 
 constant float2 BackgroundPositions[4] = {float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1)};
 
@@ -23,11 +24,7 @@ fragment float4 BackgroundFragment(
     const Scene scene{bindless, view, theme, workspace};
     if (view.WorldOpacity <= 0.0f || view.Ibl.SpecularEnvSamplerSlot == 0xFFFFFFFFu) discard_fragment();
 
-    const float3x3 view_rotation = view.ViewRotation.Unpack();
-    const float4x4 view_proj = scene.ViewProj();
-    const float3x3 proj3 = float3x3(view_proj[0].xyz, view_proj[1].xyz, view_proj[2].xyz) * transpose(view_rotation);
-    const float3x3 inv_rot = transpose(view_rotation);
-    const float3 world_dir = normalize(inv_rot * float3(in.Ndc.x / proj3[0][0], in.Ndc.y / proj3[1][1], -1.0f));
+    const float3 world_dir = normalize(WorldBackgroundDirection(scene, in.Ndc));
     const float3 env_dir = view.EnvRotation.Unpack() * world_dir;
     const uint mip_count = max(view.Ibl.SpecularEnvMipCount, 1u);
     const float lod = clamp(view.BackgroundBlur, 0.0f, 1.0f) * float(mip_count - 1u);

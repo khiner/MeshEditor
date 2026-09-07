@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/TransmissionThinwallTestGrid/glTF/TransmissionThinwallTestGrid.webp
+[validation] total 3032.99 ms (init 221.68; capture 0.27; compare 7.28; cleanup 0.02)
+[validation] replay reset 0.18; restore 2.51; derive 1446.32; render 27.46; capture 0.20 ms
+[validation] snapshot reset 0.18; restore 0.47; derive 1313.50; render 12.68; capture 0.24 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/TransmissionThinwallTestGrid/glTF/TransmissionThinwallTestGrid.webp

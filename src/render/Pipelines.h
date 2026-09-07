@@ -39,35 +39,23 @@ struct SampledTexture {
 
 // Specializes PBR pipelines to the scene's active features and output attachments.
 struct PbrCompiler {
-    PbrCompiler(mtl::PassFormats scene, mtl::PassFormats scene_velocity);
-
-    enum class Variant {
-        Opaque,
-        Blend,
-        OpaqueVelocity,
-        BlendVelocity,
-        OpaquePrepass
-    };
-    static constexpr size_t VariantCount{5};
+    PbrCompiler(mtl::PassFormats scene);
 
     bool CompilePipelines(mtl::LibraryCache &, PbrFeatureMask, bool non_triangle_topology);
     bool CompileTopologyPipelines(mtl::LibraryCache &libraries, bool non_triangle_topology) {
         return CompilePipelines(libraries, Mask, non_triangle_topology);
     }
-    void BindMeshlets(MTL::RenderCommandEncoder *, Variant) const;
-    void BindVisibility(MTL::RenderCommandEncoder *, Variant) const;
+    void BindMeshlets(MTL::RenderCommandEncoder *) const;
+    void BindVisibility(MTL::RenderCommandEncoder *, bool prepass = false) const;
     bool HasFeature(PbrFeature f) const { return ::HasFeature(Mask, f); }
     void RecompileModules(mtl::LibraryCache &);
 
 private:
-    std::unique_ptr<mtl::MeshRenderPipeline> CreateMeshletPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant, bool) const;
-    std::unique_ptr<mtl::RenderPipeline> CreateVisibilityPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant, bool) const;
-
-    mtl::PassFormats SceneFormats, VelocityFormats;
+    mtl::PassFormats SceneFormats;
     PbrFeatureMask Mask{0};
     bool NonTriangleTopology{false};
-    std::array<std::unique_ptr<mtl::MeshRenderPipeline>, VariantCount> MeshletVariants;
-    std::array<std::unique_ptr<mtl::RenderPipeline>, VariantCount> VisibilityVariants;
+    std::unique_ptr<mtl::MeshRenderPipeline> Transparent;
+    std::unique_ptr<mtl::RenderPipeline> Visibility, Prepass;
 };
 
 struct MainPipeline {
@@ -83,9 +71,9 @@ struct MainPipeline {
             mtl::Extent2D Extent;
         };
 
-        // Visibility stores the primitive ID and raster depth together; DepthImage is writable scene/overlay depth.
+        // Visibility IDs and their raster depth stay immutable until visibility consumers finish.
         // Scene-linear color and display-referred overlays stay separate until compositing.
-        mtl::Texture DepthImage, VisibilityImage, SceneColorImage, OverlayColorImage, LineDataImage, FinalColorImage;
+        mtl::Texture VisibilityDepth, ScratchDepth, VisibilityImage, SilhouetteImage, SceneColorImage, OverlayColorImage, FinalColorImage;
         mtl::Texture DepthPyramidImage;
         std::vector<PyramidMip> DepthPyramidMips;
         NS::SharedPtr<MTL::SamplerState> NearestSampler;
@@ -102,84 +90,46 @@ struct MainPipeline {
         NS::SharedPtr<MTL::SamplerState> Sampler;
     };
 
-    // Lazily allocated motion vectors, tile reduction, gather, and accumulation targets.
+    // Lazily allocated blur output and, for fast reconstruction, motion tiles.
     struct MotionBlurResourcesT {
-        MotionBlurResourcesT(const mtl::Context &, mtl::Extent2D);
+        MotionBlurResourcesT(const mtl::Context &, mtl::Extent2D, bool fast);
 
-        mtl::Texture AccumImage, VelocityImage, TileImage, GatherImage;
+        mtl::Texture OutputImage, VelocityImage, TileImage;
+        NS::SharedPtr<MTL::Buffer> TileIndirection;
     };
 
     void SetExtent(const mtl::Context &, mtl::Extent2D, mtl::BindlessSet &);
     // Returns whether the allocation changed.
     bool EnsureTransmissionResources(const mtl::Context &, mtl::Extent2D, bool wanted);
-    bool EnsureMotionBlurResources(const mtl::Context &);
+    bool EnsureMotionBlurResources(const mtl::Context &, bool fast);
 
     // Null lazy targets fall back to scene color to keep bindings valid.
     SampledTexture Nearest(const mtl::Texture *) const;
     SampledTexture SceneColorSampler() const;
     SampledTexture OverlayColorSampler() const;
     SampledTexture TransmissionSampler() const;
-    SampledTexture MotionBlurAccumSampler() const;
-    SampledTexture VelocitySampler() const;
+    SampledTexture MotionBlurOutputSampler() const;
     SampledTexture SceneDepthSampler() const;
     SampledTexture DepthPyramidSampler() const;
-    MTL::Texture *MotionBlurTileImage() const;
-    SampledTexture MotionBlurGatherSampler() const;
 
     PipelineRenderer SceneRenderer, OverlayRenderer;
-    PipelineRenderer SceneVelocityRenderer;
     mtl::RenderPipeline PrepassBackground;
-    mtl::PassFormats CompositeFormats;
     mtl::RenderPipeline ViewportComposite;
-    mtl::PassFormats MotionBlurAccumFormats;
-    mtl::RenderPipeline MotionBlurAccumulate;
-    mtl::PassFormats MotionBlurGatherFormats;
-    mtl::RenderPipeline MotionBlurGather;
+    mtl::RenderPipeline MotionBlurAccumulate, MotionBlurGather;
+    mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
     mtl::RenderPipeline WorkspaceVisibility;
+    mtl::RenderPipeline TransparencyInit, TransparencyResolve;
     mtl::MeshRenderPipeline MeshletVisibilityOpaque, MeshletVisibilityCoverage;
     mtl::MeshRenderPipeline MeshletEditEdges, MeshletEditSmoothEdges;
     mtl::MeshRenderPipeline MeshletEditPoint;
     mtl::MeshRenderPipeline FaceNormalMesh, VertexNormalMesh, OverlayJobLines;
     mtl::MeshRenderPipeline BoneFillMesh, BoneWireMesh, BoneSphereFillMesh, BoneSphereWireMesh;
-    // Wireframe lines rasterize in compute, and this resolves their coverage into the overlay layer.
     mtl::RenderPipeline WireResolve;
     std::unique_ptr<ResourcesT> Resources;
     std::unique_ptr<TransmissionResourcesT> Transmission;
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
 
     PbrCompiler Compiler;
-};
-
-struct SilhouettePipeline {
-    SilhouettePipeline(mtl::LibraryCache &);
-
-    struct ResourcesT {
-        ResourcesT(const mtl::Context &, mtl::Extent2D);
-
-        mtl::Texture DepthImage, OffscreenImage;
-        NS::SharedPtr<MTL::SamplerState> ImageSampler;
-    };
-
-    void SetExtent(const mtl::Context &, mtl::Extent2D);
-
-    mtl::RenderPipeline Visibility;
-    std::unique_ptr<ResourcesT> Resources;
-};
-
-struct SilhouetteEdgePipeline {
-    SilhouetteEdgePipeline(mtl::LibraryCache &);
-
-    struct ResourcesT {
-        ResourcesT(const mtl::Context &, mtl::Extent2D);
-
-        mtl::Texture DepthImage, OffscreenImage;
-        NS::SharedPtr<MTL::SamplerState> ImageSampler;
-    };
-
-    void SetExtent(const mtl::Context &, mtl::Extent2D);
-
-    PipelineRenderer Renderer;
-    std::unique_ptr<ResourcesT> Resources;
 };
 
 struct SelectionFragmentPipeline {
@@ -204,23 +154,18 @@ namespace ThreadgroupMemory {
 inline constexpr uint32_t BoundsFoldVector{256 * sizeof(float) * 4};
 inline constexpr uint32_t MeshletBoundsFoldVector{64 * sizeof(float) * 4};
 inline constexpr uint32_t DepthPyramidTile{32 * 32 * sizeof(float)};
-// Flatten broadcasts a payload and two motion vectors.
-inline constexpr uint32_t MotionBlurPayload{16}; // Two uints, padded to Metal's 16-byte threadgroup length granule.
-inline constexpr uint32_t MotionBlurMaxMotion{2 * 2 * sizeof(float)};
 // One sum per simd group in a 256-thread scan, plus the threadgroup total, padded to Metal's 16-byte granule.
 inline constexpr uint32_t BlockScan{48};
 } // namespace ThreadgroupMemory
 
 struct Pipelines {
-    Pipelines(const mtl::Context &, mtl::LibraryCache &);
+    Pipelines(mtl::LibraryCache &);
 
-    const mtl::Context &Ctx;
     mtl::LibraryCache &Libraries;
     MainPipeline Main;
-    SilhouettePipeline Silhouette;
-    SilhouetteEdgePipeline SilhouetteEdge;
+    mtl::RenderPipeline Silhouette;
     SelectionFragmentPipeline SelectionFragment;
-    mtl::ComputePipeline VisibilityObjectSelection, PrepareEditSelection, FillEditSelectionList, ResetEditSelectionSummary, DeriveEditSelection, EditSharpness, CommitPosedGeometry, GeometryWorkArgs;
+    mtl::ComputePipeline VisibilityObjectSelection, PrepareEditSelection, FillEditSelectionList, ResetEditSelectionSummary, DeriveEditSelection, SumEditSelectionPosition, EditSharpness, CommitPosedGeometry, GeometryWorkArgs;
     // Materializes current-pose positions before bounds and normal derivation.
     mtl::ComputePipeline PosePrepass;
     mtl::ComputePipeline PosedMeshletBounds;
@@ -230,23 +175,19 @@ struct Pipelines {
     mtl::ComputePipeline BoundsReduce;
     mtl::ComputePipeline BoundsCombine;
     mtl::ComputePipeline BoundsTree;
-    // Walks each wire draw's edge list, accumulating per-class coverage into the screen buffer.
+    // Accumulates per-class wire coverage into the screen buffer.
     mtl::ComputePipeline WireRaster;
     // Descends every span tree in lockstep, one count/prefix/emit level at a time.
     mtl::ComputePipeline LodFrontierCount, LodFrontierPrefix, LodFrontierEmit;
     mtl::ComputePipeline MeshletCullBlockCount, MeshletCullPrefix, MeshletCullEmit;
-    mtl::ComputePipeline MeshletPhase2Cull, MeshletPhase2RangeCull, MeshletPhase2Prefix;
     mtl::ComputePipeline OverlayJobBlockCount, OverlayJobPrefix, OverlayJobEmit;
     mtl::ComputePipeline DepthPyramidReduce;
-    // Marks each tile intersected by the largest motion from every source tile.
-    mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
     IblPrefilterPipelines IblPrefilter;
     // Mesh creation runs these three.
     VertexAdjacencyPipelines VertexAdjacency;
     VertexWeldPipelines VertexWeld;
     MeshConnectivityPipelines MeshConnectivity;
 
-    void SetExtent(mtl::Extent2D, mtl::BindlessSet &);
     void CompileShaders();
 
     mtl::Extent2D BuiltColorExtent() const { return Main.Resources ? Main.Resources->SceneColorImage.Extent : mtl::Extent2D{}; }

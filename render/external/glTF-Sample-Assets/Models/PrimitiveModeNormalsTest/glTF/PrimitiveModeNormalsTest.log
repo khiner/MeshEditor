@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/PrimitiveModeNormalsTest/glTF/PrimitiveModeNormalsTest.webp
+[validation] total 2920.36 ms (init 1804.50; capture 14.42; compare 8.17; cleanup 0.02)
+[validation] replay reset 0.17; restore 18.12; derive 624.04; render 19.34; capture 12.39 ms
+[validation] snapshot reset 0.36; restore 19.79; derive 33.58; render 357.78; capture 7.66 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/PrimitiveModeNormalsTest/glTF/PrimitiveModeNormalsTest.webp

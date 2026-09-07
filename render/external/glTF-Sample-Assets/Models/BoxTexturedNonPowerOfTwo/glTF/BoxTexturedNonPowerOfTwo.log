@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/BoxTexturedNonPowerOfTwo/glTF/BoxTexturedNonPowerOfTwo.webp
+[validation] total 324.59 ms (init 283.86; capture 0.22; compare 1.06; cleanup 0.02)
+[validation] replay reset 0.17; restore 1.19; derive 17.67; render 1.19; capture 0.05 ms
+[validation] snapshot reset 0.15; restore 0.11; derive 13.73; render 5.12; capture 0.05 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/BoxTexturedNonPowerOfTwo/glTF/BoxTexturedNonPowerOfTwo.webp

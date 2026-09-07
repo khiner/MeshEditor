@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/WaterBottle/glTF/WaterBottle.webp
+[validation] total 3929.28 ms (init 3119.89; capture 0.37; compare 1.10; cleanup 0.02)
+[validation] replay reset 0.18; restore 5.54; derive 398.13; render 3.87; capture 0.19 ms
+[validation] snapshot reset 0.19; restore 0.29; derive 393.26; render 6.15; capture 0.12 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/WaterBottle/glTF/WaterBottle.webp

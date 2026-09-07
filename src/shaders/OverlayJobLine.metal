@@ -5,7 +5,7 @@
 #include "SceneUBO.metal"
 #include "TransformUtils.metal"
 #include "ObjectExtrasTransform.metal"
-#include "Varyings.metal"
+#include "LineQuad.metal"
 #include "AABB.metal"
 #include "BoxWire.metal"
 #include "ExtrasLineKind.metal"
@@ -23,7 +23,7 @@ constant float SpotConeDepth = 2.0f;
 constant uint ColliderCircleSegments = OverlayDispatch_ColliderCircleSegments;
 constant uint ColliderArcSegments = ColliderCircleSegments / 2u;
 constant uint ColliderCapLines = ColliderCircleSegments + 4u * ColliderArcSegments;
-using OverlayJobLineOutput = metal::mesh<ObjectLineVaryings, void, OverlayJobGroupLines * 2u, OverlayJobGroupLines, metal::topology::line>;
+using OverlayJobLineOutput = metal::mesh<EdgeQuadVaryings, void, OverlayJobGroupLines * 4u, OverlayJobGroupLines * 2u, metal::topology::triangle>;
 
 inline bool IsColliderKind(uint kind) { return kind >= ExtrasLineKind_ColliderBox; }
 
@@ -230,12 +230,12 @@ inline float4 OverlayJobClipVertex(
     const Scene scene{bindless, view, theme, workspace};
     const OverlayJob job = ResolveOverlayJob(bindless, pc, threadgroup_position.x);
     const uint line_count = job.ElementCount;
-    output.set_primitive_count(line_count);
-    if (thread_index >= line_count * 2u) return;
+    output.set_primitive_count(line_count * 2u);
+    if (thread_index >= line_count) return;
 
     uint vertex_class;
     const float4 clip = OverlayJobClipVertex(
-        scene, bindless, pc, job, job.FirstElement + thread_index / 2u, thread_index & 1u, vertex_class
+        scene, bindless, pc, job, job.FirstElement + thread_index, 0u, vertex_class
     );
 
     const uint instance_state = uint(scene.InstanceStates(pc.StateSlot)[job.InstanceIndex]);
@@ -251,10 +251,10 @@ inline float4 OverlayJobClipVertex(
     // Use a fixed theme color for the ground line and diamond.
     if (vertex_class == VCLASS_GROUNDPOINT) color = float4(scene.Theme.Colors.Light);
 
-    const LineVaryings line = MakeLineVertex(clip, color, float2(scene.View.ViewportSize));
-    ObjectLineVaryings out{line.Position, line.Color, line.EdgeStart, line.EdgePos, BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[job.InstanceIndex].ObjectId};
-    output.set_vertex(thread_index, out);
-    output.set_index(thread_index, thread_index);
+    uint end_class;
+    const float4 end = OverlayJobClipVertex(scene, bindless, pc, job, job.FirstElement + thread_index, 1u, end_class);
+    const uint object_id = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[job.InstanceIndex].ObjectId;
+    EmitStroke(output, thread_index, scene, clip, end, color, object_id);
 }
 
 #endif

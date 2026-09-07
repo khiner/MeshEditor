@@ -1,2 +1,8 @@
-VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/ChronographWatch/glTF/ChronographWatch.mp4
+[validation] total 4009.87 ms (init 233.95; capture 1.51; compare 3.55; cleanup 0.03)
+[validation] replay reset 0.17; restore 23.54; derive 1859.17; render 6.51; capture 0.93 ms
+[validation] snapshot reset 0.18; restore 10.79; derive 1853.11; render 15.23; capture 1.17 ms
+VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/ChronographWatch/glTF/ChronographWatch.mp4
+[validation] total 367.44 ms (init 0.00; capture 1.19; compare 1.31; cleanup 0.03)
+[validation] replay reset 0.25; restore 23.02; derive 168.48; render 3.05; capture 1.12 ms
+[validation] snapshot reset 0.29; restore 8.48; derive 156.89; render 2.30; capture 1.02 ms
 VideoRecorder: wrote 1440 frames

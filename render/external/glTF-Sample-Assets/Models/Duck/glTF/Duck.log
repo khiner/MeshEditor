@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/Duck/glTF/Duck.webp
+[validation] total 3652.50 ms (init 3062.27; capture 0.37; compare 0.79; cleanup 0.02)
+[validation] replay reset 0.17; restore 2.67; derive 282.59; render 2.88; capture 0.09 ms
+[validation] snapshot reset 0.18; restore 0.50; derive 291.17; render 8.71; capture 0.09 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/Duck/glTF/Duck.webp

@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/CarbonFibre/glTF/CarbonFibre.webp
+[validation] total 1192.59 ms (init 230.55; capture 0.48; compare 2.32; cleanup 0.02)
+[validation] replay reset 0.21; restore 3.92; derive 462.61; render 1.80; capture 0.08 ms
+[validation] snapshot reset 0.20; restore 0.23; derive 470.67; render 19.42; capture 0.08 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CarbonFibre/glTF/CarbonFibre.webp

@@ -1,3 +1,12 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/SheenChair/glTF/SheenChair.webp
-Saved screenshot: render/external/glTF-Sample-Assets/Models/SheenChair/glTF/SheenChair.Mango Velvet.webp
-Saved screenshot: render/external/glTF-Sample-Assets/Models/SheenChair/glTF/SheenChair.Peacock Velvet.webp
+[validation] total 4090.11 ms (init 3094.12; capture 0.74; compare 1.32; cleanup 0.03)
+[validation] replay reset 0.17; restore 5.77; derive 483.88; render 4.10; capture 0.28 ms
+[validation] snapshot reset 0.16; restore 0.73; derive 490.01; render 8.47; capture 0.34 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SheenChair/glTF/SheenChair.webp
+[validation] total 105.62 ms (init 0.00; capture 0.37; compare 0.95; cleanup 0.02)
+[validation] replay reset 0.19; restore 5.45; derive 47.91; render 1.97; capture 0.26 ms
+[validation] snapshot reset 0.19; restore 0.28; derive 46.18; render 1.58; capture 0.27 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SheenChair/glTF/SheenChair.Mango Velvet.webp
+[validation] total 111.48 ms (init 0.00; capture 1.14; compare 0.48; cleanup 0.02)
+[validation] replay reset 0.25; restore 9.16; derive 50.83; render 1.42; capture 0.37 ms
+[validation] snapshot reset 0.21; restore 0.38; derive 45.73; render 1.20; capture 0.28 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SheenChair/glTF/SheenChair.Peacock Velvet.webp

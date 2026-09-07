@@ -207,7 +207,7 @@ enums:
     values:
       - name: Fan
       - name: Edge
-  # Packs local triangle, visible-list meshlet index, and phase into low, middle, and top bits.
+  # Packs the local triangle and visible-list meshlet index.
   - name: VisibilityId
     type: u32
     values:
@@ -215,22 +215,17 @@ enums:
         value: 6
       - name: IndexBits
         value: 25
-  # Stores one counter per color class followed by nearest-line depth.
   - name: WireCoverage
     type: u32
     values:
       - name: Base
         value: 0
-      - name: Selected
-        value: 1
-      - name: Active
-        value: 2
       - name: Incidental
+        value: 1
+      - name: Selected
+        value: 2
+      - name: Active
         value: 3
-      - name: DepthWord
-        value: 4
-      - name: WordsPerPixel
-        value: 5
   - name: MeshletInstanceFlag
     type: u32
     values:
@@ -288,22 +283,20 @@ enums:
         value: 1
       - name: Transmission
         value: 2
-      - name: Phase2Candidate
-        value: 3
       - name: OpaqueCullFront
-        value: 4
+        value: 3
       - name: OpaqueDoubleSided
-        value: 5
+        value: 4
       - name: Coverage
-        value: 6
+        value: 5
       - name: EditOverlay
-        value: 7
+        value: 6
       - name: Wire
-        value: 8
+        value: 7
       - name: Overlay
-        value: 9
+        value: 8
       - name: Count
-        value: 10
+        value: 9
   - name: MeshletLimit
     type: u32
     values:
@@ -360,14 +353,10 @@ function_constants:
         type: bool
       - name: TransmissionPrepass
         type: bool
-      - name: VelocityOutput
-        type: bool
       - name: NonTriangleTopology
         type: bool
   - name: MeshVertexConstant
     constants:
-      - name: VelocityOutput
-        type: bool
       - name: NonTriangleTopology
         type: bool
   - name: NormalIndicatorConstant
@@ -716,8 +705,6 @@ structs:
         type: u32
       - name: CullBlockCount
         type: u32
-      - name: Phase2RangeCount
-        type: u32
   # Associates a work instance with one span-tree node in the traversal frontier.
   - name: LodFrontierEntry
     fields:
@@ -732,23 +719,17 @@ structs:
         type: u32
       - name: BlockCount
         type: u32
-  # Stores one traversal block's child nodes, leaf meshlet records, and phase-2 deferred instance ranges.
+  # Stores one traversal block's child nodes and leaf meshlet records.
   - name: LodFrontierBlockState
     fields:
       - name: NodeCount
         type: u32
       - name: MeshletCount
         type: u32
-      - name: Phase2RangeCount
-        type: u32
   - name: MeshletCullBlockState
     fields:
       - name: Routes
-        type: u32[10]
-  - name: MeshletBlendBlockState
-    fields:
-      - name: Buckets
-        type: u32[256]
+        type: u32[9]
   - name: MeshDispatchArgs
     fields:
       - name: ThreadgroupsX
@@ -760,11 +741,9 @@ structs:
   - name: MeshletRouteState
     fields:
       - name: Counts
-        type: u32[10]
+        type: u32[9]
       - name: Offsets
-        type: u32[10]
-      - name: BlendOffsets
-        type: u32[256]
+        type: u32[9]
   # Defines one mesh's vertex-adjacency CSR build and its count/scatter scratch.
   # Edge jobs use edge-first bit ranks to derive edge indices.
   - name: VertexAdjacencyJob
@@ -1030,23 +1009,6 @@ structs:
       - name: ModelSlotOverride
         type: u32
         default: InvalidSlot
-      # Shutter-open and shutter-close poses share current draw offsets but use separate buffer slots and view projections.
-      - name: PrevViewProj
-        type: mat4
-      - name: NextViewProj
-        type: mat4
-      - name: PrevModelSlot
-        type: u32
-      - name: NextModelSlot
-        type: u32
-      - name: PrevArmatureDeformSlot
-        type: u32
-      - name: NextArmatureDeformSlot
-        type: u32
-      - name: PrevMorphWeightsSlot
-        type: u32
-      - name: NextMorphWeightsSlot
-        type: u32
       - name: MaterialSlot
         type: u32
       - name: PrimitiveMaterialSlot
@@ -1501,8 +1463,6 @@ structs:
         default: InvalidOffset
       - name: EditEdgeCorner
         type: u32
-      - name: VisibilityPhase
-        type: u32
       - name: VisibilityTransmission
         type: u32
       - name: EdgeSharpnessSlot
@@ -1526,8 +1486,6 @@ structs:
       - name: MeshletVertexSlot
         type: u32
       - name: VisibleMeshletSlot
-        type: u32
-      - name: Phase2VisibleMeshletSlot
         type: u32
   - name: VisibilitySelectionPushConstants
     push_constant: true
@@ -1581,9 +1539,6 @@ structs:
         type: u32
       - name: ClassificationSlot
         type: u32
-      - name: BlendBlockSlot
-        type: u32
-        default: InvalidSlot
       - name: VisibleSlot
         type: u32
       - name: InstanceMapSlot
@@ -1617,43 +1572,14 @@ structs:
         type: u32
       - name: RouteMask
         type: u32
-        default: 0x3ffu
+        default: 0x1ffu
       - name: PyramidSamplerSlot
-        type: u32
-        default: InvalidSlot
-      - name: OcclusionViewProj
-        type: mat4
-      - name: TwoPhase
-        type: u32
-      - name: Phase2VisibleSlot
-        type: u32
-        default: InvalidSlot
-      - name: Phase2RouteStateSlot
-        type: u32
-        default: InvalidSlot
-      - name: Phase2DispatchArgsSlot
-        type: u32
-        default: InvalidSlot
-      - name: Phase2CullArgsSlot
-        type: u32
-        default: InvalidSlot
-      - name: Phase2RangeCandidateSlot
-        type: u32
-        default: InvalidSlot
-      - name: Phase2RangeCullArgsSlot
         type: u32
         default: InvalidSlot
       # Counts coarse clusters selected across classification blocks.
       - name: CoarseCountSlot
         type: u32
         default: InvalidSlot
-      # Per-32-candidate survivor counts for deterministic emission offsets.
-      - name: Phase2BlockCountSlot
-        type: u32
-        default: InvalidSlot
-      # Selects phase-2 count or emit operation.
-      - name: Phase2Emit
-        type: u32
   # Push constants shared by pose and bounds passes; posed-buffer slots are in SceneViewUBO.
   - name: BoundsReducePushConstants
     push_constant: true
@@ -1797,6 +1723,8 @@ structs:
       - name: CoverageSlot
         type: u32
         default: InvalidSlot
+      - name: TestDepth
+        type: u32
   - name: WireResolvePushConstants
     push_constant: true
     fields:
@@ -1840,59 +1768,6 @@ structs:
         type: u32
       - name: TetEdgeIndexSlot
         type: u32
-  - name: SilhouetteEdgeDepthObjectPushConstants
-    push_constant: true
-    fields:
-      - name: SilhouetteSamplerIndex
-        type: u32
-  # Negative MotionScale.y converts backward-stored next motion to forward time.
-  - name: MotionBlurTilesFlattenPushConstants
-    push_constant: true
-    fields:
-      - name: VelocitySamplerSlot
-        type: u32
-        default: InvalidSlot
-      - name: TileImageSlot
-        type: u32
-        default: InvalidSlot
-      - name: TileIndirectionSlot
-        type: u32
-        default: InvalidSlot
-      - name: MotionScale
-        type: vec2
-  - name: MotionBlurTilesDilatePushConstants
-    push_constant: true
-    fields:
-      - name: TileImageSlot
-        type: u32
-        default: InvalidSlot
-      - name: TileIndirectionSlot
-        type: u32
-        default: InvalidSlot
-  - name: MotionBlurGatherPushConstants
-    push_constant: true
-    fields:
-      - name: DepthSamplerSlot
-        type: u32
-        default: InvalidSlot
-      - name: VelocitySamplerSlot
-        type: u32
-        default: InvalidSlot
-      - name: ColorSamplerSlot
-        type: u32
-        default: InvalidSlot
-      - name: TileImageSlot
-        type: u32
-        default: InvalidSlot
-      - name: TileIndirectionSlot
-        type: u32
-        default: InvalidSlot
-      - name: MotionScale
-        type: vec2
-      - name: DepthScale
-        type: float
-      - name: NoiseOffset
-        type: float
   - name: EditSelectionPushConstants
     push_constant: true
     fields:
@@ -1946,6 +1821,9 @@ structs:
         type: SlotOffset
       - name: SelectionListCount
         type: u32
+      - name: PositionSumsSlot
+        type: u32
+        default: InvalidSlot
   - name: EditSelectionSummary
     fields:
       - name: PositionSum
@@ -2061,7 +1939,32 @@ structs:
     fields:
       - name: Manipulating
         type: u32
-      - name: ObjectSamplerIndex
+      - name: SilhouetteSamplerIndex
         type: u32
       - name: ActiveObjectId
         type: u32
+      - name: SceneDepthSamplerIndex
+        type: u32
+
+  - name: MotionBlurTilesFlattenPushConstants
+    push_constant: true
+    fields:
+      - name: Visibility
+        type: VisibilityShadingPushConstants
+      - name: InvViewProj
+        type: mat4
+      - name: CameraMotion
+        type: u32
+  - name: MotionBlurGatherPushConstants
+    push_constant: true
+    fields:
+      - name: DepthSamplerSlot
+        type: u32
+      - name: VelocitySamplerSlot
+        type: u32
+      - name: ColorSamplerSlot
+        type: u32
+      - name: NoiseOffset
+        type: float
+      - name: DepthUnproject
+        type: vec4

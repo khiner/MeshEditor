@@ -52,17 +52,22 @@ struct Scene {
         return e;
     }
 
-    // Link `child` under `parent`, leaving the world transforms these scenes author directly.
+    // Link the translated test bodies while preserving the authored world pose.
     void Parent(entt::entity child, entt::entity parent) {
         auto &pn = R.get<SceneNode>(parent);
         R.get<SceneNode>(child).Parent = parent;
         R.get<SceneNode>(child).NextSibling = pn.FirstChild;
         pn.FirstChild = child;
+        R.get<Transform>(child).P -= R.get<WorldTransform>(parent).P;
     }
 
     // Build or update the bodies the components describe, as ProcessComponentEvents does in the app.
     void Sync() {
-        for (auto &handler : R.ctx().get<std::vector<ComponentEventHandler>>()) handler(R);
+        for (auto &handler : R.ctx().get<std::vector<ComponentEventHandler>>()) handler.Apply(R);
+        physics::AdvancePlayback(R, Viewport, Frame, Frame, 0, RangeEnd, Fps, false, false);
+        for (auto &&[id, storage] : R.storage()) {
+            if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();
+        }
     }
 
     void Step(int frames = 1) {
@@ -312,9 +317,9 @@ int main() {
         const auto box = AddRestingBox(s);
         expect(s.Contacts().size() == 1_ul);
 
-        // Lift the box clear of the floor. A pose change rebuilds nothing, so the body follows its transform.
-        s.R.patch<Transform>(box, [](auto &t) { t.P = vec3{0, 5, 0}; });
-        s.R.patch<WorldTransform>(box, [](auto &t) { t.P = vec3{0, 5, 0}; });
+        // Raise the authored starting pose enough to remain clear at the current timeline frame.
+        s.R.patch<Transform>(box, [](auto &t) { t.P = vec3{0, 10, 0}; });
+        s.R.patch<WorldTransform>(box, [](auto &t) { t.P = vec3{0, 10, 0}; });
         s.Sync();
         s.Step(5);
 
@@ -335,6 +340,40 @@ int main() {
         s.Step();
         expect(s.ContactStep() > step);
         expect(s.Contacts().size() == 1_ul);
+    };
+
+    "seeking reconstructs physics from the authored starting pose"_test = [] {
+        Scene stepped, sought;
+        const auto setup = [](Scene &s) {
+            s.R.get<PhysicsSimulationSettings>(s.Viewport).Gravity = {};
+            const auto body = s.AddBody({}, Sphere(0.25f), PhysicsMotion{}, {1, 0, 0});
+            s.Sync();
+            return body;
+        };
+        const auto a = setup(stepped), b = setup(sought);
+        expect(sought.R.get<WorldTransform>(b).P == vec3{});
+        stepped.Step(30);
+        physics::AdvancePlayback(sought.R, sought.Viewport, 0, 30, 0, RangeEnd, Fps, false, false);
+        expect(stepped.R.get<WorldTransform>(a).P == sought.R.get<WorldTransform>(b).P);
+        physics::AdvancePlayback(sought.R, sought.Viewport, 30, 5, 0, RangeEnd, Fps, false, false);
+        physics::AdvancePlayback(sought.R, sought.Viewport, 5, 31, 0, RangeEnd, Fps, false, false);
+        stepped.Step();
+        expect(stepped.R.get<WorldTransform>(a).P == sought.R.get<WorldTransform>(b).P);
+    };
+
+    "shutter prediction retains the displayed contact frame"_test = [] {
+        Scene s;
+        AddRestingBox(s);
+        const auto step = s.ContactStep();
+        const auto force = s.Contacts().front().NormalForce;
+        const auto impacts = s.Impacts().size();
+        physics::BakeThrough(s.R, s.Viewport, s.Frame + 3, Fps);
+        expect(s.ContactStep() == step);
+        expect(s.Contacts().front().NormalForce == force);
+        expect(s.Impacts().size() == impacts);
+        s.Step();
+        expect(s.ContactStep() == step + 1);
+        expect(physics::BakedThrough(s.R) == std::optional{uint32_t(s.Frame + 2)});
     };
 
     return RunSuites();

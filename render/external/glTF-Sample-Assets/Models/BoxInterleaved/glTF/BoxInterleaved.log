@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/BoxInterleaved/glTF/BoxInterleaved.webp
+[validation] total 391.45 ms (init 367.42; capture 0.16; compare 0.80; cleanup 0.04)
+[validation] replay reset 0.24; restore 2.09; derive 8.91; render 1.30; capture 0.05 ms
+[validation] snapshot reset 0.21; restore 0.10; derive 4.87; render 5.18; capture 0.08 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/BoxInterleaved/glTF/BoxInterleaved.webp

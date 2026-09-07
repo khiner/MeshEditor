@@ -7,6 +7,7 @@
 #include "TransformMath.h"
 #include "Variant.h"
 #include "mesh/Mesh.h"
+#include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
@@ -568,6 +569,11 @@ struct PhysicsState {
     uint32_t CacheStartFrame{1};
     uint32_t CacheEndFrame{0}; // For range validation only — actual storage is per-entity BodyPoseCache.
     std::optional<uint32_t> Baked; // highest frame baked (inclusive); nullopt if nothing baked since last clear.
+    struct CachedContacts {
+        PhysicsContactImpacts Impacts;
+        PhysicsSustainedContacts Sustained;
+    };
+    std::vector<CachedContacts> ContactFrames;
     Ref<KHRCollisionFilter> FilterRef;
     KHRContactListener ContactListener;
     MeshVsMeshShapeFilter MeshFilter;
@@ -983,7 +989,7 @@ void FlushJoints(PhysicsState &s, const entt::registry &r, bool joints_changed) 
     for (auto &[_, c] : s.ConstraintsByJoint) s.System->RemoveConstraint(c);
     s.ConstraintsByJoint.clear();
     s.FilterRef->ResetDisabledPairs();
-    for (auto entity : r.view<const PhysicsJoint>()) BuildJoint(s, r, entity);
+    for (auto entity : SortedEntities(r.view<const PhysicsJoint>())) BuildJoint(s, r, entity);
     s.FilterRef->FinalizeDisabledPairs();
 }
 
@@ -1514,6 +1520,7 @@ void ClearSimulation(PhysicsState &s, entt::registry &r) {
     r.clear<BodyPoseCache>();
     FlushPendingBodyRemovals(s);
     s.Baked = {};
+    s.ContactFrames.clear();
     s.FilterRef->Update(r);
     s.FilterRef->Reset();
     s.BodySubGroups.clear();
@@ -1524,27 +1531,38 @@ void ClearSimulation(PhysicsState &s, entt::registry &r) {
     s.ContactListener.PendingImpactCount.store(0, std::memory_order_relaxed);
 }
 
-void Rebuild(entt::registry &r) {
+void Rebuild(entt::registry &r, entt::entity viewport) {
     auto &s = r.ctx().get<PhysicsState>();
     ClearSimulation(s, r);
+    s.ResetSystem();
+    RecomputeSceneScale(s, r);
+    physics::ApplySimulationSettings(r, r.get<const PhysicsSimulationSettings>(viewport));
 
     for (auto [e, _] : r.view<const Transform>().each()) {
         const auto *node = r.try_get<const SceneNode>(e);
         if (!node || node->Parent == entt::null) UpdateWorldTransformRecursive(r, e);
     }
 
-    for (auto entity : r.view<PhysicsMotion>()) AddBody(s, r, entity);
-    for (auto entity : r.view<ColliderShape>()) AddBody(s, r, entity);
+    for (auto entity : SortedEntities(r.view<PhysicsMotion>())) AddBody(s, r, entity);
+    for (auto entity : SortedEntities(r.view<ColliderShape>())) AddBody(s, r, entity);
 
     s.JointsDirty = false;
-    for (auto entity : r.view<const PhysicsJoint>()) BuildJoint(s, r, entity);
+    for (auto entity : SortedEntities(r.view<const PhysicsJoint>())) BuildJoint(s, r, entity);
 
     s.FilterRef->FinalizeDisabledPairs();
     s.System->OptimizeBroadPhase();
+    // The range starts at the authored pose; simulation stays at the cache frontier while
+    // display and shutter sampling read earlier poses without rewinding Jolt.
+    const auto &bi = s.System->GetBodyInterface();
+    for (auto [entity, handle, cache] : r.view<const PhysicsBodyHandle, BodyPoseCache>().each()) {
+        const BodyID id{handle.BodyId};
+        if (bi.GetMotionType(id) != EMotionType::Static)
+            cache.Frames = {CachedPose{FromJolt(bi.GetPosition(id)), FromJolt(bi.GetRotation(id))}};
+    }
+    s.Baked = s.CacheStartFrame;
+    s.ContactFrames = {{r.ctx().get<PhysicsContactImpacts>(), r.ctx().get<PhysicsSustainedContacts>()}};
 }
 
-// Invalidates the bake frontier while retaining allocated cache slots.
-void ClearCache(entt::registry &r) { r.ctx().get<PhysicsState>().Baked = {}; }
 bool HasBodies(const entt::registry &r) { return r.ctx().get<PhysicsState>().System->GetNumBodies() > 0; }
 
 // Returns the entity for a live body index.
@@ -1726,7 +1744,11 @@ void BakeFrame(entt::registry &r, entt::entity viewport, PhysicsState &s, uint32
         if (!bi.IsActive(id)) continue;
         SyncBodyWorldTransform(r, entity, pos, rot);
     }
-    if (record) s.Baked = frame;
+    if (record) {
+        s.Baked = frame;
+        if (s.ContactFrames.size() <= idx) s.ContactFrames.resize(idx + 1);
+        s.ContactFrames[idx] = {std::move(r.ctx().get<PhysicsContactImpacts>()), std::move(r.ctx().get<PhysicsSustainedContacts>())};
+    }
 }
 
 } // namespace
@@ -1753,22 +1775,14 @@ bool AdvancePlayback(entt::registry &r, entt::entity viewport, int from_frame, i
         ApplySimulationSettings(r, r.get<const PhysicsSimulationSettings>(viewport));
     }
 
-    // Range edits invalidate the cache: bake frontier becomes meaningless when bounds shift.
-    if (cache_invalid) {
-        if (HasBodies(r)) ClearCache(r);
-    } else if (range_changed && HasBodies(r)) {
-        ClearCache(r);
-    }
     if (!HasBodies(r)) return false;
-
     auto &s = r.ctx().get<PhysicsState>();
-    // Keep the cache frame range in sync with the scrub bounds; shifting bounds resets the bake frontier.
-    if (uint32_t(range_start_frame) != s.CacheStartFrame || uint32_t(range_end_frame) != s.CacheEndFrame) {
+    if (cache_invalid || range_changed || uint32_t(range_start_frame) != s.CacheStartFrame || uint32_t(range_end_frame) != s.CacheEndFrame) {
         s.CacheStartFrame = range_start_frame;
         s.CacheEndFrame = range_end_frame;
         s.Baked = {};
     }
-    // Any physics-mutating change invalidates cached future frames so the next play-forward re-bakes.
+    // Authored changes invalidate the simulation, including its velocities and contact state.
     if (!reactive<changes::PhysicsShape>(r).empty() ||
         !reactive<changes::PhysicsMotion>(r).empty() ||
         !reactive<changes::PhysicsPose>(r).empty() ||
@@ -1780,31 +1794,16 @@ bool AdvancePlayback(entt::registry &r, entt::entity viewport, int from_frame, i
         !reactive<changes::CollisionFilterDef>(r).empty() ||
         !reactive<changes::PhysicsJointDef>(r).empty() ||
         !reactive<changes::PhysicsSimulationSettings>(r).empty()) {
-        // Stale slots past the frontier get overwritten on the next bake.
-        const uint32_t frame = to_frame;
-        s.Baked = (frame == 0 || !s.Baked) ? std::nullopt : std::optional{std::min(*s.Baked, frame - 1)};
+        s.Baked = {};
     }
-
-    // The cache is the timeline: bake one step past the frontier, restore within it, or reset at the range start.
-    if (from_frame == to_frame) return false; // playhead didn't move
-    if (to_frame == from_frame + 1 && (!s.Baked || uint32_t(to_frame) > *s.Baked)) {
-        BakeFrame(r, viewport, s, uint32_t(to_frame), fps);
-    } else if (s.Baked && uint32_t(to_frame) > s.CacheStartFrame && uint32_t(to_frame) <= *s.Baked) {
-        // Restore a cached frame without re-simulating.
-        const auto idx = uint32_t(to_frame) - s.CacheStartFrame;
-        auto &bi = s.System->GetBodyInterface();
-        for (auto [entity, handle, cache] : r.view<const PhysicsBodyHandle, const BodyPoseCache>().each()) {
-            if (idx >= cache.Frames.size() || !cache.Frames[idx]) continue; // Body not simulated at this frame.
-            const auto &p = *cache.Frames[idx];
-            // DontActivate: scrub/replay shouldn't wake sleeping bodies. The cache is the timeline, not a sim resume point.
-            bi.SetPositionAndRotationWhenChanged(BodyID{handle.BodyId}, ToJolt(p.P), ToJolt(p.R), EActivation::DontActivate);
-            SyncBodyWorldTransform(r, entity, p.P, p.R);
-        }
-    } else if (to_frame == range_start_frame) {
-        Rebuild(r); // Reset sim: covers wrap-after-play and user-initiated jump-to-start.
-    } else {
-        return false; // Preserve the current pose beyond the bake frontier.
-    }
+    const bool reset = !s.Baked;
+    if (reset) Rebuild(r, viewport);
+    if (!reset && from_frame == to_frame) return false;
+    BakeThrough(r, viewport, to_frame, fps);
+    SamplePosesAtFrame(r, float(to_frame));
+    const auto &contacts = s.ContactFrames[std::clamp(uint32_t(to_frame), s.CacheStartFrame, *s.Baked) - s.CacheStartFrame];
+    r.ctx().get<PhysicsContactImpacts>() = contacts.Impacts;
+    r.ctx().get<PhysicsSustainedContacts>() = contacts.Sustained;
     return true;
 }
 
@@ -1812,8 +1811,14 @@ void BakeThrough(entt::registry &r, entt::entity viewport, int through_frame, fl
     if (!HasBodies(r)) return;
     auto &s = r.ctx().get<PhysicsState>();
     if (!s.Baked) return; // Baking requires a contiguous frontier matching the simulation state.
-    const uint32_t target = std::min(uint32_t(std::max(through_frame, 1)), s.CacheEndFrame);
+    const uint32_t target = std::min(uint32_t(std::max(through_frame, int(s.CacheStartFrame))), s.CacheEndFrame);
+    if (*s.Baked >= target) return;
+    // Prediction records future contacts without publishing them to the audio timeline.
+    auto impacts = std::move(r.ctx().get<PhysicsContactImpacts>());
+    auto sustained = std::move(r.ctx().get<PhysicsSustainedContacts>());
     while (*s.Baked < target) BakeFrame(r, viewport, s, *s.Baked + 1, fps);
+    r.ctx().get<PhysicsContactImpacts>() = std::move(impacts);
+    r.ctx().get<PhysicsSustainedContacts>() = std::move(sustained);
 }
 
 void SamplePosesAtFrame(entt::registry &r, float frame) {

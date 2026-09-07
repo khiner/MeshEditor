@@ -84,7 +84,6 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             },
             [&](ClearBoxSelectBaseline) {
                 r.remove<AdditiveBoxSelectBaseline>(viewport);
-                r.emplace_or_replace<PendingBoxSelectFinalize>(viewport);
             },
             // GPU selection resolves the rectangle after action application.
             [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(viewport, a.BoxPx, a.Additive, *a.View); },

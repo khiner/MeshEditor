@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/TwoSidedPlane/glTF/TwoSidedPlane.webp
+[validation] total 3379.04 ms (init 3336.45; capture 0.23; compare 0.82; cleanup 0.02)
+[validation] replay reset 0.19; restore 1.56; derive 18.34; render 2.31; capture 0.05 ms
+[validation] snapshot reset 0.31; restore 0.09; derive 14.50; render 4.11; capture 0.05 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/TwoSidedPlane/glTF/TwoSidedPlane.webp

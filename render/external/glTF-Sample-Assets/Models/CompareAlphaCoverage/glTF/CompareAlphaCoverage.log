@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/CompareAlphaCoverage/glTF/CompareAlphaCoverage.webp
+[validation] total 907.56 ms (init 227.81; capture 0.19; compare 1.21; cleanup 0.03)
+[validation] replay reset 0.18; restore 2.11; derive 319.11; render 27.31; capture 0.07 ms
+[validation] snapshot reset 0.17; restore 0.15; derive 320.35; render 8.80; capture 0.07 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CompareAlphaCoverage/glTF/CompareAlphaCoverage.webp

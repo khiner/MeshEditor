@@ -286,11 +286,25 @@ kernel void DeriveEditSelectionKernel(
         if (simd_selected != 0u) atomic_fetch_add_explicit((device atomic_uint *)&summary.SelectedCount, simd_selected, memory_order_relaxed);
         if (simd_vertices != 0u) atomic_fetch_add_explicit((device atomic_uint *)&summary.SelectedVertexCount, simd_vertices, memory_order_relaxed);
         if (simd_sharpness != 0u) atomic_fetch_or_explicit((device atomic_uint *)&summary.SharpnessFlags, simd_sharpness, memory_order_relaxed);
-        device atomic_float *position = (device atomic_float *)&summary.PositionSum;
-        atomic_fetch_add_explicit(position, simd_position.x, memory_order_relaxed);
-        atomic_fetch_add_explicit(position + 1, simd_position.y, memory_order_relaxed);
-        atomic_fetch_add_explicit(position + 2, simd_position.z, memory_order_relaxed);
+        // Each SIMD group owns one partial; the final reduction has a fixed order.
+        if (chunk_index < vertex_chunks) {
+            BindlessBufferMutable(packed_float3, bindless.Buffer, pc.PositionSumsSlot)[chunk_index / 32u] = packed_float3(simd_position);
+        }
     }
+}
+
+// One SIMD group reduces the vertex partials without schedule-dependent float atomics.
+kernel void SumEditSelectionPositionKernel(
+    uint lane [[thread_index_in_simdgroup]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant EditSelectionPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    const uint count = (pc.VertexCount + 511u) / 512u;
+    device const packed_float3 *partials = BindlessBuffer(packed_float3, bindless.Buffer, pc.PositionSumsSlot);
+    float3 sum{0.0f};
+    for (uint i = lane; i < count; i += 32u) sum += float3(partials[i]);
+    sum = float3(simd_sum(sum.x), simd_sum(sum.y), simd_sum(sum.z));
+    if (lane == 0u) EditSelectionContext{bindless, pc}.Summary().PositionSum = packed_float3(sum);
 }
 
 #endif

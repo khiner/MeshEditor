@@ -11,7 +11,6 @@
 #include "LodFrontierState.metal"
 #include "LodNode.metal"
 #include "MeshDispatchArgs.metal"
-#include "MeshletBlendBlockState.metal"
 #include "MeshletCullBlockState.metal"
 #include "MeshletCullPushConstants.metal"
 #include "MeshletRecord.metal"
@@ -31,11 +30,9 @@ constant uint CullSimdGroups = 32u;
 constant uint PrefixStride = CullSimdGroups + 1u;
 constant uint ConeCullMinTriangles = 16u;
 // The phase-2 cull kernels run one 32-lane simdgroup per threadgroup.
-constant uint Phase2GroupSize = 32u;
 
 struct RoutedMeshlet {
     uint Routes;
-    uint BlendBucket;
     bool Coarse;
 };
 
@@ -218,7 +215,7 @@ inline bool MeshletOccluded(
     return min_depth > occluder;
 }
 
-// Returns 0 to reject, 1 to expand in phase 1, or 2 to defer the complete instance to the current-pyramid phase.
+// Reject occluded instances before expanding their span trees.
 inline uint ClassifyInstanceRange(
     const thread Scene &scene, MeshletCullPushConstants pc, uint instance_slot, InstanceRecord instance
 ) {
@@ -230,17 +227,15 @@ inline uint ClassifyInstanceRange(
     if (!in_frustum(scene.ViewProj(), bounds.Center, bounds.Ax, bounds.Ay, bounds.Az)) return 0u;
     if ((instance.Flags & MeshletInstanceFlag_OverlayOnly) != 0u) return 1u;
     if (pc.PyramidSamplerSlot == INVALID_SLOT ||
-        !MeshletOccluded(scene, pc.PyramidSamplerSlot, pc.OcclusionViewProj.Unpack(), bounds.Center, bounds.Ax, bounds.Ay, bounds.Az)) return 1u;
-    // Keep blend routes in phase 1 while opaque meshlets defer independently.
-    if (pc.TwoPhase != 0u && pc.BlendBlockSlot != INVALID_SLOT) return 1u;
-    return pc.TwoPhase != 0u ? 2u : 0u;
+        !MeshletOccluded(scene, pc.PyramidSamplerSlot, scene.ViewProj(), bounds.Center, bounds.Ax, bounds.Ay, bounds.Az)) return 1u;
+    return 0u;
 }
 
 inline RoutedMeshlet ClassifyMeshlet(
     const thread Scene &scene, MeshletCullPushConstants pc, VisibleMeshlet candidate,
     uint instance_slot, InstanceRecord instance
 ) {
-    RoutedMeshlet result{0u, 0u, false};
+    RoutedMeshlet result{0u, false};
     const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, scene.B.Buffer, pc.MeshletSlot)[candidate.Meshlet];
     const Transform world = scene.Models(pc.ModelSlot)[instance_slot];
     if (!LodClusterVisible(scene, pc, meshlet, world, InstanceFinestOnly(scene, instance))) return result;
@@ -260,7 +255,7 @@ inline RoutedMeshlet ClassifyMeshlet(
     const bool cone_visible = pc.RouteMode == 0u || material.DoubleSided != 0u ||
         MeshletConeVisible(scene, meshlet, world, InstanceDeformed(instance));
     const bool occluded = !overlay_only && can_occlude && pc.PyramidSamplerSlot != INVALID_SLOT &&
-        MeshletOccluded(scene, pc.PyramidSamplerSlot, pc.OcclusionViewProj.Unpack(), world_center, bounds.Ax, bounds.Ay, bounds.Az);
+        MeshletOccluded(scene, pc.PyramidSamplerSlot, scene.ViewProj(), world_center, bounds.Ax, bounds.Ay, bounds.Az);
 
     if (overlay_only) {
         result.Routes = 0u;
@@ -275,8 +270,6 @@ inline RoutedMeshlet ClassifyMeshlet(
             result.Routes = RouteBit(alpha_mask ? MeshletRoute_Coverage : opaque_route);
         } else if (material.AlphaMode == MaterialAlphaMode_Blend) {
             result.Routes = RouteBit(MeshletRoute_Blend);
-            const float4 clip = scene.ViewProj() * float4(world_center, 1.0f);
-            result.BlendBucket = clip.w > 0.0f ? uint(clamp(clip.z / clip.w, 0.0f, 1.0f) * 255.0f) : 0u;
         } else if (pc.RouteMode == 1u) {
             result.Routes = RouteBit(alpha_mask ? MeshletRoute_Coverage : opaque_route);
         } else {
@@ -300,20 +293,7 @@ inline RoutedMeshlet ClassifyMeshlet(
     }
     result.Routes &= pc.RouteMask;
     if (result.Routes == 0u) return result;
-    if (occluded) {
-        if (pc.TwoPhase != 0u) {
-            // Defer discard-free opaque routes; keep coverage and blend routes in phase 1.
-            const uint fast = RouteBit(MeshletRoute_OpaqueCullBack) | RouteBit(MeshletRoute_OpaqueCullFront) |
-                RouteBit(MeshletRoute_OpaqueDoubleSided) | RouteBit(MeshletRoute_EditOverlay) |
-                RouteBit(MeshletRoute_Overlay);
-            const uint keep = RouteBit(MeshletRoute_Blend) | RouteBit(MeshletRoute_Coverage) |
-                RouteBit(MeshletRoute_Wire);
-            result.Routes = (result.Routes & keep) |
-                ((result.Routes & fast) != 0u ? RouteBit(MeshletRoute_Phase2Candidate) : 0u);
-        } else {
-            result.Routes = 0u;
-        }
-    }
+    if (occluded) result.Routes = 0u;
     return result;
 }
 
@@ -346,16 +326,15 @@ inline bool LodNodeVisible(const thread Scene &scene, LodNode node, Transform wo
     return sphere_in_frustum(scene.ViewProj(), trs_transform_point(world, float3(node.Center)), radius);
 }
 
-// Stores one entry's child nodes, final-level record range, and phase-2 deferred instance range.
+// Stores one entry's child nodes and final-level record range.
 struct LodWork {
     uint Instance;
     uint Node;
     uint ChildCount;
     uint MeshletCount;
-    uint Phase2RangeCount;
 };
 
-// Seeds traversal from instance IDs and writes primitive roots or complete phase-2 deferred ranges.
+// Seeds traversal from instance IDs and writes primitive roots.
 inline LodWork ResolveLodSeed(const thread Scene &scene, MeshletCullPushConstants pc, uint id) {
     if (id >= pc.InstanceCount) return {};
     const uint instance_slot = BindlessBuffer(uint, scene.B.Buffer, pc.InstanceMapSlot)[id];
@@ -369,8 +348,7 @@ inline LodWork ResolveLodSeed(const thread Scene &scene, MeshletCullPushConstant
     for (uint p = 0u; p < instance.PrimitiveCount; ++p) {
         count += PrimitiveWorkCount(primitives[instance.PrimitiveOffset + p], finest_only) != 0u;
     }
-    if (visibility == 2u) return {id, INVALID_OFFSET, 0u, 0u, count};
-    return {id, INVALID_OFFSET, count, 0u, 0u};
+    return {id, INVALID_OFFSET, count, 0u};
 }
 
 // Expands one frontier node into child nodes or its final-level record range.
@@ -383,26 +361,24 @@ inline LodWork ResolveLodNode(const thread Scene &scene, MeshletCullPushConstant
     const LodNode node = BindlessBuffer(LodNode, scene.B.Buffer, pc.LodNodeSlot)[entry.Node];
     if (!LodNodeVisible(scene, node, scene.Models(pc.ModelSlot)[instance_slot])) return {};
     // The final level emits the complete range of nodes deeper than the recorded depth.
-    if (pc.LodFinalLevel != 0u) return {entry.Instance, entry.Node, 1u, node.MeshletCount, 0u};
+    if (pc.LodFinalLevel != 0u) return {entry.Instance, entry.Node, 1u, node.MeshletCount};
     // Repeat leaves through later levels to preserve frontier order.
-    return {entry.Instance, entry.Node, max(node.ChildCount, 1u), 0u, 0u};
+    return {entry.Instance, entry.Node, max(node.ChildCount, 1u), 0u};
 }
 
 inline LodWork ResolveLodWork(const thread Scene &scene, MeshletCullPushConstants pc, uint index) {
     return pc.LodSeedLevel != 0u ? ResolveLodSeed(scene, pc, index) : ResolveLodNode(scene, pc, index);
 }
 
-// Writes each simdgroup's three totals into the corresponding prefix-row lane.
+// Writes each simdgroup's two totals into the corresponding prefix-row lane.
 inline void WriteLodSimdGroupSums(
     threadgroup uint *group_prefixes, LodWork work, uint simd_lane, uint simd_group
 ) {
     const uint node_sum = simd_sum(work.ChildCount);
     const uint meshlet_sum = simd_sum(work.MeshletCount);
-    const uint phase2_range_sum = simd_sum(work.Phase2RangeCount);
     if (simd_lane == 0u) {
         group_prefixes[simd_group] = node_sum;
         group_prefixes[PrefixStride + simd_group] = meshlet_sum;
-        group_prefixes[2u * PrefixStride + simd_group] = phase2_range_sum;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 }
@@ -421,14 +397,13 @@ kernel void LodFrontierCount(
     const LodWork work = ResolveLodWork(scene, pc, block_id * CullBlockSize + lane);
     WriteLodSimdGroupSums(group_prefixes, work, simd_lane, simd_group);
     if (simd_group == 0u && simd_lane == 0u) {
-        uint nodes = 0u, meshlets = 0u, phase2_ranges = 0u;
+        uint nodes = 0u, meshlets = 0u;
         for (uint group = 0u; group < CullSimdGroups; ++group) {
             nodes += group_prefixes[group];
             meshlets += group_prefixes[PrefixStride + group];
-            phase2_ranges += group_prefixes[2u * PrefixStride + group];
         }
         BindlessBufferMutable(LodFrontierBlockState, bindless.Buffer, pc.LodFrontierBlockStateSlot)[block_id] = {
-            nodes, meshlets, phase2_ranges
+            nodes, meshlets
         };
     }
 }
@@ -441,13 +416,12 @@ kernel void LodFrontierPrefix(
     device LodFrontierState *states = BindlessBufferMutable(LodFrontierState, bindless.Buffer, pc.LodFrontierStateSlot);
     const uint block_count = pc.LodSeedLevel != 0u ? pc.WorkBlockCount : states[pc.LodFrontierIndex].BlockCount;
     device LodFrontierBlockState *blocks = BindlessBufferMutable(LodFrontierBlockState, bindless.Buffer, pc.LodFrontierBlockStateSlot);
-    uint node_count = 0u, meshlet_count = 0u, phase2_range_count = 0u;
+    uint node_count = 0u, meshlet_count = 0u;
     for (uint block = 0u; block < block_count; ++block) {
         const LodFrontierBlockState count = blocks[block];
-        blocks[block] = {node_count, meshlet_count, phase2_range_count};
+        blocks[block] = {node_count, meshlet_count};
         node_count += count.NodeCount;
         meshlet_count += count.MeshletCount;
-        phase2_range_count += count.Phase2RangeCount;
     }
     const uint next_block_count = (node_count + CullBlockSize - 1u) / CullBlockSize;
     states[pc.LodFrontierIndex ^ 1u] = {node_count, next_block_count};
@@ -456,13 +430,8 @@ kernel void LodFrontierPrefix(
     };
     device MeshletWorkState *state = BindlessBufferMutable(MeshletWorkState, bindless.Buffer, pc.WorkStateSlot);
     if (pc.LodSeedLevel != 0u) {
-        state[0] = {0u, 0u, 0u, phase2_range_count};
+        state[0] = {0u, 0u, 0u};
         if (pc.CoarseCountSlot != INVALID_SLOT) BindlessBufferMutable(uint, bindless.Buffer, pc.CoarseCountSlot)[0] = 0u;
-        if (pc.TwoPhase != 0u) {
-            BindlessBufferMutable(MeshDispatchArgs, bindless.Buffer, pc.Phase2RangeCullArgsSlot)[0] = {
-                phase2_range_count, 1u, 1u
-            };
-        }
     }
     if (pc.LodFinalLevel != 0u) {
         const uint cull_block_count = (meshlet_count + CullBlockSize - 1u) / CullBlockSize;
@@ -487,37 +456,18 @@ kernel void LodFrontierEmit(
     const LodWork work = ResolveLodWork(scene, pc, block_id * CullBlockSize + lane);
     uint node_rank = simd_prefix_exclusive_sum(work.ChildCount);
     uint meshlet_rank = simd_prefix_exclusive_sum(work.MeshletCount);
-    uint phase2_range_rank = simd_prefix_exclusive_sum(work.Phase2RangeCount);
     WriteLodSimdGroupSums(group_prefixes, work, simd_lane, simd_group);
     if (simd_group == 0u) {
         const uint nodes = simd_lane < CullSimdGroups ? group_prefixes[simd_lane] : 0u;
         const uint meshlets = simd_lane < CullSimdGroups ? group_prefixes[PrefixStride + simd_lane] : 0u;
-        const uint phase2_ranges = simd_lane < CullSimdGroups ? group_prefixes[2u * PrefixStride + simd_lane] : 0u;
         if (simd_lane < CullSimdGroups) {
             group_prefixes[simd_lane] = simd_prefix_exclusive_sum(nodes);
             group_prefixes[PrefixStride + simd_lane] = simd_prefix_exclusive_sum(meshlets);
-            group_prefixes[2u * PrefixStride + simd_lane] = simd_prefix_exclusive_sum(phase2_ranges);
         }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const LodFrontierBlockState block = BindlessBuffer(LodFrontierBlockState, bindless.Buffer, pc.LodFrontierBlockStateSlot)[block_id];
     device const PrimitiveRecord *primitives = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot);
-    if (work.Phase2RangeCount != 0u) {
-        phase2_range_rank += group_prefixes[2u * PrefixStride + simd_group];
-        uint output = block.Phase2RangeCount + phase2_range_rank;
-        const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[work.Instance];
-        const InstanceRecord instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
-        const bool finest_only = InstanceFinestOnly(scene, instance);
-        device MeshletWorkRange *phase2_ranges = BindlessBufferMutable(
-            MeshletWorkRange, bindless.Buffer, pc.Phase2RangeCandidateSlot
-        );
-        for (uint p = 0u; p < instance.PrimitiveCount; ++p) {
-            const PrimitiveRecord primitive = primitives[instance.PrimitiveOffset + p];
-            const uint count = PrimitiveWorkCount(primitive, finest_only);
-            if (count == 0u) continue;
-            phase2_ranges[output++] = {work.Instance, primitive.MeshletOffset, count, 0u};
-        }
-    }
     if (work.ChildCount == 0u) return;
     node_rank += group_prefixes[simd_group];
     uint output = block.NodeCount + node_rank;
@@ -568,15 +518,9 @@ kernel void MeshletCullBlockCount(
     threadgroup uint *group_prefixes [[threadgroup(0)]]
 ) {
     device MeshletCullBlockState *blocks = BindlessBufferMutable(MeshletCullBlockState, bindless.Buffer, pc.BlockStateSlot);
-    const bool sort_blend = pc.BlendBlockSlot != INVALID_SLOT;
-    threadgroup ushort *group_blend_counts = reinterpret_cast<threadgroup ushort *>(group_prefixes + CullRouteCount * PrefixStride);
-    if (sort_blend) {
-        for (uint j = lane; j < CullSimdGroups * 256u; j += CullBlockSize) group_blend_counts[j] = 0u;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
     const uint i = block_id * CullBlockSize + lane;
     const VisibleMeshlet work = ResolveMeshlet(bindless, pc, block_id, i);
-    uint routes = 0u, blend_bucket = 0u, coarse = 0u;
+    uint routes = 0u, coarse = 0u;
     if (work.Instance != INVALID_OFFSET) {
         const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[work.Instance];
         if (instance_slot != INVALID_OFFSET) {
@@ -584,7 +528,6 @@ kernel void MeshletCullBlockCount(
             const Scene scene{bindless, view, theme, workspace};
             const RoutedMeshlet routed = ClassifyMeshlet(scene, pc, work, instance_slot, instance);
             routes = routed.Routes;
-            blend_bucket = routed.BlendBucket;
             coarse = routed.Routes != 0u && routed.Coarse ? 1u : 0u;
         }
     }
@@ -611,27 +554,8 @@ kernel void MeshletCullBlockCount(
         }
     }
 
-    if (sort_blend) {
-        const uint present = (routes >> MeshletRoute_Blend) & 1u;
-        uint blend_rank = 0u, blend_count = 0u;
-        if (present != 0u) {
-            for (uint source = 0u; source < 32u; ++source) {
-                const bool match = simd_shuffle(present, source) != 0u && simd_shuffle(blend_bucket, source) == blend_bucket;
-                blend_count += match;
-                blend_rank += match && source < simd_lane;
-            }
-            if (blend_rank == 0u) group_blend_counts[simd_group * 256u + blend_bucket] = blend_count;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        device MeshletBlendBlockState *blend_blocks = BindlessBufferMutable(MeshletBlendBlockState, bindless.Buffer, pc.BlendBlockSlot);
-        for (uint bucket = lane; bucket < 256u; bucket += CullBlockSize) {
-            uint count = 0u;
-            for (uint group = 0u; group < CullSimdGroups; ++group) count += group_blend_counts[group * 256u + bucket];
-            blend_blocks[block_id].Buckets[bucket] = count;
-        }
-    }
     if (work.Instance != INVALID_OFFSET) {
-        BindlessBufferMutable(uint, bindless.Buffer, pc.ClassificationSlot)[i] = routes | (blend_bucket << CullRouteCount);
+        BindlessBufferMutable(uint, bindless.Buffer, pc.ClassificationSlot)[i] = routes;
     }
 }
 
@@ -643,44 +567,17 @@ kernel void MeshletCullPrefix(
     device MeshletCullBlockState *blocks = BindlessBufferMutable(MeshletCullBlockState, bindless.Buffer, pc.BlockStateSlot);
     device MeshletRouteState *state = BindlessBufferMutable(MeshletRouteState, bindless.Buffer, pc.RouteStateSlot);
     device MeshDispatchArgs *args = BindlessBufferMutable(MeshDispatchArgs, bindless.Buffer, pc.DispatchArgsSlot);
-    const bool sort_blend = pc.BlendBlockSlot != INVALID_SLOT;
     if (lane < CullRouteCount) {
         uint total = 0u;
-        if (lane != 2u) {
-            for (uint block = 0u; block < block_count; ++block) {
-                const uint count = blocks[block].Routes[lane];
-                blocks[block].Routes[lane] = total;
-                total += count;
-            }
-        } else {
-            for (uint block = block_count; block-- > 0u;) {
-                const uint count = blocks[block].Routes[lane];
-                blocks[block].Routes[lane] = total;
-                total += count;
-            }
+        for (uint block = 0u; block < block_count; ++block) {
+            const uint count = blocks[block].Routes[lane];
+            blocks[block].Routes[lane] = total;
+            total += count;
         }
         route_totals[lane] = total;
     }
-    if (sort_blend) {
-        device MeshletBlendBlockState *blend_blocks = BindlessBufferMutable(MeshletBlendBlockState, bindless.Buffer, pc.BlendBlockSlot);
-        uint total = 0u;
-        for (uint block = 0u; block < block_count; ++block) {
-            const uint count = blend_blocks[block].Buckets[lane];
-            blend_blocks[block].Buckets[lane] = total;
-            total += count;
-        }
-        state->BlendOffsets[lane] = total;
-    }
     threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);
     if (lane == 0u) {
-        if (sort_blend) {
-            uint blend_offset = 0u;
-            for (int bucket = 255; bucket >= 0; --bucket) {
-                const uint count = state->BlendOffsets[bucket];
-                state->BlendOffsets[bucket] = blend_offset;
-                blend_offset += count;
-            }
-        }
         uint route_offset = 0u;
         for (uint route = 0u; route < CullRouteCount; ++route) {
             state->Counts[route] = route_totals[route];
@@ -691,11 +588,6 @@ kernel void MeshletCullPrefix(
                 const uint count = route_totals[route] > begin ? min(route_totals[route] - begin, pc.DispatchChunkSize) : 0u;
                 args[route * pc.DispatchChunkCount + chunk] = {count, 1u, 1u};
             }
-        }
-        if (pc.TwoPhase != 0u) {
-            BindlessBufferMutable(MeshDispatchArgs, bindless.Buffer, pc.Phase2CullArgsSlot)[0] = {
-                (route_totals[MeshletRoute_Phase2Candidate] + Phase2GroupSize - 1u) / Phase2GroupSize, 1u, 1u
-            };
         }
     }
 }
@@ -710,15 +602,8 @@ kernel void MeshletCullEmit(
     const uint i = block_id * CullBlockSize + lane;
     const VisibleMeshlet work = ResolveMeshlet(bindless, pc, block_id, i);
     const bool valid = work.Instance != INVALID_OFFSET;
-    const bool sort_blend = pc.BlendBlockSlot != INVALID_SLOT;
     const uint classification = valid ? BindlessBuffer(uint, bindless.Buffer, pc.ClassificationSlot)[i] : 0u;
     const uint routes = classification & ((1u << CullRouteCount) - 1u);
-    const uint blend_bucket = classification >> CullRouteCount;
-    threadgroup ushort *group_blend_counts = reinterpret_cast<threadgroup ushort *>(group_prefixes + CullRouteCount * PrefixStride);
-    if (sort_blend) {
-        for (uint j = lane; j < CullSimdGroups * 256u; j += CullBlockSize) group_blend_counts[j] = 0u;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
 
     uint present[CullRouteCount], rank[CullRouteCount];
     for (uint route = 0u; route < CullRouteCount; ++route) {
@@ -738,20 +623,6 @@ kernel void MeshletCullEmit(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    uint blend_rank = 0u;
-    if (sort_blend && present[MeshletRoute_Blend] != 0u) {
-        uint blend_count = 0u;
-        for (uint source = 0u; source < 32u; ++source) {
-            const bool match = simd_shuffle(present[MeshletRoute_Blend], source) != 0u && simd_shuffle(blend_bucket, source) == blend_bucket;
-            blend_count += match;
-            blend_rank += match && source < simd_lane;
-        }
-        if (blend_rank == 0u) group_blend_counts[simd_group * 256u + blend_bucket] = blend_count;
-    }
-    if (sort_blend) threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (sort_blend && present[MeshletRoute_Blend] != 0u) {
-        for (uint group = 0u; group < simd_group; ++group) blend_rank += group_blend_counts[group * 256u + blend_bucket];
-    }
     if (!valid) return;
 
     device const MeshletCullBlockState *blocks = BindlessBuffer(MeshletCullBlockState, bindless.Buffer, pc.BlockStateSlot);
@@ -760,163 +631,7 @@ kernel void MeshletCullEmit(
     for (uint route = 0u; route < CullRouteCount; ++route) {
         if (present[route] == 0u) continue;
         rank[route] += group_prefixes[route * PrefixStride + simd_group];
-        if (route == MeshletRoute_Transmission) rank[route] = group_prefixes[route * PrefixStride + CullSimdGroups] - rank[route] - 1u;
         uint output = state->Offsets[route] + blocks[block_id].Routes[route] + rank[route];
-        if (sort_blend && route == MeshletRoute_Blend) {
-            device const MeshletBlendBlockState *blend_blocks = BindlessBuffer(MeshletBlendBlockState, bindless.Buffer, pc.BlendBlockSlot);
-            output = state->Offsets[MeshletRoute_Blend] + state->BlendOffsets[blend_bucket] + blend_blocks[block_id].Buckets[blend_bucket] + blend_rank;
-        }
         visible[output] = work;
-    }
-}
-
-inline bool Phase2ExpandedMeshletVisible(
-    const thread Scene &scene, MeshletCullPushConstants pc, VisibleMeshlet candidate,
-    uint instance_slot, InstanceRecord instance
-) {
-    const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, scene.B.Buffer, pc.MeshletSlot)[candidate.Meshlet];
-    const Transform world = scene.Models(pc.ModelSlot)[instance_slot];
-    if (!LodClusterVisible(scene, pc, meshlet, world, InstanceFinestOnly(scene, instance))) return false;
-    if (pc.RouteMode != 0u) {
-        const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, scene.B.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
-        const bool triangle_topology = PrimitiveTopology(meshlet) == MeshPrimitiveTopology_Triangle;
-        if (pc.RouteMode == 3u && !triangle_topology) return false;
-        const PBRMaterial material = scene.Materials(scene.View.MaterialSlot)[PrimitiveMaterialIndex(scene, primitive)];
-        // Solid visibility classifies rendered blend as opaque to match the primary visibility route.
-        const bool edit_overlay = (instance.Flags & MeshletInstanceFlag_EditOverlay) != 0u;
-        if (!edit_overlay && pc.RouteMode == 1u && material.AlphaMode == MaterialAlphaMode_Blend) return false;
-        if (!edit_overlay && material.DoubleSided == 0u &&
-            !MeshletConeVisible(scene, meshlet, world, InstanceDeformed(instance))) return false;
-    }
-    const MeshletBounds bounds = ResolveMeshletBounds(scene, pc, candidate, instance_slot, instance, meshlet, world);
-    if (!bounds.Valid) return true;
-    if (!MeshletBoundsInFrustum(scene, bounds)) return false;
-    return !MeshletOccluded(scene, pc.PyramidSamplerSlot, scene.ViewProj(), bounds.Center, bounds.Ax, bounds.Ay, bounds.Az);
-}
-
-// The phase-2 count, prefix, and emit passes preserve candidate order independently of GPU scheduling.
-kernel void MeshletPhase2Cull(
-    uint lane [[thread_index_in_threadgroup]], uint block_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant MeshletCullPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const Scene scene{bindless, view, theme, workspace};
-    device const MeshletRouteState *routes = BindlessBuffer(MeshletRouteState, bindless.Buffer, pc.RouteStateSlot);
-    const uint i = block_id * Phase2GroupSize + lane;
-    bool visible = false;
-    VisibleMeshlet candidate{};
-    if (i < routes->Counts[MeshletRoute_Phase2Candidate]) {
-        candidate = BindlessBuffer(VisibleMeshlet, bindless.Buffer, pc.VisibleSlot)[routes->Offsets[MeshletRoute_Phase2Candidate] + i];
-        const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[candidate.Instance];
-        if (instance_slot != INVALID_OFFSET) {
-            const InstanceRecord instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
-            const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[candidate.Meshlet];
-            const Transform world = scene.Models(pc.ModelSlot)[instance_slot];
-            const MeshletBounds bounds = ResolveMeshletBounds(scene, pc, candidate, instance_slot, instance, meshlet, world);
-            visible = !bounds.Valid ||
-                !MeshletOccluded(scene, pc.PyramidSamplerSlot, scene.ViewProj(), bounds.Center, bounds.Ax, bounds.Ay, bounds.Az);
-        }
-    }
-    const uint present = visible ? 1u : 0u;
-    const uint rank = simd_prefix_exclusive_sum(present);
-    if (pc.Phase2Emit == 0u) {
-        const uint count = simd_sum(present);
-        if (lane == 0u) BindlessBufferMutable(uint, bindless.Buffer, pc.Phase2BlockCountSlot)[block_id] = count;
-    } else if (visible) {
-        const uint offset = BindlessBuffer(uint, bindless.Buffer, pc.Phase2BlockCountSlot)[block_id];
-        BindlessBufferMutable(VisibleMeshlet, bindless.Buffer, pc.Phase2VisibleSlot)[offset + rank] = candidate;
-    }
-}
-
-kernel void MeshletPhase2RangeCull(
-    uint lane [[thread_index_in_threadgroup]], uint range_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant MeshletCullPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const Scene scene{bindless, view, theme, workspace};
-    const MeshletWorkState work = BindlessBuffer(MeshletWorkState, bindless.Buffer, pc.WorkStateSlot)[0];
-    if (range_id >= work.Phase2RangeCount) return;
-    device MeshletWorkRange *ranges = BindlessBufferMutable(MeshletWorkRange, bindless.Buffer, pc.Phase2RangeCandidateSlot);
-    const MeshletWorkRange range = ranges[range_id];
-    const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[range.Instance];
-    // Every lane evaluates the same complete-instance predicate.
-    bool range_visible = instance_slot != INVALID_OFFSET;
-    InstanceRecord instance{};
-    if (range_visible) {
-        instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
-        const OrientedBounds instance_bounds = InstanceBounds(scene, pc, instance_slot);
-        range_visible = !instance_bounds.Valid || !MeshletOccluded(
-            scene, pc.PyramidSamplerSlot, scene.ViewProj(),
-            instance_bounds.Center, instance_bounds.Ax, instance_bounds.Ay, instance_bounds.Az
-        );
-    }
-    if (!range_visible) {
-        // Write zero because the prefix reads every range.
-        if (pc.Phase2Emit == 0u && lane == 0u) ranges[range_id].WorkOffset = 0u;
-        return;
-    }
-    // Store survivor counts in WorkOffset for conversion to emit offsets by the prefix pass.
-    uint total = 0u;
-    uint output = range.WorkOffset;
-    for (uint base = 0u; base < range.MeshletCount; base += Phase2GroupSize) {
-        const uint m = base + lane;
-        const bool visible = m < range.MeshletCount &&
-            Phase2ExpandedMeshletVisible(scene, pc, {range.Instance, range.MeshletOffset + m}, instance_slot, instance);
-        const uint present = visible ? 1u : 0u;
-        const uint rank = simd_prefix_exclusive_sum(present);
-        if (pc.Phase2Emit != 0u && visible) {
-            BindlessBufferMutable(VisibleMeshlet, bindless.Buffer, pc.Phase2VisibleSlot)[output + rank] = {
-                range.Instance, range.MeshletOffset + m
-            };
-        }
-        const uint iteration = simd_sum(present);
-        total += iteration;
-        output += iteration;
-    }
-    if (pc.Phase2Emit == 0u && lane == 0u) ranges[range_id].WorkOffset = total;
-}
-
-kernel void MeshletPhase2Prefix(
-    uint lane [[thread_index_in_threadgroup]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant MeshletCullPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    if (lane != 0u) return;
-    device const MeshletRouteState *routes = BindlessBuffer(MeshletRouteState, bindless.Buffer, pc.RouteStateSlot);
-    const uint block_count = (routes->Counts[MeshletRoute_Phase2Candidate] + Phase2GroupSize - 1u) / Phase2GroupSize;
-    device uint *blocks = BindlessBufferMutable(uint, bindless.Buffer, pc.Phase2BlockCountSlot);
-    uint total = 0u;
-    for (uint block = 0u; block < block_count; ++block) {
-        const uint count = blocks[block];
-        blocks[block] = total;
-        total += count;
-    }
-    device MeshletWorkRange *ranges = BindlessBufferMutable(MeshletWorkRange, bindless.Buffer, pc.Phase2RangeCandidateSlot);
-    const uint range_count = BindlessBuffer(MeshletWorkState, bindless.Buffer, pc.WorkStateSlot)[0].Phase2RangeCount;
-    for (uint range = 0u; range < range_count; ++range) {
-        const uint count = ranges[range].WorkOffset;
-        ranges[range].WorkOffset = total;
-        total += count;
-    }
-    device MeshletRouteState *phase2 = BindlessBufferMutable(MeshletRouteState, bindless.Buffer, pc.Phase2RouteStateSlot);
-    phase2->Counts[MeshletRoute_OpaqueCullBack] = total;
-    phase2->Offsets[MeshletRoute_OpaqueCullBack] = 0u;
-    phase2->Counts[MeshletRoute_EditOverlay] = total;
-    phase2->Offsets[MeshletRoute_EditOverlay] = 0u;
-    phase2->Counts[MeshletRoute_Overlay] = total;
-    phase2->Offsets[MeshletRoute_Overlay] = 0u;
-    device MeshDispatchArgs *args = BindlessBufferMutable(MeshDispatchArgs, bindless.Buffer, pc.Phase2DispatchArgsSlot);
-    for (uint chunk = 0u; chunk < pc.DispatchChunkCount; ++chunk) {
-        const uint begin = chunk * pc.DispatchChunkSize;
-        const MeshDispatchArgs dispatch = {total > begin ? min(total - begin, pc.DispatchChunkSize) : 0u, 1u, 1u};
-        args[chunk] = dispatch;
-        args[MeshletRoute_EditOverlay * pc.DispatchChunkCount + chunk] = dispatch;
-        args[MeshletRoute_Overlay * pc.DispatchChunkCount + chunk] = dispatch;
     }
 }

@@ -26,11 +26,9 @@ enum class MeshletRouteMode : uint32_t { Single,
 struct MeshletCullConfig {
     MeshletRouteMode Mode{MeshletRouteMode::Single};
     uint32_t RequiredInstanceFlags{0};
-    uint32_t RouteMask{0x3ffu};
+    uint32_t RouteMask{0x1ffu};
     uint32_t UboOffset{0};
     uint32_t PyramidSamplerSlot{InvalidSlot};
-    bool SortBlend{false};
-    bool TwoPhase{false};
 };
 
 void RecordMeshletCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, MeshletCullConfig);
@@ -55,7 +53,7 @@ void DrawMeshlets(
 enum class RenderPhase {
     Prepare,
     Full,
-    BlurredFull,
+    BlurFast,
     BlurAccumulateFirst,
     BlurAccumulate,
     BlurResolve,
@@ -71,7 +69,7 @@ enum class SceneUpdate {
 void RecordRenderCommandBuffer(entt::registry &, entt::entity viewport, MTL::CommandBuffer *, SceneUpdate = SceneUpdate::Rebuild, RenderPhase = RenderPhase::Full);
 
 // Records every blur step and the resolve into one command buffer using one view-UBO instance per step.
-void RecordBlurStepsCommandBuffer(entt::registry &, entt::entity viewport, MTL::CommandBuffer *, std::span<const float> step_frames);
+void RecordBlurStepsCommandBuffer(entt::registry &, entt::entity viewport, MTL::CommandBuffer *, std::span<const uint32_t> sample_weights);
 
 // Derive the listed mesh entities' base normals in one batched GPU submit-and-wait, writing the base normal stores.
 // Meshes without triangles or adjacency are skipped.

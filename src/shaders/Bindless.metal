@@ -31,8 +31,6 @@ struct SceneT {
 
     // Projection matrices use Metal's positive-Y-up clip space.
     float4x4 ViewProj() const { return View.ViewProj.Unpack(); }
-    float4x4 PrevViewProj() const { return View.PrevViewProj.Unpack(); }
-    float4x4 NextViewProj() const { return View.NextViewProj.Unpack(); }
 
     device const Vertex *Vertices(uint slot) const { return BindlessBuffer(Vertex, B.VertexBuffer, slot); }
     device const Transform *Models(uint slot) const { return BindlessBuffer(Transform, B.ModelBuffer, slot); }

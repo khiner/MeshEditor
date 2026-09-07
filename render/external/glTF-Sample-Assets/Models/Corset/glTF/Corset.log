@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/Corset/glTF/Corset.webp
+[validation] total 2325.44 ms (init 1690.54; capture 0.39; compare 1.30; cleanup 0.02)
+[validation] replay reset 0.16; restore 5.96; derive 428.95; render 4.08; capture 0.23 ms
+[validation] snapshot reset 0.20; restore 0.71; derive 179.41; render 13.12; capture 0.37 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/Corset/glTF/Corset.webp

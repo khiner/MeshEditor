@@ -1,2 +1,8 @@
-VideoRecorder: 2304x1294 @ 24fps -> render/external/glTF_Physics/samples/MotionProperties/MotionProperties.mp4
+[validation] total 3314.15 ms (init 3020.62; capture 0.98; compare 0.75; cleanup 0.02)
+[validation] replay reset 0.19; restore 4.23; derive 98.77; render 47.94; capture 0.37 ms
+[validation] snapshot reset 0.18; restore 0.91; derive 89.95; render 48.82; capture 0.40 ms
+VideoRecorder: 2304x1294 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF_Physics/samples/MotionProperties/MotionProperties.mp4
+[validation] total 273.50 ms (init 0.00; capture 0.46; compare 1.48; cleanup 0.02)
+[validation] replay reset 0.26; restore 3.95; derive 86.30; render 46.54; capture 0.34 ms
+[validation] snapshot reset 0.25; restore 0.35; derive 85.18; render 48.00; capture 0.36 ms
 VideoRecorder: wrote 250 frames

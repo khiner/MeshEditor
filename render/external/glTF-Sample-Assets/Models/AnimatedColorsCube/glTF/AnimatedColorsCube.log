@@ -1,2 +1,8 @@
-VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/AnimatedColorsCube/glTF/AnimatedColorsCube.mp4
+[validation] total 3672.54 ms (init 3060.76; capture 0.26; compare 1.06; cleanup 0.06)
+[validation] replay reset 0.18; restore 1.68; derive 277.32; render 24.80; capture 0.07 ms
+[validation] snapshot reset 0.24; restore 0.13; derive 265.10; render 40.80; capture 0.09 ms
+VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/AnimatedColorsCube/glTF/AnimatedColorsCube.mp4
+[validation] total 21.63 ms (init 0.00; capture 0.17; compare 0.51; cleanup 0.02)
+[validation] replay reset 0.33; restore 1.62; derive 3.87; render 7.27; capture 0.05 ms
+[validation] snapshot reset 0.23; restore 0.03; derive 0.44; render 7.04; capture 0.05 ms
 VideoRecorder: wrote 72 frames

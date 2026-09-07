@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/OrientationTest/glTF/OrientationTest.webp
+[validation] total 2034.11 ms (init 1682.76; capture 0.38; compare 1.16; cleanup 0.03)
+[validation] replay reset 0.33; restore 2.19; derive 331.23; render 2.26; capture 0.09 ms
+[validation] snapshot reset 0.24; restore 0.27; derive 6.04; render 7.05; capture 0.07 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/OrientationTest/glTF/OrientationTest.webp

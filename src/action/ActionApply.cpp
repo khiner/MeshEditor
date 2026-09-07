@@ -53,6 +53,7 @@ void StartLog(std::filesystem::path path, bool append) {
     LogStream.emplace(LogPath, std::ios::binary | (append ? std::ios::app : std::ios::trunc));
     Log.emplace(*LogStream, &SerializeAction);
 }
+const std::filesystem::path &CurrentLogPath() { return LogPath; }
 void FlushLog() {
     if (Log) Log->Flush();
 }

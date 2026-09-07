@@ -66,7 +66,6 @@ using BoneSphereMeshOutput = metal::mesh<BoneSphereVaryings, void, OverlayDispat
     output.set_index(thread_index, thread_index);
 }
 
-
 fragment OverlayTargetsDepth BoneSphereFragment(
     BoneSphereVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -94,13 +93,11 @@ fragment OverlayTargetsDepth BoneSphereFragment(
 
     OverlayTargetsDepth out;
     out.Color = float4(color, view.BoneXRay != 0u ? 0.4f : 1.0f);
-    out.LineData = float4(0);
 
     // Project the view-space intersection to preserve sphere depth.
     const float3 world_hit = transpose(view.ViewRotation.Unpack()) * hit_view + float3(view.CameraPosition);
     const float4 clip = scene.ViewProj() * float4(world_hit, 1.0f);
-    // X-ray depth passes the cleared 1.0 depth test without occluding wires.
-    out.Depth = view.BoneXRay != 0u ? 0.999999f : clip.z / clip.w;
+    out.Depth = clip.z / clip.w;
     return out;
 }
 

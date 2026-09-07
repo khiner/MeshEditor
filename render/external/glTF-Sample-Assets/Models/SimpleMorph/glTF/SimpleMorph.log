@@ -1,2 +1,8 @@
-VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/SimpleMorph/glTF/SimpleMorph.mp4
+[validation] total 1030.84 ms (init 284.40; capture 2.77; compare 1.07; cleanup 0.03)
+[validation] replay reset 0.19; restore 7.64; derive 362.42; render 13.75; capture 0.06 ms
+[validation] snapshot reset 0.20; restore 0.12; derive 336.47; render 21.66; capture 0.06 ms
+VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SimpleMorph/glTF/SimpleMorph.mp4
+[validation] total 29.31 ms (init 0.00; capture 0.20; compare 1.03; cleanup 0.02)
+[validation] replay reset 0.31; restore 1.15; derive 1.52; render 12.90; capture 0.06 ms
+[validation] snapshot reset 0.23; restore 0.03; derive 0.66; render 11.14; capture 0.06 ms
 VideoRecorder: wrote 96 frames

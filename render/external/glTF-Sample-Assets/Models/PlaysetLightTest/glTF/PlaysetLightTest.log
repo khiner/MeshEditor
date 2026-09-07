@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/PlaysetLightTest/glTF/PlaysetLightTest.webp
+[validation] total 4769.52 ms (init 3287.10; capture 1.87; compare 1.77; cleanup 0.02)
+[validation] replay reset 0.16; restore 17.97; derive 712.17; render 4.32; capture 0.95 ms
+[validation] snapshot reset 0.16; restore 3.90; derive 724.77; render 13.52; capture 0.82 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/PlaysetLightTest/glTF/PlaysetLightTest.webp

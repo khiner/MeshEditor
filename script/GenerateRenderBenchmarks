@@ -59,7 +59,7 @@ CASES = [
     {"id": "editor-wireframe", "scene": "EditorWireframe", "camera": "Default", "action": "steady", "shading": "wireframe", "overlays": True},
     {"id": "transparency", "scene": "Transparency", "camera": "Default", "action": "steady", "shading": "rendered"},
     {"id": "deformation", "scene": "Deformation", "camera": "Default", "action": "playback"},
-    {"id": "deformation-motion-blur", "scene": "Deformation", "camera": "Default", "action": "playback", "motionBlur": 1},
+    {"id": "deformation-motion-blur", "scene": "Deformation", "camera": "Default", "action": "playback", "motionBlur": "fast"},
 ]
 
 

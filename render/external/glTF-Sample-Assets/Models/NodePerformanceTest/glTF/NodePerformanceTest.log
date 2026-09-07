@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/NodePerformanceTest/glTF/NodePerformanceTest.webp
+[validation] total 1476.47 ms (init 212.58; capture 14.18; compare 9.74; cleanup 0.05)
+[validation] replay reset 0.18; restore 79.65; derive 538.70; render 10.92; capture 12.67 ms
+[validation] snapshot reset 0.17; restore 22.34; derive 513.03; render 35.05; capture 27.20 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/NodePerformanceTest/glTF/NodePerformanceTest.webp

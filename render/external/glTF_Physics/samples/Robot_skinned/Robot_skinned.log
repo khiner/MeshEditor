@@ -1,4 +1,28 @@
 Warning: joint '<unnamed>': soft angular limit on X ignored (Jolt SixDOFConstraint lacks angular spring limits).
 Warning: joint '<unnamed>': soft angular limit on Z ignored (Jolt SixDOFConstraint lacks angular spring limits).
-VideoRecorder: 2304x1294 @ 24fps -> render/external/glTF_Physics/samples/Robot_skinned/Robot_skinned.mp4
+Warning: joint '<unnamed>': soft angular limit on X ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on Z ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on X ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on Z ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on X ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on Z ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on X ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on Z ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on X ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on Z ignored (Jolt SixDOFConstraint lacks angular spring limits).
+[validation] total 729.17 ms (init 219.08; capture 3.96; compare 2.40; cleanup 0.03)
+[validation] replay reset 0.16; restore 4.54; derive 177.64; render 72.54; capture 2.72 ms
+[validation] snapshot reset 0.17; restore 1.60; derive 170.33; render 71.04; capture 2.94 ms
+VideoRecorder: 2304x1294 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF_Physics/samples/Robot_skinned/Robot_skinned.mp4
+Warning: joint '<unnamed>': soft angular limit on X ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on Z ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on X ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on Z ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on X ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on Z ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on X ignored (Jolt SixDOFConstraint lacks angular spring limits).
+Warning: joint '<unnamed>': soft angular limit on Z ignored (Jolt SixDOFConstraint lacks angular spring limits).
+[validation] total 455.99 ms (init 0.00; capture 1.96; compare 1.38; cleanup 0.03)
+[validation] replay reset 0.43; restore 3.72; derive 158.76; render 63.24; capture 2.01 ms
+[validation] snapshot reset 0.44; restore 0.67; derive 155.76; render 65.37; capture 2.20 ms
 VideoRecorder: wrote 250 frames

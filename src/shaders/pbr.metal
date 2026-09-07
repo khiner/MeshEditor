@@ -13,18 +13,13 @@
 #include "ibl.metal"
 #include "IridescenceBRDF.metal"
 #include "PbrConstant.metal"
-#include "Velocity.metal"
 #include "VisibilityDecode.metal"
+#include "Transparency.metal"
 
 // Enable* constants permit compile-time feature removal and default to the full feature set.
 // TransmissionPrepass omits transmission materials and exposure to prevent attachment self-sampling.
 
 constant uint INVALID_MATERIAL_SLOT = 0xffffffffu;
-
-struct PbrTargets {
-    float4 Color [[color(0)]];
-    float4 Motion [[color(1)]] [[function_constant(VelocityOutput)]];
-};
 
 struct NormalInfo {
     float3 ng;
@@ -35,11 +30,6 @@ struct NormalInfo {
 };
 
 inline float clampedDot(float3 x, float3 y) { return clamp(dot(x, y), 0.0f, 1.0f); }
-
-inline float2 ProjectToNdc(float4x4 view_proj, float3 world_pos) {
-    const float4 clip = view_proj * float4(world_pos, 1.0f);
-    return clip.xy / clip.w;
-}
 
 inline float2 ApplyUvTransform(float2 uv, float2 uv_offset, float2 uv_scale, float uv_rotation) {
     const float s = sin(uv_rotation);
@@ -156,31 +146,16 @@ struct PbrContext {
     }
 };
 
-inline PbrTargets ShadePbr(
+inline float4 ShadePbr(
     MeshVaryings in, uint topology, float2 point_coord, const thread Scene &scene,
     constant SceneViewUBO &view, const thread PbrContext &ctx
 ) {
-    PbrTargets out;
-    out.Color = float4(0.0f);
-
     // Continue discarded lanes so neighboring texture-gradient calculations remain valid at masked edges.
     if (topology == uint(MeshPrimitiveTopology_Point) && length(point_coord - float2(0.5f)) > 0.5f) discard_fragment();
-    if (VelocityOutput) {
-        // Discarded fragments preserve the motion of the visible surface behind them.
-        // Project each pose through its captured view to include animated-camera motion.
-        // Camera-plane projections produce NaN and resolve to zero motion.
-        const float2 curr_ndc = ProjectToNdc(scene.ViewProj(), in.WorldPosition);
-        float2 prev_ndc = ProjectToNdc(scene.PrevViewProj(), in.WorldPosition + in.MotionPrev);
-        float2 next_ndc = ProjectToNdc(scene.NextViewProj(), in.WorldPosition + in.MotionNext);
-        if (any(isnan(prev_ndc))) prev_ndc = curr_ndc;
-        if (any(isnan(next_ndc))) next_ndc = curr_ndc;
-        out.Motion = PackScreenMotion(prev_ndc, curr_ndc, next_ndc);
-    }
 
     // Replace selected line and point shading with the selection color at the original coverage.
     if (topology != uint(MeshPrimitiveTopology_Triangle) && in.Color.a > 0.0f && view.DebugChannel == DebugChannel_None) {
-        out.Color = float4(in.Color.rgb, 1.0f);
-        return out;
+        return float4(in.Color.rgb, 1.0f);
     }
 
     device const PBRMaterial &material = scene.Materials(view.MaterialSlot)[in.MaterialIndex];
@@ -207,8 +182,7 @@ inline PbrTargets ShadePbr(
             if (material.EmissiveTexture.Slot != INVALID_MATERIAL_SLOT) emissive *= ctx.SampleTexture(material.EmissiveTexture).rgb;
             unlit += emissive;
         }
-        out.Color = TransmissionPrepass ? float4(unlit, base_color.a) : float4(unlit * view.Exposure, base_color.a);
-        return out;
+        return TransmissionPrepass ? float4(unlit, base_color.a) : float4(unlit * view.Exposure, base_color.a);
     }
 
     const float3 v = normalize(float3(view.CameraPosition) - in.WorldPosition);
@@ -500,8 +474,7 @@ inline PbrTargets ShadePbr(
             case DebugChannel_AnisotropyStrength: dbg = float3(anisotropy_strength); break;
             case DebugChannel_AnisotropyDirection: dbg = float3((anisotropy_dir + 1.0f) * 0.5f, 0.0f); break;
         }
-        out.Color = float4(dbg, base_color.a);
-        return out;
+        return float4(dbg, base_color.a);
     }
 
     if (!TransmissionPrepass) color *= view.Exposure;
@@ -515,12 +488,12 @@ inline PbrTargets ShadePbr(
         color = mix(color, overlay, selected.a);
     }
 
-    out.Color = float4(color, base_color.a);
-    return out;
+    return float4(color, base_color.a);
 }
 
-fragment PbrTargets PbrMeshletFragment(
+fragment TransparencyStore PbrTransparentFragment(
     MeshletVertexVaryings meshlet_in [[stage_in]],
+    TransparencyValues values [[imageblock_data]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
@@ -529,13 +502,12 @@ fragment PbrTargets PbrMeshletFragment(
     const MeshVaryings in = FromMeshletVertexVaryings(meshlet_in);
     const Scene scene{bindless, view, theme, workspace};
     const PbrContext ctx{scene, in};
-    return ShadePbr(
-        in, NonTriangleTopology ? meshlet_in.Topology : uint(MeshPrimitiveTopology_Triangle),
-        meshlet_in.PointCoord, scene, view, ctx
-    );
+    const auto shaded = ShadePbr(in, NonTriangleTopology ? meshlet_in.Topology : uint(MeshPrimitiveTopology_Triangle),
+        meshlet_in.PointCoord, scene, view, ctx);
+    return StoreTransparency(values, shaded, in.Position.z);
 }
 
-fragment PbrTargets PbrVisibilityFragment(
+fragment float4 PbrVisibilityFragment(
     QuadVaryings quad [[stage_in]],
     texture2d<uint, access::read> visibility [[texture(0)]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -544,7 +516,7 @@ fragment PbrTargets PbrVisibilityFragment(
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant VisibilityShadingPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
-    DecodedVisibility decoded = DecodeVisibility(quad.Position.xy, visibility, bindless, view, theme, workspace, pc, VelocityOutput);
+    DecodedVisibility decoded = DecodeVisibility(quad.Position.xy, visibility, bindless, view, theme, workspace, pc);
     if (!decoded.Valid) discard_fragment();
     const Scene scene{bindless, view, theme, workspace};
     PbrContext ctx{scene, decoded.V};

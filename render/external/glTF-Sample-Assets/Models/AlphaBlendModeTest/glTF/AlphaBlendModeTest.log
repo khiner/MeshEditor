@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/AlphaBlendModeTest/glTF/AlphaBlendModeTest.webp
+[validation] total 2507.11 ms (init 1623.56; capture 0.22; compare 2.26; cleanup 0.03)
+[validation] replay reset 0.17; restore 1.78; derive 425.41; render 4.20; capture 0.07 ms
+[validation] snapshot reset 0.19; restore 0.17; derive 432.67; render 16.32; capture 0.06 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/AlphaBlendModeTest/glTF/AlphaBlendModeTest.webp

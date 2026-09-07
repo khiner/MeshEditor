@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/SheenCloth/glTF/SheenCloth.webp
+[validation] total 1395.79 ms (init 233.59; capture 1.05; compare 2.21; cleanup 0.02)
+[validation] replay reset 0.16; restore 10.59; derive 567.95; render 3.26; capture 1.20 ms
+[validation] snapshot reset 0.22; restore 2.87; derive 557.55; render 13.89; capture 1.21 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SheenCloth/glTF/SheenCloth.webp

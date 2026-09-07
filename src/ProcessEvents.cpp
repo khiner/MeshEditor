@@ -547,29 +547,23 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
     auto &slots = r.ctx().get<mtl::BindlessSet>();
     // Wait for the live consumer (ImGui) to finish sampling the old resources before recreating them.
     if (auto *consumer = r.ctx().get<const ViewportConsumerFence>().Value) consumer->waitUntilCompleted();
-    pipelines.SetExtent(render_extent, slots);
+    pipelines.Main.SetExtent(ctx, render_extent, slots);
     {
         const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
         const bool is_pbr = shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered;
         const bool want_transmission = is_pbr && GetActivePbrLighting(r, viewport, shading).RealTransmission && pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
         pipelines.Main.EnsureTransmissionResources(ctx, render_extent, want_transmission);
     }
-    r.ctx().get<GpuBuffers>().ResizeWireCoverage(render_extent);
     {
         const profile::CpuScope scope{"UpdateSelectionSlots"};
-        const auto &sil = pipelines.Silhouette;
-        const auto &sil_edge = pipelines.SilhouetteEdge;
         const auto &main = pipelines.Main;
         const auto set_sampler = [&](uint32_t slot, SampledTexture sampled) { slots.SetSampler({SlotType::Sampler, slot}, sampled.Texture, sampled.Sampler); };
-        set_sampler(sel_slots.ObjectIdSampler, {*sil_edge.Resources->OffscreenImage, sil_edge.Resources->ImageSampler.get()});
-        set_sampler(sel_slots.DepthSampler, {*sil_edge.Resources->DepthImage, sil_edge.Resources->ImageSampler.get()});
-        set_sampler(sel_slots.SilhouetteSampler, {*sil.Resources->OffscreenImage, sil.Resources->ImageSampler.get()});
+        set_sampler(sel_slots.SilhouetteSampler, main.Nearest(&main.Resources->SilhouetteImage));
         set_sampler(sel_slots.SceneColorSampler, main.SceneColorSampler());
         set_sampler(sel_slots.OverlayColorSampler, main.OverlayColorSampler());
-        set_sampler(sel_slots.LineDataSampler, {*main.Resources->LineDataImage, main.Resources->NearestSampler.get()});
         set_sampler(sel_slots.TransmissionSampler, main.TransmissionSampler());
-        set_sampler(sel_slots.MotionBlurAccumSampler, main.MotionBlurAccumSampler());
-        set_sampler(sel_slots.VelocitySampler, main.VelocitySampler());
+        set_sampler(sel_slots.MotionBlurOutputSampler, main.MotionBlurOutputSampler());
+        set_sampler(sel_slots.VelocitySampler, main.Nearest(nullptr));
         set_sampler(sel_slots.SceneDepthSampler, main.SceneDepthSampler());
         set_sampler(sel_slots.DepthPyramidSampler, main.DepthPyramidSampler());
     }
@@ -726,7 +720,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     // Navigation is not logged; selection carries the rendered camera, including culling and LOD inputs.
     const auto stamp_selection_view = [&buffers](const RenderView &view) {
         auto &frame_view = *reinterpret_cast<SceneViewUBO *>(buffers.SceneViewUBO.Contents().data());
-        if (buffers.FrameView != view) buffers.VisibilityIdGeneration = InvalidOffset;
+        if (buffers.FrameView != view) buffers.Visibility.Generation = InvalidOffset;
         buffers.FrameView = view;
         view.ApplyTo(frame_view);
     };
@@ -787,13 +781,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 }
                 for (const auto &hit : hits) r.emplace_or_replace<Selected>(hit.Entity);
             }
-        }
-    }
-    if (r.all_of<PendingBoxSelectFinalize>(viewport)) {
-        r.remove<PendingBoxSelectFinalize>(viewport);
-        if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit &&
-            FindArmatureObject(r, FindActiveEntity(r)) == entt::null) {
-            FinalizeBoxSelectElements(r, viewport);
         }
     }
     if (const auto *pending = r.try_get<const PendingPick>(viewport)) {
@@ -1086,7 +1073,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
 
     if (const auto *handlers = r.ctx().find<std::vector<ComponentEventHandler>>()) {
-        for (const auto &h : *handlers) h(r);
+        for (const auto &h : *handlers)
+            if (h.Phase == ComponentEventPhase::BeforePose) h.Apply(r);
     }
 
     { // Run before processing InteractionMode changes because selection may update the mode.
@@ -1364,7 +1352,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         // Entering edit mode replaces animation deformation with the rest pose even when storage is unchanged.
         buffers.PreludeStale = true;
         request(RenderRequest::Rebuild);
-        r.remove<BoxSelectGpuPending>(viewport);
         if (interaction_mode == InteractionMode::Excite) {
             for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) {
                 dirty_sound_selection_meshes.insert(instance.Entity);
@@ -1376,15 +1363,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
     const bool mode_changed = !reactive<changes::InteractionMode>(r).empty();
     bool anim_advanced;
-    // Rebuild transparent sorting after transform or camera changes.
-    const auto transform_render_request = [&] {
-        const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
-        if (shading != ViewportShadingMode::MaterialPreview && shading != ViewportShadingMode::Rendered) return RenderRequest::Reuse;
-        for (uint32_t i = 0, n = buffers.Materials.Count(); i < n; ++i) {
-            if (buffers.Materials.Get(i).AlphaMode == MaterialAlphaMode::Blend) return RenderRequest::Rebuild;
-        }
-        return RenderRequest::Reuse;
-    }();
     {
         const auto &range = r.get<const TimelineRange>(viewport);
         auto &playback = r.get<TimelinePlayback>(viewport);
@@ -1461,7 +1439,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             r.emplace_or_replace<PosedLocal>(entity, local_pose.front());
             request_rerecord = true;
         }
-        if (request_rerecord) request(transform_render_request);
+        if (request_rerecord) request(RenderRequest::Reuse);
     }
     {
         const bool is_object_mode = interaction_mode == InteractionMode::Object;
@@ -1647,7 +1625,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                         }
                         buffers.PreludeStale = true;
                     }
-                    request(transform_render_request);
+                    request(RenderRequest::Reuse);
                 }
             }
         }
@@ -1716,7 +1694,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             for (auto e : sync.NewlyInserted) {
                 if (!wt_reactive.contains(e)) collect_wt(e);
             }
-            if (FlushIndexedWrites(wt_writes, [&] { return buffers.Instances.GetMutableTransforms(); })) request(transform_render_request);
+            if (FlushIndexedWrites(wt_writes, [&] { return buffers.Instances.GetMutableTransforms(); })) request(RenderRequest::Reuse);
         }
     }
     {
@@ -1772,7 +1750,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
 
     const auto render_extent = RenderExtentPx(r);
-    if (!reactive<changes::SceneView>(r).empty() ||
+    if (buffers.FrameView != RenderView{r.get<const ViewCamera>(viewport), render_extent} ||
+        !reactive<changes::SceneView>(r).empty() ||
         !reactive<changes::TransformPending>(r).empty() ||
         !reactive<changes::ViewportDisplay>(r).empty() ||
         !reactive<changes::InteractionMode>(r).empty() ||
@@ -1859,7 +1838,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         };
         buffers.FrameView.ApplyTo(view);
         buffers.SceneViewUBO.Update(as_bytes(view));
-        request(transform_render_request);
+        request(RenderRequest::Reuse);
     }
 
     // Publish dirty excite-mode vertex lists in one GPU selection transaction.
@@ -1901,6 +1880,12 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         state.EditPreludePending = is_edit_mode;
         r.remove<EditSelectionDirty>(viewport);
         request(RenderRequest::Reuse);
+    }
+    if (!r.ctx().get<FrameState>().MotionBlurSubFrame) {
+        if (const auto *handlers = r.ctx().find<std::vector<ComponentEventHandler>>()) {
+            for (const auto &handler : *handlers)
+                if (handler.Phase == ComponentEventPhase::AfterPose) handler.Apply(r);
+        }
     }
     for (auto &&[id, storage] : r.storage()) {
         if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();

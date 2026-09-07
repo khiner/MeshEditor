@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/NegativeScaleTest/glTF/NegativeScaleTest.webp
+[validation] total 2013.77 ms (init 1690.61; capture 0.37; compare 0.83; cleanup 0.03)
+[validation] replay reset 0.32; restore 1.71; derive 281.12; render 3.29; capture 0.09 ms
+[validation] snapshot reset 0.27; restore 0.39; derive 24.17; render 10.41; capture 0.15 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/NegativeScaleTest/glTF/NegativeScaleTest.webp

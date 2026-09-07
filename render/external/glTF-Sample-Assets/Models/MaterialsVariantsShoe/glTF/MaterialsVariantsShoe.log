@@ -1,4 +1,16 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.webp
-Saved screenshot: render/external/glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.midnight.webp
-Saved screenshot: render/external/glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.beach.webp
-Saved screenshot: render/external/glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.street.webp
+[validation] total 3851.05 ms (init 2970.67; capture 0.50; compare 1.87; cleanup 0.03)
+[validation] replay reset 0.17; restore 5.94; derive 424.32; render 3.86; capture 0.26 ms
+[validation] snapshot reset 0.23; restore 0.80; derive 429.01; render 13.21; capture 0.18 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.webp
+[validation] total 298.22 ms (init 0.00; capture 0.27; compare 1.04; cleanup 0.02)
+[validation] replay reset 0.22; restore 4.34; derive 145.91; render 2.63; capture 0.20 ms
+[validation] snapshot reset 0.22; restore 0.32; derive 140.92; render 1.95; capture 0.17 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.midnight.webp
+[validation] total 303.13 ms (init 0.00; capture 0.25; compare 1.41; cleanup 0.02)
+[validation] replay reset 0.19; restore 4.66; derive 146.24; render 2.90; capture 0.18 ms
+[validation] snapshot reset 0.20; restore 0.32; derive 143.55; render 3.04; capture 0.16 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.beach.webp
+[validation] total 313.11 ms (init 0.00; capture 0.28; compare 1.38; cleanup 0.02)
+[validation] replay reset 0.18; restore 13.20; derive 146.54; render 2.66; capture 0.26 ms
+[validation] snapshot reset 0.19; restore 0.33; derive 145.07; render 2.83; capture 0.17 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.street.webp

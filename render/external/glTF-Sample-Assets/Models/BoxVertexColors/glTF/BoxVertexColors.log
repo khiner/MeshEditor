@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/BoxVertexColors/glTF/BoxVertexColors.webp
+[validation] total 3637.96 ms (init 3051.56; capture 0.22; compare 2.01; cleanup 0.02)
+[validation] replay reset 0.21; restore 1.51; derive 275.39; render 11.22; capture 0.05 ms
+[validation] snapshot reset 0.18; restore 0.19; derive 281.64; render 13.68; capture 0.06 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/BoxVertexColors/glTF/BoxVertexColors.webp

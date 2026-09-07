@@ -13,13 +13,13 @@
 namespace encode {
 // Returns visibility-decode inputs only when the raster and visible-list generations match.
 inline VisibilityShadingPushConstants VisibilityDecodePc(const GpuBuffers &buffers) {
-    if (buffers.VisibilityIdGeneration != buffers.MeshletVisibleGeneration) {
+    if (buffers.Visibility.Generation != buffers.MeshletVisibleGeneration) {
         static bool reported = false;
         if (!reported) {
             reported = true;
             std::println(
                 stderr, "Visibility ids were rasterized against generation {} and decode {}, so a cull ran between them",
-                buffers.VisibilityIdGeneration, buffers.MeshletVisibleGeneration
+                buffers.Visibility.Generation, buffers.MeshletVisibleGeneration
             );
         }
         assert(false);
@@ -33,7 +33,6 @@ inline VisibilityShadingPushConstants VisibilityDecodePc(const GpuBuffers &buffe
         .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
         .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
         .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
-        .Phase2VisibleMeshletSlot = buffers.MeshletPhase2Visible.Slot,
     };
 }
 

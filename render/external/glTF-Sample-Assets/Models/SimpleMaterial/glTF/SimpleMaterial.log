@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/SimpleMaterial/glTF/SimpleMaterial.webp
+[validation] total 283.59 ms (init 253.35; capture 0.18; compare 1.09; cleanup 0.09)
+[validation] replay reset 0.18; restore 1.69; derive 10.39; render 1.39; capture 0.04 ms
+[validation] snapshot reset 0.25; restore 0.09; derive 5.39; render 9.35; capture 0.10 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SimpleMaterial/glTF/SimpleMaterial.webp

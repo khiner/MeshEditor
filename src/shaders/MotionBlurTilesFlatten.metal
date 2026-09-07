@@ -4,7 +4,7 @@
 // Reduces each tile to its longest motion vector with one threadgroup per tile.
 #include "Bindless.metal"
 #include "MotionBlurShared.metal"
-#include "Velocity.metal"
+#include "VisibilityMotion.metal"
 #include "MotionBlurTilesFlattenPushConstants.metal"
 
 constant int FlattenThreads = 8;
@@ -12,7 +12,7 @@ constant int FlattenBlocks = MotionBlurTileSize / FlattenThreads;
 
 // Packs motion length above pixel position so atomic max resolves equal lengths by row-major position.
 inline uint PackLocal(float2 motion, uint2 tile_coord) {
-    return (min(uint(ceil(length(motion))), 0xFFFFu) << 16u) | (tile_coord.y << 5) | tile_coord.x;
+    return (min(uint(ceil(length(motion))), 0xFFFFu) << 16u) | ((tile_coord.y << 5) + tile_coord.x + 1u);
 }
 
 kernel void MotionBlurTilesFlattenKernel(
@@ -21,19 +21,28 @@ kernel void MotionBlurTilesFlattenKernel(
     uint2 group_id [[threadgroup_position_in_grid]],
     threadgroup atomic_uint *payload [[threadgroup(0)]],
     threadgroup float2 *max_motion [[threadgroup(1)]],
-    device const BindlessSetImageWrite &bindless [[buffer(BufferIndex_Bindless)]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant MotionBlurTilesFlattenPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant MotionBlurTilesFlattenPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
+    constant SceneViewUBO &previous [[buffer(5)]],
+    constant SceneViewUBO &next [[buffer(6)]],
+    device atomic_uint *indirections [[buffer(7)]],
+    texture2d<uint, access::read> visibility [[texture(0)]],
+    depth2d<float, access::read> depth [[texture(1)]],
+    texture2d<float, access::write> velocity [[texture(2)]],
+    texture2d<float, access::write> tiles [[texture(3)]]
 ) {
-    const SceneImageWrite scene{bindless, view, theme, workspace};
-    device atomic_uint *indirections = BindlessBufferMutable(atomic_uint, bindless.Buffer, pc.TileIndirectionSlot);
-    const uint2 tile_extent = uint2(bindless.Image[pc.TileImageSlot].get_width(), bindless.Image[pc.TileImageSlot].get_height());
+    const Scene scene{bindless, view, theme, workspace};
+    const Scene prev_scene{bindless, previous, theme, workspace};
+    const Scene next_scene{bindless, next, theme, workspace};
+    const uint2 tile_extent = uint2(tiles.get_width(), tiles.get_height());
 
     if (local_index == 0u) {
         atomic_store_explicit(&payload[MotionPrev], 0u, memory_order_relaxed);
         atomic_store_explicit(&payload[MotionNext], 0u, memory_order_relaxed);
+        max_motion[MotionPrev] = max_motion[MotionNext] = float2(0.0f);
         // Zero indirection entries before the ordered dilate pass so untouched entries do not reference tile (0, 0).
         atomic_store_explicit(&indirections[MotionTileIndex(MotionPrev, group_id, tile_extent)], 0u, memory_order_relaxed);
         atomic_store_explicit(&indirections[MotionTileIndex(MotionNext, group_id, tile_extent)], 0u, memory_order_relaxed);
@@ -45,16 +54,18 @@ kernel void MotionBlurTilesFlattenKernel(
     float2 local_max_prev = float2(0.0f);
     float2 local_max_next = float2(0.0f);
 
-    const int2 render_size = int2(scene.TexSize(pc.VelocitySamplerSlot, 0));
+    const int2 render_size = int2(velocity.get_width(), velocity.get_height());
     const int2 tile_origin = int2(group_id) * MotionBlurTileSize;
 
-    // Clamp partial edge tiles to the final pixel; duplicate values do not affect max reduction.
+    // Each pixel owns its velocity write, including partial edge tiles.
     for (int i = 0; i < FlattenBlocks * FlattenBlocks; ++i) {
         const int2 block = int2(i % FlattenBlocks, i / FlattenBlocks) * FlattenThreads;
         const uint2 tile_coord = uint2(block) + local_id;
-        const int2 texel = min(tile_origin + int2(tile_coord), render_size - 1);
+        const int2 texel = tile_origin + int2(tile_coord);
+        if (any(texel >= render_size)) continue;
         const float2 uv = (float2(texel) + 0.5f) / float2(render_size);
-        float4 motion = UnpackVelocity(scene.FetchTex(pc.VelocitySamplerSlot, texel, 0));
+        float4 motion = VisibilityMotion(scene, prev_scene, next_scene, pc, visibility.read(uint2(texel)).r, depth.read(uint2(texel)), uv);
+        velocity.write(PackVelocity(motion), uint2(texel));
 
         // Clip motion to the viewport and negate the backward-stored next-motion vector.
         float2 line_clip;
@@ -63,7 +74,7 @@ kernel void MotionBlurTilesFlattenKernel(
         motion *= min(line_clip, float2(1.0f)).xxyy;
         // Convert UV displacement to shutter-relative pixel motion with both halves directed forward in time.
         motion *= float2(render_size).xyxy;
-        motion *= float2(pc.MotionScale).xxyy;
+        motion *= float2(1.0f, -1.0f).xxyy;
 
         const uint sample_prev = PackLocal(motion.xy, tile_coord);
         if (local_payload_prev < sample_prev) {
@@ -82,12 +93,12 @@ kernel void MotionBlurTilesFlattenKernel(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Publish the winning thread's vector without a float atomic.
-    if (local_payload_prev == atomic_load_explicit(&payload[MotionPrev], memory_order_relaxed)) max_motion[MotionPrev] = local_max_prev;
-    if (local_payload_next == atomic_load_explicit(&payload[MotionNext], memory_order_relaxed)) max_motion[MotionNext] = local_max_next;
+    if (local_payload_prev != 0u && local_payload_prev == atomic_load_explicit(&payload[MotionPrev], memory_order_relaxed)) max_motion[MotionPrev] = local_max_prev;
+    if (local_payload_next != 0u && local_payload_next == atomic_load_explicit(&payload[MotionNext], memory_order_relaxed)) max_motion[MotionNext] = local_max_next;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if (local_index == 0u) {
-        bindless.Image[pc.TileImageSlot].write(float4(max_motion[MotionPrev], max_motion[MotionNext]), group_id);
+        tiles.write(float4(max_motion[MotionPrev], max_motion[MotionNext]), group_id);
     }
 }
 

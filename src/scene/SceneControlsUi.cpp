@@ -1043,12 +1043,15 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                 }
                 if (settings.MotionBlur) {
                     auto mb = *settings.MotionBlur;
-                    bool changed = SliderFloat("Shutter (frames)", &mb.Shutter, 0.f, 2.f);
-                    if (uint32_t steps = mb.Steps; SliderUInt("Steps", &steps, 1, 32)) {
+                    int method = int(mb.Method);
+                    bool changed = Combo("Method", &method, "Velocity (fast)\0Full sampling\0");
+                    MeshEditor::HelpMarker("Velocity (fast) blurs one rendered image using motion vectors. It is inexpensive, but approximates changing visibility, reflections, and lighting.\n\nFull sampling renders multiple times across the shutter to capture those changes. More samples reduce stepping at higher rendering cost.");
+                    mb.Method = MotionBlurMethod(method);
+                    changed |= SliderFloat("Shutter (frames)", &mb.Shutter, 0.f, 2.f);
+                    if (uint32_t steps = mb.Steps; mb.Method == MotionBlurMethod::FullSampling && SliderUInt("Samples", &steps, 1, 64)) {
                         mb.Steps = uint8_t(steps);
                         changed = true;
                     }
-                    changed |= SliderFloat("Bleeding bias", &mb.BleedingBias, 0.f, 400.f);
                     if (changed) f.Set<&ViewportDisplay::MotionBlur>(std::optional{mb});
                 }
             }

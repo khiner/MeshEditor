@@ -37,11 +37,13 @@ namespace {
 std::vector<EditSelectionPushConstants> BuildSelectionTransactions(
     entt::registry &, std::span<const ElementRange>, Element, EditSelectionOperation, uint32_t pick_id_slot = InvalidSlot
 );
-void RecordSelectionPrepare(entt::registry &, MTL::CommandBuffer *, std::span<const EditSelectionPushConstants>);
-void RecordSelectionDerive(entt::registry &, MTL::CommandBuffer *, std::span<const EditSelectionPushConstants>);
+void RecordSelectionPrepare(entt::registry &, mtl::PassChain &, std::span<const EditSelectionPushConstants>);
+void RecordSelectionDerive(entt::registry &, mtl::PassChain &, std::span<const EditSelectionPushConstants>);
 
-void SubmitAndWait(MTL::CommandBuffer *command_buffer) {
+void SubmitAndWait(const mtl::Context &ctx, MTL::CommandBuffer *command_buffer) {
     const profile::CpuScope scope{"SelectionSubmit"};
+    // Selection culling may allocate bindless buffers while encoding.
+    ctx.CommitResidency();
     command_buffer->commit();
     command_buffer->waitUntilCompleted();
 }
@@ -89,7 +91,7 @@ uint32_t MaxElementBound(auto &&ranges) {
 
 void EnsureSelectionVisibility(entt::registry &r, mtl::PassChain &chain) {
     auto &buffers = r.ctx().get<GpuBuffers>();
-    if (buffers.VisibilityIdGeneration == buffers.MeshletVisibleGeneration) return;
+    if (buffers.Visibility == GpuBuffers::VisibilityState{buffers.MeshletVisibleGeneration, false}) return;
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
     RecordMeshletCull(chain, slots, pipelines, buffers, {.Mode = MeshletRouteMode::Visibility});
@@ -114,12 +116,12 @@ void RunSelectionPass(
         RecordMeshletCull(chain, slots, pipelines, buffers, *meshlet_cull);
     }
 
-    const auto extent = pipelines.Silhouette.Resources->DepthImage.Extent;
+    const auto extent = pipelines.Main.Resources->ScratchDepth.Extent;
     const uint32_t raster_passes = pick ? 2u : 1u;
     for (uint32_t index = 0; index < raster_passes; ++index) {
         // Preserve depth between the two read-only selection passes.
         const auto store = index + 1u < raster_passes ? MTL::StoreActionStore : MTL::StoreActionDontCare;
-        const auto pass = mtl::MakePassDescriptor({}, mtl::LoadDepth(*pipelines.Silhouette.Resources->DepthImage, store));
+        const auto pass = mtl::MakePassDescriptor({}, mtl::LoadDepth(*pipelines.Main.Resources->ScratchDepth, store));
         pass->setRenderTargetWidth(extent.Width);
         pass->setRenderTargetHeight(extent.Height);
         // The pick resolve reads the key an earlier raster wrote, and bindless buffers carry no tracked hazard.
@@ -158,7 +160,7 @@ void RenderElementSelectionPass(
         [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
             const SelectionElementPushConstants element_pc{MakeElementQuery(sel_slots, {box_min.x, box_min.y, box_max.x, box_max.y}, meshes.GetSelectionBitsSlot(), pick, resolve_id)};
             if (write_bitset) {
-                const auto extent = pipelines.Silhouette.Resources->DepthImage.Extent;
+                const auto extent = pipelines.Main.Resources->ScratchDepth.Extent;
                 const auto min_x = std::min(box_min.x, extent.Width);
                 const auto min_y = std::min(box_min.y, extent.Height);
                 const auto max_x = uint32_t(std::min<uint64_t>(uint64_t{box_max.x} + 1u, extent.Width));
@@ -216,7 +218,6 @@ std::optional<std::pair<entt::entity, uint32_t>> RunEditElementClick(
         toggle ? EditSelectionOperation::PickToggle : EditSelectionOperation::PickReplace,
         r.ctx().get<const SelectionSlots>().ElementPickId
     );
-    ctx.CommitResidency();
     auto *command_buffer = ctx.Queue->commandBuffer();
     { // End the final pass before submission.
         mtl::PassChain chain{command_buffer};
@@ -224,10 +225,10 @@ std::optional<std::pair<entt::entity, uint32_t>> RunEditElementClick(
             r, chain, viewport, ranges, element, false, {}, {},
             ElementPickTarget{mouse_px, ElementPickRadiusSq(element)}
         );
+        RecordSelectionPrepare(r, chain, transactions);
+        RecordSelectionDerive(r, chain, transactions);
     }
-    RecordSelectionPrepare(r, command_buffer, transactions);
-    RecordSelectionDerive(r, command_buffer, transactions);
-    SubmitAndWait(command_buffer);
+    SubmitAndWait(ctx, command_buffer);
     r.emplace_or_replace<EditSelectionDirty>(viewport);
     if (const auto index = ReadNearestPickedElement(buffers, element_count)) {
         for (const auto &range : ranges) {
@@ -283,6 +284,7 @@ void RecordVisibilityObjectSelection(
     auto *encoder = chain.BeginCompute("VisibilityObjectSelection", MTL::StageFragment);
     encode::BindCompute(encoder, pipelines.VisibilityObjectSelection, slots, buffers);
     encoder->setTexture(*pipelines.Main.Resources->VisibilityImage, 0u);
+    encoder->setTexture(*pipelines.Main.Resources->VisibilityDepth, 1u);
     encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{encode::VisibilityDecodePc(buffers), query, rect->Origin, rect->Extent});
     encoder->dispatchThreadgroups(
         MTL::Size((rect->Extent.x + 15u) / 16u, (rect->Extent.y + 15u) / 16u, 1u),
@@ -346,18 +348,16 @@ void RunBoxSelectElements(entt::registry &r, entt::entity viewport, std::span<co
                                                           EditSelectionOperation::RestoreBaseline;
     const auto transactions = BuildSelectionTransactions(r, ranges, element, operation);
     const auto &ctx = r.ctx().get<const mtl::Context>();
-    ctx.CommitResidency();
     auto *command_buffer = ctx.Queue->commandBuffer();
-    RecordSelectionPrepare(r, command_buffer, transactions);
     {
         mtl::PassChain chain{command_buffer};
+        RecordSelectionPrepare(r, chain, transactions);
         RenderElementSelectionPass(r, chain, viewport, ranges, element, true, box_min, box_max, {});
+        RecordSelectionDerive(r, chain, transactions);
     }
-    RecordSelectionDerive(r, command_buffer, transactions);
-    command_buffer->commit();
+    SubmitAndWait(ctx, command_buffer);
     if (baseline) baseline->ElementSelectionCaptured = true;
     r.emplace_or_replace<EditSelectionDirty>(viewport);
-    r.emplace_or_replace<BoxSelectGpuPending>(viewport);
 }
 
 std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::entity instance_entity, uvec2 mouse_px) {
@@ -380,7 +380,7 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
         mtl::PassChain chain{command_buffer};
         RenderSelectionPickPass(r, chain, std::nullopt, model_index, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex)});
     }
-    SubmitAndWait(command_buffer);
+    SubmitAndWait(ctx, command_buffer);
     return ReadNearestPickedElement(buffers, vertex_count);
 }
 
@@ -418,7 +418,7 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, uvec2 mouse_px, uint3
             }
         );
     }
-    SubmitAndWait(command_buffer);
+    SubmitAndWait(ctx, command_buffer);
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : r.view<RenderInstance>().each()) {
         if (ri.ObjectId > 0 && ri.ObjectId <= max_object_id) object_id_to_entity[ri.ObjectId] = e;
@@ -466,7 +466,8 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, std::pair<uvec2, uvec2
     const profile::CpuScope scope{"RunBoxSelect"};
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     memset(buffers.ObjectBoxBitset.Data(), 0, ((max_object_id + 31) / 32) * sizeof(uint32_t));
-    auto *command_buffer = r.ctx().get<const mtl::Context>().Queue->commandBuffer();
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    auto *command_buffer = ctx.Queue->commandBuffer();
     { // End the final pass before submission.
         mtl::PassChain chain{command_buffer};
         RenderSelectionPickPass(
@@ -479,7 +480,7 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, std::pair<uvec2, uvec2
             }
         );
     }
-    SubmitAndWait(command_buffer);
+    SubmitAndWait(ctx, command_buffer);
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : r.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
 
@@ -541,14 +542,14 @@ std::vector<EditSelectionPushConstants> BuildSelectionTransactions(
 }
 
 void RecordSelectionPrepare(
-    entt::registry &r, MTL::CommandBuffer *command_buffer,
+    entt::registry &r, mtl::PassChain &chain,
     std::span<const EditSelectionPushConstants> transactions
 ) {
     if (transactions.empty() || std::ranges::all_of(transactions, [](const auto &pc) { return pc.Operation == EditSelectionOperation::Derive; })) return;
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &buffers = r.ctx().get<const GpuBuffers>();
-    auto *encoder = command_buffer->computeCommandEncoder();
+    auto *encoder = chain.BeginCompute("SelectionPrepare", MTL::StageFragment | MTL::StageDispatch);
     for (const auto &pc : transactions) {
         const uint32_t count = pc.Element == Element::Vertex ? pc.VertexCount :
             pc.Element == Element::Edge                      ? pc.EdgeCount :
@@ -565,19 +566,22 @@ void RecordSelectionPrepare(
             encoder->memoryBarrier(MTL::BarrierScopeBuffers);
         }
     }
-    encoder->endEncoding();
 }
 
 void RecordSelectionDerive(
-    entt::registry &r, MTL::CommandBuffer *command_buffer,
+    entt::registry &r, mtl::PassChain &chain,
     std::span<const EditSelectionPushConstants> transactions
 ) {
     if (transactions.empty()) return;
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
-    auto *encoder = command_buffer->computeCommandEncoder();
-    for (const auto &pc : transactions) {
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    uint32_t partial_count = 0;
+    for (const auto &pc : transactions) partial_count = std::max(partial_count, (pc.VertexCount + 511u) / 512u);
+    buffers.EditSelectionPositionSums.SetCount<vec3>(std::max(partial_count, 1u));
+    auto *encoder = chain.BeginCompute("SelectionDerive", MTL::StageFragment | MTL::StageDispatch);
+    for (auto pc : transactions) {
+        pc.PositionSumsSlot = buffers.EditSelectionPositionSums.Slot;
         encode::BindCompute(encoder, pipelines.ResetEditSelectionSummary, slots, buffers);
         encode::SetPushConstants(encoder, pc);
         encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), MTL::Size(1, 1, 1));
@@ -593,8 +597,23 @@ void RecordSelectionDerive(
         encode::SetPushConstants(encoder, pc);
         encoder->dispatchThreadgroups(MTL::Size((word_count + 255) / 256, 1, 1), ThreadgroupSize::Linear256);
         encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+        encode::BindCompute(encoder, pipelines.SumEditSelectionPosition, slots, buffers);
+        encode::SetPushConstants(encoder, pc);
+        encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), MTL::Size(32, 1, 1));
+        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
     }
-    encoder->endEncoding();
+}
+
+void ApplySelectionTransactions(entt::registry &r, entt::entity viewport, std::span<const EditSelectionPushConstants> transactions) {
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    {
+        mtl::PassChain chain{command_buffer};
+        RecordSelectionPrepare(r, chain, transactions);
+        RecordSelectionDerive(r, chain, transactions);
+    }
+    SubmitAndWait(ctx, command_buffer);
+    r.emplace_or_replace<EditSelectionDirty>(viewport);
 }
 } // namespace
 
@@ -604,13 +623,7 @@ void ApplyEditSelectionCommand(
 ) {
     if (ranges.empty() || element == Element::None) return;
     const auto transactions = BuildSelectionTransactions(r, ranges, element, operation);
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    ctx.CommitResidency();
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    RecordSelectionPrepare(r, command_buffer, transactions);
-    RecordSelectionDerive(r, command_buffer, transactions);
-    SubmitAndWait(command_buffer);
-    r.emplace_or_replace<EditSelectionDirty>(viewport);
+    ApplySelectionTransactions(r, viewport, transactions);
 }
 
 void ApplyEditSelectionLists(
@@ -634,13 +647,7 @@ void ApplyEditSelectionLists(
         transactions[i].SelectionList = valid_lists[i];
         transactions[i].SelectionListCount = valid_lists[i].Count;
     }
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    ctx.CommitResidency();
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    RecordSelectionPrepare(r, command_buffer, transactions);
-    RecordSelectionDerive(r, command_buffer, transactions);
-    SubmitAndWait(command_buffer);
-    r.emplace_or_replace<EditSelectionDirty>(viewport);
+    ApplySelectionTransactions(r, viewport, transactions);
 }
 
 void ApplyEditSharpness(
@@ -699,21 +706,22 @@ void ApplyEditSharpness(
         r, selection_ranges, element, EditSelectionOperation::Derive
     );
     const auto &ctx = r.ctx().get<const mtl::Context>();
-    ctx.CommitResidency();
     auto *command_buffer = ctx.Queue->commandBuffer();
-    auto *encoder = command_buffer->computeCommandEncoder();
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
-    const auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
-    for (const auto &pc : commands) {
-        encode::BindCompute(encoder, pipelines.EditSharpness, slots, buffers);
-        encode::SetPushConstants(encoder, pc);
-        const uint32_t count = std::max(pc.EdgeCount, pc.FaceCount);
-        encoder->dispatchThreadgroups(MTL::Size((count + 255u) / 256u, 1, 1), ThreadgroupSize::Linear256);
+    {
+        mtl::PassChain chain{command_buffer};
+        auto *encoder = chain.BeginCompute("EditSharpness");
+        const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+        const auto &pipelines = r.ctx().get<const Pipelines>();
+        const auto &buffers = r.ctx().get<const GpuBuffers>();
+        for (const auto &pc : commands) {
+            encode::BindCompute(encoder, pipelines.EditSharpness, slots, buffers);
+            encode::SetPushConstants(encoder, pc);
+            const uint32_t count = std::max(pc.EdgeCount, pc.FaceCount);
+            encoder->dispatchThreadgroups(MTL::Size((count + 255u) / 256u, 1, 1), ThreadgroupSize::Linear256);
+        }
+        RecordSelectionDerive(r, chain, selection_transactions);
     }
-    encoder->endEncoding();
-    RecordSelectionDerive(r, command_buffer, selection_transactions);
-    SubmitAndWait(command_buffer);
+    SubmitAndWait(ctx, command_buffer);
     for (const auto mesh_entity : edited) r.emplace_or_replace<MeshShadingDirty>(mesh_entity);
 }
 
@@ -723,11 +731,4 @@ const EditSelectionSummary *GetElementSelectionSummary(const entt::registry &r, 
     const auto id = r.get<const MeshHandle>(mesh_entity).StoreId;
     const auto &summary = meshes.GetSelectionSummary(id);
     return summary.Mode == element ? &summary : nullptr;
-}
-
-void FinalizeBoxSelectElements(entt::registry &r, entt::entity viewport) {
-    if (!r.all_of<BoxSelectGpuPending>(viewport)) return;
-    auto *fence = r.ctx().get<const mtl::Context>().Queue->commandBuffer();
-    SubmitAndWait(fence);
-    r.remove<BoxSelectGpuPending>(viewport);
 }

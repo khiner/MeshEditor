@@ -64,6 +64,34 @@ int main(int argc, const char **argv) {
     // Optional test-name filter, e.g. `MeshEditorActionSerializeTest "every action*"`.
     if (argc > 1) cfg<override> = {.filter = argv[1]};
 
+    "motion blur reads legacy counts and preserves new sample counts"_test = [] {
+        for (uint8_t steps : {0, 1, 2, 32}) {
+            std::vector<std::byte> bytes;
+            expect(!zpp::bits::failure(zpp::bits::out{bytes}(0.75f, steps, 50.f)));
+            MotionBlur blur;
+            expect(!zpp::bits::failure(zpp::bits::in{bytes}(blur)));
+            expect(blur.Shutter == 0.75f);
+            expect(blur.Method == MotionBlurMethod::Fast && blur.Steps == 16u);
+        }
+        for (uint8_t samples : {1, 16, 64}) {
+            std::vector<std::byte> old;
+            expect(!zpp::bits::failure(zpp::bits::out{old}(0.5f, uint8_t(0x80u | samples), 100.f)));
+            MotionBlur decoded;
+            expect(!zpp::bits::failure(zpp::bits::in{old}(decoded)));
+            expect(decoded.Method == MotionBlurMethod::FullSampling && decoded.Steps == samples);
+        }
+        for (const auto method : {MotionBlurMethod::Fast, MotionBlurMethod::FullSampling})
+            for (uint8_t samples : {1, 16, 64}) {
+                const MotionBlur original{.Shutter = 0.25f, .Steps = samples, .Method = method};
+                std::vector<std::byte> bytes;
+                expect(!zpp::bits::failure(zpp::bits::out{bytes}(original)));
+                expect(bytes.size() == 9u);
+                MotionBlur restored;
+                expect(!zpp::bits::failure(zpp::bits::in{bytes}(restored)));
+                expect(restored.Shutter == original.Shutter && restored.Steps == samples && restored.Method == method);
+            }
+    };
+
     "every action round-trips through the log"_test = [] {
         for (auto &a : AllDefaultActions()) {
             EnsureSerializable(a);

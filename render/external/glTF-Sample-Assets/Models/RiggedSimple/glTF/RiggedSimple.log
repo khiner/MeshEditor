@@ -1,2 +1,8 @@
-VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.mp4
+[validation] total 317.77 ms (init 287.75; capture 0.28; compare 1.11; cleanup 0.03)
+[validation] replay reset 0.17; restore 1.54; derive 9.79; render 3.51; capture 0.08 ms
+[validation] snapshot reset 0.20; restore 0.21; derive 5.40; render 7.62; capture 0.08 ms
+VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.mp4
+[validation] total 12.26 ms (init 0.00; capture 0.18; compare 0.54; cleanup 0.02)
+[validation] replay reset 0.19; restore 0.86; derive 1.09; render 4.29; capture 0.06 ms
+[validation] snapshot reset 0.18; restore 0.04; derive 0.52; render 4.24; capture 0.05 ms
 VideoRecorder: wrote 50 frames

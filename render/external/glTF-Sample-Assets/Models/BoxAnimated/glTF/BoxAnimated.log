@@ -1,2 +1,8 @@
-VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/BoxAnimated/glTF/BoxAnimated.mp4
+[validation] total 3592.53 ms (init 2998.22; capture 0.21; compare 2.03; cleanup 0.02)
+[validation] replay reset 0.16; restore 2.07; derive 277.19; render 28.03; capture 0.06 ms
+[validation] snapshot reset 0.17; restore 0.26; derive 261.70; render 22.36; capture 0.06 ms
+VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/BoxAnimated/glTF/BoxAnimated.mp4
+[validation] total 25.44 ms (init 0.00; capture 0.20; compare 0.51; cleanup 0.02)
+[validation] replay reset 0.21; restore 0.77; derive 4.12; render 9.40; capture 0.06 ms
+[validation] snapshot reset 0.17; restore 0.04; derive 0.87; render 9.02; capture 0.06 ms
 VideoRecorder: wrote 89 frames

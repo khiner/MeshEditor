@@ -963,42 +963,6 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             if (!r.all_of<ModalModes, SoundVertices, Recording>(e)) continue;
             if (r.get<const Recording>(e).Frame == 0) TriggerModalStrike(r, e, GetActiveVertexIndex(r, e), 1.f, 1.f);
         }
-        // Last step's collisions strike the objects they hit, once per contact point.
-        if (auto *contacts = r.ctx().find<PhysicsContactImpacts>(); contacts && !contacts->Events.empty()) {
-            const auto &controls = ModalControls(r);
-            for (const auto &c : contacts->Events) {
-                if (c.Speed < controls.MinContactSpeed) continue;
-                const auto own = ResolveContactNodes(r, c.ColliderEntity, c.Entity);
-                if (!IsModalSounding(r, own.Model)) continue;
-                const auto &modes = r.get<const ModalModes>(own.Model);
-                if (modes.Positions.empty()) continue;
-                // Bring the world-space contact into the node-local frame the modes are defined in.
-                const auto &wt = r.get<const WorldTransform>(own.Model);
-                const vec3 local_point = InverseTransformPoint(wt, c.Point);
-                const vec3 local_dir = InverseTransformDir(wt, c.Direction);
-                const auto sample_point = NearestSamplePoint(modes.Positions, local_point);
-                // Apply the audibility floor to modal excitation rather than impact momentum.
-                if (PeakModalDrive(modes, sample_point, UnitOrZero(local_dir) * c.Impulse) < controls.MinContactExcitation) continue;
-                const auto other = ResolveContactNodes(r, c.OtherColliderEntity, c.Other);
-                // The other body is the impactor: its stiffness, mass, and curvature shape the contact time.
-                // Derive impactor material and curvature from the contacted surface.
-                const auto &other_props = MaterialOf(r, other.Surface, other.Model);
-                // A body with no mesh is treated as a solid sphere of its mass.
-                const auto other_curvature = SurfaceCurvature(r, other.Geometry, c.Point);
-                const Impactor impactor{
-                    .Material = other_props,
-                    .Curvature = other_curvature.value_or(SphereEquivalentCurvature(other_props.Density, c.OtherInvMass)),
-                    .InvMass = c.OtherInvMass,
-                };
-                const auto resultant_point = NearestSamplePoint(modes.Positions, InverseTransformPoint(wt, c.ResultantPoint));
-                const float own_rq = SurfaceRoughnessOf(r, own.Surface), other_rq = SurfaceRoughnessOf(r, other.Surface);
-                const float pair_roughness = std::sqrt(own_rq * own_rq + other_rq * other_rq);
-                TriggerModalStrike(r, own.Model, sample_point, c.Impulse, c.Speed, PhysicsStrike{local_dir, c.Point, own.Geometry, own.Surface, impactor, c.NominalArea, pair_roughness, resultant_point});
-            }
-            contacts->Events.clear();
-        }
-        // Recompute edited surfaces before publishing persistent contacts for this step.
-        SurfaceUpdateContacts(r);
         // Reconcile the live output device: a config change re-inits (and may change the negotiated rate), a mix change just applies level/on-off.
         bool device_rate_changed = false;
         if (auto *res = r.ctx().find<AudioDeviceResource>()) {
@@ -1104,12 +1068,52 @@ uint32_t BeginAudioCapture(entt::registry &r) {
 
 void EndAudioCapture(entt::registry &r) { r.ctx().erase<MasterCapture>(); }
 
+static void UpdateAudioContacts(entt::registry &r) {
+    // Displayed-frame collisions strike the objects they hit, once per contact point.
+    if (auto *contacts = r.ctx().find<PhysicsContactImpacts>(); contacts && !contacts->Events.empty()) {
+        const auto &controls = ModalControls(r);
+        for (const auto &c : contacts->Events) {
+            if (c.Speed < controls.MinContactSpeed) continue;
+            const auto own = ResolveContactNodes(r, c.ColliderEntity, c.Entity);
+            if (!IsModalSounding(r, own.Model)) continue;
+            const auto &modes = r.get<const ModalModes>(own.Model);
+            if (modes.Positions.empty()) continue;
+            // Bring the world-space contact into the node-local frame the modes are defined in.
+            const auto &wt = r.get<const WorldTransform>(own.Model);
+            const vec3 local_point = InverseTransformPoint(wt, c.Point);
+            const vec3 local_dir = InverseTransformDir(wt, c.Direction);
+            const auto sample_point = NearestSamplePoint(modes.Positions, local_point);
+            // Apply the audibility floor to modal excitation rather than impact momentum.
+            if (PeakModalDrive(modes, sample_point, UnitOrZero(local_dir) * c.Impulse) < controls.MinContactExcitation) continue;
+            const auto other = ResolveContactNodes(r, c.OtherColliderEntity, c.Other);
+            // The other body is the impactor: its stiffness, mass, and curvature shape the contact time.
+            // Derive impactor material and curvature from the contacted surface.
+            const auto &other_props = MaterialOf(r, other.Surface, other.Model);
+            // A body with no mesh is treated as a solid sphere of its mass.
+            const auto other_curvature = SurfaceCurvature(r, other.Geometry, c.Point);
+            const Impactor impactor{
+                .Material = other_props,
+                .Curvature = other_curvature.value_or(SphereEquivalentCurvature(other_props.Density, c.OtherInvMass)),
+                .InvMass = c.OtherInvMass,
+            };
+            const auto resultant_point = NearestSamplePoint(modes.Positions, InverseTransformPoint(wt, c.ResultantPoint));
+            const float own_rq = SurfaceRoughnessOf(r, own.Surface), other_rq = SurfaceRoughnessOf(r, other.Surface);
+            const float pair_roughness = std::sqrt(own_rq * own_rq + other_rq * other_rq);
+            TriggerModalStrike(r, own.Model, sample_point, c.Impulse, c.Speed, PhysicsStrike{local_dir, c.Point, own.Geometry, own.Surface, impactor, c.NominalArea, pair_roughness, resultant_point});
+        }
+        contacts->Events.clear();
+    }
+    // Recompute edited surfaces before publishing persistent contacts for this step.
+    SurfaceUpdateContacts(r);
+}
+
 void InitAudioSystem(entt::registry &r) {
     // A second call would connect every tracker twice.
     if (r.ctx().contains<ModalAudio>()) return;
     r.ctx().emplace<ModalAudio>();
     r.ctx().emplace<MonitorLimiter>();
     RegisterAudioComponentHandlers(r);
+    RegisterComponentEventHandler(r, UpdateAudioContacts, ComponentEventPhase::AfterPose);
 }
 
 void DeinitAudioSystem(entt::registry &r) { r.ctx().erase<ModalAudio>(); }

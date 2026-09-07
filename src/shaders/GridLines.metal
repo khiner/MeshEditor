@@ -21,7 +21,7 @@ vertex GridVaryings GridLinesVertex(
 ) {
     const Scene scene{bindless, view, theme, workspace};
     const float4 plane_pos = GridVerts[vertex_id];
-    return GridVaryings{scene.ViewProj() * plane_pos, plane_pos};
+    return GridVaryings{scene.ViewProj() * plane_pos};
 }
 
 // Returns anti-aliased line intensity for spacing 1 / scale.
@@ -51,7 +51,15 @@ fragment OverlayTargets GridLinesFragment(
 ) {
     const Scene scene{bindless, view, theme, workspace};
     constant ViewportThemeColors &colors = scene.Theme.Colors;
-    const float3 pos_3d = in.PlanePos.xyz / in.PlanePos.w;
+    // Intersect this pixel with y = 0 directly. Interpolating infinite triangle
+    // coordinates perturbs derivatives at triangle boundaries and across redraws.
+    const float2 ndc = in.Position.xy / float2(view.ViewportSize) * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
+    const float4x4 vp = scene.ViewProj();
+    const float3 clip_w = float3(vp[0].w, vp[2].w, vp[3].w);
+    const float3 row_x = float3(vp[0].x, vp[2].x, vp[3].x) - ndc.x * clip_w;
+    const float3 row_y = float3(vp[0].y, vp[2].y, vp[3].y) - ndc.y * clip_w;
+    const float3 plane = cross(row_x, row_y);
+    const float3 pos_3d = float3(plane.x, 0.0f, plane.y) / plane.z;
     const float3 camera_position = float3(view.CameraPosition);
 
     const float3 to_camera = camera_position - pos_3d;
@@ -90,7 +98,7 @@ fragment OverlayTargets GridLinesFragment(
     color.a *= 1.0f - pow(1.0f - abs(V.y), 3.0f);
     // Fade toward the far clip plane.
     color.a *= 1.0f - smoothstep(0.0f, 0.5f * view.CameraFar, dist - 0.5f * view.CameraFar);
-    return OverlayTargets{color, float4(0)};
+    return OverlayTargets{color};
 }
 
 #endif

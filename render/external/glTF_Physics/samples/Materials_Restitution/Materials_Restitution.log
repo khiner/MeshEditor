@@ -1,2 +1,8 @@
-VideoRecorder: 2304x1294 @ 24fps -> render/external/glTF_Physics/samples/Materials_Restitution/Materials_Restitution.mp4
+[validation] total 3589.41 ms (init 3053.11; capture 0.52; compare 0.55; cleanup 0.02)
+[validation] replay reset 0.17; restore 2.39; derive 448.98; render 27.24; capture 0.37 ms
+[validation] snapshot reset 0.17; restore 0.36; derive 33.76; render 21.42; capture 0.36 ms
+VideoRecorder: 2304x1294 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF_Physics/samples/Materials_Restitution/Materials_Restitution.mp4
+[validation] total 103.90 ms (init 0.00; capture 0.36; compare 0.57; cleanup 0.02)
+[validation] replay reset 0.20; restore 1.50; derive 25.46; render 15.10; capture 0.28 ms
+[validation] snapshot reset 0.20; restore 0.15; derive 31.24; render 28.29; capture 0.52 ms
 VideoRecorder: wrote 250 frames

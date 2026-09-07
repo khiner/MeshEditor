@@ -8,7 +8,6 @@
 #include "gpu/LodFrontierState.h"
 #include "gpu/LodNode.h"
 #include "gpu/MeshDispatchArgs.h"
-#include "gpu/MeshletBlendBlockState.h"
 #include "gpu/MeshletCullBlockState.h"
 #include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MeshletRecord.h"
@@ -25,7 +24,6 @@
 #include "gpu/Vertex.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/VisibleMeshlet.h"
-#include "gpu/WireCoverage.h"
 #include "gpu/WorkspaceLights.h"
 #include "metal/BufferArena.h"
 #include "metal/Image.h"
@@ -150,16 +148,8 @@ struct GpuBuffers {
           VisibleMeshlets{Ctx, 0, SlotType::Buffer},
           MeshletClassifications{Ctx, 0, SlotType::Buffer},
           MeshletCullBlocks{Ctx, 0, SlotType::Buffer},
-          MeshletBlendBlocks{Ctx, 0, SlotType::Buffer},
           MeshletRoutes{Ctx, sizeof(MeshletRouteState), SlotType::Buffer},
           MeshletDispatchArgs{Ctx, 0, SlotType::Buffer},
-          MeshletPhase2Visible{Ctx, 0, SlotType::Buffer},
-          MeshletPhase2Routes{Ctx, sizeof(MeshletRouteState), SlotType::Buffer},
-          MeshletPhase2DispatchArgs{Ctx, 0, SlotType::Buffer},
-          MeshletPhase2CullArgs{Ctx, sizeof(MeshDispatchArgs), SlotType::Buffer},
-          MeshletPhase2RangeCandidates{Ctx, 0, SlotType::Buffer},
-          MeshletPhase2RangeCullArgs{Ctx, sizeof(MeshDispatchArgs), SlotType::Buffer},
-          MeshletPhase2CullBlockCounts{Ctx, 0, SlotType::Buffer},
           MeshletCoarseCount{Ctx, sizeof(uint32_t), SlotType::Buffer},
           OverlayJobs{Ctx, 0, SlotType::Buffer},
           OverlayJobBlocks{Ctx, 0, SlotType::Buffer},
@@ -173,10 +163,9 @@ struct GpuBuffers {
           ObjectPickKeys{Ctx, MaxSelectableObjects * sizeof(uint32_t)},
           ObjectPickSeenBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t)},
           ObjectBoxBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t)},
-          MotionBlurTileIndirection{Ctx, 0},
           ElementPickKey{Ctx, sizeof(uint32_t)},
           ElementPickId{Ctx, sizeof(uint32_t)},
-          WireCoverageBuffer{Ctx, 0, SlotType::Buffer} {
+          EditSelectionPositionSums{Ctx, 0, SlotType::Buffer} {
     }
 
     void ReserveAdditionalIndices(uint32_t face, uint32_t edge, uint32_t vertex) {
@@ -246,17 +235,6 @@ struct GpuBuffers {
         }
     }
 
-    // Allocate two motion-blur indirection entries per tile only after blur targets exist.
-    void ResizeMotionBlurTileIndirection(mtl::Extent2D tile_extent) {
-        MotionBlurTileIndirection.SetCount(2 * tile_extent.Width * tile_extent.Height);
-    }
-
-    // One counter per wire color class plus the nearest wire's depth, for every pixel.
-    void ResizeWireCoverage(mtl::Extent2D extent) {
-        const uint64_t words = uint64_t(extent.Width) * extent.Height * uint32_t(WireCoverage::WordsPerPixel);
-        if (words != WireCoverageBuffer.Count<uint32_t>()) WireCoverageBuffer.SetCount<uint32_t>(uint32_t(words));
-    }
-
     // Reset derived handles to a deterministic scene-load baseline.
     void ResetSceneArenas() {
         VertexBuffer.Reset();
@@ -313,9 +291,7 @@ struct GpuBuffers {
     // Span-tree traversal alternates frontiers and stores each level's size, block prefixes, and indirect arguments.
     std::array<mtl::Buffer, 2> LodFrontiers;
     mtl::Buffer LodFrontierStates, LodFrontierBlockStates, LodExpandArgs;
-    mtl::Buffer VisibleMeshlets, MeshletClassifications, MeshletCullBlocks, MeshletBlendBlocks, MeshletRoutes, MeshletDispatchArgs;
-    mtl::Buffer MeshletPhase2Visible, MeshletPhase2Routes, MeshletPhase2DispatchArgs, MeshletPhase2CullArgs;
-    mtl::Buffer MeshletPhase2RangeCandidates, MeshletPhase2RangeCullArgs, MeshletPhase2CullBlockCounts;
+    mtl::Buffer VisibleMeshlets, MeshletClassifications, MeshletCullBlocks, MeshletRoutes, MeshletDispatchArgs;
     // Coarse clusters the last cull's cut selected, which the classification accumulates.
     mtl::Buffer MeshletCoarseCount;
     // Persistent procedural line jobs, deterministically compacted into one indirect submission.
@@ -341,8 +317,6 @@ struct GpuBuffers {
     static constexpr uint32_t MeshletDispatchChunkSize{65'535};
     static constexpr uint32_t MeshletCullBlockSize{1024};
     static constexpr uint32_t MeshletRouteCount{uint32_t(MeshletRoute::Count)};
-    // One 32-lane simdgroup per phase-2 cull threadgroup, matching the shader's Phase2GroupSize.
-    static constexpr uint32_t MeshletPhase2GroupSize{32};
     static constexpr uint32_t OverlayJobBlockSize{256};
 
     void SetOverlayJobs(std::span<const OverlayJob> jobs) {
@@ -356,8 +330,7 @@ struct GpuBuffers {
     }
 
     void EnsureMeshletVisibilityCapacity(
-        uint64_t visible_count, uint64_t work_range_count, uint64_t work_meshlet_count,
-        uint64_t dispatch_meshlet_count, bool sort_blend, bool two_phase
+        uint64_t visible_count, uint64_t work_range_count, uint64_t work_meshlet_count
     ) {
         const auto bytes = visible_count * sizeof(VisibleMeshlet);
         VisibleMeshlets.Reserve(bytes);
@@ -375,52 +348,36 @@ struct GpuBuffers {
         LodFrontierBlockStates.SetCount<LodFrontierBlockState>(frontier_block_count);
         MeshletClassifications.SetCount<uint32_t>(work_meshlet_count);
         MeshletCullBlocks.SetCount<MeshletCullBlockState>(block_count);
-        if (sort_blend) MeshletBlendBlocks.SetCount<MeshletBlendBlockState>(block_count);
-        MeshletDispatchChunkCount = static_cast<uint32_t>((dispatch_meshlet_count + MeshletDispatchChunkSize - 1) / MeshletDispatchChunkSize);
+        MeshletDispatchChunkCount = static_cast<uint32_t>((work_meshlet_count + MeshletDispatchChunkSize - 1) / MeshletDispatchChunkSize);
         MeshletDispatchArgs.SetCount<MeshDispatchArgs>(MeshletRouteCount * MeshletDispatchChunkCount);
-        if (two_phase) {
-            MeshletPhase2Visible.SetCount<VisibleMeshlet>(work_meshlet_count);
-            // Phase 2 conservatively uses one coverage-capable, two-sided visibility route.
-            MeshletPhase2DispatchArgs.SetCount<MeshDispatchArgs>(MeshletRouteCount * MeshletDispatchChunkCount);
-            MeshletPhase2RangeCandidates.SetCount<MeshletWorkRange>(work_range_count);
-            MeshletPhase2CullBlockCounts.SetCount<uint32_t>(
-                (work_meshlet_count + MeshletPhase2GroupSize - 1) / MeshletPhase2GroupSize
-            );
-        }
     }
 
     mat4 PreviousFullCullViewProj{1};
 
-    // Full-buffer shutter poses preserve live per-draw offsets for the velocity pass.
-    struct VelocityPose {
-        VelocityPose(mtl::BufferContext &ctx)
+    // Each shutter sample retains its evaluated geometry in UMA buffers.
+    struct RenderPose {
+        RenderPose(mtl::BufferContext &ctx)
             : Transforms(ctx, 0, SlotType::ModelBuffer),
               ArmatureDeform(ctx, 0, SlotType::ArmatureDeformBuffer),
-              MorphWeights(ctx, 0, SlotType::MorphWeightBuffer) {}
+              MorphWeights(ctx, 0, SlotType::MorphWeightBuffer),
+              Lights(ctx, 0, SlotType::LightBuffer) {}
 
-        mtl::Buffer Transforms, ArmatureDeform, MorphWeights;
-        // Looking through an animated camera moves the view too, so each pose carries its own.
-        mat4 ViewProj{1};
+        mtl::Buffer Transforms, ArmatureDeform, MorphWeights, Lights;
+
+        void ApplyTo(::SceneViewUBO &view) const {
+            view.ModelSlotOverride = Transforms.Slot;
+            view.ArmatureDeformSlot = ArmatureDeform.Slot;
+            view.MorphWeightsSlot = MorphWeights.Slot;
+            view.LightSlot = Lights.Slot;
+        }
     };
-    VelocityPose ShutterOpen{Ctx}, ShutterClose{Ctx};
 
-    // Blur step i uses boundaries [2i] and [2i+2] and center [2i+1].
-    std::vector<VelocityPose> BlurPoses;
-    void EnsureBlurPoses(size_t count) {
-        BlurPoses.reserve(count);
-        while (BlurPoses.size() < count) BlurPoses.emplace_back(Ctx);
-    }
-
-    void SnapshotSceneViewUbo(uint32_t instance) {
-        SceneViewUBO.Update(SceneViewUBO.Contents().subspan(0, sizeof(::SceneViewUBO)), ViewUboStride() * instance);
-    }
-    void UpdateSceneViewUboField(uint32_t instance, uint64_t field_offset, std::span<const std::byte> bytes) {
-        SceneViewUBO.Update(bytes, ViewUboStride() * instance + field_offset);
-    }
+    // One pose per shutter sample.
+    std::vector<RenderPose> BlurPoses;
     uint32_t SceneViewUboOffset(uint32_t instance) const { return uint32_t(ViewUboStride() * instance); }
 
     // Requires the scene evaluated at the capture time.
-    void CaptureVelocityPose(VelocityPose &dst) const {
+    void CaptureRenderPose(RenderPose &dst) const {
         static constexpr auto copy_whole = [](const mtl::Buffer &src, mtl::Buffer &dst) {
             dst.Reserve(src.UsedSize);
             dst.Update(src.Contents().subspan(0, src.UsedSize));
@@ -429,7 +386,7 @@ struct GpuBuffers {
         copy_whole(Instances.TransformBuffer, dst.Transforms);
         copy_whole(ArmatureDeformBuffer.Buffer, dst.ArmatureDeform);
         copy_whole(MorphWeightBuffer.Buffer, dst.MorphWeights);
-        dst.ViewProj = reinterpret_cast<const ::SceneViewUBO *>(SceneViewUBO.Contents().data())->ViewProj;
+        copy_whole(Lights, dst.Lights);
     }
 
     // Per-scene resource tables, reset through their own paths rather than ResetSceneArenas.
@@ -487,14 +444,19 @@ struct GpuBuffers {
 
     // Visibility IDs index the visible list and require matching cull and raster generations for decoding.
     uint32_t MeshletVisibleGeneration{0};
-    uint32_t VisibilityIdGeneration{InvalidOffset};
+    struct VisibilityState {
+        uint32_t Generation{InvalidOffset};
+        bool ExcludesTransmission{false};
+        bool operator==(const VisibilityState &) const = default;
+    } Visibility;
 
-    TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, ObjectBoxBitset, MotionBlurTileIndirection;
+    TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, ObjectBoxBitset;
     uint32_t ObjectPickEpochTag{}; // Zero clears the persistent keys before the first pick and after wraparound.
     TypedBuffer<uint32_t> ElementPickKey, ElementPickId;
     BufferArena<uint32_t> GeometryWork{Ctx, SlotType::Buffer};
     mtl::Buffer GeometryNormalEntries{Ctx, 0, SlotType::Buffer};
     BufferArena<uint32_t> ElementMeshlets{Ctx, SlotType::Buffer};
     BufferArena<AABB> BoundsParents{Ctx, SlotType::Buffer};
-    mtl::Buffer WireCoverageBuffer;
+    mtl::Buffer EditSelectionPositionSums;
+    mtl::Buffer WireCoverageBuffer{Ctx, 0, SlotType::Buffer};
 };

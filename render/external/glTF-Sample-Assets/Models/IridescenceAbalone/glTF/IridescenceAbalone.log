@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/IridescenceAbalone/glTF/IridescenceAbalone.webp
+[validation] total 1738.03 ms (init 231.34; capture 0.21; compare 2.42; cleanup 0.02)
+[validation] replay reset 0.16; restore 3.59; derive 750.74; render 3.47; capture 0.08 ms
+[validation] snapshot reset 0.17; restore 0.20; derive 731.05; render 14.48; capture 0.09 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/IridescenceAbalone/glTF/IridescenceAbalone.webp

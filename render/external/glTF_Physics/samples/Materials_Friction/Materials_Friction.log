@@ -1,2 +1,8 @@
-VideoRecorder: 2304x1294 @ 24fps -> render/external/glTF_Physics/samples/Materials_Friction/Materials_Friction.mp4
+[validation] total 3607.91 ms (init 3085.83; capture 0.41; compare 0.69; cleanup 0.03)
+[validation] replay reset 0.18; restore 2.56; derive 436.61; render 29.86; capture 0.30 ms
+[validation] snapshot reset 0.20; restore 0.49; derive 15.19; render 35.26; capture 0.30 ms
+VideoRecorder: 2304x1294 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF_Physics/samples/Materials_Friction/Materials_Friction.mp4
+[validation] total 85.08 ms (init 0.00; capture 0.24; compare 0.45; cleanup 0.02)
+[validation] replay reset 0.22; restore 1.75; derive 12.54; render 29.25; capture 0.14 ms
+[validation] snapshot reset 0.20; restore 0.20; derive 11.35; render 28.58; capture 0.15 ms
 VideoRecorder: wrote 250 frames

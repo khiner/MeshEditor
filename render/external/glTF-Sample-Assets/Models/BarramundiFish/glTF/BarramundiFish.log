@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/BarramundiFish/glTF/BarramundiFish.webp
+[validation] total 1121.73 ms (init 216.05; capture 0.26; compare 1.41; cleanup 0.04)
+[validation] replay reset 0.15; restore 4.08; derive 435.57; render 1.87; capture 0.10 ms
+[validation] snapshot reset 0.22; restore 0.25; derive 443.94; render 17.66; capture 0.12 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/BarramundiFish/glTF/BarramundiFish.webp

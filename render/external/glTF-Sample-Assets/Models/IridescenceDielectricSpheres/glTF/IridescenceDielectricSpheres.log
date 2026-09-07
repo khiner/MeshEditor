@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/IridescenceDielectricSpheres/glTF/IridescenceDielectricSpheres.webp
+[validation] total 2155.61 ms (init 303.62; capture 3.50; compare 3.49; cleanup 0.03)
+[validation] replay reset 0.18; restore 36.21; derive 875.22; render 4.89; capture 5.57 ms
+[validation] snapshot reset 0.30; restore 12.83; derive 894.83; render 10.04; capture 4.89 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/IridescenceDielectricSpheres/glTF/IridescenceDielectricSpheres.webp

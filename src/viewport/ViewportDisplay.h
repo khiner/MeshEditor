@@ -6,8 +6,10 @@
 
 #include <entt/entity/fwd.hpp>
 
+#include <algorithm>
 #include <optional>
 #include <string>
+#include <utility>
 
 enum class ViewportShadingMode : uint8_t {
     Wireframe,
@@ -27,15 +29,38 @@ enum class AnisotropicFilterLevel : uint8_t {
 // Levels are consecutive powers of two from Off->1 through X16->16.
 constexpr float ToMaxAnisotropy(AnisotropicFilterLevel level) { return float(1u << unsigned(level)); }
 
-// Motion blur, applied in Material Preview and Rendered while playing or scrubbing.
-// Each step renders the scene once and blurs it along its own screen motion, so a single step covers the whole shutter.
-// More steps subdivide the shutter and average the results.
-// Shutter is the time in frames between shutter open and close, centered on the frame.
+enum class MotionBlurMethod : uint8_t {
+    Fast,
+    FullSampling,
+};
+
 struct MotionBlur {
     float Shutter{0.5f};
-    uint8_t Steps{1};
-    float BleedingBias{100.f};
+    uint8_t Steps{16};
+    MotionBlurMethod Method{MotionBlurMethod::Fast};
 };
+
+// Keep the nine-byte action layout: 0x80 marks fast blur, with its inactive sample count
+// in the former bleeding-bias field. 0x81..0xc0 are full sample counts from older logs.
+constexpr auto serialize(auto &archive, const MotionBlur &blur) {
+    const uint8_t count = std::clamp<uint8_t>(blur.Steps, 1, 64);
+    const uint8_t encoded = blur.Method == MotionBlurMethod::Fast ? 0x80u : 0x80u | count;
+    const float value = blur.Method == MotionBlurMethod::Fast ? float(count) : 100.f;
+    return archive(blur.Shutter, encoded, value);
+}
+template<typename Archive> constexpr auto serialize(Archive &archive, MotionBlur &blur) {
+    if constexpr (Archive::kind() != decltype(Archive::kind())::in) return serialize(archive, std::as_const(blur));
+    else {
+        uint8_t encoded{};
+        float value{};
+        const auto result = archive(blur.Shutter, encoded, value);
+        blur.Method = encoded > 0x80u ? MotionBlurMethod::FullSampling : MotionBlurMethod::Fast;
+        blur.Steps = encoded == 0x80u ? uint8_t(value >= 1.f && value <= 64.f ? value : 16.f) :
+            encoded > 0x80u           ? std::clamp<uint8_t>(encoded & 0x7fu, 1, 64) :
+                                        16u;
+        return result;
+    }
+}
 
 // Changes require command-buffer recording.
 struct ViewportDisplay {
@@ -54,7 +79,7 @@ struct ViewportDisplay {
 };
 
 constexpr MotionBlur EffectiveMotionBlur(const ViewportDisplay &d) { return d.MotionBlur.value_or(MotionBlur{}); }
-constexpr uint32_t MotionBlurSteps(const ViewportDisplay &d) { return std::max(1u, uint32_t(EffectiveMotionBlur(d).Steps)); }
+constexpr uint32_t MotionBlurSteps(const ViewportDisplay &d) { return std::clamp(uint32_t(EffectiveMotionBlur(d).Steps), 1u, 64u); }
 
 struct PBRViewportLighting {
     bool UseSceneLights, UseSceneWorld;

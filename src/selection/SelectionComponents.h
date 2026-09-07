@@ -44,8 +44,6 @@ struct PendingBoxSelect {
     bool Additive;
     RenderView View;
 };
-struct PendingBoxSelectFinalize {};
-struct BoxSelectGpuPending {};
 
 // Object or bone click-pick awaiting GPU resolution.
 // Cycle advances to the next overlapping hit.

@@ -1,7 +1,7 @@
 #ifndef WIRERESOLVE_MSL
 #define WIRERESOLVE_MSL
 
-// Resolves per-class coverage to premultiplied overlay color and nearest wire depth.
+// Composite base, incidental, selected, and active coverage in that display order.
 #include "Bindless.metal"
 #include "SceneUBO.metal"
 #include "Varyings.metal"
@@ -23,7 +23,7 @@ inline float4 WireClassColor(const thread Scene &scene, uint wire_class) {
     return WireBaseColor(scene);
 }
 
-fragment OverlayTargetsDepth WireResolveFragment(
+fragment float4 WireResolveFragment(
     QuadVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
@@ -35,29 +35,15 @@ fragment OverlayTargetsDepth WireResolveFragment(
     const uint2 extent = uint2(scene.View.ViewportSize);
     const uint2 pixel = uint2(in.Position.xy);
     device const uint *words = BindlessBuffer(uint, bindless.Buffer, pc.CoverageSlot);
-    const uint base = (pixel.y * extent.x + pixel.x) * WireCoverage_WordsPerPixel;
-
-    // Select color from the highest-coverage class and alpha from total coverage.
-    float total = 0.0f;
+    const uint coverage = words[pixel.y * extent.x + pixel.x];
+    if (coverage == 0u) discard_fragment();
     float4 color = float4(0.0f);
-    float best = 0.0f;
-    for (uint wire_class = 0u; wire_class < WireCoverage_DepthWord; ++wire_class) {
-        const float coverage = float(words[base + wire_class]) * WireResolveScale;
-        if (coverage <= 0.0f) continue;
-        total += coverage;
-        if (coverage >= best) {
-            best = coverage;
-            color = WireClassColor(scene, wire_class);
-        }
+    for (uint wire_class = 0u; wire_class < 4u; ++wire_class) {
+        const float4 layer = WireClassColor(scene, wire_class);
+        const float alpha = float((coverage >> (wire_class * 8u)) & 255u) * WireResolveScale * layer.a;
+        color = float4(layer.rgb * alpha, alpha) + (1.0f - alpha) * color;
     }
-    if (total <= 0.0f) discard_fragment();
-
-    const float alpha = saturate(total) * color.a;
-    OverlayTargetsDepth out;
-    out.Color = float4(color.rgb * alpha, alpha);
-    out.LineData = float4(0.0f);
-    out.Depth = as_type<float>(~words[base + WireCoverage_DepthWord]);
-    return out;
+    return color;
 }
 
 #endif

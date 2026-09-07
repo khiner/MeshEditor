@@ -6,13 +6,15 @@
 #include "Bindless.metal"
 #include "BoneUtils.metal"
 #include "MeshletResolve.metal"
-#include "Varyings.metal"
+#include "LineQuad.metal"
 
-inline LineVaryings DiscardedEdge() {
-    return LineVaryings{float4(0, 0, -2, 1), float4(0), float2(0), float2(0)};
+struct BoneLineVertex { float4 Position, Color; };
+
+inline BoneLineVertex DiscardedEdge() {
+    return BoneLineVertex{float4(0, 0, -2, 1), float4(0)};
 }
 
-inline LineVaryings BoneWireMeshVertexAt(const thread Scene &scene, DrawData draw, uint vertex_id) {
+inline BoneLineVertex BoneWireMeshVertexAt(const thread Scene &scene, DrawData draw, uint vertex_id) {
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
     const float4x4 M = trs_to_mat4(world);
 
@@ -74,20 +76,17 @@ inline LineVaryings BoneWireMeshVertexAt(const thread Scene &scene, DrawData dra
     const float3 world_pos = (M * float4(vert_in_edge == 0u ? p1 : p2, 1.0f)).xyz;
     float4 clip_pos = scene.ViewProj() * float4(world_pos, 1.0f);
 
-    LineVaryings out;
+    BoneLineVertex out;
     out.Color = float4(bone_wire_color(scene, load_bone_instance_state(scene, draw)), 1.0f);
 
     // Apply Blender's depth bias to prevent z-fighting with the fill.
     clip_pos.z -= 1e-4f;
 
     out.Position = clip_pos;
-    const float2 screen_pos = clip_to_frag_co(clip_pos, float2(scene.View.ViewportSize));
-    out.EdgeStart = screen_pos;
-    out.EdgePos = screen_pos;
     return out;
 }
 
-using BoneWireMeshOutput = metal::mesh<LineVaryings, void, 24u, 12u, metal::topology::line>;
+using BoneWireMeshOutput = metal::mesh<EdgeQuadVaryings, void, 48u, 24u, metal::topology::triangle>;
 
 [[mesh]] void BoneWireMesh(
     BoneWireMeshOutput output,
@@ -105,14 +104,14 @@ using BoneWireMeshOutput = metal::mesh<LineVaryings, void, 24u, 12u, metal::topo
         if (thread_index == 0u) output.set_primitive_count(0u);
         return;
     }
-    output.set_primitive_count(12u);
-    if (thread_index >= 24u) return;
+    output.set_primitive_count(24u);
+    if (thread_index >= 12u) return;
 
     DrawData draw = work.Draw;
     draw.IndexSlotOffset = work.Primitive.AuxIndices;
-    output.set_vertex(thread_index, BoneWireMeshVertexAt(scene, draw, thread_index));
-    output.set_index(thread_index, thread_index);
+    const auto a = BoneWireMeshVertexAt(scene, draw, thread_index * 2u);
+    const auto b = BoneWireMeshVertexAt(scene, draw, thread_index * 2u + 1u);
+    EmitStroke(output, thread_index, scene, a.Position, b.Position, a.Color);
 }
-
 
 #endif

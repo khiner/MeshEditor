@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/CompareBaseColor/glTF/CompareBaseColor.webp
+[validation] total 3607.20 ms (init 2987.23; capture 0.31; compare 0.91; cleanup 0.03)
+[validation] replay reset 0.16; restore 3.80; derive 294.03; render 9.94; capture 0.13 ms
+[validation] snapshot reset 0.18; restore 0.38; derive 301.02; render 8.90; capture 0.17 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CompareBaseColor/glTF/CompareBaseColor.webp

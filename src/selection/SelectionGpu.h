@@ -7,8 +7,7 @@
 #include <array>
 struct SelectionSlots {
     uint32_t ObjectPickKey{}, ElementPickKey{}, ElementPickId{}, ObjectPickSeenBits{}, ObjectBoxBitset{};
-    uint32_t MotionBlurTileImage{}, MotionBlurTileIndirection{};
-    uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, SceneColorSampler{}, OverlayColorSampler{}, LineDataSampler{}, TransmissionSampler{}, MotionBlurAccumSampler{}, SceneDepthSampler{}, VelocitySampler{}, MotionBlurGatherSampler{}, DepthPyramidSampler{};
+    uint32_t SilhouetteSampler{}, SceneColorSampler{}, OverlayColorSampler{}, TransmissionSampler{}, MotionBlurOutputSampler{}, VelocitySampler{}, SceneDepthSampler{}, DepthPyramidSampler{};
 
     using Entry = std::pair<SlotType, uint32_t SelectionSlots::*>;
     static constexpr std::array Entries{
@@ -17,19 +16,13 @@ struct SelectionSlots {
         Entry{SlotType::Buffer, &SelectionSlots::ElementPickId},
         Entry{SlotType::Buffer, &SelectionSlots::ObjectPickSeenBits},
         Entry{SlotType::Buffer, &SelectionSlots::ObjectBoxBitset},
-        Entry{SlotType::Image, &SelectionSlots::MotionBlurTileImage},
-        Entry{SlotType::Buffer, &SelectionSlots::MotionBlurTileIndirection},
-        Entry{SlotType::Sampler, &SelectionSlots::ObjectIdSampler},
-        Entry{SlotType::Sampler, &SelectionSlots::DepthSampler},
         Entry{SlotType::Sampler, &SelectionSlots::SilhouetteSampler},
         Entry{SlotType::Sampler, &SelectionSlots::SceneColorSampler},
         Entry{SlotType::Sampler, &SelectionSlots::OverlayColorSampler},
-        Entry{SlotType::Sampler, &SelectionSlots::LineDataSampler},
         Entry{SlotType::Sampler, &SelectionSlots::TransmissionSampler},
-        Entry{SlotType::Sampler, &SelectionSlots::MotionBlurAccumSampler},
-        Entry{SlotType::Sampler, &SelectionSlots::SceneDepthSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::MotionBlurOutputSampler},
         Entry{SlotType::Sampler, &SelectionSlots::VelocitySampler},
-        Entry{SlotType::Sampler, &SelectionSlots::MotionBlurGatherSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::SceneDepthSampler},
         Entry{SlotType::Sampler, &SelectionSlots::DepthPyramidSampler},
     };
 

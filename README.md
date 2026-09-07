@@ -148,11 +148,12 @@ All of `--play`, `--record`, and `--screenshot` use the presentation look with m
 * `--play [seconds]` starts playback. Optional `[seconds]` auto-exits after the given duration. See `--record` below for how the duration is interpreted.
 * `--record path.mp4` runs playback and writes the viewport as an H.264 `.mp4` via a `ffmpeg` subprocess (must be on `PATH`).
 When a look-through camera is active, only the camera-frame sub-rect (the area inside the dimmed overlay) is recorded. Otherwise the full viewport is recorded.
+* Motion blur uses fast velocity reconstruction by default. Choose **Full sampling** in the viewport controls, or `--motion-blur N` (1–64), to average complete shutter renders for changing visibility, reflections, and lighting. `--motion-blur fast` selects the default method. Both methods share the shutter setting and keep editor overlays sharp.
 * `--fps N` sets the recording framerate (default 60).
 * `--screenshot path.webp` writes a single image. The format is chosen by extension (`.webp` lossless, `.png`, `.jpg`/`.jpeg`), which is optional and defaults to `.webp`. The captured region matches `--record`. On its own it exits after writing; combined with `--play [seconds]` or `--record` it grabs the frame and keeps running.
 * `--render basename` writes the scene's corpus artifacts under `basename.*` (used by `./script/Render` — see [Render corpus](#render-corpus)).
 * `--render-queue dir` renders one scene per `dir/*.job` file (`basename<TAB>scene arg`) in a single headless process, and parallel workers can safely share one queue. Used by `./script/Render`, combinable only with `-q`.
-* `--headless` runs without a window: the viewport renders offscreen at a fixed 1280x800 (2x pixel density) extent, and any capture flags read it back. Without a capture flag it renders one frame and exits, and a duration-less `--play` exits after one timeline loop.
+* `--headless` runs without a window: the viewport renders offscreen at a fixed 1280x800 (2x pixel density) extent, and any capture flags read it back. Without a capture flag it renders one frame and exits, and a duration-less `--play` exits after one timeline loop. With `MESHEDITOR_VALIDATE_ACTIONS` enabled, replay and snapshot validation also compare the complete UI rendered offscreen.
 
 The flags can be combined freely, except `--render` excludes `--record` and `--screenshot` (it derives its own outputs). `--render --play N` caps the video at N seconds.
 
@@ -273,6 +274,7 @@ $ SURFACE_AUDIO=1 script/Build
 
 `VALIDATE_ACTIONS=1` builds the app to run File->[Debug] Roundtrip after every committed action: the log
 replays into a fresh session and the scene saves, clears and restores, aborting on the first divergence.
+Validation compares canonical state, the complete viewport texture, and the composed UI at the captured timeline position.
 
 ```sh
 $ VALIDATE_ACTIONS=1 script/Build

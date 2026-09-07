@@ -14,7 +14,7 @@ inline uint MeshletVisibilityId(
 ) {
     const MeshletRouteState routes = BindlessBuffer(MeshletRouteState, bindless.Buffer, pc.RouteStateSlot)[0];
     const uint visible_index = routes.Offsets[pc.Route] + pc.VisibleOffset + group_index;
-    return (pc.VisibilityPhase << 31u) | (visible_index << VisibilityId_TriangleBits) | triangle;
+    return (visible_index << VisibilityId_TriangleBits) | triangle;
 }
 
 inline uint NonTriangleCorner(uint output_vertex) { return line_quad_corner(output_vertex); }

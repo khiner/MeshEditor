@@ -12,16 +12,6 @@
 #include "MeshVertexConstant.metal"
 #include "EditSelection.metal"
 
-// Returns the vertex's world position under the pose selected by buffer slots.
-inline float3 PoseWorldPos(const thread Scene &scene, DrawData draw, Vertex vert, uint idx, uint model_slot, uint armature_slot, uint morph_slot) {
-    float3 normal = float3(0);
-    float3 pos = float3(vert.Position);
-    ApplyMorphDeform(scene, draw, pos, idx, morph_slot);
-    const float3 local_pos = ApplyArmatureDeform(scene, draw, pos, idx, normal, armature_slot);
-    const Transform world = scene.Models(model_slot)[draw.FirstInstance];
-    return trs_transform_point(world, local_pos);
-}
-
 // Applies the stored polar and azimuth offsets in the frame defined by MeshStore::ComputeCornerFrame.
 // Rebuild the frame from current local positions so authored offsets follow deformation.
 inline float3 ApplyNormalOffset(const thread Scene &scene, DrawData draw, uint vertex_id, float3 normal, float2 offset) {
@@ -189,16 +179,7 @@ inline MeshVaryings TransformVertex(
     out.WorldScale = face_attributes ? (world_scale.x + world_scale.y + world_scale.z) / 3.0f : 0.0f;
     out.Position = scene.ViewProj() * float4(world_pos, 1.0f);
     out.PointSize = PointSize;
-    out.MotionPrev = float3(0);
-    out.MotionNext = float3(0);
-    if (VelocityOutput) {
-        const float3 prev = PoseWorldPos(scene, draw, vert, idx, scene.View.PrevModelSlot, scene.View.PrevArmatureDeformSlot, scene.View.PrevMorphWeightsSlot);
-        const float3 next = PoseWorldPos(scene, draw, vert, idx, scene.View.NextModelSlot, scene.View.NextArmatureDeformSlot, scene.View.NextMorphWeightsSlot);
-        out.MotionPrev = prev - world_pos;
-        out.MotionNext = next - world_pos;
-    }
-    out.EdgeStart = float2(0);
-    out.EdgePos = float2(0);
+
     return out;
 }
 

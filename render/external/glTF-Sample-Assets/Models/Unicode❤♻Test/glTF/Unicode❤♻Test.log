@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/Unicode❤♻Test/glTF/Unicode❤♻Test.webp
+[validation] total 337.69 ms (init 295.10; capture 0.23; compare 0.76; cleanup 0.06)
+[validation] replay reset 0.22; restore 1.23; derive 17.68; render 1.34; capture 0.09 ms
+[validation] snapshot reset 0.46; restore 0.23; derive 14.94; render 5.21; capture 0.14 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/Unicode❤♻Test/glTF/Unicode❤♻Test.webp

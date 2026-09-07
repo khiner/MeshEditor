@@ -1,2 +1,8 @@
-VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/CesiumMan/glTF/CesiumMan.mp4
+[validation] total 943.96 ms (init 250.51; capture 0.30; compare 1.01; cleanup 0.02)
+[validation] replay reset 0.20; restore 1.96; derive 351.59; render 4.00; capture 0.15 ms
+[validation] snapshot reset 0.23; restore 0.46; derive 325.78; render 7.61; capture 0.12 ms
+VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CesiumMan/glTF/CesiumMan.mp4
+[validation] total 64.26 ms (init 0.00; capture 0.22; compare 0.48; cleanup 0.02)
+[validation] replay reset 0.23; restore 1.50; derive 16.19; render 15.08; capture 0.12 ms
+[validation] snapshot reset 0.24; restore 0.13; derive 14.26; render 15.65; capture 0.13 ms
 VideoRecorder: wrote 48 frames

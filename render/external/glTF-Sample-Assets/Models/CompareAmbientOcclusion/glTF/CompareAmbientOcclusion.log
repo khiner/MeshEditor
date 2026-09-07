@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/CompareAmbientOcclusion/glTF/CompareAmbientOcclusion.webp
+[validation] total 539.51 ms (init 238.40; capture 1.77; compare 1.23; cleanup 0.03)
+[validation] replay reset 0.18; restore 15.88; derive 138.98; render 1.84; capture 3.12 ms
+[validation] snapshot reset 0.23; restore 4.63; derive 125.56; render 5.54; capture 2.14 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CompareAmbientOcclusion/glTF/CompareAmbientOcclusion.webp

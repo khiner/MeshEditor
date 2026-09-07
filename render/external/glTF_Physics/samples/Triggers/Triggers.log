@@ -1,2 +1,8 @@
-VideoRecorder: 2304x1294 @ 24fps -> render/external/glTF_Physics/samples/Triggers/Triggers.mp4
+[validation] total 1196.49 ms (init 218.24; capture 0.21; compare 3.27; cleanup 0.02)
+[validation] replay reset 0.15; restore 1.08; derive 457.41; render 27.73; capture 0.10 ms
+[validation] snapshot reset 0.17; restore 0.17; derive 456.72; render 31.12; capture 0.10 ms
+VideoRecorder: 2304x1294 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF_Physics/samples/Triggers/Triggers.mp4
+[validation] total 103.24 ms (init 0.00; capture 0.18; compare 1.10; cleanup 0.02)
+[validation] replay reset 0.19; restore 0.87; derive 5.41; render 47.77; capture 0.10 ms
+[validation] snapshot reset 0.23; restore 0.05; derive 6.72; render 40.50; capture 0.10 ms
 VideoRecorder: wrote 250 frames

@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/EnvironmentTest/glTF-IBL/EnvironmentTest.webp
+[validation] total 1672.11 ms (init 276.57; capture 1.21; compare 1.16; cleanup 0.03)
+[validation] replay reset 0.23; restore 4.15; derive 665.78; render 2.92; capture 0.65 ms
+[validation] snapshot reset 0.19; restore 0.62; derive 696.65; render 21.00; capture 0.93 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/EnvironmentTest/glTF-IBL/EnvironmentTest.webp

@@ -1,4 +1,16 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/GLB/CarConcept.webp
-Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/GLB/CarConcept.Carmine Candy.webp
-Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/GLB/CarConcept.Pearly Swirly.webp
-Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/GLB/CarConcept.Torched Graphite.webp
+[validation] total 521.59 ms (init 224.71; capture 6.50; compare 6.18; cleanup 0.03)
+[validation] replay reset 0.18; restore 22.82; derive 120.26; render 2.23; capture 3.81 ms
+[validation] snapshot reset 0.17; restore 6.63; derive 115.38; render 8.31; capture 4.38 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CarConcept/GLB/CarConcept.webp
+[validation] total 302.53 ms (init 0.00; capture 2.08; compare 2.13; cleanup 0.03)
+[validation] replay reset 0.37; restore 25.30; derive 152.09; render 4.93; capture 1.96 ms
+[validation] snapshot reset 0.35; restore 3.58; derive 104.51; render 3.17; capture 2.03 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CarConcept/GLB/CarConcept.Carmine Candy.webp
+[validation] total 264.69 ms (init 0.00; capture 1.98; compare 2.32; cleanup 0.03)
+[validation] replay reset 0.35; restore 25.68; derive 113.32; render 2.38; capture 2.04 ms
+[validation] snapshot reset 0.36; restore 3.63; derive 103.58; render 6.94; capture 2.07 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CarConcept/GLB/CarConcept.Pearly Swirly.webp
+[validation] total 267.06 ms (init 0.00; capture 2.08; compare 2.17; cleanup 0.02)
+[validation] replay reset 0.34; restore 25.85; derive 116.44; render 4.52; capture 1.98 ms
+[validation] snapshot reset 0.36; restore 3.60; derive 102.69; render 5.01; capture 1.99 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CarConcept/GLB/CarConcept.Torched Graphite.webp

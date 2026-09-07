@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/CompareClearcoat/glTF/CompareClearcoat.webp
+[validation] total 1360.93 ms (init 224.34; capture 0.25; compare 1.59; cleanup 0.02)
+[validation] replay reset 0.24; restore 1.62; derive 578.54; render 3.12; capture 0.20 ms
+[validation] snapshot reset 0.41; restore 0.38; derive 543.57; render 6.56; capture 0.08 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CompareClearcoat/glTF/CompareClearcoat.webp

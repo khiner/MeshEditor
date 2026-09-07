@@ -1,2 +1,8 @@
-VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/CesiumMilkTruck/glTF/CesiumMilkTruck.mp4
+[validation] total 4116.91 ms (init 3404.72; capture 0.25; compare 1.04; cleanup 0.04)
+[validation] replay reset 0.16; restore 2.69; derive 307.35; render 18.15; capture 0.10 ms
+[validation] snapshot reset 1.65; restore 0.77; derive 352.93; render 26.98; capture 0.09 ms
+VideoRecorder: 2560x1600 @ 24fps -> render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CesiumMilkTruck/glTF/CesiumMilkTruck.mp4
+[validation] total 77.29 ms (init 0.00; capture 0.18; compare 0.99; cleanup 0.03)
+[validation] replay reset 0.21; restore 3.33; derive 26.54; render 11.61; capture 0.08 ms
+[validation] snapshot reset 0.20; restore 0.23; derive 21.89; render 11.80; capture 0.19 ms
 VideoRecorder: wrote 30 frames

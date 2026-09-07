@@ -31,11 +31,11 @@ inline float4 VisibilitySampleTexture(
     return scene.SampleTexGrad(texture.Slot, transformed, dx, dy);
 }
 
-fragment uint2 MeshletVisibilityOpaqueFragment(float4 position [[position]], uint primitive_id [[primitive_id]]) {
-    return uint2(primitive_id, as_type<uint>(position.z));
+fragment uint MeshletVisibilityOpaqueFragment(uint primitive_id [[primitive_id]]) {
+    return primitive_id;
 }
 
-fragment uint2 MeshletVisibilityPrimitiveFragment(
+fragment uint MeshletVisibilityPrimitiveFragment(
     float4 position [[position]],
     uint primitive_id [[primitive_id]],
     bool front_facing [[front_facing]],
@@ -45,7 +45,7 @@ fragment uint2 MeshletVisibilityPrimitiveFragment(
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant MeshletDrawPushConstants &draw_pc [[buffer(BufferIndex_PushConstants)]]
 ) {
-    // Alias both phase slots because raster-time coverage decodes IDs against the current draw's list.
+    // Raster-time coverage decodes IDs against the current draw's list.
     const VisibilityShadingPushConstants pc{
         .PrimitiveSlot = draw_pc.PrimitiveSlot,
         .InstanceSlot = draw_pc.InstanceSlot,
@@ -55,7 +55,6 @@ fragment uint2 MeshletVisibilityPrimitiveFragment(
         .MeshletLocalTriangleSlot = draw_pc.MeshletLocalTriangleSlot,
         .MeshletVertexSlot = draw_pc.MeshletVertexSlot,
         .VisibleMeshletSlot = draw_pc.VisibleMeshletSlot,
-        .Phase2VisibleMeshletSlot = draw_pc.VisibleMeshletSlot,
     };
     const Scene scene{bindless, view, theme, workspace};
     ResolvedVisibility resolved = ResolveVisibilityPrimitive(primitive_id, bindless, pc);
@@ -71,7 +70,7 @@ fragment uint2 MeshletVisibilityPrimitiveFragment(
     const bool transmission_mask = draw_pc.VisibilityTransmission != 0u && material.Unlit == 0u &&
         material.Transmission.Factor > 0.0f;
     const bool point_coverage = topology == MeshPrimitiveTopology_Point;
-    if (!alpha_mask && !transmission_mask && !point_coverage) return uint2(primitive_id, as_type<uint>(position.z));
+    if (!alpha_mask && !transmission_mask && !point_coverage) return primitive_id;
 
     if (!MeshletCoarse(resolved.Meshlet)) {
         const uint logical_element = topology == MeshPrimitiveTopology_Triangle ?
@@ -99,5 +98,5 @@ fragment uint2 MeshletVisibilityPrimitiveFragment(
         }
         if (transmission > 0.0f) discard_fragment();
     }
-    return uint2(primitive_id, as_type<uint>(position.z));
+    return primitive_id;
 }

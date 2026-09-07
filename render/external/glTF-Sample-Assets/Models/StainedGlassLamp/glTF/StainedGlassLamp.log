@@ -1,3 +1,12 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF/StainedGlassLamp.webp
-Saved screenshot: render/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF/StainedGlassLamp.Lamp on.webp
-Saved screenshot: render/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF/StainedGlassLamp.Lamp off.webp
+[validation] total 7706.98 ms (init 1650.33; capture 0.53; compare 48.72; cleanup 0.03)
+[validation] replay reset 0.16; restore 11.03; derive 2994.78; render 11.12; capture 1.63 ms
+[validation] snapshot reset 0.25; restore 2.23; derive 2969.53; render 16.21; capture 0.42 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF/StainedGlassLamp.webp
+[validation] total 819.84 ms (init 0.00; capture 0.50; compare 0.42; cleanup 0.02)
+[validation] replay reset 0.22; restore 13.81; derive 390.03; render 4.55; capture 0.26 ms
+[validation] snapshot reset 0.63; restore 0.83; derive 406.42; render 1.68; capture 0.46 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF/StainedGlassLamp.Lamp on.webp
+[validation] total 862.38 ms (init 0.00; capture 0.37; compare 18.58; cleanup 0.03)
+[validation] replay reset 0.19; restore 11.35; derive 403.44; render 4.55; capture 0.24 ms
+[validation] snapshot reset 0.25; restore 0.84; derive 420.33; render 1.88; capture 0.33 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF/StainedGlassLamp.Lamp off.webp

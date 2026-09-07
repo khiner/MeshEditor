@@ -20,10 +20,6 @@ struct MeshVaryings {
     float4 VertexColor [[user(VertexColor)]];
     float4 WorldTangent [[user(WorldTangent)]];
     float WorldScale [[user(WorldScale)]] [[flat]];
-    float2 EdgeStart [[user(EdgeStart)]] [[flat]];
-    float2 EdgePos [[user(EdgePos)]];
-    float3 MotionPrev [[user(MotionPrev)]];
-    float3 MotionNext [[user(MotionNext)]];
 };
 
 struct MeshletVertexVaryings {
@@ -37,8 +33,6 @@ struct MeshletVertexVaryings {
     float2 TexCoord3 [[user(TexCoord3)]];
     float4 VertexColor [[user(VertexColor)]];
     float4 WorldTangent [[user(WorldTangent)]];
-    float3 MotionPrev [[user(MotionPrev)]];
-    float3 MotionNext [[user(MotionNext)]];
     // Emit flat per-face attributes on unshared corner vertices because indexed output is nondeterministic on this driver.
     float3 FlatWorldNormal [[user(FlatWorldNormal)]] [[flat]];
     uint FaceOverlayFlags [[user(FaceOverlayFlags)]] [[flat]];
@@ -66,7 +60,7 @@ inline MeshletVertexVaryings ToMeshletVertexVaryings(MeshVaryings v) {
     return {
         v.Position, v.WorldNormal, v.WorldPosition, v.Color,
         v.TexCoord0, v.TexCoord1, v.TexCoord2, v.TexCoord3, v.VertexColor,
-        v.WorldTangent, v.MotionPrev, v.MotionNext,
+        v.WorldTangent,
     };
 }
 
@@ -86,27 +80,8 @@ inline MeshVaryings FromMeshletVertexVaryings(MeshletVertexVaryings v) {
     out.VertexColor = v.VertexColor;
     out.WorldTangent = v.WorldTangent;
     out.WorldScale = v.WorldScale;
-    out.MotionPrev = v.MotionPrev;
-    out.MotionNext = v.MotionNext;
     return out;
 }
-
-// VertexColor fragment input shared by its vertex producers.
-struct LineVaryings {
-    float4 Position [[position]];
-    float4 Color [[user(Color)]];
-    float2 EdgeStart [[user(EdgeStart)]] [[flat]];
-    float2 EdgePos [[user(EdgePos)]];
-};
-
-// Line output shared by overlay and object-selection pipelines.
-struct ObjectLineVaryings {
-    float4 Position [[position]];
-    float4 Color [[user(Color)]];
-    float2 EdgeStart [[user(EdgeStart)]] [[flat]];
-    float2 EdgePos [[user(EdgePos)]];
-    uint ObjectId [[user(ObjectId)]] [[flat]];
-};
 
 struct QuadVaryings {
     float4 Position [[position]];
@@ -118,10 +93,9 @@ struct NdcVaryings {
     float2 Ndc [[user(Ndc)]];
 };
 
-// Grid-plane output with infinite outer vertices represented through homogeneous w.
+// The grid rasterizes its infinite plane for depth testing.
 struct GridVaryings {
     float4 Position [[position]];
-    float4 PlanePos [[user(PlanePos)]];
 };
 
 // Object ID output for depth and selection prepasses.
@@ -145,7 +119,9 @@ struct PointVaryings {
 // Edge-quad coverage and color output.
 struct EdgeQuadVaryings {
     float4 Position [[position]];
-    float EdgeCoord [[user(EdgeCoord)]] [[center_no_perspective]];
+    float2 EdgeCoord [[user(EdgeCoord)]] [[center_no_perspective]];
+    float EdgeLength [[user(EdgeLength)]] [[flat]];
+    uint ObjectId [[user(ObjectId)]] [[flat]];
     float4 Color [[user(Color)]];
     float4 OuterColor [[user(OuterColor)]] [[flat]];
 };
@@ -182,37 +158,11 @@ struct ElementIdFragmentVaryings {
 
 struct OverlayTargets {
     float4 Color [[color(0)]];
-    float4 LineData [[color(1)]];
 };
 
 struct OverlayTargetsDepth {
     float4 Color [[color(0)]];
-    float4 LineData [[color(1)]];
     float Depth [[depth(any)]];
 };
-
-// Converts clip space to top-down pixel coordinates.
-inline float2 clip_to_frag_co(float4 clip, float2 viewport_size) {
-    return ndc_to_uv(clip.xy / clip.w) * viewport_size;
-}
-
-inline LineVaryings MakeLineVertex(float4 clip, float4 color, float2 viewport_size) {
-    const float2 screen_pos = clip_to_frag_co(clip, viewport_size);
-    return {clip, color, screen_pos, screen_pos};
-}
-
-// Packs perpendicular direction and signed line distance into [0, 1] for composite antialiasing.
-inline float4 pack_line_data(float2 frag_co, float2 edge_start, float2 edge_pos) {
-    float2 edge = edge_start - edge_pos;
-    const float len = length(edge);
-    if (len > 0.0f) {
-        edge /= len;
-        const float2 perp = float2(-edge.y, edge.x);
-        const float dist = dot(perp, frag_co - edge_start);
-        return float4(perp * 0.5f + 0.5f, dist * 0.25f + 0.6f, 1.0f);
-    }
-    // Use a fixed perpendicular for zero-length edges.
-    return float4(1.0f, 0.0f, 0.6f, 1.0f);
-}
 
 #endif

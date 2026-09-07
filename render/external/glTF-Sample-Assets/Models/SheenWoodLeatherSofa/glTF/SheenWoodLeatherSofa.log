@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/SheenWoodLeatherSofa/glTF/SheenWoodLeatherSofa.webp
+[validation] total 4452.71 ms (init 3218.17; capture 2.97; compare 1.61; cleanup 0.02)
+[validation] replay reset 0.67; restore 10.90; derive 619.48; render 7.39; capture 0.51 ms
+[validation] snapshot reset 0.17; restore 2.74; derive 578.22; render 9.22; capture 0.62 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/SheenWoodLeatherSofa/glTF/SheenWoodLeatherSofa.webp

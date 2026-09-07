@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/DispersionTest/glTF/DispersionTest.webp
+[validation] total 3087.65 ms (init 282.72; capture 0.56; compare 6.98; cleanup 0.02)
+[validation] replay reset 0.16; restore 7.01; derive 1400.66; render 7.20; capture 0.52 ms
+[validation] snapshot reset 0.17; restore 1.51; derive 1360.97; render 18.69; capture 0.47 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/DispersionTest/glTF/DispersionTest.webp

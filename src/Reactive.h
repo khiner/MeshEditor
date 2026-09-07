@@ -35,10 +35,18 @@ ReactiveTracker track(entt::registry &r) { return {r.storage<entt::reactive>(ent
 template<typename Change>
 auto &reactive(entt::registry &r) { return r.storage<entt::reactive>(entt::type_hash<Change>::value()); }
 
-using ComponentEventHandler = std::function<void(entt::registry &)>;
+enum class ComponentEventPhase { BeforePose,
+                                 AfterPose };
+struct ComponentEventHandler {
+    std::function<void(entt::registry &)> Apply;
+    ComponentEventPhase Phase;
+};
 
-inline void RegisterComponentEventHandler(entt::registry &r, ComponentEventHandler handler) {
-    r.ctx().emplace<std::vector<ComponentEventHandler>>().emplace_back(std::move(handler));
+inline void RegisterComponentEventHandler(
+    entt::registry &r, std::function<void(entt::registry &)> handler,
+    ComponentEventPhase phase = ComponentEventPhase::BeforePose
+) {
+    r.ctx().emplace<std::vector<ComponentEventHandler>>().push_back({std::move(handler), phase});
 }
 
 // Run domain setup handlers on the viewport entity.

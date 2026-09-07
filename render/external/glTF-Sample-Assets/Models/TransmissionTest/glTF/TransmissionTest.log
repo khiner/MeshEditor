@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/TransmissionTest/glTF/TransmissionTest.webp
+[validation] total 4733.46 ms (init 254.61; capture 1.83; compare 6.64; cleanup 0.04)
+[validation] replay reset 0.19; restore 11.57; derive 2169.74; render 11.07; capture 1.53 ms
+[validation] snapshot reset 0.21; restore 3.25; derive 2251.76; render 20.08; capture 0.92 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/TransmissionTest/glTF/TransmissionTest.webp

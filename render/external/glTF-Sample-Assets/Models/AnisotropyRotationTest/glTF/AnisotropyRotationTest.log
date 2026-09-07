@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/AnisotropyRotationTest/glTF/AnisotropyRotationTest.webp
+[validation] total 1163.13 ms (init 227.07; capture 0.40; compare 1.06; cleanup 0.02)
+[validation] replay reset 0.22; restore 2.33; derive 459.43; render 2.69; capture 0.13 ms
+[validation] snapshot reset 0.25; restore 0.35; derive 464.56; render 4.49; capture 0.12 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/AnisotropyRotationTest/glTF/AnisotropyRotationTest.webp

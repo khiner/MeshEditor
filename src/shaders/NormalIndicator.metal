@@ -6,7 +6,7 @@
 #include "MeshletResolve.metal"
 #include "SceneUBO.metal"
 #include "TransformUtils.metal"
-#include "Varyings.metal"
+#include "LineQuad.metal"
 #include "NormalIndicatorConstant.metal"
 
 // Emits normal-indicator line groups scaled to local geometry size.
@@ -15,7 +15,7 @@ constant float NormalIndicatorLengthScale = 0.25f;
 constant uint NormalIndicatorMaxFaceCorners = 256u;
 constant uint NormalIndicatorThreads = MeshletLimit_MaxVertices;
 constant uint NormalIndicatorSimdGroups = NormalIndicatorThreads / 32u;
-using NormalIndicatorOutput = metal::mesh<LineVaryings, void, NormalIndicatorThreads * 2u, NormalIndicatorThreads, metal::topology::line>;
+using NormalIndicatorOutput = metal::mesh<EdgeQuadVaryings, void, NormalIndicatorThreads * 4u, NormalIndicatorThreads * 2u, metal::topology::triangle>;
 
 inline float MeanIncidentEdgeLength(const thread Scene &scene, DrawData draw, uint vertex_id, float3 position) {
     if (draw.VertexEdgeAdjacencyOffset == INVALID_OFFSET) return 0.0f;
@@ -123,7 +123,7 @@ inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uin
     const uint2 compact = CompactPresent(
         present, thread_index, lane, simd_counts, NormalIndicatorSimdGroups
     );
-    if (thread_index == 0u) output.set_primitive_count(compact.y);
+    if (thread_index == 0u) output.set_primitive_count(compact.y * 2u);
     if (present == 0u) return;
 
     const Transform world = MeshletWorld(scene, draw);
@@ -132,14 +132,13 @@ inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uin
 
     constant ViewportThemeColors &colors = scene.Theme.Colors;
     const float4 color = float4(float3(NormalIndicatorFaces ? colors.FaceNormal : colors.VertexNormal), 1.0f);
+    float4 clip[2];
     for (uint endpoint = 0u; endpoint < 2u; ++endpoint) {
         const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, endpoint == 0u ? start : end));
-        float4 clip = scene.ViewProj() * float4(world_pos, 1.0f);
-        clip.z -= NdcOffsetFactor(scene);
-        const uint slot = compact.x * 2u + endpoint;
-        output.set_vertex(slot, MakeLineVertex(clip, color, float2(scene.View.ViewportSize)));
-        output.set_index(slot, slot);
+        clip[endpoint] = scene.ViewProj() * float4(world_pos, 1.0f);
+        clip[endpoint].z -= NdcOffsetFactor(scene);
     }
+    EmitStroke(output, compact.x, scene, clip[0], clip[1], color);
 }
 
 #endif

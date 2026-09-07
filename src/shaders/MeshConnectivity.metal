@@ -287,7 +287,11 @@ kernel void MeshConnectivitySamples(
     const MeshConnectivityJob job = ctx.Jobs()[tile.x];
     const uint sample = tile.y * ScanTileSize + lane;
     const uint edge_count = ctx.Scratch()[job.StateOffset];
-    if (sample * 32u >= edge_count) return;
+    if (sample >= job.WordCount) return;
+    if (sample * 32u >= edge_count) {
+        ctx.EdgeSamples(job)[sample] = 0u;
+        return;
+    }
     // Each sample records the word containing edge 32 * sample to bound rank lookup.
     device const uint *ranks = ctx.EdgeFirstRanks(job);
     const uint edge = sample * 32u;

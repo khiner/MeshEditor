@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/MorphPrimitivesTest/glTF/MorphPrimitivesTest.webp
+[validation] total 519.76 ms (init 222.59; capture 0.14; compare 0.99; cleanup 0.02)
+[validation] replay reset 0.17; restore 1.00; derive 9.09; render 1.47; capture 0.05 ms
+[validation] snapshot reset 0.16; restore 0.10; derive 279.61; render 4.29; capture 0.06 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/MorphPrimitivesTest/glTF/MorphPrimitivesTest.webp

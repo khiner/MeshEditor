@@ -35,12 +35,9 @@ inline EdgeQuadVaryings EditEdgeQuadCorner(
     // EdgeWidth is a half-width; sharp marks add one band and every edge adds a 0.5px AA fringe.
     const float half_width = edge_width + (sharp ? max(edge_width, 1.0f) : 0.0f) + 0.5f;
 
-    EdgeQuadVaryings out;
-    out.Position = line_quad_position(scene, clip0, clip1, corner, half_width);
+    auto out = StrokeQuadCorner(scene, clip0, clip1, color,
+        sharp ? float4(float3(colors.EdgeSharp), 1.0f) : float4(0.0f), half_width, corner);
     if (sharp) out.Position.z -= 5e-7f * abs(out.Position.w);
-    out.Color = color;
-    out.OuterColor = sharp ? float4(float3(colors.EdgeSharp), 1.0f) : float4(0.0f);
-    out.EdgeCoord = line_quad_side(corner) * half_width;
     return out;
 }
 

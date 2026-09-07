@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF-JPG-PNG/StainedGlassLamp.webp
+[validation] total 1348.00 ms (init 246.08; capture 0.39; compare 1.98; cleanup 0.03)
+[validation] replay reset 0.16; restore 6.87; derive 535.50; render 1.95; capture 0.29 ms
+[validation] snapshot reset 0.19; restore 1.39; derive 531.12; render 21.68; capture 0.37 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/StainedGlassLamp/glTF-JPG-PNG/StainedGlassLamp.webp

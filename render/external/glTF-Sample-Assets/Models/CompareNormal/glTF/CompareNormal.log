@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/CompareNormal/glTF/CompareNormal.webp
+[validation] total 3637.65 ms (init 3047.18; capture 0.23; compare 3.89; cleanup 0.07)
+[validation] replay reset 0.16; restore 2.06; derive 286.18; render 5.32; capture 0.09 ms
+[validation] snapshot reset 0.17; restore 0.25; derive 275.43; render 16.48; capture 0.14 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CompareNormal/glTF/CompareNormal.webp

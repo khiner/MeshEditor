@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/ScatteringSkull/glTF/ScatteringSkull.webp
+[validation] total 4295.86 ms (init 3117.88; capture 6.06; compare 2.42; cleanup 0.02)
+[validation] replay reset 0.20; restore 20.04; derive 556.36; render 10.94; capture 19.33 ms
+[validation] snapshot reset 0.18; restore 5.20; derive 544.86; render 7.68; capture 4.68 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/ScatteringSkull/glTF/ScatteringSkull.webp

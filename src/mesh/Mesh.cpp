@@ -20,6 +20,8 @@ void BuildEdgeRanks(const ConnectivityStorage &storage, uint32_t halfedge_count,
     auto bits_out = storage.EdgeFirstBits.first(words);
     auto ranks_out = storage.EdgeFirstRanks.first(words);
     auto samples_out = storage.EdgeSamples.first((edges.size() + 31u) / 32u);
+    // The arena reserves samples by halfedge count; snapshots also include its unused tail.
+    std::ranges::fill(storage.EdgeSamples.subspan(samples_out.size()), 0u);
     uint32_t edge = 0;
     for (uint32_t word = 0; word < words; ++word) {
         ranks_out[word] = edge;

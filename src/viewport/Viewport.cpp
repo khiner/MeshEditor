@@ -86,21 +86,6 @@ void AdvanceViewport(entt::registry &r, entt::entity viewport, RenderPhase phase
     WaitForRender(r);
 }
 
-// Binds the captured shutter poses to view-UBO instance `instance`.
-void StampShutterPoses(GpuBuffers &buffers, uint32_t instance, const GpuBuffers::VelocityPose &open, const GpuBuffers::VelocityPose &close) {
-    const auto stamp = [&](const auto &value, size_t field_offset) {
-        buffers.UpdateSceneViewUboField(instance, field_offset, as_bytes(value));
-    };
-    stamp(open.ViewProj, offsetof(SceneViewUBO, PrevViewProj));
-    stamp(close.ViewProj, offsetof(SceneViewUBO, NextViewProj));
-    stamp(open.Transforms.Slot, offsetof(SceneViewUBO, PrevModelSlot));
-    stamp(close.Transforms.Slot, offsetof(SceneViewUBO, NextModelSlot));
-    stamp(open.ArmatureDeform.Slot, offsetof(SceneViewUBO, PrevArmatureDeformSlot));
-    stamp(close.ArmatureDeform.Slot, offsetof(SceneViewUBO, NextArmatureDeformSlot));
-    stamp(open.MorphWeights.Slot, offsetof(SceneViewUBO, PrevMorphWeightsSlot));
-    stamp(close.MorphWeights.Slot, offsetof(SceneViewUBO, NextMorphWeightsSlot));
-}
-
 // Motion blur applies in MaterialPreview/Rendered while playing, scrubbing, or capturing.
 bool MotionBlurActive(const entt::registry &r, entt::entity viewport) {
     const auto &display = r.get<const ViewportDisplay>(viewport);
@@ -119,7 +104,8 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
 
     const auto &display = r.get<const ViewportDisplay>(viewport);
     const auto mb = EffectiveMotionBlur(display);
-    const auto steps = MotionBlurSteps(display);
+    const bool fast = mb.Method == MotionBlurMethod::Fast;
+    const auto count = fast ? 2u : MotionBlurSteps(display);
     const auto &range = r.get<const TimelineRange>(viewport);
     const auto &playback = r.get<const TimelinePlayback>(viewport);
     const int current_frame = playback.CurrentFrame;
@@ -130,25 +116,16 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     const float lo = std::max(float(range.StartFrame), float(current_frame) - half);
     const float hi = std::min(float(range.EndFrame), float(current_frame) + half);
 
-    // Cache physics through the shutter's forward half so centered sampling has both endpoints (forward playback only).
-    if (playback.Playing) physics::BakeThrough(r, viewport, int(std::ceil(hi)), range.Fps);
+    const float last_sample = fast ? hi : lo + (hi - lo) * (1.f - 0.5f / float(count));
+    physics::BakeThrough(r, viewport, int(std::ceil(last_sample)), range.Fps);
 
     auto &buffers = r.ctx().get<GpuBuffers>();
-    // Allocate the blur targets on first use, replacing the bindless fallback slots.
-    if (pipelines.Main.EnsureMotionBlurResources(ctx)) {
+    if (pipelines.Main.EnsureMotionBlurResources(ctx, fast)) {
         auto &slots = r.ctx().get<mtl::BindlessSet>();
-        const auto &sel_slots = r.ctx().get<const SelectionSlots>();
-        const auto &main = pipelines.Main;
-        // Size the indirection table from the target tile grid.
-        buffers.ResizeMotionBlurTileIndirection(main.MotionBlur->TileImage.Extent);
-        const auto accum = main.MotionBlurAccumSampler();
-        const auto velocity = main.VelocitySampler();
-        const auto gather = main.MotionBlurGatherSampler();
-        slots.SetSampler({SlotType::Sampler, sel_slots.MotionBlurAccumSampler}, accum.Texture, accum.Sampler);
-        slots.SetSampler({SlotType::Sampler, sel_slots.VelocitySampler}, velocity.Texture, velocity.Sampler);
-        slots.SetSampler({SlotType::Sampler, sel_slots.MotionBlurGatherSampler}, gather.Texture, gather.Sampler);
-        slots.SetTexture(sel_slots.MotionBlurTileImage, main.MotionBlurTileImage());
-        slots.SetBuffer({SlotType::Buffer, sel_slots.MotionBlurTileIndirection}, *buffers.MotionBlurTileIndirection);
+        const auto sampled = pipelines.Main.MotionBlurOutputSampler();
+        slots.SetSampler({SlotType::Sampler, r.ctx().get<const SelectionSlots>().MotionBlurOutputSampler}, sampled.Texture, sampled.Sampler);
+        const auto velocity = pipelines.Main.Nearest(fast ? &pipelines.Main.MotionBlur->VelocityImage : nullptr);
+        slots.SetSampler({SlotType::Sampler, r.ctx().get<const SelectionSlots>().VelocitySampler}, velocity.Texture, velocity.Sampler);
     }
 
     // Evaluate animation, physics, and an animated look-through camera at `pf` into mapped pose buffers.
@@ -163,72 +140,47 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
         frame_state.MotionBlurSubFrame = false;
     };
 
-    const auto render_at = [&](float pf, RenderPhase phase) {
-        evaluate_at(pf);
-        // Bind shutter poses after ProcessComponentEvents rewrites the UBO and before recording.
-        StampShutterPoses(buffers, 0, buffers.ShutterOpen, buffers.ShutterClose);
-        // Buffer updates preserve the recording until the persistent scene or phase changes.
-        std::ignore = TakeRenderRequest(r);
-        auto *command_buffer = ctx.Queue->commandBuffer();
-        RecordRenderCommandBuffer(r, viewport, command_buffer, SceneUpdate::Rebuild, phase);
-        resources.RecordedPhase = phase;
-        SubmitRecordedFrame(r, command_buffer);
-        WaitForRender(r);
+    std::vector<uint32_t> sample_weights;
+    sample_weights.reserve(count);
+    buffers.BlurPoses.reserve(count);
+    const auto same_buffer = [](const mtl::Buffer &a, const mtl::Buffer &b) {
+        return a.UsedSize == b.UsedSize && (a.UsedSize == 0 || std::memcmp(a.Contents().data(), b.Contents().data(), a.UsedSize) == 0);
     };
-
-    // Match Blender's open, close, then render evaluation order.
-    if (steps == 1) {
-        // A single step composites the gather output directly without accumulation.
-        // Record the current-frame scene and overlays together while using the clamped shutter endpoints for velocity.
-        evaluate_at(lo);
-        buffers.CaptureVelocityPose(buffers.ShutterOpen);
-        evaluate_at(hi);
-        buffers.CaptureVelocityPose(buffers.ShutterClose);
-        render_at(float(current_frame), RenderPhase::BlurredFull);
-    } else {
-        // Each step renders the center of one shutter interval.
-        // The first step clears the target it sums into, so the accumulation starts from it alone.
-        // Capture all poses first so every step and the resolve can share one command buffer.
-        const auto step_count = std::min(uint32_t(steps), GpuBuffers::MaxBlurSteps);
-        const float step_span = (hi - lo) / float(step_count);
-        buffers.EnsureBlurPoses(2 * size_t(step_count) + 1);
-        // Step i uses shutter boundaries [2i] and [2i+2], sharing interior boundaries.
-        for (uint32_t i = 0; i <= step_count; ++i) {
-            evaluate_at(lo + step_span * float(i));
-            buffers.CaptureVelocityPose(buffers.BlurPoses[2 * i]);
+    for (uint32_t i = 0; i < count; ++i) {
+        const float time = fast ? (i == 0 ? lo : hi) : lo + (hi - lo) * (float(i) + 0.5f) / float(count);
+        evaluate_at(time);
+        // Consecutive identical samples need one render, including static scenes and clamped shutters.
+        if (!fast && !sample_weights.empty()) {
+            const auto &previous = buffers.BlurPoses[sample_weights.size() - 1];
+            auto current_view = *reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data());
+            const auto &previous_view = *reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data() + buffers.SceneViewUboOffset(sample_weights.size()));
+            previous.ApplyTo(current_view);
+            if (std::memcmp(&previous_view, &current_view, sizeof(current_view)) == 0 &&
+                same_buffer(previous.Transforms, buffers.Instances.TransformBuffer) &&
+                same_buffer(previous.ArmatureDeform, buffers.ArmatureDeformBuffer.Buffer) &&
+                same_buffer(previous.MorphWeights, buffers.MorphWeightBuffer.Buffer) &&
+                same_buffer(previous.Lights, buffers.Lights)) {
+                ++sample_weights.back();
+                continue;
+            }
         }
-        // Step centres at [2i+1], each snapshotting the step's evaluated view UBO into its instance.
-        std::vector<float> step_frames(step_count);
-        for (uint32_t i = 0; i < step_count; ++i) {
-            const float centre = lo + step_span * float(i) + step_span * 0.5f;
-            step_frames[i] = centre;
-            evaluate_at(centre);
-            auto &centre_pose = buffers.BlurPoses[2 * i + 1];
-            buffers.CaptureVelocityPose(centre_pose);
-            const uint32_t instance = i + 1;
-            buffers.SnapshotSceneViewUbo(instance);
-            StampShutterPoses(buffers, instance, buffers.BlurPoses[2 * i], buffers.BlurPoses[2 * i + 2]);
-            // Captured buffers provide each step's pose while draw data remains independent of the step.
-            const auto stamp = [&](const auto &value, size_t field_offset) {
-                buffers.UpdateSceneViewUboField(instance, field_offset, as_bytes(value));
-            };
-            stamp(centre_pose.Transforms.Slot, offsetof(SceneViewUBO, ModelSlotOverride));
-            stamp(centre_pose.ArmatureDeform.Slot, offsetof(SceneViewUBO, ArmatureDeformSlot));
-            stamp(centre_pose.MorphWeights.Slot, offsetof(SceneViewUBO, MorphWeightsSlot));
-        }
-        // Resolve and overlays use the current-frame state.
-        evaluate_at(float(current_frame));
-        std::ignore = TakeRenderRequest(r);
-        auto *command_buffer = ctx.Queue->commandBuffer();
-        RecordBlurStepsCommandBuffer(r, viewport, command_buffer, step_frames);
-        // Force the next single-phase render to record its own command buffer.
-        resources.RecordedPhase = RenderPhase::BlurAccumulate;
-        SubmitRecordedFrame(r, command_buffer);
-        WaitForRender(r);
+        const uint32_t instance = uint32_t(sample_weights.size()) + 1u;
+        if (buffers.BlurPoses.size() < instance) buffers.BlurPoses.emplace_back(buffers.Ctx);
+        auto &pose = buffers.BlurPoses[instance - 1u];
+        buffers.CaptureRenderPose(pose);
+        auto view = *reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data());
+        pose.ApplyTo(view);
+        buffers.SceneViewUBO.Update(as_bytes(view), buffers.SceneViewUboOffset(instance));
+        sample_weights.push_back(1u);
     }
-
-    r.get<PlaybackFrame>(viewport).Value = settled_pf;
-    frame_state.RenderPending = false;
+    evaluate_at(settled_pf);
+    std::ignore = TakeRenderRequest(r);
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    if (fast) RecordRenderCommandBuffer(r, viewport, command_buffer, SceneUpdate::Rebuild, RenderPhase::BlurFast);
+    else RecordBlurStepsCommandBuffer(r, viewport, command_buffer, sample_weights);
+    resources.RecordedPhase = fast ? RenderPhase::BlurFast : RenderPhase::BlurAccumulate;
+    SubmitRecordedFrame(r, command_buffer);
+    WaitForRender(r);
 }
 } // namespace
 
@@ -307,7 +259,7 @@ entt::entity InitEngine(entt::registry &r) {
     InitStoreCtx(r, ctx);
     auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &libraries = r.ctx().emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a");
-    r.ctx().emplace<Pipelines>(ctx, libraries);
+    r.ctx().emplace<Pipelines>(libraries);
     physics::Init(r);
     RegisterSceneComponentHandlers(r);
 
@@ -460,7 +412,16 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     TearDownStoreCtx(r);
 }
 
-void PresentViewport(entt::registry &r, entt::entity viewport) { AdvanceViewport(r, viewport, RenderPhase::Full); }
+void PresentViewport(entt::registry &r, entt::entity viewport) {
+    if (MotionBlurActive(r, viewport)) {
+        ProcessComponentEvents(r, viewport);
+        if (!ViewportImageReady(r)) return;
+        RenderMotionBlurredFrame(r, viewport);
+        r.ctx().get<FrameState>().MotionBlurred = true;
+    } else {
+        AdvanceViewport(r, viewport, RenderPhase::Full);
+    }
+}
 void PrepareViewport(entt::registry &r, entt::entity viewport) { AdvanceViewport(r, viewport, RenderPhase::Prepare); }
 
 void WaitForRender(entt::registry &r) {
@@ -476,6 +437,4 @@ void WaitForRender(entt::registry &r) {
     resources.InFlight = nullptr;
     r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     frame.RenderPending = false;
-
-    r.clear<BoxSelectGpuPending>();
 }

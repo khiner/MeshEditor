@@ -31,7 +31,6 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &, std::pair<uvec2, uvec2>
 
 // Element-level box selection: renders IDs into the authoritative masks and derives the other domains on the GPU.
 void RunBoxSelectElements(entt::registry &, entt::entity viewport, std::span<const ElementRange> ranges, Element, std::pair<uvec2, uvec2> box_px, bool is_additive);
-void FinalizeBoxSelectElements(entt::registry &, entt::entity viewport);
 
 // Returns click hits sorted by distance, depth, and object id, then advances the 8-bit epoch tag.
 std::vector<entt::entity> RunObjectPick(entt::registry &, uvec2 mouse_px, uint32_t radius_px = 0);

@@ -6,6 +6,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// Keep UV motion within half-float range for extreme projections.
+inline float4 PackVelocity(float4 motion) { return motion * 0.01f; }
+inline float4 UnpackVelocity(float4 motion) { return motion * 100.0f; }
+
 constant int MotionBlurTileSize = 32;
 
 constant uint MotionPrev = 0u;

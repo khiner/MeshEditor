@@ -1,1 +1,4 @@
-Saved screenshot: render/external/glTF-Sample-Assets/Models/CompareIridescence/glTF/CompareIridescence.webp
+[validation] total 2797.37 ms (init 1623.02; capture 0.23; compare 1.70; cleanup 0.02)
+[validation] replay reset 0.15; restore 1.78; derive 575.43; render 2.76; capture 0.07 ms
+[validation] snapshot reset 0.20; restore 0.22; derive 580.32; render 11.41; capture 0.07 ms
+Saved screenshot: render_candidates/immutable-visibility-final/external/glTF-Sample-Assets/Models/CompareIridescence/glTF/CompareIridescence.webp
