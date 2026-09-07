@@ -98,11 +98,11 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 using Clear = ApplyTreeSelection::ClearKind;
                 if (a.Clear == Clear::BonesOnly) r.clear<BoneSelection>();
                 else if (a.Clear == Clear::All) r.clear<Selected, BoneSelection>();
-                for (const auto e : a.ToSelect) {
+                for (const auto e : a.ToSelect()) {
                     if (r.all_of<BoneIndex>(e)) r.emplace_or_replace<BoneSelection>(e);
                     else if (!r.all_of<Selected>(e)) r.emplace<Selected>(e);
                 }
-                for (const auto e : a.ToDeselect) {
+                for (const auto e : a.ToDeselect()) {
                     if (r.all_of<BoneIndex>(e)) {
                         if (r.all_of<BoneSelection>(e)) r.remove<BoneSelection>(e);
                     } else if (r.all_of<Selected>(e)) r.remove<Selected>(e);

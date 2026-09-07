@@ -818,8 +818,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
     }
 
-    // Refresh persistent camera and light overlay descriptors after procedural geometry changes.
-    if (!reactive<changes::CameraLens>(r).empty() || !r.view<LightWireframeDirty>().empty()) request(RenderRequest::Rebuild);
+    // Refresh camera overlay descriptors after lens changes.
+    if (!reactive<changes::CameraLens>(r).empty()) request(RenderRequest::Rebuild);
 
     auto sync = SyncModelsBuffers(r);
     if (!sync.NewlyInserted.empty() || sync.Compacted) {
@@ -994,6 +994,13 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             // Write a copy with the transform slot offset, leaving the authored component untouched.
             auto gpu_light = r.get<const PunctualLight>(entity);
             gpu_light.TransformSlotOffset = {buffers.Instances.TransformBuffer.Slot, ri->BufferIndex};
+            if (index >= buffers.Lights.Count()) request(RenderRequest::Rebuild);
+            else {
+                const auto old = buffers.Lights.Get(index);
+                if (old.Type != gpu_light.Type || old.Range != gpu_light.Range || old.OuterConeCos != gpu_light.OuterConeCos || old.InnerConeCos != gpu_light.InnerConeCos) {
+                    request(RenderRequest::Rebuild);
+                }
+            }
             buffers.Lights.Set(index, gpu_light);
             synced = true;
         }
@@ -1891,7 +1898,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();
     }
     destroy_tracker.Storage.clear();
-    r.clear<MeshGeometryDirty, MeshPositionsChanged, MeshShadingDirty, MeshMaterialAssignment, MaterialDirty, LightWireframeDirty>();
+    r.clear<MeshGeometryDirty, MeshPositionsChanged, MeshShadingDirty, MeshMaterialAssignment, MaterialDirty>();
 }
 
 void RegisterSceneComponentHandlers(entt::registry &r) {

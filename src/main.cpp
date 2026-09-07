@@ -1340,8 +1340,8 @@ CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, cons
         }
         if (!meshes.empty()) {
             Perform(r, viewport, action::selection::ApplyTreeSelection{
-                                     .ToSelect = meshes,
-                                     .ToDeselect = {},
+                                     .Entities = meshes,
+                                     .SelectCount = uint32_t(meshes.size()),
                                      .NavToActive = meshes.front(),
                                      .Clear = action::selection::ApplyTreeSelection::ClearKind::All,
                                  });

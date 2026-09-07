@@ -74,8 +74,7 @@ inline constexpr const auto &Default{All[1]}; // Machined, matching ContactSurfa
 } // namespace surfaces::acoustic
 
 // The surface with a preset's three microscale parameters applied, keeping any authored profile and normal map.
-inline ContactSurface WithPreset(const ContactSurface &s, const ContactSurfacePreset &p) {
-    auto out = s;
+inline ContactSurface WithPreset(ContactSurface out, const ContactSurfacePreset &p) {
     out.Name = p.Name;
     out.Roughness = p.Roughness;
     out.CorrelationLength = p.CorrelationLength;

@@ -19,6 +19,8 @@ using Action = std::variant<
     selection::Action, object::Action, view::Action,
     physics::Action, audio::Action, bone::Action, timeline::Action, io::Action>;
 
+static_assert(sizeof(Action) <= 64, "Keep actions at or below 64 bytes");
+
 // Returns the domain-variant index containing leaf action type L.
 template<typename L>
 inline constexpr size_t DomainIndex = []<size_t... Is>(std::index_sequence<Is...>) {

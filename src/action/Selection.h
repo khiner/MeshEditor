@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace action::selection {
@@ -66,9 +67,17 @@ struct ApplyTreeSelection {
     enum class ClearKind : uint8_t { None,
                                      BonesOnly,
                                      All };
-    std::vector<entt::entity> ToSelect, ToDeselect;
+    std::vector<entt::entity> Entities;
+    uint32_t SelectCount{};
     entt::entity NavToActive{null_entity};
     ClearKind Clear{ClearKind::None};
+
+    auto ToSelect() const { return std::span{Entities}.first(SelectCount); }
+    auto ToDeselect() const { return std::span{Entities}.subspan(SelectCount); }
+    void Add(entt::entity e, bool selected) {
+        if (selected) Entities.insert(Entities.begin() + SelectCount++, e);
+        else Entities.push_back(e);
+    }
 };
 
 using Action = std::variant<

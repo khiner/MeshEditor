@@ -13,6 +13,7 @@
 #include "render/LightComponents.h"
 #include "render/MeshBatch.h"
 #include "render/MeshBuffers.h"
+#include "scene/Defaults.h"
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
@@ -310,16 +311,23 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
             // Mesh-data components (material assignment / slot selection) live on the object's mesh entity.
             [&]<typename T>(const Replace<T> &a) { for_each_mesh_target(a.Scope, a.Entity, [&](entt::entity e) { r.emplace_or_replace<T>(e, a.Value); }); },
-            [&](const Replace<PunctualLight> &a) {
-                auto set_light = [&](entt::entity e) {
-                    const auto *old = r.try_get<const PunctualLight>(e);
-                    const auto &n = a.Value;
-                    if (!old || old->Type != n.Type || old->Range != n.Range || old->OuterConeCos != n.OuterConeCos || old->InnerConeCos != n.InnerConeCos) {
-                        r.emplace_or_replace<LightWireframeDirty>(e);
-                    }
-                    r.emplace_or_replace<PunctualLight>(e, n);
-                };
-                ForEachReplaceTarget<PunctualLight>(r, a.Scope, a.Entity, set_light);
+            [&](const SetLightType &a) {
+                ForEachReplaceTarget<PunctualLight>(r, a.Scope, entt::null, [&](auto e) {
+                    r.patch<PunctualLight>(e, [&](auto &light) {
+                        auto next = Defaults::MakePunctualLight(a.Type);
+                        next.Color = light.Color;
+                        next.Intensity = light.Intensity;
+                        light = next;
+                    });
+                });
+            },
+            [&](const SetSpotCone &a) {
+                ForEachReplaceTarget<PunctualLight>(r, a.Scope, entt::null, [&](auto e) {
+                    r.patch<PunctualLight>(e, [&](auto &light) {
+                        light.OuterConeCos = std::cos(a.OuterAngle);
+                        light.InnerConeCos = std::cos(a.OuterAngle * (1.f - a.Blend));
+                    });
+                });
             },
         },
         action

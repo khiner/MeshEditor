@@ -16,7 +16,7 @@ Update<detail::last_field<Ms...>> UpdateOf(Scope scope, detail::last_field<Ms...
     static_assert(std::is_trivially_copyable_v<F>, "Update<T> is for trivially-copyable fields only; use Replace<T> for complex types");
     RegisterUpdateable<C>();
     if constexpr (HasLimits<Ms...>) RegisterLimits<Ms...>();
-    return {scope, null_entity, entt::type_hash<C>::value(), uint16_t((detail::MemPtrOffset(Ms) + ...)), std::move(v)};
+    return {scope, null_entity, entt::type_hash<C>::value(), detail::FieldOffset<Ms...>(), std::move(v)};
 }
 
 template<auto... Ms>
@@ -28,6 +28,15 @@ Update<detail::last_field<Ms...>> UpdateOf(entt::entity e, detail::last_field<Ms
 
 template<auto... Ms>
 Update<detail::last_field<Ms...>> UpdateOf(detail::last_field<Ms...> v) { return UpdateOf<Ms...>(Scope::Active, std::move(v)); }
+
+// Offsets for several fields within one nested component value.
+template<auto... Prefix, typename C, typename F, size_t N>
+auto PatchFieldsOf(entt::entity e, std::array<F C::*, N> members, std::array<F, N> values) {
+    using Component = detail::first_class<Prefix...>;
+    std::array<uint16_t, N> offsets;
+    for (size_t i = 0; i < N; ++i) offsets[i] = uint16_t(detail::FieldOffset<Prefix...>() + detail::MemPtrOffset(members[i]));
+    return PatchFields<Component, F, N>{e, offsets, std::move(values)};
+}
 
 // Member pointer passed as a runtime value rather than an NTTP.
 template<typename C, typename F>

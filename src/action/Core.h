@@ -45,6 +45,14 @@ struct Replace {
     T Value;
 };
 
+// Assign authored fields together, preserving the rest of the component.
+template<typename Component, typename Field, size_t N = 1>
+struct PatchFields {
+    entt::entity Entity;
+    std::array<uint16_t, N> Offsets;
+    std::array<Field, N> Values;
+};
+
 struct DestroyEntity {
     entt::entity Entity;
 };
@@ -85,6 +93,9 @@ constexpr std::ptrdiff_t MemPtrOffset(P p) {
     static_assert(sizeof(P) == sizeof(std::ptrdiff_t));
     return std::bit_cast<std::ptrdiff_t>(p);
 }
+
+template<auto... Ms>
+uint16_t FieldOffset() { return uint16_t((MemPtrOffset(Ms) + ...)); }
 
 template<auto M, auto...> inline constexpr auto first_v = M;
 template<auto... Ms> inline constexpr auto last_v = (Ms, ...);

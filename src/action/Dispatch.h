@@ -87,7 +87,7 @@ struct LimitsRegistrar {
     LimitsRegistrar() {
         using F = last_field<Ms...>;
         const auto comp = entt::type_hash<first_class<Ms...>>::value();
-        const auto base = uint16_t((MemPtrOffset(Ms) + ...));
+        const auto base = FieldOffset<Ms...>();
         LimitsTable().insert_or_assign(LimitsKey(comp, base, sizeof(F)), &ClampField<Ms...>);
         // A vec field can also be patched one component at a time, so register the same bounds per component.
         if constexpr (requires { F::ComponentCount; }) {

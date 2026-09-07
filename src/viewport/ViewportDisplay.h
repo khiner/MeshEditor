@@ -40,28 +40,6 @@ struct MotionBlur {
     MotionBlurMethod Method{MotionBlurMethod::Fast};
 };
 
-// Keep the nine-byte action layout: 0x80 marks fast blur, with its inactive sample count
-// in the former bleeding-bias field. 0x81..0xc0 are full sample counts from older logs.
-constexpr auto serialize(auto &archive, const MotionBlur &blur) {
-    const uint8_t count = std::clamp<uint8_t>(blur.Steps, 1, 64);
-    const uint8_t encoded = blur.Method == MotionBlurMethod::Fast ? 0x80u : 0x80u | count;
-    const float value = blur.Method == MotionBlurMethod::Fast ? float(count) : 100.f;
-    return archive(blur.Shutter, encoded, value);
-}
-template<typename Archive> constexpr auto serialize(Archive &archive, MotionBlur &blur) {
-    if constexpr (Archive::kind() != decltype(Archive::kind())::in) return serialize(archive, std::as_const(blur));
-    else {
-        uint8_t encoded{};
-        float value{};
-        const auto result = archive(blur.Shutter, encoded, value);
-        blur.Method = encoded > 0x80u ? MotionBlurMethod::FullSampling : MotionBlurMethod::Fast;
-        blur.Steps = encoded == 0x80u ? uint8_t(value >= 1.f && value <= 64.f ? value : 16.f) :
-            encoded > 0x80u           ? std::clamp<uint8_t>(encoded & 0x7fu, 1, 64) :
-                                        16u;
-        return result;
-    }
-}
-
 // Changes require command-buffer recording.
 struct ViewportDisplay {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};

@@ -1304,7 +1304,7 @@ bool DrawModalModelActions(
         if (has_action) SameLine();
         if (solving) BeginDisabled();
         if (Button("Create modal model ○")) {
-            action::Emit(action::audio::ConfigureModalModel{settings, material});
+            action::Emit(action::audio::EnsureModalSettings{});
             LaunchModalSolve(r, viewport, e, settings, material);
         }
         if (solving) EndDisabled();
@@ -1323,25 +1323,22 @@ void DrawModalModelSettings(
 ) {
     const ContactSurface default_surface = WithPreset({}, surfaces::acoustic::Default);
     const auto &surface = r.all_of<ContactSurface>(e) ? r.get<const ContactSurface>(e) : default_surface;
-    ui::Edit fs{r, e, ui::Replace{settings}};
+    ui::Edit fs{r, e, ui::Patch{settings}};
 
     SeparatorText("Material properties");
     ui::PresetCombo("Presets", material.Name, materials::acoustic::All, [&](const auto &choice) {
-        action::Emit(action::Replace<AcousticMaterial>{.Entity = e, .Value = choice});
+        action::Emit(action::audio::SetMaterialPreset{e, choice.Name});
     });
     using Props = AcousticMaterialProperties;
-    ui::Edit fm{r, e, ui::Replace{material}};
+    ui::Edit fm{r, e, ui::Patch{material}};
     fm.Slider<&AcousticMaterial::Properties, &Props::Density>("Density (kg/m^3)", "%.0f");
     fm.Slider<&AcousticMaterial::Properties, &Props::YoungModulus>("Young's modulus (Pa)", "%.3g", ImGuiSliderFlags_Logarithmic);
     fm.Slider<&AcousticMaterial::Properties, &Props::PoissonRatio>("Poisson's ratio", "%.2f");
-    fm.Run<&AcousticMaterial::Properties>([](Props &props) {
+    double coefficients[]{material.Properties.Alpha, material.Properties.Beta * 1e6};
+    ui::Gesture(InputScalarN("Rayleigh damping alpha / beta (1/s, µs)", ImGuiDataType_Double, coefficients, 2, nullptr, nullptr, "%.3g"), [&] {
         using AlphaLimits = FieldLimits<&AcousticMaterial::Properties, &Props::Alpha>;
         using BetaLimits = FieldLimits<&AcousticMaterial::Properties, &Props::Beta>;
-        double coefficients[]{props.Alpha, props.Beta * 1e6};
-        if (!InputScalarN("Rayleigh damping alpha / beta (1/s, µs)", ImGuiDataType_Double, coefficients, 2, nullptr, nullptr, "%.3g")) return false;
-        props.Alpha = std::clamp(coefficients[0], AlphaLimits::Min, AlphaLimits::Max);
-        props.Beta = std::clamp(coefficients[1] * 1e-6, BetaLimits::Min, BetaLimits::Max);
-        return true;
+        return action::PatchFieldsOf<&AcousticMaterial::Properties>(e, std::array{&Props::Alpha, &Props::Beta}, std::array{std::clamp(coefficients[0], AlphaLimits::Min, AlphaLimits::Max), std::clamp(coefficients[1] * 1e-6, BetaLimits::Min, BetaLimits::Max)});
     });
     MeshEditor::HelpMarker("Mass-proportional alpha primarily damps low frequencies. Stiffness-proportional beta primarily damps high frequencies.");
 
@@ -1351,8 +1348,9 @@ void DrawModalModelSettings(
     fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::NumModes>("Retained modes");
     fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::NumFemModes>("FEM eigenpairs");
     MeshEditor::HelpMarker("The eigensolver computes this many eigenpairs before filtering the retained frequency band and mode count.");
-    fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal>([](ModalSolverConfig &config) {
-        return DragFloatRange2("Frequency band (Hz)", &config.MinModeFreq, &config.MaxModeFreq, 1.f, 20.f, 20000.f, "%.0f", "%.0f");
+    float min_freq = settings.Solve.Modal.MinModeFreq, max_freq = settings.Solve.Modal.MaxModeFreq;
+    ui::Gesture(DragFloatRange2("Frequency band (Hz)", &min_freq, &max_freq, 1.f, 20.f, 20000.f, "%.0f", "%.0f"), [&] {
+        return action::PatchFieldsOf<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal>(e, std::array{&ModalSolverConfig::MinModeFreq, &ModalSolverConfig::MaxModeFreq}, std::array{min_freq, max_freq});
     });
     fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::Tolerance>("Residual tolerance", "%.1e", ImGuiSliderFlags_Logarithmic);
     fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::MaxRestarts>("Restart limit");
@@ -1577,7 +1575,7 @@ void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::ent
             if (const auto assign_label = n > 1 ? std::format("Assign sample to {} vertices…", n) : std::string{with_sample ? "Replace sample…" : "Assign sample…"};
                 Button(assign_label.c_str())) {
                 FileDialog::ShowOpen("wav;mp3;flac;ogg;opus", [verts = op_vertices](const fs::path &path) mutable {
-                    action::Emit(action::audio::AssignVertexSamples{std::move(verts), path});
+                    action::Emit(action::audio::AssignVertexSamples{std::make_unique<std::vector<uint32_t>>(std::move(verts)), path});
                 });
             }
             if (n == 0) EndDisabled();
@@ -1726,9 +1724,8 @@ void DrawGlobalSynthControls(entt::registry &r, entt::entity viewport) {
 
         SeparatorText("Striker");
         const auto &striker = r.get<const Striker>(viewport);
-        // Replace the entire striker because its material contains a string.
         ui::PresetCombo("Material", striker.Material.Name, materials::acoustic::All, [&](const auto &choice) {
-            action::Emit(action::Replace<Striker>{.Entity = viewport, .Value = {choice, striker.TipRadius, striker.Length}});
+            action::Emit(action::audio::SetMaterialPreset{viewport, choice.Name, true});
         });
         f.Slider<&Striker::TipRadius>("Tip radius (m)", "%.4f");
         f.Slider<&Striker::Length>("Length (m)", "%.3f");

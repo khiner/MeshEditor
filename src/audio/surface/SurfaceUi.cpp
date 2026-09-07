@@ -35,9 +35,9 @@ using namespace ImGui;
 void DrawContactSurfaceControls(entt::registry &r, entt::entity e, const ContactSurface &surface, const AcousticMaterial &material) {
     SeparatorText("Surface finish");
     ui::PresetCombo("Presets##finish", surface.Name, surfaces::acoustic::All, [&](const auto &choice) {
-        action::Emit(action::Replace<ContactSurface>{.Entity = e, .Value = WithPreset(surface, choice)});
+        action::Emit(action::audio::SetSurfacePreset{e, choice.Name});
     });
-    ui::Edit fsurf{r, e, ui::Replace{surface}};
+    ui::Edit fsurf{r, e, ui::Patch{surface}};
     fsurf.Slider<&ContactSurface::Roughness>("Roughness (m)", "%.3g", ImGuiSliderFlags_Logarithmic);
     MeshEditor::HelpMarker("Root-mean-square asperity height. A physical length measured with a profilometer, unrelated to a render material's roughness.");
     fsurf.Slider<&ContactSurface::CorrelationLength>("Correlation length (m)", "%.3g", ImGuiSliderFlags_Logarithmic);

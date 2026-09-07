@@ -8,7 +8,6 @@
 struct MeshGeometryDirty {};
 struct MeshPositionsChanged {};
 struct MeshShadingDirty {};
-struct LightWireframeDirty {};
 
 struct PendingSetEditMode {
     Element Mode;

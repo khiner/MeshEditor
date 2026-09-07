@@ -134,7 +134,7 @@ bool SliderField(const char *label, Field &value, const char *fmt, ImGuiSliderFl
 }
 
 template<typename Component>
-struct Replace {
+struct Patch {
     const Component &Current;
 };
 
@@ -253,24 +253,23 @@ struct Edit {
         return changed;
     }
 
-    template<auto... Ms, typename Widget>
-    bool RunReplace(Widget widget) const {
-        using Component = action::detail::first_class<Prefix..., Ms...>;
-        static_assert(HasEntity && std::same_as<Policy, Replace<Component>>);
-        auto value = ReadChain<Prefix..., Ms...>(Write.Current);
-        const bool changed = widget(value);
-        Gesture(changed, [&] {
-            auto replacement = Write.Current;
-            ReadChain<Prefix..., Ms...>(replacement) = std::move(value);
-            return action::Replace<Component>{.Entity = E, .Value = std::move(replacement)};
-        });
-        return changed;
+    template<auto... Ms>
+    auto PatchAction(action::detail::last_field<Ms...> value) const {
+        using C = action::detail::first_class<Ms...>;
+        using F = action::detail::last_field<Ms...>;
+        static_assert(HasEntity && std::same_as<Policy, Patch<C>>);
+        return action::PatchFields<C, F>{E, {action::detail::FieldOffset<Ms...>()}, {std::move(value)}};
     }
 
     template<auto... Ms, typename Widget>
     bool Run(Widget widget, bool delta_capable = false) {
         if constexpr (std::same_as<Policy, UpdateFields>) return RunUpdate<Ms...>(std::move(widget), delta_capable);
-        else return RunReplace<Ms...>(std::move(widget));
+        else {
+            auto value = ReadChain<Prefix..., Ms...>(Write.Current);
+            const bool changed = widget(value);
+            Gesture(changed, [&] { return PatchAction<Prefix..., Ms...>(std::move(value)); });
+            return changed;
+        }
     }
 
     template<auto... Ms>
@@ -349,19 +348,13 @@ struct Edit {
         if constexpr (std::same_as<Policy, UpdateFields>) {
             if constexpr (HasEntity) action::Emit(action::UpdateOf<Prefix..., Ms...>(E, std::move(value)));
             else action::Emit(action::UpdateOf<Prefix..., Ms...>(ScopeFromAlt(false), std::move(value)));
-        } else {
-            using Component = action::detail::first_class<Prefix..., Ms...>;
-            static_assert(HasEntity && std::same_as<Policy, Replace<Component>>);
-            auto replacement = Write.Current;
-            ReadChain<Prefix..., Ms...>(replacement) = std::move(value);
-            action::Emit(action::Replace<Component>{.Entity = E, .Value = std::move(replacement)});
-        }
+        } else action::Emit(PatchAction<Prefix..., Ms...>(std::move(value)));
     }
 };
 
 Edit(entt::registry &) -> Edit<false>;
 Edit(entt::registry &, entt::entity) -> Edit<true>;
 template<typename Component>
-Edit(entt::registry &, entt::entity, Replace<Component>) -> Edit<true, Replace<Component>>;
+Edit(entt::registry &, entt::entity, Patch<Component>) -> Edit<true, Patch<Component>>;
 
 } // namespace ui

@@ -695,27 +695,18 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
     }
     if (r.all_of<LightIndex>(active_entity) &&
         CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
-        auto light = GetLights(r)[r.get<const LightIndex>(active_entity).Value];
-        bool changed{false};
-
+        const auto &light = r.get<const PunctualLight>(active_entity);
+        ui::Edit fields{r};
         const char *const type_names[]{"Directional", "Point", "Spot"};
         if (int type_i = int(light.Type); Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
-            auto next = Defaults::MakePunctualLight(PunctualLightType(type_i));
-            next.TransformSlotOffset = light.TransformSlotOffset;
-            next.Color = light.Color;
-            next.Intensity = light.Intensity;
-            light = next;
-            changed = true;
+            action::Emit(action::object::SetLightType{PunctualLightType(type_i), ui::ScopeFromAlt()});
         }
-        changed |= ColorEdit3("Color", &light.Color.x);
-        changed |= SliderFloat("Intensity", &light.Intensity, 0.f, 1000.f, "%.2f");
+        fields.Color<&PunctualLight::Color>("Color");
+        fields.Run<&PunctualLight::Intensity>([](float &value) { return SliderFloat("Intensity", &value, 0.f, 1000.f, "%.2f"); });
         if (light.Type == PunctualLightType::Point || light.Type == PunctualLightType::Spot) {
             bool infinite_range = light.Range <= 0.f;
-            if (Checkbox("Infinite range", &infinite_range)) {
-                light.Range = infinite_range ? 0.f : 100.f;
-                changed = true;
-            }
-            changed |= !infinite_range && SliderFloat("Range", &light.Range, 0.01f, 1000.f, "%.2f");
+            if (Checkbox("Infinite range", &infinite_range)) fields.Set<&PunctualLight::Range>(infinite_range ? 0.f : 100.f);
+            if (!infinite_range) fields.Run<&PunctualLight::Range>([](float &value) { return SliderFloat("Range", &value, 0.01f, 1000.f, "%.2f"); });
         }
         if (light.Type == PunctualLightType::Spot) {
             constexpr float MaxCone = std::numbers::pi_v<float> / 2.f;
@@ -724,14 +715,10 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             float blend = outer > 1e-4f ? std::clamp(1.f - inner / outer, 0.f, 1.f) : 0.f;
             const bool size_changed = SliderAngle("Size", &outer, 0.f, 90.f, "%.1f deg");
             const bool blend_changed = SliderFloat("Blend", &blend, 0.f, 1.f, "%.2f");
-            if (size_changed || blend_changed) {
-                outer = std::clamp(outer, 0.f, MaxCone);
-                light.OuterConeCos = std::cos(outer);
-                light.InnerConeCos = std::cos(outer * (1.f - std::clamp(blend, 0.f, 1.f)));
-                changed = true;
-            }
+            ui::Gesture(size_changed || blend_changed, [&] {
+                return action::object::SetSpotCone{std::clamp(outer, 0.f, MaxCone), std::clamp(blend, 0.f, 1.f), ui::ScopeFromAlt()};
+            });
         }
-        ui::Gesture(changed, [&, scope = ui::ScopeFromAlt()] { return action::Replace<PunctualLight>{.Scope = scope, .Value = light}; });
     }
     if (const auto *instance = r.try_get<Instance>(active_entity); instance && HasMesh(r, instance->Entity)) {
         const bool has_sound = r.all_of<SoundVerticesModel>(active_entity);
@@ -1296,7 +1283,7 @@ static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
     const auto resolve_into = [&](action::selection::ApplyTreeSelection &out, std::span<const ImGuiSelectionRequest> requests, ImGuiSelectionUserData nav_item) {
         const auto add_target = [&](entt::entity e, bool selected) {
             if (e == entt::null) return;
-            (selected ? out.ToSelect : out.ToDeselect).push_back(e);
+            out.Add(e, selected);
         };
         for (const auto &request : requests) {
             if (request.Type == ImGuiSelectionRequestType_SetAll) {
@@ -1401,7 +1388,7 @@ static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
     resolve_into(tree_selection, begin_requests, begin_nav_item);
     auto *ms_end = EndMultiSelect();
     resolve_into(tree_selection, {ms_end->Requests.Data, size_t(ms_end->Requests.Size)}, ms_end->NavIdItem);
-    if (!tree_selection.ToSelect.empty() || !tree_selection.ToDeselect.empty() ||
+    if (!tree_selection.Entities.empty() ||
         tree_selection.Clear != Clear::None || tree_selection.NavToActive != entt::null) {
         action::Emit(std::move(tree_selection));
     }

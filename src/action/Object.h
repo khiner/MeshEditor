@@ -13,6 +13,14 @@
 #include <filesystem>
 
 namespace action::object {
+struct SetLightType {
+    PunctualLightType Type;
+    Scope Scope{Scope::Active};
+};
+struct SetSpotCone {
+    float OuterAngle, Blend;
+    Scope Scope{Scope::Active};
+};
 struct Delete {};
 struct Duplicate {};
 struct DuplicateLinked {};
@@ -90,9 +98,8 @@ using Actions = std::variant<
 
 using Action = MergedVariantT<
     Actions,
-    Replace<PunctualLight>,
     Replace<MaterialDirty>, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
-    Update<std::optional<uint32_t>>, DuplicateToPosition>;
+    Update<std::optional<uint32_t>>, DuplicateToPosition, SetLightType, SetSpotCone>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::object

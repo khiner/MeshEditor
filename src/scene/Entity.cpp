@@ -10,7 +10,7 @@
 #include <unordered_map>
 
 namespace {
-// Counts rather than set membership keep the derived index correct when loading source or legacy data with duplicate names.
+// Counts rather than set membership keep the derived index correct when loading source data with duplicate names.
 struct EntityNameCounts {
     std::unordered_map<std::string, size_t> Counts;
 };
