@@ -1,1 +1,2 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/MeshoptCubeTest/glTF-Meshopt/MeshoptCubeTest.gltf': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/MeshoptCubeTest/glTF-Meshopt/MeshoptCubeTest.gltf': One or more extensions are required by the glTF but not enabled in the Parser.
+VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/MeshoptCubeTest/glTF-Meshopt/MeshoptCubeTest.mp4
+VideoRecorder: wrote 48 frames

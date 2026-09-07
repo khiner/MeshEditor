@@ -704,7 +704,7 @@ std::optional<std::span<const std::byte>> BufferBytes(const fastgltf::Buffer &bu
     );
 }
 
-// Decodes each EXT_meshopt_compression bufferView into a new buffer for ordinary accessor reads.
+// Decodes each meshopt-compressed bufferView into a new buffer for ordinary accessor reads.
 std::expected<void, std::string> DecodeMeshoptCompression(fastgltf::Asset &asset) {
     using fastgltf::MeshoptCompressionMode, fastgltf::MeshoptCompressionFilter;
     for (auto &view : asset.bufferViews) {
@@ -761,7 +761,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
-    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_meshopt_compression | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies | fastgltf::Extensions::KHR_audio_rigid_bodies;
+    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_meshopt_compression | fastgltf::Extensions::KHR_meshopt_compression | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies | fastgltf::Extensions::KHR_audio_rigid_bodies;
     fastgltf::Parser parser{EnabledExtensions};
     if (extras_out) {
         parser.setUserPointer(extras_out);
@@ -795,7 +795,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
 
     auto &asset = parsed.get();
     if (auto decoded = DecodeMeshoptCompression(asset); !decoded) {
-        return std::unexpected{std::format("Failed to decode EXT_meshopt_compression in '{}': {}", path.string(), decoded.error())};
+        return std::unexpected{std::format("Failed to decode meshopt compression in '{}': {}", path.string(), decoded.error())};
     }
     return std::move(asset);
 }
