@@ -11,8 +11,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Emit build/compile_commands.json for clangd.
-set(CMAKE_CXX_FLAGS "-O2")
-set(CMAKE_C_FLAGS "-O2")
+set(CMAKE_CXX_FLAGS "")
+set(CMAKE_C_FLAGS "")
 set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
 set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
 
@@ -20,7 +20,11 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
 
 add_compile_options(-Wno-missing-field-initializers)
 
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2")
 add_subdirectory(lib)
+set(CMAKE_CXX_FLAGS "-stdlib=libc++")
+set(CMAKE_C_FLAGS "")
 target_compile_options(meshoptimizer PRIVATE -O3)
 
 # Link full zstd compression and decompression support.
@@ -29,14 +33,11 @@ add_library(basisu_transcoder STATIC
     lib/basis_universal/zstd/zstd.c
 )
 target_include_directories(basisu_transcoder SYSTEM PUBLIC lib/basis_universal/transcoder)
-target_compile_options(basisu_transcoder PRIVATE -w -fno-strict-aliasing $<$<COMPILE_LANGUAGE:CXX>:-include exception>)
+target_compile_options(basisu_transcoder PRIVATE -O2 -w -fno-strict-aliasing $<$<COMPILE_LANGUAGE:CXX>:-include exception>)
 
 # Suppress warnings from bundled libraries.
 file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
 set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
-
-set(ImguiDir lib/imgui)
-set(ImplotDir lib/implot)
 
 add_executable(gpu_schema_gen gpu/GenerateGpuSchema.cpp)
 target_include_directories(gpu_schema_gen PRIVATE src)
@@ -101,29 +102,6 @@ add_custom_command(
 )
 add_custom_target(generate_gpu_schema DEPENDS ${GPU_SCHEMA_STAMP})
 
-include_directories(
-    ${CMAKE_BINARY_DIR}
-    src
-)
-include_directories(SYSTEM
-    ${ImguiDir}
-    ${ImguiDir}/backends
-    ${ImplotDir}
-    lib/imspinner
-    lib/entt/src
-    lib/tinyobjloader
-    lib/tinyply/source
-    lib/lunasvg/plutovg/source
-    lib/JoltPhysics
-    lib/zpp_bits
-    lib/readerwriterqueue
-    lib/simdjson/include
-    lib/libwebp/src
-    lib/basis_universal/zstd
-    lib/metal-cpp
-    lib/FastFEM/include
-)
-
 # Symlink resources next to the executable.
 set(RESOURCE_DEST "${CMAKE_BINARY_DIR}/res")
 if(NOT EXISTS ${RESOURCE_DEST})
@@ -152,85 +130,26 @@ endforeach()
 # The default links the modal-impact entry points in src/audio/SurfaceContactAbsent.cpp.
 option(MESHEDITOR_SURFACE_AUDIO "Build the surface-contact audio model" $ENV{SURFACE_AUDIO})
 
-# Split sustained-contact sources into model, scene-integration, and control layers.
-if(MESHEDITOR_SURFACE_AUDIO)
-    set(SURFACE_MODEL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/surface/SurfaceModel.cpp)
-    set(SURFACE_SCENE_SOURCES ${SURFACE_MODEL_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/surface/SurfaceAudio.cpp)
-    set(SURFACE_AUDIO_SOURCES ${SURFACE_SCENE_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/surface/SurfaceUi.cpp)
-    add_compile_definitions(SURFACE_AUDIO)
-else()
-    set(SURFACE_MODEL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/SurfaceContactAbsent.cpp)
-    set(SURFACE_SCENE_SOURCES ${SURFACE_MODEL_SOURCES})
-    set(SURFACE_AUDIO_SOURCES ${SURFACE_MODEL_SOURCES})
+option(MESHEDITOR_APP "Build the MeshEditor app" ON)
+option(MESHEDITOR_VALIDATE_ACTIONS "Validate replay and round-trip after every committed action" $ENV{VALIDATE_ACTIONS})
+option(QUIET "Disable Timer prints" OFF)
+set(RESTORE_SESSION_RETAIN 5 CACHE STRING "Max number of scratch sessions to keep")
+if(MESHEDITOR_VALIDATE_ACTIONS AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(FATAL_ERROR "MESHEDITOR_VALIDATE_ACTIONS needs a Debug build")
 endif()
 
-option(MESHEDITOR_APP "Build the MeshEditor app" ON)
+include(cmake/Libraries.cmake)
+
 if(MESHEDITOR_APP)
-    # Link the selected sustained-contact implementation.
-    file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp src/*.mm)
-    list(FILTER SOURCES EXCLUDE REGEX "src/audio/(surface/.*|SurfaceContactAbsent)\\.cpp$")
-    list(APPEND SOURCES ${SURFACE_AUDIO_SOURCES})
-
-    add_executable(${PROJECT_NAME}
-        ${ImguiDir}/imgui_demo.cpp
-        ${ImguiDir}/imgui_draw.cpp
-        ${ImguiDir}/imgui_tables.cpp
-        ${ImguiDir}/imgui_widgets.cpp
-        ${ImguiDir}/imgui.cpp
-        ${ImguiDir}/backends/imgui_impl_metal.mm
-        ${ImguiDir}/backends/imgui_impl_osx.mm
-        ${ImplotDir}/implot.cpp
-        ${ImplotDir}/implot_items.cpp
-        ${ImplotDir}/implot_demo.cpp
-        ${SOURCES}
-    )
-    add_dependencies(${PROJECT_NAME} generate_gpu_schema)
-    # The ImGui backends manage their own retains; do not enable ARC.
-    set_source_files_properties(${ImguiDir}/backends/imgui_impl_metal.mm ${ImguiDir}/backends/imgui_impl_osx.mm PROPERTIES COMPILE_FLAGS "-w")
-    set_source_files_properties(src/FileDialog.mm src/MacPlatform.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-    target_compile_definitions(${PROJECT_NAME} PRIVATE IMGUI_IMPL_METAL_CPP)
-
-    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate" "-framework AppKit" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio" "-framework CoreFoundation" "-framework GameController" "-framework Metal" "-framework Foundation" "-framework QuartzCore" "-framework UniformTypeIdentifiers")
-
-    target_link_libraries(${PROJECT_NAME} PRIVATE FastFEM::FastFEM meshoptimizer lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
-
-    if(CMAKE_BUILD_TYPE MATCHES Debug)
-        target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
-        # Replay tests: File->Replay->Current writes a fixture here when replay diverges from the live scene state.
-        target_compile_definitions(${PROJECT_NAME} PRIVATE REPLAY_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/replay")
-    elseif(CMAKE_BUILD_TYPE MATCHES Release)
-        target_compile_definitions(${PROJECT_NAME} PRIVATE RELEASE_BUILD)
-    endif()
-
-    # Enable per-action replay and round-trip validation through the environment or cache variable.
-    option(MESHEDITOR_VALIDATE_ACTIONS "Validate replay and round-trip after every committed action" $ENV{VALIDATE_ACTIONS})
-    if(MESHEDITOR_VALIDATE_ACTIONS)
-        if(NOT CMAKE_BUILD_TYPE MATCHES Debug)
-            message(FATAL_ERROR "MESHEDITOR_VALIDATE_ACTIONS needs a Debug build")
-        endif()
-        set_property(SOURCE src/main.cpp APPEND PROPERTY COMPILE_DEFINITIONS VALIDATE_ACTIONS)
-    endif()
-
-    option(QUIET "Disable Timer prints" OFF)
-    if(QUIET)
-        target_compile_definitions(${PROJECT_NAME} PRIVATE QUIET)
-    endif()
-
-    # Limit retained scratch sessions in restore/.
-    set(RESTORE_SESSION_RETAIN 5 CACHE STRING "Max number of scratch sessions to keep")
-    target_compile_definitions(${PROJECT_NAME} PRIVATE RESTORE_SESSION_RETAIN=${RESTORE_SESSION_RETAIN})
-
-    # Populate File submenus from external glTF samples and this repository's physical-audio scenes.
-    target_compile_definitions(${PROJECT_NAME} PRIVATE
+    add_executable(MeshEditor src/main.cpp)
+    target_link_libraries(MeshEditor PRIVATE MeshEditorUi)
+    mesheditor_compile_policy(MeshEditor COLD)
+    target_compile_definitions(MeshEditor PRIVATE
         GLTF_SAMPLE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/external/glTF-Sample-Assets"
         GLTF_PHYSICS_DIR="${CMAKE_SOURCE_DIR}/external/glTF_Physics"
-        GLTF_PHYSICAL_AUDIO_DIR="${CMAKE_SOURCE_DIR}/glTF_PhysicalAudio/samples")
-
-    set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enum-base -fno-rtti)
+        GLTF_PHYSICAL_AUDIO_DIR="${CMAKE_SOURCE_DIR}/glTF_PhysicalAudio/samples"
+        $<$<BOOL:${MESHEDITOR_VALIDATE_ACTIONS}>:VALIDATE_ACTIONS>)
+    set_target_properties(MeshEditor PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 endif()
-
-add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS -DZPP_BITS_AUTODETECT_MEMBERS_MODE=1)
-add_definitions(-DMA_NO_ENGINE) # Reduce MA build size
 
 add_subdirectory(tests)

@@ -43,4 +43,3 @@ struct AudioDeviceResource {
 
 void ReconcileAudioDevice(AudioDeviceResource &, const AudioOutputConfig &, const AudioOutputMix &);
 void ApplyAudioMix(AudioDeviceResource &, const AudioOutputMix &);
-void DrawAudioDeviceControls(entt::registry &, entt::entity viewport);

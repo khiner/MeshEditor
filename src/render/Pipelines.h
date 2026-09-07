@@ -4,11 +4,8 @@
 #include "metal/Image.h"
 #include "metal/Shader.h"
 #include "render/IblPrefilterPipelines.h"
-#include "render/MeshConnectivityPipelines.h"
 #include "render/PbrFeature.h"
 #include "render/ShaderPipelineType.h"
-#include "render/VertexAdjacencyPipelines.h"
-#include "render/VertexWeldPipelines.h"
 
 #include <array>
 #include <memory>
@@ -154,8 +151,6 @@ namespace ThreadgroupMemory {
 inline constexpr uint32_t BoundsFoldVector{256 * sizeof(float) * 4};
 inline constexpr uint32_t MeshletBoundsFoldVector{64 * sizeof(float) * 4};
 inline constexpr uint32_t DepthPyramidTile{32 * 32 * sizeof(float)};
-// One sum per simd group in a 256-thread scan, plus the threadgroup total, padded to Metal's 16-byte granule.
-inline constexpr uint32_t BlockScan{48};
 } // namespace ThreadgroupMemory
 
 struct Pipelines {
@@ -184,9 +179,6 @@ struct Pipelines {
     mtl::ComputePipeline DepthPyramidReduce;
     IblPrefilterPipelines IblPrefilter;
     // Mesh creation runs these three.
-    VertexAdjacencyPipelines VertexAdjacency;
-    VertexWeldPipelines VertexWeld;
-    MeshConnectivityPipelines MeshConnectivity;
 
     void CompileShaders();
 

@@ -1,7 +1,6 @@
 #include "MacPlatform.h"
 
 #include "Paths.h"
-#include "imgui_impl_osx.h"
 #include "metal/MetalCpp.h"
 
 #import <AppKit/AppKit.h>
@@ -18,7 +17,6 @@ struct Window::Impl {
     NSWindow *NativeWindow{nil};
     MeshEditorView *View{nil};
     Events PendingEvents;
-    bool ImGuiInitialized{false};
 };
 } // namespace MacPlatform
 
@@ -29,7 +27,9 @@ using MacPlatform::Window;
 @end
 
 @implementation MeshEditorView
-- (BOOL)isFlipped { return YES; }
+- (BOOL)isFlipped {
+    return YES;
+}
 
 - (void)scrollWheel:(NSEvent *)event {
     if (event.phase == NSEventPhaseCancelled) return;
@@ -39,13 +39,12 @@ using MacPlatform::Window;
 }
 
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
-    return [sender.draggingPasteboard canReadObjectForClasses:@[NSURL.class] options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}]
-        ? NSDragOperationCopy : NSDragOperationNone;
+    return [sender.draggingPasteboard canReadObjectForClasses:@[ NSURL.class ] options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}] ? NSDragOperationCopy : NSDragOperationNone;
 }
 
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
-    const auto options = @{NSPasteboardURLReadingFileURLsOnlyKey: @YES};
-    const auto urls = [sender.draggingPasteboard readObjectsForClasses:@[NSURL.class] options:options];
+    const auto options = @{NSPasteboardURLReadingFileURLsOnlyKey : @YES};
+    const auto urls = [sender.draggingPasteboard readObjectsForClasses:@[ NSURL.class ] options:options];
     for (NSURL *url in urls) self.owner->PendingEvents.DroppedFiles.emplace_back(url.fileSystemRepresentation);
     return urls.count != 0;
 }
@@ -104,16 +103,16 @@ Window::Window() : Data{std::make_unique<Impl>()} {
     const auto style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
         NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
     Data->NativeWindow = [[NSWindow alloc] initWithContentRect:NSZeroRect
-                                                      styleMask:style
-                                                        backing:NSBackingStoreBuffered
-                                                          defer:NO];
+                                                     styleMask:style
+                                                       backing:NSBackingStoreBuffered
+                                                         defer:NO];
     Data->NativeWindow.releasedWhenClosed = NO; // ARC owns the window through Impl.
     Data->NativeWindow.title = @"MeshEditor";
     Data->NativeWindow.acceptsMouseMovedEvents = YES;
 
     Data->View = [[MeshEditorView alloc] initWithFrame:NSZeroRect];
     Data->View.owner = Data.get();
-    [Data->View registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+    [Data->View registerForDraggedTypes:@[ NSPasteboardTypeFileURL ]];
     Data->View.wantsLayer = YES;
     Data->View.layer = [CAMetalLayer layer];
     Data->NativeWindow.contentView = Data->View;
@@ -127,7 +126,6 @@ Window::Window() : Data{std::make_unique<Impl>()} {
 }
 
 Window::~Window() {
-    if (Data->ImGuiInitialized) ShutdownImGui();
     [Data->NativeWindow close];
 }
 
@@ -151,35 +149,19 @@ Events Window::PollEvents() {
     return std::exchange(Data->PendingEvents, {});
 }
 
-void Window::InitImGui() {
-    if (!(Data->ImGuiInitialized = ImGui_ImplOSX_Init(Data->View))) throw std::runtime_error("Could not initialize ImGui's macOS backend.");
-    ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_HasSetMousePos;
-}
+void *Window::NativeView() const { return (__bridge void *)Data->View; }
 
-void Window::HonorMouseWarp() {
-    auto &io = ImGui::GetIO();
-    if (!io.WantSetMousePos) return;
-    io.WantSetMousePos = false;
-    // io.MousePos is in the content view's coordinates with a top-left origin.
-    const NSPoint window_point{io.MousePos.x, Data->View.bounds.size.height - io.MousePos.y};
+void Window::WarpCursor(float x, float y) {
+    const NSPoint window_point{x, Data->View.bounds.size.height - y};
     const NSRect screen_rect = [Data->NativeWindow convertRectToScreen:NSMakeRect(window_point.x, window_point.y, 0, 0)];
-    // Cocoa screen origin is the primary screen's bottom left, global display origin its top left.
     const CGFloat primary_height = NSScreen.screens.firstObject.frame.size.height;
     CGWarpMouseCursorPosition(CGPointMake(screen_rect.origin.x, primary_height - screen_rect.origin.y));
-    // Disable post-warp event suppression.
     CGAssociateMouseAndMouseCursorPosition(true);
 }
 
-void Window::NewImGuiFrame() {
-    ImGui_ImplOSX_NewFrame(Data->View);
+void Window::UpdateDrawableSize() {
     auto *const layer = static_cast<CAMetalLayer *>(Data->View.layer);
     layer.contentsScale = Data->NativeWindow.backingScaleFactor;
     layer.drawableSize = [Data->View convertSizeToBacking:Data->View.bounds.size];
-}
-
-void Window::ShutdownImGui() {
-    if (!Data->ImGuiInitialized) return;
-    ImGui_ImplOSX_Shutdown();
-    Data->ImGuiInitialized = false;
 }
 } // namespace MacPlatform

@@ -1,4 +1,5 @@
 #include "SurfaceAudio.h"
+#include "audio/AudioUi.h"
 
 #include "TransformMath.h"
 #include "action/Action.h"

@@ -165,10 +165,3 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
 
     return action;
 }
-
-void JumpToStartFrame(entt::registry &r, entt::entity viewport) {
-    const auto frame = r.get<const TimelineRange>(viewport).StartFrame;
-    r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = frame; });
-    r.get<PlaybackFrame>(viewport).Value = frame;
-    r.emplace_or_replace<PhysicsCacheInvalid>(viewport);
-}

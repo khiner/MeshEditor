@@ -1,9 +1,9 @@
-#include "render/MeshBatch.h"
+#include "mesh/MeshBatch.h"
 
 #include "Parallel.h"
 #include "Profile.h"
-#include "render/MeshConnectivityGpu.h"
-#include "render/VertexWeldGpu.h"
+#include "mesh/MeshConnectivityGpu.h"
+#include "mesh/VertexWeldGpu.h"
 
 #include <entt/entity/registry.hpp>
 

@@ -120,6 +120,8 @@ Feature-mask changes rebuild affected pipeline states from cached MSL libraries.
 
 ## Build & run
 
+See [production libraries](cmake/README.md) for source ownership, dependencies and optimization settings.
+
 ### Install dependencies
 
 Requires Apple Silicon and the Xcode command-line tools.

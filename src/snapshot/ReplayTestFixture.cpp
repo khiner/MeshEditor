@@ -5,7 +5,7 @@
 #include <string_view>
 
 namespace {
-// Set by the debug app via -DREPLAY_FIXTURE_DIR, empty (a no-op) otherwise.
+// Set in Debug builds via -DREPLAY_FIXTURE_DIR, empty (a no-op) otherwise.
 constexpr std::string_view FixtureRoot =
 #ifdef REPLAY_FIXTURE_DIR
     REPLAY_FIXTURE_DIR;

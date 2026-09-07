@@ -18,10 +18,6 @@
 
 #include <entt/entity/registry.hpp>
 
-namespace TransformGizmo {
-bool IsUsing(const entt::registry &r, entt::entity viewport) { return r.get<const GizmoInteraction>(viewport).IsUsing(); }
-} // namespace TransformGizmo
-
 bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMode mode) {
     const auto current_mode = r.get<const Interaction>(viewport).Mode;
     if (current_mode == mode) return false;

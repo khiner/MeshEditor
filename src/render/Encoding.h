@@ -109,18 +109,4 @@ inline void BindCompute(
     BindScene(encoder, slots, buffers, view_offset);
 }
 
-// Dispatches one tiled stage after an explicit barrier for bindless-buffer dependencies.
-inline void DispatchTiledPass(
-    MTL::ComputeCommandEncoder *encoder, const mtl::ComputePipeline &pipeline, const mtl::BindlessSet &slots,
-    const GpuBuffers &buffers, auto pc, size_t groups, uint32_t first_tile
-) {
-    if (groups == 0) return;
-    BindCompute(encoder, pipeline, slots, buffers);
-    pc.FirstTile = first_tile;
-    SetPushConstants(encoder, pc);
-    encoder->setThreadgroupMemoryLength(ThreadgroupMemory::BlockScan, 0);
-    encoder->dispatchThreadgroups(MTL::Size(groups, 1, 1), ThreadgroupSize::Linear256);
-    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-}
-
 } // namespace encode

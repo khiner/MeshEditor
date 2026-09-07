@@ -9,24 +9,6 @@
 
 using std::ranges::contains, std::ranges::find;
 
-void Select(entt::registry &r, entt::entity e) {
-    r.clear<Selected>();
-    if (e != entt::null) {
-        r.clear<Active>();
-        r.emplace<Active>(e);
-        r.emplace<Selected>(e);
-    }
-}
-
-void SelectBone(entt::registry &r, entt::entity e) {
-    r.clear<BoneSelection>();
-    if (e != entt::null) {
-        r.clear<BoneActive>();
-        r.emplace<BoneActive>(e);
-        r.emplace<BoneSelection>(e);
-    }
-}
-
 std::vector<SelectionHit> ResolveHits(entt::registry &r, const std::vector<entt::entity> &raw, bool bone_mode, bool merge_parts) {
     std::vector<SelectionHit> hits;
     for (const auto e : raw) {

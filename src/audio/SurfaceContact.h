@@ -54,9 +54,3 @@ void SurfaceUpdateContacts(entt::registry &);
 float SurfaceRoughnessOf(const entt::registry &, entt::entity node);
 // Returns the collider or nearest ancestor with an acoustic surface, otherwise the body.
 entt::entity ContactSurfaceNode(const entt::registry &, entt::entity collider, entt::entity body);
-
-/***** User interface *****/
-
-void DrawContactSurfaceControls(entt::registry &, entt::entity sound_entity, const ContactSurface &, const AcousticMaterial &);
-void DrawSurfaceSynthControls(entt::registry &, entt::entity viewport);
-void DrawSurfaceContactDebug(const entt::registry &);

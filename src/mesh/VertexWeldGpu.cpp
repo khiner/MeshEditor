@@ -1,14 +1,13 @@
-#include "render/VertexWeldGpu.h"
+#include "mesh/VertexWeldGpu.h"
 
 #include "Profile.h"
 #include "gpu/VertexWeldJob.h"
 #include "gpu/VertexWeldPushConstants.h"
+#include "mesh/Compute.h"
 #include "mesh/MeshData.h"
+#include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
-#include "render/Encoding.h"
-#include "render/GpuBuffers.h"
-#include "render/Pipelines.h"
-#include "render/ScratchChunks.h"
+#include "mesh/ScratchChunks.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -60,7 +59,6 @@ struct WeldBuffers {
 
 void SubmitChunk(entt::registry &r, std::span<const WeldTarget> chunk, WeldBuffers &reused) {
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
 
     std::vector<VertexWeldJob> jobs;
     jobs.reserve(chunk.size());
@@ -130,7 +128,7 @@ void SubmitChunk(entt::registry &r, std::span<const WeldTarget> chunk, WeldBuffe
 
     const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
-    const auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &pipelines = r.ctx().get<const MeshPipelines>();
     ctx.CommitResidency();
     auto *command_buffer = ctx.Queue->commandBuffer();
     auto *encoder = command_buffer->computeCommandEncoder();
@@ -140,7 +138,7 @@ void SubmitChunk(entt::registry &r, std::span<const WeldTarget> chunk, WeldBuffe
         .ScratchSlot = scratch.Slot,
     };
     const auto dispatch = [&](const mtl::ComputePipeline &pipeline, size_t groups, uint32_t first_tile) {
-        encode::DispatchTiledPass(encoder, pipeline, slots, buffers, pc, groups, first_tile);
+        mesh_compute::DispatchTiledPass(encoder, pipeline, slots, pc, groups, first_tile);
     };
     const auto first_vertex_tile = uint32_t(table_tiles.size());
     const auto first_block_tile = first_vertex_tile + uint32_t(vertex_tiles.size());
@@ -192,7 +190,7 @@ void WeldMeshesNow(entt::registry &r, std::span<const WeldTarget> targets) {
     });
 
     // Every chunk writes over the same buffers, so a many-mesh batch takes no fresh allocation per submit.
-    auto &ctx = r.ctx().get<GpuBuffers>().Ctx;
+    auto &ctx = r.ctx().get<const MeshStore>().BufferContext();
     WeldBuffers reused{
         .Scratch = {ctx, uint64_t(split.WidestWords) * sizeof(uint32_t), SlotType::Buffer},
         .Jobs = {ctx, uint64_t(split.MostJobs) * sizeof(VertexWeldJob), SlotType::Buffer},

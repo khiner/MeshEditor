@@ -1,5 +1,8 @@
 #pragma once
 
+#include "mesh/MeshData.h"
+#include <unordered_map>
+
 #include "MeshAttributes.h"
 #include "PrimitiveType.h"
 

@@ -1,14 +1,13 @@
-#include "render/VertexAdjacencyGpu.h"
+#include "mesh/VertexAdjacencyGpu.h"
 
 #include "Profile.h"
 #include "gpu/VertexAdjacencyJob.h"
 #include "gpu/VertexAdjacencyPushConstants.h"
+#include "mesh/Compute.h"
 #include "mesh/Mesh.h"
+#include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
-#include "render/Encoding.h"
-#include "render/GpuBuffers.h"
-#include "render/Pipelines.h"
-#include "render/ScratchChunks.h"
+#include "mesh/ScratchChunks.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -36,7 +35,6 @@ uint32_t ScratchWords(const AdjacencyWork &work) {
 
 void SubmitChunk(entt::registry &r, std::span<const AdjacencyWork> chunk) {
     const auto &meshes = r.ctx().get<const MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
 
     std::vector<VertexAdjacencyJob> jobs;
     jobs.reserve(chunk.size());
@@ -74,7 +72,7 @@ void SubmitChunk(entt::registry &r, std::span<const AdjacencyWork> chunk) {
         jobs.emplace_back(job);
     }
 
-    mtl::Buffer scratch{buffers.Ctx, uint64_t(scratch_words) * sizeof(uint32_t), SlotType::Buffer};
+    mtl::Buffer scratch{meshes.BufferContext(), uint64_t(scratch_words) * sizeof(uint32_t), SlotType::Buffer};
     const auto scratch_words_span = scratch.GetMutableSpan<uint32_t>({0, scratch_words});
     for (uint32_t i = 0; i < chunk.size(); ++i) {
         if (chunk[i].Kind == VertexAdjacencyKind::Fan) continue;
@@ -88,12 +86,12 @@ void SubmitChunk(entt::registry &r, std::span<const AdjacencyWork> chunk) {
     tiles.insert(tiles.end(), vertex_tiles.begin(), vertex_tiles.end());
     tiles.insert(tiles.end(), halfedge_tiles.begin(), halfedge_tiles.end());
     tiles.insert(tiles.end(), block_tiles.begin(), block_tiles.end());
-    const mtl::Buffer job_buffer{buffers.Ctx, as_bytes(jobs), SlotType::Buffer};
-    const mtl::Buffer tile_buffer{buffers.Ctx, as_bytes(tiles), SlotType::Buffer};
+    const mtl::Buffer job_buffer{meshes.BufferContext(), as_bytes(jobs), SlotType::Buffer};
+    const mtl::Buffer tile_buffer{meshes.BufferContext(), as_bytes(tiles), SlotType::Buffer};
 
     const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
-    const auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &pipelines = r.ctx().get<const MeshPipelines>();
     ctx.CommitResidency();
     auto *command_buffer = ctx.Queue->commandBuffer();
     auto *encoder = command_buffer->computeCommandEncoder();
@@ -104,7 +102,7 @@ void SubmitChunk(entt::registry &r, std::span<const AdjacencyWork> chunk) {
         .AdjacencySlot = meshes.GetAdjacencySlot(),
     };
     const auto dispatch = [&](const mtl::ComputePipeline &pipeline, size_t groups, uint32_t first_tile) {
-        encode::DispatchTiledPass(encoder, pipeline, slots, buffers, pc, groups, first_tile);
+        mesh_compute::DispatchTiledPass(encoder, pipeline, slots, pc, groups, first_tile);
     };
     const auto first_halfedge_tile = uint32_t(vertex_tiles.size());
     const auto first_block_tile = first_halfedge_tile + uint32_t(halfedge_tiles.size());

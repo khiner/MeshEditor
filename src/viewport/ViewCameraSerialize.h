@@ -1,6 +1,6 @@
 #pragma once
 
-#include "action/SerializeNumeric.h"
+#include "numeric/Serialize.h"
 #include "viewport/ViewCamera.h"
 
 // Excludes inactive variant storage and transient animation state from the serialized representation.

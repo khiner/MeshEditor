@@ -25,8 +25,10 @@
 #include "audio/AudioDevice.h"
 #include "audio/AudioSystem.h"
 #include "audio/AudioTypes.h"
+#include "audio/AudioUi.h"
 #include "audio/ModalModelFile.h"
 #include "audio/ModalModes.h"
+#include "editor/AudioIntegration.h"
 #include "gltf/GltfScene.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
@@ -48,6 +50,7 @@
 #include "snapshot/ReplayTestFixture.h"
 #include "snapshot/SaveState.h"
 #include "snapshot/SceneSnapshot.h"
+#include "ui/MacBackend.h"
 #include "viewport/FrameState.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/ViewCamera.h"
@@ -1407,7 +1410,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     StyleColorsDark();
 
-    window.InitImGui();
+    ui::MacBackend mac_backend{window};
     ImGui_ImplMetal_Init(ctx.Device.get());
 
     InitFonts();
@@ -1418,7 +1421,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     InitViewportMedia(r);
     SetupScene(r, viewport);
     // Read the DPI scale from NewFrame before initializing DPI-scaled GPU state.
-    window.NewImGuiFrame();
+    mac_backend.NewFrame();
     r.ctx().get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(io.DisplayFramebufferScale);
     ProcessComponentEvents(r, viewport);
 
@@ -1462,7 +1465,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         const bool ui_has_pending_solves = HasPendingModalSolves(r);
 #endif
 
-        window.NewImGuiFrame();
+        mac_backend.NewFrame();
         driver.ElapsedPlayTime += io.DeltaTime;
         // Scene-affecting code reads FrameState::DeltaTime. `io.DeltaTime` is wall-clock, UI-only.
         r.ctx().get<FrameState>().DeltaTime = driver.FixedStep ? driver.RenderDt : io.DeltaTime;
@@ -1642,7 +1645,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         workspace::ApplyPending(windows);
 
         ImGui::Render();
-        window.HonorMouseWarp();
+        mac_backend.HonorMouseWarp();
         auto *draw_data = GetDrawData();
         const bool ui_gesture_settled = UiGestureSettled(ui_focus);
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
@@ -1713,7 +1716,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     DeinitViewport(r, viewport);
 
     ImGui_ImplMetal_Shutdown();
-    window.ShutdownImGui();
+    mac_backend.Shutdown();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
 }

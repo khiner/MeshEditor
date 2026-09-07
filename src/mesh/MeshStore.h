@@ -17,16 +17,6 @@
 #include <expected>
 #include <filesystem>
 
-struct ObjPlyMaterial {
-    vec4 BaseColorFactor;
-    float MetallicFactor, RoughnessFactor;
-    std::string Name;
-
-    // OBJ fields
-    std::optional<std::filesystem::path> BaseColorTexturePath{}, NormalTexturePath{};
-    bool HasAlphaTexture{false};
-};
-
 // MorphTangentDeltas returns the target-major tangent deltas the arena doesn't store, compacted to the welded vertex set.
 struct CreatedMesh {
     uint32_t StoreId;
@@ -63,16 +53,6 @@ struct MeshPrimitives {
     std::vector<std::vector<std::optional<uint32_t>>> VariantMappings{};
 };
 
-// An OBJ or PLY file read into the arrays a mesh is created from.
-struct MeshDataWithMaterials {
-    MeshData Mesh;
-    MeshVertexAttributes Attrs;
-    MeshPrimitives Primitives;
-    std::vector<ObjPlyMaterial> Materials;
-};
-
-std::expected<MeshDataWithMaterials, std::string> ReadMeshFile(const std::filesystem::path &);
-
 // Contains source-derived data without arena or store ownership.
 struct PreparedMesh {
     std::vector<vec4> CornerTangents, CornerColors;
@@ -95,6 +75,7 @@ bool BuildsEdgeAdjacencyOnGpu(const Mesh &);
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
 struct MeshStore {
     explicit MeshStore(mtl::BufferContext &);
+    mtl::BufferContext &BufferContext() const;
     ~MeshStore();
     MeshStore(MeshStore &&) noexcept;
     MeshStore &operator=(MeshStore &&) noexcept;

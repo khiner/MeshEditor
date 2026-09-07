@@ -1,14 +1,13 @@
-#include "render/MeshConnectivityGpu.h"
+#include "mesh/MeshConnectivityGpu.h"
 
 #include "Profile.h"
 #include "gpu/MeshConnectivityJob.h"
 #include "gpu/MeshConnectivityPushConstants.h"
+#include "mesh/Compute.h"
 #include "mesh/MeshData.h"
+#include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
-#include "render/Encoding.h"
-#include "render/GpuBuffers.h"
-#include "render/Pipelines.h"
-#include "render/ScratchChunks.h"
+#include "mesh/ScratchChunks.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -30,7 +29,6 @@ uint32_t ScratchWords(uint32_t vertex_count, uint32_t halfedge_count) {
 
 void SubmitChunk(entt::registry &r, std::span<const ConnectivityTarget> chunk, mtl::Buffer &scratch, mtl::Buffer &job_buffer, mtl::Buffer &tile_buffer, std::vector<ConnectivityTarget> &rejected) {
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
 
     std::vector<MeshConnectivityJob> jobs;
     jobs.reserve(chunk.size());
@@ -85,7 +83,7 @@ void SubmitChunk(entt::registry &r, std::span<const ConnectivityTarget> chunk, m
 
     const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
-    const auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &pipelines = r.ctx().get<const MeshPipelines>();
     ctx.CommitResidency();
     auto *command_buffer = ctx.Queue->commandBuffer();
     auto *encoder = command_buffer->computeCommandEncoder();
@@ -95,7 +93,7 @@ void SubmitChunk(entt::registry &r, std::span<const ConnectivityTarget> chunk, m
         .ScratchSlot = scratch.Slot,
     };
     const auto dispatch = [&](const mtl::ComputePipeline &pipeline, size_t groups, uint32_t first_tile) {
-        encode::DispatchTiledPass(encoder, pipeline, slots, buffers, pc, groups, first_tile);
+        mesh_compute::DispatchTiledPass(encoder, pipeline, slots, pc, groups, first_tile);
     };
     const auto first_halfedge_tile = uint32_t(vertex_tiles.size());
     const auto first_block_tile = first_halfedge_tile + uint32_t(halfedge_tiles.size());
@@ -192,7 +190,7 @@ std::vector<ConnectivityTarget> BuildConnectivityNow(entt::registry &r, std::spa
     });
 
     // Every chunk writes over the same buffers, so a many-mesh batch takes no fresh allocation per submit.
-    auto &ctx = r.ctx().get<GpuBuffers>().Ctx;
+    auto &ctx = r.ctx().get<const MeshStore>().BufferContext();
     mtl::Buffer scratch{ctx, uint64_t(split.WidestWords) * sizeof(uint32_t), SlotType::Buffer};
     mtl::Buffer job_buffer{ctx, uint64_t(split.MostJobs) * sizeof(MeshConnectivityJob), SlotType::Buffer};
     mtl::Buffer tile_buffer{ctx, uint64_t(split.WidestWords / 32u + split.MostJobs * 8u) * sizeof(uvec2), SlotType::Buffer};

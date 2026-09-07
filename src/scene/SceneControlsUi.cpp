@@ -13,6 +13,7 @@
 #include "armature/ArmatureComponents.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioSystem.h"
+#include "audio/AudioUi.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
 #include "gltf/GltfScene.h"

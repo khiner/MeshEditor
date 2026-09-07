@@ -1,7 +1,7 @@
 #include "WorkspaceState.h"
 
 #include "File.h"
-#include "action/SerializeNumeric.h"
+#include "numeric/Serialize.h"
 #include "viewport/ViewCameraSerialize.h"
 #include "viewport/ViewportDisplay.h"
 

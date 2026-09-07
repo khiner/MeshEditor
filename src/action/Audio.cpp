@@ -4,6 +4,7 @@
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
 #include "audio/SoundVertices.h"
+#include "editor/AudioIntegration.h"
 #include "render/Instance.h"
 #include "scene/Entity.h"
 #include <entt/entity/registry.hpp>

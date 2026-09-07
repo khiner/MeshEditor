@@ -1,7 +1,7 @@
 #pragma once
 
-#include "action/SerializeNumeric.h"
 #include "armature/Armature.h"
+#include "numeric/Serialize.h"
 
 // Excludes derived caches because unordered-map iteration would make snapshots nondeterministic.
 

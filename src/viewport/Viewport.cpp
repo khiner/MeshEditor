@@ -1,4 +1,5 @@
 #include "viewport/Viewport.h"
+#include "render/ViewportSubmission.h"
 
 #include "CameraTypes.h"
 #include "Paths.h"
@@ -10,6 +11,8 @@
 #include "action/ActionIndex.h"
 #include "animation/AnimationTimeline.h"
 #include "mesh/Mesh.h"
+#include "mesh/MeshBatch.h"
+#include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectComponents.h"
@@ -18,7 +21,6 @@
 #include "physics/PhysicsTypes.h"
 #include "render/GpuSceneState.h"
 #include "render/MaterialImport.h"
-#include "render/MeshBatch.h"
 #include "render/Pipelines.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"
@@ -42,35 +44,6 @@
 using std::ranges::find, std::ranges::to;
 
 namespace {
-// Metal command buffers are single-use, and RecordedPhase tracks the last build.
-struct ViewportRenderResources {
-    MTL::CommandBuffer *InFlight{nullptr}; // The submitted frame, until it completes.
-    RenderPhase RecordedPhase{RenderPhase::Full};
-};
-
-// Dispatch sizes follow scene recording because the rebuild determines their counts.
-void SubmitRecordedFrame(entt::registry &r, MTL::CommandBuffer *command_buffer) {
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    SyncPreludeDispatchArgs(buffers);
-    ctx.CommitResidency();
-    {
-        const profile::CpuScope scope{"QueueSubmit"};
-        command_buffer->commit();
-    }
-    r.ctx().get<ViewportRenderResources>().InFlight = command_buffer;
-    r.ctx().get<FrameState>().RenderPending = true;
-}
-
-void RecordAndSubmitFrame(entt::registry &r, entt::entity viewport, SceneUpdate update, RenderPhase phase = RenderPhase::Full) {
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    auto &resources = r.ctx().get<ViewportRenderResources>();
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    RecordRenderCommandBuffer(r, viewport, command_buffer, update, phase);
-    resources.RecordedPhase = phase;
-    SubmitRecordedFrame(r, command_buffer);
-}
-
 RenderRequest TakeRenderRequest(entt::registry &r) {
     return std::exchange(r.ctx().get<PendingRenderRequest>().Value, RenderRequest::None);
 }
@@ -184,11 +157,6 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
 }
 } // namespace
 
-bool ViewportImageReady(const entt::registry &r) {
-    const auto extent = r.ctx().get<const Pipelines>().BuiltColorExtent();
-    return extent.Width != 0 && extent.Height != 0;
-}
-
 void SubmitViewport(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *viewport_consumer) {
     const profile::CpuScope scope{"SubmitViewport"};
     // Resize waits for this consumer before replacing its sampled texture.
@@ -218,48 +186,13 @@ void SubmitViewport(entt::registry &r, entt::entity viewport, MTL::CommandBuffer
     RecordAndSubmitFrame(r, viewport, RequestedSceneUpdate(render_request));
 }
 
-void SetStudioEnvironment(entt::registry &r, uint32_t index) {
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    const auto &pipelines = r.ctx().get<const Pipelines>();
-    auto &slots = r.ctx().get<mtl::BindlessSet>();
-    auto &environments = r.ctx().get<EnvironmentStore>();
-    auto &hdri = environments.Hdris[index];
-    if (!hdri.Prefiltered) {
-        hdri.Prefiltered = CreateIblFromHdri(ctx, slots, pipelines.IblPrefilter, hdri.Path, hdri.Name);
-    }
-    const auto &pre = *hdri.Prefiltered;
-    environments.ActiveHdriIndex = index;
-    environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
-}
-
-void RebuildStudioEnvironments(entt::registry &r) {
-    auto &slots = r.ctx().get<mtl::BindlessSet>();
-    auto &environments = r.ctx().get<EnvironmentStore>();
-    if (environments.Hdris.empty()) return; // No studio environment to index into.
-    const auto release = [&slots](uint32_t sampler_slot) {
-        if (sampler_slot != InvalidSlot) slots.Release({SlotType::CubeSampler, sampler_slot});
-    };
-    for (auto &hdri : environments.Hdris) {
-        if (!hdri.Prefiltered) continue;
-        release(hdri.Prefiltered->DiffuseEnv.SamplerSlot);
-        release(hdri.Prefiltered->SpecularEnv.SamplerSlot);
-        hdri.Prefiltered.reset();
-    }
-    SetStudioEnvironment(r, environments.ActiveHdriIndex);
-}
-
-void SetStudioEnvironment(entt::registry &r, std::string_view name) {
-    const auto &hdris = r.ctx().get<const EnvironmentStore>().Hdris;
-    const auto it = find(hdris, name, &HdriEntry::Name);
-    SetStudioEnvironment(r, it != hdris.end() ? uint32_t(std::distance(hdris.begin(), it)) : 0u);
-}
-
 entt::entity InitEngine(entt::registry &r) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     InitStoreCtx(r, ctx);
     auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &libraries = r.ctx().emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a");
     r.ctx().emplace<Pipelines>(libraries);
+    r.ctx().emplace<MeshPipelines>(libraries);
     physics::Init(r);
     RegisterSceneComponentHandlers(r);
 
@@ -407,6 +340,7 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     r.ctx().erase<std::vector<ComponentEventHandler>>();
     r.ctx().erase<EntityDestroyTracker>();
     physics::Deinit(r);
+    r.ctx().erase<MeshPipelines>();
     r.ctx().erase<Pipelines>();
     if (r.valid(viewport)) r.destroy(viewport);
     TearDownStoreCtx(r);
@@ -423,18 +357,3 @@ void PresentViewport(entt::registry &r, entt::entity viewport) {
     }
 }
 void PrepareViewport(entt::registry &r, entt::entity viewport) { AdvanceViewport(r, viewport, RenderPhase::Prepare); }
-
-void WaitForRender(entt::registry &r) {
-    auto &frame = r.ctx().get<FrameState>();
-    if (!frame.RenderPending) return;
-
-    auto &resources = r.ctx().get<ViewportRenderResources>();
-    if (resources.InFlight) {
-        const profile::CpuScope scope{"WaitGpu"};
-        resources.InFlight->waitUntilCompleted();
-    }
-    profile::Resolve(resources.InFlight);
-    resources.InFlight = nullptr;
-    r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
-    frame.RenderPending = false;
-}

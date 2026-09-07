@@ -32,11 +32,10 @@ public:
     Events PollEvents();
     void Show();
 
-    void InitImGui();
-    void NewImGuiFrame();
-    // Move the OS cursor to ImGui's requested position.
-    void HonorMouseWarp();
-    void ShutdownImGui();
+    void *NativeView() const;
+    void UpdateDrawableSize();
+    // Content-view coordinates, with a top-left origin.
+    void WarpCursor(float x, float y);
 
 private:
     std::unique_ptr<Impl> Data;

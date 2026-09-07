@@ -37,23 +37,6 @@ void DrainAudioCapture(entt::registry &, std::vector<float> &);
 
 void RenderAudioOffline(entt::registry &, entt::entity viewport, std::vector<float> &, uint32_t frame_count);
 
-void RegisterAudioComponentHandlers(entt::registry &);
-
-// Create the modal audio context and register its component handlers.
-// Must run before a scene loads, so that loading one populates the bank.
-// The output device is separate, and capture works without it.
-void InitAudioSystem(entt::registry &);
-// Destroy the modal audio context after any output device has stopped.
-void DeinitAudioSystem(entt::registry &);
-bool HasPendingModalSolves(const entt::registry &);
-void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
-
-// Draw the viewport-global audio synthesis controls.
-void DrawGlobalSynthControls(entt::registry &, entt::entity viewport);
-
-// Draws audio bank and fixed-pool utilization.
-void DrawAudioDebug(const entt::registry &);
-
 // Rebuild the entity's ContactDynamics from its MassProperties, ModalModes, and mesh (surface curvature).
 // Removes ContactDynamics when the inputs are missing.
 void UpdateContactDynamics(entt::registry &, entt::entity sound_entity);
@@ -62,41 +45,7 @@ void UpdateContactDynamics(entt::registry &, entt::entity sound_entity);
 // Stored mass properties scale linearly by this ratio.
 double ModalDensityRatio(const entt::registry &, entt::entity sound_entity);
 
-// Apply a modal solve result file (relative to ModalModelsDir()) to the sound entity.
-void ApplyModalModel(entt::registry &, entt::entity sound_entity, const std::filesystem::path &relative_path);
-
-// Draw the Audio controls for a sound object entity (has SoundVerticesModel).
-void DrawObjectAudioControls(entt::registry &, entt::entity viewport, entt::entity sound_entity, entt::entity mesh_entity);
-
-// Draw the in-flight modal solve jobs as a progress overlay anchored to the current window's lower-left corner. Call inside the viewport window.
-void DrawModalJobsOverlay(entt::registry &);
-
-// Assign sample[i] to mesh_vertices[i]. Used by RealImpact initial load and mic swap.
-// Unreferenced samples are released by the component handler.
-void SetVertexSamples(
-    entt::registry &, entt::entity sound_entity,
-    std::span<const uint32_t> mesh_vertices, std::span<LoadedSample>
-);
-
-// Assign one sample (path + frames) to every mesh vertex in `mesh_vertices`.
-// Creates SoundVertices / VertexSamples / SoundVerticesModel::Samples if missing.
-// The sample store deduplicates by path.
-void AssignVertexSample(
-    entt::registry &, entt::entity sound_entity,
-    std::span<const uint32_t> mesh_vertices, std::filesystem::path, std::vector<float> &&frames
-);
-
-// Remove samples from every mesh vertex in `mesh_vertices`.
-// Removes audio components if the sound object ends up empty and has no modal model.
-void RemoveVertexSamples(
-    entt::registry &, entt::entity sound_entity,
-    std::span<const uint32_t> mesh_vertices
-);
-
 uint32_t DeviceSampleRate(const entt::registry &);
 
 // Decode any CoreAudio-supported audio file to mono float frames at `sample_rate`. Returns empty on failure.
 std::vector<float> LoadAudioFrames(const std::string &file_path, uint32_t sample_rate);
-
-void Stop(entt::registry &, entt::entity sound_entity);
-void SetModel(entt::registry &, entt::entity sound_entity, SoundVerticesModel);
