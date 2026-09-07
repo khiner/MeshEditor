@@ -298,7 +298,10 @@ void RenderSelectionPickPass(entt::registry &r, mtl::PassChain &chain, std::opti
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &selection = pipelines.SelectionFragment;
     if (object) {
-        RecordVisibilityObjectSelection(r, chain, *object);
+        if (object->BestKeySlot != InvalidSlot) {
+            // Click cycling needs every covered surface, including occluded objects.
+            RecordMeshletCull(chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers, {.Mode = MeshletRouteMode::Material});
+        } else RecordVisibilityObjectSelection(r, chain, *object);
         RecordOverlayJobCull(chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers, true);
     }
     const auto sound_cull = sound_instance ?
@@ -318,6 +321,18 @@ void RenderSelectionPickPass(entt::registry &r, mtl::PassChain &chain, std::opti
             );
         }
         if (object) {
+            const auto rect = ObjectQueryRect(*object, pipelines.Main.Resources->ScratchDepth.Extent);
+            if (!rect) return;
+            encoder->setScissorRect({rect->Origin.x, rect->Origin.y, rect->Extent.x, rect->Extent.y});
+            if (object->BestKeySlot != InvalidSlot) {
+                selection.ObjectPick.Bind(encoder);
+                encoder->setCullMode(MTL::CullModeNone); // Shared coverage handles sidedness and mirrored transforms.
+                const VisibilitySelectionPushConstants pc{encode::MeshletDecodePc(buffers), *object};
+                encoder->setFragmentBytes(&pc, sizeof(pc), BufferIndex_PushConstants);
+                for (const auto route : {MeshletRoute::OpaqueCullBack, MeshletRoute::OpaqueCullFront, MeshletRoute::OpaqueDoubleSided, MeshletRoute::Coverage, MeshletRoute::Blend}) {
+                    DrawMeshlets(encoder, buffers, uint32_t(route));
+                }
+            }
             const ObjectSelectionPushConstants sel_pc{*object};
             if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::BoneJoint)).Meshlets > 0u) {
                 selection.BoneSphere.Bind(encoder);

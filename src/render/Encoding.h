@@ -11,6 +11,20 @@
 #include <print>
 
 namespace encode {
+// Decode primitive IDs against the current meshlet list.
+inline VisibilityShadingPushConstants MeshletDecodePc(const GpuBuffers &buffers) {
+    return {
+        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
+        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
+        .InstanceMapSlot = buffers.GpuInstanceSlots.Slot,
+        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
+        .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
+        .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
+        .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
+        .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
+    };
+}
+
 // Returns visibility-decode inputs only when the raster and visible-list generations match.
 inline VisibilityShadingPushConstants VisibilityDecodePc(const GpuBuffers &buffers) {
     if (buffers.Visibility.Generation != buffers.MeshletVisibleGeneration) {
@@ -24,16 +38,7 @@ inline VisibilityShadingPushConstants VisibilityDecodePc(const GpuBuffers &buffe
         }
         assert(false);
     }
-    return {
-        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
-        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
-        .InstanceMapSlot = buffers.GpuInstanceSlots.Slot,
-        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
-        .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
-        .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
-        .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
-        .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
-    };
+    return MeshletDecodePc(buffers);
 }
 
 inline void BindScene(MTL::RenderCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers, uint32_t view_offset = 0) {
