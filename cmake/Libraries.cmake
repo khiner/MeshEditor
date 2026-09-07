@@ -80,6 +80,7 @@ mesheditor_library(MeshEditorMesh HOT
     src/mesh/MeshPipelines.cpp
     src/mesh/MeshStore.cpp
     src/mesh/MeshStores.cpp
+    src/mesh/Primitives.cpp
     src/mesh/VertexAdjacencyGpu.cpp
     src/mesh/VertexWeldGpu.cpp
     src/selection/SelectionBitset.cpp
@@ -153,6 +154,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/action/Core.cpp
     src/action/Io.cpp
     src/action/Log.cpp
+    src/action/LogSerialize.cpp
     src/action/Object.cpp
     src/action/Physics.cpp
     src/action/Selection.cpp

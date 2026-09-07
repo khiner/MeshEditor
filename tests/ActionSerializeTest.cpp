@@ -3,6 +3,7 @@
 #include "RunSuites.h"
 
 #include <boost/ut.hpp>
+#include <zpp_bits.h>
 
 #include <sstream>
 
@@ -98,6 +99,33 @@ int main(int argc, const char **argv) {
         StreamActions(out, [&](Action &&d) { read.emplace_back(IndexOf(d)); });
         const bool same = read == written;
         expect(same);
+    };
+
+    "streaming respects record limits and resumes"_test = [] {
+        auto out = MakeStream();
+        SerializeAction(Action{}, out);
+        SerializeAction(Action{}, out);
+        size_t count = 0;
+        auto read = [&](Action &&) { ++count; };
+        StreamActions(out, read, 0);
+        expect(count == 0u);
+        StreamActions(out, read, 1);
+        expect(count == 1u);
+        StreamActions(out, read);
+        expect(count == 2u);
+    };
+
+    "streaming stops at a truncated record"_test = [] {
+        auto out = MakeStream();
+        SerializeAction(Action{}, out);
+        const auto record = out.str();
+        for (size_t length = 0; length < record.size(); ++length) {
+            auto truncated = MakeStream();
+            truncated << record << record.substr(0, length);
+            size_t count = 0;
+            StreamActions(truncated, [&](Action &&) { ++count; });
+            expect(count == 1u);
+        }
     };
 
     return RunSuites();
