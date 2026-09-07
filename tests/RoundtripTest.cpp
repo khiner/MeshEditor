@@ -114,6 +114,7 @@ constexpr Exception SubtreeExceptions[]{
     {"extensions.KHR_xmp_json_ld", "not imported"},
     {"extensions.KHR_xmp", "not imported"},
     {"materials[*].extensions.KHR_materials_volume_scatter", "not imported"},
+    {"materials[*].extensions.KHR_materials_retroreflection", "not imported"},
 
     {"animations[*].channels", "channels using KHR_animation_pointer are dropped on import"},
     {"animations[*].samplers", "samplers for dropped channels (e.g. KHR_animation_pointer) are also dropped"},

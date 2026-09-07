@@ -733,6 +733,7 @@ std::expected<void, std::string> DecodeMeshoptCompression(fastgltf::Asset &asset
             case MeshoptCompressionFilter::Octahedral: meshopt_decodeFilterOct(dst, comp.count, comp.byteStride); break;
             case MeshoptCompressionFilter::Quaternion: meshopt_decodeFilterQuat(dst, comp.count, comp.byteStride); break;
             case MeshoptCompressionFilter::Exponential: meshopt_decodeFilterExp(dst, comp.count, comp.byteStride); break;
+            case MeshoptCompressionFilter::Color: meshopt_decodeFilterColor(dst, comp.count, comp.byteStride); break;
         }
 
         const auto decoded_length = decoded.size();
