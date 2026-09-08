@@ -1,5 +1,7 @@
 #include "mesh/VertexWeldGpu.h"
 
+#include <Metal/MTLCommandQueue.hpp>
+
 #include "Profile.h"
 #include "gpu/VertexWeldJob.h"
 #include "gpu/VertexWeldPushConstants.h"

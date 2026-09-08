@@ -7,10 +7,22 @@
 #include <array>
 #include <vector>
 
+namespace MTL {
+class Buffer;
+class Texture;
+class SamplerState;
+class Resource;
+class RenderCommandEncoder;
+class ComputeCommandEncoder;
+} // namespace MTL
+
 namespace mtl {
 // Tier-2 argument buffer mirroring the shader BindlessSet.
 struct BindlessSet {
     explicit BindlessSet(const Context &);
+    ~BindlessSet();
+    BindlessSet(const BindlessSet &);
+    BindlessSet(BindlessSet &&) noexcept;
 
     uint32_t Allocate(SlotType);
     // Snapshot restore re-acquires slots baked into restored state.

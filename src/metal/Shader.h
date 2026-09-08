@@ -3,11 +3,23 @@
 #include "metal/Image.h"
 #include "metal/MslSource.h"
 
+#include <Metal/MTLComputePipeline.hpp>
+#include <Metal/MTLDepthStencil.hpp>
+#include <Metal/MTLLibrary.hpp>
+#include <Metal/MTLRenderPipeline.hpp>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+namespace MTL4 {
+class PipelineDescriptor;
+class ComputePipelineDescriptor;
+class Compiler;
+class PipelineDataSetSerializer;
+class Archive;
+} // namespace MTL4
 
 namespace mtl {
 inline constexpr uint32_t MaxMeshThreadgroupsPerGrid{1'048'575};
@@ -26,10 +38,10 @@ struct LibraryCache {
     ~LibraryCache();
     LibraryCache(const LibraryCache &) = delete;
     LibraryCache &operator=(const LibraryCache &) = delete;
-    LibraryCache(LibraryCache &&) = default;
+    LibraryCache(LibraryCache &&) noexcept;
 
     MTL::Library *Get(const std::filesystem::path &relative_path, const std::vector<std::string> &defines = {});
-    void Clear() { Entries.clear(); }
+    void Clear();
 
     // Returns the archived pipeline for `descriptor`, or null after an archive miss.
     MTL::RenderPipelineState *ArchivedRenderPipeline(const MTL4::PipelineDescriptor *) const;
@@ -104,10 +116,7 @@ struct RenderPipeline {
     float DepthBias() const { return Bias; }
 
     uint32_t ImageblockSampleLength() const { return uint32_t(PipelineState->imageblockSampleLength()); }
-    void Bind(MTL::RenderCommandEncoder *encoder) const {
-        encoder->setRenderPipelineState(PipelineState.get());
-        encoder->setDepthStencilState(DepthStencilState.get());
-    }
+    void Bind(MTL::RenderCommandEncoder *) const;
 
 private:
     FunctionRef VertexFn;
@@ -127,10 +136,7 @@ struct MeshRenderPipeline {
     );
 
     void Compile(LibraryCache &);
-    void Bind(MTL::RenderCommandEncoder *encoder) const {
-        encoder->setRenderPipelineState(PipelineState.get());
-        encoder->setDepthStencilState(DepthStencilState.get());
-    }
+    void Bind(MTL::RenderCommandEncoder *) const;
 
 private:
     FunctionRef MeshFn;

@@ -1,5 +1,7 @@
 #include "ContactModel.h"
 
+#include "numeric/MatrixMath.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>

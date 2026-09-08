@@ -1,5 +1,7 @@
 #include "mesh/VertexAdjacencyGpu.h"
 
+#include <Metal/MTLCommandQueue.hpp>
+
 #include "Profile.h"
 #include "gpu/VertexAdjacencyJob.h"
 #include "gpu/VertexAdjacencyPushConstants.h"

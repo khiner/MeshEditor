@@ -1,4 +1,5 @@
 #include "Compress.h"
+
 #include "File.h"
 #include "FileDialog.h"
 #include "LogEnabled.h"
@@ -34,6 +35,7 @@
 #include "mesh/MeshComponents.h"
 #include "metal/Image.h"
 #include "metal/MetalContext.h"
+#include "metal/MetalCpp.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "object/ObjectOps.h"

@@ -1,5 +1,7 @@
 #include "gizmo/TransformGizmo.h"
+
 #include "gizmo/GizmoInteraction.h"
+#include "numeric/MatrixMath.h"
 #include "numeric/vec4.h"
 #include "viewport/ScreenSpace.h"
 #include "viewport/ViewCamera.h"

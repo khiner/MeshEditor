@@ -1,7 +1,10 @@
 #pragma once
+
 #include "gpu/BindlessBindings.h"
 #include "metal/Bindless.h"
 #include "metal/Shader.h"
+
+#include <Metal/MTLComputeCommandEncoder.hpp>
 
 namespace mesh_compute {
 // Each stage publishes its bindless-buffer writes before the next stage reads them.

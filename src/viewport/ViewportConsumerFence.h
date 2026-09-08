@@ -1,6 +1,8 @@
 #pragma once
 
-#include "metal/MetalCpp.h"
+namespace MTL {
+class CommandBuffer;
+}
 
 // Resize waits for the live ImGui command buffer before replacing its sampled image.
 struct ViewportConsumerFence {

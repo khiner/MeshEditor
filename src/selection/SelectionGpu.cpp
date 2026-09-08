@@ -1,5 +1,7 @@
 #include "selection/SelectionGpu.h"
 
+#include <Metal/MTLCommandQueue.hpp>
+
 #include "Profile.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"

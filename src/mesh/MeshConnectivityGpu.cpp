@@ -1,5 +1,7 @@
 #include "mesh/MeshConnectivityGpu.h"
 
+#include <Metal/MTLCommandQueue.hpp>
+
 #include "Profile.h"
 #include "gpu/MeshConnectivityJob.h"
 #include "gpu/MeshConnectivityPushConstants.h"

@@ -1,5 +1,7 @@
 #include "metal/Buffer.h"
 
+#include "metal/MetalCpp.h"
+
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -7,6 +9,12 @@
 #include <stdexcept>
 
 namespace mtl {
+BufferContext::BufferContext(const Context &ctx, BindlessSet &slots) : Ctx(ctx), Slots(slots) {}
+BufferContext::~BufferContext() = default;
+BufferContext::BufferContext(const BufferContext &) = default;
+BufferContext::BufferContext(BufferContext &&) noexcept = default;
+void BufferContext::ReclaimRetiredBuffers() { Retired.clear(); }
+
 namespace {
 uint64_t NextPowerOfTwo(uint64_t x) {
     if (x == 0) return 1;

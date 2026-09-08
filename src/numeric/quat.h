@@ -80,6 +80,16 @@ inline quat Rotation(vec3 from, vec3 to) {
     const float scale = std::sqrt((1.f + cosine) * 2.f), inverse_scale = 1.f / scale;
     return {scale * .5f, axis.x * inverse_scale, axis.y * inverse_scale, axis.z * inverse_scale};
 }
+inline vec3 EulerAngles(quat q) {
+    const float pitch_y = 2.f * (q.y * q.z + q.w * q.x);
+    const float pitch_x = q.w * q.w - q.x * q.x - q.y * q.y + q.z * q.z;
+    const float pitch = std::abs(pitch_x) <= std::numeric_limits<float>::epsilon() && std::abs(pitch_y) <= std::numeric_limits<float>::epsilon() ? 2.f * std::atan2(q.x, q.w) : std::atan2(pitch_y, pitch_x);
+    const float yaw = std::asin(Clamp(-2.f * (q.x * q.z - q.w * q.y), -1.f, 1.f));
+    const float roll_y = 2.f * (q.x * q.y + q.w * q.z);
+    const float roll_x = q.w * q.w + q.x * q.x - q.y * q.y - q.z * q.z;
+    const float roll = std::abs(roll_x) <= std::numeric_limits<float>::epsilon() && std::abs(roll_y) <= std::numeric_limits<float>::epsilon() ? 0.f : std::atan2(roll_y, roll_x);
+    return {pitch, yaw, roll};
+}
 } // namespace numeric
 inline vec3 operator*(quat q, vec3 v) { return numeric::Rotate(q, v); }
 static_assert(sizeof(quat) == 16);

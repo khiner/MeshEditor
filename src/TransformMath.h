@@ -1,7 +1,7 @@
 #pragma once
 
 #include "gpu/Transform.h"
-#include "numeric/mat4.h"
+#include "numeric/MatrixMath.h"
 
 inline mat4 ToMatrix(const Transform &t) {
     return numeric::Translate(I4, t.P) * numeric::ToMat4(numeric::Normalize(t.R)) * numeric::Scale(I4, t.S);

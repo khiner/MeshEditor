@@ -17,9 +17,12 @@ constexpr std::span<const std::byte> as_bytes(const T &v) { return {reinterpret_
 namespace mtl {
 // Retired buffers outlive the submit that still references them.
 struct BufferContext {
-    BufferContext(const Context &ctx, BindlessSet &slots) : Ctx(ctx), Slots(slots) {}
+    BufferContext(const Context &, BindlessSet &);
+    ~BufferContext();
+    BufferContext(const BufferContext &);
+    BufferContext(BufferContext &&) noexcept;
 
-    void ReclaimRetiredBuffers() { Retired.clear(); }
+    void ReclaimRetiredBuffers();
 
     std::string DebugHeapUsage() const;
 

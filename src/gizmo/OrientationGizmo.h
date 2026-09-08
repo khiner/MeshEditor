@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "numeric/MatrixMath.h"
+
 #include "ui/AxisColors.h"
 
 #include <bit>

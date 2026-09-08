@@ -7,6 +7,7 @@
 #include "render/PbrFeature.h"
 #include "render/ShaderPipelineType.h"
 
+#include <Metal/MTLBuffer.hpp>
 #include <array>
 #include <memory>
 #include <unordered_map>

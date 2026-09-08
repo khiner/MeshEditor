@@ -1,9 +1,11 @@
 #include "render/Textures.h"
+
 #include "File.h"
 #include "gltf/Image.h"
 #include "image/ImageDecode.h"
 #include "mesh/MeshStore.h"
 #include "metal/Bindless.h"
+#include "metal/MetalCpp.h"
 #include "metal/RenderTarget.h"
 #include "render/GpuBuffers.h"
 #include "render/IblPrefilterPipelines.h"

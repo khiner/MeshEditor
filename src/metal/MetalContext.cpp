@@ -1,5 +1,7 @@
 #include "metal/MetalContext.h"
 
+#include "metal/MetalCpp.h"
+
 #include <stdexcept>
 #include <utility>
 

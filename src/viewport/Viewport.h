@@ -1,13 +1,14 @@
 #pragma once
 
-#include "metal/MetalCpp.h"
+namespace MTL {
+class CommandBuffer;
+}
 
 namespace mtl {
 struct Context;
 } // namespace mtl
 
 #include <entt/entity/fwd.hpp>
-
 #include <expected>
 #include <filesystem>
 #include <vector>

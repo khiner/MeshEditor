@@ -1,4 +1,5 @@
 #include "render/ViewportSubmission.h"
+
 #include "Profile.h"
 #include "render/GpuBuffers.h"
 #include "render/Pipelines.h"
@@ -7,6 +8,7 @@
 #include "viewport/RenderExtent.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportDisplay.h"
+#include <Metal/MTLCommandQueue.hpp>
 #include <entt/entity/registry.hpp>
 // Dispatch sizes follow scene recording because the rebuild determines their counts.
 void SubmitRecordedFrame(entt::registry &r, MTL::CommandBuffer *command_buffer) {

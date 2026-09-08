@@ -1,5 +1,7 @@
 #include "audio/ContactModel.h"
 
+#include "numeric/MatrixMath.h"
+
 #include "Near.h"
 #include "RunSuites.h"
 

@@ -1,6 +1,8 @@
 #include "VideoRecorder.h"
+
 #include "audio/WavWriter.h"
 #include "metal/Buffer.h"
+#include <Metal/MTLBuffer.hpp>
 
 #include <sys/wait.h>
 

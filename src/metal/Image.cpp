@@ -1,5 +1,7 @@
 #include "metal/Image.h"
 
+#include "metal/MetalCpp.h"
+
 #include <algorithm>
 #include <stdexcept>
 #include <utility>

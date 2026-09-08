@@ -1,7 +1,8 @@
 #include "scene/RotationUi.h"
+
 #include "Variant.h"
 #include "numeric/Angles.h"
-#include "numeric/mat4.h"
+#include "numeric/MatrixMath.h"
 
 #include <cmath>
 

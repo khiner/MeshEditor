@@ -1,5 +1,6 @@
 #include "metal/Shader.h"
-#include "metal/MetalContext.h"
+
+#include "metal/MetalCpp.h"
 
 #include <algorithm>
 #include <array>
@@ -10,6 +11,19 @@
 #include <unistd.h>
 
 namespace mtl {
+LibraryCache::LibraryCache(LibraryCache &&) noexcept = default;
+void LibraryCache::Clear() { Entries.clear(); }
+
+void RenderPipeline::Bind(MTL::RenderCommandEncoder *encoder) const {
+    encoder->setRenderPipelineState(PipelineState.get());
+    encoder->setDepthStencilState(DepthStencilState.get());
+}
+
+void MeshRenderPipeline::Bind(MTL::RenderCommandEncoder *encoder) const {
+    encoder->setRenderPipelineState(PipelineState.get());
+    encoder->setDepthStencilState(DepthStencilState.get());
+}
+
 namespace {
 std::optional<uint64_t> ShaderTreeFingerprint(const std::filesystem::path &root) {
     std::vector<std::filesystem::path> files;

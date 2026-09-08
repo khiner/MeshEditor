@@ -1,8 +1,19 @@
 #pragma once
 
-#include "metal/MetalCpp.h"
-
 #include <string>
+#include <type_traits>
+
+#include <Foundation/NSSharedPtr.hpp>
+
+namespace NS {
+class String;
+}
+namespace MTL {
+class Allocation;
+class Device;
+class CommandQueue;
+class ResidencySet;
+} // namespace MTL
 
 namespace mtl {
 NS::String *Str(std::string_view);

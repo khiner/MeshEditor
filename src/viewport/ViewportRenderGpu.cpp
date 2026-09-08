@@ -1,4 +1,5 @@
 #include "viewport/ViewportRenderGpu.h"
+
 #include "Camera.h"
 #include "ProcessEvents.h"
 #include "Profile.h"
@@ -33,9 +34,11 @@
 #include "gpu/WireResolvePushConstants.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
+#include "metal/MetalCpp.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "numeric/Angles.h"
+#include "numeric/MatrixMath.h"
 #include "physics/PhysicsTypes.h"
 #include "render/ElementWorkOps.h"
 #include "render/Encoding.h"

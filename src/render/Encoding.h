@@ -7,6 +7,8 @@
 #include "render/GpuBuffers.h"
 #include "render/Pipelines.h"
 
+#include <Metal/MTLComputeCommandEncoder.hpp>
+#include <Metal/MTLRenderCommandEncoder.hpp>
 #include <cassert>
 #include <print>
 

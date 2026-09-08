@@ -2,6 +2,8 @@
 
 #include "metal/PassTimer.h"
 
+#include <Metal/MTLCommandBuffer.hpp>
+#include <Metal/MTLCommandEncoder.hpp>
 #include <initializer_list>
 
 namespace mtl {

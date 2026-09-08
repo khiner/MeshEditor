@@ -2,6 +2,7 @@
 
 #include "metal/MetalContext.h"
 
+#include <Metal/MTLRenderPass.hpp>
 #include <span>
 
 namespace mtl {

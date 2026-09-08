@@ -1,4 +1,5 @@
 #include "viewport/ViewportUi.h"
+
 #include "Camera.h"
 #include "Profile.h"
 #include "action/Audio.h"
@@ -13,6 +14,7 @@
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
 #include "gltf/SourceAssets.h"
+#include "numeric/MatrixMath.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/TextureRefs.h"

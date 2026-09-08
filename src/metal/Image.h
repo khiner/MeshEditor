@@ -2,6 +2,8 @@
 
 #include "metal/MetalContext.h"
 
+#include <Metal/MTLSampler.hpp>
+#include <Metal/MTLTexture.hpp>
 #include <bit>
 #include <cstdint>
 #include <optional>

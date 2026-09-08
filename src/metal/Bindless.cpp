@@ -1,10 +1,16 @@
 #include "metal/Bindless.h"
 
+#include "metal/MetalCpp.h"
+
 #include <cstring>
 #include <format>
 #include <stdexcept>
 
 namespace mtl {
+BindlessSet::~BindlessSet() = default;
+BindlessSet::BindlessSet(const BindlessSet &) = default;
+BindlessSet::BindlessSet(BindlessSet &&) noexcept = default;
+
 namespace {
 MTL::ResourceUsage UsageFor(SlotType type) {
     return BindingDefs[size_t(type)].Kind == BindKind::Sampler ? MTL::ResourceUsageRead : MTL::ResourceUsageRead | MTL::ResourceUsageWrite;

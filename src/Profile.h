@@ -2,6 +2,7 @@
 
 #include "metal/PassTimer.h"
 
+#include <Metal/MTLCommandBuffer.hpp>
 #include <filesystem>
 #include <string_view>
 

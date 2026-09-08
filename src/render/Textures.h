@@ -11,6 +11,10 @@
 #include <filesystem>
 #include <variant>
 
+namespace MTL {
+class CommandBuffer;
+}
+
 namespace mtl {
 struct BindlessSet;
 } // namespace mtl

@@ -85,7 +85,7 @@ void WriteWav(const std::vector<float> &frames, const fs::path &file_path, uint3
     writer.Write(frames_normed);
 }
 
-void PlotFrames(const std::vector<float> &frames, std::string_view label = "Waveform", std::optional<uint> highlight_frame = {}) {
+void PlotFrames(const std::vector<float> &frames, std::string_view label = "Waveform", std::optional<uint32_t> highlight_frame = {}) {
     if (ImPlot::BeginPlot(label.data(), ChartSize)) {
         ImPlot::SetupAxes("Frame", "Amplitude");
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, frames.size(), ImGuiCond_Always);
@@ -462,7 +462,7 @@ void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::ent
             const auto &frames = GetSampleFrames(r, *path);
             if (!frames.empty()) {
                 const auto *playback = r.try_get<const SamplePlayback>(e);
-                PlotFrames(frames, "Waveform", !playback || playback->Stopped ? std::optional<uint>{} : std::optional{playback->Frame});
+                PlotFrames(frames, "Waveform", !playback || playback->Stopped ? std::optional<uint32_t>{} : std::optional{playback->Frame});
                 PlotMagnitudeSpectrum(frames, sample_rate, "Spectrum");
             }
         }

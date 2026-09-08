@@ -1,12 +1,16 @@
 #pragma once
 
 #include "Range.h"
-#include "metal/MetalCpp.h"
 #include "metal/Slots.h"
 
 #include <entt/entity/fwd.hpp>
 #include <span>
 #include <vector>
+
+namespace MTL {
+class CommandBuffer;
+class RenderCommandEncoder;
+} // namespace MTL
 
 namespace mtl {
 struct BindlessSet;

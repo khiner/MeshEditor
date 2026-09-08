@@ -1,5 +1,7 @@
 #include "metal/PassTimer.h"
 
+#include "metal/MetalCpp.h"
+
 namespace mtl {
 namespace {
 MTL::CounterSet *TimestampCounterSet(const Context &ctx) {

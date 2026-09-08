@@ -1,5 +1,7 @@
 #include "viewport/Viewport.h"
+
 #include "render/ViewportSubmission.h"
+#include <Metal/MTLCommandQueue.hpp>
 
 #include "CameraTypes.h"
 #include "Paths.h"

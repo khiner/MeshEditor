@@ -1,5 +1,7 @@
 #include "metal/PassChain.h"
 
+#include "metal/MetalCpp.h"
+
 namespace mtl {
 PassChain::PassChain(MTL::CommandBuffer *command_buffer, PassTimer *timer)
     : CommandBuffer(command_buffer), Timer(timer) {}

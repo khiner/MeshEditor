@@ -2,6 +2,9 @@
 
 #include "metal/MetalContext.h"
 
+#include <Metal/MTLCounters.hpp>
+#include <memory>
+#include <optional>
 #include <string_view>
 #include <vector>
 
