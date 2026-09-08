@@ -141,6 +141,7 @@ mesheditor_library(MeshEditorAssets COLD
     src/assets/MeshImport.cpp
     src/audio/RealImpact.cpp
     src/gltf/GltfScene.cpp
+    src/gltf/GltfExport.cpp
     src/gltf/SourceTexture.cpp
 )
 
