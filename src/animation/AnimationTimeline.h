@@ -2,7 +2,7 @@
 
 #include "entt_fwd.h"
 
-// Changes invalidate baked physics frames.
+// Start-frame and frame-rate changes invalidate baked physics frames.
 struct TimelineRange {
     int StartFrame{1}, EndFrame{250};
     float Fps{24.f};
@@ -29,7 +29,7 @@ struct LastEvaluatedFrame {
     int Value{-1};
 };
 
-// Forces Rebuild on the next tick even when the start frame is cached.
+// Restarts physics from authored initial conditions on the next tick.
 struct PhysicsCacheInvalid {};
 
 // Resets playback to the start frame and invalidates the physics cache.

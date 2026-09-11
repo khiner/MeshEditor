@@ -943,10 +943,9 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
         const bool cache_invalid = r.all_of<PhysicsCacheInvalid>(viewport);
         if (cache_invalid) r.remove<PhysicsCacheInvalid>(viewport);
-        const bool range_changed = !reactive<changes::TimelineRange>(r).empty();
         const int from = r.get<LastEvaluatedFrame>(viewport).Value;
         // Use interpolation instead of advancing physics during motion-blur sub-frames.
-        if (physics::AdvancePlayback(r, viewport, from, playback.CurrentFrame, range.StartFrame, range.EndFrame, range.Fps, range_changed, cache_invalid)) {
+        if (physics::AdvancePlayback(r, viewport, from, playback.CurrentFrame, range.StartFrame, range.EndFrame, range.Fps, cache_invalid)) {
             request(RenderRequest::Reuse);
         }
 

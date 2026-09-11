@@ -39,6 +39,7 @@
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "object/ObjectOps.h"
+#include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
@@ -1018,6 +1019,7 @@ Scene:
   --display LIST              Comma-separated: vertex-normals, face-normals, bounds, tet-wireframe
 
 Capture:
+  --capture-physics PATH       Capture physics replay and reference states during --play
   --screenshot PATH           Write one image and exit
   --record PATH               Record a video, or audio alone for a .wav path
   --record-audio              Record audio alongside the video
@@ -1057,6 +1059,7 @@ struct CaptureRequest {
     bool RecordAudio{false}; // Mux the master output into the recording. Off so the render corpus stays video only.
     fs::path RecordPath{}, ScreenshotPath{};
     fs::path RenderBasename{};
+    fs::path PhysicsCapturePath{};
     std::optional<MotionBlur> Blur{};
     float TimelineEnd{0}; // Seconds. Positive: set the timeline's end frame, so a long play runs without looping.
     int BenchFrames{0};
@@ -1338,6 +1341,7 @@ struct CaptureDriver {
 // Initialize a capture session and configure its presentation state.
 CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty, bool fixed_step) {
     const bool seeded = SeedScene(r, viewport, capture, initial_file, empty);
+    if (!capture.PhysicsCapturePath.empty()) physics::CaptureReplay(r, capture.PhysicsCapturePath);
     if (seeded && capture.EditMode) {
         std::vector<entt::entity> meshes;
         for (const auto [entity, kind, _] : r.view<const ObjectKind, const Instance>().each()) {
@@ -1931,6 +1935,7 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
                 }
             }
         } else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi((++it)->c_str());
+        else if (a == "--capture-physics" && std::next(it) != args.end()) capture.PhysicsCapturePath = (++it)->c_str();
         else if (a == "--timeline-end" && std::next(it) != args.end()) capture.TimelineEnd = std::atof((++it)->c_str());
         else if (a == "--motion-blur" && std::next(it) != args.end()) {
             const std::string_view method = *++it;

@@ -9,7 +9,7 @@ The app and test executables link these libraries, so building both compiles eac
 | MeshEditorMesh | Mesh storage, topology, CPU geometry, BVH, mesh compute pipelines | `-O2` |
 | MeshEditorScene | Entities, hierarchy, transforms, armatures, camera and selection state | `-O2` |
 | MeshEditorRender | GPU scene preparation, render pipelines, selection rendering, frame submission | `-O2` |
-| MeshEditorPhysics | Jolt integration, colliders and contact collection | `-O2` |
+| MeshEditorPhysics | RBP integration, colliders and contact collection | `-O1` backend, `-O2` stores |
 | MeshEditorAudio | Audio devices, decoding, DSP, contact models and modal solves | `-O2` |
 | MeshEditorAssets | glTF, OBJ, PLY, material and sample import | `-O0` |
 | MeshEditorEditor | Actions, replay, snapshots, reactive scene orchestration and domain integration | `-O0` with the audio exceptions below |

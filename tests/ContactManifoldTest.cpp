@@ -1,244 +1,139 @@
-
-#include "RunSuites.h"
-
-#include "Jolt/Jolt.h"
-
-#include "Jolt/Core/Factory.h"
-#include "Jolt/Core/JobSystemSingleThreaded.h"
-#include "Jolt/Core/TempAllocator.h"
-#include "Jolt/Physics/Body/BodyCreationSettings.h"
-#include "Jolt/Physics/Collision/Shape/BoxShape.h"
-#include "Jolt/Physics/Collision/Shape/MeshShape.h"
-#include "Jolt/Physics/Collision/Shape/StaticCompoundShape.h"
-#include "Jolt/Physics/PhysicsSystem.h"
-#include "Jolt/RegisterTypes.h"
-
-#include "JoltTestLayers.h"
 #include "Near.h"
+#include "RunSuites.h"
+#include "Solver.h"
 
 #include <boost/ut.hpp>
 
-#include <cmath>
-#include <set>
-#include <vector>
+#include <map>
+#include <ranges>
+#include <tuple>
 
-using namespace JPH;
 using namespace boost::ut;
-
 namespace {
-// One persisting manifold as the audio path reads it: the solver's per-point impulses and where they act.
+using Key = std::tuple<uint64_t, uint32_t, uint32_t>;
 struct Manifold {
-    uint64 SubShapeKey{0};
-    Vec3 Normal{Vec3::sZero()};
-    std::vector<Vec3> Points; // In body 1's centre of mass space, which is the frame the sweep is differenced in.
-    std::vector<float> Impulses;
-    float TotalImpulse{0};
+    rbp::float3 Normal{};
+    std::vector<rbp::float3> Points;
+    float Impulse{};
 };
-
-// Records one collision step's reports, reading applied impulses as the physics system's own listener does.
-class Recorder final : public ContactListener {
-public:
-    const PhysicsSystem *System{nullptr};
-    std::vector<Manifold> Manifolds;
-
-    void OnContactPersisted(const Body &b1, const Body &b2, const ContactManifold &manifold, ContactSettings &) override {
-        ContactConstraintManager::AppliedContactImpulses applied;
-        if (!System->GetAppliedContactImpulses(SubShapeIDPair{b1.GetID(), manifold.mSubShapeID1, b2.GetID(), manifold.mSubShapeID2}, applied)) return;
-        Manifold m;
-        m.SubShapeKey = (uint64(manifold.mSubShapeID1.GetValue()) << 32) | manifold.mSubShapeID2.GetValue();
-        m.Normal = manifold.mWorldSpaceNormal;
-        for (const auto &p : applied.mPoints) {
-            m.Points.push_back(p.mPosition1);
-            m.Impulses.push_back(p.mNormalImpulse);
-            m.TotalImpulse += p.mNormalImpulse;
-        }
-        Manifolds.push_back(std::move(m));
+struct Scene {
+    rbp::mtl::Context Context;
+    rbp::World World{Context, {.Bodies = 64, .Shapes = 128}};
+    rbp::Solver Solver{Context};
+    std::map<Key, Manifold> Manifolds;
+    static constexpr float Dt = 1.f / 60;
+    Scene() { World.TrackContacts = true; }
+    rbp::Index Box(rbp::float3 half, rbp::Pose local = rbp::IdentityPose) {
+        rbp::Shape shape{};
+        shape.Kind = rbp::ShapeBox;
+        shape.HalfExtents = half;
+        shape.Local = local;
+        return World.AddShape(shape);
     }
-};
-
-Ref<Shape> Box(Vec3 half_extent) { return Ref<Shape>{new BoxShape{half_extent}}; }
-
-// A world with one dynamic body against one static body, stepped single threaded so the reported set is reproducible.
-struct World {
-    static constexpr float Dt{1.f / 60.f};
-    static constexpr uint CollisionSteps{1}; // One report per manifold per frame, so a frame's set is one collision step's.
-
-    TempAllocatorImpl TempAllocator{16 * 1024 * 1024};
-    JobSystemSingleThreaded JobSystem{cMaxPhysicsJobs};
-    BPLayerInterface BPLayerIface;
-    ObjectVsBPFilter ObjectVsBP;
-    ObjectPairFilter ObjectPair;
-    PhysicsSystem System;
-    Recorder Listener;
-
-    World() {
-        System.Init(64, 0, 256, 256, BPLayerIface, ObjectVsBP, ObjectPair);
-        Listener.System = &System;
-        System.SetContactListener(&Listener);
+    rbp::Index Add(rbp::Index shape, rbp::float3 at, bool dynamic, float gravity = 1) {
+        rbp::BodyDesc body{};
+        body.Shape = shape;
+        body.Pose = rbp::At(at);
+        body.Density = dynamic ? 1000 : 0;
+        body.GravityScale = gravity;
+        return World.AddBody(body);
     }
-
-    BodyID AddStatic(const Ref<Shape> &shape, RVec3 position) {
-        return System.GetBodyInterface().CreateAndAddBody(
-            BodyCreationSettings{shape, position, Quat::sIdentity(), EMotionType::Static, Layers::NonMoving}, EActivation::DontActivate
-        );
+    void Floor() { Add(Box(rbp::float3{50, 1, 50}), rbp::float3{0, -1, 0}, false); }
+    void UnitBox() { Add(Box(rbp::float3{0.5f, 0.5f, 0.5f}), rbp::float3{0, 0.5f, 0}, true); }
+    void Legs(std::span<const rbp::float3> centers, rbp::float3 half, bool dynamic) {
+        std::vector<rbp::Index> shapes;
+        for (auto at : centers) shapes.push_back(Box(half, rbp::At(at)));
+        rbp::Pose frame;
+        const auto compound = World.AddCompound(shapes, &frame);
+        rbp::BodyDesc body{};
+        body.Shape = compound;
+        body.Pose = frame;
+        body.Density = dynamic ? 1000 : 0;
+        World.AddBody(body);
     }
-    BodyID AddDynamic(const Ref<Shape> &shape, RVec3 position, float gravity_factor = 1.f) {
-        BodyCreationSettings settings{shape, position, Quat::sIdentity(), EMotionType::Dynamic, Layers::Moving};
-        settings.mAllowSleeping = false; // Contacts are reported only between active bodies.
-        settings.mGravityFactor = gravity_factor;
-        return System.GetBodyInterface().CreateAndAddBody(settings, EActivation::Activate);
-    }
-
-    // A floor wide enough that nothing reaches its edges, with its top face at y = 0.
-    BodyID AddFloor() { return AddStatic(Box({50, 1, 50}), RVec3(0, -1, 0)); }
-    // A unit box standing on that floor.
-    BodyID AddUnitBox() { return AddDynamic(Box({0.5f, 0.5f, 0.5f}), RVec3(0, 0.5f, 0)); }
-
     void Step() {
-        Listener.Manifolds.clear();
-        System.Update(Dt, CollisionSteps, &TempAllocator, &JobSystem);
+        Solver.Step(World);
+        Manifolds.clear();
+        for (const auto &c : World.TakeContactChanges()) {
+            if (c.Kind == rbp::ContactRemoved) continue;
+            auto &m = Manifolds[{c.Children, c.SubShapeA, c.SubShape}];
+            m.Normal = c.Normal;
+            m.Points.push_back(c.SideA.Point);
+            m.Impulse += -c.Lambda.x * Dt;
+        }
     }
-    const std::vector<Manifold> &Settle(uint frames = 120) {
-        for (uint i = 0; i < frames; ++i) Step();
-        return Listener.Manifolds;
+    void Settle() {
+        Solver.Advance(World, {}, 119);
+        World.TakeContactChanges();
+        Step();
+    }
+    float Impulse() const {
+        float total = 0;
+        for (const auto &[key, m] : Manifolds) total += m.Impulse;
+        return total;
     }
 };
-
-// A compound of identical legs, each a box whose bottom face sits at the compound origin's height.
-Ref<Shape> Legs(const std::vector<Vec3> &centers, Vec3 half_extent) {
-    StaticCompoundShapeSettings settings;
-    for (const auto &c : centers) settings.AddShape(c, Quat::sIdentity(), new BoxShape{half_extent});
-    return settings.Create().Get();
-}
-
-// A flat floor tessellated finely enough that one resting box spans many triangles.
-Ref<Shape> TriangleFloor(float extent, float cell) {
-    TriangleList triangles;
-    for (float x = -extent; x < extent - 0.5f * cell; x += cell) {
-        for (float z = -extent; z < extent - 0.5f * cell; z += cell) {
-            const Float3 a{x, 0, z}, b{x + cell, 0, z}, c{x + cell, 0, z + cell}, d{x, 0, z + cell};
-            triangles.emplace_back(a, d, c);
-            triangles.emplace_back(a, c, b);
+const suite Manifolds = [] {
+    "a box reports four spread points carrying its weight"_test = [] {
+        Scene s;
+        s.Floor();
+        s.UnitBox();
+        s.Settle();
+        expect(s.Manifolds.size() == 1_ul);
+        if (s.Manifolds.empty()) return;
+        const auto &m = s.Manifolds.begin()->second;
+        expect(m.Points.size() == 4_ul);
+        for (auto p : m.Points) {
+            expect(Near(std::abs(p.x), 0.5f, 0.01f));
+            expect(Near(std::abs(p.z), 0.5f, 0.01f));
         }
-    }
-    return MeshShapeSettings{triangles}.Create().Get();
-}
-
-float SupportedImpulse(float mass) { return mass * 9.81f * World::Dt / float(World::CollisionSteps); }
-
-// The manifolds' impulse-weighted mean normal, which is the direction a merge over a body pair excites along.
-Vec3 MergedNormal(const std::vector<Manifold> &manifolds) {
-    Vec3 sum = Vec3::sZero();
-    float impulse = 0;
-    for (const auto &m : manifolds) {
-        sum += m.Normal * m.TotalImpulse;
-        impulse += m.TotalImpulse;
-    }
-    return impulse > 0 ? sum / impulse : Vec3::sZero();
-}
-
-std::set<uint64> KeysWhileResting(const Ref<Shape> &floor, RVec3 floor_position) {
-    World w;
-    w.AddStatic(floor, floor_position);
-    w.AddUnitBox();
-    w.Settle();
-
-    std::set<uint64> keys;
-    for (uint i = 0; i < 30; ++i) {
-        w.Step();
-        for (const auto &m : w.Listener.Manifolds) keys.insert(m.SubShapeKey);
-    }
-    return keys;
-}
+        expect(Near(s.Impulse(), 1000 * 9.81f * Scene::Dt, 0.1f));
+    };
+    "separate compound feet retain all contact regions and their load"_test = [] {
+        for (int count : {4, 6}) {
+            Scene s;
+            s.Floor();
+            std::vector<rbp::float3> centers;
+            for (int i = 0; i < count / 2; ++i)
+                for (float z : {-0.4f, 0.4f}) centers.push_back(rbp::float3{float(i) * 0.4f - float(count / 2 - 1) * 0.2f, 0.3f, z});
+            s.Legs(centers, rbp::float3{0.1f, 0.3f, 0.1f}, true);
+            s.Settle();
+            expect(s.Manifolds.size() == size_t(count));
+            expect(Near(s.Impulse(), float(count) * 0.2f * 0.6f * 0.2f * 1000 * 9.81f * Scene::Dt, 0.15f));
+        }
+    };
+    "opposed faces retain separate normals"_test = [] {
+        Scene s;
+        const rbp::float3 centers[]{{-0.55f, 0, 0}, {0.55f, 0, 0}};
+        s.Legs(centers, rbp::float3{0.1f, 1, 1}, false);
+        s.Add(s.Box(rbp::float3{0.5f, 0.5f, 0.5f}), rbp::float3{0, 0, 0}, true, 0);
+        s.Settle();
+        expect(s.Manifolds.size() == 2_ul);
+        if (s.Manifolds.size() != 2) return;
+        const auto &a = s.Manifolds.begin()->second, &b = std::next(s.Manifolds.begin())->second;
+        expect(simd::dot(a.Normal, b.Normal) < -0.99f);
+        if (a.Impulse + b.Impulse > 0) expect(simd::length((a.Normal * a.Impulse + b.Normal * b.Impulse) / (a.Impulse + b.Impulse)) < 0.2f);
+    };
+    "resting triangle manifolds keep their keys across steps"_test = [] {
+        Scene s;
+        std::vector<rbp::float3> vertices;
+        std::vector<uint32_t> indices;
+        for (float x = -2; x < 2; x += 0.25f)
+            for (float z = -2; z < 2; z += 0.25f) {
+                const auto first = uint32_t(vertices.size());
+                vertices.insert(vertices.end(), {rbp::float3{x, 0, z}, rbp::float3{x, 0, z + 0.25f}, rbp::float3{x + 0.25f, 0, z + 0.25f}, rbp::float3{x + 0.25f, 0, z}});
+                indices.insert(indices.end(), {first, first + 1, first + 2, first, first + 2, first + 3});
+            }
+        s.Add(s.World.AddMesh(vertices, indices), rbp::float3{0, 0, 0}, false);
+        s.UnitBox();
+        s.Settle();
+        const auto original = s.Manifolds | std::views::keys | std::ranges::to<std::vector>();
+        expect(!original.empty());
+        for (int i = 0; i < 30; ++i) {
+            s.Step();
+            expect(std::ranges::equal(s.Manifolds | std::views::keys, original));
+        }
+    };
+};
 } // namespace
-int main() {
-    RegisterDefaultAllocator();
-    Factory::sInstance = new Factory();
-    RegisterTypes();
-
-    "a box resting flat reports one manifold of four spread points"_test = [] {
-        World w;
-        w.AddFloor();
-        w.AddUnitBox();
-        const auto &manifolds = w.Settle();
-
-        expect(manifolds.size() == 1_ul);
-        expect(manifolds[0].Points.size() == 4_ul);
-        // The four points are the face's own corners, so the load arrives distributed, not reduced to a centre.
-        for (const auto &p : manifolds[0].Points) {
-            expect(Near(std::abs(p.GetX()), 0.5f, 0.05f));
-            expect(Near(std::abs(p.GetZ()), 0.5f, 0.05f));
-        }
-    };
-
-    "per-point impulses add up to the load the step carried"_test = [] {
-        World w;
-        w.AddFloor();
-        w.AddUnitBox();
-        const auto &manifolds = w.Settle();
-
-        expect(manifolds.size() == 1_ul);
-        expect(Near(manifolds[0].TotalImpulse, SupportedImpulse(1000.f), 0.1f));
-    };
-
-    "coplanar legs of one compound arrive as a single manifold"_test = [] {
-        World w;
-        w.AddFloor();
-        w.AddDynamic(Legs({{-0.4f, 0.3f, -0.4f}, {0.4f, 0.3f, -0.4f}, {-0.4f, 0.3f, 0.4f}, {0.4f, 0.3f, 0.4f}}, {0.1f, 0.3f, 0.1f}), RVec3(0, 0, 0));
-        const auto &manifolds = w.Settle();
-
-        // Manifold reduction groups by normal, so four spatially separate legs share one manifold and one sub-shape key.
-        // Sub-shape identity therefore cannot tell the legs apart. The points can.
-        expect(manifolds.size() == 1_ul);
-        expect(manifolds[0].Points.size() == 4_ul);
-        std::set<std::pair<bool, bool>> quadrants;
-        for (const auto &p : manifolds[0].Points) {
-            expect(std::abs(p.GetX()) > 0.3f);
-            expect(std::abs(p.GetZ()) > 0.3f);
-            quadrants.emplace(p.GetX() > 0, p.GetZ() > 0);
-        }
-        expect(quadrants.size() == 4_ul); // one point per leg
-    };
-
-    "more than four coplanar regions lose the ones that are not reported"_test = [] {
-        World w;
-        w.AddFloor();
-        const std::vector<Vec3> six{
-            {-0.4f, 0.3f, -0.4f}, {0.f, 0.3f, -0.4f}, {0.4f, 0.3f, -0.4f}, {-0.4f, 0.3f, 0.4f}, {0.f, 0.3f, 0.4f}, {0.4f, 0.3f, 0.4f}
-        };
-        w.AddDynamic(Legs(six, {0.1f, 0.3f, 0.1f}), RVec3(0, 0, 0));
-        const auto &manifolds = w.Settle();
-
-        // MaxContactPoints is four, so a sixth region cannot be represented however the load is distributed.
-        // The reported points preserve the total resultant with limited spatial resolution.
-        expect(manifolds.size() == 1_ul);
-        expect(manifolds[0].Points.size() <= 4_ul);
-        expect(manifolds[0].Points.size() < six.size());
-        float total = 0;
-        for (const auto &m : manifolds) total += m.TotalImpulse;
-        expect(Near(total, SupportedImpulse(6.f * 0.2f * 0.6f * 0.2f * 1000.f), 0.15f));
-    };
-
-    "opposed faces of one body cancel the direction a merge would excite along"_test = [] {
-        World w;
-        // Two walls of one static body, their inner faces 0.9 apart, squeezing a box 1.0 wide.
-        w.AddStatic(Legs({{-0.55f, 0, 0}, {0.55f, 0, 0}}, {0.1f, 1.f, 1.f}), RVec3(0, 0, 0));
-        w.AddDynamic(Box({0.5f, 0.5f, 0.5f}), RVec3(0, 0, 0), 0.f);
-        const auto &manifolds = w.Settle();
-
-        // Both walls press along opposing normals, so their impulse-weighted mean has no direction left.
-        // Merging a body pair into one contact would read this as silence rather than as two contacts.
-        expect(manifolds.size() == 2_ul);
-        expect(std::abs(manifolds[0].Normal.Dot(manifolds[1].Normal) + 1.f) < 0.01f);
-        expect(MergedNormal(manifolds).Length() < 0.2f);
-    };
-
-    "a resting contact keeps one sub-shape key across steps"_test = [] {
-        // A reduced manifold takes the sub-shape ids of whichever hit seeded it.
-        // The box's face spans a whole box floor and many triangles of a tessellated one, and both report one key throughout.
-        expect(KeysWhileResting(Box({50, 1, 50}), RVec3(0, -1, 0)).size() == 1_ul);
-        expect(KeysWhileResting(TriangleFloor(2.f, 0.25f), RVec3(0, 0, 0)).size() == 1_ul);
-    };
-
-    return RunSuites();
-}
+int main() { return RunSuites(); }

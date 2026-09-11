@@ -120,7 +120,12 @@ mesheditor_library(MeshEditorPhysics HOT
     src/physics/ColliderUpdate.cpp
     src/physics/PhysicsStores.cpp
     src/physics/PhysicsSystem.cpp
+    src/physics/RbpBody.cpp
+    src/physics/RbpShape.cpp
 )
+
+# The same LLVM vector-growth miscompile worked around by RBP affects collider cooking.
+set_source_files_properties(src/physics/PhysicsSystem.cpp src/physics/RbpShape.cpp PROPERTIES COMPILE_OPTIONS -O1)
 
 mesheditor_library(MeshEditorAudio HOT
     src/audio/AudioDevice.cpp
@@ -218,7 +223,8 @@ target_link_libraries(MeshEditorMetal PUBLIC mesheditor_support PRIVATE "-framew
 target_link_libraries(MeshEditorMesh PUBLIC MeshEditorMetal PRIVATE meshoptimizer mesheditor_serialization)
 target_link_libraries(MeshEditorScene PUBLIC MeshEditorMesh)
 target_link_libraries(MeshEditorRender PUBLIC MeshEditorScene PRIVATE meshoptimizer mesheditor_image_codecs basisu_transcoder)
-target_link_libraries(MeshEditorPhysics PUBLIC MeshEditorScene PRIVATE Jolt)
+target_link_libraries(MeshEditorPhysics PUBLIC MeshEditorScene PRIVATE rbp)
+target_include_directories(MeshEditorPhysics PRIVATE ${PROJECT_SOURCE_DIR}/lib/RigidBodyPhysics/tools)
 target_link_libraries(MeshEditorAudio PUBLIC MeshEditorScene PRIVATE mesheditor_serialization FastFEM::FastFEM "-framework Accelerate" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio")
 target_link_libraries(MeshEditorAssets PUBLIC MeshEditorRender PRIVATE meshoptimizer MeshEditorAudio fastgltf::fastgltf simdjson::simdjson tinyobjloader tinyply mesheditor_image_codecs)
 target_include_directories(MeshEditorAssets SYSTEM PRIVATE lib/tinyobjloader lib/tinyply/source)

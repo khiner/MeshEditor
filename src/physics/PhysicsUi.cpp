@@ -456,7 +456,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
     const auto *motion = r.try_get<const PhysicsMotion>(entity);
     const auto *collider = r.try_get<const ColliderShape>(entity);
 
-    // 4-way motion type matching Jolt's EMotionType + a "none" state.
+    // No body, static collider, dynamic body, or kinematic body.
     // Projects losslessly to/from {ColliderShape?, PhysicsMotion?, PhysicsMotion::IsKinematic}.
     using MType = action::physics::SetMotionType::Type;
     auto motion_type = int(MType::None);
@@ -494,10 +494,10 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         Spacing();
         SeparatorText("Motion");
 
-        // Velocity is an authored initial condition (KHR_physics_rigid_bodies). Locked once sim has produced any baked frames; JumpToStart unlocks it.
+        // Initial velocity is editable at the authored start frame while playback is paused.
         const auto &range = r.get<const TimelineRange>(viewport);
         const auto &playback = r.get<const TimelinePlayback>(viewport);
-        const bool velocity_locked = playback.Playing || physics::BakedThrough(r) >= range.StartFrame;
+        const bool velocity_locked = playback.Playing || physics::BakedThrough(r) > range.StartFrame;
         if (velocity_locked) BeginDisabled();
         if (r.try_get<const PhysicsVelocity>(entity)) {
             ui::Edit f{r};

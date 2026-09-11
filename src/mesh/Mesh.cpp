@@ -108,7 +108,8 @@ BuiltConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std:
         for (auto v = block * VertexBlock; v < block_last; ++v) {
             pair_bucket(v, keys, [&](uint32_t h, uint32_t opposite, bool shared) {
                 if (shared) block_shares_an_edge[block] = 1u;
-                if (opposite < h) {
+                // Extra faces on a shared edge must not break the first pair's reciprocal links.
+                if (opposite < h && !opposites[h] && !opposites[opposite]) {
                     opposites[h] = he::HH(opposite);
                     opposites[opposite] = he::HH(h);
                 }

@@ -611,8 +611,8 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         .on<VertexSamples>(On::Create | On::Update | On::Destroy)
         .on<::ModalModes>(On::Create | On::Update | On::Destroy)
         .on<SoundVerticesModel>(On::Create | On::Update | On::Destroy);
-    // Reapply body-dependent sound tags when an ancestor body is added or removed.
-    track<audio_changes::ContactReportingDerivation>(r).on<PhysicsBodyHandle>(On::Create | On::Destroy);
+    // Refresh body-dependent sound tags after body or hierarchy changes.
+    track<audio_changes::ContactReportingDerivation>(r).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<SceneNode>(On::Update | On::Destroy);
     track<audio_changes::ContactDynamicsDerivation>(r)
         .on<MassProperties>(On::Create | On::Update | On::Destroy)
         .on<::ModalModes>(On::Create | On::Update | On::Destroy);

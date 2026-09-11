@@ -28,9 +28,6 @@
 [submodule "lib/basis_universal"]
 	path = lib/basis_universal
 	url = git@github.com:BinomialLLC/basis_universal.git
-[submodule "lib/JoltPhysics"]
-	path = lib/JoltPhysics
-	url = git@github.com:khiner/JoltPhysics.git
 [submodule "lib/ut"]
 	path = lib/ut
 	url = git@github.com:boost-ext/ut.git
@@ -65,3 +62,6 @@
 [submodule "lib/FastFEM"]
 	path = lib/FastFEM
 	url = git@github.com:khiner/FastFEM.git
+[submodule "lib/RigidBodyPhysics"]
+	path = lib/RigidBodyPhysics
+	url = git@github.com:khiner/RigidBodyPhysics.git

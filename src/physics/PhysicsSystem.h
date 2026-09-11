@@ -2,6 +2,7 @@
 
 #include <entt/entity/fwd.hpp>
 
+#include <filesystem>
 #include <optional>
 
 struct PhysicsSimulationSettings;
@@ -9,6 +10,8 @@ struct PhysicsSimulationSettings;
 namespace physics {
 void Init(entt::registry &);
 void Deinit(entt::registry &);
+// Capture the next fresh physics run for standalone RbpReplay verification.
+void CaptureReplay(entt::registry &, const std::filesystem::path &);
 // Removes all bodies and constraints while preserving initialization.
 void Clear(entt::registry &);
 
@@ -22,7 +25,7 @@ void ApplySimulationSettings(entt::registry &, const PhysicsSimulationSettings &
 std::optional<uint32_t> BakedThrough(const entt::registry &);
 
 // Advances playback and returns whether a body pose changed.
-bool AdvancePlayback(entt::registry &, entt::entity viewport, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps, bool range_changed, bool cache_invalid);
+bool AdvancePlayback(entt::registry &, entt::entity viewport, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps, bool cache_invalid);
 
 // Extends the contiguous cache frontier through `through_frame`, capped at the cache end.
 void BakeThrough(entt::registry &, entt::entity viewport, int through_frame, float fps);

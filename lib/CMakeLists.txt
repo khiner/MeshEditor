@@ -11,6 +11,10 @@ set(FASTFEM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(FASTFEM_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 add_subdirectory(FastFEM)
 
+set(RBP_METAL_CPP_IMPL OFF CACHE BOOL "" FORCE)
+set(RBP_TOOLS OFF CACHE BOOL "" FORCE)
+add_subdirectory(RigidBodyPhysics)
+
 # fastgltf links this simdjson::simdjson target
 add_subdirectory(simdjson)
 target_compile_options(simdjson PRIVATE -w)
@@ -32,11 +36,3 @@ set(FASTGLTF_ENABLE_KHR_AUDIO_RIGID_BODIES ON CACHE BOOL "" FORCE)
 set(FASTGLTF_ENABLE_INSTALL OFF CACHE BOOL "" FORCE) # We provide our own simdjson target.
 add_subdirectory(fastgltf)
 target_compile_options(fastgltf PRIVATE -w)
-
-# JoltPhysics: disable GPU compute (Hair/SoftBody GPU features not needed for rigid body physics)
-set(JPH_USE_DX12 OFF CACHE BOOL "" FORCE)
-set(JPH_USE_VK OFF CACHE BOOL "" FORCE)
-set(JPH_USE_MTL OFF CACHE BOOL "" FORCE)
-set(JPH_USE_CPU_COMPUTE OFF CACHE BOOL "" FORCE)
-set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
-add_subdirectory(JoltPhysics/Build)

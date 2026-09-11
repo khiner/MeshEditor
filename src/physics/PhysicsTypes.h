@@ -11,6 +11,7 @@ struct PhysicsSimulationSettings {
     vec3 Gravity{0.0f, -9.81f, 0.0f};
     uint32_t SubstepsPerFrame{10}, SolverIterations{10};
     float TimeScale{1.0f}; // Multiplier on simulated dt (1 = real-time)
+    bool operator==(const PhysicsSimulationSettings &) const = default;
 };
 
 // KHR_physics_rigid_bodies-aligned component structs.
@@ -28,9 +29,10 @@ struct PhysicsMaterial {
     float StaticFriction{0.6f}, DynamicFriction{0.6f}, Restitution{0.0f};
     PhysicsCombineMode FrictionCombine{PhysicsCombineMode::Average}, RestitutionCombine{PhysicsCombineMode::Average};
     std::string Name{};
+    bool operator==(const PhysicsMaterial &) const = default;
 };
 
-// Defines a document-level collision system assigned a Jolt mask bit by registry iteration order.
+// Defines a document-level collision system assigned a collision mask bit at world creation.
 struct CollisionSystem {
     std::string Name{};
 };
@@ -58,6 +60,7 @@ struct PhysicsJointLimit {
     std::optional<float> Min{}, Max{};
     std::optional<float> Stiffness{}; // nullopt = hard (infinite stiffness) limit
     float Damping{0.0f};
+    bool operator==(const PhysicsJointLimit &) const = default;
 };
 
 enum class PhysicsDriveType : uint8_t {
@@ -76,12 +79,14 @@ struct PhysicsJointDrive {
     float MaxForce{std::numeric_limits<float>::max()};
     float PositionTarget{0}, VelocityTarget{0};
     float Stiffness{0}, Damping{0};
+    bool operator==(const PhysicsJointDrive &) const = default;
 };
 
 struct PhysicsJointDef {
     std::vector<PhysicsJointLimit> Limits{};
     std::vector<PhysicsJointDrive> Drives{};
     std::string Name{};
+    bool operator==(const PhysicsJointDef &) const = default;
 };
 
 // --- Per-shape ---
@@ -93,24 +98,33 @@ inline constexpr float MinShapeHeight{1e-6f};
 // KHR_physics_rigid_bodies / KHR_implicit_shapes-aligned shape primitives.
 struct Box {
     vec3 Size{1.f}; // full size (not half-extents) per KHR spec
+    bool operator==(const Box &) const = default;
 };
 struct Sphere {
     float Radius{0.5f};
+    bool operator==(const Sphere &) const = default;
 };
 struct Capsule {
     float Height{0.5f}, RadiusTop{0.25f}, RadiusBottom{0.25f};
+    bool operator==(const Capsule &) const = default;
 };
 struct Cylinder {
     float Height{0.5f}, RadiusTop{0.25f}, RadiusBottom{0.25f};
+    bool operator==(const Cylinder &) const = default;
 };
 // Plane lies in the XZ plane with +Y normal. Size{X,Z} == 0 means infinite along that axis.
 struct Plane {
     float SizeX{0.f}, SizeZ{0.f};
     bool DoubleSided{false};
+    bool operator==(const Plane &) const = default;
 };
 // Mesh-backed shape kinds. Mesh reference lives on the ColliderShape wrapper.
-struct ConvexHull {};
-struct TriangleMesh {};
+struct ConvexHull {
+    bool operator==(const ConvexHull &) const = default;
+};
+struct TriangleMesh {
+    bool operator==(const TriangleMesh &) const = default;
+};
 } // namespace physics
 
 using PhysicsShape = std::variant<
@@ -145,6 +159,7 @@ struct PhysicsMotion {
     float GravityFactor{1.};
     // Engine-specific (not in KHR_physics_rigid_bodies). Defaults match Blender.
     float LinearDamping{0.04f}, AngularDamping{0.1f};
+    bool operator==(const PhysicsMotion &) const = default;
 };
 
 // Defines a force-driven positive-mass body whose mass properties control contact dynamics.
@@ -153,6 +168,7 @@ inline bool IsAuthoritativeDynamicBody(const PhysicsMotion &m) { return !m.IsKin
 // Present iff PhysicsMotion is present.
 struct PhysicsVelocity {
     vec3 Linear{0}, Angular{0};
+    bool operator==(const PhysicsVelocity &) const = default;
 };
 
 // MeshEntity present for ConvexHull/TriangleMesh, null for primitives.
@@ -161,6 +177,7 @@ struct ColliderShape {
     PhysicsShape Shape{};
     entt::entity MeshEntity{null_entity};
     vec3 LocalOffset{0};
+    bool operator==(const ColliderShape &) const = default;
 };
 
 struct ColliderMaterial {
@@ -180,7 +197,7 @@ struct ColliderPolicy {
 
 // Compound trigger (KHR NodesTrigger): zone defined by child nodes — no own shape.
 // Listed nodes supply the geometry; engine reports entry/exit for any of them.
-// Does not produce a Jolt body; exists for document structure and filter assignment.
+// Does not produce a rigid body; exists for document structure and filter assignment.
 struct TriggerNodes {
     std::vector<entt::entity> Nodes{};
     entt::entity CollisionFilterEntity{null_entity};
@@ -190,6 +207,7 @@ struct PhysicsJoint {
     entt::entity ConnectedNode{null_entity};
     entt::entity JointDefEntity{null_entity};
     bool EnableCollision{false};
+    bool operator==(const PhysicsJoint &) const = default;
 };
 
 // --- Internal (not serialized to glTF) ---
@@ -206,7 +224,7 @@ struct CachedPose {
     quat R;
 };
 
-// Per-body pose timeline indexed by frame. A nullopt slot means the body wasn't simulated at that frame.
+// Contiguous poses beginning at the simulation cache start frame.
 struct BodyPoseCache {
-    std::vector<std::optional<CachedPose>> Frames;
+    std::vector<CachedPose> Frames;
 };

@@ -128,7 +128,7 @@ Requires Apple Silicon and the Xcode command-line tools.
 
 ```shell
 $ git clone --recursive git@github.com:khiner/MeshEditor.git
-$ brew install cmake llvm eigen
+$ brew install cmake llvm
 $ brew link llvm --force
 ```
 
@@ -205,7 +205,7 @@ renders the whole corpus into `render_candidates/` with `FLAGS` handed to every 
 - macOS Core Audio: HAL output and native audio-file I/O
 - [FastFEM](https://github.com/khiner/FastFEM): Tetrahedralization, finite-element assembly, and modal eigensolves
 - [fastgltf](https://github.com/spnda/fastgltf) glTF 2.0 scene loading
-- [JoltPhysics](https://github.com/jrouwe/JoltPhysics): Rigid body physics
+- [RigidBodyPhysics](https://github.com/khiner/RigidBodyPhysics): Rigid body physics
 - [basis_universal](https://github.com/BinomialLLC/basis_universal) KTX2 texture transcoding (`KHR_texture_basisu`)
 - [libwebp](https://github.com/webmproject/libwebp) WebP texture decoding and lossless snapshot/texture encoding (`EXT_texture_webp`)
 - [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply): `.obj` and `.ply` mesh loading

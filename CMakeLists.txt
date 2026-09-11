@@ -143,6 +143,7 @@ include(cmake/Libraries.cmake)
 if(MESHEDITOR_APP)
     add_executable(MeshEditor src/main.cpp)
     target_link_libraries(MeshEditor PRIVATE MeshEditorUi)
+    rbp_copy_shaders(MeshEditor)
     mesheditor_compile_policy(MeshEditor COLD)
     target_compile_definitions(MeshEditor PRIVATE
         GLTF_SAMPLE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/external/glTF-Sample-Assets"
