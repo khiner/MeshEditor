@@ -7,10 +7,21 @@
 #include "snapshot/SceneSnapshot.h"
 
 #include <entt/entity/registry.hpp>
+#include <entt/entity/snapshot.hpp>
 #include <zpp_bits.h>
 
 namespace snapshot {
 namespace {
+// EnTT preserves packed entity order, the live/free boundary, and generations of reusable slots.
+std::vector<std::byte> SerializeEntities(const entt::registry &r) {
+    std::vector<std::byte> bytes;
+    zpp::bits::out out{bytes};
+    auto archive = [&](auto value) { out(value).or_throw(); };
+    entt::snapshot{r}.get<entt::entity>(archive);
+    bytes.resize(out.position());
+    return bytes;
+}
+
 // Persist the canonical GPU material array and parallel names because SourceAssets cannot reconstruct them.
 std::vector<std::byte> SerializeMaterials(const entt::registry &r) {
     const auto &materials = r.ctx().get<const GpuBuffers>().Materials;
@@ -59,12 +70,14 @@ std::span<const std::byte> TakeLengthPrefixed(std::span<const std::byte> &bytes)
 } // namespace
 
 std::vector<std::byte> SaveState(const entt::registry &r) {
+    const auto entities = SerializeEntities(r);
     const auto scene = SnapshotSceneState(r);
     const auto materials = SerializeMaterials(r);
     const auto mesh = r.ctx().get<const MeshStore>().Serialize();
 
     std::vector<std::byte> out;
-    out.reserve(2 * sizeof(uint64_t) + scene.size() + materials.size() + mesh.size());
+    out.reserve(3 * sizeof(uint64_t) + entities.size() + scene.size() + materials.size() + mesh.size());
+    AppendLengthPrefixed(out, entities);
     AppendLengthPrefixed(out, scene);
     AppendLengthPrefixed(out, materials);
     out.append_range(mesh);
@@ -72,8 +85,16 @@ std::vector<std::byte> SaveState(const entt::registry &r) {
 }
 
 void LoadState(entt::registry &r, std::span<const std::byte> bytes) {
+    const auto entities = TakeLengthPrefixed(bytes);
     const auto scene = TakeLengthPrefixed(bytes);
     const auto materials = TakeLengthPrefixed(bytes);
+
+    {
+        r.storage<entt::entity>().clear();
+        zpp::bits::in in{entities};
+        auto archive = [&](auto &value) { in(value).or_throw(); };
+        entt::snapshot_loader{r}.get<entt::entity>(archive);
+    }
 
     // Restore MeshStore offsets before components that reference them.
     auto &meshes = r.ctx().get<MeshStore>();
