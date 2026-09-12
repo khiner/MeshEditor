@@ -22,8 +22,6 @@
 
 #include <format>
 
-using std::ranges::to;
-
 namespace {
 // Read/write a field at `offset` within a PrimitiveShape's current alternative.
 void ReadPrimitiveField(const entt::registry &r, entt::entity e, uint16_t offset, void *dst, uint16_t size) {
@@ -198,7 +196,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
         overloaded{
             [&](Delete) {
                 if (!CanDelete(r, viewport)) return;
-                for (const auto e : r.view<Selected>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(r, viewport, e);
+                for (const auto e : SortedEntities(r.view<Selected>(entt::exclude<SubElementOf>))) Destroy(r, viewport, e);
             },
             [&](Duplicate) { duplicate(false); },
             [&](DuplicateLinked) { duplicate(true); },
