@@ -310,7 +310,9 @@ void SaveWorkspace(entt::registry &r, entt::entity viewport, bool force = true) 
 
 bool UiGestureSettled(const ImGuiWindow *frame_focus) {
     // Dock decorations can still show the old focus when menus or widgets change it during the frame.
-    if (GImGui->NavWindow != frame_focus || !GImGui->OpenPopupStack.empty() || GImGui->MovingWindow || GImGui->DragDropActive) return false;
+    // A closed menu leaves focus on its undrawn popup for one frame until ImGui refocuses under it.
+    const auto *focus = GImGui->NavWindow;
+    if (focus != frame_focus || (focus && !focus->Active) || !GImGui->OpenPopupStack.empty() || GImGui->MovingWindow || GImGui->DragDropActive) return false;
     const auto &io = GetIO();
     for (int button = 0; button < ImGuiMouseButton_COUNT; ++button) {
         if (io.MouseDown[button] || io.MouseReleased[button]) return false;
@@ -746,11 +748,16 @@ ImDrawData *RenderValidationApp(
     };
 
     render_frame(); // Instantiate the windows referenced by the restored dock layout.
-    SetWindowFocus(inputs.FocusedWindow.empty() ? nullptr : inputs.FocusedWindow.c_str());
     render_frame(); // Bind those windows to their dock nodes.
     render_frame(); // Settle docked child sizes and scrollbars.
+    // Restore focus last so dock binding and the menu bar cannot move it again.
+    SetWindowFocus(inputs.FocusedWindow.empty() ? nullptr : inputs.FocusedWindow.c_str());
     io.MousePos = inputs.MousePos;
     render_frame(/*restore_hover=*/true); // Apply live hover history after the restored hit regions settle.
+    if (const std::string_view focused = GImGui->NavWindow ? GImGui->NavWindow->Name : ""; focused != inputs.FocusedWindow) {
+        std::println(stderr, "[validation] focus DIVERGED (live '{}' / restored '{}')", inputs.FocusedWindow, focused);
+        std::abort();
+    }
     return GetDrawData();
 }
 
@@ -829,7 +836,7 @@ void CompareValidationImages(entt::registry &r, ValidationSession &session) {
         &session.Replay.Registry.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
         &session.Snapshot.Registry.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
     };
-    const std::array names{"replay app", "snapshot app", "replay viewport", "snapshot viewport"};
+    const std::array names{"replay-app", "snapshot-app", "replay-viewport", "snapshot-viewport"};
     for (uint32_t i = 0; i < restored.size(); ++i) {
         if (restored[i]->Extent != expected[i]->Extent) {
             const auto actual = restored[i]->Extent, extent = expected[i]->Extent;
@@ -862,7 +869,7 @@ void CompareValidationImages(entt::registry &r, ValidationSession &session) {
         const auto byte = differences[i], pixel = byte / 4;
         const auto extent = expected[i]->Extent;
         std::println(stderr, "[validation] {} DIVERGED at pixel ({}, {}), channel {} (byte {} of {})", names[i], pixel % extent.Width, pixel / extent.Width, byte % 4, byte, uint64_t(extent.Width) * extent.Height * 4);
-        const auto expected_path = WriteValidationImage(ctx, i < 2 ? "live" : "live viewport", *expected[i]);
+        const auto expected_path = WriteValidationImage(ctx, i < 2 ? "live-app" : "live-viewport", *expected[i]);
         const auto actual_path = WriteValidationImage(ctx, names[i], *restored[i]);
         if (!expected_path.empty() && !actual_path.empty()) std::println(stderr, "[validation] wrote {} and {}", expected_path.string(), actual_path.string());
         std::abort();
