@@ -704,6 +704,8 @@ struct ValidationInputs {
     ImGuiID HoveredIdPreviousFrame{};
     float HoveredIdTimer{}, HoveredIdNotActiveTimer{};
     std::string FocusedWindow;
+    ImGuiID NavId{};
+    bool NavCursorVisible{}, NavHighlightItemUnderNav{};
     bool Capturing{}, Scrubbing{};
     float PlaybackFrame{};
     TimelinePlayback Playback{};
@@ -725,6 +727,9 @@ ImDrawData *RenderValidationApp(
             GImGui->HoveredIdPreviousFrame = inputs.HoveredIdPreviousFrame;
             GImGui->HoveredIdTimer = inputs.HoveredIdTimer;
             GImGui->HoveredIdNotActiveTimer = inputs.HoveredIdNotActiveTimer;
+            GImGui->NavId = inputs.NavId;
+            GImGui->NavCursorVisible = inputs.NavCursorVisible;
+            GImGui->NavHighlightItemUnderNav = inputs.NavHighlightItemUnderNav;
         }
 
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
@@ -906,6 +911,9 @@ void ValidateRoundTrip(
         .HoveredIdTimer = GImGui->HoveredIdTimer,
         .HoveredIdNotActiveTimer = GImGui->HoveredIdNotActiveTimer,
         .FocusedWindow = GImGui->NavWindow ? std::string{GImGui->NavWindow->Name} : std::string{},
+        .NavId = GImGui->NavId,
+        .NavCursorVisible = GImGui->NavCursorVisible,
+        .NavHighlightItemUnderNav = GImGui->NavHighlightItemUnderNav,
         .Capturing = r.ctx().get<FrameState>().Capturing,
         .Scrubbing = r.ctx().get<FrameState>().Scrubbing,
         .PlaybackFrame = r.get<const PlaybackFrame>(viewport).Value,
