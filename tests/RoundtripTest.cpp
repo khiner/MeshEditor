@@ -895,13 +895,13 @@ int main(int argc, const char **argv) {
 
     // Require exact modal-result round trips and reuse of identical content-addressed files.
     "modal model file round trip"_test = [] {
-        const auto relative = SaveModalModelFile(SampleModal);
+        const auto relative = SaveModalModelFile(ModalModelsDir(), SampleModal);
         expect(!relative.empty());
         const auto loaded = LoadModalModelFile(relative);
         expect(bool(loaded));
         if (!loaded) return;
         expect(*loaded == SampleModal);
-        expect(SaveModalModelFile(SampleModal) == relative);
+        expect(SaveModalModelFile(ModalModelsDir(), SampleModal) == relative);
     };
 
     // A destroyed entity leaves deletion history in the pools it belonged to, and SaveState excludes it so the byte image reflects state alone.

@@ -23,11 +23,10 @@ std::vector<std::byte> Serialize(const ModalModelData &data) {
 
 fs::path ModalModelsDir() { return Paths::Project() / "modal"; }
 
-fs::path SaveModalModelFile(const ModalModelData &data) {
+fs::path SaveModalModelFile(const fs::path &dir, const ModalModelData &data) {
     const auto bytes = Serialize(data);
     if (bytes.empty()) return {};
 
-    const auto dir = ModalModelsDir();
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return {};

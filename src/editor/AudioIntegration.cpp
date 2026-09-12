@@ -552,7 +552,7 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e, 
     auto excite_positions = inputs.Vertices | transform([&](uint32_t v) { return inputs.Positions[v]; }) | to<std::vector<vec3>>();
     fastfem::ModeBasis warm_basis;
     if (const auto &warm = r.ctx().get<const ModalWarmStart>(); inputs.Discretization == fastfem::Discretization::Tet10 && warm.Basis && warm.OperatorHash == inputs.OperatorHash) warm_basis = warm.Basis;
-    auto work = [inputs = std::move(inputs), material_props = material.Properties, excite_positions = std::move(excite_positions), warm_basis = std::move(warm_basis)](fastfem::SolveMonitor &monitor) mutable -> ModalGenerationResult {
+    auto work = [inputs = std::move(inputs), material_props = material.Properties, excite_positions = std::move(excite_positions), warm_basis = std::move(warm_basis), model_dir = ModalModelsDir()](fastfem::SolveMonitor &monitor) mutable -> ModalGenerationResult {
         // Capture sample-surface triangulation before simplification.
         auto sample_triangles = SampleSurfaceTriangles(inputs.TriangleIndices, uint32_t(inputs.Positions.size()), inputs.Vertices);
         auto result = modal::SolveSurfaceModes(
@@ -572,7 +572,7 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e, 
         result->Summary.OperatorHash = inputs.OperatorHash;
         result->Summary.ModalConfigHash = inputs.ModalConfigHash;
         monitor.Stage.store(fastfem::SolveStage::Finalizing, std::memory_order_relaxed);
-        auto model_path = result->Modes.Freqs.empty() ? fs::path{} : SaveModalModelFile({std::move(result->Modes), result->Mass, std::move(result->Tetrahedra), std::move(result->Summary)});
+        auto model_path = result->Modes.Freqs.empty() ? fs::path{} : SaveModalModelFile(model_dir, {std::move(result->Modes), result->Mass, std::move(result->Tetrahedra), std::move(result->Summary)});
         monitor.Stage.store(fastfem::SolveStage::Complete, std::memory_order_relaxed);
         return {std::move(model_path), {inputs.OperatorHash, std::move(result->Basis)}};
     };

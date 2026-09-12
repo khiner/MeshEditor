@@ -21,8 +21,8 @@ struct ModalModelData {
 // The modal results store.
 std::filesystem::path ModalModelsDir();
 
-// Writes data under ModalModelsDir and returns its relative content-addressed path.
+// Writes data under dir and returns its relative content-addressed path.
 // Reuses identical stored content and returns an empty path on I/O failure.
-std::filesystem::path SaveModalModelFile(const ModalModelData &);
+std::filesystem::path SaveModalModelFile(const std::filesystem::path &dir, const ModalModelData &);
 
 std::optional<ModalModelData> LoadModalModelFile(const std::filesystem::path &relative);
