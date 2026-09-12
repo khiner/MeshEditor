@@ -9,6 +9,7 @@
 #include "Solver.h"
 #include "TransformMath.h"
 #include "mesh/Mesh.h"
+#include "metal/MetalContext.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -73,7 +74,8 @@ struct SceneInput {
     std::map<entt::entity, JointInput> Joints;
 };
 struct PhysicsState {
-    rbp::mtl::Context Context;
+    // The solver runs on Metal 4 devices only, so this stays empty on other devices and no world is built.
+    std::optional<rbp::mtl::Context> Context;
     std::optional<rbp::Solver> Solver;
     std::optional<rbp::World> World;
     rbp::StepSettings Settings;
@@ -442,8 +444,9 @@ void Rebuild(entt::registry &r) {
     const profile::CpuScope scope{"PhysicsRebuild"};
     auto &s = r.ctx().get<PhysicsState>();
     ClearSimulation(s, r);
-    if (!s.Solver) s.Solver.emplace(s.Context);
-    s.World.emplace(s.Context, Limits(r));
+    if (!s.Context) return;
+    if (!s.Solver) s.Solver.emplace(*s.Context);
+    s.World.emplace(*s.Context, Limits(r));
     for (auto entity : SortedEntities(r.view<const PhysicsMotion>())) BuildBody(s, r, entity);
     for (auto entity : SortedEntities(r.view<const ColliderShape>()))
         if (s.Input.Bodies.contains(entity)) BuildBody(s, r, entity);
@@ -812,7 +815,8 @@ void SamplePosesAtFrame(entt::registry &r, float frame) {
 }
 
 void Init(entt::registry &r) {
-    r.ctx().emplace<PhysicsState>();
+    auto &s = r.ctx().emplace<PhysicsState>();
+    if (r.ctx().get<const mtl::Context>().Device->supportsFamily(MTL::GPUFamilyMetal4)) s.Context.emplace();
     r.ctx().emplace<PhysicsContactImpacts>();
     r.ctx().emplace<PhysicsSustainedContacts>();
     r.on_destroy<PhysicsBodyHandle>().connect<&OnDestroyPhysicsBody>();
