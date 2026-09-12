@@ -6,7 +6,6 @@
 #include "armature/ArmatureComponents.h"
 #include "mesh/MeshBatch.h"
 #include "mesh/MeshComponents.h"
-#include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
 #include "render/GpuBufferOps.h"
@@ -20,7 +19,6 @@
 #include "selection/SelectionQueries.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
-#include "viewport/ViewportInteractionState.h"
 
 #include <format>
 
@@ -135,7 +133,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     const auto duplicate = [&](bool linked, const PendingTransform *placement = nullptr) {
         if (!(linked ? CanDuplicateLinked(r, viewport) : CanDuplicate(r, viewport))) return;
         const profile::CpuScope scope{linked ? "DuplicateLinked" : "Duplicate"};
-        const auto entities = r.view<Selected>() | to<std::vector>();
+        const auto entities = SortedEntities(r.view<Selected>());
         if (!linked) {
             // Pre-reserve arenas to avoid per-CloneMesh buffer growth.
             for (const auto e : entities) {
