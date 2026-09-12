@@ -67,9 +67,7 @@ void StartLog(std::filesystem::path path, bool append) {
     Log.emplace(*LogStream, &SerializeAction);
 }
 const std::filesystem::path &CurrentLogPath() { return LogPath; }
-void FlushLog() {
-    if (Log) Log->Flush();
-}
+bool FlushLog() { return !Log || Log->Flush(); }
 std::filesystem::path StopLog() {
     if (Log) Log->Stop();
     Log.reset();

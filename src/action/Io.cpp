@@ -5,10 +5,13 @@
 #include "File.h"
 #include "Profile.h"
 #include "Variant.h"
+#include "action/ActionIndex.h"
 #include "action/Errors.h"
+#include "action/Log.h"
 #include "animation/AnimationTimeline.h"
 #include "audio/AcousticMaterial.h"
 #include "audio/AudioSystem.h"
+#include "audio/ModalModelFile.h"
 #include "audio/RealImpact.h"
 #include "audio/RealImpactComponents.h"
 #include "gltf/GltfScene.h"
@@ -26,8 +29,7 @@
 #include <entt/entity/registry.hpp>
 #include <format>
 #include <numbers>
-
-#include <fstream>
+#include <utility>
 
 using std::ranges::to;
 
@@ -79,14 +81,23 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     fail(std::format("Error saving glTF file '{}': {}", a.Path.string(), save.error()));
                 }
             },
-            [&](const SaveState &a) {
-                const auto bytes = snapshot::SaveState(r);
-                std::ofstream out{a.Path, std::ios::binary};
-                if (!out) {
-                    fail(std::format("Error opening state file '{}' for writing", a.Path.string()));
+            [&](const ClearHistory &a) {
+                if (!FlushLog()) {
+                    fail("Failed to flush the action log. History was not cleared.");
                     return;
                 }
-                out.write(reinterpret_cast<const char *>(bytes.data()), std::streamsize(bytes.size()));
+                auto &index = r.get<ActionIndex>(viewport).Index;
+                const auto previous_index = std::exchange(index, 0);
+                if (const auto result = File::WriteAtomic(a.Path, snapshot::SaveState(r)); !result) {
+                    index = previous_index;
+                    fail(result.error());
+                    return;
+                }
+                const auto log_path = CurrentLogPath();
+                StopLog();
+                StartLog(log_path);
+                std::error_code ec;
+                std::filesystem::remove_all(ModalModelsDir(), ec);
             },
             [&](const LoadGltf &a) { LoadGltfFile(r, viewport, a.Path); },
             [&](const LoadRealImpact &a) {

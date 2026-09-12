@@ -9,7 +9,10 @@ namespace action {
 void SerializeAction(const Action &a, std::ostream &out) {
     static thread_local std::vector<std::byte> buffer;
     zpp::bits::out archive{buffer};
-    if (zpp::bits::failure(archive(uint32_t{0}, a))) return;
+    if (zpp::bits::failure(archive(uint32_t{0}, a))) {
+        out.setstate(std::ios::failbit);
+        return;
+    }
     const auto len = uint32_t(archive.position() - sizeof(uint32_t));
     std::memcpy(buffer.data(), &len, sizeof len);
     out.write(reinterpret_cast<const char *>(buffer.data()), std::streamsize(archive.position()));

@@ -295,17 +295,18 @@ workspace::State CaptureWorkspace(entt::registry &r, entt::entity viewport) {
     return workspace::Capture(r, viewport, r.ctx().get<const WindowsState>());
 }
 
-void SaveWorkspace(entt::registry &r, entt::entity viewport, bool force = true) {
-    if (Paths::Project().empty()) return;
+bool SaveWorkspace(entt::registry &r, entt::entity viewport, bool force = true) {
+    if (Paths::Project().empty()) return true;
     const auto path = Paths::Project() / workspace::FileName;
     auto bytes = workspace::Serialize(CaptureWorkspace(r, viewport));
-    if (!force && path == CachedWorkspacePath && bytes == CachedWorkspaceBytes) return;
+    if (!force && path == CachedWorkspacePath && bytes == CachedWorkspaceBytes) return true;
     if (!workspace::Save(path, bytes)) {
-        std::println(stderr, "Failed to save workspace state.");
-        return;
+        r.ctx().get<action::Errors>().Messages.emplace_back("Failed to save workspace state.");
+        return false;
     }
     CachedWorkspacePath = path;
     CachedWorkspaceBytes = std::move(bytes);
+    return true;
 }
 
 bool UiGestureSettled(const ImGuiWindow *frame_focus) {
@@ -420,29 +421,22 @@ void OpenFile(entt::registry &r, entt::entity viewport, const fs::path &path) {
 
 // Save a scene snapshot and project archive at archive_path.
 void SaveProjectFile(entt::registry &r, entt::entity viewport, const fs::path &archive_path) {
-    Perform(r, viewport, action::io::SaveState{.Path = Paths::Project() / ProjectStateName});
-    SaveWorkspace(r, viewport);
-    const auto log_path = Paths::Project() / SessionLogName;
-    action::StopLog(); // Flush the log before archiving.
-    const bool ok = Compress(Paths::Project(), archive_path);
-    action::StartLog(log_path, /*append=*/true);
-    if (!ok) {
-        std::println(stderr, "Failed to save project '{}'", archive_path.string());
+    auto &errors = r.ctx().get<action::Errors>().Messages;
+    if (const auto result = File::WriteAtomic(Paths::Project() / ProjectStateName, snapshot::SaveState(r)); !result) {
+        errors.emplace_back(result.error());
+        return;
+    }
+    if (!SaveWorkspace(r, viewport)) return;
+    // Saving is synchronous on the log's producer thread, so flushing keeps the log stable while archiving.
+    if (!action::FlushLog()) {
+        errors.emplace_back("Failed to flush the action log. Project was not saved.");
+        return;
+    }
+    if (!Compress(Paths::Project(), archive_path)) {
+        errors.emplace_back(std::format("Failed to save project '{}'.", archive_path.string()));
         return;
     }
     CurrentProjectPath = archive_path;
-}
-
-// Replace the session history with a snapshot of the current scene.
-void ClearHistory(entt::registry &r, entt::entity viewport) {
-    r.emplace_or_replace<ActionIndex>(viewport); // Reset session bookkeeping outside action Apply.
-    Perform(r, viewport, action::io::SaveState{.Path = Paths::Project() / ProjectStateName});
-    SaveWorkspace(r, viewport);
-    action::StopLog();
-    std::error_code ec;
-    fs::remove(Paths::Project() / SessionLogName, ec);
-    fs::remove_all(ModalModelsDir(), ec);
-    action::StartLog(Paths::Project() / SessionLogName);
 }
 
 void BuildDefaultDockLayout(const WindowsState &windows, ImGuiID dockspace_id) {
@@ -1521,7 +1515,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                     else SaveProjectFile(r, viewport, CurrentProjectPath);
                 }
                 if (MenuItem("Save as...")) save_project_as();
-                if (MenuItem("Clear history")) ClearHistory(r, viewport);
+                if (MenuItem("Clear history") && SaveWorkspace(r, viewport)) Perform(r, viewport, action::io::ClearHistory{.Path = Paths::Project() / ProjectStateName});
                 if (BeginMenu("Restore")) {
                     const auto sessions = action::ListRestoreSessions(); // Most-recent first; the newest is the live session.
                     for (size_t i = 0; i < sessions.size(); ++i) {

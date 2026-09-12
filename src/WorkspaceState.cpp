@@ -12,7 +12,6 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
-#include <fstream>
 #include <ranges>
 
 namespace workspace {
@@ -198,16 +197,6 @@ bool Save(const std::filesystem::path &path, std::span<const std::byte> bytes) {
 
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
-    auto temporary = path;
-    temporary += ".tmp";
-    {
-        std::ofstream out{temporary, std::ios::binary | std::ios::trunc};
-        out.write(reinterpret_cast<const char *>(bytes.data()), std::streamsize(bytes.size()));
-        if (!out) return false;
-    }
-    std::filesystem::rename(temporary, path, ec);
-    if (!ec) return true;
-    std::filesystem::remove(temporary, ec);
-    return false;
+    return !ec && bool(File::WriteAtomic(path, bytes));
 }
 } // namespace workspace

@@ -1,4 +1,5 @@
 #include "Compress.h"
+#include "File.h"
 
 #include <zstd.h>
 
@@ -30,16 +31,8 @@ bool Feed(ZSTD_CCtx *cctx, std::ostream &out, std::vector<char> &buf, ZSTD_inBuf
     }
     return true;
 }
-} // namespace
-
-bool Compress(const fs::path &src, const fs::path &dst) {
+bool CompressToStream(const fs::path &src, std::ostream &out) {
     std::error_code ec;
-    if (!fs::is_directory(src, ec)) return false;
-
-    if (const auto parent = dst.parent_path(); !parent.empty()) fs::create_directories(parent, ec);
-    std::ofstream out{dst, std::ios::binary | std::ios::trunc};
-    if (!out) return false;
-
     const std::unique_ptr<ZSTD_CCtx, decltype(&ZSTD_freeCCtx)> cctx{ZSTD_createCCtx(), ZSTD_freeCCtx};
     if (!cctx) return false;
 
@@ -67,7 +60,15 @@ bool Compress(const fs::path &src, const fs::path &dst) {
             left -= uint64_t(n);
         }
     }
-    return Feed(cctx.get(), out, out_buf, {nullptr, 0, 0}, ZSTD_e_end) && bool(out);
+    return Feed(cctx.get(), out, out_buf, {nullptr, 0, 0}, ZSTD_e_end);
+}
+} // namespace
+
+bool Compress(const fs::path &src, const fs::path &dst) {
+    std::error_code ec;
+    if (!fs::is_directory(src, ec)) return false;
+    if (const auto parent = dst.parent_path(); !parent.empty()) fs::create_directories(parent, ec);
+    return !ec && bool(File::WriteAtomic(dst, [&](auto &out) { return CompressToStream(src, out); }));
 }
 
 bool Decompress(const fs::path &src, const fs::path &dst) {

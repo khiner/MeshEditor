@@ -20,15 +20,15 @@ struct LoadGltf {
 struct SaveGltf {
     std::filesystem::path Path;
 };
-// Write the full persistent app image to a `.state` file. Loading one goes through Load, keyed off the extension.
-struct SaveState {
+// Replace the active session's history with a snapshot at Path.
+struct ClearHistory {
     std::filesystem::path Path;
 };
 struct LoadRealImpact {
     std::filesystem::path Directory;
 };
 
-using Action = std::variant<LoadDefaultScene, Load, LoadGltf, SaveGltf, LoadRealImpact, SaveState>;
+using Action = std::variant<LoadDefaultScene, Load, LoadGltf, SaveGltf, LoadRealImpact, ClearHistory>;
 
 // Handlers run GPU work synchronously; failures are reported through the registry's action::Errors sink.
 void Apply(entt::registry &, entt::entity viewport, const Action &);

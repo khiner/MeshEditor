@@ -48,7 +48,8 @@ template<typename F> auto MapDomains(F f) {
 // E.g. replaying a save would clobber a file.
 template<typename T> inline constexpr bool Recordable = true;
 template<> inline constexpr bool Recordable<io::SaveGltf> = false;
-template<> inline constexpr bool Recordable<io::SaveState> = false;
+// The replacement snapshot is the baseline after clearing history.
+template<> inline constexpr bool Recordable<io::ClearHistory> = false;
 // Latch state is live-only: the recorded DragGizmo already encodes the resolved transform.
 template<> inline constexpr bool Recordable<view::LatchScreenTransform> = false;
 template<> inline constexpr bool Recordable<view::ClearScreenTransformLatch> = false;

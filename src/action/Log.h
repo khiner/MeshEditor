@@ -17,6 +17,7 @@ namespace action {
 struct Stop {};
 struct Flush {
     std::binary_semaphore *Done;
+    bool *Succeeded;
 };
 
 // Single-producer, single-consumer asynchronous log.
@@ -35,12 +36,14 @@ public:
     // Enqueues without I/O, serialization, or blocking.
     void Enqueue(RecordType &&record) { Queue.enqueue(Record{std::move(record)}); }
 
-    // Waits until every earlier record is durable without closing the log.
-    void Flush() {
-        if (!Writer.joinable()) return;
+    // Flushes earlier records to the stream and reports write failure without closing the log.
+    bool Flush() {
+        if (!Writer.joinable()) return bool(Out);
         std::binary_semaphore done{0};
-        Queue.enqueue(Record{action::Flush{&done}});
+        bool succeeded{};
+        Queue.enqueue(Record{action::Flush{&done, &succeeded}});
         done.acquire();
+        return succeeded;
     }
 
     // Enqueues the stop sentinel and joins after prior records are written.
@@ -65,6 +68,7 @@ private:
                 }
                 if (const auto *flush = std::get_if<action::Flush>(&item)) {
                     Out.flush();
+                    *flush->Succeeded = bool(Out);
                     flush->Done->release();
                     continue;
                 }
@@ -92,7 +96,7 @@ std::filesystem::path ReserveRestoreSession();
 // Opens the action log and starts its writer thread.
 void StartLog(std::filesystem::path, bool append = false);
 const std::filesystem::path &CurrentLogPath();
-void FlushLog();
+bool FlushLog();
 // Flushes and joins the writer, returning an empty path when no records were written.
 std::filesystem::path StopLog();
 
