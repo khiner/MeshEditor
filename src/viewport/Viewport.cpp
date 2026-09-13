@@ -1,4 +1,5 @@
 #include "viewport/Viewport.h"
+#include "project/Registry.h"
 
 #include "render/ViewportSubmission.h"
 #include <Metal/MTLCommandQueue.hpp>
@@ -10,7 +11,6 @@
 #include "Reactive.h"
 #include "Stores.h"
 #include "Window.h"
-#include "action/ActionIndex.h"
 #include "animation/AnimationTimeline.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshBatch.h"
@@ -52,15 +52,6 @@ RenderRequest TakeRenderRequest(entt::registry &r) {
 
 SceneUpdate RequestedSceneUpdate(RenderRequest request) { return request == RenderRequest::Rebuild ? SceneUpdate::Rebuild : SceneUpdate::Reuse; }
 
-void AdvanceViewport(entt::registry &r, entt::entity viewport, RenderPhase phase) {
-    ProcessComponentEvents(r, viewport);
-    if (!ViewportImageReady(r)) return;
-    const auto request = TakeRenderRequest(r);
-    if (phase == RenderPhase::Prepare && request == RenderRequest::None) return;
-    RecordAndSubmitFrame(r, viewport, RequestedSceneUpdate(request), phase);
-    WaitForRender(r);
-}
-
 // Motion blur applies in MaterialPreview/Rendered while playing, scrubbing, or capturing.
 bool MotionBlurActive(const entt::registry &r, entt::entity viewport) {
     const auto &display = r.get<const ViewportDisplay>(viewport);
@@ -75,7 +66,6 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &pipelines = r.ctx().get<Pipelines>();
     auto &resources = r.ctx().get<ViewportRenderResources>();
-    auto &frame_state = r.ctx().get<FrameState>();
 
     const auto &display = r.get<const ViewportDisplay>(viewport);
     const auto mb = EffectiveMotionBlur(display);
@@ -104,15 +94,13 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     }
 
     // Evaluate animation, physics, and an animated look-through camera at `pf` into mapped pose buffers.
-    const auto evaluate_at = [&](float pf) {
+    const auto evaluate_at = [&](float pf, EventPass pass) {
         {
             const profile::CpuScope scope{"SamplePoses"};
             physics::SamplePosesAtFrame(r, pf);
         }
         r.get<PlaybackFrame>(viewport).Value = pf;
-        frame_state.MotionBlurSubFrame = true;
-        ProcessComponentEvents(r, viewport);
-        frame_state.MotionBlurSubFrame = false;
+        ProcessComponentEvents(r, viewport, pass);
     };
 
     std::vector<uint32_t> sample_weights;
@@ -123,7 +111,7 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     };
     for (uint32_t i = 0; i < count; ++i) {
         const float time = fast ? (i == 0 ? lo : hi) : lo + (hi - lo) * (float(i) + 0.5f) / float(count);
-        evaluate_at(time);
+        evaluate_at(time, EventPass::Sample);
         // Consecutive identical samples need one render, including static scenes and clamped shutters.
         if (!fast && !sample_weights.empty()) {
             const auto &previous = buffers.BlurPoses[sample_weights.size() - 1];
@@ -148,7 +136,8 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
         buffers.SceneViewUBO.Update(as_bytes(view), buffers.SceneViewUboOffset(instance));
         sample_weights.push_back(1u);
     }
-    evaluate_at(settled_pf);
+    evaluate_at(float(current_frame), EventPass::Render);
+    r.get<PlaybackFrame>(viewport).Value = settled_pf;
     std::ignore = TakeRenderRequest(r);
     auto *command_buffer = ctx.Queue->commandBuffer();
     if (fast) RecordRenderCommandBuffer(r, viewport, command_buffer, SceneUpdate::Rebuild, RenderPhase::BlurFast);
@@ -159,12 +148,8 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
 }
 } // namespace
 
-void SubmitViewport(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *viewport_consumer) {
+void SubmitViewport(entt::registry &r, entt::entity viewport) {
     const profile::CpuScope scope{"SubmitViewport"};
-    // Resize waits for this consumer before replacing its sampled texture.
-    r.ctx().get<ViewportConsumerFence>().Value = viewport_consumer;
-    ProcessComponentEvents(r, viewport);
-    r.ctx().get<ViewportConsumerFence>().Value = nullptr;
     if (!ViewportImageReady(r)) return;
     auto &frame_state = r.ctx().get<FrameState>();
     if (MotionBlurActive(r, viewport)) {
@@ -242,21 +227,20 @@ entt::entity InitEngine(entt::registry &r) {
 }
 
 void SetupScene(entt::registry &r, entt::entity viewport) {
-    r.emplace_or_replace<ActionIndex>(viewport);
-    r.emplace_or_replace<ViewportDisplay>(viewport);
-    r.emplace_or_replace<Interaction>(viewport);
-    r.emplace_or_replace<EditMode>(viewport);
-    r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme);
-    r.emplace_or_replace<ViewCamera>(viewport, Defaults::ViewCamera);
-    r.emplace_or_replace<MaterialPreviewLighting>(viewport, false, false, 1.f, 0.f);
-    r.emplace_or_replace<RenderedLighting>(viewport, true, true, 1.f, 0.f);
-    r.emplace_or_replace<WorkspaceLights>(viewport, Defaults::WorkspaceLights);
-    r.emplace_or_replace<EnabledInteractionModes>(viewport);
-    r.emplace_or_replace<OrbitToActive>(viewport);
-    r.emplace_or_replace<TransformGizmoState>(viewport);
-    physics::ApplySimulationSettings(r, r.emplace_or_replace<PhysicsSimulationSettings>(viewport));
+    project::EmplaceOrReplace<ViewportDisplay>(r, viewport);
+    project::EmplaceOrReplace<Interaction>(r, viewport);
+    project::EmplaceOrReplace<EditMode>(r, viewport);
+    project::EmplaceOrReplace<ViewportTheme>(r, viewport, Defaults::ViewportTheme);
+    project::EmplaceOrReplace<ViewCamera>(r, viewport, Defaults::ViewCamera);
+    project::EmplaceOrReplace<MaterialPreviewLighting>(r, viewport, false, false, 1.f, 0.f);
+    project::EmplaceOrReplace<RenderedLighting>(r, viewport, true, true, 1.f, 0.f);
+    project::EmplaceOrReplace<WorkspaceLights>(r, viewport, Defaults::WorkspaceLights);
+    project::EmplaceOrReplace<EnabledInteractionModes>(r, viewport);
+    project::EmplaceOrReplace<OrbitToActive>(r, viewport);
+    project::EmplaceOrReplace<TransformGizmoState>(r, viewport);
+    physics::ApplySimulationSettings(r, project::EmplaceOrReplace<PhysicsSimulationSettings>(r, viewport));
 
-    r.emplace_or_replace<StudioEnvironment>(viewport, std::string{"forest"});
+    project::EmplaceOrReplace<StudioEnvironment>(r, viewport, std::string{"forest"});
 
     for (const auto &handler : r.ctx().get<SceneSetupHandlers>().Handlers) handler(r, viewport);
 }
@@ -266,7 +250,7 @@ void AddDefaultSceneContent(entt::registry &r) {
     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
     const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(default_shape), .FlatShaded = true});
     const auto [mesh_entity, _] = ::AddMesh(r, created.StoreId, MeshInstanceCreateInfo{.Name = ToString(default_shape)});
-    r.emplace<PrimitiveShape>(mesh_entity, default_shape);
+    project::Emplace<PrimitiveShape>(r, mesh_entity, default_shape);
 
     // Match Blender's startup scene in its Z-up, negative-Y-forward frame.
     constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};
@@ -287,16 +271,7 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     physics::Clear(r);
     ClearMeshes(r, viewport);
 
-    // Restore the default world so reactive loading can rebuild imported lighting from restored source assets.
-    auto &environments = r.ctx().get<EnvironmentStore>();
-    if (environments.ImportedSceneWorld) {
-        auto &slots = r.ctx().get<mtl::BindlessSet>();
-        ReleaseCubeSamplerSlot(slots, environments.ImportedSceneWorld->DiffuseEnv.SamplerSlot);
-        ReleaseCubeSamplerSlot(slots, environments.ImportedSceneWorld->SpecularEnv.SamplerSlot);
-        environments.ImportedSceneWorld.reset();
-        environments.SceneWorldRotation = mat3{1.f};
-        environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
-    }
+    ResetImportedEnvironment(r);
 
     // Reset imported materials explicitly because bone visualization keeps skinned-scene mesh storage alive.
     ResetImportedTexturesAndMaterials(r);
@@ -305,11 +280,11 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     r.ctx().get<GpuBuffers>().Lights.SetCount(0);
 
     // Destroy instances before the buffer entities they reference.
-    for (const auto e : r.view<RenderInstance>() | to<std::vector>()) r.destroy(e);
+    for (const auto e : r.view<RenderInstance>() | to<std::vector>()) project::Destroy(r, e);
     for (const auto e : r.view<entt::entity>() | to<std::vector>()) {
-        if (e != viewport) r.destroy(e);
+        if (e != viewport) project::Destroy(r, e);
     }
-    r.destroy(viewport);
+    project::Destroy(r, viewport);
     r.ctx().get<ObjectIdCounter>() = {};
 
     // Reset domain caches keyed by the destroyed entities' ids, before the allocator reset lets the next scene reuse them.
@@ -319,15 +294,14 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
 
     // Reset ordered allocators so scene replay reproduces entity IDs and GPU handles.
     // Bindless allocation is order-independent and requires no reset.
-    r.storage<entt::entity>().clear();
-    r.storage<entt::entity>().start_from(entt::entity{0});
+    project::Reset(r);
     r.ctx().get<MeshStore>().Clear();
     r.ctx().get<GpuBuffers>().ResetSceneArenas();
     r.ctx().get<GpuSceneState>() = {};
     // Disable occlusion until the new scene has produced a depth pyramid.
     if (auto &resources = r.ctx().get<Pipelines>().Main.Resources) resources->DepthPyramidValid = false;
 
-    [[maybe_unused]] const auto recreated = r.create();
+    [[maybe_unused]] const auto recreated = project::Create(r);
     assert(recreated == viewport);
     SetupScene(r, viewport);
 }
@@ -338,24 +312,24 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     r.ctx().erase<FrameState>();
     r.ctx().erase<PendingRenderRequest>();
     r.ctx().erase<GpuSceneState>();
-    r.clear<Mesh>();
+    project::Clear<Mesh>(r);
     r.ctx().erase<std::vector<ComponentEventHandler>>();
     r.ctx().erase<EntityDestroyTracker>();
     physics::Deinit(r);
     r.ctx().erase<MeshPipelines>();
     r.ctx().erase<Pipelines>();
-    if (r.valid(viewport)) r.destroy(viewport);
+    if (r.valid(viewport)) project::Destroy(r, viewport);
     TearDownStoreCtx(r);
 }
 
 void PresentViewport(entt::registry &r, entt::entity viewport) {
+    ProcessComponentEvents(r, viewport, EventPass::Settle);
+    if (!ViewportImageReady(r)) return;
     if (MotionBlurActive(r, viewport)) {
-        ProcessComponentEvents(r, viewport);
-        if (!ViewportImageReady(r)) return;
         RenderMotionBlurredFrame(r, viewport);
         r.ctx().get<FrameState>().MotionBlurred = true;
     } else {
-        AdvanceViewport(r, viewport, RenderPhase::Full);
+        RecordAndSubmitFrame(r, viewport, RequestedSceneUpdate(TakeRenderRequest(r)));
+        WaitForRender(r);
     }
 }
-void PrepareViewport(entt::registry &r, entt::entity viewport) { AdvanceViewport(r, viewport, RenderPhase::Prepare); }

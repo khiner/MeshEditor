@@ -1,1 +1,1 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/MorphPrimitivesTest/glTF-Draco/MorphPrimitivesTest.gltf': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/MorphPrimitivesTest/glTF-Draco/MorphPrimitivesTest.gltf': Missing required extensions: KHR_draco_mesh_compression
+Error loading glTF file 'asset:/5c04d6b5189de8ebe5c514a9bf4f3d72/MorphPrimitivesTest.gltf': Missing required extensions: KHR_draco_mesh_compression

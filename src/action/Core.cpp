@@ -2,6 +2,7 @@
 #include "Variant.h"
 #include "action/Dispatch.h"
 #include "action/ScopeResolve.h"
+#include "project/Registry.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 
@@ -36,7 +37,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Core &action) {
         overloaded{
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
             [&](const SetTag &a) { ApplyTagScoped(r, viewport, a.Scope, a.Entity, a.TagType, a.Present); },
-            [&](const DestroyEntity &a) { r.destroy(a.Entity); },
+            [&](const DestroyEntity &a) { project::Destroy(r, a.Entity); },
         },
         action
     );

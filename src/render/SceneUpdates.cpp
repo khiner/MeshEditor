@@ -8,6 +8,7 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "object/PendingSync.h"
+#include "project/Registry.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/MeshBuffers.h"
@@ -240,7 +241,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
             }
             if (shift > 0) ri.BufferIndex -= shift;
         }
-        r.remove<PendingHide>(buffer_entity);
+        project::Remove<PendingHide>(r, buffer_entity);
     }
 
     // Return inserted instances so callers can write WorldTransform before submission.
@@ -265,7 +266,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
         const uint32_t n = entities.size();
         // Defer ModelsBuffer creation until its initial capacity is known.
         if (!r.all_of<ModelsBuffer>(buffer_entity)) {
-            r.emplace<ModelsBuffer>(buffer_entity, ModelsBuffer{buffers.Instances.Allocate(n), 0});
+            project::Emplace<ModelsBuffer>(r, buffer_entity, ModelsBuffer{buffers.Instances.Allocate(n), 0});
         }
         auto &mb = r.get<ModelsBuffer>(buffer_entity);
         const auto new_total = mb.InstanceCount + n;

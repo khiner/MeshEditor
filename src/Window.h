@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 struct TabSelection {
@@ -29,6 +30,12 @@ struct Window {
     bool Visible{true};
 };
 
+struct HistoryWindow : Window {
+    bool ValidateRequested{false};
+    uint64_t TreeRevision{UINT64_MAX};
+    std::vector<int> Rows{};
+};
+
 struct WindowsState {
     Window
         SceneControls{"Scene controls"},
@@ -38,6 +45,8 @@ struct WindowsState {
         ImSpinnerDemo{"ImSpinner Demo", false},
         ImPlotDemo{"ImPlot Demo", false},
         Debug{"Debug", false};
+    HistoryWindow History{{"History"}};
+    std::string PendingIni;
     std::vector<TabSelection> PendingTabs;
     std::vector<PendingWindowState> PendingWindows;
     bool LayoutLoaded{false};
@@ -51,6 +60,7 @@ struct WindowVisibility {
     bool ImSpinnerDemo{false};
     bool ImPlotDemo{false};
     bool Debug{false};
+    bool History{true};
 };
 
 inline WindowVisibility GetWindowVisibility(const WindowsState &windows) {
@@ -62,6 +72,7 @@ inline WindowVisibility GetWindowVisibility(const WindowsState &windows) {
         windows.ImSpinnerDemo.Visible,
         windows.ImPlotDemo.Visible,
         windows.Debug.Visible,
+        windows.History.Visible,
     };
 }
 
@@ -73,4 +84,5 @@ inline void SetWindowVisibility(WindowsState &windows, const WindowVisibility &v
     windows.ImSpinnerDemo.Visible = visibility.ImSpinnerDemo;
     windows.ImPlotDemo.Visible = visibility.ImPlotDemo;
     windows.Debug.Visible = visibility.Debug;
+    windows.History.Visible = visibility.History;
 }

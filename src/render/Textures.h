@@ -7,6 +7,7 @@
 #include "metal/Shader.h"
 #include "numeric/mat3.h"
 
+#include <entt/entity/fwd.hpp>
 #include <expected>
 #include <filesystem>
 #include <variant>
@@ -187,8 +188,9 @@ std::vector<std::byte> ReadbackImageRgba8(const mtl::Context &, const mtl::Textu
 // Synchronously read mip 0 of an RGBA8 texture into host memory.
 std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(const mtl::Context &, const TextureEntry &);
 
-std::expected<TextureEntry, std::string> MaterializeTextureEntry(const mtl::Context &, TextureUploadBatch &, mtl::BindlessSet &, const PendingTextureUpload &, const std::vector<gltf::Image> &, float max_anisotropy);
-std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(const mtl::Context &, mtl::BindlessSet &, const PendingEnvironmentImport &, const std::vector<gltf::Image> &);
+std::expected<TextureEntry, std::string> MaterializeTextureEntry(const entt::registry &, TextureUploadBatch &, mtl::BindlessSet &, const PendingTextureUpload &, const std::vector<gltf::Image> &, float max_anisotropy);
+std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(const entt::registry &, mtl::BindlessSet &, const PendingEnvironmentImport &, const std::vector<gltf::Image> &);
+void ResetImportedEnvironment(entt::registry &);
 EnvironmentPrefiltered CreateIblFromHdri(
     const mtl::Context &, mtl::BindlessSet &,
     const IblPrefilterPipelines &, const std::filesystem::path &, std::string

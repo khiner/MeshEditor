@@ -3,6 +3,7 @@
 #include "mesh/Mesh.h"
 #include "mesh/Primitives.h"
 #include "physics/PhysicsTypes.h"
+#include "project/Registry.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include <entt/entity/registry.hpp>
@@ -113,7 +114,7 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
         );
     }
 
-    r.patch<ColliderShape>(e, [&](ColliderShape &x) {
+    project::Patch<ColliderShape>(r, e, [&](ColliderShape &x) {
         x.Shape = std::move(shape);
         x.MeshEntity = IsMeshBackedShape(x.Shape) ? mesh_entity : null_entity;
         x.LocalOffset = local_offset;

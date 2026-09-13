@@ -1,10 +1,14 @@
 #include "render/RenderStores.h"
 #include "animation/AnimationTimeline.h"
+#include "animation/MorphWeightState.h"
+#include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "metal/Bindless.h"
 #include "object/ObjectComponents.h"
 #include "object/PendingSync.h"
+#include "project/Registry.h"
+#include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
@@ -26,22 +30,29 @@ namespace {
 template<typename Handle>
 void EmplaceMeshBuffers(entt::registry &r, entt::entity e) {
     const auto &meshes = r.ctx().get<const MeshStore>();
-    r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(r.get<const Handle>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
+    project::Emplace<MeshBuffers>(r, e, meshes.GetVerticesRange(r.get<const Handle>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
 }
 
 void EmplaceMeshShadingSummary(entt::registry &r, entt::entity e) {
     const auto &meshes = r.ctx().get<const MeshStore>();
     const auto [any, all] = meshes.GetFaceSharpnessSummary(r.get<const MeshHandle>(e).StoreId);
-    r.emplace_or_replace<MeshShadingSummary>(e, any, all);
+    project::EmplaceOrReplace<MeshShadingSummary>(r, e, any, all);
 }
 } // namespace
 void RegisterRenderStoreHandlers(entt::registry &r) {
+    r.on_destroy<ArmaturePoseState>().connect<[](entt::registry &r, entt::entity e) {
+        auto &buffer = r.ctx().get<GpuBuffers>().ArmatureDeformBuffer;
+        for (const auto range : r.get<const ArmaturePoseState>(e).GpuDeformRanges) buffer.Release(range);
+    }>();
+    r.on_destroy<MorphWeightGpuRange>().connect<[](entt::registry &r, entt::entity e) {
+        r.ctx().get<GpuBuffers>().MorphWeightBuffer.Release(r.get<const MorphWeightGpuRange>(e).Weights);
+    }>();
     r.on_destroy<MeshHandle>().connect<&entt::registry::remove<MeshShadingSummary>>();
     // Assign stable nonzero object identifiers to new render instances.
     r.on_construct<RenderInstance>().connect<[](entt::registry &r, entt::entity e) {
         if (r.get<const RenderInstance>(e).ObjectId != 0) return;
         if (auto *counter = r.ctx().find<ObjectIdCounter>()) {
-            r.patch<RenderInstance>(e, [counter](auto &ri) { ri.ObjectId = counter->Next++; });
+            project::Patch<RenderInstance>(r, e, [counter](auto &ri) { ri.ObjectId = counter->Next++; });
         }
     }>();
     r.on_destroy<RenderInstance>().connect<[](entt::registry &r, entt::entity e) {
@@ -51,14 +62,14 @@ void RegisterRenderStoreHandlers(entt::registry &r) {
             buffers->MeshletInstanceCount -= ri.MeshletCount;
         }
         if (ri.BufferIndex == UINT32_MAX) return;
-        r.get_or_emplace<PendingHide>(ri.Entity).BufferIndices.push_back(ri.BufferIndex);
+        project::GetOrEmplace<PendingHide>(r, ri.Entity).BufferIndices.push_back(ri.BufferIndex);
     }>();
     // Keep RenderInstance synchronized with Instance and Hidden regardless of snapshot insertion order.
     r.on_construct<Instance>().connect<[](entt::registry &r, entt::entity e) {
-        if (!r.all_of<Hidden>(e) && !r.all_of<RenderInstance>(e)) r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX, 0u);
+        if (!r.all_of<Hidden>(e) && !r.all_of<RenderInstance>(e)) project::Emplace<RenderInstance>(r, e, r.get<Instance>(e).Entity, UINT32_MAX, 0u);
     }>();
     r.on_construct<Hidden>().connect<[](entt::registry &r, entt::entity e) {
-        if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
+        if (r.all_of<RenderInstance>(e)) project::Remove<RenderInstance>(r, e);
     }>();
     r.on_construct<MeshHandle>().connect<&EmplaceMeshBuffers<MeshHandle>>();
     r.on_construct<MeshHandle>().connect<&EmplaceMeshShadingSummary>();
@@ -83,10 +94,10 @@ void InitDefaultMaterial(entt::registry &r, entt::entity viewport) {
         .DoubleSided = 0u,
         .BaseColorTexture = {.Slot = textures.WhiteTextureSlot},
     });
-    materials.Names.emplace_back("Default");
+    materials.AppendNames({"Default"});
 
     constexpr std::array<std::byte, 4> WhitePixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
-    auto &pending = r.get_or_emplace<PendingTextureUploads>(viewport);
+    auto &pending = project::GetOrEmplace<PendingTextureUploads>(r, viewport);
     pending.Items.emplace_back(PendingTextureUpload{
         .SamplerSlot = textures.WhiteTextureSlot,
         .Source = PendingTextureUpload::RawPixels{.Pixels = std::vector<std::byte>(WhitePixels.begin(), WhitePixels.end()), .Width = 1, .Height = 1},

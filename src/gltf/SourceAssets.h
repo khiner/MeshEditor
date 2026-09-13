@@ -56,10 +56,11 @@ struct TextureTransformMeta {
 
 // Retains per-material source data unavailable from buffers.Materials.
 struct MaterialSourceMeta {
-    std::optional<float> EmissiveStrength;
+    std::optional<float> EmissiveStrength{};
     std::array<TextureTransformMeta, 5> BaseSlotMeta{}; // BaseColor..Emissive
     std::array<uint32_t, MTS_Count> TextureSlots = [] { std::array<uint32_t, MTS_Count> a; a.fill(InvalidSlot); return a; }();
     bool NameWasEmpty{};
+    bool ImplicitDefault{}; // glTF's material for primitives without a material reference.
 
     enum ExtensionBit : uint16_t {
         ExtIor = 1u << 0,

@@ -67,6 +67,7 @@ void SubmitChunk(entt::registry &r, std::span<const WeldTarget> chunk, WeldBuffe
     std::vector<uvec2> table_tiles, vertex_tiles, block_tiles, corner_tiles;
     uint32_t scratch_words = 0;
     for (const auto &target : chunk) {
+        meshes.CaptureWeldWrite(target.StoreId);
         const auto vertices = meshes.GetVerticesRange(target.StoreId);
         const auto corners = meshes.GetFaceCornerRange(target.StoreId);
         const auto channels = Channels(meshes, target);

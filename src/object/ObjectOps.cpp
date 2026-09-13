@@ -1,5 +1,7 @@
 #include "object/ObjectOps.h"
 #include "assets/MeshImport.h"
+#include "project/Assets.h"
+#include "project/Registry.h"
 
 #include "CameraTypes.h"
 #include "Path.h"
@@ -42,20 +44,20 @@ bool AnyComponentRefersTo(entt::registry &r, F C::*field, entt::entity target) {
 
 void DestroyArmatureData(entt::registry &r, entt::entity arm_obj_entity) {
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &arm = r.get<ArmatureObject>(arm_obj_entity);
+    auto &arm = project::Mutable<ArmatureObject>(r, arm_obj_entity);
     if (arm.JointEntity != entt::null) {
         if (auto *mb = r.try_get<MeshBuffers>(arm.JointEntity)) ReleaseMeshBuffers(r, *mb);
         if (auto *ref = r.try_get<VertexStoreId>(arm.JointEntity)) meshes.Release(ref->StoreId);
         if (auto *models = r.try_get<ModelsBuffer>(arm.JointEntity)) FreeInstanceRange(r, models->InstanceRange);
-        r.remove<MeshBuffers, VertexStoreId, ModelsBuffer, PendingHide>(arm.JointEntity);
-        r.destroy(arm.JointEntity);
+        project::Remove<MeshBuffers, VertexStoreId, ModelsBuffer, PendingHide>(r, arm.JointEntity);
+        project::Destroy(r, arm.JointEntity);
         arm.JointEntity = entt::null;
     }
     if (auto *mb = r.try_get<MeshBuffers>(arm_obj_entity)) ReleaseMeshBuffers(r, *mb);
     if (auto *adj = r.try_get<BoneAdjacencyIndices>(arm_obj_entity)) ReleaseEdgeIndices(r, adj->Indices);
     if (auto *ref = r.try_get<VertexStoreId>(arm_obj_entity)) meshes.Release(ref->StoreId);
     if (auto *models = r.try_get<ModelsBuffer>(arm_obj_entity)) FreeInstanceRange(r, models->InstanceRange);
-    r.remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices, PendingHide>(arm_obj_entity);
+    project::Remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices, PendingHide>(r, arm_obj_entity);
 }
 
 void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
@@ -84,21 +86,21 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
 
     if (const auto *light_index = r.try_get<LightIndex>(e)) {
-        r.get_or_emplace<PendingLightRemovals>(viewport).Indices.emplace_back(light_index->Value);
+        project::GetOrEmplace<PendingLightRemovals>(r, viewport).Indices.emplace_back(light_index->Value);
     }
 
     if (r.all_of<ArmatureObject>(e)) {
         auto &arm = r.get<ArmatureObject>(e);
         auto destroy_visible = [&](entt::entity entity) {
             Hide(r, entity);
-            r.destroy(entity);
+            project::Destroy(r, entity);
         };
         for (const auto bone_entity : arm.BoneEntities) {
             if (auto *joints = r.try_get<BoneJointEntities>(bone_entity)) {
                 if (joints->Head != entt::null) destroy_visible(joints->Head);
                 if (joints->Tail != entt::null) destroy_visible(joints->Tail);
             }
-            r.remove<BoneJointEntities>(bone_entity);
+            project::Remove<BoneJointEntities>(r, bone_entity);
         }
 
         // Destroy children before parents (reverse of topological order) so ClearParent can access the parent's SceneNode to unlink the child.
@@ -109,14 +111,14 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
         DestroyArmatureData(r, e);
     }
 
-    r.destroy(e);
+    project::Destroy(r, e);
 
     if (r.valid(buffer_entity)) {
         if (!AnyComponentRefersTo(r, &Instance::Entity, buffer_entity)) {
             if (auto *mesh_buffers = r.try_get<MeshBuffers>(buffer_entity)) ReleaseMeshBuffers(r, *mesh_buffers);
             if (const auto *vs = r.try_get<VertexStoreId>(buffer_entity)) meshes.Release(vs->StoreId);
             if (const auto *models = r.try_get<ModelsBuffer>(buffer_entity)) FreeInstanceRange(r, models->InstanceRange);
-            r.destroy(buffer_entity);
+            project::Destroy(r, buffer_entity);
         }
     }
     for (const auto armature_data_entity : armature_data_entities) {
@@ -124,7 +126,7 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
             const bool is_used = AnyComponentRefersTo(r, &ArmatureObject::Entity, armature_data_entity) ||
                 AnyComponentRefersTo(r, &ArmatureModifier::ArmatureEntity, armature_data_entity) ||
                 AnyComponentRefersTo(r, &BoneAttachment::ArmatureEntity, armature_data_entity);
-            if (!is_used) r.destroy(armature_data_entity);
+            if (!is_used) project::Destroy(r, armature_data_entity);
         }
     }
 
@@ -132,7 +134,7 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
     // Clear the persistent texture manifest at the same time.
     if (r.view<Instance>().empty()) {
         ResetImportedTexturesAndMaterials(r);
-        r.remove<MaterializedTextures>(viewport);
+        project::Remove<MaterializedTextures>(r, viewport);
     }
 }
 
@@ -140,19 +142,20 @@ void ClearMeshes(entt::registry &r, entt::entity viewport) {
     for (const auto e : r.view<Instance>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(r, viewport, e);
 }
 
-std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &r, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
-    auto result = ReadMeshFile(path);
+std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &r, entt::entity viewport, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
+    const auto stored_path = project::ResolveAsset(r, path);
+    auto result = ReadMeshFile(stored_path);
     if (!result) throw std::runtime_error(result.error());
 
     // `deduplicate` merges vertices identical in every vertex-domain channel, keeping per-corner UVs and normals.
     const auto created = CreateMesh(r, {.Data = std::move(result->Mesh), .Attrs = std::move(result->Attrs), .Primitives = std::move(result->Primitives), .Weld = deduplicate});
-    if (!result->Materials.empty()) ImportObjPlyMaterials(r, result->Materials, path, created.StoreId);
+    if (!result->Materials.empty()) ImportObjPlyMaterials(r, viewport, result->Materials, stored_path, created.StoreId);
 
     const auto entities = ::AddMesh(r, created.StoreId, std::move(info));
-    r.emplace<Path>(entities.first, path);
+    project::Emplace<Path>(r, entities.first, path);
     return entities;
 }
 
 void RequestImportMesh(entt::registry &r, entt::entity viewport, std::filesystem::path path, MeshInstanceCreateInfo info) {
-    r.emplace_or_replace<PendingImportMesh>(viewport, std::move(path), std::move(info));
+    project::EmplaceOrReplace<PendingImportMesh>(r, viewport, std::move(path), std::move(info));
 }

@@ -10,10 +10,10 @@ void InitAudioSystem(entt::registry &);
 // Destroy the modal audio context after any output device has stopped.
 void DeinitAudioSystem(entt::registry &);
 bool HasPendingModalSolves(const entt::registry &);
+void CancelModalSolves(entt::registry &);
 void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 
-// Apply a modal solve result file (relative to ModalModelsDir()) to the sound entity.
-void ApplyModalModel(entt::registry &, entt::entity sound_entity, const std::filesystem::path &relative_path);
+void ApplyModalModel(entt::registry &, entt::entity sound_entity, const std::filesystem::path &);
 
 // Assign sample[i] to mesh_vertices[i]. Used by RealImpact initial load and mic swap.
 // Unreferenced samples are released by the component handler.

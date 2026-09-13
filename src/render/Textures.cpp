@@ -7,6 +7,7 @@
 #include "metal/Bindless.h"
 #include "metal/MetalCpp.h"
 #include "metal/RenderTarget.h"
+#include "project/Assets.h"
 #include "render/GpuBuffers.h"
 #include "render/IblPrefilterPipelines.h"
 #include "render/MaterialComponents.h"
@@ -243,6 +244,18 @@ void ReleaseCubeSamplerSlot(mtl::BindlessSet &slots, uint32_t sampler_slot) {
     slots.Release({SlotType::CubeSampler, sampler_slot});
 }
 
+void ResetImportedEnvironment(entt::registry &r) {
+    auto &env = r.ctx().get<EnvironmentStore>();
+    if (env.ImportedSceneWorld) {
+        auto &slots = r.ctx().get<mtl::BindlessSet>();
+        ReleaseCubeSamplerSlot(slots, env.ImportedSceneWorld->DiffuseEnv.SamplerSlot);
+        ReleaseCubeSamplerSlot(slots, env.ImportedSceneWorld->SpecularEnv.SamplerSlot);
+        env.ImportedSceneWorld.reset();
+    }
+    env.SceneWorldRotation = mat3{1.f};
+    env.SceneWorld = {.Ibl = MakeIblSamplers(env.EmptySceneWorld, env), .Name = env.EmptySceneWorld.Name};
+}
+
 void ReleaseEnvironmentSamplerSlots(mtl::BindlessSet &slots, const EnvironmentStore &environments) {
     for (const auto &hdri : environments.Hdris) {
         if (hdri.Prefiltered) {
@@ -322,9 +335,10 @@ std::pair<uint32_t, uint32_t> AllocateIblCubeSlots(mtl::BindlessSet &slots) {
 }
 
 std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
-    const mtl::Context &ctx, mtl::BindlessSet &slots,
+    const entt::registry &r, mtl::BindlessSet &slots,
     const PendingEnvironmentImport &pending, const std::vector<gltf::Image> &images
 ) {
+    const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &ibl = pending.Source;
     std::vector<CubemapMipFacesF32> specular_mips;
     specular_mips.reserve(ibl.SpecularImageIndicesByMip.size());
@@ -336,8 +350,16 @@ std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
             if (image_index >= images.size()) return std::unexpected{std::format("EXT_lights_image_based '{}' references image index {} (out of range).", ibl.Name, image_index)};
 
             const auto &src_image = images[image_index];
+            std::vector<std::byte> loaded;
+            std::span<const std::byte> bytes = src_image.Bytes;
+            if (bytes.empty()) {
+                auto file = File::Read(project::ResolveAsset(r, src_image.SourcePath));
+                if (!file) return std::unexpected{file.error()};
+                loaded = std::move(*file);
+                bytes = loaded;
+            }
             auto decoded = DecodeImageRgba32f(
-                src_image.Bytes,
+                bytes,
                 src_image.Name.empty() ? std::format("Image{}", image_index) : src_image.Name
             );
             if (!decoded) return std::unexpected{std::format("Failed to decode EXT_lights_image_based '{}' image {}: {}", ibl.Name, image_index, decoded.error())};
@@ -530,10 +552,11 @@ std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(const mt
 }
 
 std::expected<TextureEntry, std::string> MaterializeTextureEntry(
-    const mtl::Context &ctx,
+    const entt::registry &r,
     TextureUploadBatch &batch, mtl::BindlessSet &slots,
     const PendingTextureUpload &item, const std::vector<gltf::Image> &gltf_images, float max_anisotropy
 ) {
+    const auto &ctx = r.ctx().get<const mtl::Context>();
     if (const auto *raw = std::get_if<PendingTextureUpload::RawPixels>(&item.Source)) {
         return CreateTextureEntryAtSlot(
             ctx, batch, slots, item.SamplerSlot,
@@ -546,8 +569,16 @@ std::expected<TextureEntry, std::string> MaterializeTextureEntry(
         return std::unexpected{std::format("PendingTextureUpload '{}' references gltf image index {} (out of range; {} images).", item.Name, ref.ImageIndex, gltf_images.size())};
     }
     const auto &source = gltf_images[ref.ImageIndex];
+    std::vector<std::byte> loaded;
+    std::span<const std::byte> bytes = source.Bytes;
+    if (bytes.empty()) {
+        auto file = File::Read(project::ResolveAsset(r, source.SourcePath));
+        if (!file) return std::unexpected{file.error()};
+        loaded = std::move(*file);
+        bytes = loaded;
+    }
     if (source.MimeType != gltf::MimeType::KTX2) {
-        auto decoded = DecodeImageRgba8(source.Bytes, source.Name);
+        auto decoded = DecodeImageRgba8(bytes, source.Name);
         if (!decoded) return std::unexpected{std::move(decoded.error())};
         auto entry = CreateTextureEntryAtSlot(
             ctx, batch, slots, item.SamplerSlot,
@@ -561,7 +592,7 @@ std::expected<TextureEntry, std::string> MaterializeTextureEntry(
     basist::basisu_transcoder_init();
 
     basist::ktx2_transcoder transcoder;
-    if (!transcoder.init(source.Bytes.data(), uint32_t(source.Bytes.size()))) return std::unexpected{std::format("Failed to parse KTX2 image '{}'.", source.Name)};
+    if (!transcoder.init(bytes.data(), uint32_t(bytes.size()))) return std::unexpected{std::format("Failed to parse KTX2 image '{}'.", source.Name)};
     if (!transcoder.start_transcoding()) return std::unexpected{std::format("Failed to start transcoding KTX2 image '{}'.", source.Name)};
 
     const auto [texture_format, basis_fmt] = SelectKtx2Format(ctx, item.ColorSpace);
@@ -626,9 +657,8 @@ HdriRefs GetHdriRefs(entt::registry &r) {
     return refs;
 }
 
-void ResetImportedTexturesAndMaterials(entt::registry &r) {
+void ReleaseImportedTextures(entt::registry &r) {
     auto &slots = r.ctx().get<mtl::BindlessSet>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
     auto &textures = r.ctx().get<TextureStore>();
     // Index 0 is the default white texture (permanent); imported textures start at index 1.
     if (textures.Textures.size() > 1) {
@@ -636,7 +666,11 @@ void ResetImportedTexturesAndMaterials(entt::registry &r) {
         textures.Textures.erase(textures.Textures.begin() + 1, textures.Textures.end());
     }
     textures.WhiteTextureSlot = textures.Textures.empty() ? InvalidSlot : textures.Textures.front().SamplerSlot;
+}
 
+void ResetImportedTexturesAndMaterials(entt::registry &r) {
+    ReleaseImportedTextures(r);
+    auto &buffers = r.ctx().get<GpuBuffers>();
     if (buffers.Materials.Count() > 1) buffers.Materials.SetCount(1u);
-    if (auto &ms = r.ctx().get<MaterialStore>(); ms.Names.size() > 1) ms.Names.erase(ms.Names.begin() + 1, ms.Names.end());
+    if (auto &ms = r.ctx().get<MaterialStore>(); ms.Names.size() > 1) ms.ResizeNames(1);
 }

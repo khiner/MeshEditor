@@ -1,4 +1,5 @@
 #include "viewport/ViewCameraOps.h"
+#include "project/Registry.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -14,14 +15,14 @@ void SetLookThrough(entt::registry &r, entt::entity viewport, entt::entity targe
 
     // Preserve the saved view across camera switches. Only capture fresh on first entry.
     auto saved = previous != entt::null ? r.get<LookingThrough>(previous).SavedViewCamera : r.get<ViewCamera>(viewport);
-    if (previous != entt::null) r.remove<LookingThrough>(previous);
-    r.emplace<LookingThrough>(target, std::move(saved));
+    if (previous != entt::null) project::Remove<LookingThrough>(r, previous);
+    project::Emplace<LookingThrough>(r, target, std::move(saved));
 }
 
 void ClearLookThrough(entt::registry &r, entt::entity viewport) {
     if (const auto camera = LookThroughCameraEntity(r); camera != entt::null) {
-        r.replace<ViewCamera>(viewport, r.get<LookingThrough>(camera).SavedViewCamera);
-        r.remove<LookingThrough>(camera);
+        project::Replace<ViewCamera>(r, viewport, r.get<LookingThrough>(camera).SavedViewCamera);
+        project::Remove<LookingThrough>(r, camera);
     }
 }
 
@@ -32,8 +33,8 @@ ViewCameraState GetViewCameraState(const entt::registry &r, entt::entity viewpor
 }
 
 void SetViewCameraState(entt::registry &r, entt::entity viewport, ViewCameraState state) {
-    r.emplace_or_replace<ViewCamera>(viewport, std::move(state.Active));
+    project::EmplaceOrReplace<ViewCamera>(r, viewport, std::move(state.Active));
     if (state.LookThroughSaved) {
-        if (const auto e = LookThroughCameraEntity(r); e != entt::null) r.replace<LookingThrough>(e, LookingThrough{std::move(*state.LookThroughSaved)});
+        if (const auto e = LookThroughCameraEntity(r); e != entt::null) project::Replace<LookingThrough>(r, e, LookingThrough{std::move(*state.LookThroughSaved)});
     }
 }

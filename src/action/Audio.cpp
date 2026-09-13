@@ -5,6 +5,8 @@
 #include "audio/RealImpact.h"
 #include "audio/SoundVertices.h"
 #include "editor/AudioIntegration.h"
+#include "project/Assets.h"
+#include "project/Registry.h"
 #include "render/Instance.h"
 #include "scene/Entity.h"
 #include <entt/entity/registry.hpp>
@@ -16,11 +18,11 @@ template<> AcousticMaterial Default<AcousticMaterial>() { return materials::acou
 template<> ContactSurface Default<ContactSurface>() { return WithPreset({}, surfaces::acoustic::Default); }
 
 template<typename T> void Patch(entt::registry &r, entt::entity e, auto edit) {
-    if (r.all_of<T>(e)) r.patch<T>(e, edit);
+    if (r.all_of<T>(e)) project::Patch<T>(r, e, edit);
     else {
         auto value = Default<T>();
         edit(value);
-        r.emplace<T>(e, std::move(value));
+        project::Emplace<T>(r, e, std::move(value));
     }
 }
 } // namespace
@@ -29,35 +31,35 @@ void Apply(entt::registry &r, entt::entity, const Action &action) {
     std::visit(
         overloaded{
             [&](const ApplyExciteImpact &a) {
-                r.emplace_or_replace<MeshActiveElement>(r.get<Instance>(a.InstanceEntity).Entity, a.VertexIndex);
-                r.emplace_or_replace<VertexForce>(a.InstanceEntity, a.VertexIndex, 1.f);
+                project::EmplaceOrReplace<MeshActiveElement>(r, r.get<Instance>(a.InstanceEntity).Entity, a.VertexIndex);
+                project::EmplaceOrReplace<VertexForce>(r, a.InstanceEntity, a.VertexIndex, 1.f);
             },
-            [&](ClearExciteImpacts) { r.clear<VertexForce>(); },
+            [&](ClearExciteImpacts) { project::Clear<VertexForce>(r); },
             [&](const SetModel &a) { ::SetModel(r, FindActiveEntity(r), a.Model); },
             [&](const SetExciteVertex &a) {
                 const auto e = FindActiveEntity(r);
-                r.remove<VertexForce>(e);
-                r.emplace_or_replace<MeshActiveElement>(GetActiveMeshEntity(r), a.MeshVertex);
+                project::Remove<VertexForce>(r, e);
+                project::EmplaceOrReplace<MeshActiveElement>(r, GetActiveMeshEntity(r), a.MeshVertex);
                 ::Stop(r, e);
             },
             [&](const StartExcite &a) {
                 const auto e = FindActiveEntity(r);
-                r.remove<VertexForce>(e);
-                r.emplace<VertexForce>(e, a.Vertex, 1.f);
+                project::Remove<VertexForce>(r, e);
+                project::Emplace<VertexForce>(r, e, a.Vertex, 1.f);
             },
-            [&](StopExcite) { r.remove<VertexForce>(FindActiveEntity(r)); },
+            [&](StopExcite) { project::Remove<VertexForce>(r, FindActiveEntity(r)); },
             [&](DeleteSoundObject) { RemoveAudioComponents(r, FindActiveEntity(r)); },
-            [&](const StartRecording &a) { r.emplace_or_replace<Recording>(FindActiveEntity(r), a.FrameCount); },
+            [&](const StartRecording &a) { project::EmplaceOrReplace<Recording>(r, FindActiveEntity(r), a.FrameCount); },
             [&](EnsureModalSettings) {
                 const auto e = FindActiveEntity(r);
-                if (!r.all_of<ModalSolveSettings>(e)) r.emplace<ModalSolveSettings>(e);
-                if (!r.all_of<AcousticMaterial>(e)) r.emplace<AcousticMaterial>(e, Default<AcousticMaterial>());
-                if (!r.all_of<ContactSurface>(e)) r.emplace<ContactSurface>(e, Default<ContactSurface>());
+                if (!r.all_of<ModalSolveSettings>(e)) project::Emplace<ModalSolveSettings>(r, e);
+                if (!r.all_of<AcousticMaterial>(e)) project::Emplace<AcousticMaterial>(r, e, Default<AcousticMaterial>());
+                if (!r.all_of<ContactSurface>(e)) project::Emplace<ContactSurface>(r, e, Default<ContactSurface>());
             },
             [&](const SetMaterialPreset &a) {
                 if (const auto *material = materials::acoustic::Find(a.Name)) {
-                    if (a.Striker) r.patch<Striker>(a.Entity, [&](auto &s) { s.Material = *material; });
-                    else r.emplace_or_replace<AcousticMaterial>(a.Entity, *material);
+                    if (a.Striker) project::Patch<Striker>(r, a.Entity, [&](auto &s) { s.Material = *material; });
+                    else project::EmplaceOrReplace<AcousticMaterial>(r, a.Entity, *material);
                 }
             },
             [&](const SetSurfacePreset &a) {
@@ -74,23 +76,24 @@ void Apply(entt::registry &r, entt::entity, const Action &action) {
             },
             [&](const ApplyModalModel &a) { ::ApplyModalModel(r, a.SoundEntity, a.Path); },
             [&](const AssignVertexSamples &a) {
-                auto frames = LoadAudioFrames(a.Path.string(), DeviceSampleRate(r));
+                auto frames = LoadAudioFrames(project::ResolveAsset(r, a.Path).string(), DeviceSampleRate(r));
                 if (!frames.empty()) ::AssignVertexSample(r, FindActiveEntity(r), *a.MeshVertices, a.Path, std::move(frames));
             },
             [&](const ActivateRealImpactMicrophone &a) {
-                const auto dir = r.get<const Path>(r.get<const Instance>(a.TargetSoundEntity).Entity).Value.parent_path();
-                const auto &vertex_indices = r.get<const RealImpactVertices>(a.TargetSoundEntity).Vertices;
-                const auto mic_index = r.get<const RealImpactMicrophone>(a.MicrophoneEntity).Index;
-                auto samples = RealImpact::LoadSamples(dir, mic_index);
-                if (!samples) {
-                    r.ctx().get<Errors>().Messages.push_back(std::move(samples.error()));
-                    return;
+                const auto &source = r.get<const RealImpactVertices>(a.TargetSoundEntity);
+                if (!source.Samples.empty()) {
+                    const auto mic_index = r.get<const RealImpactMicrophone>(a.MicrophoneEntity).Index;
+                    auto samples = RealImpact::LoadSamples(r, source.Samples, mic_index);
+                    if (!samples) {
+                        r.ctx().get<Errors>().Messages.push_back(std::move(samples.error()));
+                        return;
+                    }
+                    ::SetVertexSamples(r, a.TargetSoundEntity, source.Vertices, *samples);
                 }
-                ::SetVertexSamples(r, a.TargetSoundEntity, vertex_indices, *samples);
-                r.emplace_or_replace<RealImpactActiveMicrophone>(a.TargetSoundEntity, a.MicrophoneEntity);
+                project::EmplaceOrReplace<RealImpactActiveMicrophone>(r, a.TargetSoundEntity, a.MicrophoneEntity);
             },
             [&](const RemoveVertexSamples &a) { ::RemoveVertexSamples(r, FindActiveEntity(r), a.MeshVertices); },
-            [&]<typename T>(const Replace<T> &a) { r.emplace_or_replace<T>(a.Entity, a.Value); },
+            [&]<typename T>(const Replace<T> &a) { project::EmplaceOrReplace<T>(r, a.Entity, a.Value); },
         },
         action
     );

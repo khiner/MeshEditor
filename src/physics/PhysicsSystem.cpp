@@ -10,6 +10,7 @@
 #include "TransformMath.h"
 #include "mesh/Mesh.h"
 #include "metal/MetalContext.h"
+#include "project/Registry.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -257,9 +258,9 @@ void ClearContacts(PhysicsState &s, entt::registry &r) {
 
 void ClearSimulation(PhysicsState &s, entt::registry &r) {
     s.Clearing = true;
-    r.clear<PhysicsConstraintHandle>();
-    r.clear<PhysicsBodyHandle>();
-    r.clear<BodyPoseCache>();
+    project::Clear<PhysicsConstraintHandle>(r);
+    project::Clear<PhysicsBodyHandle>(r);
+    project::Clear<BodyPoseCache>(r);
     s.Clearing = false;
     s.Bodies.clear();
     s.Entities.clear();
@@ -358,8 +359,8 @@ void BuildBody(PhysicsState &s, entt::registry &r, entt::entity entity) {
     s.Bodies.emplace(entity, body);
     if (s.Entities.size() <= body.Body) s.Entities.resize(body.Body + 1, null_entity);
     s.Entities[body.Body] = entity;
-    r.emplace_or_replace<PhysicsBodyHandle>(entity, PhysicsBodyHandle{body.Body});
-    if (s.Input.Bodies.at(entity).Motion) r.emplace_or_replace<BodyPoseCache>(entity, BodyPoseCache{{physics::RbpNodePose(body.InitialPose, body.Frame)}});
+    project::EmplaceOrReplace<PhysicsBodyHandle>(r, entity, PhysicsBodyHandle{body.Body});
+    if (s.Input.Bodies.at(entity).Motion) project::EmplaceOrReplace<BodyPoseCache>(r, entity, BodyPoseCache{{physics::RbpNodePose(body.InitialPose, body.Frame)}});
 }
 
 void BuildJoint(PhysicsState &s, entt::registry &r, entt::entity entity) {
@@ -437,7 +438,7 @@ void BuildJoint(PhysicsState &s, entt::registry &r, entt::entity entity) {
     }
     const auto handle = world.AddJoint(desc);
     if (handle == rbp::NoIndex) throw std::runtime_error("RBP could not create a physics joint.");
-    r.emplace_or_replace<PhysicsConstraintHandle>(entity, PhysicsConstraintHandle{handle});
+    project::EmplaceOrReplace<PhysicsConstraintHandle>(r, entity, PhysicsConstraintHandle{handle});
 }
 
 void Rebuild(entt::registry &r) {
@@ -612,7 +613,7 @@ void StepSimulation(PhysicsState &s, entt::registry &r, float sim_dt, uint32_t s
 }
 
 void SyncBodyWorldTransform(entt::registry &r, entt::entity entity, const vec3 &pos, const quat &rot) {
-    r.patch<WorldTransform>(entity, [&](WorldTransform &t) { t.P = pos; t.R = rot; });
+    project::Patch<WorldTransform>(r, entity, [&](WorldTransform &t) { t.P = pos; t.R = rot; });
     for (const auto child : Children{&r, entity}) UpdateWorldTransformRecursive(r, child);
 }
 
@@ -631,13 +632,13 @@ void BakeFrame(entt::registry &r, entt::entity viewport, PhysicsState &s, uint32
 template<typename C>
 void ClearDanglingRefs(entt::registry &r, entt::entity deleted, entt::entity C::*field) {
     for (auto [e, c] : r.view<C>().each())
-        if (c.*field == deleted) r.patch<C>(e, [field](C &x) { x.*field = null_entity; });
+        if (c.*field == deleted) project::Patch<C>(r, e, [field](C &x) { x.*field = null_entity; });
 }
 
 template<typename C>
 void ClearDanglingRefs(entt::registry &r, entt::entity deleted, std::vector<entt::entity> C::*field) {
     for (auto [e, c] : r.view<C>().each())
-        if (std::ranges::contains(c.*field, deleted)) r.patch<C>(e, [field, deleted](C &x) { std::erase(x.*field, deleted); });
+        if (std::ranges::contains(c.*field, deleted)) project::Patch<C>(r, e, [field, deleted](C &x) { std::erase(x.*field, deleted); });
 }
 
 void UpdateSettings(entt::registry &r, entt::entity viewport, float fps) {
@@ -650,7 +651,7 @@ void UpdateSettings(entt::registry &r, entt::entity viewport, float fps) {
     s.Invalidate();
 }
 
-void ProcessChanges(entt::registry &r) {
+void ProcessChanges(entt::registry &r, EventPass) {
     auto &s = r.ctx().get<PhysicsState>();
     const auto any = [&]<typename... T> { return (... || !reactive<T>(r).empty()); };
     if (!std::exchange(s.InputDirty, false) && !any.operator()<changes::PhysicsShape, changes::PhysicsMotion, changes::PhysicsPose, changes::PhysicsMaterial, changes::PhysicsTrigger, changes::PhysicsJoint, changes::PhysicsMaterialDef, changes::CollisionSystemDef, changes::CollisionFilterDef, changes::PhysicsJointDef, changes::PhysicsGeometry, changes::PhysicsHierarchy>()) return;
@@ -668,7 +669,7 @@ void ProcessChanges(entt::registry &r) {
         }
     for (auto [entity, joint] : r.view<const PhysicsJoint>().each())
         if (joint.JointDefEntity != null_entity && !r.all_of<PhysicsJointDef>(joint.JointDefEntity))
-            r.patch<PhysicsJoint>(entity, [](auto &j) { j.JointDefEntity = null_entity; });
+            project::Patch<PhysicsJoint>(r, entity, [](auto &j) { j.JointDefEntity = null_entity; });
     UpdateMasks(s, r);
     auto input = ReadScene(s, r);
     if (input.Bodies.empty()) {
@@ -693,7 +694,7 @@ void ProcessChanges(entt::registry &r) {
     s.Invalidate();
     for (auto entity : r.view<const PhysicsConstraintHandle>()) {
         const auto it = input.Joints.find(entity);
-        if (it == input.Joints.end() || !IsActiveJoint(it->second)) r.remove<PhysicsConstraintHandle>(entity);
+        if (it == input.Joints.end() || !IsActiveJoint(it->second)) project::Remove<PhysicsConstraintHandle>(r, entity);
     }
     std::set<rbp::Index> reframed;
     const auto overflows = GeometryOverflows(*s.World);

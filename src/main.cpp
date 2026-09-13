@@ -1,4 +1,5 @@
 #include "Compress.h"
+#include "project/Registry.h"
 
 #include "File.h"
 #include "FileDialog.h"
@@ -11,13 +12,10 @@
 #include "VideoRecorder.h"
 #include "Window.h"
 #include "WorkspaceState.h"
-#include "action/ActionApply.h"
-#include "action/ActionIndex.h"
 #include "action/Build.h"
 #include "action/Emit.h"
 #include "action/Errors.h"
 #include "action/Io.h"
-#include "action/Log.h"
 #include "action/Selection.h"
 #include "action/View.h"
 #include "animation/AnimationData.h"
@@ -41,6 +39,9 @@
 #include "object/ObjectOps.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
+#include "project/HistoryUi.h"
+#include "project/Project.h"
+#include "project/Sessions.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
@@ -50,15 +51,15 @@
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
 #include "selection/SelectionComponents.h"
-#include "snapshot/ReplayTestFixture.h"
-#include "snapshot/SaveState.h"
 #include "snapshot/SceneSnapshot.h"
 #include "ui/MacBackend.h"
 #include "viewport/FrameState.h"
 #include "viewport/RenderExtent.h"
+#include "viewport/VideoRecording.h"
 #include "viewport/ViewCamera.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
+#include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportUi.h"
@@ -272,21 +273,21 @@ GltfSampleTrees BuildSampleTrees() {
 
 std::future<GltfSampleTrees> SampleTreesFuture;
 
-// Apply an action and update derived scene state outside the main loop.
-template<typename ActionType> void Perform(entt::registry &r, entt::entity viewport, ActionType action) {
-    action::ApplyNow(r, viewport, std::move(action));
-    ProcessComponentEvents(r, viewport);
+project::Project &Session(entt::registry &r) { return *r.ctx().get<project::Project *>(); }
+
+template<typename ActionType> void Perform(entt::registry &r, ActionType action) {
+    Session(r).Do(action::MakeAction(std::move(action)));
 }
 
 // Finish GPU work and stop playback before modifying scene structure.
 void QuiesceScene(entt::registry &r, entt::entity viewport) {
     WaitForRender(r);
     const auto &playback = r.get<const TimelinePlayback>(viewport);
-    if (playback.Playing) action::ApplyNow(r, viewport, action::timeline::TogglePlay{playback.CurrentFrame});
+    if (playback.Playing) Perform(r, action::timeline::TogglePlay{playback.CurrentFrame});
 }
 
-constexpr std::string_view SessionLogName{"session.actions"}, ProjectStateName{"project.state"}, ProjectExt{".project"}, ActionsExt{".actions"};
-fs::path CurrentProjectPath;
+constexpr std::string_view ProjectExt{".project"}, ActionsExt{".actions"};
+fs::path HeadlessDirectory;
 uint64_t RestoreGeneration{};
 fs::path CachedWorkspacePath;
 std::vector<std::byte> CachedWorkspaceBytes;
@@ -321,128 +322,99 @@ bool UiGestureSettled(const ImGuiWindow *frame_focus) {
     return true;
 }
 
-void StartScratchSession(entt::registry &r, entt::entity viewport) {
-    QuiesceScene(r, viewport);
-    SaveWorkspace(r, viewport);
-    action::StopLog();
-    Paths::SetProject(action::ReserveRestoreSession());
-    ClearScene(r, viewport);
-    ++RestoreGeneration;
-    action::StartLog(Paths::Project() / SessionLogName);
-    CurrentProjectPath.clear();
+fs::path NewWorkingDirectory() {
+    if (HeadlessDirectory.empty()) return project::ReserveRestoreSession();
+    File::TemporaryDirectory directory{HeadlessDirectory};
+    return std::exchange(directory.Path, {});
 }
 
-// Start a scratch session with the default or empty scene.
-void NewScene(entt::registry &r, entt::entity viewport, bool empty) {
-    StartScratchSession(r, viewport);
-    if (!empty) action::Emit(action::io::LoadDefaultScene{});
-}
-
-// Clear the scene and replay an action log in the current project directory.
-void ReplayLogInPlace(entt::registry &r, entt::entity viewport, const fs::path &log_path) {
-    auto live_workspace = CaptureWorkspace(r, viewport);
-    QuiesceScene(r, viewport);
-    action::FlushLog();
-    ClearScene(r, viewport);
-    std::error_code ec;
-    const bool replaying_session_log = fs::equivalent(log_path, Paths::Project() / SessionLogName, ec);
-    action::ReplayLog(
-        r, viewport, log_path, &PrepareViewport, 0, std::numeric_limits<uint64_t>::max(),
-        /*record=*/!replaying_session_log
-    );
-    workspace::Apply(r, viewport, r.ctx().get<WindowsState>(), live_workspace);
-    PresentViewport(r, viewport);
+bool NewScene(entt::registry &r, entt::entity viewport, bool empty) {
+    if (!SaveWorkspace(r, viewport)) return false;
+    const auto dir = NewWorkingDirectory();
+    if (dir.empty() || !Session(r).New(dir, empty)) return false;
+    Paths::SetProject(dir);
     ++RestoreGeneration;
+    return true;
 }
 
 struct RestoreTimings {
-    double ResetMs{}, RestoreMs{}, DeriveMs{}, RenderMs{}, CaptureMs{};
+    double ResetMs{}, RestoreMs{}, RenderMs{}, CaptureMs{};
 };
 
-// Restore a project from its base snapshot and a bounded suffix of its action log.
-RestoreTimings RestoreProject(
-    entt::registry &r, entt::entity viewport, const fs::path &working_dir,
-    uint64_t action_end = std::numeric_limits<uint64_t>::max(), const workspace::State *workspace_override = nullptr,
-    const fs::path &log_override = {}
-) {
-    const auto state_path = working_dir / ProjectStateName;
-    const auto log_path = log_override.empty() ? working_dir / SessionLogName : log_override;
-    RestoreTimings timings;
-    auto begin = SteadyClock::now();
+bool OpenProjectDir(entt::registry &r, entt::entity viewport, const fs::path &working_dir, bool replay = false, const fs::path &saved = {}) {
+    auto &session = Session(r);
+    if (session.History.Present >= 0 && (!SaveWorkspace(r, viewport) || !session.Save())) return false;
     WaitForRender(r);
-    ClearScene(r, viewport);
-    timings.ResetMs = ElapsedMs(begin);
-    begin = SteadyClock::now();
-    uint64_t skip = 0;
-    if (std::error_code ec; fs::exists(state_path, ec)) {
-        snapshot::LoadState(r, File::Read(state_path).value_or(std::vector<std::byte>{}));
-        if (const auto *index = r.try_get<ActionIndex>(viewport)) skip = index->Index;
-    }
-    const auto fallback_workspace = CaptureWorkspace(r, viewport);
-    const auto count = action_end > skip ? action_end - skip : 0;
-    timings.DeriveMs = action::ReplayLog(r, viewport, log_path, &PrepareViewport, skip, count);
-    timings.RestoreMs += ElapsedMs(begin) - timings.DeriveMs;
-    begin = SteadyClock::now();
-    const auto stored_workspace = workspace_override ? std::optional<workspace::State>{*workspace_override} : workspace::Load(working_dir / workspace::FileName);
-    workspace::Apply(r, viewport, r.ctx().get<WindowsState>(), stored_workspace.value_or(fallback_workspace));
-    timings.DeriveMs += ElapsedMs(begin);
-    return timings;
-}
-
-// Restore a session from its base snapshot and subsequent action log.
-void OpenProjectDir(entt::registry &r, entt::entity viewport, const fs::path &working_dir) {
-    QuiesceScene(r, viewport);
-    SaveWorkspace(r, viewport);
-    action::StopLog();
-    CurrentProjectPath.clear();
+    const auto old_dir = Paths::Project();
     Paths::SetProject(working_dir);
-    RestoreProject(r, viewport, working_dir);
-    PresentViewport(r, viewport);
+    if (!session.Open(working_dir, saved)) {
+        Paths::SetProject(old_dir);
+        return false;
+    }
     ++RestoreGeneration;
-    action::StartLog(working_dir / SessionLogName, /*append=*/true);
+    const bool replayed = !replay || session.Replay();
+    const auto stored = saved.empty() ? workspace::Load(working_dir / workspace::FileName) : workspace::Deserialize(session.RestoredWorkspace);
+    if (stored) workspace::Apply(r, viewport, r.ctx().get<WindowsState>(), *stored);
+    PresentViewport(r, viewport);
+    return replayed;
 }
 
-// Open a .project archive in a new working directory.
-void OpenProjectFile(entt::registry &r, entt::entity viewport, const fs::path &archive_path) {
-    const auto working_dir = action::ReserveRestoreSession();
-    if (!Decompress(archive_path, working_dir)) {
-        std::println(stderr, "Failed to open project '{}'", archive_path.string());
-        return;
+bool OpenProjectFile(entt::registry &r, entt::entity viewport, const fs::path &path) {
+    std::error_code ec;
+    const bool directory = fs::is_directory(path, ec);
+    if (directory && HeadlessDirectory.empty()) return OpenProjectDir(r, viewport, path / "working", false, path / "Saved.project");
+    const auto working = NewWorkingDirectory();
+    if (working.empty()) return false;
+    bool copied;
+    File::DirectoryLock source_lock;
+    if (directory) {
+        source_lock = File::DirectoryLock{path / "working"};
+        if (source_lock) fs::copy(path / "working", working, fs::copy_options::recursive, ec);
+        copied = source_lock && !ec;
+    } else copied = Decompress(path, working);
+    if (!copied || !OpenProjectDir(r, viewport, working, path.extension() == ActionsExt, directory ? path / "Saved.project" : fs::path{})) {
+        if (Paths::Project() != working) fs::remove_all(working, ec);
+        r.ctx().get<action::Errors>().Messages.push_back(std::format("Failed to open project '{}'.", path.string()));
+        return false;
     }
-    OpenProjectDir(r, viewport, working_dir);
-    CurrentProjectPath = archive_path;
+    if (directory) Session(r).SavedPath.clear();
+    return true;
 }
 
 void OpenFile(entt::registry &r, entt::entity viewport, const fs::path &path) {
-    if (const auto ext = path.extension(); ext == ProjectExt) OpenProjectFile(r, viewport, path);
-    else if (ext == ActionsExt) ReplayLogInPlace(r, viewport, path);
+    std::error_code ec;
+    if (const auto ext = path.extension(); fs::is_directory(path, ec) || ext == ProjectExt || ext == ActionsExt) OpenProjectFile(r, viewport, path);
     else action::Emit(action::io::Load{.Path = path});
 }
 
-// Save a scene snapshot and project archive at archive_path.
-void SaveProjectFile(entt::registry &r, entt::entity viewport, const fs::path &archive_path) {
-    auto &errors = r.ctx().get<action::Errors>().Messages;
-    if (const auto result = File::WriteAtomic(Paths::Project() / ProjectStateName, snapshot::SaveState(r)); !result) {
-        errors.emplace_back(result.error());
-        return;
-    }
-    if (!SaveWorkspace(r, viewport)) return;
-    // Saving is synchronous on the log's producer thread, so flushing keeps the log stable while archiving.
-    if (!action::FlushLog()) {
-        errors.emplace_back("Failed to flush the action log. Project was not saved.");
-        return;
-    }
-    if (!Compress(Paths::Project(), archive_path)) {
-        errors.emplace_back(std::format("Failed to save project '{}'.", archive_path.string()));
-        return;
-    }
-    CurrentProjectPath = archive_path;
+bool SaveProjectFile(entt::registry &r, entt::entity viewport, const fs::path &archive_path) {
+    return SaveWorkspace(r, viewport) && Session(r).SaveArchive(archive_path, CachedWorkspaceBytes);
+}
+
+void SaveProjectAs(entt::registry &r, entt::entity viewport) {
+    const auto &saved = Session(r).SavedPath;
+    FileDialog::ShowSave(nullptr, saved.empty() ? fs::path{"Untitled"} : saved.parent_path(), [&r, viewport](const fs::path &directory) {
+        if (SaveWorkspace(r, viewport) && Session(r).SaveAs(directory, CachedWorkspaceBytes)) Paths::SetProject(Session(r).History.Dir);
+    });
+}
+
+void SaveProject(entt::registry &r, entt::entity viewport) {
+    if (Session(r).SavedPath.empty()) SaveProjectAs(r, viewport);
+    else SaveProjectFile(r, viewport, Session(r).SavedPath);
+}
+
+void RevertSavedProject(entt::registry &r, entt::entity viewport) {
+    if (!Session(r).RevertSaved()) return;
+    if (const auto stored = workspace::Deserialize(Session(r).RestoredWorkspace)) workspace::Apply(r, viewport, r.ctx().get<WindowsState>(), *stored);
+    ++RestoreGeneration;
+    PresentViewport(r, viewport);
 }
 
 void BuildDefaultDockLayout(const WindowsState &windows, ImGuiID dockspace_id) {
     auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.3f, nullptr, &dockspace_id);
     auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
     auto animation_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
+    DockBuilderDockWindow(windows.History.Name, extra_node_id);
     DockBuilderDockWindow(windows.Debug.Name, extra_node_id);
     DockBuilderDockWindow(windows.ImGuiDemo.Name, extra_node_id);
     DockBuilderDockWindow(windows.ImSpinnerDemo.Name, extra_node_id);
@@ -509,6 +481,7 @@ EditorWindowsFrame BeginEditorWindows(
     WindowsState &windows, const ImGuiIO &io, bool interactive
 ) {
     RenderDebugWindow(r, ctx, layer, windows, io);
+    if (project::DrawHistoryWindow(Session(r), windows.History, interactive) && SaveWorkspace(r, viewport)) Session(r).ClearHistory();
     if (windows.ImGuiDemo.Visible) ShowDemoWindow(&windows.ImGuiDemo.Visible);
     if (windows.ImSpinnerDemo.Visible) {
         if (Begin(windows.ImSpinnerDemo.Name, &windows.ImSpinnerDemo.Visible)) ImSpinner::demoSpinners();
@@ -578,6 +551,11 @@ struct ValidationImage {
     NS::SharedPtr<MTL::Event> Ready;
     uint64_t Generation{};
 };
+
+void WriteValidationProject(const fs::path &dir) {
+    const auto path = fs::temp_directory_path() / "MeshEditor-validation.actions";
+    if (Compress(dir, path)) std::println(stderr, "[validation] wrote command replay archive to {}", path.string());
+}
 
 fs::path WriteValidationImage(const mtl::Context &ctx, std::string_view name, const mtl::Texture &image) {
     auto rgba = ReadbackImageRgba8(ctx, image, 0, 0, image.Extent);
@@ -655,17 +633,20 @@ struct ValidationUi {
 
 struct ValidationEngine {
     entt::registry Registry;
+    std::unique_ptr<project::Project> Project;
+    const fs::path Directory = fs::temp_directory_path() / std::format("MeshEditor-validation-{}", uintptr_t(this));
     entt::entity Viewport;
     ValidationImage App;
     std::optional<ValidationUi> Ui;
 
     ValidationEngine() {
         Registry.ctx().emplace<mtl::Context>();
+        Project = std::make_unique<project::Project>(Registry);
         Viewport = InitEngine(Registry);
+        Project->TrackStores(Viewport);
         InitAudioSystem(Registry);
         InitViewportMedia(Registry);
         SetupScene(Registry, Viewport);
-        ProcessComponentEvents(Registry, Viewport);
     }
     ~ValidationEngine() {
         WaitForRender(Registry);
@@ -673,12 +654,15 @@ struct ValidationEngine {
         App = {};
         DeinitViewportMedia(Registry);
         DeinitAudioSystem(Registry);
+        Project.reset();
         DeinitViewport(Registry, Viewport);
+        std::error_code ec;
+        fs::remove_all(Directory, ec);
     }
 };
 
 struct ValidationSession {
-    ValidationEngine Replay, Snapshot;
+    ValidationEngine Replay, Stored;
     ValidationImage Live;
     mtl::ComputePipeline Compare;
     NS::SharedPtr<MTL::Buffer> Differences;
@@ -690,8 +674,7 @@ struct ValidationSession {
 
 struct ValidationInputs {
     fs::path WorkingDir;
-    fs::path LogPath;
-    uint64_t ActionEnd{};
+
     workspace::State Workspace;
     CA::MetalLayer *Layer{};
     ImVec2 DisplaySize{}, FramebufferScale{}, MousePos{};
@@ -733,6 +716,7 @@ ImDrawData *RenderValidationApp(
         }
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) EndMenu();
+            if (BeginMenu("Edit")) EndMenu();
             if (BeginMenu("Windows")) EndMenu();
             EndMainMenuBar();
         }
@@ -742,8 +726,8 @@ ImDrawData *RenderValidationApp(
             GetWindowDrawList()->ChannelsMerge();
         }
         EndEditorViewport(frame);
-        workspace::ApplyPending(windows);
         Render();
+        workspace::ApplyPending(windows);
     };
 
     render_frame(); // Instantiate the windows referenced by the restored dock layout.
@@ -766,7 +750,7 @@ struct ValidationResult {
 };
 
 ValidationResult RestoreForValidation(
-    ValidationEngine &engine, const ValidationInputs &inputs, const std::vector<std::byte> *snapshot_state
+    ValidationEngine &engine, const ValidationInputs &inputs, bool replay
 ) {
     auto &restored = engine.Registry;
     const auto viewport = engine.Viewport;
@@ -781,29 +765,32 @@ ValidationResult RestoreForValidation(
     frame.DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale);
     frame.Capturing = inputs.Capturing;
     frame.Scrubbing = inputs.Scrubbing;
-    if (snapshot_state) ClearScene(restored, viewport);
+    engine.Project->Close();
+    fs::create_directories(engine.Directory);
+    std::error_code asset_ec;
+    fs::remove(engine.Directory / "assets", asset_ec);
+    if (fs::is_directory(inputs.WorkingDir / "assets")) fs::create_directory_symlink(inputs.WorkingDir / "assets", engine.Directory / "assets");
+    for (const auto *name : {"leaves.log", "nodes.log", "tree.log"}) fs::copy_file(inputs.WorkingDir / name, engine.Directory / name, fs::copy_options::overwrite_existing);
     const auto reset_ms = ElapsedMs(begin);
 
     begin = SteadyClock::now();
-    if (snapshot_state) {
-        snapshot::LoadState(restored, *snapshot_state);
-        timings.RestoreMs = ElapsedMs(begin);
-        begin = SteadyClock::now();
-        ProcessComponentEvents(restored, viewport);
-        workspace::Apply(restored, viewport, restored.ctx().get<WindowsState>(), inputs.Workspace);
-        timings.DeriveMs = ElapsedMs(begin);
-    } else {
-        timings = RestoreProject(restored, viewport, inputs.WorkingDir, inputs.ActionEnd, &inputs.Workspace, inputs.LogPath);
+    if (!engine.Project->Open(engine.Directory) || (replay && !engine.Project->Replay())) {
+        for (const auto &error : restored.ctx().get<action::Errors>().Messages) std::println(stderr, "[validation] {}", error);
+        std::println(stderr, "[validation] {}", engine.Project->History.TakeIntegrityError());
+        WriteValidationProject(inputs.WorkingDir);
+        std::abort();
     }
+    timings.RestoreMs = ElapsedMs(begin);
+    workspace::Apply(restored, viewport, restored.ctx().get<WindowsState>(), inputs.Workspace);
     begin = SteadyClock::now();
-    if (inputs.Playback.Playing) restored.replace<TimelinePlayback>(viewport, inputs.Playback);
+    project::Replace<TimelinePlayback>(restored, viewport, inputs.Playback);
     restored.get<PlaybackFrame>(viewport).Value = inputs.PlaybackFrame;
     PresentViewport(restored, viewport);
     timings.ResetMs += reset_ms;
     RenderAppImage(ctx, RenderValidationApp(restored, viewport, inputs), engine.App);
     timings.RenderMs += ElapsedMs(begin);
     begin = SteadyClock::now();
-    result.State = snapshot::SaveState(restored);
+    result.State = engine.Project->History.MaterializeLive();
     result.SceneState = snapshot::SnapshotSceneState(restored);
     result.Workspace = workspace::Serialize(CaptureWorkspace(restored, viewport));
     timings.CaptureMs = ElapsedMs(begin);
@@ -811,16 +798,13 @@ ValidationResult RestoreForValidation(
     return result;
 }
 
-void RequireEqual(std::string_view what, std::span<const std::byte> expected, std::span<const std::byte> actual, const fs::path &replay_log = {}) {
+void RequireEqual(std::string_view what, std::span<const std::byte> expected, std::span<const std::byte> actual) {
     if (const auto diff = snapshot::Compare(expected, actual); !diff.Equal) {
         std::println(
             stderr, "[validation] {} DIVERGED at byte {} (expected {} / actual {})",
             what, diff.FirstDifferingByte, expected.size(), actual.size()
         );
-        if (!replay_log.empty()) {
-            if (const auto fixture_dir = snapshot::WriteReplayTestFixture(replay_log, expected, actual); !fixture_dir.empty())
-                std::println(stderr, "[validation] wrote replay-test fixture to {}", fixture_dir.string());
-        }
+        WriteValidationProject(Paths::Project());
         std::abort();
     }
 }
@@ -831,11 +815,11 @@ void CompareValidationImages(entt::registry &r, ValidationSession &session) {
     const std::array<const mtl::Texture *, 4> expected{&session.Live.Target, &session.Live.Target, &live_viewport, &live_viewport};
     const std::array<const mtl::Texture *, 4> restored{
         &session.Replay.App.Target,
-        &session.Snapshot.App.Target,
+        &session.Stored.App.Target,
         &session.Replay.Registry.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
-        &session.Snapshot.Registry.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
+        &session.Stored.Registry.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
     };
-    const std::array names{"replay-app", "snapshot-app", "replay-viewport", "snapshot-viewport"};
+    const std::array names{"replay-app", "stored-app", "replay-viewport", "stored-viewport"};
     for (uint32_t i = 0; i < restored.size(); ++i) {
         if (restored[i]->Extent != expected[i]->Extent) {
             const auto actual = restored[i]->Extent, extent = expected[i]->Extent;
@@ -847,7 +831,7 @@ void CompareValidationImages(entt::registry &r, ValidationSession &session) {
     std::fill_n(differences, restored.size(), UINT32_MAX);
     auto *command_buffer = ctx.Queue->commandBuffer();
     // Each app event follows that engine's viewport render; queues may finish in any order.
-    for (const auto *image : {&session.Live, &session.Replay.App, &session.Snapshot.App}) command_buffer->encodeWait(image->Ready.get(), image->Generation);
+    for (const auto *image : {&session.Live, &session.Replay.App, &session.Stored.App}) command_buffer->encodeWait(image->Ready.get(), image->Generation);
     {
         mtl::PassChain chain{command_buffer};
         auto *encoder = chain.BeginCompute("ValidationCompare");
@@ -871,11 +855,12 @@ void CompareValidationImages(entt::registry &r, ValidationSession &session) {
         const auto expected_path = WriteValidationImage(ctx, i < 2 ? "live-app" : "live-viewport", *expected[i]);
         const auto actual_path = WriteValidationImage(ctx, names[i], *restored[i]);
         if (!expected_path.empty() && !actual_path.empty()) std::println(stderr, "[validation] wrote {} and {}", expected_path.string(), actual_path.string());
+        WriteValidationProject(Paths::Project());
         std::abort();
     }
 }
 
-// Require independent replay and snapshot restoration to reproduce canonical state and the live composited app image.
+// Compare Persistent state, viewport pixels, and composed UI pixels after command replay and cold restoration.
 void ValidateRoundTrip(
     entt::registry &r, entt::entity viewport, CA::MetalLayer *layer,
     ImDrawData *draw_data, std::unique_ptr<ValidationSession> &session, MTL::CommandBuffer *presented_frame = nullptr
@@ -888,14 +873,19 @@ void ValidateRoundTrip(
     if (presented_frame) presented_frame->waitUntilCompleted();
     RenderAppImage(r.ctx().get<const mtl::Context>(), draw_data, session->Live);
     WaitForRender(r);
-    action::FlushLog();
+    if (!Session(r).History.Save()) {
+        std::println(stderr, "[validation] {}", Session(r).History.TakeIntegrityError());
+        std::abort();
+    }
+    if (std::string why; !Session(r).Audit(why)) {
+        std::println(stderr, "[validation] live audit failed: {}", why);
+        std::abort();
+    }
 
-    const auto live_state = snapshot::SaveState(r);
+    const auto live_state = Session(r).History.MaterializeLive();
     const auto live_scene_state = snapshot::SnapshotSceneState(r);
     const ValidationInputs inputs{
         .WorkingDir = Paths::Project(),
-        .LogPath = action::CurrentLogPath(),
-        .ActionEnd = r.get_or_emplace<ActionIndex>(viewport).Index,
         .Workspace = CaptureWorkspace(r, viewport),
         .Layer = layer,
         .DisplaySize = draw_data->DisplaySize,
@@ -915,26 +905,26 @@ void ValidateRoundTrip(
     };
 
     const auto capture_ms = ElapsedMs(begin);
-    const auto replay = RestoreForValidation(session->Replay, inputs, nullptr);
-    const auto restored = RestoreForValidation(session->Snapshot, inputs, &live_state);
+    const auto replay = RestoreForValidation(session->Replay, inputs, true);
+    const auto restored = RestoreForValidation(session->Stored, inputs, false);
     begin = SteadyClock::now();
 
-    RequireEqual("replay scene", live_scene_state, replay.SceneState, inputs.LogPath);
+    RequireEqual("replay scene", live_scene_state, replay.SceneState);
     RequireEqual("replay state", live_state, replay.State);
-    RequireEqual("snapshot state", live_state, restored.State);
-    RequireEqual("replay/snapshot workspace", replay.Workspace, restored.Workspace);
+    RequireEqual("stored state", live_state, restored.State);
+    RequireEqual("replay/stored workspace", replay.Workspace, restored.Workspace);
     CompareValidationImages(r, *session);
     const auto compare_ms = ElapsedMs(begin);
     begin = SteadyClock::now();
     session->Replay.Ui.reset();
-    session->Snapshot.Ui.reset();
+    session->Stored.Ui.reset();
     const auto cleanup_ms = ElapsedMs(begin);
     std::println("[validation] total {:.2f} ms (init {:.2f}; capture {:.2f}; compare {:.2f}; cleanup {:.2f})", ElapsedMs(total_begin), init_ms, capture_ms, compare_ms, cleanup_ms);
     const auto report = [](std::string_view name, const RestoreTimings &v) {
-        std::println("[validation] {} reset {:.2f}; restore {:.2f}; derive {:.2f}; render {:.2f}; capture {:.2f} ms", name, v.ResetMs, v.RestoreMs, v.DeriveMs, v.RenderMs, v.CaptureMs);
+        std::println("[validation] {} reset {:.2f}, restore {:.2f}, render {:.2f}, capture {:.2f} ms", name, v.ResetMs, v.RestoreMs, v.RenderMs, v.CaptureMs);
     };
     report("replay", replay.Timings);
-    report("snapshot", restored.Timings);
+    report("stored", restored.Timings);
 }
 #endif
 
@@ -1004,7 +994,7 @@ bool FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     fit.FarClip = distance + plane_reach;
     fit.NearClip = std::max(distance - plane_reach, *fit.FarClip / 10000.f);
 
-    r.replace<ViewCamera>(viewport, ViewCamera{center + distance * away, center, Camera{fit}});
+    project::Replace<ViewCamera>(r, viewport, ViewCamera{center + distance * away, center, Camera{fit}});
     return true;
 }
 
@@ -1014,7 +1004,7 @@ constexpr uvec2 DefaultWindowSize{1280, 800};
 constexpr std::string_view Usage{
     R"(Usage: MeshEditor [scene] [options]
 
-Loads `scene` (a .gltf/.glb/project file) into the editor, or the default scene when none is given.
+Loads a scene file, project directory, or .project/.actions archive, or the default scene when none is given.
 
 Scene:
   --empty                     Start with an empty scene
@@ -1100,6 +1090,9 @@ struct BenchmarkDriver {
         entities.resize(std::min<size_t>(entities.size(), capture.BenchActionCount));
         Transforms.reserve(entities.size());
         for (const auto entity : entities) Transforms.emplace_back(entity, r.get<const Transform>(entity));
+        if (Action == CaptureRequest::BenchmarkAction::Visibility && !entities.empty()) {
+            action::EmitSystem(action::selection::ApplyTreeSelection{.Entities = entities, .SelectCount = uint32_t(entities.size()), .NavToActive = entities.front(), .Clear = action::selection::ApplyTreeSelection::ClearKind::All});
+        }
     }
 
     void Apply(entt::registry &r, uvec2 extent) {
@@ -1111,18 +1104,12 @@ struct BenchmarkDriver {
             case CaptureRequest::BenchmarkAction::Transform: {
                 const float offset = Frame % 2 == 0 ? 0.05f : 0.f;
                 for (const auto &[entity, base] : Transforms) {
-                    r.patch<Transform>(entity, [&](auto &transform) {
-                        transform = base;
-                        transform.P.y += offset;
-                    });
+                    action::EmitSystem(action::UpdateOf<&Transform::P>(entity, base.P + vec3{0, offset, 0}));
                 }
                 break;
             }
             case CaptureRequest::BenchmarkAction::Visibility:
-                for (const auto &[entity, _] : Transforms) {
-                    if (Frame % 2 == 0) Hide(r, entity);
-                    else Show(r, entity);
-                }
+                action::Emit(action::object::SetSelectedVisible{Frame % 2 != 0});
                 break;
             case CaptureRequest::BenchmarkAction::BoxSelectOrbit:
                 if (Frame % 2 != 0) {
@@ -1153,11 +1140,11 @@ struct BenchmarkDriver {
     }
 };
 
-bool SelectSceneCamera(entt::registry &r, entt::entity viewport, std::string_view name) {
+bool SelectSceneCamera(entt::registry &r, std::string_view name) {
     if (name.empty()) return true;
     for (const auto [entity, _, camera_name] : r.view<const Camera, const CameraName>().each()) {
         if (camera_name.Value != name) continue;
-        Perform(r, viewport, action::view::SetLookThroughCamera{entity});
+        Perform(r, action::view::SetLookThroughCamera{entity});
         return true;
     }
     std::println(stderr, "No scene camera named '{}'.", name);
@@ -1167,51 +1154,27 @@ bool SelectSceneCamera(entt::registry &r, entt::entity viewport, std::string_vie
 // Report and clear action failures, returning whether any occurred.
 bool ReportActionErrors(entt::registry &r) {
     auto &errors = r.ctx().get<action::Errors>().Messages;
+    if (auto error = Session(r).History.TakeIntegrityError(); !error.empty()) errors.push_back(std::move(error));
     if (errors.empty()) return false;
     for (const auto &message : errors) std::cerr << message << std::endl;
     errors.clear();
     return true;
 }
 
-// Initialize the scene and session log, returning false when the initial file fails to load.
+// Return false if the initial file fails to load.
 bool SeedScene(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty) {
     const fs::path path = initial_file ? initial_file : "";
-    bool loaded{true};
-    if (path.extension() == ProjectExt) OpenProjectFile(r, viewport, path);
-    else if (path.extension() == ActionsExt) {
-        const auto imported = File::Read(path);
-        if (!imported) {
-            std::println(stderr, "{}", imported.error());
-            loaded = false;
-        } else {
-            Paths::SetProject(action::ReserveRestoreSession());
-            const auto session_log = Paths::Project() / SessionLogName;
-            {
-                std::ofstream out{session_log, std::ios::binary | std::ios::trunc};
-                out.write(reinterpret_cast<const char *>(imported->data()), std::streamsize(imported->size()));
-                loaded = bool(out);
-            }
-            if (loaded) {
-                ReplayLogInPlace(r, viewport, session_log);
-                action::StartLog(session_log, /*append=*/true);
-            } else {
-                std::println(stderr, "Failed to import action log '{}'.", path.string());
-            }
-        }
-    } else {
-        if (capture.RenderBasename.empty()) {
-            Paths::SetProject(action::ReserveRestoreSession());
-            action::StartLog(Paths::Project() / SessionLogName);
-        } else {
-            Paths::SetProject(capture.RenderBasename.parent_path());
-            action::StartLog(fs::path{capture.RenderBasename.string() + ".actions"});
-        }
-        if (initial_file) {
-            Perform(r, viewport, action::io::Load{.Path = initial_file});
+    bool loaded;
+    std::error_code ec;
+    if (fs::is_directory(path, ec) || path.extension() == ProjectExt || path.extension() == ActionsExt) loaded = OpenProjectFile(r, viewport, path);
+    else {
+        loaded = NewScene(r, viewport, initial_file || empty);
+        if (loaded && initial_file) {
+            Perform(r, action::io::Load{.Path = initial_file});
             loaded = !ReportActionErrors(r);
-        } else if (!empty) Perform(r, viewport, action::io::LoadDefaultScene{});
+        }
     }
-    return loaded && SelectSceneCamera(r, viewport, capture.CameraName);
+    return loaded && SelectSceneCamera(r, capture.CameraName);
 }
 
 // Coordinate scene framing, playback, screenshots, recording, and completion for both run loops.
@@ -1251,7 +1214,7 @@ struct CaptureDriver {
         return elapsed >= PlayDuration;
     }
 
-    // Emit capture actions before ApplyEmitted after the viewport reaches its final extent.
+    // Emit capture actions before Project::Frame, after sizing the viewport.
     void EmitFrameActions(entt::registry &r, entt::entity viewport, bool settled, uvec2 extent) {
         if (!ViewFramed && Presenting() && extent != uvec2{}) {
             // Wait for GPU bounds before framing the launch camera.
@@ -1350,48 +1313,55 @@ struct CaptureDriver {
 // Initialize a capture session and configure its presentation state.
 CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty, bool fixed_step) {
     const bool seeded = SeedScene(r, viewport, capture, initial_file, empty);
+    std::error_code ec;
+    if (const auto parent = capture.RenderBasename.parent_path(); !parent.empty()) fs::create_directories(parent, ec);
+    if (!seeded || ec) {
+        if (ec) r.ctx().get<action::Errors>().Messages.push_back("Cannot create capture directory: " + ec.message());
+        ReportActionErrors(r);
+        CaptureDriver failed{r, viewport, capture, false, fixed_step};
+        failed.SeedFailed = true;
+        return failed;
+    }
     if (!capture.PhysicsCapturePath.empty()) physics::CaptureReplay(r, capture.PhysicsCapturePath);
-    if (seeded && capture.EditMode) {
+    if (capture.EditMode) {
         std::vector<entt::entity> meshes;
         for (const auto [entity, kind, _] : r.view<const ObjectKind, const Instance>().each()) {
             if (kind.Value == ObjectType::Mesh) meshes.emplace_back(entity);
         }
         if (!meshes.empty()) {
-            Perform(r, viewport, action::selection::ApplyTreeSelection{
-                                     .Entities = meshes,
-                                     .SelectCount = uint32_t(meshes.size()),
-                                     .NavToActive = meshes.front(),
-                                     .Clear = action::selection::ApplyTreeSelection::ClearKind::All,
-                                 });
-            Perform(r, viewport, action::view::SetInteractionMode{InteractionMode::Edit});
-            Perform(r, viewport, action::view::SetEditMode{*capture.EditMode});
+            Perform(r, action::selection::ApplyTreeSelection{
+                           .Entities = meshes,
+                           .SelectCount = uint32_t(meshes.size()),
+                           .NavToActive = meshes.front(),
+                           .Clear = action::selection::ApplyTreeSelection::ClearKind::All,
+                       });
+            Perform(r, action::view::SetInteractionMode{InteractionMode::Edit});
+            Perform(r, action::view::SetEditMode{*capture.EditMode});
         }
     }
-    if (seeded && capture.SelectionXray) Perform(r, viewport, action::UpdateOf<&SelectionXRay::Value>(viewport, true));
-    if (seeded && capture.SelectAll) Perform(r, viewport, action::selection::SelectAll{});
-    const bool play = seeded && capture.Play;
+    if (capture.SelectionXray) Perform(r, action::UpdateOf<&SelectionXRay::Value>(viewport, true));
+    if (capture.SelectAll) Perform(r, action::selection::SelectAll{});
     // After the load, whose end frame comes from the scene's own animation durations.
     if (capture.TimelineEnd > 0) {
         const float fps = r.get<const TimelineRange>(viewport).Fps;
-        Perform(r, viewport, action::timeline::SetEndFrame{int(std::ceil(capture.TimelineEnd * fps))});
+        Perform(r, action::timeline::SetEndFrame{int(std::ceil(capture.TimelineEnd * fps))});
     }
-    CaptureDriver driver{r, viewport, capture, play, fixed_step};
-    driver.SeedFailed = !seeded;
+    CaptureDriver driver{r, viewport, capture, capture.Play, fixed_step};
     // Preserve the editor view for benchmark frames and screenshots.
-    if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, viewport, action::timeline::EnterPresentation{});
+    if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, action::timeline::EnterPresentation{});
     // Apply the explicit overlay override after enabling presentation mode.
-    if (capture.Overlays) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, true));
+    if (capture.Overlays) Perform(r, action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, true));
     if (capture.LodErrorPixels >= 0.f) {
-        Perform(r, viewport, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(viewport, capture.LodErrorPixels));
+        Perform(r, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(viewport, capture.LodErrorPixels));
     }
     r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
     // Enable motion blur for video recording and preserve the current setting for still or audio-only captures.
     r.ctx().get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
     if (capture.Blur) {
-        Perform(r, viewport, action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, capture.Blur));
+        Perform(r, action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, capture.Blur));
     }
     if (capture.Shading) {
-        Perform(r, viewport, action::view::SetViewportShading{*capture.Shading});
+        Perform(r, action::view::SetViewportShading{*capture.Shading});
     }
     return driver;
 }
@@ -1430,7 +1400,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     InitFonts();
 
+    auto session = std::make_unique<project::Project>(r);
     const auto viewport = InitEngine(r);
+    session->TrackStores(viewport);
     profile::Init(ctx);
     InitAudioSystem(r);
     InitViewportMedia(r);
@@ -1450,13 +1422,12 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     bool viewport_resizing{false};
 #ifdef DEBUG_BUILD
     std::unique_ptr<ValidationSession> validation_session;
-    bool validate_requested{false};
     std::pair previous_ui_revision{uint64_t{0}, RestoreGeneration};
 #endif
 #ifdef VALIDATE_ACTIONS
     auto validated_revision = previous_ui_revision;
 #endif
-    bool done{false};
+    bool done{driver.SeedFailed};
     uint8_t startup_frames_remaining{2};
     MTL::CommandBuffer *last_frame{nullptr}; // Resize waits for resources sampled by the last submitted UI frame.
     auto &windows = r.ctx().get<WindowsState>();
@@ -1468,15 +1439,16 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             profile::ClearStats();
         }
         const profile::CpuScope frame_scope{"Frame"};
+        r.ctx().get<ViewportConsumerFence>().Value = last_frame;
         auto events = window.PollEvents();
         r.ctx().get<FrameState>().PreciseWheelDelta = vec2{events.ScrollX, events.ScrollY};
         for (const auto &path : events.DroppedFiles) OpenFile(r, viewport, path);
         done = events.Quit;
         if (driver.DurationElapsed(r, viewport)) done = true;
-        if (r.get<ViewCamera>(viewport).Tick()) r.patch<ViewCamera>(viewport, [](auto &) {});
+        if (r.get<ViewCamera>(viewport).Tick()) project::Patch<ViewCamera>(r, viewport, [](auto &) {});
 
 #ifdef DEBUG_BUILD
-        const auto ui_revision = std::pair{r.get_or_emplace<ActionIndex>(viewport).Index, RestoreGeneration};
+        const auto ui_revision = std::pair{Session(r).Revision, RestoreGeneration};
         const bool ui_has_pending_solves = HasPendingModalSolves(r);
 #endif
 
@@ -1501,28 +1473,18 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                     EndMenu();
                 }
                 if (MenuItem("Open")) {
-                    FileDialog::ShowOpen("project;state;actions", [&](const fs::path &path) { OpenFile(r, viewport, path); });
+                    FileDialog::ShowOpen("project;actions", [&](const fs::path &path) { OpenFile(r, viewport, path); }, /*directories=*/true);
                 }
-                const auto save_project_as = [&] {
-                    FileDialog::ShowSave("project", "scene.project", [&](const fs::path &picked) {
-                        auto path = picked;
-                        if (path.extension() != ProjectExt) path += ProjectExt; // The dialog doesn't force the filter's extension.
-                        SaveProjectFile(r, viewport, path);
-                    });
-                };
-                if (MenuItem("Save")) {
-                    if (CurrentProjectPath.empty()) save_project_as();
-                    else SaveProjectFile(r, viewport, CurrentProjectPath);
-                }
-                if (MenuItem("Save as...")) save_project_as();
-                if (MenuItem("Clear history") && SaveWorkspace(r, viewport)) Perform(r, viewport, action::io::ClearHistory{.Path = Paths::Project() / ProjectStateName});
+                if (MenuItem("Save", "Cmd+S")) SaveProject(r, viewport);
+                if (MenuItem("Save as...", "Cmd+Shift+S")) SaveProjectAs(r, viewport);
+                if (MenuItem("Revert to Saved", nullptr, false, !Session(r).SavedPath.empty())) RevertSavedProject(r, viewport);
                 if (BeginMenu("Restore")) {
-                    const auto sessions = action::ListRestoreSessions(); // Most-recent first; the newest is the live session.
+                    const auto sessions = project::ListRestoreSessions();
                     for (size_t i = 0; i < sessions.size(); ++i) {
                         const std::time_t t = sessions[i].UnixSeconds;
                         char date[32];
                         std::strftime(date, sizeof date, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
-                        const auto label = i == 0 ? std::format("Current ({})", date) : std::string{date};
+                        const auto label = std::format("{} ({})", date, sessions[i].Path.filename().string());
                         if (MenuItem(label.c_str())) OpenProjectDir(r, viewport, sessions[i].Path);
                     }
                     EndMenu();
@@ -1541,7 +1503,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                         import_dialog("ply");
                     }
                     if (MenuItem("RealImpact")) {
-                        FileDialog::ShowPickFolder([](const fs::path &path) { action::Emit(action::io::LoadRealImpact{.Directory = path}); });
+                        FileDialog::ShowPickFolder([](const fs::path &path) { action::Emit(action::io::LoadRealImpact{.Path = path}); });
                     }
                     EndMenu();
                 }
@@ -1609,12 +1571,17 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 if (MenuItem("Save glTF", nullptr)) {
                     FileDialog::ShowSave("gltf;glb", "scene.gltf", [](const fs::path &path) { action::Emit(action::io::SaveGltf{.Path = path}); });
                 }
-#ifdef DEBUG_BUILD
-                if (MenuItem("[Debug] Roundtrip")) validate_requested = true;
-#endif
+                EndMenu();
+            }
+            if (BeginMenu("Edit")) {
+                auto &history = Session(r).History;
+                const int present = history.Present;
+                if (MenuItem("Undo", "Cmd+Z", false, history.CanUndo())) Session(r).RequestNavigate(history.Nodes[present].Parent);
+                if (MenuItem("Redo", "Cmd+Shift+Z", false, history.CanRedo())) Session(r).RequestNavigate(history.Nodes[present].Children.back());
                 EndMenu();
             }
             if (BeginMenu("Windows")) {
+                MenuItem(windows.History.Name, nullptr, &windows.History.Visible);
                 MenuItem(windows.Debug.Name, nullptr, &windows.Debug.Visible);
                 MenuItem(windows.ImGuiDemo.Name, nullptr, &windows.ImGuiDemo.Visible);
                 MenuItem(windows.ImSpinnerDemo.Name, nullptr, &windows.ImSpinnerDemo.Visible);
@@ -1625,6 +1592,12 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 EndMenu();
             }
             EndMainMenuBar();
+        }
+
+        project::HandleHistoryShortcuts(Session(r));
+        if (!GetIO().WantTextInput) {
+            if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) SaveProject(r, viewport);
+            if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) SaveProjectAs(r, viewport);
         }
 
         // Keep the viewport window open across apply/derive/render so its image is inserted before End().
@@ -1646,20 +1619,21 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             viewport_resizing = false;
         }
 
-        action::ApplyEmitted(r, viewport);
+        Session(r).Frame(action::Drain());
+        r.ctx().get<ViewportConsumerFence>().Value = nullptr;
         ReportActionErrors(r);
 
         // Submit derived state and rendering before the later WaitForRender synchronizes image sampling.
-        SubmitViewport(r, viewport, GetFrameCount() > 1 ? last_frame : nullptr);
+        SubmitViewport(r, viewport);
 
         if (editor_windows.ViewportOpen) {
             DisplayViewport(r, viewport);
             GetWindowDrawList()->ChannelsMerge();
         }
         EndEditorViewport(editor_windows);
-        workspace::ApplyPending(windows);
 
         ImGui::Render();
+        workspace::ApplyPending(windows);
         mac_backend.HonorMouseWarp();
         auto *draw_data = GetDrawData();
         const bool ui_gesture_settled = UiGestureSettled(ui_focus);
@@ -1668,8 +1642,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             if (driver.CaptureFrame(r, viewport, driver.Framed(viewport_settled))) done = true;
 
 #ifdef DEBUG_BUILD
-            const auto scene_revision = std::pair{r.get_or_emplace<ActionIndex>(viewport).Index, RestoreGeneration};
-            bool validate = validate_requested;
+            const auto scene_revision = std::pair{Session(r).Revision, RestoreGeneration};
+            bool validate = windows.History.ValidateRequested;
 #ifdef VALIDATE_ACTIONS
             validate |= scene_revision != validated_revision;
 #endif
@@ -1677,7 +1651,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             const bool ui_matches_scene = ui_revision == scene_revision && previous_ui_revision == scene_revision;
             previous_ui_revision = ui_revision;
             // Background progress is transient; compare only frames drawn after it disappears.
-            const bool validation_ready = validate && !action::HasStaged() && ui_gesture_settled && !ui_has_pending_solves && !HasPendingModalSolves(r);
+            const bool validation_ready = validate && !Session(r).HasStaged() && ui_gesture_settled && !ui_has_pending_solves && !HasPendingModalSolves(r);
             const bool present_frame = !validation_ready || ui_matches_scene;
 #else
             constexpr bool present_frame{true};
@@ -1698,7 +1672,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 #ifdef DEBUG_BUILD
             if (validation_ready && presented_frame && GetFrameCount() > 1 && viewport_settled && ViewportImageReady(r)) {
                 ValidateRoundTrip(r, viewport, layer, draw_data, validation_session, presented_frame);
-                validate_requested = false;
+                windows.History.ValidateRequested = false;
 #ifdef VALIDATE_ACTIONS
                 validated_revision = scene_revision;
 #endif
@@ -1715,7 +1689,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     }
 
     SaveWorkspace(r, viewport);
-    action::StopLog();
+    Session(r).Save();
+    ReportActionErrors(r);
     if (last_frame) last_frame->waitUntilCompleted();
 
     r.ctx().erase<AudioDeviceResource>();
@@ -1728,6 +1703,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     DeinitViewportMedia(r);
     profile::Report();
     profile::Deinit();
+    session.reset();
     DeinitViewport(r, viewport);
 
     ImGui_ImplMetal_Shutdown();
@@ -1736,22 +1712,24 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     ImGui::DestroyContext();
 }
 
-// Run one fixed-step capture session and finalize its action log.
 bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *initial_file, bool empty, const CaptureRequest &capture) {
+    // Initialize recorded inputs independently of the previous queued scene.
+    auto &frame_state = r.ctx().get<FrameState>();
+    frame_state.DeltaTime = 0;
+    frame_state.FixedFrameStep = false;
+    r.ctx().get<ViewportExtent>().Value = DefaultWindowSize;
     const auto scene_start = std::chrono::steady_clock::now();
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/true);
     // Stop after reporting an initial scene-load failure.
     if (driver.SeedFailed) {
-        action::StopLog();
         return false;
     }
-    // Emit the resize so the first SubmitViewport recreates images before rendering.
+    // Apply the capture size after loading the project's workspace.
     action::Emit(action::view::SetExtent{DefaultWindowSize});
-    if (capture.NormalOverlays != 0) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::NormalOverlays>(viewport, capture.NormalOverlays));
-    if (capture.BoundingBoxes) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::ShowBoundingBoxes>(viewport, true));
-    if (capture.TetWireframe) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::ShowTetWireframe>(viewport, true));
+    if (capture.NormalOverlays != 0) Perform(r, action::UpdateOf<&ViewportDisplay::NormalOverlays>(viewport, capture.NormalOverlays));
+    if (capture.BoundingBoxes) Perform(r, action::UpdateOf<&ViewportDisplay::ShowBoundingBoxes>(viewport, true));
+    if (capture.TetWireframe) Perform(r, action::UpdateOf<&ViewportDisplay::ShowTetWireframe>(viewport, true));
 
-    auto &frame_state = r.ctx().get<FrameState>();
     frame_state.DeltaTime = driver.RenderDt;
     int bench_frames = capture.BenchFrames;
     BenchmarkDriver benchmark{r, capture};
@@ -1786,7 +1764,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             const profile::CpuScope scope{"Frame"};
             if (bench_frames > 0 && settled) benchmark.Apply(r, RenderExtentPx(r));
             driver.EmitFrameActions(r, viewport, settled, extent);
-            action::ApplyEmitted(r, viewport);
+            Session(r).Frame(action::Drain());
             ReportActionErrors(r);
             // Continue event processing while audio-only capture suppresses GPU rendering after initial framing.
             if (driver.AudioOnly() && driver.RecordingStarted) r.ctx().get<PendingRenderRequest>().Value = RenderRequest::None;
@@ -1796,11 +1774,10 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             submitted = true;
         }
 #ifdef VALIDATE_ACTIONS
-        const auto revision = std::pair{r.get_or_emplace<ActionIndex>(viewport).Index, RestoreGeneration};
-        if (settled && revision != validated_revision && !action::HasStaged() && !HasPendingModalSolves(r)) {
+        const auto revision = std::pair{Session(r).Revision, RestoreGeneration};
+        if (settled && revision != validated_revision && !Session(r).HasStaged() && !HasPendingModalSolves(r)) {
             const ValidationInputs inputs{
                 .WorkingDir = Paths::Project(),
-                .LogPath = action::CurrentLogPath(),
                 .Workspace = CaptureWorkspace(r, viewport),
                 .DisplaySize = {float(DefaultWindowSize.x), float(DefaultWindowSize.y)},
                 .FramebufferScale = std::bit_cast<ImVec2>(frame_state.DisplayFramebufferScale),
@@ -1830,8 +1807,8 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
         }
         driver.ElapsedPlayTime += frame_state.DeltaTime;
     }
-    action::StopLog();
-    return true;
+    if (!capture.RenderBasename.empty()) return SaveProjectFile(r, viewport, fs::path{capture.RenderBasename.string() + ".actions"});
+    return Session(r).Save();
 }
 
 // Run scenes offscreen on a fixed-step, GPU-paced clock.
@@ -1839,6 +1816,9 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     LogEnabled = !quiet;
 
     MacPlatform::InitPaths();
+    const File::TemporaryDirectory temporary{fs::temp_directory_path()};
+    if (temporary.Path.empty()) throw std::runtime_error("Cannot create headless working directory.");
+    HeadlessDirectory = temporary.Path;
 
     entt::registry r;
     const auto &ctx = r.ctx().emplace<mtl::Context>();
@@ -1848,7 +1828,9 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     InitFonts();
     InitViewportMedia(r);
 #endif
+    auto session = std::make_unique<project::Project>(r);
     const auto viewport = InitEngine(r);
+    session->TrackStores(viewport);
     profile::Init(ctx);
     InitAudioSystem(r);
     SetupScene(r, viewport);
@@ -1865,14 +1847,30 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
 #endif
     profile::Report();
     profile::Deinit();
+    session.reset();
+    Paths::SetProject({});
+    HeadlessDirectory.clear();
     DeinitViewport(r, viewport);
+}
+
+bool FinishHeadlessScene(entt::registry &r, entt::entity viewport, bool ok) {
+    QuiesceScene(r, viewport);
+    project::Remove<VideoRecording>(r, viewport);
+    EndAudioCapture(r);
+    const auto working = Paths::Project();
+    const bool closed = Session(r).Close();
+    const bool errors = ReportActionErrors(r);
+    Paths::SetProject({});
+    std::error_code ec;
+    if (!working.empty()) fs::remove_all(working, ec);
+    return ok && closed && !errors;
 }
 
 // Run one headless scene and return its capture or load status.
 bool RunHeadless(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
     bool ok = true;
     RunHeadlessEngine(quiet, [&](entt::registry &r, entt::entity viewport) {
-        ok = RunHeadlessScene(r, viewport, initial_file, empty, capture);
+        ok = FinishHeadlessScene(r, viewport, RunHeadlessScene(r, viewport, initial_file, empty, capture));
     });
     return ok;
 }
@@ -2029,7 +2027,8 @@ std::optional<RenderJob> ClaimRenderJob(const fs::path &spool) {
 }
 
 // Render every queued job with one engine and write each scene's console output to its log.
-void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &harness) {
+bool RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &harness) {
+    bool succeeded = true;
     RunHeadlessEngine(quiet, [&](entt::registry &r, entt::entity viewport) {
         const int launcher_out = ::dup(STDOUT_FILENO), launcher_err = ::dup(STDERR_FILENO);
         while (const auto job = ClaimRenderJob(spool)) {
@@ -2042,25 +2041,25 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
                 ::dup2(log_fd, STDERR_FILENO);
                 ::close(log_fd);
             }
+            bool ok = false;
             if (const auto options = ParseLaunchOptions(job->Args, harness)) {
                 const auto &file = options->InitialFile;
-                RunHeadlessScene(r, viewport, file.empty() ? nullptr : file.c_str(), options->Empty, options->Capture);
+                ok = RunHeadlessScene(r, viewport, file.empty() ? nullptr : file.c_str(), options->Empty, options->Capture);
             }
-            // Finalize capture and restore engine state between jobs.
-            QuiesceScene(r, viewport);
-            ClearScene(r, viewport);
-            ProcessComponentEvents(r, viewport);
+            ok = FinishHeadlessScene(r, viewport, ok);
+            succeeded &= ok;
             std::fflush(stdout);
             std::fflush(stderr);
             ::dup2(launcher_out, STDOUT_FILENO);
             ::dup2(launcher_err, STDERR_FILENO);
-            if (fs::exists(out + ".webp") || fs::exists(out + ".mp4")) std::println("ok   {} ({:.2f} s)", out, ElapsedMs(begin) / 1000.0);
-            else std::println("SKIP {} (no output; load failed or unsupported encoding)", out);
+            if (ok) std::println("ok   {} ({:.2f} s)", out, ElapsedMs(begin) / 1000.0);
+            else std::println("FAIL {} (render or project save failed)", out);
             std::fflush(stdout);
         }
         ::close(launcher_out);
         ::close(launcher_err);
     });
+    return succeeded;
 }
 } // namespace
 
@@ -2087,7 +2086,7 @@ int main(int argc, char **argv) {
     const char *initial_file = file.empty() ? nullptr : file.c_str();
 
     bool headless_ok = true;
-    if (!render_queue.empty()) RunHeadlessQueue(render_queue, quiet, capture);
+    if (!render_queue.empty()) headless_ok = RunHeadlessQueue(render_queue, quiet, capture);
     else if (headless) headless_ok = RunHeadless(initial_file, quiet, empty, capture);
     else run(initial_file, quiet, empty, capture);
     // Report failed captures and headless scene loads through the process status.

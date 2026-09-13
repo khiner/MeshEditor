@@ -1,21 +1,29 @@
 #include "render/MaterialImport.h"
 #include "File.h"
 #include "assets/MeshImport.h"
+#include "gltf/GltfConvert.h"
+#include "project/Assets.h"
+#include "project/Registry.h"
 #include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
 #include <entt/entity/registry.hpp>
 #include <iostream>
 #include <unordered_map>
-void ImportObjPlyMaterials(entt::registry &r, std::span<const ObjPlyMaterial> materials, const std::filesystem::path &mesh_path, uint32_t mesh_store_id) {
+void ImportObjPlyMaterials(entt::registry &r, entt::entity viewport, std::span<const ObjPlyMaterial> materials, const std::filesystem::path &mesh_path, uint32_t mesh_store_id) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &textures = r.ctx().get<TextureStore>();
+    auto &sources = project::GetOrEmplace<gltf::SourceAssets>(r, viewport);
+    auto &manifest = project::GetOrEmplace<MaterializedTextures>(r, viewport);
+    const auto sampler_index = uint32_t(sources.Samplers.size());
+    sources.Samplers.emplace_back(gltf::Sampler{.MagFilter = gltf::Filter::Nearest, .MinFilter = gltf::Filter::Nearest, .WrapS = gltf::Wrap::Repeat, .WrapT = gltf::Wrap::Repeat, .Name = {}});
 
     auto obj_batch = BeginTextureUploadBatch(ctx, r.ctx().get<mtl::LibraryCache>());
     std::unordered_map<std::string, uint32_t> texture_slot_cache;
+    std::unordered_map<uint32_t, uint32_t> source_texture_indices;
     const auto resolve_texture_slot =
         [&](
             const std::optional<std::filesystem::path> &source_texture_path,
@@ -61,6 +69,25 @@ void ImportObjPlyMaterials(entt::registry &r, std::span<const ObjPlyMaterial> ma
         }
 
         const auto sampler_slot = texture->SamplerSlot;
+        const auto image_index = uint32_t(sources.Images.size());
+        sources.Images.emplace_back(gltf::Image{
+            .Bytes = {},
+            .MimeType = gltf::detail::SniffMimeType(std::as_bytes(std::span{encoded})),
+            .Name = texture_path.filename().string(),
+            .SourcePath = project::AssetReference(r, texture_path).string(),
+        });
+        texture->SourceImageIndex = image_index;
+        source_texture_indices.emplace(sampler_slot, uint32_t(sources.Textures.size()));
+        sources.Textures.emplace_back(gltf::Texture{.SamplerIndex = sampler_index, .ImageIndex = image_index, .WebpImageIndex = {}, .BasisuImageIndex = {}, .DdsImageIndex = {}, .Name = texture->Name});
+        manifest.Items.emplace_back(MaterializedTexture{
+            .SamplerSlot = sampler_slot,
+            .SourceImageIndex = image_index,
+            .ColorSpace = color_space,
+            .WrapS = texture->WrapS,
+            .WrapT = texture->WrapT,
+            .Sampler = texture->Config,
+            .Name = texture->Name,
+        });
         textures.Textures.emplace_back(std::move(*texture));
         texture_slot_cache.emplace(cache_key, sampler_slot);
         return sampler_slot;
@@ -85,12 +112,17 @@ void ImportObjPlyMaterials(entt::registry &r, std::span<const ObjPlyMaterial> ma
             .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : textures.WhiteTextureSlot},
             .NormalTexture = {.Slot = normal_texture},
         });
+        sources.MaterialMetas.resize(buffers.Materials.Count() - 1);
+        auto &meta = sources.MaterialMetas.back();
+        meta = {};
+        if (base_color_texture != InvalidSlot) meta.TextureSlots[MTS_BaseColor] = source_texture_indices.at(base_color_texture);
+        if (normal_texture != InvalidSlot) meta.TextureSlots[MTS_Normal] = source_texture_indices.at(normal_texture);
         names.emplace_back(material_name);
     }
     SubmitTextureUploadBatch(obj_batch);
 
     auto &material_store = r.ctx().get<MaterialStore>();
-    material_store.Names.insert(material_store.Names.end(), std::make_move_iterator(names.begin()), std::make_move_iterator(names.end()));
+    material_store.AppendNames(std::move(names));
 
     if (auto primitive_materials = meshes.GetPrimitiveMaterialIndices(mesh_store_id); !primitive_materials.empty()) {
         const auto fallback = scene_material_indices.front();

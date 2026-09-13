@@ -1,5 +1,6 @@
 #include "scene/SceneGraph.h"
 #include "TransformMath.h"
+#include "project/Registry.h"
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 
@@ -49,36 +50,36 @@ void ClearParent(entt::registry &r, entt::entity child) {
     const auto next_sibling = child_node.NextSibling;
     if (const auto &parent_node = r.get<const SceneNode>(parent);
         parent_node.FirstChild == child) {
-        r.patch<SceneNode>(parent, [next_sibling](auto &n) { n.FirstChild = next_sibling; });
+        project::Patch<SceneNode>(r, parent, [next_sibling](auto &n) { n.FirstChild = next_sibling; });
     } else {
         for (const auto sibling : Children(&r, parent)) {
             if (r.get<const SceneNode>(sibling).NextSibling == child) {
-                r.patch<SceneNode>(sibling, [next_sibling](auto &n) { n.NextSibling = next_sibling; });
+                project::Patch<SceneNode>(r, sibling, [next_sibling](auto &n) { n.NextSibling = next_sibling; });
                 break;
             }
         }
     }
 
-    r.patch<SceneNode>(child, [](auto &n) {
+    project::Patch<SceneNode>(r, child, [](auto &n) {
         n.Parent = entt::null;
         n.NextSibling = entt::null;
     });
-    r.remove<ParentInverse>(child);
+    project::Remove<ParentInverse>(r, child);
 }
 
 namespace {
 void LinkChildToParent(entt::registry &r, entt::entity child, entt::entity parent) {
-    if (!r.all_of<SceneNode>(child)) r.emplace<SceneNode>(child);
-    if (!r.all_of<SceneNode>(parent)) r.emplace<SceneNode>(parent);
+    if (!r.all_of<SceneNode>(child)) project::Emplace<SceneNode>(r, child);
+    if (!r.all_of<SceneNode>(parent)) project::Emplace<SceneNode>(r, parent);
 
     ClearParent(r, child);
 
     const auto first_child = r.get<const SceneNode>(parent).FirstChild;
-    r.patch<SceneNode>(child, [parent, first_child](auto &n) {
+    project::Patch<SceneNode>(r, child, [parent, first_child](auto &n) {
         n.Parent = parent;
         n.NextSibling = first_child;
     });
-    r.patch<SceneNode>(parent, [child](auto &n) { n.FirstChild = child; });
+    project::Patch<SceneNode>(r, parent, [child](auto &n) { n.FirstChild = child; });
 }
 } // namespace
 
@@ -87,14 +88,14 @@ void EnsureWorldTransform(entt::registry &r, entt::entity e) {
     const auto *t = r.try_get<const Transform>(e);
     if (!t) return;
     if (const auto *node = r.try_get<const SceneNode>(e); node && node->Parent != entt::null) EnsureWorldTransform(r, node->Parent);
-    r.emplace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(*t)));
+    project::Emplace<WorldTransform>(r, e, ToTransform(GetParentDelta(r, e) * ToMatrix(*t)));
 }
 
 void UpdateWorldTransformRecursive(entt::registry &r, entt::entity e) {
     const auto *t = r.try_get<const Transform>(e);
     if (!t) return;
     if (const auto *node = r.try_get<const SceneNode>(e); node && node->Parent != entt::null) EnsureWorldTransform(r, node->Parent);
-    r.emplace_or_replace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(*t)));
+    project::EmplaceOrReplace<WorldTransform>(r, e, ToTransform(GetParentDelta(r, e) * ToMatrix(*t)));
     for (const auto child : Children{&r, e}) UpdateWorldTransformRecursive(r, child);
 }
 
@@ -107,7 +108,7 @@ void BuildMissingWorldTransforms(entt::registry &r) {
 void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
     if (child == entt::null || parent == entt::null || child == parent) return;
     LinkChildToParent(r, child, parent);
-    r.emplace<ParentInverse>(child, I4);
+    project::Emplace<ParentInverse>(r, child, I4);
     UpdateWorldTransformRecursive(r, child);
 }
 
@@ -118,7 +119,7 @@ void SetParentKeepWorld(entt::registry &r, entt::entity child, entt::entity pare
     const auto child_world = ToMatrix(r.get<const WorldTransform>(child));
     const auto parent_world_inv = numeric::Inverse(ToMatrix(r.get<const WorldTransform>(parent)));
     LinkChildToParent(r, child, parent);
-    r.emplace<ParentInverse>(child, I4);
-    r.emplace_or_replace<Transform>(child, ToTransform(parent_world_inv * child_world));
+    project::Emplace<ParentInverse>(r, child, I4);
+    project::EmplaceOrReplace<Transform>(r, child, ToTransform(parent_world_inv * child_world));
     UpdateWorldTransformRecursive(r, child);
 }

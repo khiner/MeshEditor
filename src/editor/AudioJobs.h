@@ -2,12 +2,13 @@
 #include "Job.h"
 #include "audio/AcousticMaterial.h"
 #include "audio/AudioSystem.h"
+#include "audio/ModalModelFile.h"
 #include "audio/ModalSolve.h"
 #include "audio/ModalWarmStart.h"
 #include <FastFEM/SolveMonitor.h>
 
 struct ModalGenerationResult {
-    std::filesystem::path ModelPath; // Result file, relative to ModalModelsDir(). Empty when the solve failed or was cancelled
+    std::optional<ModalModelData> Model;
     ModalWarmStart WarmStart;
 };
 

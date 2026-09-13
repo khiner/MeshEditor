@@ -20,10 +20,9 @@ void DeinitViewport(entt::registry &, entt::entity viewport);
 void InitViewportMedia(entt::registry &);
 void DeinitViewportMedia(entt::registry &);
 
-// Processes component events and submits a nonblocking render.
-// `viewport_consumer_fence`, if set, is waited on before old resources are destroyed on an extent change.
+// Submits a nonblocking render of the processed scene.
 // Call WaitForRender() before the ImGui frame samples the final image.
-void SubmitViewport(entt::registry &, entt::entity viewport, MTL::CommandBuffer *viewport_consumer = nullptr);
+void SubmitViewport(entt::registry &, entt::entity viewport);
 
 // Reset all per-document viewport state to defaults and clear the scene.
 void SetupScene(entt::registry &, entt::entity viewport);
@@ -38,9 +37,6 @@ void WaitForRender(entt::registry &);
 
 // Resume on-screen display after a headless replay: render the current scene at the current ViewportExtent and present synchronously.
 void PresentViewport(entt::registry &, entt::entity viewport);
-
-// Complete derived GPU state between replayed actions without producing a viewport image.
-void PrepareViewport(entt::registry &, entt::entity viewport);
 
 bool ViewportImageReady(const entt::registry &);
 

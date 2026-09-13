@@ -1,12 +1,28 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
+namespace store {
+struct History;
+}
+namespace project {
+template<typename T> struct VectorHistory;
+}
+
 struct MaterialStore {
+    MaterialStore();
+    ~MaterialStore();
+    void AppendNames(std::vector<std::string>);
+    void ResizeNames(size_t);
+    void Track(store::History &);
     std::vector<std::string> Names;
+
+private:
+    std::unique_ptr<project::VectorHistory<std::string>> Tracked;
 };
 
 struct MaterialDirty {

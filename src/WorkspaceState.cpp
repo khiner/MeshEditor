@@ -16,18 +16,14 @@
 
 namespace workspace {
 namespace {
-constexpr uint32_t Version = 4;
+constexpr uint32_t Version = 5;
 
-constexpr auto SerializeWindowVisibility(auto &archive, auto &visibility) {
-    return archive(
-        visibility.SceneControls,
-        visibility.Viewport,
-        visibility.Animation,
-        visibility.ImGuiDemo,
-        visibility.ImSpinnerDemo,
-        visibility.ImPlotDemo,
-        visibility.Debug
-    );
+void ApplyPendingIni(WindowsState &windows) {
+    if (!ImGui::GetCurrentContext() || GImGui->WithinFrameScope || windows.PendingIni.empty()) return;
+    // Previous focus would override the restored dock-tab selection.
+    ImGui::SetWindowFocus(nullptr);
+    ImGui::LoadIniSettingsFromMemory(windows.PendingIni.data(), windows.PendingIni.size());
+    windows.PendingIni.clear();
 }
 
 void MergePending(auto &values, auto &&pending, auto key) {
@@ -78,12 +74,12 @@ std::vector<WindowState> CaptureWindows(const WindowsState &windows) {
 
 State Capture(const entt::registry &r, entt::entity viewport, const WindowsState &windows) {
     size_t ini_size = 0;
-    const char *ini = ImGui::GetCurrentContext() ? ImGui::SaveIniSettingsToMemory(&ini_size) : nullptr;
+    const char *ini = ImGui::GetCurrentContext() && windows.PendingIni.empty() ? ImGui::SaveIniSettingsToMemory(&ini_size) : nullptr;
     return {
         .ViewCamera = GetViewCameraState(r, viewport),
         .ViewportExtent = r.ctx().get<const ViewportExtent>().Value,
         .Windows = GetWindowVisibility(windows),
-        .ImGuiIni = ini ? std::string{ini, ini_size} : std::string{},
+        .ImGuiIni = ini ? std::string{ini, ini_size} : windows.PendingIni,
         .Tabs = CaptureTabs(windows),
         .WindowStates = CaptureWindows(windows),
     };
@@ -93,10 +89,9 @@ void Apply(entt::registry &r, entt::entity viewport, WindowsState &windows, cons
     r.ctx().get<ViewportExtent>().Value = state.ViewportExtent;
     SetViewCameraState(r, viewport, state.ViewCamera);
     SetWindowVisibility(windows, state.Windows);
-    if (ImGui::GetCurrentContext() && !state.ImGuiIni.empty()) {
-        ImGui::LoadIniSettingsFromMemory(state.ImGuiIni.data(), state.ImGuiIni.size());
-        windows.LayoutLoaded = true;
-    }
+    windows.PendingIni = state.ImGuiIni;
+    if (!windows.PendingIni.empty()) windows.LayoutLoaded = true;
+    ApplyPendingIni(windows);
     windows.PendingTabs = state.Tabs;
     windows.PendingWindows.clear();
     for (const auto &window : state.WindowStates) windows.PendingWindows.push_back({window});
@@ -104,6 +99,7 @@ void Apply(entt::registry &r, entt::entity viewport, WindowsState &windows, cons
 
 void ApplyPending(WindowsState &windows) {
     if (!ImGui::GetCurrentContext()) return;
+    ApplyPendingIni(windows);
     std::erase_if(windows.PendingTabs, [](const TabSelection &selection) {
         auto *bar = ImGui::TabBarFindByID(selection.Bar);
         if (!bar) return false;
@@ -140,9 +136,7 @@ std::vector<std::byte> Serialize(const State &state) {
     const bool has_saved_view = state.ViewCamera.LookThroughSaved.has_value();
     if (zpp::bits::failure(archive(Version, state.ViewCamera.Active, has_saved_view)) ||
         (has_saved_view && zpp::bits::failure(archive(*state.ViewCamera.LookThroughSaved))) ||
-        zpp::bits::failure(archive(state.ViewportExtent)) ||
-        zpp::bits::failure(SerializeWindowVisibility(archive, state.Windows)) ||
-        zpp::bits::failure(archive(state.ImGuiIni, state.Tabs, state.WindowStates))) {
+        zpp::bits::failure(archive(state.ViewportExtent, state.Windows, state.ImGuiIni, state.Tabs, state.WindowStates))) {
         return {};
     }
     bytes.resize(archive.position());
@@ -161,29 +155,16 @@ std::optional<State> Deserialize(std::span<const std::byte> bytes) {
         .WindowStates = {},
     };
     bool has_saved_view{};
-    if (zpp::bits::failure(archive(version, state.ViewCamera.Active, has_saved_view)) || version == 0 || version > Version) {
+    if (zpp::bits::failure(archive(version)) || version != Version || zpp::bits::failure(archive(state.ViewCamera.Active, has_saved_view))) {
         return std::nullopt;
     }
     if (has_saved_view) {
         state.ViewCamera.LookThroughSaved.emplace(vec3{0, 0, 1}, vec3{0}, Camera{});
         if (zpp::bits::failure(archive(*state.ViewCamera.LookThroughSaved))) return std::nullopt;
     }
-    if (zpp::bits::failure(archive(state.ViewportExtent)) ||
-        zpp::bits::failure(SerializeWindowVisibility(archive, state.Windows)) ||
-        zpp::bits::failure(archive(state.ImGuiIni))) {
+    if (zpp::bits::failure(archive(state.ViewportExtent, state.Windows, state.ImGuiIni, state.Tabs, state.WindowStates))) {
         return std::nullopt;
     }
-    if (version >= 2 && zpp::bits::failure(archive(state.Tabs))) return std::nullopt;
-    if (version == 3) {
-        struct WindowScroll {
-            uint32_t Window{};
-            float X{}, Y{};
-        };
-        std::vector<WindowScroll> scroll;
-        if (zpp::bits::failure(archive(scroll))) return std::nullopt;
-        for (const auto &value : scroll) state.WindowStates.push_back({value.Window, value.X, value.Y, {}});
-    }
-    if (version >= 4 && zpp::bits::failure(archive(state.WindowStates))) return std::nullopt;
     return state;
 }
 

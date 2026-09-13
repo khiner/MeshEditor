@@ -1,1 +1,1 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/Duck/glTF-Draco/Duck.gltf': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/Duck/glTF-Draco/Duck.gltf': Missing required extensions: KHR_draco_mesh_compression
+Error loading glTF file 'asset:/126d74b5607857f49a1983beed2d641a/Duck.gltf': Missing required extensions: KHR_draco_mesh_compression

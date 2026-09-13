@@ -1,6 +1,5 @@
 #include "CameraTypes.h"
 #include "Path.h"
-#include "action/ActionIndex.h"
 #include "animation/AnimationData.h"
 #include "animation/AnimationTimeline.h"
 #include "animation/MorphWeightState.h"
@@ -27,7 +26,7 @@ template<> inline constexpr bool ForceFieldwise<TimelinePlayback> = true;
 void RegisterScene(Tables &tables) {
     Persistent<
         Transform, PunctualLight, Name, Selected, Active, ObjectKind, Scene, ActiveScene, SceneMembership, SubElementOf,
-        ScaleLocked, Instance, Hidden, SceneNode, ParentInverse, ObjectExtrasTag, Path, Camera, ActionIndex, TimelineRange,
+        ScaleLocked, Instance, Hidden, SceneNode, ParentInverse, ObjectExtrasTag, Path, Camera, TimelineRange,
         TimelinePlayback, AnimationTimelineView, NodeTransformAnimation, MorphWeightAnimation, MorphWeightState>(tables);
     Derived<
         RenderInstance, WorldTransform, ModelsBuffer, MaterialDirty, LightIndex, LastEvaluatedFrame, MorphWeightGpuRange,

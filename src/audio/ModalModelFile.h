@@ -5,8 +5,13 @@
 #include "ModalModes.h"
 #include "mesh/TetMeshData.h"
 
+#include <expected>
 #include <filesystem>
-#include <optional>
+#include <string>
+
+namespace project {
+struct Assets;
+}
 
 // Stores modal solve results in write-once, content-addressed files for deterministic replay.
 struct ModalModelData {
@@ -18,11 +23,6 @@ struct ModalModelData {
     bool operator==(const ModalModelData &) const = default;
 };
 
-// The modal results store.
-std::filesystem::path ModalModelsDir();
-
-// Writes data under dir and returns its relative content-addressed path.
-// Reuses identical stored content and returns an empty path on I/O failure.
-std::filesystem::path SaveModalModelFile(const std::filesystem::path &dir, const ModalModelData &);
-
-std::optional<ModalModelData> LoadModalModelFile(const std::filesystem::path &relative);
+// Return an immutable project asset reference.
+std::expected<std::filesystem::path, std::string> SaveModalModelFile(project::Assets &, const ModalModelData &);
+std::expected<ModalModelData, std::string> LoadModalModelFile(const std::filesystem::path &);

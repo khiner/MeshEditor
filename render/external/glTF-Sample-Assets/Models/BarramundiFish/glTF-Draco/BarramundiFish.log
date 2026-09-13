@@ -1,1 +1,1 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/BarramundiFish/glTF-Draco/BarramundiFish.gltf': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/BarramundiFish/glTF-Draco/BarramundiFish.gltf': Missing required extensions: KHR_draco_mesh_compression
+Error loading glTF file 'asset:/b9ee08a5c040d41155d0b9b99e37de9a/BarramundiFish.gltf': Missing required extensions: KHR_draco_mesh_compression

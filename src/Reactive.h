@@ -37,13 +37,14 @@ auto &reactive(entt::registry &r) { return r.storage<entt::reactive>(entt::type_
 
 enum class ComponentEventPhase { BeforePose,
                                  AfterPose };
+enum class EventPass;
 struct ComponentEventHandler {
-    std::function<void(entt::registry &)> Apply;
+    std::function<void(entt::registry &, EventPass)> Apply;
     ComponentEventPhase Phase;
 };
 
 inline void RegisterComponentEventHandler(
-    entt::registry &r, std::function<void(entt::registry &)> handler,
+    entt::registry &r, std::function<void(entt::registry &, EventPass)> handler,
     ComponentEventPhase phase = ComponentEventPhase::BeforePose
 ) {
     r.ctx().emplace<std::vector<ComponentEventHandler>>().push_back({std::move(handler), phase});

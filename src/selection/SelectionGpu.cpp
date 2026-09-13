@@ -1,4 +1,5 @@
 #include "selection/SelectionGpu.h"
+#include "project/Registry.h"
 
 #include <Metal/MTLCommandQueue.hpp>
 
@@ -228,7 +229,7 @@ std::optional<std::pair<entt::entity, uint32_t>> RunEditElementClick(
         RecordSelectionDerive(r, chain, transactions);
     }
     SubmitAndWait(ctx, command_buffer);
-    r.emplace_or_replace<EditSelectionDirty>(viewport);
+    project::EmplaceOrReplace<EditSelectionDirty>(r, viewport);
     if (const auto index = ReadNearestPickedElement(buffers, element_count)) {
         for (const auto &range : ranges) {
             if (*index < range.Offset || *index >= range.Offset + range.Count) continue;
@@ -371,7 +372,7 @@ void RunBoxSelectElements(entt::registry &r, entt::entity viewport, std::span<co
     }
     SubmitAndWait(ctx, command_buffer);
     if (baseline) baseline->ElementSelectionCaptured = true;
-    r.emplace_or_replace<EditSelectionDirty>(viewport);
+    project::EmplaceOrReplace<EditSelectionDirty>(r, viewport);
 }
 
 std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::entity instance_entity, uvec2 mouse_px) {
@@ -525,6 +526,7 @@ std::vector<EditSelectionPushConstants> BuildSelectionTransactions(
         const auto &mesh_buffers = r.get<const MeshBuffers>(range.MeshEntity);
         const auto store_id = mesh.GetStoreId();
         meshes.EnsureSelectionBits(mesh);
+        meshes.CaptureSelectionWrite(store_id);
         const auto corners = meshes.GetFaceCornerRange(store_id);
         auto halfedge_to_edge = meshes.GetConnectivityHalfedgeToEdgeRange(store_id);
         if (halfedge_to_edge.Count == 0) halfedge_to_edge.Offset = InvalidOffset;
@@ -627,7 +629,7 @@ void ApplySelectionTransactions(entt::registry &r, entt::entity viewport, std::s
         RecordSelectionDerive(r, chain, transactions);
     }
     SubmitAndWait(ctx, command_buffer);
-    r.emplace_or_replace<EditSelectionDirty>(viewport);
+    project::EmplaceOrReplace<EditSelectionDirty>(r, viewport);
 }
 } // namespace
 
@@ -683,6 +685,7 @@ void ApplyEditSharpness(
         if (mesh.FaceCount() == 0) continue;
         const auto id = mesh.GetStoreId();
         if (uses_selection) meshes.EnsureSelectionBits(mesh);
+        meshes.CaptureSharpnessWrite(id, operation);
         const auto corners = meshes.GetFaceCornerRange(id);
         commands.emplace_back(EditSharpnessPushConstants{
             .VertexSelectionBits = uses_selection ? meshes.GetSelectionBitsRange(id, Element::Vertex) : SlottedRange{},
@@ -736,7 +739,7 @@ void ApplyEditSharpness(
         RecordSelectionDerive(r, chain, selection_transactions);
     }
     SubmitAndWait(ctx, command_buffer);
-    for (const auto mesh_entity : edited) r.emplace_or_replace<MeshShadingDirty>(mesh_entity);
+    for (const auto mesh_entity : edited) project::EmplaceOrReplace<MeshShadingDirty>(r, mesh_entity);
 }
 
 const EditSelectionSummary *GetElementSelectionSummary(const entt::registry &r, entt::entity mesh_entity, Element element) {

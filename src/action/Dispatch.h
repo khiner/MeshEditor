@@ -2,6 +2,7 @@
 
 #include "FieldLimits.h"
 #include "action/Core.h"
+#include "project/Registry.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -35,7 +36,7 @@ inline auto &TagTable() {
 template<typename C>
 void PatchComponent(entt::registry &r, entt::entity e, uint16_t offset, const void *src, uint16_t size) {
     // Field is trivially copyable (enforced in UpdateOf), so a sized copy is equivalent to assignment.
-    r.patch<C>(e, [&](C &c) { std::memcpy(reinterpret_cast<std::byte *>(&c) + offset, src, size); });
+    project::Patch<C>(r, e, [&](C &c) { std::memcpy(reinterpret_cast<std::byte *>(&c) + offset, src, size); });
 }
 template<typename C>
 void ReadComponent(const entt::registry &r, entt::entity e, uint16_t offset, void *dst, uint16_t size) {
@@ -45,8 +46,8 @@ template<typename C>
 bool HasComponent(const entt::registry &r, entt::entity e) { return r.all_of<C>(e); }
 template<typename Tag>
 void SetTagPresence(entt::registry &r, entt::entity e, bool present) {
-    if (present) r.emplace_or_replace<Tag>(e);
-    else r.remove<Tag>(e);
+    if (present) project::EmplaceOrReplace<Tag>(r, e);
+    else project::Remove<Tag>(r, e);
 }
 
 template<typename C>
@@ -112,11 +113,11 @@ inline auto &CreateNamedTable() {
 }
 template<typename T>
 void SetNameImpl(entt::registry &r, entt::entity e, const std::string &name) {
-    r.patch<T>(e, [&](T &x) { x.Name = name; });
+    project::Patch<T>(r, e, [&](T &x) { x.Name = name; });
 }
 template<typename T>
 void CreateNamedImpl(entt::registry &r, std::string_view prefix) {
-    r.emplace<T>(r.create(), T{.Name = std::string{prefix} + ' ' + std::to_string(r.view<T>().size())});
+    project::Emplace<T>(r, project::Create(r), T{.Name = std::string{prefix} + ' ' + std::to_string(r.view<T>().size())});
 }
 template<typename T>
 struct NamedRegistrar {
@@ -173,7 +174,7 @@ Field FieldGestureStart(entt::registry &r, entt::entity e, const detail::Compone
     p.Read(r, e, offset, &start, sizeof(Field));
     DragFieldStart s{comp, offset, uint16_t(sizeof(Field)), {}};
     std::memcpy(s.Bytes.data(), &start, sizeof(Field));
-    r.emplace_or_replace<DragFieldStart>(e, s);
+    project::EmplaceOrReplace<DragFieldStart>(r, e, s);
     return start;
 }
 

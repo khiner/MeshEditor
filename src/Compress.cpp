@@ -3,6 +3,7 @@
 
 #include <zstd.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -14,6 +15,7 @@ namespace fs = std::filesystem;
 namespace {
 constexpr int CompressionLevel{5};
 constexpr size_t ChunkSize{1 << 20}; // 1 MiB streaming buffer.
+constexpr uint32_t MetadataMagic = 0x184D2A50; // Zstd skippable frame.
 
 // Encode each archive entry as [uint32 path length][path][uint64 data length][data] in one zstd stream.
 
@@ -39,13 +41,15 @@ bool CompressToStream(const fs::path &src, std::ostream &out) {
     ZSTD_CCtx_setParameter(cctx.get(), ZSTD_c_compressionLevel, CompressionLevel);
 
     std::vector<char> out_buf(ZSTD_CStreamOutSize()), chunk(ChunkSize);
-    for (const auto &entry : fs::recursive_directory_iterator{src, ec}) {
-        if (!entry.is_regular_file(ec)) continue;
-        const auto rel = fs::relative(entry.path(), src, ec).generic_string();
-        const auto data_len = uint64_t(fs::file_size(entry.path(), ec));
+    for (fs::recursive_directory_iterator it{src, ec}, end; !ec && it != end; it.increment(ec)) {
+        const bool regular = it->is_regular_file(ec);
+        if (ec) return false;
+        if (!regular) continue;
+        const auto rel = it->path().lexically_relative(src).generic_string();
+        const auto data_len = uint64_t(fs::file_size(it->path(), ec));
         if (ec) return false;
 
-        std::ifstream in{entry.path(), std::ios::binary};
+        std::ifstream in{it->path(), std::ios::binary};
         if (!in) return false;
 
         const uint32_t path_len = uint32_t(rel.size());
@@ -60,15 +64,36 @@ bool CompressToStream(const fs::path &src, std::ostream &out) {
             left -= uint64_t(n);
         }
     }
-    return Feed(cctx.get(), out, out_buf, {nullptr, 0, 0}, ZSTD_e_end);
+    return !ec && Feed(cctx.get(), out, out_buf, {nullptr, 0, 0}, ZSTD_e_end);
 }
 } // namespace
 
-bool Compress(const fs::path &src, const fs::path &dst) {
+bool Compress(const fs::path &src, const fs::path &dst, std::span<const std::byte> metadata) {
     std::error_code ec;
     if (!fs::is_directory(src, ec)) return false;
+    const auto relative = fs::weakly_canonical(dst, ec).lexically_relative(fs::weakly_canonical(src, ec));
+    if (ec || (!relative.empty() && *relative.begin() != "..")) return false;
     if (const auto parent = dst.parent_path(); !parent.empty()) fs::create_directories(parent, ec);
-    return !ec && bool(File::WriteAtomic(dst, [&](auto &out) { return CompressToStream(src, out); }));
+    if (metadata.size() > UINT32_MAX) return false;
+    return !ec && bool(File::WriteAtomic(dst, [&](auto &out) {
+        const uint32_t size = uint32_t(metadata.size());
+        out.write(reinterpret_cast<const char *>(&MetadataMagic), sizeof(MetadataMagic));
+        out.write(reinterpret_cast<const char *>(&size), sizeof(size));
+        out.write(reinterpret_cast<const char *>(metadata.data()), size);
+        return out && CompressToStream(src, out);
+    }));
+}
+
+std::optional<std::vector<std::byte>> ReadArchiveMetadata(const fs::path &path) {
+    std::ifstream in{path, std::ios::binary | std::ios::ate};
+    const auto length = in.tellg();
+    in.seekg(0);
+    uint32_t magic{}, size{};
+    if (!in.read(reinterpret_cast<char *>(&magic), sizeof(magic)) || magic != MetadataMagic ||
+        !in.read(reinterpret_cast<char *>(&size), sizeof(size)) || length < std::streamoff(8ull + size)) return std::nullopt;
+    std::vector<std::byte> metadata(size);
+    if (!in.read(reinterpret_cast<char *>(metadata.data()), size)) return std::nullopt;
+    return metadata;
 }
 
 bool Decompress(const fs::path &src, const fs::path &dst) {
@@ -92,7 +117,10 @@ bool Decompress(const fs::path &src, const fs::path &dst) {
                 if (!cur) return false;
 
                 off += take;
-                if ((data_left -= take) == 0) cur.close();
+                if ((data_left -= take) == 0) {
+                    cur.close();
+                    if (!cur) return false;
+                }
                 continue;
             }
             header.push_back(buf[off++]);
@@ -100,33 +128,37 @@ bool Decompress(const fs::path &src, const fs::path &dst) {
             if (header.size() < sizeof path_len) continue;
 
             std::memcpy(&path_len, header.data(), sizeof path_len);
+            if (path_len == 0 || path_len > 4096) return false;
             if (header.size() < sizeof path_len + path_len + sizeof(uint64_t)) continue;
 
-            const std::string rel{header.data() + sizeof path_len, path_len};
-            uint64_t data_len = 0;
-            std::memcpy(&data_len, header.data() + sizeof path_len + path_len, sizeof data_len);
+            const fs::path entry{header.begin() + sizeof path_len, header.begin() + sizeof path_len + path_len};
+            if (entry.is_absolute() || std::ranges::find(entry, "..") != entry.end()) return false;
+            std::memcpy(&data_left, header.data() + sizeof path_len + path_len, sizeof data_left);
             header.clear();
-            const auto path = dst / fs::path{rel};
+            const auto path = dst / entry;
             if (const auto parent = path.parent_path(); !parent.empty()) fs::create_directories(parent, ec);
+            if (ec) return false;
             cur.open(path, std::ios::binary | std::ios::trunc);
             if (!cur) return false;
 
-            data_left = data_len;
-            if (data_left == 0) cur.close();
+            if (data_left == 0) {
+                cur.close();
+                if (!cur) return false;
+            }
         }
         return true;
     };
 
     std::vector<char> in_buf(ZSTD_DStreamInSize()), out_buf(ZSTD_DStreamOutSize());
+    size_t remaining = 1;
     while (in.read(in_buf.data(), std::streamsize(in_buf.size())), in.gcount() > 0) {
         ZSTD_inBuffer zin{in_buf.data(), size_t(in.gcount()), 0};
         while (zin.pos < zin.size) {
             ZSTD_outBuffer zout{out_buf.data(), out_buf.size(), 0};
-            const size_t ret = ZSTD_decompressStream(dctx.get(), &zout, &zin);
-            if (ZSTD_isError(ret)) return false;
-            if (!consume(out_buf.data(), zout.pos)) return false;
+            remaining = ZSTD_decompressStream(dctx.get(), &zout, &zin);
+            if (ZSTD_isError(remaining) || !consume(out_buf.data(), zout.pos)) return false;
         }
     }
     // A well-formed archive ends exactly at an entry boundary.
-    return data_left == 0 && header.empty() && !cur.is_open();
+    return in.eof() && remaining == 0 && data_left == 0 && header.empty() && !cur.is_open() && !cur.fail();
 }

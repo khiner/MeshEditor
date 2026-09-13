@@ -1,3 +1,4 @@
+#include "project/Registry.h"
 #include "viewport/Viewport.h"
 
 #include "Camera.h"
@@ -59,7 +60,7 @@ void DisplayViewport(entt::registry &r, entt::entity viewport) {
 
 // Intentionally mutates VideoRecording outside Apply (not replayed).
 void StartRecording(entt::registry &r, entt::entity viewport, const std::filesystem::path &path, int fps, bool with_audio) {
-    r.remove<VideoRecording>(viewport);
+    project::Remove<VideoRecording>(r, viewport);
     EndAudioCapture(r);
     const auto &pipelines = r.ctx().get<const Pipelines>();
     if (!pipelines.Main.Resources) {
@@ -77,7 +78,7 @@ void StartRecording(entt::registry &r, entt::entity viewport, const std::filesys
     // Video playback uses device units.
     // WAV measurement output remains in pascals.
     const bool monitor = with_audio && path.extension() != ".wav";
-    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(ctx, path, region.first.x, region.first.y, region.second, fps, audio_rate), .Region = region, .Monitor = monitor, .OfflineRate = offline_rate, .Fps = fps});
+    project::Emplace<VideoRecording>(r, viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(ctx, path, region.first.x, region.first.y, region.second, fps, audio_rate), .Region = region, .Monitor = monitor, .OfflineRate = offline_rate, .Fps = fps});
 }
 
 bool IsRecording(const entt::registry &r, entt::entity viewport) {
@@ -96,7 +97,7 @@ void CaptureRecordFrame(entt::registry &r, entt::entity viewport) {
     if (!rec || !rec->Recorder || !rec->Recorder->IsActive() || !pipelines.Main.Resources) return;
     if (GetCaptureRegion(r) != rec->Region) {
         std::println(stderr, "Viewport: capture region changed; stopping recording.");
-        r.remove<VideoRecording>(viewport); // Intentional direct registry mutation outside Apply
+        project::Remove<VideoRecording>(r, viewport);
         return;
     }
     // Drain all device audio produced since the last frame to preserve wall-clock duration.

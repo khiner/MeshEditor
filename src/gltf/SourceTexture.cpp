@@ -1,4 +1,5 @@
 #include "SourceTexture.h"
+#include "project/Assets.h"
 
 #include "File.h"
 #include "SourceAssets.h"
@@ -35,7 +36,7 @@ std::optional<DecodedImage> DecodeImageRgba8(const entt::registry &r, uint32_t i
     };
     if (!image.Bytes.empty()) return decode(image.Bytes);
     // Reload external sources from their retained path.
-    const auto bytes = File::Read(image.SourceAbsPath);
+    const auto bytes = File::Read(project::ResolveAsset(r, image.SourcePath));
     return bytes ? decode(*bytes) : std::nullopt;
 }
 

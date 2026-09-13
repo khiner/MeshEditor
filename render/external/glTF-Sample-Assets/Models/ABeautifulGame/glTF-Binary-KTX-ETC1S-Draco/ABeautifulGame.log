@@ -1,1 +1,1 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/ABeautifulGame/glTF-Binary-KTX-ETC1S-Draco/ABeautifulGame.glb': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/ABeautifulGame/glTF-Binary-KTX-ETC1S-Draco/ABeautifulGame.glb': Missing required extensions: KHR_draco_mesh_compression
+Error loading glTF file 'asset:/4b240b67135e43d07df701fc6f21dec0/ABeautifulGame.glb': Missing required extensions: KHR_draco_mesh_compression

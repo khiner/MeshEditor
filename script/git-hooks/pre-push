@@ -37,8 +37,7 @@ COMPARE_VIDEOS=1 script/Render </dev/null || { echo "pre-push: script/Render fai
 if [ -n "$(git status --porcelain -- render/)" ]; then
     if [ -n "${RENDER_PREPUSH_INNER:-}" ]; then
         echo "pre-push: render/ is still dirty after re-rendering the just-amended commit." >&2
-        echo "Regeneration is nondeterministic beyond the accepted GPU-noise envelope" >&2
-        echo "(script/VideosEquivalent). Investigate before pushing." >&2
+        echo "Render artifacts changed between consecutive runs. Inspect the render/ diff before pushing." >&2
         exit 1
     fi
     branch="$(git symbolic-ref --quiet HEAD || true)"

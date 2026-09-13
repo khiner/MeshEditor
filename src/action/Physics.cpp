@@ -1,6 +1,7 @@
 #include "action/Physics.h"
 #include "action/Dispatch.h"
 #include "action/ScopeResolve.h"
+#include "project/Registry.h"
 #include "scene/Entity.h"
 
 namespace action::physics {
@@ -23,16 +24,16 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 for_each_physics_target(a.Scope, accept, [&](entt::entity e) {
                     const bool want_motion = a.Value == Type::Kinematic || a.Value == Type::Dynamic;
                     const bool want_collider = a.Value == Type::Static || want_motion;
-                    if (!want_motion) r.remove<PhysicsMotion>(e);
-                    if (!want_collider) r.remove<ColliderShape>(e);
+                    if (!want_motion) project::Remove<PhysicsMotion>(r, e);
+                    if (!want_collider) project::Remove<ColliderShape>(r, e);
                     if (want_collider && !r.all_of<ColliderShape>(e)) {
-                        r.emplace<ColliderShape>(e);
-                        r.emplace<ColliderPolicy>(e);
+                        project::Emplace<ColliderShape>(r, e);
+                        project::Emplace<ColliderPolicy>(r, e);
                     }
                     if (want_motion) {
                         const bool is_kinematic = a.Value == Type::Kinematic;
-                        if (!r.all_of<PhysicsMotion>(e)) r.emplace<PhysicsMotion>(e, PhysicsMotion{.IsKinematic = is_kinematic});
-                        else r.patch<PhysicsMotion>(e, [is_kinematic](PhysicsMotion &m) { m.IsKinematic = is_kinematic; });
+                        if (!r.all_of<PhysicsMotion>(e)) project::Emplace<PhysicsMotion>(r, e, PhysicsMotion{.IsKinematic = is_kinematic});
+                        else project::Patch<PhysicsMotion>(r, e, [is_kinematic](PhysicsMotion &m) { m.IsKinematic = is_kinematic; });
                     }
                 });
             },
@@ -40,22 +41,22 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const auto accept = [&](entt::entity e) { return r.all_of<ColliderShape>(e); };
                 for_each_physics_target(a.Scope, accept, [&](entt::entity e) {
                     const auto owner_mesh = FindMeshEntity(r, e);
-                    r.patch<ColliderShape>(e, [&](ColliderShape &cs) {
+                    project::Patch<ColliderShape>(r, e, [&](ColliderShape &cs) {
                         cs.Shape = a.Shape;
                         if (IsMeshBackedShape(a.Shape) && cs.MeshEntity == null_entity) cs.MeshEntity = owner_mesh;
                     });
-                    if (a.LockKind) r.patch<ColliderPolicy>(e, [](ColliderPolicy &p) { p.LockedKind = true; });
+                    if (a.LockKind) project::Patch<ColliderPolicy>(r, e, [](ColliderPolicy &p) { p.LockedKind = true; });
                 });
             },
             [&](AddTrigger) {
                 const auto e = FindActiveEntity(r);
-                r.emplace<ColliderShape>(e);
-                r.emplace<ColliderPolicy>(e);
-                r.emplace<TriggerTag>(e);
+                project::Emplace<ColliderShape>(r, e);
+                project::Emplace<ColliderPolicy>(r, e);
+                project::Emplace<TriggerTag>(r, e);
             },
-            [&](RemoveTriggerNodes) { r.remove<TriggerNodes>(FindActiveEntity(r)); },
+            [&](RemoveTriggerNodes) { project::Remove<TriggerNodes>(r, FindActiveEntity(r)); },
             [&](const ToggleFilterEntity &a) {
-                r.patch<CollisionFilter>(a.FilterEntity, [&](CollisionFilter &f) {
+                project::Patch<CollisionFilter>(r, a.FilterEntity, [&](CollisionFilter &f) {
                     auto &vec = a.Which == ToggleFilterEntity::List::Systems ? f.Systems : f.CollideSystems;
                     if (a.Add) {
                         if (std::find(vec.begin(), vec.end(), a.SystemEntity) == vec.end()) vec.emplace_back(a.SystemEntity);
@@ -63,19 +64,19 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 });
             },
             [&]<typename T>(const SetJointVecItem<T> &a) {
-                r.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) { (d.*JointVecMember<T>)[a.Index] = *a.Value; });
+                project::Patch<PhysicsJointDef>(r, a.JointDefEntity, [&](PhysicsJointDef &d) { (d.*JointVecMember<T>)[a.Index] = *a.Value; });
             },
             [&]<typename T>(const AddJointVecItem<T> &a) {
-                r.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) { (d.*JointVecMember<T>).emplace_back(); });
+                project::Patch<PhysicsJointDef>(r, a.JointDefEntity, [&](PhysicsJointDef &d) { (d.*JointVecMember<T>).emplace_back(); });
             },
             [&]<typename T>(const DeleteJointVecItem<T> &a) {
-                r.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) {
+                project::Patch<PhysicsJointDef>(r, a.JointDefEntity, [&](PhysicsJointDef &d) {
                     auto &vec = d.*JointVecMember<T>;
                     vec.erase(vec.begin() + a.Index);
                 });
             },
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
-            [&](const Replace<PhysicsMotion> &a) { ForEachReplaceTarget<PhysicsMotion>(r, a.Scope, a.Entity, [&](entt::entity e) { r.emplace_or_replace<PhysicsMotion>(e, *a.Value); }); },
+            [&](const Replace<PhysicsMotion> &a) { ForEachReplaceTarget<PhysicsMotion>(r, a.Scope, a.Entity, [&](entt::entity e) { project::EmplaceOrReplace<PhysicsMotion>(r, e, *a.Value); }); },
         },
         action
     );

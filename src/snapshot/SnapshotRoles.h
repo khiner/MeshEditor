@@ -4,6 +4,7 @@
 
 #include <optional>
 #include <span>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -20,6 +21,7 @@ struct SnapshotEntry {
     void (*Serialize)(const void *component, std::vector<std::byte> &out);
     void (*Emplace)(entt::registry &, entt::entity, std::span<const std::byte>);
     bool (*SkipEntity)(const entt::registry &, entt::entity);
+    std::string_view Name{};
 };
 
 // Returns the serializer table for Persistent components.

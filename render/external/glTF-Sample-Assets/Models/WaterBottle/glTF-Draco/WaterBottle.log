@@ -1,1 +1,1 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/WaterBottle/glTF-Draco/WaterBottle.gltf': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/WaterBottle/glTF-Draco/WaterBottle.gltf': Missing required extensions: KHR_draco_mesh_compression
+Error loading glTF file 'asset:/428585c7b0a04f463269403e3656e28d/WaterBottle.gltf': Missing required extensions: KHR_draco_mesh_compression

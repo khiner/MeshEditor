@@ -1,13 +1,11 @@
 #include "action/Io.h"
 #include "editor/AudioIntegration.h"
+#include "project/Registry.h"
 
 #include "CameraTypes.h"
-#include "File.h"
 #include "Profile.h"
 #include "Variant.h"
-#include "action/ActionIndex.h"
 #include "action/Errors.h"
-#include "action/Log.h"
 #include "animation/AnimationTimeline.h"
 #include "audio/AcousticMaterial.h"
 #include "audio/AudioSystem.h"
@@ -22,7 +20,6 @@
 #include "object/ObjectOps.h"
 #include "render/GpuBufferOps.h"
 #include "scene/Defaults.h"
-#include "snapshot/SaveState.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 
@@ -63,17 +60,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const auto ext = path.extension().string();
                 if (ext == ".gltf" || ext == ".glb") LoadGltfFile(r, viewport, a.Path);
                 else if (ext == ".obj" || ext == ".ply") RequestImportMesh(r, viewport, path, MeshInstanceCreateInfo{.Name = path.stem().string()});
-                else if (ext == ".state") {
-                    const auto bytes = File::Read(path);
-                    if (!bytes) {
-                        fail(bytes.error());
-                        return;
-                    }
-                    // ClearScene recreates viewport GPU resources the previous frame may still be using.
-                    WaitForRender(r);
-                    ClearScene(r, viewport);
-                    snapshot::LoadState(r, *bytes);
-                } else fail(std::format("Unsupported file format: '{}'", ext));
+                else fail(std::format("Unsupported file format: '{}'", ext));
             },
             [&](const SaveGltf &a) {
                 auto &c = r.ctx();
@@ -81,52 +68,33 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     fail(std::format("Error saving glTF file '{}': {}", a.Path.string(), save.error()));
                 }
             },
-            [&](const ClearHistory &a) {
-                if (!FlushLog()) {
-                    fail("Failed to flush the action log. History was not cleared.");
-                    return;
-                }
-                auto &index = r.get<ActionIndex>(viewport).Index;
-                const auto previous_index = std::exchange(index, 0);
-                if (const auto result = File::WriteAtomic(a.Path, snapshot::SaveState(r)); !result) {
-                    index = previous_index;
-                    fail(result.error());
-                    return;
-                }
-                const auto log_path = CurrentLogPath();
-                StopLog();
-                StartLog(log_path);
-                std::error_code ec;
-                std::filesystem::remove_all(ModalModelsDir(), ec);
-            },
             [&](const LoadGltf &a) { LoadGltfFile(r, viewport, a.Path); },
             [&](const LoadRealImpact &a) {
-                const auto &directory = a.Directory;
-                auto object_name = RealImpact::ValidateDirectory(directory);
-                if (!object_name) {
-                    fail(std::move(object_name.error()));
+                auto source = RealImpact::LoadSource(r, a.Path);
+                if (!source) {
+                    fail(std::move(source.error()));
                     return;
                 }
 
                 ClearMeshes(r, viewport);
                 const auto [mesh_entity, instance_entity] = ImportMesh(
-                    r,
-                    directory / "transformed.obj",
-                    MeshInstanceCreateInfo{.Name = std::move(*object_name), .Transform = {.R = RealImpact::ObjectRotationToYUp}},
+                    r, viewport,
+                    source->Mesh,
+                    MeshInstanceCreateInfo{.Name = std::move(source->Name), .Transform = {.R = RealImpact::ObjectRotationToYUp}},
                     true // Weld vertices
                 );
 
                 // The npy file's vertex indices use the source OBJ numbering, so look up by position instead.
                 std::vector<uint32_t> vertex_indices(RealImpact::NumImpactVertices);
                 {
-                    const auto impact_positions = RealImpact::LoadPositions(directory);
+                    const auto &impact_positions = source->Positions;
                     const auto &mesh = GetMesh(r, mesh_entity);
                     for (size_t i = 0; i < impact_positions.size(); ++i) {
                         vertex_indices[i] = *mesh.FindNearestVertex(impact_positions[i]);
                     }
                 }
 
-                const auto listener_points = RealImpact::LoadListenerPoints(directory);
+                const auto &listener_points = source->Listeners;
                 const auto created = CreateMesh(r, {.Data = primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}), .FlatShaded = true});
                 const auto [listener_mesh_entity, _] = ::AddMesh(r, created.StoreId);
                 for (const auto &listener_point : listener_points) {
@@ -142,17 +110,18 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                             .Select = MeshInstanceCreateInfo::SelectBehavior::None,
                         }
                     );
-                    r.emplace<RealImpactMicrophone>(listener_instance_entity, listener_point.Index);
+                    project::Emplace<RealImpactMicrophone>(r, listener_instance_entity, listener_point.Index);
 
                     if (listener_point.Index == RealImpact::CenteredListenerIndex) {
-                        r.emplace<RealImpactActiveMicrophone>(instance_entity, listener_instance_entity);
+                        project::Emplace<RealImpactActiveMicrophone>(r, instance_entity, listener_instance_entity);
 
                         if (const auto material_name = RealImpact::FindMaterialName(r.get<Name>(instance_entity).Value)) {
-                            if (const auto *material = materials::acoustic::Find(*material_name)) r.emplace<AcousticMaterial>(instance_entity, *material);
+                            if (const auto *material = materials::acoustic::Find(*material_name)) project::Emplace<AcousticMaterial>(r, instance_entity, *material);
                         }
-                        r.emplace<ScaleLocked>(instance_entity);
-                        r.emplace<RealImpactVertices>(instance_entity, vertex_indices);
-                        auto samples = RealImpact::LoadSamples(directory, listener_point.Index);
+                        project::Emplace<ScaleLocked>(r, instance_entity);
+                        project::Emplace<RealImpactVertices>(r, instance_entity, vertex_indices, source->Samples);
+                        if (source->Samples.empty()) continue;
+                        auto samples = RealImpact::LoadSamples(r, source->Samples, listener_point.Index);
                         if (!samples) {
                             fail(std::move(samples.error()));
                             return;

@@ -1,5 +1,6 @@
 #include "GltfConvert.h"
 #include "GltfScene.h"
+#include "project/Assets.h"
 
 #include "File.h"
 #include "Profile.h"
@@ -703,9 +704,16 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         // Embedded bytes are the default source unless re-encoding or external URI emission applies.
         std::vector<std::byte> owned; // backs `view` when we re-encode
         std::span<const std::byte> view = img.Bytes;
+        const bool project_source = project::Assets::IsReference(img.SourcePath);
+        const bool ktx2_or_dds = img.MimeType == gltf::MimeType::KTX2 || img.MimeType == gltf::MimeType::DDS;
+        if (project_source && view.empty() && (!img.IsDirty || ktx2_or_dds)) {
+            auto bytes = File::Read(project::ResolveAsset(r, img.SourcePath));
+            if (!bytes) return std::unexpected{bytes.error()};
+            owned = std::move(*bytes);
+            view = owned;
+        }
         auto emit_mime = img.MimeType;
         bool emit_external_uri = false;
-        const bool ktx2_or_dds = img.MimeType == gltf::MimeType::KTX2 || img.MimeType == gltf::MimeType::DDS;
         if (img.IsDirty && !ktx2_or_dds) {
             auto re = reencode_from_gpu(i, img.MimeType, img.Name);
             if (!re) return std::unexpected{std::move(re.error())};
@@ -716,21 +724,21 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         } else if (img.IsDirty) {
             // KTX2 and DDS lack an encoder, so retain their source bytes.
             std::cerr << std::format("Warning: image '{}' is dirty but {} re-encoding isn't supported; emitting original bytes.\n", img.Name, img.MimeType == gltf::MimeType::KTX2 ? "KTX2" : "DDS");
-        } else if (!img.Uri.empty()) {
+        } else if (!img.Uri.empty() && !project_source) {
             std::error_code ec;
-            const bool exists = !img.SourceAbsPath.empty() && std::filesystem::is_regular_file(img.SourceAbsPath, ec);
+            const bool exists = !img.SourcePath.empty() && std::filesystem::is_regular_file(img.SourcePath, ec);
             // Unknown image types support external-file existence checks only.
             const bool validate = img.MimeType == gltf::MimeType::PNG || img.MimeType == gltf::MimeType::JPEG ||
                 img.MimeType == gltf::MimeType::WEBP || img.MimeType == gltf::MimeType::KTX2;
             bool ok = false;
             if (exists) {
                 if (!validate) ok = true;
-                else if (auto b = File::Read(img.SourceAbsPath)) ok = SniffMimeType(*b) == img.MimeType;
+                else if (auto b = File::Read(img.SourcePath)) ok = SniffMimeType(*b) == img.MimeType;
             }
             if (ok) {
                 emit_external_uri = true;
             } else if (auto re = reencode_from_gpu(i, gltf::MimeType::PNG, img.Name)) {
-                std::cerr << std::format("Warning: image '{}' source '{}' missing or mime-mismatched; embedding as PNG.\n", img.Name, img.SourceAbsPath);
+                std::cerr << std::format("Warning: image '{}' source '{}' missing or mime-mismatched; embedding as PNG.\n", img.Name, img.SourcePath);
                 owned = std::move(re->first);
                 emit_mime = gltf::MimeType::PNG;
                 view = owned;
@@ -785,14 +793,16 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         });
     }
 
-    const uint32_t save_material_count = material_count > 1 ? material_count - 2u : 0u;
-    asset.materials.reserve(save_material_count);
+    std::vector<fastgltf::Optional<size_t>> material_indices(material_count);
+    asset.materials.reserve(material_count);
     using M = MaterialSourceMeta;
     static const MaterialSourceMeta DefaultMeta{};
-    for (uint32_t i = 1; i <= save_material_count; ++i) {
+    for (uint32_t i = 1; i < material_count; ++i) {
         const auto source_idx = i - 1;
         auto pbr = sc.Buffers.Materials.Get(i);
         const auto &meta = source_idx < material_metas.size() ? material_metas[source_idx] : DefaultMeta;
+        if (meta.ImplicitDefault) continue;
+        material_indices[i] = asset.materials.size();
         const auto bits = meta.ExtensionPresence;
         for (uint32_t s = 0; s < MTS_Count; ++s) MaterialTextureSlots[s].Get(pbr).Slot = meta.TextureSlots[s];
 
@@ -1111,24 +1121,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
                 fastgltf::Optional<size_t> material_index;
                 if (prim_idx < primitive_materials.size()) {
-                    // Reverse populate's +1 material-index shift; `~0u` (registry default) = don't emit.
                     const auto reg_idx = primitive_materials[prim_idx];
-                    const auto mat = reg_idx >= 1 ? reg_idx - 1 : ~0u;
-                    if (mat < save_material_count) material_index = mat;
+                    if (reg_idx < material_indices.size()) material_index = material_indices[reg_idx];
                 }
 
                 std::vector<fastgltf::Optional<size_t>> mappings;
                 if (prim_idx < layout.VariantMappings.size()) {
                     for (const auto &m : layout.VariantMappings[prim_idx]) {
-                        // Same +1 shift unwind as primitive_materials above.
-                        if (m.has_value() && *m >= 1) {
-                            const auto mat = *m - 1;
-                            if (mat < save_material_count) {
-                                mappings.emplace_back(mat);
-                                continue;
-                            }
-                        }
-                        mappings.emplace_back();
+                        mappings.emplace_back(m && *m < material_indices.size() ? material_indices[*m] : fastgltf::Optional<size_t>{});
                     }
                 }
 

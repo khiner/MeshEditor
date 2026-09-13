@@ -1,1 +1,1 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/CarConcept/glTF-KTX-BasisU-Draco/CarConcept.gltf': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/CarConcept/glTF-KTX-BasisU-Draco/CarConcept.gltf': Missing required extensions: KHR_draco_mesh_compression
+Error loading glTF file 'asset:/d8c3cfc373ae91183fefbc5dc0b64a0d/CarConcept.gltf': Missing required extensions: KHR_draco_mesh_compression

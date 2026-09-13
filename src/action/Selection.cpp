@@ -4,6 +4,7 @@
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
+#include "project/Registry.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
@@ -19,10 +20,10 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     auto merge_bone_sel = [&](entt::entity e, const std::optional<BoneSel> &part, bool additive) {
         const auto sel = part ? BoneSelection::From(*part) : BoneSelection{};
         const auto *cur = r.try_get<BoneSelection>(e);
-        r.emplace_or_replace<BoneSelection>(e, additive && cur ? *cur | sel : sel);
+        project::EmplaceOrReplace<BoneSelection>(r, e, additive && cur ? *cur | sel : sel);
     };
     // Click selection ends an active box-select drag.
-    auto end_box_select_interaction = [&] { r.remove<AdditiveBoxSelectBaseline>(viewport); };
+    auto end_box_select_interaction = [&] { project::Remove<AdditiveBoxSelectBaseline>(r, viewport); };
 
     std::visit(
         overloaded{
@@ -30,8 +31,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](ToggleSelected a) {
                 end_box_select_interaction();
                 if (a.Entity == entt::null) return;
-                if (r.all_of<Selected>(a.Entity)) r.remove<Selected>(a.Entity);
-                else r.emplace_or_replace<Selected>(a.Entity);
+                if (r.all_of<Selected>(a.Entity)) project::Remove<Selected>(r, a.Entity);
+                else project::EmplaceOrReplace<Selected>(r, a.Entity);
             },
             [&](SelectBone a) {
                 end_box_select_interaction();
@@ -40,15 +41,15 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             },
             [&](ExtendActive a) {
                 end_box_select_interaction();
-                r.clear<Active>();
-                r.emplace<Active>(a.Entity);
-                r.emplace_or_replace<Selected>(a.Entity);
+                project::Clear<Active>(r);
+                project::Emplace<Active>(r, a.Entity);
+                project::EmplaceOrReplace<Selected>(r, a.Entity);
             },
             [&](ExtendBoneActive a) {
                 end_box_select_interaction();
-                r.clear<BoneActive>();
-                r.emplace<BoneActive>(a.Entity);
-                if (!r.all_of<BoneSelection>(a.Entity)) r.emplace<BoneSelection>(a.Entity, false, false, false);
+                project::Clear<BoneActive>(r);
+                project::Emplace<BoneActive>(r, a.Entity);
+                if (!r.all_of<BoneSelection>(a.Entity)) project::Emplace<BoneSelection>(r, a.Entity, false, false, false);
                 if (a.Part) merge_bone_sel(a.Entity, a.Part, a.Additive);
             },
             [&](const SetBoneSelectionPart &a) { merge_bone_sel(a.Entity, a.Part, a.Additive); },
@@ -56,16 +57,16 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 end_box_select_interaction();
                 const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
                 if (interaction_mode == InteractionMode::Pose || IsBoneEditMode(r, viewport)) {
-                    r.clear<BoneSelection>();
+                    project::Clear<BoneSelection>(r);
                 } else if (interaction_mode == InteractionMode::Edit) {
                     const auto element = r.get<const EditMode>(viewport).Value;
                     const auto ranges = GetElementRangesForSelected(r, viewport);
                     for (const auto &range : ranges) {
-                        r.remove<MeshActiveElement>(range.MeshEntity);
+                        project::Remove<MeshActiveElement>(r, range.MeshEntity);
                     }
                     ApplyEditSelectionCommand(r, viewport, ranges, element, EditSelectionOperation::Clear);
                 } else {
-                    r.clear<Selected>();
+                    project::Clear<Selected>(r);
                 }
             },
             [&](SnapshotBoxSelectBaseline) {
@@ -80,42 +81,42 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 } else if (interaction_mode == InteractionMode::Object) {
                     for (const auto e : r.view<Selected>()) baseline.SelectedEntities.emplace_back(e);
                 }
-                r.emplace_or_replace<AdditiveBoxSelectBaseline>(viewport, std::move(baseline));
+                project::EmplaceOrReplace<AdditiveBoxSelectBaseline>(r, viewport, std::move(baseline));
             },
             [&](ClearBoxSelectBaseline) {
-                r.remove<AdditiveBoxSelectBaseline>(viewport);
+                project::Remove<AdditiveBoxSelectBaseline>(r, viewport);
             },
             // GPU selection resolves the rectangle after action application.
-            [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(viewport, a.BoxPx, a.Additive, *a.View); },
+            [&](const ApplyBoxSelect &a) { project::EmplaceOrReplace<PendingBoxSelect>(r, viewport, a.BoxPx, a.Additive, *a.View); },
             // GPU selection resolves the pixel after action application.
-            [&](const Pick &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, false, *a.View); },
-            [&](const PickCycle &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, true, *a.View); },
+            [&](const Pick &a) { project::EmplaceOrReplace<PendingPick>(r, viewport, a.MousePx, a.Shift, false, *a.View); },
+            [&](const PickCycle &a) { project::EmplaceOrReplace<PendingPick>(r, viewport, a.MousePx, a.Shift, true, *a.View); },
             [&](const ApplyEditElementClick &a) {
                 end_box_select_interaction();
-                r.emplace_or_replace<PendingEditElementClick>(viewport, a.MousePx, a.Toggle, *a.View);
+                project::EmplaceOrReplace<PendingEditElementClick>(r, viewport, a.MousePx, a.Toggle, *a.View);
             },
             [&](const ApplyTreeSelection &a) {
                 using Clear = ApplyTreeSelection::ClearKind;
-                if (a.Clear == Clear::BonesOnly) r.clear<BoneSelection>();
-                else if (a.Clear == Clear::All) r.clear<Selected, BoneSelection>();
+                if (a.Clear == Clear::BonesOnly) project::Clear<BoneSelection>(r);
+                else if (a.Clear == Clear::All) project::Clear<Selected, BoneSelection>(r);
                 for (const auto e : a.ToSelect()) {
-                    if (r.all_of<BoneIndex>(e)) r.emplace_or_replace<BoneSelection>(e);
-                    else if (!r.all_of<Selected>(e)) r.emplace<Selected>(e);
+                    if (r.all_of<BoneIndex>(e)) project::EmplaceOrReplace<BoneSelection>(r, e);
+                    else if (!r.all_of<Selected>(e)) project::Emplace<Selected>(r, e);
                 }
                 for (const auto e : a.ToDeselect()) {
                     if (r.all_of<BoneIndex>(e)) {
-                        if (r.all_of<BoneSelection>(e)) r.remove<BoneSelection>(e);
-                    } else if (r.all_of<Selected>(e)) r.remove<Selected>(e);
+                        if (r.all_of<BoneSelection>(e)) project::Remove<BoneSelection>(r, e);
+                    } else if (r.all_of<Selected>(e)) project::Remove<Selected>(r, e);
                 }
                 if (a.NavToActive != entt::null) {
                     const bool is_bone = r.all_of<BoneIndex>(a.NavToActive);
                     if (is_bone ? r.all_of<BoneSelection>(a.NavToActive) : r.all_of<Selected>(a.NavToActive)) {
                         if (is_bone) {
-                            r.clear<BoneActive>();
-                            r.emplace<BoneActive>(a.NavToActive);
+                            project::Clear<BoneActive>(r);
+                            project::Emplace<BoneActive>(r, a.NavToActive);
                         } else {
-                            r.clear<Active>();
-                            r.emplace<Active>(a.NavToActive);
+                            project::Clear<Active>(r);
+                            project::Emplace<Active>(r, a.NavToActive);
                         }
                     }
                 }
@@ -128,21 +129,21 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 if (bone_select) {
                     if (arm_obj_entity == entt::null) return;
                     const auto &arm_obj = r.get<const ArmatureObject>(arm_obj_entity);
-                    r.clear<BoneActive, BoneSelection>();
-                    for (const auto bone_entity : arm_obj.BoneEntities) r.emplace<BoneSelection>(bone_entity);
-                    if (!arm_obj.BoneEntities.empty()) r.emplace<BoneActive>(arm_obj.BoneEntities.back());
+                    project::Clear<BoneActive, BoneSelection>(r);
+                    for (const auto bone_entity : arm_obj.BoneEntities) project::Emplace<BoneSelection>(r, bone_entity);
+                    if (!arm_obj.BoneEntities.empty()) project::Emplace<BoneActive>(r, arm_obj.BoneEntities.back());
                 } else if (interaction_mode == InteractionMode::Edit) {
                     const auto element = r.get<const EditMode>(viewport).Value;
                     const auto ranges = GetElementRangesForSelected(r, viewport);
                     ApplyEditSelectionCommand(r, viewport, ranges, element, EditSelectionOperation::Fill);
                 } else if (interaction_mode == InteractionMode::Object) {
-                    r.clear<Active, Selected>();
+                    project::Clear<Active, Selected>(r);
                     entt::entity last{entt::null};
                     for (const auto [e, _] : r.view<const ObjectKind>().each()) {
-                        r.emplace<Selected>(e);
+                        project::Emplace<Selected>(r, e);
                         last = e;
                     }
-                    if (last != entt::null) r.emplace<Active>(last);
+                    if (last != entt::null) project::Emplace<Active>(r, last);
                 }
             },
         },

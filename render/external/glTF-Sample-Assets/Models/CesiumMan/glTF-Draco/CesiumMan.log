@@ -1,1 +1,1 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/CesiumMan/glTF-Draco/CesiumMan.gltf': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/CesiumMan/glTF-Draco/CesiumMan.gltf': Missing required extensions: KHR_draco_mesh_compression
+Error loading glTF file 'asset:/86956116c9353c5a325e26300833fdeb/CesiumMan.gltf': Missing required extensions: KHR_draco_mesh_compression

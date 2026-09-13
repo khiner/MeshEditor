@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gpu/PBRMaterial.h"
+
 #include "CameraTypes.h"
 #include "Variant.h"
 #include "action/Core.h"
@@ -80,6 +82,12 @@ struct SetPbrMeshFeaturesMask {
     uint32_t Mask;
     Scope Scope{Scope::Active};
 };
+struct UpdateMaterial {
+    uint32_t Index;
+    std::unique_ptr<PBRMaterial> Value;
+    std::optional<uint32_t> Features;
+    Scope Scope{Scope::Active};
+};
 
 // Update the field at byte `Offset` of the active primitive's current shape alternative.
 template<typename Field>
@@ -98,7 +106,7 @@ using Actions = std::variant<
 
 using Action = MergedVariantT<
     Actions,
-    Replace<MaterialDirty>, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
+    UpdateMaterial, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
     Update<std::optional<uint32_t>>, DuplicateToPosition, SetLightType, SetSpotCone>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);

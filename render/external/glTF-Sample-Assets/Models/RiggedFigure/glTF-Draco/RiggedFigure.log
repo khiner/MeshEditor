@@ -1,1 +1,1 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/RiggedFigure/glTF-Draco/RiggedFigure.gltf': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/RiggedFigure/glTF-Draco/RiggedFigure.gltf': Missing required extensions: KHR_draco_mesh_compression
+Error loading glTF file 'asset:/0eb49e3487a44d9cd432125a8f91e32f/RiggedFigure.gltf': Missing required extensions: KHR_draco_mesh_compression

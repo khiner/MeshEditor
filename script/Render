@@ -30,8 +30,9 @@ ExcludedDirs = ("/glTF_Physics/tests/", "/glTF-Binary/", "/glTF-Embedded/")
 Scene = tuple[Path, str, list[str]]
 
 
-def has_output(out: Path) -> bool:
-    return Path(f"{out}.webp").is_file() or Path(f"{out}.mp4").is_file()
+def has_output(out: Path, require_actions: bool = False) -> bool:
+    return ((Path(f"{out}.webp").is_file() or Path(f"{out}.mp4").is_file())
+            and (not require_actions or Path(f"{out}.actions").is_file()))
 
 
 def scene_files(root: Path) -> list[Path]:
@@ -81,8 +82,8 @@ def count_jobs(spool: Path) -> int:
     return sum(1 for _ in spool.glob("*.job"))
 
 
-def run_worker(spool: Path, extra_args: list[str], skipped: set[str]) -> None:
-    """Process the spool, restarting after timeouts and recording scenes completed without output."""
+def run_worker(spool: Path, extra_args: list[str], reported_failures: set[str]) -> None:
+    """Process the spool, restarting after timeouts and recording reported job failures."""
     while (remaining := count_jobs(spool)) > 0:
         proc = subprocess.Popen([Exe, "--render-queue", str(spool), "-q", *extra_args], stdout=subprocess.PIPE, text=True)
         lines: queue.Queue[str | None] = queue.Queue()
@@ -94,7 +95,7 @@ def run_worker(spool: Path, extra_args: list[str], skipped: set[str]) -> None:
                 break
             if line is None: break
             print(f"  {line}")
-            if line.startswith("SKIP "): skipped.add(line[len("SKIP "):].split(" (", 1)[0])
+            if line.startswith("FAIL "): reported_failures.add(line[len("FAIL "):].split(" (", 1)[0])
         proc.wait()
         # Stop respawning when a worker exits before claiming a job.
         if count_jobs(spool) == remaining: break
@@ -162,25 +163,37 @@ def main() -> None:
     spool = Path(tempfile.mkdtemp(prefix="MeshEditorRenderSpool."))
     try:
         spool_jobs(spool, scenes, extra_args)
-        skipped: set[str] = set()
-        workers = [threading.Thread(target=run_worker, args=(spool, extra_args, skipped)) for _ in range(jobs)]
+        reported_failures: set[str] = set()
+        workers = [threading.Thread(target=run_worker, args=(spool, extra_args, reported_failures)) for _ in range(jobs)]
         for w in workers: w.start()
         for w in workers: w.join()
 
         # Retry once when no worker reports a scene after a crash or timeout.
-        if retries := [(out, arg, flags) for out, arg, flags in scenes if not has_output(out) and str(out) not in skipped]:
+        if retries := [(out, arg, flags) for out, arg, flags in scenes
+                       if str(out) not in reported_failures and not has_output(out, require_actions=not flags)]:
             for f in spool.iterdir(): f.unlink()
             for out, _, _ in retries: print(f"  retrying {out}")
             spool_jobs(spool, retries, extra_args)
-            run_worker(spool, extra_args, skipped)
+            run_worker(spool, extra_args, reported_failures)
 
         if os.environ.get("COMPARE_VIDEOS") and render_dir == CorpusDir: restore_noise_only_videos(spool)
     finally:
         shutil.rmtree(spool, ignore_errors=True)
 
-    skips = [out for out, _, _ in scenes if not has_output(out)]
-    print(f"\nDone: {len(scenes) - len(skips)} rendered, {len(skips)} skipped in {time.monotonic() - started:.1f} s.")
-    if skips: print("Skipped:\n" + "\n".join(f"  {out}" for out in skips))
+    failures, unsupported = [], []
+    for out, _, flags in scenes:
+        log = Path(f"{out}.log")
+        messages = log.read_text() if log.is_file() else ""
+        if not has_output(out) and "Missing required extensions:" in messages:
+            unsupported.append(out)
+        elif str(out) in reported_failures or not has_output(out, require_actions=not flags):
+            failures.append(out)
+    print(f"\nDone: {len(scenes) - len(unsupported) - len(failures)} rendered, {len(unsupported)} unsupported, "
+          f"{len(failures)} failed in {time.monotonic() - started:.1f} s.")
+    if unsupported: print("Unsupported:\n" + "\n".join(f"  {out}" for out in unsupported))
+    if failures:
+        print("Failed:\n" + "\n".join(f"  {out}" for out in failures))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

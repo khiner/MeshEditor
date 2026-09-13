@@ -103,7 +103,9 @@ void Add(Tables &tables) {
     if (!tables.Comparators.emplace(id, MakeComparator<C, Persistent>()).second) throw std::logic_error("Duplicate snapshot component classification");
     if constexpr (Persistent) {
         static_assert(!HoldsVariantOrOptional<C>() || NeedsFieldwise<C, true>, "A persistent variant/optional needs field-wise serialization");
-        tables.Snapshots.emplace(id, MakeEntry<C>());
+        auto entry = MakeEntry<C>();
+        entry.Name = entt::type_name<C>::value();
+        tables.Snapshots.emplace(id, entry);
     }
 }
 template<typename... Cs>

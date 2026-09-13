@@ -1,4 +1,5 @@
 #include "SurfaceAudio.h"
+#include "project/Registry.h"
 
 #include "Reactive.h"
 #include "TransformMath.h"
@@ -73,7 +74,7 @@ void UpdateSurfaceRelief(entt::registry &r, entt::entity node_entity, entt::enti
         return gltf::NormalMapRef{.Image = *image, .TexCoord = nt.TexCoord, .Scale = nt.Scale};
     }();
     if (!normal_map) {
-        r.remove<SurfaceRelief>(node_entity);
+        project::Remove<SurfaceRelief>(r, node_entity);
         return;
     }
     // Measuring the parameterization walks every triangle, so a surface edit that left the map alone stops here.
@@ -88,7 +89,7 @@ void UpdateSurfaceRelief(entt::registry &r, entt::entity node_entity, entt::enti
     if (existing && existing->Key == key) return;
     const auto image = length_per_uv > 0 ? gltf::DecodeImageRgba8(r, normal_map->Image) : std::nullopt;
     if (!image || image->Width == 0 || image->Height == 0) {
-        r.remove<SurfaceRelief>(node_entity);
+        project::Remove<SurfaceRelief>(r, node_entity);
         return;
     }
 
@@ -116,7 +117,7 @@ void UpdateSurfaceRelief(entt::registry &r, entt::entity node_entity, entt::enti
         y += dir_y;
     }
 
-    r.emplace_or_replace<SurfaceRelief>(node_entity, SurfaceRelief{std::make_shared<const RoughnessTrack>(MakeProfileTrack(heights, step_length)), key, source_key});
+    project::EmplaceOrReplace<SurfaceRelief>(r, node_entity, SurfaceRelief{std::make_shared<const RoughnessTrack>(MakeProfileTrack(heights, step_length)), key, source_key});
 }
 
 /***** Scene contact inputs *****/
@@ -1214,7 +1215,7 @@ entt::entity ContactSurfaceNode(const entt::registry &r, entt::entity collider, 
 
 void RegisterSurfaceContactHandlers(entt::registry &r) {
     RegisterSceneSetupHandler(r, [](entt::registry &r, entt::entity viewport) {
-        r.emplace_or_replace<SurfaceSoundControls>(viewport);
+        project::EmplaceOrReplace<SurfaceSoundControls>(r, viewport);
     });
     // A surface belongs to a node.
     track<surface_changes::SurfaceEdit>(r).on<ContactSurface>(On::Create | On::Update | On::Destroy);
@@ -1256,8 +1257,8 @@ void SurfaceUpdateContacts(entt::registry &r) {
     for (const auto node : surface_edits) {
         if (!r.valid(node)) continue;
         // Intentional registry write outside Apply: a memo derived from the surface.
-        if (const auto *s = r.try_get<const ContactSurface>(node)) r.emplace_or_replace<SurfaceFinishKey>(node, FinishTrackKey(*s));
-        else r.remove<SurfaceFinishKey>(node);
+        if (const auto *s = r.try_get<const ContactSurface>(node)) project::EmplaceOrReplace<SurfaceFinishKey>(r, node, FinishTrackKey(*s));
+        else project::Remove<SurfaceFinishKey>(r, node);
     }
 
     const auto *sustained = r.ctx().find<const PhysicsSustainedContacts>();

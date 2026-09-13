@@ -22,6 +22,7 @@
 #include "mesh/Primitives.h"
 #include "numeric/Angles.h"
 #include "physics/PhysicsUi.h"
+#include "project/Registry.h"
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
@@ -536,7 +537,8 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     EndCombo();
                 }
 
-                auto &material = materials[material_index];
+                auto material = materials[material_index];
+                BeginGroup();
                 const auto edit_texture_slot = [&](const char *label, uint32_t &slot) {
                     std::string preview = "None";
                     bool has_match = false;
@@ -676,8 +678,18 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     material_changed |= edit_texture_info("Iridescence thickness", material.Iridescence.ThicknessTexture);
                 }
 
-                if (pbr_features_changed) action::Emit(action::object::SetPbrMeshFeaturesMask{pbr_features_mask, ui::ScopeFromAlt()});
-                if (material_changed) action::Emit(action::Replace<MaterialDirty>{.Entity = viewport, .Value = {material_index}});
+                EndGroup();
+                if (pbr_features_changed || material_changed) {
+                    action::object::UpdateMaterial update{
+                        material_index,
+                        std::make_unique<PBRMaterial>(material),
+                        pbr_features_changed ? std::optional{pbr_features_mask} : std::nullopt,
+                        ui::ScopeFromAlt(),
+                    };
+                    if (IsItemActive()) action::EmitStaged(std::move(update));
+                    else action::Emit(std::move(update));
+                }
+                if (IsItemDeactivatedAfterEdit()) action::Commit();
             }
         }
     }
@@ -1045,7 +1057,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                 }
             }
             // Intentional direct registry mutation outside Apply - not replayable document state.
-            if (Button("Recompile shaders")) r.emplace_or_replace<PendingShaderRecompile>(viewport);
+            if (Button("Recompile shaders")) project::EmplaceOrReplace<PendingShaderRecompile>(r, viewport);
 
             if (!r.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");
@@ -1158,10 +1170,10 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                         TextUnformatted(MimeTypeName(img.MimeType).data());
                         TableNextColumn();
                         if (img.SourceDataUri) TextUnformatted("data URI");
-                        else if (!img.SourceAbsPath.empty()) TextUnformatted(img.SourceAbsPath.c_str());
+                        else if (!img.SourcePath.empty()) TextUnformatted(img.SourcePath.c_str());
                         else TextUnformatted("embedded");
                         TableNextColumn();
-                        if (img.Bytes.empty()) TextUnformatted(img.SourceAbsPath.empty() ? "—" : "external");
+                        if (img.Bytes.empty()) TextUnformatted(img.SourcePath.empty() ? "—" : "external");
                         else Text("%zu", img.Bytes.size());
                         if (img.IsDirty) {
                             SameLine();

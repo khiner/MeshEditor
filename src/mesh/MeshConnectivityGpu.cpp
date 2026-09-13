@@ -37,6 +37,7 @@ void SubmitChunk(entt::registry &r, std::span<const ConnectivityTarget> chunk, m
     std::vector<uvec2> vertex_tiles, halfedge_tiles, block_tiles, word_tiles, word_block_tiles;
     uint32_t scratch_words = 0;
     for (const auto &target : chunk) {
+        meshes.CaptureConnectivityWrite(target.StoreId);
         const auto corners = meshes.GetFaceCornerRange(target.StoreId);
         const auto run = meshes.GetConnectivityRange(target.StoreId);
         const uint32_t vertex_count = meshes.GetVerticesRange(target.StoreId).Count;

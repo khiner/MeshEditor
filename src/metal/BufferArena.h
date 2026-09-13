@@ -3,6 +3,7 @@
 #include "RangeAllocator.h"
 #include "SlottedRange.h"
 #include "metal/Buffer.h"
+#include "project/AllocatorHistory.h"
 
 struct ArenaState {
     std::vector<std::byte> Bytes;
@@ -19,6 +20,11 @@ struct BufferArena {
     BufferArena(mtl::BufferContext &ctx, SlotType slot_type) : Buffer(ctx, 0, slot_type) {}
     explicit BufferArena(mtl::BufferContext &ctx) : Buffer(ctx, 0) {}
 
+    void Track(store::History &history, const std::string &name, uint32_t page_bytes = 4096) {
+        Buffer.Track(history, name + ".bytes", page_bytes);
+        Tracked = std::make_unique<project::AllocatorHistory>(Allocator, history, name);
+    }
+
     void ReserveAdditional(uint32_t count) {
         if (count == 0) return;
         Buffer.Reserve(Buffer.UsedSize + uint64_t(count) * sizeof(T));
@@ -29,8 +35,7 @@ struct BufferArena {
         if (range.Count == 0) return range;
 
         const uint64_t required_size = (range.Offset + range.Count) * sizeof(T);
-        Buffer.Reserve(required_size);
-        Buffer.UsedSize = std::max(Buffer.UsedSize, required_size);
+        Buffer.SetUsedSize(std::max(Buffer.UsedSize, required_size));
         return range;
     }
 
@@ -59,7 +64,7 @@ struct BufferArena {
         Allocator.Free(tail);
         // Keep UsedSize equal to the highest allocated byte because reporting and binding use it.
         if (const uint64_t tail_end = uint64_t(tail.Offset + tail.Count) * sizeof(T); Buffer.UsedSize == tail_end) {
-            Buffer.UsedSize = uint64_t(range.Offset + used) * sizeof(T);
+            Buffer.SetUsedSize(uint64_t(range.Offset + used) * sizeof(T));
         }
         range.Count = used;
     }
@@ -75,8 +80,8 @@ struct BufferArena {
     SlottedRange Slotted(Range r) const { return {r, Buffer.Slot}; }
 
     void Reset() {
-        Buffer.UsedSize = 0;
-        Allocator = {};
+        Buffer.SetUsedSize(0);
+        Allocator.Reset();
     }
 
     ArenaState Save() const {
@@ -87,9 +92,8 @@ struct BufferArena {
         return {Buffer.Contents().first(std::min(size_t(Buffer.UsedSize), Buffer.Contents().size())), Allocator.Save()};
     }
     void Restore(ArenaState state) {
-        Buffer.Reserve(state.Bytes.size());
         Buffer.Update(state.Bytes, 0);
-        Buffer.UsedSize = state.Bytes.size();
+        Buffer.SetUsedSize(state.Bytes.size());
         Allocator.Restore(std::move(state.Allocator));
     }
 
@@ -113,4 +117,5 @@ private:
     }
 
     RangeAllocator Allocator;
+    std::unique_ptr<project::AllocatorHistory> Tracked;
 };

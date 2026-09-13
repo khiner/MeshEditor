@@ -27,7 +27,7 @@ entt::entity AddEmpty(entt::registry &, MeshStore &, const ObjectCreateInfo & = 
 entt::entity AddCamera(entt::registry &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<Camera> = {});
 entt::entity AddLight(entt::registry &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<PunctualLight> = {});
 
-std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
+std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &, entt::entity viewport, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
 
 void RequestImportMesh(entt::registry &, entt::entity viewport, std::filesystem::path, MeshInstanceCreateInfo);
 

@@ -1,4 +1,5 @@
 #include "scene/Entity.h"
+#include "project/Registry.h"
 
 #include "mesh/Mesh.h"
 #include "render/Instance.h"
@@ -48,7 +49,7 @@ void ReserveEntityNames(entt::registry &r, size_t additional) {
     counts.reserve(counts.size() + additional);
 }
 Name &EmplaceUniqueName(entt::registry &r, entt::entity e, std::string_view prefix) {
-    return r.emplace<Name>(e, ChooseUniqueName(r, prefix));
+    return project::Emplace<Name>(r, e, ChooseUniqueName(r, prefix));
 }
 
 std::string IdString(entt::entity e) { return std::format("0x{:08x}", uint32_t(e)); }

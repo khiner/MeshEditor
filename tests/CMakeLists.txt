@@ -45,3 +45,13 @@ foreach(target IN ITEMS MeshEditorTests MeshEditorActionSerializeTest MeshEditor
         MeshEditorContactCollectTest MeshEditorRbpBodyTest MeshEditorContactManifoldTest)
     rbp_copy_shaders(${target})
 endforeach()
+
+mesheditor_test(MeshEditorProjectStoreTest ProjectStoreTest.cpp MeshEditorProjectStore)
+mesheditor_test(MeshEditorProjectBench ProjectBench.cpp MeshEditorEditor)
+target_compile_options(MeshEditorProjectBench PRIVATE -O2)
+target_compile_definitions(MeshEditorProjectBench PRIVATE MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}")
+rbp_copy_shaders(MeshEditorProjectBench)
+mesheditor_test(MeshEditorProjectTest ProjectTest.cpp MeshEditorEditor)
+target_compile_definitions(MeshEditorProjectTest PRIVATE
+    MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+rbp_copy_shaders(MeshEditorProjectTest)

@@ -42,6 +42,26 @@ inline void SeedElementWork(BufferArena<uint32_t> &arena, ElementWork work, std:
     data[words * 2u + 4u] = data[words * 2u] * 32u;
 }
 
+// Mark mask words intersecting the restored ranges.
+inline void SeedElementWorkRanges(BufferArena<uint32_t> &arena, ElementWork work, std::span<const Range> ranges, bool accumulate) {
+    if (!accumulate) ClearElementWork(arena, work);
+    auto data = arena.GetMutable(WorkStorageRange(work));
+    const auto words = WorkWordCount(work);
+    for (const auto range : ranges) {
+        const auto end = std::min(range.Offset + range.Count, work.Count);
+        for (uint32_t first = range.Offset; first < end;) {
+            const auto last = std::min(end, (first / 32u + 1u) * 32u);
+            const auto mask = (~0u >> (32u - (last - first))) << (first % 32u);
+            const auto word = first / 32u;
+            if (!data[word]) data[words + data[words * 2u]++] = word;
+            data[word] |= mask;
+            first = last;
+        }
+    }
+    data[words * 2u + 1u] = (data[words * 2u] + 7u) / 8u;
+    data[words * 2u + 4u] = data[words * 2u] * 32u;
+}
+
 // Drop old preview vertices after reset, touching only words already present in the footprint.
 inline void IntersectElementWork(BufferArena<uint32_t> &arena, ElementWork work, std::span<const uint32_t> masks) {
     auto data = arena.GetMutable(WorkStorageRange(work));

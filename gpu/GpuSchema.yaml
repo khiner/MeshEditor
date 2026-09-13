@@ -84,6 +84,12 @@ enums:
       - name: PickReplace
       - name: PickToggle
       - name: ClearActive
+  - name: GeometryEditMode
+    type: u32
+    values:
+      - name: Preview
+      - name: Commit
+      - name: Refresh
   - name: EditSharpnessOperation
     type: u32
     values:
@@ -1895,8 +1901,8 @@ structs:
       - name: ApplyTransform
         type: u32
         default: 1
-      - name: Commit
-        type: u32
+      - name: Mode
+        type: GeometryEditMode
   - name: EditSharpnessPushConstants
     push_constant: true
     fields:

@@ -14,8 +14,8 @@ void ReleaseRange(auto &arena, auto &range) {
 }
 } // namespace
 
-std::span<PBRMaterial> GetMaterials(entt::registry &r) {
-    auto &materials = r.ctx().get<GpuBuffers>().Materials;
+std::span<const PBRMaterial> GetMaterials(const entt::registry &r) {
+    const auto &materials = r.ctx().get<const GpuBuffers>().Materials;
     return {materials.Data(), materials.Count()};
 }
 std::span<const uint32_t> GetFaceIndices(const entt::registry &r, const Mesh &mesh, const MeshBuffers &buffers) {

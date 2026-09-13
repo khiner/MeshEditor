@@ -1,1 +1,1 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/BrainStem/glTF-Draco/BrainStem.gltf': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/BrainStem/glTF-Draco/BrainStem.gltf': Missing required extensions: KHR_draco_mesh_compression
+Error loading glTF file 'asset:/0f3d31ead49dac60e27f3e3eaa079be3/BrainStem.gltf': Missing required extensions: KHR_draco_mesh_compression

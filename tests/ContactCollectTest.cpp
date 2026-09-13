@@ -1,9 +1,10 @@
-
+#include "ProcessEvents.h"
 #include "Reactive.h"
 #include "RunSuites.h"
 #include "mesh/MeshBatch.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/Primitives.h"
+#include "metal/MetalContext.h"
 #include "physics/PhysicsContact.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
@@ -36,6 +37,7 @@ struct Scene {
     void BodyCreated(entt::registry &, entt::entity) { ++BodyCreations; }
 
     Scene() {
+        R.ctx().emplace<mtl::Context>();
         physics::Init(R);
         R.on_construct<PhysicsBodyHandle>().connect<&Scene::BodyCreated>(*this);
         Viewport = R.create();
@@ -70,7 +72,7 @@ struct Scene {
 
     // Build or update the bodies the components describe, as ProcessComponentEvents does in the app.
     void Sync() {
-        for (auto &handler : R.ctx().get<std::vector<ComponentEventHandler>>()) handler.Apply(R);
+        for (auto &handler : R.ctx().get<std::vector<ComponentEventHandler>>()) handler.Apply(R, EventPass::Frame);
         physics::AdvancePlayback(R, Viewport, Frame, Frame, 0, RangeEnd, Fps, false);
         for (auto &&[id, storage] : R.storage()) {
             if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();

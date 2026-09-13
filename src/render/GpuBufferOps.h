@@ -15,7 +15,7 @@ struct BufferContext;
 struct MeshBuffers;
 struct Mesh;
 
-std::span<PBRMaterial> GetMaterials(entt::registry &);
+std::span<const PBRMaterial> GetMaterials(const entt::registry &);
 // Returns store corners for triangle meshes or the triangulated index-arena range for n-gons.
 std::span<const uint32_t> GetFaceIndices(const entt::registry &, const Mesh &, const MeshBuffers &);
 std::span<const PunctualLight> GetLights(entt::registry &);

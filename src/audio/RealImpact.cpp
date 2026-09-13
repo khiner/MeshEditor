@@ -1,9 +1,16 @@
 #include "RealImpact.h"
 
+#include "File.h"
+#include "PathSerialize.h"
+#include "assets/ArchiveMesh.h"
 #include "npy.h"
 #include "numeric/Angles.h"
 #include "numeric/MatrixMath.h"
+#include "numeric/Serialize.h"
 #include "numeric/vec4.h"
+#include "project/Assets.h"
+
+#include <zpp_bits.h>
 
 #include <numbers>
 #include <regex>
@@ -100,6 +107,36 @@ std::expected<std::string, std::string> ValidateDirectory(const fs::path &direct
     return std::move(*object_name);
 }
 
+std::expected<fs::path, std::string> ArchiveSource(project::Assets &assets, const fs::path &directory) {
+    if (project::Assets::IsReference(directory)) return directory;
+    auto name = ValidateDirectory(directory);
+    if (!name) return std::unexpected{name.error()};
+    try {
+        Source source{.Name = std::move(*name), .Mesh = {}, .Samples = {}, .Positions = LoadPositions(directory), .Listeners = LoadListenerPoints(directory)};
+        const auto mesh = ArchiveMesh(assets, directory / "transformed.obj");
+        if (!mesh) return std::unexpected{mesh.error()};
+        source.Mesh = *mesh;
+        if (const auto path = directory / "deconvolved_0db.npy"; fs::exists(path)) {
+            const auto samples = assets.Store(path);
+            if (!samples) return std::unexpected{samples.error()};
+            source.Samples = *samples;
+        }
+        std::vector<std::byte> bytes;
+        zpp::bits::out{bytes}(source).or_throw();
+        return assets.Store("source.realimpact", bytes);
+    } catch (const std::exception &error) {
+        return std::unexpected{error.what()};
+    }
+}
+
+std::expected<Source, std::string> LoadSource(const entt::registry &r, const fs::path &path) {
+    const auto bytes = File::Read(project::ResolveAsset(r, path));
+    if (!bytes) return std::unexpected{bytes.error()};
+    Source source;
+    if (zpp::bits::failure(zpp::bits::in{*bytes}(source))) return std::unexpected{"Invalid RealImpact source"};
+    return source;
+}
+
 // Ascend up ancestor directories until we find the RealImpact object name directory.
 std::optional<std::string> FindObjectName(const fs::path &start_path) {
     static const std::regex pattern("^\\d+_.*"); // Integer followed by an underscore and any characters
@@ -155,8 +192,8 @@ std::optional<std::pair<fs::path, long>> SampleGroupFromKey(const fs::path &key)
     return std::pair{fs::path{match[1].str()}, listener};
 }
 
-std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamples(const fs::path &directory, long listener_point_index) {
-    const auto file = directory / "deconvolved_0db.npy";
+std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamples(const entt::registry &r, const fs::path &source, long listener_point_index) {
+    const auto file = project::ResolveAsset(r, source);
     std::ifstream stream{file, std::ifstream::binary};
     if (!stream) return std::unexpected(std::format("Failed to open RealImpact audio file: {}", file.string()));
     try {
@@ -176,8 +213,8 @@ std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamp
             auto frames = npy::read_npy<float>(stream, header, advance_frames, frames_per_impact).data;
             if (!stream) return std::unexpected(std::format("Failed to read RealImpact audio file: {}", file.string()));
             max_sample = std::max(max_sample, std::abs(*max_element(frames, [](auto a, auto b) { return std::abs(a) < std::abs(b); })));
-            // Synthetic key, never opened as a real file, unique per (directory, listener, impact).
-            auto key = fs::path{std::format("realimpact://{}/li{}_impact{}", directory.string(), listener_point_index, i)};
+            // Synthetic key, unique per (sample file, listener, impact).
+            auto key = fs::path{std::format("realimpact://{}/li{}_impact{}", source.string(), listener_point_index, i)};
             all_samples[i] = {std::move(key), std::move(frames)};
         }
         // Normalize audio to [-1, 1]

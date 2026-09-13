@@ -25,7 +25,6 @@ struct DeleteSoundObject {};
 struct StartRecording {
     uint32_t FrameCount;
 };
-// Applies a completed modal solve from a path relative to the modal results directory.
 struct ApplyModalModel {
     entt::entity SoundEntity;
     std::filesystem::path Path;

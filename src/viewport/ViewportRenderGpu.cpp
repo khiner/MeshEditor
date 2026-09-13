@@ -2011,13 +2011,14 @@ void ReleaseMeshEditWork(entt::registry &r, entt::entity entity) {
 }
 
 namespace {
-CommitPosedGeometryPushConstants PrepareGeometryEdit(entt::registry &r, entt::entity viewport, entt::entity entity, entt::entity primary, const PendingTransform *pending, const PosedRanges *pose = nullptr) {
+CommitPosedGeometryPushConstants PrepareGeometryEdit(entt::registry &r, entt::entity viewport, entt::entity entity, entt::entity primary, const PendingTransform *pending, const PosedRanges *pose = nullptr, std::span<const Range> changed = {}) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &w = PrepareMeshEditWork(r, entity);
     const auto mesh = GetMesh(r, entity);
     const auto id = w.StoreId;
-    if (!w.CandidateReady || (!pose && r.all_of<EditSelectionDirty>(viewport)))
+    if (!changed.empty()) SeedElementWorkRanges(buffers.GeometryWork, w.Candidates, changed, w.PreviewActive);
+    else if (!w.CandidateReady || (!pose && r.all_of<EditSelectionDirty>(viewport)))
         SeedElementWork(buffers.GeometryWork, w.Candidates, meshes.GetSelectionBits(id, Element::Vertex), w.PreviewActive);
     else if (!w.PreviewActive)
         IntersectElementWork(buffers.GeometryWork, w.Candidates, meshes.GetSelectionBits(id, Element::Vertex));
@@ -2060,7 +2061,8 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(entt::registry &r, entt::en
                                                                2u,
         .TriangleMeshlets = buffers.ElementMeshlets.Slotted(w.ElementMeshlets),
         .ApplyTransform = pending ? 1u : 0u,
-        .Commit = pose ? 0u : 1u,
+        .Mode = !changed.empty() ? GeometryEditMode::Refresh : pose ? GeometryEditMode::Preview :
+                                                                      GeometryEditMode::Commit,
     };
 }
 
@@ -2105,6 +2107,26 @@ void RecordGeometryEditBatch(entt::registry &r, MTL::ComputeCommandEncoder *enco
 }
 } // namespace
 
+void RefreshEditedPositions(entt::registry &r, entt::entity viewport, std::span<const MeshVertexChanges> changes) {
+    if (changes.empty()) return;
+    std::vector<std::pair<entt::entity, CommitPosedGeometryPushConstants>> jobs;
+    for (const auto &[entity, ranges] : changes) jobs.emplace_back(entity, PrepareGeometryEdit(r, viewport, entity, entt::null, nullptr, nullptr, ranges));
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    auto *cb = ctx.Queue->commandBuffer();
+    {
+        mtl::PassChain chain{cb};
+        RecordGeometryEditBatch(r, chain.BeginCompute("RefreshGeometry"), jobs, false);
+    }
+    cb->commit();
+    cb->waitUntilCompleted();
+    auto &scene = r.ctx().get<GpuSceneState>();
+    scene.EditPreludePending = true;
+    for (const auto &[entity, ranges] : changes) {
+        auto &work = scene.EditWork.at(entity);
+        work.Modified = work.PreviewActive = true;
+    }
+}
+
 std::vector<entt::entity> CommitPosedGeometry(entt::registry &r, entt::entity viewport, std::span<const entt::entity> mesh_entities) {
     const profile::CpuScope scope{"CommitGeometry"};
     const auto *pending = r.try_get<const PendingTransform>(viewport);
@@ -2117,6 +2139,8 @@ std::vector<entt::entity> CommitPosedGeometry(entt::registry &r, entt::entity vi
             commits.emplace_back(entity, PrepareGeometryEdit(r, viewport, entity, primary->second, pending));
     }
     if (commits.empty()) return {};
+    auto &meshes = r.ctx().get<MeshStore>();
+    for (const auto &[entity, pc] : commits) meshes.CaptureVertexEdit(r.get<const MeshHandle>(entity).StoreId);
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto *cb = ctx.Queue->commandBuffer();
     {

@@ -63,8 +63,11 @@ std::vector<CreatedMesh> CreateMeshes(entt::registry &r, std::span<MeshSource> s
         for (uint32_t i = 0; i < sources.size(); ++i) targets.emplace_back(ids[i], &sources[i].Data);
         const auto host_targets = BuildConnectivityNow(r, targets);
         std::vector<BuiltConnectivity> built(host_targets.size());
+        std::vector<ConnectivityStorage> storage;
+        storage.reserve(host_targets.size());
+        for (const auto &target : host_targets) storage.push_back(meshes.GetConnectivityStorage(target.StoreId));
         ParallelFor(uint32_t(host_targets.size()), [&](uint32_t i) {
-            built[i] = BuildPreparedConnectivity(meshes, host_targets[i].StoreId, *host_targets[i].Data, meshes.GetConnectivityStorage(host_targets[i].StoreId));
+            built[i] = BuildPreparedConnectivity(meshes, host_targets[i].StoreId, *host_targets[i].Data, storage[i]);
         });
         for (uint32_t i = 0; i < host_targets.size(); ++i) meshes.PlaceConnectivity(host_targets[i].StoreId, built[i]);
     }

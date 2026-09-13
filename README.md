@@ -13,6 +13,8 @@ Real-time mesh viewer and editor supporting conversion of meshes to rigid body a
 
 ### General
 
+* Branching undo/redo and navigation to any recorded state through the History window
+* Save history and imported source assets in portable projects
 * Create and delete meshes and mesh instances
   - Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
   - Load `.obj` and `.ply` mesh files (via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply))
@@ -142,7 +144,16 @@ $ ./script/Build [--release]
 $ cd build && ./MeshEditor [file|--empty] [--quiet|-q] [--headless] [--play [seconds]] [--record path.mp4 [--fps N]] [--screenshot path.webp] [--render basename]
 ```
 
-* `file` can be a `.gltf`, `.glb`, `.obj`, `.ply`, `.state` (scene snapshot), or `.actions` (replayed action log). No file loads the default scene.
+* Open a project directory at its last saved position and layout, retaining the full working history, including edits made after Save.
+  First Save and Save As choose a project name and location, and confirm replacement of an existing project.
+  Project directories keep `working/` beside the compressed `Saved.project` archive.
+  Later saves replace the archive, and Revert to Saved returns to its position and layout without removing history.
+  Save As copies named projects and relocates unnamed projects.
+  Unnamed interactive projects remain available under File → Restore, while headless jobs use temporary working directories.
+  Clear history retains the current and last saved states as new replay baselines.
+* Open `.gltf`, `.glb`, `.obj`, `.ply`, `.project`, or `.actions` files.
+  `.project` extracts saved history into an unnamed working project, while `.actions` also replays commands from its archived baseline.
+  Omit `file` to load the default scene.
 * `--empty` starts with an empty scene instead of the default scene.
 * `--quiet` / `-q` suppresses timer output.
 All of `--play`, `--record`, and `--screenshot` use the presentation look with material preview shading and hidden overlays. `--play` and `--record` run animation and physics; `--screenshot` captures the first frame.
@@ -164,7 +175,9 @@ The flags can be combined freely, except `--render` excludes `--record` and `--s
 ### Render corpus
 
 `render/` contains committed demo output for every scene in the corpus and mirrors the source layout. It covers the built-in scenes, `res/examples/`, root audio samples, and glTF samples under `external/`. Isolation audio samples under `samples/test/` use `script/AudioCorpus`; redundant glTF format variants are skipped.
-Each scene leaf has a visual (lossless `.webp` for static scenes, plus one per material variant, `.mp4` for animated ones - one timeline loop per animation clip, back-to-back), the `.actions` replay log, a `.log` of console output, and a `run.sh` that opens that scene in the app.
+Each scene directory contains rendered output, an `.actions` replay archive, a console `.log`, and a `run.sh` launcher.
+Static scenes use lossless `.webp` files, including one per material variant.
+Animated scenes use `.mp4` files with one timeline loop per animation clip.
 A scene with sound objects renders its audio and muxes it into the `.mp4`.
 
 Binary artifacts are stored in [git-lfs](https://git-lfs.com); fetch them after cloning:
@@ -278,6 +291,9 @@ $ ./build/tests/MeshEditorTests
 |-|-|
 | `MeshEditorTests` | glTF roundtrip |
 | `MeshEditorActionSerializeTest` | Every action alternative through the action log |
+| `MeshEditorProjectTest` | Persistent state, rendering, replay, and archive relocation across mesh edits and glTF samples |
+| `MeshEditorProjectStoreTest` | Full-copy version/history models, manifest reconstruction, and persistence failures |
+| `MeshEditorProjectBench` | Sparse buffer edits and complete mesh-edit frames, with [measurements](tests/ProjectPerformance.md) |
 | `MeshEditorContactModelTest` | Hertz contact time, effective mass, inertia decomposition |
 | `MeshEditorModalRenderTest` | Superposition, thread independence, and the click's rate independence |
 | `MeshEditorCompressTest` | `.project` archive round trip |
@@ -291,9 +307,11 @@ for the entry points the core modal path reaches it through.
 $ SURFACE_AUDIO=1 script/Build
 ```
 
-`VALIDATE_ACTIONS=1` builds the app to run File->[Debug] Roundtrip after every committed action: the log
-replays into a fresh session and the scene saves, clears and restores, aborting on the first divergence.
-Validation compares canonical state, the complete viewport texture, and the composed UI at the captured timeline position. An unset `VALIDATE_ACTIONS` (or `0`) disables it on the next `script/Build`; `script/Render` builds with the same rule. `--no-build` retains the existing binary’s setting.
+`VALIDATE_ACTIONS=1` enables History → Validate history after every committed action.
+Validation checks cold restoration and command replay in separate sessions and aborts on divergence.
+It compares Persistent state, viewport pixels, and composed UI pixels at the recorded timeline position.
+Unset `VALIDATE_ACTIONS` or set it to `0` to disable validation on the next build.
+`script/Build` and `script/Render` use this setting, while `--no-build` retains the existing binary.
 
 ```sh
 $ VALIDATE_ACTIONS=1 script/Build

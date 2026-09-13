@@ -7,12 +7,11 @@
 
 namespace gltf {
 struct Image {
-    // Embedded sources retain encoded bytes for byte-identical saves.
-    // External sources retain their absolute path and reload bytes during saves.
+    // Retain embedded source bytes for export when SourcePath is empty.
     std::vector<std::byte> Bytes;
     MimeType MimeType;
     std::string Name, Uri{};
-    std::string SourceAbsPath{}; // Set only for nonempty Uri.
+    std::string SourcePath{};
     bool SourceDataUri{}, SourceHadMimeType{};
     // Selects GPU readback and re-encoding during SaveGltf.
     bool IsDirty{};

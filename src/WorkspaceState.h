@@ -26,6 +26,7 @@ struct State {
 
 State Capture(const entt::registry &, entt::entity viewport, const WindowsState &);
 void Apply(entt::registry &, entt::entity viewport, WindowsState &, const State &);
+// Apply pending layout and widget state after ImGui::Render().
 void ApplyPending(WindowsState &);
 
 std::vector<std::byte> Serialize(const State &);

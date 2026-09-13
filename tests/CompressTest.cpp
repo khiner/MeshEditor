@@ -1,4 +1,5 @@
 #include "Compress.h"
+#include "File.h"
 
 #include "RunSuites.h"
 
@@ -21,19 +22,11 @@ void Write(const fs::path &path, std::string_view bytes) {
     out.write(bytes.data(), std::streamsize(bytes.size()));
 }
 
-std::vector<std::byte> ReadAll(const fs::path &path) {
-    std::ifstream in{path, std::ios::binary | std::ios::ate};
-    std::vector<std::byte> bytes(size_t(in.tellg()));
-    in.seekg(0);
-    in.read(reinterpret_cast<char *>(bytes.data()), std::streamsize(bytes.size()));
-    return bytes;
-}
-
 // Every regular file under `dir`, keyed by its relative path.
 std::map<std::string, std::vector<std::byte>> Snapshot(const fs::path &dir) {
     std::map<std::string, std::vector<std::byte>> files;
     for (const auto &e : fs::recursive_directory_iterator{dir}) {
-        if (e.is_regular_file()) files[fs::relative(e.path(), dir).generic_string()] = ReadAll(e.path());
+        if (e.is_regular_file()) files[fs::relative(e.path(), dir).generic_string()] = File::Read(e.path()).value();
     }
     return files;
 }
@@ -49,10 +42,20 @@ int main() {
         Write(src / "empty", "");
         Write(src / "big", std::string(3'000'000, 'x')); // spans multiple stream chunks
 
-        expect(Compress(src, archive));
+        const std::vector<std::byte> metadata{std::byte{1}, std::byte{0}, std::byte{3}};
+        expect(Compress(src, archive, metadata));
+        expect(ReadArchiveMetadata(archive) == metadata);
         expect(Decompress(archive, dst));
-        const bool round_trips = Snapshot(src) == Snapshot(dst);
-        expect(round_trips);
+        expect(bool(Snapshot(src) == Snapshot(dst)));
+
+        const auto complete = File::Read(archive).value();
+        expect(bool(File::WriteAtomic(archive, std::span{complete}.first(complete.size() - 1))));
+        expect(!Decompress(archive, root / "truncated"));
+        expect(!Compress(src, src / "recursive.project"));
+        try {
+            File::WriteAtomic(root / "interrupted.project", [](auto &) -> bool { throw 1; });
+        } catch (...) {}
+        for (const auto &entry : fs::directory_iterator{root}) expect(!entry.path().filename().string().contains(".tmp."));
 
         fs::remove_all(root);
     };

@@ -1,4 +1,5 @@
 #include "viewport/ViewportOps.h"
+#include "project/Registry.h"
 
 #include "action/Bone.h"
 #include "action/Emit.h"
@@ -28,7 +29,7 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
     if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(r) && !active_is_armature) return false;
     if (mode == InteractionMode::Pose && !active_is_armature) return false;
 
-    r.clear<VertexForce>();
+    project::Clear<VertexForce>(r);
     auto &meshes = r.ctx().get<MeshStore>();
     std::vector<ElementRange> initialize_selection;
     const auto edit_ranges = [&](Element element) {
@@ -49,16 +50,16 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
             ApplyEditSelectionCommand(r, viewport, ranges, baseline->Mode, EditSelectionOperation::RestoreBaseline);
             for (const auto &range : ranges) {
                 const auto &summary = meshes.GetSelectionSummary(r.get<const MeshHandle>(range.MeshEntity).StoreId);
-                if (summary.ActiveHandle < range.Count) r.emplace_or_replace<MeshActiveElement>(range.MeshEntity, summary.ActiveHandle);
-                else r.remove<MeshActiveElement>(range.MeshEntity);
+                if (summary.ActiveHandle < range.Count) project::EmplaceOrReplace<MeshActiveElement>(r, range.MeshEntity, summary.ActiveHandle);
+                else project::Remove<MeshActiveElement>(r, range.MeshEntity);
             }
         }
-        r.remove<ExciteSelectionBaseline>(viewport);
+        project::Remove<ExciteSelectionBaseline>(r, viewport);
     } else if (mode == InteractionMode::Excite) {
         const auto edit_element = r.get<const EditMode>(viewport).Value;
         const auto ranges = edit_ranges(edit_element);
         ApplyEditSelectionCommand(r, viewport, ranges, edit_element, EditSelectionOperation::CaptureBaseline);
-        r.emplace_or_replace<ExciteSelectionBaseline>(viewport, edit_element);
+        project::EmplaceOrReplace<ExciteSelectionBaseline>(r, viewport, edit_element);
     }
 
     if (mode == InteractionMode::Edit && !active_is_armature) {
@@ -72,21 +73,21 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
                 if (count == 0) continue;
 
                 meshes.EnsureSelectionBits(mesh);
-                r.emplace<MeshElementSelection>(mesh_entity);
+                project::Emplace<MeshElementSelection>(r, mesh_entity);
                 initialize_selection.emplace_back(
                     mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), edit_element), count
                 );
             }
         }
     }
-    r.patch<Interaction>(viewport, [mode](auto &s) { s.Mode = mode; });
+    project::Patch<Interaction>(r, viewport, [mode](auto &s) { s.Mode = mode; });
     if (!initialize_selection.empty()) {
         ApplyEditSelectionCommand(
             r, viewport, initialize_selection, r.get<const EditMode>(viewport).Value,
             EditSelectionOperation::Fill
         );
     }
-    r.patch<ViewportTheme>(viewport, [](auto &) {});
+    project::Patch<ViewportTheme>(r, viewport, [](auto &) {});
     return true;
 }
 

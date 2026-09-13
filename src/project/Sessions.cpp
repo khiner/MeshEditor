@@ -1,5 +1,6 @@
-#include "action/Log.h"
+#include "project/Sessions.h"
 
+#include "File.h"
 #include "Paths.h"
 
 #include <algorithm>
@@ -7,12 +8,13 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <unistd.h>
 
 #ifndef RESTORE_SESSION_RETAIN
 #define RESTORE_SESSION_RETAIN 5
 #endif
 
-namespace action {
+namespace project {
 namespace {
 std::filesystem::path RestoreDir() { return Paths::UserData() / "restore"; }
 
@@ -28,7 +30,7 @@ std::vector<RestoreSession> ListRestoreSessions() {
     std::vector<RestoreSession> sessions;
     std::error_code ec;
     for (const auto &entry : std::filesystem::directory_iterator{RestoreDir(), ec}) {
-        if (!entry.is_directory(ec)) continue;
+        if (!entry.is_directory(ec) || !std::filesystem::exists(entry.path() / "tree.log", ec) || !File::DirectoryLock{entry.path()}) continue;
         if (const auto seconds = ParseTimestamp(entry.path())) sessions.emplace_back(entry.path(), *seconds);
     }
     std::ranges::sort(sessions, std::ranges::greater{}, &RestoreSession::UnixSeconds);
@@ -37,17 +39,16 @@ std::vector<RestoreSession> ListRestoreSessions() {
 
 std::filesystem::path ReserveRestoreSession() {
     std::filesystem::create_directories(RestoreDir());
-    // Keep at most RESTORE_SESSION_RETAIN sessions, including the new one.
+    // Retain closed unnamed projects independently of active projects.
     auto sessions = ListRestoreSessions();
-    for (size_t i = RESTORE_SESSION_RETAIN - 1; i < sessions.size(); ++i) {
+    for (size_t i = RESTORE_SESSION_RETAIN; i < sessions.size(); ++i) {
+        const File::DirectoryLock lock{sessions[i].Path};
+        if (!lock) continue;
         std::error_code ec;
         std::filesystem::remove_all(sessions[i].Path, ec);
     }
-    auto unix_sec = uint32_t(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-    auto dir = RestoreDir() / std::to_string(unix_sec);
-    // Bump the timestamp until the name is free (rapid opens can collide within a second).
-    for (std::error_code ec; std::filesystem::exists(dir, ec);) dir = RestoreDir() / std::to_string(++unix_sec);
-    std::filesystem::create_directories(dir);
-    return dir;
+    const auto unix_sec = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    auto name = (RestoreDir() / (std::to_string(unix_sec) + "-XXXXXX")).string();
+    return ::mkdtemp(name.data()) ? std::filesystem::path{name} : std::filesystem::path{};
 }
-} // namespace action
+} // namespace project

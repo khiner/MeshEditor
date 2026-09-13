@@ -5,6 +5,7 @@
 #include "armature/ArmatureComponents.h"
 #include "gltf/GltfScene.h"
 #include "gltf/SourceAssets.h"
+#include "project/Registry.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
@@ -23,12 +24,12 @@ using std::ranges::find;
 namespace action::view {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     auto patch_camera_stopped = [&](auto &&fn) {
-        r.patch<ViewCamera>(viewport, [&](auto &c) { fn(c); c.StopMoving(); });
+        project::Patch<ViewCamera>(r, viewport, [&](auto &c) { fn(c); c.StopMoving(); });
     };
     auto poke_active_lighting = [&] {
         const auto mode = r.get<const ViewportDisplay>(viewport).ViewportShading;
-        if (mode == ViewportShadingMode::MaterialPreview) r.patch<MaterialPreviewLighting>(viewport, [](auto &) {});
-        else if (mode == ViewportShadingMode::Rendered) r.patch<RenderedLighting>(viewport, [](auto &) {});
+        if (mode == ViewportShadingMode::MaterialPreview) project::Patch<MaterialPreviewLighting>(r, viewport, [](auto &) {});
+        else if (mode == ViewportShadingMode::Rendered) project::Patch<RenderedLighting>(r, viewport, [](auto &) {});
     };
     // Pose mode targets the active bone if there is one; otherwise the active object.
     auto active_rotation_target = [&] {
@@ -60,7 +61,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
         const quat cur = r.get<const Transform>(e).R;
         DragFieldStart s{comp, r_off, sizeof(quat), {}};
         std::memcpy(s.Bytes.data(), &cur, sizeof(quat));
-        r.emplace_or_replace<DragFieldStart>(e, s);
+        project::EmplaceOrReplace<DragFieldStart>(r, e, s);
         return cur;
     };
     std::visit(
@@ -75,44 +76,44 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     if (::SetInteractionMode(r, viewport, *it)) break;
                 }
             },
-            [&](const SetEditMode &a) { r.emplace_or_replace<PendingSetEditMode>(viewport, a.Mode); },
+            [&](const SetEditMode &a) { project::EmplaceOrReplace<PendingSetEditMode>(r, viewport, a.Mode); },
             [&](EnterLookThroughCamera) {
                 const auto e = FindActiveEntity(r);
                 if (e == entt::null || !r.all_of<Camera>(e)) return;
                 SetLookThrough(r, viewport, e);
                 const auto &wt = r.get<WorldTransform>(e);
-                r.patch<ViewCamera>(viewport, [&](auto &vc) { vc.AnimateToLookThrough(wt.P, wt.R, 1.f); });
+                project::Patch<ViewCamera>(r, viewport, [&](auto &vc) { vc.AnimateToLookThrough(wt.P, wt.R, 1.f); });
             },
             [&](ExitLookThroughCamera) { ClearLookThrough(r, viewport); },
             [&](const SetLookThroughCamera &a) {
                 if (!r.all_of<Camera, WorldTransform>(a.Entity)) return;
                 SetLookThrough(r, viewport, a.Entity);
                 const auto &wt = r.get<WorldTransform>(a.Entity);
-                r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, r.get<Camera>(a.Entity)});
+                project::Replace<ViewCamera>(r, viewport, ViewCamera{wt.P, wt.R, r.get<Camera>(a.Entity)});
             },
-            [&](const OrbitViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.RotateBy(a.DeltaRad); }); },
-            [&](const ZoomViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.ZoomBy(a.Factor); }); },
+            [&](const OrbitViewCamera &a) { project::Patch<ViewCamera>(r, viewport, [&](auto &camera) { camera.RotateBy(a.DeltaRad); }); },
+            [&](const ZoomViewCamera &a) { project::Patch<ViewCamera>(r, viewport, [&](auto &camera) { camera.ZoomBy(a.Factor); }); },
             [&](const SetExtent &a) { r.ctx().get<ViewportExtent>().Value = a.Extent; },
-            [&](const SetStudioEnvironment &a) { r.emplace_or_replace<StudioEnvironment>(viewport, a.Name); poke_active_lighting(); },
+            [&](const SetStudioEnvironment &a) { project::EmplaceOrReplace<StudioEnvironment>(r, viewport, a.Name); poke_active_lighting(); },
             [&](const SetSourceIblIntensity &a) {
-                r.patch<gltf::SourceAssets>(viewport, [&](auto &sa) { if (sa.ImageBasedLight) sa.ImageBasedLight->Intensity = a.Intensity; });
+                project::Patch<gltf::SourceAssets>(r, viewport, [&](auto &sa) { if (sa.ImageBasedLight) sa.ImageBasedLight->Intensity = a.Intensity; });
                 poke_active_lighting();
             },
             [&](const SetActiveScene &a) { gltf::SwitchActiveScene(r, a.Scene); },
             [&](ResetViewCamera) { patch_camera_stopped([](auto &c) { c = Defaults::ViewCamera; }); },
-            [&](ResetViewportTheme) { r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme); },
+            [&](ResetViewportTheme) { project::EmplaceOrReplace<ViewportTheme>(r, viewport, Defaults::ViewportTheme); },
             [&](const ResetPbrLighting &a) {
                 static constexpr PBRViewportLighting Defaults{false, false, 1.f, 0.f, 0.5f, 0.f, true};
-                if (a.Rendered) r.emplace_or_replace<RenderedLighting>(viewport, RenderedLighting{Defaults});
-                else r.emplace_or_replace<MaterialPreviewLighting>(viewport, MaterialPreviewLighting{Defaults});
+                if (a.Rendered) project::EmplaceOrReplace<RenderedLighting>(r, viewport, RenderedLighting{Defaults});
+                else project::EmplaceOrReplace<MaterialPreviewLighting>(r, viewport, MaterialPreviewLighting{Defaults});
             },
             [&](const SetViewCameraTarget &a) { patch_camera_stopped([&](auto &c) { c.Target = a.Target; }); },
             [&](const SetViewCameraLens &a) { patch_camera_stopped([&](auto &c) { c.Data = a.Data; }); },
-            [&](const SetViewCameraTargetDirection &a) { r.patch<ViewCamera>(viewport, [&](auto &c) { c.SetTargetDirection(a.Direction); }); },
+            [&](const SetViewCameraTargetDirection &a) { project::Patch<ViewCamera>(r, viewport, [&](auto &c) { c.SetTargetDirection(a.Direction); }); },
             [&](const SetRotationUiMode &a) {
                 for (const auto e : rotation_targets(a.Scope)) {
-                    r.replace<RotationUiVariant>(e, CreateVariantByIndex<RotationUiVariant>(a.Index));
-                    r.patch<Transform>(e, [](auto &) {});
+                    project::Replace<RotationUiVariant>(r, e, CreateVariantByIndex<RotationUiVariant>(a.Index));
+                    project::Patch<Transform>(r, e, [](auto &) {});
                 }
             },
             [&](const SetTransformRotationFromUi &a) {
@@ -123,17 +124,17 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     const quat delta = a.R * numeric::Conjugate(rotation_start(active));
                     for (const auto e : rotation_targets(Scope::SelectedDelta)) {
                         const quat rotation = numeric::Normalize(delta * rotation_start(e));
-                        r.patch<Transform>(e, [&](auto &t) { t.R = rotation; });
+                        project::Patch<Transform>(r, e, [&](auto &t) { t.R = rotation; });
                         if (e == active) { // keep the editor's representation stable; others re-sync from R
-                            r.replace<RotationUiVariant>(e, a.UiVariant);
-                            r.emplace_or_replace<RotationUiDriving>(e);
+                            project::Replace<RotationUiVariant>(r, e, a.UiVariant);
+                            project::EmplaceOrReplace<RotationUiDriving>(r, e);
                         }
                     }
                 } else {
                     for (const auto e : rotation_targets(a.Scope)) {
-                        r.replace<RotationUiVariant>(e, a.UiVariant);
-                        r.emplace_or_replace<RotationUiDriving>(e);
-                        r.patch<Transform>(e, [&](auto &t) { t.R = a.R; });
+                        project::Replace<RotationUiVariant>(r, e, a.UiVariant);
+                        project::EmplaceOrReplace<RotationUiDriving>(r, e);
+                        project::Patch<Transform>(r, e, [&](auto &t) { t.R = a.R; });
                     }
                 }
             },
@@ -208,24 +209,24 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
 
                 // Snapshot starts before patching so later patches don't perturb the snapshot, then apply.
                 for (const auto &[e, _] : locals)
-                    if (!r.all_of<StartTransform>(e)) r.emplace<StartTransform>(e, r.get<WorldTransform>(e), ToTransform(GetParentDelta(r, e)));
+                    if (!r.all_of<StartTransform>(e)) project::Emplace<StartTransform>(r, e, r.get<WorldTransform>(e), ToTransform(GetParentDelta(r, e)));
                 for (const auto &[e, _] : bone_scales)
                     if (!r.all_of<StartBoneLength>(e))
-                        if (const auto *ds = r.try_get<BoneDisplayScale>(e)) r.emplace<StartBoneLength>(e, ds->Value);
-                for (const auto &[e, local] : locals) r.patch<Transform>(e, [&](auto &t) { t = local; });
-                for (const auto &[e, length] : bone_scales) r.emplace_or_replace<BoneDisplayScale>(e, length);
+                        if (const auto *ds = r.try_get<BoneDisplayScale>(e)) project::Emplace<StartBoneLength>(r, e, ds->Value);
+                for (const auto &[e, local] : locals) project::Patch<Transform>(r, e, [&](auto &t) { t = local; });
+                for (const auto &[e, length] : bone_scales) project::EmplaceOrReplace<BoneDisplayScale>(r, e, length);
             },
             [&](const DragGizmoMeshEdit &a) {
                 for (const auto &[_, instance_entity] : ::selection::ComputePrimaryEditInstances(r, false)) {
                     if (!r.all_of<StartTransform>(instance_entity)) {
-                        r.emplace<StartTransform>(instance_entity, r.get<WorldTransform>(instance_entity), ToTransform(GetParentDelta(r, instance_entity)));
+                        project::Emplace<StartTransform>(r, instance_entity, r.get<WorldTransform>(instance_entity), ToTransform(GetParentDelta(r, instance_entity)));
                     }
                 }
-                r.emplace_or_replace<PendingTransform>(viewport, *a.Value);
+                project::EmplaceOrReplace<PendingTransform>(r, viewport, *a.Value);
             },
             [&](EndGizmoDrag) {
-                r.clear<StartTransform, StartBoneLength>();
-                r.remove<StartScreenTransform>(viewport);
+                project::Clear<StartTransform, StartBoneLength>(r);
+                project::Remove<StartScreenTransform>(r, viewport);
             },
             [&](const SetActiveTool &a) {
                 using Tool = SetActiveTool::Tool;
@@ -235,39 +236,39 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     a.Value == Tool::Rotate                                                  ? TT::Rotate :
                     a.Value == Tool::Scale                                                   ? TT::Scale :
                                                                                                TT::Universal;
-                r.patch<TransformGizmoState>(viewport, [&](auto &s) { s.Config.Type = type; });
+                project::Patch<TransformGizmoState>(r, viewport, [&](auto &s) { s.Config.Type = type; });
                 if (a.Value == Tool::SelectBox || a.Value == Tool::SelectClick) {
                     const auto g = a.Value == Tool::SelectBox ? SelectionGesture::Box : SelectionGesture::Click;
-                    r.patch<BoxSelectState>(viewport, [&](auto &b) { b.Gesture = g; });
+                    project::Patch<BoxSelectState>(r, viewport, [&](auto &b) { b.Gesture = g; });
                 }
             },
             [&](const LatchScreenTransform &a) {
                 // Mid-drag switch is a cancel-restart: revert any in-progress drag to its start state.
                 // StartTransform / StartBoneLength components stay so the next drag (under the new latched type) reuses them.
-                r.remove<PendingTransform>(viewport);
+                project::Remove<PendingTransform>(r, viewport);
                 for (const auto [e, st] : r.view<const StartTransform>().each()) {
                     const auto &pd = st.ParentDelta;
-                    r.patch<Transform>(e, [&](auto &t) {
+                    project::Patch<Transform>(r, e, [&](auto &t) {
                         t.P = numeric::Conjugate(pd.R) * ((st.T.P - pd.P) / pd.S);
                         t.R = numeric::Conjugate(pd.R) * st.T.R;
                         if (!r.all_of<ScaleLocked>(e)) t.S = st.T.S / pd.S;
                     });
                 }
                 for (const auto [e, sbl] : r.view<const StartBoneLength>().each()) {
-                    r.emplace_or_replace<BoneDisplayScale>(e, sbl.Value);
+                    project::EmplaceOrReplace<BoneDisplayScale>(r, e, sbl.Value);
                 }
-                r.emplace_or_replace<StartScreenTransform>(viewport, a.Value);
+                project::EmplaceOrReplace<StartScreenTransform>(r, viewport, a.Value);
             },
-            [&](ClearScreenTransformLatch) { r.remove<StartScreenTransform>(viewport); },
+            [&](ClearScreenTransformLatch) { project::Remove<StartScreenTransform>(r, viewport); },
             [&](const SetViewportShading &a) {
-                r.patch<ViewportDisplay>(viewport, [&](auto &s) {
+                project::Patch<ViewportDisplay>(r, viewport, [&](auto &s) {
                     s.ViewportShading = a.Mode;
                     if (a.Mode != ViewportShadingMode::Wireframe) s.FillMode = a.Mode;
                 });
             },
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
-            [&](const Replace<::Camera> &a) { ForEachReplaceTarget<::Camera>(r, a.Scope, a.Entity, [&](entt::entity e) { r.emplace_or_replace<::Camera>(e, a.Value); }); },
-            [&](const Replace<WorkspaceLights> &a) { r.replace<WorkspaceLights>(a.Entity, *a.Value); },
+            [&](const Replace<::Camera> &a) { ForEachReplaceTarget<::Camera>(r, a.Scope, a.Entity, [&](entt::entity e) { project::EmplaceOrReplace<::Camera>(r, e, a.Value); }); },
+            [&](const Replace<WorkspaceLights> &a) { project::Replace<WorkspaceLights>(r, a.Entity, *a.Value); },
         },
         action
     );

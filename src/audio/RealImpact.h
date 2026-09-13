@@ -4,10 +4,16 @@
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 
+#include <entt/entity/fwd.hpp>
+
 #include <expected>
 #include <filesystem>
 #include <optional>
 #include <vector>
+
+namespace project {
+struct Assets;
+}
 
 /*
 Loads and provides access to a [RealImpact](https://github.com/samuel-clarke/RealImpact) dataset for a single object.
@@ -41,24 +47,35 @@ static constexpr uint32_t CenteredListenerIndex = 263;
 extern const quat ObjectRotationToYUp;
 
 struct ListenerPoint {
-    const long Index; // [0, NumListenerPoints - 1]
-    const long MicId; // [0, NumMics - 1], bottom -> top
-    const long DistanceMm; // Distance from the microphone to the object, in (whole) mm
-    const long AngleDeg; // Angle of the listener relative to the object, in (whole) degrees
+    long Index; // [0, NumListenerPoints - 1]
+    long MicId; // [0, NumMics - 1], bottom -> top
+    long DistanceMm; // Distance from the microphone to the object, in (whole) mm
+    long AngleDeg; // Angle of the listener relative to the object, in (whole) degrees
 
     // Optionally offsets the microphone origin by half its length to place the head at the requested distance.
     // Pass `false` to get the mic head position (listener position) instead of the mic center.
     vec3 GetPosition(vec3 world_up = {0, 1, 0}, bool mic_center = false) const;
 };
 
+struct Source {
+    std::string Name;
+    fs::path Mesh, Samples; // Samples is empty for datasets imported without recordings.
+    std::array<vec3, NumImpactVertices> Positions;
+    std::vector<ListenerPoint> Listeners;
+};
+
+// Store the mesh, metadata, and all microphone recordings as project assets.
+std::expected<fs::path, std::string> ArchiveSource(project::Assets &, const fs::path &directory);
+std::expected<Source, std::string> LoadSource(const entt::registry &, const fs::path &);
+
 // Verifies `directory` is a RealImpact dataset directory (exists, contains required files, name matches).
 // Returns the object name on success, or an error message on failure.
 std::expected<std::string, std::string> ValidateDirectory(const fs::path &);
 
 // Per-impact-vertex {synthetic key, audio frames} at 48kHz.
-// Keys encode (directory, listener, impact) as realimpact://<directory>/li<listener>_impact<impact>.
-std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamples(const fs::path &directory, long listener_point_index);
-// Resolve the dataset and listener group encoded by a synthetic sample key.
+// Keys encode (sample file, listener, impact) as realimpact://<file>/li<listener>_impact<impact>.
+std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamples(const entt::registry &, const fs::path &file, long listener_point_index);
+// Return the sample file and listener group encoded in the key.
 std::optional<std::pair<fs::path, long>> SampleGroupFromKey(const fs::path &key);
 std::optional<std::string> FindObjectName(const fs::path &start_path);
 std::optional<std::string_view> FindMaterialName(std::string_view);

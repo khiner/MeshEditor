@@ -22,22 +22,26 @@ void Show(NSSavePanel *panel, OnPick callback) {
 }
 } // namespace
 
-void ShowOpen(const char *extensions, OnPick callback) {
+void ShowOpen(const char *extensions, OnPick callback, bool directories) {
     auto *const panel = [NSOpenPanel openPanel];
     panel.allowedContentTypes = Types(extensions);
+    panel.canChooseDirectories = directories;
     Show(panel, std::move(callback));
 }
 
-void ShowSave(const char *extensions, const char *default_name, OnPick callback) {
+void ShowSave(const char *extensions, const std::filesystem::path &default_path, OnPick callback) {
     auto *const panel = [NSSavePanel savePanel];
-    panel.allowedContentTypes = Types(extensions);
-    panel.nameFieldStringValue = [NSString stringWithUTF8String:default_name];
+    if (extensions) panel.allowedContentTypes = Types(extensions);
+    if (default_path.has_parent_path()) panel.directoryURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:default_path.parent_path().c_str()]];
+    panel.nameFieldStringValue = [NSString stringWithUTF8String:default_path.filename().c_str()];
+    panel.canCreateDirectories = YES;
     panel.extensionHidden = NO;
     Show(panel, std::move(callback));
 }
 
 void ShowPickFolder(OnPick callback) {
     auto *const panel = [NSOpenPanel openPanel];
+    panel.canCreateDirectories = YES;
     panel.canChooseFiles = NO;
     panel.canChooseDirectories = YES;
     Show(panel, std::move(callback));

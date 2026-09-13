@@ -3,11 +3,11 @@
 
 #include "Bindless.metal"
 #include "CommitPosedGeometryPushConstants.metal"
-#include "ElementWorkShared.metal"
-#include "TransformUtils.metal"
-#include "FanItemEncoding.metal"
 #include "CornerClass.metal"
 #include "CornerClassEncoding.metal"
+#include "ElementWorkShared.metal"
+#include "FanItemEncoding.metal"
+#include "TransformUtils.metal"
 
 kernel void GeometryWorkArgsKernel(
     uint i [[thread_position_in_grid]],
@@ -29,20 +29,22 @@ kernel void CommitPosedGeometryKernel(
     if (pc.Phase == 0u) {
         const uint i = WorkElement(bindless, pc.Candidates, invocation);
         if (i == INVALID_OFFSET) return;
-        device Vertex *vertices = BindlessBufferMutable(Vertex, bindless.VertexBuffer, pc.Vertices.Slot) + pc.Vertices.Offset;
-        const bool selected = pc.Selection.Slot != INVALID_SLOT &&
-            (BindlessBuffer(uint, bindless.Buffer, pc.Selection.Slot)[pc.Selection.Offset + i / 32u] & (1u << (i % 32u))) != 0u;
-        if (pc.Commit != 0u && !selected) return;
-        const float3 base = float3(vertices[i].Position);
-        const float3 world = trs_transform_point(pc.Primary, base);
-        const float3 posed = pc.ApplyTransform != 0u && selected ? trs_inverse_transform_point(pc.Primary, apply_edit_transform(world, pc.Pivot, pc.Delta)) : base;
-        if (pc.Commit != 0u) {
-            if (all(base == posed)) return;
-            vertices[i].Position = packed_float3(posed);
-        } else {
-            device packed_float3 *output = BindlessBufferMutable(packed_float3, bindless.Buffer, pc.Output.Slot) + pc.Output.Offset;
-            if (all(float3(output[i]) == posed)) return;
-            output[i] = packed_float3(posed);
+        if (pc.Mode != GeometryEditMode_Refresh) {
+            device Vertex *vertices = BindlessBufferMutable(Vertex, bindless.VertexBuffer, pc.Vertices.Slot) + pc.Vertices.Offset;
+            const bool selected = pc.Selection.Slot != INVALID_SLOT &&
+                (BindlessBuffer(uint, bindless.Buffer, pc.Selection.Slot)[pc.Selection.Offset + i / 32u] & (1u << (i % 32u))) != 0u;
+            if (pc.Mode == GeometryEditMode_Commit && !selected) return;
+            const float3 base = float3(vertices[i].Position);
+            const float3 world = trs_transform_point(pc.Primary, base);
+            const float3 posed = pc.ApplyTransform != 0u && selected ? trs_inverse_transform_point(pc.Primary, apply_edit_transform(world, pc.Pivot, pc.Delta)) : base;
+            if (pc.Mode == GeometryEditMode_Commit) {
+                if (all(base == posed)) return;
+                vertices[i].Position = packed_float3(posed);
+            } else {
+                device packed_float3 *output = BindlessBufferMutable(packed_float3, bindless.Buffer, pc.Output.Slot) + pc.Output.Offset;
+                if (all(float3(output[i]) == posed)) return;
+                output[i] = packed_float3(posed);
+            }
         }
         MarkWork(bindless, pc.ChangedVertices, i);
         MarkWork(bindless, pc.BoundsTiles, i / 256u);

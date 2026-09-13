@@ -17,6 +17,13 @@ struct PendingRenderRequest {
 // Register the reactive trackers and scene lifecycle handlers used by ProcessComponentEvents.
 void RegisterSceneComponentHandlers(entt::registry &);
 
-// Drain pending component changes and accumulate their render work in PendingRenderRequest.
-// Direct component mutations outside action Apply handlers are restricted to this function.
-void ProcessComponentEvents(entt::registry &, entt::entity viewport);
+// Restore reconciles Derived state without mutating Persistent state.
+// Sample evaluates a shutter time.
+// Render restores the displayed pose after sampling, including live drag offsets.
+enum class EventPass { Frame,
+                       Settle,
+                       Restore,
+                       Sample,
+                       Render };
+// Process component changes and accumulate render work in PendingRenderRequest.
+void ProcessComponentEvents(entt::registry &, entt::entity viewport, EventPass = EventPass::Frame);

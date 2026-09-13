@@ -9,7 +9,8 @@ namespace FileDialog {
 using OnPick = std::function<void(const std::filesystem::path &)>;
 
 // Separate extensions with semicolons and omit dots, for example "gltf;glb".
-void ShowOpen(const char *extensions, OnPick);
-void ShowSave(const char *extensions, const char *default_name, OnPick);
+void ShowOpen(const char *extensions, OnPick, bool directories = false);
+// A null extensions argument permits names without an extension.
+void ShowSave(const char *extensions, const std::filesystem::path &default_path, OnPick);
 void ShowPickFolder(OnPick);
 } // namespace FileDialog

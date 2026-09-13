@@ -1,4 +1,5 @@
 #include "AudioSystem.h"
+#include "project/Registry.h"
 
 #include "ContactModel.h"
 #include "ModalEigenSummary.h"
@@ -20,7 +21,7 @@ void UpdateContactDynamics(entt::registry &r, entt::entity e) {
     const auto *mp = r.try_get<const MassProperties>(e);
     const auto *modes = r.try_get<const ModalModes>(e);
     if (!mp || !modes || modes->Positions.empty()) {
-        r.remove<ContactDynamics>(e);
+        project::Remove<ContactDynamics>(r, e);
         return;
     }
     const float baked_scale = std::max(MeanScale(modes->BakedScale), 1e-6f);
@@ -42,5 +43,5 @@ void UpdateContactDynamics(entt::registry &r, entt::entity e) {
     cd.InverseInertia = InverseInertiaTensor(resolved) * float(1 / mass_scale);
     cd.ContactArm.reserve(modes->Positions.size());
     for (const auto &position : modes->Positions) cd.ContactArm.push_back((position - resolved.CenterOfMass) * baked_scale);
-    r.emplace_or_replace<ContactDynamics>(e, std::move(cd));
+    project::EmplaceOrReplace<ContactDynamics>(r, e, std::move(cd));
 }

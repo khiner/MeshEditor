@@ -34,13 +34,15 @@ jobs:
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build tests
-        run: cmake --build build --target MeshEditorTests MeshEditorActionSerializeTest MeshEditorModalSolveIntegrationTest
+        run: cmake --build build --target MeshEditorTests MeshEditorActionSerializeTest MeshEditorModalSolveIntegrationTest MeshEditorProjectStoreTest MeshEditorProjectTest
 
       - name: Run tests
         run: |
           ./build/tests/MeshEditorActionSerializeTest
           ./build/tests/MeshEditorModalSolveIntegrationTest
           ./build/tests/MeshEditorTests
+          ./build/tests/MeshEditorProjectStoreTest
+          ./build/tests/MeshEditorProjectTest
 
   # Validate mesh corpora and benchmark production surface solves.
   modal-corpus:

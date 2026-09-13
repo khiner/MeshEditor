@@ -22,6 +22,13 @@ struct GpuBuffers;
 struct MeshStore;
 struct Pipelines;
 
+struct MeshVertexChanges {
+    entt::entity Entity;
+    std::span<const Range> Ranges;
+};
+// Recompute normals and update edit work for restored vertex ranges without mutating the vertices.
+void RefreshEditedPositions(entt::registry &, entt::entity viewport, std::span<const MeshVertexChanges>);
+
 enum class MeshletRouteMode : uint32_t { Single,
                                          Material,
                                          Transmission,

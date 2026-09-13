@@ -251,9 +251,9 @@ MeshDataWithMaterials ReadPly(const std::filesystem::path &path) {
     data.ReserveFaces(uint32_t(faces->count), 3u);
     std::vector<uint32_t> face_verts;
     for (size_t f = 0; f < faces->count; ++f) {
-        const auto face_size = face_buf[offset++];
+        const auto face_size = faces->list_sizes.empty() ? face_buf.size() / idx_size / faces->count : faces->list_sizes[f];
         face_verts.clear();
-        for (uint8_t v = 0; v < face_size; ++v) {
+        for (size_t v = 0; v < face_size; ++v) {
             uint32_t vi = 0;
             std::memcpy(&vi, &face_buf[offset], idx_size);
             offset += idx_size;

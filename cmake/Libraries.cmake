@@ -35,9 +35,16 @@ function(mesheditor_library target policy)
     mesheditor_compile_policy(${target} ${policy})
 endfunction()
 
-mesheditor_library(mesheditor_support COLD src/File.cpp src/Paths.cpp src/Compress.cpp)
+mesheditor_library(MeshEditorProjectStore HOT
+    src/project/EntityStore.cpp
+    src/project/store/LiveTrie.cpp
+    src/project/store/History.cpp)
+target_link_libraries(MeshEditorProjectStore PUBLIC mesheditor_serialization)
+
+mesheditor_library(mesheditor_support COLD src/File.cpp src/Paths.cpp src/Compress.cpp src/project/Assets.cpp)
 target_include_directories(mesheditor_support SYSTEM PRIVATE lib/basis_universal/zstd)
 target_link_libraries(mesheditor_support PRIVATE basisu_transcoder)
+set_property(SOURCE src/project/Assets.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
 
 mesheditor_library(mesheditor_image_codecs HOT src/image/ImageDecode.cpp src/image/ImageEncode.cpp)
 target_include_directories(mesheditor_image_codecs SYSTEM PRIVATE lib/lunasvg/plutovg/source)
@@ -59,6 +66,7 @@ target_compile_definitions(mesheditor_implot PRIVATE "IMPLOT_CUSTOM_NUMERIC_TYPE
 target_link_libraries(mesheditor_implot PUBLIC mesheditor_imgui)
 
 mesheditor_library(MeshEditorMetal HOT
+    src/project/BufferHistory.cpp
     src/Profile.cpp
     src/metal/Bindless.cpp
     src/metal/Buffer.cpp
@@ -105,6 +113,7 @@ mesheditor_library(MeshEditorScene HOT
 mesheditor_library(MeshEditorRender HOT
     src/render/ClusterLod.cpp
     src/render/GpuBufferOps.cpp
+    src/render/Materials.cpp
     src/render/GpuScene.cpp
     src/render/MeshUpdates.cpp
     src/render/Pipelines.cpp
@@ -142,6 +151,8 @@ mesheditor_library(MeshEditorAudio HOT
 )
 
 mesheditor_library(MeshEditorAssets COLD
+    src/assets/ArchiveMesh.cpp
+    src/gltf/ArchiveSource.cpp
     src/assets/MaterialImport.cpp
     src/assets/MeshImport.cpp
     src/audio/RealImpact.cpp
@@ -151,15 +162,15 @@ mesheditor_library(MeshEditorAssets COLD
 )
 
 mesheditor_library(MeshEditorEditor COLD
+    src/project/Project.cpp
     src/ProcessEvents.cpp
     src/Stores.cpp
     src/action/Action.cpp
-    src/action/ActionApply.cpp
     src/action/Audio.cpp
     src/action/Bone.cpp
     src/action/Core.cpp
     src/action/Io.cpp
-    src/action/Log.cpp
+    src/project/Sessions.cpp
     src/action/LogSerialize.cpp
     src/action/Object.cpp
     src/action/Physics.cpp
@@ -188,6 +199,7 @@ mesheditor_library(MeshEditorEditor COLD
 )
 
 mesheditor_library(MeshEditorUi COLD
+    src/project/HistoryUi.cpp
     src/VideoRecorder.cpp
     src/WorkspaceState.cpp
     src/animation/AnimationTimeline.cpp
@@ -219,7 +231,7 @@ else()
 endif()
 
 target_include_directories(MeshEditorMetal SYSTEM PUBLIC lib/metal-cpp)
-target_link_libraries(MeshEditorMetal PUBLIC mesheditor_support PRIVATE "-framework Metal" "-framework Foundation" "-framework QuartzCore")
+target_link_libraries(MeshEditorMetal PUBLIC MeshEditorProjectStore mesheditor_support PRIVATE "-framework Metal" "-framework Foundation" "-framework QuartzCore")
 target_link_libraries(MeshEditorMesh PUBLIC MeshEditorMetal PRIVATE meshoptimizer mesheditor_serialization)
 target_link_libraries(MeshEditorScene PUBLIC MeshEditorMesh)
 target_link_libraries(MeshEditorRender PUBLIC MeshEditorScene PRIVATE meshoptimizer mesheditor_image_codecs basisu_transcoder)
@@ -229,14 +241,14 @@ target_link_libraries(MeshEditorAudio PUBLIC MeshEditorScene PRIVATE mesheditor_
 target_link_libraries(MeshEditorAssets PUBLIC MeshEditorRender PRIVATE meshoptimizer MeshEditorAudio fastgltf::fastgltf simdjson::simdjson tinyobjloader tinyply mesheditor_image_codecs)
 target_include_directories(MeshEditorAssets SYSTEM PRIVATE lib/tinyobjloader lib/tinyply/source)
 target_include_directories(MeshEditorEditor SYSTEM PUBLIC lib/readerwriterqueue)
-target_link_libraries(MeshEditorEditor PUBLIC mesheditor_serialization MeshEditorAssets MeshEditorPhysics MeshEditorAudio)
+target_link_libraries(MeshEditorEditor PUBLIC MeshEditorProjectStore mesheditor_serialization MeshEditorAssets MeshEditorPhysics MeshEditorAudio)
 target_link_libraries(MeshEditorPlatform PUBLIC MeshEditorMetal PRIVATE "-framework AppKit" "-framework UniformTypeIdentifiers" "-framework GameController")
 target_link_libraries(MeshEditorUi PUBLIC MeshEditorEditor MeshEditorPlatform mesheditor_implot PRIVATE lunasvg)
 target_include_directories(MeshEditorUi SYSTEM PUBLIC lib/imspinner)
 set_source_files_properties(src/FileDialog.mm src/MacPlatform.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 set_property(SOURCE src/snapshot/ReplayTestFixture.cpp APPEND PROPERTY COMPILE_DEFINITIONS
     "$<$<CONFIG:Debug>:REPLAY_FIXTURE_DIR=\"${CMAKE_SOURCE_DIR}/tests/replay\">")
-set_property(SOURCE src/action/Log.cpp APPEND PROPERTY COMPILE_DEFINITIONS RESTORE_SESSION_RETAIN=${RESTORE_SESSION_RETAIN})
+set_property(SOURCE src/project/Sessions.cpp APPEND PROPERTY COMPILE_DEFINITIONS RESTORE_SESSION_RETAIN=${RESTORE_SESSION_RETAIN})
 
 # Contact processing and modal input preparation run numerical loops inside the editor integration.
 set_property(SOURCE src/editor/AudioIntegration.cpp src/audio/surface/SurfaceAudio.cpp

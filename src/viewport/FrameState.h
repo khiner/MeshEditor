@@ -17,6 +17,5 @@ struct FrameState {
     bool RenderPending{false};
     bool Scrubbing{false};
     bool MotionBlurred{false};
-    bool MotionBlurSubFrame{false};
     bool Capturing{false};
 };

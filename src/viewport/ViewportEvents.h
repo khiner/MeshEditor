@@ -5,7 +5,9 @@
 
 #include <filesystem>
 
-struct MeshGeometryDirty {};
+struct MeshGeometryDirty {
+    bool ResetSelection{true};
+};
 struct MeshPositionsChanged {};
 struct MeshShadingDirty {};
 

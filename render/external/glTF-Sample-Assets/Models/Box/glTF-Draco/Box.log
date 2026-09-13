@@ -1,1 +1,1 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/Box/glTF-Draco/Box.gltf': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/Box/glTF-Draco/Box.gltf': Missing required extensions: KHR_draco_mesh_compression
+Error loading glTF file 'asset:/65f41152ffb729796a7a194efb470d6c/Box.gltf': Missing required extensions: KHR_draco_mesh_compression

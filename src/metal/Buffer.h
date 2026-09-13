@@ -3,9 +3,17 @@
 #include "Range.h"
 #include "metal/Bindless.h"
 
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
+
+namespace store {
+struct History;
+}
+namespace project {
+struct BufferHistory;
+}
 
 template<typename T>
 constexpr std::span<const std::byte> as_bytes(const std::vector<T> &v) { return std::as_bytes(std::span{v}); }
@@ -48,6 +56,10 @@ struct Buffer {
 
     void Update(std::span<const std::byte>, uint64_t offset = 0);
     void Reserve(uint64_t);
+    void SetUsedSize(uint64_t);
+    void CaptureWrite(uint64_t offset, uint64_t size) const;
+    void Track(store::History &, std::string name, uint32_t page_bytes = 4096);
+    project::BufferHistory *History() const { return Tracked.get(); }
     template<typename T> void Update(const std::vector<T> &data) { Update(as_bytes(data)); }
 
     MTL::Buffer *operator*() const { return DeviceBuffer.get(); }
@@ -56,8 +68,7 @@ struct Buffer {
     std::span<std::byte> GetMutableRange(uint64_t offset, uint64_t size) const;
     template<typename T> std::span<T> SetCount(uint32_t count) {
         const auto size = uint64_t(count) * sizeof(T);
-        Reserve(size);
-        UsedSize = size;
+        SetUsedSize(size);
         if (count == 0) return {};
         return {reinterpret_cast<T *>(GetMutableRange(0, size).data()), count};
     }
@@ -77,6 +88,7 @@ struct Buffer {
     NS::SharedPtr<MTL::Buffer> DeviceBuffer;
 
 private:
+    std::unique_ptr<project::BufferHistory> Tracked;
     void Retire();
     void UpdateSlot();
 
@@ -94,15 +106,14 @@ struct TypedBuffer : mtl::Buffer {
     uint32_t Count() const { return uint32_t(UsedSize / sizeof(T)); }
     void SetCount(uint32_t n) {
         const auto s = uint64_t(n) * sizeof(T);
-        mtl::Buffer::Reserve(s);
-        UsedSize = s;
+        SetUsedSize(s);
     }
     void ReserveElements(uint32_t n) { mtl::Buffer::Reserve(uint64_t(n) * sizeof(T)); }
 
     T *Data() { return reinterpret_cast<T *>(Contents().data()); }
     const T *Data() const { return reinterpret_cast<const T *>(Contents().data()); }
 
-    T &Get(uint32_t i) { return Data()[i]; }
+    T &Get(uint32_t i) { return *reinterpret_cast<T *>(GetMutableRange(uint64_t(i) * sizeof(T), sizeof(T)).data()); }
     const T &Get(uint32_t i) const { return Data()[i]; }
 
     void Set(uint32_t i, const T &v) { Update(as_bytes(v), uint64_t(i) * sizeof(T)); }

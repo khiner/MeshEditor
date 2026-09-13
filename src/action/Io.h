@@ -20,15 +20,11 @@ struct LoadGltf {
 struct SaveGltf {
     std::filesystem::path Path;
 };
-// Replace the active session's history with a snapshot at Path.
-struct ClearHistory {
+struct LoadRealImpact {
     std::filesystem::path Path;
 };
-struct LoadRealImpact {
-    std::filesystem::path Directory;
-};
 
-using Action = std::variant<LoadDefaultScene, Load, LoadGltf, SaveGltf, LoadRealImpact, ClearHistory>;
+using Action = std::variant<LoadDefaultScene, Load, LoadGltf, SaveGltf, LoadRealImpact>;
 
 // Handlers run GPU work synchronously; failures are reported through the registry's action::Errors sink.
 void Apply(entt::registry &, entt::entity viewport, const Action &);

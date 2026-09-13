@@ -2,6 +2,7 @@
 #include "Variant.h"
 #include "animation/AnimationTimeline.h"
 #include "gltf/SourceAssets.h"
+#include "project/Registry.h"
 #include "render/LightComponents.h"
 #include "viewport/ViewportDisplay.h"
 
@@ -15,12 +16,12 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
         const bool explicit_ibl = source_assets && source_assets->ImageBasedLight.has_value();
         const bool authored_lighting = explicit_ibl || !r.storage<LightIndex>().empty();
         const auto mode = authored_lighting ? ViewportShadingMode::Rendered : ViewportShadingMode::MaterialPreview;
-        r.patch<ViewportDisplay>(viewport, [&](auto &s) { s.ViewportShading = s.FillMode = mode; s.ShowOverlays = false; });
+        project::Patch<ViewportDisplay>(r, viewport, [&](auto &s) { s.ViewportShading = s.FillMode = mode; s.ShowOverlays = false; });
         if (!authored_lighting && r.all_of<MaterialPreviewLighting>(viewport)) {
-            r.patch<MaterialPreviewLighting>(viewport, [](auto &l) { l.WorldOpacity = 1.f; });
+            project::Patch<MaterialPreviewLighting>(r, viewport, [](auto &l) { l.WorldOpacity = 1.f; });
         }
         if (authored_lighting && r.all_of<RenderedLighting>(viewport)) {
-            r.patch<RenderedLighting>(viewport, [&](auto &l) {
+            project::Patch<RenderedLighting>(r, viewport, [&](auto &l) {
                 if (explicit_ibl) {
                     l.BackgroundBlur = 0.f;
                 } else {
@@ -35,25 +36,25 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](EnterPresentation) { enter_presentation(); },
             [&](StartPresentation) {
                 enter_presentation();
-                r.patch<TimelinePlayback>(viewport, [](auto &p) { p.Playing = true; });
+                project::Patch<TimelinePlayback>(r, viewport, [](auto &p) { p.Playing = true; });
             },
             [&](const TogglePlay &a) {
-                r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.Playing = !p.Playing; p.CurrentFrame = a.Frame; });
+                project::Patch<TimelinePlayback>(r, viewport, [&](auto &p) { p.Playing = !p.Playing; p.CurrentFrame = a.Frame; });
                 r.get<PlaybackFrame>(viewport).Value = a.Frame;
             },
             [&](const SetFrame &a) {
-                r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = a.Frame; });
+                project::Patch<TimelinePlayback>(r, viewport, [&](auto &p) { p.CurrentFrame = a.Frame; });
                 r.get<PlaybackFrame>(viewport).Value = a.Frame;
             },
-            [&](const SetStartFrame &a) { r.patch<TimelineRange>(viewport, [&](auto &range) { range.StartFrame = a.Frame; }); },
-            [&](const SetEndFrame &a) { r.patch<TimelineRange>(viewport, [&](auto &range) { range.EndFrame = a.Frame; }); },
+            [&](const SetStartFrame &a) { project::Patch<TimelineRange>(r, viewport, [&](auto &range) { range.StartFrame = a.Frame; }); },
+            [&](const SetEndFrame &a) { project::Patch<TimelineRange>(r, viewport, [&](auto &range) { range.EndFrame = a.Frame; }); },
             [&](JumpToStart) { JumpToStartFrame(r, viewport); },
             [&](JumpToEnd) {
                 const auto frame = r.get<const TimelineRange>(viewport).EndFrame;
-                r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = frame; });
+                project::Patch<TimelinePlayback>(r, viewport, [&](auto &p) { p.CurrentFrame = frame; });
                 r.get<PlaybackFrame>(viewport).Value = frame;
             },
-            [&](const SetView &a) { r.replace<AnimationTimelineView>(viewport, AnimationTimelineView{a.PixelsPerFrame, a.ViewCenterFrame}); },
+            [&](const SetView &a) { project::Replace<AnimationTimelineView>(r, viewport, AnimationTimelineView{a.PixelsPerFrame, a.ViewCenterFrame}); },
         },
         action
     );

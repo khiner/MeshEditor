@@ -8,6 +8,9 @@
 #include "audio/ContactSurface.h"
 #include "audio/ModalModelFile.h"
 #include "audio/ModalModes.h"
+#include "project/Assets.h"
+#include <barrier>
+#include <future>
 #ifdef SURFACE_AUDIO
 #include "audio/surface/SurfaceAudio.h" // SurfaceRelief, UpdateSurfaceRelief
 #endif
@@ -835,7 +838,7 @@ int main(int argc, const char **argv) {
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
 
     const auto tmp_root = MakeRoundtripDir();
-    Paths::SetProject(tmp_root); // Modal-file round-trip writes under ModalModelsDir() = Project()/modal.
+    Paths::SetProject(tmp_root);
     const auto samples = SampleRoots | transform([](auto root) { return CollectGltfSamples(SamplePath(root)); }) | join | to<std::vector>();
 
     struct SceneFixture {
@@ -895,13 +898,28 @@ int main(int argc, const char **argv) {
 
     // Require exact modal-result round trips and reuse of identical content-addressed files.
     "modal model file round trip"_test = [] {
-        const auto relative = SaveModalModelFile(ModalModelsDir(), SampleModal);
-        expect(!relative.empty());
-        const auto loaded = LoadModalModelFile(relative);
+        project::Assets assets{.Directory = Paths::Project()};
+        const auto stored = SaveModalModelFile(assets, SampleModal);
+        expect(bool(stored));
+        if (!stored) return;
+        const auto loaded = LoadModalModelFile(assets.Resolve(*stored));
         expect(bool(loaded));
         if (!loaded) return;
         expect(*loaded == SampleModal);
-        expect(SaveModalModelFile(ModalModelsDir(), SampleModal) == relative);
+        expect(SaveModalModelFile(assets, SampleModal) == stored);
+        auto changed = SampleModal;
+        changed.Modes.Freqs[0] += 1.f;
+        std::barrier gate{4};
+        std::array<std::future<std::expected<std::filesystem::path, std::string>>, 4> writes;
+        for (auto &write : writes) write = std::async(std::launch::async, [&, destination = assets]() mutable {
+                                       gate.arrive_and_wait();
+                                       return SaveModalModelFile(destination, changed);
+                                   });
+        for (auto &write : writes) {
+            const auto result = write.get();
+            expect(bool(result));
+            if (result) expect(LoadModalModelFile(assets.Resolve(*result)) == changed);
+        }
     };
 
     // A destroyed entity leaves deletion history in the pools it belonged to, and SaveState excludes it so the byte image reflects state alone.
@@ -1020,7 +1038,7 @@ int main(int argc, const char **argv) {
         auto &textures = r.ctx().get<TextureStore>();
         auto batch = BeginTextureUploadBatch(r.ctx().get<const mtl::Context>(), r.ctx().get<mtl::LibraryCache>());
         for (const auto &item : pending->Items) {
-            if (auto entry = MaterializeTextureEntry(r.ctx().get<const mtl::Context>(), batch, slots, item, src->Images, r.ctx().get<const ActiveSamplerAnisotropy>().Value)) {
+            if (auto entry = MaterializeTextureEntry(r, batch, slots, item, src->Images, r.ctx().get<const ActiveSamplerAnisotropy>().Value)) {
                 textures.Textures.emplace_back(std::move(*entry));
             }
         }

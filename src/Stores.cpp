@@ -4,6 +4,7 @@
 #include "audio/AudioStores.h"
 #include "mesh/MeshStores.h"
 #include "physics/PhysicsStores.h"
+#include "project/Registry.h"
 #include "render/RenderStores.h"
 #include "scene/Entity.h"
 #include <entt/entity/registry.hpp>
@@ -17,12 +18,12 @@ entt::entity WireRegistry(entt::registry &r) {
     InitEntityNames(r);
     RegisterRenderStoreHandlers(r);
 
-    const auto viewport = r.create();
+    const auto viewport = project::Create(r);
     auto &buffers = InitRenderStores(r);
     InitMeshStore(r, buffers);
     r.ctx().emplace<action::Errors>();
-    r.emplace<TimelineRange>(viewport);
-    r.emplace<TimelinePlayback>(viewport);
+    project::Emplace<TimelineRange>(r, viewport);
+    project::Emplace<TimelinePlayback>(r, viewport);
     InitDefaultMaterial(r, viewport);
     return viewport;
 }
