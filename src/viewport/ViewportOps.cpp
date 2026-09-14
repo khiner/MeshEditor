@@ -1,5 +1,5 @@
 #include "viewport/ViewportOps.h"
-#include "project/Registry.h"
+#include "state/Scene.h"
 
 #include "action/Bone.h"
 #include "action/Emit.h"
@@ -17,19 +17,17 @@
 #include "selection/SelectionQueries.h"
 #include "viewport/InteractionComponents.h"
 
-#include <entt/entity/registry.hpp>
-
-bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMode mode) {
+bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode mode) {
     const auto current_mode = r.get<const Interaction>(viewport).Mode;
     if (current_mode == mode) return false;
 
     const auto active_entity = FindActiveEntity(r);
-    const auto active_arm = active_entity != entt::null ? FindArmatureObject(r, active_entity) : entt::null;
-    const bool active_is_armature = active_arm != entt::null;
+    const auto active_arm = active_entity != state::Null ? FindArmatureObject(r, active_entity) : state::Null;
+    const bool active_is_armature = active_arm != state::Null;
     if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(r) && !active_is_armature) return false;
     if (mode == InteractionMode::Pose && !active_is_armature) return false;
 
-    project::Clear<VertexForce>(r);
+    r.clear<VertexForce>();
     auto &meshes = r.ctx().get<MeshStore>();
     std::vector<ElementRange> initialize_selection;
     const auto edit_ranges = [&](Element element) {
@@ -50,16 +48,16 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
             ApplyEditSelectionCommand(r, viewport, ranges, baseline->Mode, EditSelectionOperation::RestoreBaseline);
             for (const auto &range : ranges) {
                 const auto &summary = meshes.GetSelectionSummary(r.get<const MeshHandle>(range.MeshEntity).StoreId);
-                if (summary.ActiveHandle < range.Count) project::EmplaceOrReplace<MeshActiveElement>(r, range.MeshEntity, summary.ActiveHandle);
-                else project::Remove<MeshActiveElement>(r, range.MeshEntity);
+                if (summary.ActiveHandle < range.Count) r.emplace_or_replace<MeshActiveElement>(range.MeshEntity, summary.ActiveHandle);
+                else r.remove<MeshActiveElement>(range.MeshEntity);
             }
         }
-        project::Remove<ExciteSelectionBaseline>(r, viewport);
+        r.remove<ExciteSelectionBaseline>(viewport);
     } else if (mode == InteractionMode::Excite) {
         const auto edit_element = r.get<const EditMode>(viewport).Value;
         const auto ranges = edit_ranges(edit_element);
         ApplyEditSelectionCommand(r, viewport, ranges, edit_element, EditSelectionOperation::CaptureBaseline);
-        project::EmplaceOrReplace<ExciteSelectionBaseline>(r, viewport, edit_element);
+        r.emplace_or_replace<ExciteSelectionBaseline>(viewport, edit_element);
     }
 
     if (mode == InteractionMode::Edit && !active_is_armature) {
@@ -73,29 +71,29 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
                 if (count == 0) continue;
 
                 meshes.EnsureSelectionBits(mesh);
-                project::Emplace<MeshElementSelection>(r, mesh_entity);
+                r.emplace<MeshElementSelection>(mesh_entity);
                 initialize_selection.emplace_back(
                     mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), edit_element), count
                 );
             }
         }
     }
-    project::Patch<Interaction>(r, viewport, [mode](auto &s) { s.Mode = mode; });
+    r.patch<Interaction>(viewport, [mode](auto &s) { s.Mode = mode; });
     if (!initialize_selection.empty()) {
         ApplyEditSelectionCommand(
             r, viewport, initialize_selection, r.get<const EditMode>(viewport).Value,
             EditSelectionOperation::Fill
         );
     }
-    project::Patch<ViewportTheme>(r, viewport, [](auto &) {});
+    r.patch<ViewportTheme>(viewport, [](auto &) {});
     return true;
 }
 
-void Delete(const entt::registry &r, entt::entity viewport) {
+void Delete(const state::Scene &r, state::Entity viewport) {
     if (IsBoneEditMode(r, viewport)) action::Emit(action::bone::DeleteSelected{});
     else action::Emit(action::object::Delete{});
 }
-void Duplicate(const entt::registry &r, entt::entity viewport) {
+void Duplicate(const state::Scene &r, state::Entity viewport) {
     if (IsBoneEditMode(r, viewport)) action::Emit(action::bone::DuplicateSelected{});
     else action::EmitStaged(action::object::Duplicate{});
 }

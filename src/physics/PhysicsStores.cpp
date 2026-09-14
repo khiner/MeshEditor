@@ -1,21 +1,20 @@
 #include "physics/PhysicsStores.h"
 #include "physics/PhysicsTypes.h"
-#include "project/Registry.h"
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 namespace {
 template<typename C>
-void EmplaceIfAbsent(entt::registry &r, entt::entity e) {
-    if (project::Restoring(r)) return;
-    if (!r.all_of<C>(e)) project::Emplace<C>(r, e);
+void EmplaceIfAbsent(state::Scene &r, state::Entity e) {
+    if (r.Restoring) return;
+    if (!r.all_of<C>(e)) r.emplace<C>(e);
 }
 
 template<typename C>
-void RemoveOwned(entt::registry &r, entt::entity e) {
-    if (!project::Restoring(r)) project::Remove<C>(r, e);
+void RemoveOwned(state::Scene &r, state::Entity e) {
+    if (!r.Restoring) r.remove<C>(e);
 }
 
 } // namespace
-void RegisterPhysicsStoreHandlers(entt::registry &r) {
+void RegisterPhysicsStoreHandlers(state::Scene &r) {
     r.on_construct<PhysicsMotion>().connect<&EmplaceIfAbsent<PhysicsVelocity>>();
     r.on_destroy<PhysicsMotion>().connect<&RemoveOwned<PhysicsVelocity>>();
     r.on_construct<ColliderShape>().connect<&EmplaceIfAbsent<ColliderMaterial>>();

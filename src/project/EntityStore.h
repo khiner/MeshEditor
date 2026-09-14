@@ -1,49 +1,42 @@
 #pragma once
 
-#include "project/Registry.h"
 #include "project/store/History.h"
-#include "project/store/Versioned.h"
 #include "snapshot/SnapshotRoles.h"
 
 #include <memory>
 
+namespace store {
+template<typename T> struct VersionedVector;
+}
+namespace state {
+enum class Event : uint8_t;
+}
+
 namespace project {
 struct EntityStore {
-    EntityStore(entt::registry &, store::History &, const std::unordered_map<entt::id_type, snapshot::SnapshotEntry> &);
+    EntityStore(state::Scene &, store::History &, const snapshot::SnapshotEntries &);
     ~EntityStore();
 
-    entt::entity Create();
-    void Destroy(entt::entity);
-    void Capture(entt::id_type, entt::entity);
+    void Capture(state::TypeId, state::Entity);
 
-    // Destroys all live entities and resets allocation, preserving pinned versions.
-    void Reset();
     void BeginRestore();
-    std::vector<entt::entity> RemovedEntities() const;
-    void FinishRestore();
-    entt::entity Recorded(uint32_t index) const;
+    std::vector<state::Entity> RemovedEntities() const;
+    void FinishRestore(std::span<const state::Entity> removed);
     struct Change {
-        entt::id_type Type;
-        entt::entity Entity;
+        state::TypeId Type;
+        state::Entity Entity;
+        state::Event Event;
     };
     std::vector<Change> TakeChanges() { return std::exchange(Changes, {}); }
 
     struct Pool;
-    struct Pending {
-        Pool *Target;
-        uint32_t Index;
-        store::Blob Value;
-        bool Erase;
-    };
-    entt::entity LiveAt(uint32_t index) const;
     void ForEachIdentityChange(auto &&fn) const;
 
-    entt::registry &R;
-    store::VersionedVector<uint32_t> Table, Free;
-    std::vector<entt::entity> Live;
-    std::unordered_map<entt::id_type, std::unique_ptr<Pool>> Pools;
-    std::vector<Pending> Staged;
+    state::Scene &R;
+    const snapshot::SnapshotEntries &Components;
+    store::VersionedVector<uint32_t> &Table;
+    size_t PreviousLength{};
+    std::array<std::unique_ptr<Pool>, state::SchemaSize> Pools;
     std::vector<Change> Changes;
-    bool InRestore{};
 };
 } // namespace project

@@ -8,7 +8,6 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
-#include "project/Registry.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
@@ -19,6 +18,7 @@
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
 #include "selection/SelectionQueries.h"
+#include "state/Scene.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
 
@@ -26,31 +26,30 @@
 
 namespace {
 // Read/write a field at `offset` within a PrimitiveShape's current alternative.
-void ReadPrimitiveField(const entt::registry &r, entt::entity e, uint16_t offset, void *dst, uint16_t size) {
+void ReadPrimitiveField(const state::Scene &r, state::Entity e, uint16_t offset, void *dst, uint16_t size) {
     std::visit([&](const auto &alt) { std::memcpy(dst, reinterpret_cast<const std::byte *>(&alt) + offset, size); }, r.get<const PrimitiveShape>(e));
 }
-void PatchPrimitiveField(entt::registry &r, entt::entity e, uint16_t offset, const void *src, uint16_t size) {
-    project::Patch<PrimitiveShape>(r, e, [&](PrimitiveShape &s) { std::visit([&](auto &alt) { std::memcpy(reinterpret_cast<std::byte *>(&alt) + offset, src, size); }, s); });
+void PatchPrimitiveField(state::Scene &r, state::Entity e, uint16_t offset, const void *src, uint16_t size) {
+    r.patch<PrimitiveShape>(e, [&](PrimitiveShape &s) { std::visit([&](auto &alt) { std::memcpy(reinterpret_cast<std::byte *>(&alt) + offset, src, size); }, s); });
 }
-inline const action::detail::ComponentPatcher PrimitiveFieldPatcher{&PatchPrimitiveField, &ReadPrimitiveField, &action::detail::HasComponent<PrimitiveShape>, "PrimitiveShape"};
 
 // Create an armature object over `data_entity`, creating fresh armature data when null.
-entt::entity CreateArmatureObject(entt::registry &r, MeshStore &meshes, entt::entity data_entity, std::string_view name, const Transform &transform, MeshInstanceCreateInfo::SelectBehavior select) {
-    if (data_entity == entt::null) {
-        data_entity = project::Create(r);
-        project::Emplace<Armature>(r, data_entity);
+state::Entity CreateArmatureObject(state::Scene &r, MeshStore &meshes, state::Entity data_entity, std::string_view name, const Transform &transform, MeshInstanceCreateInfo::SelectBehavior select) {
+    if (data_entity == state::Null) {
+        data_entity = r.create();
+        r.emplace<Armature>(data_entity);
     }
-    const auto entity = project::Create(r);
-    project::Emplace<ObjectKind>(r, entity, ObjectType::Armature);
-    project::Emplace<ArmatureObject>(r, entity, data_entity);
-    project::Emplace<Transform>(r, entity, transform);
+    const auto entity = r.create();
+    r.emplace<ObjectKind>(entity, ObjectType::Armature);
+    r.emplace<ArmatureObject>(entity, data_entity);
+    r.emplace<Transform>(entity, transform);
     EmplaceUniqueName(r, entity, name.empty() ? "Armature" : name);
     ::ApplySelectBehavior(r, entity, select);
     ::CreateBoneInstances(r, meshes, entity, data_entity);
     return entity;
 }
 
-entt::entity DuplicateOne(entt::registry &r, entt::entity e) {
+state::Entity DuplicateOne(state::Scene &r, state::Entity e) {
     auto &meshes = r.ctx().get<MeshStore>();
     const ObjectCreateInfo create_info{
         .Name = std::format("{}_copy", GetName(r, e)),
@@ -61,9 +60,9 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e) {
 
     if (!r.all_of<Instance>(e)) {
         if (const auto object_type = r.all_of<ObjectKind>(e) ? r.get<const ObjectKind>(e).Value : ObjectType::Empty; object_type == ObjectType::Armature) {
-            const auto copy_entity = CreateArmatureObject(r, meshes, entt::null, create_info.Name, create_info.Transform, create_info.Select);
+            const auto copy_entity = CreateArmatureObject(r, meshes, state::Null, create_info.Name, create_info.Transform, create_info.Select);
             if (const auto *src_armature = r.try_get<ArmatureObject>(e)) {
-                r.get<Armature>(r.get<const ArmatureObject>(copy_entity).Entity) = r.get<const Armature>(src_armature->Entity);
+                r.edit<Armature>(r.get<const ArmatureObject>(copy_entity).Entity) = r.get<const Armature>(src_armature->Entity);
             }
             return copy_entity;
         }
@@ -71,7 +70,7 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e) {
     }
 
     // Bone sub-entities (head/tail joints, bone instances) are not independently duplicable.
-    if (r.all_of<BoneSubPartOf>(e)) return entt::null;
+    if (r.all_of<BoneSubPartOf>(e)) return state::Null;
 
     // Object extras (Camera, Empty, Light) have Instance but create their own wireframe mesh.
     if (r.all_of<ObjectExtrasTag>(r.get<Instance>(e).Entity)) {
@@ -85,15 +84,15 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e) {
         r, meshes.CloneMesh(GetMesh(r, mesh_entity)).StoreId,
         MeshInstanceCreateInfo{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = r.all_of<RenderInstance>(e)}
     );
-    if (auto *prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) project::Emplace<PrimitiveShape>(r, e_new.first, *prim_shape);
-    if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) project::Emplace<ArmatureModifier>(r, e_new.second, *armature_modifier);
-    if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) project::Emplace<BoneAttachment>(r, e_new.second, *bone_attachment);
+    if (auto *prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(e_new.first, *prim_shape);
+    if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new.second, *armature_modifier);
+    if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new.second, *bone_attachment);
     return e_new.second;
 }
 
-entt::entity DuplicateLinkedOne(entt::registry &r, entt::entity e) {
+state::Entity DuplicateLinkedOne(state::Scene &r, state::Entity e) {
     auto &meshes = r.ctx().get<MeshStore>();
-    if (r.all_of<BoneSubPartOf>(e)) return entt::null;
+    if (r.all_of<BoneSubPartOf>(e)) return state::Null;
     if (!r.all_of<Instance>(e)) {
         const auto select_behavior = r.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None;
 
@@ -104,7 +103,7 @@ entt::entity DuplicateLinkedOne(entt::registry &r, entt::entity e) {
     }
 
     const auto mesh_entity = r.get<Instance>(e).Entity;
-    const auto e_new = project::Create(r);
+    const auto e_new = r.create();
     {
         uint32_t instance_count{0}; // Count instances for naming (first duplicated instance is _1, etc.)
         for (const auto [_, instance] : r.view<Instance>().each()) {
@@ -112,24 +111,24 @@ entt::entity DuplicateLinkedOne(entt::registry &r, entt::entity e) {
         }
         EmplaceUniqueName(r, e_new, std::format("{}_{}", GetName(r, e), instance_count));
     }
-    project::Emplace<Instance>(r, e_new, mesh_entity);
-    project::Emplace<ObjectKind>(r, e_new, ObjectType::Mesh);
+    r.emplace<Instance>(e_new, mesh_entity);
+    r.emplace<ObjectKind>(e_new, ObjectType::Mesh);
     const Transform t_new{r.get<const WorldTransform>(e)};
-    project::EmplaceOrReplace<Transform>(r, e_new, t_new);
+    r.emplace_or_replace<Transform>(e_new, t_new);
     Show(r, e_new);
-    if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) project::Emplace<ArmatureModifier>(r, e_new, *armature_modifier);
-    if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) project::Emplace<BoneAttachment>(r, e_new, *bone_attachment);
+    if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new, *armature_modifier);
+    if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new, *bone_attachment);
 
-    project::Emplace<Selected>(r, e_new);
+    r.emplace<Selected>(e_new);
 
     return e_new;
 }
 } // namespace
 
 namespace action::object {
-void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
+void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     auto &meshes = r.ctx().get<MeshStore>();
-    auto begin_translate = [&] { project::EmplaceOrReplace<StartScreenTransform>(r, viewport, TransformGizmo::TransformType::Translate); };
+    auto begin_translate = [&] { r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate); };
     const auto duplicate = [&](bool linked, const PendingTransform *placement = nullptr) {
         if (!(linked ? CanDuplicateLinked(r, viewport) : CanDuplicate(r, viewport))) return;
         const profile::CpuScope scope{linked ? "DuplicateLinked" : "Duplicate"};
@@ -147,31 +146,31 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
         for (const auto src : entities) {
             const auto dup = linked ? DuplicateLinkedOne(r, src) : DuplicateOne(r, src);
             // Copies are rooted in world space, so placement needs no parent conversion.
-            if (placement) project::Patch<Transform>(r, dup, [&](auto &t) { t = placement->ApplyTo(t, r.all_of<ScaleLocked>(dup)); });
+            if (placement) r.patch<Transform>(dup, [&](auto &t) { t = placement->ApplyTo(t, r.all_of<ScaleLocked>(dup)); });
             if (r.all_of<Active>(src)) {
-                project::Remove<Active>(r, src);
-                project::Emplace<Active>(r, dup);
+                r.remove<Active>(src);
+                r.emplace<Active>(dup);
             }
-            project::Remove<Selected>(r, src);
+            r.remove<Selected>(src);
         }
-        if (placement) project::Remove<StartScreenTransform>(r, viewport);
+        if (placement) r.remove<StartScreenTransform>(viewport);
         else begin_translate();
     };
     // Rebuild a primitive mesh entity's geometry from its current PrimitiveShape.
-    auto regen_primitive = [&](entt::entity e) {
+    auto regen_primitive = [&](state::Entity e) {
         const bool was_flat = r.get<const MeshShadingSummary>(e).AllSharp;
-        if (auto *mb = r.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
+        if (auto *mb = r.try_edit<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
         // Erasing MeshHandle fires on_destroy, releasing the old store entry.
-        project::Erase<MeshBuffers, MeshHandle>(r, e);
+        r.remove<MeshBuffers, MeshHandle>(e);
         const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(r.get<const PrimitiveShape>(e)), .FlatShaded = was_flat});
-        project::Emplace<MeshHandle>(r, e, MeshHandle{created.StoreId});
-        project::EmplaceOrReplace<MeshGeometryDirty>(r, e);
+        r.emplace<MeshHandle>(e, MeshHandle{created.StoreId});
+        r.emplace_or_replace<MeshGeometryDirty>(e);
     };
-    auto for_each_mesh_target = [&](Scope scope, entt::entity entity, auto &&fn) {
+    auto for_each_mesh_target = [&](Scope scope, state::Entity entity, auto &&fn) {
         switch (scope) {
             case Scope::Entity: fn(entity); break;
             case Scope::Active:
-                if (const auto e = GetActiveMeshEntity(r); e != entt::null) fn(e);
+                if (const auto e = GetActiveMeshEntity(r); e != state::Null) fn(e);
                 break;
             case Scope::Selected:
             case Scope::SelectedDelta:
@@ -180,7 +179,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
         }
     };
     const auto edit_selection_meshes = [&](Element element) {
-        std::vector<entt::entity> result;
+        std::vector<state::Entity> result;
         if (r.get<const EditMode>(viewport).Value != element) return result;
         for (const auto me : r.view<const MeshElementSelection>()) {
             if (!HasMesh(r, me)) continue;
@@ -192,13 +191,13 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     };
     const auto selected_meshes = [&] {
         const auto selected = ::selection::GetSelectedMeshEntities(r);
-        return std::vector<entt::entity>{selected.begin(), selected.end()};
+        return std::vector<state::Entity>{selected.begin(), selected.end()};
     };
     std::visit(
         overloaded{
             [&](Delete) {
                 if (!CanDelete(r, viewport)) return;
-                for (const auto e : SortedEntities(r.view<Selected>(entt::exclude<SubElementOf>))) Destroy(r, viewport, e);
+                for (const auto e : SortedEntities(r.view<Selected>(state::Exclude<SubElementOf>))) Destroy(r, viewport, e);
             },
             [&](Duplicate) { duplicate(false); },
             [&](DuplicateLinked) { duplicate(true); },
@@ -242,7 +241,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             },
             [&](ParentToActive) {
                 const auto active = FindActiveEntity(r);
-                if (active == entt::null) return;
+                if (active == state::Null) return;
                 for (const auto e : r.view<Selected>()) {
                     if (e != active) SetParentKeepWorld(r, e, active);
                 }
@@ -252,7 +251,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             },
             [&](const AddEmpty &a) { ::AddEmpty(r, meshes, *a.Info); begin_translate(); },
             [&](const AddArmature &a) {
-                CreateArmatureObject(r, meshes, entt::null, a.Info->Name, a.Info->Transform, a.Info->Select);
+                CreateArmatureObject(r, meshes, state::Null, a.Info->Name, a.Info->Transform, a.Info->Select);
                 begin_translate();
             },
             [&](const AddCamera &a) { ::AddCamera(r, meshes, *a.Info, a.Props); begin_translate(); },
@@ -260,31 +259,34 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](const AddMeshPrimitive &a) {
                 const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(a.Shape), .FlatShaded = true});
                 const auto [mesh_entity, _] = ::AddMesh(r, created.StoreId, *a.Info);
-                project::Emplace<PrimitiveShape>(r, mesh_entity, a.Shape);
+                r.emplace<PrimitiveShape>(mesh_entity, a.Shape);
                 begin_translate();
             },
             [&](const ImportMesh &a) { RequestImportMesh(r, viewport, a.Path, *a.Info); },
             [&]<typename Field>(const UpdatePrimitiveField<Field> &a) {
-                static const auto comp = entt::type_hash<PrimitiveShape>::value();
+                static const auto comp = state::Type<PrimitiveShape>();
                 const auto active = GetActiveMeshEntity(r);
-                if (active == entt::null || !r.all_of<PrimitiveShape>(active)) return;
+                if (active == state::Null || !r.all_of<PrimitiveShape>(active)) return;
                 const auto active_index = r.get<const PrimitiveShape>(active).index();
                 auto clamp_field = [&](Field v) {
                     if constexpr (std::integral<Field>) return std::clamp(v, a.Min, a.Max);
                     else return numeric::Clamp(v, a.Min, a.Max);
                 };
-                auto write = [&](entt::entity e, Field value) {
+                auto write = [&](state::Entity e, Field value) {
                     if (::selection::HasScaleLockedInstance(r, e)) return;
                     value = clamp_field(value);
-                    PrimitiveFieldPatcher.Patch(r, e, a.Offset, &value, sizeof(Field));
+                    PatchPrimitiveField(r, e, a.Offset, &value, sizeof(Field));
                     regen_primitive(e);
                 };
                 if (a.Scope == Scope::SelectedDelta) {
                     // Add the active's delta to each member's own start, keeping their relative values.
-                    const auto active_start = FieldGestureStart<Field>(r, active, PrimitiveFieldPatcher, comp, a.Offset);
+                    const auto start = [&](state::Entity e) {
+                        return FieldGestureStart<Field>(r, e, comp, a.Offset, [&](Field &v) { ReadPrimitiveField(r, e, a.Offset, &v, sizeof(Field)); });
+                    };
+                    const auto active_start = start(active);
                     for (const auto e : ::selection::GetSelectedMeshEntities(r)) {
                         if (!r.all_of<PrimitiveShape>(e) || r.get<const PrimitiveShape>(e).index() != active_index) continue;
-                        const auto e_start = FieldGestureStart<Field>(r, e, PrimitiveFieldPatcher, comp, a.Offset);
+                        const auto e_start = start(e);
                         if constexpr (std::integral<Field>) {
                             // Accumulate in a wider signed type so an unsigned field can't wrap on a downward delta.
                             write(e, Field(std::clamp<int64_t>(int64_t(e_start) + int64_t(a.Value) - int64_t(active_start), int64_t(a.Min), int64_t(a.Max))));
@@ -301,22 +303,22 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 }
             },
             [&](const SetPbrMeshFeaturesMask &a) {
-                for_each_mesh_target(a.Scope, entt::null, [&](entt::entity e) {
-                    if (a.Mask != 0u) project::EmplaceOrReplace<PbrMeshFeatures>(r, e, a.Mask);
-                    else project::Remove<PbrMeshFeatures>(r, e);
+                for_each_mesh_target(a.Scope, state::Null, [&](state::Entity e) {
+                    if (a.Mask != 0u) r.emplace_or_replace<PbrMeshFeatures>(e, a.Mask);
+                    else r.remove<PbrMeshFeatures>(e);
                 });
             },
             [&](const UpdateMaterial &a) {
                 if (a.Features) Apply(r, viewport, SetPbrMeshFeaturesMask{*a.Features, a.Scope});
                 r.ctx().get<GpuBuffers>().Materials.Set(a.Index, *a.Value);
-                project::EmplaceOrReplace<MaterialDirty>(r, viewport, a.Index);
+                r.emplace_or_replace<MaterialDirty>(viewport, a.Index);
             },
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
             // Mesh-data components (material assignment / slot selection) live on the object's mesh entity.
-            [&]<typename T>(const Replace<T> &a) { for_each_mesh_target(a.Scope, a.Entity, [&](entt::entity e) { project::EmplaceOrReplace<T>(r, e, a.Value); }); },
+            [&]<typename T>(const Replace<T> &a) { for_each_mesh_target(a.Scope, a.Entity, [&](state::Entity e) { r.emplace_or_replace<T>(e, a.Value); }); },
             [&](const SetLightType &a) {
-                ForEachReplaceTarget<PunctualLight>(r, a.Scope, entt::null, [&](auto e) {
-                    project::Patch<PunctualLight>(r, e, [&](auto &light) {
+                ForEachReplaceTarget<PunctualLight>(r, a.Scope, state::Null, [&](auto e) {
+                    r.patch<PunctualLight>(e, [&](auto &light) {
                         auto next = Defaults::MakePunctualLight(a.Type);
                         next.Color = light.Color;
                         next.Intensity = light.Intensity;
@@ -325,8 +327,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 });
             },
             [&](const SetSpotCone &a) {
-                ForEachReplaceTarget<PunctualLight>(r, a.Scope, entt::null, [&](auto e) {
-                    project::Patch<PunctualLight>(r, e, [&](auto &light) {
+                ForEachReplaceTarget<PunctualLight>(r, a.Scope, state::Null, [&](auto e) {
+                    r.patch<PunctualLight>(e, [&](auto &light) {
                         light.OuterConeCos = std::cos(a.OuterAngle);
                         light.InnerConeCos = std::cos(a.OuterAngle * (1.f - a.Blend));
                     });

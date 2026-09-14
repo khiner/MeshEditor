@@ -6,5 +6,5 @@ struct ViewportRenderResources {
     RenderPhase RecordedPhase{RenderPhase::Full};
 };
 
-void SubmitRecordedFrame(entt::registry &, MTL::CommandBuffer *);
-void RecordAndSubmitFrame(entt::registry &, entt::entity, SceneUpdate, RenderPhase = RenderPhase::Full);
+void SubmitRecordedFrame(state::Scene &, MTL::CommandBuffer *);
+void RecordAndSubmitFrame(state::Scene &, state::Entity, SceneUpdate, RenderPhase = RenderPhase::Full);

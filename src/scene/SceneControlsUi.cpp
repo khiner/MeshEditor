@@ -22,7 +22,6 @@
 #include "mesh/Primitives.h"
 #include "numeric/Angles.h"
 #include "physics/PhysicsUi.h"
-#include "project/Registry.h"
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
@@ -36,6 +35,7 @@
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionQueries.h"
+#include "state/Scene.h"
 #include "ui/FieldEdit.h"
 #include "ui/HelpMarker.h"
 #include "viewport/InteractionComponents.h"
@@ -44,8 +44,6 @@
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
 #include <imgui_internal.h>
-
-#include <entt/entity/registry.hpp>
 
 #include <format>
 
@@ -57,8 +55,8 @@ template<> struct FieldLimits<&Transform::S> : Within<0.01f, 10.f> {};
 template<> struct FieldLimits<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue> : Within<0.01f, 100.f> {};
 template<> struct FieldLimits<&ShadeSmoothAngle::Value> : Within<0., std::numbers::pi> {};
 
-static void RenderObjectTree(entt::registry &, entt::entity viewport);
-static void RenderEntityControls(entt::registry &, entt::entity viewport, entt::entity active_entity);
+static void RenderObjectTree(state::Scene &, state::Entity viewport);
+static void RenderEntityControls(state::Scene &, state::Entity viewport, state::Entity active_entity);
 
 namespace {
 constexpr std::string_view ObjectTypeName(ObjectType type) {
@@ -264,9 +262,9 @@ void MetaTable(const char *id, std::initializer_list<const char *> cols, size_t 
 }
 } // namespace
 
-static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt::entity active_entity) {
+static void RenderEntityControls(state::Scene &r, state::Entity viewport, state::Entity active_entity) {
     auto &meshes = r.ctx().get<MeshStore>();
-    if (active_entity == entt::null) {
+    if (active_entity == state::Null) {
         TextUnformatted("Active object: None");
         return;
     }
@@ -276,7 +274,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
     Indent();
 
     if (const auto *node = r.try_get<SceneNode>(active_entity)) {
-        if (auto parent_entity = node->Parent; parent_entity != entt::null) {
+        if (auto parent_entity = node->Parent; parent_entity != state::Null) {
             AlignTextToFramePadding();
             Text("Parent: %s", GetName(r, parent_entity).c_str());
         }
@@ -287,7 +285,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
     }
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(active_entity)) {
         Text("Armature data: %s", GetName(r, armature_modifier->ArmatureEntity).c_str());
-        if (armature_modifier->ArmatureObjectEntity != entt::null) {
+        if (armature_modifier->ArmatureObjectEntity != state::Null) {
             Text("Armature object: %s", GetName(r, armature_modifier->ArmatureObjectEntity).c_str());
         }
     }
@@ -310,7 +308,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
         Text("Bones: %zu", armature.Bones.size());
     }
     Unindent();
-    const bool is_bone_edit = r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && active_bone_entity != entt::null && r.all_of<BoneDisplayScale>(active_bone_entity);
+    const bool is_bone_edit = r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && active_bone_entity != state::Null && r.all_of<BoneDisplayScale>(active_bone_entity);
     if (CollapsingHeader("Transform")) {
         if (is_bone_edit) {
             const auto &wt = r.get<WorldTransform>(active_bone_entity);
@@ -349,7 +347,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             }
         } else {
             // In Pose mode, edit the active bone rather than the armature.
-            const bool is_pose_bone = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && active_bone_entity != entt::null;
+            const bool is_pose_bone = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && active_bone_entity != state::Null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
             // Object mode resolves the active entity during replay and applies Alt-drag to the selection.
             // Pose mode records the target entity explicitly.
@@ -420,7 +418,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             TreePop();
         }
     }
-    if (active_bone_entity != entt::null && CollapsingHeader("Bone Constraints")) {
+    if (active_bone_entity != state::Null && CollapsingHeader("Bone Constraints")) {
         PushID("BoneConstraints");
         const auto *constraints = r.try_get<const BoneConstraints>(active_bone_entity);
         const size_t stack_size = constraints ? constraints->Stack.size() : 0;
@@ -438,13 +436,13 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             SameLine();
             if (SmallButton("X")) delete_index = uint32_t(i);
             if (expanded) {
-                const auto *cur_name = c.TargetEntity != entt::null && r.valid(c.TargetEntity) ? r.try_get<const Name>(c.TargetEntity) : nullptr;
-                const std::string preview = c.TargetEntity == entt::null ? "None" :
-                    cur_name && !cur_name->Value.empty()                 ? cur_name->Value :
-                                                                           IdString(c.TargetEntity);
+                const auto *cur_name = c.TargetEntity != state::Null && r.valid(c.TargetEntity) ? r.try_get<const Name>(c.TargetEntity) : nullptr;
+                const std::string preview = c.TargetEntity == state::Null ? "None" :
+                    cur_name && !cur_name->Value.empty()                  ? cur_name->Value :
+                                                                            IdString(c.TargetEntity);
                 if (BeginCombo("Target", preview.c_str())) {
-                    if (Selectable("None", c.TargetEntity == entt::null))
-                        action::Emit(action::bone::SetConstraintTarget{uint32_t(i), entt::null});
+                    if (Selectable("None", c.TargetEntity == state::Null))
+                        action::Emit(action::bone::SetConstraintTarget{uint32_t(i), state::Null});
                     for (auto [te, kind, name] : r.view<const ObjectKind, const Name>().each()) {
                         if (!r.any_of<BoneIndex, BoneSubPartOf, BoneJoint, SubElementOf>(te)) {
                             const std::string label = name.Value.empty() ? IdString(te) : name.Value;
@@ -455,7 +453,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     EndCombo();
                 }
                 if (std::holds_alternative<ChildOfData>(c.Data)) {
-                    if (Button("Set Inverse") && c.TargetEntity != entt::null && r.valid(c.TargetEntity))
+                    if (Button("Set Inverse") && c.TargetEntity != state::Null && r.valid(c.TargetEntity))
                         action::Emit(action::bone::BakeConstraintChildOfInverse{uint32_t(i)});
                     SameLine();
                     if (Button("Clear Inverse"))
@@ -748,14 +746,14 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
         if (CollapsingHeader("Audio", ImGuiTreeNodeFlags_DefaultOpen)) {
             Text("Microphone index: %u", mic->Index);
             // Target = sound object currently bound to this mic, else first sound object with a dataset Path.
-            auto target = entt::entity{entt::null};
+            auto target = state::Entity{state::Null};
             for (const auto &[e, active] : r.view<const RealImpactActiveMicrophone>().each()) {
                 if (active.Entity == active_entity) {
                     target = e;
                     break;
                 }
             }
-            if (target == entt::null) {
+            if (target == state::Null) {
                 for (auto [e, _, inst] : r.view<SoundVerticesModel, Instance>().each()) {
                     if (r.all_of<Path>(inst.Entity)) {
                         target = e;
@@ -763,7 +761,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     }
                 }
             }
-            if (target == entt::null) {
+            if (target == state::Null) {
                 TextUnformatted("No matching sound object found.");
             } else {
                 const auto target_name = GetName(r, target);
@@ -785,17 +783,17 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
     //   - `extras` JSON via SourceAssets::ExtrasByEntity[(Category::Materials, source_index)]
     //   - `MaterialSourceMeta::ExtensionPresence` bits (which extension blocks the source had)
     if (const auto *sa = r.try_get<const gltf::SourceAssets>(viewport)) {
-        const auto mesh_entity = active_instance ? active_instance->Entity : entt::null;
+        const auto mesh_entity = active_instance ? active_instance->Entity : state::Null;
         const auto extras = [&](const auto *src, gltf::ExtrasCategory cat) -> std::optional<std::string_view> {
             return src ? gltf::GetExtras(*sa, cat, src->Value) : std::nullopt;
         };
         const std::pair<const char *, std::optional<std::string_view>> sections[]{
             {"Extras (Node)", extras(r.try_get<const SourceNodeIndex>(active_entity), gltf::ExtrasCategory::Nodes)},
-            {"Extras (Mesh)", extras(mesh_entity != entt::null ? r.try_get<const SourceMeshIndex>(mesh_entity) : nullptr, gltf::ExtrasCategory::Meshes)},
+            {"Extras (Mesh)", extras(mesh_entity != state::Null ? r.try_get<const SourceMeshIndex>(mesh_entity) : nullptr, gltf::ExtrasCategory::Meshes)},
             {"Extras (Camera)", extras(r.try_get<const SourceCameraIndex>(active_entity), gltf::ExtrasCategory::Cameras)},
             {"Extras (Light)", extras(r.try_get<const SourceLightIndex>(active_entity), gltf::ExtrasCategory::Lights)},
         };
-        const auto *mesh_layout = mesh_entity != entt::null ? r.try_get<const MeshSourceLayout>(mesh_entity) : nullptr;
+        const auto *mesh_layout = mesh_entity != state::Null ? r.try_get<const MeshSourceLayout>(mesh_entity) : nullptr;
         const bool any_extras = std::ranges::any_of(sections, [](const auto &s) { return s.second.has_value(); });
         if ((any_extras || mesh_layout) && CollapsingHeader("glTF metadata")) {
             for (const auto &[label, json] : sections) {
@@ -818,7 +816,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
     PopID();
 }
 
-void RenderControls(entt::registry &r, entt::entity viewport) {
+void RenderControls(state::Scene &r, state::Entity viewport) {
     const profile::CpuScope scope{"SceneControlsUi"};
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
@@ -831,7 +829,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                 auto interaction_mode_value = int(interaction_mode);
                 bool interaction_mode_changed = false;
                 const auto active_entity_rc = FindActiveEntity(r);
-                const bool active_is_armature_rc = FindArmatureObject(r, active_entity_rc) != entt::null;
+                const bool active_is_armature_rc = FindArmatureObject(r, active_entity_rc) != state::Null;
                 const bool edit_allowed = AllSelectedAreMeshes(r) || active_is_armature_rc;
                 const bool pose_allowed = active_is_armature_rc;
                 for (const auto mode : r.get<const EnabledInteractionModes>(viewport).Value) {
@@ -859,9 +857,9 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                         if (RadioButton(name.c_str(), &type_interaction_mode, int(element))) action::Emit(action::view::SetEditMode{.Mode = element});
                     }
                     const auto active_entity = FindActiveEntity(r);
-                    const auto *active_instance = active_entity != entt::null ? r.try_get<const Instance>(active_entity) : nullptr;
-                    const auto active_mesh = active_instance && HasMesh(r, active_instance->Entity) ? active_instance->Entity : entt::null;
-                    const auto *active_stats = active_mesh != entt::null ? GetElementSelectionSummary(r, active_mesh, edit_mode) : nullptr;
+                    const auto *active_instance = active_entity != state::Null ? r.try_get<const Instance>(active_entity) : nullptr;
+                    const auto active_mesh = active_instance && HasMesh(r, active_instance->Entity) ? active_instance->Entity : state::Null;
+                    const auto *active_stats = active_mesh != state::Null ? GetElementSelectionSummary(r, active_mesh, edit_mode) : nullptr;
                     const uint32_t selected_count = active_stats ? active_stats->SelectedCount : 0u;
                     bool any_sharp = false, any_smooth = false;
                     for (const auto entity : r.view<const MeshElementSelection, const MeshHandle>()) {
@@ -871,7 +869,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                         any_smooth |= (summary->SharpnessFlags & 2u) != 0u;
                         if (any_sharp && any_smooth) break;
                     }
-                    if (active_mesh != entt::null) Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
+                    if (active_mesh != state::Null) Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
                     // Apply face shading or sharp-edge updates to selected elements.
                     // Vertex mode marks every edge incident to a selected vertex.
                     if (edit_mode != Element::None) {
@@ -891,19 +889,19 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                 PopID();
             }
             if (r.view<const Scene>().size() > 1) {
-                std::vector<entt::entity> scenes;
+                std::vector<state::Entity> scenes;
                 for (const auto e : r.view<const Scene>()) scenes.emplace_back(e);
-                std::ranges::sort(scenes, {}, [&](entt::entity e) {
+                std::ranges::sort(scenes, {}, [&](state::Entity e) {
                     const auto *si = r.try_get<const SourceSceneIndex>(e);
                     return si ? si->Value : std::numeric_limits<uint32_t>::max();
                 });
-                entt::entity active = entt::null;
+                state::Entity active = state::Null;
                 for (const auto e : r.view<const ActiveScene>()) active = e;
-                const auto scene_label = [&](entt::entity e) {
+                const auto scene_label = [&](state::Entity e) {
                     const auto *si = r.try_get<const SourceSceneIndex>(e);
                     return NamedOr(r.get<const Scene>(e).Name, "Scene ", si ? si->Value : 0u);
                 };
-                if (active != entt::null && BeginCombo("Scene", scene_label(active).c_str())) {
+                if (active != state::Null && BeginCombo("Scene", scene_label(active).c_str())) {
                     for (const auto e : scenes) {
                         const bool selected = e == active;
                         if (Selectable(scene_label(e).c_str(), selected) && !selected) action::Emit(action::view::SetActiveScene{e});
@@ -958,21 +956,21 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
             }
             if (!r.storage<Selected>().empty()) {
                 SeparatorText("Selection actions");
-                std::vector<entt::entity> selected_mesh_instances;
+                std::vector<state::Entity> selected_mesh_instances;
                 for (const auto entity : r.view<const Selected, const Instance>()) {
                     if (!r.all_of<SubElementOf>(entity)) selected_mesh_instances.emplace_back(entity);
                 }
 
                 if (!selected_mesh_instances.empty()) {
-                    const bool any_visible = any_of(selected_mesh_instances, [&](entt::entity e) { return r.all_of<RenderInstance>(e); });
-                    const bool any_hidden = any_of(selected_mesh_instances, [&](entt::entity e) { return !r.all_of<RenderInstance>(e); });
+                    const bool any_visible = any_of(selected_mesh_instances, [&](state::Entity e) { return r.all_of<RenderInstance>(e); });
+                    const bool any_hidden = any_of(selected_mesh_instances, [&](state::Entity e) { return !r.all_of<RenderInstance>(e); });
                     const bool mixed_visible = any_visible && any_hidden;
                     if (mixed_visible) PushItemFlag(ImGuiItemFlags_MixedValue, true);
                     if (bool set_visible = any_visible && !any_hidden; Checkbox("Visible", &set_visible)) action::Emit(action::object::SetSelectedVisible{set_visible});
                     if (mixed_visible) PopItemFlag();
 
                     const auto face_mesh_entities = selection::GetSelectedMeshEntities(r) |
-                        std::views::filter([&](entt::entity me) { return GetMesh(r, me).FaceCount() > 0; }) |
+                        std::views::filter([&](state::Entity me) { return GetMesh(r, me).FaceCount() > 0; }) |
                         to<std::vector>();
                     if (!face_mesh_entities.empty()) {
                         // A fully smooth mesh has no sharp faces, while partial sharpness produces a mixed checkbox.
@@ -1057,7 +1055,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                 }
             }
             // Intentional direct registry mutation outside Apply - not replayable document state.
-            if (Button("Recompile shaders")) project::EmplaceOrReplace<PendingShaderRecompile>(r, viewport);
+            if (Button("Recompile shaders")) r.emplace_or_replace<PendingShaderRecompile>(viewport);
 
             if (!r.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");
@@ -1240,10 +1238,10 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
     }
 }
 
-void RenderClipPickers(entt::registry &r) {
+void RenderClipPickers(state::Scene &r) {
     static constexpr float ComboWidth = 200.f;
     // Names live on object entities, but ArmatureAnimation lives on the data entity.
-    const auto display_name = [&]<typename Anim>(entt::entity entity) {
+    const auto display_name = [&]<typename Anim>(state::Entity entity) {
         if constexpr (std::is_same_v<Anim, ArmatureAnimation>) {
             for (const auto [obj_e, obj] : r.view<const ArmatureObject>().each()) {
                 if (obj.Entity == entity) return GetName(r, obj_e);
@@ -1276,37 +1274,37 @@ void RenderClipPickers(entt::registry &r) {
     clip_picker.template operator()<NodeTransformAnimation>("Node");
 }
 
-static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
+static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
     PushStyleVar(ImGuiStyleVar_ItemSpacing, {GetStyle().ItemSpacing.x, 0.f});
 
-    const auto ToSelectionUserData = [](entt::entity e) -> ImGuiSelectionUserData { return ImGuiSelectionUserData(uint32_t(e)); };
-    const auto FromSelectionUserData = [&](ImGuiSelectionUserData data) -> entt::entity {
-        if (data == ImGuiSelectionUserData_Invalid) return entt::null;
-        const auto e = entt::entity(uint32_t(data));
-        return r.valid(e) ? e : entt::null;
+    const auto ToSelectionUserData = [](state::Entity e) -> ImGuiSelectionUserData { return ImGuiSelectionUserData(uint32_t(e)); };
+    const auto FromSelectionUserData = [&](ImGuiSelectionUserData data) -> state::Entity {
+        if (data == ImGuiSelectionUserData_Invalid) return state::Null;
+        const auto e = state::Entity(uint32_t(data));
+        return r.valid(e) ? e : state::Null;
     };
 
-    const auto GetEntityTypeName = [&](entt::entity e) -> std::string_view {
+    const auto GetEntityTypeName = [&](state::Entity e) -> std::string_view {
         if (r.all_of<BoneIndex>(e)) return "Bone";
         if (r.all_of<ObjectKind>(e)) return ObjectTypeName(r.get<const ObjectKind>(e).Value);
         return ObjectTypeName(ObjectType::Empty);
     };
-    std::vector<entt::entity> visible_entities;
+    std::vector<state::Entity> visible_entities;
     // Mutates `out` so begin and end batches fold into a single action.
     using Clear = action::selection::ApplyTreeSelection::ClearKind;
     const auto resolve_into = [&](action::selection::ApplyTreeSelection &out, std::span<const ImGuiSelectionRequest> requests, ImGuiSelectionUserData nav_item) {
-        const auto add_target = [&](entt::entity e, bool selected) {
-            if (e == entt::null) return;
+        const auto add_target = [&](state::Entity e, bool selected) {
+            if (e == state::Null) return;
             out.Add(e, selected);
         };
         for (const auto &request : requests) {
             if (request.Type == ImGuiSelectionRequestType_SetAll) {
                 if (request.Selected) {
                     for (const auto e : visible_entities) add_target(e, true);
-                    if (const auto nav = FromSelectionUserData(nav_item); nav != entt::null) out.NavToActive = nav;
+                    if (const auto nav = FromSelectionUserData(nav_item); nav != state::Null) out.NavToActive = nav;
                 } else {
                     const auto nav = FromSelectionUserData(nav_item);
-                    out.Clear = nav != entt::null && r.all_of<BoneIndex>(nav) ? Clear::BonesOnly : Clear::All;
+                    out.Clear = nav != state::Null && r.all_of<BoneIndex>(nav) ? Clear::BonesOnly : Clear::All;
                 }
                 continue;
             }
@@ -1337,22 +1335,22 @@ static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
     const auto begin_nav_item = ms_begin->NavIdItem;
 
     // Build the set of ancestors of any selected entity (for secondary highlight).
-    std::unordered_set<entt::entity> ancestor_of_selected;
-    const auto mark_ancestors = [&](entt::entity selected_entity) {
+    std::unordered_set<state::Entity> ancestor_of_selected;
+    const auto mark_ancestors = [&](state::Entity selected_entity) {
         const auto *n = r.try_get<SceneNode>(selected_entity);
-        auto parent = n ? n->Parent : entt::null;
-        while (parent != entt::null) {
+        auto parent = n ? n->Parent : state::Null;
+        while (parent != state::Null) {
             if (!ancestor_of_selected.insert(parent).second) break; // already inserted, so parents are already covered
             const auto *pn = r.try_get<SceneNode>(parent);
-            parent = pn ? pn->Parent : entt::null;
+            parent = pn ? pn->Parent : state::Null;
         }
     };
     for (const auto e : r.view<Selected>()) mark_ancestors(e);
     for (const auto e : r.view<BoneSelection>()) mark_ancestors(e);
 
-    const auto render_entity = [&](const auto &self, entt::entity e) -> void {
+    const auto render_entity = [&](const auto &self, state::Entity e) -> void {
         const auto *node = r.try_get<SceneNode>(e);
-        const bool has_children = node && node->FirstChild != entt::null;
+        const bool has_children = node && node->FirstChild != state::Null;
         const bool is_selected = r.any_of<Selected, BoneSelection>(e);
         const bool is_ancestor_selected = !is_selected && ancestor_of_selected.contains(e);
 
@@ -1391,7 +1389,7 @@ static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
         r.view<const Name>() |
         std::views::filter([&](auto e) {
             const auto *node = r.try_get<const SceneNode>(e);
-            return !node || node->Parent == entt::null;
+            return !node || node->Parent == state::Null;
         })
     );
     for (const auto e : roots) render_entity(render_entity, e);
@@ -1403,7 +1401,7 @@ static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
     auto *ms_end = EndMultiSelect();
     resolve_into(tree_selection, {ms_end->Requests.Data, size_t(ms_end->Requests.Size)}, ms_end->NavIdItem);
     if (!tree_selection.Entities.empty() ||
-        tree_selection.Clear != Clear::None || tree_selection.NavToActive != entt::null) {
+        tree_selection.Clear != Clear::None || tree_selection.NavToActive != state::Null) {
         action::Emit(std::move(tree_selection));
     }
 

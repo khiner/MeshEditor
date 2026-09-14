@@ -14,7 +14,8 @@ struct ModalGenerationResult {
 
 // An in-flight modal solve, at most one per sound entity.
 struct ModalSolveJob {
-    entt::entity Entity, Viewport;
+    state::Entity Entity, Viewport;
+    uint64_t Epoch;
     Job<ModalGenerationResult, fastfem::SolveMonitor> Work;
 };
 struct ModalSolveJobs {
@@ -31,7 +32,7 @@ struct SolveInputs {
     size_t OperatorHash, ModalConfigHash;
 };
 
-bool IsSolving(const entt::registry &, entt::entity);
-void LaunchModalSolve(entt::registry &, entt::entity viewport, entt::entity, const ModalSolveSettings &, const AcousticMaterial &);
-SolveInputs BuildSolveInputs(const entt::registry &, entt::entity, entt::entity mesh_entity, const ModalSolveSettings &);
-bool ModalModelStale(const entt::registry &, entt::entity, const SolveInputs &, const AcousticMaterial &);
+bool IsSolving(const state::Scene &, state::Entity);
+void LaunchModalSolve(state::Scene &, state::Entity viewport, state::Entity, const ModalSolveSettings &, const AcousticMaterial &);
+SolveInputs BuildSolveInputs(const state::Scene &, state::Entity, state::Entity mesh_entity, const ModalSolveSettings &);
+bool ModalModelStale(const state::Scene &, state::Entity, const SolveInputs &, const AcousticMaterial &);

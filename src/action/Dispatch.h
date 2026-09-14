@@ -2,9 +2,7 @@
 
 #include "FieldLimits.h"
 #include "action/Core.h"
-#include "project/Registry.h"
-
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <cassert>
 #include <concepts>
@@ -14,53 +12,42 @@
 #include <string_view>
 #include <unordered_map>
 
-// Resolves an action's component-type hash to an operation on the concrete type.
+// Dynamic commands dispatch once through the fixed component catalog.
 namespace action {
 namespace detail {
-struct ComponentPatcher {
-    void (*Patch)(entt::registry &, entt::entity, uint16_t offset, const void *src, uint16_t size);
-    void (*Read)(const entt::registry &, entt::entity, uint16_t offset, void *dst, uint16_t size); // for SelectedDelta baselines
-    bool (*Has)(const entt::registry &, entt::entity); // Filters Active or Selected targets by component C.
-    std::string_view Name; // entt::type_name<C> — for a startup manifest / debugging
-};
+using PatchFn = void (*)(state::Scene &, state::Entity, uint16_t offset, const void *src, uint16_t size);
 inline auto &PatchTable() {
-    static std::unordered_map<entt::id_type, ComponentPatcher> table;
+    static std::array<PatchFn, state::SchemaSize> table{};
     return table;
 }
-using TagFn = void (*)(entt::registry &, entt::entity, bool present);
+using TagFn = void (*)(state::Scene &, state::Entity, bool present);
 inline auto &TagTable() {
-    static std::unordered_map<entt::id_type, TagFn> table;
+    static std::array<TagFn, state::SchemaSize> table{};
     return table;
 }
 
 template<typename C>
-void PatchComponent(entt::registry &r, entt::entity e, uint16_t offset, const void *src, uint16_t size) {
+void PatchComponent(state::Scene &r, state::Entity e, uint16_t offset, const void *src, uint16_t size) {
     // Field is trivially copyable (enforced in UpdateOf), so a sized copy is equivalent to assignment.
-    project::Patch<C>(r, e, [&](C &c) { std::memcpy(reinterpret_cast<std::byte *>(&c) + offset, src, size); });
+    r.patch<C>(e, [&](C &c) { std::memcpy(reinterpret_cast<std::byte *>(&c) + offset, src, size); });
 }
-template<typename C>
-void ReadComponent(const entt::registry &r, entt::entity e, uint16_t offset, void *dst, uint16_t size) {
-    std::memcpy(dst, reinterpret_cast<const std::byte *>(&r.get<const C>(e)) + offset, size);
-}
-template<typename C>
-bool HasComponent(const entt::registry &r, entt::entity e) { return r.all_of<C>(e); }
 template<typename Tag>
-void SetTagPresence(entt::registry &r, entt::entity e, bool present) {
-    if (present) project::EmplaceOrReplace<Tag>(r, e);
-    else project::Remove<Tag>(r, e);
+void SetTagPresence(state::Scene &r, state::Entity e, bool present) {
+    if (present) r.emplace_or_replace<Tag>(e);
+    else r.remove<Tag>(e);
 }
 
 template<typename C>
 struct PatchRegistrar {
-    PatchRegistrar() { PatchTable().insert_or_assign(entt::type_hash<C>::value(), ComponentPatcher{&PatchComponent<C>, &ReadComponent<C>, &HasComponent<C>, entt::type_name<C>::value()}); }
+    PatchRegistrar() { PatchTable()[state::Type<C>()] = &PatchComponent<C>; }
 };
 template<typename Tag>
 struct TagRegistrar {
-    TagRegistrar() { TagTable().insert_or_assign(entt::type_hash<Tag>::value(), &SetTagPresence<Tag>); }
+    TagRegistrar() { TagTable()[state::Type<Tag>()] = &SetTagPresence<Tag>; }
 };
 
 // Field-value clamping, keyed by (component, field-offset, field-size). Size separates a whole-field clamp from a per-component clamp at the same offset.
-inline uint64_t LimitsKey(entt::id_type comp, uint16_t offset, uint16_t size) { return (uint64_t(comp) << 32) | (uint64_t(offset) << 16) | size; }
+inline uint64_t LimitsKey(state::TypeId comp, uint16_t offset, uint16_t size) { return (uint64_t(comp) << 32) | (uint64_t(offset) << 16) | size; }
 inline auto &LimitsTable() {
     static std::unordered_map<uint64_t, void (*)(void *)> table;
     return table;
@@ -87,7 +74,7 @@ template<auto... Ms>
 struct LimitsRegistrar {
     LimitsRegistrar() {
         using F = last_field<Ms...>;
-        const auto comp = entt::type_hash<first_class<Ms...>>::value();
+        const auto comp = state::Type<first_class<Ms...>>();
         const auto base = FieldOffset<Ms...>();
         LimitsTable().insert_or_assign(LimitsKey(comp, base, sizeof(F)), &ClampField<Ms...>);
         // A vec field can also be patched one component at a time, so register the same bounds per component.
@@ -101,30 +88,30 @@ struct LimitsRegistrar {
 template<auto... Ms> inline const LimitsRegistrar<Ms...> limits_registrar{};
 
 // Named-component dispatch: set a `.Name` field, or create an entity with an ordinal name.
-using NameFn = void (*)(entt::registry &, entt::entity, const std::string &);
-using CreateNamedFn = void (*)(entt::registry &, std::string_view prefix);
+using NameFn = void (*)(state::Scene &, state::Entity, const std::string &);
+using CreateNamedFn = void (*)(state::Scene &, std::string_view prefix);
 inline auto &NameTable() {
-    static std::unordered_map<entt::id_type, NameFn> table;
+    static std::array<NameFn, state::SchemaSize> table{};
     return table;
 }
 inline auto &CreateNamedTable() {
-    static std::unordered_map<entt::id_type, CreateNamedFn> table;
+    static std::array<CreateNamedFn, state::SchemaSize> table{};
     return table;
 }
 template<typename T>
-void SetNameImpl(entt::registry &r, entt::entity e, const std::string &name) {
-    project::Patch<T>(r, e, [&](T &x) { x.Name = name; });
+void SetNameImpl(state::Scene &r, state::Entity e, const std::string &name) {
+    r.patch<T>(e, [&](T &x) { x.Name = name; });
 }
 template<typename T>
-void CreateNamedImpl(entt::registry &r, std::string_view prefix) {
-    project::Emplace<T>(r, project::Create(r), T{.Name = std::string{prefix} + ' ' + std::to_string(r.view<T>().size())});
+void CreateNamedImpl(state::Scene &r, std::string_view prefix) {
+    r.emplace<T>(r.create(), T{.Name = std::string{prefix} + ' ' + std::to_string(r.view<T>().size())});
 }
 template<typename T>
 struct NamedRegistrar {
     NamedRegistrar() {
-        const auto h = entt::type_hash<T>::value();
-        NameTable().insert_or_assign(h, &SetNameImpl<T>);
-        CreateNamedTable().insert_or_assign(h, &CreateNamedImpl<T>);
+        const auto h = state::Type<T>();
+        NameTable()[h] = &SetNameImpl<T>;
+        CreateNamedTable()[h] = &CreateNamedImpl<T>;
     }
 };
 
@@ -142,51 +129,52 @@ template<typename T> void RegisterNamed() { (void)&detail::named_registrar<T>; }
 template<auto... Ms> void RegisterLimits() { (void)&detail::limits_registrar<Ms...>; }
 
 // Clamp `value` (a `size`-byte field or component) in place to its FieldLimits. A no-op for unbounded fields.
-inline void MaybeClamp(entt::id_type comp, uint16_t offset, uint16_t size, void *value) {
+inline void MaybeClamp(state::TypeId comp, uint16_t offset, uint16_t size, void *value) {
     if (const auto it = detail::LimitsTable().find(detail::LimitsKey(comp, offset, size)); it != detail::LimitsTable().end()) it->second(value);
 }
 
 template<typename Field>
-void ApplyUpdate(entt::registry &r, entt::entity e, entt::id_type component_type, uint16_t offset, const Field &value) {
-    auto it = detail::PatchTable().find(component_type);
-    assert(it != detail::PatchTable().end() && "Update target component is not registered for dispatch");
-    it->second.Patch(r, e, offset, &value, sizeof(Field));
+void ApplyUpdate(state::Scene &r, state::Entity e, state::TypeId component_type, uint16_t offset, const Field &value) {
+    const auto patcher = detail::PatchTable().at(component_type);
+    assert(patcher);
+    patcher(r, e, offset, &value, sizeof(Field));
 }
 
 // Resolves scope and patches Active or Selected targets that contain the component.
-void ApplyUpdateScoped(entt::registry &, entt::entity viewport, Scope, entt::entity, entt::id_type component_type, uint16_t offset, const void *value, uint16_t size);
-void ApplyTagScoped(entt::registry &, entt::entity viewport, Scope, entt::entity, entt::id_type tag_type, bool present);
-void ForEachSelectedWith(entt::registry &, entt::id_type component_type, const std::function<void(entt::entity)> &);
+void ApplyUpdateScoped(state::Scene &, state::Entity viewport, Scope, state::Entity, state::TypeId component_type, uint16_t offset, const void *value, uint16_t size);
+void ApplyTagScoped(state::Scene &, state::Entity viewport, Scope, state::Entity, state::TypeId tag_type, bool present);
+void ForEachSelectedWith(state::Scene &, state::TypeId component_type, const std::function<void(state::Entity)> &);
 
 // Arithmetic type fields that support SelectedDelta (numeric drag)
 template<typename Field>
 inline constexpr bool DeltaField = std::same_as<Field, float> || std::same_as<Field, double> || std::same_as<Field, vec2> || std::same_as<Field, vec3> || std::same_as<Field, vec4> || (std::integral<Field> && !std::same_as<Field, bool>);
 
-// The DragFieldStart snapshot if present, else the current value (read via `p`), which it snapshots keyed by comp + offset.
+// Cache each selected target's initial field value for the duration of a drag.
 template<typename Field>
-Field FieldGestureStart(entt::registry &r, entt::entity e, const detail::ComponentPatcher &p, entt::id_type comp, uint16_t offset) {
+Field FieldGestureStart(state::Scene &r, state::Entity e, state::TypeId comp, uint16_t offset, auto &&read) {
     static_assert(sizeof(Field) <= sizeof(DragFieldStart::Bytes));
     Field start;
     if (const auto *snap = r.try_get<DragFieldStart>(e); snap && snap->Comp == comp && snap->Offset == offset) {
         std::memcpy(&start, snap->Bytes.data(), sizeof(Field));
         return start;
     }
-    p.Read(r, e, offset, &start, sizeof(Field));
+    read(start);
     DragFieldStart s{comp, offset, uint16_t(sizeof(Field)), {}};
     std::memcpy(s.Bytes.data(), &start, sizeof(Field));
-    project::EmplaceOrReplace<DragFieldStart>(r, e, s);
+    r.emplace_or_replace<DragFieldStart>(e, s);
     return start;
 }
 
 template<typename Field>
-void ApplyUpdate(entt::registry &r, entt::entity viewport, const Update<Field> &a) {
+void ApplyUpdate(state::Scene &r, state::Entity viewport, const Update<Field> &a) {
     if constexpr (DeltaField<Field>) {
         if (a.Scope == Scope::SelectedDelta) {
-            const auto it = detail::PatchTable().find(a.ComponentType);
-            assert(it != detail::PatchTable().end() && "SelectedDelta target component is not registered for dispatch");
-            const auto &p = it->second;
-            ForEachSelectedWith(r, a.ComponentType, [&](entt::entity e) {
-                const Field start = FieldGestureStart<Field>(r, e, p, a.ComponentType, a.Offset);
+            const auto patch = detail::PatchTable().at(a.ComponentType);
+            assert(patch);
+            ForEachSelectedWith(r, a.ComponentType, [&](state::Entity e) {
+                const Field start = FieldGestureStart<Field>(r, e, a.ComponentType, a.Offset, [&](Field &v) {
+                    std::memcpy(&v, static_cast<const std::byte *>(r.storage(a.ComponentType)->value(e)) + a.Offset, sizeof(Field));
+                });
                 Field result;
                 if constexpr (std::integral<Field>) {
                     // Accumulate in a wider signed type and clamp to the field's range so a downward delta can't wrap.
@@ -195,7 +183,7 @@ void ApplyUpdate(entt::registry &r, entt::entity viewport, const Update<Field> &
                     result = start + a.Value;
                 }
                 MaybeClamp(a.ComponentType, a.Offset, sizeof(Field), &result);
-                p.Patch(r, e, a.Offset, &result, sizeof(Field));
+                patch(r, e, a.Offset, &result, sizeof(Field));
             });
             return;
         }
@@ -205,20 +193,20 @@ void ApplyUpdate(entt::registry &r, entt::entity viewport, const Update<Field> &
     ApplyUpdateScoped(r, viewport, a.Scope, a.Entity, a.ComponentType, a.Offset, &value, sizeof(Field));
 }
 
-inline void ApplyTag(entt::registry &r, entt::entity e, entt::id_type tag_type, bool present) {
-    auto it = detail::TagTable().find(tag_type);
-    assert(it != detail::TagTable().end() && "Tag type is not registered for dispatch");
-    it->second(r, e, present);
+inline void ApplyTag(state::Scene &r, state::Entity e, state::TypeId tag_type, bool present) {
+    const auto apply = detail::TagTable().at(tag_type);
+    assert(apply);
+    apply(r, e, present);
 }
 
-inline void ApplySetName(entt::registry &r, entt::id_type type, entt::entity e, const std::string &name) {
-    auto it = detail::NameTable().find(type);
-    assert(it != detail::NameTable().end() && "SetName target component is not registered for dispatch");
-    it->second(r, e, name);
+inline void ApplySetName(state::Scene &r, state::TypeId type, state::Entity e, const std::string &name) {
+    const auto apply = detail::NameTable().at(type);
+    assert(apply);
+    apply(r, e, name);
 }
-inline void ApplyCreateNamed(entt::registry &r, entt::id_type type, std::string_view prefix) {
-    auto it = detail::CreateNamedTable().find(type);
-    assert(it != detail::CreateNamedTable().end() && "CreateNamed target component is not registered for dispatch");
-    it->second(r, prefix);
+inline void ApplyCreateNamed(state::Scene &r, state::TypeId type, std::string_view prefix) {
+    const auto apply = detail::CreateNamedTable().at(type);
+    assert(apply);
+    apply(r, prefix);
 }
 } // namespace action

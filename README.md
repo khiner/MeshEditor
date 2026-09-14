@@ -214,7 +214,6 @@ renders the whole corpus into `render_candidates/` with `FLAGS` handed to every 
 
 - [Metal](https://developer.apple.com/metal/) via [metal-cpp](https://developer.apple.com/metal/cpp/) + [AppKit](https://developer.apple.com/documentation/appkit) + [ImGui](https://github.com/ocornut/imgui): Graphics + immediate-mode UI/UX
 - Apple SIMD: Numeric vector/matrix types + math
-- [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
 - macOS Core Audio: HAL output and native audio-file I/O
 - [FastFEM](https://github.com/khiner/FastFEM): Tetrahedralization, finite-element assembly, and modal eigensolves
 - [fastgltf](https://github.com/spnda/fastgltf) glTF 2.0 scene loading
@@ -292,6 +291,7 @@ $ ./build/tests/MeshEditorTests
 | `MeshEditorTests` | glTF roundtrip |
 | `MeshEditorActionSerializeTest` | Every action alternative through the action log |
 | `MeshEditorProjectTest` | Persistent state, rendering, replay, and archive relocation across mesh edits and glTF samples |
+| `MeshEditorStateTest` | Sparse native tables, entity generations, mutation capture, and dirty-set lifetime |
 | `MeshEditorProjectStoreTest` | Full-copy version/history models, manifest reconstruction, and persistence failures |
 | `MeshEditorProjectBench` | Sparse buffer edits and complete mesh-edit frames, with [measurements](tests/ProjectPerformance.md) |
 | `MeshEditorContactModelTest` | Hertz contact time, effective mass, inertia decomposition |

@@ -3,7 +3,7 @@
 #include "Range.h"
 #include "gpu/ElementWork.h"
 
-#include <entt/entity/entity.hpp>
+#include "state/Entity.h"
 
 #include <optional>
 #include <unordered_map>
@@ -58,9 +58,9 @@ struct MeshEditWork {
 
 // Host metadata for the persistent GPU scene, refreshed when scene structure or routing changes.
 struct GpuSceneState {
-    std::unordered_map<entt::entity, PosedRanges> PosedByEntity;
-    std::unordered_map<entt::entity, MeshEditWork> EditWork;
-    std::unordered_set<entt::entity> MeshletEditOverlayMeshes;
+    std::unordered_map<state::Entity, PosedRanges> PosedByEntity;
+    std::unordered_map<state::Entity, MeshEditWork> EditWork;
+    std::unordered_set<state::Entity> MeshletEditOverlayMeshes;
     bool MeshletEditHasSharpEdges{};
     bool EditPreludePending{};
     bool InstanceRecordsStale{true};

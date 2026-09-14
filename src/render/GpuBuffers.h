@@ -73,7 +73,7 @@ private:
 };
 
 struct GpuBuffers {
-    static constexpr uint32_t MaxSelectableObjects{100'000};
+    static constexpr uint32_t MaxSelectableObjects{1u << 20};
     // Motion-blur steps use separate dynamic view-UBO offsets in one submission.
     // Instance zero remains active.
     static constexpr uint32_t MaxBlurSteps{64};
@@ -83,7 +83,6 @@ struct GpuBuffers {
     static constexpr uint64_t ViewUboStride() {
         return (sizeof(::SceneViewUBO) + ViewUboAlignment - 1) / ViewUboAlignment * ViewUboAlignment;
     }
-    static constexpr uint32_t ObjectPickBitsetWords{(MaxSelectableObjects + 31) / 32};
 
     GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots);
 

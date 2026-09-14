@@ -1,6 +1,6 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -14,12 +14,13 @@ struct Name {
 };
 
 // Initialize/tear down the derived index of live entity names.
-void InitEntityNames(entt::registry &);
-void DeinitEntityNames(entt::registry &);
-void ReserveEntityNames(entt::registry &, size_t additional);
+void InitEntityNames(state::Scene &);
+void DeinitEntityNames(state::Scene &);
+void RebuildEntityNames(state::Scene &);
+void ReserveEntityNames(state::Scene &, size_t additional);
 
 // Choose an unused editor name and attach it to an entity.
-Name &EmplaceUniqueName(entt::registry &, entt::entity, std::string_view prefix);
+Name &EmplaceUniqueName(state::Scene &, state::Entity, std::string_view prefix);
 
 // A scene: a named, possibly empty grouping of objects.
 struct Scene {
@@ -29,7 +30,7 @@ struct Scene {
 struct ActiveScene {};
 // Scenes this object is in. Absent when there's only one scene (everything's in it).
 struct SceneMembership {
-    std::vector<entt::entity> Scenes;
+    std::vector<state::Entity> Scenes;
 };
 
 // Invariants:
@@ -48,7 +49,7 @@ struct MeshActiveElement {
 // Picking/selection routes to Parent. Origin dot drawn only on Parent.
 // Examples: armature bones, future duplivert instances.
 struct SubElementOf {
-    entt::entity Parent;
+    state::Entity Parent;
 };
 
 struct ScaleLocked {}; // Disable scale changes (translate/rotate still allowed)
@@ -68,18 +69,18 @@ struct ObjectKind {
 // Canonical entity order for consumers whose output depends on traversal order.
 // Component storage order changes with insertion, deletion, and snapshot reconstruction.
 template<typename Compare = std::ranges::less>
-std::vector<entt::entity> SortedEntities(std::ranges::input_range auto &&entities, Compare compare = {}) {
-    auto sorted = entities | std::ranges::to<std::vector<entt::entity>>();
+std::vector<state::Entity> SortedEntities(std::ranges::input_range auto &&entities, Compare compare = {}) {
+    auto sorted = entities | std::ranges::to<std::vector<state::Entity>>();
     std::ranges::sort(sorted, compare);
     return sorted;
 }
 
-std::string IdString(entt::entity);
-std::string GetName(const entt::registry &, entt::entity); // Returns name if present, otherwise hex ID.
+std::string IdString(state::Entity);
+std::string GetName(const state::Scene &, state::Entity); // Returns name if present, otherwise hex ID.
 
-entt::entity FindActiveEntity(const entt::registry &); // If no active entity, returns entt::null.
+state::Entity FindActiveEntity(const state::Scene &); // If no active entity, returns state::Null.
 
 // Mesh-data entity behind an instance. GetMeshEntity returns null for non-mesh instances.
-entt::entity GetMeshEntity(const entt::registry &, entt::entity);
-entt::entity GetActiveMeshEntity(const entt::registry &);
-entt::entity FindMeshEntity(const entt::registry &, entt::entity); // Instance's mesh entity, else the entity itself.
+state::Entity GetMeshEntity(const state::Scene &, state::Entity);
+state::Entity GetActiveMeshEntity(const state::Scene &);
+state::Entity FindMeshEntity(const state::Scene &, state::Entity); // Instance's mesh entity, else the entity itself.

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <atomic>
 #include <cstdint>
@@ -11,13 +11,13 @@ struct AudioOutputConfig;
 struct AudioOutputMix;
 
 struct AudioDeviceResource {
-    AudioDeviceResource(entt::registry &, entt::entity viewport);
+    AudioDeviceResource(state::Scene &, state::Entity viewport);
     ~AudioDeviceResource();
     AudioDeviceResource(const AudioDeviceResource &) = delete;
     AudioDeviceResource &operator=(const AudioDeviceResource &) = delete;
 
-    entt::registry *R;
-    entt::entity Viewport;
+    state::Scene *R;
+    state::Entity Viewport;
 
     uint32_t SampleRate{0}; // Negotiated output rate.
     // The scheduling group the device's IO thread belongs to, for threads rendering alongside it.

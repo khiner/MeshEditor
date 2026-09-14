@@ -51,6 +51,9 @@ struct Live {
     std::function<Blob(uint64_t)> Erase{};
     // Omit to scan slot indices with Present.
     std::function<void(const std::function<void(uint64_t)> &)> ForEachPresent{};
+    // Typed CPU values retain their native representation between hot versions.
+    std::function<Blob(uint64_t)> Copy{};
+    std::function<std::span<const std::byte>(const Blob &)> Encode{};
     // Entity generation changes prevent reuse even when component bytes match.
     std::function<bool(uint64_t)> Reusable{};
     std::function<void(const std::function<void(uint64_t)> &)> ForEachNonReusable{};
@@ -59,7 +62,8 @@ struct Live {
 inline uint64_t SlotsFor(const Live &live, uint64_t length) {
     return live.PageBytes ? (length + live.PageBytes - 1) / live.PageBytes : length;
 }
-inline Blob Capture(const Live &live, uint64_t slot) { return CopyBlob(live.Read(slot)); }
+inline Blob Capture(const Live &live, uint64_t slot) { return live.Copy ? live.Copy(slot) : CopyBlob(live.Read(slot)); }
+inline std::span<const std::byte> Encoded(const Live &live, const Blob &value) { return value.Destroy && live.Encode ? live.Encode(value) : value.View(); }
 inline bool DefaultAt(const Live &live, uint64_t slot) {
     return !live.Present(slot) || (live.PageBytes && IsZero(live.Read(slot)));
 }
@@ -69,7 +73,8 @@ inline bool DefaultValue(const Live &live, const Blob &value) {
 inline bool Equals(const Live &live, uint64_t slot, const Blob &value) {
     if ((live.Reusable && !live.Reusable(slot)) || !live.Present(slot)) return false;
     const auto bytes = live.Read(slot);
-    return bytes.size() == value.Size && (bytes.empty() || std::memcmp(bytes.data(), value.Data, bytes.size()) == 0);
+    const auto wanted = Encoded(live, value);
+    return bytes.size() == wanted.size() && (bytes.empty() || std::memcmp(bytes.data(), wanted.data(), bytes.size()) == 0);
 }
 inline void ForEachPresent(const Live &live, const std::function<void(uint64_t)> &fn) {
     if (live.ForEachPresent) live.ForEachPresent(fn);
@@ -78,6 +83,9 @@ inline void ForEachPresent(const Live &live, const std::function<void(uint64_t)>
             if (live.Present(s)) fn(s);
     }
 }
+
+// Process-wide backing allocation, including cached node/child-array blocks.
+uint64_t SharedNodePoolBytes();
 
 struct TrieStats {
     uint64_t Nodes{}, AliasedNodes{}, OwnedSlots{}, OwnedBytes{};
@@ -122,7 +130,6 @@ struct LiveTrie {
     std::vector<uint64_t> TakeChanged() { return std::exchange(ChangedSlots, {}); }
 
     const TrieStats &Stats() const { return S; }
-    uint64_t SlabBytes() const { return Slabs.size() * SlabSize; }
     uint64_t HashStorageBytes() const { return SlotHashes.capacity() * sizeof(SlotHash) + DirtySlots.capacity() * sizeof(uint64_t); }
     uint64_t ManifestBytes() const;
     // Checks trie structure and that all pinned Aliased nodes are reachable from the present.
@@ -142,15 +149,6 @@ struct LiveTrie {
 
     Live L;
     const uint32_t Levels, BytesPerSlot;
-
-    // Slabs persist until trie destruction, while owned values are freed with their last version.
-    // Declare allocation state before Root, which uses it during construction.
-    static constexpr size_t SlabSize = 256 << 10;
-    std::vector<std::unique_ptr<std::byte[]>> Slabs;
-    size_t SlabRemaining{};
-    std::byte *SlabCursor{};
-    Node *FreeNodes{};
-    Node **FreeArrays{};
 
     TrieStats S;
     Node *Root;

@@ -3,7 +3,7 @@
 #include "AudioSystem.h"
 #include "CoreAudioTypes.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <algorithm>
 #include <array>
@@ -197,7 +197,7 @@ AudioUnit OpenDevice(AudioDeviceResource &res, AudioDeviceID device, uint32_t sa
 
 } // namespace
 
-AudioDeviceResource::AudioDeviceResource(entt::registry &r, entt::entity viewport) : R(&r), Viewport(viewport) {}
+AudioDeviceResource::AudioDeviceResource(state::Scene &r, state::Entity viewport) : R(&r), Viewport(viewport) {}
 AudioDeviceResource::~AudioDeviceResource() {
     CloseDevice(*this);
 }

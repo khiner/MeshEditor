@@ -1,6 +1,6 @@
 #pragma once
 
-#include "entt_fwd.h"
+#include "state/Entity.h"
 
 // Start-frame and frame-rate changes invalidate baked physics frames.
 struct TimelineRange {
@@ -33,4 +33,4 @@ struct LastEvaluatedFrame {
 struct PhysicsCacheInvalid {};
 
 // Resets playback to the start frame and invalidates the physics cache.
-void JumpToStartFrame(entt::registry &, entt::entity viewport);
+void JumpToStartFrame(state::Scene &, state::Entity viewport);

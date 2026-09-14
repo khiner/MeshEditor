@@ -3,7 +3,7 @@
 #include "SurfaceContact.h"
 #include "numeric/vec3.h"
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <array>
 #include <atomic>
@@ -114,7 +114,7 @@ struct ModalBank {
     std::vector<float> ShapeX, ShapeY, ShapeZ;
 
     // Per-object.
-    std::vector<entt::entity> Entities;
+    std::vector<state::Entity> Entities;
     std::vector<uint32_t> ModeOffset, ModeCount, ShapeOffset;
     // Modes at or past this index are muted. A mode shape row is still ModeCount wide.
     std::vector<uint32_t> TunedModeCount;
@@ -283,7 +283,7 @@ struct ModalAudio {
 inline ModalBank &LiveBank(ModalAudio &m) { return *m.Live; }
 
 // Append an object slot with zeroed state, coefficients, and gain and return its index.
-uint32_t AddModalObject(ModalBank &, entt::entity, const ModalModes &);
+uint32_t AddModalObject(ModalBank &, state::Entity, const ModalModes &);
 // Publishes a new bank and frees the previous bank.
 void InstallModalBank(ModalAudio &, ModalBank &next);
 // Set an object's resonator coefficients from per-mode frequencies (Hz) and T60s (s).
@@ -294,7 +294,7 @@ void TuneModalObject(ModalBank &, uint32_t object, std::span<const float> freqs,
 // Safe against concurrent rendering.
 bool SetModalObjectShapes(ModalBank &, uint32_t object, const ModalModes &);
 // Returns the object slot for an entity.
-std::optional<uint32_t> FindModalObject(const ModalBank &, entt::entity);
+std::optional<uint32_t> FindModalObject(const ModalBank &, state::Entity);
 
 // Enqueue an event from the main thread. Dropped when the queue is full.
 void EnqueueModalEvent(ModalAudio &, const ModalEvent &);

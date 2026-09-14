@@ -1,12 +1,11 @@
 #pragma once
 
-#include "entt_fwd.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
+#include "state/Entity.h"
 
-#include <entt/core/type_info.hpp>
-#include <entt/entity/fwd.hpp>
+#include "state/Schema.h"
 
 #include <array>
 #include <string>
@@ -24,7 +23,7 @@ enum class Scope : uint8_t {
 
 // A field's value at the start of a SelectedDelta drag, so each step (and replay) computes start + delta.
 struct DragFieldStart {
-    entt::id_type Comp;
+    state::TypeId Comp;
     uint16_t Offset, Size;
     std::array<std::byte, 16> Bytes; // fits the widest Update field (vec4)
 };
@@ -32,8 +31,8 @@ struct DragFieldStart {
 template<typename T>
 struct Update {
     Scope Scope{Scope::Entity};
-    entt::entity Entity{null_entity}; // Scope::Entity only. Null targets the viewport
-    entt::id_type ComponentType;
+    state::Entity Entity{null_entity}; // Scope::Entity only. Null targets the viewport
+    state::TypeId ComponentType;
     uint16_t Offset;
     T Value;
 };
@@ -41,39 +40,39 @@ struct Update {
 template<typename T>
 struct Replace {
     Scope Scope{Scope::Entity};
-    entt::entity Entity{null_entity}; // Scope::Entity only
+    state::Entity Entity{null_entity}; // Scope::Entity only
     T Value;
 };
 
 // Assign authored fields together, preserving the rest of the component.
 template<typename Component, typename Field, size_t N = 1>
 struct PatchFields {
-    entt::entity Entity;
+    state::Entity Entity;
     std::array<uint16_t, N> Offsets;
     std::array<Field, N> Values;
 };
 
 struct DestroyEntity {
-    entt::entity Entity;
+    state::Entity Entity;
 };
 
 struct SetTag {
     Scope Scope{Scope::Entity};
-    entt::entity Entity{null_entity}; // Scope::Entity only
-    entt::id_type TagType;
+    state::Entity Entity{null_entity}; // Scope::Entity only
+    state::TypeId TagType;
     bool Present;
 };
 
 // Set the `Name` field of the component identified by `ComponentType`.
 struct SetName {
-    entt::entity Entity;
-    entt::id_type ComponentType;
+    state::Entity Entity;
+    state::TypeId ComponentType;
     std::string Name;
 };
 
 // Creates an entity with ComponentType and the name "<Prefix> <ordinal>".
 struct CreateNamed {
-    entt::id_type ComponentType;
+    state::TypeId ComponentType;
     std::string Prefix;
 };
 
@@ -105,8 +104,8 @@ template<auto... Ms> using last_field = field_of<last_v<Ms...>>;
 
 using Core = std::variant<
     Update<bool>, Update<uint8_t>, Update<uint32_t>, Update<float>, Update<double>,
-    Update<vec2>, Update<vec3>, Update<vec4>, Update<entt::entity>,
+    Update<vec2>, Update<vec3>, Update<vec4>, Update<state::Entity>,
     SetTag, DestroyEntity>;
 
-void Apply(entt::registry &, entt::entity viewport, const Core &);
+void Apply(state::Scene &, state::Entity viewport, const Core &);
 } // namespace action

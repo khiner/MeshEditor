@@ -11,9 +11,9 @@
 
 #pragma once
 
-#include "entt_fwd.h"
 #include "gltf/SourceAssets.h"
 #include "numeric/mat4.h"
+#include "state/Entity.h"
 
 #include <expected>
 #include <filesystem>
@@ -113,8 +113,8 @@ struct MeshSourceLayout {
 
 namespace gltf {
 struct LoadContext {
-    entt::registry &R;
-    entt::entity Viewport;
+    state::Scene &R;
+    state::Entity Viewport;
     mtl::BindlessSet &Slots;
     GpuBuffers &Buffers;
     MeshStore &Meshes;
@@ -123,7 +123,7 @@ struct LoadContext {
 };
 
 struct LoadResult {
-    entt::entity FirstCameraObject{null_entity};
+    state::Entity FirstCameraObject{null_entity};
     bool ImportedAnimation{false};
 };
 
@@ -133,8 +133,8 @@ struct SaveOptions {
 
 // Ctx and BufCtx may be null when no image requires GPU readback.
 struct SaveContext {
-    const entt::registry &R;
-    entt::entity Viewport;
+    const state::Scene &R;
+    state::Entity Viewport;
     const GpuBuffers &Buffers;
     const MeshStore &Meshes;
     const TextureStore &Textures;
@@ -150,7 +150,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const S
 std::expected<fastgltf::Asset, std::string> ParseGltfAsset(const std::filesystem::path &);
 
 // Activates `scene` when it names an inactive scene.
-void SwitchActiveScene(entt::registry &, entt::entity scene);
+void SwitchActiveScene(state::Scene &, state::Entity scene);
 
 // Mirrors fastgltf::Category bits used in SourceAssets::ExtrasByEntity keys.
 enum class ExtrasCategory : uint32_t {

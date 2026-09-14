@@ -1,3 +1,3 @@
 #pragma once
-#include "entt_fwd.h"
-void UpdateMeshBvh(entt::registry &, entt::entity);
+#include "state/Entity.h"
+void UpdateMeshBvh(state::Scene &, state::Entity);

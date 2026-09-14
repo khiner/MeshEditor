@@ -56,7 +56,7 @@
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportInteractionState.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <cassert>
 #include <cstdlib>
@@ -88,7 +88,7 @@ ExtrasLine ColliderWireParams(const PhysicsShape &shape) {
     );
 }
 
-ExtrasLine ExtrasGizmoParams(const entt::registry &r, entt::entity object, ObjectType type) {
+ExtrasLine ExtrasGizmoParams(const state::Scene &r, state::Entity object, ObjectType type) {
     constexpr auto HaloLines = uint32_t(OverlayDispatch::ExtrasHaloLines);
     constexpr auto RangeSegments = uint32_t(OverlayDispatch::LightRangeSegments);
     constexpr auto SpotSegments = uint32_t(OverlayDispatch::SpotConeSegments);
@@ -134,7 +134,7 @@ ExtrasLine ExtrasGizmoParams(const entt::registry &r, entt::entity object, Objec
 }
 
 // Stores stable threadgroup chunks while the GPU filters dynamic settings and selection state at use time.
-std::vector<OverlayJob> BuildOverlayJobs(const entt::registry &r) {
+std::vector<OverlayJob> BuildOverlayJobs(const state::Scene &r) {
     constexpr uint32_t LinesPerJob{uint32_t(OverlayDispatch::LineGroupLines)};
     std::vector<OverlayJob> jobs;
     const auto append = [&](OverlayJob job, uint32_t element_count) {
@@ -254,8 +254,8 @@ struct DeformSlots {
 };
 
 // `inputs` includes per-instance deform offsets absent from per-mesh fields.
-std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::registry &r, const MeshStore &meshes, RecordInputs &inputs) {
-    std::unordered_map<entt::entity, DeformSlots> result;
+std::unordered_map<state::Entity, DeformSlots> BuildDeformSlots(const state::Scene &r, const MeshStore &meshes, RecordInputs &inputs) {
+    std::unordered_map<state::Entity, DeformSlots> result;
     for (const auto [instance_entity, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
         const auto &mesh = GetMesh(r, instance.Entity);
         const auto bone_deform = meshes.GetBoneDeformRange(mesh.GetStoreId());
@@ -559,7 +559,7 @@ void RecordDepthPyramid(
 }
 
 // The visibility/depth pair is still intact here; no shading variant needs velocity outputs.
-void RecordMotionBlurPostFx(entt::registry &r, entt::entity viewport, mtl::PassChain &chain, uint32_t ubo_offset) {
+void RecordMotionBlurPostFx(state::Scene &r, state::Entity viewport, mtl::PassChain &chain, uint32_t ubo_offset) {
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &buffers = r.ctx().get<const GpuBuffers>();
     const auto &main = r.ctx().get<const Pipelines>().Main;
@@ -602,11 +602,11 @@ void RecordMotionBlurPostFx(entt::registry &r, entt::entity viewport, mtl::PassC
     render->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
 }
 
-void RecordSparseEditPrelude(entt::registry &, entt::entity, mtl::PassChain &);
+void RecordSparseEditPrelude(state::Scene &, state::Entity, mtl::PassChain &);
 
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
 // `ubo_offset` selects the view UBO instance every bind in the phase reads.
-void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain, SceneUpdate update, RenderPhase phase, uint32_t ubo_offset, uint32_t sample_weight = 1u) {
+void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain, SceneUpdate update, RenderPhase phase, uint32_t ubo_offset, uint32_t sample_weight = 1u) {
     const profile::CpuScope scope{"RecordRenderCommandBuffer"};
     // Multi-step blur separates scene accumulation from sharp overlay rendering.
     const bool draw_scene = phase != RenderPhase::BlurResolve;
@@ -638,15 +638,15 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     record_inputs.Mix(buffers.Instances.RecordBuffer.Count<InstanceRecord>());
     // Edit mode uses the rest pose, and reused blur phases use slots built by the rebuild phase.
     const auto mesh_deform_slots = is_edit_mode || update == SceneUpdate::Reuse ?
-        std::unordered_map<entt::entity, DeformSlots>{} :
+        std::unordered_map<state::Entity, DeformSlots>{} :
         BuildDeformSlots(r, meshes, record_inputs);
     static const DeformSlots no_deform{};
-    const auto get_deform_slots = [&](entt::entity mesh_entity) -> const DeformSlots & {
+    const auto get_deform_slots = [&](state::Entity mesh_entity) -> const DeformSlots & {
         if (auto it = mesh_deform_slots.find(mesh_entity); it != mesh_deform_slots.end()) return it->second;
         return no_deform;
     };
 
-    const auto is_silhouette_eligible = [&](entt::entity e) {
+    const auto is_silhouette_eligible = [&](state::Entity e) {
         if (!r.all_of<Instance, RenderInstance>(e)) return false;
         const auto buffer_entity = r.get<const Instance>(e).Entity;
         if (!r.valid(buffer_entity) || r.all_of<ObjectExtrasTag>(buffer_entity)) return false;
@@ -655,7 +655,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         const auto *mesh_buffers = r.try_get<const MeshBuffers>(buffer_entity);
         return mesh_buffers && mesh_buffers->FaceIndices.Count > 0;
     };
-    const auto should_draw_armature_bones = [&](entt::entity armature) {
+    const auto should_draw_armature_bones = [&](state::Entity armature) {
         if (is_wireframe_mode) return true;
         if (is_edit_mode || interaction_mode == InteractionMode::Pose) return r.all_of<Active>(armature);
         return r.all_of<Selected>(armature);
@@ -663,12 +663,12 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     const bool show_normals = show_overlays && settings.NormalOverlays != 0u;
     const auto normal_meshes = show_normals ?
         selection::GetSelectedMeshEntities(r) :
-        std::unordered_set<entt::entity>{};
+        std::unordered_set<state::Entity>{};
     const bool show_face_normals = show_normals &&
         he::ElementMaskContains(settings.NormalOverlays, Element::Face);
     const bool show_vertex_normals = show_normals &&
         he::ElementMaskContains(settings.NormalOverlays, Element::Vertex);
-    std::unordered_set<entt::entity> sound_meshes;
+    std::unordered_set<state::Entity> sound_meshes;
     if (is_excite_mode) {
         for (const auto entity : r.view<const Instance, const SoundVertices>()) {
             sound_meshes.insert(r.get<const Instance>(entity).Entity);
@@ -688,7 +688,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             primary_edit_instances = selection::ComputePrimaryEditInstances(r);
         }
     }
-    std::unordered_set<entt::entity> silhouette_instances;
+    std::unordered_set<state::Entity> silhouette_instances;
     if (is_edit_mode) {
         for (const auto [e, instance, ri] : r.view<const Instance, const Selected, const RenderInstance>().each()) {
             if (!is_silhouette_eligible(e)) continue;
@@ -702,7 +702,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         scene_state.PosedByEntity.clear();
 
         struct MeshEntityData {
-            entt::entity Entity;
+            state::Entity Entity;
             const MeshBuffers &Buf;
             const ModelsBuffer &Mod;
             std::optional<Mesh> MeshComp;
@@ -762,7 +762,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 const auto &e = mesh_entities[mi];
                 auto &spec = specs[mi];
                 // Every mesh-keyed value an instance record reads, in the order the meshes come.
-                record_inputs.Mix(entt::to_integral(e.Entity));
+                record_inputs.Mix(state::Integral(e.Entity));
                 record_inputs.Mix(e.Buf.Primitives.Offset);
                 record_inputs.Mix(e.Buf.Primitives.Count);
                 record_inputs.Mix(e.Buf.Meshlets.Offset);
@@ -814,7 +814,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     spec.Level0Count = mesh_level0_count(e);
                     posed_meshlet_bounds_count += spec.Count * spec.Level0Count;
                 }
-                prelude_layout.Mix(entt::to_integral(e.Entity));
+                prelude_layout.Mix(state::Integral(e.Entity));
                 prelude_layout.Mix(spec.Count);
                 prelude_layout.Mix(uint32_t(spec.Posed) | uint32_t(spec.Derive) << 1u);
                 prelude_layout.Mix(e.Buf.Vertices.Count);
@@ -1446,13 +1446,13 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             // In armature Edit/Pose mode, the active bone gets the active-color silhouette.
             const auto active_entity = FindActiveEntity(r);
             const auto active_bone = FindActiveBone(r);
-            const bool armature_mode = FindArmatureObject(r, active_entity) != entt::null;
+            const bool armature_mode = FindArmatureObject(r, active_entity) != state::Null;
             uint32_t active_object_id = 0;
-            if (armature_mode && active_bone != entt::null) {
+            if (armature_mode && active_bone != state::Null) {
                 if (r.all_of<RenderInstance>(active_bone)) {
                     active_object_id = r.get<RenderInstance>(active_bone).ObjectId;
                 }
-            } else if (!is_edit_mode && active_entity != entt::null && r.all_of<RenderInstance>(active_entity)) {
+            } else if (!is_edit_mode && active_entity != state::Null && r.all_of<RenderInstance>(active_entity)) {
                 active_object_id = r.get<RenderInstance>(active_entity).ObjectId;
             }
             encode::SetPushConstants(encoder, SilhouetteEdgeColorPushConstants{
@@ -1776,14 +1776,14 @@ void DrawMeshlets(
     );
 }
 
-void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, SceneUpdate update, RenderPhase phase) {
+void RecordRenderCommandBuffer(state::Scene &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, SceneUpdate update, RenderPhase phase) {
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
     RecordPhase(r, viewport, chain, update, phase, 0);
     profile::EndRecording();
 }
 
-void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, std::span<const uint32_t> sample_weights) {
+void RecordBlurStepsCommandBuffer(state::Scene &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, std::span<const uint32_t> sample_weights) {
     const auto &buffers = r.ctx().get<const GpuBuffers>();
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
@@ -1797,7 +1797,7 @@ void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, MTL:
 namespace {
 // Upload `entries` and their tiles, then record and submit one batched two-phase derive and wait for completion.
 // The output slots select the target buffers.
-void SubmitNormalDeriveNow(entt::registry &r, std::span<const NormalDeriveEntry> entries, uint32_t vertex_normal_slot, uint32_t seam_normal_slot, uint32_t face_normal_slot) {
+void SubmitNormalDeriveNow(state::Scene &r, std::span<const NormalDeriveEntry> entries, uint32_t vertex_normal_slot, uint32_t seam_normal_slot, uint32_t face_normal_slot) {
     const auto &meshes = r.ctx().get<const MeshStore>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     std::vector<uvec2> face_tiles, gather_tiles;
@@ -1834,7 +1834,7 @@ void SubmitNormalDeriveNow(entt::registry &r, std::span<const NormalDeriveEntry>
 }
 } // namespace
 
-void DeriveBaseNormalsNow(entt::registry &r, std::span<const entt::entity> mesh_entities) {
+void DeriveBaseNormalsNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     const auto &meshes = r.ctx().get<const MeshStore>();
     std::vector<NormalDeriveEntry> entries;
     entries.reserve(mesh_entities.size());
@@ -1860,12 +1860,12 @@ namespace {
 // Position-only targets derive their full-weight poses in one batched submit-and-wait.
 // The derived pose tests whether derivation moves the normals authored shading would pin.
 // Runs after the base derive, since the pin test compares against the base normal stores.
-void UpdateAuthoredMorphShadingNow(entt::registry &r, std::span<const entt::entity> mesh_entities) {
+void UpdateAuthoredMorphShadingNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     auto &meshes = r.ctx().get<MeshStore>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     // Each position-only target gets a derive entry at its full-weight pose, reading and writing the posed scratch.
     struct PoseJob {
-        entt::entity Entity;
+        state::Entity Entity;
         uint32_t TargetIndex;
     };
     std::vector<NormalDeriveEntry> entries;
@@ -1938,7 +1938,7 @@ void UpdateAuthoredMorphShadingNow(entt::registry &r, std::span<const entt::enti
 }
 } // namespace
 
-void FinalizeNewMeshShadingNow(entt::registry &r, std::span<const entt::entity> mesh_entities) {
+void FinalizeNewMeshShadingNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     DeriveBaseNormalsNow(r, mesh_entities);
     auto &meshes = r.ctx().get<MeshStore>();
     for (const auto entity : mesh_entities) meshes.EncodeAuthoredCornerNormals(GetMesh(r, entity));
@@ -1950,12 +1950,12 @@ void DispatchWork(MTL::ComputeCommandEncoder *encoder, const GpuBuffers &buffers
     encoder->dispatchThreadgroups(*buffers.GeometryWork.Buffer, WorkArgsOffset(work), ThreadgroupSize::Linear256);
 }
 
-MeshEditWork &PrepareMeshEditWork(entt::registry &r, entt::entity entity) {
+MeshEditWork &PrepareMeshEditWork(state::Scene &r, state::Entity entity) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     const auto mesh = GetMesh(r, entity);
     const auto id = mesh.GetStoreId();
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &mb = r.get<MeshBuffers>(entity);
+    auto &mb = r.edit<MeshBuffers>(entity);
     auto &work = r.ctx().get<GpuSceneState>().EditWork;
     if (const auto it = work.find(entity); it != work.end() && it->second.StoreId != id) ReleaseMeshEditWork(r, entity);
     auto [it, inserted] = work.try_emplace(entity);
@@ -1993,7 +1993,7 @@ MeshEditWork &PrepareMeshEditWork(entt::registry &r, entt::entity entity) {
 }
 } // namespace
 
-void ReleaseMeshEditWork(entt::registry &r, entt::entity entity) {
+void ReleaseMeshEditWork(state::Scene &r, state::Entity entity) {
     auto *scene = r.ctx().find<GpuSceneState>();
     if (!scene) return;
     auto &work = scene->EditWork;
@@ -2011,7 +2011,7 @@ void ReleaseMeshEditWork(entt::registry &r, entt::entity entity) {
 }
 
 namespace {
-CommitPosedGeometryPushConstants PrepareGeometryEdit(entt::registry &r, entt::entity viewport, entt::entity entity, entt::entity primary, const PendingTransform *pending, const PosedRanges *pose = nullptr, std::span<const Range> changed = {}) {
+CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Entity viewport, state::Entity entity, state::Entity primary, const PendingTransform *pending, const PosedRanges *pose = nullptr, std::span<const Range> changed = {}) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &w = PrepareMeshEditWork(r, entity);
@@ -2066,7 +2066,7 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(entt::registry &r, entt::en
     };
 }
 
-void RecordGeometryEditBatch(entt::registry &r, MTL::ComputeCommandEncoder *encoder, std::vector<std::pair<entt::entity, CommitPosedGeometryPushConstants>> &commits, bool posed) {
+void RecordGeometryEditBatch(state::Scene &r, MTL::ComputeCommandEncoder *encoder, std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> &commits, bool posed) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     const auto &meshes = r.ctx().get<const MeshStore>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
@@ -2107,10 +2107,10 @@ void RecordGeometryEditBatch(entt::registry &r, MTL::ComputeCommandEncoder *enco
 }
 } // namespace
 
-void RefreshEditedPositions(entt::registry &r, entt::entity viewport, std::span<const MeshVertexChanges> changes) {
+void RefreshEditedPositions(state::Scene &r, state::Entity viewport, std::span<const MeshVertexChanges> changes) {
     if (changes.empty()) return;
-    std::vector<std::pair<entt::entity, CommitPosedGeometryPushConstants>> jobs;
-    for (const auto &[entity, ranges] : changes) jobs.emplace_back(entity, PrepareGeometryEdit(r, viewport, entity, entt::null, nullptr, nullptr, ranges));
+    std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> jobs;
+    for (const auto &[entity, ranges] : changes) jobs.emplace_back(entity, PrepareGeometryEdit(r, viewport, entity, state::Null, nullptr, nullptr, ranges));
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto *cb = ctx.Queue->commandBuffer();
     {
@@ -2127,13 +2127,13 @@ void RefreshEditedPositions(entt::registry &r, entt::entity viewport, std::span<
     }
 }
 
-std::vector<entt::entity> CommitPosedGeometry(entt::registry &r, entt::entity viewport, std::span<const entt::entity> mesh_entities) {
+std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, state::Entity viewport, std::span<const state::Entity> mesh_entities) {
     const profile::CpuScope scope{"CommitGeometry"};
     const auto *pending = r.try_get<const PendingTransform>(viewport);
     if (!pending) return {};
     const auto primaries = selection::ComputePrimaryEditInstances(r, false);
     auto &buffers = r.ctx().get<GpuBuffers>();
-    std::vector<std::pair<entt::entity, CommitPosedGeometryPushConstants>> commits;
+    std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> commits;
     for (const auto entity : mesh_entities) {
         if (const auto primary = primaries.find(entity); primary != primaries.end())
             commits.emplace_back(entity, PrepareGeometryEdit(r, viewport, entity, primary->second, pending));
@@ -2150,7 +2150,7 @@ std::vector<entt::entity> CommitPosedGeometry(entt::registry &r, entt::entity vi
     }
     cb->commit();
     cb->waitUntilCompleted();
-    std::vector<entt::entity> changed;
+    std::vector<state::Entity> changed;
     for (const auto &[entity, pc] : commits) {
         if (!ElementWorkEmpty(buffers.GeometryWork, pc.ChangedVertices)) {
             changed.push_back(entity);
@@ -2163,20 +2163,20 @@ std::vector<entt::entity> CommitPosedGeometry(entt::registry &r, entt::entity vi
 }
 
 namespace {
-void RecordSparseEditPrelude(entt::registry &r, entt::entity viewport, mtl::PassChain &chain) {
+void RecordSparseEditPrelude(state::Scene &r, state::Entity viewport, mtl::PassChain &chain) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &state = r.ctx().get<GpuSceneState>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto *pending = r.try_get<const PendingTransform>(viewport);
     const auto primaries = selection::ComputePrimaryEditInstances(r, false);
-    std::vector<std::pair<entt::entity, CommitPosedGeometryPushConstants>> jobs;
+    std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> jobs;
     for (const auto &[entity, pose] : state.PosedByEntity) {
         const auto primary = primaries.find(entity);
         const bool preview = pending && primary != primaries.end();
         const auto old = state.EditWork.find(entity);
         if (!preview && (old == state.EditWork.end() || !old->second.PreviewActive)) continue;
-        jobs.emplace_back(entity, PrepareGeometryEdit(r, viewport, entity, preview ? primary->second : entt::null, preview ? pending : nullptr, &pose));
+        jobs.emplace_back(entity, PrepareGeometryEdit(r, viewport, entity, preview ? primary->second : state::Null, preview ? pending : nullptr, &pose));
     }
     if (jobs.empty()) return;
     auto *encoder = chain.BeginCompute("EditGeometry", MTL::StageDispatch);

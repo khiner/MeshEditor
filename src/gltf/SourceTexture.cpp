@@ -8,17 +8,17 @@
 #include "render/GpuBuffers.h"
 #include "render/Textures.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 namespace gltf {
 namespace {
-const SourceAssets *Assets(const entt::registry &r) {
+const SourceAssets *Assets(const state::Scene &r) {
     const auto view = r.view<const SourceAssets>();
     return view.empty() ? nullptr : &view.get<const SourceAssets>(view.front());
 }
 } // namespace
 
-std::optional<uint32_t> TextureImageIndex(const entt::registry &r, uint32_t texture_index) {
+std::optional<uint32_t> TextureImageIndex(const state::Scene &r, uint32_t texture_index) {
     const auto *assets = Assets(r);
     if (!assets || texture_index >= assets->Textures.size()) return {};
     const auto image_index = ResolveImageIndex(assets->Textures[texture_index]);
@@ -26,7 +26,7 @@ std::optional<uint32_t> TextureImageIndex(const entt::registry &r, uint32_t text
     return image_index;
 }
 
-std::optional<DecodedImage> DecodeImageRgba8(const entt::registry &r, uint32_t image_index) {
+std::optional<DecodedImage> DecodeImageRgba8(const state::Scene &r, uint32_t image_index) {
     const auto *assets = Assets(r);
     if (!assets || image_index >= assets->Images.size()) return {};
     const auto &image = assets->Images[image_index];
@@ -40,7 +40,7 @@ std::optional<DecodedImage> DecodeImageRgba8(const entt::registry &r, uint32_t i
     return bytes ? decode(*bytes) : std::nullopt;
 }
 
-std::optional<NormalMapRef> MeshMaterialNormalMap(const entt::registry &r, entt::entity mesh_entity) {
+std::optional<NormalMapRef> MeshMaterialNormalMap(const state::Scene &r, state::Entity mesh_entity) {
     const auto mesh = TryGetMesh(r, mesh_entity);
     if (!mesh) return {};
     const auto materials = r.ctx().get<const MeshStore>().GetPrimitiveMaterialIndices(mesh->GetStoreId());

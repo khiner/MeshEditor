@@ -33,8 +33,8 @@
 #include "viewport/Viewport.h"
 
 #include "numeric/FastGltf.h"
+#include "state/Scene.h"
 #include <boost/ut.hpp>
-#include <entt/entity/registry.hpp>
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
 #include <simdjson.h>
@@ -210,9 +210,9 @@ constexpr Exception ExactExceptions[]{
 };
 
 // Return the sole entity with C or null.
-template<typename C> entt::entity NodeWith(entt::registry &r) {
+template<typename C> state::Entity NodeWith(state::Scene &r) {
     for (auto e : r.view<const C>()) return e;
-    return entt::null;
+    return state::Null;
 }
 
 // Check that a KHR_audio_rigid_bodies model's accessor reference has the given type and count.
@@ -725,16 +725,13 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
 }
 
 // Require identical component presence and comparable values for every entity.
-void CompareRegistries(std::string_view name, entt::registry &a, entt::registry &b) {
+void CompareRegistries(std::string_view name, state::Scene &a, state::Scene &b) {
     using namespace boost::ut;
-    const auto components_by_entity = [](entt::registry &r) {
-        std::map<entt::entity, std::set<std::string>> m;
+    const auto components_by_entity = [](state::Scene &r) {
+        std::map<state::Entity, std::set<std::string>> m;
         for (auto [id, set] : r.storage()) {
-            const std::string_view tn{set.info().name()};
-            if (tn.starts_with("entt::")) continue; // entity / reactive storages, not components
-            for (const auto e : set) {
-                if (e != entt::tombstone) m[e].insert(std::string{tn});
-            }
+            const std::string_view tn{state::SchemaNames[id]};
+            for (const auto e : set) m[e].insert(std::string{tn});
         }
         return m;
     };
@@ -765,20 +762,14 @@ void CompareRegistries(std::string_view name, entt::registry &a, entt::registry 
     }
 
     // ComponentValuesEqual returns nullopt for derived components without serializers.
-    std::map<entt::id_type, entt::sparse_set *> b_set;
-    for (auto [id, set] : b.storage()) b_set[set.info().hash()] = &set;
     std::map<std::string, int> value_diffs;
     for (auto [id, a_set] : a.storage()) {
-        const std::string_view tn{a_set.info().name()};
-        if (tn.starts_with("entt::")) continue;
-        const auto hash = a_set.info().hash();
-        const auto bit = b_set.find(hash);
-        if (bit == b_set.end()) continue;
-
-        auto *b_set_p = bit->second;
+        const auto tn = state::SchemaNames[id];
+        const auto *b_set_p = b.storage(id);
+        if (!b_set_p) continue;
         for (const auto e : a_set) {
-            if (e == entt::tombstone || !b_set_p->contains(e)) continue;
-            const auto eq = snapshot::ComponentValuesEqual(hash, a_set.value(e), b_set_p->value(e));
+            if (!b_set_p->contains(e)) continue;
+            const auto eq = snapshot::ComponentValuesEqual(id, a_set.value(e), b_set_p->value(e));
             if (eq && !*eq) ++value_diffs[std::string{tn}];
         }
     }
@@ -842,8 +833,8 @@ int main(int argc, const char **argv) {
     const auto samples = SampleRoots | transform([](auto root) { return CollectGltfSamples(SamplePath(root)); }) | join | to<std::vector>();
 
     struct SceneFixture {
-        entt::registry R;
-        entt::entity Viewport{null_entity};
+        state::Scene R;
+        state::Entity Viewport{null_entity};
 
         SceneFixture() {
             R.ctx().emplace<mtl::Context>();
@@ -851,6 +842,19 @@ int main(int argc, const char **argv) {
             SetupScene(R, Viewport);
         }
         ~SceneFixture() { DeinitViewport(R, Viewport); }
+    };
+
+    "snapshot encoding appends within reserved capacity"_test = [] {
+        constexpr size_t prefix = 65536;
+        std::vector<std::byte> bytes(prefix, std::byte{42});
+        bytes.reserve(prefix + 256);
+        const auto capacity = bytes.capacity();
+        Name name{"appended record"}, decoded;
+        snapshot::SnapshotTable()[state::Type<Name>()].Serialize(&name, bytes);
+        expect(bytes.capacity() == capacity);
+        expect(std::ranges::all_of(bytes | std::views::take(prefix), [](auto b) { return b == std::byte{42}; }));
+        zpp::bits::in{std::span{bytes}.subspan(prefix)}(decoded).or_throw();
+        expect(decoded.Value == name.Value);
     };
 
     // Require byte-identical state after restoring into a fresh registry and saving again.
@@ -945,7 +949,7 @@ int main(int argc, const char **argv) {
         expect(diff.Equal) << "destroyed-entity round-trip diverged at byte" << diff.FirstDifferingByte;
     };
 
-    const auto load_ctx = [](entt::registry &r, entt::entity e) {
+    const auto load_ctx = [](state::Scene &r, state::Entity e) {
         return gltf::LoadContext{
             .R = r,
             .Viewport = e,
@@ -956,7 +960,7 @@ int main(int argc, const char **argv) {
             .Environments = r.ctx().get<EnvironmentStore>(),
         };
     };
-    const auto save_ctx = [&](entt::registry &r, entt::entity e) {
+    const auto save_ctx = [&](state::Scene &r, state::Entity e) {
         auto &buffers = r.ctx().get<GpuBuffers>();
         return gltf::SaveContext{
             .R = r,
@@ -981,15 +985,15 @@ int main(int argc, const char **argv) {
         return result.has_value();
     };
     // The first mesh-instance node, with the mesh entity it instances.
-    const auto first_mesh_node = [](entt::registry &r) -> std::pair<entt::entity, entt::entity> {
+    const auto first_mesh_node = [](state::Scene &r) -> std::pair<state::Entity, state::Entity> {
         for (auto e : r.view<const Instance, const SourceNodeIndex>()) {
             if (const auto mesh = r.get<const Instance>(e).Entity; r.all_of<MeshHandle>(mesh)) return {e, mesh};
         }
-        return {entt::null, entt::null};
+        return {state::Null, state::Null};
     };
 
     // Reclaim retired arena buffers after each clear because this test has no render frames in flight.
-    const auto clear_scene = [](entt::registry &r, entt::entity vp) {
+    const auto clear_scene = [](state::Scene &r, state::Entity vp) {
         ClearScene(r, vp);
         r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     };
@@ -1030,7 +1034,7 @@ int main(int argc, const char **argv) {
     }
 
     // Drains PendingTextureUploads onto the GPU — ProcessComponentEvents minus the env / sync passes — so the edit tests below can read texture pixels back.
-    const auto materialize_textures = [&](entt::registry &r, entt::entity scene) {
+    const auto materialize_textures = [&](state::Scene &r, state::Entity scene) {
         const auto *pending = r.try_get<const PendingTextureUploads>(scene);
         const auto *src = r.try_get<const gltf::SourceAssets>(scene);
         if (!pending || pending->Items.empty() || !src) return;
@@ -1056,7 +1060,7 @@ int main(int argc, const char **argv) {
             if (!load_or_skip(fx, box_embedded, "load failed")) return;
             materialize_textures(fx.R, fx.Viewport);
 
-            // Skip the WireRegistry default-white RawPixels texture (no SourceImageIndex link).
+            // Skip the InitDocumentStores default-white RawPixels texture (no SourceImageIndex link).
             const auto &textures = fx.R.ctx().get<TextureStore>();
             const TextureEntry *tex = nullptr;
             for (const auto &t : textures.Textures) {
@@ -1071,7 +1075,7 @@ int main(int argc, const char **argv) {
             expect(original_pixels.has_value()) << "readback failed";
             if (!original_pixels) return;
 
-            fx.R.get<gltf::SourceAssets>(fx.Viewport).Images.front().IsDirty = true;
+            fx.R.edit<gltf::SourceAssets>(fx.Viewport).Images.front().IsDirty = true;
 
             const auto out_path = edit_root / "BoxTextured-dirty.gltf";
             if (!save_or_skip(fx, out_path)) return;
@@ -1129,8 +1133,8 @@ int main(int argc, const char **argv) {
             if (!load_or_skip(fx, box, "Box load failed")) return;
 
             const auto [node, mesh_entity] = first_mesh_node(fx.R);
-            expect(node != entt::null) << "no mesh instance node in Box";
-            if (node == entt::null) return;
+            expect(node != state::Null) << "no mesh instance node in Box";
+            if (node == state::Null) return;
 
             // Author a small modal model: model on the node, derivation material on the mesh.
             ModalModes modes;
@@ -1183,8 +1187,8 @@ int main(int argc, const char **argv) {
             if (!load_or_skip(fx2, out_path, "reload failed")) return;
 
             const auto rnode = NodeWith<ModalModes>(fx2.R);
-            expect(rnode != entt::null) << "no modal model after reload";
-            if (rnode == entt::null) return;
+            expect(rnode != state::Null) << "no modal model after reload";
+            if (rnode == state::Null) return;
 
             const auto &rm = fx2.R.get<const ModalModes>(rnode);
             const auto vecs_eq = [](std::span<const float> a, std::span<const float> b) {
@@ -1236,8 +1240,8 @@ int main(int argc, const char **argv) {
             if (!load_or_skip(fx, fixture, "fixture load failed")) return;
 
             const auto node = NodeWith<ModalModes>(fx.R);
-            expect(node != entt::null) << "fixture produced no modal model";
-            if (node == entt::null) return;
+            expect(node != state::Null) << "fixture produced no modal model";
+            if (node == state::Null) return;
 
             const auto &m = fx.R.get<const ModalModes>(node);
             expect(m.Freqs.size() == 1u && NumberEq(m.Freqs[0], 220.0)) << "frequency";
@@ -1250,8 +1254,8 @@ int main(int argc, const char **argv) {
             expect(gain != nullptr && NumberEq(gain->Value, 0.75)) << "gain";
 
             const auto floor_node = NodeWith<ContactSurface>(fx.R);
-            expect(floor_node != entt::null) << "fixture produced no contact surface";
-            if (floor_node == entt::null) return;
+            expect(floor_node != state::Null) << "fixture produced no contact surface";
+            if (floor_node == state::Null) return;
             const auto &cs = fx.R.get<const ContactSurface>(floor_node);
             expect(cs.Name == "TestFinish") << "surface name";
             expect(NumberEq(cs.Roughness, 3e-6) && NumberEq(cs.CorrelationLength, 7e-5) && NumberEq(cs.SpectralSlope, -1.25)) << "surface parameters";
@@ -1276,8 +1280,8 @@ int main(int argc, const char **argv) {
             if (!load_or_skip(fx, staged_gltf, "BoxTextured load failed")) return;
 
             const auto [node, mesh_entity] = first_mesh_node(fx.R);
-            expect(node != entt::null) << "no mesh instance node in BoxTextured";
-            if (node == entt::null) return;
+            expect(node != state::Null) << "no mesh instance node in BoxTextured";
+            if (node == state::Null) return;
 
             const ContactSurface surface{
                 .Name = "Tiled floor",
@@ -1340,8 +1344,8 @@ int main(int argc, const char **argv) {
             if (!load_or_skip(fx2, out_path, "reload failed")) return;
 
             const auto reloaded = NodeWith<ContactSurface>(fx2.R);
-            expect(reloaded != entt::null) << "no contact surface after reload";
-            if (reloaded == entt::null) return;
+            expect(reloaded != state::Null) << "no contact surface after reload";
+            if (reloaded == state::Null) return;
             const auto &rs = fx2.R.get<const ContactSurface>(reloaded);
             expect(rs.Name == surface.Name) << "surface name diverged";
             expect(NumberEq(rs.Roughness, surface.Roughness) && NumberEq(rs.CorrelationLength, surface.CorrelationLength) && NumberEq(rs.SpectralSlope, surface.SpectralSlope)) << "surface parameters diverged";
@@ -1369,8 +1373,8 @@ int main(int argc, const char **argv) {
             if (!load_or_skip(fx, staged_gltf, "NormalTangentTest load failed")) return;
 
             const auto [node, mesh_entity] = first_mesh_node(fx.R);
-            expect(node != entt::null) << "no mesh instance node in NormalTangentTest";
-            if (node == entt::null) return;
+            expect(node != state::Null) << "no mesh instance node in NormalTangentTest";
+            if (node == state::Null) return;
 
             // The material's normal map is texture 2, which resolves to its own source image.
             const auto inherited = gltf::MeshMaterialNormalMap(fx.R, mesh_entity);

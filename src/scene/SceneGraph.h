@@ -1,12 +1,12 @@
 #pragma once
 
-#include "entt_fwd.h"
 #include "numeric/mat4.h"
+#include "state/Entity.h"
 
 struct SceneNode {
-    entt::entity Parent{null_entity};
-    entt::entity FirstChild{null_entity};
-    entt::entity NextSibling{null_entity};
+    state::Entity Parent{null_entity};
+    state::Entity FirstChild{null_entity};
+    state::Entity NextSibling{null_entity};
 };
 
 // Stores the Blender-style parent inverse used by WorldTransform = decompose(ParentMatrix * ParentInverse * LocalMatrix).
@@ -18,12 +18,12 @@ struct ParentInverse {
 // Iterator for traversing children of a SceneNode
 struct ChildrenIterator {
     using difference_type = std::ptrdiff_t;
-    using value_type = entt::entity;
+    using value_type = state::Entity;
 
-    const entt::registry *R;
-    entt::entity Current;
+    const state::Scene *R;
+    state::Entity Current;
 
-    entt::entity operator*() const { return Current; }
+    state::Entity operator*() const { return Current; }
     ChildrenIterator &operator++();
     ChildrenIterator operator++(int) {
         auto tmp = *this;
@@ -34,27 +34,27 @@ struct ChildrenIterator {
 };
 
 struct Children {
-    const entt::registry *R;
-    entt::entity ParentEntity;
+    const state::Scene *R;
+    state::Entity ParentEntity;
 
     ChildrenIterator begin() const;
     ChildrenIterator end() const { return {R, null_entity}; }
 };
 
-mat4 GetParentDelta(const entt::registry &, entt::entity);
-entt::entity GetParentEntity(const entt::registry &, entt::entity);
+mat4 GetParentDelta(const state::Scene &, state::Entity);
+state::Entity GetParentEntity(const state::Scene &, state::Entity);
 
 // The node's parent, or null at a root.
-entt::entity ParentOrNull(const entt::registry &, entt::entity);
+state::Entity ParentOrNull(const state::Scene &, state::Entity);
 
 // The nearest of `e` and its ancestors that `pred` matches, or null_entity when none does.
-entt::entity FindAncestorIf(const entt::registry &r, entt::entity e, auto &&pred) {
+state::Entity FindAncestorIf(const state::Scene &r, state::Entity e, auto &&pred) {
     for (; e != null_entity && !pred(e); e = ParentOrNull(r, e)) {}
     return e;
 }
 
 // Build WorldTransform for `e`, and any ancestor still missing one, from local Transforms.
-void EnsureWorldTransform(entt::registry &, entt::entity);
+void EnsureWorldTransform(state::Scene &, state::Entity);
 
 // Build WorldTransform for any entity that has none yet.
-void BuildMissingWorldTransforms(entt::registry &);
+void BuildMissingWorldTransforms(state::Scene &);

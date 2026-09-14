@@ -8,7 +8,7 @@
 #include "gpu/Element.h"
 #include "gpu/Vertex.h"
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <optional>
 #include <span>
@@ -387,9 +387,9 @@ private:
 
 // GetMesh requires a mesh entity.
 // TryGetMesh returns empty for other entities.
-Mesh GetMesh(const entt::registry &, entt::entity);
-std::optional<Mesh> TryGetMesh(const entt::registry &, entt::entity);
-bool HasMesh(const entt::registry &, entt::entity);
+Mesh GetMesh(const state::Scene &, state::Entity);
+std::optional<Mesh> TryGetMesh(const state::Scene &, state::Entity);
+bool HasMesh(const state::Scene &, state::Entity);
 
 // Returns mesh-local surface length per texture-coordinate unit, or zero when the set is absent.
-float LocalLengthPerUv(const entt::registry &, entt::entity mesh_entity, uint32_t uv_set);
+float LocalLengthPerUv(const state::Scene &, state::Entity mesh_entity, uint32_t uv_set);

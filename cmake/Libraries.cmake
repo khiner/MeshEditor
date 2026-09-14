@@ -2,7 +2,6 @@
 add_library(mesheditor_headers INTERFACE)
 target_include_directories(mesheditor_headers INTERFACE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_BINARY_DIR}")
 target_include_directories(mesheditor_headers SYSTEM INTERFACE
-    "${CMAKE_SOURCE_DIR}/lib/entt/src"
     "${CMAKE_SOURCE_DIR}/lib/FastFEM/include"
 )
 target_compile_definitions(mesheditor_headers INTERFACE
@@ -36,6 +35,7 @@ function(mesheditor_library target policy)
 endfunction()
 
 mesheditor_library(MeshEditorProjectStore HOT
+    src/state/Scene.cpp
     src/project/EntityStore.cpp
     src/project/store/LiveTrie.cpp
     src/project/store/History.cpp)

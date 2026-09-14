@@ -1,6 +1,6 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -8,35 +8,35 @@
 
 struct ElementRange;
 
-bool AllSelectedAreMeshes(const entt::registry &);
-bool IsBoneEditMode(const entt::registry &, entt::entity viewport);
-bool CanDuplicate(const entt::registry &, entt::entity viewport);
-bool CanDuplicateLinked(const entt::registry &, entt::entity viewport);
-bool CanDelete(const entt::registry &, entt::entity viewport);
-std::vector<ElementRange> GetElementRangesForSelected(const entt::registry &, entt::entity viewport);
+bool AllSelectedAreMeshes(const state::Scene &);
+bool IsBoneEditMode(const state::Scene &, state::Entity viewport);
+bool CanDuplicate(const state::Scene &, state::Entity viewport);
+bool CanDuplicateLinked(const state::Scene &, state::Entity viewport);
+bool CanDelete(const state::Scene &, state::Entity viewport);
+std::vector<ElementRange> GetElementRangesForSelected(const state::Scene &, state::Entity viewport);
 
 // Returns the containing armature, or null if the entity is unrelated to an armature.
-entt::entity FindArmatureObject(const entt::registry &, entt::entity);
+state::Entity FindArmatureObject(const state::Scene &, state::Entity);
 // Returns null if no bone is active.
-entt::entity FindActiveBone(const entt::registry &);
+state::Entity FindActiveBone(const state::Scene &);
 
 // Returns selected transform roots, using bones in pose or edit mode and objects otherwise.
-std::vector<entt::entity> RootSelectedForTransform(const entt::registry &, entt::entity viewport);
+std::vector<state::Entity> RootSelectedForTransform(const state::Scene &, state::Entity viewport);
 
 struct EditTransformContext {
-    std::unordered_map<entt::entity, entt::entity> TransformInstances;
+    std::unordered_map<state::Entity, state::Entity> TransformInstances;
 };
 
 namespace selection {
-using PrimaryEditInstanceMap = std::unordered_map<entt::entity, entt::entity>;
+using PrimaryEditInstanceMap = std::unordered_map<state::Entity, state::Entity>;
 struct PrimaryEditInstanceMaps {
     PrimaryEditInstanceMap All, Transformable;
 };
 
 // Returns one selected mesh instance per mesh, preferring the active instance, then the lowest entity ID.
-PrimaryEditInstanceMap ComputePrimaryEditInstances(const entt::registry &, bool include_scale_locked = true);
-PrimaryEditInstanceMaps ComputePrimaryEditInstanceMaps(const entt::registry &);
+PrimaryEditInstanceMap ComputePrimaryEditInstances(const state::Scene &, bool include_scale_locked = true);
+PrimaryEditInstanceMaps ComputePrimaryEditInstanceMaps(const state::Scene &);
 
-bool HasScaleLockedInstance(const entt::registry &, entt::entity);
-std::unordered_set<entt::entity> GetSelectedMeshEntities(const entt::registry &);
+bool HasScaleLockedInstance(const state::Scene &, state::Entity);
+std::unordered_set<state::Entity> GetSelectedMeshEntities(const state::Scene &);
 } // namespace selection

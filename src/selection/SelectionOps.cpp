@@ -5,11 +5,11 @@
 #include "selection/BoneSelection.h"
 #include "selection/SelectionQueries.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 using std::ranges::contains, std::ranges::find;
 
-std::vector<SelectionHit> ResolveHits(entt::registry &r, const std::vector<entt::entity> &raw, bool bone_mode, bool merge_parts) {
+std::vector<SelectionHit> ResolveHits(state::Scene &r, const std::vector<state::Entity> &raw, bool bone_mode, bool merge_parts) {
     std::vector<SelectionHit> hits;
     for (const auto e : raw) {
         if (bone_mode && r.all_of<BoneIndex>(e)) {

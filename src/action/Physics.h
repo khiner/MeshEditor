@@ -9,7 +9,7 @@ namespace action {
 template<>
 struct Replace<PhysicsMotion> {
     Scope Scope{Scope::Entity};
-    entt::entity Entity{null_entity};
+    state::Entity Entity{null_entity};
     std::unique_ptr<PhysicsMotion> Value;
 };
 } // namespace action
@@ -42,9 +42,9 @@ struct RemoveTriggerNodes {};
 struct ToggleFilterEntity {
     enum class List : uint8_t { Systems,
                                 CollideSystems };
-    entt::entity FilterEntity;
+    state::Entity FilterEntity;
     List Which;
-    entt::entity SystemEntity;
+    state::Entity SystemEntity;
     bool Add;
 };
 
@@ -55,17 +55,17 @@ template<> inline constexpr std::vector<PhysicsJointDrive> PhysicsJointDef::*Joi
 
 template<typename T>
 struct SetJointVecItem {
-    entt::entity JointDefEntity;
+    state::Entity JointDefEntity;
     uint32_t Index;
     std::unique_ptr<T> Value;
 };
 template<typename T>
 struct AddJointVecItem {
-    entt::entity JointDefEntity;
+    state::Entity JointDefEntity;
 };
 template<typename T>
 struct DeleteJointVecItem {
-    entt::entity JointDefEntity;
+    state::Entity JointDefEntity;
     uint32_t Index;
 };
 
@@ -80,5 +80,5 @@ using Action = MergedVariantT<
     Update<CollideMode>, Update<PhysicsCombineMode>, Update<PhysicsDriveType>, Update<PhysicsDriveMode>,
     Replace<PhysicsMotion>>;
 
-void Apply(entt::registry &, entt::entity viewport, const Action &);
+void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::physics

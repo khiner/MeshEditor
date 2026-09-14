@@ -3,8 +3,8 @@
 #include "render/Instance.h"
 #include "scene/Entity.h"
 
+#include "state/Scene.h"
 #include <boost/ut.hpp>
-#include <entt/entity/registry.hpp>
 
 #include <algorithm>
 #include <array>
@@ -15,7 +15,7 @@ const boost::ut::suite selection_tests = [] {
     "primary edit instance is independent of component insertion order"_test = [] {
         std::array order{0, 1, 2};
         do {
-            entt::registry r;
+            state::Scene r;
             const auto mesh = r.create();
             const std::array instances{r.create(), r.create(), r.create()};
             for (const auto i : order) {

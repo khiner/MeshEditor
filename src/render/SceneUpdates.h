@@ -1,5 +1,5 @@
 #pragma once
-#include "entt_fwd.h"
+#include "state/Entity.h"
 #include <span>
 #include <vector>
 struct Mesh;
@@ -7,19 +7,19 @@ struct GpuBuffers;
 struct MeshBuffers;
 
 struct SyncResult {
-    std::vector<entt::entity> NewlyInserted;
-    std::vector<entt::entity> NewMeshEntities;
-    std::vector<entt::entity> NewExtrasEntities;
+    std::vector<state::Entity> NewlyInserted;
+    std::vector<state::Entity> NewMeshEntities;
+    std::vector<state::Entity> NewExtrasEntities;
     bool Compacted{false};
 };
 
-void RepointMeshInstances(entt::registry &, std::span<const entt::entity>);
-void BuildMeshletsNow(entt::registry &, std::span<const entt::entity>);
-void BuildBoneMeshletsNow(entt::registry &, std::span<const entt::entity>);
-bool DrawsElementIndices(const entt::registry &, entt::entity);
+void RepointMeshInstances(state::Scene &, std::span<const state::Entity>);
+void BuildMeshletsNow(state::Scene &, std::span<const state::Entity>);
+void BuildBoneMeshletsNow(state::Scene &, std::span<const state::Entity>);
+bool DrawsElementIndices(const state::Scene &, state::Entity);
 bool DrawsStoredCorners(const Mesh &);
 bool NeedsElementIndices(const Mesh &, bool);
 void WriteElementIndices(GpuBuffers &, const Mesh &, MeshBuffers &);
-SyncResult SyncModelsBuffers(entt::registry &);
-bool SyncViewportRenderResources(entt::registry &, entt::entity);
-uint8_t InstanceStateBits(const entt::registry &, entt::entity);
+SyncResult SyncModelsBuffers(state::Scene &);
+bool SyncViewportRenderResources(state::Scene &, state::Entity);
+uint8_t InstanceStateBits(const state::Scene &, state::Entity);

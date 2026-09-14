@@ -1,9 +1,9 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 struct FrameState;
 
-void Interact(entt::registry &, entt::entity viewport, FrameState &Frame);
-void InteractOverlay(entt::registry &, entt::entity viewport, FrameState &Frame);
-void DrawOverlay(entt::registry &, entt::entity viewport, FrameState &Frame);
+void Interact(state::Scene &, state::Entity viewport, FrameState &Frame);
+void InteractOverlay(state::Scene &, state::Entity viewport, FrameState &Frame);
+void DrawOverlay(state::Scene &, state::Entity viewport, FrameState &Frame);

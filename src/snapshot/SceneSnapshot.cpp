@@ -1,7 +1,7 @@
 #include "snapshot/SceneSnapshot.h"
 #include "snapshot/SnapshotRoles.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <algorithm>
 #include <cassert>
@@ -16,37 +16,32 @@ void Append(std::vector<std::byte> &out, const T &value) {
 }
 } // namespace
 
-std::vector<std::byte> SnapshotSceneState(const entt::registry &r) {
+std::vector<std::byte> SnapshotSceneState(const state::Scene &r) {
     VerifyCoverage(r);
     const auto &table = SnapshotTable();
 
-    // Sort nonempty Persistent pools by type hash for history-independent output.
-    std::vector<std::pair<entt::id_type, const entt::sparse_set *>> pools;
-    for (auto [id, set] : r.storage()) {
-        if (!set.empty() && table.contains(id)) pools.emplace_back(id, &set);
-    }
-    std::ranges::sort(pools, {}, [](const auto &p) { return p.first; });
-
     std::vector<std::byte> out;
-    for (const auto [id, set] : pools) {
-        const auto &entry = table.at(id);
-        // Exclude tombstones and sort by integral entity ID for history-independent output.
-        std::vector<entt::entity> ents;
-        for (const auto e : *set) {
-            if (e != entt::tombstone && !(entry.SkipEntity && entry.SkipEntity(r, e))) ents.emplace_back(e);
+    // Storage already visits component slots in schema order.
+    for (auto [id, set] : r.storage()) {
+        const auto &entry = table[id];
+        if (set.empty() || !entry.Emplace) continue;
+        // Sort by integral entity ID for history-independent output.
+        std::vector<state::Entity> ents;
+        for (const auto e : set) {
+            if (!(entry.SkipEntity && entry.SkipEntity(r, e))) ents.emplace_back(e);
         }
         if (ents.empty()) continue;
 
-        std::ranges::sort(ents, {}, [](entt::entity e) { return entt::to_integral(e); });
+        std::ranges::sort(ents, {}, [](state::Entity e) { return state::Integral(e); });
 
         Append(out, id);
         Append(out, uint32_t(ents.size()));
         for (const auto e : ents) {
-            Append(out, entt::to_integral(e));
+            Append(out, state::Integral(e));
             switch (entry.How) {
                 case Encoding::Tag: break;
                 case Encoding::Bytes: {
-                    const auto *p = static_cast<const std::byte *>(set->value(e));
+                    const auto *p = static_cast<const std::byte *>(set.value(e));
                     out.insert(out.end(), p, p + entry.Size);
                     break;
                 }
@@ -54,7 +49,7 @@ std::vector<std::byte> SnapshotSceneState(const entt::registry &r) {
                     // Length-prefix variable-size values for sequential restoration.
                     const auto len_pos = out.size();
                     Append(out, uint32_t(0));
-                    entry.Serialize(set->value(e), out);
+                    entry.Serialize(set.value(e), out);
                     const auto len = uint32_t(out.size() - len_pos - sizeof(uint32_t));
                     std::memcpy(out.data() + len_pos, &len, sizeof(len));
                     break;
@@ -76,7 +71,7 @@ SnapshotDiff Compare(std::span<const std::byte> expected, std::span<const std::b
     return {true, expected.size()};
 }
 
-void RestoreSceneState(entt::registry &r, std::span<const std::byte> bytes) {
+void RestoreSceneState(state::Scene &r, std::span<const std::byte> bytes) {
     const auto &table = SnapshotTable();
     size_t pos = 0;
     const auto read = [&](auto &value) {
@@ -86,27 +81,27 @@ void RestoreSceneState(entt::registry &r, std::span<const std::byte> bytes) {
         return true;
     };
     while (pos < bytes.size()) {
-        entt::id_type hash;
+        state::TypeId hash;
         uint32_t count;
         if (!read(hash) || !read(count)) return;
-        const auto it = table.find(hash);
-        if (it == table.end()) return; // a section whose type isn't registered: corrupt or stale
+        if (hash >= table.size() || !table[hash].Emplace) return; // corrupt or stale schema
+        const auto &entry = table[hash];
         for (uint32_t i = 0; i < count; ++i) {
             uint32_t entity_bits;
             if (!read(entity_bits)) return;
-            const auto e = entt::entity{entity_bits};
+            const auto e = state::Entity{entity_bits};
             if (!r.valid(e)) {
-                [[maybe_unused]] const auto created = r.create(e); // recreate the exact handle (slot is free in a cleared registry)
+                [[maybe_unused]] const auto created = r.create(e); // recreate the exact handle (slot is free in a cleared scene)
                 assert(created == e);
             }
 
             std::span<const std::byte> value;
-            switch (it->second.How) {
+            switch (entry.How) {
                 case Encoding::Tag: break;
                 case Encoding::Bytes:
-                    if (pos + it->second.Size > bytes.size()) return;
-                    value = bytes.subspan(pos, it->second.Size);
-                    pos += it->second.Size;
+                    if (pos + entry.Size > bytes.size()) return;
+                    value = bytes.subspan(pos, entry.Size);
+                    pos += entry.Size;
                     break;
                 case Encoding::Serialized: {
                     uint32_t len;
@@ -116,7 +111,7 @@ void RestoreSceneState(entt::registry &r, std::span<const std::byte> bytes) {
                     break;
                 }
             }
-            it->second.Emplace(r, e, value);
+            entry.Emplace(r, e, value);
         }
     }
 }

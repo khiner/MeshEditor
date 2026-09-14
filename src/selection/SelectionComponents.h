@@ -5,7 +5,7 @@
 #include "selection/BoneSelection.h"
 #include "viewport/RenderView.h"
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <vector>
 
@@ -14,13 +14,13 @@ constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 struct MeshElementSelection {};
 
 struct ElementRange {
-    entt::entity MeshEntity;
+    state::Entity MeshEntity;
     uint32_t Offset, Count;
 };
 
 struct AdditiveBoxSelectBaseline {
-    std::vector<entt::entity> SelectedEntities;
-    std::vector<std::pair<entt::entity, BoneSelection>> BoneSelections;
+    std::vector<state::Entity> SelectedEntities;
+    std::vector<std::pair<state::Entity, BoneSelection>> BoneSelections;
     bool ElementSelectionCaptured{};
 };
 

@@ -8,47 +8,47 @@ namespace mtl {
 struct Context;
 } // namespace mtl
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 #include <expected>
 #include <filesystem>
 #include <vector>
 
 // Build the process-lifetime engine and return the viewport entity.
-entt::entity InitEngine(entt::registry &);
-void DeinitViewport(entt::registry &, entt::entity viewport);
+state::Entity InitEngine(state::Scene &);
+void DeinitViewport(state::Scene &, state::Entity viewport);
 
-void InitViewportMedia(entt::registry &);
-void DeinitViewportMedia(entt::registry &);
+void InitViewportMedia(state::Scene &);
+void DeinitViewportMedia(state::Scene &);
 
 // Submits a nonblocking render of the processed scene.
 // Call WaitForRender() before the ImGui frame samples the final image.
-void SubmitViewport(entt::registry &, entt::entity viewport);
+void SubmitViewport(state::Scene &, state::Entity viewport);
 
 // Reset all per-document viewport state to defaults and clear the scene.
-void SetupScene(entt::registry &, entt::entity viewport);
+void SetupScene(state::Scene &, state::Entity viewport);
 
-void AddDefaultSceneContent(entt::registry &);
-void ClearScene(entt::registry &, entt::entity viewport);
+void AddDefaultSceneContent(state::Scene &);
+void ClearScene(state::Scene &, state::Entity viewport);
 
 // Call after SubmitViewport, inside the viewport's Begin block.
-void DisplayViewport(entt::registry &, entt::entity viewport);
+void DisplayViewport(state::Scene &, state::Entity viewport);
 // Waits for a pending viewport render.
-void WaitForRender(entt::registry &);
+void WaitForRender(state::Scene &);
 
 // Resume on-screen display after a headless replay: render the current scene at the current ViewportExtent and present synchronously.
-void PresentViewport(entt::registry &, entt::entity viewport);
+void PresentViewport(state::Scene &, state::Entity viewport);
 
-bool ViewportImageReady(const entt::registry &);
+bool ViewportImageReady(const state::Scene &);
 
 // Starts H.264 recording through an `ffmpeg` subprocess.
 // A look-through camera records only the framed region inside the dimmed overlay.
 // Resizing or changing look-through state after capture begins stops recording.
 // `with_audio` also captures the master output and muxes it in when the recording stops.
-void StartRecording(entt::registry &, entt::entity viewport, const std::filesystem::path &, int fps, bool with_audio = false);
+void StartRecording(state::Scene &, state::Entity viewport, const std::filesystem::path &, int fps, bool with_audio = false);
 // Call after WaitForRender() so the source image is coherent.
-void CaptureRecordFrame(entt::registry &, entt::entity viewport);
-bool IsRecording(const entt::registry &, entt::entity viewport);
-uint64_t CapturedFrameCount(const entt::registry &, entt::entity viewport);
+void CaptureRecordFrame(state::Scene &, state::Entity viewport);
+bool IsRecording(const state::Scene &, state::Entity viewport);
+uint64_t CapturedFrameCount(const state::Scene &, state::Entity viewport);
 
 struct ViewportImageRgba8 {
     std::vector<std::byte> Pixels;
@@ -56,6 +56,6 @@ struct ViewportImageRgba8 {
 };
 // Requires WaitForRender() to complete before reading the source image.
 // Returns an error message on failure.
-std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(entt::registry &);
+std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(state::Scene &);
 
-std::string DebugBufferHeapUsage(const entt::registry &);
+std::string DebugBufferHeapUsage(const state::Scene &);

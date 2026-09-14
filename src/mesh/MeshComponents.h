@@ -2,10 +2,10 @@
 
 #include "Range.h"
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 struct RenderInstance {
-    entt::entity Entity;
+    state::Entity Entity;
     uint32_t BufferIndex{0};
     uint32_t ObjectId{0};
     uint32_t MeshletRangeCount{0};

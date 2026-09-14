@@ -37,7 +37,7 @@
 #include "viewport/ViewportOps.h"
 #include <imgui_internal.h>
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <algorithm>
 #include <ranges>
@@ -110,8 +110,8 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 }
 
 // Navigation actions are not recorded. During look-through, the first navigation input emits the recorded exit action.
-void EmitViewNav(const entt::registry &r, auto &&nav) {
-    if (LookThroughCameraEntity(r) != entt::null) action::Emit(action::view::ExitLookThroughCamera{});
+void EmitViewNav(const state::Scene &r, auto &&nav) {
+    if (LookThroughCameraEntity(r) != state::Null) action::Emit(action::view::ExitLookThroughCamera{});
     else action::Emit(std::forward<decltype(nav)>(nav));
 }
 
@@ -213,7 +213,7 @@ void DrawOverlayDropdownArrow(ImVec2 pos, ImVec2 size, const OverlayIconButtonSt
 
 } // namespace
 
-void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
+void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
     // Any open popup (e.g. Viewport shading dropdown) blocks viewport mouse/keyboard input.
     // Without this, wheel/click events still patch the camera while the popup overlays the viewport_rect.
     if (IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
@@ -234,7 +234,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     const auto active_entity = FindActiveEntity(r);
     const bool has_frozen_selected = r.view<Selected, ScaleLocked>().begin() != r.view<Selected, ScaleLocked>().end();
     const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
-        any_of(selection::GetSelectedMeshEntities(r), [&](entt::entity mesh_entity) { return selection::HasScaleLockedInstance(r, mesh_entity); });
+        any_of(selection::GetSelectedMeshEntities(r), [&](state::Entity mesh_entity) { return selection::HasScaleLockedInstance(r, mesh_entity); });
     const bool transform_shortcuts_enabled = !edit_transform_locked;
     const bool scale_shortcut_enabled = transform_shortcuts_enabled && !has_frozen_selected;
     // Route shortcuts globally while preserving ImGui ownership for active widgets, navigation, and text input.
@@ -262,7 +262,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
         const bool tab_no_mods = Shortcut(ImGuiKey_Tab);
         const bool tab_ctrl = Shortcut(ImGuiMod_Ctrl | ImGuiKey_Tab);
         if (tab_no_mods || tab_ctrl) {
-            const bool is_armature = FindArmatureObject(r, active_entity) != entt::null;
+            const bool is_armature = FindArmatureObject(r, active_entity) != state::Null;
             if (is_armature && tab_ctrl) {
                 action::Emit(action::view::SetInteractionMode{.Mode = interaction_mode == InteractionMode::Pose ? InteractionMode::Object : InteractionMode::Pose});
             } else if (is_armature) {
@@ -278,7 +278,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
         }
         if (Shortcut(ImGuiKey_A, VKey)) action::Emit(action::selection::SelectAll{});
         if (Shortcut(ImGuiMod_Alt | ImGuiKey_A, VKey)) action::Emit(action::selection::DeselectAll{});
-        const bool bone_edit = interaction_mode == InteractionMode::Edit && FindArmatureObject(r, active_entity) != entt::null;
+        const bool bone_edit = interaction_mode == InteractionMode::Edit && FindArmatureObject(r, active_entity) != state::Null;
         if (bone_edit) {
             if (Shortcut(ImGuiMod_Shift | ImGuiKey_A, VKey)) {
                 action::Emit(action::bone::Add{});
@@ -344,7 +344,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     const auto selection_view = r.ctx().get<const GpuBuffers>().FrameView;
     const auto edit_mode = r.get<const EditMode>(viewport).Value;
     const auto arm_obj_entity = FindArmatureObject(r, active_entity);
-    const bool active_is_armature = arm_obj_entity != entt::null;
+    const bool active_is_armature = arm_obj_entity != state::Null;
     const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
     if (r.get<const BoxSelectState>(viewport).Gesture == SelectionGesture::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -409,7 +409,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     }
 }
 
-void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
+void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame) {
     const profile::CpuScope scope{"ViewportOverlayUi"};
     const auto &icons = r.ctx().get<const ViewportIcons>();
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
@@ -432,7 +432,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
         const bool has_frozen_selected = r.view<Selected, ScaleLocked>().begin() != r.view<Selected, ScaleLocked>().end();
         const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
-            any_of(selection::GetSelectedMeshEntities(r), [&](entt::entity mesh_entity) { return selection::HasScaleLockedInstance(r, mesh_entity); });
+            any_of(selection::GetSelectedMeshEntities(r), [&](state::Entity mesh_entity) { return selection::HasScaleLockedInstance(r, mesh_entity); });
         const bool transform_enabled = !edit_transform_locked;
         const bool scale_enabled = transform_enabled && !has_frozen_selected;
 
@@ -748,15 +748,15 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const auto active_entity = FindActiveEntity(r);
     const auto arm_obj = FindArmatureObject(r, active_entity);
-    const bool bone_edit_mode = interaction_mode == InteractionMode::Edit && arm_obj != entt::null;
-    const bool bone_mode = bone_edit_mode || (interaction_mode == InteractionMode::Pose && arm_obj != entt::null);
+    const bool bone_edit_mode = interaction_mode == InteractionMode::Edit && arm_obj != state::Null;
+    const bool bone_mode = bone_edit_mode || (interaction_mode == InteractionMode::Pose && arm_obj != state::Null);
     const bool mesh_edit_mode = interaction_mode == InteractionMode::Edit && !bone_edit_mode;
 
     const auto has_transform_target = [&]() {
         if (bone_mode) return !bone_selected_view.empty();
         if (selected_view.empty()) return false;
         if (!mesh_edit_mode) return true;
-        for (const auto [e, instance] : r.view<const Instance, const Selected>(entt::exclude<ScaleLocked>).each()) {
+        for (const auto [e, instance] : r.view<const Instance, const Selected>(state::Exclude<ScaleLocked>).each()) {
             const auto *stats = GetElementSelectionSummary(r, instance.Entity, edit_mode);
             if (stats && stats->SelectedCount > 0) return true;
         }
@@ -766,7 +766,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         // Transform root selections around their average position using the active entity's rotation and scale.
         const auto gizmo_active_entity = bone_mode ? FindActiveBone(r) : active_entity;
         const auto active_transform = [&]() -> Transform {
-            if (gizmo_active_entity == entt::null) return {};
+            if (gizmo_active_entity == state::Null) return {};
             const auto &wt = r.get<WorldTransform>(gizmo_active_entity);
             return wt;
         }();
@@ -775,7 +775,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         const auto root_count = root_selected.size();
         const auto edit_transform_instances = mesh_edit_mode ?
             selection::ComputePrimaryEditInstances(r, false) :
-            std::unordered_map<entt::entity, entt::entity>{};
+            std::unordered_map<state::Entity, state::Entity>{};
 
         vec3 pivot{};
         if (mesh_edit_mode) {
@@ -820,7 +820,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
 
         const auto start_transform_view = r.view<const StartTransform>();
         const auto &gizmo_state = r.get<const TransformGizmoState>(viewport);
-        auto &gizmo = r.get<GizmoInteraction>(viewport);
+        auto &gizmo = r.edit<GizmoInteraction>(viewport);
         const auto gizmo_transform = GizmoTransform{{.P = pivot, .R = active_transform.R, .S = active_transform.S}, gizmo_state.Mode};
         const auto *start_screen = r.try_get<const StartScreenTransform>(viewport);
         const bool was_using = gizmo.IsUsing();
@@ -851,13 +851,13 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
     if (r.all_of<StartScreenTransform>(viewport)) action::Emit(action::view::ClearScreenTransformLatch{});
 }
 
-void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
+void DrawOverlay(state::Scene &r, state::Entity viewport, FrameState &frame) {
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
     const auto axes = colors::MakeAxes(r.get<const ViewportTheme>(viewport).AxisColors);
     const auto &camera = r.get<const ViewCamera>(viewport);
 
     OrientationGizmo::Render(axes);
-    TransformGizmo::Render(r.get<GizmoInteraction>(viewport), r.get<const TransformGizmoState>(viewport).Config.Type, camera, viewport_rect, axes);
+    TransformGizmo::Render(r.edit<GizmoInteraction>(viewport), r.get<const TransformGizmoState>(viewport).Config.Type, camera, viewport_rect, axes);
 
     const auto &settings = r.get<const ViewportDisplay>(viewport);
     if (settings.ShowOverlays && settings.ShowOrigins && (!r.storage<Selected>().empty() || !r.storage<Active>().empty())) {
@@ -875,7 +875,7 @@ void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
             dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
         };
         const auto origins = SortedEntities(
-            r.view<const WorldTransform>(entt::exclude<SubElementOf>) |
+            r.view<const WorldTransform>(state::Exclude<SubElementOf>) |
                 std::views::filter([&](auto e) { return r.any_of<Active, Selected>(e); }),
             std::ranges::greater{}
         );
@@ -907,7 +907,7 @@ void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
     }
 
     // Match the centered frame to the captured look-through region.
-    if (const auto look_through_entity = LookThroughCameraEntity(r); look_through_entity != entt::null && !camera.IsAnimating()) {
+    if (const auto look_through_entity = LookThroughCameraEntity(r); look_through_entity != state::Null && !camera.IsAnimating()) {
         if (const auto *cd = r.try_get<Camera>(look_through_entity)) {
             const float cam_aspect = AspectRatio(*cd);
             const auto frame_size = vec2{viewport_rect.size.y * cam_aspect, viewport_rect.size.y} * LookThroughFrameRatio(cam_aspect, viewport_rect.size.x / viewport_rect.size.y);

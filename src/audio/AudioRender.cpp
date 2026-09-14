@@ -5,12 +5,12 @@
 #include "mesh/MeshStore.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
+#include "state/Scene.h"
 #include "viewport/ViewCamera.h"
 #include <atomic>
 #include <cmath>
-#include <entt/entity/registry.hpp>
 namespace fs = std::filesystem;
-uint32_t DeviceSampleRate(const entt::registry &r) {
+uint32_t DeviceSampleRate(const state::Scene &r) {
     const auto *res = r.ctx().find<AudioDeviceResource>();
     if (res && res->SampleRate) return res->SampleRate;
     // AUDIO_SAMPLE_RATE overrides the 48 kHz default when no device provides a rate.
@@ -22,7 +22,7 @@ uint32_t DeviceSampleRate(const entt::registry &r) {
     return fallback;
 }
 
-const std::vector<float> &GetSampleFrames(const entt::registry &r, const fs::path &path) {
+const std::vector<float> &GetSampleFrames(const state::Scene &r, const fs::path &path) {
     static const std::vector<float> EmptyFrames{};
     const auto &samples = r.ctx().get<const AudioSamples>().ByPath;
     const auto it = samples.find(path);
@@ -30,7 +30,7 @@ const std::vector<float> &GetSampleFrames(const entt::registry &r, const fs::pat
 }
 // Returns the active SoundVertices index derived from the mesh entity's MeshActiveElement.
 // Returns zero when no active element is set.
-uint32_t GetActiveVertexIndex(const entt::registry &r, entt::entity instance_entity) {
+uint32_t GetActiveVertexIndex(const state::Scene &r, state::Entity instance_entity) {
     const auto &excitable = r.get<const SoundVertices>(instance_entity);
     const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
     if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
@@ -40,7 +40,7 @@ uint32_t GetActiveVertexIndex(const entt::registry &r, entt::entity instance_ent
 }
 
 // Returns the sample-store path assigned to the instance's active mesh vertex, if any.
-std::optional<fs::path> ActiveSamplePath(const entt::registry &r, entt::entity instance_entity) {
+std::optional<fs::path> ActiveSamplePath(const state::Scene &r, state::Entity instance_entity) {
     const auto *samples = r.try_get<const VertexSamples>(instance_entity);
     if (!samples) return std::nullopt;
     const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
@@ -51,7 +51,7 @@ std::optional<fs::path> ActiveSamplePath(const entt::registry &r, entt::entity i
 }
 
 // Updates listener attenuation using inverse distance beyond ListenerDistance and a constant level within it.
-void UpdateListenerGains(const entt::registry &r, ModalBank &b, entt::entity viewport) {
+void UpdateListenerGains(const state::Scene &r, ModalBank &b, state::Entity viewport) {
     const auto *camera = r.valid(viewport) ? r.try_get<const ViewCamera>(viewport) : nullptr;
     if (!camera) return;
     const auto listener_pos = camera->Position();
@@ -72,7 +72,7 @@ struct MasterCapture {
 
 } // namespace
 
-uint32_t BeginAudioCapture(entt::registry &r) {
+uint32_t BeginAudioCapture(state::Scene &r) {
     const auto *res = r.ctx().find<AudioDeviceResource>();
     const auto rate = res && res->SampleRate ? res->SampleRate : 0u;
     if (rate == 0) return 0;
@@ -83,15 +83,15 @@ uint32_t BeginAudioCapture(entt::registry &r) {
     return rate;
 }
 
-void EndAudioCapture(entt::registry &r) { r.ctx().erase<MasterCapture>(); }
+void EndAudioCapture(state::Scene &r) { r.ctx().erase<MasterCapture>(); }
 
-void RenderAudioOffline(entt::registry &r, entt::entity viewport, std::vector<float> &out, uint32_t frame_count) {
+void RenderAudioOffline(state::Scene &r, state::Entity viewport, std::vector<float> &out, uint32_t frame_count) {
     const auto first = out.size();
     out.resize(first + frame_count);
     ProcessAudio(r, viewport, out.data() + first, frame_count);
 }
 
-void DrainAudioCapture(entt::registry &r, std::vector<float> &out) {
+void DrainAudioCapture(state::Scene &r, std::vector<float> &out) {
     auto *capture = r.ctx().find<MasterCapture>();
     if (!capture || capture->Ring.empty()) return;
     const auto written = capture->Written.load(std::memory_order_acquire);
@@ -111,7 +111,7 @@ void DrainAudioCapture(entt::registry &r, std::vector<float> &out) {
 constexpr float FullScalePressure{20.f};
 
 // Uses instant attack and 100 ms release while preserving relative levels below the peak envelope.
-void MonitorFrames(entt::registry &r, std::span<float> frames, MonitorLimiter &limiter) {
+void MonitorFrames(state::Scene &r, std::span<float> frames, MonitorLimiter &limiter) {
     const float release = std::exp(-1.f / (0.1f * float(DeviceSampleRate(r))));
     auto envelope = limiter.Envelope;
     for (auto &frame : frames) {
@@ -122,7 +122,7 @@ void MonitorFrames(entt::registry &r, std::span<float> frames, MonitorLimiter &l
     limiter.Envelope = envelope;
 }
 
-void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint32_t frame_count, bool monitor) {
+void ProcessAudio(state::Scene &r, state::Entity viewport, float *output, uint32_t frame_count, bool monitor) {
     std::fill_n(output, frame_count, 0.f);
     auto &m = r.ctx().get<ModalAudio>();
     // The mix is pressure at the view camera.
@@ -136,7 +136,7 @@ void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint3
     const float sample_gain = (controls ? controls->SampleGain : ModalSoundControls{}.SampleGain) * FullScalePressure;
     for (const auto [entity, model] : r.view<SoundVerticesModel>().each()) {
         if (model == SoundVerticesModel::Samples) {
-            auto *samples = r.try_get<SamplePlayback>(entity);
+            auto *samples = r.try_edit<SamplePlayback>(entity);
             if (!samples || samples->Stopped) continue;
             const auto path = ActiveSamplePath(r, entity);
             if (!path) continue;
@@ -145,7 +145,7 @@ void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint3
                 output[i] += (samples->Frame < impact_samples.size() ? impact_samples[samples->Frame++] : 0.0f) * sample_gain;
             }
         } else if (model == SoundVerticesModel::Modal) {
-            if (auto *recording = r.try_get<Recording>(entity)) {
+            if (auto *recording = r.try_edit<Recording>(entity)) {
                 for (uint32_t i = 0; i < frame_count && !recording->Complete(); ++i) recording->Record(output[i]);
             }
         }

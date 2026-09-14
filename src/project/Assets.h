@@ -1,6 +1,6 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <expected>
 #include <filesystem>
@@ -19,6 +19,6 @@ struct Assets {
 };
 
 // Resolve project asset references and return other paths unchanged.
-std::filesystem::path ResolveAsset(const entt::registry &, const std::filesystem::path &);
-std::filesystem::path AssetReference(const entt::registry &, const std::filesystem::path &);
+std::filesystem::path ResolveAsset(const state::Scene &, const std::filesystem::path &);
+std::filesystem::path AssetReference(const state::Scene &, const std::filesystem::path &);
 } // namespace project

@@ -3,7 +3,7 @@
 #include "File.h"
 #include "project/store/Hash.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -54,11 +54,11 @@ std::expected<fs::path, std::string> Assets::Store(const fs::path &source) {
     return Store(source.filename().string(), {static_cast<const std::byte *>(mapped), size_t(info.st_size)});
 }
 
-fs::path ResolveAsset(const entt::registry &r, const fs::path &path) {
+fs::path ResolveAsset(const state::Scene &r, const fs::path &path) {
     return Assets::IsReference(path) ? r.ctx().get<const Assets>().Resolve(path) : path;
 }
 
-fs::path AssetReference(const entt::registry &r, const fs::path &path) {
+fs::path AssetReference(const state::Scene &r, const fs::path &path) {
     const auto *assets = r.ctx().find<const Assets>();
     return assets ? assets->Reference(path) : path;
 }

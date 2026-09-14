@@ -3,9 +3,9 @@
 #include "Paths.h"
 #include "render/SvgResource.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
-void LoadViewportIcons(entt::registry &r) {
+void LoadViewportIcons(state::Scene &r) {
     const auto dir = Paths::Res() / "svg";
     const auto &ctx = r.ctx().get<const mtl::Context>();
     r.ctx().emplace<ViewportIcons>(

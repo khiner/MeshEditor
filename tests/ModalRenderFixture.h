@@ -54,7 +54,7 @@ struct ModalScene {
         ModalBank next;
         next.SampleRate = sample_rate;
         for (uint32_t o = 0; o < object_count; ++o) {
-            Objects.push_back(AddModalObject(next, entt::entity{o}, modes));
+            Objects.push_back(AddModalObject(next, state::Entity{o}, modes));
             TuneModalObject(next, Objects.back(), modes.Freqs, modes.T60s);
             next.OutGain[Objects.back()] = 1.f;
             next.RigidInvMass[Objects.back()] = rigid_inv_mass;

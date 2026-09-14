@@ -8,7 +8,6 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "object/PendingSync.h"
-#include "project/Registry.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/MeshBuffers.h"
@@ -20,23 +19,23 @@
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
+#include "state/Scene.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportRenderGpu.h"
-#include <entt/entity/registry.hpp>
 #include <numeric>
 #include <print>
 using namespace he;
-uint8_t InstanceStateBits(const entt::registry &r, entt::entity e) {
+uint8_t InstanceStateBits(const state::Scene &r, state::Entity e) {
     return (r.all_of<Selected>(e) ? ElementStateSelected : 0) | (r.all_of<Active>(e) ? ElementStateActive : 0);
 }
 
-static void UpdateMeshletInstance(entt::registry &r, entt::entity instance_entity) {
+static void UpdateMeshletInstance(state::Scene &r, state::Entity instance_entity) {
     auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &instance = r.get<RenderInstance>(instance_entity);
+    auto &instance = r.edit<RenderInstance>(instance_entity);
     buffers.MeshletRangeCount -= instance.MeshletRangeCount;
     buffers.MeshletInstanceCount -= instance.MeshletCount;
     const auto *mesh_buffers = r.valid(instance.Entity) ? r.try_get<const MeshBuffers>(instance.Entity) : nullptr;
@@ -47,22 +46,22 @@ static void UpdateMeshletInstance(entt::registry &r, entt::entity instance_entit
 }
 
 // Assign placed primitives to instances while preserving mesh and instance iteration order.
-void RepointMeshInstances(entt::registry &r, std::span<const entt::entity> mesh_entities) {
+void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     if (mesh_entities.empty()) return;
     auto &buffers = r.ctx().get<GpuBuffers>();
-    std::vector<std::pair<entt::entity, uint32_t>> batch;
+    std::vector<std::pair<state::Entity, uint32_t>> batch;
     batch.reserve(mesh_entities.size());
     for (uint32_t i = 0; i < mesh_entities.size(); ++i) batch.emplace_back(mesh_entities[i], i);
     std::ranges::sort(batch);
 
-    std::vector<std::pair<uint32_t, entt::entity>> grouped;
+    std::vector<std::pair<uint32_t, state::Entity>> grouped;
     for (const auto [instance_entity, ri] : r.view<const RenderInstance>().each()) {
         if (ri.BufferIndex == UINT32_MAX) continue;
-        const auto it = std::ranges::lower_bound(batch, ri.Entity, {}, &std::pair<entt::entity, uint32_t>::first);
+        const auto it = std::ranges::lower_bound(batch, ri.Entity, {}, &std::pair<state::Entity, uint32_t>::first);
         if (it == batch.end() || it->first != ri.Entity) continue;
         grouped.emplace_back(it->second, instance_entity);
     }
-    std::ranges::stable_sort(grouped, {}, &std::pair<uint32_t, entt::entity>::first);
+    std::ranges::stable_sort(grouped, {}, &std::pair<uint32_t, state::Entity>::first);
 
     for (const auto [mesh_index, instance_entity] : grouped) {
         const auto &mesh_buffers = r.get<const MeshBuffers>(mesh_entities[mesh_index]);
@@ -75,7 +74,7 @@ void RepointMeshInstances(entt::registry &r, std::span<const entt::entity> mesh_
 }
 
 // Build and place meshlet LOD data in input order to preserve deterministic arena and instance layouts.
-void BuildMeshletsNow(entt::registry &r, std::span<const entt::entity> mesh_entities) {
+void BuildMeshletsNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     if (mesh_entities.empty()) return;
     for (auto e : mesh_entities) ReleaseMeshEditWork(r, e);
     const profile::CpuScope scope{"BuildMeshlets"};
@@ -97,7 +96,7 @@ void BuildMeshletsNow(entt::registry &r, std::span<const entt::entity> mesh_enti
         lods[i] = BuildMeshletClusterLod(inputs[i], builds[i]);
     });
     for (uint32_t i = 0; i < count; ++i) {
-        auto &mb = r.get<MeshBuffers>(mesh_entities[i]);
+        auto &mb = r.edit<MeshBuffers>(mesh_entities[i]);
         CommitMeshlets(buffers, mb, builds[i]);
         CommitClusterLod(buffers, mb, lods[i]);
     }
@@ -140,11 +139,11 @@ void BuildMeshletsNow(entt::registry &r, std::span<const entt::entity> mesh_enti
 }
 
 // Populate standard meshlet geometry so procedural bone shaders share bounds, culling, routing, and indirect dispatch.
-void BuildBoneMeshletsNow(entt::registry &r, std::span<const entt::entity> entities) {
+void BuildBoneMeshletsNow(state::Scene &r, std::span<const state::Entity> entities) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     const auto &meshes = r.ctx().get<const MeshStore>();
     for (const auto entity : entities) {
-        auto &mb = r.get<MeshBuffers>(entity);
+        auto &mb = r.edit<MeshBuffers>(entity);
         if (mb.FaceIndices.Count == 0u) continue;
         const auto indices = buffers.FaceIndexBuffer.Get(mb.FaceIndices);
         const auto vertices = meshes.GetVertices(r.get<const VertexStoreId>(entity).StoreId);
@@ -180,7 +179,7 @@ void BuildBoneMeshletsNow(entt::registry &r, std::span<const entt::entity> entit
 
 // Allocate edge and vertex indices on demand for overlays, wireframe shading, and non-triangle meshes.
 // Vertex normal indicators require incident edge indices to determine their length.
-bool DrawsElementIndices(const entt::registry &r, entt::entity viewport) {
+bool DrawsElementIndices(const state::Scene &r, state::Entity viewport) {
     const auto mode = r.get<const Interaction>(viewport).Mode;
     const auto &display = r.get<const ViewportDisplay>(viewport);
     return display.ViewportShading == ViewportShadingMode::Wireframe ||
@@ -213,9 +212,9 @@ void WriteElementIndices(GpuBuffers &buffers, const Mesh &mesh, MeshBuffers &mb)
     }
 }
 
-SyncResult SyncModelsBuffers(entt::registry &r) {
+SyncResult SyncModelsBuffers(state::Scene &r) {
     auto &buffers = r.ctx().get<GpuBuffers>();
-    std::vector<entt::entity> new_mesh_entities, new_extras_entities;
+    std::vector<state::Entity> new_mesh_entities, new_extras_entities;
     for (auto e : reactive<changes::NewBufferEntity>(r)) {
         if (!r.valid(e) || !r.all_of<MeshBuffers>(e)) continue;
         if (HasMesh(r, e)) new_mesh_entities.emplace_back(e);
@@ -227,7 +226,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
         // Erase in descending order to keep remaining batch indices stable.
         auto &indices = pending.BufferIndices;
         std::sort(indices.begin(), indices.end(), std::greater<>());
-        auto &mb = r.get<ModelsBuffer>(buffer_entity);
+        auto &mb = r.edit<ModelsBuffer>(buffer_entity);
         for (const auto global_idx : indices) {
             buffers.Instances.CompactErase(global_idx, mb.InstanceRange.Offset + mb.InstanceCount);
             --mb.InstanceCount;
@@ -241,12 +240,12 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
             }
             if (shift > 0) ri.BufferIndex -= shift;
         }
-        project::Remove<PendingHide>(r, buffer_entity);
+        r.remove<PendingHide>(buffer_entity);
     }
 
     // Return inserted instances so callers can write WorldTransform before submission.
-    std::vector<entt::entity> newly_inserted;
-    std::unordered_map<entt::entity, std::vector<entt::entity>> shows_by_buffer;
+    std::vector<state::Entity> newly_inserted;
+    std::unordered_map<state::Entity, std::vector<state::Entity>> shows_by_buffer;
     for (auto entity : reactive<changes::RenderInstanceCreated>(r)) {
         if (!r.valid(entity) || !r.all_of<RenderInstance>(entity)) continue;
 
@@ -266,9 +265,9 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
         const uint32_t n = entities.size();
         // Defer ModelsBuffer creation until its initial capacity is known.
         if (!r.all_of<ModelsBuffer>(buffer_entity)) {
-            project::Emplace<ModelsBuffer>(r, buffer_entity, ModelsBuffer{buffers.Instances.Allocate(n), 0});
+            r.emplace<ModelsBuffer>(buffer_entity, ModelsBuffer{buffers.Instances.Allocate(n), 0});
         }
-        auto &mb = r.get<ModelsBuffer>(buffer_entity);
+        auto &mb = r.edit<ModelsBuffer>(buffer_entity);
         const auto new_total = mb.InstanceCount + n;
         if (new_total > mb.InstanceRange.Count) {
             auto old_range = mb.InstanceRange;
@@ -289,7 +288,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
         const auto *mesh_buffers = r.try_get<const MeshBuffers>(buffer_entity);
         for (uint32_t j = 0; j < n; ++j) {
             const auto instance_entity = entities[j];
-            auto &render_instance = r.get<RenderInstance>(instance_entity);
+            auto &render_instance = r.edit<RenderInstance>(instance_entity);
             render_instance.BufferIndex = base_index + j;
             object_ids[j] = render_instance.ObjectId;
             states[j] = InstanceStateBits(r, instance_entity);
@@ -314,7 +313,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
 }
 
 // Resize viewport GPU resources and return whether their extent changed.
-bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
+bool SyncViewportRenderResources(state::Scene &r, state::Entity viewport) {
     auto &pipelines = r.ctx().get<Pipelines>();
     const auto render_extent_px = RenderExtentPx(r);
     const auto render_extent = std::bit_cast<mtl::Extent2D>(render_extent_px);

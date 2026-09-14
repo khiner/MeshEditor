@@ -5,7 +5,7 @@
 #include "viewport/ViewCameraSerialize.h"
 #include "viewport/ViewportDisplay.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 #include <imgui_internal.h>
 #include <zpp_bits.h>
 
@@ -72,7 +72,7 @@ std::vector<WindowState> CaptureWindows(const WindowsState &windows) {
 }
 } // namespace
 
-State Capture(const entt::registry &r, entt::entity viewport, const WindowsState &windows) {
+State Capture(const state::Scene &r, state::Entity viewport, const WindowsState &windows) {
     size_t ini_size = 0;
     const char *ini = ImGui::GetCurrentContext() && windows.PendingIni.empty() ? ImGui::SaveIniSettingsToMemory(&ini_size) : nullptr;
     return {
@@ -85,7 +85,7 @@ State Capture(const entt::registry &r, entt::entity viewport, const WindowsState
     };
 }
 
-void Apply(entt::registry &r, entt::entity viewport, WindowsState &windows, const State &state) {
+void Apply(state::Scene &r, state::Entity viewport, WindowsState &windows, const State &state) {
     r.ctx().get<ViewportExtent>().Value = state.ViewportExtent;
     SetViewCameraState(r, viewport, state.ViewCamera);
     SetWindowVisibility(windows, state.Windows);

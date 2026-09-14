@@ -3,7 +3,7 @@
 #include "gpu/Transform.h"
 #include "numeric/mat3.h"
 
-#include "entt_fwd.h"
+#include "state/Entity.h"
 
 namespace TransformGizmo {
 enum class Mode : uint8_t {
@@ -47,5 +47,5 @@ struct Config {
 };
 
 // Available to headless callers without including imgui.
-bool IsUsing(const entt::registry &, entt::entity viewport);
+bool IsUsing(const state::Scene &, state::Entity viewport);
 } // namespace TransformGizmo

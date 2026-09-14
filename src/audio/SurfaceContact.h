@@ -1,6 +1,6 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <cstdint>
 #include <memory>
@@ -47,10 +47,10 @@ uint32_t SurfaceActiveVoices(const ModalAudio &);
 
 // Releases state that references the replaced bank.
 void SurfaceInstallBank(ModalAudio &);
-void RegisterSurfaceContactHandlers(entt::registry &);
+void RegisterSurfaceContactHandlers(state::Scene &);
 // Recomputes edited surface state and publishes the current contacts.
-void SurfaceUpdateContacts(entt::registry &);
+void SurfaceUpdateContacts(state::Scene &);
 // Returns combined RMS asperity height in meters, or zero without the model.
-float SurfaceRoughnessOf(const entt::registry &, entt::entity node);
+float SurfaceRoughnessOf(const state::Scene &, state::Entity node);
 // Returns the collider or nearest ancestor with an acoustic surface, otherwise the body.
-entt::entity ContactSurfaceNode(const entt::registry &, entt::entity collider, entt::entity body);
+state::Entity ContactSurfaceNode(const state::Scene &, state::Entity collider, state::Entity body);

@@ -1,3 +1,3 @@
 #pragma once
-#include "entt_fwd.h"
-void RegisterAudioStoreHandlers(entt::registry &);
+#include "state/Entity.h"
+void RegisterAudioStoreHandlers(state::Scene &);

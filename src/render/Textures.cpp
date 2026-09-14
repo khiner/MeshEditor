@@ -14,8 +14,8 @@
 #include "render/MaterialImport.h"
 #include "render/TextureRefs.h"
 
+#include "state/Scene.h"
 #include <basisu_transcoder.h>
-#include <entt/entity/registry.hpp>
 
 #include <algorithm>
 #include <array>
@@ -244,7 +244,7 @@ void ReleaseCubeSamplerSlot(mtl::BindlessSet &slots, uint32_t sampler_slot) {
     slots.Release({SlotType::CubeSampler, sampler_slot});
 }
 
-void ResetImportedEnvironment(entt::registry &r) {
+void ResetImportedEnvironment(state::Scene &r) {
     auto &env = r.ctx().get<EnvironmentStore>();
     if (env.ImportedSceneWorld) {
         auto &slots = r.ctx().get<mtl::BindlessSet>();
@@ -335,7 +335,7 @@ std::pair<uint32_t, uint32_t> AllocateIblCubeSlots(mtl::BindlessSet &slots) {
 }
 
 std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
-    const entt::registry &r, mtl::BindlessSet &slots,
+    const state::Scene &r, mtl::BindlessSet &slots,
     const PendingEnvironmentImport &pending, const std::vector<gltf::Image> &images
 ) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
@@ -552,7 +552,7 @@ std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(const mt
 }
 
 std::expected<TextureEntry, std::string> MaterializeTextureEntry(
-    const entt::registry &r,
+    const state::Scene &r,
     TextureUploadBatch &batch, mtl::BindlessSet &slots,
     const PendingTextureUpload &item, const std::vector<gltf::Image> &gltf_images, float max_anisotropy
 ) {
@@ -640,7 +640,7 @@ TextureEntry CreateDefaultLutTexture(const mtl::Context &ctx, TextureUploadBatch
     return std::move(*texture);
 }
 
-std::vector<TextureRef> GetTextureRefs(entt::registry &r) {
+std::vector<TextureRef> GetTextureRefs(state::Scene &r) {
     const auto &store = r.ctx().get<TextureStore>();
     std::vector<TextureRef> refs;
     refs.reserve(store.Textures.size());
@@ -648,7 +648,7 @@ std::vector<TextureRef> GetTextureRefs(entt::registry &r) {
     return refs;
 }
 
-HdriRefs GetHdriRefs(entt::registry &r) {
+HdriRefs GetHdriRefs(state::Scene &r) {
     const auto &environments = r.ctx().get<EnvironmentStore>();
     HdriRefs refs;
     refs.ActiveIndex = environments.ActiveHdriIndex;
@@ -657,7 +657,7 @@ HdriRefs GetHdriRefs(entt::registry &r) {
     return refs;
 }
 
-void ReleaseImportedTextures(entt::registry &r) {
+void ReleaseImportedTextures(state::Scene &r) {
     auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &textures = r.ctx().get<TextureStore>();
     // Index 0 is the default white texture (permanent); imported textures start at index 1.
@@ -668,7 +668,7 @@ void ReleaseImportedTextures(entt::registry &r) {
     textures.WhiteTextureSlot = textures.Textures.empty() ? InvalidSlot : textures.Textures.front().SamplerSlot;
 }
 
-void ResetImportedTexturesAndMaterials(entt::registry &r) {
+void ResetImportedTexturesAndMaterials(state::Scene &r) {
     ReleaseImportedTextures(r);
     auto &buffers = r.ctx().get<GpuBuffers>();
     if (buffers.Materials.Count() > 1) buffers.Materials.SetCount(1u);

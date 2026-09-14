@@ -1,13 +1,13 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <span>
 #include <vector>
 
 namespace snapshot {
-// A deterministic byte image of the registry's Persistent components (see snapshot/SnapshotRoles.cpp).
-std::vector<std::byte> SnapshotSceneState(const entt::registry &);
+// A deterministic byte image of the scene's Persistent components (see snapshot/SnapshotRoles.cpp).
+std::vector<std::byte> SnapshotSceneState(const state::Scene &);
 
 struct SnapshotDiff {
     bool Equal;
@@ -16,5 +16,5 @@ struct SnapshotDiff {
 SnapshotDiff Compare(std::span<const std::byte> expected, std::span<const std::byte> actual);
 
 // Restore persistent components from a SnapshotSceneState blob.
-void RestoreSceneState(entt::registry &, std::span<const std::byte>);
+void RestoreSceneState(state::Scene &, std::span<const std::byte>);
 } // namespace snapshot

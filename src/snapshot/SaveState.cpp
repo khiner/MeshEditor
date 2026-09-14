@@ -1,4 +1,5 @@
 #include "snapshot/SaveState.h"
+#include "state/Allocation.h"
 
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
@@ -6,38 +7,34 @@
 #include "render/MaterialComponents.h"
 #include "snapshot/SceneSnapshot.h"
 
-#include <entt/entity/registry.hpp>
-#include <entt/entity/snapshot.hpp>
+#include "state/Scene.h"
 #include <zpp_bits.h>
 
 namespace snapshot {
 namespace {
-// EnTT preserves packed entity order, the live/free boundary, and generations of reusable slots.
-std::vector<std::byte> SerializeEntities(const entt::registry &r) {
+// Persist generations and free-list order for deterministic subsequent allocations.
+std::vector<std::byte> SerializeEntities(const state::Scene &r) {
     std::vector<std::byte> bytes;
-    zpp::bits::out out{bytes};
-    auto archive = [&](auto value) { out(value).or_throw(); };
-    entt::snapshot{r}.get<entt::entity>(archive);
-    bytes.resize(out.position());
+    const auto &allocation = r.AllocationState();
+    zpp::bits::out{bytes}(allocation.Generations.View(), allocation.Free.View()).or_throw();
     return bytes;
 }
 
 // Persist the canonical GPU material array and parallel names because SourceAssets cannot reconstruct them.
-std::vector<std::byte> SerializeMaterials(const entt::registry &r) {
+std::vector<std::byte> SerializeMaterials(const state::Scene &r) {
     const auto &materials = r.ctx().get<const GpuBuffers>().Materials;
     const auto mapped = materials.Contents();
     const auto used = std::min(size_t(materials.UsedSize), mapped.size());
-    std::vector<std::byte> material_bytes{mapped.begin(), mapped.begin() + used};
-    auto names = r.ctx().get<const MaterialStore>().Names;
+    const auto &names = r.ctx().get<const MaterialStore>().Names;
 
     std::vector<std::byte> out;
     zpp::bits::out archive{out};
-    if (zpp::bits::failure(archive(material_bytes, names))) return {};
+    if (zpp::bits::failure(archive(mapped.first(used), names))) return {};
     out.resize(archive.position());
     return out;
 }
 
-void DeserializeMaterials(entt::registry &r, std::span<const std::byte> bytes) {
+void DeserializeMaterials(state::Scene &r, std::span<const std::byte> bytes) {
     std::vector<std::byte> material_bytes;
     std::vector<std::string> names;
     zpp::bits::in archive{bytes};
@@ -69,7 +66,7 @@ std::span<const std::byte> TakeLengthPrefixed(std::span<const std::byte> &bytes)
 }
 } // namespace
 
-std::vector<std::byte> SaveState(const entt::registry &r) {
+std::vector<std::byte> SaveState(const state::Scene &r) {
     const auto entities = SerializeEntities(r);
     const auto scene = SnapshotSceneState(r);
     const auto materials = SerializeMaterials(r);
@@ -84,16 +81,18 @@ std::vector<std::byte> SaveState(const entt::registry &r) {
     return out;
 }
 
-void LoadState(entt::registry &r, std::span<const std::byte> bytes) {
+void LoadState(state::Scene &r, std::span<const std::byte> bytes) {
     const auto entities = TakeLengthPrefixed(bytes);
     const auto scene = TakeLengthPrefixed(bytes);
     const auto materials = TakeLengthPrefixed(bytes);
 
     {
-        r.storage<entt::entity>().clear();
-        zpp::bits::in in{entities};
-        auto archive = [&](auto &value) { in(value).or_throw(); };
-        entt::snapshot_loader{r}.get<entt::entity>(archive);
+        std::vector<uint32_t> table, free;
+        zpp::bits::in{entities}(table, free).or_throw();
+        r.ResetEntities();
+        for (auto v : table) r.AllocationState().Generations.PushBack(v);
+        for (auto v : free) r.AllocationState().Free.PushBack(v);
+        r.RebuildLiving();
     }
 
     // Restore MeshStore offsets before components that reference them.

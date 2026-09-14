@@ -40,7 +40,7 @@ extern std::function<void()> GestureCancel;
 inline bool CompositeGestureOpen{false};
 
 struct FieldGesture {
-    entt::registry &R;
+    state::Scene &R;
     std::span<const std::byte> Original;
     bool Selection, DeltaCapable;
 
@@ -149,8 +149,8 @@ struct UpdateFields {};
 
 template<bool HasEntity, typename Policy = UpdateFields, auto... Prefix>
 struct Edit {
-    entt::registry &R;
-    [[no_unique_address]] std::conditional_t<HasEntity, entt::entity, std::monostate> E{};
+    state::Scene &R;
+    [[no_unique_address]] std::conditional_t<HasEntity, state::Entity, std::monostate> E{};
     [[no_unique_address]] Policy Write{};
 
     // Return an editor with additional nested field members.
@@ -159,13 +159,13 @@ struct Edit {
         return {R, E, Write};
     }
 
-    entt::entity ReadFrom() const {
+    state::Entity ReadFrom() const {
         if constexpr (HasEntity) return E;
         else return FindActiveEntity(R);
     }
 
     template<typename T, typename Reg>
-    const T &GetConst(Reg &r, entt::entity e) { return r.template get<const T>(e); }
+    const T &GetConst(Reg &r, state::Entity e) { return r.template get<const T>(e); }
 
     // Run a widget and group its staged values into one committed action or one cancellation.
     template<auto... Ms, typename Widget>
@@ -318,9 +318,9 @@ struct Edit {
     }
 };
 
-Edit(entt::registry &) -> Edit<false>;
-Edit(entt::registry &, entt::entity) -> Edit<true>;
+Edit(state::Scene &) -> Edit<false>;
+Edit(state::Scene &, state::Entity) -> Edit<true>;
 template<typename Component>
-Edit(entt::registry &, entt::entity, Patch<Component>) -> Edit<true, Patch<Component>>;
+Edit(state::Scene &, state::Entity, Patch<Component>) -> Edit<true, Patch<Component>>;
 
 } // namespace ui

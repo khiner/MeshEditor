@@ -4,14 +4,14 @@
 #include "render/GpuBuffers.h"
 #include "render/Pipelines.h"
 #include "render/Textures.h"
+#include "state/Scene.h"
 #include "viewport/FrameState.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportDisplay.h"
 #include <Metal/MTLCommandQueue.hpp>
-#include <entt/entity/registry.hpp>
 // Dispatch sizes follow scene recording because the rebuild determines their counts.
-void SubmitRecordedFrame(entt::registry &r, MTL::CommandBuffer *command_buffer) {
+void SubmitRecordedFrame(state::Scene &r, MTL::CommandBuffer *command_buffer) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     SyncPreludeDispatchArgs(buffers);
@@ -24,7 +24,7 @@ void SubmitRecordedFrame(entt::registry &r, MTL::CommandBuffer *command_buffer) 
     r.ctx().get<FrameState>().RenderPending = true;
 }
 
-void RecordAndSubmitFrame(entt::registry &r, entt::entity viewport, SceneUpdate update, RenderPhase phase) {
+void RecordAndSubmitFrame(state::Scene &r, state::Entity viewport, SceneUpdate update, RenderPhase phase) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &resources = r.ctx().get<ViewportRenderResources>();
     auto *command_buffer = ctx.Queue->commandBuffer();
@@ -33,12 +33,12 @@ void RecordAndSubmitFrame(entt::registry &r, entt::entity viewport, SceneUpdate 
     SubmitRecordedFrame(r, command_buffer);
 }
 
-bool ViewportImageReady(const entt::registry &r) {
+bool ViewportImageReady(const state::Scene &r) {
     const auto extent = r.ctx().get<const Pipelines>().BuiltColorExtent();
     return extent.Width != 0 && extent.Height != 0;
 }
 
-void SetStudioEnvironment(entt::registry &r, uint32_t index) {
+void SetStudioEnvironment(state::Scene &r, uint32_t index) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
     auto &slots = r.ctx().get<mtl::BindlessSet>();
@@ -52,7 +52,7 @@ void SetStudioEnvironment(entt::registry &r, uint32_t index) {
     environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
 }
 
-void RebuildStudioEnvironments(entt::registry &r) {
+void RebuildStudioEnvironments(state::Scene &r) {
     auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &environments = r.ctx().get<EnvironmentStore>();
     if (environments.Hdris.empty()) return; // No studio environment to index into.
@@ -68,13 +68,13 @@ void RebuildStudioEnvironments(entt::registry &r) {
     SetStudioEnvironment(r, environments.ActiveHdriIndex);
 }
 
-void SetStudioEnvironment(entt::registry &r, std::string_view name) {
+void SetStudioEnvironment(state::Scene &r, std::string_view name) {
     const auto &hdris = r.ctx().get<const EnvironmentStore>().Hdris;
     const auto it = std::ranges::find(hdris, name, &HdriEntry::Name);
     SetStudioEnvironment(r, it != hdris.end() ? uint32_t(std::distance(hdris.begin(), it)) : 0u);
 }
 
-void WaitForRender(entt::registry &r) {
+void WaitForRender(state::Scene &r) {
     auto &frame = r.ctx().get<FrameState>();
     if (!frame.RenderPending) return;
 

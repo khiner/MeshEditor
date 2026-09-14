@@ -28,6 +28,7 @@
 #include "render/MaterialImport.h"
 #include "render/MeshBuffers.h"
 #include "render/Textures.h"
+#include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionComponents.h"
 #include "viewport/FrameState.h"
@@ -77,7 +78,7 @@ template<typename A> bool Is(const action::Action &a) {
 std::string Label(const action::Action &a) {
     return std::visit([](const auto &domain) {
         return std::visit([]<typename A>(const A &) {
-            const auto name = entt::type_name<A>::value();
+            const auto name = state::TypeName<A>();
             const auto base = name.substr(0, name.find('<'));
             return std::string{base.substr(base.rfind("::") + 2)};
         },
@@ -86,7 +87,7 @@ std::string Label(const action::Action &a) {
                       a);
 }
 } // namespace
-Project::Project(entt::registry &r) : Entities(r, History, snapshot::SnapshotTable()), R(r) {
+Project::Project(state::Scene &r) : Entities(r, History, snapshot::SnapshotTable()), R(r) {
     R.ctx().emplace<Project *>(this);
     R.ctx().emplace<Assets>();
 }
@@ -96,13 +97,13 @@ Project::~Project() {
     R.ctx().erase<Assets>();
 }
 
-void Project::TrackStores(entt::entity viewport) {
+void Project::TrackStores(state::Entity viewport) {
     Viewport = viewport;
     auto &meshes = R.ctx().get<MeshStore>();
     meshes.Track(History);
     R.ctx().get<GpuBuffers>().Materials.Track(History, "material.values");
     R.ctx().get<MaterialStore>().Track(History);
-    History.SchemaRevision = 6;
+    History.SchemaRevision = 7;
     History.Callbacks = {
         .Replay = [this](const std::vector<std::byte> &bytes) {
             std::vector<Command> commands;
@@ -115,23 +116,23 @@ void Project::TrackStores(entt::entity viewport) {
                 frame.DisplayFramebufferScale = inputs.DisplayFramebufferScale;
                 // Replay commands with their recorded camera view.
                 if (static_cast<const CameraView &>(R.get<const ViewCamera>(Viewport)) != inputs.View) {
-                    Patch<ViewCamera>(R, Viewport, [&](auto &v) {
+                    R.patch<ViewCamera>(Viewport, [&](auto &v) {
                         static_cast<CameraView &>(v) = inputs.View;
                         v.StopMoving();
                     });
                 }
                 // Restore playback changes between recorded commands.
                 if (R.get<const TimelinePlayback>(Viewport).CurrentFrame != inputs.CurrentFrame) {
-                    Patch<TimelinePlayback>(R, Viewport, [&](auto &p) { p.CurrentFrame = inputs.CurrentFrame; });
-                    R.get<PlaybackFrame>(Viewport).Value = float(inputs.CurrentFrame);
+                    R.patch<TimelinePlayback>(Viewport, [&](auto &p) { p.CurrentFrame = inputs.CurrentFrame; });
+                    R.edit<PlaybackFrame>(Viewport).Value = float(inputs.CurrentFrame);
                     Settle(EventPass::Settle);
                 }
-                R.get<PlaybackFrame>(Viewport).Value = inputs.PlaybackFrame;
+                R.edit<PlaybackFrame>(Viewport).Value = inputs.PlaybackFrame;
                 frame.DeltaTime = inputs.DeltaTime;
                 frame.FixedFrameStep = inputs.FixedFrameStep;
                 Tick(a, inputs.Pass);
             }
-            Clear<action::DragFieldStart>(R);
+            R.clear<action::DragFieldStart>();
             frame = saved;
             R.ctx().get<ViewportExtent>().Value = extent; },
         .BeforeRestore = [this] {
@@ -145,15 +146,15 @@ void Project::TrackStores(entt::entity viewport) {
             // Destroy instances before their referenced mesh entities.
             if (!removed.empty()) {
                 for (const auto [e, instance] : R.view<const RenderInstance>().each()) {
-                    if (Entities.Recorded(entt::to_entity(e)) != e || Entities.Recorded(entt::to_entity(instance.Entity)) != instance.Entity) Remove<RenderInstance>(R, e);
+                    if (R.EntityAt(state::Index(e)) != e || R.EntityAt(state::Index(instance.Entity)) != instance.Entity) R.remove<RenderInstance>(e);
                 }
             }
             for (const auto e : removed) {
-                if (auto *buffers = R.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(R, *buffers);
+                if (auto *buffers = R.try_edit<MeshBuffers>(e)) ReleaseMeshBuffers(R, *buffers);
                 if (const auto *models = R.try_get<ModelsBuffer>(e)) FreeInstanceRange(R, models->InstanceRange);
             }
             R.ctx().get<MeshStore>().FinishRestore();
-            Entities.FinishRestore(); },
+            Entities.FinishRestore(removed); },
         .AfterRestore = [this] { AfterRestore(); },
     };
 }
@@ -197,7 +198,7 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
     const bool begun = Begin(dir);
     if (!begun) {
         History.Restore(previous);
-        Replace<ViewCamera>(R, Viewport, camera);
+        R.replace<ViewCamera>(Viewport, camera);
         Settle(EventPass::Settle);
     }
     History.Release(previous);
@@ -414,8 +415,8 @@ void Project::FinishGesture(EventPass pass) {
     const auto label = Label(Commands[*StageFirst].Value);
     StageFirst.reset();
     ApplyCommand(action::MakeAction(action::view::EndGizmoDrag{}), pass);
-    Clear<action::DragFieldStart>(R);
-    Remove<AdditiveBoxSelectBaseline>(R, Viewport);
+    R.clear<action::DragFieldStart>();
+    R.remove<AdditiveBoxSelectBaseline>(Viewport);
     Commit(label);
     Commands.clear();
     ReleaseGesture();
@@ -426,8 +427,8 @@ void Project::ReleaseGesture() {
     StageFirst.reset();
 }
 void Project::ClearInteraction() {
-    Clear<StartTransform, StartBoneLength, StartScreenTransform, PendingTransform, action::DragFieldStart, AdditiveBoxSelectBaseline>(R);
-    if (auto *gizmo = R.try_get<GizmoInteraction>(Viewport)) *gizmo = {};
+    R.clear<StartTransform, StartBoneLength, StartScreenTransform, PendingTransform, action::DragFieldStart, AdditiveBoxSelectBaseline>();
+    if (auto *gizmo = R.try_edit<GizmoInteraction>(Viewport)) *gizmo = {};
     auto &frame = R.ctx().get<FrameState>();
     frame.BoxSelectStart.reset();
     frame.BoxSelectEnd.reset();
@@ -525,28 +526,35 @@ bool Project::Audit(std::string &why) {
 }
 
 void Project::AfterRestore() {
-    bool textures_changed = false;
-    for (const auto &[type, entity] : Entities.TakeChanges()) {
-        if (type == entt::type_hash<Instance>::value() || type == entt::type_hash<Hidden>::value()) {
+    struct ReadOnly {
+        state::Scene &R;
+        explicit ReadOnly(state::Scene &r) : R(r) { R.DocumentReadOnly = true; }
+        ~ReadOnly() { R.DocumentReadOnly = false; }
+    } read_only{R};
+    bool textures_changed = false, names_changed = false;
+    for (const auto &[type, entity, event] : Entities.TakeChanges()) {
+        names_changed |= type == state::Type<Name>();
+        if (type == state::Type<Instance>() || type == state::Type<Hidden>()) {
             const auto *instance = R.try_get<const Instance>(entity);
             const bool visible = instance && !R.all_of<Hidden>(entity);
-            if (const auto *render = R.try_get<const RenderInstance>(entity); render && (!visible || render->Entity != instance->Entity)) Remove<RenderInstance>(R, entity);
-            if (visible && !R.all_of<RenderInstance>(entity)) Emplace<RenderInstance>(R, entity, instance->Entity, UINT32_MAX, 0u);
+            if (const auto *render = R.try_get<const RenderInstance>(entity); render && (!visible || render->Entity != instance->Entity)) R.remove<RenderInstance>(entity);
+            if (visible && !R.all_of<RenderInstance>(entity)) R.emplace<RenderInstance>(entity, instance->Entity, UINT32_MAX, 0u);
         }
-        if (type == entt::type_hash<Armature>::value() || type == entt::type_hash<ArmaturePose>::value()) Remove<ArmaturePoseState>(R, entity);
-        if (type == entt::type_hash<MorphWeightState>::value()) Remove<MorphWeightGpuRange>(R, entity);
-        textures_changed |= type == entt::type_hash<gltf::SourceAssets>::value() || type == entt::type_hash<MaterializedTextures>::value();
+        if (type == state::Type<Armature>() || type == state::Type<ArmaturePose>()) R.remove<ArmaturePoseState>(entity);
+        if (type == state::Type<MorphWeightState>()) R.remove<MorphWeightGpuRange>(entity);
+        textures_changed |= type == state::Type<gltf::SourceAssets>() || type == state::Type<MaterializedTextures>();
     }
+    if (names_changed) RebuildEntityNames(R);
     if (textures_changed) {
         ReleaseImportedTextures(R);
         ResetImportedEnvironment(R);
-        EmplaceSafe(reactive<changes::MaterializedTextures>(R), R, Viewport);
-        EmplaceSafe(reactive<changes::SceneWorld>(R), R, Viewport);
+        reactive<changes::MaterializedTextures>(R).emplace(Viewport);
+        reactive<changes::SceneWorld>(R).emplace(Viewport);
     }
     auto &meshes = R.ctx().get<MeshStore>();
     const auto changes = meshes.TakeChanges();
     std::vector<Mesh> topology;
-    std::vector<entt::entity> geometry;
+    std::vector<state::Entity> geometry;
     std::vector<MeshVertexChanges> positions;
     const auto editing = R.get<const Interaction>(Viewport).Mode == InteractionMode::Edit ? selection::ComputePrimaryEditInstances(R) : selection::PrimaryEditInstanceMap{};
     for (const auto [entity, handle] : R.view<const MeshHandle>().each()) {
@@ -555,24 +563,24 @@ void Project::AfterRestore() {
         const bool sparse = (it->Bits & MeshStore::GeometryChanged) && !(it->Bits & ~(MeshStore::GeometryChanged | MeshStore::SelectionChanged)) && editing.contains(entity);
         if (it->Bits & (MeshStore::EntryChanged | MeshStore::TopologyChanged)) {
             topology.emplace_back(meshes, handle.StoreId);
-            if (auto *buffer = R.try_get<MeshBuffers>(entity)) ReleaseMeshBuffers(R, *buffer);
-            Remove<MeshBuffers>(R, entity);
-            Emplace<MeshBuffers>(R, entity, meshes.GetVerticesRange(handle.StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
+            if (auto *buffer = R.try_edit<MeshBuffers>(entity)) ReleaseMeshBuffers(R, *buffer);
+            R.remove<MeshBuffers>(entity);
+            R.emplace<MeshBuffers>(entity, meshes.GetVerticesRange(handle.StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
         } else if (sparse) {
             positions.push_back({entity, it->VertexRanges});
         } else if (it->Bits & (MeshStore::GeometryChanged | MeshStore::DeformChanged)) {
             geometry.push_back(entity);
         }
-        if (it->Bits & MeshStore::ShadingChanged) EmplaceOrReplace<MeshShadingDirty>(R, entity);
-        if (it->Bits & MeshStore::SelectionChanged) EmplaceOrReplace<EditSelectionDirty>(R, Viewport);
-        if (!sparse && (it->Bits & ~MeshStore::SelectionChanged)) EmplaceOrReplace<MeshGeometryDirty>(R, entity, false);
+        if (it->Bits & MeshStore::ShadingChanged) R.emplace_or_replace<MeshShadingDirty>(entity);
+        if (it->Bits & MeshStore::SelectionChanged) R.emplace_or_replace<EditSelectionDirty>(Viewport);
+        if (!sparse && (it->Bits & ~MeshStore::SelectionChanged)) R.emplace_or_replace<MeshGeometryDirty>(entity, false);
     }
     meshes.RebuildDerived(topology);
     DeriveBaseNormalsNow(R, geometry);
     RefreshEditedPositions(R, Viewport, positions);
-    for (const auto &[entity, ranges] : positions) EmplaceOrReplace<MeshPositionsChanged>(R, entity);
+    for (const auto &[entity, ranges] : positions) R.emplace_or_replace<MeshPositionsChanged>(entity);
     auto &materials = R.ctx().get<GpuBuffers>().Materials;
-    if (!materials.History()->Trie.TakeChanged().empty()) EmplaceOrReplace<MaterialDirty>(R, Viewport);
+    if (!materials.History()->Trie.TakeChanged().empty()) R.emplace_or_replace<MaterialDirty>(Viewport);
     Settle(EventPass::Restore);
 }
 } // namespace project

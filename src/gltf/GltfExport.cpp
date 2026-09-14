@@ -28,7 +28,7 @@
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>
 #include <iostream>
@@ -203,7 +203,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Order entities in `view` by their `TIndex` sidecar value. Entities without `TIndex`
     // Runtime-added entries follow the source range for cameras, lights, and physics resources.
     const auto ordered_by_source = [&]<typename TIndex>(auto view) {
-        std::vector<std::pair<uint32_t, entt::entity>> ordered;
+        std::vector<std::pair<uint32_t, state::Entity>> ordered;
         uint32_t next = 0;
         for (const auto e : view) {
             if (const auto *si = r.try_get<const TIndex>(e)) {
@@ -214,7 +214,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         for (const auto e : view) {
             if (!r.all_of<TIndex>(e)) ordered.emplace_back(next++, e);
         }
-        std::ranges::sort(ordered, {}, &std::pair<uint32_t, entt::entity>::first);
+        std::ranges::sort(ordered, {}, &std::pair<uint32_t, state::Entity>::first);
         return ordered;
     };
 
@@ -231,7 +231,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
     // Preserve source mesh ordering through SourceMeshIndex.
     // Append runtime-created meshes after the source range.
-    std::unordered_map<entt::entity, uint32_t> mesh_entity_to_index;
+    std::unordered_map<state::Entity, uint32_t> mesh_entity_to_index;
     uint32_t mesh_count = 0;
     for (const auto [e, _, smi] : r.view<const MeshHandle, const SourceMeshIndex>().each()) {
         mesh_entity_to_index[e] = smi.Value;
@@ -244,7 +244,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Group triangle, line, and point entities by mesh index.
     // The emit pass reads vertex, face, skin, and morph data directly from MeshStore.
     struct MeshEntitySet {
-        entt::entity Triangles{entt::null}, Lines{entt::null}, Points{entt::null};
+        state::Entity Triangles{state::Null}, Lines{state::Null}, Points{state::Null};
         std::string Name;
     };
     std::vector<MeshEntitySet> mesh_groups(mesh_count);
@@ -263,8 +263,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Emits one camera or light per component-bearing entity in source order.
     // Khronos samples do not share source cameras or lights across nodes.
     // Store the entities here; emit to fastgltf::Asset later (when `asset` exists).
-    std::unordered_map<entt::entity, uint32_t> camera_entity_to_index, light_entity_to_index;
-    std::vector<entt::entity> camera_entities_ordered, light_entities_ordered;
+    std::unordered_map<state::Entity, uint32_t> camera_entity_to_index, light_entity_to_index;
+    std::vector<state::Entity> camera_entities_ordered, light_entities_ordered;
     {
         auto camera_view = r.view<const ::Camera>();
         for (const auto &[_, entity] : ordered_by_source.operator()<SourceCameraIndex>(camera_view)) {
@@ -289,7 +289,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         live.erase(std::ranges::unique(live).begin(), live.end());
         for (uint32_t dense = 0; dense < live.size(); ++dense) source_to_dense[live[dense]] = dense;
     }
-    std::unordered_map<entt::entity, uint32_t> entity_to_node_index;
+    std::unordered_map<state::Entity, uint32_t> entity_to_node_index;
     uint32_t total_node_count = uint32_t(source_to_dense.size());
     for (const auto [e, sni] : r.view<const SourceNodeIndex>().each()) entity_to_node_index[e] = source_to_dense.at(sni.Value);
     for (const auto [e, _t, kind] : r.view<const Transform, const ObjectKind>().each()) {
@@ -308,13 +308,13 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (auto &[_, kids] : children_by_parent) std::ranges::sort(kids, {}, &std::pair<uint32_t, uint32_t>::first);
 
     // node_index → entity, null only for the synthetic offset-collider child slots appended below.
-    std::vector<entt::entity> node_to_entity(total_node_count, entt::null);
+    std::vector<state::Entity> node_to_entity(total_node_count, state::Null);
     for (const auto [entity, node_index] : entity_to_node_index) {
         if (node_index < node_to_entity.size()) node_to_entity[node_index] = entity;
     }
 
-    std::unordered_map<entt::entity, uint32_t> entity_to_offset_child;
-    std::unordered_map<uint32_t, entt::entity> offset_child_to_owner;
+    std::unordered_map<state::Entity, uint32_t> entity_to_offset_child;
+    std::unordered_map<uint32_t, state::Entity> offset_child_to_owner;
     for (auto [e, cs] : r.view<const ColliderShape>().each()) {
         if (cs.LocalOffset == vec3{0}) continue;
         const auto it = entity_to_node_index.find(e);
@@ -324,30 +324,30 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         offset_child_to_owner[synthetic_ni] = e;
         children_by_parent[it->second].emplace_back(std::numeric_limits<uint32_t>::max(), synthetic_ni);
     }
-    node_to_entity.resize(total_node_count, entt::null);
+    node_to_entity.resize(total_node_count, state::Null);
 
     // Scenes to emit, in source order. active_scene is the default.
-    std::vector<entt::entity> scenes_ordered;
+    std::vector<state::Entity> scenes_ordered;
     for (const auto e : r.view<const Scene>()) scenes_ordered.emplace_back(e);
-    std::ranges::sort(scenes_ordered, [&](entt::entity a, entt::entity b) {
+    std::ranges::sort(scenes_ordered, [&](state::Entity a, state::Entity b) {
         const auto *ia = r.try_get<const SourceSceneIndex>(a);
         const auto *ib = r.try_get<const SourceSceneIndex>(b);
         return (ia ? ia->Value : std::numeric_limits<uint32_t>::max()) < (ib ? ib->Value : std::numeric_limits<uint32_t>::max());
     });
-    entt::entity active_scene = entt::null;
+    state::Entity active_scene = state::Null;
     for (const auto e : r.view<const ActiveScene>()) active_scene = e;
 
     // Returns live nodes without a live source parent, restricted by SceneMembership when scene is nonnull.
     // Sorts roots because glTF scene-node order is nonsemantic.
-    const auto compute_roots = [&](entt::entity scene) {
+    const auto compute_roots = [&](state::Entity scene) {
         std::vector<uint32_t> roots;
         for (uint32_t ni = 0; ni < total_node_count; ++ni) {
             const auto entity = node_to_entity[ni];
-            if (entity == entt::null) continue;
+            if (entity == state::Null) continue;
             const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
             const bool is_root = !spi || !source_to_dense.contains(spi->Value);
             if (!is_root) continue;
-            if (scene != entt::null) {
+            if (scene != state::Null) {
                 const auto *sm = r.try_get<const SceneMembership>(entity);
                 if (sm && std::ranges::find(sm->Scenes, scene) == sm->Scenes.end()) continue;
             }
@@ -361,8 +361,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Post-order DFS populates `fully_hidden` so parents can check children without recursion or multi-pass.
     // Nodes only in non-active scenes are treated as not-hidden — their missing RenderInstance is a switch-time artifact, not a user-set hide.
     const auto node_in_active_scene = [&](uint32_t ni) {
-        const auto entity = ni < node_to_entity.size() ? node_to_entity[ni] : entt::null;
-        const auto *sm = entity != entt::null ? r.try_get<const SceneMembership>(entity) : nullptr;
+        const auto entity = ni < node_to_entity.size() ? node_to_entity[ni] : state::Null;
+        const auto *sm = entity != state::Null ? r.try_get<const SceneMembership>(entity) : nullptr;
         return !sm || std::ranges::find(sm->Scenes, active_scene) != sm->Scenes.end();
     };
     std::vector<bool> fully_hidden(total_node_count, false);
@@ -370,7 +370,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto dfs = [&](this const auto &self, uint32_t ni) -> bool {
             if (ni >= total_node_count) return false;
             const auto entity = node_to_entity[ni];
-            bool hidden = node_in_active_scene(ni) && entity != entt::null && !r.all_of<RenderInstance>(entity);
+            bool hidden = node_in_active_scene(ni) && entity != state::Null && !r.all_of<RenderInstance>(entity);
             if (const auto it = children_by_parent.find(ni); it != children_by_parent.end()) {
                 for (const auto &[_, child_ni] : it->second) {
                     if (!self(child_ni)) hidden = false;
@@ -383,7 +383,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             for (const auto ni : compute_roots(se)) dfs(ni);
         }
         if (scenes_ordered.empty()) {
-            for (const auto ni : compute_roots(entt::null)) dfs(ni);
+            for (const auto ni : compute_roots(state::Null)) dfs(ni);
         }
     }
 
@@ -402,7 +402,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     fastgltf::Asset asset;
 
     // Emit source-aligned physics resources directly into the asset.
-    std::unordered_map<entt::entity, uint32_t> physics_material_to_index, physics_jointdef_to_index, collision_filter_to_index;
+    std::unordered_map<state::Entity, uint32_t> physics_material_to_index, physics_jointdef_to_index, collision_filter_to_index;
     {
         auto mat_view = r.view<const PhysicsMaterial>();
         for (const auto &[_, e] : ordered_by_source.operator()<SourcePhysicsMaterialIndex>(mat_view)) {
@@ -452,7 +452,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             physics_jointdef_to_index[e] = asset.physicsJoints.size();
             asset.physicsJoints.emplace_back(fastgltf::PhysicsJoint{.limits = std::move(limits), .drives = std::move(drives)});
         }
-        const auto resolve_system_names = [&](std::span<const entt::entity> systems) {
+        const auto resolve_system_names = [&](std::span<const state::Entity> systems) {
             fastgltf::pmr::MaybeSmallVector<FgString> out;
             out.reserve(systems.size());
             for (const auto se : systems) {
@@ -622,7 +622,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         anim.samplers.emplace_back(fastgltf::AnimationSampler{.inputAccessor = t_acc, .outputAccessor = v_acc, .interpolation = FromInterp(interp)});
         anim.channels.emplace_back(fastgltf::AnimationChannel{.samplerIndex = anim.samplers.size() - 1, .nodeIndex = target_node_index, .path = FromPath(target)});
     };
-    const auto get_node_index = [&](entt::entity e) -> std::optional<uint32_t> {
+    const auto get_node_index = [&](state::Entity e) -> std::optional<uint32_t> {
         const auto it = entity_to_node_index.find(e);
         return it != entity_to_node_index.end() ? std::optional<uint32_t>{it->second} : std::nullopt;
     };
@@ -918,7 +918,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
         // Each fan corner pairs its mesh vertex index with its index into the corner-domain arenas.
         // Every distinct corner tuple over the emitted channels becomes one export vertex, so vertices split exactly where corner attributes diverge.
-        if (group.Triangles != entt::null) {
+        if (group.Triangles != state::Null) {
             const auto &mesh = GetMesh(r, group.Triangles);
             const auto store_id = mesh.GetStoreId();
             const auto vertices = meshes.GetVertices(store_id);
@@ -1150,7 +1150,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
         }
 
-        if (group.Lines != entt::null) {
+        if (group.Lines != state::Null) {
             const auto &mesh = GetMesh(r, group.Lines);
             const auto vertices = meshes.GetVertices(mesh.GetStoreId());
             if (!vertices.empty() && mesh.EdgeCount() > 0) {
@@ -1168,7 +1168,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
         }
 
-        if (group.Points != entt::null) {
+        if (group.Points != state::Null) {
             const auto &mesh = GetMesh(r, group.Points);
             const auto vertices = meshes.GetVertices(mesh.GetStoreId());
             if (!vertices.empty()) {
@@ -1283,7 +1283,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     using TriggerVariant = std::variant<fastgltf::GeometryTrigger, fastgltf::NodeTrigger>;
     // Populates `rb.collider` or `rb.trigger` from the owner's ColliderShape + (Trigger|Collider)Material.
     // Shared between the owner-no-offset path and the synthetic-offset-child path.
-    const auto populate_collider_extension = [&](entt::entity owner, fastgltf::PhysicsRigidBody &rb) {
+    const auto populate_collider_extension = [&](state::Entity owner, fastgltf::PhysicsRigidBody &rb) {
         const auto *cs = r.try_get<const ColliderShape>(owner);
         if (!cs) return;
         const bool is_trigger = r.all_of<TriggerTag>(owner);
@@ -1323,22 +1323,22 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
     // A bone Transform contains the live pose, while its joint node TRS contains the rest pose.
     // The rest lives in the Armature, so map each bone to it. (Non-bone nodes keep their authored local in Transform.)
-    std::unordered_map<entt::entity, Transform> bone_rest;
+    std::unordered_map<state::Entity, Transform> bone_rest;
     for (const auto [ao_entity, ao] : r.view<const ArmatureObject>().each()) {
         const auto &arm = r.get<const Armature>(ao.Entity);
         for (uint32_t i = 0; i < ao.BoneEntities.size() && i < arm.Bones.size(); ++i) {
-            if (ao.BoneEntities[i] != entt::null) bone_rest.emplace(ao.BoneEntities[i], arm.Bones[i].RestLocal);
+            if (ao.BoneEntities[i] != state::Null) bone_rest.emplace(ao.BoneEntities[i], arm.Bones[i].RestLocal);
         }
     }
 
     // Use bone rest poses and authored object transforms for frame-independent export.
-    std::unordered_map<entt::entity, mat4> rest_world;
-    const auto rest_world_of = [&](this const auto &self, entt::entity e) -> mat4 {
+    std::unordered_map<state::Entity, mat4> rest_world;
+    const auto rest_world_of = [&](this const auto &self, state::Entity e) -> mat4 {
         if (const auto it = rest_world.find(e); it != rest_world.end()) return it->second;
         const auto bit = bone_rest.find(e);
         const mat4 local = ToMatrix(bit != bone_rest.end() ? bit->second : r.get<const Transform>(e));
         const auto *node = r.try_get<const SceneNode>(e);
-        const mat4 world = node && node->Parent != entt::null ? self(node->Parent) * r.get<const ParentInverse>(e).M * local : local;
+        const mat4 world = node && node->Parent != state::Null ? self(node->Parent) * r.get<const ParentInverse>(e).M * local : local;
         rest_world.emplace(e, world);
         return world;
     };
@@ -1382,7 +1382,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             continue;
         }
 
-        if (entity == entt::null) {
+        if (entity == state::Null) {
             fastgltf::Node empty{};
             empty.children = std::move(children);
             asset.nodes.emplace_back(std::move(empty));
@@ -1417,7 +1417,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const auto *node = r.try_get<const SceneNode>(entity);
             if (const auto pit = spi ? source_to_dense.find(spi->Value) : source_to_dense.end(); pit != source_to_dense.end()) {
                 const auto src_parent = node_to_entity[pit->second];
-                if (src_parent != entt::null && (!node || node->Parent != src_parent)) {
+                if (src_parent != state::Null && (!node || node->Parent != src_parent)) {
                     return ToTransform(numeric::Inverse(rest_world_of(src_parent)) * rest_world_of(entity));
                 }
             }
@@ -1696,7 +1696,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     } else {
         // No scene entities (non-glTF / runtime-built): synthesize a single scene from current roots.
         fastgltf::pmr::MaybeSmallVector<size_t> scene_roots;
-        for (const auto ni : compute_roots(entt::null)) scene_roots.emplace_back(ni);
+        for (const auto ni : compute_roots(state::Null)) scene_roots.emplace_back(ni);
         asset.scenes.emplace_back(fastgltf::Scene{
             .nodeIndices = std::move(scene_roots),
             .imageBasedLightIndex = default_scene_ibl_index,

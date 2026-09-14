@@ -109,5 +109,5 @@ using Action = MergedVariantT<
     UpdateMaterial, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
     Update<std::optional<uint32_t>>, DuplicateToPosition, SetLightType, SetSpotCone>;
 
-void Apply(entt::registry &, entt::entity viewport, const Action &);
+void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::object

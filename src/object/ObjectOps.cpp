@@ -1,7 +1,7 @@
 #include "object/ObjectOps.h"
 #include "assets/MeshImport.h"
 #include "project/Assets.h"
-#include "project/Registry.h"
+#include "state/Scene.h"
 
 #include "CameraTypes.h"
 #include "Path.h"
@@ -28,8 +28,6 @@
 #include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportEvents.h"
 
-#include <entt/entity/registry.hpp>
-
 #include <format>
 
 using std::ranges::any_of, std::ranges::find, std::ranges::to;
@@ -37,46 +35,46 @@ using std::ranges::any_of, std::ranges::find, std::ranges::to;
 namespace {
 // True if any component of type C has `C.*field == target`.
 template<typename C, typename F>
-bool AnyComponentRefersTo(entt::registry &r, F C::*field, entt::entity target) {
+bool AnyComponentRefersTo(state::Scene &r, F C::*field, state::Entity target) {
     return any_of(r.view<C>().each(), [=](const auto &entry) { return std::get<1>(entry).*field == target; });
 }
 } // namespace
 
-void DestroyArmatureData(entt::registry &r, entt::entity arm_obj_entity) {
+void DestroyArmatureData(state::Scene &r, state::Entity arm_obj_entity) {
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &arm = project::Mutable<ArmatureObject>(r, arm_obj_entity);
-    if (arm.JointEntity != entt::null) {
-        if (auto *mb = r.try_get<MeshBuffers>(arm.JointEntity)) ReleaseMeshBuffers(r, *mb);
+    auto &arm = r.edit<ArmatureObject>(arm_obj_entity);
+    if (arm.JointEntity != state::Null) {
+        if (auto *mb = r.try_edit<MeshBuffers>(arm.JointEntity)) ReleaseMeshBuffers(r, *mb);
         if (auto *ref = r.try_get<VertexStoreId>(arm.JointEntity)) meshes.Release(ref->StoreId);
         if (auto *models = r.try_get<ModelsBuffer>(arm.JointEntity)) FreeInstanceRange(r, models->InstanceRange);
-        project::Remove<MeshBuffers, VertexStoreId, ModelsBuffer, PendingHide>(r, arm.JointEntity);
-        project::Destroy(r, arm.JointEntity);
-        arm.JointEntity = entt::null;
+        r.remove<MeshBuffers, VertexStoreId, ModelsBuffer, PendingHide>(arm.JointEntity);
+        r.destroy(arm.JointEntity);
+        arm.JointEntity = state::Null;
     }
-    if (auto *mb = r.try_get<MeshBuffers>(arm_obj_entity)) ReleaseMeshBuffers(r, *mb);
+    if (auto *mb = r.try_edit<MeshBuffers>(arm_obj_entity)) ReleaseMeshBuffers(r, *mb);
     if (auto *adj = r.try_get<BoneAdjacencyIndices>(arm_obj_entity)) ReleaseEdgeIndices(r, adj->Indices);
     if (auto *ref = r.try_get<VertexStoreId>(arm_obj_entity)) meshes.Release(ref->StoreId);
     if (auto *models = r.try_get<ModelsBuffer>(arm_obj_entity)) FreeInstanceRange(r, models->InstanceRange);
-    project::Remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices, PendingHide>(r, arm_obj_entity);
+    r.remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices, PendingHide>(arm_obj_entity);
 }
 
-void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
+void Destroy(state::Scene &r, state::Entity viewport, state::Entity e) {
     auto &meshes = r.ctx().get<MeshStore>();
     if (r.all_of<LookingThrough>(e)) ClearLookThrough(r, viewport);
     { // Clear relationships
         ClearParent(r, e);
-        std::vector<entt::entity> children;
+        std::vector<state::Entity> children;
         for (auto child : Children{&r, e}) children.emplace_back(child);
         for (const auto child : children) ClearParent(r, child);
     }
 
-    entt::entity buffer_entity = entt::null;
+    state::Entity buffer_entity = state::Null;
     if (const auto *instance = r.try_get<Instance>(e)) {
         if (HasMesh(r, instance->Entity) || r.all_of<ObjectExtrasTag>(instance->Entity)) buffer_entity = instance->Entity;
         Hide(r, e);
     }
-    std::vector<entt::entity> armature_data_entities;
-    auto try_add_armature_data = [&](entt::entity data_entity) {
+    std::vector<state::Entity> armature_data_entities;
+    auto try_add_armature_data = [&](state::Entity data_entity) {
         if (r.valid(data_entity) && find(armature_data_entities, data_entity) == armature_data_entities.end()) {
             armature_data_entities.emplace_back(data_entity);
         }
@@ -86,21 +84,21 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
 
     if (const auto *light_index = r.try_get<LightIndex>(e)) {
-        project::GetOrEmplace<PendingLightRemovals>(r, viewport).Indices.emplace_back(light_index->Value);
+        r.get_or_emplace<PendingLightRemovals>(viewport).Indices.emplace_back(light_index->Value);
     }
 
     if (r.all_of<ArmatureObject>(e)) {
         auto &arm = r.get<ArmatureObject>(e);
-        auto destroy_visible = [&](entt::entity entity) {
+        auto destroy_visible = [&](state::Entity entity) {
             Hide(r, entity);
-            project::Destroy(r, entity);
+            r.destroy(entity);
         };
         for (const auto bone_entity : arm.BoneEntities) {
             if (auto *joints = r.try_get<BoneJointEntities>(bone_entity)) {
-                if (joints->Head != entt::null) destroy_visible(joints->Head);
-                if (joints->Tail != entt::null) destroy_visible(joints->Tail);
+                if (joints->Head != state::Null) destroy_visible(joints->Head);
+                if (joints->Tail != state::Null) destroy_visible(joints->Tail);
             }
-            project::Remove<BoneJointEntities>(r, bone_entity);
+            r.remove<BoneJointEntities>(bone_entity);
         }
 
         // Destroy children before parents (reverse of topological order) so ClearParent can access the parent's SceneNode to unlink the child.
@@ -111,14 +109,14 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
         DestroyArmatureData(r, e);
     }
 
-    project::Destroy(r, e);
+    r.destroy(e);
 
     if (r.valid(buffer_entity)) {
         if (!AnyComponentRefersTo(r, &Instance::Entity, buffer_entity)) {
-            if (auto *mesh_buffers = r.try_get<MeshBuffers>(buffer_entity)) ReleaseMeshBuffers(r, *mesh_buffers);
+            if (auto *mesh_buffers = r.try_edit<MeshBuffers>(buffer_entity)) ReleaseMeshBuffers(r, *mesh_buffers);
             if (const auto *vs = r.try_get<VertexStoreId>(buffer_entity)) meshes.Release(vs->StoreId);
             if (const auto *models = r.try_get<ModelsBuffer>(buffer_entity)) FreeInstanceRange(r, models->InstanceRange);
-            project::Destroy(r, buffer_entity);
+            r.destroy(buffer_entity);
         }
     }
     for (const auto armature_data_entity : armature_data_entities) {
@@ -126,7 +124,7 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
             const bool is_used = AnyComponentRefersTo(r, &ArmatureObject::Entity, armature_data_entity) ||
                 AnyComponentRefersTo(r, &ArmatureModifier::ArmatureEntity, armature_data_entity) ||
                 AnyComponentRefersTo(r, &BoneAttachment::ArmatureEntity, armature_data_entity);
-            if (!is_used) project::Destroy(r, armature_data_entity);
+            if (!is_used) r.destroy(armature_data_entity);
         }
     }
 
@@ -134,15 +132,15 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
     // Clear the persistent texture manifest at the same time.
     if (r.view<Instance>().empty()) {
         ResetImportedTexturesAndMaterials(r);
-        project::Remove<MaterializedTextures>(r, viewport);
+        r.remove<MaterializedTextures>(viewport);
     }
 }
 
-void ClearMeshes(entt::registry &r, entt::entity viewport) {
-    for (const auto e : r.view<Instance>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(r, viewport, e);
+void ClearMeshes(state::Scene &r, state::Entity viewport) {
+    for (const auto e : r.view<Instance>(state::Exclude<SubElementOf>) | to<std::vector>()) Destroy(r, viewport, e);
 }
 
-std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &r, entt::entity viewport, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
+std::pair<state::Entity, state::Entity> ImportMesh(state::Scene &r, state::Entity viewport, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
     const auto stored_path = project::ResolveAsset(r, path);
     auto result = ReadMeshFile(stored_path);
     if (!result) throw std::runtime_error(result.error());
@@ -152,10 +150,10 @@ std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &r, entt::entity
     if (!result->Materials.empty()) ImportObjPlyMaterials(r, viewport, result->Materials, stored_path, created.StoreId);
 
     const auto entities = ::AddMesh(r, created.StoreId, std::move(info));
-    project::Emplace<Path>(r, entities.first, path);
+    r.emplace<Path>(entities.first, path);
     return entities;
 }
 
-void RequestImportMesh(entt::registry &r, entt::entity viewport, std::filesystem::path path, MeshInstanceCreateInfo info) {
-    project::EmplaceOrReplace<PendingImportMesh>(r, viewport, std::move(path), std::move(info));
+void RequestImportMesh(state::Scene &r, state::Entity viewport, std::filesystem::path path, MeshInstanceCreateInfo info) {
+    r.emplace_or_replace<PendingImportMesh>(viewport, std::move(path), std::move(info));
 }

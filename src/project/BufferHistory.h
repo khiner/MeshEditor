@@ -11,7 +11,6 @@ namespace project {
 struct BufferHistory {
     mtl::Buffer *B;
     uint32_t PageBytes;
-    std::vector<std::byte> Scratch;
     store::LiveTrie Trie;
 
     BufferHistory(mtl::Buffer &, store::History &, std::string name, uint32_t page_bytes);

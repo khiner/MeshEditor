@@ -10,7 +10,7 @@
 
 #include "ui/AxisColors.h" // Must be after imgui.h
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <algorithm>
 #include <format>

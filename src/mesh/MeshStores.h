@@ -1,9 +1,9 @@
 #pragma once
-#include "entt_fwd.h"
-void RegisterMeshStoreHandlers(entt::registry &);
+#include "state/Entity.h"
+void RegisterMeshStoreHandlers(state::Scene &);
 namespace mtl {
 struct BufferContext;
 }
-void InitMeshStore(entt::registry &, mtl::BufferContext &);
-void ClearMeshStoreHandles(entt::registry &);
-void DeinitMeshStore(entt::registry &);
+void InitMeshStore(state::Scene &, mtl::BufferContext &);
+void ClearMeshStoreHandles(state::Scene &);
+void DeinitMeshStore(state::Scene &);

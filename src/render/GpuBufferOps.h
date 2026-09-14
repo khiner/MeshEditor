@@ -7,7 +7,7 @@
 
 #include <span>
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 namespace mtl {
 struct BufferContext;
@@ -15,13 +15,13 @@ struct BufferContext;
 struct MeshBuffers;
 struct Mesh;
 
-std::span<const PBRMaterial> GetMaterials(const entt::registry &);
+std::span<const PBRMaterial> GetMaterials(const state::Scene &);
 // Returns store corners for triangle meshes or the triangulated index-arena range for n-gons.
-std::span<const uint32_t> GetFaceIndices(const entt::registry &, const Mesh &, const MeshBuffers &);
-std::span<const PunctualLight> GetLights(entt::registry &);
-PunctualLight GetLight(entt::registry &, uint32_t index);
-mtl::BufferContext &GetBufferContext(entt::registry &);
-void ReleaseMeshBuffers(entt::registry &, MeshBuffers &);
+std::span<const uint32_t> GetFaceIndices(const state::Scene &, const Mesh &, const MeshBuffers &);
+std::span<const PunctualLight> GetLights(state::Scene &);
+PunctualLight GetLight(state::Scene &, uint32_t index);
+mtl::BufferContext &GetBufferContext(state::Scene &);
+void ReleaseMeshBuffers(state::Scene &, MeshBuffers &);
 
-void FreeInstanceRange(entt::registry &, Range);
-void ReleaseEdgeIndices(entt::registry &, const SlottedRange &);
+void FreeInstanceRange(state::Scene &, Range);
+void ReleaseEdgeIndices(state::Scene &, const SlottedRange &);

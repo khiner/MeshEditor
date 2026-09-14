@@ -7,7 +7,7 @@
 #include <span>
 #include <vector>
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 // `Weld` merges vertices identical in every vertex-domain channel, which a source authored per corner needs.
 struct MeshSource {
@@ -21,5 +21,5 @@ struct MeshSource {
 };
 
 // The arena work of each phase runs in source order, so a batch lays out the same way every run.
-std::vector<CreatedMesh> CreateMeshes(entt::registry &, std::span<MeshSource>);
-CreatedMesh CreateMesh(entt::registry &, MeshSource);
+std::vector<CreatedMesh> CreateMeshes(state::Scene &, std::span<MeshSource>);
+CreatedMesh CreateMesh(state::Scene &, MeshSource);

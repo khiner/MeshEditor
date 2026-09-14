@@ -1,7 +1,7 @@
 #pragma once
 
-#include "entt_fwd.h"
 #include "numeric/mat4.h"
+#include "state/Entity.h"
 
 #include <variant>
 #include <vector>
@@ -13,7 +13,7 @@ struct ChildOfData {
 };
 
 struct BoneConstraint {
-    entt::entity TargetEntity{null_entity};
+    state::Entity TargetEntity{null_entity};
     float Influence{1.f};
     std::variant<CopyTransformsData, ChildOfData> Data{CopyTransformsData{}};
 };

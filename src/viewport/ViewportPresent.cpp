@@ -1,4 +1,4 @@
-#include "project/Registry.h"
+#include "state/Scene.h"
 #include "viewport/Viewport.h"
 
 #include "Camera.h"
@@ -15,17 +15,16 @@
 #include "viewport/ViewportUi.h"
 
 #include "imgui.h"
-#include <entt/entity/registry.hpp>
 
 #include <print>
 
 namespace {
 
-std::pair<uvec2, mtl::Extent2D> GetCaptureRegion(const entt::registry &r) {
+std::pair<uvec2, mtl::Extent2D> GetCaptureRegion(const state::Scene &r) {
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto full = pipelines.Main.Resources->FinalColorImage.Extent;
     const auto camera = LookThroughCameraEntity(r);
-    const auto *cd = camera != entt::null ? r.try_get<Camera>(camera) : nullptr;
+    const auto *cd = camera != state::Null ? r.try_get<Camera>(camera) : nullptr;
     if (!cd) return {{0, 0}, full};
 
     const auto cam_aspect = AspectRatio(*cd);
@@ -37,15 +36,15 @@ std::pair<uvec2, mtl::Extent2D> GetCaptureRegion(const entt::registry &r) {
 }
 } // namespace
 
-void InitViewportMedia(entt::registry &r) {
+void InitViewportMedia(state::Scene &r) {
     LoadViewportIcons(r);
 }
 
-void DeinitViewportMedia(entt::registry &r) {
+void DeinitViewportMedia(state::Scene &r) {
     r.ctx().erase<ViewportIcons>();
 }
 
-void DisplayViewport(entt::registry &r, entt::entity viewport) {
+void DisplayViewport(state::Scene &r, state::Entity viewport) {
     auto &dl = *ImGui::GetWindowDrawList();
     dl.ChannelsSetCurrent(0);
     if (const auto &pipelines = r.ctx().get<const Pipelines>(); pipelines.Main.Resources) {
@@ -59,8 +58,8 @@ void DisplayViewport(entt::registry &r, entt::entity viewport) {
 }
 
 // Intentionally mutates VideoRecording outside Apply (not replayed).
-void StartRecording(entt::registry &r, entt::entity viewport, const std::filesystem::path &path, int fps, bool with_audio) {
-    project::Remove<VideoRecording>(r, viewport);
+void StartRecording(state::Scene &r, state::Entity viewport, const std::filesystem::path &path, int fps, bool with_audio) {
+    r.remove<VideoRecording>(viewport);
     EndAudioCapture(r);
     const auto &pipelines = r.ctx().get<const Pipelines>();
     if (!pipelines.Main.Resources) {
@@ -78,26 +77,26 @@ void StartRecording(entt::registry &r, entt::entity viewport, const std::filesys
     // Video playback uses device units.
     // WAV measurement output remains in pascals.
     const bool monitor = with_audio && path.extension() != ".wav";
-    project::Emplace<VideoRecording>(r, viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(ctx, path, region.first.x, region.first.y, region.second, fps, audio_rate), .Region = region, .Monitor = monitor, .OfflineRate = offline_rate, .Fps = fps});
+    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(ctx, path, region.first.x, region.first.y, region.second, fps, audio_rate), .Region = region, .Monitor = monitor, .OfflineRate = offline_rate, .Fps = fps});
 }
 
-bool IsRecording(const entt::registry &r, entt::entity viewport) {
+bool IsRecording(const state::Scene &r, state::Entity viewport) {
     const auto *rec = r.try_get<VideoRecording>(viewport);
     return rec && rec->Recorder && rec->Recorder->IsActive();
 }
 
-uint64_t CapturedFrameCount(const entt::registry &r, entt::entity viewport) {
+uint64_t CapturedFrameCount(const state::Scene &r, state::Entity viewport) {
     const auto *rec = r.try_get<VideoRecording>(viewport);
     return rec && rec->Recorder ? rec->Recorder->CapturedFrameCount() : 0;
 }
 
-void CaptureRecordFrame(entt::registry &r, entt::entity viewport) {
+void CaptureRecordFrame(state::Scene &r, state::Entity viewport) {
     const auto &pipelines = r.ctx().get<const Pipelines>();
-    auto *rec = r.try_get<VideoRecording>(viewport);
+    auto *rec = r.try_edit<VideoRecording>(viewport);
     if (!rec || !rec->Recorder || !rec->Recorder->IsActive() || !pipelines.Main.Resources) return;
     if (GetCaptureRegion(r) != rec->Region) {
         std::println(stderr, "Viewport: capture region changed; stopping recording.");
-        project::Remove<VideoRecording>(r, viewport);
+        r.remove<VideoRecording>(viewport);
         return;
     }
     // Drain all device audio produced since the last frame to preserve wall-clock duration.
@@ -116,7 +115,7 @@ void CaptureRecordFrame(entt::registry &r, entt::entity viewport) {
     rec->Recorder->CaptureFrame(pipelines.Main.Resources->FinalColorImage);
 }
 
-std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(entt::registry &r) {
+std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(state::Scene &r) {
     const auto &pipelines = r.ctx().get<const Pipelines>();
     if (!pipelines.Main.Resources) return std::unexpected{"render resources not ready"};
 
@@ -131,6 +130,6 @@ std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(entt::regis
     return ViewportImageRgba8{std::move(pixels), extent.Width, extent.Height};
 }
 
-std::string DebugBufferHeapUsage(const entt::registry &r) {
+std::string DebugBufferHeapUsage(const state::Scene &r) {
     return r.ctx().get<const GpuBuffers>().Ctx.DebugHeapUsage();
 }

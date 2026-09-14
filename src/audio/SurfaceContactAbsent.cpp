@@ -12,7 +12,7 @@ void SurfaceSilenceObject(ModalAudio &, uint32_t) {}
 uint32_t SurfaceActiveVoices(const ModalAudio &) { return 0; }
 
 void SurfaceInstallBank(ModalAudio &) {}
-void RegisterSurfaceContactHandlers(entt::registry &) {}
-void SurfaceUpdateContacts(entt::registry &) {}
-float SurfaceRoughnessOf(const entt::registry &, entt::entity) { return 0.f; }
-entt::entity ContactSurfaceNode(const entt::registry &, entt::entity, entt::entity body) { return body; }
+void RegisterSurfaceContactHandlers(state::Scene &) {}
+void SurfaceUpdateContacts(state::Scene &) {}
+float SurfaceRoughnessOf(const state::Scene &, state::Entity) { return 0.f; }
+state::Entity ContactSurfaceNode(const state::Scene &, state::Entity, state::Entity body) { return body; }

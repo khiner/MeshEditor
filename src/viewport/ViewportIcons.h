@@ -1,7 +1,7 @@
 #pragma once
 
-#include "entt_fwd.h"
 #include "render/SvgResource.h"
+#include "state/Entity.h"
 
 struct ViewportIconsTransform {
     std::unique_ptr<SvgResource> Select, SelectBox, Move, Rotate, Scale, Universal;
@@ -22,4 +22,4 @@ struct ViewportIcons {
 };
 
 // Emplaces the ViewportIcons context singleton and uploads each SVG into its bitmap texture.
-void LoadViewportIcons(entt::registry &);
+void LoadViewportIcons(state::Scene &);

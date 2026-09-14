@@ -21,7 +21,7 @@ store::Live BufferSlots(BufferHistory &self) {
     live.Replace = [&self](uint64_t page, store::Blob incoming, bool &was_present) {
         self.B->Reserve((page + 1) * self.PageBytes);
         was_present = true;
-        return store::SwapBlob(Page(self, page), incoming, self.Scratch);
+        return store::SwapBlob(Page(self, page), incoming);
     };
     live.Erase = [&self](uint64_t page) {
         const auto old = store::CopyBlob(Page(self, page));

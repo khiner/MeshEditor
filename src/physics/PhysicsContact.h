@@ -1,7 +1,7 @@
 #pragma once
 
-#include "entt_fwd.h"
 #include "numeric/vec3.h"
+#include "state/Entity.h"
 
 #include <array>
 #include <vector>
@@ -12,10 +12,10 @@ struct ReportContacts {};
 // Describes one body's world-space response at one point of a new solid contact.
 // Impulse excludes static support and is sampled one substep after impact.
 struct ContactImpact {
-    entt::entity Entity{null_entity}; // Owning entity of the struck body.
-    entt::entity ColliderEntity{null_entity}; // The collider node of this body that was struck.
-    entt::entity Other{null_entity}; // The body that struck it.
-    entt::entity OtherColliderEntity{null_entity}; // The collider node of the other body that did the striking.
+    state::Entity Entity{null_entity}; // Owning entity of the struck body.
+    state::Entity ColliderEntity{null_entity}; // The collider node of this body that was struck.
+    state::Entity Other{null_entity}; // The body that struck it.
+    state::Entity OtherColliderEntity{null_entity}; // The collider node of the other body that did the striking.
     vec3 Point{0}; // Contact point.
     // Load-weighted manifold center that preserves resultant force and moment.
     vec3 ResultantPoint{0};
@@ -35,9 +35,9 @@ struct PhysicsContactImpacts {
 // Stores one body's state in a persistent contact as specified by KHR_audio_rigid_bodies.
 // The two sweep velocities are independent: a box sliding on a fixed floor has zero sweep on the box and full sweep on the floor.
 struct SustainedContactSide {
-    entt::entity Entity{null_entity}; // The body this side describes.
+    state::Entity Entity{null_entity}; // The body this side describes.
     // Collider node for this sub-shape.
-    entt::entity ColliderEntity{null_entity};
+    state::Entity ColliderEntity{null_entity};
     // Contact-point velocity over this surface in meters per second.
     vec3 SweepVelocity{0};
 };

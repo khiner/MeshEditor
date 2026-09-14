@@ -1,9 +1,9 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 struct Instance {
-    entt::entity Entity;
+    state::Entity Entity;
 };
 
 // Canonical per-object visibility, present == hidden (sparse, since most objects are visible).

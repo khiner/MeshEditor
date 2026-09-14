@@ -12,29 +12,29 @@ struct Armature;
 struct MeshStore;
 
 // These operations are idempotent.
-void Show(entt::registry &, entt::entity);
-void Hide(entt::registry &, entt::entity);
+void Show(state::Scene &, state::Entity);
+void Hide(state::Scene &, state::Entity);
 
-void ApplySelectBehavior(entt::registry &, entt::entity, MeshInstanceCreateInfo::SelectBehavior);
+void ApplySelectBehavior(state::Scene &, state::Entity, MeshInstanceCreateInfo::SelectBehavior);
 
 // Callers apply SelectBehavior after entity creation.
-std::pair<entt::entity, entt::entity> AddMesh(entt::registry &, uint32_t store_id, std::optional<MeshInstanceCreateInfo> = {});
-entt::entity AddMeshInstance(entt::registry &, entt::entity mesh_entity, const MeshInstanceCreateInfo &);
+std::pair<state::Entity, state::Entity> AddMesh(state::Scene &, uint32_t store_id, std::optional<MeshInstanceCreateInfo> = {});
+state::Entity AddMeshInstance(state::Scene &, state::Entity mesh_entity, const MeshInstanceCreateInfo &);
 
-entt::entity CreateExtrasObject(entt::registry &, ObjectType, const ObjectCreateInfo &, std::string_view default_name);
+state::Entity CreateExtrasObject(state::Scene &, ObjectType, const ObjectCreateInfo &, std::string_view default_name);
 
-entt::entity AddEmpty(entt::registry &, MeshStore &, const ObjectCreateInfo & = {});
-entt::entity AddCamera(entt::registry &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<Camera> = {});
-entt::entity AddLight(entt::registry &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<PunctualLight> = {});
+state::Entity AddEmpty(state::Scene &, MeshStore &, const ObjectCreateInfo & = {});
+state::Entity AddCamera(state::Scene &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<Camera> = {});
+state::Entity AddLight(state::Scene &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<PunctualLight> = {});
 
-std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &, entt::entity viewport, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
+std::pair<state::Entity, state::Entity> ImportMesh(state::Scene &, state::Entity viewport, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
 
-void RequestImportMesh(entt::registry &, entt::entity viewport, std::filesystem::path, MeshInstanceCreateInfo);
+void RequestImportMesh(state::Scene &, state::Entity viewport, std::filesystem::path, MeshInstanceCreateInfo);
 
-void Destroy(entt::registry &, entt::entity viewport, entt::entity);
-void ClearMeshes(entt::registry &, entt::entity viewport);
-void DestroyArmatureData(entt::registry &, entt::entity arm_obj_entity);
+void Destroy(state::Scene &, state::Entity viewport, state::Entity);
+void ClearMeshes(state::Scene &, state::Entity viewport);
+void DestroyArmatureData(state::Scene &, state::Entity arm_obj_entity);
 
-entt::entity CreateBoneEntity(entt::registry &, entt::entity arm_obj_entity, const Armature &, uint32_t bone_index, entt::entity parent_entity);
-void CreateBoneJoints(entt::registry &, entt::entity arm_obj_entity, entt::entity bone_entity, entt::entity joint_entity);
-void CreateBoneInstances(entt::registry &, MeshStore &, entt::entity arm_obj_entity, entt::entity arm_data_entity);
+state::Entity CreateBoneEntity(state::Scene &, state::Entity arm_obj_entity, const Armature &, uint32_t bone_index, state::Entity parent_entity);
+void CreateBoneJoints(state::Scene &, state::Entity arm_obj_entity, state::Entity bone_entity, state::Entity joint_entity);
+void CreateBoneInstances(state::Scene &, MeshStore &, state::Entity arm_obj_entity, state::Entity arm_data_entity);

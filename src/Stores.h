@@ -1,15 +1,15 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 namespace mtl {
 struct Context;
 } // namespace mtl
 
 // Create registry stores and allocate the white-texture sampler slot.
-void InitStoreCtx(entt::registry &, const mtl::Context &);
+void InitStoreCtx(state::Scene &, const mtl::Context &);
 
 // Require InitStoreCtx to run first.
-entt::entity WireRegistry(entt::registry &);
+state::Entity InitDocumentStores(state::Scene &);
 
-void TearDownStoreCtx(entt::registry &);
+void TearDownStoreCtx(state::Scene &);

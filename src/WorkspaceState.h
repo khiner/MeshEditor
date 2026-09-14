@@ -24,8 +24,8 @@ struct State {
     std::vector<WindowState> WindowStates;
 };
 
-State Capture(const entt::registry &, entt::entity viewport, const WindowsState &);
-void Apply(entt::registry &, entt::entity viewport, WindowsState &, const State &);
+State Capture(const state::Scene &, state::Entity viewport, const WindowsState &);
+void Apply(state::Scene &, state::Entity viewport, WindowsState &, const State &);
 // Apply pending layout and widget state after ImGui::Render().
 void ApplyPending(WindowsState &);
 

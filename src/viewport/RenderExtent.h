@@ -2,6 +2,6 @@
 
 #include "numeric/vec2.h"
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
-uvec2 RenderExtentPx(const entt::registry &);
+uvec2 RenderExtentPx(const state::Scene &);

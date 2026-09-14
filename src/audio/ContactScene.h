@@ -14,33 +14,33 @@
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <algorithm>
 #include <optional>
 #include <vector>
 
-inline const ModalSoundControls &ModalControls(const entt::registry &r) {
+inline const ModalSoundControls &ModalControls(const state::Scene &r) {
     static constexpr ModalSoundControls Defaults{};
     const auto view = r.view<const ModalSoundControls>();
     return view.empty() ? Defaults : r.get<const ModalSoundControls>(view.front());
 }
 
 // A body that sounds by modal synthesis.
-inline bool IsModalSounding(const entt::registry &r, entt::entity e) {
+inline bool IsModalSounding(const state::Scene &r, state::Entity e) {
     return r.valid(e) && r.all_of<ModalModes, SoundVertices, SoundVerticesModel>(e) && r.get<SoundVerticesModel>(e) == SoundVerticesModel::Modal;
 }
 
 // A node's geometry is authored on the mesh it instances, so every lookup of one goes through its Instance.
 // Its acoustic surface and material are the node's own, two nodes being able to instance one mesh and differ in both.
-template<typename T> const T *AssetOf(const entt::registry &r, entt::entity node) {
+template<typename T> const T *AssetOf(const state::Scene &r, state::Entity node) {
     const auto *inst = r.try_get<const Instance>(node);
     return inst ? r.try_get<const T>(inst->Entity) : nullptr;
 }
 
 // Mean surface curvature (1/m) where a contact touches a node, read from that node's own mesh at `world_point`.
 // Empty when the node has no mesh.
-inline std::optional<double> SurfaceCurvature(const entt::registry &r, entt::entity node, vec3 world_point) {
+inline std::optional<double> SurfaceCurvature(const state::Scene &r, state::Entity node, vec3 world_point) {
     if (!r.valid(node)) return std::nullopt;
     const auto *inst = r.try_get<const Instance>(node);
     const auto *bvh = inst ? r.try_get<const MeshBvh>(inst->Entity) : nullptr;
@@ -57,7 +57,7 @@ inline std::optional<double> SurfaceCurvature(const entt::registry &r, entt::ent
     return scale > 0 ? local / scale : 0.0;
 }
 
-inline entt::entity NearestNodeWith(const entt::registry &r, entt::entity collider, entt::entity body, auto &&has) {
+inline state::Entity NearestNodeWith(const state::Scene &r, state::Entity collider, state::Entity body, auto &&has) {
     for (auto e = collider; e != null_entity && r.valid(e) && e != body; e = ParentOrNull(r, e)) {
         if (has(e)) return e;
     }
@@ -66,26 +66,26 @@ inline entt::entity NearestNodeWith(const entt::registry &r, entt::entity collid
 
 // The nodes one side of a contact reads from.
 struct ContactNodes {
-    entt::entity Model, Surface, Geometry;
+    state::Entity Model, Surface, Geometry;
 };
-inline ContactNodes ResolveContactNodes(const entt::registry &r, entt::entity collider, entt::entity body) {
+inline ContactNodes ResolveContactNodes(const state::Scene &r, state::Entity collider, state::Entity body) {
     return {
         // The model the contact excites, whose local space its position and directions are expressed in.
         // A body has one model however many colliders it has.
-        NearestNodeWith(r, collider, body, [&r](entt::entity e) { return r.all_of<ModalModes>(e); }),
+        NearestNodeWith(r, collider, body, [&r](state::Entity e) { return r.all_of<ModalModes>(e); }),
         ContactSurfaceNode(r, collider, body),
-        NearestNodeWith(r, collider, body, [&r](entt::entity e) { return AssetOf<MeshBvh>(r, e) != nullptr; }),
+        NearestNodeWith(r, collider, body, [&r](state::Entity e) { return AssetOf<MeshBvh>(r, e) != nullptr; }),
     };
 }
 
-inline const AcousticMaterialProperties &MaterialOf(const entt::registry &r, entt::entity surface_node, entt::entity model_node) {
+inline const AcousticMaterialProperties &MaterialOf(const state::Scene &r, state::Entity surface_node, state::Entity model_node) {
     const auto *mat = r.try_get<const AcousticMaterial>(surface_node);
     if (!mat) mat = r.try_get<const AcousticMaterial>(model_node);
     return mat ? mat->Properties : materials::acoustic::Steel.Properties;
 }
 
 // Reduce a (possibly non-uniform or mirrored) world scale to a positive size ratio relative to the baked size.
-inline float UniformScaleRatio(const entt::registry &r, entt::entity e, const ModalModes &modes) {
+inline float UniformScaleRatio(const state::Scene &r, state::Entity e, const ModalModes &modes) {
     const auto *world = r.try_get<const WorldTransform>(e);
     const float baked = MeanScale(modes.BakedScale);
     return world && baked > 0 ? std::clamp(MeanScale(world->S) / baked, 0.001f, 1000.f) : 1.f;

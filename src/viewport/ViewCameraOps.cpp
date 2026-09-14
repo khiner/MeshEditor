@@ -1,40 +1,38 @@
 #include "viewport/ViewCameraOps.h"
-#include "project/Registry.h"
+#include "state/Scene.h"
 
-#include <entt/entity/registry.hpp>
-
-entt::entity LookThroughCameraEntity(const entt::registry &r) {
+state::Entity LookThroughCameraEntity(const state::Scene &r) {
     auto view = r.view<LookingThrough>();
-    return view.empty() ? entt::null : *view.begin();
+    return view.empty() ? state::Null : *view.begin();
 }
 
-void SetLookThrough(entt::registry &r, entt::entity viewport, entt::entity target) {
+void SetLookThrough(state::Scene &r, state::Entity viewport, state::Entity target) {
     if (!r.all_of<Camera>(target)) return;
     const auto previous = LookThroughCameraEntity(r);
     if (previous == target) return;
 
     // Preserve the saved view across camera switches. Only capture fresh on first entry.
-    auto saved = previous != entt::null ? r.get<LookingThrough>(previous).SavedViewCamera : r.get<ViewCamera>(viewport);
-    if (previous != entt::null) project::Remove<LookingThrough>(r, previous);
-    project::Emplace<LookingThrough>(r, target, std::move(saved));
+    auto saved = previous != state::Null ? r.get<LookingThrough>(previous).SavedViewCamera : r.get<ViewCamera>(viewport);
+    if (previous != state::Null) r.remove<LookingThrough>(previous);
+    r.emplace<LookingThrough>(target, std::move(saved));
 }
 
-void ClearLookThrough(entt::registry &r, entt::entity viewport) {
-    if (const auto camera = LookThroughCameraEntity(r); camera != entt::null) {
-        project::Replace<ViewCamera>(r, viewport, r.get<LookingThrough>(camera).SavedViewCamera);
-        project::Remove<LookingThrough>(r, camera);
+void ClearLookThrough(state::Scene &r, state::Entity viewport) {
+    if (const auto camera = LookThroughCameraEntity(r); camera != state::Null) {
+        r.replace<ViewCamera>(viewport, r.get<LookingThrough>(camera).SavedViewCamera);
+        r.remove<LookingThrough>(camera);
     }
 }
 
-ViewCameraState GetViewCameraState(const entt::registry &r, entt::entity viewport) {
+ViewCameraState GetViewCameraState(const state::Scene &r, state::Entity viewport) {
     ViewCameraState state{r.get<ViewCamera>(viewport), std::nullopt};
-    if (const auto e = LookThroughCameraEntity(r); e != entt::null) state.LookThroughSaved = r.get<LookingThrough>(e).SavedViewCamera;
+    if (const auto e = LookThroughCameraEntity(r); e != state::Null) state.LookThroughSaved = r.get<LookingThrough>(e).SavedViewCamera;
     return state;
 }
 
-void SetViewCameraState(entt::registry &r, entt::entity viewport, ViewCameraState state) {
-    project::EmplaceOrReplace<ViewCamera>(r, viewport, std::move(state.Active));
+void SetViewCameraState(state::Scene &r, state::Entity viewport, ViewCameraState state) {
+    r.emplace_or_replace<ViewCamera>(viewport, std::move(state.Active));
     if (state.LookThroughSaved) {
-        if (const auto e = LookThroughCameraEntity(r); e != entt::null) project::Replace<LookingThrough>(r, e, LookingThrough{std::move(*state.LookThroughSaved)});
+        if (const auto e = LookThroughCameraEntity(r); e != state::Null) r.replace<LookingThrough>(e, LookingThrough{std::move(*state.LookThroughSaved)});
     }
 }

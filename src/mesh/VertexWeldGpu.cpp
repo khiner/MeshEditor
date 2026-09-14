@@ -11,7 +11,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/ScratchChunks.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <bit>
 #include <cstring>
@@ -59,7 +59,7 @@ struct WeldBuffers {
     mtl::Buffer Scratch, Jobs, Tiles;
 };
 
-void SubmitChunk(entt::registry &r, std::span<const WeldTarget> chunk, WeldBuffers &reused) {
+void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, WeldBuffers &reused) {
     auto &meshes = r.ctx().get<MeshStore>();
 
     std::vector<VertexWeldJob> jobs;
@@ -178,7 +178,7 @@ void SubmitChunk(entt::registry &r, std::span<const WeldTarget> chunk, WeldBuffe
 
 } // namespace
 
-void WeldMeshesNow(entt::registry &r, std::span<const WeldTarget> targets) {
+void WeldMeshesNow(state::Scene &r, std::span<const WeldTarget> targets) {
     const profile::CpuScope scope{"WeldMeshes"};
     auto &meshes = r.ctx().get<MeshStore>();
     std::vector<WeldTarget> work;

@@ -33,9 +33,9 @@ double Median(std::vector<double> values) {
 void BenchScene(uint32_t slices, bool render) {
     const TestDir dir{"mesheditor-project-scene-bench"};
     Paths::SetProject(dir);
-    entt::registry r;
+    state::Scene r;
     r.ctx().emplace<mtl::Context>();
-    entt::entity viewport;
+    state::Entity viewport;
     {
         project::Project p{r};
         viewport = InitEngine(r);

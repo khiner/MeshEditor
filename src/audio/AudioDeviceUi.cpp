@@ -16,7 +16,7 @@ std::string SampleRateName(const AudioDeviceResource &res, uint32_t sample_rate)
 }
 } // namespace
 
-void DrawAudioDeviceControls(entt::registry &r, entt::entity viewport) {
+void DrawAudioDeviceControls(state::Scene &r, state::Entity viewport) {
     using namespace ImGui;
     const auto &config = r.get<const AudioOutputConfig>(viewport);
     const auto &mix = r.get<const AudioOutputMix>(viewport);

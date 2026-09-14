@@ -10,24 +10,24 @@
 #include "selection/SelectionComponents.h"
 #include "viewport/InteractionComponents.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
-bool IsBoneEditMode(const entt::registry &r, entt::entity viewport) {
+bool IsBoneEditMode(const state::Scene &r, state::Entity viewport) {
     if (r.get<const Interaction>(viewport).Mode != InteractionMode::Edit) return false;
-    return FindArmatureObject(r, FindActiveEntity(r)) != entt::null;
+    return FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
 }
 
-std::vector<entt::entity> RootSelectedForTransform(const entt::registry &r, entt::entity viewport) {
+std::vector<state::Entity> RootSelectedForTransform(const state::Scene &r, state::Entity viewport) {
     const auto mode = r.get<const Interaction>(viewport).Mode;
     const auto arm_obj = FindArmatureObject(r, FindActiveEntity(r));
-    const bool bone_edit_mode = mode == InteractionMode::Edit && arm_obj != entt::null;
-    const bool bone_mode = bone_edit_mode || (mode == InteractionMode::Pose && arm_obj != entt::null);
-    const auto is_parent_selected = [&](entt::entity e) {
+    const bool bone_edit_mode = mode == InteractionMode::Edit && arm_obj != state::Null;
+    const bool bone_mode = bone_edit_mode || (mode == InteractionMode::Pose && arm_obj != state::Null);
+    const auto is_parent_selected = [&](state::Entity e) {
         const auto *node = r.try_get<const SceneNode>(e);
-        if (!node || node->Parent == entt::null) return false;
+        if (!node || node->Parent == state::Null) return false;
         return bone_mode ? r.all_of<BoneSelection>(node->Parent) : r.all_of<Selected>(node->Parent);
     };
-    std::vector<entt::entity> root_selected;
+    std::vector<state::Entity> root_selected;
     // Rest-pose edits do not propagate during a drag, so every selected edit-mode bone is a root.
     if (bone_edit_mode) {
         for (const auto e : r.view<const BoneSelection>()) root_selected.emplace_back(e);
@@ -41,22 +41,22 @@ std::vector<entt::entity> RootSelectedForTransform(const entt::registry &r, entt
     return root_selected;
 }
 
-bool CanDuplicate(const entt::registry &r, entt::entity viewport) {
+bool CanDuplicate(const state::Scene &r, state::Entity viewport) {
     if (r.get<const Interaction>(viewport).Mode == InteractionMode::Pose) return false;
     if (IsBoneEditMode(r, viewport)) return !r.view<BoneSelection>().empty();
     return !r.view<Selected>().empty();
 }
-bool CanDuplicateLinked(const entt::registry &r, entt::entity viewport) { return CanDuplicate(r, viewport) && !IsBoneEditMode(r, viewport); }
-bool CanDelete(const entt::registry &r, entt::entity viewport) { return CanDuplicate(r, viewport); }
+bool CanDuplicateLinked(const state::Scene &r, state::Entity viewport) { return CanDuplicate(r, viewport) && !IsBoneEditMode(r, viewport); }
+bool CanDelete(const state::Scene &r, state::Entity viewport) { return CanDuplicate(r, viewport); }
 
-bool AllSelectedAreMeshes(const entt::registry &r) {
+bool AllSelectedAreMeshes(const state::Scene &r) {
     for (const auto [e, ok] : r.view<const Selected, const ObjectKind>().each()) {
         if (ok.Value != ObjectType::Mesh) return false;
     }
     return true;
 }
 
-std::vector<ElementRange> GetElementRangesForSelected(const entt::registry &r, entt::entity viewport) {
+std::vector<ElementRange> GetElementRangesForSelected(const state::Scene &r, state::Entity viewport) {
     const auto element = r.get<const EditMode>(viewport).Value;
     const auto &meshes = r.ctx().get<const MeshStore>();
     std::vector<ElementRange> ranges;

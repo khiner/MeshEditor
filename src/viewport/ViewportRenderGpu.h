@@ -3,7 +3,7 @@
 #include "Range.h"
 #include "metal/Slots.h"
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 #include <span>
 #include <vector>
 
@@ -23,11 +23,11 @@ struct MeshStore;
 struct Pipelines;
 
 struct MeshVertexChanges {
-    entt::entity Entity;
+    state::Entity Entity;
     std::span<const Range> Ranges;
 };
 // Recompute normals and update edit work for restored vertex ranges without mutating the vertices.
-void RefreshEditedPositions(entt::registry &, entt::entity viewport, std::span<const MeshVertexChanges>);
+void RefreshEditedPositions(state::Scene &, state::Entity viewport, std::span<const MeshVertexChanges>);
 
 enum class MeshletRouteMode : uint32_t { Single,
                                          Material,
@@ -77,25 +77,25 @@ enum class SceneUpdate {
     Reuse,
 };
 
-void RecordRenderCommandBuffer(entt::registry &, entt::entity viewport, MTL::CommandBuffer *, SceneUpdate = SceneUpdate::Rebuild, RenderPhase = RenderPhase::Full);
+void RecordRenderCommandBuffer(state::Scene &, state::Entity viewport, MTL::CommandBuffer *, SceneUpdate = SceneUpdate::Rebuild, RenderPhase = RenderPhase::Full);
 
 // Records every blur step and the resolve into one command buffer using one view-UBO instance per step.
-void RecordBlurStepsCommandBuffer(entt::registry &, entt::entity viewport, MTL::CommandBuffer *, std::span<const uint32_t> sample_weights);
+void RecordBlurStepsCommandBuffer(state::Scene &, state::Entity viewport, MTL::CommandBuffer *, std::span<const uint32_t> sample_weights);
 
 // Derive the listed mesh entities' base normals in one batched GPU submit-and-wait, writing the base normal stores.
 // Meshes without triangles or adjacency are skipped.
 // Call on the main thread between frames, where the per-frame derive buffers have no live GPU reader.
-void DeriveBaseNormalsNow(entt::registry &, std::span<const entt::entity> mesh_entities);
+void DeriveBaseNormalsNow(state::Scene &, std::span<const state::Entity> mesh_entities);
 
 // Complete the listed new or restored mesh entities' shading state.
 // Derives base normals, encodes stored authored corner normals, and returns the authored-morph-shading gate.
 // Call after the meshes' index buffers are written, under DeriveBaseNormalsNow's between-frames constraints.
-void FinalizeNewMeshShadingNow(entt::registry &, std::span<const entt::entity> mesh_entities);
+void FinalizeNewMeshShadingNow(state::Scene &, std::span<const state::Entity> mesh_entities);
 
 // Evaluates the final pending edit into canonical positions and affected normals in one submission.
 // Returns the meshes whose positions changed.
-std::vector<entt::entity> CommitPosedGeometry(entt::registry &, entt::entity viewport, std::span<const entt::entity> mesh_entities);
-void ReleaseMeshEditWork(entt::registry &, entt::entity mesh_entity);
+std::vector<state::Entity> CommitPosedGeometry(state::Scene &, state::Entity viewport, std::span<const state::Entity> mesh_entities);
+void ReleaseMeshEditWork(state::Scene &, state::Entity mesh_entity);
 
 // Writes the posed-prelude dispatch counts for the next submission, or zeros when deform inputs are unchanged.
 void SyncPreludeDispatchArgs(GpuBuffers &);

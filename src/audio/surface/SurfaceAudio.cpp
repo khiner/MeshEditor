@@ -1,5 +1,5 @@
 #include "SurfaceAudio.h"
-#include "project/Registry.h"
+#include "state/Scene.h"
 
 #include "Reactive.h"
 #include "TransformMath.h"
@@ -12,8 +12,6 @@
 #include "physics/PhysicsTypes.h"
 #include "render/MaterialComponents.h"
 #include "viewport/ViewportEvents.h"
-
-#include <entt/entity/registry.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -63,7 +61,7 @@ vec3 SampleNormal(const DecodedImage &image, float x, float y) {
 }
 } // namespace
 
-void UpdateSurfaceRelief(entt::registry &r, entt::entity node_entity, entt::entity mesh_entity, bool geometry_changed) {
+void UpdateSurfaceRelief(state::Scene &r, state::Entity node_entity, state::Entity mesh_entity, bool geometry_changed) {
     // A surface names its own map only to override the one the mesh's material already supplies.
     const auto *surface = r.try_get<const ContactSurface>(node_entity);
     const auto normal_map = [&]() -> std::optional<gltf::NormalMapRef> {
@@ -74,7 +72,7 @@ void UpdateSurfaceRelief(entt::registry &r, entt::entity node_entity, entt::enti
         return gltf::NormalMapRef{.Image = *image, .TexCoord = nt.TexCoord, .Scale = nt.Scale};
     }();
     if (!normal_map) {
-        project::Remove<SurfaceRelief>(r, node_entity);
+        r.remove<SurfaceRelief>(node_entity);
         return;
     }
     // Measuring the parameterization walks every triangle, so a surface edit that left the map alone stops here.
@@ -89,7 +87,7 @@ void UpdateSurfaceRelief(entt::registry &r, entt::entity node_entity, entt::enti
     if (existing && existing->Key == key) return;
     const auto image = length_per_uv > 0 ? gltf::DecodeImageRgba8(r, normal_map->Image) : std::nullopt;
     if (!image || image->Width == 0 || image->Height == 0) {
-        project::Remove<SurfaceRelief>(r, node_entity);
+        r.remove<SurfaceRelief>(node_entity);
         return;
     }
 
@@ -117,7 +115,7 @@ void UpdateSurfaceRelief(entt::registry &r, entt::entity node_entity, entt::enti
         y += dir_y;
     }
 
-    project::EmplaceOrReplace<SurfaceRelief>(r, node_entity, SurfaceRelief{std::make_shared<const RoughnessTrack>(MakeProfileTrack(heights, step_length)), key, source_key});
+    r.emplace_or_replace<SurfaceRelief>(node_entity, SurfaceRelief{std::make_shared<const RoughnessTrack>(MakeProfileTrack(heights, step_length)), key, source_key});
 }
 
 /***** Scene contact inputs *****/
@@ -201,7 +199,7 @@ struct SideTracks {
 };
 
 // A body with no acoustic surface contributes the default finish, so a contact is always fully specified.
-SideTracks ResolveSideTracks(const entt::registry &r, ModalAudio &m, const SustainedContactSide &side, entt::entity node, float sample_rate) {
+SideTracks ResolveSideTracks(const state::Scene &r, ModalAudio &m, const SustainedContactSide &side, state::Entity node, float sample_rate) {
     auto &surface = Surface(m);
     static constexpr ContactSurface DefaultSurface{};
     static const uint64_t default_key = FinishTrackKey(DefaultSurface);
@@ -296,7 +294,7 @@ struct ResolvedContact {
     struct Side {
         // Subsequent values use the frame of this side's model node.
         // Null when the side has nothing to excite.
-        entt::entity ModelEntity{entt::null};
+        state::Entity ModelEntity{state::Null};
         SamplePointBlend Blend{};
         vec3 Normal{0}; // Unit contact normal, directed into this body.
         vec3 SlipDir{0}; // Unit slip direction, which the frictional force acts along.
@@ -360,7 +358,7 @@ constexpr double MinContactSamples{6};
 // The expected maximum closing rate the stiffness cap is sized at, their simulation value, m/s.
 constexpr double MaxImpactSpeed{0.5};
 
-ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const SustainedContact &c, const std::array<ContactNodes, 2> &nodes, const SurfaceSoundControls &controls) {
+ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const SustainedContact &c, const std::array<ContactNodes, 2> &nodes, const SurfaceSoundControls &controls) {
     auto &surface = Surface(m);
     ResolvedContact out;
     std::array<double, 2> curvature{};
@@ -1202,33 +1200,33 @@ std::optional<VoiceSet::Voice> BuildContactVoice(ModalAudio &m, const SustainedC
 
 /***** Core modal interface from audio/SurfaceContact.h *****/
 
-float SurfaceRoughnessOf(const entt::registry &r, entt::entity node) {
+float SurfaceRoughnessOf(const state::Scene &r, state::Entity node) {
     static constexpr ContactSurface DefaultSurface{};
     const auto *surface = node != null_entity && r.valid(node) ? r.try_get<const ContactSurface>(node) : nullptr;
     return (surface ? *surface : DefaultSurface).Roughness;
 }
 
 // A compound body's rubber foot and steel shell are separate collider nodes, so a contact on one takes that node's surface.
-entt::entity ContactSurfaceNode(const entt::registry &r, entt::entity collider, entt::entity body) {
-    return NearestNodeWith(r, collider, body, [&r](entt::entity e) { return r.all_of<ContactSurface>(e); });
+state::Entity ContactSurfaceNode(const state::Scene &r, state::Entity collider, state::Entity body) {
+    return NearestNodeWith(r, collider, body, [&r](state::Entity e) { return r.all_of<ContactSurface>(e); });
 }
 
-void RegisterSurfaceContactHandlers(entt::registry &r) {
-    RegisterSceneSetupHandler(r, [](entt::registry &r, entt::entity viewport) {
-        project::EmplaceOrReplace<SurfaceSoundControls>(r, viewport);
+void RegisterSurfaceContactHandlers(state::Scene &r) {
+    RegisterSceneSetupHandler(r, [](state::Scene &r, state::Entity viewport) {
+        r.emplace_or_replace<SurfaceSoundControls>(viewport);
     });
     // A surface belongs to a node.
-    track<surface_changes::SurfaceEdit>(r).on<ContactSurface>(On::Create | On::Update | On::Destroy);
+    reactive<surface_changes::SurfaceEdit>(r).on<ContactSurface>(On::Create | On::Update | On::Destroy);
     // A surface with no normal map of its own inherits its material's, so a material reassignment changes the relief too.
     // A material assignment names a mesh where a surface names a node, so the two are tracked apart.
-    track<surface_changes::SurfaceMaterial>(r).on<MeshMaterialAssignment>(On::Create | On::Update);
+    reactive<surface_changes::SurfaceMaterial>(r).on<MeshMaterialAssignment>(On::Create | On::Update);
     // The relief's texel size is measured from the mesh, so an edit to the mesh restates it.
     // Tracked separately from the surface edits above so the derivation can tell which of the two it is answering.
-    track<surface_changes::SurfaceGeometry>(r).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
-    track<surface_changes::SoundControls>(r).on<SurfaceSoundControls>(On::Create | On::Update);
+    reactive<surface_changes::SurfaceGeometry>(r).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
+    reactive<surface_changes::SoundControls>(r).on<SurfaceSoundControls>(On::Create | On::Update);
 }
 
-void SurfaceUpdateContacts(entt::registry &r) {
+void SurfaceUpdateContacts(state::Scene &r) {
     auto &m = r.ctx().get<ModalAudio>();
     auto &surface = Surface(m);
     for (auto e : reactive<surface_changes::SoundControls>(r)) {
@@ -1257,8 +1255,8 @@ void SurfaceUpdateContacts(entt::registry &r) {
     for (const auto node : surface_edits) {
         if (!r.valid(node)) continue;
         // Intentional registry write outside Apply: a memo derived from the surface.
-        if (const auto *s = r.try_get<const ContactSurface>(node)) project::EmplaceOrReplace<SurfaceFinishKey>(r, node, FinishTrackKey(*s));
-        else project::Remove<SurfaceFinishKey>(r, node);
+        if (const auto *s = r.try_get<const ContactSurface>(node)) r.emplace_or_replace<SurfaceFinishKey>(node, FinishTrackKey(*s));
+        else r.remove<SurfaceFinishKey>(node);
     }
 
     const auto *sustained = r.ctx().find<const PhysicsSustainedContacts>();

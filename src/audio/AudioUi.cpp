@@ -157,7 +157,7 @@ std::optional<size_t> PlotModeData(
 }
 
 bool DrawModalModelActions(
-    entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity,
+    state::Scene &r, state::Entity viewport, state::Entity e, state::Entity mesh_entity,
     const ModalSolveSettings &settings, const AcousticMaterial &material
 ) {
     const bool present = r.all_of<ModalModes>(e);
@@ -188,7 +188,7 @@ bool DrawModalModelActions(
 }
 
 void DrawModalModelSettings(
-    entt::registry &r, entt::entity e, entt::entity mesh_entity,
+    state::Scene &r, state::Entity e, state::Entity mesh_entity,
     const ModalSolveSettings &settings, const AcousticMaterial &material
 ) {
     const ContactSurface default_surface = WithPreset({}, surfaces::acoustic::Default);
@@ -320,7 +320,7 @@ void DrawModalModelSettings(
 }
 
 // Returns the active vertex in Excite mode or selected vertices in Edit mode.
-std::vector<uint32_t> GetSampleOpVertices(const entt::registry &r, entt::entity viewport, entt::entity sound_entity) {
+std::vector<uint32_t> GetSampleOpVertices(const state::Scene &r, state::Entity viewport, state::Entity sound_entity) {
     if (!r.valid(sound_entity)) return {};
     const auto *inst = r.try_get<const Instance>(sound_entity);
     if (!inst) return {};
@@ -365,8 +365,8 @@ bool ImpulseJoystick(vec2 &pos) {
 }
 } // namespace
 
-void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity) {
-    if (e == entt::null || mesh_entity == entt::null) return;
+void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Entity e, state::Entity mesh_entity) {
+    if (e == state::Null || mesh_entity == state::Null) return;
 
     const ModalSolveSettings default_settings;
     const auto &settings = r.all_of<ModalSolveSettings>(e) ? r.get<const ModalSolveSettings>(e) : default_settings;
@@ -536,7 +536,7 @@ void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::ent
     }
 }
 
-void DrawGlobalSynthControls(entt::registry &r, entt::entity viewport) {
+void DrawGlobalSynthControls(state::Scene &r, state::Entity viewport) {
     ui::Edit f{r, viewport};
     if (!r.view<const ModalModes>().empty() && CollapsingHeader("Modal synthesis", ImGuiTreeNodeFlags_DefaultOpen)) {
         f.Slider<&ModalSoundControls::RenderThreads>("Render threads");
@@ -569,7 +569,7 @@ void DrawGlobalSynthControls(entt::registry &r, entt::entity viewport) {
     }
 }
 
-void DrawAudioDebug(const entt::registry &r) {
+void DrawAudioDebug(const state::Scene &r) {
     const auto &m = r.ctx().get<const ModalAudio>();
     const auto &bank = *m.Live;
 
@@ -618,7 +618,7 @@ std::string_view SolveStageLabel(fastfem::SolveStage stage) {
     }
 }
 
-void DrawModalJobsOverlay(entt::registry &r) {
+void DrawModalJobsOverlay(state::Scene &r) {
     const auto &jobs = r.ctx().get<const ModalSolveJobs>().Jobs;
     if (jobs.empty()) return;
 

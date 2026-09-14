@@ -3,12 +3,11 @@
 #include "mesh/Mesh.h"
 #include "mesh/Primitives.h"
 #include "physics/PhysicsTypes.h"
-#include "project/Registry.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 #include <numbers>
-void RederiveCollider(entt::registry &r, entt::entity e) {
+void RederiveCollider(state::Scene &r, state::Entity e) {
     const auto *cs = r.try_get<const ColliderShape>(e);
     const auto *policy = r.try_get<const ColliderPolicy>(e);
     if (!cs || !policy) return;
@@ -114,7 +113,7 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
         );
     }
 
-    project::Patch<ColliderShape>(r, e, [&](ColliderShape &x) {
+    r.patch<ColliderShape>(e, [&](ColliderShape &x) {
         x.Shape = std::move(shape);
         x.MeshEntity = IsMeshBackedShape(x.Shape) ? mesh_entity : null_entity;
         x.LocalOffset = local_offset;

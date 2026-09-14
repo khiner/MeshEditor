@@ -11,7 +11,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/ScratchChunks.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <cstdlib>
 #include <print>
@@ -35,7 +35,7 @@ uint32_t ScratchWords(const AdjacencyWork &work) {
     return counts + blocks + bit_words;
 }
 
-void SubmitChunk(entt::registry &r, std::span<const AdjacencyWork> chunk) {
+void SubmitChunk(state::Scene &r, std::span<const AdjacencyWork> chunk) {
     const auto &meshes = r.ctx().get<const MeshStore>();
 
     std::vector<VertexAdjacencyJob> jobs;
@@ -123,7 +123,7 @@ void SubmitChunk(entt::registry &r, std::span<const AdjacencyWork> chunk) {
 }
 } // namespace
 
-void BuildVertexAdjacencyNow(entt::registry &r, std::span<const entt::entity> mesh_entities) {
+void BuildVertexAdjacencyNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     const auto &meshes = r.ctx().get<const MeshStore>();
     std::vector<AdjacencyWork> work;
     for (const auto entity : mesh_entities) {

@@ -3,7 +3,7 @@
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 namespace action::bone {
 struct Add {};
@@ -21,7 +21,7 @@ struct SetEditHeadTailRoll {
 };
 struct SetConstraintTarget {
     uint32_t Index;
-    entt::entity Target;
+    state::Entity Target;
 };
 struct SetConstraintInfluence {
     uint32_t Index;
@@ -51,5 +51,5 @@ using Action = std::variant<
     BakeConstraintChildOfInverse, ClearConstraintChildOfInverse,
     DeleteConstraint, AddConstraint>;
 
-void Apply(entt::registry &, entt::entity viewport, const Action &);
+void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::bone

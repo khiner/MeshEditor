@@ -53,7 +53,7 @@ struct Armature {
     void RecomputeInverseBindMatrices();
 };
 
-std::vector<uint32_t> CollectBonesForDeletion(const entt::registry &, entt::entity arm_obj_entity);
+std::vector<uint32_t> CollectBonesForDeletion(const state::Scene &, state::Entity arm_obj_entity);
 
 Transform ComposeWithDelta(const Transform &rest, const Transform &delta);
 

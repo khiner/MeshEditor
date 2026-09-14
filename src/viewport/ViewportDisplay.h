@@ -4,7 +4,7 @@
 #include "numeric/vec2.h"
 #include "numeric/vec4.h"
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <algorithm>
 #include <optional>
@@ -77,7 +77,7 @@ struct StudioEnvironment {
     std::string Name;
 };
 
-const PBRViewportLighting &GetActivePbrLighting(const entt::registry &, entt::entity viewport, ViewportShadingMode);
+const PBRViewportLighting &GetActivePbrLighting(const state::Scene &, state::Entity viewport, ViewportShadingMode);
 
 struct ViewportExtent {
     uvec2 Value{};

@@ -3,21 +3,20 @@
 #include "assets/MeshImport.h"
 #include "gltf/GltfConvert.h"
 #include "project/Assets.h"
-#include "project/Registry.h"
 #include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 #include <iostream>
 #include <unordered_map>
-void ImportObjPlyMaterials(entt::registry &r, entt::entity viewport, std::span<const ObjPlyMaterial> materials, const std::filesystem::path &mesh_path, uint32_t mesh_store_id) {
+void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<const ObjPlyMaterial> materials, const std::filesystem::path &mesh_path, uint32_t mesh_store_id) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &textures = r.ctx().get<TextureStore>();
-    auto &sources = project::GetOrEmplace<gltf::SourceAssets>(r, viewport);
-    auto &manifest = project::GetOrEmplace<MaterializedTextures>(r, viewport);
+    auto &sources = r.get_or_emplace<gltf::SourceAssets>(viewport);
+    auto &manifest = r.get_or_emplace<MaterializedTextures>(viewport);
     const auto sampler_index = uint32_t(sources.Samplers.size());
     sources.Samplers.emplace_back(gltf::Sampler{.MagFilter = gltf::Filter::Nearest, .MinFilter = gltf::Filter::Nearest, .WrapS = gltf::Wrap::Repeat, .WrapT = gltf::Wrap::Repeat, .Name = {}});
 

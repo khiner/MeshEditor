@@ -5,7 +5,7 @@
 #include "scene/Entity.h"
 #include "selection/BoneSelection.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <format>
 
@@ -378,7 +378,7 @@ float ComputeBoneDisplayScale(const Armature &armature, uint32_t bone_index) {
     return 1.f;
 }
 
-std::vector<uint32_t> CollectBonesForDeletion(const entt::registry &r, entt::entity arm_obj_entity) {
+std::vector<uint32_t> CollectBonesForDeletion(const state::Scene &r, state::Entity arm_obj_entity) {
     std::vector<uint32_t> to_delete;
     for (const auto e : r.view<const BoneSelection, const BoneIndex>()) {
         if (r.get<const SubElementOf>(e).Parent == arm_obj_entity) to_delete.emplace_back(r.get<const BoneIndex>(e).Index);

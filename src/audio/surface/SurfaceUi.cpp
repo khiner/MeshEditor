@@ -10,7 +10,7 @@
 #include "ui/FieldEdit.h"
 #include "ui/PresetCombo.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <atomic>
 #include <bit>
@@ -33,7 +33,7 @@ template<> struct FieldLimits<&SurfaceSoundControls::MinSweepSpeed> : Within<0.,
 
 using namespace ImGui;
 
-void DrawContactSurfaceControls(entt::registry &r, entt::entity e, const ContactSurface &surface, const AcousticMaterial &material) {
+void DrawContactSurfaceControls(state::Scene &r, state::Entity e, const ContactSurface &surface, const AcousticMaterial &material) {
     SeparatorText("Surface finish");
     ui::PresetCombo("Presets##finish", surface.Name, surfaces::acoustic::All, [&](const auto &choice) {
         action::Emit(action::audio::SetSurfacePreset{e, choice.Name});
@@ -60,7 +60,7 @@ void DrawContactSurfaceControls(entt::registry &r, entt::entity e, const Contact
     MeshEditor::HelpMarker("A patch of radius a cannot resolve wavelengths below about 2a, so the cutoff tracks the sweep speed and softens under heavier load.");
 }
 
-void DrawSurfaceSynthControls(entt::registry &r, entt::entity viewport) {
+void DrawSurfaceSynthControls(state::Scene &r, state::Entity viewport) {
     ui::Edit f{r, viewport};
     SeparatorText("Sustained contact");
     f.Slider<&SurfaceSoundControls::MaxVoices>("Max voices");
@@ -82,7 +82,7 @@ void DrawSurfaceSynthControls(entt::registry &r, entt::entity viewport) {
     Text("Active voices: %u", SurfaceActiveVoices(r.ctx().get<const ModalAudio>()));
 }
 
-void DrawSurfaceContactDebug(const entt::registry &r) {
+void DrawSurfaceContactDebug(const state::Scene &r) {
     const auto &surface = Surface(r.ctx().get<const ModalAudio>());
 
     SeparatorText("Sustained contact");

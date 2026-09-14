@@ -129,7 +129,7 @@ std::expected<fs::path, std::string> ArchiveSource(project::Assets &assets, cons
     }
 }
 
-std::expected<Source, std::string> LoadSource(const entt::registry &r, const fs::path &path) {
+std::expected<Source, std::string> LoadSource(const state::Scene &r, const fs::path &path) {
     const auto bytes = File::Read(project::ResolveAsset(r, path));
     if (!bytes) return std::unexpected{bytes.error()};
     Source source;
@@ -192,7 +192,7 @@ std::optional<std::pair<fs::path, long>> SampleGroupFromKey(const fs::path &key)
     return std::pair{fs::path{match[1].str()}, listener};
 }
 
-std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamples(const entt::registry &r, const fs::path &source, long listener_point_index) {
+std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamples(const state::Scene &r, const fs::path &source, long listener_point_index) {
     const auto file = project::ResolveAsset(r, source);
     std::ifstream stream{file, std::ifstream::binary};
     if (!stream) return std::unexpected(std::format("Failed to open RealImpact audio file: {}", file.string()));

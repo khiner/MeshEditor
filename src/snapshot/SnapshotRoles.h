@@ -1,11 +1,13 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "project/store/Blob.h"
+#include "state/Entity.h"
+#include "state/Schema.h"
 
+#include <array>
 #include <optional>
 #include <span>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 namespace snapshot {
@@ -19,17 +21,22 @@ struct SnapshotEntry {
     Encoding How;
     uint32_t Size;
     void (*Serialize)(const void *component, std::vector<std::byte> &out);
-    void (*Emplace)(entt::registry &, entt::entity, std::span<const std::byte>);
-    bool (*SkipEntity)(const entt::registry &, entt::entity);
+    void (*Emplace)(state::Scene &, state::Entity, std::span<const std::byte>);
+    bool (*SkipEntity)(const state::Scene &, state::Entity);
     std::string_view Name{};
+    bool History{true}; // Workspace-only values still participate in full snapshots.
+    state::TypeId CaptureWith{state::SchemaSize}; // Membership can change another component's persistence role.
+    store::Blob (*Copy)(const void *){};
+    void (*Move)(state::Scene &, state::Entity, store::Blob){};
 };
 
 // Returns the serializer table for Persistent components.
-const std::unordered_map<entt::id_type, SnapshotEntry> &SnapshotTable();
+using SnapshotEntries = std::array<SnapshotEntry, state::SchemaSize>;
+const SnapshotEntries &SnapshotTable();
 
 // Throws if a live component pool is absent from Persistent and Derived.
-void VerifyCoverage(const entt::registry &);
+void VerifyCoverage(const state::Scene &);
 
 // Compares two component values or returns nullopt for unsupported types.
-std::optional<bool> ComponentValuesEqual(entt::id_type, const void *, const void *);
+std::optional<bool> ComponentValuesEqual(state::TypeId, const void *, const void *);
 } // namespace snapshot

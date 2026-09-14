@@ -1,8 +1,8 @@
 #pragma once
 
-#include "entt_fwd.h"
 #include "numeric/vec2.h"
 #include "selection/BoneSelection.h"
+#include "state/Entity.h"
 #include "viewport/RenderView.h"
 
 #include <memory>
@@ -12,27 +12,27 @@
 
 namespace action::selection {
 struct Select {
-    entt::entity Entity;
+    state::Entity Entity;
 };
 struct ToggleSelected {
-    entt::entity Entity;
+    state::Entity Entity;
 };
 // `Part`/`Additive` describe an optional sub-part merged after the selection state is established.
 struct SelectBone {
-    entt::entity Entity;
+    state::Entity Entity;
     std::optional<BoneSel> Part{};
     bool Additive{false};
 };
 struct ExtendActive {
-    entt::entity Entity;
+    state::Entity Entity;
 };
 struct ExtendBoneActive {
-    entt::entity Entity;
+    state::Entity Entity;
     std::optional<BoneSel> Part{};
     bool Additive{false};
 };
 struct SetBoneSelectionPart {
-    entt::entity Entity;
+    state::Entity Entity;
     std::optional<BoneSel> Part;
     bool Additive;
 };
@@ -67,14 +67,14 @@ struct ApplyTreeSelection {
     enum class ClearKind : uint8_t { None,
                                      BonesOnly,
                                      All };
-    std::vector<entt::entity> Entities;
+    std::vector<state::Entity> Entities;
     uint32_t SelectCount{};
-    entt::entity NavToActive{null_entity};
+    state::Entity NavToActive{null_entity};
     ClearKind Clear{ClearKind::None};
 
     auto ToSelect() const { return std::span{Entities}.first(SelectCount); }
     auto ToDeselect() const { return std::span{Entities}.subspan(SelectCount); }
-    void Add(entt::entity e, bool selected) {
+    void Add(state::Entity e, bool selected) {
         if (selected) Entities.insert(Entities.begin() + SelectCount++, e);
         else Entities.push_back(e);
     }
@@ -85,5 +85,5 @@ using Action = std::variant<
     DeselectAll, SelectAll, SnapshotBoxSelectBaseline, ClearBoxSelectBaseline,
     ApplyBoxSelect, Pick, PickCycle, ApplyEditElementClick, ApplyTreeSelection>;
 
-void Apply(entt::registry &, entt::entity viewport, const Action &);
+void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::selection

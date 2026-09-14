@@ -1,69 +1,41 @@
 #pragma once
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
-enum class On : uint8_t {
-    Create = 1,
-    Update = 2,
-    Destroy = 4
-};
-constexpr On operator|(On a, On b) { return On(uint8_t(a) | uint8_t(b)); }
-
-// Erase stale versions before inserting recycled entity identifiers.
-inline void EmplaceSafe(entt::storage_for_t<entt::reactive> &s, const entt::registry &, entt::entity e) {
-    if (s.contains(e)) return;
-    using traits = entt::entt_traits<entt::entity>;
-    if (const auto stored_ver = s.current(e); stored_ver != traits::to_version(entt::tombstone)) {
-        s.erase(traits::construct(traits::to_entity(e), stored_ver));
-    }
-    s.emplace(e);
-}
-
-struct ReactiveTracker {
-    entt::storage_for_t<entt::reactive> &s;
-    template<typename T> ReactiveTracker &on(On events) {
-        if (uint8_t(events) & uint8_t(On::Create)) s.on_construct<T, &EmplaceSafe>();
-        if (uint8_t(events) & uint8_t(On::Update)) s.on_update<T, &EmplaceSafe>();
-        if (uint8_t(events) & uint8_t(On::Destroy)) s.on_destroy<T, &EmplaceSafe>();
-        return *this;
-    }
-};
+using state::On;
 
 template<typename Change>
-ReactiveTracker track(entt::registry &r) { return {r.storage<entt::reactive>(entt::type_hash<Change>::value())}; }
-
-template<typename Change>
-auto &reactive(entt::registry &r) { return r.storage<entt::reactive>(entt::type_hash<Change>::value()); }
+auto &reactive(state::Scene &r) { return r.changes(state::Type<Change>()); }
 
 enum class ComponentEventPhase { BeforePose,
                                  AfterPose };
 enum class EventPass;
 struct ComponentEventHandler {
-    std::function<void(entt::registry &, EventPass)> Apply;
+    void (*Apply)(state::Scene &, EventPass);
     ComponentEventPhase Phase;
 };
 
 inline void RegisterComponentEventHandler(
-    entt::registry &r, std::function<void(entt::registry &, EventPass)> handler,
+    state::Scene &r, void (*handler)(state::Scene &, EventPass),
     ComponentEventPhase phase = ComponentEventPhase::BeforePose
 ) {
-    r.ctx().emplace<std::vector<ComponentEventHandler>>().push_back({std::move(handler), phase});
+    r.ctx().emplace<std::vector<ComponentEventHandler>>().push_back({handler, phase});
 }
 
 // Run domain setup handlers on the viewport entity.
 struct SceneSetupHandlers {
-    std::vector<std::function<void(entt::registry &, entt::entity viewport)>> Handlers;
+    std::vector<void (*)(state::Scene &, state::Entity)> Handlers;
 };
 
 // Run domain clear handlers after scene destruction and before resetting entity identifiers.
 struct SceneClearHandlers {
-    std::vector<std::function<void(entt::registry &)>> Handlers;
+    std::vector<void (*)(state::Scene &)> Handlers;
 };
 
-inline void RegisterSceneSetupHandler(entt::registry &r, std::function<void(entt::registry &, entt::entity)> handler) {
-    r.ctx().emplace<SceneSetupHandlers>().Handlers.emplace_back(std::move(handler));
+inline void RegisterSceneSetupHandler(state::Scene &r, void (*handler)(state::Scene &, state::Entity)) {
+    r.ctx().emplace<SceneSetupHandlers>().Handlers.emplace_back(handler);
 }
 
-inline void RegisterSceneClearHandler(entt::registry &r, std::function<void(entt::registry &)> handler) {
-    r.ctx().emplace<SceneClearHandlers>().Handlers.emplace_back(std::move(handler));
+inline void RegisterSceneClearHandler(state::Scene &r, void (*handler)(state::Scene &)) {
+    r.ctx().emplace<SceneClearHandlers>().Handlers.emplace_back(handler);
 }

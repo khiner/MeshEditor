@@ -1,16 +1,16 @@
 #pragma once
 
-#include "mesh/MeshComponents.h" // RenderInstance
+#include "state/Scene.h"
 
-#include <entt/entity/registry.hpp>
+struct RenderInstance;
 
 // Unmanaged reactive storage tracking entity destruction.
-// Unlike managed storage (via r.storage<entt::reactive>()), this keeps destroyed entities until manually cleared, so deletions stay observable across a frame.
+// Unlike managed dirty sets, this keeps destroyed entities until manually cleared, so deletions stay observable across a frame.
 struct EntityDestroyTracker {
-    entt::storage_for_t<entt::reactive> Storage;
+    state::DirtySet Storage;
 
-    void Bind(entt::registry &r) {
+    void Bind(state::Scene &r) {
         Storage.bind(r);
-        Storage.on_destroy<RenderInstance>();
+        Storage.on<RenderInstance>(state::On::Destroy);
     }
 };

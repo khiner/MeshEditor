@@ -1,28 +1,34 @@
 #pragma once
 #include "PathSerialize.h"
 #include "numeric/Serialize.h"
+#include "snapshot/NativeSize.h"
 #include "snapshot/SnapshotRoles.h"
+#include "state/Scene.h"
 #include <cstring>
-#include <entt/entity/registry.hpp>
 #include <stdexcept>
 
 namespace snapshot::detail {
 using Comparator = bool (*)(const void *, const void *);
 struct Tables {
-    std::unordered_map<entt::id_type, SnapshotEntry> Snapshots;
-    std::unordered_map<entt::id_type, Comparator> Comparators;
+    SnapshotEntries Snapshots{};
+    std::array<Comparator, state::SchemaSize> Comparators{};
+    std::array<bool, state::SchemaSize> Classified{};
 };
 // Non-default-constructible serialized types specialize this emplacer.
 template<typename C>
-inline constexpr void (*CustomEmplace)(entt::registry &, entt::entity, std::span<const std::byte>) = nullptr;
+inline constexpr void (*CustomEmplace)(state::Scene &, state::Entity, std::span<const std::byte>) = nullptr;
+
+// Domains with mixed canonical/cache objects copy only canonical fields.
+template<typename C> C CopyNative(const C &value) { return value; }
+template<typename C> void PrepareNative(C &) {}
 
 // Bone transforms are derived from RestLocal and ArmaturePose.
 template<typename C>
-inline constexpr bool (*SkipEntityFor)(const entt::registry &, entt::entity) = nullptr;
+inline constexpr bool (*SkipEntityFor)(const state::Scene &, state::Entity) = nullptr;
 
 // Aligned storage supports non-default-constructible implicit-lifetime types.
 template<typename C>
-void EmplaceTrivial(entt::registry &r, entt::entity e, std::span<const std::byte> bytes) {
+void EmplaceTrivial(state::Scene &r, state::Entity e, std::span<const std::byte> bytes) {
     if constexpr (std::is_empty_v<C>) {
         r.emplace_or_replace<C>(e);
     } else {
@@ -34,16 +40,17 @@ void EmplaceTrivial(entt::registry &r, entt::entity e, std::span<const std::byte
 
 template<typename C>
 void SerializeThunk(const void *component, std::vector<std::byte> &out) {
-    thread_local std::vector<std::byte> buffer;
-    buffer.clear();
-    zpp::bits::out archive{buffer};
+    const auto start = out.size();
+    // Grow only the appended record; vector capacity handles allocation growth.
+    zpp::bits::out archive{out, zpp::bits::exact_enlarger{}};
+    archive.reset(start);
     // zpp aggregate reflection mis-encodes large const aggregates, while the output archive only reads this reference.
-    if (zpp::bits::failure(archive(const_cast<C &>(*static_cast<const C *>(component))))) return;
-    out.insert(out.end(), buffer.begin(), buffer.begin() + archive.position());
+    const auto result = archive(const_cast<C &>(*static_cast<const C *>(component)));
+    out.resize(zpp::bits::failure(result) ? start : archive.position());
 }
 
 template<typename C>
-void EmplaceSerialized(entt::registry &r, entt::entity e, std::span<const std::byte> bytes) {
+void EmplaceSerialized(state::Scene &r, state::Entity e, std::span<const std::byte> bytes) {
     if constexpr (CustomEmplace<C> != nullptr) CustomEmplace<C>(r, e, bytes);
     else {
         C value;
@@ -99,13 +106,25 @@ snapshot::SnapshotEntry MakeEntry() {
 
 template<typename C, bool Persistent>
 void Add(Tables &tables) {
-    const auto id = entt::type_hash<C>::value();
-    if (!tables.Comparators.emplace(id, MakeComparator<C, Persistent>()).second) throw std::logic_error("Duplicate snapshot component classification");
+    const auto id = state::Type<C>();
+    if (std::exchange(tables.Classified[id], true)) throw std::logic_error("Duplicate snapshot component classification");
+    tables.Comparators[id] = MakeComparator<C, Persistent>();
     if constexpr (Persistent) {
         static_assert(!HoldsVariantOrOptional<C>() || NeedsFieldwise<C, true>, "A persistent variant/optional needs field-wise serialization");
         auto entry = MakeEntry<C>();
-        entry.Name = entt::type_name<C>::value();
-        tables.Snapshots.emplace(id, entry);
+        entry.Name = state::TypeName<C>();
+        entry.Copy = [](const void *p) {
+            auto value = std::make_unique<C>(CopyNative(*static_cast<const C *>(p)));
+            const auto bytes = sizeof(C) + NativeExtra(*value);
+            return store::Blob{reinterpret_cast<std::byte *>(value.release()), sizeof(C), [](void *v) { delete static_cast<C *>(v); }, bytes};
+        };
+        entry.Move = [](state::Scene &r, state::Entity e, store::Blob value) {
+            auto &native = *reinterpret_cast<C *>(value.Data);
+            PrepareNative(native);
+            r.emplace_or_replace<C>(e, std::move(native));
+            store::FreeBlob(value);
+        };
+        tables.Snapshots[id] = entry;
     }
 }
 template<typename... Cs>

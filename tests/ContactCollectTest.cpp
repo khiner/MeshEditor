@@ -15,7 +15,7 @@
 
 #include "Near.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <boost/ut.hpp>
 
@@ -30,11 +30,11 @@ constexpr float Fps{60};
 constexpr int RangeEnd{240};
 
 struct Scene {
-    entt::registry R;
-    entt::entity Viewport{};
+    state::Scene R;
+    state::Entity Viewport{};
     int Frame{0};
     uint32_t BodyCreations = 0;
-    void BodyCreated(entt::registry &, entt::entity) { ++BodyCreations; }
+    void BodyCreated(state::Scene &, state::Entity) { ++BodyCreations; }
 
     Scene() {
         R.ctx().emplace<mtl::Context>();
@@ -46,7 +46,7 @@ struct Scene {
     ~Scene() { physics::Deinit(R); }
 
     // A body at `position`, static without motion and dynamic with it. Colliders on children make it a compound.
-    entt::entity AddBody(vec3 position, std::optional<PhysicsShape> shape, std::optional<PhysicsMotion> motion, vec3 velocity = {}) {
+    state::Entity AddBody(vec3 position, std::optional<PhysicsShape> shape, std::optional<PhysicsMotion> motion, vec3 velocity = {}) {
         const auto e = R.create();
         R.emplace<Transform>(e, Transform{.P = position});
         R.emplace<WorldTransform>(e, Transform{.P = position});
@@ -62,21 +62,19 @@ struct Scene {
     }
 
     // Link the translated test bodies while preserving the authored world pose.
-    void Parent(entt::entity child, entt::entity parent) {
-        auto &pn = R.get<SceneNode>(parent);
-        R.get<SceneNode>(child).Parent = parent;
-        R.get<SceneNode>(child).NextSibling = pn.FirstChild;
+    void Parent(state::Entity child, state::Entity parent) {
+        auto &pn = R.edit<SceneNode>(parent);
+        R.edit<SceneNode>(child).Parent = parent;
+        R.edit<SceneNode>(child).NextSibling = pn.FirstChild;
         pn.FirstChild = child;
-        R.get<Transform>(child).P -= R.get<WorldTransform>(parent).P;
+        R.edit<Transform>(child).P -= R.get<WorldTransform>(parent).P;
     }
 
     // Build or update the bodies the components describe, as ProcessComponentEvents does in the app.
     void Sync() {
         for (auto &handler : R.ctx().get<std::vector<ComponentEventHandler>>()) handler.Apply(R, EventPass::Frame);
         physics::AdvancePlayback(R, Viewport, Frame, Frame, 0, RangeEnd, Fps, false);
-        for (auto &&[id, storage] : R.storage()) {
-            if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();
-        }
+        R.ClearChanges();
     }
 
     void Step(int frames = 1) {
@@ -99,9 +97,9 @@ PhysicsShape Box(vec3 size) { return physics::Box{size}; }
 PhysicsShape Sphere(float radius) { return physics::Sphere{radius}; }
 
 // A floor wide enough that nothing reaches its edges, with its top face at y = 0.
-entt::entity AddFloor(Scene &s) { return s.AddBody({0, -1, 0}, Box({100, 2, 100}), {}); }
+state::Entity AddFloor(Scene &s) { return s.AddBody({0, -1, 0}, Box({100, 2, 100}), {}); }
 
-entt::entity AddRestingBox(Scene &s, PhysicsMotion motion = {}) {
+state::Entity AddRestingBox(Scene &s, PhysicsMotion motion = {}) {
     AddFloor(s);
     const auto box = s.AddBody({0, 0.5f, 0}, Box({1, 1, 1}), motion);
     s.Sync();
@@ -109,7 +107,7 @@ entt::entity AddRestingBox(Scene &s, PhysicsMotion motion = {}) {
     return box;
 }
 
-void SetMaterial(Scene &s, entt::entity collider, const PhysicsMaterial &material) {
+void SetMaterial(Scene &s, state::Entity collider, const PhysicsMaterial &material) {
     const auto e = s.R.create();
     s.R.emplace<PhysicsMaterial>(e, material);
     s.R.emplace<ColliderMaterial>(collider, ColliderMaterial{.PhysicsMaterialEntity = e});
@@ -127,11 +125,11 @@ const SustainedContact *OnlyContact(const Scene &s) {
 }
 
 // The impacts belonging to one body. Each contact point produces an impact for both bodies of the pair.
-std::vector<ContactImpact> ImpactsOn(const Scene &s, entt::entity e) {
+std::vector<ContactImpact> ImpactsOn(const Scene &s, state::Entity e) {
     return s.Impacts() | std::views::filter([e](const auto &c) { return c.Entity == e; }) | std::ranges::to<std::vector>();
 }
 
-std::pair<const SustainedContactSide &, const SustainedContactSide &> SidesOf(const SustainedContact &c, entt::entity e) {
+std::pair<const SustainedContactSide &, const SustainedContactSide &> SidesOf(const SustainedContact &c, state::Entity e) {
     const bool first = c.Sides.front().Entity == e;
     return {first ? c.Sides.front() : c.Sides.back(), first ? c.Sides.back() : c.Sides.front()};
 }
@@ -186,7 +184,7 @@ int main() {
         const PhysicsMaterial frictionless{.StaticFriction = 0, .DynamicFriction = 0};
         for (float side : {-1.f, 1.f}) {
             const auto wall = s.AddBody({side * offset, 0, 0}, Box({0.2f, 2, 2}), {});
-            s.R.get<Transform>(wall).R = numeric::AngleAxis(-side * angle, vec3{0, 0, 1});
+            s.R.edit<Transform>(wall).R = numeric::AngleAxis(-side * angle, vec3{0, 0, 1});
             SetMaterial(s, wall, frictionless);
             s.Parent(wall, walls);
         }
@@ -339,7 +337,7 @@ int main() {
     "seeking reconstructs physics from the authored starting pose"_test = [] {
         Scene stepped, sought;
         const auto setup = [](Scene &s) {
-            s.R.get<PhysicsSimulationSettings>(s.Viewport).Gravity = {};
+            s.R.edit<PhysicsSimulationSettings>(s.Viewport).Gravity = {};
             const auto body = s.AddBody({}, Sphere(0.25f), PhysicsMotion{}, {1, 0, 0});
             s.Sync();
             return body;
@@ -464,7 +462,7 @@ int main() {
         for (int edit = Pose; edit <= Geometry; ++edit) {
             Scene changed, fresh;
             struct Objects {
-                entt::entity Body, Material, Filter, Joint, Unrelated, Group, Floor, Child, ChildGroup, JointNode;
+                state::Entity Body, Material, Filter, Joint, Unrelated, Group, Floor, Child, ChildGroup, JointNode;
             };
             const auto setup = [edit](Scene &s) {
                 const auto floor = s.AddBody({0, -0.5f, 0}, Box(vec3{10, 1, 10}), std::nullopt);
@@ -558,7 +556,7 @@ int main() {
             apply(changed, a);
             changed.Sync();
             apply(fresh, b);
-            if (edit == ReparentKeepWorld) fresh.R.replace<Transform>(b.Body, changed.R.get<Transform>(a.Body));
+            if (edit == ReparentKeepWorld) fresh.R.replace<Transform>(b.Body, changed.R.edit<Transform>(a.Body));
             fresh.Sync();
             fresh.Step(24);
             expect(edit == ReparentOwner ? changed.BodyCreations > created : changed.BodyCreations == created) << int(edit);
@@ -583,8 +581,8 @@ int main() {
         for (bool triangles : {false, true}) {
             Scene changed, fresh;
             struct Objects {
-                entt::entity Mesh, Sensor;
-                std::array<entt::entity, 4> Bodies;
+                state::Entity Mesh, Sensor;
+                std::array<state::Entity, 4> Bodies;
                 std::vector<vec3> Positions;
             };
             const auto setup = [&](Scene &s) {
@@ -686,7 +684,7 @@ int main() {
             s.R.emplace<PhysicsJoint>(node, PhysicsJoint{anchor, definition});
             return node;
         };
-        std::vector<entt::entity> nodes;
+        std::vector<state::Entity> nodes;
         for (int i = 0; i < 8; ++i) nodes.push_back(add());
         s.Sync();
         expect(s.BodyCreations == created);

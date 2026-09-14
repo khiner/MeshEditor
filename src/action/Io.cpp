@@ -1,6 +1,6 @@
 #include "action/Io.h"
 #include "editor/AudioIntegration.h"
-#include "project/Registry.h"
+#include "state/Scene.h"
 
 #include "CameraTypes.h"
 #include "Profile.h"
@@ -23,7 +23,6 @@
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 
-#include <entt/entity/registry.hpp>
 #include <format>
 #include <numbers>
 #include <utility>
@@ -33,7 +32,7 @@ using std::ranges::to;
 namespace action::io {
 namespace {
 // Load a glTF/glb and apply its camera/animation side effects.
-void LoadGltfFile(entt::registry &r, entt::entity viewport, const std::filesystem::path &path) {
+void LoadGltfFile(state::Scene &r, state::Entity viewport, const std::filesystem::path &path) {
     const profile::CpuScope scope{"LoadGltfFile"};
     auto &c = r.ctx();
     auto result = gltf::LoadGltf(path, {r, viewport, c.get<mtl::BindlessSet>(), c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), c.get<EnvironmentStore>()});
@@ -42,15 +41,15 @@ void LoadGltfFile(entt::registry &r, entt::entity viewport, const std::filesyste
         return;
     }
 
-    if (result->FirstCameraObject != entt::null) SetLookThrough(r, viewport, result->FirstCameraObject);
+    if (result->FirstCameraObject != state::Null) SetLookThrough(r, viewport, result->FirstCameraObject);
     if (result->ImportedAnimation) {
         JumpToStartFrame(r, viewport);
-        r.get<LastEvaluatedFrame>(viewport).Value = -1;
+        r.edit<LastEvaluatedFrame>(viewport).Value = -1;
     }
 }
 } // namespace
 
-void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
+void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     const auto fail = [&](std::string message) { r.ctx().get<Errors>().Messages.emplace_back(std::move(message)); };
     std::visit(
         overloaded{
@@ -110,16 +109,16 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                             .Select = MeshInstanceCreateInfo::SelectBehavior::None,
                         }
                     );
-                    project::Emplace<RealImpactMicrophone>(r, listener_instance_entity, listener_point.Index);
+                    r.emplace<RealImpactMicrophone>(listener_instance_entity, listener_point.Index);
 
                     if (listener_point.Index == RealImpact::CenteredListenerIndex) {
-                        project::Emplace<RealImpactActiveMicrophone>(r, instance_entity, listener_instance_entity);
+                        r.emplace<RealImpactActiveMicrophone>(instance_entity, listener_instance_entity);
 
                         if (const auto material_name = RealImpact::FindMaterialName(r.get<Name>(instance_entity).Value)) {
-                            if (const auto *material = materials::acoustic::Find(*material_name)) project::Emplace<AcousticMaterial>(r, instance_entity, *material);
+                            if (const auto *material = materials::acoustic::Find(*material_name)) r.emplace<AcousticMaterial>(instance_entity, *material);
                         }
-                        project::Emplace<ScaleLocked>(r, instance_entity);
-                        project::Emplace<RealImpactVertices>(r, instance_entity, vertex_indices, source->Samples);
+                        r.emplace<ScaleLocked>(instance_entity);
+                        r.emplace<RealImpactVertices>(instance_entity, vertex_indices, source->Samples);
                         if (source->Samples.empty()) continue;
                         auto samples = RealImpact::LoadSamples(r, source->Samples, listener_point.Index);
                         if (!samples) {

@@ -1,5 +1,5 @@
 #include "AudioSystem.h"
-#include "project/Registry.h"
+#include "state/Scene.h"
 
 #include "ContactModel.h"
 #include "ModalEigenSummary.h"
@@ -7,21 +7,19 @@
 #include "TransformMath.h"
 #include "physics/PhysicsTypes.h"
 
-#include <entt/entity/registry.hpp>
-
 #include <algorithm>
 
-double ModalDensityRatio(const entt::registry &r, entt::entity e) {
+double ModalDensityRatio(const state::Scene &r, state::Entity e) {
     const auto *summary = r.try_get<const ModalEigenSummary>(e);
     const auto *mat = r.try_get<const AcousticMaterial>(e);
     return summary && mat && summary->SolvedMaterial.Density > 0 ? mat->Properties.Density / summary->SolvedMaterial.Density : 1.0;
 }
 
-void UpdateContactDynamics(entt::registry &r, entt::entity e) {
+void UpdateContactDynamics(state::Scene &r, state::Entity e) {
     const auto *mp = r.try_get<const MassProperties>(e);
     const auto *modes = r.try_get<const ModalModes>(e);
     if (!mp || !modes || modes->Positions.empty()) {
-        project::Remove<ContactDynamics>(r, e);
+        r.remove<ContactDynamics>(e);
         return;
     }
     const float baked_scale = std::max(MeanScale(modes->BakedScale), 1e-6f);
@@ -43,5 +41,5 @@ void UpdateContactDynamics(entt::registry &r, entt::entity e) {
     cd.InverseInertia = InverseInertiaTensor(resolved) * float(1 / mass_scale);
     cd.ContactArm.reserve(modes->Positions.size());
     for (const auto &position : modes->Positions) cd.ContactArm.push_back((position - resolved.CenterOfMass) * baked_scale);
-    project::EmplaceOrReplace<ContactDynamics>(r, e, std::move(cd));
+    r.emplace_or_replace<ContactDynamics>(e, std::move(cd));
 }

@@ -2,7 +2,7 @@
 
 #include "metal/Bindless.h"
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <array>
 struct SelectionSlots {

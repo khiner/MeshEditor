@@ -1,7 +1,7 @@
 #include "ModalAudio.h"
 #include "ModalModes.h"
 
-#include <entt/entity/entity.hpp>
+#include "state/Entity.h"
 
 #include <algorithm>
 #include <chrono>
@@ -287,7 +287,7 @@ void InstallModalBank(ModalAudio &m, ModalBank &next) {
     SurfaceInstallBank(m);
 }
 
-uint32_t AddModalObject(ModalBank &b, entt::entity e, const ModalModes &modes) {
+uint32_t AddModalObject(ModalBank &b, state::Entity e, const ModalModes &modes) {
     const auto count = uint32_t(modes.Freqs.size());
     const auto slot = uint32_t(b.Entities.size());
     b.Entities.push_back(e);
@@ -403,7 +403,7 @@ bool SetModalObjectShapes(ModalBank &b, uint32_t object, const ModalModes &modes
     return true;
 }
 
-std::optional<uint32_t> FindModalObject(const ModalBank &b, entt::entity e) {
+std::optional<uint32_t> FindModalObject(const ModalBank &b, state::Entity e) {
     const auto it = std::ranges::find(b.Entities, e);
     return it != b.Entities.end() ? std::optional{uint32_t(std::ranges::distance(b.Entities.begin(), it))} : std::nullopt;
 }

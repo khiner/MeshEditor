@@ -1,6 +1,6 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <filesystem>
 #include <variant>
@@ -27,5 +27,5 @@ struct LoadRealImpact {
 using Action = std::variant<LoadDefaultScene, Load, LoadGltf, SaveGltf, LoadRealImpact>;
 
 // Handlers run GPU work synchronously; failures are reported through the registry's action::Errors sink.
-void Apply(entt::registry &, entt::entity viewport, const Action &);
+void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::io

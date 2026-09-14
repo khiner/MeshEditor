@@ -16,7 +16,7 @@ namespace action {
 // Heap-allocate big types to keep the variant small.
 template<>
 struct Replace<WorkspaceLights> {
-    entt::entity Entity;
+    state::Entity Entity;
     std::unique_ptr<WorkspaceLights> Value;
 };
 } // namespace action
@@ -32,7 +32,7 @@ struct SetEditMode {
 struct EnterLookThroughCamera {};
 struct ExitLookThroughCamera {};
 struct SetLookThroughCamera {
-    entt::entity Entity;
+    state::Entity Entity;
 };
 struct SetViewportShading {
     ViewportShadingMode Mode;
@@ -114,7 +114,7 @@ struct SetSourceIblIntensity {
 
 // Make `Scene` the active scene shown in the viewport.
 struct SetActiveScene {
-    entt::entity Scene;
+    state::Entity Scene;
 };
 
 using Actions = std::variant<
@@ -133,5 +133,5 @@ using Action = MergedVariantT<
     Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
     Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>, SetLookThroughCamera>;
 
-void Apply(entt::registry &, entt::entity viewport, const Action &);
+void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::view

@@ -48,7 +48,6 @@ struct VersionedBuffer {
 
     uint32_t PageBytes;
     std::vector<std::byte> Bytes;
-    std::vector<std::byte> Scratch;
     uint64_t Len{};
     LiveTrie Trie;
 };
@@ -66,7 +65,7 @@ inline Live BufferSlots(VersionedBuffer &self) {
     live.Replace = [&self](uint64_t page, Blob incoming, bool &was_present) {
         self.Reserve((page + 1) * self.PageBytes);
         was_present = true;
-        return SwapBlob({self.Bytes.data() + page * self.PageBytes, self.PageBytes}, incoming, self.Scratch);
+        return SwapBlob({self.Bytes.data() + page * self.PageBytes, self.PageBytes}, incoming);
     };
     live.Erase = [&self](uint64_t page) {
         const auto old = Capture(self.Trie.L, page);
@@ -87,7 +86,8 @@ struct VersionedVector {
 
     size_t size() const { return Buffer.Size() / sizeof(T); }
     bool empty() const { return size() == 0; }
-    const T &operator[](size_t i) const { return reinterpret_cast<const T *>(Buffer.Data())[i]; }
+    std::span<const T> View() const { return {reinterpret_cast<const T *>(Buffer.Data()), size()}; }
+    const T &operator[](size_t i) const { return View()[i]; }
 
     T &Mutable(size_t i) {
         assert(i < size());

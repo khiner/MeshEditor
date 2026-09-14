@@ -2,30 +2,30 @@
 
 #include "Range.h"
 #include "armature/BoneId.h"
-#include "entt_fwd.h"
 #include "gpu/Transform.h"
 #include "numeric/mat4.h"
+#include "state/Entity.h"
 
 #include <vector>
 
 struct AnimationClip;
 
 struct ArmatureObject {
-    entt::entity Entity;
-    std::vector<entt::entity> BoneEntities;
-    entt::entity JointEntity{null_entity};
+    state::Entity Entity;
+    std::vector<state::Entity> BoneEntities;
+    state::Entity JointEntity{null_entity};
 };
 
 // Tag on the shared joint sphere entity (excluded from silhouette and normal mesh iteration).
 struct BoneJoint {};
 
 struct BoneSubPartOf {
-    entt::entity BoneEntity;
+    state::Entity BoneEntity;
     bool IsTip;
 };
 
 struct BoneJointEntities {
-    entt::entity Head{null_entity}, Tail{null_entity};
+    state::Entity Head{null_entity}, Tail{null_entity};
 };
 
 // Retain the armature's Selected/Active state throughout Edit/Pose mode.
@@ -34,7 +34,7 @@ struct BoneActive {};
 struct BoneInstanceStateDirty {};
 
 struct ArmatureModifier {
-    entt::entity ArmatureEntity, ArmatureObjectEntity;
+    state::Entity ArmatureEntity, ArmatureObjectEntity;
     uint32_t SkinSlot{0};
 };
 
@@ -49,7 +49,7 @@ struct BoneDisplayScale {
 
 // Supports direct glTF joint and mesh nodes independently of skin deformation.
 struct BoneAttachment {
-    entt::entity ArmatureEntity;
+    state::Entity ArmatureEntity;
     BoneId Bone;
 };
 

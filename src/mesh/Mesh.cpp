@@ -4,7 +4,7 @@
 #include "MeshStore.h"
 #include "Parallel.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <algorithm>
 
@@ -175,17 +175,17 @@ BuiltConnectivity BuildConnectivity(std::span<const std::array<uint32_t, 2>> edg
 Mesh::Mesh(const MeshStore &store, uint32_t store_id)
     : Store(&store), StoreId(store_id), C(store.GetConnectivity(store_id)), Corners(store.GetFaceCorners(store_id)) {}
 
-Mesh GetMesh(const entt::registry &r, entt::entity e) {
+Mesh GetMesh(const state::Scene &r, state::Entity e) {
     return {r.ctx().get<const MeshStore>(), r.get<const MeshHandle>(e).StoreId};
 }
-std::optional<Mesh> TryGetMesh(const entt::registry &r, entt::entity e) {
+std::optional<Mesh> TryGetMesh(const state::Scene &r, state::Entity e) {
     const auto *handle = r.try_get<const MeshHandle>(e);
     if (!handle) return std::nullopt;
     return Mesh{r.ctx().get<const MeshStore>(), handle->StoreId};
 }
-bool HasMesh(const entt::registry &r, entt::entity e) { return r.all_of<MeshHandle>(e); }
+bool HasMesh(const state::Scene &r, state::Entity e) { return r.all_of<MeshHandle>(e); }
 
-float LocalLengthPerUv(const entt::registry &r, entt::entity mesh_entity, uint32_t uv_set) {
+float LocalLengthPerUv(const state::Scene &r, state::Entity mesh_entity, uint32_t uv_set) {
     const auto mesh = TryGetMesh(r, mesh_entity);
     if (!mesh || uv_set >= MeshStore::MaxUvSets) return 0;
     const auto uvs = r.ctx().get<const MeshStore>().GetCornerUvs(mesh->GetStoreId(), uv_set);

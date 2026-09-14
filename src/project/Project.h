@@ -9,11 +9,11 @@
 
 namespace project {
 // Construct before engine initialization so all document entities use the versioned allocator.
-// Close history before tearing down the registry's stores.
+// Close history before tearing down the scene's stores.
 struct Project {
-    explicit Project(entt::registry &);
+    explicit Project(state::Scene &);
     ~Project();
-    void TrackStores(entt::entity viewport);
+    void TrackStores(state::Entity viewport);
     bool Begin(const std::filesystem::path &);
     bool New(const std::filesystem::path &, bool empty = true);
     bool Open(const std::filesystem::path &working, const std::filesystem::path &saved = {});
@@ -71,7 +71,7 @@ struct Project {
     void ReleaseGesture();
     void ClearInteraction();
     void AfterRestore();
-    entt::registry &R;
-    entt::entity Viewport{entt::null};
+    state::Scene &R;
+    state::Entity Viewport{state::Null};
 };
 } // namespace project

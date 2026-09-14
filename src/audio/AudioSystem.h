@@ -2,7 +2,7 @@
 
 #include "AudioSamples.h"
 #include "AudioTypes.h"
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 #include <filesystem>
 #include <span>
@@ -21,31 +21,31 @@ struct Recording {
 // Render the master mix, which is far-field pressure in pascals at 1 m.
 // `monitor` maps 20 Pa to full scale and soft-limits higher pressures for device output.
 // Capture paths pass null and convert pressure separately.
-void ProcessAudio(entt::registry &, entt::entity viewport, float *output, uint32_t frame_count, bool monitor = false);
+void ProcessAudio(state::Scene &, state::Entity viewport, float *output, uint32_t frame_count, bool monitor = false);
 
 // Convert captured pressure to device units in place, at the monitor level.
 // `limiter` preserves the envelope across calls for one monitored stream.
-void MonitorFrames(entt::registry &, std::span<float>, MonitorLimiter &);
+void MonitorFrames(state::Scene &, std::span<float>, MonitorLimiter &);
 
 // Capture of the master output, for muxing into a video recording.
 // The device thread writes and the main thread drains, so one of each and no locking.
 // Returns the device sample rate, or 0 when there is no device to capture.
-uint32_t BeginAudioCapture(entt::registry &);
-void EndAudioCapture(entt::registry &);
+uint32_t BeginAudioCapture(state::Scene &);
+void EndAudioCapture(state::Scene &);
 // Append everything the device has produced since the last call.
-void DrainAudioCapture(entt::registry &, std::vector<float> &);
+void DrainAudioCapture(state::Scene &, std::vector<float> &);
 
-void RenderAudioOffline(entt::registry &, entt::entity viewport, std::vector<float> &, uint32_t frame_count);
+void RenderAudioOffline(state::Scene &, state::Entity viewport, std::vector<float> &, uint32_t frame_count);
 
 // Rebuild the entity's ContactDynamics from its MassProperties, ModalModes, and mesh (surface curvature).
 // Removes ContactDynamics when the inputs are missing.
-void UpdateContactDynamics(entt::registry &, entt::entity sound_entity);
+void UpdateContactDynamics(state::Scene &, state::Entity sound_entity);
 
 // Ratio of current acoustic density to solved modal density, or one when unknown.
 // Stored mass properties scale linearly by this ratio.
-double ModalDensityRatio(const entt::registry &, entt::entity sound_entity);
+double ModalDensityRatio(const state::Scene &, state::Entity sound_entity);
 
-uint32_t DeviceSampleRate(const entt::registry &);
+uint32_t DeviceSampleRate(const state::Scene &);
 
 // Decode any CoreAudio-supported audio file to mono float frames at `sample_rate`. Returns empty on failure.
 std::vector<float> LoadAudioFrames(const std::string &file_path, uint32_t sample_rate);

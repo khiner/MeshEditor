@@ -1,53 +1,53 @@
 #include "project/store/LiveTrie.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <format>
+#include <memory_resource>
 
 namespace store {
 namespace {
-std::byte *Carve(LiveTrie &trie, size_t bytes) {
-    if (trie.SlabRemaining < bytes) {
-        trie.Slabs.push_back(std::make_unique<std::byte[]>(LiveTrie::SlabSize));
-        trie.SlabCursor = trie.Slabs.back().get();
-        trie.SlabRemaining = LiveTrie::SlabSize;
+// Account for the process-wide pool, including its cached blocks.
+struct NodeMemory : std::pmr::memory_resource {
+    std::atomic<uint64_t> Bytes{};
+    void *do_allocate(size_t bytes, size_t alignment) override {
+        auto *p = std::pmr::new_delete_resource()->allocate(bytes, alignment);
+        Bytes.fetch_add(bytes, std::memory_order_relaxed);
+        return p;
     }
-    auto *p = trie.SlabCursor;
-    trie.SlabCursor += bytes;
-    trie.SlabRemaining -= bytes;
-    return p;
+    void do_deallocate(void *p, size_t bytes, size_t alignment) override {
+        Bytes.fetch_sub(bytes, std::memory_order_relaxed);
+        std::pmr::new_delete_resource()->deallocate(p, bytes, alignment);
+    }
+    bool do_is_equal(const std::pmr::memory_resource &other) const noexcept override { return this == &other; }
+};
+struct NodeAllocator {
+    NodeMemory Memory;
+    std::pmr::synchronized_pool_resource Pool{{64, Fanout * sizeof(Node *)}, &Memory};
+};
+NodeAllocator &Allocator() {
+    static NodeAllocator allocator;
+    return allocator;
 }
-
-Node **AllocChildren(LiveTrie &trie) {
-    if (trie.FreeArrays) {
-        auto *a = trie.FreeArrays;
-        trie.FreeArrays = *reinterpret_cast<Node ***>(a);
-        return a;
-    }
-    return reinterpret_cast<Node **>(Carve(trie, Fanout * sizeof(Node *)));
+std::pmr::synchronized_pool_resource &Nodes() { return Allocator().Pool; }
+Node **AllocChildren() {
+    return ::new (Nodes().allocate(Fanout * sizeof(Node *), alignof(Node *))) Node *[Fanout] {};
 }
 
 Node *Alloc(LiveTrie &trie, NodeKind kind) {
-    Node *n;
-    if (trie.FreeNodes) {
-        n = trie.FreeNodes;
-        trie.FreeNodes = reinterpret_cast<Node *>(n->Children);
-    } else {
-        n = reinterpret_cast<Node *>(Carve(trie, sizeof(Node)));
-    }
-    *n = {1, kind, {}, nullptr, {}};
+    auto *n = static_cast<Node *>(Nodes().allocate(sizeof(Node), alignof(Node)));
+    std::construct_at(n, Node{1, kind, {}, nullptr, {}});
     ++trie.S.Nodes;
     if (kind == NodeKind::Aliased) ++trie.S.AliasedNodes;
     if (kind == NodeKind::Interior) {
-        n->Children = AllocChildren(trie);
-        std::fill_n(n->Children, Fanout, nullptr);
+        n->Children = AllocChildren();
     }
     return n;
 }
 
-void FreeChildren(LiveTrie &trie, Node **a) {
-    *reinterpret_cast<Node ***>(a) = trie.FreeArrays;
-    trie.FreeArrays = a;
+void FreeChildren(Node **a) {
+    Nodes().deallocate(a, Fanout * sizeof(Node *), alignof(Node *));
 }
 
 void ReleaseNode(LiveTrie &trie, Node *n) {
@@ -58,16 +58,15 @@ void ReleaseNode(LiveTrie &trie, Node *n) {
         case NodeKind::Absent: break;
         case NodeKind::Owned:
             --trie.S.OwnedSlots;
-            trie.S.OwnedBytes -= n->Value.Size;
+            trie.S.OwnedBytes -= n->Value.OwnedBytes();
             FreeBlob(n->Value);
             break;
         case NodeKind::Interior:
             for (uint32_t i = 0; i < Fanout; ++i) ReleaseNode(trie, n->Children[i]);
-            FreeChildren(trie, n->Children);
+            FreeChildren(n->Children);
             break;
     }
-    n->Children = reinterpret_cast<Node **>(trie.FreeNodes);
-    trie.FreeNodes = n;
+    Nodes().deallocate(n, sizeof(Node), alignof(Node));
 }
 
 // Retain adopt children or allocate aliased children, preserving the value for every referencing version.
@@ -75,7 +74,7 @@ void ToInterior(LiveTrie &trie, Node *n, Node *const *adopt = nullptr) {
     assert(n->Kind == NodeKind::Aliased);
     --trie.S.AliasedNodes;
     n->Kind = NodeKind::Interior;
-    n->Children = AllocChildren(trie);
+    n->Children = AllocChildren();
     for (uint32_t i = 0; i < Fanout; ++i) {
         if (adopt) {
             n->Children[i] = adopt[i];
@@ -92,7 +91,7 @@ Hash128 ContentHash(const LiveTrie &trie, uint64_t slot, const Blob &value) {
         const auto &e = trie.SlotHashes[slot];
         if (e.State == LiveTrie::SlotState::Value && !e.Dirty) return e.H;
     }
-    return HashBytes(value.View());
+    return HashBytes(store::Encoded(trie.L, value));
 }
 
 void CaptureInto(LiveTrie &trie, Node *n, uint64_t slot) {
@@ -103,7 +102,7 @@ void CaptureInto(LiveTrie &trie, Node *n, uint64_t slot) {
         n->Value = store::Capture(trie.L, slot);
         n->Hash = ContentHash(trie, slot, n->Value);
         ++trie.S.OwnedSlots;
-        trie.S.OwnedBytes += n->Value.Size;
+        trie.S.OwnedBytes += n->Value.OwnedBytes();
     } else {
         n->Kind = NodeKind::Absent;
     }
@@ -212,7 +211,7 @@ Node *RestoreRec(LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base
         bool changed = true;
         if (t->Kind == NodeKind::Owned) {
             --trie.S.OwnedSlots;
-            trie.S.OwnedBytes -= t->Value.Size;
+            trie.S.OwnedBytes -= t->Value.OwnedBytes();
             // Matching hashes still require byte and entity-generation comparisons.
             const auto *e = slot < trie.SlotHashes.size() ? &trie.SlotHashes[slot] : nullptr;
             const bool maybe_equal = !(e && e->State == LiveTrie::SlotState::Value && !e->Dirty && !(e->H == t->Hash));
@@ -250,7 +249,7 @@ Node *RestoreRec(LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base
             p->Hash = old_hash;
             if (old_kind == NodeKind::Owned) {
                 ++trie.S.OwnedSlots;
-                trie.S.OwnedBytes += old_value.Size;
+                trie.S.OwnedBytes += old_value.OwnedBytes();
             }
         } else if (old_kind == NodeKind::Owned) {
             FreeBlob(old_value);
@@ -300,7 +299,7 @@ void MaterializeRec(const LiveTrie &trie, Node *n, uint32_t level, uint64_t base
             for (uint64_t s = base, end = std::min(limit, base + SlotSpan(level)); s < end; ++s)
                 if (trie.L.Present(s)) visit(s, trie.L.Read(s));
             return;
-        case NodeKind::Owned: visit(base, n->Value.View()); return;
+        case NodeKind::Owned: visit(base, store::Encoded(trie.L, n->Value)); return;
         case NodeKind::Absent: return;
         case NodeKind::Interior: {
             const auto span = SlotSpan(level - 1);
@@ -353,6 +352,8 @@ bool CheckVersionRec(Node *n, const std::unordered_set<const Node *> &present_al
     return true;
 }
 } // namespace
+
+uint64_t SharedNodePoolBytes() { return Allocator().Memory.Bytes.load(std::memory_order_relaxed); }
 
 LiveTrie::LiveTrie(Live live, uint32_t levels, uint32_t slot_bytes)
     : L(std::move(live)), Levels(levels), BytesPerSlot(slot_bytes), Root(Alloc(*this, NodeKind::Aliased)), Manifest(levels) {}

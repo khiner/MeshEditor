@@ -1,7 +1,7 @@
 #include "editor/AudioExcitation.h"
 #include "render/Instance.h"
+#include "state/Scene.h"
 #include <cmath>
-#include <entt/entity/registry.hpp>
 
 // Strike impact angle relative to the surface.
 // Center strikes along surface normal, rim tilts impulse 90 degrees into the tangent plane. UI-only.
@@ -25,7 +25,7 @@ vec3 TiltAlongNormal(vec3 n, vec2 joy) {
 }
 
 // Strike direction: the excited vertex's normal, tilted by the current impact angle.
-vec3 ExciteDirection(const entt::registry &r, entt::entity e, uint32_t vertex) {
+vec3 ExciteDirection(const state::Scene &r, state::Entity e, uint32_t vertex) {
     const auto n = VertexNormal(GetMesh(r, r.get<const Instance>(e).Entity), vertex);
     return TiltAlongNormal(n, ImpulseAngle);
 }

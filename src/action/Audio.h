@@ -26,7 +26,7 @@ struct StartRecording {
     uint32_t FrameCount;
 };
 struct ApplyModalModel {
-    entt::entity SoundEntity;
+    state::Entity SoundEntity;
     std::filesystem::path Path;
 };
 // Retain the vertices chosen before the asynchronous file dialog opens. Load frames only when applied.
@@ -36,14 +36,14 @@ struct AssignVertexSamples {
 };
 // Loads microphone samples into the target sound entity and activates the microphone.
 struct ActivateRealImpactMicrophone {
-    entt::entity TargetSoundEntity, MicrophoneEntity;
+    state::Entity TargetSoundEntity, MicrophoneEntity;
 };
 struct RemoveVertexSamples {
     std::vector<uint32_t> MeshVertices;
 };
 // Applies a RealImpact impulse at a mesh vertex.
 struct ApplyExciteImpact {
-    entt::entity InstanceEntity;
+    state::Entity InstanceEntity;
     uint32_t VertexIndex;
 };
 struct ClearExciteImpacts {};
@@ -51,12 +51,12 @@ struct ClearExciteImpacts {};
 // Create missing settings from the same defaults shown by the controls.
 struct EnsureModalSettings {};
 struct SetMaterialPreset {
-    entt::entity Entity;
+    state::Entity Entity;
     std::string Name;
     bool Striker{false};
 };
 struct SetSurfacePreset {
-    entt::entity Entity;
+    state::Entity Entity;
     std::string Name;
 };
 
@@ -77,5 +77,5 @@ using Action = MergedVariantT<
     PatchFields<ModalSolveSettings, fastfem::Discretization>, PatchFields<ModalSolveSettings, fastfem::TetRefinement>,
     PatchFields<AcousticMaterial, double>, PatchFields<ContactSurface, float>>;
 
-void Apply(entt::registry &, entt::entity viewport, const Action &);
+void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::audio

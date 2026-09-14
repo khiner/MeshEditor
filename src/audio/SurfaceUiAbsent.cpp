@@ -1,6 +1,6 @@
 #include "audio/AudioUi.h"
 #include "audio/SurfaceContact.h"
 
-void DrawContactSurfaceControls(entt::registry &, entt::entity, const ContactSurface &, const AcousticMaterial &) {}
-void DrawSurfaceSynthControls(entt::registry &, entt::entity) {}
-void DrawSurfaceContactDebug(const entt::registry &) {}
+void DrawContactSurfaceControls(state::Scene &, state::Entity, const ContactSurface &, const AcousticMaterial &) {}
+void DrawSurfaceSynthControls(state::Scene &, state::Entity) {}
+void DrawSurfaceContactDebug(const state::Scene &) {}

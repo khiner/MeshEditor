@@ -1,18 +1,22 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <span>
-#include <vector>
 
 namespace store {
-// Release malloc-allocated data with FreeBlob.
+// Byte or native value ownership; release with FreeBlob.
 struct Blob {
     std::byte *Data{};
     uint32_t Size{};
+    void (*Destroy)(void *){};
+    uint64_t NativeBytes{};
+
+    uint64_t OwnedBytes() const { return Destroy ? NativeBytes : Size; }
 
     std::span<const std::byte> View() const { return {Data, Size}; }
 };
@@ -30,16 +34,14 @@ inline Blob CopyBlob(std::span<const std::byte> bytes) {
     return b;
 }
 // Requires equal live and incoming sizes.
-inline Blob SwapBlob(std::span<std::byte> live, Blob incoming, std::vector<std::byte> &scratch) {
+inline Blob SwapBlob(std::span<std::byte> live, Blob incoming) {
     assert(live.size() == incoming.Size);
-    scratch.resize(live.size());
-    std::memcpy(scratch.data(), live.data(), live.size());
-    std::memcpy(live.data(), incoming.Data, live.size());
-    std::memcpy(incoming.Data, scratch.data(), live.size());
+    std::swap_ranges(live.begin(), live.end(), incoming.Data);
     return incoming;
 }
 inline void FreeBlob(Blob &b) {
-    std::free(b.Data);
+    if (b.Destroy) b.Destroy(b.Data);
+    else std::free(b.Data);
     b = {};
 }
 } // namespace store

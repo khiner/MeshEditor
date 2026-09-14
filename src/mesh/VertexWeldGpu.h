@@ -2,7 +2,7 @@
 
 #include <span>
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 struct MeshData;
 struct PreparedMesh;
@@ -14,4 +14,4 @@ struct WeldTarget {
 };
 
 // Merges vertices identical across every vertex-domain channel and compacts their GPU arenas.
-void WeldMeshesNow(entt::registry &, std::span<const WeldTarget>);
+void WeldMeshesNow(state::Scene &, std::span<const WeldTarget>);

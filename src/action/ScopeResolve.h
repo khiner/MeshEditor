@@ -4,12 +4,12 @@
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 // Scope resolution for handlers whose component lives on the object entity (mesh-data components map object→mesh entity separately).
 namespace action {
 template<typename A, typename F>
-void ForEachScopeTarget(entt::registry &r, Scope scope, entt::entity entity, entt::entity fallback, A &&accept, F &&fn) {
+void ForEachScopeTarget(state::Scene &r, Scope scope, state::Entity entity, state::Entity fallback, A &&accept, F &&fn) {
     switch (scope) {
         case Scope::Entity: fn(entity != null_entity ? entity : fallback); break;
         case Scope::Active:
@@ -25,7 +25,7 @@ void ForEachScopeTarget(entt::registry &r, Scope scope, entt::entity entity, ent
 
 // Calls fn for each scope target that contains T.
 template<typename T, typename F>
-void ForEachReplaceTarget(entt::registry &r, Scope scope, entt::entity entity, F &&fn) {
-    ForEachScopeTarget(r, scope, entity, entity, [&](entt::entity e) { return r.all_of<T>(e); }, std::forward<F>(fn));
+void ForEachReplaceTarget(state::Scene &r, Scope scope, state::Entity entity, F &&fn) {
+    ForEachScopeTarget(r, scope, entity, entity, [&](state::Entity e) { return r.all_of<T>(e); }, std::forward<F>(fn));
 }
 } // namespace action

@@ -11,7 +11,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/ScratchChunks.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <cstdlib>
 #include <print>
@@ -29,7 +29,7 @@ uint32_t ScratchWords(uint32_t vertex_count, uint32_t halfedge_count) {
         TileCount(vertex_count + 1, BlockElements) + TileCount(words + 1, BlockElements) + 2;
 }
 
-void SubmitChunk(entt::registry &r, std::span<const ConnectivityTarget> chunk, mtl::Buffer &scratch, mtl::Buffer &job_buffer, mtl::Buffer &tile_buffer, std::vector<ConnectivityTarget> &rejected) {
+void SubmitChunk(state::Scene &r, std::span<const ConnectivityTarget> chunk, mtl::Buffer &scratch, mtl::Buffer &job_buffer, mtl::Buffer &tile_buffer, std::vector<ConnectivityTarget> &rejected) {
     auto &meshes = r.ctx().get<MeshStore>();
 
     std::vector<MeshConnectivityJob> jobs;
@@ -176,7 +176,7 @@ void SubmitChunk(entt::registry &r, std::span<const ConnectivityTarget> chunk, m
 }
 } // namespace
 
-std::vector<ConnectivityTarget> BuildConnectivityNow(entt::registry &r, std::span<const ConnectivityTarget> targets) {
+std::vector<ConnectivityTarget> BuildConnectivityNow(state::Scene &r, std::span<const ConnectivityTarget> targets) {
     auto &meshes = r.ctx().get<MeshStore>();
     std::vector<ConnectivityTarget> work, rejected;
     for (const auto &target : targets) {

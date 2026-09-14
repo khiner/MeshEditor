@@ -47,10 +47,11 @@ struct HistoryPosition {
 struct HistoryStats {
     uint64_t OwnedBytes{}, Nodes{}, AliasedNodes{};
     size_t HotNodes{}, ColdNodes{};
-    uint64_t SlabBytes{}, HashBytes{}, ManifestBytes{}, PendingBytes{}, PeakPendingBytes{};
+    uint64_t SharedNodeBytes{}, HashBytes{}, ManifestBytes{}, PendingBytes{}, PeakPendingBytes{};
     // Vector capacities and estimated hash-map allocations, excluding live data and allocator overhead.
     uint64_t MetadataBytes{};
-    uint64_t RetainedBytes() const { return OwnedBytes + SlabBytes + HashBytes + ManifestBytes + MetadataBytes + PendingBytes; }
+    // Includes the shared node pool once; concurrent histories share this contribution.
+    uint64_t RetainedBytes() const { return OwnedBytes + SharedNodeBytes + HashBytes + ManifestBytes + MetadataBytes + PendingBytes; }
 };
 
 struct History {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 
 enum class RenderRequest : uint8_t {
     None,
@@ -15,7 +15,7 @@ struct PendingRenderRequest {
 };
 
 // Register the reactive trackers and scene lifecycle handlers used by ProcessComponentEvents.
-void RegisterSceneComponentHandlers(entt::registry &);
+void RegisterSceneComponentHandlers(state::Scene &);
 
 // Restore reconciles Derived state without mutating Persistent state.
 // Sample evaluates a shutter time.
@@ -26,4 +26,4 @@ enum class EventPass { Frame,
                        Sample,
                        Render };
 // Process component changes and accumulate render work in PendingRenderRequest.
-void ProcessComponentEvents(entt::registry &, entt::entity viewport, EventPass = EventPass::Frame);
+void ProcessComponentEvents(state::Scene &, state::Entity viewport, EventPass = EventPass::Frame);

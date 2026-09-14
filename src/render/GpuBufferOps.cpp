@@ -4,8 +4,8 @@
 #include "render/GpuBuffers.h"
 #include "render/MeshBuffers.h"
 
+#include "state/Scene.h"
 #include <Metal/MTLComputeCommandEncoder.hpp>
-#include <entt/entity/registry.hpp>
 
 namespace {
 void ReleaseRange(auto &arena, auto &range) {
@@ -14,26 +14,26 @@ void ReleaseRange(auto &arena, auto &range) {
 }
 } // namespace
 
-std::span<const PBRMaterial> GetMaterials(const entt::registry &r) {
+std::span<const PBRMaterial> GetMaterials(const state::Scene &r) {
     const auto &materials = r.ctx().get<const GpuBuffers>().Materials;
     return {materials.Data(), materials.Count()};
 }
-std::span<const uint32_t> GetFaceIndices(const entt::registry &r, const Mesh &mesh, const MeshBuffers &buffers) {
+std::span<const uint32_t> GetFaceIndices(const state::Scene &r, const Mesh &mesh, const MeshBuffers &buffers) {
     const auto corners = mesh.CornerVertices();
     if (corners.size() == mesh.TriangleIndexCount()) return corners;
     return r.ctx().get<const GpuBuffers>().FaceIndexBuffer.Get(buffers.FaceIndices);
 }
-std::span<const PunctualLight> GetLights(entt::registry &r) {
+std::span<const PunctualLight> GetLights(state::Scene &r) {
     const auto &lights = r.ctx().get<GpuBuffers>().Lights;
     return {lights.Data(), lights.Count()};
 }
-PunctualLight GetLight(entt::registry &r, uint32_t index) { return r.ctx().get<GpuBuffers>().Lights.Get(index); }
-mtl::BufferContext &GetBufferContext(entt::registry &r) { return r.ctx().get<GpuBuffers>().Ctx; }
+PunctualLight GetLight(state::Scene &r, uint32_t index) { return r.ctx().get<GpuBuffers>().Lights.Get(index); }
+mtl::BufferContext &GetBufferContext(state::Scene &r) { return r.ctx().get<GpuBuffers>().Ctx; }
 
-void ReleaseMeshBuffers(entt::registry &r, MeshBuffers &mb) { r.ctx().get<GpuBuffers>().Release(mb); }
+void ReleaseMeshBuffers(state::Scene &r, MeshBuffers &mb) { r.ctx().get<GpuBuffers>().Release(mb); }
 
-void FreeInstanceRange(entt::registry &r, Range range) { r.ctx().get<GpuBuffers>().Instances.Free(range); }
-void ReleaseEdgeIndices(entt::registry &r, const SlottedRange &indices) { r.ctx().get<GpuBuffers>().EdgeIndexBuffer.Release(indices); }
+void FreeInstanceRange(state::Scene &r, Range range) { r.ctx().get<GpuBuffers>().Instances.Free(range); }
+void ReleaseEdgeIndices(state::Scene &r, const SlottedRange &indices) { r.ctx().get<GpuBuffers>().EdgeIndexBuffer.Release(indices); }
 
 InstanceArena::InstanceArena(mtl::BufferContext &ctx)
     : TransformBuffer(ctx, 0, SlotType::ModelBuffer),
@@ -115,9 +115,9 @@ GpuBuffers::GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
       ViewportThemeUBO{Ctx, sizeof(ViewportTheme)},
       WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights)},
       PreludeDispatchArgs{Ctx, PreludeGroups::PassCount * sizeof(MTL::DispatchThreadgroupsIndirectArguments)},
-      ObjectPickKeys{Ctx, MaxSelectableObjects * sizeof(uint32_t)},
-      ObjectPickSeenBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t)},
-      ObjectBoxBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t)},
+      ObjectPickKeys{Ctx, sizeof(uint32_t)},
+      ObjectPickSeenBitset{Ctx, sizeof(uint32_t)},
+      ObjectBoxBitset{Ctx, sizeof(uint32_t)},
       ElementPickKey{Ctx, sizeof(uint32_t)},
       ElementPickId{Ctx, sizeof(uint32_t)},
       EditSelectionPositionSums{Ctx, 0, SlotType::Buffer} {

@@ -5,9 +5,9 @@
 #include "mesh/MeshConnectivityGpu.h"
 #include "mesh/VertexWeldGpu.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
-std::vector<CreatedMesh> CreateMeshes(entt::registry &r, std::span<MeshSource> sources) {
+std::vector<CreatedMesh> CreateMeshes(state::Scene &r, std::span<MeshSource> sources) {
     auto &meshes = r.ctx().get<MeshStore>();
     // One reserve per arena for the whole batch, so no allocation below grows a buffer.
     for (const auto &source : sources) {
@@ -83,4 +83,4 @@ std::vector<CreatedMesh> CreateMeshes(entt::registry &r, std::span<MeshSource> s
     return created;
 }
 
-CreatedMesh CreateMesh(entt::registry &r, MeshSource source) { return std::move(CreateMeshes(r, {&source, 1}).front()); }
+CreatedMesh CreateMesh(state::Scene &r, MeshSource source) { return std::move(CreateMeshes(r, {&source, 1}).front()); }

@@ -519,6 +519,7 @@ void History::Restore(const Snapshot &s) {
     RunPipeline(*this, [&](size_t i) {
         if (!Tracks[i].Trie->Restore(s.Versions[i])) {
             AddIntegrityError(*this, Tracks[i].Name + ": restored state hash mismatch");
+            std::fprintf(stderr, "[history] %s: restored state hash mismatch\n", Tracks[i].Name.c_str());
             assert(false && "restored state hash does not match pinned hash");
         }
     });
@@ -786,13 +787,13 @@ std::string History::DiffImage(const std::vector<std::byte> &a_bytes, const std:
 
 HistoryStats History::Stats() const {
     HistoryStats s;
+    s.SharedNodeBytes = SharedNodePoolBytes();
     s.MetadataBytes = Nodes.capacity() * sizeof(HistoryNode);
     for (const auto &t : Tracks) {
         const auto &ts = t.Trie->Stats();
         s.OwnedBytes += ts.OwnedBytes;
         s.Nodes += ts.Nodes;
         s.AliasedNodes += ts.AliasedNodes;
-        s.SlabBytes += t.Trie->SlabBytes();
         s.HashBytes += t.Trie->HashStorageBytes();
         s.ManifestBytes += t.Trie->ManifestBytes();
         s.MetadataBytes += t.Trie->ChangedSlots.capacity() * sizeof(uint64_t);

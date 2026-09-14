@@ -10,11 +10,8 @@ inline store::Live AllocatorEndSlots(uint32_t &value) {
     live.Present = [](uint64_t i) { return i == 0; };
     live.Read = [&value](uint64_t) { return std::as_bytes(std::span{&value, 1}); };
     live.Replace = [&value](uint64_t, store::Blob incoming, bool &was_present) {
-        const auto old = value;
-        std::memcpy(&value, incoming.Data, sizeof(value));
-        std::memcpy(incoming.Data, &old, sizeof(value));
         was_present = true;
-        return incoming;
+        return store::SwapBlob(std::as_writable_bytes(std::span{&value, 1}), incoming);
     };
     live.Erase = [&value](uint64_t) {
         const auto old = store::CopyBlob(std::as_bytes(std::span{&value, 1}));

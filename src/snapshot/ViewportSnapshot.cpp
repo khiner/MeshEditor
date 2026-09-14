@@ -17,12 +17,12 @@
 
 namespace snapshot::detail {
 // ViewCamera and LookingThrough require constructor seeds before deserialization.
-void EmplaceViewCamera(entt::registry &r, entt::entity e, std::span<const std::byte> bytes) {
+void EmplaceViewCamera(state::Scene &r, state::Entity e, std::span<const std::byte> bytes) {
     ViewCamera v{vec3{0, 0, 1}, vec3{0}, Camera{}};
     if (zpp::bits::failure(zpp::bits::in{bytes}(v))) return;
     r.emplace_or_replace<ViewCamera>(e, v);
 }
-void EmplaceLookingThrough(entt::registry &r, entt::entity e, std::span<const std::byte> bytes) {
+void EmplaceLookingThrough(state::Scene &r, state::Entity e, std::span<const std::byte> bytes) {
     LookingThrough l{ViewCamera{vec3{0, 0, 1}, vec3{0}, Camera{}}};
     if (zpp::bits::failure(zpp::bits::in{bytes}(l))) return;
     r.emplace_or_replace<LookingThrough>(e, std::move(l));
@@ -40,6 +40,7 @@ void RegisterViewport(Tables &tables) {
     Persistent<
         ViewportTheme, WorkspaceLights, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, SelectionXRay,
         ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState>(tables);
+    tables.Snapshots[state::Type<ViewCamera>()].History = false;
     Derived<
         EnabledInteractionModes, AdditiveBoxSelectBaseline, ExciteSelectionBaseline, EditSelectionDirty,
         PendingEditElementClick, PendingBoxSelect, PendingPick, BoxSelectState, RotationUiVariant, RotationUiDriving,

@@ -1,8 +1,9 @@
 #pragma once
+#include <variant>
 
-#include "entt_fwd.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
+#include "state/Entity.h"
 
 #include <optional>
 #include <vector>
@@ -49,9 +50,9 @@ enum class CollideMode : uint8_t {
 // Mode == Blocklist: blocks collisions with bodies whose membership intersects CollideSystems.
 // Type enforces the KHR schema's mutual-exclusion of collideWithSystems / notCollideWithSystems.
 struct CollisionFilter {
-    std::vector<entt::entity> Systems{};
+    std::vector<state::Entity> Systems{};
     CollideMode Mode{CollideMode::All};
-    std::vector<entt::entity> CollideSystems{};
+    std::vector<state::Entity> CollideSystems{};
     std::string Name{};
 };
 
@@ -175,13 +176,13 @@ struct PhysicsVelocity {
 // LocalOffset is the shape's center in entity-local pre-scale coords (same convention as PhysicsMotion::CenterOfMass).
 struct ColliderShape {
     PhysicsShape Shape{};
-    entt::entity MeshEntity{null_entity};
+    state::Entity MeshEntity{null_entity};
     vec3 LocalOffset{0};
     bool operator==(const ColliderShape &) const = default;
 };
 
 struct ColliderMaterial {
-    entt::entity PhysicsMaterialEntity{null_entity}, CollisionFilterEntity{null_entity};
+    state::Entity PhysicsMaterialEntity{null_entity}, CollisionFilterEntity{null_entity};
 };
 
 // Marker: this entity's ColliderShape participates as a sensor (KHR GeometryTrigger), not a solid body.
@@ -199,13 +200,13 @@ struct ColliderPolicy {
 // Listed nodes supply the geometry; engine reports entry/exit for any of them.
 // Does not produce a rigid body; exists for document structure and filter assignment.
 struct TriggerNodes {
-    std::vector<entt::entity> Nodes{};
-    entt::entity CollisionFilterEntity{null_entity};
+    std::vector<state::Entity> Nodes{};
+    state::Entity CollisionFilterEntity{null_entity};
 };
 
 struct PhysicsJoint {
-    entt::entity ConnectedNode{null_entity};
-    entt::entity JointDefEntity{null_entity};
+    state::Entity ConnectedNode{null_entity};
+    state::Entity JointDefEntity{null_entity};
     bool EnableCollision{false};
     bool operator==(const PhysicsJoint &) const = default;
 };

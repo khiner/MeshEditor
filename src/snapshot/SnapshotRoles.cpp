@@ -19,29 +19,24 @@ const detail::Tables &GetTables() {
     return tables;
 }
 } // namespace
-const std::unordered_map<entt::id_type, SnapshotEntry> &SnapshotTable() { return GetTables().Snapshots; }
+const SnapshotEntries &SnapshotTable() { return GetTables().Snapshots; }
 
-void VerifyCoverage(const entt::registry &r) {
+void VerifyCoverage(const state::Scene &r) {
     std::set<std::string> unclassified; // Stable diagnostic ordering.
     for (auto [id, set] : r.storage()) {
         if (set.empty()) continue;
-        const auto &info = set.info();
-        if (!std::string_view{info.name()}.starts_with("entt::")) {
-            if (!GetTables().Comparators.contains(info.hash())) unclassified.emplace(info.name());
-        }
+        if (!GetTables().Classified[id]) unclassified.emplace(state::SchemaNames[id]);
     }
     if (unclassified.empty()) return;
 
-    std::string msg = "snapshot: component(s) in registry storage are classified neither Persistent nor Derived "
+    std::string msg = "snapshot: component(s) in scene storage are classified neither Persistent nor Derived "
                       "(classify in the domain snapshot registration):";
     for (const auto &name : unclassified) (msg += "\n  ") += name;
     throw std::runtime_error(msg);
 }
 
-std::optional<bool> ComponentValuesEqual(entt::id_type type_hash, const void *a, const void *b) {
-    const auto &comparators = GetTables().Comparators;
-    const auto it = comparators.find(type_hash);
-    if (it == comparators.end() || it->second == nullptr) return std::nullopt;
-    return it->second(a, b);
+std::optional<bool> ComponentValuesEqual(state::TypeId type_hash, const void *a, const void *b) {
+    if (type_hash >= state::SchemaSize || !GetTables().Comparators[type_hash]) return std::nullopt;
+    return GetTables().Comparators[type_hash](a, b);
 }
 } // namespace snapshot

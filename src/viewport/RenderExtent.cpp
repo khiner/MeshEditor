@@ -3,11 +3,11 @@
 #include "viewport/FrameState.h"
 #include "viewport/ViewportDisplay.h"
 
-#include <entt/entity/registry.hpp>
+#include "state/Scene.h"
 
 #include <algorithm>
 
-uvec2 RenderExtentPx(const entt::registry &r) {
+uvec2 RenderExtentPx(const state::Scene &r) {
     const auto logical_extent = r.ctx().get<const ViewportExtent>().Value;
     const auto scale = r.ctx().get<const FrameState>().DisplayFramebufferScale;
     const auto scaled = [](uint32_t l, float s) -> uint32_t {

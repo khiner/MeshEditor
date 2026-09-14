@@ -1,12 +1,12 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
+#include "state/Entity.h"
 #include <filesystem>
 #include <vector>
 
 // Tracks which RealImpact microphone entity is currently providing sample data for this sound object.
 struct RealImpactActiveMicrophone {
-    entt::entity Entity;
+    state::Entity Entity;
 };
 // A RealImpact microphone position in the dataset.
 struct RealImpactMicrophone {

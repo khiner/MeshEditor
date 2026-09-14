@@ -14,6 +14,7 @@
 #include "render/Pipelines.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
+#include "selection/SelectionQueries.h"
 #include "snapshot/SceneSnapshot.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/Viewport.h"
@@ -26,9 +27,9 @@ using boost::ut::expect;
 
 namespace {
 struct Fixture {
-    entt::registry R;
+    state::Scene R;
     std::unique_ptr<project::Project> P;
-    entt::entity Viewport;
+    state::Entity Viewport;
     Fixture() {
         R.ctx().emplace<mtl::Context>();
         P = std::make_unique<project::Project>(R);
@@ -88,6 +89,67 @@ struct State {
     }
 };
 
+void TestNativeStateHistory() {
+    const TestDir dir{"mesheditor-native-state"};
+    Fixture f;
+    auto &p = *f.P;
+    expect(p.Begin(dir));
+    const auto entity = f.R.create();
+    const std::string first(8192, 'a'), second(16384, 'b');
+    f.R.emplace<Name>(entity, first);
+    const auto before = p.History.Commit("native first", {});
+    f.R.patch<Name>(entity, [&](auto &name) { name.Value = second; });
+    const auto after = p.History.Commit("native second", {});
+    expect(p.History.Stats().OwnedBytes >= first.size());
+    const auto epoch = f.R.Epoch;
+    p.Navigate(before);
+    expect(f.R.Epoch != epoch && f.R.get<Name>(entity).Value == first);
+    p.Navigate(after);
+    expect(f.R.get<Name>(entity).Value == second);
+    f.R.DocumentReadOnly = true;
+    bool rejected = false;
+    try {
+        f.R.edit<Name>(entity).Value = "must not write";
+    } catch (const std::logic_error &) { rejected = true; }
+    f.R.DocumentReadOnly = false;
+    expect(rejected && f.R.get<Name>(entity).Value == second);
+    p.History.Evict(0);
+    p.Navigate(before);
+    expect(f.R.get<Name>(entity).Value == first);
+    // The derived name index must describe the restored value, including same-ID replacement.
+    const auto other = f.R.create();
+    expect(EmplaceUniqueName(f.R, other, first).Value != first);
+    f.R.destroy(other);
+    p.Navigate(after);
+    expect(f.R.get<Name>(entity).Value == second);
+    f.Audit();
+}
+
+void TestPickingIdentity() {
+    const TestDir dir{"mesheditor-picking-identity"};
+    Fixture f;
+    expect(f.P->Begin(dir));
+    f.Do(action::view::SetExtent{{64, 64}});
+    f.Do(action::object::AddMeshPrimitive{primitive::UVSphere{}, std::make_unique<MeshInstanceCreateInfo>()});
+    const auto first = FindActiveEntity(f.R);
+    const auto check = [&](state::Entity entity) {
+        f.Image();
+        const auto box = RunBoxSelect(f.R, {{0, 0}, {63, 63}});
+        expect(std::ranges::find(box, entity) != box.end());
+        const auto picked = RunObjectPick(f.R, {32, 32}, 32);
+        expect(std::ranges::find(picked, entity) != picked.end());
+    };
+    check(first);
+    // Grow the picking buffers without changing the visible object or its identity.
+    for (int i = 0; i < 500; ++i) f.R.create();
+    check(first);
+    f.Do(action::object::Delete{});
+    f.Do(action::object::AddMeshPrimitive{primitive::UVSphere{}, std::make_unique<MeshInstanceCreateInfo>()});
+    const auto recycled = FindActiveEntity(f.R);
+    expect(recycled != first && !f.R.valid(first));
+    check(recycled);
+}
+
 void TestProject(const char *sample) {
     std::printf("history: %s\n", sample);
     const TestDir dir{"mesheditor-history"}, source{"mesheditor-history-source"}, moved{"mesheditor-history-moved"}, archive{"mesheditor-history-archive"};
@@ -114,7 +176,7 @@ void TestProject(const char *sample) {
         record();
         f.Do(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>()});
         const auto reused = FindActiveEntity(f.R);
-        expect(first != reused && entt::to_entity(first) == entt::to_entity(reused));
+        expect(first != reused && state::Index(first) == state::Index(reused));
         record();
         f.Do(action::object::Delete{});
         record();
@@ -371,6 +433,8 @@ int main() {
         expect(project::ListRestoreSessions().size() <= 5);
         Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
     }
+    TestNativeStateHistory();
+    TestPickingIdentity();
     for (const char *sample : {"Sphere", "SimpleSkin", "SimpleMorph", "BoxTextured"}) TestProject(sample);
     return RunSuites();
 }
