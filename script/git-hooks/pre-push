@@ -3,8 +3,8 @@
 # Synchronizes the committed render corpus with the published site during each push.
 # script/Render restores video changes within the GPU-noise tolerance before the hook inspects render/.
 # Remaining render changes are amended into HEAD and pushed recursively before the original push aborts.
-# Clean outgoing render changes are published through deploy_render_data.sh before the push proceeds.
-# RENDER_PREPUSH_INNER detects render changes produced by the recursive push.
+# Only image/video changes trigger a second render or publication through deploy_render_data.sh.
+# RENDER_PREPUSH_INNER is media or metadata for the recursive push.
 # Install after a fresh clone: cp script/git-hooks/pre-push-dispatch .git/hooks/pre-push
 
 set -uo pipefail
@@ -15,6 +15,9 @@ RepoRoot="$(git rev-parse --show-toplevel)"
 cd "${RepoRoot}"
 
 DeployScript="${RepoRoot}/../blog/scripts/deploy_render_data.sh"
+MediaPaths=(':(glob,icase)render/**/*.webp' ':(glob,icase)render/**/*.png'
+            ':(glob,icase)render/**/*.jpg' ':(glob,icase)render/**/*.jpeg'
+            ':(glob,icase)render/**/*.mp4')
 
 # Read outgoing refs as local ref, local SHA, remote ref, and remote SHA.
 RefLines=()
@@ -32,7 +35,9 @@ for line in "${RefLines[@]}"; do
 done
 [ "${outgoing}" -eq 1 ] || exit 0
 
-COMPARE_VIDEOS=1 script/Render </dev/null || { echo "pre-push: script/Render failed, aborting push" >&2; exit 1; }
+if [ "${RENDER_PREPUSH_INNER:-}" != metadata ]; then
+    COMPARE_VIDEOS=1 script/Render </dev/null || { echo "pre-push: script/Render failed, aborting push" >&2; exit 1; }
+fi
 
 if [ -n "$(git status --porcelain -- render/)" ]; then
     if [ -n "${RENDER_PREPUSH_INNER:-}" ]; then
@@ -52,10 +57,12 @@ if [ -n "$(git status --porcelain -- render/)" ]; then
         echo "pre-push: refusing to amend render/ changes into HEAD: the index has staged changes." >&2
         exit 1
     fi
+    retry=metadata
+    if [ -n "$(git status --porcelain -- "${MediaPaths[@]}")" ]; then retry=media; fi
     git add -A -- render/
     git commit --amend --no-edit --quiet
     echo "pre-push: amended render changes into HEAD ($(git rev-parse --short HEAD)), pushing it..."
-    if RENDER_PREPUSH_INNER=1 git push "${remote}" "${local_ref}:${remote_ref}"; then
+    if RENDER_PREPUSH_INNER="${retry}" git push "${remote}" "${local_ref}:${remote_ref}"; then
         echo "pre-push: amended commit pushed. The rejection below refers to the original,"
         echo "pre-push: pre-amend push and is expected."
     else
@@ -64,19 +71,19 @@ if [ -n "$(git status --porcelain -- render/)" ]; then
     exit 1
 fi
 
-# Publish new remote refs because they have no diff base and deployment uses checksum comparison.
+# New remote refs compare against an empty tree, so only refs containing media publish.
 publish=0
 for line in "${RefLines[@]}"; do
     read -r _ local_sha _ remote_sha <<<"${line}"
     [[ "${local_sha}" =~ ^0+$ ]] && continue
-    if [[ "${remote_sha}" =~ ^0+$ ]] || \
-       [ -n "$(git diff --name-only "${remote_sha}..${local_sha}" -- render/ 2>/dev/null)" ]; then
+    if [[ "${remote_sha}" =~ ^0+$ ]]; then remote_sha="$(git hash-object -w -t tree --stdin </dev/null)"; fi
+    if [ -n "$(git diff --name-only "${remote_sha}..${local_sha}" -- "${MediaPaths[@]}" 2>/dev/null)" ]; then
         publish=1
     fi
 done
 
 if [ "${publish}" -eq 1 ]; then
-    echo "pre-push: outgoing commits touch render/, publishing to karlhiner.com..."
+    echo "pre-push: outgoing images/videos changed, publishing to karlhiner.com..."
     "${DeployScript}" "${RepoRoot}/render" </dev/null || {
         echo "pre-push: publish failed, aborting push to keep the site and repo in lockstep" >&2
         exit 1
