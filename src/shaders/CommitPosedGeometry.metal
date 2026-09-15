@@ -2,11 +2,11 @@
 #define COMMITPOSEDGEOMETRY_MSL
 
 #include "Bindless.metal"
-#include "CommitPosedGeometryPushConstants.metal"
-#include "CornerClass.metal"
-#include "CornerClassEncoding.metal"
+#include "gpu/CommitPosedGeometryPushConstants.h"
+#include "gpu/CornerClass.h"
+#include "gpu/CornerClassEncoding.h"
 #include "ElementWorkShared.metal"
-#include "FanItemEncoding.metal"
+#include "gpu/FanItemEncoding.h"
 #include "TransformUtils.metal"
 
 kernel void GeometryWorkArgsKernel(
@@ -28,16 +28,16 @@ kernel void CommitPosedGeometryKernel(
 ) {
     if (pc.Phase == 0u) {
         const uint i = WorkElement(bindless, pc.Candidates, invocation);
-        if (i == INVALID_OFFSET) return;
-        if (pc.Mode != GeometryEditMode_Refresh) {
+        if (i == InvalidOffset) return;
+        if (pc.Mode != GeometryEditMode::Refresh) {
             device Vertex *vertices = BindlessBufferMutable(Vertex, bindless.VertexBuffer, pc.Vertices.Slot) + pc.Vertices.Offset;
-            const bool selected = pc.Selection.Slot != INVALID_SLOT &&
+            const bool selected = pc.Selection.Slot != InvalidSlot &&
                 (BindlessBuffer(uint, bindless.Buffer, pc.Selection.Slot)[pc.Selection.Offset + i / 32u] & (1u << (i % 32u))) != 0u;
-            if (pc.Mode == GeometryEditMode_Commit && !selected) return;
+            if (pc.Mode == GeometryEditMode::Commit && !selected) return;
             const float3 base = float3(vertices[i].Position);
             const float3 world = trs_transform_point(pc.Primary, base);
             const float3 posed = pc.ApplyTransform != 0u && selected ? trs_inverse_transform_point(pc.Primary, apply_edit_transform(world, pc.Pivot, pc.Delta)) : base;
-            if (pc.Mode == GeometryEditMode_Commit) {
+            if (pc.Mode == GeometryEditMode::Commit) {
                 if (all(base == posed)) return;
                 vertices[i].Position = packed_float3(posed);
             } else {
@@ -49,10 +49,10 @@ kernel void CommitPosedGeometryKernel(
         MarkWork(bindless, pc.ChangedVertices, i);
         MarkWork(bindless, pc.BoundsTiles, i / 256u);
         if (pc.Entry.FaceCount == 0u) {
-            if (pc.TriangleMeshlets.Slot == INVALID_SLOT) return;
+            if (pc.TriangleMeshlets.Slot == InvalidSlot) return;
             device const uint *map = BindlessBuffer(uint, bindless.Buffer, pc.TriangleMeshlets.Slot) + pc.TriangleMeshlets.Offset;
             if (pc.Topology == 2u) MarkWork(bindless, pc.Meshlets, map[i]);
-            else if (pc.VertexEdgeAdjacencyOffset != INVALID_OFFSET) {
+            else if (pc.VertexEdgeAdjacencyOffset != InvalidOffset) {
                 device const uint *edges = BindlessBuffer(uint, bindless.Buffer, pc.AdjacencySlot) + pc.VertexEdgeAdjacencyOffset;
                 for (uint j = edges[i]; j < edges[i + 1u]; ++j)
                     MarkWork(bindless, pc.Meshlets, map[edges[pc.Entry.VertexCount + 1u + j]]);
@@ -61,31 +61,31 @@ kernel void CommitPosedGeometryKernel(
         }
         device const uint *fans = BindlessBuffer(uint, bindless.Buffer, pc.AdjacencySlot) + pc.Entry.VertexAdjacencyOffset;
         for (uint j = fans[i]; j < fans[i + 1u]; ++j)
-            MarkWork(bindless, pc.Faces, fans[pc.Entry.VertexCount + 1u + j] & FanItemEncoding_FaceMask);
+            MarkWork(bindless, pc.Faces, fans[pc.Entry.VertexCount + 1u + j] & uint(FanItemEncoding::FaceMask));
     } else if (pc.Phase == 1u) {
         const uint f = WorkElement(bindless, pc.Faces, invocation);
-        if (f == INVALID_OFFSET) return;
+        if (f == InvalidOffset) return;
         device const uint *first = BindlessBuffer(uint, bindless.ObjectIdBuffer, pc.FaceFirstTriangleSlot) + pc.Entry.FaceDataOffset;
         const uint end = f + 1u < pc.Entry.FaceCount ? first[f + 1u] : pc.Entry.TriangleCount;
         device const uint *indices = BindlessBuffer(uint, bindless.IndexBuffer, pc.Entry.FaceIndices.Slot) + pc.Entry.FaceIndices.Offset;
         for (uint t = first[f]; t < end; ++t) {
-            if (pc.TriangleMeshlets.Slot != INVALID_SLOT)
+            if (pc.TriangleMeshlets.Slot != InvalidSlot)
                 MarkWork(bindless, pc.Meshlets, BindlessBuffer(uint, bindless.Buffer, pc.TriangleMeshlets.Slot)[pc.TriangleMeshlets.Offset + t]);
             for (uint c = 0u; c < 3u; ++c) MarkWork(bindless, pc.Normals, indices[t * 3u + c]);
         }
     } else {
         const uint v = WorkElement(bindless, pc.Normals, invocation);
-        if (v >= pc.Entry.VertexCount || pc.CornerClassOffset == INVALID_OFFSET || pc.CornerClassOffset == CornerClassEncoding_UniformFaceOffset) return;
+        if (v >= pc.Entry.VertexCount || pc.CornerClassOffset == InvalidOffset || pc.CornerClassOffset == uint(CornerClassEncoding::UniformFaceOffset)) return;
         device const uint *fans = BindlessBuffer(uint, bindless.Buffer, pc.AdjacencySlot) + pc.Entry.VertexAdjacencyOffset;
         device const uint *first = BindlessBuffer(uint, bindless.ObjectIdBuffer, pc.FaceFirstTriangleSlot) + pc.Entry.FaceDataOffset;
         // Sectors are stored per corner: equivalent sectors on other incident faces also need updating.
         for (uint j = fans[v]; j < fans[v + 1u]; ++j) {
             const uint item = fans[pc.Entry.VertexCount + 1u + j];
-            const uint f = item & FanItemEncoding_FaceMask, k = item >> FanItemEncoding_LoopShift;
+            const uint f = item & uint(FanItemEncoding::FaceMask), k = item >> uint(FanItemEncoding::LoopShift);
             const uint corner = k < 2u ? first[f] * 3u + k : (first[f] + k - 2u) * 3u + 2u;
             const uint value = BindlessBuffer(uint, bindless.Buffer, pc.CornerClassSlot)[pc.CornerClassOffset + corner];
-            if ((value >> CornerClassEncoding_TagShift) == CornerClass_Seam)
-                MarkWork(bindless, pc.Normals, pc.Entry.VertexCount + (value & CornerClassEncoding_IndexMask));
+            if ((value >> uint(CornerClassEncoding::TagShift)) == uint(CornerClass::Seam))
+                MarkWork(bindless, pc.Normals, pc.Entry.VertexCount + (value & uint(CornerClassEncoding::IndexMask)));
         }
     }
 }

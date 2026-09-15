@@ -4,28 +4,28 @@
 #include "ElementOverlay.metal"
 #include "EditSelection.metal"
 #include "MeshletEditGeometry.metal"
-#include "MeshletLimit.metal"
-#include "MeshletInstanceFlag.metal"
+#include "gpu/MeshletLimit.h"
+#include "gpu/MeshletInstanceFlag.h"
 #include "MeshletResolve.metal"
 #include "SceneUBO.metal"
 #include "Varyings.metal"
 
 constant uint MeshletEditSimdGroups = 5u;
 constant uint MeshletEditPointSimdGroups = 2u;
-using MeshletEditEdgeOutput = metal::mesh<EdgeQuadVaryings, void, MeshletLimit_MaxTriangles * 4u, MeshletLimit_MaxTriangles * 2u, metal::topology::triangle>;
-using MeshletEditPointOutput = metal::mesh<PointVaryings, void, MeshletLimit_MaxVertices, MeshletLimit_MaxVertices, metal::topology::point>;
-using MeshletSelectPointOutput = metal::mesh<ElementIdVaryings, void, MeshletLimit_MaxVertices, MeshletLimit_MaxVertices, metal::topology::point>;
-using MeshletSelectEdgeOutput = metal::mesh<ElementIdFragmentVaryings, void, MeshletLimit_MaxTriangles * 2u, MeshletLimit_MaxTriangles, metal::topology::line>;
-using MeshletSelectEdgePointOutput = metal::mesh<ElementIdVaryings, void, MeshletLimit_MaxTriangles * 2u, MeshletLimit_MaxTriangles * 2u, metal::topology::point>;
-using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, MeshletLimit_MaxTriangles * 3u, MeshletLimit_MaxTriangles * 3u, metal::topology::point>;
+using MeshletEditEdgeOutput = metal::mesh<EdgeQuadVaryings, void, uint(MeshletLimit::MaxTriangles) * 4u, uint(MeshletLimit::MaxTriangles) * 2u, metal::topology::triangle>;
+using MeshletEditPointOutput = metal::mesh<PointVaryings, void, uint(MeshletLimit::MaxVertices), uint(MeshletLimit::MaxVertices), metal::topology::point>;
+using MeshletSelectPointOutput = metal::mesh<ElementIdVaryings, void, uint(MeshletLimit::MaxVertices), uint(MeshletLimit::MaxVertices), metal::topology::point>;
+using MeshletSelectEdgeOutput = metal::mesh<ElementIdFragmentVaryings, void, uint(MeshletLimit::MaxTriangles) * 2u, uint(MeshletLimit::MaxTriangles), metal::topology::line>;
+using MeshletSelectEdgePointOutput = metal::mesh<ElementIdVaryings, void, uint(MeshletLimit::MaxTriangles) * 2u, uint(MeshletLimit::MaxTriangles) * 2u, metal::topology::point>;
+using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(MeshletLimit::MaxTriangles) * 3u, uint(MeshletLimit::MaxTriangles) * 3u, metal::topology::point>;
 
 inline uint MeshletOwnedVertex(
     const thread Scene &scene, const thread MeshletWork &work,
     device const BindlessSet &bindless, constant MeshletDrawPushConstants &pc, uint local_vertex
 ) {
-    if (local_vertex >= work.Meshlet.VertexCount) return INVALID_OFFSET;
+    if (local_vertex >= work.Meshlet.VertexCount) return InvalidOffset;
     const uint packed = MeshletPackedVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, local_vertex);
-    if ((packed & MeshletGeometryEncoding_EditVertexOwnerBit) == 0u) return INVALID_OFFSET;
+    if ((packed & uint(MeshletGeometryEncoding::EditVertexOwnerBit)) == 0u) return InvalidOffset;
     return MeshletVertexId(scene, work.Draw, MeshletPrimitiveTopology(work.Meshlet), packed);
 }
 
@@ -49,13 +49,13 @@ inline void EmitMeshletEditEdge(
     if (!present) return;
 
     const uint vertex_base = compact.x * 4u;
-    const bool edit_edge = scene.View.EditElement == Element_Edge;
+    const bool edit_edge = scene.View.EditElement == Element::Edge;
     const auto color = [&](uint vertex_id) {
         return EditEdgeColor(scene, EditEdgeEndpointState(scene, work.Draw, geometry.Edge, vertex_id), edit_edge);
     };
     EditEdgeOverlay edge{
         geometry.Clip0, geometry.Clip1, color(geometry.Vertex0), color(geometry.Vertex1),
-        pc.EdgeSharpnessSlot != INVALID_SLOT &&
+        pc.EdgeSharpnessSlot != InvalidSlot &&
             uint(scene.Bytes(pc.EdgeSharpnessSlot)[work.Instance.EditEdgeSharpnessOffset + geometry.Edge]) != 0u,
     };
     edge.Clip0.z -= NdcOffsetFactor(scene);
@@ -104,9 +104,9 @@ inline void EmitMeshletEditEdge(
     }
 
     const uint vertex_id = MeshletOwnedVertex(scene, work, bindless, pc, thread_index);
-    const bool sound_point = (pc.RequiredInstanceFlags & MeshletInstanceFlag_SoundPoint) != 0u;
-    const uint vertex_state = vertex_id != INVALID_OFFSET ? EditVertexState(scene, work.Draw, vertex_id) : 0u;
-    const auto present = vertex_id != INVALID_OFFSET && (!sound_point || (vertex_state & STATE_SELECTED) != 0u);
+    const bool sound_point = (pc.RequiredInstanceFlags & uint(MeshletInstanceFlag::SoundPoint)) != 0u;
+    const uint vertex_state = vertex_id != InvalidOffset ? EditVertexState(scene, work.Draw, vertex_id) : 0u;
+    const auto present = vertex_id != InvalidOffset && (!sound_point || (vertex_state & STATE_SELECTED) != 0u);
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, MeshletEditPointSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y);
     if (!present) return;
@@ -142,8 +142,8 @@ inline void EmitMeshletEditEdge(
         return;
     }
     const uint vertex_id = MeshletOwnedVertex(scene, work, bindless, pc, thread_index);
-    const bool sound_point = (pc.RequiredInstanceFlags & MeshletInstanceFlag_SoundPoint) != 0u;
-    const auto present = vertex_id != INVALID_OFFSET && (!sound_point || EditSelectionBit(scene, work.Draw.Selection.VertexBits, vertex_id));
+    const bool sound_point = (pc.RequiredInstanceFlags & uint(MeshletInstanceFlag::SoundPoint)) != 0u;
+    const auto present = vertex_id != InvalidOffset && (!sound_point || EditSelectionBit(scene, work.Draw.Selection.VertexBits, vertex_id));
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, MeshletEditPointSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y);
     if (!present) return;
@@ -230,7 +230,7 @@ inline void EmitMeshletEditEdge(
 ) {
     const Scene scene{bindless, view, theme, workspace};
     const MeshletWork work = ResolveMeshletWork(bindless, pc, group.x);
-    if (!work.Valid || MeshletPrimitiveTopology(work.Meshlet) != MeshPrimitiveTopology_Triangle || MeshletCoarse(work.Meshlet)) {
+    if (!work.Valid || MeshletPrimitiveTopology(work.Meshlet) != uint(MeshPrimitiveTopology::Triangle) || MeshletCoarse(work.Meshlet)) {
         output.set_primitive_count(0u);
         return;
     }

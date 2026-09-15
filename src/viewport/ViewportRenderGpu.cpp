@@ -18,7 +18,9 @@
 #include "gpu/MeshletDrawPushConstants.h"
 #include "gpu/MeshletGeometryEncoding.h"
 #include "gpu/MeshletInstanceFlag.h"
+#include "gpu/MotionBlurAccumulatePushConstants.h"
 #include "gpu/MotionBlurGatherPushConstants.h"
+#include "gpu/MotionBlurResolvePushConstants.h"
 #include "gpu/MotionBlurTilesFlattenPushConstants.h"
 #include "gpu/NormalDeriveEntry.h"
 #include "gpu/NormalDerivePushConstants.h"
@@ -29,6 +31,7 @@
 #include "gpu/OverlayJobKind.h"
 #include "gpu/PosedMeshletBoundsPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
+#include "gpu/ViewportCompositePushConstants.h"
 #include "gpu/VisibilityId.h"
 #include "gpu/WireRasterPushConstants.h"
 #include "gpu/WireResolvePushConstants.h"
@@ -1339,10 +1342,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         // Resolve shutter samples before drawing sharp overlays.
         if (phase == RenderPhase::BlurResolve) {
             scene_renderer.Bind(encoder, SPT::MotionBlurResolve);
-            const struct {
-                uint32_t AccumSamplerSlot;
-                float InvSteps;
-            } resolve_pc{sel_slots.MotionBlurOutputSampler, 1.f / float(MotionBlurSteps(settings))};
+            const MotionBlurResolvePushConstants resolve_pc{.AccumSamplerSlot = sel_slots.MotionBlurOutputSampler, .InvSteps = 1.f / float(MotionBlurSteps(settings))};
             encode::SetPushConstants(encoder, resolve_pc);
             draw_quad();
         }
@@ -1381,10 +1381,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         const auto pass = mtl::MakePassDescriptor(colors);
         encoder = encode::BeginScenePass(chain, pass, "BlurAccumulate", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
         main.MotionBlurAccumulate.Bind(encoder);
-        const struct {
-            uint32_t SceneSamplerSlot;
-            float Weight;
-        } accum_pc{sel_slots.SceneColorSampler, float(sample_weight)};
+        const MotionBlurAccumulatePushConstants accum_pc{.SceneSamplerSlot = sel_slots.SceneColorSampler, .Weight = float(sample_weight)};
         encode::SetPushConstants(encoder, accum_pc);
         draw_quad();
         return;
@@ -1592,10 +1589,13 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         const uint32_t view_transform = settings.DebugChannel != DebugChannel::None ? 2u : show_rendered ? 1u :
                                                                                                            0u;
         const uint32_t scene_sampler = phase == RenderPhase::BlurFast ? sel_slots.MotionBlurOutputSampler : sel_slots.SceneColorSampler;
-        const struct {
-            uint32_t SceneColorSamplerSlot, OverlayColorSamplerSlot, ViewTransform, HasOverlay;
-            vec4 Backdrop;
-        } composite_pc{scene_sampler, sel_slots.OverlayColorSampler, view_transform, overlay_pass_needed, settings.ClearColor};
+        const ViewportCompositePushConstants composite_pc{
+            .SceneColorSamplerSlot = scene_sampler,
+            .OverlayColorSamplerSlot = sel_slots.OverlayColorSampler,
+            .ViewTransform = view_transform,
+            .HasOverlay = overlay_pass_needed,
+            .Backdrop = settings.ClearColor,
+        };
         encode::SetPushConstants(encoder, composite_pc);
         draw_quad();
     }

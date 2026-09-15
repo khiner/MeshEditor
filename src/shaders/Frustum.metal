@@ -1,7 +1,7 @@
 #ifndef FRUSTUM_MSL
 #define FRUSTUM_MSL
 
-#include "MslPrelude.metal"
+#include "gpu/Types.h"
 
 inline float4 vp_row(float4x4 m, uint i) {
     return float4(m[0][i], m[1][i], m[2][i], m[3][i]);

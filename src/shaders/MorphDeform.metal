@@ -7,7 +7,7 @@
 // `weights_slot` selects current, shutter-open, or shutter-close pose weights.
 template<typename SetT>
 inline void ApplyMorphDeform(const thread SceneT<SetT> &scene, DrawData draw, thread float3 &position, uint vertex_index, uint weights_slot) {
-    if (draw.MorphDeformOffset == INVALID_OFFSET) return;
+    if (draw.MorphDeformOffset == InvalidOffset) return;
 
     for (uint t = 0; t < draw.MorphTargetCount; ++t) {
         const float weight = scene.MorphWeights(weights_slot)[draw.MorphWeightsOffset + t];
@@ -21,7 +21,7 @@ inline void ApplyMorphDeform(const thread SceneT<SetT> &scene, DrawData draw, th
 // Applies position deformation and accumulates weighted authored normal deltas with one fetch per target vertex.
 template<typename SetT>
 inline void ApplyMorphDeform(const thread SceneT<SetT> &scene, DrawData draw, thread float3 &position, thread float3 &normal_delta, uint vertex_index) {
-    if (draw.MorphDeformOffset == INVALID_OFFSET) return;
+    if (draw.MorphDeformOffset == InvalidOffset) return;
 
     const bool authored = draw.MorphShadingAuthored != 0u;
     for (uint t = 0; t < draw.MorphTargetCount; ++t) {

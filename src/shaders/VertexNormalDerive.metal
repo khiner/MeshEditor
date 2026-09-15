@@ -4,9 +4,9 @@
 // Derives face, smooth-vertex, and normal-sector shading normals with deterministic CSR accumulation order.
 // Fan items use Blender's corner-angle weighting of unit face normals.
 #include "Bindless.metal"
-#include "NormalDeriveEntry.metal"
-#include "FanItemEncoding.metal"
-#include "NormalDerivePushConstants.metal"
+#include "gpu/NormalDeriveEntry.h"
+#include "gpu/FanItemEncoding.h"
+#include "gpu/NormalDerivePushConstants.h"
 #include "ElementWorkShared.metal"
 
 struct DeriveContext {
@@ -19,7 +19,7 @@ struct DeriveContext {
     device packed_float3 *SeamNormals() const { return BindlessBufferMutable(packed_float3, S.B.Buffer, Pc.SeamNormalSlot); }
 
     float3 Position(NormalDeriveEntry entry, uint i) const {
-        return entry.PosedPositionOffset != INVALID_OFFSET ?
+        return entry.PosedPositionOffset != InvalidOffset ?
             float3(S.PosedPositions(Pc.PositionSlot)[entry.PosedPositionOffset + i]) :
             float3(S.Vertices(entry.Vertices.Slot)[entry.Vertices.Offset + i].Position);
     }
@@ -52,8 +52,8 @@ struct DeriveContext {
 
     // Returns the corner-angle-weighted face normal, or zero for a degenerate face or corner.
     float3 FanContribution(NormalDeriveEntry entry, uint item) const {
-        const uint f = item & FanItemEncoding_FaceMask;
-        const uint k = item >> FanItemEncoding_LoopShift;
+        const uint f = item & uint(FanItemEncoding::FaceMask);
+        const uint k = item >> uint(FanItemEncoding::LoopShift);
         const float3 fn = float3(FaceNormals()[entry.FaceNormalOffset + f]);
         if (all(fn == float3(0))) return float3(0);
         const uint2 range = FaceTriangleRange(entry, f);
@@ -96,11 +96,11 @@ kernel void VertexNormalDeriveKernel(
 ) {
     const Scene scene{bindless, view, theme, workspace};
     const DeriveContext ctx{scene, pc};
-    const bool sparse = pc.Work.Storage.Slot != INVALID_SLOT;
+    const bool sparse = pc.Work.Storage.Slot != InvalidSlot;
     const uint2 tile = sparse ? uint2(pc.EntryIndex, 0u) : uint2(scene.TileMap(pc.TileMapSlot)[pc.FirstTile + group_id]);
     const NormalDeriveEntry entry = BindlessBuffer(NormalDeriveEntry, bindless.Buffer, pc.EntriesSlot)[tile.x];
     const uint i = sparse ? WorkElement(bindless, pc.Work, group_id * 256u + local_id) : tile.y * 256u + local_id;
-    if (i == INVALID_OFFSET) return;
+    if (i == InvalidOffset) return;
     if (pc.Phase == 0u) {
         if (i < entry.FaceCount) {
             ctx.FaceNormals()[entry.FaceNormalOffset + i] = packed_float3(ctx.FaceNormal(entry, i));

@@ -28,7 +28,7 @@ namespace {
 std::optional<uint64_t> ShaderTreeFingerprint(const std::filesystem::path &root) {
     std::vector<std::filesystem::path> files;
     try {
-        for (const auto &entry : std::filesystem::recursive_directory_iterator(root)) {
+        for (const auto &entry : std::filesystem::recursive_directory_iterator(root, std::filesystem::directory_options::follow_directory_symlink)) {
             if (entry.is_regular_file()) files.emplace_back(entry.path());
         }
     } catch (const std::filesystem::filesystem_error &) {

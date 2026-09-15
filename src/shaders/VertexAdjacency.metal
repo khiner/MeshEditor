@@ -4,10 +4,10 @@
 // Builds deterministic vertex-fan or vertex-edge CSR incidence tables matching CPU halfedge order.
 #include "Bindless.metal"
 #include "BlockScan.metal"
-#include "FanItemEncoding.metal"
-#include "VertexAdjacencyJob.metal"
-#include "VertexAdjacencyKind.metal"
-#include "VertexAdjacencyPushConstants.metal"
+#include "gpu/FanItemEncoding.h"
+#include "gpu/VertexAdjacencyJob.h"
+#include "gpu/VertexAdjacencyKind.h"
+#include "gpu/VertexAdjacencyPushConstants.h"
 
 struct AdjacencyContext {
     device const BindlessSet &B;
@@ -63,7 +63,7 @@ kernel void VertexAdjacencyCount(
     if (h >= job.HalfedgeCount) return;
     device const uint *corners = ctx.Corners(job);
     device atomic_uint *counts = ctx.AtomicScratch() + job.CountsOffset;
-    if (job.Kind == VertexAdjacencyKind_Fan) {
+    if (job.Kind == VertexAdjacencyKind::Fan) {
         atomic_fetch_add_explicit(&counts[corners[h]], 1u, memory_order_relaxed);
         return;
     }
@@ -140,7 +140,7 @@ kernel void VertexAdjacencyScatter(
     device const uint *corners = ctx.Corners(job);
     device atomic_uint *cursors = ctx.AtomicScratch() + job.CountsOffset;
     device uint *items = ctx.Csr() + job.CsrOffset + job.VertexCount + 1u;
-    if (job.Kind == VertexAdjacencyKind_Fan) {
+    if (job.Kind == VertexAdjacencyKind::Fan) {
         items[atomic_fetch_add_explicit(&cursors[corners[h]], 1u, memory_order_relaxed)] = h;
         return;
     }
@@ -171,10 +171,10 @@ kernel void VertexAdjacencySort(
         for (; j > start && items[j - 1u] > key; --j) items[j] = items[j - 1u];
         items[j] = key;
     }
-    if (job.Kind != VertexAdjacencyKind_Fan) return;
+    if (job.Kind != VertexAdjacencyKind::Fan) return;
     for (uint i = start; i < end; ++i) {
         const uint h = items[i];
-        items[i] = (h / 3u) | ((h % 3u) << FanItemEncoding_LoopShift);
+        items[i] = (h / 3u) | ((h % 3u) << uint(FanItemEncoding::LoopShift));
     }
 }
 

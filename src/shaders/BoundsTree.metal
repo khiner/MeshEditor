@@ -1,9 +1,9 @@
 #ifndef BOUNDS_TREE_MSL
 #define BOUNDS_TREE_MSL
 #include "Bindless.metal"
-#include "AABB.metal"
+#include "gpu/AABB.h"
 #include "BoundsShared.metal"
-#include "BoundsTreePushConstants.metal"
+#include "gpu/BoundsTreePushConstants.h"
 #include "ElementWorkShared.metal"
 
 kernel void BoundsTreeKernel(
@@ -13,7 +13,7 @@ kernel void BoundsTreeKernel(
     constant BoundsTreePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const uint i = WorkElement(bindless, pc.Work, group);
-    if (i == INVALID_OFFSET) return;
+    if (i == InvalidOffset) return;
     const uint child = i * 256u + tid;
     float3 lo = AabbEmptyMin, hi = AabbEmptyMax;
     if (child < pc.InputCount) {

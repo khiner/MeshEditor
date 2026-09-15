@@ -6,9 +6,9 @@
 #include "SceneUBO.metal"
 #include "TransformUtils.metal"
 #include "ScreenSpace.metal"
-#include "WireCoverage.metal"
+#include "gpu/WireCoverage.h"
 #include "MeshletEditGeometry.metal"
-#include "WireRasterPushConstants.metal"
+#include "gpu/WireRasterPushConstants.h"
 #include "EditSelection.metal"
 
 // Four 8-bit coverage maxima share one word.
@@ -16,19 +16,19 @@ constant float WireCoverageScale = 255.0f;
 constant float WireDiscRadius = 0.5641895835477563f * 1.05f;
 
 inline uint WireClassOf(const thread Scene &scene, DrawData draw, uint edit_selection_color, uint edge, uint vertex_id) {
-    if (scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u) {
+    if (scene.View.InteractionMode == InteractionMode::Object && scene.View.ShowOverlays != 0u) {
         const uint instance_state = scene.InstanceState(draw);
-        if ((instance_state & STATE_SELECTED) == 0u) return WireCoverage_Base;
-        return (instance_state & STATE_ACTIVE) != 0u ? WireCoverage_Active : WireCoverage_Selected;
+        if ((instance_state & STATE_SELECTED) == 0u) return uint(WireCoverage::Base);
+        return (instance_state & STATE_ACTIVE) != 0u ? uint(WireCoverage::Active) : uint(WireCoverage::Selected);
     }
-    if (edit_selection_color == 0u || draw.Selection.Summary.Slot == INVALID_SLOT) return WireCoverage_Base;
+    if (edit_selection_color == 0u || draw.Selection.Summary.Slot == InvalidSlot) return uint(WireCoverage::Base);
 
     const uint element_state = EditEdgeEndpointState(scene, draw, edge, vertex_id);
-    if ((element_state & STATE_ACTIVE) != 0u) return WireCoverage_Active;
-    if ((element_state & STATE_SELECTED) == 0u) return WireCoverage_Base;
-    return scene.View.InteractionMode == InteractionMode_Edit && scene.View.EditElement == Element_Edge ?
-        WireCoverage_Selected :
-        WireCoverage_Incidental;
+    if ((element_state & STATE_ACTIVE) != 0u) return uint(WireCoverage::Active);
+    if ((element_state & STATE_SELECTED) == 0u) return uint(WireCoverage::Base);
+    return scene.View.InteractionMode == InteractionMode::Edit && scene.View.EditElement == Element::Edge ?
+        uint(WireCoverage::Selected) :
+        uint(WireCoverage::Incidental);
 }
 
 // Union coverage within each class; higher-priority classes composite afterward.
@@ -74,18 +74,18 @@ kernel void WireRasterKernel(
     if (!work.Valid) return;
     const uint topology = MeshletPrimitiveTopology(work.Meshlet);
     MeshletEditEdgeGeometry geometry;
-    if (topology == MeshPrimitiveTopology_Triangle) {
+    if (topology == uint(MeshPrimitiveTopology::Triangle)) {
         const uint local_triangle = thread_index / 3u;
         const uint edge_corner = thread_index % 3u;
         if (local_triangle >= work.Meshlet.TriangleCount) return;
         const uint packed_edge = MeshletPackedEditEdge(
             bindless, pc.Meshlet, work, local_triangle, edge_corner
         );
-        if (packed_edge == INVALID_OFFSET) return;
+        if (packed_edge == InvalidOffset) return;
         geometry = ResolveMeshletEditEdge(
             scene, work, bindless, pc.Meshlet, local_triangle, edge_corner, packed_edge
         );
-    } else if (topology == MeshPrimitiveTopology_Line) {
+    } else if (topology == uint(MeshPrimitiveTopology::Line)) {
         if (thread_index >= work.Meshlet.TriangleCount) return;
         geometry = ResolveMeshletLineEdge(scene, work, bindless, pc.Meshlet, thread_index);
     } else {
@@ -108,8 +108,8 @@ kernel void WireRasterKernel(
     const float2 p1 = ndc_to_uv(clip1.xy / clip1.w) * viewport;
 
     // Select the coverage class from the nearer endpoint's halfedge state.
-    const uint edit_selection_color = topology == MeshPrimitiveTopology_Line ||
-        scene.View.InteractionMode == InteractionMode_Edit ? 1u : 0u;
+    const uint edit_selection_color = topology == uint(MeshPrimitiveTopology::Line) ||
+        scene.View.InteractionMode == InteractionMode::Edit ? 1u : 0u;
     const uint class0 = WireClassOf(
         scene, work.Draw, edit_selection_color, geometry.Edge, geometry.Vertex0
     );

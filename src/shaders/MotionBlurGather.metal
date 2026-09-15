@@ -4,7 +4,7 @@
 #include "Bindless.metal"
 #include "Varyings.metal"
 #include "MotionBlurShared.metal"
-#include "MotionBlurGatherPushConstants.metal"
+#include "gpu/MotionBlurGatherPushConstants.h"
 
 constant int GatherSampleCount = 8;
 

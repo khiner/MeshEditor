@@ -3,11 +3,7 @@
 
 #include "Bindless.metal"
 #include "Varyings.metal"
-
-struct MotionBlurResolvePushConstants {
-    uint AccumSamplerSlot;
-    float InvSteps;
-};
+#include "gpu/MotionBlurResolvePushConstants.h"
 
 // Average the summed steps. Color and coverage are both premultiplied, so both scale together.
 fragment float4 MotionBlurResolveFragment(

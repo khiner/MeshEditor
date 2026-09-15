@@ -3,9 +3,9 @@
 
 // Combines partial AABBs into each entry's instance bounds.
 #include "Bindless.metal"
-#include "AABB.metal"
+#include "gpu/AABB.h"
 #include "BoundsShared.metal"
-#include "BoundsReducePushConstants.metal"
+#include "gpu/BoundsReducePushConstants.h"
 
 kernel void BoundsCombineKernel(
     uint tid [[thread_position_in_threadgroup]],

@@ -1,21 +1,19 @@
 #ifndef BINDLESS_MSL
 #define BINDLESS_MSL
 
-#include "BindlessBindings.metal"
-#include "SceneViewUBO.metal"
-#include "ViewportTheme.metal"
-#include "WorkspaceLights.metal"
-#include "DrawData.metal"
-#include "Vertex.metal"
-#include "BoneDeformVertex.metal"
-#include "MorphTargetVertex.metal"
-#include "PBRMaterial.metal"
-#include "PunctualLight.metal"
-#include "Transform.metal"
+#include "gpu/BindlessBindings.h"
+#include "gpu/SceneViewUBO.h"
+#include "gpu/ViewportTheme.h"
+#include "gpu/WorkspaceLights.h"
+#include "gpu/DrawData.h"
+#include "gpu/Vertex.h"
+#include "gpu/BoneDeformVertex.h"
+#include "gpu/MorphTargetVertex.h"
+#include "gpu/PBRMaterial.h"
+#include "gpu/PunctualLight.h"
+#include "gpu/Transform.h"
 #include "TRSUtils.metal"
 
-constant uint INVALID_SLOT = 0xffffffffu;
-constant uint INVALID_OFFSET = 0xffffffffu;
 constant uint STATE_SELECTED = 1u << 0;
 constant uint STATE_ACTIVE = 1u << 1;
 
@@ -81,27 +79,27 @@ struct SceneT {
 
     // Mesh-local vertex position: the pose pre-pass's current-pose position when the draw has one.
     float3 GetLocalPosition(DrawData draw, uint idx) const {
-        return draw.PosedPositionOffset != INVALID_OFFSET ?
+        return draw.PosedPositionOffset != InvalidOffset ?
             float3(PosedPositions(View.PosedPositionSlot)[draw.PosedPositionOffset + idx]) :
             float3(Vertices(draw.VertexSlot)[draw.VertexOffset + idx].Position);
     }
 
     // Per-vertex normal: the posed normal when the draw has one, else the base normal at the vertex-arena slot.
     float3 GetVertexNormal(DrawData draw, uint idx) const {
-        return draw.PosedVertexNormalOffset != INVALID_OFFSET ?
+        return draw.PosedVertexNormalOffset != InvalidOffset ?
             float3(PosedVertexNormals(View.PosedVertexNormalSlot)[draw.PosedVertexNormalOffset + idx]) :
             float3(BaseVertexNormals(View.BaseVertexNormalSlot)[draw.VertexOffset + idx]);
     }
 
     // Per-face normal: the posed normal when the draw has one, else the base normal.
     float3 GetFaceNormal(DrawData draw, uint face) const {
-        return draw.PosedFaceNormalOffset != INVALID_OFFSET ?
+        return draw.PosedFaceNormalOffset != InvalidOffset ?
             float3(PosedFaceNormals(View.PosedFaceNormalSlot)[draw.PosedFaceNormalOffset + face]) :
             float3(BaseFaceNormals(View.BaseFaceNormalSlot)[draw.BaseFaceNormalOffset + face]);
     }
 
     uint InstanceState(DrawData draw) const {
-        return draw.InstanceStateSlot != INVALID_SLOT ?
+        return draw.InstanceStateSlot != InvalidSlot ?
             uint(InstanceStates(draw.InstanceStateSlot)[draw.FirstInstance]) :
             0u;
     }
@@ -115,7 +113,6 @@ struct SceneT {
 
 using Scene = SceneT<BindlessSet>;
 using SceneImageWrite = SceneT<BindlessSetImageWrite>;
-using SceneImageUint = SceneT<BindlessSetImageUint>;
 
 inline float3 NormalizeOrZero(float3 n) {
     const float len = length(n);

@@ -5,7 +5,7 @@
 #include "Bindless.metal"
 #include "MotionBlurShared.metal"
 #include "VisibilityMotion.metal"
-#include "MotionBlurTilesFlattenPushConstants.metal"
+#include "gpu/MotionBlurTilesFlattenPushConstants.h"
 
 constant int FlattenThreads = 8;
 constant int FlattenBlocks = MotionBlurTileSize / FlattenThreads;

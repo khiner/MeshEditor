@@ -5,8 +5,8 @@
 // Pairing uses the first reverse halfedge in ascending index order to match the CPU store.
 #include "Bindless.metal"
 #include "BlockScan.metal"
-#include "MeshConnectivityJob.metal"
-#include "MeshConnectivityPushConstants.metal"
+#include "gpu/MeshConnectivityJob.h"
+#include "gpu/MeshConnectivityPushConstants.h"
 
 constant uint ConnNullHalfedge = 0xffffffffu;
 // Packs the non-bucket endpoint with a high-to-low direction bit.

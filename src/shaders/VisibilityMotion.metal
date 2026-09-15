@@ -2,7 +2,7 @@
 #define VISIBILITYMOTION_MSL
 
 #include "VisibilityDecode.metal"
-#include "MotionBlurTilesFlattenPushConstants.metal"
+#include "gpu/MotionBlurTilesFlattenPushConstants.h"
 #include "MotionBlurShared.metal"
 
 inline bool SameTransform(Transform a, Transform b) {
@@ -39,7 +39,7 @@ inline float4 VisibilityMotion(
         const DrawData draw = resolved.Draw;
         const Transform current = MeshletWorld(scene, draw);
         const Transform prev = MeshletWorld(previous, draw), after = MeshletWorld(next, draw);
-        const bool deformed = draw.BoneDeformOffset != INVALID_OFFSET || draw.MorphDeformOffset != INVALID_OFFSET;
+        const bool deformed = draw.BoneDeformOffset != InvalidOffset || draw.MorphDeformOffset != InvalidOffset;
         if (!deformed && SameTransform(current, prev) && SameTransform(current, after)) {
             if (pc.CameraMotion == 0u) return float4(0.0f);
             // Static geometry needs only depth reprojection, regardless of its tessellation.
@@ -49,7 +49,7 @@ inline float4 VisibilityMotion(
             next_world = float4(trs_transform_point(after, local), 1.0f);
         } else {
             const uint topology = MeshletPrimitiveTopology(resolved.Meshlet);
-            const bool triangle = topology == MeshPrimitiveTopology_Triangle;
+            const bool triangle = topology == uint(MeshPrimitiveTopology::Triangle);
             const uint3 corners = MeshletCornerIds(scene.B, pc.Visibility.MeshletVertexSlot, pc.Visibility.MeshletLocalTriangleSlot,
                 resolved.Meshlet, resolved.Primitive, resolved.Triangle, resolved.LocalTriangle);
             float4 clip[3];

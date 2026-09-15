@@ -5,21 +5,21 @@
 #include "Bindless.metal"
 #include "SceneUBO.metal"
 #include "Varyings.metal"
-#include "WireCoverage.metal"
-#include "WireResolvePushConstants.metal"
+#include "gpu/WireCoverage.h"
+#include "gpu/WireResolvePushConstants.h"
 
 constant float WireResolveScale = 1.0f / 255.0f;
 
 inline float4 WireClassColor(const thread Scene &scene, uint wire_class) {
     constant ViewportThemeColors &colors = scene.Theme.Colors;
-    if (scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u) {
-        if (wire_class == WireCoverage_Active) return float4(float3(colors.ObjectActive), 1.0f);
-        if (wire_class == WireCoverage_Selected) return float4(float3(colors.ObjectSelected), 1.0f);
+    if (scene.View.InteractionMode == InteractionMode::Object && scene.View.ShowOverlays != 0u) {
+        if (wire_class == uint(WireCoverage::Active)) return float4(float3(colors.ObjectActive), 1.0f);
+        if (wire_class == uint(WireCoverage::Selected)) return float4(float3(colors.ObjectSelected), 1.0f);
         return WireBaseColor(scene);
     }
-    if (wire_class == WireCoverage_Active) return float4(float4(colors.ElementActive).rgb, 1.0f);
-    if (wire_class == WireCoverage_Selected) return float4(float3(colors.EdgeSelected), 1.0f);
-    if (wire_class == WireCoverage_Incidental) return float4(float3(colors.EdgeSelectedIncidental), 1.0f);
+    if (wire_class == uint(WireCoverage::Active)) return float4(float4(colors.ElementActive).rgb, 1.0f);
+    if (wire_class == uint(WireCoverage::Selected)) return float4(float3(colors.EdgeSelected), 1.0f);
+    if (wire_class == uint(WireCoverage::Incidental)) return float4(float3(colors.EdgeSelectedIncidental), 1.0f);
     return WireBaseColor(scene);
 }
 

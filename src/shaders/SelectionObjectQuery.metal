@@ -2,7 +2,7 @@
 #define SELECTIONOBJECTQUERY_MSL
 
 #include "Bindless.metal"
-#include "ObjectSelectQuery.metal"
+#include "gpu/ObjectSelectQuery.h"
 
 // Sorts by current click epoch, radial distance, and depth so stale keys follow current candidates.
 inline uint PackObjectPickKey(uint epoch_inv, uint dist_sq, float depth) {
@@ -18,12 +18,12 @@ inline void WriteObjectSelect(
 ) {
     if (id == 0u || id > q.MaxId) return;
     const uint bit = id - 1u;
-    if (q.BoxResultSlot != INVALID_SLOT &&
+    if (q.BoxResultSlot != InvalidSlot &&
         pixel.x >= q.Box.x && pixel.x <= q.Box.z && pixel.y >= q.Box.y && pixel.y <= q.Box.w) {
         device atomic_uint *bits = BindlessBufferMutable(atomic_uint, bindless.Buffer, q.BoxResultSlot);
         atomic_fetch_or_explicit(&bits[bit >> 5u], 1u << (bit & 31u), memory_order_relaxed);
     }
-    if (q.BestKeySlot == INVALID_SLOT) return;
+    if (q.BestKeySlot == InvalidSlot) return;
     const int2 delta = int2(pixel) - int2(q.TargetPx);
     const uint dist_sq = uint(delta.x * delta.x + delta.y * delta.y);
     if (dist_sq > q.RadiusSq) return;

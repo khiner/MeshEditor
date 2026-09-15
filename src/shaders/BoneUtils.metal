@@ -12,13 +12,13 @@ inline float3 bone_wire_color(const thread SceneT<SetT> &scene, uint instance_st
     const bool is_active = (instance_state & STATE_ACTIVE) != 0u;
     constant ViewportThemeColors &colors = scene.Theme.Colors;
 
-    if (scene.View.InteractionMode == InteractionMode_Edit) {
+    if (scene.View.InteractionMode == InteractionMode::Edit) {
         if (is_active && is_selected) return float3(colors.BoneActive);
         if (is_active) return float3(colors.BoneActiveUnsel);
         if (is_selected) return float3(colors.BoneSelect);
         return float3(colors.WireEdit);
     }
-    if (scene.View.InteractionMode == InteractionMode_Pose) {
+    if (scene.View.InteractionMode == InteractionMode::Pose) {
         if (is_active && is_selected) return float3(colors.BonePoseActive);
         if (is_active) return float3(colors.BonePoseActiveUnsel);
         if (is_selected) return float3(colors.BonePose);
@@ -32,7 +32,7 @@ inline float3 bone_wire_color(const thread SceneT<SetT> &scene, uint instance_st
 // Joint sphere wire color: Vertex/VertexSelected in Edit mode, bone wire color otherwise.
 template<typename SetT>
 inline float3 bone_joint_wire_color(const thread SceneT<SetT> &scene, uint instance_state) {
-    if (scene.View.InteractionMode == InteractionMode_Edit) {
+    if (scene.View.InteractionMode == InteractionMode::Edit) {
         const bool is_selected = (instance_state & STATE_SELECTED) != 0u;
         return is_selected ? float3(scene.Theme.Colors.VertexSelected) : float3(scene.Theme.Colors.Vertex);
     }

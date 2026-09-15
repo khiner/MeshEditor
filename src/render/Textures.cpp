@@ -2,6 +2,8 @@
 
 #include "File.h"
 #include "gltf/Image.h"
+#include "gpu/CubeFacePushConstants.h"
+#include "gpu/PrefilterPushConstants.h"
 #include "image/ImageDecode.h"
 #include "mesh/MeshStore.h"
 #include "metal/Bindless.h"
@@ -475,7 +477,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
     auto *command_buffer = ctx.Queue->commandBuffer();
     {
         auto *compute = command_buffer->computeCommandEncoder();
-        prefilter_faces(compute, prefilter.EquirectToCubemap, *equirect, equirect_sampler.get(), *raw_cube_write, raw_size, raw_size);
+        prefilter_faces(compute, prefilter.EquirectToCubemap, *equirect, equirect_sampler.get(), *raw_cube_write, CubeFacePushConstants{.FaceSize = raw_size}, raw_size);
         compute->endEncoding();
     }
     {
@@ -485,15 +487,11 @@ EnvironmentPrefiltered CreateIblFromHdri(
     }
     {
         auto *compute = command_buffer->computeCommandEncoder();
-        prefilter_faces(compute, prefilter.DiffuseIrradiance, *raw_cube, raw_cube_sampler.get(), *diff_write, diff_size, diff_size);
+        prefilter_faces(compute, prefilter.DiffuseIrradiance, *raw_cube, raw_cube_sampler.get(), *diff_write, CubeFacePushConstants{.FaceSize = diff_size}, diff_size);
 
         for (uint32_t mip = 0; mip < spec_mips; ++mip) {
             const uint32_t mip_face_size = std::max(1u, spec_size >> mip);
-            struct SpecPC {
-                uint32_t FaceSize, SourceSize;
-                float Roughness;
-            };
-            const SpecPC pc{.FaceSize = mip_face_size, .SourceSize = raw_size, .Roughness = float(mip) / float(spec_mips - 1)};
+            const PrefilterPushConstants pc{.FaceSize = mip_face_size, .SourceSize = raw_size, .Roughness = float(mip) / float(spec_mips - 1)};
             prefilter_faces(compute, prefilter.SpecularPrefilter, *raw_cube, raw_cube_sampler.get(), *spec_writes[mip], pc, mip_face_size);
         }
         compute->endEncoding();

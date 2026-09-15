@@ -1,5 +1,5 @@
 // Compiles all shaders or the file names supplied on the command line.
-// Generated assertions verify CPU and MSL layouts.
+// The shared GPU headers assert their struct sizes on the MSL side as well.
 #include "TestPaths.h"
 #include "metal/MetalCpp.h"
 #include "metal/MslSource.h"

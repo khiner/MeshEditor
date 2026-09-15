@@ -1,0 +1,36 @@
+#pragma once
+
+#include "gpu/Types.h"
+
+enum class DebugChannel : uint32_t {
+    None = 0,
+    UvCoords0 = 1,
+    UvCoords1 = 2,
+    NormalTexture = 3,
+    NormalGeometry = 4,
+    Tangent = 5,
+    Bitangent = 6,
+    TangentW = 7,
+    NormalShading = 8,
+    Alpha = 9,
+    Occlusion = 10,
+    Emissive = 11,
+    BaseColor = 12,
+    Metallic = 13,
+    Roughness = 14,
+    ClearcoatFactor = 15,
+    ClearcoatRoughness = 16,
+    ClearcoatNormal = 17,
+    SheenColor = 18,
+    SheenRoughness = 19,
+    SpecularFactor = 20,
+    SpecularColor = 21,
+    TransmissionFactor = 22,
+    VolumeThickness = 23,
+    DiffuseTransmissionFactor = 24,
+    DiffuseTransmissionColor = 25,
+    IridescenceFactor = 26,
+    IridescenceThickness = 27,
+    AnisotropyStrength = 28,
+    AnisotropyDirection = 29,
+};

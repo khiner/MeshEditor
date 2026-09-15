@@ -39,76 +39,13 @@ target_compile_options(basisu_transcoder PRIVATE -O2 -w -fno-strict-aliasing $<$
 file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
 set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 
-add_executable(gpu_schema_gen gpu/GenerateGpuSchema.cpp)
-target_include_directories(gpu_schema_gen PRIVATE src)
-
-set(GPU_SCHEMA_FILE "${CMAKE_SOURCE_DIR}/gpu/GpuSchema.yaml")
-# Regenerate the build graph when schema types change.
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GPU_SCHEMA_FILE}")
-
-set(GPU_SCHEMA_GENERATED_HEADERS
-    "${CMAKE_BINARY_DIR}/gpu/BindlessBindings.h"
-)
-set(GPU_SCHEMA_GENERATED_MSL
-    "${CMAKE_BINARY_DIR}/shaders/BindlessBindings.metal"
-)
-
-file(STRINGS "${GPU_SCHEMA_FILE}" GPU_SCHEMA_LINES)
-set(GPU_SCHEMA_IN_STRUCTS OFF)
-set(GPU_SCHEMA_IN_ENUMS OFF)
-foreach(line IN LISTS GPU_SCHEMA_LINES)
-    if(line MATCHES "^[ \t]*bindings:[ \t]*$")
-        set(GPU_SCHEMA_IN_STRUCTS OFF)
-        set(GPU_SCHEMA_IN_ENUMS OFF)
-        continue()
-    endif()
-    if(line MATCHES "^[ \t]*enums:[ \t]*$")
-        set(GPU_SCHEMA_IN_STRUCTS OFF)
-        set(GPU_SCHEMA_IN_ENUMS ON)
-        continue()
-    endif()
-    if(line MATCHES "^[ \t]*structs:[ \t]*$")
-        set(GPU_SCHEMA_IN_STRUCTS ON)
-        set(GPU_SCHEMA_IN_ENUMS OFF)
-        continue()
-    endif()
-    if(GPU_SCHEMA_IN_STRUCTS AND line MATCHES "^  - name:[ \t]*([A-Za-z_][A-Za-z0-9_]*)")
-        set(GPU_STRUCT_NAME "${CMAKE_MATCH_1}")
-        list(APPEND GPU_SCHEMA_GENERATED_HEADERS "${CMAKE_BINARY_DIR}/gpu/${GPU_STRUCT_NAME}.h")
-        list(APPEND GPU_SCHEMA_GENERATED_MSL "${CMAKE_BINARY_DIR}/shaders/${GPU_STRUCT_NAME}.metal")
-    endif()
-    if(GPU_SCHEMA_IN_ENUMS AND line MATCHES "^  - name:[ \t]*([A-Za-z_][A-Za-z0-9_]*)")
-        set(GPU_ENUM_NAME "${CMAKE_MATCH_1}")
-        list(APPEND GPU_SCHEMA_GENERATED_HEADERS "${CMAKE_BINARY_DIR}/gpu/${GPU_ENUM_NAME}.h")
-        list(APPEND GPU_SCHEMA_GENERATED_MSL "${CMAKE_BINARY_DIR}/shaders/${GPU_ENUM_NAME}.metal")
-    endif()
-endforeach()
-list(REMOVE_DUPLICATES GPU_SCHEMA_GENERATED_HEADERS)
-list(REMOVE_DUPLICATES GPU_SCHEMA_GENERATED_MSL)
-
-set(GPU_SCHEMA_STAMP "${CMAKE_BINARY_DIR}/gpu/gpu_schema.stamp")
-add_custom_command(
-    OUTPUT ${GPU_SCHEMA_STAMP}
-    BYPRODUCTS
-        ${GPU_SCHEMA_GENERATED_HEADERS}
-        ${GPU_SCHEMA_GENERATED_MSL}
-    COMMAND $<TARGET_FILE:gpu_schema_gen>
-        ${CMAKE_BINARY_DIR}
-        ${CMAKE_SOURCE_DIR}
-        gpu/GpuSchema.yaml
-    COMMAND ${CMAKE_COMMAND} -E touch ${GPU_SCHEMA_STAMP}
-    DEPENDS gpu_schema_gen ${GPU_SCHEMA_FILE}
-    COMMENT "Generating GPU schema outputs"
-)
-add_custom_target(generate_gpu_schema DEPENDS ${GPU_SCHEMA_STAMP})
-
 # Symlink resources next to the executable.
 set(RESOURCE_DEST "${CMAKE_BINARY_DIR}/res")
 if(NOT EXISTS ${RESOURCE_DEST})
     file(CREATE_LINK "${CMAKE_SOURCE_DIR}/res" ${RESOURCE_DEST} SYMBOLIC)
 endif()
 
-# Put source and generated shaders under one runtime path.
+# Put source shaders and the shared GPU headers under one runtime path.
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
 # Prune links whose source shader was deleted.
 file(GLOB SHADER_LINKS "${CMAKE_BINARY_DIR}/shaders/*")
@@ -125,6 +62,10 @@ foreach(src IN LISTS SHADER_SOURCE_FILES)
         file(CREATE_LINK "${src}" "${dst}" SYMBOLIC)
     endif()
 endforeach()
+set(GPU_HEADERS_LINK "${CMAKE_BINARY_DIR}/shaders/gpu")
+if(NOT EXISTS ${GPU_HEADERS_LINK})
+    file(CREATE_LINK "${CMAKE_SOURCE_DIR}/src/gpu" ${GPU_HEADERS_LINK} SYMBOLIC)
+endif()
 
 # Enable sustained-contact audio with `SURFACE_AUDIO=1` or the cache variable.
 # The default links the modal-impact entry points in src/audio/SurfaceContactAbsent.cpp.

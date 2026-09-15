@@ -3,16 +3,8 @@
 
 #include "Bindless.metal"
 #include "Varyings.metal"
+#include "gpu/ViewportCompositePushConstants.h"
 #include "tonemapping.metal"
-
-struct ViewportCompositePushConstants {
-    uint SceneColorSamplerSlot;
-    uint OverlayColorSamplerSlot;
-    // View transform: 0 encodes, 1 tone maps and encodes, 2 preserves debug values.
-    uint ViewTransform;
-    uint HasOverlay;
-    packed_float4 Backdrop;
-};
 
 fragment float4 ViewportCompositeFragment(
     QuadVaryings in [[stage_in]],

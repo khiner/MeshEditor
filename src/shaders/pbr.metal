@@ -5,16 +5,26 @@
 #include "Bindless.metal"
 #include "SceneUBO.metal"
 #include "Varyings.metal"
-#include "DebugChannel.metal"
-#include "MaterialAlphaMode.metal"
+#include "gpu/DebugChannel.h"
+#include "gpu/MaterialAlphaMode.h"
 #include "brdf.metal"
 #include "tonemapping.metal"
 #include "punctual.metal"
 #include "ibl.metal"
 #include "IridescenceBRDF.metal"
-#include "PbrConstant.metal"
+#include "gpu/PbrConstant.h"
 #include "VisibilityDecode.metal"
 #include "Transparency.metal"
+
+constant bool EnablePunctual [[function_constant(uint(PbrConstant::EnablePunctual))]];
+constant bool EnableTransmission [[function_constant(uint(PbrConstant::EnableTransmission))]];
+constant bool EnableDiffuseTrans [[function_constant(uint(PbrConstant::EnableDiffuseTrans))]];
+constant bool EnableClearcoat [[function_constant(uint(PbrConstant::EnableClearcoat))]];
+constant bool EnableSheen [[function_constant(uint(PbrConstant::EnableSheen))]];
+constant bool EnableAnisotropy [[function_constant(uint(PbrConstant::EnableAnisotropy))]];
+constant bool EnableIridescence [[function_constant(uint(PbrConstant::EnableIridescence))]];
+constant bool TransmissionPrepass [[function_constant(uint(PbrConstant::TransmissionPrepass))]];
+constant bool NonTriangleTopology [[function_constant(uint(PbrConstant::NonTriangleTopology))]];
 
 // Enable* constants permit compile-time feature removal and default to the full feature set.
 // TransmissionPrepass omits transmission materials and exposure to prevent attachment self-sampling.
@@ -151,10 +161,10 @@ inline float4 ShadePbr(
     constant SceneViewUBO &view, const thread PbrContext &ctx
 ) {
     // Continue discarded lanes so neighboring texture-gradient calculations remain valid at masked edges.
-    if (topology == uint(MeshPrimitiveTopology_Point) && length(point_coord - float2(0.5f)) > 0.5f) discard_fragment();
+    if (topology == uint(uint(MeshPrimitiveTopology::Point)) && length(point_coord - float2(0.5f)) > 0.5f) discard_fragment();
 
     // Replace selected line and point shading with the selection color at the original coverage.
-    if (topology != uint(MeshPrimitiveTopology_Triangle) && in.Color.a > 0.0f && view.DebugChannel == DebugChannel_None) {
+    if (topology != uint(uint(MeshPrimitiveTopology::Triangle)) && in.Color.a > 0.0f && view.DebugChannel == DebugChannel::None) {
         return float4(in.Color.rgb, 1.0f);
     }
 
@@ -165,13 +175,13 @@ inline float4 ShadePbr(
     float4 base_color = float4(material.BaseColorFactor);
     if (material.BaseColorTexture.Slot != INVALID_MATERIAL_SLOT) base_color *= ctx.SampleTexture(material.BaseColorTexture);
     base_color *= in.VertexColor;
-    if (material.AlphaMode == MaterialAlphaMode_Opaque) base_color.a = 1.0f;
+    if (material.AlphaMode == MaterialAlphaMode::Opaque) base_color.a = 1.0f;
 
     // A point or line vertex without a NORMAL has no surface orientation, so per the glTF spec it renders unlit.
-    const bool no_normal = topology != uint(MeshPrimitiveTopology_Triangle) && dot(world_normal, world_normal) < 1e-12f;
+    const bool no_normal = topology != uint(uint(MeshPrimitiveTopology::Triangle)) && dot(world_normal, world_normal) < 1e-12f;
     // Compute all material properties when a debug channel is active.
-    if (no_normal || (material.Unlit != 0u && view.DebugChannel == DebugChannel_None)) {
-        if (material.AlphaMode == MaterialAlphaMode_Mask) {
+    if (no_normal || (material.Unlit != 0u && view.DebugChannel == DebugChannel::None)) {
+        if (material.AlphaMode == MaterialAlphaMode::Mask) {
             if (base_color.a < material.AlphaCutoff) discard_fragment();
             base_color.a = 1.0f;
         }
@@ -431,48 +441,48 @@ inline float4 ShadePbr(
     if (has_clearcoat) emissive *= (1.0f - clearcoat_factor * cc_fresnel_ibl);
     color += emissive;
 
-    if (material.AlphaMode == MaterialAlphaMode_Mask) {
+    if (material.AlphaMode == MaterialAlphaMode::Mask) {
         if (base_color.a < material.AlphaCutoff) discard_fragment();
         base_color.a = 1.0f;
     }
 
     // Debug channels bypass exposure and face overlays; the composite preserves their values.
-    if (view.DebugChannel != DebugChannel_None) {
+    if (view.DebugChannel != DebugChannel::None) {
         float3 dbg = float3(0.0f);
         switch (view.DebugChannel) {
-            case DebugChannel_UvCoords0: dbg = float3(in.TexCoord0, 0.0f); break;
-            case DebugChannel_UvCoords1: dbg = float3(in.TexCoord1, 0.0f); break;
-            case DebugChannel_NormalTexture: dbg = (normal_info.ntex + 1.0f) * 0.5f; break;
-            case DebugChannel_NormalGeometry: dbg = (normal_info.ng + 1.0f) * 0.5f; break;
-            case DebugChannel_NormalShading: dbg = (n + 1.0f) * 0.5f; break;
-            case DebugChannel_Tangent: dbg = (normal_info.t + 1.0f) * 0.5f; break;
-            case DebugChannel_Bitangent: dbg = (normal_info.b + 1.0f) * 0.5f; break;
-            case DebugChannel_TangentW: dbg = float3((in.WorldTangent.w + 1.0f) * 0.5f); break;
-            case DebugChannel_Alpha: dbg = float3(base_color.a); break;
-            case DebugChannel_Occlusion: dbg = float3(ao); break;
-            case DebugChannel_Emissive: dbg = linearTosRGB(emissive); break;
-            case DebugChannel_BaseColor: dbg = linearTosRGB(base_color.rgb); break;
-            case DebugChannel_Metallic: dbg = float3(metallic); break;
-            case DebugChannel_Roughness: dbg = float3(perceptual_roughness); break;
-            case DebugChannel_ClearcoatFactor: dbg = float3(clearcoat_factor); break;
-            case DebugChannel_ClearcoatRoughness: dbg = float3(cc_perceptual_roughness); break;
-            case DebugChannel_ClearcoatNormal: dbg = (n_cc + 1.0f) * 0.5f; break;
-            case DebugChannel_SheenColor: dbg = sheen_color; break;
-            case DebugChannel_SheenRoughness: dbg = float3(sheen_roughness); break;
-            case DebugChannel_SpecularFactor: dbg = float3(specular_weight); break;
-            case DebugChannel_SpecularColor: dbg = specular_color; break;
-            case DebugChannel_TransmissionFactor: dbg = float3(transmission_factor); break;
-            case DebugChannel_VolumeThickness: {
+            case DebugChannel::UvCoords0: dbg = float3(in.TexCoord0, 0.0f); break;
+            case DebugChannel::UvCoords1: dbg = float3(in.TexCoord1, 0.0f); break;
+            case DebugChannel::NormalTexture: dbg = (normal_info.ntex + 1.0f) * 0.5f; break;
+            case DebugChannel::NormalGeometry: dbg = (normal_info.ng + 1.0f) * 0.5f; break;
+            case DebugChannel::NormalShading: dbg = (n + 1.0f) * 0.5f; break;
+            case DebugChannel::Tangent: dbg = (normal_info.t + 1.0f) * 0.5f; break;
+            case DebugChannel::Bitangent: dbg = (normal_info.b + 1.0f) * 0.5f; break;
+            case DebugChannel::TangentW: dbg = float3((in.WorldTangent.w + 1.0f) * 0.5f); break;
+            case DebugChannel::Alpha: dbg = float3(base_color.a); break;
+            case DebugChannel::Occlusion: dbg = float3(ao); break;
+            case DebugChannel::Emissive: dbg = linearTosRGB(emissive); break;
+            case DebugChannel::BaseColor: dbg = linearTosRGB(base_color.rgb); break;
+            case DebugChannel::Metallic: dbg = float3(metallic); break;
+            case DebugChannel::Roughness: dbg = float3(perceptual_roughness); break;
+            case DebugChannel::ClearcoatFactor: dbg = float3(clearcoat_factor); break;
+            case DebugChannel::ClearcoatRoughness: dbg = float3(cc_perceptual_roughness); break;
+            case DebugChannel::ClearcoatNormal: dbg = (n_cc + 1.0f) * 0.5f; break;
+            case DebugChannel::SheenColor: dbg = sheen_color; break;
+            case DebugChannel::SheenRoughness: dbg = float3(sheen_roughness); break;
+            case DebugChannel::SpecularFactor: dbg = float3(specular_weight); break;
+            case DebugChannel::SpecularColor: dbg = specular_color; break;
+            case DebugChannel::TransmissionFactor: dbg = float3(transmission_factor); break;
+            case DebugChannel::VolumeThickness: {
                 const float denom = material.Volume.ThicknessFactor * in.WorldScale;
                 dbg = denom > 0.0f ? float3(world_thickness / denom) : float3(0.0f);
             } break;
-            case DebugChannel_DiffuseTransmissionFactor: dbg = linearTosRGB(float3(diffuse_transmission_factor)); break;
-            case DebugChannel_DiffuseTransmissionColor: dbg = linearTosRGB(diffuse_transmission_color); break;
+            case DebugChannel::DiffuseTransmissionFactor: dbg = linearTosRGB(float3(diffuse_transmission_factor)); break;
+            case DebugChannel::DiffuseTransmissionColor: dbg = linearTosRGB(diffuse_transmission_color); break;
             // Normalize iridescence thickness to the reference implementation's 1200 nm range.
-            case DebugChannel_IridescenceFactor: dbg = float3(iridescence_factor); break;
-            case DebugChannel_IridescenceThickness: dbg = float3(iridescence_thickness / 1200.0f); break;
-            case DebugChannel_AnisotropyStrength: dbg = float3(anisotropy_strength); break;
-            case DebugChannel_AnisotropyDirection: dbg = float3((anisotropy_dir + 1.0f) * 0.5f, 0.0f); break;
+            case DebugChannel::IridescenceFactor: dbg = float3(iridescence_factor); break;
+            case DebugChannel::IridescenceThickness: dbg = float3(iridescence_thickness / 1200.0f); break;
+            case DebugChannel::AnisotropyStrength: dbg = float3(anisotropy_strength); break;
+            case DebugChannel::AnisotropyDirection: dbg = float3((anisotropy_dir + 1.0f) * 0.5f, 0.0f); break;
         }
         return float4(dbg, base_color.a);
     }
@@ -482,7 +492,7 @@ inline float4 ShadePbr(
     const uint overlay_flags = in.FaceOverlayFlags & 3u;
     if (overlay_flags != 0u) {
         constant ViewportThemeColors &colors = scene.Theme.Colors;
-        const bool is_edit_face = view.InteractionMode == InteractionMode_Edit && view.EditElement == Element_Face;
+        const bool is_edit_face = view.InteractionMode == InteractionMode::Edit && view.EditElement == Element::Face;
         const float4 selected = is_edit_face ? float4(colors.FaceSelected) : float4(colors.FaceSelectedIncidental);
         const float3 overlay = (overlay_flags & 2u) != 0u ? mix(selected.rgb, float4(colors.ElementActive).rgb, 0.5f) : selected.rgb;
         color = mix(color, overlay, selected.a);
@@ -502,7 +512,7 @@ fragment TransparencyStore PbrTransparentFragment(
     const MeshVaryings in = FromMeshletVertexVaryings(meshlet_in);
     const Scene scene{bindless, view, theme, workspace};
     const PbrContext ctx{scene, in};
-    const auto shaded = ShadePbr(in, NonTriangleTopology ? meshlet_in.Topology : uint(MeshPrimitiveTopology_Triangle),
+    const auto shaded = ShadePbr(in, NonTriangleTopology ? meshlet_in.Topology : uint(uint(MeshPrimitiveTopology::Triangle)),
         meshlet_in.PointCoord, scene, view, ctx);
     return StoreTransparency(values, shaded, in.Position.z);
 }
@@ -526,7 +536,7 @@ fragment float4 PbrVisibilityFragment(
         ctx.UvDy[set] = decoded.UvDy[set];
     }
     return ShadePbr(
-        decoded.V, NonTriangleTopology ? decoded.Topology : uint(MeshPrimitiveTopology_Triangle),
+        decoded.V, NonTriangleTopology ? decoded.Topology : uint(uint(MeshPrimitiveTopology::Triangle)),
         decoded.PointCoord, scene, view, ctx
     );
 }

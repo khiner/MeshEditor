@@ -2,23 +2,25 @@
 #define NORMALINDICATOR_MSL
 
 #include "Bindless.metal"
-#include "MeshletLimit.metal"
+#include "gpu/MeshletLimit.h"
 #include "MeshletResolve.metal"
 #include "SceneUBO.metal"
 #include "TransformUtils.metal"
 #include "LineQuad.metal"
-#include "NormalIndicatorConstant.metal"
+#include "gpu/NormalIndicatorConstant.h"
+
+constant bool NormalIndicatorFaces [[function_constant(uint(NormalIndicatorConstant::NormalIndicatorFaces))]];
 
 // Emits normal-indicator line groups scaled to local geometry size.
 constant float NormalIndicatorLengthScale = 0.25f;
 // Fan-triangulated faces enumerate distinct vertices from the first triangle, then each later triangle's final corner.
 constant uint NormalIndicatorMaxFaceCorners = 256u;
-constant uint NormalIndicatorThreads = MeshletLimit_MaxVertices;
+constant uint NormalIndicatorThreads = uint(MeshletLimit::MaxVertices);
 constant uint NormalIndicatorSimdGroups = NormalIndicatorThreads / 32u;
 using NormalIndicatorOutput = metal::mesh<EdgeQuadVaryings, void, NormalIndicatorThreads * 4u, NormalIndicatorThreads * 2u, metal::topology::triangle>;
 
 inline float MeanIncidentEdgeLength(const thread Scene &scene, DrawData draw, uint vertex_id, float3 position) {
-    if (draw.VertexEdgeAdjacencyOffset == INVALID_OFFSET) return 0.0f;
+    if (draw.VertexEdgeAdjacencyOffset == InvalidOffset) return 0.0f;
     device const uint *adjacency = scene.Adjacency(scene.View.AdjacencySlot);
     const uint offsets = draw.VertexEdgeAdjacencyOffset;
     const uint items = offsets + draw.VertexCountOrHeadImageSlot + 1u;
@@ -91,7 +93,7 @@ inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uin
         return;
     }
 
-    uint element = INVALID_OFFSET;
+    uint element = InvalidOffset;
     DrawData draw = work.Draw;
     if (NormalIndicatorFaces) {
         if (!MeshletCoarse(work.Meshlet) && thread_index < work.Meshlet.TriangleCount) {
@@ -113,13 +115,13 @@ inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uin
         draw.FaceIdOffset -= work.Primitive.FirstTriangle;
     } else if (thread_index < work.Meshlet.VertexCount) {
         const uint packed = MeshletPackedVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, thread_index);
-        if ((packed & MeshletGeometryEncoding_EditVertexOwnerBit) != 0u) {
+        if ((packed & uint(MeshletGeometryEncoding::EditVertexOwnerBit)) != 0u) {
             element = MeshletVertexId(scene, draw, MeshletPrimitiveTopology(work.Meshlet), packed);
         }
         draw.IndexSlotOffset = work.Primitive.AuxIndices;
     }
 
-    const uint present = element != INVALID_OFFSET ? 1u : 0u;
+    const uint present = element != InvalidOffset ? 1u : 0u;
     const uint2 compact = CompactPresent(
         present, thread_index, lane, simd_counts, NormalIndicatorSimdGroups
     );

@@ -3,11 +3,7 @@
 
 #include "Bindless.metal"
 #include "Varyings.metal"
-
-struct MotionBlurAccumulatePushConstants {
-    uint SceneSamplerSlot;
-    float Weight;
-};
+#include "gpu/MotionBlurAccumulatePushConstants.h"
 
 // Adds premultiplied color and coverage for one shutter sample to the accumulation target.
 fragment float4 MotionBlurAccumulateFragment(

@@ -3,10 +3,10 @@
 
 // Writes one partial AABB per 256-vertex tile for the bounds-combine pass.
 #include "Bindless.metal"
-#include "AABB.metal"
+#include "gpu/AABB.h"
 #include "BoundsShared.metal"
 #include "ElementWorkShared.metal"
-#include "BoundsReducePushConstants.metal"
+#include "gpu/BoundsReducePushConstants.h"
 
 kernel void BoundsReduceKernel(
     uint tid [[thread_position_in_threadgroup]],
@@ -20,9 +20,9 @@ kernel void BoundsReduceKernel(
     constant BoundsReducePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    const bool sparse = pc.Work.Storage.Slot != INVALID_SLOT;
+    const bool sparse = pc.Work.Storage.Slot != InvalidSlot;
     const uint work_id = sparse ? WorkElement(bindless, pc.Work, group_id) : group_id;
-    if (work_id == INVALID_OFFSET) return;
+    if (work_id == InvalidOffset) return;
     const uint destination = sparse ? BindlessBuffer(uint, bindless.Buffer, pc.EntryFirstTileSlot)[pc.EntryIndex] + work_id : group_id;
     const uint2 tile = uint2(scene.TileMap(pc.TileMapSlot)[destination]);
     const DrawData draw = scene.Draws(pc.DrawDataSlot)[tile.x];

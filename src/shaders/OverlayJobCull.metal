@@ -3,10 +3,10 @@
 
 #include "Bindless.metal"
 #include "CompactPresent.metal"
-#include "MeshDispatchArgs.metal"
-#include "OverlayJob.metal"
-#include "OverlayJobCullPushConstants.metal"
-#include "OverlayJobKind.metal"
+#include "gpu/MeshDispatchArgs.h"
+#include "gpu/OverlayJob.h"
+#include "gpu/OverlayJobCullPushConstants.h"
+#include "gpu/OverlayJobKind.h"
 #include "SceneUBO.metal"
 
 constant uint OverlayCullBlockSize = 256u;
@@ -14,13 +14,13 @@ constant uint OverlayCullSimdGroups = OverlayCullBlockSize / 32u;
 
 inline bool OverlayJobEnabled(constant SceneViewUBO &view, OverlayJob job, uint instance_state, bool extras_only) {
     if (view.ShowOverlays == 0u) return false;
-    if (extras_only) return job.Kind == OverlayJobKind_Extras && view.ShowExtras != 0u;
-    if (job.Kind == OverlayJobKind_Extras) return view.ShowExtras != 0u;
+    if (extras_only) return job.Kind == OverlayJobKind::Extras && view.ShowExtras != 0u;
+    if (job.Kind == OverlayJobKind::Extras) return view.ShowExtras != 0u;
     if ((instance_state & STATE_SELECTED) == 0u) return false;
-    if (job.Kind == OverlayJobKind_Bounds) {
+    if (job.Kind == OverlayJobKind::Bounds) {
         return view.ShowBoundingBoxes != 0u;
     }
-    return job.Kind == OverlayJobKind_TetWire && view.ShowTetWireframe != 0u;
+    return job.Kind == OverlayJobKind::TetWire && view.ShowTetWireframe != 0u;
 }
 
 inline uint OverlayJobPresent(

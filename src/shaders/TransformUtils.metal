@@ -1,7 +1,7 @@
 #ifndef TRANSFORMUTILS_MSL
 #define TRANSFORMUTILS_MSL
 
-#include "AABB.metal"
+#include "gpu/AABB.h"
 #include "Bindless.metal"
 #include "Frustum.metal"
 
@@ -26,7 +26,7 @@ inline float3 trs_inverse_transform_point(Transform t, float3 pos) {
 // Applies the pending object-mode transform to selected instances.
 template<typename SetT>
 inline float3 apply_object_pending_transform(const thread SceneT<SetT> &scene, DrawData draw, float3 world_pos) {
-    if (scene.View.IsTransforming == 0u || scene.View.InteractionMode == InteractionMode_Edit || draw.InstanceStateSlot == INVALID_SLOT) return world_pos;
+    if (scene.View.IsTransforming == 0u || scene.View.InteractionMode == InteractionMode::Edit || draw.InstanceStateSlot == InvalidSlot) return world_pos;
     const uint instance_state = uint(scene.InstanceStates(draw.InstanceStateSlot)[draw.FirstInstance]);
     if ((instance_state & STATE_SELECTED) == 0u) return world_pos;
     return apply_pending_transform_world(scene, world_pos);
@@ -64,7 +64,7 @@ inline OrientedBounds TransformBounds(AABB bounds, Transform world) {
 // Returns true for frustum intersections and pending-transform previews with stale recorded bounds.
 template<typename SetT>
 inline bool InstanceInFrustum(const thread SceneT<SetT> &scene, DrawData draw) {
-    if (scene.View.InstanceBoundsSlot == INVALID_SLOT || scene.View.IsTransforming != 0u) return true;
+    if (scene.View.InstanceBoundsSlot == InvalidSlot || scene.View.IsTransforming != 0u) return true;
     const auto bounds = TransformBounds(
         BindlessBuffer(AABB, scene.B.Buffer, scene.View.InstanceBoundsSlot)[draw.FirstInstance],
         scene.Models(draw.ModelSlot)[draw.FirstInstance]

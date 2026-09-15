@@ -1,10 +1,12 @@
 #ifndef BACKGROUND_MSL
 #define BACKGROUND_MSL
 
-#include "BackgroundConstant.metal"
+#include "gpu/BackgroundConstant.h"
 #include "Bindless.metal"
 #include "Varyings.metal"
 #include "SceneUBO.metal"
+
+constant bool TransmissionPrepass [[function_constant(uint(BackgroundConstant::TransmissionPrepass))]];
 
 constant float2 BackgroundPositions[4] = {float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1)};
 

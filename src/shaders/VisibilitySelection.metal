@@ -1,7 +1,7 @@
-#include "MeshletInstanceFlag.metal"
+#include "gpu/MeshletInstanceFlag.h"
 #include "SelectionObjectQuery.metal"
 #include "VisibilityCoverage.metal"
-#include "VisibilitySelectionPushConstants.metal"
+#include "gpu/VisibilitySelectionPushConstants.h"
 
 struct VisibilitySilhouetteTarget {
     float2 DepthObject [[color(0)]];
@@ -23,7 +23,7 @@ fragment VisibilitySilhouetteTarget VisibilitySilhouetteFragment(
     const VisibilityMetadata decoded = DecodeVisibilityMetadata(
         sample, bindless, view, theme, workspace, pc
     );
-    if (!decoded.Valid || (decoded.InstanceFlags & MeshletInstanceFlag_Silhouette) == 0u) discard_fragment();
+    if (!decoded.Valid || (decoded.InstanceFlags & uint(MeshletInstanceFlag::Silhouette)) == 0u) discard_fragment();
     const float z = depth.read(pixel).r;
     return {{z, float(decoded.ObjectId)}, z};
 }

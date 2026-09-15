@@ -16,7 +16,7 @@ inline BoneSolidVaryings BoneSolidMeshVertexAt(const thread Scene &scene, DrawDa
     const float3x3 M3 = float3x3(M[0].xyz, M[1].xyz, M[2].xyz);
     const float3 view_normal = scene.View.ViewRotation.Unpack() * normalize(M3 * scene.GetVertexNormal(draw, idx));
 
-    const bool is_object_mode = scene.View.InteractionMode == InteractionMode_Object;
+    const bool is_object_mode = scene.View.InteractionMode == InteractionMode::Object;
     const float3 bone_color = float3(scene.Theme.Colors.BoneSolid);
     const float3 hint_color = is_object_mode ? bone_color : bone_wire_color(scene, load_bone_instance_state(scene, draw));
     const float3 state_color = hint_color * hint_color * 0.1f; // Matches Blender's bone_hint_color_shade.

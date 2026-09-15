@@ -4,7 +4,7 @@
 // Computes an exclusive prefix sum over a uint range.
 // Every kernel using these declares ScanSimdGroups + 1 threadgroup words for the scratch.
 
-#include "MslPrelude.metal"
+#include "gpu/Types.h"
 
 constant uint ScanTileSize = 256u;
 constant uint ScanPerThread = 4u;

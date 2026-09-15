@@ -95,7 +95,7 @@ inline float4 ShadeWorkspace(MeshVaryings in, const thread Scene &scene, constan
     if (overlay_flags != 0u) {
         // Convert sRGB theme colors to linear space before blending.
         constant ViewportThemeColors &colors = scene.Theme.Colors;
-        const bool is_edit_face = view.InteractionMode == InteractionMode_Edit && view.EditElement == Element_Face;
+        const bool is_edit_face = view.InteractionMode == InteractionMode::Edit && view.EditElement == Element::Face;
         const float4 selected = is_edit_face ? float4(colors.FaceSelected) : float4(colors.FaceSelectedIncidental);
         const float3 overlay = (overlay_flags & 2u) != 0u ?
             mix(sRGBToLinear(selected.rgb), sRGBToLinear(float4(colors.ElementActive).rgb), 0.5f) :

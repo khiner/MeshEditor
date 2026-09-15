@@ -6,7 +6,7 @@
 #include "BoneUtils.metal"
 #include "MeshletResolve.metal"
 #include "Varyings.metal"
-#include "OverlayDispatch.metal"
+#include "gpu/OverlayDispatch.h"
 
 inline BoneSphereVaryings BoneSphereMeshVertexAt(
     const thread Scene &scene, DrawData draw, uint object_id, uint vertex_id
@@ -18,7 +18,7 @@ inline BoneSphereVaryings BoneSphereMeshVertexAt(
     BoneSphereVaryings out;
     out.ObjectId = object_id;
 
-    const bool is_object_mode = scene.View.InteractionMode == InteractionMode_Object;
+    const bool is_object_mode = scene.View.InteractionMode == InteractionMode::Object;
     const float3 bone_solid = float3(scene.Theme.Colors.BoneSolid);
     const float3 hint_color = is_object_mode ? bone_solid : bone_joint_wire_color(scene, load_bone_instance_state(scene, draw));
     out.BoneColor = float4(bone_solid, 1.0f);
@@ -38,7 +38,7 @@ inline BoneSphereVaryings BoneSphereMeshVertexAt(
     return out;
 }
 
-using BoneSphereMeshOutput = metal::mesh<BoneSphereVaryings, void, OverlayDispatch_BoneSphereVertices, 32u, metal::topology::triangle>;
+using BoneSphereMeshOutput = metal::mesh<BoneSphereVaryings, void, uint(OverlayDispatch::BoneSphereVertices), 32u, metal::topology::triangle>;
 
 [[mesh]] void BoneSphereMesh(
     BoneSphereMeshOutput output,
@@ -57,7 +57,7 @@ using BoneSphereMeshOutput = metal::mesh<BoneSphereVaryings, void, OverlayDispat
         return;
     }
     output.set_primitive_count(32u);
-    if (thread_index >= OverlayDispatch_BoneSphereVertices) return;
+    if (thread_index >= uint(OverlayDispatch::BoneSphereVertices)) return;
 
     output.set_vertex(
         thread_index,

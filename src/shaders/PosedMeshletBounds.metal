@@ -2,11 +2,11 @@
 #define POSED_MESHLET_BOUNDS_MSL
 
 // Writes one posed AABB per meshlet by resolving representative corners to canonical vertices.
-#include "AABB.metal"
+#include "gpu/AABB.h"
 #include "BoundsShared.metal"
 #include "MeshletShared.metal"
-#include "PosedMeshletBoundsPushConstants.metal"
-#include "PrimitiveRecord.metal"
+#include "gpu/PosedMeshletBoundsPushConstants.h"
+#include "gpu/PrimitiveRecord.h"
 #include "ElementWorkShared.metal"
 
 kernel void PosedMeshletBoundsKernel(
@@ -21,9 +21,9 @@ kernel void PosedMeshletBoundsKernel(
     constant PosedMeshletBoundsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    const uint work_id = pc.Work.Storage.Slot == INVALID_SLOT ? group_id : WorkElement(bindless, pc.Work, group_id);
-    if (work_id == INVALID_OFFSET) return;
-    const uint destination = pc.Work.Storage.Slot == INVALID_SLOT ? group_id : pc.FirstTile + work_id;
+    const uint work_id = pc.Work.Storage.Slot == InvalidSlot ? group_id : WorkElement(bindless, pc.Work, group_id);
+    if (work_id == InvalidOffset) return;
+    const uint destination = pc.Work.Storage.Slot == InvalidSlot ? group_id : pc.FirstTile + work_id;
     const uint2 tile = uint2(scene.TileMap(pc.TileMapSlot)[destination]);
     const DrawData entry = scene.Draws(pc.DrawDataSlot)[tile.x];
     const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[tile.y];
@@ -32,7 +32,7 @@ kernel void PosedMeshletBoundsKernel(
     float3 hi = AabbEmptyMax;
     if (tid < meshlet.VertexCount) {
         const uint packed_vertex = MeshletPackedVertex(bindless, pc.MeshletVertexSlot, meshlet, tid);
-        const uint topology = meshlet.LocalTriangleOffset >> MeshletGeometryEncoding_TopologyShift;
+        const uint topology = meshlet.LocalTriangleOffset >> uint(MeshletGeometryEncoding::TopologyShift);
         const uint vertex_id = MeshletVertexId(scene, primitive.Draw, topology, packed_vertex);
         const float3 position = float3(scene.PosedPositions(scene.View.PosedPositionSlot)[entry.PosedPositionOffset + vertex_id]);
         lo = position;

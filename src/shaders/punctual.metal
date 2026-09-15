@@ -4,7 +4,7 @@
 #define PUNCTUAL_MSL
 
 #include "Bindless.metal"
-#include "PunctualLightType.metal"
+#include "gpu/PunctualLightType.h"
 
 constant float LIGHT_EPSILON = 1e-4f;
 
@@ -40,7 +40,7 @@ inline float3 getLightEmissionDirection(Transform wt) {
 }
 
 inline float3 getPointToLight(PunctualLight light, Transform wt, float3 world_position, float3 emission_direction) {
-    if (light.Type == PunctualLightType_Directional) return -emission_direction;
+    if (light.Type == PunctualLightType::Directional) return -emission_direction;
     return float3(wt.P) - world_position;
 }
 
@@ -57,10 +57,10 @@ inline float3 getLightIntensity(
 
     float range_attenuation = 1.0f;
     float spot_attenuation = 1.0f;
-    if (light.Type != PunctualLightType_Directional) {
+    if (light.Type != PunctualLightType::Directional) {
         range_attenuation = getRangeAttenuation(light.Range, length(point_to_light));
     }
-    if (light.Type == PunctualLightType_Spot) {
+    if (light.Type == PunctualLightType::Spot) {
         spot_attenuation = getSpotAttenuation(point_to_light, emission_direction, light.OuterConeCos, light.InnerConeCos);
     }
     return range_attenuation * spot_attenuation * light.Intensity * float3(light.Color);

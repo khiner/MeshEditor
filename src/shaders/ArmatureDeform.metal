@@ -7,7 +7,7 @@
 // `deform_slot` selects current, shutter-open, or shutter-close pose matrices.
 template<typename SetT>
 inline float3 ApplyArmatureDeform(const thread SceneT<SetT> &scene, DrawData draw, float3 position, uint vertex_index, thread float3 &normal, uint deform_slot) {
-    if (draw.BoneDeformOffset == INVALID_OFFSET) return position;
+    if (draw.BoneDeformOffset == InvalidOffset) return position;
 
     const BoneDeformVertex bd = scene.BoneDeforms(scene.View.BoneDeformSlot)[draw.BoneDeformOffset + vertex_index];
     device const packed_float4x4 *matrices = scene.ArmatureDeforms(deform_slot);

@@ -3,7 +3,7 @@
 
 #include "SelectionObjectQuery.metal"
 #include "EdgeQuad.metal"
-#include "ObjectSelectionPushConstants.metal"
+#include "gpu/ObjectSelectionPushConstants.h"
 
 // Accumulates each covered fragment into the object-selection query.
 fragment void SelectionFragment(

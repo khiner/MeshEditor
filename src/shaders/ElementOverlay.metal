@@ -58,11 +58,11 @@ inline PointVaryings ElementPointSprite(
 ) {
     const uint state = EditVertexState(scene, draw, vertex_id);
     constant ViewportThemeColors &colors = scene.Theme.Colors;
-    const float4 color = scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u ?
+    const float4 color = scene.View.InteractionMode == InteractionMode::Object && scene.View.ShowOverlays != 0u ?
         scene.ObjectSelectionColor(scene.InstanceState(draw), float4(float3(colors.Vertex), 1.0f)) :
         EditVertexColor(scene, state);
     PointVaryings out = EditPointSprite(scene, position, color);
-    if (scene.View.InteractionMode == InteractionMode_Excite &&
+    if (scene.View.InteractionMode == InteractionMode::Excite &&
         (state & (STATE_SELECTED | STATE_ACTIVE)) == 0u) {
         out.PointSize = 0.0f;
     }

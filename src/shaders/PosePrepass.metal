@@ -6,7 +6,7 @@
 #include "MorphDeform.metal"
 #include "ArmatureDeform.metal"
 #include "TransformUtils.metal"
-#include "BoundsReducePushConstants.metal"
+#include "gpu/BoundsReducePushConstants.h"
 #include "EditSelection.metal"
 
 kernel void PosePrepassKernel(

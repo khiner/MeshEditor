@@ -1,12 +1,12 @@
 #ifndef MESHLET_RESOLVE_MSL
 #define MESHLET_RESOLVE_MSL
 
-#include "InstanceRecord.metal"
-#include "MeshletDrawPushConstants.metal"
-#include "MeshletRouteState.metal"
+#include "gpu/InstanceRecord.h"
+#include "gpu/MeshletDrawPushConstants.h"
+#include "gpu/MeshletRouteState.h"
 #include "MeshletShared.metal"
-#include "PrimitiveRecord.metal"
-#include "VisibleMeshlet.metal"
+#include "gpu/PrimitiveRecord.h"
+#include "gpu/VisibleMeshlet.h"
 #include "TransformUtils.metal"
 #include "EditSelection.metal"
 
@@ -49,7 +49,7 @@ inline MeshletWork ResolveMeshletWork(
     result.VisibleIndex = visible_index;
     result.MeshletIndex = work.Meshlet;
     result.Instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
-    if (pc.InstanceFilter != INVALID_OFFSET && pc.InstanceFilter != instance_slot) return result;
+    if (pc.InstanceFilter != InvalidOffset && pc.InstanceFilter != instance_slot) return result;
     if ((result.Instance.Flags & pc.RequiredInstanceFlags) != pc.RequiredInstanceFlags) return result;
     result.Meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[work.Meshlet];
     result.Primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[result.Meshlet.Primitive];
@@ -68,18 +68,18 @@ struct MeshletFaceValues {
 inline uint MeshletPrimitiveMaterialIndex(
     const thread Scene &scene, PrimitiveRecord primitive
 ) {
-    if (primitive.Draw.PrimitiveMaterialOffset == INVALID_OFFSET) return 0u;
+    if (primitive.Draw.PrimitiveMaterialOffset == InvalidOffset) return 0u;
     return scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[
         primitive.Draw.PrimitiveMaterialOffset + primitive.PrimitiveIndex
     ];
 }
 
 inline uint MeshletPrimitiveTopology(MeshletRecord meshlet) {
-    return meshlet.LocalTriangleOffset >> MeshletGeometryEncoding_TopologyShift;
+    return meshlet.LocalTriangleOffset >> uint(MeshletGeometryEncoding::TopologyShift);
 }
 
 // Returns true for clusters with independent triangles and no source-triangle or source-face identity.
-inline bool MeshletCoarse(MeshletRecord meshlet) { return meshlet.RefinedGroup != INVALID_OFFSET; }
+inline bool MeshletCoarse(MeshletRecord meshlet) { return meshlet.RefinedGroup != InvalidOffset; }
 
 // Returns attribute corners from the cluster vertex list or original source triangle.
 inline uint3 MeshletCornerIds(
@@ -95,8 +95,8 @@ inline uint3 MeshletCornerIds(
     const uint offset = MeshletLocalTriangleOffset(meshlet) + local_triangle * 3u;
     uint3 corners;
     for (uint c = 0u; c < 3u; ++c) {
-        const uint local = uint(triangles[offset + c] & MeshletGeometryEncoding_LocalIndexMask);
-        corners[c] = vertices[meshlet.VertexOffset + local] & MeshletGeometryEncoding_CornerMask;
+        const uint local = uint(triangles[offset + c] & uint(MeshletGeometryEncoding::LocalIndexMask));
+        corners[c] = vertices[meshlet.VertexOffset + local] & uint(MeshletGeometryEncoding::CornerMask);
     }
     return corners;
 }
@@ -147,7 +147,7 @@ inline MeshletFaceValues MeshletCoarseFace(
 inline uint MeshletFaceMaterialIndex(
     const thread Scene &scene, DrawData draw, uint face_id
 ) {
-    if (draw.ElementPrimitiveOffset == INVALID_OFFSET || draw.PrimitiveMaterialOffset == INVALID_OFFSET || face_id == 0u) return 0u;
+    if (draw.ElementPrimitiveOffset == InvalidOffset || draw.PrimitiveMaterialOffset == InvalidOffset || face_id == 0u) return 0u;
     const uint primitive_index = scene.ElementPrimitives(scene.View.ElementPrimitiveSlot)[draw.ElementPrimitiveOffset + face_id - 1u];
     return scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[draw.PrimitiveMaterialOffset + primitive_index];
 }
@@ -157,7 +157,7 @@ inline MeshletFaceValues MeshletFace(
     Transform world, uint triangle, bool flat_face
 ) {
     const uint face_id = scene.ObjectIds(draw.ObjectIdSlot)[draw.FaceIdOffset + triangle - primitive.FirstTriangle];
-    const uint element_state = scene.View.InteractionMode == InteractionMode_Edit && face_id != 0u ?
+    const uint element_state = scene.View.InteractionMode == InteractionMode::Edit && face_id != 0u ?
         EditFaceState(scene, draw, face_id - 1u) : 0u;
     const uint material_index = MeshletFaceMaterialIndex(scene, draw, face_id);
     float3 flat_world_normal = float3(0.0f);

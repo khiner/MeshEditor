@@ -1,6 +1,6 @@
 # Each production source has one owner, shared by the app and tests.
 add_library(mesheditor_headers INTERFACE)
-target_include_directories(mesheditor_headers INTERFACE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_BINARY_DIR}")
+target_include_directories(mesheditor_headers INTERFACE "${CMAKE_SOURCE_DIR}/src")
 target_include_directories(mesheditor_headers SYSTEM INTERFACE
     "${CMAKE_SOURCE_DIR}/lib/FastFEM/include"
 )
@@ -26,7 +26,6 @@ function(mesheditor_compile_policy target policy)
         "$<$<NOT:$<CONFIG:Debug>>:-O2>")
     set_target_properties(${target} PROPERTIES CXX_STANDARD 23 OBJCXX_STANDARD 23)
     target_link_libraries(${target} PUBLIC mesheditor_headers)
-    add_dependencies(${target} generate_gpu_schema)
 endfunction()
 
 function(mesheditor_library target policy)

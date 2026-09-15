@@ -3,7 +3,7 @@
 
 #include "Bindless.metal"
 #include "Varyings.metal"
-#include "SelectionElementPushConstants.metal"
+#include "gpu/SelectionElementPushConstants.h"
 
 // Sets the bit for every element covering a pixel inside the selection box.
 [[early_fragment_tests]]

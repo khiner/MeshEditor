@@ -4,11 +4,11 @@
 // Every output reads the current element-domain mask directly, so topology conversion requires no grid-wide barrier.
 #include "Bindless.metal"
 #include "ConnectivityRead.metal"
-#include "EditSelectionSummary.metal"
-#include "EditSelectionOperation.metal"
-#include "Element.metal"
-#include "FanItemEncoding.metal"
-#include "EditSelectionPushConstants.metal"
+#include "gpu/EditSelectionSummary.h"
+#include "gpu/EditSelectionOperation.h"
+#include "gpu/Element.h"
+#include "gpu/FanItemEncoding.h"
+#include "gpu/EditSelectionPushConstants.h"
 
 constant uint INVALID_HANDLE = 0xffffffffu;
 constant uint SelectionSharp = 1u;
@@ -18,17 +18,17 @@ struct EditSelectionContext {
     device const BindlessSet &B;
     constant EditSelectionPushConstants &Pc;
 
-    SlotOffset SelectionRange(uint element) const {
-        return element == Element_Vertex ? Pc.Selection.VertexBits :
-            element == Element_Edge ? Pc.Selection.EdgeBits : Pc.Selection.FaceBits;
+    SlotOffset SelectionRange(Element element) const {
+        return element == Element::Vertex ? Pc.Selection.VertexBits :
+            element == Element::Edge ? Pc.Selection.EdgeBits : Pc.Selection.FaceBits;
     }
     device EditSelectionSummary &Summary() const { return BindlessBufferMutable(EditSelectionSummary, B.Buffer, Pc.Selection.Summary.Slot)[Pc.Selection.Summary.Offset]; }
-    uint ElementCount(uint element) const {
-        return element == Element_Vertex ? Pc.VertexCount :
-            element == Element_Edge ? Pc.EdgeCount : Pc.FaceCount;
+    uint ElementCount(Element element) const {
+        return element == Element::Vertex ? Pc.VertexCount :
+            element == Element::Edge ? Pc.EdgeCount : Pc.FaceCount;
     }
     uint PickedLocal() const {
-        if (Pc.PickIdSlot == INVALID_SLOT) return INVALID_HANDLE;
+        if (Pc.PickIdSlot == InvalidSlot) return INVALID_HANDLE;
         const SlotOffset source = SelectionRange(Pc.Element);
         const uint pick_id = BindlessBuffer(uint, B.Buffer, Pc.PickIdSlot)[0];
         if (pick_id == 0u || pick_id == INVALID_HANDLE) return INVALID_HANDLE;
@@ -83,11 +83,11 @@ struct EditSelectionContext {
         return false;
     }
     bool VertexSelected(uint vertex_id) const {
-        if (Pc.Element == Element_Vertex) return SourceSelected(vertex_id);
-        const bool face = Pc.Element == Element_Face;
+        if (Pc.Element == Element::Vertex) return SourceSelected(vertex_id);
+        const bool face = Pc.Element == Element::Face;
         return VertexIncidentSelected(
             vertex_id, face ? Pc.VertexFanAdjacencyOffset : Pc.VertexEdgeAdjacencyOffset,
-            face ? FanItemEncoding_FaceMask : 0xffffffffu
+            face ? uint(FanItemEncoding::FaceMask) : 0xffffffffu
         );
     }
 
@@ -98,24 +98,24 @@ struct EditSelectionContext {
         return opposite != INVALID_HANDLE && SourceSelected(HalfedgeFace(opposite));
     }
     bool EdgeSelected(uint edge) const {
-        if (Pc.Element == Element_Vertex) {
+        if (Pc.Element == Element::Vertex) {
             return SourceSelected(EdgeIndices()[2u * edge]) && SourceSelected(EdgeIndices()[2u * edge + 1u]);
         }
-        if (Pc.Element == Element_Edge) return SourceSelected(edge);
+        if (Pc.Element == Element::Edge) return SourceSelected(edge);
         return EdgeAdjacentSelectedFace(edge);
     }
     bool EdgeTouchesSelection(uint edge) const {
-        if (Pc.Element == Element_Vertex) {
+        if (Pc.Element == Element::Vertex) {
             return SourceSelected(EdgeIndices()[2u * edge]) || SourceSelected(EdgeIndices()[2u * edge + 1u]);
         }
         return SourceSelected(edge);
     }
 
     bool FaceSelected(uint face) const {
-        if (Pc.Element == Element_Face) return SourceSelected(face);
+        if (Pc.Element == Element::Face) return SourceSelected(face);
         const uint2 halfedges = FaceHalfedges(face);
         for (uint h = halfedges.x; h < halfedges.y; ++h) {
-            const uint source = Pc.Element == Element_Vertex ? Corners()[h] : HalfedgeEdge(h);
+            const uint source = Pc.Element == Element::Vertex ? Corners()[h] : HalfedgeEdge(h);
             if (!SourceSelected(source)) return false;
         }
         return true;
@@ -141,24 +141,24 @@ kernel void PrepareEditSelectionKernel(
     device uint *baseline = BindlessBufferMutable(uint, bindless.Buffer, pc.SelectionBaseline.Slot) + pc.SelectionBaseline.Offset;
     const uint old_word = selection[word_index];
     uint new_word = old_word;
-    if (pc.Operation == EditSelectionOperation_Clear || pc.Operation == EditSelectionOperation_FillList ||
-        pc.Operation == EditSelectionOperation_PickReplace) {
+    if (pc.Operation == EditSelectionOperation::Clear || pc.Operation == EditSelectionOperation::FillList ||
+        pc.Operation == EditSelectionOperation::PickReplace) {
         new_word = 0u;
-    } else if (pc.Operation == EditSelectionOperation_Fill) {
+    } else if (pc.Operation == EditSelectionOperation::Fill) {
         const uint remaining = count - word_index * 32u;
         new_word = remaining >= 32u ? 0xffffffffu : (1u << remaining) - 1u;
-    } else if (pc.Operation == EditSelectionOperation_CaptureBaseline) {
+    } else if (pc.Operation == EditSelectionOperation::CaptureBaseline) {
         baseline[word_index] = old_word;
         if (word_index == 0u) baseline[word_count] = ctx.Summary().ActiveHandle;
-    } else if (pc.Operation == EditSelectionOperation_RestoreBaseline) {
+    } else if (pc.Operation == EditSelectionOperation::RestoreBaseline) {
         new_word = baseline[word_index];
     }
 
-    if (pc.Operation == EditSelectionOperation_PickReplace || pc.Operation == EditSelectionOperation_PickToggle) {
+    if (pc.Operation == EditSelectionOperation::PickReplace || pc.Operation == EditSelectionOperation::PickToggle) {
         const uint picked_local = ctx.PickedLocal();
         if (picked_local != INVALID_HANDLE && (picked_local >> 5u) == word_index) {
             const uint bit = 1u << (picked_local & 31u);
-            if (pc.Operation == EditSelectionOperation_PickToggle && ctx.Summary().ActiveHandle == picked_local) {
+            if (pc.Operation == EditSelectionOperation::PickToggle && ctx.Summary().ActiveHandle == picked_local) {
                 new_word &= ~bit;
             } else {
                 new_word |= bit;
@@ -191,14 +191,14 @@ kernel void ResetEditSelectionSummaryKernel(
     const EditSelectionContext ctx{bindless, pc};
     device EditSelectionSummary &summary = ctx.Summary();
     const uint picked_local = ctx.PickedLocal();
-    if (pc.Operation == EditSelectionOperation_Clear || pc.Operation == EditSelectionOperation_FillList ||
-        pc.Operation == EditSelectionOperation_ClearActive || pc.Operation == EditSelectionOperation_PickReplace) {
+    if (pc.Operation == EditSelectionOperation::Clear || pc.Operation == EditSelectionOperation::FillList ||
+        pc.Operation == EditSelectionOperation::ClearActive || pc.Operation == EditSelectionOperation::PickReplace) {
         summary.ActiveHandle = picked_local;
-    } else if (pc.Operation == EditSelectionOperation_RestoreBaseline) {
+    } else if (pc.Operation == EditSelectionOperation::RestoreBaseline) {
         summary.ActiveHandle = BindlessBuffer(uint, bindless.Buffer, pc.SelectionBaseline.Slot)[
             pc.SelectionBaseline.Offset + (ctx.ElementCount(pc.Element) + 31u) / 32u
         ];
-    } else if (pc.Operation == EditSelectionOperation_PickToggle && picked_local != INVALID_HANDLE) {
+    } else if (pc.Operation == EditSelectionOperation::PickToggle && picked_local != INVALID_HANDLE) {
         summary.ActiveHandle = summary.ActiveHandle == picked_local ? INVALID_HANDLE : picked_local;
     }
     summary.PositionSum = packed_float3(float3(0.0f));
@@ -237,7 +237,7 @@ kernel void DeriveEditSelectionKernel(
         selected_vertex_count = popcount(vertex_bits);
     }
     const uint vertex_partner_bits = simd_shuffle_xor(vertex_bits, 1u);
-    if (pc.Element != Element_Vertex && chunk_index < vertex_chunks && (chunk_index & 1u) == 0u) {
+    if (pc.Element != Element::Vertex && chunk_index < vertex_chunks && (chunk_index & 1u) == 0u) {
         ctx.WriteSelectionWord(pc.Selection.VertexBits, chunk_index / 2u, vertex_bits | (vertex_partner_bits << 16u));
     }
 
@@ -248,13 +248,13 @@ kernel void DeriveEditSelectionKernel(
             const uint edge = chunk_index * 16u + k;
             if (edge >= pc.EdgeCount) break;
             if (ctx.EdgeSelected(edge)) edge_bits |= 1u << k;
-            if (pc.Element != Element_Face && ctx.EdgeTouchesSelection(edge)) {
+            if (pc.Element != Element::Face && ctx.EdgeTouchesSelection(edge)) {
                 sharpness_flags |= ctx.EdgeSharpness()[edge] != 0u ? SelectionSharp : SelectionSmooth;
             }
         }
     }
     const uint edge_partner_bits = simd_shuffle_xor(edge_bits, 1u);
-    if (pc.Element != Element_Edge && chunk_index < edge_chunks && (chunk_index & 1u) == 0u) {
+    if (pc.Element != Element::Edge && chunk_index < edge_chunks && (chunk_index & 1u) == 0u) {
         ctx.WriteSelectionWord(pc.Selection.EdgeBits, chunk_index / 2u, edge_bits | (edge_partner_bits << 16u));
     }
 
@@ -266,14 +266,14 @@ kernel void DeriveEditSelectionKernel(
             if (face >= pc.FaceCount) break;
             if (ctx.FaceSelected(face)) {
                 face_bits |= 1u << k;
-                if (pc.Element == Element_Face) {
+                if (pc.Element == Element::Face) {
                     sharpness_flags |= ctx.FaceSharpness()[face] != 0u ? SelectionSharp : SelectionSmooth;
                 }
             }
         }
     }
     const uint face_partner_bits = simd_shuffle_xor(face_bits, 1u);
-    if (pc.Element != Element_Face && chunk_index < face_chunks && (chunk_index & 1u) == 0u) {
+    if (pc.Element != Element::Face && chunk_index < face_chunks && (chunk_index & 1u) == 0u) {
         ctx.WriteSelectionWord(pc.Selection.FaceBits, chunk_index / 2u, face_bits | (face_partner_bits << 16u));
     }
 

@@ -1,20 +1,20 @@
 #include "MeshletResolve.metal"
-#include "MeshletLimit.metal"
+#include "gpu/MeshletLimit.h"
 #include "MeshletNonTriangle.metal"
-#include "VisibilityId.metal"
+#include "gpu/VisibilityId.h"
 #include "VertexTransform.metal"
 
 // Emit one attribute-carrying vertex per corner because indexed mesh output produces nondeterministic attributes on this driver.
 // Opaque meshlets emit welded positions and fetch attributes during shading.
-using MeshletOutput = metal::mesh<MeshletVertexVaryings, void, MeshletLimit_MaxTriangles * 3u, MeshletLimit_MaxTriangles, metal::topology::triangle>;
-using MeshletVisibilityOutput = metal::mesh<MeshletPositionVaryings, MeshletVisibilityPrimitiveVaryings, MeshletLimit_MaxVertices, MeshletLimit_MaxTriangles, metal::topology::triangle>;
+using MeshletOutput = metal::mesh<MeshletVertexVaryings, void, uint(MeshletLimit::MaxTriangles) * 3u, uint(MeshletLimit::MaxTriangles), metal::topology::triangle>;
+using MeshletVisibilityOutput = metal::mesh<MeshletPositionVaryings, MeshletVisibilityPrimitiveVaryings, uint(MeshletLimit::MaxVertices), uint(MeshletLimit::MaxTriangles), metal::topology::triangle>;
 
 inline uint MeshletVisibilityId(
     device const BindlessSet &bindless, constant MeshletDrawPushConstants &pc, uint group_index, uint triangle
 ) {
     const MeshletRouteState routes = BindlessBuffer(MeshletRouteState, bindless.Buffer, pc.RouteStateSlot)[0];
     const uint visible_index = routes.Offsets[pc.Route] + pc.VisibleOffset + group_index;
-    return (visible_index << VisibilityId_TriangleBits) | triangle;
+    return (visible_index << uint(VisibilityId::TriangleBits)) | triangle;
 }
 
 inline uint NonTriangleCorner(uint output_vertex) { return line_quad_corner(output_vertex); }
@@ -23,9 +23,9 @@ template <typename Output>
 inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, MeshletRecord meshlet, uint t) {
     const uint local_triangle = MeshletLocalTriangleOffset(meshlet) + t * 3u;
     const uchar first_index = triangles[local_triangle];
-    output.set_index(t * 3u, uint(first_index & MeshletGeometryEncoding_LocalIndexMask));
-    output.set_index(t * 3u + 1u, uint(triangles[local_triangle + 1u] & MeshletGeometryEncoding_LocalIndexMask));
-    output.set_index(t * 3u + 2u, uint(triangles[local_triangle + 2u] & MeshletGeometryEncoding_LocalIndexMask));
+    output.set_index(t * 3u, uint(first_index & uint(MeshletGeometryEncoding::LocalIndexMask)));
+    output.set_index(t * 3u + 1u, uint(triangles[local_triangle + 1u] & uint(MeshletGeometryEncoding::LocalIndexMask)));
+    output.set_index(t * 3u + 2u, uint(triangles[local_triangle + 2u] & uint(MeshletGeometryEncoding::LocalIndexMask)));
     return first_index;
 }
 
@@ -46,8 +46,8 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         return;
     }
     const uint topology = NonTriangleTopology ?
-        MeshletPrimitiveTopology(work.Meshlet) : MeshPrimitiveTopology_Triangle;
-    if (topology == MeshPrimitiveTopology_Triangle && thread_index < work.Meshlet.TriangleCount * 3u) {
+        MeshletPrimitiveTopology(work.Meshlet) : uint(MeshPrimitiveTopology::Triangle);
+    if (topology == uint(MeshPrimitiveTopology::Triangle) && thread_index < work.Meshlet.TriangleCount * 3u) {
         device const uint *triangle_ids = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot);
         device const uchar *triangles = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot);
         const bool coarse = MeshletCoarse(work.Meshlet);
@@ -59,7 +59,7 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         );
         const uint vertex_index = corners.CornerIds[thread_index % 3u];
         const uint vertex_id = corners.VertexIds[thread_index % 3u];
-        const bool flat_face = (triangles[MeshletLocalTriangleOffset(work.Meshlet) + local_triangle * 3u] & MeshletGeometryEncoding_FlatTriangleBit) != 0u;
+        const bool flat_face = (triangles[MeshletLocalTriangleOffset(work.Meshlet) + local_triangle * 3u] & uint(MeshletGeometryEncoding::FlatTriangleBit)) != 0u;
         auto out = ToMeshletVertexVaryings(TransformVertex(scene, work.Draw, vertex_index, vertex_index, vertex_id, false, !flat_face, coarse, corners.CoarseNormal));
         const Transform world = MeshletWorld(scene, work.Draw);
         const auto face = coarse ? MeshletCoarseFace(scene, work.Primitive, work.Instance, world) :
@@ -70,11 +70,11 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         out.WorldScale = face.WorldScale;
         out.ObjectId = face.ObjectId;
         out.ElementId = face.ElementId;
-        out.Topology = uint(MeshPrimitiveTopology_Triangle);
+        out.Topology = uint(uint(MeshPrimitiveTopology::Triangle));
         out.PointCoord = float2(0.0f);
         output.set_vertex(thread_index, out);
         output.set_index(thread_index, thread_index);
-    } else if (topology != MeshPrimitiveTopology_Triangle && thread_index < work.Meshlet.TriangleCount * 6u) {
+    } else if (topology != uint(MeshPrimitiveTopology::Triangle) && thread_index < work.Meshlet.TriangleCount * 6u) {
         device const uint *element_ids = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot);
         const uint element_index = thread_index / 6u;
         const uint corner = NonTriangleCorner(thread_index);
@@ -96,12 +96,12 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         out.Topology = topology;
         out.PointCoord = PointQuadCorners[corner] * 0.5f + 0.5f;
         // Alpha zero marks an unselected instance for fill recoloring during shading.
-        out.Color = scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u ?
+        out.Color = scene.View.InteractionMode == InteractionMode::Object && scene.View.ShowOverlays != 0u ?
             scene.ObjectSelectionColor(scene.InstanceState(work.Draw), float4(0.0f)) : float4(0.0f);
         output.set_vertex(thread_index, out);
         output.set_index(thread_index, thread_index);
     }
-    output.set_primitive_count(work.Meshlet.TriangleCount * (topology == MeshPrimitiveTopology_Triangle ? 1u : 2u));
+    output.set_primitive_count(work.Meshlet.TriangleCount * (topology == uint(MeshPrimitiveTopology::Triangle) ? 1u : 2u));
 }
 
 [[mesh]] void MeshletVisibilityMesh(
@@ -121,24 +121,24 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         return;
     }
     const uint topology = MeshletPrimitiveTopology(work.Meshlet);
-    if (topology == MeshPrimitiveTopology_Triangle && thread_index < work.Meshlet.VertexCount) {
+    if (topology == uint(MeshPrimitiveTopology::Triangle) && thread_index < work.Meshlet.VertexCount) {
         const uint packed_vertex = MeshletPackedVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, thread_index);
         const uint vertex_id = MeshletVertexId(scene, work.Draw, topology, packed_vertex);
         output.set_vertex(thread_index, MeshletPositionVaryings{MeshletPosition(scene, work.Draw, MeshletWorld(scene, work.Draw), vertex_id)});
-    } else if (topology != MeshPrimitiveTopology_Triangle && thread_index < work.Meshlet.TriangleCount * 4u) {
+    } else if (topology != uint(MeshPrimitiveTopology::Triangle) && thread_index < work.Meshlet.TriangleCount * 4u) {
         const uint element = thread_index / 4u;
         const uint corner = thread_index & 3u;
         output.set_vertex(thread_index, MeshletPositionVaryings{NonTrianglePosition(
             scene, bindless, pc.MeshletVertexSlot, work.Draw, work.Meshlet, topology, element, corner
         )});
     }
-    if (topology == MeshPrimitiveTopology_Triangle && thread_index < work.Meshlet.TriangleCount) {
+    if (topology == uint(MeshPrimitiveTopology::Triangle) && thread_index < work.Meshlet.TriangleCount) {
         device const uchar *triangles = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot);
         EmitTriangleIndices(output, triangles, work.Meshlet, thread_index);
         output.set_primitive(thread_index, MeshletVisibilityPrimitiveVaryings{
             MeshletVisibilityId(bindless, pc, threadgroup_position.x, thread_index)
         });
-    } else if (topology != MeshPrimitiveTopology_Triangle && thread_index < work.Meshlet.TriangleCount * 2u) {
+    } else if (topology != uint(MeshPrimitiveTopology::Triangle) && thread_index < work.Meshlet.TriangleCount * 2u) {
         const uint element = thread_index / 2u;
         const uint triangle_corner = (thread_index & 1u) * 3u;
         output.set_index(thread_index * 3u, element * 4u + LineQuadCornerLut[triangle_corner]);
@@ -148,5 +148,5 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
             MeshletVisibilityId(bindless, pc, threadgroup_position.x, thread_index)
         });
     }
-    output.set_primitive_count(work.Meshlet.TriangleCount * (topology == MeshPrimitiveTopology_Triangle ? 1u : 2u));
+    output.set_primitive_count(work.Meshlet.TriangleCount * (topology == uint(MeshPrimitiveTopology::Triangle) ? 1u : 2u));
 }

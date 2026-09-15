@@ -2,7 +2,7 @@
 #define TRSUTILS_MSL
 
 // Quaternion and TRS transform utilities.
-#include "Transform.metal"
+#include "gpu/Transform.h"
 
 inline float3 quat_rotate(float4 q, float3 v) {
     const float3 t = 2.0f * cross(q.xyz, v);

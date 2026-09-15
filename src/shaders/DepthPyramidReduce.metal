@@ -2,7 +2,7 @@
 #define DEPTHPYRAMIDREDUCE_MSL
 
 #include "Bindless.metal"
-#include "DepthPyramidReducePushConstants.metal"
+#include "gpu/DepthPyramidReducePushConstants.h"
 
 constant uint INVALID_SLOT_PYRAMID = 0xffffffffu;
 constant int PyramidTileDim = 32;

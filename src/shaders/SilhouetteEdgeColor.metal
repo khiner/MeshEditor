@@ -3,7 +3,7 @@
 
 #include "Bindless.metal"
 #include "Varyings.metal"
-#include "SilhouetteEdgeColorPushConstants.metal"
+#include "gpu/SilhouetteEdgeColorPushConstants.h"
 
 inline float2 SilhouetteEdge(texture2d<float> silhouette, int2 texel, int width) {
     constexpr sampler pixels(coord::pixel, address::clamp_to_edge, filter::nearest);
@@ -41,7 +41,7 @@ fragment OverlayTargetsDepth SilhouetteEdgeColorFragment(
     const float2 edge = SilhouetteEdge(bindless.Sampler[pc.SilhouetteSamplerIndex].Texture, texel, int(theme.SilhouetteEdgeWidth));
     const uint object_id = uint(edge.y);
     // Initialize working depth for subsequent overlays without changing visibility depth.
-    const float scene_depth = pc.SceneDepthSamplerIndex == INVALID_SLOT ? 1.0f : scene.FetchTex(pc.SceneDepthSamplerIndex, texel, 0).r;
+    const float scene_depth = pc.SceneDepthSamplerIndex == InvalidSlot ? 1.0f : scene.FetchTex(pc.SceneDepthSamplerIndex, texel, 0).r;
     const float depth = min(scene_depth, edge.x);
     if (object_id == 0u) return {float4(0.0f), depth};
 

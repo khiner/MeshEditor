@@ -31,14 +31,14 @@ BindlessSet::BindlessSet(const Context &ctx) : Ctx(ctx) {
     std::memset(ArgumentBuffer->contents(), 0, BindlessTableSize);
     ctx.AddResident(ArgumentBuffer.get());
     if (!ctx.Residency) {
-        for (size_t i = 0; i < Resources.size(); ++i) Resources[i].resize(BindlessLayout[i].Capacity);
+        for (size_t i = 0; i < Resources.size(); ++i) Resources[i].resize(SlotCapacity(BindingDefs[i].Kind));
     }
 }
 
 // Lowest-free allocation keeps scene replay byte-identical regardless of release order.
 uint32_t BindlessSet::Allocate(SlotType type) {
     const auto slot = Allocators[size_t(type)].Allocate(1).Offset;
-    if (slot >= BindlessLayout[size_t(type)].Capacity) {
+    if (slot >= SlotCapacity(BindingDefs[size_t(type)].Kind)) {
         throw std::runtime_error(std::format("Ran out of '{}' bindless slots ({})", BindingDefs[size_t(type)].Name, slot));
     }
     return slot;
@@ -50,8 +50,7 @@ void BindlessSet::Release(TypedSlot slot) {
 }
 
 size_t BindlessSet::EntryOffset(SlotType type, uint32_t slot) const {
-    const auto &layout = BindlessLayout[size_t(type)];
-    return layout.Offset + size_t(slot) * layout.Stride;
+    return BindlessOffset(type) + size_t(slot) * SlotStride(BindingDefs[size_t(type)].Kind);
 }
 
 uint64_t *BindlessSet::EntryAt(SlotType type, uint32_t slot) const {
@@ -90,10 +89,10 @@ void BindlessSet::SetSampler(TypedSlot slot, MTL::Texture *texture, MTL::Sampler
 }
 
 void BindlessSet::Clear(TypedSlot slot) {
-    const auto &layout = BindlessLayout[size_t(slot.Type)];
-    if (layout.Stride == 0) return;
+    const auto stride = SlotStride(BindingDefs[size_t(slot.Type)].Kind);
+    if (stride == 0) return;
     Track(slot, nullptr);
-    std::memset(EntryAt(slot.Type, slot.Slot), 0, layout.Stride);
+    std::memset(EntryAt(slot.Type, slot.Slot), 0, stride);
 }
 
 void BindlessSet::UseResources(MTL::RenderCommandEncoder *encoder) const {

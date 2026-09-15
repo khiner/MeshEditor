@@ -4,19 +4,11 @@
 // Environment prefilter kernels bind source and destination textures directly.
 #include <metal_stdlib>
 #include "CubemapFace.metal"
+#include "gpu/CubeFacePushConstants.h"
+#include "gpu/PrefilterPushConstants.h"
 using namespace metal;
 
 constant float PI = 3.14159265358979323846f;
-
-struct CubeFacePushConstants {
-    uint FaceSize;
-};
-
-struct PrefilterPushConstants {
-    uint FaceSize;
-    uint SourceSize;
-    float Roughness;
-};
 
 kernel void EquirectToCubemapKernel(
     uint3 gid [[thread_position_in_grid]],

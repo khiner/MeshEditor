@@ -3,8 +3,8 @@
 
 #include "Bindless.metal"
 #include "ConnectivityRead.metal"
-#include "EditSharpnessOperation.metal"
-#include "EditSharpnessPushConstants.metal"
+#include "gpu/EditSharpnessOperation.h"
+#include "gpu/EditSharpnessPushConstants.h"
 
 constant uint EditSharpnessInvalid = 0xffffffffu;
 
@@ -32,11 +32,11 @@ kernel void EditSharpnessKernel(
     if (i < pc.FaceCount) {
         bool write = false;
         uint value = pc.Value;
-        if (pc.Operation == EditSharpnessOperation_SetAllFaces) write = true;
-        else if (pc.Operation == EditSharpnessOperation_SmoothAll || pc.Operation == EditSharpnessOperation_SmoothByAngle) {
+        if (pc.Operation == EditSharpnessOperation::SetAllFaces) write = true;
+        else if (pc.Operation == EditSharpnessOperation::SmoothAll || pc.Operation == EditSharpnessOperation::SmoothByAngle) {
             write = true;
             value = 0u;
-        } else if (pc.Operation == EditSharpnessOperation_SetSelectedFaces) {
+        } else if (pc.Operation == EditSharpnessOperation::SetSelectedFaces) {
             write = ctx.Selected(pc.FaceSelectionBits, i);
         }
         if (write) BindlessBufferMutable(uchar, bindless.Buffer, pc.FaceSharpness.Slot)[pc.FaceSharpness.Offset + i] = uchar(value);
@@ -45,16 +45,16 @@ kernel void EditSharpnessKernel(
     if (i >= pc.EdgeCount) return;
     bool write_edge = false;
     uint edge_value = pc.Value;
-    if (pc.Operation == EditSharpnessOperation_SmoothAll) {
+    if (pc.Operation == EditSharpnessOperation::SmoothAll) {
         write_edge = true;
         edge_value = 0u;
-    } else if (pc.Operation == EditSharpnessOperation_SetSelectedEdges) {
+    } else if (pc.Operation == EditSharpnessOperation::SetSelectedEdges) {
         write_edge = ctx.Selected(pc.EdgeSelectionBits, i);
-    } else if (pc.Operation == EditSharpnessOperation_SetVertexEdges) {
+    } else if (pc.Operation == EditSharpnessOperation::SetVertexEdges) {
         device const uint *edge_indices = BindlessBuffer(uint, bindless.IndexBuffer, pc.EdgeIndices.Slot) + pc.EdgeIndices.Offset;
         write_edge = ctx.Selected(pc.VertexSelectionBits, edge_indices[i * 2u]) ||
             ctx.Selected(pc.VertexSelectionBits, edge_indices[i * 2u + 1u]);
-    } else if (pc.Operation == EditSharpnessOperation_SmoothByAngle) {
+    } else if (pc.Operation == EditSharpnessOperation::SmoothByAngle) {
         write_edge = true;
         edge_value = 0u;
         const uint h = BindlessBuffer(uint, bindless.Buffer, pc.EdgeHalfedges.Slot)[pc.EdgeHalfedges.Offset + i];

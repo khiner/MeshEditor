@@ -2,9 +2,11 @@
 #define EDGEQUAD_MSL
 
 #include "Bindless.metal"
-#include "EditOverlayConstant.metal"
+#include "gpu/EditOverlayConstant.h"
 #include "SceneUBO.metal"
 #include "Varyings.metal"
+
+constant bool IncludeOuter [[function_constant(uint(EditOverlayConstant::IncludeOuter))]];
 
 // Matches Blender's overlay_shader_shared.hh constant values.
 constant float EdgeQuadDiscRadius = 0.5641895835477563f * 1.05f;

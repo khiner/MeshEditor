@@ -4,8 +4,8 @@
 // Welds vertices identical in every vertex-domain channel and numbers them by first source occurrence.
 #include "Bindless.metal"
 #include "BlockScan.metal"
-#include "VertexWeldJob.metal"
-#include "VertexWeldPushConstants.metal"
+#include "gpu/VertexWeldJob.h"
+#include "gpu/VertexWeldPushConstants.h"
 
 constant uint WeldEmptySlot = 0xffffffffu;
 
@@ -45,9 +45,9 @@ inline WeldKeys MakeWeldKeys(WeldContext ctx, VertexWeldJob job) {
     k.Positions = ctx.PositionWords(job);
     k.Count = job.Count;
     k.TargetCount = job.TargetCount;
-    k.HasDeform = job.Deform.Slot != INVALID_SLOT;
-    k.HasMorph = job.Morph.Slot != INVALID_SLOT;
-    k.HasTangents = job.TangentOffset != INVALID_OFFSET;
+    k.HasDeform = job.Deform.Slot != InvalidSlot;
+    k.HasMorph = job.Morph.Slot != InvalidSlot;
+    k.HasTangents = job.TangentOffset != InvalidOffset;
     k.Deform = k.HasDeform ? ctx.DeformWords(job) : k.Positions;
     k.Morph = k.HasMorph ? ctx.MorphWords(job) : k.Positions;
     k.Tangents = k.HasTangents ? ctx.Scratch() + job.TangentOffset : k.Positions;

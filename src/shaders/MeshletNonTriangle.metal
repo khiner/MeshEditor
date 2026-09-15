@@ -18,10 +18,10 @@ inline uint NonTriangleVertexId(
     device const BindlessSet &bindless, uint meshlet_vertex_slot, MeshletRecord meshlet,
     uint topology, uint element, uint corner
 ) {
-    const uint endpoint = topology == MeshPrimitiveTopology_Line ? line_quad_endpoint(corner) : 0u;
-    const uint stride = topology == MeshPrimitiveTopology_Line ? 2u : 1u;
+    const uint endpoint = topology == uint(MeshPrimitiveTopology::Line) ? line_quad_endpoint(corner) : 0u;
+    const uint stride = topology == uint(MeshPrimitiveTopology::Line) ? 2u : 1u;
     return MeshletPackedVertex(bindless, meshlet_vertex_slot, meshlet, element * stride + endpoint) &
-        MeshletGeometryEncoding_CornerMask;
+        uint(MeshletGeometryEncoding::CornerMask);
 }
 
 inline float4 NonTrianglePosition(
@@ -31,7 +31,7 @@ inline float4 NonTrianglePosition(
     const Transform world = MeshletWorld(scene, draw);
     const uint source_vertex = NonTriangleVertexId(bindless, meshlet_vertex_slot, meshlet, topology, element, corner);
     const float4 clip = MeshletPosition(scene, draw, world, source_vertex);
-    if (topology == MeshPrimitiveTopology_Point) return PointQuadPosition(scene, clip, corner);
+    if (topology == uint(MeshPrimitiveTopology::Point)) return PointQuadPosition(scene, clip, corner);
     const uint other = NonTriangleVertexId(bindless, meshlet_vertex_slot, meshlet, topology, element, corner ^ 2u);
     const float4 other_clip = MeshletPosition(scene, draw, world, other);
     const bool first = line_quad_endpoint(corner) == 0u;
