@@ -1136,8 +1136,8 @@ struct BenchmarkDriver {
 
 bool SelectSceneCamera(state::Scene &r, std::string_view name) {
     if (name.empty()) return true;
-    for (const auto [entity, _, camera_name] : r.view<const Camera, const CameraName>().each()) {
-        if (camera_name.Value != name) continue;
+    for (const auto [entity, _, node] : r.view<const Camera, const GltfNode>().each()) {
+        if (node.CameraName != name) continue;
         Perform(r, action::view::SetLookThroughCamera{entity});
         return true;
     }

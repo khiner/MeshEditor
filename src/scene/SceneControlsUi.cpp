@@ -786,16 +786,17 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
     //   - `MaterialSourceMeta::ExtensionPresence` bits (which extension blocks the source had)
     if (const auto *sa = r.try_get<const gltf::SourceAssets>(viewport)) {
         const auto mesh_entity = active_instance ? active_instance->Entity : state::Null;
-        const auto extras = [&](const auto *src, gltf::ExtrasCategory cat) -> std::optional<std::string_view> {
-            return src ? gltf::GetExtras(*sa, cat, src->Value) : std::nullopt;
+        const auto *mesh_layout = mesh_entity != state::Null ? r.try_get<const MeshSourceLayout>(mesh_entity) : nullptr;
+        const auto *node = r.try_get<const GltfNode>(active_entity);
+        const auto extras = [&](std::optional<uint32_t> index, gltf::ExtrasCategory cat) -> std::optional<std::string_view> {
+            return index ? gltf::GetExtras(*sa, cat, *index) : std::nullopt;
         };
         const std::pair<const char *, std::optional<std::string_view>> sections[]{
-            {"Extras (Node)", extras(r.try_get<const SourceNodeIndex>(active_entity), gltf::ExtrasCategory::Nodes)},
-            {"Extras (Mesh)", extras(mesh_entity != state::Null ? r.try_get<const SourceMeshIndex>(mesh_entity) : nullptr, gltf::ExtrasCategory::Meshes)},
-            {"Extras (Camera)", extras(r.try_get<const SourceCameraIndex>(active_entity), gltf::ExtrasCategory::Cameras)},
-            {"Extras (Light)", extras(r.try_get<const SourceLightIndex>(active_entity), gltf::ExtrasCategory::Lights)},
+            {"Extras (Node)", extras(node ? node->Index : std::nullopt, gltf::ExtrasCategory::Nodes)},
+            {"Extras (Mesh)", extras(mesh_layout ? std::optional{mesh_layout->Index} : std::nullopt, gltf::ExtrasCategory::Meshes)},
+            {"Extras (Camera)", extras(node ? node->Camera : std::nullopt, gltf::ExtrasCategory::Cameras)},
+            {"Extras (Light)", extras(node ? node->Light : std::nullopt, gltf::ExtrasCategory::Lights)},
         };
-        const auto *mesh_layout = mesh_entity != state::Null ? r.try_get<const MeshSourceLayout>(mesh_entity) : nullptr;
         const bool any_extras = std::ranges::any_of(sections, [](const auto &s) { return s.second.has_value(); });
         if ((any_extras || mesh_layout) && CollapsingHeader("glTF metadata")) {
             for (const auto &[label, json] : sections) {
@@ -894,13 +895,13 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 std::vector<state::Entity> scenes;
                 for (const auto e : r.view<const Scene>()) scenes.emplace_back(e);
                 std::ranges::sort(scenes, {}, [&](state::Entity e) {
-                    const auto *si = r.try_get<const SourceSceneIndex>(e);
+                    const auto *si = r.try_get<const SourceIndex>(e);
                     return si ? si->Value : std::numeric_limits<uint32_t>::max();
                 });
                 state::Entity active = state::Null;
                 for (const auto e : r.view<const ActiveScene>()) active = e;
                 const auto scene_label = [&](state::Entity e) {
-                    const auto *si = r.try_get<const SourceSceneIndex>(e);
+                    const auto *si = r.try_get<const SourceIndex>(e);
                     return NamedOr(r.get<const Scene>(e).Name, "Scene ", si ? si->Value : 0u);
                 };
                 if (active != state::Null && BeginCombo("Scene", scene_label(active).c_str())) {

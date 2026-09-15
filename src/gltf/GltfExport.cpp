@@ -200,22 +200,26 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     const auto &r = sc.R;
     const auto &meshes = sc.Meshes;
 
-    // Order entities in `view` by their `TIndex` sidecar value. Entities without `TIndex`
+    // Order entities in `view` by the source index `index_of` reads for them.
     // Runtime-added entries follow the source range for cameras, lights, and physics resources.
-    const auto ordered_by_source = [&]<typename TIndex>(auto view) {
+    const auto ordered_by_source = [&](auto view, auto &&index_of) {
         std::vector<std::pair<uint32_t, state::Entity>> ordered;
         uint32_t next = 0;
         for (const auto e : view) {
-            if (const auto *si = r.try_get<const TIndex>(e)) {
-                ordered.emplace_back(si->Value, e);
-                next = std::max(next, si->Value + 1u);
+            if (const auto index = index_of(e)) {
+                ordered.emplace_back(*index, e);
+                next = std::max(next, *index + 1u);
             }
         }
         for (const auto e : view) {
-            if (!r.all_of<TIndex>(e)) ordered.emplace_back(next++, e);
+            if (!index_of(e)) ordered.emplace_back(next++, e);
         }
         std::ranges::sort(ordered, {}, &std::pair<uint32_t, state::Entity>::first);
         return ordered;
+    };
+    const auto source_index = [&](state::Entity e) -> std::optional<uint32_t> {
+        const auto *index = r.try_get<const SourceIndex>(e);
+        return index ? std::optional{index->Value} : std::nullopt;
     };
 
     // Read source metadata and texture, image, and sampler arrays from gltf::SourceAssets.
@@ -229,13 +233,13 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     const auto material_count = sc.Buffers.Materials.Count();
     const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
 
-    // Preserve source mesh ordering through SourceMeshIndex.
+    // Preserve source mesh ordering through the source layout.
     // Append runtime-created meshes after the source range.
     std::unordered_map<state::Entity, uint32_t> mesh_entity_to_index;
     uint32_t mesh_count = 0;
-    for (const auto [e, _, smi] : r.view<const MeshHandle, const SourceMeshIndex>().each()) {
-        mesh_entity_to_index[e] = smi.Value;
-        mesh_count = std::max(mesh_count, smi.Value + 1u);
+    for (const auto [e, _, layout] : r.view<const MeshHandle, const MeshSourceLayout>().each()) {
+        mesh_entity_to_index[e] = layout.Index;
+        mesh_count = std::max(mesh_count, layout.Index + 1u);
     }
     for (const auto e : r.view<const MeshHandle>()) {
         if (!mesh_entity_to_index.contains(e)) mesh_entity_to_index[e] = mesh_count++;
@@ -250,14 +254,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     std::vector<MeshEntitySet> mesh_groups(mesh_count);
     for (const auto &[entity, idx] : mesh_entity_to_index) {
         auto &g = mesh_groups[idx];
-        const auto *kind = r.try_get<const SourceMeshKind>(entity);
-        const auto k = kind ? kind->Value : MeshKind::Triangles;
+        const auto *layout = r.try_get<const MeshSourceLayout>(entity);
+        const auto k = layout ? layout->Kind : MeshKind::Triangles;
         if (k == MeshKind::Triangles) g.Triangles = entity;
         else if (k == MeshKind::Lines) g.Lines = entity;
         else g.Points = entity;
-        if (g.Name.empty()) {
-            if (const auto *mn = r.try_get<const MeshName>(entity)) g.Name = mn->Value;
-        }
+        if (g.Name.empty() && layout) g.Name = layout->Name;
     }
 
     // Emits one camera or light per component-bearing entity in source order.
@@ -266,44 +268,47 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     std::unordered_map<state::Entity, uint32_t> camera_entity_to_index, light_entity_to_index;
     std::vector<state::Entity> camera_entities_ordered, light_entities_ordered;
     {
-        auto camera_view = r.view<const ::Camera>();
-        for (const auto &[_, entity] : ordered_by_source.operator()<SourceCameraIndex>(camera_view)) {
+        const auto node_of = [&](auto member) {
+            return [&, member](state::Entity e) { const auto *node = r.try_get<const GltfNode>(e); return node ? node->*member : std::nullopt; };
+        };
+        for (const auto &[_, entity] : ordered_by_source(r.view<const ::Camera>(), node_of(&GltfNode::Camera))) {
             camera_entity_to_index[entity] = camera_entities_ordered.size();
             camera_entities_ordered.emplace_back(entity);
         }
-        auto light_view = r.view<const PunctualLight>();
-        for (const auto &[_, entity] : ordered_by_source.operator()<SourceLightIndex>(light_view)) {
+        for (const auto &[_, entity] : ordered_by_source(r.view<const PunctualLight>(), node_of(&GltfNode::Light))) {
             light_entity_to_index[entity] = light_entities_ordered.size();
             light_entities_ordered.emplace_back(entity);
         }
     }
 
-    // Use SourceNodeIndex and SourceParentNodeIndex to preserve the imported hierarchy after runtime reparenting.
+    // Use the source node and parent indices to preserve the imported hierarchy after runtime reparenting.
     // Append runtime-created objects as scene roots after the source range.
     // Compact live source node indices to a dense [0, k) range so deleted / out-of-scene nodes leave no gaps.
     std::unordered_map<uint32_t, uint32_t> source_to_dense;
     {
         std::vector<uint32_t> live;
-        for (const auto [e, sni] : r.view<const SourceNodeIndex>().each()) live.emplace_back(sni.Value);
+        for (const auto [e, node] : r.view<const GltfNode>().each())
+            if (node.Index) live.emplace_back(*node.Index);
         std::ranges::sort(live);
         live.erase(std::ranges::unique(live).begin(), live.end());
         for (uint32_t dense = 0; dense < live.size(); ++dense) source_to_dense[live[dense]] = dense;
     }
     std::unordered_map<state::Entity, uint32_t> entity_to_node_index;
     uint32_t total_node_count = uint32_t(source_to_dense.size());
-    for (const auto [e, sni] : r.view<const SourceNodeIndex>().each()) entity_to_node_index[e] = source_to_dense.at(sni.Value);
+    for (const auto [e, node] : r.view<const GltfNode>().each())
+        if (node.Index) entity_to_node_index[e] = source_to_dense.at(*node.Index);
     for (const auto [e, _t, kind] : r.view<const Transform, const ObjectKind>().each()) {
         if (kind.Value == ObjectType::Armature) continue; // Armatures aren't gltf nodes — they round-trip via skins.
         if (!entity_to_node_index.contains(e)) entity_to_node_index[e] = total_node_count++;
     }
     // Children paired with sibling position so we sort in source order. A source parent with no entity (deleted) drops the link, so the child emits as a root.
     std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> children_by_parent;
-    for (const auto [e, sni, spi] : r.view<const SourceNodeIndex, const SourceParentNodeIndex>().each()) {
-        const auto pit = source_to_dense.find(spi.Value);
+    for (const auto [e, node] : r.view<const GltfNode>().each()) {
+        if (!node.Index || !node.Parent) continue;
+        const auto pit = source_to_dense.find(*node.Parent);
         if (pit == source_to_dense.end()) continue;
-        const auto *ssi = r.try_get<const SourceSiblingIndex>(e);
-        const auto child = source_to_dense.at(sni.Value);
-        children_by_parent[pit->second].emplace_back(ssi ? ssi->Value : child, child);
+        const auto child = source_to_dense.at(*node.Index);
+        children_by_parent[pit->second].emplace_back(node.Sibling.value_or(child), child);
     }
     for (auto &[_, kids] : children_by_parent) std::ranges::sort(kids, {}, &std::pair<uint32_t, uint32_t>::first);
 
@@ -329,11 +334,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Scenes to emit, in source order. active_scene is the default.
     std::vector<state::Entity> scenes_ordered;
     for (const auto e : r.view<const Scene>()) scenes_ordered.emplace_back(e);
-    std::ranges::sort(scenes_ordered, [&](state::Entity a, state::Entity b) {
-        const auto *ia = r.try_get<const SourceSceneIndex>(a);
-        const auto *ib = r.try_get<const SourceSceneIndex>(b);
-        return (ia ? ia->Value : std::numeric_limits<uint32_t>::max()) < (ib ? ib->Value : std::numeric_limits<uint32_t>::max());
-    });
+    std::ranges::sort(scenes_ordered, {}, [&](state::Entity e) { return source_index(e).value_or(std::numeric_limits<uint32_t>::max()); });
     state::Entity active_scene = state::Null;
     for (const auto e : r.view<const ActiveScene>()) active_scene = e;
 
@@ -344,8 +345,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         for (uint32_t ni = 0; ni < total_node_count; ++ni) {
             const auto entity = node_to_entity[ni];
             if (entity == state::Null) continue;
-            const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
-            const bool is_root = !spi || !source_to_dense.contains(spi->Value);
+            const auto *node = r.try_get<const GltfNode>(entity);
+            const bool is_root = !node || !node->Parent || !source_to_dense.contains(*node->Parent);
             if (!is_root) continue;
             if (scene != state::Null) {
                 const auto *sm = r.try_get<const SceneMembership>(entity);
@@ -405,7 +406,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     std::unordered_map<state::Entity, uint32_t> physics_material_to_index, physics_jointdef_to_index, collision_filter_to_index;
     {
         auto mat_view = r.view<const PhysicsMaterial>();
-        for (const auto &[_, e] : ordered_by_source.operator()<SourcePhysicsMaterialIndex>(mat_view)) {
+        for (const auto &[_, e] : ordered_by_source(mat_view, source_index)) {
             const auto &pm = mat_view.get<const PhysicsMaterial>(e);
             physics_material_to_index[e] = asset.physicsMaterials.size();
             asset.physicsMaterials.emplace_back(fastgltf::PhysicsMaterial{
@@ -417,7 +418,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             });
         }
         auto jd_view = r.view<const ::PhysicsJointDef>();
-        for (const auto &[_, e] : ordered_by_source.operator()<SourcePhysicsJointDefIndex>(jd_view)) {
+        for (const auto &[_, e] : ordered_by_source(jd_view, source_index)) {
             const auto &jd = jd_view.get<const ::PhysicsJointDef>(e);
             fastgltf::pmr::MaybeSmallVector<fastgltf::JointLimit> limits;
             limits.reserve(jd.Limits.size());
@@ -461,7 +462,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             return out;
         };
         auto cf_view = r.view<const CollisionFilter>();
-        for (const auto &[_, e] : ordered_by_source.operator()<SourceCollisionFilterIndex>(cf_view)) {
+        for (const auto &[_, e] : ordered_by_source(cf_view, source_index)) {
             const auto &f = cf_view.get<const CollisionFilter>(e);
             collision_filter_to_index[e] = asset.collisionFilters.size();
             fastgltf::CollisionFilter out{.collisionSystems = resolve_system_names(f.Systems), .notCollideWithSystems = {}, .collideWithSystems = {}};
@@ -1223,15 +1224,15 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Cameras / lights: emit in the order gathered above.
     asset.cameras.reserve(camera_entities_ordered.size());
     for (const auto entity : camera_entities_ordered) {
-        const auto *cn = r.try_get<const CameraName>(entity);
-        asset.cameras.emplace_back(ConvertCameraToFg(r.get<const ::Camera>(entity), cn ? cn->Value : std::string_view{}));
+        const auto *node = r.try_get<const GltfNode>(entity);
+        asset.cameras.emplace_back(ConvertCameraToFg(r.get<const ::Camera>(entity), node ? node->CameraName : std::string_view{}));
     }
     asset.lights.reserve(light_entities_ordered.size());
     for (const auto entity : light_entities_ordered) {
-        const auto *ln = r.try_get<const LightName>(entity);
+        const auto *node = r.try_get<const GltfNode>(entity);
         // Read the canonical per-light data (PunctualLight), not the Derived GPU Lights buffer.
         const auto &pl = r.get<const PunctualLight>(entity);
-        asset.lights.emplace_back(ConvertLightToFg(pl, ln ? ln->Value : std::string_view{}));
+        asset.lights.emplace_back(ConvertLightToFg(pl, node ? node->LightName : std::string_view{}));
     }
 
     // KHR_implicit_shapes: dedupe primitive shapes referenced by colliders/triggers into asset.shapes.
@@ -1343,7 +1344,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return world;
     };
 
-    // Emit nodes directly from registry components while retaining gaps in SourceNodeIndex.
+    // Emit nodes directly from registry components while retaining gaps in the source node indices.
     asset.nodes.reserve(total_node_count);
     bool uses_gpu_instancing = false;
     bool uses_physics_rigid_bodies = false;
@@ -1401,21 +1402,21 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
         }
 
+        const auto *gltf_node = r.try_get<const GltfNode>(entity);
         std::string node_name;
-        if (!r.all_of<SourceEmptyName>(entity)) {
-            if (const auto *son = r.try_get<const SourceObjectName>(entity)) node_name = son->Value;
+        if (!gltf_node || !gltf_node->EmptyName) {
+            if (gltf_node && !gltf_node->Name.empty()) node_name = gltf_node->Name;
             else if (const auto *nm = r.try_get<const Name>(entity)) node_name = nm->Value;
         }
 
         const auto &world_transform = r.get<const WorldTransform>(entity);
 
-        // SourceParentNodeIndex restores non-joint ancestors removed from the runtime bone hierarchy.
+        // The source parent restores non-joint ancestors removed from the runtime bone hierarchy.
         // Derive local transforms from rest-world transforms when source and runtime parents differ.
         const Transform local_transform = [&] {
             if (r.all_of<ArmatureModifier>(entity)) return Transform{}; // Skinned mesh node transform is spec-ignored.
-            const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
             const auto *node = r.try_get<const SceneNode>(entity);
-            if (const auto pit = spi ? source_to_dense.find(spi->Value) : source_to_dense.end(); pit != source_to_dense.end()) {
+            if (const auto pit = gltf_node && gltf_node->Parent ? source_to_dense.find(*gltf_node->Parent) : source_to_dense.end(); pit != source_to_dense.end()) {
                 const auto src_parent = node_to_entity[pit->second];
                 if (src_parent != state::Null && (!node || node->Parent != src_parent)) {
                     return ToTransform(numeric::Inverse(rest_world_of(src_parent)) * rest_world_of(entity));
@@ -1521,11 +1522,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
 
         // Preserve matrix-form sources and emit TRS-form sources from LocalTransform.
-        const auto *source_matrix = r.try_get<const SourceMatrixTransform>(entity);
+        const auto source_matrix = gltf_node ? gltf_node->Matrix : std::nullopt;
         const auto fg_transform = [&]() -> std::variant<fastgltf::TRS, fastgltf::math::fmat4x4> {
-            if (source_matrix) {
-                return std::bit_cast<fastgltf::math::fmat4x4>(source_matrix->Value);
-            }
+            if (source_matrix) return std::bit_cast<fastgltf::math::fmat4x4>(*source_matrix);
             return fastgltf::TRS{
                 .translation = std::bit_cast<fastgltf::math::fvec3>(local_transform.P),
                 .rotation = std::bit_cast<fastgltf::math::fquat>(local_transform.R),
@@ -1642,8 +1641,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .audioRigidBody = audio_rigid_body,
             .visible = [&] {
                 if (!fully_hidden[ni]) return true;
-                const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
-                const auto pit = spi ? source_to_dense.find(spi->Value) : source_to_dense.end();
+                const auto pit = gltf_node && gltf_node->Parent ? source_to_dense.find(*gltf_node->Parent) : source_to_dense.end();
                 return pit != source_to_dense.end() && fully_hidden[pit->second];
             }(),
             .selectable = true,

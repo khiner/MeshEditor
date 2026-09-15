@@ -1017,7 +1017,7 @@ int main(int argc, const char **argv) {
     };
     // The first mesh-instance node, with the mesh entity it instances.
     const auto first_mesh_node = [](state::Scene &r) -> std::pair<state::Entity, state::Entity> {
-        for (auto e : r.view<const Instance, const SourceNodeIndex>()) {
+        for (auto e : r.view<const Instance, const GltfNode>()) {
             if (const auto mesh = r.get<const Instance>(e).Entity; r.all_of<MeshHandle>(mesh)) return {e, mesh};
         }
         return {state::Null, state::Null};

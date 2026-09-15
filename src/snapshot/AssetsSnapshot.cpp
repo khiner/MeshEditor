@@ -6,11 +6,6 @@
 namespace snapshot::detail {
 
 void RegisterAssets(Tables &tables) {
-    Persistent<
-        MaterialVariants, MaterializedTextures, PbrMeshFeatures, SourceNodeIndex, SourceParentNodeIndex,
-        SourceSiblingIndex, SourceMeshIndex, SourceCameraIndex, SourceLightIndex, SourcePhysicsMaterialIndex,
-        SourceCollisionFilterIndex, SourcePhysicsJointDefIndex, SourceSceneIndex, SourceMeshKind, GltfObject, CameraName,
-        LightName, SourceObjectName, MeshName, SourceMatrixTransform, SourceEmptyName, MeshSourceLayout,
-        gltf::SourceAssets>(tables);
+    Persistent<MaterialVariants, MaterializedTextures, PbrMeshFeatures, GltfNode, SourceIndex, MeshSourceLayout, gltf::SourceAssets>(tables);
 }
 } // namespace snapshot::detail

@@ -30,73 +30,29 @@ struct TextureStore;
 namespace fastgltf {
 class Asset;
 } // namespace fastgltf
-// Source indices preserve glTF ordering and references independently of runtime hierarchy and ECS iteration.
-struct SourceNodeIndex {
-    uint32_t Value{};
-};
-struct SourceParentNodeIndex {
-    uint32_t Value{};
-};
-struct SourceSiblingIndex {
-    uint32_t Value{};
-};
-struct SourceMeshIndex {
-    uint32_t Value{};
-};
-struct SourceCameraIndex {
-    uint32_t Value{};
-};
-struct SourceLightIndex {
-    uint32_t Value{};
-};
-struct SourcePhysicsMaterialIndex {
-    uint32_t Value{};
-};
-struct SourceCollisionFilterIndex {
-    uint32_t Value{};
-};
-struct SourcePhysicsJointDefIndex {
-    uint32_t Value{};
-};
-
-struct GltfObject {};
-
-// Preserves source scene order during saves.
-struct SourceSceneIndex {
-    uint32_t Value{};
-};
-
-// Distinguishes topology entities that share a SourceMeshIndex.
+// Distinguishes topology entities that share a source mesh.
 enum class MeshKind : uint8_t {
     Triangles,
     Lines,
     Points
 };
-struct SourceMeshKind {
-    MeshKind Value{MeshKind::Triangles};
+
+// Source references preserve glTF ordering and hierarchy independently of the runtime hierarchy.
+// Every imported object, node stub, and bone carries one. Armature objects have no source node, so Index is empty.
+struct GltfNode {
+    std::optional<uint32_t> Index, Parent, Sibling, Camera, Light;
+    // Retains a source matrix while runtime state uses TRS.
+    std::optional<mat4> Matrix;
+    // Source names that runtime naming changed. Empty when the runtime name matches.
+    std::string Name, CameraName, LightName;
+    // The source name was empty and the runtime name is synthesized, so saves omit it.
+    bool EmptyName{};
 };
 
-// Retains source names that runtime naming transforms or omits.
-struct CameraName {
-    std::string Value;
+// Source order of a scene, physics material, collision filter, or joint definition.
+struct SourceIndex {
+    uint32_t Value{};
 };
-struct LightName {
-    std::string Value;
-};
-struct SourceObjectName {
-    std::string Value;
-};
-struct MeshName {
-    std::string Value;
-};
-
-// Retains a source matrix while runtime state uses TRS.
-struct SourceMatrixTransform {
-    mat4 Value{1.f};
-};
-
-// Marks a synthesized runtime name that must be omitted during save.
-struct SourceEmptyName {};
 
 // Retains per-primitive source layout after CreateMesh flattens primitives.
 struct MeshSourceLayout {
@@ -109,6 +65,9 @@ struct MeshSourceLayout {
     uint8_t Colors0ComponentCount{};
     // Target-major tangent deltas omitted from MorphTargetVertex.
     std::vector<vec3> MorphTangentDeltas;
+    uint32_t Index{};
+    MeshKind Kind{MeshKind::Triangles};
+    std::string Name;
 };
 
 namespace gltf {
