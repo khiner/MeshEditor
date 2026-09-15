@@ -6,7 +6,7 @@
 #include "action/Build.h"
 #include "action/Emit.h"
 #include "action/Errors.h"
-#include "editor/AudioIntegration.h"
+#include "editor/Engine.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "project/Sessions.h"
@@ -27,23 +27,8 @@ using boost::ut::expect;
 namespace {
 bool Render = true;
 
-struct Fixture {
-    state::Scene R;
-    std::unique_ptr<project::Project> P;
-    state::Entity Viewport;
-    Fixture() {
-        R.ctx().emplace<mtl::Context>();
-        P = std::make_unique<project::Project>(R);
-        Viewport = InitEngine(R);
-        P->TrackStores(Viewport);
-        InitAudioSystem(R);
-        SetupScene(R, Viewport);
-    }
-    ~Fixture() {
-        P.reset();
-        DeinitAudioSystem(R);
-        DeinitViewport(R, Viewport);
-    }
+struct Fixture : Engine {
+    Fixture() : Engine{true} {}
     void Audit() {
         std::string why;
         const bool valid = P->Audit(why);

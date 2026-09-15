@@ -121,7 +121,7 @@ void SetEditMode(state::Scene &r, state::Entity viewport, Element mode) {
     }
 
     r.patch<EditMode>(viewport, [mode](auto &edit_mode) { edit_mode.Value = mode; });
-    if (!ranges.empty()) ApplyEditSelectionCommand(r, viewport, ranges, mode, EditSelectionOperation::ClearActive);
+    if (!ranges.empty()) ApplyEditSelectionCommand(r, ranges, mode, EditSelectionOperation::ClearActive);
 }
 
 } // namespace
@@ -232,12 +232,11 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
         pending_env.reset();
     }
-    if (textures.PendingUploads.empty() && !environments.PendingImport) {
-        if (const auto *src_assets = r.try_get<gltf::SourceAssets>(viewport)) {
-            for (size_t i = 0; i < src_assets->Images.size(); ++i) {
-                const auto &img = src_assets->Images[i];
-                if (!img.SourcePath.empty() && !img.Bytes.empty()) r.edit<gltf::SourceAssets>(viewport).Images[i].Bytes = {};
-            }
+    // Every upload and import above has been materialized, so drop image bytes that a source path can reload.
+    if (const auto *src_assets = r.try_get<gltf::SourceAssets>(viewport)) {
+        for (size_t i = 0; i < src_assets->Images.size(); ++i) {
+            const auto &img = src_assets->Images[i];
+            if (!img.SourcePath.empty() && !img.Bytes.empty()) r.edit<gltf::SourceAssets>(viewport).Images[i].Bytes = {};
         }
     }
 
@@ -530,7 +529,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     { // Register changed lights into the GPU Lights buffer, the single path for both new and restored lights.
         bool synced = false;
         for (const auto entity : reactive<changes::PunctualLight>(r)) {
-            if (!r.valid(entity) || !r.all_of<PunctualLight, Instance>(entity)) continue;
+            if (!r.all_of<PunctualLight, Instance>(entity)) continue;
             const auto *ri = r.try_get<const RenderInstance>(entity);
             if (!ri || ri->BufferIndex == UINT32_MAX) continue;
             const auto index = r.all_of<LightIndex>(entity) ? r.get<const LightIndex>(entity).Value : buffers.Lights.Count();
@@ -757,7 +756,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         buffers.Lights.SetCount(required_count);
         light_count_changed = true;
     }
-    if (light_count_changed) request(RenderRequest::Reuse);
     if (!reactive<changes::WorkspaceLights>(r).empty()) {
         buffers.WorkspaceLightsUBO.Update(as_bytes(r.get<const WorkspaceLights>(viewport)));
         request(RenderRequest::Reuse);
@@ -843,7 +841,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 }
             }
         }
-        if (!geometry_ranges.empty()) ApplyEditSelectionCommand(r, viewport, geometry_ranges, edit_mode, EditSelectionOperation::Clear);
+        if (!geometry_ranges.empty()) ApplyEditSelectionCommand(r, geometry_ranges, edit_mode, EditSelectionOperation::Clear);
         request(RenderRequest::Reuse);
     }
     if (auto &tracker = reactive<changes::MeshMaterial>(r); !tracker.empty()) {
@@ -888,7 +886,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (const float requested = ClampMaxAnisotropy(ToMaxAnisotropy(r.get<const ViewportDisplay>(viewport).AnisotropicFilter));
             requested != r.ctx().get<const ActiveSamplerAnisotropy>().Value) {
             r.ctx().get<ActiveSamplerAnisotropy>().Value = requested;
-            RebuildTextureSamplers(ctx, r.ctx().get<mtl::BindlessSet>(), r.ctx().get<TextureStore>(), requested);
+            RebuildTextureSamplers(ctx, slots, textures, requested);
         }
     }
     if (!reactive<changes::InteractionMode>(r).empty()) {
@@ -1214,9 +1212,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 if (propagate)
                     for (const auto child : Children{&r, e}) self(child, true);
             };
-            for (const auto e : dirty) {
-                if (r.valid(e)) collect(e, !(bone_edit && r.all_of<StartTransform>(e)));
-            }
+            for (const auto e : dirty) collect(e, !(bone_edit && r.all_of<StartTransform>(e)));
 
             std::unordered_set<state::Entity> done;
             const auto compute = [&](this const auto &self, state::Entity e) -> void {
@@ -1237,8 +1233,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             wt_writes.reserve(wt_reactive.size() + sync.NewlyInserted.size());
 
             const auto collect_wt = [&](state::Entity e) {
-                if (!r.valid(e)) return;
-
                 const auto *ri = r.try_get<const RenderInstance>(e);
                 if (!ri || ri->BufferIndex == UINT32_MAX) return;
 
@@ -1430,7 +1424,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             }
             sound_selections.emplace_back(mesh_entity, sound_vertices);
         }
-        ApplyEditSelectionLists(r, viewport, sound_selections, Element::Vertex);
+        ApplyEditSelectionLists(r, sound_selections, Element::Vertex);
         if (!dirty_sound_selection_meshes.empty()) {
             auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>(
                 {0u, buffers.Instances.RecordBuffer.Count<InstanceRecord>()}

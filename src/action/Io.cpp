@@ -37,7 +37,7 @@ void LoadGltfFile(state::Scene &r, state::Entity viewport, const std::filesystem
     auto &c = r.ctx();
     auto result = gltf::LoadGltf(path, {r, viewport, c.get<mtl::BindlessSet>(), c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), c.get<EnvironmentStore>()});
     if (!result) {
-        c.get<Errors>().Messages.emplace_back(std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
+        Fail(r, std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
         return;
     }
 
@@ -50,7 +50,6 @@ void LoadGltfFile(state::Scene &r, state::Entity viewport, const std::filesystem
 } // namespace
 
 void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
-    const auto fail = [&](std::string message) { r.ctx().get<Errors>().Messages.emplace_back(std::move(message)); };
     std::visit(
         overloaded{
             [&](const LoadDefaultScene &) { AddDefaultSceneContent(r); },
@@ -59,19 +58,19 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 const auto ext = path.extension().string();
                 if (ext == ".gltf" || ext == ".glb") LoadGltfFile(r, viewport, a.Path);
                 else if (ext == ".obj" || ext == ".ply") RequestImportMesh(r, viewport, path, MeshInstanceCreateInfo{.Name = path.stem().string()});
-                else fail(std::format("Unsupported file format: '{}'", ext));
+                else Fail(r, std::format("Unsupported file format: '{}'", ext));
             },
             [&](const SaveGltf &a) {
                 auto &c = r.ctx();
                 if (auto save = gltf::SaveGltf(a.Path, {r, viewport, c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), &c.get<const mtl::Context>(), &GetBufferContext(r)}); !save) {
-                    fail(std::format("Error saving glTF file '{}': {}", a.Path.string(), save.error()));
+                    Fail(r, std::format("Error saving glTF file '{}': {}", a.Path.string(), save.error()));
                 }
             },
             [&](const LoadGltf &a) { LoadGltfFile(r, viewport, a.Path); },
             [&](const LoadRealImpact &a) {
                 auto source = RealImpact::LoadSource(r, a.Path);
                 if (!source) {
-                    fail(std::move(source.error()));
+                    Fail(r, std::move(source.error()));
                     return;
                 }
 
@@ -122,7 +121,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                         if (source->Samples.empty()) continue;
                         auto samples = RealImpact::LoadSamples(r, source->Samples, listener_point.Index);
                         if (!samples) {
-                            fail(std::move(samples.error()));
+                            Fail(r, std::move(samples.error()));
                             return;
                         }
                         SetVertexSamples(r, instance_entity, vertex_indices, *samples);

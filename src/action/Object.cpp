@@ -228,17 +228,12 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 const auto targets = selected_meshes();
                 ApplyEditSharpness(r, viewport, targets, EditSharpnessOperation::SmoothByAngle, false, a.Angle);
             },
-            [&](const SetSelectedFacesSmooth &a) {
-                const auto targets = edit_selection_meshes(Element::Face);
-                ApplyEditSharpness(r, viewport, targets, EditSharpnessOperation::SetSelectedFaces, !a.Smooth);
-            },
-            [&](const SetSelectedEdgesSharp &a) {
-                const auto targets = edit_selection_meshes(Element::Edge);
-                ApplyEditSharpness(r, viewport, targets, EditSharpnessOperation::SetSelectedEdges, a.Sharp);
-            },
-            [&](const SetSelectedVertexEdgesSharp &a) {
-                const auto targets = edit_selection_meshes(Element::Vertex);
-                ApplyEditSharpness(r, viewport, targets, EditSharpnessOperation::SetVertexEdges, a.Sharp);
+            [&](const SetSelectedSharp &a) {
+                const auto targets = edit_selection_meshes(a.Element);
+                const auto operation = a.Element == Element::Face ? EditSharpnessOperation::SetSelectedFaces :
+                    a.Element == Element::Edge                    ? EditSharpnessOperation::SetSelectedEdges :
+                                                                    EditSharpnessOperation::SetVertexEdges;
+                ApplyEditSharpness(r, viewport, targets, operation, a.Sharp);
             },
             [&](ParentToActive) {
                 const auto active = FindActiveEntity(r);

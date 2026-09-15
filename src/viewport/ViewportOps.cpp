@@ -45,7 +45,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
     if (current_mode == InteractionMode::Excite) {
         if (const auto *baseline = r.try_get<const ExciteSelectionBaseline>(viewport)) {
             const auto ranges = edit_ranges(baseline->Mode);
-            ApplyEditSelectionCommand(r, viewport, ranges, baseline->Mode, EditSelectionOperation::RestoreBaseline);
+            ApplyEditSelectionCommand(r, ranges, baseline->Mode, EditSelectionOperation::RestoreBaseline);
             for (const auto &range : ranges) {
                 const auto &summary = meshes.GetSelectionSummary(r.get<const MeshHandle>(range.MeshEntity).StoreId);
                 if (summary.ActiveHandle < range.Count) r.emplace_or_replace<MeshActiveElement>(range.MeshEntity, summary.ActiveHandle);
@@ -56,7 +56,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
     } else if (mode == InteractionMode::Excite) {
         const auto edit_element = r.get<const EditMode>(viewport).Value;
         const auto ranges = edit_ranges(edit_element);
-        ApplyEditSelectionCommand(r, viewport, ranges, edit_element, EditSelectionOperation::CaptureBaseline);
+        ApplyEditSelectionCommand(r, ranges, edit_element, EditSelectionOperation::CaptureBaseline);
         r.emplace_or_replace<ExciteSelectionBaseline>(viewport, edit_element);
     }
 
@@ -80,8 +80,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
     }
     r.patch<Interaction>(viewport, [mode](auto &s) { s.Mode = mode; });
     if (!initialize_selection.empty()) {
-        ApplyEditSelectionCommand(
-            r, viewport, initialize_selection, r.get<const EditMode>(viewport).Value,
+        ApplyEditSelectionCommand(r, initialize_selection, r.get<const EditMode>(viewport).Value,
             EditSelectionOperation::Fill
         );
     }

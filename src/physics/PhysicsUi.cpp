@@ -227,13 +227,9 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
             [&](physics::Sphere &s) {
                 if (!auto_fit) changed |= ui::DragFloat("Radius", &s.Radius, 0.01f, 0.001f, 100.f);
             },
-            [&](physics::Capsule &s) {
-                if (auto_fit) return;
-                changed |= ui::DragFloat("Height", &s.Height, 0.01f, 0.001f, 100.f);
-                changed |= ui::DragFloat("Radius top", &s.RadiusTop, 0.01f, 0.001f, 100.f);
-                changed |= ui::DragFloat("Radius bottom", &s.RadiusBottom, 0.01f, 0.001f, 100.f);
-            },
-            [&](physics::Cylinder &s) {
+            [&]<typename S>(S &s)
+                requires(std::same_as<S, physics::Capsule> || std::same_as<S, physics::Cylinder>)
+            {
                 if (auto_fit) return;
                 changed |= ui::DragFloat("Height", &s.Height, 0.01f, 0.001f, 100.f);
                 changed |= ui::DragFloat("Radius top", &s.RadiusTop, 0.01f, 0.001f, 100.f);

@@ -84,7 +84,7 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                     const auto mic_index = r.get<const RealImpactMicrophone>(a.MicrophoneEntity).Index;
                     auto samples = RealImpact::LoadSamples(r, source.Samples, mic_index);
                     if (!samples) {
-                        r.ctx().get<Errors>().Messages.push_back(std::move(samples.error()));
+                        Fail(r, std::move(samples.error()));
                         return;
                     }
                     ::SetVertexSamples(r, a.TargetSoundEntity, source.Vertices, *samples);

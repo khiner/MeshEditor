@@ -27,6 +27,7 @@
 #include "audio/ModalModelFile.h"
 #include "audio/ModalModes.h"
 #include "editor/AudioIntegration.h"
+#include "editor/Engine.h"
 #include "gltf/GltfScene.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
@@ -299,7 +300,7 @@ bool SaveWorkspace(state::Scene &r, state::Entity viewport, bool force = true) {
     auto bytes = workspace::Serialize(CaptureWorkspace(r, viewport));
     if (!force && path == CachedWorkspacePath && bytes == CachedWorkspaceBytes) return true;
     if (!workspace::Save(path, bytes)) {
-        r.ctx().get<action::Errors>().Messages.emplace_back("Failed to save workspace state.");
+        action::Fail(r, "Failed to save workspace state.");
         return false;
     }
     CachedWorkspacePath = path;
@@ -371,7 +372,7 @@ bool OpenProjectFile(state::Scene &r, state::Entity viewport, const fs::path &pa
     } else copied = Decompress(path, working);
     if (!copied || !OpenProjectDir(r, viewport, working, path.extension() == ActionsExt, directory ? path / "Saved.project" : fs::path{})) {
         if (Paths::Project() != working) fs::remove_all(working, ec);
-        r.ctx().get<action::Errors>().Messages.push_back(std::format("Failed to open project '{}'.", path.string()));
+        action::Fail(r, std::format("Failed to open project '{}'.", path.string()));
         return false;
     }
     if (directory) Session(r).SavedPath.clear();
@@ -454,7 +455,7 @@ void RenderDebugWindow(state::Scene &r, const mtl::Context &ctx, CA::MetalLayer 
                 SeparatorText("Buffer memory");
                 TextUnformatted(DebugBufferHeapUsage(r).c_str());
                 SeparatorText("Action");
-                Text("sizeof(Action): %zu bytes", action::ActionSize());
+                Text("sizeof(Action): %zu bytes", sizeof(action::Action));
                 EndTabItem();
             }
             if (BeginTabItem("Audio")) {
@@ -629,30 +630,21 @@ struct ValidationUi {
 };
 
 struct ValidationEngine {
-    state::Scene Registry;
-    std::unique_ptr<project::Project> Project;
+    std::optional<Engine> Core;
     const fs::path Directory = fs::temp_directory_path() / std::format("MeshEditor-validation-{}", uintptr_t(this));
-    state::Entity Viewport;
     ValidationImage App;
     std::optional<ValidationUi> Ui;
 
     ValidationEngine() {
-        Registry.ctx().emplace<mtl::Context>();
-        Project = std::make_unique<project::Project>(Registry);
-        Viewport = InitEngine(Registry);
-        Project->TrackStores(Viewport);
-        InitAudioSystem(Registry);
-        InitViewportMedia(Registry);
-        SetupScene(Registry, Viewport);
+        Core.emplace(true);
+        InitViewportMedia(Core->R);
     }
     ~ValidationEngine() {
-        WaitForRender(Registry);
+        WaitForRender(Core->R);
         Ui.reset();
         App = {};
-        DeinitViewportMedia(Registry);
-        DeinitAudioSystem(Registry);
-        Project.reset();
-        DeinitViewport(Registry, Viewport);
+        DeinitViewportMedia(Core->R);
+        Core.reset();
         std::error_code ec;
         fs::remove_all(Directory, ec);
     }
@@ -749,8 +741,8 @@ struct ValidationResult {
 ValidationResult RestoreForValidation(
     ValidationEngine &engine, const ValidationInputs &inputs, bool replay
 ) {
-    auto &restored = engine.Registry;
-    const auto viewport = engine.Viewport;
+    auto &restored = engine.Core->R;
+    const auto viewport = engine.Core->Viewport;
     const auto &ctx = restored.ctx().get<const mtl::Context>();
     ValidationResult result;
     auto &timings = result.Timings;
@@ -762,7 +754,7 @@ ValidationResult RestoreForValidation(
     frame.DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale);
     frame.Capturing = inputs.Capturing;
     frame.Scrubbing = inputs.Scrubbing;
-    engine.Project->Close();
+    engine.Core->P->Close();
     fs::create_directories(engine.Directory);
     std::error_code asset_ec;
     fs::remove(engine.Directory / "assets", asset_ec);
@@ -771,9 +763,9 @@ ValidationResult RestoreForValidation(
     const auto reset_ms = ElapsedMs(begin);
 
     begin = SteadyClock::now();
-    if (!engine.Project->Open(engine.Directory) || (replay && !engine.Project->Replay())) {
+    if (!engine.Core->P->Open(engine.Directory) || (replay && !engine.Core->P->Replay())) {
         for (const auto &error : restored.ctx().get<action::Errors>().Messages) std::println(stderr, "[validation] {}", error);
-        std::println(stderr, "[validation] {}", engine.Project->History.TakeIntegrityError());
+        std::println(stderr, "[validation] {}", engine.Core->P->History.TakeIntegrityError());
         WriteValidationProject(inputs.WorkingDir);
         std::abort();
     }
@@ -787,7 +779,7 @@ ValidationResult RestoreForValidation(
     RenderAppImage(ctx, RenderValidationApp(restored, viewport, inputs), engine.App);
     timings.RenderMs += ElapsedMs(begin);
     begin = SteadyClock::now();
-    result.State = engine.Project->History.MaterializeLive();
+    result.State = engine.Core->P->History.MaterializeLive();
     result.Workspace = workspace::Serialize(CaptureWorkspace(restored, viewport));
     timings.CaptureMs = ElapsedMs(begin);
     engine.Ui->ActivateLive();
@@ -812,8 +804,8 @@ void CompareValidationImages(state::Scene &r, ValidationSession &session) {
     const std::array<const mtl::Texture *, 4> restored{
         &session.Replay.App.Target,
         &session.Stored.App.Target,
-        &session.Replay.Registry.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
-        &session.Stored.Registry.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
+        &session.Replay.Core->R.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
+        &session.Stored.Core->R.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
     };
     const std::array names{"replay-app", "stored-app", "replay-viewport", "stored-viewport"};
     for (uint32_t i = 0; i < restored.size(); ++i) {
@@ -1310,7 +1302,7 @@ CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const
     std::error_code ec;
     if (const auto parent = capture.RenderBasename.parent_path(); !parent.empty()) fs::create_directories(parent, ec);
     if (!seeded || ec) {
-        if (ec) r.ctx().get<action::Errors>().Messages.push_back("Cannot create capture directory: " + ec.message());
+        if (ec) action::Fail(r, "Cannot create capture directory: " + ec.message());
         ReportActionErrors(r);
         CaptureDriver failed{r, viewport, capture, false, fixed_step};
         failed.SeedFailed = true;
@@ -1367,8 +1359,12 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     MacPlatform::Window window;
 
-    state::Scene r;
-    const auto &ctx = r.ctx().emplace<mtl::Context>();
+    std::optional<Engine> engine;
+    engine.emplace(true);
+    auto &r = engine->R;
+    const auto viewport = engine->Viewport;
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    InitViewportMedia(r);
 
     auto *const layer = window.Layer();
     layer->setDevice(ctx.Device.get());
@@ -1394,13 +1390,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     InitFonts();
 
-    auto session = std::make_unique<project::Project>(r);
-    const auto viewport = InitEngine(r);
-    session->TrackStores(viewport);
     profile::Init(ctx);
-    InitAudioSystem(r);
-    InitViewportMedia(r);
-    SetupScene(r, viewport);
     // Read the DPI scale from NewFrame before initializing DPI-scaled GPU state.
     mac_backend.NewFrame();
     r.ctx().get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(io.DisplayFramebufferScale);
@@ -1691,14 +1681,10 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 #ifdef DEBUG_BUILD
     validation_session.reset();
 #endif
-    DeinitAudioSystem(r);
-
-    // GpuBuffers must outlive MeshStore allocations retired during teardown.
     DeinitViewportMedia(r);
     profile::Report();
     profile::Deinit();
-    session.reset();
-    DeinitViewport(r, viewport);
+    engine.reset();
 
     ImGui_ImplMetal_Shutdown();
     mac_backend.Shutdown();
@@ -1814,37 +1800,31 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     if (temporary.Path.empty()) throw std::runtime_error("Cannot create headless working directory.");
     HeadlessDirectory = temporary.Path;
 
-    state::Scene r;
-    const auto &ctx = r.ctx().emplace<mtl::Context>();
+    Engine engine{true};
+    auto &r = engine.R;
+    const auto viewport = engine.Viewport;
+    const auto &ctx = r.ctx().get<const mtl::Context>();
 #ifdef VALIDATE_ACTIONS
     ValidationUi ui{ctx};
     r.ctx().emplace<std::unique_ptr<ValidationSession>>();
     InitFonts();
     InitViewportMedia(r);
 #endif
-    auto session = std::make_unique<project::Project>(r);
-    const auto viewport = InitEngine(r);
-    session->TrackStores(viewport);
     profile::Init(ctx);
-    InitAudioSystem(r);
-    SetupScene(r, viewport);
     r.ctx().get<FrameState>().DisplayFramebufferScale = {2, 2}; // Match the app's retina rendering (pixel density and DPI-scaled GPU state like edge-line width).
     ProcessComponentEvents(r, viewport);
 
     scenes(r, viewport);
 
     WaitForRender(r);
-    DeinitAudioSystem(r);
 #ifdef VALIDATE_ACTIONS
     r.ctx().erase<std::unique_ptr<ValidationSession>>();
     DeinitViewportMedia(r);
 #endif
     profile::Report();
     profile::Deinit();
-    session.reset();
     Paths::SetProject({});
     HeadlessDirectory.clear();
-    DeinitViewport(r, viewport);
 }
 
 bool FinishHeadlessScene(state::Scene &r, state::Entity viewport, bool ok) {

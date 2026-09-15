@@ -880,10 +880,9 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                             const bool mixed = any_sharp && any_smooth;
                             if (mixed) PushItemFlag(ImGuiItemFlags_MixedValue, true);
                             if (edit_mode == Element::Face) {
-                                if (bool set_smooth = !any_sharp; Checkbox("Smooth faces", &set_smooth)) action::Emit(action::object::SetSelectedFacesSmooth{set_smooth});
+                                if (bool set_smooth = !any_sharp; Checkbox("Smooth faces", &set_smooth)) action::Emit(action::object::SetSelectedSharp{Element::Face, !set_smooth});
                             } else if (bool set_sharp = any_sharp && !any_smooth; Checkbox(edit_mode == Element::Edge ? "Sharp edges" : "Sharp vertices", &set_sharp)) {
-                                if (edit_mode == Element::Edge) action::Emit(action::object::SetSelectedEdgesSharp{set_sharp});
-                                else action::Emit(action::object::SetSelectedVertexEdgesSharp{set_sharp});
+                                action::Emit(action::object::SetSelectedSharp{edit_mode == Element::Edge ? Element::Edge : Element::Vertex, set_sharp});
                             }
                             if (mixed) PopItemFlag();
                         }

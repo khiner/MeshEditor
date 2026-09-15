@@ -42,8 +42,8 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(state::Scene &, state::Entity
 // Returns the hit only for CPU editor mirrors.
 std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(state::Scene &, state::Entity viewport, std::span<const ElementRange> ranges, Element, uvec2 mouse_px, bool toggle);
 
-void ApplyEditSelectionCommand(state::Scene &, state::Entity viewport, std::span<const ElementRange>, Element, EditSelectionOperation);
-void ApplyEditSelectionLists(state::Scene &, state::Entity viewport, std::span<const std::pair<state::Entity, SlottedRange>>, Element);
+void ApplyEditSelectionCommand(state::Scene &, std::span<const ElementRange>, Element, EditSelectionOperation);
+void ApplyEditSelectionLists(state::Scene &, std::span<const std::pair<state::Entity, SlottedRange>>, Element);
 void ApplyEditSharpness(state::Scene &, state::Entity viewport, std::span<const state::Entity> mesh_entities, EditSharpnessOperation, bool value = false, float angle = 0.f);
 // Read the shared GPU summary after selection work has completed. Other element domains have no current summary.
 const EditSelectionSummary *GetElementSelectionSummary(const state::Scene &, state::Entity mesh_entity, Element);

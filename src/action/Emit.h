@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cstddef>
-
 namespace action {
 // Project::Frame applies the first user action emitted in each frame.
 
@@ -15,6 +13,4 @@ template<typename ActionType> void EmitStaged(ActionType);
 template<typename ActionType> void EmitCancel(ActionType);
 // Commits an open gesture without emitting another action.
 void Commit();
-
-size_t ActionSize();
 } // namespace action

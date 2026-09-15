@@ -9,8 +9,8 @@
 #include "audio/ContactSurface.h"
 #include "audio/ModalModelFile.h"
 #include "audio/ModalModes.h"
+#include "editor/Engine.h"
 #include "project/Assets.h"
-#include "project/Project.h"
 #include <barrier>
 #include <future>
 #ifdef SURFACE_AUDIO
@@ -834,25 +834,10 @@ int main(int argc, const char **argv) {
     Paths::SetProject(tmp_root);
     const auto samples = SampleRoots | transform([](auto root) { return CollectGltfSamples(SamplePath(root)); }) | join | to<std::vector>();
 
-    struct SceneFixture {
-        state::Scene R;
-        std::unique_ptr<project::Project> P;
-        state::Entity Viewport{state::Null};
-
+    struct SceneFixture : Engine {
         // Imports keep source image URIs while no asset store is present, so the glTF comparison sees the source layout.
         // Project operations need the store, so it exists only while a project is open.
-        SceneFixture() {
-            R.ctx().emplace<mtl::Context>();
-            P = std::make_unique<project::Project>(R);
-            R.ctx().erase<project::Assets>();
-            Viewport = InitEngine(R);
-            P->TrackStores(Viewport);
-            SetupScene(R, Viewport);
-        }
-        ~SceneFixture() {
-            P.reset();
-            DeinitViewport(R, Viewport);
-        }
+        SceneFixture() : Engine{false} { R.ctx().erase<project::Assets>(); }
         void Check(bool ok) {
             expect(ok);
             if (ok) return;

@@ -53,7 +53,7 @@ void RecordMeshletVisibilityPass(
     mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &,
     bool transmission = false, uint32_t ubo_offset = 0
 );
-void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, bool draw_meshlets, uint32_t ubo_offset = 0);
+void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, uint32_t ubo_offset = 0);
 void DrawMeshlets(
     MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route,
     uint32_t required_instance_flags = 0, uint32_t mesh_threads = 160u,

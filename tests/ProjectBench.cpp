@@ -3,7 +3,7 @@
 #include "TestPaths.h"
 #include "action/Build.h"
 #include "action/Emit.h"
-#include "editor/AudioIntegration.h"
+#include "editor/Engine.h"
 #include "mesh/MeshStore.h"
 #include "metal/Buffer.h"
 #include "project/BufferHistory.h"
@@ -33,68 +33,60 @@ double Median(std::vector<double> values) {
 void BenchScene(uint32_t slices, bool render) {
     const TestDir dir{"mesheditor-project-scene-bench"};
     Paths::SetProject(dir);
-    state::Scene r;
-    r.ctx().emplace<mtl::Context>();
-    state::Entity viewport;
-    {
-        project::Project p{r};
-        viewport = InitEngine(r);
-        p.TrackStores(viewport);
-        InitAudioSystem(r);
-        SetupScene(r, viewport);
-        expect(p.Begin(dir));
-        p.Do(action::MakeAction(action::view::SetExtent{{128, 128}}));
-        p.Do(action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshInstanceCreateInfo>()}));
-        p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Edit}));
-        p.Do(action::MakeAction(action::selection::SelectAll{}));
-        const auto finish_frame = [&] {
-            if (render) {
-                SubmitViewport(r, viewport);
-                WaitForRender(r);
-            }
-        };
-        finish_frame();
-        const auto base = p.History.Present;
-        const auto mesh = GetMesh(r, GetActiveMeshEntity(r));
-        const auto vertices = mesh.VertexCount();
-        std::vector<int> nodes;
-        std::vector<double> edits, hot, cold;
-        for (int i = 0; i < 30; ++i) {
-            edits.push_back(Ms([&] {
-                auto move = std::make_unique<PendingTransform>();
-                move->Delta.P.x = 0.001f;
-                action::EmitStaged(action::view::DragGizmoMeshEdit{std::move(move)});
-                p.Frame(action::Drain());
-                action::Commit();
-                p.Frame(action::Drain());
-                finish_frame();
-            }));
-            nodes.push_back(p.History.Present);
-            expect(nodes.back() != (i ? nodes[i - 1] : base));
+    Engine engine{true};
+    auto &r = engine.R;
+    auto &p = *engine.P;
+    const auto viewport = engine.Viewport;
+    expect(p.Begin(dir));
+    p.Do(action::MakeAction(action::view::SetExtent{{128, 128}}));
+    p.Do(action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshInstanceCreateInfo>()}));
+    p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Edit}));
+    p.Do(action::MakeAction(action::selection::SelectAll{}));
+    const auto finish_frame = [&] {
+        if (render) {
+            SubmitViewport(r, viewport);
+            WaitForRender(r);
         }
-        expect(p.Save());
-        const auto navigate = [&](int node) {
-            p.Navigate(node);
+    };
+    finish_frame();
+    const auto base = p.History.Present;
+    const auto mesh = GetMesh(r, GetActiveMeshEntity(r));
+    const auto vertices = mesh.VertexCount();
+    std::vector<int> nodes;
+    std::vector<double> edits, hot, cold;
+    for (int i = 0; i < 30; ++i) {
+        edits.push_back(Ms([&] {
+            auto move = std::make_unique<PendingTransform>();
+            move->Delta.P.x = 0.001f;
+            action::EmitStaged(action::view::DragGizmoMeshEdit{std::move(move)});
+            p.Frame(action::Drain());
+            action::Commit();
+            p.Frame(action::Drain());
             finish_frame();
-        };
-        for (int i = 0; i < 30; ++i) hot.push_back(Ms([&] { navigate(nodes[i % 2 ? 29 : 28]); }));
-        p.Navigate(base);
-        p.History.Evict(0);
-        p.Navigate(nodes.back());
-        for (int i = 28; i >= 0; --i) {
-            expect(!p.History.Nodes[nodes[i]].Hot);
-            cold.push_back(Ms([&] { navigate(nodes[i]); }));
-            expect(p.History.Present == nodes[i]);
-        }
-        std::string why;
-        expect(p.Audit(why));
-        expect(p.History.ValidateReplay(nodes.back()).empty());
-        expect(p.History.TakeIntegrityError().empty());
-        std::printf("%u vertices: dense drag + commit %.3f ms, hot %.3f ms, cold %.3f ms (medians, %s render)\n", vertices, Median(edits), Median(hot), Median(cold), render ? "including" : "excluding");
-        expect(p.Close());
+        }));
+        nodes.push_back(p.History.Present);
+        expect(nodes.back() != (i ? nodes[i - 1] : base));
     }
-    DeinitAudioSystem(r);
-    DeinitViewport(r, viewport);
+    expect(p.Save());
+    const auto navigate = [&](int node) {
+        p.Navigate(node);
+        finish_frame();
+    };
+    for (int i = 0; i < 30; ++i) hot.push_back(Ms([&] { navigate(nodes[i % 2 ? 29 : 28]); }));
+    p.Navigate(base);
+    p.History.Evict(0);
+    p.Navigate(nodes.back());
+    for (int i = 28; i >= 0; --i) {
+        expect(!p.History.Nodes[nodes[i]].Hot);
+        cold.push_back(Ms([&] { navigate(nodes[i]); }));
+        expect(p.History.Present == nodes[i]);
+    }
+    std::string why;
+    expect(p.Audit(why));
+    expect(p.History.ValidateReplay(nodes.back()).empty());
+    expect(p.History.TakeIntegrityError().empty());
+    std::printf("%u vertices: dense drag + commit %.3f ms, hot %.3f ms, cold %.3f ms (medians, %s render)\n", vertices, Median(edits), Median(hot), Median(cold), render ? "including" : "excluding");
+    expect(p.Close());
 }
 } // namespace
 

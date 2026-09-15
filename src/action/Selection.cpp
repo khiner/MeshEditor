@@ -61,7 +61,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     for (const auto &range : ranges) {
                         r.remove<MeshActiveElement>(range.MeshEntity);
                     }
-                    ApplyEditSelectionCommand(r, viewport, ranges, element, EditSelectionOperation::Clear);
+                    ApplyEditSelectionCommand(r, ranges, element, EditSelectionOperation::Clear);
                 } else {
                     r.clear<Selected>();
                 }
@@ -132,7 +132,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 } else if (interaction_mode == InteractionMode::Edit) {
                     const auto element = r.get<const EditMode>(viewport).Value;
                     const auto ranges = GetElementRangesForSelected(r, viewport);
-                    ApplyEditSelectionCommand(r, viewport, ranges, element, EditSelectionOperation::Fill);
+                    ApplyEditSelectionCommand(r, ranges, element, EditSelectionOperation::Fill);
                 } else if (interaction_mode == InteractionMode::Object) {
                     r.clear<Active, Selected>();
                     state::Entity last{state::Null};

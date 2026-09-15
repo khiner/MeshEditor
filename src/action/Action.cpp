@@ -1,5 +1,7 @@
 #include "action/ActionDrain.h"
 #include "action/Emit.h"
+#include "action/Errors.h"
+#include "state/Scene.h"
 
 using namespace action;
 
@@ -20,8 +22,7 @@ template<typename ActionType> void EmitSystem(ActionType a) { SystemEmitted.empl
 template<typename ActionType> void EmitStaged(ActionType a) { Buffer(std::move(a), Phase::Stage); }
 template<typename ActionType> void EmitCancel(ActionType a) { Buffer(std::move(a), Phase::Cancel); }
 void Commit() { CommitRequested = true; }
-
-size_t ActionSize() { return sizeof(Action); }
+void Fail(state::Scene &r, std::string message) { r.ctx().get<Errors>().Messages.push_back(std::move(message)); }
 
 Drained Drain() { return {std::exchange(Emitted, {}), std::exchange(SystemEmitted, {}), std::exchange(CommitRequested, false)}; }
 } // namespace action

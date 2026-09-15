@@ -65,7 +65,7 @@ std::optional<SavedState> ReadSavedState(Project &project, const std::filesystem
         if (zpp::bits::success(in(version, state)) && version == SavedStateVersion && in.position() == bytes->size() &&
             state.Position.Stamps.size() == project.History.Tracks.size() && state.Position.Roots.size() == project.History.Tracks.size()) return state;
     }
-    project.R.ctx().get<action::Errors>().Messages.push_back("Cannot read saved project position from '" + path.string() + "'.");
+    action::Fail(project.R, "Cannot read saved project position from '" + path.string() + "'.");
     return std::nullopt;
 }
 
@@ -165,7 +165,7 @@ bool Project::Begin(const std::filesystem::path &dir) {
     std::filesystem::create_directories(dir, ec);
     File::DirectoryLock lock{dir};
     if (ec || !lock) {
-        R.ctx().get<action::Errors>().Messages.push_back("Cannot create or exclusively open project '" + dir.string() + "'.");
+        action::Fail(R, "Cannot create or exclusively open project '" + dir.string() + "'.");
         return false;
     }
     auto &directory = R.ctx().get<Assets>().Directory;
@@ -185,7 +185,7 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     if (ec) {
-        R.ctx().get<action::Errors>().Messages.push_back("Cannot create project directory: " + ec.message());
+        action::Fail(R, "Cannot create project directory: " + ec.message());
         return false;
     }
     if (History.Present >= 0 && !Save()) return false;
@@ -216,7 +216,7 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
     File::DirectoryLock lock;
     if (dir != History.Dir) lock = File::DirectoryLock{dir};
     if (dir != History.Dir && !lock) {
-        R.ctx().get<action::Errors>().Messages.push_back("Project is already open or unavailable: '" + dir.string() + "'.");
+        action::Fail(R, "Project is already open or unavailable: '" + dir.string() + "'.");
         return false;
     }
     auto &directory = R.ctx().get<Assets>().Directory;
@@ -246,7 +246,7 @@ bool Project::Save() {
 bool Project::SaveArchive(const std::filesystem::path &path, std::span<const std::byte> workspace) {
     if (!Save()) return false;
     if (Compress(History.Dir, path, SaveMetadata(History, workspace))) return true;
-    R.ctx().get<action::Errors>().Messages.push_back("Failed to save project '" + path.string() + "'.");
+    action::Fail(R, "Failed to save project '" + path.string() + "'.");
     return false;
 }
 bool Project::SaveAs(const std::filesystem::path &directory, std::span<const std::byte> workspace) {
@@ -254,14 +254,14 @@ bool Project::SaveAs(const std::filesystem::path &directory, std::span<const std
     std::error_code ec;
     const auto destination = fs::weakly_canonical(directory, ec);
     if (ec) {
-        R.ctx().get<action::Errors>().Messages.push_back("Cannot resolve project directory: " + ec.message());
+        action::Fail(R, "Cannot resolve project directory: " + ec.message());
         return false;
     }
     const auto source = fs::weakly_canonical(SavedPath.empty() ? History.Dir : SavedPath.parent_path(), ec);
     if (!SavedPath.empty() && destination == source) return SaveArchive(SavedPath, workspace);
     const auto relative = destination.lexically_relative(source), inverse = source.lexically_relative(destination);
     if (ec || relative.empty() || *relative.begin() != ".." || inverse.empty() || *inverse.begin() != "..") {
-        R.ctx().get<action::Errors>().Messages.push_back("Choose a location outside the current project and its parent directories.");
+        action::Fail(R, "Choose a location outside the current project and its parent directories.");
         return false;
     }
     const bool exists = fs::exists(directory, ec);
@@ -269,19 +269,19 @@ bool Project::SaveAs(const std::filesystem::path &directory, std::span<const std
     if (exists) {
         const bool project = fs::is_regular_file(directory / "Saved.project", ec) && fs::is_directory(directory / "working", ec);
         if (!project && !fs::is_empty(directory, ec)) {
-            R.ctx().get<action::Errors>().Messages.push_back("Cannot replace a nonempty folder that is not a MeshEditor project.");
+            action::Fail(R, "Cannot replace a nonempty folder that is not a MeshEditor project.");
             return false;
         }
         destination_lock = File::DirectoryLock{project ? directory / "working" : directory};
         if (!destination_lock) {
-            R.ctx().get<action::Errors>().Messages.push_back("Project is already open or unavailable: '" + destination.string() + "'.");
+            action::Fail(R, "Project is already open or unavailable: '" + destination.string() + "'.");
             return false;
         }
     }
     if (!Save()) return false;
     File::TemporaryDirectory staging{directory.parent_path()};
     const auto fail = [&] {
-        R.ctx().get<action::Errors>().Messages.push_back("Cannot save project directory '" + directory.string() + "'.");
+        action::Fail(R, "Cannot save project directory '" + directory.string() + "'.");
         return false;
     };
     if (staging.Path.empty()) return fail();
@@ -295,7 +295,7 @@ bool Project::SaveAs(const std::filesystem::path &directory, std::span<const std
     const bool unnamed = SavedPath.empty();
     if (!History.Relocate(directory / "working")) {
         if (::renamex_np(directory.c_str(), staging.Path.c_str(), rename_flags) != 0 && exists) {
-            R.ctx().get<action::Errors>().Messages.push_back("Previous project retained at '" + staging.Path.string() + "'.");
+            action::Fail(R, "Previous project retained at '" + staging.Path.string() + "'.");
             staging.Path.clear();
         }
         return false;
@@ -313,7 +313,7 @@ bool Project::RevertSaved() {
     if (!saved) return false;
     const int node = History.FindPosition(saved->Position);
     if (node < 0) {
-        R.ctx().get<action::Errors>().Messages.push_back("Saved position is missing from project history.");
+        action::Fail(R, "Saved position is missing from project history.");
         return false;
     }
     if (!Save()) return false;
@@ -370,7 +370,7 @@ bool Project::ApplyCommand(action::Action a, EventPass pass, bool staged) {
             ext == ".obj"                                     ? ArchiveMesh(assets, *path) :
                                                                 assets.Store(*path);
         if (!stored) {
-            R.ctx().get<action::Errors>().Messages.push_back(stored.error());
+            action::Fail(R, stored.error());
             return false;
         }
         *path = *stored;
@@ -502,7 +502,7 @@ bool Project::Replay() {
     FinishGesture(EventPass::Settle);
     Commands.clear();
     if (const auto diff = History.Replay(History.Present); !diff.empty()) {
-        R.ctx().get<action::Errors>().Messages.push_back("Command replay differs in " + diff);
+        action::Fail(R, "Command replay differs in " + diff);
         return false;
     }
     History.Evict(MemoryCap);

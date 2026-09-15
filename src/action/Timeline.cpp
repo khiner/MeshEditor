@@ -29,6 +29,10 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             });
         }
     };
+    const auto set_frame = [&](int frame) {
+        r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = frame; });
+        r.edit<PlaybackFrame>(viewport).Value = frame;
+    };
     std::visit(
         overloaded{
             [&](EnterPresentation) { enter_presentation(); },
@@ -36,18 +40,11 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.Playing = !p.Playing; p.CurrentFrame = a.Frame; });
                 r.edit<PlaybackFrame>(viewport).Value = a.Frame;
             },
-            [&](const SetFrame &a) {
-                r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = a.Frame; });
-                r.edit<PlaybackFrame>(viewport).Value = a.Frame;
-            },
+            [&](const SetFrame &a) { set_frame(a.Frame); },
             [&](const SetStartFrame &a) { r.patch<TimelineRange>(viewport, [&](auto &range) { range.StartFrame = a.Frame; }); },
             [&](const SetEndFrame &a) { r.patch<TimelineRange>(viewport, [&](auto &range) { range.EndFrame = a.Frame; }); },
             [&](JumpToStart) { JumpToStartFrame(r, viewport); },
-            [&](JumpToEnd) {
-                const auto frame = r.get<const TimelineRange>(viewport).EndFrame;
-                r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = frame; });
-                r.edit<PlaybackFrame>(viewport).Value = frame;
-            },
+            [&](JumpToEnd) { set_frame(r.get<const TimelineRange>(viewport).EndFrame); },
             [&](const SetView &a) { r.replace<AnimationTimelineView>(viewport, AnimationTimelineView{a.PixelsPerFrame, a.ViewCenterFrame}); },
         },
         action

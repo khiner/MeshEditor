@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gpu/Element.h"
 #include "gpu/PBRMaterial.h"
 
 #include "CameraTypes.h"
@@ -37,15 +38,10 @@ struct SetSelectedSmoothShading {
 struct ShadeSelectedSmoothByAngle {
     float Angle;
 };
-// Edit-mode element sharpness. Each resolves the element selection of every edit-mode mesh at apply time.
-struct SetSelectedFacesSmooth {
-    bool Smooth;
-};
-struct SetSelectedEdgesSharp {
-    bool Sharp;
-};
-// Applies to every edge touching a selected vertex.
-struct SetSelectedVertexEdgesSharp {
+// Edit-mode element sharpness, resolving the element selection of every edit-mode mesh at apply time.
+// Vertex selections apply to every edge touching a selected vertex.
+struct SetSelectedSharp {
+    Element Element;
     bool Sharp;
 };
 struct ParentToActive {};
@@ -94,7 +90,7 @@ struct UpdatePrimitiveField {
 
 using Actions = std::variant<
     Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible, SetSelectedSmoothShading, ShadeSelectedSmoothByAngle,
-    SetSelectedFacesSmooth, SetSelectedEdgesSharp, SetSelectedVertexEdgesSharp,
+    SetSelectedSharp,
     ParentToActive, ClearParent,
     AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, SetPbrMeshFeaturesMask,
     UpdatePrimitiveField<float>, UpdatePrimitiveField<vec2>, UpdatePrimitiveField<vec3>, UpdatePrimitiveField<uint32_t>>;

@@ -1283,7 +1283,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
         main.Resources->DepthPyramidValid = true;
     }
-    if (has_silhouette) RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, true, ubo_offset);
+    if (has_silhouette) RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, ubo_offset);
 
     // Render background and opaque faces without exposure into TransmissionImage for refracted sampling.
     if (transmission_active && draw_scene) {
@@ -1743,9 +1743,9 @@ void RecordMeshletCull(
 
 void RecordSilhouetteDepthPass(
     mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
-    GpuBuffers &buffers, bool draw_meshlets, uint32_t ubo_offset
+    GpuBuffers &buffers, uint32_t ubo_offset
 ) {
-    const bool draw = draw_meshlets && buffers.MeshletInstanceCount > 0;
+    const bool draw = buffers.MeshletInstanceCount > 0;
     const auto &silhouette = pipelines.Main.Resources->SilhouetteImage;
     const auto extent = silhouette.Extent;
     const std::array colors{mtl::ClearColor(*silhouette)};

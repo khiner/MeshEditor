@@ -51,6 +51,17 @@ void SubmitAndWait(const mtl::Context &ctx, MTL::CommandBuffer *command_buffer) 
     command_buffer->waitUntilCompleted();
 }
 
+// Record selection passes into one command buffer and wait for them.
+void SubmitSelectionPasses(state::Scene &r, auto &&record) {
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    { // End the final pass before submission.
+        mtl::PassChain chain{command_buffer};
+        record(chain);
+    }
+    SubmitAndWait(ctx, command_buffer);
+}
+
 struct ElementPickTarget {
     uvec2 Px;
     uint32_t RadiusSq;
@@ -210,7 +221,6 @@ std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(
     if (element_count == 0) return {};
 
     const profile::CpuScope scope{"RunElementPick"};
-    const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     ResetElementPick(buffers);
     const auto transactions = BuildSelectionTransactions(
@@ -218,17 +228,11 @@ std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(
         toggle ? EditSelectionOperation::PickToggle : EditSelectionOperation::PickReplace,
         r.ctx().get<const SelectionSlots>().ElementPickId
     );
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    { // End the final pass before submission.
-        mtl::PassChain chain{command_buffer};
-        RenderElementSelectionPass(
-            r, chain, viewport, ranges, element, false, {}, {},
-            ElementPickTarget{mouse_px, ElementPickRadiusSq(element)}
-        );
+    SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
+        RenderElementSelectionPass(r, chain, viewport, ranges, element, false, {}, {}, ElementPickTarget{mouse_px, ElementPickRadiusSq(element)});
         RecordSelectionPrepare(r, chain, transactions);
         RecordSelectionDerive(r, chain, transactions);
-    }
-    SubmitAndWait(ctx, command_buffer);
+    });
     r.ctx().get<GpuSceneState>().EditSelectionDirty = true;
     if (const auto index = ReadNearestPickedElement(buffers, element_count)) {
         for (const auto &range : ranges) {
@@ -367,15 +371,11 @@ void RunBoxSelectElements(state::Scene &r, state::Entity viewport, std::span<con
         baseline && !baseline->ElementSelectionCaptured ? EditSelectionOperation::CaptureBaseline :
                                                           EditSelectionOperation::RestoreBaseline;
     const auto transactions = BuildSelectionTransactions(r, ranges, element, operation);
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    {
-        mtl::PassChain chain{command_buffer};
+    SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RecordSelectionPrepare(r, chain, transactions);
         RenderElementSelectionPass(r, chain, viewport, ranges, element, true, box_min, box_max, {});
         RecordSelectionDerive(r, chain, transactions);
-    }
-    SubmitAndWait(ctx, command_buffer);
+    });
     if (baseline) baseline->ElementSelectionCaptured = true;
     r.ctx().get<GpuSceneState>().EditSelectionDirty = true;
 }
@@ -384,7 +384,6 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(state::Scene &r, state::Entit
     if (!r.all_of<SoundVertices>(instance_entity)) return {};
     const auto *instance = r.try_get<Instance>(instance_entity);
     if (!instance) return {};
-    const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &buffers = r.ctx().get<GpuBuffers>();
 
     const profile::CpuScope scope{"RunSoundVerticesVertexPick"};
@@ -395,12 +394,9 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(state::Scene &r, state::Entit
 
     const auto model_index = r.get<RenderInstance>(instance_entity).BufferIndex;
     ResetElementPick(buffers);
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    {
-        mtl::PassChain chain{command_buffer};
+    SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RenderSelectionPickPass(r, chain, std::nullopt, model_index, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex)});
-    }
-    SubmitAndWait(ctx, command_buffer);
+    });
     return ReadNearestPickedElement(buffers, vertex_count);
 }
 
@@ -421,14 +417,11 @@ void ReserveObjectPicking(state::Scene &r, uint32_t count) {
 } // namespace
 
 std::vector<state::Entity> RunObjectPick(state::Scene &r, uvec2 mouse_px, uint32_t radius_px) {
-    const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     const uint32_t next_object_id = r.EntityCapacity() + 1;
     if (next_object_id <= 1) return {};
     const uint32_t max_object_id = std::min(next_object_id - 1, GpuBuffers::MaxSelectableObjects);
-    if (max_object_id == 0) return {};
-
     ReserveObjectPicking(r, max_object_id);
     const profile::CpuScope scope{"RunObjectPick"};
     // The high byte rejects stale keys; clear on first use and whenever the 8-bit epoch wraps.
@@ -439,9 +432,7 @@ std::vector<state::Entity> RunObjectPick(state::Scene &r, uvec2 mouse_px, uint32
     const uint32_t epoch_inv = buffers.ObjectPickEpochTag--;
 
     std::fill_n(buffers.ObjectPickSeenBitset.Data(), (max_object_id + 31) / 32, 0u);
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    { // End the final pass before submission.
-        mtl::PassChain chain{command_buffer};
+    SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RenderSelectionPickPass(
             r, chain,
             ObjectSelectQuery{
@@ -454,8 +445,7 @@ std::vector<state::Entity> RunObjectPick(state::Scene &r, uvec2 mouse_px, uint32
                 .BoxResultSlot = InvalidSlot,
             }
         );
-    }
-    SubmitAndWait(ctx, command_buffer);
+    });
     struct SortedHit {
         uint32_t DistSq;
         uint32_t Layer;
@@ -499,10 +489,7 @@ std::vector<state::Entity> RunBoxSelect(state::Scene &r, std::pair<uvec2, uvec2>
     const profile::CpuScope scope{"RunBoxSelect"};
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     memset(buffers.ObjectBoxBitset.Data(), 0, ((max_object_id + 31) / 32) * sizeof(uint32_t));
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    { // End the final pass before submission.
-        mtl::PassChain chain{command_buffer};
+    SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RenderSelectionPickPass(
             r, chain,
             ObjectSelectQuery{
@@ -512,8 +499,7 @@ std::vector<state::Entity> RunBoxSelect(state::Scene &r, std::pair<uvec2, uvec2>
                 .BoxResultSlot = sel_slots.ObjectBoxBitset,
             }
         );
-    }
-    SubmitAndWait(ctx, command_buffer);
+    });
     const auto *bits = buffers.ObjectBoxBitset.Data();
     std::vector<state::Entity> entities;
     for (uint32_t object_id = 1; object_id <= max_object_id; ++object_id) {
@@ -634,30 +620,26 @@ void RecordSelectionDerive(
     }
 }
 
-void ApplySelectionTransactions(state::Scene &r, state::Entity viewport, std::span<const EditSelectionPushConstants> transactions) {
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    {
-        mtl::PassChain chain{command_buffer};
+void ApplySelectionTransactions(state::Scene &r, std::span<const EditSelectionPushConstants> transactions) {
+    SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RecordSelectionPrepare(r, chain, transactions);
         RecordSelectionDerive(r, chain, transactions);
-    }
-    SubmitAndWait(ctx, command_buffer);
+    });
     r.ctx().get<GpuSceneState>().EditSelectionDirty = true;
 }
 } // namespace
 
 void ApplyEditSelectionCommand(
-    state::Scene &r, state::Entity viewport, std::span<const ElementRange> ranges,
+    state::Scene &r, std::span<const ElementRange> ranges,
     Element element, EditSelectionOperation operation
 ) {
     if (ranges.empty() || element == Element::None) return;
     const auto transactions = BuildSelectionTransactions(r, ranges, element, operation);
-    ApplySelectionTransactions(r, viewport, transactions);
+    ApplySelectionTransactions(r, transactions);
 }
 
 void ApplyEditSelectionLists(
-    state::Scene &r, state::Entity viewport,
+    state::Scene &r,
     std::span<const std::pair<state::Entity, SlottedRange>> lists, Element element
 ) {
     if (lists.empty() || element == Element::None) return;
@@ -677,7 +659,7 @@ void ApplyEditSelectionLists(
         transactions[i].SelectionList = valid_lists[i];
         transactions[i].SelectionListCount = valid_lists[i].Count;
     }
-    ApplySelectionTransactions(r, viewport, transactions);
+    ApplySelectionTransactions(r, transactions);
 }
 
 void ApplyEditSharpness(

@@ -178,6 +178,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/action/View.cpp
     src/editor/AudioExcitation.cpp
     src/editor/AudioIntegration.cpp
+    src/editor/Engine.cpp
     src/editor/Timeline.cpp
     src/object/ObjectOps.cpp
     src/selection/Selection.cpp

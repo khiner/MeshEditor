@@ -243,16 +243,6 @@ struct Edit {
                           /*delta_capable=*/true);
     }
 
-    template<auto... Ms>
-    bool Input(const char *label, const char *fmt = nullptr) {
-        return Run<Ms...>([&](auto &v) {
-            using F = std::remove_reference_t<decltype(v)>;
-            if constexpr (std::same_as<F, float>) return ImGui::InputFloat(label, &v, 0.f, 0.f, fmt ? fmt : "%.3f");
-            else if constexpr (std::same_as<F, double>) return ImGui::InputDouble(label, &v, 0.0, 0.0, fmt ? fmt : "%.3f");
-            else static_assert(false, "Edit::Input: only float/double supported");
-        });
-    }
-
     // ColorEdit3 for vec3, ColorEdit4 for vec4 — picked by field type.
     template<auto... Ms>
     bool Color(const char *label) {

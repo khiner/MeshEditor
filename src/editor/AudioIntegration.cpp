@@ -653,7 +653,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
             else if (r.valid(job.Entity) && r.all_of<ModalSolveSettings>(job.Entity)) {
                 auto path = SaveModalModelFile(r.ctx().get<project::Assets>(), *result->Model);
                 if (path) r.ctx().get<project::Project *>()->Enqueue(action::MakeAction(action::audio::ApplyModalModel{job.Entity, std::move(*path)}));
-                else r.ctx().get<action::Errors>().Messages.push_back(path.error());
+                else action::Fail(r, path.error());
             }
         }
         it = solve_jobs.erase(it);
@@ -677,7 +677,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
                 if (group) {
                     for (auto &[key, frames] : *group) samples.try_emplace(std::move(key), std::move(frames));
                 } else {
-                    r.ctx().get<action::Errors>().Messages.push_back(std::move(group.error()));
+                    action::Fail(r, std::move(group.error()));
                     samples.try_emplace(path);
                 }
             } else {
@@ -907,7 +907,7 @@ void ApplyModalModel(state::Scene &r, state::Entity e, const fs::path &path) {
     }
     auto data = LoadModalModelFile(project::ResolveAsset(r, path));
     if (!data) {
-        r.ctx().get<action::Errors>().Messages.push_back(data.error());
+        action::Fail(r, data.error());
         return;
     }
     const auto mesh_entity = r.get<const Instance>(e).Entity;
