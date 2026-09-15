@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Variant.h"
 #include "action/Core.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
@@ -59,16 +58,18 @@ struct SetSurfacePreset {
     state::Entity Entity;
     std::string Name;
 };
+// Selects the output device at its default sample rate.
+struct SetOutputDevice {
+    std::string DeviceName;
+};
 
-using Actions = std::variant<
+using Action = std::variant<
     SetModel, SetExciteVertex,
     StartExcite, StopExcite, DeleteSoundObject, StartRecording,
     EnsureModalSettings, ApplyModalModel,
     AssignVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone,
-    ApplyExciteImpact, ClearExciteImpacts>;
-
-using Action = MergedVariantT<
-    Actions, Replace<RealImpactActiveMicrophone>, Replace<AudioOutputConfig>, Replace<AudioOutputMix>, SetMaterialPreset, SetSurfacePreset,
+    ApplyExciteImpact, ClearExciteImpacts,
+    SetMaterialPreset, SetSurfacePreset, SetOutputDevice,
     PatchFields<ModalSolveSettings, float, 2>, PatchFields<AcousticMaterial, double, 2>,
     PatchFields<ModalSolveSettings, bool>, PatchFields<ModalSolveSettings, uint32_t>,
     PatchFields<ModalSolveSettings, float>, PatchFields<ModalSolveSettings, double>,

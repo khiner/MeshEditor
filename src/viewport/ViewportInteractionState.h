@@ -1,5 +1,6 @@
 #pragma once
 
+#include "FieldLimits.h"
 #include "gizmo/TransformGizmoTypes.h"
 
 struct PendingTransform {
@@ -27,3 +28,4 @@ struct TransformGizmoState {
     TransformGizmo::Config Config;
     TransformGizmo::Mode Mode;
 };
+template<> struct FieldLimits<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue> : Within<0.01f, 100.f> {};

@@ -18,54 +18,19 @@
 #include "scene/Entity.h"
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
+#include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
 #include "ui/HelpMarker.h"
-#include "ui/PresetCombo.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
 
 #include <string_view>
 
 namespace fs = std::filesystem;
-// Ranges cover the acoustic material presets with headroom (see materials::acoustic::All).
-// Limit Poisson ratio below 0.5 to keep Lame's lambda finite.
-// Set the beta floor above the logarithmic slider's zero epsilon.
-template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::Density> : Within<1., 25000.> {};
-template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::YoungModulus> : Within<1e5, 1e12> {};
-template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::PoissonRatio> : Within<0., 0.49> {};
-template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::Alpha> : Within<0., 200.> {};
-template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::Beta> : Within<1e-9, 1e-4> {};
 using SurfaceSolveConfig = fastfem::SurfaceSolveConfig;
 using ModalSolverConfig = fastfem::SolverConfig;
 using TetConfig = fastfem::TetrahedralizationConfig;
 using FiniteCellConfig = fastfem::FiniteCellConfig;
-template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Resolution> : Within<1., 256.> {};
-template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::SurfaceSimplificationRatio> : Within<0.25, 1.> {};
-template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::NumModes> : Within<1., 512.> {};
-template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::NumFemModes> : Within<1., 512.> {};
-template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::MinModeFreq> : Within<20., 20000.> {};
-template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::MaxModeFreq> : Within<20., 20000.> {};
-template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::Tolerance> : Within<1e-12, 1e-3> {};
-template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::MaxRestarts> : Within<1., 1000.> {};
-template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::CutDepth> : Within<0., 8.> {};
-template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::FictitiousScale> : Within<1e-12, 1e-2> {};
-template<> struct FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::PaddingCells> : Within<0., 2.> {};
-
-// Striker capsule dimensions, in meters.
-template<> struct FieldLimits<&Striker::TipRadius> : Within<0.0005, 0.1> {};
-template<> struct FieldLimits<&Striker::Length> : Within<0.001, 1.> {};
-
-// Modal synthesis controls.
-template<> struct FieldLimits<&ModalGain::Value> : Within<0., 2.> {};
-template<> struct FieldLimits<&ModalTuning::FundamentalFreq> : Within<20., 16000.> {};
-template<> struct FieldLimits<&ModalTuning::T60Scale> : Within<0.1, 10.> {};
-template<> struct FieldLimits<&ModalSoundControls::ModalLevel> : Within<0., 1.> {};
-template<> struct FieldLimits<&ModalSoundControls::ClickGain> : Within<0., 10.> {};
-template<> struct FieldLimits<&ModalSoundControls::SampleGain> : Within<0., 4.> {};
-template<> struct FieldLimits<&ModalSoundControls::RenderThreads> : Within<1., 16.> {};
-template<> struct FieldLimits<&ModalSoundControls::MaxImpacts> : Within<1., 4096.> {};
-template<> struct FieldLimits<&ModalSoundControls::MinContactExcitation> : Within<0., 1e-3> {};
-template<> struct FieldLimits<&ModalSoundControls::MinContactSpeed> : Within<0., 5.> {};
 
 using std::ranges::to, std::ranges::max_element;
 using std::views::transform;
@@ -193,14 +158,14 @@ void DrawModalModelSettings(
 ) {
     const ContactSurface default_surface = WithPreset({}, surfaces::acoustic::Default);
     const auto &surface = r.all_of<ContactSurface>(e) ? r.get<const ContactSurface>(e) : default_surface;
-    ui::Edit fs{r, e, ui::Patch{settings}};
+    ui::PatchEdit fs{e, settings};
 
     SeparatorText("Material properties");
-    ui::PresetCombo("Presets", material.Name, materials::acoustic::All, [&](const auto &choice) {
-        action::Emit(action::audio::SetMaterialPreset{e, choice.Name});
+    ui::ChoiceCombo("Presets", material.Name, materials::acoustic::All | transform(&AcousticMaterial::Name), std::identity{}, [&](const std::string &name) {
+        action::Emit(action::audio::SetMaterialPreset{e, name});
     });
     using Props = AcousticMaterialProperties;
-    ui::Edit fm{r, e, ui::Patch{material}};
+    ui::PatchEdit fm{e, material};
     fm.Slider<&AcousticMaterial::Properties, &Props::Density>("Density (kg/m^3)", "%.0f");
     fm.Slider<&AcousticMaterial::Properties, &Props::YoungModulus>("Young's modulus (Pa)", "%.3g", ImGuiSliderFlags_Logarithmic);
     fm.Slider<&AcousticMaterial::Properties, &Props::PoissonRatio>("Poisson's ratio", "%.2f");
@@ -555,8 +520,8 @@ void DrawGlobalSynthControls(state::Scene &r, state::Entity viewport) {
 
         SeparatorText("Striker");
         const auto &striker = r.get<const Striker>(viewport);
-        ui::PresetCombo("Material", striker.Material.Name, materials::acoustic::All, [&](const auto &choice) {
-            action::Emit(action::audio::SetMaterialPreset{viewport, choice.Name, true});
+        ui::ChoiceCombo("Material", striker.Material.Name, materials::acoustic::All | transform(&AcousticMaterial::Name), std::identity{}, [&](const std::string &name) {
+            action::Emit(action::audio::SetMaterialPreset{viewport, name, true});
         });
         f.Slider<&Striker::TipRadius>("Tip radius (m)", "%.4f");
         f.Slider<&Striker::Length>("Length (m)", "%.3f");

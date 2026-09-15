@@ -2,25 +2,18 @@
 
 #include "PhysicsUi.h"
 #include "PhysicsSystem.h"
+#include "Variant.h"
 #include "action/Physics.h"
 #include "animation/AnimationTimeline.h"
 #include "numeric/Angles.h"
 #include "numeric/vec2.h"
 #include "scene/SceneGraph.h"
+#include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
+#include "ui/ItemList.h"
 
 #include "state/Scene.h"
 #include <format>
-
-template<> struct FieldLimits<&PhysicsSimulationSettings::SubstepsPerFrame> : Within<1u, 100u> {};
-template<> struct FieldLimits<&PhysicsSimulationSettings::SolverIterations> : Within<2u, 50u> {};
-template<> struct FieldLimits<&PhysicsSimulationSettings::TimeScale> : Within<0.f, 10.f> {};
-template<> struct FieldLimits<&PhysicsMaterial::StaticFriction> : Within<0.f, 2.f> {};
-template<> struct FieldLimits<&PhysicsMaterial::DynamicFriction> : Within<0.f, 2.f> {};
-template<> struct FieldLimits<&PhysicsMaterial::Restitution> : Within<0.f, 1.f> {};
-template<> struct FieldLimits<&PhysicsMotion::GravityFactor> : Within<-10.f, 10.f> {};
-template<> struct FieldLimits<&PhysicsMotion::LinearDamping> : Within<0.f, 1.f> {};
-template<> struct FieldLimits<&PhysicsMotion::AngularDamping> : Within<0.f, 1.f> {};
 
 using namespace ImGui;
 
@@ -33,70 +26,43 @@ std::string DisplayName(std::string_view name, std::string_view fmt, auto &&...a
     return std::format("<{}>", std::vformat(fmt, std::make_format_args(args...)));
 }
 
-template<typename T>
-void RenderNameEdit(state::Entity e, const std::string &current) {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "%s", current.c_str());
-    if (InputText("Name", buf, sizeof(buf))) action::Emit(action::SetNameOf<T>(e, std::string{buf}));
-}
-
-// Editable list of joint-def vec items: a tree node per item with a delete button, plus an Add button.
+// Editable list of joint-def vec items, each a tree node with a delete button, plus an Add button.
 // `body(item, edit)` renders the fields, where edit(fn) copies the item, applies fn, and returns the Set action.
 template<typename T>
-void RenderJointVecList(state::Entity jd_entity, const std::vector<T> &items, const char *label, const char *add_label, int id_offset, auto &&body) {
-    std::optional<uint32_t> delete_index;
-    for (uint32_t i = 0; i < items.size(); ++i) {
-        PushID(int(i) + id_offset);
-        const auto &item = items[i];
-        const bool expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanLabelWidth, "%s %u", label, i);
-        SameLine();
-        if (SmallButton("X")) delete_index = i;
-        if (expanded) {
+void RenderJointVecList(state::Entity jd_entity, const std::vector<T> &items, const char *label, const char *add_label, auto &&body) {
+    PushID(label);
+    const auto deleted = ui::ItemList(
+        items.size(), [&](uint32_t i) { return std::format("{} {}", label, i); },
+        [&](uint32_t i) {
             const auto edit = [&](auto &&fn) {
-                auto e = item;
+                auto e = items[i];
                 fn(e);
                 return action::physics::SetJointVecItem<T>{jd_entity, i, std::make_unique<T>(std::move(e))};
             };
-            body(item, edit);
-            TreePop();
+            body(items[i], edit);
         }
-        PopID();
-    }
-    if (delete_index) action::Emit(action::physics::DeleteJointVecItem<T>{jd_entity, *delete_index});
+    );
+    if (deleted) action::Emit(action::physics::DeleteJointVecItem<T>{jd_entity, *deleted});
     if (Button(add_label)) action::Emit(action::physics::AddJointVecItem<T>{jd_entity});
+    PopID();
 }
 
-// Deduce owner class from a data-member pointer (state::Entity Owner::*).
-template<typename M> struct ptr_class;
-template<typename C, typename V> struct ptr_class<V C::*> {
-    using type = C;
-};
-
-// Renders a combo that selects a referenced resource entity (Field) from the registry's view<Target>.
-// Returns the currently-selected Target (or nullptr if none/invalid). Emits when the user picks a new entry.
-// When `empty_preview` is non-null and the registry has no Target entities, renders a disabled combo with that preview.
-// `entity` is the active entity (used for the read; the write targets active via the no-entity UpdateOf).
-template<typename Target, auto Field>
-const Target *RenderEntityCombo(state::Scene &r, state::Entity entity, const char *label, const char *empty_preview = nullptr) {
-    using Owner = typename ptr_class<decltype(Field)>::type;
-    const auto view = r.view<const Target>();
-    if (empty_preview && view.begin() == view.end()) {
+// Picks an entity holding `Target` by name, or None. Disabled with `empty_preview` while no Target exists.
+template<typename Target>
+void TargetCombo(state::Scene &r, const char *label, state::Entity current, const char *empty_preview, auto &&pick) {
+    std::vector<state::Entity> choices{state::Null};
+    for (const auto e : r.view<const Target>()) choices.push_back(e);
+    if (choices.size() == 1) {
         BeginDisabled();
         if (BeginCombo(label, empty_preview)) EndCombo();
         EndDisabled();
-        return nullptr;
+        return;
     }
-    const auto cur_e = r.get<const Owner>(entity).*Field;
-    const auto *cur = cur_e != state::Null && r.valid(cur_e) ? r.try_get<const Target>(cur_e) : nullptr;
-    if (const auto preview = cur ? DisplayName(cur->Name, "{:x}", uint32_t(cur_e)) : std::string{"None"};
-        BeginCombo(label, preview.c_str())) {
-        if (Selectable("None", cur_e == state::Null)) action::Emit(action::UpdateOf<Field>(state::Entity{state::Null}));
-        for (auto [te, t] : view.each()) {
-            if (Selectable(DisplayName(t.Name, "{:x}", uint32_t(te)).c_str(), cur_e == te)) action::Emit(action::UpdateOf<Field>(te));
-        }
-        EndCombo();
-    }
-    return cur;
+    const auto name = [&](state::Entity e) {
+        const auto *target = e != state::Null && r.valid(e) ? r.try_get<const Target>(e) : nullptr;
+        return target ? DisplayName(target->Name, "{:x}", uint32_t(e)) : std::string{"None"};
+    };
+    ui::ChoiceCombo(label, current, choices, name, pick);
 }
 
 std::string SystemDisplayName(const state::Scene &r, state::Entity e) {
@@ -155,7 +121,7 @@ void RenderCollisionFilterBody(state::Scene &r, state::Entity filter_e) {
     mode_changed |= RadioButton("Allowlist", &mode, int(CollideMode::Allowlist));
     SameLine();
     mode_changed |= RadioButton("Blocklist", &mode, int(CollideMode::Blocklist));
-    if (mode_changed) action::Emit(action::UpdateOf<&CollisionFilter::Mode>(filter_e, CollideMode(mode)));
+    if (mode_changed) action::Emit(action::UpdateOn<&CollisionFilter::Mode>(filter_e, CollideMode(mode)));
 
     if (mode != int(CollideMode::All)) {
         Indent();
@@ -182,29 +148,27 @@ void DrawMatrixCell(ImDrawList *dl, ImVec2 p_min, ImVec2 p_max, bool a_to_b, boo
     if (b_to_a) dl->AddTriangleFilled(TR, BR, BL, fill); // col→row
 }
 
-// List view of named entities with use-count, Delete/Add buttons, and per-entry body.
-// `body(e, x)` renders the row's editable body and emits any actions.
+// List of named entities with use count, name edit, Delete/Add buttons, and per-entry body.
+// `add` is emitted by the Add button, `rename(e, name)` returns the rename action, and `body(e, x)` renders the entry.
 template<typename T>
-void DrawNamedEntityList(state::Scene &r, const char *id, const char *add_label, std::string_view prefix, auto &&count, auto &&body) {
+void DrawNamedEntityList(state::Scene &r, const char *id, const char *add_label, auto add, auto &&rename, auto &&count, auto &&body) {
     PushID(id);
-    state::Entity delete_entity = state::Null;
-    for (auto [e, x] : r.view<T>().each()) {
-        PushID(uint32_t(e));
-        const auto label = DisplayName(x.Name, "{:x}", uint32_t(e));
-        const bool expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanLabelWidth, "%s", label.c_str());
-        SameLine();
-        TextDisabled("(%zu)", count(e));
-        SameLine();
-        if (SmallButton("X")) delete_entity = e;
-        if (expanded) {
-            RenderNameEdit<T>(e, x.Name);
+    std::vector<state::Entity> entities;
+    for (const auto e : r.view<T>()) entities.push_back(e);
+    const auto deleted = ui::ItemList(
+        entities.size(),
+        [&](uint32_t i) { return std::format("{} ({})", DisplayName(r.get<const T>(entities[i]).Name, "{:x}", uint32_t(entities[i])), count(entities[i])); },
+        [&](uint32_t i) {
+            const auto e = entities[i];
+            const auto &x = r.get<const T>(e);
+            char buf[128];
+            snprintf(buf, sizeof(buf), "%s", x.Name.c_str());
+            if (InputText("Name", buf, sizeof(buf))) action::Emit(rename(e, std::string{buf}));
             body(e, x);
-            TreePop();
         }
-        PopID();
-    }
-    if (delete_entity != state::Null) action::Emit(action::DestroyEntity{delete_entity});
-    if (Button(add_label)) action::Emit(action::CreateNamedOf<T>(prefix));
+    );
+    if (deleted) action::Emit(action::DestroyEntity{entities[*deleted]});
+    if (Button(add_label)) action::Emit(add);
     PopID();
 }
 
@@ -274,7 +238,8 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
 
     if (CollapsingHeader("Physics Materials")) {
         DrawNamedEntityList<PhysicsMaterial>(
-            r, "PhysMaterials", "Add material", "Material",
+            r, "PhysMaterials", "Add material", action::physics::AddPhysicsMaterial{},
+            [](state::Entity e, std::string name) { return action::physics::RenamePhysicsMaterial{e, std::move(name)}; },
             [&](state::Entity mat_entity) {
                 size_t n = 0;
                 for (auto [e, m] : r.view<const ColliderMaterial>().each()) {
@@ -295,7 +260,8 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
 
     if (CollapsingHeader("Collision Systems")) {
         DrawNamedEntityList<CollisionSystem>(
-            r, "CollisionSystems", "Add system", "System",
+            r, "CollisionSystems", "Add system", action::physics::AddCollisionSystem{},
+            [](state::Entity e, std::string name) { return action::physics::RenameCollisionSystem{e, std::move(name)}; },
             [&](state::Entity se) {
                 size_t n = 0;
                 for (auto [fe, f] : r.view<const CollisionFilter>().each()) {
@@ -310,7 +276,8 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
 
     if (CollapsingHeader("Collision Filters")) {
         DrawNamedEntityList<CollisionFilter>(
-            r, "CollisionFilters", "Add filter", "Filter",
+            r, "CollisionFilters", "Add filter", action::physics::AddCollisionFilter{},
+            [](state::Entity e, std::string name) { return action::physics::RenameCollisionFilter{e, std::move(name)}; },
             [&](state::Entity fe) { return CountFilterUses(r, fe); },
             [&](state::Entity fe, const CollisionFilter &) { RenderCollisionFilterBody(r, fe); }
         );
@@ -369,7 +336,8 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
 
     if (CollapsingHeader("Joint Definitions")) {
         DrawNamedEntityList<PhysicsJointDef>(
-            r, "JointDefs", "Add joint definition", "Joint",
+            r, "JointDefs", "Add joint definition", action::physics::AddJointDef{},
+            [](state::Entity e, std::string name) { return action::physics::RenameJointDef{e, std::move(name)}; },
             [&](state::Entity jd_entity) {
                 size_t n = 0;
                 for (auto [e, j] : r.view<const PhysicsJoint>().each()) {
@@ -379,7 +347,7 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
             },
             [&](state::Entity jd_entity, const PhysicsJointDef &jd) {
                 static const char *const axis_names[]{"X", "Y", "Z"};
-                RenderJointVecList<PhysicsJointLimit>(jd_entity, jd.Limits, "Limit", "Add limit", 0, [&](const auto &limit, auto &&edit_limit) {
+                RenderJointVecList<PhysicsJointLimit>(jd_entity, jd.Limits, "Limit", "Add limit", [&](const auto &limit, auto &&edit_limit) {
                     TextUnformatted("Linear axes:");
                     SameLine();
                     for (uint8_t a = 0; a < 3; ++a) {
@@ -427,7 +395,7 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
 
                 Spacing();
 
-                RenderJointVecList<PhysicsJointDrive>(jd_entity, jd.Drives, "Drive", "Add drive", 1000, [&](const auto &drive, auto &&edit_drive) {
+                RenderJointVecList<PhysicsJointDrive>(jd_entity, jd.Drives, "Drive", "Add drive", [&](const auto &drive, auto &&edit_drive) {
                     if (int type = int(drive.Type); Combo("Type", &type, "Linear\0Angular\0")) action::Emit(edit_drive([&](auto &e) { e.Type = PhysicsDriveType(type); }));
                     if (int axis = drive.Axis; Combo("Axis", &axis, "X\0Y\0Z\0")) action::Emit(edit_drive([&](auto &e) { e.Axis = uint8_t(axis); }));
                     if (int mode = int(drive.Mode); Combo("Mode", &mode, "Force\0Acceleration\0")) action::Emit(edit_drive([&](auto &e) { e.Mode = PhysicsDriveMode(mode); }));
@@ -481,8 +449,13 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
         auto s = RenderShapeEditor(collider->Shape, r.get<const ColliderPolicy>(entity).AutoFitDims);
         ui::Gesture(bool(s), [&, scope = ui::ScopeFromAlt()] { return action::physics::SetColliderShape{*s, s->index() != collider->Shape.index(), scope}; });
 
-        RenderEntityCombo<PhysicsMaterial, &ColliderMaterial::PhysicsMaterialEntity>(r, entity, "Physics material", "No materials defined");
-        RenderEntityCombo<CollisionFilter, &ColliderMaterial::CollisionFilterEntity>(r, entity, "Collision filter", "No filters defined");
+        const auto &material = r.get<const ColliderMaterial>(entity);
+        TargetCombo<PhysicsMaterial>(r, "Physics material", material.PhysicsMaterialEntity, "No materials defined", [](state::Entity e) {
+            action::Emit(action::UpdateActive<&ColliderMaterial::PhysicsMaterialEntity>(e));
+        });
+        TargetCombo<CollisionFilter>(r, "Collision filter", material.CollisionFilterEntity, "No filters defined", [](state::Entity e) {
+            action::Emit(action::UpdateActive<&ColliderMaterial::CollisionFilterEntity>(e));
+        });
     }
 
     // Motion properties editing
@@ -545,7 +518,7 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
                 motion_changed = true;
             }
             if (edit.CenterOfMass) motion_changed |= ui::DragFloat3("Center of mass", &edit.CenterOfMass->x, 0.01f);
-            ui::Gesture(motion_changed, [&, scope = ui::ScopeFromAlt()] { return action::Replace<PhysicsMotion>{.Scope = scope, .Value = std::make_unique<PhysicsMotion>(edit)}; });
+            ui::Gesture(motion_changed, [&, scope = ui::ScopeFromAlt()] { return action::physics::SetMotion{std::make_unique<PhysicsMotion>(edit), scope}; });
 
             Spacing();
             SeparatorText("Dynamics");
@@ -560,24 +533,26 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
         Spacing();
         SeparatorText("Joint");
 
-        const auto *cur = RenderEntityCombo<PhysicsJointDef, &PhysicsJoint::JointDefEntity>(r, entity, "Definition", "No joint definitions");
-        if (cur) Text("Limits: %zu, Drives: %zu", cur->Limits.size(), cur->Drives.size());
+        TargetCombo<PhysicsJointDef>(r, "Definition", joint->JointDefEntity, "No joint definitions", [](state::Entity e) {
+            action::Emit(action::UpdateActive<&PhysicsJoint::JointDefEntity>(e));
+        });
+        if (const auto *def = joint->JointDefEntity != state::Null && r.valid(joint->JointDefEntity) ? r.try_get<const PhysicsJointDef>(joint->JointDefEntity) : nullptr) {
+            Text("Limits: %zu, Drives: %zu", def->Limits.size(), def->Drives.size());
+        }
 
         ui::Edit{r}.Check<&PhysicsJoint::EnableCollision>("Enable collision");
 
-        // ConnectedNode picker — KHR joint.connectedNode is the second attachment frame.
+        // ConnectedNode picker. KHR joint.connectedNode is the second attachment frame.
         // Mirrors Blender's rigid_body_constraint object1/object2 fields.
+        std::vector<state::Entity> nodes{state::Null};
+        for (const auto ne : r.view<const SceneNode>())
+            if (ne != entity) nodes.push_back(ne);
         const auto cn = joint->ConnectedNode;
-        if (const auto cn_label = cn != state::Null && r.valid(cn) ? GetName(r, cn) : std::string{"None"};
-            BeginCombo("Connected node", cn_label.c_str())) {
-            if (Selectable("None", cn == state::Null)) action::Emit(action::UpdateOf<&PhysicsJoint::ConnectedNode>(state::Entity{state::Null}));
-            for (auto ne : r.view<const SceneNode>()) {
-                if (ne != entity) {
-                    if (Selectable(GetName(r, ne).c_str(), cn == ne)) action::Emit(action::UpdateOf<&PhysicsJoint::ConnectedNode>(ne));
-                }
-            }
-            EndCombo();
-        }
+        ui::ChoiceCombo(
+            "Connected node", cn != state::Null && r.valid(cn) ? cn : state::Null, nodes,
+            [&](state::Entity e) { return e == state::Null ? std::string{"None"} : GetName(r, e); },
+            [](state::Entity e) { action::Emit(action::UpdateActive<&PhysicsJoint::ConnectedNode>(e)); }
+        );
     }
 
     if (const auto *trigger_nodes = r.try_get<const TriggerNodes>(entity)) {
@@ -585,7 +560,9 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
         SeparatorText("Trigger (compound)");
         PushID("Trigger");
         Text("Compound trigger: %zu nodes", trigger_nodes->Nodes.size());
-        RenderEntityCombo<CollisionFilter, &TriggerNodes::CollisionFilterEntity>(r, entity, "Collision filter", "No filters defined");
+        TargetCombo<CollisionFilter>(r, "Collision filter", trigger_nodes->CollisionFilterEntity, "No filters defined", [](state::Entity e) {
+            action::Emit(action::UpdateActive<&TriggerNodes::CollisionFilterEntity>(e));
+        });
         if (Button("Remove Trigger")) action::Emit(action::physics::RemoveTriggerNodes{});
         PopID();
     } else {
@@ -593,9 +570,9 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
         const bool is_shape_trigger = collider && r.all_of<const TriggerTag>(entity);
         if (collider) {
             if (is_shape_trigger) {
-                if (Button("Convert to Collider")) action::Emit(action::SetTagOf<TriggerTag>(false));
+                if (Button("Convert to Collider")) action::Emit(action::physics::SetTrigger{false});
             } else {
-                if (Button("Convert to Trigger")) action::Emit(action::SetTagOf<TriggerTag>(true));
+                if (Button("Convert to Trigger")) action::Emit(action::physics::SetTrigger{true});
             }
         } else if (Button("Add Trigger")) action::Emit(action::physics::AddTrigger{});
     }

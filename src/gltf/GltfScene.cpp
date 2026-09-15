@@ -2747,7 +2747,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
     // Import-time UX default: show an imported world, hide the (empty) default world.
     // Kept out of the reactive world passes so a snapshot restore reproduces the saved WorldOpacity rather than re-forcing this.
-    if (r.all_of<RenderedLighting>(viewport)) r.patch<RenderedLighting>(viewport, [&](auto &l) { l.WorldOpacity = source_ibl ? 1.f : 0.f; });
+    if (r.all_of<RenderedLighting>(viewport)) r.patch<RenderedLighting>(viewport, [&](auto &l) { l.Value.WorldOpacity = source_ibl ? 1.f : 0.f; });
 
     // First-class scene entities, one per source scene. The default scene is the active one.
     std::vector<state::Entity> scene_entities;

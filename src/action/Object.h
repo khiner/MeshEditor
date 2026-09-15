@@ -4,13 +4,11 @@
 #include "gpu/PBRMaterial.h"
 
 #include "CameraTypes.h"
-#include "Variant.h"
 #include "action/Core.h"
 #include "gpu/PunctualLight.h"
 #include "mesh/MeshData.h"
 #include "mesh/PrimitiveType.h"
 #include "object/ObjectCreateInfo.h"
-#include "render/MaterialComponents.h"
 #include "viewport/ViewportInteractionState.h"
 
 #include <filesystem>
@@ -22,6 +20,10 @@ struct SetLightType {
 };
 struct SetSpotCone {
     float OuterAngle, Blend;
+    Scope Scope{Scope::Active};
+};
+struct SetCameraLens {
+    Camera Value;
     Scope Scope{Scope::Active};
 };
 struct Delete {};
@@ -79,26 +81,24 @@ struct UpdateMaterial {
     std::optional<uint32_t> Features;
     Scope Scope{Scope::Active};
 };
-
-// Update the field at byte `Offset` of the active primitive's current shape alternative.
-template<typename Field>
-struct UpdatePrimitiveField {
+// Choose the material slot shown by the material editor. Targets the mesh entity.
+struct SetMaterialSlotSelection {
+    uint32_t PrimitiveIndex;
     Scope Scope{Scope::Active};
-    uint16_t Offset;
-    Field Value, Min, Max;
+};
+// Assign a material to a primitive slot. Targets the mesh entity.
+struct SetMaterialAssignment {
+    uint32_t PrimitiveIndex, MaterialIndex;
+    Scope Scope{Scope::Active};
 };
 
-using Actions = std::variant<
+using Action = std::variant<
     Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible, SetSelectedSmoothShading, ShadeSelectedSmoothByAngle,
     SetSelectedSharp,
     ParentToActive, ClearParent,
-    AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, SetPbrMeshFeaturesMask,
-    UpdatePrimitiveField<float>, UpdatePrimitiveField<vec2>, UpdatePrimitiveField<vec3>, UpdatePrimitiveField<uint32_t>>;
-
-using Action = MergedVariantT<
-    Actions,
-    UpdateMaterial, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
-    Update<std::optional<uint32_t>>, SetLightType, SetSpotCone>;
+    AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh,
+    SetPbrMeshFeaturesMask, UpdateMaterial, SetMaterialSlotSelection, SetMaterialAssignment,
+    SetLightType, SetSpotCone, SetCameraLens>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::object

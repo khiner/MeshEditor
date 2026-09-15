@@ -16,15 +16,15 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         const auto mode = authored_lighting ? ViewportShadingMode::Rendered : ViewportShadingMode::MaterialPreview;
         r.patch<ViewportDisplay>(viewport, [&](auto &s) { s.ViewportShading = s.FillMode = mode; s.ShowOverlays = false; });
         if (!authored_lighting && r.all_of<MaterialPreviewLighting>(viewport)) {
-            r.patch<MaterialPreviewLighting>(viewport, [](auto &l) { l.WorldOpacity = 1.f; });
+            r.patch<MaterialPreviewLighting>(viewport, [](auto &l) { l.Value.WorldOpacity = 1.f; });
         }
         if (authored_lighting && r.all_of<RenderedLighting>(viewport)) {
             r.patch<RenderedLighting>(viewport, [&](auto &l) {
                 if (explicit_ibl) {
-                    l.BackgroundBlur = 0.f;
+                    l.Value.BackgroundBlur = 0.f;
                 } else {
-                    l.UseSceneWorld = false;
-                    l.WorldOpacity = 1.f;
+                    l.Value.UseSceneWorld = false;
+                    l.Value.WorldOpacity = 1.f;
                 }
             });
         }

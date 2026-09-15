@@ -1,5 +1,6 @@
 #include "action/View.h"
 #include "TransformMath.h"
+#include "Variant.h"
 #include "action/Dispatch.h"
 #include "action/ScopeResolve.h"
 #include "armature/ArmatureComponents.h"
@@ -37,16 +38,18 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         return r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && bone != state::Null ? bone : FindActiveEntity(r);
     };
     // Selected/SelectedDelta fan out to the selected bones in Pose mode, else the selected objects.
-    // Any other scope resolves to the single active rotation target.
     auto rotation_targets = [&](Scope scope) {
         std::vector<state::Entity> targets;
-        if (scope != Scope::Selected && scope != Scope::SelectedDelta) {
-            if (const auto e = active_rotation_target(); e != state::Null) targets.emplace_back(e);
-        } else if (r.get<const Interaction>(viewport).Mode == InteractionMode::Pose) {
-            for (const auto e : r.view<BoneSelection>()) targets.emplace_back(e);
-        } else {
-            for (const auto e : r.view<Selected, RotationUiVariant>()) targets.emplace_back(e);
-        }
+        ForEachScopeTarget(
+            scope, state::Null, state::Null, active_rotation_target,
+            [&](auto &&fn) {
+                if (r.get<const Interaction>(viewport).Mode == InteractionMode::Pose)
+                    for (const auto e : r.view<BoneSelection>()) fn(e);
+                else
+                    for (const auto e : r.view<Selected, RotationUiVariant>()) fn(e);
+            },
+            [&](state::Entity e) { targets.emplace_back(e); }
+        );
         return targets;
     };
     // Gesture-start rotation, snapshotted into the shared DragFieldStart baseline on first apply.
@@ -93,9 +96,10 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](ResetViewportTheme) { r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme); },
             [&](const ResetPbrLighting &a) {
                 static constexpr PBRViewportLighting Defaults{false, false, 1.f, 0.f, 0.5f, 0.f, true};
-                if (a.Rendered) r.emplace_or_replace<RenderedLighting>(viewport, RenderedLighting{Defaults});
-                else r.emplace_or_replace<MaterialPreviewLighting>(viewport, MaterialPreviewLighting{Defaults});
+                if (a.Rendered) r.replace<RenderedLighting>(viewport, Defaults);
+                else r.replace<MaterialPreviewLighting>(viewport, Defaults);
             },
+            [&](const SetWorkspaceLights &a) { r.replace<WorkspaceLights>(viewport, *a.Value); },
             [&](const SetViewCameraTarget &a) { patch_camera_stopped([&](auto &c) { c.Target = a.Target; }); },
             [&](const SetViewCameraLens &a) { patch_camera_stopped([&](auto &c) { c.Data = a.Data; }); },
             [&](const SetViewCameraTargetDirection &a) { r.patch<ViewCamera>(viewport, [&](auto &c) { c.SetTargetDirection(a.Direction); }); },
@@ -255,9 +259,6 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     if (a.Mode != ViewportShadingMode::Wireframe) s.FillMode = a.Mode;
                 });
             },
-            [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
-            [&](const Replace<::Camera> &a) { ForEachReplaceTarget<::Camera>(r, a.Scope, a.Entity, [&](state::Entity e) { r.emplace_or_replace<::Camera>(e, a.Value); }); },
-            [&](const Replace<WorkspaceLights> &a) { r.replace<WorkspaceLights>(a.Entity, *a.Value); },
         },
         action
     );

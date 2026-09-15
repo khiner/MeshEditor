@@ -9,53 +9,31 @@ action::Scope ScopeFromAlt(bool delta_capable) {
 }
 
 namespace detail {
+namespace {
+// Preserve gesture state because ImGui permits one active item.
 action::Scope GestureScope{action::Scope::Active};
-std::array<std::byte, 16> GestureStartValue{};
 bool GestureTyped{false};
-std::function<void()> GestureCancel;
+} // namespace
 
-void FieldGesture::Capture() {
-    GestureTyped = false;
-    std::memcpy(GestureStartValue.data(), Original.data(), Original.size());
-    if (Selection) {
-        GestureScope = ScopeFromAlt(DeltaCapable);
-        // Clear the transient baseline from an interrupted selection drag.
-        if (GestureScope == action::Scope::SelectedDelta) R.clear<action::DragFieldStart>();
+std::optional<action::Scope> FieldGesture(state::Scene &r, bool changed, bool selection, bool delta_capable) {
+    if (selection && ImGui::IsItemHovered() && r.view<Selected>().size() > 1) ImGui::SetItemTooltip("Hold Alt to apply to all selected");
+    if (ImGui::IsItemActivated()) {
+        GestureScope = ScopeFromAlt(delta_capable);
+        GestureTyped = false;
     }
-}
-
-bool FieldGesture::Begin() {
-    if (Selection && ImGui::IsItemHovered() && R.view<Selected>().size() > 1) ImGui::SetItemTooltip("Hold Alt to apply to all selected");
-    if (!ImGui::IsItemActivated()) return false;
-    Capture();
-    return true;
-}
-
-bool FieldGesture::ShouldStage(bool changed) {
     if (ImGui::TempInputIsActive(ImGui::GetItemID())) GestureTyped = true;
-    if (ImGui::IsItemDeactivatedAfterEdit()) return changed;
-    if (ImGui::IsItemDeactivated() || !changed) return false;
-    // Delay typed edits until commit.
-    if (ImGui::IsItemActive() && GestureTyped) return false;
-    // Capture the modifier scope for instantaneous widgets.
-    if (!ImGui::IsItemActive()) Capture();
-    return true;
-}
-
-bool FieldGesture::End(bool changed) {
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        action::Commit();
-        GestureCancel = nullptr;
-    } else if (ImGui::IsItemDeactivated()) {
-        if (GestureCancel) {
-            GestureCancel();
-            GestureCancel = nullptr;
-        }
-        return false;
-    } else if (changed && !ImGui::IsItemActive()) {
-        action::Commit();
+    if (ImGui::IsItemDeactivated() && !ImGui::IsItemDeactivatedAfterEdit()) {
+        action::Cancel();
+        return {};
     }
-    return changed;
+    // Widgets that change without staying active (combos, checkboxes) commit at once.
+    if (ImGui::IsItemDeactivatedAfterEdit() || (changed && !ImGui::IsItemActive())) action::Commit();
+    if (!changed) return {};
+    if (!selection) return action::Scope::Entity;
+    // An item that was never activated reads the modifier at the change.
+    const auto scope = ImGui::IsItemActive() || ImGui::IsItemDeactivated() ? GestureScope : ScopeFromAlt(delta_capable);
+    // Alt-typed values copy to the selection instead of offsetting it.
+    return scope == action::Scope::SelectedDelta && GestureTyped ? action::Scope::Selected : scope;
 }
 } // namespace detail
 } // namespace ui

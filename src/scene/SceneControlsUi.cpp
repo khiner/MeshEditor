@@ -3,6 +3,7 @@
 #include "Path.h"
 #include "Profile.h"
 #include "TransformMath.h"
+#include "Variant.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
 #include "action/Object.h"
@@ -25,6 +26,7 @@
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
+#include "render/MaterialComponents.h"
 #include "render/PbrFeature.h"
 #include "render/TextureRefs.h"
 #include "scene/Defaults.h"
@@ -36,8 +38,10 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionQueries.h"
 #include "state/Scene.h"
+#include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
 #include "ui/HelpMarker.h"
+#include "ui/ItemList.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraOps.h"
@@ -51,11 +55,6 @@
 using std::ranges::any_of, std::ranges::distance, std::ranges::find, std::ranges::to;
 
 using namespace ImGui;
-
-template<> struct FieldLimits<&Transform::S> : Within<0.01f, 10.f> {};
-template<> struct FieldLimits<&PosedLocal::Value, &Transform::S> : Within<0.01f, 10.f> {};
-template<> struct FieldLimits<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue> : Within<0.01f, 100.f> {};
-template<> struct FieldLimits<&ShadeSmoothAngle::Value> : Within<0., std::numbers::pi> {};
 
 static void RenderObjectTree(state::Scene &, state::Entity viewport);
 static void RenderEntityControls(state::Scene &, state::Entity viewport, state::Entity active_entity);
@@ -91,9 +90,10 @@ void PrimitiveEditor(const PrimitiveShape &shape) {
     using primitive::MaxSize, primitive::MinSize;
     static constexpr float SizeSpeed = 0.01f, HalfMin = MinSize / 2.f, HalfMax = MaxSize / 2.f;
 
+    // The member pointer addresses the field within the shape alternative.
     const auto field = [&]<typename C, typename F>(bool changed, F C::*member, F value, float lo, float hi) {
         ui::Gesture(changed, [=] {
-            return action::object::UpdatePrimitiveField<F>{ui::ScopeFromAlt(true), uint16_t(action::detail::MemPtrOffset(member)), value, F(lo), F(hi)};
+            return action::Update<F>{ui::ScopeFromAlt(true), state::Null, state::Key<PrimitiveShape>(), uint16_t(action::detail::MemPtrOffset(member)), value, action::Limit<F>(lo), action::Limit<F>(hi)};
         });
     };
     std::visit([&](const auto &s) {
@@ -423,51 +423,38 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
     if (active_bone_entity != state::Null && CollapsingHeader("Bone Constraints")) {
         PushID("BoneConstraints");
         const auto *constraints = r.try_get<const BoneConstraints>(active_bone_entity);
-        const size_t stack_size = constraints ? constraints->Stack.size() : 0;
-        std::optional<uint32_t> delete_index;
-        for (size_t i = 0; i < stack_size; ++i) {
-            PushID(int(i));
-            const auto &c = constraints->Stack[i];
-            const char *type_label = std::visit([]<typename T>(const T &) {
-                if constexpr (std::is_same_v<T, CopyTransformsData>) return "Copy Transforms";
-                else if constexpr (std::is_same_v<T, ChildOfData>) return "Child Of";
-                else return "?";
+        const auto deleted = ui::ItemList(
+            constraints ? constraints->Stack.size() : 0,
+            [&](uint32_t i) {
+                return std::visit([]<typename T>(const T &) {
+                    if constexpr (std::is_same_v<T, CopyTransformsData>) return "Copy Transforms";
+                    else if constexpr (std::is_same_v<T, ChildOfData>) return "Child Of";
+                    else return "?";
+                },
+                                  constraints->Stack[i].Data);
             },
-                                                c.Data);
-            const bool expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanLabelWidth, "%s", type_label);
-            SameLine();
-            if (SmallButton("X")) delete_index = uint32_t(i);
-            if (expanded) {
-                const auto *cur_name = c.TargetEntity != state::Null && r.valid(c.TargetEntity) ? r.try_get<const Name>(c.TargetEntity) : nullptr;
-                const std::string preview = c.TargetEntity == state::Null ? "None" :
-                    cur_name && !cur_name->Value.empty()                  ? cur_name->Value :
-                                                                            IdString(c.TargetEntity);
-                if (BeginCombo("Target", preview.c_str())) {
-                    if (Selectable("None", c.TargetEntity == state::Null))
-                        action::Emit(action::bone::SetConstraintTarget{uint32_t(i), state::Null});
-                    for (auto [te, kind, name] : r.view<const ObjectKind, const Name>().each()) {
-                        if (!r.any_of<BoneIndex, BoneSubPartOf, BoneJoint, SubElementOf>(te)) {
-                            const std::string label = name.Value.empty() ? IdString(te) : name.Value;
-                            if (Selectable(label.c_str(), te == c.TargetEntity))
-                                action::Emit(action::bone::SetConstraintTarget{uint32_t(i), te});
-                        }
-                    }
-                    EndCombo();
-                }
+            [&](uint32_t i) {
+                const auto &c = constraints->Stack[i];
+                std::vector<state::Entity> targets{state::Null};
+                for (const auto te : r.view<const ObjectKind, const Name>())
+                    if (!r.any_of<BoneIndex, BoneSubPartOf, BoneJoint, SubElementOf>(te)) targets.push_back(te);
+                const auto target_name = [&](state::Entity e) {
+                    const auto *name = e != state::Null && r.valid(e) ? r.try_get<const Name>(e) : nullptr;
+                    return e == state::Null ? std::string{"None"} : name && !name->Value.empty() ? name->Value : IdString(e);
+                };
+                ui::ChoiceCombo("Target", c.TargetEntity, targets, target_name, [&](state::Entity te) { action::Emit(action::bone::SetConstraintTarget{i, te}); });
                 if (std::holds_alternative<ChildOfData>(c.Data)) {
                     if (Button("Set Inverse") && c.TargetEntity != state::Null && r.valid(c.TargetEntity))
-                        action::Emit(action::bone::BakeConstraintChildOfInverse{uint32_t(i)});
+                        action::Emit(action::bone::BakeConstraintChildOfInverse{i});
                     SameLine();
                     if (Button("Clear Inverse"))
-                        action::Emit(action::bone::ClearConstraintChildOfInverse{uint32_t(i)});
+                        action::Emit(action::bone::ClearConstraintChildOfInverse{i});
                 }
                 if (float influence = c.Influence; SliderFloat("Influence", &influence, 0.f, 1.f))
-                    action::Emit(action::bone::SetConstraintInfluence{uint32_t(i), influence});
-                TreePop();
+                    action::Emit(action::bone::SetConstraintInfluence{i, influence});
             }
-            PopID();
-        }
-        if (delete_index) action::Emit(action::bone::DeleteConstraint{*delete_index});
+        );
+        if (deleted) action::Emit(action::bone::DeleteConstraint{*deleted});
         if (Button("Add Copy Transforms")) action::Emit(action::bone::AddConstraint{action::bone::BoneConstraintKind::CopyTransforms});
         SameLine();
         if (Button("Add Child Of")) action::Emit(action::bone::AddConstraint{action::bone::BoneConstraintKind::ChildOf});
@@ -506,7 +493,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                 uint32_t slot_primitive = existing_slot ? existing_slot->PrimitiveIndex : 0u;
                 if (!existing_slot || slot_primitive > max_primitive) {
                     slot_primitive = std::min(slot_primitive, max_primitive);
-                    action::Emit(action::Replace<MeshMaterialSlotSelection>{.Scope = action::Scope::Active, .Value = {slot_primitive}});
+                    action::Emit(action::object::SetMaterialSlotSelection{slot_primitive});
                 }
 
                 BeginChild("MaterialSlots", ImVec2(0, 110), true);
@@ -514,7 +501,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                     const uint32_t material_index = std::min(primitive_materials[primitive_index], material_count - 1);
                     if (const auto label = std::format("Slot {:L}: {}", primitive_index, material_name(material_index));
                         Selectable(label.c_str(), slot_primitive == primitive_index) && slot_primitive != primitive_index) {
-                        action::Emit(action::Replace<MeshMaterialSlotSelection>{.Scope = action::Scope::Active, .Value = {primitive_index}});
+                        action::Emit(action::object::SetMaterialSlotSelection{primitive_index});
                         slot_primitive = primitive_index;
                     }
                 }
@@ -530,7 +517,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                     for (uint32_t i = 0; i < material_count; ++i) {
                         if (const auto option_name = material_name(i);
                             Selectable(option_name.c_str(), material_index == i)) {
-                            action::Emit(action::Replace<MeshMaterialAssignment>{.Scope = ui::ScopeFromAlt(), .Value = {slot_primitive, i}});
+                            action::Emit(action::object::SetMaterialAssignment{slot_primitive, i, ui::ScopeFromAlt()});
                             material_index = i;
                         }
                     }
@@ -686,7 +673,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                         pbr_features_changed ? std::optional{pbr_features_mask} : std::nullopt,
                         ui::ScopeFromAlt(),
                     };
-                    if (IsItemActive()) action::EmitStaged(std::move(update));
+                    if (IsItemActive()) action::Emit(std::move(update), action::Phase::Stage);
                     else action::Emit(std::move(update));
                 }
                 if (IsItemDeactivatedAfterEdit()) action::Commit();
@@ -698,7 +685,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             // Use the camera's distance from world origin as the conversion distance.
             const float distance = std::max(numeric::Length(r.get<WorldTransform>(active_entity).P), 1.f);
             auto edited = *cd;
-            ui::Gesture(RenderCameraLensEditor(edited, distance), [&, scope = ui::ScopeFromAlt()] { return action::Replace<Camera>{.Scope = scope, .Value = edited}; });
+            ui::Gesture(RenderCameraLensEditor(edited, distance), [&, scope = ui::ScopeFromAlt()] { return action::object::SetCameraLens{edited, scope}; });
             Separator();
             if (LookThroughCameraEntity(r) == active_entity) {
                 if (Button("Exit camera view")) action::Emit(action::view::ExitLookThroughCamera{});
@@ -903,14 +890,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                     const auto *si = r.try_get<const SourceIndex>(e);
                     return NamedOr(r.get<const Scene>(e).Name, "Scene ", si ? si->Value : 0u);
                 };
-                if (active != state::Null && BeginCombo("Scene", scene_label(active).c_str())) {
-                    for (const auto e : scenes) {
-                        const bool selected = e == active;
-                        if (Selectable(scene_label(e).c_str(), selected) && !selected) action::Emit(action::view::SetActiveScene{e});
-                        if (selected) SetItemDefaultFocus();
-                    }
-                    EndCombo();
-                }
+                if (active != state::Null) ui::ChoiceCombo("Scene", active, scenes, scene_label, [](state::Entity e) { action::Emit(action::view::SetActiveScene{e}); });
             }
             if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree(r, viewport);
             SeparatorText("");
@@ -943,18 +923,13 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 if (Button("Light")) action::Emit(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
             }
             if (auto *mv = r.try_get<MaterialVariants>(viewport); mv && !mv->Names.empty() && CollapsingHeader("Material variants")) {
-                const auto active = mv->Active;
-                const auto preview = active ? NamedOr(mv->Names[*active], "Variant ", *active) : std::string{"Default"};
-                const auto set_variant = [&](std::optional<uint32_t> v) {
-                    if (active != v) action::Emit(action::UpdateOf<&MaterialVariants::Active>(viewport, v));
-                };
-                if (BeginCombo("Active variant", preview.c_str())) {
-                    if (Selectable("Default", !active)) set_variant({});
-                    for (uint32_t i = 0; i < mv->Names.size(); ++i) {
-                        if (Selectable(NamedOr(mv->Names[i], "Variant ", i).c_str(), active == i)) set_variant(i);
-                    }
-                    EndCombo();
-                }
+                std::vector<std::optional<uint32_t>> variants{std::nullopt};
+                for (uint32_t i = 0; i < mv->Names.size(); ++i) variants.emplace_back(i);
+                ui::ChoiceCombo(
+                    "Active variant", mv->Active, variants,
+                    [&](std::optional<uint32_t> v) { return v ? NamedOr(mv->Names[*v], "Variant ", *v) : std::string{"Default"}; },
+                    [&](std::optional<uint32_t> v) { action::Emit(action::UpdateOn<&MaterialVariants::Active>(viewport, v)); }
+                );
             }
             if (!r.view<const Selected>().empty()) {
                 SeparatorText("Selection actions");
@@ -1000,7 +975,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 if (CanDuplicate(r, viewport) && Button("Duplicate")) Duplicate(r, viewport);
                 if (CanDuplicateLinked(r, viewport)) {
                     SameLine();
-                    if (Button("Duplicate linked")) action::EmitStaged(action::object::DuplicateLinked{});
+                    if (Button("Duplicate linked")) action::Emit(action::object::DuplicateLinked{}, action::Phase::Stage);
                 }
                 if (CanDelete(r, viewport) && Button("Delete")) Delete(r, viewport);
                 if (r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && !r.view<const BoneSelection>().empty()) {
@@ -1254,18 +1229,14 @@ void RenderClipPickers(state::Scene &r) {
     const auto clip_picker = [&]<typename Anim>(std::string_view kind) {
         for (auto [entity, anim] : r.view<Anim>().each()) {
             if (anim.Clips.size() < 2) continue;
-            const auto active_idx = anim.ActiveClipIndex;
             const auto label = std::format("{}: {}", kind, display_name.template operator()<Anim>(entity));
             PushID(label.c_str());
             SetNextItemWidth(ComboWidth);
-            if (BeginCombo("##clip", NamedOr(anim.Clips[active_idx].Name, "Clip ", active_idx).c_str())) {
-                for (uint32_t i = 0; i < anim.Clips.size(); ++i) {
-                    if (Selectable(NamedOr(anim.Clips[i].Name, "Clip ", i).c_str(), active_idx == i) && active_idx != i) {
-                        action::Emit(action::UpdateOf<&Anim::ActiveClipIndex>(entity, i));
-                    }
-                }
-                EndCombo();
-            }
+            ui::ChoiceCombo(
+                "##clip", anim.ActiveClipIndex, std::views::iota(0u, uint32_t(anim.Clips.size())),
+                [&](uint32_t i) { return NamedOr(anim.Clips[i].Name, "Clip ", i); },
+                [&](uint32_t i) { action::Emit(action::UpdateOn<&Anim::ActiveClipIndex>(entity, i)); }
+            );
             SameLine();
             TextUnformatted(label.c_str());
             PopID();

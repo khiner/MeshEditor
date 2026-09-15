@@ -1,5 +1,6 @@
 #include "action/Object.h"
 #include "Profile.h"
+#include "Variant.h"
 #include "action/Dispatch.h"
 #include "action/ScopeResolve.h"
 #include "armature/Armature.h"
@@ -11,6 +12,7 @@
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
+#include "render/MaterialComponents.h"
 #include "render/LightComponents.h"
 #include "render/MeshBuffers.h"
 #include "scene/Defaults.h"
@@ -27,12 +29,15 @@
 using state::Change;
 
 namespace {
-// Read/write a field at `offset` within a PrimitiveShape's current alternative.
-void ReadPrimitiveField(const state::Scene &r, state::Entity e, uint16_t offset, void *dst, uint16_t size) {
-    std::visit([&](const auto &alt) { std::memcpy(dst, reinterpret_cast<const std::byte *>(&alt) + offset, size); }, r.get<const PrimitiveShape>(e));
-}
-void PatchPrimitiveField(state::Scene &r, state::Entity e, uint16_t offset, const void *src, uint16_t size) {
-    r.patch<PrimitiveShape>(e, [&](PrimitiveShape &s) { std::visit([&](auto &alt) { std::memcpy(reinterpret_cast<std::byte *>(&alt) + offset, src, size); }, s); });
+// Rebuild a primitive mesh entity's geometry from its current PrimitiveShape.
+void RegeneratePrimitive(state::Scene &r, state::Entity e) {
+    const bool was_flat = r.get<const MeshShadingSummary>(e).AllSharp;
+    if (auto *mb = r.try_edit<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
+    // Erasing MeshHandle fires on_destroy, releasing the old store entry.
+    r.remove<MeshBuffers, MeshHandle>(e);
+    const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(r.get<const PrimitiveShape>(e)), .FlatShaded = was_flat});
+    r.emplace<MeshHandle>(e, MeshHandle{created.StoreId});
+    r.emplace_or_replace<MeshGeometryDirty>(e);
 }
 
 // Create an armature object over `data_entity`, creating fresh armature data when null.
@@ -127,6 +132,30 @@ state::Entity DuplicateLinkedOne(state::Scene &r, state::Entity e) {
 }
 } // namespace
 
+namespace action {
+bool UpdateTraits<PrimitiveShape>::Has(const state::Scene &r, state::Entity e) { return r.all_of<PrimitiveShape>(e); }
+state::Entity UpdateTraits<PrimitiveShape>::Active(const state::Scene &r) {
+    const auto e = GetActiveMeshEntity(r);
+    return e != state::Null && Has(r, e) ? e : state::Null;
+}
+// Only meshes of the active primitive's kind share its fields.
+void UpdateTraits<PrimitiveShape>::ForEachSelected(state::Scene &r, const std::function<void(state::Entity)> &fn) {
+    const auto active = Active(r);
+    if (active == state::Null) return;
+    const auto kind = r.get<const PrimitiveShape>(active).index();
+    for (const auto e : ::selection::GetSelectedMeshEntities(r))
+        if (Has(r, e) && r.get<const PrimitiveShape>(e).index() == kind) fn(e);
+}
+void UpdateTraits<PrimitiveShape>::Read(const state::Scene &r, state::Entity e, uint16_t offset, void *dst, size_t size) {
+    std::visit([&](const auto &alt) { std::memcpy(dst, reinterpret_cast<const std::byte *>(&alt) + offset, size); }, r.get<const PrimitiveShape>(e));
+}
+void UpdateTraits<PrimitiveShape>::Write(state::Scene &r, state::Entity e, uint16_t offset, const void *src, size_t size) {
+    if (::selection::HasScaleLockedInstance(r, e)) return;
+    r.patch<PrimitiveShape>(e, [&](PrimitiveShape &s) { std::visit([&](auto &alt) { std::memcpy(reinterpret_cast<std::byte *>(&alt) + offset, src, size); }, s); });
+    RegeneratePrimitive(r, e);
+}
+} // namespace action
+
 namespace action::object {
 void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     auto &meshes = r.ctx().get<MeshStore>();
@@ -158,27 +187,14 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         if (placement) r.remove<StartScreenTransform>(viewport);
         else begin_translate();
     };
-    // Rebuild a primitive mesh entity's geometry from its current PrimitiveShape.
-    auto regen_primitive = [&](state::Entity e) {
-        const bool was_flat = r.get<const MeshShadingSummary>(e).AllSharp;
-        if (auto *mb = r.try_edit<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
-        // Erasing MeshHandle fires on_destroy, releasing the old store entry.
-        r.remove<MeshBuffers, MeshHandle>(e);
-        const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(r.get<const PrimitiveShape>(e)), .FlatShaded = was_flat});
-        r.emplace<MeshHandle>(e, MeshHandle{created.StoreId});
-        r.emplace_or_replace<MeshGeometryDirty>(e);
-    };
-    auto for_each_mesh_target = [&](Scope scope, state::Entity entity, auto &&fn) {
-        switch (scope) {
-            case Scope::Entity: fn(entity); break;
-            case Scope::Active:
-                if (const auto e = GetActiveMeshEntity(r); e != state::Null) fn(e);
-                break;
-            case Scope::Selected:
-            case Scope::SelectedDelta:
-                for (const auto e : ::selection::GetSelectedMeshEntities(r)) fn(e);
-                break;
-        }
+    // Mesh-data components live on the object's mesh entity.
+    auto for_each_mesh_target = [&](Scope scope, auto &&fn) {
+        ForEachScopeTarget(
+            scope, state::Null, state::Null,
+            [&] { return GetActiveMeshEntity(r); },
+            [&](auto &&f) { for (const auto e : ::selection::GetSelectedMeshEntities(r)) f(e); },
+            fn
+        );
     };
     const auto edit_selection_meshes = [&](Element element) {
         std::vector<state::Entity> result;
@@ -259,47 +275,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 begin_translate();
             },
             [&](const ImportMesh &a) { RequestImportMesh(r, viewport, a.Path, *a.Info); },
-            [&]<typename Field>(const UpdatePrimitiveField<Field> &a) {
-                static const auto comp = state::Type<PrimitiveShape>();
-                const auto active = GetActiveMeshEntity(r);
-                if (active == state::Null || !r.all_of<PrimitiveShape>(active)) return;
-                const auto active_index = r.get<const PrimitiveShape>(active).index();
-                auto clamp_field = [&](Field v) {
-                    if constexpr (std::integral<Field>) return std::clamp(v, a.Min, a.Max);
-                    else return numeric::Clamp(v, a.Min, a.Max);
-                };
-                auto write = [&](state::Entity e, Field value) {
-                    if (::selection::HasScaleLockedInstance(r, e)) return;
-                    value = clamp_field(value);
-                    PatchPrimitiveField(r, e, a.Offset, &value, sizeof(Field));
-                    regen_primitive(e);
-                };
-                if (a.Scope == Scope::SelectedDelta) {
-                    // Add the active's delta to each member's own start, keeping their relative values.
-                    const auto start = [&](state::Entity e) {
-                        return FieldGestureStart<Field>(r, e, comp, a.Offset, [&](Field &v) { ReadPrimitiveField(r, e, a.Offset, &v, sizeof(Field)); });
-                    };
-                    const auto active_start = start(active);
-                    for (const auto e : ::selection::GetSelectedMeshEntities(r)) {
-                        if (!r.all_of<PrimitiveShape>(e) || r.get<const PrimitiveShape>(e).index() != active_index) continue;
-                        const auto e_start = start(e);
-                        if constexpr (std::integral<Field>) {
-                            // Accumulate in a wider signed type so an unsigned field can't wrap on a downward delta.
-                            write(e, Field(std::clamp<int64_t>(int64_t(e_start) + int64_t(a.Value) - int64_t(active_start), int64_t(a.Min), int64_t(a.Max))));
-                        } else {
-                            write(e, e_start + (a.Value - active_start));
-                        }
-                    }
-                } else if (a.Scope == Scope::Selected) {
-                    for (const auto e : ::selection::GetSelectedMeshEntities(r)) {
-                        if (r.all_of<PrimitiveShape>(e) && r.get<const PrimitiveShape>(e).index() == active_index) write(e, a.Value);
-                    }
-                } else {
-                    write(active, a.Value);
-                }
-            },
             [&](const SetPbrMeshFeaturesMask &a) {
-                for_each_mesh_target(a.Scope, state::Null, [&](state::Entity e) {
+                for_each_mesh_target(a.Scope, [&](state::Entity e) {
                     if (a.Mask != 0u) r.emplace_or_replace<PbrMeshFeatures>(e, a.Mask);
                     else r.remove<PbrMeshFeatures>(e);
                 });
@@ -309,11 +286,17 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 r.ctx().get<GpuBuffers>().Materials.Update(as_bytes(*a.Value), uint64_t(a.Index) * sizeof(PBRMaterial));
                 reactive(r, Change::Materials).emplace(viewport);
             },
-            [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
-            // Mesh-data components (material assignment / slot selection) live on the object's mesh entity.
-            [&]<typename T>(const Replace<T> &a) { for_each_mesh_target(a.Scope, a.Entity, [&](state::Entity e) { r.emplace_or_replace<T>(e, a.Value); }); },
+            [&](const SetMaterialSlotSelection &a) {
+                for_each_mesh_target(a.Scope, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialSlotSelection>(e, a.PrimitiveIndex); });
+            },
+            [&](const SetMaterialAssignment &a) {
+                for_each_mesh_target(a.Scope, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialAssignment>(e, a.PrimitiveIndex, a.MaterialIndex); });
+            },
+            [&](const SetCameraLens &a) {
+                ForEachComponentTarget<Camera>(r, a.Scope, state::Null, state::Null, [&](state::Entity e) { r.replace<Camera>(e, a.Value); });
+            },
             [&](const SetLightType &a) {
-                ForEachReplaceTarget<PunctualLight>(r, a.Scope, state::Null, [&](auto e) {
+                ForEachComponentTarget<PunctualLight>(r, a.Scope, state::Null, state::Null, [&](auto e) {
                     r.patch<PunctualLight>(e, [&](auto &light) {
                         auto next = Defaults::MakePunctualLight(a.Type);
                         next.Color = light.Color;
@@ -323,7 +306,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 });
             },
             [&](const SetSpotCone &a) {
-                ForEachReplaceTarget<PunctualLight>(r, a.Scope, state::Null, [&](auto e) {
+                ForEachComponentTarget<PunctualLight>(r, a.Scope, state::Null, state::Null, [&](auto e) {
                     r.patch<PunctualLight>(e, [&](auto &light) {
                         light.OuterConeCos = std::cos(a.OuterAngle);
                         light.InnerConeCos = std::cos(a.OuterAngle * (1.f - a.Blend));

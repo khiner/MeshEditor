@@ -2,6 +2,7 @@
 
 #include "Camera.h"
 #include "Profile.h"
+#include "Variant.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
 #include "action/Object.h"
@@ -241,9 +242,9 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
     constexpr auto VKey = ImGuiInputFlags_RouteGlobal;
     if (TransformGizmo::IsUsing(r, viewport)) {
         // During an active transform, only allow transform switching shortcuts.
-        if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Translate});
-        else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Rotate});
-        else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Scale});
+        if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) action::Emit(action::view::LatchScreenTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
+        else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::Emit(action::view::LatchScreenTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
+        else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::Emit(action::view::LatchScreenTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
     } else {
         if (Shortcut(ImGuiKey_Space, VKey)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(viewport).CurrentFrame});
         else if (Shortcut(ImGuiKey_Z, VKey)) {
@@ -256,7 +257,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
             const auto &settings = r.get<const ViewportDisplay>(viewport);
             action::Emit(action::view::SetViewportShading{.Mode = settings.ViewportShading == ViewportShadingMode::Wireframe ? settings.FillMode : ViewportShadingMode::Wireframe});
         } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_Z, VKey)) {
-            action::Emit(action::UpdateOf<&SelectionXRay::Value>(viewport, !r.get<const SelectionXRay>(viewport).Value));
+            action::Emit(action::UpdateOn<&SelectionXRay::Value>(viewport, !r.get<const SelectionXRay>(viewport).Value));
         }
         // Tab uses default RouteFocused (not VKey/RouteGlobal) so widget tabbing in panels keeps working.
         const bool tab_no_mods = Shortcut(ImGuiKey_Tab);
@@ -301,7 +302,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
         }
         if (!r.view<const Selected>().empty()) {
             if (!bone_edit && Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) Duplicate(r, viewport);
-            else if (!bone_edit && Shortcut(ImGuiMod_Alt | ImGuiKey_D, VKey)) action::EmitStaged(action::object::DuplicateLinked{});
+            else if (!bone_edit && Shortcut(ImGuiMod_Alt | ImGuiKey_D, VKey)) action::Emit(action::object::DuplicateLinked{}, action::Phase::Stage);
             else if (!bone_edit && CanDelete(r, viewport) && (Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey))) Delete(r, viewport);
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_G, VKey)) action::Emit(action::bone::ClearSelectedTransforms{.Position = true});
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_R, VKey)) action::Emit(action::bone::ClearSelectedTransforms{.Rotation = true});
@@ -310,9 +311,9 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
                 // Start transform gizmo in both Object and Edit modes.
                 // In Edit mode, shader applies transform to selected vertices.
                 // In Object mode, shader applies transform to selected instances.
-                action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Translate});
-            } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Rotate});
-            else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Scale});
+                action::Emit(action::view::LatchScreenTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
+            } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::Emit(action::view::LatchScreenTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
+            else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::Emit(action::view::LatchScreenTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
             else if (Shortcut(ImGuiKey_H, VKey)) action::Emit(action::object::ToggleHidden{});
             else if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, VKey)) action::Emit(action::object::ParentToActive{});
             else if (Shortcut(ImGuiMod_Alt | ImGuiKey_P, VKey)) action::Emit(action::object::ClearParent{});
@@ -357,7 +358,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
                 const bool is_additive = r.all_of<AdditiveBoxSelectBaseline>(viewport);
                 frame.BoxSelectStaged = true;
                 // The hit set (object/bone instances or edit-mode elements) is resolved later.
-                action::EmitStaged(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = is_additive, .View = std::make_unique<RenderView>(selection_view)});
+                action::Emit(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = is_additive, .View = std::make_unique<RenderView>(selection_view)}, action::Phase::Stage);
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
             frame.BoxSelectStart.reset();
@@ -507,15 +508,15 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                 Separator();
                 const auto current_mode = settings.ViewportShading;
 
-                const auto render_pbr_controls = [&]<typename T>(const T &lighting, const char *id) {
+                const auto render_pbr_controls = [&]<typename T>(const char *id) {
                     PushID(id);
-                    const auto apply_update = [&]<typename Field>(Field PBRViewportLighting::*member, Field v) {
-                        action::Emit(action::UpdateOf<T>(viewport, static_cast<Field T::*>(member), v));
-                    };
+                    using L = PBRViewportLighting;
+                    const auto &lighting = r.get<const T>(viewport).Value;
+                    auto edit = ui::Edit{r, viewport}.template Sub<&T::Value>();
                     if (Button("Reset")) action::Emit(action::view::ResetPbrLighting{.Rendered = std::is_same_v<T, RenderedLighting>});
-                    if (bool v = lighting.UseSceneLights; Checkbox("Scene lights", &v)) apply_update(&PBRViewportLighting::UseSceneLights, v);
+                    edit.template Check<&L::UseSceneLights>("Scene lights");
                     SameLine();
-                    if (bool v = lighting.UseSceneWorld; Checkbox("Scene world", &v)) apply_update(&PBRViewportLighting::UseSceneWorld, v);
+                    edit.template Check<&L::UseSceneWorld>("Scene world");
                     const auto *source_assets = r.try_get<const gltf::SourceAssets>(viewport);
                     const auto *source_ibl = source_assets && source_assets->ImageBasedLight.has_value() ? &*source_assets->ImageBasedLight : nullptr;
                     if (lighting.UseSceneWorld) {
@@ -534,30 +535,24 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                             }
                             EndCombo();
                         }
-                        if (float v = lighting.EnvIntensity; SliderFloat("Intensity", &v, 0.f, 2.f, "%.2f"))
-                            apply_update(&PBRViewportLighting::EnvIntensity, v);
-                        if (float v = lighting.EnvRotationDegrees; SliderFloat("Rotation", &v, -180.f, 180.f, "%.1f deg"))
-                            apply_update(&PBRViewportLighting::EnvRotationDegrees, v);
+                        edit.template Run<&L::EnvIntensity>([](float &v) { return SliderFloat("Intensity", &v, 0.f, 2.f, "%.2f"); });
+                        edit.template Run<&L::EnvRotationDegrees>([](float &v) { return SliderFloat("Rotation", &v, -180.f, 180.f, "%.1f deg"); });
                     }
-                    if (float v = lighting.BackgroundBlur; SliderFloat("Blur", &v, 0.f, 1.f, "%.2f"))
-                        apply_update(&PBRViewportLighting::BackgroundBlur, v);
-                    if (float v = lighting.WorldOpacity; SliderFloat("World opacity", &v, 0.f, 1.f, "%.2f"))
-                        apply_update(&PBRViewportLighting::WorldOpacity, v);
-                    if (bool v = lighting.RealTransmission; Checkbox("Real transmission", &v))
-                        apply_update(&PBRViewportLighting::RealTransmission, v);
+                    edit.template Run<&L::BackgroundBlur>([](float &v) { return SliderFloat("Blur", &v, 0.f, 1.f, "%.2f"); });
+                    edit.template Run<&L::WorldOpacity>([](float &v) { return SliderFloat("World opacity", &v, 0.f, 1.f, "%.2f"); });
+                    edit.template Check<&L::RealTransmission>("Real transmission");
                     if (IsItemHovered()) SetTooltip("Sample transmission from a pre-rendered scene framebuffer instead of from the IBL.");
                     // AlwaysClamp: extreme typed EV values overflow exp2 into inf/NaN in the renderer.
-                    if (float v = lighting.ExposureEV; SliderFloat("Exposure", &v, -10.f, 10.f, "%.1f EV", ImGuiSliderFlags_AlwaysClamp))
-                        apply_update(&PBRViewportLighting::ExposureEV, v);
+                    edit.template Run<&L::ExposureEV>([](float &v) { return SliderFloat("Exposure", &v, -10.f, 10.f, "%.1f EV", ImGuiSliderFlags_AlwaysClamp); });
                     PopID();
                 };
 
                 if (current_mode == ViewportShadingMode::MaterialPreview) {
                     SeparatorText("Material Preview lighting");
-                    render_pbr_controls(r.get<const MaterialPreviewLighting>(viewport), "MatPreviewLighting");
+                    render_pbr_controls.template operator()<MaterialPreviewLighting>("MatPreviewLighting");
                 } else if (current_mode == ViewportShadingMode::Rendered) {
                     SeparatorText("Rendered lighting");
-                    render_pbr_controls(r.get<const RenderedLighting>(viewport), "RenderedLighting");
+                    render_pbr_controls.template operator()<RenderedLighting>("RenderedLighting");
                 } else if (current_mode == ViewportShadingMode::Solid) {
                     SeparatorText("Solid lighting");
                     auto lights = r.get<const WorkspaceLights>(viewport);
@@ -600,7 +595,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                             PopID();
                         }
                     }
-                    if (changed) action::Emit(action::Replace<WorkspaceLights>{viewport, std::make_unique<WorkspaceLights>(lights)});
+                    if (changed) action::Emit(action::view::SetWorkspaceLights{std::make_unique<WorkspaceLights>(lights)});
                 }
 
                 if (current_mode == ViewportShadingMode::MaterialPreview || current_mode == ViewportShadingMode::Rendered) {
@@ -677,7 +672,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                             for (const auto &entry : group.Entries) {
                                 const bool selected = entry.Value == settings.DebugChannel;
                                 if (Selectable(entry.Label, selected) && !selected) {
-                                    action::Emit(action::UpdateOf<&ViewportDisplay::DebugChannel>(viewport, entry.Value));
+                                    action::Emit(action::UpdateOn<&ViewportDisplay::DebugChannel>(viewport, entry.Value));
                                 }
                                 if (selected) SetItemDefaultFocus();
                             }
@@ -705,7 +700,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                 {icons.Overlay.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersLeft, true, settings.ShowOverlays, "Toggle overlays"},
             };
             if (const auto clicked = DrawOverlayIconButtonGroup("ViewportOverlays", group_start, icon_button, !active_transform, &frame.OverlayControlsHovered, shading_button_style)) {
-                action::Emit(action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, !settings.ShowOverlays));
+                action::Emit(action::UpdateOn<&ViewportDisplay::ShowOverlays>(viewport, !settings.ShowOverlays));
             }
         }
         DrawOverlayDropdownArrow(group_start + ImVec2{icon_w, 0.f}, {arrow_w, button_h}, shading_button_style, "##OverlayArrow", "##OverlayDropdown", frame.OverlayControlsHovered);
@@ -835,10 +830,10 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
             if (mesh_edit_mode) {
                 // Mesh Edit mode: store pending transform for shader-based preview.
                 // Actual vertex positions are only modified on commit.
-                action::EmitStaged(action::view::DragGizmoMeshEdit{std::make_unique<PendingTransform>(ts.P, ts.R, td)});
+                action::Emit(action::view::DragGizmoMeshEdit{std::make_unique<PendingTransform>(ts.P, ts.R, td)}, action::Phase::Stage);
             } else {
                 // Object/bone mode: store the gizmo pivot + delta. Apply recomputes per-entity transforms.
-                action::EmitStaged(action::view::DragGizmo{std::make_unique<PendingTransform>(ts.P, ts.R, td)});
+                action::Emit(action::view::DragGizmo{std::make_unique<PendingTransform>(ts.P, ts.R, td)}, action::Phase::Stage);
             }
         } else if (was_using || !start_transform_view.empty()) {
             action::Emit(action::view::EndGizmoDrag{});

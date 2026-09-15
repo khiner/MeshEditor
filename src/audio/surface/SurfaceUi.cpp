@@ -7,8 +7,8 @@
 #include "audio/ModalAudio.h"
 #include "audio/ModalModes.h"
 #include "scene/WorldTransform.h"
+#include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
-#include "ui/PresetCombo.h"
 
 #include "state/Scene.h"
 
@@ -35,10 +35,10 @@ using namespace ImGui;
 
 void DrawContactSurfaceControls(state::Scene &r, state::Entity e, const ContactSurface &surface, const AcousticMaterial &material) {
     SeparatorText("Surface finish");
-    ui::PresetCombo("Presets##finish", surface.Name, surfaces::acoustic::All, [&](const auto &choice) {
-        action::Emit(action::audio::SetSurfacePreset{e, choice.Name});
+    ui::ChoiceCombo("Presets##finish", surface.Name, surfaces::acoustic::All | std::views::transform(&ContactSurfacePreset::Name), std::identity{}, [&](const std::string &name) {
+        action::Emit(action::audio::SetSurfacePreset{e, name});
     });
-    ui::Edit fsurf{r, e, ui::Patch{surface}};
+    ui::PatchEdit fsurf{e, surface};
     fsurf.Slider<&ContactSurface::Roughness>("Roughness (m)", "%.3g", ImGuiSliderFlags_Logarithmic);
     MeshEditor::HelpMarker("Root-mean-square asperity height. A physical length measured with a profilometer, unrelated to a render material's roughness.");
     fsurf.Slider<&ContactSurface::CorrelationLength>("Correlation length (m)", "%.3g", ImGuiSliderFlags_Logarithmic);

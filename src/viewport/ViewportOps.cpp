@@ -94,5 +94,5 @@ void Delete(const state::Scene &r, state::Entity viewport) {
 }
 void Duplicate(const state::Scene &r, state::Entity viewport) {
     if (IsBoneEditMode(r, viewport)) action::Emit(action::bone::DuplicateSelected{});
-    else action::EmitStaged(action::object::Duplicate{});
+    else action::Emit(action::object::Duplicate{}, action::Phase::Stage);
 }

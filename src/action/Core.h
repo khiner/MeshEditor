@@ -1,19 +1,24 @@
 #pragma once
 
+#include "gizmo/TransformGizmoTypes.h"
+#include "gpu/DebugChannel.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
+#include "physics/PhysicsTypes.h"
 #include "state/Entity.h"
-
 #include "state/Schema.h"
+#include "viewport/ViewportDisplay.h"
 
 #include <array>
-#include <string>
+#include <concepts>
+#include <limits>
+#include <optional>
 #include <variant>
 
 namespace action {
 // `Selected` copies the value to each selected entity.
-// `SelectedDelta` adds it as a delta to each selected entity's gesture-start value (number drags).
+// `SelectedDelta` offsets each selected entity by the active entity's change since the drag started.
 enum class Scope : uint8_t {
     Entity,
     Active,
@@ -28,6 +33,34 @@ struct DragFieldStart {
     std::array<std::byte, 16> Bytes; // fits the widest Update field (vec4)
 };
 
+// Numeric fields support SelectedDelta drags and carry scalar bounds.
+template<typename F> concept ScalarField = std::floating_point<F> || (std::integral<F> && !std::same_as<F, bool>);
+template<typename F> concept VectorField = requires { F::ComponentCount; } && ScalarField<typename F::value_type>;
+template<typename F> inline constexpr bool DeltaField = ScalarField<F> || VectorField<F>;
+
+// Bounds of a field that has none.
+struct Unbounded {};
+template<typename F> struct LimitOf {
+    using Type = Unbounded;
+};
+template<ScalarField F> struct LimitOf<F> {
+    using Type = F;
+};
+template<VectorField F> struct LimitOf<F> {
+    using Type = typename F::value_type;
+};
+// The scalar type bounding a field, applied to each component of a vector.
+template<typename F> using Limit = typename LimitOf<F>::Type;
+template<typename L> constexpr L LowestLimit() {
+    if constexpr (std::same_as<L, Unbounded>) return {};
+    else return std::numeric_limits<L>::lowest();
+}
+template<typename L> constexpr L HighestLimit() {
+    if constexpr (std::same_as<L, Unbounded>) return {};
+    else return std::numeric_limits<L>::max();
+}
+
+// Writes `Value` to the field at byte `Offset` of the component on each scope target, clamped to [Min, Max].
 template<typename T>
 struct Update {
     Scope Scope{Scope::Entity};
@@ -35,13 +68,7 @@ struct Update {
     state::TypeKey ComponentType;
     uint16_t Offset;
     T Value;
-};
-
-template<typename T>
-struct Replace {
-    Scope Scope{Scope::Entity};
-    state::Entity Entity{state::Null}; // Scope::Entity only
-    T Value;
+    Limit<T> Min{LowestLimit<Limit<T>>()}, Max{HighestLimit<Limit<T>>()};
 };
 
 // Assign authored fields together, preserving the rest of the component.
@@ -54,26 +81,6 @@ struct PatchFields {
 
 struct DestroyEntity {
     state::Entity Entity;
-};
-
-struct SetTag {
-    Scope Scope{Scope::Entity};
-    state::Entity Entity{state::Null}; // Scope::Entity only
-    state::TypeKey TagType;
-    bool Present;
-};
-
-// Set the `Name` field of the component identified by `ComponentType`.
-struct SetName {
-    state::Entity Entity;
-    state::TypeKey ComponentType;
-    std::string Name;
-};
-
-// Creates an entity with ComponentType and the name "<Prefix> <ordinal>".
-struct CreateNamed {
-    state::TypeKey ComponentType;
-    std::string Prefix;
 };
 
 namespace detail {
@@ -104,8 +111,11 @@ template<auto... Ms> using last_field = field_of<last_v<Ms...>>;
 
 using Core = std::variant<
     Update<bool>, Update<uint8_t>, Update<uint32_t>, Update<float>, Update<double>,
-    Update<vec2>, Update<vec3>, Update<vec4>, Update<state::Entity>,
-    SetTag, DestroyEntity>;
+    Update<vec2>, Update<vec3>, Update<vec4>, Update<state::Entity>, Update<std::optional<uint32_t>>,
+    Update<CollideMode>, Update<PhysicsCombineMode>,
+    Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
+    Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>,
+    DestroyEntity>;
 
 void Apply(state::Scene &, state::Entity viewport, const Core &);
 } // namespace action

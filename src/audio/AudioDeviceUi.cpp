@@ -6,8 +6,6 @@
 #include "ui/FieldEdit.h"
 #include <format>
 
-template<> struct FieldLimits<&AudioOutputMix::Volume> : Within<0., 1.> {};
-
 namespace {
 std::string SampleRateName(const AudioDeviceResource &res, uint32_t sample_rate) {
     const auto &rates = res.NativeSampleRates;
@@ -32,7 +30,7 @@ void DrawAudioDeviceControls(state::Scene &r, state::Entity viewport) {
     if (BeginCombo("Output device", config.DeviceName.empty() ? "System default" : config.DeviceName.c_str())) {
         for (const auto &name : res.OutDeviceNames) {
             const bool is_selected = name == config.DeviceName;
-            if (Selectable(name.c_str(), is_selected) && !is_selected) action::Emit(action::Replace<AudioOutputConfig>{.Entity = viewport, .Value = {.DeviceName = name, .SampleRate = 0}});
+            if (Selectable(name.c_str(), is_selected) && !is_selected) action::Emit(action::audio::SetOutputDevice{name});
             if (is_selected) SetItemDefaultFocus();
         }
         EndCombo();

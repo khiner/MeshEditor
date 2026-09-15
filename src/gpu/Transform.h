@@ -1,6 +1,9 @@
 #pragma once
 
 #include "gpu/Types.h"
+#ifndef __METAL_VERSION__
+#include "FieldLimits.h"
+#endif
 
 struct Transform {
     vec3 P DEFAULT();
@@ -11,3 +14,6 @@ struct Transform {
 #endif
 };
 static_assert(sizeof(Transform) == 40, "Transform size");
+#ifndef __METAL_VERSION__
+template<> struct FieldLimits<&Transform::S> : Within<0.01f, 10.f> {};
+#endif

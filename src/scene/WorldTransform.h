@@ -13,3 +13,4 @@ struct WorldTransform : Transform {
 struct PosedLocal {
     Transform Value;
 };
+template<> struct FieldLimits<&PosedLocal::Value, &Transform::S> : Within<0.01f, 10.f> {};

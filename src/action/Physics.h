@@ -1,22 +1,13 @@
 #pragma once
 
-#include "Variant.h"
 #include "action/Core.h"
 #include "physics/PhysicsTypes.h"
 
-namespace action {
-// Shared ownership bounds the action variant size.
-template<>
-struct Replace<PhysicsMotion> {
-    Scope Scope{Scope::Entity};
-    state::Entity Entity{state::Null};
-    std::unique_ptr<PhysicsMotion> Value;
-};
-} // namespace action
+#include <string>
 
 namespace action::physics {
-// AddTrigger and RemoveTriggerNodes target the active entity.
-// SetMotionType and SetColliderShape use Scope.
+// AddTrigger, RemoveTriggerNodes and SetTrigger target the active entity.
+// SetMotionType, SetColliderShape and SetMotion use Scope.
 struct SetMotionType {
     enum class Type : uint8_t {
         None,
@@ -25,6 +16,11 @@ struct SetMotionType {
         Dynamic
     };
     Type Value;
+    Scope Scope{Scope::Active};
+};
+// Replaces the whole motion record. Shared ownership bounds the action variant size.
+struct SetMotion {
+    std::unique_ptr<PhysicsMotion> Value;
     Scope Scope{Scope::Active};
 };
 
@@ -37,6 +33,32 @@ struct SetColliderShape {
 
 struct AddTrigger {};
 struct RemoveTriggerNodes {};
+// Marks the active entity's ColliderShape as a sensor.
+struct SetTrigger {
+    bool Value;
+};
+
+// Document-level resources, created with an ordinal name.
+struct AddPhysicsMaterial {};
+struct AddCollisionSystem {};
+struct AddCollisionFilter {};
+struct AddJointDef {};
+struct RenamePhysicsMaterial {
+    state::Entity Entity;
+    std::string Name;
+};
+struct RenameCollisionSystem {
+    state::Entity Entity;
+    std::string Name;
+};
+struct RenameCollisionFilter {
+    state::Entity Entity;
+    std::string Name;
+};
+struct RenameJointDef {
+    state::Entity Entity;
+    std::string Name;
+};
 
 // `Add` appends a missing node or removes all occurrences.
 struct ToggleFilterEntity {
@@ -69,16 +91,13 @@ struct DeleteJointVecItem {
     uint32_t Index;
 };
 
-using Actions = std::variant<
-    SetName, SetMotionType, SetColliderShape, AddTrigger, RemoveTriggerNodes,
-    CreateNamed, ToggleFilterEntity,
+using Action = std::variant<
+    SetMotionType, SetMotion, SetColliderShape, AddTrigger, RemoveTriggerNodes, SetTrigger,
+    AddPhysicsMaterial, AddCollisionSystem, AddCollisionFilter, AddJointDef,
+    RenamePhysicsMaterial, RenameCollisionSystem, RenameCollisionFilter, RenameJointDef,
+    ToggleFilterEntity,
     SetJointVecItem<PhysicsJointLimit>, AddJointVecItem<PhysicsJointLimit>, DeleteJointVecItem<PhysicsJointLimit>,
     SetJointVecItem<PhysicsJointDrive>, AddJointVecItem<PhysicsJointDrive>, DeleteJointVecItem<PhysicsJointDrive>>;
-
-using Action = MergedVariantT<
-    Actions,
-    Update<CollideMode>, Update<PhysicsCombineMode>, Update<PhysicsDriveType>, Update<PhysicsDriveMode>,
-    Replace<PhysicsMotion>>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::physics

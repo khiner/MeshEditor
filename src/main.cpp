@@ -1091,7 +1091,7 @@ struct BenchmarkDriver {
             case CaptureRequest::BenchmarkAction::Transform: {
                 const float offset = Frame % 2 == 0 ? 0.05f : 0.f;
                 for (const auto &[entity, base] : Transforms) {
-                    action::EmitSystem(action::UpdateOf<&Transform::P>(entity, base.P + vec3{0, offset, 0}));
+                    action::EmitSystem(action::UpdateOn<&Transform::P>(entity, base.P + vec3{0, offset, 0}));
                 }
                 break;
             }
@@ -1230,7 +1230,7 @@ struct CaptureDriver {
                 auto name = mv->Names[NextRenderVariant].empty() ? std::format("Variant {}", NextRenderVariant) : mv->Names[NextRenderVariant];
                 std::ranges::replace(name, '/', '-');
                 ScreenshotPath = fs::path{RenderBasename.string() + "." + name + ".webp"};
-                action::Emit(action::UpdateOf<&MaterialVariants::Active>(viewport, std::optional{NextRenderVariant}));
+                action::Emit(action::UpdateOn<&MaterialVariants::Active>(viewport, std::optional{NextRenderVariant}));
                 ++NextRenderVariant;
             } else {
                 ScreenshotSaved = true;
@@ -1257,7 +1257,7 @@ struct CaptureDriver {
                         const auto switch_clips = [&]<typename Anim>() {
                             for (const auto [entity, anim] : r.view<const Anim>().each()) {
                                 if (NextRenderClip < anim.Clips.size()) {
-                                    action::Emit(action::UpdateOf<&Anim::ActiveClipIndex>(entity, NextRenderClip));
+                                    action::Emit(action::UpdateOn<&Anim::ActiveClipIndex>(entity, NextRenderClip));
                                     switched = true;
                                 }
                             }
@@ -1326,7 +1326,7 @@ CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const
             Perform(r, action::view::SetEditMode{*capture.EditMode});
         }
     }
-    if (capture.SelectionXray) Perform(r, action::UpdateOf<&SelectionXRay::Value>(viewport, true));
+    if (capture.SelectionXray) Perform(r, action::UpdateOn<&SelectionXRay::Value>(viewport, true));
     if (capture.SelectAll) Perform(r, action::selection::SelectAll{});
     // After the load, whose end frame comes from the scene's own animation durations.
     if (capture.TimelineEnd > 0) {
@@ -1337,15 +1337,15 @@ CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const
     // Preserve the editor view for benchmark frames and screenshots.
     if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, action::timeline::EnterPresentation{});
     // Apply the explicit overlay override after enabling presentation mode.
-    if (capture.Overlays) Perform(r, action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, true));
+    if (capture.Overlays) Perform(r, action::UpdateOn<&ViewportDisplay::ShowOverlays>(viewport, true));
     if (capture.LodErrorPixels >= 0.f) {
-        Perform(r, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(viewport, capture.LodErrorPixels));
+        Perform(r, action::UpdateOn<&ViewportDisplay::LodErrorPixels>(viewport, capture.LodErrorPixels));
     }
     r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
     // Enable motion blur for video recording and preserve the current setting for still or audio-only captures.
     r.ctx().get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
     if (capture.Blur) {
-        Perform(r, action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, capture.Blur));
+        Perform(r, action::UpdateOn<&ViewportDisplay::MotionBlur>(viewport, capture.Blur));
     }
     if (capture.Shading) {
         Perform(r, action::view::SetViewportShading{*capture.Shading});
@@ -1598,7 +1598,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         driver.EmitFrameActions(r, viewport, viewport_settled, new_logical_extent);
         // Stage resize drags and commit one SetExtent on mouse-up for deterministic replay.
         if (new_logical_extent != uvec2{} && r.ctx().get<const ViewportExtent>().Value != new_logical_extent) {
-            action::EmitStaged(action::view::SetExtent{new_logical_extent});
+            action::Emit(action::view::SetExtent{new_logical_extent}, action::Phase::Stage);
             viewport_resizing = true;
         } else if (viewport_resizing && !IsMouseDown(ImGuiMouseButton_Left)) {
             action::Commit();
@@ -1708,9 +1708,9 @@ bool RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initi
     }
     // Apply the capture size after loading the project's workspace.
     action::Emit(action::view::SetExtent{DefaultWindowSize});
-    if (capture.NormalOverlays != 0) Perform(r, action::UpdateOf<&ViewportDisplay::NormalOverlays>(viewport, capture.NormalOverlays));
-    if (capture.BoundingBoxes) Perform(r, action::UpdateOf<&ViewportDisplay::ShowBoundingBoxes>(viewport, true));
-    if (capture.TetWireframe) Perform(r, action::UpdateOf<&ViewportDisplay::ShowTetWireframe>(viewport, true));
+    if (capture.NormalOverlays != 0) Perform(r, action::UpdateOn<&ViewportDisplay::NormalOverlays>(viewport, capture.NormalOverlays));
+    if (capture.BoundingBoxes) Perform(r, action::UpdateOn<&ViewportDisplay::ShowBoundingBoxes>(viewport, true));
+    if (capture.TetWireframe) Perform(r, action::UpdateOn<&ViewportDisplay::ShowTetWireframe>(viewport, true));
 
     frame_state.DeltaTime = driver.RenderDt;
     int bench_frames = capture.BenchFrames;

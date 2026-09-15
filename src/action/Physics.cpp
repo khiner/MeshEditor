@@ -1,45 +1,54 @@
 #include "action/Physics.h"
-#include "action/Dispatch.h"
+#include "Variant.h"
 #include "action/ScopeResolve.h"
 #include "scene/Entity.h"
 #include "state/Scene.h"
 
 namespace action::physics {
-void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
-    // Selected scope fans out to every selected entity matching `accept`, otherwise the active entity.
-    auto for_each_physics_target = [&](Scope scope, auto &&accept, auto &&fn) {
-        if (scope != Scope::Selected && scope != Scope::SelectedDelta) {
-            if (const auto e = FindActiveEntity(r); e != state::Null) fn(e);
-        } else
-            for (const auto e : r.view<Selected>())
-                if (accept(e)) fn(e);
-    };
+namespace {
+template<typename T> void Rename(state::Scene &r, state::Entity e, const std::string &name) {
+    r.patch<T>(e, [&](T &x) { x.Name = name; });
+}
+template<typename T> void AddNamed(state::Scene &r, std::string_view prefix) {
+    r.emplace<T>(r.create(), T{.Name = std::string{prefix} + ' ' + std::to_string(r.view<T>().size())});
+}
+} // namespace
+
+void Apply(state::Scene &r, state::Entity, const Action &action) {
     std::visit(
         overloaded{
-            [&](const CreateNamed &a) { ApplyCreateNamed(r, state::Slot(a.ComponentType), a.Prefix); },
-            [&](const SetName &a) { ApplySetName(r, state::Slot(a.ComponentType), a.Entity, a.Name); },
             [&](const SetMotionType &a) {
                 using Type = SetMotionType::Type;
-                const auto accept = [&](state::Entity e) { return r.any_of<ColliderShape, PhysicsMotion>(e); };
-                for_each_physics_target(a.Scope, accept, [&](state::Entity e) {
-                    const bool want_motion = a.Value == Type::Kinematic || a.Value == Type::Dynamic;
-                    const bool want_collider = a.Value == Type::Static || want_motion;
-                    if (!want_motion) r.remove<PhysicsMotion>(e);
-                    if (!want_collider) r.remove<ColliderShape>(e);
-                    if (want_collider && !r.all_of<ColliderShape>(e)) {
-                        r.emplace<ColliderShape>(e);
-                        r.emplace<ColliderPolicy>(e);
+                // Selected scope fans out to the selected entities that already take part in physics.
+                ForEachScopeTarget(
+                    a.Scope, state::Null, state::Null,
+                    [&] { return FindActiveEntity(r); },
+                    [&](auto &&fn) {
+                        for (const auto e : r.view<Selected>())
+                            if (r.any_of<ColliderShape, PhysicsMotion>(e)) fn(e);
+                    },
+                    [&](state::Entity e) {
+                        const bool want_motion = a.Value == Type::Kinematic || a.Value == Type::Dynamic;
+                        const bool want_collider = a.Value == Type::Static || want_motion;
+                        if (!want_motion) r.remove<PhysicsMotion>(e);
+                        if (!want_collider) r.remove<ColliderShape>(e);
+                        if (want_collider && !r.all_of<ColliderShape>(e)) {
+                            r.emplace<ColliderShape>(e);
+                            r.emplace<ColliderPolicy>(e);
+                        }
+                        if (want_motion) {
+                            const bool is_kinematic = a.Value == Type::Kinematic;
+                            if (!r.all_of<PhysicsMotion>(e)) r.emplace<PhysicsMotion>(e, PhysicsMotion{.IsKinematic = is_kinematic});
+                            else r.patch<PhysicsMotion>(e, [is_kinematic](PhysicsMotion &m) { m.IsKinematic = is_kinematic; });
+                        }
                     }
-                    if (want_motion) {
-                        const bool is_kinematic = a.Value == Type::Kinematic;
-                        if (!r.all_of<PhysicsMotion>(e)) r.emplace<PhysicsMotion>(e, PhysicsMotion{.IsKinematic = is_kinematic});
-                        else r.patch<PhysicsMotion>(e, [is_kinematic](PhysicsMotion &m) { m.IsKinematic = is_kinematic; });
-                    }
-                });
+                );
+            },
+            [&](const SetMotion &a) {
+                ForEachComponentTarget<PhysicsMotion>(r, a.Scope, state::Null, state::Null, [&](state::Entity e) { r.replace<PhysicsMotion>(e, *a.Value); });
             },
             [&](const SetColliderShape &a) {
-                const auto accept = [&](state::Entity e) { return r.all_of<ColliderShape>(e); };
-                for_each_physics_target(a.Scope, accept, [&](state::Entity e) {
+                ForEachComponentTarget<ColliderShape>(r, a.Scope, state::Null, state::Null, [&](state::Entity e) {
                     const auto owner_mesh = FindMeshEntity(r, e);
                     r.patch<ColliderShape>(e, [&](ColliderShape &cs) {
                         cs.Shape = a.Shape;
@@ -55,6 +64,19 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 r.emplace<TriggerTag>(e);
             },
             [&](RemoveTriggerNodes) { r.remove<TriggerNodes>(FindActiveEntity(r)); },
+            [&](const SetTrigger &a) {
+                const auto e = FindActiveEntity(r);
+                if (a.Value) r.emplace_or_replace<TriggerTag>(e);
+                else r.remove<TriggerTag>(e);
+            },
+            [&](AddPhysicsMaterial) { AddNamed<PhysicsMaterial>(r, "Material"); },
+            [&](AddCollisionSystem) { AddNamed<CollisionSystem>(r, "System"); },
+            [&](AddCollisionFilter) { AddNamed<CollisionFilter>(r, "Filter"); },
+            [&](AddJointDef) { AddNamed<PhysicsJointDef>(r, "Joint"); },
+            [&](const RenamePhysicsMaterial &a) { Rename<PhysicsMaterial>(r, a.Entity, a.Name); },
+            [&](const RenameCollisionSystem &a) { Rename<CollisionSystem>(r, a.Entity, a.Name); },
+            [&](const RenameCollisionFilter &a) { Rename<CollisionFilter>(r, a.Entity, a.Name); },
+            [&](const RenameJointDef &a) { Rename<PhysicsJointDef>(r, a.Entity, a.Name); },
             [&](const ToggleFilterEntity &a) {
                 r.patch<CollisionFilter>(a.FilterEntity, [&](CollisionFilter &f) {
                     auto &vec = a.Which == ToggleFilterEntity::List::Systems ? f.Systems : f.CollideSystems;
@@ -75,8 +97,6 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     vec.erase(vec.begin() + a.Index);
                 });
             },
-            [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
-            [&](const Replace<PhysicsMotion> &a) { ForEachReplaceTarget<PhysicsMotion>(r, a.Scope, a.Entity, [&](state::Entity e) { r.emplace_or_replace<PhysicsMotion>(e, *a.Value); }); },
         },
         action
     );

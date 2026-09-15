@@ -1,5 +1,6 @@
 #include "action/Audio.h"
 #include "Path.h"
+#include "Variant.h"
 #include "action/Errors.h"
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
@@ -26,7 +27,7 @@ template<typename T> void Patch(state::Scene &r, state::Entity e, auto edit) {
 }
 } // namespace
 
-void Apply(state::Scene &r, state::Entity, const Action &action) {
+void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     std::visit(
         overloaded{
             [&](const ApplyExciteImpact &a) {
@@ -92,7 +93,7 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 r.emplace_or_replace<RealImpactActiveMicrophone>(a.TargetSoundEntity, a.MicrophoneEntity);
             },
             [&](const RemoveVertexSamples &a) { ::RemoveVertexSamples(r, FindActiveEntity(r), a.MeshVertices); },
-            [&]<typename T>(const Replace<T> &a) { r.emplace_or_replace<T>(a.Entity, a.Value); },
+            [&](const SetOutputDevice &a) { r.replace<AudioOutputConfig>(viewport, AudioOutputConfig{.DeviceName = a.DeviceName, .SampleRate = 0}); },
         },
         action
     );

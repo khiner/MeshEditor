@@ -247,8 +247,8 @@ void SetupScene(state::Scene &r, state::Entity viewport) {
     r.emplace_or_replace<EditMode>(viewport);
     r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme);
     r.emplace_or_replace<ViewCamera>(viewport, Defaults::ViewCamera);
-    r.emplace_or_replace<MaterialPreviewLighting>(viewport, false, false, 1.f, 0.f);
-    r.emplace_or_replace<RenderedLighting>(viewport, true, true, 1.f, 0.f);
+    r.emplace_or_replace<MaterialPreviewLighting>(viewport, PBRViewportLighting{false, false, 1.f, 0.f});
+    r.emplace_or_replace<RenderedLighting>(viewport, PBRViewportLighting{true, true, 1.f, 0.f});
     r.emplace_or_replace<WorkspaceLights>(viewport, Defaults::WorkspaceLights);
     r.emplace_or_replace<EnabledInteractionModes>(viewport);
     r.emplace_or_replace<OrbitToActive>(viewport);

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "CameraTypes.h"
-#include "Variant.h"
 #include "action/Core.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "gpu/Element.h"
@@ -11,15 +10,6 @@
 #include "viewport/ViewportDisplay.h"
 
 struct PendingTransform;
-
-namespace action {
-// Heap-allocate big types to keep the variant small.
-template<>
-struct Replace<WorkspaceLights> {
-    state::Entity Entity;
-    std::unique_ptr<WorkspaceLights> Value;
-};
-} // namespace action
 
 namespace action::view {
 struct SetInteractionMode {
@@ -47,6 +37,10 @@ struct ResetViewCamera {};
 struct ResetViewportTheme {};
 struct ResetPbrLighting {
     bool Rendered;
+};
+// Replaces the viewport's solid-mode lights. Shared ownership bounds the action variant size.
+struct SetWorkspaceLights {
+    std::unique_ptr<WorkspaceLights> Value;
 };
 struct SetViewCameraTarget {
     vec3 Target;
@@ -117,21 +111,15 @@ struct SetActiveScene {
     state::Entity Scene;
 };
 
-using Actions = std::variant<
+using Action = std::variant<
     SetInteractionMode, CycleInteractionMode, SetEditMode,
-    EnterLookThroughCamera, ExitLookThroughCamera,
+    EnterLookThroughCamera, ExitLookThroughCamera, SetLookThroughCamera,
     SetViewportShading, OrbitViewCamera, ZoomViewCamera,
-    ResetViewCamera, ResetViewportTheme, ResetPbrLighting,
+    ResetViewCamera, ResetViewportTheme, ResetPbrLighting, SetWorkspaceLights,
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection,
     SetRotationUiMode, SetTransformRotationFromUi,
     DragGizmo, DragGizmoMeshEdit, EndGizmoDrag, SetActiveTool, LatchScreenTransform, ClearScreenTransformLatch,
     SetExtent, SetStudioEnvironment, SetSourceIblIntensity, SetActiveScene>;
-
-using Action = MergedVariantT<
-    Actions,
-    Replace<::Camera>, Replace<WorkspaceLights>,
-    Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
-    Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>, SetLookThroughCamera>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::view

@@ -451,21 +451,25 @@ void Project::Frame(action::Drained drained) {
         return;
     }
     auto pass = EventPass::Frame;
+    if (drained.CancelRequested && HasStaged()) {
+        CancelGesture();
+        Settle();
+        pass = EventPass::Settle;
+    }
     if (drained.Emitted) {
         auto [a, phase] = std::move(*drained.Emitted);
         if (phase == action::Phase::Cancel) {
-            const bool restart = Is<action::view::LatchScreenTransform>(a);
+            // A duplicate placement restarts under the new transform after its gesture is cancelled.
             std::optional<bool> duplicate;
             for (const auto &command : Commands) {
                 if (Is<action::object::Duplicate>(command.Value)) duplicate = false;
                 if (Is<action::object::DuplicateLinked>(command.Value)) duplicate = true;
             }
             CancelGesture();
-            if (restart && duplicate) {
+            if (duplicate) {
                 ApplyCommand(*duplicate ? action::MakeAction(action::object::DuplicateLinked{}) : action::MakeAction(action::object::Duplicate{}), EventPass::Settle, true);
             }
-            if (restart) Tick(a);
-            else Settle();
+            Tick(a);
         } else if (HasStaged() && Is<action::view::EndGizmoDrag>(a)) {
             FinishGesture(pass);
         } else {

@@ -3,29 +3,40 @@
 #include "action/Core.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
-
 #include "state/Scene.h"
 
-// Scope resolution for handlers whose component lives on the object entity (mesh-data components map object→mesh entity separately).
 namespace action {
-template<typename A, typename F>
-void ForEachScopeTarget(state::Scene &r, Scope scope, state::Entity entity, state::Entity fallback, A &&accept, F &&fn) {
+// Visits the targets a scope resolves to.
+// Scope::Entity targets `entity`, or `fallback` when `entity` is null.
+// `active()` returns the Active target or null, and `selected(fn)` visits the selection.
+template<typename A, typename S, typename F>
+void ForEachScopeTarget(Scope scope, state::Entity entity, state::Entity fallback, A &&active, S &&selected, F &&fn) {
     switch (scope) {
-        case Scope::Entity: fn(entity != state::Null ? entity : fallback); break;
+        case Scope::Entity:
+            if (const auto e = entity != state::Null ? entity : fallback; e != state::Null) fn(e);
+            break;
         case Scope::Active:
-            if (const auto e = FindActiveEntity(r); e != state::Null && accept(e)) fn(e);
+            if (const auto e = active(); e != state::Null) fn(e);
             break;
         case Scope::Selected:
-        case Scope::SelectedDelta:
-            for (const auto e : r.view<Selected>())
-                if (accept(e)) fn(e);
-            break;
+        case Scope::SelectedDelta: selected(fn); break;
     }
 }
 
-// Calls fn for each scope target that contains T.
+// Visits the scope's object entities that hold T.
 template<typename T, typename F>
-void ForEachReplaceTarget(state::Scene &r, Scope scope, state::Entity entity, F &&fn) {
-    ForEachScopeTarget(r, scope, entity, entity, [&](state::Entity e) { return r.all_of<T>(e); }, std::forward<F>(fn));
+void ForEachComponentTarget(state::Scene &r, Scope scope, state::Entity entity, state::Entity fallback, F &&fn) {
+    ForEachScopeTarget(
+        scope, entity, fallback,
+        [&] {
+            const auto e = FindActiveEntity(r);
+            return e != state::Null && r.all_of<T>(e) ? e : state::Null;
+        },
+        [&](auto &&f) {
+            for (const auto e : r.view<Selected>())
+                if (r.all_of<T>(e)) f(e);
+        },
+        std::forward<F>(fn)
+    );
 }
 } // namespace action

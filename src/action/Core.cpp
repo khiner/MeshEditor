@@ -2,38 +2,78 @@
 #include "Variant.h"
 #include "action/Dispatch.h"
 #include "action/ScopeResolve.h"
-#include "scene/Entity.h"
-#include "selection/SelectionComponents.h"
+#include "action/Updatable.h"
+#include "animation/AnimationData.h"
+#include "armature/ArmatureComponents.h"
+#include "audio/AudioTypes.h"
+#include "audio/ContactModel.h"
+#include "audio/ContactSurface.h"
+#include "audio/ModalModes.h"
+#include "gpu/PunctualLight.h"
+#include "gpu/ViewportTheme.h"
+#include "render/MaterialComponents.h"
+#include "scene/WorldTransform.h"
 #include "state/Scene.h"
+#include "viewport/InteractionComponents.h"
+#include "viewport/ViewportInteractionState.h"
+
+#include <algorithm>
 
 namespace action {
-void ApplyUpdateScoped(state::Scene &r, state::Entity viewport, Scope scope, state::Entity entity, state::TypeId component_type, uint16_t offset, const void *value, uint16_t size) {
-    const auto patcher = detail::PatchTable().at(component_type);
-    assert(patcher);
-    const auto *components = r.storage(component_type);
-    ForEachScopeTarget(
-        r, scope, entity, viewport,
-        [&](state::Entity e) { return components && components->contains(e); },
-        [&](state::Entity e) { patcher(r, e, offset, value, size); }
-    );
+namespace {
+template<typename Field>
+Field ClampField(Field v, Limit<Field> lo, Limit<Field> hi) {
+    if constexpr (VectorField<Field>) return numeric::Min(numeric::Max(v, lo), hi);
+    else return std::clamp(v, lo, hi);
 }
 
-void ForEachSelectedWith(state::Scene &r, state::TypeId component_type, const std::function<void(state::Entity)> &fn) {
-    const auto *components = r.storage(component_type);
-    if (!components) return;
-    for (const auto e : r.view<Selected>())
-        if (components->contains(e)) fn(e);
+template<typename Field>
+void ApplyUpdate(state::Scene &r, state::Entity viewport, const Update<Field> &a) {
+    ForUpdatable(state::Slot(a.ComponentType), [&]<typename C> {
+        using Traits = UpdateTraits<C>;
+        const auto write = [&](state::Entity e, Field value) {
+            if constexpr (DeltaField<Field>) value = ClampField(value, a.Min, a.Max);
+            Traits::Write(r, e, a.Offset, &value, sizeof(Field));
+        };
+        if constexpr (DeltaField<Field>) {
+            if (a.Scope == Scope::SelectedDelta) {
+                // Offset each selected target by the active target's change from its drag start.
+                const auto active = Traits::Active(r);
+                if (active == state::Null) return;
+                const auto start = [&](state::Entity e) {
+                    return FieldGestureStart<Field>(r, e, state::Type<C>(), a.Offset, [&](Field &v) { Traits::Read(r, e, a.Offset, &v, sizeof(Field)); });
+                };
+                const auto active_start = start(active);
+                Traits::ForEachSelected(r, [&](state::Entity e) {
+                    if (e == active) {
+                        write(e, a.Value);
+                    } else if constexpr (std::integral<Field>) {
+                        // Accumulate in a wider signed type so an unsigned field can't wrap on a downward delta.
+                        const auto value = int64_t(start(e)) + int64_t(a.Value) - int64_t(active_start);
+                        write(e, Field(std::clamp<int64_t>(value, std::numeric_limits<Field>::min(), std::numeric_limits<Field>::max())));
+                    } else {
+                        write(e, start(e) + (a.Value - active_start));
+                    }
+                });
+                return;
+            }
+        }
+        ForEachScopeTarget(
+            a.Scope, a.Entity, viewport,
+            [&] { return Traits::Active(r); },
+            [&](auto &&fn) { Traits::ForEachSelected(r, fn); },
+            [&](state::Entity e) {
+                if (Traits::Has(r, e)) write(e, a.Value);
+            }
+        );
+    });
 }
-
-void ApplyTagScoped(state::Scene &r, state::Entity viewport, Scope scope, state::Entity entity, state::TypeId tag_type, bool present) {
-    ForEachScopeTarget(r, scope, entity, viewport, [](state::Entity) { return true; }, [&](state::Entity e) { ApplyTag(r, e, tag_type, present); });
-}
+} // namespace
 
 void Apply(state::Scene &r, state::Entity viewport, const Core &action) {
     std::visit(
         overloaded{
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
-            [&](const SetTag &a) { ApplyTagScoped(r, viewport, a.Scope, a.Entity, state::Slot(a.TagType), a.Present); },
             [&](const DestroyEntity &a) { r.destroy(a.Entity); },
         },
         action

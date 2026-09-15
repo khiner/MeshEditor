@@ -69,8 +69,12 @@ struct PBRViewportLighting {
     float ExposureEV{0.f};
 };
 
-struct MaterialPreviewLighting : PBRViewportLighting {};
-struct RenderedLighting : PBRViewportLighting {};
+struct MaterialPreviewLighting {
+    PBRViewportLighting Value;
+};
+struct RenderedLighting {
+    PBRViewportLighting Value;
+};
 
 // The active studio HDRI environment, by source name so it stays stable across runs (unlike the directory-scan index).
 struct StudioEnvironment {
