@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <ranges>
+#include <unordered_map>
 #include <vector>
 
 using namespace boost::ut;
@@ -28,21 +29,26 @@ namespace {
 constexpr float Fps{60};
 constexpr int RangeEnd{240};
 
+// Body creations per scene, counted by a handler that knows only the scene.
+std::unordered_map<const state::Scene *, uint32_t> BodyCreationCounts;
+
 struct Scene {
     state::Scene R;
     state::Entity Viewport{};
     int Frame{0};
-    uint32_t BodyCreations = 0;
-    void BodyCreated(state::Scene &, state::Entity) { ++BodyCreations; }
+    uint32_t &BodyCreations{BodyCreationCounts[&R]};
 
     Scene() {
         R.ctx().emplace<mtl::Context>();
         physics::Init(R);
-        R.on_construct<PhysicsBodyHandle>().connect<&Scene::BodyCreated>(*this);
+        R.on_construct<PhysicsBodyHandle>().connect<[](state::Scene &r, state::Entity) { ++BodyCreationCounts[&r]; }>();
         Viewport = R.create();
         R.emplace<PhysicsSimulationSettings>(Viewport);
     }
-    ~Scene() { physics::Deinit(R); }
+    ~Scene() {
+        physics::Deinit(R);
+        BodyCreationCounts.erase(&R);
+    }
 
     // A body at `position`, static without motion and dynamic with it. Colliders on children make it a compound.
     state::Entity AddBody(vec3 position, std::optional<PhysicsShape> shape, std::optional<PhysicsMotion> motion, vec3 velocity = {}) {

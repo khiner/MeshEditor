@@ -6,7 +6,7 @@
 #include "editor/Engine.h"
 #include "mesh/MeshStore.h"
 #include "metal/Buffer.h"
-#include "project/BufferHistory.h"
+#include "project/store/Pages.h"
 #include "project/Project.h"
 #include "scene/Entity.h"
 #include "viewport/Viewport.h"
@@ -139,7 +139,7 @@ int main() {
         history.Navigate(0);
         history.Evict(0);
         const auto stats = history.Stats();
-        std::printf("        after eviction: %llu owned bytes, %.3f MiB retained, %.3f MiB peak pending writes\n", (unsigned long long)stats.OwnedBytes, double(stats.RetainedBytes()) / MiB, double(stats.PeakPendingBytes) / MiB);
+        std::printf("        after eviction: %llu owned bytes, %.3f MiB shared nodes\n", (unsigned long long)stats.OwnedBytes, double(stats.SharedNodeBytes) / MiB);
         expect(history.Close());
     }
     for (const bool render : {false, true}) {

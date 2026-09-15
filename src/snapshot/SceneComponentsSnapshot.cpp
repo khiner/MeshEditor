@@ -18,8 +18,6 @@
 #include "viewport/ViewportEvents.h"
 
 namespace snapshot::detail {
-template<> inline constexpr bool ForceFieldwise<Camera> = true;
-template<> inline constexpr bool ForceFieldwise<TimelinePlayback> = true;
 
 void RegisterScene(Tables &tables) {
     Persistent<

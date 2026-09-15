@@ -8,8 +8,9 @@
 #include "gpu/EditSelectionSummary.h"
 #include "gpu/FanItemEncoding.h"
 #include "metal/BufferArena.h"
-#include "project/BufferHistory.h"
-#include "project/VectorHistory.h"
+#include "project/store/History.h"
+#include "project/store/Pages.h"
+#include "project/store/Records.h"
 #include "selection/SelectionBitset.h"
 
 
@@ -134,13 +135,15 @@ struct MeshStore::HistoryState {
         uint64_t Begin, End;
         uint32_t Id, Bits;
     };
-    project::VectorHistory<Entry> Entries;
-    project::VectorHistory<uint32_t> Free;
+    store::Records Entries, Free;
     std::unordered_map<mtl::Buffer *, std::vector<Extent>> Ranges;
     bool RangesDirty{true};
 
-    HistoryState(MeshStore &mesh, store::History &history)
-        : Entries(mesh.Entries, history, "mesh.entries"), Free(mesh.FreeIds, history, "mesh.free") { Entries.Trie.CollectChanged = true; }
+    HistoryState(MeshStore &mesh, store::History &history) : Entries(mesh.Entries), Free(mesh.FreeIds) {
+        Entries.Trie.CollectChanged = true;
+        history.Track(Entries, "mesh.entries", 0);
+        history.Track(Free, "mesh.free", 0);
+    }
 
     void Index(MeshStore &mesh) {
         for (auto &[buffer, ranges] : Ranges) ranges.clear();
@@ -268,7 +271,7 @@ void MeshStore::CaptureWeldWrite(uint32_t id) {
 
 MeshStore::Entry &MeshStore::WriteEntry(uint32_t id) {
     if (Tracked) {
-        Tracked->Entries.Trie.Write(id, 1);
+        Tracked->Entries.Write(id, 1);
         Tracked->RangesDirty = true;
     }
     return Entries.at(id);
@@ -1487,14 +1490,14 @@ void MeshStore::Release(uint32_t id) {
     B->BoneDeformBuffer.Release(entry.BoneDeform);
     B->MorphTargetBuffer.Release(entry.MorphTargets);
     entry = {};
-    if (Tracked) Tracked->Free.Trie.Write(FreeIds.size(), 1);
+    if (Tracked) Tracked->Free.Write(FreeIds.size(), 1);
     FreeIds.emplace_back(id);
 }
 
 void MeshStore::Clear() {
     if (Tracked) {
-        Tracked->Entries.Trie.Write(0, Entries.size());
-        Tracked->Free.Trie.Write(0, FreeIds.size());
+        Tracked->Entries.Write(0, Entries.size());
+        Tracked->Free.Write(0, FreeIds.size());
         Tracked->RangesDirty = true;
     }
     B->ForEachSerializedArena([](auto &a, auto) { a.Reset(); });
@@ -1536,13 +1539,13 @@ using namespace he;
 uint32_t MeshStore::AcquireId(Entry &&entry) {
     if (!FreeIds.empty()) {
         const auto reused = FreeIds.back();
-        if (Tracked) Tracked->Free.Trie.Write(FreeIds.size() - 1, 1);
+        if (Tracked) Tracked->Free.Write(FreeIds.size() - 1, 1);
         FreeIds.pop_back();
         WriteEntry(reused) = std::move(entry);
         return reused;
     }
     if (Tracked) {
-        Tracked->Entries.Trie.Write(Entries.size(), 1);
+        Tracked->Entries.Write(Entries.size(), 1);
         Tracked->RangesDirty = true;
     }
     Entries.emplace_back(std::move(entry));

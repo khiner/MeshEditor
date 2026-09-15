@@ -5,6 +5,7 @@
 #include <cassert>
 #include <format>
 #include <memory_resource>
+#include <unordered_set>
 
 namespace store {
 namespace {
@@ -85,21 +86,22 @@ void ToInterior(LiveTrie &trie, Node *n, Node *const *adopt = nullptr) {
     }
 }
 
-// Use the cached hash until the slot is marked dirty, then hash the captured value.
+// Use the settled hash of the slot, or hash the raw bytes of a value the slot holds in default state.
 Hash128 ContentHash(const LiveTrie &trie, uint64_t slot, const Blob &value) {
     if (slot < trie.SlotHashes.size()) {
         const auto &e = trie.SlotHashes[slot];
         if (e.State == LiveTrie::SlotState::Value && !e.Dirty) return e.H;
     }
-    return HashBytes(store::Encoded(trie.L, value));
+    assert(!value.Destroy && "native values require a settled hash");
+    return HashBytes(value.View());
 }
 
-void CaptureInto(LiveTrie &trie, Node *n, uint64_t slot) {
+void CaptureInto(LiveTrie &trie, Node *n, uint64_t slot, std::optional<Blob> value) {
     assert(n->Kind == NodeKind::Aliased);
     --trie.S.AliasedNodes;
-    if (trie.L.Present(slot)) {
+    if (value) {
         n->Kind = NodeKind::Owned;
-        n->Value = store::Capture(trie.L, slot);
+        n->Value = *value;
         n->Hash = ContentHash(trie, slot, n->Value);
         ++trie.S.OwnedSlots;
         trie.S.OwnedBytes += n->Value.OwnedBytes();
@@ -113,7 +115,7 @@ LiveTrie::SlotHash &SlotHashAt(LiveTrie &trie, uint64_t slot) {
     return trie.SlotHashes[slot];
 }
 
-void MarkDirty(LiveTrie &trie, uint64_t slot) {
+void MarkDirtySlot(LiveTrie &trie, uint64_t slot) {
     auto &e = SlotHashAt(trie, slot);
     if (!e.Dirty) {
         e.Dirty = true;
@@ -121,15 +123,15 @@ void MarkDirty(LiveTrie &trie, uint64_t slot) {
     }
 }
 
-// Return the writable node.
+// Return the writable node, capturing leaves in [first, last] with fetch(slot).
 // The caller releases its reference to n when the result differs.
-Node *WriteRec(LiveTrie &trie, Node *n, uint32_t level, uint64_t base, uint64_t first, uint64_t last, bool owned) {
+Node *WriteRec(LiveTrie &trie, Node *n, uint32_t level, uint64_t base, uint64_t first, uint64_t last, bool owned, auto &&fetch) {
     const bool uniq = owned && n->Refs == 1;
     if (uniq && n->Kind == NodeKind::Aliased) return n;
 
     if (level == 0) {
         assert(n->Kind == NodeKind::Aliased && "the present reaches only aliased leaves");
-        CaptureInto(trie, n, base);
+        CaptureInto(trie, n, base, fetch(base));
         return Alloc(trie, NodeKind::Aliased);
     }
 
@@ -148,7 +150,7 @@ Node *WriteRec(LiveTrie &trie, Node *n, uint32_t level, uint64_t base, uint64_t 
     const uint32_t hi = uint32_t((std::min(last, base + SlotSpan(level) - 1) - base) / span);
     for (uint32_t i = lo; i <= hi; ++i) {
         auto *child = n->Children[i];
-        auto *replacement = WriteRec(trie, child, level - 1, base + i * span, first, last, uniq);
+        auto *replacement = WriteRec(trie, child, level - 1, base + i * span, first, last, uniq, fetch);
         if (replacement != child) {
             ReleaseNode(trie, p->Children[i]);
             p->Children[i] = replacement;
@@ -157,16 +159,15 @@ Node *WriteRec(LiveTrie &trie, Node *n, uint32_t level, uint64_t base, uint64_t 
     return p;
 }
 
-void WriteImpl(LiveTrie &trie, uint64_t first, uint64_t count) {
+void CaptureImpl(LiveTrie &trie, uint64_t first, uint64_t count, auto &&fetch) {
     if (count == 0) return;
+    assert(!trie.Busy && "capture between a plan and its commit");
     assert(first + count <= SlotSpan(trie.Levels));
-    auto *root = WriteRec(trie, trie.Root, trie.Levels, 0, first, first + count - 1, true);
+    auto *root = WriteRec(trie, trie.Root, trie.Levels, 0, first, first + count - 1, true, fetch);
     if (root != trie.Root) {
         ReleaseNode(trie, trie.Root);
         trie.Root = root;
     }
-    // Mark hashes dirty after capturing values with their pre-write hashes.
-    for (uint64_t s = first, last = first + count; s < last; ++s) MarkDirty(trie, s);
 }
 
 void DirtyManifest(LiveTrie &trie, uint32_t level, uint64_t index) {
@@ -196,49 +197,69 @@ void RehashSlot(LiveTrie &trie, uint64_t slot, Hash128 incoming, bool incoming_d
     }
 }
 
-// Swap differing values and return the target node for the present version.
-Node *RestoreRec(LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base, bool owned) {
+// Collect the leaves that differ between the present and the target version, moving owned values into the plan.
+void PlanRec(LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base, RestorePlan &plan) {
+    if (p == t) return;
+    if (level == 0) {
+        assert(p->Kind == NodeKind::Aliased);
+        if (t->Kind == NodeKind::Aliased) return;
+        SlotChange c{.Slot = base};
+        if (t->Kind == NodeKind::Owned) {
+            --trie.S.OwnedSlots;
+            trie.S.OwnedBytes -= t->Value.OwnedBytes();
+            c.Incoming = std::exchange(t->Value, {});
+            const auto *e = base < trie.SlotHashes.size() ? &trie.SlotHashes[base] : nullptr;
+            c.MaybeEqual = !(e && e->State == LiveTrie::SlotState::Value && !e->Dirty && !(e->H == t->Hash));
+            c.Default = trie.PageBytes && (c.Incoming.Size != trie.PageBytes || IsZero(c.Incoming.View()));
+        } else {
+            c.Erase = true;
+        }
+        plan.Changes.push_back(c);
+        return;
+    }
+    if (t->Kind == NodeKind::Aliased) return;
+    assert(t->Kind == NodeKind::Interior);
+    const bool aliased = p->Kind == NodeKind::Aliased;
+    const auto span = SlotSpan(level - 1);
+    for (uint32_t i = 0; i < Fanout; ++i) {
+        auto *child = aliased ? p : p->Children[i];
+        if (child != t->Children[i]) PlanRec(trie, child, t->Children[i], level - 1, base + i * span, plan);
+    }
+}
+
+// Swap applied values and return the target node for the present version.
+Node *CommitRec(LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base, bool owned, RestorePlan &plan, size_t &next) {
     if (p == t) return t;
     const bool uniq = owned && p->Refs == 1;
 
     if (level == 0) {
         assert(p->Kind == NodeKind::Aliased);
         if (t->Kind == NodeKind::Aliased) return t; // Both alias live data.
+        auto &c = plan.Changes[next++];
+        assert(c.Slot == base && "plan applied out of order");
         const auto slot = base;
         NodeKind old_kind;
         Blob old_value{};
         Hash128 old_hash{};
-        bool changed = true;
         if (t->Kind == NodeKind::Owned) {
-            --trie.S.OwnedSlots;
-            trie.S.OwnedBytes -= t->Value.OwnedBytes();
-            // Matching hashes still require byte and entity-generation comparisons.
-            const auto *e = slot < trie.SlotHashes.size() ? &trie.SlotHashes[slot] : nullptr;
-            const bool maybe_equal = !(e && e->State == LiveTrie::SlotState::Value && !e->Dirty && !(e->H == t->Hash));
-            if (maybe_equal && store::Equals(trie.L, slot, t->Value)) {
-                old_value = t->Value;
+            if (c.Unchanged) {
+                old_value = c.Incoming;
                 old_hash = t->Hash;
                 old_kind = NodeKind::Owned;
-                changed = false;
             } else {
-                const bool incoming_default = store::DefaultValue(trie.L, t->Value);
-                bool was_present = false;
-                old_value = trie.L.Replace(slot, t->Value, was_present);
-                old_kind = was_present ? NodeKind::Owned : NodeKind::Absent;
-                if (was_present) old_hash = ContentHash(trie, slot, old_value);
-                RehashSlot(trie, slot, t->Hash, incoming_default);
+                old_value = c.Old;
+                old_kind = c.WasPresent ? NodeKind::Owned : NodeKind::Absent;
+                if (c.WasPresent) old_hash = ContentHash(trie, slot, old_value);
+                RehashSlot(trie, slot, t->Hash, c.Default);
             }
-            t->Value = {};
+        } else if (c.Unchanged) {
+            old_kind = NodeKind::Absent;
         } else {
-            if (trie.L.Present(slot)) {
-                old_value = trie.L.Erase(slot);
-                old_kind = NodeKind::Owned;
-                old_hash = ContentHash(trie, slot, old_value);
-                RehashSlot(trie, slot, {}, true);
-            } else {
-                old_kind = NodeKind::Absent;
-                changed = false;
-            }
+            assert(c.WasPresent);
+            old_value = c.Old;
+            old_kind = NodeKind::Owned;
+            old_hash = ContentHash(trie, slot, old_value);
+            RehashSlot(trie, slot, {}, true);
         }
         t->Kind = NodeKind::Aliased;
         ++trie.S.AliasedNodes;
@@ -254,7 +275,7 @@ Node *RestoreRec(LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base
         } else if (old_kind == NodeKind::Owned) {
             FreeBlob(old_value);
         }
-        if (changed && trie.CollectChanged) trie.ChangedSlots.push_back(slot);
+        if (!c.Unchanged && trie.CollectChanged) trie.ChangedSlots.push_back(slot);
         return t;
     }
 
@@ -268,42 +289,20 @@ Node *RestoreRec(LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base
     assert(p->Kind == NodeKind::Interior);
     const auto span = SlotSpan(level - 1);
     for (uint32_t i = 0; i < Fanout; ++i) {
-        if (p->Children[i] != t->Children[i]) RestoreRec(trie, p->Children[i], t->Children[i], level - 1, base + i * span, uniq);
+        if (p->Children[i] != t->Children[i]) CommitRec(trie, p->Children[i], t->Children[i], level - 1, base + i * span, uniq, plan, next);
     }
     return t;
 }
 
-bool DiffersRec(const LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base) {
-    if (p == t) return false;
-    if (level == 0) {
-        switch (t->Kind) {
-            case NodeKind::Aliased: return false;
-            case NodeKind::Absent: return trie.L.Present(base);
-            case NodeKind::Owned: return !store::Equals(trie.L, base, t->Value);
-            case NodeKind::Interior: return true;
-        }
-    }
-    if (t->Kind == NodeKind::Aliased) return false;
-    const auto span = SlotSpan(level - 1);
-    for (uint32_t i = 0; i < Fanout; ++i) {
-        auto *child = p->Kind == NodeKind::Aliased ? p : p->Children[i];
-        if (child != t->Children[i] && DiffersRec(trie, child, t->Children[i], level - 1, base + i * span)) return true;
-    }
-    return false;
-}
-
-void MaterializeRec(const LiveTrie &trie, Node *n, uint32_t level, uint64_t base, uint64_t limit, const std::function<void(uint64_t, std::span<const std::byte>)> &visit) {
+void MaterializeRec(Node *n, uint32_t level, uint64_t base, uint64_t limit, std::vector<MaterializedRun> &out) {
     if (base >= limit) return;
     switch (n->Kind) {
-        case NodeKind::Aliased:
-            for (uint64_t s = base, end = std::min(limit, base + SlotSpan(level)); s < end; ++s)
-                if (trie.L.Present(s)) visit(s, trie.L.Read(s));
-            return;
-        case NodeKind::Owned: visit(base, store::Encoded(trie.L, n->Value)); return;
+        case NodeKind::Aliased: out.push_back({base, std::min(limit, base + SlotSpan(level)) - base, nullptr}); return;
+        case NodeKind::Owned: out.push_back({base, 1, &n->Value}); return;
         case NodeKind::Absent: return;
         case NodeKind::Interior: {
             const auto span = SlotSpan(level - 1);
-            for (uint32_t i = 0; i < Fanout; ++i) MaterializeRec(trie, n->Children[i], level - 1, base + i * span, limit, visit);
+            for (uint32_t i = 0; i < Fanout; ++i) MaterializeRec(n->Children[i], level - 1, base + i * span, limit, out);
             return;
         }
     }
@@ -355,35 +354,65 @@ bool CheckVersionRec(Node *n, const std::unordered_set<const Node *> &present_al
 
 uint64_t SharedNodePoolBytes() { return Allocator().Memory.Bytes.load(std::memory_order_relaxed); }
 
-LiveTrie::LiveTrie(Live live, uint32_t levels, uint32_t slot_bytes)
-    : L(std::move(live)), Levels(levels), BytesPerSlot(slot_bytes), Root(Alloc(*this, NodeKind::Aliased)), Manifest(levels) {}
+LiveTrie::LiveTrie(uint32_t levels, uint32_t page_bytes)
+    : Levels(levels), PageBytes(page_bytes), Root(Alloc(*this, NodeKind::Aliased)), Manifest(levels) {}
 
 LiveTrie::~LiveTrie() { ReleaseNode(*this, Root); }
 
-void LiveTrie::SettleHashes() {
+void LiveTrie::Write(uint64_t first, uint64_t count, std::span<const std::byte> contents) {
+    CaptureImpl(*this, first, count, [&](uint64_t slot) -> std::optional<Blob> {
+        const auto end = (slot + 1) * PageBytes;
+        if (end > contents.size()) return std::nullopt;
+        return CopyBlob(contents.subspan(slot * PageBytes, PageBytes));
+    });
+    // Mark hashes dirty after capturing values with their pre-write hashes.
+    MarkDirty(first, count);
+}
+
+bool LiveTrie::Uncaptured(uint64_t slot) const {
+    assert(slot < SlotSpan(Levels));
+    bool uniq = true;
+    const Node *n = Root;
+    for (uint32_t level = Levels;; --level) {
+        uniq = uniq && n->Refs == 1;
+        if (n->Kind == NodeKind::Aliased) return !uniq;
+        assert(n->Kind == NodeKind::Interior && level > 0);
+        n = n->Children[(slot / SlotSpan(level - 1)) % Fanout];
+    }
+}
+
+void LiveTrie::Capture(uint64_t slot, std::optional<Blob> value) {
+    CaptureImpl(*this, slot, 1, [&](uint64_t) { return std::exchange(value, std::nullopt); });
+    if (value) FreeBlob(*value);
+}
+
+void LiveTrie::MarkDirty(uint64_t first, uint64_t count) {
+    for (uint64_t s = first, last = first + count; s < last; ++s) MarkDirtySlot(*this, s);
+}
+
+void LiveTrie::Rehash(uint64_t slot, std::optional<std::span<const std::byte>> bytes) {
+    auto &e = SlotHashAt(*this, slot);
+    e.Dirty = false;
+    if (!bytes || (PageBytes && IsZero(*bytes))) RehashSlot(*this, slot, {}, true);
+    else RehashSlot(*this, slot, HashBytes(*bytes), false);
+}
+
+void LiveTrie::SettleFlat(std::span<const std::byte> contents) {
     for (const auto slot : DirtySlots) {
-        auto &e = SlotHashes[slot];
-        if (!e.Dirty) continue; // Skip duplicate dirty indices.
-        e.Dirty = false;
-        if (store::DefaultAt(L, slot)) RehashSlot(*this, slot, {}, true);
-        else RehashSlot(*this, slot, HashBytes(L.Read(slot)), false);
+        const auto end = (slot + 1) * PageBytes;
+        if (end > contents.size()) Rehash(slot, std::nullopt);
+        else Rehash(slot, contents.subspan(slot * PageBytes, PageBytes));
     }
     DirtySlots.clear();
 }
 
-Stamp LiveTrie::CurrentStamp() {
-    SettleHashes();
-    return {{Lane0, Lane1}, L.Length()};
+Stamp LiveTrie::CurrentStamp(uint64_t length) const {
+    assert(DirtySlots.empty() && "stamp requires settled hashes");
+    return {{Lane0, Lane1}, length};
 }
 
-void LiveTrie::Write(uint64_t first, uint64_t count) {
-    assert(!Busy && "write reentry into a trie mid-restore or mid-load");
-    assert(!ExternalWritesForbidden && "LiveTrie::Write forbidden during track restoration and AfterTracks");
-    WriteImpl(*this, first, count);
-}
-
-Version LiveTrie::Pin() {
-    const auto s = CurrentStamp();
+Version LiveTrie::Pin(uint64_t length) {
+    const auto s = CurrentStamp(length);
     ++Root->Refs;
     return {Root, s};
 }
@@ -393,54 +422,64 @@ void LiveTrie::Release(Version &v) {
     v = {};
 }
 
-bool LiveTrie::Restore(const Version &v) {
+RestorePlan LiveTrie::PlanRestore(const Version &v) {
     assert(!Busy && "restore reentry into a trie mid-restore or mid-load");
+    assert(DirtySlots.empty() && "restore requires settled hashes");
     Busy = true;
-    SettleHashes(); // Update hashes before capturing outgoing values.
-    auto *root = RestoreRec(*this, Root, v.Root, Levels, 0, true);
+    RestorePlan plan;
+    plan.Length = v.S.Length;
+    plan.Target = v.Root;
+    plan.Hash = v.S.H;
+    PlanRec(*this, Root, v.Root, Levels, 0, plan);
+    return plan;
+}
+
+bool LiveTrie::CommitRestore(RestorePlan &&plan) {
+    assert(Busy);
+    size_t next = 0;
+    auto *root = CommitRec(*this, Root, plan.Target, Levels, 0, true, plan, next);
+    assert(next == plan.Changes.size() && "plan applied incompletely");
     ++root->Refs;
     ReleaseNode(*this, Root);
     Root = root;
-    if (L.SetLength) L.SetLength(v.S.Length);
     Busy = false;
-    return Hash128{Lane0, Lane1} == v.S.H;
+    return Hash128{Lane0, Lane1} == plan.Hash;
 }
 
-bool LiveTrie::Differs(const Version &v) const {
-    if (L.Length() != v.S.Length) return true;
-    return DiffersRec(*this, Root, v.Root, Levels, 0);
-}
-
-void LiveTrie::Materialize(const Version &v, const std::function<void(uint64_t, std::span<const std::byte>)> &visit) const {
-    MaterializeRec(*this, v.Root, Levels, 0, store::SlotsFor(L, v.S.Length), visit);
-}
-
-void LiveTrie::LoadChanges(uint64_t length, std::span<const std::pair<uint64_t, Hash128>> changes, const std::unordered_map<Hash128, std::vector<std::byte>, Hash128Hasher> &leaves) {
+RestorePlan LiveTrie::PlanLoad(uint64_t length, std::span<const std::pair<uint64_t, Hash128>> changes, const std::unordered_map<Hash128, std::vector<std::byte>, Hash128Hasher> &leaves) {
     assert(!Busy && "load reentry into a trie mid-restore or mid-load");
+    assert(DirtySlots.empty() && "load requires settled hashes");
     Busy = true;
-    SettleHashes();
-    const auto apply = [&](uint64_t slot, Blob incoming, bool erase = false) {
-        WriteImpl(*this, slot, 1);
-        bool was_present;
-        auto old = erase ? L.Erase(slot) : L.Replace(slot, incoming, was_present);
-        FreeBlob(old);
-        if (CollectChanged) ChangedSlots.push_back(slot);
-    };
+    RestorePlan plan;
+    plan.Length = length;
+    plan.Changes.reserve(changes.size());
     for (const auto &[slot, hash] : changes) {
         const bool erase = hash == Hash128{};
-        apply(slot, erase ? Blob{} : CopyBlob(leaves.at(hash)), erase);
+        plan.Changes.push_back({.Slot = slot, .Incoming = erase ? Blob{} : CopyBlob(leaves.at(hash)), .Erase = erase});
     }
-    if (L.ForEachNonReusable) L.ForEachNonReusable([&](uint64_t slot) {
-        // Changed slots already have replacements queued.
-        if (!SlotHashes[slot].Dirty) apply(slot, store::Capture(L, slot));
-    });
-    if (L.SetLength) L.SetLength(length);
-    Busy = false;
+    return plan;
 }
 
-ManifestChildren LiveTrie::ChildrenAt(uint32_t level, uint64_t index) const {
+void LiveTrie::CommitLoad(RestorePlan &&plan) {
+    assert(Busy);
+    Busy = false;
+    for (auto &c : plan.Changes) {
+        if (Uncaptured(c.Slot)) Capture(c.Slot, c.WasPresent ? std::optional{c.Old} : std::nullopt);
+        else if (c.WasPresent) FreeBlob(c.Old);
+        if (CollectChanged) ChangedSlots.push_back(c.Slot);
+    }
+    for (const auto &c : plan.Changes) MarkDirtySlot(*this, c.Slot);
+}
+
+std::vector<MaterializedRun> LiveTrie::Materialize(const Version &v) const {
+    std::vector<MaterializedRun> out;
+    MaterializeRec(v.Root, Levels, 0, SlotsFor(v.S.Length), out);
+    return out;
+}
+
+ManifestChildren LiveTrie::ChildrenAt(uint32_t level, uint64_t index, uint64_t length) const {
     ManifestChildren children{};
-    const auto limit = store::SlotsFor(L, L.Length());
+    const auto limit = SlotsFor(length);
     for (uint64_t digit = 0; digit < Fanout; ++digit) {
         const auto child = index * Fanout + digit;
         if (level == 0) {
@@ -453,9 +492,9 @@ ManifestChildren LiveTrie::ChildrenAt(uint32_t level, uint64_t index) const {
     return children;
 }
 
-Hash128 LiveTrie::ManifestRoot() {
-    SettleHashes();
-    const auto slots = store::SlotsFor(L, L.Length());
+Hash128 LiveTrie::ManifestRoot(uint64_t length) {
+    assert(DirtySlots.empty() && "manifest requires settled hashes");
+    const auto slots = SlotsFor(length);
     // Recompute boundary manifests when the live length changes.
     if (slots != ManifestSlots) {
         const auto end = std::min<uint64_t>(std::max(slots, ManifestSlots), SlotHashes.size());
@@ -467,7 +506,7 @@ Hash128 LiveTrie::ManifestRoot() {
         for (const auto index : m.Dirty) {
             auto &node = m.Nodes[index];
             node.Dirty = false;
-            const auto hash = ManifestRecord{level, ChildrenAt(level, index)}.Hash();
+            const auto hash = ManifestRecord{level, ChildrenAt(level, index, length)}.Hash();
             if (node.Hash == hash) continue;
             node.Hash = hash;
             if (level + 1 < Levels) DirtyManifest(*this, level + 1, index / Fanout);
@@ -477,30 +516,20 @@ Hash128 LiveTrie::ManifestRoot() {
     return Manifest.back().Nodes.empty() ? Hash128{} : Manifest.back().Nodes[0].Hash;
 }
 
-uint64_t LiveTrie::ManifestBytes() const {
-    uint64_t bytes = Manifest.capacity() * sizeof(ManifestLevel);
-    for (const auto &m : Manifest) bytes += m.Nodes.capacity() * sizeof(ManifestNode) + m.Dirty.capacity() * sizeof(uint64_t);
-    return bytes;
-}
-
-bool LiveTrie::CheckHashes(std::string &why) const {
+bool LiveTrie::CheckHashes(std::string &why, std::span<const std::pair<uint64_t, Hash128>> live) const {
     if (!DirtySlots.empty()) {
         why = "unsettled dirty slots";
         return false;
     }
     uint64_t l0 = 0, l1 = 0;
-    uint64_t bad = ~0ull;
-    store::ForEachPresent(L, [&](uint64_t s) {
-        if (store::DefaultAt(L, s)) return;
-        const auto h = HashBytes(L.Read(s));
+    for (const auto &[s, h] : live) {
         const Term t{s, h};
         l0 += t.L0;
         l1 += t.L1;
-        if (bad == ~0ull && (s >= SlotHashes.size() || SlotHashes[s].State != SlotState::Value || !(SlotHashes[s].H == h))) bad = s;
-    });
-    if (bad != ~0ull) {
-        why = std::format("slot {} does not match its settled hash (written without Write?)", bad);
-        return false;
+        if (s >= SlotHashes.size() || SlotHashes[s].State != SlotState::Value || !(SlotHashes[s].H == h)) {
+            why = std::format("slot {} does not match its settled hash (written without capture?)", s);
+            return false;
+        }
     }
     if (l0 != Lane0 || l1 != Lane1) {
         why = "state hash lanes disagree with live content";

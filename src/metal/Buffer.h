@@ -10,9 +10,7 @@
 
 namespace store {
 struct History;
-}
-namespace project {
-struct BufferHistory;
+struct Pages;
 }
 
 template<typename T>
@@ -58,7 +56,7 @@ struct Buffer {
     void SetUsedSize(uint64_t);
     void CaptureWrite(uint64_t offset, uint64_t size) const;
     void Track(store::History &, std::string name, uint32_t page_bytes = 4096);
-    project::BufferHistory *History() const { return Tracked.get(); }
+    store::Pages *History() const { return Tracked.get(); }
 
     MTL::Buffer *operator*() const { return DeviceBuffer.get(); }
     std::span<std::byte> Contents() const;
@@ -93,7 +91,7 @@ struct Buffer {
     NS::SharedPtr<MTL::Buffer> DeviceBuffer;
 
 private:
-    std::unique_ptr<project::BufferHistory> Tracked;
+    std::unique_ptr<store::Pages> Tracked;
     void Retire();
     void UpdateSlot();
 

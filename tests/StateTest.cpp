@@ -88,7 +88,7 @@ int main() {
         r.Capture = [](state::Scene &r, state::TypeId type, state::Entity e) {
             if (type == state::Type<Name>()) static_cast<std::vector<std::string> *>(r.HistoryOwner)->push_back(r.all_of<Name>(e) ? r.get<Name>(e).Value : "absent");
         };
-        auto &managed = r.changes(state::Type<state::DirtySet>());
+        auto &managed = reactive(r, state::Change::Selected);
         managed.on<Name>(state::On::Create | state::On::Destroy);
         state::DirtySet removed;
         removed.bind(r);

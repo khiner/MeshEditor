@@ -1,104 +1,28 @@
 #include "project/EntityStore.h"
+#include "project/ComponentPool.h"
+#include "project/store/History.h"
 #include "state/Allocation.h"
 #include "state/Scene.h"
 
-#include <algorithm>
-#include <cassert>
 #include <stdexcept>
 
 namespace project {
-store::Live PoolSlots(EntityStore::Pool &);
-
-struct EntityStore::Pool {
-    EntityStore &S;
-    state::TypeId Type;
-    const snapshot::SnapshotEntry &Encoding;
-    std::vector<std::byte> Scratch, SnapshotScratch;
-    store::LiveTrie Trie;
-
-    Pool(EntityStore &s, state::TypeId type, const snapshot::SnapshotEntry &encoding)
-        : S(s), Type(type), Encoding(encoding), Trie(PoolSlots(*this), 4, encoding.How == snapshot::Encoding::Bytes ? encoding.Size : 0) {}
-
-    state::TableBase *Storage() const { return S.R.storage(Type); }
-    state::Entity Stored(uint32_t index) const {
-        const auto *p = Storage();
-        return p ? p->entity_at(index) : state::Null;
-    }
-    bool Present(uint32_t index) const { return Stored(index) != state::Null; }
-    std::span<const std::byte> Encode(const void *value, std::vector<std::byte> &scratch) const {
-        if (Encoding.How != snapshot::Encoding::Serialized) return {static_cast<const std::byte *>(value), Encoding.Size};
-        scratch.clear();
-        Encoding.Serialize(value, scratch);
-        return scratch;
-    }
-    bool Reusable(uint32_t index) const { return !S.R.Restoring || Stored(index) == S.R.EntityAt(index); }
-};
-
-store::Live PoolSlots(EntityStore::Pool &self) {
-    store::Live live;
-    live.Length = [&self] { return self.S.Table.size(); };
-    live.Present = [&self](uint64_t index) { return self.Present(uint32_t(index)); };
-    live.Read = [&self](uint64_t index) {
-        return self.Encode(self.Storage()->value(self.Stored(uint32_t(index))), self.Scratch);
-    };
-    live.Replace = [&self](uint64_t index, store::Blob incoming, bool &was_present) {
-        was_present = self.Present(uint32_t(index));
-        auto old = was_present ? store::Capture(self.Trie.L, index) : store::Blob{};
-        const auto previous = self.Stored(uint32_t(index));
-        const auto entity = self.S.R.EntityAt(uint32_t(index));
-        if (previous != state::Null && previous != entity) self.Storage()->remove(previous);
-        if (entity != state::Null) {
-            if (incoming.Destroy) self.Encoding.Move(self.S.R, entity, incoming);
-            else {
-                self.Encoding.Emplace(self.S.R, entity, incoming.View());
-                store::FreeBlob(incoming);
-            }
-            self.S.Changes.push_back({self.Type, entity, previous == entity ? state::Event::Update : state::Event::Create});
-        } else store::FreeBlob(incoming);
-        return old;
-    };
-    live.Erase = [&self](uint64_t index) {
-        const auto old = store::Capture(self.Trie.L, index);
-        const auto entity = self.Stored(uint32_t(index));
-        if (entity != state::Null) {
-            self.Storage()->remove(entity);
-            self.S.Changes.push_back({self.Type, entity, state::Event::Destroy});
-        }
-        return old;
-    };
-    live.ForEachPresent = [&self](const std::function<void(uint64_t)> &fn) {
-        if (const auto *storage = self.Storage())
-            for (const auto e : *storage) fn(state::Index(e));
-    };
-    live.Copy = [&self](uint64_t index) {
-        return self.Encoding.Copy(self.Storage()->value(self.Stored(uint32_t(index))));
-    };
-    live.Encode = [&self](const store::Blob &value) { return self.Encode(value.Data, self.SnapshotScratch); };
-    live.Reusable = [&self](uint64_t index) { return self.Reusable(uint32_t(index)); };
-    live.ForEachNonReusable = [&self](const std::function<void(uint64_t)> &fn) {
-        self.S.ForEachIdentityChange([&](uint32_t index) {
-            if (!self.Reusable(index) && self.Present(index)) fn(index);
-        });
-    };
-    return live;
-}
-
 EntityStore::EntityStore(state::Scene &r, store::History &history, const snapshot::SnapshotEntries &components) : R(r), Table(r.AllocationState().Generations) {
     R.HistoryOwner = this;
     R.Capture = [](state::Scene &r, state::TypeId type, state::Entity e) {
         if (!r.Restoring) static_cast<EntityStore *>(r.HistoryOwner)->Capture(type, e);
     };
-    Table.Buffer.Trie.CollectChanged = true;
-    history.Track(Table.Buffer.Trie, "entity.table", 0);
-    history.Track(r.AllocationState().Free.Buffer.Trie, "entity.free", 0);
+    Table.P.Trie.CollectChanged = true;
+    history.Track(Table.P, "entity.table", 0);
+    history.Track(r.AllocationState().Free.P, "entity.free", 0);
     // Track pools in name order so the persisted track layout is independent of schema slot numbers.
     std::vector<state::TypeId> tracked;
     for (state::TypeId type = 0; type < components.size(); ++type)
         if (components[type].Emplace && components[type].History) tracked.push_back(type);
     std::ranges::sort(tracked, {}, [&](state::TypeId type) { return components[type].Name; });
     for (const auto type : tracked) {
-        auto pool = std::make_unique<Pool>(*this, type, components[type]);
-        history.Track(pool->Trie, "component." + std::string(components[type].Name), 1);
+        auto pool = std::make_unique<ComponentPool>(*this, type, components[type]);
+        history.Track(*pool, "component." + std::string(components[type].Name), 1);
         Pools[type] = std::move(pool);
     }
 }
@@ -111,7 +35,7 @@ EntityStore::~EntityStore() {
 void EntityStore::Capture(state::TypeId type, state::Entity e) {
     if (const auto &pool = Pools[type]) {
         if (R.DocumentReadOnly) throw std::logic_error("Persistent component mutation during history restoration: " + std::string(pool->Encoding.Name));
-        pool->Trie.Write(state::Index(e), 1);
+        pool->Capture(state::Index(e));
     }
 }
 
@@ -120,15 +44,7 @@ void EntityStore::BeginRestore() {
     PreviousLength = Table.size();
     R.Restoring = true;
     Changes.clear();
-    Table.Buffer.Trie.ChangedSlots.clear();
-}
-
-void EntityStore::ForEachIdentityChange(auto &&fn) const {
-    const auto per_page = Table.Buffer.PageBytes / sizeof(uint32_t);
-    const auto end = std::max(Table.size(), PreviousLength);
-    for (const auto page : Table.Buffer.Trie.ChangedSlots) {
-        for (uint64_t i = page * per_page, last = std::min<uint64_t>(end, (page + 1) * per_page); i < last; ++i) fn(uint32_t(i));
-    }
+    Table.P.Trie.ChangedSlots.clear();
 }
 
 std::vector<state::Entity> EntityStore::RemovedEntities() const {

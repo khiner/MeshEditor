@@ -13,13 +13,11 @@
 namespace snapshot {
 enum class Encoding : uint8_t {
     Tag,
-    Bytes,
     Serialized,
 };
 
 struct SnapshotEntry {
     Encoding How;
-    uint32_t Size;
     void (*Serialize)(const void *component, std::vector<std::byte> &out);
     void (*Emplace)(state::Scene &, state::Entity, std::span<const std::byte>);
     std::string_view Name{};

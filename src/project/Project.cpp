@@ -1,10 +1,8 @@
 #include "project/Project.h"
 
-#include "Changes.h"
 #include "Compress.h"
 #include "PathSerialize.h"
 #include "ProcessEvents.h"
-#include "Reactive.h"
 #include "action/Errors.h"
 #include "animation/AnimationTimeline.h"
 #include "animation/MorphWeightState.h"
@@ -20,7 +18,7 @@
 #include "mesh/MeshStore.h"
 #include "numeric/Serialize.h"
 #include "project/Assets.h"
-#include "project/BufferHistory.h"
+#include "project/store/Pages.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
@@ -32,6 +30,7 @@
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionComponents.h"
+#include "state/Scene.h"
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
@@ -41,6 +40,8 @@
 #include "viewport/ViewportRenderGpu.h"
 
 #include <cstdio>
+
+using state::Change;
 
 namespace project {
 namespace {
@@ -550,8 +551,8 @@ void Project::AfterRestore() {
     if (textures_changed) {
         ReleaseImportedTextures(R);
         ResetImportedEnvironment(R);
-        reactive<changes::MaterializedTextures>(R).emplace(Viewport);
-        reactive<changes::SceneWorld>(R).emplace(Viewport);
+        reactive(R, Change::MaterializedTextures).emplace(Viewport);
+        reactive(R, Change::SceneWorld).emplace(Viewport);
     }
     auto &meshes = R.ctx().get<MeshStore>();
     const auto changes = meshes.TakeChanges();
@@ -573,7 +574,7 @@ void Project::AfterRestore() {
         } else if (it->Bits & (MeshStore::GeometryChanged | MeshStore::DeformChanged)) {
             geometry.push_back(entity);
         }
-        if (it->Bits & MeshStore::ShadingChanged) reactive<changes::MeshShading>(R).emplace(entity);
+        if (it->Bits & MeshStore::ShadingChanged) reactive(R, Change::MeshShading).emplace(entity);
         if (it->Bits & MeshStore::SelectionChanged) R.ctx().get<GpuSceneState>().EditSelectionDirty = true;
         if (!sparse && (it->Bits & ~MeshStore::SelectionChanged)) R.emplace_or_replace<MeshGeometryDirty>(entity, false);
     }
@@ -582,7 +583,7 @@ void Project::AfterRestore() {
     RefreshEditedPositions(R, Viewport, positions);
     for (const auto &[entity, ranges] : positions) R.emplace_or_replace<MeshPositionsChanged>(entity);
     auto &materials = R.ctx().get<GpuBuffers>().Materials;
-    if (!materials.History()->Trie.TakeChanged().empty()) reactive<changes::Materials>(R).emplace(Viewport);
+    if (!materials.History()->Trie.TakeChanged().empty()) reactive(R, Change::Materials).emplace(Viewport);
     Settle(EventPass::Restore);
 }
 } // namespace project

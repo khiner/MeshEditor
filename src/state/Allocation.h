@@ -1,5 +1,5 @@
 #pragma once
-#include "project/store/Versioned.h"
+#include "project/store/Pages.h"
 namespace state {
 struct Allocation {
     store::VersionedVector<uint32_t> Generations, Free;

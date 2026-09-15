@@ -5,22 +5,13 @@ namespace state {
 namespace {
 constexpr uint32_t Alive = 1u << 31;
 }
-Scene::Scene() : AllocationStorage(std::make_unique<Allocation>()) {}
-Scene::~Scene() {
-    Context.Clear();
-    for (auto &p : Changes) p.reset();
+Scene::Scene() : AllocationStorage(std::make_unique<Allocation>()) {
+    for (auto &c : Changes) c.bind(*this);
 }
+Scene::~Scene() { Context.Clear(); }
 DirtySet::~DirtySet() {
     if (Owner)
         for (auto [type, event] : Bindings) std::erase(Owner->Dirty[type][size_t(event)], this);
-}
-DirtySet &Scene::changes(TypeId id) {
-    auto &set = Changes[id];
-    if (!set) {
-        set = std::make_unique<DirtySet>();
-        set->bind(*this);
-    }
-    return *set;
 }
 void DirtySet::Track(TypeId type, Event event) {
     assert(Owner);
@@ -71,8 +62,7 @@ void Scene::destroy(Entity e) {
 void Scene::RemoveComponents(Entity e) {
     for (auto &p : Tables)
         if (p) p->remove(e);
-    for (auto &set : Changes)
-        if (set) set->remove(e);
+    for (auto &set : Changes) set.remove(e);
 }
 void Scene::ResetEntities() {
     ++Epoch;

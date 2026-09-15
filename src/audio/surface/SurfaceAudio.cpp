@@ -1,7 +1,6 @@
 #include "SurfaceAudio.h"
 #include "state/Scene.h"
 
-#include "Reactive.h"
 #include "TransformMath.h"
 #include "audio/ContactScene.h"
 #include "audio/Fft.h"
@@ -22,6 +21,9 @@
 #include <numeric>
 #include <optional>
 #include <unordered_map>
+
+using state::Change;
+using state::On;
 
 /***** Mesoscale relief, sampled from a normal map *****/
 
@@ -121,14 +123,6 @@ void UpdateSurfaceRelief(state::Scene &r, state::Entity node_entity, state::Enti
 /***** Scene contact inputs *****/
 
 namespace {
-// The model's reactive tracking, kept apart from the collision path's.
-namespace surface_changes {
-struct SurfaceEdit {};
-struct SurfaceMaterial {};
-struct SurfaceGeometry {};
-struct SoundControls {};
-} // namespace surface_changes
-
 // Sample spacing of the track synthesized from a surface's roughness parameters, m.
 // Uses the surface's shortest wavelength as the track sampling interval.
 float SynthesizedFinishSpacing(const ContactSurface &s) { return FinishTrackSpacing(s.ShortWavelength); }
@@ -1215,20 +1209,20 @@ void SurfaceSetupScene(state::Scene &r, state::Entity viewport) { r.emplace_or_r
 
 void RegisterSurfaceContactHandlers(state::Scene &r) {
     // A surface belongs to a node.
-    reactive<surface_changes::SurfaceEdit>(r).on<ContactSurface>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::SurfaceEdit).on<ContactSurface>(On::Create | On::Update | On::Destroy);
     // A surface with no normal map of its own inherits its material's, so a material reassignment changes the relief too.
     // A material assignment names a mesh where a surface names a node, so the two are tracked apart.
-    reactive<surface_changes::SurfaceMaterial>(r).on<MeshMaterialAssignment>(On::Create | On::Update);
+    reactive(r, Change::SurfaceMaterial).on<MeshMaterialAssignment>(On::Create | On::Update);
     // The relief's texel size is measured from the mesh, so an edit to the mesh restates it.
     // Tracked separately from the surface edits above so the derivation can tell which of the two it is answering.
-    reactive<surface_changes::SurfaceGeometry>(r).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
-    reactive<surface_changes::SoundControls>(r).on<SurfaceSoundControls>(On::Create | On::Update);
+    reactive(r, Change::SurfaceGeometry).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
+    reactive(r, Change::SurfaceSoundControls).on<SurfaceSoundControls>(On::Create | On::Update);
 }
 
 void SurfaceUpdateContacts(state::Scene &r) {
     auto &m = r.ctx().get<ModalAudio>();
     auto &surface = Surface(m);
-    for (auto e : reactive<surface_changes::SoundControls>(r)) {
+    for (auto e : reactive(r, Change::SurfaceSoundControls)) {
         const auto &controls = r.get<const SurfaceSoundControls>(e);
         surface.SustainLevel.store(controls.SustainLevel, std::memory_order_relaxed);
         surface.AccelNoiseGain.store(controls.AccelNoiseGain, std::memory_order_relaxed);
@@ -1239,9 +1233,9 @@ void SurfaceUpdateContacts(state::Scene &r) {
     // Re-derive the mesoscale relief of any edited surface, so a sustained contact reads it without decoding a texture.
     // Refresh every node using an edited surface or mesh because relief coordinates belong to the mesh.
     // The finish key follows the surface alone.
-    auto &surface_edits = reactive<surface_changes::SurfaceEdit>(r);
-    auto &material_edits = reactive<surface_changes::SurfaceMaterial>(r);
-    auto &mesh_edits = reactive<surface_changes::SurfaceGeometry>(r);
+    auto &surface_edits = reactive(r, Change::SurfaceEdit);
+    auto &material_edits = reactive(r, Change::SurfaceMaterial);
+    auto &mesh_edits = reactive(r, Change::SurfaceGeometry);
     if (!surface_edits.empty() || !material_edits.empty() || !mesh_edits.empty()) {
         for (const auto node : r.view<const Instance>()) {
             const auto mesh_e = r.get<const Instance>(node).Entity;

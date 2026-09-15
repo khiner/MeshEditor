@@ -1,5 +1,6 @@
 #include "project/store/History.h"
-#include "project/store/Versioned.h"
+#include "project/store/Pages.h"
+#include "project/store/Records.h"
 
 #include "RunSuites.h"
 #include "TestPaths.h"
@@ -16,37 +17,69 @@ using boost::ut::expect;
 namespace {
 using namespace store;
 
-// Model absent slots and variable-size values.
-struct PoolLive {
-    std::map<uint64_t, std::vector<std::byte>> Values;
-    uint64_t Len{};
-};
-Live PoolSlots(PoolLive &pool) {
-    Live live;
-    live.Length = [&pool] { return pool.Len; };
-    live.SetLength = [&pool](uint64_t l) { pool.Len = l; };
-    live.Present = [&pool](uint64_t s) { return pool.Values.contains(s); };
-    live.Read = [&pool](uint64_t s) -> std::span<const std::byte> { return pool.Values.at(s); };
-    live.Replace = [&pool](uint64_t s, Blob incoming, bool &was_present) {
-        Blob old{};
-        was_present = pool.Values.contains(s);
-        if (was_present) old = CopyBlob(pool.Values[s]);
-        pool.Values[s].assign(incoming.Data, incoming.Data + incoming.Size);
-        FreeBlob(incoming);
-        return old;
-    };
-    live.Erase = [&pool](uint64_t s) {
-        auto old = CopyBlob(pool.Values.at(s));
-        pool.Values.erase(s);
-        return old;
-    };
-    live.ForEachPresent = [&pool](const std::function<void(uint64_t)> &fn) {
-        for (const auto &[s, _] : pool.Values) fn(s);
-    };
-    return live;
-}
-
 using Model = std::map<uint64_t, std::vector<std::byte>>;
+
+// Absent slots and variable-size values over a map, driving the trie directly.
+struct MapOwner {
+    Model Values;
+    uint64_t Len{};
+    LiveTrie Trie{3};
+
+    uint64_t Length() const { return Len; }
+    bool Present(uint64_t s) const { return Values.contains(s); }
+    std::span<const std::byte> Read(uint64_t s) const { return Values.at(s); }
+    std::span<const std::byte> Encode(const Blob &value) const { return value.View(); }
+
+    void Write(uint64_t s) {
+        if (Trie.Uncaptured(s)) Trie.Capture(s, Present(s) ? std::optional{CopyBlob(Read(s))} : std::nullopt);
+        Trie.MarkDirty(s, 1);
+    }
+    void Settle() {
+        for (const auto s : Trie.Dirty()) Trie.Rehash(s, Present(s) ? std::optional{Read(s)} : std::nullopt);
+        Trie.ClearDirty();
+    }
+    bool Restore(const Version &v) {
+        Settle();
+        auto plan = Trie.PlanRestore(v);
+        for (auto &c : plan.Changes) {
+            const bool present = Present(c.Slot);
+            if (c.Erase) {
+                if (!present) {
+                    c.Unchanged = true;
+                    continue;
+                }
+                c.Old = CopyBlob(Read(c.Slot));
+                c.WasPresent = true;
+                Values.erase(c.Slot);
+                continue;
+            }
+            if (present && c.MaybeEqual && Unchanged(Read(c.Slot), c.Incoming.View())) {
+                c.Unchanged = true;
+                continue;
+            }
+            if (present) {
+                c.Old = CopyBlob(Read(c.Slot));
+                c.WasPresent = true;
+            }
+            Values[c.Slot].assign(c.Incoming.Data, c.Incoming.Data + c.Incoming.Size);
+            FreeBlob(c.Incoming);
+        }
+        Len = plan.Length;
+        return Trie.CommitRestore(std::move(plan));
+    }
+    Model Materialize(const Version &v) {
+        Model m;
+        for (const auto &run : Trie.Materialize(v)) {
+            if (run.Owned) m[run.Slot].assign(run.Owned->View().begin(), run.Owned->View().end());
+            else {
+                for (uint64_t s = run.Slot, end = run.Slot + run.Count; s < end; ++s)
+                    if (Present(s)) m[s] = Values.at(s);
+            }
+        }
+        return m;
+    }
+};
+
 std::vector<std::byte> RandomBytes(std::mt19937 &rng, size_t n) {
     std::vector<std::byte> b(n);
     for (auto &x : b) x = std::byte(rng() & 0xff);
@@ -54,10 +87,15 @@ std::vector<std::byte> RandomBytes(std::mt19937 &rng, size_t n) {
 }
 
 // Reconstruct from live bytes to check cached hashes independently.
-Hash128 RebuiltManifest(const Live &live, uint32_t levels) {
+Hash128 RebuiltManifest(auto &owner) {
     std::map<uint64_t, Hash128> hashes;
-    ForEachPresent(live, [&](uint64_t slot) { if (!DefaultAt(live, slot)) hashes[slot] = HashBytes(live.Read(slot)); });
-    for (uint32_t level = 0; level < levels; ++level) {
+    for (uint64_t s = 0, n = owner.Trie.SlotsFor(owner.Length()); s < n; ++s) {
+        if (!owner.Present(s)) continue;
+        const auto bytes = owner.Read(s);
+        if (owner.Trie.PageBytes && IsZero(bytes)) continue;
+        hashes[s] = HashBytes(bytes);
+    }
+    for (uint32_t level = 0; level < owner.Trie.Levels; ++level) {
         std::map<uint64_t, ManifestChildren> groups;
         for (const auto &[slot, hash] : hashes) groups[slot / Fanout][slot % Fanout] = hash;
         hashes.clear();
@@ -65,16 +103,24 @@ Hash128 RebuiltManifest(const Live &live, uint32_t levels) {
     }
     return hashes.empty() ? Hash128{} : hashes.at(0);
 }
+Hash128 LiveManifest(auto &owner) {
+    owner.Settle();
+    return owner.Trie.ManifestRoot(owner.Length());
+}
+Version Pin(auto &owner) {
+    owner.Settle();
+    return owner.Trie.Pin(owner.Length());
+}
 
 void TestPoolTrieAgainstModel() {
     std::mt19937 rng{7};
-    PoolLive live;
+    MapOwner live;
     live.Len = 4096;
-    LiveTrie trie{PoolSlots(live), 3};
+    auto &trie = live.Trie;
     expect(trie.Stats().Nodes == 1);
     expect(trie.Stats().AliasedNodes == 1);
     std::vector<std::pair<Version, Model>> pinned;
-    pinned.push_back({trie.Pin(), live.Values});
+    pinned.push_back({Pin(live), live.Values});
     for (int step = 0; step < 400; ++step) {
         const int op = rng() % 10;
         if (op < 6) {
@@ -82,22 +128,22 @@ void TestPoolTrieAgainstModel() {
             const int n = 1 + rng() % 4;
             for (int i = 0; i < n; ++i) {
                 const uint64_t slot = (rng() % 3 == 0) ? rng() % 4096 : rng() % 200;
-                trie.Write(slot, 1);
+                live.Write(slot);
                 if (rng() % 5 == 0 && live.Values.contains(slot)) live.Values.erase(slot);
                 else live.Values[slot] = RandomBytes(rng, rng() % 40);
             }
         } else if (op < 8) {
-            pinned.push_back({trie.Pin(), live.Values});
+            pinned.push_back({Pin(live), live.Values});
         } else if (op == 8 && pinned.size() > 1) {
             const auto i = rng() % pinned.size();
-            expect(trie.Restore(pinned[i].first));
+            expect(live.Restore(pinned[i].first));
             expect(live.Values == pinned[i].second);
         } else if (pinned.size() > 2) {
             const auto i = 1 + rng() % (pinned.size() - 1);
             trie.Release(pinned[i].first);
             pinned.erase(pinned.begin() + i);
         }
-        expect(trie.ManifestRoot() == RebuiltManifest(trie.L, trie.Levels));
+        expect(LiveManifest(live) == RebuiltManifest(live));
         std::string why;
         std::vector<Version> versions;
         for (auto &[v, _] : pinned) versions.push_back(v);
@@ -106,14 +152,10 @@ void TestPoolTrieAgainstModel() {
             expect(false);
             return;
         }
-        for (auto &[v, model] : pinned) {
-            Model m;
-            trie.Materialize(v, [&](uint64_t slot, std::span<const std::byte> bytes) { m[slot].assign(bytes.begin(), bytes.end()); });
-            expect(m == model);
-        }
+        for (auto &[v, model] : pinned) expect(live.Materialize(v) == model);
     }
     for (auto &[v, model] : pinned) {
-        expect(trie.Restore(v));
+        expect(live.Restore(v));
         expect(live.Values == model);
     }
     for (auto &[v, _] : pinned) trie.Release(v);
@@ -123,18 +165,18 @@ void TestPoolTrieAgainstModel() {
 
 void TestBufferAgainstModel() {
     std::mt19937 rng{11};
-    VersionedBuffer buf{64, 3}; // Use small pages to test edits across page boundaries.
+    Pages buf{64, 3}; // Use small pages to test edits across page boundaries.
     std::vector<std::pair<Version, std::vector<std::byte>>> pinned;
-    auto image = [&] { return std::vector<std::byte>(buf.Data(), buf.Data() + buf.Size()); };
+    auto image = [&] { return std::vector<std::byte>(buf.Data(), buf.Data() + buf.Length()); };
     buf.Resize(1000);
     const auto init = buf.Mutable(0, 1000);
     for (uint64_t i = 0; i < 1000; ++i) init[i] = std::byte(i);
-    pinned.push_back({buf.Trie.Pin(), image()});
+    pinned.push_back({Pin(buf), image()});
     for (int step = 0; step < 300; ++step) {
         const int op = rng() % 8;
-        if (op < 4 && buf.Size()) {
-            const uint64_t off = rng() % buf.Size(), len = 1 + rng() % 200;
-            const auto end = std::min<uint64_t>(off + len, buf.Size());
+        if (op < 4 && buf.Length()) {
+            const uint64_t off = rng() % buf.Length(), len = 1 + rng() % 200;
+            const auto end = std::min<uint64_t>(off + len, buf.Length());
             const auto span = buf.Mutable(off, end - off);
             for (auto &b : span) b = std::byte(rng());
         } else if (op == 4) {
@@ -143,17 +185,17 @@ void TestBufferAgainstModel() {
             for (uint64_t i = 0; i < len; ++i)
                 if (rng() % 7 == 0) buf.Mutable(i, 1)[0] = std::byte(rng());
         } else if (op == 5) {
-            pinned.push_back({buf.Trie.Pin(), image()});
+            pinned.push_back({Pin(buf), image()});
         } else if (op == 6 && !pinned.empty()) {
             const auto i = rng() % pinned.size();
-            expect(buf.Trie.Restore(pinned[i].first));
+            expect(buf.Restore(pinned[i].first));
             expect(image() == pinned[i].second);
         } else if (pinned.size() > 1) {
             const auto i = rng() % pinned.size();
             buf.Trie.Release(pinned[i].first);
             pinned.erase(pinned.begin() + i);
         }
-        expect(buf.Trie.ManifestRoot() == RebuiltManifest(buf.Trie.L, buf.Trie.Levels));
+        expect(LiveManifest(buf) == RebuiltManifest(buf));
         std::string why;
         std::vector<Version> versions;
         for (auto &[v, _] : pinned) versions.push_back(v);
@@ -164,26 +206,26 @@ void TestBufferAgainstModel() {
         }
     }
     for (auto &[v, img] : pinned) {
-        expect(buf.Trie.Restore(v));
+        expect(buf.Restore(v));
         expect(image() == img);
         buf.Trie.Release(v);
     }
     expect(buf.Trie.Stats().OwnedBytes == 0);
 }
 
-// Use a seed as the recorded action to reproduce buffer and pool writes.
+// Use a seed as the recorded action to reproduce buffer and record writes.
 struct ToyApp {
-    VersionedBuffer Buf{64, 3};
-    PoolLive Pool;
-    LiveTrie PoolTrie{PoolSlots(Pool), 2};
+    using Values = std::vector<std::vector<std::byte>>;
+    Pages Buf{64, 3};
+    Values Pool = Values(256);
+    Records PoolRecords{Pool, 2};
     History H;
 
     int Replays{};
 
     ToyApp() {
-        Pool.Len = 256;
-        H.Track(Buf.Trie, "buf", 0);
-        H.Track(PoolTrie, "pool", 1);
+        H.Track(Buf, "buf", 0);
+        H.Track(PoolRecords, "pool", 1);
         History::Hooks hooks;
         hooks.Replay = [this](const std::vector<std::byte> &a) {
             Apply(a);
@@ -202,29 +244,29 @@ struct ToyApp {
         std::memcpy(&seed, action.data(), 4);
         if (seed & 0x80000000u) {
             // Alternate constant fills to test inverse edits.
-            Buf.Resize(std::max<uint64_t>(64, Buf.Size()));
+            Buf.Resize(std::max<uint64_t>(64, Buf.Length()));
             for (auto &b : Buf.Mutable(0, 64)) b = std::byte(seed & 0xff);
             return;
         }
         std::mt19937 rng{seed};
         if (seed % 3 == 0) Buf.Resize(std::array{0u, 65u, 65 * 64 + 7u, 8192u}[rng() % 4]);
-        if (Buf.Size()) {
-            const uint64_t off = rng() % Buf.Size(), len = std::min<uint64_t>(1 + rng() % 200, Buf.Size() - off);
+        if (Buf.Length()) {
+            const uint64_t off = rng() % Buf.Length(), len = std::min<uint64_t>(1 + rng() % 200, Buf.Length() - off);
             auto span = Buf.Mutable(off, len);
             for (auto &b : span) b = seed % 5 ? std::byte(rng()) : std::byte{};
         }
         const uint64_t slot = rng() % 256;
-        PoolTrie.Write(slot, 1);
-        if (rng() % 4 == 0) Pool.Values.erase(slot);
-        else Pool.Values[slot] = RandomBytes(rng, rng() % 20);
+        PoolRecords.Write(slot, 1);
+        if (rng() % 4 == 0) Pool[slot].clear();
+        else Pool[slot] = RandomBytes(rng, rng() % 20);
     }
     void Step(uint32_t seed) {
         auto a = Encode(seed);
         Apply(a);
         H.Commit("step " + std::to_string(seed), std::move(a));
     }
-    std::pair<std::vector<std::byte>, Model> State() const {
-        return {std::vector<std::byte>(Buf.Data(), Buf.Data() + Buf.Size()), Pool.Values};
+    std::pair<std::vector<std::byte>, Values> State() const {
+        return {std::vector<std::byte>(Buf.Data(), Buf.Data() + Buf.Length()), Pool};
     }
 };
 
@@ -242,8 +284,8 @@ void TestHistoryAgainstModel() {
         expected.emplace(app.H.Present, app.State());
         expect(app.State() == expected.at(app.H.Present));
         const auto &roots = app.H.Nodes[app.H.Present].Roots;
-        expect(roots[0] == RebuiltManifest(app.Buf.Trie.L, app.Buf.Trie.Levels));
-        expect(roots[1] == RebuiltManifest(app.PoolTrie.L, app.PoolTrie.Levels));
+        expect(roots[0] == RebuiltManifest(app.Buf));
+        expect(roots[1] == RebuiltManifest(app.PoolRecords));
     }
     expect(app.H.Save());
     for (int pass = 0; pass < 3; ++pass) {
@@ -277,11 +319,11 @@ void TestHistoryAgainstModel() {
     expect(app.State() == expected.at(app.H.Present));
     // Verify that the independent audit detects an uncaptured write.
     app.Buf.Resize(64);
-    app.Buf.Trie.SettleHashes();
-    const_cast<std::byte *>(app.Buf.Data())[0] ^= std::byte{1};
+    app.Buf.Settle();
+    app.Buf.Storage[0] ^= std::byte{1};
     std::string why;
     expect(!app.H.Audit(why));
-    const_cast<std::byte *>(app.Buf.Data())[0] ^= std::byte{1};
+    app.Buf.Storage[0] ^= std::byte{1};
     expect(app.H.Audit(why));
 }
 
@@ -332,10 +374,10 @@ void TestCommitIdentity() {
 
 void TestColdLoadFailure() {
     const TestDir dir{"projectstore_cold_failure"};
-    VersionedBuffer a{64}, b{64};
+    Pages a{64}, b{64};
     History h;
-    h.Track(a.Trie, "a", 0);
-    h.Track(b.Trie, "b", 0);
+    h.Track(a, "a", 0);
+    h.Track(b, "b", 0);
     a.Resize(64);
     b.Resize(64);
     expect(h.Begin(dir));
@@ -345,7 +387,7 @@ void TestColdLoadFailure() {
     expect(h.Save());
     h.Navigate(0);
     h.Evict(0);
-    const auto before = h.Materialize(0);
+    const auto before = h.MaterializeLive();
     // Corrupt the second track's leaf and verify that loading changes neither track.
     const auto write_leaf = [&](char value) {
         std::fstream out{dir.Path / "leaves.log", std::ios::binary | std::ios::in | std::ios::out};
@@ -370,10 +412,10 @@ void TestColdLoadFailure() {
 void TestFormatMismatch() {
     const TestDir dir{"projectstore_format"};
     {
-        VersionedBuffer a{64}, b{64};
+        Pages a{64}, b{64};
         History h;
-        h.Track(a.Trie, "A", 0);
-        h.Track(b.Trie, "B", 0);
+        h.Track(a, "A", 0);
+        h.Track(b, "B", 0);
         a.Resize(64);
         b.Resize(64);
         a.Mutable(0, 1)[0] = std::byte{11};
@@ -386,19 +428,19 @@ void TestFormatMismatch() {
     };
     const auto tree = read("tree.log"), leaves = read("leaves.log"), nodes = read("nodes.log");
     for (int mismatch = 0; mismatch < 4; ++mismatch) {
-        VersionedBuffer a{mismatch == 2 ? 128u : 64u}, b{64};
+        Pages a{mismatch == 2 ? 128u : 64u}, b{64};
         History h;
         if (mismatch == 0) {
-            h.Track(b.Trie, "B", 0);
-            h.Track(a.Trie, "A", 0);
+            h.Track(b, "B", 0);
+            h.Track(a, "A", 0);
         } else {
-            h.Track(a.Trie, "A", mismatch == 1 ? 1 : 0);
-            h.Track(b.Trie, "B", 0);
+            h.Track(a, "A", mismatch == 1 ? 1 : 0);
+            h.Track(b, "B", 0);
         }
         h.SchemaRevision = mismatch == 3 ? 1 : 0;
         expect(!h.Open(dir));
         expect(!h.TakeIntegrityError().empty());
-        expect(a.Size() == 0 && b.Size() == 0);
+        expect(a.Length() == 0 && b.Length() == 0);
         expect(read("tree.log") == tree);
         expect(read("leaves.log") == leaves);
         expect(read("nodes.log") == nodes);
@@ -408,17 +450,17 @@ void TestFormatMismatch() {
 void TestLogOpenFailure() {
     const TestDir unwritable{"projectstore_log_open_failure"}, current{"projectstore_current"}, failed_write{"projectstore_failed_root"};
     std::filesystem::create_directories(unwritable.Path / "leaves.log");
-    VersionedBuffer buffer;
+    Pages buffer;
     History h;
-    h.Track(buffer.Trie, "buffer", 0);
+    h.Track(buffer, "buffer", 0);
     expect(!h.Begin(unwritable));
     expect(!h.TakeIntegrityError().empty());
     buffer.Resize(4096);
     buffer.Mutable(0, 1)[0] = std::byte{11};
     expect(h.Begin(current));
-    const auto before = h.Materialize(0);
+    const auto before = h.MaterializeLive();
     expect(!h.Begin(unwritable));
-    expect(h.Present == 0 && h.Materialize(0) == before);
+    expect(h.Present == 0 && h.MaterializeLive() == before);
     expect(!h.TakeIntegrityError().empty());
 
     // Fail after the new streams open, while the candidate root is being written.
@@ -431,18 +473,18 @@ void TestLogOpenFailure() {
     expect(setrlimit(RLIMIT_FSIZE, &original) == 0);
     std::signal(SIGXFSZ, handler);
     expect(!created);
-    expect(h.Present == 0 && h.Materialize(0) == before);
+    expect(h.Present == 0 && h.MaterializeLive() == before);
     expect(!h.TakeIntegrityError().empty());
     expect(h.Save());
     expect(h.Close());
     expect(h.Open(current));
-    expect(h.Materialize(0) == before);
+    expect(h.Present == 0 && h.MaterializeLive() == before);
 }
 
 // Truncate records used only by the final committed step.
 void TestTornTailRecovery() {
     const TestDir dir{"projectstore_torn"};
-    std::map<int, std::pair<std::vector<std::byte>, Model>> expected;
+    std::map<int, std::pair<std::vector<std::byte>, ToyApp::Values>> expected;
     int last_node = -1;
     {
         ToyApp app;

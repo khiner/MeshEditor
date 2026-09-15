@@ -1,11 +1,13 @@
 #include "project/store/History.h"
 
+#include "project/ComponentPool.h"
+#include "project/store/Pages.h"
+#include "project/store/Records.h"
+
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 
 namespace store {
 namespace {
@@ -67,61 +69,108 @@ struct LoadPlan {
     std::unordered_map<Hash128, std::vector<std::byte>, Hash128Hasher> Leaves;
 };
 
-// Disable public writes through AfterTracks, then enable them for AfterRestore.
+// Run fn on the owner of a track.
+template<typename H> decltype(auto) With(H &history, const History::Tracked &t, auto &&fn) {
+    switch (t.K) {
+        case History::Kind::Pages: return fn(*history.PageTracks[t.Index]);
+        case History::Kind::Records: return fn(*history.RecordTracks[t.Index]);
+        case History::Kind::Pool: return fn(*history.PoolTracks[t.Index]);
+    }
+    std::unreachable();
+}
+template<typename H> LiveTrie &TrieOf(H &history, const History::Tracked &t) {
+    return With(history, t, [](auto &owner) -> LiveTrie & { return owner.Trie; });
+}
+Stamp CurrentStamp(History &history, size_t track) {
+    return With(history, history.Tracks[track], [](auto &owner) {
+        owner.Settle();
+        return owner.Trie.CurrentStamp(owner.Length());
+    });
+}
+Version PinTrack(History &history, size_t track) {
+    return With(history, history.Tracks[track], [](auto &owner) {
+        owner.Settle();
+        return owner.Trie.Pin(owner.Length());
+    });
+}
+bool RestoreTrack(History &history, size_t track, const Version &v) {
+    return With(history, history.Tracks[track], [&](auto &owner) { return owner.Restore(v); });
+}
+void LoadTrack(History &history, size_t track, uint64_t length, const LoadPlan &plan) {
+    With(history, history.Tracks[track], [&](auto &owner) { owner.Load(length, plan.Changes[track], plan.Leaves); });
+}
+// Serialize present slots of a version as [u64 length][u64 count]([u64 slot][u32 size][bytes])*.
+void MaterializeTrack(History &history, size_t track, const Version &v, std::vector<std::byte> &out) {
+    Put(out, v.S.Length);
+    const auto count_pos = out.size();
+    Put(out, uint64_t{0});
+    uint64_t count = 0;
+    const auto put = [&](uint64_t slot, std::span<const std::byte> bytes) {
+        Put(out, slot);
+        Put(out, uint32_t(bytes.size()));
+        out.insert(out.end(), bytes.begin(), bytes.end());
+        ++count;
+    };
+    With(history, history.Tracks[track], [&](auto &owner) {
+        for (const auto &run : owner.Trie.Materialize(v)) {
+            if (run.Owned) put(run.Slot, owner.Encode(*run.Owned));
+            else {
+                for (uint64_t s = run.Slot, end = run.Slot + run.Count; s < end; ++s)
+                    if (owner.Present(s)) put(s, owner.Read(s));
+            }
+        }
+    });
+    std::memcpy(out.data() + count_pos, &count, sizeof(count));
+}
+bool CheckTrackHashes(History &history, size_t track, std::string &why) {
+    return With(history, history.Tracks[track], [&](auto &owner) {
+        owner.Settle();
+        std::vector<std::pair<uint64_t, Hash128>> live;
+        for (uint64_t s = 0, n = owner.Trie.SlotsFor(owner.Length()); s < n; ++s) {
+            if (!owner.Present(s)) continue;
+            const auto bytes = owner.Read(s);
+            if (owner.Trie.PageBytes && IsZero(bytes)) continue;
+            live.emplace_back(s, HashBytes(bytes));
+        }
+        return owner.Trie.CheckHashes(why, live);
+    });
+}
+
+// Disable track writes through AfterTracks, then enable them for AfterRestore.
 struct PipelineScope {
     History &Hist;
     explicit PipelineScope(History &h) : Hist(h) {
-        for (auto &t : Hist.Tracks) t.Trie->ExternalWritesForbidden = true;
+        for (auto &t : Hist.Tracks) TrieOf(Hist, t).ExternalWritesForbidden = true;
     }
     ~PipelineScope() {
-        for (auto &t : Hist.Tracks) t.Trie->ExternalWritesForbidden = false;
+        for (auto &t : Hist.Tracks) TrieOf(Hist, t).ExternalWritesForbidden = false;
     }
 };
 
 std::string ReplayStep(History &history, const HistoryNode &node) {
     history.Callbacks.Replay(node.Action);
     for (size_t i = 0; i < history.Tracks.size(); ++i) {
-        if (history.Tracks[i].Trie->CurrentStamp() != node.Stamps[i]) return history.Tracks[i].Name;
+        if (CurrentStamp(history, i) != node.Stamps[i]) return history.Tracks[i].Name;
     }
     return {};
 }
 
-bool Matches(const History &history, const Snapshot &s) {
-    for (size_t i = 0; i < history.Tracks.size(); ++i)
-        if (history.Tracks[i].Trie->Differs(s.Versions[i])) return false;
-    return true;
-}
-
-std::vector<std::byte> MaterializeSnapshot(const History &history, const Snapshot &s) {
-    // Per-track format: [u64 length][u64 count]([u64 slot][u32 size][bytes])*.
+std::vector<std::byte> MaterializeSnapshot(History &history, const Snapshot &s) {
     std::vector<std::byte> out;
-    for (const auto i : history.Order) {
-        const auto &v = s.Versions[i];
-        Put(out, v.S.Length);
-        const auto count_pos = out.size();
-        Put(out, uint64_t{0});
-        uint64_t count = 0;
-        history.Tracks[i].Trie->Materialize(v, [&](uint64_t slot, std::span<const std::byte> bytes) {
-            Put(out, slot);
-            Put(out, uint32_t(bytes.size()));
-            out.insert(out.end(), bytes.begin(), bytes.end());
-            ++count;
-        });
-        std::memcpy(out.data() + count_pos, &count, sizeof(count));
-    }
+    for (const auto i : history.Order) MaterializeTrack(history, i, s.Versions[i], out);
     return out;
 }
 
 uint64_t OwnedBytes(const History &history) {
     uint64_t total = 0;
-    for (const auto &t : history.Tracks) total += t.Trie->Stats().OwnedBytes;
+    for (const auto &t : history.Tracks) total += TrieOf(history, t).Stats().OwnedBytes;
     return total;
 }
 
 std::vector<Stamp> CurrentStamps(History &history) {
     std::vector<Stamp> out;
     out.reserve(history.Tracks.size());
-    for (auto &t : history.Tracks) out.push_back(t.Trie->CurrentStamp());
+    for (size_t i = 0; i < history.Tracks.size(); ++i) out.push_back(CurrentStamp(history, i));
     return out;
 }
 
@@ -133,10 +182,9 @@ std::vector<Version> AllVersions(const History &history, size_t track) {
 }
 
 bool CheckHashes(History &history, std::string &why) {
-    history.SettleHashes();
-    for (const auto &t : history.Tracks) {
-        if (!t.Trie->CheckHashes(why)) {
-            why = t.Name + ": " + why;
+    for (size_t i = 0; i < history.Tracks.size(); ++i) {
+        if (!CheckTrackHashes(history, i, why)) {
+            why = history.Tracks[i].Name + ": " + why;
             return false;
         }
     }
@@ -160,7 +208,7 @@ void AddIntegrityError(History &history, std::string what) {
 
 void Adopt(History &history, const Snapshot &s) {
     for (const auto i : history.Order) {
-        if (!history.Tracks[i].Trie->Restore(s.Versions[i])) {
+        if (!RestoreTrack(history, i, s.Versions[i])) {
             AddIntegrityError(history, history.Tracks[i].Name + ": equal-state adoption failed");
             assert(false && "equal-state adoption failed");
         }
@@ -196,6 +244,53 @@ bool CheckIO(History &history, std::string error) {
     return false;
 }
 
+std::filesystem::path LogPath(const std::filesystem::path &dir, size_t file) {
+    constexpr const char *Names[]{"leaves.log", "nodes.log", TreeLogName};
+    return dir / Names[file];
+}
+
+// Report the first failed stream.
+std::string StreamError(History &history) {
+    for (size_t i = 0; i < history.Streams.size(); ++i)
+        if (history.Streams[i].is_open() && !history.Streams[i]) return "cannot write " + LogPath(history.Dir, i).string();
+    return {};
+}
+
+// Flush every open stream to the OS and report the first failure.
+std::string Flush(History &history) {
+    for (auto &stream : history.Streams)
+        if (stream.is_open()) stream.flush();
+    return StreamError(history);
+}
+
+constexpr size_t StreamBufferBytes = 1u << 20;
+std::string OpenStreams(std::array<std::ofstream, 3> &streams, std::array<std::vector<char>, 3> &buffers, const std::filesystem::path &dir, bool truncate) {
+    const auto mode = std::ios::binary | (truncate ? std::ios::trunc : std::ios::app);
+    for (size_t i = 0; i < streams.size(); ++i) {
+        buffers[i].resize(StreamBufferBytes);
+        streams[i].rdbuf()->pubsetbuf(buffers[i].data(), std::streamsize(buffers[i].size()));
+        streams[i].open(LogPath(dir, i), mode);
+        if (!streams[i]) return "cannot open " + LogPath(dir, i).string();
+    }
+    return {};
+}
+
+std::string CloseStreams(History &history) {
+    std::string error;
+    for (size_t i = 0; i < history.Streams.size(); ++i) {
+        auto &stream = history.Streams[i];
+        if (!stream.is_open()) continue;
+        stream.close();
+        if (!stream && error.empty()) error = "cannot close " + LogPath(history.Dir, i).string();
+        stream.clear();
+    }
+    return error;
+}
+
+void Append(History &history, size_t file, std::span<const std::byte> bytes) {
+    history.Streams[file].write(reinterpret_cast<const char *>(bytes.data()), std::streamsize(bytes.size()));
+}
+
 std::vector<std::byte> Descriptor(const History &history) {
     std::vector<std::byte> out;
     Put(out, uint64_t{0x45524f5453545350}); // PSTSTORE
@@ -203,11 +298,12 @@ std::vector<std::byte> Descriptor(const History &history) {
     Put(out, history.SchemaRevision);
     Put(out, uint32_t(history.Tracks.size()));
     for (const auto &t : history.Tracks) {
+        const auto &trie = TrieOf(history, t);
         Put(out, uint32_t(t.Name.size()));
         for (char c : t.Name) Put(out, c);
         Put(out, int32_t(t.Phase));
-        Put(out, t.Trie->Levels);
-        Put(out, uint64_t(t.Trie->BytesPerSlot));
+        Put(out, trie.Levels);
+        Put(out, uint64_t(trie.PageBytes));
     }
     return out;
 }
@@ -338,17 +434,18 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
     return !history.Nodes.empty();
 }
 
+// Take over the candidate's tree and open streams.
 bool AdoptProject(History &history, History &candidate) {
-    if (!CheckIO(history, candidate.Log.Stop())) return false;
-    const auto &dir = candidate.Dir;
-    if (!CheckIO(history, history.Log.Start({dir / history.LeafLog.Name, dir / history.NodeLog.Name, dir / TreeLogName}, false))) return false;
+    if (!CheckIO(history, Flush(candidate))) return false;
+    CloseStreams(history);
     for (int i = 0; i < int(history.Nodes.size()); ++i) ReleaseNode(history, i);
     history.Nodes = std::move(candidate.Nodes);
     history.LeafLog = std::move(candidate.LeafLog);
     history.NodeLog = std::move(candidate.NodeLog);
     history.Dir = std::move(candidate.Dir);
+    history.Streams = std::move(candidate.Streams);
+    history.StreamBuffers = std::move(candidate.StreamBuffers);
     history.Present = candidate.Present;
-    history.PeakPendingBytes = std::max(candidate.PeakPendingBytes, candidate.Log.PendingMemory().second);
     ++history.Revision;
     history.VisitCounter = 0;
     history.IntegrityError.clear();
@@ -362,18 +459,18 @@ bool PrepareLoad(History &history, int node, LoadPlan &plan) {
     if (!leaves || !nodes_in) return false;
     plan.Changes.resize(history.Tracks.size());
     for (size_t i = 0; i < history.Tracks.size(); ++i) {
-        auto *trie = history.Tracks[i].Trie;
-        const auto limit = trie->SlotsFor(n.Stamps[i].Length);
-        if (limit > SlotSpan(trie->Levels)) return false;
-        const auto live_root = trie->ManifestRoot();
-        const auto live_stamp = trie->CurrentStamp();
-        const auto live_limit = trie->SlotsFor(live_stamp.Length);
+        auto &trie = TrieOf(history, history.Tracks[i]);
+        const auto limit = trie.SlotsFor(n.Stamps[i].Length);
+        if (limit > SlotSpan(trie.Levels)) return false;
+        const auto live_stamp = CurrentStamp(history, i);
+        const auto live_root = trie.ManifestRoot(live_stamp.Length);
+        const auto live_limit = trie.SlotsFor(live_stamp.Length);
         auto state = live_stamp.H;
         const auto diff = [&](this auto &&self, Hash128 live, Hash128 target, uint32_t level, uint64_t index) -> bool {
             // Validate target slots beyond the new length even when subtree hashes match.
             if (live == target && (target == Hash128{} || limit >= live_limit || (index + 1) * SlotSpan(level) <= limit)) return true;
             if (level) {
-                const auto before = trie->ChildrenAt(level - 1, index);
+                const auto before = trie.ChildrenAt(level - 1, index, live_stamp.Length);
                 ManifestChildren after{};
                 if (target != Hash128{}) {
                     uint8_t recorded_level;
@@ -394,86 +491,77 @@ bool PrepareLoad(History &history, int node, LoadPlan &plan) {
                 state.A += term.L0;
                 state.B += term.L1;
                 const auto it = history.LeafLog.Idx.find(target);
-                if (it == history.LeafLog.Idx.end() || (trie->BytesPerSlot && it->second.Size != trie->BytesPerSlot)) return false;
+                if (it == history.LeafLog.Idx.end() || (trie.PageBytes && it->second.Size != trie.PageBytes)) return false;
                 const auto [leaf, inserted] = plan.Leaves.try_emplace(target);
                 if (inserted && !ReadExtent(leaves, it->second, target, leaf->second)) return false;
             }
             plan.Changes[i].push_back({index, target});
             return true;
         };
-        if (!diff(live_root, n.Roots[i], trie->Levels, 0) || state != n.Stamps[i].H) return false;
+        if (!diff(live_root, n.Roots[i], trie.Levels, 0) || state != n.Stamps[i].H) return false;
     }
     return true;
 }
 
 void ApplyLoad(History &history, int node, const LoadPlan &plan) {
     const auto &n = history.Nodes[node];
-    RunPipeline(history, [&](size_t i) {
-        history.Tracks[i].Trie->LoadChanges(n.Stamps[i].Length, plan.Changes[i], plan.Leaves);
-    });
+    RunPipeline(history, [&](size_t i) { LoadTrack(history, i, n.Stamps[i].Length, plan); });
     for (size_t i = 0; i < history.Tracks.size(); ++i) {
-        if (history.Tracks[i].Trie->CurrentStamp() == n.Stamps[i]) continue;
+        if (CurrentStamp(history, i) == n.Stamps[i]) continue;
         AddIntegrityError(history, history.Tracks[i].Name + ": cold load verification failed");
         std::fprintf(stderr, "[history] %s: cold load verification failed\n", history.Tracks[i].Name.c_str());
         assert(false && "cold load verification failed: loaded state does not hash to the recorded stamp");
     }
 }
 
-void EnqueuePending(History &history) {
-    uint64_t staged = history.Log.PendingMemory().first;
-    for (const auto &pending : history.Pending) staged += pending.capacity();
-    history.PeakPendingBytes = std::max(history.PeakPendingBytes, staged);
-    for (size_t file = 0; file < history.Pending.size(); ++file) {
-        if (history.Pending[file].empty()) continue;
-        history.Log.Append(file, std::exchange(history.Pending[file], {}));
-    }
-}
-
 void AppendContent(History &history, History::ContentLog &log, Hash128 hash, std::span<const std::byte> payload) {
     if (!log.Idx.try_emplace(hash, History::Extent{log.Size + ContentHeader, uint32_t(payload.size())}).second) return;
-    auto &pending = history.Pending[log.File];
-    // Limit each append buffer to roughly 1 MiB, allowing larger individual records.
-    if (!pending.empty() && pending.size() + ContentHeader + payload.size() > (1u << 20)) EnqueuePending(history);
-    Put(pending, hash);
-    Put(pending, uint32_t(payload.size()));
-    pending.insert(pending.end(), payload.begin(), payload.end());
+    std::vector<std::byte> header;
+    Put(header, hash);
+    Put(header, uint32_t(payload.size()));
+    Append(history, log.File, header);
+    Append(history, log.File, payload);
     log.Size += ContentHeader + payload.size();
 }
 
 Hash128 BuildManifest(History &history, size_t track) {
-    auto *trie = history.Tracks[track].Trie;
-    const auto root = trie->ManifestRoot();
-    // Indexed roots have indexed descendants.
-    const auto persist = [&](this auto &&self, Hash128 hash, uint32_t level, uint64_t index) -> void {
-        if (hash == Hash128{} || history.NodeLog.Idx.contains(hash)) return;
-        const auto children = trie->ChildrenAt(level, index);
-        for (uint64_t digit = 0; digit < Fanout; ++digit) {
-            const auto child = children[digit];
-            if (child == Hash128{}) continue;
-            if (level) self(child, level - 1, index * Fanout + digit);
-            else if (!history.LeafLog.Idx.contains(child)) {
-                AppendContent(history, history.LeafLog, child, trie->L.Read(index * Fanout + digit));
+    return With(history, history.Tracks[track], [&](auto &owner) {
+        owner.Settle();
+        const auto length = owner.Length();
+        auto &trie = owner.Trie;
+        const auto root = trie.ManifestRoot(length);
+        // Indexed roots have indexed descendants.
+        const auto persist = [&](this auto &&self, Hash128 hash, uint32_t level, uint64_t index) -> void {
+            if (hash == Hash128{} || history.NodeLog.Idx.contains(hash)) return;
+            const auto children = trie.ChildrenAt(level, index, length);
+            for (uint64_t digit = 0; digit < Fanout; ++digit) {
+                const auto child = children[digit];
+                if (child == Hash128{}) continue;
+                if (level) self(child, level - 1, index * Fanout + digit);
+                else if (!history.LeafLog.Idx.contains(child)) {
+                    AppendContent(history, history.LeafLog, child, owner.Read(index * Fanout + digit));
+                }
             }
-        }
-        AppendContent(history, history.NodeLog, hash, ManifestRecord{level, children}.View());
-    };
-    persist(root, trie->Levels - 1, 0);
-    return root;
+            AppendContent(history, history.NodeLog, hash, ManifestRecord{level, children}.View());
+        };
+        persist(root, trie.Levels - 1, 0);
+        return root;
+    });
 }
 
 void AppendTreeRecord(History &history, RecordKind kind, int parent, const std::vector<std::byte> &payload) {
-    assert(history.Log.Started() && "the tree log requires Begin or Open");
+    assert(history.Streams[FileTree].is_open() && "the tree log requires Begin or Open");
     // Tree record format: [u32 len][u8 kind][i32 parent][payload].
-    auto &record = history.Pending[FileTree];
+    std::vector<std::byte> record;
     Put(record, uint32_t(1 + 4 + payload.size()));
     Put(record, uint8_t(kind));
     Put(record, int32_t(parent));
     record.insert(record.end(), payload.begin(), payload.end());
-    EnqueuePending(history);
+    Append(history, FileTree, record);
 }
 
 void PersistNode(History &history, RecordKind kind, int node) {
-    assert(history.Log.Started() && "commit requires Begin or Open");
+    assert(history.Streams[FileTree].is_open() && "commit requires Begin or Open");
     auto &n = history.Nodes[node];
     const auto *parent = n.Parent >= 0 ? &history.Nodes[n.Parent] : nullptr;
     n.Roots.clear();
@@ -485,39 +573,51 @@ void PersistNode(History &history, RecordKind kind, int node) {
 }
 
 bool LoadNode(History &history, int node) {
-    EnqueuePending(history);
-    if (!CheckIO(history, history.Log.FlushAndWait())) return false;
+    if (!CheckIO(history, Flush(history))) return false;
     LoadPlan plan;
     if (!PrepareLoad(history, node, plan)) return CheckIO(history, "cold load contains missing or corrupt records");
     ApplyLoad(history, node, plan);
     return true;
 }
+
+void AddTrack(History &history, std::string name, int phase, History::Kind kind, size_t index) {
+    history.Tracks.push_back({std::move(name), phase, kind, index});
+    // Keep serialized track indices in registration order when sorting restoration order.
+    history.Order.insert(std::ranges::upper_bound(history.Order, phase, {}, [&](size_t i) { return history.Tracks[i].Phase; }), history.Tracks.size() - 1);
+}
 } // namespace
 
-void History::Track(LiveTrie &t, std::string name, int phase) {
-    Tracks.push_back({&t, std::move(name), phase});
-    // Keep serialized track indices in registration order when sorting restoration order.
-    Order.insert(std::ranges::upper_bound(Order, phase, {}, [&](size_t i) { return Tracks[i].Phase; }), Tracks.size() - 1);
+void History::Track(Pages &p, std::string name, int phase) {
+    PageTracks.push_back(&p);
+    AddTrack(*this, std::move(name), phase, Kind::Pages, PageTracks.size() - 1);
+}
+void History::Track(Records &r, std::string name, int phase) {
+    RecordTracks.push_back(&r);
+    AddTrack(*this, std::move(name), phase, Kind::Records, RecordTracks.size() - 1);
+}
+void History::Track(project::ComponentPool &p, std::string name, int phase) {
+    PoolTracks.push_back(&p);
+    AddTrack(*this, std::move(name), phase, Kind::Pool, PoolTracks.size() - 1);
 }
 
 Snapshot History::Pin() {
     Snapshot s;
-    for (auto &t : Tracks) s.Versions.push_back(t.Trie->Pin());
+    for (size_t i = 0; i < Tracks.size(); ++i) s.Versions.push_back(PinTrack(*this, i));
     return s;
 }
 
 void History::SettleHashes() {
-    for (auto &t : Tracks) t.Trie->SettleHashes();
+    for (const auto &t : Tracks) With(*this, t, [](auto &owner) { owner.Settle(); });
 }
 
 std::string History::TakeIntegrityError() {
     auto error = std::exchange(IntegrityError, {});
-    return error.empty() ? Log.Error() : error;
+    return error.empty() ? StreamError(*this) : error;
 }
 
 void History::Restore(const Snapshot &s) {
     RunPipeline(*this, [&](size_t i) {
-        if (!Tracks[i].Trie->Restore(s.Versions[i])) {
+        if (!RestoreTrack(*this, i, s.Versions[i])) {
             AddIntegrityError(*this, Tracks[i].Name + ": restored state hash mismatch");
             std::fprintf(stderr, "[history] %s: restored state hash mismatch\n", Tracks[i].Name.c_str());
             assert(false && "restored state hash does not match pinned hash");
@@ -526,23 +626,26 @@ void History::Restore(const Snapshot &s) {
 }
 
 void History::Release(Snapshot &snapshot) {
-    for (size_t i = 0; i < Tracks.size(); ++i) Tracks[i].Trie->Release(snapshot.Versions[i]);
+    for (size_t i = 0; i < Tracks.size(); ++i) TrieOf(*this, Tracks[i]).Release(snapshot.Versions[i]);
     snapshot.Versions.clear();
 }
 
 bool History::Begin(const std::filesystem::path &dir) {
     assert(Dir.empty() || Dir != dir);
-    if (!CheckIO(*this, Log.FlushAndWait())) return false;
+    if (!CheckIO(*this, Flush(*this))) return false;
     History candidate;
     candidate.Tracks = Tracks;
+    candidate.PageTracks = PageTracks;
+    candidate.RecordTracks = RecordTracks;
+    candidate.PoolTracks = PoolTracks;
     candidate.Order = Order;
     candidate.SchemaRevision = SchemaRevision;
     candidate.Dir = dir;
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     if (ec) return CheckIO(*this, "cannot create " + dir.string() + ": " + ec.message());
-    if (!CheckIO(*this, candidate.Log.Start({dir / LeafLog.Name, dir / NodeLog.Name, dir / TreeLogName}, true))) return false;
-    candidate.Pending[FileTree] = Descriptor(*this);
+    if (!CheckIO(*this, OpenStreams(candidate.Streams, candidate.StreamBuffers, dir, true))) return false;
+    Append(candidate, FileTree, Descriptor(*this));
     HistoryNode root;
     root.Label = "Root";
     root.Hot = Pin();
@@ -556,7 +659,7 @@ bool History::Begin(const std::filesystem::path &dir) {
 }
 
 bool History::Close() {
-    const bool saved = CheckIO(*this, Log.Stop());
+    const bool saved = CheckIO(*this, Flush(*this)) && CheckIO(*this, CloseStreams(*this));
     for (int i = 0; i < int(Nodes.size()); ++i) ReleaseNode(*this, i);
     Nodes.clear();
     ++Revision;
@@ -566,13 +669,17 @@ bool History::Close() {
     LeafLog.Idx.clear();
     NodeLog.Idx.clear();
     LeafLog.Size = NodeLog.Size = 0;
-    for (auto &p : Pending) p.clear();
     return saved;
 }
 
 bool History::Relocate(const std::filesystem::path &dir) {
-    if (!CheckIO(*this, Log.FlushAndWait())) return false;
-    if (!CheckIO(*this, Log.Start({dir / LeafLog.Name, dir / NodeLog.Name, dir / TreeLogName}, false))) return false;
+    if (!CheckIO(*this, Flush(*this))) return false;
+    std::array<std::vector<char>, 3> buffers;
+    std::array<std::ofstream, 3> streams;
+    if (!CheckIO(*this, OpenStreams(streams, buffers, dir, false))) return false;
+    if (!CheckIO(*this, CloseStreams(*this))) return false;
+    Streams = std::move(streams);
+    StreamBuffers = std::move(buffers);
     Dir = dir;
     return true;
 }
@@ -581,18 +688,13 @@ int History::Commit(std::string label, std::vector<std::byte> action) {
     assert(Present >= 0);
     const auto stamps = CurrentStamps(*this);
     if (stamps == Nodes[Present].Stamps) {
-        assert(Matches(*this, *Nodes[Present].Hot) && "state hash matches the present but bytes differ");
         Adopt(*this, *Nodes[Present].Hot); // Release redundant copies for equal state.
         return Present;
     }
     const auto adopt = [&](int node) {
         auto &n = Nodes[node];
-        if (n.Hot) {
-            assert(Matches(*this, *n.Hot) && "stamp matches but bytes differ");
-            Adopt(*this, *n.Hot);
-        } else {
-            n.Hot = Pin();
-        }
+        if (n.Hot) Adopt(*this, *n.Hot);
+        else n.Hot = Pin();
         SetPresent(*this, node);
         AppendTreeRecord(*this, RecordKind::Navigate, node, {});
         return node;
@@ -637,11 +739,11 @@ void History::Revert() {
 
 bool History::Save() {
     AppendTreeRecord(*this, RecordKind::Navigate, Present, {});
-    return CheckIO(*this, Log.FlushAndWait());
+    return CheckIO(*this, Flush(*this));
 }
 
 bool History::Clear(const HistoryPosition *saved) {
-    if (!CheckIO(*this, Log.FlushAndWait())) return false;
+    if (!CheckIO(*this, Flush(*this))) return false;
     auto stamps = CurrentStamps(*this);
     std::vector<HistoryNode> retained;
     if (saved && saved->Stamps != stamps) {
@@ -662,7 +764,7 @@ bool History::Clear(const HistoryPosition *saved) {
     auto payload = NodePayload(live);
     if (current) PutState(payload, saved->Stamps, saved->Roots);
     AppendTreeRecord(*this, RecordKind::Root, -1, payload);
-    if (!CheckIO(*this, Log.FlushAndWait())) {
+    if (!CheckIO(*this, Flush(*this))) {
         Release(*live.Hot);
         return false;
     }
@@ -687,7 +789,7 @@ void History::Evict(uint64_t cap) {
         if (std::find(protected_nodes.begin(), protected_nodes.end(), i) != protected_nodes.end()) continue;
         victims.push_back(i);
     }
-    if (victims.empty() || !CheckIO(*this, Log.FlushAndWait())) return;
+    if (victims.empty() || !CheckIO(*this, Flush(*this))) return;
     std::vector<int> distance(Nodes.size());
     for (const int v : victims) distance[v] = TreeDistance(*this, v, Present);
     // Evict farthest nodes first, breaking ties by least recent visit.
@@ -699,11 +801,6 @@ void History::Evict(uint64_t cap) {
         if (OwnedBytes(*this) <= cap) return;
         ReleaseNode(*this, victim);
     }
-}
-
-std::vector<std::byte> History::Materialize(int node) const {
-    assert(node >= 0 && Nodes[node].Hot);
-    return MaterializeSnapshot(*this, *Nodes[node].Hot);
 }
 
 std::vector<std::byte> History::MaterializeLive() {
@@ -761,36 +858,18 @@ std::string History::ValidateReplay(int node) {
 HistoryStats History::Stats() const {
     HistoryStats s;
     s.SharedNodeBytes = SharedNodePoolBytes();
-    s.MetadataBytes = Nodes.capacity() * sizeof(HistoryNode);
-    for (const auto &t : Tracks) {
-        const auto &ts = t.Trie->Stats();
-        s.OwnedBytes += ts.OwnedBytes;
-        s.Nodes += ts.Nodes;
-        s.AliasedNodes += ts.AliasedNodes;
-        s.HashBytes += t.Trie->HashStorageBytes();
-        s.ManifestBytes += t.Trie->ManifestBytes();
-        s.MetadataBytes += t.Trie->ChangedSlots.capacity() * sizeof(uint64_t);
-    }
-    for (const auto *log : {&LeafLog, &NodeLog})
-        s.MetadataBytes += log->Idx.bucket_count() * sizeof(void *) + log->Idx.size() * (sizeof(decltype(log->Idx)::value_type) + 2 * sizeof(void *));
+    s.OwnedBytes = OwnedBytes(*this);
     for (const auto &n : Nodes) {
-        s.MetadataBytes += n.Children.capacity() * sizeof(int) + n.Action.capacity() + n.Label.capacity() + 1 + n.Stamps.capacity() * sizeof(Stamp) + n.Roots.capacity() * sizeof(Hash128);
-        if (n.Hot) {
-            s.MetadataBytes += n.Hot->Versions.capacity() * sizeof(Version);
-            ++s.HotNodes;
-        } else ++s.ColdNodes;
+        if (n.Hot) ++s.HotNodes;
+        else ++s.ColdNodes;
     }
-    const auto [pending, peak] = Log.PendingMemory();
-    s.PendingBytes = pending;
-    s.PeakPendingBytes = std::max(peak, PeakPendingBytes);
-    for (const auto &p : Pending) s.PendingBytes += p.capacity();
     return s;
 }
 
 bool History::Check(std::string &why) const {
     for (size_t i = 0; i < Tracks.size(); ++i) {
         const auto versions = AllVersions(*this, i);
-        if (!Tracks[i].Trie->Check(why, versions)) {
+        if (!TrieOf(*this, Tracks[i]).Check(why, versions)) {
             why = Tracks[i].Name + ": " + why;
             return false;
         }
@@ -808,9 +887,12 @@ int History::FindPosition(const HistoryPosition &position) const {
 }
 
 bool History::Open(const std::filesystem::path &dir, const HistoryPosition *position) {
-    if (!CheckIO(*this, Log.FlushAndWait())) return false;
+    if (!CheckIO(*this, Flush(*this))) return false;
     History candidate;
     candidate.Tracks = Tracks;
+    candidate.PageTracks = PageTracks;
+    candidate.RecordTracks = RecordTracks;
+    candidate.PoolTracks = PoolTracks;
     candidate.SchemaRevision = SchemaRevision;
     uint64_t tree_size{};
     LoadPlan plan;
@@ -825,6 +907,7 @@ bool History::Open(const std::filesystem::path &dir, const HistoryPosition *posi
         std::filesystem::resize_file(dir / name, size, ec);
         if (ec) return CheckIO(*this, "cannot truncate " + (dir / name).string() + ": " + ec.message());
     }
+    if (!CheckIO(*this, OpenStreams(candidate.Streams, candidate.StreamBuffers, dir, false))) return false;
     if (!AdoptProject(*this, candidate)) return false;
     ApplyLoad(*this, candidate.Present, plan);
     Nodes[candidate.Present].Hot = Pin();

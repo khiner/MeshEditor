@@ -3,9 +3,7 @@
 
 #include <Metal/MTLCommandQueue.hpp>
 
-#include "Changes.h"
 #include "Profile.h"
-#include "Reactive.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gpu/EditSelectionPushConstants.h"
@@ -36,6 +34,8 @@
 
 #include <bit>
 #include <cmath>
+
+using state::Change;
 
 namespace {
 std::vector<EditSelectionPushConstants> BuildSelectionTransactions(
@@ -736,7 +736,7 @@ void ApplyEditSharpness(
         RecordSelectionDerive(r, chain, selection_transactions);
     }
     SubmitAndWait(ctx, command_buffer);
-    for (const auto mesh_entity : edited) reactive<changes::MeshShading>(r).emplace(mesh_entity);
+    for (const auto mesh_entity : edited) reactive(r, Change::MeshShading).emplace(mesh_entity);
 }
 
 const EditSelectionSummary *GetElementSelectionSummary(const state::Scene &r, state::Entity mesh_entity, Element element) {

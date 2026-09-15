@@ -8,9 +8,7 @@
 
 namespace store {
 struct History;
-}
-namespace project {
-template<typename T> struct VectorHistory;
+struct Records;
 }
 
 struct MaterialStore {
@@ -22,7 +20,7 @@ struct MaterialStore {
     std::vector<std::string> Names;
 
 private:
-    std::unique_ptr<project::VectorHistory<std::string>> Tracked;
+    std::unique_ptr<store::Records> Tracked;
 };
 
 struct MeshMaterialAssignment {

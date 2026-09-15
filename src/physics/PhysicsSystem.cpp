@@ -1,10 +1,8 @@
 #include "PhysicsSystem.h"
-#include "PhysicsChanges.h"
 #include "PhysicsContact.h"
 #include "Profile.h"
 #include "RbpBody.h"
 #include "RbpShape.h"
-#include "Reactive.h"
 #include "Replay.h"
 #include "Solver.h"
 #include "TransformMath.h"
@@ -24,6 +22,9 @@
 #include <ranges>
 #include <set>
 #include <stdexcept>
+
+using state::Change;
+using state::On;
 
 using physics::FromRbp;
 using physics::Inverse;
@@ -653,16 +654,16 @@ void UpdateSettings(state::Scene &r, state::Entity viewport, float fps) {
 namespace physics {
 void ProcessChanges(state::Scene &r, EventPass) {
     auto &s = r.ctx().get<PhysicsState>();
-    const auto any = [&]<typename... T> { return (... || !reactive<T>(r).empty()); };
-    if (!std::exchange(s.InputDirty, false) && !any.operator()<changes::PhysicsShape, changes::PhysicsMotion, changes::PhysicsPose, changes::PhysicsMaterial, changes::PhysicsTrigger, changes::PhysicsJoint, changes::PhysicsMaterialDef, changes::CollisionSystemDef, changes::CollisionFilterDef, changes::PhysicsJointDef, changes::PhysicsGeometry, changes::PhysicsHierarchy>()) return;
-    for (auto e : reactive<changes::PhysicsMaterialDef>(r))
+    const auto any = [&](auto... changes) { return (... || !reactive(r, changes).empty()); };
+    if (!std::exchange(s.InputDirty, false) && !any(Change::PhysicsInput, Change::PhysicsMaterialDef, Change::CollisionSystemDef, Change::CollisionFilterDef, Change::PhysicsGeometry)) return;
+    for (auto e : reactive(r, Change::PhysicsMaterialDef))
         if (!r.all_of<PhysicsMaterial>(e)) ClearDanglingRefs(r, e, &ColliderMaterial::PhysicsMaterialEntity);
-    for (auto e : reactive<changes::CollisionSystemDef>(r))
+    for (auto e : reactive(r, Change::CollisionSystemDef))
         if (!r.all_of<CollisionSystem>(e)) {
             ClearDanglingRefs(r, e, &CollisionFilter::Systems);
             ClearDanglingRefs(r, e, &CollisionFilter::CollideSystems);
         }
-    for (auto e : reactive<changes::CollisionFilterDef>(r))
+    for (auto e : reactive(r, Change::CollisionFilterDef))
         if (!r.all_of<CollisionFilter>(e)) {
             ClearDanglingRefs(r, e, &ColliderMaterial::CollisionFilterEntity);
             ClearDanglingRefs(r, e, &TriggerNodes::CollisionFilterEntity);
@@ -686,7 +687,7 @@ void ProcessChanges(state::Scene &r, EventPass) {
     std::set<state::Entity> recook, surfaces;
     for (const auto &[entity, leaf] : input.Colliders) {
         const auto &old = s.Input.Colliders.at(entity);
-        if (old.Shape != leaf.Shape || old.Local != leaf.Local || (IsMeshBackedShape(leaf.Shape.Shape) && reactive<changes::PhysicsGeometry>(r).contains(leaf.Shape.MeshEntity))) recook.insert(leaf.Owner);
+        if (old.Shape != leaf.Shape || old.Local != leaf.Local || (IsMeshBackedShape(leaf.Shape.Shape) && reactive(r, Change::PhysicsGeometry).contains(leaf.Shape.MeshEntity))) recook.insert(leaf.Owner);
         if (old != leaf) surfaces.insert(leaf.Owner);
     }
     const bool changed = !recook.empty() || !surfaces.empty() || s.Input.Bodies != input.Bodies || s.Input.Joints != input.Joints;
@@ -829,20 +830,21 @@ void Init(state::Scene &r) {
     r.on_destroy<PhysicsJoint>().connect<&OnDestroyPhysicsInput>();
     r.on_destroy<PhysicsJointDef>().connect<&OnDestroyPhysicsInput>();
     r.on_destroy<SceneNode>().connect<&OnDestroyPhysicsInput>();
-    reactive<changes::PhysicsMotion>(r).on<PhysicsMotion>(On::Create | On::Update | On::Destroy).on<PhysicsVelocity>(On::Create | On::Update | On::Destroy);
-    reactive<changes::PhysicsShape>(r).on<ColliderShape>(On::Create | On::Update | On::Destroy);
-    reactive<changes::PhysicsPose>(r).on<Transform>(On::Update);
-    reactive<changes::PhysicsGeometry>(r).on<MeshGeometryDirty>(On::Create | On::Update).on<MeshPositionsChanged>(On::Create | On::Update);
-    reactive<changes::PhysicsHierarchy>(r).on<SceneNode>(On::Create | On::Update | On::Destroy);
-    reactive<changes::ColliderPolicy>(r).on<::ColliderPolicy>(On::Create | On::Update);
-    reactive<changes::PhysicsMaterial>(r).on<ColliderMaterial>(On::Create | On::Update | On::Destroy);
-    reactive<changes::PhysicsTrigger>(r).on<TriggerTag>(On::Create | On::Destroy);
-    reactive<changes::PhysicsJoint>(r).on<PhysicsJoint>(On::Create | On::Update | On::Destroy);
-    reactive<changes::PhysicsMaterialDef>(r).on<::PhysicsMaterial>(On::Create | On::Update | On::Destroy);
-    reactive<changes::CollisionSystemDef>(r).on<CollisionSystem>(On::Create | On::Update | On::Destroy);
-    reactive<changes::CollisionFilterDef>(r).on<CollisionFilter>(On::Create | On::Update | On::Destroy);
-    reactive<changes::PhysicsJointDef>(r).on<::PhysicsJointDef>(On::Create | On::Update | On::Destroy);
-
+    reactive(r, Change::PhysicsInput)
+        .on<PhysicsMotion>(On::Create | On::Update | On::Destroy)
+        .on<PhysicsVelocity>(On::Create | On::Update | On::Destroy)
+        .on<ColliderShape>(On::Create | On::Update | On::Destroy)
+        .on<Transform>(On::Update)
+        .on<SceneNode>(On::Create | On::Update | On::Destroy)
+        .on<ColliderMaterial>(On::Create | On::Update | On::Destroy)
+        .on<TriggerTag>(On::Create | On::Destroy)
+        .on<PhysicsJoint>(On::Create | On::Update | On::Destroy)
+        .on<::PhysicsJointDef>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::PhysicsGeometry).on<MeshGeometryDirty>(On::Create | On::Update).on<MeshPositionsChanged>(On::Create | On::Update);
+    reactive(r, Change::ColliderPolicy).on<::ColliderPolicy>(On::Create | On::Update);
+    reactive(r, Change::PhysicsMaterialDef).on<::PhysicsMaterial>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::CollisionSystemDef).on<CollisionSystem>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::CollisionFilterDef).on<CollisionFilter>(On::Create | On::Update | On::Destroy);
 }
 void Deinit(state::Scene &r) { r.ctx().erase<PhysicsState>(); }
 void Clear(state::Scene &r) {

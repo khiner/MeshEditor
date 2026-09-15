@@ -3,7 +3,6 @@
 #include "state/Scene.h"
 
 #include "Job.h"
-#include "Reactive.h"
 #include "action/Audio.h"
 #include "action/Errors.h"
 #include "audio/AudioDevice.h"
@@ -33,6 +32,9 @@
 #include <numbers>
 #include <string_view>
 #include <unordered_set>
+
+using state::Change;
+using state::On;
 
 namespace fs = std::filesystem;
 
@@ -291,20 +293,6 @@ struct AudioTrackers {
         Scale.on<WorldTransform>(On::Update);
     }
 };
-
-namespace audio_changes {
-struct VertexForce {};
-struct ModalGain {};
-struct ModalTuning {};
-struct ModalSoundControls {};
-struct RecordingStart {};
-struct SoundVerticesDerivation {};
-struct ContactReportingDerivation {};
-struct ContactDynamicsDerivation {};
-struct ModelRescaleEdit {};
-struct AudioConfig {};
-struct AudioMix {};
-} // namespace audio_changes
 
 } // namespace
 
@@ -611,28 +599,27 @@ void RegisterAudioComponentHandlers(state::Scene &r) {
     r.ctx().emplace<ModalWarmStart>();
     r.ctx().emplace<ModalSolveJobs>();
 
-    reactive<audio_changes::VertexForce>(r).on<::VertexForce>(On::Create | On::Update | On::Destroy);
-    reactive<audio_changes::ModalGain>(r).on<ModalGain>(On::Update);
-    reactive<audio_changes::ModalTuning>(r).on<ModalTuning>(On::Update);
-    reactive<audio_changes::ModalSoundControls>(r).on<ModalSoundControls>(On::Create | On::Update);
-    reactive<audio_changes::RecordingStart>(r).on<Recording>(On::Create | On::Update);
+    reactive(r, Change::AudioVertexForce).on<::VertexForce>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::ModalGain).on<ModalGain>(On::Update);
+    reactive(r, Change::ModalTuning).on<ModalTuning>(On::Update);
+    reactive(r, Change::ModalSoundControls).on<ModalSoundControls>(On::Create | On::Update);
+    reactive(r, Change::RecordingStart).on<Recording>(On::Create | On::Update);
     r.ctx().emplace<AudioTrackers>().Bind(r);
-    reactive<audio_changes::SoundVerticesDerivation>(r)
+    reactive(r, Change::SoundVerticesDerivation)
         .on<VertexSamples>(On::Create | On::Update | On::Destroy)
         .on<::ModalModes>(On::Create | On::Update | On::Destroy)
         .on<SoundVerticesModel>(On::Create | On::Update | On::Destroy);
     // Refresh body-dependent sound tags after body or hierarchy changes.
-    reactive<audio_changes::ContactReportingDerivation>(r).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<SceneNode>(On::Update | On::Destroy);
-    reactive<audio_changes::ContactDynamicsDerivation>(r)
+    reactive(r, Change::ContactReportingDerivation).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<SceneNode>(On::Update | On::Destroy);
+    reactive(r, Change::ContactDynamicsDerivation)
         .on<MassProperties>(On::Create | On::Update | On::Destroy)
         .on<::ModalModes>(On::Create | On::Update | On::Destroy);
-    reactive<audio_changes::ModelRescaleEdit>(r)
+    reactive(r, Change::ModelRescaleEdit)
         .on<AcousticMaterial>(On::Create | On::Update)
         .on<PhysicsMotion>(On::Create | On::Update | On::Destroy);
-    reactive<audio_changes::AudioConfig>(r).on<AudioOutputConfig>(On::Create | On::Update);
-    reactive<audio_changes::AudioMix>(r).on<AudioOutputMix>(On::Create | On::Update);
+    reactive(r, Change::AudioConfig).on<AudioOutputConfig>(On::Create | On::Update);
+    reactive(r, Change::AudioMix).on<AudioOutputMix>(On::Create | On::Update);
     RegisterSurfaceContactHandlers(r);
-
 }
 
 void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
@@ -659,7 +646,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         it = solve_jobs.erase(it);
     }
     if (pass != EventPass::Restore) {
-        for (auto e : reactive<audio_changes::ModelRescaleEdit>(r)) {
+        for (auto e : reactive(r, Change::ModelRescaleEdit)) {
             if (!r.valid(e) || !r.all_of<ModalEigenSummary, ::ModalModes>(e)) continue;
             RescaleModalObject(r, e);
         }
@@ -688,8 +675,8 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
     }
     // Rebuild SoundVertices from VertexSamples/ModalModes, selected by SoundVerticesModel.
     // Runs before any handler that reads SoundVertices.
-    bool reporting_stale = !reactive<audio_changes::ContactReportingDerivation>(r).empty();
-    for (auto e : reactive<audio_changes::SoundVerticesDerivation>(r)) {
+    bool reporting_stale = !reactive(r, Change::ContactReportingDerivation).empty();
+    for (auto e : reactive(r, Change::SoundVerticesDerivation)) {
         const auto *model = r.try_get<const SoundVerticesModel>(e);
         std::vector<uint32_t> new_vertices;
         if (model) {
@@ -740,9 +727,9 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         }
     }
     // Refresh contact dynamics before the strike loop below reads them.
-    for (auto e : reactive<audio_changes::ContactDynamicsDerivation>(r)) UpdateContactDynamics(r, e);
+    for (auto e : reactive(r, Change::ContactDynamicsDerivation)) UpdateContactDynamics(r, e);
     // A created or replaced VertexForce is a strike. Contact pulses are one-shot.
-    for (auto e : reactive<audio_changes::VertexForce>(r)) {
+    for (auto e : reactive(r, Change::AudioVertexForce)) {
         if (!r.all_of<SoundVerticesModel>(e)) continue;
         const auto *vf = r.try_get<::VertexForce>(e);
         if (!vf || vf->Force <= 0) continue;
@@ -758,14 +745,14 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         }
     }
     // Start a new recording with an impact at the active vertex.
-    for (auto e : reactive<audio_changes::RecordingStart>(r)) {
+    for (auto e : reactive(r, Change::RecordingStart)) {
         if (!r.all_of<ModalModes, SoundVertices, Recording>(e)) continue;
         if (r.get<const Recording>(e).Frame == 0) TriggerModalStrike(r, e, GetActiveVertexIndex(r, e), 1.f, 1.f);
     }
     // Reconcile the live output device: a config change re-inits (and may change the negotiated rate), a mix change just applies level/on-off.
     bool device_rate_changed = false;
     if (auto *res = r.ctx().find<AudioDeviceResource>()) {
-        if (auto &config_tracker = reactive<audio_changes::AudioConfig>(r); !config_tracker.empty()) {
+        if (auto &config_tracker = reactive(r, Change::AudioConfig); !config_tracker.empty()) {
             const uint32_t prev_rate = res->SampleRate;
             for (auto e : config_tracker) {
                 if (r.all_of<AudioOutputConfig, AudioOutputMix>(e)) ReconcileAudioDevice(*res, r.get<const AudioOutputConfig>(e), r.get<const AudioOutputMix>(e));
@@ -774,7 +761,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
             // A reopened device publishes a new scheduling group, which the render threads have to be re-placed into.
             r.ctx().get<ModalAudio>().RenderPool.SetWorkgroup(res->RenderWorkgroup);
         }
-        for (auto e : reactive<audio_changes::AudioMix>(r)) {
+        for (auto e : reactive(r, Change::AudioMix)) {
             if (r.all_of<AudioOutputMix>(e)) ApplyAudioMix(*res, r.get<const AudioOutputMix>(e));
         }
     }
@@ -816,13 +803,13 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
     {
         auto &m = r.ctx().get<ModalAudio>();
         auto &bank = LiveBank(m);
-        for (auto e : reactive<audio_changes::ModalGain>(r)) {
+        for (auto e : reactive(r, Change::ModalGain)) {
             if (auto slot = FindModalObject(bank, e)) SetModalOutGain(r, bank, *slot, e);
         }
-        for (auto e : reactive<audio_changes::ModalTuning>(r)) {
+        for (auto e : reactive(r, Change::ModalTuning)) {
             if (auto slot = FindModalObject(bank, e)) RetuneModalObject(r, bank, *slot, e);
         }
-        for (auto e : reactive<audio_changes::ModalSoundControls>(r)) {
+        for (auto e : reactive(r, Change::ModalSoundControls)) {
             const auto &controls = r.get<const ModalSoundControls>(e);
             m.ClickGain.store(controls.ClickGain, std::memory_order_relaxed);
             m.MaxImpacts.store(controls.MaxImpacts, std::memory_order_relaxed);

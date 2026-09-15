@@ -30,11 +30,6 @@ void EmplaceLookingThrough(state::Scene &r, state::Entity e, std::span<const std
 
 template<> inline constexpr auto CustomEmplace<ViewCamera> = &EmplaceViewCamera;
 template<> inline constexpr auto CustomEmplace<LookingThrough> = &EmplaceLookingThrough;
-template<> inline constexpr bool ForceFieldwise<MaterialPreviewLighting> = true;
-template<> inline constexpr bool ForceFieldwise<RenderedLighting> = true;
-template<> inline constexpr bool ForceFieldwise<RotationUiVariant> = true;
-template<> inline constexpr bool ForceFieldwise<TransformGizmoState> = true;
-template<> inline constexpr bool ForceFieldwise<ViewportDisplay> = true;
 
 void RegisterViewport(Tables &tables) {
     Persistent<

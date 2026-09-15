@@ -37,7 +37,6 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
             const auto stats = history.Stats();
             Text("Shared node pool: %.2f MiB", double(stats.SharedNodeBytes) / (1 << 20));
             Text("Copied data: %.2f MiB", double(stats.OwnedBytes) / (1 << 20));
-            Text("Estimated history memory: %.2f MiB", double(stats.RetainedBytes()) / (1 << 20));
             Text("%zu states cached, %zu require disk reads", stats.HotNodes, stats.ColdNodes);
             int cap = int(session.MemoryCap >> 20);
             if (DragInt("Copied data budget (MiB)", &cap, 1.f, 0, 4096) && interactive) {

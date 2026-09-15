@@ -1,7 +1,8 @@
 #include "metal/Buffer.h"
 
 #include "metal/MetalCpp.h"
-#include "project/BufferHistory.h"
+#include "project/store/History.h"
+#include "project/store/Pages.h"
 
 #include <algorithm>
 #include <array>
@@ -51,7 +52,10 @@ Buffer::Buffer(BufferContext &ctx, uint64_t size) : Ctx(ctx), DeviceBuffer(NewBu
 Buffer::Buffer(Buffer &&other) noexcept
     : Ctx(other.Ctx), Slot(other.Slot), UsedSize(other.UsedSize),
       DeviceBuffer(std::move(other.DeviceBuffer)), Tracked(std::move(other.Tracked)), Type(other.Type) {
-    if (Tracked) Tracked->B = this;
+    if (Tracked) {
+        Tracked->Backing = this;
+        Tracked->Len = &UsedSize;
+    }
     other.Slot = InvalidSlot;
 }
 
@@ -64,7 +68,10 @@ Buffer &Buffer::operator=(Buffer &&other) noexcept {
         DeviceBuffer = std::move(other.DeviceBuffer);
         Type = other.Type;
         Tracked = std::move(other.Tracked);
-        if (Tracked) Tracked->B = this;
+        if (Tracked) {
+            Tracked->Backing = this;
+            Tracked->Len = &UsedSize;
+        }
         other.Slot = InvalidSlot;
     }
     return *this;
@@ -120,6 +127,7 @@ void Buffer::Reserve(uint64_t required_size) {
     Retire();
     DeviceBuffer = std::move(new_device);
     UpdateSlot();
+    if (Tracked) Tracked->Storage = Contents();
 }
 
 void Buffer::Update(std::span<const std::byte> data, uint64_t offset) {
@@ -146,6 +154,16 @@ void Buffer::SetUsedSize(uint64_t size) {
 }
 
 void Buffer::Track(store::History &history, std::string name, uint32_t page_bytes) {
-    Tracked = std::make_unique<project::BufferHistory>(*this, history, std::move(name), page_bytes);
+    Tracked = std::make_unique<store::Pages>(page_bytes, 5, this, [](void *backing, uint64_t bytes) {
+        auto &buffer = *static_cast<Buffer *>(backing);
+        buffer.Reserve(bytes);
+        return buffer.Contents();
+    }, UsedSize);
+    Tracked->Storage = Contents();
+    Tracked->Grow(UsedSize);
+    if (const auto bytes = Contents(); bytes.size() > UsedSize) std::ranges::fill(bytes.subspan(UsedSize), std::byte{});
+    Tracked->Trie.CollectChanged = true;
+    history.Track(*Tracked, std::move(name), 0);
+    Tracked->Trie.MarkDirty(0, Tracked->Trie.SlotsFor(UsedSize));
 }
 } // namespace mtl

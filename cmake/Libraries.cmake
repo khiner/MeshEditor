@@ -36,6 +36,7 @@ endfunction()
 mesheditor_library(MeshEditorProjectStore HOT
     src/state/Scene.cpp
     src/project/EntityStore.cpp
+    src/project/ComponentPool.cpp
     src/project/store/LiveTrie.cpp
     src/project/store/History.cpp)
 target_link_libraries(MeshEditorProjectStore PUBLIC mesheditor_serialization)
@@ -65,7 +66,6 @@ target_compile_definitions(mesheditor_implot PRIVATE "IMPLOT_CUSTOM_NUMERIC_TYPE
 target_link_libraries(mesheditor_implot PUBLIC mesheditor_imgui)
 
 mesheditor_library(MeshEditorMetal HOT
-    src/project/BufferHistory.cpp
     src/Profile.cpp
     src/metal/Bindless.cpp
     src/metal/Buffer.cpp

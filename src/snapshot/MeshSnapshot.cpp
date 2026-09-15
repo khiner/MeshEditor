@@ -12,7 +12,6 @@
 #include "viewport/ViewportEvents.h"
 
 namespace snapshot::detail {
-template<> inline constexpr bool ForceFieldwise<PrimitiveShape> = true;
 
 void RegisterMesh(Tables &tables) {
     Persistent<

@@ -5,6 +5,7 @@
 #include "action/Action.h"
 #include "action/ActionDrain.h"
 #include "project/EntityStore.h"
+#include "project/store/History.h"
 #include "viewport/CameraView.h"
 
 namespace project {

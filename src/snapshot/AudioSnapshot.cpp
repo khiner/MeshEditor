@@ -14,8 +14,6 @@
 #endif
 
 namespace snapshot::detail {
-template<> inline constexpr bool ForceFieldwise<AudioOutputMix> = true;
-template<> inline constexpr bool ForceFieldwise<ModalSolveSettings> = true;
 
 void RegisterAudio(Tables &tables) {
     Persistent<

@@ -23,7 +23,6 @@ constexpr auto serialize(auto &archive, Armature &a) {
 }
 
 namespace snapshot::detail {
-template<> inline constexpr bool ForceFieldwise<BoneSubPartOf> = true;
 
 template<> Armature CopyNative(const Armature &source) {
     Armature result;

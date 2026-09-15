@@ -6,11 +6,9 @@
 #include "state/Scene.h"
 
 #include "Camera.h"
-#include "Changes.h"
 #include "File.h"
 #include "Parallel.h"
 #include "Profile.h"
-#include "Reactive.h"
 #include "TransformMath.h"
 #include "Variant.h"
 #include "action/Selection.h"
@@ -32,7 +30,6 @@
 #include "mesh/TetBuffers.h"
 #include "mesh/VertexAdjacencyGpu.h"
 #include "object/ObjectOps.h"
-#include "physics/PhysicsChanges.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "render/ElementWorkOps.h"
@@ -75,6 +72,9 @@
 #include <iostream>
 #include <numeric>
 #include <print>
+
+using state::Change;
+using state::On;
 
 using std::ranges::to;
 using std::views::iota;
@@ -165,7 +165,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
 
     // Restore texture data into free recorded slots while preserving textures materialized during import.
-    if (!reactive<changes::MaterializedTextures>(r).empty()) {
+    if (!reactive(r, Change::MaterializedTextures).empty()) {
         if (const auto *manifest = r.try_get<const MaterializedTextures>(viewport)) {
             for (const auto &t : manifest->Items) {
                 if (!slots.Reserve(SlotType::Sampler, t.SamplerSlot)) continue;
@@ -191,7 +191,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         textures.PendingUploads.clear();
     }
     // Rebuild restored EXT-IBL scene resources after ClearScene releases their prefiltered cubemap.
-    if (!reactive<changes::SceneWorld>(r).empty()) {
+    if (!reactive(r, Change::SceneWorld).empty()) {
         const auto *src = r.try_get<const gltf::SourceAssets>(viewport);
         if (src && src->ImageBasedLight && !environments.ImportedSceneWorld && !environments.PendingImport) {
             const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(slots);
@@ -237,7 +237,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
 
     // Prefilter and activate the studio HDRI named by the StudioEnvironment selection whenever it changes.
-    if (!reactive<changes::StudioEnvironment>(r).empty()) {
+    if (!reactive(r, Change::StudioEnvironment).empty()) {
         SetStudioEnvironment(r, r.get<const StudioEnvironment>(viewport).Name);
     }
 
@@ -361,7 +361,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
 
     // Refresh camera overlay descriptors after lens changes.
-    if (!reactive<changes::CameraLens>(r).empty()) request(RenderRequest::Rebuild);
+    if (!reactive(r, Change::CameraLens).empty()) request(RenderRequest::Rebuild);
 
     auto sync = SyncModelsBuffers(r);
     if (!sync.NewlyInserted.empty() || sync.Compacted) {
@@ -524,7 +524,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 
     { // Register changed lights into the GPU Lights buffer, the single path for both new and restored lights.
         bool synced = false;
-        for (const auto entity : reactive<changes::PunctualLight>(r)) {
+        for (const auto entity : reactive(r, Change::PunctualLight)) {
             if (!r.all_of<PunctualLight, Instance>(entity)) continue;
             const auto *ri = r.try_get<const RenderInstance>(entity);
             if (!ri || ri->BufferIndex == UINT32_MAX) continue;
@@ -569,7 +569,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
 
     // Commit mesh edit transforms after StartTransform is cleared.
-    if (!reactive<changes::TransformEnd>(r).empty()) {
+    if (!reactive(r, Change::TransformEnd).empty()) {
         if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == state::Null) {
             if (const auto *pending = r.try_get<const PendingTransform>(viewport); pending && pending->Delta != Transform{}) {
                 // Evaluate the final edit before geometry and physics consumers run.
@@ -586,7 +586,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
     }
 
-    for (auto entity : reactive<changes::MeshGeometry>(r)) {
+    for (auto entity : reactive(r, Change::MeshGeometry)) {
         if (!r.all_of<MeshPositionsChanged>(entity)) continue;
         const auto &work = r.ctx().get<const GpuSceneState>().EditWork.at(entity);
         if (auto *bvh = r.try_edit<MeshBvh>(entity)) {
@@ -608,8 +608,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     // Restored collider shapes already hold their persisted derivation.
     if (pass != EventPass::Restore) {
         std::unordered_set<state::Entity> to_rederive;
-        for (auto e : reactive<changes::ColliderPolicy>(r)) to_rederive.insert(e);
-        if (const auto &mesh_dirty = reactive<changes::MeshGeometry>(r); !mesh_dirty.empty()) {
+        for (auto e : reactive(r, Change::ColliderPolicy)) to_rederive.insert(e);
+        if (const auto &mesh_dirty = reactive(r, Change::MeshGeometry); !mesh_dirty.empty()) {
             for (auto [ce, cs] : r.view<const ColliderShape>().each()) {
                 const auto me = cs.MeshEntity != state::Null ? cs.MeshEntity : FindMeshEntity(r, ce);
                 if (mesh_dirty.contains(me)) to_rederive.insert(ce);
@@ -629,7 +629,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (r.view<const SoundVertices>().empty()) {
             if (interaction_mode == InteractionMode::Excite) SetInteractionMode(r, viewport, *enabled_modes.begin());
             enabled_modes.erase(InteractionMode::Excite);
-        } else if (!reactive<changes::SoundVertices>(r).empty()) {
+        } else if (!reactive(r, Change::SoundVertices).empty()) {
             enabled_modes.insert(InteractionMode::Excite);
             if (interaction_mode == InteractionMode::Excite) request(RenderRequest::Rebuild);
             else SetInteractionMode(r, viewport, InteractionMode::Excite);
@@ -660,8 +660,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
 
     {
-        auto &selected_tracker = reactive<changes::Selected>(r);
-        auto &active_tracker = reactive<changes::ActiveInstance>(r);
+        auto &selected_tracker = reactive(r, Change::Selected);
+        auto &active_tracker = reactive(r, Change::ActiveInstance);
         if ((!selected_tracker.empty() || !active_tracker.empty()) && r.get<const Interaction>(viewport).Mode == InteractionMode::Edit)
             r.ctx().get<GpuSceneState>().EditPreludePending = true;
         if (!selected_tracker.empty()) {
@@ -691,7 +691,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (FlushIndexedWrites(state_writes, [&] { return buffers.Instances.GetMutableStates(); })) request(RenderRequest::Reuse);
     }
     {
-        auto &bone_sel_tracker = reactive<changes::BoneSelection>(r);
+        auto &bone_sel_tracker = reactive(r, Change::BoneSelection);
         if (!bone_sel_tracker.empty()) {
             request(RenderRequest::Silhouette);
             for (auto bone_entity : bone_sel_tracker) {
@@ -700,7 +700,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
     }
     auto &destroy_tracker = r.ctx().get<EntityDestroyTracker>();
-    if (!reactive<changes::Rerecord>(r).empty() || !destroy_tracker.Storage.empty()) {
+    if (!reactive(r, Change::Rerecord).empty() || !destroy_tracker.Storage.empty()) {
         request(RenderRequest::Rebuild);
         // Instance lifecycle and slot changes invalidate meshlet records because mesh-keyed signatures omit instance slots and object IDs.
         MarkInstanceRecordsStale(r.ctx().get<GpuSceneState>());
@@ -719,7 +719,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         });
     };
 
-    if (const auto &tracker = reactive<changes::MeshActiveElement>(r); !tracker.empty()) {
+    if (const auto &tracker = reactive(r, Change::MeshActiveElement); !tracker.empty()) {
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
         const auto active_entity = FindActiveEntity(r);
         const auto *active_instance = r.try_get<Instance>(active_entity);
@@ -731,18 +731,18 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             if (interaction_mode == InteractionMode::Excite) dirty_sound_selection_meshes.insert(mesh_entity);
         }
     }
-    for (auto instance_entity : reactive<changes::VertexForce>(r)) {
+    for (auto instance_entity : reactive(r, Change::VertexForce)) {
         if (interaction_mode == InteractionMode::Excite) {
             if (const auto *inst = r.try_get<Instance>(instance_entity)) dirty_sound_selection_meshes.insert(inst->Entity);
         }
         if (const auto *ev = r.try_get<VertexForce>(instance_entity)) orbit_to_active(instance_entity, Element::Vertex, ev->Vertex);
     }
-    for (auto instance_entity : reactive<changes::SoundVerticesUpdated>(r)) {
+    for (auto instance_entity : reactive(r, Change::SoundVerticesUpdated)) {
         if (interaction_mode == InteractionMode::Excite) {
             if (const auto *inst = r.try_get<const Instance>(instance_entity)) dirty_sound_selection_meshes.insert(inst->Entity);
         }
     }
-    for (auto camera_entity : reactive<changes::CameraLens>(r)) {
+    for (auto camera_entity : reactive(r, Change::CameraLens)) {
         // Update the viewport FOV when it uses the changed scene camera.
         if (r.all_of<Camera>(camera_entity) && r.all_of<LookingThrough>(camera_entity)) r.patch<ViewCamera>(viewport, [](auto &) {});
     }
@@ -752,7 +752,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         buffers.Lights.SetCount<PunctualLight>(required_count);
         light_count_changed = true;
     }
-    if (!reactive<changes::WorkspaceLights>(r).empty()) {
+    if (!reactive(r, Change::WorkspaceLights).empty()) {
         buffers.WorkspaceLightsUBO.Update(as_bytes(r.get<const WorkspaceLights>(viewport)));
         request(RenderRequest::Reuse);
     }
@@ -770,7 +770,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         buffers.PreludeStale = true;
         request(RenderRequest::Rebuild);
     }
-    if (auto &tracker = reactive<changes::MeshShading>(r); !tracker.empty()) {
+    if (auto &tracker = reactive(r, Change::MeshShading); !tracker.empty()) {
         // Reclassify corners and derive base normals after sharpness changes.
         std::vector<state::Entity> reclassified;
         for (auto mesh_entity : tracker) {
@@ -789,9 +789,9 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
     }
     // Persistent overlay jobs reference tet arena ranges.
-    if (!reactive<changes::TetMesh>(r).empty()) request(RenderRequest::Rebuild);
+    if (!reactive(r, Change::TetMesh).empty()) request(RenderRequest::Rebuild);
     // Maintain closest-point hierarchies for meshes reachable from contact-reporting bodies.
-    if (!reactive<changes::PhysicsBodyMesh>(r).empty()) {
+    if (!reactive(r, Change::PhysicsBodyMesh).empty()) {
         // Collider parameters live in persistent overlay jobs.
         request(RenderRequest::Rebuild);
 
@@ -814,7 +814,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
         for (const auto mesh_entity : unreached) r.remove<MeshBvh>(mesh_entity);
     }
-    if (auto &tracker = reactive<changes::MeshGeometry>(r); !tracker.empty()) {
+    if (auto &tracker = reactive(r, Change::MeshGeometry); !tracker.empty()) {
         // Vertex-arena positions feed the pose pre-pass, so geometry edits re-run the prelude.
         if (std::ranges::any_of(tracker, [&](auto e) { return r.all_of<MeshGeometryDirty>(e); })) buffers.PreludeStale = true;
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
@@ -840,7 +840,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (!geometry_ranges.empty()) ApplyEditSelectionCommand(r, geometry_ranges, edit_mode, EditSelectionOperation::Clear);
         request(RenderRequest::Reuse);
     }
-    if (auto &tracker = reactive<changes::MeshMaterial>(r); !tracker.empty()) {
+    if (auto &tracker = reactive(r, Change::MeshMaterial); !tracker.empty()) {
         for (auto mesh_entity : tracker) {
             const auto *assignment = r.try_get<const MeshMaterialAssignment>(mesh_entity);
             const auto mesh = TryGetMesh(r, mesh_entity);
@@ -854,15 +854,15 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
         request(RenderRequest::Rebuild);
     }
-    if (!reactive<changes::ViewportTheme>(r).empty()) {
+    if (!reactive(r, Change::ViewportTheme).empty()) {
         auto theme = r.get<const ViewportTheme>(viewport);
         UpdateDerivedColors(theme);
         theme.EdgeWidth *= r.ctx().get<FrameState>().DisplayFramebufferScale.x;
         buffers.ViewportThemeUBO.Update(as_bytes(theme));
         request(RenderRequest::Reuse);
     }
-    if (!reactive<changes::Materials>(r).empty()) request(RenderRequest::Rebuild);
-    if (!reactive<changes::ActiveMaterialVariant>(r).empty()) {
+    if (!reactive(r, Change::Materials).empty()) request(RenderRequest::Rebuild);
+    if (!reactive(r, Change::ActiveMaterialVariant).empty()) {
         const auto *mv = r.try_get<const MaterialVariants>(viewport);
         const auto active = mv ? mv->Active : std::nullopt;
         for (const auto [e, layout, _] : r.view<const MeshSourceLayout, const MeshHandle>().each()) {
@@ -877,7 +877,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
         request(RenderRequest::Rebuild);
     }
-    if (!reactive<changes::ViewportDisplay>(r).empty()) {
+    if (!reactive(r, Change::ViewportDisplay).empty()) {
         request(RenderRequest::Rebuild);
         if (const float requested = ClampMaxAnisotropy(ToMaxAnisotropy(r.get<const ViewportDisplay>(viewport).AnisotropicFilter));
             requested != r.ctx().get<const ActiveSamplerAnisotropy>().Value) {
@@ -885,7 +885,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             RebuildTextureSamplers(ctx, slots, textures, requested);
         }
     }
-    if (!reactive<changes::InteractionMode>(r).empty()) {
+    if (!reactive(r, Change::InteractionMode).empty()) {
         // Entering edit mode replaces animation deformation with the rest pose even when storage is unchanged.
         buffers.PreludeStale = true;
         request(RenderRequest::Rebuild);
@@ -898,7 +898,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         for (const auto arm : r.view<const ArmatureObject>()) bone_state_dirty.insert(arm);
     }
 
-    const bool mode_changed = !reactive<changes::InteractionMode>(r).empty();
+    const bool mode_changed = !reactive(r, Change::InteractionMode).empty();
     bool anim_advanced;
     float eval_seconds{}, frame_seconds{};
     const auto clip_time = [](const auto &clip, float seconds) {
@@ -923,7 +923,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             } else if (!playback.Playing) {
                 pf = float(playback.CurrentFrame);
             }
-            return playback.CurrentFrame != r.edit<LastEvaluatedFrame>(viewport).Value || !reactive<changes::ActiveAnimationClip>(r).empty();
+            return playback.CurrentFrame != r.edit<LastEvaluatedFrame>(viewport).Value || !reactive(r, Change::ActiveAnimationClip).empty();
         }();
 
         const int from = r.edit<LastEvaluatedFrame>(viewport).Value;
@@ -1031,9 +1031,9 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 
         // Update bone pose state before WorldTransform consumes its Transform patches.
         const bool bones_need_refresh = rendering || pass == EventPass::Restore || anim_advanced || mode_changed || pose_state_created;
-        if (bones_need_refresh || !reactive<changes::TransformDirty>(r).empty() || !reactive<changes::TransformEnd>(r).empty()) {
-            const auto &local_changes = reactive<changes::TransformDirty>(r);
-            const auto &transform_end = reactive<changes::TransformEnd>(r);
+        if (bones_need_refresh || !reactive(r, Change::TransformDirty).empty() || !reactive(r, Change::TransformEnd).empty()) {
+            const auto &local_changes = reactive(r, Change::TransformDirty);
+            const auto &transform_end = reactive(r, Change::TransformEnd);
             std::vector<Transform> sample_deltas, frame_deltas;
             for (const auto [arm_obj_entity, arm_obj_comp] : r.view<const ArmatureObject>().each()) {
                 auto *pose_state = r.try_edit<ArmaturePoseState>(arm_obj_comp.Entity);
@@ -1200,7 +1200,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             }
         }
         // Recompute changed world transforms and their descendants.
-        if (const auto &dirty = reactive<changes::TransformDirty>(r); !dirty.empty()) {
+        if (const auto &dirty = reactive(r, Change::TransformDirty); !dirty.empty()) {
             const bool bone_edit = is_edit_mode && FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
             std::unordered_set<state::Entity> recompute;
             const auto collect = [&](this const auto &self, state::Entity e, bool propagate) -> void {
@@ -1224,7 +1224,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             for (const auto e : recompute) compute(e);
         }
         {
-            const auto &wt_reactive = reactive<changes::WorldTransform>(r);
+            const auto &wt_reactive = reactive(r, Change::WorldTransform);
             std::vector<std::pair<uint32_t, WorldTransform>> wt_writes;
             wt_writes.reserve(wt_reactive.size() + sync.NewlyInserted.size());
 
@@ -1263,7 +1263,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
     }
     {
-        for (auto e : reactive<changes::Rotation>(r)) {
+        for (auto e : reactive(r, Change::Rotation)) {
             const auto *local = EditedLocal(r, e);
             if (!local) continue;
             if (r.all_of<RotationUiDriving>(e)) {
@@ -1277,14 +1277,14 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
     // Update an active scene camera before processing SceneView changes.
     if (const auto camera = LookThroughCameraEntity(r); camera != state::Null &&
-        reactive<changes::WorldTransform>(r).contains(camera)) {
+        reactive(r, Change::WorldTransform).contains(camera)) {
         const auto &wt = r.get<WorldTransform>(camera);
         r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, r.get<Camera>(camera)});
     }
     {
         // Update transmission specialization before the UBO reads its pipeline state.
         const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
-        if (recompiled || !reactive<changes::ViewportDisplay>(r).empty() || !reactive<changes::PbrSpecialization>(r).empty()) {
+        if (recompiled || !reactive(r, Change::ViewportDisplay).empty() || !reactive(r, Change::PbrSpecialization).empty()) {
             // SubmitViewport refreshes all slots only on resize, so update this lazy sampler inline.
             const auto refresh_transmission_sampler = [&] {
                 const auto info = targets.TransmissionSampler();
@@ -1308,18 +1308,18 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
 
     // Send pending pose deltas through the view UBO.
-    if (!reactive<changes::TransformPending>(r).empty() || !reactive<changes::TransformEnd>(r).empty()) {
+    if (!reactive(r, Change::TransformPending).empty() || !reactive(r, Change::TransformEnd).empty()) {
         if (is_edit_mode) r.ctx().get<GpuSceneState>().EditPreludePending = true;
         else buffers.PreludeStale = true;
     }
 
     const auto render_extent = RenderExtentPx(r);
     if (buffers.FrameView != RenderView{r.get<const ViewCamera>(viewport), render_extent} ||
-        !reactive<changes::SceneView>(r).empty() ||
-        !reactive<changes::TransformPending>(r).empty() ||
-        !reactive<changes::ViewportDisplay>(r).empty() ||
-        !reactive<changes::InteractionMode>(r).empty() ||
-        !reactive<changes::TransformEnd>(r).empty() ||
+        !reactive(r, Change::SceneView).empty() ||
+        !reactive(r, Change::TransformPending).empty() ||
+        !reactive(r, Change::ViewportDisplay).empty() ||
+        !reactive(r, Change::InteractionMode).empty() ||
+        !reactive(r, Change::TransformEnd).empty() ||
         light_count_changed ||
         resized) {
         const float aspect = render_extent.x == 0 || render_extent.y == 0 ? 1.f : float(render_extent.x) / float(render_extent.y);
@@ -1452,55 +1452,55 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 
 void RegisterSceneComponentHandlers(state::Scene &r) {
     r.on_destroy<MeshHandle>().connect<&ReleaseMeshEditWork>();
-    reactive<changes::Selected>(r).on<Selected>(On::Create | On::Destroy);
-    reactive<changes::ActiveInstance>(r).on<Active>(On::Create | On::Destroy);
-    reactive<changes::BoneSelection>(r).on<BoneSelection>(On::Create | On::Update | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
-    reactive<changes::Rerecord>(r)
+    reactive(r, Change::Selected).on<Selected>(On::Create | On::Destroy);
+    reactive(r, Change::ActiveInstance).on<Active>(On::Create | On::Destroy);
+    reactive(r, Change::BoneSelection).on<BoneSelection>(On::Create | On::Update | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
+    reactive(r, Change::Rerecord)
         .on<RenderInstance>(On::Create | On::Destroy)
         .on<Active>(On::Create | On::Destroy)
         .on<StartTransform>(On::Create | On::Destroy)
         .on<EditMode>(On::Create | On::Update);
-    reactive<changes::MeshActiveElement>(r).on<MeshActiveElement>(On::Create | On::Update);
-    reactive<changes::MeshGeometry>(r).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
+    reactive(r, Change::MeshActiveElement).on<MeshActiveElement>(On::Create | On::Update);
+    reactive(r, Change::MeshGeometry).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     // Refresh body-mesh reachability after collider or body changes.
-    reactive<changes::PhysicsBodyMesh>(r).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<ColliderShape>(On::Create | On::Update | On::Destroy);
-    reactive<changes::MeshMaterial>(r).on<MeshMaterialAssignment>(On::Create | On::Update);
-    reactive<changes::SoundVertices>(r).on<SoundVertices>(On::Create | On::Destroy);
-    reactive<changes::SoundVerticesUpdated>(r).on<SoundVertices>(On::Update);
-    reactive<changes::VertexForce>(r).on<VertexForce>(On::Create | On::Destroy);
-    reactive<changes::TetMesh>(r).on<TetBuffers>(On::Create | On::Update | On::Destroy);
-    reactive<changes::NewBufferEntity>(r).on<MeshBuffers>(On::Create);
-    reactive<changes::RenderInstanceCreated>(r).on<RenderInstance>(On::Create);
-    reactive<changes::ViewportDisplay>(r).on<ViewportDisplay>(On::Create | On::Update);
-    reactive<changes::InteractionMode>(r).on<Interaction>(On::Create | On::Update);
-    reactive<changes::WorkspaceLights>(r).on<WorkspaceLights>(On::Create | On::Update);
-    reactive<changes::ViewportTheme>(r).on<ViewportTheme>(On::Create | On::Update);
-    reactive<changes::MaterializedTextures>(r).on<MaterializedTextures>(On::Create | On::Update);
-    reactive<changes::StudioEnvironment>(r).on<StudioEnvironment>(On::Create | On::Update);
-    reactive<changes::SceneWorld>(r).on<gltf::SourceAssets>(On::Create | On::Update);
-    reactive<changes::PunctualLight>(r).on<PunctualLight>(On::Create | On::Update);
-    reactive<changes::ActiveMaterialVariant>(r).on<MaterialVariants>(On::Create | On::Update);
-    reactive<changes::PbrSpecialization>(r)
+    reactive(r, Change::PhysicsBodyMesh).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<ColliderShape>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::MeshMaterial).on<MeshMaterialAssignment>(On::Create | On::Update);
+    reactive(r, Change::SoundVertices).on<SoundVertices>(On::Create | On::Destroy);
+    reactive(r, Change::SoundVerticesUpdated).on<SoundVertices>(On::Update);
+    reactive(r, Change::VertexForce).on<VertexForce>(On::Create | On::Destroy);
+    reactive(r, Change::TetMesh).on<TetBuffers>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::NewBufferEntity).on<MeshBuffers>(On::Create);
+    reactive(r, Change::RenderInstanceCreated).on<RenderInstance>(On::Create);
+    reactive(r, Change::ViewportDisplay).on<ViewportDisplay>(On::Create | On::Update);
+    reactive(r, Change::InteractionMode).on<Interaction>(On::Create | On::Update);
+    reactive(r, Change::WorkspaceLights).on<WorkspaceLights>(On::Create | On::Update);
+    reactive(r, Change::ViewportTheme).on<ViewportTheme>(On::Create | On::Update);
+    reactive(r, Change::MaterializedTextures).on<MaterializedTextures>(On::Create | On::Update);
+    reactive(r, Change::StudioEnvironment).on<StudioEnvironment>(On::Create | On::Update);
+    reactive(r, Change::SceneWorld).on<gltf::SourceAssets>(On::Create | On::Update);
+    reactive(r, Change::PunctualLight).on<PunctualLight>(On::Create | On::Update);
+    reactive(r, Change::ActiveMaterialVariant).on<MaterialVariants>(On::Create | On::Update);
+    reactive(r, Change::PbrSpecialization)
         .on<PbrMeshFeatures>(On::Create | On::Update | On::Destroy)
         .on<MaterialPreviewLighting>(On::Create | On::Update)
         .on<RenderedLighting>(On::Create | On::Update);
-    reactive<changes::SceneView>(r)
+    reactive(r, Change::SceneView)
         .on<ViewCamera>(On::Create | On::Update)
         .on<MaterialPreviewLighting>(On::Create | On::Update)
         .on<RenderedLighting>(On::Create | On::Update)
         .on<LightIndex>(On::Create | On::Destroy)
         .on<EditMode>(On::Create | On::Update);
-    reactive<changes::CameraLens>(r).on<Camera>(On::Create | On::Update).on<LookingThrough>(On::Create | On::Destroy);
-    reactive<changes::Rotation>(r).on<Transform>(On::Create | On::Update).on<PosedLocal>(On::Create | On::Update);
-    reactive<changes::WorldTransform>(r).on<WorldTransform>(On::Create | On::Update);
-    reactive<changes::TransformPending>(r).on<PendingTransform>(On::Create | On::Update | On::Destroy);
-    reactive<changes::TransformEnd>(r).on<StartTransform>(On::Destroy);
-    reactive<changes::TransformDirty>(r)
+    reactive(r, Change::CameraLens).on<Camera>(On::Create | On::Update).on<LookingThrough>(On::Create | On::Destroy);
+    reactive(r, Change::Rotation).on<Transform>(On::Create | On::Update).on<PosedLocal>(On::Create | On::Update);
+    reactive(r, Change::WorldTransform).on<WorldTransform>(On::Create | On::Update);
+    reactive(r, Change::TransformPending).on<PendingTransform>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::TransformEnd).on<StartTransform>(On::Destroy);
+    reactive(r, Change::TransformDirty)
         .on<Transform>(On::Create | On::Update)
         .on<PosedLocal>(On::Create | On::Update)
         .on<SceneNode>(On::Create | On::Update)
         .on<BoneDisplayScale>(On::Update);
-    reactive<changes::ActiveAnimationClip>(r)
+    reactive(r, Change::ActiveAnimationClip)
         .on<ArmatureAnimation>(On::Update)
         .on<MorphWeightAnimation>(On::Update)
         .on<NodeTransformAnimation>(On::Update);

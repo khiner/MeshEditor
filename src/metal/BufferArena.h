@@ -3,7 +3,8 @@
 #include "RangeAllocator.h"
 #include "SlottedRange.h"
 #include "metal/Buffer.h"
-#include "project/AllocatorHistory.h"
+#include "project/store/History.h"
+#include "project/store/Records.h"
 
 template<typename T>
 struct BufferArena {
@@ -12,7 +13,9 @@ struct BufferArena {
 
     void Track(store::History &history, const std::string &name, uint32_t page_bytes = 4096) {
         Buffer.Track(history, name + ".bytes", page_bytes);
-        Tracked = std::make_unique<project::AllocatorHistory>(Allocator, history, name);
+        Tracked = std::make_unique<store::Records>(&Allocator, AllocatorCodec, 1);
+        Allocator.History = Tracked.get();
+        history.Track(*Tracked, name + ".alloc", 0);
     }
 
     void ReserveAdditional(uint32_t count) {
@@ -77,5 +80,5 @@ private:
     void WriteRange(uint32_t offset, std::span<const T> values) { Buffer.Update(as_bytes(values), offset * sizeof(T)); }
 
     RangeAllocator Allocator;
-    std::unique_ptr<project::AllocatorHistory> Tracked;
+    std::unique_ptr<store::Records> Tracked;
 };

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "state/Changes.h"
 #include "state/Entity.h"
 #include "state/Schema.h"
 
@@ -201,12 +202,8 @@ struct Scene {
     Services Context;
     std::array<std::unique_ptr<TableBase>, SchemaSize> Tables;
     std::array<std::array<std::vector<DirtySet *>, 3>, SchemaSize> Dirty;
-    std::array<std::unique_ptr<DirtySet>, SchemaSize> Changes;
-    struct Handler {
-        void (*Apply)(void *, Scene &, Entity);
-        void *Owner{};
-        void operator()(Scene &r, Entity e) const { Apply(Owner, r, e); }
-    };
+    std::array<DirtySet, size_t(Change::Count)> Changes;
+    using Handler = void (*)(Scene &, Entity);
     std::array<std::array<std::vector<Handler>, 3>, SchemaSize> Handlers;
     // The generation table and ordered free list are the only allocation authority.
     std::unique_ptr<Allocation> AllocationStorage;
@@ -229,7 +226,6 @@ struct Scene {
     void RebuildLiving();
     TableBase *storage(TypeId id) { return Tables[id].get(); }
     const TableBase *storage(TypeId id) const { return Tables[id].get(); }
-    DirtySet &changes(TypeId);
     template<typename C> auto &storage() {
         if constexpr (std::is_same_v<C, Entity>) return Living;
         else {
@@ -280,18 +276,14 @@ struct Scene {
     }
     template<typename... C> void clear() { ((Tables[Type<C>()] ? Tables[Type<C>()]->clear() : void()), ...); }
     void ClearChanges() {
-        for (auto &p : Changes)
-            if (p) p->clear();
+        for (auto &c : Changes) c.clear();
     }
     struct Sink {
         Scene &R;
         TypeId Type;
         Event Kind;
         template<auto Fn> void connect() {
-            R.Handlers[Type][size_t(Kind)].push_back({[](void *, Scene &r, Entity e) { std::invoke(Fn, r, e); }});
-        }
-        template<auto Fn, typename T> void connect(T &owner) {
-            R.Handlers[Type][size_t(Kind)].push_back({[](void *p, Scene &r, Entity e) { std::invoke(Fn, *static_cast<T *>(p), r, e); }, &owner});
+            R.Handlers[Type][size_t(Kind)].push_back([](Scene &r, Entity e) { std::invoke(Fn, r, e); });
         }
     };
     template<typename C> Sink on_construct() { return {*this, Type<C>(), Event::Create}; }
@@ -307,6 +299,9 @@ struct Scene {
         return View<const Scene, const C...>{*this, excluded};
     }
 };
+
+inline DirtySet &reactive(Scene &r, Change c) { return r.Changes[size_t(c)]; }
+inline const DirtySet &reactive(const Scene &r, Change c) { return r.Changes[size_t(c)]; }
 
 template<typename R, typename... C> struct View : std::ranges::view_interface<View<R, C...>> {
     R *Owner{};

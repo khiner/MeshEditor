@@ -1,8 +1,6 @@
 #include "render/SceneUpdates.h"
-#include "Changes.h"
 #include "Parallel.h"
 #include "Profile.h"
-#include "Reactive.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
@@ -29,6 +27,8 @@
 #include "viewport/ViewportRenderGpu.h"
 #include <numeric>
 #include <print>
+
+using state::Change;
 using namespace he;
 uint8_t InstanceStateBits(const state::Scene &r, state::Entity e) {
     return (r.all_of<Selected>(e) ? ElementStateSelected : 0) | (r.all_of<Active>(e) ? ElementStateActive : 0);
@@ -216,7 +216,7 @@ void WriteElementIndices(GpuBuffers &buffers, const Mesh &mesh, MeshBuffers &mb)
 SyncResult SyncModelsBuffers(state::Scene &r) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     std::vector<state::Entity> new_mesh_entities, new_extras_entities;
-    for (auto e : reactive<changes::NewBufferEntity>(r)) {
+    for (auto e : reactive(r, Change::NewBufferEntity)) {
         if (!r.valid(e) || !r.all_of<MeshBuffers>(e)) continue;
         if (HasMesh(r, e)) new_mesh_entities.emplace_back(e);
         else if (r.all_of<ObjectExtrasTag>(e) || r.all_of<ArmatureObject>(e) || r.all_of<BoneJoint>(e)) new_extras_entities.emplace_back(e);
@@ -247,7 +247,7 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
     // Return inserted instances so callers can write WorldTransform before submission.
     std::vector<state::Entity> newly_inserted;
     std::unordered_map<state::Entity, std::vector<state::Entity>> shows_by_buffer;
-    for (auto entity : reactive<changes::RenderInstanceCreated>(r)) {
+    for (auto entity : reactive(r, Change::RenderInstanceCreated)) {
         if (!r.valid(entity) || !r.all_of<RenderInstance>(entity)) continue;
 
         const auto &ri = r.get<const RenderInstance>(entity);

@@ -3,16 +3,15 @@
 #include "project/store/Blob.h"
 #include "project/store/Manifest.h"
 
-#include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
-// Versioned slots over externally owned storage.
-// Call Write before mutating live data and complete CPU/GPU writes before updating hashes or pinning a version.
+// Versioned slots over bytes and hashes the owner supplies.
+// Capture a slot before mutating it and rehash after CPU and GPU writes complete.
 // Pinned versions share trie nodes and copies of changed values.
 namespace store {
 
@@ -36,52 +35,35 @@ struct Version {
     Stamp S{};
 };
 
-// Referenced storage must outlive the trie.
-struct Live {
-    uint32_t PageBytes{}; // Zero for records, or the page size for zero-default byte buffers.
-    std::function<uint64_t()> Length{}; // Bytes for buffers, slot count for records.
-    // Called after every restore, including when the length is unchanged.
-    std::function<void(uint64_t)> SetLength{};
-    std::function<bool(uint64_t)> Present{};
-    // The returned span remains valid until the next read or mutation.
-    std::function<std::span<const std::byte>(uint64_t)> Read{};
-    // Take ownership of incoming and return the previous value, or an empty Blob when !was_present.
-    std::function<Blob(uint64_t slot, Blob incoming, bool &was_present)> Replace{};
-    // Remove a present value and return its owned copy.
-    std::function<Blob(uint64_t)> Erase{};
-    // Omit to scan slot indices with Present.
-    std::function<void(const std::function<void(uint64_t)> &)> ForEachPresent{};
-    // Typed CPU values retain their native representation between hot versions.
-    std::function<Blob(uint64_t)> Copy{};
-    std::function<std::span<const std::byte>(const Blob &)> Encode{};
-    // Entity generation changes prevent reuse even when component bytes match.
-    std::function<bool(uint64_t)> Reusable{};
-    std::function<void(const std::function<void(uint64_t)> &)> ForEachNonReusable{};
+// One slot the owner applies while restoring or loading a version.
+struct SlotChange {
+    uint64_t Slot{};
+    // The version's value, moved out of the trie. The owner takes it when applying and leaves it when Unchanged.
+    Blob Incoming{};
+    bool Erase{}; // The version holds no value at Slot.
+    bool MaybeEqual{}; // The settled hash matches Incoming, so the owner compares bytes before replacing.
+    bool Default{}; // Incoming hashes as a default page.
+    // The owner fills these while applying.
+    Blob Old{}; // The displaced live value when WasPresent and not Unchanged.
+    bool WasPresent{};
+    bool Unchanged{}; // Live already held Incoming, or nothing was present to erase.
+};
+struct RestorePlan {
+    uint64_t Length{};
+    std::vector<SlotChange> Changes;
+    Node *Target{}; // The version root, or null for a load.
+    Hash128 Hash{}; // The version's recorded state hash.
 };
 
-inline uint64_t SlotsFor(const Live &live, uint64_t length) {
-    return live.PageBytes ? (length + live.PageBytes - 1) / live.PageBytes : length;
-}
-inline Blob Capture(const Live &live, uint64_t slot) { return live.Copy ? live.Copy(slot) : CopyBlob(live.Read(slot)); }
-inline std::span<const std::byte> Encoded(const Live &live, const Blob &value) { return value.Destroy && live.Encode ? live.Encode(value) : value.View(); }
-inline bool DefaultAt(const Live &live, uint64_t slot) {
-    return !live.Present(slot) || (live.PageBytes && IsZero(live.Read(slot)));
-}
-inline bool DefaultValue(const Live &live, const Blob &value) {
-    return live.PageBytes && (value.Size != live.PageBytes || IsZero(value.View()));
-}
-inline bool Equals(const Live &live, uint64_t slot, const Blob &value) {
-    if ((live.Reusable && !live.Reusable(slot)) || !live.Present(slot)) return false;
-    const auto bytes = live.Read(slot);
-    const auto wanted = Encoded(live, value);
-    return bytes.size() == wanted.size() && (bytes.empty() || std::memcmp(bytes.data(), wanted.data(), bytes.size()) == 0);
-}
-inline void ForEachPresent(const Live &live, const std::function<void(uint64_t)> &fn) {
-    if (live.ForEachPresent) live.ForEachPresent(fn);
-    else {
-        for (uint64_t s = 0, n = SlotsFor(live, live.Length()); s < n; ++s)
-            if (live.Present(s)) fn(s);
-    }
+// A run of slots in a version: one owned value, or Count slots that alias live data.
+struct MaterializedRun {
+    uint64_t Slot{}, Count{};
+    const Blob *Owned{};
+};
+
+// Whether live bytes already equal the incoming encoded value.
+inline bool Unchanged(std::span<const std::byte> current, std::span<const std::byte> incoming) {
+    return current.size() == incoming.size() && (current.empty() || std::memcmp(current.data(), incoming.data(), current.size()) == 0);
 }
 
 // Process-wide backing allocation, including cached node/child-array blocks.
@@ -93,50 +75,65 @@ struct TrieStats {
 
 struct LiveTrie {
     // Capacity is Fanout^levels slots.
-    // slot_bytes records the fixed payload size, or zero for variable/empty slots, in the disk format descriptor.
-    LiveTrie(Live, uint32_t levels, uint32_t slot_bytes = 0);
+    // page_bytes is the size of zero-default byte pages, or zero for records.
+    LiveTrie(uint32_t levels, uint32_t page_bytes = 0);
     ~LiveTrie();
     LiveTrie(const LiveTrie &) = delete;
     LiveTrie &operator=(const LiveTrie &) = delete;
 
-    // Capture [first, first + count) before mutation and mark its hashes dirty.
-    void Write(uint64_t first, uint64_t count);
-    // Recompute dirty hashes after CPU and GPU writes complete.
-    void SettleHashes();
-    // Update dirty hashes and return the live hash and length.
-    Stamp CurrentStamp();
-    // Update dirty hashes and pin live state.
-    Version Pin();
-    void Release(Version &);
-    // Restore v and return whether the resulting hash matches its recorded hash.
-    // On failure, live state contains the restoration result.
-    bool Restore(const Version &);
-    bool Differs(const Version &) const;
-    // Visit present slots in order with byte spans valid for the callback duration.
-    void Materialize(const Version &, const std::function<void(uint64_t slot, std::span<const std::byte>)> &) const;
-    // Apply validated changes, erasing slots with zero hashes.
-    // Apply staged replacements before calling SettleHashes.
-    void LoadChanges(uint64_t length, std::span<const std::pair<uint64_t, Hash128>> changes, const std::unordered_map<Hash128, std::vector<std::byte>, Hash128Hasher> &leaves);
-    // Update hashes and return the manifest root for live data.
-    Hash128 ManifestRoot();
-    // Requires current slot hashes and child-level hashes.
-    ManifestChildren ChildrenAt(uint32_t level, uint64_t index) const;
-    uint64_t SlotsFor(uint64_t length) const { return store::SlotsFor(L, length); }
+    // Capture pages of [first, first + count) that pinned versions still alias and mark them dirty.
+    // contents spans whole pages of live storage.
+    void Write(uint64_t first, uint64_t count, std::span<const std::byte> contents);
+    // Whether pinned versions alias slot, so its value must be captured before mutation.
+    bool Uncaptured(uint64_t slot) const;
+    // Record slot's live value for pinned versions. Absent slots pass nullopt.
+    void Capture(uint64_t slot, std::optional<Blob>);
+    // Schedule [first, first + count) for rehashing.
+    void MarkDirty(uint64_t first, uint64_t count);
+    bool IsDirty(uint64_t slot) const { return slot < SlotHashes.size() && SlotHashes[slot].Dirty; }
 
-    // Restore and LoadChanges append slot indices when CollectChanged is set.
+    // Slots awaiting Rehash. Rehash each, then ClearDirty.
+    std::span<const uint64_t> Dirty() const { return DirtySlots; }
+    // Hash slot's live bytes. Absent slots pass nullopt.
+    void Rehash(uint64_t slot, std::optional<std::span<const std::byte>> bytes);
+    void ClearDirty() { DirtySlots.clear(); }
+    // Rehash dirty pages from live storage.
+    void SettleFlat(std::span<const std::byte> contents);
+
+    // Require settled hashes.
+    Stamp CurrentStamp(uint64_t length) const;
+    Version Pin(uint64_t length);
+    void Release(Version &);
+
+    // Plan the slot changes that restore v. Apply them, then CommitRestore.
+    // Requires settled hashes. No other trie operation may run between the two calls.
+    RestorePlan PlanRestore(const Version &);
+    // Swap displaced values into the version's nodes, rehash changed slots, and return whether the hash matches the recorded stamp.
+    bool CommitRestore(RestorePlan &&);
+    // Plan validated changes, erasing slots with zero hashes. Apply them, then CommitLoad.
+    RestorePlan PlanLoad(uint64_t length, std::span<const std::pair<uint64_t, Hash128>> changes, const std::unordered_map<Hash128, std::vector<std::byte>, Hash128Hasher> &leaves);
+    // Capture displaced values for pinned versions and mark loaded slots dirty.
+    void CommitLoad(RestorePlan &&);
+
+    // Present runs of a version in slot order, bounded by its length.
+    std::vector<MaterializedRun> Materialize(const Version &) const;
+    // Requires settled hashes. Return the manifest root for live data.
+    Hash128 ManifestRoot(uint64_t length);
+    // Requires current slot hashes and child-level hashes.
+    ManifestChildren ChildrenAt(uint32_t level, uint64_t index, uint64_t length) const;
+    uint64_t SlotsFor(uint64_t length) const { return PageBytes ? (length + PageBytes - 1) / PageBytes : length; }
+
+    // Restore and load append slot indices when CollectChanged is set.
     // The consumer clears ChangedSlots after use.
     bool CollectChanged{};
     std::vector<uint64_t> ChangedSlots;
     std::vector<uint64_t> TakeChanged() { return std::exchange(ChangedSlots, {}); }
 
     const TrieStats &Stats() const { return S; }
-    uint64_t HashStorageBytes() const { return SlotHashes.capacity() * sizeof(SlotHash) + DirtySlots.capacity() * sizeof(uint64_t); }
-    uint64_t ManifestBytes() const;
     // Checks trie structure and that all pinned Aliased nodes are reachable from the present.
     bool Check(std::string &why, const std::vector<Version> &all_versions) const;
-    // Compare cached hashes with live data and report mismatching slot indices.
-    // Call SettleHashes after the last write before checking.
-    bool CheckHashes(std::string &why) const;
+    // Compare settled hashes with the hashes of live non-default slots, given in slot order.
+    bool CheckHashes(std::string &why, std::span<const std::pair<uint64_t, Hash128>> live) const;
 
     enum class SlotState : uint8_t { Unhashed,
                                      Value,
@@ -147,8 +144,7 @@ struct LiveTrie {
         bool Dirty{};
     };
 
-    Live L;
-    const uint32_t Levels, BytesPerSlot;
+    const uint32_t Levels, PageBytes;
 
     TrieStats S;
     Node *Root;
@@ -167,7 +163,7 @@ struct LiveTrie {
     uint64_t ManifestSlots{};
     uint64_t Lane0{}, Lane1{}; // Wrapping sums of Term::L0 and Term::L1 over non-default slots.
 
-    bool Busy{}; // Restore and LoadChanges assert against reentry while set
-    bool ExternalWritesForbidden{}; // Assert on public Write calls during track restoration.
+    bool Busy{}; // Set between a plan and its commit.
+    bool ExternalWritesForbidden{}; // Owners assert against writes during track restoration.
 };
 } // namespace store
