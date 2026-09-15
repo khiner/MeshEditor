@@ -23,10 +23,6 @@ std::span<const uint32_t> GetFaceIndices(const state::Scene &r, const Mesh &mesh
     if (corners.size() == mesh.TriangleIndexCount()) return corners;
     return r.ctx().get<const GpuBuffers>().FaceIndexBuffer.Get(buffers.FaceIndices);
 }
-std::span<const PunctualLight> GetLights(state::Scene &r) {
-    const auto &lights = r.ctx().get<GpuBuffers>().Lights;
-    return {lights.Data(), lights.Count()};
-}
 PunctualLight GetLight(state::Scene &r, uint32_t index) { return r.ctx().get<GpuBuffers>().Lights.Get(index); }
 mtl::BufferContext &GetBufferContext(state::Scene &r) { return r.ctx().get<GpuBuffers>().Ctx; }
 
@@ -138,10 +134,6 @@ std::pair<SlottedRange, std::span<uint32_t>> GpuBuffers::AllocateIndices(uint32_
     auto &buf = GetIndexBuffer(index_kind);
     auto range = buf.Allocate(count);
     return {buf.Slotted(range), buf.GetMutable(range)};
-}
-
-RenderBuffers GpuBuffers::CreateRenderBuffers(std::span<const Vertex> vertices, std::span<const uint32_t> indices, IndexKind index_kind) {
-    return {VertexBuffer.Allocate(vertices), CreateIndices(indices, index_kind), index_kind};
 }
 
 void GpuBuffers::Release(RenderBuffers &buffers) {

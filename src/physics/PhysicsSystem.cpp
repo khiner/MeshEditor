@@ -648,6 +648,9 @@ void UpdateSettings(state::Scene &r, state::Entity viewport, float fps) {
     s.Invalidate();
 }
 
+} // namespace
+
+namespace physics {
 void ProcessChanges(state::Scene &r, EventPass) {
     auto &s = r.ctx().get<PhysicsState>();
     const auto any = [&]<typename... T> { return (... || !reactive<T>(r).empty()); };
@@ -736,6 +739,9 @@ void ProcessChanges(state::Scene &r, EventPass) {
     }
     s.Input = std::move(input);
 }
+} // namespace physics
+
+namespace {
 } // namespace
 
 namespace physics {
@@ -837,7 +843,6 @@ void Init(state::Scene &r) {
     reactive<changes::CollisionFilterDef>(r).on<CollisionFilter>(On::Create | On::Update | On::Destroy);
     reactive<changes::PhysicsJointDef>(r).on<::PhysicsJointDef>(On::Create | On::Update | On::Destroy);
 
-    RegisterComponentEventHandler(r, ProcessChanges);
 }
 void Deinit(state::Scene &r) { r.ctx().erase<PhysicsState>(); }
 void Clear(state::Scene &r) {

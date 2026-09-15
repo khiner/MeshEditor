@@ -26,11 +26,6 @@ struct SetSpotCone {
 struct Delete {};
 struct Duplicate {};
 struct DuplicateLinked {};
-// One committed duplication, including its resolved placement (also supports rotate/scale).
-struct DuplicateToPosition {
-    std::unique_ptr<PendingTransform> Placement;
-    bool Linked{};
-};
 struct ToggleHidden {};
 struct SetSelectedVisible {
     bool Visible;
@@ -107,7 +102,7 @@ using Actions = std::variant<
 using Action = MergedVariantT<
     Actions,
     UpdateMaterial, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
-    Update<std::optional<uint32_t>>, DuplicateToPosition, SetLightType, SetSpotCone>;
+    Update<std::optional<uint32_t>>, SetLightType, SetSpotCone>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::object

@@ -77,10 +77,6 @@ Texture CreateTextureCube(const Context &ctx, MTL::PixelFormat format, uint32_t 
     return Create(ctx, MTL::TextureTypeCube, format, {size, size}, usage, mip_levels, StorageFor(usage));
 }
 
-Texture CreateTexture2DArray(const Context &ctx, MTL::PixelFormat format, Extent2D extent, uint32_t layers, MTL::TextureUsage usage, uint32_t mip_levels) {
-    return Create(ctx, MTL::TextureType2DArray, format, extent, usage, mip_levels, StorageFor(usage), layers);
-}
-
 Texture CreateMipView(const Texture &texture, uint32_t mip) {
     auto handle = NS::TransferPtr(texture.Handle->newTextureView(
         texture.Handle->pixelFormat(), texture.Handle->textureType(),

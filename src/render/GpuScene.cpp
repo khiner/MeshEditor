@@ -61,13 +61,6 @@ std::vector<uint32_t> BuildTriangleEditEdges(const Mesh &mesh, std::span<const u
     return result;
 }
 
-// A mixed-normal meshlet stores the never-culls cutoff, so the cone test needs no separate flag.
-uint32_t PackCone(const meshopt_Bounds &bounds, bool cone_cull_safe) {
-    return uint32_t(uint8_t(bounds.cone_axis_s8[0])) |
-        uint32_t(uint8_t(bounds.cone_axis_s8[1])) << 8u |
-        uint32_t(uint8_t(bounds.cone_axis_s8[2])) << 16u |
-        uint32_t(uint8_t(cone_cull_safe ? bounds.cone_cutoff_s8 : int8_t{127})) << 24u;
-}
 // Stores meshlets for one spatial chunk of a primitive.
 // Vertex offsets stay relative to the chunk's vertex list until the merge places them.
 struct MeshletChunk {

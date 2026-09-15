@@ -11,6 +11,7 @@ constexpr uint32_t TileElements{256};
 constexpr uint32_t BlockElements{1024};
 
 constexpr uint32_t TileCount(uint32_t count, uint32_t per_tile) { return (count + per_tile - 1) / per_tile; }
+constexpr uint32_t BitWords(uint32_t bits) { return (bits + 31u) / 32u; }
 
 // Runs of a work list, each sized so one submit's scratch stays under the budget.
 // An item wider than the budget takes a chunk to itself.

@@ -93,14 +93,6 @@ void GeneratePositionRemap(std::vector<uint32_t> &remap, const std::vector<std::
     });
 }
 
-// A mixed-normal cluster stores the never-culls cutoff, so the cone test needs no separate flag.
-uint32_t PackCone(const meshopt_Bounds &bounds, bool cone_cull_safe) {
-    return uint32_t(uint8_t(bounds.cone_axis_s8[0])) |
-        uint32_t(uint8_t(bounds.cone_axis_s8[1])) << 8u |
-        uint32_t(uint8_t(bounds.cone_axis_s8[2])) << 16u |
-        uint32_t(uint8_t(cone_cull_safe ? bounds.cone_cutoff_s8 : int8_t{127})) << 24u;
-}
-
 // Preserves meshopt's center-then-radius sphere layout and adds simplification error.
 struct Bounds {
     vec3 Center{};
@@ -596,6 +588,14 @@ void BuildSpanTrees(ClusterLodBuild &build, const ClusterLodMesh &mesh) {
     }
 }
 } // namespace
+
+// A mixed-normal cluster stores the never-culls cutoff, so the cone test needs no separate flag.
+uint32_t PackCone(const meshopt_Bounds &bounds, bool cone_cull_safe) {
+    return uint32_t(uint8_t(bounds.cone_axis_s8[0])) |
+        uint32_t(uint8_t(bounds.cone_axis_s8[1])) << 8u |
+        uint32_t(uint8_t(bounds.cone_axis_s8[2])) << 16u |
+        uint32_t(uint8_t(cone_cull_safe ? bounds.cone_cutoff_s8 : int8_t{127})) << 24u;
+}
 
 ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
     const auto total_start = Clock::now();

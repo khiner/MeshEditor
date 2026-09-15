@@ -128,8 +128,6 @@ struct History {
     // Replay one action from its parent, returning an error or differing track name, or empty on success.
     // Restore the present node before returning.
     std::string ValidateReplay(int node);
-    // Return the first differing track name, or empty for equal images.
-    std::string DiffImage(const std::vector<std::byte> &, const std::vector<std::byte> &) const;
 
     HistoryStats Stats() const;
     bool Check(std::string &why) const;

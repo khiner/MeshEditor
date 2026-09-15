@@ -49,20 +49,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         }
         return targets;
     };
-    // Gesture-start Transform.R, snapshotted into the shared DragFieldStart baseline on first apply.
-    auto rotation_start = [&](state::Entity e) -> quat {
-        static constexpr uint16_t r_off = offsetof(Transform, R);
-        const auto comp = state::Type<Transform>();
-        if (const auto *s = r.try_get<DragFieldStart>(e); s && s->Comp == comp && s->Offset == r_off) {
-            quat q;
-            std::memcpy(&q, s->Bytes.data(), sizeof(quat));
-            return q;
-        }
-        const quat cur = EditedLocal(r, e)->R;
-        DragFieldStart s{comp, r_off, sizeof(quat), {}};
-        std::memcpy(s.Bytes.data(), &cur, sizeof(quat));
-        r.emplace_or_replace<DragFieldStart>(e, s);
-        return cur;
+    // Gesture-start rotation, snapshotted into the shared DragFieldStart baseline on first apply.
+    auto rotation_start = [&](state::Entity e) {
+        return FieldGestureStart<quat>(r, e, state::Type<Transform>(), offsetof(Transform, R), [&](quat &q) { q = EditedLocal(r, e)->R; });
     };
     std::visit(
         overloaded{

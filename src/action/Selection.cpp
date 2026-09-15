@@ -50,7 +50,6 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 if (!r.all_of<BoneSelection>(a.Entity)) r.emplace<BoneSelection>(a.Entity, false, false, false);
                 if (a.Part) merge_bone_sel(a.Entity, a.Part, a.Additive);
             },
-            [&](const SetBoneSelectionPart &a) { merge_bone_sel(a.Entity, a.Part, a.Additive); },
             [&](DeselectAll) {
                 end_box_select_interaction();
                 const auto interaction_mode = r.get<const Interaction>(viewport).Mode;

@@ -1211,10 +1211,9 @@ state::Entity ContactSurfaceNode(const state::Scene &r, state::Entity collider, 
     return NearestNodeWith(r, collider, body, [&r](state::Entity e) { return r.all_of<ContactSurface>(e); });
 }
 
+void SurfaceSetupScene(state::Scene &r, state::Entity viewport) { r.emplace_or_replace<SurfaceSoundControls>(viewport); }
+
 void RegisterSurfaceContactHandlers(state::Scene &r) {
-    RegisterSceneSetupHandler(r, [](state::Scene &r, state::Entity viewport) {
-        r.emplace_or_replace<SurfaceSoundControls>(viewport);
-    });
     // A surface belongs to a node.
     reactive<surface_changes::SurfaceEdit>(r).on<ContactSurface>(On::Create | On::Update | On::Destroy);
     // A surface with no normal map of its own inherits its material's, so a material reassignment changes the relief too.

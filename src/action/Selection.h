@@ -31,11 +31,6 @@ struct ExtendBoneActive {
     std::optional<BoneSel> Part{};
     bool Additive{false};
 };
-struct SetBoneSelectionPart {
-    state::Entity Entity;
-    std::optional<BoneSel> Part;
-    bool Additive;
-};
 struct DeselectAll {};
 struct SelectAll {};
 struct SnapshotBoxSelectBaseline {};
@@ -81,7 +76,7 @@ struct ApplyTreeSelection {
 };
 
 using Action = std::variant<
-    Select, ToggleSelected, SelectBone, ExtendActive, ExtendBoneActive, SetBoneSelectionPart,
+    Select, ToggleSelected, SelectBone, ExtendActive, ExtendBoneActive,
     DeselectAll, SelectAll, SnapshotBoxSelectBaseline, ClearBoxSelectBaseline,
     ApplyBoxSelect, Pick, PickCycle, ApplyEditElementClick, ApplyTreeSelection>;
 

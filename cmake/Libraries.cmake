@@ -164,7 +164,6 @@ mesheditor_library(MeshEditorAssets COLD
 mesheditor_library(MeshEditorEditor COLD
     src/project/Project.cpp
     src/ProcessEvents.cpp
-    src/Stores.cpp
     src/action/Action.cpp
     src/action/Audio.cpp
     src/action/Bone.cpp
@@ -188,7 +187,6 @@ mesheditor_library(MeshEditorEditor COLD
     src/snapshot/AudioSnapshot.cpp
     src/snapshot/MeshSnapshot.cpp
     src/snapshot/PhysicsSnapshot.cpp
-    src/snapshot/ReplayTestFixture.cpp
     src/snapshot/SceneComponentsSnapshot.cpp
     src/snapshot/SnapshotRoles.cpp
     src/snapshot/ViewportSnapshot.cpp
@@ -244,8 +242,6 @@ target_link_libraries(MeshEditorPlatform PUBLIC MeshEditorMetal PRIVATE "-framew
 target_link_libraries(MeshEditorUi PUBLIC MeshEditorEditor MeshEditorPlatform mesheditor_implot PRIVATE lunasvg)
 target_include_directories(MeshEditorUi SYSTEM PUBLIC lib/imspinner)
 set_source_files_properties(src/FileDialog.mm src/MacPlatform.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-set_property(SOURCE src/snapshot/ReplayTestFixture.cpp APPEND PROPERTY COMPILE_DEFINITIONS
-    "$<$<CONFIG:Debug>:REPLAY_FIXTURE_DIR=\"${CMAKE_SOURCE_DIR}/tests/replay\">")
 set_property(SOURCE src/project/Sessions.cpp APPEND PROPERTY COMPILE_DEFINITIONS RESTORE_SESSION_RETAIN=${RESTORE_SESSION_RETAIN})
 
 # Contact processing and modal input preparation run numerical loops inside the editor integration.

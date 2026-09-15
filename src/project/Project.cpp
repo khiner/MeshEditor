@@ -195,6 +195,7 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
     Deferred.clear();
     ClearInteraction();
     ClearScene(R, Viewport);
+    ClearAudioScene(R);
     if (!empty) Tick(action::MakeAction(action::io::LoadDefaultScene{}), EventPass::Settle);
     const bool begun = Begin(dir);
     if (!begun) {

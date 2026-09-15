@@ -5,8 +5,6 @@
 namespace action::timeline {
 // Enter presentation view (material-preview shading, overlays off) without starting playback.
 struct EnterPresentation {};
-// Enter presentation view and start playback.
-struct StartPresentation {};
 
 // Frame pins CurrentFrame on apply, so a recorded stop replays to the same frame.
 struct TogglePlay {
@@ -27,7 +25,7 @@ struct SetView {
     float PixelsPerFrame, ViewCenterFrame;
 };
 
-using Action = std::variant<TogglePlay, StartPresentation, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, SetView, EnterPresentation>;
+using Action = std::variant<TogglePlay, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, SetView, EnterPresentation>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::timeline

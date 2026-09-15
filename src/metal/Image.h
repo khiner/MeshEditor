@@ -52,7 +52,6 @@ Texture CreateTexture2D(const Context &, MTL::PixelFormat, Extent2D, MTL::Textur
 // Directly encoded short-lived textures do not belong in the queue-wide residency set.
 Texture CreateUntrackedTexture2D(const Context &, MTL::PixelFormat, Extent2D, MTL::TextureUsage, std::optional<MTL::StorageMode> storage = {});
 Texture CreateTextureCube(const Context &, MTL::PixelFormat, uint32_t size, MTL::TextureUsage, uint32_t mip_levels = 1);
-Texture CreateTexture2DArray(const Context &, MTL::PixelFormat, Extent2D, uint32_t layers, MTL::TextureUsage, uint32_t mip_levels = 1);
 Texture CreateMipView(const Texture &, uint32_t mip);
 Texture CreateCubeMipView(const Texture &, uint32_t mip);
 

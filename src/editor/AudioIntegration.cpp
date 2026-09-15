@@ -591,18 +591,20 @@ void CancelModalSolves(state::Scene &r) {
     }
 }
 
+void ClearAudioScene(state::Scene &r) {
+    auto *m = r.ctx().find<ModalAudio>();
+    if (!m) return;
+    // Clear bank slots before entity IDs can be reused by the next scene.
+    ModalBank empty;
+    InstallModalBank(*m, empty);
+    r.ctx().get<AudioSamples>().ByPath.clear();
+    // Clear warm-start data associated with the removed scene.
+    r.ctx().get<ModalWarmStart>() = {};
+    // In-flight solves target entities from the cleared scene. Their results are discarded on arrival.
+    CancelModalSolves(r);
+}
+
 void RegisterAudioComponentHandlers(state::Scene &r) {
-    RegisterSceneClearHandler(r, [](state::Scene &r) {
-        // Clear bank slots before entity IDs can be reused by the next scene.
-        auto &m = r.ctx().get<ModalAudio>();
-        ModalBank empty;
-        InstallModalBank(m, empty);
-        r.ctx().get<AudioSamples>().ByPath.clear();
-        // Clear warm-start data associated with the removed scene.
-        r.ctx().get<ModalWarmStart>() = {};
-        // In-flight solves target entities from the cleared scene. Their results are discarded on arrival.
-        CancelModalSolves(r);
-    });
 
     // Create audio context slots once because ProcessAudio reads the registry context concurrently.
     r.ctx().emplace<AudioSamples>();
@@ -631,217 +633,220 @@ void RegisterAudioComponentHandlers(state::Scene &r) {
     reactive<audio_changes::AudioMix>(r).on<AudioOutputMix>(On::Create | On::Update);
     RegisterSurfaceContactHandlers(r);
 
-    RegisterComponentEventHandler(r, [](state::Scene &r, EventPass pass) {
-        // Apply completed modal solves.
-        auto &solve_jobs = r.ctx().get<ModalSolveJobs>().Jobs;
-        for (auto it = solve_jobs.begin(); it != solve_jobs.end();) {
-            auto &job = **it;
-            auto result = job.Work.Poll();
-            if (!result) {
-                ++it;
-                continue;
-            }
-            if (!job.Work.Cancelled() && job.Epoch == r.Epoch) {
-                // Intentional registry-ctx write outside Apply: the warm-start slot is a derived memo, not scene input.
-                if (result->WarmStart.Basis) r.ctx().get<ModalWarmStart>() = std::move(result->WarmStart);
-                if (!result->Model) std::cerr << "Modal model computation failed.\n";
-                else if (r.valid(job.Entity) && r.all_of<ModalSolveSettings>(job.Entity)) {
-                    auto path = SaveModalModelFile(r.ctx().get<project::Assets>(), *result->Model);
-                    if (path) r.ctx().get<project::Project *>()->Enqueue(action::MakeAction(action::audio::ApplyModalModel{job.Entity, std::move(*path)}));
-                    else r.ctx().get<action::Errors>().Messages.push_back(path.error());
-                }
-            }
-            it = solve_jobs.erase(it);
-        }
-        if (pass != EventPass::Restore) {
-            for (auto e : reactive<audio_changes::ModelRescaleEdit>(r)) {
-                if (!r.valid(e) || !r.all_of<ModalEigenSummary, ::ModalModes>(e)) continue;
-                RescaleModalObject(r, e);
-            }
-        }
-        if (!r.ctx().get<AudioTrackers>().Samples.empty()) {
-            std::unordered_set<fs::path> used_samples;
-            for (const auto &[_, samples] : r.view<const VertexSamples>().each()) {
-                for (const auto &[__, path] : samples.PathByVertex) used_samples.insert(path);
-            }
-            auto &samples = r.ctx().get<AudioSamples>().ByPath;
-            for (const auto &path : used_samples) {
-                if (samples.contains(path)) continue;
-                if (const auto source = RealImpact::SampleGroupFromKey(path)) {
-                    auto group = RealImpact::LoadSamples(r, source->first, source->second);
-                    if (group) {
-                        for (auto &[key, frames] : *group) samples.try_emplace(std::move(key), std::move(frames));
-                    } else {
-                        r.ctx().get<action::Errors>().Messages.push_back(std::move(group.error()));
-                        samples.try_emplace(path);
-                    }
-                } else {
-                    samples.emplace(path, LoadAudioFrames(project::ResolveAsset(r, path).string(), DeviceSampleRate(r)));
-                }
-            }
-            std::erase_if(samples, [&](const auto &entry) { return !used_samples.contains(entry.first); });
-        }
-        // Rebuild SoundVertices from VertexSamples/ModalModes, selected by SoundVerticesModel.
-        // Runs before any handler that reads SoundVertices.
-        bool reporting_stale = !reactive<audio_changes::ContactReportingDerivation>(r).empty();
-        for (auto e : reactive<audio_changes::SoundVerticesDerivation>(r)) {
-            const auto *model = r.try_get<const SoundVerticesModel>(e);
-            std::vector<uint32_t> new_vertices;
-            if (model) {
-                if (*model == SoundVerticesModel::Samples) {
-                    if (const auto *vs = r.try_get<const VertexSamples>(e)) {
-                        new_vertices = vs->PathByVertex | std::views::keys | to<std::vector>();
-                    }
-                } else if (const auto *modes = r.try_get<const ::ModalModes>(e)) {
-                    new_vertices = modes->Vertices;
-                }
-            }
-            reporting_stale = true;
-            if (new_vertices.empty()) {
-                r.remove<SoundVertices>(e);
-                continue;
-            }
-            auto &meshes = r.ctx().get<MeshStore>();
-            if (auto *sv = r.try_get<SoundVertices>(e)) {
-                if (!std::ranges::equal(meshes.GetSoundVertices(sv->Vertices), new_vertices)) {
-                    meshes.ReleaseSoundVertices(sv->Vertices);
-                    r.replace<SoundVertices>(e, SoundVertices{meshes.AllocateSoundVertices(new_vertices)});
-                }
-            } else {
-                r.emplace<SoundVertices>(e, SoundVertices{meshes.AllocateSoundVertices(new_vertices)});
-            }
-            // Ensure MeshActiveElement is valid for the new vertex set.
-            const auto mesh_entity = r.get<const Instance>(e).Entity;
-            const auto &sv = r.get<const SoundVertices>(e);
-            if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
-                const auto vertices = meshes.GetSoundVertices(sv.Vertices);
-                if (!FindSoundVertexIndex(vertices, active->Handle)) r.emplace_or_replace<MeshActiveElement>(mesh_entity, vertices.front());
-            }
-        }
-        // A body reports contacts when anything under it can sound.
-        // Stop traversal at nested rigid bodies so each node maps to one body.
-        // Intentional registry write outside Apply: derived from the sound models under each body.
-        if (reporting_stale) {
-            const auto sounds = [&r](this auto &self, state::Entity node) -> bool {
-                if (IsModalSounding(r, node)) return true;
-                for (auto child : Children{&r, node}) {
-                    if (!r.all_of<PhysicsBodyHandle>(child) && self(child)) return true;
-                }
-                return false;
-            };
-            for (const auto body : r.view<const PhysicsBodyHandle>()) {
-                if (sounds(body)) r.emplace_or_replace<ReportContacts>(body);
-                else r.remove<ReportContacts>(body);
-            }
-        }
-        // Refresh contact dynamics before the strike loop below reads them.
-        for (auto e : reactive<audio_changes::ContactDynamicsDerivation>(r)) UpdateContactDynamics(r, e);
-        // A created or replaced VertexForce is a strike. Contact pulses are one-shot.
-        for (auto e : reactive<audio_changes::VertexForce>(r)) {
-            if (!r.all_of<SoundVerticesModel>(e)) continue;
-            const auto *vf = r.try_get<::VertexForce>(e);
-            if (!vf || vf->Force <= 0) continue;
-            const auto &excitable = r.get<const SoundVertices>(e);
-            if (auto vi = FindSoundVertexIndex(r.ctx().get<const MeshStore>().GetSoundVertices(excitable.Vertices), vf->Vertex)) {
-                r.emplace_or_replace<MeshActiveElement>(r.get<const Instance>(e).Entity, vf->Vertex);
-                const auto model = r.get<SoundVerticesModel>(e);
-                if (model == SoundVerticesModel::Modal && r.all_of<ModalModes>(e)) {
-                    TriggerModalStrike(r, e, *vi, vf->Force, vf->ContactSpeed);
-                } else if (model == SoundVerticesModel::Samples && r.all_of<VertexSamples>(e)) {
-                    r.get_or_emplace<SamplePlayback>(e).Play();
-                }
-            }
-        }
-        // Start a new recording with an impact at the active vertex.
-        for (auto e : reactive<audio_changes::RecordingStart>(r)) {
-            if (!r.all_of<ModalModes, SoundVertices, Recording>(e)) continue;
-            if (r.get<const Recording>(e).Frame == 0) TriggerModalStrike(r, e, GetActiveVertexIndex(r, e), 1.f, 1.f);
-        }
-        // Reconcile the live output device: a config change re-inits (and may change the negotiated rate), a mix change just applies level/on-off.
-        bool device_rate_changed = false;
-        if (auto *res = r.ctx().find<AudioDeviceResource>()) {
-            if (auto &config_tracker = reactive<audio_changes::AudioConfig>(r); !config_tracker.empty()) {
-                const uint32_t prev_rate = res->SampleRate;
-                for (auto e : config_tracker) {
-                    if (r.all_of<AudioOutputConfig, AudioOutputMix>(e)) ReconcileAudioDevice(*res, r.get<const AudioOutputConfig>(e), r.get<const AudioOutputMix>(e));
-                }
-                device_rate_changed = res->SampleRate != prev_rate;
-                // A reopened device publishes a new scheduling group, which the render threads have to be re-placed into.
-                r.ctx().get<ModalAudio>().RenderPool.SetWorkgroup(res->RenderWorkgroup);
-            }
-            for (auto e : reactive<audio_changes::AudioMix>(r)) {
-                if (r.all_of<AudioOutputMix>(e)) ApplyAudioMix(*res, r.get<const AudioOutputMix>(e));
-            }
-        }
-
-        auto &modal_tracker = r.ctx().get<AudioTrackers>().Modes;
-        if (!modal_tracker.empty() || device_rate_changed) {
-            // Ensure every modal object has tuning, gain, solve settings, and acoustic material.
-            for (auto e : modal_tracker) {
-                const auto *modes = r.try_get<const ::ModalModes>(e);
-                if (!modes) continue;
-                if (!r.all_of<ModalTuning>(e)) r.emplace<ModalTuning>(e, modes->Freqs.empty() ? 0.f : modes->Freqs.front(), 1.f);
-                if (!r.all_of<ModalGain>(e)) r.emplace<ModalGain>(e);
-                if (!r.all_of<ModalSolveSettings>(e)) {
-                    r.emplace<ModalSolveSettings>(e, modes->Vertices.empty() ? ModalSolveSettings{} : ModalSolveSettings{.NumVertices = uint32_t(modes->Vertices.size())});
-                }
-                if (!r.all_of<AcousticMaterial>(e)) r.emplace<AcousticMaterial>(e, materials::acoustic::All.front());
-            }
-            // Retune and reshape same-layout model replacements in place.
-            // Rebuild the bank for structural layout changes.
-            auto &m = r.ctx().get<ModalAudio>();
-            bool rebuild = false;
-            for (auto e : modal_tracker) {
-                if (rebuild) break;
-                const auto *modes = r.valid(e) ? r.try_get<const ::ModalModes>(e) : nullptr;
-                const bool active = modes && !modes->Freqs.empty() && r.all_of<SoundVertices>(e);
-                const auto slot = FindModalObject(LiveBank(m), e);
-                if (!active && !slot) continue;
-                if (active && slot && SetModalObjectShapes(LiveBank(m), *slot, *modes)) RetuneModalObject(r, LiveBank(m), *slot, e);
-                else rebuild = true;
-            }
-            if (rebuild) {
-                RebuildModalBank(r);
-            } else if (device_rate_changed) {
-                // A rate change keeps the layout but rebakes every coefficient.
-                LiveBank(m).SampleRate = float(DeviceSampleRate(r));
-                for (uint32_t slot = 0; slot < uint32_t(LiveBank(m).Entities.size()); ++slot) RetuneModalObject(r, LiveBank(m), slot, LiveBank(m).Entities[slot]);
-            }
-        }
-        {
-            auto &m = r.ctx().get<ModalAudio>();
-            auto &bank = LiveBank(m);
-            for (auto e : reactive<audio_changes::ModalGain>(r)) {
-                if (auto slot = FindModalObject(bank, e)) SetModalOutGain(r, bank, *slot, e);
-            }
-            for (auto e : reactive<audio_changes::ModalTuning>(r)) {
-                if (auto slot = FindModalObject(bank, e)) RetuneModalObject(r, bank, *slot, e);
-            }
-            for (auto e : reactive<audio_changes::ModalSoundControls>(r)) {
-                const auto &controls = r.get<const ModalSoundControls>(e);
-                m.ClickGain.store(controls.ClickGain, std::memory_order_relaxed);
-                m.MaxImpacts.store(controls.MaxImpacts, std::memory_order_relaxed);
-                // Sized from the main thread, since a render call cannot spawn threads.
-                const auto *device = r.ctx().find<const AudioDeviceResource>();
-                m.RenderPool.SetSize(controls.RenderThreads);
-                m.RenderPool.SetWorkgroup(device ? device->RenderWorkgroup : nullptr);
-                for (uint32_t slot = 0; slot < uint32_t(bank.Entities.size()); ++slot) SetModalOutGain(r, bank, slot, bank.Entities[slot]);
-            }
-            // Retune objects whose node was rescaled.
-            auto &trackers = r.ctx().get<AudioTrackers>();
-            for (auto e : trackers.Scale) {
-                if (auto slot = FindModalObject(bank, e)) RetuneModalObject(r, bank, *slot, e);
-            }
-            trackers.Scale.clear();
-            trackers.Modes.clear();
-            trackers.Samples.clear();
-            // Publish camera-derived object attenuation because the audio thread cannot access the registry.
-            if (const auto *res = r.ctx().find<AudioDeviceResource>()) UpdateListenerGains(r, bank, res->Viewport);
-        }
-    });
 }
 
-static void UpdateAudioContacts(state::Scene &r, EventPass) {
+void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
+    if (!r.ctx().find<ModalSolveJobs>()) return;
+    // Apply completed modal solves.
+    auto &solve_jobs = r.ctx().get<ModalSolveJobs>().Jobs;
+    for (auto it = solve_jobs.begin(); it != solve_jobs.end();) {
+        auto &job = **it;
+        auto result = job.Work.Poll();
+        if (!result) {
+            ++it;
+            continue;
+        }
+        if (!job.Work.Cancelled() && job.Epoch == r.Epoch) {
+            // Intentional registry-ctx write outside Apply: the warm-start slot is a derived memo, not scene input.
+            if (result->WarmStart.Basis) r.ctx().get<ModalWarmStart>() = std::move(result->WarmStart);
+            if (!result->Model) std::cerr << "Modal model computation failed.\n";
+            else if (r.valid(job.Entity) && r.all_of<ModalSolveSettings>(job.Entity)) {
+                auto path = SaveModalModelFile(r.ctx().get<project::Assets>(), *result->Model);
+                if (path) r.ctx().get<project::Project *>()->Enqueue(action::MakeAction(action::audio::ApplyModalModel{job.Entity, std::move(*path)}));
+                else r.ctx().get<action::Errors>().Messages.push_back(path.error());
+            }
+        }
+        it = solve_jobs.erase(it);
+    }
+    if (pass != EventPass::Restore) {
+        for (auto e : reactive<audio_changes::ModelRescaleEdit>(r)) {
+            if (!r.valid(e) || !r.all_of<ModalEigenSummary, ::ModalModes>(e)) continue;
+            RescaleModalObject(r, e);
+        }
+    }
+    if (!r.ctx().get<AudioTrackers>().Samples.empty()) {
+        std::unordered_set<fs::path> used_samples;
+        for (const auto &[_, samples] : r.view<const VertexSamples>().each()) {
+            for (const auto &[__, path] : samples.PathByVertex) used_samples.insert(path);
+        }
+        auto &samples = r.ctx().get<AudioSamples>().ByPath;
+        for (const auto &path : used_samples) {
+            if (samples.contains(path)) continue;
+            if (const auto source = RealImpact::SampleGroupFromKey(path)) {
+                auto group = RealImpact::LoadSamples(r, source->first, source->second);
+                if (group) {
+                    for (auto &[key, frames] : *group) samples.try_emplace(std::move(key), std::move(frames));
+                } else {
+                    r.ctx().get<action::Errors>().Messages.push_back(std::move(group.error()));
+                    samples.try_emplace(path);
+                }
+            } else {
+                samples.emplace(path, LoadAudioFrames(project::ResolveAsset(r, path).string(), DeviceSampleRate(r)));
+            }
+        }
+        std::erase_if(samples, [&](const auto &entry) { return !used_samples.contains(entry.first); });
+    }
+    // Rebuild SoundVertices from VertexSamples/ModalModes, selected by SoundVerticesModel.
+    // Runs before any handler that reads SoundVertices.
+    bool reporting_stale = !reactive<audio_changes::ContactReportingDerivation>(r).empty();
+    for (auto e : reactive<audio_changes::SoundVerticesDerivation>(r)) {
+        const auto *model = r.try_get<const SoundVerticesModel>(e);
+        std::vector<uint32_t> new_vertices;
+        if (model) {
+            if (*model == SoundVerticesModel::Samples) {
+                if (const auto *vs = r.try_get<const VertexSamples>(e)) {
+                    new_vertices = vs->PathByVertex | std::views::keys | to<std::vector>();
+                }
+            } else if (const auto *modes = r.try_get<const ::ModalModes>(e)) {
+                new_vertices = modes->Vertices;
+            }
+        }
+        reporting_stale = true;
+        if (new_vertices.empty()) {
+            r.remove<SoundVertices>(e);
+            continue;
+        }
+        auto &meshes = r.ctx().get<MeshStore>();
+        if (auto *sv = r.try_get<SoundVertices>(e)) {
+            if (!std::ranges::equal(meshes.GetSoundVertices(sv->Vertices), new_vertices)) {
+                meshes.ReleaseSoundVertices(sv->Vertices);
+                r.replace<SoundVertices>(e, SoundVertices{meshes.AllocateSoundVertices(new_vertices)});
+            }
+        } else {
+            r.emplace<SoundVertices>(e, SoundVertices{meshes.AllocateSoundVertices(new_vertices)});
+        }
+        // Ensure MeshActiveElement is valid for the new vertex set.
+        const auto mesh_entity = r.get<const Instance>(e).Entity;
+        const auto &sv = r.get<const SoundVertices>(e);
+        if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
+            const auto vertices = meshes.GetSoundVertices(sv.Vertices);
+            if (!FindSoundVertexIndex(vertices, active->Handle)) r.emplace_or_replace<MeshActiveElement>(mesh_entity, vertices.front());
+        }
+    }
+    // A body reports contacts when anything under it can sound.
+    // Stop traversal at nested rigid bodies so each node maps to one body.
+    // Intentional registry write outside Apply: derived from the sound models under each body.
+    if (reporting_stale) {
+        const auto sounds = [&r](this auto &self, state::Entity node) -> bool {
+            if (IsModalSounding(r, node)) return true;
+            for (auto child : Children{&r, node}) {
+                if (!r.all_of<PhysicsBodyHandle>(child) && self(child)) return true;
+            }
+            return false;
+        };
+        for (const auto body : r.view<const PhysicsBodyHandle>()) {
+            if (sounds(body)) r.emplace_or_replace<ReportContacts>(body);
+            else r.remove<ReportContacts>(body);
+        }
+    }
+    // Refresh contact dynamics before the strike loop below reads them.
+    for (auto e : reactive<audio_changes::ContactDynamicsDerivation>(r)) UpdateContactDynamics(r, e);
+    // A created or replaced VertexForce is a strike. Contact pulses are one-shot.
+    for (auto e : reactive<audio_changes::VertexForce>(r)) {
+        if (!r.all_of<SoundVerticesModel>(e)) continue;
+        const auto *vf = r.try_get<::VertexForce>(e);
+        if (!vf || vf->Force <= 0) continue;
+        const auto &excitable = r.get<const SoundVertices>(e);
+        if (auto vi = FindSoundVertexIndex(r.ctx().get<const MeshStore>().GetSoundVertices(excitable.Vertices), vf->Vertex)) {
+            r.emplace_or_replace<MeshActiveElement>(r.get<const Instance>(e).Entity, vf->Vertex);
+            const auto model = r.get<SoundVerticesModel>(e);
+            if (model == SoundVerticesModel::Modal && r.all_of<ModalModes>(e)) {
+                TriggerModalStrike(r, e, *vi, vf->Force, vf->ContactSpeed);
+            } else if (model == SoundVerticesModel::Samples && r.all_of<VertexSamples>(e)) {
+                r.get_or_emplace<SamplePlayback>(e).Play();
+            }
+        }
+    }
+    // Start a new recording with an impact at the active vertex.
+    for (auto e : reactive<audio_changes::RecordingStart>(r)) {
+        if (!r.all_of<ModalModes, SoundVertices, Recording>(e)) continue;
+        if (r.get<const Recording>(e).Frame == 0) TriggerModalStrike(r, e, GetActiveVertexIndex(r, e), 1.f, 1.f);
+    }
+    // Reconcile the live output device: a config change re-inits (and may change the negotiated rate), a mix change just applies level/on-off.
+    bool device_rate_changed = false;
+    if (auto *res = r.ctx().find<AudioDeviceResource>()) {
+        if (auto &config_tracker = reactive<audio_changes::AudioConfig>(r); !config_tracker.empty()) {
+            const uint32_t prev_rate = res->SampleRate;
+            for (auto e : config_tracker) {
+                if (r.all_of<AudioOutputConfig, AudioOutputMix>(e)) ReconcileAudioDevice(*res, r.get<const AudioOutputConfig>(e), r.get<const AudioOutputMix>(e));
+            }
+            device_rate_changed = res->SampleRate != prev_rate;
+            // A reopened device publishes a new scheduling group, which the render threads have to be re-placed into.
+            r.ctx().get<ModalAudio>().RenderPool.SetWorkgroup(res->RenderWorkgroup);
+        }
+        for (auto e : reactive<audio_changes::AudioMix>(r)) {
+            if (r.all_of<AudioOutputMix>(e)) ApplyAudioMix(*res, r.get<const AudioOutputMix>(e));
+        }
+    }
+
+    auto &modal_tracker = r.ctx().get<AudioTrackers>().Modes;
+    if (!modal_tracker.empty() || device_rate_changed) {
+        // Ensure every modal object has tuning, gain, solve settings, and acoustic material.
+        for (auto e : modal_tracker) {
+            const auto *modes = r.try_get<const ::ModalModes>(e);
+            if (!modes) continue;
+            if (!r.all_of<ModalTuning>(e)) r.emplace<ModalTuning>(e, modes->Freqs.empty() ? 0.f : modes->Freqs.front(), 1.f);
+            if (!r.all_of<ModalGain>(e)) r.emplace<ModalGain>(e);
+            if (!r.all_of<ModalSolveSettings>(e)) {
+                r.emplace<ModalSolveSettings>(e, modes->Vertices.empty() ? ModalSolveSettings{} : ModalSolveSettings{.NumVertices = uint32_t(modes->Vertices.size())});
+            }
+            if (!r.all_of<AcousticMaterial>(e)) r.emplace<AcousticMaterial>(e, materials::acoustic::All.front());
+        }
+        // Retune and reshape same-layout model replacements in place.
+        // Rebuild the bank for structural layout changes.
+        auto &m = r.ctx().get<ModalAudio>();
+        bool rebuild = false;
+        for (auto e : modal_tracker) {
+            if (rebuild) break;
+            const auto *modes = r.valid(e) ? r.try_get<const ::ModalModes>(e) : nullptr;
+            const bool active = modes && !modes->Freqs.empty() && r.all_of<SoundVertices>(e);
+            const auto slot = FindModalObject(LiveBank(m), e);
+            if (!active && !slot) continue;
+            if (active && slot && SetModalObjectShapes(LiveBank(m), *slot, *modes)) RetuneModalObject(r, LiveBank(m), *slot, e);
+            else rebuild = true;
+        }
+        if (rebuild) {
+            RebuildModalBank(r);
+        } else if (device_rate_changed) {
+            // A rate change keeps the layout but rebakes every coefficient.
+            LiveBank(m).SampleRate = float(DeviceSampleRate(r));
+            for (uint32_t slot = 0; slot < uint32_t(LiveBank(m).Entities.size()); ++slot) RetuneModalObject(r, LiveBank(m), slot, LiveBank(m).Entities[slot]);
+        }
+    }
+    {
+        auto &m = r.ctx().get<ModalAudio>();
+        auto &bank = LiveBank(m);
+        for (auto e : reactive<audio_changes::ModalGain>(r)) {
+            if (auto slot = FindModalObject(bank, e)) SetModalOutGain(r, bank, *slot, e);
+        }
+        for (auto e : reactive<audio_changes::ModalTuning>(r)) {
+            if (auto slot = FindModalObject(bank, e)) RetuneModalObject(r, bank, *slot, e);
+        }
+        for (auto e : reactive<audio_changes::ModalSoundControls>(r)) {
+            const auto &controls = r.get<const ModalSoundControls>(e);
+            m.ClickGain.store(controls.ClickGain, std::memory_order_relaxed);
+            m.MaxImpacts.store(controls.MaxImpacts, std::memory_order_relaxed);
+            // Sized from the main thread, since a render call cannot spawn threads.
+            const auto *device = r.ctx().find<const AudioDeviceResource>();
+            m.RenderPool.SetSize(controls.RenderThreads);
+            m.RenderPool.SetWorkgroup(device ? device->RenderWorkgroup : nullptr);
+            for (uint32_t slot = 0; slot < uint32_t(bank.Entities.size()); ++slot) SetModalOutGain(r, bank, slot, bank.Entities[slot]);
+        }
+        // Retune objects whose node was rescaled.
+        auto &trackers = r.ctx().get<AudioTrackers>();
+        for (auto e : trackers.Scale) {
+            if (auto slot = FindModalObject(bank, e)) RetuneModalObject(r, bank, *slot, e);
+        }
+        trackers.Scale.clear();
+        trackers.Modes.clear();
+        trackers.Samples.clear();
+        // Publish camera-derived object attenuation because the audio thread cannot access the registry.
+        if (const auto *res = r.ctx().find<AudioDeviceResource>()) UpdateListenerGains(r, bank, res->Viewport);
+    }
+}
+
+void UpdateAudioContacts(state::Scene &r) {
+    if (!r.ctx().find<ModalAudio>()) return;
     // Displayed-frame collisions strike the objects they hit, once per contact point.
     if (auto *contacts = r.ctx().find<PhysicsContactImpacts>(); contacts && !contacts->Events.empty()) {
         const auto &controls = ModalControls(r);
@@ -886,7 +891,6 @@ void InitAudioSystem(state::Scene &r) {
     r.ctx().emplace<ModalAudio>();
     r.ctx().emplace<MonitorLimiter>();
     RegisterAudioComponentHandlers(r);
-    RegisterComponentEventHandler(r, UpdateAudioContacts, ComponentEventPhase::AfterPose);
 }
 
 void DeinitAudioSystem(state::Scene &r) { r.ctx().erase<ModalAudio>(); }

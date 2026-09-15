@@ -84,9 +84,6 @@ struct AnyHandle {
     operator FH() const { return {Element == Element::Face ? Index : null}; }
 };
 
-struct AnyHandleHash {
-    size_t operator()(const AnyHandle &h) const { return std::hash<uint32_t>{}(uint32_t(h.Element)) ^ (std::hash<uint32_t>{}(h.Index) << 1); }
-};
 } // namespace he
 
 namespace std {

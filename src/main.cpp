@@ -3,7 +3,6 @@
 
 #include "File.h"
 #include "FileDialog.h"
-#include "LogEnabled.h"
 #include "MacPlatform.h"
 #include "Paths.h"
 #include "ProcessEvents.h"
@@ -88,6 +87,8 @@
 using std::ranges::any_of, std::ranges::all_of;
 
 namespace fs = std::filesystem;
+
+bool LogEnabled{true};
 using SteadyClock = std::chrono::steady_clock;
 double ElapsedMs(SteadyClock::time_point begin) { return std::chrono::duration<double, std::milli>(SteadyClock::now() - begin).count(); }
 

@@ -8,6 +8,3 @@ void RegisterMeshStoreHandlers(state::Scene &r) {
         r.ctx().get<MeshStore>().Release(r.get<MeshHandle>(e).StoreId);
     }>();
 }
-void InitMeshStore(state::Scene &r, mtl::BufferContext &ctx) { r.ctx().emplace<MeshStore>(ctx); }
-void ClearMeshStoreHandles(state::Scene &r) { r.clear<MeshHandle>(); }
-void DeinitMeshStore(state::Scene &r) { r.ctx().erase<MeshStore>(); }

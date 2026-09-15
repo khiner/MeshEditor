@@ -20,8 +20,6 @@ namespace {
 // A submit's scratch stays under this, so a batch of large meshes splits across submits.
 constexpr uint32_t ScratchWordBudget{48u << 20};
 
-constexpr uint32_t BitWordCount(uint32_t bits) { return (bits + 31u) / 32u; }
-
 struct AdjacencyWork {
     Mesh MeshView;
     VertexAdjacencyKind Kind;
@@ -31,7 +29,7 @@ struct AdjacencyWork {
 uint32_t ScratchWords(const AdjacencyWork &work) {
     const uint32_t counts = work.MeshView.VertexCount() + 1;
     const uint32_t blocks = TileCount(counts, BlockElements);
-    const uint32_t bit_words = work.Kind == VertexAdjacencyKind::Edge ? 2 * BitWordCount(work.MeshView.HalfEdgeCount()) : 0;
+    const uint32_t bit_words = work.Kind == VertexAdjacencyKind::Edge ? 2 * BitWords(work.MeshView.HalfEdgeCount()) : 0;
     return counts + blocks + bit_words;
 }
 
@@ -49,7 +47,7 @@ void SubmitChunk(state::Scene &r, std::span<const AdjacencyWork> chunk) {
         const auto csr = fan ? meshes.GetVertexFanAdjacencyRange(id) : meshes.GetVertexEdgeAdjacencyRange(id);
         const uint32_t vertex_count = work.MeshView.VertexCount(), halfedge_count = work.MeshView.HalfEdgeCount();
         const uint32_t counts = vertex_count + 1, block_count = TileCount(counts, BlockElements);
-        const uint32_t bit_words = fan ? 0u : BitWordCount(halfedge_count);
+        const uint32_t bit_words = fan ? 0u : BitWords(halfedge_count);
         // The scratch runs follow the order ScratchWords sizes them in.
         const uint32_t counts_offset = scratch_words;
         const uint32_t block_offset = counts_offset + counts;

@@ -758,33 +758,6 @@ std::string History::ValidateReplay(int node) {
     return diff;
 }
 
-std::string History::DiffImage(const std::vector<std::byte> &a_bytes, const std::vector<std::byte> &b_bytes) const {
-    if (a_bytes == b_bytes) return {};
-    std::span<const std::byte> a{a_bytes}, b{b_bytes};
-    for (const auto i : Order) {
-        const auto &t = Tracks[i];
-        uint64_t la, ca, lb, cb;
-        Take(a, la);
-        Take(a, ca);
-        Take(b, lb);
-        Take(b, cb);
-        const auto skip = [](std::span<const std::byte> &in, uint64_t count) {
-            const auto *start = in.data();
-            for (uint64_t i = 0; i < count; ++i) {
-                uint64_t slot;
-                uint32_t size;
-                Take(in, slot);
-                Take(in, size);
-                in = in.subspan(size);
-            }
-            return std::span<const std::byte>{start, in.data()};
-        };
-        const auto sa = skip(a, ca), sb = skip(b, cb);
-        if (la != lb || ca != cb || !std::equal(sa.begin(), sa.end(), sb.begin(), sb.end())) return t.Name;
-    }
-    return "(unknown)";
-}
-
 HistoryStats History::Stats() const {
     HistoryStats s;
     s.SharedNodeBytes = SharedNodePoolBytes();

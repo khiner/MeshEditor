@@ -1,7 +1,15 @@
 #pragma once
 #include "audio/AudioSystem.h"
 
+enum class EventPass;
+
 void RegisterAudioComponentHandlers(state::Scene &);
+// Install finished modal solves and apply pending model rescales.
+void ApplyCompletedModalSolves(state::Scene &, EventPass);
+// Strike the objects hit by the displayed frame's contacts.
+void UpdateAudioContacts(state::Scene &);
+// Drop the cleared scene's bank slots, samples, warm-start data, and in-flight solves.
+void ClearAudioScene(state::Scene &);
 
 // Create the modal audio context and register its component handlers.
 // Must run before a scene loads, so that loading one populates the bank.

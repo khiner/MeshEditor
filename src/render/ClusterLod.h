@@ -21,6 +21,10 @@ inline constexpr uint32_t ClusterLodPartitionSize{16};
 inline constexpr uint32_t ClusterLodSpanLeafRecords{64};
 inline constexpr uint32_t ClusterLodInvalid{~0u};
 
+struct meshopt_Bounds;
+// Pack a meshopt cone axis and cutoff into the record's ConeAxisCutoff field.
+uint32_t PackCone(const meshopt_Bounds &, bool cone_cull_safe);
+
 struct ClusterLodPrimitive {
     uint32_t FirstTriangle{}, TriangleCount{};
     uint32_t FirstCluster{}, ClusterCount{};

@@ -9,23 +9,31 @@
 #include "Paths.h"
 #include "ProcessEvents.h"
 #include "Profile.h"
-#include "Reactive.h"
-#include "Stores.h"
+#include "action/Errors.h"
 #include "Window.h"
 #include "animation/AnimationTimeline.h"
+#include "audio/AudioStores.h"
+#include "audio/AudioTypes.h"
+#include "audio/ContactModel.h"
+#include "audio/SurfaceContact.h"
+#include "gizmo/GizmoInteraction.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshBatch.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
+#include "mesh/MeshStores.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
+#include "physics/PhysicsStores.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "render/GpuSceneState.h"
 #include "render/MaterialImport.h"
 #include "render/Pipelines.h"
+#include "render/RenderStores.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"
+#include "scene/Entity.h"
 #include "scene/EntityDestroyTracker.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
@@ -175,7 +183,7 @@ void SubmitViewport(state::Scene &r, state::Entity viewport) {
 
 state::Entity InitEngine(state::Scene &r) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
-    InitStoreCtx(r, ctx);
+    InitRenderStoreContext(r, ctx);
     auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &libraries = r.ctx().emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a");
     r.ctx().emplace<Pipelines>(libraries);
@@ -183,8 +191,16 @@ state::Entity InitEngine(state::Scene &r) {
     physics::Init(r);
     RegisterSceneComponentHandlers(r);
 
-    const auto viewport = InitDocumentStores(r);
+    RegisterMeshStoreHandlers(r);
+    RegisterAudioStoreHandlers(r);
+    RegisterPhysicsStoreHandlers(r);
+    InitEntityNames(r);
+    RegisterRenderStoreHandlers(r);
+    const auto viewport = r.create();
+    r.ctx().emplace<MeshStore>(InitRenderStores(r));
     auto &buffers = r.ctx().get<GpuBuffers>();
+    r.ctx().emplace<action::Errors>();
+    InitDefaultMaterial(r, viewport);
     // These engine resources outlive documents.
     r.ctx().emplace<ViewportExtent>();
     r.ctx().emplace<ViewportConsumerFence>();
@@ -241,8 +257,20 @@ void SetupScene(state::Scene &r, state::Entity viewport) {
     physics::ApplySimulationSettings(r, r.emplace_or_replace<PhysicsSimulationSettings>(viewport));
 
     r.emplace_or_replace<StudioEnvironment>(viewport, std::string{"forest"});
-
-    for (const auto &handler : r.ctx().get<SceneSetupHandlers>().Handlers) handler(r, viewport);
+    r.emplace_or_replace<AudioOutputConfig>(viewport);
+    r.emplace_or_replace<AudioOutputMix>(viewport);
+    r.emplace_or_replace<Striker>(viewport);
+    r.emplace_or_replace<ModalSoundControls>(viewport);
+    r.emplace_or_replace<PlaybackFrame>(viewport);
+    r.emplace_or_replace<LastEvaluatedFrame>(viewport);
+    r.emplace_or_replace<AnimationTimelineView>(viewport);
+    r.emplace_or_replace<TimelineRange>(viewport);
+    r.emplace_or_replace<TimelinePlayback>(viewport);
+    r.emplace_or_replace<SelectionXRay>(viewport);
+    r.emplace_or_replace<ShadeSmoothAngle>(viewport);
+    r.emplace_or_replace<BoxSelectState>(viewport);
+    r.emplace_or_replace<GizmoInteraction>(viewport);
+    SurfaceSetupScene(r, viewport);
 }
 
 void AddDefaultSceneContent(state::Scene &r) {
@@ -289,11 +317,6 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
     }
     r.destroy(viewport);
 
-    // Reset domain caches keyed by the destroyed entities' ids, before the allocator reset lets the next scene reuse them.
-    if (const auto *clear_handlers = r.ctx().find<SceneClearHandlers>()) {
-        for (const auto &handler : clear_handlers->Handlers) handler(r);
-    }
-
     // Reset ordered allocators so scene replay reproduces entity IDs and GPU handles.
     // Bindless allocation is order-independent and requires no reset.
     r.ResetEntities();
@@ -314,13 +337,18 @@ void DeinitViewport(state::Scene &r, state::Entity viewport) {
     r.ctx().erase<FrameState>();
     r.ctx().erase<PendingRenderRequest>();
     r.ctx().erase<GpuSceneState>();
-    r.ctx().erase<std::vector<ComponentEventHandler>>();
     r.ctx().erase<EntityDestroyTracker>();
     physics::Deinit(r);
     r.ctx().erase<MeshPipelines>();
     r.ctx().erase<Pipelines>();
     if (r.valid(viewport)) r.destroy(viewport);
-    TearDownStoreCtx(r);
+    // MeshHandle destruction needs the mesh store, and resource owners retire buffers into the render store.
+    r.clear<MeshHandle>();
+    DeinitTextureStores(r);
+    r.ctx().erase<MeshStore>();
+    DeinitRenderStores(r);
+    DeinitEntityNames(r);
+    DeinitRenderStoreContext(r);
 }
 
 void PresentViewport(state::Scene &r, state::Entity viewport) {

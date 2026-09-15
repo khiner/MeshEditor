@@ -90,7 +90,6 @@ struct GpuBuffers {
 
     SlottedRange CreateIndices(std::span<const uint32_t> indices, IndexKind index_kind);
     std::pair<SlottedRange, std::span<uint32_t>> AllocateIndices(uint32_t count, IndexKind index_kind);
-    RenderBuffers CreateRenderBuffers(std::span<const Vertex> vertices, std::span<const uint32_t> indices, IndexKind index_kind);
 
     void Release(RenderBuffers &buffers);
     void Release(MeshBuffers &buffers);

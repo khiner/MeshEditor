@@ -32,10 +32,6 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     std::visit(
         overloaded{
             [&](EnterPresentation) { enter_presentation(); },
-            [&](StartPresentation) {
-                enter_presentation();
-                r.patch<TimelinePlayback>(viewport, [](auto &p) { p.Playing = true; });
-            },
             [&](const TogglePlay &a) {
                 r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.Playing = !p.Playing; p.CurrentFrame = a.Frame; });
                 r.edit<PlaybackFrame>(viewport).Value = a.Frame;

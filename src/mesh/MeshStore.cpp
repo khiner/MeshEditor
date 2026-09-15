@@ -1,6 +1,7 @@
 #include "MeshStore.h"
 
 #include "MeshAttributes.h"
+#include "ScratchChunks.h"
 #include "Profile.h"
 #include "gpu/CornerClass.h"
 #include "gpu/CornerClassEncoding.h"
@@ -21,7 +22,6 @@ constexpr uint32_t ClassTagShift{uint32_t(CornerClassEncoding::TagShift)}, Class
 constexpr uint32_t UniformFaceOffset{uint32_t(CornerClassEncoding::UniformFaceOffset)};
 constexpr uint32_t FanLoopShift{uint32_t(FanItemEncoding::LoopShift)};
 
-constexpr uint32_t BitWords(uint32_t bits) { return (bits + 31u) / 32u; }
 constexpr uint32_t ElementIndex(Element element) {
     return element == Element::Vertex ? 0u : element == Element::Edge ? 1u :
                                                                         2u;
@@ -384,7 +384,6 @@ uint32_t MeshStore::GetCornerTangentSlot() const { return B->CornerTangentBuffer
 uint32_t MeshStore::GetCornerColorSlot() const { return B->CornerColorBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetCornerUvSlot() const { return B->CornerUvBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetEdgeSharpnessSlot() const { return B->EdgeSharpnessBuffer.Buffer.Slot; }
-uint32_t MeshStore::GetEdgeSharpnessCount() const { return B->EdgeSharpnessBuffer.Buffer.Count<uint8_t>(); }
 uint32_t MeshStore::GetTetPositionSlot() const { return B->TetPositionBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetTetEdgeIndexSlot() const { return B->TetEdgeIndexBuffer.Buffer.Slot; }
 
@@ -428,7 +427,6 @@ std::span<const vec3> MeshStore::GetBaseFaceNormals(uint32_t id) const { return 
 std::span<vec3> MeshStore::GetBaseFaceNormals(uint32_t id) { return B->BaseFaceNormalBuffer.GetMutableSpan<vec3>(Entries.at(id).FaceData); }
 SlottedRange MeshStore::GetBaseFaceNormalRange(uint32_t id) const { return {Entries.at(id).FaceData, B->BaseFaceNormalBuffer.Slot}; }
 SlottedRange MeshStore::GetBaseVertexNormalRange(uint32_t id) const { return {Entries.at(id).Vertices, B->BaseVertexNormalBuffer.Slot}; }
-SlottedRange MeshStore::GetBaseSeamNormalSlottedRange(uint32_t id) const { return B->BaseSeamNormalBuffer.Slotted(Derived.at(id).BaseSeamNormals); }
 std::span<const vec3> MeshStore::GetBaseSeamNormals(uint32_t id) const { return B->BaseSeamNormalBuffer.Get(Derived.at(id).BaseSeamNormals); }
 std::span<vec3> MeshStore::GetBaseSeamNormals(uint32_t id) { return B->BaseSeamNormalBuffer.GetMutable(Derived.at(id).BaseSeamNormals); }
 std::span<const vec3> MeshStore::GetPointNormals(uint32_t id) const { return B->PointNormalBuffer.Get(Entries.at(id).PointNormals); }
@@ -808,30 +806,6 @@ void MeshStore::UpdateMorphShadingAuthored(const Mesh &mesh, std::span<const Cor
     }
 }
 
-void MeshStore::SetEdgeSharpnessByAngle(const Mesh &mesh, float angle) {
-    const auto id = mesh.GetStoreId();
-    auto sharp = GetMutableEdgeSharpness(id);
-    if (sharp.empty()) return;
-    const auto vertices = GetVertices(id);
-    static thread_local std::vector<vec3> face_normals;
-    face_normals.resize(mesh.FaceCount());
-    for (const auto fh : mesh.faces()) {
-        auto it = mesh.cfv_iter(fh);
-        const auto p0 = vertices[**it].Position;
-        const auto p1 = vertices[**++it].Position;
-        const auto p2 = vertices[**++it].Position;
-        face_normals[*fh] = numeric::Normalize(numeric::Cross(p1 - p0, p2 - p0));
-    }
-    const auto &c = mesh.GetConnectivity();
-    const float cos_angle = std::cos(angle);
-    for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
-        const auto hh = mesh.GetHalfedge(Mesh::EH{ei}, 0);
-        const auto face = mesh.GetFace(hh);
-        const auto opposite = c.Opposites[*hh];
-        const auto opposite_face = opposite ? c.FaceOf(opposite) : Mesh::FH{};
-        sharp[ei] = face && opposite_face && numeric::Dot(face_normals[*face], face_normals[*opposite_face]) < cos_angle ? 1 : 0;
-    }
-}
 
 SharpnessSummary MeshStore::GetFaceSharpnessSummary(uint32_t id) const {
     const auto s = GetFaceSharpness(id);

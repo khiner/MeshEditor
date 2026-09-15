@@ -149,7 +149,6 @@ struct MeshStore {
     uint32_t GetCornerColorSlot() const;
     uint32_t GetCornerUvSlot() const;
     uint32_t GetEdgeSharpnessSlot() const;
-    uint32_t GetEdgeSharpnessCount() const;
     uint32_t GetElementPrimitiveSlot() const;
     uint32_t GetPrimitiveMaterialSlot() const;
     uint32_t GetBoneDeformSlot() const;
@@ -214,7 +213,6 @@ struct MeshStore {
     std::span<vec3> GetBaseFaceNormals(uint32_t id);
     SlottedRange GetBaseFaceNormalRange(uint32_t id) const;
     SlottedRange GetBaseVertexNormalRange(uint32_t id) const;
-    SlottedRange GetBaseSeamNormalSlottedRange(uint32_t id) const;
     std::span<const vec3> GetBaseSeamNormals(uint32_t id) const;
     std::span<vec3> GetBaseSeamNormals(uint32_t id);
     // Returns face-less authored normals in vertex order.
@@ -258,8 +256,6 @@ struct MeshStore {
 
     std::span<const PrimitiveTriangleRange> GetPrimitiveTriangleRanges(uint32_t id) const { return Entries.at(id).PrimitiveTriangleRanges; }
 
-    // Write edge sharpness from face dihedral angles: sharp where the angle exceeds `angle` (radians). Boundary edges stay smooth.
-    void SetEdgeSharpnessByAngle(const Mesh &, float angle);
     // Classify each corner from the sharpness stores: vertex-normal, face-normal, or a seam sector of incident triangles.
     // Call after any sharpness write, then run the base derive pass to refill the base normal stores.
     void UpdateCornerClassification(const Mesh &);

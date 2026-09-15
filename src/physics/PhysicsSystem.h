@@ -6,10 +6,13 @@
 #include <optional>
 
 struct PhysicsSimulationSettings;
+enum class EventPass;
 
 namespace physics {
 void Init(state::Scene &);
 void Deinit(state::Scene &);
+// Rebuild simulation input from changed components.
+void ProcessChanges(state::Scene &, EventPass);
 // Capture the next fresh physics run for standalone RbpReplay verification.
 void CaptureReplay(state::Scene &, const std::filesystem::path &);
 // Removes all bodies and constraints while preserving initialization.

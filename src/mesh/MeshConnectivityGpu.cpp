@@ -20,8 +20,6 @@ namespace {
 // A submit's scratch stays under this, so a batch of large meshes splits across submits.
 constexpr uint32_t ScratchWordBudget{96u << 20};
 
-constexpr uint32_t BitWords(uint32_t bits) { return (bits + 31u) / 32u; }
-
 // Returns scratch words for bucketed halfedges, scan intermediates, and state.
 uint32_t ScratchWords(uint32_t vertex_count, uint32_t halfedge_count) {
     const uint32_t words = BitWords(halfedge_count);

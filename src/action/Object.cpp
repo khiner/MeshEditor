@@ -203,7 +203,6 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](Duplicate) { duplicate(false); },
             [&](DuplicateLinked) { duplicate(true); },
-            [&](const DuplicateToPosition &a) { duplicate(a.Linked, a.Placement.get()); },
             [&](ToggleHidden) {
                 for (const auto e : r.view<Selected>()) {
                     if (r.all_of<RenderInstance>(e)) Hide(r, e);

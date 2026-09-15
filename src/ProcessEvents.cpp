@@ -22,6 +22,7 @@
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
 #include "audio/SoundVertices.h"
+#include "editor/AudioIntegration.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/GltfScene.h"
 #include "mesh/MeshBvh.h"
@@ -622,9 +623,9 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         for (auto e : to_rederive) RederiveCollider(r, e);
     }
 
-    if (const auto *handlers = r.ctx().find<std::vector<ComponentEventHandler>>(); handlers && !rendering) {
-        for (const auto &h : *handlers)
-            if (h.Phase == ComponentEventPhase::BeforePose) h.Apply(r, pass);
+    if (!rendering) {
+        physics::ProcessChanges(r, pass);
+        ApplyCompletedModalSolves(r, pass);
     }
 
     { // Run before processing InteractionMode changes because selection may update the mode.
@@ -1455,12 +1456,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         state.EditSelectionDirty = false;
         request(RenderRequest::Reuse);
     }
-    if (!rendering) {
-        if (const auto *handlers = r.ctx().find<std::vector<ComponentEventHandler>>()) {
-            for (const auto &handler : *handlers)
-                if (handler.Phase == ComponentEventPhase::AfterPose) handler.Apply(r, pass);
-        }
-    }
+    if (!rendering) UpdateAudioContacts(r);
     r.ClearChanges();
     destroy_tracker.Storage.clear();
     r.clear<MeshGeometryDirty, MeshPositionsChanged, MeshMaterialAssignment>();
@@ -1526,20 +1522,4 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
     r.on_update<BoneConstraints>().connect<[](state::Scene &r, state::Entity e) {
         PatchEditedLocal(r, e, [](auto &) {});
     }>();
-
-    RegisterSceneSetupHandler(r, [](state::Scene &r, state::Entity viewport) {
-        r.emplace_or_replace<AudioOutputConfig>(viewport);
-        r.emplace_or_replace<AudioOutputMix>(viewport);
-        r.emplace_or_replace<Striker>(viewport);
-        r.emplace_or_replace<ModalSoundControls>(viewport);
-        r.emplace_or_replace<PlaybackFrame>(viewport);
-        r.emplace_or_replace<LastEvaluatedFrame>(viewport);
-        r.emplace_or_replace<AnimationTimelineView>(viewport);
-        r.emplace_or_replace<TimelineRange>(viewport);
-        r.emplace_or_replace<TimelinePlayback>(viewport);
-        r.emplace_or_replace<SelectionXRay>(viewport);
-        r.emplace_or_replace<ShadeSmoothAngle>(viewport);
-        r.emplace_or_replace<BoxSelectState>(viewport);
-        r.emplace_or_replace<GizmoInteraction>(viewport);
-    });
 }
