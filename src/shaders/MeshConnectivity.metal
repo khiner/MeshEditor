@@ -5,10 +5,11 @@
 // Pairing uses the first reverse halfedge in ascending index order to match the CPU store.
 #include "Bindless.metal"
 #include "BlockScan.metal"
+#include "ConnectivityRead.metal"
 #include "gpu/MeshConnectivityJob.h"
 #include "gpu/MeshConnectivityPushConstants.h"
 
-constant uint ConnNullHalfedge = 0xffffffffu;
+constant uint ConnNullHalfedge = InvalidOffset;
 // Packs the non-bucket endpoint with a high-to-low direction bit.
 constant uint ConnReverseBit = 1u << 31;
 
@@ -34,13 +35,7 @@ struct ConnContext {
     uint2 Tile(uint group_id) const { return Tiles()[Pc.FirstTile + group_id]; }
 };
 
-// The halfedge before `h` in its triangle's loop, whose corner is `h`'s from-vertex.
-inline uint ConnPrevious(uint h) {
-    const uint first = h - h % 3u;
-    return first + (h - first + 2u) % 3u;
-}
-
-inline uint2 ConnEndpoints(device const uint *corners, uint h) { return uint2(corners[ConnPrevious(h)], corners[h]); }
+inline uint2 ConnEndpoints(device const uint *corners, uint h) { return uint2(corners[ConnectivityPrevious(h)], corners[h]); }
 
 // The key a bucket scan pairs on: the endpoint away from the bucket, marked with the direction.
 inline uint ConnBucketKey(device const uint *corners, uint h) {

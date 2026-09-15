@@ -72,4 +72,23 @@ inline bool InstanceInFrustum(const thread SceneT<SetT> &scene, DrawData draw) {
     return !bounds.Valid || in_frustum(scene.ViewProj(), bounds.Center, bounds.Ax, bounds.Ay, bounds.Az);
 }
 
+// KHR_texture_transform: scale, then rotate, then offset.
+inline float2 ApplyUvTransform(float2 uv, float2 uv_offset, float2 uv_scale, float uv_rotation) {
+    const float s = sin(uv_rotation);
+    const float c = cos(uv_rotation);
+    const float3x3 rotation = float3x3(float3(c, -s, 0.0f), float3(s, c, 0.0f), float3(0.0f, 0.0f, 1.0f));
+    const float3x3 scale = float3x3(float3(uv_scale.x, 0.0f, 0.0f), float3(0.0f, uv_scale.y, 0.0f), float3(0.0f, 0.0f, 1.0f));
+    const float3x3 translation = float3x3(float3(1.0f, 0.0f, 0.0f), float3(0.0f, 1.0f, 0.0f), float3(uv_offset.x, uv_offset.y, 1.0f));
+    const float3x3 uv_transform = translation * rotation * scale;
+    return (uv_transform * float3(uv, 1.0f)).xy;
+}
+
+// The screen-space UV gradient under the same scale and rotation.
+inline float2 TransformUvGradient(float2 gradient, float2 uv_scale, float uv_rotation) {
+    const float s = sin(uv_rotation);
+    const float c = cos(uv_rotation);
+    const float2 scaled = gradient * uv_scale;
+    return float2(c * scaled.x - s * scaled.y, s * scaled.x + c * scaled.y);
+}
+
 #endif

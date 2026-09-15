@@ -10,7 +10,6 @@
 #include "gpu/FanItemEncoding.h"
 #include "gpu/EditSelectionPushConstants.h"
 
-constant uint INVALID_HANDLE = 0xffffffffu;
 constant uint SelectionSharp = 1u;
 constant uint SelectionSmooth = 2u;
 
@@ -28,13 +27,13 @@ struct EditSelectionContext {
             element == Element::Edge ? Pc.EdgeCount : Pc.FaceCount;
     }
     uint PickedLocal() const {
-        if (Pc.PickIdSlot == InvalidSlot) return INVALID_HANDLE;
+        if (Pc.PickIdSlot == InvalidSlot) return InvalidOffset;
         const SlotOffset source = SelectionRange(Pc.Element);
         const uint pick_id = BindlessBuffer(uint, B.Buffer, Pc.PickIdSlot)[0];
-        if (pick_id == 0u || pick_id == INVALID_HANDLE) return INVALID_HANDLE;
+        if (pick_id == 0u || pick_id == InvalidOffset) return InvalidOffset;
         const uint picked_global = pick_id - 1u;
         const uint base = source.Offset * 32u;
-        return picked_global >= base && picked_global < base + ElementCount(Pc.Element) ? picked_global - base : INVALID_HANDLE;
+        return picked_global >= base && picked_global < base + ElementCount(Pc.Element) ? picked_global - base : InvalidOffset;
     }
     bool SourceSelected(uint element) const {
         if (element >= ElementCount(Pc.Element)) return false;
@@ -63,18 +62,18 @@ struct EditSelectionContext {
         return ConnectivityHalfedgeFace(Connectivity(), Pc.VertexCount, Pc.HalfedgeCount, Pc.FaceCount, Pc.ConnectivityFaceStarts != 0u, halfedge);
     }
     uint HalfedgeEdge(uint halfedge) const {
-        if (Pc.HalfedgeToEdge.Offset != INVALID_HANDLE) {
+        if (Pc.HalfedgeToEdge.Offset != InvalidOffset) {
             return BindlessBuffer(uint, B.Buffer, Pc.HalfedgeToEdge.Slot)[Pc.HalfedgeToEdge.Offset + halfedge];
         }
         const uint opposite = Opposites()[halfedge];
-        const uint first = opposite != INVALID_HANDLE && opposite < halfedge ? opposite : halfedge;
+        const uint first = opposite != InvalidOffset && opposite < halfedge ? opposite : halfedge;
         const uint word = first >> 5u;
         const uint preceding = (1u << (first & 31u)) - 1u;
         return EdgeFirstRanks()[word] + popcount(EdgeFirstBits()[word] & preceding);
     }
 
     bool VertexIncidentSelected(uint vertex_id, uint offset, uint item_mask) const {
-        if (offset == INVALID_HANDLE) return false;
+        if (offset == InvalidOffset) return false;
         device const uint *a = Adjacency() + offset;
         const uint items = Pc.VertexCount + 1u;
         for (uint i = a[vertex_id]; i < a[vertex_id + 1u]; ++i) {
@@ -95,7 +94,7 @@ struct EditSelectionContext {
         const uint h = EdgeHalfedges()[edge];
         if (SourceSelected(HalfedgeFace(h))) return true;
         const uint opposite = Opposites()[h];
-        return opposite != INVALID_HANDLE && SourceSelected(HalfedgeFace(opposite));
+        return opposite != InvalidOffset && SourceSelected(HalfedgeFace(opposite));
     }
     bool EdgeSelected(uint edge) const {
         if (Pc.Element == Element::Vertex) {
@@ -156,7 +155,7 @@ kernel void PrepareEditSelectionKernel(
 
     if (pc.Operation == EditSelectionOperation::PickReplace || pc.Operation == EditSelectionOperation::PickToggle) {
         const uint picked_local = ctx.PickedLocal();
-        if (picked_local != INVALID_HANDLE && (picked_local >> 5u) == word_index) {
+        if (picked_local != InvalidOffset && (picked_local >> 5u) == word_index) {
             const uint bit = 1u << (picked_local & 31u);
             if (pc.Operation == EditSelectionOperation::PickToggle && ctx.Summary().ActiveHandle == picked_local) {
                 new_word &= ~bit;
@@ -198,8 +197,8 @@ kernel void ResetEditSelectionSummaryKernel(
         summary.ActiveHandle = BindlessBuffer(uint, bindless.Buffer, pc.SelectionBaseline.Slot)[
             pc.SelectionBaseline.Offset + (ctx.ElementCount(pc.Element) + 31u) / 32u
         ];
-    } else if (pc.Operation == EditSelectionOperation::PickToggle && picked_local != INVALID_HANDLE) {
-        summary.ActiveHandle = summary.ActiveHandle == picked_local ? INVALID_HANDLE : picked_local;
+    } else if (pc.Operation == EditSelectionOperation::PickToggle && picked_local != InvalidOffset) {
+        summary.ActiveHandle = summary.ActiveHandle == picked_local ? InvalidOffset : picked_local;
     }
     summary.PositionSum = packed_float3(float3(0.0f));
     summary.Mode = pc.Element;

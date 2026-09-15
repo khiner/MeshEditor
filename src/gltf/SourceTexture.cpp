@@ -49,8 +49,8 @@ std::optional<NormalMapRef> MeshMaterialNormalMap(const state::Scene &r, state::
     // Material bindings contain the remapped GPU indices.
     const auto &buffers = r.ctx().get<const GpuBuffers>();
     const uint32_t material = materials.front();
-    if (material >= buffers.Materials.Count()) return {};
-    const auto &pbr = buffers.Materials.Data()[material];
+    if (material >= buffers.Materials.Count<PBRMaterial>()) return {};
+    const auto &pbr = buffers.Materials.GetSpan<PBRMaterial>()[material];
     if (pbr.NormalTexture.Slot == InvalidSlot) return {};
 
     // Resolve the uploaded source image through the sampler slot.

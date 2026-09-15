@@ -1057,7 +1057,7 @@ int main(int argc, const char **argv) {
         const auto *src = r.try_get<const gltf::SourceAssets>(scene);
         if (textures.PendingUploads.empty() || !src) return;
         auto &slots = r.ctx().get<mtl::BindlessSet>();
-        auto batch = BeginTextureUploadBatch(r.ctx().get<const mtl::Context>(), r.ctx().get<mtl::LibraryCache>());
+        auto batch = BeginTextureUploadBatch(r.ctx().get<const mtl::Context>());
         for (const auto &item : textures.PendingUploads) {
             if (auto entry = MaterializeTextureEntry(r, batch, slots, item, src->Images, r.ctx().get<const ActiveSamplerAnisotropy>().Value)) {
                 textures.Textures.emplace_back(std::move(*entry));

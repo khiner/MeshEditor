@@ -19,11 +19,6 @@ void RenderPipeline::Bind(MTL::RenderCommandEncoder *encoder) const {
     encoder->setDepthStencilState(DepthStencilState.get());
 }
 
-void MeshRenderPipeline::Bind(MTL::RenderCommandEncoder *encoder) const {
-    encoder->setRenderPipelineState(PipelineState.get());
-    encoder->setDepthStencilState(DepthStencilState.get());
-}
-
 namespace {
 std::optional<uint64_t> ShaderTreeFingerprint(const std::filesystem::path &root) {
     std::vector<std::filesystem::path> files;
@@ -75,6 +70,7 @@ bool DepsUnchanged(const std::vector<std::pair<std::filesystem::path, std::files
     return true;
 }
 
+// Devices without the Metal 4 family create pipelines through the classic descriptors.
 template<typename Descriptor>
 void ConfigureAttachments(Descriptor *descriptor, const PassFormats &formats, const std::vector<BlendState> &blends) {
     for (size_t i = 0; i < formats.Color.size(); ++i) {
@@ -118,14 +114,8 @@ NS::SharedPtr<MTL::DepthStencilState> MakeDepthState(LibraryCache &cache, const 
     return NS::TransferPtr(cache.Ctx.Device->newDepthStencilState(descriptor.get()));
 }
 
-NS::SharedPtr<MTL::Function> MakeFunction(LibraryCache &cache, const FunctionRef &ref) {
-    auto *library = cache.Get(ref.Path, ref.Defines);
-    if (ref.Constants.empty()) {
-        auto function = NS::TransferPtr(library->newFunction(Str(ref.Name)));
-        if (!function) throw std::runtime_error(std::format("No function '{}' in '{}'", ref.Name, ref.Path.string()));
-        return function;
-    }
-    const auto values = NS::TransferPtr(MTL::FunctionConstantValues::alloc()->init());
+NS::SharedPtr<MTL::FunctionConstantValues> MakeConstantValues(const FunctionRef &ref) {
+    auto values = NS::TransferPtr(MTL::FunctionConstantValues::alloc()->init());
     for (const auto &constant : ref.Constants) {
         if (constant.Type == MTL::DataTypeBool) {
             const bool value = constant.Value != 0;
@@ -134,10 +124,17 @@ NS::SharedPtr<MTL::Function> MakeFunction(LibraryCache &cache, const FunctionRef
             values->setConstantValue(&constant.Value, constant.Type, NS::UInteger(constant.Index));
         }
     }
+    return values;
+}
+
+NS::SharedPtr<MTL::Function> MakeFunction(LibraryCache &cache, const FunctionRef &ref) {
+    auto *library = cache.Get(ref.Path, ref.Defines);
     NS::Error *error = nullptr;
-    auto function = NS::TransferPtr(library->newFunction(Str(ref.Name), values.get(), &error));
+    auto function = ref.Constants.empty() ?
+        NS::TransferPtr(library->newFunction(Str(ref.Name))) :
+        NS::TransferPtr(library->newFunction(Str(ref.Name), MakeConstantValues(ref).get(), &error));
     if (!function) {
-        throw std::runtime_error(std::format("Failed to specialize '{}' in '{}':\n{}", ref.Name, ref.Path.string(), error ? error->localizedDescription()->utf8String() : "unknown"));
+        throw std::runtime_error(std::format("No function '{}' in '{}':\n{}", ref.Name, ref.Path.string(), error ? error->localizedDescription()->utf8String() : "unknown"));
     }
     return function;
 }
@@ -149,15 +146,7 @@ NS::SharedPtr<MTL4::FunctionDescriptor> MakeFunctionDescriptor(LibraryCache &cac
     function->setLibrary(library);
     if (ref.Constants.empty()) return function;
 
-    const auto values = NS::TransferPtr(MTL::FunctionConstantValues::alloc()->init());
-    for (const auto &constant : ref.Constants) {
-        if (constant.Type == MTL::DataTypeBool) {
-            const bool value = constant.Value != 0;
-            values->setConstantValue(&value, constant.Type, NS::UInteger(constant.Index));
-        } else {
-            values->setConstantValue(&constant.Value, constant.Type, NS::UInteger(constant.Index));
-        }
-    }
+    const auto values = MakeConstantValues(ref);
     auto specialized = NS::TransferPtr(MTL4::SpecializedFunctionDescriptor::alloc()->init());
     specialized->setFunctionDescriptor(function.get());
     specialized->setConstantValues(values.get());
@@ -254,133 +243,117 @@ MTL::Library *LibraryCache::Get(const std::filesystem::path &relative_path, cons
     return entry.Library.get();
 }
 
-RenderPipeline::RenderPipeline(
+RenderPipeline MakeRenderPipeline(
     LibraryCache &cache, FunctionRef vertex, std::optional<FunctionRef> fragment, PassFormats formats,
-    std::vector<BlendState> blends, std::optional<DepthState> depth, float depth_bias
-) : VertexFn(std::move(vertex)), FragmentFn(std::move(fragment)), Formats(std::move(formats)),
-    Blends(std::move(blends)), Depth(depth), Bias(depth_bias) {
-    Compile(cache);
-}
-
-void RenderPipeline::Compile(LibraryCache &cache) {
+    std::vector<BlendState> blends, std::optional<DepthState> depth
+) {
     if (!cache.PipelineCompiler()) {
         const auto descriptor = NS::TransferPtr(MTL::RenderPipelineDescriptor::alloc()->init());
-        const auto vertex_function = MakeFunction(cache, VertexFn);
+        const auto vertex_function = MakeFunction(cache, vertex);
         descriptor->setVertexFunction(vertex_function.get());
         NS::SharedPtr<MTL::Function> fragment_function;
-        if (FragmentFn) {
-            fragment_function = MakeFunction(cache, *FragmentFn);
+        if (fragment) {
+            fragment_function = MakeFunction(cache, *fragment);
             descriptor->setFragmentFunction(fragment_function.get());
         }
-        ConfigureAttachments(descriptor.get(), Formats, Blends);
+        ConfigureAttachments(descriptor.get(), formats, blends);
         NS::Error *error = nullptr;
-        PipelineState = NS::TransferPtr(cache.Ctx.Device->newRenderPipelineState(descriptor.get(), &error));
-        if (!PipelineState) {
-            throw std::runtime_error(std::format("Failed to create the render pipeline for '{}':\n{}", VertexFn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
+        auto state = NS::TransferPtr(cache.Ctx.Device->newRenderPipelineState(descriptor.get(), &error));
+        if (!state) {
+            throw std::runtime_error(std::format("Failed to create the render pipeline for '{}':\n{}", vertex.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
         }
-        DepthStencilState = MakeDepthState(cache, Depth);
-        return;
+        return {std::move(state), MakeDepthState(cache, depth)};
     }
     const auto descriptor = NS::TransferPtr(MTL4::RenderPipelineDescriptor::alloc()->init());
-    const auto vertex_function = MakeFunctionDescriptor(cache, VertexFn);
+    const auto vertex_function = MakeFunctionDescriptor(cache, vertex);
     descriptor->setVertexFunctionDescriptor(vertex_function.get());
     NS::SharedPtr<MTL4::FunctionDescriptor> fragment_function;
-    if (FragmentFn) {
-        fragment_function = MakeFunctionDescriptor(cache, *FragmentFn);
+    if (fragment) {
+        fragment_function = MakeFunctionDescriptor(cache, *fragment);
         descriptor->setFragmentFunctionDescriptor(fragment_function.get());
     }
+    ConfigureAttachments(descriptor->colorAttachments(), formats, blends);
 
-    ConfigureAttachments(descriptor->colorAttachments(), Formats, Blends);
-
-    PipelineState = NS::TransferPtr(cache.ArchivedRenderPipeline(descriptor.get()));
-    if (!PipelineState) {
+    auto state = NS::TransferPtr(cache.ArchivedRenderPipeline(descriptor.get()));
+    if (!state) {
         NS::Error *error = nullptr;
-        PipelineState = NS::TransferPtr(cache.PipelineCompiler()->newRenderPipelineState(descriptor.get(), nullptr, &error));
-        if (!PipelineState) {
-            throw std::runtime_error(std::format("Failed to create the render pipeline for '{}':\n{}", VertexFn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
+        state = NS::TransferPtr(cache.PipelineCompiler()->newRenderPipelineState(descriptor.get(), nullptr, &error));
+        if (!state) {
+            throw std::runtime_error(std::format("Failed to create the render pipeline for '{}':\n{}", vertex.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
         }
     }
     cache.NotePipelineCreated();
-
-    DepthStencilState = MakeDepthState(cache, Depth);
+    return {std::move(state), MakeDepthState(cache, depth)};
 }
 
-MeshRenderPipeline::MeshRenderPipeline(
+RenderPipeline MakeMeshPipeline(
     LibraryCache &cache, FunctionRef mesh, std::optional<FunctionRef> fragment, PassFormats formats,
     std::vector<BlendState> blends, std::optional<DepthState> depth
-) : MeshFn(std::move(mesh)), FragmentFn(std::move(fragment)), Formats(std::move(formats)),
-    Blends(std::move(blends)), Depth(depth) {
-    Compile(cache);
-}
-
-void MeshRenderPipeline::Compile(LibraryCache &cache) {
+) {
     if (!cache.PipelineCompiler()) {
         const auto descriptor = NS::TransferPtr(MTL::MeshRenderPipelineDescriptor::alloc()->init());
-        const auto mesh_function = MakeFunction(cache, MeshFn);
+        const auto mesh_function = MakeFunction(cache, mesh);
         descriptor->setMeshFunction(mesh_function.get());
         descriptor->setMaxTotalThreadsPerMeshThreadgroup(160);
         descriptor->setMeshThreadgroupSizeIsMultipleOfThreadExecutionWidth(true);
         descriptor->setMaxTotalThreadgroupsPerMeshGrid(MaxMeshThreadgroupsPerGrid);
         NS::SharedPtr<MTL::Function> fragment_function;
-        if (FragmentFn) {
-            fragment_function = MakeFunction(cache, *FragmentFn);
+        if (fragment) {
+            fragment_function = MakeFunction(cache, *fragment);
             descriptor->setFragmentFunction(fragment_function.get());
         }
-        ConfigureAttachments(descriptor.get(), Formats, Blends);
+        ConfigureAttachments(descriptor.get(), formats, blends);
         NS::Error *error = nullptr;
-        PipelineState = NS::TransferPtr(cache.Ctx.Device->newRenderPipelineState(descriptor.get(), MTL::PipelineOptionNone, nullptr, &error));
-        if (!PipelineState) {
-            throw std::runtime_error(std::format("Failed to create the mesh render pipeline for '{}':\n{}", MeshFn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
+        auto state = NS::TransferPtr(cache.Ctx.Device->newRenderPipelineState(descriptor.get(), MTL::PipelineOptionNone, nullptr, &error));
+        if (!state) {
+            throw std::runtime_error(std::format("Failed to create the mesh render pipeline for '{}':\n{}", mesh.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
         }
-        DepthStencilState = MakeDepthState(cache, Depth);
-        return;
+        return {std::move(state), MakeDepthState(cache, depth)};
     }
     const auto descriptor = NS::TransferPtr(MTL4::MeshRenderPipelineDescriptor::alloc()->init());
-    const auto mesh_function = MakeFunctionDescriptor(cache, MeshFn);
+    const auto mesh_function = MakeFunctionDescriptor(cache, mesh);
     descriptor->setMeshFunctionDescriptor(mesh_function.get());
     descriptor->setMaxTotalThreadsPerMeshThreadgroup(160);
     descriptor->setMeshThreadgroupSizeIsMultipleOfThreadExecutionWidth(true);
     descriptor->setMaxTotalThreadgroupsPerMeshGrid(MaxMeshThreadgroupsPerGrid);
     NS::SharedPtr<MTL4::FunctionDescriptor> fragment_function;
-    if (FragmentFn) {
-        fragment_function = MakeFunctionDescriptor(cache, *FragmentFn);
+    if (fragment) {
+        fragment_function = MakeFunctionDescriptor(cache, *fragment);
         descriptor->setFragmentFunctionDescriptor(fragment_function.get());
     }
-    ConfigureAttachments(descriptor->colorAttachments(), Formats, Blends);
+    ConfigureAttachments(descriptor->colorAttachments(), formats, blends);
 
-    PipelineState = NS::TransferPtr(cache.ArchivedRenderPipeline(descriptor.get()));
-    if (!PipelineState) {
+    auto state = NS::TransferPtr(cache.ArchivedRenderPipeline(descriptor.get()));
+    if (!state) {
         NS::Error *error = nullptr;
-        PipelineState = NS::TransferPtr(cache.PipelineCompiler()->newRenderPipelineState(descriptor.get(), nullptr, &error));
-        if (!PipelineState) {
-            throw std::runtime_error(std::format("Failed to create the mesh render pipeline for '{}':\n{}", MeshFn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
+        state = NS::TransferPtr(cache.PipelineCompiler()->newRenderPipelineState(descriptor.get(), nullptr, &error));
+        if (!state) {
+            throw std::runtime_error(std::format("Failed to create the mesh render pipeline for '{}':\n{}", mesh.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
         }
     }
     cache.NotePipelineCreated();
-    DepthStencilState = MakeDepthState(cache, Depth);
+    return {std::move(state), MakeDepthState(cache, depth)};
 }
 
-ComputePipeline::ComputePipeline(LibraryCache &cache, FunctionRef fn) : Fn(std::move(fn)) { Compile(cache); }
-
-void ComputePipeline::Compile(LibraryCache &cache) {
+ComputePipeline::ComputePipeline(LibraryCache &cache, FunctionRef fn) {
     if (!cache.PipelineCompiler()) {
-        const auto function = MakeFunction(cache, Fn);
+        const auto function = MakeFunction(cache, fn);
         NS::Error *error = nullptr;
         PipelineState = NS::TransferPtr(cache.Ctx.Device->newComputePipelineState(function.get(), &error));
         if (!PipelineState) {
-            throw std::runtime_error(std::format("Failed to create the compute pipeline for '{}':\n{}", Fn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
+            throw std::runtime_error(std::format("Failed to create the compute pipeline for '{}':\n{}", fn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
         }
         return;
     }
     const auto descriptor = NS::TransferPtr(MTL4::ComputePipelineDescriptor::alloc()->init());
-    const auto function = MakeFunctionDescriptor(cache, Fn);
+    const auto function = MakeFunctionDescriptor(cache, fn);
     descriptor->setComputeFunctionDescriptor(function.get());
     PipelineState = NS::TransferPtr(cache.ArchivedComputePipeline(descriptor.get()));
     if (!PipelineState) {
         NS::Error *error = nullptr;
         PipelineState = NS::TransferPtr(cache.PipelineCompiler()->newComputePipelineState(descriptor.get(), nullptr, &error));
         if (!PipelineState) {
-            throw std::runtime_error(std::format("Failed to create the compute pipeline for '{}':\n{}", Fn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
+            throw std::runtime_error(std::format("Failed to create the compute pipeline for '{}':\n{}", fn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
         }
     }
     cache.NotePipelineCreated();

@@ -45,7 +45,8 @@
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
-#include "render/Pipelines.h"
+#include "metal/Shader.h"
+#include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
@@ -799,13 +800,13 @@ void RequireEqual(std::string_view what, std::span<const std::byte> expected, st
 
 void CompareValidationImages(state::Scene &r, ValidationSession &session) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
-    const auto &live_viewport = r.ctx().get<const Pipelines>().Main.Resources->FinalColorImage;
+    const auto &live_viewport = r.ctx().get<const RenderTargets>().Resources->FinalColorImage;
     const std::array<const mtl::Texture *, 4> expected{&session.Live.Target, &session.Live.Target, &live_viewport, &live_viewport};
     const std::array<const mtl::Texture *, 4> restored{
         &session.Replay.App.Target,
         &session.Stored.App.Target,
-        &session.Replay.Core->R.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
-        &session.Stored.Core->R.ctx().get<const Pipelines>().Main.Resources->FinalColorImage,
+        &session.Replay.Core->R.ctx().get<const RenderTargets>().Resources->FinalColorImage,
+        &session.Stored.Core->R.ctx().get<const RenderTargets>().Resources->FinalColorImage,
     };
     const std::array names{"replay-app", "stored-app", "replay-viewport", "stored-viewport"};
     for (uint32_t i = 0; i < restored.size(); ++i) {
@@ -1364,6 +1365,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     auto &r = engine->R;
     const auto viewport = engine->Viewport;
     const auto &ctx = r.ctx().get<const mtl::Context>();
+    if (!ctx.Device->supportsFamily(MTL::GPUFamilyMetal4)) throw std::runtime_error("MeshEditor renders with Metal 4, which this device does not support.");
     InitViewportMedia(r);
 
     auto *const layer = window.Layer();

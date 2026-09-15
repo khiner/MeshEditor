@@ -11,7 +11,7 @@
 #include "mesh/MeshStore.h"
 #include "project/Sessions.h"
 #include "render/GpuBuffers.h"
-#include "render/Pipelines.h"
+#include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
 #include "selection/SelectionQueries.h"
@@ -54,7 +54,7 @@ struct Fixture : Engine {
     std::vector<std::byte> Image() {
         SubmitViewport(R, Viewport);
         WaitForRender(R);
-        const auto &image = R.ctx().get<const Pipelines>().Main.Resources->FinalColorImage;
+        const auto &image = R.ctx().get<const RenderTargets>().Resources->FinalColorImage;
         return ReadbackImageRgba8(R.ctx().get<const mtl::Context>(), image, 0, 0, image.Extent);
     }
 };

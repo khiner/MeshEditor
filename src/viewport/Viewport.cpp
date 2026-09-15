@@ -30,6 +30,7 @@
 #include "render/GpuSceneState.h"
 #include "render/MaterialImport.h"
 #include "render/Pipelines.h"
+#include "render/RenderTargets.h"
 #include "render/RenderStores.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"
@@ -72,7 +73,7 @@ bool MotionBlurActive(const state::Scene &r, state::Entity viewport) {
 // Renders shutter samples with sharp overlays and restores the current frame afterward.
 void RenderMotionBlurredFrame(state::Scene &r, state::Entity viewport) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
-    auto &pipelines = r.ctx().get<Pipelines>();
+    auto &targets = r.ctx().get<RenderTargets>();
     auto &resources = r.ctx().get<ViewportRenderResources>();
 
     const auto &display = r.get<const ViewportDisplay>(viewport);
@@ -93,11 +94,11 @@ void RenderMotionBlurredFrame(state::Scene &r, state::Entity viewport) {
     physics::BakeThrough(r, viewport, int(std::ceil(last_sample)), range.Fps);
 
     auto &buffers = r.ctx().get<GpuBuffers>();
-    if (pipelines.Main.EnsureMotionBlurResources(ctx, fast)) {
+    if (targets.EnsureMotionBlurResources(ctx, fast)) {
         auto &slots = r.ctx().get<mtl::BindlessSet>();
-        const auto sampled = pipelines.Main.MotionBlurOutputSampler();
+        const auto sampled = targets.MotionBlurOutputSampler();
         slots.SetSampler({SlotType::Sampler, r.ctx().get<const SelectionSlots>().MotionBlurOutputSampler}, sampled.Texture, sampled.Sampler);
-        const auto velocity = pipelines.Main.Nearest(fast ? &pipelines.Main.MotionBlur->VelocityImage : nullptr);
+        const auto velocity = targets.Nearest(fast ? &targets.MotionBlur->VelocityImage : nullptr);
         slots.SetSampler({SlotType::Sampler, r.ctx().get<const SelectionSlots>().VelocitySampler}, velocity.Texture, velocity.Sampler);
     }
 
@@ -185,9 +186,8 @@ state::Entity InitEngine(state::Scene &r) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     InitRenderStoreContext(r, ctx);
     auto &slots = r.ctx().get<mtl::BindlessSet>();
-    auto &libraries = r.ctx().emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a");
-    r.ctx().emplace<Pipelines>(libraries);
-    r.ctx().emplace<MeshPipelines>(libraries);
+    r.ctx().emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a");
+    r.ctx().emplace<RenderTargets>();
     physics::Init(r);
     RegisterSceneComponentHandlers(r);
 
@@ -217,15 +217,14 @@ state::Entity InitEngine(state::Scene &r) {
     r.ctx().emplace<ViewportRenderResources>();
     r.ctx().emplace<WindowsState>();
 
-    auto init_batch = BeginTextureUploadBatch(ctx, libraries);
     auto &environments = r.ctx().get<EnvironmentStore>();
+    auto &textures = r.ctx().get<TextureStore>();
     const auto images_dir = Paths::Res() / "images";
-    environments.BrdfLut = CreateDefaultLutTexture(ctx, init_batch, slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT", r.ctx().get<const ActiveSamplerAnisotropy>().Value);
-    environments.SheenELut = CreateDefaultLutTexture(ctx, init_batch, slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT", r.ctx().get<const ActiveSamplerAnisotropy>().Value);
-    environments.CharlieLut = CreateDefaultLutTexture(ctx, init_batch, slots, images_dir / "lut_charlie.png", "DefaultCharlieLUT", r.ctx().get<const ActiveSamplerAnisotropy>().Value);
+    environments.BrdfLutSlot = QueueLutTexture(textures, slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT");
+    environments.SheenELutSlot = QueueLutTexture(textures, slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT");
+    environments.CharlieLutSlot = QueueLutTexture(textures, slots, images_dir / "lut_charlie.png", "DefaultCharlieLUT");
     // Blender's default world background color (linear RGB), a flat ambient-only IBL when no scene world is provided.
     environments.EmptySceneWorld = BuildFlatColorEnvironment(ctx, slots, vec3{0.05f}, "EmptySceneWorld");
-    SubmitTextureUploadBatch(init_batch);
     // SceneWorld uses this default until reactive EXT_lights_image_based loading replaces it.
     environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
     // Safe placeholder until the reactive StudioEnvironment pass prefilters the selected HDRI on the first tick.
@@ -305,9 +304,10 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
     ResetImportedTexturesAndMaterials(r);
 
     // Clear derived light slots so restored persistent lights register from slot zero.
-    r.ctx().get<GpuBuffers>().Lights.SetCount(0);
+    r.ctx().get<GpuBuffers>().Lights.SetCount<PunctualLight>(0);
     r.ctx().get<GpuBuffers>().PendingLightRemovals.clear();
-    r.ctx().get<TextureStore>().PendingUploads.clear();
+    // Raw-pixel uploads queued at engine init survive a clear that precedes their materialization.
+    std::erase_if(r.ctx().get<TextureStore>().PendingUploads, [](const auto &upload) { return std::holds_alternative<PendingTextureUpload::GltfImageRef>(upload.Source); });
     r.ctx().get<EnvironmentStore>().PendingImport.reset();
 
     // Destroy instances before the buffer entities they reference.
@@ -324,7 +324,7 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
     r.ctx().get<GpuBuffers>().ResetSceneArenas();
     r.ctx().get<GpuSceneState>() = {};
     // Disable occlusion until the new scene has produced a depth pyramid.
-    if (auto &resources = r.ctx().get<Pipelines>().Main.Resources) resources->DepthPyramidValid = false;
+    if (auto &resources = r.ctx().get<RenderTargets>().Resources) resources->DepthPyramidValid = false;
 
     [[maybe_unused]] const auto recreated = r.create();
     assert(recreated == viewport);
@@ -341,6 +341,7 @@ void DeinitViewport(state::Scene &r, state::Entity viewport) {
     physics::Deinit(r);
     r.ctx().erase<MeshPipelines>();
     r.ctx().erase<Pipelines>();
+    r.ctx().erase<RenderTargets>();
     if (r.valid(viewport)) r.destroy(viewport);
     // MeshHandle destruction needs the mesh store, and resource owners retire buffers into the render store.
     r.clear<MeshHandle>();

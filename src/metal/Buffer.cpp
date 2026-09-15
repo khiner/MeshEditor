@@ -48,8 +48,6 @@ Buffer::Buffer(BufferContext &ctx, std::span<const std::byte> data, SlotType slo
 
 Buffer::Buffer(BufferContext &ctx, uint64_t size) : Ctx(ctx), DeviceBuffer(NewBuffer(ctx.Ctx, size)) {}
 
-Buffer::Buffer(BufferContext &ctx, std::span<const std::byte> data) : Buffer(ctx, data.size()) { Update(data); }
-
 Buffer::Buffer(Buffer &&other) noexcept
     : Ctx(other.Ctx), Slot(other.Slot), UsedSize(other.UsedSize),
       DeviceBuffer(std::move(other.DeviceBuffer)), Tracked(std::move(other.Tracked)), Type(other.Type) {

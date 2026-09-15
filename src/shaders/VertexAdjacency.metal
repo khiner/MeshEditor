@@ -4,6 +4,7 @@
 // Builds deterministic vertex-fan or vertex-edge CSR incidence tables matching CPU halfedge order.
 #include "Bindless.metal"
 #include "BlockScan.metal"
+#include "ConnectivityRead.metal"
 #include "gpu/FanItemEncoding.h"
 #include "gpu/VertexAdjacencyJob.h"
 #include "gpu/VertexAdjacencyKind.h"
@@ -22,12 +23,6 @@ struct AdjacencyContext {
 
     uint2 Tile(uint group_id) const { return Tiles()[Pc.FirstTile + group_id]; }
 };
-
-// The halfedge before `h` in its triangle's loop, whose corner vertex is `h`'s from-vertex.
-inline uint PreviousHalfedge(uint h) {
-    const uint first = h - h % 3u;
-    return first + (h - first + 2u) % 3u;
-}
 
 // Returns true when `h` is the first halfedge counted by the edge ranks.
 inline bool IsEdgeFirst(device const uint *bits, uint h) { return (bits[h / 32u] & (1u << (h % 32u))) != 0u; }
@@ -68,7 +63,7 @@ kernel void VertexAdjacencyCount(
         return;
     }
     if (!IsEdgeFirst(ctx.Scratch() + job.EdgeFirstBitsOffset, h)) return;
-    atomic_fetch_add_explicit(&counts[corners[PreviousHalfedge(h)]], 1u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&counts[corners[ConnectivityPrevious(h)]], 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&counts[corners[h]], 1u, memory_order_relaxed);
 }
 
@@ -147,7 +142,7 @@ kernel void VertexAdjacencyScatter(
     device const uint *bits = ctx.Scratch() + job.EdgeFirstBitsOffset;
     if (!IsEdgeFirst(bits, h)) return;
     const uint edge = EdgeIndex(bits, ctx.Scratch() + job.EdgeFirstRanksOffset, h);
-    items[atomic_fetch_add_explicit(&cursors[corners[PreviousHalfedge(h)]], 1u, memory_order_relaxed)] = edge;
+    items[atomic_fetch_add_explicit(&cursors[corners[ConnectivityPrevious(h)]], 1u, memory_order_relaxed)] = edge;
     items[atomic_fetch_add_explicit(&cursors[corners[h]], 1u, memory_order_relaxed)] = edge;
 }
 

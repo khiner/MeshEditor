@@ -4,7 +4,6 @@
 #include "Bindless.metal"
 #include "gpu/DepthPyramidReducePushConstants.h"
 
-constant uint INVALID_SLOT_PYRAMID = 0xffffffffu;
 constant int PyramidTileDim = 32;
 
 inline float max4(float a, float b, float c, float d) { return max(max(a, b), max(c, d)); }
@@ -41,7 +40,7 @@ kernel void DepthPyramidReduceKernel(
     }
     for (int level = 1; level <= 5; ++level) {
         const uint slot = pc.DstSlots[level];
-        if (slot == INVALID_SLOT_PYRAMID) return;
+        if (slot == InvalidSlot) return;
         threadgroup_barrier(mem_flags::mem_threadgroup);
         const int dim = PyramidTileDim >> level;
         const bool reducing = thread_px.x < dim && thread_px.y < dim;

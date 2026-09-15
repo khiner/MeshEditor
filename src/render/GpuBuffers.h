@@ -190,10 +190,10 @@ struct GpuBuffers {
     void CaptureRenderPose(RenderPose &dst) const;
 
     // Per-scene resource tables, reset through their own paths rather than ResetSceneArenas.
-    TypedBuffer<PunctualLight> Lights;
+    mtl::Buffer Lights;
     // Light buffer indices freed by destroyed lights, compacted by the next event pass.
     std::vector<uint32_t> PendingLightRemovals;
-    TypedBuffer<PBRMaterial> Materials;
+    mtl::Buffer Materials;
 
     RenderView FrameView{};
     // SceneViewUBO stores the live state at instance zero and one aligned instance per blur step.
@@ -252,9 +252,9 @@ struct GpuBuffers {
         bool operator==(const VisibilityState &) const = default;
     } Visibility;
 
-    TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, ObjectBoxBitset;
+    mtl::Buffer ObjectPickKeys, ObjectPickSeenBitset, ObjectBoxBitset;
     uint32_t ObjectPickEpochTag{}; // Zero clears the persistent keys before the first pick and after wraparound.
-    TypedBuffer<uint32_t> ElementPickKey, ElementPickId;
+    mtl::Buffer ElementPickKey, ElementPickId;
     BufferArena<uint32_t> GeometryWork{Ctx, SlotType::Buffer};
     mtl::Buffer GeometryNormalEntries{Ctx, 0, SlotType::Buffer};
     BufferArena<uint32_t> ElementMeshlets{Ctx, SlotType::Buffer};

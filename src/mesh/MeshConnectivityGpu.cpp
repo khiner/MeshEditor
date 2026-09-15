@@ -84,7 +84,7 @@ void SubmitChunk(state::Scene &r, std::span<const ConnectivityTarget> chunk, mtl
 
     const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
-    const auto &pipelines = r.ctx().get<const MeshPipelines>();
+    const auto &pipelines = GetMeshPipelines(r);
     ctx.CommitResidency();
     auto *command_buffer = ctx.Queue->commandBuffer();
     auto *encoder = command_buffer->computeCommandEncoder();

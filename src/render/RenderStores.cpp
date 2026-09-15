@@ -74,7 +74,7 @@ void InitDefaultMaterial(state::Scene &r, state::Entity viewport) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &textures = r.ctx().get<TextureStore>();
     auto &materials = r.ctx().get<MaterialStore>();
-    buffers.Materials.Append({
+    buffers.Materials.Append(PBRMaterial{
         .BaseColorFactor = vec4{1.f},
         .MetallicFactor = 0.f,
         .RoughnessFactor = 1.f,
@@ -89,11 +89,13 @@ void InitDefaultMaterial(state::Scene &r, state::Entity viewport) {
     textures.PendingUploads.emplace_back(PendingTextureUpload{
         .SamplerSlot = textures.WhiteTextureSlot,
         .Source = PendingTextureUpload::RawPixels{.Pixels = std::vector<std::byte>(WhitePixels.begin(), WhitePixels.end()), .Width = 1, .Height = 1},
-        .ColorSpace = TextureColorSpace::Srgb,
-        .WrapS = MTL::SamplerAddressModeRepeat,
-        .WrapT = MTL::SamplerAddressModeRepeat,
-        .Sampler = SamplerConfig{},
-        .Name = "DefaultWhite",
+        .Params = {
+            .ColorSpace = TextureColorSpace::Srgb,
+            .WrapS = MTL::SamplerAddressModeRepeat,
+            .WrapT = MTL::SamplerAddressModeRepeat,
+            .Sampler = SamplerConfig{},
+            .Name = "DefaultWhite",
+        },
     });
 }
 void DeinitTextureStores(state::Scene &r) {
@@ -101,7 +103,7 @@ void DeinitTextureStores(state::Scene &r) {
     auto &textures = r.ctx().get<TextureStore>();
     auto &environments = r.ctx().get<EnvironmentStore>();
     ReleaseEnvironmentSamplerSlots(slots, environments);
-    ReleaseSamplerSlots(slots, CollectSamplerSlots(textures.Textures));
+    ReleaseTextureSlots(slots, textures.Textures);
     r.ctx().erase<EnvironmentStore>();
     r.ctx().erase<TextureStore>();
 }

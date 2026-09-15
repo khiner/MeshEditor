@@ -3,6 +3,12 @@
 
 inline uint ConnectivityWordCount(uint halfedge_count) { return (halfedge_count + 31u) / 32u; }
 
+// The halfedge before `h` in its triangle's loop, whose corner is `h`'s from-vertex.
+inline uint ConnectivityPrevious(uint h) {
+    const uint first = h - h % 3u;
+    return first + (h - first + 2u) % 3u;
+}
+
 inline device const uint *ConnectivityOpposites(device const uint *connectivity, uint vertex_count) { return connectivity + vertex_count; }
 
 inline device const uint *ConnectivityFaceStarts(

@@ -7,13 +7,6 @@
 #include "SceneUBO.metal"
 #include "VisibilityDecode.metal"
 
-inline float2 VisibilityUvTransform(float2 uv, float2 offset, float2 scale, float rotation) {
-    const float s = sin(rotation);
-    const float c = cos(rotation);
-    const float2 scaled = uv * scale;
-    return float2(c * scaled.x - s * scaled.y, s * scaled.x + c * scaled.y) + offset;
-}
-
 inline float4 VisibilitySampleTexture(
     const thread Scene &scene, const thread ResolvedVisibility &resolved,
     const thread VisibilityCoverageValues &coverage, TextureInfo texture,
@@ -22,16 +15,11 @@ inline float4 VisibilitySampleTexture(
     const VisibilityTextureCoordinates coordinates = DecodeVisibilityTextureCoordinates(
         scene, resolved, coverage, texture.TexCoord, pc
     );
-    const float2 transformed = VisibilityUvTransform(
-        coordinates.Value, float2(texture.UvOffset), float2(texture.UvScale), texture.UvRotation
+    const float2 scale = float2(texture.UvScale);
+    return scene.SampleTexGrad(
+        texture.Slot, ApplyUvTransform(coordinates.Value, float2(texture.UvOffset), scale, texture.UvRotation),
+        TransformUvGradient(coordinates.Dx, scale, texture.UvRotation), TransformUvGradient(coordinates.Dy, scale, texture.UvRotation)
     );
-    const float s = sin(texture.UvRotation);
-    const float c = cos(texture.UvRotation);
-    const float2 dx_scaled = coordinates.Dx * float2(texture.UvScale);
-    const float2 dy_scaled = coordinates.Dy * float2(texture.UvScale);
-    const float2 dx = float2(c * dx_scaled.x - s * dx_scaled.y, s * dx_scaled.x + c * dx_scaled.y);
-    const float2 dy = float2(c * dy_scaled.x - s * dy_scaled.y, s * dy_scaled.x + c * dy_scaled.y);
-    return scene.SampleTexGrad(texture.Slot, transformed, dx, dy);
 }
 
 // Shared raster coverage for visibility and all-depth object picking.

@@ -9,10 +9,7 @@
 #include "MorphDeform.metal"
 #include "ArmatureDeform.metal"
 #include "TransformUtils.metal"
-#include "gpu/MeshVertexConstant.h"
 #include "EditSelection.metal"
-
-constant bool NonTriangleTopology [[function_constant(uint(MeshVertexConstant::NonTriangleTopology))]];
 
 // Applies the stored polar and azimuth offsets in the frame defined by MeshStore::ComputeCornerFrame.
 // Rebuild the frame from current local positions so authored offsets follow deformation.

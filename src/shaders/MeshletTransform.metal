@@ -1,19 +1,18 @@
 #include "MeshletResolve.metal"
 #include "gpu/MeshletLimit.h"
 #include "MeshletNonTriangle.metal"
+#include "gpu/MeshVertexConstant.h"
 #include "gpu/VisibilityId.h"
 #include "VertexTransform.metal"
+
+constant bool NonTriangleTopology [[function_constant(uint(MeshVertexConstant::NonTriangleTopology))]];
 
 // Emit one attribute-carrying vertex per corner because indexed mesh output produces nondeterministic attributes on this driver.
 // Opaque meshlets emit welded positions and fetch attributes during shading.
 using MeshletOutput = metal::mesh<MeshletVertexVaryings, void, uint(MeshletLimit::MaxTriangles) * 3u, uint(MeshletLimit::MaxTriangles), metal::topology::triangle>;
 using MeshletVisibilityOutput = metal::mesh<MeshletPositionVaryings, MeshletVisibilityPrimitiveVaryings, uint(MeshletLimit::MaxVertices), uint(MeshletLimit::MaxTriangles), metal::topology::triangle>;
 
-inline uint MeshletVisibilityId(
-    device const BindlessSet &bindless, constant MeshletDrawPushConstants &pc, uint group_index, uint triangle
-) {
-    const MeshletRouteState routes = BindlessBuffer(MeshletRouteState, bindless.Buffer, pc.RouteStateSlot)[0];
-    const uint visible_index = routes.Offsets[pc.Route] + pc.VisibleOffset + group_index;
+inline uint MeshletVisibilityId(uint visible_index, uint triangle) {
     return (visible_index << uint(VisibilityId::TriangleBits)) | triangle;
 }
 
@@ -136,7 +135,7 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         device const uchar *triangles = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot);
         EmitTriangleIndices(output, triangles, work.Meshlet, thread_index);
         output.set_primitive(thread_index, MeshletVisibilityPrimitiveVaryings{
-            MeshletVisibilityId(bindless, pc, threadgroup_position.x, thread_index)
+            MeshletVisibilityId(work.VisibleIndex, thread_index)
         });
     } else if (topology != uint(MeshPrimitiveTopology::Triangle) && thread_index < work.Meshlet.TriangleCount * 2u) {
         const uint element = thread_index / 2u;
@@ -145,7 +144,7 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         output.set_index(thread_index * 3u + 1u, element * 4u + LineQuadCornerLut[triangle_corner + 1u]);
         output.set_index(thread_index * 3u + 2u, element * 4u + LineQuadCornerLut[triangle_corner + 2u]);
         output.set_primitive(thread_index, MeshletVisibilityPrimitiveVaryings{
-            MeshletVisibilityId(bindless, pc, threadgroup_position.x, thread_index)
+            MeshletVisibilityId(work.VisibleIndex, thread_index)
         });
     }
     output.set_primitive_count(work.Meshlet.TriangleCount * (topology == uint(MeshPrimitiveTopology::Triangle) ? 1u : 2u));

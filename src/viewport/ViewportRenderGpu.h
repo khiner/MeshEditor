@@ -21,6 +21,7 @@ struct PassChain;
 struct GpuBuffers;
 struct MeshStore;
 struct Pipelines;
+struct RenderTargets;
 
 struct MeshVertexChanges {
     state::Entity Entity;
@@ -50,10 +51,10 @@ void RecordOverlayJobCull(
 void DrawOverlayJobs(MTL::RenderCommandEncoder *, const GpuBuffers &, const MeshStore &);
 // Rasterize the current meshlet routes into the visibility/depth pair shared by shading and selection.
 void RecordMeshletVisibilityPass(
-    mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &,
+    mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const RenderTargets &, GpuBuffers &,
     bool transmission = false, uint32_t ubo_offset = 0
 );
-void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, uint32_t ubo_offset = 0);
+void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const RenderTargets &, GpuBuffers &, uint32_t ubo_offset = 0);
 void DrawMeshlets(
     MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route,
     uint32_t required_instance_flags = 0, uint32_t mesh_threads = 160u,

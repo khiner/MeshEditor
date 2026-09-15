@@ -14,6 +14,7 @@
 #include "render/MeshletBuild.h"
 #include "render/PickConstants.h"
 #include "render/Pipelines.h"
+#include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
 #include "selection/SelectionBitset.h"
@@ -314,36 +315,35 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
 
 // Resize viewport GPU resources and return whether their extent changed.
 bool SyncViewportRenderResources(state::Scene &r, state::Entity viewport) {
-    auto &pipelines = r.ctx().get<Pipelines>();
+    auto &targets = r.ctx().get<RenderTargets>();
     const auto render_extent_px = RenderExtentPx(r);
     const auto render_extent = std::bit_cast<mtl::Extent2D>(render_extent_px);
     if (render_extent.Width == 0 || render_extent.Height == 0) return false;
-    if (pipelines.BuiltColorExtent() == render_extent) return false;
+    if (targets.BuiltColorExtent() == render_extent) return false;
 
     const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &slots = r.ctx().get<mtl::BindlessSet>();
     // Wait for the live consumer (ImGui) to finish sampling the old resources before recreating them.
     if (auto *consumer = r.ctx().get<const ViewportConsumerFence>().Value) consumer->waitUntilCompleted();
-    pipelines.Main.SetExtent(ctx, render_extent, slots);
+    targets.SetExtent(ctx, render_extent, slots);
     {
         const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
         const bool is_pbr = shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered;
-        const bool want_transmission = is_pbr && GetActivePbrLighting(r, viewport, shading).RealTransmission && pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
-        pipelines.Main.EnsureTransmissionResources(ctx, render_extent, want_transmission);
+        const bool want_transmission = is_pbr && GetActivePbrLighting(r, viewport, shading).RealTransmission && GetPipelines(r).Main.Compiler.HasFeature(PbrFeature::Transmission);
+        targets.EnsureTransmissionResources(ctx, render_extent, want_transmission);
     }
     {
         const profile::CpuScope scope{"UpdateSelectionSlots"};
-        const auto &main = pipelines.Main;
         const auto set_sampler = [&](uint32_t slot, SampledTexture sampled) { slots.SetSampler({SlotType::Sampler, slot}, sampled.Texture, sampled.Sampler); };
-        set_sampler(sel_slots.SilhouetteSampler, main.Nearest(&main.Resources->SilhouetteImage));
-        set_sampler(sel_slots.SceneColorSampler, main.SceneColorSampler());
-        set_sampler(sel_slots.OverlayColorSampler, main.OverlayColorSampler());
-        set_sampler(sel_slots.TransmissionSampler, main.TransmissionSampler());
-        set_sampler(sel_slots.MotionBlurOutputSampler, main.MotionBlurOutputSampler());
-        set_sampler(sel_slots.VelocitySampler, main.Nearest(nullptr));
-        set_sampler(sel_slots.SceneDepthSampler, main.SceneDepthSampler());
-        set_sampler(sel_slots.DepthPyramidSampler, main.DepthPyramidSampler());
+        set_sampler(sel_slots.SilhouetteSampler, targets.Nearest(&targets.Resources->SilhouetteImage));
+        set_sampler(sel_slots.SceneColorSampler, targets.SceneColorSampler());
+        set_sampler(sel_slots.OverlayColorSampler, targets.OverlayColorSampler());
+        set_sampler(sel_slots.TransmissionSampler, targets.TransmissionSampler());
+        set_sampler(sel_slots.MotionBlurOutputSampler, targets.MotionBlurOutputSampler());
+        set_sampler(sel_slots.VelocitySampler, targets.Nearest(nullptr));
+        set_sampler(sel_slots.SceneDepthSampler, targets.SceneDepthSampler());
+        set_sampler(sel_slots.DepthPyramidSampler, targets.DepthPyramidSampler());
     }
     return true;
 }

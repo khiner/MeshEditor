@@ -306,7 +306,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const UpdateMaterial &a) {
                 if (a.Features) Apply(r, viewport, SetPbrMeshFeaturesMask{*a.Features, a.Scope});
-                r.ctx().get<GpuBuffers>().Materials.Set(a.Index, *a.Value);
+                r.ctx().get<GpuBuffers>().Materials.Update(as_bytes(*a.Value), uint64_t(a.Index) * sizeof(PBRMaterial));
                 reactive<changes::Materials>(r).emplace(viewport);
             },
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },

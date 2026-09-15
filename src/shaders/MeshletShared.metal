@@ -7,6 +7,7 @@
 #include "gpu/MeshletGeometryEncoding.h"
 #include "gpu/MeshletRecord.h"
 #include "gpu/MeshPrimitiveTopology.h"
+#include "gpu/PrimitiveRecord.h"
 
 inline uint MeshletPackedVertex(device const BindlessSet &bindless, uint vertex_slot, MeshletRecord meshlet, uint i) {
     return BindlessBuffer(uint, bindless.Buffer, vertex_slot)[meshlet.VertexOffset + i];
@@ -14,6 +15,15 @@ inline uint MeshletPackedVertex(device const BindlessSet &bindless, uint vertex_
 
 inline uint MeshletLocalTriangleOffset(MeshletRecord meshlet) {
     return meshlet.LocalTriangleOffset & uint(MeshletGeometryEncoding::LocalTriangleOffsetMask);
+}
+
+inline uint MeshletPrimitiveTopology(MeshletRecord meshlet) {
+    return meshlet.LocalTriangleOffset >> uint(MeshletGeometryEncoding::TopologyShift);
+}
+
+inline uint MeshletPrimitiveMaterialIndex(const thread Scene &scene, PrimitiveRecord primitive) {
+    if (primitive.Draw.PrimitiveMaterialOffset == InvalidOffset) return 0u;
+    return scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[primitive.Draw.PrimitiveMaterialOffset + primitive.PrimitiveIndex];
 }
 
 inline uint MeshletVertexId(

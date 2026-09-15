@@ -13,10 +13,8 @@
 #include "gpu/MeshDispatchArgs.h"
 #include "gpu/MeshletCullBlockState.h"
 #include "gpu/MeshletCullPushConstants.h"
-#include "gpu/MeshletRecord.h"
-#include "gpu/MeshletGeometryEncoding.h"
-#include "gpu/MeshPrimitiveTopology.h"
 #include "gpu/MeshletRoute.h"
+#include "MeshletShared.metal"
 #include "gpu/MeshletRouteState.h"
 #include "gpu/MeshletWorkRange.h"
 #include "gpu/MeshletWorkState.h"
@@ -37,10 +35,6 @@ struct RoutedMeshlet {
 };
 
 inline uint RouteBit(MeshletRoute route) { return 1u << uint(route); }
-
-inline uint PrimitiveTopology(MeshletRecord meshlet) {
-    return meshlet.LocalTriangleOffset >> uint(MeshletGeometryEncoding::TopologyShift);
-}
 
 inline MeshletRoute OpaqueVisibilityRoute(PBRMaterial material, Transform world) {
     if (material.DoubleSided != 0u) return MeshletRoute::OpaqueDoubleSided;
@@ -95,13 +89,6 @@ inline bool LodClusterVisible(
     if (LodGroupErrorPixels(scene, groups[meshlet.GroupIndex], world) <= scene.View.LodErrorPixels) return false;
     return meshlet.RefinedGroup == InvalidOffset ||
         LodGroupErrorPixels(scene, groups[meshlet.RefinedGroup], world) <= scene.View.LodErrorPixels;
-}
-
-inline uint PrimitiveMaterialIndex(const thread Scene &scene, PrimitiveRecord primitive) {
-    if (primitive.Draw.PrimitiveMaterialOffset == InvalidOffset) return 0u;
-    return scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[
-        primitive.Draw.PrimitiveMaterialOffset + primitive.PrimitiveIndex
-    ];
 }
 
 inline bool MeshletConeVisible(
@@ -245,11 +232,11 @@ inline RoutedMeshlet ClassifyMeshlet(
     const float3 world_center = bounds.Valid ? bounds.Center : float3(world.P);
 
     const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, scene.B.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
-    const bool triangle_topology = PrimitiveTopology(meshlet) == uint(MeshPrimitiveTopology::Triangle);
+    const bool triangle_topology = MeshletPrimitiveTopology(meshlet) == uint(MeshPrimitiveTopology::Triangle);
     // A one-meshlet instance already passed the conservative instance query.
     const bool can_occlude = bounds.Valid && !(instance.PrimitiveCount == 1u && primitive.MeshletCount == 1u);
     PBRMaterial material{};
-    if (pc.RouteMode != 0u) material = scene.Materials(scene.View.MaterialSlot)[PrimitiveMaterialIndex(scene, primitive)];
+    if (pc.RouteMode != 0u) material = scene.Materials(scene.View.MaterialSlot)[MeshletPrimitiveMaterialIndex(scene, primitive)];
     const bool edit_overlay = (instance.Flags & uint(MeshletInstanceFlag::EditOverlay)) != 0u;
     const bool overlay_only = (instance.Flags & uint(MeshletInstanceFlag::OverlayOnly)) != 0u;
     const bool cone_visible = pc.RouteMode == 0u || material.DoubleSided != 0u ||

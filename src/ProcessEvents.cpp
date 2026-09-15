@@ -45,6 +45,7 @@
 #include "render/MeshletBuild.h"
 #include "render/PickConstants.h"
 #include "render/Pipelines.h"
+#include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "render/ViewportSubmission.h"
 #include "scene/Defaults.h"
@@ -134,7 +135,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     auto &meshes = r.ctx().get<MeshStore>();
     auto &textures = r.ctx().get<TextureStore>();
     auto &environments = r.ctx().get<EnvironmentStore>();
-    auto &pipelines = r.ctx().get<Pipelines>();
+    auto &targets = r.ctx().get<RenderTargets>();
     const profile::CpuScope profile_scope{"ProcessEvents"};
 
     auto &pending_render = r.ctx().get<PendingRenderRequest>().Value;
@@ -152,9 +153,12 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     const bool resized = SyncViewportRenderResources(r, viewport);
     if (resized) request(RenderRequest::Reuse);
 
-    if (std::exchange(pipelines.RecompileRequested, false)) {
-        pipelines.CompileShaders();
-        r.ctx().get<MeshPipelines>().CompileShaders(pipelines.Libraries);
+    // Dropping the pipeline sets recompiles every pipeline on its next use.
+    const bool recompiled = std::exchange(r.ctx().get<FrameState>().RecompileShaders, false);
+    if (recompiled) {
+        r.ctx().get<mtl::LibraryCache>().Clear();
+        r.ctx().erase<Pipelines>();
+        r.ctx().erase<MeshPipelines>();
         // Recompiled prefilter kernels must regenerate their cached cubemaps.
         RebuildStudioEnvironments(r);
         request(RenderRequest::Reuse);
@@ -165,15 +169,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (const auto *manifest = r.try_get<const MaterializedTextures>(viewport)) {
             for (const auto &t : manifest->Items) {
                 if (!slots.Reserve(SlotType::Sampler, t.SamplerSlot)) continue;
-                textures.PendingUploads.emplace_back(PendingTextureUpload{
-                    .SamplerSlot = t.SamplerSlot,
-                    .Source = PendingTextureUpload::GltfImageRef{t.SourceImageIndex},
-                    .ColorSpace = t.ColorSpace,
-                    .WrapS = t.WrapS,
-                    .WrapT = t.WrapT,
-                    .Sampler = t.Sampler,
-                    .Name = t.Name,
-                });
+                textures.PendingUploads.emplace_back(PendingTextureUpload{.SamplerSlot = t.SamplerSlot, .Source = PendingTextureUpload::GltfImageRef{t.SourceImageIndex}, .Params = t.Params});
             }
         }
     }
@@ -181,12 +177,12 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const auto *src = r.try_get<const gltf::SourceAssets>(viewport);
         static const std::vector<gltf::Image> empty_images;
         const auto &gltf_images = src ? src->Images : empty_images;
-        auto batch = BeginTextureUploadBatch(ctx, r.ctx().get<mtl::LibraryCache>());
+        auto batch = BeginTextureUploadBatch(ctx);
         for (const auto &item : textures.PendingUploads) {
             auto entry = MaterializeTextureEntry(r, batch, slots, item, gltf_images, r.ctx().get<const ActiveSamplerAnisotropy>().Value);
             if (!entry) {
-                std::cerr << std::format("Warning: Failed to materialize texture '{}': {}\n", item.Name, entry.error());
-                ReleaseSamplerSlots(slots, std::span{&item.SamplerSlot, 1});
+                std::cerr << std::format("Warning: Failed to materialize texture '{}': {}\n", item.Params.Name, entry.error());
+                slots.Release({SlotType::Sampler, item.SamplerSlot});
                 continue;
             }
             textures.Textures.emplace_back(std::move(*entry));
@@ -532,19 +528,19 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             if (!r.all_of<PunctualLight, Instance>(entity)) continue;
             const auto *ri = r.try_get<const RenderInstance>(entity);
             if (!ri || ri->BufferIndex == UINT32_MAX) continue;
-            const auto index = r.all_of<LightIndex>(entity) ? r.get<const LightIndex>(entity).Value : buffers.Lights.Count();
+            const auto index = r.all_of<LightIndex>(entity) ? r.get<const LightIndex>(entity).Value : buffers.Lights.Count<PunctualLight>();
             if (!r.all_of<LightIndex>(entity)) r.emplace<LightIndex>(entity, index);
             // Write a copy with the transform slot offset, leaving the authored component untouched.
             auto gpu_light = r.get<const PunctualLight>(entity);
             gpu_light.TransformSlotOffset = {buffers.Instances.TransformBuffer.Slot, ri->BufferIndex};
-            if (index >= buffers.Lights.Count()) request(RenderRequest::Rebuild);
+            if (index >= buffers.Lights.Count<PunctualLight>()) request(RenderRequest::Rebuild);
             else {
-                const auto old = buffers.Lights.Get(index);
+                const auto old = buffers.Lights.GetSpan<PunctualLight>()[index];
                 if (old.Type != gpu_light.Type || old.Range != gpu_light.Range || old.OuterConeCos != gpu_light.OuterConeCos || old.InnerConeCos != gpu_light.InnerConeCos) {
                     request(RenderRequest::Rebuild);
                 }
             }
-            buffers.Lights.Set(index, gpu_light);
+            buffers.Lights.Update(as_bytes(gpu_light), uint64_t(index) * sizeof(PunctualLight));
             synced = true;
         }
         if (synced) request(RenderRequest::Reuse);
@@ -553,12 +549,12 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     // Compact destroyed light indices in one batch.
     if (auto &indices = buffers.PendingLightRemovals; !indices.empty()) {
         std::sort(indices.begin(), indices.end(), std::greater<>());
-        auto buffer_count = buffers.Lights.Count();
+        auto buffer_count = buffers.Lights.Count<PunctualLight>();
         for (const auto remove_index : indices) {
             if (remove_index >= buffer_count) continue;
             --buffer_count;
             if (remove_index != buffer_count) {
-                buffers.Lights.Set(remove_index, buffers.Lights.Get(buffer_count));
+                buffers.Lights.Update(as_bytes(buffers.Lights.GetSpan<PunctualLight>()[buffer_count]), uint64_t(remove_index) * sizeof(PunctualLight));
                 for (auto [other_entity, other_light_index] : r.view<LightIndex>().each()) {
                     if (other_light_index.Value == buffer_count) {
                         r.replace<LightIndex>(other_entity, remove_index);
@@ -567,7 +563,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 }
             }
         }
-        buffers.Lights.SetCount(buffer_count);
+        buffers.Lights.SetCount<PunctualLight>(buffer_count);
         indices.clear();
         request(RenderRequest::Rebuild);
     }
@@ -752,8 +748,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
     bool light_count_changed = false;
     if (const uint32_t required_count = r.view<const LightIndex>().size();
-        buffers.Lights.Count() != required_count) {
-        buffers.Lights.SetCount(required_count);
+        buffers.Lights.Count<PunctualLight>() != required_count) {
+        buffers.Lights.SetCount<PunctualLight>(required_count);
         light_count_changed = true;
     }
     if (!reactive<changes::WorkspaceLights>(r).empty()) {
@@ -849,7 +845,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             const auto *assignment = r.try_get<const MeshMaterialAssignment>(mesh_entity);
             const auto mesh = TryGetMesh(r, mesh_entity);
             if (!assignment || !mesh) continue;
-            const auto material_count = buffers.Materials.Count();
+            const auto material_count = buffers.Materials.Count<PBRMaterial>();
             if (material_count == 0u) continue;
             auto primitive_materials = meshes.GetPrimitiveMaterialIndices(mesh->GetStoreId());
             if (assignment->PrimitiveIndex < primitive_materials.size()) {
@@ -1288,10 +1284,10 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     {
         // Update transmission specialization before the UBO reads its pipeline state.
         const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
-        if (!reactive<changes::ViewportDisplay>(r).empty() || !reactive<changes::PbrSpecialization>(r).empty()) {
+        if (recompiled || !reactive<changes::ViewportDisplay>(r).empty() || !reactive<changes::PbrSpecialization>(r).empty()) {
             // SubmitViewport refreshes all slots only on resize, so update this lazy sampler inline.
             const auto refresh_transmission_sampler = [&] {
-                const auto info = pipelines.Main.TransmissionSampler();
+                const auto info = targets.TransmissionSampler();
                 slots.SetSampler({SlotType::Sampler, r.ctx().get<const SelectionSlots>().TransmissionSampler}, info.Texture, info.Sampler);
                 request(RenderRequest::Rebuild);
             };
@@ -1301,13 +1297,11 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 if (active_lighting.UseSceneLights) pbr_mask |= PbrFeature::Punctual;
                 for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
                 const bool non_triangle_topology = (buffers.MeshletTopologyMask & ~1u) != 0u;
-                if (pipelines.Main.Compiler.CompilePipelines(
-                        r.ctx().get<mtl::LibraryCache>(), pbr_mask, non_triangle_topology
-                    )) request(RenderRequest::Rebuild);
+                if (GetPipelines(r).Main.Compiler.CompilePipelines(pbr_mask, non_triangle_topology)) request(RenderRequest::Rebuild);
                 const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
                 const auto te_px = RenderExtentPx(r);
-                if (pipelines.Main.EnsureTransmissionResources(ctx, std::bit_cast<mtl::Extent2D>(te_px), want_transmission)) refresh_transmission_sampler();
-            } else if (pipelines.Main.EnsureTransmissionResources(ctx, {}, false)) {
+                if (targets.EnsureTransmissionResources(ctx, std::bit_cast<mtl::Extent2D>(te_px), want_transmission)) refresh_transmission_sampler();
+            } else if (targets.EnsureTransmissionResources(ctx, {}, false)) {
                 refresh_transmission_sampler();
             }
         }
@@ -1354,8 +1348,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const auto *pending = r.try_get<const PendingTransform>(viewport);
         buffers.FrameView = {camera, render_extent};
         SceneViewUBO view{
-            .LightCount = buffers.Lights.Count(),
-            .LightSlot = buffers.Lights.Slot(),
+            .LightCount = buffers.Lights.Count<PunctualLight>(),
+            .LightSlot = buffers.Lights.Slot,
             .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
             .EnvIntensity = env_intensity,
             .Exposure = std::exp2(active_lighting.ExposureEV),
@@ -1393,7 +1387,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             .PosedFaceNormalSlot = buffers.PosedFaceNormals.Slot,
             .PosedMorphNormalDeltaSlot = buffers.PosedMorphNormalDeltas.Slot,
             .InstanceBoundsSlot = buffers.Instances.BoundsBuffer.Slot,
-            .MaterialSlot = buffers.Materials.Slot(),
+            .MaterialSlot = buffers.Materials.Slot,
             .PrimitiveMaterialSlot = meshes.GetPrimitiveMaterialSlot(),
             .ElementPrimitiveSlot = meshes.GetElementPrimitiveSlot(),
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
@@ -1402,8 +1396,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             .ShowBoundingBoxes = settings.ShowBoundingBoxes ? 1u : 0u,
             .ShowTetWireframe = settings.ShowTetWireframe ? 1u : 0u,
             .TransmissionFramebufferSamplerSlot = r.ctx().get<const SelectionSlots>().TransmissionSampler,
-            .TransmissionFramebufferMipCount = pipelines.Main.Transmission ? pipelines.Main.Transmission->Image.MipLevels : 1u,
-            .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && pipelines.Main.Transmission) ? 1u : 0u,
+            .TransmissionFramebufferMipCount = targets.Transmission ? targets.Transmission->Image.MipLevels : 1u,
+            .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && targets.Transmission) ? 1u : 0u,
             .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
         };
         buffers.FrameView.ApplyTo(view);

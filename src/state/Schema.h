@@ -139,6 +139,7 @@ inline constexpr std::string_view SchemaNames[] = {
     "RealImpactVertices",
     "Recording",
     "RenderInstance",
+    "RenderTargets",
     "RenderedLighting",
     "ReportContacts",
     "RotationUiDriving",

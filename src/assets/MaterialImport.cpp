@@ -2,6 +2,7 @@
 #include "File.h"
 #include "assets/MeshImport.h"
 #include "gltf/GltfConvert.h"
+#include "image/ImageDecode.h"
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
@@ -20,7 +21,7 @@ void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<co
     const auto sampler_index = uint32_t(sources.Samplers.size());
     sources.Samplers.emplace_back(gltf::Sampler{.MagFilter = gltf::Filter::Nearest, .MinFilter = gltf::Filter::Nearest, .WrapS = gltf::Wrap::Repeat, .WrapT = gltf::Wrap::Repeat, .Name = {}});
 
-    auto obj_batch = BeginTextureUploadBatch(ctx, r.ctx().get<mtl::LibraryCache>());
+    auto obj_batch = BeginTextureUploadBatch(ctx);
     std::unordered_map<std::string, uint32_t> texture_slot_cache;
     std::unordered_map<uint32_t, uint32_t> source_texture_indices;
     const auto resolve_texture_slot =
@@ -46,28 +47,26 @@ void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<co
             return InvalidSlot;
         }
         const std::string &encoded = *read;
-
-        auto texture = CreateTextureEntryFromEncoded(
-            ctx,
-            obj_batch,
-            slots,
-            std::as_bytes(std::span{encoded}),
-            texture_path.filename().string(),
-            std::format("{} ({})", texture_path.filename().string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"),
-            color_space,
-            MTL::SamplerAddressModeRepeat,
-            MTL::SamplerAddressModeRepeat,
-            SamplerConfig{}, r.ctx().get<const ActiveSamplerAnisotropy>().Value
-        );
-        if (!texture) {
+        const auto decoded = DecodeImageRgba8(std::as_bytes(std::span{encoded}), texture_path.filename().string());
+        if (!decoded) {
             std::cerr << std::format(
                 "Warning: Failed to decode OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
-                texture_path.string(), material_name, texture_label, mesh_path.string(), texture.error()
+                texture_path.string(), material_name, texture_label, mesh_path.string(), decoded.error()
             );
             return InvalidSlot;
         }
-
-        const auto sampler_slot = texture->SamplerSlot;
+        const auto sampler_slot = AllocateSamplerSlot(slots);
+        auto texture = CreateTextureEntry(
+            ctx, obj_batch, slots, sampler_slot, Rgba8Pixels{decoded->Pixels, decoded->Width, decoded->Height},
+            TextureParams{
+                .ColorSpace = color_space,
+                .WrapS = MTL::SamplerAddressModeRepeat,
+                .WrapT = MTL::SamplerAddressModeRepeat,
+                .Sampler = SamplerConfig{},
+                .Name = std::format("{} ({})", texture_path.filename().string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"),
+            },
+            r.ctx().get<const ActiveSamplerAnisotropy>().Value
+        );
         const auto image_index = uint32_t(sources.Images.size());
         sources.Images.emplace_back(gltf::Image{
             .Bytes = {},
@@ -75,19 +74,11 @@ void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<co
             .Name = texture_path.filename().string(),
             .SourcePath = project::AssetReference(r, texture_path).string(),
         });
-        texture->SourceImageIndex = image_index;
+        texture.SourceImageIndex = image_index;
         source_texture_indices.emplace(sampler_slot, uint32_t(sources.Textures.size()));
-        sources.Textures.emplace_back(gltf::Texture{.SamplerIndex = sampler_index, .ImageIndex = image_index, .WebpImageIndex = {}, .BasisuImageIndex = {}, .DdsImageIndex = {}, .Name = texture->Name});
-        manifest.Items.emplace_back(MaterializedTexture{
-            .SamplerSlot = sampler_slot,
-            .SourceImageIndex = image_index,
-            .ColorSpace = color_space,
-            .WrapS = texture->WrapS,
-            .WrapT = texture->WrapT,
-            .Sampler = texture->Config,
-            .Name = texture->Name,
-        });
-        textures.Textures.emplace_back(std::move(*texture));
+        sources.Textures.emplace_back(gltf::Texture{.SamplerIndex = sampler_index, .ImageIndex = image_index, .WebpImageIndex = {}, .BasisuImageIndex = {}, .DdsImageIndex = {}, .Name = texture.Params.Name});
+        manifest.Items.emplace_back(MaterializedTexture{.SamplerSlot = sampler_slot, .SourceImageIndex = image_index, .Params = texture.Params});
+        textures.Textures.emplace_back(std::move(texture));
         texture_slot_cache.emplace(cache_key, sampler_slot);
         return sampler_slot;
     };
@@ -95,13 +86,13 @@ void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<co
     std::vector<uint32_t> scene_material_indices(materials.size(), 0u);
     std::vector<std::string> names;
     names.reserve(materials.size());
-    buffers.Materials.ReserveElements(buffers.Materials.Count() + materials.size());
+    buffers.Materials.Reserve((buffers.Materials.Count<PBRMaterial>() + materials.size()) * sizeof(PBRMaterial));
     for (uint32_t material_index = 0; material_index < materials.size(); ++material_index) {
         const auto &source = materials[material_index];
         const auto material_name = source.Name.empty() ? std::format("Material{}", material_index) : source.Name;
         const auto base_color_texture = resolve_texture_slot(source.BaseColorTexturePath, TextureColorSpace::Srgb, material_name, "baseColor");
         const auto normal_texture = resolve_texture_slot(source.NormalTexturePath, TextureColorSpace::Linear, material_name, "normal");
-        scene_material_indices[material_index] = buffers.Materials.Append({
+        scene_material_indices[material_index] = buffers.Materials.Append(PBRMaterial{
             .BaseColorFactor = source.BaseColorFactor,
             .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
             .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
@@ -111,7 +102,7 @@ void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<co
             .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : textures.WhiteTextureSlot},
             .NormalTexture = {.Slot = normal_texture},
         });
-        sources.MaterialMetas.resize(buffers.Materials.Count() - 1);
+        sources.MaterialMetas.resize(buffers.Materials.Count<PBRMaterial>() - 1);
         auto &meta = sources.MaterialMetas.back();
         meta = {};
         if (base_color_texture != InvalidSlot) meta.TextureSlots[MTS_BaseColor] = source_texture_indices.at(base_color_texture);

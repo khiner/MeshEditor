@@ -6,7 +6,6 @@
 #include "gpu/EditSharpnessOperation.h"
 #include "gpu/EditSharpnessPushConstants.h"
 
-constant uint EditSharpnessInvalid = 0xffffffffu;
 
 struct EditSharpnessContext {
     device const BindlessSet &B;
@@ -59,7 +58,7 @@ kernel void EditSharpnessKernel(
         edge_value = 0u;
         const uint h = BindlessBuffer(uint, bindless.Buffer, pc.EdgeHalfedges.Slot)[pc.EdgeHalfedges.Offset + i];
         const uint opposite = ctx.Opposites()[h];
-        if (opposite != EditSharpnessInvalid) {
+        if (opposite != InvalidOffset) {
             const uint f0 = ctx.HalfedgeFace(h), f1 = ctx.HalfedgeFace(opposite);
             device const packed_float3 *normals = BindlessBuffer(packed_float3, bindless.Buffer, pc.FaceNormals.Slot) + pc.FaceNormals.Offset;
             edge_value = dot(float3(normals[f0]), float3(normals[f1])) < pc.CosAngle ? 1u : 0u;

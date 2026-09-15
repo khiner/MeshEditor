@@ -7,7 +7,7 @@
 #include "gpu/VertexWeldJob.h"
 #include "gpu/VertexWeldPushConstants.h"
 
-constant uint WeldEmptySlot = 0xffffffffu;
+constant uint WeldEmptySlot = InvalidOffset;
 
 constant uint WeldPositionWords = 3u;
 constant uint WeldDeformWords = 8u;

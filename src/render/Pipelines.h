@@ -1,143 +1,62 @@
 #pragma once
 
 #include "gpu/Element.h"
-#include "metal/Image.h"
 #include "metal/Shader.h"
-#include "render/IblPrefilterPipelines.h"
 #include "render/PbrFeature.h"
-#include "render/ShaderPipelineType.h"
 
-#include <Metal/MTLBuffer.hpp>
+#include "state/Entity.h"
 #include <array>
-#include <memory>
-#include <unordered_map>
-
-namespace mtl {
-struct BindlessSet;
-} // namespace mtl
-
-using SPT = ShaderPipelineType;
+#include <optional>
 
 namespace Format = mtl::Format;
 
-// Pipelines sharing attachment formats, which Metal bakes into pipeline state.
-struct PipelineRenderer {
-    mtl::PassFormats Formats;
-    std::unordered_map<SPT, mtl::RenderPipeline> Pipelines;
-
-    void CompileShaders(mtl::LibraryCache &);
-    const mtl::RenderPipeline &Bind(MTL::RenderCommandEncoder *, SPT) const;
-};
-
-struct SampledTexture {
-    MTL::Texture *Texture{nullptr};
-    MTL::SamplerState *Sampler{nullptr};
-    explicit operator bool() const { return Texture != nullptr; }
-};
-
 // Specializes PBR pipelines to the scene's active features and output attachments.
 struct PbrCompiler {
-    PbrCompiler(mtl::PassFormats scene);
+    PbrCompiler(mtl::LibraryCache &, mtl::PassFormats scene);
 
-    bool CompilePipelines(mtl::LibraryCache &, PbrFeatureMask, bool non_triangle_topology);
-    bool CompileTopologyPipelines(mtl::LibraryCache &libraries, bool non_triangle_topology) {
-        return CompilePipelines(libraries, Mask, non_triangle_topology);
-    }
+    bool CompilePipelines(PbrFeatureMask, bool non_triangle_topology);
+    bool CompileTopologyPipelines(bool non_triangle_topology) { return CompilePipelines(Mask, non_triangle_topology); }
     void BindMeshlets(MTL::RenderCommandEncoder *) const;
     void BindVisibility(MTL::RenderCommandEncoder *, bool prepass = false) const;
     bool HasFeature(PbrFeature f) const { return ::HasFeature(Mask, f); }
-    void RecompileModules(mtl::LibraryCache &);
 
 private:
+    mtl::LibraryCache &Libraries;
     mtl::PassFormats SceneFormats;
     PbrFeatureMask Mask{0};
     bool NonTriangleTopology{false};
-    std::unique_ptr<mtl::MeshRenderPipeline> Transparent;
-    std::unique_ptr<mtl::RenderPipeline> Visibility, Prepass;
+    std::optional<mtl::RenderPipeline> Transparent, Visibility, Prepass;
 };
 
 struct MainPipeline {
     MainPipeline(mtl::LibraryCache &);
 
-    struct ResourcesT {
-        ResourcesT(const mtl::Context &, mtl::Extent2D, mtl::BindlessSet &);
-        ~ResourcesT();
-
-        struct PyramidMip {
-            mtl::Texture View;
-            uint32_t Slot;
-            mtl::Extent2D Extent;
-        };
-
-        // Visibility IDs and their raster depth stay immutable until visibility consumers finish.
-        // Scene-linear color and display-referred overlays stay separate until compositing.
-        mtl::Texture VisibilityDepth, ScratchDepth, VisibilityImage, SilhouetteImage, SceneColorImage, OverlayColorImage, FinalColorImage;
-        mtl::Texture DepthPyramidImage;
-        std::vector<PyramidMip> DepthPyramidMips;
-        NS::SharedPtr<MTL::SamplerState> NearestSampler;
-        mtl::BindlessSet &Slots;
-        bool DepthPyramidValid{false};
-    };
-
-    // Lazily allocated, unexposed radiance sampled by real transmission.
-    struct TransmissionResourcesT {
-        TransmissionResourcesT(const mtl::Context &, mtl::Extent2D);
-
-        mtl::Texture Image;
-        mtl::Texture Mip0View;
-        NS::SharedPtr<MTL::SamplerState> Sampler;
-    };
-
-    // Lazily allocated blur output and, for fast reconstruction, motion tiles.
-    struct MotionBlurResourcesT {
-        MotionBlurResourcesT(const mtl::Context &, mtl::Extent2D, bool fast);
-
-        mtl::Texture OutputImage, VelocityImage, TileImage;
-        NS::SharedPtr<MTL::Buffer> TileIndirection;
-    };
-
-    void SetExtent(const mtl::Context &, mtl::Extent2D, mtl::BindlessSet &);
-    // Returns whether the allocation changed.
-    bool EnsureTransmissionResources(const mtl::Context &, mtl::Extent2D, bool wanted);
-    bool EnsureMotionBlurResources(const mtl::Context &, bool fast);
-
-    // Null lazy targets fall back to scene color to keep bindings valid.
-    SampledTexture Nearest(const mtl::Texture *) const;
-    SampledTexture SceneColorSampler() const;
-    SampledTexture OverlayColorSampler() const;
-    SampledTexture TransmissionSampler() const;
-    SampledTexture MotionBlurOutputSampler() const;
-    SampledTexture SceneDepthSampler() const;
-    SampledTexture DepthPyramidSampler() const;
-
-    PipelineRenderer SceneRenderer, OverlayRenderer;
+    mtl::RenderPipeline Background, TransmissionComposite, MotionBlurResolve;
+    mtl::RenderPipeline Grid, SilhouetteEdgeColor;
     mtl::RenderPipeline PrepassBackground;
     mtl::RenderPipeline ViewportComposite;
     mtl::RenderPipeline MotionBlurAccumulate, MotionBlurGather;
     mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
     mtl::RenderPipeline WorkspaceVisibility;
     mtl::RenderPipeline TransparencyInit, TransparencyResolve;
-    mtl::MeshRenderPipeline MeshletVisibilityOpaque, MeshletVisibilityCoverage;
-    mtl::MeshRenderPipeline MeshletEditEdges, MeshletEditSmoothEdges;
-    mtl::MeshRenderPipeline MeshletEditPoint;
-    mtl::MeshRenderPipeline FaceNormalMesh, VertexNormalMesh, OverlayJobLines;
-    mtl::MeshRenderPipeline BoneFillMesh, BoneWireMesh, BoneSphereFillMesh, BoneSphereWireMesh;
+    mtl::RenderPipeline MeshletVisibilityOpaque, MeshletVisibilityCoverage;
+    mtl::RenderPipeline MeshletEditEdges, MeshletEditSmoothEdges;
+    mtl::RenderPipeline MeshletEditPoint;
+    mtl::RenderPipeline FaceNormalMesh, VertexNormalMesh, OverlayJobLines;
+    mtl::RenderPipeline BoneFillMesh, BoneWireMesh, BoneSphereFillMesh, BoneSphereWireMesh;
     mtl::RenderPipeline WireResolve;
-    std::unique_ptr<ResourcesT> Resources;
-    std::unique_ptr<TransmissionResourcesT> Transmission;
-    std::unique_ptr<MotionBlurResourcesT> MotionBlur;
 
     PbrCompiler Compiler;
 };
 
 struct SelectionFragmentPipeline {
     SelectionFragmentPipeline(mtl::LibraryCache &);
-    const mtl::MeshRenderPipeline &ElementRaster(Element, bool bitset_box, bool xray) const;
+    const mtl::RenderPipeline &ElementRaster(Element, bool bitset_box, bool xray) const;
 
-    using ElementVariants = std::array<mtl::MeshRenderPipeline, 4>;
+    using ElementVariants = std::array<mtl::RenderPipeline, 4>;
     ElementVariants MeshletFaces, MeshletVertices, MeshletEdges;
-    mtl::MeshRenderPipeline MeshletFaceXRayPointsBitsetBox, MeshletEdgeXRayPointsBitsetBox;
-    mtl::MeshRenderPipeline ObjectPick, OverlayJobLines, BoneSolid, BoneSphere;
+    mtl::RenderPipeline MeshletFaceXRayPointsBitsetBox, MeshletEdgeXRayPointsBitsetBox;
+    mtl::RenderPipeline ObjectPick, OverlayJobLines, BoneSolid, BoneSphere;
 };
 
 namespace ThreadgroupSize {
@@ -157,9 +76,6 @@ inline constexpr uint32_t DepthPyramidTile{32 * 32 * sizeof(float)};
 struct Pipelines {
     Pipelines(mtl::LibraryCache &);
 
-    mtl::LibraryCache &Libraries;
-    // Recompile every shader on the next event pass.
-    bool RecompileRequested{};
     MainPipeline Main;
     mtl::RenderPipeline Silhouette;
     SelectionFragmentPipeline SelectionFragment;
@@ -180,10 +96,9 @@ struct Pipelines {
     mtl::ComputePipeline MeshletCullBlockCount, MeshletCullPrefix, MeshletCullEmit;
     mtl::ComputePipeline OverlayJobBlockCount, OverlayJobPrefix, OverlayJobEmit;
     mtl::ComputePipeline DepthPyramidReduce;
-    IblPrefilterPipelines IblPrefilter;
-    // Mesh creation runs these three.
-
-    void CompileShaders();
-
-    mtl::Extent2D BuiltColorExtent() const { return Main.Resources ? Main.Resources->SceneColorImage.Extent : mtl::Extent2D{}; }
+    // The environment prefilter passes run once per loaded environment and bind their textures directly.
+    mtl::ComputePipeline EquirectToCubemap, DiffuseIrradiance, SpecularPrefilter;
 };
+
+// Returns the pipeline set, compiling every pipeline on first use.
+Pipelines &GetPipelines(state::Scene &);

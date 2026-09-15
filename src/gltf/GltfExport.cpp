@@ -230,7 +230,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     static const gltf::SourceAssets EmptySourceAssets{};
     const auto &sa = src_assets ? *src_assets : EmptySourceAssets;
     const auto &names = r.ctx().get<const MaterialStore>().Names;
-    const auto material_count = sc.Buffers.Materials.Count();
+    const auto material_count = sc.Buffers.Materials.Count<PBRMaterial>();
     const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
 
     // Preserve source mesh ordering through the source layout.
@@ -800,7 +800,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     static const MaterialSourceMeta DefaultMeta{};
     for (uint32_t i = 1; i < material_count; ++i) {
         const auto source_idx = i - 1;
-        auto pbr = sc.Buffers.Materials.Get(i);
+        auto pbr = sc.Buffers.Materials.GetSpan<PBRMaterial>()[i];
         const auto &meta = source_idx < material_metas.size() ? material_metas[source_idx] : DefaultMeta;
         if (meta.ImplicitDefault) continue;
         material_indices[i] = asset.materials.size();

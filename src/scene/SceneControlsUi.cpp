@@ -26,7 +26,6 @@
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/PbrFeature.h"
-#include "render/Pipelines.h"
 #include "render/TextureRefs.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
@@ -39,6 +38,7 @@
 #include "state/Scene.h"
 #include "ui/FieldEdit.h"
 #include "ui/HelpMarker.h"
+#include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportEvents.h"
@@ -1057,7 +1057,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 }
             }
             // Direct mutation outside Apply: not replayable document state.
-            if (Button("Recompile shaders")) r.ctx().get<Pipelines>().RecompileRequested = true;
+            if (Button("Recompile shaders")) r.ctx().get<FrameState>().RecompileShaders = true;
 
             if (!r.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");

@@ -29,8 +29,6 @@ constant bool NonTriangleTopology [[function_constant(uint(PbrConstant::NonTrian
 // Enable* constants permit compile-time feature removal and default to the full feature set.
 // TransmissionPrepass omits transmission materials and exposure to prevent attachment self-sampling.
 
-constant uint INVALID_MATERIAL_SLOT = 0xffffffffu;
-
 struct NormalInfo {
     float3 ng;
     float3 t;
@@ -40,16 +38,6 @@ struct NormalInfo {
 };
 
 inline float clampedDot(float3 x, float3 y) { return clamp(dot(x, y), 0.0f, 1.0f); }
-
-inline float2 ApplyUvTransform(float2 uv, float2 uv_offset, float2 uv_scale, float uv_rotation) {
-    const float s = sin(uv_rotation);
-    const float c = cos(uv_rotation);
-    const float3x3 rotation = float3x3(float3(c, -s, 0.0f), float3(s, c, 0.0f), float3(0.0f, 0.0f, 1.0f));
-    const float3x3 scale = float3x3(float3(uv_scale.x, 0.0f, 0.0f), float3(0.0f, uv_scale.y, 0.0f), float3(0.0f, 0.0f, 1.0f));
-    const float3x3 translation = float3x3(float3(1.0f, 0.0f, 0.0f), float3(0.0f, 1.0f, 0.0f), float3(uv_offset.x, uv_offset.y, 1.0f));
-    const float3x3 uv_transform = translation * rotation * scale;
-    return (uv_transform * float3(uv, 1.0f)).xy;
-}
 
 // KHR_materials_volume: Beer's law. An attenuation distance of zero or less means no attenuation.
 inline float3 applyVolumeAttenuation(float3 radiance, float dist, float3 attenuation_color, float attenuation_distance) {
@@ -95,17 +83,12 @@ struct PbrContext {
     float2 GetUv(TextureInfo tex) const {
         return ApplyUvTransform(GetUv(tex.TexCoord), float2(tex.UvOffset), float2(tex.UvScale), tex.UvRotation);
     }
-    float2 TransformUvGradient(float2 gradient, TextureInfo tex) const {
-        const float s = sin(tex.UvRotation);
-        const float c = cos(tex.UvRotation);
-        const float2 scaled = gradient * float2(tex.UvScale);
-        return float2(c * scaled.x - s * scaled.y, s * scaled.x + c * scaled.y);
-    }
     float4 SampleTexture(TextureInfo tex) const {
         const float2 uv = GetUv(tex);
         if (!ExplicitGradients) return S.SampleTex(tex.Slot, uv);
         const uint set = min(tex.TexCoord, 3u);
-        return S.SampleTexGrad(tex.Slot, uv, TransformUvGradient(UvDx[set], tex), TransformUvGradient(UvDy[set], tex));
+        const float2 scale = float2(tex.UvScale);
+        return S.SampleTexGrad(tex.Slot, uv, TransformUvGradient(UvDx[set], scale, tex.UvRotation), TransformUvGradient(UvDy[set], scale, tex.UvRotation));
     }
 
     NormalInfo GetNormalInfo(device const PBRMaterial &material) const {
@@ -143,7 +126,7 @@ struct PbrContext {
         info.ng = ng;
         info.t = t;
         info.b = b;
-        if (material.NormalTexture.Slot != INVALID_MATERIAL_SLOT) {
+        if (material.NormalTexture.Slot != InvalidSlot) {
             info.ntex = SampleTexture(material.NormalTexture).rgb * 2.0f - float3(1.0f);
             info.ntex *= float3(material.NormalScale, material.NormalScale, 1.0f);
             info.ntex = normalize(info.ntex);
@@ -173,7 +156,7 @@ inline float4 ShadePbr(
     if (material.DoubleSided == 0u && !IsFrontFacing(scene, world_normal, in.WorldPosition)) discard_fragment();
 
     float4 base_color = float4(material.BaseColorFactor);
-    if (material.BaseColorTexture.Slot != INVALID_MATERIAL_SLOT) base_color *= ctx.SampleTexture(material.BaseColorTexture);
+    if (material.BaseColorTexture.Slot != InvalidSlot) base_color *= ctx.SampleTexture(material.BaseColorTexture);
     base_color *= in.VertexColor;
     if (material.AlphaMode == MaterialAlphaMode::Opaque) base_color.a = 1.0f;
 
@@ -189,7 +172,7 @@ inline float4 ShadePbr(
         float3 unlit = base_color.rgb;
         if (no_normal) {
             float3 emissive = float3(material.EmissiveFactor);
-            if (material.EmissiveTexture.Slot != INVALID_MATERIAL_SLOT) emissive *= ctx.SampleTexture(material.EmissiveTexture).rgb;
+            if (material.EmissiveTexture.Slot != InvalidSlot) emissive *= ctx.SampleTexture(material.EmissiveTexture).rgb;
             unlit += emissive;
         }
         return TransmissionPrepass ? float4(unlit, base_color.a) : float4(unlit * view.Exposure, base_color.a);
@@ -202,7 +185,7 @@ inline float4 ShadePbr(
 
     float metallic = material.MetallicFactor;
     float perceptual_roughness = material.RoughnessFactor;
-    if (material.MetallicRoughnessTexture.Slot != INVALID_MATERIAL_SLOT) {
+    if (material.MetallicRoughnessTexture.Slot != InvalidSlot) {
         const float4 metallic_roughness = ctx.SampleTexture(material.MetallicRoughnessTexture);
         perceptual_roughness *= metallic_roughness.g;
         metallic *= metallic_roughness.b;
@@ -215,26 +198,26 @@ inline float4 ShadePbr(
     float sheen_roughness = 0.0f;
     if (EnableSheen) {
         sheen_color = float3(material.Sheen.ColorFactor);
-        if (material.Sheen.ColorTexture.Slot != INVALID_MATERIAL_SLOT) sheen_color *= ctx.SampleTexture(material.Sheen.ColorTexture).rgb;
+        if (material.Sheen.ColorTexture.Slot != InvalidSlot) sheen_color *= ctx.SampleTexture(material.Sheen.ColorTexture).rgb;
         sheen_roughness = clamp(material.Sheen.RoughnessFactor, 0.0f, 1.0f);
-        if (material.Sheen.RoughnessTexture.Slot != INVALID_MATERIAL_SLOT) sheen_roughness *= ctx.SampleTexture(material.Sheen.RoughnessTexture).a;
+        if (material.Sheen.RoughnessTexture.Slot != InvalidSlot) sheen_roughness *= ctx.SampleTexture(material.Sheen.RoughnessTexture).a;
     }
     const bool has_sheen = EnableSheen && any(sheen_color > float3(0.0f));
 
     // KHR_materials_specular scales dielectric F0 and F90; defaults produce F0 = 0.04.
     float specular_weight = material.Specular.Factor;
-    if (material.Specular.Texture.Slot != INVALID_MATERIAL_SLOT) specular_weight *= ctx.SampleTexture(material.Specular.Texture).a;
+    if (material.Specular.Texture.Slot != InvalidSlot) specular_weight *= ctx.SampleTexture(material.Specular.Texture).a;
     const float f0_ior_t = (material.Ior - 1.0f) / (material.Ior + 1.0f);
     const float f0_ior = f0_ior_t * f0_ior_t;
     float3 specular_color = float3(material.Specular.ColorFactor);
-    if (material.Specular.ColorTexture.Slot != INVALID_MATERIAL_SLOT) specular_color *= ctx.SampleTexture(material.Specular.ColorTexture).rgb;
+    if (material.Specular.ColorTexture.Slot != InvalidSlot) specular_color *= ctx.SampleTexture(material.Specular.ColorTexture).rgb;
     const float3 f0_dielectric = min(float3(f0_ior) * specular_color, float3(1.0f));
     const float3 f90_dielectric = float3(specular_weight);
 
     float transmission_factor = 0.0f;
     if (EnableTransmission) {
         transmission_factor = material.Transmission.Factor;
-        if (material.Transmission.Texture.Slot != INVALID_MATERIAL_SLOT) transmission_factor *= ctx.SampleTexture(material.Transmission.Texture).r;
+        if (material.Transmission.Texture.Slot != InvalidSlot) transmission_factor *= ctx.SampleTexture(material.Transmission.Texture).r;
     }
     // Omit transmission fragments from their source framebuffer to preserve opaque geometry behind them.
     if (TransmissionPrepass && transmission_factor > 0.0f) discard_fragment();
@@ -242,13 +225,13 @@ inline float4 ShadePbr(
     float3 diffuse_transmission_color = float3(0.0f);
     if (EnableDiffuseTrans) {
         diffuse_transmission_factor = material.DiffuseTransmission.Factor;
-        if (material.DiffuseTransmission.Texture.Slot != INVALID_MATERIAL_SLOT) diffuse_transmission_factor *= ctx.SampleTexture(material.DiffuseTransmission.Texture).a;
+        if (material.DiffuseTransmission.Texture.Slot != InvalidSlot) diffuse_transmission_factor *= ctx.SampleTexture(material.DiffuseTransmission.Texture).a;
         diffuse_transmission_color = float3(material.DiffuseTransmission.ColorFactor);
-        if (material.DiffuseTransmission.ColorTexture.Slot != INVALID_MATERIAL_SLOT) diffuse_transmission_color *= ctx.SampleTexture(material.DiffuseTransmission.ColorTexture).rgb;
+        if (material.DiffuseTransmission.ColorTexture.Slot != InvalidSlot) diffuse_transmission_color *= ctx.SampleTexture(material.DiffuseTransmission.ColorTexture).rgb;
     }
     // Convert KHR_materials_volume thickness from model to world space for Beer's law.
     float world_thickness = material.Volume.ThicknessFactor * in.WorldScale;
-    if (material.Volume.ThicknessTexture.Slot != INVALID_MATERIAL_SLOT) world_thickness *= ctx.SampleTexture(material.Volume.ThicknessTexture).g;
+    if (material.Volume.ThicknessTexture.Slot != InvalidSlot) world_thickness *= ctx.SampleTexture(material.Volume.ThicknessTexture).g;
     const float3 attenuation_color = float3(material.Volume.AttenuationColor);
     const float attenuation_distance = material.Volume.AttenuationDistance;
 
@@ -259,13 +242,13 @@ inline float4 ShadePbr(
     float NdotV_cc = 0.0f;
     if (EnableClearcoat) {
         clearcoat_factor = material.Clearcoat.Factor;
-        if (material.Clearcoat.Texture.Slot != INVALID_MATERIAL_SLOT) clearcoat_factor *= ctx.SampleTexture(material.Clearcoat.Texture).r;
+        if (material.Clearcoat.Texture.Slot != InvalidSlot) clearcoat_factor *= ctx.SampleTexture(material.Clearcoat.Texture).r;
         cc_perceptual_roughness = clamp(material.Clearcoat.RoughnessFactor, 0.0f, 1.0f);
-        if (material.Clearcoat.RoughnessTexture.Slot != INVALID_MATERIAL_SLOT) cc_perceptual_roughness *= ctx.SampleTexture(material.Clearcoat.RoughnessTexture).g;
+        if (material.Clearcoat.RoughnessTexture.Slot != InvalidSlot) cc_perceptual_roughness *= ctx.SampleTexture(material.Clearcoat.RoughnessTexture).g;
         cc_perceptual_roughness = clamp(cc_perceptual_roughness, 0.0f, 1.0f);
         cc_alpha_roughness = cc_perceptual_roughness * cc_perceptual_roughness;
         // Use the base tangent frame for the clearcoat normal map.
-        if (material.Clearcoat.NormalTexture.Slot != INVALID_MATERIAL_SLOT) {
+        if (material.Clearcoat.NormalTexture.Slot != InvalidSlot) {
             float3 cc_ntex = ctx.SampleTexture(material.Clearcoat.NormalTexture).rgb * 2.0f - float3(1.0f);
             cc_ntex *= float3(material.Clearcoat.NormalScale, material.Clearcoat.NormalScale, 1.0f);
             n_cc = normalize(GetNormalMapTBN(normal_info.t, normal_info.b, normal_info.ng, material.Clearcoat.NormalTexture.UvRotation) * normalize(cc_ntex));
@@ -281,7 +264,7 @@ inline float4 ShadePbr(
     if (EnableAnisotropy) {
         anisotropy_strength = material.Anisotropy.Strength;
         anisotropy_dir = float2(cos(material.Anisotropy.Rotation), sin(material.Anisotropy.Rotation));
-        if (material.Anisotropy.Texture.Slot != INVALID_MATERIAL_SLOT) {
+        if (material.Anisotropy.Texture.Slot != InvalidSlot) {
             const float3 anisotropySample = ctx.SampleTexture(material.Anisotropy.Texture).rgb;
             // Decode RG to [-1, 1] and apply the material rotation.
             const float2 texDir = anisotropySample.xy * 2.0f - float2(1.0f);
@@ -302,10 +285,10 @@ inline float4 ShadePbr(
     float3 iridescence_fresnel_metallic = float3(0.0f);
     if (EnableIridescence) {
         iridescence_factor = material.Iridescence.Factor;
-        if (material.Iridescence.Texture.Slot != INVALID_MATERIAL_SLOT) iridescence_factor *= ctx.SampleTexture(material.Iridescence.Texture).r;
+        if (material.Iridescence.Texture.Slot != InvalidSlot) iridescence_factor *= ctx.SampleTexture(material.Iridescence.Texture).r;
         iridescence_factor = clamp(iridescence_factor, 0.0f, 1.0f);
         iridescence_thickness = material.Iridescence.ThicknessMaximum;
-        if (material.Iridescence.ThicknessTexture.Slot != INVALID_MATERIAL_SLOT) {
+        if (material.Iridescence.ThicknessTexture.Slot != InvalidSlot) {
             const float t = ctx.SampleTexture(material.Iridescence.ThicknessTexture).g;
             iridescence_thickness = mix(material.Iridescence.ThicknessMinimum, material.Iridescence.ThicknessMaximum, t);
         }
@@ -393,7 +376,7 @@ inline float4 ShadePbr(
     if (transmission_factor > 0.0f) {
         const bool real = !TransmissionPrepass
             && view.UseRealTransmission != 0u
-            && view.TransmissionFramebufferSamplerSlot != INVALID_MATERIAL_SLOT;
+            && view.TransmissionFramebufferSamplerSlot != InvalidSlot;
         float3 f_transmission = getVolumeRefraction(scene, n, v, in.WorldPosition, world_thickness, perceptual_roughness, material.Ior, material.Dispersion, real) * base_color.rgb;
         f_transmission = applyVolumeAttenuation(f_transmission, world_thickness, attenuation_color, attenuation_distance);
         f_diffuse = mix(f_diffuse, f_transmission, transmission_factor);
@@ -423,7 +406,7 @@ inline float4 ShadePbr(
         indirect_color = f_sheen + indirect_color * albedo_sheen_scaling;
     }
     float ao = 1.0f;
-    if (material.OcclusionTexture.Slot != INVALID_MATERIAL_SLOT) {
+    if (material.OcclusionTexture.Slot != InvalidSlot) {
         ao = ctx.SampleTexture(material.OcclusionTexture).r;
         indirect_color *= (1.0f + material.OcclusionStrength * (ao - 1.0f));
     }
@@ -437,7 +420,7 @@ inline float4 ShadePbr(
 
     float3 color = direct_color + indirect_color;
     float3 emissive = float3(material.EmissiveFactor);
-    if (material.EmissiveTexture.Slot != INVALID_MATERIAL_SLOT) emissive *= ctx.SampleTexture(material.EmissiveTexture).rgb;
+    if (material.EmissiveTexture.Slot != InvalidSlot) emissive *= ctx.SampleTexture(material.EmissiveTexture).rgb;
     if (has_clearcoat) emissive *= (1.0f - clearcoat_factor * cc_fresnel_ibl);
     color += emissive;
 

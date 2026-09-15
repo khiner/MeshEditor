@@ -65,19 +65,6 @@ struct MeshletFaceValues {
     uint ObjectId, ElementId;
 };
 
-inline uint MeshletPrimitiveMaterialIndex(
-    const thread Scene &scene, PrimitiveRecord primitive
-) {
-    if (primitive.Draw.PrimitiveMaterialOffset == InvalidOffset) return 0u;
-    return scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[
-        primitive.Draw.PrimitiveMaterialOffset + primitive.PrimitiveIndex
-    ];
-}
-
-inline uint MeshletPrimitiveTopology(MeshletRecord meshlet) {
-    return meshlet.LocalTriangleOffset >> uint(MeshletGeometryEncoding::TopologyShift);
-}
-
 // Returns true for clusters with independent triangles and no source-triangle or source-face identity.
 inline bool MeshletCoarse(MeshletRecord meshlet) { return meshlet.RefinedGroup != InvalidOffset; }
 

@@ -117,6 +117,7 @@ mesheditor_library(MeshEditorRender HOT
     src/render/MeshUpdates.cpp
     src/render/Pipelines.cpp
     src/render/RenderStores.cpp
+    src/render/RenderTargets.cpp
     src/render/SceneUpdates.cpp
     src/render/Textures.cpp
     src/render/ViewportSubmission.cpp

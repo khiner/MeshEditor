@@ -104,60 +104,29 @@ struct DepthState {
     bool operator==(const DepthState &) const = default;
 };
 
+// A render or mesh pipeline state with the depth-stencil state its passes bind alongside it.
 struct RenderPipeline {
-    RenderPipeline(
-        LibraryCache &, FunctionRef vertex, std::optional<FunctionRef> fragment, PassFormats,
-        std::vector<BlendState> blends = {}, std::optional<DepthState> depth = {}, float depth_bias = 0.f
-    );
-
-    void Compile(LibraryCache &);
-
-    MTL::RenderPipelineState *State() const { return PipelineState.get(); }
-    float DepthBias() const { return Bias; }
-
+    void Bind(MTL::RenderCommandEncoder *) const;
     uint32_t ImageblockSampleLength() const { return uint32_t(PipelineState->imageblockSampleLength()); }
-    void Bind(MTL::RenderCommandEncoder *) const;
 
-private:
-    FunctionRef VertexFn;
-    std::optional<FunctionRef> FragmentFn;
-    PassFormats Formats;
-    std::vector<BlendState> Blends;
-    std::optional<DepthState> Depth;
-    float Bias;
     NS::SharedPtr<MTL::RenderPipelineState> PipelineState;
     NS::SharedPtr<MTL::DepthStencilState> DepthStencilState;
 };
 
-struct MeshRenderPipeline {
-    MeshRenderPipeline(
-        LibraryCache &, FunctionRef mesh, std::optional<FunctionRef> fragment, PassFormats,
-        std::vector<BlendState> blends = {}, std::optional<DepthState> depth = {}
-    );
-
-    void Compile(LibraryCache &);
-    void Bind(MTL::RenderCommandEncoder *) const;
-
-private:
-    FunctionRef MeshFn;
-    std::optional<FunctionRef> FragmentFn;
-    PassFormats Formats;
-    std::vector<BlendState> Blends;
-    std::optional<DepthState> Depth;
-    NS::SharedPtr<MTL::RenderPipelineState> PipelineState;
-    NS::SharedPtr<MTL::DepthStencilState> DepthStencilState;
-};
+RenderPipeline MakeRenderPipeline(
+    LibraryCache &, FunctionRef vertex, std::optional<FunctionRef> fragment, PassFormats,
+    std::vector<BlendState> blends = {}, std::optional<DepthState> depth = {}
+);
+RenderPipeline MakeMeshPipeline(
+    LibraryCache &, FunctionRef mesh, std::optional<FunctionRef> fragment, PassFormats,
+    std::vector<BlendState> blends = {}, std::optional<DepthState> depth = {}
+);
 
 struct ComputePipeline {
     ComputePipeline(LibraryCache &, FunctionRef);
 
-    void Compile(LibraryCache &);
-
     MTL::ComputePipelineState *State() const { return PipelineState.get(); }
-    uint32_t MaxThreadsPerThreadgroup() const { return PipelineState ? uint32_t(PipelineState->maxTotalThreadsPerThreadgroup()) : 0; }
 
-private:
-    FunctionRef Fn;
     NS::SharedPtr<MTL::ComputePipelineState> PipelineState;
 };
 

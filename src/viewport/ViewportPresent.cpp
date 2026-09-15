@@ -5,7 +5,7 @@
 #include "audio/AudioSystem.h"
 #include "metal/ImGuiTexture.h"
 #include "render/GpuBuffers.h"
-#include "render/Pipelines.h"
+#include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "viewport/FrameState.h"
 #include "viewport/VideoRecording.h"
@@ -21,8 +21,7 @@
 namespace {
 
 std::pair<uvec2, mtl::Extent2D> GetCaptureRegion(const state::Scene &r) {
-    const auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto full = pipelines.Main.Resources->FinalColorImage.Extent;
+    const auto full = r.ctx().get<const RenderTargets>().Resources->FinalColorImage.Extent;
     const auto camera = LookThroughCameraEntity(r);
     const auto *cd = camera != state::Null ? r.try_get<Camera>(camera) : nullptr;
     if (!cd) return {{0, 0}, full};
@@ -47,10 +46,10 @@ void DeinitViewportMedia(state::Scene &r) {
 void DisplayViewport(state::Scene &r, state::Entity viewport) {
     auto &dl = *ImGui::GetWindowDrawList();
     dl.ChannelsSetCurrent(0);
-    if (const auto &pipelines = r.ctx().get<const Pipelines>(); pipelines.Main.Resources) {
+    if (const auto &targets = r.ctx().get<const RenderTargets>(); targets.Resources) {
         const auto p = ImGui::GetCursorScreenPos();
         const auto extent = r.ctx().get<ViewportExtent>().Value;
-        dl.AddImage(mtl::ImGuiTextureId(*pipelines.Main.Resources->FinalColorImage), p, p + ImVec2{float(extent.x), float(extent.y)});
+        dl.AddImage(mtl::ImGuiTextureId(*targets.Resources->FinalColorImage), p, p + ImVec2{float(extent.x), float(extent.y)});
     }
 
     dl.ChannelsSetCurrent(1);
@@ -61,8 +60,7 @@ void DisplayViewport(state::Scene &r, state::Entity viewport) {
 void StartRecording(state::Scene &r, state::Entity viewport, const std::filesystem::path &path, int fps, bool with_audio) {
     r.remove<VideoRecording>(viewport);
     EndAudioCapture(r);
-    const auto &pipelines = r.ctx().get<const Pipelines>();
-    if (!pipelines.Main.Resources) {
+    if (!r.ctx().get<const RenderTargets>().Resources) {
         std::println(stderr, "StartRecording: render resources not ready");
         return;
     }
@@ -91,9 +89,9 @@ uint64_t CapturedFrameCount(const state::Scene &r, state::Entity viewport) {
 }
 
 void CaptureRecordFrame(state::Scene &r, state::Entity viewport) {
-    const auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &targets = r.ctx().get<const RenderTargets>();
     auto *rec = r.try_edit<VideoRecording>(viewport);
-    if (!rec || !rec->Recorder || !rec->Recorder->IsActive() || !pipelines.Main.Resources) return;
+    if (!rec || !rec->Recorder || !rec->Recorder->IsActive() || !targets.Resources) return;
     if (GetCaptureRegion(r) != rec->Region) {
         std::println(stderr, "Viewport: capture region changed; stopping recording.");
         r.remove<VideoRecording>(viewport);
@@ -112,18 +110,18 @@ void CaptureRecordFrame(state::Scene &r, state::Entity viewport) {
     }
     if (rec->Monitor) MonitorFrames(r, rec->Drained, rec->Limiter);
     rec->Recorder->CaptureAudio(rec->Drained);
-    rec->Recorder->CaptureFrame(pipelines.Main.Resources->FinalColorImage);
+    rec->Recorder->CaptureFrame(targets.Resources->FinalColorImage);
 }
 
 std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(state::Scene &r) {
-    const auto &pipelines = r.ctx().get<const Pipelines>();
-    if (!pipelines.Main.Resources) return std::unexpected{"render resources not ready"};
+    const auto &targets = r.ctx().get<const RenderTargets>();
+    if (!targets.Resources) return std::unexpected{"render resources not ready"};
 
     const auto [offset, extent] = GetCaptureRegion(r);
     if (extent.Width == 0 || extent.Height == 0) return std::unexpected{"viewport extent is zero"};
 
     const auto &ctx = r.ctx().get<const mtl::Context>();
-    auto pixels = ReadbackImageRgba8(ctx, pipelines.Main.Resources->FinalColorImage, offset.x, offset.y, extent);
+    auto pixels = ReadbackImageRgba8(ctx, targets.Resources->FinalColorImage, offset.x, offset.y, extent);
     // Format::Color is BGRA, so red and blue trade places.
     for (size_t i = 0; i < pixels.size(); i += 4) std::swap(pixels[i], pixels[i + 2]);
 

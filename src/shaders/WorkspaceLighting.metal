@@ -114,9 +114,9 @@ fragment float4 WorkspaceVisibilityFragment(
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant VisibilityShadingPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
-    const DecodedVisibility decoded = DecodeWorkspaceVisibilityId(
+    const DecodedVisibility decoded = DecodeVisibilityId(
         visibility.read(uint2(quad.Position.xy)).r, quad.Position.xy,
-        bindless, view, theme, workspace, pc
+        bindless, view, theme, workspace, pc, false
     );
     if (!decoded.Valid) discard_fragment();
     const Scene scene{bindless, view, theme, workspace};

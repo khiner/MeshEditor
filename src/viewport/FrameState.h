@@ -18,4 +18,6 @@ struct FrameState {
     bool Scrubbing{false};
     bool MotionBlurred{false};
     bool Capturing{false};
+    // Recompile every shader on the next event pass.
+    bool RecompileShaders{false};
 };

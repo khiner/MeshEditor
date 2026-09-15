@@ -15,15 +15,14 @@ void ReleaseRange(auto &arena, auto &range) {
 } // namespace
 
 std::span<const PBRMaterial> GetMaterials(const state::Scene &r) {
-    const auto &materials = r.ctx().get<const GpuBuffers>().Materials;
-    return {materials.Data(), materials.Count()};
+    return r.ctx().get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
 }
 std::span<const uint32_t> GetFaceIndices(const state::Scene &r, const Mesh &mesh, const MeshBuffers &buffers) {
     const auto corners = mesh.CornerVertices();
     if (corners.size() == mesh.TriangleIndexCount()) return corners;
     return r.ctx().get<const GpuBuffers>().FaceIndexBuffer.Get(buffers.FaceIndices);
 }
-PunctualLight GetLight(state::Scene &r, uint32_t index) { return r.ctx().get<GpuBuffers>().Lights.Get(index); }
+PunctualLight GetLight(state::Scene &r, uint32_t index) { return r.ctx().get<GpuBuffers>().Lights.GetSpan<PunctualLight>()[index]; }
 mtl::BufferContext &GetBufferContext(state::Scene &r) { return r.ctx().get<GpuBuffers>().Ctx; }
 
 void ReleaseMeshBuffers(state::Scene &r, MeshBuffers &mb) { r.ctx().get<GpuBuffers>().Release(mb); }

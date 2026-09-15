@@ -4,14 +4,11 @@
 #include "MeshletResolve.metal"
 #include "Varyings.metal"
 #include "gpu/VisibilityShadingPushConstants.h"
-#include "ArmatureDeform.metal"
-#include "gpu/CornerClass.h"
-#include "gpu/CornerClassEncoding.h"
-#include "MorphDeform.metal"
 #include "MeshletNonTriangle.metal"
+#include "VertexTransform.metal"
 #include "gpu/VisibilityId.h"
 
-constant uint VisibilityBackground = 0xffffffffu;
+constant uint VisibilityBackground = InvalidOffset;
 constant uint VisibilityTriangleMask = (1u << uint(VisibilityId::TriangleBits)) - 1u;
 constant uint VisibilityIndexMask = (1u << uint(VisibilityId::IndexBits)) - 1u;
 
@@ -44,123 +41,6 @@ struct VisibilityMetadata {
     uint InstanceFlags;
     bool Valid;
 };
-
-inline float3 VisibilityApplyNormalOffset(
-    const thread Scene &scene, DrawData draw, uint vertex_id, float3 normal, float2 offset
-) {
-    const float3 n = dot(normal, normal) > 0.0f ? normal : float3(0, 0, 1);
-    const uint tri = (vertex_id / 3u) * 3u;
-    const uint k = vertex_id - tri;
-    device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
-    const float3 p0 = scene.GetLocalPosition(draw, indices[draw.IndexSlotOffset.Offset + tri + k]);
-    float3 ref;
-    const float3 e1 = scene.GetLocalPosition(draw, indices[draw.IndexSlotOffset.Offset + tri + (k + 1u) % 3u]) - p0;
-    const float3 r1 = e1 - n * dot(e1, n);
-    const float l1 = length(r1);
-    if (l1 > 1e-3f * length(e1)) {
-        ref = r1 / l1;
-    } else {
-        const float3 e2 = scene.GetLocalPosition(draw, indices[draw.IndexSlotOffset.Offset + tri + (k + 2u) % 3u]) - p0;
-        const float3 r2 = e2 - n * dot(e2, n);
-        const float l2 = length(r2);
-        if (l2 > 1e-3f * length(e2)) {
-            ref = r2 / l2;
-        } else {
-            const float3 axis = abs(n.x) < 0.5f ? float3(1, 0, 0) : float3(0, 1, 0);
-            ref = normalize(cross(n, axis));
-        }
-    }
-    return cos(offset.x) * n + sin(offset.x) * (cos(offset.y) * ref + sin(offset.y) * cross(n, ref));
-}
-
-inline float3 VisibilityCornerNormal(
-    const thread Scene &scene, DrawData draw, uint vertex_id, uint idx, uint face_id,
-    bool coarse, float3 coarse_normal
-) {
-    const uint value = draw.CornerClassOffset == InvalidOffset ? uint(CornerClass::Vertex) << uint(CornerClassEncoding::TagShift) :
-        draw.CornerClassOffset == uint(CornerClassEncoding::UniformFaceOffset) ? uint(CornerClass::Face) << uint(CornerClassEncoding::TagShift) :
-                                                                          scene.CornerClasses(scene.View.CornerClassSlot)[draw.CornerClassOffset + vertex_id];
-    const uint tag = value >> uint(CornerClassEncoding::TagShift);
-    float3 normal;
-    if (tag == uint(CornerClass::Vertex)) {
-        normal = scene.GetVertexNormal(draw, idx);
-    } else if (tag == uint(CornerClass::Face)) {
-        normal = coarse ? coarse_normal :
-            draw.PosedFaceNormalOffset != InvalidOffset ?
-            float3(scene.PosedFaceNormals(scene.View.PosedFaceNormalSlot)[draw.PosedFaceNormalOffset + face_id - 1u]) :
-            float3(scene.BaseFaceNormals(scene.View.BaseFaceNormalSlot)[draw.BaseFaceNormalOffset + face_id - 1u]);
-    } else {
-        const uint seam = value & uint(CornerClassEncoding::IndexMask);
-        normal = draw.PosedSeamNormalOffset != InvalidOffset ?
-            float3(scene.PosedSeamNormals(scene.View.PosedSeamNormalSlot)[draw.PosedSeamNormalOffset + seam]) :
-            float3(scene.BaseSeamNormals(scene.View.BaseSeamNormalSlot)[draw.BaseSeamNormalOffset + seam]);
-    }
-    if (draw.CustomCornerMaskOffset != InvalidOffset) {
-        const uint corner = draw.CornerBase + vertex_id;
-        const uint2 mask = uint2(scene.CustomCornerMasks(scene.View.CustomCornerMaskSlot)[draw.CustomCornerMaskOffset + corner / 32u]);
-        const uint bit = 1u << (corner % 32u);
-        if ((mask.x & bit) != 0u) {
-            const uint packed = mask.y + popcount(mask.x & (bit - 1u));
-            normal = VisibilityApplyNormalOffset(
-                scene, draw, vertex_id, normal,
-                float2(scene.CustomCornerNormals(scene.View.CustomCornerNormalSlot)[draw.CustomCornerNormalOffset + packed])
-            );
-        }
-    }
-    if (draw.MorphShadingAuthored != 0u) {
-        normal = NormalizeOrZero(normal + float3(scene.PosedMorphNormalDeltas(scene.View.PosedMorphNormalDeltaSlot)[draw.PosedPositionOffset + idx]));
-    }
-    return normal;
-}
-
-inline MeshVaryings VisibilityCorner(
-    const thread Scene &scene, DrawData draw, uint vertex_index, uint idx, uint face_id, bool shading_normal,
-    bool coarse = false, float3 coarse_normal = float3(0.0f)
-) {
-    MeshVaryings out{};
-    const uint model_slot = scene.View.ModelSlotOverride != InvalidSlot ? scene.View.ModelSlotOverride : draw.ModelSlot;
-    const Transform world = scene.Models(model_slot)[draw.FirstInstance];
-    const float3 local_pos = scene.GetLocalPosition(draw, idx);
-    const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, local_pos));
-    out.WorldNormal = shading_normal ? trs_transform_normal(world, VisibilityCornerNormal(scene, draw, vertex_index, idx, face_id, coarse, coarse_normal)) : float3(0.0f);
-    out.WorldPosition = world_pos;
-    out.Color = float4(0.8f, 0.8f, 0.8f, 1.0f);
-    out.VertexColor = draw.CornerColorOffset != InvalidOffset ?
-        float4(scene.CornerColors(scene.View.CornerColorSlot)[draw.CornerColorOffset + vertex_index]) : float4(1.0f);
-    device const packed_float2 *uvs = scene.CornerUvs(scene.View.CornerUvSlot);
-    out.TexCoord0 = draw.CornerUvOffsets[0] != InvalidOffset ? float2(uvs[draw.CornerUvOffsets[0] + vertex_index]) : float2(0);
-    out.TexCoord1 = draw.CornerUvOffsets[1] != InvalidOffset ? float2(uvs[draw.CornerUvOffsets[1] + vertex_index]) : float2(0);
-    out.TexCoord2 = draw.CornerUvOffsets[2] != InvalidOffset ? float2(uvs[draw.CornerUvOffsets[2] + vertex_index]) : float2(0);
-    out.TexCoord3 = draw.CornerUvOffsets[3] != InvalidOffset ? float2(uvs[draw.CornerUvOffsets[3] + vertex_index]) : float2(0);
-    const float4 vertex_tangent = draw.CornerTangentOffset != InvalidOffset ?
-        float4(scene.CornerTangents(scene.View.CornerTangentSlot)[draw.CornerTangentOffset + vertex_index]) : float4(0, 0, 0, 1);
-    float3 tangent = vertex_tangent.xyz;
-    if (dot(tangent, tangent) > 1e-8f) {
-        tangent = normalize(tangent);
-        float3 tangent_dummy_pos = float3(0.0f);
-        ApplyArmatureDeform(scene, draw, tangent_dummy_pos, idx, tangent);
-        out.WorldTangent = float4(normalize(trs_transform_normal(world, tangent)), vertex_tangent.w);
-    } else {
-        out.WorldTangent = float4(0, 0, 0, 1);
-    }
-    out.Position = scene.ViewProj() * float4(world_pos, 1.0f);
-
-    return out;
-}
-
-inline MeshVaryings VisibilityWorkspaceCorner(
-    const thread Scene &scene, DrawData draw, uint vertex_index, uint idx, uint face_id, bool shading_normal,
-    bool coarse = false, float3 coarse_normal = float3(0.0f)
-) {
-    MeshVaryings out{};
-    const uint model_slot = scene.View.ModelSlotOverride != InvalidSlot ? scene.View.ModelSlotOverride : draw.ModelSlot;
-    const Transform world = scene.Models(model_slot)[draw.FirstInstance];
-    const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, scene.GetLocalPosition(draw, idx)));
-    out.WorldNormal = shading_normal ? trs_transform_normal(world, VisibilityCornerNormal(scene, draw, vertex_index, idx, face_id, coarse, coarse_normal)) : float3(0.0f);
-    out.WorldPosition = world_pos;
-    out.Position = scene.ViewProj() * float4(world_pos, 1.0f);
-    return out;
-}
 
 template<typename T>
 inline T PerspectiveValue(float3 weights, T a, T b, T c) {
@@ -363,13 +243,15 @@ inline VisibilityMetadata DecodeVisibilityMetadata(
     };
 }
 
+// `attributes` adds the interpolated colors, UVs, and tangents that lit shading reads.
 inline DecodedVisibility DecodeVisibilityId(
     uint id, float2 pixel,
     device const BindlessSet &bindless,
     constant SceneViewUBO &view,
     constant ViewportTheme &theme,
     constant WorkspaceLights &workspace,
-    VisibilityShadingPushConstants pc
+    VisibilityShadingPushConstants pc,
+    bool attributes = true
 ) {
     DecodedVisibility result{};
     if (id == VisibilityBackground) return result;
@@ -392,7 +274,7 @@ inline DecodedVisibility DecodeVisibilityId(
             const uint vertex_id = NonTriangleVertexId(
                 bindless, pc.MeshletVertexSlot, meshlet, topology, logical_element, quad_corner
             );
-            corners[corner] = VisibilityCorner(scene, draw, vertex_id, vertex_id, 0u, true);
+            corners[corner] = TransformVertex(scene, draw, vertex_id, vertex_id, vertex_id, false, true);
             corners[corner].Position = NonTrianglePosition(
                 scene, bindless, pc.MeshletVertexSlot, draw, meshlet, topology, logical_element, quad_corner
             );
@@ -432,9 +314,9 @@ inline DecodedVisibility DecodeVisibilityId(
     );
     MeshVaryings corners[3];
     for (uint corner = 0u; corner < 3u; ++corner) {
-        corners[corner] = VisibilityCorner(
-            scene, draw, triangle_corners.CornerIds[corner], triangle_corners.VertexIds[corner], face_id,
-            !flat_face, coarse, triangle_corners.CoarseNormal
+        corners[corner] = TransformVertex(
+            scene, draw, triangle_corners.CornerIds[corner], triangle_corners.CornerIds[corner], triangle_corners.VertexIds[corner],
+            false, !flat_face, coarse, triangle_corners.CoarseNormal
         );
     }
     const PerspectiveWeights weights = TriangleWeights(
@@ -443,22 +325,24 @@ inline DecodedVisibility DecodeVisibilityId(
     result.V.Position = float4(pixel, 0.0f, 1.0f);
     result.V.WorldNormal = PerspectiveValue(weights.Value, corners[0].WorldNormal, corners[1].WorldNormal, corners[2].WorldNormal);
     result.V.WorldPosition = PerspectiveValue(weights.Value, corners[0].WorldPosition, corners[1].WorldPosition, corners[2].WorldPosition);
-    result.V.Color = PerspectiveValue(weights.Value, corners[0].Color, corners[1].Color, corners[2].Color);
-    result.V.VertexColor = draw.CornerColorOffset != InvalidOffset ?
-        PerspectiveValue(weights.Value, corners[0].VertexColor, corners[1].VertexColor, corners[2].VertexColor) : float4(1.0f);
-    result.V.WorldTangent = draw.CornerTangentOffset != InvalidOffset ?
-        PerspectiveValue(weights.Value, corners[0].WorldTangent, corners[1].WorldTangent, corners[2].WorldTangent) : float4(0, 0, 0, 1);
-    if (draw.CornerUvOffsets[0] != InvalidOffset) {
-        DecodeUv(result.V.TexCoord0, result.UvDx[0], result.UvDy[0], weights, corners[0].TexCoord0, corners[1].TexCoord0, corners[2].TexCoord0);
-    }
-    if (draw.CornerUvOffsets[1] != InvalidOffset) {
-        DecodeUv(result.V.TexCoord1, result.UvDx[1], result.UvDy[1], weights, corners[0].TexCoord1, corners[1].TexCoord1, corners[2].TexCoord1);
-    }
-    if (draw.CornerUvOffsets[2] != InvalidOffset) {
-        DecodeUv(result.V.TexCoord2, result.UvDx[2], result.UvDy[2], weights, corners[0].TexCoord2, corners[1].TexCoord2, corners[2].TexCoord2);
-    }
-    if (draw.CornerUvOffsets[3] != InvalidOffset) {
-        DecodeUv(result.V.TexCoord3, result.UvDx[3], result.UvDy[3], weights, corners[0].TexCoord3, corners[1].TexCoord3, corners[2].TexCoord3);
+    result.V.Color = attributes ? PerspectiveValue(weights.Value, corners[0].Color, corners[1].Color, corners[2].Color) : corners[0].Color;
+    if (attributes) {
+        result.V.VertexColor = draw.CornerColorOffset != InvalidOffset ?
+            PerspectiveValue(weights.Value, corners[0].VertexColor, corners[1].VertexColor, corners[2].VertexColor) : float4(1.0f);
+        result.V.WorldTangent = draw.CornerTangentOffset != InvalidOffset ?
+            PerspectiveValue(weights.Value, corners[0].WorldTangent, corners[1].WorldTangent, corners[2].WorldTangent) : float4(0, 0, 0, 1);
+        if (draw.CornerUvOffsets[0] != InvalidOffset) {
+            DecodeUv(result.V.TexCoord0, result.UvDx[0], result.UvDy[0], weights, corners[0].TexCoord0, corners[1].TexCoord0, corners[2].TexCoord0);
+        }
+        if (draw.CornerUvOffsets[1] != InvalidOffset) {
+            DecodeUv(result.V.TexCoord1, result.UvDx[1], result.UvDy[1], weights, corners[0].TexCoord1, corners[1].TexCoord1, corners[2].TexCoord1);
+        }
+        if (draw.CornerUvOffsets[2] != InvalidOffset) {
+            DecodeUv(result.V.TexCoord2, result.UvDx[2], result.UvDy[2], weights, corners[0].TexCoord2, corners[1].TexCoord2, corners[2].TexCoord2);
+        }
+        if (draw.CornerUvOffsets[3] != InvalidOffset) {
+            DecodeUv(result.V.TexCoord3, result.UvDx[3], result.UvDy[3], weights, corners[0].TexCoord3, corners[1].TexCoord3, corners[2].TexCoord3);
+        }
     }
 
     const Transform world = MeshletWorld(scene, draw);
@@ -473,52 +357,6 @@ inline DecodedVisibility DecodeVisibilityId(
     result.InstanceFlags = instance.Flags;
     result.Topology = uint(uint(MeshPrimitiveTopology::Triangle));
     result.PointCoord = float2(0.0f);
-    result.Valid = true;
-    return result;
-}
-
-inline DecodedVisibility DecodeWorkspaceVisibilityId(
-    uint id, float2 pixel,
-    device const BindlessSet &bindless,
-    constant SceneViewUBO &view,
-    constant ViewportTheme &theme,
-    constant WorkspaceLights &workspace,
-    VisibilityShadingPushConstants pc
-) {
-    DecodedVisibility result{};
-    const ResolvedVisibility resolved = ResolveVisibilityId(id, bindless, view, theme, workspace, pc);
-    if (!resolved.Valid) return result;
-
-    const Scene scene{bindless, view, theme, workspace};
-    const uchar packed_first = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot)[
-        MeshletLocalTriangleOffset(resolved.Meshlet) + resolved.LocalTriangle * 3u
-    ];
-    const bool coarse = MeshletCoarse(resolved.Meshlet);
-    const bool flat_face = (packed_first & uint(MeshletGeometryEncoding::FlatTriangleBit)) != 0u;
-    const MeshletTriangleCorners triangle_corners = ResolveMeshletCorners(
-        scene, resolved.Draw, pc.MeshletVertexSlot, pc.MeshletLocalTriangleSlot, resolved.Meshlet,
-        resolved.Primitive, resolved.Triangle, resolved.LocalTriangle
-    );
-    MeshVaryings corners[3];
-    for (uint corner = 0u; corner < 3u; ++corner) {
-        corners[corner] = VisibilityWorkspaceCorner(
-            scene, resolved.Draw, triangle_corners.CornerIds[corner], triangle_corners.VertexIds[corner],
-            resolved.FaceId, !flat_face, coarse, triangle_corners.CoarseNormal
-        );
-    }
-    const PerspectiveWeights weights = TriangleWeights(
-        pixel, corners[0].Position, corners[1].Position, corners[2].Position, float2(view.ViewportSize)
-    );
-    result.V.Position = float4(pixel, 0.0f, 1.0f);
-    result.V.WorldNormal = PerspectiveValue(weights.Value, corners[0].WorldNormal, corners[1].WorldNormal, corners[2].WorldNormal);
-    result.V.WorldPosition = PerspectiveValue(weights.Value, corners[0].WorldPosition, corners[1].WorldPosition, corners[2].WorldPosition);
-    result.V.Color = float4(0.8f, 0.8f, 0.8f, 1.0f);
-    const Transform world = MeshletWorld(scene, resolved.Draw);
-    const MeshletFaceValues face = coarse ?
-        MeshletCoarseFace(scene, resolved.Primitive, resolved.Instance, world) :
-        MeshletFace(scene, resolved.Draw, resolved.Primitive, resolved.Instance, world, resolved.Triangle, flat_face);
-    result.V.FlatWorldNormal = face.FlatWorldNormal;
-    result.V.FaceOverlayFlags = face.FaceOverlayFlags;
     result.Valid = true;
     return result;
 }

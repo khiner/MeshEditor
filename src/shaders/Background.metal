@@ -24,7 +24,7 @@ fragment float4 BackgroundFragment(
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    if (view.WorldOpacity <= 0.0f || view.Ibl.SpecularEnvSamplerSlot == 0xFFFFFFFFu) discard_fragment();
+    if (view.WorldOpacity <= 0.0f || view.Ibl.SpecularEnvSamplerSlot == InvalidSlot) discard_fragment();
 
     const float3 world_dir = normalize(WorldBackgroundDirection(scene, in.Ndc));
     const float3 env_dir = view.EnvRotation.Unpack() * world_dir;

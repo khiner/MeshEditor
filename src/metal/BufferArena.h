@@ -59,11 +59,8 @@ struct BufferArena {
         range.Count = used;
     }
 
-    std::span<const T> Get(Range range) const { return SpanFromBytes<const T>(range); }
-    std::span<T> GetMutable(Range range) {
-        auto bytes = Buffer.GetMutableRange(range.Offset * sizeof(T), range.Count * sizeof(T));
-        return {reinterpret_cast<T *>(bytes.data()), range.Count};
-    }
+    std::span<const T> Get(Range range) const { return Buffer.GetSpan<T>(range); }
+    std::span<T> GetMutable(Range range) { return Buffer.GetMutableSpan<T>(range); }
 
     Range Clone(Range src) { return src.Count > 0 ? Allocate(Get(src)) : Range{}; }
 
@@ -78,20 +75,6 @@ struct BufferArena {
 
 private:
     void WriteRange(uint32_t offset, std::span<const T> values) { Buffer.Update(as_bytes(values), offset * sizeof(T)); }
-
-    static auto RangeBytes(auto bytes, Range range) {
-        const auto start = range.Offset * sizeof(T);
-        const auto count_bytes = range.Count * sizeof(T);
-        return start + count_bytes > bytes.size() ? bytes.subspan(0, 0) : bytes.subspan(start, count_bytes);
-    }
-
-    template<typename U>
-    std::span<const U> SpanFromBytes(Range range) const {
-        if (const auto bytes = RangeBytes(Buffer.Contents(), range); !bytes.empty()) {
-            return {reinterpret_cast<const U *>(bytes.data()), range.Count};
-        }
-        return {};
-    }
 
     RangeAllocator Allocator;
     std::unique_ptr<project::AllocatorHistory> Tracked;

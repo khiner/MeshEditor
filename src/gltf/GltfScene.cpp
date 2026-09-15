@@ -1632,18 +1632,18 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     const auto viewport = ctx.Viewport;
     auto &texture_store = ctx.Textures;
     const auto texture_start = texture_store.Textures.size();
-    const auto material_start = ctx.Buffers.Materials.Count();
+    const auto material_start = ctx.Buffers.Materials.Count<PBRMaterial>();
     const auto material_name_start = r.ctx().get<const MaterialStore>().Names.size();
     const auto pending_texture_start = texture_store.PendingUploads.size();
     bool replaced_pending_env = false;
     std::optional<PendingEnvironmentImport> prev_pending_env_backup;
     const auto rollback_import_side_effects = [&] {
         if (texture_store.Textures.size() > texture_start) {
-            ReleaseSamplerSlots(ctx.Slots, CollectSamplerSlots(std::span<const TextureEntry>{texture_store.Textures}.subspan(texture_start)));
+            ReleaseTextureSlots(ctx.Slots, std::span<const TextureEntry>{texture_store.Textures}.subspan(texture_start));
             texture_store.Textures.resize(texture_start);
         }
         if (auto &pending = texture_store.PendingUploads; pending.size() > pending_texture_start) {
-            for (size_t i = pending_texture_start; i < pending.size(); ++i) ReleaseSamplerSlots(ctx.Slots, std::span{&pending[i].SamplerSlot, 1});
+            for (size_t i = pending_texture_start; i < pending.size(); ++i) ctx.Slots.Release({SlotType::Sampler, pending[i].SamplerSlot});
             pending.resize(pending_texture_start);
         }
         if (replaced_pending_env) {
@@ -1653,7 +1653,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             }
             ctx.Environments.PendingImport = std::move(prev_pending_env_backup);
         }
-        if (ctx.Buffers.Materials.Count() > material_start) ctx.Buffers.Materials.SetCount(material_start);
+        if (ctx.Buffers.Materials.Count<PBRMaterial>() > material_start) ctx.Buffers.Materials.SetCount<PBRMaterial>(material_start);
         if (auto &store = r.ctx().get<MaterialStore>(); store.Names.size() > material_name_start) store.ResizeNames(material_name_start);
     };
     struct ImportRollbackGuard {
@@ -1741,22 +1741,18 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         new_pending_textures.emplace_back(PendingTextureUpload{
             .SamplerSlot = sampler_slot,
             .Source = PendingTextureUpload::GltfImageRef{*image_index},
-            .ColorSpace = color_space,
-            .WrapS = wrap_s,
-            .WrapT = wrap_t,
-            .Sampler = sampler_config,
-            .Name = std::move(texture_name),
+            .Params = {.ColorSpace = color_space, .WrapS = wrap_s, .WrapT = wrap_t, .Sampler = sampler_config, .Name = std::move(texture_name)},
         });
         texture_slot_cache.emplace(cache_key, sampler_slot);
         return sampler_slot;
     };
 
     std::vector<uint32_t> material_indices_by_gltf_material(source_materials.size(), 0u);
-    const auto material_count = ctx.Buffers.Materials.Count();
+    const auto material_count = ctx.Buffers.Materials.Count<PBRMaterial>();
     const auto default_material_index = material_count > 0 ? material_count - 1u : 0u;
     std::vector<std::string> material_names;
     material_names.reserve(source_materials.size());
-    ctx.Buffers.Materials.ReserveElements(material_count + source_materials.size());
+    ctx.Buffers.Materials.Reserve((material_count + source_materials.size()) * sizeof(PBRMaterial));
     for (uint32_t material_index = 0; material_index < source_materials.size(); ++material_index) {
         const auto &src_material = source_materials[material_index];
         const auto src_name = material_index < asset.materials.size() ? std::string_view(asset.materials[material_index].name) : std::string_view{"DefaultMaterial"};
@@ -1805,11 +1801,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         materialized_textures.emplace_back(MaterializedTexture{
             .SamplerSlot = t.SamplerSlot,
             .SourceImageIndex = std::get<PendingTextureUpload::GltfImageRef>(t.Source).ImageIndex,
-            .ColorSpace = t.ColorSpace,
-            .WrapS = t.WrapS,
-            .WrapT = t.WrapT,
-            .Sampler = t.Sampler,
-            .Name = t.Name,
+            .Params = t.Params,
         });
     }
     if (!new_pending_textures.empty()) {
