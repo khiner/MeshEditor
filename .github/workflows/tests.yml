@@ -42,7 +42,8 @@ jobs:
           ./build/tests/MeshEditorModalSolveIntegrationTest
           ./build/tests/MeshEditorTests
           ./build/tests/MeshEditorProjectStoreTest
-          ./build/tests/MeshEditorProjectTest
+          # The hosted VM's Metal encoder lacks the renderer's queue-barrier API.
+          ./build/tests/MeshEditorProjectTest --no-render
 
   # Validate mesh corpora and benchmark production surface solves.
   modal-corpus:

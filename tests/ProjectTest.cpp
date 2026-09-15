@@ -26,6 +26,8 @@
 using boost::ut::expect;
 
 namespace {
+bool Render = true;
+
 struct Fixture {
     state::Scene R;
     std::unique_ptr<project::Project> P;
@@ -75,15 +77,18 @@ struct Fixture {
 
 struct State {
     std::vector<std::byte> Persistent, Scene, Image;
-    explicit State(Fixture &f) : Persistent(f.P->History.MaterializeLive()), Scene(snapshot::SnapshotSceneState(f.R)), Image(f.Image()) {
+    explicit State(Fixture &f)
+        : Persistent(f.P->History.MaterializeLive()), Scene(snapshot::SnapshotSceneState(f.R)), Image(Render ? f.Image() : std::vector<std::byte>{}) {
         expect(f.P->History.MaterializeLive() == Persistent);
     }
     void Check(Fixture &f) const {
         expect(f.P->History.MaterializeLive() == Persistent);
         expect(snapshot::SnapshotSceneState(f.R) == Scene);
-        const auto rendered = f.Image();
-        if (rendered != Image) std::printf("node %d image differs at byte %zu\n", f.P->History.Present, snapshot::Compare(Image, rendered).FirstDifferingByte);
-        expect(rendered == Image);
+        if (Render) {
+            const auto rendered = f.Image();
+            if (rendered != Image) std::printf("node %d image differs at byte %zu\n", f.P->History.Present, snapshot::Compare(Image, rendered).FirstDifferingByte);
+            expect(rendered == Image);
+        }
         expect(f.P->History.MaterializeLive() == Persistent);
         f.Audit();
     }
@@ -204,7 +209,7 @@ void TestProject(const char *sample) {
         expect(f.Do(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>()}) == continued);
         record();
         p.Navigate(base);
-        if (mesh_edit) {
+        if (mesh_edit && Render) {
             f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
             record();
             // Test sparse and dense GPU writes.
@@ -407,8 +412,14 @@ void TestProject(const char *sample) {
 }
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    if (argc == 2 && std::string_view{argv[1]} == "--no-render") Render = false;
+    else if (argc != 1) {
+        std::fprintf(stderr, "Usage: %s [--no-render]\n", argv[0]);
+        return 1;
+    }
+    if (!Render) std::puts("Skipping rendered-image comparisons, GPU picking, and mesh-edit gestures (--no-render).");
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
     {
         const TestDir sessions{"mesheditor-session-retention"};
@@ -434,7 +445,7 @@ int main() {
         Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
     }
     TestNativeStateHistory();
-    TestPickingIdentity();
+    if (Render) TestPickingIdentity();
     for (const char *sample : {"Sphere", "SimpleSkin", "SimpleMorph", "BoxTextured"}) TestProject(sample);
     return RunSuites();
 }
