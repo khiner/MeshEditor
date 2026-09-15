@@ -137,7 +137,7 @@ struct SelectionFragmentPipeline {
     using ElementVariants = std::array<mtl::MeshRenderPipeline, 4>;
     ElementVariants MeshletFaces, MeshletVertices, MeshletEdges;
     mtl::MeshRenderPipeline MeshletFaceXRayPointsBitsetBox, MeshletEdgeXRayPointsBitsetBox;
-    mtl::MeshRenderPipeline ObjectPick, OverlayJobLines, BoneSphere;
+    mtl::MeshRenderPipeline ObjectPick, OverlayJobLines, BoneSolid, BoneSphere;
 };
 
 namespace ThreadgroupSize {

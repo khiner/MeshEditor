@@ -131,6 +131,7 @@ struct BoneSolidVaryings {
     float4 Position [[position]];
     float4 Color [[user(Color)]];
     int Inverted [[user(Inverted)]] [[flat]];
+    uint ObjectId [[user(ObjectId)]] [[flat]];
 };
 
 // Bone-joint billboard output includes its view-space sphere.

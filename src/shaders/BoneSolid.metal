@@ -6,7 +6,7 @@
 #include "MeshletResolve.metal"
 #include "Varyings.metal"
 
-inline BoneSolidVaryings BoneSolidMeshVertexAt(const thread Scene &scene, DrawData draw, uint vertex_id) {
+inline BoneSolidVaryings BoneSolidMeshVertexAt(const thread Scene &scene, DrawData draw, uint object_id, uint vertex_id) {
     const uint idx = scene.Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + vertex_id];
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
@@ -26,6 +26,7 @@ inline BoneSolidVaryings BoneSolidMeshVertexAt(const thread Scene &scene, DrawDa
     const float alpha = scene.View.BoneXRay != 0u ? 0.6f : 1.0f;
 
     BoneSolidVaryings out;
+    out.ObjectId = object_id;
     out.Color = float4(mix(state_color, bone_color, fac * fac), alpha);
     out.Inverted = int(dot(cross(M[0].xyz, M[1].xyz), M[2].xyz) < 0.0f);
     out.Position = scene.ViewProj() * float4(world_pos, 1.0f);
@@ -53,7 +54,7 @@ using BoneSolidMeshOutput = metal::mesh<BoneSolidVaryings, void, 24u, 8u, metal:
     output.set_primitive_count(8u);
     if (thread_index >= 24u) return;
 
-    output.set_vertex(thread_index, BoneSolidMeshVertexAt(scene, work.Draw, thread_index));
+    output.set_vertex(thread_index, BoneSolidMeshVertexAt(scene, work.Draw, work.Instance.ObjectId, thread_index));
     output.set_index(thread_index, thread_index);
 }
 

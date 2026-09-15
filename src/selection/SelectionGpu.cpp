@@ -334,6 +334,11 @@ void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::option
                 }
             }
             const ObjectSelectionPushConstants sel_pc{*object};
+            if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::Bone)).Meshlets > 0u) {
+                selection.BoneSolid.Bind(encoder);
+                encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
+                DrawMeshlets(encoder, buffers, uint32_t(MeshletRoute::Overlay), uint32_t(MeshletInstanceFlag::Bone), 24u);
+            }
             if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::BoneJoint)).Meshlets > 0u) {
                 selection.BoneSphere.Bind(encoder);
                 encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);

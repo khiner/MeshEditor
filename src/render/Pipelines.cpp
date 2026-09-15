@@ -297,6 +297,7 @@ SelectionFragmentPipeline::SelectionFragmentPipeline(mtl::LibraryCache &librarie
       MeshletEdgeXRayPointsBitsetBox{MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectEdgePointMesh"}, true, true)},
       ObjectPick{CreateMeshPipeline(libraries, FunctionRef{"VisibilitySelection.metal", "MeshletObjectPickFragment"}, SelectionFormats(), {}, DepthOff, MeshletVisibilityVertex())},
       OverlayJobLines{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionStrokeFragment"}, SelectionFormats(), {}, DepthOff, {"OverlayJobLine.metal", "OverlayJobLineMesh"})},
+      BoneSolid{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, SelectionFormats(), {}, DepthOff, {"BoneSolid.metal", "BoneSolidMesh"})},
       BoneSphere{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, SelectionFormats(), {}, DepthOff, {"BoneSphere.metal", "BoneSphereMesh"})} {}
 
 const mtl::MeshRenderPipeline &SelectionFragmentPipeline::ElementRaster(
@@ -367,6 +368,7 @@ void Pipelines::CompileShaders() {
     Silhouette.Compile(Libraries);
     SelectionFragment.ObjectPick.Compile(Libraries);
     SelectionFragment.OverlayJobLines.Compile(Libraries);
+    SelectionFragment.BoneSolid.Compile(Libraries);
     SelectionFragment.BoneSphere.Compile(Libraries);
     for (auto *variants : {&SelectionFragment.MeshletFaces, &SelectionFragment.MeshletVertices, &SelectionFragment.MeshletEdges}) {
         for (auto &pipeline : *variants) pipeline.Compile(Libraries);
