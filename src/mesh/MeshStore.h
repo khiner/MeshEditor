@@ -40,9 +40,6 @@ struct MeshPrimitives {
     std::vector<uint32_t> ElementPrimitiveIndices{}; // source primitive index per drawn element (per face, or per vertex for point/line meshes)
     std::vector<uint32_t> MaterialIndices{};
     std::vector<uint32_t> AttributeFlags{}; // bitmask of MeshAttributeBit_*
-    std::vector<uint8_t> HasSourceIndices{}; // 0 = source drew non-indexed
-    // Inner size = variant count (empty when primitive has no mappings), and nullopt falls back to MaterialIndices.
-    std::vector<std::vector<std::optional<uint32_t>>> VariantMappings{};
 };
 
 // Corner-domain attribute layers in triangulated fan order, empty where the source lacks the channel.

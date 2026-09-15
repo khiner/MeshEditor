@@ -28,7 +28,6 @@
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "render/GpuSceneState.h"
-#include "render/MaterialImport.h"
 #include "render/Pipelines.h"
 #include "render/RenderTargets.h"
 #include "render/RenderStores.h"

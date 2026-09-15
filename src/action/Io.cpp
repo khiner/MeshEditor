@@ -14,11 +14,9 @@
 #include "audio/RealImpactComponents.h"
 #include "gltf/GltfScene.h"
 #include "mesh/MeshCreate.h"
-#include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "numeric/Angles.h"
 #include "object/ObjectOps.h"
-#include "render/GpuBufferOps.h"
 #include "scene/Defaults.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
@@ -34,8 +32,7 @@ namespace {
 // Load a glTF/glb and apply its camera/animation side effects.
 void LoadGltfFile(state::Scene &r, state::Entity viewport, const std::filesystem::path &path) {
     const profile::CpuScope scope{"LoadGltfFile"};
-    auto &c = r.ctx();
-    auto result = gltf::LoadGltf(path, {r, viewport, c.get<mtl::BindlessSet>(), c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), c.get<EnvironmentStore>()});
+    auto result = gltf::LoadGltf(path, r, viewport);
     if (!result) {
         Fail(r, std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
         return;
@@ -61,8 +58,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 else Fail(r, std::format("Unsupported file format: '{}'", ext));
             },
             [&](const SaveGltf &a) {
-                auto &c = r.ctx();
-                if (auto save = gltf::SaveGltf(a.Path, {r, viewport, c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), &c.get<const mtl::Context>(), &GetBufferContext(r)}); !save) {
+                if (auto save = gltf::SaveGltf(a.Path, r, viewport); !save) {
                     Fail(r, std::format("Error saving glTF file '{}': {}", a.Path.string(), save.error()));
                 }
             },

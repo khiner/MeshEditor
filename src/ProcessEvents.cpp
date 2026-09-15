@@ -226,14 +226,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
         pending_env.reset();
     }
-    // Every upload and import above has been materialized, so drop image bytes that a source path can reload.
-    if (const auto *src_assets = r.try_get<gltf::SourceAssets>(viewport)) {
-        for (size_t i = 0; i < src_assets->Images.size(); ++i) {
-            const auto &img = src_assets->Images[i];
-            if (!img.SourcePath.empty() && !img.Bytes.empty()) r.edit<gltf::SourceAssets>(viewport).Images[i].Bytes = {};
-        }
-    }
-
     // Prefilter and activate the studio HDRI named by the StudioEnvironment selection whenever it changes.
     if (!reactive(r, Change::StudioEnvironment).empty()) {
         SetStudioEnvironment(r, r.get<const StudioEnvironment>(viewport).Name);

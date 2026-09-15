@@ -197,6 +197,10 @@ std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(const mt
 std::expected<TextureEntry, std::string> MaterializeTextureEntry(const state::Scene &, TextureUploadBatch &, mtl::BindlessSet &, const PendingTextureUpload &, const std::vector<gltf::Image> &, float max_anisotropy);
 std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(const state::Scene &, mtl::BindlessSet &, const PendingEnvironmentImport &, const std::vector<gltf::Image> &);
 void ResetImportedEnvironment(state::Scene &);
+// Release imported GPU textures while retaining the default white texture.
+void ReleaseImportedTextures(state::Scene &);
+// Release imported textures and reset to the default material.
+void ResetImportedTexturesAndMaterials(state::Scene &);
 EnvironmentPrefiltered CreateIblFromHdri(const mtl::Context &, mtl::BindlessSet &, const Pipelines &, const std::filesystem::path &, std::string);
 // Allocate a 1x1x6 cubemap (1 mip) of the given linear color.
 EnvironmentPrefiltered BuildFlatColorEnvironment(const mtl::Context &, mtl::BindlessSet &, vec3 color, std::string name);

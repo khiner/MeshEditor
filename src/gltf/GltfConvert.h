@@ -13,68 +13,76 @@
 namespace gltf::detail {
 using ExtrasMap = std::map<uint64_t, std::string>;
 
-inline uint64_t ExtrasKey(fastgltf::Category cat, size_t idx) { return (uint64_t(uint32_t(cat)) << 32) | uint64_t(idx); }
-// Maps enums in either direction and returns `fallback` for unmapped values.
-template<typename A, typename B, size_t N>
-constexpr B MapEnum(const std::pair<A, B> (&table)[N], A from, B fallback) {
-    for (const auto &[a, b] : table) {
-        if (a == from) return b;
+inline uint64_t ExtrasKey(uint32_t category, size_t idx) { return (uint64_t(category) << 32) | uint64_t(idx); }
+
+// MimeType, AlphaMode, and CombineMode share fastgltf's ordinals.
+static_assert(uint8_t(fastgltf::MimeType::None) == uint8_t(MimeType::None) && uint8_t(fastgltf::MimeType::JPEG) == uint8_t(MimeType::JPEG) && uint8_t(fastgltf::MimeType::PNG) == uint8_t(MimeType::PNG) && uint8_t(fastgltf::MimeType::KTX2) == uint8_t(MimeType::KTX2) && uint8_t(fastgltf::MimeType::DDS) == uint8_t(MimeType::DDS) && uint8_t(fastgltf::MimeType::GltfBuffer) == uint8_t(MimeType::GltfBuffer) && uint8_t(fastgltf::MimeType::OctetStream) == uint8_t(MimeType::OctetStream) && uint8_t(fastgltf::MimeType::WEBP) == uint8_t(MimeType::WEBP));
+inline MimeType ToMimeType(fastgltf::MimeType m) { return MimeType(uint8_t(m)); }
+inline fastgltf::MimeType FromMimeType(MimeType m) { return fastgltf::MimeType(uint8_t(m)); }
+
+static_assert(uint8_t(fastgltf::AlphaMode::Opaque) == uint8_t(MaterialAlphaMode::Opaque) && uint8_t(fastgltf::AlphaMode::Mask) == uint8_t(MaterialAlphaMode::Mask) && uint8_t(fastgltf::AlphaMode::Blend) == uint8_t(MaterialAlphaMode::Blend));
+inline MaterialAlphaMode ToAlphaMode(fastgltf::AlphaMode m) { return MaterialAlphaMode(uint8_t(m)); }
+inline fastgltf::AlphaMode FromAlphaMode(MaterialAlphaMode m) { return fastgltf::AlphaMode(uint8_t(m)); }
+
+static_assert(uint8_t(fastgltf::CombineMode::Average) == uint8_t(PhysicsCombineMode::Average) && uint8_t(fastgltf::CombineMode::Minimum) == uint8_t(PhysicsCombineMode::Minimum) && uint8_t(fastgltf::CombineMode::Maximum) == uint8_t(PhysicsCombineMode::Maximum) && uint8_t(fastgltf::CombineMode::Multiply) == uint8_t(PhysicsCombineMode::Multiply));
+// fastgltf parses an unrecognized combine string as Invalid, which reads as the spec default.
+inline PhysicsCombineMode ToCombineMode(fastgltf::CombineMode m) { return m == fastgltf::CombineMode::Invalid ? PhysicsCombineMode::Average : PhysicsCombineMode(uint8_t(m)); }
+inline fastgltf::CombineMode FromCombineMode(PhysicsCombineMode m) { return fastgltf::CombineMode(uint8_t(m)); }
+
+// fastgltf numbers animation paths from one.
+static_assert(uint8_t(fastgltf::AnimationPath::Translation) == uint8_t(AnimationPath::Translation) + 1 && uint8_t(fastgltf::AnimationPath::Rotation) == uint8_t(AnimationPath::Rotation) + 1 && uint8_t(fastgltf::AnimationPath::Scale) == uint8_t(AnimationPath::Scale) + 1 && uint8_t(fastgltf::AnimationPath::Weights) == uint8_t(AnimationPath::Weights) + 1);
+inline AnimationPath ToPath(fastgltf::AnimationPath p) { return AnimationPath(uint8_t(p) - 1); }
+inline fastgltf::AnimationPath FromPath(AnimationPath p) { return fastgltf::AnimationPath(uint8_t(p) + 1); }
+
+inline AnimationInterpolation ToInterp(fastgltf::AnimationInterpolation i) {
+    switch (i) {
+        case fastgltf::AnimationInterpolation::Step: return AnimationInterpolation::Step;
+        case fastgltf::AnimationInterpolation::Linear: return AnimationInterpolation::Linear;
+        case fastgltf::AnimationInterpolation::CubicSpline: return AnimationInterpolation::CubicSpline;
     }
-    return fallback;
 }
-template<typename A, typename B, size_t N>
-constexpr A MapEnumBack(const std::pair<A, B> (&table)[N], B from, A fallback) {
-    for (const auto &[a, b] : table) {
-        if (b == from) return a;
+inline fastgltf::AnimationInterpolation FromInterp(AnimationInterpolation i) {
+    switch (i) {
+        case AnimationInterpolation::Step: return fastgltf::AnimationInterpolation::Step;
+        case AnimationInterpolation::Linear: return fastgltf::AnimationInterpolation::Linear;
+        case AnimationInterpolation::CubicSpline: return fastgltf::AnimationInterpolation::CubicSpline;
     }
-    return fallback;
 }
 
-constexpr std::pair<fastgltf::Filter, Filter> FilterMap[]{
-    {fastgltf::Filter::Nearest, Filter::Nearest},
-    {fastgltf::Filter::Linear, Filter::Linear},
-    {fastgltf::Filter::NearestMipMapNearest, Filter::NearestMipMapNearest},
-    {fastgltf::Filter::LinearMipMapNearest, Filter::LinearMipMapNearest},
-    {fastgltf::Filter::NearestMipMapLinear, Filter::NearestMipMapLinear},
-    {fastgltf::Filter::LinearMipMapLinear, Filter::LinearMipMapLinear},
-};
-constexpr std::pair<fastgltf::Wrap, Wrap> WrapMap[]{
-    {fastgltf::Wrap::ClampToEdge, Wrap::ClampToEdge},
-    {fastgltf::Wrap::MirroredRepeat, Wrap::MirroredRepeat},
-    {fastgltf::Wrap::Repeat, Wrap::Repeat},
-};
-constexpr std::pair<fastgltf::MimeType, MimeType> MimeTypeMap[]{
-    {fastgltf::MimeType::None, MimeType::None},
-    {fastgltf::MimeType::JPEG, MimeType::JPEG},
-    {fastgltf::MimeType::PNG, MimeType::PNG},
-    {fastgltf::MimeType::KTX2, MimeType::KTX2},
-    {fastgltf::MimeType::DDS, MimeType::DDS},
-    {fastgltf::MimeType::GltfBuffer, MimeType::GltfBuffer},
-    {fastgltf::MimeType::OctetStream, MimeType::OctetStream},
-    {fastgltf::MimeType::WEBP, MimeType::WEBP},
-};
-constexpr std::pair<fastgltf::AlphaMode, MaterialAlphaMode> AlphaModeMap[]{
-    {fastgltf::AlphaMode::Opaque, MaterialAlphaMode::Opaque},
-    {fastgltf::AlphaMode::Mask, MaterialAlphaMode::Mask},
-    {fastgltf::AlphaMode::Blend, MaterialAlphaMode::Blend},
-};
-constexpr std::pair<fastgltf::AnimationInterpolation, AnimationInterpolation> InterpMap[]{
-    {fastgltf::AnimationInterpolation::Step, AnimationInterpolation::Step},
-    {fastgltf::AnimationInterpolation::Linear, AnimationInterpolation::Linear},
-    {fastgltf::AnimationInterpolation::CubicSpline, AnimationInterpolation::CubicSpline},
-};
-constexpr std::pair<fastgltf::AnimationPath, AnimationPath> PathMap[]{
-    {fastgltf::AnimationPath::Translation, AnimationPath::Translation},
-    {fastgltf::AnimationPath::Rotation, AnimationPath::Rotation},
-    {fastgltf::AnimationPath::Scale, AnimationPath::Scale},
-    {fastgltf::AnimationPath::Weights, AnimationPath::Weights},
-};
-constexpr std::pair<fastgltf::CombineMode, PhysicsCombineMode> CombineMap[]{
-    {fastgltf::CombineMode::Average, PhysicsCombineMode::Average},
-    {fastgltf::CombineMode::Minimum, PhysicsCombineMode::Minimum},
-    {fastgltf::CombineMode::Maximum, PhysicsCombineMode::Maximum},
-    {fastgltf::CombineMode::Multiply, PhysicsCombineMode::Multiply},
-};
+inline Filter ToFilter(fastgltf::Filter f) {
+    switch (f) {
+        case fastgltf::Filter::Nearest: return Filter::Nearest;
+        case fastgltf::Filter::Linear: return Filter::Linear;
+        case fastgltf::Filter::NearestMipMapNearest: return Filter::NearestMipMapNearest;
+        case fastgltf::Filter::LinearMipMapNearest: return Filter::LinearMipMapNearest;
+        case fastgltf::Filter::NearestMipMapLinear: return Filter::NearestMipMapLinear;
+        case fastgltf::Filter::LinearMipMapLinear: return Filter::LinearMipMapLinear;
+    }
+}
+inline fastgltf::Filter FromFilter(Filter f) {
+    switch (f) {
+        case Filter::Nearest: return fastgltf::Filter::Nearest;
+        case Filter::Linear: return fastgltf::Filter::Linear;
+        case Filter::NearestMipMapNearest: return fastgltf::Filter::NearestMipMapNearest;
+        case Filter::LinearMipMapNearest: return fastgltf::Filter::LinearMipMapNearest;
+        case Filter::NearestMipMapLinear: return fastgltf::Filter::NearestMipMapLinear;
+        case Filter::LinearMipMapLinear: return fastgltf::Filter::LinearMipMapLinear;
+    }
+}
+inline Wrap ToWrap(fastgltf::Wrap w) {
+    switch (w) {
+        case fastgltf::Wrap::ClampToEdge: return Wrap::ClampToEdge;
+        case fastgltf::Wrap::MirroredRepeat: return Wrap::MirroredRepeat;
+        case fastgltf::Wrap::Repeat: return Wrap::Repeat;
+    }
+}
+inline fastgltf::Wrap FromWrap(Wrap w) {
+    switch (w) {
+        case Wrap::ClampToEdge: return fastgltf::Wrap::ClampToEdge;
+        case Wrap::MirroredRepeat: return fastgltf::Wrap::MirroredRepeat;
+        case Wrap::Repeat: return fastgltf::Wrap::Repeat;
+    }
+}
 
 // Identifies an encoded image from its magic bytes.
 inline MimeType SniffMimeType(std::span<const std::byte> bytes) {

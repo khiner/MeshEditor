@@ -17,7 +17,7 @@
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
-#include "render/MaterialImport.h"
+#include "assets/MaterialImport.h"
 #include "render/MeshBuffers.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"

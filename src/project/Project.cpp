@@ -24,7 +24,6 @@
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
-#include "render/MaterialImport.h"
 #include "render/MeshBuffers.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"

@@ -29,6 +29,7 @@
 #include "scene/WorldTransform.h"
 
 #include "state/Scene.h"
+#include "metal/MetalContext.h"
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>
 #include <iostream>
@@ -42,13 +43,10 @@ namespace {
 std::optional<std::string> EmitExtras(size_t idx, fastgltf::Category cat, void *userPtr) {
     if (!userPtr) return std::nullopt;
     const auto &m = *static_cast<const ExtrasMap *>(userPtr);
-    if (const auto it = m.find(ExtrasKey(cat, idx)); it != m.end()) return it->second;
+    if (const auto it = m.find(ExtrasKey(uint32_t(cat), idx)); it != m.end()) return it->second;
     return std::nullopt;
 }
 
-fastgltf::Filter FromFilter(Filter f) { return MapEnumBack(FilterMap, f, fastgltf::Filter::LinearMipMapLinear); }
-fastgltf::Wrap FromWrap(Wrap w) { return MapEnumBack(WrapMap, w, fastgltf::Wrap::Repeat); }
-fastgltf::MimeType FromMimeType(MimeType m) { return MapEnumBack(MimeTypeMap, m, fastgltf::MimeType::None); }
 // Encode tightly-packed RGBA8 pixels to the container for `mime`, dispatching to the generic encoders.
 // KTX2 and DDS aren't supported and return an error.
 std::expected<std::vector<std::byte>, std::string>
@@ -66,10 +64,6 @@ EncodeImageRgba8ForMime(MimeType mime, std::span<const std::byte> rgba8, uint32_
     }
     return std::unexpected{std::format("Unhandled mime type for image '{}'.", name)};
 }
-fastgltf::AnimationInterpolation FromInterp(AnimationInterpolation i) { return MapEnumBack(InterpMap, i, fastgltf::AnimationInterpolation::Linear); }
-fastgltf::AnimationPath FromPath(AnimationPath p) { return MapEnumBack(PathMap, p, fastgltf::AnimationPath::Translation); }
-fastgltf::CombineMode FromCombine(PhysicsCombineMode m) { return MapEnumBack(CombineMap, m, fastgltf::CombineMode::Average); }
-
 // fastgltf's name fields are pmr::string (doesn't implicit-copy from std::string).
 using FgString = std::remove_cvref_t<decltype(fastgltf::Material::name)>;
 FgString ToFgStr(std::string_view s) { return FgString{s}; }
@@ -112,14 +106,14 @@ uint32_t AppendField(std::vector<std::byte> &buffer, std::span<const V> data, T 
     return offset;
 }
 
-fastgltf::AlphaMode FromAlphaMode(MaterialAlphaMode m) { return MapEnumBack(AlphaModeMap, m, fastgltf::AlphaMode::Opaque); }
-
-std::unique_ptr<fastgltf::TextureTransform> MakeTextureTransform(const ::TextureInfo &ti, const TextureTransformMeta *meta = nullptr) {
+// Emits KHR_texture_transform when the UV transform is non-default or the source declared the extension, and sets `used` on emission.
+std::unique_ptr<fastgltf::TextureTransform> MakeTextureTransform(const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &used) {
     const bool has_transform = ti.UvOffset.x != 0.f || ti.UvOffset.y != 0.f ||
         ti.UvScale.x != 1.f || ti.UvScale.y != 1.f ||
         ti.UvRotation != 0.f;
     const bool source_had_ext = meta && meta->SourceHadExtension;
     if (!has_transform && !source_had_ext) return nullptr;
+    used = true;
     auto t = std::make_unique<fastgltf::TextureTransform>();
     t->rotation = ti.UvRotation;
     t->uvOffset = std::bit_cast<fastgltf::math::nvec2>(ti.UvOffset);
@@ -128,29 +122,31 @@ std::unique_ptr<fastgltf::TextureTransform> MakeTextureTransform(const ::Texture
     return t;
 }
 
-void FillFgTextureInfo(fastgltf::TextureInfo &out, const ::TextureInfo &ti, const TextureTransformMeta *meta = nullptr) {
+// With meta, the parent texCoord and the extension's override are emitted separately.
+void FillTextureInfo(fastgltf::TextureInfo &out, const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &transform_used) {
     out.textureIndex = ti.Slot;
-    // With meta, the parent texCoord and the extension's override are emitted separately.
     out.texCoordIndex = meta ? meta->SourceBaseTexCoord : ti.TexCoord;
-    out.transform = MakeTextureTransform(ti, meta);
+    out.transform = MakeTextureTransform(ti, meta, transform_used);
 }
-
-template<typename Out>
-fastgltf::Optional<Out> ToFgTexInfoAs(const ::TextureInfo &ti, const TextureTransformMeta *meta, auto &&set_extra) {
+fastgltf::Optional<fastgltf::TextureInfo> ToFgTexInfo(const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &transform_used) {
     if (ti.Slot == InvalidSlot) return {};
-    Out out;
-    FillFgTextureInfo(out, ti, meta);
-    set_extra(out);
-    return fastgltf::Optional<Out>{std::move(out)};
+    fastgltf::TextureInfo out;
+    FillTextureInfo(out, ti, meta, transform_used);
+    return fastgltf::Optional<fastgltf::TextureInfo>{std::move(out)};
 }
-fastgltf::Optional<fastgltf::TextureInfo> ToFgTexInfo(const ::TextureInfo &ti, const TextureTransformMeta *meta = nullptr) {
-    return ToFgTexInfoAs<fastgltf::TextureInfo>(ti, meta, [](auto &) {});
+fastgltf::Optional<fastgltf::NormalTextureInfo> ToFgNormalTexInfo(const ::TextureInfo &ti, float scale, const TextureTransformMeta *meta, bool &transform_used) {
+    if (ti.Slot == InvalidSlot) return {};
+    fastgltf::NormalTextureInfo out;
+    FillTextureInfo(out, ti, meta, transform_used);
+    out.scale = scale;
+    return fastgltf::Optional<fastgltf::NormalTextureInfo>{std::move(out)};
 }
-fastgltf::Optional<fastgltf::NormalTextureInfo> ToFgNormalTexInfo(const ::TextureInfo &ti, float scale, const TextureTransformMeta *meta = nullptr) {
-    return ToFgTexInfoAs<fastgltf::NormalTextureInfo>(ti, meta, [&](auto &o) { o.scale = scale; });
-}
-fastgltf::Optional<fastgltf::OcclusionTextureInfo> ToFgOcclusionTexInfo(const ::TextureInfo &ti, float strength, const TextureTransformMeta *meta = nullptr) {
-    return ToFgTexInfoAs<fastgltf::OcclusionTextureInfo>(ti, meta, [&](auto &o) { o.strength = strength; });
+fastgltf::Optional<fastgltf::OcclusionTextureInfo> ToFgOcclusionTexInfo(const ::TextureInfo &ti, float strength, const TextureTransformMeta *meta, bool &transform_used) {
+    if (ti.Slot == InvalidSlot) return {};
+    fastgltf::OcclusionTextureInfo out;
+    FillTextureInfo(out, ti, meta, transform_used);
+    out.strength = strength;
+    return fastgltf::Optional<fastgltf::OcclusionTextureInfo>{std::move(out)};
 }
 
 fastgltf::Camera ConvertCameraToFg(const ::Camera &cam, std::string_view name) {
@@ -195,26 +191,16 @@ fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name)
 
 } // namespace
 
-std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const SaveContext &sc) {
+std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const state::Scene &r, state::Entity viewport, SaveOptions options) {
     const profile::CpuScope scope{"SaveGltf"};
-    const auto &r = sc.R;
-    const auto &meshes = sc.Meshes;
+    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &buffers = r.ctx().get<const GpuBuffers>();
 
-    // Order entities in `view` by the source index `index_of` reads for them.
-    // Runtime-added entries follow the source range for cameras, lights, and physics resources.
+    // Entities of `view` in the source order `index_of` reads, with runtime-added ones after the source range in view order.
     const auto ordered_by_source = [&](auto view, auto &&index_of) {
-        std::vector<std::pair<uint32_t, state::Entity>> ordered;
-        uint32_t next = 0;
-        for (const auto e : view) {
-            if (const auto index = index_of(e)) {
-                ordered.emplace_back(*index, e);
-                next = std::max(next, *index + 1u);
-            }
-        }
-        for (const auto e : view) {
-            if (!index_of(e)) ordered.emplace_back(next++, e);
-        }
-        std::ranges::sort(ordered, {}, &std::pair<uint32_t, state::Entity>::first);
+        std::vector<state::Entity> ordered;
+        for (const auto e : view) ordered.emplace_back(e);
+        std::ranges::stable_sort(ordered, {}, [&](state::Entity e) { return index_of(e).value_or(std::numeric_limits<uint32_t>::max()); });
         return ordered;
     };
     const auto source_index = [&](state::Entity e) -> std::optional<uint32_t> {
@@ -225,12 +211,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Read source metadata and texture, image, and sampler arrays from gltf::SourceAssets.
     // Encoded images, sampler details, and asset metadata cannot be reconstructed from registry or GPU state.
     // Emit cameras and lights from entity components and materials from PBRMaterial plus MaterialSourceMeta.
-    const auto *src_assets = r.try_get<const gltf::SourceAssets>(sc.Viewport);
+    const auto *src_assets = r.try_get<const gltf::SourceAssets>(viewport);
     // Read source-form scene metadata directly from src_assets at each emission site.
     static const gltf::SourceAssets EmptySourceAssets{};
     const auto &sa = src_assets ? *src_assets : EmptySourceAssets;
     const auto &names = r.ctx().get<const MaterialStore>().Names;
-    const auto material_count = sc.Buffers.Materials.Count<PBRMaterial>();
+    const auto material_count = buffers.Materials.Count<PBRMaterial>();
     const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
 
     // Preserve source mesh ordering through the source layout.
@@ -262,74 +248,85 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (g.Name.empty() && layout) g.Name = layout->Name;
     }
 
-    // Emits one camera or light per component-bearing entity in source order.
+    // Cameras and lights emit one resource per component-bearing entity in source order.
     // Khronos samples do not share source cameras or lights across nodes.
-    // Store the entities here; emit to fastgltf::Asset later (when `asset` exists).
+    const auto node_of = [&](auto member) {
+        return [&, member](state::Entity e) { const auto *node = r.try_get<const GltfNode>(e); return node ? node->*member : std::nullopt; };
+    };
+    const auto camera_entities_ordered = ordered_by_source(r.view<const ::Camera>(), node_of(&GltfNode::Camera));
+    const auto light_entities_ordered = ordered_by_source(r.view<const PunctualLight>(), node_of(&GltfNode::Light));
     std::unordered_map<state::Entity, uint32_t> camera_entity_to_index, light_entity_to_index;
-    std::vector<state::Entity> camera_entities_ordered, light_entities_ordered;
+    for (uint32_t i = 0; i < camera_entities_ordered.size(); ++i) camera_entity_to_index[camera_entities_ordered[i]] = i;
+    for (uint32_t i = 0; i < light_entities_ordered.size(); ++i) light_entity_to_index[light_entities_ordered[i]] = i;
+
+    // One entry per emitted node: live source nodes compacted to [0, k) in source order, then runtime-created objects as scene roots, then offset-collider children.
+    // Source parent links restore the imported hierarchy after runtime reparenting. A deleted source parent drops the link, so the child emits as a root.
+    struct ExportNode {
+        // The entity whose transform, name, physics, and audio represent the node: the lowest entity id among those sharing its source index.
+        state::Entity Entity{state::Null};
+        // Object entities sharing the node in ascending entity id order, for EXT_mesh_gpu_instancing.
+        std::vector<state::Entity> Instances;
+        std::optional<uint32_t> Parent;
+        // Dense child indices in source sibling order, offset-collider children last.
+        std::vector<uint32_t> Children;
+        // Set on the owner of a synthetic offset-collider child and on that child.
+        std::optional<uint32_t> OffsetChild;
+        state::Entity OffsetOwner{state::Null};
+        bool Hidden{};
+    };
+    std::vector<ExportNode> nodes;
+    std::unordered_map<state::Entity, uint32_t> node_index_of;
     {
-        const auto node_of = [&](auto member) {
-            return [&, member](state::Entity e) { const auto *node = r.try_get<const GltfNode>(e); return node ? node->*member : std::nullopt; };
-        };
-        for (const auto &[_, entity] : ordered_by_source(r.view<const ::Camera>(), node_of(&GltfNode::Camera))) {
-            camera_entity_to_index[entity] = camera_entities_ordered.size();
-            camera_entities_ordered.emplace_back(entity);
+        std::map<uint32_t, std::vector<state::Entity>> entities_by_source;
+        for (const auto [e, node] : r.view<const GltfNode>().each()) {
+            if (node.Index) entities_by_source[*node.Index].emplace_back(e);
         }
-        for (const auto &[_, entity] : ordered_by_source(r.view<const PunctualLight>(), node_of(&GltfNode::Light))) {
-            light_entity_to_index[entity] = light_entities_ordered.size();
-            light_entities_ordered.emplace_back(entity);
+        std::unordered_map<uint32_t, uint32_t> source_to_dense;
+        for (auto &[source, entities] : entities_by_source) {
+            std::ranges::sort(entities);
+            const auto ni = uint32_t(nodes.size());
+            source_to_dense[source] = ni;
+            auto &node = nodes.emplace_back();
+            node.Entity = entities.front();
+            for (const auto e : entities) {
+                node_index_of[e] = ni;
+                const auto *kind = r.try_get<const ObjectKind>(e);
+                if (kind && kind->Value != ObjectType::Armature && r.all_of<Transform>(e)) node.Instances.emplace_back(e);
+            }
+        }
+        for (const auto [e, _t, kind] : r.view<const Transform, const ObjectKind>().each()) {
+            if (kind.Value == ObjectType::Armature || node_index_of.contains(e)) continue; // Armatures round-trip via skins.
+            node_index_of[e] = uint32_t(nodes.size());
+            auto &node = nodes.emplace_back();
+            node.Entity = e;
+            node.Instances = {e};
+        }
+        std::vector<std::vector<std::pair<uint32_t, uint32_t>>> children(nodes.size());
+        for (uint32_t ni = 0; ni < nodes.size(); ++ni) {
+            const auto *node = r.try_get<const GltfNode>(nodes[ni].Entity);
+            if (!node || !node->Parent) continue;
+            const auto pit = source_to_dense.find(*node->Parent);
+            if (pit == source_to_dense.end()) continue;
+            nodes[ni].Parent = pit->second;
+            children[pit->second].emplace_back(node->Sibling.value_or(ni), ni);
+        }
+        // A collider with a local offset emits its geometry on a synthetic child node carrying the offset.
+        for (uint32_t ni = 0, count = uint32_t(nodes.size()); ni < count; ++ni) {
+            const auto *cs = r.try_get<const ColliderShape>(nodes[ni].Entity);
+            if (!cs || cs->LocalOffset == vec3{0}) continue;
+            const auto child = uint32_t(nodes.size());
+            nodes[ni].OffsetChild = child;
+            auto &node = nodes.emplace_back();
+            node.Parent = ni;
+            node.OffsetOwner = nodes[ni].Entity;
+            children.emplace_back();
+            children[ni].emplace_back(std::numeric_limits<uint32_t>::max(), child);
+        }
+        for (uint32_t ni = 0; ni < nodes.size(); ++ni) {
+            std::ranges::sort(children[ni], {}, &std::pair<uint32_t, uint32_t>::first);
+            for (const auto &[_, child] : children[ni]) nodes[ni].Children.emplace_back(child);
         }
     }
-
-    // Use the source node and parent indices to preserve the imported hierarchy after runtime reparenting.
-    // Append runtime-created objects as scene roots after the source range.
-    // Compact live source node indices to a dense [0, k) range so deleted / out-of-scene nodes leave no gaps.
-    std::unordered_map<uint32_t, uint32_t> source_to_dense;
-    {
-        std::vector<uint32_t> live;
-        for (const auto [e, node] : r.view<const GltfNode>().each())
-            if (node.Index) live.emplace_back(*node.Index);
-        std::ranges::sort(live);
-        live.erase(std::ranges::unique(live).begin(), live.end());
-        for (uint32_t dense = 0; dense < live.size(); ++dense) source_to_dense[live[dense]] = dense;
-    }
-    std::unordered_map<state::Entity, uint32_t> entity_to_node_index;
-    uint32_t total_node_count = uint32_t(source_to_dense.size());
-    for (const auto [e, node] : r.view<const GltfNode>().each())
-        if (node.Index) entity_to_node_index[e] = source_to_dense.at(*node.Index);
-    for (const auto [e, _t, kind] : r.view<const Transform, const ObjectKind>().each()) {
-        if (kind.Value == ObjectType::Armature) continue; // Armatures aren't gltf nodes — they round-trip via skins.
-        if (!entity_to_node_index.contains(e)) entity_to_node_index[e] = total_node_count++;
-    }
-    // Children paired with sibling position so we sort in source order. A source parent with no entity (deleted) drops the link, so the child emits as a root.
-    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> children_by_parent;
-    for (const auto [e, node] : r.view<const GltfNode>().each()) {
-        if (!node.Index || !node.Parent) continue;
-        const auto pit = source_to_dense.find(*node.Parent);
-        if (pit == source_to_dense.end()) continue;
-        const auto child = source_to_dense.at(*node.Index);
-        children_by_parent[pit->second].emplace_back(node.Sibling.value_or(child), child);
-    }
-    for (auto &[_, kids] : children_by_parent) std::ranges::sort(kids, {}, &std::pair<uint32_t, uint32_t>::first);
-
-    // node_index → entity, null only for the synthetic offset-collider child slots appended below.
-    std::vector<state::Entity> node_to_entity(total_node_count, state::Null);
-    for (const auto [entity, node_index] : entity_to_node_index) {
-        if (node_index < node_to_entity.size()) node_to_entity[node_index] = entity;
-    }
-
-    std::unordered_map<state::Entity, uint32_t> entity_to_offset_child;
-    std::unordered_map<uint32_t, state::Entity> offset_child_to_owner;
-    for (auto [e, cs] : r.view<const ColliderShape>().each()) {
-        if (cs.LocalOffset == vec3{0}) continue;
-        const auto it = entity_to_node_index.find(e);
-        if (it == entity_to_node_index.end()) continue;
-        const uint32_t synthetic_ni = total_node_count++;
-        entity_to_offset_child[e] = synthetic_ni;
-        offset_child_to_owner[synthetic_ni] = e;
-        children_by_parent[it->second].emplace_back(std::numeric_limits<uint32_t>::max(), synthetic_ni);
-    }
-    node_to_entity.resize(total_node_count, state::Null);
 
     // Scenes to emit, in source order. active_scene is the default.
     std::vector<state::Entity> scenes_ordered;
@@ -342,12 +339,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Sorts roots because glTF scene-node order is nonsemantic.
     const auto compute_roots = [&](state::Entity scene) {
         std::vector<uint32_t> roots;
-        for (uint32_t ni = 0; ni < total_node_count; ++ni) {
-            const auto entity = node_to_entity[ni];
-            if (entity == state::Null) continue;
-            const auto *node = r.try_get<const GltfNode>(entity);
-            const bool is_root = !node || !node->Parent || !source_to_dense.contains(*node->Parent);
-            if (!is_root) continue;
+        for (uint32_t ni = 0; ni < nodes.size(); ++ni) {
+            const auto entity = nodes[ni].Entity;
+            if (entity == state::Null || nodes[ni].Parent) continue;
             if (scene != state::Null) {
                 const auto *sm = r.try_get<const SceneMembership>(entity);
                 if (sm && std::ranges::find(sm->Scenes, scene) == sm->Scenes.end()) continue;
@@ -357,27 +351,22 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return roots;
     };
 
-    // KHR_node_visibility: node is hidden iff it has no RenderInstance and every child is hidden too.
-    // Stubs are unreachable from scene roots, so they default to not-hidden and don't emit spurious visible:false.
-    // Post-order DFS populates `fully_hidden` so parents can check children without recursion or multi-pass.
-    // Nodes only in non-active scenes are treated as not-hidden — their missing RenderInstance is a switch-time artifact, not a user-set hide.
-    const auto node_in_active_scene = [&](uint32_t ni) {
-        const auto entity = ni < node_to_entity.size() ? node_to_entity[ni] : state::Null;
-        const auto *sm = entity != state::Null ? r.try_get<const SceneMembership>(entity) : nullptr;
-        return !sm || std::ranges::find(sm->Scenes, active_scene) != sm->Scenes.end();
-    };
-    std::vector<bool> fully_hidden(total_node_count, false);
+    // KHR_node_visibility: a node is hidden iff it has no RenderInstance and every child is hidden too.
+    // Stubs are unreachable from scene roots, so they default to not-hidden and emit no spurious visible:false.
+    // A post-order walk from the roots fills Hidden so parents can check children without recursion or multi-pass.
+    // Nodes only in non-active scenes count as not-hidden, since their missing RenderInstance is a switch-time artifact, not a user-set hide.
     {
+        const auto node_in_active_scene = [&](state::Entity entity) {
+            const auto *sm = entity != state::Null ? r.try_get<const SceneMembership>(entity) : nullptr;
+            return !sm || std::ranges::find(sm->Scenes, active_scene) != sm->Scenes.end();
+        };
         const auto dfs = [&](this const auto &self, uint32_t ni) -> bool {
-            if (ni >= total_node_count) return false;
-            const auto entity = node_to_entity[ni];
-            bool hidden = node_in_active_scene(ni) && entity != state::Null && !r.all_of<RenderInstance>(entity);
-            if (const auto it = children_by_parent.find(ni); it != children_by_parent.end()) {
-                for (const auto &[_, child_ni] : it->second) {
-                    if (!self(child_ni)) hidden = false;
-                }
+            auto &node = nodes[ni];
+            bool hidden = node.Entity != state::Null && node_in_active_scene(node.Entity) && !r.all_of<RenderInstance>(node.Entity);
+            for (const auto child : node.Children) {
+                if (!self(child)) hidden = false;
             }
-            fully_hidden[ni] = hidden;
+            node.Hidden = hidden;
             return hidden;
         };
         for (const auto se : scenes_ordered) {
@@ -388,17 +377,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Group object world transforms by source node for EXT_mesh_gpu_instancing.
-    std::vector<std::vector<Transform>> node_instance_worlds(total_node_count);
-    auto object_view = r.view<const Transform, const ObjectKind>();
-    for (const auto entity : object_view) {
-        if (object_view.get<const ObjectKind>(entity).Value == ObjectType::Armature) continue; // → gltf::Skin, handled separately.
-        const auto it = entity_to_node_index.find(entity);
-        if (it != entity_to_node_index.end() && it->second < total_node_count) {
-            node_instance_worlds[it->second].emplace_back(r.get<const WorldTransform>(entity));
-        }
-    }
-
     // Construct the asset before allocator-bound collision filters.
     fastgltf::Asset asset;
 
@@ -406,19 +384,19 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     std::unordered_map<state::Entity, uint32_t> physics_material_to_index, physics_jointdef_to_index, collision_filter_to_index;
     {
         auto mat_view = r.view<const PhysicsMaterial>();
-        for (const auto &[_, e] : ordered_by_source(mat_view, source_index)) {
+        for (const auto e : ordered_by_source(mat_view, source_index)) {
             const auto &pm = mat_view.get<const PhysicsMaterial>(e);
             physics_material_to_index[e] = asset.physicsMaterials.size();
             asset.physicsMaterials.emplace_back(fastgltf::PhysicsMaterial{
                 .staticFriction = pm.StaticFriction,
                 .dynamicFriction = pm.DynamicFriction,
                 .restitution = pm.Restitution,
-                .frictionCombine = FromCombine(pm.FrictionCombine),
-                .restitutionCombine = FromCombine(pm.RestitutionCombine),
+                .frictionCombine = FromCombineMode(pm.FrictionCombine),
+                .restitutionCombine = FromCombineMode(pm.RestitutionCombine),
             });
         }
         auto jd_view = r.view<const ::PhysicsJointDef>();
-        for (const auto &[_, e] : ordered_by_source(jd_view, source_index)) {
+        for (const auto e : ordered_by_source(jd_view, source_index)) {
             const auto &jd = jd_view.get<const ::PhysicsJointDef>(e);
             fastgltf::pmr::MaybeSmallVector<fastgltf::JointLimit> limits;
             limits.reserve(jd.Limits.size());
@@ -462,7 +440,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             return out;
         };
         auto cf_view = r.view<const CollisionFilter>();
-        for (const auto &[_, e] : ordered_by_source(cf_view, source_index)) {
+        for (const auto e : ordered_by_source(cf_view, source_index)) {
             const auto &f = cf_view.get<const CollisionFilter>(e);
             collision_filter_to_index[e] = asset.collisionFilters.size();
             fastgltf::CollisionFilter out{.collisionSystems = resolve_system_names(f.Systems), .notCollideWithSystems = {}, .collideWithSystems = {}};
@@ -624,8 +602,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         anim.channels.emplace_back(fastgltf::AnimationChannel{.samplerIndex = anim.samplers.size() - 1, .nodeIndex = target_node_index, .path = FromPath(target)});
     };
     const auto get_node_index = [&](state::Entity e) -> std::optional<uint32_t> {
-        const auto it = entity_to_node_index.find(e);
-        return it != entity_to_node_index.end() ? std::optional<uint32_t>{it->second} : std::nullopt;
+        const auto it = node_index_of.find(e);
+        return it != node_index_of.end() ? std::optional<uint32_t>{it->second} : std::nullopt;
     };
 
     // Armature animation: bone channels → joint node index.
@@ -672,111 +650,94 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         });
     }
 
-    // Re-encode dirty images, reload clean external images, and pass through embedded bytes.
+    // Each image emits in its source form: an external URI, a data URI, or a buffer view. A dirty image re-encodes from its GPU texture first.
     asset.images.reserve(sa.Images.size());
-
     std::unordered_map<uint32_t, const TextureEntry *> texture_for_image;
-    for (const auto &tex : sc.Textures.Textures) {
+    for (const auto &tex : r.ctx().get<const TextureStore>().Textures) {
         if (tex.SourceImageIndex != UINT32_MAX) texture_for_image.emplace(tex.SourceImageIndex, &tex);
     }
     const auto reencode_from_gpu = [&](uint32_t img_idx, gltf::MimeType target, std::string_view name)
         -> std::expected<std::pair<std::vector<std::byte>, gltf::MimeType>, std::string> {
         const auto it = texture_for_image.find(img_idx);
         if (it == texture_for_image.end()) return std::unexpected{std::format("Image '{}' has no GPU texture; cannot re-encode.", name)};
-        if (!sc.Ctx) return std::unexpected{"GPU readback required but SaveContext.Ctx is null"};
-        auto rgba8 = ReadbackTextureRgba8(*sc.Ctx, *it->second);
+        const auto *ctx = r.ctx().find<const mtl::Context>();
+        if (!ctx) return std::unexpected{std::format("Image '{}' needs GPU readback but no Metal context is registered.", name)};
+        auto rgba8 = ReadbackTextureRgba8(*ctx, *it->second);
         if (!rgba8) return std::unexpected{std::move(rgba8.error())};
         const auto w = it->second->Image.Extent.Width, h = it->second->Image.Extent.Height;
-        if (auto enc = EncodeImageRgba8ForMime(target, *rgba8, w, h, sc.Options.LossyImageQuality, name)) {
+        if (auto enc = EncodeImageRgba8ForMime(target, *rgba8, w, h, options.LossyImageQuality, name)) {
             return std::pair{std::move(*enc), target};
         } else if (target == gltf::MimeType::PNG) {
             return std::unexpected{std::move(enc.error())};
         } else {
             // PNG provides the encoder fallback.
-            std::cerr << std::format("Warning: image '{}': {} — falling back to PNG.\n", name, enc.error());
+            std::cerr << std::format("Warning: image '{}': {}. Falling back to PNG.\n", name, enc.error());
             auto png = EncodeImagePngRgba8(*rgba8, w, h, name);
             if (!png) return std::unexpected{std::move(png.error())};
             return std::pair{std::move(*png), gltf::MimeType::PNG};
         }
     };
-
     for (uint32_t i = 0; i < sa.Images.size(); ++i) {
         const auto &img = sa.Images[i];
-        // Embedded bytes are the default source unless re-encoding or external URI emission applies.
-        std::vector<std::byte> owned; // backs `view` when we re-encode
-        std::span<const std::byte> view = img.Bytes;
-        const bool project_source = project::Assets::IsReference(img.SourcePath);
-        const bool ktx2_or_dds = img.MimeType == gltf::MimeType::KTX2 || img.MimeType == gltf::MimeType::DDS;
-        if (project_source && view.empty() && (!img.IsDirty || ktx2_or_dds)) {
-            auto bytes = File::Read(project::ResolveAsset(r, img.SourcePath));
-            if (!bytes) return std::unexpected{bytes.error()};
-            owned = std::move(*bytes);
-            view = owned;
-        }
-        auto emit_mime = img.MimeType;
-        bool emit_external_uri = false;
-        if (img.IsDirty && !ktx2_or_dds) {
+        using Source = gltf::Image::SourceKind;
+        const bool encodable = img.MimeType != gltf::MimeType::KTX2 && img.MimeType != gltf::MimeType::DDS;
+        auto form = img.Source;
+        auto mime = img.MimeType;
+        std::vector<std::byte> owned;
+        std::span<const std::byte> bytes = img.Bytes;
+        if (img.IsDirty && encodable) {
             auto re = reencode_from_gpu(i, img.MimeType, img.Name);
             if (!re) return std::unexpected{std::move(re.error())};
-
             owned = std::move(re->first);
-            emit_mime = re->second;
-            view = owned;
+            mime = re->second;
+            bytes = owned;
+            // The re-encoded bytes no longer match the external file, so they embed.
+            if (form == Source::External) form = Source::Embedded;
         } else if (img.IsDirty) {
-            // KTX2 and DDS lack an encoder, so retain their source bytes.
+            // KTX2 and DDS lack an encoder, so their source bytes stand.
             std::cerr << std::format("Warning: image '{}' is dirty but {} re-encoding isn't supported; emitting original bytes.\n", img.Name, img.MimeType == gltf::MimeType::KTX2 ? "KTX2" : "DDS");
-        } else if (!img.Uri.empty() && !project_source) {
+        }
+        // A project archives external sources, so they embed on export.
+        if (form == Source::External && project::Assets::IsReference(img.SourcePath)) form = Source::Embedded;
+        if (form == Source::External) {
             std::error_code ec;
-            const bool exists = !img.SourcePath.empty() && std::filesystem::is_regular_file(img.SourcePath, ec);
-            // Unknown image types support external-file existence checks only.
-            const bool validate = img.MimeType == gltf::MimeType::PNG || img.MimeType == gltf::MimeType::JPEG ||
-                img.MimeType == gltf::MimeType::WEBP || img.MimeType == gltf::MimeType::KTX2;
-            bool ok = false;
-            if (exists) {
-                if (!validate) ok = true;
-                else if (auto b = File::Read(img.SourcePath)) ok = SniffMimeType(*b) == img.MimeType;
-            }
-            if (ok) {
-                emit_external_uri = true;
-            } else if (auto re = reencode_from_gpu(i, gltf::MimeType::PNG, img.Name)) {
-                std::cerr << std::format("Warning: image '{}' source '{}' missing or mime-mismatched; embedding as PNG.\n", img.Name, img.SourcePath);
-                owned = std::move(re->first);
-                emit_mime = gltf::MimeType::PNG;
-                view = owned;
-            } else {
-                // Preserve the URI when GPU readback is unavailable.
-                std::cerr << std::format("Warning: image '{}' fallback re-encode failed ({}); emitting URI as-is.\n", img.Name, re.error());
-                emit_external_uri = true;
+            if (!std::filesystem::is_regular_file(img.SourcePath, ec)) {
+                if (auto re = reencode_from_gpu(i, gltf::MimeType::PNG, img.Name)) {
+                    std::cerr << std::format("Warning: image '{}' source '{}' is missing; embedding as PNG.\n", img.Name, img.SourcePath);
+                    owned = std::move(re->first);
+                    mime = gltf::MimeType::PNG;
+                    bytes = owned;
+                    form = Source::Embedded;
+                } else {
+                    std::cerr << std::format("Warning: image '{}' source '{}' is missing and re-encoding failed ({}); emitting the URI as-is.\n", img.Name, img.SourcePath, re.error());
+                }
             }
         }
+        if (form != Source::External && bytes.empty() && !img.SourcePath.empty()) {
+            auto file = File::Read(project::ResolveAsset(r, img.SourcePath));
+            if (!file) return std::unexpected{std::move(file.error())};
+            owned = std::move(*file);
+            bytes = owned;
+        }
 
-        if (emit_external_uri) {
-            const auto fg_mime = img.SourceHadMimeType ? FromMimeType(img.MimeType) : fastgltf::MimeType::None;
+        if (form == Source::External) {
             asset.images.emplace_back(fastgltf::Image{
-                .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::URI{std::string_view{img.Uri}}, .mimeType = fg_mime},
+                .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::URI{std::string_view{img.Uri}}, .mimeType = img.SourceHadMimeType ? FromMimeType(img.MimeType) : fastgltf::MimeType::None},
                 .name = ToFgStr(img.Name),
             });
-        } else if (img.SourceDataUri && !view.empty()) {
-            const auto fg_mime = FromMimeType(emit_mime);
+        } else if (form == Source::DataUri && !bytes.empty()) {
+            const auto fg_mime = FromMimeType(mime);
             const auto mime_str = fg_mime == fastgltf::MimeType::None ? std::string{} : std::string{fastgltf::getMimeTypeString(fg_mime)};
-            const auto data_uri = "data:" + mime_str + ";base64," + fastgltf::base64::encode(reinterpret_cast<const uint8_t *>(view.data()), view.size());
+            const auto data_uri = "data:" + mime_str + ";base64," + fastgltf::base64::encode(reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size());
             asset.images.emplace_back(fastgltf::Image{
                 .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::URI{data_uri}, .mimeType = fastgltf::MimeType::None},
                 .name = ToFgStr(img.Name),
             });
         } else {
-            uint32_t bv;
-            if (!view.empty()) {
-                bv = AddBufferView(AppendAligned(bin, view.data(), view.size()), view.size());
-            } else {
-                // Preserve the required bufferView slot.
-                const uint32_t offset = bin.size();
-                bin.emplace_back(std::byte{0});
-                while (bin.size() % 4 != 0) bin.emplace_back(std::byte{0});
-                bv = AddBufferView(offset, 1);
-            }
+            // An image without bytes keeps its required bufferView slot with one padding byte.
+            const uint32_t bv = bytes.empty() ? AddBufferView(AppendAligned(bin, reinterpret_cast<const std::byte *>("\0"), 1), 1) : AddBufferView(AppendAligned(bin, bytes.data(), bytes.size()), bytes.size());
             asset.images.emplace_back(fastgltf::Image{
-                .data = fastgltf::sources::BufferView{.bufferViewIndex = bv, .mimeType = FromMimeType(emit_mime)},
+                .data = fastgltf::sources::BufferView{.bufferViewIndex = bv, .mimeType = FromMimeType(mime)},
                 .name = ToFgStr(img.Name),
             });
         }
@@ -796,11 +757,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
     std::vector<fastgltf::Optional<size_t>> material_indices(material_count);
     asset.materials.reserve(material_count);
+    bool uses_texture_transform = false;
     using M = MaterialSourceMeta;
     static const MaterialSourceMeta DefaultMeta{};
     for (uint32_t i = 1; i < material_count; ++i) {
         const auto source_idx = i - 1;
-        auto pbr = sc.Buffers.Materials.GetSpan<PBRMaterial>()[i];
+        auto pbr = buffers.Materials.GetSpan<PBRMaterial>()[i];
         const auto &meta = source_idx < material_metas.size() ? material_metas[source_idx] : DefaultMeta;
         if (meta.ImplicitDefault) continue;
         material_indices[i] = asset.materials.size();
@@ -817,11 +779,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         out.pbrData.baseColorFactor = std::bit_cast<fastgltf::math::nvec4>(pbr.BaseColorFactor);
         out.pbrData.metallicFactor = pbr.MetallicFactor;
         out.pbrData.roughnessFactor = pbr.RoughnessFactor;
-        out.pbrData.baseColorTexture = ToFgTexInfo(pbr.BaseColorTexture, &meta.BaseSlotMeta[0]);
-        out.pbrData.metallicRoughnessTexture = ToFgTexInfo(pbr.MetallicRoughnessTexture, &meta.BaseSlotMeta[1]);
-        out.normalTexture = ToFgNormalTexInfo(pbr.NormalTexture, pbr.NormalScale, &meta.BaseSlotMeta[2]);
-        out.occlusionTexture = ToFgOcclusionTexInfo(pbr.OcclusionTexture, pbr.OcclusionStrength, &meta.BaseSlotMeta[3]);
-        out.emissiveTexture = ToFgTexInfo(pbr.EmissiveTexture, &meta.BaseSlotMeta[4]);
+        out.pbrData.baseColorTexture = ToFgTexInfo(pbr.BaseColorTexture, &meta.BaseSlotMeta[0], uses_texture_transform);
+        out.pbrData.metallicRoughnessTexture = ToFgTexInfo(pbr.MetallicRoughnessTexture, &meta.BaseSlotMeta[1], uses_texture_transform);
+        out.normalTexture = ToFgNormalTexInfo(pbr.NormalTexture, pbr.NormalScale, &meta.BaseSlotMeta[2], uses_texture_transform);
+        out.occlusionTexture = ToFgOcclusionTexInfo(pbr.OcclusionTexture, pbr.OcclusionStrength, &meta.BaseSlotMeta[3], uses_texture_transform);
+        out.emissiveTexture = ToFgTexInfo(pbr.EmissiveTexture, &meta.BaseSlotMeta[4], uses_texture_transform);
         out.emissiveFactor = std::bit_cast<fastgltf::math::nvec3>(emissive_factor);
         if (bits & M::ExtEmissiveStrength) out.emissiveStrength = fastgltf::Optional<fastgltf::num>{meta.EmissiveStrength.value_or(1.f)};
         out.alphaMode = FromAlphaMode(pbr.AlphaMode);
@@ -835,48 +797,48 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             out.sheen = std::make_unique<fastgltf::MaterialSheen>();
             out.sheen->sheenColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.Sheen.ColorFactor);
             out.sheen->sheenRoughnessFactor = pbr.Sheen.RoughnessFactor;
-            out.sheen->sheenColorTexture = ToFgTexInfo(pbr.Sheen.ColorTexture);
-            out.sheen->sheenRoughnessTexture = ToFgTexInfo(pbr.Sheen.RoughnessTexture);
+            out.sheen->sheenColorTexture = ToFgTexInfo(pbr.Sheen.ColorTexture, nullptr, uses_texture_transform);
+            out.sheen->sheenRoughnessTexture = ToFgTexInfo(pbr.Sheen.RoughnessTexture, nullptr, uses_texture_transform);
         }
         if (bits & M::ExtSpecular) {
             out.specular = std::make_unique<fastgltf::MaterialSpecular>();
             out.specular->specularFactor = pbr.Specular.Factor;
             out.specular->specularColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.Specular.ColorFactor);
-            out.specular->specularTexture = ToFgTexInfo(pbr.Specular.Texture);
-            out.specular->specularColorTexture = ToFgTexInfo(pbr.Specular.ColorTexture);
+            out.specular->specularTexture = ToFgTexInfo(pbr.Specular.Texture, nullptr, uses_texture_transform);
+            out.specular->specularColorTexture = ToFgTexInfo(pbr.Specular.ColorTexture, nullptr, uses_texture_transform);
         }
         if (bits & M::ExtTransmission) {
             out.transmission = std::make_unique<fastgltf::MaterialTransmission>();
             out.transmission->transmissionFactor = pbr.Transmission.Factor;
-            out.transmission->transmissionTexture = ToFgTexInfo(pbr.Transmission.Texture);
+            out.transmission->transmissionTexture = ToFgTexInfo(pbr.Transmission.Texture, nullptr, uses_texture_transform);
         }
         if (bits & M::ExtDiffuseTransmission) {
             out.diffuseTransmission = std::make_unique<fastgltf::MaterialDiffuseTransmission>();
             out.diffuseTransmission->diffuseTransmissionFactor = pbr.DiffuseTransmission.Factor;
             out.diffuseTransmission->diffuseTransmissionColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.DiffuseTransmission.ColorFactor);
-            out.diffuseTransmission->diffuseTransmissionTexture = ToFgTexInfo(pbr.DiffuseTransmission.Texture);
-            out.diffuseTransmission->diffuseTransmissionColorTexture = ToFgTexInfo(pbr.DiffuseTransmission.ColorTexture);
+            out.diffuseTransmission->diffuseTransmissionTexture = ToFgTexInfo(pbr.DiffuseTransmission.Texture, nullptr, uses_texture_transform);
+            out.diffuseTransmission->diffuseTransmissionColorTexture = ToFgTexInfo(pbr.DiffuseTransmission.ColorTexture, nullptr, uses_texture_transform);
         }
         if (bits & M::ExtVolume) {
             out.volume = std::make_unique<fastgltf::MaterialVolume>();
             out.volume->thicknessFactor = pbr.Volume.ThicknessFactor;
             out.volume->attenuationColor = std::bit_cast<fastgltf::math::nvec3>(pbr.Volume.AttenuationColor);
             out.volume->attenuationDistance = pbr.Volume.AttenuationDistance > 0.f ? pbr.Volume.AttenuationDistance : std::numeric_limits<float>::infinity();
-            out.volume->thicknessTexture = ToFgTexInfo(pbr.Volume.ThicknessTexture);
+            out.volume->thicknessTexture = ToFgTexInfo(pbr.Volume.ThicknessTexture, nullptr, uses_texture_transform);
         }
         if (bits & M::ExtClearcoat) {
             out.clearcoat = std::make_unique<fastgltf::MaterialClearcoat>();
             out.clearcoat->clearcoatFactor = pbr.Clearcoat.Factor;
             out.clearcoat->clearcoatRoughnessFactor = pbr.Clearcoat.RoughnessFactor;
-            out.clearcoat->clearcoatTexture = ToFgTexInfo(pbr.Clearcoat.Texture);
-            out.clearcoat->clearcoatRoughnessTexture = ToFgTexInfo(pbr.Clearcoat.RoughnessTexture);
-            out.clearcoat->clearcoatNormalTexture = ToFgNormalTexInfo(pbr.Clearcoat.NormalTexture, pbr.Clearcoat.NormalScale);
+            out.clearcoat->clearcoatTexture = ToFgTexInfo(pbr.Clearcoat.Texture, nullptr, uses_texture_transform);
+            out.clearcoat->clearcoatRoughnessTexture = ToFgTexInfo(pbr.Clearcoat.RoughnessTexture, nullptr, uses_texture_transform);
+            out.clearcoat->clearcoatNormalTexture = ToFgNormalTexInfo(pbr.Clearcoat.NormalTexture, pbr.Clearcoat.NormalScale, nullptr, uses_texture_transform);
         }
         if (bits & M::ExtAnisotropy) {
             out.anisotropy = std::make_unique<fastgltf::MaterialAnisotropy>();
             out.anisotropy->anisotropyStrength = pbr.Anisotropy.Strength;
             out.anisotropy->anisotropyRotation = pbr.Anisotropy.Rotation;
-            out.anisotropy->anisotropyTexture = ToFgTexInfo(pbr.Anisotropy.Texture);
+            out.anisotropy->anisotropyTexture = ToFgTexInfo(pbr.Anisotropy.Texture, nullptr, uses_texture_transform);
         }
         if (bits & M::ExtIridescence) {
             out.iridescence = std::make_unique<fastgltf::MaterialIridescence>();
@@ -884,8 +846,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             out.iridescence->iridescenceIor = pbr.Iridescence.Ior;
             out.iridescence->iridescenceThicknessMinimum = pbr.Iridescence.ThicknessMinimum;
             out.iridescence->iridescenceThicknessMaximum = pbr.Iridescence.ThicknessMaximum;
-            out.iridescence->iridescenceTexture = ToFgTexInfo(pbr.Iridescence.Texture);
-            out.iridescence->iridescenceThicknessTexture = ToFgTexInfo(pbr.Iridescence.ThicknessTexture);
+            out.iridescence->iridescenceTexture = ToFgTexInfo(pbr.Iridescence.Texture, nullptr, uses_texture_transform);
+            out.iridescence->iridescenceThicknessTexture = ToFgTexInfo(pbr.Iridescence.ThicknessTexture, nullptr, uses_texture_transform);
         }
 
         asset.materials.emplace_back(std::move(out));
@@ -1348,7 +1310,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     };
 
     // Emit nodes directly from registry components while retaining gaps in the source node indices.
-    asset.nodes.reserve(total_node_count);
+    asset.nodes.reserve(nodes.size());
     bool uses_gpu_instancing = false;
     bool uses_physics_rigid_bodies = false;
     // KHR_audio_rigid_bodies acoustic materials and surfaces, deduped by value across node instances.
@@ -1363,17 +1325,16 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         mirror.emplace_back(*value);
         return index;
     };
-    for (uint32_t ni = 0; ni < total_node_count; ++ni) {
-        const auto entity = node_to_entity[ni];
+    for (uint32_t ni = 0; ni < nodes.size(); ++ni) {
+        const auto &export_node = nodes[ni];
+        const auto entity = export_node.Entity;
 
         fastgltf::pmr::MaybeSmallVector<size_t> children;
-        if (const auto cit = children_by_parent.find(ni); cit != children_by_parent.end()) {
-            children.reserve(cit->second.size());
-            for (const auto &[_, child_idx] : cit->second) children.emplace_back(child_idx);
-        }
+        children.reserve(export_node.Children.size());
+        for (const auto child : export_node.Children) children.emplace_back(child);
 
-        if (const auto sit = offset_child_to_owner.find(ni); sit != offset_child_to_owner.end()) {
-            const auto owner = sit->second;
+        if (export_node.OffsetOwner != state::Null) {
+            const auto owner = export_node.OffsetOwner;
             const auto &cs = r.get<const ColliderShape>(owner);
             auto rb = std::make_unique<fastgltf::PhysicsRigidBody>();
             populate_collider_extension(owner, *rb);
@@ -1383,13 +1344,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             node.transform = fastgltf::TRS{.translation = std::bit_cast<fastgltf::math::fvec3>(cs.LocalOffset)};
             node.physicsRigidBody = std::move(rb);
             asset.nodes.emplace_back(std::move(node));
-            continue;
-        }
-
-        if (entity == state::Null) {
-            fastgltf::Node empty{};
-            empty.children = std::move(children);
-            asset.nodes.emplace_back(std::move(empty));
             continue;
         }
 
@@ -1419,8 +1373,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const Transform local_transform = [&] {
             if (r.all_of<ArmatureModifier>(entity)) return Transform{}; // Skinned mesh node transform is spec-ignored.
             const auto *node = r.try_get<const SceneNode>(entity);
-            if (const auto pit = gltf_node && gltf_node->Parent ? source_to_dense.find(*gltf_node->Parent) : source_to_dense.end(); pit != source_to_dense.end()) {
-                const auto src_parent = node_to_entity[pit->second];
+            if (export_node.Parent) {
+                const auto src_parent = nodes[*export_node.Parent].Entity;
                 if (src_parent != state::Null && (!node || node->Parent != src_parent)) {
                     return ToTransform(numeric::Inverse(rest_world_of(src_parent)) * rest_world_of(entity));
                 }
@@ -1432,7 +1386,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         // EXT_mesh_gpu_instancing. Per-instance TRS = node.WorldTransform^-1 * instance.WorldTransform.
         // Emit only channels that aren't uniformly default.
         // spec requires >=1 attribute so fall back to TRANSLATION when everything's default.
-        const auto &instance_worlds = node_instance_worlds[ni];
+        std::vector<Transform> instance_worlds;
+        instance_worlds.reserve(export_node.Instances.size());
+        for (const auto instance : export_node.Instances) instance_worlds.emplace_back(r.get<const WorldTransform>(instance));
         const bool needs_instancing = mesh_index.has_value() && instance_worlds.size() > 1;
         if (needs_instancing) uses_gpu_instancing = true;
         std::pmr::vector<fastgltf::Attribute> instancing;
@@ -1472,9 +1428,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto *tn = r.try_get<const TriggerNodes>(entity);
         const auto *pj = r.try_get<const PhysicsJoint>(entity);
         const bool is_trigger = r.all_of<TriggerTag>(entity);
-        // Offset colliders emit their geometry on a synthetic child — strip the cs contribution here.
-        const bool has_offset_child = entity_to_offset_child.contains(entity);
-        const bool cs_on_owner = cs && !has_offset_child;
+        // An offset collider emits its geometry on the synthetic child, so the owner node carries none.
+        const bool cs_on_owner = cs && !export_node.OffsetChild;
         fastgltf::Optional<size_t> collider_mesh_idx;
         if (cs_on_owner && cs->MeshEntity != state::Null) {
             if (const auto mit = mesh_entity_to_index.find(cs->MeshEntity); mit != mesh_entity_to_index.end()) collider_mesh_idx = mit->second;
@@ -1510,14 +1465,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 // NodesTrigger: compound zone.
                 fastgltf::NodeTrigger nt;
                 for (const auto ne : tn->Nodes) {
-                    if (const auto nit = entity_to_node_index.find(ne); nit != entity_to_node_index.end()) nt.nodes.emplace_back(nit->second);
+                    if (const auto nit = node_index_of.find(ne); nit != node_index_of.end()) nt.nodes.emplace_back(nit->second);
                 }
                 physics_rigid_body->trigger = fastgltf::Optional<TriggerVariant>{TriggerVariant{std::move(nt)}};
             }
 
             if (pj) {
                 fastgltf::Joint joint{};
-                if (const auto cit = entity_to_node_index.find(pj->ConnectedNode); cit != entity_to_node_index.end()) joint.connectedNode = cit->second;
+                if (const auto cit = node_index_of.find(pj->ConnectedNode); cit != node_index_of.end()) joint.connectedNode = cit->second;
                 if (const auto dit = physics_jointdef_to_index.find(pj->JointDefEntity); dit != physics_jointdef_to_index.end()) joint.joint = dit->second;
                 joint.enableCollision = pj->EnableCollision;
                 physics_rigid_body->joint = fastgltf::Optional<fastgltf::Joint>{std::move(joint)};
@@ -1576,7 +1531,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
             // Omit texture references removed by scene edits.
             if (const auto &nt = contact_surface->NormalTexture; nt && nt->Texture < asset.textures.size()) {
-                out.normalTexture = ToFgNormalTexInfo({.Slot = nt->Texture, .TexCoord = nt->TexCoord}, nt->Scale);
+                out.normalTexture = ToFgNormalTexInfo({.Slot = nt->Texture, .TexCoord = nt->TexCoord}, nt->Scale, nullptr, uses_texture_transform);
             }
             asset.acousticSurfaces.emplace_back(std::move(out));
             return asset.acousticSurfaces.size() - 1;
@@ -1642,11 +1597,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .name = ToFgStr(node_name),
             .physicsRigidBody = std::move(physics_rigid_body),
             .audioRigidBody = audio_rigid_body,
-            .visible = [&] {
-                if (!fully_hidden[ni]) return true;
-                const auto pit = gltf_node && gltf_node->Parent ? source_to_dense.find(*gltf_node->Parent) : source_to_dense.end();
-                return pit != source_to_dense.end() && fully_hidden[pit->second];
-            }(),
+            .visible = !export_node.Hidden || (export_node.Parent && nodes[*export_node.Parent].Hidden),
             .selectable = true,
             .hoverable = true,
         });
@@ -1731,28 +1682,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     if (any_material([](const auto &m) { return m.clearcoat != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_clearcoat");
     if (any_material([](const auto &m) { return m.anisotropy != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_anisotropy");
     if (any_material([](const auto &m) { return m.iridescence != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_iridescence");
-    if (const auto *mv = sc.R.try_get<const ::MaterialVariants>(sc.Viewport); mv && !mv->Names.empty()) {
+    if (const auto *mv = r.try_get<const ::MaterialVariants>(viewport); mv && !mv->Names.empty()) {
         asset.materialVariants.reserve(mv->Names.size());
         for (const auto &v : mv->Names) asset.materialVariants.emplace_back(v);
         asset.extensionsUsed.emplace_back("KHR_materials_variants");
     }
-    {
-        const auto has_xf = [](const auto &opt) { return opt.has_value() && opt->transform != nullptr; };
-        const auto material_has_xf = [&](const fastgltf::Material &m) {
-            if (has_xf(m.pbrData.baseColorTexture) || has_xf(m.pbrData.metallicRoughnessTexture) ||
-                has_xf(m.normalTexture) || has_xf(m.occlusionTexture) || has_xf(m.emissiveTexture)) return true;
-            if (m.sheen && (has_xf(m.sheen->sheenColorTexture) || has_xf(m.sheen->sheenRoughnessTexture))) return true;
-            if (m.specular && (has_xf(m.specular->specularTexture) || has_xf(m.specular->specularColorTexture))) return true;
-            if (m.transmission && has_xf(m.transmission->transmissionTexture)) return true;
-            if (m.diffuseTransmission && (has_xf(m.diffuseTransmission->diffuseTransmissionTexture) || has_xf(m.diffuseTransmission->diffuseTransmissionColorTexture))) return true;
-            if (m.volume && has_xf(m.volume->thicknessTexture)) return true;
-            if (m.clearcoat && (has_xf(m.clearcoat->clearcoatTexture) || has_xf(m.clearcoat->clearcoatRoughnessTexture) || has_xf(m.clearcoat->clearcoatNormalTexture))) return true;
-            if (m.anisotropy && has_xf(m.anisotropy->anisotropyTexture)) return true;
-            if (m.iridescence && (has_xf(m.iridescence->iridescenceTexture) || has_xf(m.iridescence->iridescenceThicknessTexture))) return true;
-            return false;
-        };
-        if (std::ranges::any_of(asset.materials, material_has_xf)) asset.extensionsUsed.emplace_back("KHR_texture_transform");
-    }
+    if (uses_texture_transform) asset.extensionsUsed.emplace_back("KHR_texture_transform");
     if (std::ranges::any_of(asset.textures, [](const auto &t) { return t.webpImageIndex.has_value(); })) {
         asset.extensionsUsed.emplace_back("EXT_texture_webp");
     }

@@ -1,4 +1,4 @@
-#include "render/MaterialImport.h"
+#include "assets/MaterialImport.h"
 #include "File.h"
 #include "assets/MeshImport.h"
 #include "gltf/GltfConvert.h"
@@ -71,7 +71,11 @@ void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<co
         sources.Images.emplace_back(gltf::Image{
             .Bytes = {},
             .MimeType = gltf::detail::SniffMimeType(std::as_bytes(std::span{encoded})),
+            .Source = gltf::Image::SourceKind::External,
+            .SourceHadMimeType = false,
+            .IsDirty = false,
             .Name = texture_path.filename().string(),
+            .Uri = {},
             .SourcePath = project::AssetReference(r, texture_path).string(),
         });
         texture.SourceImageIndex = image_index;

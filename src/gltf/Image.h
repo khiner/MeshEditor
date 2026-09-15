@@ -7,13 +7,23 @@
 
 namespace gltf {
 struct Image {
-    // Retain embedded source bytes for export when SourcePath is empty.
+    // Where the source document kept the encoded bytes, which the export reproduces.
+    enum class SourceKind : uint8_t {
+        Embedded,
+        DataUri,
+        External,
+    };
+    // Encoded bytes, empty once SourcePath names a file holding them.
     std::vector<std::byte> Bytes;
     MimeType MimeType;
-    std::string Name, Uri{};
-    std::string SourcePath{};
-    bool SourceDataUri{}, SourceHadMimeType{};
+    SourceKind Source{SourceKind::Embedded};
+    // The source document declared MimeType, so an external export repeats it.
+    bool SourceHadMimeType{};
     // Selects GPU readback and re-encoding during SaveGltf.
     bool IsDirty{};
+    std::string Name;
+    // The external source URI as written in the document.
+    std::string Uri{};
+    std::string SourcePath{};
 };
 } // namespace gltf

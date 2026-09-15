@@ -27,6 +27,7 @@
 #include "mesh/Primitives.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
+#include "render/MaterialComponents.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
@@ -41,6 +42,7 @@
 #include <simdjson.h>
 
 #include <cstring>
+#include <fstream>
 #include <map>
 #include <numeric>
 #include <set>
@@ -820,6 +822,151 @@ const ModalModelData SampleModal{
         summary.SolvedVertices = {0, 1, 2};
         return summary; }(),
 };
+
+struct SceneFixture : Engine {
+    // Imports keep source image URIs while no asset store is present, so the glTF comparison sees the source layout.
+    // Project operations need the store, so it exists only while a project is open.
+    SceneFixture() : Engine{false} { R.ctx().erase<project::Assets>(); }
+    void Check(bool ok) {
+        boost::ut::expect(ok);
+        if (ok) return;
+        for (const auto &message : R.ctx().get<action::Errors>().Messages) std::cerr << "  project: " << message << "\n";
+        if (const auto error = P->History.TakeIntegrityError(); !error.empty()) std::cerr << "  history: " << error << "\n";
+    }
+    // Start a project at `dir`, save live state into it, close it, and return the persistent image.
+    std::vector<std::byte> SaveTo(const std::filesystem::path &dir) {
+        R.ctx().emplace<project::Assets>();
+        Check(P->Begin(dir));
+        Check(P->Save());
+        auto image = P->History.MaterializeLive();
+        Check(P->Close());
+        R.ctx().erase<project::Assets>();
+        return image;
+    }
+    // Restore the project at `dir` and return the persistent image.
+    std::vector<std::byte> LoadFrom(const std::filesystem::path &dir) {
+        R.ctx().emplace<project::Assets>();
+        Check(P->Open(dir));
+        return P->History.MaterializeLive();
+    }
+};
+
+// The first mesh-instance node, or null.
+state::Entity FirstMeshNode(state::Scene &r) {
+    for (auto e : r.view<const Instance, const GltfNode>()) {
+        if (r.all_of<MeshHandle>(r.get<const Instance>(e).Entity)) return e;
+    }
+    return state::Null;
+}
+
+// The reloaded scene of a save/load round trip, with the first entity carrying T. Value is null when any step failed.
+template<typename T> struct Roundtripped {
+    std::unique_ptr<SceneFixture> Scene;
+    state::Entity Node{state::Null};
+    const T *Value{nullptr};
+};
+
+// Loads `sample` into a fresh scene, runs `author` on it with its first mesh-instance node, saves to `out_path`, and reloads the file into a second fresh scene.
+template<typename T> Roundtripped<T> RoundtripComponent(const fs::path &sample, const fs::path &out_path, auto &&author) {
+    using namespace boost::ut;
+    Roundtripped<T> out;
+    SceneFixture fx;
+    const auto load = gltf::LoadGltf(sample, fx.R, fx.Viewport);
+    expect(load.has_value()) << "load failed: " << (load ? "" : load.error());
+    if (!load) return out;
+    const auto node = FirstMeshNode(fx.R);
+    expect(node != state::Null) << "no mesh instance node in " << sample.stem().string();
+    if (node == state::Null) return out;
+    author(fx, node);
+    const auto save = gltf::SaveGltf(out_path, fx.R, fx.Viewport);
+    expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
+    if (!save) return out;
+    out.Scene = std::make_unique<SceneFixture>();
+    const auto reload = gltf::LoadGltf(out_path, out.Scene->R, out.Scene->Viewport);
+    expect(reload.has_value()) << "reload failed: " << (reload ? "" : reload.error());
+    if (!reload) return out;
+    out.Node = NodeWith<T>(out.Scene->R);
+    expect(out.Node != state::Null) << "no entity carries the component after reload";
+    state::Scene &reloaded = out.Scene->R;
+    if (out.Node != state::Null) out.Value = &reloaded.get<const T>(out.Node);
+    return out;
+}
+
+bool FloatsEq(std::span<const float> a, std::span<const float> b) {
+    return a.size() == b.size() && std::ranges::equal(a, b, [](float x, float y) { return NumberEq(x, y); });
+}
+bool Vec3sEq(std::span<const vec3> a, std::span<const vec3> b) {
+    return a.size() == b.size() && std::ranges::equal(a, b, VecEq<vec3>);
+}
+// Tolerance equality over the fields a glTF round trip carries.
+bool ModesEq(const ModalModes &a, const ModalModes &b) {
+    return FloatsEq(a.Freqs, b.Freqs) && FloatsEq(a.T60s, b.T60s) && Vec3sEq(a.Positions, b.Positions) && a.Indices == b.Indices &&
+        a.Shapes.size() == b.Shapes.size() && std::ranges::equal(a.Shapes, b.Shapes, Vec3sEq);
+}
+bool SurfacesEq(const ContactSurface &a, const ContactSurface &b) {
+    const bool textures_eq = a.NormalTexture.has_value() == b.NormalTexture.has_value() &&
+        (!a.NormalTexture || (a.NormalTexture->Texture == b.NormalTexture->Texture && a.NormalTexture->TexCoord == b.NormalTexture->TexCoord && NumberEq(a.NormalTexture->Scale, b.NormalTexture->Scale)));
+    return a.Name == b.Name && NumberEq(a.Roughness, b.Roughness) && NumberEq(a.CorrelationLength, b.CorrelationLength) && NumberEq(a.SpectralSlope, b.SpectralSlope) &&
+        NumberEq(a.ShortWavelength, b.ShortWavelength) && NumberEq(a.Waviness, b.Waviness) && NumberEq(a.WavinessLength, b.WavinessLength) &&
+        FloatsEq(a.Profile, b.Profile) && NumberEq(a.SampleSpacing, b.SampleSpacing) && textures_eq;
+}
+bool AcousticMaterialsEq(const AcousticMaterial &a, const AcousticMaterial &b) {
+    const auto &pa = a.Properties, &pb = b.Properties;
+    return a.Name == b.Name && NumberEq(pa.Density, pb.Density) && NumberEq(pa.YoungModulus, pb.YoungModulus) && NumberEq(pa.PoissonRatio, pb.PoissonRatio) && NumberEq(pa.Alpha, pb.Alpha) && NumberEq(pa.Beta, pb.Beta);
+}
+
+// A glTF with one skinned triangle. The joint sits under a rig node the scene never reaches, so the armature root check fails, and dropping WEIGHTS_0 fails the mesh parse instead.
+std::string BrokenSkinnedTriangleGltf(bool drop_weights) {
+    // 3 positions, 3 ubyte4 joints, and 3 float4 weights, all zero.
+    const std::string buffer(128, 'A');
+    return std::format(R"({{
+  "asset": {{"version": "2.0"}},
+  "scene": 0,
+  "scenes": [{{"nodes": [0]}}],
+  "nodes": [
+    {{"mesh": 0, "skin": 0, "name": "Skinned"}},
+    {{"children": [2], "name": "Rig"}},
+    {{"name": "Joint"}}
+  ],
+  "skins": [{{"joints": [2]}}],
+  "meshes": [{{"primitives": [{{"attributes": {{"POSITION": 0, "JOINTS_0": 1{}}}}}]}}],
+  "accessors": [
+    {{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [0, 0, 0]}},
+    {{"bufferView": 1, "componentType": 5121, "count": 3, "type": "VEC4"}},
+    {{"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC4"}}
+  ],
+  "bufferViews": [
+    {{"buffer": 0, "byteOffset": 0, "byteLength": 36}},
+    {{"buffer": 0, "byteOffset": 36, "byteLength": 12}},
+    {{"buffer": 0, "byteOffset": 48, "byteLength": 48}}
+  ],
+  "buffers": [{{"byteLength": 96, "uri": "data:application/octet-stream;base64,{}"}}]
+}})", drop_weights ? "" : ", \"WEIGHTS_0\": 2", buffer);
+}
+
+// Every count a load changes, so a failed load can prove it changed none of them.
+// Every bindless slot an import allocates pairs with a pending upload or environment import, which these counts cover.
+struct SceneCounts {
+    size_t Entities, MeshHandles, Textures, PendingUploads, Materials, MaterialNames, MaterializedTextures;
+    uint64_t VertexBytes;
+    bool PendingEnvironment, SourceAssets;
+    bool operator==(const SceneCounts &) const = default;
+};
+SceneCounts CountScene(SceneFixture &f) {
+    auto &c = f.R.ctx();
+    return SceneCounts{
+        .Entities = f.R.storage<state::Entity>().size(),
+        .MeshHandles = f.R.storage<MeshHandle>().size(),
+        .Textures = c.get<TextureStore>().Textures.size(),
+        .PendingUploads = c.get<TextureStore>().PendingUploads.size(),
+        .Materials = c.get<GpuBuffers>().Materials.Count<PBRMaterial>(),
+        .MaterialNames = c.get<MaterialStore>().Names.size(),
+        .MaterializedTextures = f.R.storage<MaterializedTextures>().size(),
+        .VertexBytes = c.get<MeshStore>().Arenas().Vertices.Buffer.UsedSize,
+        .PendingEnvironment = c.get<EnvironmentStore>().PendingImport.has_value(),
+        .SourceAssets = f.R.all_of<gltf::SourceAssets>(f.Viewport),
+    };
+}
 } // namespace
 int main(int argc, const char **argv) {
     using namespace boost::ut;
@@ -833,34 +980,6 @@ int main(int argc, const char **argv) {
     const auto tmp_root = MakeRoundtripDir();
     Paths::SetProject(tmp_root);
     const auto samples = SampleRoots | transform([](auto root) { return CollectGltfSamples(SamplePath(root)); }) | join | to<std::vector>();
-
-    struct SceneFixture : Engine {
-        // Imports keep source image URIs while no asset store is present, so the glTF comparison sees the source layout.
-        // Project operations need the store, so it exists only while a project is open.
-        SceneFixture() : Engine{false} { R.ctx().erase<project::Assets>(); }
-        void Check(bool ok) {
-            expect(ok);
-            if (ok) return;
-            for (const auto &message : R.ctx().get<action::Errors>().Messages) std::cerr << "  project: " << message << "\n";
-            if (const auto error = P->History.TakeIntegrityError(); !error.empty()) std::cerr << "  history: " << error << "\n";
-        }
-        // Start a project at `dir`, save live state into it, close it, and return the persistent image.
-        std::vector<std::byte> SaveTo(const std::filesystem::path &dir) {
-            R.ctx().emplace<project::Assets>();
-            Check(P->Begin(dir));
-            Check(P->Save());
-            auto image = P->History.MaterializeLive();
-            Check(P->Close());
-            R.ctx().erase<project::Assets>();
-            return image;
-        }
-        // Restore the project at `dir` and return the persistent image.
-        std::vector<std::byte> LoadFrom(const std::filesystem::path &dir) {
-            R.ctx().emplace<project::Assets>();
-            Check(P->Open(dir));
-            return P->History.MaterializeLive();
-        }
-    };
 
     "snapshot encoding appends within reserved capacity"_test = [] {
         constexpr size_t prefix = 65536;
@@ -965,49 +1084,6 @@ int main(int argc, const char **argv) {
         CompareRegistries("destroyed", f.R, g.R);
     };
 
-    const auto load_ctx = [](state::Scene &r, state::Entity e) {
-        return gltf::LoadContext{
-            .R = r,
-            .Viewport = e,
-            .Slots = r.ctx().get<mtl::BindlessSet>(),
-            .Buffers = r.ctx().get<GpuBuffers>(),
-            .Meshes = r.ctx().get<MeshStore>(),
-            .Textures = r.ctx().get<TextureStore>(),
-            .Environments = r.ctx().get<EnvironmentStore>(),
-        };
-    };
-    const auto save_ctx = [&](state::Scene &r, state::Entity e) {
-        auto &buffers = r.ctx().get<GpuBuffers>();
-        return gltf::SaveContext{
-            .R = r,
-            .Viewport = e,
-            .Buffers = buffers,
-            .Meshes = r.ctx().get<MeshStore>(),
-            .Textures = r.ctx().get<TextureStore>(),
-            .Ctx = &r.ctx().get<const mtl::Context>(),
-            .BufCtx = &buffers.Ctx,
-        };
-    };
-
-    // Load/save with an expect-and-skip guard. The result value is only ever used for the guard — reloaded data is re-fetched from the registry.
-    const auto load_or_skip = [&](SceneFixture &f, const fs::path &p, const char *msg) {
-        const auto result = gltf::LoadGltf(p, load_ctx(f.R, f.Viewport));
-        expect(result.has_value()) << msg;
-        return result.has_value();
-    };
-    const auto save_or_skip = [&](SceneFixture &f, const fs::path &p) {
-        const auto result = gltf::SaveGltf(p, save_ctx(f.R, f.Viewport));
-        expect(result.has_value()) << "save failed: " << (result ? "" : result.error());
-        return result.has_value();
-    };
-    // The first mesh-instance node, with the mesh entity it instances.
-    const auto first_mesh_node = [](state::Scene &r) -> std::pair<state::Entity, state::Entity> {
-        for (auto e : r.view<const Instance, const GltfNode>()) {
-            if (const auto mesh = r.get<const Instance>(e).Entity; r.all_of<MeshHandle>(mesh)) return {e, mesh};
-        }
-        return {state::Null, state::Null};
-    };
-
     // Reclaim retired arena buffers after each clear because this test has no render frames in flight.
     const auto clear_scene = [](state::Scene &r, state::Entity vp) {
         ClearScene(r, vp);
@@ -1028,12 +1104,12 @@ int main(int argc, const char **argv) {
             ProcessComponentEvents(fx.R, fx.Viewport);
             clear_scene(fx.R, fx.Viewport);
 
-            const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
+            const auto load = gltf::LoadGltf(src, fx.R, fx.Viewport);
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); skips both round-trips.
             ProcessComponentEvents(fx.R, fx.Viewport); // mirror prod: a frame runs (posing skinned models) before save
 
             const auto out_path = tmp_root / (sample_name + ".gltf");
-            const auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
+            const auto save = gltf::SaveGltf(out_path, fx.R, fx.Viewport);
             expect(save.has_value()) << "SaveGltf failed: " << (save ? "" : save.error());
             if (save) {
                 const auto unexpected = CompareGltfJson(src, out_path, sample_name);
@@ -1051,64 +1127,38 @@ int main(int argc, const char **argv) {
         };
     }
 
-    // Drains pending texture uploads onto the GPU, ProcessComponentEvents minus the env / sync passes, so the edit tests below can read texture pixels back.
-    const auto materialize_textures = [&](state::Scene &r, state::Entity scene) {
-        auto &textures = r.ctx().get<TextureStore>();
-        const auto *src = r.try_get<const gltf::SourceAssets>(scene);
-        if (textures.PendingUploads.empty() || !src) return;
-        auto &slots = r.ctx().get<mtl::BindlessSet>();
-        auto batch = BeginTextureUploadBatch(r.ctx().get<const mtl::Context>());
-        for (const auto &item : textures.PendingUploads) {
-            if (auto entry = MaterializeTextureEntry(r, batch, slots, item, src->Images, r.ctx().get<const ActiveSamplerAnisotropy>().Value)) {
-                textures.Textures.emplace_back(std::move(*entry));
-            }
-        }
-        SubmitTextureUploadBatch(batch);
-        textures.PendingUploads.clear();
-    };
-
     const auto edit_root = tmp_root / "edits";
     fs::create_directories(edit_root);
 
     // Mark the embedded variant's image dirty; saved bytes must pixel-equal the GPU readback.
     if (const fs::path box_embedded = SamplePath("external/glTF-Sample-Assets/Models/BoxTextured/glTF-Embedded/BoxTextured.gltf"); fs::exists(box_embedded)) {
         test("dirty_image_re_encodes_pixel_equal") = [&] {
-            SceneFixture fx;
-            if (!load_or_skip(fx, box_embedded, "load failed")) return;
-            materialize_textures(fx.R, fx.Viewport);
-
-            // Skip the InitDocumentStores default-white RawPixels texture (no SourceImageIndex link).
-            const auto &textures = fx.R.ctx().get<TextureStore>();
-            const TextureEntry *tex = nullptr;
-            for (const auto &t : textures.Textures) {
-                if (t.SourceImageIndex == 0) {
-                    tex = &t;
-                    break;
-                }
-            }
-            expect(tex != nullptr) << "BoxTextured image was not materialized";
-            if (!tex) return;
-            const auto original_pixels = ReadbackTextureRgba8(fx.R.ctx().get<const mtl::Context>(), *tex);
-            expect(original_pixels.has_value()) << "readback failed";
-            if (!original_pixels) return;
-
-            fx.R.edit<gltf::SourceAssets>(fx.Viewport).Images.front().IsDirty = true;
-
-            const auto out_path = edit_root / "BoxTextured-dirty.gltf";
-            if (!save_or_skip(fx, out_path)) return;
-
-            SceneFixture fx2;
-            if (!load_or_skip(fx2, out_path, "reload failed")) return;
-            const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.Viewport).Images;
-            expect(reloaded.size() == 1u);
+            std::vector<std::byte> original_pixels;
+            uint32_t width = 0, height = 0;
+            const auto reloaded = RoundtripComponent<gltf::SourceAssets>(box_embedded, edit_root / "BoxTextured-dirty.gltf", [&](SceneFixture &fx, state::Entity) {
+                // A frame materializes the pending upload so the readback sees the texture.
+                ProcessComponentEvents(fx.R, fx.Viewport);
+                const auto &textures = fx.R.ctx().get<TextureStore>().Textures;
+                const auto tex = std::ranges::find(textures, 0u, &TextureEntry::SourceImageIndex);
+                expect(tex != textures.end()) << "BoxTextured image was not materialized";
+                if (tex == textures.end()) return;
+                auto pixels = ReadbackTextureRgba8(fx.R.ctx().get<const mtl::Context>(), *tex);
+                expect(pixels.has_value()) << "readback failed";
+                if (!pixels) return;
+                original_pixels = std::move(*pixels);
+                width = tex->Image.Extent.Width;
+                height = tex->Image.Extent.Height;
+                fx.R.edit<gltf::SourceAssets>(fx.Viewport).Images.front().IsDirty = true;
+            });
+            if (!reloaded.Value || original_pixels.empty()) return;
+            const auto &images = reloaded.Value->Images;
+            expect(images.size() == 1u);
             // PNG re-encode is lossless, so decoded pixels must match the pre-edit GPU readback.
-            const auto decoded = DecodeImageRgba8(reloaded.front().Bytes, reloaded.front().Name);
+            const auto decoded = DecodeImageRgba8(images.front().Bytes, images.front().Name);
             expect(decoded.has_value()) << "reloaded image failed to decode";
             if (!decoded) return;
-            expect(decoded->Width == tex->Image.Extent.Width);
-            expect(decoded->Height == tex->Image.Extent.Height);
-            const bool pixels_match = decoded->Pixels == *original_pixels;
-            expect(pixels_match) << "re-encoded pixels diverge from GPU readback";
+            expect(decoded->Width == width && decoded->Height == height);
+            expect(decoded->Pixels == original_pixels) << "re-encoded pixels diverge from GPU readback";
         };
     }
 
@@ -1120,40 +1170,23 @@ int main(int argc, const char **argv) {
             const auto staged_gltf = StageSample(box_external, stage_dir);
             const auto staged_png = stage_dir / "CesiumLogoFlat.png";
             expect(fs::exists(staged_png)) << "fixture missing PNG";
-
-            SceneFixture fx;
-            if (!load_or_skip(fx, staged_gltf, "load failed")) return;
-
-            materialize_textures(fx.R, fx.Viewport);
-
-            fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
-
-            const auto out_path = edit_root / "BoxTextured-fallback.gltf";
-            if (!save_or_skip(fx, out_path)) return;
-
-            SceneFixture fx2;
-            if (!load_or_skip(fx2, out_path, "reload failed")) return;
-
-            const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.Viewport).Images;
-            expect(reloaded.size() == 1u);
-            if (reloaded.empty()) return;
-
-            expect(reloaded.front().Uri.empty()) << "fallback should drop the URI";
-            expect(reloaded.front().MimeType == gltf::MimeType::PNG);
+            const auto reloaded = RoundtripComponent<gltf::SourceAssets>(staged_gltf, edit_root / "BoxTextured-fallback.gltf", [&](SceneFixture &fx, state::Entity) {
+                ProcessComponentEvents(fx.R, fx.Viewport);
+                fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
+            });
+            if (!reloaded.Value) return;
+            const auto &images = reloaded.Value->Images;
+            expect(images.size() == 1u);
+            if (images.empty()) return;
+            expect(images.front().Source == gltf::Image::SourceKind::Embedded) << "fallback should embed";
+            expect(images.front().MimeType == gltf::MimeType::PNG);
         };
     }
 
     // Require KHR_audio_rigid_bodies modal data and schema shape to survive export and re-import.
     if (const fs::path box = SamplePath("external/glTF-Sample-Assets/Models/Box/glTF/Box.gltf"); fs::exists(box)) {
         test("audio_modal_round_trip") = [&] {
-            SceneFixture fx;
-            if (!load_or_skip(fx, box, "Box load failed")) return;
-
-            const auto [node, mesh_entity] = first_mesh_node(fx.R);
-            expect(node != state::Null) << "no mesh instance node in Box";
-            if (node == state::Null) return;
-
-            // Author a small modal model: model on the node, derivation material on the mesh.
+            // A small modal model on the node, with its derivation material.
             ModalModes modes;
             modes.Freqs = {110.f, 275.5f, 431.2f};
             modes.T60s = {1.5f, 0.8f, 0.32f};
@@ -1165,14 +1198,15 @@ int main(int argc, const char **argv) {
             };
             modes.Indices = {0, 1, 2};
             modes.OriginalFundamentalFreq = modes.Freqs.front();
-            fx.R.emplace<ModalModes>(node, modes);
-            fx.R.emplace<ModalGain>(node, ModalGain{0.6f});
-            fx.R.emplace_or_replace<AcousticMaterial>(node, materials::acoustic::Ceramic);
-
             const auto out_path = edit_root / "audio_modal.gltf";
-            if (!save_or_skip(fx, out_path)) return;
+            const auto reloaded = RoundtripComponent<ModalModes>(box, out_path, [&](SceneFixture &fx, state::Entity node) {
+                fx.R.emplace<ModalModes>(node, modes);
+                fx.R.emplace<ModalGain>(node, ModalGain{0.6f});
+                fx.R.emplace_or_replace<AcousticMaterial>(node, materials::acoustic::Ceramic);
+            });
+            if (!reloaded.Value) return;
 
-            // --- Schema-shape checks on the emitted JSON. ---
+            // Schema-shape checks on the emitted JSON.
             {
                 simdjson::dom::parser p;
                 simdjson::dom::element doc;
@@ -1199,54 +1233,17 @@ int main(int argc, const char **argv) {
                 if (instanced) expect(*instanced == 0u) << "node model index";
             }
 
-            // --- Re-import and compare against the authored model. ---
-            SceneFixture fx2;
-            if (!load_or_skip(fx2, out_path, "reload failed")) return;
-
-            const auto rnode = NodeWith<ModalModes>(fx2.R);
-            expect(rnode != state::Null) << "no modal model after reload";
-            if (rnode == state::Null) return;
-
-            const auto &rm = fx2.R.get<const ModalModes>(rnode);
-            const auto vecs_eq = [](std::span<const float> a, std::span<const float> b) {
-                if (a.size() != b.size()) return false;
-                for (size_t i = 0; i < a.size(); ++i) {
-                    if (!NumberEq(a[i], b[i])) return false;
-                }
-                return true;
-            };
-            expect(vecs_eq(rm.Freqs, modes.Freqs)) << "frequencies diverged";
-            expect(vecs_eq(rm.T60s, modes.T60s)) << "T60s diverged";
-            expect(rm.Positions.size() == modes.Positions.size()) << "positions count diverged";
-            for (size_t i = 0; i < rm.Positions.size() && i < modes.Positions.size(); ++i) {
-                expect(VecEq(rm.Positions[i], modes.Positions[i])) << "position diverged";
-            }
-            expect(rm.Indices == modes.Indices) << "sample surface indices diverged";
-            expect(rm.Shapes.size() == modes.Shapes.size()) << "shape point count diverged";
-            for (size_t p = 0; p < rm.Shapes.size() && p < modes.Shapes.size(); ++p) {
-                expect(rm.Shapes[p].size() == modes.Shapes[p].size()) << "shape mode count diverged";
-                for (size_t m = 0; m < rm.Shapes[p].size() && m < modes.Shapes[p].size(); ++m) {
-                    expect(VecEq(rm.Shapes[p][m], modes.Shapes[p][m])) << "shape vector diverged";
-                }
-            }
-
-            const auto *rgain = fx2.R.try_get<const ModalGain>(rnode);
+            auto &r = reloaded.Scene->R;
+            const auto rnode = reloaded.Node;
+            expect(ModesEq(*reloaded.Value, modes)) << "modal model diverged";
+            const auto *rgain = r.try_get<const ModalGain>(rnode);
             expect(rgain != nullptr && NumberEq(rgain->Value, 0.6f)) << "gain diverged";
-
-            const auto *rinst = fx2.R.try_get<const Instance>(rnode);
-            expect(rinst != nullptr) << "modal node lost its mesh instance";
-            const auto *rmat = fx2.R.try_get<const AcousticMaterial>(rnode);
-            expect(rmat != nullptr) << "acoustic material not restored on the node";
-            if (rmat) {
-                expect(rmat->Name == materials::acoustic::Ceramic.Name) << "material name diverged";
-                const auto &pa = rmat->Properties;
-                const auto &pb = materials::acoustic::Ceramic.Properties;
-                expect(NumberEq(pa.Density, pb.Density) && NumberEq(pa.YoungModulus, pb.YoungModulus) && NumberEq(pa.PoissonRatio, pb.PoissonRatio) && NumberEq(pa.Alpha, pb.Alpha) && NumberEq(pa.Beta, pb.Beta)) << "material properties diverged";
-            }
-
+            expect(r.all_of<Instance>(rnode)) << "modal node lost its mesh instance";
+            const auto *rmat = r.try_get<const AcousticMaterial>(rnode);
+            expect(rmat != nullptr && AcousticMaterialsEq(*rmat, materials::acoustic::Ceramic)) << "acoustic material not restored on the node";
             // Import maps sample points to mesh vertices and marks the entity modal, so it is a playable sound object.
-            expect(rm.Vertices.size() == modes.Positions.size()) << "sample points not mapped to mesh vertices";
-            expect(fx2.R.all_of<SoundVerticesModel>(rnode) && fx2.R.get<const SoundVerticesModel>(rnode) == SoundVerticesModel::Modal) << "imported model not set up as a modal sound object";
+            expect(reloaded.Value->Vertices.size() == modes.Positions.size()) << "sample points not mapped to mesh vertices";
+            expect(r.all_of<SoundVerticesModel>(rnode) && r.get<const SoundVerticesModel>(rnode) == SoundVerticesModel::Modal) << "imported model not set up as a modal sound object";
         };
     }
 
@@ -1254,7 +1251,9 @@ int main(int argc, const char **argv) {
     if (const fs::path fixture = SamplePath("tests/fixtures/KHR_audio_rigid_bodies.gltf"); fs::exists(fixture)) {
         test("audio_modal_decode_fixture") = [&] {
             SceneFixture fx;
-            if (!load_or_skip(fx, fixture, "fixture load failed")) return;
+            const auto load = gltf::LoadGltf(fixture, fx.R, fx.Viewport);
+            expect(load.has_value()) << "fixture load failed";
+            if (!load) return;
 
             const auto node = NodeWith<ModalModes>(fx.R);
             expect(node != state::Null) << "fixture produced no modal model";
@@ -1292,14 +1291,6 @@ int main(int argc, const char **argv) {
             // Stage the asset so its external PNG sits beside the file this test writes back out.
             const auto stage_dir = edit_root / "audio-surface";
             const auto staged_gltf = StageSample(box_textured, stage_dir);
-
-            SceneFixture fx;
-            if (!load_or_skip(fx, staged_gltf, "BoxTextured load failed")) return;
-
-            const auto [node, mesh_entity] = first_mesh_node(fx.R);
-            expect(node != state::Null) << "no mesh instance node in BoxTextured";
-            if (node == state::Null) return;
-
             const ContactSurface surface{
                 .Name = "Tiled floor",
                 .Roughness = 8e-6f,
@@ -1312,35 +1303,35 @@ int main(int argc, const char **argv) {
                 .SampleSpacing = 5e-6f,
                 .NormalTexture = SurfaceNormalTexture{.Texture = 0, .TexCoord = 0, .Scale = 0.8f},
             };
-            fx.R.emplace_or_replace<ContactSurface>(node, surface);
-
-#ifdef SURFACE_AUDIO
-            // A texel spans a real distance along the surface, set by the mesh's own UV parameterization.
-            UpdateSurfaceRelief(fx.R, node, mesh_entity, true);
-            const auto *relief = fx.R.try_get<const SurfaceRelief>(node);
-            expect(relief != nullptr) << "no mesoscale relief derived from the normal map";
-            if (relief) {
-                expect(relief->Track->Spacing > 1e-3f && relief->Track->Spacing < 1e-2f) << "texel size";
-            }
-            if (relief) {
-                const auto spacing = relief->Track->Spacing, rms = relief->Track->Rms;
-                for (auto e : fx.R.view<const Instance>()) {
-                    if (fx.R.get<const Instance>(e).Entity == mesh_entity) fx.R.patch<Transform>(e, [](Transform &t) { t.S = vec3{3.f}; });
-                }
-                ProcessComponentEvents(fx.R, fx.Viewport);
-                UpdateSurfaceRelief(fx.R, node, mesh_entity, true);
-                const auto *rescaled = fx.R.try_get<const SurfaceRelief>(node);
-                expect(rescaled != nullptr) << "relief lost when the node was resized";
-                if (rescaled) {
-                    expect(NumberEq(rescaled->Track->Spacing, spacing)) << "node scale leaked into the track spacing";
-                    expect(NumberEq(rescaled->Track->Rms, rms)) << "node scale leaked into the track height";
-                }
-            }
-#endif
-
             const auto out_path = stage_dir / "audio_surface.gltf";
-            if (!save_or_skip(fx, out_path)) return;
-
+            const auto reloaded = RoundtripComponent<ContactSurface>(staged_gltf, out_path, [&](SceneFixture &fx, state::Entity node) {
+                fx.R.emplace_or_replace<ContactSurface>(node, surface);
+#ifdef SURFACE_AUDIO
+                // A texel spans a real distance along the surface, set by the mesh's own UV parameterization.
+                const auto mesh_entity = fx.R.get<const Instance>(node).Entity;
+                UpdateSurfaceRelief(fx.R, node, mesh_entity, true);
+                const auto *relief = fx.R.try_get<const SurfaceRelief>(node);
+                expect(relief != nullptr) << "no mesoscale relief derived from the normal map";
+                if (relief) {
+                    expect(relief->Track->Spacing > 1e-3f && relief->Track->Spacing < 1e-2f) << "texel size";
+                }
+                if (relief) {
+                    const auto spacing = relief->Track->Spacing, rms = relief->Track->Rms;
+                    for (auto e : fx.R.view<const Instance>()) {
+                        if (fx.R.get<const Instance>(e).Entity == mesh_entity) fx.R.patch<Transform>(e, [](Transform &t) { t.S = vec3{3.f}; });
+                    }
+                    ProcessComponentEvents(fx.R, fx.Viewport);
+                    UpdateSurfaceRelief(fx.R, node, mesh_entity, true);
+                    const auto *rescaled = fx.R.try_get<const SurfaceRelief>(node);
+                    expect(rescaled != nullptr) << "relief lost when the node was resized";
+                    if (rescaled) {
+                        expect(NumberEq(rescaled->Track->Spacing, spacing)) << "node scale leaked into the track spacing";
+                        expect(NumberEq(rescaled->Track->Rms, rms)) << "node scale leaked into the track height";
+                    }
+                }
+#endif
+            });
+            if (!reloaded.Value) return;
             {
                 simdjson::dom::parser p;
                 simdjson::dom::element doc;
@@ -1356,27 +1347,7 @@ int main(int argc, const char **argv) {
                 expect(instanced.has_value()) << "no node instances the acoustic surface";
                 if (instanced) expect(*instanced == 0u) << "node surface index";
             }
-
-            SceneFixture fx2;
-            if (!load_or_skip(fx2, out_path, "reload failed")) return;
-
-            const auto reloaded = NodeWith<ContactSurface>(fx2.R);
-            expect(reloaded != state::Null) << "no contact surface after reload";
-            if (reloaded == state::Null) return;
-            const auto &rs = fx2.R.get<const ContactSurface>(reloaded);
-            expect(rs.Name == surface.Name) << "surface name diverged";
-            expect(NumberEq(rs.Roughness, surface.Roughness) && NumberEq(rs.CorrelationLength, surface.CorrelationLength) && NumberEq(rs.SpectralSlope, surface.SpectralSlope)) << "surface parameters diverged";
-            expect(NumberEq(rs.ShortWavelength, surface.ShortWavelength)) << "short wavelength diverged";
-            expect(NumberEq(rs.Waviness, surface.Waviness) && NumberEq(rs.WavinessLength, surface.WavinessLength)) << "waviness diverged";
-            expect(rs.Profile.size() == surface.Profile.size()) << "profile length diverged";
-            for (size_t i = 0; i < rs.Profile.size() && i < surface.Profile.size(); ++i) {
-                expect(NumberEq(rs.Profile[i], surface.Profile[i])) << "profile sample diverged";
-            }
-            expect(NumberEq(rs.SampleSpacing, surface.SampleSpacing)) << "sample spacing diverged";
-            expect(rs.NormalTexture.has_value()) << "normal texture lost";
-            if (rs.NormalTexture) {
-                expect(rs.NormalTexture->Texture == 0u && rs.NormalTexture->TexCoord == 0u && NumberEq(rs.NormalTexture->Scale, 0.8)) << "normal texture info diverged";
-            }
+            expect(SurfacesEq(*reloaded.Value, surface)) << "contact surface diverged";
         };
     }
 
@@ -1387,11 +1358,14 @@ int main(int argc, const char **argv) {
             const auto staged_gltf = StageSample(normal_tangent, stage_dir);
 
             SceneFixture fx;
-            if (!load_or_skip(fx, staged_gltf, "NormalTangentTest load failed")) return;
+            const auto load = gltf::LoadGltf(staged_gltf, fx.R, fx.Viewport);
+            expect(load.has_value()) << "NormalTangentTest load failed: " << (load ? "" : load.error());
+            if (!load) return;
 
-            const auto [node, mesh_entity] = first_mesh_node(fx.R);
+            const auto node = FirstMeshNode(fx.R);
             expect(node != state::Null) << "no mesh instance node in NormalTangentTest";
             if (node == state::Null) return;
+            const auto mesh_entity = fx.R.get<const Instance>(node).Entity;
 
             // The material's normal map is texture 2, which resolves to its own source image.
             const auto inherited = gltf::MeshMaterialNormalMap(fx.R, mesh_entity);
@@ -1413,7 +1387,9 @@ int main(int argc, const char **argv) {
             }
 
             const auto out_path = stage_dir / "audio_surface_inherit.gltf";
-            if (!save_or_skip(fx, out_path)) return;
+            const auto save = gltf::SaveGltf(out_path, fx.R, fx.Viewport);
+            expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
+            if (!save) return;
 
             simdjson::dom::parser p;
             simdjson::dom::element doc;
@@ -1424,6 +1400,23 @@ int main(int argc, const char **argv) {
         };
     }
 #endif
+
+    // A load that fails validation leaves the scene and every store as they were.
+    "failed_import_leaves_scene_untouched"_test = [&] {
+        SceneFixture fx;
+        const auto before = CountScene(fx);
+        const std::pair<bool, std::string_view> cases[]{{false, "armature root node"}, {true, "JOINTS_0 without WEIGHTS_0"}};
+        for (const auto &[drop_weights, expected_error] : cases) {
+            const auto path = tmp_root / std::format("broken_{}.gltf", drop_weights ? "mesh" : "skin");
+            std::ofstream{path} << BrokenSkinnedTriangleGltf(drop_weights);
+            const auto load = gltf::LoadGltf(path, fx.R, fx.Viewport);
+            expect(!load.has_value()) << "broken document loaded";
+            if (!load) expect(load.error().contains(expected_error)) << "unexpected error: " << load.error();
+            const auto after = CountScene(fx);
+            expect(after == before) << "failed load changed the scene or a store: entities " << before.Entities << " -> " << after.Entities << ", materials " << before.Materials << " -> " << after.Materials;
+            std::cerr << std::format("  failed load '{}': entities {} -> {}, mesh handles {} -> {}, textures {} -> {}, materials {} -> {}, vertex bytes {} -> {}\n", path.filename().string(), before.Entities, after.Entities, before.MeshHandles, after.MeshHandles, before.Textures, after.Textures, before.Materials, after.Materials, before.VertexBytes, after.VertexBytes);
+        }
+    };
 
     return RunSuites();
 }

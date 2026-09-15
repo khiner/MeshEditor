@@ -50,63 +50,9 @@
 namespace gltf {
 using namespace detail;
 namespace {
-// Batches parsed geometry for one arena reservation before ECS insertion.
-struct MeshData {
-    std::optional<::MeshData> Triangles, Lines, Points;
-    ::MeshVertexAttributes TriangleAttrs, LineAttrs, PointAttrs;
-    ::MeshPrimitives TrianglePrimitives, LinePrimitives, PointPrimitives;
-    std::optional<ArmatureDeformData> DeformData;
-    std::optional<MorphTargetData> MorphData;
-    std::string Name;
-};
-
-// Per-node KHR_physics_rigid_bodies staging data.
-struct NodePhysics {
-    std::optional<PhysicsMotion> Motion{};
-    std::optional<PhysicsVelocity> Velocity{};
-    std::optional<ColliderShape> Collider{};
-    struct MaterialRefs {
-        std::optional<uint32_t> PhysicsMaterialIndex{}, CollisionFilterIndex{};
-    };
-    std::optional<MaterialRefs> Material{};
-    std::optional<uint32_t> ColliderGeometryMeshIndex{};
-
-    struct TriggerData {
-        std::optional<PhysicsShape> Shape{};
-        std::optional<uint32_t> GeometryMeshIndex{};
-        std::vector<uint32_t> NodeIndices{};
-        std::optional<uint32_t> CollisionFilterIndex{};
-    };
-    std::optional<TriggerData> Trigger{};
-
-    struct JointData {
-        uint32_t ConnectedNodeIndex{};
-        uint32_t JointDefIndex{};
-        bool EnableCollision{false};
-    };
-    std::optional<JointData> Joint{};
-};
-
-struct Object {
-    enum class Type : uint8_t {
-        Empty,
-        Mesh,
-        Camera,
-        Light,
-    };
-
-    Type ObjectType;
-    uint32_t NodeIndex;
-    std::optional<uint32_t> ParentNodeIndex;
-    Transform LocalTransform;
-    std::optional<uint32_t> MeshIndex, SkinIndex, CameraIndex, LightIndex;
-    std::optional<std::vector<float>> NodeWeights;
-    std::string Name;
-};
-
 void CollectExtras(simdjson::dom::object *extras, size_t idx, fastgltf::Category cat, void *userPtr) {
     if (!extras || !userPtr) return;
-    static_cast<ExtrasMap *>(userPtr)->emplace(ExtrasKey(cat, idx), simdjson::minify(*extras));
+    static_cast<ExtrasMap *>(userPtr)->emplace(ExtrasKey(uint32_t(cat), idx), simdjson::minify(*extras));
 }
 std::optional<uint32_t> ToIndex(size_t index, size_t upper_bound) {
     if (index >= upper_bound) return {};
@@ -116,18 +62,10 @@ std::optional<uint32_t> ToIndex(const fastgltf::Optional<size_t> &index, size_t 
     if (!index) return {};
     return ToIndex(*index, upper_bound);
 }
-
-Filter ToFilter(fastgltf::Filter f) { return MapEnum(FilterMap, f, Filter::LinearMipMapLinear); }
 std::optional<Filter> ToFilter(const fastgltf::Optional<fastgltf::Filter> &filter) {
     if (!filter) return {};
-    return ToFilter(*filter);
+    return detail::ToFilter(*filter);
 }
-Wrap ToWrap(fastgltf::Wrap w) { return MapEnum(WrapMap, w, Wrap::Repeat); }
-MimeType ToMimeType(fastgltf::MimeType m) { return MapEnum(MimeTypeMap, m, MimeType::None); }
-AnimationInterpolation ToInterp(fastgltf::AnimationInterpolation i) { return MapEnum(InterpMap, i, AnimationInterpolation::Linear); }
-PhysicsCombineMode ToCombineMode(fastgltf::CombineMode m) { return MapEnum(CombineMap, m, PhysicsCombineMode::Average); }
-
-MaterialAlphaMode ToAlphaMode(fastgltf::AlphaMode m) { return MapEnum(AlphaModeMap, m, MaterialAlphaMode::Opaque); }
 
 vec2 ToVec2(const fastgltf::math::nvec2 &v) { return std::bit_cast<vec2>(v); }
 vec3 ToVec3(const fastgltf::math::nvec3 &v) { return std::bit_cast<vec3>(v); }
@@ -161,75 +99,42 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
     if (image_index >= asset.images.size()) return std::unexpected{std::format("glTF image index {} is out of range.", image_index)};
     const auto &image = asset.images[image_index];
 
-    Image image_result{.Bytes = {}, .MimeType = MimeType::None, .Name = std::string{image.name}};
-
-    const auto from_span = [&image_result](const auto &data, fastgltf::MimeType mime_type) {
-        image_result.Bytes.resize(data.size());
-        std::memcpy(image_result.Bytes.data(), data.data(), data.size());
-        image_result.MimeType = ToMimeType(mime_type);
-        // fastgltf only sets mimeType when source JSON had the field (pre our magic-byte inference below).
-        image_result.SourceHadMimeType = mime_type != fastgltf::MimeType::None;
+    Image out{.Bytes = {}, .MimeType = MimeType::None, .Source = Image::SourceKind::Embedded, .SourceHadMimeType = false, .IsDirty = false, .Name = std::string{image.name}, .Uri = {}, .SourcePath = {}};
+    const auto copy_bytes = [&out](const auto &data, fastgltf::MimeType mime_type) {
+        out.Bytes.resize(data.size());
+        std::memcpy(out.Bytes.data(), data.data(), data.size());
+        out.MimeType = ToMimeType(mime_type);
+        out.SourceHadMimeType = mime_type != fastgltf::MimeType::None;
     };
-
-    auto read_result = std::visit(
-        fastgltf::visitor{
-            [&](const fastgltf::sources::Array &array) -> std::expected<void, std::string> {
-                // With LoadExternalImages off, sources::Array only comes from data URI decode.
-                from_span(array.bytes, array.mimeType);
-                image_result.SourceDataUri = true;
-                return {};
-            },
-            [&](const fastgltf::sources::Vector &vector) -> std::expected<void, std::string> {
-                from_span(vector.bytes, vector.mimeType);
-                return {};
-            },
-            [&](const fastgltf::sources::ByteView &view) -> std::expected<void, std::string> {
-                from_span(view.bytes, view.mimeType);
-                return {};
-            },
-            [&](const fastgltf::sources::BufferView &buffer_view) -> std::expected<void, std::string> {
-                if (buffer_view.bufferViewIndex >= asset.bufferViews.size()) {
-                    return std::unexpected{std::format("glTF image {} references invalid bufferView index {}.", image_index, buffer_view.bufferViewIndex)};
-                }
-                const auto bytes = fastgltf::DefaultBufferDataAdapter{}(asset, buffer_view.bufferViewIndex);
-                from_span(bytes, buffer_view.mimeType);
-                return {};
-            },
-            [&](const fastgltf::sources::URI &uri) -> std::expected<void, std::string> {
-                if (!uri.uri.isLocalPath()) {
-                    return std::unexpected{std::format("glTF image {} URI '{}' is not a local path.", image_index, uri.uri.string())};
-                }
-                auto image_path = uri.uri.fspath();
-                if (image_path.is_relative()) image_path = base_dir / image_path;
-                image_path = image_path.lexically_normal();
-                auto bytes = File::Read(image_path);
-                if (!bytes) return std::unexpected{std::move(bytes.error())};
-                // External images reload from SourcePath after upload.
-                image_result.Bytes = std::move(*bytes);
-                image_result.MimeType = ToMimeType(uri.mimeType);
-                image_result.SourceHadMimeType = uri.mimeType != fastgltf::MimeType::None;
-                image_result.Uri = uri.uri.string();
-                image_result.SourcePath = image_path.string();
-                return {};
-            },
-            [&](const fastgltf::sources::CustomBuffer &) -> std::expected<void, std::string> {
-                return std::unexpected{std::format("glTF image {} uses unsupported custom buffer source.", image_index)};
-            },
-            [&](const fastgltf::sources::Fallback &) -> std::expected<void, std::string> {
-                return std::unexpected{std::format("glTF image {} resolved to fallback image source.", image_index)};
-            },
-            [&](const std::monostate &) -> std::expected<void, std::string> {
-                return std::unexpected{std::format("glTF image {} has no data source.", image_index)};
-            },
-        },
-        image.data
-    );
-    if (!read_result) return std::unexpected{std::move(read_result.error())};
-    if (image_result.MimeType == MimeType::None) image_result.MimeType = SniffMimeType(image_result.Bytes);
-    return image_result;
+    if (const auto *uri = std::get_if<fastgltf::sources::URI>(&image.data)) {
+        if (!uri->uri.isLocalPath()) return std::unexpected{std::format("glTF image {} URI '{}' is not a local path.", image_index, uri->uri.string())};
+        auto image_path = uri->uri.fspath();
+        if (image_path.is_relative()) image_path = base_dir / image_path;
+        image_path = image_path.lexically_normal();
+        auto bytes = File::Read(image_path);
+        if (!bytes) return std::unexpected{std::move(bytes.error())};
+        out.Bytes = std::move(*bytes);
+        out.MimeType = ToMimeType(uri->mimeType);
+        out.Source = Image::SourceKind::External;
+        out.SourceHadMimeType = uri->mimeType != fastgltf::MimeType::None;
+        out.Uri = uri->uri.string();
+        out.SourcePath = image_path.string();
+    } else if (const auto *buffer_view = std::get_if<fastgltf::sources::BufferView>(&image.data)) {
+        if (buffer_view->bufferViewIndex >= asset.bufferViews.size()) {
+            return std::unexpected{std::format("glTF image {} references invalid bufferView index {}.", image_index, buffer_view->bufferViewIndex)};
+        }
+        copy_bytes(fastgltf::DefaultBufferDataAdapter{}(asset, buffer_view->bufferViewIndex), buffer_view->mimeType);
+    } else if (const auto *array = std::get_if<fastgltf::sources::Array>(&image.data)) {
+        // The parser decodes data URIs into an array, the only in-memory source with external image loading off.
+        copy_bytes(array->bytes, array->mimeType);
+        out.Source = Image::SourceKind::DataUri;
+    } else {
+        return std::unexpected{std::format("glTF image {} has no supported data source.", image_index)};
+    }
+    if (out.MimeType == MimeType::None) out.MimeType = SniffMimeType(out.Bytes);
+    return out;
 }
 
-// Appends a non-triangle primitive while preserving channel alignment across merged primitives.
 // Append `count` vertices of the optional `name` attribute, backfilling with `fill` where absent.
 // Sets `bit` in `flags` when present. With `check_count`, a count mismatch with POSITION is an error.
 template<typename T>
@@ -306,6 +211,7 @@ std::vector<uint32_t> ReadIndices(const fastgltf::Asset &asset, const fastgltf::
     return indices;
 }
 
+// Appends a line or point primitive while preserving channel alignment across merged primitives.
 void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, ::MeshData &target, ::MeshVertexAttributes &attrs) {
     const auto *const position_it = primitive.findAttribute("POSITION");
     if (position_it == primitive.attributes.end()) return;
@@ -354,9 +260,9 @@ std::expected<void, std::string> AppendPrimitive(
     ::MeshVertexAttributes &attrs,
     std::optional<ArmatureDeformData> &deform,
     std::optional<MorphTargetData> &morph,
+    uint32_t total_vertex_count,
     uint32_t &attribute_flags
 ) {
-    attribute_flags = 0;
     if (!IsTriangleType(primitive.type)) return {};
 
     const auto *const position_it = primitive.findAttribute("POSITION");
@@ -465,75 +371,35 @@ std::expected<void, std::string> AppendPrimitive(
         }
     }
 
-    // Packs morph deltas by primitive before conversion to per-target contiguous layout.
+    // Morph deltas are target-major over the whole mesh, so each primitive writes its vertex range of every target in place.
     if (!primitive.targets.empty()) {
         const uint32_t target_count = primitive.targets.size();
-        const uint32_t prim_vertex_count = position_accessor.count;
         if (!morph) {
             morph.emplace();
             morph->TargetCount = target_count;
-            morph->PositionDeltas.resize(target_count * base_vertex, vec3{0.f});
+            morph->PositionDeltas.assign(size_t(target_count) * total_vertex_count, vec3{0.f});
         }
         if (morph->TargetCount != target_count) return std::unexpected{"glTF primitive morph target count mismatch between primitives of the same mesh."};
 
-        const auto prev_pos_size = morph->PositionDeltas.size();
-        morph->PositionDeltas.resize(prev_pos_size + target_count * prim_vertex_count, vec3{0.f});
         const auto any_target_has = [&](std::string_view name) {
             for (uint32_t t = 0; t < target_count; ++t) {
                 if (primitive.findTargetAttribute(t, name) != primitive.targets[t].end()) return true;
             }
             return false;
         };
-        const bool prim_has_normal_deltas = any_target_has("NORMAL");
-        const bool prim_has_tangent_deltas = any_target_has("TANGENT");
-        if (prim_has_normal_deltas && morph->NormalDeltas.empty() && prev_pos_size > 0) {
-            morph->NormalDeltas.resize(prev_pos_size, vec3{0.f});
-        }
-        if (prim_has_normal_deltas || !morph->NormalDeltas.empty()) {
-            const auto prev_norm_size = morph->NormalDeltas.size();
-            morph->NormalDeltas.resize(prev_norm_size + target_count * prim_vertex_count, vec3{0.f});
-        }
-        if (prim_has_tangent_deltas && morph->TangentDeltas.empty() && prev_pos_size > 0) {
-            morph->TangentDeltas.resize(prev_pos_size, vec3{0.f});
-        }
-        if (prim_has_tangent_deltas || !morph->TangentDeltas.empty()) {
-            const auto prev_tan_size = morph->TangentDeltas.size();
-            morph->TangentDeltas.resize(prev_tan_size + target_count * prim_vertex_count, vec3{0.f});
-        }
+        if (morph->NormalDeltas.empty() && any_target_has("NORMAL")) morph->NormalDeltas.assign(size_t(target_count) * total_vertex_count, vec3{0.f});
+        if (morph->TangentDeltas.empty() && any_target_has("TANGENT")) morph->TangentDeltas.assign(size_t(target_count) * total_vertex_count, vec3{0.f});
+        const auto copy_target = [&](uint32_t t, std::string_view name, std::vector<vec3> &channel) {
+            if (channel.empty()) return;
+            const auto *it = primitive.findTargetAttribute(t, name);
+            if (it == primitive.targets[t].end()) return;
+            const auto &accessor = asset.accessors[it->accessorIndex];
+            if (accessor.count == vertex_count) fastgltf::copyFromAccessor<vec3>(asset, accessor, &channel[size_t(t) * total_vertex_count + base_vertex]);
+        };
         for (uint32_t t = 0; t < target_count; ++t) {
-            if (const auto *pos_it = primitive.findTargetAttribute(t, "POSITION"); pos_it != primitive.targets[t].end()) {
-                const auto &target_accessor = asset.accessors[pos_it->accessorIndex];
-                if (target_accessor.count == prim_vertex_count) {
-                    fastgltf::copyFromAccessor<vec3>(asset, target_accessor, &morph->PositionDeltas[prev_pos_size + t * prim_vertex_count]);
-                }
-            }
-            if (!morph->NormalDeltas.empty()) {
-                if (const auto *norm_it = primitive.findTargetAttribute(t, "NORMAL"); norm_it != primitive.targets[t].end()) {
-                    const auto &norm_accessor = asset.accessors[norm_it->accessorIndex];
-                    const auto prev_norm_size = morph->NormalDeltas.size() - target_count * prim_vertex_count;
-                    if (norm_accessor.count == prim_vertex_count) {
-                        fastgltf::copyFromAccessor<vec3>(asset, norm_accessor, &morph->NormalDeltas[prev_norm_size + t * prim_vertex_count]);
-                    }
-                }
-            }
-            if (!morph->TangentDeltas.empty()) {
-                if (const auto *tan_it = primitive.findTargetAttribute(t, "TANGENT"); tan_it != primitive.targets[t].end()) {
-                    const auto &tan_accessor = asset.accessors[tan_it->accessorIndex];
-                    const auto prev_tan_size = morph->TangentDeltas.size() - target_count * prim_vertex_count;
-                    if (tan_accessor.count == prim_vertex_count) {
-                        fastgltf::copyFromAccessor<vec3>(asset, tan_accessor, &morph->TangentDeltas[prev_tan_size + t * prim_vertex_count]);
-                    }
-                }
-            }
-        }
-    } else if (morph) {
-        const uint32_t prim_vertex_count = position_accessor.count;
-        morph->PositionDeltas.resize(morph->PositionDeltas.size() + morph->TargetCount * prim_vertex_count, vec3{0.f});
-        if (!morph->NormalDeltas.empty()) {
-            morph->NormalDeltas.resize(morph->NormalDeltas.size() + morph->TargetCount * prim_vertex_count, vec3{0.f});
-        }
-        if (!morph->TangentDeltas.empty()) {
-            morph->TangentDeltas.resize(morph->TangentDeltas.size() + morph->TargetCount * prim_vertex_count, vec3{0.f});
+            copy_target(t, "POSITION", morph->PositionDeltas);
+            copy_target(t, "NORMAL", morph->NormalDeltas);
+            copy_target(t, "TANGENT", morph->TangentDeltas);
         }
     }
 
@@ -689,129 +555,89 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     return std::move(asset);
 }
 
-// Preserves asset.meshes index alignment with an entry for empty meshes.
-std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset, uint32_t source_mesh_index, std::vector<MeshData> &meshes, std::unordered_map<uint32_t, uint32_t> &mesh_index_map, size_t material_count) {
-    if (const auto it = mesh_index_map.find(source_mesh_index); it != mesh_index_map.end()) return it->second;
+// One source mesh's triangle, line, and point parts, with the per-primitive layout every part shares.
+struct SourceMesh {
+    std::optional<MeshSource> Triangles, Lines, Points;
+    MeshSourceLayout Layout;
+    bool HasParts() const { return Triangles || Lines || Points; }
+};
 
-    ::MeshData mesh;
-    ::MeshVertexAttributes mesh_attrs;
-    std::optional<ArmatureDeformData> mesh_deform;
-    std::optional<MorphTargetData> mesh_morph;
-    ::MeshData lines, points; // merged across all line/point primitives
-    ::MeshVertexAttributes line_attrs, point_attrs;
-
-    // Non-triangle primitives contribute 0 vertices here (their verts go into lines/points).
+// Reads every primitive of asset.meshes[source_mesh_index]. Materials index the source materials plus the trailing implicit default.
+std::expected<SourceMesh, std::string> ReadSourceMesh(const fastgltf::Asset &asset, uint32_t source_mesh_index) {
     const auto &source_mesh = asset.meshes[source_mesh_index];
-    std::vector<uint32_t> vertex_counts(source_mesh.primitives.size(), 0);
-    std::vector<uint32_t> attribute_flags(source_mesh.primitives.size(), 0);
-    std::vector<uint8_t> has_source_indices(source_mesh.primitives.size(), 0);
-    std::vector<std::vector<std::optional<uint32_t>>> variant_mappings(source_mesh.primitives.size());
-    std::vector<uint32_t> face_primitive_indices;
-    // Point and line primitives merge into one mesh each, so every vertex records its source primitive.
-    std::vector<uint32_t> point_primitive_indices, line_primitive_indices;
-    std::vector<uint32_t> primitive_material_indices(source_mesh.primitives.size(), material_count == 0 ? 0u : material_count - 1u);
-    for (uint32_t primitive_index = 0; primitive_index < source_mesh.primitives.size(); ++primitive_index) {
+    const auto primitive_count = uint32_t(source_mesh.primitives.size());
+    const auto material_count = uint32_t(asset.materials.size()) + 1u;
+    MeshSourceLayout layout{
+        .AttributeFlags = std::vector<uint32_t>(primitive_count, 0u),
+        .HasSourceIndices = std::vector<uint8_t>(primitive_count, 0u),
+        .DefaultMaterials = std::vector<uint32_t>(primitive_count, material_count - 1u),
+        .VariantMappings = std::vector<std::vector<std::optional<uint32_t>>>(primitive_count),
+        .Colors0ComponentCount = 0,
+        .MorphTangentDeltas = {},
+        .Index = source_mesh_index,
+        .Kind = MeshKind::Triangles,
+        .Name = std::string{source_mesh.name},
+    };
+    // Morph deltas are written target-major, so the triangle vertex total is fixed before the first primitive appends.
+    uint32_t triangle_vertex_count = 0;
+    for (const auto &primitive : source_mesh.primitives) {
+        if (!IsTriangleType(primitive.type)) continue;
+        if (const auto *it = primitive.findAttribute("POSITION"); it != primitive.attributes.end()) triangle_vertex_count += asset.accessors[it->accessorIndex].count;
+    }
+
+    ::MeshData triangles, lines, points;
+    ::MeshVertexAttributes triangle_attrs, line_attrs, point_attrs;
+    std::optional<ArmatureDeformData> deform;
+    std::optional<MorphTargetData> morph;
+    // Every drawn element records its source primitive, per face for triangles and per vertex for the merged line and point meshes.
+    std::vector<uint32_t> face_primitives, line_primitives, point_primitives;
+    for (uint32_t primitive_index = 0; primitive_index < primitive_count; ++primitive_index) {
         const auto &primitive = source_mesh.primitives[primitive_index];
-        if (const auto material_index = ToIndex(primitive.materialIndex, material_count)) {
-            primitive_material_indices[primitive_index] = *material_index;
-        }
-        has_source_indices[primitive_index] = primitive.indicesAccessor.has_value() ? 1u : 0u;
-        if (!primitive.mappings.empty()) {
-            auto &out = variant_mappings[primitive_index];
-            out.reserve(primitive.mappings.size());
-            for (const auto &m : primitive.mappings) {
-                if (m.has_value()) out.emplace_back(ToIndex(*m, material_count));
-                else out.emplace_back(std::nullopt);
-            }
+        if (const auto material_index = ToIndex(primitive.materialIndex, material_count)) layout.DefaultMaterials[primitive_index] = *material_index;
+        layout.HasSourceIndices[primitive_index] = primitive.indicesAccessor.has_value() ? 1u : 0u;
+        auto &mappings = layout.VariantMappings[primitive_index];
+        mappings.reserve(primitive.mappings.size());
+        for (const auto &m : primitive.mappings) mappings.emplace_back(m.has_value() ? ToIndex(*m, material_count) : std::nullopt);
+
+        auto &flags = layout.AttributeFlags[primitive_index];
+        if (IsTriangleType(primitive.type)) {
+            const auto prev_face_count = triangles.FaceCount();
+            if (auto appended = AppendPrimitive(asset, primitive, triangles, triangle_attrs, deform, morph, triangle_vertex_count, flags); !appended) return std::unexpected{std::move(appended.error())};
+            face_primitives.insert(face_primitives.end(), triangles.FaceCount() - prev_face_count, primitive_index);
+            continue;
         }
         // Point and line shading keys off NORMAL and TANGENT, which the triangle append path records for itself.
-        if (!IsTriangleType(primitive.type)) {
-            if (primitive.findAttribute("NORMAL") != primitive.attributes.end()) attribute_flags[primitive_index] |= MeshAttributeBit_Normal;
-            if (primitive.findAttribute("TANGENT") != primitive.attributes.end()) attribute_flags[primitive_index] |= MeshAttributeBit_Tangent;
-        }
-        // Point and line primitives append into their own mesh, recording each appended vertex's source primitive.
-        const auto append_non_triangle = [&](::MeshData &data, ::MeshVertexAttributes &attrs, std::vector<uint32_t> &primitive_indices) {
-            const auto prev_vertex_count = data.Positions.size();
-            AppendNonTrianglePrimitive(asset, primitive, data, attrs);
-            primitive_indices.insert(primitive_indices.end(), data.Positions.size() - prev_vertex_count, primitive_index);
-        };
-        if (primitive.type == fastgltf::PrimitiveType::Points) {
-            append_non_triangle(points, point_attrs, point_primitive_indices);
-            continue;
-        }
-        if (primitive.type == fastgltf::PrimitiveType::Lines || primitive.type == fastgltf::PrimitiveType::LineStrip || primitive.type == fastgltf::PrimitiveType::LineLoop) {
-            append_non_triangle(lines, line_attrs, line_primitive_indices);
-            continue;
-        }
-        const uint32_t prev_vertex_count = mesh.Positions.size(), prev_face_count = mesh.FaceCount();
-        if (auto append_result = AppendPrimitive(asset, primitive, mesh, mesh_attrs, mesh_deform, mesh_morph, attribute_flags[primitive_index]); !append_result) {
-            return std::unexpected{std::move(append_result.error())};
-        }
-        vertex_counts[primitive_index] = mesh.Positions.size() - prev_vertex_count;
-        const auto appended_face_count = mesh.FaceCount() - prev_face_count;
-        face_primitive_indices.insert(face_primitive_indices.end(), appended_face_count, primitive_index);
+        if (primitive.findAttribute("NORMAL") != primitive.attributes.end()) flags |= MeshAttributeBit_Normal;
+        if (primitive.findAttribute("TANGENT") != primitive.attributes.end()) flags |= MeshAttributeBit_Tangent;
+        const bool is_points = primitive.type == fastgltf::PrimitiveType::Points;
+        auto &data = is_points ? points : lines;
+        auto &element_primitives = is_points ? point_primitives : line_primitives;
+        const auto prev_vertex_count = data.Positions.size();
+        AppendNonTrianglePrimitive(asset, primitive, data, is_points ? point_attrs : line_attrs);
+        element_primitives.insert(element_primitives.end(), data.Positions.size() - prev_vertex_count, primitive_index);
+    }
+    if (morph) {
+        morph->DefaultWeights.assign(morph->TargetCount, 0.f);
+        std::copy_n(source_mesh.weights.begin(), std::min(source_mesh.weights.size(), size_t(morph->TargetCount)), morph->DefaultWeights.begin());
     }
 
-    // Repack morph deltas from primitive-interleaved to per-target-contiguous.
-    const auto triangle_prim_count = std::ranges::count_if(vertex_counts, [](auto c) { return c > 0; });
-    if (mesh_morph && mesh_morph->TargetCount > 0 && triangle_prim_count > 1) {
-        const uint32_t total_verts = mesh.Positions.size();
-        const auto target_count = mesh_morph->TargetCount;
-        const auto repack_channel = [&](std::vector<vec3> &channel) {
-            if (channel.empty()) return;
-            std::vector<vec3> repacked(target_count * total_verts, vec3{0.f});
-            uint32_t src_off{0}, dst_vert_off{0};
-            for (const auto prim_verts : vertex_counts) {
-                if (prim_verts == 0) continue;
-                for (uint32_t t = 0; t < target_count; ++t) {
-                    for (uint32_t v = 0; v < prim_verts; ++v) {
-                        repacked[t * total_verts + dst_vert_off + v] = channel[src_off + t * prim_verts + v];
-                    }
-                }
-                src_off += target_count * prim_verts;
-                dst_vert_off += prim_verts;
-            }
-            channel = std::move(repacked);
-        };
-        repack_channel(mesh_morph->PositionDeltas);
-        repack_channel(mesh_morph->NormalDeltas);
-        repack_channel(mesh_morph->TangentDeltas);
-    }
-
-    if (mesh_morph && !source_mesh.weights.empty()) {
-        mesh_morph->DefaultWeights.resize(mesh_morph->TargetCount, 0.f);
-        const auto copy_count = std::min(source_mesh.weights.size(), size_t(mesh_morph->TargetCount));
-        std::copy_n(source_mesh.weights.begin(), copy_count, mesh_morph->DefaultWeights.begin());
-    } else if (mesh_morph) {
-        mesh_morph->DefaultWeights.assign(mesh_morph->TargetCount, 0.f);
-    }
-
-    const auto mesh_index = meshes.size();
-    const bool has_triangles = !mesh.Positions.empty() && mesh.FaceCount() > 0;
-    // Point and line meshes resolve their material per element through the same primitive-index tables the triangle mesh uses.
-    const auto non_triangle_primitives = [&](std::vector<uint32_t> element_primitive_indices) {
-        return element_primitive_indices.empty() ?
-            ::MeshPrimitives{} :
-            ::MeshPrimitives{std::move(element_primitive_indices), primitive_material_indices, attribute_flags, {}, {}};
+    const auto make_source = [&](::MeshData &data, ::MeshVertexAttributes &attrs, std::vector<uint32_t> &element_primitives) {
+        return MeshSource{.Data = std::move(data), .Attrs = std::move(attrs), .Primitives = {std::move(element_primitives), layout.DefaultMaterials, layout.AttributeFlags}};
     };
-    auto line_primitives = non_triangle_primitives(std::move(line_primitive_indices));
-    auto point_primitives = non_triangle_primitives(std::move(point_primitive_indices));
-    meshes.emplace_back(MeshData{
-        .Triangles = has_triangles ? std::optional{std::move(mesh)} : std::nullopt,
-        .Lines = !lines.Positions.empty() ? std::optional{std::move(lines)} : std::nullopt,
-        .Points = !points.Positions.empty() ? std::optional{std::move(points)} : std::nullopt,
-        .TriangleAttrs = std::move(mesh_attrs),
-        .LineAttrs = std::move(line_attrs),
-        .PointAttrs = std::move(point_attrs),
-        .TrianglePrimitives = has_triangles ? ::MeshPrimitives{std::move(face_primitive_indices), std::move(primitive_material_indices), std::move(attribute_flags), std::move(has_source_indices), std::move(variant_mappings)} : ::MeshPrimitives{},
-        .LinePrimitives = std::move(line_primitives),
-        .PointPrimitives = std::move(point_primitives),
-        .DeformData = std::move(mesh_deform),
-        .MorphData = std::move(mesh_morph),
-        .Name = std::string{source_mesh.name},
-    });
-    mesh_index_map.emplace(source_mesh_index, mesh_index);
-    return mesh_index;
+    SourceMesh out;
+    if (!triangles.Positions.empty() && triangles.FaceCount() > 0) {
+        // Primitives without NORMAL are flat-shaded per the glTF spec.
+        const bool any_normals = std::ranges::any_of(layout.AttributeFlags, [](uint32_t f) { return (f & MeshAttributeBit_Normal) != 0; });
+        out.Triangles = make_source(triangles, triangle_attrs, face_primitives);
+        out.Triangles->Deform = std::move(deform);
+        out.Triangles->Morph = std::move(morph);
+        out.Triangles->Weld = true;
+        out.Triangles->FlatShaded = !any_normals;
+    }
+    if (!lines.Positions.empty()) out.Lines = make_source(lines, line_attrs, line_primitives);
+    if (!points.Positions.empty()) out.Points = make_source(points, point_attrs, point_primitives);
+    out.Layout = std::move(layout);
+    return out;
 }
 
 std::vector<std::optional<uint32_t>> BuildNodeParentTable(const fastgltf::Asset &asset) {
@@ -1133,25 +959,10 @@ void ApplyActiveSceneSelection(state::Scene &r) {
     if (active != state::Null) r.emplace<Active>(active);
     for (const auto &[_, e] : ordered) r.emplace<Selected>(e);
 }
-} // namespace
-
-std::expected<fastgltf::Asset, std::string> ParseGltfAsset(const std::filesystem::path &path) { return ParseAsset(path); }
-
-std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &source_path, LoadContext ctx) {
-    const profile::CpuScope scope{"LoadGltf"};
-
-    ExtrasMap extras;
-    const auto stored_path = project::ResolveAsset(ctx.R, source_path);
-    auto parsed_asset = ParseAsset(stored_path, &extras);
-    if (!parsed_asset) return std::unexpected{parsed_asset.error()};
-
-    auto &asset = *parsed_asset;
-    if (asset.scenes.empty()) return std::unexpected{std::format("glTF '{}' has no scenes.", source_path.string())};
-
-    const auto scene_index = asset.defaultScene.value_or(0);
-    if (scene_index >= asset.scenes.size()) return std::unexpected{std::format("glTF '{}' has invalid default scene index.", source_path.string())};
-
-    gltf::SourceAssets source_assets{
+// Header, samplers, images, textures, required extensions, and the default scene's IBL.
+// Image bytes move into the project store when one is open, and an image with a file to reload from keeps no bytes.
+std::expected<SourceAssets, std::string> ReadSourceAssets(state::Scene &r, const fastgltf::Asset &asset, const std::filesystem::path &stored_path, ExtrasMap &&extras, uint32_t scene_index) {
+    SourceAssets sa{
         .Copyright = asset.assetInfo ? std::string{asset.assetInfo->copyright} : std::string{},
         .Generator = asset.assetInfo ? std::string{asset.assetInfo->generator} : std::string{},
         .MinVersion = asset.assetInfo ? std::string{asset.assetInfo->minVersion} : std::string{},
@@ -1164,11 +975,13 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         .Images = {},
         .Samplers = {},
         .AnimationOrder = {},
-        .ImageBasedLight = {},
+        .ImageBasedLight = ConvertIBL(asset, scene_index),
     };
-    source_assets.Samplers.reserve(asset.samplers.size());
+    sa.ExtensionsRequired.reserve(asset.extensionsRequired.size());
+    for (const auto &e : asset.extensionsRequired) sa.ExtensionsRequired.emplace_back(e);
+    sa.Samplers.reserve(asset.samplers.size());
     for (const auto &sampler : asset.samplers) {
-        source_assets.Samplers.emplace_back(Sampler{
+        sa.Samplers.emplace_back(Sampler{
             .MagFilter = ToFilter(sampler.magFilter),
             .MinFilter = ToFilter(sampler.minFilter),
             .WrapS = ToWrap(sampler.wrapS),
@@ -1176,22 +989,23 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             .Name = std::string{sampler.name},
         });
     }
-    source_assets.Images.reserve(asset.images.size());
+    sa.Images.reserve(asset.images.size());
     const auto source_dir = AbsoluteScenePath(stored_path).parent_path();
     for (uint32_t image_index = 0; image_index < asset.images.size(); ++image_index) {
-        auto image_result = ReadImage(asset, image_index, source_dir);
-        if (!image_result) return std::unexpected{std::move(image_result.error())};
-        if (!image_result->SourcePath.empty()) image_result->SourcePath = project::AssetReference(ctx.R, image_result->SourcePath).string();
-        if (auto *files = ctx.R.ctx().find<project::Assets>(); files && !project::Assets::IsReference(image_result->SourcePath)) {
-            const auto stored = files->Store("image.bin", image_result->Bytes);
+        auto image = ReadImage(asset, image_index, source_dir);
+        if (!image) return std::unexpected{std::move(image.error())};
+        if (!image->SourcePath.empty()) image->SourcePath = project::AssetReference(r, image->SourcePath).string();
+        if (auto *files = r.ctx().find<project::Assets>(); files && !project::Assets::IsReference(image->SourcePath)) {
+            const auto stored = files->Store("image.bin", image->Bytes);
             if (!stored) return std::unexpected{stored.error()};
-            image_result->SourcePath = stored->string();
+            image->SourcePath = stored->string();
         }
-        source_assets.Images.emplace_back(std::move(*image_result));
+        if (!image->SourcePath.empty()) image->Bytes = {};
+        sa.Images.emplace_back(std::move(*image));
     }
-    source_assets.Textures.reserve(asset.textures.size());
+    sa.Textures.reserve(asset.textures.size());
     for (const auto &texture : asset.textures) {
-        source_assets.Textures.emplace_back(Texture{
+        sa.Textures.emplace_back(Texture{
             .SamplerIndex = ToIndex(texture.samplerIndex, asset.samplers.size()),
             .ImageIndex = ToIndex(texture.imageIndex, asset.images.size()),
             .WebpImageIndex = ToIndex(texture.webpImageIndex, asset.images.size()),
@@ -1200,13 +1014,20 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             .Name = std::string{texture.name},
         });
     }
+    return sa;
+}
 
-    // Store render materials and source metadata in parallel arrays with a trailing fallback entry.
-    // Texture slots contain glTF indices until the emit loop maps them to bindless slots.
-    std::vector<PBRMaterial> source_materials;
-    source_materials.reserve(asset.materials.size() + 1u);
-    std::vector<MaterialSourceMeta> material_metas;
-    material_metas.reserve(asset.materials.size() + 1u);
+// Render materials and source metadata in parallel, with a trailing implicit default for primitives without a material.
+// Texture slots hold glTF texture indices until ImportMaterials maps them to bindless slots.
+struct SourceMaterials {
+    std::vector<PBRMaterial> Materials;
+    std::vector<MaterialSourceMeta> Metas;
+};
+
+SourceMaterials ReadMaterials(const fastgltf::Asset &asset) {
+    SourceMaterials out;
+    out.Materials.reserve(asset.materials.size() + 1u);
+    out.Metas.reserve(asset.materials.size() + 1u);
     for (uint32_t material_index = 0; material_index < asset.materials.size(); ++material_index) {
         const auto &material = asset.materials[material_index];
         using M = MaterialSourceMeta;
@@ -1320,42 +1141,71 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
 
         for (uint32_t s = 0; s < MTS_Count; ++s) meta.TextureSlots[s] = MaterialTextureSlots[s].Get(pbr).Slot;
-        material_metas.emplace_back(std::move(meta));
-        source_materials.emplace_back(std::move(pbr));
+        out.Metas.emplace_back(std::move(meta));
+        out.Materials.emplace_back(std::move(pbr));
     }
-    // Supply the required default for primitives without a material.
-    source_materials.emplace_back();
-    material_metas.emplace_back(MaterialSourceMeta{.ImplicitDefault = true});
+    out.Materials.emplace_back();
+    out.Metas.emplace_back(MaterialSourceMeta{.ImplicitDefault = true});
+    return out;
+}
 
-    const auto parents = BuildNodeParentTable(asset);
-    std::vector<Transform> local_transforms(asset.nodes.size());
-    std::vector<std::optional<mat4>> source_matrices(asset.nodes.size());
-    for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
+// Node facts derived from the document before any scene mutation.
+struct NodePlan {
+    std::vector<std::optional<uint32_t>> Parents;
+    std::vector<Transform> LocalTransforms;
+    std::vector<std::optional<mat4>> SourceMatrices;
+    // Merged over every scene with the default scene first, so a node shared between scenes keeps the default scene's placement.
+    std::vector<bool> InScene;
+    std::vector<mat4> WorldTransforms;
+    std::vector<uint32_t> SceneMask;
+    std::vector<bool> UsedSkin, IsBone;
+    // Bone nodes render only when they also carry mesh data.
+    std::vector<bool> IsObjectEmitted;
+    std::vector<std::optional<uint32_t>> NearestObjectAncestor;
+    // Armature-root node per skin. Empty means the scene root.
+    std::vector<std::optional<uint32_t>> SkinArmaNode;
+    // Valid joint nodes per used skin, deduped, in source order.
+    std::vector<std::vector<uint32_t>> SkinJointNodes;
+};
+
+NodePlan PlanNodes(const fastgltf::Asset &asset, uint32_t scene_index) {
+    const auto node_count = asset.nodes.size();
+    NodePlan plan{
+        .Parents = BuildNodeParentTable(asset),
+        .LocalTransforms = std::vector<Transform>(node_count),
+        .SourceMatrices = std::vector<std::optional<mat4>>(node_count),
+        .InScene = std::vector(node_count, false),
+        .WorldTransforms = std::vector(node_count, I4),
+        .SceneMask = std::vector<uint32_t>(node_count, 0u),
+        .UsedSkin = std::vector(asset.skins.size(), false),
+        .IsBone = std::vector(node_count, false),
+        .IsObjectEmitted = std::vector(node_count, false),
+        .NearestObjectAncestor = std::vector<std::optional<uint32_t>>(node_count),
+        .SkinArmaNode = std::vector<std::optional<uint32_t>>(asset.skins.size()),
+        .SkinJointNodes = std::vector<std::vector<uint32_t>>(asset.skins.size()),
+    };
+    for (uint32_t node_index = 0; node_index < node_count; ++node_index) {
         const auto &fg_transform = asset.nodes[node_index].transform;
         if (std::holds_alternative<fastgltf::TRS>(fg_transform)) {
-            local_transforms[node_index] = TrsToTransform(std::get<fastgltf::TRS>(fg_transform));
+            plan.LocalTransforms[node_index] = TrsToTransform(std::get<fastgltf::TRS>(fg_transform));
         } else {
             const auto &fm = std::get<fastgltf::math::fmat4x4>(fg_transform);
-            const mat4 m = std::bit_cast<mat4>(fm);
-            source_matrices[node_index] = m;
+            plan.SourceMatrices[node_index] = std::bit_cast<mat4>(fm);
 
             fastgltf::math::fvec3 scale, translation;
             fastgltf::math::fquat rotation;
             fastgltf::math::decomposeTransformMatrix(fm, scale, rotation, translation);
-            local_transforms[node_index] = Transform{ToVec3(translation), numeric::Normalize(ToQuat(rotation)), ToVec3(scale)};
+            plan.LocalTransforms[node_index] = Transform{ToVec3(translation), numeric::Normalize(ToQuat(rotation)), ToVec3(scale)};
         }
     }
-    // Process the default scene first to resolve shared-node hierarchy consistently.
-    SceneTraversalData traversal{.InScene = std::vector(asset.nodes.size(), false), .WorldTransforms = std::vector(asset.nodes.size(), I4)};
-    std::vector<uint32_t> node_to_scene_mask(asset.nodes.size(), 0u);
     const auto merge_scene = [&](uint32_t si) {
-        const auto t = TraverseSceneNodes(asset, local_transforms, si);
-        for (uint32_t i = 0; i < asset.nodes.size(); ++i) {
+        const auto t = TraverseSceneNodes(asset, plan.LocalTransforms, si);
+        for (uint32_t i = 0; i < node_count; ++i) {
             if (!t.InScene[i]) continue;
-            node_to_scene_mask[i] |= (1u << si);
-            if (!traversal.InScene[i]) {
-                traversal.InScene[i] = true;
-                traversal.WorldTransforms[i] = t.WorldTransforms[i];
+            plan.SceneMask[i] |= (1u << si);
+            if (!plan.InScene[i]) {
+                plan.InScene[i] = true;
+                plan.WorldTransforms[i] = t.WorldTransforms[i];
             }
         }
     };
@@ -1364,674 +1214,447 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         if (s != scene_index) merge_scene(s);
     }
 
-    std::vector<bool> used_skin(asset.skins.size(), false);
-    for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
-        if (!traversal.InScene[node_index]) continue;
-        if (const auto skin_index = ToIndex(asset.nodes[node_index].skinIndex, asset.skins.size())) used_skin[*skin_index] = true;
+    for (uint32_t node_index = 0; node_index < node_count; ++node_index) {
+        if (!plan.InScene[node_index]) continue;
+        if (const auto skin_index = ToIndex(asset.nodes[node_index].skinIndex, asset.skins.size())) plan.UsedSkin[*skin_index] = true;
     }
 
-    // Parses KHR_physics_rigid_bodies document resources directly into entities.
-    // Defers collision filters until the consumer block can use the shared name-deduplication map.
-    std::vector<state::Entity> physics_material_entities, physics_jointdef_entities;
-    {
-        physics_material_entities.reserve(asset.physicsMaterials.size());
-        for (uint32_t i = 0; i < asset.physicsMaterials.size(); ++i) {
-            const auto &src = asset.physicsMaterials[i];
-            const auto e = ctx.R.create();
-            ctx.R.emplace<PhysicsMaterial>(e, PhysicsMaterial{.StaticFriction = src.staticFriction, .DynamicFriction = src.dynamicFriction, .Restitution = src.restitution, .FrictionCombine = ToCombineMode(src.frictionCombine), .RestitutionCombine = ToCombineMode(src.restitutionCombine)});
-            ctx.R.emplace<SourceIndex>(e, i);
-            physics_material_entities.emplace_back(e);
-        }
-        physics_jointdef_entities.reserve(asset.physicsJoints.size());
-        for (uint32_t i = 0; i < asset.physicsJoints.size(); ++i) {
-            const auto &src = asset.physicsJoints[i];
-            PhysicsJointDef def;
-            for (const auto &lim : src.limits) {
-                def.Limits.emplace_back(PhysicsJointLimit{
-                    .LinearAxes = {lim.linearAxes.begin(), lim.linearAxes.end()},
-                    .AngularAxes = {lim.angularAxes.begin(), lim.angularAxes.end()},
-                    .Min = lim.min ? std::optional{float(*lim.min)} : std::nullopt,
-                    .Max = lim.max ? std::optional{float(*lim.max)} : std::nullopt,
-                    .Stiffness = lim.stiffness ? std::optional{float(*lim.stiffness)} : std::nullopt,
-                    .Damping = float(lim.damping),
-                });
-            }
-            for (const auto &drv : src.drives) {
-                // fastgltf zero-initializes maxForce when absent; KHR spec defaults to FLT_MAX.
-                def.Drives.emplace_back(PhysicsJointDrive{
-                    .Type = drv.type == fastgltf::DriveType::Angular ? PhysicsDriveType::Angular : PhysicsDriveType::Linear,
-                    .Mode = drv.mode == fastgltf::DriveMode::Acceleration ? PhysicsDriveMode::Acceleration : PhysicsDriveMode::Force,
-                    .Axis = drv.axis,
-                    .MaxForce = drv.maxForce > 0 ? float(drv.maxForce) : std::numeric_limits<float>::max(),
-                    .PositionTarget = float(drv.positionTarget),
-                    .VelocityTarget = float(drv.velocityTarget),
-                    .Stiffness = float(drv.stiffness),
-                    .Damping = float(drv.damping),
-                });
-            }
-            const auto e = ctx.R.create();
-            ctx.R.emplace<PhysicsJointDef>(e, std::move(def));
-            ctx.R.emplace<SourceIndex>(e, i);
-            physics_jointdef_entities.emplace_back(e);
-        }
+    // A skin's armature root is the nearest non-bone ancestor of its joints' common ancestor.
+    // Every payload-free node between a joint and that root also becomes a bone.
+    std::vector<bool> node_carries_payload(node_count, false);
+    for (uint32_t node_index = 0; node_index < node_count; ++node_index) {
+        const auto &node = asset.nodes[node_index];
+        node_carries_payload[node_index] = ToIndex(node.meshIndex, asset.meshes.size()).has_value() ||
+            ToIndex(node.cameraIndex, asset.cameras.size()).has_value() ||
+            ToIndex(node.lightIndex, asset.lights.size()).has_value() ||
+            bool(node.physicsRigidBody) || !node.instancingAttributes.empty();
     }
-
-    // Mesh-backed shapes resolve MeshEntity after node-to-entity mapping.
-    const auto ToPhysicsShape = [&](const fastgltf::Geometry &geom) -> PhysicsShape {
-        if (geom.shape && *geom.shape < asset.shapes.size()) {
-            return std::visit(
-                overloaded{
-                    [](const fastgltf::BoxShape &s) -> PhysicsShape { return physics::Box{ToVec3(s.size)}; },
-                    [](const fastgltf::SphereShape &s) -> PhysicsShape { return physics::Sphere{s.radius}; },
-                    [](const fastgltf::CapsuleShape &s) -> PhysicsShape { return physics::Capsule{std::max(float(s.height), physics::MinShapeHeight), s.radiusTop, s.radiusBottom}; },
-                    [](const fastgltf::CylinderShape &s) -> PhysicsShape { return physics::Cylinder{std::max(float(s.height), physics::MinShapeHeight), s.radiusTop, s.radiusBottom}; },
-                    [](const fastgltf::PlaneShape &s) -> PhysicsShape { return physics::Plane{s.sizeX, s.sizeZ, s.doubleSided}; },
-                },
-                asset.shapes[*geom.shape]
-            );
+    std::vector<std::optional<uint32_t>> skin_lca(asset.skins.size());
+    for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
+        if (!plan.UsedSkin[skin_index]) continue;
+        const auto &skin = asset.skins[skin_index];
+        auto &joint_nodes = plan.SkinJointNodes[skin_index];
+        std::unordered_set<uint32_t> seen;
+        for (const auto joint_idx : skin.joints) {
+            if (const auto joint = ToIndex(joint_idx, node_count); joint && seen.emplace(*joint).second) joint_nodes.emplace_back(*joint);
         }
-        if (geom.convexHull) return physics::ConvexHull{};
-        return physics::TriangleMesh{};
-    };
-
-    std::vector<bool> is_bone(asset.nodes.size(), false);
-    std::vector<std::optional<uint32_t>> skin_arma_node(asset.skins.size()); // Armature-root node per skin. Nullopt = scene root.
-    std::vector<std::vector<uint32_t>> skin_joint_nodes(asset.skins.size()); // Valid joint nodes per used skin, deduped, source order.
-    {
-        std::vector<bool> node_carries_payload(asset.nodes.size(), false);
-        for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
-            const auto &node = asset.nodes[node_index];
-            node_carries_payload[node_index] = ToIndex(node.meshIndex, asset.meshes.size()).has_value() ||
-                ToIndex(node.cameraIndex, asset.cameras.size()).has_value() ||
-                ToIndex(node.lightIndex, asset.lights.size()).has_value() ||
-                bool(node.physicsRigidBody) || !node.instancingAttributes.empty();
-        }
-        std::vector<std::optional<uint32_t>> skin_lca(asset.skins.size());
+        if (joint_nodes.empty()) continue;
+        auto lca_candidates = joint_nodes;
+        if (const auto skel = ToIndex(skin.skeleton, node_count)) lca_candidates.emplace_back(*skel);
+        skin_lca[skin_index] = ComputeCommonAncestor(lca_candidates, plan.Parents);
+        for (const auto joint : joint_nodes) plan.IsBone[joint] = true;
+    }
+    for (bool changed = true; changed;) {
+        changed = false;
         for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
-            if (!used_skin[skin_index]) continue;
-            const auto &skin = asset.skins[skin_index];
-            auto &joint_nodes = skin_joint_nodes[skin_index];
-            std::unordered_set<uint32_t> seen;
-            for (const auto joint_idx : skin.joints) {
-                if (const auto joint = ToIndex(joint_idx, asset.nodes.size()); joint && seen.emplace(*joint).second) joint_nodes.emplace_back(*joint);
-            }
-            if (joint_nodes.empty()) continue;
-            auto lca_candidates = joint_nodes;
-            if (const auto skel = ToIndex(skin.skeleton, asset.nodes.size())) lca_candidates.emplace_back(*skel);
-            skin_lca[skin_index] = ComputeCommonAncestor(lca_candidates, parents);
-            for (const auto joint : joint_nodes) is_bone[joint] = true;
-        }
-        for (bool changed = true; changed;) {
-            changed = false;
-            for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
-                if (skin_joint_nodes[skin_index].empty()) continue;
-                auto arma = skin_lca[skin_index];
-                while (arma && is_bone[*arma]) arma = parents[*arma];
-                skin_arma_node[skin_index] = arma;
-                for (const auto joint : skin_joint_nodes[skin_index]) {
-                    for (std::optional<uint32_t> cur = joint; cur && cur != arma; cur = parents[*cur]) {
-                        if (!is_bone[*cur] && !node_carries_payload[*cur]) {
-                            is_bone[*cur] = true;
-                            changed = true;
-                        }
+            if (plan.SkinJointNodes[skin_index].empty()) continue;
+            auto arma = skin_lca[skin_index];
+            while (arma && plan.IsBone[*arma]) arma = plan.Parents[*arma];
+            plan.SkinArmaNode[skin_index] = arma;
+            for (const auto joint : plan.SkinJointNodes[skin_index]) {
+                for (std::optional<uint32_t> cur = joint; cur && cur != arma; cur = plan.Parents[*cur]) {
+                    if (!plan.IsBone[*cur] && !node_carries_payload[*cur]) {
+                        plan.IsBone[*cur] = true;
+                        changed = true;
                     }
                 }
             }
         }
     }
 
-    // Preserve asset.meshes index alignment, including empty meshes.
-    std::unordered_map<uint32_t, uint32_t> mesh_index_map;
-    std::vector<MeshData> source_meshes;
-    source_meshes.reserve(asset.meshes.size());
-    for (uint32_t source_mesh_index = 0; source_mesh_index < asset.meshes.size(); ++source_mesh_index) {
-        auto ensured = EnsureMeshData(asset, source_mesh_index, source_meshes, mesh_index_map, source_materials.size());
-        if (!ensured) return std::unexpected{std::move(ensured.error())};
+    for (uint32_t node_index = 0; node_index < node_count; ++node_index) {
+        const bool has_mesh = ToIndex(asset.nodes[node_index].meshIndex, asset.meshes.size()).has_value();
+        plan.IsObjectEmitted[node_index] = plan.InScene[node_index] && (has_mesh || !plan.IsBone[node_index]);
     }
+    for (uint32_t node_index = 0; node_index < node_count; ++node_index) {
+        plan.NearestObjectAncestor[node_index] = FindNearestMarkedAncestor(node_index, plan.Parents, plan.IsObjectEmitted);
+    }
+    return plan;
+}
 
-    // Convert physics only for nodes carrying KHR_physics_rigid_bodies.
-    // Other per-node info is read directly from asset.nodes/parents at the consumer site, so it needs no staging here.
-    std::vector<NodePhysics> source_node_physics(asset.nodes.size());
+// One armature per distinct armature root, consuming every skin anchored there, with its bones validated and rest-posed.
+// A bone's pose world then composes the same node transforms as the spec's global joint transform.
+struct ArmaturePlan {
+    std::optional<uint32_t> ArmaNode;
+    std::vector<uint32_t> SkinIndices;
+    // Parent before child, with each bone's parent bone and rest transform at the same position.
+    std::vector<uint32_t> BoneNodes;
+    std::vector<std::optional<uint32_t>> BoneParents;
+    std::vector<Transform> RestLocals;
+};
+
+std::expected<std::vector<ArmaturePlan>, std::string> PlanArmatures(const fastgltf::Asset &asset, const NodePlan &plan, std::span<const SourceMesh> source_meshes, const std::filesystem::path &source_path) {
+    std::vector<ArmaturePlan> groups;
+    for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
+        if (!plan.UsedSkin[skin_index] || plan.SkinJointNodes[skin_index].empty()) continue;
+        auto it = std::ranges::find(groups, plan.SkinArmaNode[skin_index], &ArmaturePlan::ArmaNode);
+        if (it == groups.end()) it = groups.emplace(groups.end(), ArmaturePlan{.ArmaNode = plan.SkinArmaNode[skin_index], .SkinIndices = {}, .BoneNodes = {}, .BoneParents = {}, .RestLocals = {}});
+        it->SkinIndices.emplace_back(skin_index);
+    }
+    // A skin binds only through an emitted mesh instance that references it.
+    std::vector<bool> skin_has_instance(asset.skins.size(), false);
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
-        const auto &source_node = asset.nodes[node_index];
-        if (const auto &rb = source_node.physicsRigidBody) {
-            auto &node = source_node_physics[node_index];
-            if (rb->motion) {
-                const auto com = ToVec3(rb->motion->centerOfMass);
-                const auto inertia_orientation = rb->motion->inertialOrientation ? std::optional{std::bit_cast<quat>(*rb->motion->inertialOrientation)} : std::nullopt;
-                node.Motion = PhysicsMotion{
-                    .IsKinematic = rb->motion->isKinematic,
-                    .Mass = rb->motion->mass ? std::optional{float(*rb->motion->mass)} : std::nullopt,
-                    .CenterOfMass = com != vec3{0} ? std::optional{com} : std::nullopt,
-                    .InertiaDiagonal = rb->motion->inertialDiagonal ? std::optional{ToVec3(*rb->motion->inertialDiagonal)} : std::nullopt,
-                    .InertiaOrientation = inertia_orientation,
-                    .GravityFactor = float(rb->motion->gravityFactor),
-                };
-                if (const auto lv = ToVec3(rb->motion->linearVelocity), av = ToVec3(rb->motion->angularVelocity); lv != vec3{0} || av != vec3{0}) {
-                    node.Velocity = {lv, av};
+        if (!plan.IsObjectEmitted[node_index]) continue;
+        const auto &node = asset.nodes[node_index];
+        const auto mesh_index = ToIndex(node.meshIndex, asset.meshes.size());
+        if (const auto skin_index = ToIndex(node.skinIndex, asset.skins.size()); skin_index && mesh_index && source_meshes[*mesh_index].HasParts()) skin_has_instance[*skin_index] = true;
+    }
+    for (uint32_t group_index = 0; group_index < groups.size(); ++group_index) {
+        auto &group = groups[group_index];
+        const auto arma_node = group.ArmaNode;
+        if (arma_node && !plan.InScene[*arma_node]) {
+            return std::unexpected{std::format("glTF import failed for '{}': skin {} armature root node {} is not in the imported scene.", source_path.string(), group.SkinIndices.front(), *arma_node)};
+        }
+        for (const auto skin_index : group.SkinIndices) {
+            if (!skin_has_instance[skin_index]) return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", source_path.string(), skin_index)};
+        }
+
+        // Bone nodes: every bone node on a path from a joint up to the root (exclusive), first-seen order.
+        std::vector<uint32_t> source_bone_nodes;
+        std::vector<bool> in_group(asset.nodes.size(), false);
+        for (const auto skin_index : group.SkinIndices) {
+            for (const auto joint : plan.SkinJointNodes[skin_index]) {
+                for (std::optional<uint32_t> cur = joint; cur && cur != arma_node; cur = plan.Parents[*cur]) {
+                    if (!plan.IsBone[*cur]) continue;
+                    if (in_group[*cur]) break;
+                    in_group[*cur] = true;
+                    source_bone_nodes.emplace_back(*cur);
                 }
             }
-            if (rb->collider) {
-                node.Collider = ColliderShape{ToPhysicsShape(rb->collider->geometry)};
-                const NodePhysics::MaterialRefs material{
-                    .PhysicsMaterialIndex = ToIndex(rb->collider->physicsMaterial, asset.physicsMaterials.size()),
-                    .CollisionFilterIndex = ToIndex(rb->collider->collisionFilter, asset.collisionFilters.size()),
-                };
-                if (material.PhysicsMaterialIndex || material.CollisionFilterIndex) node.Material = material;
-                // source_meshes is index-aligned with asset.meshes, so the glTF mesh index is also the source mesh index.
-                node.ColliderGeometryMeshIndex = ToIndex(rb->collider->geometry.mesh, asset.meshes.size());
-            }
-            if (rb->trigger) {
-                NodePhysics::TriggerData trigger;
-                std::visit(
-                    [&](const auto &t) {
-                        using T = std::decay_t<decltype(t)>;
-                        if constexpr (std::is_same_v<T, fastgltf::GeometryTrigger>) {
-                            trigger.Shape = ToPhysicsShape(t.geometry);
-                            trigger.GeometryMeshIndex = ToIndex(t.geometry.mesh, asset.meshes.size());
-                            trigger.CollisionFilterIndex = ToIndex(t.collisionFilter, asset.collisionFilters.size());
-                        } else {
-                            for (const auto n : t.nodes) {
-                                if (n < asset.nodes.size()) trigger.NodeIndices.emplace_back(n);
-                            }
-                        }
-                    },
-                    *rb->trigger
-                );
-                node.Trigger = std::move(trigger);
-            }
-            if (rb->joint) {
-                node.Joint = NodePhysics::JointData{
-                    .ConnectedNodeIndex = uint32_t(rb->joint->connectedNode),
-                    .JointDefIndex = uint32_t(rb->joint->joint),
-                    .EnableCollision = rb->joint->enableCollision,
-                };
-            }
+        }
+        std::unordered_map<uint32_t, std::optional<uint32_t>> bone_parent_map;
+        bone_parent_map.reserve(source_bone_nodes.size());
+        for (const auto node : source_bone_nodes) bone_parent_map.emplace(node, FindNearestMarkedAncestor(node, plan.Parents, in_group));
+
+        auto ordered = BuildParentBeforeChildJointOrder(source_bone_nodes, bone_parent_map, group_index);
+        if (!ordered) return std::unexpected{std::move(ordered.error())};
+        group.BoneNodes = std::move(*ordered);
+        group.BoneParents.reserve(group.BoneNodes.size());
+        group.RestLocals.reserve(group.BoneNodes.size());
+        for (const auto node : group.BoneNodes) {
+            const auto parent_node = bone_parent_map.at(node);
+            auto rest_local = ComputeJointRestLocal(group_index, node, parent_node, arma_node, plan.Parents, plan.LocalTransforms);
+            if (!rest_local) return std::unexpected{std::move(rest_local.error())};
+            group.BoneParents.emplace_back(parent_node);
+            group.RestLocals.emplace_back(*rest_local);
         }
     }
+    return groups;
+}
 
-    std::vector<bool> is_object_emitted(asset.nodes.size(), false);
-    for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
-        if (traversal.InScene[node_index]) {
-            // Bone nodes render only when they also contain mesh data.
-            const bool has_mesh = ToIndex(asset.nodes[node_index].meshIndex, asset.meshes.size()).has_value();
-            is_object_emitted[node_index] = has_mesh || !is_bone[node_index];
-        }
+// Commit phase. Everything below runs after validation and cannot fail.
+
+struct PhysicsResources {
+    std::vector<state::Entity> Materials, JointDefs;
+};
+
+// KHR_physics_rigid_bodies document resources. Collision filters follow in ImportNodePhysics with the node colliders that reference them.
+PhysicsResources ImportPhysicsResources(state::Scene &r, const fastgltf::Asset &asset) {
+    PhysicsResources out;
+    out.Materials.reserve(asset.physicsMaterials.size());
+    for (uint32_t i = 0; i < asset.physicsMaterials.size(); ++i) {
+        const auto &src = asset.physicsMaterials[i];
+        const auto e = r.create();
+        r.emplace<PhysicsMaterial>(e, PhysicsMaterial{.StaticFriction = src.staticFriction, .DynamicFriction = src.dynamicFriction, .Restitution = src.restitution, .FrictionCombine = ToCombineMode(src.frictionCombine), .RestitutionCombine = ToCombineMode(src.restitutionCombine)});
+        r.emplace<SourceIndex>(e, i);
+        out.Materials.emplace_back(e);
     }
-
-    std::vector<std::optional<uint32_t>> nearest_object_ancestor(asset.nodes.size());
-    for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
-        nearest_object_ancestor[node_index] = FindNearestMarkedAncestor(node_index, parents, is_object_emitted);
-    }
-
-    std::vector<Object> source_objects;
-    for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
-        if (!is_object_emitted[node_index]) continue;
-        const auto &source_node = asset.nodes[node_index];
-        const auto mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size());
-        const auto skin_index = ToIndex(source_node.skinIndex, asset.skins.size());
-        const auto camera_index = ToIndex(source_node.cameraIndex, asset.cameras.size());
-        const auto light_index = ToIndex(source_node.lightIndex, asset.lights.size());
-        const auto instance_transforms = traversal.InScene[node_index] ? ReadInstanceTransforms(asset, source_node) : std::vector<Transform>{};
-        const auto &source_weights = source_node.weights;
-        auto node_weights = source_weights.empty() ? std::optional<std::vector<float>>{} : std::optional{std::vector<float>(source_weights.begin(), source_weights.end())};
-        if (!instance_transforms.empty() && mesh_index) {
-            // EXT_mesh_gpu_instancing: emit one object per instance with baked world transform
-            const auto base_name = MakeNodeName(asset, node_index, mesh_index);
-            for (uint32_t i = 0; i < instance_transforms.size(); ++i) {
-                // EXT_mesh_gpu_instancing: each instance is a root in the engine, so local == world.
-                auto instance_world = ToTransform(traversal.WorldTransforms[node_index] * ToMatrix(instance_transforms[i]));
-                source_objects.emplace_back(Object{
-                    .ObjectType = Object::Type::Mesh,
-                    .NodeIndex = node_index,
-                    .ParentNodeIndex = std::nullopt,
-                    .LocalTransform = instance_world,
-                    .MeshIndex = mesh_index,
-                    .SkinIndex = skin_index,
-                    .CameraIndex = {},
-                    .LightIndex = {},
-                    .NodeWeights = node_weights,
-                    .Name = base_name + "." + std::to_string(i),
-                });
-            }
-        } else {
-            const auto object_type = mesh_index ? Object::Type::Mesh :
-                camera_index                    ? Object::Type::Camera :
-                light_index                     ? Object::Type::Light :
-                                                  Object::Type::Empty;
-            source_objects.emplace_back(Object{
-                .ObjectType = object_type,
-                .NodeIndex = node_index,
-                .ParentNodeIndex = nearest_object_ancestor[node_index],
-                .LocalTransform = local_transforms[node_index],
-                .MeshIndex = mesh_index,
-                .SkinIndex = skin_index,
-                .CameraIndex = camera_index,
-                .LightIndex = light_index,
-                .NodeWeights = std::move(node_weights),
-                .Name = MakeNodeName(asset, node_index, mesh_index),
+    out.JointDefs.reserve(asset.physicsJoints.size());
+    for (uint32_t i = 0; i < asset.physicsJoints.size(); ++i) {
+        const auto &src = asset.physicsJoints[i];
+        PhysicsJointDef def;
+        for (const auto &lim : src.limits) {
+            def.Limits.emplace_back(PhysicsJointLimit{
+                .LinearAxes = {lim.linearAxes.begin(), lim.linearAxes.end()},
+                .AngularAxes = {lim.angularAxes.begin(), lim.angularAxes.end()},
+                .Min = lim.min ? std::optional{float(*lim.min)} : std::nullopt,
+                .Max = lim.max ? std::optional{float(*lim.max)} : std::nullopt,
+                .Stiffness = lim.stiffness ? std::optional{float(*lim.stiffness)} : std::nullopt,
+                .Damping = float(lim.damping),
             });
         }
+        for (const auto &drv : src.drives) {
+            // fastgltf zero-initializes maxForce when absent, and the KHR default is FLT_MAX.
+            def.Drives.emplace_back(PhysicsJointDrive{
+                .Type = drv.type == fastgltf::DriveType::Angular ? PhysicsDriveType::Angular : PhysicsDriveType::Linear,
+                .Mode = drv.mode == fastgltf::DriveMode::Acceleration ? PhysicsDriveMode::Acceleration : PhysicsDriveMode::Force,
+                .Axis = drv.axis,
+                .MaxForce = drv.maxForce > 0 ? float(drv.maxForce) : std::numeric_limits<float>::max(),
+                .PositionTarget = float(drv.positionTarget),
+                .VelocityTarget = float(drv.velocityTarget),
+                .Stiffness = float(drv.stiffness),
+                .Damping = float(drv.damping),
+            });
+        }
+        const auto e = r.create();
+        r.emplace<PhysicsJointDef>(e, std::move(def));
+        r.emplace<SourceIndex>(e, i);
+        out.JointDefs.emplace_back(e);
     }
+    return out;
+}
 
-    // Any skin with at least one valid joint reference and used_skin[i] is usable by the merged build/consume loop below.
-    const bool any_usable_skin = [&] {
-        for (uint32_t i = 0; i < asset.skins.size(); ++i) {
-            if (!used_skin[i]) continue;
-            for (const auto j : asset.skins[i].joints) {
-                if (j < asset.nodes.size()) return true;
-            }
-        }
-        return false;
-    }();
-    if (source_objects.empty() && !any_usable_skin) {
-        return std::unexpected{std::format("glTF '{}' has no importable source objects or skins.", source_path.string())};
-    }
+struct ImportedMaterials {
+    // GPU material index per source material, the trailing entry being the implicit default.
+    std::vector<uint32_t> IndexByGltfMaterial;
+    std::vector<MaterializedTexture> Textures;
+};
 
-    auto &r = ctx.R;
-    const auto viewport = ctx.Viewport;
-    auto &texture_store = ctx.Textures;
-    const auto texture_start = texture_store.Textures.size();
-    const auto material_start = ctx.Buffers.Materials.Count<PBRMaterial>();
-    const auto material_name_start = r.ctx().get<const MaterialStore>().Names.size();
-    const auto pending_texture_start = texture_store.PendingUploads.size();
-    bool replaced_pending_env = false;
-    std::optional<PendingEnvironmentImport> prev_pending_env_backup;
-    const auto rollback_import_side_effects = [&] {
-        if (texture_store.Textures.size() > texture_start) {
-            ReleaseTextureSlots(ctx.Slots, std::span<const TextureEntry>{texture_store.Textures}.subspan(texture_start));
-            texture_store.Textures.resize(texture_start);
-        }
-        if (auto &pending = texture_store.PendingUploads; pending.size() > pending_texture_start) {
-            for (size_t i = pending_texture_start; i < pending.size(); ++i) ctx.Slots.Release({SlotType::Sampler, pending[i].SamplerSlot});
-            pending.resize(pending_texture_start);
-        }
-        if (replaced_pending_env) {
-            if (const auto &cur = ctx.Environments.PendingImport) {
-                ReleaseCubeSamplerSlot(ctx.Slots, cur->DiffuseCubeSlot);
-                ReleaseCubeSamplerSlot(ctx.Slots, cur->SpecularCubeSlot);
-            }
-            ctx.Environments.PendingImport = std::move(prev_pending_env_backup);
-        }
-        if (ctx.Buffers.Materials.Count<PBRMaterial>() > material_start) ctx.Buffers.Materials.SetCount<PBRMaterial>(material_start);
-        if (auto &store = r.ctx().get<MaterialStore>(); store.Names.size() > material_name_start) store.ResizeNames(material_name_start);
-    };
-    struct ImportRollbackGuard {
-        decltype(rollback_import_side_effects) &Rollback;
-        bool Enabled{true};
-        ~ImportRollbackGuard() {
-            if (Enabled) Rollback();
-        }
-    };
-    ImportRollbackGuard import_rollback_guard{rollback_import_side_effects};
+// Appends every source material to the GPU material buffer with its textures queued for upload and mapped to bindless slots.
+ImportedMaterials ImportMaterials(state::Scene &r, const fastgltf::Asset &asset, const SourceAssets &sa, std::span<const PBRMaterial> source_materials) {
+    auto &slots = r.ctx().get<mtl::BindlessSet>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &textures = r.ctx().get<TextureStore>();
+    ImportedMaterials out;
 
-    // Fill in the remaining SourceAssets fields (extensions, IBL, MaterialMetas), then emplace and bind a const ref.
-    // The source-assets reference must outlive all subsequent load operations.
-    auto source_ibl = ConvertIBL(asset, scene_index);
-    source_assets.ImageBasedLight = source_ibl;
-    source_assets.ExtensionsRequired.reserve(asset.extensionsRequired.size());
-    for (const auto &e : asset.extensionsRequired) source_assets.ExtensionsRequired.emplace_back(e);
-    source_assets.MaterialMetas = std::move(material_metas);
-    const auto &sa = r.emplace_or_replace<gltf::SourceAssets>(viewport, std::move(source_assets));
-
-    if (!asset.materialVariants.empty()) {
-        ::MaterialVariants mv;
-        mv.Names.reserve(asset.materialVariants.size());
-        for (const auto &v : asset.materialVariants) mv.Names.emplace_back(v);
-        r.emplace_or_replace<::MaterialVariants>(viewport, std::move(mv));
-    } else {
-        r.remove<::MaterialVariants>(viewport);
-    }
-
-    std::vector<PendingTextureUpload> new_pending_textures;
+    // Equivalent glTF textures share one TextureEntry, keyed by resolved image, sampler, and color space.
     std::unordered_map<uint64_t, uint32_t> texture_slot_cache;
-    // Caches by resolved image, sampler, and color space so equivalent glTF textures share one TextureEntry.
-    const auto texture_cache_key = [](uint32_t image_index, uint32_t sampler_index, TextureColorSpace color_space) {
-        return (uint64_t(image_index) << 33u) | (uint64_t(sampler_index) << 1u) | (color_space == TextureColorSpace::Srgb ? 1u : 0u);
-    };
-    const auto resolve_texture_slot = [&](uint32_t texture_index, TextureColorSpace color_space) -> std::expected<uint32_t, std::string> {
+    const auto resolve_texture_slot = [&](uint32_t texture_index, TextureColorSpace color_space) -> uint32_t {
         if (texture_index >= sa.Textures.size()) return InvalidSlot;
-
         const auto &src_texture = sa.Textures[texture_index];
-        const auto image_index = gltf::ResolveImageIndex(src_texture);
+        const auto image_index = ResolveImageIndex(src_texture);
         if (!image_index || *image_index >= sa.Images.size()) return InvalidSlot;
 
         const auto sampler_index = src_texture.SamplerIndex.value_or(InvalidSlot);
-        const auto cache_key = texture_cache_key(*image_index, sampler_index, color_space);
+        const auto cache_key = (uint64_t(*image_index) << 33u) | (uint64_t(sampler_index) << 1u) | (color_space == TextureColorSpace::Srgb ? 1u : 0u);
         if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
 
-        const auto *src_sampler = src_texture.SamplerIndex && *src_texture.SamplerIndex < sa.Samplers.size() ?
-            &sa.Samplers[*src_texture.SamplerIndex] :
-            nullptr;
-        static constexpr auto ToSamplerAddressMode = [](gltf::Wrap wrap) {
+        const auto *src_sampler = src_texture.SamplerIndex && *src_texture.SamplerIndex < sa.Samplers.size() ? &sa.Samplers[*src_texture.SamplerIndex] : nullptr;
+        static constexpr auto ToSamplerAddressMode = [](Wrap wrap) {
             switch (wrap) {
-                case gltf::Wrap::ClampToEdge: return MTL::SamplerAddressModeClampToEdge;
-                case gltf::Wrap::MirroredRepeat: return MTL::SamplerAddressModeMirrorRepeat;
-                case gltf::Wrap::Repeat: return MTL::SamplerAddressModeRepeat;
+                case Wrap::ClampToEdge: return MTL::SamplerAddressModeClampToEdge;
+                case Wrap::MirroredRepeat: return MTL::SamplerAddressModeMirrorRepeat;
+                case Wrap::Repeat: return MTL::SamplerAddressModeRepeat;
             }
             return MTL::SamplerAddressModeRepeat;
         };
-        static constexpr auto ToSamplerConfig = [](const gltf::Sampler *sampler) -> SamplerConfig {
+        static constexpr auto ToSamplerConfig = [](const Sampler *sampler) -> SamplerConfig {
             if (!sampler) return {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = MTL::SamplerMinMagFilterLinear, .MipmapMode = MTL::SamplerMipFilterLinear, .UsesMipmaps = true};
 
-            const auto mag_filter = sampler->MagFilter && *sampler->MagFilter == gltf::Filter::Nearest ? MTL::SamplerMinMagFilterNearest : MTL::SamplerMinMagFilterLinear;
-            switch (sampler->MinFilter.value_or(gltf::Filter::LinearMipMapLinear)) {
-                case gltf::Filter::Nearest:
+            const auto mag_filter = sampler->MagFilter && *sampler->MagFilter == Filter::Nearest ? MTL::SamplerMinMagFilterNearest : MTL::SamplerMinMagFilterLinear;
+            switch (sampler->MinFilter.value_or(Filter::LinearMipMapLinear)) {
+                case Filter::Nearest:
                     return {.MinFilter = MTL::SamplerMinMagFilterNearest, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterNearest, .UsesMipmaps = false};
-                case gltf::Filter::Linear:
+                case Filter::Linear:
                     return {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterNearest, .UsesMipmaps = false};
-                case gltf::Filter::NearestMipMapNearest:
+                case Filter::NearestMipMapNearest:
                     return {.MinFilter = MTL::SamplerMinMagFilterNearest, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterNearest, .UsesMipmaps = true};
-                case gltf::Filter::LinearMipMapNearest:
+                case Filter::LinearMipMapNearest:
                     return {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterNearest, .UsesMipmaps = true};
-                case gltf::Filter::NearestMipMapLinear:
+                case Filter::NearestMipMapLinear:
                     return {.MinFilter = MTL::SamplerMinMagFilterNearest, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterLinear, .UsesMipmaps = true};
-                case gltf::Filter::LinearMipMapLinear:
+                case Filter::LinearMipMapLinear:
                     return {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterLinear, .UsesMipmaps = true};
             }
             return {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterLinear, .UsesMipmaps = true};
         };
 
-        const auto sampler_config = ToSamplerConfig(src_sampler);
-        const auto wrap_s = src_sampler ? ToSamplerAddressMode(src_sampler->WrapS) : MTL::SamplerAddressModeRepeat;
-        const auto wrap_t = src_sampler ? ToSamplerAddressMode(src_sampler->WrapT) : MTL::SamplerAddressModeRepeat;
-        auto texture_name = std::format("{} ({})", src_texture.Name.empty() ? std::format("Texture{}", texture_index) : src_texture.Name, color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
-
-        const auto sampler_slot = AllocateSamplerSlot(ctx.Slots);
-        new_pending_textures.emplace_back(PendingTextureUpload{
+        const auto sampler_slot = AllocateSamplerSlot(slots);
+        const PendingTextureUpload upload{
             .SamplerSlot = sampler_slot,
             .Source = PendingTextureUpload::GltfImageRef{*image_index},
-            .Params = {.ColorSpace = color_space, .WrapS = wrap_s, .WrapT = wrap_t, .Sampler = sampler_config, .Name = std::move(texture_name)},
-        });
+            .Params = {
+                .ColorSpace = color_space,
+                .WrapS = src_sampler ? ToSamplerAddressMode(src_sampler->WrapS) : MTL::SamplerAddressModeRepeat,
+                .WrapT = src_sampler ? ToSamplerAddressMode(src_sampler->WrapT) : MTL::SamplerAddressModeRepeat,
+                .Sampler = ToSamplerConfig(src_sampler),
+                .Name = std::format("{} ({})", src_texture.Name.empty() ? std::format("Texture{}", texture_index) : src_texture.Name, color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"),
+            },
+        };
+        // The manifest records each upload so a snapshot restore can reuse its bindless slot.
+        out.Textures.emplace_back(MaterializedTexture{.SamplerSlot = sampler_slot, .SourceImageIndex = *image_index, .Params = upload.Params});
+        textures.PendingUploads.emplace_back(upload);
         texture_slot_cache.emplace(cache_key, sampler_slot);
         return sampler_slot;
     };
 
-    std::vector<uint32_t> material_indices_by_gltf_material(source_materials.size(), 0u);
-    const auto material_count = ctx.Buffers.Materials.Count<PBRMaterial>();
-    const auto default_material_index = material_count > 0 ? material_count - 1u : 0u;
+    out.IndexByGltfMaterial.reserve(source_materials.size());
     std::vector<std::string> material_names;
     material_names.reserve(source_materials.size());
-    ctx.Buffers.Materials.Reserve((material_count + source_materials.size()) * sizeof(PBRMaterial));
+    buffers.Materials.Reserve((buffers.Materials.Count<PBRMaterial>() + source_materials.size()) * sizeof(PBRMaterial));
     for (uint32_t material_index = 0; material_index < source_materials.size(); ++material_index) {
-        const auto &src_material = source_materials[material_index];
         const auto src_name = material_index < asset.materials.size() ? std::string_view(asset.materials[material_index].name) : std::string_view{"DefaultMaterial"};
         const auto material_name = src_name.empty() ? std::format("Material{}", material_index) : std::string{src_name};
-        const auto clamp_uv_set = [&](uint32_t uv_set, std::string_view texture_label) {
-            if (uv_set <= 3u) return uv_set;
-            std::cerr << std::format(
-                "Warning: glTF material '{}' texture '{}' uses TEXCOORD_{}. MeshEditor currently supports TEXCOORD_0..3. Clamping to TEXCOORD_3.\n",
-                material_name, texture_label, uv_set
-            );
-            return 3u;
-        };
-        // Replaces a GltfLoader texture index in tex.Slot with its bindless sampler slot.
-        // UV fields remain unchanged.
-        const auto resolve_texture = [&](TextureInfo &tex, TextureColorSpace color_space, std::string_view texture_label) -> std::expected<void, std::string> {
-            if (tex.Slot == InvalidSlot) return {};
-            const uint32_t gltf_index = tex.Slot;
-            tex.TexCoord = clamp_uv_set(tex.TexCoord, texture_label);
-            auto texture_slot_result = resolve_texture_slot(gltf_index, color_space);
-            if (!texture_slot_result) return std::unexpected{std::move(texture_slot_result.error())};
-            tex.Slot = *texture_slot_result;
-            return {};
-        };
-        auto gpu_material = src_material;
+        auto gpu_material = source_materials[material_index];
         for (const auto &slot : MaterialTextureSlots) {
-            if (auto result = resolve_texture(slot.Get(gpu_material), slot.ColorSpace, slot.Label); !result) {
-                return std::unexpected{std::move(result.error())};
+            auto &tex = slot.Get(gpu_material);
+            if (tex.Slot == InvalidSlot) continue;
+            if (tex.TexCoord > 3u) {
+                std::cerr << std::format("Warning: glTF material '{}' texture '{}' uses TEXCOORD_{}. MeshEditor currently supports TEXCOORD_0..3. Clamping to TEXCOORD_3.\n", material_name, slot.Label, tex.TexCoord);
+                tex.TexCoord = 3u;
             }
+            tex.Slot = resolve_texture_slot(tex.Slot, slot.ColorSpace);
         }
-        material_indices_by_gltf_material[material_index] = ctx.Buffers.Materials.Append(gpu_material);
+        out.IndexByGltfMaterial.emplace_back(buffers.Materials.Append(gpu_material));
         material_names.emplace_back(material_name);
     }
-    const auto fallback_material_index = material_indices_by_gltf_material.empty() ? default_material_index : material_indices_by_gltf_material.back();
-    // Map a source gltf material index to its post-load PrimitiveMaterialBuffer index.
-    const auto remap_material = [&](uint32_t i) { return i < material_indices_by_gltf_material.size() ? material_indices_by_gltf_material[i] : fallback_material_index; };
-    if (!material_names.empty()) {
-        auto &store = r.ctx().get<MaterialStore>();
-        store.AppendNames(std::move(material_names));
-    }
+    r.ctx().get<MaterialStore>().AppendNames(std::move(material_names));
+    return out;
+}
 
-    // Capture resolved texture uploads before moving them so snapshots can reuse their bindless slots.
-    // Emplaced only on success, after the rollback guard is disarmed.
-    std::vector<MaterializedTexture> materialized_textures;
-    materialized_textures.reserve(new_pending_textures.size());
-    for (const auto &t : new_pending_textures) {
-        materialized_textures.emplace_back(MaterializedTexture{
-            .SamplerSlot = t.SamplerSlot,
-            .SourceImageIndex = std::get<PendingTextureUpload::GltfImageRef>(t.Source).ImageIndex,
-            .Params = t.Params,
-        });
+// Shading features the mesh's materials enable, read from the appended GPU materials.
+PbrFeatureMask PbrFeaturesOf(std::span<const PBRMaterial> materials, std::span<const uint32_t> material_indices) {
+    PbrFeatureMask mask{0};
+    for (const auto index : material_indices) {
+        if (index >= materials.size()) continue;
+        const auto &mat = materials[index];
+        if (mat.Transmission.Factor > 0.f || mat.Transmission.Texture.Slot != InvalidSlot) mask |= PbrFeature::Transmission;
+        if (mat.DiffuseTransmission.Factor > 0.f || mat.DiffuseTransmission.Texture.Slot != InvalidSlot) mask |= PbrFeature::DiffuseTrans;
+        if (mat.Clearcoat.Factor > 0.f || mat.Clearcoat.Texture.Slot != InvalidSlot) mask |= PbrFeature::Clearcoat;
+        if (mat.Sheen.RoughnessFactor > 0.f || mat.Sheen.ColorTexture.Slot != InvalidSlot) mask |= PbrFeature::Sheen;
+        if (mat.Anisotropy.Strength != 0.f || mat.Anisotropy.Texture.Slot != InvalidSlot) mask |= PbrFeature::Anisotropy;
+        if (mat.Iridescence.Factor > 0.f || mat.Iridescence.Texture.Slot != InvalidSlot) mask |= PbrFeature::Iridescence;
     }
-    if (!new_pending_textures.empty()) {
-        auto &pending = texture_store.PendingUploads;
-        pending.insert(pending.end(), std::make_move_iterator(new_pending_textures.begin()), std::make_move_iterator(new_pending_textures.end()));
-    }
+    return mask;
+}
 
-    struct MorphSummary {
-        uint32_t TargetCount{};
-        std::vector<float> DefaultWeights;
-    };
-    struct NonTriangleEntities {
-        state::Entity Lines{state::Null}, Points{state::Null};
-    };
-    // Maps each source mesh to its triangle, line, and point batch entries.
-    static constexpr uint32_t NoPart{UINT32_MAX};
-    struct SourceParts {
-        uint32_t Triangles{NoPart}, Lines{NoPart}, Points{NoPart};
-    };
+// Triangle, line, and point mesh entities per source mesh, indexed by MeshKind.
+using MeshEntities = std::vector<std::array<state::Entity, 3>>;
 
+// Remaps primitive materials to their GPU indices, creates every part in source order, and attaches each part's layout.
+MeshEntities ImportMeshes(state::Scene &r, std::span<SourceMesh> source_meshes, std::span<const uint32_t> material_index_by_gltf_material, const std::filesystem::path &source_path) {
+    const auto remap = [&](uint32_t i) { return i < material_index_by_gltf_material.size() ? material_index_by_gltf_material[i] : material_index_by_gltf_material.back(); };
+    struct Part {
+        uint32_t Mesh;
+        MeshKind Kind;
+    };
+    std::vector<Part> parts;
     std::vector<MeshSource> sources;
     std::vector<MeshSourceLayout> layouts;
-    std::vector<SourceParts> parts(source_meshes.size());
-    std::vector<PbrFeatureMask> pbr_masks(source_meshes.size(), PbrFeatureMask{0});
-    std::vector<MorphSummary> mesh_morphs(source_meshes.size());
     for (uint32_t mi = 0; mi < source_meshes.size(); ++mi) {
-        auto &scene_mesh = source_meshes[mi];
-        if (scene_mesh.Triangles) {
-            // Must run before the remap loop below overwrites MaterialIndices, since this indexes source_materials by gltf index.
-            // The texture tests only check for InvalidSlot, which survives slot remapping, so reading pre-remap slots is fine.
-            PbrFeatureMask mesh_pbr_mask{0};
-            for (const auto gltf_mat_idx : scene_mesh.TrianglePrimitives.MaterialIndices) {
-                if (gltf_mat_idx < source_materials.size()) {
-                    const auto &mat = source_materials[gltf_mat_idx];
-                    if (mat.Transmission.Factor > 0.f || mat.Transmission.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Transmission;
-                    if (mat.DiffuseTransmission.Factor > 0.f || mat.DiffuseTransmission.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::DiffuseTrans;
-                    if (mat.Clearcoat.Factor > 0.f || mat.Clearcoat.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Clearcoat;
-                    if (mat.Sheen.RoughnessFactor > 0.f || mat.Sheen.ColorTexture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Sheen;
-                    if (mat.Anisotropy.Strength != 0.f || mat.Anisotropy.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Anisotropy;
-                    if (mat.Iridescence.Factor > 0.f || mat.Iridescence.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Iridescence;
-                }
+        auto &source_mesh = source_meshes[mi];
+        auto &layout = source_mesh.Layout;
+        for (auto &material : layout.DefaultMaterials) material = remap(material);
+        // KHR_materials_variants mappings then index the same buffer, so applying a variant writes entries straight into it.
+        for (auto &mappings : layout.VariantMappings) {
+            for (auto &m : mappings) {
+                if (m) *m = remap(*m);
             }
-            pbr_masks[mi] = mesh_pbr_mask;
-            for (auto &local_material_index : scene_mesh.TrianglePrimitives.MaterialIndices) local_material_index = remap_material(local_material_index);
-            // KHR_materials_variants mappings contain source glTF material indices.
-            // Remap to match post-load PrimitiveMaterialBuffer indices so the runtime can apply a variant by writing entries straight to that buffer.
-            for (auto &prim_mappings : scene_mesh.TrianglePrimitives.VariantMappings) {
-                for (auto &m : prim_mappings) {
-                    if (m) *m = remap_material(*m);
-                }
-            }
-            // Snapshot per-primitive metadata before the batch consumes the source.
-            // DefaultMaterials copies because the create also consumes MaterialIndices to populate PrimitiveMaterialBuffer.
-            MeshSourceLayout layout{
-                .AttributeFlags = std::move(scene_mesh.TrianglePrimitives.AttributeFlags),
-                .HasSourceIndices = std::move(scene_mesh.TrianglePrimitives.HasSourceIndices),
-                .DefaultMaterials = scene_mesh.TrianglePrimitives.MaterialIndices,
-                .VariantMappings = std::move(scene_mesh.TrianglePrimitives.VariantMappings),
-                .Colors0ComponentCount = scene_mesh.TriangleAttrs.Colors0ComponentCount,
-                .MorphTangentDeltas = {}, // Filled from the created mesh below, after welding compacts them.
-            };
-            if (scene_mesh.MorphData) mesh_morphs[mi] = {scene_mesh.MorphData->TargetCount, scene_mesh.MorphData->DefaultWeights};
-            // Primitives without NORMAL are flat-shaded per the glTF spec.
-            const bool any_normals = std::ranges::any_of(layout.AttributeFlags, [](uint32_t flags) { return (flags & MeshAttributeBit_Normal) != 0; });
-            parts[mi].Triangles = uint32_t(sources.size());
-            sources.emplace_back(MeshSource{
-                .Data = std::move(*scene_mesh.Triangles),
-                .Attrs = std::move(scene_mesh.TriangleAttrs),
-                .Primitives = std::move(scene_mesh.TrianglePrimitives),
-                .Deform = std::move(scene_mesh.DeformData),
-                .Morph = std::move(scene_mesh.MorphData),
-                .Weld = true,
-                .FlatShaded = !any_normals,
-            });
-            layouts.emplace_back(std::move(layout));
         }
-        // Point and line primitives draw straight from their positions, so they record no source index streams.
-        const auto add_non_triangle = [&](std::optional<::MeshData> &data, ::MeshVertexAttributes &attrs, ::MeshPrimitives &primitives) {
-            if (!data) return NoPart;
-            for (auto &local_material_index : primitives.MaterialIndices) local_material_index = remap_material(local_material_index);
-            layouts.emplace_back(MeshSourceLayout{
-                .AttributeFlags = primitives.AttributeFlags,
-                .HasSourceIndices = {},
-                .DefaultMaterials = primitives.MaterialIndices,
-                .VariantMappings = {},
-                .Colors0ComponentCount = attrs.Colors0ComponentCount,
-                .MorphTangentDeltas = {},
-            });
-            const auto part = uint32_t(sources.size());
-            sources.emplace_back(MeshSource{.Data = std::move(*data), .Attrs = std::move(attrs), .Primitives = std::move(primitives)});
-            return part;
+        const auto add_part = [&](std::optional<MeshSource> &source, MeshKind kind) {
+            if (!source) return;
+            source->Primitives.MaterialIndices = layout.DefaultMaterials;
+            auto part_layout = layout;
+            part_layout.Colors0ComponentCount = source->Attrs.Colors0ComponentCount;
+            part_layout.Kind = kind;
+            layouts.emplace_back(std::move(part_layout));
+            parts.emplace_back(mi, kind);
+            sources.emplace_back(std::move(*source));
         };
-        parts[mi].Lines = add_non_triangle(scene_mesh.Lines, scene_mesh.LineAttrs, scene_mesh.LinePrimitives);
-        parts[mi].Points = add_non_triangle(scene_mesh.Points, scene_mesh.PointAttrs, scene_mesh.PointPrimitives);
+        add_part(source_mesh.Triangles, MeshKind::Triangles);
+        add_part(source_mesh.Lines, MeshKind::Lines);
+        add_part(source_mesh.Points, MeshKind::Points);
     }
 
-    // Derive the batch in source order.
     auto created = CreateMeshes(r, sources);
-
-    std::vector<state::Entity> mesh_entities;
-    mesh_entities.reserve(source_meshes.size());
-    std::vector<NonTriangleEntities> non_triangle_entities_per_mesh(source_meshes.size());
-    for (uint32_t mi = 0; mi < source_meshes.size(); ++mi) {
-        const auto &scene_mesh = source_meshes[mi];
-        const auto add_part = [&](uint32_t part, MeshKind kind) {
-            auto &layout = layouts[part];
-            layout.MorphTangentDeltas = std::move(created[part].MorphTangentDeltas);
-            layout.Index = mi;
-            layout.Kind = kind;
-            layout.Name = scene_mesh.Name;
-            const auto [e, _] = ::AddMesh(r, created[part].StoreId, std::nullopt);
-            if (!created[part].AuthoredCornerNormals.empty()) r.emplace<AuthoredCornerNormals>(e, std::move(created[part].AuthoredCornerNormals));
-            r.emplace<Path>(e, source_path);
-            r.emplace<MeshSourceLayout>(e, std::move(layout));
-            return e;
-        };
-        state::Entity mesh_entity = state::Null;
-        if (parts[mi].Triangles != NoPart) {
-            mesh_entity = add_part(parts[mi].Triangles, MeshKind::Triangles);
-            if (pbr_masks[mi] != 0) r.emplace<PbrMeshFeatures>(mesh_entity, pbr_masks[mi]);
-        }
-        mesh_entities.emplace_back(mesh_entity);
-        non_triangle_entities_per_mesh[mi] = {
-            parts[mi].Lines == NoPart ? state::Null : add_part(parts[mi].Lines, MeshKind::Lines),
-            parts[mi].Points == NoPart ? state::Null : add_part(parts[mi].Points, MeshKind::Points),
-        };
+    const auto materials = r.ctx().get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
+    MeshEntities entities(source_meshes.size(), {state::Null, state::Null, state::Null});
+    for (uint32_t part = 0; part < parts.size(); ++part) {
+        auto &layout = layouts[part];
+        // Welding compacts the tangent deltas, so they come from the created mesh.
+        layout.MorphTangentDeltas = std::move(created[part].MorphTangentDeltas);
+        const auto features = parts[part].Kind == MeshKind::Triangles ? PbrFeaturesOf(materials, layout.DefaultMaterials) : PbrFeatureMask{0};
+        const auto [e, _] = ::AddMesh(r, created[part].StoreId, std::nullopt);
+        if (!created[part].AuthoredCornerNormals.empty()) r.emplace<AuthoredCornerNormals>(e, std::move(created[part].AuthoredCornerNormals));
+        r.emplace<Path>(e, source_path);
+        r.emplace<MeshSourceLayout>(e, std::move(layout));
+        if (features != 0) r.emplace<PbrMeshFeatures>(e, features);
+        entities[parts[part].Mesh][size_t(parts[part].Kind)] = e;
     }
+    return entities;
+}
 
-    const auto name_prefix = source_path.stem().string();
-    ReserveEntityNames(r, source_objects.size());
-    std::unordered_map<uint32_t, state::Entity> object_entities_by_node;
-    object_entities_by_node.reserve(source_objects.size());
-    std::unordered_map<uint32_t, std::vector<state::Entity>> skinned_mesh_instances_by_skin;
-    skinned_mesh_instances_by_skin.reserve(asset.skins.size());
-    std::vector<state::Entity> armature_data_entities;
+struct ImportedObjects {
+    // Object entities per node, one per EXT_mesh_gpu_instancing instance and otherwise one.
+    std::vector<std::vector<state::Entity>> ByNode;
+    state::Entity FirstCamera{state::Null};
+    // The entity other nodes reference for a node, the last emitted instance.
+    state::Entity Of(uint32_t node_index) const { return node_index < ByNode.size() && !ByNode[node_index].empty() ? ByNode[node_index].back() : state::Null; }
+};
 
-    state::Entity first_object_entity = state::Null,
-                  first_mesh_object_entity = state::Null,
-                  first_camera_object_entity = state::Null,
-                  first_root_empty_entity = state::Null,
-                  first_armature_entity = state::Null;
-    for (uint32_t i = 0; i < source_objects.size(); ++i) {
-        const auto &object = source_objects[i];
-        const auto object_name = object.Name.empty() ? std::format("{}_{}", name_prefix, i) : object.Name;
-        state::Entity object_entity = state::Null;
-        GltfNode node{.Index = object.NodeIndex};
-        // Prefer Triangles, then Lines, then Points (for Lines/Points-only source meshes).
-        const auto primary_mesh_entity = [&]() -> state::Entity {
-            if (object.ObjectType != gltf::Object::Type::Mesh || !object.MeshIndex) return state::Null;
-            const auto mi = *object.MeshIndex;
-            if (mi < mesh_entities.size() && mesh_entities[mi] != state::Null) return mesh_entities[mi];
-            if (mi < non_triangle_entities_per_mesh.size()) {
-                const auto &[lines, points] = non_triangle_entities_per_mesh[mi];
-                return lines != state::Null ? lines : points;
+// Creates the mesh, camera, light, and empty objects of every emitted node, parents them, and stubs the nodes no scene reaches.
+ImportedObjects ImportObjects(state::Scene &r, const fastgltf::Asset &asset, const NodePlan &plan, const MeshEntities &mesh_entities) {
+    auto &meshes = r.ctx().get<MeshStore>();
+    ImportedObjects objects{.ByNode = std::vector<std::vector<state::Entity>>(asset.nodes.size()), .FirstCamera = state::Null};
+    ReserveEntityNames(r, size_t(std::ranges::count(plan.IsObjectEmitted, true)));
+    std::vector<bool> instanced(asset.nodes.size(), false);
+    for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
+        if (!plan.IsObjectEmitted[node_index]) continue;
+        const auto &source_node = asset.nodes[node_index];
+        const auto mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size());
+        const auto camera_index = ToIndex(source_node.cameraIndex, asset.cameras.size());
+        const auto light_index = ToIndex(source_node.lightIndex, asset.lights.size());
+        // Triangles, then lines, then points instance a mesh whose source lacks triangles.
+        const auto primary_mesh = [&]() -> state::Entity {
+            if (!mesh_index) return state::Null;
+            for (const auto e : mesh_entities[*mesh_index]) {
+                if (e != state::Null) return e;
             }
             return state::Null;
         }();
-        if (primary_mesh_entity != state::Null) {
-            object_entity = ::AddMeshInstance(
-                r,
-                primary_mesh_entity,
-                {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
-            );
-        } else if (object.ObjectType == gltf::Object::Type::Camera && object.CameraIndex && *object.CameraIndex < asset.cameras.size()) {
-            const auto &cam = asset.cameras[*object.CameraIndex];
-            object_entity = ::AddCamera(r, ctx.Meshes, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
-            r.replace<::Camera>(object_entity, ConvertCamera(cam));
-            node.Camera = *object.CameraIndex;
-            node.CameraName = cam.name;
-        } else if (object.ObjectType == gltf::Object::Type::Light && object.LightIndex && *object.LightIndex < asset.lights.size()) {
-            const auto &light = asset.lights[*object.LightIndex];
-            object_entity = ::AddLight(r, ctx.Meshes, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, ConvertLight(light));
-            node.Light = *object.LightIndex;
-            node.LightName = light.name;
-        } else {
-            object_entity = ::AddEmpty(r, ctx.Meshes, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
-        }
-        // Parent non-triangle instances under the primary instance with identity transforms.
-        if (object.ObjectType == gltf::Object::Type::Mesh && object.MeshIndex && *object.MeshIndex < non_triangle_entities_per_mesh.size()) {
-            const auto &non_triangle = non_triangle_entities_per_mesh[*object.MeshIndex];
-            for (const auto extra_entity : {non_triangle.Lines, non_triangle.Points}) {
-                if (extra_entity != state::Null && extra_entity != primary_mesh_entity) {
-                    const auto extra_instance = ::AddMeshInstance(
-                        r,
-                        extra_entity,
-                        {.Name = object_name, .Transform = Transform{}, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
-                    );
-                    SetParent(r, extra_instance, object_entity);
+        // EXT_mesh_gpu_instancing emits one root object per instance with its world transform baked in.
+        const auto instance_transforms = mesh_index ? ReadInstanceTransforms(asset, source_node) : std::vector<Transform>{};
+        instanced[node_index] = !instance_transforms.empty();
+        const auto base_name = MakeNodeName(asset, node_index, mesh_index);
+        const std::string raw_name{source_node.name};
+        const uint32_t count = instanced[node_index] ? uint32_t(instance_transforms.size()) : 1u;
+        for (uint32_t i = 0; i < count; ++i) {
+            const auto name = instanced[node_index] ? std::format("{}.{}", base_name, i) : base_name;
+            const auto transform = instanced[node_index] ? ToTransform(plan.WorldTransforms[node_index] * ToMatrix(instance_transforms[i])) : plan.LocalTransforms[node_index];
+            const ObjectCreateInfo info{.Name = name, .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None};
+            GltfNode node;
+            node.Index = node_index;
+            state::Entity e = state::Null;
+            if (primary_mesh != state::Null) {
+                e = ::AddMeshInstance(r, primary_mesh, {.Name = name, .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true});
+                // The source mesh's other parts ride under the primary instance with identity transforms.
+                for (const auto extra : mesh_entities[*mesh_index]) {
+                    if (extra == state::Null || extra == primary_mesh) continue;
+                    const auto extra_instance = ::AddMeshInstance(r, extra, {.Name = name, .Transform = Transform{}, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true});
+                    SetParent(r, extra_instance, e);
                 }
+            } else if (!mesh_index && camera_index) {
+                const auto &cam = asset.cameras[*camera_index];
+                e = ::AddCamera(r, meshes, info);
+                r.replace<::Camera>(e, ConvertCamera(cam));
+                node.Camera = *camera_index;
+                node.CameraName = cam.name;
+                if (objects.FirstCamera == state::Null) objects.FirstCamera = e;
+            } else if (!mesh_index && light_index) {
+                const auto &light = asset.lights[*light_index];
+                e = ::AddLight(r, meshes, info, ConvertLight(light));
+                node.Light = *light_index;
+                node.LightName = light.name;
+            } else {
+                e = ::AddEmpty(r, meshes, info);
             }
-        }
-
-        object_entities_by_node[object.NodeIndex] = object_entity;
-        // Compare synthesized object.Name with the raw source name to record empty or collision-renamed values.
-        if (object.NodeIndex < asset.nodes.size()) {
-            const std::string raw_name(asset.nodes[object.NodeIndex].name);
+            // Record a source name the runtime name replaced or synthesized.
             if (raw_name.empty()) node.EmptyName = true;
-            else if (const auto *n = r.try_get<const Name>(object_entity); n && n->Value != raw_name) node.Name = raw_name;
-        }
-        r.emplace<GltfNode>(object_entity, std::move(node));
-        // glTF node.skin is deform linkage, not a transform-parent relationship.
-        if (object.SkinIndex && r.all_of<Instance>(object_entity)) skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
-        if (first_object_entity == state::Null) first_object_entity = object_entity;
-        if (first_mesh_object_entity == state::Null && object.ObjectType == gltf::Object::Type::Mesh) first_mesh_object_entity = object_entity;
-        if (first_camera_object_entity == state::Null && object.ObjectType == gltf::Object::Type::Camera) first_camera_object_entity = object_entity;
-        if (first_root_empty_entity == state::Null && object.ObjectType == gltf::Object::Type::Empty && !object.ParentNodeIndex) first_root_empty_entity = object_entity;
-    }
-
-    for (const auto &object : source_objects) {
-        if (!object.ParentNodeIndex) continue;
-
-        const auto child_it = object_entities_by_node.find(object.NodeIndex);
-        if (child_it == object_entities_by_node.end()) continue;
-        const auto parent_it = object_entities_by_node.find(*object.ParentNodeIndex);
-        if (parent_it != object_entities_by_node.end()) {
-            SetParent(r, child_it->second, parent_it->second);
+            else if (const auto *n = r.try_get<const Name>(e); n && n->Value != raw_name) node.Name = raw_name;
+            r.emplace<GltfNode>(e, std::move(node));
+            objects.ByNode[node_index].emplace_back(e);
         }
     }
 
-    // Create serialization-only stubs for nodes referenced exclusively by non-default scenes.
+    // Objects nest under their nearest emitted ancestor. Instances are roots, so their baked world transforms stand alone.
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
-        if (traversal.InScene[node_index]) continue;
+        if (!plan.IsObjectEmitted[node_index] || instanced[node_index]) continue;
+        const auto parent = plan.NearestObjectAncestor[node_index];
+        if (!parent) continue;
+        if (const auto parent_entity = objects.Of(*parent); parent_entity != state::Null) SetParent(r, objects.Of(node_index), parent_entity);
+    }
+
+    // Nodes no scene reaches become serialization-only stubs.
+    for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
+        if (plan.InScene[node_index]) continue;
         const auto &source_node = asset.nodes[node_index];
         const auto e = r.create();
-        GltfNode node{.Index = node_index};
-        r.emplace<Transform>(e, local_transforms[node_index]);
+        GltfNode node;
+        node.Index = node_index;
+        r.emplace<Transform>(e, plan.LocalTransforms[node_index]);
         r.emplace<WorldTransform>(e);
-        if (const auto mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size());
-            mesh_index && *mesh_index < mesh_entities.size() && mesh_entities[*mesh_index] != state::Null) {
-            r.emplace<Instance>(e, mesh_entities[*mesh_index]);
+        if (const auto mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size()); mesh_index && mesh_entities[*mesh_index][size_t(MeshKind::Triangles)] != state::Null) {
+            r.emplace<Instance>(e, mesh_entities[*mesh_index][size_t(MeshKind::Triangles)]);
         }
         if (source_node.name.empty()) {
             node.EmptyName = true;
@@ -2042,385 +1665,364 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
         r.emplace<GltfNode>(e, std::move(node));
     }
+    return objects;
+}
 
-    // Creates collision-filter entities with one system-name deduplication map shared across all filters.
-    {
-        // Dedupe system names across all filters into CollisionSystem entities.
-        std::unordered_map<std::string, state::Entity> system_entity_by_name;
-        const auto resolve_systems = [&](const auto &names) {
-            std::vector<state::Entity> out;
-            out.reserve(names.size());
-            for (const auto &n : names) {
-                std::string key{n};
-                auto [it, inserted] = system_entity_by_name.try_emplace(std::move(key), state::Null);
-                if (inserted) {
-                    it->second = r.create();
-                    r.emplace<CollisionSystem>(it->second, CollisionSystem{.Name = it->first});
-                }
-                out.emplace_back(it->second);
+PhysicsShape ToPhysicsShape(const fastgltf::Asset &asset, const fastgltf::Geometry &geom) {
+    if (geom.shape && *geom.shape < asset.shapes.size()) {
+        return std::visit(
+            overloaded{
+                [](const fastgltf::BoxShape &s) -> PhysicsShape { return physics::Box{ToVec3(s.size)}; },
+                [](const fastgltf::SphereShape &s) -> PhysicsShape { return physics::Sphere{s.radius}; },
+                [](const fastgltf::CapsuleShape &s) -> PhysicsShape { return physics::Capsule{std::max(float(s.height), physics::MinShapeHeight), s.radiusTop, s.radiusBottom}; },
+                [](const fastgltf::CylinderShape &s) -> PhysicsShape { return physics::Cylinder{std::max(float(s.height), physics::MinShapeHeight), s.radiusTop, s.radiusBottom}; },
+                [](const fastgltf::PlaneShape &s) -> PhysicsShape { return physics::Plane{s.sizeX, s.sizeZ, s.doubleSided}; },
+            },
+            asset.shapes[*geom.shape]
+        );
+    }
+    if (geom.convexHull) return physics::ConvexHull{};
+    return physics::TriangleMesh{};
+}
+
+// Collision filters, then every node's KHR_physics_rigid_bodies collider, motion, trigger, and joint.
+void ImportNodePhysics(state::Scene &r, const fastgltf::Asset &asset, const ImportedObjects &objects, const MeshEntities &mesh_entities, const PhysicsResources &resources) {
+    // Collision system names dedupe into CollisionSystem entities shared across every filter.
+    std::unordered_map<std::string, state::Entity> system_entity_by_name;
+    const auto resolve_systems = [&](const auto &names) {
+        std::vector<state::Entity> out;
+        out.reserve(names.size());
+        for (const auto &n : names) {
+            std::string key{n};
+            auto [it, inserted] = system_entity_by_name.try_emplace(std::move(key), state::Null);
+            if (inserted) {
+                it->second = r.create();
+                r.emplace<CollisionSystem>(it->second, CollisionSystem{.Name = it->first});
             }
-            return out;
-        };
-
-        std::vector<state::Entity> filter_entities;
-        filter_entities.reserve(asset.collisionFilters.size());
-        for (uint32_t i = 0; i < asset.collisionFilters.size(); ++i) {
-            const auto &src = asset.collisionFilters[i];
-            // KHR schema forbids both collideWith and notCollideWith; prefer allowlist if both appear.
-            auto [mode, collide_systems] = [&]() -> std::pair<CollideMode, std::vector<state::Entity>> {
-                if (!src.collideWithSystems.empty()) return {CollideMode::Allowlist, resolve_systems(src.collideWithSystems)};
-                if (!src.notCollideWithSystems.empty()) return {CollideMode::Blocklist, resolve_systems(src.notCollideWithSystems)};
-                return {CollideMode::All, {}};
-            }();
-            const auto e = r.create();
-            r.emplace<CollisionFilter>(e, CollisionFilter{.Systems = resolve_systems(src.collisionSystems), .Mode = mode, .CollideSystems = std::move(collide_systems)});
-            r.emplace<SourceIndex>(e, i);
-            filter_entities.emplace_back(e);
+            out.emplace_back(it->second);
         }
+        return out;
+    };
+    std::vector<state::Entity> filter_entities;
+    filter_entities.reserve(asset.collisionFilters.size());
+    for (uint32_t i = 0; i < asset.collisionFilters.size(); ++i) {
+        const auto &src = asset.collisionFilters[i];
+        // The KHR schema forbids both collideWith and notCollideWith, and the allowlist wins when both appear.
+        auto [mode, collide_systems] = [&]() -> std::pair<CollideMode, std::vector<state::Entity>> {
+            if (!src.collideWithSystems.empty()) return {CollideMode::Allowlist, resolve_systems(src.collideWithSystems)};
+            if (!src.notCollideWithSystems.empty()) return {CollideMode::Blocklist, resolve_systems(src.notCollideWithSystems)};
+            return {CollideMode::All, {}};
+        }();
+        const auto e = r.create();
+        r.emplace<CollisionFilter>(e, CollisionFilter{.Systems = resolve_systems(src.collisionSystems), .Mode = mode, .CollideSystems = std::move(collide_systems)});
+        r.emplace<SourceIndex>(e, i);
+        filter_entities.emplace_back(e);
+    }
+    const auto resolve_material = [&](const fastgltf::Optional<size_t> &index) {
+        const auto i = ToIndex(index, resources.Materials.size());
+        return i ? resources.Materials[*i] : state::Null;
+    };
+    const auto resolve_filter = [&](const fastgltf::Optional<size_t> &index) {
+        const auto i = ToIndex(index, filter_entities.size());
+        return i ? filter_entities[*i] : state::Null;
+    };
+    const auto triangles_of = [&](const fastgltf::Optional<size_t> &mesh) {
+        const auto i = ToIndex(mesh, asset.meshes.size());
+        return i ? mesh_entities[*i][size_t(MeshKind::Triangles)] : state::Null;
+    };
 
-        auto resolve_mat = [&](std::optional<uint32_t> idx) {
-            return idx && *idx < physics_material_entities.size() ? physics_material_entities[*idx] : state::Null;
-        };
-        auto resolve_filter = [&](std::optional<uint32_t> idx) {
-            return idx && *idx < filter_entities.size() ? filter_entities[*idx] : state::Null;
-        };
+    for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
+        const auto &rb = asset.nodes[node_index].physicsRigidBody;
+        const auto entity = objects.Of(node_index);
+        if (!rb || entity == state::Null) continue;
 
-        for (uint32_t node_index = 0; node_index < source_node_physics.size(); ++node_index) {
-            const auto &node = source_node_physics[node_index];
-            auto it = object_entities_by_node.find(node_index);
-            if (it == object_entities_by_node.end()) continue;
-            const auto entity = it->second;
-
-            if (node.Collider) {
-                const auto collider_mesh_entity = [&]() -> state::Entity {
-                    if (!IsMeshBackedShape(node.Collider->Shape)) return state::Null;
-                    if (node.ColliderGeometryMeshIndex && *node.ColliderGeometryMeshIndex < mesh_entities.size()) {
-                        return mesh_entities[*node.ColliderGeometryMeshIndex];
-                    }
-                    if (r.all_of<Instance>(entity)) return r.get<const Instance>(entity).Entity;
-                    return state::Null;
-                }();
-                r.emplace<ColliderShape>(entity, ColliderShape{.Shape = node.Collider->Shape, .MeshEntity = collider_mesh_entity});
-                // Imported collider state is authoritative — engine must not auto-derive over it.
-                r.emplace<ColliderPolicy>(entity, ColliderPolicy{.AutoFitDims = false, .LockedKind = true});
-                if (node.Material) {
-                    r.replace<ColliderMaterial>(entity, ColliderMaterial{
-                                                            .PhysicsMaterialEntity = resolve_mat(node.Material->PhysicsMaterialIndex),
-                                                            .CollisionFilterEntity = resolve_filter(node.Material->CollisionFilterIndex),
-                                                        });
-                }
-            }
-            if (node.Motion) {
-                r.emplace<PhysicsMotion>(entity, *node.Motion);
-                if (node.Velocity) r.replace<PhysicsVelocity>(entity, *node.Velocity);
-            }
-            if (node.Trigger) {
-                const auto &td = *node.Trigger;
-                if (td.Shape) {
-                    // Represents GeometryTrigger with ColliderShape and TriggerTag.
-                    // Skip entities already used by a solid collider because KHR makes the two forms exclusive.
-                    if (!r.all_of<ColliderShape>(entity)) {
-                        const auto trigger_mesh_entity = (td.GeometryMeshIndex && *td.GeometryMeshIndex < mesh_entities.size()) ? mesh_entities[*td.GeometryMeshIndex] : state::Null;
-                        r.emplace<ColliderShape>(entity, ColliderShape{.Shape = *td.Shape, .MeshEntity = trigger_mesh_entity});
+        if (rb->collider) {
+            const auto shape = ToPhysicsShape(asset, rb->collider->geometry);
+            const auto collider_mesh_entity = [&]() -> state::Entity {
+                if (!IsMeshBackedShape(shape)) return state::Null;
+                if (const auto geometry_mesh = triangles_of(rb->collider->geometry.mesh); geometry_mesh != state::Null) return geometry_mesh;
+                if (const auto *instance = r.try_get<const Instance>(entity)) return instance->Entity;
+                return state::Null;
+            }();
+            r.emplace<ColliderShape>(entity, ColliderShape{.Shape = shape, .MeshEntity = collider_mesh_entity});
+            // Imported collider state is authoritative, so the engine never auto-derives over it.
+            r.emplace<ColliderPolicy>(entity, ColliderPolicy{.AutoFitDims = false, .LockedKind = true});
+            const auto material = resolve_material(rb->collider->physicsMaterial), filter = resolve_filter(rb->collider->collisionFilter);
+            if (material != state::Null || filter != state::Null) r.replace<ColliderMaterial>(entity, ColliderMaterial{.PhysicsMaterialEntity = material, .CollisionFilterEntity = filter});
+        }
+        if (rb->motion) {
+            const auto &m = *rb->motion;
+            const auto com = ToVec3(m.centerOfMass);
+            r.emplace<PhysicsMotion>(entity, PhysicsMotion{
+                                                 .IsKinematic = m.isKinematic,
+                                                 .Mass = m.mass ? std::optional{float(*m.mass)} : std::nullopt,
+                                                 .CenterOfMass = com != vec3{0} ? std::optional{com} : std::nullopt,
+                                                 .InertiaDiagonal = m.inertialDiagonal ? std::optional{ToVec3(*m.inertialDiagonal)} : std::nullopt,
+                                                 .InertiaOrientation = m.inertialOrientation ? std::optional{std::bit_cast<quat>(*m.inertialOrientation)} : std::nullopt,
+                                                 .GravityFactor = float(m.gravityFactor),
+                                             });
+            if (const auto lv = ToVec3(m.linearVelocity), av = ToVec3(m.angularVelocity); lv != vec3{0} || av != vec3{0}) r.replace<PhysicsVelocity>(entity, PhysicsVelocity{lv, av});
+        }
+        if (rb->trigger) {
+            std::visit(
+                overloaded{
+                    [&](const fastgltf::GeometryTrigger &t) {
+                        // A geometry trigger is a ColliderShape with TriggerTag. KHR makes it exclusive with a solid collider, so a node already carrying one keeps it.
+                        if (r.all_of<ColliderShape>(entity)) return;
+                        r.emplace<ColliderShape>(entity, ColliderShape{.Shape = ToPhysicsShape(asset, t.geometry), .MeshEntity = triangles_of(t.geometry.mesh)});
                         r.emplace<ColliderPolicy>(entity, ColliderPolicy{.AutoFitDims = false, .LockedKind = true});
                         r.emplace<TriggerTag>(entity);
-                        r.patch<ColliderMaterial>(entity, [&](auto &m) { m.CollisionFilterEntity = resolve_filter(td.CollisionFilterIndex); });
-                    }
-                } else {
-                    // NodesTrigger: compound zone.
-                    std::vector<state::Entity> resolved_nodes;
-                    resolved_nodes.reserve(td.NodeIndices.size());
-                    for (const auto node_idx : td.NodeIndices) {
-                        auto nit = object_entities_by_node.find(node_idx);
-                        resolved_nodes.emplace_back(nit != object_entities_by_node.end() ? nit->second : state::Null);
-                    }
-                    r.emplace<TriggerNodes>(entity, TriggerNodes{.Nodes = std::move(resolved_nodes), .CollisionFilterEntity = resolve_filter(td.CollisionFilterIndex)});
-                }
-            }
-            if (node.Joint) {
-                const auto &jd = *node.Joint;
-                auto nit = object_entities_by_node.find(jd.ConnectedNodeIndex);
-                const auto def_entity = jd.JointDefIndex < physics_jointdef_entities.size() ? physics_jointdef_entities[jd.JointDefIndex] : state::Null;
-                r.emplace<PhysicsJoint>(entity, PhysicsJoint{.ConnectedNode = nit != object_entities_by_node.end() ? nit->second : state::Null, .JointDefEntity = def_entity, .EnableCollision = jd.EnableCollision});
-            }
-        }
-    }
-
-    // KHR_audio_rigid_bodies: rebuild modal models, acoustic materials, and acoustic surfaces, attaching them to each instancing node and its mesh entity.
-    if (!asset.modalModels.empty() || !asset.acousticSurfaces.empty()) {
-        std::vector<AcousticMaterial> acoustic_materials;
-        acoustic_materials.reserve(asset.acousticMaterials.size());
-        static constexpr auto MaterialDefaults = materials::acoustic::All.front().Properties;
-        // Treat out-of-range acoustic values as absent.
-        // Reject Poisson ratio 0.5, zero density or modulus, and negative damping to keep derived equations finite and decaying.
-        const auto validated = [](const auto &value, double fallback, auto &&ok, std::string_view field, std::string_view name) {
-            const double v = value.value_or(fallback);
-            if (std::isfinite(v) && ok(v)) return v;
-            std::cerr << std::format("Warning: KHR_audio_rigid_bodies acoustic material '{}' has an invalid {} ({}); using {}.\n", name, field, v, fallback);
-            return fallback;
-        };
-        static constexpr auto positive = [](double v) { return v > 0; };
-        static constexpr auto non_negative = [](double v) { return v >= 0; };
-        for (const auto &m : asset.acousticMaterials) {
-            const std::string name{m.name};
-            acoustic_materials.emplace_back(AcousticMaterial{
-                .Name = name,
-                .Properties = {
-                    .Density = validated(m.density, MaterialDefaults.Density, positive, "density", name),
-                    .YoungModulus = validated(m.youngsModulus, MaterialDefaults.YoungModulus, positive, "youngsModulus", name),
-                    .PoissonRatio = validated(m.poissonRatio, MaterialDefaults.PoissonRatio, [](double v) { return v > -1 && v < 0.5; }, "poissonRatio", name),
-                    .Alpha = validated(m.alpha, MaterialDefaults.Alpha, non_negative, "alpha", name),
-                    .Beta = validated(m.beta, MaterialDefaults.Beta, non_negative, "beta", name),
-                },
-            });
-        }
-
-        const auto read_accessor = [&]<typename T>(size_t accessor_index) {
-            const auto &acc = asset.accessors[accessor_index];
-            std::vector<T> out(acc.count);
-            fastgltf::copyFromAccessor<T>(asset, acc, out.data());
-            return out;
-        };
-        const auto read_scalars = [&](size_t i) { return read_accessor.template operator()<float>(i); };
-        const auto read_vec3s = [&](size_t i) { return read_accessor.template operator()<vec3>(i); };
-        const auto read_indices = [&](size_t i) { return read_accessor.template operator()<uint32_t>(i); };
-
-        // Every accessor value has to be finite, since a resonator's state never recovers from a non-finite frequency, decay, or shape.
-        const auto all_finite = [](const auto &values) {
-            return std::ranges::all_of(values, [](const auto &v) {
-                if constexpr (std::is_same_v<std::decay_t<decltype(v)>, vec3>) return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
-                else return std::isfinite(v);
-            });
-        };
-        // A model needs its four accessors, one decay rate per mode, and a mode-major M*P shape block, and reads back empty otherwise.
-        const auto read_model = [&](const fastgltf::ModalModel &m) -> ModalModes {
-            const auto accessors = asset.accessors.size();
-            const auto freqs = ToIndex(m.frequencies, accessors), decays = ToIndex(m.decayRates, accessors);
-            const auto positions = ToIndex(m.positions, accessors), shapes = ToIndex(m.shapes, accessors);
-            if (!freqs || !decays || !positions || !shapes) return {};
-
-            ModalModes modes;
-            modes.Freqs = read_scalars(*freqs);
-            modes.Positions = read_vec3s(*positions);
-            const auto decay_rates = read_scalars(*decays);
-            const auto shapes_flat = read_vec3s(*shapes);
-            const uint32_t n_modes = modes.Freqs.size(), n_points = modes.Positions.size();
-            if (n_modes == 0 || n_points == 0 || decay_rates.size() != n_modes || shapes_flat.size() != size_t(n_modes) * n_points) return {};
-            if (!all_finite(modes.Freqs) || !all_finite(decay_rates) || !all_finite(modes.Positions) || !all_finite(shapes_flat)) return {};
-            // The spec forbids a frequency at or below zero, and a negative decay rate grows without bound.
-            // The shape block is indexed by mode, so one malformed mode invalidates the whole model.
-            if (std::ranges::any_of(modes.Freqs, [](float f) { return f <= 0; })) return {};
-            if (std::ranges::any_of(decay_rates, [](float d) { return d < 0; })) return {};
-
-            modes.T60s.resize(n_modes);
-            for (uint32_t k = 0; k < n_modes; ++k) modes.T60s[k] = decay_rates[k] > 0 ? float(Ln1000 / decay_rates[k]) : 0.f;
-            // Shapes arrive mode-major (element m*P + i) and are stored position-major as Shapes[point][mode].
-            modes.Shapes.assign(n_points, std::vector<vec3>(n_modes));
-            for (uint32_t mode = 0; mode < n_modes; ++mode) {
-                for (uint32_t i = 0; i < n_points; ++i) modes.Shapes[i][mode] = shapes_flat[mode * n_points + i];
-            }
-            // The sample surface is optional, and is dropped unless it describes whole triangles over the model's own sample points.
-            if (const auto indices = ToIndex(m.indices, accessors)) {
-                auto tris = read_indices(*indices);
-                if (tris.size() % 3 == 0 && std::ranges::all_of(tris, [n_points](uint32_t i) { return i < n_points; })) modes.Indices = std::move(tris);
-                else std::cerr << std::format("Warning: KHR_audio_rigid_bodies modal model '{}' has sample surface indices outside its sample points; ignoring them.\n", std::string{m.name});
-            }
-            modes.OriginalFundamentalFreq = modes.Freqs.front();
-            return modes;
-        };
-        // An empty entry keeps the array's indices aligned with the document's while attaching nothing.
-        std::vector<ModalModes> models;
-        models.reserve(asset.modalModels.size());
-        for (const auto &m : asset.modalModels) {
-            models.emplace_back(read_model(m));
-            if (models.back().Freqs.empty()) {
-                std::cerr << std::format("Warning: KHR_audio_rigid_bodies modal model '{}' has accessors that do not match, or a frequency at or below zero, or a negative decay rate; ignoring it.\n", std::string{m.name});
-            }
-        }
-
-        std::vector<ContactSurface> surfaces;
-        surfaces.reserve(asset.acousticSurfaces.size());
-        for (const auto &s : asset.acousticSurfaces) {
-            static constexpr ContactSurface Defaults{};
-            ContactSurface surface{
-                .Name = std::string{s.name},
-                .Roughness = float(s.roughness.value_or(Defaults.Roughness)),
-                .CorrelationLength = float(s.correlationLength.value_or(Defaults.CorrelationLength)),
-                .SpectralSlope = float(s.spectralSlope.value_or(Defaults.SpectralSlope)),
-                .ShortWavelength = float(s.shortWavelength.value_or(Defaults.ShortWavelength)),
-                .Waviness = float(s.waviness.value_or(Defaults.Waviness)),
-                .WavinessLength = float(s.wavinessLength.value_or(Defaults.WavinessLength)),
-                .Profile = {},
-                .SampleSpacing = float(s.sampleSpacing.value_or(0.0)),
-                .NormalTexture = {},
-            };
-            if (const auto profile = ToIndex(s.profile, asset.accessors.size())) surface.Profile = read_scalars(*profile);
-            if (const auto texture = s.normalTexture.has_value() ? ToIndex(s.normalTexture->textureIndex, asset.textures.size()) : std::nullopt) {
-                surface.NormalTexture = SurfaceNormalTexture{
-                    .Texture = *texture,
-                    .TexCoord = uint32_t(s.normalTexture->texCoordIndex),
-                    .Scale = float(s.normalTexture->scale),
-                };
-            }
-            surfaces.emplace_back(std::move(surface));
-        }
-
-        for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
-            const auto &source_node = asset.nodes[node_index];
-            if (!source_node.audioRigidBody.has_value()) continue;
-            const auto &instance = *source_node.audioRigidBody;
-            const auto it = object_entities_by_node.find(node_index);
-            if (it == object_entities_by_node.end()) continue;
-            const auto entity = it->second;
-
-            const auto surface_index = ToIndex(instance.acousticSurface, asset.acousticSurfaces.size());
-            // Store a separate finish on each node that shares a mesh.
-            if (surface_index) r.emplace_or_replace<ContactSurface>(entity, surfaces[*surface_index]);
-
-            const auto model_index = [&]() -> std::optional<uint32_t> {
-                const auto i = ToIndex(instance.modalModel, models.size());
-                return i && !models[*i].Freqs.empty() ? i : std::nullopt;
-            }();
-            // One acoustic material per node, a model's reference winning over its surface's.
-            const auto material_index = [&]() -> std::optional<uint32_t> {
-                if (model_index) {
-                    if (const auto i = ToIndex(asset.modalModels[*model_index].material, acoustic_materials.size())) return i;
-                }
-                if (surface_index) return ToIndex(asset.acousticSurfaces[*surface_index].material, acoustic_materials.size());
-                return std::nullopt;
-            }();
-            if (material_index) r.emplace_or_replace<AcousticMaterial>(entity, acoustic_materials[*material_index]);
-
-            if (!model_index) continue;
-            auto model = models[*model_index];
-            model.BakedScale = vec3{1.f};
-            // Map each sample point to its nearest render-mesh vertex so the model stays excitable.
-            const auto *inst = r.try_get<const Instance>(entity);
-            if (inst && r.all_of<MeshHandle>(inst->Entity) && !model.Positions.empty()) {
-                const auto mesh = GetMesh(r, inst->Entity);
-                model.Vertices.resize(model.Positions.size());
-                for (size_t i = 0; i < model.Positions.size(); ++i) {
-                    uint32_t nearest = 0;
-                    float nearest_d2 = -1.f;
-                    for (uint32_t v = 0; v < mesh.VertexCount(); ++v) {
-                        const auto d = model.Positions[i] - mesh.GetPosition(Mesh::VH{v});
-                        if (const float d2 = numeric::Dot(d, d); nearest_d2 < 0.f || d2 < nearest_d2) {
-                            nearest_d2 = d2;
-                            nearest = v;
+                        r.patch<ColliderMaterial>(entity, [&](auto &m) { m.CollisionFilterEntity = resolve_filter(t.collisionFilter); });
+                    },
+                    [&](const fastgltf::NodeTrigger &t) {
+                        // A node trigger is a compound zone over other nodes.
+                        std::vector<state::Entity> nodes;
+                        nodes.reserve(t.nodes.size());
+                        for (const auto n : t.nodes) {
+                            if (n < asset.nodes.size()) nodes.emplace_back(objects.Of(n));
                         }
-                    }
-                    model.Vertices[i] = nearest;
-                }
-            }
-            // A model without sample-to-vertex mapping (e.g. a mesh-less node) stays passive data.
-            const bool excitable = !model.Vertices.empty();
-            r.emplace<ModalModes>(entity, std::move(model));
-            if (const auto &mp = asset.modalModels[*model_index].massProperties; mp.has_value()) {
-                const auto &q = mp->inertiaOrientation;
-                r.emplace<MassProperties>(entity, MassProperties{
-                                                      .Mass = mp->mass,
-                                                      .CenterOfMass = ToVec3(mp->centerOfMass),
-                                                      .InertiaDiagonal = ToVec3(mp->inertiaDiagonal),
-                                                      .InertiaOrientation = std::bit_cast<quat>(q),
-                                                  });
-                // Uses dynamic rigid-body mass for sound contact dynamics; see UpdateContactDynamics.
-                // Warn when modal and rigid-body masses differ.
-                // The node's scale sizes the model, so the mass it implies at this size is the solved mass times scale cubed.
-                if (const auto *motion = r.try_get<const PhysicsMotion>(entity); motion && IsAuthoritativeDynamicBody(*motion)) {
-                    const auto *trs = std::get_if<fastgltf::TRS>(&source_node.transform);
-                    const float node_scale = trs ? MeanScale(std::bit_cast<vec3>(trs->scale)) : 1.f;
-                    const float sized_mass = float(mp->mass) * node_scale * node_scale * node_scale;
-                    const float body_mass = motion->Mass.value_or(DefaultMass);
-                    if (std::abs(body_mass - sized_mass) > 1e-3f * std::max(body_mass, sized_mass)) {
-                        const auto name = source_node.name.empty() ? std::format("node {}", node_index) : std::string{source_node.name};
-                        std::cerr << std::format(
-                            "Warning: '{}': KHR_audio_rigid_bodies mass ({:.4g} kg at the node's scale) disagrees with its KHR_physics_rigid_bodies rigid body ({:.4g} kg); using the rigid body for contact dynamics.\n",
-                            name, sized_mass, body_mass
-                        );
-                    }
-                }
-            } else if (const auto *motion = r.try_get<const PhysicsMotion>(entity); motion && motion->Mass) {
-                // A model without its own mass properties falls back to the node's KHR_physics_rigid_bodies motion.
-                r.emplace<MassProperties>(entity, MassProperties{
-                                                      .Mass = *motion->Mass,
-                                                      .CenterOfMass = motion->CenterOfMass.value_or(vec3{0}),
-                                                      .InertiaDiagonal = motion->InertiaDiagonal.value_or(vec3{0}),
-                                                      .InertiaOrientation = motion->InertiaOrientation.value_or(quat{1, 0, 0, 0}),
-                                                  });
-            }
-            if (excitable) r.emplace<SoundVerticesModel>(entity, SoundVerticesModel::Modal);
-            if (instance.gain != fastgltf::num(1)) r.emplace<ModalGain>(entity, ModalGain{instance.gain});
+                        r.emplace<TriggerNodes>(entity, TriggerNodes{.Nodes = std::move(nodes), .CollisionFilterEntity = state::Null});
+                    },
+                },
+                *rb->trigger
+            );
+        }
+        if (rb->joint) {
+            const auto def = ToIndex(rb->joint->joint, resources.JointDefs.size());
+            r.emplace<PhysicsJoint>(entity, PhysicsJoint{.ConnectedNode = objects.Of(uint32_t(rb->joint->connectedNode)), .JointDefEntity = def ? resources.JointDefs[*def] : state::Null, .EnableCollision = rb->joint->enableCollision});
         }
     }
+}
 
-    // Build one armature per distinct armature root, consuming every skin anchored there.
-    // This way a bone's pose world composes the same node transforms as the spec's global joint transform.
-    std::unordered_set<uint32_t> joint_node_indices;
-    struct ArmatureGroup {
-        std::optional<uint32_t> ArmaNode;
-        std::vector<uint32_t> SkinIndices;
+// KHR_audio_rigid_bodies: modal models, acoustic materials, and acoustic surfaces attached to each instancing node.
+void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedObjects &objects) {
+    if (asset.modalModels.empty() && asset.acousticSurfaces.empty()) return;
+
+    std::vector<AcousticMaterial> acoustic_materials;
+    acoustic_materials.reserve(asset.acousticMaterials.size());
+    static constexpr auto MaterialDefaults = materials::acoustic::All.front().Properties;
+    // Treat out-of-range acoustic values as absent.
+    // Reject Poisson ratio 0.5, zero density or modulus, and negative damping to keep derived equations finite and decaying.
+    const auto validated = [](const auto &value, double fallback, auto &&ok, std::string_view field, std::string_view name) {
+        const double v = value.value_or(fallback);
+        if (std::isfinite(v) && ok(v)) return v;
+        std::cerr << std::format("Warning: KHR_audio_rigid_bodies acoustic material '{}' has an invalid {} ({}); using {}.\n", name, field, v, fallback);
+        return fallback;
     };
-    std::vector<ArmatureGroup> armature_groups;
-    for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
-        if (!used_skin[skin_index] || skin_joint_nodes[skin_index].empty()) continue;
-        auto it = std::ranges::find(armature_groups, skin_arma_node[skin_index], &ArmatureGroup::ArmaNode);
-        if (it == armature_groups.end()) it = armature_groups.emplace(armature_groups.end(), ArmatureGroup{skin_arma_node[skin_index], {}});
-        it->SkinIndices.emplace_back(skin_index);
+    static constexpr auto positive = [](double v) { return v > 0; };
+    static constexpr auto non_negative = [](double v) { return v >= 0; };
+    for (const auto &m : asset.acousticMaterials) {
+        const std::string name{m.name};
+        acoustic_materials.emplace_back(AcousticMaterial{
+            .Name = name,
+            .Properties = {
+                .Density = validated(m.density, MaterialDefaults.Density, positive, "density", name),
+                .YoungModulus = validated(m.youngsModulus, MaterialDefaults.YoungModulus, positive, "youngsModulus", name),
+                .PoissonRatio = validated(m.poissonRatio, MaterialDefaults.PoissonRatio, [](double v) { return v > -1 && v < 0.5; }, "poissonRatio", name),
+                .Alpha = validated(m.alpha, MaterialDefaults.Alpha, non_negative, "alpha", name),
+                .Beta = validated(m.beta, MaterialDefaults.Beta, non_negative, "beta", name),
+            },
+        });
     }
-    for (uint32_t group_index = 0; group_index < armature_groups.size(); ++group_index) {
-        const auto &group = armature_groups[group_index];
-        const auto arma_node = group.ArmaNode;
-        if (arma_node && !traversal.InScene[*arma_node]) {
-            return std::unexpected{std::format("glTF import failed for '{}': skin {} armature root node {} is not in the imported scene.", source_path.string(), group.SkinIndices.front(), *arma_node)};
-        }
 
-        // Bone nodes: every bone node on a path from a joint up to the root (exclusive), first-seen order.
-        std::vector<uint32_t> source_bone_nodes;
-        std::vector<bool> in_group(asset.nodes.size(), false);
-        for (const auto skin_index : group.SkinIndices) {
-            for (const auto joint : skin_joint_nodes[skin_index]) {
-                for (std::optional<uint32_t> cur = joint; cur && cur != arma_node; cur = parents[*cur]) {
-                    if (!is_bone[*cur]) continue;
-                    if (in_group[*cur]) break;
-                    in_group[*cur] = true;
-                    source_bone_nodes.emplace_back(*cur);
+    const auto read_accessor = [&]<typename T>(size_t accessor_index) {
+        const auto &acc = asset.accessors[accessor_index];
+        std::vector<T> out(acc.count);
+        fastgltf::copyFromAccessor<T>(asset, acc, out.data());
+        return out;
+    };
+    const auto read_scalars = [&](size_t i) { return read_accessor.template operator()<float>(i); };
+    const auto read_vec3s = [&](size_t i) { return read_accessor.template operator()<vec3>(i); };
+    const auto read_indices = [&](size_t i) { return read_accessor.template operator()<uint32_t>(i); };
+
+    // Every accessor value has to be finite, since a resonator's state never recovers from a non-finite frequency, decay, or shape.
+    const auto all_finite = [](const auto &values) {
+        return std::ranges::all_of(values, [](const auto &v) {
+            if constexpr (std::is_same_v<std::decay_t<decltype(v)>, vec3>) return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+            else return std::isfinite(v);
+        });
+    };
+    // A model needs its four accessors, one decay rate per mode, and a mode-major M*P shape block, and reads back empty otherwise.
+    const auto read_model = [&](const fastgltf::ModalModel &m) -> ModalModes {
+        const auto accessors = asset.accessors.size();
+        const auto freqs = ToIndex(m.frequencies, accessors), decays = ToIndex(m.decayRates, accessors);
+        const auto positions = ToIndex(m.positions, accessors), shapes = ToIndex(m.shapes, accessors);
+        if (!freqs || !decays || !positions || !shapes) return {};
+
+        ModalModes modes;
+        modes.Freqs = read_scalars(*freqs);
+        modes.Positions = read_vec3s(*positions);
+        const auto decay_rates = read_scalars(*decays);
+        const auto shapes_flat = read_vec3s(*shapes);
+        const uint32_t n_modes = modes.Freqs.size(), n_points = modes.Positions.size();
+        if (n_modes == 0 || n_points == 0 || decay_rates.size() != n_modes || shapes_flat.size() != size_t(n_modes) * n_points) return {};
+        if (!all_finite(modes.Freqs) || !all_finite(decay_rates) || !all_finite(modes.Positions) || !all_finite(shapes_flat)) return {};
+        // The spec forbids a frequency at or below zero, and a negative decay rate grows without bound.
+        // The shape block is indexed by mode, so one malformed mode invalidates the whole model.
+        if (std::ranges::any_of(modes.Freqs, [](float f) { return f <= 0; })) return {};
+        if (std::ranges::any_of(decay_rates, [](float d) { return d < 0; })) return {};
+
+        modes.T60s.resize(n_modes);
+        for (uint32_t k = 0; k < n_modes; ++k) modes.T60s[k] = decay_rates[k] > 0 ? float(Ln1000 / decay_rates[k]) : 0.f;
+        // Shapes arrive mode-major (element m*P + i) and are stored position-major as Shapes[point][mode].
+        modes.Shapes.assign(n_points, std::vector<vec3>(n_modes));
+        for (uint32_t mode = 0; mode < n_modes; ++mode) {
+            for (uint32_t i = 0; i < n_points; ++i) modes.Shapes[i][mode] = shapes_flat[mode * n_points + i];
+        }
+        // The sample surface is optional, and is dropped unless it describes whole triangles over the model's own sample points.
+        if (const auto indices = ToIndex(m.indices, accessors)) {
+            auto tris = read_indices(*indices);
+            if (tris.size() % 3 == 0 && std::ranges::all_of(tris, [n_points](uint32_t i) { return i < n_points; })) modes.Indices = std::move(tris);
+            else std::cerr << std::format("Warning: KHR_audio_rigid_bodies modal model '{}' has sample surface indices outside its sample points; ignoring them.\n", std::string{m.name});
+        }
+        modes.OriginalFundamentalFreq = modes.Freqs.front();
+        return modes;
+    };
+    // An empty entry keeps the array's indices aligned with the document's while attaching nothing.
+    std::vector<ModalModes> models;
+    models.reserve(asset.modalModels.size());
+    for (const auto &m : asset.modalModels) {
+        models.emplace_back(read_model(m));
+        if (models.back().Freqs.empty()) {
+            std::cerr << std::format("Warning: KHR_audio_rigid_bodies modal model '{}' has accessors that do not match, or a frequency at or below zero, or a negative decay rate; ignoring it.\n", std::string{m.name});
+        }
+    }
+
+    std::vector<ContactSurface> surfaces;
+    surfaces.reserve(asset.acousticSurfaces.size());
+    for (const auto &s : asset.acousticSurfaces) {
+        static constexpr ContactSurface Defaults{};
+        ContactSurface surface{
+            .Name = std::string{s.name},
+            .Roughness = float(s.roughness.value_or(Defaults.Roughness)),
+            .CorrelationLength = float(s.correlationLength.value_or(Defaults.CorrelationLength)),
+            .SpectralSlope = float(s.spectralSlope.value_or(Defaults.SpectralSlope)),
+            .ShortWavelength = float(s.shortWavelength.value_or(Defaults.ShortWavelength)),
+            .Waviness = float(s.waviness.value_or(Defaults.Waviness)),
+            .WavinessLength = float(s.wavinessLength.value_or(Defaults.WavinessLength)),
+            .Profile = {},
+            .SampleSpacing = float(s.sampleSpacing.value_or(0.0)),
+            .NormalTexture = {},
+        };
+        if (const auto profile = ToIndex(s.profile, asset.accessors.size())) surface.Profile = read_scalars(*profile);
+        if (const auto texture = s.normalTexture.has_value() ? ToIndex(s.normalTexture->textureIndex, asset.textures.size()) : std::nullopt) {
+            surface.NormalTexture = SurfaceNormalTexture{
+                .Texture = *texture,
+                .TexCoord = uint32_t(s.normalTexture->texCoordIndex),
+                .Scale = float(s.normalTexture->scale),
+            };
+        }
+        surfaces.emplace_back(std::move(surface));
+    }
+
+    for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
+        const auto &source_node = asset.nodes[node_index];
+        const auto entity = objects.Of(node_index);
+        if (!source_node.audioRigidBody.has_value() || entity == state::Null) continue;
+        const auto &instance = *source_node.audioRigidBody;
+
+        const auto surface_index = ToIndex(instance.acousticSurface, asset.acousticSurfaces.size());
+        // Store a separate finish on each node that shares a mesh.
+        if (surface_index) r.emplace_or_replace<ContactSurface>(entity, surfaces[*surface_index]);
+
+        const auto model_index = [&]() -> std::optional<uint32_t> {
+            const auto i = ToIndex(instance.modalModel, models.size());
+            return i && !models[*i].Freqs.empty() ? i : std::nullopt;
+        }();
+        // One acoustic material per node, a model's reference winning over its surface's.
+        const auto material_index = [&]() -> std::optional<uint32_t> {
+            if (model_index) {
+                if (const auto i = ToIndex(asset.modalModels[*model_index].material, acoustic_materials.size())) return i;
+            }
+            if (surface_index) return ToIndex(asset.acousticSurfaces[*surface_index].material, acoustic_materials.size());
+            return std::nullopt;
+        }();
+        if (material_index) r.emplace_or_replace<AcousticMaterial>(entity, acoustic_materials[*material_index]);
+
+        if (!model_index) continue;
+        auto model = models[*model_index];
+        model.BakedScale = vec3{1.f};
+        // Map each sample point to its nearest render-mesh vertex so the model stays excitable.
+        const auto *inst = r.try_get<const Instance>(entity);
+        if (inst && r.all_of<MeshHandle>(inst->Entity) && !model.Positions.empty()) {
+            const auto mesh = GetMesh(r, inst->Entity);
+            model.Vertices.resize(model.Positions.size());
+            for (size_t i = 0; i < model.Positions.size(); ++i) {
+                uint32_t nearest = 0;
+                float nearest_d2 = -1.f;
+                for (uint32_t v = 0; v < mesh.VertexCount(); ++v) {
+                    const auto d = model.Positions[i] - mesh.GetPosition(Mesh::VH{v});
+                    if (const float d2 = numeric::Dot(d, d); nearest_d2 < 0.f || d2 < nearest_d2) {
+                        nearest_d2 = d2;
+                        nearest = v;
+                    }
                 }
+                model.Vertices[i] = nearest;
             }
         }
-
-        std::unordered_map<uint32_t, std::optional<uint32_t>> bone_parent_map;
-        bone_parent_map.reserve(source_bone_nodes.size());
-        for (const auto node : source_bone_nodes) {
-            bone_parent_map.emplace(node, FindNearestMarkedAncestor(node, parents, in_group));
+        // A model without sample-to-vertex mapping (e.g. a mesh-less node) stays passive data.
+        const bool excitable = !model.Vertices.empty();
+        r.emplace<ModalModes>(entity, std::move(model));
+        if (const auto &mp = asset.modalModels[*model_index].massProperties; mp.has_value()) {
+            const auto &q = mp->inertiaOrientation;
+            r.emplace<MassProperties>(entity, MassProperties{
+                                                  .Mass = mp->mass,
+                                                  .CenterOfMass = ToVec3(mp->centerOfMass),
+                                                  .InertiaDiagonal = ToVec3(mp->inertiaDiagonal),
+                                                  .InertiaOrientation = std::bit_cast<quat>(q),
+                                              });
+            // Contact dynamics use the dynamic rigid-body mass (UpdateContactDynamics), so a differing modal mass gets a warning.
+            // The node's scale sizes the model, so the mass it implies at this size is the solved mass times scale cubed.
+            if (const auto *motion = r.try_get<const PhysicsMotion>(entity); motion && IsAuthoritativeDynamicBody(*motion)) {
+                const auto *trs = std::get_if<fastgltf::TRS>(&source_node.transform);
+                const float node_scale = trs ? MeanScale(std::bit_cast<vec3>(trs->scale)) : 1.f;
+                const float sized_mass = float(mp->mass) * node_scale * node_scale * node_scale;
+                const float body_mass = motion->Mass.value_or(DefaultMass);
+                if (std::abs(body_mass - sized_mass) > 1e-3f * std::max(body_mass, sized_mass)) {
+                    const auto name = source_node.name.empty() ? std::format("node {}", node_index) : std::string{source_node.name};
+                    std::cerr << std::format(
+                        "Warning: '{}': KHR_audio_rigid_bodies mass ({:.4g} kg at the node's scale) disagrees with its KHR_physics_rigid_bodies rigid body ({:.4g} kg); using the rigid body for contact dynamics.\n",
+                        name, sized_mass, body_mass
+                    );
+                }
+            }
+        } else if (const auto *motion = r.try_get<const PhysicsMotion>(entity); motion && motion->Mass) {
+            // A model without its own mass properties falls back to the node's KHR_physics_rigid_bodies motion.
+            r.emplace<MassProperties>(entity, MassProperties{
+                                                  .Mass = *motion->Mass,
+                                                  .CenterOfMass = motion->CenterOfMass.value_or(vec3{0}),
+                                                  .InertiaDiagonal = motion->InertiaDiagonal.value_or(vec3{0}),
+                                                  .InertiaOrientation = motion->InertiaOrientation.value_or(quat{1, 0, 0, 0}),
+                                              });
         }
+        if (excitable) r.emplace<SoundVerticesModel>(entity, SoundVerticesModel::Modal);
+        if (instance.gain != fastgltf::num(1)) r.emplace<ModalGain>(entity, ModalGain{instance.gain});
+    }
+}
 
-        auto ordered_bone_nodes = BuildParentBeforeChildJointOrder(source_bone_nodes, bone_parent_map, group_index);
-        if (!ordered_bone_nodes) return std::unexpected{ordered_bone_nodes.error()};
-
+// Builds each planned armature with its bones, skins, bone instances, and constraints. Returns the armature data entities.
+std::vector<state::Entity> ImportArmatures(state::Scene &r, const fastgltf::Asset &asset, const NodePlan &plan, std::span<const ArmaturePlan> groups, const ImportedObjects &objects, std::string_view name_prefix) {
+    auto &meshes = r.ctx().get<MeshStore>();
+    std::vector<state::Entity> data_entities;
+    data_entities.reserve(groups.size());
+    for (uint32_t group_index = 0; group_index < groups.size(); ++group_index) {
+        const auto &group = groups[group_index];
+        const auto arma_node = group.ArmaNode;
         const auto armature_data_entity = r.create();
         auto &armature = r.emplace<Armature>(armature_data_entity);
-        armature_data_entities.emplace_back(armature_data_entity);
+        data_entities.emplace_back(armature_data_entity);
 
         std::unordered_map<uint32_t, BoneId> bone_id_by_node;
-        bone_id_by_node.reserve(ordered_bone_nodes->size());
-        for (const auto node : *ordered_bone_nodes) {
-            joint_node_indices.emplace(node);
-            const auto parent_node = bone_parent_map.at(node);
-            auto rest_local = ComputeJointRestLocal(group_index, node, parent_node, arma_node, parents, local_transforms);
-            if (!rest_local) return std::unexpected{rest_local.error()};
-
-            // Parents precede children in the ordered walk, so the parent's bone ID is always mapped.
-            const auto parent_bone_id = parent_node ? std::optional{bone_id_by_node.at(*parent_node)} : std::nullopt;
-            const auto source_name = MakeNodeName(asset, node);
-            const auto bone_name = source_name.empty() ? std::format("Joint{}", node) : source_name;
-            const auto bone_id = armature.AddBone(bone_name, parent_bone_id, *rest_local, node);
+        bone_id_by_node.reserve(group.BoneNodes.size());
+        for (uint32_t k = 0; k < group.BoneNodes.size(); ++k) {
+            const auto node = group.BoneNodes[k];
+            // Parents precede children, so the parent's bone id is always mapped.
+            const auto parent_bone_id = group.BoneParents[k] ? std::optional{bone_id_by_node.at(*group.BoneParents[k])} : std::nullopt;
+            const auto bone_id = armature.AddBone(MakeNodeName(asset, node), parent_bone_id, group.RestLocals[k], node);
             bone_id_by_node.emplace(node, bone_id);
-            if (const auto object_it = object_entities_by_node.find(node);
-                object_it != object_entities_by_node.end() &&
-                r.all_of<Instance>(object_it->second) &&
-                !r.all_of<PhysicsMotion>(object_it->second) &&
-                !r.all_of<BoneAttachment>(object_it->second)) {
-                r.emplace<BoneAttachment>(object_it->second, armature_data_entity, bone_id);
+            if (const auto object = objects.Of(node);
+                object != state::Null && r.all_of<Instance>(object) && !r.all_of<PhysicsMotion>(object) && !r.all_of<BoneAttachment>(object)) {
+                r.emplace<BoneAttachment>(object, armature_data_entity, bone_id);
             }
         }
 
@@ -2444,7 +2046,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         const auto armature_entity = r.create();
         r.emplace<ObjectKind>(armature_entity, ObjectType::Armature);
         r.emplace<ArmatureObject>(armature_entity, armature_data_entity);
-        r.emplace<Transform>(armature_entity, arma_node ? ToTransform(traversal.WorldTransforms[*arma_node]) : Transform{});
+        r.emplace<Transform>(armature_entity, arma_node ? ToTransform(plan.WorldTransforms[*arma_node]) : Transform{});
         const auto skin_name = [&]() -> std::string {
             for (const auto skin_index : group.SkinIndices) {
                 if (const auto &name = asset.skins[skin_index].name; !name.empty()) return std::string(name);
@@ -2452,86 +2054,80 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             return {};
         }();
         EmplaceUniqueName(r, armature_entity, skin_name.empty() ? std::format("{}_Armature{}", name_prefix, group_index) : skin_name);
-        r.emplace<GltfNode>(armature_entity, GltfNode{.EmptyName = skin_name.empty()});
+        GltfNode armature_node;
+        armature_node.EmptyName = skin_name.empty();
+        r.emplace<GltfNode>(armature_entity, std::move(armature_node));
 
         // Follow the root node's entity when it is an object (it may be animated), else the nearest object above it.
         if (arma_node) {
-            const auto parent_node = object_entities_by_node.contains(*arma_node) ? arma_node : nearest_object_ancestor[*arma_node];
-            if (const auto parent_it = parent_node ? object_entities_by_node.find(*parent_node) : object_entities_by_node.end();
-                parent_it != object_entities_by_node.end()) {
-                SetParentKeepWorld(r, armature_entity, parent_it->second);
-            }
+            const auto parent_node = objects.Of(*arma_node) != state::Null ? arma_node : plan.NearestObjectAncestor[*arma_node];
+            if (const auto parent_entity = parent_node ? objects.Of(*parent_node) : state::Null; parent_entity != state::Null) SetParentKeepWorld(r, armature_entity, parent_entity);
         }
-
-        if (first_armature_entity == state::Null) first_armature_entity = armature_entity;
-        if (first_object_entity == state::Null) first_object_entity = armature_entity;
 
         for (uint32_t skin_slot = 0; skin_slot < group.SkinIndices.size(); ++skin_slot) {
             const auto skin_index = group.SkinIndices[skin_slot];
-            const auto skinned_it = skinned_mesh_instances_by_skin.find(skin_index);
-            if (skinned_it == skinned_mesh_instances_by_skin.end()) {
-                return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", source_path.string(), skin_index)};
-            }
-            for (const auto mesh_instance_entity : skinned_it->second) {
-                if (!r.valid(mesh_instance_entity) || !r.all_of<Instance>(mesh_instance_entity)) continue;
-                r.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity, skin_slot);
-                // The spec ignores a skinned mesh node's own transform.
-                // Identity-parent it to the armature so its world transform is the deform's space.
-                r.emplace_or_replace<Transform>(mesh_instance_entity, Transform{});
-                SetParent(r, mesh_instance_entity, armature_entity);
+            // glTF node.skin is deform linkage, not a transform-parent relationship.
+            for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
+                if (ToIndex(asset.nodes[node_index].skinIndex, asset.skins.size()) != skin_index) continue;
+                for (const auto mesh_instance_entity : objects.ByNode[node_index]) {
+                    if (!r.all_of<Instance>(mesh_instance_entity)) continue;
+                    r.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity, skin_slot);
+                    // The spec ignores a skinned mesh node's own transform.
+                    // Identity-parent it to the armature so its world transform is the deform's space.
+                    r.emplace_or_replace<Transform>(mesh_instance_entity, Transform{});
+                    SetParent(r, mesh_instance_entity, armature_entity);
+                }
             }
         }
 
         // Bone instances only, their pose state is built later from the bone Transforms and rest pose.
-        ::CreateBoneInstances(r, ctx.Meshes, armature_entity, armature_data_entity);
+        ::CreateBoneInstances(r, meshes, armature_entity, armature_data_entity);
         // Mark each bone entity with its source joint NodeIndex (for SaveScene round-trip).
-        const auto &bone_entities_for_source = r.get<const ArmatureObject>(armature_entity).BoneEntities;
+        const auto &bone_entities = r.get<const ArmatureObject>(armature_entity).BoneEntities;
         for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
             const auto joint_node_index = armature.Bones[i].JointNodeIndex;
             if (!joint_node_index) continue;
-            const bool empty_name = *joint_node_index < asset.nodes.size() && asset.nodes[*joint_node_index].name.empty();
-            r.emplace<GltfNode>(bone_entities_for_source[i], GltfNode{.Index = *joint_node_index, .EmptyName = empty_name});
+            GltfNode bone_node;
+            bone_node.Index = *joint_node_index;
+            bone_node.EmptyName = *joint_node_index < asset.nodes.size() && asset.nodes[*joint_node_index].name.empty();
+            r.emplace<GltfNode>(bone_entities[i], std::move(bone_node));
         }
 
-        // Adds Child Of to bones under a physics-driven ancestor so skinned geometry follows simulation.
-        // Target is the nearest ancestor object with PhysicsMotion; InverseMatrix bakes the rest offset.
-        {
-            const auto find_physics_ancestor_entity = [&](uint32_t node_index) -> state::Entity {
-                for (std::optional<uint32_t> cur = node_index; cur;) {
-                    if (const auto oit = object_entities_by_node.find(*cur);
-                        oit != object_entities_by_node.end() && r.all_of<PhysicsMotion>(oit->second)) return oit->second;
-                    if (*cur >= parents.size()) break;
-                    cur = parents[*cur];
-                }
-                return state::Null;
-            };
-            const auto &arm_obj = r.get<const ArmatureObject>(armature_entity);
-            const mat4 armature_world = ToMatrix(r.get<const WorldTransform>(armature_entity));
-            for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
-                const auto &bone = armature.Bones[i];
-                if (!bone.JointNodeIndex) continue;
-                const auto target = find_physics_ancestor_entity(*bone.JointNodeIndex);
-                if (target != state::Null) {
-                    EnsureWorldTransform(r, target);
-                    r.emplace<BoneConstraints>(arm_obj.BoneEntities[i], BoneConstraints{.Stack = {BoneConstraint{
-                                                                                            .TargetEntity = target,
-                                                                                            .Influence = 1.f,
-                                                                                            .Data = ChildOfData{.InverseMatrix = numeric::Inverse(ToMatrix(r.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
-                                                                                        }}});
-                }
+        // Bones under a physics-driven ancestor get a Child Of constraint so skinned geometry follows simulation.
+        // The target is the nearest ancestor object with PhysicsMotion, and InverseMatrix bakes the rest offset.
+        const auto find_physics_ancestor_entity = [&](uint32_t node_index) -> state::Entity {
+            for (std::optional<uint32_t> cur = node_index; cur; cur = plan.Parents[*cur]) {
+                if (const auto object = objects.Of(*cur); object != state::Null && r.all_of<PhysicsMotion>(object)) return object;
             }
+            return state::Null;
+        };
+        const mat4 armature_world = ToMatrix(r.get<const WorldTransform>(armature_entity));
+        for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
+            const auto &bone = armature.Bones[i];
+            if (!bone.JointNodeIndex) continue;
+            const auto target = find_physics_ancestor_entity(*bone.JointNodeIndex);
+            if (target == state::Null) continue;
+            EnsureWorldTransform(r, target);
+            r.emplace<BoneConstraints>(bone_entities[i], BoneConstraints{.Stack = {BoneConstraint{
+                                                                            .TargetEntity = target,
+                                                                            .Influence = 1.f,
+                                                                            .Data = ChildOfData{.InverseMatrix = numeric::Inverse(ToMatrix(r.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
+                                                                        }}});
         }
     }
+    return data_entities;
+}
 
-    // Per source-derived entity: record the source parent, sibling position, and matrix form.
+// Records each source-derived entity's source parent, sibling position, and matrix form, then applies KHR_node_visibility.
+void RecordSourceHierarchy(state::Scene &r, const fastgltf::Asset &asset, const NodePlan &plan) {
     for (const auto [entity, node] : r.view<const GltfNode>().each()) {
         if (!node.Index || *node.Index >= asset.nodes.size()) continue;
-        const auto parent_idx = parents[*node.Index];
-        if (!parent_idx && !source_matrices[*node.Index]) continue;
+        const auto parent_idx = plan.Parents[*node.Index];
+        if (!parent_idx && !plan.SourceMatrices[*node.Index]) continue;
         auto &edited = r.edit<GltfNode>(entity);
         if (parent_idx) {
             edited.Parent = *parent_idx;
-            // Sibling position in parent's bounds-filtered children list.
+            // Sibling position in the parent's bounds-filtered children list.
             uint32_t sibling_idx = 0;
             for (const auto child_raw : asset.nodes[*parent_idx].children) {
                 const auto child = ToIndex(child_raw, asset.nodes.size());
@@ -2543,84 +2139,57 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 ++sibling_idx;
             }
         }
-        if (source_matrices[*node.Index]) edited.Matrix = *source_matrices[*node.Index];
+        if (plan.SourceMatrices[*node.Index]) edited.Matrix = *plan.SourceMatrices[*node.Index];
     }
 
-    { // KHR_node_visibility: `visible:false` hides node *and* descendants.
-        const auto hide_subtree = [&](this const auto &self, state::Entity e) -> void {
-            Hide(r, e);
-            for (const auto child : Children{&r, e}) self(child);
-        };
-        for (const auto [entity, node] : r.view<const GltfNode>().each()) {
-            if (node.Index && *node.Index < asset.nodes.size() && !asset.nodes[*node.Index].visible) hide_subtree(entity);
-        }
+    // KHR_node_visibility: visible:false hides the node and its descendants.
+    const auto hide_subtree = [&](this const auto &self, state::Entity e) -> void {
+        Hide(r, e);
+        for (const auto child : Children{&r, e}) self(child);
+    };
+    for (const auto [entity, node] : r.view<const GltfNode>().each()) {
+        if (node.Index && *node.Index < asset.nodes.size() && !asset.nodes[*node.Index].visible) hide_subtree(entity);
     }
+}
 
+struct ImportedAnimations {
+    // Source names of animations with at least one valid channel, in source order.
+    std::vector<std::string> Order;
+    bool Any{false};
+};
+
+// Sets up morph weight state, then parses every channel straight into armature, morph, and node clips.
+ImportedAnimations ImportAnimations(state::Scene &r, const fastgltf::Asset &asset, state::Entity viewport, const ImportedObjects &objects, std::span<const state::Entity> armature_data_entities) {
     std::unordered_map<uint32_t, std::vector<std::pair<state::Entity, BoneId>>> armature_targets_by_joint_node;
     for (const auto armature_data_entity : armature_data_entities) {
-        const auto &armature = r.get<const Armature>(armature_data_entity);
-        for (const auto &bone : armature.Bones) {
-            if (bone.JointNodeIndex) {
-                armature_targets_by_joint_node[*bone.JointNodeIndex].emplace_back(armature_data_entity, bone.Id);
-            }
+        for (const auto &bone : r.get<const Armature>(armature_data_entity).Bones) {
+            if (bone.JointNodeIndex) armature_targets_by_joint_node[*bone.JointNodeIndex].emplace_back(armature_data_entity, bone.Id);
         }
     }
 
-    // Set up morph weight state for mesh instances with morph targets.
-    // The GPU range (MorphWeightGpuRange) is allocated later.
-    // Build a map: node_index -> mesh instance entity, for resolving weight animation channels.
+    // Mesh instances with morph targets start at the node's weights, else the mesh defaults. The GPU range (MorphWeightGpuRange) is allocated later.
+    const auto &meshes = r.ctx().get<const MeshStore>();
     std::unordered_map<uint32_t, state::Entity> morph_instance_by_node;
-    for (const auto &object : source_objects) {
-        if (object.ObjectType != gltf::Object::Type::Mesh || !object.MeshIndex) continue;
-        if (*object.MeshIndex >= mesh_morphs.size()) continue;
-        const auto obj_it = object_entities_by_node.find(object.NodeIndex);
-        if (obj_it == object_entities_by_node.end()) continue;
-        const auto instance_entity = obj_it->second;
-        if (!r.all_of<Instance>(instance_entity)) continue;
-
-        const auto &morph = mesh_morphs[*object.MeshIndex];
-        if (morph.TargetCount == 0) continue;
-
-        auto weights = [&] {
-            if (!object.NodeWeights) return morph.DefaultWeights;
-            std::vector<float> w(morph.TargetCount, 0.f);
-            std::copy_n(object.NodeWeights->begin(), std::min(uint32_t(object.NodeWeights->size()), morph.TargetCount), w.begin());
-            return w;
-        }();
-        r.emplace<MorphWeightState>(instance_entity, MorphWeightState{.Weights = std::move(weights)});
-        morph_instance_by_node[object.NodeIndex] = instance_entity;
-    }
-
-    // Resolve object/node transform animations (empties, meshes, cameras, lights).
-    // Channels targeting skin joints are handled by ArmatureAnimation and skipped here.
-    std::unordered_map<state::Entity, Transform> node_anim_bindings;
-    node_anim_bindings.reserve(object_entities_by_node.size());
-    for (const auto &[node_index, object_entity] : object_entities_by_node) {
-        if (r.valid(object_entity) && node_index < local_transforms.size()) {
-            node_anim_bindings.emplace(object_entity, local_transforms[node_index]);
+    for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
+        for (const auto instance_entity : objects.ByNode[node_index]) {
+            const auto *instance = r.try_get<const Instance>(instance_entity);
+            const auto *handle = instance ? r.try_get<const MeshHandle>(instance->Entity) : nullptr;
+            if (!handle) continue;
+            const auto &record = meshes.Get(handle->StoreId);
+            if (record.MorphTargetCount == 0) continue;
+            const auto &node_weights = asset.nodes[node_index].weights;
+            auto weights = record.DefaultMorphWeights;
+            if (!node_weights.empty()) {
+                weights.assign(record.MorphTargetCount, 0.f);
+                std::copy_n(node_weights.begin(), std::min(node_weights.size(), size_t(record.MorphTargetCount)), weights.begin());
+            }
+            r.emplace<MorphWeightState>(instance_entity, MorphWeightState{.Weights = std::move(weights)});
+            morph_instance_by_node[node_index] = instance_entity;
         }
     }
 
-    bool imported_animation = false;
-    const auto append_node_clip = [&](state::Entity object_entity, ::AnimationClip &&resolved_clip) {
-        if (resolved_clip.Channels.empty()) return;
-        imported_animation = true;
-        if (auto *existing = r.try_edit<NodeTransformAnimation>(object_entity)) {
-            existing->Clips.emplace_back(std::move(resolved_clip));
-            return;
-        }
-        if (!node_anim_bindings.contains(object_entity)) return; // needs a known local transform
-        r.emplace<NodeTransformAnimation>(object_entity, NodeTransformAnimation{.Clips = {std::move(resolved_clip)}, .ActiveClipIndex = 0});
-    };
-
-    // Parse source channels directly into target ECS clips in one pass.
-    // AnimationOrder records source names for animations with at least one valid channel.
-    std::vector<std::string> animation_order;
-    animation_order.reserve(asset.animations.size());
-    struct ChannelTargetSpec {
-        AnimationPath Path;
-        size_t ComponentCount;
-    };
+    ImportedAnimations out;
+    out.Order.reserve(asset.animations.size());
     for (const auto &anim : asset.animations) {
         std::unordered_map<state::Entity, ::AnimationClip> armature_clips_by_entity;
         std::unordered_map<state::Entity, MorphWeightClip> morph_clips_by_entity;
@@ -2632,125 +2201,94 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         for (const auto &channel : anim.channels) {
             if (!channel.nodeIndex || *channel.nodeIndex >= asset.nodes.size()) continue;
             if (channel.samplerIndex >= anim.samplers.size()) continue;
-
-            const auto target_spec = [&]() -> std::optional<ChannelTargetSpec> {
-                switch (channel.path) {
-                    case fastgltf::AnimationPath::Translation: return ChannelTargetSpec{.Path = AnimationPath::Translation, .ComponentCount = 3};
-                    case fastgltf::AnimationPath::Rotation: return ChannelTargetSpec{.Path = AnimationPath::Rotation, .ComponentCount = 4};
-                    case fastgltf::AnimationPath::Scale: return ChannelTargetSpec{.Path = AnimationPath::Scale, .ComponentCount = 3};
-                    case fastgltf::AnimationPath::Weights: {
-                        const auto &target_node = asset.nodes[*channel.nodeIndex];
-                        if (!target_node.meshIndex || *target_node.meshIndex >= asset.meshes.size()) return std::nullopt;
-                        const auto component_count = asset.meshes[*target_node.meshIndex].primitives.empty() ? 0 : asset.meshes[*target_node.meshIndex].primitives[0].targets.size();
-                        if (component_count == 0) return std::nullopt;
-                        return ChannelTargetSpec{.Path = AnimationPath::Weights, .ComponentCount = component_count};
-                    }
-                }
-                return std::nullopt;
+            const auto target_node_index = uint32_t(*channel.nodeIndex);
+            const auto path = ToPath(channel.path);
+            // A weights channel's component count is the target mesh's morph target count.
+            const auto component_count = [&]() -> size_t {
+                if (path != AnimationPath::Weights) return path == AnimationPath::Rotation ? 4 : 3;
+                const auto mesh_index = ToIndex(asset.nodes[target_node_index].meshIndex, asset.meshes.size());
+                if (!mesh_index || asset.meshes[*mesh_index].primitives.empty()) return 0;
+                return asset.meshes[*mesh_index].primitives[0].targets.size();
             }();
-            if (!target_spec) continue;
+            if (component_count == 0) continue;
 
             const auto &sampler = anim.samplers[channel.samplerIndex];
             if (sampler.inputAccessor >= asset.accessors.size() || sampler.outputAccessor >= asset.accessors.size()) continue;
-
             const auto &input_accessor = asset.accessors[sampler.inputAccessor];
             const auto &output_accessor = asset.accessors[sampler.outputAccessor];
             if (input_accessor.count == 0) continue;
 
             const auto interp = ToInterp(sampler.interpolation);
-
             std::vector<float> times(input_accessor.count);
             fastgltf::copyFromAccessor<float>(asset, input_accessor, times.data());
-
             std::vector<float> values;
-            if (target_spec->Path == AnimationPath::Weights) {
+            if (path == AnimationPath::Weights) {
                 values.resize(output_accessor.count);
                 fastgltf::copyFromAccessor<float>(asset, output_accessor, values.data());
             } else {
-                values.resize(output_accessor.count * target_spec->ComponentCount);
-                if (target_spec->ComponentCount == 4) fastgltf::copyFromAccessor<vec4>(asset, output_accessor, reinterpret_cast<vec4 *>(values.data()));
+                values.resize(output_accessor.count * component_count);
+                if (component_count == 4) fastgltf::copyFromAccessor<vec4>(asset, output_accessor, reinterpret_cast<vec4 *>(values.data()));
                 else fastgltf::copyFromAccessor<vec3>(asset, output_accessor, reinterpret_cast<vec3 *>(values.data()));
             }
-
-            if (!times.empty()) max_time = std::max(max_time, times.back());
+            max_time = std::max(max_time, times.back());
             any_channel = true;
-            const uint32_t target_node_index = *channel.nodeIndex;
 
-            if (target_spec->Path == AnimationPath::Weights) {
+            if (path == AnimationPath::Weights) {
                 const auto inst_it = morph_instance_by_node.find(target_node_index);
                 if (inst_it == morph_instance_by_node.end()) continue;
-                auto &resolved_clip = morph_clips_by_entity
-                                          .try_emplace(inst_it->second, MorphWeightClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}})
-                                          .first->second;
+                auto &resolved_clip = morph_clips_by_entity.try_emplace(inst_it->second, MorphWeightClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}}).first->second;
                 resolved_clip.Channels.emplace_back(MorphWeightChannel{.Interp = interp, .TimesSeconds = std::move(times), .Values = std::move(values)});
                 continue;
             }
-
-            if (const auto armature_it = armature_targets_by_joint_node.find(target_node_index);
-                armature_it != armature_targets_by_joint_node.end()) {
+            // Channels targeting a joint drive its bone in every armature that owns it.
+            if (const auto armature_it = armature_targets_by_joint_node.find(target_node_index); armature_it != armature_targets_by_joint_node.end()) {
                 for (const auto &[target_data_entity, bone_id] : armature_it->second) {
                     const auto &armature = r.get<const Armature>(target_data_entity);
                     const auto bone_index = armature.FindBoneIndex(bone_id).value_or(InvalidBoneIndex);
-                    auto &resolved_clip = armature_clips_by_entity
-                                              .try_emplace(target_data_entity, ::AnimationClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}})
-                                              .first->second;
-                    resolved_clip.Channels.emplace_back(::AnimationChannel{.BoneIndex = bone_index, .TargetBoneId = bone_id, .Target = target_spec->Path, .Interp = interp, .TimesSeconds = times, .Values = values});
+                    auto &resolved_clip = armature_clips_by_entity.try_emplace(target_data_entity, ::AnimationClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}}).first->second;
+                    resolved_clip.Channels.emplace_back(::AnimationChannel{.BoneIndex = bone_index, .TargetBoneId = bone_id, .Target = path, .Interp = interp, .TimesSeconds = times, .Values = values});
                 }
                 continue;
             }
-
-            if (joint_node_indices.contains(target_node_index)) continue;
-
-            const auto object_it = object_entities_by_node.find(target_node_index);
-            if (object_it != object_entities_by_node.end() && r.valid(object_it->second)) {
-                auto &resolved_clip = node_clips_by_entity
-                                          .try_emplace(object_it->second, ::AnimationClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}})
-                                          .first->second;
-                resolved_clip.Channels.emplace_back(::AnimationChannel{.BoneIndex = 0, .Target = target_spec->Path, .Interp = interp, .TimesSeconds = std::move(times), .Values = std::move(values)});
+            if (const auto object = objects.Of(target_node_index); object != state::Null) {
+                auto &resolved_clip = node_clips_by_entity.try_emplace(object, ::AnimationClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}}).first->second;
+                resolved_clip.Channels.emplace_back(::AnimationChannel{.BoneIndex = 0, .Target = path, .Interp = interp, .TimesSeconds = std::move(times), .Values = std::move(values)});
             }
         }
 
         if (!any_channel) continue;
-        animation_order.emplace_back(std::move(anim_name));
+        out.Order.emplace_back(std::move(anim_name));
 
         for (auto &[_, c] : armature_clips_by_entity) c.DurationSeconds = max_time;
         for (auto &[_, c] : morph_clips_by_entity) c.DurationSeconds = max_time;
         for (auto &[_, c] : node_clips_by_entity) c.DurationSeconds = max_time;
 
-        for (auto &[target_data_entity, resolved_clip] : armature_clips_by_entity) imported_animation |= AppendClip<ArmatureAnimation>(r, target_data_entity, std::move(resolved_clip));
-        for (auto &[instance_entity, resolved_clip] : morph_clips_by_entity) imported_animation |= AppendClip<MorphWeightAnimation>(r, instance_entity, std::move(resolved_clip));
-        for (auto &[object_entity, resolved_clip] : node_clips_by_entity) append_node_clip(object_entity, std::move(resolved_clip));
-    }
-    r.patch<gltf::SourceAssets>(viewport, [&](auto &a) { a.AnimationOrder = std::move(animation_order); });
-
-    { // Get timeline range from imported animation durations
-        float max_dur = 0;
-        for (const auto [_, anim] : r.view<const ArmatureAnimation>().each()) {
-            for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
+        for (auto &[target_data_entity, resolved_clip] : armature_clips_by_entity) out.Any |= AppendClip<ArmatureAnimation>(r, target_data_entity, std::move(resolved_clip));
+        for (auto &[instance_entity, resolved_clip] : morph_clips_by_entity) out.Any |= AppendClip<MorphWeightAnimation>(r, instance_entity, std::move(resolved_clip));
+        for (auto &[object_entity, resolved_clip] : node_clips_by_entity) {
+            out.Any = true;
+            if (auto *existing = r.try_edit<NodeTransformAnimation>(object_entity)) existing->Clips.emplace_back(std::move(resolved_clip));
+            else r.emplace<NodeTransformAnimation>(object_entity, NodeTransformAnimation{.Clips = {std::move(resolved_clip)}, .ActiveClipIndex = 0});
         }
-        for (const auto [_, anim] : r.view<const MorphWeightAnimation>().each()) {
-            for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
-        }
-        for (const auto [_, anim] : r.view<const NodeTransformAnimation>().each()) {
-            for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
-        }
-        if (max_dur > 0) r.patch<TimelineRange>(viewport, [&](auto &r) { r.EndFrame = int(std::ceil(max_dur * r.Fps)); });
     }
 
-    if (source_ibl) {
-        prev_pending_env_backup = ctx.Environments.PendingImport;
-        const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(ctx.Slots);
-        ctx.Environments.PendingImport = PendingEnvironmentImport{*source_ibl, diffuse_slot, specular_slot};
-        ctx.Environments.ClearRequested = false;
-        replaced_pending_env = true;
-    } else {
-        ctx.Environments.ClearRequested = true;
+    // The timeline spans the longest imported clip.
+    float max_dur = 0;
+    for (const auto [_, anim] : r.view<const ArmatureAnimation>().each()) {
+        for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
     }
-    // Import-time UX default: show an imported world, hide the (empty) default world.
-    // Kept out of the reactive world passes so a snapshot restore reproduces the saved WorldOpacity rather than re-forcing this.
-    if (r.all_of<RenderedLighting>(viewport)) r.patch<RenderedLighting>(viewport, [&](auto &l) { l.Value.WorldOpacity = source_ibl ? 1.f : 0.f; });
+    for (const auto [_, anim] : r.view<const MorphWeightAnimation>().each()) {
+        for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
+    }
+    for (const auto [_, anim] : r.view<const NodeTransformAnimation>().each()) {
+        for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
+    }
+    if (max_dur > 0) r.patch<TimelineRange>(viewport, [&](auto &range) { range.EndFrame = int(std::ceil(max_dur * range.Fps)); });
+    return out;
+}
 
-    // First-class scene entities, one per source scene. The default scene is the active one.
+// One scene entity per source scene with the default scene active. Multi-scene assets record each node's membership.
+void ImportScenes(state::Scene &r, const fastgltf::Asset &asset, uint32_t scene_index, std::span<const uint32_t> scene_mask) {
     std::vector<state::Entity> scene_entities;
     scene_entities.reserve(asset.scenes.size());
     for (uint32_t i = 0; i < asset.scenes.size(); ++i) {
@@ -2760,27 +2298,96 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         if (i == scene_index) r.emplace<ActiveScene>(se);
         scene_entities.emplace_back(se);
     }
-    // Multi-scene only: record each node's scene membership as references to those scene entities.
-    if (asset.scenes.size() > 1) {
-        for (const auto [e, node] : r.view<const GltfNode>().each()) {
-            if (!node.Index || *node.Index >= node_to_scene_mask.size()) continue;
-            const auto mask = node_to_scene_mask[*node.Index];
-            std::vector<state::Entity> scenes;
-            for (uint32_t i = 0; i < scene_entities.size(); ++i) {
-                if (mask & (1u << i)) scenes.emplace_back(scene_entities[i]);
-            }
-            if (!scenes.empty()) r.emplace<SceneMembership>(e, std::move(scenes));
+    if (asset.scenes.size() <= 1) return;
+    for (const auto [e, node] : r.view<const GltfNode>().each()) {
+        if (!node.Index || *node.Index >= scene_mask.size()) continue;
+        const auto mask = scene_mask[*node.Index];
+        std::vector<state::Entity> scenes;
+        for (uint32_t i = 0; i < scene_entities.size(); ++i) {
+            if (mask & (1u << i)) scenes.emplace_back(scene_entities[i]);
         }
+        if (!scenes.empty()) r.emplace<SceneMembership>(e, std::move(scenes));
     }
+}
+} // namespace
+
+std::expected<fastgltf::Asset, std::string> ParseGltfAsset(const std::filesystem::path &path) { return ParseAsset(path); }
+
+std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &source_path, state::Scene &r, state::Entity viewport) {
+    const profile::CpuScope scope{"LoadGltf"};
+
+    // Parse and validate everything that can fail before the first entity or store write.
+    ExtrasMap extras;
+    const auto stored_path = project::ResolveAsset(r, source_path);
+    auto parsed_asset = ParseAsset(stored_path, &extras);
+    if (!parsed_asset) return std::unexpected{parsed_asset.error()};
+    const auto &asset = *parsed_asset;
+    if (asset.scenes.empty()) return std::unexpected{std::format("glTF '{}' has no scenes.", source_path.string())};
+    const auto scene_index = uint32_t(asset.defaultScene.value_or(0));
+    if (scene_index >= asset.scenes.size()) return std::unexpected{std::format("glTF '{}' has invalid default scene index.", source_path.string())};
+
+    auto source_assets = ReadSourceAssets(r, asset, stored_path, std::move(extras), scene_index);
+    if (!source_assets) return std::unexpected{std::move(source_assets.error())};
+    auto source_materials = ReadMaterials(asset);
+    source_assets->MaterialMetas = std::move(source_materials.Metas);
+
+    std::vector<SourceMesh> source_meshes;
+    source_meshes.reserve(asset.meshes.size());
+    for (uint32_t mesh_index = 0; mesh_index < asset.meshes.size(); ++mesh_index) {
+        auto source_mesh = ReadSourceMesh(asset, mesh_index);
+        if (!source_mesh) return std::unexpected{std::move(source_mesh.error())};
+        source_meshes.emplace_back(std::move(*source_mesh));
+    }
+
+    const auto plan = PlanNodes(asset, scene_index);
+    const bool any_object = std::ranges::any_of(plan.IsObjectEmitted, [](bool emitted) { return emitted; });
+    const bool any_usable_skin = std::ranges::any_of(plan.SkinJointNodes, [](const auto &joints) { return !joints.empty(); });
+    if (!any_object && !any_usable_skin) return std::unexpected{std::format("glTF '{}' has no importable source objects or skins.", source_path.string())};
+    auto armature_plans = PlanArmatures(asset, plan, source_meshes, source_path);
+    if (!armature_plans) return std::unexpected{std::move(armature_plans.error())};
+
+    // Commit. Nothing below can fail.
+    const auto physics = ImportPhysicsResources(r, asset);
+    if (!asset.materialVariants.empty()) {
+        ::MaterialVariants mv;
+        mv.Names.reserve(asset.materialVariants.size());
+        for (const auto &v : asset.materialVariants) mv.Names.emplace_back(v);
+        r.emplace_or_replace<::MaterialVariants>(viewport, std::move(mv));
+    } else {
+        r.remove<::MaterialVariants>(viewport);
+    }
+    auto materials = ImportMaterials(r, asset, *source_assets, source_materials.Materials);
+    const auto mesh_entities = ImportMeshes(r, source_meshes, materials.IndexByGltfMaterial, source_path);
+    const auto objects = ImportObjects(r, asset, plan, mesh_entities);
+    ImportNodePhysics(r, asset, objects, mesh_entities, physics);
+    ImportAudio(r, asset, objects);
+    const auto armature_data_entities = ImportArmatures(r, asset, plan, *armature_plans, objects, source_path.stem().string());
+    RecordSourceHierarchy(r, asset, plan);
+    auto animations = ImportAnimations(r, asset, viewport, objects, armature_data_entities);
+    source_assets->AnimationOrder = std::move(animations.Order);
+
+    auto &environments = r.ctx().get<EnvironmentStore>();
+    if (const auto &source_ibl = source_assets->ImageBasedLight) {
+        const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(r.ctx().get<mtl::BindlessSet>());
+        environments.PendingImport = PendingEnvironmentImport{*source_ibl, diffuse_slot, specular_slot};
+        environments.ClearRequested = false;
+    } else {
+        environments.ClearRequested = true;
+    }
+    // Import-time UX default: show an imported world, hide the (empty) default world.
+    // Kept out of the reactive world passes so a snapshot restore reproduces the saved WorldOpacity rather than re-forcing this.
+    if (r.all_of<RenderedLighting>(viewport)) r.patch<RenderedLighting>(viewport, [&](auto &l) { l.Value.WorldOpacity = source_assets->ImageBasedLight ? 1.f : 0.f; });
+
+    ImportScenes(r, asset, scene_index, plan.SceneMask);
     ApplySceneVisibility(r);
     ApplyActiveSceneSelection(r);
-    if (!materialized_textures.empty()) {
+    if (!materials.Textures.empty()) {
         auto &manifest = r.get_or_emplace<MaterializedTextures>(viewport);
-        manifest.Items.insert(manifest.Items.end(), std::make_move_iterator(materialized_textures.begin()), std::make_move_iterator(materialized_textures.end()));
+        manifest.Items.insert(manifest.Items.end(), std::make_move_iterator(materials.Textures.begin()), std::make_move_iterator(materials.Textures.end()));
     }
-    import_rollback_guard.Enabled = false;
+    r.emplace_or_replace<SourceAssets>(viewport, std::move(*source_assets));
 
-    return gltf::LoadResult{.FirstCameraObject = first_camera_object_entity, .ImportedAnimation = imported_animation};
+    return LoadResult{.FirstCameraObject = objects.FirstCamera, .ImportedAnimation = animations.Any};
 }
 
 void SwitchActiveScene(state::Scene &r, state::Entity scene) {
@@ -2791,22 +2398,10 @@ void SwitchActiveScene(state::Scene &r, state::Entity scene) {
     ApplyActiveSceneSelection(r);
 }
 
-static_assert(uint32_t(ExtrasCategory::Images) == uint32_t(fastgltf::Category::Images));
-static_assert(uint32_t(ExtrasCategory::Samplers) == uint32_t(fastgltf::Category::Samplers));
-static_assert(uint32_t(ExtrasCategory::Textures) == uint32_t(fastgltf::Category::Textures));
-static_assert(uint32_t(ExtrasCategory::Animations) == uint32_t(fastgltf::Category::Animations));
-static_assert(uint32_t(ExtrasCategory::Cameras) == uint32_t(fastgltf::Category::Cameras));
-static_assert(uint32_t(ExtrasCategory::Materials) == uint32_t(fastgltf::Category::Materials));
-static_assert(uint32_t(ExtrasCategory::Meshes) == uint32_t(fastgltf::Category::Meshes));
-static_assert(uint32_t(ExtrasCategory::Skins) == uint32_t(fastgltf::Category::Skins));
-static_assert(uint32_t(ExtrasCategory::Nodes) == uint32_t(fastgltf::Category::Nodes));
-static_assert(uint32_t(ExtrasCategory::Scenes) == uint32_t(fastgltf::Category::Scenes));
-static_assert(uint32_t(ExtrasCategory::Lights) == uint32_t(fastgltf::Category::Lights));
-static_assert(uint32_t(ExtrasCategory::ImageBasedLights) == uint32_t(fastgltf::Category::ImageBasedLights));
+static_assert(ExtrasCameras == uint32_t(fastgltf::Category::Cameras) && ExtrasMeshes == uint32_t(fastgltf::Category::Meshes) && ExtrasNodes == uint32_t(fastgltf::Category::Nodes) && ExtrasLights == uint32_t(fastgltf::Category::Lights));
 
-std::optional<std::string_view> GetExtras(const SourceAssets &sa, ExtrasCategory cat, uint32_t source_index) {
-    const auto key = (uint64_t(uint32_t(cat)) << 32) | uint64_t(source_index);
-    if (const auto it = sa.ExtrasByEntity.find(key); it != sa.ExtrasByEntity.end()) return std::string_view{it->second};
+std::optional<std::string_view> GetExtras(const SourceAssets &sa, uint32_t category, uint32_t source_index) {
+    if (const auto it = sa.ExtrasByEntity.find(ExtrasKey(category, source_index)); it != sa.ExtrasByEntity.end()) return std::string_view{it->second};
     return std::nullopt;
 }
 } // namespace gltf

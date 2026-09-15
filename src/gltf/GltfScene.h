@@ -18,15 +18,6 @@
 #include <expected>
 #include <filesystem>
 
-namespace mtl {
-struct BindlessSet;
-struct BufferContext;
-struct Context;
-} // namespace mtl
-struct EnvironmentStore;
-struct MeshStore;
-struct GpuBuffers;
-struct TextureStore;
 namespace fastgltf {
 class Asset;
 } // namespace fastgltf
@@ -71,16 +62,6 @@ struct MeshSourceLayout {
 };
 
 namespace gltf {
-struct LoadContext {
-    state::Scene &R;
-    state::Entity Viewport;
-    mtl::BindlessSet &Slots;
-    GpuBuffers &Buffers;
-    MeshStore &Meshes;
-    TextureStore &Textures;
-    EnvironmentStore &Environments;
-};
-
 struct LoadResult {
     state::Entity FirstCameraObject{state::Null};
     bool ImportedAnimation{false};
@@ -90,20 +71,10 @@ struct SaveOptions {
     uint8_t LossyImageQuality{75}; // Range 1-100; ignored for PNG.
 };
 
-// Ctx and BufCtx may be null when no image requires GPU readback.
-struct SaveContext {
-    const state::Scene &R;
-    state::Entity Viewport;
-    const GpuBuffers &Buffers;
-    const MeshStore &Meshes;
-    const TextureStore &Textures;
-    const mtl::Context *Ctx{nullptr};
-    mtl::BufferContext *BufCtx{nullptr};
-    SaveOptions Options{};
-};
-
-std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &, LoadContext);
-std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const SaveContext &);
+// Parses and validates the whole document before creating any entity or touching any store, so a failed load leaves the scene unchanged.
+std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &, state::Scene &, state::Entity viewport);
+// Re-encodes dirty images through the Metal context when one is registered.
+std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const state::Scene &, state::Entity viewport, SaveOptions = {});
 
 // Parses with import extensions, loads external buffers, and decodes meshopt buffer views.
 std::expected<fastgltf::Asset, std::string> ParseGltfAsset(const std::filesystem::path &);
@@ -111,20 +82,7 @@ std::expected<fastgltf::Asset, std::string> ParseGltfAsset(const std::filesystem
 // Activates `scene` when it names an inactive scene.
 void SwitchActiveScene(state::Scene &, state::Entity scene);
 
-// Mirrors fastgltf::Category bits used in SourceAssets::ExtrasByEntity keys.
-enum class ExtrasCategory : uint32_t {
-    Images = 1u << 3,
-    Samplers = 1u << 4,
-    Textures = 1u << 5,
-    Animations = 1u << 6,
-    Cameras = 1u << 7,
-    Materials = 1u << 8,
-    Meshes = 1u << 9,
-    Skins = 1u << 10,
-    Nodes = 1u << 11,
-    Scenes = 1u << 12,
-    Lights = 1u << 18, // KHR_lights_punctual; not a top-level glTF category but identifies lights in the extras callback.
-    ImageBasedLights = 1u << 19, // EXT_lights_image_based.
-};
-std::optional<std::string_view> GetExtras(const SourceAssets &, ExtrasCategory, uint32_t source_index);
+// Extras keys use fastgltf::Category bits. These name the categories the UI reads.
+constexpr uint32_t ExtrasCameras = 1u << 7, ExtrasMeshes = 1u << 9, ExtrasNodes = 1u << 11, ExtrasLights = 1u << 18;
+std::optional<std::string_view> GetExtras(const SourceAssets &, uint32_t category, uint32_t source_index);
 } // namespace gltf

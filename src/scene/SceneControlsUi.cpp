@@ -774,14 +774,14 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
         const auto mesh_entity = active_instance ? active_instance->Entity : state::Null;
         const auto *mesh_layout = mesh_entity != state::Null ? r.try_get<const MeshSourceLayout>(mesh_entity) : nullptr;
         const auto *node = r.try_get<const GltfNode>(active_entity);
-        const auto extras = [&](std::optional<uint32_t> index, gltf::ExtrasCategory cat) -> std::optional<std::string_view> {
-            return index ? gltf::GetExtras(*sa, cat, *index) : std::nullopt;
+        const auto extras = [&](std::optional<uint32_t> index, uint32_t category) -> std::optional<std::string_view> {
+            return index ? gltf::GetExtras(*sa, category, *index) : std::nullopt;
         };
         const std::pair<const char *, std::optional<std::string_view>> sections[]{
-            {"Extras (Node)", extras(node ? node->Index : std::nullopt, gltf::ExtrasCategory::Nodes)},
-            {"Extras (Mesh)", extras(mesh_layout ? std::optional{mesh_layout->Index} : std::nullopt, gltf::ExtrasCategory::Meshes)},
-            {"Extras (Camera)", extras(node ? node->Camera : std::nullopt, gltf::ExtrasCategory::Cameras)},
-            {"Extras (Light)", extras(node ? node->Light : std::nullopt, gltf::ExtrasCategory::Lights)},
+            {"Extras (Node)", extras(node ? node->Index : std::nullopt, gltf::ExtrasNodes)},
+            {"Extras (Mesh)", extras(mesh_layout ? std::optional{mesh_layout->Index} : std::nullopt, gltf::ExtrasMeshes)},
+            {"Extras (Camera)", extras(node ? node->Camera : std::nullopt, gltf::ExtrasCameras)},
+            {"Extras (Light)", extras(node ? node->Light : std::nullopt, gltf::ExtrasLights)},
         };
         const bool any_extras = std::ranges::any_of(sections, [](const auto &s) { return s.second.has_value(); });
         if ((any_extras || mesh_layout) && CollapsingHeader("glTF metadata")) {
@@ -1143,7 +1143,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                         TableNextColumn();
                         TextUnformatted(MimeTypeName(img.MimeType).data());
                         TableNextColumn();
-                        if (img.SourceDataUri) TextUnformatted("data URI");
+                        if (img.Source == gltf::Image::SourceKind::DataUri) TextUnformatted("data URI");
                         else if (!img.SourcePath.empty()) TextUnformatted(img.SourcePath.c_str());
                         else TextUnformatted("embedded");
                         TableNextColumn();
