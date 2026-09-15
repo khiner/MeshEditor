@@ -87,10 +87,10 @@ const Target *RenderEntityCombo(state::Scene &r, state::Entity entity, const cha
         return nullptr;
     }
     const auto cur_e = r.get<const Owner>(entity).*Field;
-    const auto *cur = cur_e != null_entity && r.valid(cur_e) ? r.try_get<const Target>(cur_e) : nullptr;
+    const auto *cur = cur_e != state::Null && r.valid(cur_e) ? r.try_get<const Target>(cur_e) : nullptr;
     if (const auto preview = cur ? DisplayName(cur->Name, "{:x}", uint32_t(cur_e)) : std::string{"None"};
         BeginCombo(label, preview.c_str())) {
-        if (Selectable("None", cur_e == null_entity)) action::Emit(action::UpdateOf<Field>(state::Entity{null_entity}));
+        if (Selectable("None", cur_e == state::Null)) action::Emit(action::UpdateOf<Field>(state::Entity{state::Null}));
         for (auto [te, t] : view.each()) {
             if (Selectable(DisplayName(t.Name, "{:x}", uint32_t(te)).c_str(), cur_e == te)) action::Emit(action::UpdateOf<Field>(te));
         }
@@ -572,9 +572,9 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
         // ConnectedNode picker — KHR joint.connectedNode is the second attachment frame.
         // Mirrors Blender's rigid_body_constraint object1/object2 fields.
         const auto cn = joint->ConnectedNode;
-        if (const auto cn_label = cn != null_entity && r.valid(cn) ? GetName(r, cn) : std::string{"None"};
+        if (const auto cn_label = cn != state::Null && r.valid(cn) ? GetName(r, cn) : std::string{"None"};
             BeginCombo("Connected node", cn_label.c_str())) {
-            if (Selectable("None", cn == null_entity)) action::Emit(action::UpdateOf<&PhysicsJoint::ConnectedNode>(state::Entity{null_entity}));
+            if (Selectable("None", cn == state::Null)) action::Emit(action::UpdateOf<&PhysicsJoint::ConnectedNode>(state::Entity{state::Null}));
             for (auto ne : r.view<const SceneNode>()) {
                 if (ne != entity) {
                     if (Selectable(GetName(r, ne).c_str(), cn == ne)) action::Emit(action::UpdateOf<&PhysicsJoint::ConnectedNode>(ne));

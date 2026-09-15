@@ -13,5 +13,3 @@ struct Scene;
 template<> struct std::hash<state::Entity> {
     size_t operator()(state::Entity e) const { return state::Integral(e); }
 };
-
-inline constexpr state::Entity null_entity = state::Null;

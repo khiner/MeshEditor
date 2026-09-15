@@ -290,10 +290,10 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
             const auto instance_entity = entities[j];
             auto &render_instance = r.edit<RenderInstance>(instance_entity);
             render_instance.BufferIndex = base_index + j;
-            object_ids[j] = render_instance.ObjectId;
+            object_ids[j] = ObjectId(instance_entity);
             states[j] = InstanceStateBits(r, instance_entity);
             auto &record = instance_records[j];
-            record.ObjectId = render_instance.ObjectId;
+            record.ObjectId = ObjectId(instance_entity);
             if (mesh_buffers) {
                 record.PrimitiveOffset = OffsetOrInvalid(mesh_buffers->Primitives);
                 record.PrimitiveCount = mesh_buffers->Primitives.Count;

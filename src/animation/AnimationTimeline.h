@@ -29,8 +29,5 @@ struct LastEvaluatedFrame {
     int Value{-1};
 };
 
-// Restarts physics from authored initial conditions on the next tick.
-struct PhysicsCacheInvalid {};
-
 // Resets playback to the start frame and invalidates the physics cache.
 void JumpToStartFrame(state::Scene &, state::Entity viewport);

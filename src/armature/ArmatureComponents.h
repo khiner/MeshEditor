@@ -13,7 +13,7 @@ struct AnimationClip;
 struct ArmatureObject {
     state::Entity Entity;
     std::vector<state::Entity> BoneEntities;
-    state::Entity JointEntity{null_entity};
+    state::Entity JointEntity{state::Null};
 };
 
 // Tag on the shared joint sphere entity (excluded from silhouette and normal mesh iteration).
@@ -25,13 +25,11 @@ struct BoneSubPartOf {
 };
 
 struct BoneJointEntities {
-    state::Entity Head{null_entity}, Tail{null_entity};
+    state::Entity Head{state::Null}, Tail{state::Null};
 };
 
 // Retain the armature's Selected/Active state throughout Edit/Pose mode.
 struct BoneActive {};
-
-struct BoneInstanceStateDirty {};
 
 struct ArmatureModifier {
     state::Entity ArmatureEntity, ArmatureObjectEntity;

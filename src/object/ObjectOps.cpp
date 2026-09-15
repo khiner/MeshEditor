@@ -14,6 +14,7 @@
 #include "object/PendingSync.h"
 #include "physics/PhysicsTypes.h"
 #include "render/GpuBufferOps.h"
+#include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MaterialImport.h"
@@ -84,7 +85,7 @@ void Destroy(state::Scene &r, state::Entity viewport, state::Entity e) {
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
 
     if (const auto *light_index = r.try_get<LightIndex>(e)) {
-        r.get_or_emplace<PendingLightRemovals>(viewport).Indices.emplace_back(light_index->Value);
+        r.ctx().get<GpuBuffers>().PendingLightRemovals.emplace_back(light_index->Value);
     }
 
     if (r.all_of<ArmatureObject>(e)) {

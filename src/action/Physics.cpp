@@ -9,15 +9,15 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     // Selected scope fans out to every selected entity matching `accept`, otherwise the active entity.
     auto for_each_physics_target = [&](Scope scope, auto &&accept, auto &&fn) {
         if (scope != Scope::Selected && scope != Scope::SelectedDelta) {
-            if (const auto e = FindActiveEntity(r); e != null_entity) fn(e);
+            if (const auto e = FindActiveEntity(r); e != state::Null) fn(e);
         } else
             for (const auto e : r.view<Selected>())
                 if (accept(e)) fn(e);
     };
     std::visit(
         overloaded{
-            [&](const CreateNamed &a) { ApplyCreateNamed(r, a.ComponentType, a.Prefix); },
-            [&](const SetName &a) { ApplySetName(r, a.ComponentType, a.Entity, a.Name); },
+            [&](const CreateNamed &a) { ApplyCreateNamed(r, state::Slot(a.ComponentType), a.Prefix); },
+            [&](const SetName &a) { ApplySetName(r, state::Slot(a.ComponentType), a.Entity, a.Name); },
             [&](const SetMotionType &a) {
                 using Type = SetMotionType::Type;
                 const auto accept = [&](state::Entity e) { return r.any_of<ColliderShape, PhysicsMotion>(e); };
@@ -43,7 +43,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     const auto owner_mesh = FindMeshEntity(r, e);
                     r.patch<ColliderShape>(e, [&](ColliderShape &cs) {
                         cs.Shape = a.Shape;
-                        if (IsMeshBackedShape(a.Shape) && cs.MeshEntity == null_entity) cs.MeshEntity = owner_mesh;
+                        if (IsMeshBackedShape(a.Shape) && cs.MeshEntity == state::Null) cs.MeshEntity = owner_mesh;
                     });
                     if (a.LockKind) r.patch<ColliderPolicy>(e, [](ColliderPolicy &p) { p.LockedKind = true; });
                 });

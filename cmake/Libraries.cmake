@@ -189,9 +189,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/snapshot/MeshSnapshot.cpp
     src/snapshot/PhysicsSnapshot.cpp
     src/snapshot/ReplayTestFixture.cpp
-    src/snapshot/SaveState.cpp
     src/snapshot/SceneComponentsSnapshot.cpp
-    src/snapshot/SceneSnapshot.cpp
     src/snapshot/SnapshotRoles.cpp
     src/snapshot/ViewportSnapshot.cpp
     src/viewport/Viewport.cpp

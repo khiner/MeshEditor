@@ -158,6 +158,8 @@ struct Pipelines {
     Pipelines(mtl::LibraryCache &);
 
     mtl::LibraryCache &Libraries;
+    // Recompile every shader on the next event pass.
+    bool RecompileRequested{};
     MainPipeline Main;
     mtl::RenderPipeline Silhouette;
     SelectionFragmentPipeline SelectionFragment;

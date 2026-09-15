@@ -5,16 +5,6 @@
 #include "metal/Buffer.h"
 #include "project/AllocatorHistory.h"
 
-struct ArenaState {
-    std::vector<std::byte> Bytes;
-    RangeAllocator::State Allocator;
-};
-
-struct ArenaView {
-    std::span<const std::byte> Bytes;
-    RangeAllocator::State Allocator;
-};
-
 template<typename T>
 struct BufferArena {
     BufferArena(mtl::BufferContext &ctx, SlotType slot_type) : Buffer(ctx, 0, slot_type) {}
@@ -82,19 +72,6 @@ struct BufferArena {
     void Reset() {
         Buffer.SetUsedSize(0);
         Allocator.Reset();
-    }
-
-    ArenaState Save() const {
-        auto view = View();
-        return {{view.Bytes.begin(), view.Bytes.end()}, std::move(view.Allocator)};
-    }
-    ArenaView View() const {
-        return {Buffer.Contents().first(std::min(size_t(Buffer.UsedSize), Buffer.Contents().size())), Allocator.Save()};
-    }
-    void Restore(ArenaState state) {
-        Buffer.Update(state.Bytes, 0);
-        Buffer.SetUsedSize(state.Bytes.size());
-        Allocator.Restore(std::move(state.Allocator));
     }
 
     mtl::Buffer Buffer;

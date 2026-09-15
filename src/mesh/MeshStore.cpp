@@ -7,12 +7,10 @@
 #include "gpu/EditSelectionSummary.h"
 #include "gpu/FanItemEncoding.h"
 #include "metal/BufferArena.h"
-#include "numeric/Serialize.h"
 #include "project/BufferHistory.h"
 #include "project/VectorHistory.h"
 #include "selection/SelectionBitset.h"
 
-#include <zpp_bits.h>
 
 #include <bit>
 #include <format>
@@ -98,8 +96,8 @@ struct MeshStore::Buffers {
     // Stores CSR offsets followed by items for vertex-triangle, vertex-edge, and corner-sector incidence.
     BufferArena<uint32_t> AdjacencyBuffer;
 
-    // Visit every serialized BufferArena in a fixed order, so Serialize/Deserialize stay in lockstep.
-    // The derived arenas rebuild from connectivity and the sharpness stores after Deserialize.
+    // Visit every history-tracked BufferArena in a fixed order.
+    // The derived arenas rebuild from connectivity and the sharpness stores after a restore.
     void ForEachSerializedArena(auto &&f) {
         f(VerticesBuffer, "Vertices");
         f(FaceFirstTriangleBuffer, "FaceFirstTriangle");
@@ -122,7 +120,6 @@ struct MeshStore::Buffers {
         f(TetPositionBuffer, "TetPosition");
         f(TetEdgeIndexBuffer, "TetEdgeIndex");
     }
-    static constexpr size_t SerializedArenaCount = 20;
 
     void ForEachDerivedArena(auto &&f) {
         f(AdjacencyBuffer);
@@ -318,12 +315,6 @@ std::vector<MeshStore::Change> MeshStore::TakeChanges() {
 }
 
 namespace {
-// Restore a plain mirror buffer by its used byte region.
-void RestoreBuffer(mtl::Buffer &b, std::span<const std::byte> bytes) {
-    if (!bytes.empty()) b.Update(bytes, 0);
-    b.SetUsedSize(bytes.size());
-}
-
 // Size a mirror buffer to cover the mirrored arena's element range.
 template<typename T> void SyncMirror(mtl::Buffer &mirror, Range range) {
     const auto end = uint64_t(range.Offset + range.Count) * sizeof(T);
@@ -350,51 +341,6 @@ void MeshStore::FillBaseVertexNormalMirror(Range vertices, Range point_normals) 
     const auto normals = B->BaseVertexNormalBuffer.GetMutableSpan<vec3>(vertices);
     if (point_normals.Count > 0) std::ranges::copy(B->PointNormalBuffer.Get(point_normals), normals.begin());
     else std::ranges::fill(normals, vec3{0});
-}
-
-std::vector<std::byte> MeshStore::Serialize() const {
-    std::vector<ArenaView> arenas;
-    arenas.reserve(Buffers::SerializedArenaCount);
-    B->ForEachSerializedArena([&](const auto &a, auto) { arenas.push_back(a.View()); });
-    const auto face_sharpness = B->FaceSharpnessBuffer.Contents().first(B->FaceSharpnessBuffer.UsedSize);
-
-    // Serialize from non-const copies: zpp mis-encodes a const aggregate this large, and these match the types Deserialize reads back into.
-    auto entries = Entries;
-    auto free_ids = FreeIds;
-    std::vector<std::byte> out;
-    zpp::bits::out archive{out};
-    if (zpp::bits::failure(archive(arenas, face_sharpness, entries, free_ids))) return {};
-    out.resize(archive.position());
-    return out;
-}
-
-void MeshStore::Deserialize(std::span<const std::byte> bytes) {
-    std::vector<ArenaState> arenas;
-    std::vector<std::byte> face_sharpness;
-    std::vector<Entry> entries;
-    std::vector<uint32_t> free_ids;
-    zpp::bits::in archive{bytes};
-    if (zpp::bits::failure(archive(arenas, face_sharpness, entries, free_ids))) return;
-    if (arenas.size() != Buffers::SerializedArenaCount) return;
-
-    size_t i = 0;
-    B->ForEachSerializedArena([&](auto &a, auto) { a.Restore(std::move(arenas[i++])); });
-    // RebuildDerived refills arenas per mesh once connectivity is restored.
-    B->ForEachDerivedArena([](auto &a) { a.Reset(); });
-    RestoreBuffer(B->FaceSharpnessBuffer, face_sharpness);
-    Entries = std::move(entries);
-    FreeIds = std::move(free_ids);
-    Derived.assign(Entries.size(), {});
-
-    // Triangle meshes rederive their region, and face-less meshes take their authored point normals back.
-    B->BaseVertexNormalBuffer.UsedSize = 0;
-    B->BaseFaceNormalBuffer.UsedSize = 0;
-    for (const auto &e : Entries) {
-        if (!e.Alive) continue;
-        SyncMirror<vec3>(B->BaseVertexNormalBuffer, e.Vertices);
-        SyncMirror<vec3>(B->BaseFaceNormalBuffer, e.FaceData);
-        FillBaseVertexNormalMirror(e.Vertices, e.PointNormals);
-    }
 }
 
 // Derived arena offsets follow rebuild order, so sort by store id for a deterministic layout.

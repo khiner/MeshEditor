@@ -299,7 +299,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
         } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_L, VKey)) {
             action::Emit(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
         }
-        if (!r.storage<Selected>().empty()) {
+        if (!r.view<const Selected>().empty()) {
             if (!bone_edit && Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) Duplicate(r, viewport);
             else if (!bone_edit && Shortcut(ImGuiMod_Alt | ImGuiKey_D, VKey)) action::EmitStaged(action::object::DuplicateLinked{});
             else if (!bone_edit && CanDelete(r, viewport) && (Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey))) Delete(r, viewport);
@@ -860,7 +860,7 @@ void DrawOverlay(state::Scene &r, state::Entity viewport, FrameState &frame) {
     TransformGizmo::Render(r.edit<GizmoInteraction>(viewport), r.get<const TransformGizmoState>(viewport).Config.Type, camera, viewport_rect, axes);
 
     const auto &settings = r.get<const ViewportDisplay>(viewport);
-    if (settings.ShowOverlays && settings.ShowOrigins && (!r.storage<Selected>().empty() || !r.storage<Active>().empty())) {
+    if (settings.ShowOverlays && settings.ShowOrigins && (!r.view<const Selected>().empty() || !r.view<const Active>().empty())) {
         const auto &theme = r.get<const ViewportTheme>(viewport);
         const auto vp = camera.Projection(viewport_rect.size.x / viewport_rect.size.y) * camera.View();
         auto draw_dot = [&](vec3 pos, bool is_active) {

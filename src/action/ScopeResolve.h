@@ -11,9 +11,9 @@ namespace action {
 template<typename A, typename F>
 void ForEachScopeTarget(state::Scene &r, Scope scope, state::Entity entity, state::Entity fallback, A &&accept, F &&fn) {
     switch (scope) {
-        case Scope::Entity: fn(entity != null_entity ? entity : fallback); break;
+        case Scope::Entity: fn(entity != state::Null ? entity : fallback); break;
         case Scope::Active:
-            if (const auto e = FindActiveEntity(r); e != null_entity && accept(e)) fn(e);
+            if (const auto e = FindActiveEntity(r); e != state::Null && accept(e)) fn(e);
             break;
         case Scope::Selected:
         case Scope::SelectedDelta:

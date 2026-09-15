@@ -51,7 +51,6 @@ struct Scene {
         R.emplace<Transform>(e, Transform{.P = position});
         R.emplace<WorldTransform>(e, Transform{.P = position});
         R.emplace<SceneNode>(e);
-        R.emplace<ParentInverse>(e); // The world-transform walk reads it on every parented node.
         R.emplace<ReportContacts>(e);
         if (shape) R.emplace<ColliderShape>(e, ColliderShape{.Shape = *shape});
         if (motion) {
@@ -73,19 +72,19 @@ struct Scene {
     // Build or update the bodies the components describe, as ProcessComponentEvents does in the app.
     void Sync() {
         for (auto &handler : R.ctx().get<std::vector<ComponentEventHandler>>()) handler.Apply(R, EventPass::Frame);
-        physics::AdvancePlayback(R, Viewport, Frame, Frame, 0, RangeEnd, Fps, false);
+        physics::AdvancePlayback(R, Viewport, Frame, Frame, 0, RangeEnd, Fps);
         R.ClearChanges();
     }
 
     void Step(int frames = 1) {
         for (int i = 0; i < frames; ++i) {
-            physics::AdvancePlayback(R, Viewport, Frame, Frame + 1, 0, RangeEnd, Fps, false);
+            physics::AdvancePlayback(R, Viewport, Frame, Frame + 1, 0, RangeEnd, Fps);
             ++Frame;
         }
     }
 
     void Hold(int frames = 1) {
-        for (int i = 0; i < frames; ++i) physics::AdvancePlayback(R, Viewport, Frame, Frame, 0, RangeEnd, Fps, false);
+        for (int i = 0; i < frames; ++i) physics::AdvancePlayback(R, Viewport, Frame, Frame, 0, RangeEnd, Fps);
     }
 
     const std::vector<SustainedContact> &Contacts() const { return R.ctx().get<const PhysicsSustainedContacts>().Active; }
@@ -345,10 +344,10 @@ int main() {
         const auto a = setup(stepped), b = setup(sought);
         expect(sought.R.get<WorldTransform>(b).P == vec3{});
         stepped.Step(30);
-        physics::AdvancePlayback(sought.R, sought.Viewport, 0, 30, 0, RangeEnd, Fps, false);
+        physics::AdvancePlayback(sought.R, sought.Viewport, 0, 30, 0, RangeEnd, Fps);
         expect(stepped.R.get<WorldTransform>(a).P == sought.R.get<WorldTransform>(b).P);
-        physics::AdvancePlayback(sought.R, sought.Viewport, 30, 5, 0, RangeEnd, Fps, false);
-        physics::AdvancePlayback(sought.R, sought.Viewport, 5, 31, 0, RangeEnd, Fps, false);
+        physics::AdvancePlayback(sought.R, sought.Viewport, 30, 5, 0, RangeEnd, Fps);
+        physics::AdvancePlayback(sought.R, sought.Viewport, 5, 31, 0, RangeEnd, Fps);
         stepped.Step();
         expect(stepped.R.get<WorldTransform>(a).P == sought.R.get<WorldTransform>(b).P);
     };
@@ -476,8 +475,8 @@ int main() {
                 const auto material = s.R.create(), filter = s.R.create(), joint = s.R.create(), unrelated = s.R.create();
                 s.R.emplace<PhysicsMaterial>(material);
                 s.R.emplace<CollisionFilter>(filter);
-                s.R.emplace<ColliderMaterial>(body, ColliderMaterial{material, null_entity});
-                s.R.emplace<ColliderMaterial>(child, ColliderMaterial{material, null_entity});
+                s.R.emplace<ColliderMaterial>(body, ColliderMaterial{material, state::Null});
+                s.R.emplace<ColliderMaterial>(child, ColliderMaterial{material, state::Null});
                 PhysicsJointDef definition;
                 definition.Drives.push_back({.Type = PhysicsDriveType::Linear, .Mode = PhysicsDriveMode::Acceleration, .Axis = 0, .PositionTarget = 0.25f, .Stiffness = 2, .Damping = 0.5f});
                 s.R.emplace<PhysicsJointDef>(joint, definition);
@@ -723,14 +722,15 @@ int main() {
         s.Step(12);
         const auto created = s.BodyCreations;
         const auto contact_step = s.ContactStep();
-        physics::AdvancePlayback(s.R, s.Viewport, 12, 12, 0, RangeEnd + 120, Fps, false);
+        physics::AdvancePlayback(s.R, s.Viewport, 12, 12, 0, RangeEnd + 120, Fps);
         expect(s.BodyCreations == created);
         expect(physics::BakedThrough(s.R) == std::optional{12u});
         expect(s.ContactStep() == contact_step);
-        physics::AdvancePlayback(s.R, s.Viewport, 12, 0, 0, RangeEnd + 120, Fps, true);
+        physics::InvalidateCache(s.R);
+        physics::AdvancePlayback(s.R, s.Viewport, 12, 0, 0, RangeEnd + 120, Fps);
         expect(s.BodyCreations == created);
         expect(s.R.get<WorldTransform>(body).P == vec3{});
-        physics::AdvancePlayback(s.R, s.Viewport, 0, 12, 0, RangeEnd + 120, Fps, false);
+        physics::AdvancePlayback(s.R, s.Viewport, 0, 12, 0, RangeEnd + 120, Fps);
         expect(Near(s.R.get<WorldTransform>(body).P.x, 12.f / Fps, 1e-6f));
     };
 

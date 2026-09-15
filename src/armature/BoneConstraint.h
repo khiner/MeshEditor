@@ -13,7 +13,7 @@ struct ChildOfData {
 };
 
 struct BoneConstraint {
-    state::Entity TargetEntity{null_entity};
+    state::Entity TargetEntity{state::Null};
     float Influence{1.f};
     std::variant<CopyTransformsData, ChildOfData> Data{CopyTransformsData{}};
 };

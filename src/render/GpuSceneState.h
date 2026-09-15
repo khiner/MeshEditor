@@ -63,6 +63,8 @@ struct GpuSceneState {
     std::unordered_set<state::Entity> MeshletEditOverlayMeshes;
     bool MeshletEditHasSharpEdges{};
     bool EditPreludePending{};
+    // Element selection bits changed, so edit work candidates reseed.
+    bool EditSelectionDirty{};
     bool InstanceRecordsStale{true};
     bool InstanceFlagsStale{true};
     uint64_t InstanceRecordInputs{0};

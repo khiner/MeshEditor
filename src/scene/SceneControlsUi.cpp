@@ -26,6 +26,7 @@
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/PbrFeature.h"
+#include "render/Pipelines.h"
 #include "render/TextureRefs.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
@@ -52,6 +53,7 @@ using std::ranges::any_of, std::ranges::distance, std::ranges::find, std::ranges
 using namespace ImGui;
 
 template<> struct FieldLimits<&Transform::S> : Within<0.01f, 10.f> {};
+template<> struct FieldLimits<&PosedLocal::Value, &Transform::S> : Within<0.01f, 10.f> {};
 template<> struct FieldLimits<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue> : Within<0.01f, 100.f> {};
 template<> struct FieldLimits<&ShadeSmoothAngle::Value> : Within<0., std::numbers::pi> {};
 
@@ -351,7 +353,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
             // Object mode resolves the active entity during replay and applies Alt-drag to the selection.
             // Pose mode records the target entity explicitly.
-            if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&Transform::P>("Position", 0.01f);
+            if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&PosedLocal::Value, &Transform::P>("Position", 0.01f);
             else ui::Edit{r}.Drag<&Transform::P>("Position", 0.01f);
             // RotationUiVariant is reactively created and may not exist yet on the first frame.
             if (const auto *rotation_ui_ptr = r.try_get<const RotationUiVariant>(transform_entity)) {
@@ -378,7 +380,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             const bool frozen = r.all_of<ScaleLocked>(transform_entity);
             if (frozen) BeginDisabled();
             const auto scale_label = std::format("Scale{}", frozen ? " (frozen)" : "");
-            if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&Transform::S>(scale_label.c_str(), 0.01f);
+            if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&PosedLocal::Value, &Transform::S>(scale_label.c_str(), 0.01f);
             else ui::Edit{r}.Drag<&Transform::S>(scale_label.c_str(), 0.01f);
             if (frozen) EndDisabled();
         }
@@ -954,7 +956,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                     EndCombo();
                 }
             }
-            if (!r.storage<Selected>().empty()) {
+            if (!r.view<const Selected>().empty()) {
                 SeparatorText("Selection actions");
                 std::vector<state::Entity> selected_mesh_instances;
                 for (const auto entity : r.view<const Selected, const Instance>()) {
@@ -1054,8 +1056,8 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                     if (changed) f.Set<&ViewportDisplay::MotionBlur>(std::optional{mb});
                 }
             }
-            // Intentional direct registry mutation outside Apply - not replayable document state.
-            if (Button("Recompile shaders")) r.emplace_or_replace<PendingShaderRecompile>(viewport);
+            // Direct mutation outside Apply: not replayable document state.
+            if (Button("Recompile shaders")) r.ctx().get<Pipelines>().RecompileRequested = true;
 
             if (!r.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");
@@ -1327,7 +1329,7 @@ static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
         }
     };
 
-    const int total_selected = r.storage<Selected>().size() + r.storage<BoneSelection>().size();
+    const int total_selected = r.view<const Selected>().size() + r.view<const BoneSelection>().size();
     auto *ms_begin = BeginMultiSelect(ImGuiMultiSelectFlags_None, total_selected, -1);
     std::vector<ImGuiSelectionRequest> begin_requests;
     begin_requests.reserve(ms_begin->Requests.Size);

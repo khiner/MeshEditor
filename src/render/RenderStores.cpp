@@ -45,10 +45,6 @@ void RegisterRenderStoreHandlers(state::Scene &r) {
         r.ctx().get<GpuBuffers>().MorphWeightBuffer.Release(r.get<const MorphWeightGpuRange>(e).Weights);
     }>();
     r.on_destroy<MeshHandle>().connect<&state::Scene::remove<MeshShadingSummary>>();
-    // GPU object IDs are the entity slot plus one; zero remains the background.
-    r.on_construct<RenderInstance>().connect<[](state::Scene &r, state::Entity e) {
-        r.edit<RenderInstance>(e).ObjectId = state::Index(e) + 1;
-    }>();
     r.on_destroy<RenderInstance>().connect<[](state::Scene &r, state::Entity e) {
         const auto &ri = r.get<const RenderInstance>(e);
         if (auto *buffers = r.ctx().find<GpuBuffers>()) {
@@ -60,7 +56,7 @@ void RegisterRenderStoreHandlers(state::Scene &r) {
     }>();
     // Keep RenderInstance synchronized with Instance and Hidden regardless of snapshot insertion order.
     r.on_construct<Instance>().connect<[](state::Scene &r, state::Entity e) {
-        if (!r.all_of<Hidden>(e) && !r.all_of<RenderInstance>(e)) r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX, 0u);
+        if (!r.all_of<Hidden>(e) && !r.all_of<RenderInstance>(e)) r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX);
     }>();
     r.on_construct<Hidden>().connect<[](state::Scene &r, state::Entity e) {
         if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
@@ -90,8 +86,7 @@ void InitDefaultMaterial(state::Scene &r, state::Entity viewport) {
     materials.AppendNames({"Default"});
 
     constexpr std::array<std::byte, 4> WhitePixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
-    auto &pending = r.get_or_emplace<PendingTextureUploads>(viewport);
-    pending.Items.emplace_back(PendingTextureUpload{
+    textures.PendingUploads.emplace_back(PendingTextureUpload{
         .SamplerSlot = textures.WhiteTextureSlot,
         .Source = PendingTextureUpload::RawPixels{.Pixels = std::vector<std::byte>(WhitePixels.begin(), WhitePixels.end()), .Width = 1, .Height = 1},
         .ColorSpace = TextureColorSpace::Srgb,

@@ -176,13 +176,13 @@ struct PhysicsVelocity {
 // LocalOffset is the shape's center in entity-local pre-scale coords (same convention as PhysicsMotion::CenterOfMass).
 struct ColliderShape {
     PhysicsShape Shape{};
-    state::Entity MeshEntity{null_entity};
+    state::Entity MeshEntity{state::Null};
     vec3 LocalOffset{0};
     bool operator==(const ColliderShape &) const = default;
 };
 
 struct ColliderMaterial {
-    state::Entity PhysicsMaterialEntity{null_entity}, CollisionFilterEntity{null_entity};
+    state::Entity PhysicsMaterialEntity{state::Null}, CollisionFilterEntity{state::Null};
 };
 
 // Marker: this entity's ColliderShape participates as a sensor (KHR GeometryTrigger), not a solid body.
@@ -201,12 +201,12 @@ struct ColliderPolicy {
 // Does not produce a rigid body; exists for document structure and filter assignment.
 struct TriggerNodes {
     std::vector<state::Entity> Nodes{};
-    state::Entity CollisionFilterEntity{null_entity};
+    state::Entity CollisionFilterEntity{state::Null};
 };
 
 struct PhysicsJoint {
-    state::Entity ConnectedNode{null_entity};
-    state::Entity JointDefEntity{null_entity};
+    state::Entity ConnectedNode{state::Null};
+    state::Entity JointDefEntity{state::Null};
     bool EnableCollision{false};
     bool operator==(const PhysicsJoint &) const = default;
 };

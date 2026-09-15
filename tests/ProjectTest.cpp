@@ -15,7 +15,6 @@
 #include "render/Textures.h"
 #include "scene/Entity.h"
 #include "selection/SelectionQueries.h"
-#include "snapshot/SceneSnapshot.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/Viewport.h"
 #include <fstream>
@@ -76,17 +75,16 @@ struct Fixture {
 };
 
 struct State {
-    std::vector<std::byte> Persistent, Scene, Image;
+    std::vector<std::byte> Persistent, Image;
     explicit State(Fixture &f)
-        : Persistent(f.P->History.MaterializeLive()), Scene(snapshot::SnapshotSceneState(f.R)), Image(Render ? f.Image() : std::vector<std::byte>{}) {
+        : Persistent(f.P->History.MaterializeLive()), Image(Render ? f.Image() : std::vector<std::byte>{}) {
         expect(f.P->History.MaterializeLive() == Persistent);
     }
     void Check(Fixture &f) const {
         expect(f.P->History.MaterializeLive() == Persistent);
-        expect(snapshot::SnapshotSceneState(f.R) == Scene);
         if (Render) {
             const auto rendered = f.Image();
-            if (rendered != Image) std::printf("node %d image differs at byte %zu\n", f.P->History.Present, snapshot::Compare(Image, rendered).FirstDifferingByte);
+            if (rendered != Image) std::printf("node %d image differs at byte %zu\n", f.P->History.Present, size_t(std::ranges::mismatch(Image, rendered).in1 - Image.begin()));
             expect(rendered == Image);
         }
         expect(f.P->History.MaterializeLive() == Persistent);

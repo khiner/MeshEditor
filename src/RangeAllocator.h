@@ -83,19 +83,12 @@ struct RangeAllocator {
 
     uint32_t HighWaterMark() const { return EndOffset; }
 
-    // Serializable allocator state for save/restore.
-    struct State {
-        std::vector<Range> FreeBlocks;
-        uint32_t EndOffset{0};
-    };
-    State Save() const { return {FreeBlocks, EndOffset}; }
-    void Restore(State state) {
-        if (FreeHistory) FreeHistory->Write(0, std::max(FreeBlocks.size(), state.FreeBlocks.size()));
+    void Reset() {
+        if (FreeHistory) FreeHistory->Write(0, FreeBlocks.size());
         if (EndHistory) EndHistory->Write(0, 1);
-        FreeBlocks = std::move(state.FreeBlocks);
-        EndOffset = state.EndOffset;
+        FreeBlocks.clear();
+        EndOffset = 0;
     }
-    void Reset() { Restore({}); }
 
     std::vector<Range> FreeBlocks;
     uint32_t EndOffset{0};

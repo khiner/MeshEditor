@@ -45,7 +45,7 @@ struct ContactSum {
 };
 struct BodyInput {
     Transform Node;
-    state::Entity Parent = null_entity;
+    state::Entity Parent = state::Null;
     std::optional<PhysicsMotion> Motion;
     PhysicsVelocity Velocity;
     bool Sensor = false;
@@ -64,7 +64,7 @@ struct ColliderInput {
 struct JointInput {
     PhysicsJoint Joint;
     std::optional<PhysicsJointDef> Definition{};
-    state::Entity Owner = null_entity, ConnectedOwner = null_entity;
+    state::Entity Owner = state::Null, ConnectedOwner = state::Null;
     Transform Node;
     std::optional<Transform> Connected;
     bool operator==(const JointInput &) const = default;
@@ -86,6 +86,7 @@ struct PhysicsState {
     float CacheFps = 0;
     bool InputDirty = false;
     bool Evaluate = false;
+    bool CacheInvalid = false;
     std::map<state::Entity, physics::RbpBody> Bodies;
     std::vector<state::Entity> Entities;
     std::map<state::Entity, rbp::CollisionMask> Masks;
@@ -135,12 +136,12 @@ void UpdateMasks(PhysicsState &s, const state::Scene &r) {
     }
 }
 
-Transform ComposeAuthored(const Transform &parent, Transform result, const mat4 &inverse) {
+Transform ComposeAuthored(const Transform &parent, Transform result) {
     // Preserve exact scale under rigid edits instead of remeasuring quaternion matrix columns.
-    if (inverse == I4 && parent.S.x == parent.S.y && parent.S.y == parent.S.z) {
+    if (parent.S.x == parent.S.y && parent.S.y == parent.S.z) {
         result.P *= parent.S;
         result.S *= parent.S;
-    } else result = ToTransform(ToMatrix(Transform{.S = parent.S}) * inverse * ToMatrix(result));
+    } else result = ToTransform(ToMatrix(Transform{.S = parent.S}) * ToMatrix(result));
     result.P = parent.P + numeric::Rotate(parent.R, result.P);
     result.R = numeric::Normalize(parent.R * result.R);
     return result;
@@ -154,10 +155,7 @@ SceneInput ReadScene(const PhysicsState &s, const state::Scene &r) {
         Transform result;
         if (const auto *local = r.try_get<const Transform>(e)) {
             result = *local;
-            if (const auto parent = ParentOrNull(r, e); parent != null_entity) {
-                const auto *inverse = r.try_get<const ParentInverse>(e);
-                result = ComposeAuthored(self(parent), *local, inverse ? inverse->M : I4);
-            }
+            if (const auto parent = ParentOrNull(r, e); parent != state::Null) result = ComposeAuthored(self(parent), *local);
         }
         transforms.emplace(e, result);
         return result;
@@ -166,7 +164,7 @@ SceneInput ReadScene(const PhysicsState &s, const state::Scene &r) {
         if (input.Bodies.contains(entity)) return;
         const auto *motion = r.try_get<const PhysicsMotion>(entity);
         const bool sensor = r.all_of<TriggerTag, ColliderShape>(entity);
-        if (!motion && !sensor && MotionOwner(r, entity) != null_entity) return;
+        if (!motion && !sensor && MotionOwner(r, entity) != state::Null) return;
         auto &body = input.Bodies[entity];
         body.Node = transform(entity);
         body.Parent = ParentOrNull(r, entity);
@@ -188,8 +186,7 @@ SceneInput ReadScene(const PhysicsState &s, const state::Scene &r) {
         }
         const auto local_transform = [&](this auto &self, state::Entity node) -> Transform {
             if (node == entity) return {.S = body.Node.S};
-            const auto *inverse = r.try_get<const ParentInverse>(node);
-            return ComposeAuthored(self(ParentOrNull(r, node)), r.get<const Transform>(node), inverse ? inverse->M : I4);
+            return ComposeAuthored(self(ParentOrNull(r, node)), r.get<const Transform>(node));
         };
         for (auto collider : body.Colliders) {
             ColliderInput leaf{.Owner = entity, .Shape = r.get<const ColliderShape>(collider), .Local = local_transform(collider)};
@@ -235,7 +232,7 @@ bool RequiresRebuild(const SceneInput &before, const SceneInput &after) {
 }
 
 bool IsActiveJoint(const JointInput &input) {
-    return input.Definition && input.Connected && input.Owner != null_entity && input.Owner != input.ConnectedOwner;
+    return input.Definition && input.Connected && input.Owner != state::Null && input.Owner != input.ConnectedOwner;
 }
 
 void ApplyCollider(rbp::Shape &shape, state::Entity entity, const ColliderInput &input) {
@@ -278,7 +275,7 @@ void OnDestroyPhysicsBody(state::Scene &r, state::Entity e) {
     if (it == s->Bodies.end()) return;
     s->World->RemoveBody(it->second.Body);
     if (it->second.Shape != rbp::NoIndex) s->World->RemoveShape(it->second.Shape);
-    s->Entities[it->second.Body] = null_entity;
+    s->Entities[it->second.Body] = state::Null;
     s->Bodies.erase(it);
     s->Baked.reset();
     s->Contacts.clear();
@@ -357,7 +354,7 @@ void BuildBody(PhysicsState &s, state::Scene &r, state::Entity entity) {
     if (s.Bodies.contains(entity)) return;
     const auto body = CookBody(s, s.Input, r, entity);
     s.Bodies.emplace(entity, body);
-    if (s.Entities.size() <= body.Body) s.Entities.resize(body.Body + 1, null_entity);
+    if (s.Entities.size() <= body.Body) s.Entities.resize(body.Body + 1, state::Null);
     s.Entities[body.Body] = entity;
     r.emplace_or_replace<PhysicsBodyHandle>(entity, PhysicsBodyHandle{body.Body});
     if (s.Input.Bodies.at(entity).Motion) r.emplace_or_replace<BodyPoseCache>(entity, BodyPoseCache{{physics::RbpNodePose(body.InitialPose, body.Frame)}});
@@ -371,10 +368,10 @@ void BuildJoint(PhysicsState &s, state::Scene &r, state::Entity entity) {
     const auto &def = *input.Definition;
     const auto owner = input.Owner, connected = input.ConnectedOwner;
     auto &world = *s.World;
-    if (connected == null_entity && s.WorldAnchor == rbp::NoIndex) s.WorldAnchor = world.AddBody({});
+    if (connected == state::Null && s.WorldAnchor == rbp::NoIndex) s.WorldAnchor = world.AddBody({});
     // KHR measures the connected frame in the joint node's frame. RBP measures A in B.
     rbp::JointDesc desc;
-    desc.BodyA = connected == null_entity ? s.WorldAnchor : s.Bodies.at(connected).Body;
+    desc.BodyA = connected == state::Null ? s.WorldAnchor : s.Bodies.at(connected).Body;
     desc.BodyB = s.Bodies.at(owner).Body;
     const auto a = PoseOf(*input.Connected), b = PoseOf(input.Node);
     desc.AtA = a.Position;
@@ -460,7 +457,7 @@ void Restart(PhysicsState &s, state::Scene &r) {
     const profile::CpuScope scope{"PhysicsReset"};
     ClearContacts(s, r);
     for (auto [entity, transform] : r.view<const Transform>().each())
-        if (ParentOrNull(r, entity) == null_entity) UpdateWorldTransformRecursive(r, entity);
+        if (ParentOrNull(r, entity) == state::Null) UpdateWorldTransformRecursive(r, entity);
     for (const auto &[entity, body] : s.Bodies) {
         s.World->Poses[body.Body] = body.InitialPose;
         s.World->Velocities[body.Body] = body.InitialVelocity;
@@ -473,7 +470,7 @@ void Restart(PhysicsState &s, state::Scene &r) {
     for (const auto &[entity, body] : s.Bodies) {
         if (!r.all_of<TriggerTag>(entity) || r.all_of<PhysicsMotion>(entity)) continue;
         const auto owner = MotionOwner(r, GetParentEntity(r, entity));
-        if (owner == null_entity) continue;
+        if (owner == state::Null) continue;
         const auto owner_body = s.Bodies.at(owner).Body;
         s.SensorFollowers.push_back({body.Body, owner_body, rbp::ComposePose(Inverse(s.World->Poses[owner_body]), s.World->Poses[body.Body])});
     }
@@ -482,8 +479,8 @@ void Restart(PhysicsState &s, state::Scene &r) {
     s.ContactFrames = {{r.ctx().get<PhysicsContactImpacts>(), r.ctx().get<PhysicsSustainedContacts>()}};
 }
 
-state::Entity EntityForBody(const PhysicsState &s, rbp::Index body) { return body < s.Entities.size() ? s.Entities[body] : null_entity; }
-state::Entity Collider(uint64_t data) { return data ? state::Entity(uint32_t(data - 1)) : null_entity; }
+state::Entity EntityForBody(const PhysicsState &s, rbp::Index body) { return body < s.Entities.size() ? s.Entities[body] : state::Null; }
+state::Entity Collider(uint64_t data) { return data ? state::Entity(uint32_t(data - 1)) : state::Null; }
 rbp::float3 WorldPoint(const rbp::ContactSide &side) { return rbp::WorldPoint(side.InitialPose, side.Point); }
 rbp::float3 PointVelocity(const rbp::ContactSide &side) { return side.Velocity.Linear + simd::cross(side.Velocity.Angular, rbp::Rotate(side.Pose.Orientation, side.Point)); }
 
@@ -632,7 +629,7 @@ void BakeFrame(state::Scene &r, state::Entity viewport, PhysicsState &s, uint32_
 template<typename C>
 void ClearDanglingRefs(state::Scene &r, state::Entity deleted, state::Entity C::*field) {
     for (auto [e, c] : r.view<C>().each())
-        if (c.*field == deleted) r.patch<C>(e, [field](C &x) { x.*field = null_entity; });
+        if (c.*field == deleted) r.patch<C>(e, [field](C &x) { x.*field = state::Null; });
 }
 
 template<typename C>
@@ -668,8 +665,8 @@ void ProcessChanges(state::Scene &r, EventPass) {
             ClearDanglingRefs(r, e, &TriggerNodes::CollisionFilterEntity);
         }
     for (auto [entity, joint] : r.view<const PhysicsJoint>().each())
-        if (joint.JointDefEntity != null_entity && !r.all_of<PhysicsJointDef>(joint.JointDefEntity))
-            r.patch<PhysicsJoint>(entity, [](auto &j) { j.JointDefEntity = null_entity; });
+        if (joint.JointDefEntity != state::Null && !r.all_of<PhysicsJointDef>(joint.JointDefEntity))
+            r.patch<PhysicsJoint>(entity, [](auto &j) { j.JointDefEntity = state::Null; });
     UpdateMasks(s, r);
     auto input = ReadScene(s, r);
     if (input.Bodies.empty()) {
@@ -760,10 +757,11 @@ bool DoesFilterAllow(const state::Scene &r, state::Entity source, state::Entity 
     const auto a = masks.find(source), b = masks.find(target);
     return a == masks.end() || b == masks.end() || (a->second.Layer & b->second.Collides) != 0;
 }
-bool AdvancePlayback(state::Scene &r, state::Entity viewport, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps, bool cache_invalid) {
+void InvalidateCache(state::Scene &r) { r.ctx().get<PhysicsState>().CacheInvalid = true; }
+bool AdvancePlayback(state::Scene &r, state::Entity viewport, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps) {
     auto &s = r.ctx().get<PhysicsState>();
     UpdateSettings(r, viewport, fps);
-    if (cache_invalid || uint32_t(range_start_frame) != s.CacheStartFrame) s.Invalidate();
+    if (std::exchange(s.CacheInvalid, false) || uint32_t(range_start_frame) != s.CacheStartFrame) s.Invalidate();
     s.CacheStartFrame = range_start_frame;
     s.CacheEndFrame = range_end_frame;
     if (s.Bodies.empty()) return false;
@@ -804,7 +802,7 @@ void SamplePosesAtFrame(state::Scene &r, float frame) {
     std::vector<std::pair<uint32_t, state::Entity>> entities;
     for (auto entity : r.view<const PhysicsBodyHandle, const BodyPoseCache>()) {
         uint32_t depth = 0;
-        for (auto parent = ParentOrNull(r, entity); parent != null_entity; parent = ParentOrNull(r, parent)) ++depth;
+        for (auto parent = ParentOrNull(r, entity); parent != state::Null; parent = ParentOrNull(r, parent)) ++depth;
         entities.emplace_back(depth, entity);
     }
     std::ranges::sort(entities);
@@ -829,7 +827,7 @@ void Init(state::Scene &r) {
     reactive<changes::PhysicsShape>(r).on<ColliderShape>(On::Create | On::Update | On::Destroy);
     reactive<changes::PhysicsPose>(r).on<Transform>(On::Update);
     reactive<changes::PhysicsGeometry>(r).on<MeshGeometryDirty>(On::Create | On::Update).on<MeshPositionsChanged>(On::Create | On::Update);
-    reactive<changes::PhysicsHierarchy>(r).on<SceneNode>(On::Update | On::Destroy).on<ParentInverse>(On::Create | On::Update | On::Destroy);
+    reactive<changes::PhysicsHierarchy>(r).on<SceneNode>(On::Create | On::Update | On::Destroy);
     reactive<changes::ColliderPolicy>(r).on<::ColliderPolicy>(On::Create | On::Update);
     reactive<changes::PhysicsMaterial>(r).on<ColliderMaterial>(On::Create | On::Update | On::Destroy);
     reactive<changes::PhysicsTrigger>(r).on<TriggerTag>(On::Create | On::Destroy);

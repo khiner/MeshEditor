@@ -42,7 +42,7 @@ state::Entity CreateSingleBoneInstance(state::Scene &r, state::Entity arm_obj_en
     const auto parent_index = armature.Bones[new_index].ParentIndex;
     const auto parent_entity = parent_index == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[parent_index];
     const auto bone_entity = ::CreateBoneEntity(r, arm_obj_entity, armature, new_index, parent_entity);
-    if (arm_obj.JointEntity != null_entity && r.valid(arm_obj.JointEntity)) {
+    if (arm_obj.JointEntity != state::Null && r.valid(arm_obj.JointEntity)) {
         ::CreateBoneJoints(r, arm_obj_entity, bone_entity, arm_obj.JointEntity);
     }
     arm_obj.BoneEntities.emplace_back(bone_entity);
@@ -163,10 +163,10 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 for (const auto b : r.view<const BoneSelection, const BoneIndex>()) {
                     const auto idx = r.get<const BoneIndex>(b).Index;
                     const auto &rest = armature.Bones[idx].RestLocal;
-                    r.patch<Transform>(b, [&](auto &t) {
-                        if (a.Position) t.P = rest.P;
-                        if (a.Rotation) t.R = rest.R;
-                        if (a.Scale) t.S = rest.S;
+                    r.patch<PosedLocal>(b, [&](auto &posed) {
+                        if (a.Position) posed.Value.P = rest.P;
+                        if (a.Rotation) posed.Value.R = rest.R;
+                        if (a.Scale) posed.Value.S = rest.S;
                     });
                 }
             },
@@ -186,11 +186,11 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     const auto grandparent = bone.ParentIndex == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[bone.ParentIndex];
 
                     if (auto *joints = r.try_get<BoneJointEntities>(bone_entity)) {
-                        if (joints->Head != null_entity) {
+                        if (joints->Head != state::Null) {
                             Hide(r, joints->Head);
                             r.destroy(joints->Head);
                         }
-                        if (joints->Tail != null_entity) {
+                        if (joints->Tail != state::Null) {
                             Hide(r, joints->Tail);
                             r.destroy(joints->Tail);
                         }
@@ -200,9 +200,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     std::vector<state::Entity> children;
                     for (const auto child : Children{&r, bone_entity}) children.emplace_back(child);
                     for (const auto child : children) {
-                        const auto &ct = r.get<const Transform>(child);
+                        const auto ct = *EditedLocal(r, child);
                         const auto t = ComposeLocalTransforms(bone.RestLocal, ct);
-                        r.emplace_or_replace<Transform>(child, Transform{t.P, t.R, r.all_of<ScaleLocked>(child) ? ct.S : t.S});
+                        PatchEditedLocal(r, child, [&](auto &local) { local = Transform{t.P, t.R, r.all_of<ScaleLocked>(child) ? ct.S : t.S}; });
                         ClearParent(r, child);
                         SetParent(r, child, grandparent);
                     }
@@ -229,7 +229,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const SetEditHeadTailRoll &a) {
                 const auto e = FindActiveBone(r);
-                r.patch<Transform>(e, [&](auto &t) { t.P = a.LocalP; t.R = a.LocalR; });
+                r.patch<PosedLocal>(e, [&](auto &posed) { posed.Value.P = a.LocalP; posed.Value.R = a.LocalR; });
                 r.replace<BoneDisplayScale>(e, a.DisplayScale);
             },
             [&](const SetConstraintTarget &a) {

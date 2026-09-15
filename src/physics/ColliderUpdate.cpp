@@ -11,7 +11,7 @@ void RederiveCollider(state::Scene &r, state::Entity e) {
     const auto *cs = r.try_get<const ColliderShape>(e);
     const auto *policy = r.try_get<const ColliderPolicy>(e);
     if (!cs || !policy) return;
-    const auto mesh_entity = cs->MeshEntity != null_entity ? cs->MeshEntity : FindMeshEntity(r, e);
+    const auto mesh_entity = cs->MeshEntity != state::Null ? cs->MeshEntity : FindMeshEntity(r, e);
     const auto mesh = TryGetMesh(r, mesh_entity);
     if (!mesh) return;
 
@@ -115,7 +115,7 @@ void RederiveCollider(state::Scene &r, state::Entity e) {
 
     r.patch<ColliderShape>(e, [&](ColliderShape &x) {
         x.Shape = std::move(shape);
-        x.MeshEntity = IsMeshBackedShape(x.Shape) ? mesh_entity : null_entity;
+        x.MeshEntity = IsMeshBackedShape(x.Shape) ? mesh_entity : state::Null;
         x.LocalOffset = local_offset;
     });
 }

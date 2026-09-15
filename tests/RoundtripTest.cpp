@@ -2,6 +2,7 @@
 #include "Paths.h"
 #include "ProcessEvents.h"
 #include "RunSuites.h"
+#include "action/Errors.h"
 #include "audio/AcousticMaterial.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
@@ -9,6 +10,7 @@
 #include "audio/ModalModelFile.h"
 #include "audio/ModalModes.h"
 #include "project/Assets.h"
+#include "project/Project.h"
 #include <barrier>
 #include <future>
 #ifdef SURFACE_AUDIO
@@ -27,8 +29,7 @@
 #include "render/Instance.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
-#include "snapshot/SaveState.h"
-#include "snapshot/SceneSnapshot.h"
+#include "scene/WorldTransform.h"
 #include "snapshot/SnapshotRoles.h"
 #include "viewport/Viewport.h"
 
@@ -762,11 +763,12 @@ void CompareRegistries(std::string_view name, state::Scene &a, state::Scene &b) 
     }
 
     // ComponentValuesEqual returns nullopt for derived components without serializers.
+    // Meshlet arena ranges follow build order, and a restore rebuilds reclassified meshes after the import built them.
     std::map<std::string, int> value_diffs;
     for (auto [id, a_set] : a.storage()) {
         const auto tn = state::SchemaNames[id];
         const auto *b_set_p = b.storage(id);
-        if (!b_set_p) continue;
+        if (!b_set_p || id == state::Type<MeshBuffers>()) continue;
         for (const auto e : a_set) {
             if (!b_set_p->contains(e)) continue;
             const auto eq = snapshot::ComponentValuesEqual(id, a_set.value(e), b_set_p->value(e));
@@ -834,14 +836,45 @@ int main(int argc, const char **argv) {
 
     struct SceneFixture {
         state::Scene R;
-        state::Entity Viewport{null_entity};
+        std::unique_ptr<project::Project> P;
+        state::Entity Viewport{state::Null};
 
+        // Imports keep source image URIs while no asset store is present, so the glTF comparison sees the source layout.
+        // Project operations need the store, so it exists only while a project is open.
         SceneFixture() {
             R.ctx().emplace<mtl::Context>();
+            P = std::make_unique<project::Project>(R);
+            R.ctx().erase<project::Assets>();
             Viewport = InitEngine(R);
+            P->TrackStores(Viewport);
             SetupScene(R, Viewport);
         }
-        ~SceneFixture() { DeinitViewport(R, Viewport); }
+        ~SceneFixture() {
+            P.reset();
+            DeinitViewport(R, Viewport);
+        }
+        void Check(bool ok) {
+            expect(ok);
+            if (ok) return;
+            for (const auto &message : R.ctx().get<action::Errors>().Messages) std::cerr << "  project: " << message << "\n";
+            if (const auto error = P->History.TakeIntegrityError(); !error.empty()) std::cerr << "  history: " << error << "\n";
+        }
+        // Start a project at `dir`, save live state into it, close it, and return the persistent image.
+        std::vector<std::byte> SaveTo(const std::filesystem::path &dir) {
+            R.ctx().emplace<project::Assets>();
+            Check(P->Begin(dir));
+            Check(P->Save());
+            auto image = P->History.MaterializeLive();
+            Check(P->Close());
+            R.ctx().erase<project::Assets>();
+            return image;
+        }
+        // Restore the project at `dir` and return the persistent image.
+        std::vector<std::byte> LoadFrom(const std::filesystem::path &dir) {
+            R.ctx().emplace<project::Assets>();
+            Check(P->Open(dir));
+            return P->History.MaterializeLive();
+        }
     };
 
     "snapshot encoding appends within reserved capacity"_test = [] {
@@ -857,11 +890,10 @@ int main(int argc, const char **argv) {
         expect(decoded.Value == name.Value);
     };
 
-    // Require byte-identical state after restoring into a fresh registry and saving again.
-    "snapshot save/restore round trip"_test = [&] {
-        std::vector<std::byte> before;
+    // Require an identical persistent image and registry after restoring into a fresh scene.
+    "project save/restore round trip"_test = [&] {
+        SceneFixture f;
         {
-            SceneFixture f;
             auto &meshes = f.R.ctx().get<MeshStore>();
             const auto created = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cuboid{})});
             const auto e = f.R.create();
@@ -888,16 +920,16 @@ int main(int argc, const char **argv) {
             f.R.emplace<TetBuffers>(e, meshes.AllocateTets(SampleModal.Tets.Positions, SampleModal.Tets.EdgeIndices));
 
             ProcessComponentEvents(f.R, f.Viewport);
-            before = snapshot::SaveState(f.R);
-            expect(before.size() > sizeof(uint64_t));
         }
+        const auto dir = tmp_root / "roundtrip.project";
+        const auto before = f.SaveTo(dir);
+        expect(before.size() > sizeof(uint64_t));
 
-        SceneFixture f;
-        snapshot::LoadState(f.R, before);
-        ProcessComponentEvents(f.R, f.Viewport);
-        const auto after = snapshot::SaveState(f.R);
-        const auto diff = snapshot::Compare(before, after);
-        expect(diff.Equal) << "round-trip diverged at byte" << diff.FirstDifferingByte << "of" << before.size() << "/" << after.size();
+        SceneFixture g;
+        const auto after = g.LoadFrom(dir);
+        ProcessComponentEvents(g.R, g.Viewport);
+        expect(after == before) << "round-trip diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin() << "of" << before.size() << "/" << after.size();
+        CompareRegistries("roundtrip", f.R, g.R);
     };
 
     // Require exact modal-result round trips and reuse of identical content-addressed files.
@@ -926,9 +958,8 @@ int main(int argc, const char **argv) {
         }
     };
 
-    // A destroyed entity leaves deletion history in the pools it belonged to, and SaveState excludes it so the byte image reflects state alone.
-    // An in-place-delete pool yields a tombstone during iteration and value() asserts on one, so SaveState skips them.
-    "snapshot save omits destroyed mesh entities"_test = [&] {
+    // A destroyed entity leaves deletion history in its pools, and the persistent image reflects live state alone.
+    "project save omits destroyed mesh entities"_test = [&] {
         SceneFixture f;
         const auto keep = f.R.create();
         const auto kept = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cuboid{})});
@@ -940,13 +971,13 @@ int main(int argc, const char **argv) {
         f.R.destroy(gone);
 
         ProcessComponentEvents(f.R, f.Viewport);
-        const auto before = snapshot::SaveState(f.R);
+        const auto dir = tmp_root / "destroyed.project";
+        const auto before = f.SaveTo(dir);
         SceneFixture g;
-        snapshot::LoadState(g.R, before);
+        const auto after = g.LoadFrom(dir);
         ProcessComponentEvents(g.R, g.Viewport);
-        const auto after = snapshot::SaveState(g.R);
-        const auto diff = snapshot::Compare(before, after);
-        expect(diff.Equal) << "destroyed-entity round-trip diverged at byte" << diff.FirstDifferingByte;
+        expect(after == before) << "destroyed-entity round-trip diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin();
+        CompareRegistries("destroyed", f.R, g.R);
     };
 
     const auto load_ctx = [](state::Scene &r, state::Entity e) {
@@ -998,12 +1029,15 @@ int main(int argc, const char **argv) {
         r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     };
 
-    // Check each sample through JSON comparison and byte-identical snapshot restoration.
-    // Compare registries for derived components omitted from the snapshot bytes.
+    // Check each sample through JSON comparison and byte-identical project restoration.
+    // Compare registries for derived components omitted from the persistent image.
     SceneFixture fx;
     SceneFixture restore_fx;
+    size_t sample_index = 0;
     for (const auto &src : samples) {
         const auto sample_name = src.stem().string();
+        // Variants of one model share a stem, so number the project directories.
+        const auto dir = tmp_root / std::format("{}_{}.project", sample_name, sample_index++);
 
         test(sample_name) = [&] {
             ProcessComponentEvents(fx.R, fx.Viewport);
@@ -1021,33 +1055,31 @@ int main(int argc, const char **argv) {
                 expect(unexpected == 0) << unexpected << " unexpected JSON diff(s)";
             }
 
-            const auto before = snapshot::SaveState(fx.R);
+            const auto before = fx.SaveTo(dir);
             ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
             clear_scene(restore_fx.R, restore_fx.Viewport);
-            snapshot::LoadState(restore_fx.R, before);
+            const auto after = restore_fx.LoadFrom(dir);
             ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
 
-            const auto diff = snapshot::Compare(before, snapshot::SaveState(restore_fx.R));
-            expect(diff.Equal) << "SaveState image diverged at byte" << diff.FirstDifferingByte;
+            expect(after == before) << "persistent image diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin();
             CompareRegistries(sample_name, fx.R, restore_fx.R);
         };
     }
 
-    // Drains PendingTextureUploads onto the GPU — ProcessComponentEvents minus the env / sync passes — so the edit tests below can read texture pixels back.
+    // Drains pending texture uploads onto the GPU, ProcessComponentEvents minus the env / sync passes, so the edit tests below can read texture pixels back.
     const auto materialize_textures = [&](state::Scene &r, state::Entity scene) {
-        const auto *pending = r.try_get<const PendingTextureUploads>(scene);
-        const auto *src = r.try_get<const gltf::SourceAssets>(scene);
-        if (!pending || pending->Items.empty() || !src) return;
-        auto &slots = r.ctx().get<mtl::BindlessSet>();
         auto &textures = r.ctx().get<TextureStore>();
+        const auto *src = r.try_get<const gltf::SourceAssets>(scene);
+        if (textures.PendingUploads.empty() || !src) return;
+        auto &slots = r.ctx().get<mtl::BindlessSet>();
         auto batch = BeginTextureUploadBatch(r.ctx().get<const mtl::Context>(), r.ctx().get<mtl::LibraryCache>());
-        for (const auto &item : pending->Items) {
+        for (const auto &item : textures.PendingUploads) {
             if (auto entry = MaterializeTextureEntry(r, batch, slots, item, src->Images, r.ctx().get<const ActiveSamplerAnisotropy>().Value)) {
                 textures.Textures.emplace_back(std::move(*entry));
             }
         }
         SubmitTextureUploadBatch(batch);
-        r.remove<PendingTextureUploads>(scene);
+        textures.PendingUploads.clear();
     };
 
     const auto edit_root = tmp_root / "edits";

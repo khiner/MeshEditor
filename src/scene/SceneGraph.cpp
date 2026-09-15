@@ -1,13 +1,11 @@
 #include "scene/SceneGraph.h"
 #include "TransformMath.h"
 #include "scene/SceneGraphOps.h"
-#include "scene/WorldTransform.h"
-#include "state/Scene.h"
 
 mat4 GetParentDelta(const state::Scene &r, state::Entity e) {
     const auto *node = r.try_get<SceneNode>(e);
     if (!node || node->Parent == state::Null) return I4;
-    return ToMatrix(r.get<WorldTransform>(node->Parent)) * r.get<ParentInverse>(e).M;
+    return ToMatrix(r.get<WorldTransform>(node->Parent));
 }
 
 ChildrenIterator &ChildrenIterator::operator++() {
@@ -62,7 +60,6 @@ void ClearParent(state::Scene &r, state::Entity child) {
         n.Parent = state::Null;
         n.NextSibling = state::Null;
     });
-    r.remove<ParentInverse>(child);
 }
 
 namespace {
@@ -81,16 +78,27 @@ void LinkChildToParent(state::Scene &r, state::Entity child, state::Entity paren
 }
 } // namespace
 
+const Transform *ComposedLocal(const state::Scene &r, state::Entity e) {
+    if (const auto *posed = r.try_get<const PosedLocal>(e)) return &posed->Value;
+    return r.try_get<const Transform>(e);
+}
+
+const Transform *EditedLocal(const state::Scene &r, state::Entity e) {
+    if (const auto *t = r.try_get<const Transform>(e)) return t;
+    const auto *posed = r.try_get<const PosedLocal>(e);
+    return posed ? &posed->Value : nullptr;
+}
+
 void EnsureWorldTransform(state::Scene &r, state::Entity e) {
     if (r.all_of<WorldTransform>(e)) return;
-    const auto *t = r.try_get<const Transform>(e);
+    const auto *t = ComposedLocal(r, e);
     if (!t) return;
     if (const auto *node = r.try_get<const SceneNode>(e); node && node->Parent != state::Null) EnsureWorldTransform(r, node->Parent);
     r.emplace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(*t)));
 }
 
 void UpdateWorldTransformRecursive(state::Scene &r, state::Entity e) {
-    const auto *t = r.try_get<const Transform>(e);
+    const auto *t = ComposedLocal(r, e);
     if (!t) return;
     if (const auto *node = r.try_get<const SceneNode>(e); node && node->Parent != state::Null) EnsureWorldTransform(r, node->Parent);
     r.emplace_or_replace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(*t)));
@@ -100,13 +108,13 @@ void UpdateWorldTransformRecursive(state::Scene &r, state::Entity e) {
 void BuildMissingWorldTransforms(state::Scene &r) {
     std::vector<state::Entity> missing;
     for (const auto e : r.view<const Transform>(state::Exclude<WorldTransform>)) missing.push_back(e);
+    for (const auto e : r.view<const PosedLocal>(state::Exclude<WorldTransform, Transform>)) missing.push_back(e);
     for (const auto e : missing) EnsureWorldTransform(r, e);
 }
 
 void SetParent(state::Scene &r, state::Entity child, state::Entity parent) {
     if (child == state::Null || parent == state::Null || child == parent) return;
     LinkChildToParent(r, child, parent);
-    r.emplace<ParentInverse>(child, I4);
     UpdateWorldTransformRecursive(r, child);
 }
 
@@ -117,7 +125,6 @@ void SetParentKeepWorld(state::Scene &r, state::Entity child, state::Entity pare
     const auto child_world = ToMatrix(r.get<const WorldTransform>(child));
     const auto parent_world_inv = numeric::Inverse(ToMatrix(r.get<const WorldTransform>(parent)));
     LinkChildToParent(r, child, parent);
-    r.emplace<ParentInverse>(child, I4);
     r.emplace_or_replace<Transform>(child, ToTransform(parent_world_inv * child_world));
     UpdateWorldTransformRecursive(r, child);
 }

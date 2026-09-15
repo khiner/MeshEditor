@@ -278,6 +278,9 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
 
     // Clear derived light slots so restored persistent lights register from slot zero.
     r.ctx().get<GpuBuffers>().Lights.SetCount(0);
+    r.ctx().get<GpuBuffers>().PendingLightRemovals.clear();
+    r.ctx().get<TextureStore>().PendingUploads.clear();
+    r.ctx().get<EnvironmentStore>().PendingImport.reset();
 
     // Destroy instances before the buffer entities they reference.
     for (const auto e : r.view<RenderInstance>() | to<std::vector>()) r.destroy(e);

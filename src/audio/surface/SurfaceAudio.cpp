@@ -940,7 +940,7 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
         };
         const auto &bank = LiveBank(m);
         for (auto &side : out.Sides) {
-            if (side.ModelEntity == null_entity) continue;
+            if (side.ModelEntity == state::Null) continue;
             const auto slot = FindModalObject(bank, side.ModelEntity);
             if (!slot) continue;
             // Derive contact-point effective mass from the coupled modal and rigid one-sample response.
@@ -1026,7 +1026,7 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
             constexpr uint32_t bin_count = std::min(8u, MaxSpringBins);
             for (uint32_t i = 0; i < c.Sides.size(); ++i) {
                 auto &side = out.Sides[i];
-                if (side.ModelEntity == null_entity) continue;
+                if (side.ModelEntity == state::Null) continue;
                 const auto *modes = r.try_get<const ModalModes>(side.ModelEntity);
                 const auto *transform = r.try_get<const WorldTransform>(side.ModelEntity);
                 if (!modes || !transform) continue;
@@ -1052,7 +1052,7 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
             const auto &bank = LiveBank(m);
             for (uint32_t i = 0; i < c.Sides.size(); ++i) {
                 auto &side = out.Sides[i];
-                if (side.ModelEntity == null_entity) continue;
+                if (side.ModelEntity == state::Null) continue;
                 if (numeric::Length(c.Sides[i].SweepVelocity) > 0.01f * speed) continue;
                 const auto *modes = r.try_get<const ModalModes>(side.ModelEntity);
                 const auto *transform = r.try_get<const WorldTransform>(side.ModelEntity);
@@ -1113,7 +1113,7 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                 side.SweepIndex = index;
                 ReadTurnoverNoise(side, surface, index, 1.f);
             }
-            if (auto &side = out.Sides[out.SlowSide]; side.SweepIndex < 0 && side.ModelEntity != null_entity) {
+            if (auto &side = out.Sides[out.SlowSide]; side.SweepIndex < 0 && side.ModelEntity != state::Null) {
                 const double pen_bucket = QuarterOctave(double(side.StaticPenetration));
                 if (pen_bucket > 0) {
                     const uint64_t noise_key = HashParams(
@@ -1140,7 +1140,7 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
 // The voice one side of a resolved contact renders, empty when the body has no bank slot or no sample points to excite.
 std::optional<VoiceSet::Voice> BuildContactVoice(ModalAudio &m, const SustainedContact &c, const ResolvedContact &resolved, uint32_t side) {
     const auto &own_resolved = resolved.Sides[side];
-    if (own_resolved.ModelEntity == null_entity) return {};
+    if (own_resolved.ModelEntity == state::Null) return {};
     const auto slot = FindModalObject(LiveBank(m), own_resolved.ModelEntity);
     if (!slot) return {};
 
@@ -1202,7 +1202,7 @@ std::optional<VoiceSet::Voice> BuildContactVoice(ModalAudio &m, const SustainedC
 
 float SurfaceRoughnessOf(const state::Scene &r, state::Entity node) {
     static constexpr ContactSurface DefaultSurface{};
-    const auto *surface = node != null_entity && r.valid(node) ? r.try_get<const ContactSurface>(node) : nullptr;
+    const auto *surface = node != state::Null && r.valid(node) ? r.try_get<const ContactSurface>(node) : nullptr;
     return (surface ? *surface : DefaultSurface).Roughness;
 }
 

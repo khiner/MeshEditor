@@ -33,7 +33,6 @@ struct Services {
         assert(p);
         return *p;
     }
-    template<typename T> bool contains() const { return find<T>(); }
     template<typename T, typename... A> T &emplace(A &&...args) {
         auto &s = Slots[Type<T>()];
         if (!s.Value) {
@@ -106,7 +105,6 @@ struct DirtySet : EntityRange {
         Entities.pop_back();
         return true;
     }
-    void erase(Entity e) { remove(e); }
     void clear() {
         for (auto e : Entities) Positions[Index(e)] = UINT32_MAX;
         Entities.clear();
@@ -221,7 +219,7 @@ struct Scene {
     uint64_t Epoch{1};
     Services &ctx() { return Context; }
     const Services &ctx() const { return Context; }
-    Entity create(Entity requested = Null);
+    Entity create();
     void destroy(Entity);
     void RemoveComponents(Entity);
     bool valid(Entity e) const;
@@ -367,8 +365,16 @@ template<typename R, typename... C> struct View : std::ranges::view_interface<Vi
         return i;
     }
     Iterator end() const { return {this, 0}; }
-    bool empty() const { return begin() == end(); }
+    // A single component without exclusions answers from its table.
+    static constexpr bool Direct = sizeof...(C) == 1;
+    bool empty() const {
+        if constexpr (Direct)
+            if (Excluded.empty()) return !Driver || Driver->empty();
+        return begin() == end();
+    }
     size_t size() const {
+        if constexpr (Direct)
+            if (Excluded.empty()) return Driver ? Driver->size() : 0;
         size_t n = 0;
         for ([[maybe_unused]] auto e : *this) ++n;
         return n;

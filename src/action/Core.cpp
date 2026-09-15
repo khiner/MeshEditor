@@ -33,7 +33,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Core &action) {
     std::visit(
         overloaded{
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
-            [&](const SetTag &a) { ApplyTagScoped(r, viewport, a.Scope, a.Entity, a.TagType, a.Present); },
+            [&](const SetTag &a) { ApplyTagScoped(r, viewport, a.Scope, a.Entity, state::Slot(a.TagType), a.Present); },
             [&](const DestroyEntity &a) { r.destroy(a.Entity); },
         },
         action

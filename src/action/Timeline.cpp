@@ -12,7 +12,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         // Uses Rendered mode for scene lighting and material preview with the default world otherwise.
         const auto *source_assets = r.try_get<const gltf::SourceAssets>(viewport);
         const bool explicit_ibl = source_assets && source_assets->ImageBasedLight.has_value();
-        const bool authored_lighting = explicit_ibl || !r.storage<LightIndex>().empty();
+        const bool authored_lighting = explicit_ibl || !r.view<const LightIndex>().empty();
         const auto mode = authored_lighting ? ViewportShadingMode::Rendered : ViewportShadingMode::MaterialPreview;
         r.patch<ViewportDisplay>(viewport, [&](auto &s) { s.ViewportShading = s.FillMode = mode; s.ShowOverlays = false; });
         if (!authored_lighting && r.all_of<MaterialPreviewLighting>(viewport)) {

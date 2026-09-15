@@ -58,7 +58,7 @@ inline std::optional<double> SurfaceCurvature(const state::Scene &r, state::Enti
 }
 
 inline state::Entity NearestNodeWith(const state::Scene &r, state::Entity collider, state::Entity body, auto &&has) {
-    for (auto e = collider; e != null_entity && r.valid(e) && e != body; e = ParentOrNull(r, e)) {
+    for (auto e = collider; e != state::Null && r.valid(e) && e != body; e = ParentOrNull(r, e)) {
         if (has(e)) return e;
     }
     return body;

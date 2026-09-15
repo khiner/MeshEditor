@@ -13,6 +13,6 @@ void RegisterPhysics(Tables &tables) {
     Persistent<
         PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
         ColliderShape, ColliderMaterial, ColliderPolicy, PhysicsVelocity, TriggerTag, TriggerNodes, PhysicsJoint>(tables);
-    Derived<PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, PhysicsCacheInvalid>(tables);
+    Derived<PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache>(tables);
 }
 } // namespace snapshot::detail

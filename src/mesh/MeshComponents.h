@@ -7,10 +7,11 @@
 struct RenderInstance {
     state::Entity Entity;
     uint32_t BufferIndex{0};
-    uint32_t ObjectId{0};
     uint32_t MeshletRangeCount{0};
     uint32_t MeshletCount{0};
 };
+// GPU object IDs are the entity slot plus one. Zero remains the background.
+constexpr uint32_t ObjectId(state::Entity e) { return state::Index(e) + 1; }
 
 struct ModelsBuffer {
     Range InstanceRange{};

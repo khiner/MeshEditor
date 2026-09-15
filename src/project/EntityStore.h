@@ -33,7 +33,6 @@ struct EntityStore {
     void ForEachIdentityChange(auto &&fn) const;
 
     state::Scene &R;
-    const snapshot::SnapshotEntries &Components;
     store::VersionedVector<uint32_t> &Table;
     size_t PreviousLength{};
     std::array<std::unique_ptr<Pool>, state::SchemaSize> Pools;

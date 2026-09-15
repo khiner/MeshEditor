@@ -12,6 +12,5 @@ void RegisterAssets(Tables &tables) {
         SourceCollisionFilterIndex, SourcePhysicsJointDefIndex, SourceSceneIndex, SourceMeshKind, GltfObject, CameraName,
         LightName, SourceObjectName, MeshName, SourceMatrixTransform, SourceEmptyName, MeshSourceLayout,
         gltf::SourceAssets>(tables);
-    Derived<PendingTextureUploads>(tables);
 }
 } // namespace snapshot::detail

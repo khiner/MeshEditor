@@ -270,11 +270,6 @@ struct MeshStore {
     // Requires a full scene clear without live StoreId references so allocation restarts deterministically.
     void Clear();
 
-    // Serialize the source mesh arenas and the StoreId->Range entry table to a self-contained blob, and restore from one.
-    // Restore writes the bytes back into the existing GPU buffers and re-establishes the entries, keeping every Range/StoreId offset valid.
-    // The derived arenas (adjacency CSRs, corner classes, seam normals) rebuild via RebuildDerived after restore.
-    std::vector<std::byte> Serialize() const;
-    void Deserialize(std::span<const std::byte>);
     // Rebuilds derived data in store-ID order and sorts the input span in place.
     void RebuildDerived(std::span<Mesh>);
 

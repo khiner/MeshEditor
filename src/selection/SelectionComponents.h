@@ -29,8 +29,6 @@ struct ExciteSelectionBaseline {
     Element Mode{Element::None};
 };
 
-struct EditSelectionDirty {};
-
 // Preserve the rendered camera so replay resolves pixels with the same rasterization and culling inputs.
 struct PendingEditElementClick {
     uvec2 MousePx;

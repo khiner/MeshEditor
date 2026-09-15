@@ -1288,7 +1288,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (!cs) return;
         const bool is_trigger = r.all_of<TriggerTag>(owner);
         fastgltf::Optional<size_t> collider_mesh_idx;
-        if (cs->MeshEntity != null_entity) {
+        if (cs->MeshEntity != state::Null) {
             if (const auto mit = mesh_entity_to_index.find(cs->MeshEntity); mit != mesh_entity_to_index.end()) collider_mesh_idx = mit->second;
         }
         if (!is_trigger) {
@@ -1338,7 +1338,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto bit = bone_rest.find(e);
         const mat4 local = ToMatrix(bit != bone_rest.end() ? bit->second : r.get<const Transform>(e));
         const auto *node = r.try_get<const SceneNode>(e);
-        const mat4 world = node && node->Parent != state::Null ? self(node->Parent) * r.get<const ParentInverse>(e).M * local : local;
+        const mat4 world = node && node->Parent != state::Null ? self(node->Parent) * local : local;
         rest_world.emplace(e, world);
         return world;
     };
@@ -1472,7 +1472,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const bool has_offset_child = entity_to_offset_child.contains(entity);
         const bool cs_on_owner = cs && !has_offset_child;
         fastgltf::Optional<size_t> collider_mesh_idx;
-        if (cs_on_owner && cs->MeshEntity != null_entity) {
+        if (cs_on_owner && cs->MeshEntity != state::Null) {
             if (const auto mit = mesh_entity_to_index.find(cs->MeshEntity); mit != mesh_entity_to_index.end()) collider_mesh_idx = mit->second;
         }
 

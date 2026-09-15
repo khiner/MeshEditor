@@ -42,7 +42,7 @@ void RegisterViewport(Tables &tables) {
         ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState>(tables);
     tables.Snapshots[state::Type<ViewCamera>()].History = false;
     Derived<
-        EnabledInteractionModes, AdditiveBoxSelectBaseline, ExciteSelectionBaseline, EditSelectionDirty,
+        EnabledInteractionModes, AdditiveBoxSelectBaseline, ExciteSelectionBaseline,
         PendingEditElementClick, PendingBoxSelect, PendingPick, BoxSelectState, RotationUiVariant, RotationUiDriving,
         GizmoInteraction, PendingTransform, StartScreenTransform, StartTransform, StartBoneLength, action::DragFieldStart, VideoRecording>(tables);
 }

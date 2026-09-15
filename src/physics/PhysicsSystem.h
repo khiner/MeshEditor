@@ -24,8 +24,10 @@ bool DoesFilterAllow(const state::Scene &, state::Entity source, state::Entity t
 void ApplySimulationSettings(state::Scene &, const PhysicsSimulationSettings &);
 std::optional<uint32_t> BakedThrough(const state::Scene &);
 
+// Restart the simulation from authored initial conditions on the next playback advance.
+void InvalidateCache(state::Scene &);
 // Advances playback and returns whether a body pose changed.
-bool AdvancePlayback(state::Scene &, state::Entity viewport, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps, bool cache_invalid);
+bool AdvancePlayback(state::Scene &, state::Entity viewport, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps);
 
 // Extends the contiguous cache frontier through `through_frame`, capped at the cache end.
 void BakeThrough(state::Scene &, state::Entity viewport, int through_frame, float fps);

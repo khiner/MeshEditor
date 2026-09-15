@@ -25,9 +25,6 @@ private:
     std::unique_ptr<project::VectorHistory<std::string>> Tracked;
 };
 
-struct MaterialDirty {
-    uint32_t Index{0};
-};
 struct MeshMaterialAssignment {
     uint32_t PrimitiveIndex, MaterialIndex;
 };

@@ -8,9 +8,8 @@ struct WorldTransform : Transform {
 };
 // World-space transform, composed from the local Transform and parent chain.
 
-// Evaluated local pose of an animated node (its Transform stays the authored local).
-// When present, the world transform composes from this instead of Transform. Derived.
-struct PosedLocal : Transform {
-    using Transform::Transform;
-    PosedLocal(const Transform &t) : Transform{t} {}
+// Evaluated local pose of an animated node or a bone. Derived.
+// When present, the world transform composes from this instead of Transform. Bones carry only a pose.
+struct PosedLocal {
+    Transform Value;
 };

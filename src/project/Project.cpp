@@ -23,6 +23,7 @@
 #include "project/BufferHistory.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
+#include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/MaterialImport.h"
@@ -103,7 +104,7 @@ void Project::TrackStores(state::Entity viewport) {
     meshes.Track(History);
     R.ctx().get<GpuBuffers>().Materials.Track(History, "material.values");
     R.ctx().get<MaterialStore>().Track(History);
-    History.SchemaRevision = 7;
+    History.SchemaRevision = 8;
     History.Callbacks = {
         .Replay = [this](const std::vector<std::byte> &bytes) {
             std::vector<Command> commands;
@@ -405,7 +406,7 @@ int Project::Commit(std::string label) {
     zpp::bits::out{bytes}(Commands).or_throw();
     const auto before = History.Present;
     const auto node = History.Commit(std::move(label), std::move(bytes));
-    const bool baseline = !R.storage<StartTransform>().empty() || R.all_of<AdditiveBoxSelectBaseline>(Viewport);
+    const bool baseline = !R.view<const StartTransform>().empty() || R.all_of<AdditiveBoxSelectBaseline>(Viewport);
     if (node != before || !baseline) Commands.clear();
     History.Evict(MemoryCap);
     return node;
@@ -538,7 +539,7 @@ void Project::AfterRestore() {
             const auto *instance = R.try_get<const Instance>(entity);
             const bool visible = instance && !R.all_of<Hidden>(entity);
             if (const auto *render = R.try_get<const RenderInstance>(entity); render && (!visible || render->Entity != instance->Entity)) R.remove<RenderInstance>(entity);
-            if (visible && !R.all_of<RenderInstance>(entity)) R.emplace<RenderInstance>(entity, instance->Entity, UINT32_MAX, 0u);
+            if (visible && !R.all_of<RenderInstance>(entity)) R.emplace<RenderInstance>(entity, instance->Entity, UINT32_MAX);
         }
         if (type == state::Type<Armature>() || type == state::Type<ArmaturePose>()) R.remove<ArmaturePoseState>(entity);
         if (type == state::Type<MorphWeightState>()) R.remove<MorphWeightGpuRange>(entity);
@@ -571,8 +572,8 @@ void Project::AfterRestore() {
         } else if (it->Bits & (MeshStore::GeometryChanged | MeshStore::DeformChanged)) {
             geometry.push_back(entity);
         }
-        if (it->Bits & MeshStore::ShadingChanged) R.emplace_or_replace<MeshShadingDirty>(entity);
-        if (it->Bits & MeshStore::SelectionChanged) R.emplace_or_replace<EditSelectionDirty>(Viewport);
+        if (it->Bits & MeshStore::ShadingChanged) reactive<changes::MeshShading>(R).emplace(entity);
+        if (it->Bits & MeshStore::SelectionChanged) R.ctx().get<GpuSceneState>().EditSelectionDirty = true;
         if (!sparse && (it->Bits & ~MeshStore::SelectionChanged)) R.emplace_or_replace<MeshGeometryDirty>(entity, false);
     }
     meshes.RebuildDerived(topology);
@@ -580,7 +581,7 @@ void Project::AfterRestore() {
     RefreshEditedPositions(R, Viewport, positions);
     for (const auto &[entity, ranges] : positions) R.emplace_or_replace<MeshPositionsChanged>(entity);
     auto &materials = R.ctx().get<GpuBuffers>().Materials;
-    if (!materials.History()->Trie.TakeChanged().empty()) R.emplace_or_replace<MaterialDirty>(Viewport);
+    if (!materials.History()->Trie.TakeChanged().empty()) reactive<changes::Materials>(R).emplace(Viewport);
     Settle(EventPass::Restore);
 }
 } // namespace project

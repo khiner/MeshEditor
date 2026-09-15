@@ -1637,7 +1637,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     const auto texture_start = texture_store.Textures.size();
     const auto material_start = ctx.Buffers.Materials.Count();
     const auto material_name_start = r.ctx().get<const MaterialStore>().Names.size();
-    const auto pending_texture_start = r.all_of<PendingTextureUploads>(viewport) ? r.get<const PendingTextureUploads>(viewport).Items.size() : size_t{0};
+    const auto pending_texture_start = texture_store.PendingUploads.size();
     bool replaced_pending_env = false;
     std::optional<PendingEnvironmentImport> prev_pending_env_backup;
     const auto rollback_import_side_effects = [&] {
@@ -1645,20 +1645,16 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             ReleaseSamplerSlots(ctx.Slots, CollectSamplerSlots(std::span<const TextureEntry>{texture_store.Textures}.subspan(texture_start)));
             texture_store.Textures.resize(texture_start);
         }
-        if (auto *pending = r.try_edit<PendingTextureUploads>(viewport); pending && pending->Items.size() > pending_texture_start) {
-            for (size_t i = pending_texture_start; i < pending->Items.size(); ++i) {
-                ReleaseSamplerSlots(ctx.Slots, std::span{&pending->Items[i].SamplerSlot, 1});
-            }
-            pending->Items.resize(pending_texture_start);
-            if (pending->Items.empty()) r.remove<PendingTextureUploads>(viewport);
+        if (auto &pending = texture_store.PendingUploads; pending.size() > pending_texture_start) {
+            for (size_t i = pending_texture_start; i < pending.size(); ++i) ReleaseSamplerSlots(ctx.Slots, std::span{&pending[i].SamplerSlot, 1});
+            pending.resize(pending_texture_start);
         }
         if (replaced_pending_env) {
-            if (auto *cur = r.try_get<PendingEnvironmentImport>(viewport)) {
+            if (const auto &cur = ctx.Environments.PendingImport) {
                 ReleaseCubeSamplerSlot(ctx.Slots, cur->DiffuseCubeSlot);
                 ReleaseCubeSamplerSlot(ctx.Slots, cur->SpecularCubeSlot);
             }
-            if (prev_pending_env_backup) r.emplace_or_replace<PendingEnvironmentImport>(viewport, std::move(*prev_pending_env_backup));
-            else r.remove<PendingEnvironmentImport>(viewport);
+            ctx.Environments.PendingImport = std::move(prev_pending_env_backup);
         }
         if (ctx.Buffers.Materials.Count() > material_start) ctx.Buffers.Materials.SetCount(material_start);
         if (auto &store = r.ctx().get<MaterialStore>(); store.Names.size() > material_name_start) store.ResizeNames(material_name_start);
@@ -1820,8 +1816,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         });
     }
     if (!new_pending_textures.empty()) {
-        auto &pending = r.get_or_emplace<PendingTextureUploads>(viewport);
-        pending.Items.insert(pending.Items.end(), std::make_move_iterator(new_pending_textures.begin()), std::make_move_iterator(new_pending_textures.end()));
+        auto &pending = texture_store.PendingUploads;
+        pending.insert(pending.end(), std::make_move_iterator(new_pending_textures.begin()), std::make_move_iterator(new_pending_textures.end()));
     }
 
     struct MorphSummary {
@@ -2094,10 +2090,10 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
 
         auto resolve_mat = [&](std::optional<uint32_t> idx) {
-            return idx && *idx < physics_material_entities.size() ? physics_material_entities[*idx] : null_entity;
+            return idx && *idx < physics_material_entities.size() ? physics_material_entities[*idx] : state::Null;
         };
         auto resolve_filter = [&](std::optional<uint32_t> idx) {
-            return idx && *idx < filter_entities.size() ? filter_entities[*idx] : null_entity;
+            return idx && *idx < filter_entities.size() ? filter_entities[*idx] : state::Null;
         };
 
         for (uint32_t node_index = 0; node_index < source_node_physics.size(); ++node_index) {
@@ -2108,12 +2104,12 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
 
             if (node.Collider) {
                 const auto collider_mesh_entity = [&]() -> state::Entity {
-                    if (!IsMeshBackedShape(node.Collider->Shape)) return null_entity;
+                    if (!IsMeshBackedShape(node.Collider->Shape)) return state::Null;
                     if (node.ColliderGeometryMeshIndex && *node.ColliderGeometryMeshIndex < mesh_entities.size()) {
                         return mesh_entities[*node.ColliderGeometryMeshIndex];
                     }
                     if (r.all_of<Instance>(entity)) return r.get<const Instance>(entity).Entity;
-                    return null_entity;
+                    return state::Null;
                 }();
                 r.emplace<ColliderShape>(entity, ColliderShape{.Shape = node.Collider->Shape, .MeshEntity = collider_mesh_entity});
                 // Imported collider state is authoritative — engine must not auto-derive over it.
@@ -2135,7 +2131,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                     // Represents GeometryTrigger with ColliderShape and TriggerTag.
                     // Skip entities already used by a solid collider because KHR makes the two forms exclusive.
                     if (!r.all_of<ColliderShape>(entity)) {
-                        const auto trigger_mesh_entity = (td.GeometryMeshIndex && *td.GeometryMeshIndex < mesh_entities.size()) ? mesh_entities[*td.GeometryMeshIndex] : null_entity;
+                        const auto trigger_mesh_entity = (td.GeometryMeshIndex && *td.GeometryMeshIndex < mesh_entities.size()) ? mesh_entities[*td.GeometryMeshIndex] : state::Null;
                         r.emplace<ColliderShape>(entity, ColliderShape{.Shape = *td.Shape, .MeshEntity = trigger_mesh_entity});
                         r.emplace<ColliderPolicy>(entity, ColliderPolicy{.AutoFitDims = false, .LockedKind = true});
                         r.emplace<TriggerTag>(entity);
@@ -2155,7 +2151,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             if (node.Joint) {
                 const auto &jd = *node.Joint;
                 auto nit = object_entities_by_node.find(jd.ConnectedNodeIndex);
-                const auto def_entity = jd.JointDefIndex < physics_jointdef_entities.size() ? physics_jointdef_entities[jd.JointDefIndex] : null_entity;
+                const auto def_entity = jd.JointDefIndex < physics_jointdef_entities.size() ? physics_jointdef_entities[jd.JointDefIndex] : state::Null;
                 r.emplace<PhysicsJoint>(entity, PhysicsJoint{.ConnectedNode = nit != object_entities_by_node.end() ? nit->second : state::Null, .JointDefEntity = def_entity, .EnableCollision = jd.EnableCollision});
             }
         }
@@ -2753,13 +2749,13 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
 
     if (source_ibl) {
-        if (auto *prev = r.try_get<PendingEnvironmentImport>(viewport)) prev_pending_env_backup = *prev;
+        prev_pending_env_backup = ctx.Environments.PendingImport;
         const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(ctx.Slots);
-        r.emplace_or_replace<PendingEnvironmentImport>(viewport, *source_ibl, diffuse_slot, specular_slot);
-        r.remove<PendingSceneWorldClear>(viewport);
+        ctx.Environments.PendingImport = PendingEnvironmentImport{*source_ibl, diffuse_slot, specular_slot};
+        ctx.Environments.ClearRequested = false;
         replaced_pending_env = true;
     } else {
-        r.emplace_or_replace<PendingSceneWorldClear>(viewport);
+        ctx.Environments.ClearRequested = true;
     }
     // Import-time UX default: show an imported world, hide the (empty) default world.
     // Kept out of the reactive world passes so a snapshot restore reproduces the saved WorldOpacity rather than re-forcing this.

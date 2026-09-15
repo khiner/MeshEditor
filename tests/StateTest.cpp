@@ -67,7 +67,7 @@ int main() {
         }
         expect(removed == model.size() && r.view<const Name>().empty());
     };
-    "generation exhaustion retires a slot and requested IDs preserve allocation"_test = [] {
+    "generation exhaustion retires a slot"_test = [] {
         state::Scene r;
         const auto first = r.create();
         auto current = first;
@@ -78,9 +78,7 @@ int main() {
             expect(!r.valid(first));
         }
         expect(state::Index(current) != state::Index(first));
-        const auto requested = state::MakeEntity(50, 8);
-        expect(r.create(requested) == requested);
-        std::set<state::Entity> allocated{current, requested};
+        std::set<state::Entity> allocated{current};
         for (unsigned i = 0; i < 70; ++i) expect(allocated.insert(r.create()).second);
     };
     "capture precedes mutation and dirty lifetime respects generation and reset"_test = [] {

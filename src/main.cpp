@@ -51,7 +51,6 @@
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
 #include "selection/SelectionComponents.h"
-#include "snapshot/SceneSnapshot.h"
 #include "ui/MacBackend.h"
 #include "viewport/FrameState.h"
 #include "viewport/RenderExtent.h"
@@ -85,8 +84,6 @@
 
 #include <fcntl.h>
 #include <unistd.h>
-
-static_assert(null_entity == state::Null, "null_entity does not match state::Null");
 
 using std::ranges::any_of, std::ranges::all_of;
 
@@ -744,7 +741,7 @@ ImDrawData *RenderValidationApp(
 }
 
 struct ValidationResult {
-    std::vector<std::byte> State, SceneState, Workspace;
+    std::vector<std::byte> State, Workspace;
     RestoreTimings Timings;
 };
 
@@ -790,7 +787,6 @@ ValidationResult RestoreForValidation(
     timings.RenderMs += ElapsedMs(begin);
     begin = SteadyClock::now();
     result.State = engine.Project->History.MaterializeLive();
-    result.SceneState = snapshot::SnapshotSceneState(restored);
     result.Workspace = workspace::Serialize(CaptureWorkspace(restored, viewport));
     timings.CaptureMs = ElapsedMs(begin);
     engine.Ui->ActivateLive();
@@ -798,10 +794,10 @@ ValidationResult RestoreForValidation(
 }
 
 void RequireEqual(std::string_view what, std::span<const std::byte> expected, std::span<const std::byte> actual) {
-    if (const auto diff = snapshot::Compare(expected, actual); !diff.Equal) {
+    if (!std::ranges::equal(expected, actual)) {
         std::println(
             stderr, "[validation] {} DIVERGED at byte {} (expected {} / actual {})",
-            what, diff.FirstDifferingByte, expected.size(), actual.size()
+            what, std::ranges::mismatch(expected, actual).in1 - expected.begin(), expected.size(), actual.size()
         );
         WriteValidationProject(Paths::Project());
         std::abort();
@@ -882,7 +878,6 @@ void ValidateRoundTrip(
     }
 
     const auto live_state = Session(r).History.MaterializeLive();
-    const auto live_scene_state = snapshot::SnapshotSceneState(r);
     const ValidationInputs inputs{
         .WorkingDir = Paths::Project(),
         .Workspace = CaptureWorkspace(r, viewport),
@@ -908,7 +903,6 @@ void ValidateRoundTrip(
     const auto restored = RestoreForValidation(session->Stored, inputs, false);
     begin = SteadyClock::now();
 
-    RequireEqual("replay scene", live_scene_state, replay.SceneState);
     RequireEqual("replay state", live_state, replay.State);
     RequireEqual("stored state", live_state, restored.State);
     RequireEqual("replay/stored workspace", replay.Workspace, restored.Workspace);

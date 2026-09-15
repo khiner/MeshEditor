@@ -3,7 +3,9 @@
 
 #include <Metal/MTLCommandQueue.hpp>
 
+#include "Changes.h"
 #include "Profile.h"
+#include "Reactive.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gpu/EditSelectionPushConstants.h"
@@ -19,6 +21,7 @@
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "render/Encoding.h"
+#include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/PickConstants.h"
 #include "render/Pipelines.h"
@@ -226,7 +229,7 @@ std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(
         RecordSelectionDerive(r, chain, transactions);
     }
     SubmitAndWait(ctx, command_buffer);
-    r.emplace_or_replace<EditSelectionDirty>(viewport);
+    r.ctx().get<GpuSceneState>().EditSelectionDirty = true;
     if (const auto index = ReadNearestPickedElement(buffers, element_count)) {
         for (const auto &range : ranges) {
             if (*index < range.Offset || *index >= range.Offset + range.Count) continue;
@@ -369,7 +372,7 @@ void RunBoxSelectElements(state::Scene &r, state::Entity viewport, std::span<con
     }
     SubmitAndWait(ctx, command_buffer);
     if (baseline) baseline->ElementSelectionCaptured = true;
-    r.emplace_or_replace<EditSelectionDirty>(viewport);
+    r.ctx().get<GpuSceneState>().EditSelectionDirty = true;
 }
 
 std::optional<uint32_t> RunSoundVerticesVertexPick(state::Scene &r, state::Entity instance_entity, uvec2 mouse_px) {
@@ -635,7 +638,7 @@ void ApplySelectionTransactions(state::Scene &r, state::Entity viewport, std::sp
         RecordSelectionDerive(r, chain, transactions);
     }
     SubmitAndWait(ctx, command_buffer);
-    r.emplace_or_replace<EditSelectionDirty>(viewport);
+    r.ctx().get<GpuSceneState>().EditSelectionDirty = true;
 }
 } // namespace
 
@@ -745,7 +748,7 @@ void ApplyEditSharpness(
         RecordSelectionDerive(r, chain, selection_transactions);
     }
     SubmitAndWait(ctx, command_buffer);
-    for (const auto mesh_entity : edited) r.emplace_or_replace<MeshShadingDirty>(mesh_entity);
+    for (const auto mesh_entity : edited) reactive<changes::MeshShading>(r).emplace(mesh_entity);
 }
 
 const EditSelectionSummary *GetElementSelectionSummary(const state::Scene &r, state::Entity mesh_entity, Element element) {

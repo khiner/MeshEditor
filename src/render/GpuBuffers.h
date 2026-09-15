@@ -192,6 +192,8 @@ struct GpuBuffers {
 
     // Per-scene resource tables, reset through their own paths rather than ResetSceneArenas.
     TypedBuffer<PunctualLight> Lights;
+    // Light buffer indices freed by destroyed lights, compacted by the next event pass.
+    std::vector<uint32_t> PendingLightRemovals;
     TypedBuffer<PBRMaterial> Materials;
 
     RenderView FrameView{};

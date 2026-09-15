@@ -69,7 +69,7 @@ struct ApplyTreeSelection {
                                      All };
     std::vector<state::Entity> Entities;
     uint32_t SelectCount{};
-    state::Entity NavToActive{null_entity};
+    state::Entity NavToActive{state::Null};
     ClearKind Clear{ClearKind::None};
 
     auto ToSelect() const { return std::span{Entities}.first(SelectCount); }

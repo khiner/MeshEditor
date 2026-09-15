@@ -43,36 +43,18 @@ Entity Scene::EntityAt(uint32_t index) const {
     const auto value = AllocationStorage->Generations[index];
     return value & Alive ? MakeEntity(index, value & ~Alive) : Null;
 }
-Entity Scene::create(Entity requested) {
+Entity Scene::create() {
     if (DocumentReadOnly) throw std::logic_error("Entity creation during derived restoration");
     uint32_t i;
-    if (requested != Null) {
-        i = Index(requested);
-        if (i == Index(Null) || Generation(requested) >= 0xfffu) throw std::logic_error("Reserved entity identity");
-        if (EntityAt(i) != Null) throw std::logic_error("Creating an occupied entity slot");
-        while (AllocationStorage->Generations.size() <= i) {
-            const auto slot = uint32_t(AllocationStorage->Generations.size());
-            AllocationStorage->Generations.PushBack(0);
-            if (slot != i) AllocationStorage->Free.PushBack(slot);
-        }
-        for (size_t n = 0; n < AllocationStorage->Free.size(); ++n) {
-            if (AllocationStorage->Free[n] != i) continue;
-            for (size_t j = n + 1; j < AllocationStorage->Free.size(); ++j) AllocationStorage->Free.Set(j - 1, AllocationStorage->Free[j]);
-            AllocationStorage->Free.PopBack();
-            break;
-        }
-        AllocationStorage->Generations.Set(i, Alive | Generation(requested));
+    if (AllocationStorage->Free.empty()) {
+        i = uint32_t(AllocationStorage->Generations.size());
+        if (i >= Index(Null)) throw std::length_error("Entity indices exhausted");
+        AllocationStorage->Generations.PushBack(0);
     } else {
-        if (AllocationStorage->Free.empty()) {
-            i = uint32_t(AllocationStorage->Generations.size());
-            if (i >= Index(Null)) throw std::length_error("Entity indices exhausted");
-            AllocationStorage->Generations.PushBack(0);
-        } else {
-            i = AllocationStorage->Free.Back();
-            AllocationStorage->Free.PopBack();
-        }
-        AllocationStorage->Generations.Set(i, AllocationStorage->Generations[i] | Alive);
+        i = AllocationStorage->Free.Back();
+        AllocationStorage->Free.PopBack();
     }
+    AllocationStorage->Generations.Set(i, AllocationStorage->Generations[i] | Alive);
     const auto e = MakeEntity(i, AllocationStorage->Generations[i] & ~Alive);
     Living.emplace(e);
     return e;

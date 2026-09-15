@@ -31,8 +31,8 @@ struct DragFieldStart {
 template<typename T>
 struct Update {
     Scope Scope{Scope::Entity};
-    state::Entity Entity{null_entity}; // Scope::Entity only. Null targets the viewport
-    state::TypeId ComponentType;
+    state::Entity Entity{state::Null}; // Scope::Entity only. Null targets the viewport
+    state::TypeKey ComponentType;
     uint16_t Offset;
     T Value;
 };
@@ -40,7 +40,7 @@ struct Update {
 template<typename T>
 struct Replace {
     Scope Scope{Scope::Entity};
-    state::Entity Entity{null_entity}; // Scope::Entity only
+    state::Entity Entity{state::Null}; // Scope::Entity only
     T Value;
 };
 
@@ -58,21 +58,21 @@ struct DestroyEntity {
 
 struct SetTag {
     Scope Scope{Scope::Entity};
-    state::Entity Entity{null_entity}; // Scope::Entity only
-    state::TypeId TagType;
+    state::Entity Entity{state::Null}; // Scope::Entity only
+    state::TypeKey TagType;
     bool Present;
 };
 
 // Set the `Name` field of the component identified by `ComponentType`.
 struct SetName {
     state::Entity Entity;
-    state::TypeId ComponentType;
+    state::TypeKey ComponentType;
     std::string Name;
 };
 
 // Creates an entity with ComponentType and the name "<Prefix> <ordinal>".
 struct CreateNamed {
-    state::TypeId ComponentType;
+    state::TypeKey ComponentType;
     std::string Prefix;
 };
 

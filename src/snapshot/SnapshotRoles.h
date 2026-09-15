@@ -22,10 +22,8 @@ struct SnapshotEntry {
     uint32_t Size;
     void (*Serialize)(const void *component, std::vector<std::byte> &out);
     void (*Emplace)(state::Scene &, state::Entity, std::span<const std::byte>);
-    bool (*SkipEntity)(const state::Scene &, state::Entity);
     std::string_view Name{};
-    bool History{true}; // Workspace-only values still participate in full snapshots.
-    state::TypeId CaptureWith{state::SchemaSize}; // Membership can change another component's persistence role.
+    bool History{true}; // Workspace-only values stay out of history.
     store::Blob (*Copy)(const void *){};
     void (*Move)(state::Scene &, state::Entity, store::Blob){};
 };

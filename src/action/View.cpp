@@ -58,7 +58,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             std::memcpy(&q, s->Bytes.data(), sizeof(quat));
             return q;
         }
-        const quat cur = r.get<const Transform>(e).R;
+        const quat cur = EditedLocal(r, e)->R;
         DragFieldStart s{comp, r_off, sizeof(quat), {}};
         std::memcpy(s.Bytes.data(), &cur, sizeof(quat));
         r.emplace_or_replace<DragFieldStart>(e, s);
@@ -113,7 +113,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](const SetRotationUiMode &a) {
                 for (const auto e : rotation_targets(a.Scope)) {
                     r.replace<RotationUiVariant>(e, CreateVariantByIndex<RotationUiVariant>(a.Index));
-                    r.patch<Transform>(e, [](auto &) {});
+                    PatchEditedLocal(r, e, [](auto &) {});
                 }
             },
             [&](const SetTransformRotationFromUi &a) {
@@ -124,7 +124,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     const quat delta = a.R * numeric::Conjugate(rotation_start(active));
                     for (const auto e : rotation_targets(Scope::SelectedDelta)) {
                         const quat rotation = numeric::Normalize(delta * rotation_start(e));
-                        r.patch<Transform>(e, [&](auto &t) { t.R = rotation; });
+                        PatchEditedLocal(r, e, [&](auto &t) { t.R = rotation; });
                         if (e == active) { // keep the editor's representation stable; others re-sync from R
                             r.replace<RotationUiVariant>(e, a.UiVariant);
                             r.emplace_or_replace<RotationUiDriving>(e);
@@ -134,7 +134,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     for (const auto e : rotation_targets(a.Scope)) {
                         r.replace<RotationUiVariant>(e, a.UiVariant);
                         r.emplace_or_replace<RotationUiDriving>(e);
-                        r.patch<Transform>(e, [&](auto &t) { t.R = a.R; });
+                        PatchEditedLocal(r, e, [&](auto &t) { t.R = a.R; });
                     }
                 }
             },
@@ -151,7 +151,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     Transform local;
                     local.P = numeric::Conjugate(pd.R) * ((world.P - pd.P) / pd.S);
                     local.R = numeric::Conjugate(pd.R) * world.R;
-                    local.S = r.all_of<ScaleLocked>(e) ? r.get<const Transform>(e).S : world.S / pd.S;
+                    local.S = r.all_of<ScaleLocked>(e) ? EditedLocal(r, e)->S : world.S / pd.S;
                     locals.emplace_back(e, local);
                 };
                 // On the first drag frame StartTransform isn't snapshotted yet, so current WorldTransform is the start.
@@ -213,7 +213,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 for (const auto &[e, _] : bone_scales)
                     if (!r.all_of<StartBoneLength>(e))
                         if (const auto *ds = r.try_get<BoneDisplayScale>(e)) r.emplace<StartBoneLength>(e, ds->Value);
-                for (const auto &[e, local] : locals) r.patch<Transform>(e, [&](auto &t) { t = local; });
+                for (const auto &[e, local] : locals) PatchEditedLocal(r, e, [&](auto &t) { t = local; });
                 for (const auto &[e, length] : bone_scales) r.emplace_or_replace<BoneDisplayScale>(e, length);
             },
             [&](const DragGizmoMeshEdit &a) {
@@ -248,7 +248,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 r.remove<PendingTransform>(viewport);
                 for (const auto [e, st] : r.view<const StartTransform>().each()) {
                     const auto &pd = st.ParentDelta;
-                    r.patch<Transform>(e, [&](auto &t) {
+                    PatchEditedLocal(r, e, [&](auto &t) {
                         t.P = numeric::Conjugate(pd.R) * ((st.T.P - pd.P) / pd.S);
                         t.R = numeric::Conjugate(pd.R) * st.T.R;
                         if (!r.all_of<ScaleLocked>(e)) t.S = st.T.S / pd.S;

@@ -986,7 +986,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 InstanceRecord record{
                     .PrimitiveOffset = mesh_buffers->Primitives.Offset,
                     .PrimitiveCount = mesh_buffers->Primitives.Count,
-                    .ObjectId = ri.ObjectId,
+                    .ObjectId = ObjectId(instance_entity),
                 };
                 const auto &deform = get_deform_slots(instance.Entity);
                 record.BoneDeformOffset = deform.BoneDeformOffset;
@@ -1072,7 +1072,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         for (const auto [instance_entity, ri] : r.view<const RenderInstance>().each()) {
             if (ri.BufferIndex == UINT32_MAX || ri.BufferIndex >= instance_records.size()) continue;
             auto &record = instance_records[ri.BufferIndex];
-            record.ObjectId = ri.ObjectId;
+            record.ObjectId = ObjectId(instance_entity);
             const bool selected = r.all_of<Selected>(instance_entity) && is_silhouette_eligible(instance_entity);
             const bool silhouette = selected && (!is_edit_mode || silhouette_instances.contains(instance_entity));
             record.Flags = silhouette ? uint32_t(MeshletInstanceFlag::Silhouette) : 0u;
@@ -1449,11 +1449,9 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             const bool armature_mode = FindArmatureObject(r, active_entity) != state::Null;
             uint32_t active_object_id = 0;
             if (armature_mode && active_bone != state::Null) {
-                if (r.all_of<RenderInstance>(active_bone)) {
-                    active_object_id = r.get<RenderInstance>(active_bone).ObjectId;
-                }
+                if (r.all_of<RenderInstance>(active_bone)) active_object_id = ObjectId(active_bone);
             } else if (!is_edit_mode && active_entity != state::Null && r.all_of<RenderInstance>(active_entity)) {
-                active_object_id = r.get<RenderInstance>(active_entity).ObjectId;
+                active_object_id = ObjectId(active_entity);
             }
             encode::SetPushConstants(encoder, SilhouetteEdgeColorPushConstants{
                                                   TransformGizmo::IsUsing(r, viewport) && interaction_mode == InteractionMode::Object,
@@ -2018,7 +2016,7 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Ent
     const auto mesh = GetMesh(r, entity);
     const auto id = w.StoreId;
     if (!changed.empty()) SeedElementWorkRanges(buffers.GeometryWork, w.Candidates, changed, w.PreviewActive);
-    else if (!w.CandidateReady || (!pose && r.all_of<EditSelectionDirty>(viewport)))
+    else if (!w.CandidateReady || (!pose && r.ctx().get<const GpuSceneState>().EditSelectionDirty))
         SeedElementWork(buffers.GeometryWork, w.Candidates, meshes.GetSelectionBits(id, Element::Vertex), w.PreviewActive);
     else if (!w.PreviewActive)
         IntersectElementWork(buffers.GeometryWork, w.Candidates, meshes.GetSelectionBits(id, Element::Vertex));

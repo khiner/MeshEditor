@@ -16,7 +16,7 @@ Update<detail::last_field<Ms...>> UpdateOf(Scope scope, detail::last_field<Ms...
     static_assert(std::is_trivially_copyable_v<F>, "Update<T> is for trivially-copyable fields only; use Replace<T> for complex types");
     RegisterUpdateable<C>();
     if constexpr (HasLimits<Ms...>) RegisterLimits<Ms...>();
-    return {scope, null_entity, state::Type<C>(), detail::FieldOffset<Ms...>(), std::move(v)};
+    return {scope, state::Null, state::Key<C>(), detail::FieldOffset<Ms...>(), std::move(v)};
 }
 
 template<auto... Ms>
@@ -43,35 +43,35 @@ template<typename C, typename F>
 Update<F> UpdateOf(state::Entity e, F C::*m, F v) {
     static_assert(std::is_trivially_copyable_v<F>);
     RegisterUpdateable<C>();
-    return {Scope::Entity, e, state::Type<C>(), uint16_t(detail::MemPtrOffset(m)), std::move(v)};
+    return {Scope::Entity, e, state::Key<C>(), uint16_t(detail::MemPtrOffset(m)), std::move(v)};
 }
 template<typename C, typename F>
 Update<F> UpdateOf(F C::*m, F v) {
     static_assert(std::is_trivially_copyable_v<F>);
     RegisterUpdateable<C>();
-    return {Scope::Active, null_entity, state::Type<C>(), uint16_t(detail::MemPtrOffset(m)), std::move(v)};
+    return {Scope::Active, state::Null, state::Key<C>(), uint16_t(detail::MemPtrOffset(m)), std::move(v)};
 }
 
 template<typename Tag>
 SetTag SetTagOf(state::Entity e, bool present) {
     RegisterTaggable<Tag>();
-    return {Scope::Entity, e, state::Type<Tag>(), present};
+    return {Scope::Entity, e, state::Key<Tag>(), present};
 }
 
 template<typename Tag>
 SetTag SetTagOf(bool present) {
     RegisterTaggable<Tag>();
-    return {Scope::Active, null_entity, state::Type<Tag>(), present};
+    return {Scope::Active, state::Null, state::Key<Tag>(), present};
 }
 
 template<typename T>
 SetName SetNameOf(state::Entity e, std::string name) {
     RegisterNamed<T>();
-    return {e, state::Type<T>(), std::move(name)};
+    return {e, state::Key<T>(), std::move(name)};
 }
 template<typename T>
 CreateNamed CreateNamedOf(std::string_view prefix) {
     RegisterNamed<T>();
-    return {state::Type<T>(), std::string{prefix}};
+    return {state::Key<T>(), std::string{prefix}};
 }
 } // namespace action

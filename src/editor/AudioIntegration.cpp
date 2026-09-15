@@ -882,7 +882,7 @@ static void UpdateAudioContacts(state::Scene &r, EventPass) {
 
 void InitAudioSystem(state::Scene &r) {
     // A second call would connect every tracker twice.
-    if (r.ctx().contains<ModalAudio>()) return;
+    if (r.ctx().find<ModalAudio>()) return;
     r.ctx().emplace<ModalAudio>();
     r.ctx().emplace<MonitorLimiter>();
     RegisterAudioComponentHandlers(r);

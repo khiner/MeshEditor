@@ -9,12 +9,10 @@ struct MeshGeometryDirty {
     bool ResetSelection{true};
 };
 struct MeshPositionsChanged {};
-struct MeshShadingDirty {};
 
 struct PendingSetEditMode {
     Element Mode;
 };
-struct PendingShaderRecompile {};
 
 struct PendingImportMesh {
     std::filesystem::path Path;

@@ -1,5 +1,7 @@
 #include "action/Object.h"
+#include "Changes.h"
 #include "Profile.h"
+#include "Reactive.h"
 #include "action/Dispatch.h"
 #include "action/ScopeResolve.h"
 #include "armature/Armature.h"
@@ -311,7 +313,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](const UpdateMaterial &a) {
                 if (a.Features) Apply(r, viewport, SetPbrMeshFeaturesMask{*a.Features, a.Scope});
                 r.ctx().get<GpuBuffers>().Materials.Set(a.Index, *a.Value);
-                r.emplace_or_replace<MaterialDirty>(viewport, a.Index);
+                reactive<changes::Materials>(r).emplace(viewport);
             },
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
             // Mesh-data components (material assignment / slot selection) live on the object's mesh entity.

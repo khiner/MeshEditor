@@ -22,10 +22,6 @@ inline constexpr void (*CustomEmplace)(state::Scene &, state::Entity, std::span<
 template<typename C> C CopyNative(const C &value) { return value; }
 template<typename C> void PrepareNative(C &) {}
 
-// Bone transforms are derived from RestLocal and ArmaturePose.
-template<typename C>
-inline constexpr bool (*SkipEntityFor)(const state::Scene &, state::Entity) = nullptr;
-
 // Aligned storage supports non-default-constructible implicit-lifetime types.
 template<typename C>
 void EmplaceTrivial(state::Scene &r, state::Entity e, std::span<const std::byte> bytes) {
@@ -99,9 +95,9 @@ constexpr Comparator MakeComparator() {
 template<typename C>
 snapshot::SnapshotEntry MakeEntry() {
     using snapshot::Encoding;
-    if constexpr (std::is_empty_v<C>) return {Encoding::Tag, 0, nullptr, &EmplaceTrivial<C>, SkipEntityFor<C>};
-    else if constexpr (NeedsFieldwise<C, true>) return {Encoding::Serialized, 0, &SerializeThunk<C>, &EmplaceSerialized<C>, SkipEntityFor<C>};
-    else return {Encoding::Bytes, sizeof(C), nullptr, &EmplaceTrivial<C>, SkipEntityFor<C>};
+    if constexpr (std::is_empty_v<C>) return {Encoding::Tag, 0, nullptr, &EmplaceTrivial<C>};
+    else if constexpr (NeedsFieldwise<C, true>) return {Encoding::Serialized, 0, &SerializeThunk<C>, &EmplaceSerialized<C>};
+    else return {Encoding::Bytes, sizeof(C), nullptr, &EmplaceTrivial<C>};
 }
 
 template<typename C, bool Persistent>

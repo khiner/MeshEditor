@@ -16,7 +16,7 @@ namespace {
 // RenderInstance is derived from Instance + !Hidden.
 // ObjectId is derived from the entity slot. BufferIndex UINT32_MAX means SyncModelsBuffers assigns it.
 void EnsureRenderInstance(state::Scene &r, state::Entity e) {
-    if (!r.all_of<RenderInstance>(e)) r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX, 0u);
+    if (!r.all_of<RenderInstance>(e)) r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX);
 }
 } // namespace
 
@@ -38,7 +38,7 @@ void ApplySelectBehavior(state::Scene &r, state::Entity e, MeshInstanceCreateInf
             r.emplace<Selected>(e);
             // Fallthrough
         case MeshInstanceCreateInfo::SelectBehavior::None:
-            if (r.storage<Active>().empty()) r.emplace<Active>(e);
+            if (r.view<const Active>().empty()) r.emplace<Active>(e);
             break;
     }
 }
@@ -93,8 +93,7 @@ state::Entity CreateBoneEntity(state::Scene &r, state::Entity arm_obj_entity, co
     r.emplace<Instance>(bone_entity, arm_obj_entity);
     EmplaceUniqueName(r, bone_entity, bone.Name);
     r.emplace<BoneDisplayScale>(bone_entity, ComputeBoneDisplayScale(armature, bone_index));
-    const Transform bone_transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
-    r.emplace<Transform>(bone_entity, bone_transform);
+    r.emplace<PosedLocal>(bone_entity, Transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}});
     SetParent(r, bone_entity, parent_entity);
     Show(r, bone_entity);
     return bone_entity;

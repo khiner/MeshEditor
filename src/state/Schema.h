@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <string_view>
 #include <type_traits>
@@ -41,7 +43,6 @@ inline constexpr std::string_view SchemaNames[] = {
     "BoneConstraints",
     "BoneDisplayScale",
     "BoneIndex",
-    "BoneInstanceStateDirty",
     "BoneJoint",
     "BoneJointEntities",
     "BoneSelection",
@@ -56,7 +57,6 @@ inline constexpr std::string_view SchemaNames[] = {
     "ContactDynamics",
     "ContactSurface",
     "EditMode",
-    "EditSelectionDirty",
     "EnabledInteractionModes",
     "EntityDestroyTracker",
     "EntityNameCounts",
@@ -75,7 +75,6 @@ inline constexpr std::string_view SchemaNames[] = {
     "LightName",
     "LookingThrough",
     "MasterCapture",
-    "MaterialDirty",
     "MaterialPreviewLighting",
     "MaterialStore",
     "MaterialVariants",
@@ -91,7 +90,6 @@ inline constexpr std::string_view SchemaNames[] = {
     "MeshName",
     "MeshPipelines",
     "MeshPositionsChanged",
-    "MeshShadingDirty",
     "MeshShadingSummary",
     "MeshSourceLayout",
     "MeshStore",
@@ -114,24 +112,17 @@ inline constexpr std::string_view SchemaNames[] = {
     "ObjectExtrasTag",
     "ObjectKind",
     "OrbitToActive",
-    "ParentInverse",
     "Path",
     "PbrMeshFeatures",
     "PendingBoxSelect",
     "PendingEditElementClick",
-    "PendingEnvironmentImport",
     "PendingHide",
     "PendingImportMesh",
-    "PendingLightRemovals",
     "PendingPick",
     "PendingRenderRequest",
-    "PendingSceneWorldClear",
     "PendingSetEditMode",
-    "PendingShaderRecompile",
-    "PendingTextureUploads",
     "PendingTransform",
     "PhysicsBodyHandle",
-    "PhysicsCacheInvalid",
     "PhysicsConstraintHandle",
     "PhysicsContactImpacts",
     "PhysicsJoint",
@@ -241,7 +232,6 @@ inline constexpr std::string_view SchemaNames[] = {
     "changes::MeshMaterial",
     "changes::MeshShading",
     "changes::NewBufferEntity",
-    "changes::ObjectCreated",
     "changes::PbrSpecialization",
     "changes::PhysicsBodyMesh",
     "changes::PhysicsGeometry",
@@ -265,7 +255,6 @@ inline constexpr std::string_view SchemaNames[] = {
     "changes::SoundVerticesUpdated",
     "changes::StudioEnvironment",
     "changes::TetMesh",
-    "changes::TimelineRange",
     "changes::TransformDirty",
     "changes::TransformEnd",
     "changes::TransformPending",
@@ -324,5 +313,26 @@ template<typename T> consteval TypeId Type() {
     constexpr auto index = TypeIndex<std::remove_cv_t<T>>;
     static_assert(index < SchemaSize, "Type is missing from the MeshEditor state schema");
     return index;
+}
+
+// Serialized records identify a type by a hash of its schema name, so slot numbers can change without invalidating them.
+enum class TypeKey : uint32_t {};
+constexpr uint32_t HashName(std::string_view name) {
+    uint32_t hash = 2166136261u;
+    for (const char c : name) hash = (hash ^ uint8_t(c)) * 16777619u;
+    return hash;
+}
+template<typename T> consteval TypeKey Key() { return TypeKey{HashName(SchemaNames[Type<T>()])}; }
+inline constexpr auto KeyTable = [] {
+    std::array<std::pair<uint32_t, TypeId>, SchemaSize> table{};
+    for (TypeId i = 0; i < SchemaSize; ++i) table[i] = {HashName(SchemaNames[i]), i};
+    std::ranges::sort(table);
+    return table;
+}();
+static_assert(std::ranges::adjacent_find(KeyTable, {}, [](const auto &entry) { return entry.first; }) == KeyTable.end(), "Schema name hashes collide");
+// The slot for a serialized key, or SchemaSize for a key absent from the schema.
+constexpr TypeId Slot(TypeKey key) {
+    const auto it = std::ranges::lower_bound(KeyTable, uint32_t(key), {}, [](const auto &entry) { return entry.first; });
+    return it != KeyTable.end() && it->first == uint32_t(key) ? it->second : TypeId(SchemaSize);
 }
 } // namespace state

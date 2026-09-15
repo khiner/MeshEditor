@@ -51,9 +51,35 @@ struct TextureEntry {
     uint32_t SourceImageIndex{UINT32_MAX};
 };
 
+enum class TextureColorSpace : uint8_t {
+    Srgb,
+    Linear,
+};
+
+struct PendingTextureUpload {
+    // Indexes the glTF image array supplied at materialization.
+    // The caller retains that array through the drain pass.
+    struct GltfImageRef {
+        uint32_t ImageIndex;
+    };
+    struct RawPixels {
+        std::vector<std::byte> Pixels;
+        uint32_t Width, Height;
+    };
+
+    uint32_t SamplerSlot;
+    std::variant<GltfImageRef, RawPixels> Source;
+    TextureColorSpace ColorSpace;
+    MTL::SamplerAddressMode WrapS, WrapT;
+    SamplerConfig Sampler;
+    std::string Name;
+};
+
 struct TextureStore {
     std::vector<TextureEntry> Textures;
     uint32_t WhiteTextureSlot;
+    // Uploads the next event pass materializes.
+    std::vector<PendingTextureUpload> PendingUploads;
 
     TextureStore() = default;
     TextureStore(const TextureStore &) = delete;
@@ -86,6 +112,11 @@ struct EnvironmentSelection {
     std::string Name;
 };
 
+struct PendingEnvironmentImport {
+    gltf::ImageBasedLight Source;
+    uint32_t DiffuseCubeSlot, SpecularCubeSlot;
+};
+
 struct EnvironmentStore {
     std::vector<HdriEntry> Hdris;
     uint32_t ActiveHdriIndex;
@@ -94,6 +125,10 @@ struct EnvironmentStore {
     mat3 SceneWorldRotation{1.f}; // From EXT_lights_image_based rotation quaternion.
     EnvironmentPrefiltered EmptySceneWorld; // 1x1 flat-color cubemap used without an EXT_lights_image_based asset.
     EnvironmentSelection SceneWorld, StudioWorld;
+    // An EXT_lights_image_based import the next event pass materializes.
+    std::optional<PendingEnvironmentImport> PendingImport;
+    // Release the imported scene world on the next event pass.
+    bool ClearRequested{};
 
     EnvironmentStore() = default;
     EnvironmentStore(const EnvironmentStore &) = delete;
@@ -102,32 +137,6 @@ struct EnvironmentStore {
     EnvironmentStore &operator=(EnvironmentStore &&) = default;
 };
 
-enum class TextureColorSpace : uint8_t {
-    Srgb,
-    Linear,
-};
-
-struct PendingTextureUpload {
-    // Indexes the glTF image array supplied at materialization.
-    // The caller retains that array through the drain pass.
-    struct GltfImageRef {
-        uint32_t ImageIndex;
-    };
-    struct RawPixels {
-        std::vector<std::byte> Pixels;
-        uint32_t Width, Height;
-    };
-
-    uint32_t SamplerSlot;
-    std::variant<GltfImageRef, RawPixels> Source;
-    TextureColorSpace ColorSpace;
-    MTL::SamplerAddressMode WrapS, WrapT;
-    SamplerConfig Sampler;
-    std::string Name;
-};
-struct PendingTextureUploads {
-    std::vector<PendingTextureUpload> Items;
-};
 
 // Records an imported texture's material slot and glTF source image.
 struct MaterializedTexture {
@@ -141,14 +150,6 @@ struct MaterializedTexture {
 struct MaterializedTextures {
     std::vector<MaterializedTexture> Items;
 };
-
-struct PendingEnvironmentImport {
-    gltf::ImageBasedLight Source;
-    uint32_t DiffuseCubeSlot, SpecularCubeSlot;
-};
-
-// Tag: drain pass releases ImportedSceneWorld and resets SceneWorld back to EmptySceneWorld.
-struct PendingSceneWorldClear {};
 
 struct TextureUploadBatch {
     const mtl::Context *Ctx{nullptr};

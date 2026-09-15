@@ -9,7 +9,7 @@ namespace action {
 template<>
 struct Replace<PhysicsMotion> {
     Scope Scope{Scope::Entity};
-    state::Entity Entity{null_entity};
+    state::Entity Entity{state::Null};
     std::unique_ptr<PhysicsMotion> Value;
 };
 } // namespace action

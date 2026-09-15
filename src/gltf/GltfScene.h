@@ -123,7 +123,7 @@ struct LoadContext {
 };
 
 struct LoadResult {
-    state::Entity FirstCameraObject{null_entity};
+    state::Entity FirstCameraObject{state::Null};
     bool ImportedAnimation{false};
 };
 

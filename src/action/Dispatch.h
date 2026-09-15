@@ -167,13 +167,14 @@ Field FieldGestureStart(state::Scene &r, state::Entity e, state::TypeId comp, ui
 
 template<typename Field>
 void ApplyUpdate(state::Scene &r, state::Entity viewport, const Update<Field> &a) {
+    const auto component = state::Slot(a.ComponentType);
     if constexpr (DeltaField<Field>) {
         if (a.Scope == Scope::SelectedDelta) {
-            const auto patch = detail::PatchTable().at(a.ComponentType);
+            const auto patch = detail::PatchTable().at(component);
             assert(patch);
-            ForEachSelectedWith(r, a.ComponentType, [&](state::Entity e) {
-                const Field start = FieldGestureStart<Field>(r, e, a.ComponentType, a.Offset, [&](Field &v) {
-                    std::memcpy(&v, static_cast<const std::byte *>(r.storage(a.ComponentType)->value(e)) + a.Offset, sizeof(Field));
+            ForEachSelectedWith(r, component, [&](state::Entity e) {
+                const Field start = FieldGestureStart<Field>(r, e, component, a.Offset, [&](Field &v) {
+                    std::memcpy(&v, static_cast<const std::byte *>(r.storage(component)->value(e)) + a.Offset, sizeof(Field));
                 });
                 Field result;
                 if constexpr (std::integral<Field>) {
@@ -182,15 +183,15 @@ void ApplyUpdate(state::Scene &r, state::Entity viewport, const Update<Field> &a
                 } else {
                     result = start + a.Value;
                 }
-                MaybeClamp(a.ComponentType, a.Offset, sizeof(Field), &result);
+                MaybeClamp(component, a.Offset, sizeof(Field), &result);
                 patch(r, e, a.Offset, &result, sizeof(Field));
             });
             return;
         }
     }
     Field value = a.Value;
-    MaybeClamp(a.ComponentType, a.Offset, sizeof(Field), &value);
-    ApplyUpdateScoped(r, viewport, a.Scope, a.Entity, a.ComponentType, a.Offset, &value, sizeof(Field));
+    MaybeClamp(component, a.Offset, sizeof(Field), &value);
+    ApplyUpdateScoped(r, viewport, a.Scope, a.Entity, component, a.Offset, &value, sizeof(Field));
 }
 
 inline void ApplyTag(state::Scene &r, state::Entity e, state::TypeId tag_type, bool present) {
