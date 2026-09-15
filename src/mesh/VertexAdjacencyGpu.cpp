@@ -1,15 +1,12 @@
 #include "mesh/VertexAdjacencyGpu.h"
 
-#include <Metal/MTLCommandQueue.hpp>
-
 #include "Profile.h"
 #include "gpu/VertexAdjacencyJob.h"
 #include "gpu/VertexAdjacencyPushConstants.h"
-#include "mesh/Compute.h"
 #include "mesh/Mesh.h"
-#include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/ScratchChunks.h"
+#include "mesh/TiledJobBatch.h"
 
 #include "state/Scene.h"
 
@@ -19,6 +16,19 @@
 namespace {
 // A submit's scratch stays under this, so a batch of large meshes splits across submits.
 constexpr uint32_t ScratchWordBudget{48u << 20};
+
+enum Domain : uint32_t { Vertices, Halfedges, Blocks, DomainCount };
+using Batch = TiledJobBatch<VertexAdjacencyJob, DomainCount>;
+
+constexpr std::array Passes{
+    TiledPass{MeshPass::AdjacencyZero, Vertices},
+    TiledPass{MeshPass::AdjacencyCount, Halfedges},
+    TiledPass{MeshPass::AdjacencyBlockSum, Blocks},
+    TiledPass{MeshPass::AdjacencyBlockPrefix, PerJob},
+    TiledPass{MeshPass::AdjacencyOffsets, Blocks},
+    TiledPass{MeshPass::AdjacencyScatter, Halfedges},
+    TiledPass{MeshPass::AdjacencySort, Vertices},
+};
 
 struct AdjacencyWork {
     Mesh MeshView;
@@ -33,91 +43,52 @@ uint32_t ScratchWords(const AdjacencyWork &work) {
     return counts + blocks + bit_words;
 }
 
-void SubmitChunk(state::Scene &r, std::span<const AdjacencyWork> chunk) {
+void SubmitChunk(state::Scene &r, std::span<const AdjacencyWork> chunk, Batch &batch) {
     const auto &meshes = r.ctx().get<const MeshStore>();
-
-    std::vector<VertexAdjacencyJob> jobs;
-    jobs.reserve(chunk.size());
-    std::vector<uvec2> vertex_tiles, halfedge_tiles, block_tiles;
-    uint32_t scratch_words = 0;
+    const auto &arenas = meshes.Arenas();
+    batch.Begin();
     for (const auto &work : chunk) {
         const auto id = work.MeshView.GetStoreId();
         const bool fan = work.Kind == VertexAdjacencyKind::Fan;
-        const auto corners = meshes.GetFaceCornerRange(id);
-        const auto csr = fan ? meshes.GetVertexFanAdjacencyRange(id) : meshes.GetVertexEdgeAdjacencyRange(id);
+        const auto &derived = meshes.GetDerived(id);
+        const auto corners = arenas.FaceCorners.Slotted(meshes.Get(id).FaceCorners);
+        const auto csr = fan ? derived.VertexFanAdjacency : derived.VertexEdgeAdjacency;
         const uint32_t vertex_count = work.MeshView.VertexCount(), halfedge_count = work.MeshView.HalfEdgeCount();
         const uint32_t counts = vertex_count + 1, block_count = TileCount(counts, BlockElements);
         const uint32_t bit_words = fan ? 0u : BitWords(halfedge_count);
         // The scratch runs follow the order ScratchWords sizes them in.
-        const uint32_t counts_offset = scratch_words;
+        const uint32_t counts_offset = batch.AllocateScratch(ScratchWords(work));
         const uint32_t block_offset = counts_offset + counts;
         const uint32_t bits_offset = block_offset + block_count;
-        const VertexAdjacencyJob job{
-            .Corners = {corners.Slot, corners.Offset},
-            .VertexCount = vertex_count,
-            .HalfedgeCount = halfedge_count,
-            .Kind = work.Kind,
-            .CsrOffset = csr.Offset,
-            .CountsOffset = counts_offset,
-            .BlockOffset = block_offset,
-            .BlockCount = block_count,
-            .EdgeFirstBitsOffset = fan ? InvalidOffset : bits_offset,
-            .EdgeFirstRanksOffset = fan ? InvalidOffset : bits_offset + bit_words,
-        };
-        scratch_words += counts + block_count + 2 * bit_words;
-        const auto job_index = uint32_t(jobs.size());
-        for (uint32_t t = 0, n = TileCount(counts, TileElements); t < n; ++t) vertex_tiles.emplace_back(job_index, t);
-        for (uint32_t t = 0, n = TileCount(halfedge_count, TileElements); t < n; ++t) halfedge_tiles.emplace_back(job_index, t);
-        for (uint32_t t = 0; t < block_count; ++t) block_tiles.emplace_back(job_index, t);
-        jobs.emplace_back(job);
+        batch.AddJob(
+            VertexAdjacencyJob{
+                .Corners = {corners.Slot, corners.Offset},
+                .VertexCount = vertex_count,
+                .HalfedgeCount = halfedge_count,
+                .Kind = work.Kind,
+                .CsrOffset = csr.Offset,
+                .CountsOffset = counts_offset,
+                .BlockOffset = block_offset,
+                .BlockCount = block_count,
+                .EdgeFirstBitsOffset = fan ? InvalidOffset : bits_offset,
+                .EdgeFirstRanksOffset = fan ? InvalidOffset : bits_offset + bit_words,
+            },
+            {TileCount(counts, TileElements), TileCount(halfedge_count, TileElements), block_count}
+        );
     }
 
-    mtl::Buffer scratch{meshes.BufferContext(), uint64_t(scratch_words) * sizeof(uint32_t), SlotType::Buffer};
-    const auto scratch_words_span = scratch.GetMutableSpan<uint32_t>({0, scratch_words});
+    // An edge job derives edge indices from the mesh's edge-first bit ranks, staged into its scratch.
+    const auto scratch = batch.ScratchSpan();
     for (uint32_t i = 0; i < chunk.size(); ++i) {
         if (chunk[i].Kind == VertexAdjacencyKind::Fan) continue;
         const auto &c = chunk[i].MeshView.GetConnectivity();
-        std::ranges::copy(c.EdgeFirstBits, scratch_words_span.begin() + jobs[i].EdgeFirstBitsOffset);
-        std::ranges::copy(c.EdgeFirstRanks, scratch_words_span.begin() + jobs[i].EdgeFirstRanksOffset);
+        std::ranges::copy(c.EdgeFirstBits, scratch.begin() + batch.Jobs[i].EdgeFirstBitsOffset);
+        std::ranges::copy(c.EdgeFirstRanks, scratch.begin() + batch.Jobs[i].EdgeFirstRanksOffset);
     }
-
-    std::vector<uvec2> tiles;
-    tiles.reserve(vertex_tiles.size() + halfedge_tiles.size() + block_tiles.size());
-    tiles.insert(tiles.end(), vertex_tiles.begin(), vertex_tiles.end());
-    tiles.insert(tiles.end(), halfedge_tiles.begin(), halfedge_tiles.end());
-    tiles.insert(tiles.end(), block_tiles.begin(), block_tiles.end());
-    const mtl::Buffer job_buffer{meshes.BufferContext(), as_bytes(jobs), SlotType::Buffer};
-    const mtl::Buffer tile_buffer{meshes.BufferContext(), as_bytes(tiles), SlotType::Buffer};
-
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
-    const auto &pipelines = GetMeshPipelines(r);
-    ctx.CommitResidency();
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    auto *encoder = command_buffer->computeCommandEncoder();
-    const VertexAdjacencyPushConstants pc{
-        .JobsSlot = job_buffer.Slot,
-        .TileMapSlot = tile_buffer.Slot,
-        .ScratchSlot = scratch.Slot,
-        .AdjacencySlot = meshes.GetAdjacencySlot(),
-    };
-    const auto dispatch = [&](const mtl::ComputePipeline &pipeline, size_t groups, uint32_t first_tile) {
-        mesh_compute::DispatchTiledPass(encoder, pipeline, slots, pc, groups, first_tile);
-    };
-    const auto first_halfedge_tile = uint32_t(vertex_tiles.size());
-    const auto first_block_tile = first_halfedge_tile + uint32_t(halfedge_tiles.size());
-    const auto &passes = pipelines.VertexAdjacency;
-    dispatch(passes.Zero, vertex_tiles.size(), 0);
-    dispatch(passes.Count, halfedge_tiles.size(), first_halfedge_tile);
-    dispatch(passes.BlockSum, block_tiles.size(), first_block_tile);
-    // The block prefix runs one threadgroup per job, so it reads jobs by threadgroup rather than by tile.
-    dispatch(passes.BlockPrefix, jobs.size(), 0);
-    dispatch(passes.Offsets, block_tiles.size(), first_block_tile);
-    dispatch(passes.Scatter, halfedge_tiles.size(), first_halfedge_tile);
-    dispatch(passes.Sort, vertex_tiles.size(), 0);
-    encoder->endEncoding();
-    command_buffer->commit();
-    command_buffer->waitUntilCompleted();
+    batch.Submit(
+        r.ctx().get<const mtl::Context>(), r.ctx().get<const mtl::BindlessSet>(), GetMeshPipelines(r),
+        VertexAdjacencyPushConstants{.AdjacencySlot = meshes.Slots().Adjacency}, Passes
+    );
 }
 } // namespace
 
@@ -127,21 +98,20 @@ void BuildVertexAdjacencyNow(state::Scene &r, std::span<const state::Entity> mes
     for (const auto entity : mesh_entities) {
         const auto mesh = TryGetMesh(r, entity);
         if (!mesh) continue;
-        const auto id = mesh->GetStoreId();
-        if (meshes.GetVertexFanAdjacencyRange(id).Count > 0 && BuildsFanAdjacencyOnGpu(*mesh)) {
-            work.emplace_back(*mesh, VertexAdjacencyKind::Fan);
-        }
-        if (meshes.GetVertexEdgeAdjacencyRange(id).Count > 0 && BuildsEdgeAdjacencyOnGpu(*mesh)) {
-            work.emplace_back(*mesh, VertexAdjacencyKind::Edge);
-        }
+        const auto &derived = meshes.GetDerived(mesh->GetStoreId());
+        if (derived.VertexFanAdjacency.Count > 0 && BuildsFanAdjacencyOnGpu(*mesh)) work.emplace_back(*mesh, VertexAdjacencyKind::Fan);
+        if (derived.VertexEdgeAdjacency.Count > 0 && BuildsEdgeAdjacencyOnGpu(*mesh)) work.emplace_back(*mesh, VertexAdjacencyKind::Edge);
     }
     if (work.empty()) return;
 
     const profile::CpuScope scope{"VertexAdjacencyGpu"};
+    const auto split = ChunkByScratch(uint32_t(work.size()), ScratchWordBudget, [&](uint32_t i) { return ScratchWords(work[i]); });
+    // Every chunk writes over the same buffers, so a many-mesh batch takes no fresh allocation per submit.
+    Batch batch{meshes.BufferContext(), split.WidestWords, split.MostJobs};
+    for (const auto chunk : split.Chunks) SubmitChunk(r, std::span{work}.subspan(chunk.Offset, chunk.Count), batch);
+
     // MESHEDITOR_ADJACENCY_CHECK rebuilds every filled table on the CPU and reports the first entry that differs.
     static const bool check = std::getenv("MESHEDITOR_ADJACENCY_CHECK") != nullptr;
-    const auto split = ChunkByScratch(uint32_t(work.size()), ScratchWordBudget, [&](uint32_t i) { return ScratchWords(work[i]); });
-    for (const auto chunk : split.Chunks) SubmitChunk(r, std::span{work}.subspan(chunk.Offset, chunk.Count));
     if (!check) return;
     for (const auto &item : work) {
         if (const auto mismatch = meshes.CheckVertexAdjacency(item.MeshView); !mismatch.empty()) {

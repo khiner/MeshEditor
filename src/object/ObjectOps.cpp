@@ -7,7 +7,7 @@
 #include "Path.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
-#include "mesh/MeshBatch.h"
+#include "mesh/MeshCreate.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
@@ -25,7 +25,7 @@
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "selection/SelectionComponents.h"
-#include "selection/SelectionOps.h"
+#include "selection/Selection.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportEvents.h"
 
@@ -147,10 +147,11 @@ std::pair<state::Entity, state::Entity> ImportMesh(state::Scene &r, state::Entit
     if (!result) throw std::runtime_error(result.error());
 
     // `deduplicate` merges vertices identical in every vertex-domain channel, keeping per-corner UVs and normals.
-    const auto created = CreateMesh(r, {.Data = std::move(result->Mesh), .Attrs = std::move(result->Attrs), .Primitives = std::move(result->Primitives), .Weld = deduplicate});
+    auto created = CreateMesh(r, {.Data = std::move(result->Mesh), .Attrs = std::move(result->Attrs), .Primitives = std::move(result->Primitives), .Weld = deduplicate});
     if (!result->Materials.empty()) ImportObjPlyMaterials(r, viewport, result->Materials, stored_path, created.StoreId);
 
     const auto entities = ::AddMesh(r, created.StoreId, std::move(info));
+    if (!created.AuthoredCornerNormals.empty()) r.emplace<AuthoredCornerNormals>(entities.first, std::move(created.AuthoredCornerNormals));
     r.emplace<Path>(entities.first, path);
     return entities;
 }

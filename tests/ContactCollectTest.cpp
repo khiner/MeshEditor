@@ -1,6 +1,6 @@
 #include "ProcessEvents.h"
 #include "RunSuites.h"
-#include "mesh/MeshBatch.h"
+#include "mesh/MeshCreate.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/Primitives.h"
 #include "metal/MetalContext.h"
@@ -636,7 +636,7 @@ int main() {
                         s.R.replace<MeshHandle>(objects.Mesh, mesh.StoreId);
                         s.R.ctx().get<MeshStore>().Release(previous);
                     }
-                    auto vertices = s.R.ctx().get<MeshStore>().GetMutableVertices(s.R.get<MeshHandle>(objects.Mesh).StoreId);
+                    auto vertices = s.R.ctx().get<MeshStore>().EditVertices(s.R.get<MeshHandle>(objects.Mesh).StoreId);
                     for (size_t i = 0; i < vertices.size(); ++i) vertices[i].Position = objects.Positions[i] * vec3{1, 0.6f + 0.05f * edit, 1} + vec3{0.1f, 0, 0};
                     s.R.emplace_or_replace<MeshPositionsChanged>(objects.Mesh);
                     s.R.emplace_or_replace<MeshGeometryDirty>(objects.Mesh);

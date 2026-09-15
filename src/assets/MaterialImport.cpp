@@ -114,7 +114,7 @@ void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<co
     auto &material_store = r.ctx().get<MaterialStore>();
     material_store.AppendNames(std::move(names));
 
-    if (auto primitive_materials = meshes.GetPrimitiveMaterialIndices(mesh_store_id); !primitive_materials.empty()) {
+    if (auto primitive_materials = meshes.EditPrimitiveMaterials(mesh_store_id); !primitive_materials.empty()) {
         const auto fallback = scene_material_indices.front();
         for (auto &primitive_material : primitive_materials) {
             primitive_material = primitive_material < scene_material_indices.size() ? scene_material_indices[primitive_material] : fallback;

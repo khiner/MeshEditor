@@ -97,36 +97,39 @@ void SplitTriangleChunks(std::span<uint32_t> triangles, std::span<const std::arr
 // Draw data for one of a mesh's source triangle primitives, whose corner offsets start at its first triangle.
 DrawData PrimitiveDrawData(const GpuBuffers &buffers, const MeshBuffers &mb, const MeshStore &meshes, uint32_t store_id, const PrimitiveTriangleRange &primitive) {
     const auto first_index = size_t(primitive.FirstTriangle) * 3;
+    const auto &record = meshes.Get(store_id);
+    const auto &derived = meshes.GetDerived(store_id);
+    const auto &arenas = meshes.Arenas();
     DrawData draw{
         .VertexSlot = mb.Vertices.Slot,
         .IndexSlotOffset = {mb.FaceIndices.Slot, mb.FaceIndices.Offset + uint32_t(first_index)},
         .ModelSlot = buffers.Instances.TransformBuffer.Slot,
-        .ObjectIdSlot = meshes.GetFaceIdRange(store_id).Slot,
+        .ObjectIdSlot = arenas.TriangleFaceIds.Buffer.Slot,
         .CornerClassOffset = meshes.GetCornerClassOffset(store_id),
-        .CustomCornerMaskOffset = OffsetOrInvalid(meshes.GetCustomCornerMaskRange(store_id)),
-        .CustomCornerNormalOffset = OffsetOrInvalid(meshes.GetCustomCornerNormalRange(store_id)),
+        .CustomCornerMaskOffset = OffsetOrInvalid(record.CustomCornerMasks),
+        .CustomCornerNormalOffset = OffsetOrInvalid(record.CustomCornerNormals),
         .CornerBase = uint32_t(first_index),
-        .BaseSeamNormalOffset = OffsetOrInvalid(meshes.GetBaseSeamNormalRange(store_id)),
-        .CornerTangentOffset = OffsetOrInvalid(meshes.GetCornerTangentRange(store_id)),
-        .CornerColorOffset = OffsetOrInvalid(meshes.GetCornerColorRange(store_id)),
-        .FaceIdOffset = meshes.GetFaceIdRange(store_id).Offset + primitive.FirstTriangle,
-        .BaseFaceNormalOffset = meshes.GetFaceDataRange(store_id).Offset,
-        .FaceFirstTriangleOffset = meshes.GetFaceDataRange(store_id).Offset,
-        .VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexEdgeAdjacencyRange(store_id)),
-        .VertexFanAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexFanAdjacencyRange(store_id)),
-        .Connectivity = meshes.GetConnectivityRange(store_id),
-        .EdgeHalfedges = meshes.GetConnectivityEdgeRange(store_id),
-        .HalfedgeCount = meshes.GetFaceCornerRange(store_id).Count,
-        .FaceCount = meshes.GetFaceDataRange(store_id).Count,
-        .ConnectivityFaceStarts = meshes.GetConnectivity(store_id).Faces.empty() ? 0u : 1u,
+        .BaseSeamNormalOffset = OffsetOrInvalid(derived.BaseSeamNormals),
+        .CornerTangentOffset = OffsetOrInvalid(record.CornerTangents),
+        .CornerColorOffset = OffsetOrInvalid(record.CornerColors),
+        .FaceIdOffset = record.TriangleFaceIds.Offset + primitive.FirstTriangle,
+        .BaseFaceNormalOffset = record.FaceData.Offset,
+        .FaceFirstTriangleOffset = record.FaceData.Offset,
+        .VertexEdgeAdjacencyOffset = OffsetOrInvalid(derived.VertexEdgeAdjacency),
+        .VertexFanAdjacencyOffset = OffsetOrInvalid(derived.VertexFanAdjacency),
+        .Connectivity = arenas.Connectivity.Slotted(record.Connectivity),
+        .EdgeHalfedges = arenas.Connectivity.Slotted(record.ConnectivityEdges),
+        .HalfedgeCount = record.FaceCorners.Count,
+        .FaceCount = record.FaceData.Count,
+        .ConnectivityFaceStarts = record.ConnectivityFaceStarts ? 1u : 0u,
         .VertexCountOrHeadImageSlot = mb.Vertices.Count,
         .Selection = meshes.GetEditSelectionStorage(store_id),
         .EditEdgeOffset = 0u,
         .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
         .VertexOffset = mb.Vertices.Offset,
-        .MorphShadingAuthored = meshes.GetMorphShadingAuthored(store_id) ? 1u : 0u,
-        .PrimitiveMaterialOffset = OffsetOrInvalid(meshes.GetPrimitiveMaterialRange(store_id)),
-        .ElementPrimitiveOffset = OffsetOrInvalid(meshes.GetElementPrimitiveRange(store_id)),
+        .MorphShadingAuthored = derived.MorphShadingAuthored ? 1u : 0u,
+        .PrimitiveMaterialOffset = OffsetOrInvalid(record.PrimitiveMaterials),
+        .ElementPrimitiveOffset = OffsetOrInvalid(record.ElementPrimitives),
     };
     if (draw.CornerClassOffset < uint32_t(CornerClassEncoding::UniformFaceOffset)) draw.CornerClassOffset += uint32_t(first_index);
     const auto advance_corner = [first_index](uint32_t &offset) {
@@ -135,7 +138,7 @@ DrawData PrimitiveDrawData(const GpuBuffers &buffers, const MeshBuffers &mb, con
     advance_corner(draw.CornerTangentOffset);
     advance_corner(draw.CornerColorOffset);
     for (uint32_t set = 0; set < draw.CornerUvOffsets.size(); ++set) {
-        draw.CornerUvOffsets[set] = OffsetOrInvalid(meshes.GetCornerUvRange(store_id, set));
+        draw.CornerUvOffsets[set] = OffsetOrInvalid(record.CornerUvs[set]);
         advance_corner(draw.CornerUvOffsets[set]);
     }
     return draw;
@@ -151,32 +154,35 @@ MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &buffers, const MeshBuf
 
     const bool face_topology = mesh.FaceCount() > 0u;
     const bool line_topology = !face_topology && mesh.EdgeCount() != 0u;
-    const auto primitive_ranges = meshes.GetPrimitiveTriangleRanges(store_id);
+    const auto &record = meshes.Get(store_id);
+    const auto &derived = meshes.GetDerived(store_id);
+    const auto &arenas = meshes.Arenas();
+    const auto &primitive_ranges = record.PrimitiveTriangleRanges;
     MeshletBuildInputs inputs{
         .Indices = indices,
         .Vertices = mesh.GetVerticesSpan(),
-        .ElementPrimitives = meshes.GetElementPrimitiveIndices(store_id),
-        .TriangleEditEdges = face_topology ? BuildTriangleEditEdges(mesh, meshes.GetFaceFirstTriangles(store_id)) : std::vector<uint32_t>{},
+        .ElementPrimitives = arenas.ElementPrimitives.Get(record.ElementPrimitives),
+        .TriangleEditEdges = face_topology ? BuildTriangleEditEdges(mesh, arenas.FaceFirstTriangles.Get(record.FaceData)) : std::vector<uint32_t>{},
         .PrimitiveTriangleRanges = {primitive_ranges.begin(), primitive_ranges.end()},
         .Weld = {
             .CornerClassOffset = meshes.GetCornerClassOffset(store_id),
-            .CornerClasses = meshes.GetCornerClasses(store_id),
-            .TriangleFaceIds = meshes.GetTriangleFaceIds(store_id),
-            .CustomCornerMasks = meshes.GetCustomCornerMasks(store_id),
+            .CornerClasses = arenas.CornerClasses.Get(derived.CornerClasses),
+            .TriangleFaceIds = arenas.TriangleFaceIds.Get(record.TriangleFaceIds),
+            .CustomCornerMasks = arenas.CustomCornerMasks.Get(record.CustomCornerMasks),
             .CornerUvs = {
-                meshes.GetCornerUvs(store_id, 0),
-                meshes.GetCornerUvs(store_id, 1),
-                meshes.GetCornerUvs(store_id, 2),
-                meshes.GetCornerUvs(store_id, 3),
+                arenas.CornerUvs.Get(record.CornerUvs[0]),
+                arenas.CornerUvs.Get(record.CornerUvs[1]),
+                arenas.CornerUvs.Get(record.CornerUvs[2]),
+                arenas.CornerUvs.Get(record.CornerUvs[3]),
             },
-            .CornerTangents = meshes.GetCornerTangents(store_id),
-            .CornerColors = meshes.GetCornerColors(store_id),
-            .MorphShadingAuthored = meshes.GetMorphShadingAuthored(store_id),
+            .CornerTangents = arenas.CornerTangents.Get(record.CornerTangents),
+            .CornerColors = arenas.CornerColors.Get(record.CornerColors),
+            .MorphShadingAuthored = derived.MorphShadingAuthored,
         },
         .TriangleCount = mesh.TriangleIndexCount() / 3u,
         .ElementCount = face_topology ? 0u : (line_topology ? mesh.EdgeCount() : mesh.VertexCount()),
         .EdgeCount = mesh.EdgeCount(),
-        .SourcePrimitiveCount = meshes.GetPrimitiveMaterialRange(store_id).Count,
+        .SourcePrimitiveCount = record.PrimitiveMaterials.Count,
         .FaceTopology = face_topology,
         .LineTopology = line_topology,
         .AuxIndices = mb.EdgeIndices,
@@ -195,12 +201,12 @@ MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &buffers, const MeshBuf
             .IndexSlotOffset = line_topology ? mb.EdgeIndices : mb.VertexIndices,
             .ModelSlot = buffers.Instances.TransformBuffer.Slot,
             .ObjectIdSlot = InvalidSlot,
-            .CornerColorOffset = OffsetOrInvalid(meshes.GetCornerColorRange(store_id)),
+            .CornerColorOffset = OffsetOrInvalid(record.CornerColors),
             .VertexCountOrHeadImageSlot = mb.Vertices.Count,
             .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
             .VertexOffset = mb.Vertices.Offset,
-            .PrimitiveMaterialOffset = OffsetOrInvalid(meshes.GetPrimitiveMaterialRange(store_id)),
-            .ElementPrimitiveOffset = OffsetOrInvalid(meshes.GetElementPrimitiveRange(store_id)),
+            .PrimitiveMaterialOffset = OffsetOrInvalid(record.PrimitiveMaterials),
+            .ElementPrimitiveOffset = OffsetOrInvalid(record.ElementPrimitives),
         };
     }
     return inputs;

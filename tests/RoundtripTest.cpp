@@ -20,7 +20,7 @@
 #include "gltf/SourceTexture.h"
 #include "gpu/PunctualLight.h"
 #include "image/ImageDecode.h"
-#include "mesh/MeshBatch.h"
+#include "mesh/MeshCreate.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/PrimitiveType.h"

@@ -3,7 +3,6 @@
 #include "gpu/Transform.h"
 #include "numeric/mat3.h"
 
-#include "state/Entity.h"
 
 namespace TransformGizmo {
 enum class Mode : uint8_t {
@@ -45,7 +44,4 @@ struct Config {
     vec3 SnapValue{0.5};
     bool Snap{false};
 };
-
-// Available to headless callers without including imgui.
-bool IsUsing(const state::Scene &, state::Entity viewport);
 } // namespace TransformGizmo

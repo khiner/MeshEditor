@@ -81,7 +81,7 @@ mesheditor_library(MeshEditorMetal HOT
 
 mesheditor_library(MeshEditorMesh HOT
     src/mesh/Mesh.cpp
-    src/mesh/MeshBatch.cpp
+    src/mesh/MeshCreate.cpp
     src/mesh/MeshBvh.cpp
     src/mesh/MeshConnectivityGpu.cpp
     src/mesh/MeshPipelines.cpp
@@ -90,7 +90,6 @@ mesheditor_library(MeshEditorMesh HOT
     src/mesh/Primitives.cpp
     src/mesh/VertexAdjacencyGpu.cpp
     src/mesh/VertexWeldGpu.cpp
-    src/selection/SelectionBitset.cpp
 )
 
 mesheditor_library(MeshEditorScene HOT
@@ -101,8 +100,7 @@ mesheditor_library(MeshEditorScene HOT
     src/scene/ObjectCreation.cpp
     src/scene/RotationUi.cpp
     src/scene/SceneGraph.cpp
-    src/scene/SelectionQueries.cpp
-    src/scene/SelectionState.cpp
+    src/selection/Selection.cpp
     src/viewport/RenderExtent.cpp
     src/viewport/ViewCamera.cpp
     src/viewport/ViewCameraOps.cpp
@@ -181,8 +179,6 @@ mesheditor_library(MeshEditorEditor COLD
     src/editor/Engine.cpp
     src/editor/Timeline.cpp
     src/object/ObjectOps.cpp
-    src/selection/Selection.cpp
-    src/selection/SelectionOps.cpp
     src/snapshot/ArmatureSnapshot.cpp
     src/snapshot/AssetsSnapshot.cpp
     src/snapshot/AudioSnapshot.cpp

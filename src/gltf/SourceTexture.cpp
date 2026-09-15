@@ -43,7 +43,8 @@ std::optional<DecodedImage> DecodeImageRgba8(const state::Scene &r, uint32_t ima
 std::optional<NormalMapRef> MeshMaterialNormalMap(const state::Scene &r, state::Entity mesh_entity) {
     const auto mesh = TryGetMesh(r, mesh_entity);
     if (!mesh) return {};
-    const auto materials = r.ctx().get<const MeshStore>().GetPrimitiveMaterialIndices(mesh->GetStoreId());
+    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto materials = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(mesh->GetStoreId()).PrimitiveMaterials);
     if (materials.empty()) return {};
 
     // Material bindings contain the remapped GPU indices.

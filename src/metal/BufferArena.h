@@ -6,6 +6,8 @@
 #include "project/store/History.h"
 #include "project/store/Records.h"
 
+#include <utility>
+
 template<typename T>
 struct BufferArena {
     BufferArena(mtl::BufferContext &ctx, SlotType slot_type) : Buffer(ctx, 0, slot_type) {}
@@ -21,6 +23,15 @@ struct BufferArena {
     void ReserveAdditional(uint32_t count) {
         if (count == 0) return;
         Buffer.Reserve(Buffer.UsedSize + uint64_t(count) * sizeof(T));
+    }
+    // Accumulate a coming allocation so one CommitPlanned grows the buffer once for a batch.
+    void PlanAdditional(uint32_t count) { Planned += count; }
+    void CommitPlanned() { ReserveAdditional(std::exchange(Planned, 0u)); }
+
+    // Size the buffer to cover `range`, which a master arena this one mirrors element for element allocated.
+    void Mirror(Range range) {
+        if (range.Count == 0) return;
+        Buffer.SetUsedSize(std::max(Buffer.UsedSize, uint64_t(range.Offset + range.Count) * sizeof(T)));
     }
 
     Range Allocate(uint32_t count) {
@@ -81,4 +92,5 @@ private:
 
     RangeAllocator Allocator;
     std::unique_ptr<store::Records> Tracked;
+    uint32_t Planned{0};
 };

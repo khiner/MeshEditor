@@ -8,7 +8,7 @@
 #include "animation/MorphWeightState.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
-#include "gizmo/TransformGizmoTypes.h"
+#include "gizmo/GizmoInteraction.h"
 #include "gpu/BoundsReducePushConstants.h"
 #include "gpu/BoundsTreePushConstants.h"
 #include "gpu/CommitPosedGeometryPushConstants.h"
@@ -36,6 +36,7 @@
 #include "gpu/WireRasterPushConstants.h"
 #include "gpu/WireResolvePushConstants.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/MeshCreate.h"
 #include "mesh/MeshStore.h"
 #include "metal/MetalCpp.h"
 #include "metal/PassChain.h"
@@ -52,7 +53,6 @@
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
-#include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
@@ -261,8 +261,7 @@ struct DeformSlots {
 std::unordered_map<state::Entity, DeformSlots> BuildDeformSlots(const state::Scene &r, const MeshStore &meshes, RecordInputs &inputs) {
     std::unordered_map<state::Entity, DeformSlots> result;
     for (const auto [instance_entity, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
-        const auto &mesh = GetMesh(r, instance.Entity);
-        const auto bone_deform = meshes.GetBoneDeformRange(mesh.GetStoreId());
+        const auto bone_deform = meshes.Get(r.get<const MeshHandle>(instance.Entity).StoreId).BoneDeform;
         if (bone_deform.Count == 0) continue;
         const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier.ArmatureEntity);
         if (!pose_state || modifier.SkinSlot >= pose_state->GpuDeformRanges.size()) continue;
@@ -280,12 +279,11 @@ std::unordered_map<state::Entity, DeformSlots> BuildDeformSlots(const state::Sce
     }
     for (const auto [instance_entity, instance, gpu_range, ri] : r.view<const Instance, const MorphWeightGpuRange, const RenderInstance>().each()) {
         const auto mesh_entity = instance.Entity;
-        const auto &mesh = GetMesh(r, mesh_entity);
-        const auto morph_range = meshes.GetMorphTargetRange(mesh.GetStoreId());
-        if (morph_range.Count == 0) continue;
+        const auto &record = meshes.Get(r.get<const MeshHandle>(mesh_entity).StoreId);
+        if (record.MorphTargets.Count == 0) continue;
         auto &slots = result[mesh_entity];
-        slots.MorphDeformOffset = morph_range.Offset;
-        slots.MorphTargetCount = meshes.GetMorphTargetCount(mesh.GetStoreId());
+        slots.MorphDeformOffset = record.MorphTargets.Offset;
+        slots.MorphTargetCount = record.MorphTargetCount;
         slots.MorphWeightsByBufferIndex[ri.BufferIndex] = gpu_range.Weights.Offset;
         inputs.Mix(ri.BufferIndex);
         inputs.Mix(gpu_range.Weights.Offset);
@@ -338,20 +336,19 @@ void DispatchPrelude(MTL::ComputeCommandEncoder *encoder, const GpuBuffers &buff
 // Empty when the mesh has no triangles or adjacency.
 std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &meshes, uint32_t store_id, SlottedRange face_indices) {
     if (face_indices.Count == 0) return {};
-    const auto adjacency = meshes.GetVertexFanAdjacencyRange(store_id);
-    if (adjacency.Count == 0) return {};
-    const auto vertices = meshes.GetVerticesRange(store_id);
-    const auto face_data = meshes.GetFaceDataRange(store_id);
+    const auto &record = meshes.Get(store_id);
+    const auto &derived = meshes.GetDerived(store_id);
+    if (derived.VertexFanAdjacency.Count == 0) return {};
     return NormalDeriveEntry{
-        .Vertices = {vertices.Slot, vertices.Offset},
+        .Vertices = {meshes.Slots().Vertices, record.Vertices.Offset},
         .FaceIndices = face_indices,
-        .VertexCount = vertices.Count,
-        .VertexAdjacencyOffset = adjacency.Offset,
-        .SeamFanOffset = meshes.GetSeamFanRange(store_id).Offset,
-        .SeamCount = meshes.GetSeamCornerCount(store_id),
-        .FaceDataOffset = face_data.Offset,
-        .FaceCount = face_data.Count,
-        .TriangleCount = meshes.GetTriangleCount(store_id),
+        .VertexCount = record.Vertices.Count,
+        .VertexAdjacencyOffset = derived.VertexFanAdjacency.Offset,
+        .SeamFanOffset = derived.SeamFans.Offset,
+        .SeamCount = derived.SeamCornerCount,
+        .FaceDataOffset = record.FaceData.Offset,
+        .FaceCount = record.FaceData.Count,
+        .TriangleCount = record.TriangleCount,
     };
 }
 
@@ -383,9 +380,9 @@ void RecordNormalDerive(MTL::ComputeCommandEncoder *encoder, const mtl::Bindless
 NormalDerivePushConstants MakeNormalDerivePc(const GpuBuffers &buffers, const MeshStore &meshes, uint32_t vertex_normal_slot, uint32_t seam_normal_slot, uint32_t face_normal_slot) {
     return {
         .EntriesSlot = buffers.NormalDeriveEntries.Slot,
-        .AdjacencySlot = meshes.GetAdjacencySlot(),
+        .AdjacencySlot = meshes.Slots().Adjacency,
         .TileMapSlot = buffers.DeriveTiles.Slot,
-        .FaceFirstTriangleSlot = meshes.GetFaceFirstTriangleSlot(),
+        .FaceFirstTriangleSlot = meshes.Slots().FaceFirstTriangle,
         .PositionSlot = buffers.PosedPositions.Slot,
         .VertexNormalSlot = vertex_normal_slot,
         .SeamNormalSlot = seam_normal_slot,
@@ -532,7 +529,7 @@ void DrawVisibilityMeshlets(
 
 void RecordDepthPyramid(
     MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers,
-    const Pipelines &pipelines, const RenderTargets &targets, const SelectionSlots &sel_slots, uint32_t ubo_offset
+    const Pipelines &pipelines, const RenderTargets &targets, const RenderSamplerSlots &samplers, uint32_t ubo_offset
 ) {
     encode::BindCompute(encoder, pipelines.DepthPyramidReduce, slots, buffers, ubo_offset);
     const auto &mips = targets.Resources->DepthPyramidMips;
@@ -542,7 +539,7 @@ void RecordDepthPyramid(
         if (base > 0) encoder->memoryBarrier(MTL::BarrierScopeTextures);
         const auto src_extent = base == 0 ? scene_extent : mips[base - 1].Extent;
         const DepthPyramidReducePushConstants pc{
-            .SrcSamplerSlot = base == 0 ? sel_slots.SceneDepthSampler : sel_slots.DepthPyramidSampler,
+            .SrcSamplerSlot = base == 0 ? samplers.SceneDepth : samplers.DepthPyramid,
             .SrcLod = base == 0 ? 0 : base - 1,
             .SrcWidth = src_extent.Width,
             .SrcHeight = src_extent.Height,
@@ -568,7 +565,7 @@ void RecordMotionBlurPostFx(state::Scene &r, state::Entity viewport, mtl::PassCh
     const auto &main = GetPipelines(r).Main;
     const auto &targets = r.ctx().get<const RenderTargets>();
     const auto &blur = *targets.MotionBlur;
-    const auto &samplers = r.ctx().get<const SelectionSlots>();
+    const auto &samplers = r.ctx().get<const RenderSamplerSlots>();
     const auto extent = targets.Resources->SceneColorImage.Extent;
     const auto tiles = blur.TileImage.Extent;
     const auto &view = *reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data() + ubo_offset);
@@ -602,7 +599,7 @@ void RecordMotionBlurPostFx(state::Scene &r, state::Entity viewport, mtl::PassCh
     render->setFragmentTexture(*blur.TileImage, 0);
     const auto inverse_projection = numeric::Inverse(r.get<const ViewCamera>(viewport).Projection(float(extent.Width) / float(extent.Height)));
     const float noise_phase = r.get<const PlaybackFrame>(viewport).Value * std::numbers::phi_v<float>;
-    encode::SetPushConstants(render, MotionBlurGatherPushConstants{samplers.SceneDepthSampler, samplers.VelocitySampler, samplers.SceneColorSampler, noise_phase - std::floor(noise_phase), {inverse_projection[2].z, inverse_projection[3].z, inverse_projection[2].w, inverse_projection[3].w}});
+    encode::SetPushConstants(render, MotionBlurGatherPushConstants{samplers.SceneDepth, samplers.Velocity, samplers.SceneColor, noise_phase - std::floor(noise_phase), {inverse_projection[2].z, inverse_projection[3].z, inverse_projection[2].w, inverse_projection[3].w}});
     render->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
 }
 
@@ -635,7 +632,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         active_lighting.RealTransmission &&
         pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
 
-    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
+    const auto &samplers = r.ctx().get<const RenderSamplerSlots>();
     auto &scene_state = r.ctx().get<GpuSceneState>();
 
     RecordInputs record_inputs;
@@ -680,15 +677,14 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         }
     }
 
-    selection::PrimaryEditInstanceMap primary_edit_instances;
-    EditTransformContext edit_transform_context;
+    selection::PrimaryEditInstanceMap primary_edit_instances, transform_instances;
     const bool has_pending_transform = is_edit_mode && r.all_of<PendingTransform>(viewport);
     record_inputs.Mix(has_pending_transform);
     if (is_edit_mode) {
         if (has_pending_transform) {
             auto primaries = selection::ComputePrimaryEditInstanceMaps(r);
             primary_edit_instances = std::move(primaries.All);
-            edit_transform_context.TransformInstances = std::move(primaries.Transformable);
+            transform_instances = std::move(primaries.Transformable);
         } else {
             primary_edit_instances = selection::ComputePrimaryEditInstances(r);
         }
@@ -735,7 +731,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         // The mesh shades authored under morphing: rest normals plus weighted authored deltas.
         // Edit mode builds no deform slots, so edit-mode draws (including drags) derive.
         const auto morph_shading_authored = [&meshes](const MeshEntityData &e) {
-            return e.Deform.MorphDeformOffset != InvalidOffset && e.MeshComp && meshes.GetMorphShadingAuthored(e.MeshComp->GetStoreId());
+            return e.Deform.MorphDeformOffset != InvalidOffset && e.MeshComp && meshes.GetDerived(e.MeshComp->GetStoreId()).MorphShadingAuthored;
         };
 
         { // Bounds reduce entries.
@@ -789,7 +785,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 }
                 if (!e.MeshComp || e.Mod.InstanceCount == 0) continue;
                 if (has_pending_transform) {
-                    if (const auto it = edit_transform_context.TransformInstances.find(e.Entity); it != edit_transform_context.TransformInstances.end()) {
+                    if (const auto it = transform_instances.find(e.Entity); it != transform_instances.end()) {
                         spec.PendingPrimary = r.try_get<const RenderInstance>(it->second);
                     }
                 }
@@ -1023,7 +1019,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 if (primary != primary_edit_instances.end() && primary->second == instance_entity) {
                     const uint32_t store_id = r.get<const MeshHandle>(instance.Entity).StoreId;
                     record.Selection = meshes.GetEditSelectionStorage(store_id);
-                    record.EditEdgeSharpnessOffset = meshes.GetEdgeSharpnessRange(store_id).Offset;
+                    record.EditEdgeSharpnessOffset = meshes.Get(store_id).EdgeSharpness.Offset;
                     record.ElementIdOffset = meshes.GetSelectionBitOffset(store_id, edit_mode);
                 } else if (is_excite_mode && sound_meshes.contains(instance.Entity)) {
                     const uint32_t store_id = r.get<const MeshHandle>(instance.Entity).StoreId;
@@ -1047,7 +1043,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             for (const auto &e : mesh_entities) {
                 if (!e.PrimaryEditBufferIndex || !e.MeshComp || e.Buf.Meshlets.Count == 0u) continue;
                 scene_state.MeshletEditOverlayMeshes.insert(e.Entity);
-                const auto sharpness = meshes.GetEdgeSharpness(e.MeshComp->GetStoreId());
+                const auto sharpness = meshes.Arenas().EdgeSharpness.Get(meshes.Get(e.MeshComp->GetStoreId()).EdgeSharpness);
                 scene_state.MeshletEditHasSharpEdges |= std::memchr(sharpness.data(), 1, sharpness.size()) != nullptr;
             }
         }
@@ -1090,7 +1086,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             const auto *mesh_buffers = instance ? r.try_get<const MeshBuffers>(instance->Entity) : nullptr;
             if (instance && mesh_buffers && mesh_buffers->Meshlets.Count > 0u &&
                 primary != primary_edit_instances.end() && primary->second == instance_entity &&
-                selection::GetElementCount(GetMesh(r, instance->Entity), edit_mode) > 0u) {
+                GetMesh(r, instance->Entity).ElementCount(edit_mode) > 0u) {
                 record.Flags |= uint32_t(MeshletInstanceFlag::ElementSelection);
                 if (ri.MeshletCount > 0) {
                     element_selection_work.Ranges += ri.MeshletRangeCount;
@@ -1107,7 +1103,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             }
             const auto mesh = instance ? TryGetMesh(r, instance->Entity) : std::nullopt;
             const bool shaded_face_less = mesh && show_rendered && mesh->FaceCount() == 0u &&
-                meshes.GetPrimitiveMaterialRange(mesh->GetStoreId()).Count > 0u;
+                meshes.Get(mesh->GetStoreId()).PrimitiveMaterials.Count > 0u;
             const bool wire = instance && mesh_buffers && mesh_buffers->Meshlets.Count > 0u &&
                 !r.all_of<ArmatureObject>(instance->Entity) && !r.all_of<BoneJoint>(instance->Entity) &&
                 !r.all_of<ObjectExtrasTag>(instance->Entity) && mesh_buffers->EdgeIndices.Count > 0u &&
@@ -1261,7 +1257,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
     // surfaces across temporal phases changes the winner of equal-depth raster ties.
     if (cull_scene_meshlets) {
         const uint32_t pyramid = show_fill && phase == RenderPhase::Full && targets.Resources->DepthPyramidValid && !disocclusion_possible ?
-            sel_slots.DepthPyramidSampler :
+            samplers.DepthPyramid :
             InvalidSlot;
         RecordMeshletCull(
             chain, slots, pipelines, buffers,
@@ -1283,7 +1279,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         buffers.PreviousFullCullViewProj = current_view_proj;
         // Only visibility surfaces contribute to occlusion.
         auto *compute = chain.BeginCompute("DepthPyramidFinal", MTL::StageFragment);
-        RecordDepthPyramid(compute, slots, buffers, pipelines, targets, sel_slots, ubo_offset);
+        RecordDepthPyramid(compute, slots, buffers, pipelines, targets, samplers, ubo_offset);
         targets.Resources->DepthPyramidValid = true;
     }
     if (has_silhouette) RecordSilhouetteDepthPass(chain, slots, pipelines, targets, buffers, ubo_offset);
@@ -1341,7 +1337,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         // Resolve shutter samples before drawing sharp overlays.
         if (phase == RenderPhase::BlurResolve) {
             main.MotionBlurResolve.Bind(encoder);
-            const MotionBlurResolvePushConstants resolve_pc{.AccumSamplerSlot = sel_slots.MotionBlurOutputSampler, .InvSteps = 1.f / float(MotionBlurSteps(settings))};
+            const MotionBlurResolvePushConstants resolve_pc{.AccumSamplerSlot = samplers.MotionBlurOutput, .InvSteps = 1.f / float(MotionBlurSteps(settings))};
             encode::SetPushConstants(encoder, resolve_pc);
             draw_quad();
         }
@@ -1380,7 +1376,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         const auto pass = mtl::MakePassDescriptor(colors);
         encoder = encode::BeginScenePass(chain, pass, "BlurAccumulate", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
         main.MotionBlurAccumulate.Bind(encoder);
-        const MotionBlurAccumulatePushConstants accum_pc{.SceneSamplerSlot = sel_slots.SceneColorSampler, .Weight = float(sample_weight)};
+        const MotionBlurAccumulatePushConstants accum_pc{.SceneSamplerSlot = samplers.SceneColor, .Weight = float(sample_weight)};
         encode::SetPushConstants(encoder, accum_pc);
         draw_quad();
         return;
@@ -1450,10 +1446,10 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 active_object_id = ObjectId(active_entity);
             }
             encode::SetPushConstants(encoder, SilhouetteEdgeColorPushConstants{
-                                                  TransformGizmo::IsUsing(r, viewport) && interaction_mode == InteractionMode::Object,
-                                                  sel_slots.SilhouetteSampler,
+                                                  r.get<const GizmoInteraction>(viewport).IsUsing() && interaction_mode == InteractionMode::Object,
+                                                  samplers.Silhouette,
                                                   active_object_id,
-                                                  show_fill && meshlet_fill ? sel_slots.SceneDepthSampler : InvalidSlot,
+                                                  show_fill && meshlet_fill ? samplers.SceneDepth : InvalidSlot,
                                               });
             draw_quad();
         }
@@ -1480,7 +1476,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             for (uint32_t corner = 0u; corner < 3u; ++corner) {
                 draw_meshlet_overlay(
                     edit_edges, MeshletRoute::EditOverlay, MeshletInstanceFlag::EditOverlay,
-                    160u, corner, meshes.GetEdgeSharpnessSlot()
+                    160u, corner, meshes.Slots().EdgeSharpness
                 );
             }
         }
@@ -1587,10 +1583,10 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         // Debug channels write their own already-viewable values, so they pass through untransformed.
         const uint32_t view_transform = settings.DebugChannel != DebugChannel::None ? 2u : show_rendered ? 1u :
                                                                                                            0u;
-        const uint32_t scene_sampler = phase == RenderPhase::BlurFast ? sel_slots.MotionBlurOutputSampler : sel_slots.SceneColorSampler;
+        const uint32_t scene_sampler = phase == RenderPhase::BlurFast ? samplers.MotionBlurOutput : samplers.SceneColor;
         const ViewportCompositePushConstants composite_pc{
             .SceneColorSamplerSlot = scene_sampler,
-            .OverlayColorSamplerSlot = sel_slots.OverlayColorSampler,
+            .OverlayColorSamplerSlot = samplers.OverlayColor,
             .ViewTransform = view_transform,
             .HasOverlay = overlay_pass_needed,
             .Backdrop = settings.ClearColor,
@@ -1643,8 +1639,8 @@ void DrawOverlayJobs(
                                               .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
                                               .ModelSlot = buffers.Instances.TransformBuffer.Slot,
                                               .StateSlot = buffers.Instances.StateBuffer.Slot,
-                                              .TetPositionSlot = meshes.GetTetPositionSlot(),
-                                              .TetEdgeIndexSlot = meshes.GetTetEdgeIndexSlot(),
+                                              .TetPositionSlot = meshes.Slots().TetPosition,
+                                              .TetEdgeIndexSlot = meshes.Slots().TetEdgeIndex,
                                           });
     encoder->drawMeshThreadgroups(
         *buffers.OverlayJobDispatchArgs, 0u, MTL::Size(1, 1, 1),
@@ -1843,12 +1839,12 @@ void DeriveBaseNormalsNow(state::Scene &r, std::span<const state::Entity> mesh_e
         auto entry = MakeDeriveEntryInputs(meshes, store_id, mesh_buffers->FaceIndices);
         if (!entry) continue;
         entry->VertexNormalOffset = entry->Vertices.Offset;
-        entry->SeamNormalOffset = meshes.GetBaseSeamNormalRange(store_id).Offset;
+        entry->SeamNormalOffset = meshes.GetDerived(store_id).BaseSeamNormals.Offset;
         entry->FaceNormalOffset = entry->FaceDataOffset;
         entries.emplace_back(*entry);
     }
     if (entries.empty()) return;
-    SubmitNormalDeriveNow(r, entries, meshes.GetBaseVertexNormalSlot(), meshes.GetBaseSeamNormalSlot(), meshes.GetBaseFaceNormalSlot());
+    SubmitNormalDeriveNow(r, entries, meshes.Slots().BaseVertexNormal, meshes.Slots().BaseSeamNormal, meshes.Slots().BaseFaceNormal);
 }
 
 namespace {
@@ -1873,16 +1869,17 @@ void UpdateAuthoredMorphShadingNow(state::Scene &r, std::span<const state::Entit
         const auto mesh = TryGetMesh(r, entity);
         if (!mesh_buffers || !mesh) continue;
         const auto store_id = mesh->GetStoreId();
-        const auto target_count = meshes.GetMorphTargetCount(store_id);
+        const auto &record = meshes.Get(store_id);
+        const auto target_count = record.MorphTargetCount;
         // A mesh without authored normals shades by derivation alone, under any morph weights.
-        if (target_count == 0 || !meshes.HasAuthoredNormals(store_id)) continue;
+        if (target_count == 0 || !record.HasAuthoredNormals) continue;
         const auto entry_inputs = MakeDeriveEntryInputs(meshes, store_id, mesh_buffers->FaceIndices);
         if (!entry_inputs) continue;
         // Resolve the authored-normal gate from every morph target.
-        meshes.UpdateMorphShadingAuthored(*mesh, {});
-        if (meshes.GetMorphShadingAuthored(store_id)) continue;
+        UpdateMorphShadingAuthored(meshes, *mesh, {});
+        if (meshes.GetDerived(store_id).MorphShadingAuthored) continue;
         const auto vertex_count = entry_inputs->VertexCount;
-        const auto targets = meshes.GetMorphTargets(store_id);
+        const auto targets = meshes.Arenas().MorphTargets.Get(record.MorphTargets);
         for (uint32_t t = 0; t < target_count; ++t) {
             // Targets without position deltas use the rest pose and require no normal pinning.
             const auto deltas = targets.subspan(size_t{t} * vertex_count, vertex_count);
@@ -1908,10 +1905,10 @@ void UpdateAuthoredMorphShadingNow(state::Scene &r, std::span<const state::Entit
     const auto seam_normals = buffers.PosedSeamNormals.SetCount<vec3>(seam_count_total);
     const auto face_normals = buffers.PosedFaceNormals.SetCount<vec3>(face_count_total);
     for (size_t i = 0; i < jobs.size(); ++i) {
-        const auto store_id = r.get<const MeshHandle>(jobs[i].Entity).StoreId;
-        const auto base_vertices = meshes.GetVertices(store_id);
+        const auto &record = meshes.Get(r.get<const MeshHandle>(jobs[i].Entity).StoreId);
+        const auto base_vertices = meshes.Arenas().Vertices.Get(record.Vertices);
         const auto vertex_count = uint32_t(base_vertices.size());
-        const auto deltas = meshes.GetMorphTargets(store_id).subspan(size_t{jobs[i].TargetIndex} * vertex_count, vertex_count);
+        const auto deltas = meshes.Arenas().MorphTargets.Get(record.MorphTargets).subspan(size_t{jobs[i].TargetIndex} * vertex_count, vertex_count);
         for (uint32_t v = 0; v < vertex_count; ++v) {
             positions[entries[i].PosedPositionOffset + v] = base_vertices[v].Position + deltas[v].PositionDelta;
         }
@@ -1930,7 +1927,7 @@ void UpdateAuthoredMorphShadingNow(state::Scene &r, std::span<const state::Entit
                 face_normals.subspan(entry.FaceNormalOffset, entry.FaceCount)
             );
         }
-        meshes.UpdateMorphShadingAuthored(GetMesh(r, entity), poses);
+        UpdateMorphShadingAuthored(meshes, GetMesh(r, entity), poses);
     }
 }
 } // namespace
@@ -1938,7 +1935,12 @@ void UpdateAuthoredMorphShadingNow(state::Scene &r, std::span<const state::Entit
 void FinalizeNewMeshShadingNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     DeriveBaseNormalsNow(r, mesh_entities);
     auto &meshes = r.ctx().get<MeshStore>();
-    for (const auto entity : mesh_entities) meshes.EncodeAuthoredCornerNormals(GetMesh(r, entity));
+    for (const auto entity : mesh_entities) {
+        const auto *authored = r.try_get<const AuthoredCornerNormals>(entity);
+        if (!authored) continue;
+        EncodeAuthoredCornerNormals(meshes, GetMesh(r, entity), authored->Corners);
+        r.remove<AuthoredCornerNormals>(entity);
+    }
     UpdateAuthoredMorphShadingNow(r, mesh_entities);
 }
 
@@ -1962,7 +1964,7 @@ MeshEditWork &PrepareMeshEditWork(state::Scene &r, state::Entity entity) {
         w.Candidates = AllocateElementWork(buffers.GeometryWork, mesh.VertexCount());
         w.Vertices = AllocateElementWork(buffers.GeometryWork, mesh.VertexCount());
         w.Faces = AllocateElementWork(buffers.GeometryWork, mesh.FaceCount());
-        w.Normals = AllocateElementWork(buffers.GeometryWork, mesh.VertexCount() + meshes.GetSeamCornerCount(id));
+        w.Normals = AllocateElementWork(buffers.GeometryWork, mesh.VertexCount() + meshes.GetDerived(id).SeamCornerCount);
         uint32_t level0 = 0;
         for (const auto &primitive : buffers.Primitives.Get(mb.Primitives)) level0 += primitive.Level0Count;
         w.Meshlets = AllocateElementWork(buffers.GeometryWork, level0);
@@ -1972,7 +1974,7 @@ MeshEditWork &PrepareMeshEditWork(state::Scene &r, state::Entity entity) {
             w.BoundsLevels.push_back({AllocateElementWork(buffers.GeometryWork, n), buffers.BoundsParents.Allocate(n)});
             if (n <= 1u) break;
         }
-        const uint32_t elements = mesh.FaceCount() ? meshes.GetTriangleCount(id) : mesh.EdgeCount() ? mesh.EdgeCount() :
+        const uint32_t elements = mesh.FaceCount() ? meshes.Get(id).TriangleCount : mesh.EdgeCount() ? mesh.EdgeCount() :
                                                                                                       mesh.VertexCount();
         w.ElementMeshlets = buffers.ElementMeshlets.Allocate(elements);
         auto map = buffers.ElementMeshlets.GetMutable(w.ElementMeshlets);
@@ -2022,9 +2024,9 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Ent
     w.CandidateReady = true;
     for (auto work : {w.Vertices, w.Faces, w.Normals, w.Meshlets, w.BoundsTiles}) ClearElementWork(buffers.GeometryWork, work);
     auto entry = MakeDeriveEntryInputs(meshes, id, r.get<const MeshBuffers>(entity).FaceIndices).value_or(NormalDeriveEntry{.VertexCount = mesh.VertexCount()});
-    entry.VertexNormalOffset = meshes.GetBaseVertexNormalRange(id).Offset;
-    entry.SeamNormalOffset = meshes.GetBaseSeamNormalRange(id).Offset;
-    entry.FaceNormalOffset = meshes.GetBaseFaceNormalRange(id).Offset;
+    entry.VertexNormalOffset = meshes.Get(id).Vertices.Offset;
+    entry.SeamNormalOffset = meshes.GetDerived(id).BaseSeamNormals.Offset;
+    entry.FaceNormalOffset = meshes.Get(id).FaceData.Offset;
     if (pose) {
         for (const auto &level : w.BoundsLevels) ClearElementWork(buffers.GeometryWork, level.Work);
         entry.PosedPositionOffset = pose->PositionBase;
@@ -2036,7 +2038,7 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Ent
         w.PreviewActive = pending != nullptr;
     }
     return {
-        .Vertices = meshes.GetVerticesRange(id),
+        .Vertices = meshes.Arenas().Vertices.Slotted(meshes.Get(id).Vertices),
         .Output = pose ? SlotOffset{buffers.PosedPositions.Slot, pose->PositionBase} : SlotOffset{},
         .Selection = meshes.GetEditSelectionStorage(id).VertexBits,
         .Candidates = w.Candidates,
@@ -2049,11 +2051,11 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Ent
         .Primary = pending ? static_cast<Transform>(r.get<const WorldTransform>(primary)) : Transform{},
         .Delta = pending ? pending->Delta : Transform{},
         .Pivot = pending ? pending->Pivot : vec3{},
-        .AdjacencySlot = meshes.GetAdjacencySlot(),
-        .FaceFirstTriangleSlot = meshes.GetFaceFirstTriangleSlot(),
-        .CornerClassSlot = meshes.GetCornerClassSlot(),
+        .AdjacencySlot = meshes.Slots().Adjacency,
+        .FaceFirstTriangleSlot = meshes.Slots().FaceFirstTriangle,
+        .CornerClassSlot = meshes.Slots().CornerClass,
         .CornerClassOffset = meshes.GetCornerClassOffset(id),
-        .VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexEdgeAdjacencyRange(id)),
+        .VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetDerived(id).VertexEdgeAdjacency),
         .Topology = mesh.FaceCount() ? 0u : mesh.EdgeCount() ? 1u :
                                                                2u,
         .TriangleMeshlets = buffers.ElementMeshlets.Slotted(w.ElementMeshlets),
@@ -2087,7 +2089,7 @@ void RecordGeometryEditBatch(state::Scene &r, MTL::ComputeCommandEncoder *encode
         }
         encoder->memoryBarrier(MTL::BarrierScopeBuffers);
     }
-    auto derive = MakeNormalDerivePc(buffers, meshes, posed ? buffers.PosedVertexNormals.Slot : meshes.GetBaseVertexNormalSlot(), posed ? buffers.PosedSeamNormals.Slot : meshes.GetBaseSeamNormalSlot(), posed ? buffers.PosedFaceNormals.Slot : meshes.GetBaseFaceNormalSlot());
+    auto derive = MakeNormalDerivePc(buffers, meshes, posed ? buffers.PosedVertexNormals.Slot : meshes.Slots().BaseVertexNormal, posed ? buffers.PosedSeamNormals.Slot : meshes.Slots().BaseSeamNormal, posed ? buffers.PosedFaceNormals.Slot : meshes.Slots().BaseFaceNormal);
     derive.EntriesSlot = buffers.GeometryNormalEntries.Slot;
     for (uint32_t phase = 0; phase < 2; ++phase) {
         derive.Phase = phase;

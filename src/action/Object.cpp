@@ -5,7 +5,7 @@
 #include "action/ScopeResolve.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
-#include "mesh/MeshBatch.h"
+#include "mesh/MeshCreate.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
@@ -19,7 +19,7 @@
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
-#include "selection/SelectionQueries.h"
+#include "selection/SelectionGpu.h"
 #include "state/Scene.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
@@ -88,7 +88,7 @@ state::Entity DuplicateOne(state::Scene &r, state::Entity e) {
 
     const auto mesh_entity = r.get<Instance>(e).Entity;
     const auto e_new = ::AddMesh(
-        r, meshes.CloneMesh(GetMesh(r, mesh_entity)).StoreId,
+        r, meshes.CloneMesh(GetMesh(r, mesh_entity)),
         MeshInstanceCreateInfo{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = r.all_of<RenderInstance>(e)}
     );
     if (auto *prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(e_new.first, *prim_shape);

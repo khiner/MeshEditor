@@ -1,7 +1,10 @@
 #pragma once
 
+#include "selection/BoneSelection.h"
+
 #include "state/Entity.h"
 
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -23,9 +26,19 @@ state::Entity FindActiveBone(const state::Scene &);
 // Returns selected transform roots, using bones in pose or edit mode and objects otherwise.
 std::vector<state::Entity> RootSelectedForTransform(const state::Scene &, state::Entity viewport);
 
-struct EditTransformContext {
-    std::unordered_map<state::Entity, state::Entity> TransformInstances;
+// Exclusive select: clears Selected/Active, then selects `e` (null clears everything).
+void Select(state::Scene &, state::Entity);
+// Exclusive bone select: clears BoneSelection/BoneActive, then selects `e` (null clears everything).
+void SelectBone(state::Scene &, state::Entity);
+
+struct SelectionHit {
+    state::Entity Entity;
+    std::optional<BoneSel> Part{};
+    bool operator==(const SelectionHit &) const = default;
 };
+
+// Resolves raw GPU hits to logical targets, collapsing bone parts and object sub-elements.
+std::vector<SelectionHit> ResolveHits(state::Scene &, const std::vector<state::Entity> &raw, bool bone_mode, bool merge_parts = false);
 
 namespace selection {
 using PrimaryEditInstanceMap = std::unordered_map<state::Entity, state::Entity>;

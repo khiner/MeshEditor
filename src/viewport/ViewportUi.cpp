@@ -23,9 +23,8 @@
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
-#include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
-#include "selection/SelectionQueries.h"
+#include "selection/SelectionGpu.h"
 #include "ui/FieldEdit.h"
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
@@ -240,7 +239,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
     const bool scale_shortcut_enabled = transform_shortcuts_enabled && !has_frozen_selected;
     // Route shortcuts globally while preserving ImGui ownership for active widgets, navigation, and text input.
     constexpr auto VKey = ImGuiInputFlags_RouteGlobal;
-    if (TransformGizmo::IsUsing(r, viewport)) {
+    if (r.get<const GizmoInteraction>(viewport).IsUsing()) {
         // During an active transform, only allow transform switching shortcuts.
         if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) action::Emit(action::view::LatchScreenTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
         else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::Emit(action::view::LatchScreenTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
@@ -320,7 +319,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
         }
     }
 
-    const bool active_transform = TransformGizmo::IsUsing(r, viewport);
+    const bool active_transform = r.get<const GizmoInteraction>(viewport).IsUsing();
     if (active_transform) {
         // TransformGizmo overrides this mouse cursor during some actions, so this is a default.
         SetMouseCursor(ImGuiMouseCursor_ResizeAll);
@@ -414,7 +413,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
     const profile::CpuScope scope{"ViewportOverlayUi"};
     const auto &icons = r.ctx().get<const ViewportIcons>();
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
-    const bool active_transform = TransformGizmo::IsUsing(r, viewport);
+    const bool active_transform = r.get<const GizmoInteraction>(viewport).IsUsing();
     static constexpr float OrientationGizmoSize{84};
     const OverlayIconButtonStyle overlay_button_style{};
     const float overlay_corner_gap = GetTextLineHeightWithSpacing() / 2.f;

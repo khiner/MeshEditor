@@ -1,19 +1,28 @@
 #pragma once
 
+#include "metal/Bindless.h"
 #include "metal/Image.h"
 
 #include <Metal/MTLBuffer.hpp>
 #include <memory>
 #include <vector>
 
-namespace mtl {
-struct BindlessSet;
-} // namespace mtl
-
 struct SampledTexture {
     MTL::Texture *Texture{nullptr};
     MTL::SamplerState *Sampler{nullptr};
     explicit operator bool() const { return Texture != nullptr; }
+};
+
+// Bindless sampler slots the render passes read the viewport targets through, fixed for the viewport's lifetime.
+struct RenderSamplerSlots {
+    explicit RenderSamplerSlots(mtl::BindlessSet &slots)
+        : Owner(slots),
+          Silhouette(Owner.Allocate(SlotType::Sampler)), SceneColor(Owner.Allocate(SlotType::Sampler)), OverlayColor(Owner.Allocate(SlotType::Sampler)),
+          Transmission(Owner.Allocate(SlotType::Sampler)), MotionBlurOutput(Owner.Allocate(SlotType::Sampler)), Velocity(Owner.Allocate(SlotType::Sampler)),
+          SceneDepth(Owner.Allocate(SlotType::Sampler)), DepthPyramid(Owner.Allocate(SlotType::Sampler)) {}
+
+    mtl::SlotOwner Owner;
+    uint32_t Silhouette, SceneColor, OverlayColor, Transmission, MotionBlurOutput, Velocity, SceneDepth, DepthPyramid;
 };
 
 // The viewport-sized attachments and the lazily allocated transmission and motion-blur targets.

@@ -27,7 +27,7 @@ namespace {
 template<typename Handle>
 void EmplaceMeshBuffers(state::Scene &r, state::Entity e) {
     const auto &meshes = r.ctx().get<const MeshStore>();
-    r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(r.get<const Handle>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
+    r.emplace<MeshBuffers>(e, meshes.Arenas().Vertices.Slotted(meshes.Get(r.get<const Handle>(e).StoreId).Vertices), SlottedRange{}, SlottedRange{}, SlottedRange{});
 }
 
 void EmplaceMeshShadingSummary(state::Scene &r, state::Entity e) {

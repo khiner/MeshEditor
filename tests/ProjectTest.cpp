@@ -14,7 +14,7 @@
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
-#include "selection/SelectionQueries.h"
+#include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/Viewport.h"
 #include <fstream>

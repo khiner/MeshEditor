@@ -16,7 +16,6 @@
 #include "mesh/MeshStore.h"
 #include "render/Instance.h"
 #include "scene/Entity.h"
-#include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
@@ -302,7 +301,7 @@ std::vector<uint32_t> GetSampleOpVertices(const state::Scene &r, state::Entity v
 
     const auto bits = r.ctx().get<const MeshStore>().GetSelectionBits(mesh->GetStoreId(), Element::Vertex);
     std::vector<uint32_t> vertices;
-    selection::ForEachSelected(bits, mesh->VertexCount(), [&](uint32_t vertex) { vertices.push_back(vertex); });
+    ForEachSelected(bits, mesh->VertexCount(), [&](uint32_t vertex) { vertices.push_back(vertex); });
     return vertices;
 }
 
@@ -368,7 +367,7 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
     }
 
     if (has_model && excitable) {
-        const auto excitable_vertices = r.ctx().get<const MeshStore>().GetSoundVertices(excitable->Vertices);
+        const auto excitable_vertices = r.ctx().get<const MeshStore>().Arenas().SoundVertices.Get(excitable->Vertices);
         const auto active_vertex = excitable_vertices[active_vi];
         const bool can_excite =
             (model == SoundVerticesModel::Samples) ||
@@ -456,7 +455,7 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
         if (auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
         const auto active_gains = [&]() -> std::vector<float> {
             if (active_vi >= modes.Shapes.size()) return {};
-            const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), r.ctx().get<const MeshStore>().GetSoundVertices(excitable->Vertices)[active_vi]), ImpulseAngle);
+            const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), r.ctx().get<const MeshStore>().Arenas().SoundVertices.Get(excitable->Vertices)[active_vi]), ImpulseAngle);
             return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(numeric::Dot(s, j)); }) | to<std::vector<float>>();
         }();
         if (!active_gains.empty()) {

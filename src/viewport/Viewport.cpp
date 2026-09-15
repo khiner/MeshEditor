@@ -18,7 +18,7 @@
 #include "audio/SurfaceContact.h"
 #include "gizmo/GizmoInteraction.h"
 #include "mesh/Mesh.h"
-#include "mesh/MeshBatch.h"
+#include "mesh/MeshCreate.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/MeshStores.h"
@@ -38,7 +38,6 @@
 #include "scene/EntityDestroyTracker.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
-#include "selection/SelectionQueries.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportConsumerFence.h"
@@ -97,9 +96,9 @@ void RenderMotionBlurredFrame(state::Scene &r, state::Entity viewport) {
     if (targets.EnsureMotionBlurResources(ctx, fast)) {
         auto &slots = r.ctx().get<mtl::BindlessSet>();
         const auto sampled = targets.MotionBlurOutputSampler();
-        slots.SetSampler({SlotType::Sampler, r.ctx().get<const SelectionSlots>().MotionBlurOutputSampler}, sampled.Texture, sampled.Sampler);
+        slots.SetSampler({SlotType::Sampler, r.ctx().get<const RenderSamplerSlots>().MotionBlurOutput}, sampled.Texture, sampled.Sampler);
         const auto velocity = targets.Nearest(fast ? &targets.MotionBlur->VelocityImage : nullptr);
-        slots.SetSampler({SlotType::Sampler, r.ctx().get<const SelectionSlots>().VelocitySampler}, velocity.Texture, velocity.Sampler);
+        slots.SetSampler({SlotType::Sampler, r.ctx().get<const RenderSamplerSlots>().Velocity}, velocity.Texture, velocity.Sampler);
     }
 
     // Evaluate animation, physics, and an animated look-through camera at `pf` into mapped pose buffers.
@@ -205,6 +204,7 @@ state::Entity InitEngine(state::Scene &r) {
     r.ctx().emplace<ViewportExtent>();
     r.ctx().emplace<ViewportConsumerFence>();
     const auto &sel_slots = r.ctx().emplace<SelectionSlots>(slots);
+    r.ctx().emplace<RenderSamplerSlots>(slots);
     // Object picking grows on demand and refreshes its bindings; element picking uses fixed buffers.
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickKey}, *buffers.ObjectPickKeys);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickKey}, *buffers.ElementPickKey);
@@ -334,6 +334,7 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
 void DeinitViewport(state::Scene &r, state::Entity viewport) {
     r.ctx().erase<ViewportRenderResources>();
     r.ctx().erase<SelectionSlots>();
+    r.ctx().erase<RenderSamplerSlots>();
     r.ctx().erase<FrameState>();
     r.ctx().erase<PendingRenderRequest>();
     r.ctx().erase<GpuSceneState>();

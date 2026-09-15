@@ -1,8 +1,11 @@
 #pragma once
 
 #include "Range.h"
+#include "numeric/vec3.h"
 
 #include "state/Entity.h"
+
+#include <vector>
 
 struct RenderInstance {
     state::Entity Entity;
@@ -29,6 +32,11 @@ struct MeshHandle {
 // Derived from the canonical per-face sharpness store after construction or a shading edit.
 struct MeshShadingSummary {
     bool AnySharp{}, AllSharp{};
+};
+
+// A new triangle mesh's authored normals in fan order, held until its base normals derive and the custom corner-normal layer encodes them.
+struct AuthoredCornerNormals {
+    std::vector<vec3> Corners;
 };
 
 struct ObjectExtrasTag {};

@@ -20,7 +20,7 @@
 #include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
 #include "mesh/MeshAttributes.h"
-#include "mesh/MeshBatch.h"
+#include "mesh/MeshCreate.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "object/ObjectOps.h"
@@ -1913,6 +1913,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             layout.Kind = kind;
             layout.Name = scene_mesh.Name;
             const auto [e, _] = ::AddMesh(r, created[part].StoreId, std::nullopt);
+            if (!created[part].AuthoredCornerNormals.empty()) r.emplace<AuthoredCornerNormals>(e, std::move(created[part].AuthoredCornerNormals));
             r.emplace<Path>(e, source_path);
             r.emplace<MeshSourceLayout>(e, std::move(layout));
             return e;

@@ -22,7 +22,6 @@
 #include "physics/PhysicsTypes.h"
 #include "project/Project.h"
 #include "scene/Entity.h"
-#include "selection/SelectionBitset.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
 
@@ -396,7 +395,7 @@ size_t HashModalConfig(const fastfem::SolverConfig &config) {
 // Returns existing excitation vertices when copying or unique evenly spaced mesh vertices otherwise.
 std::vector<uint32_t> DesiredSolveVertices(const state::Scene &r, state::Entity e, const ModalSolveSettings &settings, uint32_t num_vertices) {
     if (settings.CopySoundVertices && r.all_of<SoundVertices>(e)) {
-        const auto vertices = r.ctx().get<const MeshStore>().GetSoundVertices(r.get<const SoundVertices>(e).Vertices);
+        const auto vertices = r.ctx().get<const MeshStore>().Arenas().SoundVertices.Get(r.get<const SoundVertices>(e).Vertices);
         return {vertices.begin(), vertices.end()};
     }
     const uint32_t ex_count = std::clamp(settings.NumVertices, 1u, num_vertices);
@@ -695,7 +694,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         }
         auto &meshes = r.ctx().get<MeshStore>();
         if (auto *sv = r.try_get<SoundVertices>(e)) {
-            if (!std::ranges::equal(meshes.GetSoundVertices(sv->Vertices), new_vertices)) {
+            if (!std::ranges::equal(meshes.Arenas().SoundVertices.Get(sv->Vertices), new_vertices)) {
                 meshes.ReleaseSoundVertices(sv->Vertices);
                 r.replace<SoundVertices>(e, SoundVertices{meshes.AllocateSoundVertices(new_vertices)});
             }
@@ -706,7 +705,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         const auto mesh_entity = r.get<const Instance>(e).Entity;
         const auto &sv = r.get<const SoundVertices>(e);
         if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
-            const auto vertices = meshes.GetSoundVertices(sv.Vertices);
+            const auto vertices = meshes.Arenas().SoundVertices.Get(sv.Vertices);
             if (!FindSoundVertexIndex(vertices, active->Handle)) r.emplace_or_replace<MeshActiveElement>(mesh_entity, vertices.front());
         }
     }
@@ -734,7 +733,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         const auto *vf = r.try_get<::VertexForce>(e);
         if (!vf || vf->Force <= 0) continue;
         const auto &excitable = r.get<const SoundVertices>(e);
-        if (auto vi = FindSoundVertexIndex(r.ctx().get<const MeshStore>().GetSoundVertices(excitable.Vertices), vf->Vertex)) {
+        if (auto vi = FindSoundVertexIndex(r.ctx().get<const MeshStore>().Arenas().SoundVertices.Get(excitable.Vertices), vf->Vertex)) {
             r.emplace_or_replace<MeshActiveElement>(r.get<const Instance>(e).Entity, vf->Vertex);
             const auto model = r.get<SoundVerticesModel>(e);
             if (model == SoundVerticesModel::Modal && r.all_of<ModalModes>(e)) {

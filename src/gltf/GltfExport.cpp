@@ -892,11 +892,13 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     }
 
     asset.meshes.reserve(mesh_groups.size());
+    const auto &arenas = meshes.Arenas();
     const auto emit_non_triangle_attrs = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, uint32_t store_id) {
-        if (const auto point_normals = meshes.GetPointNormals(store_id); !point_normals.empty()) {
+        const auto &record = meshes.Get(store_id);
+        if (const auto point_normals = arenas.PointNormals.Get(record.PointNormals); !point_normals.empty()) {
             out.emplace_back(fastgltf::Attribute{"NORMAL", AddDataAccessor(point_normals, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
-        if (const auto colors = meshes.GetCornerColors(store_id); !colors.empty()) {
+        if (const auto colors = arenas.CornerColors.Get(record.CornerColors); !colors.empty()) {
             out.emplace_back(fastgltf::Attribute{"COLOR_0", AddDataAccessor(colors, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
     };
@@ -922,14 +924,15 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (group.Triangles != state::Null) {
             const auto &mesh = GetMesh(r, group.Triangles);
             const auto store_id = mesh.GetStoreId();
-            const auto vertices = meshes.GetVertices(store_id);
+            const auto &record = meshes.Get(store_id);
+            const auto vertices = arenas.Vertices.Get(record.Vertices);
             const auto total_vcount = vertices.size();
-            const auto face_primitives = meshes.GetElementPrimitiveIndices(store_id);
-            const auto primitive_materials = meshes.GetPrimitiveMaterialIndices(store_id);
+            const auto face_primitives = arenas.ElementPrimitives.Get(record.ElementPrimitives);
+            const auto primitive_materials = arenas.PrimitiveMaterials.Get(record.PrimitiveMaterials);
             const auto corner_normals = meshes.GetCornerNormals(mesh);
-            const auto corner_tangents = meshes.GetCornerTangents(store_id);
-            const auto corner_colors = meshes.GetCornerColors(store_id);
-            const std::array corner_uv_sets{meshes.GetCornerUvs(store_id, 0), meshes.GetCornerUvs(store_id, 1), meshes.GetCornerUvs(store_id, 2), meshes.GetCornerUvs(store_id, 3)};
+            const auto corner_tangents = arenas.CornerTangents.Get(record.CornerTangents);
+            const auto corner_colors = arenas.CornerColors.Get(record.CornerColors);
+            const std::array corner_uv_sets{arenas.CornerUvs.Get(record.CornerUvs[0]), arenas.CornerUvs.Get(record.CornerUvs[1]), arenas.CornerUvs.Get(record.CornerUvs[2]), arenas.CornerUvs.Get(record.CornerUvs[3])};
             // Derive one primitive layout for runtime-created meshes.
             const auto *layout_ptr = r.try_get<const MeshSourceLayout>(group.Triangles);
             const MeshSourceLayout synthesized_layout = layout_ptr ? MeshSourceLayout{} : [&] {
@@ -953,7 +956,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             struct CornerRef {
                 uint32_t Vertex, Corner;
             };
-            const auto face_first_tris = meshes.GetFaceFirstTriangles(store_id);
+            const auto face_first_tris = arenas.FaceFirstTriangles.Get(record.FaceData);
             std::vector<std::vector<CornerRef>> corners_per_prim(prim_count);
             uint32_t fi = 0;
             for (const auto fh : mesh.faces()) {
@@ -979,10 +982,10 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
 
             // Skin / morph spans (empty when the mesh lacks the channel).
-            const auto bd_span = meshes.GetBoneDeform(store_id);
+            const auto bd_span = arenas.BoneDeform.Get(record.BoneDeform);
             const bool has_skin = bd_span.size() == total_vcount && total_vcount > 0;
-            const uint32_t target_count = (total_vcount > 0) ? meshes.GetMorphTargetCount(store_id) : 0u;
-            const auto mt_span = meshes.GetMorphTargets(store_id);
+            const uint32_t target_count = (total_vcount > 0) ? record.MorphTargetCount : 0u;
+            const auto mt_span = arenas.MorphTargets.Get(record.MorphTargets);
             // CreateMesh writes 0 when source lacked normal deltas, so any non-zero means source had them.
             const bool has_normal_deltas = std::ranges::any_of(mt_span, [](const auto &m) { return m.NormalDelta != vec3{0}; });
             const bool has_tangent_deltas = !layout.MorphTangentDeltas.empty();
@@ -1144,7 +1147,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 });
             }
 
-            const auto dw = meshes.GetDefaultMorphWeights(store_id);
+            const auto &dw = meshes.Get(store_id).DefaultMorphWeights;
             if (!dw.empty()) {
                 default_weights.reserve(dw.size());
                 for (const auto w : dw) default_weights.emplace_back(w);
@@ -1153,7 +1156,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
         if (group.Lines != state::Null) {
             const auto &mesh = GetMesh(r, group.Lines);
-            const auto vertices = meshes.GetVertices(mesh.GetStoreId());
+            const auto vertices = mesh.GetVerticesSpan();
             if (!vertices.empty() && mesh.EdgeCount() > 0) {
                 std::vector<uint32_t> idx;
                 idx.reserve(mesh.EdgeCount() * 2);
@@ -1171,7 +1174,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
         if (group.Points != state::Null) {
             const auto &mesh = GetMesh(r, group.Points);
-            const auto vertices = meshes.GetVertices(mesh.GetStoreId());
+            const auto vertices = mesh.GetVerticesSpan();
             if (!vertices.empty()) {
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
                 attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(vertices, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});

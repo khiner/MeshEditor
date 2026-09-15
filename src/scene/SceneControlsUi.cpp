@@ -34,9 +34,8 @@
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
-#include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
-#include "selection/SelectionQueries.h"
+#include "selection/SelectionGpu.h"
 #include "state/Scene.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
@@ -406,7 +405,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
         Spacing();
         if (TreeNode("Debug")) {
             if (const auto label = TransformGizmo::ToString(r.get<const GizmoInteraction>(viewport)); !label.empty()) {
-                Text("%s op: %s", TransformGizmo::IsUsing(r, viewport) ? "Active" : "Hovered", label.data());
+                Text("%s op: %s", r.get<const GizmoInteraction>(viewport).IsUsing() ? "Active" : "Hovered", label.data());
             } else {
                 TextUnformatted("Not hovering");
             }
@@ -476,7 +475,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             const auto &active_mesh = GetMesh(r, active_mesh_entity);
             auto &material_store = r.ctx().get<MaterialStore>();
             const auto texture_refs = GetTextureRefs(r);
-            const std::span<const uint32_t> primitive_materials = meshes.GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
+            const std::span<const uint32_t> primitive_materials = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(active_mesh.GetStoreId()).PrimitiveMaterials);
             const auto materials = GetMaterials(r);
             const auto material_count = uint32_t(materials.size());
             const auto material_name = [&](uint32_t index) {

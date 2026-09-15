@@ -15,9 +15,7 @@
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
-#include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
-#include "selection/SelectionGpu.h"
 #include "state/Scene.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
@@ -147,7 +145,7 @@ void BuildBoneMeshletsNow(state::Scene &r, std::span<const state::Entity> entiti
         auto &mb = r.edit<MeshBuffers>(entity);
         if (mb.FaceIndices.Count == 0u) continue;
         const auto indices = buffers.FaceIndexBuffer.Get(mb.FaceIndices);
-        const auto vertices = meshes.GetVertices(r.get<const VertexStoreId>(entity).StoreId);
+        const auto vertices = meshes.Arenas().Vertices.Get(meshes.Get(r.get<const VertexStoreId>(entity).StoreId).Vertices);
         const uint32_t triangle_count = uint32_t(indices.size() / 3u);
         std::vector<uint32_t> face_ids(triangle_count), element_primitives(triangle_count, 0u);
         std::iota(face_ids.begin(), face_ids.end(), 1u);
@@ -322,7 +320,7 @@ bool SyncViewportRenderResources(state::Scene &r, state::Entity viewport) {
     if (targets.BuiltColorExtent() == render_extent) return false;
 
     const auto &ctx = r.ctx().get<const mtl::Context>();
-    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
+    const auto &samplers = r.ctx().get<const RenderSamplerSlots>();
     auto &slots = r.ctx().get<mtl::BindlessSet>();
     // Wait for the live consumer (ImGui) to finish sampling the old resources before recreating them.
     if (auto *consumer = r.ctx().get<const ViewportConsumerFence>().Value) consumer->waitUntilCompleted();
@@ -334,16 +332,16 @@ bool SyncViewportRenderResources(state::Scene &r, state::Entity viewport) {
         targets.EnsureTransmissionResources(ctx, render_extent, want_transmission);
     }
     {
-        const profile::CpuScope scope{"UpdateSelectionSlots"};
+        const profile::CpuScope scope{"UpdateSamplerSlots"};
         const auto set_sampler = [&](uint32_t slot, SampledTexture sampled) { slots.SetSampler({SlotType::Sampler, slot}, sampled.Texture, sampled.Sampler); };
-        set_sampler(sel_slots.SilhouetteSampler, targets.Nearest(&targets.Resources->SilhouetteImage));
-        set_sampler(sel_slots.SceneColorSampler, targets.SceneColorSampler());
-        set_sampler(sel_slots.OverlayColorSampler, targets.OverlayColorSampler());
-        set_sampler(sel_slots.TransmissionSampler, targets.TransmissionSampler());
-        set_sampler(sel_slots.MotionBlurOutputSampler, targets.MotionBlurOutputSampler());
-        set_sampler(sel_slots.VelocitySampler, targets.Nearest(nullptr));
-        set_sampler(sel_slots.SceneDepthSampler, targets.SceneDepthSampler());
-        set_sampler(sel_slots.DepthPyramidSampler, targets.DepthPyramidSampler());
+        set_sampler(samplers.Silhouette, targets.Nearest(&targets.Resources->SilhouetteImage));
+        set_sampler(samplers.SceneColor, targets.SceneColorSampler());
+        set_sampler(samplers.OverlayColor, targets.OverlayColorSampler());
+        set_sampler(samplers.Transmission, targets.TransmissionSampler());
+        set_sampler(samplers.MotionBlurOutput, targets.MotionBlurOutputSampler());
+        set_sampler(samplers.Velocity, targets.Nearest(nullptr));
+        set_sampler(samplers.SceneDepth, targets.SceneDepthSampler());
+        set_sampler(samplers.DepthPyramid, targets.DepthPyramidSampler());
     }
     return true;
 }

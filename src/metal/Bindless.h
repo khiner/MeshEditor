@@ -48,4 +48,23 @@ private:
     std::array<RangeAllocator, SlotTypeCount> Allocators;
     std::array<std::vector<MTL::Resource *>, SlotTypeCount> Resources;
 };
+
+// Slots allocated from one set and released together when the owner goes away.
+struct SlotOwner {
+    explicit SlotOwner(BindlessSet &slots) : Slots(slots) {}
+    SlotOwner(const SlotOwner &) = delete;
+    SlotOwner &operator=(const SlotOwner &) = delete;
+    ~SlotOwner() {
+        for (const auto slot : Owned) Slots.Release(slot);
+    }
+
+    uint32_t Allocate(SlotType type) {
+        const auto slot = Slots.Allocate(type);
+        Owned.push_back({type, slot});
+        return slot;
+    }
+
+    BindlessSet &Slots;
+    std::vector<TypedSlot> Owned;
+};
 } // namespace mtl

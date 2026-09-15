@@ -51,10 +51,8 @@
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
-#include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
-#include "selection/SelectionQueries.h"
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
@@ -117,7 +115,7 @@ void SetEditMode(state::Scene &r, state::Entity viewport, Element mode) {
         const auto id = mesh.GetStoreId();
         meshes.EnsureSelectionBits(mesh);
         r.remove<MeshActiveElement>(mesh_entity);
-        const auto count = selection::GetElementCount(mesh, mode);
+        const auto count = mesh.ElementCount(mode);
         if (count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, mode), count);
     }
 
@@ -354,8 +352,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             else if (bone_mode) Apply(r, viewport, ExtendBoneActive{pick->Entity, pick->Part, true});
             else Apply(r, viewport, ExtendActive{pick->Entity});
         } else if (pick || !shift) {
-            if (pick && bone_mode) Apply(r, viewport, SelectBone{pick->Entity, pick->Part, false});
-            else if (pick) Apply(r, viewport, Select{pick->Entity});
+            if (pick && bone_mode) Apply(r, viewport, action::selection::SelectBone{pick->Entity, pick->Part, false});
+            else if (pick) Apply(r, viewport, action::selection::Select{pick->Entity});
             else Apply(r, viewport, DeselectAll{});
         }
     }
@@ -460,7 +458,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             const auto &mesh = GetMesh(r, entity);
             r.patch<MeshBuffers>(entity, [&](auto &mb) {
                 if (DrawsStoredCorners(mesh)) {
-                    mb.FaceIndices = meshes.GetFaceCornerRange(mesh.GetStoreId());
+                    mb.FaceIndices = meshes.Arenas().FaceCorners.Slotted(meshes.Get(mesh.GetStoreId()).FaceCorners);
                 } else if (const auto tri_idx_count = mesh.TriangleIndexCount(); tri_idx_count > 0) {
                     auto [sr, dest] = buffers.AllocateIndices(tri_idx_count, IndexKind::Face);
                     mesh.WriteTriangleIndices(dest);
@@ -592,7 +590,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (auto *bvh = r.try_edit<MeshBvh>(entity)) {
             const auto mesh = GetMesh(r, entity);
             const auto indices = GetFaceIndices(r, mesh, r.get<const MeshBuffers>(entity));
-            const auto first = meshes.GetFaceFirstTriangles(mesh.GetStoreId());
+            const auto first = meshes.Arenas().FaceFirstTriangles.Get(meshes.Get(mesh.GetStoreId()).FaceData);
             std::vector<uint32_t> triangles;
             ForEachWorkElement(buffers.GeometryWork, work.Faces, [&](uint32_t f) {
                 const auto end = f + 1 < first.size() ? first[f + 1] : uint32_t(indices.size() / 3);
@@ -600,7 +598,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             });
             bvh->Refit(mesh.GetVerticesSpan(), indices, triangles);
             ForEachWorkElement(buffers.GeometryWork, work.Normals, [&](uint32_t v) {
-                if (v < mesh.VertexCount()) bvh->MeanCurvature[v] = mesh.CalcMeanCurvature(VH{v}, meshes.GetEdgeSharpness(mesh.GetStoreId()));
+                if (v < mesh.VertexCount()) bvh->MeanCurvature[v] = mesh.CalcMeanCurvature(VH{v}, meshes.Arenas().EdgeSharpness.Get(meshes.Get(mesh.GetStoreId()).EdgeSharpness));
             });
             bvh->EnclosedVolume = mesh.CalcEnclosedVolume();
         }
@@ -832,7 +830,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 const auto mesh = GetMesh(r, mesh_entity);
                 meshes.EnsureSelectionBits(mesh);
                 const auto id = mesh.GetStoreId();
-                if (const uint32_t count = selection::GetElementCount(mesh, edit_mode); count > 0) {
+                if (const uint32_t count = mesh.ElementCount(edit_mode); count > 0) {
                     geometry_ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, edit_mode), count);
                 }
             }
@@ -847,7 +845,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             if (!assignment || !mesh) continue;
             const auto material_count = buffers.Materials.Count<PBRMaterial>();
             if (material_count == 0u) continue;
-            auto primitive_materials = meshes.GetPrimitiveMaterialIndices(mesh->GetStoreId());
+            auto primitive_materials = meshes.EditPrimitiveMaterials(mesh->GetStoreId());
             if (assignment->PrimitiveIndex < primitive_materials.size()) {
                 primitive_materials[assignment->PrimitiveIndex] = std::min(assignment->MaterialIndex, material_count - 1u);
             }
@@ -867,7 +865,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const auto active = mv ? mv->Active : std::nullopt;
         for (const auto [e, layout, _] : r.view<const MeshSourceLayout, const MeshHandle>().each()) {
             const auto mesh = GetMesh(r, e);
-            auto primitive_materials = meshes.GetPrimitiveMaterialIndices(mesh.GetStoreId());
+            auto primitive_materials = meshes.EditPrimitiveMaterials(mesh.GetStoreId());
             for (size_t i = 0; i < layout.DefaultMaterials.size(); ++i) {
                 const auto &mapping = layout.VariantMappings[i];
                 primitive_materials[i] = active && *active < mapping.size() && mapping[*active] ?
@@ -945,7 +943,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 if (morph_anim.Clips.empty() || morph_anim.ActiveClipIndex >= morph_anim.Clips.size()) continue;
                 const auto &clip = morph_anim.Clips[morph_anim.ActiveClipIndex];
                 const auto &mesh = GetMesh(r, instance.Entity);
-                const auto default_weights = meshes.GetDefaultMorphWeights(mesh.GetStoreId());
+                const auto &default_weights = meshes.Get(mesh.GetStoreId()).DefaultMorphWeights;
                 auto gpu_weights = buffers.MorphWeightBuffer.GetMutable(gpu_range.Weights);
                 if (pass == EventPass::Sample && eval_seconds != frame_seconds) {
                     frame_weights.assign(default_weights.begin(), default_weights.end());
@@ -1288,7 +1286,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             // SubmitViewport refreshes all slots only on resize, so update this lazy sampler inline.
             const auto refresh_transmission_sampler = [&] {
                 const auto info = targets.TransmissionSampler();
-                slots.SetSampler({SlotType::Sampler, r.ctx().get<const SelectionSlots>().TransmissionSampler}, info.Texture, info.Sampler);
+                slots.SetSampler({SlotType::Sampler, r.ctx().get<const RenderSamplerSlots>().Transmission}, info.Texture, info.Sampler);
                 request(RenderRequest::Rebuild);
             };
             if (shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered) {
@@ -1347,6 +1345,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const float world_opacity = is_pbr_mode ? active_lighting.WorldOpacity : 0.f;
         const auto *pending = r.try_get<const PendingTransform>(viewport);
         buffers.FrameView = {camera, render_extent};
+        const auto &mesh_slots = meshes.Slots();
         SceneViewUBO view{
             .LightCount = buffers.Lights.Count<PunctualLight>(),
             .LightSlot = buffers.Lights.Slot,
@@ -1365,21 +1364,21 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             .PendingRotation = pending ? pending->Delta.R : quat{1, 0, 0, 0},
             .PendingScale = pending ? pending->Delta.S : vec3{1},
             .LodErrorPixels = settings.LodErrorPixels,
-            .CornerTangentSlot = meshes.GetCornerTangentSlot(),
-            .CornerColorSlot = meshes.GetCornerColorSlot(),
-            .CornerUvSlot = meshes.GetCornerUvSlot(),
-            .EdgeSharpnessSlot = meshes.GetEdgeSharpnessSlot(),
-            .CornerClassSlot = meshes.GetCornerClassSlot(),
-            .CustomCornerMaskSlot = meshes.GetCustomCornerMaskSlot(),
-            .CustomCornerNormalSlot = meshes.GetCustomCornerNormalSlot(),
-            .BaseSeamNormalSlot = meshes.GetBaseSeamNormalSlot(),
-            .BaseVertexNormalSlot = meshes.GetBaseVertexNormalSlot(),
-            .BaseFaceNormalSlot = meshes.GetBaseFaceNormalSlot(),
-            .FaceFirstTriangleSlot = meshes.GetFaceFirstTriangleSlot(),
-            .AdjacencySlot = meshes.GetAdjacencySlot(),
-            .BoneDeformSlot = meshes.GetBoneDeformSlot(),
+            .CornerTangentSlot = mesh_slots.CornerTangent,
+            .CornerColorSlot = mesh_slots.CornerColor,
+            .CornerUvSlot = mesh_slots.CornerUv,
+            .EdgeSharpnessSlot = mesh_slots.EdgeSharpness,
+            .CornerClassSlot = mesh_slots.CornerClass,
+            .CustomCornerMaskSlot = mesh_slots.CustomCornerMask,
+            .CustomCornerNormalSlot = mesh_slots.CustomCornerNormal,
+            .BaseSeamNormalSlot = mesh_slots.BaseSeamNormal,
+            .BaseVertexNormalSlot = mesh_slots.BaseVertexNormal,
+            .BaseFaceNormalSlot = mesh_slots.BaseFaceNormal,
+            .FaceFirstTriangleSlot = mesh_slots.FaceFirstTriangle,
+            .AdjacencySlot = mesh_slots.Adjacency,
+            .BoneDeformSlot = mesh_slots.BoneDeform,
             .ArmatureDeformSlot = buffers.ArmatureDeformBuffer.Buffer.Slot,
-            .MorphDeformSlot = meshes.GetMorphTargetSlot(),
+            .MorphDeformSlot = mesh_slots.MorphTarget,
             .MorphWeightsSlot = buffers.MorphWeightBuffer.Buffer.Slot,
             .PosedPositionSlot = buffers.PosedPositions.Slot,
             .PosedVertexNormalSlot = buffers.PosedVertexNormals.Slot,
@@ -1388,14 +1387,14 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             .PosedMorphNormalDeltaSlot = buffers.PosedMorphNormalDeltas.Slot,
             .InstanceBoundsSlot = buffers.Instances.BoundsBuffer.Slot,
             .MaterialSlot = buffers.Materials.Slot,
-            .PrimitiveMaterialSlot = meshes.GetPrimitiveMaterialSlot(),
-            .ElementPrimitiveSlot = meshes.GetElementPrimitiveSlot(),
+            .PrimitiveMaterialSlot = mesh_slots.PrimitiveMaterial,
+            .ElementPrimitiveSlot = mesh_slots.ElementPrimitive,
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
             .ShowOverlays = settings.ShowOverlays ? 1u : 0u,
             .ShowExtras = settings.ShowExtras ? 1u : 0u,
             .ShowBoundingBoxes = settings.ShowBoundingBoxes ? 1u : 0u,
             .ShowTetWireframe = settings.ShowTetWireframe ? 1u : 0u,
-            .TransmissionFramebufferSamplerSlot = r.ctx().get<const SelectionSlots>().TransmissionSampler,
+            .TransmissionFramebufferSamplerSlot = r.ctx().get<const RenderSamplerSlots>().Transmission,
             .TransmissionFramebufferMipCount = targets.Transmission ? targets.Transmission->Image.MipLevels : 1u,
             .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && targets.Transmission) ? 1u : 0u,
             .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
@@ -1413,7 +1412,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             SlottedRange sound_vertices{};
             for (const auto [entity, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
                 if (instance.Entity != mesh_entity) continue;
-                sound_vertices = {excitable.Vertices, meshes.GetSoundVertexSlot()};
+                sound_vertices = {excitable.Vertices, meshes.Slots().SoundVertex};
                 break;
             }
             sound_selections.emplace_back(mesh_entity, sound_vertices);

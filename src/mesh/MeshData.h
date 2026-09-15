@@ -22,6 +22,8 @@ struct MeshData {
     std::vector<std::array<uint32_t, 2>> Edges{};
 
     uint32_t FaceCount() const { return Faces; }
+    // A face mesh's halfedges are its face corners, an edge mesh's are two per edge.
+    uint32_t HalfedgeCount() const { return Faces > 0 ? uint32_t(FaceCorners.size()) : uint32_t(Edges.size()) * 2u; }
     uint32_t FaceStart(uint32_t face) const { return FaceOffsets.empty() ? 3u * face : FaceOffsets[face]; }
     uint32_t FaceSize(uint32_t face) const { return FaceOffsets.empty() ? 3u : FaceOffsets[face + 1] - FaceOffsets[face]; }
     std::span<const uint32_t> Face(uint32_t face) const {

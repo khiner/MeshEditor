@@ -50,13 +50,6 @@ struct Handle {
     uint32_t operator*() const { return Index; }
     auto operator<=>(const Handle &) const = default;
     explicit operator bool() const { return Index != null; }
-
-    constexpr Element GetElement() const {
-        if constexpr (std::is_same_v<Tag, tag::Vertex>) return Element::Vertex;
-        if constexpr (std::is_same_v<Tag, tag::Edge>) return Element::Edge;
-        if constexpr (std::is_same_v<Tag, tag::Face>) return Element::Face;
-        return Element::None;
-    }
 };
 
 using VH = Handle<tag::Vertex>;
@@ -64,36 +57,23 @@ using HH = Handle<tag::Halfedge>;
 using EH = Handle<tag::Edge>;
 using FH = Handle<tag::Face>;
 
-struct AnyHandle {
-    AnyHandle(Element element = Element::None, uint32_t index = null) : Element(element), Index(index) {}
-    template<typename Tag> AnyHandle(Handle<Tag> h) : Element(h.GetElement()), Index(*h) {}
-
-    Element Element;
-    uint32_t Index;
-
-    uint32_t operator*() const { return Index; }
-    bool operator==(const AnyHandle &other) const { return Element == other.Element && Index == other.Index; }
-    operator bool() const { return Index != null; }
-
-    bool operator==(VH vh) const { return Element == Element::Vertex && Index == *vh; }
-    bool operator==(EH eh) const { return Element == Element::Edge && Index == *eh; }
-    bool operator==(FH fh) const { return Element == Element::Face && Index == *fh; }
-
-    operator VH() const { return {Element == Element::Vertex ? Index : null}; }
-    operator EH() const { return {Element == Element::Edge ? Index : null}; }
-    operator FH() const { return {Element == Element::Face ? Index : null}; }
+// The handles 0 to Count - 1 of one element domain.
+template<typename H>
+struct HandleRange {
+    struct Iterator {
+        uint32_t Index;
+        H operator*() const { return {Index}; }
+        Iterator &operator++() {
+            ++Index;
+            return *this;
+        }
+        bool operator==(const Iterator &) const = default;
+    };
+    uint32_t Count;
+    Iterator begin() const { return {0}; }
+    Iterator end() const { return {Count}; }
 };
-
 } // namespace he
-
-namespace std {
-template<typename Tag>
-struct hash<he::Handle<Tag>> {
-    size_t operator()(const he::Handle<Tag> &h) const noexcept {
-        return std::hash<uint32_t>{}(*h);
-    }
-};
-} // namespace std
 
 static constexpr uint32_t InvalidStoreId{~0u};
 
@@ -248,53 +228,12 @@ struct Mesh {
     void WriteTriangleIndices(std::span<uint32_t> dest) const;
     void WriteEdgeIndices(std::span<uint32_t> dest) const;
 
-    struct VertexIterator {
-        uint32_t Index;
-        VH operator*() const { return {Index}; }
-        VertexIterator &operator++() {
-            ++Index;
-            return *this;
-        }
-        bool operator==(const VertexIterator &) const = default;
-    };
-    struct VertexRange {
-        uint32_t Count;
-        VertexIterator begin() const { return {0}; }
-        VertexIterator end() const { return {Count}; }
-    };
-    VertexRange vertices() const { return {VertexCount()}; }
-
-    struct EdgeIterator {
-        uint32_t Index;
-        EH operator*() const { return {Index}; }
-        EdgeIterator &operator++() {
-            ++Index;
-            return *this;
-        }
-        bool operator==(const EdgeIterator &) const = default;
-    };
-    struct EdgeRange {
-        uint32_t Count;
-        EdgeIterator begin() const { return {0}; }
-        EdgeIterator end() const { return {Count}; }
-    };
-    EdgeRange edges() const { return {EdgeCount()}; }
-
-    struct FaceIterator {
-        uint32_t Index;
-        FH operator*() const { return {Index}; }
-        FaceIterator &operator++() {
-            ++Index;
-            return *this;
-        }
-        bool operator==(const FaceIterator &) const = default;
-    };
-    struct FaceRange {
-        uint32_t Count;
-        FaceIterator begin() const { return {0}; }
-        FaceIterator end() const { return {Count}; }
-    };
-    FaceRange faces() const { return {FaceCount()}; }
+    he::HandleRange<VH> vertices() const { return {VertexCount()}; }
+    he::HandleRange<EH> edges() const { return {EdgeCount()}; }
+    he::HandleRange<FH> faces() const { return {FaceCount()}; }
+    uint32_t ElementCount(Element element) const {
+        return element == Element::Vertex ? VertexCount() : element == Element::Edge ? EdgeCount() : element == Element::Face ? FaceCount() : 0u;
+    }
 
     struct CirculatorBase {
         const Mesh *M{};
@@ -326,7 +265,6 @@ struct Mesh {
 
         VH operator*() const { return M->GetToVertex(CurrentHalfedge); }
         HH advance() const { return M->C.Next(CurrentHalfedge); }
-        operator bool() const { return bool(CurrentHalfedge); }
     };
     struct FaceVertexRange {
         const Mesh *Mesh;
@@ -335,7 +273,6 @@ struct Mesh {
         FaceVertexIterator end() const { return {Mesh, HH{}, StartHalfedge}; }
     };
     FaceVertexRange fv_range(FH fh) const { return {this, C.FaceHalfedge(*fh)}; }
-    FaceVertexIterator cfv_iter(FH fh) const { return {this, C.FaceHalfedge(*fh), C.FaceHalfedge(*fh)}; }
 
     struct VertexOutgoingHalfedgeIterator : CirculatorBase {
         using difference_type = std::ptrdiff_t;

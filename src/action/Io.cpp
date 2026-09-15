@@ -13,7 +13,7 @@
 #include "audio/RealImpact.h"
 #include "audio/RealImpactComponents.h"
 #include "gltf/GltfScene.h"
-#include "mesh/MeshBatch.h"
+#include "mesh/MeshCreate.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "numeric/Angles.h"

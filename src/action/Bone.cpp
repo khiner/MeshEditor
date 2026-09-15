@@ -11,7 +11,6 @@
 #include "scene/WorldTransform.h"
 #include "selection/BoneSelection.h"
 #include "selection/Selection.h"
-#include "selection/SelectionOps.h"
 #include "state/Scene.h"
 #include "viewport/ViewportInteractionState.h"
 

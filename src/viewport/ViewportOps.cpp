@@ -12,9 +12,8 @@
 #include "mesh/MeshStore.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
-#include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
-#include "selection/SelectionQueries.h"
+#include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
 
 bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode mode) {
@@ -36,7 +35,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
         for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
             const auto mesh = GetMesh(r, mesh_entity);
             meshes.EnsureSelectionBits(mesh);
-            const auto count = selection::GetElementCount(mesh, element);
+            const auto count = mesh.ElementCount(element);
             if (count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), element), count);
         }
         return ranges;
@@ -67,7 +66,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
             for (const auto mesh_entity : selection::GetSelectedMeshEntities(r)) {
                 if (r.all_of<MeshElementSelection>(mesh_entity)) continue;
                 const auto mesh = GetMesh(r, mesh_entity);
-                const uint32_t count = selection::GetElementCount(mesh, edit_element);
+                const uint32_t count = mesh.ElementCount(edit_element);
                 if (count == 0) continue;
 
                 meshes.EnsureSelectionBits(mesh);

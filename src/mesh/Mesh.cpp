@@ -34,6 +34,16 @@ void BuildEdgeRanks(const ConnectivityStorage &storage, uint32_t halfedge_count,
     }
 }
 
+
+// Calls `fn(v0, v1, v2)` for each triangle of each face's fan, in face order.
+void ForEachFaceTriangle(const Mesh &mesh, auto &&fn) {
+    const auto &c = mesh.GetConnectivity();
+    const auto corners = mesh.CornerVertices();
+    for (uint32_t face = 0; face < c.FaceCount; ++face) {
+        const auto first = *c.FaceHalfedge(face), last = c.FaceEnd(face);
+        for (auto h = first + 1; h + 1 < last; ++h) fn(corners[first], corners[h], corners[h + 1]);
+    }
+}
 } // namespace
 
 BuiltConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std::span<const uint32_t> face_corners, uint32_t vertex_count, const ConnectivityStorage &storage) {
@@ -173,7 +183,7 @@ BuiltConnectivity BuildConnectivity(std::span<const std::array<uint32_t, 2>> edg
 }
 
 Mesh::Mesh(const MeshStore &store, uint32_t store_id)
-    : Store(&store), StoreId(store_id), C(store.GetConnectivity(store_id)), Corners(store.GetFaceCorners(store_id)) {}
+    : Store(&store), StoreId(store_id), C(store.GetConnectivity(store_id)), Corners(store.Arenas().FaceCorners.Get(store.Get(store_id).FaceCorners)) {}
 
 Mesh GetMesh(const state::Scene &r, state::Entity e) {
     return {r.ctx().get<const MeshStore>(), r.get<const MeshHandle>(e).StoreId};
@@ -188,7 +198,8 @@ bool HasMesh(const state::Scene &r, state::Entity e) { return r.all_of<MeshHandl
 float LocalLengthPerUv(const state::Scene &r, state::Entity mesh_entity, uint32_t uv_set) {
     const auto mesh = TryGetMesh(r, mesh_entity);
     if (!mesh || uv_set >= MeshStore::MaxUvSets) return 0;
-    const auto uvs = r.ctx().get<const MeshStore>().GetCornerUvs(mesh->GetStoreId(), uv_set);
+    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto uvs = meshes.Arenas().CornerUvs.Get(meshes.Get(mesh->GetStoreId()).CornerUvs[uv_set]);
     const auto corners = mesh->CreateTriangleIndices();
     if (uvs.size() != corners.size() || corners.empty()) return 0;
 
@@ -216,7 +227,7 @@ uint32_t Mesh::GetValence(FH fh) const { return distance(fh_range(fh)); }
 
 vec3 Mesh::CalcFaceCentroid(FH fh) const {
     assert(*fh < C.FaceCount);
-    const auto vertices = Store->GetVertices(StoreId);
+    const auto vertices = GetVerticesSpan();
     vec3 centroid{0};
     uint32_t count{0};
     for (auto vh : fv_range(fh)) {
@@ -262,17 +273,10 @@ std::optional<double> Mesh::CalcEnclosedVolume() const {
 
     // Sum the signed volume of the tetrahedron each triangle spans with the origin. The sign follows the winding.
     double volume = 0;
-    for (const auto fh : faces()) {
-        auto fv_it = cfv_iter(fh);
-        const auto v0 = *fv_it++;
-        VH v1 = *fv_it++, v2;
-        for (; fv_it; ++fv_it) {
-            v2 = *fv_it;
-            const dvec3 a{GetPosition(v0)}, b{GetPosition(v1)}, c{GetPosition(v2)};
-            volume += numeric::Dot(a, numeric::Cross(b, c)) / 6.0;
-            v1 = v2;
-        }
-    }
+    ForEachFaceTriangle(*this, [&](uint32_t v0, uint32_t v1, uint32_t v2) {
+        const dvec3 a{GetPosition(VH{v0})}, b{GetPosition(VH{v1})}, c{GetPosition(VH{v2})};
+        volume += numeric::Dot(a, numeric::Cross(b, c)) / 6.0;
+    });
     return std::abs(volume);
 }
 
@@ -290,28 +294,21 @@ he::VH Mesh::FindNearestVertex(vec3 p) const {
 }
 
 const vec3 &Mesh::GetPosition(VH vh) const { return GetVerticesSpan()[*vh].Position; }
-const vec3 &Mesh::GetNormal(VH vh) const { return Store->GetBaseVertexNormals(StoreId)[*vh]; }
-vec3 Mesh::GetNormal(FH fh) const { return Store->GetBaseFaceNormals(StoreId)[*fh]; }
-std::span<const Vertex> Mesh::GetVerticesSpan() const { return Store->GetVertices(StoreId); }
+const vec3 &Mesh::GetNormal(VH vh) const { return Store->Arenas().BaseVertexNormals.Get(Store->Get(StoreId).Vertices)[*vh]; }
+vec3 Mesh::GetNormal(FH fh) const { return Store->Arenas().BaseFaceNormals.Get(Store->Get(StoreId).FaceData)[*fh]; }
+std::span<const Vertex> Mesh::GetVerticesSpan() const { return Store->Arenas().Vertices.Get(Store->Get(StoreId).Vertices); }
 
 VertexAdjacency Mesh::GetVertexEdgeAdjacency() const { return Store->GetVertexEdgeAdjacency(StoreId); }
 
-uint32_t Mesh::TriangleIndexCount() const { return Store->GetTriangleCount(StoreId) * 3; }
+uint32_t Mesh::TriangleIndexCount() const { return Store->Get(StoreId).TriangleCount * 3; }
 
 void Mesh::WriteTriangleIndices(std::span<uint32_t> dest) const {
     uint32_t i = 0;
-    for (const auto fh : faces()) {
-        auto fv_it = cfv_iter(fh);
-        const auto v0 = *fv_it++;
-        VH v1 = *fv_it++, v2;
-        for (; fv_it; ++fv_it) {
-            v2 = *fv_it;
-            dest[i++] = *v0;
-            dest[i++] = *v1;
-            dest[i++] = *v2;
-            v1 = v2;
-        }
-    }
+    ForEachFaceTriangle(*this, [&](uint32_t v0, uint32_t v1, uint32_t v2) {
+        dest[i++] = v0;
+        dest[i++] = v1;
+        dest[i++] = v2;
+    });
 }
 
 std::vector<uint32_t> Mesh::CreateTriangleIndices() const {

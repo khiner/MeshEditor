@@ -34,7 +34,8 @@ uint32_t GetActiveVertexIndex(const state::Scene &r, state::Entity instance_enti
     const auto &excitable = r.get<const SoundVertices>(instance_entity);
     const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
     if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
-        if (auto vi = FindSoundVertexIndex(r.ctx().get<const MeshStore>().GetSoundVertices(excitable.Vertices), active->Handle)) return *vi;
+        const auto &meshes = r.ctx().get<const MeshStore>();
+        if (auto vi = FindSoundVertexIndex(meshes.Arenas().SoundVertices.Get(excitable.Vertices), active->Handle)) return *vi;
     }
     return 0;
 }

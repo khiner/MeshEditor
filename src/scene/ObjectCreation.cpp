@@ -10,7 +10,7 @@
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
-#include "selection/SelectionOps.h"
+#include "selection/Selection.h"
 #include "state/Scene.h"
 namespace {
 // RenderInstance is derived from Instance + !Hidden.

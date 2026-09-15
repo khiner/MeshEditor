@@ -572,7 +572,7 @@ void Project::AfterRestore() {
             topology.emplace_back(meshes, handle.StoreId);
             if (auto *buffer = R.try_edit<MeshBuffers>(entity)) ReleaseMeshBuffers(R, *buffer);
             R.remove<MeshBuffers>(entity);
-            R.emplace<MeshBuffers>(entity, meshes.GetVerticesRange(handle.StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
+            R.emplace<MeshBuffers>(entity, meshes.Arenas().Vertices.Slotted(meshes.Get(handle.StoreId).Vertices), SlottedRange{}, SlottedRange{}, SlottedRange{});
         } else if (sparse) {
             positions.push_back({entity, it->VertexRanges});
         } else if (it->Bits & (MeshStore::GeometryChanged | MeshStore::DeformChanged)) {

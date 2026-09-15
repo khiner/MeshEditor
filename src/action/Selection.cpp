@@ -6,10 +6,8 @@
 #include "mesh/MeshStore.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
-#include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
-#include "selection/SelectionOps.h"
-#include "selection/SelectionQueries.h"
+#include "selection/SelectionGpu.h"
 #include "state/Scene.h"
 #include "viewport/InteractionComponents.h"
 
