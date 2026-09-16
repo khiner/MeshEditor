@@ -889,7 +889,7 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
             if (g.NumInput.Str.find('.') == std::string::npos) g.NumInput.Str += '.';
         } else if (ImGui::IsKeyPressed(ImGuiKey_Minus, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract, false)) {
             g.NumInput.Negate = !g.NumInput.Negate;
-        } else if (ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
+        } else if (ImGui::IsKeyPressed(ImGuiKey_Backspace)) {
             if (!g.NumInput.Str.empty()) g.NumInput.Str.pop_back();
             else if (g.NumInput.Negate) g.NumInput.Negate = false;
         }

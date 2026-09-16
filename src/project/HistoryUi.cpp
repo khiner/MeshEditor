@@ -13,8 +13,8 @@ void HandleHistoryShortcuts(Project &session) {
     if (GetIO().WantTextInput) return;
     auto &history = session.History;
     const int present = history.Present;
-    if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal) && history.CanUndo()) session.RequestNavigate(history.Nodes[present].Parent);
-    if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal) && history.CanRedo()) session.RequestNavigate(history.Nodes[present].Children.back());
+    if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat) && history.CanUndo()) session.RequestNavigate(history.Nodes[present].Parent);
+    if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat) && history.CanRedo()) session.RequestNavigate(history.Nodes[present].Children.back());
 }
 
 bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive) {
