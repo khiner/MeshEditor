@@ -162,7 +162,7 @@ def case_args(case: dict) -> list[str]:
     """Camera, display and action settings shared by benchmarks and corpus captures."""
     command: list[str] = []
     command.extend(("--shading", case.get("shading", "solid")))
-    command.extend(flag for key, flag in (("overlays", "--overlays"), ("selectAll", "--select-all"), ("selectionXray", "--selection-xray")) if case.get(key))
+    command.extend(flag for key, flag in (("overlays", "--overlays"), ("selectAll", "--select-all"), ("xray", "--xray")) if case.get(key))
     if edit := case.get("edit"):
         command.extend(("--edit", edit))
     action = case.get("action", "steady")

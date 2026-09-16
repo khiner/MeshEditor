@@ -63,6 +63,11 @@ struct SceneViewUBO {
     uint32_t PrimitiveMaterialSlot DEFAULT();
     uint32_t ElementPrimitiveSlot DEFAULT();
     uint32_t BoneXRay DEFAULT();
+    // Opacity of every surface in the X-ray solid draw.
+    float XRayAlpha DEFAULT(1);
+    // Scales overlay coverage behind the scene surface while overlays draw through it. Zero leaves occlusion to the depth test.
+    float OverlayBehindOpacity DEFAULT();
+    uint32_t SceneDepthSamplerSlot DEFAULT(InvalidSlot);
     // Apply wire and point selection colors only when overlays are visible.
     uint32_t ShowOverlays DEFAULT();
     uint32_t ShowExtras DEFAULT();
@@ -74,4 +79,4 @@ struct SceneViewUBO {
     uint32_t UseRealTransmission DEFAULT();
     DebugChannel DebugChannel DEFAULT();
 };
-static_assert(sizeof(SceneViewUBO) == 440, "SceneViewUBO size");
+static_assert(sizeof(SceneViewUBO) == 452, "SceneViewUBO size");

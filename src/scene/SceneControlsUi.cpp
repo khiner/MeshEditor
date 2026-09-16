@@ -834,9 +834,6 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 if (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Excite) {
                     viewport_edit.Check<&OrbitToActive::Value>("Orbit to active");
                 }
-                if (interaction_mode == InteractionMode::Edit) {
-                    viewport_edit.Check<&SelectionXRay::Value>("X-ray selection");
-                }
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature_rc) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");

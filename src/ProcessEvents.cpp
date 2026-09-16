@@ -289,7 +289,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             RunBoxSelectElements(r, viewport, ranges, r.get<const EditMode>(viewport).Value, box_px, additive);
         } else {
             const bool bone_mode = interaction.Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
-            const auto hits = ResolveHits(r, RunBoxSelect(r, box_px), bone_mode, true);
+            const auto hits = ResolveHits(r, RunBoxSelect(r, viewport, box_px), bone_mode, true);
             const auto *baseline = additive ? r.try_get<const AdditiveBoxSelectBaseline>(viewport) : nullptr;
             if (bone_mode) {
                 r.clear<BoneSelection>();
@@ -1383,6 +1383,9 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             .PrimitiveMaterialSlot = mesh_slots.PrimitiveMaterial,
             .ElementPrimitiveSlot = mesh_slots.ElementPrimitive,
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
+            .XRayAlpha = XRayActive(settings) && settings.ViewportShading == ViewportShadingMode::Solid ? XRayOpacity(settings) : 1.f,
+            .OverlayBehindOpacity = OverlayBehindOpacity(settings, r.get<const Interaction>(viewport).Mode),
+            .SceneDepthSamplerSlot = r.ctx().get<const RenderSamplerSlots>().SceneDepth,
             .ShowOverlays = settings.ShowOverlays ? 1u : 0u,
             .ShowExtras = settings.ShowExtras ? 1u : 0u,
             .ShowBoundingBoxes = settings.ShowBoundingBoxes ? 1u : 0u,

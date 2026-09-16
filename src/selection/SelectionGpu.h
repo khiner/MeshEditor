@@ -28,8 +28,8 @@ struct SelectionSlots {
     uint32_t ObjectPickKey, ElementPickKey, ElementPickId, ObjectPickSeenBits, ObjectBoxBitset;
 };
 
-// Returns box hits in object-id order.
-std::vector<state::Entity> RunBoxSelect(state::Scene &, std::pair<uvec2, uvec2> box_px);
+// Returns box hits in object-id order. X-ray display includes occluded objects.
+std::vector<state::Entity> RunBoxSelect(state::Scene &, state::Entity viewport, std::pair<uvec2, uvec2> box_px);
 
 // Element-level box selection: renders IDs into the authoritative masks and derives the other domains on the GPU.
 void RunBoxSelectElements(state::Scene &, state::Entity viewport, std::span<const ElementRange> ranges, Element, std::pair<uvec2, uvec2> box_px, bool is_additive);

@@ -17,7 +17,7 @@ struct AnimationIcons {
 struct ViewportIcons {
     ViewportIconsTransform Transform;
     ViewportIconsShading Shading;
-    std::unique_ptr<SvgResource> Overlay;
+    std::unique_ptr<SvgResource> Overlay, XRay;
     AnimationIcons Anim;
 };
 

@@ -265,7 +265,6 @@ void SetupScene(state::Scene &r, state::Entity viewport) {
     r.emplace_or_replace<TimelineRange>(viewport);
     r.emplace_or_replace<TimelinePlayback>(viewport);
     r.emplace_or_replace<TimelineNavigation>(viewport);
-    r.emplace_or_replace<SelectionXRay>(viewport);
     r.emplace_or_replace<ShadeSmoothAngle>(viewport);
     r.emplace_or_replace<BoxSelectState>(viewport);
     r.emplace_or_replace<GizmoInteraction>(viewport);

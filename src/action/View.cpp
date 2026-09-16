@@ -259,6 +259,12 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     if (a.Mode != ViewportShadingMode::Wireframe) s.FillMode = a.Mode;
                 });
             },
+            [&](ToggleXRay) {
+                r.patch<ViewportDisplay>(viewport, [](auto &s) {
+                    if (s.ViewportShading == ViewportShadingMode::Wireframe) s.XRayWireframe = !s.XRayWireframe;
+                    else s.XRaySolid = !s.XRaySolid;
+                });
+            },
         },
         action
     );

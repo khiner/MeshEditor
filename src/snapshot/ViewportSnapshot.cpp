@@ -33,7 +33,7 @@ template<> inline constexpr auto CustomEmplace<LookingThrough> = &EmplaceLooking
 
 void RegisterViewport(Tables &tables) {
     Persistent<
-        ViewportTheme, WorkspaceLights, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, SelectionXRay,
+        ViewportTheme, WorkspaceLights, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive,
         ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState>(tables);
     tables.Snapshots[state::Type<ViewCamera>()].History = false;
     Derived<

@@ -530,7 +530,7 @@ OVERLAY_CASES = [
     {"id": "overview", "camera": "Overview", "selectAll": True, "display": "bounds,face-normals,vertex-normals", "action": "playback", "captureFrames": 12},
     {"id": "orthographic", "camera": "Orthographic", "selectAll": True, "shading": "wireframe"},
     *({"id": f"edit-{element}", "camera": "Axes", "edit": element, "action": "box-select-orbit", "captureFrames": 2} for element in ("vertex", "edge", "face")),
-    {"id": "edit-xray", "camera": "Axes", "edit": "vertex", "selectionXray": True, "action": "box-select-orbit", "captureFrames": 2},
+    {"id": "edit-xray", "camera": "Axes", "edit": "vertex", "xray": True, "action": "box-select-orbit", "captureFrames": 2},
     *({"id": f"pick-{step}", "camera": "Pick", "shading": "preview", "action": "pick-cycle", "captureFrames": step} for step in range(1, 5)),
 ]
 OVERLAY_CASES = [{"scene": "Overlays", "overlays": True, **case} for case in OVERLAY_CASES]

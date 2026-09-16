@@ -138,13 +138,14 @@ kernel void WireRasterKernel(
             const float along = clamp(dot(sample_point - p0, direction), 0.0f, length_px);
             const float2 closest = p0 + direction * along;
             const float distance = length(sample_point - closest);
-            const float coverage = smoothstep(half_width + WireDiscRadius, half_width - WireDiscRadius, distance);
+            float coverage = smoothstep(half_width + WireDiscRadius, half_width - WireDiscRadius, distance);
             if (coverage <= 0.0f) continue;
             const float u = length_px > 0.0f ? along / length_px : 0.0f;
             if (pc.TestDepth != 0u) {
                 if (any(pixel < 0) || any(uint2(pixel) >= extent)) continue;
                 const float depth = mix(clip0.z / clip0.w, clip1.z / clip1.w, u);
-                if (depth > visibility_depth.read(uint2(pixel)).r) continue;
+                if (depth > visibility_depth.read(uint2(pixel)).r) coverage *= pc.BehindOpacity;
+                if (coverage <= 0.0f) continue;
             }
             WireAccumulate(coverage_words, extent, pixel, u < 0.5f ? class0 : class1, coverage);
         }

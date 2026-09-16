@@ -152,7 +152,6 @@ inline constexpr std::string_view SchemaNames[] = {
     "SceneNode",
     "Selected",
     "SelectionSlots",
-    "SelectionXRay",
     "ShadeSmoothAngle",
     "SoundVertices",
     "SoundVerticesModel",

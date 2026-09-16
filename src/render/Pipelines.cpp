@@ -130,6 +130,7 @@ MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
       MotionBlurTilesFlatten{libraries, {"MotionBlurTilesFlatten.metal", "MotionBlurTilesFlattenKernel"}},
       MotionBlurTilesDilate{libraries, {"MotionBlurTilesDilate.metal", "MotionBlurTilesDilateKernel"}},
       WorkspaceVisibility{mtl::MakeRenderPipeline(libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"WorkspaceLighting.metal", "WorkspaceVisibilityFragment"}, SceneFormats(), {Blend}, DepthOff)},
+      WorkspaceTransparent{CreateMeshPipeline(libraries, FunctionRef{"WorkspaceLighting.metal", "WorkspaceTransparentFragment"}, SceneFormats(), {NoWrite}, DepthOff)},
       TransparencyInit{CreateQuadPipeline(libraries, SceneFormats(), "Transparency.metal", "TransparencyInitFragment", NoWrite)},
       TransparencyResolve{CreateQuadPipeline(libraries, SceneFormats(), "Transparency.metal", "TransparencyResolveFragment", NoBlend)},
       MeshletVisibilityOpaque{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityOpaqueFragment"}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},

@@ -18,7 +18,7 @@ Real-time mesh viewer and editor supporting conversion of meshes to rigid body a
 * Create and delete meshes and mesh instances
   - Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
   - Load `.obj` and `.ply` mesh files (via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply))
-* Select meshes, vertices, edges, or faces by clicking or box selection, with optional x-ray selection
+* Select meshes, vertices, edges, or faces by clicking or box selection, through geometry with Blender's X-ray toggle (Alt+Z)
 * Flat/smooth/wireframe mesh rendering
 * Translate, rotate, and nonuniformly scale meshes and instances with numeric inputs or a Blender-style transform gizmo
 * Edit the camera with the mouse wheel, numeric inputs, or a Blender-style orientation gizmo

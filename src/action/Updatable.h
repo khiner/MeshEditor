@@ -23,7 +23,6 @@ struct PhysicsSimulationSettings;
 struct PhysicsVelocity;
 struct PosedLocal;
 struct PunctualLight;
-struct SelectionXRay;
 struct ShadeSmoothAngle;
 struct Striker;
 struct SurfaceSoundControls;
@@ -36,7 +35,7 @@ template<typename... Cs> struct TypeList {};
 
 // The components Update can address, visited at apply time and checked at each emit site.
 using UpdatableComponents = TypeList<
-    Transform, PosedLocal, TransformGizmoState, OrbitToActive, SelectionXRay, ShadeSmoothAngle,
+    Transform, PosedLocal, TransformGizmoState, OrbitToActive, ShadeSmoothAngle,
     ViewportDisplay, ViewportTheme, MaterialPreviewLighting, RenderedLighting,
     PunctualLight, MaterialVariants, PrimitiveShape,
     ArmatureAnimation, MorphWeightAnimation, NodeTransformAnimation,

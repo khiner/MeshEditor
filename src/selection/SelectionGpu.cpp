@@ -27,6 +27,7 @@
 #include "selection/Selection.h"
 #include "selection/SelectionComponents.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportRenderGpu.h"
 
@@ -176,7 +177,7 @@ void RenderElementSelectionPass(
     auto &meshes = r.ctx().get<MeshStore>();
     auto &buffers = r.ctx().get<GpuBuffers>();
 
-    const bool xray_selection = r.get<const SelectionXRay>(viewport).Value;
+    const bool xray_selection = XRayFlag(r.get<const ViewportDisplay>(viewport));
     const auto &selection = pipelines.SelectionFragment;
     const bool degenerate_point_pass = write_bitset && xray_selection && element != Element::Vertex;
     for (const auto &range : ranges) {
@@ -283,14 +284,16 @@ void RecordVisibilityObjectSelection(
     );
 }
 
-void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::optional<ObjectSelectQuery> object, std::optional<uint32_t> sound_instance = {}, std::optional<ElementPickTarget> pick = {}) {
+// `through` rasters every covered surface for an object box instead of the visible surface alone.
+void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::optional<ObjectSelectQuery> object, bool through, std::optional<uint32_t> sound_instance = {}, std::optional<ElementPickTarget> pick = {}) {
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     const auto &pipelines = GetPipelines(r);
     const auto &selection = pipelines.SelectionFragment;
+    const bool raster_all = object && (object->BestKeySlot != InvalidSlot || through);
     if (object) {
-        if (object->BestKeySlot != InvalidSlot) {
-            // Click cycling needs every covered surface, including occluded objects.
+        if (raster_all) {
+            // Click cycling and X-ray boxes need every covered surface, including occluded objects.
             RecordMeshletCull(chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers, {.Mode = MeshletRouteMode::Selection});
         } else RecordVisibilityObjectSelection(r, chain, *object);
         RecordOverlayJobCull(chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers, true);
@@ -317,7 +320,7 @@ void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::option
             const auto rect = ObjectQueryRect(*object, r.ctx().get<const RenderTargets>().Resources->ScratchDepth.Extent);
             if (!rect) return;
             encoder->setScissorRect({rect->Origin.x, rect->Origin.y, rect->Extent.x, rect->Extent.y});
-            if (object->BestKeySlot != InvalidSlot) {
+            if (raster_all) {
                 selection.ObjectPick.Bind(encoder);
                 encoder->setCullMode(MTL::CullModeNone); // Shared coverage handles sidedness and mirrored transforms.
                 const VisibilitySelectionPushConstants pc{encode::MeshletDecodePc(buffers), *object};
@@ -384,7 +387,7 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(state::Scene &r, state::Entit
     const auto model_index = r.get<RenderInstance>(instance_entity).BufferIndex;
     ResetElementPick(buffers);
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
-        RenderSelectionPickPass(r, chain, std::nullopt, model_index, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex)});
+        RenderSelectionPickPass(r, chain, std::nullopt, false, model_index, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex)});
     });
     return ReadNearestPickedElement(buffers, vertex_count);
 }
@@ -449,7 +452,8 @@ std::vector<state::Entity> RunObjectPick(state::Scene &r, uvec2 mouse_px, uint32
                 .BestKeySlot = sel_slots.ObjectPickKey,
                 .SeenBitsSlot = sel_slots.ObjectPickSeenBits,
                 .BoxResultSlot = InvalidSlot,
-            }
+            },
+            false
         );
     });
     struct SortedHit {
@@ -476,7 +480,7 @@ std::vector<state::Entity> RunObjectPick(state::Scene &r, uvec2 mouse_px, uint32
     return entities;
 }
 
-std::vector<state::Entity> RunBoxSelect(state::Scene &r, std::pair<uvec2, uvec2> box_px) {
+std::vector<state::Entity> RunBoxSelect(state::Scene &r, state::Entity viewport, std::pair<uvec2, uvec2> box_px) {
     const auto [box_min, box_max] = box_px;
     if (box_min.x > box_max.x || box_min.y > box_max.y) return {};
     const uint32_t max_object_id = PrepareObjectQuery(r);
@@ -493,7 +497,8 @@ std::vector<state::Entity> RunBoxSelect(state::Scene &r, std::pair<uvec2, uvec2>
                 .BestKeySlot = InvalidSlot,
                 .Box = {box_min.x, box_min.y, box_max.x, box_max.y},
                 .BoxResultSlot = sel_slots.ObjectBoxBitset,
-            }
+            },
+            XRayActive(r.get<const ViewportDisplay>(viewport))
         );
     });
     std::vector<state::Entity> entities;

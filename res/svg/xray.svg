@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <path d="M 6,16 a 2,2 0 0 0 -2,2 v 40 a 2,2 0 0 0 2,2 h 40 a 2,2 0 0 0 2,-2 v -40 a 2,2 0 0 0 -2,-2 z M 8,20 h 36 v 36 h -36 z" fill="#fff" fill-rule="evenodd"/>
+  <path d="M 20,24 v 8 h 4 v -8 z M 20,36 v 6 a 2,2 0 0 0 2,2 h 6 v -4 h -4 v -4 z M 32,40 v 4 h 8 v -4 z" fill="#fff" opacity=".75"/>
+  <path d="M 22,4 a 2,2 0 0 0 -2,2 v 6 h 4 v -4 h 32 v 32 h -4 v 4 h 6 a 2,2 0 0 0 2,-2 v -36 a 2,2 0 0 0 -2,-2 z" fill="#fff" opacity=".75"/>
+</svg>

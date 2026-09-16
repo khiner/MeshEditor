@@ -122,7 +122,7 @@ void TestPickingIdentity() {
     const auto first = FindActiveEntity(f.R);
     const auto check = [&](state::Entity entity) {
         f.Image();
-        const auto box = RunBoxSelect(f.R, {{0, 0}, {63, 63}});
+        const auto box = RunBoxSelect(f.R, f.Viewport, {{0, 0}, {63, 63}});
         expect(std::ranges::find(box, entity) != box.end());
         const auto picked = RunObjectPick(f.R, {32, 32}, 32);
         expect(std::ranges::find(picked, entity) != picked.end());

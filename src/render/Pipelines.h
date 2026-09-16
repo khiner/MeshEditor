@@ -37,7 +37,7 @@ struct MainPipeline {
     mtl::RenderPipeline ViewportComposite;
     mtl::RenderPipeline MotionBlurAccumulate, MotionBlurGather;
     mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
-    mtl::RenderPipeline WorkspaceVisibility;
+    mtl::RenderPipeline WorkspaceVisibility, WorkspaceTransparent;
     mtl::RenderPipeline TransparencyInit, TransparencyResolve;
     mtl::RenderPipeline MeshletVisibilityOpaque, MeshletVisibilityCoverage;
     mtl::RenderPipeline MeshletEditEdges, MeshletEditSmoothEdges;

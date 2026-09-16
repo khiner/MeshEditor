@@ -507,25 +507,23 @@ void DrawMeshletList(
 }
 
 // Encodes every route with zero-sized dispatch arguments for routes without visible meshlets.
+// The routes that raster into the visibility image, each with the cull mode it draws under.
+constexpr std::pair<MeshletRoute, MTL::CullMode> VisibilityRoutes[]{
+    {MeshletRoute::OpaqueCullBack, MTL::CullModeBack},
+    {MeshletRoute::OpaqueCullFront, MTL::CullModeFront},
+    {MeshletRoute::OpaqueDoubleSided, MTL::CullModeNone},
+    {MeshletRoute::Coverage, MTL::CullModeNone},
+};
+
 void DrawVisibilityMeshlets(
     MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const MainPipeline &main,
     bool transmission
 ) {
-    const auto draw = [&](MeshletRoute route) {
-        DrawMeshletList(
-            encoder, buffers,
-            uint32_t(route), 0u, transmission, true
-        );
-    };
-    main.MeshletVisibilityOpaque.Bind(encoder);
-    encoder->setCullMode(MTL::CullModeBack);
-    draw(MeshletRoute::OpaqueCullBack);
-    encoder->setCullMode(MTL::CullModeFront);
-    draw(MeshletRoute::OpaqueCullFront);
-    encoder->setCullMode(MTL::CullModeNone);
-    draw(MeshletRoute::OpaqueDoubleSided);
-    main.MeshletVisibilityCoverage.Bind(encoder);
-    draw(MeshletRoute::Coverage);
+    for (const auto [route, cull] : VisibilityRoutes) {
+        (route == MeshletRoute::Coverage ? main.MeshletVisibilityCoverage : main.MeshletVisibilityOpaque).Bind(encoder);
+        encoder->setCullMode(cull);
+        DrawMeshletList(encoder, buffers, uint32_t(route), 0u, transmission, true);
+    }
 }
 
 void RecordDepthPyramid(
@@ -627,6 +625,12 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
     const bool is_wireframe_mode = settings.ViewportShading == ViewportShadingMode::Wireframe;
     const bool show_rendered = settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered;
     const bool show_fill = !is_wireframe_mode;
+    const bool xray = XRayActive(settings);
+    const float overlay_behind = OverlayBehindOpacity(settings, interaction_mode);
+    // Overlays draw through geometry and fade behind it instead of testing against scene depth.
+    const bool overlays_through = overlay_behind > 0.f;
+    // Overlays need scene depth to occlude or fade unless X-ray shows them at full strength.
+    const bool overlay_scene_depth = overlay_behind < 1.f;
     const bool show_overlays = settings.ShowOverlays;
     const auto &active_lighting = GetActivePbrLighting(r, viewport, settings.ViewportShading);
     const bool real_transmission = show_rendered &&
@@ -1225,8 +1229,8 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
     const auto &main = pipelines.Main;
     const auto main_extent = targets.Resources->SceneColorImage.Extent;
     const bool has_silhouette = render_silhouette && meshlet_fill;
-    // Populate visibility for wireframe selection outlines without loading its depth into the scene pass.
-    const bool need_visibility = meshlet_fill && (show_fill || has_silhouette);
+    // Populate visibility for wireframe selection outlines and overlay depth without loading its depth into the scene pass.
+    const bool need_visibility = meshlet_fill && (show_fill || has_silhouette || overlay_scene_depth);
     const bool wire_meshlets = draw_overlays &&
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::Wire)).Meshlets > 0u;
     const uint64_t bone_meshlets = draw_overlays ?
@@ -1245,7 +1249,9 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
     const bool cull_scene_meshlets =
         (need_visibility || wire_meshlets || bone_meshlets > 0u || normal_meshlets > 0u ||
          element_overlay_meshlets > 0u);
-    const bool transparent = show_rendered && (real_transmission || std::ranges::any_of(buffers.Materials.GetSpan<PBRMaterial>(), [](const auto &m) { return m.AlphaMode == MaterialAlphaMode::Blend; }));
+    // X-ray blends every solid surface through the transparency layers.
+    const bool xray_fill = xray && show_fill && meshlet_fill;
+    const bool transparent = xray_fill || (show_rendered && (real_transmission || std::ranges::any_of(buffers.Materials.GetSpan<PBRMaterial>(), [](const auto &m) { return m.AlphaMode == MaterialAlphaMode::Blend; })));
     const auto view_bytes = buffers.SceneViewUBO.Contents().subspan(ubo_offset, sizeof(SceneViewUBO));
     const auto &current_view_proj = reinterpret_cast<const SceneViewUBO *>(view_bytes.data())->ViewProj;
     const bool disocclusion_possible = update != SceneUpdate::Reuse || buffers.PreludeStale || buffers.MeshletOcclusionStale ||
@@ -1253,14 +1259,15 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
     // Cached occlusion is valid only for the pose that produced it. Reordering opaque
     // surfaces across temporal phases changes the winner of equal-depth raster ties.
     if (cull_scene_meshlets) {
-        const uint32_t pyramid = show_fill && phase == RenderPhase::Full && targets.Resources->DepthPyramidValid && !disocclusion_possible ?
+        // X-ray draws occluded surfaces, so it skips occlusion culling.
+        const uint32_t pyramid = show_fill && !xray && phase == RenderPhase::Full && targets.Resources->DepthPyramidValid && !disocclusion_possible ?
             samplers.DepthPyramid :
             InvalidSlot;
         RecordMeshletCull(
             chain, slots, pipelines, buffers,
             {
                 .Mode = show_rendered ? (real_transmission ? MeshletRouteMode::Transmission : MeshletRouteMode::Material) : MeshletRouteMode::Visibility,
-                .RequiredInstanceFlags = show_fill || wire_meshlets || bone_meshlets > 0u ||
+                .RequiredInstanceFlags = show_fill || overlay_scene_depth || wire_meshlets || bone_meshlets > 0u ||
                         normal_meshlets > 0u || element_overlay_meshlets > 0u ?
                     0u :
                     uint32_t(MeshletInstanceFlag::Silhouette),
@@ -1269,7 +1276,8 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             }
         );
     }
-    if (need_visibility || phase == RenderPhase::BlurFast) {
+    // Overlay depth needs a cleared visibility depth even without meshlets.
+    if (need_visibility || overlay_scene_depth || phase == RenderPhase::BlurFast) {
         RecordMeshletVisibilityPass(chain, slots, pipelines, targets, buffers, real_transmission, ubo_offset, {});
     }
     if (show_fill && phase == RenderPhase::Full && cull_scene_meshlets) {
@@ -1308,7 +1316,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         const std::array colors{
             mtl::ClearColor(*targets.Resources->SceneColorImage),
         };
-        const auto depth = show_fill && meshlet_fill ? mtl::LoadDepth(*targets.Resources->VisibilityDepth) : mtl::ClearDepth(*targets.Resources->ScratchDepth);
+        const auto depth = show_fill && meshlet_fill && !xray ? mtl::LoadDepth(*targets.Resources->VisibilityDepth) : mtl::ClearDepth(*targets.Resources->ScratchDepth);
         const auto pass = mtl::MakePassDescriptor(colors, depth);
         if (transparent) {
             pass->setImageblockSampleLength(std::max(main.TransparencyInit.ImageblockSampleLength(), main.TransparencyResolve.ImageblockSampleLength()));
@@ -1357,6 +1365,17 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                     main.TransparencyResolve.Bind(encoder);
                     draw_quad();
                 }
+            } else if (xray_fill && draw_scene) {
+                // Every visibility route blends at the X-ray opacity instead of resolving the nearest surface.
+                main.TransparencyInit.Bind(encoder);
+                draw_quad();
+                main.WorkspaceTransparent.Bind(encoder);
+                for (const auto [route, cull] : VisibilityRoutes) {
+                    encoder->setCullMode(cull);
+                    DrawMeshlets(encoder, buffers, uint32_t(route));
+                }
+                main.TransparencyResolve.Bind(encoder);
+                draw_quad();
             } else if (meshlet_fill && draw_scene) {
                 main.WorkspaceVisibility.Bind(encoder);
                 encoder->setFragmentTexture(*targets.Resources->VisibilityImage, 0u);
@@ -1400,7 +1419,8 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 false, InvalidSlot
             ),
             .CoverageSlot = buffers.WireCoverageBuffer.Slot,
-            .TestDepth = show_fill && meshlet_fill,
+            .TestDepth = overlay_scene_depth,
+            .BehindOpacity = overlay_behind,
         };
         for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
             wire_pc.Meshlet.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
@@ -1423,9 +1443,9 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         const std::array overlay_colors{
             has_silhouette ? mtl::DiscardColor(*targets.Resources->OverlayColorImage) : mtl::ClearColor(*targets.Resources->OverlayColorImage),
         };
-        const auto overlay_depth = has_silhouette ?
-            mtl::DepthAttachment{*targets.Resources->ScratchDepth, MTL::LoadActionDontCare, MTL::StoreActionDontCare} :
-            mtl::LoadDepth(show_fill && meshlet_fill ? *targets.Resources->VisibilityDepth : *targets.Resources->ScratchDepth);
+        const auto overlay_depth = has_silhouette ? mtl::DepthAttachment{*targets.Resources->ScratchDepth, MTL::LoadActionDontCare, MTL::StoreActionDontCare} :
+            overlays_through                      ? mtl::ClearDepth(*targets.Resources->ScratchDepth) :
+                                                    mtl::LoadDepth(*targets.Resources->VisibilityDepth);
         const auto overlay_pass = mtl::MakePassDescriptor(overlay_colors, overlay_depth);
         encoder = encode::BeginScenePass(chain, overlay_pass, "OverlayPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
 
@@ -1446,7 +1466,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                                                   r.get<const GizmoInteraction>(viewport).IsUsing() && interaction_mode == InteractionMode::Object,
                                                   samplers.Silhouette,
                                                   active_object_id,
-                                                  show_fill && meshlet_fill ? samplers.SceneDepth : InvalidSlot,
+                                                  overlays_through ? InvalidSlot : samplers.SceneDepth,
                                               });
             draw_quad();
         }
@@ -1658,7 +1678,8 @@ void RecordMeshletVisibilityPass(
         targets.Resources->VisibilityImage.Extent, slots, buffers, ubo_offset
     );
     if (scissor) encoder->setScissorRect({scissor->Origin.x, scissor->Origin.y, scissor->Extent.x, scissor->Extent.y});
-    DrawVisibilityMeshlets(encoder, buffers, main, transmission);
+    // Without meshlets the pass only clears, which is what overlay depth needs.
+    if (buffers.MeshletInstanceCount > 0) DrawVisibilityMeshlets(encoder, buffers, main, transmission);
     buffers.VisibilityGeneration = buffers.MeshletVisibleGeneration;
 }
 
@@ -1756,11 +1777,8 @@ void RecordSilhouetteDepthPass(
         encoder->setCullMode(cull);
         DrawMeshlets(encoder, buffers, uint32_t(route), uint32_t(MeshletInstanceFlag::Silhouette));
     };
-    // Opaque surfaces outline the pixels the visibility image assigns to them.
-    draw_route(MeshletRoute::OpaqueCullBack, MTL::CullModeBack, true);
-    draw_route(MeshletRoute::OpaqueCullFront, MTL::CullModeFront, true);
-    draw_route(MeshletRoute::OpaqueDoubleSided, MTL::CullModeNone, true);
-    draw_route(MeshletRoute::Coverage, MTL::CullModeNone, true);
+    // Visibility surfaces outline the pixels the visibility image assigns to them.
+    for (const auto [route, cull] : VisibilityRoutes) draw_route(route, cull, true);
     // Blend and transmission surfaces never enter the visibility image, so scene depth alone decides their outline.
     draw_route(MeshletRoute::Blend, MTL::CullModeNone, false);
     draw_route(MeshletRoute::Transmission, MTL::CullModeNone, false);

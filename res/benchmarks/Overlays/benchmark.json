@@ -70,7 +70,7 @@
       "id": "edit-xray",
       "camera": "Axes",
       "edit": "vertex",
-      "selectionXray": true,
+      "xray": true,
       "action": "box-select-orbit",
       "captureFrames": 2
     },

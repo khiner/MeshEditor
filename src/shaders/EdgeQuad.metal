@@ -3,6 +3,7 @@
 
 #include "Bindless.metal"
 #include "gpu/EditOverlayConstant.h"
+#include "OverlayFade.metal"
 #include "SceneUBO.metal"
 #include "Varyings.metal"
 
@@ -26,6 +27,7 @@ inline OverlayTargets ShadeEdgeQuad(EdgeQuadVaryings in, const thread Scene &sce
     } else {
         color.a *= 1.0f - mix_w;
     }
+    color.a *= OverlayBehindFade(scene, in.Position);
     // Edge quads apply antialiasing before the composite pass.
     if (color.a <= 0.0f) discard_fragment();
     return OverlayTargets{float4(color.rgb * color.a, color.a)};

@@ -2,6 +2,7 @@
 #define GRIDLINES_MSL
 
 #include "Bindless.metal"
+#include "OverlayFade.metal"
 #include "Varyings.metal"
 
 // Infinite vertices cover the y = 0 plane while preserving rasterized depth for early depth testing.
@@ -98,6 +99,7 @@ fragment OverlayTargets GridLinesFragment(
     color.a *= 1.0f - pow(1.0f - abs(V.y), 3.0f);
     // Fade toward the far clip plane.
     color.a *= 1.0f - smoothstep(0.0f, 0.5f * view.CameraFar, dist - 0.5f * view.CameraFar);
+    color.a *= OverlayBehindFade(scene, in.Position);
     return OverlayTargets{color};
 }
 

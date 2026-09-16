@@ -122,6 +122,8 @@ struct OverlayIconButtonInfo {
     bool Enabled{true};
     bool Active{false};
     const char *Tooltip{nullptr};
+    // Dims a button whose setting has no effect in the current mode while keeping it clickable.
+    bool Muted{false};
 };
 
 struct OverlayIconButtonStyle {
@@ -164,6 +166,7 @@ std::optional<size_t> DrawOverlayIconButtonGroup(
         }
         if (any_hovered && hovered) *any_hovered = true;
 
+        if (button.Muted) PushStyleVar(ImGuiStyleVar_Alpha, GetStyle().Alpha * 0.5f);
         const auto bg_color = GetColorU32(
             !button.Enabled   ? ImGuiCol_FrameBg :
                 button.Active ? ImGuiCol_ButtonActive :
@@ -175,6 +178,7 @@ std::optional<size_t> DrawOverlayIconButtonGroup(
             SetCursorScreenPos(button_min + (style.ButtonSize - icon_size) * 0.5f);
             button.Icon->DrawIcon(std::bit_cast<vec2>(icon_size));
         }
+        if (button.Muted) PopStyleVar();
     }
     PopID();
     SetCursorScreenPos(saved_cursor_pos);
@@ -257,7 +261,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
             const auto &settings = r.get<const ViewportDisplay>(viewport);
             action::Emit(action::view::SetViewportShading{.Mode = settings.ViewportShading == ViewportShadingMode::Wireframe ? settings.FillMode : ViewportShadingMode::Wireframe});
         } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_Z, VKey)) {
-            action::Emit(action::UpdateOn<&SelectionXRay::Value>(viewport, !r.get<const SelectionXRay>(viewport).Value));
+            action::Emit(action::view::ToggleXRay{});
         }
         // Tab uses default RouteFocused (not VKey/RouteGlobal) so widget tabbing in panels keeps working.
         const bool tab_no_mods = Shortcut(ImGuiKey_Tab);
@@ -477,9 +481,11 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
     const float shading_button_w = shading_button_style.ButtonSize.x;
     const float shading_group_width = shading_button_w * 4.f + shading_arrow_w;
     const auto shading_button_h = shading_button_style.ButtonSize.y;
+    const auto buttons_gap = 6.f;
+    const auto shading_start = std::bit_cast<ImVec2>(viewport_rect.pos + vec2{GetWindowContentRegionMax().x - shading_group_width, GetWindowContentRegionMin().y}) + ImVec2{-overlay_corner_gap, overlay_corner_gap};
 
     { // Viewport shading button group + dropdown (top-right overlay)
-        const auto start_pos = std::bit_cast<ImVec2>(viewport_rect.pos + vec2{GetWindowContentRegionMax().x - shading_group_width, GetWindowContentRegionMin().y}) + ImVec2{-overlay_corner_gap, overlay_corner_gap};
+        const auto start_pos = shading_start;
         const auto make_shading_button = [&](const SvgResource *icon, float x, ImDrawFlags corners, ViewportShadingMode mode, const char *tooltip) {
             return OverlayIconButtonInfo{icon, {x, 0.f}, corners, true, settings.ViewportShading == mode, tooltip};
         };
@@ -546,6 +552,19 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                     edit.template Run<&L::ExposureEV>([](float &v) { return SliderFloat("Exposure", &v, -10.f, 10.f, "%.1f EV", ImGuiSliderFlags_AlwaysClamp); });
                     PopID();
                 };
+
+                if (WorkbenchShading(current_mode)) {
+                    const bool wireframe = current_mode == ViewportShadingMode::Wireframe;
+                    ui::Edit edit{r, viewport};
+                    if (wireframe) edit.Check<&ViewportDisplay::XRayWireframe>("##XRay");
+                    else edit.Check<&ViewportDisplay::XRaySolid>("##XRay");
+                    SameLine();
+                    PushStyleVar(ImGuiStyleVar_Alpha, GetStyle().Alpha * (XRayFlag(settings) ? 1.f : 0.5f));
+                    const auto opacity_slider = [](float &v) { return SliderFloat("X-ray", &v, 0.f, 1.f, "%.2f"); };
+                    if (wireframe) edit.Run<&ViewportDisplay::XRayAlphaWireframe>(opacity_slider);
+                    else edit.Run<&ViewportDisplay::XRayAlpha>(opacity_slider);
+                    PopStyleVar();
+                }
 
                 if (current_mode == ViewportShadingMode::MaterialPreview) {
                     SeparatorText("Material Preview lighting");
@@ -687,13 +706,23 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
         }
     }
 
+    { // X-ray toggle, left of the shading group as in Blender
+        const bool applies = WorkbenchShading(settings.ViewportShading) || r.get<const Interaction>(viewport).Mode == InteractionMode::Edit;
+        const auto start_pos = shading_start - ImVec2{buttons_gap + shading_button_w, 0.f};
+        const OverlayIconButtonInfo button[]{
+            {icons.XRay.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersAll, true, XRayFlag(settings), "Toggle X-ray", !applies},
+        };
+        if (DrawOverlayIconButtonGroup("ViewportXRay", start_pos, button, !active_transform, &frame.OverlayControlsHovered, shading_button_style)) {
+            action::Emit(action::view::ToggleXRay{});
+        }
+    }
+
     { // Viewport overlays toggle + dropdown
-        const auto buttons_gap = 6.f;
         const auto arrow_w = shading_arrow_w;
         const auto icon_w = shading_button_w;
         const auto button_h = shading_button_h;
         const auto overlay_group_width = icon_w + arrow_w;
-        const auto group_start = std::bit_cast<ImVec2>(viewport_rect.pos + vec2{GetWindowContentRegionMax().x - shading_group_width - buttons_gap - overlay_group_width, GetWindowContentRegionMin().y}) + ImVec2{-overlay_corner_gap, overlay_corner_gap};
+        const auto group_start = shading_start - ImVec2{2.f * buttons_gap + shading_button_w + overlay_group_width, 0.f};
 
         {
             const OverlayIconButtonInfo icon_button[]{

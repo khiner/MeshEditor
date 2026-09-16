@@ -5,6 +5,7 @@
 #include "Bindless.metal"
 #include "Varyings.metal"
 #include "tonemapping.metal"
+#include "Transparency.metal"
 #include "VisibilityDecode.metal"
 
 inline float3 brdf_approx(float3 spec_color, float roughness, float NV) {
@@ -121,6 +122,22 @@ fragment float4 WorkspaceVisibilityFragment(
     if (!decoded.Valid) discard_fragment();
     const Scene scene{bindless, view, theme, workspace};
     return ShadeWorkspace(decoded.V, scene, view);
+}
+
+// X-ray display stores every workspace-shaded surface at the view's X-ray opacity.
+fragment TransparencyStore WorkspaceTransparentFragment(
+    MeshletVertexVaryings meshlet_in [[stage_in]],
+    TransparencyValues values [[imageblock_data]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
+) {
+    const MeshVaryings in = FromMeshletVertexVaryings(meshlet_in);
+    const Scene scene{bindless, view, theme, workspace};
+    float4 shaded = ShadeWorkspace(in, scene, view);
+    shaded.a *= view.XRayAlpha;
+    return StoreTransparency(values, shaded, in.Position.z);
 }
 
 #endif

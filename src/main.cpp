@@ -1001,7 +1001,7 @@ Scene:
   --shading MODE              wireframe | solid | preview | rendered
   --edit ELEMENT              Enter edit mode on vertex | edge | face
   --select-all                Select all objects or edited elements
-  --selection-xray            Select occluded mesh elements too
+  --xray                      Turn on X-ray for the capture's shading mode
   --overlays                  Draw the editor overlays
   --lod-error PIXELS          Screen-space error budget for the cluster LOD cut
   --display LIST              Comma-separated: vertex-normals, face-normals, bounds, tet-wireframe
@@ -1059,7 +1059,7 @@ struct CaptureRequest {
     std::optional<ViewportShadingMode> Shading{};
     bool Overlays{false}; // Keep overlays on through a capture, which presentation otherwise turns off.
     std::optional<Element> EditMode{}; // Engaged: select mesh objects and enter this element edit mode.
-    bool SelectionXray{false};
+    bool XRay{false};
     bool SelectAll{false};
     float LodErrorPixels{-1.f}; // Screen-space error budget override for the cluster LOD cut. Negative leaves the viewport setting untouched.
     uint8_t NormalOverlays{0};
@@ -1331,7 +1331,6 @@ CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const
             Perform(r, action::view::SetEditMode{*capture.EditMode});
         }
     }
-    if (capture.SelectionXray) Perform(r, action::UpdateOn<&SelectionXRay::Value>(viewport, true));
     if (capture.SelectAll) Perform(r, action::selection::SelectAll{});
     // After the load, whose end frame comes from the scene's own animation durations.
     if (capture.TimelineEnd > 0) {
@@ -1355,6 +1354,7 @@ CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const
     if (capture.Shading) {
         Perform(r, action::view::SetViewportShading{*capture.Shading});
     }
+    if (capture.XRay && !XRayFlag(r.get<const ViewportDisplay>(viewport))) Perform(r, action::view::ToggleXRay{});
     return driver;
 }
 
@@ -1906,7 +1906,7 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
             }
         } else if (a == "--lod-error" && std::next(it) != args.end()) {
             capture.LodErrorPixels = std::stof(std::string{*++it});
-        } else if (a == "--selection-xray") capture.SelectionXray = true;
+        } else if (a == "--xray") capture.XRay = true;
         else if (a == "--select-all") capture.SelectAll = true;
         else if (a == "--display" && std::next(it) != args.end()) {
             const std::string_view names{*++it};

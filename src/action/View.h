@@ -27,6 +27,8 @@ struct SetLookThroughCamera {
 struct SetViewportShading {
     ViewportShadingMode Mode;
 };
+// Flips the X-ray flag of the current shading family.
+struct ToggleXRay {};
 struct OrbitViewCamera {
     vec2 DeltaRad;
 };
@@ -114,7 +116,7 @@ struct SetActiveScene {
 using Action = std::variant<
     SetInteractionMode, CycleInteractionMode, SetEditMode,
     EnterLookThroughCamera, ExitLookThroughCamera, SetLookThroughCamera,
-    SetViewportShading, OrbitViewCamera, ZoomViewCamera,
+    SetViewportShading, ToggleXRay, OrbitViewCamera, ZoomViewCamera,
     ResetViewCamera, ResetViewportTheme, ResetPbrLighting, SetWorkspaceLights,
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection,
     SetRotationUiMode, SetTransformRotationFromUi,

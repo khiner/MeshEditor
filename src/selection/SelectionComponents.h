@@ -52,10 +52,6 @@ struct PendingPick {
     RenderView View;
 };
 
-struct SelectionXRay {
-    bool Value{false};
-};
-
 enum class SelectionGesture : uint8_t {
     Click,
     Box,
