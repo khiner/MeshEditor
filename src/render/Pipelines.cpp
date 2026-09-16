@@ -181,7 +181,7 @@ const RenderPipeline &SelectionFragmentPipeline::ElementRaster(Element element, 
 
 Pipelines::Pipelines(mtl::LibraryCache &libraries)
     : Main{libraries},
-      Silhouette{mtl::MakeRenderPipeline(libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"VisibilitySelection.metal", "VisibilitySilhouetteFragment"}, PassFormats{{Format::Float2}, Format::Depth}, {NoBlend}, DepthTestWrite)},
+      Silhouette{CreateMeshPipeline(libraries, FunctionRef{"VisibilitySelection.metal", "MeshletSilhouetteFragment"}, PassFormats{{Format::Float2}, Format::Depth}, {NoBlend}, DepthTestNoWriteLessEqual, MeshletVisibilityVertex())},
       SelectionFragment{libraries},
       VisibilityObjectSelection{libraries, {"VisibilitySelection.metal", "VisibilityObjectSelectionKernel"}},
       PrepareEditSelection{libraries, {"EditSelectionTransaction.metal", "PrepareEditSelectionKernel"}},

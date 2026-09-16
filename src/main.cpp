@@ -1021,6 +1021,7 @@ Benchmarking:
   --frames N                  Render N frames and exit
   --bench-action ACTION       steady | orbit | transform | visibility | box-select | box-select-orbit | pick-cycle
   --bench-action-count N      Actions per benchmark run
+  --bench-box-inset PX        Inset of the benchmark box select from the viewport edge (default 4)
   --profile                   Print the profile report on exit
   --profile-json PATH         Write the profile report to PATH
 
@@ -1049,6 +1050,7 @@ struct CaptureRequest {
     std::optional<MotionBlur> Blur{};
     float TimelineEnd{0}; // Seconds. Positive: set the timeline's end frame, so a long play runs without looping.
     int BenchFrames{0};
+    uint32_t BenchBoxInset{4};
     BenchmarkAction BenchAction{BenchmarkAction::Steady};
     uint32_t BenchActionCount{64};
     std::string CameraName{};
@@ -1064,10 +1066,11 @@ struct CaptureRequest {
 
 struct BenchmarkDriver {
     CaptureRequest::BenchmarkAction Action;
+    uint32_t BoxInset;
     std::vector<std::pair<state::Entity, Transform>> Transforms;
     uint32_t Frame{};
 
-    BenchmarkDriver(state::Scene &r, const CaptureRequest &capture) : Action(capture.BenchAction) {
+    BenchmarkDriver(state::Scene &r, const CaptureRequest &capture) : Action(capture.BenchAction), BoxInset(capture.BenchBoxInset) {
         if (Action != CaptureRequest::BenchmarkAction::Transform && Action != CaptureRequest::BenchmarkAction::Visibility) return;
         std::vector<state::Entity> entities;
         for (const auto [entity, kind] : r.view<const ObjectKind>(state::Exclude<SubElementOf>).each()) {
@@ -1107,7 +1110,7 @@ struct BenchmarkDriver {
                 [[fallthrough]];
             case CaptureRequest::BenchmarkAction::BoxSelect: {
                 if (extent == uvec2{}) break;
-                const uint32_t inset = Frame % 2 == 0 ? 4u : 8u;
+                const uint32_t inset = BoxInset + (Frame % 2 == 0 ? 0u : 4u);
                 action::Emit(action::selection::ApplyBoxSelect{
                     .BoxPx = {{inset, inset}, {extent.x - inset - 1, extent.y - inset - 1}},
                     .Additive = false,
@@ -1924,6 +1927,7 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
             const std::string_view method = *++it;
             capture.Blur = method == "fast" ? MotionBlur{} : MotionBlur{.Steps = uint8_t(std::clamp(std::atoi(method.data()), 1, 64)), .Method = MotionBlurMethod::FullSampling};
         } else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi((++it)->c_str());
+        else if (a == "--bench-box-inset" && std::next(it) != args.end()) capture.BenchBoxInset = uint32_t(std::atoi((++it)->c_str()));
         else if (a == "--bench-action" && std::next(it) != args.end()) {
             const std::string_view action{*++it};
             if (action == "steady") capture.BenchAction = CaptureRequest::BenchmarkAction::Steady;

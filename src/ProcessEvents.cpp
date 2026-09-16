@@ -246,7 +246,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     // Use the rendered camera for selection, culling, and LOD.
     const auto prepare_selection = [&](const RenderView &view) {
         auto &frame_view = *reinterpret_cast<SceneViewUBO *>(buffers.SceneViewUBO.Contents().data());
-        if (buffers.FrameView != view) buffers.Visibility.Generation = InvalidOffset;
         buffers.FrameView = view;
         view.ApplyTo(frame_view);
         // Submit restored geometry and draw records before selection.

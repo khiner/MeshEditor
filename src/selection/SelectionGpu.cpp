@@ -66,10 +66,6 @@ struct ElementPickTarget {
     uint32_t RadiusSq;
 };
 
-struct PixelRect {
-    uvec2 Origin{}, Extent{};
-};
-
 std::optional<PixelRect> ClampedRect(uvec2 lo, uvec2 hi, mtl::Extent2D target) {
     const auto limit = std::bit_cast<uvec2>(target);
     lo = numeric::Min(lo, limit);
@@ -128,26 +124,28 @@ uint32_t MaxElementBound(auto &&ranges) {
     return std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &r) { return std::max(total, r.Offset + r.Count); });
 }
 
-void EnsureSelectionVisibility(state::Scene &r, mtl::PassChain &chain) {
+// Rasterize ids and depth for the query rectangle with every surface opaque.
+// Selection mode adds lines and points so object queries can hit them.
+// Visibility mode leaves them out so elements are occluded by surfaces only, never by wire geometry.
+void RecordSelectionVisibility(state::Scene &r, mtl::PassChain &chain, const PixelRect &rect, MeshletRouteMode mode) {
     auto &buffers = r.ctx().get<GpuBuffers>();
-    if (buffers.Visibility == GpuBuffers::VisibilityState{buffers.MeshletVisibleGeneration, false}) return;
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
-    RecordMeshletCull(chain, slots, pipelines, buffers, {.Mode = MeshletRouteMode::Visibility});
-    RecordMeshletVisibilityPass(chain, slots, pipelines, r.ctx().get<const RenderTargets>(), buffers);
+    RecordMeshletCull(chain, slots, pipelines, buffers, {.Mode = mode});
+    RecordMeshletVisibilityPass(chain, slots, pipelines, r.ctx().get<const RenderTargets>(), buffers, false, 0u, rect);
 }
 
-// Preserve scene depth while selection culling rewrites the visible list used for ID decoding.
+// A depth rectangle rasterizes selection depth for the query so the draws test against it.
 // Picks raster twice; boxes raster once.
 void RunSelectionPass(
-    state::Scene &r, mtl::PassChain &chain, bool test_depth,
+    state::Scene &r, mtl::PassChain &chain, std::optional<PixelRect> depth_rect,
     std::optional<MeshletCullConfig> meshlet_cull, bool pick, auto &&record_draws
 ) {
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
     auto &buffers = r.ctx().get<GpuBuffers>();
 
-    if (test_depth) EnsureSelectionVisibility(r, chain);
+    if (depth_rect) RecordSelectionVisibility(r, chain, *depth_rect, MeshletRouteMode::Visibility);
     if (meshlet_cull && buffers.MeshletInstanceCount > 0) {
         RecordMeshletCull(chain, slots, pipelines, buffers, *meshlet_cull);
     }
@@ -156,7 +154,7 @@ void RunSelectionPass(
     const uint32_t raster_passes = pick ? 2u : 1u;
     for (uint32_t index = 0; index < raster_passes; ++index) {
         // Scene depth remains valid for shading and later picks; depth-free queries need no scratch contents.
-        const auto depth = test_depth ? mtl::LoadDepth(*r.ctx().get<const RenderTargets>().Resources->VisibilityDepth) :
+        const auto depth = depth_rect ? mtl::LoadDepth(*r.ctx().get<const RenderTargets>().Resources->VisibilityDepth) :
                                         mtl::DepthAttachment{*r.ctx().get<const RenderTargets>().Resources->ScratchDepth, MTL::LoadActionDontCare, MTL::StoreActionDontCare};
         const auto pass = mtl::MakePassDescriptor({}, depth);
         pass->setRenderTargetWidth(extent.Width);
@@ -186,8 +184,11 @@ void RenderElementSelectionPass(
         assert(mesh_buffers.Meshlets.Count > 0u && "selectable mesh geometry must have persistent meshlets");
     }
 
+    const auto target = r.ctx().get<const RenderTargets>().Resources->ScratchDepth.Extent;
+    const auto query_rect = write_bitset ? BoxRect({box_min.x, box_min.y, box_max.x, box_max.y}, target) : RadiusRect(pick->Px, pick->RadiusSq, target);
+    if (!query_rect) return;
     RunSelectionPass(
-        r, chain, !xray_selection,
+        r, chain, xray_selection ? std::nullopt : query_rect,
         MeshletCullConfig{
             .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::ElementSelection),
             .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
@@ -195,11 +196,7 @@ void RenderElementSelectionPass(
         pick.has_value(),
         [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
             const SelectionElementPushConstants element_pc{MakeElementQuery(sel_slots, {box_min.x, box_min.y, box_max.x, box_max.y}, meshes.Slots().SelectionBits, pick, resolve_id)};
-            if (write_bitset) {
-                const auto rect = BoxRect({box_min.x, box_min.y, box_max.x, box_max.y}, r.ctx().get<const RenderTargets>().Resources->ScratchDepth.Extent);
-                if (!rect) return;
-                encoder->setScissorRect({rect->Origin.x, rect->Origin.y, rect->Extent.x, rect->Extent.y});
-            }
+            if (write_bitset) encoder->setScissorRect({query_rect->Origin.x, query_rect->Origin.y, query_rect->Extent.x, query_rect->Extent.y});
             // Edges draw once per triangle corner.
             const auto draw_edges = [&] {
                 for (uint32_t corner = 0u; corner < 3u; ++corner) {
@@ -271,9 +268,9 @@ void RecordVisibilityObjectSelection(
     const auto &pipelines = GetPipelines(r);
     auto &buffers = r.ctx().get<GpuBuffers>();
 
-    EnsureSelectionVisibility(r, chain);
     const auto rect = ObjectQueryRect(query, r.ctx().get<const RenderTargets>().Resources->VisibilityImage.Extent);
     if (!rect) return;
+    RecordSelectionVisibility(r, chain, *rect, MeshletRouteMode::Selection);
 
     auto *encoder = chain.BeginCompute("VisibilityObjectSelection", MTL::StageFragment);
     encode::BindCompute(encoder, pipelines.VisibilityObjectSelection, slots, buffers);
@@ -294,7 +291,7 @@ void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::option
     if (object) {
         if (object->BestKeySlot != InvalidSlot) {
             // Click cycling needs every covered surface, including occluded objects.
-            RecordMeshletCull(chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers, {.Mode = MeshletRouteMode::Material});
+            RecordMeshletCull(chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers, {.Mode = MeshletRouteMode::Selection});
         } else RecordVisibilityObjectSelection(r, chain, *object);
         RecordOverlayJobCull(chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers, true);
     }
@@ -304,7 +301,9 @@ void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::option
             .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
         }} :
         std::nullopt;
-    RunSelectionPass(r, chain, sound_instance.has_value(), sound_cull, pick.has_value(), [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
+    const auto sound_rect = sound_instance && pick ? RadiusRect(pick->Px, pick->RadiusSq, r.ctx().get<const RenderTargets>().Resources->ScratchDepth.Extent) : std::nullopt;
+    if (sound_instance && !sound_rect) return;
+    RunSelectionPass(r, chain, sound_rect, sound_cull, pick.has_value(), [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
         if (sound_instance) {
             const SelectionElementPushConstants point_pc{MakeElementQuery(sel_slots, {}, InvalidSlot, pick, resolve_id)};
             selection.ElementRaster(Element::Vertex, false, false).Bind(encoder);

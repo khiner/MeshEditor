@@ -246,11 +246,8 @@ struct GpuBuffers {
 
     // Visibility IDs index the visible list and require matching cull and raster generations for decoding.
     uint32_t MeshletVisibleGeneration{0};
-    struct VisibilityState {
-        uint32_t Generation{InvalidOffset};
-        bool ExcludesTransmission{false};
-        bool operator==(const VisibilityState &) const = default;
-    } Visibility;
+    // The cull generation the visibility image was rasterized against.
+    uint32_t VisibilityGeneration{InvalidOffset};
 
     mtl::Buffer ObjectPickKeys, ObjectPickSeenBitset, ObjectBoxBitset;
     uint32_t ObjectPickEpochTag{}; // Zero clears the persistent keys before the first pick and after wraparound.

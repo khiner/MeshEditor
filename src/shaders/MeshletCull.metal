@@ -5,6 +5,7 @@
 #include "Frustum.metal"
 #include "gpu/InstanceRecord.h"
 #include "gpu/MeshletInstanceFlag.h"
+#include "gpu/MeshletRouteMode.h"
 #include "gpu/MaterialAlphaMode.h"
 #include "gpu/LodFrontierBlockState.h"
 #include "gpu/LodFrontierEntry.h"
@@ -236,28 +237,29 @@ inline RoutedMeshlet ClassifyMeshlet(
     // A one-meshlet instance already passed the conservative instance query.
     const bool can_occlude = bounds.Valid && !(instance.PrimitiveCount == 1u && primitive.MeshletCount == 1u);
     PBRMaterial material{};
-    if (pc.RouteMode != 0u) material = scene.Materials(scene.View.MaterialSlot)[MeshletPrimitiveMaterialIndex(scene, primitive)];
+    const MeshletRouteMode mode = MeshletRouteMode(pc.RouteMode);
+    if (mode != MeshletRouteMode::Single) material = scene.Materials(scene.View.MaterialSlot)[MeshletPrimitiveMaterialIndex(scene, primitive)];
     const bool edit_overlay = (instance.Flags & uint(MeshletInstanceFlag::EditOverlay)) != 0u;
     const bool overlay_only = (instance.Flags & uint(MeshletInstanceFlag::OverlayOnly)) != 0u;
-    const bool cone_visible = pc.RouteMode == 0u || material.DoubleSided != 0u ||
+    const bool cone_visible = mode == MeshletRouteMode::Single || material.DoubleSided != 0u ||
         MeshletConeVisible(scene, meshlet, world, InstanceDeformed(instance));
     const bool occluded = !overlay_only && can_occlude && pc.PyramidSamplerSlot != InvalidSlot &&
         MeshletOccluded(scene, pc.PyramidSamplerSlot, scene.ViewProj(), world_center, bounds.Ax, bounds.Ay, bounds.Az);
 
     if (overlay_only) {
         result.Routes = 0u;
-    } else if (pc.RouteMode == 3u && !triangle_topology) {
+    } else if (mode == MeshletRouteMode::Visibility && !triangle_topology) {
         result.Routes = 0u;
-    } else if (pc.RouteMode == 0u) {
+    } else if (mode == MeshletRouteMode::Single) {
         result.Routes = RouteBit(MeshletRoute::OpaqueCullBack);
     } else {
         const bool alpha_mask = material.AlphaMode == MaterialAlphaMode::Mask;
         const MeshletRoute opaque_route = triangle_topology ? OpaqueVisibilityRoute(material, world) : MeshletRoute::Coverage;
-        if (pc.RouteMode == 3u) {
+        if (mode == MeshletRouteMode::Visibility || mode == MeshletRouteMode::Selection) {
             result.Routes = RouteBit(alpha_mask ? MeshletRoute::Coverage : opaque_route);
         } else if (material.AlphaMode == MaterialAlphaMode::Blend) {
             result.Routes = RouteBit(MeshletRoute::Blend);
-        } else if (pc.RouteMode == 1u) {
+        } else if (mode == MeshletRouteMode::Material) {
             result.Routes = RouteBit(alpha_mask ? MeshletRoute::Coverage : opaque_route);
         } else {
             const bool transmissive = material.Transmission.Factor > 0.0f;

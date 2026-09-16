@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Range.h"
+#include "gpu/MeshletRouteMode.h"
 #include "metal/Slots.h"
 
 #include "state/Entity.h"
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -30,10 +32,10 @@ struct MeshVertexChanges {
 // Recompute normals and update edit work for restored vertex ranges without mutating the vertices.
 void RefreshEditedPositions(state::Scene &, state::Entity viewport, std::span<const MeshVertexChanges>);
 
-enum class MeshletRouteMode : uint32_t { Single,
-                                         Material,
-                                         Transmission,
-                                         Visibility };
+// A pixel rectangle on a render target.
+struct PixelRect {
+    uvec2 Origin{}, Extent{};
+};
 
 struct MeshletCullConfig {
     MeshletRouteMode Mode{MeshletRouteMode::Single};
@@ -52,7 +54,7 @@ void DrawOverlayJobs(MTL::RenderCommandEncoder *, const GpuBuffers &, const Mesh
 // Rasterize the current meshlet routes into the visibility/depth pair shared by shading and selection.
 void RecordMeshletVisibilityPass(
     mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const RenderTargets &, GpuBuffers &,
-    bool transmission = false, uint32_t ubo_offset = 0
+    bool transmission, uint32_t ubo_offset, std::optional<PixelRect> scissor
 );
 void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const RenderTargets &, GpuBuffers &, uint32_t ubo_offset = 0);
 void DrawMeshlets(
