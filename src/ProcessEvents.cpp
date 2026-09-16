@@ -905,8 +905,10 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             }
             if (rendering) return false;
             if (playback.Playing && pass == EventPass::Frame) {
-                pf += frame_state.FixedFrameStep ? 1.f : frame_state.DeltaTime * range.Fps;
+                const float step = frame_state.FixedFrameStep ? 1.f : frame_state.DeltaTime * range.Fps;
+                pf += playback.Reverse ? -step : step;
                 if (pf > float(range.EndFrame)) pf = float(range.StartFrame);
+                else if (pf < float(range.StartFrame)) pf = float(range.EndFrame);
                 const int new_frame = int(std::floor(pf));
                 if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = new_frame; });
             } else if (!playback.Playing) {

@@ -23,7 +23,7 @@ void RegisterScene(Tables &tables) {
     Persistent<
         Transform, PunctualLight, Name, Selected, Active, ObjectKind, Scene, ActiveScene, SceneMembership, SubElementOf,
         ScaleLocked, Instance, Hidden, SceneNode, ObjectExtrasTag, Path, Camera, TimelineRange,
-        TimelinePlayback, AnimationTimelineView, NodeTransformAnimation, MorphWeightAnimation, MorphWeightState>(tables);
+        TimelinePlayback, TimelineNavigation, AnimationTimelineView, NodeTransformAnimation, MorphWeightAnimation, MorphWeightState>(tables);
     Derived<
         RenderInstance, WorldTransform, ModelsBuffer, LightIndex, LastEvaluatedFrame, MorphWeightGpuRange,
         PlaybackFrame>(tables);

@@ -14,9 +14,9 @@ using namespace ImGui;
 namespace {
 constexpr float HeaderHeight{20}, MinPixelsPerFrame{1}, MaxPixelsPerFrame{400};
 
-bool IconButton(const char *id, const SvgResource *icon, ImDrawFlags corners = ImDrawFlags_RoundCornersAll) {
+bool IconButton(const char *id, const SvgResource *icon, ImDrawFlags corners = ImDrawFlags_RoundCornersAll, float width_scale = 1.f) {
     const float h = GetFrameHeight();
-    const ImVec2 size{h, h};
+    const ImVec2 size{h * width_scale, h};
     const float icon_dim = h * 0.7f;
     static constexpr ImVec2 padding{0.5f, 0.5f};
 
@@ -27,7 +27,7 @@ bool IconButton(const char *id, const SvgResource *icon, ImDrawFlags corners = I
     dl->AddRectFilled(GetItemRectMin() + padding, GetItemRectMax() - padding, hovered ? GetColorU32(ImGuiCol_ButtonHovered) : GetColorU32(ImGuiCol_Button), 6.0f, corners);
     if (icon) {
         const auto saved = GetCursorScreenPos();
-        SetCursorScreenPos({GetItemRectMin().x + (h - icon_dim) * 0.5f, GetItemRectMin().y + (h - icon_dim) * 0.5f});
+        SetCursorScreenPos({GetItemRectMin().x + (size.x - icon_dim) * 0.5f, GetItemRectMin().y + (h - icon_dim) * 0.5f});
         icon->DrawIcon({icon_dim, icon_dim});
         SetCursorScreenPos(saved);
     }
@@ -46,7 +46,21 @@ int ComputeMajorStep(float pixels_per_frame) {
 }
 } // namespace
 
-std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &range, const TimelinePlayback &playback, const AnimationTimelineView &view, const AnimationIcons &icons, bool &scrubbing) {
+std::optional<action::timeline::Action> HandleTimelineShortcuts(const TimelinePlayback &playback) {
+    const auto &io = GetIO();
+    if (io.WantTextInput || io.NavVisible) return {};
+    if (playback.Playing && Shortcut(ImGuiKey_Escape, ImGuiInputFlags_RouteGlobal)) return action::timeline::CancelPlay{};
+    constexpr auto flags = ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat;
+    if (Shortcut(ImGuiKey_LeftArrow, flags)) return action::timeline::OffsetFrame{-1};
+    if (Shortcut(ImGuiKey_RightArrow, flags)) return action::timeline::OffsetFrame{1};
+    if (Shortcut(ImGuiMod_Shift | ImGuiKey_LeftArrow, flags)) return action::timeline::JumpToStart{};
+    if (Shortcut(ImGuiMod_Shift | ImGuiKey_RightArrow, flags)) return action::timeline::JumpToEnd{};
+    if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_LeftArrow, flags)) return action::timeline::JumpTime{.Backward = true};
+    if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_RightArrow, flags)) return action::timeline::JumpTime{.Backward = false};
+    return {};
+}
+
+std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &range, const TimelinePlayback &playback, const AnimationTimelineView &view, const TimelineNavigation &navigation, const AnimationIcons &icons, bool &scrubbing) {
     std::optional<action::timeline::Action> action;
     scrubbing = false;
 
@@ -56,13 +70,64 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
 
     const auto bar_origin = GetCursorScreenPos();
     {
-        const auto transport_p = bar_origin + ImVec2{(w - h * 3) * 0.5f, spacing.y};
+        // The transport group holds the range jumps and play controls.
+        // The delta group to its right holds the Jump Time by Delta buttons and the playback options.
+        // Pause spans the reverse and forward play slots while playing.
+        constexpr float TransportSlots{4}, DeltaSlots{3};
+        const auto transport_p = bar_origin + ImVec2{(w - h * (TransportSlots + DeltaSlots) - spacing.x) * 0.5f, spacing.y};
         SetCursorScreenPos(transport_p);
         if (IconButton("jump_start", icons.JumpStart.get(), ImDrawFlags_RoundCornersLeft)) action = action::timeline::JumpToStart{};
         SetCursorScreenPos({transport_p.x + h, transport_p.y});
-        if (IconButton("play_pause", playback.Playing ? icons.Pause.get() : icons.Play.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::TogglePlay{playback.CurrentFrame};
-        SetCursorScreenPos({transport_p.x + h * 2, transport_p.y});
+        if (playback.Playing) {
+            if (IconButton("pause", icons.Pause.get(), ImDrawFlags_RoundCornersNone, 2.f)) action = action::timeline::TogglePlay{playback.CurrentFrame};
+        } else {
+            if (IconButton("play_reverse", icons.PlayReverse.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::TogglePlay{playback.CurrentFrame, /*Reverse=*/true};
+            SetCursorScreenPos({transport_p.x + h * 2, transport_p.y});
+            if (IconButton("play", icons.Play.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::TogglePlay{playback.CurrentFrame};
+        }
+        SetCursorScreenPos({transport_p.x + h * 3, transport_p.y});
         if (IconButton("jump_end", icons.JumpEnd.get(), ImDrawFlags_RoundCornersRight)) action = action::timeline::JumpToEnd{};
+
+        const auto delta_p = ImVec2{transport_p.x + h * TransportSlots + spacing.x, transport_p.y};
+        SetCursorScreenPos(delta_p);
+        if (IconButton("jump_back", icons.FramePrev.get(), ImDrawFlags_RoundCornersLeft)) action = action::timeline::JumpTime{.Backward = true};
+        SetCursorScreenPos({delta_p.x + h, delta_p.y});
+        if (IconButton("jump_forward", icons.FrameNext.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::JumpTime{.Backward = false};
+        SetCursorScreenPos({delta_p.x + h * 2, delta_p.y});
+        if (IconButton("playback_options", nullptr, ImDrawFlags_RoundCornersRight)) OpenPopup("##PlaybackOptions");
+        {
+            const auto center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
+            constexpr float arrow_half = 3.5f;
+            GetWindowDrawList()->AddTriangleFilled(
+                center - ImVec2{arrow_half, arrow_half * 0.5f},
+                center + ImVec2{arrow_half, -arrow_half * 0.5f},
+                center + ImVec2{0.f, arrow_half * 0.5f},
+                GetColorU32(ImGuiCol_Text)
+            );
+        }
+        if (BeginPopup("##PlaybackOptions")) {
+            auto nav = navigation;
+            bool changed = Checkbox("Wrap Timeline Navigation", &nav.Wrap);
+            Separator();
+            TextUnformatted("Jump Unit");
+            if (RadioButton("Frame", !nav.JumpInSeconds)) {
+                nav.JumpInSeconds = false;
+                changed = true;
+            }
+            SameLine();
+            if (RadioButton("Second", nav.JumpInSeconds)) {
+                nav.JumpInSeconds = true;
+                changed = true;
+            }
+            SetNextItemWidth(GetFontSize() * 5);
+            InputFloat("Delta", &nav.JumpDelta, 0.f, 0.f, "%.2f");
+            if (IsItemDeactivatedAfterEdit()) {
+                nav.JumpDelta = std::max(nav.JumpDelta, 0.1f);
+                changed = true;
+            }
+            if (changed) action = action::timeline::SetNavigation{nav};
+            EndPopup();
+        }
     }
 
     SetCursorScreenPos({bar_origin.x, bar_origin.y + spacing.y});

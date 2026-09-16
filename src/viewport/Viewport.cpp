@@ -9,8 +9,8 @@
 #include "Paths.h"
 #include "ProcessEvents.h"
 #include "Profile.h"
-#include "action/Errors.h"
 #include "Window.h"
+#include "action/Errors.h"
 #include "animation/AnimationTimeline.h"
 #include "audio/AudioStores.h"
 #include "audio/AudioTypes.h"
@@ -29,8 +29,8 @@
 #include "physics/PhysicsTypes.h"
 #include "render/GpuSceneState.h"
 #include "render/Pipelines.h"
-#include "render/RenderTargets.h"
 #include "render/RenderStores.h"
+#include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
@@ -264,6 +264,7 @@ void SetupScene(state::Scene &r, state::Entity viewport) {
     r.emplace_or_replace<AnimationTimelineView>(viewport);
     r.emplace_or_replace<TimelineRange>(viewport);
     r.emplace_or_replace<TimelinePlayback>(viewport);
+    r.emplace_or_replace<TimelineNavigation>(viewport);
     r.emplace_or_replace<SelectionXRay>(viewport);
     r.emplace_or_replace<ShadeSmoothAngle>(viewport);
     r.emplace_or_replace<BoxSelectState>(viewport);

@@ -27,9 +27,12 @@ void LoadViewportIcons(state::Scene &r) {
             .Overlay = LoadSvg(ctx, dir / "overlay.svg"),
             .Anim = {
                 .Play = LoadSvg(ctx, dir / "play.svg"),
+                .PlayReverse = LoadSvg(ctx, dir / "play_reverse.svg"),
                 .Pause = LoadSvg(ctx, dir / "pause.svg"),
                 .JumpStart = LoadSvg(ctx, dir / "jump_start.svg"),
                 .JumpEnd = LoadSvg(ctx, dir / "jump_end.svg"),
+                .FramePrev = LoadSvg(ctx, dir / "frame_prev.svg"),
+                .FrameNext = LoadSvg(ctx, dir / "frame_next.svg"),
             },
         }
     );

@@ -168,6 +168,7 @@ inline constexpr std::string_view SchemaNames[] = {
     "SurfaceSoundControls",
     "TetBuffers",
     "TextureStore",
+    "TimelineNavigation",
     "TimelinePlayback",
     "TimelineRange",
     "Transform",

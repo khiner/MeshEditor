@@ -9,9 +9,22 @@ struct TimelineRange {
 };
 
 // Per-tick state that does not invalidate the physics cache.
+// Reverse plays toward the start frame and wraps to the end frame.
+// PlayStartFrame is the frame playback started from, restored by CancelPlay.
 struct TimelinePlayback {
     int CurrentFrame{1};
+    int PlayStartFrame{1};
     bool Playing{false};
+    bool Reverse{false};
+};
+
+// Frame-step settings for Jump Time by Delta and the arrow-key frame offsets.
+// JumpDelta counts frames, or seconds when JumpInSeconds is set.
+// Wrap keeps stepped frames inside the timeline range.
+struct TimelineNavigation {
+    float JumpDelta{1.f};
+    bool JumpInSeconds{false};
+    bool Wrap{false};
 };
 
 struct AnimationTimelineView {

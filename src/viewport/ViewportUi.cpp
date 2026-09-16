@@ -246,6 +246,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
         else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::Emit(action::view::LatchScreenTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
     } else {
         if (Shortcut(ImGuiKey_Space, VKey)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(viewport).CurrentFrame});
+        else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Space, VKey)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(viewport).CurrentFrame, /*Reverse=*/true});
         else if (Shortcut(ImGuiKey_Z, VKey)) {
             const auto current = r.get<const ViewportDisplay>(viewport).ViewportShading;
             const auto next = current == ViewportShadingMode::Solid ? ViewportShadingMode::MaterialPreview :

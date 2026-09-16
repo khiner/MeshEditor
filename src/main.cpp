@@ -504,7 +504,7 @@ EditorWindowsFrame BeginEditorWindows(
             PopStyleVar();
             if (auto action = RenderAnimationTimeline(
                     r.get<const TimelineRange>(viewport), r.get<const TimelinePlayback>(viewport),
-                    r.get<const AnimationTimelineView>(viewport), r.ctx().get<const ViewportIcons>().Anim, scrubbing
+                    r.get<const AnimationTimelineView>(viewport), r.get<const TimelineNavigation>(viewport), r.ctx().get<const ViewportIcons>().Anim, scrubbing
                 );
                 interactive && action) {
                 std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*action));
@@ -1588,6 +1588,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) SaveProject(r, viewport);
             if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) SaveProjectAs(r, viewport);
         }
+        if (auto action = HandleTimelineShortcuts(r.get<const TimelinePlayback>(viewport))) std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*action));
 
         // Keep the viewport window open across apply/derive/render so its image is inserted before End().
         const auto editor_windows = BeginEditorWindows(r, viewport, ctx, layer, windows, io, /*interactive=*/true);
