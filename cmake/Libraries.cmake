@@ -174,6 +174,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/action/Selection.cpp
     src/action/Timeline.cpp
     src/action/View.cpp
+    src/animation/Keyframes.cpp
     src/editor/AudioExcitation.cpp
     src/editor/AudioIntegration.cpp
     src/editor/Engine.cpp

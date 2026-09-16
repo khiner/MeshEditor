@@ -18,6 +18,7 @@
 #include "action/Selection.h"
 #include "action/View.h"
 #include "animation/AnimationData.h"
+#include "animation/Keyframes.h"
 #include "animation/TimelineUi.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/AudioDevice.h"
@@ -502,9 +503,10 @@ EditorWindowsFrame BeginEditorWindows(
             RenderClipPickers(r);
             Unindent(6);
             PopStyleVar();
+            const auto keyframes = CollectKeyframes(r, viewport);
             if (auto action = RenderAnimationTimeline(
                     r.get<const TimelineRange>(viewport), r.get<const TimelinePlayback>(viewport),
-                    r.get<const AnimationTimelineView>(viewport), r.get<const TimelineNavigation>(viewport), r.ctx().get<const ViewportIcons>().Anim, scrubbing
+                    r.get<const AnimationTimelineView>(viewport), r.get<const TimelineNavigation>(viewport), keyframes, r.ctx().get<const ViewportIcons>().Anim, scrubbing
                 );
                 interactive && action) {
                 std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*action));

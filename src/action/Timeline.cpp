@@ -1,12 +1,14 @@
 #include "action/Timeline.h"
 #include "Variant.h"
 #include "animation/AnimationTimeline.h"
+#include "animation/Keyframes.h"
 #include "gltf/SourceAssets.h"
 #include "render/LightComponents.h"
 #include "state/Scene.h"
 #include "viewport/ViewportDisplay.h"
 
 #include <cmath>
+#include <optional>
 
 namespace action::timeline {
 namespace {
@@ -77,6 +79,38 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 const auto &nav = r.get<const TimelineNavigation>(viewport);
                 const float frames = nav.JumpInSeconds ? nav.JumpDelta * r.get<const TimelineRange>(viewport).Fps : nav.JumpDelta;
                 step_frame(int(std::lround(a.Backward ? -frames : frames)));
+            },
+            [&](const JumpKeyframe &a) {
+                const auto keys = CollectKeyframes(r, viewport);
+                const int current = r.get<const TimelinePlayback>(viewport).CurrentFrame;
+                const auto &range = r.get<const TimelineRange>(viewport);
+                const bool wrap = r.get<const TimelineNavigation>(viewport).Wrap;
+                // Wrapping ignores keys outside the range and continues from the far end when none remain.
+                const auto in_range = [&](float key) { return !wrap || (key >= float(range.StartFrame) && key <= float(range.EndFrame)); };
+                const auto frame_of = [](float key) { return int(std::lround(key)); };
+                std::optional<int> target;
+                if (a.Next) {
+                    for (const float key : keys) {
+                        if (in_range(key) && frame_of(key) > current) {
+                            target = frame_of(key);
+                            break;
+                        }
+                    }
+                    if (!target && wrap) {
+                        if (const auto it = std::ranges::find_if(keys, in_range); it != keys.end()) target = frame_of(*it);
+                    }
+                } else {
+                    for (auto it = keys.rbegin(); it != keys.rend(); ++it) {
+                        if (in_range(*it) && frame_of(*it) < current) {
+                            target = frame_of(*it);
+                            break;
+                        }
+                    }
+                    if (!target && wrap) {
+                        if (const auto it = std::ranges::find_if(keys.rbegin(), keys.rend(), in_range); it != keys.rend()) target = frame_of(*it);
+                    }
+                }
+                if (target) set_frame(*target);
             },
             [&](const SetNavigation &a) { r.replace<TimelineNavigation>(viewport, a.Value); },
             [&](const SetView &a) { r.replace<AnimationTimelineView>(viewport, AnimationTimelineView{a.PixelsPerFrame, a.ViewCenterFrame}); },

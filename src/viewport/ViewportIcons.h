@@ -10,7 +10,7 @@ struct ViewportIconsShading {
     std::unique_ptr<SvgResource> Wireframe, Solid, MaterialPreview, Rendered;
 };
 struct AnimationIcons {
-    std::unique_ptr<SvgResource> Play, PlayReverse, Pause, JumpStart, JumpEnd, FramePrev, FrameNext;
+    std::unique_ptr<SvgResource> Play, PlayReverse, Pause, JumpStart, JumpEnd, FramePrev, FrameNext, PrevKeyframe, NextKeyframe;
 };
 
 // Loaded once by LoadViewportIcons after the GPU context is ready.

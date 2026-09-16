@@ -7,6 +7,7 @@
 
 #include "state/Scene.h"
 
+#include <algorithm>
 #include <format>
 
 using namespace ImGui;
@@ -17,7 +18,7 @@ constexpr float HeaderHeight{20}, MinPixelsPerFrame{1}, MaxPixelsPerFrame{400};
 bool IconButton(const char *id, const SvgResource *icon, ImDrawFlags corners = ImDrawFlags_RoundCornersAll, float width_scale = 1.f) {
     const float h = GetFrameHeight();
     const ImVec2 size{h * width_scale, h};
-    const float icon_dim = h * 0.7f;
+    const float icon_dim = h * 0.8f;
     static constexpr ImVec2 padding{0.5f, 0.5f};
 
     PushID(id);
@@ -57,10 +58,12 @@ std::optional<action::timeline::Action> HandleTimelineShortcuts(const TimelinePl
     if (Shortcut(ImGuiMod_Shift | ImGuiKey_RightArrow, flags)) return action::timeline::JumpToEnd{};
     if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_LeftArrow, flags)) return action::timeline::JumpTime{.Backward = true};
     if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_RightArrow, flags)) return action::timeline::JumpTime{.Backward = false};
+    if (Shortcut(ImGuiKey_UpArrow, flags)) return action::timeline::JumpKeyframe{.Next = false};
+    if (Shortcut(ImGuiKey_DownArrow, flags)) return action::timeline::JumpKeyframe{.Next = true};
     return {};
 }
 
-std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &range, const TimelinePlayback &playback, const AnimationTimelineView &view, const TimelineNavigation &navigation, const AnimationIcons &icons, bool &scrubbing) {
+std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &range, const TimelinePlayback &playback, const AnimationTimelineView &view, const TimelineNavigation &navigation, std::span<const float> keyframes, const AnimationIcons &icons, bool &scrubbing) {
     std::optional<action::timeline::Action> action;
     scrubbing = false;
 
@@ -73,19 +76,23 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
         // The transport group holds the range jumps and play controls.
         // The delta group to its right holds the Jump Time by Delta buttons and the playback options.
         // Pause spans the reverse and forward play slots while playing.
-        constexpr float TransportSlots{4}, DeltaSlots{3};
-        const auto transport_p = bar_origin + ImVec2{(w - h * (TransportSlots + DeltaSlots) - spacing.x) * 0.5f, spacing.y};
+        constexpr float TransportSlots{6}, DeltaSlots{3};
+        const auto transport_p = bar_origin + ImVec2{(w - h * (TransportSlots + DeltaSlots) - spacing.x) * 0.5f, 0.f};
         SetCursorScreenPos(transport_p);
         if (IconButton("jump_start", icons.JumpStart.get(), ImDrawFlags_RoundCornersLeft)) action = action::timeline::JumpToStart{};
         SetCursorScreenPos({transport_p.x + h, transport_p.y});
+        if (IconButton("prev_keyframe", icons.PrevKeyframe.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::JumpKeyframe{.Next = false};
+        SetCursorScreenPos({transport_p.x + h * 2, transport_p.y});
         if (playback.Playing) {
             if (IconButton("pause", icons.Pause.get(), ImDrawFlags_RoundCornersNone, 2.f)) action = action::timeline::TogglePlay{playback.CurrentFrame};
         } else {
             if (IconButton("play_reverse", icons.PlayReverse.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::TogglePlay{playback.CurrentFrame, /*Reverse=*/true};
-            SetCursorScreenPos({transport_p.x + h * 2, transport_p.y});
+            SetCursorScreenPos({transport_p.x + h * 3, transport_p.y});
             if (IconButton("play", icons.Play.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::TogglePlay{playback.CurrentFrame};
         }
-        SetCursorScreenPos({transport_p.x + h * 3, transport_p.y});
+        SetCursorScreenPos({transport_p.x + h * 4, transport_p.y});
+        if (IconButton("next_keyframe", icons.NextKeyframe.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::JumpKeyframe{.Next = true};
+        SetCursorScreenPos({transport_p.x + h * 5, transport_p.y});
         if (IconButton("jump_end", icons.JumpEnd.get(), ImDrawFlags_RoundCornersRight)) action = action::timeline::JumpToEnd{};
 
         const auto delta_p = ImVec2{transport_p.x + h * TransportSlots + spacing.x, transport_p.y};
@@ -130,7 +137,7 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
         }
     }
 
-    SetCursorScreenPos({bar_origin.x, bar_origin.y + spacing.y});
+    SetCursorScreenPos(bar_origin);
     Dummy({h, h});
     static constexpr float input_width{50};
     SameLine(w - CalcTextSize("Frame").x - CalcTextSize("Start").x - CalcTextSize("End").x - spacing.x * 6 - input_width * 3);
@@ -153,7 +160,7 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
         if (IsItemDeactivatedAfterEdit()) action = action::timeline::SetEndFrame{end};
     }
     PopItemWidth();
-    SetCursorScreenPos({bar_origin.x, bar_origin.y + h + spacing.y * 2 - spacing.y});
+    SetCursorScreenPos({bar_origin.x, bar_origin.y + h});
     Dummy({0, 0});
 
     const auto area = GetContentRegionAvail();
@@ -195,6 +202,20 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
     }
 
     dl->AddLine({p0.x, p0.y + HeaderHeight}, {p1.x, p0.y + HeaderHeight}, IM_COL32(60, 60, 60, 255));
+
+    // Summary row of keyframe diamonds under the ruler.
+    if (!keyframes.empty()) {
+        constexpr float KeyHalf{5.f};
+        const float ky = p0.y + HeaderHeight + KeyHalf + 4.f;
+        const auto first = std::ranges::lower_bound(keyframes, x_to_frame(p0.x - KeyHalf));
+        for (auto it = first; it != keyframes.end(); ++it) {
+            const float kx = frame_to_x(*it);
+            if (kx > p1.x + KeyHalf) break;
+            const ImVec2 top{kx, ky - KeyHalf}, right{kx + KeyHalf, ky}, bottom{kx, ky + KeyHalf}, left{kx - KeyHalf, ky};
+            dl->AddQuadFilled(top, right, bottom, left, IM_COL32(230, 230, 230, 255));
+            dl->AddQuad(top, right, bottom, left, IM_COL32(20, 20, 20, 255));
+        }
+    }
 
     if (const float cfx = frame_to_x(float(playback.CurrentFrame)); cfx >= p0.x && cfx <= p1.x) {
         dl->AddLine({cfx, p0.y}, {cfx, p1.y}, IM_COL32(100, 160, 255, 200), 2.0f);

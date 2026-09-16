@@ -34,6 +34,10 @@ struct OffsetFrame {
 struct JumpTime {
     bool Backward;
 };
+// Moves to the nearest selected-object keyframe after or before the current frame.
+struct JumpKeyframe {
+    bool Next;
+};
 struct SetNavigation {
     TimelineNavigation Value;
 };
@@ -41,7 +45,7 @@ struct SetView {
     float PixelsPerFrame, ViewCenterFrame;
 };
 
-using Action = std::variant<TogglePlay, CancelPlay, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, OffsetFrame, JumpTime, SetNavigation, SetView, EnterPresentation>;
+using Action = std::variant<TogglePlay, CancelPlay, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, OffsetFrame, JumpTime, JumpKeyframe, SetNavigation, SetView, EnterPresentation>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::timeline

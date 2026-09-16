@@ -33,6 +33,8 @@ void LoadViewportIcons(state::Scene &r) {
                 .JumpEnd = LoadSvg(ctx, dir / "jump_end.svg"),
                 .FramePrev = LoadSvg(ctx, dir / "frame_prev.svg"),
                 .FrameNext = LoadSvg(ctx, dir / "frame_next.svg"),
+                .PrevKeyframe = LoadSvg(ctx, dir / "prev_keyframe.svg"),
+                .NextKeyframe = LoadSvg(ctx, dir / "next_keyframe.svg"),
             },
         }
     );
