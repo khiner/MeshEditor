@@ -1,11 +1,11 @@
 #pragma once
 
-#include "gpu/Types.h"
-#include "gpu/SlotOffset.h"
 #include "gpu/ElementWork.h"
-#include "gpu/NormalDeriveEntry.h"
-#include "gpu/Transform.h"
 #include "gpu/GeometryEditMode.h"
+#include "gpu/NormalDeriveEntry.h"
+#include "gpu/SlotOffset.h"
+#include "gpu/Transform.h"
+#include "gpu/Types.h"
 
 struct CommitPosedGeometryPushConstants {
     SlotOffset Vertices DEFAULT();

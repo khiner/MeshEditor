@@ -1,8 +1,8 @@
 #pragma once
 
-#include "gpu/Types.h"
-#include "gpu/SlotOffset.h"
 #include "gpu/EditSelectionStorage.h"
+#include "gpu/SlotOffset.h"
+#include "gpu/Types.h"
 
 struct DrawData {
     uint32_t VertexSlot DEFAULT(InvalidSlot);

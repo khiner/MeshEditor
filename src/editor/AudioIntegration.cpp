@@ -592,7 +592,6 @@ void ClearAudioScene(state::Scene &r) {
 }
 
 void RegisterAudioComponentHandlers(state::Scene &r) {
-
     // Create audio context slots once because ProcessAudio reads the registry context concurrently.
     r.ctx().emplace<AudioSamples>();
     r.ctx().emplace<ModalWarmStart>();

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "gpu/Types.h"
 #include "gpu/ElementWork.h"
 #include "gpu/SlotOffset.h"
+#include "gpu/Types.h"
 
 struct BoundsTreePushConstants {
     ElementWork Work DEFAULT();

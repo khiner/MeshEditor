@@ -1984,7 +1984,7 @@ MeshEditWork &PrepareMeshEditWork(state::Scene &r, state::Entity entity) {
             if (n <= 1u) break;
         }
         const uint32_t elements = mesh.FaceCount() ? meshes.Get(id).TriangleCount : mesh.EdgeCount() ? mesh.EdgeCount() :
-                                                                                                      mesh.VertexCount();
+                                                                                                       mesh.VertexCount();
         w.ElementMeshlets = buffers.ElementMeshlets.Allocate(elements);
         auto map = buffers.ElementMeshlets.GetMutable(w.ElementMeshlets);
         std::ranges::fill(map, InvalidOffset);

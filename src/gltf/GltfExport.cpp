@@ -28,8 +28,8 @@
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 
-#include "state/Scene.h"
 #include "metal/MetalContext.h"
+#include "state/Scene.h"
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>
 #include <iostream>

@@ -1,8 +1,8 @@
 #pragma once
 
+#include "gpu/AxisThemeColors.h"
 #include "gpu/Types.h"
 #include "gpu/ViewportThemeColors.h"
-#include "gpu/AxisThemeColors.h"
 
 struct ViewportTheme {
     ViewportThemeColors Colors DEFAULT();

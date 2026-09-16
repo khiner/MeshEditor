@@ -119,7 +119,7 @@ struct FieldWidgets {
             else if constexpr (std::same_as<F, vec4>) return ui::DragFloat4(label, &v.x, speed, bounds.first, bounds.second, fmt);
             else static_assert(false, "Edit::Drag: field type must be float, vec3, or vec4");
         },
-                                            /*delta_capable=*/true);
+                                          /*delta_capable=*/true);
     }
 
     // Slider bounds come from the field's FieldLimits, which must declare both Min and Max.
@@ -135,7 +135,7 @@ struct FieldWidgets {
         static_assert(HasMin<Prefix..., Ms...> && HasMax<Prefix..., Ms...>, "Edit::SliderAngle: field must declare FieldLimits with both Min and Max");
         using L = FieldLimits<Prefix..., Ms...>;
         return Self().template Run<Ms...>([&](float &v) { return ImGui::SliderAngle(label, &v, numeric::Degrees(float(L::Min)), numeric::Degrees(float(L::Max)), fmt); },
-                                            /*delta_capable=*/true);
+                                          /*delta_capable=*/true);
     }
 
     // ColorEdit3 for vec3, ColorEdit4 for vec4, picked by field type.

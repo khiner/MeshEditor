@@ -1,10 +1,10 @@
 #pragma once
 
-#include "gpu/Types.h"
-#include "gpu/EditSelectionStorage.h"
-#include "gpu/SlotOffset.h"
-#include "gpu/Element.h"
 #include "gpu/EditSelectionOperation.h"
+#include "gpu/EditSelectionStorage.h"
+#include "gpu/Element.h"
+#include "gpu/SlotOffset.h"
+#include "gpu/Types.h"
 
 struct EditSelectionPushConstants {
     EditSelectionStorage Selection DEFAULT();

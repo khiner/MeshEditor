@@ -1,8 +1,8 @@
 #pragma once
 
-#include "gpu/Types.h"
-#include "gpu/SlotOffset.h"
 #include "gpu/PunctualLightType.h"
+#include "gpu/SlotOffset.h"
+#include "gpu/Types.h"
 
 struct PunctualLight {
     SlotOffset TransformSlotOffset DEFAULT();

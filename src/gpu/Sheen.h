@@ -1,7 +1,7 @@
 #pragma once
 
-#include "gpu/Types.h"
 #include "gpu/TextureInfo.h"
+#include "gpu/Types.h"
 
 struct Sheen {
     vec3 ColorFactor DEFAULT(0);

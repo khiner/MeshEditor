@@ -1,8 +1,8 @@
 #pragma once
 
-#include "gpu/Types.h"
 #include "gpu/DrawData.h"
 #include "gpu/SlotOffset.h"
+#include "gpu/Types.h"
 
 // Stores immutable topology and shading once per mesh. Instance records contain mutable state.
 struct PrimitiveRecord {

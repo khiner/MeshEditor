@@ -1,7 +1,7 @@
 #pragma once
 
-#include "gpu/Types.h"
 #include "gpu/Element.h"
+#include "gpu/Types.h"
 
 struct EditSelectionSummary {
     vec3 PositionSum DEFAULT();

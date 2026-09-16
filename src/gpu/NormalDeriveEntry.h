@@ -1,7 +1,7 @@
 #pragma once
 
-#include "gpu/Types.h"
 #include "gpu/SlotOffset.h"
+#include "gpu/Types.h"
 
 // Defines one normal-derivation item with optional posed positions and push-constant-selected outputs.
 struct NormalDeriveEntry {

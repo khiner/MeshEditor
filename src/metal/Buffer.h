@@ -11,7 +11,7 @@
 namespace store {
 struct History;
 struct Pages;
-}
+} // namespace store
 
 template<typename T>
 constexpr std::span<const std::byte> as_bytes(const std::vector<T> &v) { return std::as_bytes(std::span{v}); }

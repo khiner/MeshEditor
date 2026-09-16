@@ -9,7 +9,7 @@
 namespace store {
 struct History;
 struct Records;
-}
+} // namespace store
 
 struct MaterialStore {
     MaterialStore();

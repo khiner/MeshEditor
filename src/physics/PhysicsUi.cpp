@@ -218,8 +218,8 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
             },
             [](physics::ConvexHull &) {},
             [](physics::TriangleMesh &) {},
-        },
-        out
+            },
+            out
     );
     return changed ? std::optional{std::move(out)} : std::nullopt;
 }

@@ -1,16 +1,16 @@
 #pragma once
 
-#include "gpu/Types.h"
+#include "gpu/Anisotropy.h"
+#include "gpu/Clearcoat.h"
+#include "gpu/DiffuseTransmission.h"
+#include "gpu/Iridescence.h"
 #include "gpu/MaterialAlphaMode.h"
-#include "gpu/TextureInfo.h"
 #include "gpu/Sheen.h"
 #include "gpu/Specular.h"
+#include "gpu/TextureInfo.h"
 #include "gpu/Transmission.h"
-#include "gpu/DiffuseTransmission.h"
+#include "gpu/Types.h"
 #include "gpu/Volume.h"
-#include "gpu/Clearcoat.h"
-#include "gpu/Anisotropy.h"
-#include "gpu/Iridescence.h"
 
 struct PBRMaterial {
     vec4 BaseColorFactor DEFAULT(1);

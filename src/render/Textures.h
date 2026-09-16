@@ -139,7 +139,6 @@ struct EnvironmentStore {
     EnvironmentStore &operator=(EnvironmentStore &&) = default;
 };
 
-
 // Records an imported texture's material slot and glTF source image.
 struct MaterializedTexture {
     uint32_t SamplerSlot;

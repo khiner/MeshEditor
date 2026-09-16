@@ -157,8 +157,7 @@ void Buffer::Track(store::History &history, std::string name, uint32_t page_byte
     Tracked = std::make_unique<store::Pages>(page_bytes, 5, this, [](void *backing, uint64_t bytes) {
         auto &buffer = *static_cast<Buffer *>(backing);
         buffer.Reserve(bytes);
-        return buffer.Contents();
-    }, UsedSize);
+        return buffer.Contents(); }, UsedSize);
     Tracked->Storage = Contents();
     Tracked->Grow(UsedSize);
     if (const auto bytes = Contents(); bytes.size() > UsedSize) std::ranges::fill(bytes.subspan(UsedSize), std::byte{});

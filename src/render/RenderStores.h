@@ -7,7 +7,7 @@ struct BufferContext;
 void InitRenderStoreContext(state::Scene &, const mtl::Context &);
 void RegisterRenderStoreHandlers(state::Scene &);
 mtl::BufferContext &InitRenderStores(state::Scene &);
-void InitDefaultMaterial(state::Scene &, state::Entity);
+void InitDefaultMaterial(state::Scene &);
 void DeinitTextureStores(state::Scene &);
 void DeinitRenderStores(state::Scene &);
 void DeinitRenderStoreContext(state::Scene &);

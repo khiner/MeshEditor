@@ -34,8 +34,10 @@ struct DragFieldStart {
 };
 
 // Numeric fields support SelectedDelta drags and carry scalar bounds.
-template<typename F> concept ScalarField = std::floating_point<F> || (std::integral<F> && !std::same_as<F, bool>);
-template<typename F> concept VectorField = requires { F::ComponentCount; } && ScalarField<typename F::value_type>;
+template<typename F>
+concept ScalarField = std::floating_point<F> || (std::integral<F> && !std::same_as<F, bool>);
+template<typename F>
+concept VectorField = requires { F::ComponentCount; } && ScalarField<typename F::value_type>;
 template<typename F> inline constexpr bool DeltaField = ScalarField<F> || VectorField<F>;
 
 // Bounds of a field that has none.

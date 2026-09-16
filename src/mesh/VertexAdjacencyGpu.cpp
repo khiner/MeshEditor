@@ -17,7 +17,10 @@ namespace {
 // A submit's scratch stays under this, so a batch of large meshes splits across submits.
 constexpr uint32_t ScratchWordBudget{48u << 20};
 
-enum Domain : uint32_t { Vertices, Halfedges, Blocks, DomainCount };
+enum Domain : uint32_t { Vertices,
+                         Halfedges,
+                         Blocks,
+                         DomainCount };
 using Batch = TiledJobBatch<VertexAdjacencyJob, DomainCount>;
 
 constexpr std::array Passes{

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "gpu/Types.h"
 #include "gpu/SolidLight.h"
+#include "gpu/Types.h"
 
 struct WorkspaceLights {
     GpuArray<SolidLight, 4> Lights DEFAULT();

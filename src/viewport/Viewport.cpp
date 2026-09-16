@@ -198,7 +198,7 @@ state::Entity InitEngine(state::Scene &r) {
     r.ctx().emplace<MeshStore>(InitRenderStores(r));
     auto &buffers = r.ctx().get<GpuBuffers>();
     r.ctx().emplace<action::Errors>();
-    InitDefaultMaterial(r, viewport);
+    InitDefaultMaterial(r);
     // These engine resources outlive documents.
     r.ctx().emplace<ViewportExtent>();
     r.ctx().emplace<ViewportConsumerFence>();

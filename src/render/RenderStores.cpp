@@ -70,7 +70,7 @@ mtl::BufferContext &InitRenderStores(state::Scene &r) {
     r.ctx().emplace<MaterialStore>();
     return buffers.Ctx;
 }
-void InitDefaultMaterial(state::Scene &r, state::Entity viewport) {
+void InitDefaultMaterial(state::Scene &r) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &textures = r.ctx().get<TextureStore>();
     auto &materials = r.ctx().get<MaterialStore>();

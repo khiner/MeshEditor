@@ -232,7 +232,9 @@ struct Mesh {
     he::HandleRange<EH> edges() const { return {EdgeCount()}; }
     he::HandleRange<FH> faces() const { return {FaceCount()}; }
     uint32_t ElementCount(Element element) const {
-        return element == Element::Vertex ? VertexCount() : element == Element::Edge ? EdgeCount() : element == Element::Face ? FaceCount() : 0u;
+        return element == Element::Vertex ? VertexCount() : element == Element::Edge ? EdgeCount() :
+            element == Element::Face                                                 ? FaceCount() :
+                                                                                       0u;
     }
 
     struct CirculatorBase {

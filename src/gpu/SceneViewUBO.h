@@ -1,10 +1,10 @@
 #pragma once
 
-#include "gpu/Types.h"
+#include "gpu/DebugChannel.h"
+#include "gpu/Element.h"
 #include "gpu/IblSamplers.h"
 #include "gpu/InteractionMode.h"
-#include "gpu/Element.h"
-#include "gpu/DebugChannel.h"
+#include "gpu/Types.h"
 
 struct SceneViewUBO {
     mat4 ViewProj DEFAULT();

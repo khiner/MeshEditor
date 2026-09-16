@@ -79,9 +79,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
     }
     r.patch<Interaction>(viewport, [mode](auto &s) { s.Mode = mode; });
     if (!initialize_selection.empty()) {
-        ApplyEditSelectionCommand(r, initialize_selection, r.get<const EditMode>(viewport).Value,
-            EditSelectionOperation::Fill
-        );
+        ApplyEditSelectionCommand(r, initialize_selection, r.get<const EditMode>(viewport).Value, EditSelectionOperation::Fill);
     }
     r.patch<ViewportTheme>(viewport, [](auto &) {});
     return true;

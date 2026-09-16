@@ -4,7 +4,6 @@
 
 #include "state/Entity.h"
 
-
 // Returns false if the requested interaction mode is unavailable.
 bool SetInteractionMode(state::Scene &, state::Entity viewport, InteractionMode);
 

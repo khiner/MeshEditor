@@ -20,8 +20,8 @@
 #include "gltf/SourceTexture.h"
 #include "gpu/PunctualLight.h"
 #include "image/ImageDecode.h"
-#include "mesh/MeshCreate.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/MeshCreate.h"
 #include "mesh/MeshStore.h"
 #include "mesh/PrimitiveType.h"
 #include "mesh/Primitives.h"
@@ -941,7 +941,8 @@ std::string BrokenSkinnedTriangleGltf(bool drop_weights) {
     {{"buffer": 0, "byteOffset": 48, "byteLength": 48}}
   ],
   "buffers": [{{"byteLength": 96, "uri": "data:application/octet-stream;base64,{}"}}]
-}})", drop_weights ? "" : ", \"WEIGHTS_0\": 2", buffer);
+}})",
+                       drop_weights ? "" : ", \"WEIGHTS_0\": 2", buffer);
 }
 
 // Every count a load changes, so a failed load can prove it changed none of them.

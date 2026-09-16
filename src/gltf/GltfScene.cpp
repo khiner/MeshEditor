@@ -20,8 +20,8 @@
 #include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
 #include "mesh/MeshAttributes.h"
-#include "mesh/MeshCreate.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/MeshCreate.h"
 #include "mesh/MeshStore.h"
 #include "object/ObjectOps.h"
 #include "physics/PhysicsTypes.h"
@@ -2109,10 +2109,10 @@ std::vector<state::Entity> ImportArmatures(state::Scene &r, const fastgltf::Asse
             if (target == state::Null) continue;
             EnsureWorldTransform(r, target);
             r.emplace<BoneConstraints>(bone_entities[i], BoneConstraints{.Stack = {BoneConstraint{
-                                                                            .TargetEntity = target,
-                                                                            .Influence = 1.f,
-                                                                            .Data = ChildOfData{.InverseMatrix = numeric::Inverse(ToMatrix(r.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
-                                                                        }}});
+                                                                             .TargetEntity = target,
+                                                                             .Influence = 1.f,
+                                                                             .Data = ChildOfData{.InverseMatrix = numeric::Inverse(ToMatrix(r.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
+                                                                         }}});
         }
     }
     return data_entities;

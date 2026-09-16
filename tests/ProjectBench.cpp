@@ -6,8 +6,8 @@
 #include "editor/Engine.h"
 #include "mesh/MeshStore.h"
 #include "metal/Buffer.h"
-#include "project/store/Pages.h"
 #include "project/Project.h"
+#include "project/store/Pages.h"
 #include "scene/Entity.h"
 #include "viewport/Viewport.h"
 

@@ -1,8 +1,8 @@
 #pragma once
 
+#include "gpu/ObjectSelectQuery.h"
 #include "gpu/Types.h"
 #include "gpu/VisibilityShadingPushConstants.h"
-#include "gpu/ObjectSelectQuery.h"
 
 struct VisibilitySelectionPushConstants {
     VisibilityShadingPushConstants Visibility DEFAULT();

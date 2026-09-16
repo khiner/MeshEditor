@@ -1,7 +1,7 @@
 #pragma once
 
-#include "gpu/Types.h"
 #include "gpu/SlotOffset.h"
+#include "gpu/Types.h"
 
 // Defines one mesh's halfedge-connectivity output and scratch layout.
 // Output order is outgoing halfedges, opposites, edge-first bits, ranks, and samples.

@@ -34,7 +34,6 @@ void BuildEdgeRanks(const ConnectivityStorage &storage, uint32_t halfedge_count,
     }
 }
 
-
 // Calls `fn(v0, v1, v2)` for each triangle of each face's fan, in face order.
 void ForEachFaceTriangle(const Mesh &mesh, auto &&fn) {
     const auto &c = mesh.GetConnectivity();

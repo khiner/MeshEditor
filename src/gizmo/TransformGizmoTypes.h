@@ -3,7 +3,6 @@
 #include "gpu/Transform.h"
 #include "numeric/mat3.h"
 
-
 namespace TransformGizmo {
 enum class Mode : uint8_t {
     Local,

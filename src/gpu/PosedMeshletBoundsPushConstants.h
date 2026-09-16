@@ -1,7 +1,7 @@
 #pragma once
 
-#include "gpu/Types.h"
 #include "gpu/ElementWork.h"
+#include "gpu/Types.h"
 
 // Configures one posed-entry meshlet AABB reduction.
 struct PosedMeshletBoundsPushConstants {

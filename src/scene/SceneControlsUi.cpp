@@ -439,7 +439,8 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                     if (!r.any_of<BoneIndex, BoneSubPartOf, BoneJoint, SubElementOf>(te)) targets.push_back(te);
                 const auto target_name = [&](state::Entity e) {
                     const auto *name = e != state::Null && r.valid(e) ? r.try_get<const Name>(e) : nullptr;
-                    return e == state::Null ? std::string{"None"} : name && !name->Value.empty() ? name->Value : IdString(e);
+                    return e == state::Null ? std::string{"None"} : name && !name->Value.empty() ? name->Value :
+                                                                                                   IdString(e);
                 };
                 ui::ChoiceCombo("Target", c.TargetEntity, targets, target_name, [&](state::Entity te) { action::Emit(action::bone::SetConstraintTarget{i, te}); });
                 if (std::holds_alternative<ChildOfData>(c.Data)) {

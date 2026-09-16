@@ -10,8 +10,8 @@
 #include "metal/MetalCpp.h"
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
-#include "render/Pipelines.h"
 #include "render/MaterialComponents.h"
+#include "render/Pipelines.h"
 #include "render/TextureRefs.h"
 
 #include "state/Scene.h"

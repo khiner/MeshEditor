@@ -45,7 +45,8 @@ using UpdatableComponents = TypeList<
 
 template<typename C, typename List> inline constexpr bool InTypeList = false;
 template<typename C, typename... Cs> inline constexpr bool InTypeList<C, TypeList<Cs...>> = (std::same_as<C, Cs> || ...);
-template<typename C> concept Updatable = InTypeList<C, UpdatableComponents>;
+template<typename C>
+concept Updatable = InTypeList<C, UpdatableComponents>;
 
 // Invokes `f.template operator()<C>()` for the updatable component in `slot`, or nothing for a key outside the list.
 template<typename F> void ForUpdatable(state::TypeId slot, F &&f) {

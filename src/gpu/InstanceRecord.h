@@ -1,7 +1,7 @@
 #pragma once
 
-#include "gpu/Types.h"
 #include "gpu/EditSelectionStorage.h"
+#include "gpu/Types.h"
 
 struct InstanceRecord {
     uint32_t PrimitiveOffset DEFAULT(InvalidOffset);

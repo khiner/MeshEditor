@@ -100,9 +100,7 @@ void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<co
             .BaseColorFactor = source.BaseColorFactor,
             .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
             .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
-            .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
-                MaterialAlphaMode::Blend :
-                MaterialAlphaMode::Opaque,
+            .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ? MaterialAlphaMode::Blend : MaterialAlphaMode::Opaque,
             .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : textures.WhiteTextureSlot},
             .NormalTexture = {.Slot = normal_texture},
         });

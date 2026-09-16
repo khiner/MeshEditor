@@ -115,7 +115,6 @@ MeshArenas::MeshArenas(mtl::BufferContext &ctx)
       BaseVertexNormals{ctx, SlotType::Buffer},
       BaseFaceNormals{ctx, SlotType::Buffer} {}
 
-
 struct MeshStore::HistoryState {
     struct Extent {
         uint64_t Begin, End;

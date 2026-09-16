@@ -1,7 +1,7 @@
 #pragma once
 
-#include "gpu/Types.h"
 #include "gpu/SlotOffset.h"
+#include "gpu/Types.h"
 #include "gpu/VertexAdjacencyKind.h"
 
 // Defines one mesh's vertex-adjacency CSR build and its count/scatter scratch.
