@@ -74,6 +74,8 @@ struct SceneInput {
     std::map<state::Entity, BodyInput> Bodies;
     std::map<state::Entity, ColliderInput> Colliders;
     std::map<state::Entity, JointInput> Joints;
+    // Every entity whose local transform poses a body, collider, or joint, including their ancestors.
+    std::set<state::Entity> Posers;
 };
 struct PhysicsState {
     // The solver runs on Metal 4 devices only, so this stays empty on other devices and no world is built.
@@ -153,6 +155,7 @@ SceneInput ReadScene(const PhysicsState &s, const state::Scene &r) {
     std::map<state::Entity, Transform> transforms;
     const auto transform = [&](this auto &self, state::Entity e) -> Transform {
         if (const auto it = transforms.find(e); it != transforms.end()) return it->second;
+        input.Posers.insert(e);
         Transform result;
         if (const auto *local = r.try_get<const Transform>(e)) {
             result = *local;
@@ -187,6 +190,7 @@ SceneInput ReadScene(const PhysicsState &s, const state::Scene &r) {
         }
         const auto local_transform = [&](this auto &self, state::Entity node) -> Transform {
             if (node == entity) return {.S = body.Node.S};
+            input.Posers.insert(node);
             return ComposeAuthored(self(ParentOrNull(r, node)), r.get<const Transform>(node));
         };
         for (auto collider : body.Colliders) {
@@ -655,7 +659,11 @@ namespace physics {
 void ProcessChanges(state::Scene &r, EventPass) {
     auto &s = r.ctx().get<PhysicsState>();
     const auto any = [&](auto... changes) { return (... || !reactive(r, changes).empty()); };
-    if (!std::exchange(s.InputDirty, false) && !any(Change::PhysicsInput, Change::PhysicsMaterialDef, Change::CollisionSystemDef, Change::CollisionFilterDef, Change::PhysicsGeometry)) return;
+    const auto poser_moved = [&] {
+        const auto &moved = reactive(r, Change::PhysicsTransform);
+        return std::ranges::any_of(s.Input.Posers, [&](auto e) { return moved.contains(e); });
+    };
+    if (!std::exchange(s.InputDirty, false) && !any(Change::PhysicsInput, Change::PhysicsMaterialDef, Change::CollisionSystemDef, Change::CollisionFilterDef, Change::PhysicsGeometry) && !poser_moved()) return;
     for (auto e : reactive(r, Change::PhysicsMaterialDef))
         if (!r.all_of<PhysicsMaterial>(e)) ClearDanglingRefs(r, e, &ColliderMaterial::PhysicsMaterialEntity);
     for (auto e : reactive(r, Change::CollisionSystemDef))
@@ -691,7 +699,10 @@ void ProcessChanges(state::Scene &r, EventPass) {
         if (old != leaf) surfaces.insert(leaf.Owner);
     }
     const bool changed = !recook.empty() || !surfaces.empty() || s.Input.Bodies != input.Bodies || s.Input.Joints != input.Joints;
-    if (!changed) return;
+    if (!changed) {
+        s.Input.Posers = std::move(input.Posers);
+        return;
+    }
     s.Invalidate();
     for (auto entity : r.view<const PhysicsConstraintHandle>()) {
         const auto it = input.Joints.find(entity);
@@ -834,12 +845,12 @@ void Init(state::Scene &r) {
         .on<PhysicsMotion>(On::Create | On::Update | On::Destroy)
         .on<PhysicsVelocity>(On::Create | On::Update | On::Destroy)
         .on<ColliderShape>(On::Create | On::Update | On::Destroy)
-        .on<Transform>(On::Update)
         .on<SceneNode>(On::Create | On::Update | On::Destroy)
         .on<ColliderMaterial>(On::Create | On::Update | On::Destroy)
         .on<TriggerTag>(On::Create | On::Destroy)
         .on<PhysicsJoint>(On::Create | On::Update | On::Destroy)
         .on<::PhysicsJointDef>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::PhysicsTransform).on<Transform>(On::Update);
     reactive(r, Change::PhysicsGeometry).on<MeshGeometryDirty>(On::Create | On::Update).on<MeshPositionsChanged>(On::Create | On::Update);
     reactive(r, Change::ColliderPolicy).on<::ColliderPolicy>(On::Create | On::Update);
     reactive(r, Change::PhysicsMaterialDef).on<::PhysicsMaterial>(On::Create | On::Update | On::Destroy);

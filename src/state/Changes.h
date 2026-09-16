@@ -43,7 +43,8 @@ enum class Change : uint8_t {
     CameraLens,
     ActiveAnimationClip,
     // Physics
-    PhysicsInput, // Any body, collider, joint, pose, or hierarchy input.
+    PhysicsInput, // Any body, collider, joint, or hierarchy input.
+    PhysicsTransform, // A local transform update, relevant when the entity poses a body, collider, or joint.
     PhysicsMaterialDef,
     CollisionSystemDef,
     CollisionFilterDef,
