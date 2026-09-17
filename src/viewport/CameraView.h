@@ -9,7 +9,7 @@
 
 // Camera pose and lens, independent of navigation and animation.
 struct CameraView {
-    Camera Data;
+    CameraLens Data;
     vec3 Target;
     float Distance;
     quat Orientation;

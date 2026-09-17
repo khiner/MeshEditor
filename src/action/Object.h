@@ -5,10 +5,10 @@
 
 #include "CameraTypes.h"
 #include "action/Core.h"
-#include "gpu/PunctualLight.h"
 #include "mesh/MeshData.h"
 #include "mesh/PrimitiveType.h"
 #include "object/ObjectCreateInfo.h"
+#include "render/LightComponents.h"
 #include "viewport/ViewportInteractionState.h"
 
 #include <filesystem>
@@ -22,8 +22,9 @@ struct SetSpotCone {
     float OuterAngle, Blend;
     Scope Scope{Scope::Active};
 };
-struct SetCameraLens {
-    Camera Value;
+// Switches a camera between perspective and orthographic, keeping the view size at the camera's distance from the origin.
+struct SetProjection {
+    bool Orthographic;
     Scope Scope{Scope::Active};
 };
 struct Delete {};
@@ -57,7 +58,7 @@ struct AddArmature {
 };
 struct AddCamera {
     std::unique_ptr<ObjectCreateInfo> Info;
-    std::optional<Camera> Props;
+    std::optional<CameraLens> Props;
 };
 struct AddLight {
     std::unique_ptr<ObjectCreateInfo> Info;
@@ -75,11 +76,12 @@ struct SetPbrMeshFeaturesMask {
     uint32_t Mask;
     Scope Scope{Scope::Active};
 };
+// Writes `Value` to the field at byte `Offset` of material `Index` in the material buffer.
+template<typename T>
 struct UpdateMaterial {
     uint32_t Index;
-    std::unique_ptr<PBRMaterial> Value;
-    std::optional<uint32_t> Features;
-    Scope Scope{Scope::Active};
+    uint16_t Offset;
+    T Value;
 };
 // Choose the material slot shown by the material editor. Targets the mesh entity.
 struct SetMaterialSlotSelection {
@@ -97,8 +99,9 @@ using Action = std::variant<
     SetSelectedSharp,
     ParentToActive, ClearParent,
     AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh,
-    SetPbrMeshFeaturesMask, UpdateMaterial, SetMaterialSlotSelection, SetMaterialAssignment,
-    SetLightType, SetSpotCone, SetCameraLens>;
+    SetPbrMeshFeaturesMask, SetMaterialSlotSelection, SetMaterialAssignment,
+    UpdateMaterial<float>, UpdateMaterial<vec2>, UpdateMaterial<vec3>, UpdateMaterial<vec4>, UpdateMaterial<uint32_t>, UpdateMaterial<MaterialAlphaMode>,
+    SetLightType, SetSpotCone, SetProjection>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::object

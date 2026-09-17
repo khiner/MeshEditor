@@ -69,6 +69,8 @@ struct Project {
     bool ApplyCommand(action::Action, EventPass, bool staged = false);
     int Commit(std::string label);
     void FinishGesture(EventPass);
+    // Keys changed animated properties before a user commit while recording.
+    void RecordKeys();
     void ReleaseGesture();
     void ClearInteraction();
     void AfterRestore();

@@ -15,6 +15,7 @@
 struct PBRMaterial {
     vec4 BaseColorFactor DEFAULT(1);
     vec3 EmissiveFactor DEFAULT(0);
+    float EmissiveStrength DEFAULT(1);
     float MetallicFactor DEFAULT(1);
     float RoughnessFactor DEFAULT(1);
     float NormalScale DEFAULT(1);
@@ -39,4 +40,4 @@ struct PBRMaterial {
     Anisotropy Anisotropy DEFAULT();
     Iridescence Iridescence DEFAULT();
 };
-static_assert(sizeof(PBRMaterial) == 708, "PBRMaterial size");
+static_assert(sizeof(PBRMaterial) == 712, "PBRMaterial size");

@@ -15,6 +15,9 @@ namespace action {
 template<typename ActionType> void Emit(ActionType a, Phase phase) {
     if (!Emitted) Emitted.emplace(MakeAction(std::move(a)), phase);
 }
+void Emit(Action a, Phase phase) {
+    if (!Emitted) Emitted.emplace(std::move(a), phase);
+}
 template<typename ActionType> void EmitSystem(ActionType a) { SystemEmitted.emplace_back(MakeAction(std::move(a))); }
 void Commit() { CommitRequested = true; }
 void Cancel() { CancelRequested = true; }

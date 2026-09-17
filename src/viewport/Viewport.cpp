@@ -1,5 +1,6 @@
 #include "viewport/Viewport.h"
 #include "mesh/MeshComponents.h"
+#include "render/LightComponents.h"
 #include "state/Scene.h"
 
 #include "render/ViewportSubmission.h"
@@ -11,6 +12,7 @@
 #include "Profile.h"
 #include "Window.h"
 #include "action/Errors.h"
+#include "animation/AnimationData.h"
 #include "animation/AnimationTimeline.h"
 #include "audio/AudioStores.h"
 #include "audio/AudioTypes.h"
@@ -265,6 +267,7 @@ void SetupScene(state::Scene &r, state::Entity viewport) {
     r.emplace_or_replace<TimelineRange>(viewport);
     r.emplace_or_replace<TimelinePlayback>(viewport);
     r.emplace_or_replace<TimelineNavigation>(viewport);
+    r.emplace_or_replace<Animations>(viewport);
     r.emplace_or_replace<ShadeSmoothAngle>(viewport);
     r.emplace_or_replace<BoxSelectState>(viewport);
     r.emplace_or_replace<GizmoInteraction>(viewport);

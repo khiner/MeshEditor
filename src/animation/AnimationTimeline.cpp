@@ -1,4 +1,6 @@
 #include "animation/AnimationTimeline.h"
+#include "action/Build.h"
+#include "animation/AnimationData.h"
 #include "animation/TimelineUi.h"
 #include "render/SvgResource.h"
 #include "viewport/ViewportIcons.h"
@@ -8,6 +10,7 @@
 #include "state/Scene.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <format>
 
 using namespace ImGui;
@@ -63,8 +66,9 @@ std::optional<action::timeline::Action> HandleTimelineShortcuts(const TimelinePl
     return {};
 }
 
-std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &range, const TimelinePlayback &playback, const AnimationTimelineView &view, const TimelineNavigation &navigation, std::span<const float> keyframes, const AnimationIcons &icons, bool &scrubbing) {
-    std::optional<action::timeline::Action> action;
+std::optional<action::Action> RenderAnimationTimeline(const TimelineRange &range, const TimelinePlayback &playback, const AnimationTimelineView &view, const TimelineNavigation &navigation, const Animations &animations, std::span<const float> keyframes, const AnimationIcons &icons, bool &scrubbing) {
+    std::optional<action::Action> result;
+    const auto emit = [&](auto leaf) { result = action::MakeAction(std::move(leaf)); };
     scrubbing = false;
 
     const float w = GetContentRegionAvail().x;
@@ -79,27 +83,27 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
         constexpr float TransportSlots{6}, DeltaSlots{3};
         const auto transport_p = bar_origin + ImVec2{(w - h * (TransportSlots + DeltaSlots) - spacing.x) * 0.5f, 0.f};
         SetCursorScreenPos(transport_p);
-        if (IconButton("jump_start", icons.JumpStart.get(), ImDrawFlags_RoundCornersLeft)) action = action::timeline::JumpToStart{};
+        if (IconButton("jump_start", icons.JumpStart.get(), ImDrawFlags_RoundCornersLeft)) emit(action::timeline::JumpToStart{});
         SetCursorScreenPos({transport_p.x + h, transport_p.y});
-        if (IconButton("prev_keyframe", icons.PrevKeyframe.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::JumpKeyframe{.Next = false};
+        if (IconButton("prev_keyframe", icons.PrevKeyframe.get(), ImDrawFlags_RoundCornersNone)) emit(action::timeline::JumpKeyframe{.Next = false});
         SetCursorScreenPos({transport_p.x + h * 2, transport_p.y});
         if (playback.Playing) {
-            if (IconButton("pause", icons.Pause.get(), ImDrawFlags_RoundCornersNone, 2.f)) action = action::timeline::TogglePlay{playback.CurrentFrame};
+            if (IconButton("pause", icons.Pause.get(), ImDrawFlags_RoundCornersNone, 2.f)) emit(action::timeline::TogglePlay{playback.CurrentFrame});
         } else {
-            if (IconButton("play_reverse", icons.PlayReverse.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::TogglePlay{playback.CurrentFrame, /*Reverse=*/true};
+            if (IconButton("play_reverse", icons.PlayReverse.get(), ImDrawFlags_RoundCornersNone)) emit(action::timeline::TogglePlay{playback.CurrentFrame, /*Reverse=*/true});
             SetCursorScreenPos({transport_p.x + h * 3, transport_p.y});
-            if (IconButton("play", icons.Play.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::TogglePlay{playback.CurrentFrame};
+            if (IconButton("play", icons.Play.get(), ImDrawFlags_RoundCornersNone)) emit(action::timeline::TogglePlay{playback.CurrentFrame});
         }
         SetCursorScreenPos({transport_p.x + h * 4, transport_p.y});
-        if (IconButton("next_keyframe", icons.NextKeyframe.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::JumpKeyframe{.Next = true};
+        if (IconButton("next_keyframe", icons.NextKeyframe.get(), ImDrawFlags_RoundCornersNone)) emit(action::timeline::JumpKeyframe{.Next = true});
         SetCursorScreenPos({transport_p.x + h * 5, transport_p.y});
-        if (IconButton("jump_end", icons.JumpEnd.get(), ImDrawFlags_RoundCornersRight)) action = action::timeline::JumpToEnd{};
+        if (IconButton("jump_end", icons.JumpEnd.get(), ImDrawFlags_RoundCornersRight)) emit(action::timeline::JumpToEnd{});
 
         const auto delta_p = ImVec2{transport_p.x + h * TransportSlots + spacing.x, transport_p.y};
         SetCursorScreenPos(delta_p);
-        if (IconButton("jump_back", icons.FramePrev.get(), ImDrawFlags_RoundCornersLeft)) action = action::timeline::JumpTime{.Backward = true};
+        if (IconButton("jump_back", icons.FramePrev.get(), ImDrawFlags_RoundCornersLeft)) emit(action::timeline::JumpTime{.Backward = true});
         SetCursorScreenPos({delta_p.x + h, delta_p.y});
-        if (IconButton("jump_forward", icons.FrameNext.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::JumpTime{.Backward = false};
+        if (IconButton("jump_forward", icons.FrameNext.get(), ImDrawFlags_RoundCornersNone)) emit(action::timeline::JumpTime{.Backward = false});
         SetCursorScreenPos({delta_p.x + h * 2, delta_p.y});
         if (IconButton("playback_options", nullptr, ImDrawFlags_RoundCornersRight)) OpenPopup("##PlaybackOptions");
         {
@@ -132,11 +136,47 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
                 nav.JumpDelta = std::max(nav.JumpDelta, 0.1f);
                 changed = true;
             }
-            if (changed) action = action::timeline::SetNavigation{nav};
+            if (changed) emit(action::timeline::SetNavigation{nav});
+            if (animations.Active < animations.Names.size()) {
+                Separator();
+                TextUnformatted("Animation name");
+                static char name[128];
+                if (IsWindowAppearing()) std::snprintf(name, sizeof name, "%s", animations.Names[animations.Active].c_str());
+                SetNextItemWidth(GetFontSize() * 10);
+                InputText("##animation_name", name, sizeof name);
+                if (IsItemDeactivatedAfterEdit()) emit(action::animation::RenameAnimation{animations.Active, name});
+            }
             EndPopup();
         }
     }
 
+    SetCursorScreenPos(bar_origin);
+    {
+        if (IconButton("record", nullptr, ImDrawFlags_RoundCornersAll)) emit(action::UpdateOn<&Animations::Record>(state::Null, !animations.Record));
+        SetItemTooltip("Auto keying: insert keyframes for animated properties on edit");
+        const auto center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
+        GetWindowDrawList()->AddCircleFilled(center, h * 0.22f, animations.Record ? IM_COL32(230, 60, 50, 255) : IM_COL32(120, 120, 120, 255));
+        if (!animations.Names.empty()) {
+            SameLine(0, spacing.x);
+            SetNextItemWidth(GetFontSize() * 9);
+            if (BeginCombo("##animation", animations.Names[animations.Active].c_str())) {
+                for (uint32_t i = 0; i < animations.Names.size(); ++i) {
+                    PushID(int(i));
+                    if (Selectable(animations.Names[i].empty() ? "(unnamed)" : animations.Names[i].c_str(), i == animations.Active)) emit(action::animation::SelectAnimation{i});
+                    PopID();
+                }
+                EndCombo();
+            }
+            SameLine(0, spacing.x);
+            if (IconButton("add_animation", nullptr, ImDrawFlags_RoundCornersAll)) emit(action::animation::AddAnimation{std::format("Animation {}", animations.Names.size() + 1)});
+            SetItemTooltip("Create a new animation");
+            const auto plus_center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
+            constexpr float arm = 4.f;
+            auto *draw = GetWindowDrawList();
+            draw->AddLine({plus_center.x - arm, plus_center.y}, {plus_center.x + arm, plus_center.y}, GetColorU32(ImGuiCol_Text), 1.5f);
+            draw->AddLine({plus_center.x, plus_center.y - arm}, {plus_center.x, plus_center.y + arm}, GetColorU32(ImGuiCol_Text), 1.5f);
+        }
+    }
     SetCursorScreenPos(bar_origin);
     Dummy({h, h});
     static constexpr float input_width{50};
@@ -145,26 +185,26 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
     {
         int frame = playback.CurrentFrame;
         InputInt("Frame", &frame, 0, 0);
-        if (IsItemDeactivatedAfterEdit()) action = action::timeline::SetFrame{frame};
+        if (IsItemDeactivatedAfterEdit()) emit(action::timeline::SetFrame{frame});
     }
     SameLine(0, spacing.x * 2);
     {
         int start = range.StartFrame;
         InputInt("Start", &start, 0, 0);
-        if (IsItemDeactivatedAfterEdit()) action = action::timeline::SetStartFrame{start};
+        if (IsItemDeactivatedAfterEdit()) emit(action::timeline::SetStartFrame{start});
     }
     SameLine(0, spacing.x);
     {
         int end = range.EndFrame;
         InputInt("End", &end, 0, 0);
-        if (IsItemDeactivatedAfterEdit()) action = action::timeline::SetEndFrame{end};
+        if (IsItemDeactivatedAfterEdit()) emit(action::timeline::SetEndFrame{end});
     }
     PopItemWidth();
     SetCursorScreenPos({bar_origin.x, bar_origin.y + h});
     Dummy({0, 0});
 
     const auto area = GetContentRegionAvail();
-    if (area.x <= 0 || area.y <= 0) return action;
+    if (area.x <= 0 || area.y <= 0) return result;
 
     const auto p0 = GetCursorScreenPos(), p1 = p0 + area;
     InvisibleButton("##timeline", area);
@@ -234,7 +274,7 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
         scrubbing = timeline_active && io.MouseClickedPos[0].y < p0.y + HeaderHeight;
         if ((in_header && IsMouseClicked(ImGuiMouseButton_Left)) || (scrubbing && IsMouseDragging(ImGuiMouseButton_Left))) {
             if (const int frame = int(std::round(x_to_frame(io.MousePos.x))); frame != playback.CurrentFrame) {
-                action = action::timeline::SetFrame{frame};
+                emit(action::timeline::SetFrame{frame});
             }
         }
         // Vertical scrolling zooms and horizontal scrolling pans.
@@ -242,12 +282,12 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
             const float mouse_frame = x_to_frame(io.MousePos.x);
             const float mouse_frac = (io.MousePos.x - p0.x) / area.x - 0.5f;
             const float new_ppf = std::clamp(view.PixelsPerFrame * std::pow(1.1f, io.MouseWheel), MinPixelsPerFrame, MaxPixelsPerFrame);
-            action = action::timeline::SetView{new_ppf, mouse_frame - mouse_frac * area.x / new_ppf};
+            emit(action::timeline::SetView{new_ppf, mouse_frame - mouse_frac * area.x / new_ppf});
         }
         if (io.MouseWheelH != 0.0f) {
-            action = action::timeline::SetView{view.PixelsPerFrame, view.ViewCenterFrame - io.MouseWheelH * 20.0f / view.PixelsPerFrame};
+            emit(action::timeline::SetView{view.PixelsPerFrame, view.ViewCenterFrame - io.MouseWheelH * 20.0f / view.PixelsPerFrame});
         }
     }
 
-    return action;
+    return result;
 }

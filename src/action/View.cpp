@@ -6,6 +6,7 @@
 #include "armature/ArmatureComponents.h"
 #include "gltf/GltfScene.h"
 #include "gltf/SourceAssets.h"
+#include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
@@ -71,26 +72,22 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](const SetEditMode &a) { r.emplace_or_replace<PendingSetEditMode>(viewport, a.Mode); },
             [&](EnterLookThroughCamera) {
                 const auto e = FindActiveEntity(r);
-                if (e == state::Null || !r.all_of<Camera>(e)) return;
+                if (e == state::Null || !HasLens(r, e)) return;
                 SetLookThrough(r, viewport, e);
                 const auto &wt = r.get<WorldTransform>(e);
                 r.patch<ViewCamera>(viewport, [&](auto &vc) { vc.AnimateToLookThrough(wt.P, wt.R, 1.f); });
             },
             [&](ExitLookThroughCamera) { ClearLookThrough(r, viewport); },
             [&](const SetLookThroughCamera &a) {
-                if (!r.all_of<Camera, WorldTransform>(a.Entity)) return;
+                if (!HasLens(r, a.Entity) || !r.all_of<WorldTransform>(a.Entity)) return;
                 SetLookThrough(r, viewport, a.Entity);
                 const auto &wt = r.get<WorldTransform>(a.Entity);
-                r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, r.get<Camera>(a.Entity)});
+                r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, *LensOf(r, a.Entity)});
             },
             [&](const OrbitViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.RotateBy(a.DeltaRad); }); },
             [&](const ZoomViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.ZoomBy(a.Factor); }); },
             [&](const SetExtent &a) { r.ctx().get<ViewportExtent>().Value = a.Extent; },
             [&](const SetStudioEnvironment &a) { r.emplace_or_replace<StudioEnvironment>(viewport, a.Name); poke_active_lighting(); },
-            [&](const SetSourceIblIntensity &a) {
-                r.patch<gltf::SourceAssets>(viewport, [&](auto &sa) { if (sa.ImageBasedLight) sa.ImageBasedLight->Intensity = a.Intensity; });
-                poke_active_lighting();
-            },
             [&](const SetActiveScene &a) { gltf::SwitchActiveScene(r, a.Scene); },
             [&](ResetViewCamera) { patch_camera_stopped([](auto &c) { c = Defaults::ViewCamera; }); },
             [&](ResetViewportTheme) { r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme); },

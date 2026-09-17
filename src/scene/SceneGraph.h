@@ -50,11 +50,17 @@ state::Entity FindAncestorIf(const state::Scene &r, state::Entity e, auto &&pred
 
 // The local transform composing into WorldTransform: the pose when present, else the authored Transform.
 const Transform *ComposedLocal(const state::Scene &, state::Entity);
-// The local transform edits target: the authored Transform when present, else the pose.
+// The local transform edits show: the pose when present, else the authored Transform.
 const Transform *EditedLocal(const state::Scene &, state::Entity);
+// Writes an edited local transform.
+// A posed node takes the edit in its pose, and components the active animation does not pose persist in its Transform.
+void CommitEditedLocal(state::Scene &, state::Entity, const Transform &edited);
 void PatchEditedLocal(state::Scene &r, state::Entity e, auto &&fn) {
-    if (r.all_of<Transform>(e)) r.patch<Transform>(e, fn);
-    else r.patch<PosedLocal>(e, [&](PosedLocal &posed) { fn(posed.Value); });
+    const auto *current = EditedLocal(r, e);
+    if (!current) return;
+    Transform edited = *current;
+    fn(edited);
+    CommitEditedLocal(r, e, edited);
 }
 
 // Build WorldTransform for `e`, and any ancestor still missing one, from local transforms.

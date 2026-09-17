@@ -3,6 +3,7 @@
 #include "Camera.h"
 #include "Profile.h"
 #include "Variant.h"
+#include "action/Animation.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
 #include "action/Object.h"
@@ -18,7 +19,9 @@
 #include "numeric/MatrixMath.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
+#include "render/LightComponents.h"
 #include "render/TextureRefs.h"
+#include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
@@ -249,6 +252,8 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
         else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::Emit(action::view::LatchScreenTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
         else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::Emit(action::view::LatchScreenTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
     } else {
+        if (Shortcut(ImGuiKey_I, VKey)) action::Emit(action::animation::InsertKey{{.Scope = action::Scope::Selected}});
+        else if (Shortcut(ImGuiMod_Alt | ImGuiKey_I, VKey)) action::Emit(action::animation::DeleteKey{{.Scope = action::Scope::Selected}});
         if (Shortcut(ImGuiKey_Space, VKey)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(viewport).CurrentFrame});
         else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Space, VKey)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(viewport).CurrentFrame, /*Reverse=*/true});
         else if (Shortcut(ImGuiKey_Z, VKey)) {
@@ -523,14 +528,8 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                     edit.template Check<&L::UseSceneLights>("Scene lights");
                     SameLine();
                     edit.template Check<&L::UseSceneWorld>("Scene world");
-                    const auto *source_assets = r.try_get<const gltf::SourceAssets>(viewport);
-                    const auto *source_ibl = source_assets && source_assets->ImageBasedLight.has_value() ? &*source_assets->ImageBasedLight : nullptr;
                     if (lighting.UseSceneWorld) {
-                        // Spec-defined intensity edits the source IBL directly so save round-trips.
-                        if (source_ibl) {
-                            if (float v = source_ibl->Intensity; SliderFloat("Intensity", &v, 0.f, 2.f, "%.2f"))
-                                action::Emit(action::view::SetSourceIblIntensity{v});
-                        }
+                        if (r.all_of<ImageLight>(viewport)) ui::Edit{r, viewport}.Slider<&ImageLight::Intensity>("Intensity", 0.f, 2.f, "%.2f");
                     } else {
                         const auto hdris = GetHdriRefs(r);
                         if (BeginCombo("Environment", hdris.Names[hdris.ActiveIndex].c_str())) {
@@ -932,7 +931,7 @@ void DrawOverlay(state::Scene &r, state::Entity viewport, FrameState &frame) {
 
     // Match the centered frame to the captured look-through region.
     if (const auto look_through_entity = LookThroughCameraEntity(r); look_through_entity != state::Null && !camera.IsAnimating()) {
-        if (const auto *cd = r.try_get<Camera>(look_through_entity)) {
+        if (const auto cd = LensOf(r, look_through_entity)) {
             const float cam_aspect = AspectRatio(*cd);
             const auto frame_size = vec2{viewport_rect.size.y * cam_aspect, viewport_rect.size.y} * LookThroughFrameRatio(cam_aspect, viewport_rect.size.x / viewport_rect.size.y);
             const vec2 vp_center = viewport_rect.pos + viewport_rect.size * 0.5f;

@@ -48,7 +48,7 @@ struct SetViewCameraTarget {
     vec3 Target;
 };
 struct SetViewCameraLens {
-    ::Camera Data;
+    CameraLens Data;
 };
 struct SetViewCameraTargetDirection {
     vec3 Direction;
@@ -104,9 +104,6 @@ struct SetExtent {
 struct SetStudioEnvironment {
     std::string Name;
 };
-struct SetSourceIblIntensity {
-    float Intensity;
-};
 
 // Make `Scene` the active scene shown in the viewport.
 struct SetActiveScene {
@@ -121,7 +118,7 @@ using Action = std::variant<
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection,
     SetRotationUiMode, SetTransformRotationFromUi,
     DragGizmo, DragGizmoMeshEdit, EndGizmoDrag, SetActiveTool, LatchScreenTransform, ClearScreenTransformLatch,
-    SetExtent, SetStudioEnvironment, SetSourceIblIntensity, SetActiveScene>;
+    SetExtent, SetStudioEnvironment, SetActiveScene>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::view

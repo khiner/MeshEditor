@@ -147,7 +147,7 @@ std::optional<State> Deserialize(std::span<const std::byte> bytes) {
     zpp::bits::in archive{bytes};
     uint32_t version{};
     State state{
-        .ViewCamera = {ViewCamera{vec3{0, 0, 1}, vec3{0}, Camera{}}, std::nullopt},
+        .ViewCamera = {ViewCamera{vec3{0, 0, 1}, vec3{0}, CameraLens{}}, std::nullopt},
         .ViewportExtent = {},
         .Windows = {},
         .ImGuiIni = {},
@@ -159,7 +159,7 @@ std::optional<State> Deserialize(std::span<const std::byte> bytes) {
         return std::nullopt;
     }
     if (has_saved_view) {
-        state.ViewCamera.LookThroughSaved.emplace(vec3{0, 0, 1}, vec3{0}, Camera{});
+        state.ViewCamera.LookThroughSaved.emplace(vec3{0, 0, 1}, vec3{0}, CameraLens{});
         if (zpp::bits::failure(archive(*state.ViewCamera.LookThroughSaved))) return std::nullopt;
     }
     if (zpp::bits::failure(archive(state.ViewportExtent, state.Windows, state.ImGuiIni, state.Tabs, state.WindowStates))) {

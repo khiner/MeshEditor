@@ -4,9 +4,12 @@
 // Edit{R} targets the active entity and applies Alt-modified edits to the selection.
 // Edit{R, E} targets E explicitly.
 // PatchEdit{E, value} edits fields of a value the caller holds and patches them onto E.
+// ValueEdit{value} edits fields of a value the caller holds in place.
 
 #include "action/Build.h"
 #include "action/Emit.h"
+#include "animation/Fields.h"
+#include "animation/Keying.h"
 #include "numeric/Angles.h"
 #include "scene/Entity.h" // FindActiveEntity
 #include "state/Scene.h"
@@ -33,12 +36,54 @@ inline bool DragFloat4(const char *label, float *v, float speed = 1.f, float lo 
 // Apply Alt-modified drags as per-entity deltas and other Alt-modified edits as copied values.
 action::Scope ScopeFromAlt(bool delta_capable = false);
 
+// Keying state of a field on its entity, or nothing for a field channels cannot animate there.
+std::optional<animation::ChannelState> QueryKey(const state::Scene &, state::Entity, const ChannelTarget &);
+
 namespace detail {
 inline bool CompositeGestureOpen{false};
 
 // Commits, cancels, or continues the gesture of the last item, returning the scope to stage a change with.
 // Returns nothing when the change is not staged.
 std::optional<action::Scope> FieldGesture(state::Scene &, bool changed, bool selection, bool delta_capable);
+
+// The channel target of the field Ms... walks to, or a zero-count target for a field channels cannot animate.
+template<auto... Ms>
+ChannelTarget Channel(uint16_t index = 0) {
+    if constexpr (animation::KeyableField<action::detail::last_field<Ms...>>) {
+        if (const auto target = animation::Target<Ms...>(index); animation::IsChannelStore(target.Component)) return target;
+    }
+    return {};
+}
+} // namespace detail
+
+// Tints the widgets drawn while alive by the field's channel state: green animated, yellow keyed on this frame, orange changed.
+struct KeyTint {
+    explicit KeyTint(const std::optional<animation::ChannelState> &);
+    ~KeyTint();
+    int Pushed{0};
+};
+
+// Draws the keying decorator beside the last item: a dot for no channel, a diamond for a channel, filled for a key on this frame.
+// Clicking keys or unkeys the field at the current frame.
+void KeyDecorator(state::Entity, const ChannelTarget &, const animation::ChannelState &);
+inline void KeyDecorator(const state::Scene &r, state::Entity entity, const ChannelTarget &target) {
+    if (const auto state = QueryKey(r, entity, target)) KeyDecorator(entity, target, *state);
+}
+
+namespace detail {
+// Runs `widget` over `v` and stages its change in the item's gesture through `emit(scope, v)`.
+// A field with a channel target is tinted by its keying state on `entity` and followed by its keying decorator.
+template<typename Field, typename Widget, typename Emit>
+bool RunField(state::Scene &r, state::Entity entity, const ChannelTarget &channel, Field v, Widget widget, bool selection, bool delta_capable, Emit emit) {
+    const auto state = channel.Count ? QueryKey(r, entity, channel) : std::nullopt;
+    const bool changed = [&] {
+        const KeyTint tint{state};
+        return widget(v);
+    }();
+    if (const auto scope = FieldGesture(r, changed, selection, delta_capable)) emit(*scope, v);
+    if (state) KeyDecorator(entity, channel, *state);
+    return changed;
+}
 } // namespace detail
 
 // Group a composite editor into one recorded action per drag.
@@ -115,9 +160,10 @@ struct FieldWidgets {
         return Self().template Run<Ms...>([&](auto &v) {
             using F = std::remove_reference_t<decltype(v)>;
             if constexpr (std::same_as<F, float>) return ui::DragFloat(label, &v, speed, bounds.first, bounds.second, fmt);
+            else if constexpr (std::same_as<F, vec2>) return ui::DragFloat2(label, &v.x, speed, bounds.first, bounds.second, fmt);
             else if constexpr (std::same_as<F, vec3>) return ui::DragFloat3(label, &v.x, speed, bounds.first, bounds.second, fmt);
             else if constexpr (std::same_as<F, vec4>) return ui::DragFloat4(label, &v.x, speed, bounds.first, bounds.second, fmt);
-            else static_assert(false, "Edit::Drag: field type must be float, vec3, or vec4");
+            else static_assert(false, "Edit::Drag: field type must be float or a float vector");
         },
                                           /*delta_capable=*/true);
     }
@@ -126,6 +172,12 @@ struct FieldWidgets {
     template<auto... Ms>
     bool Slider(const char *label, const char *fmt = nullptr, ImGuiSliderFlags flags = 0) {
         return Self().template Run<Ms...>([&](auto &value) { return SliderField<Prefix..., Ms...>(label, value, fmt, flags); }, /*delta_capable=*/true);
+    }
+
+    // Slider over a float field with explicit bounds.
+    template<auto... Ms>
+    bool Slider(const char *label, float lo, float hi, const char *fmt = "%.3f") {
+        return Self().template Run<Ms...>([&](float &v) { return ImGui::SliderFloat(label, &v, lo, hi, fmt); }, /*delta_capable=*/true);
     }
 
     // Slider over an angle field stored in radians, displayed in degrees.
@@ -188,13 +240,15 @@ struct Edit : FieldWidgets<Edit<HasEntity, Prefix...>, Prefix...> {
     template<auto... Ms, typename Widget>
     bool Run(Widget widget, bool delta_capable = false) {
         using Field = action::detail::last_field<Prefix..., Ms...>;
-        Field v = ReadChain<Prefix..., Ms...>(R.template get<const action::detail::first_class<Prefix..., Ms...>>(ReadFrom()));
-        const bool changed = widget(v);
-        if (const auto scope = detail::FieldGesture(R, changed, !HasEntity, delta_capable && action::DeltaField<Field>)) {
-            if constexpr (HasEntity) action::Emit(action::UpdateOn<Prefix..., Ms...>(E, v), action::Phase::Stage);
-            else action::Emit(action::UpdateOf<Prefix..., Ms...>(*scope, v), action::Phase::Stage);
-        }
-        return changed;
+        using C = action::detail::first_class<Prefix..., Ms...>;
+        const auto target = ReadFrom();
+        return detail::RunField(
+            R, target, detail::Channel<Prefix..., Ms...>(), ReadChain<Prefix..., Ms...>(R.template get<const C>(target)), widget,
+            !HasEntity, delta_capable && action::DeltaField<Field>, [&](action::Scope scope, const Field &v) {
+                if constexpr (HasEntity) action::Emit(action::UpdateOn<Prefix..., Ms...>(E, v), action::Phase::Stage);
+                else action::Emit(action::UpdateOf<Prefix..., Ms...>(scope, v), action::Phase::Stage);
+            }
+        );
     }
 
     // Write a value the caller has already produced (e.g. from a bitmask widget, optional toggle).
@@ -238,4 +292,29 @@ struct PatchEdit : FieldWidgets<PatchEdit<Component, Prefix...>, Prefix...> {
     void Set(action::detail::last_field<Prefix..., Ms...> value) const { action::Emit(Action<Ms...>(std::move(value))); }
 };
 
+// Edits fields of `Value` in place, accumulating whether any changed.
+template<typename T, auto... Prefix>
+struct ValueEdit : FieldWidgets<ValueEdit<T, Prefix...>, Prefix...> {
+    ValueEdit(T &value, bool &changed) : Value{value}, Changed{changed} {}
+
+    T &Value;
+    bool &Changed;
+
+    template<auto... More>
+    ValueEdit<T, Prefix..., More...> Sub() const { return {Value, Changed}; }
+
+    template<auto... Ms, typename Widget>
+    bool Run(Widget widget, bool = false) {
+        const bool changed = widget(ReadChain<Prefix..., Ms...>(Value));
+        Changed |= changed;
+        return changed;
+    }
+
+    template<auto... Ms>
+    void Set(action::detail::last_field<Prefix..., Ms...> value) {
+        ReadChain<Prefix..., Ms...>(Value) = std::move(value);
+        Changed = true;
+    }
+};
+template<typename T> ValueEdit(T &, bool &) -> ValueEdit<T>;
 } // namespace ui

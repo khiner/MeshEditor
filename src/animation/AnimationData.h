@@ -1,16 +1,19 @@
 #pragma once
 
-#include "armature/BoneId.h"
-#include "gpu/Transform.h"
+#include "numeric/quat.h"
+#include "state/Schema.h"
 
-#include <span>
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <string>
 #include <vector>
 
-enum class AnimationPath : uint8_t {
-    Translation,
-    Rotation,
-    Scale,
-    Weights
+// How a channel's floats interpolate: Float lerps, Quaternion slerps, and Bool steps between 0 and 1.
+enum class ValueKind : uint8_t {
+    Float,
+    Quaternion,
+    Bool,
 };
 
 enum class AnimationInterpolation : uint8_t {
@@ -19,50 +22,58 @@ enum class AnimationInterpolation : uint8_t {
     CubicSpline
 };
 
-// Generic animation channel.
-// For bone channels, TargetBoneId stores the stable identity; BoneIndex is a resolved cache.
-// For non-bone channels (e.g. node animation), TargetBoneId is InvalidBoneId and BoneIndex is used directly.
-struct AnimationChannel {
-    uint32_t BoneIndex;
-    BoneId TargetBoneId{InvalidBoneId};
-    AnimationPath Target;
-    AnimationInterpolation Interp;
-    std::vector<float> TimesSeconds;
-    std::vector<float> Values;
+// The field a channel animates: Count floats at byte Offset of a store, addressed like an Update.
+// Component keys the store: a component on the clip's entity, the material buffer, or the entity's morph weights.
+// Index selects the material in the material buffer. Values hold the field's native units and layout.
+struct ChannelTarget {
+    state::TypeKey Component;
+    uint16_t Offset{0};
+    uint16_t Index{0};
+    uint16_t Count{0};
+    ValueKind Kind{ValueKind::Float};
+
+    bool operator==(const ChannelTarget &) const = default;
 };
 
+// A quaternion channel value is quat's own bytes.
+static_assert(sizeof(quat) == 4 * sizeof(float) && std::is_trivially_copyable_v<quat>);
+inline quat LoadQuat(const float *v) {
+    quat q;
+    std::memcpy(&q, v, sizeof q);
+    return q;
+}
+inline void StoreQuat(float *v, quat q) { std::memcpy(v, &q, sizeof q); }
+
+// Keys in seconds with Count values per key, or in tangent, value, and out tangent per key for cubic channels.
+// Rest is the field's value from before the channel animated it, written back when the channel stops driving the field.
+struct AnimationChannel {
+    ChannelTarget Target;
+    AnimationInterpolation Interp{AnimationInterpolation::Linear};
+    std::vector<float> Times;
+    std::vector<float> Values;
+    std::vector<float> Rest;
+};
+
+// An entity's channels in one scene animation.
 struct AnimationClip {
-    std::string Name;
-    float DurationSeconds;
+    uint32_t Animation;
     std::vector<AnimationChannel> Channels;
 };
 
-// Morph weight animation channel — dedicated type (no BoneIndex/Target overhead).
-struct MorphWeightChannel {
-    AnimationInterpolation Interp{AnimationInterpolation::Linear};
-    std::vector<float> TimesSeconds;
-    std::vector<float> Values; // Packed: target_count floats per keyframe
-};
-
-struct MorphWeightClip {
-    std::string Name;
-    float DurationSeconds;
-    std::vector<MorphWeightChannel> Channels;
-};
-
-// Imported glTF node TRS animation. Clips target this entity, evaluated against its authored Transform.
-struct NodeTransformAnimation {
+struct AnimationClips {
     std::vector<AnimationClip> Clips;
-    uint32_t ActiveClipIndex{0};
+
+    // The clip in scene animation `animation`, or null.
+    auto *Find(this auto &self, uint32_t animation) {
+        const auto it = std::ranges::find(self.Clips, animation, &AnimationClip::Animation);
+        return it != self.Clips.end() ? &*it : nullptr;
+    }
 };
 
-struct MorphWeightAnimation {
-    std::vector<MorphWeightClip> Clips;
-    uint32_t ActiveClipIndex{0};
+// The scene's animations. Active selects the animation every clip evaluates and records into.
+// Record keys each changed animated property when a user edit commits.
+struct Animations {
+    std::vector<std::string> Names;
+    uint32_t Active{0};
+    bool Record{false};
 };
-
-// Interpolate animation channels at `time`, writing into pre-initialized rest-pose `local_transforms`.
-void EvaluateAnimation(const AnimationClip &, float time, std::span<Transform> local_transforms);
-
-// Interpolate morph weight animation channels at `time`, writing into `weights`.
-void EvaluateMorphWeights(const MorphWeightClip &, float time, std::span<float> weights);

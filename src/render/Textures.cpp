@@ -190,7 +190,6 @@ void ResetImportedEnvironment(state::Scene &r) {
         ReleaseCubeSamplerSlot(slots, env.ImportedSceneWorld->SpecularEnv.SamplerSlot);
         env.ImportedSceneWorld.reset();
     }
-    env.SceneWorldRotation = mat3{1.f};
     env.SceneWorld = {.Ibl = MakeIblSamplers(env.EmptySceneWorld, env), .Name = env.EmptySceneWorld.Name};
 }
 

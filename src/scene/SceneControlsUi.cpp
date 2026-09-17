@@ -9,7 +9,7 @@
 #include "action/Object.h"
 #include "action/Selection.h"
 #include "action/View.h"
-#include "animation/AnimationData.h"
+#include "animation/Fields.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/AudioDevice.h"
@@ -29,6 +29,7 @@
 #include "render/MaterialComponents.h"
 #include "render/PbrFeature.h"
 #include "render/TextureRefs.h"
+#include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
@@ -41,6 +42,7 @@
 #include "ui/FieldEdit.h"
 #include "ui/HelpMarker.h"
 #include "ui/ItemList.h"
+#include "ui/MaterialEdit.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraOps.h"
@@ -148,56 +150,53 @@ std::string to_string(InteractionMode mode) {
 
 using namespace he;
 
-float AngleFromCos(float cos_theta) { return std::acos(std::clamp(cos_theta, -1.f, 1.f)); }
+// Lens fields shared by the camera object editor and the view camera editor.
+// Near and far clip bound each other.
+void RenderPerspectiveFields(auto &&fields, const Perspective &perspective) {
+    const float far_max = std::max(perspective.NearClip + MinNearFarDelta, MaxFarClip);
+    fields.template SliderAngle<&Perspective::FieldOfViewRad>("Field of view", "%.1f deg");
+    fields.template Slider<&Perspective::NearClip>("Near clip", MinNearClip, perspective.HasFarClip() ? std::max(perspective.FarClip - MinNearFarDelta, MinNearClip) : far_max);
+    bool infinite_far = !perspective.HasFarClip();
+    if (Checkbox("Infinite far clip", &infinite_far)) fields.template Set<&Perspective::FarClip>(infinite_far ? std::numeric_limits<float>::infinity() : far_max);
+    if (perspective.HasFarClip()) fields.template Slider<&Perspective::FarClip>("Far clip", perspective.NearClip + MinNearFarDelta, far_max);
+}
+void RenderOrthographicFields(auto &&fields, const Orthographic &orthographic) {
+    fields.template Slider<&Orthographic::Mag, &vec2::x>("X Mag");
+    fields.template Slider<&Orthographic::Mag, &vec2::y>("Y Mag");
+    fields.template Slider<&Orthographic::NearClip>("Near clip", MinNearClip, std::max(orthographic.FarClip - MinNearFarDelta, MinNearClip));
+    fields.template Slider<&Orthographic::FarClip>("Far clip", orthographic.NearClip + MinNearFarDelta, std::max(orthographic.NearClip + MinNearFarDelta, MaxFarClip));
+}
 
-// `viewport_aspect` is set when the camera is bound to a viewport that determines its aspect.
-bool RenderCameraLensEditor(Camera &camera, float distance, std::optional<float> viewport_aspect = {}) {
-    bool lens_changed = false;
-
+// Edits the view camera's lens value. `viewport_aspect` is the aspect of the viewport the camera renders.
+bool RenderCameraLensEditor(CameraLens &camera, float distance, float viewport_aspect) {
+    bool changed = false;
     int proj_i = std::holds_alternative<Orthographic>(camera) ? 1 : 0;
     const char *const proj_names[]{"Perspective", "Orthographic"};
-    if (Combo("Projection", &proj_i, proj_names, IM_ARRAYSIZE(proj_names))) {
-        if (proj_i == 0 && !std::holds_alternative<Perspective>(camera)) {
-            camera = PerspectiveFromOrthographic(std::get<Orthographic>(camera), distance);
-            lens_changed = true;
-        } else if (proj_i == 1 && !std::holds_alternative<Orthographic>(camera)) {
-            camera = OrthographicFromPerspective(std::get<Perspective>(camera), distance, viewport_aspect);
-            lens_changed = true;
-        }
+    if (Combo("Projection", &proj_i, proj_names, IM_ARRAYSIZE(proj_names)) && proj_i != int(camera.index())) {
+        if (proj_i == 0) camera = PerspectiveFromOrthographic(std::get<Orthographic>(camera), distance);
+        else camera = OrthographicFromPerspective(std::get<Perspective>(camera), distance, viewport_aspect);
+        changed = true;
     }
+    if (auto *perspective = std::get_if<Perspective>(&camera)) RenderPerspectiveFields(ui::ValueEdit{*perspective, changed}, *perspective);
+    else RenderOrthographicFields(ui::ValueEdit{std::get<Orthographic>(camera), changed}, std::get<Orthographic>(camera));
+    return changed;
+}
 
-    if (auto *perspective = std::get_if<Perspective>(&camera)) {
-        const float far_max = std::max(perspective->NearClip + MinNearFarDelta, MaxFarClip);
-        lens_changed |= SliderAngle("Field of view", &perspective->FieldOfViewRad, 1.f, 179.f, "%.1f deg");
-        const float near_max = perspective->FarClip ? std::max(*perspective->FarClip - MinNearFarDelta, MinNearClip) : far_max;
-        lens_changed |= SliderFloat("Near clip", &perspective->NearClip, MinNearClip, near_max);
-        bool infinite_far = !perspective->FarClip.has_value();
-        if (Checkbox("Infinite far clip", &infinite_far)) {
-            if (infinite_far) perspective->FarClip.reset();
-            else perspective->FarClip = far_max;
-            lens_changed = true;
-        }
-        if (perspective->FarClip) {
-            lens_changed |= SliderFloat("Far clip", &*perspective->FarClip, perspective->NearClip + MinNearFarDelta, far_max);
-        }
-        if (!viewport_aspect) {
-            float aspect = perspective->AspectRatio.value_or(DefaultAspectRatio);
-            if (SliderFloat("Aspect ratio", &aspect, 0.1f, 5.f)) {
-                perspective->AspectRatio = aspect;
-                lens_changed = true;
-            }
-        }
-    } else if (auto *orthographic = std::get_if<Orthographic>(&camera)) {
-        const float far_max = std::max(orthographic->NearClip + MinNearFarDelta, MaxFarClip);
-        lens_changed |= SliderFloat("X Mag", &orthographic->Mag.x, 0.01f, 100.f);
-        lens_changed |= SliderFloat("Y Mag", &orthographic->Mag.y, 0.01f, 100.f);
-        // DragFloatRange2 keeps near <= far but allows them to meet, so re-open the minimum gap after.
-        if (DragFloatRange2("Clip (near/far)", &orthographic->NearClip, &orthographic->FarClip, 0.5f, MinNearClip, far_max)) {
-            orthographic->FarClip = std::max(orthographic->FarClip, orthographic->NearClip + MinNearFarDelta);
-            lens_changed = true;
-        }
+// Edits a camera object's lens component through field updates.
+void RenderCameraLensFields(state::Scene &r, state::Entity entity) {
+    const auto *perspective = r.try_get<const Perspective>(entity);
+    int proj_i = perspective ? 0 : 1;
+    const char *const proj_names[]{"Perspective", "Orthographic"};
+    if (Combo("Projection", &proj_i, proj_names, IM_ARRAYSIZE(proj_names))) action::Emit(action::object::SetProjection{proj_i == 1, ui::ScopeFromAlt()});
+    ui::Edit fields{r, entity};
+    if (perspective) {
+        RenderPerspectiveFields(fields, *perspective);
+        bool viewport_aspect = !perspective->HasAspectRatio();
+        if (Checkbox("Viewport aspect ratio", &viewport_aspect)) fields.Set<&Perspective::AspectRatio>(viewport_aspect ? 0.f : DefaultAspectRatio);
+        if (perspective->HasAspectRatio()) fields.Slider<&Perspective::AspectRatio>("Aspect ratio", 0.1f, 5.f);
+    } else {
+        RenderOrthographicFields(fields, r.get<const Orthographic>(entity));
     }
-    return lens_changed;
 }
 
 std::string NamedOr(const std::string &name, std::string_view fallback, uint32_t i) {
@@ -351,9 +350,15 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             const bool is_pose_bone = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && active_bone_entity != state::Null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
             // Object mode resolves the active entity during replay and applies Alt-drag to the selection.
-            // Pose mode records the target entity explicitly.
-            if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&PosedLocal::Value, &Transform::P>("Position", 0.01f);
-            else ui::Edit{r}.Drag<&Transform::P>("Position", 0.01f);
+            // A bone edits its rest-relative delta, and an animated node edits its pose. Both record the target entity explicitly.
+            const bool bone = r.all_of<BoneDelta>(transform_entity);
+            const bool posed = !bone && r.all_of<PosedLocal>(transform_entity);
+            const auto drag_local = [&]<auto Component>(const char *label) {
+                if (bone) ui::Edit{r, transform_entity}.Drag<&BoneDelta::Value, Component>(label, 0.01f);
+                else if (posed) ui::Edit{r, transform_entity}.Drag<&PosedLocal::Value, Component>(label, 0.01f);
+                else ui::Edit{r}.Drag<Component>(label, 0.01f);
+            };
+            drag_local.template operator()<&Transform::P>("Position");
             // RotationUiVariant is reactively created and may not exist yet on the first frame.
             if (const auto *rotation_ui_ptr = r.try_get<const RotationUiVariant>(transform_entity)) {
                 int mode_i = rotation_ui_ptr->index();
@@ -378,9 +383,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
 
             const bool frozen = r.all_of<ScaleLocked>(transform_entity);
             if (frozen) BeginDisabled();
-            const auto scale_label = std::format("Scale{}", frozen ? " (frozen)" : "");
-            if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&PosedLocal::Value, &Transform::S>(scale_label.c_str(), 0.01f);
-            else ui::Edit{r}.Drag<&Transform::S>(scale_label.c_str(), 0.01f);
+            drag_local.template operator()<&Transform::S>(std::format("Scale{}", frozen ? " (frozen)" : "").c_str());
             if (frozen) EndDisabled();
         }
         Spacing();
@@ -507,11 +510,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                 }
                 EndChild();
 
-                const auto *pending_assignment = r.try_get<const MeshMaterialAssignment>(active_mesh_entity);
-                uint32_t material_index = pending_assignment && pending_assignment->PrimitiveIndex == slot_primitive ?
-                    pending_assignment->MaterialIndex :
-                    primitive_materials[slot_primitive];
-                material_index = std::min(material_index, material_count - 1);
+                uint32_t material_index = std::min(DisplayedMaterial(r, active_mesh_entity).value_or(primitive_materials[slot_primitive]), material_count - 1);
                 if (const auto assigned_material_name = material_name(material_index);
                     BeginCombo("Assigned material", assigned_material_name.c_str())) {
                     for (uint32_t i = 0; i < material_count; ++i) {
@@ -524,8 +523,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                     EndCombo();
                 }
 
-                auto material = materials[material_index];
-                BeginGroup();
+                ui::MaterialEdit fields{r, material_index};
                 const auto edit_texture_slot = [&](const char *label, uint32_t &slot) {
                     std::string preview = "None";
                     bool has_match = false;
@@ -553,139 +551,105 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                     }
                     return changed;
                 };
-                const auto edit_uv_transform = [&](const char *offset_label, const char *scale_label, const char *rotation_label, vec2 &offset, vec2 &scale, float &rotation) {
-                    bool changed = false;
-                    changed |= ui::DragFloat2(offset_label, &offset.x, 0.01f);
-                    changed |= ui::DragFloat2(scale_label, &scale.x, 0.01f);
-                    changed |= ui::DragFloat(rotation_label, &rotation, 0.01f);
-                    return changed;
+                // `tex` is a sub-editor over one of the material's TextureInfo fields.
+                const auto edit_texture_info = [&](const char *label, auto tex) {
+                    tex.template Run<&TextureInfo::Slot>([&](uint32_t &slot) { return edit_texture_slot(std::format("{} texture", label).c_str(), slot); });
+                    tex.template Run<&TextureInfo::TexCoord>([&](uint32_t &set) { return SliderUInt(std::format("{} UV set", label).c_str(), &set, 0u, 3u); });
+                    tex.template Drag<&TextureInfo::UvOffset>(std::format("{} UV offset", label).c_str(), 0.01f);
+                    tex.template Drag<&TextureInfo::UvScale>(std::format("{} UV scale", label).c_str(), 0.01f);
+                    tex.template Drag<&TextureInfo::UvRotation>(std::format("{} UV rotation", label).c_str(), 0.01f);
                 };
-                const auto edit_texture_info = [&](const char *label, TextureInfo &tex) {
-                    bool changed = false;
-                    changed |= edit_texture_slot(std::format("{} texture", label).c_str(), tex.Slot);
-                    changed |= SliderUInt(std::format("{} UV set", label).c_str(), &tex.TexCoord, 0u, 3u);
-                    changed |= edit_uv_transform(
-                        std::format("{} UV offset", label).c_str(),
-                        std::format("{} UV scale", label).c_str(),
-                        std::format("{} UV rotation", label).c_str(),
-                        tex.UvOffset, tex.UvScale, tex.UvRotation
-                    );
-                    return changed;
-                };
-                bool material_changed = false;
-                material_changed |= ColorEdit4("Base color", &material.BaseColorFactor.x);
-                material_changed |= SliderFloat("Metallic", &material.MetallicFactor, 0.f, 1.f);
-                material_changed |= SliderFloat("Roughness", &material.RoughnessFactor, 0.f, 1.f);
-                material_changed |= edit_texture_info("Base color", material.BaseColorTexture);
-                material_changed |= edit_texture_info("Metallic-roughness", material.MetallicRoughnessTexture);
-                material_changed |= edit_texture_info("Normal", material.NormalTexture);
-                material_changed |= SliderFloat("Normal scale", &material.NormalScale, -2.f, 2.f);
-                material_changed |= edit_texture_info("Occlusion", material.OcclusionTexture);
-                material_changed |= SliderFloat("Occlusion strength", &material.OcclusionStrength, 0.f, 1.f);
-                material_changed |= ColorEdit3("Emissive", &material.EmissiveFactor.x);
-                material_changed |= edit_texture_info("Emissive", material.EmissiveTexture);
+                fields.Color<&PBRMaterial::BaseColorFactor>("Base color");
+                fields.Slider<&PBRMaterial::MetallicFactor>("Metallic", 0.f, 1.f);
+                fields.Slider<&PBRMaterial::RoughnessFactor>("Roughness", 0.f, 1.f);
+                edit_texture_info("Base color", fields.Sub<&PBRMaterial::BaseColorTexture>());
+                edit_texture_info("Metallic-roughness", fields.Sub<&PBRMaterial::MetallicRoughnessTexture>());
+                edit_texture_info("Normal", fields.Sub<&PBRMaterial::NormalTexture>());
+                fields.Slider<&PBRMaterial::NormalScale>("Normal scale", -2.f, 2.f);
+                edit_texture_info("Occlusion", fields.Sub<&PBRMaterial::OcclusionTexture>());
+                fields.Slider<&PBRMaterial::OcclusionStrength>("Occlusion strength", 0.f, 1.f);
+                fields.Color<&PBRMaterial::EmissiveFactor>("Emissive");
+                fields.Run<&PBRMaterial::EmissiveStrength>([](float &v) { return ui::DragFloat("Emissive strength", &v, 0.01f, 0.f, FLT_MAX, "%.2f"); }, true);
+                edit_texture_info("Emissive", fields.Sub<&PBRMaterial::EmissiveTexture>());
 
-                static constexpr std::array alpha_mode_labels{"Opaque", "Mask", "Blend"};
-                int alpha_mode = std::clamp<int>(int(material.AlphaMode), 0, int(alpha_mode_labels.size() - 1));
-                if (Combo("Alpha mode", &alpha_mode, alpha_mode_labels.data(), int(alpha_mode_labels.size()))) {
-                    material.AlphaMode = MaterialAlphaMode(alpha_mode);
-                    material_changed = true;
-                }
-                if (material.AlphaMode == MaterialAlphaMode::Mask) {
-                    material_changed |= SliderFloat("Alpha cutoff", &material.AlphaCutoff, 0.f, 1.f);
-                }
-                bool double_sided = material.DoubleSided != 0u;
-                if (Checkbox("Double sided", &double_sided)) {
-                    material.DoubleSided = double_sided ? 1u : 0u;
-                    material_changed = true;
-                }
+                fields.Enum<&PBRMaterial::AlphaMode>("Alpha mode", "Opaque\0Mask\0Blend\0");
+                if (materials[material_index].AlphaMode == MaterialAlphaMode::Mask) fields.Slider<&PBRMaterial::AlphaCutoff>("Alpha cutoff", 0.f, 1.f);
+                fields.Run<&PBRMaterial::DoubleSided>([](uint32_t &v) {
+                    bool double_sided = v != 0u;
+                    if (!Checkbox("Double sided", &double_sided)) return false;
+                    v = double_sided ? 1u : 0u;
+                    return true;
+                });
 
                 // IOR affects Fresnel reflectance even for non-transmissive dielectrics, so it stays visible.
-                material_changed |= SliderFloat("IOR", &material.Ior, 1.0f, 3.0f, "%.3f");
+                fields.Slider<&PBRMaterial::Ior>("IOR", 1.f, 3.f);
 
-                auto pbr_features_mask = r.all_of<PbrMeshFeatures>(active_mesh_entity) ? r.get<const PbrMeshFeatures>(active_mesh_entity).Mask : 0u;
-                bool pbr_features_changed = false;
+                const auto pbr_features_mask = r.all_of<PbrMeshFeatures>(active_mesh_entity) ? r.get<const PbrMeshFeatures>(active_mesh_entity).Mask : 0u;
                 // Renders the section header when the feature is enabled.
                 const auto feature_toggle = [&](const char *label, PbrFeature feature) {
                     bool enabled = HasFeature(pbr_features_mask, feature);
                     if (Checkbox(label, &enabled)) {
-                        if (enabled) pbr_features_mask |= feature;
-                        else pbr_features_mask &= ~uint32_t(feature);
-                        pbr_features_changed = true;
+                        const auto mask = enabled ? pbr_features_mask | uint32_t(feature) : pbr_features_mask & ~uint32_t(feature);
+                        action::Emit(action::object::SetPbrMeshFeaturesMask{mask, ui::ScopeFromAlt()});
                     }
                     if (enabled) SeparatorText(label);
                     return enabled;
                 };
 
                 if (feature_toggle("Transmission", PbrFeature::Transmission)) {
-                    material_changed |= SliderFloat("Transmission factor", &material.Transmission.Factor, 0.f, 1.f);
-                    material_changed |= edit_texture_info("Transmission", material.Transmission.Texture);
-                    material_changed |= SliderFloat("Dispersion", &material.Dispersion, 0.f, 1.f);
+                    fields.Slider<&PBRMaterial::Transmission, &Transmission::Factor>("Transmission factor", 0.f, 1.f);
+                    edit_texture_info("Transmission", fields.Sub<&PBRMaterial::Transmission, &Transmission::Texture>());
+                    fields.Slider<&PBRMaterial::Dispersion>("Dispersion", 0.f, 1.f);
                     // Volume (only meaningful with transmission)
-                    material_changed |= SliderFloat("Thickness", &material.Volume.ThicknessFactor, 0.f, 10.f);
-                    material_changed |= edit_texture_info("Thickness", material.Volume.ThicknessTexture);
-                    material_changed |= ColorEdit3("Attenuation color", &material.Volume.AttenuationColor.x);
-                    material_changed |= ui::DragFloat("Attenuation distance", &material.Volume.AttenuationDistance, 0.01f, 0.f, 0.f, material.Volume.AttenuationDistance <= 0.f ? "Infinite" : "%.3f m");
+                    fields.Slider<&PBRMaterial::Volume, &Volume::ThicknessFactor>("Thickness", 0.f, 10.f);
+                    edit_texture_info("Thickness", fields.Sub<&PBRMaterial::Volume, &Volume::ThicknessTexture>());
+                    fields.Color<&PBRMaterial::Volume, &Volume::AttenuationColor>("Attenuation color");
+                    fields.Run<&PBRMaterial::Volume, &Volume::AttenuationDistance>([](float &v) { return ui::DragFloat("Attenuation distance", &v, 0.01f, 0.f, 0.f, v <= 0.f ? "Infinite" : "%.3f m"); }, true);
                 }
 
                 if (feature_toggle("Diffuse transmission", PbrFeature::DiffuseTrans)) {
-                    material_changed |= SliderFloat("Diffuse transmission factor", &material.DiffuseTransmission.Factor, 0.f, 1.f);
-                    material_changed |= edit_texture_info("Diffuse transmission", material.DiffuseTransmission.Texture);
-                    material_changed |= ColorEdit3("Diffuse transmission color", &material.DiffuseTransmission.ColorFactor.x);
-                    material_changed |= edit_texture_info("Diffuse transmission color", material.DiffuseTransmission.ColorTexture);
+                    fields.Slider<&PBRMaterial::DiffuseTransmission, &DiffuseTransmission::Factor>("Diffuse transmission factor", 0.f, 1.f);
+                    edit_texture_info("Diffuse transmission", fields.Sub<&PBRMaterial::DiffuseTransmission, &DiffuseTransmission::Texture>());
+                    fields.Color<&PBRMaterial::DiffuseTransmission, &DiffuseTransmission::ColorFactor>("Diffuse transmission color");
+                    edit_texture_info("Diffuse transmission color", fields.Sub<&PBRMaterial::DiffuseTransmission, &DiffuseTransmission::ColorTexture>());
                 }
 
                 if (feature_toggle("Clearcoat", PbrFeature::Clearcoat)) {
-                    material_changed |= SliderFloat("Clearcoat factor", &material.Clearcoat.Factor, 0.f, 1.f);
-                    material_changed |= edit_texture_info("Clearcoat", material.Clearcoat.Texture);
-                    material_changed |= SliderFloat("Clearcoat roughness", &material.Clearcoat.RoughnessFactor, 0.f, 1.f);
-                    material_changed |= edit_texture_info("Clearcoat roughness", material.Clearcoat.RoughnessTexture);
-                    material_changed |= edit_texture_info("Clearcoat normal", material.Clearcoat.NormalTexture);
-                    material_changed |= SliderFloat("Clearcoat normal scale", &material.Clearcoat.NormalScale, -2.f, 2.f);
+                    fields.Slider<&PBRMaterial::Clearcoat, &Clearcoat::Factor>("Clearcoat factor", 0.f, 1.f);
+                    edit_texture_info("Clearcoat", fields.Sub<&PBRMaterial::Clearcoat, &Clearcoat::Texture>());
+                    fields.Slider<&PBRMaterial::Clearcoat, &Clearcoat::RoughnessFactor>("Clearcoat roughness", 0.f, 1.f);
+                    edit_texture_info("Clearcoat roughness", fields.Sub<&PBRMaterial::Clearcoat, &Clearcoat::RoughnessTexture>());
+                    edit_texture_info("Clearcoat normal", fields.Sub<&PBRMaterial::Clearcoat, &Clearcoat::NormalTexture>());
+                    fields.Slider<&PBRMaterial::Clearcoat, &Clearcoat::NormalScale>("Clearcoat normal scale", -2.f, 2.f);
                 }
 
                 if (feature_toggle("Anisotropy", PbrFeature::Anisotropy)) {
-                    material_changed |= SliderFloat("Anisotropy strength", &material.Anisotropy.Strength, 0.f, 1.f);
-                    material_changed |= SliderAngle("Anisotropy rotation", &material.Anisotropy.Rotation, 0.f, 360.f, "%.1f deg");
-                    material_changed |= edit_texture_info("Anisotropy", material.Anisotropy.Texture);
+                    fields.Slider<&PBRMaterial::Anisotropy, &Anisotropy::Strength>("Anisotropy strength", 0.f, 1.f);
+                    fields.Run<&PBRMaterial::Anisotropy, &Anisotropy::Rotation>([](float &v) { return SliderAngle("Anisotropy rotation", &v, 0.f, 360.f, "%.1f deg"); }, true);
+                    edit_texture_info("Anisotropy", fields.Sub<&PBRMaterial::Anisotropy, &Anisotropy::Texture>());
                 }
 
                 if (feature_toggle("Sheen", PbrFeature::Sheen)) {
-                    material_changed |= ColorEdit3("Sheen color", &material.Sheen.ColorFactor.x);
-                    material_changed |= edit_texture_info("Sheen color", material.Sheen.ColorTexture);
-                    material_changed |= SliderFloat("Sheen roughness", &material.Sheen.RoughnessFactor, 0.f, 1.f);
-                    material_changed |= edit_texture_info("Sheen roughness", material.Sheen.RoughnessTexture);
+                    fields.Color<&PBRMaterial::Sheen, &Sheen::ColorFactor>("Sheen color");
+                    edit_texture_info("Sheen color", fields.Sub<&PBRMaterial::Sheen, &Sheen::ColorTexture>());
+                    fields.Slider<&PBRMaterial::Sheen, &Sheen::RoughnessFactor>("Sheen roughness", 0.f, 1.f);
+                    edit_texture_info("Sheen roughness", fields.Sub<&PBRMaterial::Sheen, &Sheen::RoughnessTexture>());
                 }
 
                 if (feature_toggle("Iridescence", PbrFeature::Iridescence)) {
-                    material_changed |= SliderFloat("Iridescence factor", &material.Iridescence.Factor, 0.f, 1.f);
-                    material_changed |= edit_texture_info("Iridescence", material.Iridescence.Texture);
-                    material_changed |= SliderFloat("Iridescence IOR", &material.Iridescence.Ior, 1.0f, 5.0f);
-                    material_changed |= DragFloatRange2("Thickness (nm)", &material.Iridescence.ThicknessMinimum, &material.Iridescence.ThicknessMaximum, 1.f, 0.f, 1000.f, "%.0f nm", "%.0f nm");
-                    material_changed |= edit_texture_info("Iridescence thickness", material.Iridescence.ThicknessTexture);
+                    fields.Slider<&PBRMaterial::Iridescence, &Iridescence::Factor>("Iridescence factor", 0.f, 1.f);
+                    edit_texture_info("Iridescence", fields.Sub<&PBRMaterial::Iridescence, &Iridescence::Texture>());
+                    fields.Slider<&PBRMaterial::Iridescence, &Iridescence::Ior>("Iridescence IOR", 1.f, 5.f);
+                    fields.Slider<&PBRMaterial::Iridescence, &Iridescence::ThicknessMinimum>("Thickness min", 0.f, 1000.f, "%.0f nm");
+                    fields.Slider<&PBRMaterial::Iridescence, &Iridescence::ThicknessMaximum>("Thickness max", 0.f, 1000.f, "%.0f nm");
+                    edit_texture_info("Iridescence thickness", fields.Sub<&PBRMaterial::Iridescence, &Iridescence::ThicknessTexture>());
                 }
-
-                EndGroup();
-                if (pbr_features_changed || material_changed) {
-                    action::object::UpdateMaterial update{
-                        material_index,
-                        std::make_unique<PBRMaterial>(material),
-                        pbr_features_changed ? std::optional{pbr_features_mask} : std::nullopt,
-                        ui::ScopeFromAlt(),
-                    };
-                    if (IsItemActive()) action::Emit(std::move(update), action::Phase::Stage);
-                    else action::Emit(std::move(update));
-                }
-                if (IsItemDeactivatedAfterEdit()) action::Commit();
             }
         }
     }
-    if (const auto *cd = r.try_get<const Camera>(active_entity)) {
+    if (HasLens(r, active_entity)) {
         if (CollapsingHeader("Camera")) {
-            // Use the camera's distance from world origin as the conversion distance.
-            const float distance = std::max(numeric::Length(r.get<WorldTransform>(active_entity).P), 1.f);
-            auto edited = *cd;
-            ui::Gesture(RenderCameraLensEditor(edited, distance), [&, scope = ui::ScopeFromAlt()] { return action::object::SetCameraLens{edited, scope}; });
+            RenderCameraLensFields(r, active_entity);
             Separator();
             if (LookThroughCameraEntity(r) == active_entity) {
                 if (Button("Exit camera view")) action::Emit(action::view::ExitLookThroughCamera{});
@@ -703,19 +667,21 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             action::Emit(action::object::SetLightType{PunctualLightType(type_i), ui::ScopeFromAlt()});
         }
         fields.Color<&PunctualLight::Color>("Color");
-        fields.Run<&PunctualLight::Intensity>([](float &value) { return SliderFloat("Intensity", &value, 0.f, 1000.f, "%.2f"); });
+        fields.Slider<&PunctualLight::Intensity>("Intensity", 0.f, 1000.f, "%.2f");
         if (light.Type == PunctualLightType::Point || light.Type == PunctualLightType::Spot) {
             bool infinite_range = light.Range <= 0.f;
             if (Checkbox("Infinite range", &infinite_range)) fields.Set<&PunctualLight::Range>(infinite_range ? 0.f : 100.f);
-            if (!infinite_range) fields.Run<&PunctualLight::Range>([](float &value) { return SliderFloat("Range", &value, 0.01f, 1000.f, "%.2f"); });
+            if (!infinite_range) fields.Slider<&PunctualLight::Range>("Range", 0.01f, 1000.f, "%.2f");
         }
         if (light.Type == PunctualLightType::Spot) {
             constexpr float MaxCone = std::numbers::pi_v<float> / 2.f;
-            float outer = std::clamp(AngleFromCos(light.OuterConeCos), 0.f, MaxCone);
-            const float inner = std::clamp(AngleFromCos(light.InnerConeCos), 0.f, outer);
+            float outer = std::clamp(light.OuterConeAngle, 0.f, MaxCone);
+            const float inner = std::clamp(light.InnerConeAngle, 0.f, outer);
             float blend = outer > 1e-4f ? std::clamp(1.f - inner / outer, 0.f, 1.f) : 0.f;
             const bool size_changed = SliderAngle("Size", &outer, 0.f, 90.f, "%.1f deg");
+            ui::KeyDecorator(r, active_entity, animation::Target<&PunctualLight::OuterConeAngle>());
             const bool blend_changed = SliderFloat("Blend", &blend, 0.f, 1.f, "%.2f");
+            ui::KeyDecorator(r, active_entity, animation::Target<&PunctualLight::InnerConeAngle>());
             ui::Gesture(size_changed || blend_changed, [&] {
                 return action::object::SetSpotCone{std::clamp(outer, 0.f, MaxCone), std::clamp(blend, 0.f, 1.f), ui::ScopeFromAlt()};
             });
@@ -1100,7 +1066,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 ui::Gesture(SliderFloat3("Target", &target.x, -10, 10), [&] { return action::view::SetViewCameraTarget{target}; });
             }
             {
-                Camera lens = camera.Data;
+                CameraLens lens = camera.Data;
                 ui::Gesture(RenderCameraLensEditor(lens, camera.Distance, viewport_aspect), [&] { return action::view::SetViewCameraLens{lens}; });
             }
             EndTabItem();
@@ -1210,38 +1176,6 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
         }
         EndTabBar();
     }
-}
-
-void RenderClipPickers(state::Scene &r) {
-    static constexpr float ComboWidth = 200.f;
-    // Names live on object entities, but ArmatureAnimation lives on the data entity.
-    const auto display_name = [&]<typename Anim>(state::Entity entity) {
-        if constexpr (std::is_same_v<Anim, ArmatureAnimation>) {
-            for (const auto [obj_e, obj] : r.view<const ArmatureObject>().each()) {
-                if (obj.Entity == entity) return GetName(r, obj_e);
-            }
-        }
-        return GetName(r, entity);
-    };
-    const auto clip_picker = [&]<typename Anim>(std::string_view kind) {
-        for (auto [entity, anim] : r.view<Anim>().each()) {
-            if (anim.Clips.size() < 2) continue;
-            const auto label = std::format("{}: {}", kind, display_name.template operator()<Anim>(entity));
-            PushID(label.c_str());
-            SetNextItemWidth(ComboWidth);
-            ui::ChoiceCombo(
-                "##clip", anim.ActiveClipIndex, std::views::iota(0u, uint32_t(anim.Clips.size())),
-                [&](uint32_t i) { return NamedOr(anim.Clips[i].Name, "Clip ", i); },
-                [&](uint32_t i) { action::Emit(action::UpdateOn<&Anim::ActiveClipIndex>(entity, i)); }
-            );
-            SameLine();
-            TextUnformatted(label.c_str());
-            PopID();
-        }
-    };
-    clip_picker.template operator()<ArmatureAnimation>("Armature");
-    clip_picker.template operator()<MorphWeightAnimation>("Morph");
-    clip_picker.template operator()<NodeTransformAnimation>("Node");
 }
 
 static void RenderObjectTree(state::Scene &r, state::Entity viewport) {

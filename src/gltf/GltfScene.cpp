@@ -1,6 +1,7 @@
 #include "GltfScene.h"
 #include "GltfConvert.h"
 #include "project/Assets.h"
+#include "render/LightComponents.h"
 #include "state/Scene.h"
 
 #include "File.h"
@@ -10,7 +11,9 @@
 #include "Variant.h"
 #include "animation/AnimationData.h"
 #include "animation/AnimationTimeline.h"
-#include "animation/MorphWeightState.h"
+#include "animation/Clips.h"
+#include "animation/Fields.h"
+#include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/AcousticMaterial.h"
@@ -19,6 +22,7 @@
 #include "audio/ContactModel.h"
 #include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
+#include "gltf/AnimationPointers.h"
 #include "mesh/MeshAttributes.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
@@ -30,6 +34,7 @@
 #include "render/MaterialComponents.h"
 #include "render/PbrFeature.h"
 #include "render/Textures.h"
+#include "scene/CameraLens.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -516,7 +521,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF: {}", fastgltf::getErrorMessage(gltf_file.error()))};
 
-    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_meshopt_compression | fastgltf::Extensions::KHR_meshopt_compression | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies | fastgltf::Extensions::KHR_audio_rigid_bodies;
+    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_meshopt_compression | fastgltf::Extensions::KHR_meshopt_compression | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies | fastgltf::Extensions::KHR_audio_rigid_bodies | fastgltf::Extensions::KHR_animation_pointer;
     fastgltf::Parser parser{EnabledExtensions};
     if (extras_out) {
         parser.setUserPointer(extras_out);
@@ -690,15 +695,6 @@ std::optional<uint32_t> FindNearestMarkedAncestor(uint32_t node_index, const std
     return {};
 }
 
-// Append a non-empty clip onto an entity's Anim component, creating the component on first use.
-template<typename Anim, typename Clip>
-bool AppendClip(state::Scene &r, state::Entity e, Clip &&clip) {
-    if (clip.Channels.empty()) return false;
-    if (auto *existing = r.try_edit<Anim>(e)) existing->Clips.emplace_back(std::forward<Clip>(clip));
-    else r.emplace<Anim>(e, Anim{.Clips = {std::forward<Clip>(clip)}});
-    return true;
-}
-
 std::optional<uint32_t> ComputeCommonAncestor(const std::vector<uint32_t> &nodes, const std::vector<std::optional<uint32_t>> &parents) {
     if (nodes.empty()) return {};
 
@@ -838,12 +834,12 @@ std::vector<Transform> ReadInstanceTransforms(const fastgltf::Asset &asset, cons
     return transforms;
 }
 
-::Camera ConvertCamera(const fastgltf::Camera &cam) {
+CameraLens ConvertCamera(const fastgltf::Camera &cam) {
     return std::visit(
-        [](const auto &source) -> ::Camera {
+        [](const auto &source) -> CameraLens {
             using P = std::decay_t<decltype(source)>;
             if constexpr (std::is_same_v<P, fastgltf::Camera::Perspective>) {
-                return Perspective{.FieldOfViewRad = source.yfov, .FarClip = source.zfar, .NearClip = source.znear, .AspectRatio = source.aspectRatio};
+                return Perspective{.FieldOfViewRad = source.yfov, .FarClip = source.zfar.value_or(std::numeric_limits<float>::infinity()), .NearClip = source.znear, .AspectRatio = source.aspectRatio.value_or(0.f)};
             } else {
                 return Orthographic{.Mag = {source.xmag, source.ymag}, .FarClip = source.zfar, .NearClip = source.znear};
             }
@@ -857,8 +853,8 @@ PunctualLight ConvertLight(const fastgltf::Light &light) {
         .Range = 0.f,
         .Color = ToVec3(light.color),
         .Intensity = light.intensity,
-        .InnerConeCos = 0.f,
-        .OuterConeCos = 0.f,
+        .InnerConeAngle = 0.f,
+        .OuterConeAngle = 0.f,
         .Type = PunctualLightType::Point,
     };
     switch (light.type) {
@@ -873,8 +869,8 @@ PunctualLight ConvertLight(const fastgltf::Light &light) {
             const auto outer = light.outerConeAngle ? *light.outerConeAngle : std::numbers::pi_v<float> / 4.f;
             pl.Type = PunctualLightType::Spot;
             pl.Range = light.range ? *light.range : 0.f;
-            pl.InnerConeCos = std::cos(std::clamp(light.innerConeAngle ? *light.innerConeAngle : 0.f, 0.f, outer));
-            pl.OuterConeCos = std::cos(outer);
+            pl.InnerConeAngle = std::clamp(light.innerConeAngle ? *light.innerConeAngle : 0.f, 0.f, outer);
+            pl.OuterConeAngle = outer;
             break;
         }
     }
@@ -886,9 +882,7 @@ std::optional<ImageBasedLight> ConvertIBL(const fastgltf::Asset &asset, size_t s
     if (!ibl_idx) return std::nullopt;
     const auto &src_ibl = asset.imageBasedLights[*ibl_idx];
     ImageBasedLight ibl{
-        .Rotation = numeric::Normalize(std::bit_cast<quat>(src_ibl.rotation)),
         .SpecularImageSize = src_ibl.specularImageSize,
-        .Intensity = std::max(0.f, src_ibl.intensity),
         .Name = src_ibl.name.empty() ? std::format("ImageBasedLight{}", *ibl_idx) : std::string{src_ibl.name},
     };
     ibl.SpecularImageIndicesByMip.reserve(src_ibl.specularImages.size());
@@ -974,7 +968,6 @@ std::expected<SourceAssets, std::string> ReadSourceAssets(state::Scene &r, const
         .Textures = {},
         .Images = {},
         .Samplers = {},
-        .AnimationOrder = {},
         .ImageBasedLight = ConvertIBL(asset, scene_index),
     };
     sa.ExtensionsRequired.reserve(asset.extensionsRequired.size());
@@ -1059,10 +1052,8 @@ SourceMaterials ReadMaterials(const fastgltf::Asset &asset) {
             meta.ExtensionPresence |= M::ExtDispersion;
         }
         if (material.emissiveStrength) {
-            const float s = *material.emissiveStrength;
-            meta.EmissiveStrength = s;
+            pbr.EmissiveStrength = *material.emissiveStrength;
             meta.ExtensionPresence |= M::ExtEmissiveStrength;
-            pbr.EmissiveFactor *= s; // collapse strength into factor for GPU
         }
 
         if (material.sheen) {
@@ -1616,7 +1607,7 @@ ImportedObjects ImportObjects(state::Scene &r, const fastgltf::Asset &asset, con
             } else if (!mesh_index && camera_index) {
                 const auto &cam = asset.cameras[*camera_index];
                 e = ::AddCamera(r, meshes, info);
-                r.replace<::Camera>(e, ConvertCamera(cam));
+                SetLens(r, e, ConvertCamera(cam));
                 node.Camera = *camera_index;
                 node.CameraName = cam.name;
                 if (objects.FirstCamera == state::Null) objects.FirstCamera = e;
@@ -2142,33 +2133,33 @@ void RecordSourceHierarchy(state::Scene &r, const fastgltf::Asset &asset, const 
         if (plan.SourceMatrices[*node.Index]) edited.Matrix = *plan.SourceMatrices[*node.Index];
     }
 
-    // KHR_node_visibility: visible:false hides the node and its descendants.
-    const auto hide_subtree = [&](this const auto &self, state::Entity e) -> void {
-        Hide(r, e);
-        for (const auto child : Children{&r, e}) self(child);
-    };
+    // KHR_node_visibility: a false flag hides the node and its descendants.
     for (const auto [entity, node] : r.view<const GltfNode>().each()) {
-        if (node.Index && *node.Index < asset.nodes.size() && !asset.nodes[*node.Index].visible) hide_subtree(entity);
+        if (node.Index && *node.Index < asset.nodes.size() && !asset.nodes[*node.Index].visible) r.emplace_or_replace<Visibility>(entity, 0u);
     }
+    for (const auto entity : r.view<const Visibility>()) ApplyVisibility(r, entity);
 }
 
-struct ImportedAnimations {
-    // Source names of animations with at least one valid channel, in source order.
-    std::vector<std::string> Order;
-    bool Any{false};
-};
-
-// Sets up morph weight state, then parses every channel straight into armature, morph, and node clips.
-ImportedAnimations ImportAnimations(state::Scene &r, const fastgltf::Asset &asset, state::Entity viewport, const ImportedObjects &objects, std::span<const state::Entity> armature_data_entities) {
-    std::unordered_map<uint32_t, std::vector<std::pair<state::Entity, BoneId>>> armature_targets_by_joint_node;
-    for (const auto armature_data_entity : armature_data_entities) {
-        for (const auto &bone : r.get<const Armature>(armature_data_entity).Bones) {
-            if (bone.JointNodeIndex) armature_targets_by_joint_node[*bone.JointNodeIndex].emplace_back(armature_data_entity, bone.Id);
+// Allocates morph weights, then parses every channel into per-entity clips of the scene animations appended for this asset.
+// Returns whether any channel was imported.
+bool ImportAnimations(state::Scene &r, const fastgltf::Asset &asset, state::Entity viewport, const ImportedObjects &objects, std::span<const state::Entity> armature_data_entities, std::span<const uint32_t> material_index_by_source, std::optional<uint32_t> image_light) {
+    // Joint nodes drive the bone entity of every armature owning them.
+    struct BoneTarget {
+        state::Entity Entity;
+        Transform Rest;
+    };
+    std::unordered_map<uint32_t, std::vector<BoneTarget>> bones_by_joint_node;
+    for (const auto [_, arm_obj] : r.view<const ArmatureObject>().each()) {
+        if (!std::ranges::contains(armature_data_entities, arm_obj.Entity)) continue;
+        const auto &armature = r.get<const Armature>(arm_obj.Entity);
+        for (uint32_t i = 0; i < armature.Bones.size() && i < arm_obj.BoneEntities.size(); ++i) {
+            if (armature.Bones[i].JointNodeIndex) bones_by_joint_node[*armature.Bones[i].JointNodeIndex].emplace_back(arm_obj.BoneEntities[i], armature.Bones[i].RestLocal);
         }
     }
 
-    // Mesh instances with morph targets start at the node's weights, else the mesh defaults. The GPU range (MorphWeightGpuRange) is allocated later.
+    // Mesh instances with morph targets start at the node's weights, else the mesh defaults, in the UMA weight buffer.
     const auto &meshes = r.ctx().get<const MeshStore>();
+    auto &weight_buffer = r.ctx().get<GpuBuffers>().MorphWeightBuffer;
     std::unordered_map<uint32_t, state::Entity> morph_instance_by_node;
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         for (const auto instance_entity : objects.ByNode[node_index]) {
@@ -2183,108 +2174,146 @@ ImportedAnimations ImportAnimations(state::Scene &r, const fastgltf::Asset &asse
                 weights.assign(record.MorphTargetCount, 0.f);
                 std::copy_n(node_weights.begin(), std::min(node_weights.size(), size_t(record.MorphTargetCount)), weights.begin());
             }
-            r.emplace<MorphWeightState>(instance_entity, MorphWeightState{.Weights = std::move(weights)});
+            r.emplace<MorphWeightRange>(instance_entity, weight_buffer.Allocate(std::span<const float>{weights}));
             morph_instance_by_node[node_index] = instance_entity;
         }
     }
+    // Camera and light channels drive every object node referencing the source camera or light.
+    std::unordered_map<uint32_t, std::vector<state::Entity>> objects_by_camera, objects_by_light;
+    for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
+        const auto &node = asset.nodes[node_index];
+        for (const auto e : objects.ByNode[node_index]) {
+            if (const auto camera = ToIndex(node.cameraIndex, asset.cameras.size())) objects_by_camera[*camera].emplace_back(e);
+            if (const auto light = ToIndex(node.lightIndex, asset.lights.size())) objects_by_light[*light].emplace_back(e);
+        }
+    }
 
-    ImportedAnimations out;
-    out.Order.reserve(asset.animations.size());
+    // Entities a channel drives with the target on each, and the bone rest pose for a joint.
+    struct ResolvedTarget {
+        state::Entity Entity;
+        ChannelTarget Target;
+        std::optional<Transform> BoneRest;
+        std::vector<float> Rest;
+    };
+    const auto resolve = [&](const fastgltf::AnimationChannel &channel) {
+        std::vector<ResolvedTarget> targets;
+        const gltf::PointerRow *row = nullptr;
+        uint32_t index = 0;
+        std::optional<uint32_t> element;
+        if (channel.path == fastgltf::AnimationPath::Pointer) {
+            const auto parsed = gltf::ParsePointer(channel.pointer);
+            if (!parsed) return targets;
+            row = parsed->Row;
+            index = parsed->Index;
+            element = parsed->Element;
+        } else {
+            if (!channel.nodeIndex) return targets;
+            row = &gltf::NodePathRow(channel.path);
+            index = uint32_t(*channel.nodeIndex);
+        }
+        switch (row->Space) {
+            case gltf::PointerSpace::Node: {
+                if (index >= asset.nodes.size()) break;
+                if (row->Target.Component == state::Key<MorphWeightRange>()) {
+                    const auto it = morph_instance_by_node.find(index);
+                    if (it == morph_instance_by_node.end()) break;
+                    auto target = animation::WeightsTarget(r, it->second);
+                    if (element) {
+                        if (*element >= target.Count) break;
+                        target.Offset = uint16_t(*element * sizeof(float));
+                        target.Count = 1;
+                    }
+                    targets.emplace_back(it->second, target);
+                    break;
+                }
+                // A joint node's transform drives its bones. Its other properties stay on the object.
+                if (const auto it = bones_by_joint_node.find(index); row->Target.Component == state::Key<PosedLocal>() && it != bones_by_joint_node.end()) {
+                    for (const auto &bone : it->second) {
+                        auto target = row->Target;
+                        target.Component = state::Key<BoneDelta>();
+                        targets.emplace_back(bone.Entity, target, bone.Rest);
+                    }
+                    break;
+                }
+                if (const auto object = objects.Of(index); object != state::Null) targets.emplace_back(object, row->Target);
+                break;
+            }
+            case gltf::PointerSpace::Material:
+                if (index < material_index_by_source.size()) {
+                    auto target = row->Target;
+                    target.Index = uint16_t(material_index_by_source[index]);
+                    targets.emplace_back(viewport, target);
+                }
+                break;
+            case gltf::PointerSpace::ImageLight:
+                if (image_light && index == *image_light) targets.emplace_back(viewport, row->Target);
+                break;
+            case gltf::PointerSpace::Camera:
+            case gltf::PointerSpace::Light: {
+                const auto &objects_by_index = row->Space == gltf::PointerSpace::Camera ? objects_by_camera : objects_by_light;
+                if (const auto it = objects_by_index.find(index); it != objects_by_index.end())
+                    for (const auto e : it->second) targets.emplace_back(e, row->Target);
+                break;
+            }
+        }
+        // Only fields the entity holds take a channel, so a perspective pointer skips an orthographic camera.
+        std::erase_if(targets, [&](ResolvedTarget &target) {
+            target.Rest.resize(target.Target.Count);
+            return !animation::ReadField(r, target.Entity, target.Target, target.Rest);
+        });
+        return targets;
+    };
+
+    auto &animations = r.get_or_emplace<Animations>(viewport);
+    const bool had_animations = !animations.Names.empty();
+    bool any = false;
     for (const auto &anim : asset.animations) {
-        std::unordered_map<state::Entity, ::AnimationClip> armature_clips_by_entity;
-        std::unordered_map<state::Entity, MorphWeightClip> morph_clips_by_entity;
-        std::unordered_map<state::Entity, ::AnimationClip> node_clips_by_entity;
-        const std::string anim_name(anim.name);
-        float max_time = 0;
-        bool any_channel = false;
-
+        std::vector<std::pair<state::Entity, AnimationChannel>> resolved;
         for (const auto &channel : anim.channels) {
-            if (!channel.nodeIndex || *channel.nodeIndex >= asset.nodes.size()) continue;
             if (channel.samplerIndex >= anim.samplers.size()) continue;
-            const auto target_node_index = uint32_t(*channel.nodeIndex);
-            const auto path = ToPath(channel.path);
-            // A weights channel's component count is the target mesh's morph target count.
-            const auto component_count = [&]() -> size_t {
-                if (path != AnimationPath::Weights) return path == AnimationPath::Rotation ? 4 : 3;
-                const auto mesh_index = ToIndex(asset.nodes[target_node_index].meshIndex, asset.meshes.size());
-                if (!mesh_index || asset.meshes[*mesh_index].primitives.empty()) return 0;
-                return asset.meshes[*mesh_index].primitives[0].targets.size();
-            }();
-            if (component_count == 0) continue;
-
+            const auto targets = resolve(channel);
+            if (targets.empty()) continue;
             const auto &sampler = anim.samplers[channel.samplerIndex];
             if (sampler.inputAccessor >= asset.accessors.size() || sampler.outputAccessor >= asset.accessors.size()) continue;
             const auto &input_accessor = asset.accessors[sampler.inputAccessor];
             const auto &output_accessor = asset.accessors[sampler.outputAccessor];
             if (input_accessor.count == 0) continue;
-
-            const auto interp = ToInterp(sampler.interpolation);
+            // A bool channel steps, as the extension requires of its samplers.
+            const auto interp = targets.front().Target.Kind == ValueKind::Bool ? AnimationInterpolation::Step : ToInterp(sampler.interpolation);
+            const uint32_t n = targets.front().Target.Count;
+            const auto keys_expected = interp == AnimationInterpolation::CubicSpline ? input_accessor.count * 3 : input_accessor.count;
+            // Weights channels pack every target into scalar elements. Other channels store one element per key.
+            const bool packed = targets.front().Target.Component == state::Key<MorphWeightRange>();
+            if (n == 0 || (packed ? output_accessor.count != keys_expected * n : fastgltf::getNumComponents(output_accessor.type) != n || output_accessor.count != keys_expected)) continue;
             std::vector<float> times(input_accessor.count);
             fastgltf::copyFromAccessor<float>(asset, input_accessor, times.data());
-            std::vector<float> values;
-            if (path == AnimationPath::Weights) {
-                values.resize(output_accessor.count);
-                fastgltf::copyFromAccessor<float>(asset, output_accessor, values.data());
-            } else {
-                values.resize(output_accessor.count * component_count);
-                if (component_count == 4) fastgltf::copyFromAccessor<vec4>(asset, output_accessor, reinterpret_cast<vec4 *>(values.data()));
-                else fastgltf::copyFromAccessor<vec3>(asset, output_accessor, reinterpret_cast<vec3 *>(values.data()));
-            }
-            max_time = std::max(max_time, times.back());
-            any_channel = true;
-
-            if (path == AnimationPath::Weights) {
-                const auto inst_it = morph_instance_by_node.find(target_node_index);
-                if (inst_it == morph_instance_by_node.end()) continue;
-                auto &resolved_clip = morph_clips_by_entity.try_emplace(inst_it->second, MorphWeightClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}}).first->second;
-                resolved_clip.Channels.emplace_back(MorphWeightChannel{.Interp = interp, .TimesSeconds = std::move(times), .Values = std::move(values)});
-                continue;
-            }
-            // Channels targeting a joint drive its bone in every armature that owns it.
-            if (const auto armature_it = armature_targets_by_joint_node.find(target_node_index); armature_it != armature_targets_by_joint_node.end()) {
-                for (const auto &[target_data_entity, bone_id] : armature_it->second) {
-                    const auto &armature = r.get<const Armature>(target_data_entity);
-                    const auto bone_index = armature.FindBoneIndex(bone_id).value_or(InvalidBoneIndex);
-                    auto &resolved_clip = armature_clips_by_entity.try_emplace(target_data_entity, ::AnimationClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}}).first->second;
-                    resolved_clip.Channels.emplace_back(::AnimationChannel{.BoneIndex = bone_index, .TargetBoneId = bone_id, .Target = path, .Interp = interp, .TimesSeconds = times, .Values = values});
-                }
-                continue;
-            }
-            if (const auto object = objects.Of(target_node_index); object != state::Null) {
-                auto &resolved_clip = node_clips_by_entity.try_emplace(object, ::AnimationClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}}).first->second;
-                resolved_clip.Channels.emplace_back(::AnimationChannel{.BoneIndex = 0, .Target = path, .Interp = interp, .TimesSeconds = std::move(times), .Values = std::move(values)});
+            std::vector<float> values(keys_expected * n);
+            if (packed || n == 1) fastgltf::copyFromAccessor<float>(asset, output_accessor, values.data());
+            else if (n == 2) fastgltf::copyFromAccessor<vec2>(asset, output_accessor, reinterpret_cast<vec2 *>(values.data()));
+            else if (n == 3) fastgltf::copyFromAccessor<vec3>(asset, output_accessor, reinterpret_cast<vec3 *>(values.data()));
+            else fastgltf::copyFromAccessor<vec4>(asset, output_accessor, reinterpret_cast<vec4 *>(values.data()));
+            for (const auto &target : targets) {
+                if (target.Target.Count != n) continue;
+                AnimationChannel out{.Target = target.Target, .Interp = interp, .Times = times, .Values = values, .Rest = target.Rest};
+                if (target.BoneRest) ConvertBoneChannel(out, *target.BoneRest, true);
+                resolved.emplace_back(target.Entity, std::move(out));
             }
         }
-
-        if (!any_channel) continue;
-        out.Order.emplace_back(std::move(anim_name));
-
-        for (auto &[_, c] : armature_clips_by_entity) c.DurationSeconds = max_time;
-        for (auto &[_, c] : morph_clips_by_entity) c.DurationSeconds = max_time;
-        for (auto &[_, c] : node_clips_by_entity) c.DurationSeconds = max_time;
-
-        for (auto &[target_data_entity, resolved_clip] : armature_clips_by_entity) out.Any |= AppendClip<ArmatureAnimation>(r, target_data_entity, std::move(resolved_clip));
-        for (auto &[instance_entity, resolved_clip] : morph_clips_by_entity) out.Any |= AppendClip<MorphWeightAnimation>(r, instance_entity, std::move(resolved_clip));
-        for (auto &[object_entity, resolved_clip] : node_clips_by_entity) {
-            out.Any = true;
-            if (auto *existing = r.try_edit<NodeTransformAnimation>(object_entity)) existing->Clips.emplace_back(std::move(resolved_clip));
-            else r.emplace<NodeTransformAnimation>(object_entity, NodeTransformAnimation{.Clips = {std::move(resolved_clip)}, .ActiveClipIndex = 0});
+        if (resolved.empty()) continue;
+        const auto index = uint32_t(animations.Names.size());
+        animations.Names.emplace_back(anim.name);
+        for (auto &[entity, channel] : resolved) {
+            auto &clips = r.get_or_emplace<AnimationClips>(entity);
+            auto *clip = clips.Find(index);
+            if (!clip) clip = &clips.Clips.emplace_back(AnimationClip{.Animation = index, .Channels = {}});
+            clip->Channels.emplace_back(std::move(channel));
         }
+        any = true;
     }
-
-    // The timeline spans the longest imported clip.
-    float max_dur = 0;
-    for (const auto [_, anim] : r.view<const ArmatureAnimation>().each()) {
-        for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
-    }
-    for (const auto [_, anim] : r.view<const MorphWeightAnimation>().each()) {
-        for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
-    }
-    for (const auto [_, anim] : r.view<const NodeTransformAnimation>().each()) {
-        for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
-    }
-    if (max_dur > 0) r.patch<TimelineRange>(viewport, [&](auto &range) { range.EndFrame = int(std::ceil(max_dur * range.Fps)); });
-    return out;
+    if (!had_animations) animations.Active = 0;
+    // The timeline spans the longest animation in the scene.
+    if (const float end = animation::LastKeySeconds(r); end > 0) r.patch<TimelineRange>(viewport, [&](auto &range) { range.EndFrame = int(std::ceil(end * range.Fps)); });
+    return any;
 }
 
 // One scene entity per source scene with the default scene active. Multi-scene assets record each node's membership.
@@ -2363,8 +2392,12 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     ImportAudio(r, asset, objects);
     const auto armature_data_entities = ImportArmatures(r, asset, plan, *armature_plans, objects, source_path.stem().string());
     RecordSourceHierarchy(r, asset, plan);
-    auto animations = ImportAnimations(r, asset, viewport, objects, armature_data_entities);
-    source_assets->AnimationOrder = std::move(animations.Order);
+    const auto image_light = ToIndex(asset.scenes[scene_index].imageBasedLightIndex, asset.imageBasedLights.size());
+    if (image_light) {
+        const auto &src_ibl = asset.imageBasedLights[*image_light];
+        r.emplace_or_replace<ImageLight>(viewport, ImageLight{numeric::Normalize(std::bit_cast<quat>(src_ibl.rotation)), std::max(0.f, src_ibl.intensity)});
+    }
+    const bool imported_animation = ImportAnimations(r, asset, viewport, objects, armature_data_entities, materials.IndexByGltfMaterial, image_light);
 
     auto &environments = r.ctx().get<EnvironmentStore>();
     if (const auto &source_ibl = source_assets->ImageBasedLight) {
@@ -2387,7 +2420,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
     r.emplace_or_replace<SourceAssets>(viewport, std::move(*source_assets));
 
-    return LoadResult{.FirstCameraObject = objects.FirstCamera, .ImportedAnimation = animations.Any};
+    return LoadResult{.FirstCameraObject = objects.FirstCamera, .ImportedAnimation = imported_animation};
 }
 
 void SwitchActiveScene(state::Scene &r, state::Entity scene) {

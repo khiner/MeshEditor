@@ -10,7 +10,7 @@
 #include "gpu/BoneDeformVertex.h"
 #include "gpu/MorphTargetVertex.h"
 #include "gpu/PBRMaterial.h"
-#include "gpu/PunctualLight.h"
+#include "gpu/LightRecord.h"
 #include "gpu/Transform.h"
 #include "TRSUtils.metal"
 
@@ -43,7 +43,7 @@ struct SceneT {
     device const packed_float4x4 *ArmatureDeforms(uint slot) const { return BindlessBuffer(packed_float4x4, B.ArmatureDeformBuffer, slot); }
     device const MorphTargetVertex *MorphTargets(uint slot) const { return BindlessBuffer(MorphTargetVertex, B.MorphTargetBuffer, slot); }
     device const float *MorphWeights(uint slot) const { return BindlessBuffer(float, B.MorphWeightBuffer, slot); }
-    device const PunctualLight *Lights(uint slot) const { return BindlessBuffer(PunctualLight, B.LightBuffer, slot); }
+    device const LightRecord *Lights(uint slot) const { return BindlessBuffer(LightRecord, B.LightBuffer, slot); }
     device const PBRMaterial *Materials(uint slot) const { return BindlessBuffer(PBRMaterial, B.MaterialBuffer, slot); }
     device const uint *PrimitiveMaterials(uint slot) const { return BindlessBuffer(uint, B.PrimitiveMaterialBuffer, slot); }
     device const uint *ElementPrimitives(uint slot) const { return BindlessBuffer(uint, B.ElementPrimitiveBuffer, slot); }

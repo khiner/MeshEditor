@@ -1,6 +1,6 @@
 #include "render/RenderStores.h"
 #include "animation/AnimationTimeline.h"
-#include "animation/MorphWeightState.h"
+#include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
@@ -41,8 +41,9 @@ void RegisterRenderStoreHandlers(state::Scene &r) {
         auto &buffer = r.ctx().get<GpuBuffers>().ArmatureDeformBuffer;
         for (const auto range : r.get<const ArmaturePoseState>(e).GpuDeformRanges) buffer.Release(range);
     }>();
-    r.on_destroy<MorphWeightGpuRange>().connect<[](state::Scene &r, state::Entity e) {
-        r.ctx().get<GpuBuffers>().MorphWeightBuffer.Release(r.get<const MorphWeightGpuRange>(e).Weights);
+    // History restores the tracked allocator, so a restore releases nothing.
+    r.on_destroy<MorphWeightRange>().connect<[](state::Scene &r, state::Entity e) {
+        if (!r.Restoring) r.ctx().get<GpuBuffers>().MorphWeightBuffer.Release(r.get<const MorphWeightRange>(e).Weights);
     }>();
     r.on_destroy<MeshHandle>().connect<&state::Scene::remove<MeshShadingSummary>>();
     r.on_destroy<RenderInstance>().connect<[](state::Scene &r, state::Entity e) {

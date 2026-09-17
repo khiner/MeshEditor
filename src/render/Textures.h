@@ -124,7 +124,6 @@ struct EnvironmentStore {
     // Sampler slots of the raw-pixel LUT textures that TextureStore materializes and owns.
     uint32_t BrdfLutSlot, SheenELutSlot, CharlieLutSlot;
     std::optional<EnvironmentPrefiltered> ImportedSceneWorld;
-    mat3 SceneWorldRotation{1.f}; // From EXT_lights_image_based rotation quaternion.
     EnvironmentPrefiltered EmptySceneWorld; // 1x1 flat-color cubemap used without an EXT_lights_image_based asset.
     EnvironmentSelection SceneWorld, StudioWorld;
     // An EXT_lights_image_based import the next event pass materializes.

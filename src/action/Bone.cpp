@@ -23,13 +23,13 @@ void RebuildBoneStructure(state::Scene &r, state::Entity viewport, state::Entity
     armature.FinalizeStructure();
     armature.RecomputeRestWorld();
 
-    if (auto *pose = r.try_edit<ArmaturePose>(arm_data_entity)) pose->BoneDeltas.assign(armature.Bones.size(), Transform{});
+    for (const auto [_, arm_obj] : r.view<const ArmatureObject>().each()) {
+        if (arm_obj.Entity != arm_data_entity) continue;
+        for (const auto b : arm_obj.BoneEntities) r.emplace_or_replace<BoneDelta>(b);
+    }
     if (auto *ps = r.try_edit<ArmaturePoseState>(arm_data_entity)) {
         ps->BoneUserOffset.assign(armature.Bones.size(), Transform{});
         ps->BonePoseWorld.assign(armature.Bones.size(), I4);
-    }
-    if (auto *anim = r.try_edit<ArmatureAnimation>(arm_data_entity)) {
-        for (auto &clip : anim->Clips) armature.ResolveAnimationIndices(clip);
     }
     r.edit<LastEvaluatedFrame>(viewport).Value = -1;
 }
@@ -154,18 +154,12 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate);
             },
             [&](const ClearSelectedTransforms &a) {
-                const auto arm_obj_entity = FindArmatureObject(r, FindActiveEntity(r));
-                if (arm_obj_entity == state::Null) return;
-
-                const auto &arm_obj = r.get<const ArmatureObject>(arm_obj_entity);
-                const auto &armature = r.get<const Armature>(arm_obj.Entity);
-                for (const auto b : r.view<const BoneSelection, const BoneIndex>()) {
-                    const auto idx = r.get<const BoneIndex>(b).Index;
-                    const auto &rest = armature.Bones[idx].RestLocal;
-                    r.patch<PosedLocal>(b, [&](auto &posed) {
-                        if (a.Position) posed.Value.P = rest.P;
-                        if (a.Rotation) posed.Value.R = rest.R;
-                        if (a.Scale) posed.Value.S = rest.S;
+                if (FindArmatureObject(r, FindActiveEntity(r)) == state::Null) return;
+                for (const auto b : r.view<const BoneSelection, const BoneDelta>()) {
+                    r.patch<BoneDelta>(b, [&](auto &delta) {
+                        if (a.Position) delta.Value.P = {};
+                        if (a.Rotation) delta.Value.R = {};
+                        if (a.Scale) delta.Value.S = vec3{1};
                     });
                 }
             },

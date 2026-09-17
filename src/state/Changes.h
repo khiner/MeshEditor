@@ -15,6 +15,7 @@ enum class Change : uint8_t {
     TransformPending,
     TransformEnd,
     TransformDirty,
+    BonePose, // A bone's pose delta changed.
     Rotation,
     WorldTransform,
     // Meshes
@@ -24,6 +25,7 @@ enum class Change : uint8_t {
     TetMesh,
     NewBufferEntity,
     RenderInstanceCreated,
+    RenderInstanceDestroyed, // A live entity lost its render instance.
     // Sound vertices
     SoundVertices,
     SoundVerticesUpdated,
@@ -41,7 +43,8 @@ enum class Change : uint8_t {
     PunctualLight,
     SceneView,
     CameraLens,
-    ActiveAnimationClip,
+    AnimationEdited,
+    MorphWeights, // Morph weights changed in the UMA weight buffer.
     // Physics
     PhysicsInput, // Any body, collider, joint, or hierarchy input.
     PhysicsTransform, // A local transform update, relevant when the entity poses a body, collider, or joint.

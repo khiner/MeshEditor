@@ -94,6 +94,7 @@ mesheditor_library(MeshEditorMesh HOT
 
 mesheditor_library(MeshEditorScene HOT
     src/TransformMath.cpp
+    src/animation/Clips.cpp
     src/armature/Armature.cpp
     src/scene/Defaults.cpp
     src/scene/Entity.cpp
@@ -108,6 +109,8 @@ mesheditor_library(MeshEditorScene HOT
 )
 
 mesheditor_library(MeshEditorRender HOT
+    src/animation/Evaluate.cpp
+    src/animation/Fields.cpp
     src/render/ClusterLod.cpp
     src/render/GpuBufferOps.cpp
     src/render/Materials.cpp
@@ -155,6 +158,7 @@ mesheditor_library(MeshEditorAssets COLD
     src/assets/MeshImport.cpp
     src/audio/RealImpact.cpp
     src/gltf/GltfScene.cpp
+    src/gltf/AnimationPointers.cpp
     src/gltf/GltfExport.cpp
     src/gltf/SourceTexture.cpp
 )
@@ -163,6 +167,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/project/Project.cpp
     src/ProcessEvents.cpp
     src/action/Action.cpp
+    src/action/Animation.cpp
     src/action/Audio.cpp
     src/action/Bone.cpp
     src/action/Core.cpp
@@ -175,6 +180,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/action/Timeline.cpp
     src/action/View.cpp
     src/animation/Keyframes.cpp
+    src/animation/Keying.cpp
     src/editor/AudioExcitation.cpp
     src/editor/AudioIntegration.cpp
     src/editor/Engine.cpp

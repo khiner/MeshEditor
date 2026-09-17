@@ -4,8 +4,10 @@
 #include "PathSerialize.h"
 #include "ProcessEvents.h"
 #include "action/Errors.h"
+#include "animation/AnimationData.h"
 #include "animation/AnimationTimeline.h"
-#include "animation/MorphWeightState.h"
+#include "animation/Keying.h"
+#include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "assets/ArchiveMesh.h"
@@ -103,6 +105,7 @@ void Project::TrackStores(state::Entity viewport) {
     auto &meshes = R.ctx().get<MeshStore>();
     meshes.Track(History);
     R.ctx().get<GpuBuffers>().Materials.Track(History, "material.values");
+    R.ctx().get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights");
     R.ctx().get<MaterialStore>().Track(History);
     History.SchemaRevision = 8;
     History.Callbacks = {
@@ -400,7 +403,14 @@ int Project::Do(action::Action a, std::string label) {
     WaitForRender(R);
     if (label.empty()) label = Label(a);
     FinishGesture(EventPass::Settle);
-    return ApplyCommand(std::move(a), EventPass::Frame) ? Commit(std::move(label)) : History.Present;
+    if (!ApplyCommand(std::move(a), EventPass::Frame)) return History.Present;
+    RecordKeys();
+    return Commit(std::move(label));
+}
+void Project::RecordKeys() {
+    if (!R.get<const Animations>(Viewport).Record) return;
+    const auto seconds = animation::FrameSeconds(R, Viewport, R.get<const TimelinePlayback>(Viewport).CurrentFrame);
+    if (animation::AnyChanged(R, Viewport, seconds)) ApplyCommand(action::MakeAction(action::animation::RecordChanged{}), EventPass::Settle);
 }
 int Project::Commit(std::string label) {
     std::vector<std::byte> bytes;
@@ -419,6 +429,7 @@ void Project::FinishGesture(EventPass pass) {
     ApplyCommand(action::MakeAction(action::view::EndGizmoDrag{}), pass);
     R.clear<action::DragFieldStart>();
     R.remove<AdditiveBoxSelectBaseline>(Viewport);
+    RecordKeys();
     Commit(label);
     Commands.clear();
     ReleaseGesture();
@@ -475,7 +486,10 @@ void Project::Frame(action::Drained drained) {
             if (phase == action::Phase::Record) FinishGesture(EventPass::Settle);
             const auto label = Label(a);
             const bool recordable = ApplyCommand(std::move(a), pass, phase == action::Phase::Stage);
-            if (phase == action::Phase::Record && recordable) Commit(label);
+            if (phase == action::Phase::Record && recordable) {
+                RecordKeys();
+                Commit(label);
+            }
         }
         pass = EventPass::Settle;
     }
@@ -546,8 +560,7 @@ void Project::AfterRestore() {
             if (const auto *render = R.try_get<const RenderInstance>(entity); render && (!visible || render->Entity != instance->Entity)) R.remove<RenderInstance>(entity);
             if (visible && !R.all_of<RenderInstance>(entity)) R.emplace<RenderInstance>(entity, instance->Entity, UINT32_MAX);
         }
-        if (type == state::Type<Armature>() || type == state::Type<ArmaturePose>()) R.remove<ArmaturePoseState>(entity);
-        if (type == state::Type<MorphWeightState>()) R.remove<MorphWeightGpuRange>(entity);
+        if (type == state::Type<Armature>()) R.remove<ArmaturePoseState>(entity);
         textures_changed |= type == state::Type<gltf::SourceAssets>() || type == state::Type<MaterializedTextures>();
     }
     if (names_changed) RebuildEntityNames(R);
@@ -583,10 +596,11 @@ void Project::AfterRestore() {
     }
     meshes.RebuildDerived(topology);
     DeriveBaseNormalsNow(R, geometry);
-    RefreshEditedPositions(R, Viewport, positions);
+    RefreshEditedPositions(R, positions);
     for (const auto &[entity, ranges] : positions) R.emplace_or_replace<MeshPositionsChanged>(entity);
-    auto &materials = R.ctx().get<GpuBuffers>().Materials;
-    if (!materials.History()->Trie.TakeChanged().empty()) reactive(R, Change::Materials).emplace(Viewport);
+    auto &buffers = R.ctx().get<GpuBuffers>();
+    if (!buffers.Materials.History()->Trie.TakeChanged().empty()) reactive(R, Change::Materials).emplace(Viewport);
+    if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) reactive(R, Change::MorphWeights).emplace(Viewport);
     Settle(EventPass::Restore);
 }
 } // namespace project

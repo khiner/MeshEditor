@@ -1,6 +1,5 @@
 #include "armature/Armature.h"
 #include "TransformMath.h"
-#include "animation/AnimationData.h"
 #include "armature/ArmatureComponents.h"
 #include "scene/Entity.h"
 #include "selection/BoneSelection.h"
@@ -8,32 +7,6 @@
 #include "state/Scene.h"
 
 #include <format>
-
-namespace {
-// Returns the left endpoint of the keyframe interval containing `t`.
-uint32_t FindKeyframe(const std::vector<float> &times, float t) {
-    if (times.size() <= 1 || t <= times.front()) return 0;
-    if (t >= times.back()) return times.size() - 2;
-
-    auto it = std::upper_bound(times.begin(), times.end(), t);
-    if (it == times.begin()) return 0;
-    return std::distance(times.begin(), it) - 1;
-}
-
-vec3 ReadVec3(const float *data) { return {data[0], data[1], data[2]}; }
-quat ReadQuat(const float *data) { return {data[3], data[0], data[1], data[2]}; }
-
-vec3 CubicHermite(vec3 p0, vec3 m0, vec3 p1, vec3 m1, float t) {
-    const float t2 = t * t, t3 = t2 * t;
-    return (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * m1;
-}
-
-quat CubicHermiteQuat(quat p0, quat m0, quat p1, quat m1, float t) {
-    const float t2 = t * t, t3 = t2 * t;
-    const quat result = (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * m1;
-    return numeric::Normalize(result);
-}
-} // namespace
 
 BoneId Armature::AllocateBoneId() {
     if (NextBoneId == InvalidBoneId) throw std::runtime_error{"Armature bone ID allocator overflowed."};
@@ -135,12 +108,6 @@ void Armature::FinalizeStructure() {
     Dirty = false;
 }
 
-void Armature::ResolveAnimationIndices(AnimationClip &clip) const {
-    for (auto &channel : clip.Channels) {
-        if (channel.TargetBoneId != InvalidBoneId) channel.BoneIndex = FindBoneIndex(channel.TargetBoneId).value_or(InvalidBoneIndex);
-    }
-}
-
 void Armature::RecomputeRestWorld() {
     for (uint32_t i = 0; i < Bones.size(); ++i) {
         const auto local = ToMatrix(Bones[i].RestLocal);
@@ -163,109 +130,6 @@ void Armature::RecomputeInverseBindMatrices() {
     }
 }
 
-void EvaluateMorphWeights(const MorphWeightClip &clip, float time_seconds, std::span<float> weights) {
-    for (const auto &channel : clip.Channels) {
-        if (channel.TimesSeconds.empty()) continue;
-
-        const uint32_t target_count = weights.size();
-        if (target_count == 0) continue;
-
-        const auto k = FindKeyframe(channel.TimesSeconds, time_seconds);
-        const uint32_t last = channel.TimesSeconds.size() - 1;
-        const uint32_t k1 = std::min(k + 1, last);
-
-        if (channel.Interp == AnimationInterpolation::Step) {
-            const float *v = channel.Values.data() + k * target_count;
-            for (uint32_t t = 0; t < target_count; ++t) weights[t] = v[t];
-        } else if (channel.Interp == AnimationInterpolation::Linear) {
-            const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
-            const float alpha = (t1 > t0) ? std::clamp((time_seconds - t0) / (t1 - t0), 0.f, 1.f) : 0.f;
-            const float *v0 = channel.Values.data() + k * target_count;
-            const float *v1 = channel.Values.data() + k1 * target_count;
-            for (uint32_t t = 0; t < target_count; ++t) weights[t] = numeric::Mix(v0[t], v1[t], alpha);
-        } else {
-            const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
-            const float dt = t1 - t0;
-            const float alpha = (dt > 0) ? std::clamp((time_seconds - t0) / dt, 0.f, 1.f) : 0.f;
-            const float t2 = alpha * alpha, t3 = t2 * alpha;
-            // glTF cubic-spline keyframes store the in tangent, value, and out tangent.
-            const uint32_t stride = target_count * 3;
-            const float *kf0 = channel.Values.data() + k * stride;
-            const float *kf1 = channel.Values.data() + k1 * stride;
-            for (uint32_t tw = 0; tw < target_count; ++tw) {
-                const float val0 = kf0[target_count + tw];
-                const float out0 = kf0[2 * target_count + tw];
-                const float in1 = kf1[tw];
-                const float val1 = kf1[target_count + tw];
-                weights[tw] = (2 * t3 - 3 * t2 + 1) * val0 + (t3 - 2 * t2 + alpha) * dt * out0 +
-                    (-2 * t3 + 3 * t2) * val1 + (t3 - t2) * dt * in1;
-            }
-        }
-    }
-}
-
-void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<Transform> bone_pose_local) {
-    for (const auto &channel : clip.Channels) {
-        if (channel.Target == AnimationPath::Weights) continue;
-        if (channel.BoneIndex >= bone_pose_local.size() || channel.BoneIndex == InvalidBoneIndex) continue;
-        if (channel.TimesSeconds.empty()) continue;
-
-        const auto k = FindKeyframe(channel.TimesSeconds, time_seconds);
-        auto &pose = bone_pose_local[channel.BoneIndex];
-
-        const bool is_rotation = channel.Target == AnimationPath::Rotation;
-        const uint32_t comp = is_rotation ? 4 : 3;
-
-        const uint32_t last = channel.TimesSeconds.size() - 1;
-        const uint32_t k1 = std::min(k + 1, last);
-
-        if (channel.Interp == AnimationInterpolation::Step) {
-            const float *v = channel.Values.data() + k * comp;
-            switch (channel.Target) {
-                case AnimationPath::Translation: pose.P = ReadVec3(v); break;
-                case AnimationPath::Rotation: pose.R = ReadQuat(v); break;
-                case AnimationPath::Scale: pose.S = ReadVec3(v); break;
-                default: break;
-            }
-        } else if (channel.Interp == AnimationInterpolation::Linear) {
-            const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
-            const float alpha = (t1 > t0) ? std::clamp((time_seconds - t0) / (t1 - t0), 0.f, 1.f) : 0.f;
-            const float *v0 = channel.Values.data() + k * comp;
-            const float *v1 = channel.Values.data() + k1 * comp;
-            switch (channel.Target) {
-                case AnimationPath::Translation: pose.P = numeric::Mix(ReadVec3(v0), ReadVec3(v1), alpha); break;
-                case AnimationPath::Rotation: pose.R = numeric::Slerp(ReadQuat(v0), ReadQuat(v1), alpha); break;
-                case AnimationPath::Scale: pose.S = numeric::Mix(ReadVec3(v0), ReadVec3(v1), alpha); break;
-                default: break;
-            }
-        } else {
-            const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
-            const float dt = t1 - t0;
-            const float alpha = (dt > 0) ? std::clamp((time_seconds - t0) / dt, 0.f, 1.f) : 0.f;
-            // glTF cubic-spline keyframes store the in tangent, value, and out tangent.
-            const uint32_t stride = comp * 3;
-            const float *kf0 = channel.Values.data() + k * stride;
-            const float *kf1 = channel.Values.data() + k1 * stride;
-            const float *val0 = kf0 + comp;
-            const float *out0 = kf0 + 2 * comp;
-            const float *in1 = kf1;
-            const float *val1 = kf1 + comp;
-            switch (channel.Target) {
-                case AnimationPath::Translation:
-                    pose.P = CubicHermite(ReadVec3(val0), dt * ReadVec3(out0), ReadVec3(val1), dt * ReadVec3(in1), alpha);
-                    break;
-                case AnimationPath::Rotation:
-                    pose.R = CubicHermiteQuat(ReadQuat(val0), dt * ReadQuat(out0), ReadQuat(val1), dt * ReadQuat(in1), alpha);
-                    break;
-                case AnimationPath::Scale:
-                    pose.S = CubicHermite(ReadVec3(val0), dt * ReadVec3(out0), ReadVec3(val1), dt * ReadVec3(in1), alpha);
-                    break;
-                default: break;
-            }
-        }
-    }
-}
-
 Transform ComposeWithDelta(const Transform &rest, const Transform &delta) {
     return {.P = rest.P + rest.R * delta.P, .R = numeric::Normalize(rest.R * delta.R), .S = rest.S * delta.S};
 }
@@ -273,23 +137,6 @@ Transform ComposeWithDelta(const Transform &rest, const Transform &delta) {
 Transform AbsoluteToDelta(const Transform &rest, const Transform &absolute) {
     const auto inv_r = numeric::Conjugate(rest.R);
     return {.P = inv_r * (absolute.P - rest.P), .R = numeric::Normalize(inv_r * absolute.R), .S = absolute.S / rest.S};
-}
-
-void EvaluateAnimationDeltas(const AnimationClip &clip, float time, std::span<const ArmatureBone> bones, std::span<Transform> deltas) {
-    // Preserve unanimated rest-relative components while converting keyed absolute values.
-    EvaluateAnimation(clip, time, deltas);
-    for (const auto &channel : clip.Channels) {
-        if (channel.Target == AnimationPath::Weights) continue;
-        if (channel.BoneIndex >= deltas.size() || channel.BoneIndex == InvalidBoneIndex || channel.TimesSeconds.empty()) continue;
-        const auto &rest = bones[channel.BoneIndex].RestLocal;
-        auto &d = deltas[channel.BoneIndex];
-        switch (channel.Target) {
-            case AnimationPath::Translation: d.P = numeric::Conjugate(rest.R) * (d.P - rest.P); break;
-            case AnimationPath::Rotation: d.R = numeric::Normalize(numeric::Conjugate(rest.R) * d.R); break;
-            case AnimationPath::Scale: d.S = d.S / rest.S; break;
-            default: break;
-        }
-    }
 }
 
 namespace {

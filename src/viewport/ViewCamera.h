@@ -4,10 +4,10 @@
 
 // Uses the viewport aspect ratio rather than the source camera's aspect ratio.
 struct ViewCamera : CameraView {
-    ViewCamera(vec3 position, vec3 target, Camera data)
+    ViewCamera(vec3 position, vec3 target, CameraLens data)
         : CameraView{data, target, numeric::Length(position - target), OrientationFromAway(position - target)} {}
 
-    ViewCamera(vec3 position, quat orientation, Camera data)
+    ViewCamera(vec3 position, quat orientation, CameraLens data)
         : CameraView{data, {}, 1.f, numeric::Normalize(orientation)} {
         Target = position - Orientation * vec3{0, 0, 1};
     }

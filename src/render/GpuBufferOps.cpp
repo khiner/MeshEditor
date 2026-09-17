@@ -22,7 +22,6 @@ std::span<const uint32_t> GetFaceIndices(const state::Scene &r, const Mesh &mesh
     if (corners.size() == mesh.TriangleIndexCount()) return corners;
     return r.ctx().get<const GpuBuffers>().FaceIndexBuffer.Get(buffers.FaceIndices);
 }
-PunctualLight GetLight(state::Scene &r, uint32_t index) { return r.ctx().get<GpuBuffers>().Lights.GetSpan<PunctualLight>()[index]; }
 mtl::BufferContext &GetBufferContext(state::Scene &r) { return r.ctx().get<GpuBuffers>().Ctx; }
 
 void ReleaseMeshBuffers(state::Scene &r, MeshBuffers &mb) { r.ctx().get<GpuBuffers>().Release(mb); }
@@ -104,7 +103,7 @@ GpuBuffers::GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
       OverlayJobBlocks{Ctx, 0, SlotType::Buffer},
       VisibleOverlayJobs{Ctx, 0, SlotType::Buffer},
       OverlayJobDispatchArgs{Ctx, sizeof(MeshDispatchArgs), SlotType::Buffer},
-      Lights{Ctx, sizeof(PunctualLight), SlotType::LightBuffer},
+      Lights{Ctx, sizeof(LightRecord), SlotType::LightBuffer},
       Materials{Ctx, sizeof(PBRMaterial), SlotType::MaterialBuffer},
       SceneViewUBO{Ctx, ViewUboStride() * (MaxBlurSteps + 1)},
       ViewportThemeUBO{Ctx, sizeof(ViewportTheme)},

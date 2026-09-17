@@ -3,6 +3,8 @@
 #include "action/Core.h"
 #include "mesh/PrimitiveType.h"
 #include "scene/Entity.h"
+#include "scene/SceneGraph.h"
+#include "scene/WorldTransform.h"
 #include "selection/SelectionComponents.h"
 #include "state/Scene.h"
 
@@ -13,7 +15,7 @@
 namespace action {
 // Reads and writes a field at a byte offset of a component held on object entities.
 template<typename C>
-struct UpdateTraits {
+struct ComponentUpdateTraits {
     static bool Has(const state::Scene &r, state::Entity e) { return r.all_of<C>(e); }
     static state::Entity Active(const state::Scene &r) {
         const auto e = FindActiveEntity(r);
@@ -28,6 +30,18 @@ struct UpdateTraits {
     }
     static void Write(state::Scene &r, state::Entity e, uint16_t offset, const void *src, size_t size) {
         r.patch<C>(e, [&](C &c) { std::memcpy(reinterpret_cast<std::byte *>(&c) + offset, src, size); });
+    }
+};
+template<typename C>
+struct UpdateTraits : ComponentUpdateTraits<C> {};
+
+// A pose edit also persists its unanimated components in the node's Transform.
+template<>
+struct UpdateTraits<PosedLocal> : ComponentUpdateTraits<PosedLocal> {
+    static void Write(state::Scene &r, state::Entity e, uint16_t offset, const void *src, size_t size) {
+        PosedLocal edited = r.get<const PosedLocal>(e);
+        std::memcpy(reinterpret_cast<std::byte *>(&edited) + offset, src, size);
+        CommitEditedLocal(r, e, edited.Value);
     }
 };
 

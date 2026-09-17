@@ -2,36 +2,42 @@
 
 #include "animation/AnimationData.h"
 #include "animation/AnimationTimeline.h"
+#include "animation/Clips.h"
 #include "armature/ArmatureComponents.h"
+#include "render/Instance.h"
+#include "render/MaterialComponents.h"
 #include "scene/Entity.h"
 #include "state/Scene.h"
+#include "state/Schema.h"
 
 #include <algorithm>
 
 namespace {
-// Every key is kept. Loop repeats are added while they land inside the timeline range.
-void AppendClipKeys(const auto &clip, const TimelineRange &range, std::vector<float> &frames) {
-    const float period = clip.DurationSeconds * range.Fps;
+void AppendClipKeys(const AnimationClip &clip, float fps, std::vector<float> &frames, auto &&include) {
     for (const auto &channel : clip.Channels) {
-        for (const float t : channel.TimesSeconds) {
-            float f = 1.f + t * range.Fps;
-            do frames.push_back(f);
-            while (period >= 1.f && (f += period) <= float(range.EndFrame));
-        }
+        if (!include(channel)) continue;
+        for (const float t : channel.Times) frames.emplace_back(1.f + t * fps);
     }
 }
 } // namespace
 
 std::vector<float> CollectKeyframes(const state::Scene &r, state::Entity viewport) {
-    const auto &range = r.get<const TimelineRange>(viewport);
+    const float fps = r.get<const TimelineRange>(viewport).Fps;
     std::vector<float> frames;
-    const auto append_active = [&](const auto *animation) {
-        if (animation && animation->ActiveClipIndex < animation->Clips.size()) AppendClipKeys(animation->Clips[animation->ActiveClipIndex], range, frames);
+    const auto append = [&](state::Entity e, auto &&include) {
+        if (const auto *clips = r.try_get<const AnimationClips>(e)) {
+            if (const auto *clip = animation::ActiveClip(r, viewport, *clips)) AppendClipKeys(*clip, fps, frames, include);
+        }
     };
+    const auto all = [](const AnimationChannel &) { return true; };
     for (const auto e : r.view<const Selected>()) {
-        append_active(r.try_get<const NodeTransformAnimation>(e));
-        append_active(r.try_get<const MorphWeightAnimation>(e));
-        if (const auto *armature = r.try_get<const ArmatureObject>(e)) append_active(r.try_get<const ArmatureAnimation>(armature->Entity));
+        append(e, all);
+        if (const auto *armature = r.try_get<const ArmatureObject>(e)) append(armature->Entity, all);
+    }
+    // Material keys show for the material slot the active mesh displays.
+    if (const auto active = FindActiveEntity(r); active != state::Null) {
+        const auto *instance = r.try_get<const Instance>(active);
+        if (const auto material = instance ? DisplayedMaterial(r, instance->Entity) : std::nullopt) append(viewport, [&](const AnimationChannel &channel) { return channel.Target.Component == state::Key<MaterialStore>() && channel.Target.Index == *material; });
     }
     std::ranges::sort(frames);
     frames.erase(std::unique(frames.begin(), frames.end()), frames.end());

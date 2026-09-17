@@ -1,11 +1,12 @@
 #include "viewport/ViewportRenderGpu.h"
+#include "render/LightComponents.h"
 
 #include "Camera.h"
 #include "ProcessEvents.h"
 #include "Profile.h"
 #include "Variant.h"
 #include "animation/AnimationTimeline.h"
-#include "animation/MorphWeightState.h"
+#include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
@@ -51,6 +52,7 @@
 #include "render/Instance.h"
 #include "render/Pipelines.h"
 #include "render/RenderTargets.h"
+#include "scene/CameraLens.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
@@ -101,7 +103,7 @@ ExtrasLine ExtrasGizmoParams(const state::Scene &r, state::Entity object, Object
     if (type == ObjectType::Camera) {
         // Matches Blender's overlay at default drawsize 1: the frame spans one unit on its dominant axis.
         constexpr float HalfExtent{0.5f};
-        const auto &camera = r.get<const Camera>(object);
+        const auto camera = *LensOf(r, object);
         float depth{1.f}, half_w{HalfExtent}, half_h{HalfExtent};
         if (const auto *perspective = std::get_if<Perspective>(&camera)) {
             const float aspect = AspectRatio(camera);
@@ -126,9 +128,8 @@ ExtrasLine ExtrasGizmoParams(const state::Scene &r, state::Entity object, Object
         return {ExtrasLineKind::LightDirectional, vec4{light.Range, 0, 0, 0}, 8 * 2 + HaloLines};
     }
     constexpr float SpotDepth{2.f};
-    const auto angle_from_cos = [](float c) { return std::acos(std::clamp(c, -1.f, 1.f)); };
-    const float outer_angle = std::min(angle_from_cos(light.OuterConeCos), numeric::Radians(89.f));
-    const float inner_angle = std::min(angle_from_cos(light.InnerConeCos), outer_angle);
+    const float outer_angle = std::min(light.OuterConeAngle, numeric::Radians(89.f));
+    const float inner_angle = std::min(light.InnerConeAngle, outer_angle);
     const float outer_radius = SpotDepth * std::tan(outer_angle), inner_radius = SpotDepth * std::tan(inner_angle);
     const uint32_t inner_lines = inner_radius > 0.f ? SpotSegments : 0;
     return {
@@ -278,7 +279,7 @@ std::unordered_map<state::Entity, DeformSlots> BuildDeformSlots(const state::Sce
             inputs.Mix(deform_offset);
         }
     }
-    for (const auto [instance_entity, instance, gpu_range, ri] : r.view<const Instance, const MorphWeightGpuRange, const RenderInstance>().each()) {
+    for (const auto [instance_entity, instance, gpu_range, ri] : r.view<const Instance, const MorphWeightRange, const RenderInstance>().each()) {
         const auto mesh_entity = instance.Entity;
         const auto &record = meshes.Get(r.get<const MeshHandle>(mesh_entity).StoreId);
         if (record.MorphTargets.Count == 0) continue;
@@ -2037,7 +2038,7 @@ void ReleaseMeshEditWork(state::Scene &r, state::Entity entity) {
 }
 
 namespace {
-CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Entity viewport, state::Entity entity, state::Entity primary, const PendingTransform *pending, const PosedRanges *pose = nullptr, std::span<const Range> changed = {}) {
+CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Entity entity, state::Entity primary, const PendingTransform *pending, const PosedRanges *pose = nullptr, std::span<const Range> changed = {}) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &w = PrepareMeshEditWork(r, entity);
@@ -2133,10 +2134,10 @@ void RecordGeometryEditBatch(state::Scene &r, MTL::ComputeCommandEncoder *encode
 }
 } // namespace
 
-void RefreshEditedPositions(state::Scene &r, state::Entity viewport, std::span<const MeshVertexChanges> changes) {
+void RefreshEditedPositions(state::Scene &r, std::span<const MeshVertexChanges> changes) {
     if (changes.empty()) return;
     std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> jobs;
-    for (const auto &[entity, ranges] : changes) jobs.emplace_back(entity, PrepareGeometryEdit(r, viewport, entity, state::Null, nullptr, nullptr, ranges));
+    for (const auto &[entity, ranges] : changes) jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, state::Null, nullptr, nullptr, ranges));
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto *cb = ctx.Queue->commandBuffer();
     {
@@ -2162,7 +2163,7 @@ std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, state::Entity vi
     std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> commits;
     for (const auto entity : mesh_entities) {
         if (const auto primary = primaries.find(entity); primary != primaries.end())
-            commits.emplace_back(entity, PrepareGeometryEdit(r, viewport, entity, primary->second, pending));
+            commits.emplace_back(entity, PrepareGeometryEdit(r, entity, primary->second, pending));
     }
     if (commits.empty()) return {};
     auto &meshes = r.ctx().get<MeshStore>();
@@ -2202,7 +2203,7 @@ void RecordSparseEditPrelude(state::Scene &r, state::Entity viewport, mtl::PassC
         const bool preview = pending && primary != primaries.end();
         const auto old = state.EditWork.find(entity);
         if (!preview && (old == state.EditWork.end() || !old->second.PreviewActive)) continue;
-        jobs.emplace_back(entity, PrepareGeometryEdit(r, viewport, entity, preview ? primary->second : state::Null, preview ? pending : nullptr, &pose));
+        jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, preview ? primary->second : state::Null, preview ? pending : nullptr, &pose));
     }
     if (jobs.empty()) return;
     auto *encoder = chain.BeginCompute("EditGeometry", MTL::StageDispatch);

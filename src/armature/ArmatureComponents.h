@@ -8,8 +8,6 @@
 
 #include <vector>
 
-struct AnimationClip;
-
 struct ArmatureObject {
     state::Entity Entity;
     std::vector<state::Entity> BoneEntities;
@@ -51,19 +49,14 @@ struct BoneAttachment {
     BoneId Bone;
 };
 
-// Canonical bone pose: each bone's local transform relative to rest (identity = at rest), by bone index.
-// The persisted pose; bone entity Transforms are derived from this plus the rest pose.
-struct ArmaturePose {
-    std::vector<Transform> BoneDeltas;
+// A bone entity's persisted pose relative to its rest pose. Identity is at rest.
+struct BoneDelta {
+    Transform Value;
 };
 
-// Derived from ArmaturePose plus the Armature rest pose.
+// Derived from the bone deltas plus the Armature rest pose.
 struct ArmaturePoseState {
     std::vector<Transform> BoneUserOffset;
     std::vector<mat4> BonePoseWorld;
     std::vector<Range> GpuDeformRanges;
-};
-struct ArmatureAnimation {
-    std::vector<AnimationClip> Clips;
-    uint32_t ActiveClipIndex{0};
 };

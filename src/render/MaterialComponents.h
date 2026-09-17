@@ -1,10 +1,16 @@
 #pragma once
 
+#include "state/Entity.h"
+
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
+
+namespace state {
+struct Scene;
+} // namespace state
 
 namespace store {
 struct History;
@@ -29,6 +35,9 @@ struct MeshMaterialAssignment {
 struct MeshMaterialSlotSelection {
     uint32_t PrimitiveIndex{0};
 };
+
+// The material the mesh entity's selected slot shows: its pending assignment, else the mesh's primitive material.
+std::optional<uint32_t> DisplayedMaterial(const state::Scene &, state::Entity mesh_entity);
 
 // Presence indicates declared glTF variants.
 // An empty Active value selects each primitive's default material.

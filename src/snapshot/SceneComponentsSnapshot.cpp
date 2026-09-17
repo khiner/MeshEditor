@@ -2,9 +2,8 @@
 #include "Path.h"
 #include "animation/AnimationData.h"
 #include "animation/AnimationTimeline.h"
-#include "animation/MorphWeightState.h"
+#include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
-#include "gpu/PunctualLight.h"
 #include "gpu/Transform.h"
 #include "mesh/MeshComponents.h"
 #include "render/Instance.h"
@@ -22,10 +21,10 @@ namespace snapshot::detail {
 void RegisterScene(Tables &tables) {
     Persistent<
         Transform, PunctualLight, Name, Selected, Active, ObjectKind, Scene, ActiveScene, SceneMembership, SubElementOf,
-        ScaleLocked, Instance, Hidden, SceneNode, ObjectExtrasTag, Path, Camera, TimelineRange,
-        TimelinePlayback, TimelineNavigation, AnimationTimelineView, NodeTransformAnimation, MorphWeightAnimation, MorphWeightState>(tables);
+        ScaleLocked, Instance, Hidden, SceneNode, ObjectExtrasTag, Path, Perspective, Orthographic, TimelineRange,
+        TimelinePlayback, TimelineNavigation, AnimationTimelineView, AnimationClips, Animations, MorphWeightRange, ImageLight, Visibility>(tables);
     Derived<
-        RenderInstance, WorldTransform, ModelsBuffer, LightIndex, LastEvaluatedFrame, MorphWeightGpuRange,
+        RenderInstance, WorldTransform, ModelsBuffer, LightIndex, LastEvaluatedFrame,
         PlaybackFrame>(tables);
 }
 } // namespace snapshot::detail

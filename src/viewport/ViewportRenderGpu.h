@@ -30,7 +30,7 @@ struct MeshVertexChanges {
     std::span<const Range> Ranges;
 };
 // Recompute normals and update edit work for restored vertex ranges without mutating the vertices.
-void RefreshEditedPositions(state::Scene &, state::Entity viewport, std::span<const MeshVertexChanges>);
+void RefreshEditedPositions(state::Scene &, std::span<const MeshVertexChanges>);
 
 // A pixel rectangle on a render target.
 struct PixelRect {

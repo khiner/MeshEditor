@@ -39,14 +39,14 @@ inline float3 getLightEmissionDirection(Transform wt) {
     return -safeNormalize(local_plus_z, float3(0.0f, 0.0f, 1.0f));
 }
 
-inline float3 getPointToLight(PunctualLight light, Transform wt, float3 world_position, float3 emission_direction) {
+inline float3 getPointToLight(LightRecord light, Transform wt, float3 world_position, float3 emission_direction) {
     if (light.Type == PunctualLightType::Directional) return -emission_direction;
     return float3(wt.P) - world_position;
 }
 
 template<typename SetT>
 inline float3 getLightIntensity(
-    const thread SceneT<SetT> &scene, PunctualLight light, float3 worldPosition,
+    const thread SceneT<SetT> &scene, LightRecord light, float3 worldPosition,
     thread float3 &L, thread float3 &point_to_light
 ) {
     const Transform wt = scene.Models(light.TransformSlotOffset.Slot)[light.TransformSlotOffset.Offset];

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "CameraTypes.h"
-#include "gpu/PunctualLight.h"
 #include "object/ObjectCreateInfo.h"
+#include "render/LightComponents.h"
 #include "scene/Entity.h" // ObjectType
 
 #include <filesystem>
@@ -14,6 +14,8 @@ struct MeshStore;
 // These operations are idempotent.
 void Show(state::Scene &, state::Entity);
 void Hide(state::Scene &, state::Entity);
+// Hides or shows the node and its descendants from their Visibility flags and the parent's Hidden state.
+void ApplyVisibility(state::Scene &, state::Entity);
 
 void ApplySelectBehavior(state::Scene &, state::Entity, MeshInstanceCreateInfo::SelectBehavior);
 
@@ -24,7 +26,7 @@ state::Entity AddMeshInstance(state::Scene &, state::Entity mesh_entity, const M
 state::Entity CreateExtrasObject(state::Scene &, ObjectType, const ObjectCreateInfo &, std::string_view default_name);
 
 state::Entity AddEmpty(state::Scene &, MeshStore &, const ObjectCreateInfo & = {});
-state::Entity AddCamera(state::Scene &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<Camera> = {});
+state::Entity AddCamera(state::Scene &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<CameraLens> = {});
 state::Entity AddLight(state::Scene &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<PunctualLight> = {});
 
 std::pair<state::Entity, state::Entity> ImportMesh(state::Scene &, state::Entity viewport, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);

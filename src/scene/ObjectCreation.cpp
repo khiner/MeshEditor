@@ -5,6 +5,8 @@
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
 #include "render/Instance.h"
+#include "render/LightComponents.h"
+#include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
@@ -27,6 +29,18 @@ void Show(state::Scene &r, state::Entity e) {
 
 void Hide(state::Scene &r, state::Entity e) {
     r.emplace_or_replace<Hidden>(e);
+}
+
+void ApplyVisibility(state::Scene &r, state::Entity e) {
+    const auto parent = ParentOrNull(r, e);
+    const auto apply = [&](this const auto &self, state::Entity node, bool hidden) -> void {
+        const auto *visibility = r.try_get<const Visibility>(node);
+        hidden = hidden || (visibility && !visibility->Visible);
+        if (hidden) Hide(r, node);
+        else Show(r, node);
+        for (const auto child : Children{&r, node}) self(child, hidden);
+    };
+    apply(e, parent != state::Null && r.all_of<Hidden>(parent));
 }
 
 void ApplySelectBehavior(state::Scene &r, state::Entity e, MeshInstanceCreateInfo::SelectBehavior behavior) {
@@ -79,9 +93,9 @@ state::Entity AddEmpty(state::Scene &r, MeshStore &, const ObjectCreateInfo &inf
     return CreateExtrasObject(r, ObjectType::Empty, info, "Empty");
 }
 
-state::Entity AddCamera(state::Scene &r, MeshStore &, const ObjectCreateInfo &info, std::optional<Camera> props) {
+state::Entity AddCamera(state::Scene &r, MeshStore &, const ObjectCreateInfo &info, std::optional<CameraLens> props) {
     const auto entity = CreateExtrasObject(r, ObjectType::Camera, info, "Camera");
-    r.emplace<Camera>(entity, props.value_or(Camera{Defaults::PerspectiveCamera}));
+    SetLens(r, entity, props.value_or(CameraLens{Defaults::PerspectiveCamera}));
     return entity;
 }
 
@@ -94,6 +108,7 @@ state::Entity CreateBoneEntity(state::Scene &r, state::Entity arm_obj_entity, co
     EmplaceUniqueName(r, bone_entity, bone.Name);
     r.emplace<BoneDisplayScale>(bone_entity, ComputeBoneDisplayScale(armature, bone_index));
     r.emplace<PosedLocal>(bone_entity, Transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}});
+    r.emplace<BoneDelta>(bone_entity);
     SetParent(r, bone_entity, parent_entity);
     Show(r, bone_entity);
     return bone_entity;

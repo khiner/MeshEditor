@@ -5,9 +5,9 @@
 // - EXT_meshopt_compression buffer views decode and save uncompressed.
 // - EXT_mesh_gpu_instancing retains TRS attributes only.
 // - EXT_lights_image_based retains one source IBL on the default scene.
+// - KHR_animation_pointer channels to properties outside the pointer rows are dropped.
 // Unsupported conversions:
 // - KHR_draco_mesh_compression does not provide geometry to the importer.
-// - KHR_animation_pointer channels are omitted while their static values remain.
 
 #pragma once
 

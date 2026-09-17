@@ -3,7 +3,6 @@
 #include "action/Core.h"
 #include "mesh/PrimitiveType.h"
 
-struct ArmatureAnimation;
 struct AudioOutputConfig;
 struct AudioOutputMix;
 struct ColliderMaterial;
@@ -13,9 +12,12 @@ struct MaterialVariants;
 struct ModalGain;
 struct ModalSoundControls;
 struct ModalTuning;
-struct MorphWeightAnimation;
-struct NodeTransformAnimation;
+struct Animations;
+struct ImageLight;
+struct BoneDelta;
 struct OrbitToActive;
+struct Orthographic;
+struct Perspective;
 struct PhysicsJoint;
 struct PhysicsMaterial;
 struct PhysicsMotion;
@@ -35,10 +37,10 @@ template<typename... Cs> struct TypeList {};
 
 // The components Update can address, visited at apply time and checked at each emit site.
 using UpdatableComponents = TypeList<
-    Transform, PosedLocal, TransformGizmoState, OrbitToActive, ShadeSmoothAngle,
+    Transform, PosedLocal, BoneDelta, TransformGizmoState, OrbitToActive, ShadeSmoothAngle,
     ViewportDisplay, ViewportTheme, MaterialPreviewLighting, RenderedLighting,
-    PunctualLight, MaterialVariants, PrimitiveShape,
-    ArmatureAnimation, MorphWeightAnimation, NodeTransformAnimation,
+    PunctualLight, ImageLight, Perspective, Orthographic, MaterialVariants, PrimitiveShape,
+    Animations,
     PhysicsSimulationSettings, PhysicsMaterial, PhysicsMotion, PhysicsVelocity, ColliderPolicy, CollisionFilter, PhysicsJoint, ColliderMaterial, TriggerNodes,
     ModalGain, ModalTuning, ModalSoundControls, Striker, SurfaceSoundControls, AudioOutputMix, AudioOutputConfig>;
 

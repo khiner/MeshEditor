@@ -4,6 +4,7 @@
 #include "animation/AnimationData.h"
 #include "gpu/PBRMaterial.h"
 #include "physics/PhysicsTypes.h"
+#include "render/MaterialTextureSlots.h"
 #include "render/Textures.h"
 #include <cstring>
 #include <fastgltf/types.hpp>
@@ -28,11 +29,6 @@ static_assert(uint8_t(fastgltf::CombineMode::Average) == uint8_t(PhysicsCombineM
 // fastgltf parses an unrecognized combine string as Invalid, which reads as the spec default.
 inline PhysicsCombineMode ToCombineMode(fastgltf::CombineMode m) { return m == fastgltf::CombineMode::Invalid ? PhysicsCombineMode::Average : PhysicsCombineMode(uint8_t(m)); }
 inline fastgltf::CombineMode FromCombineMode(PhysicsCombineMode m) { return fastgltf::CombineMode(uint8_t(m)); }
-
-// fastgltf numbers animation paths from one.
-static_assert(uint8_t(fastgltf::AnimationPath::Translation) == uint8_t(AnimationPath::Translation) + 1 && uint8_t(fastgltf::AnimationPath::Rotation) == uint8_t(AnimationPath::Rotation) + 1 && uint8_t(fastgltf::AnimationPath::Scale) == uint8_t(AnimationPath::Scale) + 1 && uint8_t(fastgltf::AnimationPath::Weights) == uint8_t(AnimationPath::Weights) + 1);
-inline AnimationPath ToPath(fastgltf::AnimationPath p) { return AnimationPath(uint8_t(p) - 1); }
-inline fastgltf::AnimationPath FromPath(AnimationPath p) { return fastgltf::AnimationPath(uint8_t(p) + 1); }
 
 inline AnimationInterpolation ToInterp(fastgltf::AnimationInterpolation i) {
     switch (i) {
@@ -94,34 +90,6 @@ inline MimeType SniffMimeType(std::span<const std::byte> bytes) {
     if (bytes.size() >= 12 && std::memcmp(bytes.data(), Ktx2Magic, 12) == 0) return MimeType::KTX2;
     return MimeType::None;
 }
-
-// Top-level material texture slots (PBRMaterial accessor, color space, glTF label), ordered to match MaterialTextureSlot.
-struct MaterialTextureSlotInfo {
-    ::TextureInfo &(*Get)(PBRMaterial &);
-    TextureColorSpace ColorSpace;
-    std::string_view Label;
-};
-constexpr std::array<MaterialTextureSlotInfo, MTS_Count> MaterialTextureSlots{{
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.BaseColorTexture; }, TextureColorSpace::Srgb, "baseColor"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.MetallicRoughnessTexture; }, TextureColorSpace::Linear, "metallicRoughness"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.NormalTexture; }, TextureColorSpace::Linear, "normal"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.OcclusionTexture; }, TextureColorSpace::Linear, "occlusion"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.EmissiveTexture; }, TextureColorSpace::Srgb, "emissive"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Specular.Texture; }, TextureColorSpace::Linear, "specular"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Specular.ColorTexture; }, TextureColorSpace::Srgb, "specularColor"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Sheen.ColorTexture; }, TextureColorSpace::Srgb, "sheenColor"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Sheen.RoughnessTexture; }, TextureColorSpace::Linear, "sheenRoughness"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Transmission.Texture; }, TextureColorSpace::Linear, "transmission"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.DiffuseTransmission.Texture; }, TextureColorSpace::Linear, "diffuseTransmission"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.DiffuseTransmission.ColorTexture; }, TextureColorSpace::Srgb, "diffuseTransmissionColor"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Volume.ThicknessTexture; }, TextureColorSpace::Linear, "thickness"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Clearcoat.Texture; }, TextureColorSpace::Linear, "clearcoat"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Clearcoat.RoughnessTexture; }, TextureColorSpace::Linear, "clearcoatRoughness"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Clearcoat.NormalTexture; }, TextureColorSpace::Linear, "clearcoatNormal"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Anisotropy.Texture; }, TextureColorSpace::Linear, "anisotropy"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Iridescence.Texture; }, TextureColorSpace::Linear, "iridescence"},
-    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Iridescence.ThicknessTexture; }, TextureColorSpace::Linear, "iridescenceThickness"},
-}};
 
 constexpr double Ln1000 = 3 * std::numbers::ln10;
 

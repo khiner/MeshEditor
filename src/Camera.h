@@ -7,8 +7,8 @@
 #include <cmath>
 #include <type_traits>
 
-inline float AspectRatio(const Camera &camera) {
-    if (const auto *persp = std::get_if<Perspective>(&camera)) return persp->AspectRatio.value_or(DefaultAspectRatio);
+inline float AspectRatio(const CameraLens &camera) {
+    if (const auto *persp = std::get_if<Perspective>(&camera)) return persp->HasAspectRatio() ? persp->AspectRatio : DefaultAspectRatio;
     const auto &mag = std::get<Orthographic>(camera).Mag;
     return mag.x / mag.y;
 }
@@ -24,11 +24,11 @@ inline Perspective PerspectiveFromOrthographic(const Orthographic &orthographic,
 }
 
 inline Orthographic OrthographicFromPerspective(const Perspective &perspective, float distance, std::optional<float> aspect_ratio = {}) {
-    const float aspect = perspective.AspectRatio.value_or(aspect_ratio.value_or(DefaultAspectRatio));
+    const float aspect = perspective.HasAspectRatio() ? perspective.AspectRatio : aspect_ratio.value_or(DefaultAspectRatio);
     const float mag_y = distance * std::tan(perspective.FieldOfViewRad * 0.5f);
     return {
         .Mag = {mag_y * aspect, mag_y},
-        .FarClip = perspective.FarClip.value_or(std::max(perspective.NearClip + MinNearFarDelta, DefaultPerspectiveFarClip)),
+        .FarClip = perspective.HasFarClip() ? perspective.FarClip : std::max(perspective.NearClip + MinNearFarDelta, DefaultPerspectiveFarClip),
         .NearClip = perspective.NearClip,
     };
 }
@@ -37,10 +37,10 @@ inline float LookThroughFrameRatio(float camera_aspect, float viewport_aspect, f
     return camera_aspect > viewport_aspect ? viewport_aspect * pad_ratio / camera_aspect : pad_ratio;
 }
 
-inline Camera WidenForLookThrough(const Camera &camera, float viewport_aspect, float pad_ratio = 0.9f) {
+inline CameraLens WidenForLookThrough(const CameraLens &camera, float viewport_aspect, float pad_ratio = 0.9f) {
     const float zoom = 1.f / LookThroughFrameRatio(AspectRatio(camera), viewport_aspect, pad_ratio);
     return std::visit(
-        [zoom](const auto &projection) -> Camera {
+        [zoom](const auto &projection) -> CameraLens {
             using Projection = std::decay_t<decltype(projection)>;
             if constexpr (std::is_same_v<Projection, Perspective>) {
                 auto widened = projection;
@@ -56,7 +56,7 @@ inline Camera WidenForLookThrough(const Camera &camera, float viewport_aspect, f
     );
 }
 
-inline float ScreenPixelScale(const Camera &camera, float viewport_height) {
+inline float ScreenPixelScale(const CameraLens &camera, float viewport_height) {
     return std::visit(
         [viewport_height](const auto &projection) -> float {
             using Projection = std::decay_t<decltype(projection)>;

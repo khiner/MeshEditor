@@ -49,6 +49,7 @@
 #include "render/MaterialComponents.h"
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
+#include "scene/CameraLens.h"
 #include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
@@ -500,16 +501,16 @@ EditorWindowsFrame BeginEditorWindows(
             PushStyleVar(ImGuiStyleVar_FramePadding, {6, 4});
             Indent(6);
             Spacing();
-            RenderClipPickers(r);
             Unindent(6);
             PopStyleVar();
             const auto keyframes = CollectKeyframes(r, viewport);
             if (auto action = RenderAnimationTimeline(
                     r.get<const TimelineRange>(viewport), r.get<const TimelinePlayback>(viewport),
-                    r.get<const AnimationTimelineView>(viewport), r.get<const TimelineNavigation>(viewport), keyframes, r.ctx().get<const ViewportIcons>().Anim, scrubbing
+                    r.get<const AnimationTimelineView>(viewport), r.get<const TimelineNavigation>(viewport), r.get<const Animations>(viewport),
+                    keyframes, r.ctx().get<const ViewportIcons>().Anim, scrubbing
                 );
                 interactive && action) {
-                std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*action));
+                action::Emit(std::move(*action));
             }
         }
         End();
@@ -981,9 +982,9 @@ bool FrameScene(state::Scene &r, state::Entity viewport, float aspect_ratio) {
     const float plane_reach = 6 * numeric::Length(scene.Max - scene.Min);
     auto fit = *persp;
     fit.FarClip = distance + plane_reach;
-    fit.NearClip = std::max(distance - plane_reach, *fit.FarClip / 10000.f);
+    fit.NearClip = std::max(distance - plane_reach, fit.FarClip / 10000.f);
 
-    r.replace<ViewCamera>(viewport, ViewCamera{center + distance * away, center, Camera{fit}});
+    r.replace<ViewCamera>(viewport, ViewCamera{center + distance * away, center, CameraLens{fit}});
     return true;
 }
 
@@ -1134,8 +1135,8 @@ struct BenchmarkDriver {
 
 bool SelectSceneCamera(state::Scene &r, std::string_view name) {
     if (name.empty()) return true;
-    for (const auto [entity, _, node] : r.view<const Camera, const GltfNode>().each()) {
-        if (node.CameraName != name) continue;
+    for (const auto [entity, node] : r.view<const GltfNode>().each()) {
+        if (node.CameraName != name || !HasLens(r, entity)) continue;
         Perform(r, action::view::SetLookThroughCamera{entity});
         return true;
     }
@@ -1178,10 +1179,7 @@ struct CaptureDriver {
           RecordPath(capture.RecordPath), ScreenshotPath(capture.ScreenshotPath), RenderBasename(capture.RenderBasename) {
         if (RenderMode()) {
             const auto with = [&](const char *ext) { return fs::path{capture.RenderBasename.string() + ext}; };
-            const bool dynamic = !r.view<const PhysicsMotion>().empty() ||
-                !r.view<const ArmatureAnimation>().empty() ||
-                !r.view<const NodeTransformAnimation>().empty() ||
-                !r.view<const MorphWeightAnimation>().empty();
+            const bool dynamic = !r.view<const PhysicsMotion>().empty() || !r.view<const AnimationClips>().empty();
             if (dynamic) RecordPath = with(".mp4");
             else ScreenshotPath = with(".webp");
         }
@@ -1210,7 +1208,7 @@ struct CaptureDriver {
     void EmitFrameActions(state::Scene &r, state::Entity viewport, bool settled, uvec2 extent) {
         if (!ViewFramed && Presenting() && extent != uvec2{}) {
             // Wait for GPU bounds before framing the launch camera.
-            const bool framed = !r.view<const Camera>().empty() ||
+            const bool framed = !r.view<const Perspective>().empty() || !r.view<const Orthographic>().empty() ||
                 FrameScene(r, viewport, float(extent.x) / float(extent.y));
             ViewFramed = settled && framed;
         }
@@ -1258,19 +1256,8 @@ struct CaptureDriver {
                 CaptureRecordFrame(r, viewport);
                 if (loop_end) {
                     if (RenderMode()) {
-                        bool switched = false;
-                        const auto switch_clips = [&]<typename Anim>() {
-                            for (const auto [entity, anim] : r.view<const Anim>().each()) {
-                                if (NextRenderClip < anim.Clips.size()) {
-                                    action::Emit(action::UpdateOn<&Anim::ActiveClipIndex>(entity, NextRenderClip));
-                                    switched = true;
-                                }
-                            }
-                        };
-                        switch_clips.template operator()<ArmatureAnimation>();
-                        switch_clips.template operator()<MorphWeightAnimation>();
-                        switch_clips.template operator()<NodeTransformAnimation>();
-                        if (switched) ++NextRenderClip;
+                        // Render every scene animation once in turn.
+                        if (NextRenderClip < r.get<const Animations>(viewport).Names.size()) action::Emit(action::animation::SelectAnimation{NextRenderClip++});
                         else done = true;
                     } else if (PlayDuration <= 0) {
                         done = true;
@@ -1332,7 +1319,10 @@ CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const
         }
     }
     if (capture.SelectAll) Perform(r, action::selection::SelectAll{});
-    // After the load, whose end frame comes from the scene's own animation durations.
+    // A render plays the active animation once.
+    if (const auto *animations = !capture.RenderBasename.empty() ? r.try_get<const Animations>(viewport) : nullptr; animations && !animations->Names.empty()) {
+        Perform(r, action::animation::SelectAnimation{animations->Active});
+    }
     if (capture.TimelineEnd > 0) {
         const float fps = r.get<const TimelineRange>(viewport).Fps;
         Perform(r, action::timeline::SetEndFrame{int(std::ceil(capture.TimelineEnd * fps))});

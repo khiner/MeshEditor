@@ -1,5 +1,6 @@
 #include "scene/SceneGraph.h"
 #include "TransformMath.h"
+#include "animation/Clips.h"
 #include "scene/SceneGraphOps.h"
 
 mat4 GetParentDelta(const state::Scene &r, state::Entity e) {
@@ -83,10 +84,21 @@ const Transform *ComposedLocal(const state::Scene &r, state::Entity e) {
     return r.try_get<const Transform>(e);
 }
 
-const Transform *EditedLocal(const state::Scene &r, state::Entity e) {
-    if (const auto *t = r.try_get<const Transform>(e)) return t;
-    const auto *posed = r.try_get<const PosedLocal>(e);
-    return posed ? &posed->Value : nullptr;
+const Transform *EditedLocal(const state::Scene &r, state::Entity e) { return ComposedLocal(r, e); }
+
+void CommitEditedLocal(state::Scene &r, state::Entity e, const Transform &edited) {
+    if (!r.all_of<PosedLocal>(e)) {
+        if (r.all_of<Transform>(e)) r.replace<Transform>(e, edited);
+        return;
+    }
+    r.patch<PosedLocal>(e, [&](PosedLocal &posed) { posed.Value = edited; });
+    if (!r.all_of<Transform>(e)) return;
+    const auto posed = animation::PosedTransformComponents(r, animation::AnimationsViewport(r), e);
+    r.patch<Transform>(e, [&](Transform &t) {
+        if (!(posed & animation::TranslationBit)) t.P = edited.P;
+        if (!(posed & animation::RotationBit)) t.R = edited.R;
+        if (!(posed & animation::ScaleBit)) t.S = edited.S;
+    });
 }
 
 void EnsureWorldTransform(state::Scene &r, state::Entity e) {

@@ -56,7 +56,6 @@ struct TextureTransformMeta {
 
 // Retains per-material source data unavailable from buffers.Materials.
 struct MaterialSourceMeta {
-    std::optional<float> EmissiveStrength{};
     std::array<TextureTransformMeta, 5> BaseSlotMeta{}; // BaseColor..Emissive
     std::array<uint32_t, MTS_Count> TextureSlots = [] { std::array<uint32_t, MTS_Count> a; a.fill(InvalidSlot); return a; }();
     bool NameWasEmpty{};
@@ -108,7 +107,6 @@ struct SourceAssets {
     std::vector<Texture> Textures;
     std::vector<Image> Images;
     std::vector<Sampler> Samplers;
-    std::vector<std::string> AnimationOrder; // Source animation order.
     std::optional<ImageBasedLight> ImageBasedLight; // Source IBL definition.
 };
 } // namespace gltf

@@ -7,6 +7,7 @@
 #include "render/GpuBuffers.h"
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
+#include "scene/CameraLens.h"
 #include "viewport/FrameState.h"
 #include "viewport/VideoRecording.h"
 #include "viewport/ViewCameraOps.h"
@@ -23,7 +24,7 @@ namespace {
 std::pair<uvec2, mtl::Extent2D> GetCaptureRegion(const state::Scene &r) {
     const auto full = r.ctx().get<const RenderTargets>().Resources->FinalColorImage.Extent;
     const auto camera = LookThroughCameraEntity(r);
-    const auto *cd = camera != state::Null ? r.try_get<Camera>(camera) : nullptr;
+    const auto cd = camera != state::Null ? LensOf(r, camera) : std::nullopt;
     if (!cd) return {{0, 0}, full};
 
     const auto cam_aspect = AspectRatio(*cd);

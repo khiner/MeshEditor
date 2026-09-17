@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Variant.h"
+#include "action/Animation.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
 #include "action/Core.h"
+#include "action/Emit.h"
 #include "action/Io.h"
 #include "action/Object.h"
 #include "action/Physics.h"
@@ -17,7 +19,7 @@ namespace action {
 using Action = std::variant<
     Core,
     selection::Action, object::Action, view::Action,
-    physics::Action, audio::Action, bone::Action, timeline::Action, io::Action>;
+    physics::Action, audio::Action, bone::Action, timeline::Action, io::Action, animation::Action>;
 
 static_assert(sizeof(Action) <= 64, "Keep actions at or below 64 bytes");
 
@@ -57,6 +59,8 @@ template<> inline constexpr bool Recordable<view::ResetViewCamera> = false;
 template<> inline constexpr bool Recordable<view::SetViewCameraTarget> = false;
 template<> inline constexpr bool Recordable<view::SetViewCameraLens> = false;
 template<> inline constexpr bool Recordable<view::SetViewCameraTargetDirection> = false;
+
+void Emit(Action, Phase = Phase::Record);
 
 inline bool IsRecordable(const Action &a) {
     return std::visit([](const auto &dv) { return std::visit([]<typename L>(const L &) { return Recordable<L>; }, dv); }, a);

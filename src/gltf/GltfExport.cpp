@@ -1,12 +1,15 @@
 #include "GltfConvert.h"
 #include "GltfScene.h"
 #include "project/Assets.h"
+#include "render/LightComponents.h"
 
 #include "File.h"
 #include "Profile.h"
 #include "TransformMath.h"
 #include "Variant.h"
 #include "animation/AnimationData.h"
+#include "animation/Fields.h"
+#include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/AcousticMaterial.h"
@@ -15,6 +18,7 @@
 #include "audio/ContactModel.h"
 #include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
+#include "gltf/AnimationPointers.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshAttributes.h"
 #include "mesh/MeshComponents.h"
@@ -24,9 +28,11 @@
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
+#include "scene/CameraLens.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
+#include "selection/Selection.h"
 
 #include "metal/MetalContext.h"
 #include "state/Scene.h"
@@ -35,6 +41,7 @@
 #include <iostream>
 
 #include <bit>
+#include <cstring>
 #include <map>
 
 namespace gltf {
@@ -149,15 +156,15 @@ fastgltf::Optional<fastgltf::OcclusionTextureInfo> ToFgOcclusionTexInfo(const ::
     return fastgltf::Optional<fastgltf::OcclusionTextureInfo>{std::move(out)};
 }
 
-fastgltf::Camera ConvertCameraToFg(const ::Camera &cam, std::string_view name) {
+fastgltf::Camera ConvertCameraToFg(const CameraLens &cam, std::string_view name) {
     auto camera = std::visit(
         [](const auto &proj) -> std::variant<fastgltf::Camera::Perspective, fastgltf::Camera::Orthographic> {
             using P = std::decay_t<decltype(proj)>;
             if constexpr (std::is_same_v<P, Perspective>) {
                 return fastgltf::Camera::Perspective{
-                    .aspectRatio = ToFgOpt<fastgltf::num>(proj.AspectRatio),
+                    .aspectRatio = proj.HasAspectRatio() ? fastgltf::Optional<fastgltf::num>{proj.AspectRatio} : fastgltf::Optional<fastgltf::num>{},
                     .yfov = proj.FieldOfViewRad,
-                    .zfar = ToFgOpt<fastgltf::num>(proj.FarClip),
+                    .zfar = proj.HasFarClip() ? fastgltf::Optional<fastgltf::num>{proj.FarClip} : fastgltf::Optional<fastgltf::num>{},
                     .znear = proj.NearClip,
                 };
             } else {
@@ -174,6 +181,15 @@ fastgltf::Camera ConvertCameraToFg(const ::Camera &cam, std::string_view name) {
     return fastgltf::Camera{.camera = std::move(camera), .name = ToFgStr(name)};
 }
 
+// Writes each channel's rest value over the field it animates in `record`, so the export holds authored values.
+void OverlayRest(const state::Scene &r, state::Entity e, state::TypeKey component, uint16_t index, std::span<std::byte> record) {
+    const auto *clips = r.try_get<const AnimationClips>(e);
+    if (!clips) return;
+    for (const auto &clip : clips->Clips)
+        for (const auto &channel : clip.Channels)
+            if (channel.Target.Component == component && channel.Target.Index == index) std::memcpy(record.data() + channel.Target.Offset, channel.Rest.data(), channel.Rest.size() * sizeof(float));
+}
+
 fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name) {
     const auto type = pl.Type == PunctualLightType::Point ? fastgltf::LightType::Point : pl.Type == PunctualLightType::Spot ? fastgltf::LightType::Spot :
                                                                                                                               fastgltf::LightType::Directional;
@@ -183,8 +199,8 @@ fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name)
         .color = std::bit_cast<fastgltf::math::nvec3>(pl.Color),
         .intensity = pl.Intensity,
         .range = (type != fastgltf::LightType::Directional && pl.Range > 0) ? fastgltf::Optional<fastgltf::num>{pl.Range} : fastgltf::Optional<fastgltf::num>{},
-        .innerConeAngle = is_spot ? fastgltf::Optional<fastgltf::num>{std::acos(std::clamp(pl.InnerConeCos, -1.f, 1.f))} : fastgltf::Optional<fastgltf::num>{},
-        .outerConeAngle = is_spot ? fastgltf::Optional<fastgltf::num>{std::acos(std::clamp(pl.OuterConeCos, -1.f, 1.f))} : fastgltf::Optional<fastgltf::num>{},
+        .innerConeAngle = is_spot ? fastgltf::Optional<fastgltf::num>{pl.InnerConeAngle} : fastgltf::Optional<fastgltf::num>{},
+        .outerConeAngle = is_spot ? fastgltf::Optional<fastgltf::num>{pl.OuterConeAngle} : fastgltf::Optional<fastgltf::num>{},
         .name = ToFgStr(name),
     };
 }
@@ -253,7 +269,10 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     const auto node_of = [&](auto member) {
         return [&, member](state::Entity e) { const auto *node = r.try_get<const GltfNode>(e); return node ? node->*member : std::nullopt; };
     };
-    const auto camera_entities_ordered = ordered_by_source(r.view<const ::Camera>(), node_of(&GltfNode::Camera));
+    std::vector<state::Entity> camera_entities;
+    for (const auto e : r.view<const Perspective>()) camera_entities.emplace_back(e);
+    for (const auto e : r.view<const Orthographic>()) camera_entities.emplace_back(e);
+    const auto camera_entities_ordered = ordered_by_source(camera_entities, node_of(&GltfNode::Camera));
     const auto light_entities_ordered = ordered_by_source(r.view<const PunctualLight>(), node_of(&GltfNode::Light));
     std::unordered_map<state::Entity, uint32_t> camera_entity_to_index, light_entity_to_index;
     for (uint32_t i = 0; i < camera_entities_ordered.size(); ++i) camera_entity_to_index[camera_entities_ordered[i]] = i;
@@ -554,91 +573,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     };
 
-    // Merge per-entity clips by name and duration, preserving source animation order.
-    std::unordered_map<std::string, size_t> clip_index_by_name;
-    std::vector<float> clip_duration_by_index;
-    if (src_assets) {
-        asset.animations.reserve(src_assets->AnimationOrder.size());
-        clip_duration_by_index.reserve(src_assets->AnimationOrder.size());
-        for (const auto &name : src_assets->AnimationOrder) {
-            clip_index_by_name.emplace(name, asset.animations.size());
-            asset.animations.emplace_back(fastgltf::Animation{.channels = {}, .samplers = {}, .name = ToFgStr(name)});
-            clip_duration_by_index.emplace_back(0.f);
-        }
-    }
-    const auto get_or_create_clip_index = [&](const std::string &name, float duration) -> size_t {
-        auto [it, inserted] = clip_index_by_name.try_emplace(name, asset.animations.size());
-        if (inserted) {
-            asset.animations.emplace_back(fastgltf::Animation{.channels = {}, .samplers = {}, .name = ToFgStr(name)});
-            clip_duration_by_index.emplace_back(duration);
-        } else {
-            clip_duration_by_index[it->second] = std::max(clip_duration_by_index[it->second], duration);
-        }
-        return it->second;
-    };
-    // Push one channel into asset.animations[clip_idx]: write times+values accessors, then add a sampler/channel pair.
-    const auto push_channel = [&](size_t clip_idx, uint32_t target_node_index, AnimationPath target, AnimationInterpolation interp, std::span<const float> times, std::span<const float> values) {
-        if (times.empty()) return;
-        const uint32_t t_offset = AppendAligned<float>(bin, times);
-        const uint32_t t_bv = AddBufferView(t_offset, times.size() * sizeof(float));
-        const auto [t_min, t_max] = std::minmax_element(times.begin(), times.end());
-        const uint32_t t_acc = AddAccessor(
-            t_bv, times.size(), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float,
-            MakeBounds({double(*t_min)}), MakeBounds({double(*t_max)})
-        );
-        const uint32_t v_offset = AppendAligned<float>(bin, values);
-        const uint32_t v_bv = AddBufferView(v_offset, values.size() * sizeof(float));
-        const auto [v_type, v_count] = [&] -> std::pair<fastgltf::AccessorType, uint32_t> {
-            switch (target) {
-                case AnimationPath::Translation:
-                case AnimationPath::Scale: return {fastgltf::AccessorType::Vec3, values.size() / 3};
-                case AnimationPath::Rotation: return {fastgltf::AccessorType::Vec4, values.size() / 4};
-                case AnimationPath::Weights: return {fastgltf::AccessorType::Scalar, values.size()};
-            }
-        }();
-        const uint32_t v_acc = AddAccessor(v_bv, v_count, v_type, fastgltf::ComponentType::Float);
-        auto &anim = asset.animations[clip_idx];
-        anim.samplers.emplace_back(fastgltf::AnimationSampler{.inputAccessor = t_acc, .outputAccessor = v_acc, .interpolation = FromInterp(interp)});
-        anim.channels.emplace_back(fastgltf::AnimationChannel{.samplerIndex = anim.samplers.size() - 1, .nodeIndex = target_node_index, .path = FromPath(target)});
-    };
-    const auto get_node_index = [&](state::Entity e) -> std::optional<uint32_t> {
-        const auto it = node_index_of.find(e);
-        return it != node_index_of.end() ? std::optional<uint32_t>{it->second} : std::nullopt;
-    };
-
-    // Armature animation: bone channels → joint node index.
-    for (const auto [data_entity, anim] : r.view<const ArmatureAnimation>().each()) {
-        const auto &arm = r.get<const Armature>(data_entity);
-        for (const auto &clip : anim.Clips) {
-            const auto idx = get_or_create_clip_index(clip.Name, clip.DurationSeconds);
-            for (const auto &ch : clip.Channels) {
-                if (ch.BoneIndex != InvalidBoneIndex && ch.BoneIndex < arm.Bones.size()) {
-                    if (const auto &bone = arm.Bones[ch.BoneIndex]; bone.JointNodeIndex) {
-                        push_channel(idx, *bone.JointNodeIndex, ch.Target, ch.Interp, ch.TimesSeconds, ch.Values);
-                    }
-                }
-            }
-        }
-    }
-    // Morph weight animation: target = the mesh-instance entity's node index.
-    for (const auto [entity, anim] : r.view<const MorphWeightAnimation>().each()) {
-        const auto node_idx = get_node_index(entity);
-        if (!node_idx) continue;
-        for (const auto &clip : anim.Clips) {
-            const auto idx = get_or_create_clip_index(clip.Name, clip.DurationSeconds);
-            for (const auto &ch : clip.Channels) push_channel(idx, *node_idx, AnimationPath::Weights, ch.Interp, ch.TimesSeconds, ch.Values);
-        }
-    }
-    // Node transform animation: target = the object entity's node index.
-    for (const auto [entity, anim] : r.view<const NodeTransformAnimation>().each()) {
-        const auto node_idx = get_node_index(entity);
-        if (!node_idx) continue;
-        for (const auto &clip : anim.Clips) {
-            const auto idx = get_or_create_clip_index(clip.Name, clip.DurationSeconds);
-            for (const auto &ch : clip.Channels) push_channel(idx, *node_idx, ch.Target, ch.Interp, ch.TimesSeconds, ch.Values);
-        }
-    }
-
     asset.samplers.reserve(sa.Samplers.size());
     for (const auto &s : sa.Samplers) {
         asset.samplers.emplace_back(fastgltf::Sampler{
@@ -763,6 +697,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (uint32_t i = 1; i < material_count; ++i) {
         const auto source_idx = i - 1;
         auto pbr = buffers.Materials.GetSpan<PBRMaterial>()[i];
+        OverlayRest(r, viewport, state::Key<MaterialStore>(), uint16_t(i), std::as_writable_bytes(std::span{&pbr, 1}));
         const auto &meta = source_idx < material_metas.size() ? material_metas[source_idx] : DefaultMeta;
         if (meta.ImplicitDefault) continue;
         material_indices[i] = asset.materials.size();
@@ -770,10 +705,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         for (uint32_t s = 0; s < MTS_Count; ++s) MaterialTextureSlots[s].Get(pbr).Slot = meta.TextureSlots[s];
 
         const std::string name = (!meta.NameWasEmpty && i < names.size()) ? names[i] : std::string{};
-        // Un-fold load's `EmissiveFactor *= strength` for emissive_strength round-trip.
-        vec3 emissive_factor = pbr.EmissiveFactor;
-        if (meta.EmissiveStrength && *meta.EmissiveStrength != 0.f) emissive_factor /= *meta.EmissiveStrength;
-
         fastgltf::Material out;
         out.name = ToFgStr(name);
         out.pbrData.baseColorFactor = std::bit_cast<fastgltf::math::nvec4>(pbr.BaseColorFactor);
@@ -784,8 +715,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         out.normalTexture = ToFgNormalTexInfo(pbr.NormalTexture, pbr.NormalScale, &meta.BaseSlotMeta[2], uses_texture_transform);
         out.occlusionTexture = ToFgOcclusionTexInfo(pbr.OcclusionTexture, pbr.OcclusionStrength, &meta.BaseSlotMeta[3], uses_texture_transform);
         out.emissiveTexture = ToFgTexInfo(pbr.EmissiveTexture, &meta.BaseSlotMeta[4], uses_texture_transform);
-        out.emissiveFactor = std::bit_cast<fastgltf::math::nvec3>(emissive_factor);
-        if (bits & M::ExtEmissiveStrength) out.emissiveStrength = fastgltf::Optional<fastgltf::num>{meta.EmissiveStrength.value_or(1.f)};
+        out.emissiveFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.EmissiveFactor);
+        if (bits & M::ExtEmissiveStrength || pbr.EmissiveStrength != 1.f) out.emissiveStrength = fastgltf::Optional<fastgltf::num>{pbr.EmissiveStrength};
         out.alphaMode = FromAlphaMode(pbr.AlphaMode);
         out.alphaCutoff = pbr.AlphaCutoff;
         out.doubleSided = pbr.DoubleSided != 0u;
@@ -851,6 +782,101 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
 
         asset.materials.emplace_back(std::move(out));
+    }
+
+    // Animations: one glTF animation per scene animation with channels, in scene order.
+    // Node transforms and morph weights emit classic channels. Other fields emit KHR_animation_pointer channels.
+    bool uses_animation_pointer = false;
+    {
+        const auto *animations = r.try_get<const Animations>(viewport);
+        const auto animation_names = animations ? std::span<const std::string>{animations->Names} : std::span<const std::string>{};
+        asset.animations.reserve(animation_names.size());
+        for (const auto &name : animation_names) asset.animations.emplace_back(fastgltf::Animation{.channels = {}, .samplers = {}, .name = ToFgStr(name)});
+        const auto push_channel = [&](size_t animation, fastgltf::AnimationChannel target, const AnimationChannel &channel) {
+            const auto &times = channel.Times;
+            const uint32_t t_offset = AppendAligned<float>(bin, std::span<const float>{times});
+            const uint32_t t_bv = AddBufferView(t_offset, times.size() * sizeof(float));
+            const auto [t_min, t_max] = std::minmax_element(times.begin(), times.end());
+            const uint32_t t_acc = AddAccessor(t_bv, times.size(), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float, MakeBounds({double(*t_min)}), MakeBounds({double(*t_max)}));
+            // Weights channels pack every target into scalar elements, and bool channels are unsigned bytes.
+            const uint32_t components = channel.Target.Count;
+            const bool packed = channel.Target.Component == state::Key<MorphWeightRange>();
+            const auto v_type = packed || components == 1 ? fastgltf::AccessorType::Scalar : components == 2 ? fastgltf::AccessorType::Vec2 :
+                components == 3                                                                              ? fastgltf::AccessorType::Vec3 :
+                                                                                                               fastgltf::AccessorType::Vec4;
+            const uint32_t v_count = packed ? channel.Values.size() : channel.Values.size() / components;
+            uint32_t v_acc;
+            if (channel.Target.Kind == ValueKind::Bool) {
+                std::vector<uint8_t> flags(channel.Values.size());
+                for (size_t i = 0; i < flags.size(); ++i) flags[i] = channel.Values[i] != 0.f;
+                const uint32_t v_offset = AppendAligned<uint8_t>(bin, std::span<const uint8_t>{flags});
+                v_acc = AddAccessor(AddBufferView(v_offset, flags.size()), v_count, v_type, fastgltf::ComponentType::UnsignedByte);
+            } else {
+                const uint32_t v_offset = AppendAligned<float>(bin, std::span<const float>{channel.Values});
+                v_acc = AddAccessor(AddBufferView(v_offset, channel.Values.size() * sizeof(float)), v_count, v_type, fastgltf::ComponentType::Float);
+            }
+            auto &anim = asset.animations[animation];
+            anim.samplers.emplace_back(fastgltf::AnimationSampler{.inputAccessor = t_acc, .outputAccessor = v_acc, .interpolation = FromInterp(channel.Interp)});
+            target.samplerIndex = anim.samplers.size() - 1;
+            anim.channels.emplace_back(std::move(target));
+        };
+        // A pointer channel names its target by export index.
+        const auto pointer_channel = [](const gltf::PointerRow &row, size_t index, size_t element = 0) {
+            return fastgltf::AnimationChannel{.samplerIndex = 0, .nodeIndex = {}, .path = fastgltf::AnimationPath::Pointer, .pointer = ToFgStr(std::vformat(row.Template, std::make_format_args(index, element)))};
+        };
+        for (const auto [entity, clips] : r.view<const AnimationClips>().each()) {
+            for (const auto &clip : clips.Clips) {
+                if (clip.Animation >= animation_names.size()) continue;
+                for (const auto &source : clip.Channels) {
+                    if (source.Times.empty() || source.Target.Count == 0) continue;
+                    const auto *row = gltf::RowOf(source.Target);
+                    if (!row) continue;
+                    auto channel = source;
+                    std::optional<fastgltf::AnimationChannel> target;
+                    switch (row->Space) {
+                        case gltf::PointerSpace::Node: {
+                            std::optional<uint32_t> node;
+                            if (source.Target.Component == state::Key<BoneDelta>()) {
+                                // Convert the delta channel to the joint node's absolute transform.
+                                const auto arm_obj = FindArmatureObject(r, entity);
+                                const auto *arm = arm_obj != state::Null ? r.try_get<const Armature>(r.get<const ArmatureObject>(arm_obj).Entity) : nullptr;
+                                const auto index = r.get<const BoneIndex>(entity).Index;
+                                if (arm && index < arm->Bones.size()) {
+                                    node = arm->Bones[index].JointNodeIndex;
+                                    ConvertBoneChannel(channel, arm->Bones[index].RestLocal, false);
+                                }
+                            } else if (const auto it = node_index_of.find(entity); it != node_index_of.end()) {
+                                node = it->second;
+                            }
+                            if (!node) break;
+                            // Transforms and whole weights are classic channels. Visibility and one weight of a multi-weight mesh are pointer channels.
+                            const bool weights = source.Target.Component == state::Key<MorphWeightRange>();
+                            if (source.Target.Component == state::Key<Visibility>()) target = pointer_channel(*row, *node);
+                            else if (weights && source.Target.Count == 1 && r.get<const MorphWeightRange>(entity).Weights.Count > 1) target = pointer_channel(*row, *node, source.Target.Offset / sizeof(float));
+                            else target = fastgltf::AnimationChannel{.samplerIndex = 0, .nodeIndex = *node, .path = weights ? fastgltf::AnimationPath::Weights : gltf::NodePath(*row), .pointer = {}};
+                            break;
+                        }
+                        case gltf::PointerSpace::Material:
+                            if (source.Target.Index < material_indices.size() && material_indices[source.Target.Index]) target = pointer_channel(*row, *material_indices[source.Target.Index]);
+                            break;
+                        case gltf::PointerSpace::Camera:
+                            if (const auto it = camera_entity_to_index.find(entity); it != camera_entity_to_index.end()) target = pointer_channel(*row, it->second);
+                            break;
+                        case gltf::PointerSpace::Light:
+                            if (const auto it = light_entity_to_index.find(entity); it != light_entity_to_index.end()) target = pointer_channel(*row, it->second);
+                            break;
+                        case gltf::PointerSpace::ImageLight:
+                            // The one exported image-based light is at index 0.
+                            if (src_assets && src_assets->ImageBasedLight) target = pointer_channel(*row, 0);
+                            break;
+                    }
+                    if (!target) continue;
+                    uses_animation_pointer |= target->path == fastgltf::AnimationPath::Pointer;
+                    push_channel(clip.Animation, std::move(*target), channel);
+                }
+            }
+        }
+        std::erase_if(asset.animations, [](const auto &animation) { return animation.channels.empty(); });
     }
 
     asset.meshes.reserve(mesh_groups.size());
@@ -1190,13 +1216,15 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     asset.cameras.reserve(camera_entities_ordered.size());
     for (const auto entity : camera_entities_ordered) {
         const auto *node = r.try_get<const GltfNode>(entity);
-        asset.cameras.emplace_back(ConvertCameraToFg(r.get<const ::Camera>(entity), node ? node->CameraName : std::string_view{}));
+        auto lens = *LensOf(r, entity);
+        std::visit([&](auto &l) { OverlayRest(r, entity, state::Key<std::remove_reference_t<decltype(l)>>(), 0, std::as_writable_bytes(std::span{&l, 1})); }, lens);
+        asset.cameras.emplace_back(ConvertCameraToFg(lens, node ? node->CameraName : std::string_view{}));
     }
     asset.lights.reserve(light_entities_ordered.size());
     for (const auto entity : light_entities_ordered) {
         const auto *node = r.try_get<const GltfNode>(entity);
-        // Read the canonical per-light data (PunctualLight), not the Derived GPU Lights buffer.
-        const auto &pl = r.get<const PunctualLight>(entity);
+        auto pl = r.get<const PunctualLight>(entity);
+        OverlayRest(r, entity, state::Key<PunctualLight>(), 0, std::as_writable_bytes(std::span{&pl, 1}));
         asset.lights.emplace_back(ConvertLightToFg(pl, node ? node->LightName : std::string_view{}));
     }
 
@@ -1585,6 +1613,15 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             audio_rigid_body = fastgltf::AudioRigidBody{.modalModel = {}, .acousticSurface = acoustic_surface_index};
         }
 
+        // A node with a Visibility flag exports that flag at rest. Other nodes derive it from their hidden state.
+        bool visible = !export_node.Hidden || (export_node.Parent && nodes[*export_node.Parent].Hidden);
+        if (const auto owner = export_node.Instances.empty() ? state::Null : export_node.Instances.front(); owner != state::Null) {
+            if (const auto *visibility = r.try_get<const Visibility>(owner)) {
+                auto flag = *visibility;
+                OverlayRest(r, owner, state::Key<Visibility>(), 0, std::as_writable_bytes(std::span{&flag, 1}));
+                visible = flag.Visible != 0;
+            }
+        }
         asset.nodes.emplace_back(fastgltf::Node{
             .meshIndex = mesh_index,
             .skinIndex = skin_index,
@@ -1597,7 +1634,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .name = ToFgStr(node_name),
             .physicsRigidBody = std::move(physics_rigid_body),
             .audioRigidBody = audio_rigid_body,
-            .visible = !export_node.Hidden || (export_node.Parent && nodes[*export_node.Parent].Hidden),
+            .visible = visible,
             .selectable = true,
             .hoverable = true,
         });
@@ -1608,9 +1645,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     fastgltf::Optional<size_t> default_scene_ibl_index;
     if (sa.ImageBasedLight) {
         const auto &src_ibl = *sa.ImageBasedLight;
+        const auto *image_light = r.try_get<const ImageLight>(viewport);
+        auto light = image_light ? *image_light : ImageLight{};
+        OverlayRest(r, viewport, state::Key<ImageLight>(), 0, std::as_writable_bytes(std::span{&light, 1}));
         fastgltf::ImageBasedLight ibl{
-            .intensity = src_ibl.Intensity,
-            .rotation = fastgltf::math::fquat(src_ibl.Rotation.x, src_ibl.Rotation.y, src_ibl.Rotation.z, src_ibl.Rotation.w),
+            .intensity = light.Intensity,
+            .rotation = fastgltf::math::fquat(light.Rotation.x, light.Rotation.y, light.Rotation.z, light.Rotation.w),
             .specularImageSize = src_ibl.SpecularImageSize,
             .specularImages = {},
             .irradianceCoefficients = {},
@@ -1662,6 +1702,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
     if (std::ranges::any_of(asset.nodes, [](const auto &n) { return !n.visible; })) asset.extensionsUsed.emplace_back("KHR_node_visibility");
     if (!asset.lights.empty()) asset.extensionsUsed.emplace_back("KHR_lights_punctual");
+    if (uses_animation_pointer) asset.extensionsUsed.emplace_back("KHR_animation_pointer");
     if (uses_gpu_instancing) asset.extensionsUsed.emplace_back("EXT_mesh_gpu_instancing");
     if (uses_physics_rigid_bodies || !asset.physicsMaterials.empty() || !asset.collisionFilters.empty() || !asset.physicsJoints.empty()) {
         asset.extensionsUsed.emplace_back("KHR_physics_rigid_bodies");

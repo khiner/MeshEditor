@@ -12,8 +12,6 @@
 
 inline constexpr uint32_t InvalidBoneIndex{std::numeric_limits<uint32_t>::max()};
 
-struct AnimationClip;
-
 struct ArmatureBone {
     BoneId Id;
     BoneId ParentBoneId;
@@ -48,7 +46,6 @@ struct Armature {
     bool RemoveBone(BoneId bone_id);
     void FinalizeStructure();
     void RebuildCaches();
-    void ResolveAnimationIndices(AnimationClip &) const;
     void RecomputeRestWorld();
     void RecomputeInverseBindMatrices();
 };
@@ -58,9 +55,6 @@ std::vector<uint32_t> CollectBonesForDeletion(const state::Scene &, state::Entit
 Transform ComposeWithDelta(const Transform &rest, const Transform &delta);
 
 Transform AbsoluteToDelta(const Transform &rest, const Transform &absolute);
-
-// For each keyed channel, interpolate the absolute glTF keyframe value and convert to rest-relative delta.
-void EvaluateAnimationDeltas(const AnimationClip &, float time, std::span<const ArmatureBone>, std::span<Transform> deltas);
 
 // For each joint j of skin `skin_slot`: out[j] = bone_pose_world[bone_for_j] * inverse_bind[j], or I4 if the joint maps to no bone.
 void ComputeDeformMatrices(const Armature &, uint32_t skin_slot, std::span<const mat4> bone_pose_world, std::span<mat4> out);

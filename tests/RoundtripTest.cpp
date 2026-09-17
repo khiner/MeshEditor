@@ -18,7 +18,6 @@
 #endif
 #include "gltf/GltfScene.h"
 #include "gltf/SourceTexture.h"
-#include "gpu/PunctualLight.h"
 #include "image/ImageDecode.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
@@ -27,6 +26,7 @@
 #include "mesh/Primitives.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
+#include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
@@ -122,8 +122,8 @@ constexpr Exception SubtreeExceptions[]{
     {"materials[*].extensions.KHR_materials_volume_scatter", "not imported"},
     {"materials[*].extensions.KHR_materials_retroreflection", "not imported"},
 
-    {"animations[*].channels", "channels using KHR_animation_pointer are dropped on import"},
-    {"animations[*].samplers", "samplers for dropped channels (e.g. KHR_animation_pointer) are also dropped"},
+    {"animations[*].channels", "channels are re-emitted in scene entity order, so their positions and sampler indices differ from the source"},
+    {"animations[*].samplers", "samplers follow the re-emitted channel order"},
 
     // Import duplicates lights shared by source nodes, changing table and node indices.
     {"extensions.KHR_lights_punctual.lights", "per-node PunctualLight components aren't deduped on save"},

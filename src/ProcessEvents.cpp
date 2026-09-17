@@ -14,7 +14,8 @@
 #include "action/Selection.h"
 #include "animation/AnimationData.h"
 #include "animation/AnimationTimeline.h"
-#include "animation/MorphWeightState.h"
+#include "animation/Evaluate.h"
+#include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/AudioTypes.h"
@@ -45,6 +46,7 @@
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "render/ViewportSubmission.h"
+#include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/EntityDestroyTracker.h"
 #include "scene/RotationUi.h"
@@ -216,7 +218,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                     ReleaseCubeSamplerSlot(slots, env.ImportedSceneWorld->SpecularEnv.SamplerSlot);
                 }
                 env.ImportedSceneWorld = std::move(*pre);
-                env.SceneWorldRotation = numeric::ToMat3(pending_env->Source.Rotation);
                 env.SceneWorld = {.Ibl = MakeIblSamplers(*env.ImportedSceneWorld, env), .Name = env.ImportedSceneWorld->Name};
             } else {
                 std::cerr << std::format("Warning: Failed to materialize EXT_lights_image_based '{}': {}\n", pending_env->Source.Name, pre.error());
@@ -352,6 +353,45 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     // Refresh camera overlay descriptors after lens changes.
     if (!reactive(r, Change::CameraLens).empty()) request(RenderRequest::Rebuild);
 
+    // Advance playback and evaluate the animation before the render sync, so this frame renders what it writes.
+    bool anim_advanced;
+    int evaluated_from;
+    float eval_seconds{}, frame_seconds{};
+    {
+        const auto &range = r.get<const TimelineRange>(viewport);
+        const auto &playback = r.get<const TimelinePlayback>(viewport);
+        auto &pf = r.edit<PlaybackFrame>(viewport).Value;
+        auto &frame_state = r.ctx().get<FrameState>();
+        anim_advanced = [&] {
+            if (pass == EventPass::Restore) {
+                pf = float(playback.CurrentFrame);
+                return false;
+            }
+            if (rendering) return false;
+            // A frame set by an action shows for one tick before playback advances.
+            if (playback.Playing && pass == EventPass::Frame && playback.CurrentFrame == r.get<const LastEvaluatedFrame>(viewport).Value) {
+                const float step = frame_state.FixedFrameStep ? 1.f : frame_state.DeltaTime * range.Fps;
+                pf += playback.Reverse ? -step : step;
+                if (pf > float(range.EndFrame)) pf = float(range.StartFrame);
+                else if (pf < float(range.StartFrame)) pf = float(range.EndFrame);
+                const int new_frame = int(std::floor(pf));
+                if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = new_frame; });
+            } else if (!playback.Playing) {
+                pf = float(playback.CurrentFrame);
+            }
+            return playback.CurrentFrame != r.edit<LastEvaluatedFrame>(viewport).Value || !reactive(r, Change::AnimationEdited).empty();
+        }();
+
+        evaluated_from = r.edit<LastEvaluatedFrame>(viewport).Value;
+        if (anim_advanced || pass == EventPass::Restore) r.edit<LastEvaluatedFrame>(viewport).Value = playback.CurrentFrame;
+        // Convert 1-based display frames to animation time and preserve fractional motion-blur samples.
+        frame_seconds = float(std::max(0, playback.CurrentFrame - 1)) / range.Fps;
+        eval_seconds = pass == EventPass::Sample ? std::max(0.f, pf - 1.f) / range.Fps : frame_seconds;
+
+        // A restore rebuilds only the derived node poses, since history restores every other animated value.
+        if (anim_advanced || rendering || pass == EventPass::Restore) animation::Evaluate(r, viewport, eval_seconds, pass != EventPass::Restore);
+    }
+
     auto sync = SyncModelsBuffers(r);
     if (!sync.NewlyInserted.empty() || sync.Compacted) {
         request(RenderRequest::Reuse);
@@ -368,14 +408,14 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const auto *armature = r.try_get<const Armature>(data_entity);
         if (!armature || armature->Bones.empty() || r.all_of<ArmaturePoseState>(data_entity)) continue;
         const auto n = armature->Bones.size();
-        if (!r.all_of<ArmaturePose>(data_entity)) r.emplace<ArmaturePose>(data_entity, std::vector<Transform>(n));
         r.emplace<ArmaturePoseState>(data_entity, ArmaturePoseState{.BoneUserOffset = std::vector<Transform>(n), .BonePoseWorld = std::vector<mat4>(n, I4), .GpuDeformRanges = {}});
         // Bone poses derive from rest + delta. Scale stays at rest.
-        const auto &deltas = r.get<const ArmaturePose>(data_entity).BoneDeltas;
         for (uint32_t i = 0; i < n && i < arm_obj_comp.BoneEntities.size(); ++i) {
+            const auto b = arm_obj_comp.BoneEntities[i];
+            if (!r.all_of<BoneDelta>(b)) r.emplace<BoneDelta>(b);
             const auto &rest = armature->Bones[i].RestLocal;
-            const auto posed = ComposeWithDelta(rest, deltas[i]);
-            r.emplace_or_replace<PosedLocal>(arm_obj_comp.BoneEntities[i], Transform{posed.P, posed.R, rest.S});
+            const auto posed = ComposeWithDelta(rest, r.get<const BoneDelta>(b).Value);
+            r.emplace_or_replace<PosedLocal>(b, Transform{posed.P, posed.R, rest.S});
         }
         pose_state_created = true;
     }
@@ -403,33 +443,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             }
         }
         if (!pending_armatures.empty()) request(RenderRequest::Rebuild);
-    }
-
-    {
-        // Allocate GPU storage for newly created morph-weight state.
-        uint32_t total_weights = 0;
-        std::vector<state::Entity> pending_morphs;
-        for (auto [entity, morph_state] : r.view<const MorphWeightState>().each()) {
-            if (morph_state.Weights.empty()) continue;
-
-            const auto *gpu = r.try_get<const MorphWeightGpuRange>(entity);
-            if (!gpu || gpu->Weights.Count == 0) {
-                total_weights += morph_state.Weights.size();
-                pending_morphs.emplace_back(entity);
-            }
-        }
-        buffers.MorphWeightBuffer.ReserveAdditional(total_weights);
-        for (const auto entity : pending_morphs) {
-            const auto &morph_state = r.get<const MorphWeightState>(entity);
-            const auto range = buffers.MorphWeightBuffer.Allocate(morph_state.Weights.size());
-            r.emplace_or_replace<MorphWeightGpuRange>(entity, MorphWeightGpuRange{range});
-            auto gpu_weights = buffers.MorphWeightBuffer.GetMutable(range);
-            std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
-        }
-        if (!pending_morphs.empty()) {
-            buffers.PreludeStale = true;
-            request(RenderRequest::Rebuild);
-        }
     }
 
     std::unordered_set<state::Entity> dirty_sound_selection_meshes;
@@ -517,33 +530,47 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             if (!r.all_of<PunctualLight, Instance>(entity)) continue;
             const auto *ri = r.try_get<const RenderInstance>(entity);
             if (!ri || ri->BufferIndex == UINT32_MAX) continue;
-            const auto index = r.all_of<LightIndex>(entity) ? r.get<const LightIndex>(entity).Value : buffers.Lights.Count<PunctualLight>();
+            const auto index = r.all_of<LightIndex>(entity) ? r.get<const LightIndex>(entity).Value : buffers.Lights.Count<LightRecord>();
             if (!r.all_of<LightIndex>(entity)) r.emplace<LightIndex>(entity, index);
-            // Write a copy with the transform slot offset, leaving the authored component untouched.
-            auto gpu_light = r.get<const PunctualLight>(entity);
-            gpu_light.TransformSlotOffset = {buffers.Instances.TransformBuffer.Slot, ri->BufferIndex};
-            if (index >= buffers.Lights.Count<PunctualLight>()) request(RenderRequest::Rebuild);
+            const auto &light = r.get<const PunctualLight>(entity);
+            const LightRecord gpu_light{
+                .TransformSlotOffset = {buffers.Instances.TransformBuffer.Slot, ri->BufferIndex},
+                .Range = light.Range,
+                .Color = light.Color,
+                .Intensity = light.Intensity,
+                .InnerConeCos = std::cos(light.InnerConeAngle),
+                .OuterConeCos = std::cos(light.OuterConeAngle),
+                .Type = light.Type,
+            };
+            if (index >= buffers.Lights.Count<LightRecord>()) request(RenderRequest::Rebuild);
             else {
-                const auto old = buffers.Lights.GetSpan<PunctualLight>()[index];
+                const auto old = buffers.Lights.GetSpan<LightRecord>()[index];
                 if (old.Type != gpu_light.Type || old.Range != gpu_light.Range || old.OuterConeCos != gpu_light.OuterConeCos || old.InnerConeCos != gpu_light.InnerConeCos) {
                     request(RenderRequest::Rebuild);
                 }
             }
-            buffers.Lights.Update(as_bytes(gpu_light), uint64_t(index) * sizeof(PunctualLight));
+            buffers.Lights.Update(as_bytes(gpu_light), uint64_t(index) * sizeof(LightRecord));
             synced = true;
         }
         if (synced) request(RenderRequest::Reuse);
     }
 
+    // A hidden light leaves the light buffer.
+    for (const auto entity : reactive(r, Change::RenderInstanceDestroyed)) {
+        if (const auto *light_index = r.try_get<const LightIndex>(entity)) {
+            buffers.PendingLightRemovals.emplace_back(light_index->Value);
+            r.remove<LightIndex>(entity);
+        }
+    }
     // Compact destroyed light indices in one batch.
     if (auto &indices = buffers.PendingLightRemovals; !indices.empty()) {
         std::sort(indices.begin(), indices.end(), std::greater<>());
-        auto buffer_count = buffers.Lights.Count<PunctualLight>();
+        auto buffer_count = buffers.Lights.Count<LightRecord>();
         for (const auto remove_index : indices) {
             if (remove_index >= buffer_count) continue;
             --buffer_count;
             if (remove_index != buffer_count) {
-                buffers.Lights.Update(as_bytes(buffers.Lights.GetSpan<PunctualLight>()[buffer_count]), uint64_t(remove_index) * sizeof(PunctualLight));
+                buffers.Lights.Update(as_bytes(buffers.Lights.GetSpan<LightRecord>()[buffer_count]), uint64_t(remove_index) * sizeof(LightRecord));
                 for (auto [other_entity, other_light_index] : r.view<LightIndex>().each()) {
                     if (other_light_index.Value == buffer_count) {
                         r.replace<LightIndex>(other_entity, remove_index);
@@ -552,7 +579,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 }
             }
         }
-        buffers.Lights.SetCount<PunctualLight>(buffer_count);
+        buffers.Lights.SetCount<LightRecord>(buffer_count);
         indices.clear();
         request(RenderRequest::Rebuild);
     }
@@ -733,12 +760,12 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
     for (auto camera_entity : reactive(r, Change::CameraLens)) {
         // Update the viewport FOV when it uses the changed scene camera.
-        if (r.all_of<Camera>(camera_entity) && r.all_of<LookingThrough>(camera_entity)) r.patch<ViewCamera>(viewport, [](auto &) {});
+        if (HasLens(r, camera_entity) && r.all_of<LookingThrough>(camera_entity)) r.patch<ViewCamera>(viewport, [](auto &) {});
     }
     bool light_count_changed = false;
     if (const uint32_t required_count = r.view<const LightIndex>().size();
-        buffers.Lights.Count<PunctualLight>() != required_count) {
-        buffers.Lights.SetCount<PunctualLight>(required_count);
+        buffers.Lights.Count<LightRecord>() != required_count) {
+        buffers.Lights.SetCount<LightRecord>(required_count);
         light_count_changed = true;
     }
     if (!reactive(r, Change::WorkspaceLights).empty()) {
@@ -850,7 +877,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         buffers.ViewportThemeUBO.Update(as_bytes(theme));
         request(RenderRequest::Reuse);
     }
-    if (!reactive(r, Change::Materials).empty()) request(RenderRequest::Rebuild);
     if (!reactive(r, Change::ActiveMaterialVariant).empty()) {
         const auto *mv = r.try_get<const MaterialVariants>(viewport);
         const auto active = mv ? mv->Active : std::nullopt;
@@ -888,86 +914,16 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
 
     const bool mode_changed = !reactive(r, Change::InteractionMode).empty();
-    bool anim_advanced;
-    float eval_seconds{}, frame_seconds{};
-    const auto clip_time = [](const auto &clip, float seconds) {
-        return clip.DurationSeconds > 0 ? std::fmod(seconds, clip.DurationSeconds) : 0.f;
-    };
     {
         const auto &range = r.get<const TimelineRange>(viewport);
-        const auto &playback = r.get<const TimelinePlayback>(viewport);
-        auto &pf = r.edit<PlaybackFrame>(viewport).Value;
-        auto &frame_state = r.ctx().get<FrameState>();
-        anim_advanced = [&] {
-            if (pass == EventPass::Restore) {
-                pf = float(playback.CurrentFrame);
-                return false;
-            }
-            if (rendering) return false;
-            if (playback.Playing && pass == EventPass::Frame) {
-                const float step = frame_state.FixedFrameStep ? 1.f : frame_state.DeltaTime * range.Fps;
-                pf += playback.Reverse ? -step : step;
-                if (pf > float(range.EndFrame)) pf = float(range.StartFrame);
-                else if (pf < float(range.StartFrame)) pf = float(range.EndFrame);
-                const int new_frame = int(std::floor(pf));
-                if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = new_frame; });
-            } else if (!playback.Playing) {
-                pf = float(playback.CurrentFrame);
-            }
-            return playback.CurrentFrame != r.edit<LastEvaluatedFrame>(viewport).Value || !reactive(r, Change::ActiveAnimationClip).empty();
-        }();
-
-        const int from = r.edit<LastEvaluatedFrame>(viewport).Value;
         // Use interpolation instead of advancing physics during motion-blur sub-frames.
-        if (!rendering && physics::AdvancePlayback(r, viewport, from, playback.CurrentFrame, range.StartFrame, range.EndFrame, range.Fps)) {
-            request(RenderRequest::Reuse);
-        }
-
-        if (anim_advanced || pass == EventPass::Restore) r.edit<LastEvaluatedFrame>(viewport).Value = playback.CurrentFrame;
-        // Convert 1-based display frames to animation time and preserve fractional motion-blur samples.
-        frame_seconds = float(std::max(0, playback.CurrentFrame - 1)) / range.Fps;
-        eval_seconds = pass == EventPass::Sample ? std::max(0.f, pf - 1.f) / range.Fps : frame_seconds;
-
-        bool request_rerecord = false;
-        if (anim_advanced || rendering || pass == EventPass::Restore) {
-            std::vector<float> frame_weights;
-            for (auto [entity, morph_anim, morph_state, gpu_range, instance] :
-                 r.view<const MorphWeightAnimation, const MorphWeightState, const MorphWeightGpuRange, const Instance>().each()) {
-                if (morph_anim.Clips.empty() || morph_anim.ActiveClipIndex >= morph_anim.Clips.size()) continue;
-                const auto &clip = morph_anim.Clips[morph_anim.ActiveClipIndex];
-                const auto &mesh = GetMesh(r, instance.Entity);
-                const auto &default_weights = meshes.Get(mesh.GetStoreId()).DefaultMorphWeights;
-                auto gpu_weights = buffers.MorphWeightBuffer.GetMutable(gpu_range.Weights);
-                if (pass == EventPass::Sample && eval_seconds != frame_seconds) {
-                    frame_weights.assign(default_weights.begin(), default_weights.end());
-                    EvaluateMorphWeights(clip, clip_time(clip, frame_seconds), frame_weights);
-                    std::copy(default_weights.begin(), default_weights.end(), gpu_weights.begin());
-                    EvaluateMorphWeights(clip, clip_time(clip, eval_seconds), gpu_weights);
-                    for (size_t i = 0; i < gpu_weights.size(); ++i) gpu_weights[i] += morph_state.Weights[i] - frame_weights[i];
-                } else {
-                    if (anim_advanced) {
-                        auto &weights = r.edit<MorphWeightState>(entity).Weights;
-                        std::copy(default_weights.begin(), default_weights.end(), weights.begin());
-                        EvaluateMorphWeights(clip, clip_time(clip, eval_seconds), weights);
-                    }
-                    std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
-                }
-                buffers.PreludeStale = true;
-                request_rerecord = true;
-            }
-        }
-
-        // Store animated node transforms in PosedLocal while preserving authored Transform values.
-        for (auto [entity, node_anim] : r.view<const NodeTransformAnimation>().each()) {
-            if (node_anim.Clips.empty() || node_anim.ActiveClipIndex >= node_anim.Clips.size()) continue;
-            if (!rendering && pass != EventPass::Restore && !anim_advanced && r.all_of<PosedLocal>(entity)) continue;
-            const auto &clip = node_anim.Clips[node_anim.ActiveClipIndex];
-            std::array local_pose{r.get<const Transform>(entity)};
-            EvaluateAnimation(clip, clip_time(clip, eval_seconds), local_pose);
-            r.emplace_or_replace<PosedLocal>(entity, local_pose.front());
-            request_rerecord = true;
-        }
-        if (request_rerecord) request(RenderRequest::Reuse);
+        if (!rendering && physics::AdvancePlayback(r, viewport, evaluated_from, r.get<const TimelinePlayback>(viewport).CurrentFrame, range.StartFrame, range.EndFrame, range.Fps)) request(RenderRequest::Reuse);
+    }
+    // Evaluation writes materials and morph weights, so their consumers follow it.
+    if (!reactive(r, Change::Materials).empty()) request(RenderRequest::Rebuild);
+    if (!reactive(r, Change::MorphWeights).empty()) {
+        buffers.PreludeStale = true;
+        request(RenderRequest::Reuse);
     }
     {
         const bool is_object_mode = interaction_mode == InteractionMode::Object;
@@ -1022,36 +978,15 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 
         // Update bone pose state before WorldTransform consumes its Transform patches.
         const bool bones_need_refresh = rendering || pass == EventPass::Restore || anim_advanced || mode_changed || pose_state_created;
-        if (bones_need_refresh || !reactive(r, Change::TransformDirty).empty() || !reactive(r, Change::TransformEnd).empty()) {
+        if (bones_need_refresh || !reactive(r, Change::TransformDirty).empty() || !reactive(r, Change::TransformEnd).empty() || !reactive(r, Change::BonePose).empty()) {
             const auto &local_changes = reactive(r, Change::TransformDirty);
             const auto &transform_end = reactive(r, Change::TransformEnd);
-            std::vector<Transform> sample_deltas, frame_deltas;
+            const auto &pose_changes = reactive(r, Change::BonePose);
             for (const auto [arm_obj_entity, arm_obj_comp] : r.view<const ArmatureObject>().each()) {
                 auto *pose_state = r.try_edit<ArmaturePoseState>(arm_obj_comp.Entity);
                 if (!pose_state) continue;
-                const auto &canonical_deltas = r.get<ArmaturePose>(arm_obj_comp.Entity).BoneDeltas;
                 const auto &armature = r.get<Armature>(arm_obj_comp.Entity);
                 if (armature.Skins.empty()) continue;
-                const auto *animation = r.try_get<const ArmatureAnimation>(arm_obj_comp.Entity);
-                const bool animated = animation && animation->ActiveClipIndex < animation->Clips.size();
-                const bool sample_pose = animated && pass == EventPass::Sample && !is_edit_mode && eval_seconds != frame_seconds;
-                if (sample_pose) sample_deltas = canonical_deltas;
-                const auto &deltas = sample_pose ? sample_deltas : canonical_deltas;
-                const auto mutable_deltas = [&]() -> std::vector<Transform> & {
-                    return sample_pose ? sample_deltas : r.edit<ArmaturePose>(arm_obj_comp.Entity).BoneDeltas;
-                };
-                if (animated && (anim_advanced || sample_pose)) {
-                    const auto &clip = animation->Clips[animation->ActiveClipIndex];
-                    EvaluateAnimationDeltas(clip, clip_time(clip, eval_seconds), armature.Bones, mutable_deltas());
-                    if (sample_pose) {
-                        // Apply the surrounding animation's motion relative to the displayed manual pose.
-                        frame_deltas = canonical_deltas;
-                        EvaluateAnimationDeltas(clip, clip_time(clip, frame_seconds), armature.Bones, frame_deltas);
-                        for (size_t i = 0; i < deltas.size(); ++i) {
-                            if (frame_deltas[i] != canonical_deltas[i]) sample_deltas[i] = ComposeWithDelta(deltas[i], AbsoluteToDelta(frame_deltas[i], canonical_deltas[i]));
-                        }
-                    }
-                }
 
                 // Constraints can depend on external targets (e.g. physics bodies), so bone-dirty alone does not allow an early out.
                 const bool has_any_constraint = std::any_of(
@@ -1062,7 +997,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 if (!bones_need_refresh && !has_any_constraint) {
                     bool has_dirty = false;
                     for (const auto b : arm_obj_comp.BoneEntities) {
-                        if (local_changes.contains(b) || transform_end.contains(b)) {
+                        if (local_changes.contains(b) || transform_end.contains(b) || pose_changes.contains(b)) {
                             has_dirty = true;
                             break;
                         }
@@ -1076,10 +1011,10 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 bool rest_pose_edited = false;
                 for (uint32_t i = 0; i < arm_obj_comp.BoneEntities.size(); ++i) {
                     const auto b = arm_obj_comp.BoneEntities[i];
-                    if (i >= deltas.size()) continue;
+                    if (!r.all_of<BoneDelta>(b)) continue;
                     const auto &rest = armature.Bones[i].RestLocal;
                     // Every pass composes the pose the same way so a restored pose matches a live one bit for bit.
-                    const auto posed = [&] { return ComposeWithDelta(rest, ComposeWithDelta(deltas[i], pose_state->BoneUserOffset[i])); };
+                    const auto posed = [&] { return ComposeWithDelta(rest, ComposeWithDelta(r.get<const BoneDelta>(b).Value, pose_state->BoneUserOffset[i])); };
                     const auto &bt = r.get<const PosedLocal>(b).Value;
                     Transform local{bt.P, bt.R, rest.S};
                     bool should_patch = false;
@@ -1121,11 +1056,11 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                         should_patch = need_sync = true;
                     } else if (transform_end.contains(b)) {
                         // Commit the drag into the pose delta and reconstruct Transform from rest and delta.
-                        mutable_deltas()[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
+                        r.edit<BoneDelta>(b).Value = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
                         pose_state->BoneUserOffset[i] = {};
-                        local = ComposeWithDelta(rest, deltas[i]);
+                        local = posed();
                         should_patch = need_sync = true;
-                    } else if (anim_advanced || mode_changed || pose_state_created) {
+                    } else if (anim_advanced || mode_changed || pose_state_created || pose_changes.contains(b)) {
                         // Reconstruct entity position and rotation from the pose delta.
                         local = posed();
                         should_patch = need_sync = true;
@@ -1133,9 +1068,9 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                         // Commit manual position or rotation changes into the pose delta.
                         if (const auto expected = posed();
                             bt.P != expected.P || bt.R != expected.R) {
-                            mutable_deltas()[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
+                            r.edit<BoneDelta>(b).Value = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
                             pose_state->BoneUserOffset[i] = {};
-                            local = ComposeWithDelta(rest, deltas[i]);
+                            local = posed();
                             should_patch = need_sync = true;
                         }
                     }
@@ -1270,7 +1205,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     if (const auto camera = LookThroughCameraEntity(r); camera != state::Null &&
         reactive(r, Change::WorldTransform).contains(camera)) {
         const auto &wt = r.get<WorldTransform>(camera);
-        r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, r.get<Camera>(camera)});
+        r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, *LensOf(r, camera)});
     }
     {
         // Update transmission specialization before the UBO reads its pipeline state.
@@ -1316,7 +1251,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const float aspect = render_extent.x == 0 || render_extent.y == 0 ? 1.f : float(render_extent.x) / float(render_extent.y);
         // Update widened scene-camera FOV after viewport aspect-ratio changes.
         if (const auto camera = LookThroughCameraEntity(r); camera != state::Null) {
-            r.edit<ViewCamera>(viewport).Data = WidenForLookThrough(r.get<Camera>(camera), aspect);
+            r.edit<ViewCamera>(viewport).Data = WidenForLookThrough(*LensOf(r, camera), aspect);
         }
         const auto &camera = r.get<const ViewCamera>(viewport);
         const auto &settings = r.get<const ViewportDisplay>(viewport);
@@ -1325,11 +1260,10 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const bool use_scene_lights = is_pbr_mode && active_lighting.UseSceneLights;
         const bool use_scene_world = is_pbr_mode && active_lighting.UseSceneWorld;
         const auto &active_environment = use_scene_world ? environments.SceneWorld : environments.StudioWorld;
-        const auto *source_assets = r.try_get<const gltf::SourceAssets>(viewport);
-        const auto *source_ibl = source_assets && source_assets->ImageBasedLight.has_value() ? &*source_assets->ImageBasedLight : nullptr;
-        const float env_intensity = use_scene_world && source_ibl ? source_ibl->Intensity : active_lighting.EnvIntensity;
+        const auto *image_light = r.try_get<const ImageLight>(viewport);
+        const float env_intensity = use_scene_world && image_light ? image_light->Intensity : active_lighting.EnvIntensity;
         const mat3 env_rotation = [&]() -> mat3 {
-            if (use_scene_world) return environments.SceneWorldRotation;
+            if (use_scene_world) return image_light ? numeric::ToMat3(image_light->Rotation) : mat3{1.f};
             const float radians = active_lighting.EnvRotationDegrees * (Pi / 180.f);
             const float s = std::sin(radians), c = std::cos(radians);
             return {c, 0, -s, 0, 1, 0, s, 0, c};
@@ -1340,7 +1274,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         buffers.FrameView = {camera, render_extent};
         const auto &mesh_slots = meshes.Slots();
         SceneViewUBO view{
-            .LightCount = buffers.Lights.Count<PunctualLight>(),
+            .LightCount = buffers.Lights.Count<LightRecord>(),
             .LightSlot = buffers.Lights.Slot,
             .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
             .EnvIntensity = env_intensity,
@@ -1466,6 +1400,7 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
     reactive(r, Change::TetMesh).on<TetBuffers>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::NewBufferEntity).on<MeshBuffers>(On::Create);
     reactive(r, Change::RenderInstanceCreated).on<RenderInstance>(On::Create);
+    reactive(r, Change::RenderInstanceDestroyed).on<RenderInstance>(On::Destroy);
     reactive(r, Change::ViewportDisplay).on<ViewportDisplay>(On::Create | On::Update);
     reactive(r, Change::InteractionMode).on<Interaction>(On::Create | On::Update);
     reactive(r, Change::WorkspaceLights).on<WorkspaceLights>(On::Create | On::Update);
@@ -1473,7 +1408,7 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
     reactive(r, Change::MaterializedTextures).on<MaterializedTextures>(On::Create | On::Update);
     reactive(r, Change::StudioEnvironment).on<StudioEnvironment>(On::Create | On::Update);
     reactive(r, Change::SceneWorld).on<gltf::SourceAssets>(On::Create | On::Update);
-    reactive(r, Change::PunctualLight).on<PunctualLight>(On::Create | On::Update);
+    reactive(r, Change::PunctualLight).on<PunctualLight>(On::Create | On::Update).on<RenderInstance>(On::Create);
     reactive(r, Change::ActiveMaterialVariant).on<MaterialVariants>(On::Create | On::Update);
     reactive(r, Change::PbrSpecialization)
         .on<PbrMeshFeatures>(On::Create | On::Update | On::Destroy)
@@ -1481,24 +1416,25 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
         .on<RenderedLighting>(On::Create | On::Update);
     reactive(r, Change::SceneView)
         .on<ViewCamera>(On::Create | On::Update)
+        .on<ImageLight>(On::Create | On::Update)
         .on<MaterialPreviewLighting>(On::Create | On::Update)
         .on<RenderedLighting>(On::Create | On::Update)
         .on<LightIndex>(On::Create | On::Destroy)
         .on<EditMode>(On::Create | On::Update);
-    reactive(r, Change::CameraLens).on<Camera>(On::Create | On::Update).on<LookingThrough>(On::Create | On::Destroy);
+    reactive(r, Change::CameraLens).on<Perspective>(On::Create | On::Update).on<Orthographic>(On::Create | On::Update).on<LookingThrough>(On::Create | On::Destroy);
     reactive(r, Change::Rotation).on<Transform>(On::Create | On::Update).on<PosedLocal>(On::Create | On::Update);
     reactive(r, Change::WorldTransform).on<WorldTransform>(On::Create | On::Update);
     reactive(r, Change::TransformPending).on<PendingTransform>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::TransformEnd).on<StartTransform>(On::Destroy);
+    reactive(r, Change::BonePose).on<BoneDelta>(On::Update);
     reactive(r, Change::TransformDirty)
         .on<Transform>(On::Create | On::Update)
         .on<PosedLocal>(On::Create | On::Update)
         .on<SceneNode>(On::Create | On::Update)
         .on<BoneDisplayScale>(On::Update);
-    reactive(r, Change::ActiveAnimationClip)
-        .on<ArmatureAnimation>(On::Update)
-        .on<MorphWeightAnimation>(On::Update)
-        .on<NodeTransformAnimation>(On::Update);
+    reactive(r, Change::AnimationEdited)
+        .on<AnimationClips>(On::Create | On::Update | On::Destroy)
+        .on<Animations>(On::Update);
     r.ctx().emplace<EntityDestroyTracker>().Bind(r);
 
     // Mark local transforms after constraint edits to trigger world-transform recomputation.

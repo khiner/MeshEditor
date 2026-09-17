@@ -1,4 +1,5 @@
 #include "viewport/ViewCameraOps.h"
+#include "scene/CameraLens.h"
 #include "state/Scene.h"
 
 state::Entity LookThroughCameraEntity(const state::Scene &r) {
@@ -7,7 +8,7 @@ state::Entity LookThroughCameraEntity(const state::Scene &r) {
 }
 
 void SetLookThrough(state::Scene &r, state::Entity viewport, state::Entity target) {
-    if (!r.all_of<Camera>(target)) return;
+    if (!HasLens(r, target)) return;
     const auto previous = LookThroughCameraEntity(r);
     if (previous == target) return;
 

@@ -171,7 +171,7 @@ inline float4 ShadePbr(
         // Preserve emissive output for vertices without normals.
         float3 unlit = base_color.rgb;
         if (no_normal) {
-            float3 emissive = float3(material.EmissiveFactor);
+            float3 emissive = float3(material.EmissiveFactor) * material.EmissiveStrength;
             if (material.EmissiveTexture.Slot != InvalidSlot) emissive *= ctx.SampleTexture(material.EmissiveTexture).rgb;
             unlit += emissive;
         }
@@ -303,9 +303,9 @@ inline float4 ShadePbr(
 
     float3 direct_color = float3(0.0f);
     if (EnablePunctual && view.UseSceneLightsRender != 0u) {
-        device const PunctualLight *lights = scene.Lights(view.LightSlot);
+        device const LightRecord *lights = scene.Lights(view.LightSlot);
         for (uint i = 0u; i < view.LightCount; ++i) {
-            const PunctualLight light = lights[i];
+            const LightRecord light = lights[i];
 
             float3 L;
             float3 point_to_light;
@@ -419,7 +419,7 @@ inline float4 ShadePbr(
     }
 
     float3 color = direct_color + indirect_color;
-    float3 emissive = float3(material.EmissiveFactor);
+    float3 emissive = float3(material.EmissiveFactor) * material.EmissiveStrength;
     if (material.EmissiveTexture.Slot != InvalidSlot) emissive *= ctx.SampleTexture(material.EmissiveTexture).rgb;
     if (has_clearcoat) emissive *= (1.0f - clearcoat_factor * cc_fresnel_ibl);
     color += emissive;

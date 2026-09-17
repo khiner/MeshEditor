@@ -1,8 +1,8 @@
 #pragma once
 
-#include "gpu/PunctualLight.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
+#include "render/LightComponents.h"
 #include "viewport/ViewCamera.h"
 
 #include <numbers>
@@ -24,8 +24,8 @@ struct Defaults {
             .Range = 0.f, // infinite
             .Color = {1.f, 1.f, 1.f},
             .Intensity = LightIntensity,
-            .InnerConeCos = type == PunctualLightType::Spot ? std::cos(SpotOuterAngle * (1.f - SpotBlend)) : 0.f,
-            .OuterConeCos = type == PunctualLightType::Spot ? std::cos(SpotOuterAngle) : 0.f,
+            .InnerConeAngle = type == PunctualLightType::Spot ? SpotOuterAngle * (1.f - SpotBlend) : 0.f,
+            .OuterConeAngle = type == PunctualLightType::Spot ? SpotOuterAngle : 0.f,
             .Type = type,
         };
     }

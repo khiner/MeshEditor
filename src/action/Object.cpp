@@ -1,8 +1,10 @@
 #include "action/Object.h"
+#include "Camera.h"
 #include "Profile.h"
 #include "Variant.h"
 #include "action/Dispatch.h"
 #include "action/ScopeResolve.h"
+#include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
@@ -15,6 +17,7 @@
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
 #include "render/MeshBuffers.h"
+#include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
@@ -25,6 +28,7 @@
 #include "viewport/ViewportEvents.h"
 
 #include <format>
+#include <span>
 
 using state::Change;
 
@@ -81,8 +85,8 @@ state::Entity DuplicateOne(state::Scene &r, state::Entity e) {
 
     // Object extras (Camera, Empty, Light) have Instance but create their own wireframe mesh.
     if (r.all_of<ObjectExtrasTag>(r.get<Instance>(e).Entity)) {
-        if (const auto *src_cd = r.try_get<Camera>(e)) return ::AddCamera(r, meshes, create_info, *src_cd);
-        if (r.all_of<LightIndex>(e)) return ::AddLight(r, meshes, create_info, GetLight(r, r.get<const LightIndex>(e).Value));
+        if (const auto lens = LensOf(r, e)) return ::AddCamera(r, meshes, create_info, *lens);
+        if (const auto *light = r.try_get<const PunctualLight>(e)) return ::AddLight(r, meshes, create_info, *light);
         return ::AddEmpty(r, meshes, create_info);
     }
 
@@ -94,6 +98,7 @@ state::Entity DuplicateOne(state::Scene &r, state::Entity e) {
     if (auto *prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(e_new.first, *prim_shape);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new.second, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new.second, *bone_attachment);
+    if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(e_new.second, r.ctx().get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
     return e_new.second;
 }
 
@@ -125,6 +130,7 @@ state::Entity DuplicateLinkedOne(state::Scene &r, state::Entity e) {
     Show(r, e_new);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new, *bone_attachment);
+    if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(e_new, r.ctx().get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
 
     r.emplace<Selected>(e_new);
 
@@ -281,9 +287,10 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     else r.remove<PbrMeshFeatures>(e);
                 });
             },
-            [&](const UpdateMaterial &a) {
-                if (a.Features) Apply(r, viewport, SetPbrMeshFeaturesMask{*a.Features, a.Scope});
-                r.ctx().get<GpuBuffers>().Materials.Update(as_bytes(*a.Value), uint64_t(a.Index) * sizeof(PBRMaterial));
+            [&]<typename T>(const UpdateMaterial<T> &a) {
+                auto &materials = r.ctx().get<GpuBuffers>().Materials;
+                if (a.Index >= materials.Count<PBRMaterial>()) return;
+                materials.Update(std::as_bytes(std::span{&a.Value, 1}), uint64_t(a.Index) * sizeof(PBRMaterial) + a.Offset);
                 reactive(r, Change::Materials).emplace(viewport);
             },
             [&](const SetMaterialSlotSelection &a) {
@@ -292,8 +299,20 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](const SetMaterialAssignment &a) {
                 for_each_mesh_target(a.Scope, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialAssignment>(e, a.PrimitiveIndex, a.MaterialIndex); });
             },
-            [&](const SetCameraLens &a) {
-                ForEachComponentTarget<Camera>(r, a.Scope, state::Null, state::Null, [&](state::Entity e) { r.replace<Camera>(e, a.Value); });
+            [&](const SetProjection &a) {
+                ForEachScopeTarget(
+                    a.Scope, state::Null, state::Null,
+                    [&] { const auto e = FindActiveEntity(r); return HasLens(r, e) ? e : state::Null; },
+                    [&](auto &&fn) {
+                        for (const auto e : r.view<Selected>())
+                            if (HasLens(r, e)) fn(e);
+                    },
+                    [&](state::Entity e) {
+                        const float distance = std::max(numeric::Length(r.get<const WorldTransform>(e).P), 1.f);
+                        if (const auto *perspective = r.try_get<const Perspective>(e); perspective && a.Orthographic) SetLens(r, e, OrthographicFromPerspective(*perspective, distance));
+                        else if (const auto *orthographic = r.try_get<const Orthographic>(e); orthographic && !a.Orthographic) SetLens(r, e, PerspectiveFromOrthographic(*orthographic, distance));
+                    }
+                );
             },
             [&](const SetLightType &a) {
                 ForEachComponentTarget<PunctualLight>(r, a.Scope, state::Null, state::Null, [&](auto e) {
@@ -308,8 +327,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](const SetSpotCone &a) {
                 ForEachComponentTarget<PunctualLight>(r, a.Scope, state::Null, state::Null, [&](auto e) {
                     r.patch<PunctualLight>(e, [&](auto &light) {
-                        light.OuterConeCos = std::cos(a.OuterAngle);
-                        light.InnerConeCos = std::cos(a.OuterAngle * (1.f - a.Blend));
+                        light.OuterConeAngle = a.OuterAngle;
+                        light.InnerConeAngle = a.OuterAngle * (1.f - a.Blend);
                     });
                 });
             },

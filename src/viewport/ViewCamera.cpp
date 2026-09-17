@@ -26,7 +26,7 @@ float CameraView::NearClip() const {
 }
 
 float CameraView::FarClip() const {
-    if (const auto *perspective = std::get_if<Perspective>(&Data)) return perspective->FarClip.value_or(MaxFarClip);
+    if (const auto *perspective = std::get_if<Perspective>(&Data)) return perspective->HasFarClip() ? perspective->FarClip : MaxFarClip;
     return std::get<Orthographic>(Data).FarClip;
 }
 
@@ -59,14 +59,15 @@ quat ViewCamera::OrientationFromAway(vec3 away) {
 
 mat4 CameraView::View() const { return numeric::LookAt(Position(), Target, Up()); }
 mat4 CameraView::Projection(float aspect_ratio) const {
+    // Clamp far in front of near, since the fields edit independently.
     if (const auto *perspective = std::get_if<Perspective>(&Data)) {
-        if (perspective->FarClip) return numeric::PerspectiveRhZo(perspective->FieldOfViewRad, aspect_ratio, perspective->NearClip, *perspective->FarClip);
+        if (perspective->HasFarClip()) return numeric::PerspectiveRhZo(perspective->FieldOfViewRad, aspect_ratio, perspective->NearClip, std::max(perspective->FarClip, perspective->NearClip + MinNearFarDelta));
         return numeric::InfinitePerspectiveRhZo(perspective->FieldOfViewRad, aspect_ratio, perspective->NearClip);
     }
 
     const auto &orthographic = std::get<Orthographic>(Data);
     const vec2 mag{orthographic.Mag.y * aspect_ratio, orthographic.Mag.y};
-    return numeric::OrthoRhZo(-mag.x, mag.x, -mag.y, mag.y, orthographic.NearClip, orthographic.FarClip);
+    return numeric::OrthoRhZo(-mag.x, mag.x, -mag.y, mag.y, orthographic.NearClip, std::max(orthographic.FarClip, orthographic.NearClip + MinNearFarDelta));
 }
 mat3 CameraView::Basis() const {
     const auto m = numeric::ToMat3(Orientation); // {Right, Up, Away}

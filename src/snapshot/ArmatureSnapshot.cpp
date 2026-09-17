@@ -1,4 +1,3 @@
-#include "animation/AnimationData.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "render/MeshBuffers.h"
@@ -38,7 +37,7 @@ template<> void PrepareNative(Armature &value) { value.RebuildCaches(); }
 void RegisterArmature(Tables &tables) {
     Persistent<
         Armature, ArmatureObject, BoneJointEntities, BoneJoint, BoneSubPartOf, BoneActive, BoneSelection, BoneConstraints,
-        ArmatureModifier, BoneIndex, BoneDisplayScale, BoneAttachment, ArmatureAnimation, ArmaturePose>(tables);
+        ArmatureModifier, BoneIndex, BoneDisplayScale, BoneAttachment, BoneDelta>(tables);
     Derived<PosedLocal, BoneAdjacencyIndices, ArmaturePoseState>(tables);
 }
 } // namespace snapshot::detail
