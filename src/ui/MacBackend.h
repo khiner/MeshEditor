@@ -16,5 +16,6 @@ public:
 private:
     MacPlatform::Window &Window;
     bool Initialized{false};
+    bool Active{true};
 };
 } // namespace ui
