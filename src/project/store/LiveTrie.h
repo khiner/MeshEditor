@@ -66,8 +66,8 @@ inline bool Unchanged(std::span<const std::byte> current, std::span<const std::b
     return current.size() == incoming.size() && (current.empty() || std::memcmp(current.data(), incoming.data(), current.size()) == 0);
 }
 
-// Process-wide backing allocation, including cached node/child-array blocks.
-uint64_t SharedNodePoolBytes();
+// Process-wide bytes held by trie nodes and child arrays.
+uint64_t SharedNodeBytes();
 
 struct TrieStats {
     uint64_t Nodes{}, AliasedNodes{}, OwnedSlots{}, OwnedBytes{};

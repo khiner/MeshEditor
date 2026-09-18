@@ -838,7 +838,7 @@ std::string History::ValidateReplay(int node) {
 }
 
 HistoryStats History::Stats() const {
-    HistoryStats s{.OwnedBytes = OwnedBytes(*this), .SharedNodeBytes = SharedNodePoolBytes()};
+    HistoryStats s{.OwnedBytes = OwnedBytes(*this), .SharedNodeBytes = SharedNodeBytes()};
     for (const auto &n : Nodes) {
         if (n.Hot) ++s.HotNodes;
         else ++s.ColdNodes;

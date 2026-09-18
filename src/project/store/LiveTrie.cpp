@@ -4,41 +4,20 @@
 #include <atomic>
 #include <cassert>
 #include <format>
-#include <memory_resource>
 #include <unordered_set>
 
 namespace store {
 namespace {
-// Account for the process-wide pool, including its cached blocks.
-struct NodeMemory : std::pmr::memory_resource {
-    std::atomic<uint64_t> Bytes{};
-    void *do_allocate(size_t bytes, size_t alignment) override {
-        auto *p = std::pmr::new_delete_resource()->allocate(bytes, alignment);
-        Bytes.fetch_add(bytes, std::memory_order_relaxed);
-        return p;
-    }
-    void do_deallocate(void *p, size_t bytes, size_t alignment) override {
-        Bytes.fetch_sub(bytes, std::memory_order_relaxed);
-        std::pmr::new_delete_resource()->deallocate(p, bytes, alignment);
-    }
-    bool do_is_equal(const std::pmr::memory_resource &other) const noexcept override { return this == &other; }
-};
-struct NodeAllocator {
-    NodeMemory Memory;
-    std::pmr::synchronized_pool_resource Pool{{64, Fanout * sizeof(Node *)}, &Memory};
-};
-NodeAllocator &Allocator() {
-    static NodeAllocator allocator;
-    return allocator;
-}
-std::pmr::synchronized_pool_resource &Nodes() { return Allocator().Pool; }
+// Process-wide bytes held by nodes and child arrays.
+std::atomic<uint64_t> NodeBytes{};
 Node **AllocChildren() {
-    return ::new (Nodes().allocate(Fanout * sizeof(Node *), alignof(Node *))) Node *[Fanout] {};
+    NodeBytes.fetch_add(Fanout * sizeof(Node *), std::memory_order_relaxed);
+    return new Node *[Fanout] {};
 }
 
 Node *Alloc(LiveTrie &trie, NodeKind kind) {
-    auto *n = static_cast<Node *>(Nodes().allocate(sizeof(Node), alignof(Node)));
-    std::construct_at(n, Node{1, kind, {}, nullptr, {}});
+    NodeBytes.fetch_add(sizeof(Node), std::memory_order_relaxed);
+    auto *n = new Node{1, kind, {}, nullptr, {}};
     ++trie.S.Nodes;
     if (kind == NodeKind::Aliased) ++trie.S.AliasedNodes;
     if (kind == NodeKind::Interior) {
@@ -48,7 +27,8 @@ Node *Alloc(LiveTrie &trie, NodeKind kind) {
 }
 
 void FreeChildren(Node **a) {
-    Nodes().deallocate(a, Fanout * sizeof(Node *), alignof(Node *));
+    NodeBytes.fetch_sub(Fanout * sizeof(Node *), std::memory_order_relaxed);
+    delete[] a;
 }
 
 void ReleaseNode(LiveTrie &trie, Node *n) {
@@ -67,7 +47,8 @@ void ReleaseNode(LiveTrie &trie, Node *n) {
             FreeChildren(n->Children);
             break;
     }
-    Nodes().deallocate(n, sizeof(Node), alignof(Node));
+    NodeBytes.fetch_sub(sizeof(Node), std::memory_order_relaxed);
+    delete n;
 }
 
 // Retain adopt children or allocate aliased children, preserving the value for every referencing version.
@@ -352,7 +333,7 @@ bool CheckVersionRec(Node *n, const std::unordered_set<const Node *> &present_al
 }
 } // namespace
 
-uint64_t SharedNodePoolBytes() { return Allocator().Memory.Bytes.load(std::memory_order_relaxed); }
+uint64_t SharedNodeBytes() { return NodeBytes.load(std::memory_order_relaxed); }
 
 LiveTrie::LiveTrie(uint32_t levels, uint32_t page_bytes)
     : Levels(levels), PageBytes(page_bytes), Root(Alloc(*this, NodeKind::Aliased)), Manifest(levels) {}

@@ -346,7 +346,8 @@ void DeinitViewport(state::Scene &r, state::Entity viewport) {
     r.ctx().erase<Pipelines>();
     r.ctx().erase<RenderTargets>();
     if (r.valid(viewport)) r.destroy(viewport);
-    // MeshHandle destruction needs the mesh store, and resource owners retire buffers into the render store.
+    // The store releases every mesh in one batch, and MeshHandle destruction still needs it present.
+    r.ctx().get<MeshStore>().Clear();
     r.clear<MeshHandle>();
     DeinitTextureStores(r);
     r.ctx().erase<MeshStore>();
