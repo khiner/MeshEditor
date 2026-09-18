@@ -37,7 +37,7 @@ inline void EmitMeshletEditEdge(
     constant MeshletDrawPushConstants &pc, uint edge_corner
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    const MeshletWork work = ResolveMeshletWork(bindless, pc, group_index);
+    const MeshletWork work = ResolveMeshletWork(scene, pc, group_index);
     if (!work.Valid) {
         output.set_primitive_count(0u);
         return;
@@ -97,7 +97,7 @@ inline void EmitMeshletEditEdge(
 ) {
     threadgroup uint simd_counts[MeshletEditPointSimdGroups];
     const Scene scene{bindless, view, theme, workspace};
-    const MeshletWork work = ResolveMeshletWork(bindless, pc, group.x);
+    const MeshletWork work = ResolveMeshletWork(scene, pc, group.x);
     if (!work.Valid) {
         output.set_primitive_count(0u);
         return;
@@ -136,7 +136,7 @@ inline void EmitMeshletEditEdge(
 ) {
     threadgroup uint simd_counts[MeshletEditPointSimdGroups];
     const Scene scene{bindless, view, theme, workspace};
-    const MeshletWork work = ResolveMeshletWork(bindless, pc, group.x);
+    const MeshletWork work = ResolveMeshletWork(scene, pc, group.x);
     if (!work.Valid) {
         output.set_primitive_count(0u);
         return;
@@ -168,7 +168,7 @@ inline void EmitMeshletEditEdge(
 ) {
     threadgroup uint simd_counts[MeshletEditSimdGroups];
     const Scene scene{bindless, view, theme, workspace};
-    const MeshletWork work = ResolveMeshletWork(bindless, pc, group.x);
+    const MeshletWork work = ResolveMeshletWork(scene, pc, group.x);
     if (!work.Valid) {
         output.set_primitive_count(0u);
         return;
@@ -197,7 +197,7 @@ inline void EmitMeshletEditEdge(
 ) {
     threadgroup uint simd_counts[MeshletEditSimdGroups];
     const Scene scene{bindless, view, theme, workspace};
-    const MeshletWork work = ResolveMeshletWork(bindless, pc, group.x);
+    const MeshletWork work = ResolveMeshletWork(scene, pc, group.x);
     if (!work.Valid) {
         output.set_primitive_count(0u);
         return;
@@ -225,7 +225,7 @@ inline void EmitMeshletEditEdge(
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    const MeshletWork work = ResolveMeshletWork(bindless, pc, group.x);
+    const MeshletWork work = ResolveMeshletWork(scene, pc, group.x);
     if (!work.Valid || MeshletPrimitiveTopology(work.Meshlet) != uint(MeshPrimitiveTopology::Triangle) || MeshletCoarse(work.Meshlet)) {
         output.set_primitive_count(0u);
         return;

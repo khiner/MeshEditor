@@ -7,7 +7,7 @@
 struct PosedMeshletBoundsPushConstants {
     ElementWork Work DEFAULT();
     uint32_t FirstTile DEFAULT();
-    uint32_t DrawDataSlot DEFAULT();
+    uint32_t BoundsEntrySlot DEFAULT();
     uint32_t TileMapSlot DEFAULT();
     uint32_t MeshletSlot DEFAULT();
     uint32_t PrimitiveSlot DEFAULT();

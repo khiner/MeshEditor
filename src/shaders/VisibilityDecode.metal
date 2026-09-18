@@ -185,6 +185,7 @@ inline VisibilityTextureCoordinates DecodeVisibilityTextureCoordinates(
 inline ResolvedVisibility ResolveVisibilityPrimitive(
     uint id,
     device const BindlessSet &bindless,
+    constant SceneViewUBO &view,
     VisibilityShadingPushConstants pc
 ) {
     if (id == VisibilityBackground) return {};
@@ -192,9 +193,10 @@ inline ResolvedVisibility ResolveVisibilityPrimitive(
     const VisibleMeshlet visible = BindlessBuffer(VisibleMeshlet, bindless.Buffer, pc.VisibleMeshletSlot)[visible_index];
     const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[visible.Instance];
     const InstanceRecord instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
+    const MeshRecord mesh = BindlessBuffer(MeshRecord, bindless.Buffer, view.MeshRecordSlot)[visible.Mesh];
     const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[visible.Meshlet];
     const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
-    return {.Instance = instance, .Meshlet = meshlet, .Primitive = primitive, .Draw = MeshletDraw(primitive, instance, instance_slot), .LocalTriangle = id & VisibilityTriangleMask, .Valid = true};
+    return {.Instance = instance, .Meshlet = meshlet, .Primitive = primitive, .Draw = ComposeDraw(mesh, primitive.FirstTriangle, instance, instance_slot, instance.Selection), .LocalTriangle = id & VisibilityTriangleMask, .Valid = true};
 }
 
 inline ResolvedVisibility ResolveVisibilityId(
@@ -205,7 +207,7 @@ inline ResolvedVisibility ResolveVisibilityId(
     constant WorkspaceLights &workspace,
     VisibilityShadingPushConstants pc
 ) {
-    ResolvedVisibility result = ResolveVisibilityPrimitive(id, bindless, pc);
+    ResolvedVisibility result = ResolveVisibilityPrimitive(id, bindless, view, pc);
     if (!result.Valid) return result;
     if (MeshletCoarse(result.Meshlet)) return result;
     const Scene scene{bindless, view, theme, workspace};

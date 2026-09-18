@@ -1,15 +1,15 @@
 #pragma once
 
-#include "gpu/DrawData.h"
 #include "gpu/SlotOffset.h"
 #include "gpu/Types.h"
 
-// Stores immutable topology and shading once per mesh. Instance records contain mutable state.
+// Stores one primitive's meshlet range and LOD roots. The instance record names the mesh record they share.
 struct PrimitiveRecord {
-    DrawData Draw DEFAULT();
     // Optional kind-specific indices for bone adjacency and ring geometry.
     SlotOffset AuxIndices DEFAULT();
     uint32_t PrimitiveIndex DEFAULT();
+    // The mesh's primitive-material offset, kept here so the cull resolves a material without the mesh record.
+    uint32_t PrimitiveMaterialOffset DEFAULT(InvalidOffset);
     uint32_t FirstTriangle DEFAULT();
     uint32_t MeshletOffset DEFAULT();
     uint32_t MeshletCount DEFAULT();
@@ -19,4 +19,4 @@ struct PrimitiveRecord {
     uint32_t LodRootNode DEFAULT(InvalidOffset);
     uint32_t LodFinestNode DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(PrimitiveRecord) == 264, "PrimitiveRecord size");
+static_assert(sizeof(PrimitiveRecord) == 40, "PrimitiveRecord size");

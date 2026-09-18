@@ -10,25 +10,6 @@
 #include "TransformUtils.metal"
 #include "EditSelection.metal"
 
-inline DrawData MeshletDraw(PrimitiveRecord primitive, InstanceRecord instance, uint instance_slot) {
-    DrawData draw = primitive.Draw;
-    draw.FirstInstance = instance_slot;
-    draw.BoneDeformOffset = instance.BoneDeformOffset;
-    draw.ArmatureDeformOffset = instance.ArmatureDeformOffset;
-    draw.MorphDeformOffset = instance.MorphDeformOffset;
-    draw.MorphWeightsOffset = instance.MorphWeightsOffset;
-    draw.MorphTargetCount = instance.MorphTargetCount;
-    draw.PosedPositionOffset = instance.PosedPositionOffset;
-    draw.PosedVertexNormalOffset = instance.PosedVertexNormalOffset;
-    draw.PosedSeamNormalOffset = instance.PosedSeamNormalOffset;
-    draw.PosedFaceNormalOffset = instance.PosedFaceNormalOffset;
-    draw.Selection = instance.Selection;
-    draw.ElementIdOffset = instance.ElementIdOffset;
-    draw.HasPendingVertexTransform = instance.HasPendingVertexTransform;
-    draw.PrimaryEditInstanceIndex = instance.PrimaryEditInstanceIndex;
-    return draw;
-}
-
 struct MeshletWork {
     InstanceRecord Instance;
     MeshletRecord Meshlet;
@@ -39,8 +20,9 @@ struct MeshletWork {
 };
 
 inline MeshletWork ResolveMeshletWork(
-    device const BindlessSet &bindless, constant MeshletDrawPushConstants &pc, uint group_index
+    const thread Scene &scene, constant MeshletDrawPushConstants &pc, uint group_index
 ) {
+    device const BindlessSet &bindless = scene.B;
     const MeshletRouteState routes = BindlessBuffer(MeshletRouteState, bindless.Buffer, pc.RouteStateSlot)[0];
     const uint visible_index = routes.Offsets[pc.Route] + pc.VisibleOffset + group_index;
     const VisibleMeshlet work = BindlessBuffer(VisibleMeshlet, bindless.Buffer, pc.VisibleMeshletSlot)[visible_index];
@@ -50,13 +32,14 @@ inline MeshletWork ResolveMeshletWork(
         (instance.Flags & pc.RequiredInstanceFlags) != pc.RequiredInstanceFlags) {
         return {.Instance = instance, .VisibleIndex = visible_index, .MeshletIndex = work.Meshlet};
     }
+    const MeshRecord mesh = scene.MeshRecords(scene.View.MeshRecordSlot)[work.Mesh];
     const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[work.Meshlet];
     const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
     return {
         .Instance = instance,
         .Meshlet = meshlet,
         .Primitive = primitive,
-        .Draw = MeshletDraw(primitive, instance, instance_slot),
+        .Draw = ComposeDraw(mesh, primitive.FirstTriangle, instance, instance_slot, instance.Selection),
         .VisibleIndex = visible_index,
         .MeshletIndex = work.Meshlet,
         .Valid = true,

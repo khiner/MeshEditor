@@ -61,6 +61,8 @@ struct SceneViewUBO {
     uint32_t ModelSlotOverride DEFAULT(InvalidSlot);
     uint32_t MaterialSlot DEFAULT();
     uint32_t PrimitiveMaterialSlot DEFAULT();
+    uint32_t MeshRecordSlot DEFAULT();
+    uint32_t InstanceRecordSlot DEFAULT();
     uint32_t ElementPrimitiveSlot DEFAULT();
     uint32_t BoneXRay DEFAULT();
     // Opacity of every surface in the X-ray solid draw.
@@ -79,4 +81,4 @@ struct SceneViewUBO {
     uint32_t UseRealTransmission DEFAULT();
     DebugChannel DebugChannel DEFAULT();
 };
-static_assert(sizeof(SceneViewUBO) == 452, "SceneViewUBO size");
+static_assert(sizeof(SceneViewUBO) == 460, "SceneViewUBO size");

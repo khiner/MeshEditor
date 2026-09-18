@@ -25,7 +25,7 @@ kernel void BoundsReduceKernel(
     if (work_id == InvalidOffset) return;
     const uint destination = sparse ? BindlessBuffer(uint, bindless.Buffer, pc.EntryFirstTileSlot)[pc.EntryIndex] + work_id : group_id;
     const uint2 tile = uint2(scene.TileMap(pc.TileMapSlot)[destination]);
-    const DrawData draw = scene.Draws(pc.DrawDataSlot)[tile.x];
+    const DrawData draw = scene.BoundsDraw(scene.BoundsEntries(pc.BoundsEntrySlot)[tile.x]);
     const uint i = tile.y * 256u + tid;
     float3 lo = AabbEmptyMin;
     float3 hi = AabbEmptyMax;

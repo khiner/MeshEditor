@@ -290,7 +290,7 @@ inline VisibleMeshlet ResolveMeshlet(
     device const BindlessSet &bindless, MeshletCullPushConstants pc, uint block_id, uint work_index
 ) {
     device const MeshletWorkState *state = BindlessBuffer(MeshletWorkState, bindless.Buffer, pc.WorkStateSlot);
-    if (work_index >= state->MeshletCount) return {InvalidOffset, InvalidOffset};
+    if (work_index >= state->MeshletCount) return {InvalidOffset, InvalidOffset, InvalidOffset};
     device const uint *work_blocks = BindlessBuffer(uint, bindless.Buffer, pc.WorkBlockSlot);
     device const MeshletWorkRange *ranges = BindlessBuffer(MeshletWorkRange, bindless.Buffer, pc.WorkRangeSlot);
     uint lo = work_blocks[block_id];
@@ -301,7 +301,14 @@ inline VisibleMeshlet ResolveMeshlet(
         else hi = mid;
     }
     const MeshletWorkRange range = ranges[lo];
-    return {range.Instance, range.MeshletOffset + work_index - range.WorkOffset};
+    return {range.Instance, range.MeshletOffset + work_index - range.WorkOffset, InvalidOffset};
+}
+
+// The mesh record of a candidate's instance, or InvalidOffset for an unmapped instance.
+inline uint CandidateMesh(device const BindlessSet &bindless, MeshletCullPushConstants pc, VisibleMeshlet candidate) {
+    if (candidate.Instance == InvalidOffset) return InvalidOffset;
+    const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[candidate.Instance];
+    return instance_slot == InvalidOffset ? InvalidOffset : BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot].Mesh;
 }
 
 // Node error and bounds conservatively cover every record in the span, so pruning preserves classification results.
@@ -591,6 +598,7 @@ kernel void MeshletCullEmit(
     const uint i = block_id * CullBlockSize + lane;
     const VisibleMeshlet work = ResolveMeshlet(bindless, pc, block_id, i);
     const bool valid = work.Instance != InvalidOffset;
+    const uint mesh = CandidateMesh(bindless, pc, work);
     const uint classification = valid ? BindlessBuffer(uint, bindless.Buffer, pc.ClassificationSlot)[i] : 0u;
     const uint routes = classification & ((1u << CullRouteCount) - 1u);
 
@@ -621,6 +629,6 @@ kernel void MeshletCullEmit(
         if (present[route] == 0u) continue;
         rank[route] += group_prefixes[route * PrefixStride + simd_group];
         uint output = state->Offsets[route] + blocks[block_id].Routes[route] + rank[route];
-        visible[output] = work;
+        visible[output] = {work.Instance, work.Meshlet, mesh};
     }
 }

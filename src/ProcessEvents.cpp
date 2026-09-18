@@ -1316,6 +1316,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             .InstanceBoundsSlot = buffers.Instances.BoundsBuffer.Slot,
             .MaterialSlot = buffers.Materials.Slot,
             .PrimitiveMaterialSlot = mesh_slots.PrimitiveMaterial,
+            .MeshRecordSlot = buffers.MeshRecords.Buffer.Slot,
+            .InstanceRecordSlot = buffers.Instances.RecordBuffer.Slot,
             .ElementPrimitiveSlot = mesh_slots.ElementPrimitive,
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
             .XRayAlpha = XRayActive(settings) && settings.ViewportShading == ViewportShadingMode::Solid ? XRayOpacity(settings) : 1.f,

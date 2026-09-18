@@ -68,6 +68,7 @@ void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_e
         auto &record = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({ri.BufferIndex, 1}).front();
         record.PrimitiveOffset = OffsetOrInvalid(mesh_buffers.Primitives);
         record.PrimitiveCount = mesh_buffers.Primitives.Count;
+        record.Mesh = OffsetOrInvalid(mesh_buffers.MeshRecord);
         UpdateMeshletInstance(r, instance_entity);
     }
 }
@@ -158,14 +159,14 @@ void BuildBoneMeshletsNow(state::Scene &r, std::span<const state::Entity> entiti
             .Weld = {.TriangleFaceIds = face_ids},
             .TriangleCount = triangle_count,
             .FaceTopology = true,
-            .PrimitiveDraws = {{
+            .Mesh = {
                 .VertexSlot = mb.Vertices.Slot,
                 .IndexSlotOffset = mb.FaceIndices,
                 .ModelSlot = buffers.Instances.TransformBuffer.Slot,
                 .VertexCountOrHeadImageSlot = mb.Vertices.Count,
                 .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
                 .VertexOffset = mb.Vertices.Offset,
-            }},
+            },
         };
         auto build = BuildMeshlets(inputs);
         assert(build.Primitives.size() == 1u);
@@ -297,6 +298,7 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
             if (mesh_buffers) {
                 record.PrimitiveOffset = OffsetOrInvalid(mesh_buffers->Primitives);
                 record.PrimitiveCount = mesh_buffers->Primitives.Count;
+                record.Mesh = OffsetOrInvalid(mesh_buffers->MeshRecord);
             }
         }
         // WorldTransform slots stay unwritten here, and the WorldTransform reactive pass writes them before submit.

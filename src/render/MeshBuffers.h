@@ -28,7 +28,7 @@ struct MeshBuffers {
     MeshBuffers &operator=(const MeshBuffers &) = delete;
     SlottedRange Vertices;
     SlottedRange FaceIndices, EdgeIndices, VertexIndices;
-    Range Primitives, Meshlets, MeshletTriangles, MeshletVertices, MeshletLocalTriangles, MeshletEditEdges;
+    Range MeshRecord, Primitives, Meshlets, MeshletTriangles, MeshletVertices, MeshletLocalTriangles, MeshletEditEdges;
     // Meshes without coarse geometry use one unpruned span node per primitive.
     Range ClusterGroups, LodNodes, CoarseVertices, CoarseLocalTriangles;
 };

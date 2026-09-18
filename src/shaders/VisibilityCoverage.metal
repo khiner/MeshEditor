@@ -29,7 +29,7 @@ inline uint CoveredMeshletObject(
 ) {
     device const BindlessSet &bindless = scene.B;
     constant SceneViewUBO &view = scene.View;
-    ResolvedVisibility resolved = ResolveVisibilityPrimitive(primitive_id, bindless, pc);
+    ResolvedVisibility resolved = ResolveVisibilityPrimitive(primitive_id, bindless, view, pc);
     const uint topology = MeshletPrimitiveTopology(resolved.Meshlet);
     const uint material_index = MeshletPrimitiveMaterialIndex(scene, resolved.Primitive);
     device const PBRMaterial &material = scene.Materials(view.MaterialSlot)[material_index];

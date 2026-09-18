@@ -70,7 +70,7 @@ kernel void WireRasterKernel(
     constant WireRasterPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    const MeshletWork work = ResolveMeshletWork(bindless, pc.Meshlet, threadgroup_position.x);
+    const MeshletWork work = ResolveMeshletWork(scene, pc.Meshlet, threadgroup_position.x);
     if (!work.Valid) return;
     const uint topology = MeshletPrimitiveTopology(work.Meshlet);
     MeshletEditEdgeGeometry geometry;

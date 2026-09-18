@@ -9,6 +9,7 @@
 #include "gpu/LodFrontierState.h"
 #include "gpu/LodNode.h"
 #include "gpu/MeshDispatchArgs.h"
+#include "gpu/MeshRecord.h"
 #include "gpu/MeshletCullBlockState.h"
 #include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MeshletRecord.h"
@@ -119,6 +120,7 @@ struct GpuBuffers {
     BufferArena<ClusterGroup> ClusterGroups;
     BufferArena<LodNode> LodNodes;
     BufferArena<PrimitiveRecord> Primitives;
+    BufferArena<MeshRecord> MeshRecords;
     mtl::Buffer GpuInstanceSlots;
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, SlotType::ArmatureDeformBuffer};
     BufferArena<float> MorphWeightBuffer{Ctx, SlotType::MorphWeightBuffer};
@@ -200,7 +202,7 @@ struct GpuBuffers {
     mtl::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
 
     // One entry per run of mesh instance slots sharing a deform state.
-    mtl::Buffer BoundsReduceEntries{Ctx, 0, SlotType::DrawDataBuffer};
+    mtl::Buffer BoundsReduceEntries{Ctx, 0, SlotType::BoundsEntryBuffer};
     // (entry index, tile index) per bounds threadgroup, posed entries' tiles first.
     mtl::Buffer BoundsTiles{Ctx, 0, SlotType::Buffer};
     // Per-tile partial AABBs of each entry's positions.

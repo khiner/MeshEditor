@@ -39,7 +39,7 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    const MeshletWork work = ResolveMeshletWork(bindless, pc, threadgroup_position.x);
+    const MeshletWork work = ResolveMeshletWork(scene, pc, threadgroup_position.x);
     if (!work.Valid) {
         output.set_primitive_count(0u);
         return;
@@ -114,7 +114,7 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    const MeshletWork work = ResolveMeshletWork(bindless, pc, threadgroup_position.x);
+    const MeshletWork work = ResolveMeshletWork(scene, pc, threadgroup_position.x);
     if (!work.Valid) {
         output.set_primitive_count(0u);
         return;

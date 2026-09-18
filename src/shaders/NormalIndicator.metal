@@ -87,7 +87,7 @@ inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uin
 ) {
     threadgroup uint simd_counts[NormalIndicatorSimdGroups];
     const Scene scene{bindless, view, theme, workspace};
-    const MeshletWork work = ResolveMeshletWork(bindless, pc, threadgroup_position.x);
+    const MeshletWork work = ResolveMeshletWork(scene, pc, threadgroup_position.x);
     if (!work.Valid) {
         output.set_primitive_count(0u);
         return;

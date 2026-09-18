@@ -19,7 +19,8 @@ kernel void BoundsCombineKernel(
     constant BoundsReducePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    const DrawData draw = scene.Draws(pc.DrawDataSlot)[group_id];
+    const BoundsEntry entry = scene.BoundsEntries(pc.BoundsEntrySlot)[group_id];
+    const DrawData draw = scene.BoundsDraw(entry);
     const uint first_tile = BindlessBuffer(uint, bindless.Buffer, pc.EntryFirstTileSlot)[group_id];
     const uint tile_count = max((draw.VertexCountOrHeadImageSlot + 255u) / 256u, 1u);
     device const AABB *partials = BindlessBuffer(AABB, bindless.Buffer, pc.PartialBoundsSlot);
@@ -34,8 +35,8 @@ kernel void BoundsCombineKernel(
     FoldSharedAabb(shared_min, shared_max, BoundsFoldLanes, tid, lo, hi);
     const AABB bounds{packed_float3(shared_min[0]), packed_float3(shared_max[0])};
     device AABB *out_bounds = BindlessBufferMutable(AABB, bindless.Buffer, pc.BoundsSlot);
-    for (uint k = tid; k < draw.ElementIdOffset; k += 256u) {
-        out_bounds[draw.FirstInstance + k] = bounds;
+    for (uint k = tid; k < entry.InstanceCount; k += 256u) {
+        out_bounds[entry.FirstInstance + k] = bounds;
     }
 }
 

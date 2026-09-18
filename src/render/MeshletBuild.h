@@ -1,6 +1,6 @@
 #pragma once
 
-#include "gpu/DrawData.h"
+#include "gpu/MeshRecord.h"
 #include "gpu/MeshletRecord.h"
 #include "gpu/PrimitiveRecord.h"
 #include "gpu/Vertex.h"
@@ -31,15 +31,14 @@ struct MeshletBuildInputs {
     uint32_t SourcePrimitiveCount{};
     bool FaceTopology{}, LineTopology{};
     SlotOffset AuxIndices{};
-    // Derived from the topology fields above.
-    std::vector<DrawData> PrimitiveDraws{};
-    DrawData ElementDraw{};
+    MeshRecord Mesh{};
     std::vector<uint32_t> EdgeIndices{};
 };
 
 // One mesh's finished meshlets, in the arena layout the commit places them at.
 // Offsets are relative to the mesh's own ranges until the commit rebases them.
 struct MeshletBuild {
+    MeshRecord Mesh{};
     std::vector<MeshletRecord> Records{};
     std::vector<uint32_t> Vertices{};
     std::vector<PrimitiveRecord> Primitives{};

@@ -20,7 +20,7 @@ kernel void PosePrepassKernel(
 ) {
     const Scene scene{bindless, view, theme, workspace};
     const uint2 tile = uint2(scene.TileMap(pc.TileMapSlot)[group_id]);
-    const DrawData draw = scene.Draws(pc.DrawDataSlot)[tile.x];
+    const DrawData draw = scene.BoundsDraw(scene.BoundsEntries(pc.BoundsEntrySlot)[tile.x]);
     const uint i = tile.y * 256u + local_id;
     if (i >= draw.VertexCountOrHeadImageSlot) return;
 

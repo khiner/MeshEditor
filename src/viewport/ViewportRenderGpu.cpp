@@ -12,6 +12,7 @@
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
+#include "gpu/BoundsEntry.h"
 #include "gpu/BoundsReducePushConstants.h"
 #include "gpu/BoundsTreePushConstants.h"
 #include "gpu/CommitPosedGeometryPushConstants.h"
@@ -295,19 +296,6 @@ std::unordered_map<state::Entity, DeformSlots> BuildDeformSlots(const state::Sce
     return result;
 }
 
-// Rewrite per-instance deform fields on `draws`, keyed by each draw's instance buffer index.
-void PatchInstanceDeform(std::span<DrawData> draws, const DeformSlots &deform) {
-    if (deform.MorphWeightsByBufferIndex.empty() && deform.ArmatureDeformByBufferIndex.empty()) return;
-    for (auto &draw : draws) {
-        if (auto it = deform.MorphWeightsByBufferIndex.find(draw.FirstInstance); it != deform.MorphWeightsByBufferIndex.end()) {
-            draw.MorphWeightsOffset = it->second;
-        }
-        if (auto it = deform.ArmatureDeformByBufferIndex.find(draw.FirstInstance); it != deform.ArmatureDeformByBufferIndex.end()) {
-            draw.ArmatureDeformOffset = it->second;
-        }
-    }
-}
-
 // Threadgroup memory lengths must be 16-byte multiples.
 constexpr uint32_t AlignedThreadgroupBytes(uint32_t bytes) { return (bytes + 15u) & ~15u; }
 
@@ -364,7 +352,7 @@ void RecordPosePrepass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessS
     const auto &prepass = pipelines.PosePrepass;
     encode::BindCompute(encoder, prepass, slots, buffers, ubo_offset);
     const BoundsReducePushConstants pc{
-        .DrawDataSlot = buffers.BoundsReduceEntries.Slot,
+        .BoundsEntrySlot = buffers.BoundsReduceEntries.Slot,
         .TileMapSlot = buffers.BoundsTiles.Slot,
     };
     encode::SetPushConstants(encoder, pc);
@@ -395,7 +383,7 @@ NormalDerivePushConstants MakeNormalDerivePc(const GpuBuffers &buffers, const Me
 }
 
 void RecordBoundsPass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const mtl::ComputePipeline &pipeline, const GpuBuffers &buffers, PreludeSlot slot, uint32_t ubo_offset, BoundsReducePushConstants pc = {}) {
-    pc.DrawDataSlot = buffers.BoundsReduceEntries.Slot;
+    pc.BoundsEntrySlot = buffers.BoundsReduceEntries.Slot;
     pc.BoundsSlot = buffers.Instances.BoundsBuffer.Slot;
     pc.TileMapSlot = buffers.BoundsTiles.Slot;
     pc.PartialBoundsSlot = buffers.BoundsPartials.Slot;
@@ -413,7 +401,7 @@ void RecordPosedMeshletBounds(
     const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t ubo_offset,
     PosedMeshletBoundsPushConstants pc = {}
 ) {
-    pc.DrawDataSlot = buffers.BoundsReduceEntries.Slot;
+    pc.BoundsEntrySlot = buffers.BoundsReduceEntries.Slot;
     pc.TileMapSlot = buffers.PosedMeshletBoundsTiles.Slot;
     pc.MeshletSlot = buffers.Meshlets.Buffer.Slot;
     pc.PrimitiveSlot = buffers.Primitives.Buffer.Slot;
@@ -846,7 +834,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             const bool tiles_changed = prelude_layout.Value != scene_state.PreludeLayoutInputs;
             scene_state.PreludeLayoutInputs = prelude_layout.Value;
             if (tiles_changed) buffers.PreludeStale = true;
-            const auto entries = buffers.BoundsReduceEntries.SetCount<DrawData>(entry_count);
+            const auto entries = buffers.BoundsReduceEntries.SetCount<BoundsEntry>(entry_count);
             const auto derive_entries = buffers.NormalDeriveEntries.SetCount<NormalDeriveEntry>(derive_entry_count);
             const auto bounds_tiles = buffers.BoundsTiles.SetCount<uvec2>(bounds_tile_count);
             const auto derive_tiles = buffers.DeriveTiles.SetCount<uvec2>(derive_face_tile_count + derive_gather_tile_count);
@@ -880,24 +868,11 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 const auto &spec = specs[mi];
                 if (spec.Count == 0) continue;
                 auto &write = spec.Posed ? posed_write : unposed_write;
-                DrawData entry{
-                    .VertexSlot = e.Buf.Vertices.Slot,
-                    .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+                const BoundsEntry entry{
                     .FirstInstance = e.Mod.InstanceRange.Offset,
-                    .VertexCountOrHeadImageSlot = e.Buf.Vertices.Count,
-                    .ElementIdOffset = spec.PerInstanceDeform ? 1u : e.Mod.InstanceCount,
+                    .InstanceCount = spec.PerInstanceDeform ? 1u : e.Mod.InstanceCount,
                     .Selection = meshes.GetEditSelectionStorage(e.MeshComp->GetStoreId()),
-                    .VertexOffset = e.Buf.Vertices.Offset,
-                    .BoneDeformOffset = e.Deform.BoneDeformOffset,
-                    .ArmatureDeformOffset = e.Deform.ArmatureDeformOffset,
-                    .MorphDeformOffset = e.Deform.MorphDeformOffset,
-                    .MorphTargetCount = e.Deform.MorphTargetCount,
-                    .MorphShadingAuthored = morph_shading_authored(e) ? 1u : 0u,
                 };
-                if (spec.PendingPrimary) {
-                    entry.HasPendingVertexTransform = 1u;
-                    entry.PrimaryEditInstanceIndex = spec.PendingPrimary->BufferIndex;
-                }
                 // PosedRanges defines bases and per-instance offsets for the posed-buffer layout.
                 PosedRanges pr{};
                 NormalDeriveEntry derive_entry = spec.Entry;
@@ -928,10 +903,8 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 const auto gather_tiles_per = TileCountFor(spec.Entry.VertexCount + spec.Entry.SeamCount);
                 auto &tile_write = spec.Posed ? posed_tile_write : unposed_tile_write;
                 for (uint32_t i = 0; i < spec.Count; ++i) {
-                    if (spec.PerInstanceDeform) entry.FirstInstance = e.Mod.InstanceRange.Offset + i;
-                    if (spec.Posed) entry.PosedPositionOffset = pr.PositionOffset(i);
                     if (const auto normals = pr.NormalsAt(i)) {
-                        derive_entry.PosedPositionOffset = entry.PosedPositionOffset;
+                        derive_entry.PosedPositionOffset = pr.PositionOffset(i);
                         derive_entry.VertexNormalOffset = normals->VertexOffset;
                         derive_entry.SeamNormalOffset = normals->SeamOffset;
                         derive_entry.FaceNormalOffset = normals->FaceOffset;
@@ -945,7 +918,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                     if (tiles_changed) {
                         for (uint32_t t = 0; t < bounds_tiles_per; ++t) bounds_tiles[tile_write++] = {write, t};
                     } else tile_write += bounds_tiles_per;
-                    entries[write++] = entry;
+                    entries[write++] = spec.PerInstanceDeform ? BoundsEntry{.FirstInstance = entry.FirstInstance + i, .InstanceCount = 1u, .Selection = entry.Selection} : entry;
                 }
                 // Shared-pose instances share one entry and one set of meshlet bounds, like positions.
                 if (spec.Posed && tiles_changed) {
@@ -958,7 +931,6 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                         }
                     }
                 }
-                if (spec.PerInstanceDeform) PatchInstanceDeform(entries.subspan(first, spec.Count), e.Deform);
             }
         }
 
@@ -995,6 +967,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 InstanceRecord record{
                     .PrimitiveOffset = mesh_buffers->Primitives.Offset,
                     .PrimitiveCount = mesh_buffers->Primitives.Count,
+                    .Mesh = mesh_buffers->MeshRecord.Offset,
                     .ObjectId = ObjectId(instance_entity),
                 };
                 const auto &deform = get_deform_slots(instance.Entity);
@@ -2210,11 +2183,11 @@ void RecordSparseEditPrelude(state::Scene &r, state::Entity viewport, mtl::PassC
     if (jobs.empty()) return;
     auto *encoder = chain.BeginCompute("EditGeometry", MTL::StageDispatch);
     RecordGeometryEditBatch(r, encoder, jobs, true);
-    const auto entries = buffers.BoundsReduceEntries.GetSpan<DrawData>({0, buffers.BoundsReduceEntries.Count<DrawData>()});
+    const auto entries = buffers.BoundsReduceEntries.GetSpan<BoundsEntry>({0, buffers.BoundsReduceEntries.Count<BoundsEntry>()});
     for (const auto &[entity, job] : jobs) {
         auto &w = state.EditWork.at(entity);
         const auto &pose = state.PosedByEntity.at(entity);
-        const auto entry_it = std::ranges::find(entries, pose.PositionBase, &DrawData::PosedPositionOffset);
+        const auto entry_it = std::ranges::find(entries, pose.FirstInstance, &BoundsEntry::FirstInstance);
         assert(entry_it != entries.end());
         const auto entry_index = uint32_t(entry_it - entries.begin());
         const auto first_tile = buffers.BoundsEntryFirstTiles.GetSpan<uint32_t>({entry_index, 1}).front();
@@ -2238,7 +2211,7 @@ void RecordSparseEditPrelude(state::Scene &r, state::Entity viewport, mtl::PassC
                 .Output = buffers.BoundsParents.Slotted(level.Values),
                 .InputCount = input_count,
                 .InstanceBounds = {buffers.Instances.BoundsBuffer.Slot, entry_it->FirstInstance},
-                .InstanceCount = last ? entry_it->ElementIdOffset : 0u,
+                .InstanceCount = last ? entry_it->InstanceCount : 0u,
             };
             encode::BindCompute(encoder, pipelines.BoundsTree, slots, buffers);
             encode::SetPushConstants(encoder, tree);

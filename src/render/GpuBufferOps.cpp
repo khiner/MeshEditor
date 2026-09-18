@@ -83,6 +83,7 @@ GpuBuffers::GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
       ClusterGroups{Ctx, SlotType::Buffer},
       LodNodes{Ctx, SlotType::Buffer},
       Primitives{Ctx, SlotType::Buffer},
+      MeshRecords{Ctx, SlotType::Buffer},
       GpuInstanceSlots{Ctx, 0, SlotType::Buffer},
       Instances{Ctx},
       MeshletWorkRanges{Ctx, 0, SlotType::Buffer},
@@ -158,6 +159,7 @@ void GpuBuffers::ReleaseMeshlets(MeshBuffers &buffers) {
     ReleaseRange(MeshletLocalTriangles, buffers.MeshletLocalTriangles);
     ReleaseRange(MeshletEditEdgeIds, buffers.MeshletEditEdges);
     ReleaseRange(Primitives, buffers.Primitives);
+    ReleaseRange(MeshRecords, buffers.MeshRecord);
 }
 
 void GpuBuffers::ResetSceneArenas() {
@@ -176,6 +178,7 @@ void GpuBuffers::ResetSceneArenas() {
     ClusterGroups.Reset();
     LodNodes.Reset();
     Primitives.Reset();
+    MeshRecords.Reset();
     GpuInstanceSlots.UsedSize = 0;
     MeshletRangeCount = 0;
     MeshletInstanceCount = 0;

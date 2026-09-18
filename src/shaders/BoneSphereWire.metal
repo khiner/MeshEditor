@@ -38,7 +38,7 @@ using BoneSphereWireMeshOutput = metal::mesh<EdgeQuadVaryings, void, 128u, 64u, 
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    const MeshletWork work = ResolveMeshletWork(bindless, pc, threadgroup_position.x);
+    const MeshletWork work = ResolveMeshletWork(scene, pc, threadgroup_position.x);
     if (!work.Valid) {
         if (thread_index == 0u) output.set_primitive_count(0u);
         return;

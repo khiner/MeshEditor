@@ -95,25 +95,38 @@ void SplitTriangleChunks(std::span<uint32_t> triangles, std::span<const std::arr
     SplitTriangleChunks(triangles.subspan(middle), centroids, first + uint32_t(middle), chunks);
 }
 
-// Draw data for one of a mesh's source triangle primitives, whose corner offsets start at its first triangle.
-DrawData PrimitiveDrawData(const GpuBuffers &buffers, const MeshBuffers &mb, const MeshStore &meshes, uint32_t store_id, const PrimitiveTriangleRange &primitive) {
-    const auto first_index = size_t(primitive.FirstTriangle) * 3;
+// The mesh's shared arena locations, which ComposeDraw advances to each primitive's first triangle.
+MeshRecord BuildMeshRecord(const GpuBuffers &buffers, const MeshBuffers &mb, const MeshStore &meshes, uint32_t store_id, bool face_topology, bool line_topology) {
     const auto &record = meshes.Get(store_id);
     const auto &derived = meshes.GetDerived(store_id);
     const auto &arenas = meshes.Arenas();
-    DrawData draw{
+    if (!face_topology) {
+        return {
+            .VertexSlot = mb.Vertices.Slot,
+            .IndexSlotOffset = line_topology ? mb.EdgeIndices : mb.VertexIndices,
+            .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+            .ObjectIdSlot = InvalidSlot,
+            .CornerColorOffset = OffsetOrInvalid(record.CornerColors),
+            .VertexCountOrHeadImageSlot = mb.Vertices.Count,
+            .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
+            .VertexOffset = mb.Vertices.Offset,
+            .PrimitiveMaterialOffset = OffsetOrInvalid(record.PrimitiveMaterials),
+            .ElementPrimitiveOffset = OffsetOrInvalid(record.ElementPrimitives),
+        };
+    }
+    return {
         .VertexSlot = mb.Vertices.Slot,
-        .IndexSlotOffset = {mb.FaceIndices.Slot, mb.FaceIndices.Offset + uint32_t(first_index)},
+        .IndexSlotOffset = mb.FaceIndices,
         .ModelSlot = buffers.Instances.TransformBuffer.Slot,
         .ObjectIdSlot = arenas.TriangleFaceIds.Buffer.Slot,
         .CornerClassOffset = meshes.GetCornerClassOffset(store_id),
         .CustomCornerMaskOffset = OffsetOrInvalid(record.CustomCornerMasks),
         .CustomCornerNormalOffset = OffsetOrInvalid(record.CustomCornerNormals),
-        .CornerBase = uint32_t(first_index),
         .BaseSeamNormalOffset = OffsetOrInvalid(derived.BaseSeamNormals),
         .CornerTangentOffset = OffsetOrInvalid(record.CornerTangents),
         .CornerColorOffset = OffsetOrInvalid(record.CornerColors),
-        .FaceIdOffset = record.TriangleFaceIds.Offset + primitive.FirstTriangle,
+        .CornerUvOffsets = {OffsetOrInvalid(record.CornerUvs[0]), OffsetOrInvalid(record.CornerUvs[1]), OffsetOrInvalid(record.CornerUvs[2]), OffsetOrInvalid(record.CornerUvs[3])},
+        .FaceIdOffset = record.TriangleFaceIds.Offset,
         .BaseFaceNormalOffset = record.FaceData.Offset,
         .FaceFirstTriangleOffset = record.FaceData.Offset,
         .VertexEdgeAdjacencyOffset = OffsetOrInvalid(derived.VertexEdgeAdjacency),
@@ -124,7 +137,6 @@ DrawData PrimitiveDrawData(const GpuBuffers &buffers, const MeshBuffers &mb, con
         .FaceCount = record.FaceData.Count,
         .ConnectivityFaceStarts = record.ConnectivityFaceStarts ? 1u : 0u,
         .VertexCountOrHeadImageSlot = mb.Vertices.Count,
-        .Selection = meshes.GetEditSelectionStorage(store_id),
         .EditEdgeOffset = 0u,
         .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
         .VertexOffset = mb.Vertices.Offset,
@@ -132,17 +144,6 @@ DrawData PrimitiveDrawData(const GpuBuffers &buffers, const MeshBuffers &mb, con
         .PrimitiveMaterialOffset = OffsetOrInvalid(record.PrimitiveMaterials),
         .ElementPrimitiveOffset = OffsetOrInvalid(record.ElementPrimitives),
     };
-    if (draw.CornerClassOffset < uint32_t(CornerClassEncoding::UniformFaceOffset)) draw.CornerClassOffset += uint32_t(first_index);
-    const auto advance_corner = [first_index](uint32_t &offset) {
-        if (offset != InvalidOffset) offset += uint32_t(first_index);
-    };
-    advance_corner(draw.CornerTangentOffset);
-    advance_corner(draw.CornerColorOffset);
-    for (uint32_t set = 0; set < draw.CornerUvOffsets.size(); ++set) {
-        draw.CornerUvOffsets[set] = OffsetOrInvalid(record.CornerUvs[set]);
-        advance_corner(draw.CornerUvOffsets[set]);
-    }
-    return draw;
 }
 } // namespace
 
@@ -187,28 +188,11 @@ MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &buffers, const MeshBuf
         .FaceTopology = face_topology,
         .LineTopology = line_topology,
         .AuxIndices = mb.EdgeIndices,
+        .Mesh = BuildMeshRecord(buffers, mb, meshes, store_id, face_topology, line_topology),
     };
-    inputs.PrimitiveDraws.reserve(primitive_ranges.size());
-    for (const auto &primitive : primitive_ranges) {
-        inputs.PrimitiveDraws.push_back(PrimitiveDrawData(buffers, mb, meshes, store_id, primitive));
-    }
-    if (!face_topology) {
-        if (line_topology) {
-            inputs.EdgeIndices.resize(size_t(inputs.ElementCount) * 2u);
-            mesh.WriteEdgeIndices(inputs.EdgeIndices);
-        }
-        inputs.ElementDraw = {
-            .VertexSlot = mb.Vertices.Slot,
-            .IndexSlotOffset = line_topology ? mb.EdgeIndices : mb.VertexIndices,
-            .ModelSlot = buffers.Instances.TransformBuffer.Slot,
-            .ObjectIdSlot = InvalidSlot,
-            .CornerColorOffset = OffsetOrInvalid(record.CornerColors),
-            .VertexCountOrHeadImageSlot = mb.Vertices.Count,
-            .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
-            .VertexOffset = mb.Vertices.Offset,
-            .PrimitiveMaterialOffset = OffsetOrInvalid(record.PrimitiveMaterials),
-            .ElementPrimitiveOffset = OffsetOrInvalid(record.ElementPrimitives),
-        };
+    if (line_topology) {
+        inputs.EdgeIndices.resize(size_t(inputs.ElementCount) * 2u);
+        mesh.WriteEdgeIndices(inputs.EdgeIndices);
     }
     return inputs;
 }
@@ -240,6 +224,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
 
     // Allocate one source ID and three local indices per meshlet triangle.
     MeshletBuild sink{
+        .Mesh = in.Mesh,
         .TriangleIds = std::vector<uint32_t>(face_topology ? in.TriangleCount : element_count),
         .LocalTriangles = std::vector<uint8_t>(face_topology ? size_t(in.TriangleCount) * 3 : 0),
         .EditEdges = std::move(in.TriangleEditEdges),
@@ -441,9 +426,9 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
         }
 
         sink.Primitives.emplace_back(PrimitiveRecord{
-            .Draw = in.PrimitiveDraws[primitive_record_index],
             .AuxIndices = in.AuxIndices,
             .PrimitiveIndex = primitive.PrimitiveIndex,
+            .PrimitiveMaterialOffset = in.Mesh.PrimitiveMaterialOffset,
             .FirstTriangle = primitive.FirstTriangle,
             .MeshletOffset = first_meshlet,
             .MeshletCount = uint32_t(sink.Records.size()) - first_meshlet,
@@ -494,9 +479,9 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
             }
 
             sink.Primitives.emplace_back(PrimitiveRecord{
-                .Draw = in.ElementDraw,
                 .AuxIndices = in.AuxIndices,
                 .PrimitiveIndex = primitive_index,
+                .PrimitiveMaterialOffset = in.Mesh.PrimitiveMaterialOffset,
                 .MeshletOffset = first_meshlet,
                 .MeshletCount = uint32_t(sink.Records.size()) - first_meshlet,
                 .Level0Count = uint32_t(sink.Records.size()) - first_meshlet,
@@ -600,10 +585,9 @@ void CommitMeshlets(GpuBuffers &buffers, MeshBuffers &mb, MeshletBuild &build) {
         record.VertexOffset += mb.MeshletVertices.Offset;
     }
     mb.Meshlets = buffers.Meshlets.Allocate(build.Records);
-    for (auto &record : build.Primitives) {
-        record.MeshletOffset += mb.Meshlets.Offset;
-        if (record.Draw.EditEdgeOffset != InvalidOffset) record.Draw.EditEdgeOffset += mb.MeshletEditEdges.Offset;
-    }
+    if (build.Mesh.EditEdgeOffset != InvalidOffset) build.Mesh.EditEdgeOffset += mb.MeshletEditEdges.Offset;
+    mb.MeshRecord = buffers.MeshRecords.Allocate(std::span<const MeshRecord>{&build.Mesh, 1});
+    for (auto &record : build.Primitives) record.MeshletOffset += mb.Meshlets.Offset;
     mb.Primitives = buffers.Primitives.Allocate(build.Primitives);
     for (auto &record : buffers.Meshlets.GetMutable(mb.Meshlets)) record.Primitive += mb.Primitives.Offset;
     // Give each non-DAG primitive one unpruned span node until a DAG commit replaces it.

@@ -27,7 +27,7 @@ enum class SlotType : uint8_t {
     ModelBuffer,
     Buffer,
     ObjectIdBuffer,
-    DrawDataBuffer,
+    BoundsEntryBuffer,
     InstanceStateBuffer,
     BoneDeformBuffer,
     ArmatureDeformBuffer,
@@ -108,7 +108,7 @@ template<typename ImageT> struct BindlessSetT {
     GpuArray<BindlessBufferRef, SlotCapacity(BindKind::Buffer)> ModelBuffer;
     GpuArray<BindlessBufferRef, SlotCapacity(BindKind::Buffer)> Buffer;
     GpuArray<BindlessBufferRef, SlotCapacity(BindKind::Buffer)> ObjectIdBuffer;
-    GpuArray<BindlessBufferRef, SlotCapacity(BindKind::Buffer)> DrawDataBuffer;
+    GpuArray<BindlessBufferRef, SlotCapacity(BindKind::Buffer)> BoundsEntryBuffer;
     GpuArray<BindlessBufferRef, SlotCapacity(BindKind::Buffer)> InstanceStateBuffer;
     GpuArray<BindlessBufferRef, SlotCapacity(BindKind::Buffer)> BoneDeformBuffer;
     GpuArray<BindlessBufferRef, SlotCapacity(BindKind::Buffer)> ArmatureDeformBuffer;
@@ -151,7 +151,7 @@ constexpr GpuArray<BindingDef, SlotTypeCount> BindingDefs{{
     {BindKind::Buffer, "ModelBuffer"},
     {BindKind::Buffer, "Buffer"},
     {BindKind::Buffer, "ObjectIdBuffer"},
-    {BindKind::Buffer, "DrawDataBuffer"},
+    {BindKind::Buffer, "BoundsEntryBuffer"},
     {BindKind::Buffer, "InstanceStateBuffer"},
     {BindKind::Buffer, "BoneDeformBuffer"},
     {BindKind::Buffer, "ArmatureDeformBuffer"},

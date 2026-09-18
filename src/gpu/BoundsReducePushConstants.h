@@ -8,7 +8,7 @@ struct BoundsReducePushConstants {
     ElementWork Work DEFAULT();
     ElementWork NextWork DEFAULT();
     uint32_t EntryIndex DEFAULT();
-    uint32_t DrawDataSlot DEFAULT();
+    uint32_t BoundsEntrySlot DEFAULT();
     uint32_t BoundsSlot DEFAULT();
     uint32_t TileMapSlot DEFAULT();
     uint32_t PartialBoundsSlot DEFAULT();

@@ -6,6 +6,7 @@
 struct InstanceRecord {
     uint32_t PrimitiveOffset DEFAULT(InvalidOffset);
     uint32_t PrimitiveCount DEFAULT();
+    uint32_t Mesh DEFAULT(InvalidOffset);
     uint32_t BoneDeformOffset DEFAULT(InvalidOffset);
     uint32_t ArmatureDeformOffset DEFAULT(InvalidOffset);
     uint32_t MorphDeformOffset DEFAULT(InvalidOffset);
@@ -26,4 +27,4 @@ struct InstanceRecord {
     uint32_t ActiveVertex DEFAULT(InvalidOffset);
     uint32_t ExcitedVertex DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(InstanceRecord) == 112, "InstanceRecord size");
+static_assert(sizeof(InstanceRecord) == 116, "InstanceRecord size");

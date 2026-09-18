@@ -22,9 +22,10 @@ inline uint MeshletPrimitiveTopology(MeshletRecord meshlet) {
 }
 
 inline uint MeshletPrimitiveMaterialIndex(const thread Scene &scene, PrimitiveRecord primitive) {
-    if (primitive.Draw.PrimitiveMaterialOffset == InvalidOffset) return 0u;
-    return scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[primitive.Draw.PrimitiveMaterialOffset + primitive.PrimitiveIndex];
+    if (primitive.PrimitiveMaterialOffset == InvalidOffset) return 0u;
+    return scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[primitive.PrimitiveMaterialOffset + primitive.PrimitiveIndex];
 }
+
 
 inline uint MeshletVertexId(
     const thread Scene &scene, DrawData draw, uint topology, uint packed_vertex
