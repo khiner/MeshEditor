@@ -22,7 +22,7 @@ vertex GridVaryings GridLinesVertex(
 ) {
     const Scene scene{bindless, view, theme, workspace};
     const float4 plane_pos = GridVerts[vertex_id];
-    return GridVaryings{scene.ViewProj() * plane_pos};
+    return {scene.ViewProj() * plane_pos};
 }
 
 // Returns anti-aliased line intensity for spacing 1 / scale.
@@ -100,7 +100,7 @@ fragment OverlayTargets GridLinesFragment(
     // Fade toward the far clip plane.
     color.a *= 1.0f - smoothstep(0.0f, 0.5f * view.CameraFar, dist - 0.5f * view.CameraFar);
     color.a *= OverlayBehindFade(scene, in.Position);
-    return OverlayTargets{color};
+    return {color};
 }
 
 #endif

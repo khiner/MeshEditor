@@ -11,7 +11,7 @@
 struct BoneLineVertex { float4 Position, Color; };
 
 inline BoneLineVertex DiscardedEdge() {
-    return BoneLineVertex{float4(0, 0, -2, 1), float4(0)};
+    return {float4(0, 0, -2, 1), float4(0)};
 }
 
 inline BoneLineVertex BoneWireMeshVertexAt(const thread Scene &scene, DrawData draw, uint vertex_id) {
@@ -76,14 +76,10 @@ inline BoneLineVertex BoneWireMeshVertexAt(const thread Scene &scene, DrawData d
     const float3 world_pos = (M * float4(vert_in_edge == 0u ? p1 : p2, 1.0f)).xyz;
     float4 clip_pos = scene.ViewProj() * float4(world_pos, 1.0f);
 
-    BoneLineVertex out;
-    out.Color = float4(bone_wire_color(scene, load_bone_instance_state(scene, draw)), 1.0f);
-
     // Apply Blender's depth bias to prevent z-fighting with the fill.
     clip_pos.z -= 1e-4f;
 
-    out.Position = clip_pos;
-    return out;
+    return {.Position = clip_pos, .Color = float4(bone_wire_color(scene, load_bone_instance_state(scene, draw)), 1.0f)};
 }
 
 using BoneWireMeshOutput = metal::mesh<EdgeQuadVaryings, void, 48u, 24u, metal::topology::triangle>;

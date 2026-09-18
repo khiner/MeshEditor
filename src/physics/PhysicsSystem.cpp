@@ -303,12 +303,7 @@ void OnDestroyPhysicsInput(state::Scene &r, state::Entity) {
 rbp::WorldLimits Limits(const state::Scene &r) {
     const uint32_t colliders = uint32_t(r.view<const ColliderShape>().size());
     const uint32_t motions = uint32_t(r.view<const PhysicsMotion>().size());
-    rbp::WorldLimits limits;
-    limits.Bodies = std::max(1u, colliders + motions + 1);
-    limits.Shapes = std::max(4u, 4 * colliders + motions + 4);
     const auto joints = uint32_t(r.view<const PhysicsJoint>().size());
-    limits.Joints = std::max(8u, joints + joints / 2);
-    limits.CompoundChildren = std::max(1u, 2 * colliders);
     uint64_t vertices = 1, triangles = 1;
     for (const auto [e, collider] : r.view<const ColliderShape>().each()) {
         const auto mesh = IsMeshBackedShape(collider.Shape) ? TryGetMesh(r, collider.MeshEntity) : std::nullopt;
@@ -316,11 +311,16 @@ rbp::WorldLimits Limits(const state::Scene &r) {
         triangles += mesh ? uint64_t(mesh->TriangleIndexCount() / 3) : 4;
     }
     if (vertices * 3 > UINT32_MAX || triangles * 6 > UINT32_MAX) throw std::runtime_error("Physics geometry exceeds RBP pool indexing.");
-    limits.ShapeVertices = uint32_t(vertices * 3);
-    limits.HullFaces = std::max(1u, colliders * 384);
-    limits.Triangles = uint32_t(triangles * 3);
-    limits.BvhNodes = uint32_t(triangles * 6);
-    return limits;
+    return {
+        .Bodies = std::max(1u, colliders + motions + 1),
+        .Shapes = std::max(4u, 4 * colliders + motions + 4),
+        .Joints = std::max(8u, joints + joints / 2),
+        .ShapeVertices = uint32_t(vertices * 3),
+        .HullFaces = std::max(1u, colliders * 384),
+        .Triangles = uint32_t(triangles * 3),
+        .BvhNodes = uint32_t(triangles * 6),
+        .CompoundChildren = std::max(1u, 2 * colliders),
+    };
 }
 
 auto GeometryOverflows(const rbp::World &world) {
@@ -376,16 +376,17 @@ void BuildJoint(PhysicsState &s, state::Scene &r, state::Entity entity) {
     auto &world = *s.World;
     if (connected == state::Null && s.WorldAnchor == rbp::NoIndex) s.WorldAnchor = world.AddBody({});
     // KHR measures the connected frame in the joint node's frame. RBP measures A in B.
-    rbp::JointDesc desc;
-    desc.BodyA = connected == state::Null ? s.WorldAnchor : s.Bodies.at(connected).Body;
-    desc.BodyB = s.Bodies.at(owner).Body;
     const auto a = PoseOf(*input.Connected), b = PoseOf(input.Node);
-    desc.AtA = a.Position;
-    desc.AtB = b.Position;
-    desc.FrameA = a.Orientation;
-    desc.FrameB = b.Orientation;
-    desc.Collide = joint.EnableCollision;
-    for (int axis = 0; axis < 3; ++axis) desc.Linear[axis] = rbp::AxisFree;
+    rbp::JointDesc desc{
+        .BodyA = connected == state::Null ? s.WorldAnchor : s.Bodies.at(connected).Body,
+        .BodyB = s.Bodies.at(owner).Body,
+        .AtA = a.Position,
+        .AtB = b.Position,
+        .FrameA = a.Orientation,
+        .FrameB = b.Orientation,
+        .Linear = {rbp::AxisFree, rbp::AxisFree, rbp::AxisFree},
+        .Collide = joint.EnableCollision,
+    };
     for (const auto &limit : def.Limits) {
         const bool linear = !limit.LinearAxes.empty();
         const auto &axes = linear ? limit.LinearAxes : limit.AngularAxes;

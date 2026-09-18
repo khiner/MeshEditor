@@ -186,17 +186,17 @@ Fixture TwoPrimitiveFixture(uint32_t rings, uint32_t segments) {
 }
 
 ClusterLodMesh MeshOf(const Fixture &fixture) {
-    ClusterLodMesh mesh;
-    mesh.CornerVertices = fixture.CornerVertices;
-    mesh.Positions = &fixture.Positions.front().x;
-    mesh.PositionStride = sizeof(vec3);
-    mesh.CornerNormals = fixture.CornerNormals;
-    mesh.Weld.CornerUvs[0] = fixture.CornerUvs;
-    mesh.Primitives = fixture.Primitives;
-    mesh.Clusters = fixture.Clusters;
-    mesh.SourceVertexCorners = fixture.ClusterVertices;
-    mesh.SourceLocalTriangles = fixture.ClusterLocalTriangles;
-    return mesh;
+    return {
+        .CornerVertices = fixture.CornerVertices,
+        .Positions = &fixture.Positions.front().x,
+        .PositionStride = sizeof(vec3),
+        .CornerNormals = fixture.CornerNormals,
+        .Weld = {.CornerUvs = {fixture.CornerUvs}},
+        .Primitives = fixture.Primitives,
+        .Clusters = fixture.Clusters,
+        .SourceVertexCorners = fixture.ClusterVertices,
+        .SourceLocalTriangles = fixture.ClusterLocalTriangles,
+    };
 }
 
 template<typename T> bool SameBytes(const std::vector<T> &a, const std::vector<T> &b) {

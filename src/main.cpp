@@ -257,21 +257,24 @@ struct GltfSampleTrees {
 };
 
 GltfSampleTrees BuildSampleTrees() {
-    GltfSampleTrees t;
-    t.Examples = BuildGltfSampleTree(Paths::Res() / "examples");
-    t.Benchmarks = BuildGltfSampleTree(Paths::Res() / "benchmarks");
+    GltfSampleTrees t{
+        .Examples = BuildGltfSampleTree(Paths::Res() / "examples"),
+        .Benchmarks = BuildGltfSampleTree(Paths::Res() / "benchmarks"),
 #ifdef GLTF_SAMPLE_ASSETS_DIR
-    t.SampleAssets = BuildGltfSampleTree(fs::path{GLTF_SAMPLE_ASSETS_DIR} / "Models");
+        .SampleAssets = BuildGltfSampleTree(fs::path{GLTF_SAMPLE_ASSETS_DIR} / "Models"),
+#endif
+#ifdef GLTF_PHYSICS_DIR
+        .Physics = BuildGltfSampleTree(GLTF_PHYSICS_DIR),
+#endif
+#ifdef GLTF_PHYSICAL_AUDIO_DIR
+        .PhysicalAudio = BuildGltfSampleTree(GLTF_PHYSICAL_AUDIO_DIR),
+#endif
+    };
+#ifdef GLTF_SAMPLE_ASSETS_DIR
     [&](this auto &&self, const GltfSampleTree &n) -> void {
         for (const auto &f : n.Files) t.SampleAssetsExtensions.insert_range(f.Extensions);
         for (const auto &[_, c] : n.Children) self(c);
     }(t.SampleAssets);
-#endif
-#ifdef GLTF_PHYSICS_DIR
-    t.Physics = BuildGltfSampleTree(GLTF_PHYSICS_DIR);
-#endif
-#ifdef GLTF_PHYSICAL_AUDIO_DIR
-    t.PhysicalAudio = BuildGltfSampleTree(GLTF_PHYSICAL_AUDIO_DIR);
 #endif
     return t;
 }
@@ -758,10 +761,7 @@ ValidationResult RestoreForValidation(
     engine.Ui.emplace(ctx);
     restored.ctx().get<WindowsState>() = {};
     auto &frame = restored.ctx().get<FrameState>();
-    frame = {};
-    frame.DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale);
-    frame.Capturing = inputs.Capturing;
-    frame.Scrubbing = inputs.Scrubbing;
+    frame = {.DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale), .Scrubbing = inputs.Scrubbing, .Capturing = inputs.Capturing};
     engine.Core->P->Close();
     fs::create_directories(engine.Directory);
     std::error_code asset_ec;
@@ -1764,7 +1764,6 @@ bool RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initi
                 .DisplaySize = {float(DefaultWindowSize.x), float(DefaultWindowSize.y)},
                 .FramebufferScale = std::bit_cast<ImVec2>(frame_state.DisplayFramebufferScale),
                 .MousePos = {-FLT_MAX, -FLT_MAX},
-                .FocusedWindow = {},
             };
             auto *draw_data = RenderValidationApp(r, viewport, inputs);
             ValidateRoundTrip(r, viewport, nullptr, draw_data, validation_session);

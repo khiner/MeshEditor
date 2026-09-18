@@ -148,10 +148,11 @@ inline void EmitMeshletEditEdge(
     if (thread_index == 0u) output.set_primitive_count(compact.y);
     if (!present) return;
 
-    ElementIdVaryings out;
-    out.ElementId = (sound_point ? 0u : work.Draw.ElementIdOffset) + vertex_id + 1u;
-    out.Position = MeshletPosition(scene, work.Draw, MeshletWorld(scene, work.Draw), vertex_id);
-    out.PointSize = PointSize;
+    ElementIdVaryings out{
+        .Position = MeshletPosition(scene, work.Draw, MeshletWorld(scene, work.Draw), vertex_id),
+        .PointSize = PointSize,
+        .ElementId = (sound_point ? 0u : work.Draw.ElementIdOffset) + vertex_id + 1u,
+    };
     output.set_vertex(compact.x, out);
     output.set_index(compact.x, compact.x);
 }
@@ -177,9 +178,7 @@ inline void EmitMeshletEditEdge(
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, MeshletEditSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y);
     if (!present) return;
-    ElementIdFragmentVaryings out;
-    out.ElementId = work.Draw.ElementIdOffset + edge.Edge + 1u;
-    out.Position = edge.Clip0;
+    ElementIdFragmentVaryings out{.Position = edge.Clip0, .ElementId = work.Draw.ElementIdOffset + edge.Edge + 1u};
     output.set_vertex(compact.x * 2u, out);
     out.Position = edge.Clip1;
     output.set_vertex(compact.x * 2u + 1u, out);
@@ -208,10 +207,7 @@ inline void EmitMeshletEditEdge(
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, MeshletEditSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y * 2u);
     if (!present) return;
-    ElementIdVaryings out;
-    out.ElementId = work.Draw.ElementIdOffset + edge.Edge + 1u;
-    out.PointSize = 2.0f;
-    out.Position = edge.Clip0;
+    ElementIdVaryings out{.Position = edge.Clip0, .PointSize = 2.0f, .ElementId = work.Draw.ElementIdOffset + edge.Edge + 1u};
     output.set_vertex(compact.x * 2u, out);
     output.set_index(compact.x * 2u, compact.x * 2u);
     out.Position = edge.Clip1;
@@ -246,10 +242,7 @@ inline void EmitMeshletEditEdge(
     ];
     const Transform world = MeshletWorld(scene, work.Draw);
     for (uint corner = 0u; corner < 3u; ++corner) {
-        ElementIdVaryings out;
-        out.ElementId = work.Draw.ElementIdOffset + face_id;
-        out.Position = MeshletPosition(scene, work.Draw, world, corners.VertexIds[corner]);
-        out.PointSize = 1.0f;
+        ElementIdVaryings out{.Position = MeshletPosition(scene, work.Draw, world, corners.VertexIds[corner]), .PointSize = 1.0f, .ElementId = work.Draw.ElementIdOffset + face_id};
         const uint output_index = thread_index * 3u + corner;
         output.set_vertex(output_index, out);
         output.set_index(output_index, output_index);

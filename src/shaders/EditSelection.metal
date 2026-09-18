@@ -15,9 +15,7 @@ inline bool EditSelectionBit(const thread Scene &scene, SlotOffset range, uint e
 
 inline EditSelectionSummary EditSelectionInfo(const thread Scene &scene, DrawData draw) {
     if (draw.Selection.Summary.Slot == InvalidSlot) {
-        EditSelectionSummary empty{};
-        empty.ActiveHandle = InvalidOffset;
-        return empty;
+        return {.ActiveHandle = InvalidOffset};
     }
     return BindlessBuffer(EditSelectionSummary, scene.B.Buffer, draw.Selection.Summary.Slot)[draw.Selection.Summary.Offset];
 }

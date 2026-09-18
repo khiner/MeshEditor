@@ -68,9 +68,10 @@ kernel void MotionBlurTilesFlattenKernel(
         velocity.write(PackVelocity(motion), uint2(texel));
 
         // Clip motion to the viewport and negate the backward-stored next-motion vector.
-        float2 line_clip;
-        line_clip.x = LineUnitSquareIntersectDistSafe(uv * 2.0f - 1.0f, motion.xy * 2.0f);
-        line_clip.y = LineUnitSquareIntersectDistSafe(uv * 2.0f - 1.0f, -motion.zw * 2.0f);
+        const float2 line_clip{
+            LineUnitSquareIntersectDistSafe(uv * 2.0f - 1.0f, motion.xy * 2.0f),
+            LineUnitSquareIntersectDistSafe(uv * 2.0f - 1.0f, -motion.zw * 2.0f),
+        };
         motion *= min(line_clip, float2(1.0f)).xxyy;
         // Convert UV displacement to shutter-relative pixel motion with both halves directed forward in time.
         motion *= float2(render_size).xyxy;

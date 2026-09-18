@@ -25,12 +25,12 @@ inline BoneSolidVaryings BoneSolidMeshVertexAt(const thread Scene &scene, DrawDa
     const float fac = clamp(dot(view_normal, light) * 0.8f + 0.2f, 0.0f, 1.0f);
     const float alpha = scene.View.BoneXRay != 0u ? 0.6f : 1.0f;
 
-    BoneSolidVaryings out;
-    out.ObjectId = object_id;
-    out.Color = float4(mix(state_color, bone_color, fac * fac), alpha);
-    out.Inverted = int(dot(cross(M[0].xyz, M[1].xyz), M[2].xyz) < 0.0f);
-    out.Position = scene.ViewProj() * float4(world_pos, 1.0f);
-    return out;
+    return {
+        .Position = scene.ViewProj() * float4(world_pos, 1.0f),
+        .Color = float4(mix(state_color, bone_color, fac * fac), alpha),
+        .Inverted = int(dot(cross(M[0].xyz, M[1].xyz), M[2].xyz) < 0.0f),
+        .ObjectId = object_id,
+    };
 }
 
 using BoneSolidMeshOutput = metal::mesh<BoneSolidVaryings, void, 24u, 8u, metal::topology::triangle>;
@@ -68,10 +68,7 @@ fragment OverlayTargetsDepth BoneSolidFragment(
     // Account for mirrored instances during manual backface culling.
     if ((in.Inverted == 1) == front_facing) discard_fragment();
 
-    OverlayTargetsDepth out;
-    out.Color = in.Color;
-    out.Depth = in.Position.z;
-    return out;
+    return {.Color = in.Color, .Depth = in.Position.z};
 }
 
 #endif

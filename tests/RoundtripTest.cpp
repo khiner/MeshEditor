@@ -802,26 +802,29 @@ void CompareRegistries(std::string_view name, state::Scene &a, state::Scene &b) 
 }
 
 const ModalModelData SampleModal{
-    .Modes = [] {
-        ModalModes modes;
-        modes.Freqs = {110.f, 275.5f};
-        modes.T60s = {1.5f, 0.8f};
-        modes.Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}, {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}}};
-        modes.Vertices = {0, 1, 2};
-        modes.Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}, {-0.1f, 0.5f, 0.3f}};
-        modes.Indices = {0, 1, 2};
-        return modes; }(),
+    .Modes = {
+        {
+            .Freqs = {110.f, 275.5f},
+            .T60s = {1.5f, 0.8f},
+            .Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}, {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}}},
+            .Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}, {-0.1f, 0.5f, 0.3f}},
+            .OriginalFundamentalFreq = 0.f,
+        },
+        {0, 1, 2},
+        {0, 1, 2},
+    },
     .Mass = {2.5, {0.1f, 0.2f, 0.3f}, {0.4f, 0.5f, 0.6f}, {1.f, 0.f, 0.f, 0.f}},
     .Tets = {{{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}}, {0, 1}},
-    .Summary = [] {
-        ModalEigenSummary summary;
-        summary.Eigenvalues = {4.7e5, 3.0e6};
-        summary.Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}, {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}}};
-        summary.SolvedMaterial = materials::acoustic::Ceramic.Properties;
-        summary.OperatorHash = 1;
-        summary.ModalConfigHash = 2;
-        summary.SolvedVertices = {0, 1, 2};
-        return summary; }(),
+    .Summary = {
+        {
+            .Eigenvalues = {4.7e5, 3.0e6},
+            .Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}, {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}}},
+            .SolvedMaterial = materials::acoustic::Ceramic.Properties,
+        },
+        1,
+        2,
+        {0, 1, 2},
+    },
 };
 
 struct SceneFixture : Engine {
@@ -956,7 +959,7 @@ struct SceneCounts {
 };
 SceneCounts CountScene(SceneFixture &f) {
     auto &c = f.R.ctx();
-    return SceneCounts{
+    return {
         .Entities = f.R.storage<state::Entity>().size(),
         .MeshHandles = f.R.storage<MeshHandle>().size(),
         .Textures = c.get<TextureStore>().Textures.size(),
@@ -1189,17 +1192,20 @@ int main(int argc, const char **argv) {
     if (const fs::path box = SamplePath("external/glTF-Sample-Assets/Models/Box/glTF/Box.gltf"); fs::exists(box)) {
         test("audio_modal_round_trip") = [&] {
             // A small modal model on the node, with its derivation material.
-            ModalModes modes;
-            modes.Freqs = {110.f, 275.5f, 431.2f};
-            modes.T60s = {1.5f, 0.8f, 0.32f};
-            modes.Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}, {-0.1f, 0.5f, 0.3f}};
-            modes.Shapes = {
-                {{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}, {-0.05f, 0.06f, 0.07f}},
-                {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}, {0.01f, -0.02f, 0.03f}},
-                {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}, {0.08f, 0.09f, -0.01f}},
+            ModalModes modes{
+                {
+                    .Freqs = {110.f, 275.5f, 431.2f},
+                    .T60s = {1.5f, 0.8f, 0.32f},
+                    .Shapes = {
+                        {{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}, {-0.05f, 0.06f, 0.07f}},
+                        {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}, {0.01f, -0.02f, 0.03f}},
+                        {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}, {0.08f, 0.09f, -0.01f}},
+                    },
+                    .Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}, {-0.1f, 0.5f, 0.3f}},
+                },
+                {},
+                {0, 1, 2},
             };
-            modes.Indices = {0, 1, 2};
-            modes.OriginalFundamentalFreq = modes.Freqs.front();
             const auto out_path = edit_root / "audio_modal.gltf";
             const auto reloaded = RoundtripComponent<ModalModes>(box, out_path, [&](SceneFixture &fx, state::Entity node) {
                 fx.R.emplace<ModalModes>(node, modes);

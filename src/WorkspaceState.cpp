@@ -146,14 +146,7 @@ std::vector<std::byte> Serialize(const State &state) {
 std::optional<State> Deserialize(std::span<const std::byte> bytes) {
     zpp::bits::in archive{bytes};
     uint32_t version{};
-    State state{
-        .ViewCamera = {ViewCamera{vec3{0, 0, 1}, vec3{0}, CameraLens{}}, std::nullopt},
-        .ViewportExtent = {},
-        .Windows = {},
-        .ImGuiIni = {},
-        .Tabs = {},
-        .WindowStates = {},
-    };
+    State state{.ViewCamera = {ViewCamera{vec3{0, 0, 1}, vec3{0}, CameraLens{}}, std::nullopt}};
     bool has_saved_view{};
     if (zpp::bits::failure(archive(version)) || version != Version || zpp::bits::failure(archive(state.ViewCamera.Active, has_saved_view))) {
         return std::nullopt;

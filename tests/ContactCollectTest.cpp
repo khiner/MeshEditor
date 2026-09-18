@@ -399,8 +399,7 @@ int main() {
         const auto connected = s.AddBody({0, 0, 0}, {}, PhysicsMotion{.GravityFactor = 0, .LinearDamping = 0});
         // A collider-free static attachment is anchored to the world.
         const auto def = s.R.create();
-        PhysicsJointDef joint;
-        joint.Drives.push_back({.Type = PhysicsDriveType::Linear, .Axis = 0, .PositionTarget = 1, .Stiffness = 100, .Damping = 20});
+        PhysicsJointDef joint{.Drives = {{.Type = PhysicsDriveType::Linear, .Axis = 0, .PositionTarget = 1, .Stiffness = 100, .Damping = 20}}};
         s.R.emplace<PhysicsJointDef>(def, joint);
         s.R.emplace<PhysicsJoint>(connected, PhysicsJoint{.ConnectedNode = owner, .JointDefEntity = def});
         s.Sync();
@@ -483,8 +482,7 @@ int main() {
                 s.R.emplace<CollisionFilter>(filter);
                 s.R.emplace<ColliderMaterial>(body, ColliderMaterial{material, state::Null});
                 s.R.emplace<ColliderMaterial>(child, ColliderMaterial{material, state::Null});
-                PhysicsJointDef definition;
-                definition.Drives.push_back({.Type = PhysicsDriveType::Linear, .Mode = PhysicsDriveMode::Acceleration, .Axis = 0, .PositionTarget = 0.25f, .Stiffness = 2, .Damping = 0.5f});
+                PhysicsJointDef definition{.Drives = {{.Type = PhysicsDriveType::Linear, .Mode = PhysicsDriveMode::Acceleration, .Axis = 0, .PositionTarget = 0.25f, .Stiffness = 2, .Damping = 0.5f}}};
                 s.R.emplace<PhysicsJointDef>(joint, definition);
                 if (edit != JointAdd) s.R.emplace<PhysicsJoint>(joint_node, PhysicsJoint{edit == JointDeleteEndpoint ? unrelated : floor, joint, true});
                 s.R.emplace<Transform>(unrelated);
@@ -593,10 +591,8 @@ int main() {
             const auto setup = [&](Scene &s) {
                 s.R.ctx().emplace<MeshStore>(buffers);
                 const auto floor = AddFloor(s);
-                Objects result;
-                result.Mesh = s.R.create();
                 auto data = primitive::CreateMesh(primitive::Cuboid{});
-                result.Positions = data.Positions;
+                Objects result{.Mesh = s.R.create(), .Positions = data.Positions};
                 const auto mesh = CreateMesh(s.R, {.Data = std::move(data)});
                 s.R.emplace<MeshHandle>(result.Mesh, MeshHandle{mesh.StoreId});
                 for (uint32_t i = 0; i < result.Bodies.size(); ++i) {
@@ -607,8 +603,7 @@ int main() {
                 s.R.emplace<TriggerTag>(result.Sensor);
                 s.Parent(result.Sensor, result.Bodies[0]);
                 const auto definition = s.R.create();
-                PhysicsJointDef joint;
-                joint.Drives.push_back({.Type = PhysicsDriveType::Linear, .Mode = PhysicsDriveMode::Acceleration, .Axis = 0, .PositionTarget = 0.25f, .Stiffness = 2, .Damping = 0.5f});
+                PhysicsJointDef joint{.Drives = {{.Type = PhysicsDriveType::Linear, .Mode = PhysicsDriveMode::Acceleration, .Axis = 0, .PositionTarget = 0.25f, .Stiffness = 2, .Damping = 0.5f}}};
                 s.R.emplace<PhysicsJointDef>(definition, joint);
                 s.R.emplace<PhysicsJoint>(result.Bodies[1], PhysicsJoint{floor, definition, true});
                 return result;
@@ -678,8 +673,7 @@ int main() {
         const auto body = s.AddBody({0, 2, 0}, Box(vec3{1}), PhysicsMotion{});
         const auto anchor = s.AddBody({0, 2, 0}, {}, {});
         const auto definition = s.R.create();
-        PhysicsJointDef fixed;
-        fixed.Limits.push_back({.LinearAxes = {0, 1, 2}, .Min = 0, .Max = 0});
+        PhysicsJointDef fixed{.Limits = {{.LinearAxes = {0, 1, 2}, .Min = 0, .Max = 0}}};
         s.R.emplace<PhysicsJointDef>(definition, fixed);
         s.Sync();
         const auto created = s.BodyCreations;

@@ -59,11 +59,10 @@ rbp::BodyDesc DescribeBody(RbpBody &result, const Transform &node, const Physics
         mass.Inertia = motion->IsKinematic ? rbp::float3{0, 0, 0} : moments;
     }
     const auto node_pose = rbp::At(ToRbp(node.P), Rotation(node.R));
-    rbp::Velocity initial{};
-    if (motion && velocity) {
-        initial.Angular = rbp::Rotate(node_pose.Orientation, ToRbp(velocity->Angular));
-        initial.Linear = rbp::Rotate(node_pose.Orientation, ToRbp(velocity->Linear));
-    }
+    const rbp::Velocity initial{
+        .Linear = motion && velocity ? rbp::Rotate(node_pose.Orientation, ToRbp(velocity->Linear)) : rbp::float3{0, 0, 0},
+        .Angular = motion && velocity ? rbp::Rotate(node_pose.Orientation, ToRbp(velocity->Angular)) : rbp::float3{0, 0, 0},
+    };
     return {
         .Pose = rbp::ComposePose(node_pose, result.Frame),
         .Velocity = initial,

@@ -122,20 +122,13 @@ struct PbrContext {
             ng *= -1.0f;
         }
 
-        NormalInfo info;
-        info.ng = ng;
-        info.t = t;
-        info.b = b;
         if (material.NormalTexture.Slot != InvalidSlot) {
-            info.ntex = SampleTexture(material.NormalTexture).rgb * 2.0f - float3(1.0f);
-            info.ntex *= float3(material.NormalScale, material.NormalScale, 1.0f);
-            info.ntex = normalize(info.ntex);
-            info.n = normalize(GetNormalMapTBN(t, b, ng, material.NormalTexture.UvRotation) * info.ntex);
-        } else {
-            info.ntex = float3(0.0f, 0.0f, 1.0f);
-            info.n = ng;
+            float3 ntex = SampleTexture(material.NormalTexture).rgb * 2.0f - float3(1.0f);
+            ntex *= float3(material.NormalScale, material.NormalScale, 1.0f);
+            ntex = normalize(ntex);
+            return {.ng = ng, .t = t, .b = b, .n = normalize(GetNormalMapTBN(t, b, ng, material.NormalTexture.UvRotation) * ntex), .ntex = ntex};
         }
-        return info;
+        return {.ng = ng, .t = t, .b = b, .n = ng, .ntex = float3(0.0f, 0.0f, 1.0f)};
     }
 };
 

@@ -521,7 +521,7 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                     };
                     spacing = std::min(spacing, track->Spacing);
                 } else if (s.Roughness > 0) {
-                    specs[side * 2] = {.Correlation = s.CorrelationLength, .Slope = s.SpectralSlope, .Sigma = s.Roughness, .Cutoff = s.ShortWavelength, .Profile = nullptr, .Spacing = 0, .Key = 0, .Side = side};
+                    specs[side * 2] = {.Correlation = s.CorrelationLength, .Slope = s.SpectralSlope, .Sigma = s.Roughness, .Cutoff = s.ShortWavelength, .Side = side};
                     spacing = std::min(spacing, SynthesizedFinishSpacing(s));
                 } else {
                     continue;
@@ -537,7 +537,7 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                         };
                     }
                 } else if (s.Waviness > 0 && s.WavinessLength > 0) {
-                    specs[side * 2 + 1] = {.Correlation = s.WavinessLength, .Slope = s.SpectralSlope, .Sigma = s.Waviness, .Cutoff = specs[side * 2].Correlation, .Profile = nullptr, .Spacing = 0, .Key = 0, .Side = side};
+                    specs[side * 2 + 1] = {.Correlation = s.WavinessLength, .Slope = s.SpectralSlope, .Sigma = s.Waviness, .Cutoff = specs[side * 2].Correlation, .Side = side};
                 }
             }
             const RoughnessTrack *sweep = nullptr;
@@ -635,27 +635,20 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                                 .Profile = profile,
                                 .ProfileSpacing = drawn[i].Spacing,
                                 .Correlation = drawn[i].Correlation,
-                                .Slope = 0,
                                 .Cutoff = drawn[i].Cutoff,
                                 .Sigma = drawn[i].Sigma,
                                 .Span = span,
                                 .Across = across,
-                                .Columns = 0,
-                                .Rows = 0,
                                 .Realization = realization,
                                 .Side = drawn[i].Side,
                             });
                         } else {
                             const float coarse = drawn[i].Cutoff / SurfaceSamplesPerCutoff;
                             to_draw.push_back({
-                                .Profile = nullptr,
-                                .ProfileSpacing = 0,
                                 .Correlation = drawn[i].Correlation,
                                 .Slope = drawn[i].Slope,
                                 .Cutoff = drawn[i].Cutoff,
                                 .Sigma = drawn[i].Sigma,
-                                .Span = 0,
-                                .Across = 0,
                                 .Columns = fft::DirectLength(uint32_t(std::llround(band_length / coarse))),
                                 .Rows = fft::DirectLength(uint32_t(std::llround(wide / coarse))),
                                 .Realization = realization,

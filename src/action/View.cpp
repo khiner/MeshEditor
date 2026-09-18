@@ -139,10 +139,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 std::vector<std::pair<state::Entity, Transform>> locals;
                 std::vector<std::pair<state::Entity, float>> bone_scales;
                 const auto make_local = [&](state::Entity e, const Transform &world, const Transform &pd) {
-                    Transform local;
-                    local.P = Conjugate(pd.R) * ((world.P - pd.P) / pd.S);
-                    local.R = Conjugate(pd.R) * world.R;
-                    local.S = r.all_of<ScaleLocked>(e) ? EditedLocal(r, e)->S : world.S / pd.S;
+                    Transform local{.P = Conjugate(pd.R) * ((world.P - pd.P) / pd.S), .R = Conjugate(pd.R) * world.R, .S = r.all_of<ScaleLocked>(e) ? EditedLocal(r, e)->S : world.S / pd.S};
                     locals.emplace_back(e, local);
                 };
                 // On the first drag frame StartTransform isn't snapshotted yet, so current WorldTransform is the start.

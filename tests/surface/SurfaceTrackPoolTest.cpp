@@ -11,11 +11,7 @@ using namespace boost::ut;
 namespace {
 // A track the tests can tell apart by value.
 std::shared_ptr<const RoughnessTrack> TrackWith(float spacing) {
-    RoughnessTrack track;
-    track.Heights.assign(4, 0.f);
-    track.Sum.assign(5, 0.f);
-    track.Spacing = spacing;
-    return std::make_shared<const RoughnessTrack>(std::move(track));
+    return std::make_shared<const RoughnessTrack>(RoughnessTrack{.Heights = std::vector<float>(4, 0.f), .Sum = std::vector<float>(5, 0.f), .Spacing = spacing});
 }
 
 size_t FilledSlots(const ModalAudio &m) {

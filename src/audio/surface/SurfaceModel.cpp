@@ -270,9 +270,7 @@ void SetTransformThreads(uint32_t threads) {
 }
 
 RoughnessTrack SynthesizeRoughness(float correlation_length, float spectral_slope, float short_wavelength, float spacing, uint32_t count) {
-    RoughnessTrack track;
-    track.Spacing = spacing;
-    track.Heights.assign(count, 0.f);
+    RoughnessTrack track{.Heights = std::vector<float>(count, 0.f), .Spacing = spacing};
     if (count < 2 || spacing <= 0) {
         Finish(track);
         return track;
@@ -381,10 +379,11 @@ LatticeCovariance RoughnessLatticeCovariance(float correlation_length, float spe
 }
 
 RoughnessTrack SynthesizeTurnover(float spacing, uint32_t count, uint64_t seed) {
-    RoughnessTrack track;
-    track.Spacing = spacing;
-    track.Cutoff = SurfaceSamplesPerCutoff * spacing; // Sampling determines the white-noise cutoff.
-    track.Heights.resize(count);
+    RoughnessTrack track{
+        .Heights = std::vector<float>(count),
+        .Spacing = spacing,
+        .Cutoff = SurfaceSamplesPerCutoff * spacing, // Sampling determines the white-noise cutoff.
+    };
     uint64_t state = SurfaceDraw(seed);
     for (float &h : track.Heights) h = float(SplitMix64(state) >> 40) / float(1 << 24) - 0.5f;
     Finish(track);
@@ -392,10 +391,11 @@ RoughnessTrack SynthesizeTurnover(float spacing, uint32_t count, uint64_t seed) 
 }
 
 RoughnessTrack MakeProfileTrack(std::span<const float> heights, float spacing) {
-    RoughnessTrack track;
-    track.Spacing = spacing;
-    track.Cutoff = SurfaceSamplesPerCutoff * spacing; // Sampling determines the measured cutoff.
-    track.Heights.assign(heights.begin(), heights.end());
+    RoughnessTrack track{
+        .Heights = {heights.begin(), heights.end()},
+        .Spacing = spacing,
+        .Cutoff = SurfaceSamplesPerCutoff * spacing, // Sampling determines the measured cutoff.
+    };
     track.Rms = Finish(track);
     if (heights.size() >= 8 && spacing > 0) {
         const auto spectrum = fft::RealToComplex(track.Heights);
@@ -2034,10 +2034,9 @@ bool BearsOnSprings(const SustainedState &st, const ContactSpringSet *set) {
 }
 
 VoiceBlock BlockConstants(const SustainedState &st, const ContactSpringSet *spring_set, const RoughnessTrack *turnover, float sample_rate) {
-    VoiceBlock out;
     // A sub-audio one-pole mean removes static junction-force offsets after sweep motion stops.
     // The 10 Hz corner sits below the channel's band.
-    out.Dcn = std::min(2 * std::numbers::pi_v<float> * 10.f / sample_rate, 1.f);
+    VoiceBlock out{.Dcn = std::min(2 * std::numbers::pi_v<float> * 10.f / sample_rate, 1.f)};
     const uint32_t spots = st.SpotCount;
     const bool spring_read = BearsOnSprings(st, spring_set);
     if (spots > 0 && st.CellSpread > 0 && !spring_read) {

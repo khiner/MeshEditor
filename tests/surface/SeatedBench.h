@@ -12,9 +12,7 @@
 #include <vector>
 
 inline std::shared_ptr<const RoughnessTrack> MakeTrack() {
-    RoughnessTrack t;
-    t.Heights.resize(TrackSamples);
-    t.Sum.resize(TrackSamples + 1, 0.f);
+    RoughnessTrack t{.Heights = std::vector<float>(TrackSamples), .Sum = std::vector<float>(TrackSamples + 1, 0.f), .Spacing = 1e-6f};
     uint64_t x = 0x9e3779b97f4a7c15ull;
     for (uint32_t i = 0; i < TrackSamples; ++i) {
         x ^= x << 13;
@@ -23,7 +21,6 @@ inline std::shared_ptr<const RoughnessTrack> MakeTrack() {
         t.Heights[i] = float(double(x >> 11) / double(1ull << 52)) - 1.f;
         t.Sum[i + 1] = t.Sum[i] + t.Heights[i];
     }
-    t.Spacing = 1e-6f;
     return std::make_shared<const RoughnessTrack>(std::move(t));
 }
 
@@ -67,9 +64,7 @@ constexpr vec3 ContactNormal{0.f, 1.f, 0.f}, ContactTangent{1.f, 0.f, 0.f};
 
 constexpr float SeatedModeShape{1.f};
 inline ModalModes PolarizedMode(vec3 direction, float freq, float t60) {
-    ModalModes modes;
-    modes.Freqs.push_back(freq);
-    modes.T60s.push_back(t60);
+    ModalModes modes{{.Freqs = {freq}, .T60s = {t60}, .OriginalFundamentalFreq = 0.f}};
     SampleStrip(modes);
     for (auto &shape : modes.Shapes) shape.push_back(SeatedModeShape * direction);
     return modes;
@@ -102,10 +97,8 @@ inline std::shared_ptr<const ContactSpringSet> MakeSpringSet() {
             for (size_t at = 0; at < heights.size(); ++at) heights[at] = SeatedCompositeSigma * patch.Heights[at];
             GatherElementSummits(summits, heights, Columns, rows, gap, {}, SeatedElementColumns, spacing, SeatedInvModulus);
         }
-        auto set = std::make_shared<ContactSpringSet>();
-        set->SubCutoff = SeatedSubCutoff();
-        set->Springs = BuildElementSprings(summits, set->SubCutoff, SeatedEngagementMax, SeatedKnots);
-        set->Curvature = 0;
+        const auto sub_cutoff = SeatedSubCutoff();
+        auto set = std::make_shared<ContactSpringSet>(ContactSpringSet{.Springs = BuildElementSprings(summits, sub_cutoff, SeatedEngagementMax, SeatedKnots), .SubCutoff = sub_cutoff});
         set->Reach = std::max(set->Springs.Count() / 2, 1u);
         set->Envelope = ElementEnvelope(set->Springs, set->Curvature, set->Reach);
         FillAnchorForce(*set);
@@ -122,16 +115,16 @@ inline const RoughnessTrack &SeatedFinishTrack() {
 }
 
 inline SustainedState SeatedSpringContact(int32_t spring_slot, const ContactSpringSet &set, float flank_stiffness, float load) {
-    SustainedState e;
-    e.Blend = {.Points = {0, 1, 0}, .Weights = {0.5f, 0.5f, 0.f}};
-    e.N = ContactNormal;
-    e.NormalForce = load;
-    e.Friction = 0.5f;
-    e.DampingFactor = 1.5f; // Restitution zero, the ceiling PressedRing must author to seat at all.
-    e.StaticPenetration = SolveSpringAnchor(set, load);
-    e.SpringIndex = spring_slot;
-    e.FlankStiffness = flank_stiffness;
-    return e;
+    return {
+        .Blend = {.Points = {0, 1, 0}, .Weights = {0.5f, 0.5f, 0.f}},
+        .N = ContactNormal,
+        .NormalForce = load,
+        .Friction = 0.5f,
+        .StaticPenetration = SolveSpringAnchor(set, load),
+        .DampingFactor = 1.5f, // Restitution zero, the ceiling PressedRing must author to seat at all.
+        .FlankStiffness = flank_stiffness,
+        .SpringIndex = spring_slot,
+    };
 }
 
 inline float SeatedShearStiffness(float load) { return float(0.82 * double(load) / (0.4 * double(SeatedCompositeSigma))); }

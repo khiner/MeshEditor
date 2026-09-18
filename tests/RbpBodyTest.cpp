@@ -18,11 +18,7 @@ namespace {
 bool Near(rbp::float3 a, rbp::float3 b, float tolerance = 1e-4f) { return simd::length(a - b) < tolerance; }
 
 rbp::Shape BoxShape(rbp::float3 half, rbp::Pose local = rbp::IdentityPose) {
-    rbp::Shape result{};
-    result.Kind = rbp::ShapeBox;
-    result.HalfExtents = half;
-    result.Local = local;
-    return result;
+    return {.HalfExtents = half, .Kind = rbp::ShapeBox, .Local = local};
 }
 
 // Reconstruct the tensor in node axes independently of the principal-axis ordering.
@@ -77,9 +73,7 @@ const suite Bodies = [] {
             const PhysicsMotion motion{.Mass = 1};
             const auto body = BuildRbpBody(world, std::array{cube}, Transform{.P = {1, 3, 2}}, &motion);
             const auto beyond = rbp::WorldPoint(local, plane.SizeX > 0 ? rbp::float3{2, 2, 0} : rbp::float3{0, 2, 2});
-            rbp::BodyDesc miss{};
-            miss.Pose = rbp::At(beyond);
-            miss.Shape = cube;
+            rbp::BodyDesc miss{.Pose = rbp::At(beyond), .Shape = cube};
             const auto missed = world.AddBody(miss);
             solver.Advance(world, {}, 180);
             expect(std::abs(world.Poses[body.Body].Position.y - 1.5f) < 0.005f);
@@ -240,11 +234,8 @@ const suite Bodies = [] {
         rbp::World world{context};
         rbp::Solver solver{context};
         world.TrackContacts = true;
-        rbp::Shape plane{};
-        plane.Normal = {0, 1, 0};
-        plane.Kind = rbp::ShapePlane;
-        rbp::BodyDesc ground{};
-        ground.Shape = world.AddShape(plane);
+        rbp::Shape plane{.Normal = {0, 1, 0}, .Kind = rbp::ShapePlane};
+        rbp::BodyDesc ground{.Shape = world.AddShape(plane)};
         world.AddBody(ground);
         const auto box = world.AddShape(BoxShape(rbp::float3{0.5f, 0.5f, 0.5f}));
         const PhysicsMotion motion{.Mass = 2, .CenterOfMass = vec3{0, 0.3f, 0}, .InertiaDiagonal = vec3{1, 2, 3}, .InertiaOrientation = numeric::AngleAxis(0.4f, vec3{1, 0, 0})};

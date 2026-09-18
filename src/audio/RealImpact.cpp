@@ -114,7 +114,7 @@ std::expected<fs::path, std::string> ArchiveSource(project::Assets &assets, cons
     auto name = ValidateDirectory(directory);
     if (!name) return std::unexpected{name.error()};
     try {
-        Source source{.Name = std::move(*name), .Mesh = {}, .Samples = {}, .Positions = LoadPositions(directory), .Listeners = LoadListenerPoints(directory)};
+        Source source{.Name = std::move(*name), .Positions = LoadPositions(directory), .Listeners = LoadListenerPoints(directory)};
         const auto mesh = ArchiveMesh(assets, directory / "transformed.obj");
         if (!mesh) return std::unexpected{mesh.error()};
         source.Mesh = *mesh;

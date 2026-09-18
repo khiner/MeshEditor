@@ -24,10 +24,7 @@ constexpr auto serialize(auto &archive, Armature &a) {
 namespace snapshot::detail {
 
 template<> Armature CopyNative(const Armature &source) {
-    Armature result;
-    result.Version = source.Version;
-    result.NextBoneId = source.NextBoneId;
-    result.Skins = source.Skins;
+    Armature result{.Version = source.Version, .NextBoneId = source.NextBoneId, .Skins = source.Skins};
     result.Bones.reserve(source.Bones.size());
     for (const auto &b : source.Bones) result.Bones.push_back({b.Id, b.ParentBoneId, b.JointNodeIndex, b.Name, b.RestLocal});
     return result;

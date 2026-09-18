@@ -124,39 +124,29 @@ std::unique_ptr<fastgltf::TextureTransform> MakeTextureTransform(const ::Texture
     const bool source_had_ext = meta && meta->SourceHadExtension;
     if (!has_transform && !source_had_ext) return nullptr;
     used = true;
-    auto t = std::make_unique<fastgltf::TextureTransform>();
-    t->rotation = ti.UvRotation;
-    t->uvOffset = std::bit_cast<fastgltf::math::nvec2>(ti.UvOffset);
-    t->uvScale = std::bit_cast<fastgltf::math::nvec2>(ti.UvScale);
-    if (meta && meta->SourceTexCoordOverride) t->texCoordIndex = *meta->SourceTexCoordOverride;
-    return t;
+    return std::make_unique<fastgltf::TextureTransform>(fastgltf::TextureTransform{
+        .rotation = ti.UvRotation,
+        .uvOffset = std::bit_cast<fastgltf::math::nvec2>(ti.UvOffset),
+        .uvScale = std::bit_cast<fastgltf::math::nvec2>(ti.UvScale),
+        .texCoordIndex = meta && meta->SourceTexCoordOverride ? fastgltf::Optional<size_t>{*meta->SourceTexCoordOverride} : fastgltf::Optional<size_t>{},
+    });
 }
 
 // With meta, the parent texCoord and the extension's override are emitted separately.
-void FillTextureInfo(fastgltf::TextureInfo &out, const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &transform_used) {
-    out.textureIndex = ti.Slot;
-    out.texCoordIndex = meta ? meta->SourceBaseTexCoord : ti.TexCoord;
-    out.transform = MakeTextureTransform(ti, meta, transform_used);
+fastgltf::TextureInfo ToFgTextureInfo(const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &transform_used) {
+    return {.textureIndex = ti.Slot, .texCoordIndex = meta ? meta->SourceBaseTexCoord : ti.TexCoord, .transform = MakeTextureTransform(ti, meta, transform_used)};
 }
 fastgltf::Optional<fastgltf::TextureInfo> ToFgTexInfo(const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &transform_used) {
     if (ti.Slot == InvalidSlot) return {};
-    fastgltf::TextureInfo out;
-    FillTextureInfo(out, ti, meta, transform_used);
-    return fastgltf::Optional<fastgltf::TextureInfo>{std::move(out)};
+    return ToFgTextureInfo(ti, meta, transform_used);
 }
 fastgltf::Optional<fastgltf::NormalTextureInfo> ToFgNormalTexInfo(const ::TextureInfo &ti, float scale, const TextureTransformMeta *meta, bool &transform_used) {
     if (ti.Slot == InvalidSlot) return {};
-    fastgltf::NormalTextureInfo out;
-    FillTextureInfo(out, ti, meta, transform_used);
-    out.scale = scale;
-    return fastgltf::Optional<fastgltf::NormalTextureInfo>{std::move(out)};
+    return fastgltf::NormalTextureInfo{ToFgTextureInfo(ti, meta, transform_used), scale};
 }
 fastgltf::Optional<fastgltf::OcclusionTextureInfo> ToFgOcclusionTexInfo(const ::TextureInfo &ti, float strength, const TextureTransformMeta *meta, bool &transform_used) {
     if (ti.Slot == InvalidSlot) return {};
-    fastgltf::OcclusionTextureInfo out;
-    FillTextureInfo(out, ti, meta, transform_used);
-    out.strength = strength;
-    return fastgltf::Optional<fastgltf::OcclusionTextureInfo>{std::move(out)};
+    return fastgltf::OcclusionTextureInfo{ToFgTextureInfo(ti, meta, transform_used), strength};
 }
 
 fastgltf::Camera ConvertCameraToFg(const CameraLens &cam, std::string_view name) {
@@ -181,7 +171,7 @@ fastgltf::Camera ConvertCameraToFg(const CameraLens &cam, std::string_view name)
         },
         cam
     );
-    return fastgltf::Camera{.camera = std::move(camera), .name = ToFgStr(name)};
+    return {.camera = std::move(camera), .name = ToFgStr(name)};
 }
 
 // Writes each channel's rest value over the field it animates in `record`, so the export holds authored values.
@@ -197,7 +187,7 @@ fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name)
     const auto type = pl.Type == PunctualLightType::Point ? fastgltf::LightType::Point : pl.Type == PunctualLightType::Spot ? fastgltf::LightType::Spot :
                                                                                                                               fastgltf::LightType::Directional;
     const bool is_spot = type == fastgltf::LightType::Spot;
-    return fastgltf::Light{
+    return {
         .type = type,
         .color = std::bit_cast<fastgltf::math::nvec3>(pl.Color),
         .intensity = pl.Intensity,
@@ -465,7 +455,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         for (const auto e : ordered_by_source(cf_view, source_index)) {
             const auto &f = cf_view.get<const CollisionFilter>(e);
             collision_filter_to_index[e] = asset.collisionFilters.size();
-            fastgltf::CollisionFilter out{.collisionSystems = resolve_system_names(f.Systems), .notCollideWithSystems = {}, .collideWithSystems = {}};
+            fastgltf::CollisionFilter out{.collisionSystems = resolve_system_names(f.Systems)};
             if (f.Mode == CollideMode::Allowlist) out.collideWithSystems = resolve_system_names(f.CollideSystems);
             else if (f.Mode == CollideMode::Blocklist) out.notCollideWithSystems = resolve_system_names(f.CollideSystems);
             asset.collisionFilters.emplace_back(std::move(out));
@@ -493,26 +483,13 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .byteLength = length,
             .byteStride = ToFgOpt<size_t>(stride),
             .target = ToFgOpt<fastgltf::BufferTarget>(target),
-            .meshoptCompression = nullptr,
-            .name = {},
         });
         return bufferViews.size() - 1;
     };
 
     auto AddAccessor = [&](uint32_t bufferViewIdx, uint32_t count, fastgltf::AccessorType type, fastgltf::ComponentType component,
                            std::optional<fastgltf::AccessorBoundsArray> min = {}, std::optional<fastgltf::AccessorBoundsArray> max = {}) {
-        accessors.emplace_back(fastgltf::Accessor{
-            .byteOffset = 0,
-            .count = count,
-            .type = type,
-            .componentType = component,
-            .normalized = false,
-            .max = std::move(max),
-            .min = std::move(min),
-            .bufferViewIndex = bufferViewIdx,
-            .sparse = {},
-            .name = {},
-        });
+        accessors.emplace_back(fastgltf::Accessor{.count = count, .type = type, .componentType = component, .max = std::move(max), .min = std::move(min), .bufferViewIndex = bufferViewIdx});
         return accessors.size() - 1;
     };
 
@@ -708,80 +685,91 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         for (uint32_t s = 0; s < MTS_Count; ++s) MaterialTextureSlots[s].Get(pbr).Slot = meta.TextureSlots[s];
 
         const std::string name = (!meta.NameWasEmpty && i < names.size()) ? names[i] : std::string{};
-        fastgltf::Material out;
-        out.name = ToFgStr(name);
-        out.pbrData.baseColorFactor = std::bit_cast<fastgltf::math::nvec4>(pbr.BaseColorFactor);
-        out.pbrData.metallicFactor = pbr.MetallicFactor;
-        out.pbrData.roughnessFactor = pbr.RoughnessFactor;
-        out.pbrData.baseColorTexture = ToFgTexInfo(pbr.BaseColorTexture, &meta.BaseSlotMeta[0], uses_texture_transform);
-        out.pbrData.metallicRoughnessTexture = ToFgTexInfo(pbr.MetallicRoughnessTexture, &meta.BaseSlotMeta[1], uses_texture_transform);
-        out.normalTexture = ToFgNormalTexInfo(pbr.NormalTexture, pbr.NormalScale, &meta.BaseSlotMeta[2], uses_texture_transform);
-        out.occlusionTexture = ToFgOcclusionTexInfo(pbr.OcclusionTexture, pbr.OcclusionStrength, &meta.BaseSlotMeta[3], uses_texture_transform);
-        out.emissiveTexture = ToFgTexInfo(pbr.EmissiveTexture, &meta.BaseSlotMeta[4], uses_texture_transform);
-        out.emissiveFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.EmissiveFactor);
+        fastgltf::Material out{
+            .pbrData = {
+                .baseColorFactor = std::bit_cast<fastgltf::math::nvec4>(pbr.BaseColorFactor),
+                .metallicFactor = pbr.MetallicFactor,
+                .roughnessFactor = pbr.RoughnessFactor,
+                .baseColorTexture = ToFgTexInfo(pbr.BaseColorTexture, &meta.BaseSlotMeta[0], uses_texture_transform),
+                .metallicRoughnessTexture = ToFgTexInfo(pbr.MetallicRoughnessTexture, &meta.BaseSlotMeta[1], uses_texture_transform),
+            },
+            .normalTexture = ToFgNormalTexInfo(pbr.NormalTexture, pbr.NormalScale, &meta.BaseSlotMeta[2], uses_texture_transform),
+            .occlusionTexture = ToFgOcclusionTexInfo(pbr.OcclusionTexture, pbr.OcclusionStrength, &meta.BaseSlotMeta[3], uses_texture_transform),
+            .emissiveTexture = ToFgTexInfo(pbr.EmissiveTexture, &meta.BaseSlotMeta[4], uses_texture_transform),
+            .emissiveFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.EmissiveFactor),
+            .alphaMode = FromAlphaMode(pbr.AlphaMode),
+            .doubleSided = pbr.DoubleSided != 0u,
+            .unlit = pbr.Unlit != 0u,
+            .alphaCutoff = pbr.AlphaCutoff,
+            .name = ToFgStr(name),
+        };
         if (bits & M::ExtEmissiveStrength || pbr.EmissiveStrength != 1.f) out.emissiveStrength = fastgltf::Optional<fastgltf::num>{pbr.EmissiveStrength};
-        out.alphaMode = FromAlphaMode(pbr.AlphaMode);
-        out.alphaCutoff = pbr.AlphaCutoff;
-        out.doubleSided = pbr.DoubleSided != 0u;
-        out.unlit = pbr.Unlit != 0u;
         if (bits & M::ExtIor) out.ior = fastgltf::Optional<fastgltf::num>{pbr.Ior};
         if (bits & M::ExtDispersion) out.dispersion = fastgltf::Optional<fastgltf::num>{pbr.Dispersion};
 
         if (bits & M::ExtSheen) {
-            out.sheen = std::make_unique<fastgltf::MaterialSheen>();
-            out.sheen->sheenColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.Sheen.ColorFactor);
-            out.sheen->sheenRoughnessFactor = pbr.Sheen.RoughnessFactor;
-            out.sheen->sheenColorTexture = ToFgTexInfo(pbr.Sheen.ColorTexture, nullptr, uses_texture_transform);
-            out.sheen->sheenRoughnessTexture = ToFgTexInfo(pbr.Sheen.RoughnessTexture, nullptr, uses_texture_transform);
+            out.sheen = std::make_unique<fastgltf::MaterialSheen>(fastgltf::MaterialSheen{
+                .sheenColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.Sheen.ColorFactor),
+                .sheenColorTexture = ToFgTexInfo(pbr.Sheen.ColorTexture, nullptr, uses_texture_transform),
+                .sheenRoughnessFactor = pbr.Sheen.RoughnessFactor,
+                .sheenRoughnessTexture = ToFgTexInfo(pbr.Sheen.RoughnessTexture, nullptr, uses_texture_transform),
+            });
         }
         if (bits & M::ExtSpecular) {
-            out.specular = std::make_unique<fastgltf::MaterialSpecular>();
-            out.specular->specularFactor = pbr.Specular.Factor;
-            out.specular->specularColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.Specular.ColorFactor);
-            out.specular->specularTexture = ToFgTexInfo(pbr.Specular.Texture, nullptr, uses_texture_transform);
-            out.specular->specularColorTexture = ToFgTexInfo(pbr.Specular.ColorTexture, nullptr, uses_texture_transform);
+            out.specular = std::make_unique<fastgltf::MaterialSpecular>(fastgltf::MaterialSpecular{
+                .specularFactor = pbr.Specular.Factor,
+                .specularTexture = ToFgTexInfo(pbr.Specular.Texture, nullptr, uses_texture_transform),
+                .specularColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.Specular.ColorFactor),
+                .specularColorTexture = ToFgTexInfo(pbr.Specular.ColorTexture, nullptr, uses_texture_transform),
+            });
         }
         if (bits & M::ExtTransmission) {
-            out.transmission = std::make_unique<fastgltf::MaterialTransmission>();
-            out.transmission->transmissionFactor = pbr.Transmission.Factor;
-            out.transmission->transmissionTexture = ToFgTexInfo(pbr.Transmission.Texture, nullptr, uses_texture_transform);
+            out.transmission = std::make_unique<fastgltf::MaterialTransmission>(fastgltf::MaterialTransmission{
+                .transmissionFactor = pbr.Transmission.Factor,
+                .transmissionTexture = ToFgTexInfo(pbr.Transmission.Texture, nullptr, uses_texture_transform),
+            });
         }
         if (bits & M::ExtDiffuseTransmission) {
-            out.diffuseTransmission = std::make_unique<fastgltf::MaterialDiffuseTransmission>();
-            out.diffuseTransmission->diffuseTransmissionFactor = pbr.DiffuseTransmission.Factor;
-            out.diffuseTransmission->diffuseTransmissionColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.DiffuseTransmission.ColorFactor);
-            out.diffuseTransmission->diffuseTransmissionTexture = ToFgTexInfo(pbr.DiffuseTransmission.Texture, nullptr, uses_texture_transform);
-            out.diffuseTransmission->diffuseTransmissionColorTexture = ToFgTexInfo(pbr.DiffuseTransmission.ColorTexture, nullptr, uses_texture_transform);
+            out.diffuseTransmission = std::make_unique<fastgltf::MaterialDiffuseTransmission>(fastgltf::MaterialDiffuseTransmission{
+                .diffuseTransmissionFactor = pbr.DiffuseTransmission.Factor,
+                .diffuseTransmissionTexture = ToFgTexInfo(pbr.DiffuseTransmission.Texture, nullptr, uses_texture_transform),
+                .diffuseTransmissionColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.DiffuseTransmission.ColorFactor),
+                .diffuseTransmissionColorTexture = ToFgTexInfo(pbr.DiffuseTransmission.ColorTexture, nullptr, uses_texture_transform),
+            });
         }
         if (bits & M::ExtVolume) {
-            out.volume = std::make_unique<fastgltf::MaterialVolume>();
-            out.volume->thicknessFactor = pbr.Volume.ThicknessFactor;
-            out.volume->attenuationColor = std::bit_cast<fastgltf::math::nvec3>(pbr.Volume.AttenuationColor);
-            out.volume->attenuationDistance = pbr.Volume.AttenuationDistance > 0.f ? pbr.Volume.AttenuationDistance : std::numeric_limits<float>::infinity();
-            out.volume->thicknessTexture = ToFgTexInfo(pbr.Volume.ThicknessTexture, nullptr, uses_texture_transform);
+            out.volume = std::make_unique<fastgltf::MaterialVolume>(fastgltf::MaterialVolume{
+                .thicknessFactor = pbr.Volume.ThicknessFactor,
+                .thicknessTexture = ToFgTexInfo(pbr.Volume.ThicknessTexture, nullptr, uses_texture_transform),
+                .attenuationDistance = pbr.Volume.AttenuationDistance > 0.f ? pbr.Volume.AttenuationDistance : std::numeric_limits<float>::infinity(),
+                .attenuationColor = std::bit_cast<fastgltf::math::nvec3>(pbr.Volume.AttenuationColor),
+            });
         }
         if (bits & M::ExtClearcoat) {
-            out.clearcoat = std::make_unique<fastgltf::MaterialClearcoat>();
-            out.clearcoat->clearcoatFactor = pbr.Clearcoat.Factor;
-            out.clearcoat->clearcoatRoughnessFactor = pbr.Clearcoat.RoughnessFactor;
-            out.clearcoat->clearcoatTexture = ToFgTexInfo(pbr.Clearcoat.Texture, nullptr, uses_texture_transform);
-            out.clearcoat->clearcoatRoughnessTexture = ToFgTexInfo(pbr.Clearcoat.RoughnessTexture, nullptr, uses_texture_transform);
-            out.clearcoat->clearcoatNormalTexture = ToFgNormalTexInfo(pbr.Clearcoat.NormalTexture, pbr.Clearcoat.NormalScale, nullptr, uses_texture_transform);
+            out.clearcoat = std::make_unique<fastgltf::MaterialClearcoat>(fastgltf::MaterialClearcoat{
+                .clearcoatFactor = pbr.Clearcoat.Factor,
+                .clearcoatTexture = ToFgTexInfo(pbr.Clearcoat.Texture, nullptr, uses_texture_transform),
+                .clearcoatRoughnessFactor = pbr.Clearcoat.RoughnessFactor,
+                .clearcoatRoughnessTexture = ToFgTexInfo(pbr.Clearcoat.RoughnessTexture, nullptr, uses_texture_transform),
+                .clearcoatNormalTexture = ToFgNormalTexInfo(pbr.Clearcoat.NormalTexture, pbr.Clearcoat.NormalScale, nullptr, uses_texture_transform),
+            });
         }
         if (bits & M::ExtAnisotropy) {
-            out.anisotropy = std::make_unique<fastgltf::MaterialAnisotropy>();
-            out.anisotropy->anisotropyStrength = pbr.Anisotropy.Strength;
-            out.anisotropy->anisotropyRotation = pbr.Anisotropy.Rotation;
-            out.anisotropy->anisotropyTexture = ToFgTexInfo(pbr.Anisotropy.Texture, nullptr, uses_texture_transform);
+            out.anisotropy = std::make_unique<fastgltf::MaterialAnisotropy>(fastgltf::MaterialAnisotropy{
+                .anisotropyStrength = pbr.Anisotropy.Strength,
+                .anisotropyRotation = pbr.Anisotropy.Rotation,
+                .anisotropyTexture = ToFgTexInfo(pbr.Anisotropy.Texture, nullptr, uses_texture_transform),
+            });
         }
         if (bits & M::ExtIridescence) {
-            out.iridescence = std::make_unique<fastgltf::MaterialIridescence>();
-            out.iridescence->iridescenceFactor = pbr.Iridescence.Factor;
-            out.iridescence->iridescenceIor = pbr.Iridescence.Ior;
-            out.iridescence->iridescenceThicknessMinimum = pbr.Iridescence.ThicknessMinimum;
-            out.iridescence->iridescenceThicknessMaximum = pbr.Iridescence.ThicknessMaximum;
-            out.iridescence->iridescenceTexture = ToFgTexInfo(pbr.Iridescence.Texture, nullptr, uses_texture_transform);
-            out.iridescence->iridescenceThicknessTexture = ToFgTexInfo(pbr.Iridescence.ThicknessTexture, nullptr, uses_texture_transform);
+            out.iridescence = std::make_unique<fastgltf::MaterialIridescence>(fastgltf::MaterialIridescence{
+                .iridescenceFactor = pbr.Iridescence.Factor,
+                .iridescenceTexture = ToFgTexInfo(pbr.Iridescence.Texture, nullptr, uses_texture_transform),
+                .iridescenceIor = pbr.Iridescence.Ior,
+                .iridescenceThicknessMinimum = pbr.Iridescence.ThicknessMinimum,
+                .iridescenceThicknessMaximum = pbr.Iridescence.ThicknessMaximum,
+                .iridescenceThicknessTexture = ToFgTexInfo(pbr.Iridescence.ThicknessTexture, nullptr, uses_texture_transform),
+            });
         }
 
         asset.materials.emplace_back(std::move(out));
@@ -794,7 +782,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto *animations = r.try_get<const Animations>(viewport);
         const auto animation_names = animations ? std::span<const std::string>{animations->Names} : std::span<const std::string>{};
         asset.animations.reserve(animation_names.size());
-        for (const auto &name : animation_names) asset.animations.emplace_back(fastgltf::Animation{.channels = {}, .samplers = {}, .name = ToFgStr(name)});
+        for (const auto &name : animation_names) asset.animations.emplace_back(fastgltf::Animation{.name = ToFgStr(name)});
         const auto push_channel = [&](size_t animation, fastgltf::AnimationChannel target, const AnimationChannel &channel) {
             const auto &times = channel.Times;
             const uint32_t t_offset = AppendAligned<float>(bin, std::span<const float>{times});
@@ -825,7 +813,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         };
         // A pointer channel names its target by export index.
         const auto pointer_channel = [](const gltf::PointerRow &row, size_t index, size_t element = 0) {
-            return fastgltf::AnimationChannel{.samplerIndex = 0, .nodeIndex = {}, .path = fastgltf::AnimationPath::Pointer, .pointer = ToFgStr(std::vformat(row.Template, std::make_format_args(index, element)))};
+            return fastgltf::AnimationChannel{.samplerIndex = 0, .path = fastgltf::AnimationPath::Pointer, .pointer = ToFgStr(std::vformat(row.Template, std::make_format_args(index, element)))};
         };
         for (const auto [entity, clips] : r.view<const AnimationClips>().each()) {
             for (const auto &clip : clips.Clips) {
@@ -856,7 +844,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                             const bool weights = source.Target.Component == state::Key<MorphWeightRange>();
                             if (source.Target.Component == state::Key<Visibility>()) target = pointer_channel(*row, *node);
                             else if (weights && source.Target.Count == 1 && r.get<const MorphWeightRange>(entity).Weights.Count > 1) target = pointer_channel(*row, *node, source.Target.Offset / sizeof(float));
-                            else target = fastgltf::AnimationChannel{.samplerIndex = 0, .nodeIndex = *node, .path = weights ? fastgltf::AnimationPath::Weights : gltf::NodePath(*row), .pointer = {}};
+                            else target = fastgltf::AnimationChannel{.samplerIndex = 0, .nodeIndex = *node, .path = weights ? fastgltf::AnimationPath::Weights : gltf::NodePath(*row)};
                             break;
                         }
                         case gltf::PointerSpace::Material:
@@ -899,15 +887,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         fastgltf::pmr::MaybeSmallVector<fastgltf::num> default_weights;
         // Non-triangle primitives omit targets, materials, and mappings.
         const auto push_prim = [&](fastgltf::PrimitiveType type, auto &&attrs, const fastgltf::Optional<size_t> &indices = {}) {
-            primitives.emplace_back(fastgltf::Primitive{
-                .attributes = std::forward<decltype(attrs)>(attrs),
-                .type = type,
-                .targets = {},
-                .indicesAccessor = indices,
-                .materialIndex = {},
-                .mappings = {},
-                .dracoCompression = nullptr,
-            });
+            primitives.emplace_back(fastgltf::Primitive{.attributes = std::forward<decltype(attrs)>(attrs), .type = type, .indicesAccessor = indices});
         };
 
         // Each fan corner pairs its mesh vertex index with its index into the corner-domain arenas.
@@ -927,7 +907,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             // Derive one primitive layout for runtime-created meshes.
             const auto *layout_ptr = r.try_get<const MeshSourceLayout>(group.Triangles);
             const MeshSourceLayout synthesized_layout = layout_ptr ? MeshSourceLayout{} : [&] {
-                MeshSourceLayout out;
                 // Triangle-mesh normals are always derivable, so runtime meshes always emit them.
                 uint32_t flags = MeshAttributeBit_Normal;
                 if (!corner_tangents.empty()) flags |= MeshAttributeBit_Tangent;
@@ -935,10 +914,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 for (uint32_t set = 0; set < corner_uv_sets.size(); ++set) {
                     if (!corner_uv_sets[set].empty()) flags |= MeshAttributeBit_TexCoord0 << set;
                 }
-                out.AttributeFlags = {flags};
-                out.HasSourceIndices = {1};
-                out.Colors0ComponentCount = 4;
-                return out;
+                return MeshSourceLayout{.AttributeFlags = {flags}, .HasSourceIndices = {1}, .Colors0ComponentCount = 4};
             }();
             const auto &layout = layout_ptr ? *layout_ptr : synthesized_layout;
             const auto prim_count = layout.AttributeFlags.size();
@@ -1134,7 +1110,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     .indicesAccessor = indices_accessor,
                     .materialIndex = material_index,
                     .mappings = std::move(mappings),
-                    .dracoCompression = nullptr,
                 });
             }
 
@@ -1370,10 +1345,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             auto rb = std::make_unique<fastgltf::PhysicsRigidBody>();
             populate_collider_extension(owner, *rb);
             uses_physics_rigid_bodies = true;
-            fastgltf::Node node{};
-            node.children = std::move(children);
-            node.transform = fastgltf::TRS{.translation = std::bit_cast<fastgltf::math::fvec3>(cs.LocalOffset)};
-            node.physicsRigidBody = std::move(rb);
+            fastgltf::Node node{.children = std::move(children), .transform = fastgltf::TRS{.translation = std::bit_cast<fastgltf::math::fvec3>(cs.LocalOffset)}, .physicsRigidBody = std::move(rb)};
             asset.nodes.emplace_back(std::move(node));
             continue;
         }
@@ -1472,8 +1444,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             uses_physics_rigid_bodies = true;
 
             if (motion) {
-                fastgltf::Motion fg_motion{};
-                fg_motion.isKinematic = motion->IsKinematic;
+                fastgltf::Motion fg_motion{.isKinematic = motion->IsKinematic};
                 if (motion->Mass) fg_motion.mass = fastgltf::Optional<fastgltf::num>{*motion->Mass};
                 if (motion->CenterOfMass) fg_motion.centerOfMass = std::bit_cast<fastgltf::math::fvec3>(*motion->CenterOfMass);
                 if (motion->InertiaDiagonal) {
@@ -1550,9 +1521,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .wavinessLength = contact_surface->WavinessLength,
                 .spectralSlope = contact_surface->SpectralSlope,
                 .shortWavelength = contact_surface->ShortWavelength,
-                .profile = {},
-                .sampleSpacing = {},
-                .normalTexture = {},
                 .material = acoustic_material_index,
                 .name = ToFgStr(contact_surface->Name),
             };
@@ -1588,7 +1556,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .shapes = AddDataAccessor(std::span<const vec3>(shapes), fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float),
                 .indices = modes->Indices.empty() ? fastgltf::Optional<size_t>{} : fastgltf::Optional<size_t>{AddDataAccessor(std::span<const uint32_t>(modes->Indices), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt)},
                 .material = acoustic_material_index,
-                .massProperties = {},
                 .name = ToFgStr(node_name),
             };
             if (const auto *mp = r.try_get<const MassProperties>(entity)) {
@@ -1613,7 +1580,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             asset.modalModels.emplace_back(std::move(model));
         } else if (acoustic_surface_index.has_value()) {
             // A body that only supplies its finish to contacts against it, such as a floor.
-            audio_rigid_body = fastgltf::AudioRigidBody{.modalModel = {}, .acousticSurface = acoustic_surface_index};
+            audio_rigid_body = fastgltf::AudioRigidBody{.acousticSurface = acoustic_surface_index};
         }
 
         // A node with a Visibility flag exports that flag at rest. Other nodes derive it from their hidden state.
@@ -1631,15 +1598,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .cameraIndex = camera_index,
             .lightIndex = light_index,
             .children = std::move(children),
-            .weights = {},
             .transform = fg_transform,
             .instancingAttributes = std::move(instancing),
             .name = ToFgStr(node_name),
             .physicsRigidBody = std::move(physics_rigid_body),
             .audioRigidBody = audio_rigid_body,
             .visible = visible,
-            .selectable = true,
-            .hoverable = true,
         });
     }
 
@@ -1655,8 +1619,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .intensity = light.Intensity,
             .rotation = fastgltf::math::fquat(light.Rotation.x, light.Rotation.y, light.Rotation.z, light.Rotation.w),
             .specularImageSize = src_ibl.SpecularImageSize,
-            .specularImages = {},
-            .irradianceCoefficients = {},
             .name = ToFgStr(src_ibl.Name),
         };
         ibl.specularImages.reserve(src_ibl.SpecularImageIndicesByMip.size());
@@ -1684,7 +1646,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             fastgltf::pmr::MaybeSmallVector<size_t> scene_roots;
             for (const auto ni : compute_roots(se)) scene_roots.emplace_back(ni);
             if (se == active_scene) active_emitted = asset.scenes.size();
-            asset.scenes.emplace_back(fastgltf::Scene{.nodeIndices = std::move(scene_roots), .imageBasedLightIndex = {}, .name = ToFgStr(r.get<const Scene>(se).Name)});
+            asset.scenes.emplace_back(fastgltf::Scene{.nodeIndices = std::move(scene_roots), .name = ToFgStr(r.get<const Scene>(se).Name)});
         }
         asset.defaultScene = active_emitted.value_or(0);
         if (default_scene_ibl_index) asset.scenes[*asset.defaultScene].imageBasedLightIndex = default_scene_ibl_index;
@@ -1692,11 +1654,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         // No scene entities (non-glTF / runtime-built): synthesize a single scene from current roots.
         fastgltf::pmr::MaybeSmallVector<size_t> scene_roots;
         for (const auto ni : compute_roots(state::Null)) scene_roots.emplace_back(ni);
-        asset.scenes.emplace_back(fastgltf::Scene{
-            .nodeIndices = std::move(scene_roots),
-            .imageBasedLightIndex = default_scene_ibl_index,
-            .name = {},
-        });
+        asset.scenes.emplace_back(fastgltf::Scene{.nodeIndices = std::move(scene_roots), .imageBasedLightIndex = default_scene_ibl_index});
         asset.defaultScene = 0;
     }
 

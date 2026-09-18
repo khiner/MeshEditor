@@ -108,7 +108,7 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
     if (image_index >= asset.images.size()) return std::unexpected{std::format("glTF image index {} is out of range.", image_index)};
     const auto &image = asset.images[image_index];
 
-    Image out{.Bytes = {}, .MimeType = MimeType::None, .Source = Image::SourceKind::Embedded, .SourceHadMimeType = false, .IsDirty = false, .Name = std::string{image.name}, .Uri = {}, .SourcePath = {}};
+    Image out{.MimeType = MimeType::None, .Name = std::string{image.name}};
     const auto copy_bytes = [&out](const auto &data, fastgltf::MimeType mime_type) {
         out.Bytes.resize(data.size());
         std::memcpy(out.Bytes.data(), data.data(), data.size());
@@ -581,8 +581,6 @@ std::expected<SourceMesh, std::string> ReadSourceMesh(const fastgltf::Asset &ass
         .HasSourceIndices = std::vector<uint8_t>(primitive_count, 0u),
         .DefaultMaterials = std::vector<uint32_t>(primitive_count, material_count - 1u),
         .VariantMappings = std::vector<std::vector<std::optional<uint32_t>>>(primitive_count),
-        .Colors0ComponentCount = 0,
-        .MorphTangentDeltas = {},
         .Index = source_mesh_index,
         .Kind = MeshKind::Triangles,
         .Name = std::string{source_mesh.name},
@@ -966,12 +964,7 @@ std::expected<SourceAssets, std::string> ReadSourceAssets(state::Scene &r, const
         .MinVersion = asset.assetInfo ? std::string{asset.assetInfo->minVersion} : std::string{},
         .AssetExtras = asset.assetInfo ? std::string{asset.assetInfo->extras} : std::string{},
         .AssetExtensions = asset.assetInfo ? std::string{asset.assetInfo->extensions} : std::string{},
-        .ExtensionsRequired = {},
         .ExtrasByEntity = std::move(extras),
-        .MaterialMetas = {},
-        .Textures = {},
-        .Images = {},
-        .Samplers = {},
         .ImageBasedLight = ConvertIBL(asset, scene_index),
     };
     sa.ExtensionsRequired.reserve(asset.extensionsRequired.size());
@@ -1028,8 +1021,7 @@ SourceMaterials ReadMaterials(const fastgltf::Asset &asset) {
     for (uint32_t material_index = 0; material_index < asset.materials.size(); ++material_index) {
         const auto &material = asset.materials[material_index];
         using M = MaterialSourceMeta;
-        MaterialSourceMeta meta;
-        meta.NameWasEmpty = material.name.empty();
+        MaterialSourceMeta meta{.NameWasEmpty = material.name.empty()};
         PBRMaterial pbr{
             .BaseColorFactor = ToVec4(material.pbrData.baseColorFactor),
             .EmissiveFactor = ToVec3(material.emissiveFactor),
@@ -1283,7 +1275,7 @@ std::expected<std::vector<ArmaturePlan>, std::string> PlanArmatures(const fastgl
     for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
         if (!plan.UsedSkin[skin_index] || plan.SkinJointNodes[skin_index].empty()) continue;
         auto it = std::ranges::find(groups, plan.SkinArmaNode[skin_index], &ArmaturePlan::ArmaNode);
-        if (it == groups.end()) it = groups.emplace(groups.end(), ArmaturePlan{.ArmaNode = plan.SkinArmaNode[skin_index], .SkinIndices = {}, .BoneNodes = {}, .BoneParents = {}, .RestLocals = {}});
+        if (it == groups.end()) it = groups.emplace(groups.end(), ArmaturePlan{.ArmaNode = plan.SkinArmaNode[skin_index]});
         it->SkinIndices.emplace_back(skin_index);
     }
     // A skin binds only through an emitted mesh instance that references it.
@@ -1597,8 +1589,7 @@ ImportedObjects ImportObjects(state::Scene &r, const fastgltf::Asset &asset, con
             const auto name = instanced[node_index] ? std::format("{}.{}", base_name, i) : base_name;
             const auto transform = instanced[node_index] ? ToTransform(plan.WorldTransforms[node_index] * ToMatrix(instance_transforms[i])) : plan.LocalTransforms[node_index];
             const ObjectCreateInfo info{.Name = name, .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None};
-            GltfNode node;
-            node.Index = node_index;
+            GltfNode node{.Index = node_index};
             state::Entity e = state::Null;
             if (primary_mesh != state::Null) {
                 e = ::AddMeshInstance(r, primary_mesh, {.Name = name, .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true});
@@ -1644,8 +1635,7 @@ ImportedObjects ImportObjects(state::Scene &r, const fastgltf::Asset &asset, con
         if (plan.InScene[node_index]) continue;
         const auto &source_node = asset.nodes[node_index];
         const auto e = r.create();
-        GltfNode node;
-        node.Index = node_index;
+        GltfNode node{.Index = node_index};
         r.emplace<Transform>(e, plan.LocalTransforms[node_index]);
         r.emplace<WorldTransform>(e);
         if (const auto mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size()); mesh_index && mesh_entities[*mesh_index][size_t(MeshKind::Triangles)] != state::Null) {
@@ -1844,9 +1834,7 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
         const auto positions = ToIndex(m.positions, accessors), shapes = ToIndex(m.shapes, accessors);
         if (!freqs || !decays || !positions || !shapes) return {};
 
-        ModalModes modes;
-        modes.Freqs = read_scalars(*freqs);
-        modes.Positions = read_vec3s(*positions);
+        ModalModes modes{{.Freqs = read_scalars(*freqs), .Positions = read_vec3s(*positions)}};
         const auto decay_rates = read_scalars(*decays);
         const auto shapes_flat = read_vec3s(*shapes);
         const uint32_t n_modes = modes.Freqs.size(), n_points = modes.Positions.size();
@@ -1870,7 +1858,6 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
             if (tris.size() % 3 == 0 && std::ranges::all_of(tris, [n_points](uint32_t i) { return i < n_points; })) modes.Indices = std::move(tris);
             else std::cerr << std::format("Warning: KHR_audio_rigid_bodies modal model '{}' has sample surface indices outside its sample points; ignoring them.\n", std::string{m.name});
         }
-        modes.OriginalFundamentalFreq = modes.Freqs.front();
         return modes;
     };
     // An empty entry keeps the array's indices aligned with the document's while attaching nothing.
@@ -1895,9 +1882,7 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
             .ShortWavelength = float(s.shortWavelength.value_or(Defaults.ShortWavelength)),
             .Waviness = float(s.waviness.value_or(Defaults.Waviness)),
             .WavinessLength = float(s.wavinessLength.value_or(Defaults.WavinessLength)),
-            .Profile = {},
             .SampleSpacing = float(s.sampleSpacing.value_or(0.0)),
-            .NormalTexture = {},
         };
         if (const auto profile = ToIndex(s.profile, asset.accessors.size())) surface.Profile = read_scalars(*profile);
         if (const auto texture = s.normalTexture.has_value() ? ToIndex(s.normalTexture->textureIndex, asset.textures.size()) : std::nullopt) {
@@ -2029,7 +2014,6 @@ std::vector<state::Entity> ImportArmatures(state::Scene &r, const fastgltf::Asse
                 .SkeletonNodeIndex = ToIndex(skin.skeleton, asset.nodes.size()),
                 .AnchorNodeIndex = arma_node,
                 .Name = std::string(skin.name),
-                .OrderedJointNodeIndices = {},
                 .InverseBindMatrices = LoadInverseBindMatrices(asset, skin, skin.joints.size()),
             };
             imported_skin.OrderedJointNodeIndices.reserve(skin.joints.size());
@@ -2049,8 +2033,7 @@ std::vector<state::Entity> ImportArmatures(state::Scene &r, const fastgltf::Asse
             return {};
         }();
         EmplaceUniqueName(r, armature_entity, skin_name.empty() ? std::format("{}_Armature{}", name_prefix, group_index) : skin_name);
-        GltfNode armature_node;
-        armature_node.EmptyName = skin_name.empty();
+        GltfNode armature_node{.EmptyName = skin_name.empty()};
         r.emplace<GltfNode>(armature_entity, std::move(armature_node));
 
         // Follow the root node's entity when it is an object (it may be animated), else the nearest object above it.
@@ -2082,9 +2065,7 @@ std::vector<state::Entity> ImportArmatures(state::Scene &r, const fastgltf::Asse
         for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
             const auto joint_node_index = armature.Bones[i].JointNodeIndex;
             if (!joint_node_index) continue;
-            GltfNode bone_node;
-            bone_node.Index = *joint_node_index;
-            bone_node.EmptyName = *joint_node_index < asset.nodes.size() && asset.nodes[*joint_node_index].name.empty();
+            GltfNode bone_node{.Index = *joint_node_index, .EmptyName = *joint_node_index < asset.nodes.size() && asset.nodes[*joint_node_index].name.empty()};
             r.emplace<GltfNode>(bone_entities[i], std::move(bone_node));
         }
 
@@ -2309,7 +2290,7 @@ bool ImportAnimations(state::Scene &r, const fastgltf::Asset &asset, state::Enti
         for (auto &[entity, channel] : resolved) {
             auto &clips = r.get_or_emplace<AnimationClips>(entity);
             auto *clip = clips.Find(index);
-            if (!clip) clip = &clips.Clips.emplace_back(AnimationClip{.Animation = index, .Channels = {}});
+            if (!clip) clip = &clips.Clips.emplace_back(AnimationClip{.Animation = index});
             clip->Channels.emplace_back(std::move(channel));
         }
         any = true;

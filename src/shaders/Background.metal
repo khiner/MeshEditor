@@ -13,7 +13,7 @@ constant float2 BackgroundPositions[4] = {float2(-1, -1), float2(1, -1), float2(
 vertex NdcVaryings BackgroundVertex(uint vertex_id [[vertex_id]]) {
     const float2 p = BackgroundPositions[vertex_id];
     // z=1 puts the quad on the far plane, so geometry overdraws it through the depth test.
-    return NdcVaryings{float4(p, 1.0f, 1.0f), p};
+    return {float4(p, 1.0f, 1.0f), p};
 }
 
 fragment float4 BackgroundFragment(

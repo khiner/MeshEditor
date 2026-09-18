@@ -18,8 +18,6 @@ set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
 
-add_compile_options(-Wno-missing-field-initializers)
-
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2")
 add_subdirectory(lib)

@@ -24,18 +24,11 @@ struct Scene {
     static constexpr float Dt = 1.f / 60;
     Scene() { World.TrackContacts = true; }
     rbp::Index Box(rbp::float3 half, rbp::Pose local = rbp::IdentityPose) {
-        rbp::Shape shape{};
-        shape.Kind = rbp::ShapeBox;
-        shape.HalfExtents = half;
-        shape.Local = local;
+        rbp::Shape shape{.HalfExtents = half, .Kind = rbp::ShapeBox, .Local = local};
         return World.AddShape(shape);
     }
     rbp::Index Add(rbp::Index shape, rbp::float3 at, bool dynamic, float gravity = 1) {
-        rbp::BodyDesc body{};
-        body.Shape = shape;
-        body.Pose = rbp::At(at);
-        body.Density = dynamic ? 1000 : 0;
-        body.GravityScale = gravity;
+        rbp::BodyDesc body{.Pose = rbp::At(at), .Shape = shape, .Density = dynamic ? 1000.f : 0.f, .GravityScale = gravity};
         return World.AddBody(body);
     }
     void Floor() { Add(Box(rbp::float3{50, 1, 50}), rbp::float3{0, -1, 0}, false); }
@@ -45,10 +38,7 @@ struct Scene {
         for (auto at : centers) shapes.push_back(Box(half, rbp::At(at)));
         rbp::Pose frame;
         const auto compound = World.AddCompound(shapes, &frame);
-        rbp::BodyDesc body{};
-        body.Shape = compound;
-        body.Pose = frame;
-        body.Density = dynamic ? 1000 : 0;
+        rbp::BodyDesc body{.Pose = frame, .Shape = compound, .Density = dynamic ? 1000.f : 0.f};
         World.AddBody(body);
     }
     void Step() {

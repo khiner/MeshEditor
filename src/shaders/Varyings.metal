@@ -65,22 +65,22 @@ inline MeshletVertexVaryings ToMeshletVertexVaryings(MeshVaryings v) {
 }
 
 inline MeshVaryings FromMeshletVertexVaryings(MeshletVertexVaryings v) {
-    MeshVaryings out{};
-    out.Position = v.Position;
-    out.WorldNormal = v.WorldNormal;
-    out.FlatWorldNormal = v.FlatWorldNormal;
-    out.WorldPosition = v.WorldPosition;
-    out.Color = v.Color;
-    out.FaceOverlayFlags = v.FaceOverlayFlags;
-    out.TexCoord0 = v.TexCoord0;
-    out.TexCoord1 = v.TexCoord1;
-    out.TexCoord2 = v.TexCoord2;
-    out.TexCoord3 = v.TexCoord3;
-    out.MaterialIndex = v.MaterialIndex;
-    out.VertexColor = v.VertexColor;
-    out.WorldTangent = v.WorldTangent;
-    out.WorldScale = v.WorldScale;
-    return out;
+    return {
+        .Position = v.Position,
+        .WorldNormal = v.WorldNormal,
+        .FlatWorldNormal = v.FlatWorldNormal,
+        .WorldPosition = v.WorldPosition,
+        .Color = v.Color,
+        .FaceOverlayFlags = v.FaceOverlayFlags,
+        .TexCoord0 = v.TexCoord0,
+        .TexCoord1 = v.TexCoord1,
+        .TexCoord2 = v.TexCoord2,
+        .TexCoord3 = v.TexCoord3,
+        .MaterialIndex = v.MaterialIndex,
+        .VertexColor = v.VertexColor,
+        .WorldTangent = v.WorldTangent,
+        .WorldScale = v.WorldScale,
+    };
 }
 
 struct QuadVaryings {

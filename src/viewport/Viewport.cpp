@@ -234,7 +234,7 @@ state::Entity InitEngine(state::Scene &r) {
     std::error_code ec;
     for (const auto &entry : std::filesystem::directory_iterator{images_dir / "studiolights" / "world", ec}) {
         if (entry.path().extension() == ".hdr") {
-            environments.Hdris.emplace_back(HdriEntry{.Name = entry.path().stem().string(), .Path = entry.path(), .Prefiltered = {}});
+            environments.Hdris.emplace_back(HdriEntry{.Name = entry.path().stem().string(), .Path = entry.path()});
         }
     }
     std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name);

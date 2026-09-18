@@ -497,7 +497,6 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
                 .Draw = in.ElementDraw,
                 .AuxIndices = in.AuxIndices,
                 .PrimitiveIndex = primitive_index,
-                .FirstTriangle = 0u,
                 .MeshletOffset = first_meshlet,
                 .MeshletCount = uint32_t(sink.Records.size()) - first_meshlet,
                 .Level0Count = uint32_t(sink.Records.size()) - first_meshlet,

@@ -45,17 +45,22 @@ inline MeshletWork ResolveMeshletWork(
     const uint visible_index = routes.Offsets[pc.Route] + pc.VisibleOffset + group_index;
     const VisibleMeshlet work = BindlessBuffer(VisibleMeshlet, bindless.Buffer, pc.VisibleMeshletSlot)[visible_index];
     const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[work.Instance];
-    MeshletWork result{};
-    result.VisibleIndex = visible_index;
-    result.MeshletIndex = work.Meshlet;
-    result.Instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
-    if (pc.InstanceFilter != InvalidOffset && pc.InstanceFilter != instance_slot) return result;
-    if ((result.Instance.Flags & pc.RequiredInstanceFlags) != pc.RequiredInstanceFlags) return result;
-    result.Meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[work.Meshlet];
-    result.Primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[result.Meshlet.Primitive];
-    result.Draw = MeshletDraw(result.Primitive, result.Instance, instance_slot);
-    result.Valid = true;
-    return result;
+    const InstanceRecord instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
+    if ((pc.InstanceFilter != InvalidOffset && pc.InstanceFilter != instance_slot) ||
+        (instance.Flags & pc.RequiredInstanceFlags) != pc.RequiredInstanceFlags) {
+        return {.Instance = instance, .VisibleIndex = visible_index, .MeshletIndex = work.Meshlet};
+    }
+    const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[work.Meshlet];
+    const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
+    return {
+        .Instance = instance,
+        .Meshlet = meshlet,
+        .Primitive = primitive,
+        .Draw = MeshletDraw(primitive, instance, instance_slot),
+        .VisibleIndex = visible_index,
+        .MeshletIndex = work.Meshlet,
+        .Valid = true,
+    };
 }
 
 struct MeshletFaceValues {
@@ -106,14 +111,16 @@ inline MeshletTriangleCorners ResolveMeshletCorners(
     const thread Scene &scene, DrawData draw, uint vertex_slot, uint local_triangle_slot,
     MeshletRecord meshlet, PrimitiveRecord primitive, uint triangle, uint local_triangle
 ) {
-    MeshletTriangleCorners result;
-    result.CornerIds = MeshletCornerIds(
+    const uint3 corner_ids = MeshletCornerIds(
         scene.B, vertex_slot, local_triangle_slot, meshlet, primitive, triangle, local_triangle
     );
     device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
-    for (uint c = 0u; c < 3u; ++c) result.VertexIds[c] = indices[draw.IndexSlotOffset.Offset + result.CornerIds[c]];
-    result.CoarseNormal = MeshletCoarse(meshlet) ? MeshletCoarseNormal(scene, draw, result.VertexIds) : float3(0.0f);
-    return result;
+    const uint3 vertex_ids{
+        indices[draw.IndexSlotOffset.Offset + corner_ids.x],
+        indices[draw.IndexSlotOffset.Offset + corner_ids.y],
+        indices[draw.IndexSlotOffset.Offset + corner_ids.z],
+    };
+    return {.CornerIds = corner_ids, .VertexIds = vertex_ids, .CoarseNormal = MeshletCoarse(meshlet) ? MeshletCoarseNormal(scene, draw, vertex_ids) : float3(0.0f)};
 }
 
 // Returns coarse face values with primitive material and no source-face selection state.

@@ -685,27 +685,25 @@ void MeshStore::SetConnectivityEdgeCount(uint32_t id, uint32_t edge_count) { Wri
 
 MeshConnectivity MeshStore::GetConnectivity(uint32_t id) const {
     const auto &record = Records.at(id);
-    MeshConnectivity c;
-    c.VertexCount = record.ConnectivityVertices;
-    c.EdgeCount = record.ConnectivityEdgeCount;
-    c.FaceCount = record.ConnectivityFaces;
-    if (record.Connectivity.Count == 0) return c;
+    if (record.Connectivity.Count == 0) return {.VertexCount = record.ConnectivityVertices, .EdgeCount = record.ConnectivityEdgeCount, .FaceCount = record.ConnectivityFaces};
     const auto [outgoing, opposites, bits, ranks, samples, faces] = SliceConnectivity(record, Buffers.Connectivity.Get(record.Connectivity));
-    c.OutgoingHalfedges = outgoing;
-    c.Opposites = opposites;
-    c.Faces = faces;
     // A non-manifold mesh reads its edges from the list instead of the bit ranks.
-    if (record.ConnectivityEdges.Count > 0) {
-        const auto edges = Buffers.Connectivity.Get(record.ConnectivityEdges);
-        c.Edges = {reinterpret_cast<const he::HH *>(edges.data()), edges.size()};
-        const auto halfedge_to_edge = Buffers.Connectivity.Get(record.ConnectivityHalfedgeToEdge);
-        c.HalfedgeToEdge = {reinterpret_cast<const he::EH *>(halfedge_to_edge.data()), halfedge_to_edge.size()};
-        return c;
-    }
-    c.EdgeFirstBits = bits;
-    c.EdgeFirstRanks = ranks;
-    c.EdgeSamples = samples.first(BitWords(record.ConnectivityEdgeCount));
-    return c;
+    const bool explicit_edges = record.ConnectivityEdges.Count > 0;
+    const auto edges = explicit_edges ? Buffers.Connectivity.Get(record.ConnectivityEdges) : std::span<const uint32_t>{};
+    const auto halfedge_to_edge = explicit_edges ? Buffers.Connectivity.Get(record.ConnectivityHalfedgeToEdge) : std::span<const uint32_t>{};
+    return {
+        .VertexCount = record.ConnectivityVertices,
+        .OutgoingHalfedges = outgoing,
+        .Opposites = opposites,
+        .EdgeFirstBits = explicit_edges ? std::span<const uint32_t>{} : bits,
+        .EdgeFirstRanks = explicit_edges ? std::span<const uint32_t>{} : ranks,
+        .HalfedgeToEdge = {reinterpret_cast<const he::EH *>(halfedge_to_edge.data()), halfedge_to_edge.size()},
+        .EdgeCount = record.ConnectivityEdgeCount,
+        .Edges = {reinterpret_cast<const he::HH *>(edges.data()), edges.size()},
+        .EdgeSamples = explicit_edges ? std::span<const uint32_t>{} : samples.first(BitWords(record.ConnectivityEdgeCount)),
+        .FaceCount = record.ConnectivityFaces,
+        .Faces = faces,
+    };
 }
 
 uint32_t MeshStore::CreateMeshSource(const MeshData &data) {

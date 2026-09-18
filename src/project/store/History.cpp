@@ -391,8 +391,7 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
         if (kind == RecordKind::Root || kind == RecordKind::Action) {
             uint32_t asz;
             if (!Take(payload, asz) || payload.size() < asz) break;
-            HistoryNode n;
-            n.Action.assign(payload.begin(), payload.begin() + asz);
+            HistoryNode n{.Action = {payload.begin(), payload.begin() + asz}};
             payload = payload.subspan(asz);
             uint32_t label_size;
             if (!Take(payload, label_size) || payload.size() < label_size) break;
@@ -633,23 +632,13 @@ void History::Release(Snapshot &snapshot) {
 bool History::Begin(const std::filesystem::path &dir) {
     assert(Dir.empty() || Dir != dir);
     if (!CheckIO(*this, Flush(*this))) return false;
-    History candidate;
-    candidate.Tracks = Tracks;
-    candidate.PageTracks = PageTracks;
-    candidate.RecordTracks = RecordTracks;
-    candidate.PoolTracks = PoolTracks;
-    candidate.Order = Order;
-    candidate.SchemaRevision = SchemaRevision;
-    candidate.Dir = dir;
+    History candidate{.SchemaRevision = SchemaRevision, .Tracks = Tracks, .PageTracks = PageTracks, .RecordTracks = RecordTracks, .PoolTracks = PoolTracks, .Order = Order, .Dir = dir};
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     if (ec) return CheckIO(*this, "cannot create " + dir.string() + ": " + ec.message());
     if (!CheckIO(*this, OpenStreams(candidate.Streams, candidate.StreamBuffers, dir, true))) return false;
     Append(candidate, FileTree, Descriptor(*this));
-    HistoryNode root;
-    root.Label = "Root";
-    root.Hot = Pin();
-    root.Stamps = CurrentStamps(*this);
+    HistoryNode root{.Label = "Root", .Hot = Pin(), .Stamps = CurrentStamps(*this)};
     candidate.Nodes.push_back(std::move(root));
     SetPresent(candidate, 0);
     PersistNode(candidate, RecordKind::Root, 0);
@@ -703,14 +692,7 @@ int History::Commit(std::string label, std::vector<std::byte> action) {
         if (Nodes[child].Stamps == stamps) return adopt(child);
     if (const int parent = Nodes[Present].Parent; parent >= 0 && Nodes[parent].Stamps == stamps) return adopt(parent);
     const int id = int(Nodes.size());
-    HistoryNode n;
-    n.Parent = Present;
-    n.ReplayBaseline = false;
-    n.Action = std::move(action);
-    n.Label = std::move(label);
-    n.Depth = Nodes[Present].Depth + 1;
-    n.Hot = Pin();
-    n.Stamps = stamps;
+    HistoryNode n{.Parent = Present, .Action = std::move(action), .Label = std::move(label), .Depth = Nodes[Present].Depth + 1, .ReplayBaseline = false, .Hot = Pin(), .Stamps = stamps};
     Nodes.push_back(std::move(n));
     Nodes[Present].Children.push_back(id);
     ++Revision;
@@ -856,9 +838,7 @@ std::string History::ValidateReplay(int node) {
 }
 
 HistoryStats History::Stats() const {
-    HistoryStats s;
-    s.SharedNodeBytes = SharedNodePoolBytes();
-    s.OwnedBytes = OwnedBytes(*this);
+    HistoryStats s{.OwnedBytes = OwnedBytes(*this), .SharedNodeBytes = SharedNodePoolBytes()};
     for (const auto &n : Nodes) {
         if (n.Hot) ++s.HotNodes;
         else ++s.ColdNodes;
@@ -888,12 +868,7 @@ int History::FindPosition(const HistoryPosition &position) const {
 
 bool History::Open(const std::filesystem::path &dir, const HistoryPosition *position) {
     if (!CheckIO(*this, Flush(*this))) return false;
-    History candidate;
-    candidate.Tracks = Tracks;
-    candidate.PageTracks = PageTracks;
-    candidate.RecordTracks = RecordTracks;
-    candidate.PoolTracks = PoolTracks;
-    candidate.SchemaRevision = SchemaRevision;
+    History candidate{.SchemaRevision = SchemaRevision, .Tracks = Tracks, .PageTracks = PageTracks, .RecordTracks = RecordTracks, .PoolTracks = PoolTracks};
     uint64_t tree_size{};
     LoadPlan plan;
     if (!ReadProject(candidate, dir, tree_size))

@@ -168,8 +168,7 @@ void RetuneModalObject(const state::Scene &r, ModalBank &b, uint32_t slot, state
 void RebuildModalBank(state::Scene &r) {
     auto &m = r.ctx().get<ModalAudio>();
 
-    ModalBank next;
-    next.SampleRate = float(DeviceSampleRate(r));
+    ModalBank next{.SampleRate = float(DeviceSampleRate(r))};
     for (auto e : r.view<const ModalModes, const SoundVertices>()) {
         const auto &modes = r.get<const ModalModes>(e);
         if (modes.Freqs.empty()) continue;

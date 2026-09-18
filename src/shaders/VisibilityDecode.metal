@@ -187,18 +187,14 @@ inline ResolvedVisibility ResolveVisibilityPrimitive(
     device const BindlessSet &bindless,
     VisibilityShadingPushConstants pc
 ) {
-    ResolvedVisibility result{};
-    if (id == VisibilityBackground) return result;
+    if (id == VisibilityBackground) return {};
     const uint visible_index = (id >> uint(VisibilityId::TriangleBits)) & VisibilityIndexMask;
     const VisibleMeshlet visible = BindlessBuffer(VisibleMeshlet, bindless.Buffer, pc.VisibleMeshletSlot)[visible_index];
     const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[visible.Instance];
-    result.Instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
-    result.Meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[visible.Meshlet];
-    result.Primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[result.Meshlet.Primitive];
-    result.Draw = MeshletDraw(result.Primitive, result.Instance, instance_slot);
-    result.LocalTriangle = id & VisibilityTriangleMask;
-    result.Valid = true;
-    return result;
+    const InstanceRecord instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
+    const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[visible.Meshlet];
+    const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
+    return {.Instance = instance, .Meshlet = meshlet, .Primitive = primitive, .Draw = MeshletDraw(primitive, instance, instance_slot), .LocalTriangle = id & VisibilityTriangleMask, .Valid = true};
 }
 
 inline ResolvedVisibility ResolveVisibilityId(

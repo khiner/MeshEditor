@@ -104,11 +104,7 @@ static_assert(offsetof(Bounds, Radius) == sizeof(vec3));
 
 Bounds MergeBounds(std::span<const Bounds> bounds) {
     const auto merged = meshopt_computeSphereBounds(&bounds.front().Center.x, bounds.size(), sizeof(Bounds), &bounds.front().Radius, sizeof(Bounds));
-    Bounds result{
-        .Center = std::bit_cast<vec3>(merged.center),
-        .Radius = merged.radius,
-        .Error = 0.f,
-    };
+    Bounds result{.Center = std::bit_cast<vec3>(merged.center), .Radius = merged.radius};
     // Merged bounds stay conservative with respect to the member errors.
     for (const auto &member : bounds) result.Error = std::max(result.Error, member.Error);
     return result;
@@ -601,8 +597,7 @@ uint32_t PackCone(const meshopt_Bounds &bounds, bool cone_cull_safe) {
 ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
     const auto total_start = Clock::now();
 
-    ClusterLodBuild build;
-    build.Level0Groups.assign(mesh.Clusters.size(), ClusterLodInvalid);
+    ClusterLodBuild build{.Level0Groups = std::vector<uint32_t>(mesh.Clusters.size(), ClusterLodInvalid)};
     build.PrimitiveRanges.reserve(mesh.Primitives.size());
 
     PrimitiveWeld weld;
@@ -643,11 +638,7 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
                 assert(local < source.VertexCount);
                 cluster.LocalTriangles[c] = local;
             }
-            cluster.Sphere = Bounds{
-                .Center = source.Center,
-                .Radius = source.Radius,
-                .Error = 0.f,
-            };
+            cluster.Sphere = Bounds{.Center = source.Center, .Radius = source.Radius};
             cluster.Level0Id = range.FirstCluster + i;
             cluster.ConeSafe = source.ConeCullSafe;
         }

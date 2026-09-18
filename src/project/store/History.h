@@ -69,7 +69,6 @@ struct History {
         std::function<void()> AfterRestore{};
     };
 
-    History() = default;
     ~History() { Close(); }
     // Tracks restore in ascending phase, stable within a phase.
     void Track(Pages &, std::string name, int phase);

@@ -100,14 +100,7 @@ void SubmitChunk(state::Scene &r, std::span<const ConnectivityTarget> chunk, Bat
             const auto words = BitWords(job.HalfedgeCount);
             std::vector<he::HH> outgoing(job.VertexCount), opposites(job.HalfedgeCount);
             std::vector<uint32_t> bits(words), ranks(words), samples(words);
-            const ConnectivityStorage host{
-                .OutgoingHalfedges = outgoing,
-                .Opposites = opposites,
-                .EdgeFirstBits = bits,
-                .EdgeFirstRanks = ranks,
-                .EdgeSamples = samples,
-                .Faces = {},
-            };
+            const ConnectivityStorage host{.OutgoingHalfedges = outgoing, .Opposites = opposites, .EdgeFirstBits = bits, .EdgeFirstRanks = ranks, .EdgeSamples = samples};
             const auto built = BuildConnectivity(chunk[i].Data->FaceOffsets, arenas.FaceCorners.Get(meshes.Get(chunk[i].StoreId).FaceCorners), job.VertexCount, host);
             const auto gpu = meshes.GetConnectivity(chunk[i].StoreId);
             const auto report = [&](std::string_view what, uint32_t at, uint32_t got, uint32_t wanted) {

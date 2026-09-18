@@ -409,7 +409,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const auto *armature = r.try_get<const Armature>(data_entity);
         if (!armature || armature->Bones.empty() || r.all_of<ArmaturePoseState>(data_entity)) continue;
         const auto n = armature->Bones.size();
-        r.emplace<ArmaturePoseState>(data_entity, ArmaturePoseState{.BoneUserOffset = std::vector<Transform>(n), .BonePoseWorld = std::vector<mat4>(n, I4), .GpuDeformRanges = {}});
+        r.emplace<ArmaturePoseState>(data_entity, ArmaturePoseState{.BoneUserOffset = std::vector<Transform>(n), .BonePoseWorld = std::vector<mat4>(n, I4)});
         // Bone poses derive from rest + delta. Scale stays at rest.
         for (uint32_t i = 0; i < n && i < arm_obj_comp.BoneEntities.size(); ++i) {
             const auto b = arm_obj_comp.BoneEntities[i];

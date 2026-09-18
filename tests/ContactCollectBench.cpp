@@ -17,18 +17,14 @@ int main(int argc, char **argv) {
         plane.Normal = {0, 1, 0};
         box.Kind = rbp::ShapeBox;
         box.HalfExtents = {0.5f, 0.5f, 0.5f};
-        rbp::BodyDesc floor{};
-        floor.Shape = world.AddShape(plane);
+        rbp::BodyDesc floor{.Shape = world.AddShape(plane)};
         world.AddBody(floor);
         const auto shape = world.AddShape(box);
         for (uint32_t i = 0; i < bodies; ++i) {
-            rbp::BodyDesc body{};
-            body.Shape = shape;
-            body.Pose = rbp::At(rbp::float3{2 * float(i % 16), 0.5f, 2 * float(i / 16)});
+            rbp::BodyDesc body{.Pose = rbp::At(rbp::float3{2 * float(i % 16), 0.5f, 2 * float(i / 16)}), .Shape = shape};
             world.AddBody(body);
         }
-        rbp::StepSettings settings;
-        settings.SleepSteps = UINT32_MAX;
+        rbp::StepSettings settings{.SleepSteps = UINT32_MAX};
         for (int i = 0; i < 60; ++i) solver.Step(world, settings);
         world.TrackContacts = reporting;
         size_t events = 0;

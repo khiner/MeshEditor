@@ -426,10 +426,7 @@ RestorePlan LiveTrie::PlanRestore(const Version &v) {
     assert(!Busy && "restore reentry into a trie mid-restore or mid-load");
     assert(DirtySlots.empty() && "restore requires settled hashes");
     Busy = true;
-    RestorePlan plan;
-    plan.Length = v.S.Length;
-    plan.Target = v.Root;
-    plan.Hash = v.S.H;
+    RestorePlan plan{.Length = v.S.Length, .Target = v.Root, .Hash = v.S.H};
     PlanRec(*this, Root, v.Root, Levels, 0, plan);
     return plan;
 }
@@ -450,8 +447,7 @@ RestorePlan LiveTrie::PlanLoad(uint64_t length, std::span<const std::pair<uint64
     assert(!Busy && "load reentry into a trie mid-restore or mid-load");
     assert(DirtySlots.empty() && "load requires settled hashes");
     Busy = true;
-    RestorePlan plan;
-    plan.Length = length;
+    RestorePlan plan{.Length = length};
     plan.Changes.reserve(changes.size());
     for (const auto &[slot, hash] : changes) {
         const bool erase = hash == Hash128{};

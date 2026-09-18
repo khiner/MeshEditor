@@ -36,9 +36,7 @@ void UpdateContactDynamics(state::Scene &r, state::Entity e) {
         mass_scale = 1.0;
     }
 
-    ContactDynamics cd;
-    cd.Mass = resolved.Mass * mass_scale;
-    cd.InverseInertia = InverseInertiaTensor(resolved) * float(1 / mass_scale);
+    ContactDynamics cd{.Mass = resolved.Mass * mass_scale, .InverseInertia = InverseInertiaTensor(resolved) * float(1 / mass_scale)};
     cd.ContactArm.reserve(modes->Positions.size());
     for (const auto &position : modes->Positions) cd.ContactArm.push_back((position - resolved.CenterOfMass) * baked_scale);
     r.emplace_or_replace<ContactDynamics>(e, std::move(cd));

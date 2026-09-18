@@ -22,7 +22,7 @@ function(mesheditor_compile_policy target policy)
         set(debug_optimization -O0)
     endif()
     target_compile_options(${target} PRIVATE
-        -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti
+        -Wall -Wextra -Wno-missing-field-initializers -Wno-missing-designated-field-initializers -Wno-elaborated-enum-base -fno-rtti
         "$<$<CONFIG:Debug>:${debug_optimization}>"
         "$<$<NOT:$<CONFIG:Debug>>:-O2>")
     set_target_properties(${target} PROPERTIES CXX_STANDARD 23 OBJCXX_STANDARD 23)

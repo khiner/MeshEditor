@@ -56,8 +56,7 @@ void BenchScene(uint32_t slices, bool render) {
     std::vector<double> edits, hot, cold;
     for (int i = 0; i < 30; ++i) {
         edits.push_back(Ms([&] {
-            auto move = std::make_unique<PendingTransform>();
-            move->Delta.P.x = 0.001f;
+            auto move = std::make_unique<PendingTransform>(PendingTransform{.Delta = {.P = {0.001f, 0.f, 0.f}}});
             action::Emit(action::view::DragGizmoMeshEdit{std::move(move)}, action::Phase::Stage);
             p.Frame(action::Drain());
             action::Commit();

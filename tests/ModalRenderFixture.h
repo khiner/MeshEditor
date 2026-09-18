@@ -38,7 +38,7 @@ inline ModalModes MakeModes(uint32_t mode_count, float longest_t60, float shape_
 }
 
 inline ModalEvent ImpactEvent(uint32_t object, float impulse, uint32_t ex_pos = 0, float pulse_step = 1.f / 300.f) {
-    return {.Kind = ModalEventKind::Impact, .Object = object, .ExPos = ex_pos, .Jx = impulse, .Jy = 0.5f * impulse, .Jz = 0.f, .PulseStep = pulse_step, .PulseGamma = 20.f, .AccelAmp = 0.f};
+    return {.Object = object, .ExPos = ex_pos, .Jx = impulse, .Jy = 0.5f * impulse, .PulseStep = pulse_step, .PulseGamma = 20.f};
 }
 
 // A bank of identical objects, ready to render.
@@ -52,8 +52,7 @@ struct ModalScene {
     // One bank of whatever modes a case needs to press, for a bench that needs its own frequency.
     ModalScene(const ModalModes &modes, uint32_t object_count, uint32_t renderers, float rigid_inv_mass = 0.f, float sample_rate = SampleRate) {
         Audio.RenderPool.SetSize(renderers);
-        ModalBank next;
-        next.SampleRate = sample_rate;
+        ModalBank next{.SampleRate = sample_rate};
         for (uint32_t o = 0; o < object_count; ++o) {
             Objects.push_back(AddModalObject(next, state::Entity{o}, modes));
             TuneModalObject(next, Objects.back(), modes.Freqs, modes.T60s);

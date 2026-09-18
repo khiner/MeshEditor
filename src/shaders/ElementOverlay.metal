@@ -50,7 +50,7 @@ inline EdgeQuadVaryings EditEdgeQuadCorner(
 
 inline PointVaryings EditPointSprite(const thread Scene &scene, float4 position, float4 color) {
     position.z -= NdcOffsetFactor(scene) * 1.5f;
-    return PointVaryings{position, PointSize, color};
+    return {position, PointSize, color};
 }
 
 inline PointVaryings ElementPointSprite(

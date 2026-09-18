@@ -578,8 +578,7 @@ std::vector<TextureRef> GetTextureRefs(state::Scene &r) {
 
 HdriRefs GetHdriRefs(state::Scene &r) {
     const auto &environments = r.ctx().get<EnvironmentStore>();
-    HdriRefs refs;
-    refs.ActiveIndex = environments.ActiveHdriIndex;
+    HdriRefs refs{.ActiveIndex = environments.ActiveHdriIndex};
     refs.Names.reserve(environments.Hdris.size());
     for (const auto &hdri : environments.Hdris) refs.Names.emplace_back(hdri.Name);
     return refs;

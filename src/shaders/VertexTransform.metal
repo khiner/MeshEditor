@@ -87,7 +87,6 @@ inline MeshVaryings TransformVertex(
     bool face_attributes = true, bool shading_normal = true,
     bool coarse = false, float3 coarse_normal = float3(0.0f)
 ) {
-    MeshVaryings out;
     device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
     // Motion-blur steps use captured transforms without modifying DrawData.
@@ -96,7 +95,7 @@ inline MeshVaryings TransformVertex(
 
     uint element_state = 0u;
     uint face_id = 0u;
-    out.MaterialIndex = 0u;
+    uint material_index = 0u;
     const float3 local_pos = scene.GetLocalPosition(draw, idx);
     const bool is_face_draw = draw.ObjectIdSlot != InvalidSlot;
     float3 normal = is_face_draw ? float3(0) : scene.GetVertexNormal(draw, idx);
@@ -110,13 +109,7 @@ inline MeshVaryings TransformVertex(
     }
     const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, local_pos));
 
-    out.WorldNormal = shading_normal ? trs_transform_normal(world, normal) : float3(0.0f);
-    out.FlatWorldNormal = float3(0.0f);
-    out.WorldPosition = world_pos;
     const uint color_index = is_face_draw ? vertex_index : idx;
-    out.VertexColor = draw.CornerColorOffset != InvalidOffset ?
-        float4(scene.CornerColors(scene.View.CornerColorSlot)[draw.CornerColorOffset + color_index]) :
-        float4(1.0f);
 
     constant ViewportThemeColors &colors = scene.Theme.Colors;
     const bool is_edit_mode = scene.View.InteractionMode == InteractionMode::Edit;
@@ -128,7 +121,7 @@ inline MeshVaryings TransformVertex(
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;
 
-    out.FaceOverlayFlags = 0u;
+    uint face_overlay_flags = 0u;
 
     float4 selected_color = base_color;
     if (is_selected && is_edge_draw) {
@@ -140,25 +133,22 @@ inline MeshVaryings TransformVertex(
     if (face_attributes && draw.ElementPrimitiveOffset != InvalidOffset && draw.PrimitiveMaterialOffset != InvalidOffset && (!is_face_draw || face_id != 0u)) {
         const uint element = is_face_draw ? face_id - 1u : idx;
         const uint primitive_index = scene.ElementPrimitives(scene.View.ElementPrimitiveSlot)[draw.ElementPrimitiveOffset + element];
-        out.MaterialIndex = scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[draw.PrimitiveMaterialOffset + primitive_index];
+        material_index = scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[draw.PrimitiveMaterialOffset + primitive_index];
     }
+    float4 color = base_color;
     if (is_face_draw) {
-        if (face_attributes && is_selected) out.FaceOverlayFlags |= 1u;
-        if (face_attributes && is_active) out.FaceOverlayFlags |= 2u;
-        out.Color = base_color;
+        if (face_attributes && is_selected) face_overlay_flags |= 1u;
+        if (face_attributes && is_active) face_overlay_flags |= 2u;
     } else if (is_edge_draw && scene.View.InteractionMode == InteractionMode::Object && scene.View.ShowOverlays != 0u) {
-        out.Color = scene.ObjectSelectionColor(scene.InstanceState(draw), base_color);
+        color = scene.ObjectSelectionColor(scene.InstanceState(draw), base_color);
     } else {
         float4 final_color = is_selected ? selected_color : base_color;
         if (is_active) final_color = float4(float4(colors.ElementActive).rgb, 1.0f);
-        out.Color = final_color;
+        color = final_color;
     }
     const uint corner_uv_slot = scene.View.CornerUvSlot;
     device const packed_float2 *uvs = scene.CornerUvs(corner_uv_slot);
-    out.TexCoord0 = draw.CornerUvOffsets[0] != InvalidOffset ? float2(uvs[draw.CornerUvOffsets[0] + vertex_index]) : float2(0);
-    out.TexCoord1 = draw.CornerUvOffsets[1] != InvalidOffset ? float2(uvs[draw.CornerUvOffsets[1] + vertex_index]) : float2(0);
-    out.TexCoord2 = draw.CornerUvOffsets[2] != InvalidOffset ? float2(uvs[draw.CornerUvOffsets[2] + vertex_index]) : float2(0);
-    out.TexCoord3 = draw.CornerUvOffsets[3] != InvalidOffset ? float2(uvs[draw.CornerUvOffsets[3] + vertex_index]) : float2(0);
+    float4 world_tangent = float4(0, 0, 0, 1);
     {
         const float4 vertex_tangent = draw.CornerTangentOffset != InvalidOffset ?
             float4(scene.CornerTangents(scene.View.CornerTangentSlot)[draw.CornerTangentOffset + vertex_index]) :
@@ -169,17 +159,28 @@ inline MeshVaryings TransformVertex(
             float3 tangent_dummy_pos = float3(0.0f);
             ApplyArmatureDeform(scene, draw, tangent_dummy_pos, idx, tangent);
             tangent = normalize(trs_transform_normal(world, tangent));
-            out.WorldTangent = float4(tangent, vertex_tangent.w);
-        } else {
-            out.WorldTangent = float4(0, 0, 0, 1);
+            world_tangent = float4(tangent, vertex_tangent.w);
         }
     }
     const float3 world_scale = float3(world.S);
-    out.WorldScale = face_attributes ? (world_scale.x + world_scale.y + world_scale.z) / 3.0f : 0.0f;
-    out.Position = scene.ViewProj() * float4(world_pos, 1.0f);
-    out.PointSize = PointSize;
-
-    return out;
+    return {
+        .Position = scene.ViewProj() * float4(world_pos, 1.0f),
+        .PointSize = PointSize,
+        .WorldNormal = shading_normal ? trs_transform_normal(world, normal) : float3(0.0f),
+        .WorldPosition = world_pos,
+        .Color = color,
+        .FaceOverlayFlags = face_overlay_flags,
+        .TexCoord0 = draw.CornerUvOffsets[0] != InvalidOffset ? float2(uvs[draw.CornerUvOffsets[0] + vertex_index]) : float2(0),
+        .TexCoord1 = draw.CornerUvOffsets[1] != InvalidOffset ? float2(uvs[draw.CornerUvOffsets[1] + vertex_index]) : float2(0),
+        .TexCoord2 = draw.CornerUvOffsets[2] != InvalidOffset ? float2(uvs[draw.CornerUvOffsets[2] + vertex_index]) : float2(0),
+        .TexCoord3 = draw.CornerUvOffsets[3] != InvalidOffset ? float2(uvs[draw.CornerUvOffsets[3] + vertex_index]) : float2(0),
+        .MaterialIndex = material_index,
+        .VertexColor = draw.CornerColorOffset != InvalidOffset ?
+            float4(scene.CornerColors(scene.View.CornerColorSlot)[draw.CornerColorOffset + color_index]) :
+            float4(1.0f),
+        .WorldTangent = world_tangent,
+        .WorldScale = face_attributes ? (world_scale.x + world_scale.y + world_scale.z) / 3.0f : 0.0f,
+    };
 }
 
 #endif

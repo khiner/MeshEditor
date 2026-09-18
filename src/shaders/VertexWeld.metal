@@ -41,17 +41,21 @@ struct WeldKeys {
 };
 
 inline WeldKeys MakeWeldKeys(WeldContext ctx, VertexWeldJob job) {
-    WeldKeys k;
-    k.Positions = ctx.PositionWords(job);
-    k.Count = job.Count;
-    k.TargetCount = job.TargetCount;
-    k.HasDeform = job.Deform.Slot != InvalidSlot;
-    k.HasMorph = job.Morph.Slot != InvalidSlot;
-    k.HasTangents = job.TangentOffset != InvalidOffset;
-    k.Deform = k.HasDeform ? ctx.DeformWords(job) : k.Positions;
-    k.Morph = k.HasMorph ? ctx.MorphWords(job) : k.Positions;
-    k.Tangents = k.HasTangents ? ctx.Scratch() + job.TangentOffset : k.Positions;
-    return k;
+    device uint *positions = ctx.PositionWords(job);
+    const bool has_deform = job.Deform.Slot != InvalidSlot;
+    const bool has_morph = job.Morph.Slot != InvalidSlot;
+    const bool has_tangents = job.TangentOffset != InvalidOffset;
+    return {
+        .Positions = positions,
+        .Deform = has_deform ? ctx.DeformWords(job) : positions,
+        .Morph = has_morph ? ctx.MorphWords(job) : positions,
+        .Tangents = has_tangents ? ctx.Scratch() + job.TangentOffset : positions,
+        .Count = job.Count,
+        .TargetCount = job.TargetCount,
+        .HasDeform = has_deform,
+        .HasMorph = has_morph,
+        .HasTangents = has_tangents,
+    };
 }
 
 inline uint WeldHashWords(uint hash, device const uint *words, uint first, uint count) {

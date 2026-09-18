@@ -25,13 +25,7 @@ constexpr Striker NullStriker{
 constexpr AcousticMaterialProperties Polymer{.Density = 1000, .YoungModulus = 1e9, .PoissonRatio = 0.3, .Alpha = 0, .Beta = 0};
 constexpr AcousticMaterialProperties Ceramic{.Density = 2700, .YoungModulus = 7.2e10, .PoissonRatio = 0.19, .Alpha = 0, .Beta = 0};
 
-ContactDynamics Body(double mass, mat3 inverse_inertia, vec3 arm = vec3{0}) {
-    ContactDynamics d;
-    d.Mass = mass;
-    d.InverseInertia = inverse_inertia;
-    d.ContactArm = {arm};
-    return d;
-}
+ContactDynamics Body(double mass, mat3 inverse_inertia, vec3 arm = {0}) { return {.Mass = mass, .InverseInertia = inverse_inertia, .ContactArm = {arm}}; }
 
 // The contact time of a strike along +z, with the striker's own compliance out of the way.
 double ContactTime(const ContactDynamics &d, const AcousticMaterialProperties &material, double curvature, double area = 0, double speed = 1, double scale = 1, const Striker &striker = NullStriker) {
@@ -40,10 +34,11 @@ double ContactTime(const ContactDynamics &d, const AcousticMaterialProperties &m
 } // namespace
 int main() {
     "inverse inertia round-trips a principal decomposition"_test = [] {
-        MassProperties mp;
-        mp.Mass = 1.0;
-        mp.InertiaDiagonal = {2.f, 5.f, 9.f};
-        mp.InertiaOrientation = numeric::Normalize(quat(0.3f, 0.1f, -0.5f, 0.8f)); // arbitrary orientation
+        MassProperties mp{
+            .Mass = 1.0,
+            .InertiaDiagonal = {2.f, 5.f, 9.f},
+            .InertiaOrientation = numeric::Normalize(quat(0.3f, 0.1f, -0.5f, 0.8f)), // arbitrary orientation
+        };
         const auto rot = numeric::ToMat3(mp.InertiaOrientation);
         const mat3 diag{vec3{2, 0, 0}, vec3{0, 5, 0}, vec3{0, 0, 9}};
         const mat3 inertia = rot * diag * numeric::Transpose(rot);

@@ -15,14 +15,9 @@ inline BoneSphereVaryings BoneSphereMeshVertexAt(
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
 
-    BoneSphereVaryings out;
-    out.ObjectId = object_id;
-
     const bool is_object_mode = scene.View.InteractionMode == InteractionMode::Object;
     const float3 bone_solid = float3(scene.Theme.Colors.BoneSolid);
     const float3 hint_color = is_object_mode ? bone_solid : bone_joint_wire_color(scene, load_bone_instance_state(scene, draw));
-    out.BoneColor = float4(bone_solid, 1.0f);
-    out.StateColor = float4(hint_color * hint_color * 0.1f, 1.0f);
 
     const float3 cam_pos = float3(scene.View.CameraPosition);
     const float3x3 VR = scene.View.ViewRotation.Unpack();
@@ -31,11 +26,15 @@ inline BoneSphereVaryings BoneSphereMeshVertexAt(
     );
 
     const BoneBillboard bb = bone_sphere_billboard(scene, world, float3(vert.Position));
-    out.SphereCenter = (view_matrix * float4(bb.center, 1.0f)).xyz;
-    out.SphereRadius = bb.radius;
-    out.ViewPos = (view_matrix * float4(bb.world_pos, 1.0f)).xyz;
-    out.Position = scene.ViewProj() * float4(bb.world_pos, 1.0f);
-    return out;
+    return {
+        .Position = scene.ViewProj() * float4(bb.world_pos, 1.0f),
+        .SphereCenter = (view_matrix * float4(bb.center, 1.0f)).xyz,
+        .ObjectId = object_id,
+        .ViewPos = (view_matrix * float4(bb.world_pos, 1.0f)).xyz,
+        .BoneColor = float4(bone_solid, 1.0f),
+        .StateColor = float4(hint_color * hint_color * 0.1f, 1.0f),
+        .SphereRadius = bb.radius,
+    };
 }
 
 using BoneSphereMeshOutput = metal::mesh<BoneSphereVaryings, void, uint(OverlayDispatch::BoneSphereVertices), 32u, metal::topology::triangle>;
@@ -91,14 +90,10 @@ fragment OverlayTargetsDepth BoneSphereFragment(
     const float fac = clamp(dot(normal, light) * 0.8f + 0.2f, 0.0f, 1.0f);
     const float3 color = mix(in.StateColor.rgb, in.BoneColor.rgb, fac * fac);
 
-    OverlayTargetsDepth out;
-    out.Color = float4(color, view.BoneXRay != 0u ? 0.4f : 1.0f);
-
     // Project the view-space intersection to preserve sphere depth.
     const float3 world_hit = transpose(view.ViewRotation.Unpack()) * hit_view + float3(view.CameraPosition);
     const float4 clip = scene.ViewProj() * float4(world_hit, 1.0f);
-    out.Depth = clip.z / clip.w;
-    return out;
+    return {.Color = float4(color, view.BoneXRay != 0u ? 0.4f : 1.0f), .Depth = clip.z / clip.w};
 }
 
 #endif

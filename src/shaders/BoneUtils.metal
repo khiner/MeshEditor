@@ -58,7 +58,7 @@ inline BoneBillboard bone_sphere_billboard(const thread SceneT<SetT> &scene, Tra
     const float3 up = cross(forward, right);
 
     const float3 world_pos = center + (right * vert_pos.x + up * vert_pos.y) * radius / 0.05f;
-    return BoneBillboard{world_pos, center, radius};
+    return {world_pos, center, radius};
 }
 
 #endif

@@ -12,6 +12,5 @@ inline AudioStreamBasicDescription MonoFloatAudioFormat(double sample_rate) {
         .mBytesPerFrame = sizeof(float),
         .mChannelsPerFrame = 1,
         .mBitsPerChannel = 8 * sizeof(float),
-        .mReserved = 0,
     };
 }

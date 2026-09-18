@@ -54,9 +54,10 @@ struct GatherContext {
         const float sample_depth = LinearDepth(S.SampleTexLod(Pc.DepthSamplerSlot, sample_uv, 0.0f).r);
         const float4 sample_color = S.SampleTexLod(Pc.ColorSamplerSlot, sample_uv, 0.0f);
 
-        float3 weights;
-        weights.xy = DepthCompare(center_depth, sample_depth) * SpreadCompare(center_len, sample_len, offset_len);
-        weights.z = DirCompare(offset, sample_motion, sample_len);
+        auto weights = float3(
+            DepthCompare(center_depth, sample_depth) * SpreadCompare(center_len, sample_len, offset_len),
+            DirCompare(offset, sample_motion, sample_len)
+        );
         weights.xy *= weights.z;
 
         accum.Fg += sample_color * weights.y;
@@ -135,10 +136,7 @@ fragment float4 MotionBlurGatherFragment(
     if (max(length(center_motion.xy), length(max_motion.xy)) < 0.5f &&
         max(length(center_motion.zw), length(max_motion.zw)) < 0.5f) return center_color;
 
-    Accumulator accum;
-    accum.Fg = float4(0.0f);
-    accum.Bg = float4(0.0f);
-    accum.Weight = float3(0.0f, 0.0f, 1.0f);
+    Accumulator accum{.Weight = float3(0.0f, 0.0f, 1.0f)};
 
     ctx.GatherBlur(uv, center_motion.xy, center_depth, max_motion.xy, rand.y, false, accum);
     ctx.GatherBlur(uv, center_motion.zw, center_depth, max_motion.zw, rand.y, true, accum);

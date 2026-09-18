@@ -208,8 +208,7 @@ void TestProject(const char *sample) {
                 const auto selected = record();
                 const auto count = p.History.Nodes.size();
                 for (int i = 1; i <= 3; ++i) {
-                    auto move = std::make_unique<PendingTransform>();
-                    move->Delta.P = vec3{0.4f, 0.3f, 0.2f} * (float(i) / 3);
+                    auto move = std::make_unique<PendingTransform>(PendingTransform{.Delta = {.P = vec3{0.4f, 0.3f, 0.2f} * (float(i) / 3)}});
                     f.Stage(action::view::DragGizmoMeshEdit{std::move(move)});
                     expect(p.History.Nodes.size() == count);
                 }
@@ -218,8 +217,7 @@ void TestProject(const char *sample) {
                 expect(p.History.MaterializeLive() != expected.at(selected).Persistent);
                 if (dense) expect(f.Image() != expected.at(selected).Image);
                 record();
-                auto move = std::make_unique<PendingTransform>();
-                move->Delta.P.x = 2.f;
+                auto move = std::make_unique<PendingTransform>(PendingTransform{.Delta = {.P = {2.f, 0.f, 0.f}}});
                 f.Stage(action::view::DragGizmoMeshEdit{std::move(move)});
                 p.CancelGesture();
                 expect(!p.HasStaged());

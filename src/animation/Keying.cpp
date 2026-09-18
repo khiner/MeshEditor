@@ -94,9 +94,9 @@ void InsertKey(state::Scene &r, state::Entity viewport, const KeyTarget &key, fl
     }
     auto &clips = r.get_or_emplace<AnimationClips>(key.Entity);
     auto *clip = clips.Find(animations.Active);
-    if (!clip) clip = &clips.Clips.emplace_back(AnimationClip{.Animation = animations.Active, .Channels = {}});
+    if (!clip) clip = &clips.Clips.emplace_back(AnimationClip{.Animation = animations.Active});
     auto *channel = FindChannel(*clip, key.Target);
-    if (!channel) channel = &clip->Channels.emplace_back(AnimationChannel{.Target = key.Target, .Interp = AnimationInterpolation::Linear, .Times = {}, .Values = {}, .Rest = value});
+    if (!channel) channel = &clip->Channels.emplace_back(AnimationChannel{.Target = key.Target, .Interp = AnimationInterpolation::Linear, .Rest = value});
     SetKey(*channel, seconds, value);
     PublishClips(r, key.Entity);
 }

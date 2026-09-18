@@ -36,7 +36,6 @@ void ActivateImpact(const ModalAudio &m, ModalBank &b, const ModalEvent &e) {
         .Jy = e.Jy,
         .Jz = e.Jz,
         .PhaseRe = 1.f,
-        .PhaseIm = 0.f,
         .RotRe = std::cos(theta),
         .RotIm = std::sin(theta),
         .Gamma = e.PulseGamma,
@@ -44,8 +43,6 @@ void ActivateImpact(const ModalAudio &m, ModalBank &b, const ModalEvent &e) {
         .ClickB0 = e.ClickB0,
         .ClickA1 = e.ClickA1,
         .ClickA2 = e.ClickA2,
-        .ClickZ1 = 0.f,
-        .ClickZ2 = 0.f,
     });
     b.Ringing[e.Object] = 1;
 }

@@ -19,7 +19,7 @@ void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<co
     auto &sources = r.get_or_emplace<gltf::SourceAssets>(viewport);
     auto &manifest = r.get_or_emplace<MaterializedTextures>(viewport);
     const auto sampler_index = uint32_t(sources.Samplers.size());
-    sources.Samplers.emplace_back(gltf::Sampler{.MagFilter = gltf::Filter::Nearest, .MinFilter = gltf::Filter::Nearest, .WrapS = gltf::Wrap::Repeat, .WrapT = gltf::Wrap::Repeat, .Name = {}});
+    sources.Samplers.emplace_back(gltf::Sampler{.MagFilter = gltf::Filter::Nearest, .MinFilter = gltf::Filter::Nearest, .WrapS = gltf::Wrap::Repeat, .WrapT = gltf::Wrap::Repeat});
 
     auto obj_batch = BeginTextureUploadBatch(ctx);
     std::unordered_map<std::string, uint32_t> texture_slot_cache;
@@ -69,18 +69,14 @@ void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<co
         );
         const auto image_index = uint32_t(sources.Images.size());
         sources.Images.emplace_back(gltf::Image{
-            .Bytes = {},
             .MimeType = gltf::detail::SniffMimeType(std::as_bytes(std::span{encoded})),
             .Source = gltf::Image::SourceKind::External,
-            .SourceHadMimeType = false,
-            .IsDirty = false,
             .Name = texture_path.filename().string(),
-            .Uri = {},
             .SourcePath = project::AssetReference(r, texture_path).string(),
         });
         texture.SourceImageIndex = image_index;
         source_texture_indices.emplace(sampler_slot, uint32_t(sources.Textures.size()));
-        sources.Textures.emplace_back(gltf::Texture{.SamplerIndex = sampler_index, .ImageIndex = image_index, .WebpImageIndex = {}, .BasisuImageIndex = {}, .DdsImageIndex = {}, .Name = texture.Params.Name});
+        sources.Textures.emplace_back(gltf::Texture{.SamplerIndex = sampler_index, .ImageIndex = image_index, .Name = texture.Params.Name});
         manifest.Items.emplace_back(MaterializedTexture{.SamplerSlot = sampler_slot, .SourceImageIndex = image_index, .Params = texture.Params});
         textures.Textures.emplace_back(std::move(texture));
         texture_slot_cache.emplace(cache_key, sampler_slot);

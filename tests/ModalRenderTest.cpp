@@ -53,7 +53,7 @@ int main() {
             const auto step = float(1.0 / (Tau * double(rate)));
             const auto click = RecoilClickFilter(Radius, Volume, Mass, rate);
             // No impulse on the modes, so they stay silent and the click is the whole output.
-            EnqueueModalEvent(scene.Audio, {.Kind = ModalEventKind::Impact, .Object = scene.Objects.front(), .ExPos = 0, .Jx = 0.f, .Jy = 0.f, .Jz = 0.f, .PulseStep = step, .PulseGamma = 2 * step, .AccelAmp = float(Impulse) * rate, .ClickB0 = click.B0, .ClickA1 = click.A1, .ClickA2 = click.A2});
+            EnqueueModalEvent(scene.Audio, {.Object = scene.Objects.front(), .PulseStep = step, .PulseGamma = 2 * step, .AccelAmp = float(Impulse) * rate, .ClickB0 = click.B0, .ClickA1 = click.A1, .ClickA2 = click.A2});
             const auto blocks = uint32_t(std::ceil(4 * Tau * double(rate) / BlockSize));
             return Peak(scene.Render(blocks, BlockSize));
         };

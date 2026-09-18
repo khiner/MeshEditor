@@ -149,7 +149,7 @@ constexpr vec3 ScaleVecForOp(InteractionOp op, float v) {
         s[AxisIndex(plane_axes->second)] = v;
         return s;
     }
-    return vec3{v};
+    return {v};
 }
 
 constexpr vec4 BuildPlane(vec3 p, const vec4 &p_normal) { return {vec3{p_normal}, Dot(p_normal, vec4{p, 1})}; }
@@ -195,15 +195,15 @@ using TransformGizmo::Mode;
 vec4 GetPlaneNormal(const Interaction &interaction, const GizmoTransform &transform, const ray &cam_ray) {
     using enum TransformType;
     if (interaction.Op == Screen || interaction.Op == Trackball || interaction.Op == Action) return -vec4{cam_ray.d, 0};
-    if (auto plane_index = TranslatePlaneIndex(interaction.Op)) return vec4{transform.AxisDirWs(*plane_index), 0};
+    if (auto plane_index = TranslatePlaneIndex(interaction.Op)) return {transform.AxisDirWs(*plane_index), 0};
 
     const auto i = AxisIndex(interaction.Op);
-    if (interaction.Type == Scale) return vec4{transform.AxisDirWs((i + 1) % 3), 0};
+    if (interaction.Type == Scale) return {transform.AxisDirWs((i + 1) % 3), 0};
     if (interaction.Type == Rotate) return transform.Mode == Mode::Local ? vec4{transform.AxisDirWs(i), 0} : vec4{I3[i], 0};
 
     const auto n = transform.AxisDirWs(i);
     const auto v = Normalize(transform.P - cam_ray.o);
-    return vec4{v - n * Dot(n, v), 0};
+    return {v - n * Dot(n, v), 0};
 };
 
 constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }

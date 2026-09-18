@@ -30,7 +30,7 @@ inline OverlayTargets ShadeEdgeQuad(EdgeQuadVaryings in, const thread Scene &sce
     color.a *= OverlayBehindFade(scene, in.Position);
     // Edge quads apply antialiasing before the composite pass.
     if (color.a <= 0.0f) discard_fragment();
-    return OverlayTargets{float4(color.rgb * color.a, color.a)};
+    return {float4(color.rgb * color.a, color.a)};
 }
 
 fragment OverlayTargets EdgeQuadFragment(

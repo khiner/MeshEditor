@@ -39,33 +39,22 @@ rbp::Index BuildRbpShape(rbp::World &world, const PhysicsShape &source, const Me
         }
         return hull(points);
     };
-    rbp::Shape shape{};
-    shape.Local = local;
     const auto create = overloaded{
         [&](const physics::Box &box) {
-            shape.Kind = rbp::ShapeBox;
-            shape.HalfExtents = ToRbp(box.Size * stretch * 0.5f);
-            return world.AddShape(shape);
+            return world.AddShape({.HalfExtents = ToRbp(box.Size * stretch * 0.5f), .Kind = rbp::ShapeBox, .Local = local});
         },
         [&](const Sphere &sphere) {
             if (stretch.x != stretch.y || stretch.y != stretch.z) return round(0, sphere.Radius, sphere.Radius);
-            shape.Kind = rbp::ShapeSphere;
-            shape.Radius = sphere.Radius * stretch.x;
-            return world.AddShape(shape);
+            return world.AddShape({.Radius = sphere.Radius * stretch.x, .Kind = rbp::ShapeSphere, .Local = local});
         },
         [&](const Capsule &capsule) {
             if (capsule.RadiusTop != capsule.RadiusBottom || stretch.x != stretch.y || stretch.y != stretch.z)
                 return round(capsule.Height * 0.5f, capsule.RadiusTop, capsule.RadiusBottom);
-            shape.Kind = rbp::ShapeCapsule;
-            shape.Radius = capsule.RadiusTop * stretch.x;
-            shape.HalfExtents.y = capsule.Height * stretch.y * 0.5f;
-            return world.AddShape(shape);
+            return world.AddShape({.HalfExtents = {0, capsule.Height * stretch.y * 0.5f, 0}, .Radius = capsule.RadiusTop * stretch.x, .Kind = rbp::ShapeCapsule, .Local = local});
         },
         [&](const Cylinder &cylinder) {
             if (cylinder.RadiusTop == cylinder.RadiusBottom && stretch.x == stretch.z) {
-                shape.Kind = rbp::ShapeCylinder;
-                shape.HalfExtents = {cylinder.RadiusTop * stretch.x, cylinder.Height * stretch.y * 0.5f, 0};
-                return world.AddShape(shape);
+                return world.AddShape({.HalfExtents = {cylinder.RadiusTop * stretch.x, cylinder.Height * stretch.y * 0.5f, 0}, .Kind = rbp::ShapeCylinder, .Local = local});
             }
             rbp::float3 points[64];
             for (int i = 0; i < 32; ++i) {
@@ -78,11 +67,7 @@ rbp::Index BuildRbpShape(rbp::World &world, const PhysicsShape &source, const Me
             return hull(points);
         },
         [&](const Plane &plane) {
-            shape.Kind = rbp::ShapePlane;
-            shape.Normal = {0, scale.y > 0 ? 1.f : -1.f, 0};
-            shape.HalfExtents = {plane.SizeX * stretch.x * 0.5f, 0, plane.SizeZ * stretch.z * 0.5f};
-            shape.DoubleSided = plane.DoubleSided;
-            return world.AddShape(shape);
+            return world.AddShape({.HalfExtents = {plane.SizeX * stretch.x * 0.5f, 0, plane.SizeZ * stretch.z * 0.5f}, .Normal = {0, scale.y > 0 ? 1.f : -1.f, 0}, .Kind = rbp::ShapePlane, .Local = local, .DoubleSided = plane.DoubleSided});
         },
         [&](const auto &kind) {
             if (!mesh) throw std::runtime_error("A mesh collider has no mesh geometry.");

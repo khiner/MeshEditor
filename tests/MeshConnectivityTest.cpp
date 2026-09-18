@@ -25,7 +25,6 @@ int main() {
                 .Edges = built.Edges,
                 .EdgeSamples = samples,
                 .FaceCount = count / 3,
-                .Faces = {},
             };
             expect(built.EdgeCount == 6_u);
             for (uint32_t h = 0; h < count; ++h) {

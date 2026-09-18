@@ -45,9 +45,7 @@ inline float4 line_quad_position(const thread SceneT<SetT> &scene, float4 clip0,
 inline EdgeQuadVaryings StrokeQuadCorner(
     const thread Scene &scene, float4 a, float4 b, float4 color, float4 outer, float half_width, uint corner
 ) {
-    EdgeQuadVaryings out{};
-    out.Position = float4(0, 0, -1, 1);
-    if (!ClipLineNear(a, b)) return out;
+    if (!ClipLineNear(a, b)) return {.Position = float4(0, 0, -1, 1)};
     const float2 extent = float2(scene.View.ViewportSize);
     const float2 delta = (b.xy / b.w - a.xy / a.w) * extent * 0.5f;
     const float len = length(delta);
@@ -56,13 +54,9 @@ inline EdgeQuadVaryings StrokeQuadCorner(
     const bool end = line_quad_endpoint(corner) != 0u;
     const float along = end ? half_width : -half_width;
     const float across = line_quad_side(corner) * half_width;
-    out.Position = end ? b : a;
-    out.Position.xy += (tangent * along + normal * across) * 2.0f / extent * out.Position.w;
-    out.EdgeCoord = float2((end ? len : 0.0f) + along, across);
-    out.EdgeLength = len;
-    out.Color = color;
-    out.OuterColor = outer;
-    return out;
+    float4 position = end ? b : a;
+    position.xy += (tangent * along + normal * across) * 2.0f / extent * position.w;
+    return {.Position = position, .EdgeCoord = float2((end ? len : 0.0f) + along, across), .EdgeLength = len, .Color = color, .OuterColor = outer};
 }
 
 template<typename Output>

@@ -149,23 +149,24 @@ void BuildBoneMeshletsNow(state::Scene &r, std::span<const state::Entity> entiti
         const uint32_t triangle_count = uint32_t(indices.size() / 3u);
         std::vector<uint32_t> face_ids(triangle_count), element_primitives(triangle_count, 0u);
         std::iota(face_ids.begin(), face_ids.end(), 1u);
-        MeshletBuildInputs inputs;
-        inputs.Indices = indices;
-        inputs.Vertices = vertices;
-        inputs.ElementPrimitives = element_primitives;
-        inputs.TriangleEditEdges.assign(indices.size(), InvalidOffset);
-        inputs.PrimitiveTriangleRanges = {{0u, 0u, triangle_count}};
-        inputs.Weld.TriangleFaceIds = face_ids;
-        inputs.TriangleCount = triangle_count;
-        inputs.FaceTopology = true;
-        inputs.PrimitiveDraws.push_back({
-            .VertexSlot = mb.Vertices.Slot,
-            .IndexSlotOffset = mb.FaceIndices,
-            .ModelSlot = buffers.Instances.TransformBuffer.Slot,
-            .VertexCountOrHeadImageSlot = mb.Vertices.Count,
-            .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
-            .VertexOffset = mb.Vertices.Offset,
-        });
+        MeshletBuildInputs inputs{
+            .Indices = indices,
+            .Vertices = vertices,
+            .ElementPrimitives = element_primitives,
+            .TriangleEditEdges = std::vector<uint32_t>(indices.size(), InvalidOffset),
+            .PrimitiveTriangleRanges = {{0u, 0u, triangle_count}},
+            .Weld = {.TriangleFaceIds = face_ids},
+            .TriangleCount = triangle_count,
+            .FaceTopology = true,
+            .PrimitiveDraws = {{
+                .VertexSlot = mb.Vertices.Slot,
+                .IndexSlotOffset = mb.FaceIndices,
+                .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+                .VertexCountOrHeadImageSlot = mb.Vertices.Count,
+                .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
+                .VertexOffset = mb.Vertices.Offset,
+            }},
+        };
         auto build = BuildMeshlets(inputs);
         assert(build.Primitives.size() == 1u);
         build.Primitives.front().AuxIndices = r.all_of<ArmatureObject>(entity) ?

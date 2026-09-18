@@ -75,15 +75,7 @@ void InitDefaultMaterial(state::Scene &r) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &textures = r.ctx().get<TextureStore>();
     auto &materials = r.ctx().get<MaterialStore>();
-    buffers.Materials.Append(PBRMaterial{
-        .BaseColorFactor = vec4{1.f},
-        .MetallicFactor = 0.f,
-        .RoughnessFactor = 1.f,
-        .AlphaMode = MaterialAlphaMode::Opaque,
-        .AlphaCutoff = 0.5f,
-        .DoubleSided = 0u,
-        .BaseColorTexture = {.Slot = textures.WhiteTextureSlot},
-    });
+    buffers.Materials.Append(PBRMaterial{.MetallicFactor = 0.f, .BaseColorTexture = {.Slot = textures.WhiteTextureSlot}});
     materials.AppendNames({"Default"});
 
     constexpr std::array<std::byte, 4> WhitePixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};

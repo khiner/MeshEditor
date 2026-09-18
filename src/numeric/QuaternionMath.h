@@ -8,14 +8,14 @@
 
 namespace numeric {
 inline quat FromEulerAngles(vec3 euler_xyz) {
-    quat q;
     const vec3 cosine{std::cos(euler_xyz.x * .5f), std::cos(euler_xyz.y * .5f), std::cos(euler_xyz.z * .5f)};
     const vec3 sine{std::sin(euler_xyz.x * .5f), std::sin(euler_xyz.y * .5f), std::sin(euler_xyz.z * .5f)};
-    q.w = cosine.x * cosine.y * cosine.z + sine.x * sine.y * sine.z;
-    q.x = sine.x * cosine.y * cosine.z - cosine.x * sine.y * sine.z;
-    q.y = cosine.x * sine.y * cosine.z + sine.x * cosine.y * sine.z;
-    q.z = cosine.x * cosine.y * sine.z - sine.x * sine.y * cosine.z;
-    return q;
+    return {
+        cosine.x * cosine.y * cosine.z + sine.x * sine.y * sine.z,
+        sine.x * cosine.y * cosine.z - cosine.x * sine.y * sine.z,
+        cosine.x * sine.y * cosine.z + sine.x * cosine.y * sine.z,
+        cosine.x * cosine.y * sine.z - sine.x * sine.y * cosine.z,
+    };
 }
 
 constexpr quat operator-(quat q) { return {-q.w, -q.x, -q.y, -q.z}; }

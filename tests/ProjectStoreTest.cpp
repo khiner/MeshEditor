@@ -114,8 +114,7 @@ Version Pin(auto &owner) {
 
 void TestPoolTrieAgainstModel() {
     std::mt19937 rng{7};
-    MapOwner live;
-    live.Len = 4096;
+    MapOwner live{.Len = 4096};
     auto &trie = live.Trie;
     expect(trie.Stats().Nodes == 1);
     expect(trie.Stats().AliasedNodes == 1);
@@ -226,12 +225,7 @@ struct ToyApp {
     ToyApp() {
         H.Track(Buf, "buf", 0);
         H.Track(PoolRecords, "pool", 1);
-        History::Hooks hooks;
-        hooks.Replay = [this](const std::vector<std::byte> &a) {
-            Apply(a);
-            ++Replays;
-        };
-        H.Callbacks = std::move(hooks);
+        H.Callbacks = {.Replay = [this](const std::vector<std::byte> &a) { Apply(a); ++Replays; }};
         Buf.Resize(512);
     }
     static std::vector<std::byte> Encode(uint32_t seed) {

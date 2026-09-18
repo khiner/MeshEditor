@@ -22,16 +22,17 @@ constexpr float RestPenetration{0x1p-18f}, RestStiffness{0x1p31f}, RestLoad{0x1p
 
 // A contact travelling over both surfaces, as a scrape does.
 SustainedState MovingContact(int32_t slot) {
-    SustainedState e;
-    e.Blend = {.Points = {0, 1, 0}, .Weights = {0.5f, 0.5f, 0.f}};
-    e.N = {0.f, 1.f, 0.f};
-    e.SlipDir = {1.f, 0.f, 0.f};
-    e.SweepDir = {vec3{1.f, 0.f, 0.f}, vec3{0.f, 0.f, -1.f}};
-    e.NormalForce = RestLoad;
-    e.Friction = 0.5f;
-    e.Stiffness = RestStiffness;
-    e.StaticPenetration = RestPenetration;
-    e.DampingFactor = 0.4f;
+    SustainedState e{
+        .Blend = {.Points = {0, 1, 0}, .Weights = {0.5f, 0.5f, 0.f}},
+        .N = {0.f, 1.f, 0.f},
+        .SlipDir = {1.f, 0.f, 0.f},
+        .SweepDir = {vec3{1.f, 0.f, 0.f}, vec3{0.f, 0.f, -1.f}},
+        .NormalForce = RestLoad,
+        .Friction = 0.5f,
+        .Stiffness = RestStiffness,
+        .StaticPenetration = RestPenetration,
+        .DampingFactor = 0.4f,
+    };
     for (auto &t : e.Tracks) t = {.Index = slot, .Rate = 0.4f, .Sigma = 2e-7f, .Window = 8.f, .Step = 4e-7f};
     return e;
 }
@@ -72,18 +73,12 @@ void ExpectSettles(auto &&make_state) {
 
 // A contact pressing with nothing, which drives no mode however the force model is written.
 SustainedState SilentContact() {
-    SustainedState e;
-    e.Blend = {.Points = {0, 1, 0}, .Weights = {0.5f, 0.5f, 0.f}};
-    e.N = {0.f, 1.f, 0.f};
-    return e;
+    return {.Blend = {.Points = {0, 1, 0}, .Weights = {0.5f, 0.5f, 0.f}}, .N = {0.f, 1.f, 0.f}};
 }
 
 double RelaxationPerCycle(float scale, float approach_amp, float tangent_amp, double phase, double per_cycle, uint32_t cycles = 40) {
-    SustainedState st;
-    st.RelaxScale = scale;
-    // A real coefficient, since a contact carrying none is not one this model renders.
-    // The channel does not read it, so the closed-form checks below are unaffected.
-    st.Friction = 0.5f;
+    // Nonzero friction makes this contact renderable without affecting the closed-form checks.
+    SustainedState st{.Friction = 0.5f, .RelaxScale = scale};
     SustainedCarry carry;
     const auto depth = [=](uint32_t i) { return approach_amp * std::cos(2 * std::numbers::pi * i / per_cycle); };
     const auto tangent = [=](uint32_t i) { return tangent_amp * std::cos(2 * std::numbers::pi * i / per_cycle + phase); };
