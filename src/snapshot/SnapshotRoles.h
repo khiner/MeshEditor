@@ -13,6 +13,7 @@
 namespace snapshot {
 enum class Encoding : uint8_t {
     Tag,
+    Bytes, // The value's object representation is its encoding.
     Serialized,
 };
 
@@ -20,6 +21,7 @@ struct SnapshotEntry {
     Encoding How;
     void (*Serialize)(const void *component, std::vector<std::byte> &out);
     void (*Emplace)(state::Scene &, state::Entity, std::span<const std::byte>);
+    uint32_t Size{}; // Bytes only.
     std::string_view Name{};
     bool History{true}; // Workspace-only values stay out of history.
     store::Blob (*Copy)(const void *){};

@@ -4,6 +4,7 @@
 #include "snapshot/NativeSize.h"
 #include "snapshot/SnapshotRoles.h"
 #include "state/Scene.h"
+#include <cassert>
 #include <cstring>
 #include <stdexcept>
 
@@ -48,12 +49,62 @@ void EmplaceSerialized(state::Scene &r, state::Entity e, std::span<const std::by
     }
 }
 
-// Persistent values compare through their serialization. Derived aggregates compare by bytes.
+template<typename C>
+void SerializeBytes(const void *component, std::vector<std::byte> &out) {
+    const auto *bytes = static_cast<const std::byte *>(component);
+    out.insert(out.end(), bytes, bytes + sizeof(C));
+}
+
+template<typename C>
+void EmplaceBytes(state::Scene &r, state::Entity e, std::span<const std::byte> bytes) {
+    if constexpr (CustomEmplace<C> != nullptr) CustomEmplace<C>(r, e, bytes);
+    else {
+        if (bytes.size() != sizeof(C)) return;
+        C value;
+        std::memcpy(&value, bytes.data(), sizeof(C));
+        r.emplace_or_replace<C>(e, std::move(value));
+    }
+}
+
+// The numeric types serialize their components in memory order.
+template<typename T>
+concept NumericComponents = std::same_as<T, numeric::vec2> || std::same_as<T, numeric::vec3> || std::same_as<T, numeric::vec4> ||
+    std::same_as<T, numeric::uvec2> || std::same_as<T, numeric::uvec3> || std::same_as<T, numeric::uvec4> || std::same_as<T, numeric::dvec3> ||
+    std::same_as<T, numeric::quat> || std::same_as<T, numeric::mat3> || std::same_as<T, numeric::mat4>;
+
+// A padding-free trivially copyable type, whose object representation is its zpp encoding.
+template<typename T> struct PaddingFreeTrait {
+    static constexpr bool Value = [] {
+        if constexpr (std::is_arithmetic_v<T> || std::is_enum_v<T> || NumericComponents<T>) return true;
+        else if constexpr (std::is_aggregate_v<T> && std::is_trivially_copyable_v<T> && !std::is_empty_v<T>) {
+            return zpp::bits::access::visit_members_types<T>([]<typename... M>() {
+                return std::bool_constant<(... && PaddingFreeTrait<std::remove_cvref_t<M>>::Value) && (size_t{} + ... + sizeof(M)) == sizeof(T)>{};
+            })();
+        } else return false;
+    }();
+};
+template<typename T, size_t N> struct PaddingFreeTrait<std::array<T, N>> {
+    static constexpr bool Value = PaddingFreeTrait<T>::Value;
+};
+template<typename C>
+constexpr bool EncodesAsBytes = PaddingFreeTrait<C>::Value;
+
+// Checks the byte encoding against zpp on a value whose bytes count upward, so reordered or resized members differ.
+template<typename C>
+bool BytesMatchSerialization() {
+    alignas(C) std::byte storage[sizeof(C)];
+    for (size_t i = 0; i < sizeof(C); ++i) storage[i] = std::byte(i + 1);
+    std::vector<std::byte> encoded;
+    SerializeThunk<C>(storage, encoded);
+    return encoded.size() == sizeof(C) && std::memcmp(encoded.data(), storage, sizeof(C)) == 0;
+}
+
+// Serialized values compare through their encoding. Byte-encoded and derived aggregates compare by bytes.
 template<typename C, bool Persistent>
 bool ValuesEqual(const void *a, const void *b) {
     if constexpr (std::is_empty_v<C>) {
         return true;
-    } else if constexpr (Persistent) {
+    } else if constexpr (Persistent && !EncodesAsBytes<C>) {
         std::vector<std::byte> ba, bb;
         SerializeThunk<C>(a, ba);
         SerializeThunk<C>(b, bb);
@@ -70,12 +121,15 @@ constexpr Comparator MakeComparator() {
     else return nullptr;
 }
 
-// Selects Tag or Serialized encoding from the component traits.
+// Selects the Tag, Bytes or Serialized encoding from the component traits.
 template<typename C>
 snapshot::SnapshotEntry MakeEntry() {
     using snapshot::Encoding;
     if constexpr (std::is_empty_v<C>) return {Encoding::Tag, nullptr, &EmplaceTag<C>};
-    else return {Encoding::Serialized, &SerializeThunk<C>, &EmplaceSerialized<C>};
+    else if constexpr (EncodesAsBytes<C>) {
+        assert(BytesMatchSerialization<C>() && "a byte-encoded component must serialize as its object representation");
+        return {Encoding::Bytes, &SerializeBytes<C>, &EmplaceBytes<C>, sizeof(C)};
+    } else return {Encoding::Serialized, &SerializeThunk<C>, &EmplaceSerialized<C>};
 }
 
 template<typename C, bool Persistent>

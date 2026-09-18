@@ -7,6 +7,7 @@
 namespace project {
 namespace {
 std::span<const std::byte> Serialize(const snapshot::SnapshotEntry &encoding, const void *value, std::vector<std::byte> &scratch) {
+    if (encoding.How == snapshot::Encoding::Bytes) return {static_cast<const std::byte *>(value), encoding.Size};
     scratch.clear();
     if (encoding.How == snapshot::Encoding::Serialized) encoding.Serialize(value, scratch);
     return scratch;
