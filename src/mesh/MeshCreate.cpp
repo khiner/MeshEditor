@@ -108,12 +108,6 @@ PreparedMesh PrepareMeshSources(MeshData &data, MeshVertexAttributes &attrs, Mes
     return prepared;
 }
 
-BuiltConnectivity BuildPreparedConnectivity(const MeshStore &meshes, uint32_t id, const MeshData &data, const ConnectivityStorage &storage) {
-    const auto &record = meshes.Get(id);
-    if (data.FaceCount() > 0) return BuildConnectivity(data.FaceOffsets, meshes.Arenas().FaceCorners.Get(record.FaceCorners), record.Vertices.Count, storage);
-    return BuildConnectivity(data.Edges, record.Vertices.Count, storage);
-}
-
 // Seed the sharpness stores of a new face mesh: flat where the source shades flat, then where its authored normals say so.
 void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &data, const MeshPrimitives &primitives, bool flat_shaded, std::span<const vec3> authored) {
     const auto id = mesh.GetStoreId();
@@ -238,27 +232,23 @@ std::vector<CreatedMesh> CreateMeshes(state::Scene &r, std::span<MeshSource> sou
         WeldMeshesNow(r, weld_targets);
     }
     {
-        // Allocate connectivity in source order before parallel construction.
+        // Allocate connectivity in source order, then build face meshes on the GPU and edge meshes on the host.
         const profile::CpuScope scope{"BuildConnectivity"};
+        std::vector<uint32_t> face_mesh_ids;
         for (uint32_t i = 0; i < sources.size(); ++i) {
             const auto &data = sources[i].Data;
             const auto &record = meshes.Get(ids[i]);
             const uint32_t halfedges = data.FaceCount() > 0 ? record.FaceCorners.Count : data.HalfedgeCount();
             const bool face_starts = data.FaceCount() > 0 && halfedges != 3 * data.FaceCount();
-            meshes.AllocateConnectivity(ids[i], record.Vertices.Count, halfedges, data.FaceCount(), face_starts);
+            meshes.AllocateConnectivity(ids[i], record.Vertices.Count, halfedges, data.FaceCount(), face_starts, face_starts ? data.FaceOffsets : std::span<const uint32_t>{});
+            if (data.FaceCount() > 0) face_mesh_ids.push_back(ids[i]);
         }
-        std::vector<ConnectivityTarget> targets;
-        targets.reserve(sources.size());
-        for (uint32_t i = 0; i < sources.size(); ++i) targets.emplace_back(ids[i], &sources[i].Data);
-        const auto host_targets = BuildConnectivityNow(r, targets);
-        std::vector<BuiltConnectivity> built(host_targets.size());
-        std::vector<ConnectivityStorage> storage;
-        storage.reserve(host_targets.size());
-        for (const auto &target : host_targets) storage.push_back(meshes.GetConnectivityStorage(target.StoreId));
-        ParallelFor(uint32_t(host_targets.size()), [&](uint32_t i) {
-            built[i] = BuildPreparedConnectivity(meshes, host_targets[i].StoreId, *host_targets[i].Data, storage[i]);
-        });
-        for (uint32_t i = 0; i < host_targets.size(); ++i) meshes.PlaceConnectivity(host_targets[i].StoreId, built[i]);
+        BuildConnectivityNow(r, face_mesh_ids);
+        for (uint32_t i = 0; i < sources.size(); ++i) {
+            const auto &data = sources[i].Data;
+            if (data.FaceCount() > 0) continue;
+            meshes.FinishConnectivity(ids[i], BuildConnectivity(data.Edges, meshes.Get(ids[i]).Vertices.Count, meshes.GetConnectivityStorage(ids[i])));
+        }
     }
 
     std::vector<CreatedMesh> created;

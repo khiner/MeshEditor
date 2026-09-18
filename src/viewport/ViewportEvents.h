@@ -5,8 +5,15 @@
 
 #include <filesystem>
 
+// The mesh's edit selection after a geometry change.
+// A restore keeps it, a rebuild drops it, and a topology operator carries it onto the output and derives the rest.
+enum class EditSelectionAfter : uint8_t {
+    Keep,
+    Reset,
+    Derive,
+};
 struct MeshGeometryDirty {
-    bool ResetSelection{true};
+    EditSelectionAfter Selection{EditSelectionAfter::Reset};
 };
 struct MeshPositionsChanged {};
 

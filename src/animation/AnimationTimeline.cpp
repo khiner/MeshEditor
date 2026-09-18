@@ -6,6 +6,7 @@
 #include "viewport/ViewportIcons.h"
 
 #include "imgui.h"
+#include "ui/CtrlShortcut.h"
 
 #include "state/Scene.h"
 
@@ -59,8 +60,8 @@ std::optional<action::timeline::Action> HandleTimelineShortcuts(const TimelinePl
     if (Shortcut(ImGuiKey_RightArrow, flags)) return action::timeline::OffsetFrame{1};
     if (Shortcut(ImGuiMod_Shift | ImGuiKey_LeftArrow, flags)) return action::timeline::JumpToStart{};
     if (Shortcut(ImGuiMod_Shift | ImGuiKey_RightArrow, flags)) return action::timeline::JumpToEnd{};
-    if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_LeftArrow, flags)) return action::timeline::JumpTime{.Backward = true};
-    if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_RightArrow, flags)) return action::timeline::JumpTime{.Backward = false};
+    if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_LeftArrow, flags)) return action::timeline::JumpTime{.Backward = true};
+    if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_RightArrow, flags)) return action::timeline::JumpTime{.Backward = false};
     if (Shortcut(ImGuiKey_UpArrow, flags)) return action::timeline::JumpKeyframe{.Next = false};
     if (Shortcut(ImGuiKey_DownArrow, flags)) return action::timeline::JumpKeyframe{.Next = true};
     return {};

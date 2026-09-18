@@ -2,11 +2,11 @@
 
 #include "gpu/Types.h"
 
-// Shared vertex-weld slots with per-pass tiles beginning at FirstTile.
-struct VertexWeldPushConstants {
+// The slots a tiled job batch binds, with each pass's tiles beginning at FirstTile.
+struct TiledJobPushConstants {
     uint32_t JobsSlot DEFAULT(InvalidSlot);
     uint32_t TileMapSlot DEFAULT(InvalidSlot);
     uint32_t ScratchSlot DEFAULT(InvalidSlot);
     uint32_t FirstTile DEFAULT();
 };
-static_assert(sizeof(VertexWeldPushConstants) == 16, "VertexWeldPushConstants size");
+static_assert(sizeof(TiledJobPushConstants) == 16, "TiledJobPushConstants size");

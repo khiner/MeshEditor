@@ -49,7 +49,6 @@ inline DrawData ComposeDraw(MeshRecord mesh, uint first_triangle, InstanceRecord
         .VertexEdgeAdjacencyOffset = mesh.VertexEdgeAdjacencyOffset,
         .VertexFanAdjacencyOffset = mesh.VertexFanAdjacencyOffset,
         .Connectivity = mesh.Connectivity,
-        .EdgeHalfedges = mesh.EdgeHalfedges,
         .HalfedgeCount = mesh.HalfedgeCount,
         .FaceCount = mesh.FaceCount,
         .ConnectivityFaceStarts = mesh.ConnectivityFaceStarts,

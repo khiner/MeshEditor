@@ -227,6 +227,20 @@ void SetPresent(History &history, int node) {
     history.Nodes[node].LastVisited = ++history.VisitCounter;
 }
 
+// Releases a node's descendants' snapshots and detaches them, leaving them unreachable from the root.
+void DropDescendants(History &history, int node) {
+    std::vector<int> pending(history.Nodes[node].Children);
+    history.Nodes[node].Children.clear();
+    while (!pending.empty()) {
+        auto &n = history.Nodes[pending.back()];
+        pending.pop_back();
+        pending.append_range(n.Children);
+        n.Children.clear();
+        if (n.Hot) history.Release(*n.Hot);
+        n.Hot.reset();
+    }
+}
+
 int TreeDistance(const History &history, int a, int b) {
     int x = a, y = b;
     while (history.Nodes[x].Depth > history.Nodes[y].Depth) x = history.Nodes[x].Parent;
@@ -388,7 +402,7 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
         if (!Take(rest, len) || rest.size() < len || len < 5 || !Take(rest, kind) || !Take(rest, parent)) break;
         auto payload = rest.subspan(0, len - 5);
         rest = rest.subspan(len - 5);
-        if (kind == RecordKind::Root || kind == RecordKind::Action) {
+        if (kind != RecordKind::Navigate) {
             uint32_t asz;
             if (!Take(payload, asz) || payload.size() < asz) break;
             HistoryNode n{.Action = {payload.begin(), payload.begin() + asz}};
@@ -398,7 +412,7 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
             n.Label.assign(reinterpret_cast<const char *>(payload.data()), label_size);
             payload = payload.subspan(label_size);
             if (!TakeState(payload, n, history.Tracks.size())) break;
-            if (kind == RecordKind::Action && (parent < 0 || parent >= int(history.Nodes.size()))) break;
+            if (kind != RecordKind::Root && (parent < 0 || parent >= int(history.Nodes.size()))) break;
             if (!std::ranges::all_of(n.Roots, resolvable)) break;
             std::optional<HistoryNode> saved;
             if (kind == RecordKind::Root && !payload.empty()) {
@@ -408,6 +422,17 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
                 if (!TakeState(payload, *saved, history.Tracks.size()) || !std::ranges::all_of(saved->Roots, resolvable)) break;
             }
             if (!payload.empty()) break;
+            if (kind == RecordKind::Replace) {
+                DropDescendants(history, parent);
+                auto &target = history.Nodes[parent];
+                target.Action = std::move(n.Action);
+                target.Label = std::move(n.Label);
+                target.Stamps = std::move(n.Stamps);
+                target.Roots = std::move(n.Roots);
+                history.Present = parent;
+                tree_size += 4 + len;
+                continue;
+            }
             if (kind == RecordKind::Root) {
                 history.Nodes.clear();
                 if (saved) {
@@ -568,7 +593,7 @@ void PersistNode(History &history, RecordKind kind, int node) {
         if (parent && parent->Roots.size() == history.Tracks.size() && parent->Stamps[i] == n.Stamps[i]) n.Roots.push_back(parent->Roots[i]);
         else n.Roots.push_back(BuildManifest(history, i));
     }
-    AppendTreeRecord(history, kind, n.Parent, NodePayload(n));
+    AppendTreeRecord(history, kind, kind == RecordKind::Replace ? node : n.Parent, NodePayload(n));
 }
 
 bool LoadNode(History &history, int node) {
@@ -699,6 +724,20 @@ int History::Commit(std::string label, std::vector<std::byte> action) {
     SetPresent(*this, id);
     PersistNode(*this, RecordKind::Action, id);
     return id;
+}
+
+int History::Replace(int node, std::vector<std::byte> action) {
+    assert(node > 0 && node < int(Nodes.size()));
+    DropDescendants(*this, node);
+    auto &n = Nodes[node];
+    if (n.Hot) Release(*n.Hot);
+    n.Action = std::move(action);
+    n.Stamps = CurrentStamps(*this);
+    n.Hot = Pin();
+    ++Revision;
+    SetPresent(*this, node);
+    PersistNode(*this, RecordKind::Replace, node);
+    return node;
 }
 
 void History::Navigate(int node) {

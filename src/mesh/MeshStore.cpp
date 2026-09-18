@@ -27,9 +27,9 @@ constexpr uint32_t ElementIndex(Element element) {
 
 constexpr bool IsSharp(uint8_t sharpness) { return sharpness != 0; }
 
-// Outgoing halfedges, opposites, the two bit tables, the samples at their bound, then an n-gon mesh's face starts.
-constexpr uint32_t ConnectivityWords(uint32_t vertices, uint32_t halfedges, uint32_t faces, bool face_starts) {
-    return vertices + halfedges + 3 * BitWords(halfedges) + (face_starts ? faces : 0u);
+// Outgoing halfedges, opposites, each halfedge's edge, an n-gon mesh's face starts, then each edge's first halfedge.
+constexpr uint32_t ConnectivityWords(uint32_t vertices, uint32_t halfedges, uint32_t faces, bool face_starts, uint32_t edges) {
+    return vertices + 2 * halfedges + (face_starts ? faces : 0u) + edges;
 }
 // CSR offsets then one item per halfedge, since every halfedge of a face-topology mesh belongs to a face loop.
 constexpr uint32_t FanAdjacencyWords(uint32_t vertices, uint32_t halfedges) { return vertices + 1 + halfedges; }
@@ -65,7 +65,7 @@ void ForEachArena(MeshArenas &b, auto &&f) {
     f(b.SelectionSummary, ArenaInfo{SelectionChanged, "SelectionSummary"}, [](auto &e, auto &) { return Ptrs(e.SelectionSummary); });
     f(b.TriangleFaceIds, ArenaInfo{TopologyChanged, "TriangleFaceId"}, [](auto &e, auto &) { return Ptrs(e.TriangleFaceIds); });
     f(b.FaceCorners, ArenaInfo{TopologyChanged, "FaceCorner"}, [](auto &e, auto &) { return Ptrs(e.FaceCorners); });
-    f(b.Connectivity, ArenaInfo{TopologyChanged, "Connectivity"}, [](auto &e, auto &) { return Ptrs(e.Connectivity, e.ConnectivityEdges, e.ConnectivityHalfedgeToEdge); });
+    f(b.Connectivity, ArenaInfo{TopologyChanged, "Connectivity"}, [](auto &e, auto &) { return Ptrs(e.Connectivity); });
     f(b.EdgeSharpness, ArenaInfo{ShadingChanged, "EdgeSharpness"}, [](auto &e, auto &) { return Ptrs(e.EdgeSharpness); });
     f(b.CustomCornerMasks, ArenaInfo{ShadingChanged, "CustomCornerMask"}, [](auto &e, auto &) { return Ptrs(e.CustomCornerMasks); });
     f(b.CustomCornerNormals, ArenaInfo{ShadingChanged, "CustomCornerNormal"}, [](auto &e, auto &) { return Ptrs(e.CustomCornerNormals); });
@@ -77,6 +77,7 @@ void ForEachArena(MeshArenas &b, auto &&f) {
     f(b.TetEdgeIndices, ArenaInfo{0, "TetEdgeIndex"}, NoRanges);
     f(b.FaceSharpness, ArenaInfo{ShadingChanged, "FaceSharpness", true}, [](auto &e, auto &) { return Ptrs(e.FaceData); });
     f(b.SoundVertices, ArenaInfo{}, NoRanges);
+    f(b.Lists, ArenaInfo{}, NoRanges);
     f(b.Adjacency, ArenaInfo{}, [](auto &, auto &d) { return Ptrs(d.VertexFanAdjacency, d.VertexEdgeAdjacency, d.SeamFans); });
     f(b.CornerClasses, ArenaInfo{}, [](auto &, auto &d) { return Ptrs(d.CornerClasses); });
     f(b.BaseSeamNormals, ArenaInfo{}, [](auto &, auto &d) { return Ptrs(d.BaseSeamNormals); });
@@ -111,6 +112,7 @@ MeshArenas::MeshArenas(mtl::BufferContext &ctx)
       TetPositions{ctx, SlotType::Buffer},
       TetEdgeIndices{ctx, SlotType::Buffer},
       SoundVertices{ctx, SlotType::Buffer},
+      Lists{ctx, SlotType::Buffer},
       Adjacency{ctx, SlotType::Buffer},
       CornerClasses{ctx, SlotType::Buffer},
       BaseSeamNormals{ctx, SlotType::Buffer},
@@ -390,6 +392,8 @@ void MeshStore::ReleaseTets(TetBuffers tets) {
 
 Range MeshStore::AllocateSoundVertices(std::span<const uint32_t> vertices) { return Buffers.SoundVertices.Allocate(vertices); }
 void MeshStore::ReleaseSoundVertices(Range range) { Buffers.SoundVertices.Release(range); }
+Range MeshStore::AllocateList(std::span<const uint32_t> words) { return Buffers.Lists.Allocate(words); }
+void MeshStore::ReleaseList(Range range) { Buffers.Lists.Release(range); }
 
 void MeshStore::EnsureSelectionBits(const Mesh &mesh) {
     auto &record = Records.at(mesh.GetStoreId());
@@ -633,74 +637,62 @@ void WriteVertices(std::span<Vertex> dst, std::span<const vec3> positions) {
 }
 } // namespace
 
-void MeshStore::AllocateConnectivity(uint32_t id, uint32_t vertex_count, uint32_t halfedge_count, uint32_t face_count, bool face_starts) {
+namespace {
+auto SliceConnectivity(const auto &record, auto run) {
+    const auto vertices = record.ConnectivityVertices, halfedges = record.ConnectivityHalfedges;
+    const auto faces = record.ConnectivityFaceStarts ? record.ConnectivityFaces : 0u;
+    constexpr bool IsConst = std::is_const_v<typename decltype(run)::element_type>;
+    using Handle = std::conditional_t<IsConst, const he::HH, he::HH>;
+    using Edge = std::conditional_t<IsConst, const he::EH, he::EH>;
+    using Face = std::conditional_t<IsConst, const MeshConnectivity::Face, MeshConnectivity::Face>;
+    const auto as = [](auto words, auto *tag) { return std::span{reinterpret_cast<decltype(tag)>(words.data()), words.size()}; };
+    // The edge list spans the run's tail, at the halfedge bound until the build trims it.
+    const auto tail = vertices + 2 * halfedges + faces;
+    return std::tuple{
+        as(run.subspan(0, vertices), (Handle *)nullptr),
+        as(run.subspan(vertices, halfedges), (Handle *)nullptr),
+        as(run.subspan(vertices + halfedges, halfedges), (Edge *)nullptr),
+        as(run.subspan(vertices + 2 * halfedges, faces), (Face *)nullptr),
+        as(run.subspan(tail, run.size() - tail), (Handle *)nullptr),
+    };
+}
+} // namespace
+
+void MeshStore::AllocateConnectivity(uint32_t id, uint32_t vertex_count, uint32_t halfedge_count, uint32_t face_count, bool face_starts, std::span<const uint32_t> face_offsets) {
     auto &record = WriteRecord(id);
     record.ConnectivityVertices = vertex_count;
     record.ConnectivityHalfedges = halfedge_count;
     record.ConnectivityFaces = face_count;
     record.ConnectivityFaceStarts = face_starts;
-    record.Connectivity = Buffers.Connectivity.Allocate(ConnectivityWords(vertex_count, halfedge_count, face_count, face_starts));
+    record.Connectivity = Buffers.Connectivity.Allocate(ConnectivityWords(vertex_count, halfedge_count, face_count, face_starts, halfedge_count));
+    if (!face_starts || face_offsets.empty()) return;
+    const auto faces = std::get<3>(SliceConnectivity(record, Buffers.Connectivity.GetMutable(record.Connectivity)));
+    for (uint32_t f = 0; f < face_count; ++f) faces[f] = {he::HH(face_offsets[f])};
 }
-
-namespace {
-auto SliceConnectivity(const auto &record, auto run) {
-    const auto vertices = record.ConnectivityVertices, halfedges = record.ConnectivityHalfedges;
-    const auto words = BitWords(halfedges);
-    constexpr bool IsConst = std::is_const_v<typename decltype(run)::element_type>;
-    using Handle = std::conditional_t<IsConst, const he::HH, he::HH>;
-    using Face = std::conditional_t<IsConst, const MeshConnectivity::Face, MeshConnectivity::Face>;
-    const auto handles = [](auto words) { return std::span{reinterpret_cast<Handle *>(words.data()), words.size()}; };
-    return std::tuple{
-        handles(run.subspan(0, vertices)),
-        handles(run.subspan(vertices, halfedges)),
-        run.subspan(vertices + halfedges, words),
-        run.subspan(vertices + halfedges + words, words),
-        run.subspan(vertices + halfedges + 2 * words, words),
-        record.ConnectivityFaceStarts ?
-            std::span{reinterpret_cast<Face *>(run.data() + vertices + halfedges + 3 * words), record.ConnectivityFaces} :
-            std::span<Face>{},
-    };
-}
-} // namespace
 
 ConnectivityStorage MeshStore::GetConnectivityStorage(uint32_t id) {
     const auto &record = Records.at(id);
-    return std::apply([](auto... spans) { return ConnectivityStorage{spans...}; }, SliceConnectivity(record, Buffers.Connectivity.GetMutable(record.Connectivity)));
+    const auto [outgoing, opposites, halfedge_to_edge, faces, edges] = SliceConnectivity(record, Buffers.Connectivity.GetMutable(record.Connectivity));
+    return {outgoing, opposites, halfedge_to_edge, edges};
 }
 
-void MeshStore::PlaceConnectivity(uint32_t id, const BuiltConnectivity &built) {
+void MeshStore::FinishConnectivity(uint32_t id, uint32_t edge_count) {
     auto &record = WriteRecord(id);
-    record.ConnectivityEdgeCount = built.EdgeCount;
-    // Only a non-manifold mesh keeps an edge list, which the bit ranks cannot answer for.
-    if (built.Edges.empty()) return;
-    record.ConnectivityEdges = Buffers.Connectivity.Allocate(uint32_t(built.Edges.size()));
-    record.ConnectivityHalfedgeToEdge = Buffers.Connectivity.Allocate(uint32_t(built.HalfedgeToEdge.size()));
-    const auto edges = Buffers.Connectivity.GetMutable(record.ConnectivityEdges);
-    const auto halfedge_to_edge = Buffers.Connectivity.GetMutable(record.ConnectivityHalfedgeToEdge);
-    for (uint32_t i = 0; i < built.Edges.size(); ++i) edges[i] = *built.Edges[i];
-    for (uint32_t i = 0; i < built.HalfedgeToEdge.size(); ++i) halfedge_to_edge[i] = *built.HalfedgeToEdge[i];
+    record.ConnectivityEdgeCount = edge_count;
+    Buffers.Connectivity.Shrink(record.Connectivity, ConnectivityWords(record.ConnectivityVertices, record.ConnectivityHalfedges, record.ConnectivityFaces, record.ConnectivityFaceStarts, edge_count));
 }
-
-void MeshStore::SetConnectivityEdgeCount(uint32_t id, uint32_t edge_count) { WriteRecord(id).ConnectivityEdgeCount = edge_count; }
 
 MeshConnectivity MeshStore::GetConnectivity(uint32_t id) const {
     const auto &record = Records.at(id);
     if (record.Connectivity.Count == 0) return {.VertexCount = record.ConnectivityVertices, .EdgeCount = record.ConnectivityEdgeCount, .FaceCount = record.ConnectivityFaces};
-    const auto [outgoing, opposites, bits, ranks, samples, faces] = SliceConnectivity(record, Buffers.Connectivity.Get(record.Connectivity));
-    // A non-manifold mesh reads its edges from the list instead of the bit ranks.
-    const bool explicit_edges = record.ConnectivityEdges.Count > 0;
-    const auto edges = explicit_edges ? Buffers.Connectivity.Get(record.ConnectivityEdges) : std::span<const uint32_t>{};
-    const auto halfedge_to_edge = explicit_edges ? Buffers.Connectivity.Get(record.ConnectivityHalfedgeToEdge) : std::span<const uint32_t>{};
+    const auto [outgoing, opposites, halfedge_to_edge, faces, edges] = SliceConnectivity(record, Buffers.Connectivity.Get(record.Connectivity));
     return {
         .VertexCount = record.ConnectivityVertices,
         .OutgoingHalfedges = outgoing,
         .Opposites = opposites,
-        .EdgeFirstBits = explicit_edges ? std::span<const uint32_t>{} : bits,
-        .EdgeFirstRanks = explicit_edges ? std::span<const uint32_t>{} : ranks,
-        .HalfedgeToEdge = {reinterpret_cast<const he::EH *>(halfedge_to_edge.data()), halfedge_to_edge.size()},
+        .HalfedgeToEdge = halfedge_to_edge,
         .EdgeCount = record.ConnectivityEdgeCount,
-        .Edges = {reinterpret_cast<const he::HH *>(edges.data()), edges.size()},
-        .EdgeSamples = explicit_edges ? std::span<const uint32_t>{} : samples.first(BitWords(record.ConnectivityEdgeCount)),
+        .Edges = edges.first(record.ConnectivityEdgeCount),
         .FaceCount = record.ConnectivityFaces,
         .Faces = faces,
     };
@@ -779,7 +771,7 @@ void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitive
     Buffers.FaceCorners.PlanAdditional(halfedges);
     Buffers.EdgeSharpness.PlanAdditional(edges);
     Buffers.Adjacency.PlanAdditional(FanAdjacencyWords(vertices, halfedges) + EdgeAdjacencyWords(vertices, edges));
-    Buffers.Connectivity.PlanAdditional(ConnectivityWords(vertices, halfedges, faces, faces > 0 && halfedges != 3 * faces));
+    Buffers.Connectivity.PlanAdditional(ConnectivityWords(vertices, halfedges, faces, faces > 0 && halfedges != 3 * faces, halfedges));
     Buffers.PrimitiveMaterials.PlanAdditional(primitives.MaterialIndices.size());
     if (has_deform) Buffers.BoneDeform.PlanAdditional(vertices);
     if (morph_target_count > 0) Buffers.MorphTargets.PlanAdditional(morph_target_count * vertices);
@@ -823,14 +815,7 @@ void WriteCsr(std::span<uint32_t> out, uint32_t bucket_count, auto &&emit) {
 }
 } // namespace
 
-bool BuildsFanAdjacencyOnGpu(const Mesh &mesh) {
-    const auto &c = mesh.GetConnectivity();
-    return c.FaceCount > 0 && c.Faces.empty();
-}
-
-bool BuildsEdgeAdjacencyOnGpu(const Mesh &mesh) {
-    return BuildsFanAdjacencyOnGpu(mesh) && mesh.GetConnectivity().HalfedgeToEdge.empty();
-}
+bool BuildsAdjacencyOnGpu(const Mesh &mesh) { return mesh.GetConnectivity().FaceCount > 0; }
 
 namespace {
 // Calls `add(vertex, item)` once per vertex-fan incidence in table order.
@@ -864,38 +849,16 @@ void MeshStore::BuildVertexAdjacency(const Mesh &mesh) {
     const uint32_t vertex_count = mesh.VertexCount();
     if (record.TriangleCount > 0) {
         derived.VertexFanAdjacency = Buffers.Adjacency.Allocate(FanAdjacencyWords(vertex_count, mesh.HalfEdgeCount()));
-        if (!BuildsFanAdjacencyOnGpu(mesh)) {
+        if (!BuildsAdjacencyOnGpu(mesh)) {
             WriteCsr(Buffers.Adjacency.GetMutable(derived.VertexFanAdjacency), vertex_count, [&](auto &&add) { EmitFanIncidence(mesh, add); });
         }
     }
     if (mesh.EdgeCount() > 0) {
         derived.VertexEdgeAdjacency = Buffers.Adjacency.Allocate(EdgeAdjacencyWords(vertex_count, mesh.EdgeCount()));
-        if (!BuildsEdgeAdjacencyOnGpu(mesh)) {
+        if (!BuildsAdjacencyOnGpu(mesh)) {
             WriteCsr(Buffers.Adjacency.GetMutable(derived.VertexEdgeAdjacency), vertex_count, [&](auto &&add) { EmitEdgeIncidence(mesh, add); });
         }
     }
-}
-
-std::string MeshStore::CheckVertexAdjacency(const Mesh &mesh) const {
-    const auto vertex_count = mesh.VertexCount();
-    const auto check = [&](std::string_view name, Range range, auto &&emit) {
-        if (range.Count == 0) return std::string{};
-        std::vector<uint32_t> reference(range.Count);
-        WriteCsr(reference, vertex_count, emit);
-        const auto stored = Buffers.Adjacency.Get(range);
-        for (uint32_t i = 0; i < range.Count; ++i) {
-            if (reference[i] == stored[i]) continue;
-            const bool offset = i <= vertex_count;
-            return std::format(
-                "mesh {} {} {} {} differs: {} against {}",
-                mesh.GetStoreId(), name, offset ? "offset" : "item", offset ? i : i - vertex_count - 1, stored[i], reference[i]
-            );
-        }
-        return std::string{};
-    };
-    const auto &derived = DerivedRecords.at(mesh.GetStoreId());
-    if (auto fan = check("fan", derived.VertexFanAdjacency, [&](auto &&add) { EmitFanIncidence(mesh, add); }); !fan.empty()) return fan;
-    return check("edge", derived.VertexEdgeAdjacency, [&](auto &&add) { EmitEdgeIncidence(mesh, add); });
 }
 
 void MeshStore::CreateMesh(uint32_t id, const MeshData &data, const MeshVertexAttributes &attrs, const MeshPrimitives &primitives, const CornerLayers &layers, bool has_authored_normals) {
@@ -991,6 +954,83 @@ void MeshStore::CreateMesh(uint32_t id, const MeshData &data, const MeshVertexAt
     std::ranges::fill(Buffers.FaceSharpness.GetMutable(record.FaceData), uint8_t{0});
     std::ranges::fill(Buffers.EdgeSharpness.GetMutable(record.EdgeSharpness), uint8_t{0});
     BuildVertexAdjacency(mesh);
+}
+
+uint32_t MeshStore::BeginTopologyOutput(uint32_t source, const TopologyCounts &counts) {
+    const Record src = Records.at(source);
+    const uint32_t triangles = counts.Halfedges - 2 * counts.Faces;
+    const auto allocate = [&](auto &arena, uint32_t count) {
+        const auto range = arena.Allocate(count);
+        CaptureRange(arena, range);
+        return range;
+    };
+    Record record{
+        .Vertices = allocate(Buffers.Vertices, counts.Vertices),
+        .FaceData = allocate(Buffers.FaceFirstTriangles, counts.Faces),
+        .EdgeSharpness = allocate(Buffers.EdgeSharpness, counts.Halfedges),
+        .TriangleFaceIds = allocate(Buffers.TriangleFaceIds, triangles),
+        .ElementPrimitives = allocate(Buffers.ElementPrimitives, counts.Faces),
+        .PrimitiveMaterials = Buffers.PrimitiveMaterials.Clone(src.PrimitiveMaterials),
+        .FaceCorners = allocate(Buffers.FaceCorners, counts.Halfedges),
+        .SelectionBits = {allocate(Buffers.SelectionBits, BitWords(counts.Vertices)), allocate(Buffers.SelectionBits, BitWords(counts.Halfedges)), allocate(Buffers.SelectionBits, BitWords(counts.Faces))},
+        .SelectionSummary = Buffers.SelectionSummary.Allocate(1),
+        .ConnectivityVertices = counts.Vertices,
+        .ConnectivityHalfedges = counts.Halfedges,
+        .ConnectivityFaces = counts.Faces,
+        .ConnectivityFaceStarts = counts.Faces > 0 && counts.Halfedges != 3 * counts.Faces,
+        .MorphTargetCount = src.MorphTargetCount,
+        .TriangleCount = triangles,
+        .HasAuthoredNormals = src.HasAuthoredNormals,
+        .DefaultMorphWeights = src.DefaultMorphWeights,
+        .Alive = true,
+    };
+    Buffers.SelectionSummary.GetMutable(record.SelectionSummary)[0] = {};
+    if (src.CustomCornerMasks.Count > 0) {
+        record.CustomCornerMasks = allocate(Buffers.CustomCornerMasks, BitWords(triangles * 3));
+        record.CustomCornerNormals = allocate(Buffers.CustomCornerNormals, src.CustomCornerNormals.Count);
+    }
+    if (src.CornerTangents.Count > 0) record.CornerTangents = allocate(Buffers.CornerTangents, triangles * 3);
+    if (src.CornerColors.Count > 0) record.CornerColors = allocate(Buffers.CornerColors, triangles * 3);
+    for (uint32_t set = 0; set < MaxUvSets; ++set) {
+        if (src.CornerUvs[set].Count > 0) record.CornerUvs[set] = allocate(Buffers.CornerUvs, triangles * 3);
+    }
+    if (src.BoneDeform.Count > 0) record.BoneDeform = allocate(Buffers.BoneDeform, counts.Vertices);
+    if (src.MorphTargets.Count > 0) record.MorphTargets = allocate(Buffers.MorphTargets, src.MorphTargetCount * counts.Vertices);
+    const bool face_starts = record.ConnectivityFaceStarts;
+    const auto id = AcquireId(std::move(record));
+    AllocateConnectivity(id, counts.Vertices, counts.Halfedges, counts.Faces, face_starts);
+    const auto &placed = Records.at(id);
+    // The face sharpness mirror carries its own history over the face range.
+    CaptureRange(Buffers.FaceSharpness, placed.FaceData);
+    CaptureRange(Buffers.Connectivity, placed.Connectivity);
+    SyncMirrors(id);
+    FillBaseVertexNormalMirror(placed.Vertices, {});
+    return id;
+}
+
+void MeshStore::CompleteTopologyOutput(uint32_t id, uint32_t custom_corner_normals) {
+    auto &record = WriteRecord(id);
+    Buffers.EdgeSharpness.Shrink(record.EdgeSharpness, record.ConnectivityEdgeCount);
+    if (record.CustomCornerMasks.Count > 0) {
+        Buffers.CustomCornerNormals.Shrink(record.CustomCornerNormals, custom_corner_normals);
+        if (custom_corner_normals == 0) {
+            Buffers.CustomCornerMasks.Shrink(record.CustomCornerMasks, 0);
+            record.CustomCornerMasks = record.CustomCornerNormals = {};
+        }
+    }
+    record.PrimitiveTriangleRanges.clear();
+    const auto primitives = Buffers.ElementPrimitives.Get(record.ElementPrimitives);
+    const auto first_triangles = Buffers.FaceFirstTriangles.Get(record.FaceData);
+    auto &ranges = record.PrimitiveTriangleRanges;
+    for (uint32_t f = 0; f < primitives.size(); ++f) {
+        if (!ranges.empty() && ranges.back().PrimitiveIndex == primitives[f]) continue;
+        if (!ranges.empty()) ranges.back().TriangleCount = first_triangles[f] - ranges.back().FirstTriangle;
+        ranges.push_back({primitives[f], first_triangles[f], 0});
+    }
+    if (!ranges.empty()) ranges.back().TriangleCount = record.TriangleCount - ranges.back().FirstTriangle;
+    const Mesh mesh{*this, id};
+    BuildVertexAdjacency(mesh);
+    UpdateCornerClassification(mesh);
 }
 
 uint32_t MeshStore::CloneMesh(const Mesh &mesh) {

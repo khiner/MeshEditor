@@ -198,19 +198,32 @@ bool NeedsElementIndices(const Mesh &mesh, bool overlay_indices) {
     return overlay_indices || mesh.FaceCount() == 0;
 }
 
-void WriteElementIndices(GpuBuffers &buffers, const Mesh &mesh, MeshBuffers &mb) {
-    if (mesh.EdgeCount() > 0 && mb.EdgeIndices.Count == 0) {
-        auto [sr, dest] = buffers.AllocateIndices(mesh.EdgeCount() * 2, IndexKind::Edge);
-        mesh.WriteEdgeIndices(dest);
-        mb.EdgeIndices = sr;
-        // The meshlet build captured the edge indices into the mesh's primitive records, so records built before the indices existed take them now.
-        for (auto &record : buffers.Primitives.Buffer.GetMutableSpan<PrimitiveRecord>(mb.Primitives)) record.AuxIndices = mb.EdgeIndices;
+void WriteElementIndices(GpuBuffers &buffers, const MeshStore &meshes, const Mesh &mesh, MeshBuffers &mb, bool overlay_indices, std::vector<ElementIndicesWork> &pending) {
+    ElementIndicesWork work{mesh.GetStoreId()};
+    if (mesh.TriangleIndexCount() > 0 && mb.FaceIndices.Count == 0) {
+        if (DrawsStoredCorners(mesh)) {
+            mb.FaceIndices = meshes.Arenas().FaceCorners.Slotted(meshes.Get(mesh.GetStoreId()).FaceCorners);
+        } else {
+            mb.FaceIndices = buffers.AllocateIndices(mesh.TriangleIndexCount(), IndexKind::Face).first;
+            work.Triangles = mb.FaceIndices;
+        }
     }
-    if (mesh.VertexCount() > 0 && mb.VertexIndices.Count == 0) {
-        auto [sr, dest] = buffers.AllocateIndices(mesh.VertexCount(), IndexKind::Vertex);
-        std::iota(dest.begin(), dest.end(), 0u);
-        mb.VertexIndices = sr;
+    if (NeedsElementIndices(mesh, overlay_indices)) {
+        if (mesh.EdgeCount() > 0 && mb.EdgeIndices.Count == 0) {
+            auto [sr, dest] = buffers.AllocateIndices(mesh.EdgeCount() * 2, IndexKind::Edge);
+            if (mesh.FaceCount() > 0) work.Endpoints = sr;
+            else mesh.WriteEdgeIndices(dest);
+            mb.EdgeIndices = sr;
+            // The meshlet build captured the edge indices into the mesh's primitive records, so records built before the indices existed take them now.
+            for (auto &record : buffers.Primitives.Buffer.GetMutableSpan<PrimitiveRecord>(mb.Primitives)) record.AuxIndices = mb.EdgeIndices;
+        }
+        if (mesh.VertexCount() > 0 && mb.VertexIndices.Count == 0) {
+            auto [sr, dest] = buffers.AllocateIndices(mesh.VertexCount(), IndexKind::Vertex);
+            std::iota(dest.begin(), dest.end(), 0u);
+            mb.VertexIndices = sr;
+        }
     }
+    if (work.Endpoints.Count > 0 || work.Triangles.Count > 0) pending.push_back(work);
 }
 
 SyncResult SyncModelsBuffers(state::Scene &r) {

@@ -29,7 +29,6 @@ struct DrawData {
     uint32_t VertexEdgeAdjacencyOffset DEFAULT(InvalidOffset);
     uint32_t VertexFanAdjacencyOffset DEFAULT(InvalidOffset);
     SlotOffset Connectivity DEFAULT();
-    SlotOffset EdgeHalfedges DEFAULT();
     uint32_t HalfedgeCount DEFAULT();
     uint32_t FaceCount DEFAULT();
     uint32_t ConnectivityFaceStarts DEFAULT();
@@ -57,4 +56,4 @@ struct DrawData {
     uint32_t PrimitiveMaterialOffset DEFAULT(InvalidOffset);
     uint32_t ElementPrimitiveOffset DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(DrawData) == 224, "DrawData size");
+static_assert(sizeof(DrawData) == 216, "DrawData size");

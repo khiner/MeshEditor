@@ -90,6 +90,9 @@ std::string Label(const action::Action &a) {
                       a);
 }
 } // namespace
+
+Project &Session(state::Scene &r) { return *r.ctx().get<Project *>(); }
+
 Project::Project(state::Scene &r) : Entities(r, History, snapshot::SnapshotTable()), R(r) {
     R.ctx().emplace<Project *>(this);
     R.ctx().emplace<Assets>();
@@ -379,7 +382,17 @@ bool Project::ApplyCommand(action::Action a, EventPass pass, bool staged) {
         *path = *stored;
     }
     const bool recordable = action::IsRecordable(a);
-    if (staged && !GestureBase && recordable) GestureBase = History.Pin();
+    if (staged && !GestureBase && recordable) {
+        GestureBase = History.Pin();
+        GestureStart = Commands.size();
+    }
+    // A restarting operator reapplies from the gesture base, so its earlier command leaves the gesture.
+    bool same_kind = staged && StageFirst && Kind(Commands[*StageFirst].Value) == Kind(a);
+    if (same_kind && action::IsRestarting(a)) {
+        History.Restore(*GestureBase);
+        Commands.resize(*StageFirst);
+        same_kind = false;
+    }
     const auto &frame = R.ctx().get<const FrameState>();
     Command command{
         {R.get<const ViewCamera>(Viewport), R.ctx().get<const ViewportExtent>().Value, frame.DisplayFramebufferScale, frame.DeltaTime,
@@ -390,7 +403,7 @@ bool Project::ApplyCommand(action::Action a, EventPass pass, bool staged) {
     if (!recordable) return false;
     ++Revision;
     // Replay requires the first gesture update for initialization and the latest for the final value.
-    if (staged && StageFirst && Kind(Commands[*StageFirst].Value) == Kind(command.Value)) {
+    if (same_kind) {
         if (Commands.size() > *StageFirst + 1) {
             Commands.back() = std::move(command);
             return true;
@@ -412,11 +425,18 @@ void Project::RecordKeys() {
     const auto seconds = animation::FrameSeconds(R, Viewport, R.get<const TimelinePlayback>(Viewport).CurrentFrame);
     if (animation::AnyChanged(R, Viewport, seconds)) ApplyCommand(action::MakeAction(action::animation::RecordChanged{}), EventPass::Settle);
 }
-int Project::Commit(std::string label) {
+int Project::Commit(std::string label, std::optional<int> replace) {
     std::vector<std::byte> bytes;
     zpp::bits::out{bytes}(Commands).or_throw();
     const auto before = History.Present;
-    const auto node = History.Commit(std::move(label), std::move(bytes));
+    const auto node = replace ? History.Replace(*replace, std::move(bytes)) : History.Commit(std::move(label), std::move(bytes));
+    Editing.reset();
+    if (const auto it = std::ranges::find_if(Commands, [](const auto &c) { return std::holds_alternative<action::mesh::Action>(c.Value); }); it != Commands.end()) {
+        std::visit([&]<typename L>(const L &leaf) {
+            if constexpr (std::copyable<L>) R.emplace_or_replace<action::mesh::LastOperation>(Viewport, action::mesh::Action{leaf}, node);
+        },
+                   std::get<action::mesh::Action>(it->Value));
+    }
     const bool baseline = !R.view<const StartTransform>().empty() || R.all_of<AdditiveBoxSelectBaseline>(Viewport);
     if (node != before || !baseline) Commands.clear();
     History.Evict(MemoryCap);
@@ -424,13 +444,19 @@ int Project::Commit(std::string label) {
 }
 void Project::FinishGesture(EventPass pass) {
     if (!HasStaged()) return;
-    const auto label = Label(Commands[*StageFirst].Value);
+    // The node names every distinct action in the gesture, in order.
+    std::vector<std::string> names;
+    for (size_t i = GestureStart; i < Commands.size(); ++i) {
+        if (auto name = Label(Commands[i].Value); std::ranges::find(names, name) == names.end()) names.push_back(std::move(name));
+    }
+    std::string label;
+    for (const auto &name : names) label += (label.empty() ? "" : ", ") + name;
     StageFirst.reset();
-    ApplyCommand(action::MakeAction(action::view::EndGizmoDrag{}), pass);
+    ApplyCommand(action::MakeAction(action::view::EndTransform{}), pass);
     R.clear<action::DragFieldStart>();
     R.remove<AdditiveBoxSelectBaseline>(Viewport);
     RecordKeys();
-    Commit(label);
+    Commit(label, Editing);
     Commands.clear();
     ReleaseGesture();
 }
@@ -452,6 +478,8 @@ void Project::CancelGesture() {
     Commands.clear();
     History.Restore(*GestureBase);
     ReleaseGesture();
+    // A cancelled edit returns to the node it was replacing.
+    if (const auto node = std::exchange(Editing, std::nullopt)) History.Navigate(*node);
     ++Revision;
 }
 void Project::Frame(action::Drained drained) {
@@ -480,7 +508,7 @@ void Project::Frame(action::Drained drained) {
                 ApplyCommand(*duplicate ? action::MakeAction(action::object::DuplicateLinked{}) : action::MakeAction(action::object::Duplicate{}), EventPass::Settle, true);
             }
             Tick(a);
-        } else if (HasStaged() && Is<action::view::EndGizmoDrag>(a)) {
+        } else if (HasStaged() && Is<action::view::EndTransform>(a)) {
             FinishGesture(pass);
         } else {
             if (phase == action::Phase::Record) FinishGesture(EventPass::Settle);
@@ -510,11 +538,16 @@ void Project::Frame(action::Drained drained) {
 }
 void Project::Navigate(int node) {
     CancelGesture();
+    Editing.reset();
     Commands.clear();
     if (node == History.Present) History.Revert();
     else History.Navigate(node);
     History.Evict(MemoryCap);
     ++Revision;
+}
+void Project::EditNode(int node) {
+    Navigate(History.Nodes[node].Parent);
+    Editing = node;
 }
 bool Project::Replay() {
     FinishGesture(EventPass::Settle);
@@ -592,7 +625,7 @@ void Project::AfterRestore() {
         }
         if (it->Bits & MeshStore::ShadingChanged) reactive(R, Change::MeshShading).emplace(entity);
         if (it->Bits & MeshStore::SelectionChanged) R.ctx().get<GpuSceneState>().EditSelectionDirty = true;
-        if (!sparse && (it->Bits & ~MeshStore::SelectionChanged)) R.emplace_or_replace<MeshGeometryDirty>(entity, false);
+        if (!sparse && (it->Bits & ~MeshStore::SelectionChanged)) R.emplace_or_replace<MeshGeometryDirty>(entity, EditSelectionAfter::Keep);
     }
     meshes.RebuildDerived(topology);
     DeriveBaseNormalsNow(R, geometry);

@@ -69,7 +69,6 @@
 #include "state/Scene.h"
 
 #include <cassert>
-#include <cstdlib>
 #include <cstring>
 #include <numbers>
 
@@ -223,16 +222,6 @@ void RecordSceneCounters(const GpuBuffers &buffers) {
         profile::RecordCounter("SelectedCoarseMeshlets", *reinterpret_cast<const uint32_t *>(buffers.MeshletCoarseCount.Contents().data()));
         profile::RecordCounter("VisibleBlendMeshlets", count(MeshletRoute::Blend));
         profile::RecordCounter("VisibleTransmissionMeshlets", count(MeshletRoute::Transmission));
-        static const bool record_routes = std::getenv("MESHEDITOR_MESHLET_ROUTE_COUNTERS") != nullptr;
-        if (record_routes) {
-            profile::RecordCounter("MeshletRoute OpaqueCullBack", count(MeshletRoute::OpaqueCullBack));
-            profile::RecordCounter("MeshletRoute Blend", count(MeshletRoute::Blend));
-            profile::RecordCounter("MeshletRoute Transmission", count(MeshletRoute::Transmission));
-            profile::RecordCounter("MeshletRoute OpaqueCullFront", count(MeshletRoute::OpaqueCullFront));
-            profile::RecordCounter("MeshletRoute OpaqueDoubleSided", count(MeshletRoute::OpaqueDoubleSided));
-            profile::RecordCounter("MeshletRoute Coverage", count(MeshletRoute::Coverage));
-            profile::RecordCounter("MeshletRoute Overlay", count(MeshletRoute::Overlay));
-        }
     }
     profile::RecordCounter("DeviceAllocatedBytes", buffers.Ctx.Ctx.Device->currentAllocatedSize());
 }

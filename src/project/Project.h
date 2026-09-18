@@ -36,6 +36,8 @@ struct Project {
     void CancelGesture();
     void Settle(EventPass = EventPass::Frame);
     void Navigate(int node);
+    // Moves to `node`'s parent so the next gesture replaces the node's operator with its own.
+    void EditNode(int node);
     void Undo();
     void Redo();
     bool Replay();
@@ -67,10 +69,13 @@ struct Project {
     std::vector<action::Action> Deferred;
     std::optional<size_t> StageFirst;
     std::optional<store::Snapshot> GestureBase;
+    size_t GestureStart{};
     std::optional<int> Navigation;
+    std::optional<int> Editing; // The node the open gesture replaces on commit
     void Tick(const action::Action &, EventPass = EventPass::Frame);
     bool ApplyCommand(action::Action, EventPass, bool staged = false);
-    int Commit(std::string label);
+    // Records the commands as a new node, or as `replace`'s content.
+    int Commit(std::string label, std::optional<int> replace = {});
     void FinishGesture(EventPass);
     // Keys changed animated properties before a user commit while recording.
     void RecordKeys();
@@ -80,4 +85,6 @@ struct Project {
     state::Scene &R;
     state::Entity Viewport{state::Null};
 };
+
+Project &Session(state::Scene &);
 } // namespace project

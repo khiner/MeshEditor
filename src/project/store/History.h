@@ -30,6 +30,7 @@ enum class RecordKind : uint8_t {
     Root, // Replace history with the current baseline and optional saved baseline.
     Action,
     Navigate, // Restore Parent when reopening.
+    Replace, // Give the node named by Parent new content and drop its descendants.
 };
 
 struct HistoryNode {
@@ -90,6 +91,8 @@ struct History {
 
     // Record live state and return its node ID, reusing a matching present, child, or parent node.
     int Commit(std::string label, std::vector<std::byte> action);
+    // Record live state as `node`'s new content under its label, drop the node's descendants, and make it present.
+    int Replace(int node, std::vector<std::byte> action);
     // Call after CPU and GPU writes complete.
     void SettleHashes();
     // Restore node using its snapshot or stored data and update Present.

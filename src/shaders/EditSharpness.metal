@@ -15,10 +15,8 @@ struct EditSharpnessContext {
         const uint word = BindlessBuffer(uint, B.Buffer, range.Slot)[range.Offset + (element >> 5u)];
         return ((word >> (element & 31u)) & 1u) != 0u;
     }
-    device const uint *Connectivity() const { return BindlessBuffer(uint, B.Buffer, Pc.Connectivity.Slot) + Pc.Connectivity.Offset; }
-    device const uint *Opposites() const { return ConnectivityOpposites(Connectivity(), Pc.VertexCount); }
-    uint HalfedgeFace(uint halfedge) const {
-        return ConnectivityHalfedgeFace(Connectivity(), Pc.VertexCount, Pc.HalfedgeCount, Pc.FaceCount, Pc.ConnectivityFaceStarts != 0u, halfedge);
+    ConnectivityView Connectivity() const {
+        return {BindlessBuffer(uint, B.Buffer, Pc.Connectivity.Slot) + Pc.Connectivity.Offset, Pc.VertexCount, Pc.HalfedgeCount, Pc.FaceCount, Pc.ConnectivityFaceStarts != 0u};
     }
 };
 
@@ -56,10 +54,11 @@ kernel void EditSharpnessKernel(
     } else if (pc.Operation == EditSharpnessOperation::SmoothByAngle) {
         write_edge = true;
         edge_value = 0u;
-        const uint h = BindlessBuffer(uint, bindless.Buffer, pc.EdgeHalfedges.Slot)[pc.EdgeHalfedges.Offset + i];
-        const uint opposite = ctx.Opposites()[h];
+        const auto conn = ctx.Connectivity();
+        const uint h = conn.EdgeHalfedge(i);
+        const uint opposite = conn.Opposite(h);
         if (opposite != InvalidOffset) {
-            const uint f0 = ctx.HalfedgeFace(h), f1 = ctx.HalfedgeFace(opposite);
+            const uint f0 = conn.HalfedgeFace(h), f1 = conn.HalfedgeFace(opposite);
             device const packed_float3 *normals = BindlessBuffer(packed_float3, bindless.Buffer, pc.FaceNormals.Slot) + pc.FaceNormals.Offset;
             edge_value = dot(float3(normals[f0]), float3(normals[f1])) < pc.CosAngle ? 1u : 0u;
         }

@@ -6,7 +6,6 @@
 
 #include "MeshComponents.h"
 #include "MeshStore.h"
-#include "Parallel.h"
 
 #include "state/Scene.h"
 
@@ -17,29 +16,6 @@ using numeric::dvec3;
 using std::ranges::distance;
 
 namespace {
-// Packs the opposite endpoint with a high bit indicating descending halfedge direction for bucket pairing.
-constexpr uint32_t ReverseBit{1u << 31};
-
-// Requires first halfedges in ascending order for the running rank count.
-void BuildEdgeRanks(const ConnectivityStorage &storage, uint32_t halfedge_count, std::span<const he::HH> edges) {
-    const auto words = (halfedge_count + 31u) / 32u;
-    auto bits_out = storage.EdgeFirstBits.first(words);
-    auto ranks_out = storage.EdgeFirstRanks.first(words);
-    auto samples_out = storage.EdgeSamples.first((edges.size() + 31u) / 32u);
-    // The arena reserves samples by halfedge count; snapshots also include its unused tail.
-    std::ranges::fill(storage.EdgeSamples.subspan(samples_out.size()), 0u);
-    uint32_t edge = 0;
-    for (uint32_t word = 0; word < words; ++word) {
-        ranks_out[word] = edge;
-        uint32_t bits = 0;
-        while (edge < edges.size() && *edges[edge] / 32u == word) {
-            if (edge % 32u == 0) samples_out[edge / 32u] = word;
-            bits |= 1u << (*edges[edge++] % 32u);
-        }
-        bits_out[word] = bits;
-    }
-}
-
 // Calls `fn(v0, v1, v2)` for each triangle of each face's fan, in face order.
 void ForEachFaceTriangle(const Mesh &mesh, auto &&fn) {
     const auto &c = mesh.GetConnectivity();
@@ -51,140 +27,22 @@ void ForEachFaceTriangle(const Mesh &mesh, auto &&fn) {
 }
 } // namespace
 
-BuiltConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std::span<const uint32_t> face_corners, uint32_t vertex_count, const ConnectivityStorage &storage) {
-    assert(vertex_count < ReverseBit);
-    const bool arithmetic_offsets = face_offsets.empty();
-    const auto face_count = arithmetic_offsets ? uint32_t(face_corners.size() / 3) : uint32_t(face_offsets.size() - 1);
-    const auto face_first = [&](uint32_t f) { return arithmetic_offsets ? 3u * f : face_offsets[f]; };
-    auto outgoing = storage.OutgoingHalfedges.first(vertex_count);
-    std::ranges::fill(outgoing, he::HH{});
-
-    const auto total_halfedges = face_corners.size();
-    auto opposites = storage.Opposites.first(total_halfedges);
-    std::ranges::fill(opposites, he::HH{});
-
-    const auto for_each_halfedge = [&](auto &&body) {
-        for (uint32_t f = 0; f < face_count; ++f) {
-            const auto first = face_first(f), last = face_first(f + 1);
-            for (auto h = first; h < last; ++h) body(h, face_corners[h == first ? last - 1 : h - 1], face_corners[h]);
-        }
-    };
-
-    const bool all_triangles = total_halfedges == 3 * size_t(face_count);
-    if (!all_triangles) {
-        auto faces = storage.Faces.first(face_count);
-        for (uint32_t f = 0; f < face_count; ++f) {
-            assert(face_first(f + 1) - face_first(f) >= 3);
-            faces[f] = {he::HH(face_first(f))};
-        }
-    }
-    // Counting-sort halfedges by lower endpoint while preserving ascending halfedge order for pair scans.
-    const auto halfedge_count = uint32_t(total_halfedges);
-    std::vector<uint32_t> bucket_offsets(size_t(vertex_count) + 1, 0u);
-    for_each_halfedge([&](uint32_t h, uint32_t from_v, uint32_t to_v) {
-        if (!outgoing[from_v]) outgoing[from_v] = he::HH(h);
-        ++bucket_offsets[std::min(from_v, to_v) + 1];
-    });
-    for (uint32_t v = 0; v < vertex_count; ++v) bucket_offsets[v + 1] += bucket_offsets[v];
-    std::vector<uint32_t> bucket_halfedges(halfedge_count);
-    {
-        std::vector<uint32_t> cursor(bucket_offsets.begin(), bucket_offsets.end() - 1);
-        for_each_halfedge([&](uint32_t h, uint32_t from_v, uint32_t to_v) { bucket_halfedges[cursor[std::min(from_v, to_v)]++] = h; });
-    }
-
-    const auto bucket_key = [&](uint32_t h) {
-        const auto f = all_triangles ? h / 3u : uint32_t(std::upper_bound(face_offsets.begin(), face_offsets.end(), h) - face_offsets.begin()) - 1u;
-        const auto first = face_first(f), last = face_first(f + 1);
-        const auto to_v = face_corners[h], from_v = face_corners[h == first ? last - 1u : h - 1u];
-        return std::max(from_v, to_v) | (from_v > to_v ? ReverseBit : 0u);
-    };
-
-    // Pair opposite directions and store explicit edge IDs only for non-manifold buckets.
-    constexpr uint32_t VertexBlock{4u * 1024u};
-    const auto block_count = (vertex_count + VertexBlock - 1u) / VertexBlock;
-    std::vector<uint8_t> block_shares_an_edge(block_count, 0u);
-    const auto pair_bucket = [&](uint32_t v, std::vector<uint32_t> &keys, auto &&joined) {
-        const auto first = bucket_offsets[v], last = bucket_offsets[v + 1];
-        keys.clear();
-        for (auto p = first; p < last; ++p) keys.emplace_back(bucket_key(bucket_halfedges[p]));
-        for (uint32_t i = 0; i < keys.size(); ++i) {
-            const auto key = keys[i];
-            uint32_t opposite = he::null, sharing = 0;
-            for (uint32_t j = 0; j < keys.size(); ++j) {
-                if (keys[j] == (key ^ ReverseBit) && opposite == he::null) opposite = bucket_halfedges[first + j];
-                sharing += (keys[j] & ~ReverseBit) == (key & ~ReverseBit);
-            }
-            joined(bucket_halfedges[first + i], opposite, sharing > 2u);
-        }
-    };
-    ParallelFor(block_count, [&](uint32_t block) {
-        const auto block_last = std::min((block + 1u) * VertexBlock, vertex_count);
-        std::vector<uint32_t> keys;
-        for (auto v = block * VertexBlock; v < block_last; ++v) {
-            pair_bucket(v, keys, [&](uint32_t h, uint32_t opposite, bool shared) {
-                if (shared) block_shares_an_edge[block] = 1u;
-                // Extra faces on a shared edge must not break the first pair's reciprocal links.
-                if (opposite < h && !opposites[h] && !opposites[opposite]) {
-                    opposites[h] = he::HH(opposite);
-                    opposites[opposite] = he::HH(h);
-                }
-            });
-        }
-    });
-
-    // Edges number by ascending first halfedge, which is the order the halfedge walk reaches them.
-    std::vector<he::HH> edges;
-    edges.reserve(halfedge_count / 2 + 1);
-    const bool ranks_answer = std::ranges::none_of(block_shares_an_edge, [](uint8_t f) { return f != 0u; });
-    std::vector<uint32_t> edge_representative;
-    if (ranks_answer) {
-        for (uint32_t h = 0; h < halfedge_count; ++h) {
-            if (const auto opposite = opposites[h]; !opposite || *opposite > h) edges.emplace_back(he::HH(h));
-        }
-    } else {
-        // A shared edge has a halfedge whose first is neither itself nor its opposite.
-        edge_representative.assign(halfedge_count, 0u);
-        std::vector<uint32_t> keys;
-        for (uint32_t v = 0; v < vertex_count; ++v) {
-            pair_bucket(v, keys, [&](uint32_t h, uint32_t opposite, bool) {
-                edge_representative[h] = opposite < h ? edge_representative[opposite] : h;
-            });
-        }
-        for (uint32_t h = 0; h < halfedge_count; ++h) {
-            if (edge_representative[h] == h) edges.emplace_back(he::HH(h));
-        }
-    }
-    BuildEdgeRanks(storage, halfedge_count, edges);
-    const auto edge_count = uint32_t(edges.size());
-    if (ranks_answer) return {edge_count, {}, {}};
-
-    // Use the edge list and its inverse when a shared edge makes the ranks ambiguous.
-    std::vector<he::EH> halfedge_to_edge(halfedge_count);
-    uint32_t edge = 0;
-    for (uint32_t h = 0; h < halfedge_count; ++h) {
-        halfedge_to_edge[h] = edge_representative[h] == h ? he::EH(edge++) : halfedge_to_edge[edge_representative[h]];
-    }
-    return {edge_count, std::move(edges), std::move(halfedge_to_edge)};
-}
-
-BuiltConnectivity BuildConnectivity(std::span<const std::array<uint32_t, 2>> edge_pairs, uint32_t vertex_count, const ConnectivityStorage &storage) {
+uint32_t BuildConnectivity(std::span<const std::array<uint32_t, 2>> edge_pairs, uint32_t vertex_count, const ConnectivityStorage &storage) {
     auto outgoing = storage.OutgoingHalfedges.first(vertex_count);
     std::ranges::fill(outgoing, he::HH{});
     const auto halfedge_count = uint32_t(edge_pairs.size()) * 2u;
     auto opposites = storage.Opposites.first(halfedge_count);
-    std::vector<he::HH> edges(edge_pairs.size());
-
     for (uint32_t e = 0; e < edge_pairs.size(); ++e) {
         const auto [a, b] = edge_pairs[e];
         const auto h0 = he::HH(e * 2u), h1 = he::HH(e * 2u + 1u);
         opposites[*h0] = h1;
         opposites[*h1] = h0;
-        edges[e] = h0;
+        storage.Edges[e] = h0;
+        storage.HalfedgeToEdge[*h0] = storage.HalfedgeToEdge[*h1] = he::EH(e);
         if (!outgoing[a]) outgoing[a] = h0;
         if (!outgoing[b]) outgoing[b] = h1;
     }
-    BuildEdgeRanks(storage, halfedge_count, edges);
-    return {uint32_t(edges.size()), {}, {}};
+    return uint32_t(edge_pairs.size());
 }
 
 Mesh::Mesh(const MeshStore &store, uint32_t store_id)

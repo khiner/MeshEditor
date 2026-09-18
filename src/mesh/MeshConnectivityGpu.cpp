@@ -2,163 +2,156 @@
 
 #include "Profile.h"
 #include "gpu/MeshConnectivityJob.h"
-#include "gpu/MeshConnectivityPushConstants.h"
-#include "mesh/MeshData.h"
+#include "gpu/TiledJobPushConstants.h"
+#include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/ScratchChunks.h"
 #include "mesh/TiledJobBatch.h"
-
 #include "state/Scene.h"
 
-#include <cstdlib>
-#include <print>
+#include <algorithm>
+#include <bit>
 
 namespace {
-// A submit's scratch stays under this, so a batch of large meshes splits across submits.
+// A chunk's scratch stays under this, so a batch of large meshes splits across chunks, each over its own buffers.
 constexpr uint32_t ScratchWordBudget{96u << 20};
 
-enum Domain : uint32_t { Vertices,
+enum Domain : uint32_t { Init,
                          Halfedges,
-                         Blocks,
-                         Words,
                          WordBlocks,
                          DomainCount };
 using Batch = TiledJobBatch<MeshConnectivityJob, DomainCount>;
 
 constexpr std::array Passes{
-    TiledPass{MeshPass::ConnectivityZero, Vertices},
-    TiledPass{MeshPass::ConnectivityCount, Halfedges},
-    TiledPass{MeshPass::ConnectivityBlockSum, Blocks},
-    TiledPass{MeshPass::ConnectivityBlockPrefix, PerJob},
-    TiledPass{MeshPass::ConnectivityOffsets, Blocks},
-    TiledPass{MeshPass::ConnectivityScatter, Halfedges},
-    TiledPass{MeshPass::ConnectivityPair, Vertices},
-    TiledPass{MeshPass::ConnectivityBits, Words},
+    TiledPass{MeshPass::ConnectivityPrev, Halfedges},
+    TiledPass{MeshPass::ConnectivityInit, Init},
+    TiledPass{MeshPass::ConnectivityInsert, Halfedges},
+    TiledPass{MeshPass::ConnectivityResolve, Halfedges},
+    TiledPass{MeshPass::ConnectivityLink, Halfedges},
     TiledPass{MeshPass::ConnectivityWordBlockSum, WordBlocks},
     TiledPass{MeshPass::ConnectivityWordBlockPrefix, PerJob},
     TiledPass{MeshPass::ConnectivityRanks, WordBlocks},
-    // The samples run one thread per edge-first word, which the word tiles already cover.
-    TiledPass{MeshPass::ConnectivitySamples, Words},
+    TiledPass{MeshPass::ConnectivityEdgeTables, Halfedges},
 };
 
-// Returns scratch words for bucketed halfedges, scan intermediates, and state.
-uint32_t ScratchWords(uint32_t vertex_count, uint32_t halfedge_count) {
+// Probing stays short at a load factor below three quarters.
+uint32_t TableSize(uint32_t halfedge_count) { return std::bit_ceil(halfedge_count + halfedge_count / 2u + 1u); }
+
+// Returns scratch words for the edge table, representatives, partners, the rank scan, state, edge-first bits and ranks, and staged predecessors.
+uint32_t ScratchWords(uint32_t halfedge_count, bool face_starts) {
     const uint32_t words = BitWords(halfedge_count);
-    return 2 * (vertex_count + 1) + halfedge_count + words + 1 +
-        TileCount(vertex_count + 1, BlockElements) + TileCount(words + 1, BlockElements) + 2;
+    return TableSize(halfedge_count) + 2 * halfedge_count + words + 1 + TileCount(words + 1, BlockElements) + 1 +
+        2 * words + (face_starts ? halfedge_count : 0u);
 }
 
-void SubmitChunk(state::Scene &r, std::span<const ConnectivityTarget> chunk, Batch &batch, std::vector<ConnectivityTarget> &rejected) {
+void EncodeChunk(state::Scene &r, std::span<const uint32_t> chunk, Batch &batch, MTL::ComputeCommandEncoder *encoder) {
     auto &meshes = r.ctx().get<MeshStore>();
     const auto &arenas = meshes.Arenas();
     batch.Begin();
-    for (const auto &target : chunk) {
-        meshes.CaptureConnectivityWrite(target.StoreId);
-        const auto &record = meshes.Get(target.StoreId);
+    for (const auto id : chunk) {
+        meshes.CaptureConnectivityWrite(id);
+        const auto &record = meshes.Get(id);
         const auto corners = arenas.FaceCorners.Slotted(record.FaceCorners);
         const auto run = arenas.Connectivity.Slotted(record.Connectivity);
         const uint32_t vertex_count = record.Vertices.Count;
         const uint32_t halfedge_count = corners.Count, words = BitWords(halfedge_count);
-        const uint32_t buckets = vertex_count + 1;
-        const uint32_t block_count = TileCount(buckets, BlockElements), word_block_count = TileCount(words + 1, BlockElements);
+        const uint32_t table_size = TableSize(halfedge_count), word_block_count = TileCount(words + 1, BlockElements);
         // The scratch runs follow the order ScratchWords sizes them in.
-        const uint32_t counts_offset = batch.AllocateScratch(ScratchWords(vertex_count, halfedge_count));
-        const uint32_t cursors_offset = counts_offset + buckets;
-        const uint32_t items_offset = cursors_offset + buckets;
-        const uint32_t block_offset = items_offset + halfedge_count;
-        const uint32_t popcount_offset = block_offset + block_count;
+        const uint32_t table_offset = batch.AllocateScratch(ScratchWords(halfedge_count, record.ConnectivityFaceStarts));
+        const uint32_t rep_offset = table_offset + table_size;
+        const uint32_t partner_offset = rep_offset + halfedge_count;
+        const uint32_t popcount_offset = partner_offset + halfedge_count;
         const uint32_t word_block_offset = popcount_offset + words + 1;
+        const uint32_t state_offset = word_block_offset + word_block_count;
+        const uint32_t bits_offset = state_offset + 1;
         batch.AddJob(
             MeshConnectivityJob{
                 .Corners = {corners.Slot, corners.Offset},
                 .Connectivity = {run.Slot, run.Offset},
                 .VertexCount = vertex_count,
                 .HalfedgeCount = halfedge_count,
+                .FaceCount = record.ConnectivityFaces,
+                .FaceStarts = record.ConnectivityFaceStarts ? 1u : 0u,
                 .WordCount = words,
-                .CountsOffset = counts_offset,
-                .CursorsOffset = cursors_offset,
-                .ItemsOffset = items_offset,
-                .BlockOffset = block_offset,
-                .BlockCount = block_count,
+                .TableOffset = table_offset,
+                .TableMask = table_size - 1,
+                .RepOffset = rep_offset,
+                .PartnerOffset = partner_offset,
                 .PopcountOffset = popcount_offset,
                 .WordBlockOffset = word_block_offset,
                 .WordBlockCount = word_block_count,
-                .StateOffset = word_block_offset + word_block_count,
+                .BitsOffset = bits_offset,
+                .RanksOffset = bits_offset + words,
+                .PrevOffset = record.ConnectivityFaceStarts ? bits_offset + 2 * words : InvalidOffset,
+                .StateOffset = state_offset,
             },
-            {TileCount(buckets, TileElements), TileCount(halfedge_count, TileElements), block_count, TileCount(words + 1, TileElements), word_block_count}
+            {TileCount(std::max({table_size, halfedge_count, vertex_count}), TileElements), TileCount(halfedge_count, TileElements), word_block_count}
         );
     }
-    batch.Submit(r.ctx().get<const mtl::Context>(), r.ctx().get<const mtl::BindlessSet>(), GetMeshPipelines(r), MeshConnectivityPushConstants{}, Passes);
+    batch.Encode(r.ctx().get<const mtl::BindlessSet>(), GetMeshPipelines(r), TiledJobPushConstants{}, Passes, encoder);
+}
 
-    const auto scratch = batch.ScratchSpan();
-    // MESHEDITOR_CONNECTIVITY_CHECK builds every mesh on the CPU too and reports the first difference.
-    static const bool check = std::getenv("MESHEDITOR_CONNECTIVITY_CHECK") != nullptr;
-    if (check) {
-        for (uint32_t i = 0; i < chunk.size(); ++i) {
-            const auto &job = batch.Jobs[i];
-            if (scratch[job.StateOffset + 1] != 0) continue;
-            const auto words = BitWords(job.HalfedgeCount);
-            std::vector<he::HH> outgoing(job.VertexCount), opposites(job.HalfedgeCount);
-            std::vector<uint32_t> bits(words), ranks(words), samples(words);
-            const ConnectivityStorage host{.OutgoingHalfedges = outgoing, .Opposites = opposites, .EdgeFirstBits = bits, .EdgeFirstRanks = ranks, .EdgeSamples = samples};
-            const auto built = BuildConnectivity(chunk[i].Data->FaceOffsets, arenas.FaceCorners.Get(meshes.Get(chunk[i].StoreId).FaceCorners), job.VertexCount, host);
-            const auto gpu = meshes.GetConnectivity(chunk[i].StoreId);
-            const auto report = [&](std::string_view what, uint32_t at, uint32_t got, uint32_t wanted) {
-                std::println(stderr, "Connectivity: mesh {} {} {} is {} against {}", i, what, at, got, wanted);
-            };
-            if (scratch[job.StateOffset] != built.EdgeCount) report("edge count", 0, scratch[job.StateOffset], built.EdgeCount);
-            for (uint32_t h = 0; h < job.HalfedgeCount; ++h) {
-                if (*gpu.Opposites[h] == *opposites[h]) continue;
-                report("opposite of", h, *gpu.Opposites[h], *opposites[h]);
-                break;
-            }
-            for (uint32_t v = 0; v < job.VertexCount; ++v) {
-                if (*gpu.OutgoingHalfedges[v] == *outgoing[v]) continue;
-                report("outgoing of", v, *gpu.OutgoingHalfedges[v], *outgoing[v]);
-                break;
-            }
-            for (uint32_t w = 0; w < words; ++w) {
-                if (gpu.EdgeFirstBits[w] == bits[w] && gpu.EdgeFirstRanks[w] == ranks[w]) continue;
-                report("edge word", w, gpu.EdgeFirstBits[w], bits[w]);
-                break;
-            }
-            for (uint32_t sample = 0; sample < gpu.EdgeSamples.size(); ++sample) {
-                if (gpu.EdgeSamples[sample] == samples[sample]) continue;
-                report("edge sample", sample, gpu.EdgeSamples[sample], samples[sample]);
-                break;
-            }
-        }
-    }
+uint32_t ScratchWords(const MeshStore &meshes, uint32_t id) {
+    const auto &record = meshes.Get(id);
+    return ScratchWords(record.FaceCorners.Count, record.ConnectivityFaceStarts);
+}
 
-    for (uint32_t i = 0; i < chunk.size(); ++i) {
-        // A mesh with a third halfedge on an edge goes back to the store, whose build has tables for it.
-        const auto state = batch.Jobs[i].StateOffset;
-        if (scratch[state + 1] != 0) rejected.emplace_back(chunk[i]);
-        else meshes.SetConnectivityEdgeCount(chunk[i].StoreId, scratch[state]);
-    }
+ScratchChunks Split(const MeshStore &meshes, std::span<const uint32_t> store_ids) {
+    return ChunkByScratch(uint32_t(store_ids.size()), ScratchWordBudget, [&](uint32_t i) { return ScratchWords(meshes, store_ids[i]); });
 }
 } // namespace
 
-std::vector<ConnectivityTarget> BuildConnectivityNow(state::Scene &r, std::span<const ConnectivityTarget> targets) {
-    auto &meshes = r.ctx().get<MeshStore>();
-    std::vector<ConnectivityTarget> work, rejected;
-    for (const auto &target : targets) {
-        const uint32_t faces = target.Data->FaceCount(), corners = meshes.Get(target.StoreId).FaceCorners.Count;
-        // The passes read a halfedge's face loop arithmetically, which only a triangle mesh allows.
-        if (faces > 0 && corners == 3 * faces) work.emplace_back(target);
-        else rejected.emplace_back(target);
-    }
-    if (work.empty()) return rejected;
+// One batch per scratch chunk, each over its own scratch, job, and tile buffers so every chunk sits in one command buffer.
+// Ids run in encode order, and each batch's jobs take the next run of them.
+struct PendingConnectivity::Batches {
+    std::vector<Batch> Chunks;
+    std::vector<uint32_t> Ids;
+};
 
-    const profile::CpuScope scope{"ConnectivityGpu"};
-    const auto split = ChunkByScratch(uint32_t(work.size()), ScratchWordBudget, [&](uint32_t i) {
-        const auto &record = meshes.Get(work[i].StoreId);
-        return ScratchWords(record.Vertices.Count, record.FaceCorners.Count);
-    });
-    // Every chunk writes over the same buffers, so a many-mesh batch takes no fresh allocation per submit.
-    Batch batch{meshes.BufferContext(), split.WidestWords, split.MostJobs};
+PendingConnectivity::PendingConnectivity() : Chunks{std::make_unique<Batches>()} {}
+PendingConnectivity::PendingConnectivity(PendingConnectivity &&) noexcept = default;
+PendingConnectivity::~PendingConnectivity() = default;
+
+PendingConnectivity EncodeConnectivity(state::Scene &r, std::span<const uint32_t> store_ids, MTL::ComputeCommandEncoder *encoder) {
+    PendingConnectivity pending;
+    if (store_ids.empty()) return pending;
+    auto &meshes = r.ctx().get<MeshStore>();
+    const auto split = Split(meshes, store_ids);
+    auto &batches = *pending.Chunks;
+    batches.Ids.assign(store_ids.begin(), store_ids.end());
+    batches.Chunks.reserve(split.Chunks.size());
     for (const auto chunk : split.Chunks) {
-        SubmitChunk(r, std::span{work}.subspan(chunk.Offset, chunk.Count), batch, rejected);
+        uint32_t words = 0;
+        for (uint32_t i = chunk.Offset; i < chunk.Offset + chunk.Count; ++i) words += ScratchWords(meshes, store_ids[i]);
+        EncodeChunk(r, store_ids.subspan(chunk.Offset, chunk.Count), batches.Chunks.emplace_back(meshes.BufferContext(), words, chunk.Count), encoder);
     }
-    return rejected;
+    return pending;
+}
+
+void FinishConnectivity(state::Scene &r, PendingConnectivity &pending) {
+    auto &meshes = r.ctx().get<MeshStore>();
+    const auto &batches = *pending.Chunks;
+    uint32_t next = 0;
+    for (const auto &batch : batches.Chunks) {
+        const auto scratch = batch.ScratchSpan();
+        for (const auto &job : batch.Jobs) meshes.FinishConnectivity(batches.Ids[next++], scratch[job.StateOffset]);
+    }
+}
+
+void BuildConnectivityNow(state::Scene &r, std::span<const uint32_t> store_ids) {
+    if (store_ids.empty()) return;
+    const profile::CpuScope scope{"ConnectivityGpu"};
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    // One chunk per command buffer, so a load holds one chunk's scratch at a time.
+    for (const auto chunk : Split(r.ctx().get<const MeshStore>(), store_ids).Chunks) {
+        auto *command_buffer = ctx.Queue->commandBuffer();
+        auto *encoder = command_buffer->computeCommandEncoder();
+        auto pending = EncodeConnectivity(r, store_ids.subspan(chunk.Offset, chunk.Count), encoder);
+        encoder->endEncoding();
+        // The chunk's buffers are allocated during encoding, so residency commits after it.
+        ctx.CommitResidency();
+        command_buffer->commit();
+        command_buffer->waitUntilCompleted();
+        FinishConnectivity(r, pending);
+    }
 }

@@ -528,15 +528,11 @@ std::vector<EditSelectionPushConstants> BuildSelectionTransactions(
         const auto &derived = meshes.GetDerived(store_id);
         const auto &arenas = meshes.Arenas();
         const auto corners = arenas.FaceCorners.Slotted(record.FaceCorners);
-        auto halfedge_to_edge = arenas.Connectivity.Slotted(record.ConnectivityHalfedgeToEdge);
-        if (halfedge_to_edge.Count == 0) halfedge_to_edge.Offset = InvalidOffset;
         result.emplace_back(EditSelectionPushConstants{
             .Selection = meshes.GetEditSelectionStorage(store_id),
             .EdgeIndices = mesh_buffers.EdgeIndices,
             .Corners = corners,
             .Connectivity = arenas.Connectivity.Slotted(record.Connectivity),
-            .HalfedgeToEdge = halfedge_to_edge,
-            .EdgeHalfedges = arenas.Connectivity.Slotted(record.ConnectivityEdges),
             .Vertices = arenas.Vertices.Slotted(record.Vertices),
             .VertexFanAdjacencyOffset = OffsetOrInvalid(derived.VertexFanAdjacency),
             .VertexEdgeAdjacencyOffset = OffsetOrInvalid(derived.VertexEdgeAdjacency),
@@ -692,7 +688,6 @@ void ApplyEditSharpness(
             .FaceSharpness = arenas.FaceSharpness.Slotted(record.FaceData),
             .EdgeSharpness = arenas.EdgeSharpness.Slotted(record.EdgeSharpness),
             .Connectivity = arenas.Connectivity.Slotted(record.Connectivity),
-            .EdgeHalfedges = arenas.Connectivity.Slotted(record.ConnectivityEdges),
             .EdgeIndices = r.get<const MeshBuffers>(mesh_entity).EdgeIndices,
             .FaceNormals = arenas.BaseFaceNormals.Slotted(record.FaceData),
             .VertexCount = mesh.VertexCount(),

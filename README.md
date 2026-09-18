@@ -19,6 +19,13 @@ Real-time mesh viewer and editor supporting conversion of meshes to rigid body a
   - Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
   - Load `.obj` and `.ply` mesh files (via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply))
 * Select meshes, vertices, edges, or faces by clicking or box selection, through geometry with Blender's X-ray toggle (Alt+Z)
+* Blender-style edit-mode topology operators, each run on the GPU as a transform from the source mesh and its selection to a new mesh
+  - Delete (X), dissolve (Ctrl+X), merge (M), extrude (E), duplicate (Shift+D), split (Y), separate (P), fill (F), triangulate (Ctrl+T), tris to quads (Alt+J), loop cut (Ctrl+R), and rip (V)
+  - Mouse-sized inset (I), bevel edges (Ctrl+B) and vertices (Ctrl+Shift+B) with wheel or -/= segments, and knife cuts (K)
+  - Right-click, Ctrl+V, Ctrl+E, and Ctrl+F menus list the rest: subdivide, poke, edge split, rotate edge, bridge edge loops, grid fill, fill holes, solidify, connect vertex path, flip normals, spin, extrude repeat, bisect, symmetrize, convex hull, and the clean-up dissolves
+  - A last-operation panel edits the operator's parameters in place, previewing live and replacing its history node
+  - Extrude, duplicate, and rip commit with their placement drag as one history node, and cancelling the drag cancels the operator
+  - Not ported: wire edges (extruding lone vertices and ripping edges without faces), un-subdivide, decimate, wireframe, boolean, and intersect. Merges keep doubled faces, bevel vertices use one segment, and grid fill spans one loop
 * Flat/smooth/wireframe mesh rendering
 * Translate, rotate, and nonuniformly scale meshes and instances with numeric inputs or a Blender-style transform gizmo
 * Edit the camera with the mouse wheel, numeric inputs, or a Blender-style orientation gizmo
@@ -141,7 +148,7 @@ $ git clone --recurse-submodules git@github.com:khiner/MeshEditor.git
 $ cd MeshEditor
 $ ./script/Clean # optionally clean first
 $ ./script/Build [--release]
-$ cd build && ./MeshEditor [file|--empty] [--quiet|-q] [--headless] [--play [seconds]] [--record path.mp4 [--fps N]] [--screenshot path.webp] [--render basename]
+$ cd build && ./MeshEditor [file|--empty] [options]
 ```
 
 * Open a project directory at its last saved position and layout, retaining the full working history, including edits made after Save.
@@ -159,7 +166,7 @@ $ cd build && ./MeshEditor [file|--empty] [--quiet|-q] [--headless] [--play [sec
 All of `--play`, `--record`, and `--screenshot` use the presentation look with material preview shading and hidden overlays. `--play` and `--record` run animation and physics; `--screenshot` captures the first frame.
 
 * `--play [seconds]` starts playback. Optional `[seconds]` auto-exits after the given duration. See `--record` below for how the duration is interpreted.
-* `--record path.mp4` runs playback and writes the viewport as an H.264 `.mp4` via a `ffmpeg` subprocess (must be on `PATH`).
+* `--record path.mp4` runs playback and writes the viewport as an H.264 `.mp4` via a `ffmpeg` subprocess (must be on `PATH`). A `.wav` path records the master audio output alone, and `--record-audio` muxes it into the video.
 When a look-through camera is active, only the camera-frame sub-rect (the area inside the dimmed overlay) is recorded. Otherwise the full viewport is recorded.
 * Motion blur uses fast velocity reconstruction by default. Choose **Full sampling** in the viewport controls, or `--motion-blur N` (1–64), to average complete shutter renders for changing visibility, reflections, and lighting. `--motion-blur fast` selects the default method. Both methods share the shutter setting and keep editor overlays sharp.
 * `--fps N` sets the recording framerate (default 60).
@@ -167,6 +174,22 @@ When a look-through camera is active, only the camera-frame sub-rect (the area i
 * `--render basename` writes the scene's corpus artifacts under `basename.*` (used by `./script/Render` — see [Render corpus](#render-corpus)).
 * `--render-queue dir` renders one scene per `dir/*.job` file (output basename followed by one command-line argument per line) in a single headless process, and parallel workers can safely share one queue. Used by `./script/Render`; capture settings are parsed the same way as direct launches.
 * `--headless` runs without a window: the viewport renders offscreen at a fixed 1280x800 (2x pixel density) extent, and any capture flags read it back. Without a capture flag it renders one frame and exits, and a duration-less `--play` exits after one timeline loop. With `MESHEDITOR_VALIDATE_ACTIONS` enabled, replay and snapshot validation also compare the complete UI rendered offscreen.
+* `--timeline-end seconds` sets the timeline's end so a long play runs without looping.
+* `--frames N` renders N frames and exits.
+
+View setup, applied after the scene loads:
+
+* `--camera name` frames the named camera.
+* `--shading wireframe|solid|preview|rendered` sets the viewport shading mode, and `--xray` turns on X-ray for it.
+* `--overlays` draws the editor overlays, which the capture flags otherwise hide.
+* `--display list` turns on display options by comma-separated name: `vertex-normals`, `face-normals`, `bounds`, `tet-wireframe`.
+* `--edit vertex|edge|face` enters edit mode on the selected meshes, and `--select-all` selects all objects, or all elements in edit mode.
+* `--lod-error pixels` sets the screen-space error budget of the cluster LOD cut.
+
+Profiling, used by `script/Bench`:
+
+* `--profile` prints the profile report on exit, and `--profile-json path` writes it to a file.
+* `--bench-action steady|orbit|transform|visibility|box-select|box-select-orbit|pick-cycle` drives the named interaction every frame, and `--bench-action-count N` caps how many objects the transform and visibility actions touch (default 64).
 
 The flags can be combined freely, except `--render` excludes `--record` and `--screenshot` (it derives its own outputs). `--render --play N` caps the video at N seconds.
 

@@ -23,7 +23,6 @@ struct MeshRecord {
     uint32_t VertexEdgeAdjacencyOffset DEFAULT(InvalidOffset);
     uint32_t VertexFanAdjacencyOffset DEFAULT(InvalidOffset);
     SlotOffset Connectivity DEFAULT();
-    SlotOffset EdgeHalfedges DEFAULT();
     uint32_t HalfedgeCount DEFAULT();
     uint32_t FaceCount DEFAULT();
     uint32_t ConnectivityFaceStarts DEFAULT();
@@ -35,4 +34,4 @@ struct MeshRecord {
     uint32_t PrimitiveMaterialOffset DEFAULT(InvalidOffset);
     uint32_t ElementPrimitiveOffset DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(MeshRecord) == 136, "MeshRecord size");
+static_assert(sizeof(MeshRecord) == 128, "MeshRecord size");

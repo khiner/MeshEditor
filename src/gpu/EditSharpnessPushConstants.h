@@ -11,7 +11,6 @@ struct EditSharpnessPushConstants {
     SlotOffset FaceSharpness DEFAULT();
     SlotOffset EdgeSharpness DEFAULT();
     SlotOffset Connectivity DEFAULT();
-    SlotOffset EdgeHalfedges DEFAULT();
     SlotOffset EdgeIndices DEFAULT();
     SlotOffset FaceNormals DEFAULT();
     uint32_t VertexCount DEFAULT();
@@ -23,4 +22,4 @@ struct EditSharpnessPushConstants {
     uint32_t Value DEFAULT();
     float CosAngle DEFAULT();
 };
-static_assert(sizeof(EditSharpnessPushConstants) == 104, "EditSharpnessPushConstants size");
+static_assert(sizeof(EditSharpnessPushConstants) == 96, "EditSharpnessPushConstants size");

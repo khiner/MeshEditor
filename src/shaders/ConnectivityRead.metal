@@ -9,32 +9,41 @@ inline uint ConnectivityPrevious(uint h) {
     return first + (h - first + 2u) % 3u;
 }
 
-inline device const uint *ConnectivityOpposites(device const uint *connectivity, uint vertex_count) { return connectivity + vertex_count; }
+// A mesh's connectivity run: outgoing halfedges, opposites, each halfedge's edge, an n-gon mesh's face starts, then each edge's first halfedge.
+struct ConnectivityView {
+    device const uint *Run;
+    uint VertexCount, HalfedgeCount, FaceCount;
+    bool FaceStarts;
 
-inline device const uint *ConnectivityFaceStarts(
-    device const uint *connectivity, uint vertex_count, uint halfedge_count
-) { return ConnectivityOpposites(connectivity, vertex_count) + halfedge_count + 3u * ConnectivityWordCount(halfedge_count); }
+    device const uint *Opposites() const { return Run + VertexCount; }
+    device const uint *HalfedgeToEdge() const { return Opposites() + HalfedgeCount; }
+    device const uint *Starts() const { return HalfedgeToEdge() + HalfedgeCount; }
+    device const uint *Edges() const { return Starts() + (FaceStarts ? FaceCount : 0u); }
 
-inline uint2 ConnectivityFaceHalfedges(
-    device const uint *connectivity, uint vertex_count, uint halfedge_count, uint face_count, bool face_starts, uint face
-) {
-    if (!face_starts) return uint2(face * 3u, metal::min(face * 3u + 3u, halfedge_count));
-    device const uint *starts = ConnectivityFaceStarts(connectivity, vertex_count, halfedge_count);
-    return uint2(starts[face], face + 1u < face_count ? starts[face + 1u] : halfedge_count);
-}
+    uint Opposite(uint h) const { return Opposites()[h]; }
+    uint Edge(uint h) const { return HalfedgeToEdge()[h]; }
+    uint EdgeHalfedge(uint e) const { return Edges()[e]; }
+    bool EdgeFirst(uint h) const { return EdgeHalfedge(Edge(h)) == h; }
 
-inline uint ConnectivityHalfedgeFace(
-    device const uint *connectivity, uint vertex_count, uint halfedge_count, uint face_count, bool face_starts, uint halfedge
-) {
-    if (!face_starts) return halfedge / 3u;
-    device const uint *starts = ConnectivityFaceStarts(connectivity, vertex_count, halfedge_count);
-    uint lo = 0u, hi = face_count;
-    while (lo + 1u < hi) {
-        const uint mid = (lo + hi) >> 1u;
-        if (starts[mid] <= halfedge) lo = mid;
-        else hi = mid;
+    uint2 FaceHalfedges(uint f) const {
+        if (!FaceStarts) return uint2(f * 3u, metal::min(f * 3u + 3u, HalfedgeCount));
+        return uint2(Starts()[f], f + 1u < FaceCount ? Starts()[f + 1u] : HalfedgeCount);
     }
-    return lo;
-}
+    uint HalfedgeFace(uint h) const {
+        if (!FaceStarts) return h / 3u;
+        uint lo = 0u, hi = FaceCount;
+        while (lo + 1u < hi) {
+            const uint mid = (lo + hi) >> 1u;
+            if (Starts()[mid] <= h) lo = mid;
+            else hi = mid;
+        }
+        return lo;
+    }
+    uint Previous(uint h) const {
+        if (!FaceStarts) return ConnectivityPrevious(h);
+        const uint2 range = FaceHalfedges(HalfedgeFace(h));
+        return h == range.x ? range.y - 1u : h - 1u;
+    }
+};
 
 #endif

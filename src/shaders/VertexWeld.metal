@@ -5,7 +5,7 @@
 #include "Bindless.metal"
 #include "BlockScan.metal"
 #include "gpu/VertexWeldJob.h"
-#include "gpu/VertexWeldPushConstants.h"
+#include "gpu/TiledJobPushConstants.h"
 
 constant uint WeldEmptySlot = InvalidOffset;
 
@@ -16,7 +16,7 @@ constant uint WeldTangentWords = 3u;
 
 struct WeldContext {
     device const BindlessSet &B;
-    constant VertexWeldPushConstants &Pc;
+    constant TiledJobPushConstants &Pc;
 
     device const VertexWeldJob *Jobs() const { return BindlessBuffer(VertexWeldJob, B.Buffer, Pc.JobsSlot); }
     device const uint2 *Tiles() const { return BindlessBuffer(uint2, B.Buffer, Pc.TileMapSlot); }
@@ -122,7 +122,7 @@ inline void WeldMoveRecord(thread const WeldKeys &k, device uint *record, uint v
 kernel void VertexWeldTableInit(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant VertexWeldPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const WeldContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
@@ -135,7 +135,7 @@ kernel void VertexWeldTableInit(
 kernel void VertexWeldInsert(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant VertexWeldPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const WeldContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
@@ -162,7 +162,7 @@ kernel void VertexWeldInsert(
 kernel void VertexWeldMarkReps(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant VertexWeldPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const WeldContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
@@ -179,7 +179,7 @@ kernel void VertexWeldBlockSum(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant VertexWeldPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
+    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
     threadgroup uint *sums [[threadgroup(0)]]
 ) {
     const WeldContext ctx{bindless, pc};
@@ -195,7 +195,7 @@ kernel void VertexWeldBlockPrefix(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant VertexWeldPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
+    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
     threadgroup uint *sums [[threadgroup(0)]]
 ) {
     const WeldContext ctx{bindless, pc};
@@ -207,7 +207,7 @@ kernel void VertexWeldScan(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant VertexWeldPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
+    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
     threadgroup uint *sums [[threadgroup(0)]]
 ) {
     const WeldContext ctx{bindless, pc};
@@ -231,7 +231,7 @@ kernel void VertexWeldScan(
 kernel void VertexWeldEmit(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant VertexWeldPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const WeldContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
@@ -248,7 +248,7 @@ kernel void VertexWeldEmit(
 kernel void VertexWeldCompact(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant VertexWeldPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const WeldContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
@@ -267,7 +267,7 @@ kernel void VertexWeldCompact(
 kernel void VertexWeldWriteBack(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant VertexWeldPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const WeldContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
@@ -285,7 +285,7 @@ kernel void VertexWeldWriteBack(
 kernel void VertexWeldRemapCorners(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant VertexWeldPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const WeldContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);

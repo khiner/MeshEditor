@@ -44,33 +44,13 @@ struct EditSelectionContext {
 
     device const uint *EdgeIndices() const { return BindlessBuffer(uint, B.IndexBuffer, Pc.EdgeIndices.Slot) + Pc.EdgeIndices.Offset; }
     device const uint *Corners() const { return BindlessBuffer(uint, B.IndexBuffer, Pc.Corners.Slot) + Pc.Corners.Offset; }
-    device const uint *Connectivity() const { return BindlessBuffer(uint, B.Buffer, Pc.Connectivity.Slot) + Pc.Connectivity.Offset; }
+    ConnectivityView Connectivity() const {
+        return {BindlessBuffer(uint, B.Buffer, Pc.Connectivity.Slot) + Pc.Connectivity.Offset, Pc.VertexCount, Pc.HalfedgeCount, Pc.FaceCount, Pc.ConnectivityFaceStarts != 0u};
+    }
     device const uint *Adjacency() const { return BindlessBuffer(uint, B.Buffer, Pc.AdjacencySlot); }
     device const uchar *FaceSharpness() const { return BindlessBuffer(uchar, B.Buffer, Pc.FaceSharpness.Slot) + Pc.FaceSharpness.Offset; }
     device const uchar *EdgeSharpness() const { return BindlessBuffer(uchar, B.Buffer, Pc.EdgeSharpness.Slot) + Pc.EdgeSharpness.Offset; }
     device const Vertex *Vertices() const { return BindlessBuffer(Vertex, B.VertexBuffer, Pc.Vertices.Slot) + Pc.Vertices.Offset; }
-
-    device const uint *Opposites() const { return ConnectivityOpposites(Connectivity(), Pc.VertexCount); }
-    device const uint *EdgeFirstBits() const { return Opposites() + Pc.HalfedgeCount; }
-    device const uint *EdgeFirstRanks() const { return EdgeFirstBits() + ConnectivityWordCount(Pc.HalfedgeCount); }
-    device const uint *EdgeHalfedges() const { return BindlessBuffer(uint, B.Buffer, Pc.EdgeHalfedges.Slot) + Pc.EdgeHalfedges.Offset; }
-
-    uint2 FaceHalfedges(uint face) const {
-        return ConnectivityFaceHalfedges(Connectivity(), Pc.VertexCount, Pc.HalfedgeCount, Pc.FaceCount, Pc.ConnectivityFaceStarts != 0u, face);
-    }
-    uint HalfedgeFace(uint halfedge) const {
-        return ConnectivityHalfedgeFace(Connectivity(), Pc.VertexCount, Pc.HalfedgeCount, Pc.FaceCount, Pc.ConnectivityFaceStarts != 0u, halfedge);
-    }
-    uint HalfedgeEdge(uint halfedge) const {
-        if (Pc.HalfedgeToEdge.Offset != InvalidOffset) {
-            return BindlessBuffer(uint, B.Buffer, Pc.HalfedgeToEdge.Slot)[Pc.HalfedgeToEdge.Offset + halfedge];
-        }
-        const uint opposite = Opposites()[halfedge];
-        const uint first = opposite != InvalidOffset && opposite < halfedge ? opposite : halfedge;
-        const uint word = first >> 5u;
-        const uint preceding = (1u << (first & 31u)) - 1u;
-        return EdgeFirstRanks()[word] + popcount(EdgeFirstBits()[word] & preceding);
-    }
 
     bool VertexIncidentSelected(uint vertex_id, uint offset, uint item_mask) const {
         if (offset == InvalidOffset) return false;
@@ -91,10 +71,11 @@ struct EditSelectionContext {
     }
 
     bool EdgeAdjacentSelectedFace(uint edge) const {
-        const uint h = EdgeHalfedges()[edge];
-        if (SourceSelected(HalfedgeFace(h))) return true;
-        const uint opposite = Opposites()[h];
-        return opposite != InvalidOffset && SourceSelected(HalfedgeFace(opposite));
+        const auto conn = Connectivity();
+        const uint h = conn.EdgeHalfedge(edge);
+        if (SourceSelected(conn.HalfedgeFace(h))) return true;
+        const uint opposite = conn.Opposite(h);
+        return opposite != InvalidOffset && SourceSelected(conn.HalfedgeFace(opposite));
     }
     bool EdgeSelected(uint edge) const {
         if (Pc.Element == Element::Vertex) {
@@ -112,9 +93,10 @@ struct EditSelectionContext {
 
     bool FaceSelected(uint face) const {
         if (Pc.Element == Element::Face) return SourceSelected(face);
-        const uint2 halfedges = FaceHalfedges(face);
+        const auto conn = Connectivity();
+        const uint2 halfedges = conn.FaceHalfedges(face);
         for (uint h = halfedges.x; h < halfedges.y; ++h) {
-            const uint source = Pc.Element == Element::Vertex ? Corners()[h] : HalfedgeEdge(h);
+            const uint source = Pc.Element == Element::Vertex ? Corners()[h] : conn.Edge(h);
             if (!SourceSelected(source)) return false;
         }
         return true;

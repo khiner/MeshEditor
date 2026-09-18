@@ -42,22 +42,20 @@ inline uint EditVertexState(const thread Scene &scene, DrawData draw, uint verte
         (EditVertexTouchesActive(scene, draw, vertex_id, summary) ? STATE_ACTIVE : 0u);
 }
 
-inline uint EditHalfedgeFace(const thread Scene &scene, DrawData draw, uint halfedge) {
-    device const uint *connectivity = BindlessBuffer(uint, scene.B.Buffer, draw.Connectivity.Slot) + draw.Connectivity.Offset;
-    return ConnectivityHalfedgeFace(
-        connectivity, draw.VertexCountOrHeadImageSlot, draw.HalfedgeCount,
-        draw.FaceCount, draw.ConnectivityFaceStarts != 0u, halfedge
-    );
+inline ConnectivityView EditConnectivity(const thread Scene &scene, DrawData draw) {
+    return {
+        BindlessBuffer(uint, scene.B.Buffer, draw.Connectivity.Slot) + draw.Connectivity.Offset,
+        draw.VertexCountOrHeadImageSlot, draw.HalfedgeCount, draw.FaceCount, draw.ConnectivityFaceStarts != 0u
+    };
 }
 
 inline bool EditEdgeTouchesActiveFace(const thread Scene &scene, DrawData draw, uint edge, uint active_face) {
-    if (draw.Connectivity.Slot == InvalidSlot || draw.EdgeHalfedges.Slot == InvalidSlot) return false;
-    device const uint *connectivity = BindlessBuffer(uint, scene.B.Buffer, draw.Connectivity.Slot) + draw.Connectivity.Offset;
-    device const uint *opposites = ConnectivityOpposites(connectivity, draw.VertexCountOrHeadImageSlot);
-    const uint halfedge = BindlessBuffer(uint, scene.B.Buffer, draw.EdgeHalfedges.Slot)[draw.EdgeHalfedges.Offset + edge];
-    if (EditHalfedgeFace(scene, draw, halfedge) == active_face) return true;
-    const uint opposite = opposites[halfedge];
-    return opposite != InvalidOffset && EditHalfedgeFace(scene, draw, opposite) == active_face;
+    if (draw.Connectivity.Slot == InvalidSlot) return false;
+    const auto conn = EditConnectivity(scene, draw);
+    const uint halfedge = conn.EdgeHalfedge(edge);
+    if (conn.HalfedgeFace(halfedge) == active_face) return true;
+    const uint opposite = conn.Opposite(halfedge);
+    return opposite != InvalidOffset && conn.HalfedgeFace(opposite) == active_face;
 }
 
 inline uint EditEdgeEndpointState(const thread Scene &scene, DrawData draw, uint edge, uint vertex_id) {

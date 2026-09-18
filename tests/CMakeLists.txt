@@ -24,7 +24,6 @@ mesheditor_test(MeshEditorRbpBodyTest RbpBodyTest.cpp MeshEditorPhysics rbp)
 mesheditor_test(MeshEditorContactManifoldTest ContactManifoldTest.cpp MeshEditorPhysics rbp)
 mesheditor_test(MeshEditorClusterLodTest ClusterLodTest.cpp MeshEditorRender meshoptimizer)
 mesheditor_test(MeshEditorMeshBvhTest MeshBvhTest.cpp MeshEditorMesh)
-mesheditor_test(MeshEditorMeshConnectivityTest MeshConnectivityTest.cpp MeshEditorMesh)
 mesheditor_test(MeshEditorModalRenderTest ModalRenderTest.cpp MeshEditorAudio)
 mesheditor_test(MeshEditorContactModelTest ContactModelTest.cpp MeshEditorAudio)
 
@@ -57,3 +56,6 @@ target_compile_definitions(MeshEditorProjectTest PRIVATE
 rbp_copy_shaders(MeshEditorProjectTest)
 
 mesheditor_test(MeshEditorStateTest StateTest.cpp MeshEditorProjectStore)
+mesheditor_test(MeshEditorMeshTopologyTest MeshTopologyTest.cpp MeshEditorEditor)
+target_compile_definitions(MeshEditorMeshTopologyTest PRIVATE MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+rbp_copy_shaders(MeshEditorMeshTopologyTest)

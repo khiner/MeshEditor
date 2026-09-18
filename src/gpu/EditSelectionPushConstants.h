@@ -11,8 +11,6 @@ struct EditSelectionPushConstants {
     SlotOffset EdgeIndices DEFAULT();
     SlotOffset Corners DEFAULT();
     SlotOffset Connectivity DEFAULT();
-    SlotOffset HalfedgeToEdge DEFAULT();
-    SlotOffset EdgeHalfedges DEFAULT();
     SlotOffset Vertices DEFAULT();
     uint32_t VertexFanAdjacencyOffset DEFAULT(InvalidOffset);
     uint32_t VertexEdgeAdjacencyOffset DEFAULT(InvalidOffset);
@@ -32,4 +30,4 @@ struct EditSelectionPushConstants {
     uint32_t SelectionListCount DEFAULT();
     uint32_t PositionSumsSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(EditSelectionPushConstants) == 164, "EditSelectionPushConstants size");
+static_assert(sizeof(EditSelectionPushConstants) == 148, "EditSelectionPushConstants size");

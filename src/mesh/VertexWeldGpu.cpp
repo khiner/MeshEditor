@@ -1,8 +1,8 @@
 #include "mesh/VertexWeldGpu.h"
 
 #include "Profile.h"
+#include "gpu/TiledJobPushConstants.h"
 #include "gpu/VertexWeldJob.h"
-#include "gpu/VertexWeldPushConstants.h"
 #include "mesh/MeshData.h"
 #include "mesh/MeshStore.h"
 #include "mesh/ScratchChunks.h"
@@ -127,7 +127,7 @@ void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, Batch &batc
         const auto &deltas = *chunk[i].MorphTangentDeltas;
         std::memcpy(scratch.data() + batch.Jobs[i].TangentOffset, deltas.data(), deltas.size() * sizeof(vec3));
     }
-    batch.Submit(r.ctx().get<const mtl::Context>(), r.ctx().get<const mtl::BindlessSet>(), GetMeshPipelines(r), VertexWeldPushConstants{}, Passes);
+    batch.Submit(r.ctx().get<const mtl::Context>(), r.ctx().get<const mtl::BindlessSet>(), GetMeshPipelines(r), TiledJobPushConstants{}, Passes);
 
     for (uint32_t i = 0; i < chunk.size(); ++i) {
         const auto &job = batch.Jobs[i];

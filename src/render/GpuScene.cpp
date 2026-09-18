@@ -132,7 +132,6 @@ MeshRecord BuildMeshRecord(const GpuBuffers &buffers, const MeshBuffers &mb, con
         .VertexEdgeAdjacencyOffset = OffsetOrInvalid(derived.VertexEdgeAdjacency),
         .VertexFanAdjacencyOffset = OffsetOrInvalid(derived.VertexFanAdjacency),
         .Connectivity = arenas.Connectivity.Slotted(record.Connectivity),
-        .EdgeHalfedges = arenas.Connectivity.Slotted(record.ConnectivityEdges),
         .HalfedgeCount = record.FaceCorners.Count,
         .FaceCount = record.FaceData.Count,
         .ConnectivityFaceStarts = record.ConnectivityFaceStarts ? 1u : 0u,

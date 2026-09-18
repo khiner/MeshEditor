@@ -191,6 +191,7 @@ inline constexpr std::string_view SchemaNames[] = {
     "WorldTransform",
     "action::DragFieldStart",
     "action::Errors",
+    "action::mesh::LastOperation",
     "gltf::SourceAssets",
     "mtl::BindlessSet",
     "mtl::Context",

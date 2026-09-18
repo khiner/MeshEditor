@@ -81,6 +81,8 @@ struct MeshArenas {
     BufferArena<uint32_t> TetEdgeIndices; // Two indices per tet edge
     // Excitable vertex handles per sounding mesh, rebuilt from the sound model after serialization.
     BufferArena<uint32_t> SoundVertices;
+    // Transient index lists an operator reads during its run.
+    BufferArena<uint32_t> Lists;
     // Stores CSR offsets followed by items for vertex-triangle, vertex-edge, and corner-sector incidence.
     BufferArena<uint32_t> Adjacency;
     BufferArena<uint32_t> CornerClasses; // Per-corner CornerClass values, from the sharpness stores
@@ -112,10 +114,9 @@ void ForEachSelected(std::span<const uint32_t> bits, uint32_t count, auto &&fn) 
     }
 }
 
-// Returns true when triangle topology permits GPU vertex-fan construction.
-bool BuildsFanAdjacencyOnGpu(const Mesh &);
-// Returns true when triangle-manifold topology permits GPU vertex-edge construction.
-bool BuildsEdgeAdjacencyOnGpu(const Mesh &);
+// True when the mesh has faces.
+// A face mesh builds its fan and edge adjacency tables on the GPU.
+bool BuildsAdjacencyOnGpu(const Mesh &);
 
 // The corner normal a class value selects from the sources: the face normal, a seam sector normal, or the vertex normal.
 vec3 ComposeCornerNormal(std::span<const uint32_t> classes, CornerClass uniform_class, uint32_t ci, std::span<const uint32_t> indices, std::span<const uint32_t> face_ids, const CornerNormalSources &);
@@ -155,8 +156,7 @@ struct MeshStore {
         std::array<Range, 3> SelectionBits{}; // vertex, edge, face masks
         Range SelectionSummary{};
         // The mesh's half-edge connectivity, laid out in the order SliceConnectivity reads it.
-        // Only a non-manifold mesh keeps the edge list and the halfedge-to-edge map.
-        Range Connectivity{}, ConnectivityEdges{}, ConnectivityHalfedgeToEdge{};
+        Range Connectivity{};
         uint32_t ConnectivityVertices{}, ConnectivityHalfedges{}, ConnectivityEdgeCount{}, ConnectivityFaces{};
         bool ConnectivityFaceStarts{false}; // An n-gon mesh stores each face's first halfedge.
         Range PointNormals{};
@@ -181,6 +181,16 @@ struct MeshStore {
         bool MorphShadingAuthored{};
     };
 
+    // Output element counts of a topology operator.
+    struct TopologyCounts {
+        uint32_t Vertices, Halfedges, Faces;
+    };
+    // Acquires an output record with `source`'s metadata, its ranges allocated at the counts and captured for the GPU writes that fill them.
+    // Custom normals are allocated at the source's count until CompleteTopologyOutput trims them.
+    uint32_t BeginTopologyOutput(uint32_t source, const TopologyCounts &);
+    // Completes the output once its connectivity and edge attributes exist: trims edge and custom normal storage, derives primitive ranges, adjacency, and corner classes.
+    void CompleteTopologyOutput(uint32_t id, uint32_t custom_corner_normals);
+
     void Track(store::History &);
     void FinishRestore();
     std::vector<Change> TakeChanges();
@@ -203,11 +213,12 @@ struct MeshStore {
     void CreateDeformSource(uint32_t id, const std::optional<ArmatureDeformData> &, const std::optional<MorphTargetData> &);
     // Trims all vertex-domain arena ranges to `welded_vertices`.
     void ShrinkMeshSource(uint32_t id, uint32_t welded_vertices);
-    // Allocates connectivity storage from source counts in call order.
-    void AllocateConnectivity(uint32_t id, uint32_t vertex_count, uint32_t halfedge_count, uint32_t face_count, bool face_starts);
+    // Allocates connectivity storage from source counts in call order, with the edge list at its halfedge bound.
+    // `face_offsets` fills the face starts of a mesh whose faces are not all triangles, and is empty when a GPU pass writes them.
+    void AllocateConnectivity(uint32_t id, uint32_t vertex_count, uint32_t halfedge_count, uint32_t face_count, bool face_starts, std::span<const uint32_t> face_offsets = {});
     ConnectivityStorage GetConnectivityStorage(uint32_t id);
-    void PlaceConnectivity(uint32_t id, const BuiltConnectivity &);
-    void SetConnectivityEdgeCount(uint32_t id, uint32_t edge_count);
+    // Completes a build: records the edge count and trims the edge list to it.
+    void FinishConnectivity(uint32_t id, uint32_t edge_count);
     MeshConnectivity GetConnectivity(uint32_t id) const;
     // Completes the record created by CreateMeshSource: face tables, corner layers, primitive tables, smooth sharpness stores, and adjacency.
     void CreateMesh(uint32_t id, const MeshData &, const MeshVertexAttributes &, const MeshPrimitives &, const CornerLayers &, bool has_authored_normals);
@@ -242,6 +253,8 @@ struct MeshStore {
     void ReleaseTets(TetBuffers);
     Range AllocateSoundVertices(std::span<const uint32_t>);
     void ReleaseSoundVertices(Range);
+    Range AllocateList(std::span<const uint32_t>);
+    void ReleaseList(Range);
 
     // Allocates compact masks for every element domain, of which the GPU derives two from the authoritative domain.
     void EnsureSelectionBits(const Mesh &);
@@ -265,8 +278,6 @@ struct MeshStore {
     void UpdateCornerClassification(const Mesh &);
     // CSR vertex-to-edge incidence, edge items in edge order.
     VertexAdjacency GetVertexEdgeAdjacency(uint32_t id) const;
-    // Rebuild the mesh's CSR tables and report the first entry differing from the stored ones, or empty when they match.
-    std::string CheckVertexAdjacency(const Mesh &) const;
 
 private:
     MeshArenas Buffers;

@@ -1,5 +1,6 @@
 #include "CameraTypes.h"
 #include "action/Core.h"
+#include "action/Mesh.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
@@ -39,6 +40,6 @@ void RegisterViewport(Tables &tables) {
     Derived<
         EnabledInteractionModes, AdditiveBoxSelectBaseline, ExciteSelectionBaseline,
         PendingEditElementClick, PendingBoxSelect, PendingPick, BoxSelectState, RotationUiVariant, RotationUiDriving,
-        GizmoInteraction, PendingTransform, StartScreenTransform, StartTransform, StartBoneLength, action::DragFieldStart, VideoRecording>(tables);
+        GizmoInteraction, PendingTransform, StartScreenTransform, StartTransform, StartBoneLength, action::DragFieldStart, action::mesh::LastOperation, VideoRecording>(tables);
 }
 } // namespace snapshot::detail

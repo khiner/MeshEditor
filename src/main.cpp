@@ -58,6 +58,7 @@
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
 #include "selection/SelectionComponents.h"
+#include "ui/CtrlShortcut.h"
 #include "ui/MacBackend.h"
 #include "viewport/FrameState.h"
 #include "viewport/RenderExtent.h"
@@ -281,7 +282,7 @@ GltfSampleTrees BuildSampleTrees() {
 
 std::future<GltfSampleTrees> SampleTreesFuture;
 
-project::Project &Session(state::Scene &r) { return *r.ctx().get<project::Project *>(); }
+using project::Session;
 
 template<typename ActionType> void Perform(state::Scene &r, ActionType action) {
     Session(r).Do(action::MakeAction(std::move(action)));
@@ -1012,7 +1013,6 @@ Scene:
   --display LIST              Comma-separated: vertex-normals, face-normals, bounds, tet-wireframe
 
 Capture:
-  --capture-physics PATH       Capture physics replay and reference states during --play
   --screenshot PATH           Write one image and exit
   --record PATH               Record a video, or audio alone for a .wav path
   --record-audio              Record audio alongside the video
@@ -1027,8 +1027,7 @@ Benchmarking:
   --headless                  Run without a window
   --frames N                  Render N frames and exit
   --bench-action ACTION       steady | orbit | transform | visibility | box-select | box-select-orbit | pick-cycle
-  --bench-action-count N      Actions per benchmark run
-  --bench-box-inset PX        Inset of the benchmark box select from the viewport edge (default 4)
+  --bench-action-count N      Objects the transform and visibility actions touch (default 64)
   --profile                   Print the profile report on exit
   --profile-json PATH         Write the profile report to PATH
 
@@ -1053,11 +1052,9 @@ struct CaptureRequest {
     bool RecordAudio{false}; // Mux the master output into the recording. Off so the render corpus stays video only.
     fs::path RecordPath{}, ScreenshotPath{};
     fs::path RenderBasename{};
-    fs::path PhysicsCapturePath{};
     std::optional<MotionBlur> Blur{};
     float TimelineEnd{0}; // Seconds. Positive: set the timeline's end frame, so a long play runs without looping.
     int BenchFrames{0};
-    uint32_t BenchBoxInset{4};
     BenchmarkAction BenchAction{BenchmarkAction::Steady};
     uint32_t BenchActionCount{64};
     std::string CameraName{};
@@ -1073,11 +1070,10 @@ struct CaptureRequest {
 
 struct BenchmarkDriver {
     CaptureRequest::BenchmarkAction Action;
-    uint32_t BoxInset;
     std::vector<std::pair<state::Entity, Transform>> Transforms;
     uint32_t Frame{};
 
-    BenchmarkDriver(state::Scene &r, const CaptureRequest &capture) : Action(capture.BenchAction), BoxInset(capture.BenchBoxInset) {
+    BenchmarkDriver(state::Scene &r, const CaptureRequest &capture) : Action(capture.BenchAction) {
         if (Action != CaptureRequest::BenchmarkAction::Transform && Action != CaptureRequest::BenchmarkAction::Visibility) return;
         std::vector<state::Entity> entities;
         for (const auto [entity, kind] : r.view<const ObjectKind>(state::Exclude<SubElementOf>).each()) {
@@ -1117,7 +1113,8 @@ struct BenchmarkDriver {
                 [[fallthrough]];
             case CaptureRequest::BenchmarkAction::BoxSelect: {
                 if (extent == uvec2{}) break;
-                const uint32_t inset = BoxInset + (Frame % 2 == 0 ? 0u : 4u);
+                // The box alternates between two insets from the viewport edge so every frame changes the selection.
+                const uint32_t inset = Frame % 2 == 0 ? 4u : 8u;
                 action::Emit(action::selection::ApplyBoxSelect{
                     .BoxPx = {{inset, inset}, {extent.x - inset - 1, extent.y - inset - 1}},
                     .Additive = false,
@@ -1305,7 +1302,6 @@ CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const
         failed.SeedFailed = true;
         return failed;
     }
-    if (!capture.PhysicsCapturePath.empty()) physics::CaptureReplay(r, capture.PhysicsCapturePath);
     if (capture.EditMode) {
         std::vector<state::Entity> meshes;
         for (const auto [entity, kind, _] : r.view<const ObjectKind, const Instance>().each()) {
@@ -1384,6 +1380,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     io.IniFilename = nullptr;
     io.ConfigDebugIgnoreFocusLoss = true; // Keep input state across Cmd+Tab so in-flight gizmo drags survive focus loss.
     io.ConfigDragClickToInputText = true; // A click-release without dragging turns a Drag field into a text input.
+    // Ctrl+Tab toggles pose mode, so ImGui's window cycling on the same chord is off.
+    GetCurrentContext()->ConfigNavWindowingKeyNext = GetCurrentContext()->ConfigNavWindowingKeyPrev = 0;
 
     StyleColorsDark();
 
@@ -1582,8 +1580,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
         project::HandleHistoryShortcuts(Session(r));
         if (!GetIO().WantTextInput) {
-            if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) SaveProject(r, viewport);
-            if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) SaveProjectAs(r, viewport);
+            if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) SaveProject(r, viewport);
+            if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) SaveProjectAs(r, viewport);
         }
         if (auto action = HandleTimelineShortcuts(r.get<const TimelinePlayback>(viewport))) std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*action));
 
@@ -1918,13 +1916,11 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
                 }
             }
         } else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi((++it)->c_str());
-        else if (a == "--capture-physics" && std::next(it) != args.end()) capture.PhysicsCapturePath = (++it)->c_str();
         else if (a == "--timeline-end" && std::next(it) != args.end()) capture.TimelineEnd = std::atof((++it)->c_str());
         else if (a == "--motion-blur" && std::next(it) != args.end()) {
             const std::string_view method = *++it;
             capture.Blur = method == "fast" ? MotionBlur{} : MotionBlur{.Steps = uint8_t(std::clamp(std::atoi(method.data()), 1, 64)), .Method = MotionBlurMethod::FullSampling};
         } else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi((++it)->c_str());
-        else if (a == "--bench-box-inset" && std::next(it) != args.end()) capture.BenchBoxInset = uint32_t(std::atoi((++it)->c_str()));
         else if (a == "--bench-action" && std::next(it) != args.end()) {
             const std::string_view action{*++it};
             if (action == "steady") capture.BenchAction = CaptureRequest::BenchmarkAction::Steady;

@@ -459,19 +459,12 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             total_vertex += mesh.VertexCount();
         }
         buffers.ReserveAdditionalIndices(total_face, total_edge, total_vertex);
+        std::vector<ElementIndicesWork> work;
         for (auto entity : sync.NewMeshEntities) {
             const auto &mesh = GetMesh(r, entity);
-            r.patch<MeshBuffers>(entity, [&](auto &mb) {
-                if (DrawsStoredCorners(mesh)) {
-                    mb.FaceIndices = meshes.Arenas().FaceCorners.Slotted(meshes.Get(mesh.GetStoreId()).FaceCorners);
-                } else if (const auto tri_idx_count = mesh.TriangleIndexCount(); tri_idx_count > 0) {
-                    auto [sr, dest] = buffers.AllocateIndices(tri_idx_count, IndexKind::Face);
-                    mesh.WriteTriangleIndices(dest);
-                    mb.FaceIndices = sr;
-                }
-                if (NeedsElementIndices(mesh, overlay_indices)) WriteElementIndices(buffers, mesh, mb);
-            });
+            r.patch<MeshBuffers>(entity, [&](auto &mb) { WriteElementIndices(buffers, meshes, mesh, mb, overlay_indices, work); });
         }
+        WriteElementIndicesNow(r, work);
         // Fill adjacency tables before normal derivation reads the vertex-fan CSR.
         BuildVertexAdjacencyNow(r, sync.NewMeshEntities);
         // Derive shading state for all new and restored meshes in one batch.
@@ -667,10 +660,12 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             }
             if (total_edge > 0 || total_vertex > 0) {
                 buffers.ReserveAdditionalIndices(0, total_edge, total_vertex);
+                std::vector<ElementIndicesWork> work;
                 for (const auto entity : r.view<const MeshBuffers, const MeshHandle>() | to<std::vector>()) {
                     const auto &mesh = GetMesh(r, entity);
-                    r.patch<MeshBuffers>(entity, [&](auto &mb) { WriteElementIndices(buffers, mesh, mb); });
+                    r.patch<MeshBuffers>(entity, [&](auto &mb) { WriteElementIndices(buffers, meshes, mesh, mb, true, work); });
                 }
+                WriteElementIndicesNow(r, work);
                 request(RenderRequest::Rebuild);
             }
         }
@@ -835,26 +830,31 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         // Vertex-arena positions feed the pose pre-pass, so geometry edits re-run the prelude.
         if (std::ranges::any_of(tracker, [&](auto e) { return r.all_of<MeshGeometryDirty>(e); })) buffers.PreludeStale = true;
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
-        std::vector<ElementRange> geometry_ranges;
+        std::vector<ElementRange> reset_ranges, carried_ranges;
         // Rebuild edited meshlets before rendering the same frame.
-        std::vector<state::Entity> edited;
+        std::vector<state::Entity> edited, rebuilt;
         for (auto e : tracker)
             if (r.all_of<MeshGeometryDirty>(e)) edited.push_back(e);
-        BuildMeshletsNow(r, edited);
+        // A new mesh's meshlets were built above.
+        for (auto e : edited)
+            if (std::ranges::find(sync.NewMeshEntities, e) == sync.NewMeshEntities.end()) rebuilt.push_back(e);
+        BuildMeshletsNow(r, rebuilt);
         for (auto mesh_entity : edited) {
             // Rebuild existing closest-point hierarchies after geometry edits.
             if (r.all_of<MeshBvh>(mesh_entity)) UpdateMeshBvh(r, mesh_entity);
-            if (r.all_of<MeshElementSelection>(mesh_entity) && r.get<const MeshGeometryDirty>(mesh_entity).ResetSelection) {
-                // Topology changed: resize the bits to cover the new element counts and drop the stale selection.
-                const auto mesh = GetMesh(r, mesh_entity);
-                meshes.EnsureSelectionBits(mesh);
-                const auto id = mesh.GetStoreId();
-                if (const uint32_t count = mesh.ElementCount(edit_mode); count > 0) {
-                    geometry_ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, edit_mode), count);
-                }
-            }
+            const auto selection_after = r.get<const MeshGeometryDirty>(mesh_entity).Selection;
+            if (selection_after == EditSelectionAfter::Keep || !r.all_of<MeshElementSelection>(mesh_entity) || edit_mode == Element::None) continue;
+            // Topology changed: size the bits to the new element counts, then drop a stale selection or derive a carried one.
+            const auto mesh = GetMesh(r, mesh_entity);
+            meshes.EnsureSelectionBits(mesh);
+            const auto id = mesh.GetStoreId();
+            const uint32_t count = mesh.ElementCount(edit_mode);
+            if (count == 0) continue;
+            auto &ranges = selection_after == EditSelectionAfter::Reset ? reset_ranges : carried_ranges;
+            ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, edit_mode), count);
         }
-        if (!geometry_ranges.empty()) ApplyEditSelectionCommand(r, geometry_ranges, edit_mode, EditSelectionOperation::Clear);
+        if (!reset_ranges.empty()) ApplyEditSelectionCommand(r, reset_ranges, edit_mode, EditSelectionOperation::Clear);
+        if (!carried_ranges.empty()) ApplyEditSelectionCommand(r, carried_ranges, edit_mode, EditSelectionOperation::Derive);
         request(RenderRequest::Reuse);
     }
     if (auto &tracker = reactive(r, Change::MeshMaterial); !tracker.empty()) {

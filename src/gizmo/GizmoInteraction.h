@@ -58,6 +58,8 @@ struct GizmoInteraction {
     std::optional<TransformGizmo::Interaction> Current;
     std::optional<TransformGizmo::StartContext> Start;
     TransformGizmo::NumericInput NumInput;
+    // Set when Escape ends a drag, and cleared by the overlay that cancels the gesture.
+    bool Cancelled{false};
 
     // Interact writes these fields for Render and Render clears RenderTransform.
     std::optional<GizmoTransform> RenderTransform;

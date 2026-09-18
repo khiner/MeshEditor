@@ -20,18 +20,12 @@ struct AdjacencyContext {
     device atomic_uint *AtomicScratch() const { return BindlessBufferMutable(atomic_uint, B.Buffer, Pc.ScratchSlot); }
     device uint *Csr() const { return BindlessBufferMutable(uint, B.Buffer, Pc.AdjacencySlot); }
     device const uint *Corners(VertexAdjacencyJob job) const { return BindlessBuffer(uint, B.IndexBuffer, job.Corners.Slot) + job.Corners.Offset; }
+    ConnectivityView Connectivity(VertexAdjacencyJob job) const {
+        return {BindlessBuffer(uint, B.Buffer, job.Connectivity.Slot) + job.Connectivity.Offset, job.VertexCount, job.HalfedgeCount, job.FaceCount, job.FaceStarts != 0u};
+    }
 
     uint2 Tile(uint group_id) const { return Tiles()[Pc.FirstTile + group_id]; }
 };
-
-// Returns true when `h` is the first halfedge counted by the edge ranks.
-inline bool IsEdgeFirst(device const uint *bits, uint h) { return (bits[h / 32u] & (1u << (h % 32u))) != 0u; }
-
-// Returns the number of edge-first bits preceding `h`.
-inline uint EdgeIndex(device const uint *bits, device const uint *ranks, uint h) {
-    const uint word = h / 32u;
-    return ranks[word] + popcount(bits[word] & ((1u << (h % 32u)) - 1u));
-}
 
 kernel void VertexAdjacencyZero(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
@@ -62,8 +56,9 @@ kernel void VertexAdjacencyCount(
         atomic_fetch_add_explicit(&counts[corners[h]], 1u, memory_order_relaxed);
         return;
     }
-    if (!IsEdgeFirst(ctx.Scratch() + job.EdgeFirstBitsOffset, h)) return;
-    atomic_fetch_add_explicit(&counts[corners[ConnectivityPrevious(h)]], 1u, memory_order_relaxed);
+    const auto conn = ctx.Connectivity(job);
+    if (!conn.EdgeFirst(h)) return;
+    atomic_fetch_add_explicit(&counts[corners[conn.Previous(h)]], 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&counts[corners[h]], 1u, memory_order_relaxed);
 }
 
@@ -139,10 +134,10 @@ kernel void VertexAdjacencyScatter(
         items[atomic_fetch_add_explicit(&cursors[corners[h]], 1u, memory_order_relaxed)] = h;
         return;
     }
-    device const uint *bits = ctx.Scratch() + job.EdgeFirstBitsOffset;
-    if (!IsEdgeFirst(bits, h)) return;
-    const uint edge = EdgeIndex(bits, ctx.Scratch() + job.EdgeFirstRanksOffset, h);
-    items[atomic_fetch_add_explicit(&cursors[corners[ConnectivityPrevious(h)]], 1u, memory_order_relaxed)] = edge;
+    const auto conn = ctx.Connectivity(job);
+    if (!conn.EdgeFirst(h)) return;
+    const uint edge = conn.Edge(h);
+    items[atomic_fetch_add_explicit(&cursors[corners[conn.Previous(h)]], 1u, memory_order_relaxed)] = edge;
     items[atomic_fetch_add_explicit(&cursors[corners[h]], 1u, memory_order_relaxed)] = edge;
 }
 
@@ -167,9 +162,12 @@ kernel void VertexAdjacencySort(
         items[j] = key;
     }
     if (job.Kind != VertexAdjacencyKind::Fan) return;
+    const auto conn = ctx.Connectivity(job);
     for (uint i = start; i < end; ++i) {
         const uint h = items[i];
-        items[i] = (h / 3u) | ((h % 3u) << uint(FanItemEncoding::LoopShift));
+        const uint face = conn.HalfedgeFace(h);
+        const uint first = conn.FaceHalfedges(face).x;
+        items[i] = face | ((h - first) << uint(FanItemEncoding::LoopShift));
     }
 }
 

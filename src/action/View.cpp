@@ -129,7 +129,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     }
                 }
             },
-            [&](const DragGizmo &a) {
+            [&](const TransformSelection &a) {
                 const bool bone_edit_mode = IsBoneEditMode(r, viewport);
                 const auto root_selected = RootSelectedForTransform(r, viewport);
 
@@ -204,7 +204,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 for (const auto &[e, local] : locals) PatchEditedLocal(r, e, [&](auto &t) { t = local; });
                 for (const auto &[e, length] : bone_scales) r.emplace_or_replace<BoneDisplayScale>(e, length);
             },
-            [&](const DragGizmoMeshEdit &a) {
+            [&](const TransformElements &a) {
                 for (const auto &[_, instance_entity] : ::selection::ComputePrimaryEditInstances(r, false)) {
                     if (!r.all_of<StartTransform>(instance_entity)) {
                         r.emplace<StartTransform>(instance_entity, r.get<WorldTransform>(instance_entity), ToTransform(GetParentDelta(r, instance_entity)));
@@ -212,7 +212,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 }
                 r.emplace_or_replace<PendingTransform>(viewport, *a.Value);
             },
-            [&](EndGizmoDrag) {
+            [&](EndTransform) {
                 r.clear<StartTransform, StartBoneLength>();
                 r.remove<StartScreenTransform>(viewport);
             },
@@ -230,7 +230,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     r.patch<BoxSelectState>(viewport, [&](auto &b) { b.Gesture = g; });
                 }
             },
-            [&](const LatchScreenTransform &a) {
+            [&](const LatchTransform &a) {
                 // Mid-drag switch is a cancel-restart: revert any in-progress drag to its start state.
                 // StartTransform / StartBoneLength components stay so the next drag (under the new latched type) reuses them.
                 r.remove<PendingTransform>(viewport);
@@ -247,7 +247,6 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 }
                 r.emplace_or_replace<StartScreenTransform>(viewport, a.Value);
             },
-            [&](ClearScreenTransformLatch) { r.remove<StartScreenTransform>(viewport); },
             [&](const SetViewportShading &a) {
                 r.patch<ViewportDisplay>(viewport, [&](auto &s) {
                     s.ViewportShading = a.Mode;

@@ -3,7 +3,6 @@
 #include "Profile.h"
 #include "RbpBody.h"
 #include "RbpShape.h"
-#include "Replay.h"
 #include "Solver.h"
 #include "TransformMath.h"
 #include "mesh/Mesh.h"
@@ -95,8 +94,6 @@ struct PhysicsState {
     std::vector<state::Entity> Entities;
     std::map<state::Entity, rbp::CollisionMask> Masks;
     std::vector<rbp::SensorFollower> SensorFollowers;
-    std::filesystem::path CapturePath;
-    std::optional<rbp::replay::Writer> Capture;
     rbp::Index WorldAnchor = rbp::NoIndex;
     uint32_t CacheStartFrame{1}, CacheEndFrame{0};
     std::optional<uint32_t> Baked;
@@ -250,7 +247,6 @@ void ApplyCollider(rbp::Shape &shape, state::Entity entity, const ColliderInput 
 }
 
 void ClearContacts(PhysicsState &s, state::Scene &r) {
-    s.Capture.reset();
     s.Contacts.clear();
     s.ContactFrames.clear();
     r.ctx().get<PhysicsContactImpacts>().Events.clear();
@@ -575,16 +571,11 @@ void StepSimulation(PhysicsState &s, state::Scene &r, float sim_dt, uint32_t sub
     s.Settings.DeltaTime = sim_dt / float(substeps);
     auto &world = *s.World;
     world.TrackContacts = !r.view<const ReportContacts>().empty();
-    if (!s.CapturePath.empty()) {
-        s.Capture.emplace(s.CapturePath, world, s.SensorFollowers);
-        s.CapturePath.clear();
-    }
     std::map<ContactKey, ContactSum> contacts;
     rbp::AdvanceResult completed;
     {
         const profile::CpuScope advance_scope{"RbpAdvance"};
-        completed = s.Solver->Advance(world, s.Settings, substeps, s.SensorFollowers, [&](const rbp::StepResult &step) {
-            if (s.Capture) s.Capture->Step(world, s.Settings, step);
+        completed = s.Solver->Advance(world, s.Settings, substeps, s.SensorFollowers, [&](const rbp::StepResult &) {
             CollectSubstep(s, r, contacts);
         });
     }
@@ -759,11 +750,6 @@ namespace {
 } // namespace
 
 namespace physics {
-void CaptureReplay(state::Scene &r, const std::filesystem::path &path) {
-    auto &s = r.ctx().get<PhysicsState>();
-    s.CapturePath = path;
-    s.Invalidate();
-}
 
 void ApplySimulationSettings(state::Scene &r, const PhysicsSimulationSettings &settings) {
     auto &step = r.ctx().get<PhysicsState>().Settings;

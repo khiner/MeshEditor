@@ -87,15 +87,10 @@ struct MeshConnectivity {
     uint32_t VertexCount{0};
     std::span<const he::HH> OutgoingHalfedges;
     std::span<const he::HH> Opposites;
-    // Edge IDs are ranks in the bitset of first halfedges.
-    std::span<const uint32_t> EdgeFirstBits, EdgeFirstRanks;
-    // Non-manifold edges require an explicit halfedge-to-edge mapping.
+    // Edges number by ascending first halfedge.
     std::span<const he::EH> HalfedgeToEdge;
     uint32_t EdgeCount{0};
-    // Non-manifold meshes store each edge's first halfedge.
-    // Manifold meshes use sampled bit ranks.
     std::span<const he::HH> Edges;
-    std::span<const uint32_t> EdgeSamples;
     uint32_t FaceCount{0};
     // Stores each face's first halfedge.
     // Triangle meshes omit this array because face f starts at halfedge 3f.
@@ -104,22 +99,8 @@ struct MeshConnectivity {
     he::HH FaceHalfedge(uint32_t face) const { return Faces.empty() ? he::HH(face * 3u) : Faces[face].Halfedge; }
     uint32_t FaceEnd(uint32_t face) const { return face + 1 < FaceCount ? *FaceHalfedge(face + 1) : uint32_t(Opposites.size()); }
 
-    he::HH EdgeHalfedge(uint32_t edge) const {
-        if (!Edges.empty()) return Edges[edge];
-        auto word = EdgeSamples[edge / 32u];
-        while (word + 1u < EdgeFirstRanks.size() && EdgeFirstRanks[word + 1u] <= edge) ++word;
-        auto bits = EdgeFirstBits[word];
-        for (auto remaining = edge - EdgeFirstRanks[word]; remaining > 0u; --remaining) bits &= bits - 1u;
-        return he::HH(word * 32u + uint32_t(std::countr_zero(bits)));
-    }
-
-    he::EH Edge(he::HH hh) const {
-        if (!HalfedgeToEdge.empty()) return HalfedgeToEdge[*hh];
-        const auto opposite = Opposites[*hh];
-        const uint32_t first = opposite && *opposite < *hh ? *opposite : *hh;
-        const auto word = first / 32u;
-        return he::EH(EdgeFirstRanks[word] + uint32_t(std::popcount(EdgeFirstBits[word] & ((1u << (first % 32u)) - 1u))));
-    }
+    he::HH EdgeHalfedge(uint32_t edge) const { return Edges[edge]; }
+    he::EH Edge(he::HH hh) const { return HalfedgeToEdge[*hh]; }
 
     // Returns the face whose contiguous halfedge range contains `hh`, or empty for edge-only meshes.
     he::FH FaceOf(he::HH hh) const {
@@ -146,24 +127,16 @@ struct MeshConnectivity {
 };
 
 // The arena spans a connectivity build fills, sized from the source counts before the build runs.
-// `EdgeSamples` and `Edges` come sized at their bound, since the edge count only falls out of the build.
+// `Edges` comes sized at its bound, since the edge count only falls out of the build.
+// Face meshes build on the GPU, and edge meshes here.
 struct ConnectivityStorage {
     std::span<he::HH> OutgoingHalfedges, Opposites;
-    std::span<uint32_t> EdgeFirstBits, EdgeFirstRanks, EdgeSamples;
-    std::span<MeshConnectivity::Face> Faces;
+    std::span<he::EH> HalfedgeToEdge;
+    std::span<he::HH> Edges;
 };
 
-struct BuiltConnectivity {
-    uint32_t EdgeCount{0};
-    std::vector<he::HH> Edges;
-    std::vector<he::EH> HalfedgeToEdge;
-};
-
-// Build connectivity into `storage` from polygon faces (concatenated vertex-index loops, face `f`
-// spanning [offsets[f], offsets[f + 1]) of corners), or from edge pairs.
-// An empty `face_offsets` means every face is a triangle, where face `f` spans corners [3f, 3f + 3).
-BuiltConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std::span<const uint32_t> face_corners, uint32_t vertex_count, const ConnectivityStorage &);
-BuiltConnectivity BuildConnectivity(std::span<const std::array<uint32_t, 2>> edges, uint32_t vertex_count, const ConnectivityStorage &);
+// Builds an edge mesh's connectivity into `storage` from its edge pairs and returns the edge count.
+uint32_t BuildConnectivity(std::span<const std::array<uint32_t, 2>> edges, uint32_t vertex_count, const ConnectivityStorage &);
 
 struct VertexAdjacency {
     std::span<const uint32_t> Offsets;

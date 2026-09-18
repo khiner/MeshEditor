@@ -366,6 +366,48 @@ void TestCommitIdentity() {
     app.H.Close();
 }
 
+// A replaced node keeps its identity and drops its descendants, in memory and after reopening.
+void TestReplace() {
+    const TestDir dir{"projectstore_replace"};
+    ToyApp app;
+    app.H.Begin(dir);
+    app.Step(1);
+    const int a = app.H.Present;
+    app.Step(2);
+    const int b = app.H.Present;
+    app.Step(3);
+    const int c = app.H.Present;
+    app.Step(4);
+    const int d = app.H.Present;
+    app.H.Navigate(a);
+    const auto a_state = app.State();
+    app.Apply(ToyApp::Encode(5));
+    const auto replaced = app.State();
+    expect(app.H.Replace(b, ToyApp::Encode(5)) == b);
+    expect(app.H.Present == b);
+    expect(app.H.Nodes.size() == 5u);
+    expect(app.H.Nodes[b].Children.empty());
+    expect(app.H.Nodes[a].Children == std::vector{b});
+    expect(!app.H.Nodes[c].Hot && !app.H.Nodes[d].Hot);
+    app.H.Navigate(a);
+    expect(app.State() == a_state);
+    app.H.Navigate(b);
+    expect(app.State() == replaced);
+    expect(app.H.Replay(b).empty());
+    expect(app.State() == replaced);
+    expect(app.H.Save());
+    expect(app.H.Close());
+    expect(app.H.Open(dir));
+    expect(app.H.Present == b);
+    expect(app.H.Nodes[b].Children.empty());
+    app.H.Navigate(a);
+    app.H.Navigate(b);
+    expect(app.State() == replaced);
+    std::string why;
+    expect(app.H.Audit(why));
+    if (!why.empty()) std::printf("  %s\n", why.c_str());
+}
+
 void TestColdLoadFailure() {
     const TestDir dir{"projectstore_cold_failure"};
     Pages a{64}, b{64};
@@ -624,6 +666,7 @@ int main() {
     TestBufferAgainstModel();
     TestHistoryAgainstModel();
     TestCommitIdentity();
+    TestReplace();
     TestColdLoadFailure();
     TestFormatMismatch();
     TestLogOpenFailure();

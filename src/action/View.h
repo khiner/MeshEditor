@@ -67,13 +67,16 @@ struct SetTransformRotationFromUi {
     RotationUiVariant UiVariant;
     Scope Scope{Scope::Active};
 };
-struct DragGizmo {
+// Applies a pivot and delta to the selected objects or bones.
+struct TransformSelection {
     std::unique_ptr<PendingTransform> Value;
 };
-struct DragGizmoMeshEdit {
+// Stages a pivot and delta over the edit-mode elements, which move on commit.
+struct TransformElements {
     std::unique_ptr<PendingTransform> Value;
 };
-struct EndGizmoDrag {};
+// Clears the transform start state and the latch.
+struct EndTransform {};
 
 // Select tools clear the transform type, while transform tools retain the hidden selection gesture.
 struct SetActiveTool {
@@ -88,13 +91,11 @@ struct SetActiveTool {
     Tool Value;
 };
 
-// Latches a transform type for the next gizmo drag and restores any active drag to its initial state.
+// Latches a transform type for the next drag and restores any active drag to its initial state.
 // This live-only action aborts the staged gesture and is excluded from recording.
-struct LatchScreenTransform {
+struct LatchTransform {
     TransformGizmo::TransformType Value;
 };
-// Clear the screen-transform latch once consumed by InteractOverlay. Live-only bookkeeping, not recorded.
-struct ClearScreenTransformLatch {};
 
 // Logical (window) size of the viewport.
 // Apply only sets the ViewportExtent ctx value, the GPU resize happens later.
@@ -120,7 +121,7 @@ using Action = std::variant<
     ResetViewCamera, ResetViewportTheme, ResetPbrLighting, SetWorkspaceLights,
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection,
     SetRotationUiMode, SetTransformRotationFromUi,
-    DragGizmo, DragGizmoMeshEdit, EndGizmoDrag, SetActiveTool, LatchScreenTransform, ClearScreenTransformLatch,
+    TransformSelection, TransformElements, EndTransform, SetActiveTool, LatchTransform,
     SetExtent, SetStudioEnvironment, SetActiveScene>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);

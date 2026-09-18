@@ -7,6 +7,7 @@
 #include "action/Core.h"
 #include "action/Emit.h"
 #include "action/Io.h"
+#include "action/Mesh.h"
 #include "action/Object.h"
 #include "action/Physics.h"
 #include "action/Selection.h"
@@ -19,7 +20,7 @@ namespace action {
 using Action = std::variant<
     Core,
     selection::Action, object::Action, view::Action,
-    physics::Action, audio::Action, bone::Action, timeline::Action, io::Action, animation::Action>;
+    physics::Action, audio::Action, bone::Action, timeline::Action, io::Action, animation::Action, mesh::Action>;
 
 static_assert(sizeof(Action) <= 64, "Keep actions at or below 64 bytes");
 
@@ -50,9 +51,8 @@ template<typename F> auto MapDomains(F f) {
 // E.g. replaying a save would clobber a file.
 template<typename T> inline constexpr bool Recordable = true;
 template<> inline constexpr bool Recordable<io::SaveGltf> = false;
-// Latch state is live-only: the recorded DragGizmo already encodes the resolved transform.
-template<> inline constexpr bool Recordable<view::LatchScreenTransform> = false;
-template<> inline constexpr bool Recordable<view::ClearScreenTransformLatch> = false;
+// Latch state is live-only: the recorded TransformSelection already encodes the resolved transform.
+template<> inline constexpr bool Recordable<view::LatchTransform> = false;
 template<> inline constexpr bool Recordable<view::OrbitViewCamera> = false;
 template<> inline constexpr bool Recordable<view::ZoomViewCamera> = false;
 template<> inline constexpr bool Recordable<view::ResetViewCamera> = false;
@@ -64,5 +64,14 @@ void Emit(Action, Phase = Phase::Record);
 
 inline bool IsRecordable(const Action &a) {
     return std::visit([](const auto &dv) { return std::visit([]<typename L>(const L &) { return Recordable<L>; }, dv); }, a);
+}
+
+// A staged update of a restarting action restores the gesture's base state before it applies.
+// Every mesh operator restarts except one whose placement drag continues its gesture.
+template<typename T> inline constexpr bool Restarting = !std::is_same_v<T, mesh::Extrude> && !std::is_same_v<T, mesh::Duplicate> && !std::is_same_v<T, mesh::Rip>;
+
+inline bool IsRestarting(const Action &a) {
+    const auto *m = std::get_if<mesh::Action>(&a);
+    return m && std::visit([]<typename L>(const L &) { return Restarting<L>; }, *m);
 }
 } // namespace action

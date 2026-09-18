@@ -854,11 +854,11 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
     }
 
     if (g.Start && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-        Result ret{g.Start->Transform, {}};
         g.Start = {};
         g.Current = {};
         g.NumInput.Reset();
-        return ret;
+        g.Cancelled = true;
+        return {};
     }
     if (g.Start && (ImGui::IsMouseReleased(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) {
         g.Start = {};
