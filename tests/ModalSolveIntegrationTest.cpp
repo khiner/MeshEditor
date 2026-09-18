@@ -9,10 +9,6 @@
 
 using namespace boost::ut;
 
-static_assert(std::is_same_v<vec3, fastfem::Vec3>);
-static_assert(std::is_same_v<dvec3, fastfem::DVec3>);
-static_assert(std::is_same_v<uvec3, fastfem::UVec3>);
-static_assert(std::is_same_v<quat, fastfem::Quat>);
 static_assert(std::is_same_v<AcousticMaterialProperties, fastfem::AcousticMaterialProperties>);
 static_assert(std::is_same_v<MassProperties, fastfem::MassProperties>);
 static_assert(std::is_base_of_v<fastfem::ModalModes, ModalModes>);

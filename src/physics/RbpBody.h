@@ -7,7 +7,7 @@
 
 namespace rbp {
 struct World;
-}
+} // namespace rbp
 
 struct Transform;
 

@@ -1,5 +1,9 @@
 #pragma once
 
+#include "numeric/uvec2.h"
+#include "numeric/uvec4.h"
+#include "numeric/vec2.h"
+
 #include "Mesh.h"
 #include "MeshAttributes.h"
 #include "MeshData.h"

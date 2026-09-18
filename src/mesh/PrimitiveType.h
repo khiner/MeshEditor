@@ -8,6 +8,8 @@
 #include <variant>
 
 namespace primitive {
+using numeric::vec2, numeric::vec3;
+
 // Bounds for the editable size fields of every primitive (radii, extents, height).
 constexpr float MinSize = 0.01f, MaxSize = 100.f;
 

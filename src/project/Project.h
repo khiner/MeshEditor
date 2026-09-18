@@ -1,5 +1,8 @@
 #pragma once
 
+#include "numeric/uvec2.h"
+#include "numeric/vec2.h"
+
 #include "File.h"
 #include "ProcessEvents.h"
 #include "action/Action.h"

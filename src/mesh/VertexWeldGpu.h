@@ -7,6 +7,8 @@
 
 #include "state/Entity.h"
 
+using numeric::vec3;
+
 struct MeshData;
 
 // MorphTangentDeltas points at the host-owned target-major tangent deltas, compacted in place with the vertices.

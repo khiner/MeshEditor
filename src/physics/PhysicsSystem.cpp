@@ -8,6 +8,7 @@
 #include "TransformMath.h"
 #include "mesh/Mesh.h"
 #include "metal/MetalContext.h"
+#include "numeric/VectorMath.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -114,7 +115,7 @@ struct PhysicsState {
     }
 };
 
-rbp::Pose PoseOf(const Transform &t) { return rbp::At(ToRbp(t.P), ToRbp(numeric::Normalize(t.R))); }
+rbp::Pose PoseOf(const Transform &t) { return rbp::At(ToRbp(t.P), ToRbp(Normalize(t.R))); }
 state::Entity MotionOwner(const state::Scene &r, state::Entity e) {
     return FindAncestorIf(r, e, [&](auto node) { return r.all_of<PhysicsMotion>(node); });
 }
@@ -145,8 +146,8 @@ Transform ComposeAuthored(const Transform &parent, Transform result) {
         result.P *= parent.S;
         result.S *= parent.S;
     } else result = ToTransform(ToMatrix(Transform{.S = parent.S}) * ToMatrix(result));
-    result.P = parent.P + numeric::Rotate(parent.R, result.P);
-    result.R = numeric::Normalize(parent.R * result.R);
+    result.P = parent.P + Rotate(parent.R, result.P);
+    result.R = Normalize(parent.R * result.R);
     return result;
 }
 
@@ -827,7 +828,7 @@ void SamplePosesAtFrame(state::Scene &r, float frame) {
     for (auto [depth, entity] : entities) {
         const auto &cache = r.get<const BodyPoseCache>(entity);
         const auto &a = cache.Frames[lo_idx], &b = cache.Frames[hi_idx];
-        SyncBodyWorldTransform(r, entity, numeric::Mix(a.P, b.P, t), numeric::Slerp(a.R, b.R, t));
+        SyncBodyWorldTransform(r, entity, Mix(a.P, b.P, t), Slerp(a.R, b.R, t));
     }
 }
 

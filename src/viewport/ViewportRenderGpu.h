@@ -1,5 +1,7 @@
 #pragma once
 
+#include "numeric/uvec2.h"
+
 #include "Range.h"
 #include "gpu/MeshletRouteMode.h"
 #include "metal/Slots.h"

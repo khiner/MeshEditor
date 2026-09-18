@@ -7,3 +7,4 @@ struct Vertex {
     vec3 Position DEFAULT();
 };
 static_assert(sizeof(Vertex) == 12, "Vertex size");
+static_assert(alignof(Vertex) == 4 && __builtin_offsetof(Vertex, Position) == 0);

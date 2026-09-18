@@ -1,4 +1,5 @@
 #include "render/ClusterLod.h"
+#include "numeric/VectorMath.h"
 
 #include "FlatKeyMap.h"
 #include "Parallel.h"

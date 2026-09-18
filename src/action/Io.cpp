@@ -1,5 +1,6 @@
 #include "action/Io.h"
 #include "editor/AudioIntegration.h"
+#include "numeric/VectorMath.h"
 #include "state/Scene.h"
 
 #include "CameraTypes.h"
@@ -24,6 +25,8 @@
 #include <format>
 #include <numbers>
 #include <utility>
+
+using numeric::Radians;
 
 using std::ranges::to;
 
@@ -92,14 +95,14 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 const auto created = CreateMesh(r, {.Data = primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}), .FlatShaded = true});
                 const auto [listener_mesh_entity, _] = ::AddMesh(r, created.StoreId);
                 for (const auto &listener_point : listener_points) {
-                    static const auto rot_z = numeric::AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
+                    static const auto rot_z = AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
                     const auto listener_instance_entity = ::AddMeshInstance(
                         r, listener_mesh_entity,
                         {
                             .Name = std::format("RealImpact Microphone: {}", listener_point.Index),
                             .Transform = {
                                 .P = listener_point.GetPosition(Defaults::WorldUp, true),
-                                .R = numeric::AngleAxis(numeric::Radians(float(listener_point.AngleDeg)), Defaults::WorldUp) * rot_z,
+                                .R = AngleAxis(Radians(float(listener_point.AngleDeg)), Defaults::WorldUp) * rot_z,
                             },
                             .Select = MeshInstanceCreateInfo::SelectBehavior::None,
                         }

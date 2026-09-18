@@ -1,4 +1,6 @@
 #include "animation/Clips.h"
+#include "numeric/QuaternionMath.h"
+#include "numeric/VectorMath.h"
 
 #include "numeric/quat.h"
 #include "scene/WorldTransform.h"
@@ -42,7 +44,7 @@ void EvaluateChannel(const AnimationChannel &channel, float seconds, std::span<f
     }
     if (channel.Interp == AnimationInterpolation::Linear) {
         const float *v0 = channel.Values.data() + k * n, *v1 = channel.Values.data() + k1 * n;
-        if (rotation) return StoreQuat(out.data(), numeric::Slerp(LoadQuat(v0), LoadQuat(v1), alpha));
+        if (rotation) return StoreQuat(out.data(), Slerp(LoadQuat(v0), LoadQuat(v1), alpha));
         for (uint32_t i = 0; i < n; ++i) out[i] = v0[i] + (v1[i] - v0[i]) * alpha;
         return;
     }
@@ -51,7 +53,7 @@ void EvaluateChannel(const AnimationChannel &channel, float seconds, std::span<f
     const float h00 = 2 * a3 - 3 * a2 + 1, h10 = (a3 - 2 * a2 + alpha) * dt, h01 = -2 * a3 + 3 * a2, h11 = (a3 - a2) * dt;
     const float *kf0 = channel.Values.data() + k * 3 * n, *kf1 = channel.Values.data() + k1 * 3 * n;
     for (uint32_t i = 0; i < n; ++i) out[i] = h00 * kf0[n + i] + h10 * kf0[2 * n + i] + h01 * kf1[n + i] + h11 * kf1[i];
-    if (rotation) StoreQuat(out.data(), numeric::Normalize(LoadQuat(out.data())));
+    if (rotation) StoreQuat(out.data(), Normalize(LoadQuat(out.data())));
 }
 
 float LastKeySeconds(const state::Scene &r, std::optional<uint32_t> animation) {

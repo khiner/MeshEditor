@@ -1,5 +1,8 @@
 #pragma once
 
+#include "numeric/QuaternionMath.h"
+#include "numeric/vec2.h"
+
 #include "CameraTypes.h"
 #include "numeric/mat3.h"
 #include "numeric/mat4.h"
@@ -8,6 +11,8 @@
 #include "numeric/rect.h"
 
 // Camera pose and lens, independent of navigation and animation.
+using numeric::mat3, numeric::mat4, numeric::quat;
+
 struct CameraView {
     CameraLens Data;
     vec3 Target;

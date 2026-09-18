@@ -7,6 +7,8 @@
 #include <vector>
 
 // Enables ContactImpact and SustainedContact reporting for a body.
+using numeric::vec3;
+
 struct ReportContacts {};
 
 // Describes one body's world-space response at one point of a new solid contact.

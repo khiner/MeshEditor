@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <memory>
 
+using numeric::vec2;
+
 namespace mtl {
 struct Context;
 } // namespace mtl

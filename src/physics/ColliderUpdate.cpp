@@ -1,12 +1,17 @@
-#include "physics/ColliderUpdate.h"
+#include "numeric/VectorMath.h"
+#include "numeric/vec2.h"
+
 #include "Variant.h"
 #include "mesh/Mesh.h"
 #include "mesh/Primitives.h"
+#include "physics/ColliderUpdate.h"
 #include "physics/PhysicsTypes.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "state/Scene.h"
 #include <numbers>
+using numeric::Max;
+
 void RederiveCollider(state::Scene &r, state::Entity e) {
     const auto *cs = r.try_get<const ColliderShape>(e);
     const auto *policy = r.try_get<const ColliderPolicy>(e);
@@ -53,7 +58,7 @@ void RederiveCollider(state::Scene &r, state::Entity e) {
                 float best_d2 = 0;
                 for (const auto &v : verts) {
                     const vec3 delta = v.Position - from;
-                    const float d2 = numeric::Dot(delta, delta);
+                    const float d2 = Dot(delta, delta);
                     if (d2 > best_d2) {
                         best_d2 = d2;
                         best = v.Position;
@@ -64,9 +69,9 @@ void RederiveCollider(state::Scene &r, state::Entity e) {
             const vec3 q = farthest_from(verts[0].Position);
             const vec3 ru = farthest_from(q);
             vec3 c = (q + ru) * 0.5f;
-            float radius = numeric::Length(ru - c);
+            float radius = Length(ru - c);
             for (const auto &v : verts) {
-                const float d = numeric::Length(v.Position - c);
+                const float d = Length(v.Position - c);
                 if (d > radius) {
                     const float new_r = (radius + d) * 0.5f;
                     c = c + ((d - radius) / (2.f * d)) * (v.Position - c);
@@ -79,7 +84,7 @@ void RederiveCollider(state::Scene &r, state::Entity e) {
         const auto xz_radius = [&] {
             const vec2 c{aabb_center.x, aabb_center.z};
             float r = 0;
-            for (const auto &v : verts) r = numeric::Max(r, numeric::Length(vec2{v.Position.x, v.Position.z} - c));
+            for (const auto &v : verts) r = Max(r, Length(vec2{v.Position.x, v.Position.z} - c));
             return r;
         };
 
@@ -97,14 +102,14 @@ void RederiveCollider(state::Scene &r, state::Entity e) {
                 [&](physics::Cylinder &s) {
                     const float radius = xz_radius();
                     s.RadiusTop = s.RadiusBottom = radius;
-                    s.Height = numeric::Max(physics::MinShapeHeight, aabb_extents.y);
+                    s.Height = Max(physics::MinShapeHeight, aabb_extents.y);
                     local_offset = aabb_center;
                 },
                 [&](physics::Capsule &s) {
                     const float radius = xz_radius();
                     s.RadiusTop = s.RadiusBottom = radius;
                     // 2r >= aabb.y degenerates toward a sphere, so clamp height to keep it spec-valid.
-                    s.Height = numeric::Max(physics::MinShapeHeight, aabb_extents.y - 2.f * radius);
+                    s.Height = Max(physics::MinShapeHeight, aabb_extents.y - 2.f * radius);
                     local_offset = aabb_center;
                 },
                 [](auto &) {},

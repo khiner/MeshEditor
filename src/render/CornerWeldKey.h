@@ -1,5 +1,7 @@
 #pragma once
 
+#include "numeric/uvec2.h"
+
 #include "gpu/CornerClass.h"
 #include "gpu/CornerClassEncoding.h"
 #include "numeric/vec2.h"

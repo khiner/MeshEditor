@@ -15,6 +15,8 @@
 #include <numbers>
 #include <regex>
 
+using numeric::Radians, numeric::mat4, numeric::vec4;
+
 using std::ranges::max_element, std::ranges::iota_view, std::ranges::to;
 using std::views::transform;
 
@@ -91,7 +93,7 @@ const std::unordered_map<std::string_view, std::string_view> MaterialNameForObje
 } // namespace
 
 namespace RealImpact {
-const quat ObjectRotationToYUp = numeric::AngleAxis(-std::numbers::pi_v<float> / 2.f, vec3{1, 0, 0}) * numeric::AngleAxis(std::numbers::pi_v<float>, vec3{0, 0, 1});
+const quat ObjectRotationToYUp = AngleAxis(-std::numbers::pi_v<float> / 2.f, vec3{1, 0, 0}) * AngleAxis(std::numbers::pi_v<float>, vec3{0, 0, 1});
 
 std::expected<std::string, std::string> ValidateDirectory(const fs::path &directory) {
     if (!fs::is_directory(directory)) return std::unexpected(std::format("RealImpact directory does not exist: {}", directory.string()));
@@ -243,12 +245,12 @@ The only difference is we use Y-up instead of Z-up.
         return pos_meters
 */
 vec3 ListenerPoint::GetPosition(vec3 world_up, bool mic_center) const {
-    const float angle = numeric::Radians(float(AngleDeg)), dist = float(DistanceMm);
+    const float angle = Radians(float(AngleDeg)), dist = float(DistanceMm);
     const vec3 pos{
         230 + dist + (mic_center ? MicLengthMm / 2 : 0),
         -(MicBarLengthMm / 2) + (float(MicId) / (NumMics - 1)) * MicBarLengthMm,
         ((45.f / 2.f) + 20.95f),
     };
-    return vec3{numeric::Rotate(mat4{1}, angle, world_up) * vec4{pos, 1}} / 1000.f;
+    return vec3{Rotate(mat4{1}, angle, world_up) * vec4{pos, 1}} / 1000.f;
 }
 } // namespace RealImpact

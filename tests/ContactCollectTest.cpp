@@ -4,6 +4,7 @@
 #include "mesh/MeshCreate.h"
 #include "mesh/Primitives.h"
 #include "metal/MetalContext.h"
+#include "numeric/QuaternionMath.h"
 #include "physics/PhysicsContact.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"

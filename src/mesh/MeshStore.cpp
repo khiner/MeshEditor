@@ -1,3 +1,6 @@
+#include "numeric/uvec2.h"
+#include "numeric/vec2.h"
+
 #include "MeshStore.h"
 
 #include "CornerNormalOffset.h"

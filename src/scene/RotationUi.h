@@ -6,6 +6,8 @@
 
 #include <variant>
 
+using numeric::quat, numeric::vec3, numeric::vec4;
+
 struct RotationQuat {
     quat Value; // xyzw
 };

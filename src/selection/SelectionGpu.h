@@ -1,5 +1,7 @@
 #pragma once
 
+#include "numeric/uvec2.h"
+
 #include "SlottedRange.h"
 #include "gpu/EditSelectionOperation.h"
 #include "gpu/EditSelectionSummary.h"

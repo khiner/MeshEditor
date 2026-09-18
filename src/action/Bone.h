@@ -6,6 +6,8 @@
 #include "state/Entity.h"
 
 namespace action::bone {
+using numeric::quat, numeric::vec3;
+
 struct Add {};
 struct Extrude {};
 struct DuplicateSelected {};

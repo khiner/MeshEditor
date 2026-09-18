@@ -1,12 +1,23 @@
 #pragma once
 
-#include "numeric/vec4.h"
+#include "VectorMath.h"
+#include "numeric/quat.h"
 
-#include <bit>
 #include <limits>
 #include <numbers>
 
-using quat = fastfem::Quat;
+namespace numeric {
+inline quat FromEulerAngles(vec3 euler_xyz) {
+    quat q;
+    const vec3 cosine{std::cos(euler_xyz.x * .5f), std::cos(euler_xyz.y * .5f), std::cos(euler_xyz.z * .5f)};
+    const vec3 sine{std::sin(euler_xyz.x * .5f), std::sin(euler_xyz.y * .5f), std::sin(euler_xyz.z * .5f)};
+    q.w = cosine.x * cosine.y * cosine.z + sine.x * sine.y * sine.z;
+    q.x = sine.x * cosine.y * cosine.z - cosine.x * sine.y * sine.z;
+    q.y = cosine.x * sine.y * cosine.z + sine.x * cosine.y * sine.z;
+    q.z = cosine.x * cosine.y * sine.z - sine.x * sine.y * cosine.z;
+    return q;
+}
+
 constexpr quat operator-(quat q) { return {-q.w, -q.x, -q.y, -q.z}; }
 constexpr quat operator+(quat a, quat b) { return {a.w + b.w, a.x + b.x, a.y + b.y, a.z + b.z}; }
 constexpr quat operator-(quat a, quat b) { return {a.w - b.w, a.x - b.x, a.y - b.y, a.z - b.z}; }
@@ -16,8 +27,6 @@ constexpr quat operator*(quat a, quat b) {
     return {a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z, a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z, a.w * b.z + a.z * b.w + a.x * b.y - a.y * b.x};
 }
 constexpr quat &operator*=(quat &a, quat b) { return a = a * b; }
-namespace numeric {
-using ::quat;
 constexpr float Dot(quat a, quat b) {
     return std::fma(a.x, b.x, a.y * b.y) + std::fma(a.z, b.z, a.w * b.w);
 }
@@ -90,6 +99,5 @@ inline vec3 EulerAngles(quat q) {
     const float roll = std::abs(roll_x) <= std::numeric_limits<float>::epsilon() && std::abs(roll_y) <= std::numeric_limits<float>::epsilon() ? 0.f : std::atan2(roll_y, roll_x);
     return {pitch, yaw, roll};
 }
+inline vec3 operator*(quat q, vec3 v) { return Rotate(q, v); }
 } // namespace numeric
-inline vec3 operator*(quat q, vec3 v) { return numeric::Rotate(q, v); }
-static_assert(sizeof(quat) == 16);

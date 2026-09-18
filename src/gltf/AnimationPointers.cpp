@@ -1,3 +1,6 @@
+#include "numeric/VectorMath.h"
+#include "numeric/vec2.h"
+
 #include "gltf/AnimationPointers.h"
 
 #include "CameraTypes.h"
@@ -129,13 +132,13 @@ std::optional<ParsedPointer> ParsePointer(std::string_view pointer) {
 void ConvertBoneChannel(AnimationChannel &channel, const Transform &rest, bool to_delta) {
     const uint32_t n = channel.Target.Count;
     const bool cubic = channel.Interp == AnimationInterpolation::CubicSpline;
-    const auto rotation = to_delta ? numeric::Conjugate(rest.R) : rest.R;
+    const auto rotation = to_delta ? Conjugate(rest.R) : rest.R;
     for (size_t i = 0; i < channel.Values.size(); i += n) {
         const bool tangent = cubic && (i / n) % 3 != 1;
         float *v = channel.Values.data() + i;
         if (n == 4) {
             const quat q = rotation * LoadQuat(v);
-            StoreQuat(v, tangent ? q : numeric::Normalize(q));
+            StoreQuat(v, tangent ? q : Normalize(q));
         } else if (channel.Target.Offset == offsetof(Transform, P)) {
             const vec3 p{v[0], v[1], v[2]};
             const vec3 out = tangent ? rotation * p : to_delta ? rotation * (p - rest.P) :

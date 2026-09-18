@@ -7,6 +7,8 @@
 #include <optional>
 #include <variant>
 
+using numeric::vec2;
+
 inline constexpr float DefaultAspectRatio{16.f / 9.f};
 inline constexpr float DefaultPerspectiveNearClip{0.1f}, DefaultPerspectiveFarClip{1000.f};
 inline constexpr float MinNearClip{0.01f}, MaxFarClip{DefaultPerspectiveFarClip}, MinNearFarDelta{MinNearClip};

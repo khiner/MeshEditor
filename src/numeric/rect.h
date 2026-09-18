@@ -1,6 +1,8 @@
 #pragma once
 
-#include "vec2.h"
+#include "numeric/VectorMath.h"
+
+using numeric::vec2;
 
 struct rect {
     vec2 pos, size;

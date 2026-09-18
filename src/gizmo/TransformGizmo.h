@@ -1,5 +1,7 @@
 #pragma once
 
+#include "numeric/vec2.h"
+
 #include <optional>
 
 #include "gizmo/TransformGizmoTypes.h"
@@ -12,7 +14,7 @@ struct GizmoInteraction;
 
 namespace colors {
 struct AxesArray;
-}
+} // namespace colors
 
 namespace TransformGizmo {
 std::string_view ToString(const GizmoInteraction &);

@@ -3,6 +3,7 @@ add_library(mesheditor_headers INTERFACE)
 target_include_directories(mesheditor_headers INTERFACE "${CMAKE_SOURCE_DIR}/src")
 target_include_directories(mesheditor_headers SYSTEM INTERFACE
     "${CMAKE_SOURCE_DIR}/lib/FastFEM/include"
+    "${CMAKE_SOURCE_DIR}/lib/FastFEM/src"
 )
 target_compile_definitions(mesheditor_headers INTERFACE
     $<$<CONFIG:Debug>:DEBUG_BUILD>

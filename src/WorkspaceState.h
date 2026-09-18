@@ -1,5 +1,7 @@
 #pragma once
 
+#include "numeric/uvec2.h"
+
 #include "Window.h"
 #include "numeric/vec2.h"
 #include "viewport/ViewCameraOps.h"
@@ -13,6 +15,8 @@
 #include <vector>
 
 namespace workspace {
+using numeric::uvec2;
+
 inline constexpr std::string_view FileName{"workspace.state"};
 
 struct State {

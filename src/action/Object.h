@@ -1,5 +1,7 @@
 #pragma once
 
+#include "numeric/vec2.h"
+
 #include "gpu/Element.h"
 #include "gpu/PBRMaterial.h"
 

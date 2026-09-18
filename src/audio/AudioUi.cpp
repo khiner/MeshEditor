@@ -1,3 +1,7 @@
+#include "numeric/VectorMath.h"
+#include "numeric/dvec3.h"
+#include "numeric/vec2.h"
+
 #include "audio/AudioUi.h"
 
 #include "AudioSystem.h"
@@ -24,6 +28,8 @@
 #include "viewport/ViewportEvents.h"
 
 #include <string_view>
+
+using numeric::dvec3;
 
 namespace fs = std::filesystem;
 using SurfaceSolveConfig = fastfem::SurfaceSolveConfig;
@@ -227,7 +233,7 @@ void DrawModalModelSettings(
             fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Resolution>("Target resolution", nullptr, ImGuiSliderFlags_AlwaysClamp);
             MeshEditor::HelpMarker("Target divisions along the object's longest scaled axis. Higher values request finer tetrahedra. Refines the surface triangles and tetrahedron volume together.");
         }
-        fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::Holes>([](std::vector<fastfem::DVec3> &holes) {
+        fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::Holes>([](std::vector<dvec3> &holes) {
             bool changed = false;
             for (size_t i = 0; i < holes.size(); ++i) {
                 PushID(int(i));
@@ -255,7 +261,7 @@ void DrawModalModelSettings(
         fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::CutDepth>("Cut depth");
         fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::FictitiousScale>("Fictitious scale", "%.1e", ImGuiSliderFlags_Logarithmic);
         fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::PaddingCells>("Padding (cells)", "%.2f");
-        fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::GridOffsetCells>([](fastfem::DVec3 &offset) {
+        fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::GridOffsetCells>([](dvec3 &offset) {
             return InputScalarN("Grid offset (cells)", ImGuiDataType_Double, &offset.x, 3);
         });
     }
@@ -315,7 +321,7 @@ bool ImpulseJoystick(vec2 &pos) {
     if (IsItemActive() && IsMouseDown(ImGuiMouseButton_Left)) {
         const auto m = GetIO().MousePos;
         pos = {(m.x - center.x) / radius, -(m.y - center.y) / radius};
-        if (const float len = numeric::Length(pos); len > 1.f) pos /= len;
+        if (const float len = Length(pos); len > 1.f) pos /= len;
         changed = true;
     } else if (IsItemClicked(ImGuiMouseButton_Right)) {
         pos = {0, 0};
@@ -456,7 +462,7 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
         const auto active_gains = [&]() -> std::vector<float> {
             if (active_vi >= modes.Shapes.size()) return {};
             const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), r.ctx().get<const MeshStore>().Arenas().SoundVertices.Get(excitable->Vertices)[active_vi]), ImpulseAngle);
-            return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(numeric::Dot(s, j)); }) | to<std::vector<float>>();
+            return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(Dot(s, j)); }) | to<std::vector<float>>();
         }();
         if (!active_gains.empty()) {
             if (auto hovered = PlotModeData(active_gains, "Mode gains", "Mode index", "Gain", hovered_mode_index)) new_hovered_index = hovered;

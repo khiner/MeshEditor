@@ -1,5 +1,7 @@
-#include "viewport/ViewportRenderGpu.h"
+#include "numeric/uvec2.h"
+
 #include "render/LightComponents.h"
+#include "viewport/ViewportRenderGpu.h"
 
 #include "Camera.h"
 #include "ProcessEvents.h"
@@ -128,7 +130,7 @@ ExtrasLine ExtrasGizmoParams(const state::Scene &r, state::Entity object, Object
         return {ExtrasLineKind::LightDirectional, vec4{light.Range, 0, 0, 0}, 8 * 2 + HaloLines};
     }
     constexpr float SpotDepth{2.f};
-    const float outer_angle = std::min(light.OuterConeAngle, numeric::Radians(89.f));
+    const float outer_angle = std::min(light.OuterConeAngle, Radians(89.f));
     const float inner_angle = std::min(light.InnerConeAngle, outer_angle);
     const float outer_radius = SpotDepth * std::tan(outer_angle), inner_radius = SpotDepth * std::tan(inner_angle);
     const uint32_t inner_lines = inner_radius > 0.f ? SpotSegments : 0;
@@ -574,7 +576,7 @@ void RecordMotionBlurPostFx(state::Scene &r, state::Entity viewport, mtl::PassCh
     const auto &previous = *reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data() + buffers.SceneViewUboOffset(1));
     const auto &next = *reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data() + buffers.SceneViewUboOffset(2));
     const uint32_t camera_motion = view.ViewProj != previous.ViewProj || view.ViewProj != next.ViewProj;
-    encode::SetPushConstants(compute, MotionBlurTilesFlattenPushConstants{encode::VisibilityDecodePc(buffers), numeric::Inverse(view.ViewProj), camera_motion});
+    encode::SetPushConstants(compute, MotionBlurTilesFlattenPushConstants{encode::VisibilityDecodePc(buffers), Inverse(view.ViewProj), camera_motion});
     compute->setBuffer(*buffers.SceneViewUBO, buffers.SceneViewUboOffset(1), 5);
     compute->setBuffer(*buffers.SceneViewUBO, buffers.SceneViewUboOffset(2), 6);
     compute->setBuffer(blur.TileIndirection.get(), 0, 7);
@@ -597,7 +599,7 @@ void RecordMotionBlurPostFx(state::Scene &r, state::Entity viewport, mtl::PassCh
     main.MotionBlurGather.Bind(render);
     render->setFragmentBuffer(blur.TileIndirection.get(), 0, 5);
     render->setFragmentTexture(*blur.TileImage, 0);
-    const auto inverse_projection = numeric::Inverse(r.get<const ViewCamera>(viewport).Projection(float(extent.Width) / float(extent.Height)));
+    const auto inverse_projection = Inverse(r.get<const ViewCamera>(viewport).Projection(float(extent.Width) / float(extent.Height)));
     const float noise_phase = r.get<const PlaybackFrame>(viewport).Value * std::numbers::phi_v<float>;
     encode::SetPushConstants(render, MotionBlurGatherPushConstants{samplers.SceneDepth, samplers.Velocity, samplers.SceneColor, noise_phase - std::floor(noise_phase), {inverse_projection[2].z, inverse_projection[3].z, inverse_projection[2].w, inverse_projection[3].w}});
     render->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));

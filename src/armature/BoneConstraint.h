@@ -7,6 +7,8 @@
 #include <vector>
 
 // Pose constraint stack on bone entities.
+using numeric::I4, numeric::mat4;
+
 struct CopyTransformsData {};
 struct ChildOfData {
     mat4 InverseMatrix{I4}; // Stored "parent-inverse" like Blender's Child Of: inverse(target_world) * owner_world at bind time.

@@ -1,3 +1,5 @@
+#include "numeric/vec2.h"
+
 #include "render/SvgResource.h"
 
 #include "metal/ImGuiTexture.h"

@@ -5,6 +5,7 @@
 #include "animation/AnimationTimeline.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
+#include "numeric/VectorMath.h"
 #include "object/ObjectOps.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -60,7 +61,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
 
                 auto &armature = r.edit<Armature>(r.get<ArmatureObject>(arm_obj_entity).Entity);
                 const auto &arm_wt = r.get<WorldTransform>(arm_obj_entity);
-                const auto new_id = armature.AddBone("Bone", {}, {.P = (numeric::Conjugate(numeric::Normalize(arm_wt.R)) * -arm_wt.P) / arm_wt.S});
+                const auto new_id = armature.AddBone("Bone", {}, {.P = (Conjugate(Normalize(arm_wt.R)) * -arm_wt.P) / arm_wt.S});
                 RebuildBoneStructure(r, viewport, r.get<ArmatureObject>(arm_obj_entity).Entity);
 
                 const auto bone_entity = CreateSingleBoneInstance(r, arm_obj_entity, new_id);
@@ -238,7 +239,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     const auto *twt = r.try_get<const WorldTransform>(target);
                     const auto *bwt = r.try_get<const WorldTransform>(bone);
                     // Bake inverse(target_world) * bone_world so the current relative pose becomes the new rest.
-                    if (twt && bwt) std::get<ChildOfData>(cs.Stack[a.Index].Data).InverseMatrix = numeric::Inverse(ToMatrix(*twt)) * ToMatrix(*bwt);
+                    if (twt && bwt) std::get<ChildOfData>(cs.Stack[a.Index].Data).InverseMatrix = Inverse(ToMatrix(*twt)) * ToMatrix(*bwt);
                 });
             },
             [&](const ClearConstraintChildOfInverse &a) {

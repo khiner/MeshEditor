@@ -1,6 +1,7 @@
 // Requires deterministic output, nondecreasing coarse-level error, and exact level-0 coverage at every threshold.
 
 #include "render/ClusterLod.h"
+#include "numeric/VectorMath.h"
 
 #include "RunSuites.h"
 

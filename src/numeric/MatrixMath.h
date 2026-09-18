@@ -1,12 +1,28 @@
 #pragma once
 
+#include "QuaternionMath.h"
+#include "numeric/mat3.h"
 #include "numeric/mat4.h"
-#include "numeric/quat.h"
 
 #include <bit>
 #include <simd/matrix.h>
 
-namespace numeric::detail {
+namespace numeric {
+
+constexpr mat3 operator+(mat3 a, mat3 b) { return {a[0] + b[0], a[1] + b[1], a[2] + b[2]}; }
+constexpr mat3 operator-(mat3 a, mat3 b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
+constexpr mat3 operator*(mat3 a, float b) { return {a[0] * b, a[1] * b, a[2] * b}; }
+constexpr mat3 operator*(float a, mat3 b) { return b * a; }
+
+constexpr mat4 operator+(mat4 a, mat4 b) { return {a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]}; }
+constexpr mat4 operator-(mat4 a, mat4 b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]}; }
+constexpr mat4 operator*(mat4 a, float b) { return {a[0] * b, a[1] * b, a[2] * b, a[3] * b}; }
+constexpr mat4 operator*(float a, mat4 b) { return b * a; }
+
+constexpr mat3 ToMat3(mat4 m) { return {{m[0].x, m[0].y, m[0].z}, {m[1].x, m[1].y, m[1].z}, {m[2].x, m[2].y, m[2].z}}; }
+constexpr mat4 ToMat4(mat3 m) { return {{m[0].x, m[0].y, m[0].z, 0.f}, {m[1].x, m[1].y, m[1].z, 0.f}, {m[2].x, m[2].y, m[2].z, 0.f}, {0.f, 0.f, 0.f, 1.f}}; }
+
+namespace detail {
 inline simd_float3x3 ToSimd(mat3 m) {
     return simd_matrix(simd_make_float3(m[0].x, m[0].y, m[0].z), simd_make_float3(m[1].x, m[1].y, m[1].z), simd_make_float3(m[2].x, m[2].y, m[2].z));
 }
@@ -16,7 +32,7 @@ inline mat3 FromSimd(simd_float3x3 m) {
 }
 inline simd_float4x4 ToSimd(mat4 m) { return std::bit_cast<simd_float4x4>(m); }
 inline mat4 FromSimd(simd_float4x4 m) { return std::bit_cast<mat4>(m); }
-} // namespace numeric::detail
+} // namespace detail
 
 inline vec3 operator*(mat3 a, vec3 b) {
     return {
@@ -27,12 +43,11 @@ inline vec3 operator*(mat3 a, vec3 b) {
 }
 inline mat3 operator*(mat3 a, mat3 b) { return {a * b[0], a * b[1], a * b[2]}; }
 
-inline mat4 operator*(mat4 a, mat4 b) { return numeric::detail::FromSimd(simd_mul(numeric::detail::ToSimd(a), numeric::detail::ToSimd(b))); }
+inline mat4 operator*(mat4 a, mat4 b) { return detail::FromSimd(simd_mul(detail::ToSimd(a), detail::ToSimd(b))); }
 inline vec4 operator*(mat4 a, vec4 b) {
-    return std::bit_cast<vec4>(simd_mul(numeric::detail::ToSimd(a), std::bit_cast<simd_float4>(b)));
+    return std::bit_cast<vec4>(simd_mul(detail::ToSimd(a), std::bit_cast<simd_float4>(b)));
 }
 
-namespace numeric {
 inline mat3 Transpose(mat3 m) { return detail::FromSimd(simd_transpose(detail::ToSimd(m))); }
 inline float Determinant(mat3 m) {
     return m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2]) - m[1][0] * (m[0][1] * m[2][2] - m[2][1] * m[0][2]) + m[2][0] * (m[0][1] * m[1][2] - m[1][1] * m[0][2]);
@@ -123,8 +138,8 @@ inline mat4 Inverse(mat4 m) {
     const float determinant = (dot_0.x + dot_0.y) + (dot_0.z + dot_0.w);
     return inverse * (1.f / determinant);
 }
-inline mat4 ToMat4(quat q) { return mat4{ToMat3(q)}; }
-inline quat ToQuat(mat4 m) { return ToQuat(mat3{m}); }
+inline mat4 ToMat4(quat q) { return ToMat4(ToMat3(q)); }
+inline quat ToQuat(mat4 m) { return ToQuat(ToMat3(m)); }
 inline mat4 Translate(mat4 m, vec3 t) { return m * mat4{vec4{1, 0, 0, 0}, vec4{0, 1, 0, 0}, vec4{0, 0, 1, 0}, vec4{t.x, t.y, t.z, 1}}; }
 inline mat4 Scale(mat4 m, vec3 s) { return m * mat4{vec4{s.x, 0, 0, 0}, vec4{0, s.y, 0, 0}, vec4{0, 0, s.z, 0}, vec4{0, 0, 0, 1}}; }
 inline mat4 Rotate(mat4 m, float angle, vec3 axis) {

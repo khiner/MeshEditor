@@ -9,6 +9,8 @@
 #include <vector>
 
 namespace gltf {
+using numeric::vec3;
+
 struct ImageBasedLight {
     std::vector<std::array<uint32_t, 6>> SpecularImageIndicesByMip{}; // Mip-major; face order: +X, -X, +Y, -Y, +Z, -Z.
     std::optional<std::array<vec3, 9>> IrradianceCoefficients{}; // L00, L1-1, L10, L11, L2-2, L2-1, L20, L21, L22.

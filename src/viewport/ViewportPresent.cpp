@@ -1,3 +1,5 @@
+#include "numeric/uvec2.h"
+
 #include "state/Scene.h"
 #include "viewport/Viewport.h"
 

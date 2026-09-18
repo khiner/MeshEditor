@@ -10,6 +10,8 @@
 #include <cmath>
 #include <numbers>
 
+using numeric::quat;
+
 using namespace boost::ut;
 
 namespace {

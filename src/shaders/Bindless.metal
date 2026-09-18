@@ -1,18 +1,18 @@
 #ifndef BINDLESS_MSL
 #define BINDLESS_MSL
 
+#include "TRSUtils.metal"
 #include "gpu/BindlessBindings.h"
-#include "gpu/SceneViewUBO.h"
-#include "gpu/ViewportTheme.h"
-#include "gpu/WorkspaceLights.h"
-#include "gpu/DrawData.h"
-#include "gpu/Vertex.h"
 #include "gpu/BoneDeformVertex.h"
+#include "gpu/DrawData.h"
+#include "gpu/LightRecord.h"
 #include "gpu/MorphTargetVertex.h"
 #include "gpu/PBRMaterial.h"
-#include "gpu/LightRecord.h"
+#include "gpu/SceneViewUBO.h"
 #include "gpu/Transform.h"
-#include "TRSUtils.metal"
+#include "gpu/Vertex.h"
+#include "gpu/ViewportTheme.h"
+#include "gpu/WorkspaceLights.h"
 
 constant uint STATE_SELECTED = 1u << 0;
 constant uint STATE_ACTIVE = 1u << 1;
@@ -40,7 +40,7 @@ struct SceneT {
     device const DrawData *Draws(uint slot) const { return BindlessBuffer(DrawData, B.DrawDataBuffer, slot); }
     device const uchar *InstanceStates(uint slot) const { return BindlessBuffer(uchar, B.InstanceStateBuffer, slot); }
     device const BoneDeformVertex *BoneDeforms(uint slot) const { return BindlessBuffer(BoneDeformVertex, B.BoneDeformBuffer, slot); }
-    device const packed_float4x4 *ArmatureDeforms(uint slot) const { return BindlessBuffer(packed_float4x4, B.ArmatureDeformBuffer, slot); }
+    device const mat4 *ArmatureDeforms(uint slot) const { return BindlessBuffer(mat4, B.ArmatureDeformBuffer, slot); }
     device const MorphTargetVertex *MorphTargets(uint slot) const { return BindlessBuffer(MorphTargetVertex, B.MorphTargetBuffer, slot); }
     device const float *MorphWeights(uint slot) const { return BindlessBuffer(float, B.MorphWeightBuffer, slot); }
     device const LightRecord *Lights(uint slot) const { return BindlessBuffer(LightRecord, B.LightBuffer, slot); }

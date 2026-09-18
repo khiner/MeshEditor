@@ -2,10 +2,13 @@
 
 #include "CameraTypes.h"
 #include "numeric/Angles.h"
+#include "numeric/VectorMath.h"
 
 #include <algorithm>
 #include <cmath>
 #include <type_traits>
+
+using numeric::Clamp, numeric::Radians;
 
 inline float AspectRatio(const CameraLens &camera) {
     if (const auto *persp = std::get_if<Perspective>(&camera)) return persp->HasAspectRatio() ? persp->AspectRatio : DefaultAspectRatio;
@@ -16,7 +19,7 @@ inline float AspectRatio(const CameraLens &camera) {
 // Convert projections so applying the inverse conversion at the same distance restores the original projection.
 inline Perspective PerspectiveFromOrthographic(const Orthographic &orthographic, float distance) {
     return {
-        .FieldOfViewRad = numeric::Clamp(2.f * std::atan(orthographic.Mag.y / distance), numeric::Radians(1.f), numeric::Radians(179.f)),
+        .FieldOfViewRad = Clamp(2.f * std::atan(orthographic.Mag.y / distance), Radians(1.f), Radians(179.f)),
         .FarClip = orthographic.FarClip,
         .NearClip = orthographic.NearClip,
         .AspectRatio = orthographic.Mag.x / orthographic.Mag.y,
@@ -44,7 +47,7 @@ inline CameraLens WidenForLookThrough(const CameraLens &camera, float viewport_a
             using Projection = std::decay_t<decltype(projection)>;
             if constexpr (std::is_same_v<Projection, Perspective>) {
                 auto widened = projection;
-                widened.FieldOfViewRad = std::min(2.f * std::atan(std::tan(projection.FieldOfViewRad * 0.5f) * zoom), numeric::Radians(179.f));
+                widened.FieldOfViewRad = std::min(2.f * std::atan(std::tan(projection.FieldOfViewRad * 0.5f) * zoom), Radians(179.f));
                 return widened;
             } else {
                 auto widened = projection;

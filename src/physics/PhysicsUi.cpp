@@ -6,6 +6,7 @@
 #include "action/Physics.h"
 #include "animation/AnimationTimeline.h"
 #include "numeric/Angles.h"
+#include "numeric/VectorMath.h"
 #include "numeric/vec2.h"
 #include "scene/SceneGraph.h"
 #include "ui/ChoiceCombo.h"
@@ -506,9 +507,9 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
             }
             if (edit.InertiaDiagonal) {
                 motion_changed |= ui::DragFloat3("Inertia diagonal", &edit.InertiaDiagonal->x, 0.01f, 0.001f, 1e6f);
-                vec3 euler_deg = numeric::Degrees(numeric::EulerAngles(edit.InertiaOrientation.value_or(quat{1, 0, 0, 0})));
+                vec3 euler_deg = Degrees(EulerAngles(edit.InertiaOrientation.value_or(quat{1, 0, 0, 0})));
                 if (ui::DragFloat3("Inertia orientation", &euler_deg.x, 0.1f)) {
-                    edit.InertiaOrientation = quat{numeric::Radians(euler_deg)};
+                    edit.InertiaOrientation = FromEulerAngles(Radians(euler_deg));
                     motion_changed = true;
                 }
             }

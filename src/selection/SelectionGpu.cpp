@@ -1,3 +1,7 @@
+#include "numeric/VectorMath.h"
+#include "numeric/uvec2.h"
+#include "numeric/uvec4.h"
+
 #include "selection/SelectionGpu.h"
 #include "state/Scene.h"
 
@@ -69,8 +73,8 @@ struct ElementPickTarget {
 
 std::optional<PixelRect> ClampedRect(uvec2 lo, uvec2 hi, mtl::Extent2D target) {
     const auto limit = std::bit_cast<uvec2>(target);
-    lo = numeric::Min(lo, limit);
-    hi = numeric::Min(hi, limit);
+    lo = Min(lo, limit);
+    hi = Min(hi, limit);
     if (hi.x <= lo.x || hi.y <= lo.y) return {};
     return PixelRect{lo, hi - lo};
 }

@@ -5,7 +5,6 @@
 #include "gpu/AxisThemeColors.h"
 
 namespace colors {
-
 constexpr ImU32 Lighten(ImU32 color, float amount) {
     const ImVec4 rgba{ImColor{color}};
     return ImColor{

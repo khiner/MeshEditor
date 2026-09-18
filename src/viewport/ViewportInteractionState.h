@@ -2,6 +2,7 @@
 
 #include "FieldLimits.h"
 #include "gizmo/TransformGizmoTypes.h"
+#include "numeric/VectorMath.h"
 
 struct PendingTransform {
     vec3 Pivot{};
@@ -10,11 +11,11 @@ struct PendingTransform {
 
     // Apply the resolved gizmo delta to an object in world space.
     Transform ApplyTo(const Transform &start, bool scale_locked) const {
-        const auto inverse = numeric::Conjugate(PivotR);
+        const auto inverse = Conjugate(PivotR);
         const auto offset = start.P - Pivot;
         return {
-            Delta.P + Pivot + numeric::Rotate(Delta.R, scale_locked ? offset : PivotR * (inverse * offset * Delta.S)),
-            numeric::Normalize(Delta.R * start.R),
+            Delta.P + Pivot + Rotate(Delta.R, scale_locked ? offset : PivotR * (inverse * offset * Delta.S)),
+            Normalize(Delta.R * start.R),
             scale_locked ? start.S : Delta.S * start.S,
         };
     }

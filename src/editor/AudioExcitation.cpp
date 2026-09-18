@@ -1,3 +1,6 @@
+#include "numeric/VectorMath.h"
+#include "numeric/vec2.h"
+
 #include "editor/AudioExcitation.h"
 #include "render/Instance.h"
 #include "state/Scene.h"
@@ -8,11 +11,11 @@
 vec2 ImpulseAngle{0, 0};
 
 // Unit surface normal at a mesh vertex.
-vec3 VertexNormal(const Mesh &mesh, uint32_t vertex) { return numeric::Normalize(mesh.GetNormal(Mesh::VH{vertex})); }
+vec3 VertexNormal(const Mesh &mesh, uint32_t vertex) { return Normalize(mesh.GetNormal(Mesh::VH{vertex})); }
 
 // Tilts a unit normal using a joystick position in the unit disk.
 vec3 TiltAlongNormal(vec3 n, vec2 joy) {
-    const float r = numeric::Length(joy);
+    const float r = Length(joy);
     if (r < 1e-6f) return n;
     // Orthonormal tangent basis from the normal (Duff et al. 2017).
     const float s = n.z >= 0 ? 1.f : -1.f;

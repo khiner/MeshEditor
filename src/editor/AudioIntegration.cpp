@@ -1,4 +1,5 @@
 #include "editor/AudioIntegration.h"
+#include "numeric/VectorMath.h"
 #include "project/Assets.h"
 #include "state/Scene.h"
 
@@ -226,7 +227,7 @@ void TriggerModalStrike(state::Scene &r, state::Entity e, uint32_t excitable_ind
 
     const auto &modes = r.get<const ModalModes>(e);
     if (excitable_index >= std::min(modes.Vertices.size(), modes.Positions.size())) return;
-    const vec3 dir = physics ? numeric::Normalize(physics->Direction) : ExciteDirection(r, e, modes.Vertices[excitable_index]);
+    const vec3 dir = physics ? Normalize(physics->Direction) : ExciteDirection(r, e, modes.Vertices[excitable_index]);
 
     const auto *cd = r.try_get<const ContactDynamics>(e);
     const auto *mat = r.try_get<const AcousticMaterial>(e);

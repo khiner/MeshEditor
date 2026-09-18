@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <optional>
 
+using numeric::vec2;
+
 struct FrameState {
     float DeltaTime{0};
     bool FixedFrameStep{false};

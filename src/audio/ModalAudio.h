@@ -16,6 +16,8 @@
 #include <thread>
 #include <vector>
 
+using numeric::vec3;
+
 struct ModalModes;
 
 // One-shot events the main thread queues for the audio thread.

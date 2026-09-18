@@ -1,5 +1,6 @@
 
 #include "SeatedBench.h"
+#include "numeric/VectorMath.h"
 
 #include "Near.h"
 #include "RunSuites.h"

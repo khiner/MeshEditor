@@ -6,6 +6,7 @@
 #include "armature/ArmatureComponents.h"
 #include "gltf/GltfScene.h"
 #include "gltf/SourceAssets.h"
+#include "numeric/VectorMath.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
@@ -111,9 +112,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     // Rotate each selected entity by the same relative rotation the active turned through.
                     const auto active = active_rotation_target();
                     if (active == state::Null) return;
-                    const quat delta = a.R * numeric::Conjugate(rotation_start(active));
+                    const quat delta = a.R * Conjugate(rotation_start(active));
                     for (const auto e : rotation_targets(Scope::SelectedDelta)) {
-                        const quat rotation = numeric::Normalize(delta * rotation_start(e));
+                        const quat rotation = Normalize(delta * rotation_start(e));
                         PatchEditedLocal(r, e, [&](auto &t) { t.R = rotation; });
                         if (e == active) { // keep the editor's representation stable; others re-sync from R
                             r.replace<RotationUiVariant>(e, a.UiVariant);
@@ -139,8 +140,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 std::vector<std::pair<state::Entity, float>> bone_scales;
                 const auto make_local = [&](state::Entity e, const Transform &world, const Transform &pd) {
                     Transform local;
-                    local.P = numeric::Conjugate(pd.R) * ((world.P - pd.P) / pd.S);
-                    local.R = numeric::Conjugate(pd.R) * world.R;
+                    local.P = Conjugate(pd.R) * ((world.P - pd.P) / pd.S);
+                    local.R = Conjugate(pd.R) * world.R;
                     local.S = r.all_of<ScaleLocked>(e) ? EditedLocal(r, e)->S : world.S / pd.S;
                     locals.emplace_back(e, local);
                 };
@@ -155,7 +156,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     return std::nullopt;
                 };
 
-                const auto rot = ts.R, rT = numeric::Conjugate(rot);
+                const auto rot = ts.R, rT = Conjugate(rot);
                 for (const auto e : root_selected) {
                     const auto [ts_e, start_pd] = get_start(e);
 
@@ -169,17 +170,17 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                             const bool tip_only = parts->Tip && !parts->Root && !parts->Body;
                             const bool root_only = parts->Root && !parts->Tip && !parts->Body;
                             if (tip_only || root_only) {
-                                const auto transform_point = [&](vec3 p) { return td.P + ts.P + numeric::Rotate(td.R, rot * (rT * (p - ts.P) * td.S)); };
+                                const auto transform_point = [&](vec3 p) { return td.P + ts.P + Rotate(td.R, rot * (rT * (p - ts.P) * td.S)); };
 
                                 const float bone_length = *sbl;
                                 const auto start_head = ts_e.P;
-                                const auto start_tail = start_head + numeric::Rotate(ts_e.R, vec3{0, bone_length, 0});
+                                const auto start_tail = start_head + Rotate(ts_e.R, vec3{0, bone_length, 0});
                                 const auto new_head = tip_only ? start_head : transform_point(start_head);
                                 const auto new_tail = root_only ? start_tail : transform_point(start_tail);
                                 const auto dir = new_tail - new_head;
-                                const auto new_length = numeric::Length(dir);
+                                const auto new_length = Length(dir);
                                 constexpr float eps = 1e-6f;
-                                const auto new_world_rot = new_length > eps ? numeric::Rotation(numeric::Normalize(numeric::Rotate(ts_e.R, vec3{0, 1, 0})), dir / new_length) * ts_e.R : ts_e.R;
+                                const auto new_world_rot = new_length > eps ? Rotation(Normalize(Rotate(ts_e.R, vec3{0, 1, 0})), dir / new_length) * ts_e.R : ts_e.R;
                                 bone_scales.emplace_back(e, std::max(new_length, eps));
                                 make_local(e, {new_head, new_world_rot, ts_e.S}, pd);
                                 continue;
@@ -188,7 +189,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
 
                         // Full bone transform in bone edit mode.
                         const auto offset = ts_e.P - ts.P;
-                        make_local(e, {td.P + ts.P + numeric::Rotate(td.R, rot * (rT * offset * td.S)), numeric::Normalize(td.R * ts_e.R), ts_e.S}, pd);
+                        make_local(e, {td.P + ts.P + Rotate(td.R, rot * (rT * offset * td.S)), Normalize(td.R * ts_e.R), ts_e.S}, pd);
                         continue;
                     }
 
@@ -239,8 +240,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 for (const auto [e, st] : r.view<const StartTransform>().each()) {
                     const auto &pd = st.ParentDelta;
                     PatchEditedLocal(r, e, [&](auto &t) {
-                        t.P = numeric::Conjugate(pd.R) * ((st.T.P - pd.P) / pd.S);
-                        t.R = numeric::Conjugate(pd.R) * st.T.R;
+                        t.P = Conjugate(pd.R) * ((st.T.P - pd.P) / pd.S);
+                        t.R = Conjugate(pd.R) * st.T.R;
                         if (!r.all_of<ScaleLocked>(e)) t.S = st.T.S / pd.S;
                     });
                 }

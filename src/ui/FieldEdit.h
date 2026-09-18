@@ -1,5 +1,8 @@
 #pragma once
 
+#include "numeric/VectorMath.h"
+#include "numeric/vec2.h"
+
 // Wrap ImGui field controls in one action gesture per edit.
 // Edit{R} targets the active entity and applies Alt-modified edits to the selection.
 // Edit{R, E} targets E explicitly.
@@ -18,6 +21,7 @@
 #include <optional>
 
 namespace ui {
+using numeric::Degrees;
 
 // Reserve Alt for selection edits and use Shift for 0.05x drag precision.
 inline bool DragFloat(const char *label, float *v, float speed = 1.f, float lo = 0.f, float hi = 0.f, const char *fmt = "%.3f") {
@@ -186,7 +190,7 @@ struct FieldWidgets {
     bool SliderAngle(const char *label, const char *fmt = "%.0f deg") {
         static_assert(HasMin<Prefix..., Ms...> && HasMax<Prefix..., Ms...>, "Edit::SliderAngle: field must declare FieldLimits with both Min and Max");
         using L = FieldLimits<Prefix..., Ms...>;
-        return Self().template Run<Ms...>([&](float &v) { return ImGui::SliderAngle(label, &v, numeric::Degrees(float(L::Min)), numeric::Degrees(float(L::Max)), fmt); },
+        return Self().template Run<Ms...>([&](float &v) { return ImGui::SliderAngle(label, &v, Degrees(float(L::Min)), Degrees(float(L::Max)), fmt); },
                                           /*delta_capable=*/true);
     }
 

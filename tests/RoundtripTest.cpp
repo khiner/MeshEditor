@@ -10,6 +10,7 @@
 #include "audio/ModalModelFile.h"
 #include "audio/ModalModes.h"
 #include "editor/Engine.h"
+#include "numeric/VectorMath.h"
 #include "project/Assets.h"
 #include <barrier>
 #include <future>

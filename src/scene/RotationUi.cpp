@@ -6,19 +6,21 @@
 
 #include <cmath>
 
+using numeric::AngleAxis, numeric::Degrees, numeric::Radians;
+
 quat ToRotation(const RotationUiVariant &v) {
     return std::visit(
         overloaded{
-            [](const RotationQuat &q) { return numeric::Normalize(q.Value); },
+            [](const RotationQuat &q) { return Normalize(q.Value); },
             [](const RotationEuler &e) {
-                const auto rads = numeric::Radians(e.Value);
-                const auto rotation = numeric::AngleAxis(rads.z, {0, 0, 1}) * numeric::AngleAxis(rads.y, {0, 1, 0}) * numeric::AngleAxis(rads.x, {1, 0, 0});
-                return numeric::Normalize(numeric::ToQuat(numeric::ToMat4(rotation)));
+                const auto rads = Radians(e.Value);
+                const auto rotation = AngleAxis(rads.z, {0, 0, 1}) * AngleAxis(rads.y, {0, 1, 0}) * AngleAxis(rads.x, {1, 0, 0});
+                return Normalize(ToQuat(ToMat4(rotation)));
             },
             [](const RotationAxisAngle &a) {
-                const auto axis = numeric::Normalize(vec3{a.Value});
-                const auto angle = numeric::Radians(a.Value.w);
-                return numeric::Normalize(quat{std::cos(angle / 2), axis * std::sin(angle / 2)});
+                const auto axis = Normalize(vec3{a.Value});
+                const auto angle = Radians(a.Value.w);
+                return Normalize(quat{std::cos(angle / 2), axis * std::sin(angle / 2)});
             },
         },
         v
@@ -28,12 +30,12 @@ quat ToRotation(const RotationUiVariant &v) {
 RotationUiVariant ToUiVariant(quat rotation, size_t mode) {
     switch (mode) {
         case 1: {
-            const auto euler = numeric::EulerAngles(numeric::ToQuat(numeric::ToMat4(rotation)));
-            return RotationEuler{numeric::Degrees(euler)};
+            const auto euler = EulerAngles(ToQuat(ToMat4(rotation)));
+            return RotationEuler{Degrees(euler)};
         }
         case 2: {
-            const auto q = numeric::Normalize(rotation);
-            return RotationAxisAngle{{numeric::Axis(q), numeric::Degrees(numeric::Angle(q))}};
+            const auto q = Normalize(rotation);
+            return RotationAxisAngle{{Axis(q), Degrees(Angle(q))}};
         }
         default: return RotationQuat{rotation};
     }

@@ -10,7 +10,7 @@ inline float3 ApplyArmatureDeform(const thread SceneT<SetT> &scene, DrawData dra
     if (draw.BoneDeformOffset == InvalidOffset) return position;
 
     const BoneDeformVertex bd = scene.BoneDeforms(scene.View.BoneDeformSlot)[draw.BoneDeformOffset + vertex_index];
-    device const packed_float4x4 *matrices = scene.ArmatureDeforms(deform_slot);
+    device const mat4 *matrices = scene.ArmatureDeforms(deform_slot);
     const float4 weights = float4(bd.Weights);
     const uint4 joints = uint4(bd.Joints);
 

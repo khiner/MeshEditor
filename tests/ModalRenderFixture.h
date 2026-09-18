@@ -2,6 +2,7 @@
 
 #include "audio/ModalAudio.h"
 #include "audio/ModalModes.h"
+#include "numeric/VectorMath.h"
 
 #include <algorithm>
 #include <cmath>

@@ -1,3 +1,6 @@
+#include "numeric/VectorMath.h"
+#include "numeric/vec2.h"
+
 #include "assets/MeshImport.h"
 #include <format>
 #include <fstream>
@@ -24,7 +27,7 @@ ObjPlyMaterial ToObjPlyMaterial(const tinyobj::material_t &material, uint32_t in
     const auto roughness = std::clamp(std::sqrt(2.f / (shininess + 2.f)), 0.04f, 1.f);
     const auto specular_strength = std::max({ks.x, ks.y, ks.z});
     const auto metallic = std::clamp((specular_strength - 0.04f) / (1.f - 0.04f), 0.f, 1.f);
-    const auto base_color = numeric::Mix(kd, ks, metallic);
+    const auto base_color = Mix(kd, ks, metallic);
     const auto alpha = std::clamp(material.dissolve, 0.f, 1.f);
     auto name = material.name.empty() ? "Material" + std::to_string(index) : material.name;
     return {

@@ -1,5 +1,9 @@
-#include "GltfScene.h"
+#include "numeric/VectorMath.h"
+#include "numeric/uvec4.h"
+#include "numeric/vec2.h"
+
 #include "GltfConvert.h"
+#include "GltfScene.h"
 #include "project/Assets.h"
 #include "render/LightComponents.h"
 #include "state/Scene.h"
@@ -76,7 +80,7 @@ vec2 ToVec2(const fastgltf::math::nvec2 &v) { return std::bit_cast<vec2>(v); }
 vec3 ToVec3(const fastgltf::math::nvec3 &v) { return std::bit_cast<vec3>(v); }
 vec4 ToVec4(const fastgltf::math::nvec4 &v) { return std::bit_cast<vec4>(v); }
 quat ToQuat(const fastgltf::math::fquat &q) { return std::bit_cast<quat>(q); }
-Transform TrsToTransform(const fastgltf::TRS &trs) { return {.P = ToVec3(trs.translation), .R = numeric::Normalize(ToQuat(trs.rotation)), .S = ToVec3(trs.scale)}; }
+Transform TrsToTransform(const fastgltf::TRS &trs) { return {.P = ToVec3(trs.translation), .R = Normalize(ToQuat(trs.rotation)), .S = ToVec3(trs.scale)}; }
 
 // Slot initially contains a glTF texture index and later contains a bindless Scene.cpp slot.
 // Supply meta for top-level material textures that require texCoord override round trips.
@@ -823,7 +827,7 @@ std::vector<Transform> ReadInstanceTransforms(const fastgltf::Asset &asset, cons
     if (r_attr != node.instancingAttributes.end()) {
         const auto &accessor = asset.accessors[r_attr->accessorIndex];
         fastgltf::iterateAccessorWithIndex<vec4>(asset, accessor, [&](const vec4 &v, auto i) {
-            transforms[i].R = numeric::Normalize(std::bit_cast<quat>(v));
+            transforms[i].R = Normalize(std::bit_cast<quat>(v));
         });
     }
     if (s_attr != node.instancingAttributes.end()) {
@@ -1186,7 +1190,7 @@ NodePlan PlanNodes(const fastgltf::Asset &asset, uint32_t scene_index) {
             fastgltf::math::fvec3 scale, translation;
             fastgltf::math::fquat rotation;
             fastgltf::math::decomposeTransformMatrix(fm, scale, rotation, translation);
-            plan.LocalTransforms[node_index] = Transform{ToVec3(translation), numeric::Normalize(ToQuat(rotation)), ToVec3(scale)};
+            plan.LocalTransforms[node_index] = Transform{ToVec3(translation), Normalize(ToQuat(rotation)), ToVec3(scale)};
         }
     }
     const auto merge_scene = [&](uint32_t si) {
@@ -1943,7 +1947,7 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
                 float nearest_d2 = -1.f;
                 for (uint32_t v = 0; v < mesh.VertexCount(); ++v) {
                     const auto d = model.Positions[i] - mesh.GetPosition(Mesh::VH{v});
-                    if (const float d2 = numeric::Dot(d, d); nearest_d2 < 0.f || d2 < nearest_d2) {
+                    if (const float d2 = Dot(d, d); nearest_d2 < 0.f || d2 < nearest_d2) {
                         nearest_d2 = d2;
                         nearest = v;
                     }
@@ -2102,7 +2106,7 @@ std::vector<state::Entity> ImportArmatures(state::Scene &r, const fastgltf::Asse
             r.emplace<BoneConstraints>(bone_entities[i], BoneConstraints{.Stack = {BoneConstraint{
                                                                              .TargetEntity = target,
                                                                              .Influence = 1.f,
-                                                                             .Data = ChildOfData{.InverseMatrix = numeric::Inverse(ToMatrix(r.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
+                                                                             .Data = ChildOfData{.InverseMatrix = Inverse(ToMatrix(r.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
                                                                          }}});
         }
     }
@@ -2395,7 +2399,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     const auto image_light = ToIndex(asset.scenes[scene_index].imageBasedLightIndex, asset.imageBasedLights.size());
     if (image_light) {
         const auto &src_ibl = asset.imageBasedLights[*image_light];
-        r.emplace_or_replace<ImageLight>(viewport, ImageLight{numeric::Normalize(std::bit_cast<quat>(src_ibl.rotation)), std::max(0.f, src_ibl.intensity)});
+        r.emplace_or_replace<ImageLight>(viewport, ImageLight{Normalize(std::bit_cast<quat>(src_ibl.rotation)), std::max(0.f, src_ibl.intensity)});
     }
     const bool imported_animation = ImportAnimations(r, asset, viewport, objects, armature_data_entities, materials.IndexByGltfMaterial, image_light);
 

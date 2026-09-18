@@ -1,5 +1,7 @@
 #pragma once
 
+#include "numeric/uvec2.h"
+
 #include "gpu/BindlessBindings.h"
 #include "gpu/Types.h"
 #include "mesh/MeshPipelines.h"

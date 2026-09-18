@@ -1,3 +1,7 @@
+#include "numeric/VectorMath.h"
+#include "numeric/uvec2.h"
+#include "numeric/vec2.h"
+
 #include "Compress.h"
 #include "state/Scene.h"
 
@@ -962,9 +966,9 @@ bool FrameScene(state::Scene &r, state::Entity viewport, float aspect_ratio) {
         const auto m = ToMatrix(wt);
         for (int c = 0; c < 8; ++c) {
             const vec3 v{m * vec4{(c & 1) ? local.Max.x : local.Min.x, (c & 2) ? local.Max.y : local.Min.y, (c & 4) ? local.Max.z : local.Min.z, 1.f}};
-            scene.Min = numeric::Min(scene.Min, v);
-            scene.Max = numeric::Max(scene.Max, v);
-            const float a = numeric::Dot(v, right), b = numeric::Dot(v, up), f = numeric::Dot(v, away);
+            scene.Min = Min(scene.Min, v);
+            scene.Max = Max(scene.Max, v);
+            const float a = Dot(v, right), b = Dot(v, up), f = Dot(v, away);
             top = std::max(top, b / ty + f);
             bottom = std::max(bottom, -b / ty + f);
             rgt = std::max(rgt, a / tx + f);
@@ -974,12 +978,12 @@ bool FrameScene(state::Scene &r, state::Entity viewport, float aspect_ratio) {
     if (scene.Min.x > scene.Max.x || scene.Min.y > scene.Max.y || scene.Min.z > scene.Max.z) return !any_bounded_instance;
 
     const auto center = (scene.Min + scene.Max) * 0.5f;
-    const float ca = numeric::Dot(center, right), cb = numeric::Dot(center, up), cf = numeric::Dot(center, away);
+    const float ca = Dot(center, right), cb = Dot(center, up), cf = Dot(center, away);
     const float distance = std::max({top - cb / ty, bottom + cb / ty, rgt - ca / tx, lft + ca / tx}) - cf;
     if (distance <= 0.f) return true;
 
     // Clip planes bracket the scene depth so nothing is z-clipped.
-    const float plane_reach = 6 * numeric::Length(scene.Max - scene.Min);
+    const float plane_reach = 6 * Length(scene.Max - scene.Min);
     auto fit = *persp;
     fit.FarClip = distance + plane_reach;
     fit.NearClip = std::max(distance - plane_reach, fit.FarClip / 10000.f);

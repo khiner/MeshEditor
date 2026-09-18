@@ -11,9 +11,11 @@
 #include <optional>
 #include <vector>
 
+using numeric::quat, numeric::vec3;
+
 namespace project {
 struct Assets;
-}
+} // namespace project
 
 /*
 Loads and provides access to a [RealImpact](https://github.com/samuel-clarke/RealImpact) dataset for a single object.

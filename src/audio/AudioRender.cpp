@@ -3,6 +3,7 @@
 #include "audio/AudioSystem.h"
 #include "audio/ContactScene.h"
 #include "mesh/MeshStore.h"
+#include "numeric/VectorMath.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 #include "state/Scene.h"
@@ -59,7 +60,7 @@ void UpdateListenerGains(const state::Scene &r, ModalBank &b, state::Entity view
     for (uint32_t slot = 0; slot < uint32_t(b.Entities.size()); ++slot) {
         const auto e = b.Entities[slot];
         const auto *world = r.valid(e) ? r.try_get<const WorldTransform>(e) : nullptr;
-        const float distance = world ? numeric::Distance(listener_pos, world->P) : ListenerDistance;
+        const float distance = world ? Distance(listener_pos, world->P) : ListenerDistance;
         std::atomic_ref{b.ListenerGain[slot]}.store(ListenerDistance / std::max(distance, ListenerDistance), std::memory_order_relaxed);
     }
 }

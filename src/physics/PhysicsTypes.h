@@ -9,6 +9,8 @@
 #include <optional>
 #include <vector>
 
+using numeric::quat, numeric::vec3;
+
 struct PhysicsSimulationSettings {
     vec3 Gravity{0.0f, -9.81f, 0.0f};
     uint32_t SubstepsPerFrame{10}, SolverIterations{10};

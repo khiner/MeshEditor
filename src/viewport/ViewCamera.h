@@ -1,14 +1,18 @@
 #pragma once
 
+#include "numeric/QuaternionMath.h"
+#include "numeric/VectorMath.h"
+#include "numeric/vec2.h"
+
 #include "viewport/CameraView.h"
 
 // Uses the viewport aspect ratio rather than the source camera's aspect ratio.
 struct ViewCamera : CameraView {
     ViewCamera(vec3 position, vec3 target, CameraLens data)
-        : CameraView{data, target, numeric::Length(position - target), OrientationFromAway(position - target)} {}
+        : CameraView{data, target, Length(position - target), OrientationFromAway(position - target)} {}
 
     ViewCamera(vec3 position, quat orientation, CameraLens data)
-        : CameraView{data, {}, 1.f, numeric::Normalize(orientation)} {
+        : CameraView{data, {}, 1.f, Normalize(orientation)} {
         Target = position - Orientation * vec3{0, 0, 1};
     }
 

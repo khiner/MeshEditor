@@ -1,3 +1,7 @@
+#include "numeric/VectorMath.h"
+#include "numeric/dvec3.h"
+#include "numeric/vec2.h"
+
 #include "Mesh.h"
 
 #include "MeshComponents.h"
@@ -7,6 +11,8 @@
 #include "state/Scene.h"
 
 #include <algorithm>
+
+using numeric::dvec3;
 
 using std::ranges::distance;
 
@@ -207,7 +213,7 @@ float LocalLengthPerUv(const state::Scene &r, state::Entity mesh_entity, uint32_
         const vec3 p0 = mesh->GetPosition(Mesh::VH{corners[t]});
         const vec3 p1 = mesh->GetPosition(Mesh::VH{corners[t + 1]});
         const vec3 p2 = mesh->GetPosition(Mesh::VH{corners[t + 2]});
-        world_area += 0.5 * double(numeric::Length(numeric::Cross(p1 - p0, p2 - p0)));
+        world_area += 0.5 * double(Length(Cross(p1 - p0, p2 - p0)));
         const vec2 a = uvs[t], b = uvs[t + 1], c = uvs[t + 2];
         uv_area += 0.5 * std::abs(double((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)));
     }
@@ -243,16 +249,16 @@ float Mesh::CalcMeanCurvature(VH vh, std::span<const uint8_t> edge_sharpness) co
     }
 
     const vec3 xi = GetPosition(vh);
-    const vec3 ni = numeric::Normalize(GetNormal(vh));
+    const vec3 ni = Normalize(GetNormal(vh));
     double sum = 0;
     int count = 0;
     for (const auto he : voh_range(vh)) {
         // A halfedge with no opposite bounds the surface rather than running through it.
         if (!GetOppositeHalfedge(he)) continue;
         const vec3 d = GetPosition(GetToVertex(he)) - xi;
-        const double d2 = numeric::Dot(d, d);
+        const double d2 = Dot(d, d);
         if (d2 < 1e-20) continue;
-        sum += -2.0 * double(numeric::Dot(d, ni)) / d2;
+        sum += -2.0 * double(Dot(d, ni)) / d2;
         ++count;
     }
     return count ? float(sum / count) : 0.f;
@@ -274,7 +280,7 @@ std::optional<double> Mesh::CalcEnclosedVolume() const {
     double volume = 0;
     ForEachFaceTriangle(*this, [&](uint32_t v0, uint32_t v1, uint32_t v2) {
         const dvec3 a{GetPosition(VH{v0})}, b{GetPosition(VH{v1})}, c{GetPosition(VH{v2})};
-        volume += numeric::Dot(a, numeric::Cross(b, c)) / 6.0;
+        volume += Dot(a, Cross(b, c)) / 6.0;
     });
     return std::abs(volume);
 }
@@ -284,7 +290,7 @@ he::VH Mesh::FindNearestVertex(vec3 p) const {
     float min_dist_sq = std::numeric_limits<float>::max();
     const auto vertex_span = GetVerticesSpan();
     for (const auto vh : vertices()) {
-        if (const float dist_sq = numeric::Distance2(vertex_span[*vh].Position, p); dist_sq < min_dist_sq) {
+        if (const float dist_sq = Distance2(vertex_span[*vh].Position, p); dist_sq < min_dist_sq) {
             min_dist_sq = dist_sq;
             closest_vertex = vh;
         }
@@ -337,8 +343,8 @@ void Mesh::WriteEdgeIndices(std::span<uint32_t> dest) const {
 AABB Mesh::CalcAABB() const {
     AABB b;
     for (const auto &v : GetVerticesSpan()) {
-        b.Min = numeric::Min(b.Min, v.Position);
-        b.Max = numeric::Max(b.Max, v.Position);
+        b.Min = Min(b.Min, v.Position);
+        b.Max = Max(b.Max, v.Position);
     }
     return b;
 }

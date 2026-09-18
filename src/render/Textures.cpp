@@ -1,4 +1,5 @@
 #include "render/Textures.h"
+#include "numeric/VectorMath.h"
 
 #include "File.h"
 #include "gltf/Image.h"
@@ -48,12 +49,12 @@ MTL::PixelFormat ToTextureFormat(TextureColorSpace color_space) {
 
 vec3 CubemapFaceDirection(uint32_t face, float u, float v) {
     switch (face) {
-        case 0: return numeric::Normalize(vec3{1.f, -v, -u}); // +X
-        case 1: return numeric::Normalize(vec3{-1.f, -v, u}); // -X
-        case 2: return numeric::Normalize(vec3{u, 1.f, v}); // +Y
-        case 3: return numeric::Normalize(vec3{u, -1.f, -v}); // -Y
-        case 4: return numeric::Normalize(vec3{u, -v, 1.f}); // +Z
-        default: return numeric::Normalize(vec3{-u, -v, -1.f}); // -Z
+        case 0: return Normalize(vec3{1.f, -v, -u}); // +X
+        case 1: return Normalize(vec3{-1.f, -v, u}); // -X
+        case 2: return Normalize(vec3{u, 1.f, v}); // +Y
+        case 3: return Normalize(vec3{u, -1.f, -v}); // -Y
+        case 4: return Normalize(vec3{u, -v, 1.f}); // +Z
+        default: return Normalize(vec3{-u, -v, -1.f}); // -Z
     }
 }
 
@@ -70,7 +71,7 @@ vec3 EvaluateIrradianceSH(const std::array<vec3, 9> &l, vec3 n) {
         c3 * (3.f * n.z * n.z - 1.f) * l[6] -
         c2 * n.x * n.z * l[7] +
         c4 * (n.x * n.x - n.y * n.y) * l[8];
-    return numeric::Max(irradiance, vec3{0});
+    return Max(irradiance, vec3{0});
 }
 
 using CubemapMipFacesF32 = std::array<DecodedImageF32, 6>;

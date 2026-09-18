@@ -1,4 +1,5 @@
 #include "physics/RbpBody.h"
+#include "numeric/VectorMath.h"
 #include "physics/RbpShape.h"
 
 #include "RunSuites.h"

@@ -8,6 +8,7 @@
 #include "TransformMath.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshBvh.h"
+#include "numeric/VectorMath.h"
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/MeshBuffers.h"
@@ -93,13 +94,13 @@ inline float UniformScaleRatio(const state::Scene &r, state::Entity e, const Mod
 
 // Unit direction of `v`, or zero when `v` has no length.
 inline vec3 UnitOrZero(vec3 v) {
-    const float len = numeric::Length(v);
+    const float len = Length(v);
     return len > 0 ? v / len : vec3{0};
 }
 
 // The sample point nearest `local_point`.
 inline uint32_t NearestSamplePoint(const std::vector<vec3> &positions, vec3 local_point) {
-    const auto dist2 = [local_point](vec3 p) { const auto d = p - local_point; return numeric::Dot(d, d); };
+    const auto dist2 = [local_point](vec3 p) { const auto d = p - local_point; return Dot(d, d); };
     return uint32_t(std::ranges::distance(positions.begin(), std::ranges::min_element(positions, {}, dist2)));
 }
 
@@ -108,6 +109,6 @@ inline uint32_t NearestSamplePoint(const std::vector<vec3> &positions, vec3 loca
 inline float PeakModalDrive(const ModalModes &modes, uint32_t p, vec3 j) {
     if (p >= modes.Shapes.size()) return 0;
     float peak = 0;
-    for (const auto &shape : modes.Shapes[p]) peak = std::max(peak, std::abs(numeric::Dot(shape, j)));
+    for (const auto &shape : modes.Shapes[p]) peak = std::max(peak, std::abs(Dot(shape, j)));
     return peak;
 }

@@ -1,3 +1,6 @@
+#include "numeric/VectorMath.h"
+#include "numeric/vec2.h"
+
 #include "GltfConvert.h"
 #include "GltfScene.h"
 #include "project/Assets.h"
@@ -524,8 +527,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (!with_bounds || vcount == 0) return AddDataAccessor(data, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, target);
         vec3 lo = data[0], hi = data[0];
         for (const auto &p : data) {
-            lo = numeric::Min(lo, p);
-            hi = numeric::Max(hi, p);
+            lo = Min(lo, p);
+            hi = Max(hi, p);
         }
         const uint32_t off = AppendAligned<vec3>(bin, data);
         const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, target);
@@ -546,8 +549,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (vcount == 0) return AddFieldAccessor.template operator()<vec3>(data, field, fastgltf::AccessorType::Vec3, target);
         vec3 lo = data[0].*field, hi = lo;
         for (const auto &v : data) {
-            lo = numeric::Min(lo, v.*field);
-            hi = numeric::Max(hi, v.*field);
+            lo = Min(lo, v.*field);
+            hi = Max(hi, v.*field);
         }
         const uint32_t off = AppendField<vec3>(bin, data, field);
         const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, target);
@@ -1404,7 +1407,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             if (export_node.Parent) {
                 const auto src_parent = nodes[*export_node.Parent].Entity;
                 if (src_parent != state::Null && (!node || node->Parent != src_parent)) {
-                    return ToTransform(numeric::Inverse(rest_world_of(src_parent)) * rest_world_of(entity));
+                    return ToTransform(Inverse(rest_world_of(src_parent)) * rest_world_of(entity));
                 }
             }
             if (const auto it = bone_rest.find(entity); it != bone_rest.end()) return it->second;
@@ -1422,7 +1425,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         std::pmr::vector<fastgltf::Attribute> instancing;
         if (needs_instancing) {
             const uint32_t count = instance_worlds.size();
-            const mat4 node_world_inv = numeric::Inverse(ToMatrix(world_transform));
+            const mat4 node_world_inv = Inverse(ToMatrix(world_transform));
 
             std::vector<vec3> translations(count);
             std::vector<vec4> rotations(count); // xyzw

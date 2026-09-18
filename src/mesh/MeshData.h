@@ -6,6 +6,8 @@
 #include <span>
 #include <vector>
 
+using numeric::vec3;
+
 struct MeshData {
     MeshData() = default;
     explicit MeshData(std::vector<vec3> positions) : Positions{std::move(positions)} {}

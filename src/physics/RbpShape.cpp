@@ -1,5 +1,6 @@
 #include "RbpShape.h"
 #include "RbpBody.h"
+#include "numeric/VectorMath.h"
 
 #include "Variant.h"
 #include "World.h"
@@ -10,7 +11,7 @@
 
 namespace physics {
 rbp::Index BuildRbpShape(rbp::World &world, const PhysicsShape &source, const Mesh *mesh, vec3 scale, rbp::Pose local) {
-    const auto stretch = numeric::Abs(scale);
+    const auto stretch = Abs(scale);
     if (stretch.x <= 0 || stretch.y <= 0 || stretch.z <= 0) throw std::invalid_argument("A physics collider must have nonzero scale.");
     const auto hull = [&](std::span<rbp::float3> points) {
         for (auto &point : points) point *= ToRbp(scale);

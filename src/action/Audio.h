@@ -1,5 +1,7 @@
 #pragma once
 
+#include "numeric/dvec3.h"
+
 #include "action/Core.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
@@ -9,6 +11,8 @@
 #include <filesystem>
 
 namespace action::audio {
+using numeric::dvec3;
+
 struct SetModel {
     SoundVerticesModel Model;
 };
@@ -73,8 +77,8 @@ using Action = std::variant<
     PatchFields<ModalSolveSettings, float, 2>, PatchFields<AcousticMaterial, double, 2>,
     PatchFields<ModalSolveSettings, bool>, PatchFields<ModalSolveSettings, uint32_t>,
     PatchFields<ModalSolveSettings, float>, PatchFields<ModalSolveSettings, double>,
-    PatchFields<ModalSolveSettings, std::optional<float>>, PatchFields<ModalSolveSettings, fastfem::DVec3>,
-    PatchFields<ModalSolveSettings, std::vector<fastfem::DVec3>>,
+    PatchFields<ModalSolveSettings, std::optional<float>>, PatchFields<ModalSolveSettings, dvec3>,
+    PatchFields<ModalSolveSettings, std::vector<dvec3>>,
     PatchFields<ModalSolveSettings, fastfem::Discretization>, PatchFields<ModalSolveSettings, fastfem::TetRefinement>,
     PatchFields<AcousticMaterial, double>, PatchFields<ContactSurface, float>>;
 

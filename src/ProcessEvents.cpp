@@ -1,5 +1,6 @@
 #include "ProcessEvents.h"
 #include "mesh/MeshComponents.h"
+#include "numeric/VectorMath.h"
 #include "physics/ColliderUpdate.h"
 #include "render/MeshUpdates.h"
 #include "render/SceneUpdates.h"
@@ -103,7 +104,7 @@ vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t han
 vec3 ComputeElementWorldPosition(const state::Scene &r, state::Entity instance_entity, Element element, uint32_t handle) {
     const auto &mesh = GetMesh(r, r.get<Instance>(instance_entity).Entity);
     const auto &wt = r.get<WorldTransform>(instance_entity);
-    return {wt.P + numeric::Rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle))};
+    return {wt.P + Rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle))};
 }
 
 void SetEditMode(state::Scene &r, state::Entity viewport, Element mode) {
@@ -729,8 +730,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (!r.get<const OrbitToActive>(viewport).Value) return;
         const auto world_pos = ComputeElementWorldPosition(r, instance_entity, element, handle);
         r.patch<ViewCamera>(viewport, [&](auto &camera) {
-            if (const auto dir = world_pos - camera.Target; numeric::Dot(dir, dir) >= 1e-6f) {
-                camera.SetTargetDirection(numeric::Normalize(dir));
+            if (const auto dir = world_pos - camera.Target; Dot(dir, dir) >= 1e-6f) {
+                camera.SetTargetDirection(Normalize(dir));
             }
         });
     };
@@ -1005,7 +1006,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                     if (!has_dirty) continue;
                 }
 
-                const mat4 armature_world_inv = has_any_constraint ? numeric::Inverse(ToMatrix(r.get<const WorldTransform>(arm_obj_entity))) : I4;
+                const mat4 armature_world_inv = has_any_constraint ? Inverse(ToMatrix(r.get<const WorldTransform>(arm_obj_entity))) : I4;
 
                 bool need_sync = has_any_constraint || pose_state_created;
                 bool rest_pose_edited = false;
@@ -1045,8 +1046,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                         const auto grab_delta = AbsoluteToDelta(
                             rest,
                             {
-                                .P = numeric::Conjugate(pd.R) * ((st->T.P - pd.P) / pd.S),
-                                .R = numeric::Conjugate(pd.R) * st->T.R,
+                                .P = Conjugate(pd.R) * ((st->T.P - pd.P) / pd.S),
+                                .R = Conjugate(pd.R) * st->T.R,
                                 .S = st->T.S / pd.S,
                             }
                         );
@@ -1105,12 +1106,12 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                             edited.Bones[i].RestWorld = parent_world * ToMatrix(edited.Bones[i].RestLocal);
                         } else {
                             // Adjust RestLocal to preserve the previous world position after a parent change.
-                            const mat4 new_local_mat = numeric::Inverse(parent_world) * edited.Bones[i].RestWorld;
+                            const mat4 new_local_mat = Inverse(parent_world) * edited.Bones[i].RestWorld;
                             edited.Bones[i].RestLocal.P = vec3(new_local_mat[3]);
-                            edited.Bones[i].RestLocal.R = numeric::Normalize(numeric::ToQuat(mat3(new_local_mat)));
+                            edited.Bones[i].RestLocal.R = Normalize(ToQuat(ToMat3(new_local_mat)));
                             r.patch<PosedLocal>(b, [&](auto &posed) { posed.Value.P = edited.Bones[i].RestLocal.P; posed.Value.R = edited.Bones[i].RestLocal.R; });
                         }
-                        edited.Bones[i].InvRestWorld = numeric::Inverse(edited.Bones[i].RestWorld);
+                        edited.Bones[i].InvRestWorld = Inverse(edited.Bones[i].RestWorld);
                     }
                     edited.RecomputeInverseBindMatrices();
                 }
@@ -1263,7 +1264,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const auto *image_light = r.try_get<const ImageLight>(viewport);
         const float env_intensity = use_scene_world && image_light ? image_light->Intensity : active_lighting.EnvIntensity;
         const mat3 env_rotation = [&]() -> mat3 {
-            if (use_scene_world) return image_light ? numeric::ToMat3(image_light->Rotation) : mat3{1.f};
+            if (use_scene_world) return image_light ? ToMat3(image_light->Rotation) : mat3{1.f};
             const float radians = active_lighting.EnvRotationDegrees * (Pi / 180.f);
             const float s = std::sin(radians), c = std::cos(radians);
             return {c, 0, -s, 0, 1, 0, s, 0, c};

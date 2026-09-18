@@ -1,3 +1,7 @@
+#include "numeric/VectorMath.h"
+#include "numeric/uvec2.h"
+#include "numeric/vec2.h"
+
 #include "mesh/MeshCreate.h"
 
 #include "Parallel.h"
@@ -21,9 +25,9 @@ constexpr float AuthoredMatchDot{0.99999962f};
 // Returns nullopt when `normal` is degenerate.
 // A zero reference matches nothing.
 std::optional<bool> NormalsMatch(vec3 normal, vec3 reference) {
-    const auto len = numeric::Length(normal);
+    const auto len = Length(normal);
     if (len < 1e-6f) return {};
-    return numeric::Dot(normal / len, reference) >= AuthoredMatchDot;
+    return Dot(normal / len, reference) >= AuthoredMatchDot;
 }
 
 // Contains source-derived data without arena or store ownership.
@@ -135,8 +139,8 @@ void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &da
         const auto face = corners.subspan(data.FaceStart(fi), data.FaceSize(fi));
         const uint32_t corner_count = (face.size() - 2) * 3;
         const auto p0 = vertices[face[0]].Position;
-        const auto cross = numeric::Cross(vertices[face[1]].Position - p0, vertices[face[2]].Position - p0);
-        const auto cross_len = numeric::Length(cross);
+        const auto cross = Cross(vertices[face[1]].Position - p0, vertices[face[2]].Position - p0);
+        const auto cross_len = Length(cross);
         bool flat = cross_len > 0.f;
         if (flat) {
             const auto face_normal = cross / cross_len;
@@ -176,7 +180,7 @@ void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &da
         const auto ka = vertex_position(fa, vh), kb = vertex_position(fb, vh);
         if (!ka || !kb) return false;
         const auto nb = authored_at(fb, *kb);
-        const auto lb = numeric::Length(nb);
+        const auto lb = Length(nb);
         if (lb < 1e-6f) return false;
         return NormalsMatch(authored_at(fa, *ka), nb / lb) == false;
     };
@@ -287,7 +291,7 @@ void EncodeAuthoredCornerNormals(MeshStore &meshes, const Mesh &mesh, std::span<
         const auto authored_normal = authored[i];
         if (NormalsMatch(authored_normal, derived[i]).value_or(true)) continue;
         masks[i / 32].x |= 1u << (i % 32);
-        packed.emplace_back(EncodeNormalOffset(authored_normal / numeric::Length(authored_normal), ComputeCornerFrame(derived[i], indices, vertices, i)));
+        packed.emplace_back(EncodeNormalOffset(authored_normal / Length(authored_normal), ComputeCornerFrame(derived[i], indices, vertices, i)));
     }
     if (packed.empty()) return;
     uint32_t rank = 0;
@@ -325,7 +329,7 @@ void UpdateMorphShadingAuthored(MeshStore &meshes, const Mesh &mesh, std::span<c
         if (rest_normal == vec3{0}) continue;
         for (const auto &pose : poses) {
             const auto posed = compose(pose, ci);
-            if (posed != vec3{0} && numeric::Dot(rest_normal, posed) < AuthoredMatchDot) {
+            if (posed != vec3{0} && Dot(rest_normal, posed) < AuthoredMatchDot) {
                 meshes.SetMorphShadingAuthored(id, true);
                 return;
             }

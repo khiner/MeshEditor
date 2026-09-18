@@ -1,3 +1,6 @@
+#include "numeric/uvec2.h"
+#include <cmath>
+
 #include "viewport/RenderExtent.h"
 
 #include "viewport/FrameState.h"

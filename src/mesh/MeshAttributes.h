@@ -10,6 +10,8 @@
 
 // Per-vertex attributes.
 // Absent channels use GPU defaults.
+using numeric::vec2, numeric::vec3, numeric::vec4;
+
 struct MeshVertexAttributes {
     std::optional<std::vector<vec3>> Normals{};
     std::optional<std::vector<vec4>> Tangents{}, Colors0{};

@@ -1,6 +1,8 @@
 #pragma once
 
-#include "numeric/vec3.h"
+#include "numeric/VectorMath.h"
+
+using numeric::vec3;
 
 struct ray {
     vec3 o, d;

@@ -1,6 +1,7 @@
 #include "armature/Armature.h"
 #include "TransformMath.h"
 #include "armature/ArmatureComponents.h"
+#include "numeric/VectorMath.h"
 #include "scene/Entity.h"
 #include "selection/BoneSelection.h"
 
@@ -113,7 +114,7 @@ void Armature::RecomputeRestWorld() {
         const auto local = ToMatrix(Bones[i].RestLocal);
         const auto parent = Bones[i].ParentIndex;
         Bones[i].RestWorld = parent == InvalidBoneIndex ? local : Bones[parent].RestWorld * local;
-        Bones[i].InvRestWorld = numeric::Inverse(Bones[i].RestWorld);
+        Bones[i].InvRestWorld = Inverse(Bones[i].RestWorld);
     }
 }
 
@@ -131,12 +132,12 @@ void Armature::RecomputeInverseBindMatrices() {
 }
 
 Transform ComposeWithDelta(const Transform &rest, const Transform &delta) {
-    return {.P = rest.P + rest.R * delta.P, .R = numeric::Normalize(rest.R * delta.R), .S = rest.S * delta.S};
+    return {.P = rest.P + rest.R * delta.P, .R = Normalize(rest.R * delta.R), .S = rest.S * delta.S};
 }
 
 Transform AbsoluteToDelta(const Transform &rest, const Transform &absolute) {
-    const auto inv_r = numeric::Conjugate(rest.R);
-    return {.P = inv_r * (absolute.P - rest.P), .R = numeric::Normalize(inv_r * absolute.R), .S = absolute.S / rest.S};
+    const auto inv_r = Conjugate(rest.R);
+    return {.P = inv_r * (absolute.P - rest.P), .R = Normalize(inv_r * absolute.R), .S = absolute.S / rest.S};
 }
 
 namespace {
@@ -156,20 +157,20 @@ quat ZeroRollQuat(vec3 nor) {
     } else {
         m = {-1, 0, 0, 0, -1, 0, 0, 0, 1};
     }
-    return numeric::ToQuat(m);
+    return ToQuat(m);
 }
 } // namespace
 
 mat3 BoneVecRollToMat3(vec3 direction, float roll) {
-    const vec3 nor = numeric::Normalize(direction);
-    return numeric::ToMat3(numeric::AngleAxis(roll, nor) * ZeroRollQuat(nor));
+    const vec3 nor = Normalize(direction);
+    return ToMat3(AngleAxis(roll, nor) * ZeroRollQuat(nor));
 }
 
 void BoneMat3ToVecRoll(const mat3 &m, vec3 &direction, float &roll) {
     direction = m[1];
-    const vec3 nor = numeric::Normalize(direction);
-    const quat twist = numeric::ToQuat(m) * numeric::Conjugate(ZeroRollQuat(nor));
-    roll = 2.f * std::atan2(numeric::Dot(vec3{twist.x, twist.y, twist.z}, nor), twist.w);
+    const vec3 nor = Normalize(direction);
+    const quat twist = ToQuat(m) * Conjugate(ZeroRollQuat(nor));
+    roll = 2.f * std::atan2(Dot(vec3{twist.x, twist.y, twist.z}, nor), twist.w);
 }
 
 // One deform buffer per skin is shared across mesh instances, so a skinned mesh moved off its armature shifts rigidly instead of stretching.
@@ -203,10 +204,10 @@ Transform ApplyBoneConstraint(
         },
         c.Data
     );
-    const mat4 constrained_local = numeric::Inverse(parent_pose_world) * (armature_world_inv * effective_target);
-    const Transform tl{vec3(constrained_local[3]), numeric::Normalize(numeric::ToQuat(mat3(constrained_local))), pre_local.S};
+    const mat4 constrained_local = Inverse(parent_pose_world) * (armature_world_inv * effective_target);
+    const Transform tl{vec3(constrained_local[3]), Normalize(ToQuat(ToMat3(constrained_local))), pre_local.S};
     if (c.Influence >= 1.f) return tl;
-    return {numeric::Mix(pre_local.P, tl.P, c.Influence), numeric::Slerp(pre_local.R, tl.R, c.Influence), pre_local.S};
+    return {Mix(pre_local.P, tl.P, c.Influence), Slerp(pre_local.R, tl.R, c.Influence), pre_local.S};
 }
 
 float ComputeBoneDisplayScale(const Armature &armature, uint32_t bone_index) {
@@ -214,7 +215,7 @@ float ComputeBoneDisplayScale(const Armature &armature, uint32_t bone_index) {
     float min_child_dist = std::numeric_limits<float>::max();
     for (uint32_t j = 0; j < armature.Bones.size(); ++j) {
         if (armature.Bones[j].ParentIndex == bone_index) {
-            const float d = numeric::Length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[bone_index].RestWorld[3]});
+            const float d = Length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[bone_index].RestWorld[3]});
             if (d > MinBoneLength) min_child_dist = std::min(min_child_dist, d);
         }
     }

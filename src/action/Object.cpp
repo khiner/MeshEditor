@@ -10,6 +10,7 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/Primitives.h"
+#include "numeric/VectorMath.h"
 #include "object/ObjectOps.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
@@ -308,7 +309,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                             if (HasLens(r, e)) fn(e);
                     },
                     [&](state::Entity e) {
-                        const float distance = std::max(numeric::Length(r.get<const WorldTransform>(e).P), 1.f);
+                        const float distance = std::max(Length(r.get<const WorldTransform>(e).P), 1.f);
                         if (const auto *perspective = r.try_get<const Perspective>(e); perspective && a.Orthographic) SetLens(r, e, OrthographicFromPerspective(*perspective, distance));
                         else if (const auto *orthographic = r.try_get<const Orthographic>(e); orthographic && !a.Orthographic) SetLens(r, e, PerspectiveFromOrthographic(*orthographic, distance));
                     }

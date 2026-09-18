@@ -1,5 +1,7 @@
 #pragma once
 
+#include "numeric/uvec2.h"
+
 #include "gpu/Element.h"
 #include "numeric/vec2.h"
 #include "selection/BoneSelection.h"

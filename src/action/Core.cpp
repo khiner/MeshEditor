@@ -10,6 +10,7 @@
 #include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
 #include "gpu/ViewportTheme.h"
+#include "numeric/VectorMath.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
 #include "scene/WorldTransform.h"
@@ -23,7 +24,7 @@ namespace action {
 namespace {
 template<typename Field>
 Field ClampField(Field v, Limit<Field> lo, Limit<Field> hi) {
-    if constexpr (VectorField<Field>) return numeric::Min(numeric::Max(v, lo), hi);
+    if constexpr (VectorField<Field>) return Min(Max(v, lo), hi);
     else return std::clamp(v, lo, hi);
 }
 

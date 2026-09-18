@@ -1,3 +1,5 @@
+#include "numeric/vec2.h"
+
 // imgui.h must be included before this header.
 
 #pragma once
@@ -9,6 +11,8 @@
 #include <bit>
 
 namespace OrientationGizmo {
+using numeric::I3;
+
 static constexpr float CircleRad = .095f, HoverCircleRad = .5f;
 
 inline constexpr vec3 SignedAxis(const mat3 &m, uint32_t i) { return i < 3 ? m[i] : -m[i - 3]; }
@@ -52,9 +56,9 @@ std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &came
         Ctx.DragEndPos = std::nullopt;
     }
     const auto hover_r = size * HoverCircleRad;
-    Ctx.Hovered = interactive && numeric::Dot(mouse_pos - center, mouse_pos - center) <= hover_r * hover_r;
+    Ctx.Hovered = interactive && Dot(mouse_pos - center, mouse_pos - center) <= hover_r * hover_r;
 
-    const auto cam_basis = numeric::Transpose(camera.Basis());
+    const auto cam_basis = Transpose(camera.Basis());
     for (size_t i = 0; i < 6; ++i) {
         Ctx.AxisCam[i] = SignedAxis(cam_basis, i);
         auto dir = Ctx.AxisCam[i] * size * (0.5f - CircleRad);
@@ -67,7 +71,7 @@ std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &came
     if (interactive && Ctx.Hovered && !Ctx.DragEndPos) {
         Ctx.HoveredAxis = std::ranges::min(Ctx.SortedIndices, {}, [&](size_t i) {
             const auto mouse_delta = mouse_pos - (center + Ctx.AxisScreen[i]);
-            return numeric::Dot(mouse_delta, mouse_delta) + Ctx.AxisCam[i].z;
+            return Dot(mouse_delta, mouse_delta) + Ctx.AxisCam[i].z;
         });
     }
 
@@ -80,7 +84,7 @@ std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &came
             // Start dragging while the pointer remains inside the hovered axis circle.
             const auto click_threshold = 0.5f * size * CircleRad;
             if (const auto mouse_delta = mouse_pos - *Ctx.MouseDownPos;
-                numeric::Dot(mouse_delta, mouse_delta) > click_threshold * click_threshold) {
+                Dot(mouse_delta, mouse_delta) > click_threshold * click_threshold) {
                 Ctx.DragEndPos = mouse_pos;
             }
         } else {

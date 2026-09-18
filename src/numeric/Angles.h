@@ -1,6 +1,6 @@
 #pragma once
 
-#include "numeric/vec3.h"
+#include "VectorMath.h"
 
 #include <numbers>
 

@@ -1,4 +1,6 @@
-#include "scene/SceneControlsUi.h"
+#include "numeric/VectorMath.h"
+#include "numeric/vec2.h"
+
 #include "Camera.h"
 #include "Path.h"
 #include "Profile.h"
@@ -32,6 +34,7 @@
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
+#include "scene/SceneControlsUi.h"
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
@@ -52,6 +55,8 @@
 #include <imgui_internal.h>
 
 #include <format>
+
+using numeric::Degrees;
 
 using std::ranges::any_of, std::ranges::distance, std::ranges::find, std::ranges::to;
 
@@ -315,32 +320,32 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             const float bone_length = r.get<BoneDisplayScale>(active_bone_entity).Value;
 
             vec3 head = wt.P;
-            vec3 tail = head + numeric::Rotate(wt.R, vec3{0, bone_length, 0});
+            vec3 tail = head + Rotate(wt.R, vec3{0, bone_length, 0});
             vec3 dir;
             float roll;
-            BoneMat3ToVecRoll(numeric::ToMat3(wt.R), dir, roll);
-            float roll_deg = numeric::Degrees(roll);
+            BoneMat3ToVecRoll(ToMat3(wt.R), dir, roll);
+            float roll_deg = Degrees(roll);
             float length = bone_length;
 
             bool changed = ui::DragFloat3("Head", &head[0], 0.01f);
             changed |= ui::DragFloat3("Tail", &tail[0], 0.01f);
             if (ui::DragFloat("Roll", &roll_deg, 1.f)) {
-                roll = numeric::Radians(roll_deg);
+                roll = Radians(roll_deg);
                 changed = true;
             }
             if (ui::DragFloat("Length", &length, 0.01f, 0.001f, 0.f)) {
-                tail = head + numeric::Normalize(tail - head) * std::max(length, 1e-4f);
+                tail = head + Normalize(tail - head) * std::max(length, 1e-4f);
                 changed = true;
             }
 
             if (changed) {
                 const auto new_dir = tail - head;
-                if (const auto new_length = numeric::Length(new_dir); new_length > 1e-6f) {
-                    const auto new_rot = numeric::ToQuat(BoneVecRollToMat3(new_dir, roll));
+                if (const auto new_length = Length(new_dir); new_length > 1e-6f) {
+                    const auto new_rot = ToQuat(BoneVecRollToMat3(new_dir, roll));
                     const auto pd = ToTransform(GetParentDelta(r, active_bone_entity));
                     action::Emit(action::bone::SetEditHeadTailRoll{
-                        .LocalP = numeric::Conjugate(pd.R) * ((head - pd.P) / pd.S),
-                        .LocalR = numeric::Conjugate(pd.R) * new_rot,
+                        .LocalP = Conjugate(pd.R) * ((head - pd.P) / pd.S),
+                        .LocalR = Conjugate(pd.R) * new_rot,
                         .DisplayScale = new_length,
                     });
                 }

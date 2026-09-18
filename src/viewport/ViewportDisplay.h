@@ -1,5 +1,7 @@
 #pragma once
 
+#include "numeric/uvec2.h"
+
 #include "gpu/DebugChannel.h"
 #include "gpu/InteractionMode.h"
 #include "numeric/vec2.h"

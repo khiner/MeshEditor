@@ -10,6 +10,8 @@
 #include <vector>
 
 // How a channel's floats interpolate: Float lerps, Quaternion slerps, and Bool steps between 0 and 1.
+using numeric::quat;
+
 enum class ValueKind : uint8_t {
     Float,
     Quaternion,

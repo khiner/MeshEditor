@@ -1,4 +1,5 @@
 #include "ModalSolve.h"
+#include "numeric/VectorMath.h"
 
 #include <algorithm>
 #include <cstdint>

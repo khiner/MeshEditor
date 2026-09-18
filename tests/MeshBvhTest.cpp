@@ -1,6 +1,7 @@
 // Pins the mesh closest-point query against brute force over every triangle, the one oracle that does not reimplement the hierarchy's pruning.
 
 #include "mesh/MeshBvh.h"
+#include "numeric/VectorMath.h"
 
 #include "RunSuites.h"
 

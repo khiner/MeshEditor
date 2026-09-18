@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <vector>
 
+using numeric::mat3, numeric::vec3;
+
 using MassProperties = fastfem::MassProperties;
 
 // Precomputed SI contact dynamics aligned with ModalModes::Vertices and Positions.
