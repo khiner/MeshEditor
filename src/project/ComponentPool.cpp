@@ -16,17 +16,14 @@ std::span<const std::byte> Serialize(const snapshot::SnapshotEntry &encoding, co
 ComponentPool::ComponentPool(EntityStore &s, state::TypeId type, const snapshot::SnapshotEntry &encoding)
     : S(s), Type(type), Encoding(encoding), Trie(4) {}
 
-state::TableBase *ComponentPool::Storage() const { return S.R.storage(Type); }
-state::Entity ComponentPool::Stored(uint32_t index) const {
-    const auto *p = Storage();
-    return p ? p->entity_at(index) : state::Null;
-}
-store::Blob ComponentPool::Copy(uint32_t index) const { return Encoding.Copy(Storage()->value(Stored(index))); }
+state::Table &ComponentPool::Storage() const { return S.R.storage(Type); }
+state::Entity ComponentPool::Stored(uint32_t index) const { return Storage().entity_at(index); }
+store::Blob ComponentPool::Copy(uint32_t index) const { return Encoding.Copy(Storage().value(Stored(index))); }
 
 uint64_t ComponentPool::Length() const { return S.Table.size(); }
 bool ComponentPool::Present(uint64_t index) const { return Stored(uint32_t(index)) != state::Null; }
 std::span<const std::byte> ComponentPool::Read(uint64_t index) {
-    return Serialize(Encoding, Storage()->value(Stored(uint32_t(index))), Scratch);
+    return Serialize(Encoding, Storage().value(Stored(uint32_t(index))), Scratch);
 }
 std::span<const std::byte> ComponentPool::Encode(const store::Blob &value) {
     return value.Destroy ? Serialize(Encoding, value.Data, SnapshotScratch) : value.View();
@@ -57,7 +54,7 @@ void ComponentPool::Apply(store::RestorePlan &plan, bool compare) {
             }
             c.Old = Copy(index);
             c.WasPresent = true;
-            Storage()->remove(previous);
+            S.R.remove(Type, previous);
             S.Changes.push_back({Type, previous, state::Event::Destroy});
             continue;
         }
@@ -68,7 +65,7 @@ void ComponentPool::Apply(store::RestorePlan &plan, bool compare) {
         if (present) {
             c.Old = Copy(index);
             c.WasPresent = true;
-            if (previous != entity) Storage()->remove(previous);
+            if (previous != entity) S.R.remove(Type, previous);
         }
         if (entity != state::Null) {
             if (c.Incoming.Destroy) Encoding.Move(S.R, entity, c.Incoming);
@@ -102,7 +99,7 @@ void ComponentPool::Load(uint64_t length, std::span<const std::pair<uint64_t, st
         if (Trie.Uncaptured(index)) Trie.Capture(index, Copy(index));
         Trie.MarkDirty(index, 1);
         auto value = Copy(index);
-        Storage()->remove(previous);
+        S.R.remove(Type, previous);
         if (entity != state::Null) {
             Encoding.Move(S.R, entity, value);
             S.Changes.push_back({Type, entity, state::Event::Create});

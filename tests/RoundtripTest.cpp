@@ -770,11 +770,11 @@ void CompareRegistries(std::string_view name, state::Scene &a, state::Scene &b) 
     std::map<std::string, int> value_diffs;
     for (auto [id, a_set] : a.storage()) {
         const auto tn = state::SchemaNames[id];
-        const auto *b_set_p = b.storage(id);
-        if (!b_set_p || id == state::Type<MeshBuffers>()) continue;
+        const auto &b_set = b.storage(id);
+        if (id == state::Type<MeshBuffers>()) continue;
         for (const auto e : a_set) {
-            if (!b_set_p->contains(e)) continue;
-            const auto eq = snapshot::ComponentValuesEqual(id, a_set.value(e), b_set_p->value(e));
+            if (!b_set.contains(e)) continue;
+            const auto eq = snapshot::ComponentValuesEqual(id, a_set.value(e), b_set.value(e));
             if (eq && !*eq) ++value_diffs[std::string{tn}];
         }
     }

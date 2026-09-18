@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <functional>
 #include <memory>
@@ -56,15 +57,104 @@ struct EntityRange {
     bool empty() const { return Entities.empty(); }
 };
 
-struct TableBase : EntityRange {
-    virtual ~TableBase() = default;
-    virtual bool contains(Entity) const = 0;
-    virtual void *value(Entity) const = 0;
-    virtual Entity entity_at(uint32_t) const = 0;
-    virtual bool remove(Entity) = 0;
-    virtual void clear() {
-        while (!empty()) remove(Entities.back());
+// Walks the live slots of a mask source in entity index order. Slots removed ahead of the cursor are skipped.
+template<typename M> struct MaskIterator {
+    using value_type = Entity;
+    using difference_type = std::ptrdiff_t;
+    using iterator_category = std::forward_iterator_tag;
+    static constexpr uint32_t End = UINT32_MAX;
+    const M *Source{};
+    uint32_t Page{}, Bits{};
+    // Move to the first page at or after Page with live slots.
+    void Seek() {
+        while (Page < Source->pages()) {
+            const auto word = Source->occupied(Page / 64) & (~uint64_t{0} << Page % 64);
+            if (!word) {
+                Page = (Page / 64 + 1) * 64;
+                continue;
+            }
+            Page = Page / 64 * 64 + std::countr_zero(word);
+            if ((Bits = Source->mask(Page))) return;
+            ++Page;
+        }
+        Page = End;
+        Bits = 0;
     }
+    Entity operator*() const { return Source->entity(Page, std::countr_zero(Bits)); }
+    MaskIterator &operator++() {
+        Bits = (Bits & (Bits - 1)) & Source->mask(Page);
+        if (!Bits) {
+            ++Page;
+            Seek();
+        }
+        return *this;
+    }
+    MaskIterator operator++(int) {
+        auto old = *this;
+        ++*this;
+        return old;
+    }
+    bool operator==(const MaskIterator &) const = default;
+};
+
+// Paged sparse set of raw values. Each page holds its slot owners and then the values.
+// Small pages keep unrelated sparse components inexpensive and addresses stable.
+struct Table {
+    static constexpr uint32_t PageCount = 32;
+    struct Page {
+        uint32_t Mask{};
+        std::array<Entity, PageCount> Owners;
+    };
+    uint32_t Size{}, Align{alignof(Page)}, ValueOffset{sizeof(Page)}, Count{};
+    void (*Destroy)(void *){};
+    std::vector<uint64_t> Occupied; // One bit per allocated page.
+    std::vector<Page *> Pages;
+    Table() = default;
+    Table(const Table &) = delete;
+    Table &operator=(const Table &) = delete;
+    ~Table() { clear(); }
+    // Describes the value type. An unbound table holds no value bytes.
+    template<typename C> void Bind() {
+        Size = sizeof(C);
+        Align = uint32_t(std::max(alignof(C), alignof(Page)));
+        ValueOffset = (uint32_t(sizeof(Page)) + Align - 1) / Align * Align;
+        if constexpr (!std::is_trivially_destructible_v<C>) Destroy = [](void *p) { std::destroy_at(static_cast<C *>(p)); };
+    }
+    uint32_t pages() const { return uint32_t(Pages.size()); }
+    uint32_t mask(uint32_t page) const { return page < Pages.size() && Pages[page] ? Pages[page]->Mask : 0; }
+    uint64_t occupied(uint32_t word) const { return word < Occupied.size() ? Occupied[word] : 0; }
+    Entity entity(uint32_t page, uint32_t slot) const { return Pages[page]->Owners[slot]; }
+    Entity entity_at(uint32_t index) const {
+        const auto p = index / PageCount;
+        return p < Pages.size() && Pages[p] ? Pages[p]->Owners[index % PageCount] : Null;
+    }
+    bool contains(Entity e) const { return e != Null && entity_at(Index(e)) == e; }
+    std::byte *slot(Entity e, size_t stride) const {
+        const auto index = Index(e), p = index / PageCount, i = index % PageCount;
+        auto *page = e != Null && p < Pages.size() ? Pages[p] : nullptr;
+        return page && page->Owners[i] == e ? reinterpret_cast<std::byte *>(page) + ValueOffset + i * stride : nullptr;
+    }
+    void *value(Entity e) const { return slot(e, Size); }
+    template<typename C> C *at(Entity e) const {
+        auto *p = slot(e, sizeof(C));
+        return p ? std::launder(reinterpret_cast<C *>(p)) : nullptr;
+    }
+    size_t size() const { return Count; }
+    bool empty() const { return Count == 0; }
+    MaskIterator<Table> begin() const {
+        MaskIterator<Table> it{this};
+        it.Seek();
+        return it;
+    }
+    MaskIterator<Table> end() const { return {this, MaskIterator<Table>::End, 0}; }
+    // Links the slot and returns its uninitialized value storage.
+    void *insert(Entity);
+    // Destroys the value and unlinks the slot.
+    void erase(Entity);
+    void clear();
+
+private:
+    void Release(uint32_t page);
 };
 
 enum class On : uint8_t { Create = 1,
@@ -121,75 +211,6 @@ struct DirtySet : EntityRange {
 void Notify(Scene &, TypeId, Event, Entity);
 void BeforeWrite(Scene &, TypeId, Entity);
 
-template<typename C> struct Table final : TableBase {
-    // Small pages keep unrelated sparse components inexpensive and addresses stable.
-    static constexpr uint32_t PageCount = 32;
-    struct Page {
-        uint32_t Mask{};
-        std::array<uint32_t, PageCount> Positions{};
-        alignas(C) std::byte Bytes[PageCount * sizeof(C)];
-        C *address(uint32_t i) { return reinterpret_cast<C *>(Bytes + i * sizeof(C)); }
-        C *at(uint32_t i) { return std::launder(address(i)); }
-        ~Page() {
-            for (uint32_t i = 0; i < PageCount; ++i)
-                if (Mask & (1u << i)) std::destroy_at(at(i));
-        }
-    };
-    Scene &Owner;
-    std::vector<std::unique_ptr<Page>> Pages;
-    explicit Table(Scene &owner) : Owner(owner) {}
-    Page *page(Entity e) const {
-        const auto p = Index(e) / PageCount;
-        return p < Pages.size() ? Pages[p].get() : nullptr;
-    }
-    bool contains(Entity e) const override {
-        return e != Null && entity_at(Index(e)) == e;
-    }
-    Entity entity_at(uint32_t index) const override {
-        const auto e = Entity{index};
-        auto *p = page(e);
-        const auto i = index % PageCount;
-        return p && (p->Mask & (1u << i)) ? Entities[p->Positions[i]] : Null;
-    }
-    void *value(Entity e) const override { return contains(e) ? page(e)->at(Index(e) % PageCount) : nullptr; }
-    C &get(Entity e) const {
-        auto *p = static_cast<C *>(value(e));
-        assert(p);
-        return *p;
-    }
-    template<typename... A> C &emplace(Entity e, A &&...args) {
-        assert(!contains(e));
-        BeforeWrite(Owner, Type<C>(), e);
-        const auto p = Index(e) / PageCount, i = Index(e) % PageCount;
-        if (p >= Pages.size()) Pages.resize(p + 1);
-        if (!Pages[p]) Pages[p] = std::make_unique<Page>();
-        auto &page = *Pages[p];
-        assert(!(page.Mask & (1u << i)));
-        if constexpr (std::is_aggregate_v<C> && !std::is_constructible_v<C, A...>) ::new (static_cast<void *>(page.address(i))) C{std::forward<A>(args)...};
-        else std::construct_at(page.address(i), std::forward<A>(args)...);
-        page.Mask |= 1u << i;
-        page.Positions[i] = uint32_t(Entities.size());
-        Entities.push_back(e);
-        Notify(Owner, Type<C>(), Event::Create, e);
-        return get(e);
-    }
-    bool remove(Entity e) override {
-        if (!contains(e)) return false;
-        BeforeWrite(Owner, Type<C>(), e);
-        Notify(Owner, Type<C>(), Event::Destroy, e);
-        auto &p = *page(e);
-        const auto i = Index(e) % PageCount, pos = p.Positions[i];
-        std::destroy_at(p.at(i));
-        p.Mask &= ~(1u << i);
-        const auto moved = Entities.back();
-        Entities[pos] = moved;
-        page(moved)->Positions[Index(moved) % PageCount] = pos;
-        Entities.pop_back();
-        if (!p.Mask) Pages[Index(e) / PageCount].reset();
-        return true;
-    }
-};
-
 template<typename... C> struct ExcludeList {};
 template<typename... C> inline constexpr ExcludeList<C...> Exclude{};
 template<typename R, typename... C> struct View;
@@ -200,7 +221,8 @@ struct Scene {
     Scene(const Scene &) = delete;
     Scene &operator=(const Scene &) = delete;
     Services Context;
-    std::array<std::unique_ptr<TableBase>, SchemaSize> Tables;
+    std::array<Table, SchemaSize> Tables;
+    std::vector<TypeId> Active; // Tables bound to a component type, in first-touch order.
     std::array<std::array<std::vector<DirtySet *>, 3>, SchemaSize> Dirty;
     std::array<DirtySet, size_t(Change::Count)> Changes;
     using Handler = void (*)(Scene &, Entity);
@@ -209,7 +231,7 @@ struct Scene {
     std::unique_ptr<Allocation> AllocationStorage;
     Allocation &AllocationState() { return *AllocationStorage; }
     const Allocation &AllocationState() const { return *AllocationStorage; }
-    DirtySet Living;
+    Table Living;
     void (*Capture)(Scene &, TypeId, Entity){};
     void *HistoryOwner{};
     bool Restoring{}, DocumentReadOnly{}, RestoringEvents{};
@@ -224,28 +246,33 @@ struct Scene {
     Entity EntityAt(uint32_t index) const;
     void ResetEntities();
     void RebuildLiving();
-    TableBase *storage(TypeId id) { return Tables[id].get(); }
-    const TableBase *storage(TypeId id) const { return Tables[id].get(); }
-    template<typename C> auto &storage() {
-        if constexpr (std::is_same_v<C, Entity>) return Living;
+    Table &storage(TypeId id) { return Tables[id]; }
+    const Table &storage(TypeId id) const { return Tables[id]; }
+    // The non-const form binds the table to its component type on first use.
+    template<typename C> Table &storage() {
+        if constexpr (std::is_same_v<std::remove_const_t<C>, Entity>) return Living;
         else {
-            using T = std::remove_const_t<C>;
-            auto &p = Tables[Type<T>()];
-            if (!p) p = std::make_unique<Table<T>>(*this);
-            return *static_cast<Table<T> *>(p.get());
+            auto &t = Tables[Type<C>()];
+            if (!t.Size) {
+                t.template Bind<std::remove_const_t<C>>();
+                Active.push_back(Type<C>());
+            }
+            return t;
         }
     }
+    template<typename C> const Table &storage() const {
+        if constexpr (std::is_same_v<std::remove_const_t<C>, Entity>) return Living;
+        else return Tables[Type<C>()];
+    }
     auto storage() const {
-        return std::views::iota(size_t{0}, SchemaSize) | std::views::filter([this](size_t i) { return bool(Tables[i]); }) |
-            std::views::transform([this](size_t i) { return std::pair<TypeId, const TableBase &>{TypeId(i), *Tables[i]}; });
+        return Active | std::views::transform([this](TypeId id) { return std::pair<TypeId, const Table &>{id, Tables[id]}; });
     }
-    template<typename C> const C *try_get(Entity e) const {
-        const auto *p = static_cast<const Table<std::remove_const_t<C>> *>(Tables[Type<C>()].get());
-        return p ? static_cast<const C *>(p->value(e)) : nullptr;
-    }
+    template<typename C> const C *try_get(Entity e) const { return Tables[Type<C>()].template at<const C>(e); }
     template<typename C> C &edit(Entity e) {
         BeforeWrite(*this, Type<C>(), e);
-        return storage<C>().get(e);
+        auto *p = Tables[Type<C>()].template at<C>(e);
+        assert(p);
+        return *p;
     }
     template<typename C> C *try_edit(Entity e) { return all_of<C>(e) ? &edit<C>(e) : nullptr; }
     template<typename C> const C &get(Entity e) const {
@@ -255,7 +282,17 @@ struct Scene {
     }
     template<typename... C> bool all_of(Entity e) const { return (... && (try_get<C>(e) != nullptr)); }
     template<typename... C> bool any_of(Entity e) const { return (... || (try_get<C>(e) != nullptr)); }
-    template<typename C, typename... A> decltype(auto) emplace(Entity e, A &&...a) { return storage<C>().emplace(e, std::forward<A>(a)...); }
+    template<typename C, typename... A> C &emplace(Entity e, A &&...a) {
+        auto &t = storage<C>();
+        assert(!t.contains(e));
+        BeforeWrite(*this, Type<C>(), e);
+        auto *slot = t.insert(e);
+        C *value;
+        if constexpr (std::is_aggregate_v<C> && !std::is_constructible_v<C, A...>) value = ::new (slot) C{std::forward<A>(a)...};
+        else value = std::construct_at(static_cast<C *>(slot), std::forward<A>(a)...);
+        Notify(*this, Type<C>(), Event::Create, e);
+        return *value;
+    }
     template<typename C, typename... A> C &replace(Entity e, A &&...a) {
         return patch<C>(e, [&](C &value) { value = C{std::forward<A>(a)...}; });
     }
@@ -271,10 +308,19 @@ struct Scene {
         Notify(*this, Type<C>(), Event::Update, e);
         return value;
     }
-    template<typename... C> size_t remove(Entity e) {
-        return (size_t{0} + ... + (Tables[Type<C>()] ? Tables[Type<C>()]->remove(e) : false));
+    bool remove(TypeId type, Entity e) {
+        auto &t = Tables[type];
+        if (!t.contains(e)) return false;
+        BeforeWrite(*this, type, e);
+        Notify(*this, type, Event::Destroy, e);
+        t.erase(e);
+        return true;
     }
-    template<typename... C> void clear() { ((Tables[Type<C>()] ? Tables[Type<C>()]->clear() : void()), ...); }
+    template<typename... C> size_t remove(Entity e) { return (size_t{0} + ... + remove(Type<C>(), e)); }
+    void clear(TypeId type) {
+        for (auto &t = Tables[type]; !t.empty();) remove(type, *t.begin());
+    }
+    template<typename... C> void clear() { (clear(Type<C>()), ...); }
     void ClearChanges() {
         for (auto &c : Changes) c.clear();
     }
@@ -291,7 +337,6 @@ struct Scene {
     template<typename C> Sink on_destroy() { return {*this, Type<C>(), Event::Destroy}; }
     template<typename... C, typename... X> auto view(ExcludeList<X...> = {}) {
         static constexpr std::array<TypeId, sizeof...(X)> excluded{Type<X>()...};
-        (storage<std::remove_const_t<C>>(), ...);
         return View<Scene, C...>{*this, excluded};
     }
     template<typename... C, typename... X> auto view(ExcludeList<X...> = {}) const {
@@ -303,75 +348,42 @@ struct Scene {
 inline DirtySet &reactive(Scene &r, Change c) { return r.Changes[size_t(c)]; }
 inline const DirtySet &reactive(const Scene &r, Change c) { return r.Changes[size_t(c)]; }
 
+// Entities holding every listed component and none of the excluded ones, joined page by page on the table masks.
 template<typename R, typename... C> struct View : std::ranges::view_interface<View<R, C...>> {
+    using Driver = std::tuple_element_t<0, std::tuple<C...>>;
     R *Owner{};
     std::span<const TypeId> Excluded;
-    const EntityRange *Driver{};
-    View(R &r, std::span<const TypeId> excluded) : Owner(&r), Excluded(excluded) {
-        if constexpr ((std::is_same_v<std::remove_const_t<C>, Entity> && ...)) Driver = &r.Living;
-        else {
-            for (auto id : {Type<C>()...}) {
-                auto *p = r.storage(id);
-                if (!p) {
-                    Driver = nullptr;
-                    break;
-                }
-                if (!Driver || p->size() < Driver->size()) Driver = p;
-            }
-        }
+    View(R &r, std::span<const TypeId> excluded) : Owner(&r), Excluded(excluded) {}
+    template<typename T> const Table &table() const { return std::as_const(*Owner).template storage<T>(); }
+    uint32_t pages() const { return std::min({table<C>().pages()...}); }
+    uint64_t occupied(uint32_t word) const { return (table<C>().occupied(word) & ...); }
+    uint32_t mask(uint32_t page) const {
+        auto m = (table<C>().mask(page) & ...);
+        for (auto id : Excluded) m &= ~Owner->storage(id).mask(page);
+        return m;
     }
+    Entity entity(uint32_t page, uint32_t slot) const { return table<Driver>().entity(page, slot); }
     bool contains(Entity e) const {
-        const bool present = ([&] {
-            if constexpr (std::is_same_v<std::remove_const_t<C>, Entity>) return Owner->valid(e);
-            else return Owner->template all_of<C>(e);
-        }() && ...);
-        if (!present) return false;
-        for (auto id : Excluded) {
-            auto *p = Owner->storage(id);
-            if (p && p->contains(e)) return false;
-        }
-        return true;
+        return table<Driver>().contains(e) && (mask(Index(e) / Table::PageCount) >> (Index(e) % Table::PageCount) & 1);
     }
-    struct Iterator {
-        using value_type = Entity;
-        using difference_type = std::ptrdiff_t;
-        using iterator_category = std::forward_iterator_tag;
-        const View *V{};
-        size_t Position{};
-        void Skip() {
-            while (Position && (Position > V->Driver->size() || !V->contains(V->Driver->Entities[Position - 1]))) --Position;
-        }
-        Entity operator*() const { return V->Driver->Entities[Position - 1]; }
-        Iterator &operator++() {
-            --Position;
-            Skip();
-            return *this;
-        }
-        Iterator operator++(int) {
-            auto old = *this;
-            ++*this;
-            return old;
-        }
-        bool operator==(const Iterator &) const = default;
-    };
-    Iterator begin() const {
-        Iterator i{this, Driver ? Driver->size() : 0};
-        i.Skip();
-        return i;
+    MaskIterator<View> begin() const {
+        MaskIterator<View> it{this};
+        it.Seek();
+        return it;
     }
-    Iterator end() const { return {this, 0}; }
+    MaskIterator<View> end() const { return {this, MaskIterator<View>::End, 0}; }
     // A single component without exclusions answers from its table.
     static constexpr bool Direct = sizeof...(C) == 1;
     bool empty() const {
         if constexpr (Direct)
-            if (Excluded.empty()) return !Driver || Driver->empty();
+            if (Excluded.empty()) return table<Driver>().empty();
         return begin() == end();
     }
     size_t size() const {
         if constexpr (Direct)
-            if (Excluded.empty()) return Driver ? Driver->size() : 0;
+            if (Excluded.empty()) return table<Driver>().size();
         size_t n = 0;
-        for ([[maybe_unused]] auto e : *this) ++n;
+        for (auto it = begin(); it != end(); it.Page++, it.Seek()) n += std::popcount(it.Bits);
         return n;
     }
     Entity front() const { return *begin(); }

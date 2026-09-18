@@ -1311,6 +1311,7 @@ CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const
         for (const auto [entity, kind, _] : r.view<const ObjectKind, const Instance>().each()) {
             if (kind.Value == ObjectType::Mesh) meshes.emplace_back(entity);
         }
+        std::ranges::sort(meshes);
         if (!meshes.empty()) {
             Perform(r, action::selection::ApplyTreeSelection{
                            .Entities = meshes,

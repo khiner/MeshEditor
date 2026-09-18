@@ -132,13 +132,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     const auto ranges = GetElementRangesForSelected(r, viewport);
                     ApplyEditSelectionCommand(r, ranges, element, EditSelectionOperation::Fill);
                 } else if (interaction_mode == InteractionMode::Object) {
-                    r.clear<Active, Selected>();
-                    state::Entity last{state::Null};
-                    for (const auto [e, _] : r.view<const ObjectKind>().each()) {
-                        r.emplace<Selected>(e);
-                        last = e;
-                    }
-                    if (last != state::Null) r.emplace<Active>(last);
+                    r.clear<Selected>();
+                    for (const auto e : r.view<const ObjectKind>()) r.emplace<Selected>(e);
                 }
             },
         },

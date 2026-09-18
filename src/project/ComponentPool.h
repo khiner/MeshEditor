@@ -4,7 +4,7 @@
 #include "snapshot/SnapshotRoles.h"
 
 namespace state {
-struct TableBase;
+struct Table;
 }
 
 namespace project {
@@ -35,7 +35,7 @@ struct ComponentPool {
     store::LiveTrie Trie;
 
 private:
-    state::TableBase *Storage() const;
+    state::Table &Storage() const;
     state::Entity Stored(uint32_t index) const;
     store::Blob Copy(uint32_t index) const;
     void Apply(store::RestorePlan &, bool compare);
