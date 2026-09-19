@@ -124,7 +124,7 @@ bool AllSelectedAreMeshes(const state::Scene &r) {
 
 std::vector<ElementRange> GetElementRangesForSelected(const state::Scene &r, state::Entity viewport) {
     const auto element = r.get<const EditMode>(viewport).Value;
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     std::vector<ElementRange> ranges;
     for (const auto mesh_entity : selection::GetSelectedMeshEntities(r)) {
         if (!r.all_of<MeshElementSelection>(mesh_entity)) continue;

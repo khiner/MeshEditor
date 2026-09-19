@@ -16,39 +16,39 @@
 #include "viewport/ViewportDisplay.h"
 
 void InitRenderStoreContext(state::Scene &r, const mtl::Context &ctx) {
-    auto &slots = r.ctx().emplace<mtl::BindlessSet>(ctx);
-    r.ctx().emplace<ActiveSamplerAnisotropy>(ClampMaxAnisotropy(ToMaxAnisotropy(ViewportDisplay{}.AnisotropicFilter)));
-    auto &textures = r.ctx().emplace<TextureStore>();
+    auto &slots = r.Context.emplace<mtl::BindlessSet>(ctx);
+    r.Context.emplace<ActiveSamplerAnisotropy>(ClampMaxAnisotropy(ToMaxAnisotropy(ViewportDisplay{}.AnisotropicFilter)));
+    auto &textures = r.Context.emplace<TextureStore>();
     textures.WhiteTextureSlot = AllocateSamplerSlot(slots);
-    r.ctx().emplace<EnvironmentStore>();
+    r.Context.emplace<EnvironmentStore>();
 }
 
 namespace {
 template<typename Handle>
 void EmplaceMeshBuffers(state::Scene &r, state::Entity e) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     r.emplace<MeshBuffers>(e, meshes.Arenas().Vertices.Slotted(meshes.Get(r.get<const Handle>(e).StoreId).Vertices), SlottedRange{}, SlottedRange{}, SlottedRange{});
 }
 
 void EmplaceMeshShadingSummary(state::Scene &r, state::Entity e) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     const auto [any, all] = meshes.GetFaceSharpnessSummary(r.get<const MeshHandle>(e).StoreId);
     r.emplace_or_replace<MeshShadingSummary>(e, any, all);
 }
 } // namespace
 void RegisterRenderStoreHandlers(state::Scene &r) {
-    r.on_destroy<ArmaturePoseState>().connect<[](state::Scene &r, state::Entity e) {
-        auto &buffer = r.ctx().get<GpuBuffers>().ArmatureDeformBuffer;
+    r.on_destroy<ArmaturePoseState, [](state::Scene &r, state::Entity e) {
+        auto &buffer = r.Context.get<GpuBuffers>().ArmatureDeformBuffer;
         for (const auto range : r.get<const ArmaturePoseState>(e).GpuDeformRanges) buffer.Release(range);
     }>();
     // History restores the tracked allocator, so a restore releases nothing.
-    r.on_destroy<MorphWeightRange>().connect<[](state::Scene &r, state::Entity e) {
-        if (!r.Restoring) r.ctx().get<GpuBuffers>().MorphWeightBuffer.Release(r.get<const MorphWeightRange>(e).Weights);
+    r.on_destroy<MorphWeightRange, [](state::Scene &r, state::Entity e) {
+        if (!r.Restoring) r.Context.get<GpuBuffers>().MorphWeightBuffer.Release(r.get<const MorphWeightRange>(e).Weights);
     }>();
-    r.on_destroy<MeshHandle>().connect<&state::Scene::remove<MeshShadingSummary>>();
-    r.on_destroy<RenderInstance>().connect<[](state::Scene &r, state::Entity e) {
+    r.on_destroy<MeshHandle, &state::Scene::remove<MeshShadingSummary>>();
+    r.on_destroy<RenderInstance, [](state::Scene &r, state::Entity e) {
         const auto &ri = r.get<const RenderInstance>(e);
-        if (auto *buffers = r.ctx().find<GpuBuffers>()) {
+        if (auto *buffers = r.Context.find<GpuBuffers>()) {
             buffers->MeshletRangeCount -= ri.MeshletRangeCount;
             buffers->MeshletInstanceCount -= ri.MeshletCount;
         }
@@ -56,25 +56,25 @@ void RegisterRenderStoreHandlers(state::Scene &r) {
         r.get_or_emplace<PendingHide>(ri.Entity).BufferIndices.push_back(ri.BufferIndex);
     }>();
     // Keep RenderInstance synchronized with Instance and Hidden regardless of snapshot insertion order.
-    r.on_construct<Instance>().connect<[](state::Scene &r, state::Entity e) {
+    r.on_construct<Instance, [](state::Scene &r, state::Entity e) {
         if (!r.all_of<Hidden>(e) && !r.all_of<RenderInstance>(e)) r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX);
     }>();
-    r.on_construct<Hidden>().connect<[](state::Scene &r, state::Entity e) {
+    r.on_construct<Hidden, [](state::Scene &r, state::Entity e) {
         if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
     }>();
-    r.on_construct<MeshHandle>().connect<&EmplaceMeshBuffers<MeshHandle>>();
-    r.on_construct<MeshHandle>().connect<&EmplaceMeshShadingSummary>();
-    r.on_construct<VertexStoreId>().connect<&EmplaceMeshBuffers<VertexStoreId>>();
+    r.on_construct<MeshHandle, &EmplaceMeshBuffers<MeshHandle>>();
+    r.on_construct<MeshHandle, &EmplaceMeshShadingSummary>();
+    r.on_construct<VertexStoreId, &EmplaceMeshBuffers<VertexStoreId>>();
 }
 mtl::BufferContext &InitRenderStores(state::Scene &r) {
-    auto &buffers = r.ctx().emplace<GpuBuffers>(r.ctx().get<const mtl::Context>(), r.ctx().get<mtl::BindlessSet>());
-    r.ctx().emplace<MaterialStore>();
+    auto &buffers = r.Context.emplace<GpuBuffers>(r.Context.get<const mtl::Context>(), r.Context.get<mtl::BindlessSet>());
+    r.Context.emplace<MaterialStore>();
     return buffers.Ctx;
 }
 void InitDefaultMaterial(state::Scene &r) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &textures = r.ctx().get<TextureStore>();
-    auto &materials = r.ctx().get<MaterialStore>();
+    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &textures = r.Context.get<TextureStore>();
+    auto &materials = r.Context.get<MaterialStore>();
     buffers.Materials.Append(PBRMaterial{.MetallicFactor = 0.f, .BaseColorTexture = {.Slot = textures.WhiteTextureSlot}});
     materials.AppendNames({"Default"});
 
@@ -92,16 +92,16 @@ void InitDefaultMaterial(state::Scene &r) {
     });
 }
 void DeinitTextureStores(state::Scene &r) {
-    auto &slots = r.ctx().get<mtl::BindlessSet>();
-    auto &textures = r.ctx().get<TextureStore>();
-    auto &environments = r.ctx().get<EnvironmentStore>();
+    auto &slots = r.Context.get<mtl::BindlessSet>();
+    auto &textures = r.Context.get<TextureStore>();
+    auto &environments = r.Context.get<EnvironmentStore>();
     ReleaseEnvironmentSamplerSlots(slots, environments);
     ReleaseTextureSlots(slots, textures.Textures);
-    r.ctx().erase<EnvironmentStore>();
-    r.ctx().erase<TextureStore>();
+    r.Context.erase<EnvironmentStore>();
+    r.Context.erase<TextureStore>();
 }
 void DeinitRenderStores(state::Scene &r) {
-    r.ctx().erase<GpuBuffers>();
-    r.ctx().erase<MaterialStore>();
+    r.Context.erase<GpuBuffers>();
+    r.Context.erase<MaterialStore>();
 }
-void DeinitRenderStoreContext(state::Scene &r) { r.ctx().erase<mtl::BindlessSet>(); }
+void DeinitRenderStoreContext(state::Scene &r) { r.Context.erase<mtl::BindlessSet>(); }

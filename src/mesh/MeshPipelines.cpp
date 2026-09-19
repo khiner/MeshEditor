@@ -79,6 +79,6 @@ MeshPipelines::MeshPipelines(mtl::LibraryCache &libraries)
     : Pipelines{CompilePasses(libraries, std::make_index_sequence<size_t(MeshPass::Count)>{})} {}
 
 MeshPipelines &GetMeshPipelines(state::Scene &r) {
-    if (auto *pipelines = r.ctx().find<MeshPipelines>()) return *pipelines;
-    return r.ctx().emplace<MeshPipelines>(r.ctx().get<mtl::LibraryCache>());
+    if (auto *pipelines = r.Context.find<MeshPipelines>()) return *pipelines;
+    return r.Context.emplace<MeshPipelines>(r.Context.get<mtl::LibraryCache>());
 }

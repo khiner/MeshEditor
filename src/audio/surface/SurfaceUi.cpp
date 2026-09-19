@@ -79,14 +79,14 @@ void DrawSurfaceSynthControls(state::Scene &r, state::Entity viewport) {
     f.Check<&SurfaceSoundControls::MuteGeometricDrive>("Mute geometric drive");
     f.Check<&SurfaceSoundControls::MuteFrictionDrive>("Mute friction drive");
     MeshEditor::HelpMarker("Silence one modal drive row at a time, which isolates a feedback loop through the modes to a row. The body feed and every other channel stay live.");
-    Text("Active voices: %u", SurfaceActiveVoices(r.ctx().get<const ModalAudio>()));
+    Text("Active voices: %u", SurfaceActiveVoices(r.Context.get<const ModalAudio>()));
 }
 
 void DrawSurfaceContactDebug(const state::Scene &r) {
-    const auto &surface = Surface(r.ctx().get<const ModalAudio>());
+    const auto &surface = Surface(r.Context.get<const ModalAudio>());
 
     SeparatorText("Sustained contact");
-    Text("Voices: %u / %u", r.ctx().get<const ModalAudio>().ActiveVoices.load(std::memory_order_relaxed), SurfaceControls(r).MaxVoices);
+    Text("Voices: %u / %u", r.Context.get<const ModalAudio>().ActiveVoices.load(std::memory_order_relaxed), SurfaceControls(r).MaxVoices);
     Text("Refused: %llu", surface.VoicesRefused);
     MeshEditor::HelpMarker("Contacts the voice cap had no room for, each a body pressing on another that stays silent.");
 

@@ -77,7 +77,7 @@ State Capture(const state::Scene &r, state::Entity viewport, const WindowsState 
     const char *ini = ImGui::GetCurrentContext() && windows.PendingIni.empty() ? ImGui::SaveIniSettingsToMemory(&ini_size) : nullptr;
     return {
         .ViewCamera = GetViewCameraState(r, viewport),
-        .ViewportExtent = r.ctx().get<const ViewportExtent>().Value,
+        .ViewportExtent = r.Context.get<const ViewportExtent>().Value,
         .Windows = GetWindowVisibility(windows),
         .ImGuiIni = ini ? std::string{ini, ini_size} : windows.PendingIni,
         .Tabs = CaptureTabs(windows),
@@ -86,7 +86,7 @@ State Capture(const state::Scene &r, state::Entity viewport, const WindowsState 
 }
 
 void Apply(state::Scene &r, state::Entity viewport, WindowsState &windows, const State &state) {
-    r.ctx().get<ViewportExtent>().Value = state.ViewportExtent;
+    r.Context.get<ViewportExtent>().Value = state.ViewportExtent;
     SetViewCameraState(r, viewport, state.ViewCamera);
     SetWindowVisibility(windows, state.Windows);
     windows.PendingIni = state.ImGuiIni;

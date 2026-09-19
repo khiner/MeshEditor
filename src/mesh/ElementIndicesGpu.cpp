@@ -13,7 +13,7 @@ constexpr std::array Passes{TiledPass{MeshPass::EdgeEndpointsWrite, 0}, TiledPas
 
 void WriteElementIndicesNow(state::Scene &r, std::span<const ElementIndicesWork> work) {
     if (work.empty()) return;
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     const auto &arenas = meshes.Arenas();
     TiledJobBatch<ElementIndicesJob, 2> batch{meshes.BufferContext(), 1, uint32_t(work.size())};
     batch.Begin();
@@ -42,5 +42,5 @@ void WriteElementIndicesNow(state::Scene &r, std::span<const ElementIndicesWork>
             {TileCount(edge_count, TileElements), TileCount(triangle_count, TileElements)}
         );
     }
-    batch.Submit(r.ctx().get<const mtl::Context>(), r.ctx().get<const mtl::BindlessSet>(), GetMeshPipelines(r), TiledJobPushConstants{}, Passes);
+    batch.Submit(r.Context.get<const mtl::Context>(), r.Context.get<const mtl::BindlessSet>(), GetMeshPipelines(r), TiledJobPushConstants{}, Passes);
 }

@@ -1214,7 +1214,7 @@ void RegisterSurfaceContactHandlers(state::Scene &r) {
 }
 
 void SurfaceUpdateContacts(state::Scene &r) {
-    auto &m = r.ctx().get<ModalAudio>();
+    auto &m = r.Context.get<ModalAudio>();
     auto &surface = Surface(m);
     for (auto e : reactive(r, Change::SurfaceSoundControls)) {
         const auto &controls = r.get<const SurfaceSoundControls>(e);
@@ -1246,7 +1246,7 @@ void SurfaceUpdateContacts(state::Scene &r) {
         else r.remove<SurfaceFinishKey>(node);
     }
 
-    const auto *sustained = r.ctx().find<const PhysicsSustainedContacts>();
+    const auto *sustained = r.Context.find<const PhysicsSustainedContacts>();
     if (!sustained || sustained->Step == surface.ContactStep) return;
 
     const std::span<const SustainedContact> active{sustained->Active};

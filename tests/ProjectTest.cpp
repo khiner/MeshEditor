@@ -34,7 +34,7 @@ struct Fixture : Engine {
         const bool valid = P->Audit(why);
         if (!valid) std::printf("audit: %s\n", why.c_str());
         expect(valid);
-        expect(R.ctx().get<action::Errors>().Messages.empty());
+        expect(R.Context.get<action::Errors>().Messages.empty());
     }
     template<typename A> int Do(A a) {
         const auto node = P->Do(action::MakeAction(std::move(a)));
@@ -54,8 +54,8 @@ struct Fixture : Engine {
     std::vector<std::byte> Image() {
         SubmitViewport(R, Viewport);
         WaitForRender(R);
-        const auto &image = R.ctx().get<const RenderTargets>().Resources->FinalColorImage;
-        return ReadbackImageRgba8(R.ctx().get<const mtl::Context>(), image, 0, 0, image.Extent);
+        const auto &image = R.Context.get<const RenderTargets>().Resources->FinalColorImage;
+        return ReadbackImageRgba8(R.Context.get<const mtl::Context>(), image, 0, 0, image.Extent);
     }
 };
 
@@ -200,8 +200,8 @@ void TestProject(const char *sample) {
                 if (dense) f.Do(action::selection::SelectAll{});
                 else {
                     f.Image();
-                    f.Do(action::selection::ApplyEditElementClick{{32, 32}, false, std::make_unique<RenderView>(f.R.ctx().get<const GpuBuffers>().FrameView)});
-                    const auto &meshes = f.R.ctx().get<const MeshStore>();
+                    f.Do(action::selection::ApplyEditElementClick{{32, 32}, false, std::make_unique<RenderView>(f.R.Context.get<const GpuBuffers>().FrameView)});
+                    const auto &meshes = f.R.Context.get<const MeshStore>();
                     const auto id = f.R.get<const MeshHandle>(GetActiveMeshEntity(f.R)).StoreId;
                     expect(meshes.GetSelectionSummary(id).SelectedVertexCount == 1);
                 }
@@ -293,19 +293,19 @@ void TestProject(const char *sample) {
     {
         Fixture other;
         expect(!other.P->Open(copy.Path / "working"));
-        expect(!other.R.ctx().get<action::Errors>().Messages.empty());
+        expect(!other.R.Context.get<action::Errors>().Messages.empty());
     }
     {
         const File::DirectoryLock lock{named.Path / "working"};
         expect(!f.P->SaveAs(named));
-        expect(!f.R.ctx().get<action::Errors>().Messages.empty());
-        f.R.ctx().get<action::Errors>().Messages.clear();
+        expect(!f.R.Context.get<action::Errors>().Messages.empty());
+        f.R.Context.get<action::Errors>().Messages.clear();
         expect(File::Read(named.Path / "Saved.project").value() == saved);
     }
     for (const auto &invalid : {archive.Path, copy.Path / "working/nested", copy.Path.parent_path()}) {
         expect(!f.P->SaveAs(invalid));
-        expect(!f.R.ctx().get<action::Errors>().Messages.empty());
-        f.R.ctx().get<action::Errors>().Messages.clear();
+        expect(!f.R.Context.get<action::Errors>().Messages.empty());
+        f.R.Context.get<action::Errors>().Messages.clear();
         edited.Check(f);
     }
     std::ofstream{named.Path / "working/obsolete"} << "old project";
@@ -356,7 +356,7 @@ void TestProject(const char *sample) {
     const auto archive_bytes = File::Read(f.P->SavedPath).value();
     expect(bool(File::WriteAtomic(f.P->SavedPath, std::span{archive_bytes}.first(1))));
     expect(!f.P->RevertSaved());
-    f.R.ctx().get<action::Errors>().Messages.clear();
+    f.R.Context.get<action::Errors>().Messages.clear();
     edited.Check(f);
     expect(bool(File::WriteAtomic(f.P->SavedPath, archive_bytes)));
     f.P->Navigate(branch_node);

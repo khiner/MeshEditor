@@ -75,7 +75,7 @@ uint32_t ScratchWords(uint32_t count, const WeldChannels &c) {
 }
 
 void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, Batch &batch) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     const auto &arenas = meshes.Arenas();
     batch.Begin();
     for (const auto &target : chunk) {
@@ -127,7 +127,7 @@ void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, Batch &batc
         const auto &deltas = *chunk[i].MorphTangentDeltas;
         std::memcpy(scratch.data() + batch.Jobs[i].TangentOffset, deltas.data(), deltas.size() * sizeof(vec3));
     }
-    batch.Submit(r.ctx().get<const mtl::Context>(), r.ctx().get<const mtl::BindlessSet>(), GetMeshPipelines(r), TiledJobPushConstants{}, Passes);
+    batch.Submit(r.Context.get<const mtl::Context>(), r.Context.get<const mtl::BindlessSet>(), GetMeshPipelines(r), TiledJobPushConstants{}, Passes);
 
     for (uint32_t i = 0; i < chunk.size(); ++i) {
         const auto &job = batch.Jobs[i];
@@ -145,7 +145,7 @@ void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, Batch &batc
 
 void WeldMeshesNow(state::Scene &r, std::span<const WeldTarget> targets) {
     const profile::CpuScope scope{"WeldMeshes"};
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     std::vector<WeldTarget> work;
     for (const auto &target : targets) {
         if (meshes.Get(target.StoreId).Vertices.Count == 0 || target.Data->FaceCount() == 0) continue;

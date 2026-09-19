@@ -55,11 +55,11 @@ std::expected<fs::path, std::string> Assets::Store(const fs::path &source) {
 }
 
 fs::path ResolveAsset(const state::Scene &r, const fs::path &path) {
-    return Assets::IsReference(path) ? r.ctx().get<const Assets>().Resolve(path) : path;
+    return Assets::IsReference(path) ? r.Context.get<const Assets>().Resolve(path) : path;
 }
 
 fs::path AssetReference(const state::Scene &r, const fs::path &path) {
-    const auto *assets = r.ctx().find<const Assets>();
+    const auto *assets = r.Context.find<const Assets>();
     return assets ? assets->Reference(path) : path;
 }
 } // namespace project

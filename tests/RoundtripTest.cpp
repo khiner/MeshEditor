@@ -13,6 +13,7 @@
 #include "numeric/VectorMath.h"
 #include "project/Assets.h"
 #include <barrier>
+#include <bit>
 #include <future>
 #ifdef SURFACE_AUDIO
 #include "audio/surface/SurfaceAudio.h" // SurfaceRelief, UpdateSurfaceRelief
@@ -728,14 +729,20 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
     return unexpected.size();
 }
 
+// Calls fn with each live entity of a table in entity index order.
+void ForEachEntity(const state::Table &t, auto &&fn) {
+    for (uint32_t p = 0; p < t.pages(); ++p)
+        for (auto m = t.mask(p); m; m &= m - 1) fn(t.entity(p, std::countr_zero(m)));
+}
+
 // Require identical component presence and comparable values for every entity.
 void CompareRegistries(std::string_view name, state::Scene &a, state::Scene &b) {
     using namespace boost::ut;
     const auto components_by_entity = [](state::Scene &r) {
         std::map<state::Entity, std::set<std::string>> m;
-        for (auto [id, set] : r.storage()) {
+        for (const auto id : r.Active) {
             const std::string_view tn{state::SchemaNames[id]};
-            for (const auto e : set.entities()) m[e].insert(std::string{tn});
+            ForEachEntity(r.Tables[id], [&](state::Entity e) { m[e].insert(std::string{tn}); });
         }
         return m;
     };
@@ -768,15 +775,16 @@ void CompareRegistries(std::string_view name, state::Scene &a, state::Scene &b) 
     // ComponentValuesEqual returns nullopt for derived components without serializers.
     // Meshlet arena ranges follow build order, and a restore rebuilds reclassified meshes after the import built them.
     std::map<std::string, int> value_diffs;
-    for (auto [id, a_set] : a.storage()) {
+    for (const auto id : a.Active) {
         const auto tn = state::SchemaNames[id];
-        const auto &b_set = b.storage(id);
+        const auto &a_set = a.Tables[id];
+        const auto &b_set = b.Tables[id];
         if (id == state::Type<MeshBuffers>()) continue;
-        for (const auto e : a_set.entities()) {
-            if (!b_set.contains(e)) continue;
+        ForEachEntity(a_set, [&](state::Entity e) {
+            if (!b_set.contains(e)) return;
             const auto eq = snapshot::ComponentValuesEqual(id, a_set.value(e), b_set.value(e));
             if (eq && !*eq) ++value_diffs[std::string{tn}];
-        }
+        });
     }
 
     // Require exact component presence, including types excluded from value comparison.
@@ -830,26 +838,26 @@ const ModalModelData SampleModal{
 struct SceneFixture : Engine {
     // Imports keep source image URIs while no asset store is present, so the glTF comparison sees the source layout.
     // Project operations need the store, so it exists only while a project is open.
-    SceneFixture() : Engine{false} { R.ctx().erase<project::Assets>(); }
+    SceneFixture() : Engine{false} { R.Context.erase<project::Assets>(); }
     void Check(bool ok) {
         boost::ut::expect(ok);
         if (ok) return;
-        for (const auto &message : R.ctx().get<action::Errors>().Messages) std::cerr << "  project: " << message << "\n";
+        for (const auto &message : R.Context.get<action::Errors>().Messages) std::cerr << "  project: " << message << "\n";
         if (const auto error = P->History.TakeIntegrityError(); !error.empty()) std::cerr << "  history: " << error << "\n";
     }
     // Start a project at `dir`, save live state into it, close it, and return the persistent image.
     std::vector<std::byte> SaveTo(const std::filesystem::path &dir) {
-        R.ctx().emplace<project::Assets>();
+        R.Context.emplace<project::Assets>();
         Check(P->Begin(dir));
         Check(P->Save());
         auto image = P->History.MaterializeLive();
         Check(P->Close());
-        R.ctx().erase<project::Assets>();
+        R.Context.erase<project::Assets>();
         return image;
     }
     // Restore the project at `dir` and return the persistent image.
     std::vector<std::byte> LoadFrom(const std::filesystem::path &dir) {
-        R.ctx().emplace<project::Assets>();
+        R.Context.emplace<project::Assets>();
         Check(P->Open(dir));
         return P->History.MaterializeLive();
     }
@@ -958,7 +966,7 @@ struct SceneCounts {
     bool operator==(const SceneCounts &) const = default;
 };
 SceneCounts CountScene(SceneFixture &f) {
-    auto &c = f.R.ctx();
+    auto &c = f.R.Context;
     return {
         .Entities = f.R.storage<state::Entity>().size(),
         .MeshHandles = f.R.storage<MeshHandle>().size(),
@@ -1003,7 +1011,7 @@ int main(int argc, const char **argv) {
     "project save/restore round trip"_test = [&] {
         SceneFixture f;
         {
-            auto &meshes = f.R.ctx().get<MeshStore>();
+            auto &meshes = f.R.Context.get<MeshStore>();
             const auto created = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cuboid{})});
             const auto e = f.R.create();
             f.R.emplace<MeshHandle>(e, MeshHandle{created.StoreId});
@@ -1092,7 +1100,7 @@ int main(int argc, const char **argv) {
     // Reclaim retired arena buffers after each clear because this test has no render frames in flight.
     const auto clear_scene = [](state::Scene &r, state::Entity vp) {
         ClearScene(r, vp);
-        r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
+        r.Context.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     };
 
     // Check each sample through JSON comparison and byte-identical project restoration.
@@ -1143,11 +1151,11 @@ int main(int argc, const char **argv) {
             const auto reloaded = RoundtripComponent<gltf::SourceAssets>(box_embedded, edit_root / "BoxTextured-dirty.gltf", [&](SceneFixture &fx, state::Entity) {
                 // A frame materializes the pending upload so the readback sees the texture.
                 ProcessComponentEvents(fx.R, fx.Viewport);
-                const auto &textures = fx.R.ctx().get<TextureStore>().Textures;
+                const auto &textures = fx.R.Context.get<TextureStore>().Textures;
                 const auto tex = std::ranges::find(textures, 0u, &TextureEntry::SourceImageIndex);
                 expect(tex != textures.end()) << "BoxTextured image was not materialized";
                 if (tex == textures.end()) return;
-                auto pixels = ReadbackTextureRgba8(fx.R.ctx().get<const mtl::Context>(), *tex);
+                auto pixels = ReadbackTextureRgba8(fx.R.Context.get<const mtl::Context>(), *tex);
                 expect(pixels.has_value()) << "readback failed";
                 if (!pixels) return;
                 original_pixels = std::move(*pixels);

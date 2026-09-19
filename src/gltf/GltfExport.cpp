@@ -202,8 +202,8 @@ fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name)
 
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const state::Scene &r, state::Entity viewport, SaveOptions options) {
     const profile::CpuScope scope{"SaveGltf"};
-    const auto &meshes = r.ctx().get<const MeshStore>();
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &buffers = r.Context.get<const GpuBuffers>();
 
     // Entities of `view` in the source order `index_of` reads, with runtime-added ones after the source range in view order.
     const auto ordered_by_source = [&](auto view, auto &&index_of) {
@@ -224,7 +224,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Read source-form scene metadata directly from src_assets at each emission site.
     static const gltf::SourceAssets EmptySourceAssets{};
     const auto &sa = src_assets ? *src_assets : EmptySourceAssets;
-    const auto &names = r.ctx().get<const MaterialStore>().Names;
+    const auto &names = r.Context.get<const MaterialStore>().Names;
     const auto material_count = buffers.Materials.Count<PBRMaterial>();
     const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
 
@@ -397,7 +397,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     {
         auto mat_view = r.view<const PhysicsMaterial>();
         for (const auto e : ordered_by_source(mat_view, source_index)) {
-            const auto &pm = mat_view.get<const PhysicsMaterial>(e);
+            const auto &pm = r.get<const PhysicsMaterial>(e);
             physics_material_to_index[e] = asset.physicsMaterials.size();
             asset.physicsMaterials.emplace_back(fastgltf::PhysicsMaterial{
                 .staticFriction = pm.StaticFriction,
@@ -409,7 +409,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
         auto jd_view = r.view<const ::PhysicsJointDef>();
         for (const auto e : ordered_by_source(jd_view, source_index)) {
-            const auto &jd = jd_view.get<const ::PhysicsJointDef>(e);
+            const auto &jd = r.get<const ::PhysicsJointDef>(e);
             fastgltf::pmr::MaybeSmallVector<fastgltf::JointLimit> limits;
             limits.reserve(jd.Limits.size());
             for (const auto &lim : jd.Limits) {
@@ -453,7 +453,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         };
         auto cf_view = r.view<const CollisionFilter>();
         for (const auto e : ordered_by_source(cf_view, source_index)) {
-            const auto &f = cf_view.get<const CollisionFilter>(e);
+            const auto &f = r.get<const CollisionFilter>(e);
             collision_filter_to_index[e] = asset.collisionFilters.size();
             fastgltf::CollisionFilter out{.collisionSystems = resolve_system_names(f.Systems)};
             if (f.Mode == CollideMode::Allowlist) out.collideWithSystems = resolve_system_names(f.CollideSystems);
@@ -567,14 +567,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Each image emits in its source form: an external URI, a data URI, or a buffer view. A dirty image re-encodes from its GPU texture first.
     asset.images.reserve(sa.Images.size());
     std::unordered_map<uint32_t, const TextureEntry *> texture_for_image;
-    for (const auto &tex : r.ctx().get<const TextureStore>().Textures) {
+    for (const auto &tex : r.Context.get<const TextureStore>().Textures) {
         if (tex.SourceImageIndex != UINT32_MAX) texture_for_image.emplace(tex.SourceImageIndex, &tex);
     }
     const auto reencode_from_gpu = [&](uint32_t img_idx, gltf::MimeType target, std::string_view name)
         -> std::expected<std::pair<std::vector<std::byte>, gltf::MimeType>, std::string> {
         const auto it = texture_for_image.find(img_idx);
         if (it == texture_for_image.end()) return std::unexpected{std::format("Image '{}' has no GPU texture; cannot re-encode.", name)};
-        const auto *ctx = r.ctx().find<const mtl::Context>();
+        const auto *ctx = r.Context.find<const mtl::Context>();
         if (!ctx) return std::unexpected{std::format("Image '{}' needs GPU readback but no Metal context is registered.", name)};
         auto rgba8 = ReadbackTextureRgba8(*ctx, *it->second);
         if (!rgba8) return std::unexpected{std::move(rgba8.error())};

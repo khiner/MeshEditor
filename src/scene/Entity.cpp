@@ -15,17 +15,17 @@ struct EntityNameCounts {
 };
 
 void TrackName(state::Scene &r, state::Entity e) {
-    if (auto *names = r.ctx().find<EntityNameCounts>()) ++names->Counts[r.get<const Name>(e).Value];
+    if (auto *names = r.Context.find<EntityNameCounts>()) ++names->Counts[r.get<const Name>(e).Value];
 }
 void UntrackName(state::Scene &r, state::Entity e) {
-    auto *names = r.ctx().find<EntityNameCounts>();
+    auto *names = r.Context.find<EntityNameCounts>();
     if (!names) return;
     const auto it = names->Counts.find(r.get<const Name>(e).Value);
     if (it != names->Counts.end() && --it->second == 0) names->Counts.erase(it);
 }
 
 std::string ChooseUniqueName(const state::Scene &r, std::string_view prefix) {
-    const auto &counts = r.ctx().get<const EntityNameCounts>().Counts;
+    const auto &counts = r.Context.get<const EntityNameCounts>().Counts;
     const std::string base{prefix};
     for (uint32_t i = 0; i < std::numeric_limits<uint32_t>::max(); ++i) {
         auto candidate = i == 0 ? base : std::format("{}_{}", prefix, i);
@@ -37,18 +37,18 @@ std::string ChooseUniqueName(const state::Scene &r, std::string_view prefix) {
 } // namespace
 
 void InitEntityNames(state::Scene &r) {
-    r.ctx().emplace<EntityNameCounts>();
-    r.on_construct<Name>().connect<&TrackName>();
-    r.on_destroy<Name>().connect<&UntrackName>();
+    r.Context.emplace<EntityNameCounts>();
+    r.on_construct<Name, &TrackName>();
+    r.on_destroy<Name, &UntrackName>();
 }
 void RebuildEntityNames(state::Scene &r) {
-    auto &counts = r.ctx().get<EntityNameCounts>().Counts;
+    auto &counts = r.Context.get<EntityNameCounts>().Counts;
     counts.clear();
     for (const auto &[e, name] : r.view<const Name>().each()) ++counts[name.Value];
 }
-void DeinitEntityNames(state::Scene &r) { r.ctx().erase<EntityNameCounts>(); }
+void DeinitEntityNames(state::Scene &r) { r.Context.erase<EntityNameCounts>(); }
 void ReserveEntityNames(state::Scene &r, size_t additional) {
-    auto &counts = r.ctx().get<EntityNameCounts>().Counts;
+    auto &counts = r.Context.get<EntityNameCounts>().Counts;
     counts.reserve(counts.size() + additional);
 }
 Name &EmplaceUniqueName(state::Scene &r, state::Entity e, std::string_view prefix) {

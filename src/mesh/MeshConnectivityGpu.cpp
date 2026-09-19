@@ -45,7 +45,7 @@ uint32_t ScratchWords(uint32_t halfedge_count, bool face_starts) {
 }
 
 void EncodeChunk(state::Scene &r, std::span<const uint32_t> chunk, Batch &batch, MTL::ComputeCommandEncoder *encoder) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     const auto &arenas = meshes.Arenas();
     batch.Begin();
     for (const auto id : chunk) {
@@ -88,7 +88,7 @@ void EncodeChunk(state::Scene &r, std::span<const uint32_t> chunk, Batch &batch,
             {TileCount(std::max({table_size, halfedge_count, vertex_count}), TileElements), TileCount(halfedge_count, TileElements), word_block_count}
         );
     }
-    batch.Encode(r.ctx().get<const mtl::BindlessSet>(), GetMeshPipelines(r), TiledJobPushConstants{}, Passes, encoder);
+    batch.Encode(r.Context.get<const mtl::BindlessSet>(), GetMeshPipelines(r), TiledJobPushConstants{}, Passes, encoder);
 }
 
 uint32_t ScratchWords(const MeshStore &meshes, uint32_t id) {
@@ -115,7 +115,7 @@ PendingConnectivity::~PendingConnectivity() = default;
 PendingConnectivity EncodeConnectivity(state::Scene &r, std::span<const uint32_t> store_ids, MTL::ComputeCommandEncoder *encoder) {
     PendingConnectivity pending;
     if (store_ids.empty()) return pending;
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     const auto split = Split(meshes, store_ids);
     auto &batches = *pending.Chunks;
     batches.Ids.assign(store_ids.begin(), store_ids.end());
@@ -129,7 +129,7 @@ PendingConnectivity EncodeConnectivity(state::Scene &r, std::span<const uint32_t
 }
 
 void FinishConnectivity(state::Scene &r, PendingConnectivity &pending) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     const auto &batches = *pending.Chunks;
     uint32_t next = 0;
     for (const auto &batch : batches.Chunks) {
@@ -141,9 +141,9 @@ void FinishConnectivity(state::Scene &r, PendingConnectivity &pending) {
 void BuildConnectivityNow(state::Scene &r, std::span<const uint32_t> store_ids) {
     if (store_ids.empty()) return;
     const profile::CpuScope scope{"ConnectivityGpu"};
-    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
     // One chunk per command buffer, so a load holds one chunk's scratch at a time.
-    for (const auto chunk : Split(r.ctx().get<const MeshStore>(), store_ids).Chunks) {
+    for (const auto chunk : Split(r.Context.get<const MeshStore>(), store_ids).Chunks) {
         auto *command_buffer = ctx.Queue->commandBuffer();
         auto *encoder = command_buffer->computeCommandEncoder();
         auto pending = EncodeConnectivity(r, store_ids.subspan(chunk.Offset, chunk.Count), encoder);

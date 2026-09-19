@@ -249,8 +249,8 @@ void ApplyCollider(rbp::Shape &shape, state::Entity entity, const ColliderInput 
 void ClearContacts(PhysicsState &s, state::Scene &r) {
     s.Contacts.clear();
     s.ContactFrames.clear();
-    r.ctx().get<PhysicsContactImpacts>().Events.clear();
-    auto &sustained = r.ctx().get<PhysicsSustainedContacts>();
+    r.Context.get<PhysicsContactImpacts>().Events.clear();
+    auto &sustained = r.Context.get<PhysicsSustainedContacts>();
     sustained.Active.clear();
     sustained.Step = ++s.ContactStep;
 }
@@ -271,7 +271,7 @@ void ClearSimulation(PhysicsState &s, state::Scene &r) {
 }
 
 void OnDestroyPhysicsBody(state::Scene &r, state::Entity e) {
-    auto *s = r.ctx().find<PhysicsState>();
+    auto *s = r.Context.find<PhysicsState>();
     if (!s || s->Clearing || !s->World) return;
     const auto it = s->Bodies.find(e);
     if (it == s->Bodies.end()) return;
@@ -281,11 +281,11 @@ void OnDestroyPhysicsBody(state::Scene &r, state::Entity e) {
     s->Bodies.erase(it);
     s->Baked.reset();
     s->Contacts.clear();
-    r.ctx().get<PhysicsSustainedContacts>().Active.clear();
+    r.Context.get<PhysicsSustainedContacts>().Active.clear();
 }
 
 void OnDestroyPhysicsConstraint(state::Scene &r, state::Entity e) {
-    auto *s = r.ctx().find<PhysicsState>();
+    auto *s = r.Context.find<PhysicsState>();
     if (!s || s->Clearing || !s->World) return;
     s->World->RemoveJoint(r.get<const PhysicsConstraintHandle>(e).ConstraintIndex);
     s->Invalidate();
@@ -293,7 +293,7 @@ void OnDestroyPhysicsConstraint(state::Scene &r, state::Entity e) {
 
 void OnDestroyPhysicsInput(state::Scene &r, state::Entity) {
     // Entity destruction can erase entries from reactive storage after component destruction signals.
-    if (auto *s = r.ctx().find<PhysicsState>()) s->InputDirty = true;
+    if (auto *s = r.Context.find<PhysicsState>()) s->InputDirty = true;
 }
 
 rbp::WorldLimits Limits(const state::Scene &r) {
@@ -443,7 +443,7 @@ void BuildJoint(PhysicsState &s, state::Scene &r, state::Entity entity) {
 
 void Rebuild(state::Scene &r) {
     const profile::CpuScope scope{"PhysicsRebuild"};
-    auto &s = r.ctx().get<PhysicsState>();
+    auto &s = r.Context.get<PhysicsState>();
     ClearSimulation(s, r);
     if (!s.Context) return;
     if (!s.Solver) s.Solver.emplace(*s.Context);
@@ -479,7 +479,7 @@ void Restart(PhysicsState &s, state::Scene &r) {
     }
     s.World->WeldStatic();
     s.Baked = s.CacheStartFrame;
-    s.ContactFrames = {{r.ctx().get<PhysicsContactImpacts>(), r.ctx().get<PhysicsSustainedContacts>()}};
+    s.ContactFrames = {{r.Context.get<PhysicsContactImpacts>(), r.Context.get<PhysicsSustainedContacts>()}};
 }
 
 state::Entity EntityForBody(const PhysicsState &s, rbp::Index body) { return body < s.Entities.size() ? s.Entities[body] : state::Null; }
@@ -492,7 +492,7 @@ void CollectSubstep(PhysicsState &s, state::Scene &r, std::map<ContactKey, Conta
     auto events = s.World->TakeContactChanges();
     std::ranges::stable_sort(events, {}, Key);
     ++s.Substep;
-    auto &impacts = r.ctx().get<PhysicsContactImpacts>().Events;
+    auto &impacts = r.Context.get<PhysicsContactImpacts>().Events;
     const auto gravity = s.Settings.Gravity;
     for (const auto manifold : events | std::views::chunk_by([](const auto &a, const auto &b) { return Key(a) == Key(b); })) {
         const auto &first = manifold.front();
@@ -562,10 +562,10 @@ void CollectSubstep(PhysicsState &s, state::Scene &r, std::map<ContactKey, Conta
 
 void StepSimulation(PhysicsState &s, state::Scene &r, float sim_dt, uint32_t substeps) {
     const profile::CpuScope scope{"PhysicsFrame"};
-    auto &out = r.ctx().get<PhysicsSustainedContacts>();
+    auto &out = r.Context.get<PhysicsSustainedContacts>();
     out.Active.clear();
     out.Step = ++s.ContactStep;
-    r.ctx().get<PhysicsContactImpacts>().Events.clear();
+    r.Context.get<PhysicsContactImpacts>().Events.clear();
     if (sim_dt <= 0) return;
     substeps = std::max(1u, substeps);
     s.Settings.DeltaTime = sim_dt / float(substeps);
@@ -620,7 +620,7 @@ void BakeFrame(state::Scene &r, state::Entity viewport, PhysicsState &s, uint32_
         const auto &body = s.Bodies.at(entity);
         cache.Frames.push_back(physics::RbpNodePose(s.World->Poses[body.Body], body.Frame));
     }
-    s.ContactFrames.push_back({std::move(r.ctx().get<PhysicsContactImpacts>()), std::move(r.ctx().get<PhysicsSustainedContacts>())});
+    s.ContactFrames.push_back({std::move(r.Context.get<PhysicsContactImpacts>()), std::move(r.Context.get<PhysicsSustainedContacts>())});
     s.Baked = frame;
 }
 
@@ -637,7 +637,7 @@ void ClearDanglingRefs(state::Scene &r, state::Entity deleted, std::vector<state
 }
 
 void UpdateSettings(state::Scene &r, state::Entity viewport, float fps) {
-    auto &s = r.ctx().get<PhysicsState>();
+    auto &s = r.Context.get<PhysicsState>();
     const auto &settings = r.get<const PhysicsSimulationSettings>(viewport);
     if (s.AppliedSettings == settings && s.CacheFps == fps) return;
     physics::ApplySimulationSettings(r, settings);
@@ -650,7 +650,7 @@ void UpdateSettings(state::Scene &r, state::Entity viewport, float fps) {
 
 namespace physics {
 void ProcessChanges(state::Scene &r, EventPass) {
-    auto &s = r.ctx().get<PhysicsState>();
+    auto &s = r.Context.get<PhysicsState>();
     const auto any = [&](auto... changes) { return (... || !reactive(r, changes).empty()); };
     const auto poser_moved = [&] {
         const auto &moved = reactive(r, Change::PhysicsTransform);
@@ -752,20 +752,20 @@ namespace {
 namespace physics {
 
 void ApplySimulationSettings(state::Scene &r, const PhysicsSimulationSettings &settings) {
-    auto &step = r.ctx().get<PhysicsState>().Settings;
+    auto &step = r.Context.get<PhysicsState>().Settings;
     step.Gravity = ToRbp(settings.Gravity);
     step.Iterations = std::max(1u, settings.SolverIterations);
 }
-std::optional<uint32_t> BakedThrough(const state::Scene &r) { return r.ctx().get<PhysicsState>().Baked; }
-uint32_t BodyCount(const state::Scene &r) { return uint32_t(r.ctx().get<PhysicsState>().Bodies.size()); }
+std::optional<uint32_t> BakedThrough(const state::Scene &r) { return r.Context.get<PhysicsState>().Baked; }
+uint32_t BodyCount(const state::Scene &r) { return uint32_t(r.Context.get<PhysicsState>().Bodies.size()); }
 bool DoesFilterAllow(const state::Scene &r, state::Entity source, state::Entity target) {
-    const auto &masks = r.ctx().get<PhysicsState>().Masks;
+    const auto &masks = r.Context.get<PhysicsState>().Masks;
     const auto a = masks.find(source), b = masks.find(target);
     return a == masks.end() || b == masks.end() || (a->second.Layer & b->second.Collides) != 0;
 }
-void InvalidateCache(state::Scene &r) { r.ctx().get<PhysicsState>().CacheInvalid = true; }
+void InvalidateCache(state::Scene &r) { r.Context.get<PhysicsState>().CacheInvalid = true; }
 bool AdvancePlayback(state::Scene &r, state::Entity viewport, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps) {
-    auto &s = r.ctx().get<PhysicsState>();
+    auto &s = r.Context.get<PhysicsState>();
     UpdateSettings(r, viewport, fps);
     if (std::exchange(s.CacheInvalid, false) || uint32_t(range_start_frame) != s.CacheStartFrame) s.Invalidate();
     s.CacheStartFrame = range_start_frame;
@@ -776,28 +776,28 @@ bool AdvancePlayback(state::Scene &r, state::Entity viewport, int from_frame, in
     BakeThrough(r, viewport, to_frame, fps);
     SamplePosesAtFrame(r, float(to_frame));
     const auto &contacts = s.ContactFrames[std::clamp(uint32_t(to_frame), s.CacheStartFrame, *s.Baked) - s.CacheStartFrame];
-    r.ctx().get<PhysicsContactImpacts>() = contacts.Impacts;
-    r.ctx().get<PhysicsSustainedContacts>() = contacts.Sustained;
+    r.Context.get<PhysicsContactImpacts>() = contacts.Impacts;
+    r.Context.get<PhysicsSustainedContacts>() = contacts.Sustained;
     return true;
 }
 
 void BakeThrough(state::Scene &r, state::Entity viewport, int through_frame, float fps) {
-    auto &s = r.ctx().get<PhysicsState>();
+    auto &s = r.Context.get<PhysicsState>();
     if (s.Bodies.empty()) return;
     UpdateSettings(r, viewport, fps);
     if (!s.Baked) Restart(s, r);
     const uint32_t target = std::min(uint32_t(std::max(through_frame, int(s.CacheStartFrame))), s.CacheEndFrame);
     if (*s.Baked >= target) return;
     // Prediction records future contacts without publishing them to the audio timeline.
-    auto impacts = std::move(r.ctx().get<PhysicsContactImpacts>());
-    auto sustained = std::move(r.ctx().get<PhysicsSustainedContacts>());
+    auto impacts = std::move(r.Context.get<PhysicsContactImpacts>());
+    auto sustained = std::move(r.Context.get<PhysicsSustainedContacts>());
     while (*s.Baked < target) BakeFrame(r, viewport, s, *s.Baked + 1, fps);
-    r.ctx().get<PhysicsContactImpacts>() = std::move(impacts);
-    r.ctx().get<PhysicsSustainedContacts>() = std::move(sustained);
+    r.Context.get<PhysicsContactImpacts>() = std::move(impacts);
+    r.Context.get<PhysicsSustainedContacts>() = std::move(sustained);
 }
 
 void SamplePosesAtFrame(state::Scene &r, float frame) {
-    auto &s = r.ctx().get<PhysicsState>();
+    auto &s = r.Context.get<PhysicsState>();
     if (s.Bodies.empty() || !s.Baked) return;
     const float clamped = std::clamp(frame, float(s.CacheStartFrame), float(*s.Baked));
     const uint32_t lo = uint32_t(std::floor(clamped));
@@ -820,15 +820,15 @@ void SamplePosesAtFrame(state::Scene &r, float frame) {
 }
 
 void Init(state::Scene &r) {
-    auto &s = r.ctx().emplace<PhysicsState>();
-    if (r.ctx().get<const mtl::Context>().Device->supportsFamily(MTL::GPUFamilyMetal4)) s.Context.emplace();
-    r.ctx().emplace<PhysicsContactImpacts>();
-    r.ctx().emplace<PhysicsSustainedContacts>();
-    r.on_destroy<PhysicsBodyHandle>().connect<&OnDestroyPhysicsBody>();
-    r.on_destroy<PhysicsConstraintHandle>().connect<&OnDestroyPhysicsConstraint>();
-    r.on_destroy<PhysicsJoint>().connect<&OnDestroyPhysicsInput>();
-    r.on_destroy<PhysicsJointDef>().connect<&OnDestroyPhysicsInput>();
-    r.on_destroy<SceneNode>().connect<&OnDestroyPhysicsInput>();
+    auto &s = r.Context.emplace<PhysicsState>();
+    if (r.Context.get<const mtl::Context>().Device->supportsFamily(MTL::GPUFamilyMetal4)) s.Context.emplace();
+    r.Context.emplace<PhysicsContactImpacts>();
+    r.Context.emplace<PhysicsSustainedContacts>();
+    r.on_destroy<PhysicsBodyHandle, &OnDestroyPhysicsBody>();
+    r.on_destroy<PhysicsConstraintHandle, &OnDestroyPhysicsConstraint>();
+    r.on_destroy<PhysicsJoint, &OnDestroyPhysicsInput>();
+    r.on_destroy<PhysicsJointDef, &OnDestroyPhysicsInput>();
+    r.on_destroy<SceneNode, &OnDestroyPhysicsInput>();
     reactive(r, Change::PhysicsInput)
         .on<PhysicsMotion>(On::Create | On::Update | On::Destroy)
         .on<PhysicsVelocity>(On::Create | On::Update | On::Destroy)
@@ -845,8 +845,8 @@ void Init(state::Scene &r) {
     reactive(r, Change::CollisionSystemDef).on<CollisionSystem>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::CollisionFilterDef).on<CollisionFilter>(On::Create | On::Update | On::Destroy);
 }
-void Deinit(state::Scene &r) { r.ctx().erase<PhysicsState>(); }
+void Deinit(state::Scene &r) { r.Context.erase<PhysicsState>(); }
 void Clear(state::Scene &r) {
-    if (auto *s = r.ctx().find<PhysicsState>()) ClearSimulation(*s, r);
+    if (auto *s = r.Context.find<PhysicsState>()) ClearSimulation(*s, r);
 }
 } // namespace physics

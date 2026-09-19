@@ -49,7 +49,7 @@ struct Fixture : Engine {
         const bool valid = P->Audit(why);
         if (!valid) std::printf("audit: %s\n", why.c_str());
         expect(valid);
-        expect(R.ctx().get<action::Errors>().Messages.empty());
+        expect(R.Context.get<action::Errors>().Messages.empty());
     }
     template<typename A> int Do(A a) {
         const auto node = P->Do(action::MakeAction(std::move(a)));
@@ -122,10 +122,10 @@ void CheckInvariants(const MeshStore &meshes, const Mesh &mesh) {
     expect(firsts == mesh.EdgeCount());
 }
 
-void CheckInvariants(const Fixture &f) { CheckInvariants(f.R.ctx().get<const MeshStore>(), f.ActiveMesh()); }
+void CheckInvariants(const Fixture &f) { CheckInvariants(f.R.Context.get<const MeshStore>(), f.ActiveMesh()); }
 
 uint32_t SelectedCount(const Fixture &f, Element element) {
-    const auto &meshes = f.R.ctx().get<const MeshStore>();
+    const auto &meshes = f.R.Context.get<const MeshStore>();
     const auto &summary = meshes.GetSelectionSummary(f.ActiveMesh().GetStoreId());
     return summary.Mode == element ? summary.SelectedCount : 0u;
 }
@@ -133,7 +133,7 @@ uint32_t SelectedCount(const Fixture &f, Element element) {
 // The number of set bits in the active mesh's selection over `element`, whichever mode is active.
 uint32_t BitCount(const Fixture &f, Element element) {
     uint32_t n = 0;
-    for (const auto word : f.R.ctx().get<const MeshStore>().GetSelectionBits(f.ActiveMesh().GetStoreId(), element)) n += uint32_t(std::popcount(word));
+    for (const auto word : f.R.Context.get<const MeshStore>().GetSelectionBits(f.ActiveMesh().GetStoreId(), element)) n += uint32_t(std::popcount(word));
     return n;
 }
 
@@ -149,7 +149,7 @@ std::vector<vec3> Positions(const Mesh &mesh) {
     return positions;
 }
 
-std::unique_ptr<RenderView> View(const Fixture &f) { return std::make_unique<RenderView>(f.R.ctx().get<const GpuBuffers>().FrameView); }
+std::unique_ptr<RenderView> View(const Fixture &f) { return std::make_unique<RenderView>(f.R.Context.get<const GpuBuffers>().FrameView); }
 
 // Clicks the centre of the view and expects it to pick one `element`.
 void Pick(Fixture &f, Element element) {
@@ -176,7 +176,7 @@ struct Region {
 // The selected faces' region: the edges with exactly one selected adjacent face, the vertices on them, and every vertex of a selected face.
 Region RegionOf(const Fixture &f) {
     const auto mesh = f.ActiveMesh();
-    const auto faces = f.R.ctx().get<const MeshStore>().GetSelectionBits(mesh.GetStoreId(), Element::Face);
+    const auto faces = f.R.Context.get<const MeshStore>().GetSelectionBits(mesh.GetStoreId(), Element::Face);
     const auto selected = [&](he::FH fh) { return fh && (faces[*fh / 32] >> (*fh % 32)) & 1u; };
     uint32_t edges = 0;
     std::vector<uint8_t> on_boundary(mesh.VertexCount(), 0), in_region(mesh.VertexCount(), 0);
@@ -196,7 +196,7 @@ Region RegionOf(const Fixture &f) {
 
 void TestDeleteSphereVertex() {
     Fixture f{"delete", primitive::UVSphere{}, Element::Vertex};
-    const auto &meshes = f.R.ctx().get<const MeshStore>();
+    const auto &meshes = f.R.Context.get<const MeshStore>();
     const auto before = CountsOf(f.ActiveMesh());
     const auto base = f.P->History.Present;
     Pick(f, Element::Vertex);
@@ -238,7 +238,7 @@ void TestDeleteAllFaces() {
         std::vector<uint32_t> expected(mesh.EdgeCount() * 2);
         mesh.WriteEdgeIndices(expected);
         const auto &indices = f.R.get<const MeshBuffers>(GetActiveMeshEntity(f.R)).EdgeIndices;
-        const auto written = f.R.ctx().get<const GpuBuffers>().EdgeIndexBuffer.Get(indices);
+        const auto written = f.R.Context.get<const GpuBuffers>().EdgeIndexBuffer.Get(indices);
         expect(std::ranges::equal(written, expected));
     }
     // Only Faces keeps every vertex as a loose point cloud, and Faces removes everything.
@@ -283,7 +283,7 @@ void TestMerge() {
 
 void TestExtrude() {
     Fixture f{"extrude", primitive::Cuboid{}, Element::Face};
-    const auto &meshes = f.R.ctx().get<const MeshStore>();
+    const auto &meshes = f.R.Context.get<const MeshStore>();
     BoxSelect(f, 40);
     const auto selected = SelectedCount(f, Element::Face);
     expect(selected > 0 && selected < 6);
@@ -398,7 +398,7 @@ void TestDissolve() {
     {
         const auto mesh = f.ActiveMesh();
         const auto &indices = f.R.get<const MeshBuffers>(GetActiveMeshEntity(f.R)).FaceIndices;
-        const auto written = f.R.ctx().get<const GpuBuffers>().FaceIndexBuffer.Get(indices);
+        const auto written = f.R.Context.get<const GpuBuffers>().FaceIndexBuffer.Get(indices);
         expect(std::ranges::equal(written, mesh.CreateTriangleIndices()));
     }
 
@@ -746,7 +746,7 @@ void TestEditNode() {
 void TestCustomNormals() {
     Fixture f{"custom-normals"};
     f.Do(action::io::Load{std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/Duck/glTF/Duck.gltf"});
-    const auto &meshes = f.R.ctx().get<const MeshStore>();
+    const auto &meshes = f.R.Context.get<const MeshStore>();
     state::Entity instance_entity = state::Null;
     for (const auto [e, instance] : f.R.view<const Instance>().each()) {
         const auto *handle = f.R.try_get<const MeshHandle>(instance.Entity);

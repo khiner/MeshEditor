@@ -305,7 +305,7 @@ std::vector<uint32_t> GetSampleOpVertices(const state::Scene &r, state::Entity v
     }
     if (mode != InteractionMode::Edit || !r.all_of<MeshElementSelection>(mesh_entity)) return {};
 
-    const auto bits = r.ctx().get<const MeshStore>().GetSelectionBits(mesh->GetStoreId(), Element::Vertex);
+    const auto bits = r.Context.get<const MeshStore>().GetSelectionBits(mesh->GetStoreId(), Element::Vertex);
     std::vector<uint32_t> vertices;
     ForEachSelected(bits, mesh->VertexCount(), [&](uint32_t vertex) { vertices.push_back(vertex); });
     return vertices;
@@ -373,7 +373,7 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
     }
 
     if (has_model && excitable) {
-        const auto excitable_vertices = r.ctx().get<const MeshStore>().Arenas().SoundVertices.Get(excitable->Vertices);
+        const auto excitable_vertices = r.Context.get<const MeshStore>().Arenas().SoundVertices.Get(excitable->Vertices);
         const auto active_vertex = excitable_vertices[active_vi];
         const bool can_excite =
             (model == SoundVerticesModel::Samples) ||
@@ -461,7 +461,7 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
         if (auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
         const auto active_gains = [&]() -> std::vector<float> {
             if (active_vi >= modes.Shapes.size()) return {};
-            const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), r.ctx().get<const MeshStore>().Arenas().SoundVertices.Get(excitable->Vertices)[active_vi]), ImpulseAngle);
+            const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), r.Context.get<const MeshStore>().Arenas().SoundVertices.Get(excitable->Vertices)[active_vi]), ImpulseAngle);
             return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(Dot(s, j)); }) | to<std::vector<float>>();
         }();
         if (!active_gains.empty()) {
@@ -540,11 +540,11 @@ void DrawGlobalSynthControls(state::Scene &r, state::Entity viewport) {
 }
 
 void DrawAudioDebug(const state::Scene &r) {
-    const auto &m = r.ctx().get<const ModalAudio>();
+    const auto &m = r.Context.get<const ModalAudio>();
     const auto &bank = *m.Live;
 
     SeparatorText("Device");
-    if (const auto *device = r.ctx().find<AudioDeviceResource>(); device && device->Initialized) {
+    if (const auto *device = r.Context.find<AudioDeviceResource>(); device && device->Initialized) {
         Text("%s at %u Hz", device->DeviceName.empty() ? "System default" : device->DeviceName.c_str(), device->SampleRate);
     } else {
         TextUnformatted("No output device");
@@ -589,7 +589,7 @@ std::string_view SolveStageLabel(fastfem::SolveStage stage) {
 }
 
 void DrawModalJobsOverlay(state::Scene &r) {
-    const auto &jobs = r.ctx().get<const ModalSolveJobs>().Jobs;
+    const auto &jobs = r.Context.get<const ModalSolveJobs>().Jobs;
     if (jobs.empty()) return;
 
     constexpr float Pad{12.f};

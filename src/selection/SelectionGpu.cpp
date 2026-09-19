@@ -57,7 +57,7 @@ void SubmitAndWait(const mtl::Context &ctx, MTL::CommandBuffer *command_buffer) 
 
 // Record selection passes into one command buffer and wait for them.
 void SubmitSelectionPasses(state::Scene &r, auto &&record) {
-    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
     auto *command_buffer = ctx.Queue->commandBuffer();
     { // End the final pass before submission.
         mtl::PassChain chain{command_buffer};
@@ -133,11 +133,11 @@ uint32_t MaxElementBound(auto &&ranges) {
 // Selection mode adds lines and points so object queries can hit them.
 // Visibility mode leaves them out so elements are occluded by surfaces only, never by wire geometry.
 void RecordSelectionVisibility(state::Scene &r, mtl::PassChain &chain, const PixelRect &rect, MeshletRouteMode mode) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
     RecordMeshletCull(chain, slots, pipelines, buffers, {.Mode = mode});
-    RecordMeshletVisibilityPass(chain, slots, pipelines, r.ctx().get<const RenderTargets>(), buffers, false, 0u, rect);
+    RecordMeshletVisibilityPass(chain, slots, pipelines, r.Context.get<const RenderTargets>(), buffers, false, 0u, rect);
 }
 
 // A depth rectangle rasterizes selection depth for the query so the draws test against it.
@@ -146,21 +146,21 @@ void RunSelectionPass(
     state::Scene &r, mtl::PassChain &chain, std::optional<PixelRect> depth_rect,
     std::optional<MeshletCullConfig> meshlet_cull, bool pick, auto &&record_draws
 ) {
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
 
     if (depth_rect) RecordSelectionVisibility(r, chain, *depth_rect, MeshletRouteMode::Visibility);
     if (meshlet_cull && buffers.MeshletInstanceCount > 0) {
         RecordMeshletCull(chain, slots, pipelines, buffers, *meshlet_cull);
     }
 
-    const auto extent = r.ctx().get<const RenderTargets>().Resources->ScratchDepth.Extent;
+    const auto extent = r.Context.get<const RenderTargets>().Resources->ScratchDepth.Extent;
     const uint32_t raster_passes = pick ? 2u : 1u;
     for (uint32_t index = 0; index < raster_passes; ++index) {
         // Scene depth remains valid for shading and later picks; depth-free queries need no scratch contents.
-        const auto depth = depth_rect ? mtl::LoadDepth(*r.ctx().get<const RenderTargets>().Resources->VisibilityDepth) :
-                                        mtl::DepthAttachment{*r.ctx().get<const RenderTargets>().Resources->ScratchDepth, MTL::LoadActionDontCare, MTL::StoreActionDontCare};
+        const auto depth = depth_rect ? mtl::LoadDepth(*r.Context.get<const RenderTargets>().Resources->VisibilityDepth) :
+                                        mtl::DepthAttachment{*r.Context.get<const RenderTargets>().Resources->ScratchDepth, MTL::LoadActionDontCare, MTL::StoreActionDontCare};
         const auto pass = mtl::MakePassDescriptor({}, depth);
         pass->setRenderTargetWidth(extent.Width);
         pass->setRenderTargetHeight(extent.Height);
@@ -177,9 +177,9 @@ void RenderElementSelectionPass(
 ) {
     if (ranges.empty() || element == Element::None) return;
     const auto &pipelines = GetPipelines(r);
-    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
-    auto &meshes = r.ctx().get<MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    const auto &sel_slots = r.Context.get<const SelectionSlots>();
+    auto &meshes = r.Context.get<MeshStore>();
+    auto &buffers = r.Context.get<GpuBuffers>();
 
     const bool xray_selection = XRayFlag(r.get<const ViewportDisplay>(viewport));
     const auto &selection = pipelines.SelectionFragment;
@@ -189,7 +189,7 @@ void RenderElementSelectionPass(
         assert(mesh_buffers.Meshlets.Count > 0u && "selectable mesh geometry must have persistent meshlets");
     }
 
-    const auto target = r.ctx().get<const RenderTargets>().Resources->ScratchDepth.Extent;
+    const auto target = r.Context.get<const RenderTargets>().Resources->ScratchDepth.Extent;
     const auto query_rect = write_bitset ? BoxRect({box_min.x, box_min.y, box_max.x, box_max.y}, target) : RadiusRect(pick->Px, pick->RadiusSq, target);
     if (!query_rect) return;
     RunSelectionPass(
@@ -237,19 +237,19 @@ std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(
     if (element_count == 0) return {};
 
     const profile::CpuScope scope{"RunElementPick"};
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     ResetElementPick(buffers);
     const auto transactions = BuildSelectionTransactions(
         r, ranges, element,
         toggle ? EditSelectionOperation::PickToggle : EditSelectionOperation::PickReplace,
-        r.ctx().get<const SelectionSlots>().ElementPickId
+        r.Context.get<const SelectionSlots>().ElementPickId
     );
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RenderElementSelectionPass(r, chain, viewport, ranges, element, false, {}, {}, ElementPickTarget{mouse_px, ElementPickRadiusSq(element)});
         RecordSelectionPrepare(r, chain, transactions);
         RecordSelectionDerive(r, chain, transactions);
     });
-    r.ctx().get<GpuSceneState>().EditSelectionDirty = true;
+    r.Context.get<GpuSceneState>().EditSelectionDirty = true;
     if (const auto index = ReadNearestPickedElement(buffers, element_count)) {
         for (const auto &range : ranges) {
             if (*index < range.Offset || *index >= range.Offset + range.Count) continue;
@@ -269,18 +269,18 @@ std::optional<PixelRect> ObjectQueryRect(const ObjectSelectQuery &query, mtl::Ex
 void RecordVisibilityObjectSelection(
     state::Scene &r, mtl::PassChain &chain, const ObjectSelectQuery &query
 ) {
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
 
-    const auto rect = ObjectQueryRect(query, r.ctx().get<const RenderTargets>().Resources->VisibilityImage.Extent);
+    const auto rect = ObjectQueryRect(query, r.Context.get<const RenderTargets>().Resources->VisibilityImage.Extent);
     if (!rect) return;
     RecordSelectionVisibility(r, chain, *rect, MeshletRouteMode::Selection);
 
     auto *encoder = chain.BeginCompute("VisibilityObjectSelection", MTL::StageFragment);
     encode::BindCompute(encoder, pipelines.VisibilityObjectSelection, slots, buffers);
-    encoder->setTexture(*r.ctx().get<const RenderTargets>().Resources->VisibilityImage, 0u);
-    encoder->setTexture(*r.ctx().get<const RenderTargets>().Resources->VisibilityDepth, 1u);
+    encoder->setTexture(*r.Context.get<const RenderTargets>().Resources->VisibilityImage, 0u);
+    encoder->setTexture(*r.Context.get<const RenderTargets>().Resources->VisibilityDepth, 1u);
     encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{encode::VisibilityDecodePc(buffers), query, rect->Origin, rect->Extent});
     encoder->dispatchThreadgroups(
         MTL::Size((rect->Extent.x + 15u) / 16u, (rect->Extent.y + 15u) / 16u, 1u),
@@ -290,17 +290,17 @@ void RecordVisibilityObjectSelection(
 
 // `through` rasters every covered surface for an object box instead of the visible surface alone.
 void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::optional<ObjectSelectQuery> object, bool through, std::optional<uint32_t> sound_instance = {}, std::optional<ElementPickTarget> pick = {}) {
-    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    const auto &sel_slots = r.Context.get<const SelectionSlots>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     const auto &pipelines = GetPipelines(r);
     const auto &selection = pipelines.SelectionFragment;
     const bool raster_all = object && (object->BestKeySlot != InvalidSlot || through);
     if (object) {
         if (raster_all) {
             // Click cycling and X-ray boxes need every covered surface, including occluded objects.
-            RecordMeshletCull(chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers, {.Mode = MeshletRouteMode::Selection});
+            RecordMeshletCull(chain, r.Context.get<const mtl::BindlessSet>(), pipelines, buffers, {.Mode = MeshletRouteMode::Selection});
         } else RecordVisibilityObjectSelection(r, chain, *object);
-        RecordOverlayJobCull(chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers, true);
+        RecordOverlayJobCull(chain, r.Context.get<const mtl::BindlessSet>(), pipelines, buffers, true);
     }
     const auto sound_cull = sound_instance ?
         std::optional{MeshletCullConfig{
@@ -308,7 +308,7 @@ void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::option
             .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
         }} :
         std::nullopt;
-    const auto sound_rect = sound_instance && pick ? RadiusRect(pick->Px, pick->RadiusSq, r.ctx().get<const RenderTargets>().Resources->ScratchDepth.Extent) : std::nullopt;
+    const auto sound_rect = sound_instance && pick ? RadiusRect(pick->Px, pick->RadiusSq, r.Context.get<const RenderTargets>().Resources->ScratchDepth.Extent) : std::nullopt;
     if (sound_instance && !sound_rect) return;
     RunSelectionPass(r, chain, sound_rect, sound_cull, pick.has_value(), [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
         if (sound_instance) {
@@ -321,7 +321,7 @@ void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::option
             );
         }
         if (object) {
-            const auto rect = ObjectQueryRect(*object, r.ctx().get<const RenderTargets>().Resources->ScratchDepth.Extent);
+            const auto rect = ObjectQueryRect(*object, r.Context.get<const RenderTargets>().Resources->ScratchDepth.Extent);
             if (!rect) return;
             encoder->setScissorRect({rect->Origin.x, rect->Origin.y, rect->Extent.x, rect->Extent.y});
             if (raster_all) {
@@ -349,7 +349,7 @@ void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::option
             }
             selection.OverlayJobLines.Bind(encoder);
             encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
-            DrawOverlayJobs(encoder, buffers, r.ctx().get<const MeshStore>());
+            DrawOverlayJobs(encoder, buffers, r.Context.get<const MeshStore>());
         }
     });
 }
@@ -373,14 +373,14 @@ void RunBoxSelectElements(state::Scene &r, state::Entity viewport, std::span<con
         RecordSelectionDerive(r, chain, transactions);
     });
     if (baseline) baseline->ElementSelectionCaptured = true;
-    r.ctx().get<GpuSceneState>().EditSelectionDirty = true;
+    r.Context.get<GpuSceneState>().EditSelectionDirty = true;
 }
 
 std::optional<uint32_t> RunSoundVerticesVertexPick(state::Scene &r, state::Entity instance_entity, uvec2 mouse_px) {
     if (!r.all_of<SoundVertices>(instance_entity)) return {};
     const auto *instance = r.try_get<Instance>(instance_entity);
     if (!instance) return {};
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
 
     const profile::CpuScope scope{"RunSoundVerticesVertexPick"};
     const auto mesh_entity = instance->Entity;
@@ -398,14 +398,14 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(state::Scene &r, state::Entit
 
 namespace {
 void ReserveObjectPicking(state::Scene &r, uint32_t count) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     if (count <= buffers.ObjectPickKeys.Count<uint32_t>()) return;
     buffers.ObjectPickKeys.SetCount<uint32_t>(count);
     buffers.ObjectPickSeenBitset.SetCount<uint32_t>((count + 31) / 32);
     buffers.ObjectBoxBitset.SetCount<uint32_t>((count + 31) / 32);
     buffers.ObjectPickEpochTag = 0;
-    auto &slots = r.ctx().get<mtl::BindlessSet>();
-    const auto &selection = r.ctx().get<const SelectionSlots>();
+    auto &slots = r.Context.get<mtl::BindlessSet>();
+    const auto &selection = r.Context.get<const SelectionSlots>();
     slots.SetBuffer({SlotType::Buffer, selection.ObjectPickKey}, *buffers.ObjectPickKeys);
     slots.SetBuffer({SlotType::Buffer, selection.ObjectPickSeenBits}, *buffers.ObjectPickSeenBitset);
     slots.SetBuffer({SlotType::Buffer, selection.ObjectBoxBitset}, *buffers.ObjectBoxBitset);
@@ -434,8 +434,8 @@ void ForEachHitObject(const state::Scene &r, std::span<const uint32_t> bits, uin
 std::vector<state::Entity> RunObjectPick(state::Scene &r, uvec2 mouse_px, uint32_t radius_px) {
     const uint32_t max_object_id = PrepareObjectQuery(r);
     if (max_object_id == 0) return {};
-    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    const auto &sel_slots = r.Context.get<const SelectionSlots>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     const profile::CpuScope scope{"RunObjectPick"};
     // The high byte rejects stale keys; clear on first use and whenever the 8-bit epoch wraps.
     if (buffers.ObjectPickEpochTag == 0) {
@@ -489,9 +489,9 @@ std::vector<state::Entity> RunBoxSelect(state::Scene &r, state::Entity viewport,
     if (box_min.x > box_max.x || box_min.y > box_max.y) return {};
     const uint32_t max_object_id = PrepareObjectQuery(r);
     if (max_object_id == 0) return {};
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     const profile::CpuScope scope{"RunBoxSelect"};
-    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
+    const auto &sel_slots = r.Context.get<const SelectionSlots>();
     std::ranges::fill(buffers.ObjectBoxBitset.GetMutableSpan<uint32_t>({0, (max_object_id + 31) / 32}), 0u);
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RenderSelectionPickPass(
@@ -517,7 +517,7 @@ std::vector<EditSelectionPushConstants> BuildSelectionTransactions(
 ) {
     std::vector<EditSelectionPushConstants> result;
     result.reserve(ranges.size());
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     for (const auto &range : ranges) {
         const auto &mesh = GetMesh(r, range.MeshEntity);
         const auto &mesh_buffers = r.get<const MeshBuffers>(range.MeshEntity);
@@ -558,9 +558,9 @@ void RecordSelectionPrepare(
     std::span<const EditSelectionPushConstants> transactions
 ) {
     if (transactions.empty() || std::ranges::all_of(transactions, [](const auto &pc) { return pc.Operation == EditSelectionOperation::Derive; })) return;
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    const auto &buffers = r.Context.get<const GpuBuffers>();
     auto *encoder = chain.BeginCompute("SelectionPrepare", MTL::StageFragment | MTL::StageDispatch);
     for (const auto &pc : transactions) {
         const uint32_t count = pc.Element == Element::Vertex ? pc.VertexCount :
@@ -585,9 +585,9 @@ void RecordSelectionDerive(
     std::span<const EditSelectionPushConstants> transactions
 ) {
     if (transactions.empty()) return;
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     uint32_t partial_count = 0;
     for (const auto &pc : transactions) partial_count = std::max(partial_count, (pc.VertexCount + 511u) / 512u);
     buffers.EditSelectionPositionSums.SetCount<vec3>(std::max(partial_count, 1u));
@@ -621,7 +621,7 @@ void ApplySelectionTransactions(state::Scene &r, std::span<const EditSelectionPu
         RecordSelectionPrepare(r, chain, transactions);
         RecordSelectionDerive(r, chain, transactions);
     });
-    r.ctx().get<GpuSceneState>().EditSelectionDirty = true;
+    r.Context.get<GpuSceneState>().EditSelectionDirty = true;
 }
 } // namespace
 
@@ -663,7 +663,7 @@ void ApplyEditSharpness(
     EditSharpnessOperation operation, bool value, float angle
 ) {
     if (mesh_entities.empty()) return;
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     std::vector<EditSharpnessPushConstants> commands;
     std::vector<state::Entity> edited;
     commands.reserve(mesh_entities.size());
@@ -717,9 +717,9 @@ void ApplyEditSharpness(
     );
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         auto *encoder = chain.BeginCompute("EditSharpness");
-        const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+        const auto &slots = r.Context.get<const mtl::BindlessSet>();
         const auto &pipelines = GetPipelines(r);
-        const auto &buffers = r.ctx().get<const GpuBuffers>();
+        const auto &buffers = r.Context.get<const GpuBuffers>();
         for (const auto &pc : commands) {
             encode::BindCompute(encoder, pipelines.EditSharpness, slots, buffers);
             encode::SetPushConstants(encoder, pc);
@@ -733,7 +733,7 @@ void ApplyEditSharpness(
 
 const EditSelectionSummary *GetElementSelectionSummary(const state::Scene &r, state::Entity mesh_entity, Element element) {
     if (element == Element::None || !r.all_of<MeshElementSelection, MeshHandle>(mesh_entity)) return nullptr;
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     const auto id = r.get<const MeshHandle>(mesh_entity).StoreId;
     const auto &summary = meshes.GetSelectionSummary(id);
     return summary.Mode == element ? &summary : nullptr;

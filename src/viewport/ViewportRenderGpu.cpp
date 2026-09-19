@@ -539,12 +539,12 @@ void RecordDepthPyramid(
 
 // The visibility/depth pair is still intact here; no shading variant needs velocity outputs.
 void RecordMotionBlurPostFx(state::Scene &r, state::Entity viewport, mtl::PassChain &chain, uint32_t ubo_offset) {
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
+    const auto &buffers = r.Context.get<const GpuBuffers>();
     const auto &main = GetPipelines(r).Main;
-    const auto &targets = r.ctx().get<const RenderTargets>();
+    const auto &targets = r.Context.get<const RenderTargets>();
     const auto &blur = *targets.MotionBlur;
-    const auto &samplers = r.ctx().get<const RenderSamplerSlots>();
+    const auto &samplers = r.Context.get<const RenderSamplerSlots>();
     const auto extent = targets.Resources->SceneColorImage.Extent;
     const auto tiles = blur.TileImage.Extent;
     const auto &view = *reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data() + ubo_offset);
@@ -592,11 +592,11 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
     const bool draw_scene = phase != RenderPhase::BlurResolve;
     const bool draw_overlays = !IsBlurAccumulate(phase);
 
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &meshes = r.ctx().get<MeshStore>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
+    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &meshes = r.Context.get<MeshStore>();
     auto &pipelines = GetPipelines(r);
-    auto &targets = r.ctx().get<RenderTargets>();
+    auto &targets = r.Context.get<RenderTargets>();
     const auto &settings = r.get<const ViewportDisplay>(viewport);
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const auto edit_mode = r.get<const EditMode>(viewport).Value;
@@ -617,8 +617,8 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         active_lighting.RealTransmission &&
         pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
 
-    const auto &samplers = r.ctx().get<const RenderSamplerSlots>();
-    auto &scene_state = r.ctx().get<GpuSceneState>();
+    const auto &samplers = r.Context.get<const RenderSamplerSlots>();
+    auto &scene_state = r.Context.get<GpuSceneState>();
 
     RecordInputs record_inputs;
     record_inputs.Mix(uint32_t(interaction_mode) | uint32_t(edit_mode) << 8u);
@@ -1769,7 +1769,7 @@ void RecordRenderCommandBuffer(state::Scene &r, state::Entity viewport, MTL::Com
 }
 
 void RecordBlurStepsCommandBuffer(state::Scene &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, std::span<const uint32_t> sample_weights) {
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    const auto &buffers = r.Context.get<const GpuBuffers>();
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
     for (uint32_t i = 0; i < sample_weights.size(); ++i) {
@@ -1783,8 +1783,8 @@ namespace {
 // Upload `entries` and their tiles, then record and submit one batched two-phase derive and wait for completion.
 // The output slots select the target buffers.
 void SubmitNormalDeriveNow(state::Scene &r, std::span<const NormalDeriveEntry> entries, uint32_t vertex_normal_slot, uint32_t seam_normal_slot, uint32_t face_normal_slot) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    const auto &meshes = r.Context.get<const MeshStore>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     std::vector<uvec2> face_tiles, gather_tiles;
     for (uint32_t entry_index = 0; entry_index < entries.size(); ++entry_index) {
         const auto &entry = entries[entry_index];
@@ -1798,8 +1798,8 @@ void SubmitNormalDeriveNow(state::Scene &r, std::span<const NormalDeriveEntry> e
     WritePreludeArg(buffers, PreludeSlot::DeriveFaces, uint32_t(face_tiles.size()));
     WritePreludeArg(buffers, PreludeSlot::DeriveGather, uint32_t(gather_tiles.size()));
 
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
     ctx.CommitResidency();
     auto *command_buffer = ctx.Queue->commandBuffer();
@@ -1815,12 +1815,12 @@ void SubmitNormalDeriveNow(state::Scene &r, std::span<const NormalDeriveEntry> e
     command_buffer->commit();
     command_buffer->waitUntilCompleted();
     // The one-shot rewrote per-frame derive inputs, so the next submit refreshes persistent scene descriptors.
-    r.ctx().get<PendingRenderRequest>().Value = RenderRequest::Rebuild;
+    r.Context.get<PendingRenderRequest>().Value = RenderRequest::Rebuild;
 }
 } // namespace
 
 void DeriveBaseNormalsNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     std::vector<NormalDeriveEntry> entries;
     entries.reserve(mesh_entities.size());
     for (const auto entity : mesh_entities) {
@@ -1846,8 +1846,8 @@ namespace {
 // The derived pose tests whether derivation moves the normals authored shading would pin.
 // Runs after the base derive, since the pin test compares against the base normal stores.
 void UpdateAuthoredMorphShadingNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    auto &meshes = r.ctx().get<MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &meshes = r.Context.get<MeshStore>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     // Each position-only target gets a derive entry at its full-weight pose, reading and writing the posed scratch.
     struct PoseJob {
         state::Entity Entity;
@@ -1926,7 +1926,7 @@ void UpdateAuthoredMorphShadingNow(state::Scene &r, std::span<const state::Entit
 
 void FinalizeNewMeshShadingNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     DeriveBaseNormalsNow(r, mesh_entities);
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     for (const auto entity : mesh_entities) {
         const auto *authored = r.try_get<const AuthoredCornerNormals>(entity);
         if (!authored) continue;
@@ -1942,12 +1942,12 @@ void DispatchWork(MTL::ComputeCommandEncoder *encoder, const GpuBuffers &buffers
 }
 
 MeshEditWork &PrepareMeshEditWork(state::Scene &r, state::Entity entity) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     const auto mesh = GetMesh(r, entity);
     const auto id = mesh.GetStoreId();
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     auto &mb = r.edit<MeshBuffers>(entity);
-    auto &work = r.ctx().get<GpuSceneState>().EditWork;
+    auto &work = r.Context.get<GpuSceneState>().EditWork;
     if (const auto it = work.find(entity); it != work.end() && it->second.StoreId != id) ReleaseMeshEditWork(r, entity);
     auto [it, inserted] = work.try_emplace(entity);
     auto &w = it->second;
@@ -1985,12 +1985,12 @@ MeshEditWork &PrepareMeshEditWork(state::Scene &r, state::Entity entity) {
 } // namespace
 
 void ReleaseMeshEditWork(state::Scene &r, state::Entity entity) {
-    auto *scene = r.ctx().find<GpuSceneState>();
+    auto *scene = r.Context.find<GpuSceneState>();
     if (!scene) return;
     auto &work = scene->EditWork;
     const auto it = work.find(entity);
     if (it == work.end()) return;
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     const auto &w = it->second;
     for (auto range : {w.Candidates, w.Vertices, w.Faces, w.Normals, w.Meshlets, w.BoundsTiles}) buffers.GeometryWork.Release(WorkStorageRange(range));
     for (const auto &level : w.BoundsLevels) {
@@ -2003,13 +2003,13 @@ void ReleaseMeshEditWork(state::Scene &r, state::Entity entity) {
 
 namespace {
 CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Entity entity, state::Entity primary, const PendingTransform *pending, const PosedRanges *pose = nullptr, std::span<const Range> changed = {}) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &meshes = r.Context.get<MeshStore>();
     auto &w = PrepareMeshEditWork(r, entity);
     const auto mesh = GetMesh(r, entity);
     const auto id = w.StoreId;
     if (!changed.empty()) SeedElementWorkRanges(buffers.GeometryWork, w.Candidates, changed, w.PreviewActive);
-    else if (!w.CandidateReady || (!pose && r.ctx().get<const GpuSceneState>().EditSelectionDirty))
+    else if (!w.CandidateReady || (!pose && r.Context.get<const GpuSceneState>().EditSelectionDirty))
         SeedElementWork(buffers.GeometryWork, w.Candidates, meshes.GetSelectionBits(id, Element::Vertex), w.PreviewActive);
     else if (!w.PreviewActive)
         IntersectElementWork(buffers.GeometryWork, w.Candidates, meshes.GetSelectionBits(id, Element::Vertex));
@@ -2058,13 +2058,13 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Ent
 }
 
 void RecordGeometryEditBatch(state::Scene &r, MTL::ComputeCommandEncoder *encoder, std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> &commits, bool posed) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     const auto &pipelines = GetPipelines(r);
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto entries = buffers.GeometryNormalEntries.SetCount<NormalDeriveEntry>(commits.size());
     for (uint32_t i = 0; i < commits.size(); ++i) entries[i] = commits[i].second.Entry;
-    r.ctx().get<const mtl::Context>().CommitResidency();
+    r.Context.get<const mtl::Context>().CommitResidency();
     for (uint32_t phase = 0; phase < 3; ++phase) {
         for (auto &[_, pc] : commits) {
             pc.Phase = phase;
@@ -2102,7 +2102,7 @@ void RefreshEditedPositions(state::Scene &r, std::span<const MeshVertexChanges> 
     if (changes.empty()) return;
     std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> jobs;
     for (const auto &[entity, ranges] : changes) jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, state::Null, nullptr, nullptr, ranges));
-    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
     auto *cb = ctx.Queue->commandBuffer();
     {
         mtl::PassChain chain{cb};
@@ -2110,7 +2110,7 @@ void RefreshEditedPositions(state::Scene &r, std::span<const MeshVertexChanges> 
     }
     cb->commit();
     cb->waitUntilCompleted();
-    auto &scene = r.ctx().get<GpuSceneState>();
+    auto &scene = r.Context.get<GpuSceneState>();
     scene.EditPreludePending = true;
     for (const auto &[entity, ranges] : changes) {
         auto &work = scene.EditWork.at(entity);
@@ -2123,16 +2123,16 @@ std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, state::Entity vi
     const auto *pending = r.try_get<const PendingTransform>(viewport);
     if (!pending) return {};
     const auto primaries = selection::ComputePrimaryEditInstances(r, false);
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> commits;
     for (const auto entity : mesh_entities) {
         if (const auto primary = primaries.find(entity); primary != primaries.end())
             commits.emplace_back(entity, PrepareGeometryEdit(r, entity, primary->second, pending));
     }
     if (commits.empty()) return {};
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     for (const auto &[entity, pc] : commits) meshes.CaptureVertexEdit(r.get<const MeshHandle>(entity).StoreId);
-    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
     auto *cb = ctx.Queue->commandBuffer();
     {
         mtl::PassChain chain{cb};
@@ -2145,7 +2145,7 @@ std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, state::Entity vi
     for (const auto &[entity, pc] : commits) {
         if (!ElementWorkEmpty(buffers.GeometryWork, pc.ChangedVertices)) {
             changed.push_back(entity);
-            auto &w = r.ctx().get<GpuSceneState>().EditWork.at(entity);
+            auto &w = r.Context.get<GpuSceneState>().EditWork.at(entity);
             w.Modified = true;
             w.PreviewActive = true;
         }
@@ -2155,10 +2155,10 @@ std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, state::Entity vi
 
 namespace {
 void RecordSparseEditPrelude(state::Scene &r, state::Entity viewport, mtl::PassChain &chain) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &state = r.ctx().get<GpuSceneState>();
+    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &state = r.Context.get<GpuSceneState>();
     const auto &pipelines = GetPipelines(r);
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto *pending = r.try_get<const PendingTransform>(viewport);
     const auto primaries = selection::ComputePrimaryEditInstances(r, false);
     std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> jobs;

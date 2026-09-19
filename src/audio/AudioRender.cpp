@@ -12,7 +12,7 @@
 #include <cmath>
 namespace fs = std::filesystem;
 uint32_t DeviceSampleRate(const state::Scene &r) {
-    const auto *res = r.ctx().find<AudioDeviceResource>();
+    const auto *res = r.Context.find<AudioDeviceResource>();
     if (res && res->SampleRate) return res->SampleRate;
     // AUDIO_SAMPLE_RATE overrides the 48 kHz default when no device provides a rate.
     static const uint32_t fallback = [] {
@@ -25,7 +25,7 @@ uint32_t DeviceSampleRate(const state::Scene &r) {
 
 const std::vector<float> &GetSampleFrames(const state::Scene &r, const fs::path &path) {
     static const std::vector<float> EmptyFrames{};
-    const auto &samples = r.ctx().get<const AudioSamples>().ByPath;
+    const auto &samples = r.Context.get<const AudioSamples>().ByPath;
     const auto it = samples.find(path);
     return it != samples.end() ? it->second : EmptyFrames;
 }
@@ -35,7 +35,7 @@ uint32_t GetActiveVertexIndex(const state::Scene &r, state::Entity instance_enti
     const auto &excitable = r.get<const SoundVertices>(instance_entity);
     const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
     if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
-        const auto &meshes = r.ctx().get<const MeshStore>();
+        const auto &meshes = r.Context.get<const MeshStore>();
         if (auto vi = FindSoundVertexIndex(meshes.Arenas().SoundVertices.Get(excitable.Vertices), active->Handle)) return *vi;
     }
     return 0;
@@ -75,17 +75,17 @@ struct MasterCapture {
 } // namespace
 
 uint32_t BeginAudioCapture(state::Scene &r) {
-    const auto *res = r.ctx().find<AudioDeviceResource>();
+    const auto *res = r.Context.find<AudioDeviceResource>();
     const auto rate = res && res->SampleRate ? res->SampleRate : 0u;
     if (rate == 0) return 0;
-    auto &capture = r.ctx().emplace<MasterCapture>();
+    auto &capture = r.Context.emplace<MasterCapture>();
     capture.Ring.assign(size_t(rate) * 2, 0.f);
     capture.Written.store(0, std::memory_order_relaxed);
     capture.Read.store(0, std::memory_order_relaxed);
     return rate;
 }
 
-void EndAudioCapture(state::Scene &r) { r.ctx().erase<MasterCapture>(); }
+void EndAudioCapture(state::Scene &r) { r.Context.erase<MasterCapture>(); }
 
 void RenderAudioOffline(state::Scene &r, state::Entity viewport, std::vector<float> &out, uint32_t frame_count) {
     const auto first = out.size();
@@ -94,7 +94,7 @@ void RenderAudioOffline(state::Scene &r, state::Entity viewport, std::vector<flo
 }
 
 void DrainAudioCapture(state::Scene &r, std::vector<float> &out) {
-    auto *capture = r.ctx().find<MasterCapture>();
+    auto *capture = r.Context.find<MasterCapture>();
     if (!capture || capture->Ring.empty()) return;
     const auto written = capture->Written.load(std::memory_order_acquire);
     auto read = capture->Read.load(std::memory_order_relaxed);
@@ -126,7 +126,7 @@ void MonitorFrames(state::Scene &r, std::span<float> frames, MonitorLimiter &lim
 
 void ProcessAudio(state::Scene &r, state::Entity viewport, float *output, uint32_t frame_count, bool monitor) {
     std::fill_n(output, frame_count, 0.f);
-    auto &m = r.ctx().get<ModalAudio>();
+    auto &m = r.Context.get<ModalAudio>();
     // The mix is pressure at the view camera.
     // The device path runs this on the audio thread, which cannot read the registry, so its gains are written by the frame handler.
     // Offline rendering uses its viewport camera on the main thread.
@@ -153,7 +153,7 @@ void ProcessAudio(state::Scene &r, state::Entity viewport, float *output, uint32
         }
     }
 
-    if (auto *capture = r.ctx().find<MasterCapture>(); capture && !capture->Ring.empty()) {
+    if (auto *capture = r.Context.find<MasterCapture>(); capture && !capture->Ring.empty()) {
         const auto capacity = uint64_t(capture->Ring.size());
         auto written = capture->Written.load(std::memory_order_relaxed);
         auto pos = size_t(written % capacity);
@@ -165,5 +165,5 @@ void ProcessAudio(state::Scene &r, state::Entity viewport, float *output, uint32
     }
 
     // The monitor stage, after the capture tap: device units at the monitor level.
-    if (monitor) MonitorFrames(r, {output, frame_count}, r.ctx().get<MonitorLimiter>());
+    if (monitor) MonitorFrames(r, {output, frame_count}, r.Context.get<MonitorLimiter>());
 }

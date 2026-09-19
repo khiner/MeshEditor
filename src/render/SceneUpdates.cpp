@@ -33,7 +33,7 @@ uint8_t InstanceStateBits(const state::Scene &r, state::Entity e) {
 }
 
 static void UpdateMeshletInstance(state::Scene &r, state::Entity instance_entity) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     auto &instance = r.edit<RenderInstance>(instance_entity);
     buffers.MeshletRangeCount -= instance.MeshletRangeCount;
     buffers.MeshletInstanceCount -= instance.MeshletCount;
@@ -47,7 +47,7 @@ static void UpdateMeshletInstance(state::Scene &r, state::Entity instance_entity
 // Assign placed primitives to instances while preserving mesh and instance iteration order.
 void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     if (mesh_entities.empty()) return;
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     std::vector<std::pair<state::Entity, uint32_t>> batch;
     batch.reserve(mesh_entities.size());
     for (uint32_t i = 0; i < mesh_entities.size(); ++i) batch.emplace_back(mesh_entities[i], i);
@@ -78,9 +78,9 @@ void BuildMeshletsNow(state::Scene &r, std::span<const state::Entity> mesh_entit
     if (mesh_entities.empty()) return;
     for (auto e : mesh_entities) ReleaseMeshEditWork(r, e);
     const profile::CpuScope scope{"BuildMeshlets"};
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     buffers.PreludeStale = true;
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     const uint32_t count = uint32_t(mesh_entities.size());
     // Capture registry inputs before concurrent mesh builds.
     std::vector<MeshletBuildInputs> inputs;
@@ -140,8 +140,8 @@ void BuildMeshletsNow(state::Scene &r, std::span<const state::Entity> mesh_entit
 
 // Populate standard meshlet geometry so procedural bone shaders share bounds, culling, routing, and indirect dispatch.
 void BuildBoneMeshletsNow(state::Scene &r, std::span<const state::Entity> entities) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     for (const auto entity : entities) {
         auto &mb = r.edit<MeshBuffers>(entity);
         if (mb.FaceIndices.Count == 0u) continue;
@@ -227,7 +227,7 @@ void WriteElementIndices(GpuBuffers &buffers, const MeshStore &meshes, const Mes
 }
 
 SyncResult SyncModelsBuffers(state::Scene &r) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     std::vector<state::Entity> new_mesh_entities, new_extras_entities;
     for (auto e : reactive(r, Change::NewBufferEntity)) {
         if (!r.valid(e) || !r.all_of<MeshBuffers>(e)) continue;
@@ -329,17 +329,17 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
 
 // Resize viewport GPU resources and return whether their extent changed.
 bool SyncViewportRenderResources(state::Scene &r, state::Entity viewport) {
-    auto &targets = r.ctx().get<RenderTargets>();
+    auto &targets = r.Context.get<RenderTargets>();
     const auto render_extent_px = RenderExtentPx(r);
     const auto render_extent = std::bit_cast<mtl::Extent2D>(render_extent_px);
     if (render_extent.Width == 0 || render_extent.Height == 0) return false;
     if (targets.BuiltColorExtent() == render_extent) return false;
 
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    const auto &samplers = r.ctx().get<const RenderSamplerSlots>();
-    auto &slots = r.ctx().get<mtl::BindlessSet>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &samplers = r.Context.get<const RenderSamplerSlots>();
+    auto &slots = r.Context.get<mtl::BindlessSet>();
     // Wait for the live consumer (ImGui) to finish sampling the old resources before recreating them.
-    if (auto *consumer = r.ctx().get<const ViewportConsumerFence>().Value) consumer->waitUntilCompleted();
+    if (auto *consumer = r.Context.get<const ViewportConsumerFence>().Value) consumer->waitUntilCompleted();
     targets.SetExtent(ctx, render_extent, slots);
     {
         const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;

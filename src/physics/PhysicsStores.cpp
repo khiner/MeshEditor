@@ -15,8 +15,8 @@ void RemoveOwned(state::Scene &r, state::Entity e) {
 
 } // namespace
 void RegisterPhysicsStoreHandlers(state::Scene &r) {
-    r.on_construct<PhysicsMotion>().connect<&EmplaceIfAbsent<PhysicsVelocity>>();
-    r.on_destroy<PhysicsMotion>().connect<&RemoveOwned<PhysicsVelocity>>();
-    r.on_construct<ColliderShape>().connect<&EmplaceIfAbsent<ColliderMaterial>>();
-    r.on_destroy<ColliderShape>().connect<&RemoveOwned<ColliderMaterial>>();
+    r.on_construct<PhysicsMotion, &EmplaceIfAbsent<PhysicsVelocity>>();
+    r.on_destroy<PhysicsMotion, &RemoveOwned<PhysicsVelocity>>();
+    r.on_construct<ColliderShape, &EmplaceIfAbsent<ColliderMaterial>>();
+    r.on_destroy<ColliderShape, &RemoveOwned<ColliderMaterial>>();
 }

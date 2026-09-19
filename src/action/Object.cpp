@@ -62,7 +62,7 @@ state::Entity CreateArmatureObject(state::Scene &r, MeshStore &meshes, state::En
 }
 
 state::Entity DuplicateOne(state::Scene &r, state::Entity e) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     const ObjectCreateInfo create_info{
         .Name = std::format("{}_copy", GetName(r, e)),
         // Duplicate is created at root, so its local must match source's world.
@@ -99,12 +99,12 @@ state::Entity DuplicateOne(state::Scene &r, state::Entity e) {
     if (auto *prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(e_new.first, *prim_shape);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new.second, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new.second, *bone_attachment);
-    if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(e_new.second, r.ctx().get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
+    if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(e_new.second, r.Context.get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
     return e_new.second;
 }
 
 state::Entity DuplicateLinkedOne(state::Scene &r, state::Entity e) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     if (r.all_of<BoneSubPartOf>(e)) return state::Null;
     if (!r.all_of<Instance>(e)) {
         const auto select_behavior = r.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None;
@@ -131,7 +131,7 @@ state::Entity DuplicateLinkedOne(state::Scene &r, state::Entity e) {
     Show(r, e_new);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new, *bone_attachment);
-    if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(e_new, r.ctx().get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
+    if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(e_new, r.Context.get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
 
     r.emplace<Selected>(e_new);
 
@@ -165,7 +165,7 @@ void UpdateTraits<PrimitiveShape>::Write(state::Scene &r, state::Entity e, uint1
 
 namespace action::object {
 void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     auto begin_translate = [&] { r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate); };
     const auto duplicate = [&](bool linked, const PendingTransform *placement = nullptr) {
         if (!(linked ? CanDuplicateLinked(r, viewport) : CanDuplicate(r, viewport))) return;
@@ -289,7 +289,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 });
             },
             [&]<typename T>(const UpdateMaterial<T> &a) {
-                auto &materials = r.ctx().get<GpuBuffers>().Materials;
+                auto &materials = r.Context.get<GpuBuffers>().Materials;
                 if (a.Index >= materials.Count<PBRMaterial>()) return;
                 materials.Update(std::as_bytes(std::span{&a.Value, 1}), uint64_t(a.Index) * sizeof(PBRMaterial) + a.Offset);
                 reactive(r, Change::Materials).emplace(viewport);

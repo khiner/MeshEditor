@@ -14,7 +14,7 @@ namespace gltf {
 namespace {
 const SourceAssets *Assets(const state::Scene &r) {
     const auto view = r.view<const SourceAssets>();
-    return view.empty() ? nullptr : &view.get<const SourceAssets>(view.front());
+    return view.empty() ? nullptr : &r.get<const SourceAssets>(view.front());
 }
 } // namespace
 
@@ -43,12 +43,12 @@ std::optional<DecodedImage> DecodeImageRgba8(const state::Scene &r, uint32_t ima
 std::optional<NormalMapRef> MeshMaterialNormalMap(const state::Scene &r, state::Entity mesh_entity) {
     const auto mesh = TryGetMesh(r, mesh_entity);
     if (!mesh) return {};
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     const auto materials = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(mesh->GetStoreId()).PrimitiveMaterials);
     if (materials.empty()) return {};
 
     // Material bindings contain the remapped GPU indices.
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    const auto &buffers = r.Context.get<const GpuBuffers>();
     const uint32_t material = materials.front();
     if (material >= buffers.Materials.Count<PBRMaterial>()) return {};
     const auto &pbr = buffers.Materials.GetSpan<PBRMaterial>()[material];

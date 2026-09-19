@@ -302,7 +302,7 @@ fs::path CachedWorkspacePath;
 std::vector<std::byte> CachedWorkspaceBytes;
 
 workspace::State CaptureWorkspace(state::Scene &r, state::Entity viewport) {
-    return workspace::Capture(r, viewport, r.ctx().get<const WindowsState>());
+    return workspace::Capture(r, viewport, r.Context.get<const WindowsState>());
 }
 
 bool SaveWorkspace(state::Scene &r, state::Entity viewport, bool force = true) {
@@ -363,7 +363,7 @@ bool OpenProjectDir(state::Scene &r, state::Entity viewport, const fs::path &wor
     ++RestoreGeneration;
     const bool replayed = !replay || session.Replay();
     const auto stored = saved.empty() ? workspace::Load(working_dir / workspace::FileName) : workspace::Deserialize(session.RestoredWorkspace);
-    if (stored) workspace::Apply(r, viewport, r.ctx().get<WindowsState>(), *stored);
+    if (stored) workspace::Apply(r, viewport, r.Context.get<WindowsState>(), *stored);
     PresentViewport(r, viewport);
     return replayed;
 }
@@ -414,7 +414,7 @@ void SaveProject(state::Scene &r, state::Entity viewport) {
 
 void RevertSavedProject(state::Scene &r, state::Entity viewport) {
     if (!Session(r).RevertSaved()) return;
-    if (const auto stored = workspace::Deserialize(Session(r).RestoredWorkspace)) workspace::Apply(r, viewport, r.ctx().get<WindowsState>(), *stored);
+    if (const auto stored = workspace::Deserialize(Session(r).RestoredWorkspace)) workspace::Apply(r, viewport, r.Context.get<WindowsState>(), *stored);
     ++RestoreGeneration;
     PresentViewport(r, viewport);
 }
@@ -515,7 +515,7 @@ EditorWindowsFrame BeginEditorWindows(
             if (auto action = RenderAnimationTimeline(
                     r.get<const TimelineRange>(viewport), r.get<const TimelinePlayback>(viewport),
                     r.get<const AnimationTimelineView>(viewport), r.get<const TimelineNavigation>(viewport), r.get<const Animations>(viewport),
-                    keyframes, r.ctx().get<const ViewportIcons>().Anim, scrubbing
+                    keyframes, r.Context.get<const ViewportIcons>().Anim, scrubbing
                 );
                 interactive && action) {
                 action::Emit(std::move(*action));
@@ -524,7 +524,7 @@ EditorWindowsFrame BeginEditorWindows(
         End();
         PopStyleVar();
     }
-    if (interactive) r.ctx().get<FrameState>().Scrubbing = scrubbing;
+    if (interactive) r.Context.get<FrameState>().Scrubbing = scrubbing;
 
     EditorWindowsFrame frame;
     if (windows.Viewport.Visible) {
@@ -532,11 +532,11 @@ EditorWindowsFrame BeginEditorWindows(
         PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
         frame.ViewportOpen = Begin(windows.Viewport.Name, &windows.Viewport.Visible);
         if (frame.ViewportOpen) {
-            if (interactive) Interact(r, viewport, r.ctx().get<FrameState>());
+            if (interactive) Interact(r, viewport, r.Context.get<FrameState>());
             auto &draw_list = *GetWindowDrawList();
             draw_list.ChannelsSplit(2);
             draw_list.ChannelsSetCurrent(1);
-            InteractOverlay(r, viewport, r.ctx().get<FrameState>());
+            InteractOverlay(r, viewport, r.Context.get<FrameState>());
             DrawModalJobsOverlay(r);
             const auto content_region = GetContentRegionAvail();
             frame.ViewportExtent = {
@@ -669,8 +669,8 @@ struct ValidationSession {
     NS::SharedPtr<MTL::Buffer> Differences;
 
     ValidationSession(state::Scene &r)
-        : Compare(r.ctx().get<mtl::LibraryCache>(), {"ValidationCompare.metal", "CompareValidationImages"}),
-          Differences(mtl::NewBuffer(r.ctx().get<const mtl::Context>(), 4 * sizeof(uint32_t))) {}
+        : Compare(r.Context.get<mtl::LibraryCache>(), {"ValidationCompare.metal", "CompareValidationImages"}),
+          Differences(mtl::NewBuffer(r.Context.get<const mtl::Context>(), 4 * sizeof(uint32_t))) {}
 };
 
 struct ValidationInputs {
@@ -692,9 +692,9 @@ struct ValidationInputs {
 ImDrawData *RenderValidationApp(
     state::Scene &r, state::Entity viewport, const ValidationInputs &inputs
 ) {
-    auto &ctx = r.ctx().get<const mtl::Context>();
+    auto &ctx = r.Context.get<const mtl::Context>();
     auto &io = GetIO();
-    auto &windows = r.ctx().get<WindowsState>();
+    auto &windows = r.Context.get<WindowsState>();
     io.MousePos = {-FLT_MAX, -FLT_MAX};
     const auto render_frame = [&](bool restore_hover = false) {
         io.DisplaySize = inputs.DisplaySize;
@@ -755,13 +755,13 @@ ValidationResult RestoreForValidation(
 ) {
     auto &restored = engine.Core->R;
     const auto viewport = engine.Core->Viewport;
-    const auto &ctx = restored.ctx().get<const mtl::Context>();
+    const auto &ctx = restored.Context.get<const mtl::Context>();
     ValidationResult result;
     auto &timings = result.Timings;
     auto begin = SteadyClock::now();
     engine.Ui.emplace(ctx);
-    restored.ctx().get<WindowsState>() = {};
-    auto &frame = restored.ctx().get<FrameState>();
+    restored.Context.get<WindowsState>() = {};
+    auto &frame = restored.Context.get<FrameState>();
     frame = {.DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale), .Scrubbing = inputs.Scrubbing, .Capturing = inputs.Capturing};
     engine.Core->P->Close();
     fs::create_directories(engine.Directory);
@@ -773,13 +773,13 @@ ValidationResult RestoreForValidation(
 
     begin = SteadyClock::now();
     if (!engine.Core->P->Open(engine.Directory) || (replay && !engine.Core->P->Replay())) {
-        for (const auto &error : restored.ctx().get<action::Errors>().Messages) std::println(stderr, "[validation] {}", error);
+        for (const auto &error : restored.Context.get<action::Errors>().Messages) std::println(stderr, "[validation] {}", error);
         std::println(stderr, "[validation] {}", engine.Core->P->History.TakeIntegrityError());
         WriteValidationProject(inputs.WorkingDir);
         std::abort();
     }
     timings.RestoreMs = ElapsedMs(begin);
-    workspace::Apply(restored, viewport, restored.ctx().get<WindowsState>(), inputs.Workspace);
+    workspace::Apply(restored, viewport, restored.Context.get<WindowsState>(), inputs.Workspace);
     begin = SteadyClock::now();
     restored.replace<TimelinePlayback>(viewport, inputs.Playback);
     restored.edit<PlaybackFrame>(viewport).Value = inputs.PlaybackFrame;
@@ -807,14 +807,14 @@ void RequireEqual(std::string_view what, std::span<const std::byte> expected, st
 }
 
 void CompareValidationImages(state::Scene &r, ValidationSession &session) {
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    const auto &live_viewport = r.ctx().get<const RenderTargets>().Resources->FinalColorImage;
+    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &live_viewport = r.Context.get<const RenderTargets>().Resources->FinalColorImage;
     const std::array<const mtl::Texture *, 4> expected{&session.Live.Target, &session.Live.Target, &live_viewport, &live_viewport};
     const std::array<const mtl::Texture *, 4> restored{
         &session.Replay.App.Target,
         &session.Stored.App.Target,
-        &session.Replay.Core->R.ctx().get<const RenderTargets>().Resources->FinalColorImage,
-        &session.Stored.Core->R.ctx().get<const RenderTargets>().Resources->FinalColorImage,
+        &session.Replay.Core->R.Context.get<const RenderTargets>().Resources->FinalColorImage,
+        &session.Stored.Core->R.Context.get<const RenderTargets>().Resources->FinalColorImage,
     };
     const std::array names{"replay-app", "stored-app", "replay-viewport", "stored-viewport"};
     for (uint32_t i = 0; i < restored.size(); ++i) {
@@ -868,7 +868,7 @@ void ValidateRoundTrip(
     const auto init_ms = ElapsedMs(begin);
     begin = SteadyClock::now();
     if (presented_frame) presented_frame->waitUntilCompleted();
-    RenderAppImage(r.ctx().get<const mtl::Context>(), draw_data, session->Live);
+    RenderAppImage(r.Context.get<const mtl::Context>(), draw_data, session->Live);
     WaitForRender(r);
     if (!Session(r).History.Save()) {
         std::println(stderr, "[validation] {}", Session(r).History.TakeIntegrityError());
@@ -894,8 +894,8 @@ void ValidateRoundTrip(
         .NavId = GImGui->NavId,
         .NavCursorVisible = GImGui->NavCursorVisible,
         .NavHighlightItemUnderNav = GImGui->NavHighlightItemUnderNav,
-        .Capturing = r.ctx().get<FrameState>().Capturing,
-        .Scrubbing = r.ctx().get<FrameState>().Scrubbing,
+        .Capturing = r.Context.get<FrameState>().Capturing,
+        .Scrubbing = r.Context.get<FrameState>().Scrubbing,
         .PlaybackFrame = r.get<const PlaybackFrame>(viewport).Value,
         .Playback = r.get<const TimelinePlayback>(viewport),
     };
@@ -954,7 +954,7 @@ bool FrameScene(state::Scene &r, state::Entity viewport, float aspect_ratio) {
     const float ty = 0.5f * std::tan(persp->FieldOfViewRad * 0.5f), tx = aspect_ratio * ty;
     constexpr float lowest = std::numeric_limits<float>::lowest();
     float top = lowest, bottom = lowest, rgt = lowest, lft = lowest;
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    const auto &buffers = r.Context.get<const GpuBuffers>();
     AABB scene;
     bool any_bounded_instance = false;
     for (const auto [e, ri, wt] : r.view<const RenderInstance, const WorldTransform>().each()) {
@@ -1118,13 +1118,13 @@ struct BenchmarkDriver {
                 action::Emit(action::selection::ApplyBoxSelect{
                     .BoxPx = {{inset, inset}, {extent.x - inset - 1, extent.y - inset - 1}},
                     .Additive = false,
-                    .View = std::make_unique<RenderView>(r.ctx().get<const GpuBuffers>().FrameView),
+                    .View = std::make_unique<RenderView>(r.Context.get<const GpuBuffers>().FrameView),
                 });
                 break;
             }
             case CaptureRequest::BenchmarkAction::PickCycle: {
                 const auto px = extent / 2u;
-                auto view = std::make_unique<RenderView>(r.ctx().get<const GpuBuffers>().FrameView);
+                auto view = std::make_unique<RenderView>(r.Context.get<const GpuBuffers>().FrameView);
                 if (Frame == 0) action::Emit(action::selection::Pick{px, false, std::move(view)});
                 else action::Emit(action::selection::PickCycle{px, false, std::move(view)});
                 break;
@@ -1147,7 +1147,7 @@ bool SelectSceneCamera(state::Scene &r, std::string_view name) {
 
 // Report and clear action failures, returning whether any occurred.
 bool ReportActionErrors(state::Scene &r) {
-    auto &errors = r.ctx().get<action::Errors>().Messages;
+    auto &errors = r.Context.get<action::Errors>().Messages;
     if (auto error = Session(r).History.TakeIntegrityError(); !error.empty()) errors.push_back(std::move(error));
     if (errors.empty()) return false;
     for (const auto &message : errors) std::cerr << message << std::endl;
@@ -1336,9 +1336,9 @@ CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const
     if (capture.LodErrorPixels >= 0.f) {
         Perform(r, action::UpdateOn<&ViewportDisplay::LodErrorPixels>(viewport, capture.LodErrorPixels));
     }
-    r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
+    r.Context.get<FrameState>().FixedFrameStep = driver.FixedStep;
     // Enable motion blur for video recording and preserve the current setting for still or audio-only captures.
-    r.ctx().get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
+    r.Context.get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
     if (capture.Blur) {
         Perform(r, action::UpdateOn<&ViewportDisplay::MotionBlur>(viewport, capture.Blur));
     }
@@ -1360,7 +1360,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     engine.emplace(true);
     auto &r = engine->R;
     const auto viewport = engine->Viewport;
-    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
     if (!ctx.Device->supportsFamily(MTL::GPUFamilyMetal4)) throw std::runtime_error("MeshEditor renders with Metal 4, which this device does not support.");
     InitViewportMedia(r);
 
@@ -1393,10 +1393,10 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     profile::Init(ctx);
     // Read the DPI scale from NewFrame before initializing DPI-scaled GPU state.
     mac_backend.NewFrame();
-    r.ctx().get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(io.DisplayFramebufferScale);
+    r.Context.get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(io.DisplayFramebufferScale);
     ProcessComponentEvents(r, viewport);
 
-    auto &audio_device = r.ctx().emplace<AudioDeviceResource>(r, viewport);
+    auto &audio_device = r.Context.emplace<AudioDeviceResource>(r, viewport);
     ReconcileAudioDevice(audio_device, r.get<const AudioOutputConfig>(viewport), r.get<const AudioOutputMix>(viewport));
 
     SampleTreesFuture = std::async(std::launch::async, BuildSampleTrees);
@@ -1414,7 +1414,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     bool done{driver.SeedFailed};
     uint8_t startup_frames_remaining{2};
     MTL::CommandBuffer *last_frame{nullptr}; // Resize waits for resources sampled by the last submitted UI frame.
-    auto &windows = r.ctx().get<WindowsState>();
+    auto &windows = r.Context.get<WindowsState>();
     int bench_ticks{0};
     while (!done) {
         // Report scene loading separately from frame timing.
@@ -1423,9 +1423,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             profile::ClearStats();
         }
         const profile::CpuScope frame_scope{"Frame"};
-        r.ctx().get<ViewportConsumerFence>().Value = last_frame;
+        r.Context.get<ViewportConsumerFence>().Value = last_frame;
         auto events = window.PollEvents();
-        r.ctx().get<FrameState>().PreciseWheelDelta = vec2{events.ScrollX, events.ScrollY};
+        r.Context.get<FrameState>().PreciseWheelDelta = vec2{events.ScrollX, events.ScrollY};
         for (const auto &path : events.DroppedFiles) OpenFile(r, viewport, path);
         done = events.Quit;
         if (driver.DurationElapsed(r, viewport)) done = true;
@@ -1439,7 +1439,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         mac_backend.NewFrame();
         driver.ElapsedPlayTime += io.DeltaTime;
         // Scene-affecting code reads FrameState::DeltaTime. `io.DeltaTime` is wall-clock, UI-only.
-        r.ctx().get<FrameState>().DeltaTime = driver.FixedStep ? driver.RenderDt : io.DeltaTime;
+        r.Context.get<FrameState>().DeltaTime = driver.FixedStep ? driver.RenderDt : io.DeltaTime;
         const auto *ui_focus = GImGui->NavWindow;
         NewFrame();
 
@@ -1588,7 +1588,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         // Keep the viewport window open across apply/derive/render so its image is inserted before End().
         const auto editor_windows = BeginEditorWindows(r, viewport, ctx, layer, windows, io, /*interactive=*/true);
         const auto new_logical_extent = editor_windows.ViewportExtent;
-        const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == r.ctx().get<const ViewportExtent>().Value;
+        const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == r.Context.get<const ViewportExtent>().Value;
         if (capture.BenchFrames > 0 && viewport_settled) {
             if (capture.BenchAction == CaptureRequest::BenchmarkAction::Orbit) action::Emit(action::view::OrbitViewCamera{{0.01f, 0.f}});
             if (++bench_ticks >= capture.BenchFrames) done = true;
@@ -1596,7 +1596,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         // Give interaction actions priority in the single-action buffer.
         driver.EmitFrameActions(r, viewport, viewport_settled, new_logical_extent);
         // Stage resize drags and commit one SetExtent on mouse-up for deterministic replay.
-        if (new_logical_extent != uvec2{} && r.ctx().get<const ViewportExtent>().Value != new_logical_extent) {
+        if (new_logical_extent != uvec2{} && r.Context.get<const ViewportExtent>().Value != new_logical_extent) {
             action::Emit(action::view::SetExtent{new_logical_extent}, action::Phase::Stage);
             viewport_resizing = true;
         } else if (viewport_resizing && !IsMouseDown(ImGuiMouseButton_Left)) {
@@ -1605,7 +1605,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         }
 
         Session(r).Frame(action::Drain());
-        r.ctx().get<ViewportConsumerFence>().Value = nullptr;
+        r.Context.get<ViewportConsumerFence>().Value = nullptr;
         ReportActionErrors(r);
 
         // Submit derived state and rendering before the later WaitForRender synchronizes image sampling.
@@ -1678,7 +1678,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     ReportActionErrors(r);
     if (last_frame) last_frame->waitUntilCompleted();
 
-    r.ctx().erase<AudioDeviceResource>();
+    r.Context.erase<AudioDeviceResource>();
 #ifdef DEBUG_BUILD
     validation_session.reset();
 #endif
@@ -1695,10 +1695,10 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
 bool RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initial_file, bool empty, const CaptureRequest &capture) {
     // Initialize recorded inputs independently of the previous queued scene.
-    auto &frame_state = r.ctx().get<FrameState>();
+    auto &frame_state = r.Context.get<FrameState>();
     frame_state.DeltaTime = 0;
     frame_state.FixedFrameStep = false;
-    r.ctx().get<ViewportExtent>().Value = DefaultWindowSize;
+    r.Context.get<ViewportExtent>().Value = DefaultWindowSize;
     const auto scene_start = std::chrono::steady_clock::now();
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/true);
     // Stop after reporting an initial scene-load failure.
@@ -1718,14 +1718,14 @@ bool RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initi
     bool submitted{false};
     bool done{false};
 #ifdef VALIDATE_ACTIONS
-    auto &validation_session = r.ctx().get<std::unique_ptr<ValidationSession>>();
+    auto &validation_session = r.Context.get<std::unique_ptr<ValidationSession>>();
     std::optional<std::pair<uint64_t, uint64_t>> validated_revision;
 #endif
     // Record readiness after the first submitted frame has complete meshlet data.
     std::chrono::steady_clock::time_point first_frame_at{};
     while (!done) {
         if (driver.DurationElapsed(r, viewport)) break;
-        const auto extent = r.ctx().get<const ViewportExtent>().Value;
+        const auto extent = r.Context.get<const ViewportExtent>().Value;
         // Require this scene's first submit because queue workers preserve ready images across scenes.
         const bool settled = submitted && ViewportImageReady(r);
         // Report scene loading separately from frame timing.
@@ -1748,7 +1748,7 @@ bool RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initi
             Session(r).Frame(action::Drain());
             ReportActionErrors(r);
             // Continue event processing while audio-only capture suppresses GPU rendering after initial framing.
-            if (driver.AudioOnly() && driver.RecordingStarted) r.ctx().get<PendingRenderRequest>().Value = RenderRequest::None;
+            if (driver.AudioOnly() && driver.RecordingStarted) r.Context.get<PendingRenderRequest>().Value = RenderRequest::None;
             SubmitViewport(r, viewport);
             WaitForRender(r);
             if (!submitted) first_frame_at = std::chrono::steady_clock::now();
@@ -1778,7 +1778,7 @@ bool RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initi
                 }
                 done = true;
             }
-            auto &pending = r.ctx().get<PendingRenderRequest>().Value;
+            auto &pending = r.Context.get<PendingRenderRequest>().Value;
             pending = std::max(pending, RenderRequest::Reuse);
         } else {
             if (driver.CaptureFrame(r, viewport, driver.Framed(settled))) done = true;
@@ -1803,22 +1803,22 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     Engine engine{true};
     auto &r = engine.R;
     const auto viewport = engine.Viewport;
-    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
 #ifdef VALIDATE_ACTIONS
     ValidationUi ui{ctx};
-    r.ctx().emplace<std::unique_ptr<ValidationSession>>();
+    r.Context.emplace<std::unique_ptr<ValidationSession>>();
     InitFonts();
     InitViewportMedia(r);
 #endif
     profile::Init(ctx);
-    r.ctx().get<FrameState>().DisplayFramebufferScale = {2, 2}; // Match the app's retina rendering (pixel density and DPI-scaled GPU state like edge-line width).
+    r.Context.get<FrameState>().DisplayFramebufferScale = {2, 2}; // Match the app's retina rendering (pixel density and DPI-scaled GPU state like edge-line width).
     ProcessComponentEvents(r, viewport);
 
     scenes(r, viewport);
 
     WaitForRender(r);
 #ifdef VALIDATE_ACTIONS
-    r.ctx().erase<std::unique_ptr<ValidationSession>>();
+    r.Context.erase<std::unique_ptr<ValidationSession>>();
     DeinitViewportMedia(r);
 #endif
     profile::Report();

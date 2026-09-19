@@ -11,8 +11,8 @@
 #include <algorithm>
 
 uvec2 RenderExtentPx(const state::Scene &r) {
-    const auto logical_extent = r.ctx().get<const ViewportExtent>().Value;
-    const auto scale = r.ctx().get<const FrameState>().DisplayFramebufferScale;
+    const auto logical_extent = r.Context.get<const ViewportExtent>().Value;
+    const auto scale = r.Context.get<const FrameState>().DisplayFramebufferScale;
     const auto scaled = [](uint32_t l, float s) -> uint32_t {
         if (l == 0u) return 0u;
         return std::max(1u, uint32_t(std::lround(float(l) * (s > 0 ? s : 1.f))));

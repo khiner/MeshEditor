@@ -21,7 +21,7 @@ void Emit(Action a, Phase phase) {
 template<typename ActionType> void EmitSystem(ActionType a) { SystemEmitted.emplace_back(MakeAction(std::move(a))); }
 void Commit() { CommitRequested = true; }
 void Cancel() { CancelRequested = true; }
-void Fail(state::Scene &r, std::string message) { r.ctx().get<Errors>().Messages.push_back(std::move(message)); }
+void Fail(state::Scene &r, std::string message) { r.Context.get<Errors>().Messages.push_back(std::move(message)); }
 
 Drained Drain() {
     return {std::exchange(Emitted, {}), std::exchange(SystemEmitted, {}), std::exchange(CommitRequested, false), std::exchange(CancelRequested, false)};

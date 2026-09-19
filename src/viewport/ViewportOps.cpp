@@ -27,7 +27,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
     if (mode == InteractionMode::Pose && !active_is_armature) return false;
 
     r.clear<VertexForce>();
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     std::vector<ElementRange> initialize_selection;
     const auto edit_ranges = [&](Element element) {
         std::vector<ElementRange> ranges;

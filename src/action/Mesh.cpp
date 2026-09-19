@@ -37,7 +37,7 @@ namespace {
 std::vector<state::Entity> SelectedEditMeshes(const state::Scene &r, state::Entity viewport) {
     std::vector<state::Entity> result;
     const auto element = r.get<const EditMode>(viewport).Value;
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     for (const auto e : r.view<const MeshElementSelection>()) {
         if (!HasMesh(r, e)) continue;
         const auto &summary = meshes.GetSelectionSummary(r.get<const MeshHandle>(e).StoreId);
@@ -62,7 +62,7 @@ void RunTasks(state::Scene &r, std::span<const state::Entity> mesh_entities, std
 
 // Runs the task `make` builds for each mesh, skipping the meshes it returns nothing for.
 void RunPerMesh(state::Scene &r, std::span<const state::Entity> mesh_entities, auto &&make) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     std::vector<MeshTopologyTask> tasks;
     std::vector<state::Entity> entities;
     for (const auto e : mesh_entities) {
@@ -114,7 +114,7 @@ void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entit
 
 // The lowest selected edge of a mesh, or the active one when the active element is an edge.
 std::optional<uint32_t> ActiveOrFirstSelectedEdge(const state::Scene &r, state::Entity mesh_entity, const Mesh &mesh) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     const auto bits = meshes.GetSelectionBits(mesh.GetStoreId(), Element::Edge);
     if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity); active && active->Handle < mesh.EdgeCount() && (bits[active->Handle / 32] >> (active->Handle % 32)) & 1u) return active->Handle;
     for (uint32_t w = 0; w < bits.size(); ++w) {
@@ -208,7 +208,7 @@ MeshTopologyTask FaceListTask(uint32_t source, std::span<const std::vector<uint3
 
 // Bridges the two closed loops of selected boundary edges, pairing each vertex of the longer with its share of the shorter.
 void BridgeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
         auto chains = BoundaryChains(meshes, mesh, true);
         if (chains.size() != 2) return {};
@@ -241,7 +241,7 @@ void BridgeSelected(state::Scene &r, std::span<const state::Entity> mesh_entitie
 
 // Fills one closed loop of selected boundary edges with a Coons patch of quads, `span` edges along its first side.
 void GridFillSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, uint32_t span) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
         const auto chains = BoundaryChains(meshes, mesh, true);
         if (chains.size() != 1 || chains[0].size() % 2 != 0 || chains[0].size() < 4) return {};
@@ -281,7 +281,7 @@ void GridFillSelected(state::Scene &r, std::span<const state::Entity> mesh_entit
 }
 
 void FillHolesSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, uint32_t sides) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
         auto loops = BoundaryLoops(meshes, mesh, false);
         std::erase_if(loops, [&](const auto &loop) { return sides > 0 && loop.size() > sides; });
@@ -292,7 +292,7 @@ void FillHolesSelected(state::Scene &r, std::span<const state::Entity> mesh_enti
 
 // The convex hull of the selected vertices as outward triangles, built by adding points one by one.
 void ConvexHullSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
         std::vector<uint32_t> points;
         ForEachSelected(meshes.GetSelectionBits(mesh.GetStoreId(), Element::Vertex), mesh.VertexCount(), [&](uint32_t v) { points.push_back(v); });
@@ -365,7 +365,7 @@ void ConvexHullSelected(state::Scene &r, std::span<const state::Entity> mesh_ent
 // Rotates each selected edge with two faces: dissolves it, then connects the vertices following its ends around the joined face.
 // Dissolves each selected edge and connects the far vertices of its two faces, which keep their numbering through the dissolve.
 void EdgeRotateSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     std::vector<MeshTopologyTask> connects;
     std::vector<state::Entity> entities;
     for (const auto e : mesh_entities) {
@@ -392,7 +392,7 @@ void EdgeRotateSelected(state::Scene &r, std::span<const state::Entity> mesh_ent
 }
 
 void FillSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
         const auto loops = BoundaryLoops(meshes, mesh, true);
         if (loops.empty()) return {};
@@ -480,7 +480,7 @@ void MergeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities
     using Mode = action::mesh::Merge::Mode;
     if (mode == Mode::Collapse) return RunOperator(r, mesh_entities, MeshTopologyOp::MergeCollapse);
     if (mode == Mode::ByDistance) return RunOperator(r, mesh_entities, MeshTopologyOp::MergeByDistance, distance);
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
         const auto id = mesh.GetStoreId();
         const auto [first, last] = SelectedVertexSpan(meshes, id);

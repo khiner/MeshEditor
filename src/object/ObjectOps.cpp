@@ -42,7 +42,7 @@ bool AnyComponentRefersTo(state::Scene &r, F C::*field, state::Entity target) {
 } // namespace
 
 void DestroyArmatureData(state::Scene &r, state::Entity arm_obj_entity) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     auto &arm = r.edit<ArmatureObject>(arm_obj_entity);
     if (arm.JointEntity != state::Null) {
         if (auto *mb = r.try_edit<MeshBuffers>(arm.JointEntity)) ReleaseMeshBuffers(r, *mb);
@@ -60,7 +60,7 @@ void DestroyArmatureData(state::Scene &r, state::Entity arm_obj_entity) {
 }
 
 void Destroy(state::Scene &r, state::Entity viewport, state::Entity e) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     if (r.all_of<LookingThrough>(e)) ClearLookThrough(r, viewport);
     { // Clear relationships
         ClearParent(r, e);
@@ -85,7 +85,7 @@ void Destroy(state::Scene &r, state::Entity viewport, state::Entity e) {
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
 
     if (const auto *light_index = r.try_get<LightIndex>(e)) {
-        r.ctx().get<GpuBuffers>().PendingLightRemovals.emplace_back(light_index->Value);
+        r.Context.get<GpuBuffers>().PendingLightRemovals.emplace_back(light_index->Value);
     }
 
     if (r.all_of<ArmatureObject>(e)) {

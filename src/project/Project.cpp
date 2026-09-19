@@ -91,35 +91,35 @@ std::string Label(const action::Action &a) {
 }
 } // namespace
 
-Project &Session(state::Scene &r) { return *r.ctx().get<Project *>(); }
+Project &Session(state::Scene &r) { return *r.Context.get<Project *>(); }
 
 Project::Project(state::Scene &r) : Entities(r, History, snapshot::SnapshotTable()), R(r) {
-    R.ctx().emplace<Project *>(this);
-    R.ctx().emplace<Assets>();
+    R.Context.emplace<Project *>(this);
+    R.Context.emplace<Assets>();
 }
 Project::~Project() {
     Close();
-    R.ctx().erase<Project *>();
-    R.ctx().erase<Assets>();
+    R.Context.erase<Project *>();
+    R.Context.erase<Assets>();
 }
 
 void Project::TrackStores(state::Entity viewport) {
     Viewport = viewport;
-    auto &meshes = R.ctx().get<MeshStore>();
+    auto &meshes = R.Context.get<MeshStore>();
     meshes.Track(History);
-    R.ctx().get<GpuBuffers>().Materials.Track(History, "material.values");
-    R.ctx().get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights");
-    R.ctx().get<MaterialStore>().Track(History);
+    R.Context.get<GpuBuffers>().Materials.Track(History, "material.values");
+    R.Context.get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights");
+    R.Context.get<MaterialStore>().Track(History);
     History.SchemaRevision = 8;
     History.Callbacks = {
         .Replay = [this](const std::vector<std::byte> &bytes) {
             std::vector<Command> commands;
             zpp::bits::in{bytes}(commands).or_throw();
-            auto &frame = R.ctx().get<FrameState>();
+            auto &frame = R.Context.get<FrameState>();
             const auto saved = frame;
-            const auto extent = R.ctx().get<ViewportExtent>().Value;
+            const auto extent = R.Context.get<ViewportExtent>().Value;
             for (const auto &[inputs, a] : commands) {
-                R.ctx().get<ViewportExtent>().Value = inputs.ViewportExtent;
+                R.Context.get<ViewportExtent>().Value = inputs.ViewportExtent;
                 frame.DisplayFramebufferScale = inputs.DisplayFramebufferScale;
                 // Replay commands with their recorded camera view.
                 if (static_cast<const CameraView &>(R.get<const ViewCamera>(Viewport)) != inputs.View) {
@@ -141,7 +141,7 @@ void Project::TrackStores(state::Entity viewport) {
             }
             R.clear<action::DragFieldStart>();
             frame = saved;
-            R.ctx().get<ViewportExtent>().Value = extent; },
+            R.Context.get<ViewportExtent>().Value = extent; },
         .BeforeRestore = [this] {
             WaitForRender(R);
             CancelModalSolves(R);
@@ -160,7 +160,7 @@ void Project::TrackStores(state::Entity viewport) {
                 if (auto *buffers = R.try_edit<MeshBuffers>(e)) ReleaseMeshBuffers(R, *buffers);
                 if (const auto *models = R.try_get<ModelsBuffer>(e)) FreeInstanceRange(R, models->InstanceRange);
             }
-            R.ctx().get<MeshStore>().FinishRestore();
+            R.Context.get<MeshStore>().FinishRestore();
             Entities.FinishRestore(removed); },
         .AfterRestore = [this] { AfterRestore(); },
     };
@@ -174,7 +174,7 @@ bool Project::Begin(const std::filesystem::path &dir) {
         action::Fail(R, "Cannot create or exclusively open project '" + dir.string() + "'.");
         return false;
     }
-    auto &directory = R.ctx().get<Assets>().Directory;
+    auto &directory = R.Context.get<Assets>().Directory;
     const auto previous = std::exchange(directory, dir);
     WaitForRender(R);
     Settle(EventPass::Settle);
@@ -225,7 +225,7 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
         action::Fail(R, "Project is already open or unavailable: '" + dir.string() + "'.");
         return false;
     }
-    auto &directory = R.ctx().get<Assets>().Directory;
+    auto &directory = R.Context.get<Assets>().Directory;
     const auto previous = std::exchange(directory, dir);
     if (!History.Open(dir, saved ? &saved->Position : nullptr)) {
         directory = previous;
@@ -308,7 +308,7 @@ bool Project::SaveAs(const std::filesystem::path &directory, std::span<const std
     }
     auto previous_lock = std::move(DirectoryLock);
     DirectoryLock = std::move(lock);
-    R.ctx().get<Assets>().Directory = History.Dir;
+    R.Context.get<Assets>().Directory = History.Dir;
     SavedPath = directory / "Saved.project";
     if (unnamed) fs::remove_all(previous, ec);
     return true;
@@ -369,7 +369,7 @@ bool Project::ApplyCommand(action::Action a, EventPass pass, bool staged) {
     },
                             a);
     if (path) {
-        auto &assets = R.ctx().get<Assets>();
+        auto &assets = R.Context.get<Assets>();
         const auto ext = path->extension();
         const auto stored = Is<action::io::LoadRealImpact>(a) ? RealImpact::ArchiveSource(assets, *path) :
             ext == ".gltf" || ext == ".glb"                   ? gltf::ArchiveSource(assets, *path) :
@@ -393,9 +393,9 @@ bool Project::ApplyCommand(action::Action a, EventPass pass, bool staged) {
         Commands.resize(*StageFirst);
         same_kind = false;
     }
-    const auto &frame = R.ctx().get<const FrameState>();
+    const auto &frame = R.Context.get<const FrameState>();
     Command command{
-        {R.get<const ViewCamera>(Viewport), R.ctx().get<const ViewportExtent>().Value, frame.DisplayFramebufferScale, frame.DeltaTime,
+        {R.get<const ViewCamera>(Viewport), R.Context.get<const ViewportExtent>().Value, frame.DisplayFramebufferScale, frame.DeltaTime,
          R.get<const PlaybackFrame>(Viewport).Value, R.get<const TimelinePlayback>(Viewport).CurrentFrame, frame.FixedFrameStep, pass},
         std::move(a),
     };
@@ -468,7 +468,7 @@ void Project::ReleaseGesture() {
 void Project::ClearInteraction() {
     R.clear<StartTransform, StartBoneLength, StartScreenTransform, PendingTransform, action::DragFieldStart, AdditiveBoxSelectBaseline>();
     if (auto *gizmo = R.try_edit<GizmoInteraction>(Viewport)) *gizmo = {};
-    auto &frame = R.ctx().get<FrameState>();
+    auto &frame = R.Context.get<FrameState>();
     frame.BoxSelectStart.reset();
     frame.BoxSelectEnd.reset();
     frame.BoxSelectStaged = false;
@@ -603,7 +603,7 @@ void Project::AfterRestore() {
         reactive(R, Change::MaterializedTextures).emplace(Viewport);
         reactive(R, Change::SceneWorld).emplace(Viewport);
     }
-    auto &meshes = R.ctx().get<MeshStore>();
+    auto &meshes = R.Context.get<MeshStore>();
     const auto changes = meshes.TakeChanges();
     std::vector<Mesh> topology;
     std::vector<state::Entity> geometry;
@@ -624,14 +624,14 @@ void Project::AfterRestore() {
             geometry.push_back(entity);
         }
         if (it->Bits & MeshStore::ShadingChanged) reactive(R, Change::MeshShading).emplace(entity);
-        if (it->Bits & MeshStore::SelectionChanged) R.ctx().get<GpuSceneState>().EditSelectionDirty = true;
+        if (it->Bits & MeshStore::SelectionChanged) R.Context.get<GpuSceneState>().EditSelectionDirty = true;
         if (!sparse && (it->Bits & ~MeshStore::SelectionChanged)) R.emplace_or_replace<MeshGeometryDirty>(entity, EditSelectionAfter::Keep);
     }
     meshes.RebuildDerived(topology);
     DeriveBaseNormalsNow(R, geometry);
     RefreshEditedPositions(R, positions);
     for (const auto &[entity, ranges] : positions) R.emplace_or_replace<MeshPositionsChanged>(entity);
-    auto &buffers = R.ctx().get<GpuBuffers>();
+    auto &buffers = R.Context.get<GpuBuffers>();
     if (!buffers.Materials.History()->Trie.TakeChanged().empty()) reactive(R, Change::Materials).emplace(Viewport);
     if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) reactive(R, Change::MorphWeights).emplace(Viewport);
     Settle(EventPass::Restore);

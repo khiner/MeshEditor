@@ -87,7 +87,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const OrbitViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.RotateBy(a.DeltaRad); }); },
             [&](const ZoomViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.ZoomBy(a.Factor); }); },
-            [&](const SetExtent &a) { r.ctx().get<ViewportExtent>().Value = a.Extent; },
+            [&](const SetExtent &a) { r.Context.get<ViewportExtent>().Value = a.Extent; },
             [&](const SetStudioEnvironment &a) { r.emplace_or_replace<StudioEnvironment>(viewport, a.Name); poke_active_lighting(); },
             [&](const SetActiveScene &a) { gltf::SwitchActiveScene(r, a.Scene); },
             [&](ResetViewCamera) { patch_camera_stopped([](auto &c) { c = Defaults::ViewCamera; }); },

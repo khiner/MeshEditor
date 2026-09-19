@@ -111,7 +111,7 @@ void SetEditMode(state::Scene &r, state::Entity viewport, Element mode) {
     const auto current_mode = r.get<const EditMode>(viewport).Value;
     if (current_mode == mode) return;
 
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     std::vector<ElementRange> ranges;
     for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
         const auto mesh = GetMesh(r, mesh_entity);
@@ -130,16 +130,16 @@ void SetEditMode(state::Scene &r, state::Entity viewport, Element mode) {
 
 void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass pass) {
     const bool rendering = pass == EventPass::Sample || pass == EventPass::Render;
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    auto &slots = r.ctx().get<mtl::BindlessSet>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &meshes = r.ctx().get<MeshStore>();
-    auto &textures = r.ctx().get<TextureStore>();
-    auto &environments = r.ctx().get<EnvironmentStore>();
-    auto &targets = r.ctx().get<RenderTargets>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
+    auto &slots = r.Context.get<mtl::BindlessSet>();
+    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &meshes = r.Context.get<MeshStore>();
+    auto &textures = r.Context.get<TextureStore>();
+    auto &environments = r.Context.get<EnvironmentStore>();
+    auto &targets = r.Context.get<RenderTargets>();
     const profile::CpuScope profile_scope{"ProcessEvents"};
 
-    auto &pending_render = r.ctx().get<PendingRenderRequest>().Value;
+    auto &pending_render = r.Context.get<PendingRenderRequest>().Value;
     auto request = [&pending_render, &buffers](RenderRequest req) {
         pending_render = std::max(pending_render, req);
         if (req != RenderRequest::None) buffers.MeshletOcclusionStale = true;
@@ -155,11 +155,11 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     if (resized) request(RenderRequest::Reuse);
 
     // Dropping the pipeline sets recompiles every pipeline on its next use.
-    const bool recompiled = std::exchange(r.ctx().get<FrameState>().RecompileShaders, false);
+    const bool recompiled = std::exchange(r.Context.get<FrameState>().RecompileShaders, false);
     if (recompiled) {
-        r.ctx().get<mtl::LibraryCache>().Clear();
-        r.ctx().erase<Pipelines>();
-        r.ctx().erase<MeshPipelines>();
+        r.Context.get<mtl::LibraryCache>().Clear();
+        r.Context.erase<Pipelines>();
+        r.Context.erase<MeshPipelines>();
         // Recompiled prefilter kernels must regenerate their cached cubemaps.
         RebuildStudioEnvironments(r);
         request(RenderRequest::Reuse);
@@ -180,7 +180,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const auto &gltf_images = src ? src->Images : empty_images;
         auto batch = BeginTextureUploadBatch(ctx);
         for (const auto &item : textures.PendingUploads) {
-            auto entry = MaterializeTextureEntry(r, batch, slots, item, gltf_images, r.ctx().get<const ActiveSamplerAnisotropy>().Value);
+            auto entry = MaterializeTextureEntry(r, batch, slots, item, gltf_images, r.Context.get<const ActiveSamplerAnisotropy>().Value);
             if (!entry) {
                 std::cerr << std::format("Warning: Failed to materialize texture '{}': {}\n", item.Params.Name, entry.error());
                 slots.Release({SlotType::Sampler, item.SamplerSlot});
@@ -324,7 +324,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 
         const bool bone_mode = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
         const auto active = bone_mode ? FindActiveBone(r) : FindActiveEntity(r);
-        const auto logical_extent = r.ctx().get<ViewportExtent>().Value;
+        const auto logical_extent = r.Context.get<ViewportExtent>().Value;
         const auto render_extent = RenderExtentPx(r);
         const float render_scale = std::max(
             logical_extent.x > 0u ? float(render_extent.x) / float(logical_extent.x) : 1.f,
@@ -362,7 +362,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const auto &range = r.get<const TimelineRange>(viewport);
         const auto &playback = r.get<const TimelinePlayback>(viewport);
         auto &pf = r.edit<PlaybackFrame>(viewport).Value;
-        auto &frame_state = r.ctx().get<FrameState>();
+        auto &frame_state = r.Context.get<FrameState>();
         anim_advanced = [&] {
             if (pass == EventPass::Restore) {
                 pf = float(playback.CurrentFrame);
@@ -397,7 +397,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     if (!sync.NewlyInserted.empty() || sync.Compacted) {
         request(RenderRequest::Reuse);
         // Insertion and compaction both reassign the record slots instances write into.
-        MarkInstanceRecordsStale(r.ctx().get<GpuSceneState>());
+        MarkInstanceRecordsStale(r.Context.get<GpuSceneState>());
     }
     const std::unordered_set<state::Entity> newly_inserted_set(sync.NewlyInserted.begin(), sync.NewlyInserted.end());
     const auto is_newly_inserted = [&](state::Entity e) { return newly_inserted_set.contains(e); };
@@ -598,7 +598,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 
     for (auto entity : reactive(r, Change::MeshGeometry)) {
         if (!r.all_of<MeshPositionsChanged>(entity)) continue;
-        const auto &work = r.ctx().get<const GpuSceneState>().EditWork.at(entity);
+        const auto &work = r.Context.get<const GpuSceneState>().EditWork.at(entity);
         if (auto *bvh = r.try_edit<MeshBvh>(entity)) {
             const auto mesh = GetMesh(r, entity);
             const auto indices = GetFaceIndices(r, mesh, r.get<const MeshBuffers>(entity));
@@ -653,7 +653,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             uint32_t total_edge = 0, total_vertex = 0;
             const auto mesh_view = r.view<const MeshBuffers, const MeshHandle>();
             for (const auto entity : mesh_view) {
-                const auto &mb = mesh_view.get<const MeshBuffers>(entity);
+                const auto &mb = r.get<const MeshBuffers>(entity);
                 const auto &mesh = GetMesh(r, entity);
                 if (mb.EdgeIndices.Count == 0) total_edge += mesh.EdgeCount() * 2;
                 if (mb.VertexIndices.Count == 0) total_vertex += mesh.VertexCount();
@@ -675,12 +675,12 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         auto &selected_tracker = reactive(r, Change::Selected);
         auto &active_tracker = reactive(r, Change::ActiveInstance);
         if ((!selected_tracker.empty() || !active_tracker.empty()) && r.get<const Interaction>(viewport).Mode == InteractionMode::Edit)
-            r.ctx().get<GpuSceneState>().EditPreludePending = true;
+            r.Context.get<GpuSceneState>().EditPreludePending = true;
         if (!selected_tracker.empty()) {
             // Edit-mode selection changes the fill, edge, and point batches.
             const auto mode = r.get<const Interaction>(viewport).Mode;
             request(mode == InteractionMode::Edit ? RenderRequest::Rebuild : RenderRequest::Silhouette);
-            r.ctx().get<GpuSceneState>().InstanceFlagsStale = true;
+            r.Context.get<GpuSceneState>().InstanceFlagsStale = true;
         }
 
         // SyncModelsBuffers writes the full initial state for newly inserted instances, so they are skipped here.
@@ -711,11 +711,11 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             }
         }
     }
-    auto &destroy_tracker = r.ctx().get<EntityDestroyTracker>();
+    auto &destroy_tracker = r.Context.get<EntityDestroyTracker>();
     if (!reactive(r, Change::Rerecord).empty() || !destroy_tracker.Storage.empty()) {
         request(RenderRequest::Rebuild);
         // Instance lifecycle and slot changes invalidate meshlet records because mesh-keyed signatures omit instance slots and object IDs.
-        MarkInstanceRecordsStale(r.ctx().get<GpuSceneState>());
+        MarkInstanceRecordsStale(r.Context.get<GpuSceneState>());
     }
 
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
@@ -768,8 +768,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         buffers.WorkspaceLightsUBO.Update(as_bytes(r.get<const WorkspaceLights>(viewport)));
         request(RenderRequest::Reuse);
     }
-    if (!is_edit_mode && !r.ctx().get<GpuSceneState>().EditWork.empty()) {
-        auto &edit_work = r.ctx().get<GpuSceneState>().EditWork;
+    if (!is_edit_mode && !r.Context.get<GpuSceneState>().EditWork.empty()) {
+        auto &edit_work = r.Context.get<GpuSceneState>().EditWork;
         std::vector<state::Entity> edited;
         for (const auto &[e, work] : edit_work) {
             if (work.Modified && r.valid(e) && r.all_of<MeshHandle>(e)) edited.push_back(e);
@@ -874,7 +874,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     if (!reactive(r, Change::ViewportTheme).empty()) {
         auto theme = r.get<const ViewportTheme>(viewport);
         UpdateDerivedColors(theme);
-        theme.EdgeWidth *= r.ctx().get<FrameState>().DisplayFramebufferScale.x;
+        theme.EdgeWidth *= r.Context.get<FrameState>().DisplayFramebufferScale.x;
         buffers.ViewportThemeUBO.Update(as_bytes(theme));
         request(RenderRequest::Reuse);
     }
@@ -896,8 +896,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     if (!reactive(r, Change::ViewportDisplay).empty()) {
         request(RenderRequest::Rebuild);
         if (const float requested = ClampMaxAnisotropy(ToMaxAnisotropy(r.get<const ViewportDisplay>(viewport).AnisotropicFilter));
-            requested != r.ctx().get<const ActiveSamplerAnisotropy>().Value) {
-            r.ctx().get<ActiveSamplerAnisotropy>().Value = requested;
+            requested != r.Context.get<const ActiveSamplerAnisotropy>().Value) {
+            r.Context.get<ActiveSamplerAnisotropy>().Value = requested;
             RebuildTextureSamplers(ctx, slots, textures, requested);
         }
     }
@@ -1215,7 +1215,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             // SubmitViewport refreshes all slots only on resize, so update this lazy sampler inline.
             const auto refresh_transmission_sampler = [&] {
                 const auto info = targets.TransmissionSampler();
-                slots.SetSampler({SlotType::Sampler, r.ctx().get<const RenderSamplerSlots>().Transmission}, info.Texture, info.Sampler);
+                slots.SetSampler({SlotType::Sampler, r.Context.get<const RenderSamplerSlots>().Transmission}, info.Texture, info.Sampler);
                 request(RenderRequest::Rebuild);
             };
             if (shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered) {
@@ -1236,7 +1236,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 
     // Send pending pose deltas through the view UBO.
     if (!reactive(r, Change::TransformPending).empty() || !reactive(r, Change::TransformEnd).empty()) {
-        if (is_edit_mode) r.ctx().get<GpuSceneState>().EditPreludePending = true;
+        if (is_edit_mode) r.Context.get<GpuSceneState>().EditPreludePending = true;
         else buffers.PreludeStale = true;
     }
 
@@ -1322,12 +1322,12 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
             .XRayAlpha = XRayActive(settings) && settings.ViewportShading == ViewportShadingMode::Solid ? XRayOpacity(settings) : 1.f,
             .OverlayBehindOpacity = OverlayBehindOpacity(settings, r.get<const Interaction>(viewport).Mode),
-            .SceneDepthSamplerSlot = r.ctx().get<const RenderSamplerSlots>().SceneDepth,
+            .SceneDepthSamplerSlot = r.Context.get<const RenderSamplerSlots>().SceneDepth,
             .ShowOverlays = settings.ShowOverlays ? 1u : 0u,
             .ShowExtras = settings.ShowExtras ? 1u : 0u,
             .ShowBoundingBoxes = settings.ShowBoundingBoxes ? 1u : 0u,
             .ShowTetWireframe = settings.ShowTetWireframe ? 1u : 0u,
-            .TransmissionFramebufferSamplerSlot = r.ctx().get<const RenderSamplerSlots>().Transmission,
+            .TransmissionFramebufferSamplerSlot = r.Context.get<const RenderSamplerSlots>().Transmission,
             .TransmissionFramebufferMipCount = targets.Transmission ? targets.Transmission->Image.MipLevels : 1u,
             .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && targets.Transmission) ? 1u : 0u,
             .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
@@ -1370,7 +1370,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     if (!dirty_sound_selection_meshes.empty()) {
         request(RenderRequest::Reuse);
     }
-    if (auto &state = r.ctx().get<GpuSceneState>(); state.EditSelectionDirty) {
+    if (auto &state = r.Context.get<GpuSceneState>(); state.EditSelectionDirty) {
         for (auto &[_, work] : state.EditWork) work.CandidateReady = false;
         state.EditPreludePending = is_edit_mode;
         state.EditSelectionDirty = false;
@@ -1383,7 +1383,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 }
 
 void RegisterSceneComponentHandlers(state::Scene &r) {
-    r.on_destroy<MeshHandle>().connect<&ReleaseMeshEditWork>();
+    r.on_destroy<MeshHandle, &ReleaseMeshEditWork>();
     reactive(r, Change::Selected).on<Selected>(On::Create | On::Destroy);
     reactive(r, Change::ActiveInstance).on<Active>(On::Create | On::Destroy);
     reactive(r, Change::BoneSelection).on<BoneSelection>(On::Create | On::Update | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
@@ -1438,10 +1438,10 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
     reactive(r, Change::AnimationEdited)
         .on<AnimationClips>(On::Create | On::Update | On::Destroy)
         .on<Animations>(On::Update);
-    r.ctx().emplace<EntityDestroyTracker>().Bind(r);
+    r.Context.emplace<EntityDestroyTracker>().Bind(r);
 
     // Mark local transforms after constraint edits to trigger world-transform recomputation.
-    r.on_update<BoneConstraints>().connect<[](state::Scene &r, state::Entity e) {
+    r.on_update<BoneConstraints, [](state::Scene &r, state::Entity e) {
         PatchEditedLocal(r, e, [](auto &) {});
     }>();
 }

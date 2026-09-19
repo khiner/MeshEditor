@@ -10,21 +10,21 @@
 #include <Metal/MTLCommandQueue.hpp>
 // Dispatch sizes follow scene recording because the rebuild determines their counts.
 void SubmitRecordedFrame(state::Scene &r, MTL::CommandBuffer *command_buffer) {
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     SyncPreludeDispatchArgs(buffers);
     ctx.CommitResidency();
     {
         const profile::CpuScope scope{"QueueSubmit"};
         command_buffer->commit();
     }
-    r.ctx().get<ViewportRenderResources>().InFlight = command_buffer;
-    r.ctx().get<FrameState>().RenderPending = true;
+    r.Context.get<ViewportRenderResources>().InFlight = command_buffer;
+    r.Context.get<FrameState>().RenderPending = true;
 }
 
 void RecordAndSubmitFrame(state::Scene &r, state::Entity viewport, SceneUpdate update, RenderPhase phase) {
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    auto &resources = r.ctx().get<ViewportRenderResources>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
+    auto &resources = r.Context.get<ViewportRenderResources>();
     auto *command_buffer = ctx.Queue->commandBuffer();
     RecordRenderCommandBuffer(r, viewport, command_buffer, update, phase);
     resources.RecordedPhase = phase;
@@ -32,21 +32,21 @@ void RecordAndSubmitFrame(state::Scene &r, state::Entity viewport, SceneUpdate u
 }
 
 bool ViewportImageReady(const state::Scene &r) {
-    const auto extent = r.ctx().get<const RenderTargets>().BuiltColorExtent();
+    const auto extent = r.Context.get<const RenderTargets>().BuiltColorExtent();
     return extent.Width != 0 && extent.Height != 0;
 }
 
 void WaitForRender(state::Scene &r) {
-    auto &frame = r.ctx().get<FrameState>();
+    auto &frame = r.Context.get<FrameState>();
     if (!frame.RenderPending) return;
 
-    auto &resources = r.ctx().get<ViewportRenderResources>();
+    auto &resources = r.Context.get<ViewportRenderResources>();
     if (resources.InFlight) {
         const profile::CpuScope scope{"WaitGpu"};
         resources.InFlight->waitUntilCompleted();
     }
     profile::Resolve(resources.InFlight);
     resources.InFlight = nullptr;
-    r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
+    r.Context.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     frame.RenderPending = false;
 }

@@ -268,7 +268,7 @@ void MetaTable(const char *id, std::initializer_list<const char *> cols, size_t 
 } // namespace
 
 static void RenderEntityControls(state::Scene &r, state::Entity viewport, state::Entity active_entity) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     if (active_entity == state::Null) {
         TextUnformatted("Active object: None");
         return;
@@ -482,7 +482,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
 
         if (CollapsingHeader("Material")) {
             const auto &active_mesh = GetMesh(r, active_mesh_entity);
-            auto &material_store = r.ctx().get<MaterialStore>();
+            auto &material_store = r.Context.get<MaterialStore>();
             const auto texture_refs = GetTextureRefs(r);
             const std::span<const uint32_t> primitive_materials = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(active_mesh.GetStoreId()).PrimitiveMaterials);
             const auto materials = GetMaterials(r);
@@ -1000,7 +1000,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 }
             }
             // Direct mutation outside Apply: not replayable document state.
-            if (Button("Recompile shaders")) r.ctx().get<FrameState>().RecompileShaders = true;
+            if (Button("Recompile shaders")) r.Context.get<FrameState>().RecompileShaders = true;
 
             if (!r.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");
@@ -1063,7 +1063,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
 
         if (BeginTabItem("Camera")) {
             const auto &camera = r.get<const ViewCamera>(viewport);
-            const auto extent = r.ctx().get<ViewportExtent>().Value;
+            const auto extent = r.Context.get<ViewportExtent>().Value;
             const float viewport_aspect = extent.x == 0 || extent.y == 0 ? 1.f : float(extent.x) / float(extent.y);
             if (Button("Reset##Camera")) action::Emit(action::view::ResetViewCamera{});
             {

@@ -24,7 +24,7 @@
 namespace {
 
 std::pair<uvec2, mtl::Extent2D> GetCaptureRegion(const state::Scene &r) {
-    const auto full = r.ctx().get<const RenderTargets>().Resources->FinalColorImage.Extent;
+    const auto full = r.Context.get<const RenderTargets>().Resources->FinalColorImage.Extent;
     const auto camera = LookThroughCameraEntity(r);
     const auto cd = camera != state::Null ? LensOf(r, camera) : std::nullopt;
     if (!cd) return {{0, 0}, full};
@@ -43,32 +43,32 @@ void InitViewportMedia(state::Scene &r) {
 }
 
 void DeinitViewportMedia(state::Scene &r) {
-    r.ctx().erase<ViewportIcons>();
+    r.Context.erase<ViewportIcons>();
 }
 
 void DisplayViewport(state::Scene &r, state::Entity viewport) {
     auto &dl = *ImGui::GetWindowDrawList();
     dl.ChannelsSetCurrent(0);
-    if (const auto &targets = r.ctx().get<const RenderTargets>(); targets.Resources) {
+    if (const auto &targets = r.Context.get<const RenderTargets>(); targets.Resources) {
         const auto p = ImGui::GetCursorScreenPos();
-        const auto extent = r.ctx().get<ViewportExtent>().Value;
+        const auto extent = r.Context.get<ViewportExtent>().Value;
         dl.AddImage(mtl::ImGuiTextureId(*targets.Resources->FinalColorImage), p, p + ImVec2{float(extent.x), float(extent.y)});
     }
 
     dl.ChannelsSetCurrent(1);
-    DrawOverlay(r, viewport, r.ctx().get<FrameState>());
+    DrawOverlay(r, viewport, r.Context.get<FrameState>());
 }
 
 // Intentionally mutates VideoRecording outside Apply (not replayed).
 void StartRecording(state::Scene &r, state::Entity viewport, const std::filesystem::path &path, int fps, bool with_audio) {
     r.remove<VideoRecording>(viewport);
     EndAudioCapture(r);
-    if (!r.ctx().get<const RenderTargets>().Resources) {
+    if (!r.Context.get<const RenderTargets>().Resources) {
         std::println(stderr, "StartRecording: render resources not ready");
         return;
     }
     const auto region = GetCaptureRegion(r);
-    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
     // Zero selects video-only encoding, identical to a recording made without audio.
     // Render one audio frame per captured video frame when live device capture is unavailable.
     const auto device_rate = with_audio ? BeginAudioCapture(r) : 0u;
@@ -92,7 +92,7 @@ uint64_t CapturedFrameCount(const state::Scene &r, state::Entity viewport) {
 }
 
 void CaptureRecordFrame(state::Scene &r, state::Entity viewport) {
-    const auto &targets = r.ctx().get<const RenderTargets>();
+    const auto &targets = r.Context.get<const RenderTargets>();
     auto *rec = r.try_edit<VideoRecording>(viewport);
     if (!rec || !rec->Recorder || !rec->Recorder->IsActive() || !targets.Resources) return;
     if (GetCaptureRegion(r) != rec->Region) {
@@ -117,13 +117,13 @@ void CaptureRecordFrame(state::Scene &r, state::Entity viewport) {
 }
 
 std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(state::Scene &r) {
-    const auto &targets = r.ctx().get<const RenderTargets>();
+    const auto &targets = r.Context.get<const RenderTargets>();
     if (!targets.Resources) return std::unexpected{"render resources not ready"};
 
     const auto [offset, extent] = GetCaptureRegion(r);
     if (extent.Width == 0 || extent.Height == 0) return std::unexpected{"viewport extent is zero"};
 
-    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
     auto pixels = ReadbackImageRgba8(ctx, targets.Resources->FinalColorImage, offset.x, offset.y, extent);
     // Format::Color is BGRA, so red and blue trade places.
     for (size_t i = 0; i < pixels.size(); i += 4) std::swap(pixels[i], pixels[i + 2]);
@@ -132,5 +132,5 @@ std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(state::Scen
 }
 
 std::string DebugBufferHeapUsage(const state::Scene &r) {
-    return r.ctx().get<const GpuBuffers>().Ctx.DebugHeapUsage();
+    return r.Context.get<const GpuBuffers>().Ctx.DebugHeapUsage();
 }

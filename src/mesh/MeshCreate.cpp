@@ -192,7 +192,7 @@ void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &da
 } // namespace
 
 std::vector<CreatedMesh> CreateMeshes(state::Scene &r, std::span<MeshSource> sources) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     // One reserve per arena for the whole batch, so no allocation below grows a buffer.
     for (const auto &source : sources) {
         meshes.PlanCreate(source.Data, source.Primitives, source.Deform.has_value(), source.Morph ? source.Morph->TargetCount : 0u, source.Attrs);

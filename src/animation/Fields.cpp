@@ -55,7 +55,7 @@ bool ReadField(const state::Scene &r, state::Entity e, const ChannelTarget &targ
     if (out.size() != target.Count) return false;
     const auto bytes = target.Count * sizeof(float);
     if (target.Component == state::Key<MaterialStore>()) {
-        const auto materials = r.ctx().get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
+        const auto materials = r.Context.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
         if (target.Index >= materials.size()) return false;
         std::memcpy(out.data(), reinterpret_cast<const std::byte *>(&materials[target.Index]) + target.Offset, bytes);
         return true;
@@ -64,7 +64,7 @@ bool ReadField(const state::Scene &r, state::Entity e, const ChannelTarget &targ
         const auto *weights = r.try_get<const MorphWeightRange>(e);
         const auto first = target.Offset / sizeof(float);
         if (!weights || first + target.Count > weights->Weights.Count) return false;
-        std::ranges::copy(r.ctx().get<const GpuBuffers>().MorphWeightBuffer.Get(weights->Weights).subspan(first, target.Count), out.begin());
+        std::ranges::copy(r.Context.get<const GpuBuffers>().MorphWeightBuffer.Get(weights->Weights).subspan(first, target.Count), out.begin());
         return true;
     }
     bool found = false;
@@ -100,7 +100,7 @@ void WriteField(state::Scene &r, state::Entity e, const ChannelTarget &target, s
     if (in.size() != target.Count) return;
     const auto bytes = target.Count * sizeof(float);
     if (target.Component == state::Key<MaterialStore>()) {
-        auto &materials = r.ctx().get<GpuBuffers>().Materials;
+        auto &materials = r.Context.get<GpuBuffers>().Materials;
         if (target.Index >= materials.Count<PBRMaterial>()) return;
         materials.Update(std::as_bytes(in), uint64_t(target.Index) * sizeof(PBRMaterial) + target.Offset);
         reactive(r, state::Change::Materials).emplace(e);
@@ -110,7 +110,7 @@ void WriteField(state::Scene &r, state::Entity e, const ChannelTarget &target, s
         const auto *weights = r.try_get<const MorphWeightRange>(e);
         const auto first = target.Offset / sizeof(float);
         if (!weights || first + target.Count > weights->Weights.Count) return;
-        std::ranges::copy(in, r.ctx().get<GpuBuffers>().MorphWeightBuffer.GetMutable(weights->Weights).begin() + first);
+        std::ranges::copy(in, r.Context.get<GpuBuffers>().MorphWeightBuffer.GetMutable(weights->Weights).begin() + first);
         reactive(r, state::Change::MorphWeights).emplace(e);
         return;
     }

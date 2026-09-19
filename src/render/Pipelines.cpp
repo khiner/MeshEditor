@@ -215,6 +215,6 @@ Pipelines::Pipelines(mtl::LibraryCache &libraries)
       SpecularPrefilter{libraries, {"IblPrefilter.metal", "SpecularPrefilterKernel"}} {}
 
 Pipelines &GetPipelines(state::Scene &r) {
-    if (auto *pipelines = r.ctx().find<Pipelines>()) return *pipelines;
-    return r.ctx().emplace<Pipelines>(r.ctx().get<mtl::LibraryCache>());
+    if (auto *pipelines = r.Context.find<Pipelines>()) return *pipelines;
+    return r.Context.emplace<Pipelines>(r.Context.get<mtl::LibraryCache>());
 }

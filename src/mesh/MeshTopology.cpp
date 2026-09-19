@@ -281,9 +281,9 @@ void SetOutput(MeshTopologyJob &job, const MeshStore::Record &dst) {
 }
 
 void SubmitChunk(state::Scene &r, std::span<Work> chunk, Batch &batch) {
-    auto &meshes = r.ctx().get<MeshStore>();
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    auto &meshes = r.Context.get<MeshStore>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto &pipelines = GetMeshPipelines(r);
     for (auto &work : chunk) {
         if (!work.Task.List.empty()) work.ListRange = meshes.AllocateList(work.Task.List);
@@ -370,7 +370,7 @@ void SubmitChunk(state::Scene &r, std::span<Work> chunk, Batch &batch) {
 } // namespace
 
 std::vector<uint32_t> RunMeshTopology(state::Scene &r, std::span<const MeshTopologyTask> tasks) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     std::vector<uint32_t> outputs(tasks.size(), InvalidStoreId);
     std::vector<Work> work;
     std::vector<size_t> task_of;

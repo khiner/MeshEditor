@@ -56,7 +56,7 @@ using std::ranges::find, std::ranges::to;
 
 namespace {
 RenderRequest TakeRenderRequest(state::Scene &r) {
-    return std::exchange(r.ctx().get<PendingRenderRequest>().Value, RenderRequest::None);
+    return std::exchange(r.Context.get<PendingRenderRequest>().Value, RenderRequest::None);
 }
 
 SceneUpdate RequestedSceneUpdate(RenderRequest request) { return request == RenderRequest::Rebuild ? SceneUpdate::Rebuild : SceneUpdate::Reuse; }
@@ -65,16 +65,16 @@ SceneUpdate RequestedSceneUpdate(RenderRequest request) { return request == Rend
 bool MotionBlurActive(const state::Scene &r, state::Entity viewport) {
     const auto &display = r.get<const ViewportDisplay>(viewport);
     if (display.ViewportShading != ViewportShadingMode::MaterialPreview && display.ViewportShading != ViewportShadingMode::Rendered) return false;
-    const auto &frame_state = r.ctx().get<const FrameState>();
+    const auto &frame_state = r.Context.get<const FrameState>();
     if (!display.MotionBlur && !frame_state.Capturing) return false;
     return r.get<const TimelinePlayback>(viewport).Playing || frame_state.Scrubbing || frame_state.Capturing;
 }
 
 // Renders shutter samples with sharp overlays and restores the current frame afterward.
 void RenderMotionBlurredFrame(state::Scene &r, state::Entity viewport) {
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    auto &targets = r.ctx().get<RenderTargets>();
-    auto &resources = r.ctx().get<ViewportRenderResources>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
+    auto &targets = r.Context.get<RenderTargets>();
+    auto &resources = r.Context.get<ViewportRenderResources>();
 
     const auto &display = r.get<const ViewportDisplay>(viewport);
     const auto mb = EffectiveMotionBlur(display);
@@ -93,13 +93,13 @@ void RenderMotionBlurredFrame(state::Scene &r, state::Entity viewport) {
     const float last_sample = fast ? hi : lo + (hi - lo) * (1.f - 0.5f / float(count));
     physics::BakeThrough(r, viewport, int(std::ceil(last_sample)), range.Fps);
 
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &buffers = r.Context.get<GpuBuffers>();
     if (targets.EnsureMotionBlurResources(ctx, fast)) {
-        auto &slots = r.ctx().get<mtl::BindlessSet>();
+        auto &slots = r.Context.get<mtl::BindlessSet>();
         const auto sampled = targets.MotionBlurOutputSampler();
-        slots.SetSampler({SlotType::Sampler, r.ctx().get<const RenderSamplerSlots>().MotionBlurOutput}, sampled.Texture, sampled.Sampler);
+        slots.SetSampler({SlotType::Sampler, r.Context.get<const RenderSamplerSlots>().MotionBlurOutput}, sampled.Texture, sampled.Sampler);
         const auto velocity = targets.Nearest(fast ? &targets.MotionBlur->VelocityImage : nullptr);
-        slots.SetSampler({SlotType::Sampler, r.ctx().get<const RenderSamplerSlots>().Velocity}, velocity.Texture, velocity.Sampler);
+        slots.SetSampler({SlotType::Sampler, r.Context.get<const RenderSamplerSlots>().Velocity}, velocity.Texture, velocity.Sampler);
     }
 
     // Evaluate animation, physics, and an animated look-through camera at `pf` into mapped pose buffers.
@@ -160,12 +160,12 @@ void RenderMotionBlurredFrame(state::Scene &r, state::Entity viewport) {
 void SubmitViewport(state::Scene &r, state::Entity viewport) {
     const profile::CpuScope scope{"SubmitViewport"};
     if (!ViewportImageReady(r)) return;
-    auto &frame_state = r.ctx().get<FrameState>();
+    auto &frame_state = r.Context.get<FrameState>();
     if (MotionBlurActive(r, viewport)) {
         // A blurred frame costs several scene evaluations, so only run one when something changed.
         if (const auto request = TakeRenderRequest(r); request != RenderRequest::None) {
             // Preserve the request for the per-step render and any required framebuffer recreation.
-            r.ctx().get<PendingRenderRequest>().Value = request;
+            r.Context.get<PendingRenderRequest>().Value = request;
             RenderMotionBlurredFrame(r, viewport);
             frame_state.MotionBlurred = true;
         }
@@ -174,7 +174,7 @@ void SubmitViewport(state::Scene &r, state::Entity viewport) {
     // Blur just ended (playback stopped, or the playhead was released): replace the blurred frame with a sharp one.
     if (frame_state.MotionBlurred) {
         frame_state.MotionBlurred = false;
-        r.ctx().get<PendingRenderRequest>().Value = RenderRequest::Rebuild;
+        r.Context.get<PendingRenderRequest>().Value = RenderRequest::Rebuild;
     }
     const auto render_request = TakeRenderRequest(r);
     if (render_request == RenderRequest::None) return;
@@ -183,11 +183,11 @@ void SubmitViewport(state::Scene &r, state::Entity viewport) {
 }
 
 state::Entity InitEngine(state::Scene &r) {
-    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
     InitRenderStoreContext(r, ctx);
-    auto &slots = r.ctx().get<mtl::BindlessSet>();
-    r.ctx().emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a");
-    r.ctx().emplace<RenderTargets>();
+    auto &slots = r.Context.get<mtl::BindlessSet>();
+    r.Context.emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a");
+    r.Context.emplace<RenderTargets>();
     physics::Init(r);
     RegisterSceneComponentHandlers(r);
 
@@ -197,29 +197,29 @@ state::Entity InitEngine(state::Scene &r) {
     InitEntityNames(r);
     RegisterRenderStoreHandlers(r);
     const auto viewport = r.create();
-    r.ctx().emplace<MeshStore>(InitRenderStores(r));
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    r.ctx().emplace<action::Errors>();
+    r.Context.emplace<MeshStore>(InitRenderStores(r));
+    auto &buffers = r.Context.get<GpuBuffers>();
+    r.Context.emplace<action::Errors>();
     InitDefaultMaterial(r);
     // These engine resources outlive documents.
-    r.ctx().emplace<ViewportExtent>();
-    r.ctx().emplace<ViewportConsumerFence>();
-    const auto &sel_slots = r.ctx().emplace<SelectionSlots>(slots);
-    r.ctx().emplace<RenderSamplerSlots>(slots);
+    r.Context.emplace<ViewportExtent>();
+    r.Context.emplace<ViewportConsumerFence>();
+    const auto &sel_slots = r.Context.emplace<SelectionSlots>(slots);
+    r.Context.emplace<RenderSamplerSlots>(slots);
     // Object picking grows on demand and refreshes its bindings; element picking uses fixed buffers.
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickKey}, *buffers.ObjectPickKeys);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickKey}, *buffers.ElementPickKey);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickId}, *buffers.ElementPickId);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, *buffers.ObjectPickSeenBitset);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectBoxBitset}, *buffers.ObjectBoxBitset);
-    r.ctx().emplace<GpuSceneState>();
-    r.ctx().emplace<FrameState>();
-    r.ctx().emplace<PendingRenderRequest>();
-    r.ctx().emplace<ViewportRenderResources>();
-    r.ctx().emplace<WindowsState>();
+    r.Context.emplace<GpuSceneState>();
+    r.Context.emplace<FrameState>();
+    r.Context.emplace<PendingRenderRequest>();
+    r.Context.emplace<ViewportRenderResources>();
+    r.Context.emplace<WindowsState>();
 
-    auto &environments = r.ctx().get<EnvironmentStore>();
-    auto &textures = r.ctx().get<TextureStore>();
+    auto &environments = r.Context.get<EnvironmentStore>();
+    auto &textures = r.Context.get<TextureStore>();
     const auto images_dir = Paths::Res() / "images";
     environments.BrdfLutSlot = QueueLutTexture(textures, slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT");
     environments.SheenELutSlot = QueueLutTexture(textures, slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT");
@@ -275,7 +275,7 @@ void SetupScene(state::Scene &r, state::Entity viewport) {
 }
 
 void AddDefaultSceneContent(state::Scene &r) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
     const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(default_shape), .FlatShaded = true});
     const auto [mesh_entity, _] = ::AddMesh(r, created.StoreId, MeshInstanceCreateInfo{.Name = ToString(default_shape)});
@@ -306,11 +306,11 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
     ResetImportedTexturesAndMaterials(r);
 
     // Clear derived light slots so restored persistent lights register from slot zero.
-    r.ctx().get<GpuBuffers>().Lights.SetCount<PunctualLight>(0);
-    r.ctx().get<GpuBuffers>().PendingLightRemovals.clear();
+    r.Context.get<GpuBuffers>().Lights.SetCount<PunctualLight>(0);
+    r.Context.get<GpuBuffers>().PendingLightRemovals.clear();
     // Raw-pixel uploads queued at engine init survive a clear that precedes their materialization.
-    std::erase_if(r.ctx().get<TextureStore>().PendingUploads, [](const auto &upload) { return std::holds_alternative<PendingTextureUpload::GltfImageRef>(upload.Source); });
-    r.ctx().get<EnvironmentStore>().PendingImport.reset();
+    std::erase_if(r.Context.get<TextureStore>().PendingUploads, [](const auto &upload) { return std::holds_alternative<PendingTextureUpload::GltfImageRef>(upload.Source); });
+    r.Context.get<EnvironmentStore>().PendingImport.reset();
 
     // Destroy instances before the buffer entities they reference.
     for (const auto e : r.view<RenderInstance>() | to<std::vector>()) r.destroy(e);
@@ -322,11 +322,11 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
     // Reset ordered allocators so scene replay reproduces entity IDs and GPU handles.
     // Bindless allocation is order-independent and requires no reset.
     r.ResetEntities();
-    r.ctx().get<MeshStore>().Clear();
-    r.ctx().get<GpuBuffers>().ResetSceneArenas();
-    r.ctx().get<GpuSceneState>() = {};
+    r.Context.get<MeshStore>().Clear();
+    r.Context.get<GpuBuffers>().ResetSceneArenas();
+    r.Context.get<GpuSceneState>() = {};
     // Disable occlusion until the new scene has produced a depth pyramid.
-    if (auto &resources = r.ctx().get<RenderTargets>().Resources) resources->DepthPyramidValid = false;
+    if (auto &resources = r.Context.get<RenderTargets>().Resources) resources->DepthPyramidValid = false;
 
     [[maybe_unused]] const auto recreated = r.create();
     assert(recreated == viewport);
@@ -334,23 +334,23 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
 }
 
 void DeinitViewport(state::Scene &r, state::Entity viewport) {
-    r.ctx().erase<ViewportRenderResources>();
-    r.ctx().erase<SelectionSlots>();
-    r.ctx().erase<RenderSamplerSlots>();
-    r.ctx().erase<FrameState>();
-    r.ctx().erase<PendingRenderRequest>();
-    r.ctx().erase<GpuSceneState>();
-    r.ctx().erase<EntityDestroyTracker>();
+    r.Context.erase<ViewportRenderResources>();
+    r.Context.erase<SelectionSlots>();
+    r.Context.erase<RenderSamplerSlots>();
+    r.Context.erase<FrameState>();
+    r.Context.erase<PendingRenderRequest>();
+    r.Context.erase<GpuSceneState>();
+    r.Context.erase<EntityDestroyTracker>();
     physics::Deinit(r);
-    r.ctx().erase<MeshPipelines>();
-    r.ctx().erase<Pipelines>();
-    r.ctx().erase<RenderTargets>();
+    r.Context.erase<MeshPipelines>();
+    r.Context.erase<Pipelines>();
+    r.Context.erase<RenderTargets>();
     if (r.valid(viewport)) r.destroy(viewport);
     // The store releases every mesh in one batch, and MeshHandle destruction still needs it present.
-    r.ctx().get<MeshStore>().Clear();
+    r.Context.get<MeshStore>().Clear();
     r.clear<MeshHandle>();
     DeinitTextureStores(r);
-    r.ctx().erase<MeshStore>();
+    r.Context.erase<MeshStore>();
     DeinitRenderStores(r);
     DeinitEntityNames(r);
     DeinitRenderStoreContext(r);
@@ -361,7 +361,7 @@ void PresentViewport(state::Scene &r, state::Entity viewport) {
     if (!ViewportImageReady(r)) return;
     if (MotionBlurActive(r, viewport)) {
         RenderMotionBlurredFrame(r, viewport);
-        r.ctx().get<FrameState>().MotionBlurred = true;
+        r.Context.get<FrameState>().MotionBlurred = true;
     } else {
         RecordAndSubmitFrame(r, viewport, RequestedSceneUpdate(TakeRenderRequest(r)));
         WaitForRender(r);

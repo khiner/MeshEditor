@@ -985,7 +985,7 @@ std::expected<SourceAssets, std::string> ReadSourceAssets(state::Scene &r, const
         auto image = ReadImage(asset, image_index, source_dir);
         if (!image) return std::unexpected{std::move(image.error())};
         if (!image->SourcePath.empty()) image->SourcePath = project::AssetReference(r, image->SourcePath).string();
-        if (auto *files = r.ctx().find<project::Assets>(); files && !project::Assets::IsReference(image->SourcePath)) {
+        if (auto *files = r.Context.find<project::Assets>(); files && !project::Assets::IsReference(image->SourcePath)) {
             const auto stored = files->Store("image.bin", image->Bytes);
             if (!stored) return std::unexpected{stored.error()};
             image->SourcePath = stored->string();
@@ -1389,9 +1389,9 @@ struct ImportedMaterials {
 
 // Appends every source material to the GPU material buffer with its textures queued for upload and mapped to bindless slots.
 ImportedMaterials ImportMaterials(state::Scene &r, const fastgltf::Asset &asset, const SourceAssets &sa, std::span<const PBRMaterial> source_materials) {
-    auto &slots = r.ctx().get<mtl::BindlessSet>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &textures = r.ctx().get<TextureStore>();
+    auto &slots = r.Context.get<mtl::BindlessSet>();
+    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &textures = r.Context.get<TextureStore>();
     ImportedMaterials out;
 
     // Equivalent glTF textures share one TextureEntry, keyed by resolved image, sampler, and color space.
@@ -1475,7 +1475,7 @@ ImportedMaterials ImportMaterials(state::Scene &r, const fastgltf::Asset &asset,
         out.IndexByGltfMaterial.emplace_back(buffers.Materials.Append(gpu_material));
         material_names.emplace_back(material_name);
     }
-    r.ctx().get<MaterialStore>().AppendNames(std::move(material_names));
+    r.Context.get<MaterialStore>().AppendNames(std::move(material_names));
     return out;
 }
 
@@ -1534,7 +1534,7 @@ MeshEntities ImportMeshes(state::Scene &r, std::span<SourceMesh> source_meshes, 
     }
 
     auto created = CreateMeshes(r, sources);
-    const auto materials = r.ctx().get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
+    const auto materials = r.Context.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
     MeshEntities entities(source_meshes.size(), {state::Null, state::Null, state::Null});
     for (uint32_t part = 0; part < parts.size(); ++part) {
         auto &layout = layouts[part];
@@ -1561,7 +1561,7 @@ struct ImportedObjects {
 
 // Creates the mesh, camera, light, and empty objects of every emitted node, parents them, and stubs the nodes no scene reaches.
 ImportedObjects ImportObjects(state::Scene &r, const fastgltf::Asset &asset, const NodePlan &plan, const MeshEntities &mesh_entities) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     ImportedObjects objects{.ByNode = std::vector<std::vector<state::Entity>>(asset.nodes.size()), .FirstCamera = state::Null};
     ReserveEntityNames(r, size_t(std::ranges::count(plan.IsObjectEmitted, true)));
     std::vector<bool> instanced(asset.nodes.size(), false);
@@ -1982,7 +1982,7 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
 
 // Builds each planned armature with its bones, skins, bone instances, and constraints. Returns the armature data entities.
 std::vector<state::Entity> ImportArmatures(state::Scene &r, const fastgltf::Asset &asset, const NodePlan &plan, std::span<const ArmaturePlan> groups, const ImportedObjects &objects, std::string_view name_prefix) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    auto &meshes = r.Context.get<MeshStore>();
     std::vector<state::Entity> data_entities;
     data_entities.reserve(groups.size());
     for (uint32_t group_index = 0; group_index < groups.size(); ++group_index) {
@@ -2143,8 +2143,8 @@ bool ImportAnimations(state::Scene &r, const fastgltf::Asset &asset, state::Enti
     }
 
     // Mesh instances with morph targets start at the node's weights, else the mesh defaults, in the UMA weight buffer.
-    const auto &meshes = r.ctx().get<const MeshStore>();
-    auto &weight_buffer = r.ctx().get<GpuBuffers>().MorphWeightBuffer;
+    const auto &meshes = r.Context.get<const MeshStore>();
+    auto &weight_buffer = r.Context.get<GpuBuffers>().MorphWeightBuffer;
     std::unordered_map<uint32_t, state::Entity> morph_instance_by_node;
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         for (const auto instance_entity : objects.ByNode[node_index]) {
@@ -2384,9 +2384,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
     const bool imported_animation = ImportAnimations(r, asset, viewport, objects, armature_data_entities, materials.IndexByGltfMaterial, image_light);
 
-    auto &environments = r.ctx().get<EnvironmentStore>();
+    auto &environments = r.Context.get<EnvironmentStore>();
     if (const auto &source_ibl = source_assets->ImageBasedLight) {
-        const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(r.ctx().get<mtl::BindlessSet>());
+        const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(r.Context.get<mtl::BindlessSet>());
         environments.PendingImport = PendingEnvironmentImport{*source_ibl, diffuse_slot, specular_slot};
         environments.ClearRequested = false;
     } else {

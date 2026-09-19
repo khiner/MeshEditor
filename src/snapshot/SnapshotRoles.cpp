@@ -23,10 +23,8 @@ const SnapshotEntries &SnapshotTable() { return GetTables().Snapshots; }
 
 void VerifyCoverage(const state::Scene &r) {
     std::set<std::string> unclassified; // Stable diagnostic ordering.
-    for (auto [id, set] : r.storage()) {
-        if (set.empty()) continue;
-        if (!GetTables().Classified[id]) unclassified.emplace(state::SchemaNames[id]);
-    }
+    for (const auto id : r.Active)
+        if (!r.Tables[id].empty() && !GetTables().Classified[id]) unclassified.emplace(state::SchemaNames[id]);
     if (unclassified.empty()) return;
 
     std::string msg = "snapshot: component(s) in scene storage are classified neither Persistent nor Derived "

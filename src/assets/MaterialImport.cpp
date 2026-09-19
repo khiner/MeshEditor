@@ -11,11 +11,11 @@
 #include <iostream>
 #include <unordered_map>
 void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<const ObjPlyMaterial> materials, const std::filesystem::path &mesh_path, uint32_t mesh_store_id) {
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    auto &slots = r.ctx().get<mtl::BindlessSet>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &meshes = r.ctx().get<MeshStore>();
-    auto &textures = r.ctx().get<TextureStore>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
+    auto &slots = r.Context.get<mtl::BindlessSet>();
+    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &meshes = r.Context.get<MeshStore>();
+    auto &textures = r.Context.get<TextureStore>();
     auto &sources = r.get_or_emplace<gltf::SourceAssets>(viewport);
     auto &manifest = r.get_or_emplace<MaterializedTextures>(viewport);
     const auto sampler_index = uint32_t(sources.Samplers.size());
@@ -65,7 +65,7 @@ void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<co
                 .Sampler = SamplerConfig{},
                 .Name = std::format("{} ({})", texture_path.filename().string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"),
             },
-            r.ctx().get<const ActiveSamplerAnisotropy>().Value
+            r.Context.get<const ActiveSamplerAnisotropy>().Value
         );
         const auto image_index = uint32_t(sources.Images.size());
         sources.Images.emplace_back(gltf::Image{
@@ -109,7 +109,7 @@ void ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<co
     }
     SubmitTextureUploadBatch(obj_batch);
 
-    auto &material_store = r.ctx().get<MaterialStore>();
+    auto &material_store = r.Context.get<MaterialStore>();
     material_store.AppendNames(std::move(names));
 
     if (auto primitive_materials = meshes.EditPrimitiveMaterials(mesh_store_id); !primitive_materials.empty()) {

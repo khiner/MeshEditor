@@ -49,19 +49,19 @@ Mesh::Mesh(const MeshStore &store, uint32_t store_id)
     : Store(&store), StoreId(store_id), C(store.GetConnectivity(store_id)), Corners(store.Arenas().FaceCorners.Get(store.Get(store_id).FaceCorners)) {}
 
 Mesh GetMesh(const state::Scene &r, state::Entity e) {
-    return {r.ctx().get<const MeshStore>(), r.get<const MeshHandle>(e).StoreId};
+    return {r.Context.get<const MeshStore>(), r.get<const MeshHandle>(e).StoreId};
 }
 std::optional<Mesh> TryGetMesh(const state::Scene &r, state::Entity e) {
     const auto *handle = r.try_get<const MeshHandle>(e);
     if (!handle) return std::nullopt;
-    return Mesh{r.ctx().get<const MeshStore>(), handle->StoreId};
+    return Mesh{r.Context.get<const MeshStore>(), handle->StoreId};
 }
 bool HasMesh(const state::Scene &r, state::Entity e) { return r.all_of<MeshHandle>(e); }
 
 float LocalLengthPerUv(const state::Scene &r, state::Entity mesh_entity, uint32_t uv_set) {
     const auto mesh = TryGetMesh(r, mesh_entity);
     if (!mesh || uv_set >= MeshStore::MaxUvSets) return 0;
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     const auto uvs = meshes.Arenas().CornerUvs.Get(meshes.Get(mesh->GetStoreId()).CornerUvs[uv_set]);
     const auto corners = mesh->CreateTriangleIndices();
     if (uvs.size() != corners.size() || corners.empty()) return 0;

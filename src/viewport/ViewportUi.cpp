@@ -249,7 +249,7 @@ vec2 ScreenPx(const mat4 &vp, const rect &viewport_rect, vec3 p) {
 
 // A screen position in pixels of the render target.
 vec2 ToRenderPx(const state::Scene &r, vec2 screen_px) {
-    const auto logical = r.ctx().get<const ViewportExtent>().Value;
+    const auto logical = r.Context.get<const ViewportExtent>().Value;
     const auto render_extent = RenderExtentPx(r);
     const vec2 scale{logical.x > 0u ? float(render_extent.x) / float(logical.x) : 1.f, logical.y > 0u ? float(render_extent.y) / float(logical.y) : 1.f};
     return (screen_px - ToVec2(GetCursorScreenPos())) * scale;
@@ -297,7 +297,7 @@ void UpdateMeshDrag(state::Scene &r, FrameState &frame) {
         const auto end = ToRenderPx(r, mouse), start = ToRenderPx(r, drag.StartPx);
         const float length = Length(end - start);
         if (length <= 0.f || drag.Staged == length) return;
-        action::Emit(action::mesh::Knife{.Start = start, .End = end, .View = std::make_unique<RenderView>(r.ctx().get<const GpuBuffers>().FrameView)}, action::Phase::Stage);
+        action::Emit(action::mesh::Knife{.Start = start, .End = end, .View = std::make_unique<RenderView>(r.Context.get<const GpuBuffers>().FrameView)}, action::Phase::Stage);
         drag.Staged = length;
         return;
     }
@@ -581,7 +581,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
         CurrentClickPos = GetIO().MouseClickedPos[0];
     }
 
-    const auto logical_extent = r.ctx().get<ViewportExtent>().Value;
+    const auto logical_extent = r.Context.get<ViewportExtent>().Value;
     if (logical_extent.x == 0 || logical_extent.y == 0) return;
 
     if (frame.MeshDrag) {
@@ -733,7 +733,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
 
     const auto render_extent = RenderExtentPx(r);
     // Pick against the preceding rendered view; the live camera may already have advanced its animation.
-    const auto selection_view = r.ctx().get<const GpuBuffers>().FrameView;
+    const auto selection_view = r.Context.get<const GpuBuffers>().FrameView;
     const auto edit_mode = r.get<const EditMode>(viewport).Value;
     const auto arm_obj_entity = FindArmatureObject(r, active_entity);
     const bool active_is_armature = arm_obj_entity != state::Null;
@@ -806,7 +806,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
 
 void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame) {
     const profile::CpuScope scope{"ViewportOverlayUi"};
-    const auto &icons = r.ctx().get<const ViewportIcons>();
+    const auto &icons = r.Context.get<const ViewportIcons>();
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
     const bool active_transform = r.get<const GizmoInteraction>(viewport).IsUsing();
     static constexpr float OrientationGizmoSize{84};

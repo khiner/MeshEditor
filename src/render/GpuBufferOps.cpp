@@ -15,19 +15,19 @@ void ReleaseRange(auto &arena, auto &range) {
 } // namespace
 
 std::span<const PBRMaterial> GetMaterials(const state::Scene &r) {
-    return r.ctx().get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
+    return r.Context.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
 }
 std::span<const uint32_t> GetFaceIndices(const state::Scene &r, const Mesh &mesh, const MeshBuffers &buffers) {
     const auto corners = mesh.CornerVertices();
     if (corners.size() == mesh.TriangleIndexCount()) return corners;
-    return r.ctx().get<const GpuBuffers>().FaceIndexBuffer.Get(buffers.FaceIndices);
+    return r.Context.get<const GpuBuffers>().FaceIndexBuffer.Get(buffers.FaceIndices);
 }
-mtl::BufferContext &GetBufferContext(state::Scene &r) { return r.ctx().get<GpuBuffers>().Ctx; }
+mtl::BufferContext &GetBufferContext(state::Scene &r) { return r.Context.get<GpuBuffers>().Ctx; }
 
-void ReleaseMeshBuffers(state::Scene &r, MeshBuffers &mb) { r.ctx().get<GpuBuffers>().Release(mb); }
+void ReleaseMeshBuffers(state::Scene &r, MeshBuffers &mb) { r.Context.get<GpuBuffers>().Release(mb); }
 
-void FreeInstanceRange(state::Scene &r, Range range) { r.ctx().get<GpuBuffers>().Instances.Free(range); }
-void ReleaseEdgeIndices(state::Scene &r, const SlottedRange &indices) { r.ctx().get<GpuBuffers>().EdgeIndexBuffer.Release(indices); }
+void FreeInstanceRange(state::Scene &r, Range range) { r.Context.get<GpuBuffers>().Instances.Free(range); }
+void ReleaseEdgeIndices(state::Scene &r, const SlottedRange &indices) { r.Context.get<GpuBuffers>().EdgeIndexBuffer.Release(indices); }
 
 InstanceArena::InstanceArena(mtl::BufferContext &ctx)
     : TransformBuffer(ctx, 0, SlotType::ModelBuffer),

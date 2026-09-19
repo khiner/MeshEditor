@@ -43,7 +43,7 @@ uint32_t ScratchWords(const AdjacencyWork &work) {
 }
 
 void SubmitChunk(state::Scene &r, std::span<const AdjacencyWork> chunk, Batch &batch) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     const auto &arenas = meshes.Arenas();
     batch.Begin();
     for (const auto &work : chunk) {
@@ -78,14 +78,14 @@ void SubmitChunk(state::Scene &r, std::span<const AdjacencyWork> chunk, Batch &b
     }
 
     batch.Submit(
-        r.ctx().get<const mtl::Context>(), r.ctx().get<const mtl::BindlessSet>(), GetMeshPipelines(r),
+        r.Context.get<const mtl::Context>(), r.Context.get<const mtl::BindlessSet>(), GetMeshPipelines(r),
         VertexAdjacencyPushConstants{.AdjacencySlot = meshes.Slots().Adjacency}, Passes
     );
 }
 } // namespace
 
 void BuildVertexAdjacencyNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     std::vector<AdjacencyWork> work;
     for (const auto entity : mesh_entities) {
         const auto mesh = TryGetMesh(r, entity);

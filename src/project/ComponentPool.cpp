@@ -17,7 +17,7 @@ std::span<const std::byte> Serialize(const snapshot::SnapshotEntry &encoding, co
 ComponentPool::ComponentPool(EntityStore &s, state::TypeId type, const snapshot::SnapshotEntry &encoding)
     : S(s), Type(type), Encoding(encoding), Trie(4) {}
 
-state::Table &ComponentPool::Storage() const { return S.R.storage(Type); }
+state::Table &ComponentPool::Storage() const { return S.R.Tables[Type]; }
 state::Entity ComponentPool::Stored(uint32_t index) const { return Storage().entity_at(index); }
 store::Blob ComponentPool::Copy(uint32_t index) const { return Encoding.Copy(Storage().value(Stored(index))); }
 
