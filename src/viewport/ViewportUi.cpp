@@ -591,7 +591,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
 
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const auto active_entity = FindActiveEntity(r);
-    const bool has_frozen_selected = r.view<Selected, ScaleLocked>().begin() != r.view<Selected, ScaleLocked>().end();
+    const bool has_frozen_selected = !r.view<const Selected, const ScaleLocked>().empty();
     const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
         any_of(selection::GetSelectedMeshEntities(r), [&](state::Entity mesh_entity) { return selection::HasScaleLockedInstance(r, mesh_entity); });
     const bool transform_shortcuts_enabled = !edit_transform_locked;
@@ -825,7 +825,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
     { // Transform mode pill buttons (top-left overlay)
         using enum TransformGizmo::Type;
         const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
-        const bool has_frozen_selected = r.view<Selected, ScaleLocked>().begin() != r.view<Selected, ScaleLocked>().end();
+        const bool has_frozen_selected = !r.view<const Selected, const ScaleLocked>().empty();
         const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
             any_of(selection::GetSelectedMeshEntities(r), [&](state::Entity mesh_entity) { return selection::HasScaleLockedInstance(r, mesh_entity); });
         const bool transform_enabled = !edit_transform_locked;

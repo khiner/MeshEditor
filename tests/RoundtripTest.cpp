@@ -735,7 +735,7 @@ void CompareRegistries(std::string_view name, state::Scene &a, state::Scene &b) 
         std::map<state::Entity, std::set<std::string>> m;
         for (auto [id, set] : r.storage()) {
             const std::string_view tn{state::SchemaNames[id]};
-            for (const auto e : set) m[e].insert(std::string{tn});
+            for (const auto e : set.entities()) m[e].insert(std::string{tn});
         }
         return m;
     };
@@ -772,7 +772,7 @@ void CompareRegistries(std::string_view name, state::Scene &a, state::Scene &b) 
         const auto tn = state::SchemaNames[id];
         const auto &b_set = b.storage(id);
         if (id == state::Type<MeshBuffers>()) continue;
-        for (const auto e : a_set) {
+        for (const auto e : a_set.entities()) {
             if (!b_set.contains(e)) continue;
             const auto eq = snapshot::ComponentValuesEqual(id, a_set.value(e), b_set.value(e));
             if (eq && !*eq) ++value_diffs[std::string{tn}];

@@ -11,7 +11,6 @@
 #include <functional>
 #include <memory>
 #include <ranges>
-#include <span>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -63,26 +62,26 @@ template<typename M> struct MaskIterator {
     using difference_type = std::ptrdiff_t;
     using iterator_category = std::forward_iterator_tag;
     static constexpr uint32_t End = UINT32_MAX;
-    const M *Source{};
+    M Source{};
     uint32_t Page{}, Bits{};
     // Move to the first page at or after Page with live slots.
     void Seek() {
-        while (Page < Source->pages()) {
-            const auto word = Source->occupied(Page / 64) & (~uint64_t{0} << Page % 64);
+        while (Page < Source.pages()) {
+            const auto word = Source.occupied(Page / 64) & (~uint64_t{0} << Page % 64);
             if (!word) {
                 Page = (Page / 64 + 1) * 64;
                 continue;
             }
             Page = Page / 64 * 64 + std::countr_zero(word);
-            if ((Bits = Source->mask(Page))) return;
+            if ((Bits = Source.mask(Page))) return;
             ++Page;
         }
         Page = End;
         Bits = 0;
     }
-    Entity operator*() const { return Source->entity(Page, std::countr_zero(Bits)); }
+    Entity operator*() const { return Source.entity(Page, std::countr_zero(Bits)); }
     MaskIterator &operator++() {
-        Bits = (Bits & (Bits - 1)) & Source->mask(Page);
+        Bits = (Bits & (Bits - 1)) & Source.mask(Page);
         if (!Bits) {
             ++Page;
             Seek();
@@ -96,6 +95,8 @@ template<typename M> struct MaskIterator {
     }
     bool operator==(const MaskIterator &) const = default;
 };
+
+struct TableEntities;
 
 // Paged sparse set of raw values. Each page holds its slot owners and then the values.
 // Small pages keep unrelated sparse components inexpensive and addresses stable.
@@ -141,12 +142,7 @@ struct Table {
     }
     size_t size() const { return Count; }
     bool empty() const { return Count == 0; }
-    MaskIterator<Table> begin() const {
-        MaskIterator<Table> it{this};
-        it.Seek();
-        return it;
-    }
-    MaskIterator<Table> end() const { return {this, MaskIterator<Table>::End, 0}; }
+    TableEntities entities() const;
     // Links the slot and returns its uninitialized value storage.
     void *insert(Entity);
     // Destroys the value and unlinks the slot.
@@ -156,6 +152,23 @@ struct Table {
 private:
     void Release(uint32_t page);
 };
+
+// One table's live entities, in entity index order.
+struct TableEntities {
+    const Table *T{};
+    uint32_t pages() const { return T->pages(); }
+    uint64_t occupied(uint32_t word) const { return T->occupied(word); }
+    uint32_t mask(uint32_t page) const { return T->mask(page); }
+    Entity entity(uint32_t page, uint32_t slot) const { return T->entity(page, slot); }
+    bool operator==(const TableEntities &) const = default;
+    MaskIterator<TableEntities> begin() const {
+        MaskIterator<TableEntities> it{*this};
+        it.Seek();
+        return it;
+    }
+    MaskIterator<TableEntities> end() const { return {*this, MaskIterator<TableEntities>::End, 0}; }
+};
+inline TableEntities Table::entities() const { return {this}; }
 
 enum class On : uint8_t { Create = 1,
                           Update = 2,
@@ -213,7 +226,7 @@ void BeforeWrite(Scene &, TypeId, Entity);
 
 template<typename... C> struct ExcludeList {};
 template<typename... C> inline constexpr ExcludeList<C...> Exclude{};
-template<typename R, typename... C> struct View;
+template<typename R, typename Ex, typename... C> struct View;
 
 struct Scene {
     Scene();
@@ -318,7 +331,7 @@ struct Scene {
     }
     template<typename... C> size_t remove(Entity e) { return (size_t{0} + ... + remove(Type<C>(), e)); }
     void clear(TypeId type) {
-        for (auto &t = Tables[type]; !t.empty();) remove(type, *t.begin());
+        for (auto &t = Tables[type]; !t.empty();) remove(type, *t.entities().begin());
     }
     template<typename... C> void clear() { (clear(Type<C>()), ...); }
     void ClearChanges() {
@@ -336,12 +349,10 @@ struct Scene {
     template<typename C> Sink on_update() { return {*this, Type<C>(), Event::Update}; }
     template<typename C> Sink on_destroy() { return {*this, Type<C>(), Event::Destroy}; }
     template<typename... C, typename... X> auto view(ExcludeList<X...> = {}) {
-        static constexpr std::array<TypeId, sizeof...(X)> excluded{Type<X>()...};
-        return View<Scene, C...>{*this, excluded};
+        return View<Scene, ExcludeList<X...>, C...>{*this};
     }
     template<typename... C, typename... X> auto view(ExcludeList<X...> = {}) const {
-        static constexpr std::array<TypeId, sizeof...(X)> excluded{Type<X>()...};
-        return View<const Scene, const C...>{*this, excluded};
+        return View<const Scene, ExcludeList<X...>, const C...>{*this};
     }
 };
 
@@ -349,44 +360,46 @@ inline DirtySet &reactive(Scene &r, Change c) { return r.Changes[size_t(c)]; }
 inline const DirtySet &reactive(const Scene &r, Change c) { return r.Changes[size_t(c)]; }
 
 // Entities holding every listed component and none of the excluded ones, joined page by page on the table masks.
-template<typename R, typename... C> struct View : std::ranges::view_interface<View<R, C...>> {
+template<typename R, typename... X, typename... C>
+struct View<R, ExcludeList<X...>, C...> : std::ranges::view_interface<View<R, ExcludeList<X...>, C...>> {
     using Driver = std::tuple_element_t<0, std::tuple<C...>>;
+    using Iterator = MaskIterator<View>;
     R *Owner{};
-    std::span<const TypeId> Excluded;
-    View(R &r, std::span<const TypeId> excluded) : Owner(&r), Excluded(excluded) {}
+    View() = default;
+    explicit View(R &r) : Owner(&r) {}
+    bool operator==(const View &o) const { return Owner == o.Owner; }
     template<typename T> const Table &table() const { return std::as_const(*Owner).template storage<T>(); }
     uint32_t pages() const { return std::min({table<C>().pages()...}); }
     uint64_t occupied(uint32_t word) const { return (table<C>().occupied(word) & ...); }
     uint32_t mask(uint32_t page) const {
         auto m = (table<C>().mask(page) & ...);
-        for (auto id : Excluded) m &= ~Owner->storage(id).mask(page);
+        ((m &= ~table<X>().mask(page)), ...);
         return m;
     }
     Entity entity(uint32_t page, uint32_t slot) const { return table<Driver>().entity(page, slot); }
     bool contains(Entity e) const {
         return table<Driver>().contains(e) && (mask(Index(e) / Table::PageCount) >> (Index(e) % Table::PageCount) & 1);
     }
-    MaskIterator<View> begin() const {
-        MaskIterator<View> it{this};
+    Iterator begin() const {
+        Iterator it{*this};
         it.Seek();
         return it;
     }
-    MaskIterator<View> end() const { return {this, MaskIterator<View>::End, 0}; }
+    Iterator end() const { return {*this, Iterator::End, 0}; }
     // A single component without exclusions answers from its table.
-    static constexpr bool Direct = sizeof...(C) == 1;
+    static constexpr bool Direct = sizeof...(C) == 1 && sizeof...(X) == 0;
     bool empty() const {
-        if constexpr (Direct)
-            if (Excluded.empty()) return table<Driver>().empty();
-        return begin() == end();
+        if constexpr (Direct) return table<Driver>().empty();
+        else return begin() == end();
     }
     size_t size() const {
-        if constexpr (Direct)
-            if (Excluded.empty()) return table<Driver>().size();
-        size_t n = 0;
-        for (auto it = begin(); it != end(); it.Page++, it.Seek()) n += std::popcount(it.Bits);
-        return n;
+        if constexpr (Direct) return table<Driver>().size();
+        else {
+            size_t n = 0;
+            for (auto it = begin(); it != end(); it.Page++, it.Seek()) n += std::popcount(it.Bits);
+            return n;
+        }
     }
-    Entity front() const { return *begin(); }
     template<typename T> decltype(auto) get(Entity e) const { return Owner->template get<T>(e); }
     template<typename T> static auto Value(R &owner, Entity e) {
         if constexpr (std::is_empty_v<T> || std::is_same_v<std::remove_const_t<T>, Entity>) return std::tuple<>{};
@@ -399,3 +412,7 @@ template<typename R, typename... C> struct View : std::ranges::view_interface<Vi
 };
 
 } // namespace state
+
+namespace std::ranges {
+template<typename R, typename Ex, typename... C> inline constexpr bool enable_borrowed_range<state::View<R, Ex, C...>> = true;
+} // namespace std::ranges
