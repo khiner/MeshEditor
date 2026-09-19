@@ -35,6 +35,7 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "ui/CtrlShortcut.h"
+#include "ui/DashedLine.h"
 #include "ui/FieldEdit.h"
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
@@ -1263,6 +1264,8 @@ void DrawOverlay(state::Scene &r, state::Entity viewport, FrameState &frame) {
 
     OrientationGizmo::Render(axes);
     TransformGizmo::Render(r.edit<GizmoInteraction>(viewport), r.get<const TransformGizmoState>(viewport).Config.Type, camera, viewport_rect, axes);
+    // Inset and bevel size by the mouse's distance from the selection center, so they show the same guide as scale and rotate.
+    if (frame.MeshDrag && frame.MeshDrag->Value != MeshOperatorDrag::Op::Knife) DrawDashedGuide(*GetWindowDrawList(), std::bit_cast<ImVec2>(frame.MeshDrag->CenterPx), GetMousePos());
 
     const auto &settings = r.get<const ViewportDisplay>(viewport);
     if (settings.ShowOverlays && settings.ShowOrigins && (!r.view<const Selected>().empty() || !r.view<const Active>().empty())) {
@@ -1293,22 +1296,11 @@ void DrawOverlay(state::Scene &r, state::Entity viewport, FrameState &frame) {
         const auto box_max = Max(*frame.BoxSelectStart, *frame.BoxSelectEnd);
         dl.AddRectFilled(std::bit_cast<ImVec2>(box_min), std::bit_cast<ImVec2>(box_max), IM_COL32(255, 255, 255, 30));
 
-        // Dashed outline: dashes step from `a` toward `b` along their one differing axis.
         static constexpr auto outline_color{IM_COL32(255, 255, 255, 200)};
-        static constexpr float dash_size{4}, gap_size{4};
-        const auto dash_line = [&](vec2 a, vec2 b) {
-            const uint32_t axis = a.x == b.x ? 1 : 0;
-            for (float v = a[axis]; v < b[axis]; v += dash_size + gap_size) {
-                auto d0 = a, d1 = b;
-                d0[axis] = v;
-                d1[axis] = Min(v + dash_size, b[axis]);
-                dl.AddLine(std::bit_cast<ImVec2>(d0), std::bit_cast<ImVec2>(d1), outline_color, 1.f);
-            }
-        };
-        dash_line({box_min.x, box_min.y}, {box_max.x, box_min.y});
-        dash_line({box_min.x, box_max.y}, {box_max.x, box_max.y});
-        dash_line({box_min.x, box_min.y}, {box_min.x, box_max.y});
-        dash_line({box_max.x, box_min.y}, {box_max.x, box_max.y});
+        DrawDashedLine(dl, {box_min.x, box_min.y}, {box_max.x, box_min.y}, outline_color);
+        DrawDashedLine(dl, {box_min.x, box_max.y}, {box_max.x, box_max.y}, outline_color);
+        DrawDashedLine(dl, {box_min.x, box_min.y}, {box_min.x, box_max.y}, outline_color);
+        DrawDashedLine(dl, {box_max.x, box_min.y}, {box_max.x, box_max.y}, outline_color);
     }
 
     // Match the centered frame to the captured look-through region.

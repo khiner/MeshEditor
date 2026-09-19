@@ -11,6 +11,7 @@
 #include "imgui.h"
 
 #include "ui/AxisColors.h" // Must be after imgui.h
+#include "ui/DashedLine.h"
 
 #include "state/Scene.h"
 
@@ -427,33 +428,8 @@ void RenderMouseGuid(const ViewFrame &f, TransformGizmo::TransformType type, ImV
 
     const auto mouse_px = std::bit_cast<ImVec2>(f.MousePx);
 
-    // Avoid ImDrawList::AddLine's half-pixel offset.
-    static const auto AddLine = [](ImDrawList &dl, ImVec2 p1, ImVec2 p2, ImU32 col, float thickness) {
-        dl.PathLineTo(p1);
-        dl.PathLineTo(p2);
-        dl.PathStroke(col, 0, thickness);
-    };
-
-    static const auto DrawDashedLine = [](ImDrawList &dl, ImVec2 a, ImVec2 b, ImU32 color) {
-        static constexpr float Thickness{1}, DashLen{4}, GapLen{3};
-
-        const auto dir = b - a;
-        const float len = sqrtf(ImLengthSqr(dir));
-        if (len <= 1e-3f) return;
-
-        const auto dir_unit = dir / len;
-        float t{0};
-        while (t < len) {
-            AddLine(dl, a + dir_unit * t, a + dir_unit * (t + std::min(DashLen, len - t)), color, Thickness);
-            t += DashLen + GapLen;
-        }
-    };
-
     auto &dl = *ImGui::GetWindowDrawList();
-    static constexpr auto LineColor{IM_COL32(255, 255, 255, 255)}, ShadowLineColor{IM_COL32(90, 90, 90, 200)};
-    static constexpr ImVec2 ShadowOffset{1.5, 1.5};
-    DrawDashedLine(dl, o_px + ShadowOffset, mouse_px + ShadowOffset, ShadowLineColor);
-    DrawDashedLine(dl, o_px, mouse_px, LineColor);
+    DrawDashedGuide(dl, o_px, mouse_px);
 
     static const auto DrawCursorArrow = [](ImDrawList &dl, ImVec2 base, ImVec2 dir, ImVec2 lat) {
         static constexpr float CursorThickness{2}, ShaftLength{22}, HeadLength{7}, HeadWidth{5};
