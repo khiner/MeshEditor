@@ -17,9 +17,6 @@ mesheditor_test(MeshEditorActionSerializeTest ActionSerializeTest.cpp MeshEditor
 mesheditor_test(MeshEditorModalSolveIntegrationTest ModalSolveIntegrationTest.cpp MeshEditorAudio FastFEM::FastFEM)
 mesheditor_test(MeshEditorCompressTest CompressTest.cpp mesheditor_support)
 mesheditor_test(MeshEditorAudioFileTest AudioFileTest.cpp MeshEditorAudio)
-mesheditor_test(MeshEditorContactCollectBench ContactCollectBench.cpp MeshEditorPhysics rbp)
-target_compile_options(MeshEditorContactCollectBench PRIVATE -O2)
-mesheditor_test(MeshEditorContactCollectTest ContactCollectTest.cpp MeshEditorPhysics)
 mesheditor_test(MeshEditorRbpBodyTest RbpBodyTest.cpp MeshEditorPhysics rbp)
 mesheditor_test(MeshEditorContactManifoldTest ContactManifoldTest.cpp MeshEditorPhysics rbp)
 mesheditor_test(MeshEditorClusterLodTest ClusterLodTest.cpp MeshEditorRender meshoptimizer)
@@ -40,8 +37,8 @@ foreach(test MslCompile Transparency)
     set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 endforeach()
 
-foreach(target IN ITEMS MeshEditorTests MeshEditorActionSerializeTest MeshEditorContactCollectBench
-        MeshEditorContactCollectTest MeshEditorRbpBodyTest MeshEditorContactManifoldTest)
+foreach(target IN ITEMS MeshEditorTests MeshEditorActionSerializeTest
+        MeshEditorRbpBodyTest MeshEditorContactManifoldTest)
     rbp_copy_shaders(${target})
 endforeach()
 
