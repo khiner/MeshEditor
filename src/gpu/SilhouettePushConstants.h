@@ -5,7 +5,7 @@
 
 struct SilhouettePushConstants {
     VisibilityShadingPushConstants Visibility;
-    // Opaque routes outline only the pixels the visibility image assigns to the same object, which keeps coplanar ties out.
-    uint32_t RequireOwner DEFAULT();
+    // Opaque routes yield the pixels the visibility image assigns to another outlined object, which resolves coplanar ties and occlusion among outlines exactly.
+    uint32_t YieldToOutlinedOwner DEFAULT();
 };
 static_assert(sizeof(SilhouettePushConstants) == sizeof(VisibilityShadingPushConstants) + 4, "SilhouettePushConstants size");

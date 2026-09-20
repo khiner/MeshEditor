@@ -24,11 +24,12 @@ fragment VisibilitySilhouetteTarget MeshletSilhouetteFragment(
     const uint object_id = CoveredMeshletObject(
         Scene{bindless, view, theme, workspace}, pc.Visibility, primitive_id, position.xy, front_facing, false
     );
-    if (pc.RequireOwner != 0u) {
+    if (pc.YieldToOutlinedOwner != 0u) {
         const VisibilityMetadata owner = DecodeVisibilityMetadata(
             visibility.read(uint2(position.xy)).r, bindless, view, theme, workspace, pc.Visibility
         );
-        if (owner.Valid && owner.ObjectId != object_id) discard_fragment();
+        const bool owner_outlined = (owner.InstanceFlags & uint(MeshletInstanceFlag::Silhouette)) != 0u;
+        if (owner.Valid && owner_outlined && owner.ObjectId != object_id) discard_fragment();
     }
     return {{position.z, float(object_id)}, position.z};
 }

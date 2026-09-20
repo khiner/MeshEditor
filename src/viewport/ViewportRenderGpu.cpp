@@ -1727,8 +1727,8 @@ void RecordSilhouetteDepthPass(
     const auto &silhouette = targets.Resources->SilhouetteImage;
     const auto extent = silhouette.Extent;
     const std::array colors{mtl::ClearColor(*silhouette)};
-    // Scene depth occludes the outline and is left intact for the passes that shade against it.
-    const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*targets.Resources->VisibilityDepth));
+    // Outlined surfaces occlude each other in a private depth, so unselected geometry never hides an outline.
+    const auto pass = mtl::MakePassDescriptor(colors, {*targets.Resources->ScratchDepth, MTL::LoadActionClear, MTL::StoreActionDontCare});
     auto *encoder = encode::BeginScenePass(
         chain, pass, "SilhouetteDepth", {{MTL::StageDispatch, MTL::StageMesh}, {MTL::StageFragment, MTL::StageFragment}},
         extent, slots, buffers, ubo_offset
@@ -1736,15 +1736,15 @@ void RecordSilhouetteDepthPass(
     if (!draw) return;
     pipelines.Silhouette.Bind(encoder);
     encoder->setFragmentTexture(*targets.Resources->VisibilityImage, 0u);
-    const auto draw_route = [&](MeshletRoute route, MTL::CullMode cull, bool require_owner) {
-        const SilhouettePushConstants pc{encode::VisibilityDecodePc(buffers), require_owner ? 1u : 0u};
+    const auto draw_route = [&](MeshletRoute route, MTL::CullMode cull, bool yield_to_outlined_owner) {
+        const SilhouettePushConstants pc{encode::VisibilityDecodePc(buffers), yield_to_outlined_owner ? 1u : 0u};
         encoder->setFragmentBytes(&pc, sizeof(pc), BufferIndex_PushConstants);
         encoder->setCullMode(cull);
         DrawMeshlets(encoder, buffers, uint32_t(route), uint32_t(MeshletInstanceFlag::Silhouette));
     };
-    // Visibility surfaces outline the pixels the visibility image assigns to them.
+    // Visibility surfaces outline the pixels the visibility image assigns to them or to unselected geometry.
     for (const auto [route, cull] : VisibilityRoutes) draw_route(route, cull, true);
-    // Blend and transmission surfaces never enter the visibility image, so scene depth alone decides their outline.
+    // Blend and transmission surfaces never enter the visibility image, so the outline depth alone decides their outline.
     draw_route(MeshletRoute::Blend, MTL::CullModeNone, false);
     draw_route(MeshletRoute::Transmission, MTL::CullModeNone, false);
 }
