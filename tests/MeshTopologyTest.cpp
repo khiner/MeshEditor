@@ -705,7 +705,7 @@ void TestBevel() {
     ExpectMesh(f, {10, 15, 7, 16});
 }
 
-// Editing a committed operator re-runs its recorded commands with the edited values on the node's parent.
+// Editing a committed operator re-runs its recorded actions with the edited values on the node's parent.
 // The commit forks a node with descendants and replaces a leaf node in place.
 void TestEditNode() {
     Fixture f{"edit-node", primitive::Cuboid{}, Element::Edge};
@@ -718,7 +718,7 @@ void TestEditNode() {
     f.P->Navigate(node);
 
     const auto bevel = [&](int of) -> action::mesh::Bevel & {
-        return std::get<action::mesh::Bevel>(std::get<action::mesh::Action>(f.P->DraftOf(of).Commands[0].Value));
+        return std::get<action::mesh::Bevel>(std::get<action::mesh::Action>(f.P->DraftOf(of).RecordedActions[0].Action));
     };
     const auto restage = [&](float width, uint32_t segments) {
         bevel(node).Width = width;

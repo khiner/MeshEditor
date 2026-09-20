@@ -36,10 +36,10 @@ enum class RecordKind : uint8_t {
 struct HistoryNode {
     int Parent{-1};
     std::vector<int> Children;
-    std::vector<std::byte> Action;
+    std::vector<std::byte> Actions; // The recorded actions, encoded by the project.
     std::string Label;
     int Depth{};
-    bool ReplayBaseline{true};
+    bool ReplayBaseline{true}; // Replay starts from this node's stored state instead of replaying its ancestors.
     std::optional<Snapshot> Hot;
     // Stamps and Roots use track registration order and remain available after eviction.
     std::vector<Stamp> Stamps;
@@ -90,9 +90,9 @@ struct History {
     bool Relocate(const std::filesystem::path &dir);
 
     // Record live state and return its node ID, reusing a matching present, child, or parent node.
-    int Commit(std::string label, std::vector<std::byte> action);
+    int Commit(std::string label, std::vector<std::byte> actions);
     // Record live state as `node`'s new content under its label, drop the node's descendants, and make it present.
-    int Replace(int node, std::vector<std::byte> action);
+    int Replace(int node, std::vector<std::byte> actions);
     // Call after CPU and GPU writes complete.
     void SettleHashes();
     // Restore node using its snapshot or stored data and update Present.

@@ -56,8 +56,8 @@ bool TakeState(std::span<const std::byte> &in, HistoryNode &node, size_t tracks)
 
 std::vector<std::byte> NodePayload(const HistoryNode &node) {
     std::vector<std::byte> payload;
-    Put(payload, uint32_t(node.Action.size()));
-    payload.insert(payload.end(), node.Action.begin(), node.Action.end());
+    Put(payload, uint32_t(node.Actions.size()));
+    payload.insert(payload.end(), node.Actions.begin(), node.Actions.end());
     Put(payload, uint32_t(node.Label.size()));
     const auto *label = reinterpret_cast<const std::byte *>(node.Label.data());
     payload.insert(payload.end(), label, label + node.Label.size());
@@ -148,7 +148,7 @@ struct PipelineScope {
 };
 
 std::string ReplayStep(History &history, const HistoryNode &node) {
-    history.Callbacks.Replay(node.Action);
+    history.Callbacks.Replay(node.Actions);
     for (size_t i = 0; i < history.Tracks.size(); ++i) {
         if (CurrentStamp(history, i) != node.Stamps[i]) return history.Tracks[i].Name;
     }
@@ -405,7 +405,7 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
         if (kind != RecordKind::Navigate) {
             uint32_t asz;
             if (!Take(payload, asz) || payload.size() < asz) break;
-            HistoryNode n{.Action = {payload.begin(), payload.begin() + asz}};
+            HistoryNode n{.Actions = {payload.begin(), payload.begin() + asz}};
             payload = payload.subspan(asz);
             uint32_t label_size;
             if (!Take(payload, label_size) || payload.size() < label_size) break;
@@ -425,7 +425,7 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
             if (kind == RecordKind::Replace) {
                 DropDescendants(history, parent);
                 auto &target = history.Nodes[parent];
-                target.Action = std::move(n.Action);
+                target.Actions = std::move(n.Actions);
                 target.Label = std::move(n.Label);
                 target.Stamps = std::move(n.Stamps);
                 target.Roots = std::move(n.Roots);
@@ -698,7 +698,7 @@ bool History::Relocate(const std::filesystem::path &dir) {
     return true;
 }
 
-int History::Commit(std::string label, std::vector<std::byte> action) {
+int History::Commit(std::string label, std::vector<std::byte> actions) {
     assert(Present >= 0);
     const auto stamps = CurrentStamps(*this);
     if (stamps == Nodes[Present].Stamps) {
@@ -717,7 +717,7 @@ int History::Commit(std::string label, std::vector<std::byte> action) {
         if (Nodes[child].Stamps == stamps) return adopt(child);
     if (const int parent = Nodes[Present].Parent; parent >= 0 && Nodes[parent].Stamps == stamps) return adopt(parent);
     const int id = int(Nodes.size());
-    HistoryNode n{.Parent = Present, .Action = std::move(action), .Label = std::move(label), .Depth = Nodes[Present].Depth + 1, .ReplayBaseline = false, .Hot = Pin(), .Stamps = stamps};
+    HistoryNode n{.Parent = Present, .Actions = std::move(actions), .Label = std::move(label), .Depth = Nodes[Present].Depth + 1, .ReplayBaseline = false, .Hot = Pin(), .Stamps = stamps};
     Nodes.push_back(std::move(n));
     Nodes[Present].Children.push_back(id);
     ++Revision;
@@ -726,12 +726,12 @@ int History::Commit(std::string label, std::vector<std::byte> action) {
     return id;
 }
 
-int History::Replace(int node, std::vector<std::byte> action) {
+int History::Replace(int node, std::vector<std::byte> actions) {
     assert(node > 0 && node < int(Nodes.size()));
     DropDescendants(*this, node);
     auto &n = Nodes[node];
     if (n.Hot) Release(*n.Hot);
-    n.Action = std::move(action);
+    n.Actions = std::move(actions);
     n.Stamps = CurrentStamps(*this);
     n.Hot = Pin();
     ++Revision;

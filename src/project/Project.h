@@ -64,11 +64,11 @@ struct Project {
         bool FixedFrameStep{};
         EventPass Pass{EventPass::Frame};
     };
-    struct Command {
+    struct RecordedAction {
         ReplayInputs Inputs;
-        action::Action Value;
+        action::Action Action;
     };
-    std::vector<Command> Commands;
+    std::vector<RecordedAction> RecordedActions;
     std::vector<action::Action> Deferred;
     std::optional<size_t> StageFirst;
     std::optional<store::Snapshot> GestureBase;
@@ -78,21 +78,24 @@ struct Project {
 
     struct EditDraft {
         int Node;
-        uint64_t Revision; // The history revision the commands were decoded at.
-        std::vector<Command> Commands;
+        uint64_t Revision; // The history revision the actions were decoded at.
+        std::vector<RecordedAction> RecordedActions;
     };
     std::optional<EditDraft> Draft;
     bool RestageRequested{false};
     // The draft of `node`, decoded anew when the node or the history changed.
     EditDraft &DraftOf(int node);
+    // Whether any of the node's actions has parameters to edit.
+    bool Editable(int node) const;
     // Re-runs the draft on its node's parent at frame end.
     // The commit that follows replaces a leaf node and forks a node with children.
     void RequestRestage() { RestageRequested = true; }
 
     void Tick(const action::Action &, EventPass = EventPass::Frame);
-    bool ApplyCommand(action::Action, EventPass, bool staged = false);
-    void RunRecorded(std::span<const Command>);
-    // Records the commands as a new node, replacing `replace` when it has no children and adding a sibling otherwise.
+    // Applies the action and records it with the frame inputs it ran under.
+    bool Record(action::Action, EventPass, bool staged = false);
+    void RunRecorded(std::span<const RecordedAction>);
+    // Records the actions as a new node, replacing `replace` when it has no children and adding a sibling otherwise.
     int Commit(std::string label, std::optional<int> replace = {});
     void FinishGesture(EventPass);
     // Removes the drag-start records a gesture's updates made.

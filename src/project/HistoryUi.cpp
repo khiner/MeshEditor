@@ -14,6 +14,7 @@
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <format>
@@ -185,30 +186,24 @@ template<typename L> void DrawLeaf(const state::Scene &r, L &leaf, bool &changed
     }
 }
 
-// A change re-runs the node's commands with the edited values on its parent.
+// A change re-runs the node's actions with the edited values on its parent.
 // A release commits them in the node's place.
-bool DrawNodeEditor(Project &session, bool interactive) {
-    const auto &history = session.History;
-    const int node = session.Editing.value_or(history.Present);
-    if (node <= 0) return false;
+void DrawNodeEditor(Project &session, int node, bool interactive) {
     auto &draft = session.DraftOf(node);
     size_t leaves = 0;
-    for (const auto &command : draft.Commands) leaves += action::VisitLeaf(command.Value, []<typename L>(const L &) { return !std::is_empty_v<L>; });
-    if (leaves == 0) return false;
-    if (!TreeNodeEx(SpacedName(history.Nodes[node].Label).c_str(), ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen)) return true;
+    for (const auto &recorded_action : draft.RecordedActions) leaves += action::VisitLeaf(recorded_action.Action, []<typename L>(const L &) { return !std::is_empty_v<L>; });
     bool changed = false, finished = false;
-    for (size_t i = 0; auto &command : draft.Commands) {
+    for (size_t i = 0; auto &recorded_action : draft.RecordedActions) {
         PushID(int(i++));
-        if (leaves > 1) SeparatorText(SpacedName(Label(command.Value)).c_str());
-        action::VisitLeaf(command.Value, [&]<typename L>(L &leaf) {
+        if (leaves > 1) SeparatorText(SpacedName(Label(recorded_action.Action)).c_str());
+        action::VisitLeaf(recorded_action.Action, [&]<typename L>(L &leaf) {
             if constexpr (!std::is_empty_v<L>) DrawLeaf(session.R, leaf, changed, finished);
         });
         PopID();
     }
-    if (!interactive) return true;
+    if (!interactive) return;
     if (changed) session.RequestRestage();
     if (finished) action::Commit();
-    return true;
 }
 } // namespace
 
@@ -255,9 +250,7 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
 #endif
         clear = Button("Clear history") && interactive;
         SetItemTooltip("Keep the current and last saved states. Discard other undo/redo states.");
-        Text("%zu states", nodes.size());
         Separator();
-        if (DrawNodeEditor(session, interactive)) Separator();
         if (window.TreeRevision != history.Revision) {
             window.Rows.clear();
             std::vector<int> pending;
@@ -265,23 +258,56 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
             while (!pending.empty()) {
                 const auto id = pending.back();
                 pending.pop_back();
-                window.Rows.push_back(id);
+                window.Rows.push_back({id, session.Editable(id)});
                 for (auto it = nodes[id].Children.rbegin(); it != nodes[id].Children.rend(); ++it) pending.push_back(*it);
             }
             window.TreeRevision = history.Revision;
         }
-        const float x = GetCursorPosX();
-        ImGuiListClipper clipper;
-        clipper.Begin(int(window.Rows.size()), GetTextLineHeightWithSpacing());
         // An open edit highlights its node while the present node is its parent.
+        // The highlighted node's editor opens below it, and the arrow collapses it.
         const int shown = session.Editing.value_or(present);
-        while (clipper.Step()) {
-            for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
-                const int id = window.Rows[row];
-                const auto &node = nodes[id];
-                SetCursorPosX(x + float(std::min(node.Depth, 20)) * 12.f);
-                if (Selectable(std::format("{}: {}", id, node.Label).c_str(), id == shown) && interactive) session.RequestNavigate(id);
+        if (window.EditorNode != shown) {
+            window.EditorNode = shown;
+            window.EditorOpen = true;
+        }
+        const float x = GetCursorPosX();
+        const auto indent = [&](int id) { return float(std::min(nodes[id].Depth, 20)) * 12.f; };
+        const auto draw_row = [&](const HistoryRow &row) {
+            const int id = row.Node;
+            SetCursorPosX(x + indent(id));
+            auto flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+            if (!row.Editable) flags |= ImGuiTreeNodeFlags_Leaf;
+            if (id == shown) flags |= ImGuiTreeNodeFlags_Selected;
+            SetNextItemOpen(id == shown && window.EditorOpen);
+            TreeNodeEx(std::format("{}##{}", nodes[id].Label, id).c_str(), flags);
+            if (!interactive) return;
+            if (IsItemToggledOpen()) {
+                if (id == shown) window.EditorOpen = !window.EditorOpen;
+                else session.RequestNavigate(id);
+            } else if (IsItemClicked()) {
+                session.RequestNavigate(id);
             }
+        };
+        const auto draw_rows = [&](size_t begin, size_t end) {
+            ImGuiListClipper clipper;
+            clipper.Begin(int(end - begin), GetFrameHeightWithSpacing());
+            while (clipper.Step()) {
+                for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) draw_row(window.Rows[begin + size_t(i)]);
+            }
+        };
+        const auto shown_row = size_t(std::ranges::find(window.Rows, shown, &HistoryRow::Node) - window.Rows.begin());
+        draw_rows(0, std::min(shown_row, window.Rows.size()));
+        if (shown_row < window.Rows.size()) {
+            draw_row(window.Rows[shown_row]);
+            if (window.EditorOpen && window.Rows[shown_row].Editable) {
+                const float editor_indent = indent(shown) + GetTreeNodeToLabelSpacing();
+                Indent(editor_indent);
+                PushID(shown);
+                DrawNodeEditor(session, shown, interactive);
+                PopID();
+                Unindent(editor_indent);
+            }
+            draw_rows(shown_row + 1, window.Rows.size());
         }
     }
     End();

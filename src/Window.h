@@ -30,10 +30,16 @@ struct Window {
     bool Visible{true};
 };
 
+struct HistoryRow {
+    int Node;
+    bool Editable; // Whether any of the node's actions has parameters.
+};
 struct HistoryWindow : Window {
     bool ValidateRequested{false};
     uint64_t TreeRevision{UINT64_MAX};
-    std::vector<int> Rows{};
+    std::vector<HistoryRow> Rows{};
+    int EditorNode{-1}; // The node whose editor the open state belongs to.
+    bool EditorOpen{true};
 };
 
 struct WindowsState {

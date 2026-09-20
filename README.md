@@ -159,7 +159,7 @@ $ cd build && ./MeshEditor [file|--empty] [options]
   Unnamed interactive projects remain available under File → Restore, while headless jobs use temporary working directories.
   Clear history retains the current and last saved states as new replay baselines.
 * Open `.gltf`, `.glb`, `.obj`, `.ply`, `.project`, or `.actions` files.
-  `.project` extracts saved history into an unnamed working project, while `.actions` also replays commands from its archived baseline.
+  `.project` extracts saved history into an unnamed working project, while `.actions` also replays the recorded actions from its archived baseline.
   Omit `file` to load the default scene.
 * `--empty` starts with an empty scene instead of the default scene.
 * `--quiet` / `-q` suppresses timer output.
@@ -331,7 +331,7 @@ $ SURFACE_AUDIO=1 script/Build
 ```
 
 `VALIDATE_ACTIONS=1` enables History → Validate history after every committed action.
-Validation checks cold restoration and command replay in separate sessions and aborts on divergence.
+Validation checks cold restoration and action replay in separate sessions and aborts on divergence.
 It compares Persistent state, viewport pixels, and composed UI pixels at the recorded timeline position.
 Unset `VALIDATE_ACTIONS` or set it to `0` to disable validation on the next build.
 `script/Build` and `script/Render` use this setting, while `--no-build` retains the existing binary.

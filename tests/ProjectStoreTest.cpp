@@ -652,9 +652,9 @@ void TestClearHistory() {
         expect(app.State() == state);
         app.H.Callbacks = {.Replay = [&](const auto &) {
             app.Apply(ToyApp::Encode(100));
-            throw std::runtime_error("bad command");
+            throw std::runtime_error("bad action");
         }};
-        expect(app.H.Replay(baseline + 1) == "bad command");
+        expect(app.H.Replay(baseline + 1) == "bad action");
         expect(app.H.Present == baseline);
         expect(app.State() == state);
     }

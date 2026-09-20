@@ -88,16 +88,17 @@ bool RecordsView(const action::Action &a) {
     return action::VisitLeaf(a, []<typename L>(const L &) { return ViewRecording<L>; });
 }
 
+// A node's recorded actions, with no bytes for a baseline node that records none.
 // The output archive takes a mutable reference, since zpp aggregate reflection mis-encodes a const aggregate.
-std::vector<std::byte> Encode(std::vector<Project::Command> &commands) {
+std::vector<std::byte> Encode(std::vector<Project::RecordedAction> &recorded_actions) {
     std::vector<std::byte> bytes;
-    zpp::bits::out{bytes}(commands).or_throw();
+    if (!recorded_actions.empty()) zpp::bits::out{bytes}(recorded_actions).or_throw();
     return bytes;
 }
-std::vector<Project::Command> Decode(const std::vector<std::byte> &bytes) {
-    std::vector<Project::Command> commands;
-    zpp::bits::in{bytes}(commands).or_throw();
-    return commands;
+std::vector<Project::RecordedAction> Decode(const std::vector<std::byte> &bytes) {
+    std::vector<Project::RecordedAction> recorded_actions;
+    if (!bytes.empty()) zpp::bits::in{bytes}(recorded_actions).or_throw();
+    return recorded_actions;
 }
 } // namespace
 
@@ -195,7 +196,7 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
     if (History.Present >= 0 && !Save()) return false;
     auto previous = History.Pin();
     const auto camera = R.get<const ViewCamera>(Viewport);
-    Commands.clear();
+    RecordedActions.clear();
     Deferred.clear();
     ClearInteraction();
     ClearScene(R, Viewport);
@@ -233,7 +234,7 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
     if (lock) DirectoryLock = std::move(lock);
     SavedPath = saved_path;
     RestoredWorkspace = saved ? std::move(saved->Workspace) : std::vector<std::byte>{};
-    Commands.clear();
+    RecordedActions.clear();
     Deferred.clear();
     ++Revision;
     return true;
@@ -243,7 +244,7 @@ bool Project::Save() {
     WaitForRender(R);
     FinishGesture(EventPass::Settle);
     // Save playback progress since the last edit.
-    ApplyCommand(action::MakeAction(action::timeline::SetFrame{R.get<const TimelinePlayback>(Viewport).CurrentFrame}), EventPass::Settle);
+    Record(action::MakeAction(action::timeline::SetFrame{R.get<const TimelinePlayback>(Viewport).CurrentFrame}), EventPass::Settle);
     Commit("Playback position");
     return History.Save();
 }
@@ -336,7 +337,7 @@ bool Project::ClearHistory() {
         if (!saved) return false;
     }
     if (!History.Clear(saved ? &saved->Position : nullptr)) return false;
-    Commands.clear();
+    RecordedActions.clear();
     ++Revision;
     return true;
 }
@@ -353,7 +354,7 @@ void Project::Tick(const action::Action &a, EventPass pass) {
     std::visit([&](const auto &domain) { Apply(R, Viewport, domain); }, a);
     Settle(pass);
 }
-void Project::RunRecorded(std::span<const Command> commands) {
+void Project::RunRecorded(std::span<const RecordedAction> recorded_actions) {
     auto &frame = R.Context.get<FrameState>();
     const auto saved = frame;
     const auto extent = R.Context.get<ViewportExtent>().Value;
@@ -366,15 +367,15 @@ void Project::RunRecorded(std::span<const Command> commands) {
         });
     };
     bool resized = false;
-    for (const auto &[inputs, a] : commands) {
-        // A pixel-space command renders its selection passes at the extent it recorded.
+    for (const auto &[inputs, a] : recorded_actions) {
+        // A pixel-space action renders its selection passes at the extent it recorded.
         if (RecordsView(a)) {
             R.Context.get<ViewportExtent>().Value = inputs.ViewportExtent;
             frame.DisplayFramebufferScale = inputs.DisplayFramebufferScale;
             resized |= inputs.ViewportExtent != extent || inputs.DisplayFramebufferScale != saved.DisplayFramebufferScale;
         }
         set_view(inputs.View);
-        // Restore playback changes between recorded commands.
+        // Restore playback changes between recorded actions.
         if (R.get<const TimelinePlayback>(Viewport).CurrentFrame != inputs.CurrentFrame) {
             R.patch<TimelinePlayback>(Viewport, [&](auto &p) { p.CurrentFrame = inputs.CurrentFrame; });
             R.edit<PlaybackFrame>(Viewport).Value = float(inputs.CurrentFrame);
@@ -396,7 +397,7 @@ void Project::Settle(EventPass pass) {
     ProcessComponentEvents(R, Viewport, pass);
     History.SettleHashes();
 }
-bool Project::ApplyCommand(action::Action a, EventPass pass, bool staged) {
+bool Project::Record(action::Action a, EventPass pass, bool staged) {
     auto *path = std::visit([](auto &domain) {
         return std::visit([]<typename A>(A &leaf) -> std::filesystem::path * {
             if constexpr (std::is_same_v<A, action::io::Load> || std::is_same_v<A, action::io::LoadGltf> || std::is_same_v<A, action::io::LoadRealImpact> || std::is_same_v<A, action::object::ImportMesh> || std::is_same_v<A, action::audio::AssignVertexSamples>) return &leaf.Path;
@@ -421,45 +422,45 @@ bool Project::ApplyCommand(action::Action a, EventPass pass, bool staged) {
     const bool recordable = action::IsRecordable(a);
     if (staged && !GestureBase && recordable) {
         GestureBase = History.Pin();
-        GestureStart = Commands.size();
+        GestureStart = RecordedActions.size();
     }
     // A restarting operator reapplies from the gesture base.
-    const bool same_kind = staged && StageFirst && Kind(Commands[*StageFirst].Value) == Kind(a);
+    const bool same_kind = staged && StageFirst && Kind(RecordedActions[*StageFirst].Action) == Kind(a);
     if (same_kind && action::IsRestarting(a)) History.Restore(*GestureBase);
     const auto &frame = R.Context.get<const FrameState>();
-    Command command{
+    RecordedAction recorded_action{
         {R.get<const ViewCamera>(Viewport), R.Context.get<const ViewportExtent>().Value, frame.DisplayFramebufferScale, frame.DeltaTime,
          R.get<const PlaybackFrame>(Viewport).Value, R.get<const TimelinePlayback>(Viewport).CurrentFrame, frame.FixedFrameStep, pass},
         std::move(a),
     };
-    Tick(command.Value, pass);
+    Tick(recorded_action.Action, pass);
     if (!recordable) return false;
     ++Revision;
     // Only the latest update of a same-kind run is recorded.
-    if (same_kind) Commands.resize(*StageFirst);
-    else if (staged) StageFirst = Commands.size();
-    Commands.push_back(std::move(command));
+    if (same_kind) RecordedActions.resize(*StageFirst);
+    else if (staged) StageFirst = RecordedActions.size();
+    RecordedActions.push_back(std::move(recorded_action));
     return true;
 }
 int Project::Do(action::Action a, std::string label) {
     WaitForRender(R);
     if (label.empty()) label = Label(a);
     FinishGesture(EventPass::Settle);
-    if (!ApplyCommand(std::move(a), EventPass::Frame)) return History.Present;
+    if (!Record(std::move(a), EventPass::Frame)) return History.Present;
     RecordKeys();
     return Commit(std::move(label));
 }
 void Project::RecordKeys() {
     if (!R.get<const Animations>(Viewport).Record) return;
     const auto seconds = animation::FrameSeconds(R, Viewport, R.get<const TimelinePlayback>(Viewport).CurrentFrame);
-    if (animation::AnyChanged(R, Viewport, seconds)) ApplyCommand(action::MakeAction(action::animation::RecordChanged{}), EventPass::Settle);
+    if (animation::AnyChanged(R, Viewport, seconds)) Record(action::MakeAction(action::animation::RecordChanged{}), EventPass::Settle);
 }
 int Project::Commit(std::string label, std::optional<int> replace) {
-    auto bytes = Encode(Commands);
+    auto bytes = Encode(RecordedActions);
     const bool in_place = replace && History.Nodes[*replace].Children.empty();
     const auto node = in_place ? History.Replace(*replace, std::move(bytes)) : History.Commit(std::move(label), std::move(bytes));
     Editing.reset();
-    Commands.clear();
+    RecordedActions.clear();
     History.Evict(MemoryCap);
     return node;
 }
@@ -470,8 +471,8 @@ void Project::FinishGesture(EventPass pass) {
         Commit(History.Nodes[*Editing].Label, Editing);
     } else {
         std::vector<std::string> names;
-        for (size_t i = GestureStart; i < Commands.size(); ++i) {
-            if (auto name = Label(Commands[i].Value); std::ranges::find(names, name) == names.end()) names.push_back(std::move(name));
+        for (size_t i = GestureStart; i < RecordedActions.size(); ++i) {
+            if (auto name = Label(RecordedActions[i].Action); std::ranges::find(names, name) == names.end()) names.push_back(std::move(name));
         }
         std::string label;
         for (const auto &name : names) label += (label.empty() ? "" : ", ") + name;
@@ -487,8 +488,14 @@ void Project::EndGesture(EventPass pass) {
     R.remove<StartScreenTransform>(Viewport);
     Settle(pass);
 }
+bool Project::Editable(int node) const {
+    for (const auto &recorded_action : Decode(History.Nodes[node].Actions)) {
+        if (action::VisitLeaf(recorded_action.Action, []<typename L>(const L &) { return !std::is_empty_v<L>; })) return true;
+    }
+    return false;
+}
 Project::EditDraft &Project::DraftOf(int node) {
-    if (!Draft || Draft->Node != node || Draft->Revision != History.Revision) Draft = EditDraft{node, History.Revision, Decode(History.Nodes[node].Action)};
+    if (!Draft || Draft->Node != node || Draft->Revision != History.Revision) Draft = EditDraft{node, History.Revision, Decode(History.Nodes[node].Actions)};
     return *Draft;
 }
 void Project::RestageDraft() {
@@ -497,13 +504,13 @@ void Project::RestageDraft() {
     if (GestureBase) History.Restore(*GestureBase);
     else {
         GestureBase = History.Pin();
-        GestureStart = Commands.size();
+        GestureStart = RecordedActions.size();
     }
-    Commands.resize(GestureStart);
+    RecordedActions.resize(GestureStart);
     // Run a copy so the draft keeps its values for the next change.
-    auto commands = Decode(Encode(Draft->Commands));
-    RunRecorded(commands);
-    for (auto &command : commands) Commands.push_back(std::move(command));
+    auto recorded_actions = Decode(Encode(Draft->RecordedActions));
+    RunRecorded(recorded_actions);
+    for (auto &recorded_action : recorded_actions) RecordedActions.push_back(std::move(recorded_action));
     ++Revision;
 }
 void Project::ReleaseGesture() {
@@ -521,7 +528,7 @@ void Project::ClearInteraction() {
 }
 void Project::CancelGesture() {
     if (!GestureBase) return;
-    Commands.clear();
+    RecordedActions.clear();
     History.Restore(*GestureBase);
     ReleaseGesture();
     // A cancelled edit returns to the node it was replacing.
@@ -550,19 +557,19 @@ void Project::Frame(action::Drained drained) {
         if (phase == action::Phase::Cancel) {
             // A duplicate placement restarts under the new transform after its gesture is cancelled.
             std::optional<bool> duplicate;
-            for (const auto &command : Commands) {
-                if (Is<action::object::Duplicate>(command.Value)) duplicate = false;
-                if (Is<action::object::DuplicateLinked>(command.Value)) duplicate = true;
+            for (const auto &recorded_action : RecordedActions) {
+                if (Is<action::object::Duplicate>(recorded_action.Action)) duplicate = false;
+                if (Is<action::object::DuplicateLinked>(recorded_action.Action)) duplicate = true;
             }
             CancelGesture();
             if (duplicate) {
-                ApplyCommand(*duplicate ? action::MakeAction(action::object::DuplicateLinked{}) : action::MakeAction(action::object::Duplicate{}), EventPass::Settle, true);
+                Record(*duplicate ? action::MakeAction(action::object::DuplicateLinked{}) : action::MakeAction(action::object::Duplicate{}), EventPass::Settle, true);
             }
             Tick(a);
         } else {
             if (phase == action::Phase::Record) FinishGesture(EventPass::Settle);
             const auto label = Label(a);
-            const bool recordable = ApplyCommand(std::move(a), pass, phase == action::Phase::Stage);
+            const bool recordable = Record(std::move(a), pass, phase == action::Phase::Stage);
             if (phase == action::Phase::Record && recordable) {
                 RecordKeys();
                 Commit(label);
@@ -579,7 +586,7 @@ void Project::Frame(action::Drained drained) {
         auto deferred = std::exchange(Deferred, {});
         for (auto &a : deferred) {
             const auto label = Label(a);
-            if (ApplyCommand(std::move(a), pass)) Commit(label);
+            if (Record(std::move(a), pass)) Commit(label);
             pass = EventPass::Settle;
         }
     }
@@ -588,7 +595,7 @@ void Project::Frame(action::Drained drained) {
 void Project::Navigate(int node) {
     CancelGesture();
     Editing.reset();
-    Commands.clear();
+    RecordedActions.clear();
     if (node == History.Present) History.Revert();
     else History.Navigate(node);
     History.Evict(MemoryCap);
@@ -600,9 +607,9 @@ void Project::EditNode(int node) {
 }
 bool Project::Replay() {
     FinishGesture(EventPass::Settle);
-    Commands.clear();
+    RecordedActions.clear();
     if (const auto diff = History.Replay(History.Present); !diff.empty()) {
-        action::Fail(R, "Command replay differs in " + diff);
+        action::Fail(R, "Action replay differs in " + diff);
         return false;
     }
     History.Evict(MemoryCap);

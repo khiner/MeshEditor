@@ -564,7 +564,7 @@ struct ValidationImage {
 
 void WriteValidationProject(const fs::path &dir) {
     const auto path = fs::temp_directory_path() / "MeshEditor-validation.actions";
-    if (Compress(dir, path)) std::println(stderr, "[validation] wrote command replay archive to {}", path.string());
+    if (Compress(dir, path)) std::println(stderr, "[validation] wrote action replay archive to {}", path.string());
 }
 
 fs::path WriteValidationImage(const mtl::Context &ctx, std::string_view name, const mtl::Texture &image) {
@@ -857,7 +857,7 @@ void CompareValidationImages(state::Scene &r, ValidationSession &session) {
     }
 }
 
-// Compare Persistent state, viewport pixels, and composed UI pixels after command replay and cold restoration.
+// Compare Persistent state, viewport pixels, and composed UI pixels after action replay and cold restoration.
 void ValidateRoundTrip(
     state::Scene &r, state::Entity viewport, CA::MetalLayer *layer,
     ImDrawData *draw_data, std::unique_ptr<ValidationSession> &session, MTL::CommandBuffer *presented_frame = nullptr
@@ -1594,7 +1594,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         }
         // Give interaction actions priority in the single-action buffer.
         driver.EmitFrameActions(r, viewport, viewport_settled, new_logical_extent);
-        // The viewport extent is a frame input that each command records for replay.
+        // The viewport extent is a frame input that each recorded action carries for replay.
         if (new_logical_extent != uvec2{}) r.Context.get<ViewportExtent>().Value = new_logical_extent;
 
         Session(r).Frame(action::Drain());
