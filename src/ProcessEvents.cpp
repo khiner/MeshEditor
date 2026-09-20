@@ -276,7 +276,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
         if (hit) {
             const auto mesh_entity = hit->first;
-            const auto &summary = meshes.GetSelectionSummary(r.get<const MeshHandle>(mesh_entity).StoreId);
+            const auto &summary = meshes.GetSelectionSummary(GetMesh(r, mesh_entity).GetStoreId());
             if (summary.ActiveHandle == InvalidOffset) r.remove<MeshActiveElement>(mesh_entity);
             else r.emplace_or_replace<MeshActiveElement>(mesh_entity, summary.ActiveHandle);
         }
@@ -478,7 +478,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         std::vector<ElementIndicesWork> work;
         for (auto entity : sync.NewMeshEntities) {
             const auto &mesh = GetMesh(r, entity);
-            r.patch<MeshBuffers>(entity, [&](auto &mb) { WriteElementIndices(buffers, meshes, mesh, mb, overlay_indices, work); });
+            WriteElementIndices(buffers, meshes, mesh, buffers.MeshOf(mesh.GetStoreId()), overlay_indices, work);
         }
         WriteElementIndicesNow(r, work);
         // Fill adjacency tables before normal derivation reads the vertex-fan CSR.
@@ -515,18 +515,16 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 
         for (auto entity : sync.NewExtrasEntities) {
             if (r.all_of<ArmatureObject>(entity)) {
-                r.patch<MeshBuffers>(entity, [&](auto &mb) {
-                    mb.FaceIndices = buffers.CreateIndices(bone_faces, IndexKind::Face);
-                    mb.VertexIndices = buffers.CreateIndices(bone_verts, IndexKind::Vertex);
-                });
+                auto &mb = MeshBuffersOf(r, entity);
+                mb.FaceIndices = buffers.CreateIndices(bone_faces, IndexKind::Face);
+                mb.VertexIndices = buffers.CreateIndices(bone_verts, IndexKind::Vertex);
                 r.emplace_or_replace<BoneAdjacencyIndices>(entity, buffers.CreateIndices(bone.AdjacencyIndices, IndexKind::Edge));
                 bone_mesh_entities.push_back(entity);
             } else if (r.all_of<BoneJoint>(entity)) {
-                r.patch<MeshBuffers>(entity, [&](auto &mb) {
-                    mb.FaceIndices = buffers.CreateIndices(sphere_faces, IndexKind::Face);
-                    mb.EdgeIndices = buffers.CreateIndices(sphere.OutlineIndices, IndexKind::Edge);
-                    mb.VertexIndices = buffers.CreateIndices(sphere_verts, IndexKind::Vertex);
-                });
+                auto &mb = MeshBuffersOf(r, entity);
+                mb.FaceIndices = buffers.CreateIndices(sphere_faces, IndexKind::Face);
+                mb.EdgeIndices = buffers.CreateIndices(sphere.OutlineIndices, IndexKind::Edge);
+                mb.VertexIndices = buffers.CreateIndices(sphere_verts, IndexKind::Vertex);
                 bone_mesh_entities.push_back(entity);
             }
         }
@@ -617,7 +615,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const auto &work = r.Context.get<const GpuSceneState>().EditWork.at(entity);
         if (auto *bvh = r.try_edit<MeshBvh>(entity)) {
             const auto mesh = GetMesh(r, entity);
-            const auto indices = GetFaceIndices(r, mesh, r.get<const MeshBuffers>(entity));
+            const auto indices = GetFaceIndices(r, mesh);
             const auto first = meshes.Arenas().FaceFirstTriangles.Get(meshes.Get(mesh.GetStoreId()).FaceData);
             std::vector<uint32_t> triangles;
             ForEachWorkElement(buffers.GeometryWork, work.Faces, [&](uint32_t f) {
@@ -667,19 +665,18 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         buffers.DrewElementIndices = draws_element_indices;
         if (draws_element_indices) {
             uint32_t total_edge = 0, total_vertex = 0;
-            const auto mesh_view = r.view<const MeshBuffers, const MeshHandle>();
-            for (const auto entity : mesh_view) {
-                const auto &mb = r.get<const MeshBuffers>(entity);
+            for (const auto [entity, handle] : r.view<const MeshHandle>().each()) {
+                const auto *mb = buffers.TryMeshOf(handle.StoreId);
+                if (!mb) continue;
                 const auto &mesh = GetMesh(r, entity);
-                if (mb.EdgeIndices.Count == 0) total_edge += mesh.EdgeCount() * 2;
-                if (mb.VertexIndices.Count == 0) total_vertex += mesh.VertexCount();
+                if (mb->EdgeIndices.Count == 0) total_edge += mesh.EdgeCount() * 2;
+                if (mb->VertexIndices.Count == 0) total_vertex += mesh.VertexCount();
             }
             if (total_edge > 0 || total_vertex > 0) {
                 buffers.ReserveAdditionalIndices(0, total_edge, total_vertex);
                 std::vector<ElementIndicesWork> work;
-                for (const auto entity : r.view<const MeshBuffers, const MeshHandle>() | to<std::vector>()) {
-                    const auto &mesh = GetMesh(r, entity);
-                    r.patch<MeshBuffers>(entity, [&](auto &mb) { WriteElementIndices(buffers, meshes, mesh, mb, true, work); });
+                for (const auto [entity, handle] : r.view<const MeshHandle>().each()) {
+                    if (auto *mb = buffers.TryMeshOf(handle.StoreId)) WriteElementIndices(buffers, meshes, GetMesh(r, entity), *mb, true, work);
                 }
                 WriteElementIndicesNow(r, work);
                 request(RenderRequest::Rebuild);
@@ -873,6 +870,26 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (!carried_ranges.empty()) ApplyEditSelectionCommand(r, carried_ranges, edit_mode, EditSelectionOperation::Derive);
         request(RenderRequest::Reuse);
     }
+    // A preview change moves the entity's drawn record. A new preview took the new-record path above, and a dropped one returns the mesh.
+    if (auto &tracker = reactive(r, Change::MeshPreview); !tracker.empty()) {
+        std::vector<state::Entity> returned;
+        for (auto e : tracker) {
+            if (!r.valid(e) || !HasMesh(r, e)) continue;
+            const auto [any, all] = meshes.GetFaceSharpnessSummary(GetMesh(r, e).GetStoreId());
+            r.emplace_or_replace<MeshShadingSummary>(e, any, all);
+            if (!r.all_of<MeshGeometryDirty>(e)) returned.push_back(e);
+        }
+        if (!returned.empty()) {
+            std::ranges::sort(returned);
+            for (auto e : returned)
+                if (r.all_of<MeshBvh>(e)) UpdateMeshBvh(r, e);
+            RepointMeshInstances(r, returned);
+            buffers.PreludeStale = true;
+            request(RenderRequest::Rebuild);
+        }
+    }
+    // Every meshlet build in this pass has committed, so unpinned meshes take their hierarchy here.
+    if (BuildDemandedClusterLods(r, is_edit_mode)) request(RenderRequest::Rebuild);
     if (auto &tracker = reactive(r, Change::MeshMaterial); !tracker.empty()) {
         for (auto mesh_entity : tracker) {
             const auto *assignment = r.try_get<const MeshMaterialAssignment>(mesh_entity);
@@ -945,7 +962,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     {
         const bool is_object_mode = interaction_mode == InteractionMode::Object;
         for (const auto arm_obj_entity : bone_state_dirty) {
-            if (!r.valid(arm_obj_entity) || !r.all_of<MeshBuffers>(arm_obj_entity)) continue;
+            if (!r.valid(arm_obj_entity) || !TryMeshBuffers(r, arm_obj_entity)) continue;
             const auto &arm_obj = r.get<const ArmatureObject>(arm_obj_entity);
             const auto &bone_entities = arm_obj.BoneEntities;
             // Use object-level state in Object mode and per-bone state in Edit and Pose modes.
@@ -1404,7 +1421,8 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
     reactive(r, Change::SoundVerticesUpdated).on<SoundVertices>(On::Update);
     reactive(r, Change::VertexForce).on<VertexForce>(On::Create | On::Destroy);
     reactive(r, Change::TetMesh).on<TetBuffers>(On::Create | On::Update | On::Destroy);
-    reactive(r, Change::NewBufferEntity).on<MeshBuffers>(On::Create);
+    reactive(r, Change::NewBufferEntity).on<MeshHandle>(On::Create).on<VertexStoreId>(On::Create).on<MeshPreview>(On::Create | On::Update);
+    reactive(r, Change::MeshPreview).on<MeshPreview>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::RenderInstanceCreated).on<RenderInstance>(On::Create);
     reactive(r, Change::RenderInstanceDestroyed).on<RenderInstance>(On::Destroy);
     reactive(r, Change::ViewportDisplay).on<ViewportDisplay>(On::Create | On::Update);

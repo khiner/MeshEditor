@@ -51,10 +51,12 @@
 #include "physics/PhysicsTypes.h"
 #include "render/ElementWorkOps.h"
 #include "render/Encoding.h"
+#include "render/GpuBufferOps.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/Pipelines.h"
 #include "render/RenderTargets.h"
+#include "render/SceneUpdates.h"
 #include "scene/CameraLens.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
@@ -639,7 +641,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         if (!r.valid(buffer_entity) || r.all_of<ObjectExtrasTag>(buffer_entity)) return false;
         // Bones get outlines from BoneWire/BoneSphereWire, not the screen-space silhouette system.
         if (r.all_of<ArmatureObject>(buffer_entity) || r.all_of<BoneJoint>(buffer_entity)) return false;
-        const auto *mesh_buffers = r.try_get<const MeshBuffers>(buffer_entity);
+        const auto *mesh_buffers = TryMeshBuffers(r, buffer_entity);
         return mesh_buffers && mesh_buffers->FaceIndices.Count > 0;
     };
     const auto should_draw_armature_bones = [&](state::Entity armature) {
@@ -697,19 +699,20 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         };
 
         // Sort by descending entity ID for deterministic coincident-surface ordering across scene loads.
-        const auto mesh_entity_order = SortedEntities(r.view<const MeshBuffers, const ModelsBuffer>(), std::ranges::greater{});
+        const auto mesh_entity_order = SortedEntities(r.view<const ModelsBuffer>(), std::ranges::greater{});
 
         std::vector<MeshEntityData> mesh_entities;
         mesh_entities.reserve(mesh_entity_order.size());
         for (const auto entity : mesh_entity_order) {
-            const auto &mesh_buffers = r.get<const MeshBuffers>(entity);
+            const auto *mesh_buffers = TryMeshBuffers(r, entity);
+            if (!mesh_buffers) continue;
             const auto &models = r.get<const ModelsBuffer>(entity);
             std::optional<uint32_t> primary_bi;
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 primary_bi = r.get<RenderInstance>(it->second).BufferIndex;
             }
             mesh_entities.emplace_back(
-                entity, mesh_buffers, models, TryGetMesh(r, entity), get_deform_slots(entity), primary_bi
+                entity, *mesh_buffers, models, TryGetMesh(r, entity), get_deform_slots(entity), primary_bi
             );
         }
 
@@ -943,7 +946,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             buffers.MeshletTopologyMask = 0u;
             for (const auto [instance_entity, instance, ri] : r.view<const Instance, const RenderInstance>().each()) {
                 if (ri.BufferIndex == UINT32_MAX) continue;
-                const auto *mesh_buffers = r.try_get<const MeshBuffers>(instance.Entity);
+                const auto *mesh_buffers = TryMeshBuffers(r, instance.Entity);
                 if (!mesh_buffers || mesh_buffers->Primitives.Count == 0) continue;
                 if (mesh_buffers->Meshlets.Count != 0u) {
                     const MeshletRecord &first_meshlet = buffers.Meshlets.Buffer.GetSpan<MeshletRecord>(
@@ -987,12 +990,12 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                     record.PrimaryEditInstanceIndex = r.get<const RenderInstance>(primary->second).BufferIndex;
                 }
                 if (primary != primary_edit_instances.end() && primary->second == instance_entity) {
-                    const uint32_t store_id = r.get<const MeshHandle>(instance.Entity).StoreId;
+                    const uint32_t store_id = GetMesh(r, instance.Entity).GetStoreId();
                     record.Selection = meshes.GetEditSelectionStorage(store_id);
                     record.EditEdgeSharpnessOffset = meshes.Get(store_id).EdgeSharpness.Offset;
                     record.ElementIdOffset = meshes.GetSelectionBitOffset(store_id, edit_mode);
                 } else if (is_excite_mode && sound_meshes.contains(instance.Entity)) {
-                    const uint32_t store_id = r.get<const MeshHandle>(instance.Entity).StoreId;
+                    const uint32_t store_id = GetMesh(r, instance.Entity).GetStoreId();
                     record.Selection = meshes.GetEditSelectionStorage(store_id);
                     const auto *active = r.try_get<const MeshActiveElement>(instance.Entity);
                     const auto *force = r.try_get<const VertexForce>(instance_entity);
@@ -1047,13 +1050,10 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             const bool selected = r.all_of<Selected>(instance_entity) && is_silhouette_eligible(instance_entity);
             const bool silhouette = selected && (!is_edit_mode || silhouette_instances.contains(instance_entity));
             record.Flags = silhouette ? uint32_t(MeshletInstanceFlag::Silhouette) : 0u;
-            // Every instance of an edited mesh draws original geometry, since an element pick can land on any of them.
             const auto *instance = r.try_get<const Instance>(instance_entity);
-            if (instance && (primary_edit_instances.contains(instance->Entity) || scene_state.EditWork.contains(instance->Entity))) {
-                record.Flags |= uint32_t(MeshletInstanceFlag::LodPinFinest);
-            }
+            if (instance && EditPinsFinest(primary_edit_instances, scene_state, instance->Entity)) record.Flags |= uint32_t(MeshletInstanceFlag::LodPinFinest);
             const auto primary = instance ? primary_edit_instances.find(instance->Entity) : primary_edit_instances.end();
-            const auto *mesh_buffers = instance ? r.try_get<const MeshBuffers>(instance->Entity) : nullptr;
+            const auto *mesh_buffers = instance ? TryMeshBuffers(r, instance->Entity) : nullptr;
             if (instance && mesh_buffers && mesh_buffers->Meshlets.Count > 0u &&
                 primary != primary_edit_instances.end() && primary->second == instance_entity &&
                 GetMesh(r, instance->Entity).ElementCount(edit_mode) > 0u) {
@@ -1824,7 +1824,7 @@ void DeriveBaseNormalsNow(state::Scene &r, std::span<const state::Entity> mesh_e
     std::vector<NormalDeriveEntry> entries;
     entries.reserve(mesh_entities.size());
     for (const auto entity : mesh_entities) {
-        const auto *mesh_buffers = r.try_get<const MeshBuffers>(entity);
+        const auto *mesh_buffers = TryMeshBuffers(r, entity);
         const auto mesh = TryGetMesh(r, entity);
         if (!mesh_buffers || !mesh) continue;
         const auto store_id = mesh->GetStoreId();
@@ -1857,7 +1857,7 @@ void UpdateAuthoredMorphShadingNow(state::Scene &r, std::span<const state::Entit
     std::vector<PoseJob> jobs;
     uint32_t vertex_count_total = 0, seam_count_total = 0, face_count_total = 0;
     for (const auto entity : mesh_entities) {
-        const auto *mesh_buffers = r.try_get<const MeshBuffers>(entity);
+        const auto *mesh_buffers = TryMeshBuffers(r, entity);
         const auto mesh = TryGetMesh(r, entity);
         if (!mesh_buffers || !mesh) continue;
         const auto store_id = mesh->GetStoreId();
@@ -1946,7 +1946,7 @@ MeshEditWork &PrepareMeshEditWork(state::Scene &r, state::Entity entity) {
     const auto mesh = GetMesh(r, entity);
     const auto id = mesh.GetStoreId();
     auto &meshes = r.Context.get<MeshStore>();
-    auto &mb = r.edit<MeshBuffers>(entity);
+    auto &mb = MeshBuffersOf(r, entity);
     auto &work = r.Context.get<GpuSceneState>().EditWork;
     if (const auto it = work.find(entity); it != work.end() && it->second.StoreId != id) ReleaseMeshEditWork(r, entity);
     auto [it, inserted] = work.try_emplace(entity);
@@ -2015,7 +2015,7 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Ent
         IntersectElementWork(buffers.GeometryWork, w.Candidates, meshes.GetSelectionBits(id, Element::Vertex));
     w.CandidateReady = true;
     for (auto work : {w.Vertices, w.Faces, w.Normals, w.Meshlets, w.BoundsTiles}) ClearElementWork(buffers.GeometryWork, work);
-    auto entry = MakeDeriveEntryInputs(meshes, id, r.get<const MeshBuffers>(entity).FaceIndices).value_or(NormalDeriveEntry{.VertexCount = mesh.VertexCount()});
+    auto entry = MakeDeriveEntryInputs(meshes, id, MeshBuffersOf(r, entity).FaceIndices).value_or(NormalDeriveEntry{.VertexCount = mesh.VertexCount()});
     entry.VertexNormalOffset = meshes.Get(id).Vertices.Offset;
     entry.SeamNormalOffset = meshes.GetDerived(id).BaseSeamNormals.Offset;
     entry.FaceNormalOffset = meshes.Get(id).FaceData.Offset;
@@ -2131,7 +2131,7 @@ std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, state::Entity vi
     }
     if (commits.empty()) return {};
     auto &meshes = r.Context.get<MeshStore>();
-    for (const auto &[entity, pc] : commits) meshes.CaptureVertexEdit(r.get<const MeshHandle>(entity).StoreId);
+    for (const auto &[entity, pc] : commits) meshes.CaptureVertexEdit(GetMesh(r, entity).GetStoreId());
     const auto &ctx = r.Context.get<const mtl::Context>();
     auto *cb = ctx.Queue->commandBuffer();
     {

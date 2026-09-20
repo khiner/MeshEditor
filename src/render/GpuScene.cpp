@@ -525,28 +525,29 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
     return sink;
 }
 
-// Requires the captured inputs and finished level-zero build from the producing thread.
-ClusterLodBuild BuildMeshletClusterLod(const MeshletBuildInputs &in, const MeshletBuild &build) {
-    // A face-less mesh clusters line or point elements, which carry no coarser level.
-    if (!in.FaceTopology || build.Records.size() <= ClusterLodPartitionSize) return {};
-    assert(build.Primitives.size() == in.PrimitiveTriangleRanges.size());
+ClusterLodBuild BuildMeshletClusterLod(const GpuBuffers &buffers, const MeshBuffers &mb, const MeshletBuildInputs &in) {
+    const auto placed_primitives = buffers.Primitives.Get(mb.Primitives);
+    const auto records = buffers.Meshlets.Get(mb.Meshlets);
+    if (!ClusterLodApplies(in.FaceTopology, uint32_t(records.size()))) return {};
+    assert(mb.ClusterGroups.Count == 0u);
+    assert(placed_primitives.size() == in.PrimitiveTriangleRanges.size());
 
-    std::vector<ClusterLodPrimitive> primitives(build.Primitives.size());
+    std::vector<ClusterLodPrimitive> primitives(placed_primitives.size());
     for (uint32_t p = 0; p < primitives.size(); ++p) {
         primitives[p] = {
             .FirstTriangle = in.PrimitiveTriangleRanges[p].FirstTriangle,
             .TriangleCount = in.PrimitiveTriangleRanges[p].TriangleCount,
-            .FirstCluster = build.Primitives[p].MeshletOffset,
-            .ClusterCount = build.Primitives[p].MeshletCount,
+            .FirstCluster = placed_primitives[p].MeshletOffset - mb.Meshlets.Offset,
+            .ClusterCount = placed_primitives[p].MeshletCount,
         };
     }
-    std::vector<ClusterLodSourceCluster> clusters(build.Records.size());
+    std::vector<ClusterLodSourceCluster> clusters(records.size());
     for (uint32_t i = 0; i < clusters.size(); ++i) {
-        const auto &record = build.Records[i];
+        const auto &record = records[i];
         clusters[i] = {
-            .FirstVertex = record.VertexOffset,
+            .FirstVertex = record.VertexOffset - mb.MeshletVertices.Offset,
             .VertexCount = record.VertexCount,
-            .FirstLocalTriangle = record.LocalTriangleOffset & uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask),
+            .FirstLocalTriangle = (record.LocalTriangleOffset & uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask)) - mb.MeshletLocalTriangles.Offset,
             .TriangleCount = record.TriangleCount,
             .Center = record.Center,
             .Radius = record.Radius,
@@ -563,8 +564,8 @@ ClusterLodBuild BuildMeshletClusterLod(const MeshletBuildInputs &in, const Meshl
         .Weld = in.Weld,
         .Primitives = primitives,
         .Clusters = clusters,
-        .SourceVertexCorners = build.Vertices,
-        .SourceLocalTriangles = std::span{build.LocalTriangles}.first(build.LocalTriangleCount),
+        .SourceVertexCorners = buffers.MeshletVertexCorners.Get(mb.MeshletVertices),
+        .SourceLocalTriangles = buffers.MeshletLocalTriangles.Get(mb.MeshletLocalTriangles),
     };
     return BuildClusterLod(mesh);
 }

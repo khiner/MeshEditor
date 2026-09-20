@@ -2,14 +2,17 @@
 #include "Paths.h"
 #include "RunSuites.h"
 #include "TestPaths.h"
+#include "action/Emit.h"
 #include "action/Errors.h"
 #include "editor/Engine.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "project/Project.h"
+#include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
+#include "render/ClusterLod.h"
 #include "render/MeshBuffers.h"
 #include "scene/Entity.h"
 #include "viewport/Viewport.h"
@@ -56,6 +59,16 @@ struct Fixture : Engine {
         const auto node = P->Do(action::MakeAction(std::move(a)));
         Audit();
         return node;
+    }
+    template<typename A> void Stage(A a) {
+        action::Emit(std::move(a), action::Phase::Stage);
+        P->Frame(action::Drain());
+        Audit();
+    }
+    void Finish() {
+        action::Commit();
+        P->Frame(action::Drain());
+        Audit();
     }
     void Render() {
         SubmitViewport(R, Viewport);
@@ -238,7 +251,7 @@ void TestDeleteAllFaces() {
         const auto mesh = f.ActiveMesh();
         std::vector<uint32_t> expected(mesh.EdgeCount() * 2);
         mesh.WriteEdgeIndices(expected);
-        const auto &indices = f.R.get<const MeshBuffers>(GetActiveMeshEntity(f.R)).EdgeIndices;
+        const auto &indices = MeshBuffersOf(f.R, GetActiveMeshEntity(f.R)).EdgeIndices;
         const auto written = f.R.Context.get<const GpuBuffers>().EdgeIndexBuffer.Get(indices);
         expect(std::ranges::equal(written, expected));
     }
@@ -398,7 +411,7 @@ void TestDissolve() {
     // The GPU wrote the hexagon's and the quads' fan triangles in face order, matching the host walk.
     {
         const auto mesh = f.ActiveMesh();
-        const auto &indices = f.R.get<const MeshBuffers>(GetActiveMeshEntity(f.R)).FaceIndices;
+        const auto &indices = MeshBuffersOf(f.R, GetActiveMeshEntity(f.R)).FaceIndices;
         const auto written = f.R.Context.get<const GpuBuffers>().FaceIndexBuffer.Get(indices);
         expect(std::ranges::equal(written, mesh.CreateTriangleIndices()));
     }
@@ -465,6 +478,91 @@ void TestSubdivide() {
     f.Do(action::mesh::Subdivide{1});
     expect(f.ActiveMesh().FaceCount() == 4 * sphere.Faces);
     CheckInvariants(f);
+}
+
+// The cluster hierarchy exists only while an unpinned instance draws the mesh.
+void TestClusterLodOnDemand() {
+    Fixture f{"cluster-lod", primitive::Cuboid{}, Element::Face};
+    const auto buffers_of = [&] -> const MeshBuffers & { return MeshBuffersOf(f.R, GetActiveMeshEntity(f.R)); };
+    f.Do(action::selection::SelectAll{});
+    f.Do(action::mesh::Subdivide{15});
+    expect(buffers_of().Meshlets.Count > ClusterLodPartitionSize);
+    expect(buffers_of().ClusterGroups.Count == 0u);
+    f.Do(action::view::SetInteractionMode{InteractionMode::Object});
+    expect(buffers_of().ClusterGroups.Count > 0u);
+    f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
+    expect(buffers_of().ClusterGroups.Count > 0u);
+    f.Do(action::mesh::Subdivide{1});
+    expect(buffers_of().ClusterGroups.Count == 0u);
+    f.P->Undo();
+    expect(buffers_of().ClusterGroups.Count == 0u);
+    f.Do(action::view::SetInteractionMode{InteractionMode::Object});
+    expect(buffers_of().ClusterGroups.Count > 0u);
+}
+
+// Every vertex of a sphere is on its hull, so the hull triangulates each planar ring quad and keeps the pole fans.
+void TestConvexHullSphere() {
+    Fixture f{"hull-sphere", primitive::UVSphere{.Slices = 32, .Stacks = 16}, Element::Vertex};
+    const auto sphere = CountsOf(f.ActiveMesh());
+    const uint32_t quads = 32 * 14, hull_triangles = 2 * sphere.Vertices - 4;
+    f.Do(action::selection::SelectAll{});
+    f.Do(action::mesh::ConvexHull{});
+    ExpectMesh(f, {sphere.Vertices, sphere.Edges + quads, sphere.Faces + hull_triangles, sphere.Triangles + hull_triangles});
+}
+
+// Staged operator updates preview over the untouched base, and the commit adopts the last preview as the mesh a replay produces.
+void TestPreviewGesture() {
+    Fixture f{"preview", primitive::Cuboid{}, Element::Face};
+    const auto entity = GetActiveMeshEntity(f.R);
+    const auto base_id = f.R.get<const MeshHandle>(entity).StoreId;
+    f.Do(action::selection::SelectAll{});
+    for (const float thickness : {0.1f, 0.2f, 0.25f}) {
+        f.Stage(action::mesh::Inset{.Thickness = thickness, .Individual = true});
+        expect(f.P->HasStaged());
+        expect(f.R.all_of<MeshPreview>(entity));
+        expect(f.R.get<const MeshHandle>(entity).StoreId == base_id);
+        ExpectMesh(f, {32, 60, 30, 60});
+    }
+    const auto preview_id = f.R.get<const MeshPreview>(entity).StoreId;
+    f.Finish();
+    expect(!f.P->HasStaged());
+    expect(!f.R.all_of<MeshPreview>(entity));
+    expect(f.R.get<const MeshHandle>(entity).StoreId == preview_id);
+    ExpectMesh(f, {32, 60, 30, 60});
+    expect(std::ranges::count_if(Positions(f.ActiveMesh()), [](vec3 p) { return std::abs(std::abs(p.x) - 0.75f) < 1e-3f || std::abs(std::abs(p.y) - 0.75f) < 1e-3f || std::abs(std::abs(p.z) - 0.75f) < 1e-3f; }) == 24);
+    // The adopted state is what replaying the recorded inset produces.
+    expect(f.P->Replay());
+    f.Audit();
+    ExpectMesh(f, {32, 60, 30, 60});
+
+    // A cancelled gesture returns to the base with no preview.
+    f.P->Undo();
+    ExpectMesh(f, {8, 12, 6, 12});
+    f.Stage(action::mesh::Inset{.Thickness = 0.1f, .Individual = true});
+    expect(f.R.all_of<MeshPreview>(entity));
+    f.P->CancelGesture();
+    f.P->Settle();
+    expect(!f.R.all_of<MeshPreview>(entity));
+    expect(f.R.get<const MeshHandle>(entity).StoreId == base_id);
+    ExpectMesh(f, {8, 12, 6, 12});
+    f.Audit();
+}
+
+// Every fan triangle of a mesh that needs more tiles than any earlier one is written.
+void TestDrawTriangleStream() {
+    Fixture f{"draw-triangles", primitive::UVSphere{.Slices = 64, .Stacks = 32}, Element::Face};
+    const auto expect_written = [&] {
+        const auto &buffers = f.R.Context.get<const GpuBuffers>();
+        const auto indices = buffers.FaceIndexBuffer.Get(MeshBuffersOf(f.R, GetActiveMeshEntity(f.R)).FaceIndices);
+        expect(indices.size() == f.ActiveMesh().TriangleIndexCount());
+        uint32_t empty = 0;
+        for (size_t t = 0; t < indices.size() / 3; ++t) empty += indices[3 * t] == 0u && indices[3 * t + 1] == 0u && indices[3 * t + 2] == 0u;
+        expect(empty == 0u);
+    };
+    expect_written();
+    f.Do(action::selection::SelectAll{});
+    f.Do(action::mesh::Inset{.Thickness = 0.01f, .Individual = true});
+    expect_written();
 }
 
 void TestFaceOperators() {
@@ -815,6 +913,10 @@ int main() {
         "extrude, split, separate, and duplicate a region"_test = TestExtrude;
         "dissolve an edge, a vertex, and a face region"_test = TestDissolve;
         "subdivide edges into grids, pentagons, and chords"_test = TestSubdivide;
+        "build the cluster hierarchy only for unpinned meshes"_test = TestClusterLodOnDemand;
+        "hull every vertex of a sphere"_test = TestConvexHullSphere;
+        "preview staged inset updates and adopt the last on commit"_test = TestPreviewGesture;
+        "write every draw triangle of a large fan stream"_test = TestDrawTriangleStream;
         "triangulate, join, poke, flip, split edges, inset, fill, grid fill, and loop cut"_test = TestFaceOperators;
         "merge by distance, limited and degenerate dissolve"_test = TestMergeVariants;
         "spin, repeat, solidify, bisect, symmetrize, and knife"_test = TestTransformOperators;

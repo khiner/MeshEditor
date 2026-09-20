@@ -8,7 +8,7 @@
 // Rebuild the closest-point hierarchy, curvature, and volume derived from a mesh.
 void UpdateMeshBvh(state::Scene &r, state::Entity mesh_entity) {
     const auto mesh = GetMesh(r, mesh_entity);
-    const auto indices = GetFaceIndices(r, mesh, r.get<const MeshBuffers>(mesh_entity));
+    const auto indices = GetFaceIndices(r, mesh);
     // A mesh of points or lines has no surface.
     if (indices.empty()) {
         r.remove<MeshBvh>(mesh_entity);

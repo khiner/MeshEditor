@@ -112,11 +112,12 @@ struct TiledJobBatch {
     // Encodes the passes into a command buffer of their own and waits for its completion.
     template<typename PC>
     void Submit(const mtl::Context &ctx, const mtl::BindlessSet &slots, const MeshPipelines &pipelines, PC pc, std::span<const TiledPass> passes) {
-        ctx.CommitResidency();
         auto *command_buffer = ctx.Queue->commandBuffer();
         auto *encoder = command_buffer->computeCommandEncoder();
         Encode(slots, pipelines, pc, passes, encoder);
         encoder->endEncoding();
+        // Encoding grows the job and tile buffers, so residency commits after it.
+        ctx.CommitResidency();
         command_buffer->commit();
         command_buffer->waitUntilCompleted();
     }

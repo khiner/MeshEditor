@@ -52,8 +52,9 @@ struct MeshletBuild {
 MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &, const MeshBuffers &, const Mesh &, const MeshStore &);
 // Builds meshlets in host vectors and consumes TriangleEditEdges.
 MeshletBuild BuildMeshlets(MeshletBuildInputs &);
+// Builds the DAG over the mesh's committed level-zero clusters.
 // A face-less mesh, and one whose clusters fit a single partition, returns an empty build.
-ClusterLodBuild BuildMeshletClusterLod(const MeshletBuildInputs &, const MeshletBuild &);
+ClusterLodBuild BuildMeshletClusterLod(const GpuBuffers &, const MeshBuffers &, const MeshletBuildInputs &);
 // Release the mesh's previous meshlet ranges, place the finished build, and rebase its offsets.
 // Serial, because arena offsets follow call order.
 void CommitMeshlets(GpuBuffers &, MeshBuffers &, MeshletBuild &);

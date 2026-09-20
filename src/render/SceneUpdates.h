@@ -1,11 +1,13 @@
 #pragma once
 
 #include "mesh/ElementIndicesGpu.h"
+#include "selection/Selection.h"
 #include "state/Entity.h"
 #include <span>
 #include <vector>
 struct Mesh;
 struct GpuBuffers;
+struct GpuSceneState;
 struct MeshBuffers;
 struct MeshStore;
 
@@ -17,7 +19,12 @@ struct SyncResult {
 };
 
 void RepointMeshInstances(state::Scene &, std::span<const state::Entity>);
+// Builds and places level-zero meshlets for the meshes, in input order.
 void BuildMeshletsNow(state::Scene &, std::span<const state::Entity>);
+// Every instance of an edited mesh draws original geometry, since an element pick can land on any of them.
+bool EditPinsFinest(const selection::PrimaryEditInstanceMap &, const GpuSceneState &, state::Entity mesh_entity);
+// Builds the cluster hierarchy for each face mesh that lacks one and that an unpinned instance draws, and returns whether any mesh took one.
+bool BuildDemandedClusterLods(state::Scene &, bool edit_mode);
 void BuildBoneMeshletsNow(state::Scene &, std::span<const state::Entity>);
 bool DrawsElementIndices(const state::Scene &, state::Entity);
 bool DrawsStoredCorners(const Mesh &);

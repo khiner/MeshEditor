@@ -48,7 +48,7 @@ inline std::optional<double> SurfaceCurvature(const state::Scene &r, state::Enti
     if (!bvh) return std::nullopt;
     const auto &wt = r.get<const WorldTransform>(node);
     const auto mesh = GetMesh(r, inst->Entity);
-    const auto indices = GetFaceIndices(r, mesh, r.get<const MeshBuffers>(inst->Entity));
+    const auto indices = GetFaceIndices(r, mesh);
     const auto hit = bvh->ClosestPoint(mesh.GetVerticesSpan(), indices, InverseTransformPoint(wt, world_point));
     // Interpolate the triangle's per-vertex curvature at the contact's barycentric weights.
     double local = 0;

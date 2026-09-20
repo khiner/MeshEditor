@@ -23,6 +23,7 @@
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "render/Encoding.h"
+#include "render/GpuBufferOps.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/PickConstants.h"
@@ -185,7 +186,7 @@ void RenderElementSelectionPass(
     const auto &selection = pipelines.SelectionFragment;
     const bool degenerate_point_pass = write_bitset && xray_selection && element != Element::Vertex;
     for (const auto &range : ranges) {
-        [[maybe_unused]] const auto &mesh_buffers = r.edit<MeshBuffers>(range.MeshEntity);
+        [[maybe_unused]] const auto &mesh_buffers = MeshBuffersOf(r, range.MeshEntity);
         assert(mesh_buffers.Meshlets.Count > 0u && "selectable mesh geometry must have persistent meshlets");
     }
 
@@ -520,7 +521,7 @@ std::vector<EditSelectionPushConstants> BuildSelectionTransactions(
     auto &meshes = r.Context.get<MeshStore>();
     for (const auto &range : ranges) {
         const auto &mesh = GetMesh(r, range.MeshEntity);
-        const auto &mesh_buffers = r.get<const MeshBuffers>(range.MeshEntity);
+        const auto &mesh_buffers = MeshBuffersOf(r, range.MeshEntity);
         const auto store_id = mesh.GetStoreId();
         meshes.EnsureSelectionBits(mesh);
         meshes.CaptureSelectionWrite(store_id);
@@ -672,7 +673,7 @@ void ApplyEditSharpness(
         operation == EditSharpnessOperation::SetSelectedEdges ||
         operation == EditSharpnessOperation::SetVertexEdges;
     for (const auto mesh_entity : mesh_entities) {
-        if (!HasMesh(r, mesh_entity) || !r.all_of<MeshBuffers>(mesh_entity)) continue;
+        if (!HasMesh(r, mesh_entity) || !TryMeshBuffers(r, mesh_entity)) continue;
         const auto mesh = GetMesh(r, mesh_entity);
         if (mesh.FaceCount() == 0) continue;
         const auto id = mesh.GetStoreId();
@@ -688,7 +689,7 @@ void ApplyEditSharpness(
             .FaceSharpness = arenas.FaceSharpness.Slotted(record.FaceData),
             .EdgeSharpness = arenas.EdgeSharpness.Slotted(record.EdgeSharpness),
             .Connectivity = arenas.Connectivity.Slotted(record.Connectivity),
-            .EdgeIndices = r.get<const MeshBuffers>(mesh_entity).EdgeIndices,
+            .EdgeIndices = MeshBuffersOf(r, mesh_entity).EdgeIndices,
             .FaceNormals = arenas.BaseFaceNormals.Slotted(record.FaceData),
             .VertexCount = mesh.VertexCount(),
             .EdgeCount = mesh.EdgeCount(),
@@ -734,7 +735,7 @@ void ApplyEditSharpness(
 const EditSelectionSummary *GetElementSelectionSummary(const state::Scene &r, state::Entity mesh_entity, Element element) {
     if (element == Element::None || !r.all_of<MeshElementSelection, MeshHandle>(mesh_entity)) return nullptr;
     const auto &meshes = r.Context.get<const MeshStore>();
-    const auto id = r.get<const MeshHandle>(mesh_entity).StoreId;
+    const auto id = GetMesh(r, mesh_entity).GetStoreId();
     const auto &summary = meshes.GetSelectionSummary(id);
     return summary.Mode == element ? &summary : nullptr;
 }

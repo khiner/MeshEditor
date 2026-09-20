@@ -24,15 +24,9 @@ void InitRenderStoreContext(state::Scene &r, const mtl::Context &ctx) {
 }
 
 namespace {
-template<typename Handle>
-void EmplaceMeshBuffers(state::Scene &r, state::Entity e) {
-    const auto &meshes = r.Context.get<const MeshStore>();
-    r.emplace<MeshBuffers>(e, meshes.Arenas().Vertices.Slotted(meshes.Get(r.get<const Handle>(e).StoreId).Vertices), SlottedRange{}, SlottedRange{}, SlottedRange{});
-}
-
 void EmplaceMeshShadingSummary(state::Scene &r, state::Entity e) {
     const auto &meshes = r.Context.get<const MeshStore>();
-    const auto [any, all] = meshes.GetFaceSharpnessSummary(r.get<const MeshHandle>(e).StoreId);
+    const auto [any, all] = meshes.GetFaceSharpnessSummary(GetMesh(r, e).GetStoreId());
     r.emplace_or_replace<MeshShadingSummary>(e, any, all);
 }
 } // namespace
@@ -62,9 +56,7 @@ void RegisterRenderStoreHandlers(state::Scene &r) {
     r.on_construct<Hidden, [](state::Scene &r, state::Entity e) {
         if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
     }>();
-    r.on_construct<MeshHandle, &EmplaceMeshBuffers<MeshHandle>>();
     r.on_construct<MeshHandle, &EmplaceMeshShadingSummary>();
-    r.on_construct<VertexStoreId, &EmplaceMeshBuffers<VertexStoreId>>();
 }
 mtl::BufferContext &InitRenderStores(state::Scene &r) {
     auto &buffers = r.Context.emplace<GpuBuffers>(r.Context.get<const mtl::Context>(), r.Context.get<mtl::BindlessSet>());

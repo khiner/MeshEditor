@@ -21,11 +21,8 @@ struct RenderBuffers {
     IndexKind IndexType;
 };
 
+// The render arena ranges of one mesh record, held by store id for the record's lifetime.
 struct MeshBuffers {
-    MeshBuffers(SlottedRange vertices, SlottedRange face_indices, SlottedRange edge_indices, SlottedRange vertex_indices)
-        : Vertices{vertices}, FaceIndices{face_indices}, EdgeIndices{edge_indices}, VertexIndices{vertex_indices} {}
-    MeshBuffers(const MeshBuffers &) = delete;
-    MeshBuffers &operator=(const MeshBuffers &) = delete;
     SlottedRange Vertices;
     SlottedRange FaceIndices, EdgeIndices, VertexIndices;
     Range MeshRecord, Primitives, Meshlets, MeshletTriangles, MeshletVertices, MeshletLocalTriangles, MeshletEditEdges;

@@ -194,6 +194,8 @@ struct MeshStore {
     void Track(store::History &);
     void FinishRestore();
     std::vector<Change> TakeChanges();
+    // Records whose render data is stale, released or changed by a restore, for the render sync to drop.
+    std::vector<uint32_t> TakeRenderStale() { return std::exchange(RenderStale, {}); }
 
     // Capture destination pages before dispatching GPU writes to Persistent mesh data.
     void CaptureVertexEdit(uint32_t id);
@@ -285,6 +287,7 @@ private:
     std::vector<Record> Records{};
     std::vector<DerivedRecord> DerivedRecords{};
     std::vector<uint32_t> FreeIds{};
+    std::vector<uint32_t> RenderStale{};
 
     struct HistoryState;
     std::unique_ptr<HistoryState> Tracked;

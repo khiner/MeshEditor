@@ -66,6 +66,8 @@ struct Project {
     std::optional<size_t> StageFirst;
     std::optional<store::Snapshot> GestureBase;
     size_t GestureStart{};
+    // The action being applied is a staged preview, so mesh operators draw their output without replacing the mesh.
+    bool Previewing{false};
     std::optional<int> Navigation;
     std::optional<int> Editing; // The node the open gesture replaces on commit
 

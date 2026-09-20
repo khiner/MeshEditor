@@ -45,18 +45,16 @@ void DestroyArmatureData(state::Scene &r, state::Entity arm_obj_entity) {
     auto &meshes = r.Context.get<MeshStore>();
     auto &arm = r.edit<ArmatureObject>(arm_obj_entity);
     if (arm.JointEntity != state::Null) {
-        if (auto *mb = r.try_edit<MeshBuffers>(arm.JointEntity)) ReleaseMeshBuffers(r, *mb);
         if (auto *ref = r.try_get<VertexStoreId>(arm.JointEntity)) meshes.Release(ref->StoreId);
         if (auto *models = r.try_get<ModelsBuffer>(arm.JointEntity)) FreeInstanceRange(r, models->InstanceRange);
-        r.remove<MeshBuffers, VertexStoreId, ModelsBuffer, PendingHide>(arm.JointEntity);
+        r.remove<VertexStoreId, ModelsBuffer, PendingHide>(arm.JointEntity);
         r.destroy(arm.JointEntity);
         arm.JointEntity = state::Null;
     }
-    if (auto *mb = r.try_edit<MeshBuffers>(arm_obj_entity)) ReleaseMeshBuffers(r, *mb);
     if (auto *adj = r.try_get<BoneAdjacencyIndices>(arm_obj_entity)) ReleaseEdgeIndices(r, adj->Indices);
     if (auto *ref = r.try_get<VertexStoreId>(arm_obj_entity)) meshes.Release(ref->StoreId);
     if (auto *models = r.try_get<ModelsBuffer>(arm_obj_entity)) FreeInstanceRange(r, models->InstanceRange);
-    r.remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices, PendingHide>(arm_obj_entity);
+    r.remove<VertexStoreId, ModelsBuffer, BoneAdjacencyIndices, PendingHide>(arm_obj_entity);
 }
 
 void Destroy(state::Scene &r, state::Entity viewport, state::Entity e) {
@@ -114,7 +112,6 @@ void Destroy(state::Scene &r, state::Entity viewport, state::Entity e) {
 
     if (r.valid(buffer_entity)) {
         if (!AnyComponentRefersTo(r, &Instance::Entity, buffer_entity)) {
-            if (auto *mesh_buffers = r.try_edit<MeshBuffers>(buffer_entity)) ReleaseMeshBuffers(r, *mesh_buffers);
             if (const auto *vs = r.try_get<VertexStoreId>(buffer_entity)) meshes.Release(vs->StoreId);
             if (const auto *models = r.try_get<ModelsBuffer>(buffer_entity)) FreeInstanceRange(r, models->InstanceRange);
             r.destroy(buffer_entity);

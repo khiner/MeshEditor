@@ -13,6 +13,7 @@
 #include "numeric/QuaternionMath.h"
 #include "numeric/VectorMath.h"
 #include "object/ObjectOps.h"
+#include "project/Project.h"
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/MeshBuffers.h"
@@ -30,9 +31,11 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <limits>
 #include <numbers>
 #include <optional>
+#include <unordered_map>
 
 namespace {
 // The edit-mode meshes with a selection in the viewport's edit element domain.
@@ -48,16 +51,22 @@ std::vector<state::Entity> SelectedEditMeshes(const state::Scene &r, state::Enti
     return result;
 }
 
-// Runs the tasks and replaces each entity's mesh with its output.
+// Runs the tasks and replaces each entity's mesh with its output, or draws the output as a preview while the session previews.
 void RunTasks(state::Scene &r, std::span<const state::Entity> mesh_entities, std::span<const MeshTopologyTask> tasks) {
     const auto outputs = RunMeshTopology(r, tasks);
+    const bool preview = project::Session(r).Previewing;
     for (size_t i = 0; i < tasks.size(); ++i) {
         if (outputs[i] == InvalidStoreId) continue;
         const auto e = mesh_entities[i];
-        if (auto *buffers = r.try_edit<MeshBuffers>(e)) ReleaseMeshBuffers(r, *buffers);
-        // Releasing the handle frees the source record, and the new handle takes the entity through the new-mesh path.
-        r.remove<MeshBuffers, MeshHandle, PrimitiveShape, MeshActiveElement>(e);
-        r.emplace<MeshHandle>(e, MeshHandle{outputs[i]});
+        if (preview) {
+            // The base handle stays for the commit to adopt or the restore to return to.
+            r.remove<PrimitiveShape, MeshActiveElement>(e);
+            r.emplace_or_replace<MeshPreview>(e, MeshPreview{outputs[i]});
+        } else {
+            // Releasing the handle frees the source record, and the new handle takes the entity through the new-mesh path.
+            r.remove<MeshHandle, PrimitiveShape, MeshActiveElement>(e);
+            r.emplace<MeshHandle>(e, MeshHandle{outputs[i]});
+        }
         r.emplace_or_replace<MeshGeometryDirty>(e, EditSelectionAfter::Derive);
     }
 }
@@ -292,7 +301,8 @@ void FillHolesSelected(state::Scene &r, std::span<const state::Entity> mesh_enti
     });
 }
 
-// The convex hull of the selected vertices as outward triangles, built by adding points one by one.
+// The convex hull of the selected vertices as outward triangles, by quickhull.
+// Each face keeps the points outside it, and adding a face's farthest point replaces only the faces that point sees.
 void ConvexHullSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     const auto &meshes = r.Context.get<const MeshStore>();
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
@@ -308,6 +318,7 @@ void ConvexHullSelected(state::Scene &r, std::span<const state::Entity> mesh_ent
                 best = d;
                 seed[1] = v;
             }
+        const float extent = std::sqrt(best);
         best = 0.f;
         for (const auto v : points)
             if (const auto d = Length(Cross(at(seed[1]) - at(seed[0]), at(v) - at(seed[0]))); d > best) {
@@ -322,39 +333,127 @@ void ConvexHullSelected(state::Scene &r, std::span<const state::Entity> mesh_ent
                 seed[3] = v;
             }
         if (best < 1e-12f) return {};
+
         struct Face {
             std::array<uint32_t, 3> V;
+            // The face across each edge V[k] to V[k + 1].
+            std::array<uint32_t, 3> Across{};
+            vec3 Normal;
+            float Offset, Tolerance;
+            std::vector<uint32_t> Outside;
             bool Alive{true};
         };
         std::vector<Face> faces;
+        // A point counts as outside a face beyond a sliver of the point set's extent, so coplanar points stay inside.
+        const float tolerance = 1e-6f * extent;
+        const auto make = [&](std::array<uint32_t, 3> v) {
+            Face face{.V = v, .Normal = Cross(at(v[1]) - at(v[0]), at(v[2]) - at(v[0]))};
+            face.Offset = Dot(face.Normal, at(v[0]));
+            face.Tolerance = Length(face.Normal) * tolerance;
+            return face;
+        };
+        const auto height = [&](const Face &face, uint32_t p) { return Dot(face.Normal, at(p)) - face.Offset; };
+        const auto outside = [&](const Face &face, uint32_t p) { return height(face, p) > face.Tolerance; };
         const auto outward = [&](std::array<uint32_t, 3> tri, uint32_t inside) {
             const auto n = Cross(at(tri[1]) - at(tri[0]), at(tri[2]) - at(tri[0]));
             return Dot(n, at(inside) - at(tri[0])) > 0.f ? std::array{tri[0], tri[2], tri[1]} : tri;
         };
-        faces.push_back({outward({seed[0], seed[1], seed[2]}, seed[3])});
-        faces.push_back({outward({seed[0], seed[1], seed[3]}, seed[2])});
-        faces.push_back({outward({seed[0], seed[2], seed[3]}, seed[1])});
-        faces.push_back({outward({seed[1], seed[2], seed[3]}, seed[0])});
-        for (const auto v : points) {
-            if (std::ranges::find(seed, v) != seed.end()) continue;
-            // Faces visible from the point are removed, and their horizon edges fan to it.
-            std::vector<std::pair<uint32_t, uint32_t>> horizon;
-            bool visible_any = false;
-            for (auto &face : faces) {
-                if (!face.Alive) continue;
-                const auto n = Cross(at(face.V[1]) - at(face.V[0]), at(face.V[2]) - at(face.V[0]));
-                if (Dot(n, at(v) - at(face.V[0])) <= 1e-9f * Length(n)) continue;
-                face.Alive = false;
-                visible_any = true;
-                for (uint32_t k = 0; k < 3; ++k) {
-                    const auto edge = std::pair{face.V[k], face.V[(k + 1) % 3]};
-                    // An edge shared by two removed faces cancels out, leaving only the horizon.
-                    if (const auto twin = std::ranges::find(horizon, std::pair{edge.second, edge.first}); twin != horizon.end()) horizon.erase(twin);
-                    else horizon.push_back(edge);
+        // The slot of the edge `from` to `to` on a face, or three when the face lacks it.
+        const auto edge_slot = [](const Face &face, uint32_t from, uint32_t to) {
+            uint32_t j = 0;
+            while (j < 3 && !(face.V[j] == from && face.V[(j + 1) % 3] == to)) ++j;
+            return j;
+        };
+        // A point waits on the first face from `first` that sees it, or falls inside.
+        const auto assign = [&](uint32_t v, uint32_t first) {
+            for (uint32_t i = first; i < faces.size(); ++i) {
+                if (outside(faces[i], v)) {
+                    faces[i].Outside.push_back(v);
+                    return;
                 }
             }
-            if (!visible_any) continue;
-            for (const auto &[from, to] : horizon) faces.push_back({{from, to, v}});
+        };
+        std::vector<uint32_t> pending;
+        const auto enqueue = [&](uint32_t first) {
+            for (uint32_t i = first; i < faces.size(); ++i)
+                if (!faces[i].Outside.empty()) pending.push_back(i);
+        };
+        faces.push_back(make(outward({seed[0], seed[1], seed[2]}, seed[3])));
+        faces.push_back(make(outward({seed[0], seed[1], seed[3]}, seed[2])));
+        faces.push_back(make(outward({seed[0], seed[2], seed[3]}, seed[1])));
+        faces.push_back(make(outward({seed[1], seed[2], seed[3]}, seed[0])));
+        // The tetrahedron's faces meet across each shared edge, in opposite directions.
+        for (uint32_t a = 0; a < 4; ++a) {
+            for (uint32_t k = 0; k < 3; ++k) {
+                for (uint32_t b = 0; b < 4; ++b) {
+                    if (edge_slot(faces[b], faces[a].V[(k + 1) % 3], faces[a].V[k]) < 3) faces[a].Across[k] = b;
+                }
+            }
+        }
+        for (const auto v : points)
+            if (std::ranges::find(seed, v) == seed.end()) assign(v, 0);
+        enqueue(0);
+
+        struct HorizonEdge {
+            uint32_t From, To, Neighbor, NeighborEdge;
+        };
+        std::vector<uint32_t> visible, stack;
+        std::vector<HorizonEdge> horizon;
+        // The search that last reached each face.
+        std::vector<uint32_t> visited(faces.size(), 0u);
+        uint32_t search = 0;
+        while (!pending.empty()) {
+            const auto start = pending.back();
+            pending.pop_back();
+            if (!faces[start].Alive || faces[start].Outside.empty()) continue;
+            const auto p = *std::ranges::max_element(faces[start].Outside, {}, [&](uint32_t v) { return height(faces[start], v); });
+            // The faces the point sees form one connected region, whose boundary edges are the horizon.
+            visible.clear();
+            horizon.clear();
+            ++search;
+            stack.assign(1, start);
+            visited[start] = search;
+            while (!stack.empty()) {
+                const auto f = stack.back();
+                stack.pop_back();
+                visible.push_back(f);
+                for (uint32_t k = 0; k < 3; ++k) {
+                    const auto n = faces[f].Across[k];
+                    const bool sees = outside(faces[n], p);
+                    if (!sees) horizon.push_back({faces[f].V[k], faces[f].V[(k + 1) % 3], n, 0});
+                    if (visited[n] == search) continue;
+                    visited[n] = search;
+                    if (sees) stack.push_back(n);
+                }
+            }
+            for (auto &edge : horizon) edge.NeighborEdge = edge_slot(faces[edge.Neighbor], edge.To, edge.From);
+            // Each horizon edge fans to the point, and consecutive fans meet along the point's spokes.
+            const uint32_t first_new = uint32_t(faces.size());
+            std::unordered_map<uint32_t, uint32_t> fan_from, fan_to;
+            for (uint32_t i = 0; i < horizon.size(); ++i) {
+                const auto &edge = horizon[i];
+                faces.push_back(make({edge.From, edge.To, p}));
+                fan_from[edge.From] = first_new + i;
+                fan_to[edge.To] = first_new + i;
+            }
+            // A horizon that is not one simple loop means the tolerance split a nearly coplanar region, and the hull is abandoned.
+            if (fan_from.size() != horizon.size() || fan_to.size() != horizon.size()) return {};
+            visited.resize(faces.size(), 0u);
+            for (uint32_t i = 0; i < horizon.size(); ++i) {
+                const auto &edge = horizon[i];
+                auto &face = faces[first_new + i];
+                face.Across = {edge.Neighbor, fan_from.at(edge.To), fan_to.at(edge.From)};
+                faces[edge.Neighbor].Across[edge.NeighborEdge] = first_new + i;
+            }
+            // The visible faces' outside points move to the new faces.
+            for (const auto f : visible) {
+                auto &face = faces[f];
+                face.Alive = false;
+                for (const auto v : face.Outside)
+                    if (v != p) assign(v, first_new);
+                face.Outside.clear();
+            }
+            enqueue(first_new);
         }
         std::vector<std::vector<uint32_t>> hull;
         for (const auto &face : faces)
@@ -496,7 +595,20 @@ void MergeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities
 } // namespace
 
 namespace action::mesh {
+void CommitPreviews(state::Scene &r) {
+    std::vector<std::pair<state::Entity, uint32_t>> previews;
+    for (const auto [e, preview] : r.view<const MeshPreview>().each()) previews.emplace_back(e, preview.StoreId);
+    for (const auto [e, id] : previews) {
+        r.remove<MeshPreview>(e);
+        // Releasing the handle frees the base record, and the preview's render data stays with its record.
+        r.remove<MeshHandle>(e);
+        r.emplace<MeshHandle>(e, MeshHandle{id});
+    }
+}
+
 void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
+    // A restart has restored the base already, so any preview still present belongs to an earlier operator and becomes the source.
+    CommitPreviews(r);
     const auto targets = SelectedEditMeshes(r, viewport);
     const auto latch_translate = [&] { r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate); };
     std::visit(

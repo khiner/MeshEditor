@@ -779,7 +779,6 @@ void CompareRegistries(std::string_view name, state::Scene &a, state::Scene &b) 
         const auto tn = state::SchemaNames[id];
         const auto &a_set = a.Tables[id];
         const auto &b_set = b.Tables[id];
-        if (id == state::Type<MeshBuffers>()) continue;
         ForEachEntity(a_set, [&](state::Entity e) {
             if (!b_set.contains(e)) return;
             const auto eq = snapshot::ComponentValuesEqual(id, a_set.value(e), b_set.value(e));

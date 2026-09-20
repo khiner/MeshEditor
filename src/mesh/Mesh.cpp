@@ -48,15 +48,26 @@ uint32_t BuildConnectivity(std::span<const std::array<uint32_t, 2>> edge_pairs, 
 Mesh::Mesh(const MeshStore &store, uint32_t store_id)
     : Store(&store), StoreId(store_id), C(store.GetConnectivity(store_id)), Corners(store.Arenas().FaceCorners.Get(store.Get(store_id).FaceCorners)) {}
 
+namespace {
+uint32_t MeshStoreId(const state::Scene &r, state::Entity e) {
+    if (const auto *preview = r.try_get<const MeshPreview>(e)) return preview->StoreId;
+    return r.get<const MeshHandle>(e).StoreId;
+}
+} // namespace
+
 Mesh GetMesh(const state::Scene &r, state::Entity e) {
-    return {r.Context.get<const MeshStore>(), r.get<const MeshHandle>(e).StoreId};
+    return {r.Context.get<const MeshStore>(), MeshStoreId(r, e)};
 }
 std::optional<Mesh> TryGetMesh(const state::Scene &r, state::Entity e) {
-    const auto *handle = r.try_get<const MeshHandle>(e);
-    if (!handle) return std::nullopt;
-    return Mesh{r.Context.get<const MeshStore>(), handle->StoreId};
+    if (!HasMesh(r, e)) return std::nullopt;
+    return GetMesh(r, e);
 }
 bool HasMesh(const state::Scene &r, state::Entity e) { return r.all_of<MeshHandle>(e); }
+std::optional<uint32_t> DrawnStoreId(const state::Scene &r, state::Entity e) {
+    if (HasMesh(r, e)) return MeshStoreId(r, e);
+    if (const auto *vertices = r.try_get<const VertexStoreId>(e)) return vertices->StoreId;
+    return std::nullopt;
+}
 
 float LocalLengthPerUv(const state::Scene &r, state::Entity mesh_entity, uint32_t uv_set) {
     const auto mesh = TryGetMesh(r, mesh_entity);

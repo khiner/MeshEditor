@@ -148,7 +148,6 @@ void Project::TrackStores(state::Entity viewport) {
                 }
             }
             for (const auto e : removed) {
-                if (auto *buffers = R.try_edit<MeshBuffers>(e)) ReleaseMeshBuffers(R, *buffers);
                 if (const auto *models = R.try_get<ModelsBuffer>(e)) FreeInstanceRange(R, models->InstanceRange);
             }
             R.Context.get<MeshStore>().FinishRestore();
@@ -343,7 +342,9 @@ bool Project::Close() {
 }
 
 void Project::Tick(const action::Action &a, EventPass pass) {
+    Previewing = GestureBase.has_value() && action::IsPreview(a);
     std::visit([&](const auto &domain) { Apply(R, Viewport, domain); }, a);
+    Previewing = false;
     Settle(pass);
 }
 void Project::RunRecorded(std::span<const RecordedAction> recorded_actions) {
@@ -395,9 +396,9 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
         GestureBase = History.Pin();
         GestureStart = RecordedActions.size();
     }
-    // A restarting operator reapplies from the gesture base.
+    // A previewing operator reapplies from the gesture base, which the restore touches only through the dropped preview.
     const bool same_kind = staged && StageFirst && Kind(RecordedActions[*StageFirst].Action) == Kind(a);
-    if (same_kind && action::IsRestarting(a)) History.Restore(*GestureBase);
+    if (same_kind && action::IsPreview(a)) History.Restore(*GestureBase);
     const auto &frame = R.Context.get<const FrameState>();
     RecordedAction recorded_action{
         {frame.DeltaTime, R.get<const PlaybackFrame>(Viewport).Value, R.get<const TimelinePlayback>(Viewport).CurrentFrame, frame.FixedFrameStep, pass},
@@ -436,8 +437,11 @@ int Project::Commit(std::string label, std::optional<int> replace) {
 }
 void Project::FinishGesture(EventPass pass) {
     if (!HasStaged()) return;
+    // The gesture's previews become their entities' meshes.
+    action::mesh::CommitPreviews(R);
     // An edit keeps the node's label, and a new node names every distinct action in the gesture, in order.
     if (Editing) {
+        Settle(pass);
         Commit(History.Nodes[*Editing].Label, Editing);
     } else {
         std::vector<std::string> names;
@@ -610,6 +614,8 @@ void Project::AfterRestore() {
         explicit ReadOnly(state::Scene &r) : R(r) { R.DocumentReadOnly = true; }
         ~ReadOnly() { R.DocumentReadOnly = false; }
     } read_only{R};
+    // Previews revert with their records.
+    R.clear<MeshPreview>();
     bool textures_changed = false, names_changed = false;
     for (const auto &[type, entity, event] : Entities.TakeChanges()) {
         names_changed |= type == state::Type<Name>();
@@ -641,9 +647,8 @@ void Project::AfterRestore() {
         const bool sparse = (it->Bits & MeshStore::GeometryChanged) && !(it->Bits & ~(MeshStore::GeometryChanged | MeshStore::SelectionChanged)) && editing.contains(entity);
         if (it->Bits & (MeshStore::EntryChanged | MeshStore::TopologyChanged)) {
             topology.emplace_back(meshes, handle.StoreId);
-            if (auto *buffer = R.try_edit<MeshBuffers>(entity)) ReleaseMeshBuffers(R, *buffer);
-            R.remove<MeshBuffers>(entity);
-            R.emplace<MeshBuffers>(entity, meshes.Arenas().Vertices.Slotted(meshes.Get(handle.StoreId).Vertices), SlottedRange{}, SlottedRange{}, SlottedRange{});
+            R.Context.get<GpuBuffers>().ReleaseMesh(handle.StoreId);
+            reactive(R, Change::NewBufferEntity).emplace(entity);
         } else if (sparse) {
             positions.push_back({entity, it->VertexRanges});
         } else if (it->Bits & (MeshStore::GeometryChanged | MeshStore::DeformChanged)) {

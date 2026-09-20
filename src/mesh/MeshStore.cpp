@@ -188,6 +188,8 @@ void MeshStore::Track(store::History &history) {
         // A mirror owns no allocator, so only its bytes carry history.
         if (info.Mirror) arena.Buffer.Track(history, std::string{"mesh."} + info.Name);
         else arena.Track(history, std::string{"mesh."} + info.Name);
+        // Changes map to records by byte extent rather than by page.
+        arena.Buffer.History()->Trie.CollectChanged = false;
     });
     Tracked = std::make_unique<HistoryState>(*this, history);
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
@@ -292,9 +294,8 @@ std::vector<MeshStore::Change> MeshStore::TakeChanges() {
     std::vector<ChangedRange> changed;
     for (const auto id : Tracked->Entries.Trie.TakeChanged()) changed.push_back({uint32_t(id), EntryChanged});
     for (const auto &[buffer, ranges] : Tracked->Ranges) {
-        const auto page_size = buffer->History()->PageBytes;
-        for (const auto page : buffer->History()->Trie.TakeChanged()) {
-            const uint64_t begin = page * page_size, end = begin + page_size;
+        // Byte extents keep a record whose neighbor shares a page out of the changes.
+        for (const auto [begin, end] : buffer->History()->TakeChangedExtents()) {
             auto it = std::ranges::upper_bound(ranges, begin, {}, &HistoryState::Extent::End);
             for (; it != ranges.end() && it->Begin < end; ++it) {
                 Range vertices{};
@@ -335,6 +336,7 @@ void MeshStore::FinishRestore() {
     if (!Tracked->Entries.Trie.ChangedSlots.empty()) Tracked->RangesDirty = true;
     for (const auto id : Tracked->Entries.Trie.ChangedSlots) {
         if (id < DerivedRecords.size()) ReleaseDerived(id);
+        RenderStale.push_back(uint32_t(id));
     }
     DerivedRecords.resize(Records.size());
     for (const auto id : Tracked->Entries.Trie.ChangedSlots) {
@@ -1078,6 +1080,7 @@ void MeshStore::Release(uint32_t id) {
     });
     record = {};
     derived = {};
+    RenderStale.push_back(id);
     if (Tracked) Tracked->Free.Write(FreeIds.size(), 1);
     FreeIds.emplace_back(id);
 }
@@ -1092,6 +1095,7 @@ void MeshStore::Clear() {
     Records.clear();
     DerivedRecords.clear();
     FreeIds.clear();
+    RenderStale.clear();
 }
 
 VertexAdjacency MeshStore::GetVertexEdgeAdjacency(uint32_t id) const {

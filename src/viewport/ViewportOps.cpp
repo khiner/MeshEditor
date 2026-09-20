@@ -46,7 +46,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
             const auto ranges = edit_ranges(baseline->Mode);
             ApplyEditSelectionCommand(r, ranges, baseline->Mode, EditSelectionOperation::RestoreBaseline);
             for (const auto &range : ranges) {
-                const auto &summary = meshes.GetSelectionSummary(r.get<const MeshHandle>(range.MeshEntity).StoreId);
+                const auto &summary = meshes.GetSelectionSummary(GetMesh(r, range.MeshEntity).GetStoreId());
                 if (summary.ActiveHandle < range.Count) r.emplace_or_replace<MeshActiveElement>(range.MeshEntity, summary.ActiveHandle);
                 else r.remove<MeshActiveElement>(range.MeshEntity);
             }

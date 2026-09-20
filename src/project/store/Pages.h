@@ -60,6 +60,9 @@ struct Pages {
 
     void Settle() { Trie.SettleFlat(Storage); }
 
+    // The byte ranges a restore or load changed, for an owner that maps bytes to records. The consumer takes them.
+    std::vector<std::pair<uint64_t, uint64_t>> TakeChangedExtents() { return std::exchange(ChangedExtents, {}); }
+
     bool Restore(const Version &v) {
         Settle();
         auto plan = Trie.PlanRestore(v);
@@ -87,10 +90,20 @@ struct Pages {
     ReserveFn Reserve;
 
 private:
+    std::vector<std::pair<uint64_t, uint64_t>> ChangedExtents;
+
     static std::span<std::byte> ReserveBytes(void *backing, uint64_t bytes) {
         auto &vector = *static_cast<std::vector<std::byte> *>(backing);
         vector.resize(bytes);
         return vector;
+    }
+    // Records the page's bytes that differ between its old and new contents, as absolute offsets.
+    void NoteChanged(uint64_t slot, std::span<const std::byte> old_bytes, std::span<const std::byte> new_bytes) {
+        uint64_t first = 0, end = old_bytes.size();
+        while (first < end && old_bytes[first] == new_bytes[first]) ++first;
+        if (first == end) return;
+        while (old_bytes[end - 1] == new_bytes[end - 1]) --end;
+        ChangedExtents.emplace_back(slot * PageBytes + first, slot * PageBytes + end);
     }
     void Apply(RestorePlan &plan) {
         for (auto &c : plan.Changes) {
@@ -103,6 +116,7 @@ private:
                 c.Old = CopyBlob(page);
                 c.WasPresent = true;
                 std::memset(page.data(), 0, PageBytes);
+                NoteChanged(c.Slot, c.Old.View(), page);
                 continue;
             }
             Grow((c.Slot + 1) * PageBytes);
@@ -114,6 +128,7 @@ private:
             c.Old = SwapBlob(page, c.Incoming);
             c.WasPresent = true;
             c.Incoming = {};
+            NoteChanged(c.Slot, c.Old.View(), page);
         }
     }
 };

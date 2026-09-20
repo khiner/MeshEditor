@@ -294,11 +294,13 @@ private:
     std::span<const uint32_t> Corners{};
 };
 
-// GetMesh requires a mesh entity.
+// GetMesh requires a mesh entity, and reads its preview while a staged operator has one.
 // TryGetMesh returns empty for other entities.
 Mesh GetMesh(const state::Scene &, state::Entity);
 std::optional<Mesh> TryGetMesh(const state::Scene &, state::Entity);
 bool HasMesh(const state::Scene &, state::Entity);
+// The store record an entity's instances draw: its preview, its mesh, or the vertex record of a bone or joint.
+std::optional<uint32_t> DrawnStoreId(const state::Scene &, state::Entity);
 
 // Returns mesh-local surface length per texture-coordinate unit, or zero when the set is absent.
 float LocalLengthPerUv(const state::Scene &, state::Entity mesh_entity, uint32_t uv_set);

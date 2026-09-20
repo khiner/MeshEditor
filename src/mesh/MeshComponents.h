@@ -29,6 +29,11 @@ struct MeshHandle {
     uint32_t StoreId{~0u};
 };
 
+// The record a staged operator produced over the entity's mesh, drawn in its place until the gesture commits or restores.
+struct MeshPreview {
+    uint32_t StoreId;
+};
+
 // Derived from the canonical per-face sharpness store after construction or a shading edit.
 struct MeshShadingSummary {
     bool AnySharp{}, AllSharp{};

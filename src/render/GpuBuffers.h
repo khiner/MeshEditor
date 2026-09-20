@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <optional>
 
 // Per-instance GPU data behind one RangeAllocator, so every buffer shares the same instance offsets.
 struct InstanceArena {
@@ -95,6 +96,13 @@ struct GpuBuffers {
     void Release(RenderBuffers &buffers);
     void Release(MeshBuffers &buffers);
     void ReleaseMeshlets(MeshBuffers &buffers);
+
+    // The render ranges of each mesh record, present from its first sync until the record is released.
+    std::vector<std::optional<MeshBuffers>> Meshes;
+    MeshBuffers &EmplaceMesh(uint32_t store_id, SlottedRange vertices);
+    auto &MeshOf(this auto &self, uint32_t store_id) { return *self.Meshes.at(store_id); }
+    auto *TryMeshOf(this auto &self, uint32_t store_id) { return store_id < self.Meshes.size() && self.Meshes[store_id] ? &*self.Meshes[store_id] : nullptr; }
+    void ReleaseMesh(uint32_t store_id);
 
     BufferArena<uint32_t> &GetIndexBuffer(IndexKind kind) {
         switch (kind) {

@@ -17,14 +17,31 @@ void ReleaseRange(auto &arena, auto &range) {
 std::span<const PBRMaterial> GetMaterials(const state::Scene &r) {
     return r.Context.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
 }
-std::span<const uint32_t> GetFaceIndices(const state::Scene &r, const Mesh &mesh, const MeshBuffers &buffers) {
+std::span<const uint32_t> GetFaceIndices(const state::Scene &r, const Mesh &mesh) {
     const auto corners = mesh.CornerVertices();
     if (corners.size() == mesh.TriangleIndexCount()) return corners;
-    return r.Context.get<const GpuBuffers>().FaceIndexBuffer.Get(buffers.FaceIndices);
+    const auto &buffers = r.Context.get<const GpuBuffers>();
+    return buffers.FaceIndexBuffer.Get(buffers.MeshOf(mesh.GetStoreId()).FaceIndices);
 }
 mtl::BufferContext &GetBufferContext(state::Scene &r) { return r.Context.get<GpuBuffers>().Ctx; }
+const MeshBuffers *TryMeshBuffers(const state::Scene &r, state::Entity e) {
+    const auto id = DrawnStoreId(r, e);
+    return id ? r.Context.get<const GpuBuffers>().TryMeshOf(*id) : nullptr;
+}
+const MeshBuffers &MeshBuffersOf(const state::Scene &r, state::Entity e) { return r.Context.get<const GpuBuffers>().MeshOf(*DrawnStoreId(r, e)); }
+MeshBuffers &MeshBuffersOf(state::Scene &r, state::Entity e) { return r.Context.get<GpuBuffers>().MeshOf(*DrawnStoreId(r, e)); }
 
-void ReleaseMeshBuffers(state::Scene &r, MeshBuffers &mb) { r.Context.get<GpuBuffers>().Release(mb); }
+MeshBuffers &GpuBuffers::EmplaceMesh(uint32_t store_id, SlottedRange vertices) {
+    if (Meshes.size() <= store_id) Meshes.resize(store_id + 1);
+    assert(!Meshes[store_id]);
+    return Meshes[store_id].emplace(MeshBuffers{.Vertices = vertices});
+}
+void GpuBuffers::ReleaseMesh(uint32_t store_id) {
+    auto *buffers = TryMeshOf(store_id);
+    if (!buffers) return;
+    Release(*buffers);
+    Meshes[store_id].reset();
+}
 
 void FreeInstanceRange(state::Scene &r, Range range) { r.Context.get<GpuBuffers>().Instances.Free(range); }
 void ReleaseEdgeIndices(state::Scene &r, const SlottedRange &indices) { r.Context.get<GpuBuffers>().EdgeIndexBuffer.Release(indices); }
@@ -179,6 +196,7 @@ void GpuBuffers::ResetSceneArenas() {
     LodNodes.Reset();
     Primitives.Reset();
     MeshRecords.Reset();
+    Meshes.clear();
     GpuInstanceSlots.UsedSize = 0;
     MeshletRangeCount = 0;
     MeshletInstanceCount = 0;

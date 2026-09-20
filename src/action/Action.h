@@ -69,12 +69,12 @@ inline bool IsRecordable(const Action &a) {
     return VisitLeaf(a, []<typename L>(const L &) { return Recordable<L>; });
 }
 
-// A staged update of a restarting action restores the gesture's base state before it applies.
-// Every mesh operator restarts except one whose placement drag continues its gesture.
-template<typename T> inline constexpr bool Restarting = !std::is_same_v<T, mesh::Extrude> && !std::is_same_v<T, mesh::Duplicate> && !std::is_same_v<T, mesh::Rip>;
+// A staged previewing action restores the gesture's base state and applies over it as a preview the commit adopts.
+// Every mesh operator previews except one whose placement drag continues its gesture.
+template<typename T> inline constexpr bool Previews = !std::is_same_v<T, mesh::Extrude> && !std::is_same_v<T, mesh::Duplicate> && !std::is_same_v<T, mesh::Rip>;
 
-inline bool IsRestarting(const Action &a) {
+inline bool IsPreview(const Action &a) {
     const auto *m = std::get_if<mesh::Action>(&a);
-    return m && std::visit([]<typename L>(const L &) { return Restarting<L>; }, *m);
+    return m && std::visit([]<typename L>(const L &) { return Previews<L>; }, *m);
 }
 } // namespace action

@@ -155,6 +155,8 @@ using Action = std::variant<
     Spin, ExtrudeRepeat, Bisect, Symmetrize, Solidify, ConnectVertices, Knife, BridgeEdgeLoops, GridFill, FillHoles, ConvexHull, EdgeRotate, Rip, Bevel>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
+// Adopts every entity's preview as its mesh, releasing the base record.
+void CommitPreviews(state::Scene &);
 } // namespace action::mesh
 
 template<> inline constexpr FieldSpec Spec<action::mesh::Merge, "Distance">{.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4};

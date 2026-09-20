@@ -38,9 +38,8 @@ namespace {
 // Rebuild a primitive mesh entity's geometry from its current PrimitiveShape.
 void RegeneratePrimitive(state::Scene &r, state::Entity e) {
     const bool was_flat = r.get<const MeshShadingSummary>(e).AllSharp;
-    if (auto *mb = r.try_edit<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
     // Erasing MeshHandle fires on_destroy, releasing the old store entry.
-    r.remove<MeshBuffers, MeshHandle>(e);
+    r.remove<MeshHandle>(e);
     const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(r.get<const PrimitiveShape>(e)), .FlatShaded = was_flat});
     r.emplace<MeshHandle>(e, MeshHandle{created.StoreId});
     r.emplace_or_replace<MeshGeometryDirty>(e);

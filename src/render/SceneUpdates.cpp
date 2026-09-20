@@ -8,6 +8,7 @@
 #include "object/PendingSync.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
+#include "render/GpuSceneState.h"
 #include "render/MeshBuffers.h"
 #include "render/MeshletBuild.h"
 #include "render/PickConstants.h"
@@ -37,7 +38,7 @@ static void UpdateMeshletInstance(state::Scene &r, state::Entity instance_entity
     auto &instance = r.edit<RenderInstance>(instance_entity);
     buffers.MeshletRangeCount -= instance.MeshletRangeCount;
     buffers.MeshletInstanceCount -= instance.MeshletCount;
-    const auto *mesh_buffers = r.valid(instance.Entity) ? r.try_get<const MeshBuffers>(instance.Entity) : nullptr;
+    const auto *mesh_buffers = r.valid(instance.Entity) ? TryMeshBuffers(r, instance.Entity) : nullptr;
     instance.MeshletRangeCount = mesh_buffers ? mesh_buffers->Primitives.Count : 0;
     instance.MeshletCount = mesh_buffers ? mesh_buffers->Meshlets.Count : 0;
     buffers.MeshletRangeCount += instance.MeshletRangeCount;
@@ -63,7 +64,7 @@ void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_e
     std::ranges::stable_sort(grouped, {}, &std::pair<uint32_t, state::Entity>::first);
 
     for (const auto [mesh_index, instance_entity] : grouped) {
-        const auto &mesh_buffers = r.get<const MeshBuffers>(mesh_entities[mesh_index]);
+        const auto &mesh_buffers = MeshBuffersOf(r, mesh_entities[mesh_index]);
         const auto &ri = r.get<const RenderInstance>(instance_entity);
         auto &record = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({ri.BufferIndex, 1}).front();
         record.PrimitiveOffset = OffsetOrInvalid(mesh_buffers.Primitives);
@@ -73,7 +74,6 @@ void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_e
     }
 }
 
-// Build and place meshlet LOD data in input order to preserve deterministic arena and instance layouts.
 void BuildMeshletsNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     if (mesh_entities.empty()) return;
     for (auto e : mesh_entities) ReleaseMeshEditWork(r, e);
@@ -86,28 +86,52 @@ void BuildMeshletsNow(state::Scene &r, std::span<const state::Entity> mesh_entit
     std::vector<MeshletBuildInputs> inputs;
     inputs.reserve(count);
     for (const auto entity : mesh_entities) {
-        inputs.push_back(CaptureMeshletInputs(buffers, r.get<const MeshBuffers>(entity), GetMesh(r, entity), meshes));
+        inputs.push_back(CaptureMeshletInputs(buffers, MeshBuffersOf(r, entity), GetMesh(r, entity), meshes));
     }
     // Build meshes concurrently from independent captured inputs.
     std::vector<MeshletBuild> builds(count);
-    std::vector<ClusterLodBuild> lods(count);
-    ParallelFor(count, [&](uint32_t i) {
-        builds[i] = BuildMeshlets(inputs[i]);
-        lods[i] = BuildMeshletClusterLod(inputs[i], builds[i]);
-    });
-    for (uint32_t i = 0; i < count; ++i) {
-        auto &mb = r.edit<MeshBuffers>(mesh_entities[i]);
-        CommitMeshlets(buffers, mb, builds[i]);
-        CommitClusterLod(buffers, mb, lods[i]);
-    }
+    ParallelFor(count, [&](uint32_t i) { builds[i] = BuildMeshlets(inputs[i]); });
+    for (uint32_t i = 0; i < count; ++i) CommitMeshlets(buffers, MeshBuffersOf(r, mesh_entities[i]), builds[i]);
     RepointMeshInstances(r, mesh_entities);
+}
+
+bool EditPinsFinest(const selection::PrimaryEditInstanceMap &primaries, const GpuSceneState &scene, state::Entity mesh_entity) {
+    return primaries.contains(mesh_entity) || scene.EditWork.contains(mesh_entity);
+}
+
+bool BuildDemandedClusterLods(state::Scene &r, bool edit_mode) {
+    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &meshes = r.Context.get<const MeshStore>();
+    std::vector<state::Entity> demanded;
+    for (const auto [entity, handle] : r.view<const MeshHandle>().each()) {
+        const auto *mb = buffers.TryMeshOf(handle.StoreId);
+        if (mb && mb->ClusterGroups.Count == 0u && ClusterLodApplies(Mesh{meshes, handle.StoreId}.FaceCount() > 0u, mb->Meshlets.Count)) demanded.push_back(entity);
+    }
+    if (edit_mode && !demanded.empty()) {
+        const auto primaries = selection::ComputePrimaryEditInstances(r);
+        const auto &scene = r.Context.get<const GpuSceneState>();
+        std::erase_if(demanded, [&](state::Entity e) { return EditPinsFinest(primaries, scene, e); });
+    }
+    if (demanded.empty()) return false;
+    // Arena offsets follow commit order.
+    std::ranges::sort(demanded);
+    const profile::CpuScope scope{"BuildClusterLods"};
+    const uint32_t count = uint32_t(demanded.size());
+    std::vector<MeshletBuildInputs> inputs;
+    inputs.reserve(count);
+    for (const auto entity : demanded) {
+        inputs.push_back(CaptureMeshletInputs(buffers, MeshBuffersOf(r, entity), GetMesh(r, entity), meshes));
+    }
+    std::vector<ClusterLodBuild> lods(count);
+    ParallelFor(count, [&](uint32_t i) { lods[i] = BuildMeshletClusterLod(buffers, MeshBuffersOf(r, demanded[i]), inputs[i]); });
+    for (uint32_t i = 0; i < count; ++i) CommitClusterLod(buffers, MeshBuffersOf(r, demanded[i]), lods[i]);
+    RepointMeshInstances(r, demanded);
+    buffers.PreludeStale = true;
     if (profile::Enabled) {
-        uint32_t lod_meshes = 0, lod_levels = 0, lod_clusters = 0, lod_groups = 0;
+        uint32_t lod_levels = 0, lod_clusters = 0, lod_groups = 0;
         ClusterLodStats stats;
         ClusterLodLevelStats level_stats;
         for (const auto &lod : lods) {
-            if (lod.Groups.empty()) continue;
-            ++lod_meshes;
             lod_levels = std::max(lod_levels, lod.LevelCount);
             lod_clusters += uint32_t(lod.Clusters.size());
             lod_groups += uint32_t(lod.Groups.size());
@@ -127,7 +151,7 @@ void BuildMeshletsNow(state::Scene &r, std::span<const state::Entity> mesh_entit
         const double levels_ms = stats.TotalMs - stats.WeldMs - stats.Level0Ms - stats.HierarchyMs;
         std::println(
             "Cluster LOD: {} meshes, {} levels, {} coarse clusters, {} groups, {:.1f} ms of build ({:.1f} weld, {:.1f} source, {:.1f} levels, {:.1f} span trees)",
-            lod_meshes, lod_levels, lod_clusters, lod_groups, stats.TotalMs,
+            count, lod_levels, lod_clusters, lod_groups, stats.TotalMs,
             stats.WeldMs, stats.Level0Ms, levels_ms, stats.HierarchyMs
         );
         std::println(
@@ -136,6 +160,7 @@ void BuildMeshletsNow(state::Scene &r, std::span<const state::Entity> mesh_entit
             level_stats.SimplifyMs, level_stats.ClusterizeMs, level_stats.EmitMs
         );
     }
+    return true;
 }
 
 // Populate standard meshlet geometry so procedural bone shaders share bounds, culling, routing, and indirect dispatch.
@@ -143,7 +168,7 @@ void BuildBoneMeshletsNow(state::Scene &r, std::span<const state::Entity> entiti
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &meshes = r.Context.get<const MeshStore>();
     for (const auto entity : entities) {
-        auto &mb = r.edit<MeshBuffers>(entity);
+        auto &mb = MeshBuffersOf(r, entity);
         if (mb.FaceIndices.Count == 0u) continue;
         const auto indices = buffers.FaceIndexBuffer.Get(mb.FaceIndices);
         const auto vertices = meshes.Arenas().Vertices.Get(meshes.Get(r.get<const VertexStoreId>(entity).StoreId).Vertices);
@@ -228,9 +253,16 @@ void WriteElementIndices(GpuBuffers &buffers, const MeshStore &meshes, const Mes
 
 SyncResult SyncModelsBuffers(state::Scene &r) {
     auto &buffers = r.Context.get<GpuBuffers>();
+    auto &meshes = r.Context.get<MeshStore>();
+    // Released and restored records drop their render data ahead of this pass's builds.
+    for (const auto id : meshes.TakeRenderStale()) buffers.ReleaseMesh(id);
     std::vector<state::Entity> new_mesh_entities, new_extras_entities;
     for (auto e : reactive(r, Change::NewBufferEntity)) {
-        if (!r.valid(e) || !r.all_of<MeshBuffers>(e)) continue;
+        if (!r.valid(e)) continue;
+        // A record keeps its render data across handle changes that leave it intact.
+        const auto id = DrawnStoreId(r, e);
+        if (!id || buffers.TryMeshOf(*id)) continue;
+        buffers.EmplaceMesh(*id, meshes.Arenas().Vertices.Slotted(meshes.Get(*id).Vertices));
         if (HasMesh(r, e)) new_mesh_entities.emplace_back(e);
         else if (r.all_of<ObjectExtrasTag>(e) || r.all_of<ArmatureObject>(e) || r.all_of<BoneJoint>(e)) new_extras_entities.emplace_back(e);
     }
@@ -299,7 +331,7 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
         states.resize(n);
         instance_records.assign(n, {});
         const auto base_index = mb.InstanceRange.Offset + mb.InstanceCount;
-        const auto *mesh_buffers = r.try_get<const MeshBuffers>(buffer_entity);
+        const auto *mesh_buffers = TryMeshBuffers(r, buffer_entity);
         for (uint32_t j = 0; j < n; ++j) {
             const auto instance_entity = entities[j];
             auto &render_instance = r.edit<RenderInstance>(instance_entity);

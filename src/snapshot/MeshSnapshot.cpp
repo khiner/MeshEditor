@@ -17,6 +17,6 @@ void RegisterMesh(Tables &tables) {
     Persistent<
         MeshActiveElement, MeshHandle, VertexStoreId, MeshElementSelection, MeshMaterialAssignment,
         MeshMaterialSlotSelection, PrimitiveShape, ShadeSmoothAngle, TetBuffers>(tables);
-    Derived<MeshPositionsChanged, MeshBuffers, MeshShadingSummary, MeshBvh, AuthoredCornerNormals>(tables);
+    Derived<MeshPositionsChanged, MeshPreview, MeshShadingSummary, MeshBvh, AuthoredCornerNormals>(tables);
 }
 } // namespace snapshot::detail
