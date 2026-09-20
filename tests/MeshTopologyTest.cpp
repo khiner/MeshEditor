@@ -155,7 +155,7 @@ std::unique_ptr<RenderView> View(const Fixture &f) { return std::make_unique<Ren
 // Clicks the centre of the view and expects it to pick one `element`.
 void Pick(Fixture &f, Element element) {
     f.Render();
-    f.Do(action::selection::ApplyEditElementClick{{32, 32}, false, View(f)});
+    f.Do(action::selection::ApplyEditElementClick{{0.5f, 0.5f}, false, View(f)});
     expect(SelectedCount(f, element) == 1);
 }
 
@@ -164,10 +164,10 @@ void SelectAll(Fixture &f, Element element) {
     f.Do(action::selection::SelectAll{});
 }
 
-// Box-selects the view's full height from its left edge to `right`.
+// Box-selects the view's full height from its left edge to the `right` pixel of its 64.
 void BoxSelect(Fixture &f, uint32_t right) {
     f.Render();
-    f.Do(action::selection::ApplyBoxSelect{{{0, 0}, {right, 63}}, false, View(f)});
+    f.Do(action::selection::ApplyBoxSelect{{{0.f, 0.f}, {float(right) / 64.f, 63.f / 64.f}}, false, View(f)});
 }
 
 struct Region {

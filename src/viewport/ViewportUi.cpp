@@ -66,27 +66,15 @@ namespace {
 constexpr vec2 ToVec2(ImVec2 v) { return std::bit_cast<vec2>(v); }
 constexpr float WheelOrbitRadPerUnit{0.05f}, WheelZoomStep{1.04f};
 
-std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, uvec2 logical_extent, uvec2 render_extent) {
+// The drag's box as fractions of the viewport, or nothing for a drag below the threshold or wholly outside it.
+std::optional<std::pair<vec2, vec2>> ComputeBoxSelect(vec2 start, vec2 end, vec2 window_pos, uvec2 logical_extent) {
     static constexpr float DragThresholdSq{2 * 2};
     if (Distance2(start, end) <= DragThresholdSq) return {};
-
     const vec2 logical_size{float(logical_extent.x), float(logical_extent.y)};
-    const vec2 render_scale{
-        logical_extent.x > 0u ? float(render_extent.x) / float(logical_extent.x) : 1.f,
-        logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.f
-    };
-    // Intersect the drag with the viewport. A drag that ends up wholly outside it selects nothing.
     const auto local_min = Max(Min(start, end) - window_pos, vec2{0});
     const auto local_max = Min(Max(start, end) - window_pos, logical_size);
     if (local_min.x > local_max.x || local_min.y > local_max.y) return {};
-
-    // The box names pixels, so its maximum is the last one, not one past it.
-    const auto last_px = Max(render_extent, uvec2{1}) - uvec2{1};
-    const auto render_min = local_min * render_scale;
-    const auto render_max = local_max * render_scale;
-    const auto box_min_px = Min(uvec2{std::floor(render_min.x), std::floor(render_min.y)}, last_px);
-    const auto box_max_px = Min(uvec2{std::ceil(render_max.x), std::ceil(render_max.y)}, last_px);
-    return std::pair{box_min_px, box_max_px};
+    return std::pair{local_min / logical_size, local_max / logical_size};
 }
 
 void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
@@ -234,6 +222,12 @@ vec2 ScreenPx(const mat4 &vp, const rect &viewport_rect, vec3 p) {
     return viewport_rect.pos + NdcToUv(vec2{cs.x, cs.y} / cs.w) * viewport_rect.size;
 }
 
+// A screen position as a fraction of the viewport.
+vec2 ToViewFraction(const state::Scene &r, vec2 screen_px) {
+    const auto logical = r.Context.get<const ViewportExtent>().Value;
+    const auto local = screen_px - ToVec2(GetCursorScreenPos());
+    return Clamp(vec2{local.x / float(std::max(logical.x, 1u)), local.y / float(std::max(logical.y, 1u))}, vec2{0}, vec2{1});
+}
 // A screen position in pixels of the render target.
 vec2 ToRenderPx(const state::Scene &r, vec2 screen_px) {
     const auto logical = r.Context.get<const ViewportExtent>().Value;
@@ -585,9 +579,9 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
             frame.BoxSelectAdditive = IsKeyDown(ImGuiMod_Shift);
         } else if (IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
             frame.BoxSelectEnd = ToVec2(GetMousePos());
-            if (const auto box_px = ComputeBoxSelectPixels(*frame.BoxSelectStart, *frame.BoxSelectEnd, ToVec2(GetCursorScreenPos()), logical_extent, render_extent); box_px) {
+            if (const auto box = ComputeBoxSelect(*frame.BoxSelectStart, *frame.BoxSelectEnd, ToVec2(GetCursorScreenPos()), logical_extent); box) {
                 // The hit set (object/bone instances or edit-mode elements) is resolved later.
-                action::Emit(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = frame.BoxSelectAdditive, .View = std::make_unique<RenderView>(selection_view)}, action::Phase::Stage);
+                action::Emit(action::selection::ApplyBoxSelect{.Box = *box, .Additive = frame.BoxSelectAdditive, .View = std::make_unique<RenderView>(selection_view)}, action::Phase::Stage);
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
             frame.BoxSelectStart.reset();
@@ -602,6 +596,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
     const float max_y = float(std::max(render_extent.y, 1u) - 1u);
     // ImGui's origin and the picking pass's pixel rows both start at the top left.
     const uvec2 mouse_px{Clamp(mouse_pos_render.x, 0.0f, max_x), Clamp(mouse_pos_render.y, 0.0f, max_y)};
+    const auto mouse = ToViewFraction(r, ToVec2(GetMousePos()));
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -620,7 +615,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
     if (interaction_mode == InteractionMode::Edit && !active_is_armature && CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_R, VKey)) {
         // The pick takes the edge under the cursor, and the cut follows once the pick resolves.
         if (edit_mode != Element::Edge) action::Emit(action::view::SetEditMode{.Mode = Element::Edge});
-        action::EmitSystem(action::selection::ApplyEditElementClick{.MousePx = mouse_px, .Toggle = false, .View = std::make_unique<RenderView>(selection_view)});
+        action::EmitSystem(action::selection::ApplyEditElementClick{.Mouse = mouse, .Toggle = false, .View = std::make_unique<RenderView>(selection_view)});
         action::EmitSystem(action::mesh::LoopCut{});
         return;
     }
@@ -630,13 +625,12 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
 
     if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
         const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
-        action::Emit(action::selection::ApplyEditElementClick{.MousePx = mouse_px, .Toggle = toggle, .View = std::make_unique<RenderView>(selection_view)});
+        action::Emit(action::selection::ApplyEditElementClick{.Mouse = mouse, .Toggle = toggle, .View = std::make_unique<RenderView>(selection_view)});
     } else if (interaction_mode == InteractionMode::Object || bone_mode) {
         const bool shift = IsKeyDown(ImGuiMod_Shift);
-        // Store only the pixel, the GPU pick and selection resolution run later.
-        // A re-click at the same spot cycles to the next overlapping hit.
-        if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) action::Emit(action::selection::Pick{mouse_px, shift, std::make_unique<RenderView>(selection_view)});
-        else action::Emit(action::selection::PickCycle{mouse_px, shift, std::make_unique<RenderView>(selection_view)});
+        // The GPU pick and selection resolution run later, and a re-click at the same spot cycles to the next overlapping hit.
+        if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) action::Emit(action::selection::Pick{mouse, shift, std::make_unique<RenderView>(selection_view)});
+        else action::Emit(action::selection::PickCycle{mouse, shift, std::make_unique<RenderView>(selection_view)});
     }
 }
 
@@ -911,7 +905,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                             for (const auto &entry : group.Entries) {
                                 const bool selected = entry.Value == settings.DebugChannel;
                                 if (Selectable(entry.Label, selected) && !selected) {
-                                    action::Emit(action::UpdateOf<&ViewportDisplay::DebugChannel>(viewport, entry.Value));
+                                    action::Emit(action::UpdateOf<&ViewportDisplay::DebugChannel>(action::OnViewport{}, entry.Value));
                                 }
                                 if (selected) SetItemDefaultFocus();
                             }
@@ -949,7 +943,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                 {icons.Overlay.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersLeft, true, settings.ShowOverlays, "Toggle overlays"},
             };
             if (const auto clicked = DrawOverlayIconButtonGroup("ViewportOverlays", group_start, icon_button, !active_transform, &frame.OverlayControlsHovered, shading_button_style)) {
-                action::Emit(action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, !settings.ShowOverlays));
+                action::Emit(action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{}, !settings.ShowOverlays));
             }
         }
         DrawOverlayDropdownArrow(group_start + ImVec2{icon_w, 0.f}, {arrow_w, button_h}, shading_button_style, "##OverlayArrow", "##OverlayDropdown", frame.OverlayControlsHovered);

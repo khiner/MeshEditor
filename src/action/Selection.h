@@ -36,25 +36,26 @@ struct ExtendBoneActive {
 struct DeselectAll {};
 struct SelectAll {};
 
+// Positions are fractions of the recorded view, so the selection passes resolve them at any render size.
 struct ApplyBoxSelect {
-    std::pair<uvec2, uvec2> BoxPx;
+    std::pair<vec2, vec2> Box;
     bool Additive;
     std::unique_ptr<RenderView> View;
 };
-// Object/bone click pick at a pixel; the hit entity is resolved against current scene state when applied.
+// Object/bone click pick; the hit entity is resolved against current scene state when applied.
 struct Pick {
-    uvec2 MousePx;
+    vec2 Mouse;
     bool Shift;
     std::unique_ptr<RenderView> View;
 };
 // Re-click at the same spot to cycle to the next overlapping hit under the cursor.
 struct PickCycle {
-    uvec2 MousePx;
+    vec2 Mouse;
     bool Shift;
     std::unique_ptr<RenderView> View;
 };
 struct ApplyEditElementClick {
-    uvec2 MousePx;
+    vec2 Mouse;
     bool Toggle;
     std::unique_ptr<RenderView> View;
 };

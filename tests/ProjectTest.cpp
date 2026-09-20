@@ -156,7 +156,7 @@ void TestProject(const char *sample) {
             return node;
         };
         record();
-        f.Do(action::UpdateOf<&ViewportDisplay::ShowOverlays>(f.Viewport, false));
+        f.Do(action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{}, false));
         record();
         // Verify entity-generation restoration when component values match.
         f.Do(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>()});
@@ -326,7 +326,7 @@ void TestProject(const char *sample) {
     const auto later_node = f.Do(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>()});
     const auto later_state = f.P->History.MaterializeLive();
     f.P->Navigate(saved_node);
-    const auto branch_node = f.Do(action::UpdateOf<&ViewportDisplay::ShowGrid>(f.Viewport, false));
+    const auto branch_node = f.Do(action::UpdateOf<&ViewportDisplay::ShowGrid>(action::OnViewport{}, false));
     const auto branch_state = f.P->History.MaterializeLive();
     const auto retained_nodes = f.P->History.Nodes.size();
     expect(f.P->Save());

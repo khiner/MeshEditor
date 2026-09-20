@@ -1,15 +1,11 @@
 #pragma once
 
-#include "numeric/uvec2.h"
-#include "numeric/vec2.h"
-
 #include "File.h"
 #include "ProcessEvents.h"
 #include "action/Action.h"
 #include "action/ActionDrain.h"
 #include "project/EntityStore.h"
 #include "project/store/History.h"
-#include "viewport/CameraView.h"
 
 #include <span>
 
@@ -56,9 +52,6 @@ struct Project {
     uint64_t Revision{};
 
     struct ReplayInputs {
-        CameraView View{};
-        uvec2 ViewportExtent{};
-        vec2 DisplayFramebufferScale{1, 1};
         float DeltaTime{}, PlaybackFrame{};
         int CurrentFrame{};
         bool FixedFrameStep{};

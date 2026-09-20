@@ -864,7 +864,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 ui::ChoiceCombo(
                     "Active variant", mv->Active, variants,
                     [&](std::optional<uint32_t> v) { return v ? NamedOr(mv->Names[*v], "Variant ", *v) : std::string{"Default"}; },
-                    [&](std::optional<uint32_t> v) { action::Emit(action::UpdateOf<&MaterialVariants::Active>(viewport, v)); }
+                    [&](std::optional<uint32_t> v) { action::Emit(action::UpdateOf<&MaterialVariants::Active>(action::OnViewport{}, v)); }
                 );
             }
             if (!r.view<const Selected>().empty()) {

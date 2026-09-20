@@ -34,14 +34,14 @@ struct ExciteSelectionBaseline {
 
 // Preserve the rendered camera so replay resolves pixels with the same rasterization and culling inputs.
 struct PendingEditElementClick {
-    uvec2 MousePx;
+    vec2 Mouse;
     bool Toggle;
     RenderView View;
 };
 
 // Object/bone box-select awaiting GPU resolution against current scene state.
 struct PendingBoxSelect {
-    std::pair<uvec2, uvec2> BoxPx;
+    std::pair<vec2, vec2> Box;
     bool Additive;
     RenderView View;
 };
@@ -49,7 +49,7 @@ struct PendingBoxSelect {
 // Object or bone click-pick awaiting GPU resolution.
 // Cycle advances to the next overlapping hit.
 struct PendingPick {
-    uvec2 MousePx;
+    vec2 Mouse;
     bool Shift;
     bool Cycle;
     RenderView View;

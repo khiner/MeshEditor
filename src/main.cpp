@@ -662,15 +662,16 @@ struct ValidationEngine {
     }
 };
 
+// One offscreen engine restores by replay and then cold from the stored state, each compared with the live session before the next.
 struct ValidationSession {
-    ValidationEngine Replay, Stored;
+    ValidationEngine Restored;
     ValidationImage Live;
     mtl::ComputePipeline Compare;
     NS::SharedPtr<MTL::Buffer> Differences;
 
     ValidationSession(state::Scene &r)
         : Compare(r.Context.get<mtl::LibraryCache>(), {"ValidationCompare.metal", "CompareValidationImages"}),
-          Differences(mtl::NewBuffer(r.Context.get<const mtl::Context>(), 4 * sizeof(uint32_t))) {}
+          Differences(mtl::NewBuffer(r.Context.get<const mtl::Context>(), 2 * sizeof(uint32_t))) {}
 };
 
 struct ValidationInputs {
@@ -685,6 +686,7 @@ struct ValidationInputs {
     ImGuiID NavId{};
     bool NavCursorVisible{}, NavHighlightItemUnderNav{};
     bool Capturing{}, Scrubbing{};
+    uvec2 ViewportExtent{};
     float PlaybackFrame{};
     TimelinePlayback Playback{};
 };
@@ -763,6 +765,7 @@ ValidationResult RestoreForValidation(
     restored.Context.get<WindowsState>() = {};
     auto &frame = restored.Context.get<FrameState>();
     frame = {.DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale), .Scrubbing = inputs.Scrubbing, .Capturing = inputs.Capturing};
+    restored.Context.get<ViewportExtent>().Value = inputs.ViewportExtent;
     engine.Core->P->Close();
     fs::create_directories(engine.Directory);
     std::error_code asset_ec;
@@ -806,17 +809,12 @@ void RequireEqual(std::string_view what, std::span<const std::byte> expected, st
     }
 }
 
-void CompareValidationImages(state::Scene &r, ValidationSession &session) {
+// Compares the restored engine's app and viewport images with the live ones, naming a divergence by `restore`.
+void CompareValidationImages(state::Scene &r, ValidationSession &session, std::string_view restore) {
     const auto &ctx = r.Context.get<const mtl::Context>();
-    const auto &live_viewport = r.Context.get<const RenderTargets>().Resources->FinalColorImage;
-    const std::array<const mtl::Texture *, 4> expected{&session.Live.Target, &session.Live.Target, &live_viewport, &live_viewport};
-    const std::array<const mtl::Texture *, 4> restored{
-        &session.Replay.App.Target,
-        &session.Stored.App.Target,
-        &session.Replay.Core->R.Context.get<const RenderTargets>().Resources->FinalColorImage,
-        &session.Stored.Core->R.Context.get<const RenderTargets>().Resources->FinalColorImage,
-    };
-    const std::array names{"replay-app", "stored-app", "replay-viewport", "stored-viewport"};
+    const std::array<const mtl::Texture *, 2> expected{&session.Live.Target, &r.Context.get<const RenderTargets>().Resources->FinalColorImage};
+    const std::array<const mtl::Texture *, 2> restored{&session.Restored.App.Target, &session.Restored.Core->R.Context.get<const RenderTargets>().Resources->FinalColorImage};
+    const std::array names{std::format("{}-app", restore), std::format("{}-viewport", restore)};
     for (uint32_t i = 0; i < restored.size(); ++i) {
         if (restored[i]->Extent != expected[i]->Extent) {
             const auto actual = restored[i]->Extent, extent = expected[i]->Extent;
@@ -827,8 +825,8 @@ void CompareValidationImages(state::Scene &r, ValidationSession &session) {
     auto *differences = static_cast<uint32_t *>(session.Differences->contents());
     std::fill_n(differences, restored.size(), UINT32_MAX);
     auto *command_buffer = ctx.Queue->commandBuffer();
-    // Each app event follows that engine's viewport render; queues may finish in any order.
-    for (const auto *image : {&session.Live, &session.Replay.App, &session.Stored.App}) command_buffer->encodeWait(image->Ready.get(), image->Generation);
+    // Each app event follows its engine's viewport render; queues may finish in any order.
+    for (const auto *image : {&session.Live, &session.Restored.App}) command_buffer->encodeWait(image->Ready.get(), image->Generation);
     {
         mtl::PassChain chain{command_buffer};
         auto *encoder = chain.BeginCompute("ValidationCompare");
@@ -849,7 +847,7 @@ void CompareValidationImages(state::Scene &r, ValidationSession &session) {
         const auto byte = differences[i], pixel = byte / 4;
         const auto extent = expected[i]->Extent;
         std::println(stderr, "[validation] {} DIVERGED at pixel ({}, {}), channel {} (byte {} of {})", names[i], pixel % extent.Width, pixel / extent.Width, byte % 4, byte, uint64_t(extent.Width) * extent.Height * 4);
-        const auto expected_path = WriteValidationImage(ctx, i < 2 ? "live-app" : "live-viewport", *expected[i]);
+        const auto expected_path = WriteValidationImage(ctx, i == 0 ? "live-app" : "live-viewport", *expected[i]);
         const auto actual_path = WriteValidationImage(ctx, names[i], *restored[i]);
         if (!expected_path.empty() && !actual_path.empty()) std::println(stderr, "[validation] wrote {} and {}", expected_path.string(), actual_path.string());
         WriteValidationProject(Paths::Project());
@@ -896,23 +894,25 @@ void ValidateRoundTrip(
         .NavHighlightItemUnderNav = GImGui->NavHighlightItemUnderNav,
         .Capturing = r.Context.get<FrameState>().Capturing,
         .Scrubbing = r.Context.get<FrameState>().Scrubbing,
+        .ViewportExtent = r.Context.get<const ViewportExtent>().Value,
         .PlaybackFrame = r.get<const PlaybackFrame>(viewport).Value,
         .Playback = r.get<const TimelinePlayback>(viewport),
     };
 
     const auto capture_ms = ElapsedMs(begin);
-    const auto replay = RestoreForValidation(session->Replay, inputs, true);
-    const auto restored = RestoreForValidation(session->Stored, inputs, false);
+    const auto replay = RestoreForValidation(session->Restored, inputs, true);
     begin = SteadyClock::now();
-
     RequireEqual("replay state", live_state, replay.State);
+    CompareValidationImages(r, *session, "replay");
+    auto compare_ms = ElapsedMs(begin);
+    const auto restored = RestoreForValidation(session->Restored, inputs, false);
+    begin = SteadyClock::now();
     RequireEqual("stored state", live_state, restored.State);
     RequireEqual("replay/stored workspace", replay.Workspace, restored.Workspace);
-    CompareValidationImages(r, *session);
-    const auto compare_ms = ElapsedMs(begin);
+    CompareValidationImages(r, *session, "stored");
+    compare_ms += ElapsedMs(begin);
     begin = SteadyClock::now();
-    session->Replay.Ui.reset();
-    session->Stored.Ui.reset();
+    session->Restored.Ui.reset();
     const auto cleanup_ms = ElapsedMs(begin);
     std::println("[validation] total {:.2f} ms (init {:.2f}; capture {:.2f}; compare {:.2f}; cleanup {:.2f})", ElapsedMs(total_begin), init_ms, capture_ms, compare_ms, cleanup_ms);
     const auto report = [](std::string_view name, const RestoreTimings &v) {
@@ -1114,19 +1114,20 @@ struct BenchmarkDriver {
             case CaptureRequest::BenchmarkAction::BoxSelect: {
                 if (extent == uvec2{}) break;
                 // The box alternates between two insets from the viewport edge so every frame changes the selection.
-                const uint32_t inset = Frame % 2 == 0 ? 4u : 8u;
+                const float inset = Frame % 2 == 0 ? 4.f : 8.f;
+                const vec2 size{float(extent.x), float(extent.y)};
                 action::Emit(action::selection::ApplyBoxSelect{
-                    .BoxPx = {{inset, inset}, {extent.x - inset - 1, extent.y - inset - 1}},
+                    .Box = {vec2{inset} / size, (size - vec2{inset + 1.f}) / size},
                     .Additive = false,
                     .View = std::make_unique<RenderView>(r.Context.get<const GpuBuffers>().FrameView),
                 });
                 break;
             }
             case CaptureRequest::BenchmarkAction::PickCycle: {
-                const auto px = extent / 2u;
+                const vec2 center{0.5f, 0.5f};
                 auto view = std::make_unique<RenderView>(r.Context.get<const GpuBuffers>().FrameView);
-                if (Frame == 0) action::Emit(action::selection::Pick{px, false, std::move(view)});
-                else action::Emit(action::selection::PickCycle{px, false, std::move(view)});
+                if (Frame == 0) action::Emit(action::selection::Pick{center, false, std::move(view)});
+                else action::Emit(action::selection::PickCycle{center, false, std::move(view)});
                 break;
             }
         }
@@ -1234,7 +1235,7 @@ struct CaptureDriver {
                 auto name = mv->Names[NextRenderVariant].empty() ? std::format("Variant {}", NextRenderVariant) : mv->Names[NextRenderVariant];
                 std::ranges::replace(name, '/', '-');
                 ScreenshotPath = fs::path{RenderBasename.string() + "." + name + ".webp"};
-                action::Emit(action::UpdateOf<&MaterialVariants::Active>(viewport, std::optional{NextRenderVariant}));
+                action::Emit(action::UpdateOf<&MaterialVariants::Active>(action::OnViewport{}, std::optional{NextRenderVariant}));
                 ++NextRenderVariant;
             } else {
                 ScreenshotSaved = true;
@@ -1332,15 +1333,15 @@ CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const
     // Preserve the editor view for benchmark frames and screenshots.
     if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, action::timeline::EnterPresentation{});
     // Apply the explicit overlay override after enabling presentation mode.
-    if (capture.Overlays) Perform(r, action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, true));
+    if (capture.Overlays) Perform(r, action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{}, true));
     if (capture.LodErrorPixels >= 0.f) {
-        Perform(r, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(viewport, capture.LodErrorPixels));
+        Perform(r, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(action::OnViewport{}, capture.LodErrorPixels));
     }
     r.Context.get<FrameState>().FixedFrameStep = driver.FixedStep;
     // Enable motion blur for video recording and preserve the current setting for still or audio-only captures.
     r.Context.get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
     if (capture.Blur) {
-        Perform(r, action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, capture.Blur));
+        Perform(r, action::UpdateOf<&ViewportDisplay::MotionBlur>(action::OnViewport{}, capture.Blur));
     }
     if (capture.Shading) {
         Perform(r, action::view::SetViewportShading{*capture.Shading});
@@ -1699,9 +1700,9 @@ bool RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initi
         return false;
     }
     r.Context.get<ViewportExtent>().Value = DefaultWindowSize;
-    if (capture.NormalOverlays != 0) Perform(r, action::UpdateOf<&ViewportDisplay::NormalOverlays>(viewport, capture.NormalOverlays));
-    if (capture.BoundingBoxes) Perform(r, action::UpdateOf<&ViewportDisplay::ShowBoundingBoxes>(viewport, true));
-    if (capture.TetWireframe) Perform(r, action::UpdateOf<&ViewportDisplay::ShowTetWireframe>(viewport, true));
+    if (capture.NormalOverlays != 0) Perform(r, action::UpdateOf<&ViewportDisplay::NormalOverlays>(action::OnViewport{}, capture.NormalOverlays));
+    if (capture.BoundingBoxes) Perform(r, action::UpdateOf<&ViewportDisplay::ShowBoundingBoxes>(action::OnViewport{}, true));
+    if (capture.TetWireframe) Perform(r, action::UpdateOf<&ViewportDisplay::ShowTetWireframe>(action::OnViewport{}, true));
 
     frame_state.DeltaTime = driver.RenderDt;
     int bench_frames = capture.BenchFrames;

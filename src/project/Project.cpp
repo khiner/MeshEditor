@@ -37,7 +37,6 @@
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
-#include "viewport/RenderView.h"
 #include "viewport/ViewCamera.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
@@ -81,13 +80,6 @@ template<typename A> bool Is(const action::Action &a) {
     const auto *domain = std::get_if<action::DomainIndex<A>>(&a);
     return domain && std::holds_alternative<A>(*domain);
 }
-// A pixel-space action records the view it was made in, so it replays in that view's extent.
-template<typename L>
-concept ViewRecording = requires(L a) { { a.View } -> std::same_as<std::unique_ptr<RenderView> &>; };
-bool RecordsView(const action::Action &a) {
-    return action::VisitLeaf(a, []<typename L>(const L &) { return ViewRecording<L>; });
-}
-
 // A node's recorded actions, with no bytes for a baseline node that records none.
 // The output archive takes a mutable reference, since zpp aggregate reflection mis-encodes a const aggregate.
 std::vector<std::byte> Encode(std::vector<Project::RecordedAction> &recorded_actions) {
@@ -138,7 +130,7 @@ void Project::TrackStores(state::Entity viewport) {
     R.Context.get<GpuBuffers>().Materials.Track(History, "material.values");
     R.Context.get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights");
     R.Context.get<MaterialStore>().Track(History);
-    History.SchemaRevision = 9;
+    History.SchemaRevision = 10;
     History.Callbacks = {
         .Replay = [this](const std::vector<std::byte> &bytes) { RunRecorded(Decode(bytes)); },
         .BeforeRestore = [this] {
@@ -357,24 +349,7 @@ void Project::Tick(const action::Action &a, EventPass pass) {
 void Project::RunRecorded(std::span<const RecordedAction> recorded_actions) {
     auto &frame = R.Context.get<FrameState>();
     const auto saved = frame;
-    const auto extent = R.Context.get<ViewportExtent>().Value;
-    const auto live_view = static_cast<const CameraView &>(R.get<const ViewCamera>(Viewport));
-    const auto set_view = [&](const CameraView &view) {
-        if (static_cast<const CameraView &>(R.get<const ViewCamera>(Viewport)) == view) return;
-        R.patch<ViewCamera>(Viewport, [&](auto &v) {
-            static_cast<CameraView &>(v) = view;
-            v.StopMoving();
-        });
-    };
-    bool resized = false;
     for (const auto &[inputs, a] : recorded_actions) {
-        // A pixel-space action renders its selection passes at the extent it recorded.
-        if (RecordsView(a)) {
-            R.Context.get<ViewportExtent>().Value = inputs.ViewportExtent;
-            frame.DisplayFramebufferScale = inputs.DisplayFramebufferScale;
-            resized |= inputs.ViewportExtent != extent || inputs.DisplayFramebufferScale != saved.DisplayFramebufferScale;
-        }
-        set_view(inputs.View);
         // Restore playback changes between recorded actions.
         if (R.get<const TimelinePlayback>(Viewport).CurrentFrame != inputs.CurrentFrame) {
             R.patch<TimelinePlayback>(Viewport, [&](auto &p) { p.CurrentFrame = inputs.CurrentFrame; });
@@ -387,11 +362,7 @@ void Project::RunRecorded(std::span<const RecordedAction> recorded_actions) {
         Tick(a, inputs.Pass);
     }
     EndGesture(EventPass::Settle);
-    set_view(live_view);
     frame = saved;
-    R.Context.get<ViewportExtent>().Value = extent;
-    // Resize the render targets back to the live extent before this frame draws.
-    if (resized) Settle(EventPass::Settle);
 }
 void Project::Settle(EventPass pass) {
     ProcessComponentEvents(R, Viewport, pass);
@@ -429,8 +400,7 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
     if (same_kind && action::IsRestarting(a)) History.Restore(*GestureBase);
     const auto &frame = R.Context.get<const FrameState>();
     RecordedAction recorded_action{
-        {R.get<const ViewCamera>(Viewport), R.Context.get<const ViewportExtent>().Value, frame.DisplayFramebufferScale, frame.DeltaTime,
-         R.get<const PlaybackFrame>(Viewport).Value, R.get<const TimelinePlayback>(Viewport).CurrentFrame, frame.FixedFrameStep, pass},
+        {frame.DeltaTime, R.get<const PlaybackFrame>(Viewport).Value, R.get<const TimelinePlayback>(Viewport).CurrentFrame, frame.FixedFrameStep, pass},
         std::move(a),
     };
     Tick(recorded_action.Action, pass);

@@ -256,8 +256,14 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             pending_render = RenderRequest::Reuse;
         }
     };
+    // A view fraction as a pixel of the current render target.
+    const auto target_px = [&](vec2 fraction) {
+        const auto extent = RenderExtentPx(r);
+        const auto last = Max(extent, uvec2{1}) - uvec2{1};
+        return Min(uvec2{std::lround(fraction.x * float(extent.x)), std::lround(fraction.y * float(extent.y))}, last);
+    };
     if (const auto *pending = r.try_get<const PendingEditElementClick>(viewport)) {
-        const auto mouse_px = pending->MousePx;
+        const auto mouse_px = target_px(pending->Mouse);
         const bool toggle = pending->Toggle;
         prepare_selection(pending->View);
         r.remove<PendingEditElementClick>(viewport);
@@ -276,7 +282,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
     }
     if (const auto *pending = r.try_get<const PendingBoxSelect>(viewport)) {
-        const auto box_px = pending->BoxPx;
+        const auto box_px = std::pair{target_px(pending->Box.first), target_px(pending->Box.second)};
         const bool additive = pending->Additive;
         prepare_selection(pending->View);
         r.remove<PendingBoxSelect>(viewport);
@@ -327,7 +333,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
     }
     if (const auto *pending = r.try_get<const PendingPick>(viewport)) {
-        const auto mouse_px = pending->MousePx;
+        const auto mouse_px = target_px(pending->Mouse);
         const bool shift = pending->Shift, cycle = pending->Cycle;
         prepare_selection(pending->View);
         r.remove<PendingPick>(viewport);
