@@ -35,8 +35,6 @@ struct ExtendBoneActive {
 };
 struct DeselectAll {};
 struct SelectAll {};
-struct SnapshotBoxSelectBaseline {};
-struct ClearBoxSelectBaseline {};
 
 struct ApplyBoxSelect {
     std::pair<uvec2, uvec2> BoxPx;
@@ -79,7 +77,7 @@ struct ApplyTreeSelection {
 
 using Action = std::variant<
     Select, ToggleSelected, SelectBone, ExtendActive, ExtendBoneActive,
-    DeselectAll, SelectAll, SnapshotBoxSelectBaseline, ClearBoxSelectBaseline,
+    DeselectAll, SelectAll,
     ApplyBoxSelect, Pick, PickCycle, ApplyEditElementClick, ApplyTreeSelection>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);

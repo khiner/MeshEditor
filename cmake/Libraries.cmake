@@ -22,7 +22,7 @@ function(mesheditor_compile_policy target policy)
         set(debug_optimization -O0)
     endif()
     target_compile_options(${target} PRIVATE
-        -Wall -Wextra -Wno-missing-field-initializers -Wno-missing-designated-field-initializers -Wno-elaborated-enum-base -fno-rtti
+        -Wall -Wextra -Wno-missing-field-initializers -Wno-missing-designated-field-initializers -Wno-elaborated-enum-base -Wno-c++26-extensions -fno-rtti
         "$<$<CONFIG:Debug>:${debug_optimization}>"
         "$<$<NOT:$<CONFIG:Debug>>:-O2>")
     set_target_properties(${target} PROPERTIES CXX_STANDARD 23 OBJCXX_STANDARD 23)
@@ -53,9 +53,9 @@ target_link_libraries(mesheditor_image_codecs PRIVATE mesheditor_support webp)
 
 add_library(mesheditor_imgui STATIC
     lib/imgui/imgui.cpp lib/imgui/imgui_draw.cpp lib/imgui/imgui_tables.cpp
-    lib/imgui/imgui_widgets.cpp lib/imgui/imgui_demo.cpp
+    lib/imgui/imgui_widgets.cpp lib/imgui/imgui_demo.cpp lib/imgui/misc/cpp/imgui_stdlib.cpp
     lib/imgui/backends/imgui_impl_metal.mm lib/imgui/backends/imgui_impl_osx.mm)
-target_include_directories(mesheditor_imgui SYSTEM PUBLIC lib/imgui lib/imgui/backends lib/metal-cpp)
+target_include_directories(mesheditor_imgui SYSTEM PUBLIC lib/imgui lib/imgui/backends lib/imgui/misc/cpp lib/metal-cpp)
 target_compile_definitions(mesheditor_imgui PUBLIC IMGUI_DEFINE_MATH_OPERATORS IMGUI_IMPL_METAL_CPP)
 target_compile_options(mesheditor_imgui PRIVATE -O2 -w)
 target_link_libraries(mesheditor_imgui PRIVATE "-framework Metal" "-framework AppKit" "-framework QuartzCore" "-framework GameController")

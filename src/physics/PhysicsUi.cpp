@@ -122,7 +122,7 @@ void RenderCollisionFilterBody(state::Scene &r, state::Entity filter_e) {
     mode_changed |= RadioButton("Allowlist", &mode, int(CollideMode::Allowlist));
     SameLine();
     mode_changed |= RadioButton("Blocklist", &mode, int(CollideMode::Blocklist));
-    if (mode_changed) action::Emit(action::UpdateOn<&CollisionFilter::Mode>(filter_e, CollideMode(mode)));
+    if (mode_changed) action::Emit(action::UpdateOf<&CollisionFilter::Mode>(filter_e, CollideMode(mode)));
 
     if (mode != int(CollideMode::All)) {
         Indent();
@@ -231,10 +231,10 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
     Text("Bodies: %u", physics::BodyCount(r));
     {
         ui::Edit f{r, viewport};
-        f.Slider<&PhysicsSimulationSettings::SubstepsPerFrame>("Substeps per frame");
-        f.Slider<&PhysicsSimulationSettings::SolverIterations>("Solver iterations");
-        f.Slider<&PhysicsSimulationSettings::TimeScale>("Time scale", "%.2fx");
-        f.Drag<&PhysicsSimulationSettings::Gravity>("Gravity", 0.1f);
+        f.Slider<&PhysicsSimulationSettings::SubstepsPerFrame>();
+        f.Slider<&PhysicsSimulationSettings::SolverIterations>();
+        f.Slider<&PhysicsSimulationSettings::TimeScale>(nullptr, "%.2fx");
+        f.Drag<&PhysicsSimulationSettings::Gravity>();
     }
 
     if (CollapsingHeader("Physics Materials")) {
@@ -250,11 +250,11 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
             },
             [&](state::Entity mat_entity, const PhysicsMaterial &) {
                 ui::Edit f{r, mat_entity};
-                f.Slider<&PhysicsMaterial::StaticFriction>("Static friction");
-                f.Slider<&PhysicsMaterial::DynamicFriction>("Dynamic friction");
-                f.Slider<&PhysicsMaterial::Restitution>("Restitution");
-                f.Enum<&PhysicsMaterial::FrictionCombine>("Friction combine", "Average\0Minimum\0Maximum\0Multiply\0");
-                f.Enum<&PhysicsMaterial::RestitutionCombine>("Restitution combine", "Average\0Minimum\0Maximum\0Multiply\0");
+                f.Slider<&PhysicsMaterial::StaticFriction>();
+                f.Slider<&PhysicsMaterial::DynamicFriction>();
+                f.Slider<&PhysicsMaterial::Restitution>();
+                f.Enum<&PhysicsMaterial::FrictionCombine>();
+                f.Enum<&PhysicsMaterial::RestitutionCombine>();
             }
         );
     }
@@ -440,7 +440,7 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
     SameLine();
     changed |= RadioButton("Dynamic", &motion_type, int(MType::Dynamic));
 
-    if (changed) action::Emit(action::physics::SetMotionType{MType(motion_type), ui::ScopeFromAlt()});
+    if (changed) action::Emit(action::physics::SetMotionType{MType(motion_type), ui::TargetFromAlt()});
 
     if (collider) { // Collider shape editing
         Spacing();
@@ -448,7 +448,7 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
 
         ui::Edit{r}.Check<&ColliderPolicy::AutoFitDims>("Auto-fit");
         auto s = RenderShapeEditor(collider->Shape, r.get<const ColliderPolicy>(entity).AutoFitDims);
-        ui::Gesture(bool(s), [&, scope = ui::ScopeFromAlt()] { return action::physics::SetColliderShape{*s, s->index() != collider->Shape.index(), scope}; });
+        ui::Gesture(bool(s), [&, scope = ui::TargetFromAlt()] { return action::physics::SetColliderShape{*s, s->index() != collider->Shape.index(), scope}; });
 
         const auto &material = r.get<const ColliderMaterial>(entity);
         TargetCombo<PhysicsMaterial>(r, "Physics material", material.PhysicsMaterialEntity, "No materials defined", [](state::Entity e) {
@@ -471,8 +471,8 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
         if (velocity_locked) BeginDisabled();
         if (r.try_get<const PhysicsVelocity>(entity)) {
             ui::Edit f{r};
-            f.Drag<&PhysicsVelocity::Linear>("Linear velocity", 0.1f);
-            f.Drag<&PhysicsVelocity::Angular>("Angular velocity", 0.1f);
+            f.Drag<&PhysicsVelocity::Linear>("Linear velocity");
+            f.Drag<&PhysicsVelocity::Angular>("Angular velocity");
         }
         if (velocity_locked) EndDisabled();
 
@@ -480,7 +480,7 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
         // Kinematic bodies move purely by velocity assignment; these fields are hidden to avoid noise.
         if (!motion->IsKinematic) {
             ui::Edit f{r};
-            f.Drag<&PhysicsMotion::GravityFactor>("Gravity factor", 0.01f);
+            f.Drag<&PhysicsMotion::GravityFactor>();
 
             Spacing();
             SeparatorText("Mass properties");
@@ -519,13 +519,13 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
                 motion_changed = true;
             }
             if (edit.CenterOfMass) motion_changed |= ui::DragFloat3("Center of mass", &edit.CenterOfMass->x, 0.01f);
-            ui::Gesture(motion_changed, [&, scope = ui::ScopeFromAlt()] { return action::physics::SetMotion{std::make_unique<PhysicsMotion>(edit), scope}; });
+            ui::Gesture(motion_changed, [&, scope = ui::TargetFromAlt()] { return action::physics::SetMotion{std::make_unique<PhysicsMotion>(edit), scope}; });
 
             Spacing();
             SeparatorText("Dynamics");
 
-            f.Drag<&PhysicsMotion::LinearDamping>("Damping translation", 0.01f);
-            f.Drag<&PhysicsMotion::AngularDamping>("Damping rotation", 0.01f);
+            f.Drag<&PhysicsMotion::LinearDamping>("Damping translation");
+            f.Drag<&PhysicsMotion::AngularDamping>("Damping rotation");
         }
     }
 
@@ -541,7 +541,7 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
             Text("Limits: %zu, Drives: %zu", def->Limits.size(), def->Drives.size());
         }
 
-        ui::Edit{r}.Check<&PhysicsJoint::EnableCollision>("Enable collision");
+        ui::Edit{r}.Check<&PhysicsJoint::EnableCollision>();
 
         // ConnectedNode picker. KHR joint.connectedNode is the second attachment frame.
         // Mirrors Blender's rigid_body_constraint object1/object2 fields.

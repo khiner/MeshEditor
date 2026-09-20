@@ -2,7 +2,7 @@
 
 #include <FastFEM/Surface2Modes.h>
 
-#include "FieldLimits.h"
+#include "Field.h"
 #include "numeric/vec3.h"
 
 #include <vector>
@@ -35,12 +35,12 @@ constexpr auto serialize(auto &archive, const ModalModes &modes) {
 struct ModalGain {
     float Value{1.f};
 };
-template<> struct FieldLimits<&ModalGain::Value> : Within<0., 2.> {};
+template<> inline constexpr FieldSpec Spec<ModalGain, "Value">{.Min = 0, .Max = 2};
 
 // Per-instance synth tuning.
 struct ModalTuning {
     float FundamentalFreq{0.f}; // Target frequency of the first mode, Hz. All modes shift proportionally. 0 keeps the baked tuning.
     float T60Scale{1.f}; // Multiplies every mode's T60.
 };
-template<> struct FieldLimits<&ModalTuning::FundamentalFreq> : Within<20., 16000.> {};
-template<> struct FieldLimits<&ModalTuning::T60Scale> : Within<0.1, 10.> {};
+template<> inline constexpr FieldSpec Spec<ModalTuning, "FundamentalFreq">{.Min = 20, .Max = 16000, .Digits = 1};
+template<> inline constexpr FieldSpec Spec<ModalTuning, "T60Scale">{.Min = 0.1, .Max = 10};

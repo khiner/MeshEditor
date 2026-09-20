@@ -23,7 +23,7 @@ Real-time mesh viewer and editor supporting conversion of meshes to rigid body a
   - Delete (X), dissolve (Ctrl+X), merge (M), extrude (E), duplicate (Shift+D), split (Y), separate (P), fill (F), triangulate (Ctrl+T), tris to quads (Alt+J), loop cut (Ctrl+R), and rip (V)
   - Mouse-sized inset (I), bevel edges (Ctrl+B) and vertices (Ctrl+Shift+B) with wheel or -/= segments, and knife cuts (K)
   - Right-click, Ctrl+V, Ctrl+E, and Ctrl+F menus list the rest: subdivide, poke, edge split, rotate edge, bridge edge loops, grid fill, fill holes, solidify, connect vertex path, flip normals, spin, extrude repeat, bisect, symmetrize, convex hull, and the clean-up dissolves
-  - A last-operation panel edits the operator's parameters in place, previewing live and replacing its history node
+  - The history window edits any node's action parameters in place, previewing live and committing in the node's place
   - Extrude, duplicate, and rip commit with their placement drag as one history node, and cancelling the drag cancels the operator
   - Not ported: wire edges (extruding lone vertices and ripping edges without faces), un-subdivide, decimate, wireframe, boolean, and intersect. Merges keep doubled faces, bevel vertices use one segment, and grid fill spans one loop
 * Flat/smooth/wireframe mesh rendering

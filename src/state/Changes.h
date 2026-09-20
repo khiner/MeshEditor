@@ -16,7 +16,6 @@ enum class Change : uint8_t {
     TransformEnd,
     TransformDirty,
     BonePose, // A bone's pose delta changed.
-    Rotation,
     WorldTransform,
     // Meshes
     MeshGeometry,

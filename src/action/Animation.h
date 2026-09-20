@@ -11,9 +11,8 @@ namespace action::animation {
 // Selected targets are the selected bones in Pose mode and the selected objects otherwise.
 // No target means translation, rotation, and scale for an insert and every channel for a delete.
 struct KeyScope {
-    Scope Scope{Scope::Active};
-    state::Entity Entity{state::Null};
-    std::optional<ChannelTarget> Target{};
+    Target Target{OnActive{}};
+    std::optional<ChannelTarget> Channel{};
 };
 // Keys each target's current value.
 struct InsertKey {

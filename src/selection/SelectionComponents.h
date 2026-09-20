@@ -20,6 +20,7 @@ struct ElementRange {
     uint32_t Offset, Count;
 };
 
+// The selection an additive box drag started from, recorded by the drag's first update and removed when its gesture ends.
 struct AdditiveBoxSelectBaseline {
     std::vector<state::Entity> SelectedEntities;
     std::vector<std::pair<state::Entity, BoneSelection>> BoneSelections;

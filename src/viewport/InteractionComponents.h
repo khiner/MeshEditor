@@ -1,6 +1,6 @@
 #pragma once
 
-#include "FieldLimits.h"
+#include "Field.h"
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"
 
@@ -26,4 +26,4 @@ struct OrbitToActive {
 struct ShadeSmoothAngle {
     float Value{std::numbers::pi_v<float> / 6.f};
 };
-template<> struct FieldLimits<&ShadeSmoothAngle::Value> : Within<0., std::numbers::pi> {};
+template<> inline constexpr FieldSpec Spec<ShadeSmoothAngle, "Value">{.Min = 0, .Max = std::numbers::pi, .Digits = 0, .Unit = FieldUnit::Radians};

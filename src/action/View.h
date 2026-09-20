@@ -8,11 +8,9 @@
 #include "gizmo/TransformGizmoTypes.h"
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"
+#include "gpu/Transform.h"
 #include "gpu/WorkspaceLights.h"
-#include "scene/RotationUi.h"
 #include "viewport/ViewportDisplay.h"
-
-struct PendingTransform;
 
 namespace action::view {
 struct SetInteractionMode {
@@ -56,27 +54,14 @@ struct SetViewCameraLens {
 struct SetViewCameraTargetDirection {
     vec3 Direction;
 };
-// Targets the active bone in Pose mode, otherwise the active entity.
-struct SetRotationUiMode {
-    int Index;
-    Scope Scope{Scope::Active};
-};
-// `R` must already be normalized. Targets the active bone in Pose mode, otherwise the active entity.
-struct SetTransformRotationFromUi {
-    quat R;
-    RotationUiVariant UiVariant;
-    Scope Scope{Scope::Active};
-};
-// Applies a pivot and delta to the selected objects or bones.
+// Applies a delta about the selection's pivot to the selected objects or bones.
 struct TransformSelection {
-    std::unique_ptr<PendingTransform> Value;
+    Transform Delta;
 };
-// Stages a pivot and delta over the edit-mode elements, which move on commit.
+// Stages a delta about the selection's pivot over the edit-mode elements, which move on commit.
 struct TransformElements {
-    std::unique_ptr<PendingTransform> Value;
+    Transform Delta;
 };
-// Clears the transform start state and the latch.
-struct EndTransform {};
 
 // Select tools clear the transform type, while transform tools retain the hidden selection gesture.
 struct SetActiveTool {
@@ -97,12 +82,6 @@ struct LatchTransform {
     TransformGizmo::TransformType Value;
 };
 
-// Logical (window) size of the viewport.
-// Apply only sets the ViewportExtent ctx value, the GPU resize happens later.
-struct SetExtent {
-    uvec2 Extent;
-};
-
 // Set the viewport's studio HDRI / image-based lighting environment.
 // Identified by source HDRI name (not the directory-scan index) so it stays stable across runs.
 struct SetStudioEnvironment {
@@ -120,9 +99,8 @@ using Action = std::variant<
     SetViewportShading, ToggleXRay, OrbitViewCamera, ZoomViewCamera,
     ResetViewCamera, ResetViewportTheme, ResetPbrLighting, SetWorkspaceLights,
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection,
-    SetRotationUiMode, SetTransformRotationFromUi,
-    TransformSelection, TransformElements, EndTransform, SetActiveTool, LatchTransform,
-    SetExtent, SetStudioEnvironment, SetActiveScene>;
+    TransformSelection, TransformElements, SetActiveTool, LatchTransform,
+    SetStudioEnvironment, SetActiveScene>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::view

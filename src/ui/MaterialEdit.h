@@ -31,7 +31,7 @@ struct MaterialEdit : FieldWidgets<MaterialEdit<Prefix...>, Prefix...> {
         using Field = action::detail::last_field<Prefix..., Ms...>;
         return detail::RunField(
             R, animation::AnimationsViewport(R), detail::Channel<Prefix..., Ms...>(uint16_t(Index)), ReadChain<Prefix..., Ms...>(GetMaterials(R)[Index]), widget,
-            false, false, [&](action::Scope, const Field &v) { action::Emit(Action<Ms...>(v), action::Phase::Stage); }
+            false, false, [&](action::Target, const Field &v) { action::Emit(Action<Ms...>(v), action::Phase::Stage); }
         );
     }
 

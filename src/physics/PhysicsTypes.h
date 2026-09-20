@@ -1,7 +1,7 @@
 #pragma once
 #include <variant>
 
-#include "FieldLimits.h"
+#include "Field.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 #include "state/Entity.h"
@@ -17,9 +17,10 @@ struct PhysicsSimulationSettings {
     float TimeScale{1.0f}; // Multiplier on simulated dt (1 = real-time)
     bool operator==(const PhysicsSimulationSettings &) const = default;
 };
-template<> struct FieldLimits<&PhysicsSimulationSettings::SubstepsPerFrame> : Within<1u, 100u> {};
-template<> struct FieldLimits<&PhysicsSimulationSettings::SolverIterations> : Within<2u, 50u> {};
-template<> struct FieldLimits<&PhysicsSimulationSettings::TimeScale> : Within<0.f, 10.f> {};
+template<> inline constexpr FieldSpec Spec<PhysicsSimulationSettings, "SubstepsPerFrame">{.Min = 1, .Max = 100};
+template<> inline constexpr FieldSpec Spec<PhysicsSimulationSettings, "SolverIterations">{.Min = 2, .Max = 50};
+template<> inline constexpr FieldSpec Spec<PhysicsSimulationSettings, "TimeScale">{.Min = 0, .Max = 10, .Digits = 2};
+template<> inline constexpr FieldSpec Spec<PhysicsSimulationSettings, "Gravity">{.Speed = 0.1f};
 
 // KHR_physics_rigid_bodies-aligned component structs.
 
@@ -38,9 +39,9 @@ struct PhysicsMaterial {
     std::string Name{};
     bool operator==(const PhysicsMaterial &) const = default;
 };
-template<> struct FieldLimits<&PhysicsMaterial::StaticFriction> : Within<0.f, 2.f> {};
-template<> struct FieldLimits<&PhysicsMaterial::DynamicFriction> : Within<0.f, 2.f> {};
-template<> struct FieldLimits<&PhysicsMaterial::Restitution> : Within<0.f, 1.f> {};
+template<> inline constexpr FieldSpec Spec<PhysicsMaterial, "StaticFriction">{.Min = 0, .Max = 2};
+template<> inline constexpr FieldSpec Spec<PhysicsMaterial, "DynamicFriction">{.Min = 0, .Max = 2};
+template<> inline constexpr FieldSpec Spec<PhysicsMaterial, "Restitution">{.Min = 0, .Max = 1};
 
 // Defines a document-level collision system assigned a collision mask bit at world creation.
 struct CollisionSystem {
@@ -171,9 +172,9 @@ struct PhysicsMotion {
     float LinearDamping{0.04f}, AngularDamping{0.1f};
     bool operator==(const PhysicsMotion &) const = default;
 };
-template<> struct FieldLimits<&PhysicsMotion::GravityFactor> : Within<-10.f, 10.f> {};
-template<> struct FieldLimits<&PhysicsMotion::LinearDamping> : Within<0.f, 1.f> {};
-template<> struct FieldLimits<&PhysicsMotion::AngularDamping> : Within<0.f, 1.f> {};
+template<> inline constexpr FieldSpec Spec<PhysicsMotion, "GravityFactor">{.Min = -10, .Max = 10, .Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<PhysicsMotion, "LinearDamping">{.Min = 0, .Max = 1, .Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<PhysicsMotion, "AngularDamping">{.Min = 0, .Max = 1, .Speed = 0.01f};
 
 // Defines a force-driven positive-mass body whose mass properties control contact dynamics.
 inline bool IsAuthoritativeDynamicBody(const PhysicsMotion &m) { return !m.IsKinematic && m.Mass.value_or(DefaultMass) > 0; }
@@ -183,6 +184,8 @@ struct PhysicsVelocity {
     vec3 Linear{0}, Angular{0};
     bool operator==(const PhysicsVelocity &) const = default;
 };
+template<> inline constexpr FieldSpec Spec<PhysicsVelocity, "Linear">{.Speed = 0.1f};
+template<> inline constexpr FieldSpec Spec<PhysicsVelocity, "Angular">{.Speed = 0.1f};
 
 // MeshEntity present for ConvexHull/TriangleMesh, null for primitives.
 // LocalOffset is the shape's center in entity-local pre-scale coords (same convention as PhysicsMotion::CenterOfMass).

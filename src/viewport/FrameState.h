@@ -29,7 +29,7 @@ struct FrameState {
     vec2 AccumulatedWrapMouseDelta{0, 0};
     vec2 PreciseWheelDelta{0, 0};
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
-    bool BoxSelectStaged{false};
+    bool BoxSelectAdditive{false}; // Shift was held at the box's click.
     std::optional<MeshOperatorDrag> MeshDrag;
     bool OverlayControlsHovered{false};
     bool RenderPending{false};

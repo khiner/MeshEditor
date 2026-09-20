@@ -1,7 +1,7 @@
 #pragma once
 
 #include "AcousticMaterial.h"
-#include "FieldLimits.h"
+#include "Field.h"
 #include "numeric/mat3.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
@@ -26,8 +26,8 @@ struct Striker {
     float TipRadius{0.01f}; // Cap radius, also the cylinder cross-section, m
     float Length{0.19f}; // Cylinder length, m (~0.5 kg of steel at the default radius)
 };
-template<> struct FieldLimits<&Striker::TipRadius> : Within<0.0005, 0.1> {};
-template<> struct FieldLimits<&Striker::Length> : Within<0.001, 1.> {};
+template<> inline constexpr FieldSpec Spec<Striker, "TipRadius">{.Min = 0.0005, .Max = 0.1, .Digits = 4};
+template<> inline constexpr FieldSpec Spec<Striker, "Length">{.Min = 0.001, .Max = 1};
 
 // Defines the compliance, curvature, and inverse mass of one side of a Hertz contact.
 struct Impactor {

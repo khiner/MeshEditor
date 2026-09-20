@@ -1,7 +1,7 @@
 #pragma once
 
 #include "AcousticMaterialProperties.h"
-#include "FieldLimits.h"
+#include "Field.h"
 
 #include <array>
 #include <string>
@@ -15,11 +15,11 @@ struct AcousticMaterial {
 // Ranges cover the acoustic material presets with headroom.
 // Limit Poisson ratio below 0.5 to keep Lame's lambda finite.
 // Set the beta floor above the logarithmic slider's zero epsilon.
-template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::Density> : Within<1., 25000.> {};
-template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::YoungModulus> : Within<1e5, 1e12> {};
-template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::PoissonRatio> : Within<0., 0.49> {};
-template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::Alpha> : Within<0., 200.> {};
-template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::Beta> : Within<1e-9, 1e-4> {};
+template<> inline constexpr FieldSpec Spec<AcousticMaterialProperties, "Density">{.Min = 1, .Max = 25000, .Digits = 0};
+template<> inline constexpr FieldSpec Spec<AcousticMaterialProperties, "YoungModulus">{.Min = 1e5, .Max = 1e12};
+template<> inline constexpr FieldSpec Spec<AcousticMaterialProperties, "PoissonRatio">{.Min = 0, .Max = 0.49, .Digits = 2};
+template<> inline constexpr FieldSpec Spec<AcousticMaterialProperties, "Alpha">{.Min = 0, .Max = 200};
+template<> inline constexpr FieldSpec Spec<AcousticMaterialProperties, "Beta">{.Min = 1e-9, .Max = 1e-4};
 
 /*
 From Table 4 in the [Kleinpat paper](https://graphics.stanford.edu/projects/kleinpat/assets/mfpat_opt.pdf).

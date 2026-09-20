@@ -58,16 +58,16 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const SetMaterialPreset &a) {
                 if (const auto *material = materials::acoustic::Find(a.Name)) {
-                    if (a.Striker) r.patch<Striker>(a.Entity, [&](auto &s) { s.Material = *material; });
-                    else r.emplace_or_replace<AcousticMaterial>(a.Entity, *material);
+                    if (a.Striker) r.patch<Striker>(viewport, [&](auto &s) { s.Material = *material; });
+                    else r.emplace_or_replace<AcousticMaterial>(FindActiveEntity(r), *material);
                 }
             },
             [&](const SetSurfacePreset &a) {
                 for (const auto &preset : surfaces::acoustic::All)
-                    if (a.Name == preset.Name) Patch<ContactSurface>(r, a.Entity, [&](auto &s) { s = WithPreset(std::move(s), preset); });
+                    if (a.Name == preset.Name) Patch<ContactSurface>(r, FindActiveEntity(r), [&](auto &s) { s = WithPreset(std::move(s), preset); });
             },
             [&]<typename C, typename F, size_t N>(const PatchFields<C, F, N> &a) {
-                Patch<C>(r, a.Entity, [&](C &c) {
+                Patch<C>(r, FindActiveEntity(r), [&](C &c) {
                     for (size_t i = 0; i < N; ++i) {
                         assert(size_t(a.Offsets[i]) + sizeof(F) <= sizeof(C));
                         *reinterpret_cast<F *>(reinterpret_cast<std::byte *>(&c) + a.Offsets[i]) = a.Values[i];
@@ -80,9 +80,10 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 if (!frames.empty()) ::AssignVertexSample(r, FindActiveEntity(r), *a.MeshVertices, a.Path, std::move(frames));
             },
             [&](const ActivateRealImpactMicrophone &a) {
+                const auto microphone = FindActiveEntity(r);
                 const auto &source = r.get<const RealImpactVertices>(a.TargetSoundEntity);
                 if (!source.Samples.empty()) {
-                    const auto mic_index = r.get<const RealImpactMicrophone>(a.MicrophoneEntity).Index;
+                    const auto mic_index = r.get<const RealImpactMicrophone>(microphone).Index;
                     auto samples = RealImpact::LoadSamples(r, source.Samples, mic_index);
                     if (!samples) {
                         Fail(r, std::move(samples.error()));
@@ -90,7 +91,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     }
                     ::SetVertexSamples(r, a.TargetSoundEntity, source.Vertices, *samples);
                 }
-                r.emplace_or_replace<RealImpactActiveMicrophone>(a.TargetSoundEntity, a.MicrophoneEntity);
+                r.emplace_or_replace<RealImpactActiveMicrophone>(a.TargetSoundEntity, microphone);
             },
             [&](const RemoveVertexSamples &a) { ::RemoveVertexSamples(r, FindActiveEntity(r), a.MeshVertices); },
             [&](const SetOutputDevice &a) { r.replace<AudioOutputConfig>(viewport, AudioOutputConfig{.DeviceName = a.DeviceName, .SampleRate = 0}); },

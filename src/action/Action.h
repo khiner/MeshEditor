@@ -13,7 +13,6 @@
 #include "action/Selection.h"
 #include "action/Timeline.h"
 #include "action/View.h"
-#include "viewport/ViewportInteractionState.h"
 
 namespace action {
 // Contains one action variant per domain.
@@ -62,8 +61,12 @@ template<> inline constexpr bool Recordable<view::SetViewCameraTargetDirection> 
 
 void Emit(Action, Phase = Phase::Record);
 
+template<typename A, typename F> decltype(auto) VisitLeaf(A &&a, F &&fn) {
+    return std::visit([&](auto &&domain) { return std::visit(fn, domain); }, std::forward<A>(a));
+}
+
 inline bool IsRecordable(const Action &a) {
-    return std::visit([](const auto &dv) { return std::visit([]<typename L>(const L &) { return Recordable<L>; }, dv); }, a);
+    return VisitLeaf(a, []<typename L>(const L &) { return Recordable<L>; });
 }
 
 // A staged update of a restarting action restores the gesture's base state before it applies.

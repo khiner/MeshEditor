@@ -41,3 +41,13 @@ struct PBRMaterial {
     Iridescence Iridescence DEFAULT();
 };
 static_assert(sizeof(PBRMaterial) == 712, "PBRMaterial size");
+#ifndef __METAL_VERSION__
+#include "Field.h"
+template<> inline constexpr FieldSpec Spec<PBRMaterial, "MetallicFactor">{.Min = 0, .Max = 1};
+template<> inline constexpr FieldSpec Spec<PBRMaterial, "RoughnessFactor">{.Min = 0, .Max = 1};
+template<> inline constexpr FieldSpec Spec<PBRMaterial, "NormalScale">{.Min = -2, .Max = 2};
+template<> inline constexpr FieldSpec Spec<PBRMaterial, "OcclusionStrength">{.Min = 0, .Max = 1};
+template<> inline constexpr FieldSpec Spec<PBRMaterial, "AlphaCutoff">{.Min = 0, .Max = 1};
+template<> inline constexpr FieldSpec Spec<PBRMaterial, "Ior">{.Min = 1, .Max = 3};
+template<> inline constexpr FieldSpec Spec<PBRMaterial, "Dispersion">{.Min = 0, .Max = 1};
+#endif

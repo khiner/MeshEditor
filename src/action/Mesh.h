@@ -1,6 +1,6 @@
 #pragma once
 
-#include "gpu/MeshTopologyOp.h"
+#include "Field.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 #include "state/Entity.h"
@@ -11,29 +11,35 @@
 
 // Edit-mode topology operators over the selected meshes' element selections.
 namespace action::mesh {
-// Removes the selected elements, with `Op` naming which dependents go with them.
+// Values match the delete topology ops.
+enum class DeleteMode : uint32_t { Vertices,
+                                   Edges,
+                                   Faces,
+                                   OnlyEdgesAndFaces,
+                                   OnlyFaces,
+                                   Loose };
 struct Delete {
-    MeshTopologyOp Op{MeshTopologyOp::DeleteVertices};
+    DeleteMode Mode{DeleteMode::Vertices};
 };
 
 // Merges the selected vertices: all into one at their center or at the first or last selected vertex.
 // Collapse merges each connected run into its center, and ByDistance merges every pair within Distance.
+enum class MergeMode : uint8_t { Center,
+                                 First,
+                                 Last,
+                                 Collapse,
+                                 ByDistance };
 struct Merge {
-    enum class Mode : uint8_t { Center,
-                                First,
-                                Last,
-                                Collapse,
-                                ByDistance };
-    Mode Value{Mode::Center};
+    MergeMode Mode{MergeMode::Center};
     float Distance{0.0001f};
 };
 
 // Extrudes the selection and latches a translate for the drag that follows.
+enum class ExtrudeMode : uint8_t { Region,
+                                   Edges,
+                                   FacesIndividual };
 struct Extrude {
-    enum class Mode : uint8_t { Region,
-                                Edges,
-                                FacesIndividual };
-    Mode Value{Mode::Region};
+    ExtrudeMode Mode{ExtrudeMode::Region};
 };
 // Duplicates the selected faces onto copied vertices and latches a translate for the drag that follows.
 struct Duplicate {};
@@ -44,13 +50,13 @@ struct Separate {};
 
 // Joins the faces around the selected vertices, across the selected edges, or of each selected region into one face.
 // Limited joins across edges flatter than Angle, and Degenerate collapses edges shorter than Distance.
+enum class DissolveMode : uint8_t { Vertices,
+                                    Edges,
+                                    Faces,
+                                    Limited,
+                                    Degenerate };
 struct Dissolve {
-    enum class Mode : uint8_t { Vertices,
-                                Edges,
-                                Faces,
-                                Limited,
-                                Degenerate };
-    Mode Value{Mode::Edges};
+    DissolveMode Mode{DissolveMode::Edges};
     float Angle{0.0872665f};
     float Distance{0.0001f};
 };
@@ -103,8 +109,11 @@ struct Bisect {
     bool ClearOuter{false};
 };
 // Mirrors the mesh's positive side of Axis onto its negative side across the mesh origin and welds the vertices on the plane.
+enum class SymmetrizeAxis : uint8_t { X,
+                                      Y,
+                                      Z };
 struct Symmetrize {
-    uint8_t Axis{0};
+    SymmetrizeAxis Axis{SymmetrizeAxis::X};
     bool Negative{false};
 };
 // Thickens the selected faces by Thickness toward their back with a rim along the region boundary.
@@ -146,10 +155,27 @@ using Action = std::variant<
     Spin, ExtrudeRepeat, Bisect, Symmetrize, Solidify, ConnectVertices, Knife, BridgeEdgeLoops, GridFill, FillHoles, ConvexHull, EdgeRotate, Rip, Bevel>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
-
-// The most recent committed mesh operator and its history node, for rerunning it with edited parameters.
-struct LastOperation {
-    Action Value;
-    int Node;
-};
 } // namespace action::mesh
+
+template<> inline constexpr FieldSpec Spec<action::mesh::Merge, "Distance">{.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4};
+template<> inline constexpr FieldSpec Spec<action::mesh::Dissolve, "Angle">{.Min = 0, .Max = 3.14159265f, .Digits = 1, .Unit = FieldUnit::Radians};
+template<> inline constexpr FieldSpec Spec<action::mesh::Dissolve, "Distance">{.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4};
+template<> inline constexpr FieldSpec Spec<action::mesh::Subdivide, "Cuts">{.Min = 1, .Max = 32};
+template<> inline constexpr FieldSpec Spec<action::mesh::Poke, "Offset">{.Min = -100, .Max = 100, .Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<action::mesh::Inset, "Thickness">{.Min = 0, .Max = 100, .Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<action::mesh::Inset, "Depth">{.Min = -100, .Max = 100, .Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<action::mesh::LoopCut, "Cuts">{.Min = 1, .Max = 32};
+template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Steps">{.Min = 1, .Max = 256};
+template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Angle">{.Min = -6.2831853f, .Max = 6.2831853f, .Digits = 1, .Unit = FieldUnit::Radians};
+template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Axis">{.Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Center">{.Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Offset">{.Min = -100, .Max = 100, .Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<action::mesh::ExtrudeRepeat, "Steps">{.Min = 1, .Max = 256};
+template<> inline constexpr FieldSpec Spec<action::mesh::ExtrudeRepeat, "Offset">{.Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<action::mesh::Bisect, "Point">{.Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<action::mesh::Bisect, "Normal">{.Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<action::mesh::Solidify, "Thickness">{.Min = -100, .Max = 100, .Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<action::mesh::GridFill, "Span">{.Min = 0, .Max = 256};
+template<> inline constexpr FieldSpec Spec<action::mesh::FillHoles, "Sides">{.Min = 0, .Max = 1000};
+template<> inline constexpr FieldSpec Spec<action::mesh::Bevel, "Width">{.Min = 0, .Max = 100, .Speed = 0.01f};
+template<> inline constexpr FieldSpec Spec<action::mesh::Bevel, "Segments">{.Min = 1, .Max = 16};

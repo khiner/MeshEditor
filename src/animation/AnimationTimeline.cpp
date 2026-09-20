@@ -153,7 +153,7 @@ std::optional<action::Action> RenderAnimationTimeline(const TimelineRange &range
 
     SetCursorScreenPos(bar_origin);
     {
-        if (IconButton("record", nullptr, ImDrawFlags_RoundCornersAll)) emit(action::UpdateOn<&Animations::Record>(state::Null, !animations.Record));
+        if (IconButton("record", nullptr, ImDrawFlags_RoundCornersAll)) emit(action::UpdateOf<&Animations::Record>(state::Null, !animations.Record));
         SetItemTooltip("Auto keying: insert keyframes for animated properties on edit");
         const auto center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
         GetWindowDrawList()->AddCircleFilled(center, h * 0.22f, animations.Record ? IM_COL32(230, 60, 50, 255) : IM_COL32(120, 120, 120, 255));

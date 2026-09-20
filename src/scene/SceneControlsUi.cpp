@@ -46,6 +46,7 @@
 #include "ui/HelpMarker.h"
 #include "ui/ItemList.h"
 #include "ui/MaterialEdit.h"
+#include "ui/TransformEdit.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraOps.h"
@@ -94,51 +95,49 @@ constexpr std::string Capitalize(std::string_view str) {
 // Draw the active primitive's fields, emitting a gesture-grouped update per field on change.
 void PrimitiveEditor(const PrimitiveShape &shape) {
     using primitive::MaxSize, primitive::MinSize;
-    static constexpr float SizeSpeed = 0.01f, HalfMin = MinSize / 2.f, HalfMax = MaxSize / 2.f;
+    static constexpr float SizeSpeed = 0.01f;
 
     // The member pointer addresses the field within the shape alternative.
-    const auto field = [&]<typename C, typename F>(bool changed, F C::*member, F value, float lo, float hi) {
-        ui::Gesture(changed, [=] {
-            return action::Update<F>{ui::ScopeFromAlt(true), state::Null, state::Key<PrimitiveShape>(), uint16_t(action::detail::MemPtrOffset(member)), value, action::Limit<F>(lo), action::Limit<F>(hi)};
-        });
+    const auto field = [&]<typename C, typename F>(bool changed, F C::*member, F value) {
+        ui::Gesture(changed, [=] { return action::Update<F>{ui::TargetFromAlt(true), state::Key<PrimitiveShape>(), uint16_t(action::detail::MemPtrOffset(member)), value}; });
     };
     std::visit([&](const auto &s) {
         using T = std::decay_t<decltype(s)>;
         if constexpr (std::is_same_v<T, primitive::Plane>) {
             vec2 size = s.HalfExtents * 2.f;
-            field(ui::DragFloat2("Size", &size.x, SizeSpeed, MinSize, MaxSize), &primitive::Plane::HalfExtents, size / 2.f, HalfMin, HalfMax);
+            field(ui::DragFloat2("Size", &size.x, SizeSpeed, MinSize, MaxSize), &primitive::Plane::HalfExtents, size / 2.f);
         } else if constexpr (std::is_same_v<T, primitive::Circle>) {
             float radius = s.Radius;
-            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::Circle::Radius, radius, MinSize, MaxSize);
+            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::Circle::Radius, radius);
             uint32_t segments = s.Segments;
-            field(SliderUInt("Segments", &segments, 3, 128), &primitive::Circle::Segments, segments, 3, 128);
+            field(SliderUInt("Segments", &segments, 3, 128), &primitive::Circle::Segments, segments);
         } else if constexpr (std::is_same_v<T, primitive::Cuboid>) {
             vec3 size = s.HalfExtents * 2.f;
-            field(ui::DragFloat3("Size", &size.x, SizeSpeed, MinSize, MaxSize), &primitive::Cuboid::HalfExtents, size / 2.f, HalfMin, HalfMax);
+            field(ui::DragFloat3("Size", &size.x, SizeSpeed, MinSize, MaxSize), &primitive::Cuboid::HalfExtents, size / 2.f);
         } else if constexpr (std::is_same_v<T, primitive::IcoSphere>) {
             float radius = s.Radius;
-            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::IcoSphere::Radius, radius, MinSize, MaxSize);
+            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::IcoSphere::Radius, radius);
             uint32_t subdivisions = s.Subdivisions;
-            field(SliderUInt("Subdivisions", &subdivisions, 1, 6), &primitive::IcoSphere::Subdivisions, subdivisions, 1, 6);
+            field(SliderUInt("Subdivisions", &subdivisions, 1, 6), &primitive::IcoSphere::Subdivisions, subdivisions);
         } else if constexpr (std::is_same_v<T, primitive::UVSphere>) {
             float radius = s.Radius;
-            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::UVSphere::Radius, radius, MinSize, MaxSize);
+            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::UVSphere::Radius, radius);
             uint32_t slices = s.Slices, stacks = s.Stacks;
-            field(SliderUInt("Slices", &slices, 3, 128), &primitive::UVSphere::Slices, slices, 3, 128);
-            field(SliderUInt("Stacks", &stacks, 2, 64), &primitive::UVSphere::Stacks, stacks, 2, 64);
+            field(SliderUInt("Slices", &slices, 3, 128), &primitive::UVSphere::Slices, slices);
+            field(SliderUInt("Stacks", &stacks, 2, 64), &primitive::UVSphere::Stacks, stacks);
         } else if constexpr (std::is_same_v<T, primitive::Torus>) {
             float major = s.MajorRadius, minor = s.MinorRadius;
-            field(ui::DragFloat("Major radius", &major, SizeSpeed, MinSize, MaxSize), &primitive::Torus::MajorRadius, major, MinSize, MaxSize);
-            field(ui::DragFloat("Minor radius", &minor, SizeSpeed, MinSize, s.MajorRadius), &primitive::Torus::MinorRadius, minor, MinSize, s.MajorRadius);
+            field(ui::DragFloat("Major radius", &major, SizeSpeed, MinSize, MaxSize), &primitive::Torus::MajorRadius, major);
+            field(ui::DragFloat("Minor radius", &minor, SizeSpeed, MinSize, s.MajorRadius), &primitive::Torus::MinorRadius, minor);
             uint32_t major_seg = s.MajorSegments, minor_seg = s.MinorSegments;
-            field(SliderUInt("Major segments", &major_seg, 3, 256), &primitive::Torus::MajorSegments, major_seg, 3, 256);
-            field(SliderUInt("Minor segments", &minor_seg, 3, 256), &primitive::Torus::MinorSegments, minor_seg, 3, 256);
+            field(SliderUInt("Major segments", &major_seg, 3, 256), &primitive::Torus::MajorSegments, major_seg);
+            field(SliderUInt("Minor segments", &minor_seg, 3, 256), &primitive::Torus::MinorSegments, minor_seg);
         } else if constexpr (std::is_same_v<T, primitive::Cylinder> || std::is_same_v<T, primitive::Cone>) {
             float radius = s.Radius, height = s.Height;
-            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &T::Radius, radius, MinSize, MaxSize);
-            field(ui::DragFloat("Height", &height, SizeSpeed, MinSize, MaxSize), &T::Height, height, MinSize, MaxSize);
+            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &T::Radius, radius);
+            field(ui::DragFloat("Height", &height, SizeSpeed, MinSize, MaxSize), &T::Height, height);
             uint32_t slices = s.Slices;
-            field(SliderUInt("Slices", &slices, 3, 128), &T::Slices, slices, 3, 128);
+            field(SliderUInt("Slices", &slices, 3, 128), &T::Slices, slices);
         }
     },
                shape);
@@ -159,7 +158,7 @@ using namespace he;
 // Near and far clip bound each other.
 void RenderPerspectiveFields(auto &&fields, const Perspective &perspective) {
     const float far_max = std::max(perspective.NearClip + MinNearFarDelta, MaxFarClip);
-    fields.template SliderAngle<&Perspective::FieldOfViewRad>("Field of view", "%.1f deg");
+    fields.template Slider<&Perspective::FieldOfViewRad>("Field of view");
     fields.template Slider<&Perspective::NearClip>("Near clip", MinNearClip, perspective.HasFarClip() ? std::max(perspective.FarClip - MinNearFarDelta, MinNearClip) : far_max);
     bool infinite_far = !perspective.HasFarClip();
     if (Checkbox("Infinite far clip", &infinite_far)) fields.template Set<&Perspective::FarClip>(infinite_far ? std::numeric_limits<float>::infinity() : far_max);
@@ -192,13 +191,13 @@ void RenderCameraLensFields(state::Scene &r, state::Entity entity) {
     const auto *perspective = r.try_get<const Perspective>(entity);
     int proj_i = perspective ? 0 : 1;
     const char *const proj_names[]{"Perspective", "Orthographic"};
-    if (Combo("Projection", &proj_i, proj_names, IM_ARRAYSIZE(proj_names))) action::Emit(action::object::SetProjection{proj_i == 1, ui::ScopeFromAlt()});
+    if (Combo("Projection", &proj_i, proj_names, IM_ARRAYSIZE(proj_names))) action::Emit(action::object::SetProjection{proj_i == 1, ui::TargetFromAlt()});
     ui::Edit fields{r, entity};
     if (perspective) {
         RenderPerspectiveFields(fields, *perspective);
         bool viewport_aspect = !perspective->HasAspectRatio();
         if (Checkbox("Viewport aspect ratio", &viewport_aspect)) fields.Set<&Perspective::AspectRatio>(viewport_aspect ? 0.f : DefaultAspectRatio);
-        if (perspective->HasAspectRatio()) fields.Slider<&Perspective::AspectRatio>("Aspect ratio", 0.1f, 5.f);
+        if (perspective->HasAspectRatio()) fields.Slider<&Perspective::AspectRatio>();
     } else {
         RenderOrthographicFields(fields, r.get<const Orthographic>(entity));
     }
@@ -354,42 +353,11 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             // In Pose mode, edit the active bone rather than the armature.
             const bool is_pose_bone = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && active_bone_entity != state::Null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
-            // Object mode resolves the active entity during replay and applies Alt-drag to the selection.
-            // A bone edits its rest-relative delta, and an animated node edits its pose. Both record the target entity explicitly.
-            const bool bone = r.all_of<BoneDelta>(transform_entity);
-            const bool posed = !bone && r.all_of<PosedLocal>(transform_entity);
-            const auto drag_local = [&]<auto Component>(const char *label) {
-                if (bone) ui::Edit{r, transform_entity}.Drag<&BoneDelta::Value, Component>(label, 0.01f);
-                else if (posed) ui::Edit{r, transform_entity}.Drag<&PosedLocal::Value, Component>(label, 0.01f);
-                else ui::Edit{r}.Drag<Component>(label, 0.01f);
-            };
-            drag_local.template operator()<&Transform::P>("Position");
-            // RotationUiVariant is reactively created and may not exist yet on the first frame.
-            if (const auto *rotation_ui_ptr = r.try_get<const RotationUiVariant>(transform_entity)) {
-                int mode_i = rotation_ui_ptr->index();
-                const char *const modes[]{"Quat (WXYZ)", "XYZ Euler", "Axis Angle"};
-                if (Combo("Rotation mode", &mode_i, modes, IM_ARRAYSIZE(modes)))
-                    action::Emit(action::view::SetRotationUiMode{mode_i, ui::ScopeFromAlt()});
-                auto ui_local = *rotation_ui_ptr;
-                bool changed = false;
-                std::visit(
-                    overloaded{
-                        [&](RotationQuat &v) { changed = ui::DragFloat4("Rotation (quat XYZW)", &v.Value[0], 0.01f); },
-                        [&](RotationEuler &v) { changed = ui::DragFloat3("Rotation (XYZ Euler, deg)", &v.Value[0], 1.f); },
-                        [&](RotationAxisAngle &v) {
-                            changed = ui::DragFloat3("Rotation axis (XYZ)", &v.Value[0], 0.01f);
-                            changed |= ui::DragFloat("Angle (deg)", &v.Value.w, 1.f);
-                        },
-                    },
-                    ui_local
-                );
-                ui::Gesture(changed, [&] { return action::view::SetTransformRotationFromUi{ToRotation(ui_local), ui_local, ui::ScopeFromAlt(true)}; });
-            }
-
-            const bool frozen = r.all_of<ScaleLocked>(transform_entity);
-            if (frozen) BeginDisabled();
-            drag_local.template operator()<&Transform::S>(std::format("Scale{}", frozen ? " (frozen)" : "").c_str());
-            if (frozen) EndDisabled();
+            // A bone edits its rest-relative delta, and an animated node edits its pose.
+            const auto draw = [&](auto edit) { ui::DrawEditor(edit, std::type_identity<Transform>{}, r.all_of<ScaleLocked>(transform_entity)); };
+            if (r.all_of<BoneDelta>(transform_entity)) draw(ui::Edit{r}.Sub<&BoneDelta::Value>());
+            else if (r.all_of<PosedLocal>(transform_entity)) draw(ui::Edit{r}.Sub<&PosedLocal::Value>());
+            else draw(ui::Edit{r});
         }
         Spacing();
         {
@@ -403,11 +371,11 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             SameLine();
             if (RadioButton("World", gizmo_state.Mode == World)) gizmo_edit.Set<&TransformGizmoState::Mode>(World);
             Spacing();
-            gizmo_edit.Check<&TransformGizmoState::Config, &TransformGizmo::Config::Snap>("Snap");
+            gizmo_edit.Check<&TransformGizmoState::Config, &TransformGizmo::Config::Snap>();
             if (gizmo_state.Config.Snap) {
                 SameLine();
                 // todo link/unlink snap values
-                gizmo_edit.Drag<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue>("Snap", 1.f);
+                gizmo_edit.Drag<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue>("Snap");
             }
         }
         Spacing();
@@ -521,7 +489,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                     for (uint32_t i = 0; i < material_count; ++i) {
                         if (const auto option_name = material_name(i);
                             Selectable(option_name.c_str(), material_index == i)) {
-                            action::Emit(action::object::SetMaterialAssignment{slot_primitive, i, ui::ScopeFromAlt()});
+                            action::Emit(action::object::SetMaterialAssignment{slot_primitive, i, ui::TargetFromAlt()});
                             material_index = i;
                         }
                     }
@@ -560,25 +528,25 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                 const auto edit_texture_info = [&](const char *label, auto tex) {
                     tex.template Run<&TextureInfo::Slot>([&](uint32_t &slot) { return edit_texture_slot(std::format("{} texture", label).c_str(), slot); });
                     tex.template Run<&TextureInfo::TexCoord>([&](uint32_t &set) { return SliderUInt(std::format("{} UV set", label).c_str(), &set, 0u, 3u); });
-                    tex.template Drag<&TextureInfo::UvOffset>(std::format("{} UV offset", label).c_str(), 0.01f);
-                    tex.template Drag<&TextureInfo::UvScale>(std::format("{} UV scale", label).c_str(), 0.01f);
-                    tex.template Drag<&TextureInfo::UvRotation>(std::format("{} UV rotation", label).c_str(), 0.01f);
+                    tex.template Drag<&TextureInfo::UvOffset>(std::format("{} UV offset", label).c_str());
+                    tex.template Drag<&TextureInfo::UvScale>(std::format("{} UV scale", label).c_str());
+                    tex.template Drag<&TextureInfo::UvRotation>(std::format("{} UV rotation", label).c_str());
                 };
                 fields.Color<&PBRMaterial::BaseColorFactor>("Base color");
-                fields.Slider<&PBRMaterial::MetallicFactor>("Metallic", 0.f, 1.f);
-                fields.Slider<&PBRMaterial::RoughnessFactor>("Roughness", 0.f, 1.f);
+                fields.Slider<&PBRMaterial::MetallicFactor>("Metallic");
+                fields.Slider<&PBRMaterial::RoughnessFactor>("Roughness");
                 edit_texture_info("Base color", fields.Sub<&PBRMaterial::BaseColorTexture>());
                 edit_texture_info("Metallic-roughness", fields.Sub<&PBRMaterial::MetallicRoughnessTexture>());
                 edit_texture_info("Normal", fields.Sub<&PBRMaterial::NormalTexture>());
-                fields.Slider<&PBRMaterial::NormalScale>("Normal scale", -2.f, 2.f);
+                fields.Slider<&PBRMaterial::NormalScale>();
                 edit_texture_info("Occlusion", fields.Sub<&PBRMaterial::OcclusionTexture>());
-                fields.Slider<&PBRMaterial::OcclusionStrength>("Occlusion strength", 0.f, 1.f);
+                fields.Slider<&PBRMaterial::OcclusionStrength>();
                 fields.Color<&PBRMaterial::EmissiveFactor>("Emissive");
                 fields.Run<&PBRMaterial::EmissiveStrength>([](float &v) { return ui::DragFloat("Emissive strength", &v, 0.01f, 0.f, FLT_MAX, "%.2f"); }, true);
                 edit_texture_info("Emissive", fields.Sub<&PBRMaterial::EmissiveTexture>());
 
-                fields.Enum<&PBRMaterial::AlphaMode>("Alpha mode", "Opaque\0Mask\0Blend\0");
-                if (materials[material_index].AlphaMode == MaterialAlphaMode::Mask) fields.Slider<&PBRMaterial::AlphaCutoff>("Alpha cutoff", 0.f, 1.f);
+                fields.Enum<&PBRMaterial::AlphaMode>();
+                if (materials[material_index].AlphaMode == MaterialAlphaMode::Mask) fields.Slider<&PBRMaterial::AlphaCutoff>();
                 fields.Run<&PBRMaterial::DoubleSided>([](uint32_t &v) {
                     bool double_sided = v != 0u;
                     if (!Checkbox("Double sided", &double_sided)) return false;
@@ -587,7 +555,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                 });
 
                 // IOR affects Fresnel reflectance even for non-transmissive dielectrics, so it stays visible.
-                fields.Slider<&PBRMaterial::Ior>("IOR", 1.f, 3.f);
+                fields.Slider<&PBRMaterial::Ior>("IOR");
 
                 const auto pbr_features_mask = r.all_of<PbrMeshFeatures>(active_mesh_entity) ? r.get<const PbrMeshFeatures>(active_mesh_entity).Mask : 0u;
                 // Renders the section header when the feature is enabled.
@@ -595,58 +563,58 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                     bool enabled = HasFeature(pbr_features_mask, feature);
                     if (Checkbox(label, &enabled)) {
                         const auto mask = enabled ? pbr_features_mask | uint32_t(feature) : pbr_features_mask & ~uint32_t(feature);
-                        action::Emit(action::object::SetPbrMeshFeaturesMask{mask, ui::ScopeFromAlt()});
+                        action::Emit(action::object::SetPbrMeshFeaturesMask{mask, ui::TargetFromAlt()});
                     }
                     if (enabled) SeparatorText(label);
                     return enabled;
                 };
 
                 if (feature_toggle("Transmission", PbrFeature::Transmission)) {
-                    fields.Slider<&PBRMaterial::Transmission, &Transmission::Factor>("Transmission factor", 0.f, 1.f);
+                    fields.Slider<&PBRMaterial::Transmission, &Transmission::Factor>("Transmission factor");
                     edit_texture_info("Transmission", fields.Sub<&PBRMaterial::Transmission, &Transmission::Texture>());
-                    fields.Slider<&PBRMaterial::Dispersion>("Dispersion", 0.f, 1.f);
+                    fields.Slider<&PBRMaterial::Dispersion>();
                     // Volume (only meaningful with transmission)
-                    fields.Slider<&PBRMaterial::Volume, &Volume::ThicknessFactor>("Thickness", 0.f, 10.f);
+                    fields.Slider<&PBRMaterial::Volume, &Volume::ThicknessFactor>("Thickness");
                     edit_texture_info("Thickness", fields.Sub<&PBRMaterial::Volume, &Volume::ThicknessTexture>());
                     fields.Color<&PBRMaterial::Volume, &Volume::AttenuationColor>("Attenuation color");
                     fields.Run<&PBRMaterial::Volume, &Volume::AttenuationDistance>([](float &v) { return ui::DragFloat("Attenuation distance", &v, 0.01f, 0.f, 0.f, v <= 0.f ? "Infinite" : "%.3f m"); }, true);
                 }
 
                 if (feature_toggle("Diffuse transmission", PbrFeature::DiffuseTrans)) {
-                    fields.Slider<&PBRMaterial::DiffuseTransmission, &DiffuseTransmission::Factor>("Diffuse transmission factor", 0.f, 1.f);
+                    fields.Slider<&PBRMaterial::DiffuseTransmission, &DiffuseTransmission::Factor>("Diffuse transmission factor");
                     edit_texture_info("Diffuse transmission", fields.Sub<&PBRMaterial::DiffuseTransmission, &DiffuseTransmission::Texture>());
                     fields.Color<&PBRMaterial::DiffuseTransmission, &DiffuseTransmission::ColorFactor>("Diffuse transmission color");
                     edit_texture_info("Diffuse transmission color", fields.Sub<&PBRMaterial::DiffuseTransmission, &DiffuseTransmission::ColorTexture>());
                 }
 
                 if (feature_toggle("Clearcoat", PbrFeature::Clearcoat)) {
-                    fields.Slider<&PBRMaterial::Clearcoat, &Clearcoat::Factor>("Clearcoat factor", 0.f, 1.f);
+                    fields.Slider<&PBRMaterial::Clearcoat, &Clearcoat::Factor>("Clearcoat factor");
                     edit_texture_info("Clearcoat", fields.Sub<&PBRMaterial::Clearcoat, &Clearcoat::Texture>());
-                    fields.Slider<&PBRMaterial::Clearcoat, &Clearcoat::RoughnessFactor>("Clearcoat roughness", 0.f, 1.f);
+                    fields.Slider<&PBRMaterial::Clearcoat, &Clearcoat::RoughnessFactor>("Clearcoat roughness");
                     edit_texture_info("Clearcoat roughness", fields.Sub<&PBRMaterial::Clearcoat, &Clearcoat::RoughnessTexture>());
                     edit_texture_info("Clearcoat normal", fields.Sub<&PBRMaterial::Clearcoat, &Clearcoat::NormalTexture>());
-                    fields.Slider<&PBRMaterial::Clearcoat, &Clearcoat::NormalScale>("Clearcoat normal scale", -2.f, 2.f);
+                    fields.Slider<&PBRMaterial::Clearcoat, &Clearcoat::NormalScale>("Clearcoat normal scale");
                 }
 
                 if (feature_toggle("Anisotropy", PbrFeature::Anisotropy)) {
-                    fields.Slider<&PBRMaterial::Anisotropy, &Anisotropy::Strength>("Anisotropy strength", 0.f, 1.f);
-                    fields.Run<&PBRMaterial::Anisotropy, &Anisotropy::Rotation>([](float &v) { return SliderAngle("Anisotropy rotation", &v, 0.f, 360.f, "%.1f deg"); }, true);
+                    fields.Slider<&PBRMaterial::Anisotropy, &Anisotropy::Strength>("Anisotropy strength");
+                    fields.Slider<&PBRMaterial::Anisotropy, &Anisotropy::Rotation>("Anisotropy rotation");
                     edit_texture_info("Anisotropy", fields.Sub<&PBRMaterial::Anisotropy, &Anisotropy::Texture>());
                 }
 
                 if (feature_toggle("Sheen", PbrFeature::Sheen)) {
                     fields.Color<&PBRMaterial::Sheen, &Sheen::ColorFactor>("Sheen color");
                     edit_texture_info("Sheen color", fields.Sub<&PBRMaterial::Sheen, &Sheen::ColorTexture>());
-                    fields.Slider<&PBRMaterial::Sheen, &Sheen::RoughnessFactor>("Sheen roughness", 0.f, 1.f);
+                    fields.Slider<&PBRMaterial::Sheen, &Sheen::RoughnessFactor>("Sheen roughness");
                     edit_texture_info("Sheen roughness", fields.Sub<&PBRMaterial::Sheen, &Sheen::RoughnessTexture>());
                 }
 
                 if (feature_toggle("Iridescence", PbrFeature::Iridescence)) {
-                    fields.Slider<&PBRMaterial::Iridescence, &Iridescence::Factor>("Iridescence factor", 0.f, 1.f);
+                    fields.Slider<&PBRMaterial::Iridescence, &Iridescence::Factor>("Iridescence factor");
                     edit_texture_info("Iridescence", fields.Sub<&PBRMaterial::Iridescence, &Iridescence::Texture>());
-                    fields.Slider<&PBRMaterial::Iridescence, &Iridescence::Ior>("Iridescence IOR", 1.f, 5.f);
-                    fields.Slider<&PBRMaterial::Iridescence, &Iridescence::ThicknessMinimum>("Thickness min", 0.f, 1000.f, "%.0f nm");
-                    fields.Slider<&PBRMaterial::Iridescence, &Iridescence::ThicknessMaximum>("Thickness max", 0.f, 1000.f, "%.0f nm");
+                    fields.Slider<&PBRMaterial::Iridescence, &Iridescence::Ior>("Iridescence IOR");
+                    fields.Slider<&PBRMaterial::Iridescence, &Iridescence::ThicknessMinimum>("Thickness min", "%.0f nm");
+                    fields.Slider<&PBRMaterial::Iridescence, &Iridescence::ThicknessMaximum>("Thickness max", "%.0f nm");
                     edit_texture_info("Iridescence thickness", fields.Sub<&PBRMaterial::Iridescence, &Iridescence::ThicknessTexture>());
                 }
             }
@@ -669,14 +637,14 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
         ui::Edit fields{r};
         const char *const type_names[]{"Directional", "Point", "Spot"};
         if (int type_i = int(light.Type); Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
-            action::Emit(action::object::SetLightType{PunctualLightType(type_i), ui::ScopeFromAlt()});
+            action::Emit(action::object::SetLightType{PunctualLightType(type_i), ui::TargetFromAlt()});
         }
-        fields.Color<&PunctualLight::Color>("Color");
-        fields.Slider<&PunctualLight::Intensity>("Intensity", 0.f, 1000.f, "%.2f");
+        fields.Color<&PunctualLight::Color>();
+        fields.Slider<&PunctualLight::Intensity>();
         if (light.Type == PunctualLightType::Point || light.Type == PunctualLightType::Spot) {
             bool infinite_range = light.Range <= 0.f;
             if (Checkbox("Infinite range", &infinite_range)) fields.Set<&PunctualLight::Range>(infinite_range ? 0.f : 100.f);
-            if (!infinite_range) fields.Slider<&PunctualLight::Range>("Range", 0.01f, 1000.f, "%.2f");
+            if (!infinite_range) fields.Slider<&PunctualLight::Range>();
         }
         if (light.Type == PunctualLightType::Spot) {
             constexpr float MaxCone = std::numbers::pi_v<float> / 2.f;
@@ -688,7 +656,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             const bool blend_changed = SliderFloat("Blend", &blend, 0.f, 1.f, "%.2f");
             ui::KeyDecorator(r, active_entity, animation::Target<&PunctualLight::InnerConeAngle>());
             ui::Gesture(size_changed || blend_changed, [&] {
-                return action::object::SetSpotCone{std::clamp(outer, 0.f, MaxCone), std::clamp(blend, 0.f, 1.f), ui::ScopeFromAlt()};
+                return action::object::SetSpotCone{std::clamp(outer, 0.f, MaxCone), std::clamp(blend, 0.f, 1.f), ui::TargetFromAlt()};
             });
         }
     }
@@ -730,7 +698,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                 if (is_active) {
                     Text("Active for: %s", target_name.c_str());
                 } else if (Button(std::format("Set as active for {}", target_name).c_str())) {
-                    action::Emit(action::audio::ActivateRealImpactMicrophone{target, active_entity});
+                    action::Emit(action::audio::ActivateRealImpactMicrophone{target});
                 }
                 if (Button("Select sound object")) action::Emit(action::selection::Select{target});
             }
@@ -896,7 +864,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 ui::ChoiceCombo(
                     "Active variant", mv->Active, variants,
                     [&](std::optional<uint32_t> v) { return v ? NamedOr(mv->Names[*v], "Variant ", *v) : std::string{"Default"}; },
-                    [&](std::optional<uint32_t> v) { action::Emit(action::UpdateOn<&MaterialVariants::Active>(viewport, v)); }
+                    [&](std::optional<uint32_t> v) { action::Emit(action::UpdateOf<&MaterialVariants::Active>(viewport, v)); }
                 );
             }
             if (!r.view<const Selected>().empty()) {
@@ -935,7 +903,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                         if (Button("Smooth by angle")) action::Emit(action::object::ShadeSelectedSmoothByAngle{r.get<const ShadeSmoothAngle>(viewport).Value});
                         SameLine();
                         SetNextItemWidth(GetFontSize() * 6);
-                        ui::Edit{r, viewport}.SliderAngle<&ShadeSmoothAngle::Value>("##SmoothByAngle");
+                        ui::Edit{r, viewport}.Slider<&ShadeSmoothAngle::Value>("##SmoothByAngle");
                         SameLine();
                         MeshEditor::HelpMarker("Maximum angle between face normals that will be considered as smooth");
                     }
@@ -973,14 +941,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                     f.Set<&ViewportDisplay::ClearColor>(color);
                 }
             }
-            f.Enum<&ViewportDisplay::AnisotropicFilter>(
-                "Anisotropic filtering",
-                "Off\0"
-                "2x\0"
-                "4x\0"
-                "8x\0"
-                "16x\0"
-            );
+            f.Enum<&ViewportDisplay::AnisotropicFilter>("Anisotropic filtering");
             if (CollapsingHeader("Motion blur")) {
                 if (bool enabled = settings.MotionBlur.has_value(); Checkbox("Enabled", &enabled)) {
                     f.Set<&ViewportDisplay::MotionBlur>(enabled ? std::optional{MotionBlur{}} : std::optional<MotionBlur>{});
@@ -1026,27 +987,27 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 const auto &theme = r.get<const ViewportTheme>(viewport);
                 if (Button("Reset##ViewportTheme")) action::Emit(action::view::ResetViewportTheme{});
                 auto c = f.Sub<&ViewportTheme::Colors>();
-                c.Color<&VC::Grid>("Grid");
-                c.Color<&VC::Wire>("Wire");
-                c.Color<&VC::WireEdit>("Wire edit");
-                c.Color<&VC::ObjectActive>("Object active");
-                c.Color<&VC::ObjectSelected>("Object selected");
-                c.Color<&VC::Light>("Light");
-                c.Color<&VC::Vertex>("Vertex");
-                c.Color<&VC::VertexSelected>("Vertex selected");
+                c.Color<&VC::Grid>();
+                c.Color<&VC::Wire>();
+                c.Color<&VC::WireEdit>();
+                c.Color<&VC::ObjectActive>();
+                c.Color<&VC::ObjectSelected>();
+                c.Color<&VC::Light>();
+                c.Color<&VC::Vertex>();
+                c.Color<&VC::VertexSelected>();
                 c.Color<&VC::EdgeSelectedIncidental>("Edge selected (incidental)");
-                c.Color<&VC::EdgeSelected>("Edge selected");
-                c.Color<&VC::EdgeSharp>("Edge sharp");
+                c.Color<&VC::EdgeSelected>();
+                c.Color<&VC::EdgeSharp>();
                 c.Color<&VC::FaceSelectedIncidental>("Face selected (incidental)");
-                c.Color<&VC::FaceSelected>("Face selected");
-                c.Color<&VC::ElementActive>("Element active");
-                c.Color<&VC::ElementExcited>("Element excited");
-                c.Color<&VC::FaceNormal>("Face normal");
-                c.Color<&VC::VertexNormal>("Vertex normal");
-                c.Color<&VC::BoneSolid>("Bone solid");
-                c.Color<&VC::BonePose>("Bone pose");
-                c.Color<&VC::BonePoseActive>("Bone pose active");
-                c.Color<&VC::Transform>("Transform");
+                c.Color<&VC::FaceSelected>();
+                c.Color<&VC::ElementActive>();
+                c.Color<&VC::ElementExcited>();
+                c.Color<&VC::FaceNormal>();
+                c.Color<&VC::VertexNormal>();
+                c.Color<&VC::BoneSolid>();
+                c.Color<&VC::BonePose>();
+                c.Color<&VC::BonePoseActive>();
+                c.Color<&VC::Transform>();
                 SeparatorText("Axis colors");
                 auto a = f.Sub<&ViewportTheme::AxisColors>();
                 a.Color<&AC::X>("Axis X");

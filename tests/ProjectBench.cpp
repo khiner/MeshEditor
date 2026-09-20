@@ -38,7 +38,8 @@ void BenchScene(uint32_t slices, bool render) {
     auto &p = *engine.P;
     const auto viewport = engine.Viewport;
     expect(p.Begin(dir));
-    p.Do(action::MakeAction(action::view::SetExtent{{128, 128}}));
+    engine.R.Context.get<ViewportExtent>().Value = {128, 128};
+    p.Settle();
     p.Do(action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshInstanceCreateInfo>()}));
     p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Edit}));
     p.Do(action::MakeAction(action::selection::SelectAll{}));
@@ -56,8 +57,7 @@ void BenchScene(uint32_t slices, bool render) {
     std::vector<double> edits, hot, cold;
     for (int i = 0; i < 30; ++i) {
         edits.push_back(Ms([&] {
-            auto move = std::make_unique<PendingTransform>(PendingTransform{.Delta = {.P = {0.001f, 0.f, 0.f}}});
-            action::Emit(action::view::TransformElements{std::move(move)}, action::Phase::Stage);
+            action::Emit(action::view::TransformElements{{.P = {0.001f, 0.f, 0.f}}}, action::Phase::Stage);
             p.Frame(action::Drain());
             action::Commit();
             p.Frame(action::Drain());

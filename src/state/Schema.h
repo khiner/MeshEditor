@@ -12,11 +12,17 @@ template<typename T> consteval std::string_view TypeName() {
     const auto begin = text.find("T = ") + 4;
     return text.substr(begin, text.rfind(']') - begin);
 }
+// A type's own name, without its namespace or template arguments.
+constexpr std::string_view LeafName(std::string_view name) {
+    const auto base = name.substr(0, name.find('<'));
+    const auto scope = base.rfind("::");
+    return scope == std::string_view::npos ? base : base.substr(scope + 2);
+}
+template<typename T> consteval std::string_view LeafName() { return LeafName(TypeName<T>()); }
 // Closed schema: adding a component or service assigns a compile-time slot here.
 // Names keep concrete definitions in their domain TUs, including private service types.
 inline constexpr std::string_view SchemaNames[] = {
     "fastfem::MassProperties",
-    "std::variant<RotationQuat, RotationEuler, RotationAxisAngle>",
     "std::variant<primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>",
     "AcousticMaterial",
     "Active",
@@ -144,7 +150,6 @@ inline constexpr std::string_view SchemaNames[] = {
     "RenderTargets",
     "RenderedLighting",
     "ReportContacts",
-    "RotationUiDriving",
     "SamplePlayback",
     "ScaleLocked",
     "Scene",
@@ -157,6 +162,7 @@ inline constexpr std::string_view SchemaNames[] = {
     "SoundVerticesModel",
     "SourceIndex",
     "StartBoneLength",
+    "StartPivot",
     "StartScreenTransform",
     "StartTransform",
     "Striker",
@@ -191,7 +197,6 @@ inline constexpr std::string_view SchemaNames[] = {
     "WorldTransform",
     "action::DragFieldStart",
     "action::Errors",
-    "action::mesh::LastOperation",
     "gltf::SourceAssets",
     "mtl::BindlessSet",
     "mtl::Context",

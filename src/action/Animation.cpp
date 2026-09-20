@@ -1,5 +1,7 @@
 #include "action/Animation.h"
+
 #include "Variant.h"
+#include "action/ScopeResolve.h"
 #include "animation/AnimationTimeline.h"
 #include "animation/Clips.h"
 #include "animation/Fields.h"
@@ -17,32 +19,30 @@ namespace action::animation {
 namespace {
 using ::animation::KeyTarget;
 
-// Entities a scope names: the given entity, or the bones in Pose mode and the objects otherwise.
-std::vector<state::Entity> ScopeEntities(const state::Scene &r, state::Entity viewport, Scope scope, state::Entity entity) {
+// Entities a target names: the bones in Pose mode and the objects otherwise.
+std::vector<state::Entity> TargetEntities(const state::Scene &r, state::Entity viewport, const Target &target) {
     std::vector<state::Entity> entities;
     const bool pose = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose;
-    switch (scope) {
-        case Scope::Entity: entities.emplace_back(entity); break;
-        case Scope::Active:
-            if (const auto e = pose ? FindActiveBone(r) : FindActiveEntity(r); e != state::Null) entities.emplace_back(e);
-            break;
-        case Scope::Selected:
-        case Scope::SelectedDelta:
+    ForEachTarget(
+        target, viewport,
+        [&] { return pose ? FindActiveBone(r) : FindActiveEntity(r); },
+        [&](auto &&fn) {
             if (pose) {
-                for (const auto e : r.view<const BoneSelection>()) entities.emplace_back(e);
+                for (const auto e : r.view<const BoneSelection>()) fn(e);
             } else {
                 for (const auto e : r.view<const Selected>())
-                    if (r.all_of<Transform>(e)) entities.emplace_back(e);
+                    if (r.all_of<Transform>(e)) fn(e);
             }
-            break;
-    }
+        },
+        [&](state::Entity e) { entities.emplace_back(e); }
+    );
     return entities;
 }
 
 std::vector<KeyTarget> Targets(const state::Scene &r, state::Entity viewport, const KeyScope &keys) {
     std::vector<KeyTarget> targets;
-    for (const auto e : ScopeEntities(r, viewport, keys.Scope, keys.Entity)) {
-        if (keys.Target) targets.emplace_back(e, *keys.Target);
+    for (const auto e : TargetEntities(r, viewport, keys.Target)) {
+        if (keys.Channel) targets.emplace_back(e, *keys.Channel);
         else
             for (const auto &target : ::animation::TransformTargets(r, e)) targets.emplace_back(e, target);
     }
@@ -63,11 +63,11 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const DeleteKey &a) {
                 const float seconds = CurrentSeconds(r, viewport);
-                if (a.Keys.Target) {
+                if (a.Keys.Channel) {
                     for (const auto &target : Targets(r, viewport, a.Keys)) ::animation::DeleteKey(r, viewport, target, seconds);
                     return;
                 }
-                for (const auto e : ScopeEntities(r, viewport, a.Keys.Scope, a.Keys.Entity)) ::animation::DeleteKeys(r, viewport, e, seconds);
+                for (const auto e : TargetEntities(r, viewport, a.Keys.Target)) ::animation::DeleteKeys(r, viewport, e, seconds);
             },
             [&](RecordChanged) { ::animation::RecordChanged(r, viewport, CurrentSeconds(r, viewport)); },
             [&](const AddAnimation &a) {

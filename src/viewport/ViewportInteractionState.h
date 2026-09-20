@@ -1,8 +1,14 @@
 #pragma once
 
-#include "FieldLimits.h"
+#include "Field.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "numeric/VectorMath.h"
+
+// The pivot a transform drag rotates and scales about, recorded by the drag's first update from the selection it started on.
+struct StartPivot {
+    vec3 P{};
+    quat R{1, 0, 0, 0};
+};
 
 struct PendingTransform {
     vec3 Pivot{};
@@ -29,4 +35,4 @@ struct TransformGizmoState {
     TransformGizmo::Config Config;
     TransformGizmo::Mode Mode;
 };
-template<> struct FieldLimits<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue> : Within<0.01f, 100.f> {};
+template<> inline constexpr FieldSpec Spec<TransformGizmo::Config, "SnapValue">{.Min = 0.01, .Max = 100};

@@ -117,7 +117,8 @@ void TestPickingIdentity() {
     const TestDir dir{"mesheditor-picking-identity"};
     Fixture f;
     expect(f.P->Begin(dir));
-    f.Do(action::view::SetExtent{{64, 64}});
+    f.R.Context.get<ViewportExtent>().Value = {64, 64};
+    f.P->Settle();
     f.Do(action::object::AddMeshPrimitive{primitive::UVSphere{}, std::make_unique<MeshInstanceCreateInfo>()});
     const auto first = FindActiveEntity(f.R);
     const auto check = [&](state::Entity entity) {
@@ -146,7 +147,8 @@ void TestProject(const char *sample) {
         Fixture f;
         auto &p = *f.P;
         expect(p.Begin(dir));
-        f.Do(action::view::SetExtent{{64, 64}});
+        f.R.Context.get<ViewportExtent>().Value = {64, 64};
+        f.P->Settle();
         const auto record = [&] {
             const auto node = p.History.Present;
             if (expected.contains(node)) expected.at(node).Check(f);
@@ -154,7 +156,7 @@ void TestProject(const char *sample) {
             return node;
         };
         record();
-        f.Do(action::UpdateOn<&ViewportDisplay::ShowOverlays>(f.Viewport, false));
+        f.Do(action::UpdateOf<&ViewportDisplay::ShowOverlays>(f.Viewport, false));
         record();
         // Verify entity-generation restoration when component values match.
         f.Do(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>()});
@@ -208,8 +210,7 @@ void TestProject(const char *sample) {
                 const auto selected = record();
                 const auto count = p.History.Nodes.size();
                 for (int i = 1; i <= 3; ++i) {
-                    auto move = std::make_unique<PendingTransform>(PendingTransform{.Delta = {.P = vec3{0.4f, 0.3f, 0.2f} * (float(i) / 3)}});
-                    f.Stage(action::view::TransformElements{std::move(move)});
+                    f.Stage(action::view::TransformElements{{.P = vec3{0.4f, 0.3f, 0.2f} * (float(i) / 3)}});
                     expect(p.History.Nodes.size() == count);
                 }
                 f.Finish();
@@ -217,8 +218,7 @@ void TestProject(const char *sample) {
                 expect(p.History.MaterializeLive() != expected.at(selected).Persistent);
                 if (dense) expect(f.Image() != expected.at(selected).Image);
                 record();
-                auto move = std::make_unique<PendingTransform>(PendingTransform{.Delta = {.P = {2.f, 0.f, 0.f}}});
-                f.Stage(action::view::TransformElements{std::move(move)});
+                f.Stage(action::view::TransformElements{{.P = {2.f, 0.f, 0.f}}});
                 p.CancelGesture();
                 expect(!p.HasStaged());
                 record();
@@ -229,12 +229,12 @@ void TestProject(const char *sample) {
             f.Do(action::selection::SelectAll{});
             record();
             const auto count = p.History.Nodes.size();
-            for (int i = 1; i <= 3; ++i) f.Stage(action::UpdateOf<&Transform::P>(action::Scope::SelectedDelta, vec3{float(i), 0, 0}));
+            for (int i = 1; i <= 3; ++i) f.Stage(action::UpdateOf<&Transform::P>(action::OnSelectedDelta{}, vec3{float(i), 0, 0}));
             expect(p.History.Nodes.size() == count);
             f.Finish();
             expect(p.History.Nodes.size() == count + 1);
             record();
-            f.Stage(action::UpdateOf<&Transform::P>(action::Scope::SelectedDelta, vec3{2, 0, 0}));
+            f.Stage(action::UpdateOf<&Transform::P>(action::OnSelectedDelta{}, vec3{2, 0, 0}));
             p.CancelGesture();
             expect(!p.HasStaged());
             record();
@@ -268,7 +268,8 @@ void TestProject(const char *sample) {
     expect(Decompress(archive.Path / "history.project", moved.Path));
     Fixture f;
     expect(f.P->Open(moved));
-    f.Do(action::view::SetExtent{{64, 64}});
+    f.R.Context.get<ViewportExtent>().Value = {64, 64};
+    f.P->Settle();
     expected.at(f.P->History.Present).Check(f);
     for (const auto &[node, state] : expected) {
         f.P->Navigate(node);
@@ -325,7 +326,7 @@ void TestProject(const char *sample) {
     const auto later_node = f.Do(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>()});
     const auto later_state = f.P->History.MaterializeLive();
     f.P->Navigate(saved_node);
-    const auto branch_node = f.Do(action::UpdateOn<&ViewportDisplay::ShowGrid>(f.Viewport, false));
+    const auto branch_node = f.Do(action::UpdateOf<&ViewportDisplay::ShowGrid>(f.Viewport, false));
     const auto branch_state = f.P->History.MaterializeLive();
     const auto retained_nodes = f.P->History.Nodes.size();
     expect(f.P->Save());

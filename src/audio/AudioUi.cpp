@@ -163,22 +163,21 @@ void DrawModalModelSettings(
 ) {
     const ContactSurface default_surface = WithPreset({}, surfaces::acoustic::Default);
     const auto &surface = r.all_of<ContactSurface>(e) ? r.get<const ContactSurface>(e) : default_surface;
-    ui::PatchEdit fs{e, settings};
+    ui::PatchEdit fs{settings};
 
     SeparatorText("Material properties");
     ui::ChoiceCombo("Presets", material.Name, materials::acoustic::All | transform(&AcousticMaterial::Name), std::identity{}, [&](const std::string &name) {
-        action::Emit(action::audio::SetMaterialPreset{e, name});
+        action::Emit(action::audio::SetMaterialPreset{name});
     });
     using Props = AcousticMaterialProperties;
-    ui::PatchEdit fm{e, material};
-    fm.Slider<&AcousticMaterial::Properties, &Props::Density>("Density (kg/m^3)", "%.0f");
+    ui::PatchEdit fm{material};
+    fm.Slider<&AcousticMaterial::Properties, &Props::Density>("Density (kg/m^3)");
     fm.Slider<&AcousticMaterial::Properties, &Props::YoungModulus>("Young's modulus (Pa)", "%.3g", ImGuiSliderFlags_Logarithmic);
-    fm.Slider<&AcousticMaterial::Properties, &Props::PoissonRatio>("Poisson's ratio", "%.2f");
+    fm.Slider<&AcousticMaterial::Properties, &Props::PoissonRatio>("Poisson's ratio");
     double coefficients[]{material.Properties.Alpha, material.Properties.Beta * 1e6};
     ui::Gesture(InputScalarN("Rayleigh damping alpha / beta (1/s, µs)", ImGuiDataType_Double, coefficients, 2, nullptr, nullptr, "%.3g"), [&] {
-        using AlphaLimits = FieldLimits<&AcousticMaterial::Properties, &Props::Alpha>;
-        using BetaLimits = FieldLimits<&AcousticMaterial::Properties, &Props::Beta>;
-        return action::PatchFieldsOf<&AcousticMaterial::Properties>(e, std::array{&Props::Alpha, &Props::Beta}, std::array{std::clamp(coefficients[0], AlphaLimits::Min, AlphaLimits::Max), std::clamp(coefficients[1] * 1e-6, BetaLimits::Min, BetaLimits::Max)});
+        constexpr auto &alpha = field::SpecOf<&Props::Alpha>, &beta = field::SpecOf<&Props::Beta>;
+        return action::PatchFieldsOf<&AcousticMaterial::Properties>(std::array{&Props::Alpha, &Props::Beta}, std::array{std::clamp(coefficients[0], alpha.Min, alpha.Max), std::clamp(coefficients[1] * 1e-6, beta.Min, beta.Max)});
     });
     MeshEditor::HelpMarker("Mass-proportional alpha primarily damps low frequencies. Stiffness-proportional beta primarily damps high frequencies.");
 
@@ -190,7 +189,7 @@ void DrawModalModelSettings(
     MeshEditor::HelpMarker("The eigensolver computes this many eigenpairs before filtering the retained frequency band and mode count.");
     float min_freq = settings.Solve.Modal.MinModeFreq, max_freq = settings.Solve.Modal.MaxModeFreq;
     ui::Gesture(DragFloatRange2("Frequency band (Hz)", &min_freq, &max_freq, 1.f, 20.f, 20000.f, "%.0f", "%.0f"), [&] {
-        return action::PatchFieldsOf<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal>(e, std::array{&ModalSolverConfig::MinModeFreq, &ModalSolverConfig::MaxModeFreq}, std::array{min_freq, max_freq});
+        return action::PatchFieldsOf<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal>(std::array{&ModalSolverConfig::MinModeFreq, &ModalSolverConfig::MaxModeFreq}, std::array{min_freq, max_freq});
     });
     fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::Tolerance>("Residual tolerance", "%.1e", ImGuiSliderFlags_Logarithmic);
     fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::MaxRestarts>("Restart limit");
@@ -218,12 +217,12 @@ void DrawModalModelSettings(
 
     if (settings.Discretization == fastfem::Discretization::Tet10) {
         SeparatorText("Tet10 mesh");
-        fs.Enum<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::Refinement>("Refinement", "None\0Quality\0Quality + resolution\0");
+        fs.Enum<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::Refinement>();
         MeshEditor::HelpMarker("None: basic tetrahedralization and repair. Quality: improve element shapes. Quality + resolution: also refine to the target resolution.");
         fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::SurfaceSimplificationRatio>([](float &ratio) {
-            using Limits = FieldLimits<&ModalSolveSettings::Solve, &SurfaceSolveConfig::SurfaceSimplificationRatio>;
+            constexpr auto &limits = field::SpecOf<&SurfaceSolveConfig::SurfaceSimplificationRatio>;
             float percent = ratio * 100;
-            if (!SliderFloat("Surface detail", &percent, float(Limits::Min * 100), float(Limits::Max * 100), "%.1f%%", ImGuiSliderFlags_AlwaysClamp)) return false;
+            if (!SliderFloat("Surface detail", &percent, float(limits.Min * 100), float(limits.Max * 100), "%.1f%%", ImGuiSliderFlags_AlwaysClamp)) return false;
             ratio = percent / 100;
             return true;
         },
@@ -258,9 +257,9 @@ void DrawModalModelSettings(
         SeparatorText("Finite-cell grid");
         fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Resolution>("Target resolution", nullptr, ImGuiSliderFlags_AlwaysClamp);
         MeshEditor::HelpMarker("Target divisions along the object's longest scaled axis. The other axes use the same target spacing.");
-        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::CutDepth>("Cut depth");
-        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::FictitiousScale>("Fictitious scale", "%.1e", ImGuiSliderFlags_Logarithmic);
-        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::PaddingCells>("Padding (cells)", "%.2f");
+        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::CutDepth>();
+        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::FictitiousScale>(nullptr, "%.1e", ImGuiSliderFlags_Logarithmic);
+        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::PaddingCells>("Padding (cells)");
         fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::GridOffsetCells>([](dvec3 &offset) {
             return InputScalarN("Grid offset (cells)", ImGuiDataType_Double, &offset.x, 3);
         });
@@ -482,8 +481,8 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
     if (CollapsingHeader("Synthesis")) {
         ui::Edit fe{r, e};
         fe.Slider<&ModalGain::Value>("Gain");
-        fe.Drag<&ModalTuning::FundamentalFreq>("Fundamental (Hz)", 1.f, "%.1f");
-        fe.Slider<&ModalTuning::T60Scale>("T60 scale");
+        fe.Drag<&ModalTuning::FundamentalFreq>("Fundamental (Hz)");
+        fe.Slider<&ModalTuning::T60Scale>();
     }
 
     const bool is_recording = recording && !recording->Complete();
@@ -509,16 +508,16 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
 void DrawGlobalSynthControls(state::Scene &r, state::Entity viewport) {
     ui::Edit f{r, viewport};
     if (!r.view<const ModalModes>().empty() && CollapsingHeader("Modal synthesis", ImGuiTreeNodeFlags_DefaultOpen)) {
-        f.Slider<&ModalSoundControls::RenderThreads>("Render threads");
+        f.Slider<&ModalSoundControls::RenderThreads>();
         MeshEditor::HelpMarker("Objects render independently, so a scene of many ringing ones scales on this.");
-        f.Slider<&ModalSoundControls::MaxImpacts>("Max impacts");
+        f.Slider<&ModalSoundControls::MaxImpacts>();
         MeshEditor::HelpMarker("Cap on simultaneous in-flight contact pulses.");
         f.Slider<&ModalSoundControls::ModalLevel>("Modal gain");
         MeshEditor::HelpMarker("Gain on every modal object's resonator output.");
         f.Slider<&ModalSoundControls::ClickGain>("Click");
         MeshEditor::HelpMarker("Level of the rigid-body acceleration-noise click.");
-        f.Slider<&ModalSoundControls::MinContactExcitation>("Min contact excitation", "%.3g", ImGuiSliderFlags_Logarithmic);
-        f.Slider<&ModalSoundControls::MinContactSpeed>("Min contact speed", "%.3f");
+        f.Slider<&ModalSoundControls::MinContactExcitation>(nullptr, "%.3g", ImGuiSliderFlags_Logarithmic);
+        f.Slider<&ModalSoundControls::MinContactSpeed>();
         MeshEditor::HelpMarker("A physics collision sounds only above both floors: the loudest mode its impulse starts ringing, and its approach speed.");
 
         DrawSurfaceSynthControls(r, viewport);
@@ -526,15 +525,15 @@ void DrawGlobalSynthControls(state::Scene &r, state::Entity viewport) {
         SeparatorText("Striker");
         const auto &striker = r.get<const Striker>(viewport);
         ui::ChoiceCombo("Material", striker.Material.Name, materials::acoustic::All | transform(&AcousticMaterial::Name), std::identity{}, [&](const std::string &name) {
-            action::Emit(action::audio::SetMaterialPreset{viewport, name, true});
+            action::Emit(action::audio::SetMaterialPreset{name, true});
         });
-        f.Slider<&Striker::TipRadius>("Tip radius (m)", "%.4f");
-        f.Slider<&Striker::Length>("Length (m)", "%.3f");
+        f.Slider<&Striker::TipRadius>("Tip radius (m)");
+        f.Slider<&Striker::Length>("Length (m)");
         Text("Mass: %.3g kg", StrikerMass(striker));
         MeshEditor::HelpMarker("The mallet that strikes objects. A harder material or lighter capsule brightens the contact, and the tip radius sets its curvature.");
     }
     if (!r.view<const VertexSamples>().empty() && CollapsingHeader("Samples", ImGuiTreeNodeFlags_DefaultOpen)) {
-        f.Slider<&ModalSoundControls::SampleGain>("Sample gain");
+        f.Slider<&ModalSoundControls::SampleGain>();
         MeshEditor::HelpMarker("Level of impact-sample playback.");
     }
 }

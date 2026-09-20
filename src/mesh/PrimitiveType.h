@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Field.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 
@@ -45,6 +46,26 @@ struct Cone {
     uint32_t Slices{32};
 };
 } // namespace primitive
+
+template<> inline constexpr FieldSpec Spec<primitive::Plane, "HalfExtents">{.Min = primitive::MinSize / 2, .Max = primitive::MaxSize / 2};
+template<> inline constexpr FieldSpec Spec<primitive::Circle, "Radius">{.Min = primitive::MinSize, .Max = primitive::MaxSize};
+template<> inline constexpr FieldSpec Spec<primitive::Circle, "Segments">{.Min = 3, .Max = 128};
+template<> inline constexpr FieldSpec Spec<primitive::Cuboid, "HalfExtents">{.Min = primitive::MinSize / 2, .Max = primitive::MaxSize / 2};
+template<> inline constexpr FieldSpec Spec<primitive::IcoSphere, "Radius">{.Min = primitive::MinSize, .Max = primitive::MaxSize};
+template<> inline constexpr FieldSpec Spec<primitive::IcoSphere, "Subdivisions">{.Min = 1, .Max = 6};
+template<> inline constexpr FieldSpec Spec<primitive::UVSphere, "Radius">{.Min = primitive::MinSize, .Max = primitive::MaxSize};
+template<> inline constexpr FieldSpec Spec<primitive::UVSphere, "Slices">{.Min = 3, .Max = 128};
+template<> inline constexpr FieldSpec Spec<primitive::UVSphere, "Stacks">{.Min = 2, .Max = 64};
+template<> inline constexpr FieldSpec Spec<primitive::Torus, "MajorRadius">{.Min = primitive::MinSize, .Max = primitive::MaxSize};
+template<> inline constexpr FieldSpec Spec<primitive::Torus, "MinorRadius">{.Min = primitive::MinSize, .Max = primitive::MaxSize};
+template<> inline constexpr FieldSpec Spec<primitive::Torus, "MajorSegments">{.Min = 3, .Max = 256};
+template<> inline constexpr FieldSpec Spec<primitive::Torus, "MinorSegments">{.Min = 3, .Max = 256};
+template<> inline constexpr FieldSpec Spec<primitive::Cylinder, "Radius">{.Min = primitive::MinSize, .Max = primitive::MaxSize};
+template<> inline constexpr FieldSpec Spec<primitive::Cylinder, "Height">{.Min = primitive::MinSize, .Max = primitive::MaxSize};
+template<> inline constexpr FieldSpec Spec<primitive::Cylinder, "Slices">{.Min = 3, .Max = 128};
+template<> inline constexpr FieldSpec Spec<primitive::Cone, "Radius">{.Min = primitive::MinSize, .Max = primitive::MaxSize};
+template<> inline constexpr FieldSpec Spec<primitive::Cone, "Height">{.Min = primitive::MinSize, .Max = primitive::MaxSize};
+template<> inline constexpr FieldSpec Spec<primitive::Cone, "Slices">{.Min = 3, .Max = 128};
 
 using PrimitiveShape = std::variant<
     primitive::Plane,

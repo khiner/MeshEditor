@@ -1,5 +1,7 @@
 #include "action/Mesh.h"
 
+#include "gpu/MeshTopologyOp.h"
+
 #include "TransformMath.h"
 #include "Variant.h"
 #include "mesh/Mesh.h"
@@ -476,8 +478,8 @@ void KnifeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities
     });
 }
 
-void MergeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, action::mesh::Merge::Mode mode, float distance) {
-    using Mode = action::mesh::Merge::Mode;
+void MergeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, action::mesh::MergeMode mode, float distance) {
+    using Mode = action::mesh::MergeMode;
     if (mode == Mode::Collapse) return RunOperator(r, mesh_entities, MeshTopologyOp::MergeCollapse);
     if (mode == Mode::ByDistance) return RunOperator(r, mesh_entities, MeshTopologyOp::MergeByDistance, distance);
     const auto &meshes = r.Context.get<const MeshStore>();
@@ -499,12 +501,12 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     const auto latch_translate = [&] { r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate); };
     std::visit(
         overloaded{
-            [&](const Delete &a) { RunOperator(r, targets, a.Op); },
-            [&](const Merge &a) { MergeSelected(r, targets, a.Value, std::max(a.Distance, 0.f)); },
+            [&](const Delete &a) { RunOperator(r, targets, MeshTopologyOp(uint32_t(a.Mode))); },
+            [&](const Merge &a) { MergeSelected(r, targets, a.Mode, std::max(a.Distance, 0.f)); },
             [&](const Extrude &a) {
-                using Mode = Extrude::Mode;
-                const auto op = a.Value == Mode::Edges ? MeshTopologyOp::ExtrudeEdges : a.Value == Mode::FacesIndividual ? MeshTopologyOp::ExtrudeFacesIndividual :
-                                                                                                                           MeshTopologyOp::ExtrudeRegion;
+                using Mode = ExtrudeMode;
+                const auto op = a.Mode == Mode::Edges ? MeshTopologyOp::ExtrudeEdges : a.Mode == Mode::FacesIndividual ? MeshTopologyOp::ExtrudeFacesIndividual :
+                                                                                                                         MeshTopologyOp::ExtrudeRegion;
                 RunOperator(r, targets, op);
                 latch_translate();
             },
@@ -533,7 +535,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 if (Dot(a.Normal, a.Normal) <= 0.f) return;
                 BisectSelected(r, targets, a.Point, a.Normal, a.ClearInner, a.ClearOuter);
             },
-            [&](const Symmetrize &a) { SymmetrizeSelected(r, targets, a.Axis, a.Negative); },
+            [&](const Symmetrize &a) { SymmetrizeSelected(r, targets, uint8_t(a.Axis), a.Negative); },
             [&](const Solidify &a) { RunOperator(r, targets, MeshTopologyOp::Solidify, a.Thickness); },
             [&](ConnectVertices) { RunOperator(r, targets, MeshTopologyOp::ConnectVertices); },
             [&](const Knife &a) { KnifeSelected(r, targets, a.Start, a.End, *a.View); },
@@ -548,8 +550,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 latch_translate();
             },
             [&](const Dissolve &a) {
-                using Mode = Dissolve::Mode;
-                switch (a.Value) {
+                using Mode = DissolveMode;
+                switch (a.Mode) {
                     case Mode::Vertices: return RunOperator(r, targets, MeshTopologyOp::DissolveVertices);
                     case Mode::Edges: return RunOperator(r, targets, MeshTopologyOp::DissolveEdges);
                     case Mode::Faces: return RunOperator(r, targets, MeshTopologyOp::DissolveFaces);

@@ -50,7 +50,6 @@
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/EntityDestroyTracker.h"
-#include "scene/RotationUi.h"
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
@@ -283,7 +282,18 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         r.remove<PendingBoxSelect>(viewport);
 
         const auto &interaction = r.get<const Interaction>(viewport);
-        if (interaction.Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == state::Null) {
+        const bool element_mode = interaction.Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == state::Null;
+        // An additive drag unions each box with the selection it started from, recorded on the first update.
+        // The GPU pass captures the element masks on its first run.
+        if (additive && !r.all_of<AdditiveBoxSelectBaseline>(viewport)) {
+            auto &baseline = r.emplace<AdditiveBoxSelectBaseline>(viewport);
+            if (interaction.Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport)) {
+                for (const auto e : r.view<BoneSelection>()) baseline.BoneSelections.emplace_back(e, r.get<BoneSelection>(e));
+            } else if (!element_mode) {
+                for (const auto e : r.view<Selected>()) baseline.SelectedEntities.emplace_back(e);
+            }
+        }
+        if (element_mode) {
             const auto ranges = GetElementRangesForSelected(r, viewport);
             if (!additive) {
                 for (const auto &range : ranges) r.remove<MeshActiveElement>(range.MeshEntity);
@@ -1189,19 +1199,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             if (FlushIndexedWrites(wt_writes, [&] { return buffers.Instances.GetMutableTransforms(); })) request(RenderRequest::Reuse);
         }
     }
-    {
-        for (auto e : reactive(r, Change::Rotation)) {
-            const auto *local = EditedLocal(r, e);
-            if (!local) continue;
-            if (r.all_of<RotationUiDriving>(e)) {
-                r.remove<RotationUiDriving>(e);
-                continue;
-            }
-            const auto v = local->R;
-            if (auto *ui = r.try_edit<RotationUiVariant>(e)) *ui = ToUiVariant(v, ui->index());
-            else r.emplace<RotationUiVariant>(e, RotationQuat{v});
-        }
-    }
     // Update an active scene camera before processing SceneView changes.
     if (const auto camera = LookThroughCameraEntity(r); camera != state::Null &&
         reactive(r, Change::WorldTransform).contains(camera)) {
@@ -1425,7 +1422,6 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
         .on<LightIndex>(On::Create | On::Destroy)
         .on<EditMode>(On::Create | On::Update);
     reactive(r, Change::CameraLens).on<Perspective>(On::Create | On::Update).on<Orthographic>(On::Create | On::Update).on<LookingThrough>(On::Create | On::Destroy);
-    reactive(r, Change::Rotation).on<Transform>(On::Create | On::Update).on<PosedLocal>(On::Create | On::Update);
     reactive(r, Change::WorldTransform).on<WorldTransform>(On::Create | On::Update);
     reactive(r, Change::TransformPending).on<PendingTransform>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::TransformEnd).on<StartTransform>(On::Destroy);

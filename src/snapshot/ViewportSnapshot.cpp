@@ -4,7 +4,6 @@
 #include "gizmo/GizmoInteraction.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
-#include "scene/RotationUi.h"
 #include "selection/SelectionComponents.h"
 #include "snapshot/SnapshotRegistration.h"
 #include "viewport/GizmoDrag.h"
@@ -39,7 +38,7 @@ void RegisterViewport(Tables &tables) {
     tables.Snapshots[state::Type<ViewCamera>()].History = false;
     Derived<
         EnabledInteractionModes, AdditiveBoxSelectBaseline, ExciteSelectionBaseline,
-        PendingEditElementClick, PendingBoxSelect, PendingPick, BoxSelectState, RotationUiVariant, RotationUiDriving,
-        GizmoInteraction, PendingTransform, StartScreenTransform, StartTransform, StartBoneLength, action::DragFieldStart, action::mesh::LastOperation, VideoRecording>(tables);
+        PendingEditElementClick, PendingBoxSelect, PendingPick, BoxSelectState,
+        GizmoInteraction, PendingTransform, StartPivot, StartScreenTransform, StartTransform, StartBoneLength, action::DragFieldStart, VideoRecording>(tables);
 }
 } // namespace snapshot::detail

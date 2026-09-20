@@ -23,6 +23,7 @@
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
+#include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "state/Scene.h"
 #include "viewport/InteractionComponents.h"
@@ -161,13 +162,16 @@ void UpdateTraits<PrimitiveShape>::Write(state::Scene &r, state::Entity e, uint1
     r.patch<PrimitiveShape>(e, [&](PrimitiveShape &s) { std::visit([&](auto &alt) { std::memcpy(reinterpret_cast<std::byte *>(&alt) + offset, src, size); }, s); });
     RegeneratePrimitive(r, e);
 }
+const FieldSpec &UpdateTraits<PrimitiveShape>::Bounds(const state::Scene &r, state::Entity e, uint16_t offset) {
+    return std::visit([&](const auto &alt) -> const FieldSpec & { return FieldAt<std::remove_cvref_t<decltype(alt)>>(offset).Spec; }, r.get<const PrimitiveShape>(e));
+}
 } // namespace action
 
 namespace action::object {
 void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     auto &meshes = r.Context.get<MeshStore>();
     auto begin_translate = [&] { r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate); };
-    const auto duplicate = [&](bool linked, const PendingTransform *placement = nullptr) {
+    const auto duplicate = [&](bool linked) {
         if (!(linked ? CanDuplicateLinked(r, viewport) : CanDuplicate(r, viewport))) return;
         const profile::CpuScope scope{linked ? "DuplicateLinked" : "Duplicate"};
         const auto entities = SortedEntities(r.view<Selected>());
@@ -183,21 +187,18 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         }
         for (const auto src : entities) {
             const auto dup = linked ? DuplicateLinkedOne(r, src) : DuplicateOne(r, src);
-            // Copies are rooted in world space, so placement needs no parent conversion.
-            if (placement) r.patch<Transform>(dup, [&](auto &t) { t = placement->ApplyTo(t, r.all_of<ScaleLocked>(dup)); });
             if (r.all_of<Active>(src)) {
                 r.remove<Active>(src);
                 r.emplace<Active>(dup);
             }
             r.remove<Selected>(src);
         }
-        if (placement) r.remove<StartScreenTransform>(viewport);
-        else begin_translate();
+        begin_translate();
     };
     // Mesh-data components live on the object's mesh entity.
-    auto for_each_mesh_target = [&](Scope scope, auto &&fn) {
-        ForEachScopeTarget(
-            scope, state::Null, state::Null,
+    auto for_each_mesh_target = [&](const Target &target, auto &&fn) {
+        ForEachTarget(
+            target, viewport,
             [&] { return GetActiveMeshEntity(r); },
             [&](auto &&f) { for (const auto e : ::selection::GetSelectedMeshEntities(r)) f(e); },
             fn
@@ -283,7 +284,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const ImportMesh &a) { RequestImportMesh(r, viewport, a.Path, *a.Info); },
             [&](const SetPbrMeshFeaturesMask &a) {
-                for_each_mesh_target(a.Scope, [&](state::Entity e) {
+                for_each_mesh_target(a.Target, [&](state::Entity e) {
                     if (a.Mask != 0u) r.emplace_or_replace<PbrMeshFeatures>(e, a.Mask);
                     else r.remove<PbrMeshFeatures>(e);
                 });
@@ -295,14 +296,14 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 reactive(r, Change::Materials).emplace(viewport);
             },
             [&](const SetMaterialSlotSelection &a) {
-                for_each_mesh_target(a.Scope, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialSlotSelection>(e, a.PrimitiveIndex); });
+                for_each_mesh_target(a.Target, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialSlotSelection>(e, a.PrimitiveIndex); });
             },
             [&](const SetMaterialAssignment &a) {
-                for_each_mesh_target(a.Scope, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialAssignment>(e, a.PrimitiveIndex, a.MaterialIndex); });
+                for_each_mesh_target(a.Target, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialAssignment>(e, a.PrimitiveIndex, a.MaterialIndex); });
             },
             [&](const SetProjection &a) {
-                ForEachScopeTarget(
-                    a.Scope, state::Null, state::Null,
+                ForEachTarget(
+                    a.Target, viewport,
                     [&] { const auto e = FindActiveEntity(r); return HasLens(r, e) ? e : state::Null; },
                     [&](auto &&fn) {
                         for (const auto e : r.view<Selected>())
@@ -316,7 +317,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 );
             },
             [&](const SetLightType &a) {
-                ForEachComponentTarget<PunctualLight>(r, a.Scope, state::Null, state::Null, [&](auto e) {
+                ForEachComponentTarget<PunctualLight>(r, a.Target, viewport, [&](auto e) {
                     r.patch<PunctualLight>(e, [&](auto &light) {
                         auto next = Defaults::MakePunctualLight(a.Type);
                         next.Color = light.Color;
@@ -326,7 +327,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 });
             },
             [&](const SetSpotCone &a) {
-                ForEachComponentTarget<PunctualLight>(r, a.Scope, state::Null, state::Null, [&](auto e) {
+                ForEachComponentTarget<PunctualLight>(r, a.Target, viewport, [&](auto e) {
                     r.patch<PunctualLight>(e, [&](auto &light) {
                         light.OuterConeAngle = a.OuterAngle;
                         light.InnerConeAngle = a.OuterAngle * (1.f - a.Blend);

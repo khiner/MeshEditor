@@ -29,7 +29,7 @@ KeyTint::~KeyTint() {
     if (Pushed) ImGui::PopStyleColor(Pushed);
 }
 
-void KeyDecorator(state::Entity entity, const ChannelTarget &target, const animation::ChannelState &d) {
+void KeyDecorator(const state::Scene &r, state::Entity entity, const ChannelTarget &target, const animation::ChannelState &d) {
     ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::PushID(int(uint32_t(target.Component) ^ (uint32_t(target.Offset) << 16) ^ target.Index));
     const float h = ImGui::GetFrameHeight();
@@ -48,29 +48,30 @@ void KeyDecorator(state::Entity entity, const ChannelTarget &target, const anima
     ImGui::SetItemTooltip("%s", d.KeyAtFrame ? "Delete keyframe" : d.HasChannel ? "Insert keyframe" :
                                                                                   "Insert keyframe and start animating this property");
     if (clicked) {
-        const action::animation::KeyScope keys{action::Scope::Entity, entity, target};
+        const action::animation::KeyScope keys{entity == FindActiveEntity(r) ? action::Target{action::OnActive{}} : action::Target{entity}, target};
         if (d.KeyAtFrame) action::Emit(action::animation::DeleteKey{keys});
         else action::Emit(action::animation::InsertKey{keys});
     }
     ImGui::PopID();
 }
 
-action::Scope ScopeFromAlt(bool delta_capable) {
-    if (!ImGui::GetIO().KeyAlt) return action::Scope::Active;
-    return delta_capable ? action::Scope::SelectedDelta : action::Scope::Selected;
+action::Target TargetFromAlt(bool delta_capable) {
+    if (!ImGui::GetIO().KeyAlt) return action::OnActive{};
+    if (delta_capable) return action::OnSelectedDelta{};
+    return action::OnSelected{};
 }
 
 namespace detail {
 namespace {
 // Preserve gesture state because ImGui permits one active item.
-action::Scope GestureScope{action::Scope::Active};
+action::Target GestureTarget{action::OnActive{}};
 bool GestureTyped{false};
 } // namespace
 
-std::optional<action::Scope> FieldGesture(state::Scene &r, bool changed, bool selection, bool delta_capable) {
+std::optional<action::Target> FieldGesture(state::Scene &r, bool changed, bool selection, bool delta_capable) {
     if (selection && ImGui::IsItemHovered() && r.view<Selected>().size() > 1) ImGui::SetItemTooltip("Hold Alt to apply to all selected");
     if (ImGui::IsItemActivated()) {
-        GestureScope = ScopeFromAlt(delta_capable);
+        GestureTarget = TargetFromAlt(delta_capable);
         GestureTyped = false;
     }
     if (ImGui::TempInputIsActive(ImGui::GetItemID())) GestureTyped = true;
@@ -81,11 +82,12 @@ std::optional<action::Scope> FieldGesture(state::Scene &r, bool changed, bool se
     // Widgets that change without staying active (combos, checkboxes) commit at once.
     if (ImGui::IsItemDeactivatedAfterEdit() || (changed && !ImGui::IsItemActive())) action::Commit();
     if (!changed) return {};
-    if (!selection) return action::Scope::Entity;
+    // An explicit-entity editor records its own target.
+    if (!selection) return action::Target{action::OnActive{}};
     // An item that was never activated reads the modifier at the change.
-    const auto scope = ImGui::IsItemActive() || ImGui::IsItemDeactivated() ? GestureScope : ScopeFromAlt(delta_capable);
+    const auto target = ImGui::IsItemActive() || ImGui::IsItemDeactivated() ? GestureTarget : TargetFromAlt(delta_capable);
     // Alt-typed values copy to the selection instead of offsetting it.
-    return scope == action::Scope::SelectedDelta && GestureTyped ? action::Scope::Selected : scope;
+    return std::holds_alternative<action::OnSelectedDelta>(target) && GestureTyped ? action::Target{action::OnSelected{}} : target;
 }
 } // namespace detail
 } // namespace ui

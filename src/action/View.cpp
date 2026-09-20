@@ -24,6 +24,14 @@
 
 using std::ranges::find;
 
+namespace {
+// The drag's pivot, recorded from the selection on its first update.
+const StartPivot &StartPivotOf(state::Scene &r, state::Entity viewport) {
+    if (const auto *pivot = r.try_get<const StartPivot>(viewport)) return *pivot;
+    return r.emplace<StartPivot>(viewport, TransformPivot(r, viewport));
+}
+} // namespace
+
 namespace action::view {
 void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     auto patch_camera_stopped = [&](auto &&fn) {
@@ -33,30 +41,6 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         const auto mode = r.get<const ViewportDisplay>(viewport).ViewportShading;
         if (mode == ViewportShadingMode::MaterialPreview) r.patch<MaterialPreviewLighting>(viewport, [](auto &) {});
         else if (mode == ViewportShadingMode::Rendered) r.patch<RenderedLighting>(viewport, [](auto &) {});
-    };
-    // Pose mode targets the active bone if there is one; otherwise the active object.
-    auto active_rotation_target = [&] {
-        const auto bone = FindActiveBone(r);
-        return r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && bone != state::Null ? bone : FindActiveEntity(r);
-    };
-    // Selected/SelectedDelta fan out to the selected bones in Pose mode, else the selected objects.
-    auto rotation_targets = [&](Scope scope) {
-        std::vector<state::Entity> targets;
-        ForEachScopeTarget(
-            scope, state::Null, state::Null, active_rotation_target,
-            [&](auto &&fn) {
-                if (r.get<const Interaction>(viewport).Mode == InteractionMode::Pose)
-                    for (const auto e : r.view<BoneSelection>()) fn(e);
-                else
-                    for (const auto e : r.view<Selected, RotationUiVariant>()) fn(e);
-            },
-            [&](state::Entity e) { targets.emplace_back(e); }
-        );
-        return targets;
-    };
-    // Gesture-start rotation, snapshotted into the shared DragFieldStart baseline on first apply.
-    auto rotation_start = [&](state::Entity e) {
-        return FieldGestureStart<quat>(r, e, state::Type<Transform>(), offsetof(Transform, R), [&](quat &q) { q = EditedLocal(r, e)->R; });
     };
     std::visit(
         overloaded{
@@ -87,7 +71,6 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const OrbitViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.RotateBy(a.DeltaRad); }); },
             [&](const ZoomViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.ZoomBy(a.Factor); }); },
-            [&](const SetExtent &a) { r.Context.get<ViewportExtent>().Value = a.Extent; },
             [&](const SetStudioEnvironment &a) { r.emplace_or_replace<StudioEnvironment>(viewport, a.Name); poke_active_lighting(); },
             [&](const SetActiveScene &a) { gltf::SwitchActiveScene(r, a.Scene); },
             [&](ResetViewCamera) { patch_camera_stopped([](auto &c) { c = Defaults::ViewCamera; }); },
@@ -101,40 +84,13 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](const SetViewCameraTarget &a) { patch_camera_stopped([&](auto &c) { c.Target = a.Target; }); },
             [&](const SetViewCameraLens &a) { patch_camera_stopped([&](auto &c) { c.Data = a.Data; }); },
             [&](const SetViewCameraTargetDirection &a) { r.patch<ViewCamera>(viewport, [&](auto &c) { c.SetTargetDirection(a.Direction); }); },
-            [&](const SetRotationUiMode &a) {
-                for (const auto e : rotation_targets(a.Scope)) {
-                    r.replace<RotationUiVariant>(e, CreateVariantByIndex<RotationUiVariant>(a.Index));
-                    PatchEditedLocal(r, e, [](auto &) {});
-                }
-            },
-            [&](const SetTransformRotationFromUi &a) {
-                if (a.Scope == Scope::SelectedDelta) {
-                    // Rotate each selected entity by the same relative rotation the active turned through.
-                    const auto active = active_rotation_target();
-                    if (active == state::Null) return;
-                    const quat delta = a.R * Conjugate(rotation_start(active));
-                    for (const auto e : rotation_targets(Scope::SelectedDelta)) {
-                        const quat rotation = Normalize(delta * rotation_start(e));
-                        PatchEditedLocal(r, e, [&](auto &t) { t.R = rotation; });
-                        if (e == active) { // keep the editor's representation stable; others re-sync from R
-                            r.replace<RotationUiVariant>(e, a.UiVariant);
-                            r.emplace_or_replace<RotationUiDriving>(e);
-                        }
-                    }
-                } else {
-                    for (const auto e : rotation_targets(a.Scope)) {
-                        r.replace<RotationUiVariant>(e, a.UiVariant);
-                        r.emplace_or_replace<RotationUiDriving>(e);
-                        PatchEditedLocal(r, e, [&](auto &t) { t.R = a.R; });
-                    }
-                }
-            },
             [&](const TransformSelection &a) {
                 const bool bone_edit_mode = IsBoneEditMode(r, viewport);
                 const auto root_selected = RootSelectedForTransform(r, viewport);
 
-                const Transform ts{a.Value->Pivot, a.Value->PivotR, vec3{1}}; // only P/R are used
-                const auto &td = a.Value->Delta;
+                const auto &pivot = StartPivotOf(r, viewport);
+                const auto &td = a.Delta;
+                const PendingTransform pending{pivot.P, pivot.R, td};
 
                 std::vector<std::pair<state::Entity, Transform>> locals;
                 std::vector<std::pair<state::Entity, float>> bone_scales;
@@ -153,7 +109,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     return std::nullopt;
                 };
 
-                const auto rot = ts.R, rT = Conjugate(rot);
+                const auto rot = pivot.R, rT = Conjugate(rot);
                 for (const auto e : root_selected) {
                     const auto [ts_e, start_pd] = get_start(e);
 
@@ -167,7 +123,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                             const bool tip_only = parts->Tip && !parts->Root && !parts->Body;
                             const bool root_only = parts->Root && !parts->Tip && !parts->Body;
                             if (tip_only || root_only) {
-                                const auto transform_point = [&](vec3 p) { return td.P + ts.P + Rotate(td.R, rot * (rT * (p - ts.P) * td.S)); };
+                                const auto transform_point = [&](vec3 p) { return td.P + pivot.P + Rotate(td.R, rot * (rT * (p - pivot.P) * td.S)); };
 
                                 const float bone_length = *sbl;
                                 const auto start_head = ts_e.P;
@@ -185,14 +141,14 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                         }
 
                         // Full bone transform in bone edit mode.
-                        const auto offset = ts_e.P - ts.P;
-                        make_local(e, {td.P + ts.P + Rotate(td.R, rot * (rT * offset * td.S)), Normalize(td.R * ts_e.R), ts_e.S}, pd);
+                        const auto offset = ts_e.P - pivot.P;
+                        make_local(e, {td.P + pivot.P + Rotate(td.R, rot * (rT * offset * td.S)), Normalize(td.R * ts_e.R), ts_e.S}, pd);
                         continue;
                     }
 
                     // Object mode / non-bone transform.
                     const bool frozen = r.all_of<ScaleLocked>(e);
-                    make_local(e, a.Value->ApplyTo(ts_e, frozen), start_pd);
+                    make_local(e, pending.ApplyTo(ts_e, frozen), start_pd);
                 }
 
                 // Snapshot starts before patching so later patches don't perturb the snapshot, then apply.
@@ -210,11 +166,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                         r.emplace<StartTransform>(instance_entity, r.get<WorldTransform>(instance_entity), ToTransform(GetParentDelta(r, instance_entity)));
                     }
                 }
-                r.emplace_or_replace<PendingTransform>(viewport, *a.Value);
-            },
-            [&](EndTransform) {
-                r.clear<StartTransform, StartBoneLength>();
-                r.remove<StartScreenTransform>(viewport);
+                const auto &pivot = StartPivotOf(r, viewport);
+                r.emplace_or_replace<PendingTransform>(viewport, pivot.P, pivot.R, a.Delta);
             },
             [&](const SetActiveTool &a) {
                 using Tool = SetActiveTool::Tool;

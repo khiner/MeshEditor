@@ -1,6 +1,6 @@
 #pragma once
 
-#include "FieldLimits.h"
+#include "Field.h"
 #include "numeric/vec2.h"
 
 #include <cmath>
@@ -36,10 +36,10 @@ struct Perspective {
 using CameraLens = std::variant<Perspective, Orthographic>;
 
 inline constexpr float MinFieldOfViewRad{0.0174533f}, MaxFieldOfViewRad{3.12414f}; // 1 and 179 degrees.
-template<> struct FieldLimits<&Perspective::FieldOfViewRad> : Within<MinFieldOfViewRad, MaxFieldOfViewRad> {};
-template<> struct FieldLimits<&Perspective::NearClip> : Within<MinNearClip, MaxFarClip> {};
-template<> struct FieldLimits<&Perspective::FarClip> : Within<MinNearClip, MaxFarClip> {};
-template<> struct FieldLimits<&Orthographic::Mag, &vec2::x> : Within<0.01f, 100.f> {};
-template<> struct FieldLimits<&Orthographic::Mag, &vec2::y> : Within<0.01f, 100.f> {};
-template<> struct FieldLimits<&Orthographic::NearClip> : Within<MinNearClip, MaxFarClip> {};
-template<> struct FieldLimits<&Orthographic::FarClip> : Within<MinNearClip, MaxFarClip> {};
+template<> inline constexpr FieldSpec Spec<Perspective, "FieldOfViewRad">{.Min = MinFieldOfViewRad, .Max = MaxFieldOfViewRad, .Digits = 1, .Unit = FieldUnit::Radians};
+template<> inline constexpr FieldSpec Spec<Perspective, "NearClip">{.Min = MinNearClip, .Max = MaxFarClip};
+template<> inline constexpr FieldSpec Spec<Perspective, "FarClip">{.Min = MinNearClip, .Max = MaxFarClip};
+template<> inline constexpr FieldSpec Spec<Perspective, "AspectRatio">{.Min = 0.1, .Max = 5};
+template<> inline constexpr FieldSpec Spec<Orthographic, "Mag">{.Min = 0.01, .Max = 100};
+template<> inline constexpr FieldSpec Spec<Orthographic, "NearClip">{.Min = MinNearClip, .Max = MaxFarClip};
+template<> inline constexpr FieldSpec Spec<Orthographic, "FarClip">{.Min = MinNearClip, .Max = MaxFarClip};

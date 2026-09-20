@@ -14,14 +14,14 @@ template<typename T> void AddNamed(state::Scene &r, std::string_view prefix) {
 }
 } // namespace
 
-void Apply(state::Scene &r, state::Entity, const Action &action) {
+void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     std::visit(
         overloaded{
             [&](const SetMotionType &a) {
                 using Type = SetMotionType::Type;
                 // Selected scope fans out to the selected entities that already take part in physics.
-                ForEachScopeTarget(
-                    a.Scope, state::Null, state::Null,
+                ForEachTarget(
+                    a.Target, viewport,
                     [&] { return FindActiveEntity(r); },
                     [&](auto &&fn) {
                         for (const auto e : r.view<Selected>())
@@ -45,10 +45,10 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 );
             },
             [&](const SetMotion &a) {
-                ForEachComponentTarget<PhysicsMotion>(r, a.Scope, state::Null, state::Null, [&](state::Entity e) { r.replace<PhysicsMotion>(e, *a.Value); });
+                ForEachComponentTarget<PhysicsMotion>(r, a.Target, viewport, [&](state::Entity e) { r.replace<PhysicsMotion>(e, *a.Value); });
             },
             [&](const SetColliderShape &a) {
-                ForEachComponentTarget<ColliderShape>(r, a.Scope, state::Null, state::Null, [&](state::Entity e) {
+                ForEachComponentTarget<ColliderShape>(r, a.Target, viewport, [&](state::Entity e) {
                     const auto owner_mesh = FindMeshEntity(r, e);
                     r.patch<ColliderShape>(e, [&](ColliderShape &cs) {
                         cs.Shape = a.Shape;

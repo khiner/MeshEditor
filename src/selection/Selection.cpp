@@ -4,11 +4,15 @@
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
+#include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
+#include "scene/WorldTransform.h"
 #include "selection/SelectionComponents.h"
+#include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/ViewportInteractionState.h"
 
 #include "state/Scene.h"
 
@@ -105,6 +109,52 @@ std::vector<state::Entity> RootSelectedForTransform(const state::Scene &r, state
             if (!is_parent_selected(e)) root_selected.emplace_back(e);
     }
     return root_selected;
+}
+
+vec3 EditSelectionCenter(const state::Scene &r, Element edit_mode) {
+    vec3 center{};
+    uint32_t vertex_count = 0;
+    for (const auto &[mesh_entity, instance_entity] : selection::ComputePrimaryEditInstances(r, false)) {
+        const auto *stats = GetElementSelectionSummary(r, mesh_entity, edit_mode);
+        if (!stats || stats->SelectedVertexCount == 0) continue;
+        const auto &world = r.get<const WorldTransform>(instance_entity);
+        center += float(stats->SelectedVertexCount) * world.P + Rotate(world.R, world.S * stats->PositionSum);
+        vertex_count += stats->SelectedVertexCount;
+    }
+    return vertex_count > 0 ? center / float(vertex_count) : center;
+}
+
+StartPivot TransformPivot(state::Scene &r, state::Entity viewport) {
+    const auto mode = r.get<const Interaction>(viewport).Mode;
+    const auto active_entity = FindActiveEntity(r);
+    const bool bone_edit_mode = IsBoneEditMode(r, viewport);
+    const bool bone_mode = bone_edit_mode || (mode == InteractionMode::Pose && FindArmatureObject(r, active_entity) != state::Null);
+    const auto active = bone_mode ? FindActiveBone(r) : active_entity;
+    StartPivot pivot{.R = active != state::Null ? r.get<const WorldTransform>(active).R : quat{1, 0, 0, 0}};
+    if (mode == InteractionMode::Edit && !bone_edit_mode) {
+        const auto element = r.get<const EditMode>(viewport).Value;
+        // Derive the summary now, since a restore leaves it stale until the next render.
+        if (r.Context.get<const GpuSceneState>().EditSelectionDirty) ApplyEditSelectionCommand(r, GetElementRangesForSelected(r, viewport), element, EditSelectionOperation::Derive);
+        pivot.P = EditSelectionCenter(r, element);
+        return pivot;
+    }
+    vec3 sum{};
+    uint32_t count = 0;
+    // A bone contributes its head for a selected root and its tail for a selected tip, so a whole bone contributes its midpoint.
+    for (const auto e : RootSelectedForTransform(r, viewport)) {
+        const auto &wt = r.get<const WorldTransform>(e);
+        const auto *parts = bone_edit_mode ? r.try_get<const BoneSelection>(e) : nullptr;
+        if (!parts || parts->Root) {
+            sum += wt.P;
+            ++count;
+        }
+        if (parts && parts->Tip) {
+            sum += wt.P + Rotate(wt.R, vec3{0, r.get<const BoneDisplayScale>(e).Value, 0});
+            ++count;
+        }
+    }
+    pivot.P = count > 0 ? sum / float(count) : vec3{};
+    return pivot;
 }
 
 bool CanDuplicate(const state::Scene &r, state::Entity viewport) {

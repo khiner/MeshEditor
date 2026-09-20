@@ -11,7 +11,12 @@
 #include "project/store/History.h"
 #include "viewport/CameraView.h"
 
+#include <span>
+
 namespace project {
+// An action's name, and for a field write the component and field it names.
+std::string Label(const action::Action &);
+
 // Construct before engine initialization so all document entities use the versioned allocator.
 // Close history before tearing down the scene's stores.
 struct Project {
@@ -36,8 +41,6 @@ struct Project {
     void CancelGesture();
     void Settle(EventPass = EventPass::Frame);
     void Navigate(int node);
-    // Moves to `node`'s parent so the next gesture replaces the node's operator with its own.
-    void EditNode(int node);
     void Undo();
     void Redo();
     bool Replay();
@@ -72,11 +75,31 @@ struct Project {
     size_t GestureStart{};
     std::optional<int> Navigation;
     std::optional<int> Editing; // The node the open gesture replaces on commit
+
+    struct EditDraft {
+        int Node;
+        uint64_t Revision; // The history revision the commands were decoded at.
+        std::vector<Command> Commands;
+    };
+    std::optional<EditDraft> Draft;
+    bool RestageRequested{false};
+    // The draft of `node`, decoded anew when the node or the history changed.
+    EditDraft &DraftOf(int node);
+    // Re-runs the draft on its node's parent at frame end.
+    // The commit that follows replaces a leaf node and forks a node with children.
+    void RequestRestage() { RestageRequested = true; }
+
     void Tick(const action::Action &, EventPass = EventPass::Frame);
     bool ApplyCommand(action::Action, EventPass, bool staged = false);
-    // Records the commands as a new node, or as `replace`'s content.
+    void RunRecorded(std::span<const Command>);
+    // Records the commands as a new node, replacing `replace` when it has no children and adding a sibling otherwise.
     int Commit(std::string label, std::optional<int> replace = {});
     void FinishGesture(EventPass);
+    // Removes the drag-start records a gesture's updates made.
+    void EndGesture(EventPass);
+    // Moves to `node`'s parent so the open gesture replaces the node on commit.
+    void EditNode(int node);
+    void RestageDraft();
     // Keys changed animated properties before a user commit while recording.
     void RecordKeys();
     void ReleaseGesture();

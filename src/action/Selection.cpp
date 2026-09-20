@@ -64,23 +64,6 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     r.clear<Selected>();
                 }
             },
-            [&](SnapshotBoxSelectBaseline) {
-                const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
-                const auto active_entity = FindActiveEntity(r);
-                const bool active_is_armature = FindArmatureObject(r, active_entity) != state::Null;
-                AdditiveBoxSelectBaseline baseline;
-                if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
-                    // Preserve the initial domain masks throughout the drag.
-                } else if (interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature)) {
-                    for (const auto e : r.view<BoneSelection>()) baseline.BoneSelections.emplace_back(e, r.get<BoneSelection>(e));
-                } else if (interaction_mode == InteractionMode::Object) {
-                    for (const auto e : r.view<Selected>()) baseline.SelectedEntities.emplace_back(e);
-                }
-                r.emplace_or_replace<AdditiveBoxSelectBaseline>(viewport, std::move(baseline));
-            },
-            [&](ClearBoxSelectBaseline) {
-                r.remove<AdditiveBoxSelectBaseline>(viewport);
-            },
             // GPU selection resolves the rectangle after action application.
             [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(viewport, a.BoxPx, a.Additive, *a.View); },
             // GPU selection resolves the pixel after action application.

@@ -19,31 +19,31 @@
 #include "ui/HelpMarker.h" // depends on imgui
 
 // Surface finish. Ranges cover the finish presets with headroom (see surfaces::acoustic::All).
-template<> struct FieldLimits<&ContactSurface::Roughness> : Within<1e-9, 1e-2> {};
-template<> struct FieldLimits<&ContactSurface::CorrelationLength> : Within<1e-7, 1e-1> {};
-template<> struct FieldLimits<&ContactSurface::SpectralSlope> : Within<-3., 0.> {};
+template<> inline constexpr FieldSpec Spec<ContactSurface, "Roughness">{.Min = 1e-9, .Max = 1e-2};
+template<> inline constexpr FieldSpec Spec<ContactSurface, "CorrelationLength">{.Min = 1e-7, .Max = 1e-1};
+template<> inline constexpr FieldSpec Spec<ContactSurface, "SpectralSlope">{.Min = -3, .Max = 0, .Digits = 2};
 
-template<> struct FieldLimits<&SurfaceSoundControls::MaxVoices> : Within<1., 64.> {};
-template<> struct FieldLimits<&SurfaceSoundControls::SustainLevel> : Within<0., 4.> {};
-template<> struct FieldLimits<&SurfaceSoundControls::AccelNoiseGain> : Within<0., 4.> {};
-template<> struct FieldLimits<&SurfaceSoundControls::Coupling> : Within<0., 4.> {};
-template<> struct FieldLimits<&SurfaceSoundControls::ContactDamping> : Within<0., 10.> {};
-template<> struct FieldLimits<&SurfaceSoundControls::MinSlipSpeed> : Within<0., 1.> {};
-template<> struct FieldLimits<&SurfaceSoundControls::MinSweepSpeed> : Within<0., 1.> {};
+template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "MaxVoices">{.Min = 1, .Max = 64};
+template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "SustainLevel">{.Min = 0, .Max = 4};
+template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "AccelNoiseGain">{.Min = 0, .Max = 4};
+template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "Coupling">{.Min = 0, .Max = 4};
+template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "ContactDamping">{.Min = 0, .Max = 10};
+template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "MinSlipSpeed">{.Min = 0, .Max = 1};
+template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "MinSweepSpeed">{.Min = 0, .Max = 1};
 
 using namespace ImGui;
 
 void DrawContactSurfaceControls(state::Scene &r, state::Entity e, const ContactSurface &surface, const AcousticMaterial &material) {
     SeparatorText("Surface finish");
     ui::ChoiceCombo("Presets##finish", surface.Name, surfaces::acoustic::All | std::views::transform(&ContactSurfacePreset::Name), std::identity{}, [&](const std::string &name) {
-        action::Emit(action::audio::SetSurfacePreset{e, name});
+        action::Emit(action::audio::SetSurfacePreset{name});
     });
-    ui::PatchEdit fsurf{e, surface};
+    ui::PatchEdit fsurf{surface};
     fsurf.Slider<&ContactSurface::Roughness>("Roughness (m)", "%.3g", ImGuiSliderFlags_Logarithmic);
     MeshEditor::HelpMarker("Root-mean-square asperity height. A physical length measured with a profilometer, unrelated to a render material's roughness.");
     fsurf.Slider<&ContactSurface::CorrelationLength>("Correlation length (m)", "%.3g", ImGuiSliderFlags_Logarithmic);
     MeshEditor::HelpMarker("Lateral asperity spacing. With roughness it fixes the surface gradient a contact bears on.");
-    fsurf.Slider<&ContactSurface::SpectralSlope>("Spectral slope", "%.2f");
+    fsurf.Slider<&ContactSurface::SpectralSlope>();
     MeshEditor::HelpMarker("Exponent of the roughness power spectrum. More negative is smoother-sounding.");
 
     // Derived contact constants, for a contact against a like body at the object's own weight.
@@ -63,21 +63,21 @@ void DrawContactSurfaceControls(state::Scene &r, state::Entity e, const ContactS
 void DrawSurfaceSynthControls(state::Scene &r, state::Entity viewport) {
     ui::Edit f{r, viewport};
     SeparatorText("Sustained contact");
-    f.Slider<&SurfaceSoundControls::MaxVoices>("Max voices");
+    f.Slider<&SurfaceSoundControls::MaxVoices>();
     MeshEditor::HelpMarker("Cap on simultaneous sustained-contact voices.");
     f.Slider<&SurfaceSoundControls::SustainLevel>("Level##sustain");
     MeshEditor::HelpMarker("Level of the force a persisting contact drives the modes with as the two surfaces slide over one another.");
     f.Slider<&SurfaceSoundControls::AccelNoiseGain>("Acceleration noise");
     MeshEditor::HelpMarker("Level of the acceleration noise a body's rigid recoil radiates while a contact persists. Zero disables it.");
-    f.Slider<&SurfaceSoundControls::Coupling>("Coupling");
+    f.Slider<&SurfaceSoundControls::Coupling>();
     MeshEditor::HelpMarker("How much of the object's vibration modulates the contact separation. Coupling produces micro-collisions and chatter that an open-loop force cannot.");
-    f.Slider<&SurfaceSoundControls::ContactDamping>("Contact damping");
+    f.Slider<&SurfaceSoundControls::ContactDamping>();
     MeshEditor::HelpMarker("Scale on the Hunt-Crossley dissipation the pair's restitution implies.");
-    f.Slider<&SurfaceSoundControls::MinSlipSpeed>("Min slip speed", "%.3f");
-    f.Slider<&SurfaceSoundControls::MinSweepSpeed>("Min sweep speed", "%.3f");
+    f.Slider<&SurfaceSoundControls::MinSlipSpeed>();
+    f.Slider<&SurfaceSoundControls::MinSweepSpeed>();
     MeshEditor::HelpMarker("A persisting contact sounds only once its slip or either sweep speed clears its floor. Slip is how fast the surfaces slide, and sweep is how fast the contact travels over each surface, so a rolling body has sweep without slip.");
-    f.Check<&SurfaceSoundControls::MuteGeometricDrive>("Mute geometric drive");
-    f.Check<&SurfaceSoundControls::MuteFrictionDrive>("Mute friction drive");
+    f.Check<&SurfaceSoundControls::MuteGeometricDrive>();
+    f.Check<&SurfaceSoundControls::MuteFrictionDrive>();
     MeshEditor::HelpMarker("Silence one modal drive row at a time, which isolates a feedback loop through the modes to a row. The body feed and every other channel stay live.");
     Text("Active voices: %u", SurfaceActiveVoices(r.Context.get<const ModalAudio>()));
 }

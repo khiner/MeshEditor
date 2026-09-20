@@ -4,6 +4,7 @@
 #include "viewport/ViewportUi.h"
 
 #include "Camera.h"
+#include "Field.h"
 #include "Profile.h"
 #include "Variant.h"
 #include "action/Animation.h"
@@ -20,7 +21,6 @@
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
 #include "gltf/SourceAssets.h"
-#include "numeric/Angles.h"
 #include "numeric/MatrixMath.h"
 #include "project/Project.h"
 #include "render/GpuBuffers.h"
@@ -228,20 +228,6 @@ void DrawOverlayDropdownArrow(ImVec2 pos, ImVec2 size, const OverlayIconButtonSt
     if (IsMouseClicked(0) && arrow_hovered && !popup_open) OpenPopup(popup_id);
 }
 
-// The world-space center of the selected vertices across the edit meshes' primary instances.
-vec3 EditSelectionCenter(const state::Scene &r, Element edit_mode) {
-    vec3 center{};
-    uint32_t vertex_count = 0;
-    for (const auto &[mesh_entity, instance_entity] : selection::ComputePrimaryEditInstances(r, false)) {
-        const auto *stats = GetElementSelectionSummary(r, mesh_entity, edit_mode);
-        if (!stats || stats->SelectedVertexCount == 0) continue;
-        const auto &world = r.get<const WorldTransform>(instance_entity);
-        center += float(stats->SelectedVertexCount) * world.P + Rotate(world.R, world.S * stats->PositionSum);
-        vertex_count += stats->SelectedVertexCount;
-    }
-    return vertex_count > 0 ? center / float(vertex_count) : center;
-}
-
 // A world point's screen position in logical pixels.
 vec2 ScreenPx(const mat4 &vp, const rect &viewport_rect, vec3 p) {
     const auto cs = vp * vec4{p, 1.f};
@@ -311,9 +297,6 @@ void UpdateMeshDrag(state::Scene &r, FrameState &frame) {
     drag.Staged = value;
 }
 
-constexpr const char *DeleteNames[]{"Vertices", "Edges", "Faces", "Only Edges & Faces", "Only Faces", "Loose"};
-constexpr const char *MergeNames[]{"At Center", "At First", "At Last", "Collapse", "By Distance"};
-
 // The edit-mode operator popups, opened by keys and the right mouse button.
 void DrawMeshOperatorMenus(state::Scene &r, state::Entity viewport) {
     using namespace action::mesh;
@@ -326,18 +309,18 @@ void DrawMeshOperatorMenus(state::Scene &r, state::Entity viewport) {
         EndMenu();
     };
     const auto merge_items = [&] {
-        for (size_t i = 0; i < std::size(MergeNames); ++i) op(MergeNames[i], Merge{Merge::Mode(i)});
+        for (size_t i = 0; i < field::EnumCount<MergeMode>; ++i) op(field::EnumLabels<MergeMode>[i], Merge { field::EnumValues<MergeMode>[i] });
     };
     const auto delete_items = [&] {
-        for (size_t i = 0; i < 5; ++i) op(DeleteNames[i], action::mesh::Delete{MeshTopologyOp(i)});
+        for (size_t i = 0; i < 5; ++i) op(field::EnumLabels<DeleteMode>[i], action::mesh::Delete { field::EnumValues<DeleteMode>[i] });
         Separator();
-        op("Dissolve Vertices", Dissolve{Dissolve::Mode::Vertices});
-        op("Dissolve Edges", Dissolve{Dissolve::Mode::Edges});
-        op("Dissolve Faces", Dissolve{Dissolve::Mode::Faces});
-        op("Limited Dissolve", Dissolve{Dissolve::Mode::Limited});
+        op("Dissolve Vertices", Dissolve{DissolveMode::Vertices});
+        op("Dissolve Edges", Dissolve{DissolveMode::Edges});
+        op("Dissolve Faces", Dissolve{DissolveMode::Faces});
+        op("Limited Dissolve", Dissolve{DissolveMode::Limited});
         Separator();
-        op("Edge Collapse", Merge{Merge::Mode::Collapse});
-        op("Edge Loops", Dissolve{Dissolve::Mode::Edges});
+        op("Edge Collapse", Merge{MergeMode::Collapse});
+        op("Edge Loops", Dissolve{DissolveMode::Edges});
     };
     const auto vertex_items = [&] {
         op("Bevel Vertices", Bevel{.Vertices = true});
@@ -347,10 +330,10 @@ void DrawMeshOperatorMenus(state::Scene &r, state::Entity viewport) {
         Separator();
         submenu("Merge Vertices", merge_items);
         op("Separate", Separate{});
-        op("Dissolve Vertices", Dissolve{Dissolve::Mode::Vertices});
+        op("Dissolve Vertices", Dissolve{DissolveMode::Vertices});
     };
     const auto edge_items = [&] {
-        op("Extrude Edges", Extrude{Extrude::Mode::Edges}, action::Phase::Stage);
+        op("Extrude Edges", Extrude{ExtrudeMode::Edges}, action::Phase::Stage);
         op("Bevel Edges", Bevel{});
         op("Bridge Edge Loops", BridgeEdgeLoops{});
         op("Loop Cut", LoopCut{});
@@ -359,11 +342,11 @@ void DrawMeshOperatorMenus(state::Scene &r, state::Entity viewport) {
         op("Rotate Edge", EdgeRotate{});
         op("Edge Split", EdgeSplit{});
         op("Rip", Rip{}, action::Phase::Stage);
-        op("Dissolve Edges", Dissolve{Dissolve::Mode::Edges});
+        op("Dissolve Edges", Dissolve{DissolveMode::Edges});
     };
     const auto face_items = [&] {
-        op("Extrude Faces", Extrude{Extrude::Mode::Region}, action::Phase::Stage);
-        op("Extrude Individual Faces", Extrude{Extrude::Mode::FacesIndividual}, action::Phase::Stage);
+        op("Extrude Faces", Extrude{ExtrudeMode::Region}, action::Phase::Stage);
+        op("Extrude Individual Faces", Extrude{ExtrudeMode::FacesIndividual}, action::Phase::Stage);
         op("Inset Faces", Inset{});
         op("Poke Faces", Poke{});
         op("Triangulate Faces", Triangulate{});
@@ -375,13 +358,13 @@ void DrawMeshOperatorMenus(state::Scene &r, state::Entity viewport) {
         op("Fill Holes", FillHoles{});
         Separator();
         op("Flip Normals", FlipNormals{});
-        op("Dissolve Faces", Dissolve{Dissolve::Mode::Faces});
+        op("Dissolve Faces", Dissolve{DissolveMode::Faces});
     };
     const auto cleanup_items = [&] {
-        op("Delete Loose", action::mesh::Delete{MeshTopologyOp::DeleteLoose});
-        op("Degenerate Dissolve", Dissolve{Dissolve::Mode::Degenerate});
-        op("Limited Dissolve", Dissolve{Dissolve::Mode::Limited});
-        op("Merge by Distance", Merge{Merge::Mode::ByDistance});
+        op("Delete Loose", action::mesh::Delete{DeleteMode::Loose});
+        op("Degenerate Dissolve", Dissolve{DissolveMode::Degenerate});
+        op("Limited Dissolve", Dissolve{DissolveMode::Limited});
+        op("Merge by Distance", Merge{MergeMode::ByDistance});
         op("Fill Holes", FillHoles{});
     };
     const auto mesh_items = [&] {
@@ -423,149 +406,6 @@ void DrawMeshOperatorMenus(state::Scene &r, state::Entity viewport) {
     PopStyleVar();
 }
 
-std::string SpacedName(std::string_view name) {
-    std::string out;
-    for (const char c : name) {
-        if (!out.empty() && c >= 'A' && c <= 'Z') out += ' ';
-        out += c;
-    }
-    return out;
-}
-
-// The panel that reruns the last mesh operator with edited parameters on the state it was applied to.
-void DrawLastOperationPanel(state::Scene &r, state::Entity viewport, const rect &viewport_rect) {
-    using namespace action::mesh;
-    const auto *last = r.try_get<const LastOperation>(viewport);
-    auto &session = project::Session(r);
-    const auto &history = session.History;
-    if (!last || (history.Present != last->Node && session.Editing != last->Node)) return;
-    if (std::visit([]<typename L>(const L &) { return std::is_empty_v<L>; }, last->Value)) return;
-
-    constexpr float Pad{12.f};
-    SetNextWindowPos(std::bit_cast<ImVec2>(viewport_rect.pos) + ImVec2{Pad, viewport_rect.size.y - Pad}, ImGuiCond_Always, {0.f, 1.f});
-    SetNextWindowBgAlpha(0.85f);
-    PushStyleVar(ImGuiStyleVar_WindowPadding, {10.f, 6.f});
-    PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
-    constexpr ImGuiWindowFlags PanelFlags =
-        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoMove;
-    if (Begin("##LastMeshOperation", nullptr, PanelFlags)) {
-        BringWindowToDisplayFront(GetCurrentWindow());
-        const auto &node = history.Nodes[last->Node];
-        if (TreeNodeEx(SpacedName(node.Label).c_str(), ImGuiTreeNodeFlags_CollapsingHeader)) {
-            // The widgets edit the record in place, every change restages the operator on the node's parent, and a release commits the gesture in the node's place.
-            auto &op = r.edit<LastOperation>(viewport);
-            bool changed = false, finished = false;
-            const auto released = [&] { finished |= IsItemDeactivatedAfterEdit(); };
-            const auto drag_float = [&](const char *label, float &v, float speed, float min, float max, const char *format = "%.3f") {
-                changed |= DragFloat(label, &v, speed, min, max, format, ImGuiSliderFlags_AlwaysClamp);
-                released();
-            };
-            const auto drag_int = [&](const char *label, uint32_t &v, int min, int max) {
-                int value = int(v);
-                if (DragInt(label, &value, 0.1f, min, max, "%d", ImGuiSliderFlags_AlwaysClamp)) {
-                    v = uint32_t(value);
-                    changed = true;
-                }
-                released();
-            };
-            const auto drag_vec3 = [&](const char *label, vec3 &v) {
-                changed |= DragFloat3(label, &v.x, 0.01f);
-                released();
-            };
-            const auto degrees = [&](const char *label, float &radians, float min, float max) {
-                float value = numeric::Degrees(radians);
-                if (DragFloat(label, &value, 0.5f, min, max, "%.1f deg", ImGuiSliderFlags_AlwaysClamp)) {
-                    radians = numeric::Radians(value);
-                    changed = true;
-                }
-                released();
-            };
-            const auto check = [&](const char *label, bool &v) {
-                if (Checkbox(label, &v)) changed = finished = true;
-            };
-            const auto combo = [&](const char *label, auto &mode, std::span<const char *const> names) {
-                int value = int(mode);
-                if (Combo(label, &value, names.data(), int(names.size()))) {
-                    mode = std::remove_cvref_t<decltype(mode)>(value);
-                    changed = finished = true;
-                }
-            };
-            PushItemWidth(160.f);
-            std::visit(
-                overloaded{
-                    [&](action::mesh::Delete &a) { combo("Type", a.Op, DeleteNames); },
-                    [&](Merge &a) {
-                        combo("Mode", a.Value, MergeNames);
-                        if (a.Value == Merge::Mode::ByDistance) drag_float("Distance", a.Distance, 0.0001f, 0.f, 10.f, "%.4f");
-                    },
-                    [&](Extrude &a) {
-                        static constexpr const char *Names[]{"Region", "Edges", "Individual Faces"};
-                        combo("Mode", a.Value, Names);
-                    },
-                    [&](Dissolve &a) {
-                        static constexpr const char *Names[]{"Vertices", "Edges", "Faces", "Limited", "Degenerate"};
-                        combo("Mode", a.Value, Names);
-                        if (a.Value == Dissolve::Mode::Limited) degrees("Max Angle", a.Angle, 0.f, 180.f);
-                        if (a.Value == Dissolve::Mode::Degenerate) drag_float("Distance", a.Distance, 0.0001f, 0.f, 10.f, "%.4f");
-                    },
-                    [&](Subdivide &a) { drag_int("Cuts", a.Cuts, 1, 32); },
-                    [&](Poke &a) { drag_float("Offset", a.Offset, 0.01f, -100.f, 100.f); },
-                    [&](Inset &a) {
-                        drag_float("Thickness", a.Thickness, 0.01f, 0.f, 100.f);
-                        drag_float("Depth", a.Depth, 0.01f, -100.f, 100.f);
-                        check("Individual", a.Individual);
-                        check("Even", a.Even);
-                    },
-                    [&](LoopCut &a) { drag_int("Cuts", a.Cuts, 1, 32); },
-                    [&](Spin &a) {
-                        drag_int("Steps", a.Steps, 1, 256);
-                        degrees("Angle", a.Angle, -360.f, 360.f);
-                        drag_vec3("Axis", a.Axis);
-                        drag_vec3("Center", a.Center);
-                        drag_float("Offset", a.Offset, 0.01f, -100.f, 100.f);
-                    },
-                    [&](ExtrudeRepeat &a) {
-                        drag_int("Steps", a.Steps, 1, 256);
-                        drag_vec3("Offset", a.Offset);
-                    },
-                    [&](Bisect &a) {
-                        drag_vec3("Point", a.Point);
-                        drag_vec3("Normal", a.Normal);
-                        check("Clear Inner", a.ClearInner);
-                        check("Clear Outer", a.ClearOuter);
-                    },
-                    [&](Symmetrize &a) {
-                        static constexpr const char *Names[]{"X", "Y", "Z"};
-                        combo("Axis", a.Axis, Names);
-                        check("Negative", a.Negative);
-                    },
-                    [&](Solidify &a) { drag_float("Thickness", a.Thickness, 0.01f, -100.f, 100.f); },
-                    [&](GridFill &a) { drag_int("Span", a.Span, 0, 256); },
-                    [&](FillHoles &a) { drag_int("Sides", a.Sides, 0, 1000); },
-                    [&](Bevel &a) {
-                        drag_float("Width", a.Width, 0.01f, 0.f, 100.f);
-                        drag_int("Segments", a.Segments, 1, 16);
-                        check("Vertices", a.Vertices);
-                    },
-                    [](auto &) {},
-                },
-                op.Value
-            );
-            PopItemWidth();
-            if (changed) {
-                if (session.Editing != last->Node) session.EditNode(last->Node);
-                std::visit([&]<typename L>(const L &leaf) {
-                    if constexpr (std::copyable<L>) action::Emit(L{leaf}, action::Phase::Stage);
-                },
-                           op.Value);
-            }
-            if (finished) action::Commit();
-        }
-    }
-    End();
-    PopStyleVar(2);
-}
 } // namespace
 
 void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
@@ -606,8 +446,8 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
         else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
     } else {
         if (interaction_mode != InteractionMode::Edit) {
-            if (Shortcut(ImGuiKey_I, VKey)) action::Emit(action::animation::InsertKey{{.Scope = action::Scope::Selected}});
-            else if (Shortcut(ImGuiMod_Alt | ImGuiKey_I, VKey)) action::Emit(action::animation::DeleteKey{{.Scope = action::Scope::Selected}});
+            if (Shortcut(ImGuiKey_I, VKey)) action::Emit(action::animation::InsertKey{{.Target = action::OnSelected{}}});
+            else if (Shortcut(ImGuiMod_Alt | ImGuiKey_I, VKey)) action::Emit(action::animation::DeleteKey{{.Target = action::OnSelected{}}});
         }
         if (Shortcut(ImGuiKey_Space, VKey)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(viewport).CurrentFrame});
         else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Space, VKey)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(viewport).CurrentFrame, /*Reverse=*/true});
@@ -648,13 +488,13 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
         if (mesh_edit) {
             namespace mesh = action::mesh;
             using Op = MeshOperatorDrag::Op;
-            using DissolveMode = mesh::Dissolve::Mode;
+            using mesh::DissolveMode;
             const auto element = r.get<const EditMode>(viewport).Value;
             // Placement drags join the gesture, so an extrude, duplicate, or rip and its move commit as one node.
             if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_X, VKey)) action::Emit(mesh::Dissolve{element == Element::Face ? DissolveMode::Faces : element == Element::Edge ? DissolveMode::Edges :
                                                                                                                                                                         DissolveMode::Vertices});
             else if (Shortcut(ImGuiKey_X, VKey) || Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey)) OpenPopup("##MeshDelete");
-            else if (Shortcut(ImGuiKey_E, VKey)) action::Emit(mesh::Extrude{element == Element::Edge ? mesh::Extrude::Mode::Edges : mesh::Extrude::Mode::Region}, action::Phase::Stage);
+            else if (Shortcut(ImGuiKey_E, VKey)) action::Emit(mesh::Extrude{element == Element::Edge ? mesh::ExtrudeMode::Edges : mesh::ExtrudeMode::Region}, action::Phase::Stage);
             else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) action::Emit(mesh::Duplicate{}, action::Phase::Stage);
             else if (Shortcut(ImGuiKey_Y, VKey)) action::Emit(mesh::Split{});
             else if (Shortcut(ImGuiKey_P, VKey)) action::Emit(mesh::Separate{});
@@ -742,22 +582,17 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
     if (r.get<const BoxSelectState>(viewport).Gesture == SelectionGesture::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             frame.BoxSelectStart = frame.BoxSelectEnd = ToVec2(GetMousePos());
-            frame.BoxSelectStaged = false;
-            if (IsKeyDown(ImGuiMod_Shift)) action::Emit(action::selection::SnapshotBoxSelectBaseline{});
+            frame.BoxSelectAdditive = IsKeyDown(ImGuiMod_Shift);
         } else if (IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
             frame.BoxSelectEnd = ToVec2(GetMousePos());
             if (const auto box_px = ComputeBoxSelectPixels(*frame.BoxSelectStart, *frame.BoxSelectEnd, ToVec2(GetCursorScreenPos()), logical_extent, render_extent); box_px) {
-                const bool is_additive = r.all_of<AdditiveBoxSelectBaseline>(viewport);
-                frame.BoxSelectStaged = true;
                 // The hit set (object/bone instances or edit-mode elements) is resolved later.
-                action::Emit(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = is_additive, .View = std::make_unique<RenderView>(selection_view)}, action::Phase::Stage);
+                action::Emit(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = frame.BoxSelectAdditive, .View = std::make_unique<RenderView>(selection_view)}, action::Phase::Stage);
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
             frame.BoxSelectStart.reset();
             frame.BoxSelectEnd.reset();
-            // Gated on the same condition that staged, so a staged box-select always commits.
-            if (frame.BoxSelectStaged) action::Emit(action::selection::ClearBoxSelectBaseline{});
-            frame.BoxSelectStaged = false;
+            action::Commit();
         }
         if (frame.BoxSelectStart) return;
     }
@@ -915,7 +750,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                     SameLine();
                     edit.template Check<&L::UseSceneWorld>("Scene world");
                     if (lighting.UseSceneWorld) {
-                        if (r.all_of<ImageLight>(viewport)) ui::Edit{r, viewport}.Slider<&ImageLight::Intensity>("Intensity", 0.f, 2.f, "%.2f");
+                        if (r.all_of<ImageLight>(viewport)) ui::Edit{r, viewport}.Slider<&ImageLight::Intensity>();
                     } else {
                         const auto hdris = GetHdriRefs(r);
                         if (BeginCombo("Environment", hdris.Names[hdris.ActiveIndex].c_str())) {
@@ -1076,7 +911,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                             for (const auto &entry : group.Entries) {
                                 const bool selected = entry.Value == settings.DebugChannel;
                                 if (Selectable(entry.Label, selected) && !selected) {
-                                    action::Emit(action::UpdateOn<&ViewportDisplay::DebugChannel>(viewport, entry.Value));
+                                    action::Emit(action::UpdateOf<&ViewportDisplay::DebugChannel>(viewport, entry.Value));
                                 }
                                 if (selected) SetItemDefaultFocus();
                             }
@@ -1114,7 +949,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                 {icons.Overlay.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersLeft, true, settings.ShowOverlays, "Toggle overlays"},
             };
             if (const auto clicked = DrawOverlayIconButtonGroup("ViewportOverlays", group_start, icon_button, !active_transform, &frame.OverlayControlsHovered, shading_button_style)) {
-                action::Emit(action::UpdateOn<&ViewportDisplay::ShowOverlays>(viewport, !settings.ShowOverlays));
+                action::Emit(action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, !settings.ShowOverlays));
             }
         }
         DrawOverlayDropdownArrow(group_start + ImVec2{icon_w, 0.f}, {arrow_w, button_h}, shading_button_style, "##OverlayArrow", "##OverlayDropdown", frame.OverlayControlsHovered);
@@ -1174,50 +1009,18 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
     if (has_transform_target) { // Transform gizmo
         // Transform root selections around their average position using the active entity's rotation and scale.
         const auto gizmo_active_entity = bone_mode ? FindActiveBone(r) : active_entity;
-        const auto active_transform = [&]() -> Transform {
-            if (gizmo_active_entity == state::Null) return {};
-            const auto &wt = r.get<WorldTransform>(gizmo_active_entity);
-            return wt;
-        }();
-
-        const auto root_selected = RootSelectedForTransform(r, viewport);
-        const auto root_count = root_selected.size();
-        vec3 pivot{};
+        const auto active_scale = gizmo_active_entity == state::Null ? vec3{1} : r.get<const WorldTransform>(gizmo_active_entity).S;
+        // Edit-mode vertices only move on commit, so the pivot previews the pending delta.
+        const auto *start_pivot = r.try_get<const StartPivot>(viewport);
+        auto pivot = start_pivot ? *start_pivot : TransformPivot(r, viewport);
         if (mesh_edit_mode) {
-            pivot = EditSelectionCenter(r, edit_mode);
-            // Apply pending transform to gizmo position (vertices aren't modified until commit).
-            if (const auto *pending = r.try_get<const PendingTransform>(viewport)) {
-                pivot += pending->Delta.P;
-            }
-        } else {
-            if (bone_edit_mode) {
-                // Bone pivot: contribute head position for selected Root, tail for selected Tip.
-                // A fully-selected bone (Root+Tip+Body) contributes both, giving the midpoint.
-                vec3 pivot_sum{};
-                uint32_t pivot_count = 0;
-                for (const auto e : root_selected) {
-                    const auto &wt = r.get<WorldTransform>(e);
-                    const auto *parts = r.try_get<const BoneSelection>(e);
-                    if (!parts || parts->Root) {
-                        pivot_sum += wt.P;
-                        ++pivot_count;
-                    }
-                    if (parts && parts->Tip) {
-                        const float bl = r.get<BoneDisplayScale>(e).Value;
-                        pivot_sum += wt.P + Rotate(wt.R, vec3{0, bl, 0});
-                        ++pivot_count;
-                    }
-                }
-                pivot = pivot_count > 0 ? pivot_sum / float(pivot_count) : vec3{};
-            } else {
-                pivot = fold_left(root_selected | transform([&](auto e) { return r.get<WorldTransform>(e).P; }), vec3{}, [](vec3 sum, vec3 position) { return sum + position; }) / float(root_count);
-            }
+            if (const auto *pending = r.try_get<const PendingTransform>(viewport)) pivot.P += pending->Delta.P;
         }
 
         const auto start_transform_view = r.view<const StartTransform>();
         const auto &gizmo_state = r.get<const TransformGizmoState>(viewport);
         auto &gizmo = r.edit<GizmoInteraction>(viewport);
-        const auto gizmo_transform = GizmoTransform{{.P = pivot, .R = active_transform.R, .S = active_transform.S}, gizmo_state.Mode};
+        const auto gizmo_transform = GizmoTransform{{.P = pivot.P, .R = pivot.R, .S = active_scale}, gizmo_state.Mode};
         const auto *start_screen = r.try_get<const StartScreenTransform>(viewport);
         const bool was_using = gizmo.IsUsing();
         auto interact_result = TransformGizmo::Interact(
@@ -1231,17 +1034,17 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
             gizmo.Cancelled = false;
             action::Cancel();
         } else if (interact_result) {
-            const auto &[ts, td] = *interact_result;
+            const auto &td = interact_result->Delta;
             if (mesh_edit_mode) {
                 // Mesh Edit mode: store pending transform for shader-based preview.
                 // Actual vertex positions are only modified on commit.
-                action::Emit(action::view::TransformElements{std::make_unique<PendingTransform>(ts.P, ts.R, td)}, action::Phase::Stage);
+                action::Emit(action::view::TransformElements{td}, action::Phase::Stage);
             } else {
                 // Object/bone mode: store the gizmo pivot + delta. Apply recomputes per-entity transforms.
-                action::Emit(action::view::TransformSelection{std::make_unique<PendingTransform>(ts.P, ts.R, td)}, action::Phase::Stage);
+                action::Emit(action::view::TransformSelection{td}, action::Phase::Stage);
             }
         } else if (was_using || !start_transform_view.empty()) {
-            action::Emit(action::view::EndTransform{});
+            action::Commit();
         }
 
         gizmo.RenderTransform = gizmo_transform;
@@ -1250,7 +1053,6 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
 
     if (mesh_edit_mode) {
         DrawMeshOperatorMenus(r, viewport);
-        DrawLastOperationPanel(r, viewport, viewport_rect);
     }
 
     // The latch is a handoff from the operator's Apply to this overlay, consumed here rather than through an action.

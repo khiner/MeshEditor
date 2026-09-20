@@ -21,7 +21,7 @@ void DrawAudioDeviceControls(state::Scene &r, state::Entity viewport) {
     const auto &res = r.Context.get<const AudioDeviceResource>();
     ui::Edit f{r, viewport};
 
-    f.Check<&AudioOutputMix::On>("On");
+    f.Check<&AudioOutputMix::On>();
     if (!mix.On) {
         TextUnformatted("Audio device: Not started");
         return;
@@ -44,9 +44,9 @@ void DrawAudioDeviceControls(state::Scene &r, state::Entity viewport) {
         EndCombo();
     }
 
-    f.Check<&AudioOutputMix::Muted>("Muted");
+    f.Check<&AudioOutputMix::Muted>();
     SameLine();
     if (mix.Muted) BeginDisabled();
-    f.Slider<&AudioOutputMix::Volume>("Volume");
+    f.Slider<&AudioOutputMix::Volume>();
     if (mix.Muted) EndDisabled();
 }

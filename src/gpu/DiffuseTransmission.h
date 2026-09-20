@@ -10,3 +10,7 @@ struct DiffuseTransmission {
     TextureInfo ColorTexture DEFAULT();
 };
 static_assert(sizeof(DiffuseTransmission) == 72, "DiffuseTransmission size");
+#ifndef __METAL_VERSION__
+#include "Field.h"
+template<> inline constexpr FieldSpec Spec<DiffuseTransmission, "Factor">{.Min = 0, .Max = 1};
+#endif

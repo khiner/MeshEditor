@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gpu/Element.h"
+#include "numeric/vec3.h"
 #include "selection/BoneSelection.h"
 
 #include "state/Entity.h"
@@ -10,6 +12,7 @@
 #include <vector>
 
 struct ElementRange;
+struct StartPivot;
 
 bool AllSelectedAreMeshes(const state::Scene &);
 bool IsBoneEditMode(const state::Scene &, state::Entity viewport);
@@ -25,6 +28,9 @@ state::Entity FindActiveBone(const state::Scene &);
 
 // Returns selected transform roots, using bones in pose or edit mode and objects otherwise.
 std::vector<state::Entity> RootSelectedForTransform(const state::Scene &, state::Entity viewport);
+vec3 EditSelectionCenter(const state::Scene &, Element edit_mode);
+// The pivot a transform of the current selection turns and scales about: the selection's center, with the active target's rotation.
+StartPivot TransformPivot(state::Scene &, state::Entity viewport);
 
 // Exclusive select: clears Selected/Active, then selects `e` (null clears everything).
 void Select(state::Scene &, state::Entity);

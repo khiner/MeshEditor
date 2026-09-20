@@ -18,16 +18,16 @@
 namespace action::object {
 struct SetLightType {
     PunctualLightType Type;
-    Scope Scope{Scope::Active};
+    Target Target{OnActive{}};
 };
 struct SetSpotCone {
     float OuterAngle, Blend;
-    Scope Scope{Scope::Active};
+    Target Target{OnActive{}};
 };
 // Switches a camera between perspective and orthographic, keeping the view size at the camera's distance from the origin.
 struct SetProjection {
     bool Orthographic;
-    Scope Scope{Scope::Active};
+    Target Target{OnActive{}};
 };
 struct Delete {};
 struct Duplicate {};
@@ -76,7 +76,7 @@ struct ImportMesh {
 // `Mask=0` removes the component. Targets the mesh entity.
 struct SetPbrMeshFeaturesMask {
     uint32_t Mask;
-    Scope Scope{Scope::Active};
+    Target Target{OnActive{}};
 };
 // Writes `Value` to the field at byte `Offset` of material `Index` in the material buffer.
 template<typename T>
@@ -85,15 +85,17 @@ struct UpdateMaterial {
     uint16_t Offset;
     T Value;
 };
+template<typename T> inline constexpr bool IsUpdateMaterial = false;
+template<typename T> inline constexpr bool IsUpdateMaterial<UpdateMaterial<T>> = true;
 // Choose the material slot shown by the material editor. Targets the mesh entity.
 struct SetMaterialSlotSelection {
     uint32_t PrimitiveIndex;
-    Scope Scope{Scope::Active};
+    Target Target{OnActive{}};
 };
 // Assign a material to a primitive slot. Targets the mesh entity.
 struct SetMaterialAssignment {
     uint32_t PrimitiveIndex, MaterialIndex;
-    Scope Scope{Scope::Active};
+    Target Target{OnActive{}};
 };
 
 using Action = std::variant<

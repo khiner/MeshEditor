@@ -31,7 +31,8 @@ struct Fixture : Engine {
     TestDir Dir;
     explicit Fixture(const char *name) : Engine{false}, Dir{(std::string{"mesheditor-topology-"} + name).c_str()} {
         expect(P->Begin(Dir));
-        Do(action::view::SetExtent{{64, 64}});
+        R.Context.get<ViewportExtent>().Value = {64, 64};
+        P->Settle();
     }
     // Adds one `shape` and enters edit mode over `element`.
     Fixture(const char *name, auto shape, Element element) : Fixture{name} {
@@ -204,7 +205,7 @@ void TestDeleteSphereVertex() {
     const auto valence = uint32_t(std::ranges::distance(f.ActiveMesh().voh_range(he::VH{picked})));
     const auto selected = f.P->History.Present;
 
-    f.Do(action::mesh::Delete{MeshTopologyOp::DeleteVertices});
+    f.Do(action::mesh::Delete{action::mesh::DeleteMode::Vertices});
     const auto after = CountsOf(f.ActiveMesh());
     expect(after.Vertices == before.Vertices - 1);
     expect(after.Faces == before.Faces - valence);
@@ -242,12 +243,12 @@ void TestDeleteAllFaces() {
         expect(std::ranges::equal(written, expected));
     }
     // Only Faces keeps every vertex as a loose point cloud, and Faces removes everything.
-    f.Do(action::mesh::Delete{MeshTopologyOp::DeleteOnlyFaces});
+    f.Do(action::mesh::Delete{action::mesh::DeleteMode::OnlyFaces});
     ExpectCounts(f.ActiveMesh(), {8, 0, 0, 0});
     f.Render();
     f.P->Undo();
     ExpectMesh(f, {8, 12, 6, 12});
-    f.Do(action::mesh::Delete{MeshTopologyOp::DeleteFaces});
+    f.Do(action::mesh::Delete{action::mesh::DeleteMode::Faces});
     ExpectCounts(f.ActiveMesh(), {0, 0, 0, 0});
     f.Render();
     f.P->Undo();
@@ -261,7 +262,7 @@ void TestMerge() {
     const auto selected = SelectedCount(f, Element::Vertex);
     expect(selected > 1 && selected < 8);
     const auto before = f.P->History.Present;
-    f.Do(action::mesh::Merge{action::mesh::Merge::Mode::Center});
+    f.Do(action::mesh::Merge{action::mesh::MergeMode::Center});
     expect(f.ActiveMesh().VertexCount() == 8 - selected + 1);
     CheckInvariants(f);
     expect(SelectedCount(f, Element::Vertex) == 1);
@@ -270,14 +271,14 @@ void TestMerge() {
     expect(f.ActiveMesh().VertexCount() == 8);
     expect(SelectedCount(f, Element::Vertex) == selected);
     // Collapsing the same run of vertices merges them at their center and drops the faces that lose their area.
-    f.Do(action::mesh::Merge{.Value = action::mesh::Merge::Mode::Collapse});
+    f.Do(action::mesh::Merge{.Mode = action::mesh::MergeMode::Collapse});
     expect(f.ActiveMesh().VertexCount() == 8 - selected + 1);
     CheckInvariants(f);
     f.Render();
     f.P->Navigate(before);
     // Merging every vertex leaves one point and no faces.
     f.Do(action::selection::SelectAll{});
-    f.Do(action::mesh::Merge{action::mesh::Merge::Mode::First});
+    f.Do(action::mesh::Merge{action::mesh::MergeMode::First});
     ExpectCounts(f.ActiveMesh(), {1, 0, 0, 0});
 }
 
@@ -291,7 +292,7 @@ void TestExtrude() {
     const auto partial = f.P->History.Present;
 
     // A region bordering unselected faces moves onto copied boundary vertices with a side quad per boundary edge.
-    f.Do(action::mesh::Extrude{action::mesh::Extrude::Mode::Region});
+    f.Do(action::mesh::Extrude{action::mesh::ExtrudeMode::Region});
     expect(f.ActiveMesh().VertexCount() == 8 + boundary_vertices);
     expect(f.ActiveMesh().FaceCount() == 6 + boundary_edges);
     expect(SelectedCount(f, Element::Face) == selected);
@@ -305,8 +306,8 @@ void TestExtrude() {
         action::Emit(std::move(a), phase);
         f.P->Frame(action::Drain());
     };
-    frame(action::mesh::Extrude{action::mesh::Extrude::Mode::Region}, action::Phase::Stage);
-    frame(action::view::TransformElements{std::make_unique<PendingTransform>(PendingTransform{.Delta = {.P = vec3{0.f, 0.f, 0.5f}}})}, action::Phase::Stage);
+    frame(action::mesh::Extrude{action::mesh::ExtrudeMode::Region}, action::Phase::Stage);
+    frame(action::view::TransformElements{{.P = vec3{0.f, 0.f, 0.5f}}}, action::Phase::Stage);
     action::Commit();
     f.P->Frame(action::Drain());
     f.Audit();
@@ -319,8 +320,8 @@ void TestExtrude() {
 
     // Cancelling the placement drag discards the extrude with it and records nothing.
     f.P->Navigate(partial);
-    frame(action::mesh::Extrude{action::mesh::Extrude::Mode::Region}, action::Phase::Stage);
-    frame(action::view::TransformElements{std::make_unique<PendingTransform>(PendingTransform{.Delta = {.P = vec3{0.f, 0.f, 0.5f}}})}, action::Phase::Stage);
+    frame(action::mesh::Extrude{action::mesh::ExtrudeMode::Region}, action::Phase::Stage);
+    frame(action::view::TransformElements{{.P = vec3{0.f, 0.f, 0.5f}}}, action::Phase::Stage);
     action::Cancel();
     f.P->Frame(action::Drain());
     f.Audit();
@@ -351,14 +352,14 @@ void TestExtrude() {
     // A selection bordering nothing duplicates instead, as does Duplicate itself.
     f.P->Navigate(partial);
     f.Do(action::selection::SelectAll{});
-    f.Do(action::mesh::Extrude{action::mesh::Extrude::Mode::Region});
+    f.Do(action::mesh::Extrude{action::mesh::ExtrudeMode::Region});
     ExpectMesh(f, {16, 24, 12, 24});
     expect(SelectedCount(f, Element::Face) == 6);
     f.P->Undo();
     f.Do(action::mesh::Duplicate{});
     ExpectMesh(f, {16, 24, 12, 24});
     f.P->Undo();
-    f.Do(action::mesh::Extrude{action::mesh::Extrude::Mode::FacesIndividual});
+    f.Do(action::mesh::Extrude{action::mesh::ExtrudeMode::FacesIndividual});
     ExpectMesh(f, {32, 60, 30, 60});
     expect(SelectedCount(f, Element::Face) == 6);
     f.Render();
@@ -370,7 +371,7 @@ void TestExtrude() {
     const auto edges = SelectedCount(f, Element::Edge);
     expect(edges > 0);
     const auto edge_vertices = BitCount(f, Element::Vertex);
-    f.Do(action::mesh::Extrude{action::mesh::Extrude::Mode::Edges});
+    f.Do(action::mesh::Extrude{action::mesh::ExtrudeMode::Edges});
     expect(f.ActiveMesh().VertexCount() == 8 + edge_vertices);
     expect(f.ActiveMesh().FaceCount() == 6 + edges);
     expect(SelectedCount(f, Element::Edge) == edges);
@@ -384,14 +385,14 @@ void TestDissolve() {
     // Dissolving one cube edge joins its two faces and removes its endpoints, which have two edges left, so the neighbors lose a corner.
     f.Do(action::view::SetEditMode{.Mode = Element::Edge});
     Pick(f, Element::Edge);
-    f.Do(action::mesh::Dissolve{action::mesh::Dissolve::Mode::Edges});
+    f.Do(action::mesh::Dissolve{action::mesh::DissolveMode::Edges});
     ExpectMesh(f, {6, 9, 5, 8});
     f.Render();
 
     // Dissolving one cube vertex joins its three faces into a hexagon.
     f.P->Navigate(base);
     Pick(f, Element::Vertex);
-    f.Do(action::mesh::Dissolve{action::mesh::Dissolve::Mode::Vertices});
+    f.Do(action::mesh::Dissolve{action::mesh::DissolveMode::Vertices});
     ExpectMesh(f, {7, 9, 4, 10});
     f.Render();
     // The GPU wrote the hexagon's and the quads' fan triangles in face order, matching the host walk.
@@ -409,7 +410,7 @@ void TestDissolve() {
     const auto selected = SelectedCount(f, Element::Face);
     expect(selected > 1 && selected < 6);
     const auto [boundary_edges, boundary_vertices, region_vertices] = RegionOf(f);
-    f.Do(action::mesh::Dissolve{action::mesh::Dissolve::Mode::Faces});
+    f.Do(action::mesh::Dissolve{action::mesh::DissolveMode::Faces});
     // A vertex inside the region loses every edge and is removed.
     const auto interior = region_vertices - boundary_vertices;
     ExpectMesh(f, {8 - interior, 12 - (selected - 1) - interior, 6 - selected + 1, boundary_edges - 2 + 2 * (6 - selected)});
@@ -419,7 +420,7 @@ void TestDissolve() {
     // A closed selection has no boundary to walk, so nothing joins.
     f.P->Navigate(base);
     SelectAll(f, Element::Face);
-    f.Do(action::mesh::Dissolve{action::mesh::Dissolve::Mode::Faces});
+    f.Do(action::mesh::Dissolve{action::mesh::DissolveMode::Faces});
     ExpectMesh(f, {8, 12, 6, 12});
 }
 
@@ -524,7 +525,7 @@ void TestFaceOperators() {
     // Filling the hole left by a deleted face restores the cube.
     f.P->Navigate(base);
     Pick(f, Element::Face);
-    f.Do(action::mesh::Delete{MeshTopologyOp::DeleteOnlyFaces});
+    f.Do(action::mesh::Delete{action::mesh::DeleteMode::OnlyFaces});
     ExpectCounts(f.ActiveMesh(), {8, 12, 5, 10});
     SelectAll(f, Element::Edge);
     f.Do(action::mesh::Fill{});
@@ -561,7 +562,7 @@ void TestMergeVariants() {
     f.Do(action::mesh::EdgeSplit{});
     ExpectCounts(f.ActiveMesh(), {24, 24, 6, 12});
     SelectAll(f, Element::Vertex);
-    f.Do(action::mesh::Merge{.Value = action::mesh::Merge::Mode::ByDistance, .Distance = 0.001f});
+    f.Do(action::mesh::Merge{.Mode = action::mesh::MergeMode::ByDistance, .Distance = 0.001f});
     ExpectMesh(f, {8, 12, 6, 12});
     f.Render();
 
@@ -571,14 +572,14 @@ void TestMergeVariants() {
     f.Do(action::mesh::Subdivide{1});
     ExpectCounts(f.ActiveMesh(), {26, 48, 24, 48});
     SelectAll(f, Element::Face);
-    f.Do(action::mesh::Dissolve{.Value = action::mesh::Dissolve::Mode::Limited, .Angle = 0.1f});
+    f.Do(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Limited, .Angle = 0.1f});
     ExpectMesh(f, {8, 12, 6, 12});
     f.Render();
 
     // Degenerate dissolve collapses edges under the distance, which a tiny cube has everywhere.
     f.P->Navigate(base);
     f.Do(action::selection::SelectAll{});
-    f.Do(action::mesh::Dissolve{.Value = action::mesh::Dissolve::Mode::Degenerate, .Distance = 10.f});
+    f.Do(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Degenerate, .Distance = 10.f});
     ExpectCounts(f.ActiveMesh(), {1, 0, 0, 0});
 }
 
@@ -620,7 +621,7 @@ void TestTransformOperators() {
     // Symmetrizing across x mirrors the positive half back into a ringed cube.
     f.P->Navigate(base);
     f.Do(action::selection::SelectAll{});
-    f.Do(action::mesh::Symmetrize{.Axis = 0});
+    f.Do(action::mesh::Symmetrize{.Axis = action::mesh::SymmetrizeAxis::X});
     ExpectMesh(f, {12, 20, 10, 20});
     f.Render();
 
@@ -704,7 +705,8 @@ void TestBevel() {
     ExpectMesh(f, {10, 15, 7, 16});
 }
 
-// Editing a committed operator restages it on the node's parent from the gesture base and commits in the node's place.
+// Editing a committed operator re-runs its recorded commands with the edited values on the node's parent.
+// The commit forks a node with descendants and replaces a leaf node in place.
 void TestEditNode() {
     Fixture f{"edit-node", primitive::Cuboid{}, Element::Edge};
     f.Do(action::selection::SelectAll{});
@@ -713,33 +715,63 @@ void TestEditNode() {
     const auto count = f.P->History.Nodes.size();
     f.Do(action::mesh::Subdivide{1});
     const auto child = f.P->History.Present;
+    f.P->Navigate(node);
 
-    f.P->EditNode(node);
+    const auto bevel = [&](int of) -> action::mesh::Bevel & {
+        return std::get<action::mesh::Bevel>(std::get<action::mesh::Action>(f.P->DraftOf(of).Commands[0].Value));
+    };
+    const auto restage = [&](float width, uint32_t segments) {
+        bevel(node).Width = width;
+        bevel(node).Segments = segments;
+        f.P->RequestRestage();
+        f.P->Frame(action::Drain());
+    };
+    restage(0.2f, 1);
     expect(f.P->History.Present == base);
-    f.P->ApplyCommand(action::MakeAction(action::mesh::Bevel{.Width = 0.2f}), EventPass::Frame, true);
-    f.P->ApplyCommand(action::MakeAction(action::mesh::Bevel{.Width = 0.3f, .Segments = 2}), EventPass::Frame, true);
-    f.P->FinishGesture(EventPass::Settle);
+    expect(f.P->Editing == node);
+    restage(0.3f, 2);
+    action::Commit();
+    f.P->Frame(action::Drain());
     f.Audit();
-    expect(f.P->History.Present == node);
-    expect(f.P->History.Nodes.size() == count + 1);
-    expect(f.P->History.Nodes[node].Children.empty());
-    expect(!f.P->History.Nodes[child].Hot);
+    const auto forked = f.P->History.Present;
+    expect(forked != node);
+    expect(f.P->History.Nodes[forked].Parent == base);
+    expect(f.P->History.Nodes[forked].Label == f.P->History.Nodes[node].Label);
+    expect(f.P->History.Nodes.size() == count + 2);
+    expect(f.P->History.Nodes[node].Children == std::vector{child});
+    expect(!f.P->Editing);
     ExpectMesh(f, {48, 84, 38, 92});
-    const auto *last = f.R.try_get<const action::mesh::LastOperation>(f.Viewport);
-    expect(last && last->Node == node);
-    expect(last && std::get<action::mesh::Bevel>(last->Value).Width == 0.3f);
+    expect(bevel(forked).Width == 0.3f);
     // Running the final bevel once from the same base gives the same mesh.
     const auto staged_positions = Positions(f.ActiveMesh());
     f.P->Navigate(base);
     f.Do(action::mesh::Bevel{.Width = 0.3f, .Segments = 2});
     expect(Positions(f.ActiveMesh()) == staged_positions);
 
+    f.P->Navigate(forked);
+    bevel(forked).Width = 0.2f;
+    f.P->RequestRestage();
+    f.P->Frame(action::Drain());
+    action::Commit();
+    f.P->Frame(action::Drain());
+    f.Audit();
+    expect(f.P->History.Present == forked);
+    expect(f.P->History.Nodes.size() == count + 2);
+    expect(bevel(forked).Width == 0.2f);
+    expect(bevel(forked).Segments == 2u);
+    const auto replaced_counts = CountsOf(f.ActiveMesh());
+
     // Cancelling an edit returns to the node unchanged.
-    f.P->EditNode(node);
-    f.P->ApplyCommand(action::MakeAction(action::mesh::Bevel{.Width = 0.5f}), EventPass::Frame, true);
-    f.P->CancelGesture();
-    expect(f.P->History.Present == node);
-    ExpectMesh(f, {48, 84, 38, 92});
+    bevel(forked).Width = 0.5f;
+    f.P->RequestRestage();
+    f.P->Frame(action::Drain());
+    expect(f.P->History.Present == base);
+    action::Cancel();
+    f.P->Frame(action::Drain());
+    expect(f.P->History.Present == forked);
+    expect(!f.P->Editing);
+    ExpectCounts(f.ActiveMesh(), replaced_counts);
+    expect(bevel(forked).Width == 0.2f);
 }
 
 // A loaded mesh with authored normals carries its custom corner normals through an operator.
