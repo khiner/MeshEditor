@@ -54,7 +54,7 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         // Coarse triangles have no source-triangle identity.
         const uint triangle = coarse ? 0u : triangle_ids[work.Meshlet.TriangleOffset + local_triangle];
         const MeshletTriangleCorners corners = ResolveMeshletCorners(
-            scene, work.Draw, pc.MeshletVertexSlot, pc.MeshletLocalTriangleSlot, work.Meshlet, work.Primitive, triangle, local_triangle
+            scene, work.Draw, pc.MeshletVertexSlot, pc.MeshletLocalTriangleSlot, work.Meshlet, triangle, local_triangle
         );
         const uint vertex_index = corners.CornerIds[thread_index % 3u];
         const uint vertex_id = corners.VertexIds[thread_index % 3u];
@@ -62,7 +62,7 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         auto out = ToMeshletVertexVaryings(TransformVertex(scene, work.Draw, vertex_index, vertex_index, vertex_id, false, !flat_face, coarse, corners.CoarseNormal));
         const Transform world = MeshletWorld(scene, work.Draw);
         const auto face = coarse ? MeshletCoarseFace(scene, work.Primitive, work.Instance, world) :
-                                   MeshletFace(scene, work.Draw, work.Primitive, work.Instance, world, triangle, flat_face);
+                                   MeshletFace(scene, work.Draw, work.Instance, world, triangle, flat_face);
         out.FlatWorldNormal = face.FlatWorldNormal;
         out.FaceOverlayFlags = face.FaceOverlayFlags;
         out.MaterialIndex = face.MaterialIndex;
@@ -121,8 +121,8 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
     }
     const uint topology = MeshletPrimitiveTopology(work.Meshlet);
     if (topology == uint(MeshPrimitiveTopology::Triangle) && thread_index < work.Meshlet.VertexCount) {
-        const uint packed_vertex = MeshletPackedVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, thread_index);
-        const uint vertex_id = MeshletVertexId(scene, work.Draw, topology, packed_vertex);
+        const uint source_vertex = MeshletSourceVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, thread_index);
+        const uint vertex_id = MeshletVertexId(scene, work.Draw, topology, source_vertex);
         output.set_vertex(thread_index, MeshletPositionVaryings{MeshletPosition(scene, work.Draw, MeshletWorld(scene, work.Draw), vertex_id)});
     } else if (topology != uint(MeshPrimitiveTopology::Triangle) && thread_index < work.Meshlet.TriangleCount * 4u) {
         const uint element = thread_index / 4u;

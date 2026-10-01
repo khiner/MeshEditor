@@ -1,6 +1,7 @@
 #include "render/ViewportSubmission.h"
 
 #include "Profile.h"
+#include "mesh/MeshStore.h"
 #include "render/GpuBuffers.h"
 #include "render/RenderTargets.h"
 #include "state/Scene.h"
@@ -8,6 +9,8 @@
 #include "viewport/RenderExtent.h"
 #include "viewport/Viewport.h"
 #include <Metal/MTLCommandQueue.hpp>
+ViewportRenderResources::ViewportRenderResources() = default;
+ViewportRenderResources::~ViewportRenderResources() = default;
 // Dispatch sizes follow scene recording because the rebuild determines their counts.
 void SubmitRecordedFrame(state::Scene &r, MTL::CommandBuffer *command_buffer) {
     const auto &ctx = r.Context.get<const mtl::Context>();
@@ -18,8 +21,9 @@ void SubmitRecordedFrame(state::Scene &r, MTL::CommandBuffer *command_buffer) {
         const profile::CpuScope scope{"QueueSubmit"};
         command_buffer->commit();
     }
-    r.Context.get<ViewportRenderResources>().InFlight = command_buffer;
+    r.Context.get<ViewportRenderResources>().InFlight = NS::RetainPtr(command_buffer);
     r.Context.get<FrameState>().RenderPending = true;
+    r.Context.get<MeshStore>().FrameSubmitted();
 }
 
 void RecordAndSubmitFrame(state::Scene &r, state::Entity viewport, SceneUpdate update, RenderPhase phase) {
@@ -45,8 +49,10 @@ void WaitForRender(state::Scene &r) {
         const profile::CpuScope scope{"WaitGpu"};
         resources.InFlight->waitUntilCompleted();
     }
-    profile::Resolve(resources.InFlight);
+    profile::Resolve(resources.InFlight.get());
     resources.InFlight = nullptr;
     r.Context.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
+    r.Context.get<MeshStore>().FrameCompleted();
+    r.Context.get<const mtl::Context>().TrimPageCache();
     frame.RenderPending = false;
 }

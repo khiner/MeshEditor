@@ -14,6 +14,7 @@ enum class EditSelectionAfter : uint8_t {
 };
 struct MeshGeometryDirty {
     EditSelectionAfter Selection{EditSelectionAfter::Reset};
+    bool RenderReady{}; // Canonical meshlets and normals already repaired or restored.
 };
 struct MeshPositionsChanged {};
 

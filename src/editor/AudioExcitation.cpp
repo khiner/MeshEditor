@@ -11,7 +11,7 @@
 vec2 ImpulseAngle{0, 0};
 
 // Unit surface normal at a mesh vertex.
-vec3 VertexNormal(const Mesh &mesh, uint32_t vertex) { return Normalize(mesh.GetNormal(Mesh::VH{vertex})); }
+vec3 VertexNormal(const Mesh &mesh, uint32_t vertex) { return Normalize(mesh.GetNormal(mesh.VertexAt(vertex))); }
 
 // Tilts a unit normal using a joystick position in the unit disk.
 vec3 TiltAlongNormal(vec3 n, vec2 joy) {

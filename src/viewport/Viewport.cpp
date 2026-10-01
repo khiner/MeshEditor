@@ -324,6 +324,7 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
     r.ResetEntities();
     r.Context.get<MeshStore>().Clear();
     r.Context.get<GpuBuffers>().ResetSceneArenas();
+    r.Context.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     r.Context.get<GpuSceneState>() = {};
     // Disable occlusion until the new scene has produced a depth pyramid.
     if (auto &resources = r.Context.get<RenderTargets>().Resources) resources->DepthPyramidValid = false;

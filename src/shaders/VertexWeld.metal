@@ -5,6 +5,7 @@
 #include "Bindless.metal"
 #include "BlockScan.metal"
 #include "gpu/VertexWeldJob.h"
+#include "gpu/MeshElementBlock.h"
 #include "gpu/TiledJobPushConstants.h"
 
 constant uint WeldEmptySlot = InvalidOffset;
@@ -24,8 +25,8 @@ struct WeldContext {
     device uint *PositionWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.VertexBuffer, job.Positions.Slot) + job.Positions.Offset * WeldPositionWords; }
     device uint *Corners(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.IndexBuffer, job.Corners.Slot) + job.Corners.Offset; }
     device atomic_uint *AtomicScratch() const { return BindlessBufferMutable(atomic_uint, B.Buffer, Pc.ScratchSlot); }
-    device uint *DeformWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.BoneDeformBuffer, job.Deform.Slot) + job.Deform.Offset * WeldDeformWords; }
-    device uint *MorphWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.MorphTargetBuffer, job.Morph.Slot) + job.Morph.Offset * WeldMorphWords; }
+    device uint *DeformWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.BoneDeformBuffer, job.Skin.ValuesSlot); }
+    device uint *MorphWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.MorphTargetBuffer, job.Morph.ValuesSlot); }
 
     uint2 Tile(uint group_id) const { return Tiles()[Pc.FirstTile + group_id]; }
 };
@@ -35,28 +36,36 @@ struct WeldKeys {
     device uint *Positions;
     device uint *Deform;
     device uint *Morph;
+    device const uint *SkinBlocks;
+    device const uint *MorphBlocks;
     device uint *Tangents;
-    uint Count, TargetCount;
+    uint Count, TargetCount, FirstVertex;
     bool HasDeform, HasMorph, HasTangents;
 };
 
 inline WeldKeys MakeWeldKeys(WeldContext ctx, VertexWeldJob job) {
     device uint *positions = ctx.PositionWords(job);
-    const bool has_deform = job.Deform.Slot != InvalidSlot;
-    const bool has_morph = job.Morph.Slot != InvalidSlot;
+    const bool has_deform = job.Skin.ValuesSlot != InvalidSlot;
+    const bool has_morph = job.Morph.ValuesSlot != InvalidSlot;
     const bool has_tangents = job.TangentOffset != InvalidOffset;
     return {
         .Positions = positions,
         .Deform = has_deform ? ctx.DeformWords(job) : positions,
         .Morph = has_morph ? ctx.MorphWords(job) : positions,
+        .SkinBlocks = has_deform ? BindlessBuffer(uint, ctx.B.Buffer, job.Skin.BlocksSlot) : positions,
+        .MorphBlocks = has_morph ? BindlessBuffer(uint, ctx.B.Buffer, job.Morph.BlocksSlot) : positions,
         .Tangents = has_tangents ? ctx.Scratch() + job.TangentOffset : positions,
         .Count = job.Count,
         .TargetCount = job.TargetCount,
+        .FirstVertex = job.Positions.Offset,
         .HasDeform = has_deform,
         .HasMorph = has_morph,
         .HasTangents = has_tangents,
     };
 }
+
+inline uint WeldSkinWord(thread const WeldKeys &k, uint i) { return ElementAttributeIndex(k.SkinBlocks, k.FirstVertex + i) * WeldDeformWords; }
+inline uint WeldMorphWord(thread const WeldKeys &k, uint i, uint target) { return ElementAttributeIndex(k.MorphBlocks, k.FirstVertex + i, target) * WeldMorphWords; }
 
 inline uint WeldHashWords(uint hash, device const uint *words, uint first, uint count) {
     for (uint w = 0u; w < count; ++w) {
@@ -68,9 +77,9 @@ inline uint WeldHashWords(uint hash, device const uint *words, uint first, uint 
 
 inline uint WeldKeyHash(thread const WeldKeys &k, uint i) {
     uint hash = WeldHashWords(2166136261u, k.Positions, i * WeldPositionWords, WeldPositionWords);
-    if (k.HasDeform) hash = WeldHashWords(hash, k.Deform, i * WeldDeformWords, WeldDeformWords);
+    if (k.HasDeform) hash = WeldHashWords(hash, k.Deform, WeldSkinWord(k,i), WeldDeformWords);
     for (uint t = 0u; k.HasMorph && t < k.TargetCount; ++t) {
-        hash = WeldHashWords(hash, k.Morph, (t * k.Count + i) * WeldMorphWords, WeldMorphWords);
+        hash = WeldHashWords(hash, k.Morph, WeldMorphWord(k,i,t), WeldMorphWords);
     }
     for (uint t = 0u; k.HasTangents && t < k.TargetCount; ++t) {
         hash = WeldHashWords(hash, k.Tangents, (t * k.Count + i) * WeldTangentWords, WeldTangentWords);
@@ -87,9 +96,9 @@ inline bool WeldWordsEqual(device const uint *words, uint first_a, uint first_b,
 
 inline bool WeldKeysEqual(thread const WeldKeys &k, uint a, uint b) {
     if (!WeldWordsEqual(k.Positions, a * WeldPositionWords, b * WeldPositionWords, WeldPositionWords)) return false;
-    if (k.HasDeform && !WeldWordsEqual(k.Deform, a * WeldDeformWords, b * WeldDeformWords, WeldDeformWords)) return false;
+    if (k.HasDeform && !WeldWordsEqual(k.Deform, WeldSkinWord(k,a), WeldSkinWord(k,b), WeldDeformWords)) return false;
     for (uint t = 0u; k.HasMorph && t < k.TargetCount; ++t) {
-        if (!WeldWordsEqual(k.Morph, (t * k.Count + a) * WeldMorphWords, (t * k.Count + b) * WeldMorphWords, WeldMorphWords)) return false;
+        if (!WeldWordsEqual(k.Morph, WeldMorphWord(k,a,t), WeldMorphWord(k,b,t), WeldMorphWords)) return false;
     }
     for (uint t = 0u; k.HasTangents && t < k.TargetCount; ++t) {
         if (!WeldWordsEqual(k.Tangents, (t * k.Count + a) * WeldTangentWords, (t * k.Count + b) * WeldTangentWords, WeldTangentWords)) return false;
@@ -106,13 +115,14 @@ inline void WeldMoveWords(device uint *record, thread uint &w, device uint *chan
     w += count;
 }
 
-// Copies one welded vertex's channels with `stride` vertices per morph target.
+// Copies one welded vertex's channels.
+// `stride` addresses the host tangent scratch.
 inline void WeldMoveRecord(thread const WeldKeys &k, device uint *record, uint vertex_index, uint stride, bool to_channels) {
     uint w = 0u;
     WeldMoveWords(record, w, k.Positions, vertex_index * WeldPositionWords, WeldPositionWords, to_channels);
-    if (k.HasDeform) WeldMoveWords(record, w, k.Deform, vertex_index * WeldDeformWords, WeldDeformWords, to_channels);
+    if (k.HasDeform) WeldMoveWords(record, w, k.Deform, WeldSkinWord(k,vertex_index), WeldDeformWords, to_channels);
     for (uint t = 0u; k.HasMorph && t < k.TargetCount; ++t) {
-        WeldMoveWords(record, w, k.Morph, (t * stride + vertex_index) * WeldMorphWords, WeldMorphWords, to_channels);
+        WeldMoveWords(record, w, k.Morph, WeldMorphWord(k,vertex_index,t), WeldMorphWords, to_channels);
     }
     for (uint t = 0u; k.HasTangents && t < k.TargetCount; ++t) {
         WeldMoveWords(record, w, k.Tangents, (t * stride + vertex_index) * WeldTangentWords, WeldTangentWords, to_channels);
@@ -214,18 +224,7 @@ kernel void VertexWeldScan(
     const uint2 tile = ctx.Tile(group_id);
     const VertexWeldJob job = ctx.Jobs()[tile.x];
     device uint *flags = ctx.Scratch() + job.FlagsOffset;
-    uint local[ScanPerThread];
-    uint start = ScanBlockStart(
-        flags, job.Count + 1u, tile.y, ctx.Scratch() + job.BlockOffset, lane, simd_lane, simd_group, sums, local
-    );
-    // Each thread overwrites only its source marks, permitting an in-place scan.
-    const uint base = tile.y * ScanBlockElements + lane * ScanPerThread;
-    for (uint k = 0u; k < ScanPerThread; ++k) {
-        const uint i = base + k;
-        if (i > job.Count) break;
-        flags[i] = start;
-        start += local[k];
-    }
+    ScanBlockOffsets(flags, job.Count + 1u, tile.y, ctx.Scratch() + job.BlockOffset, flags, lane, simd_lane, simd_group, sums);
 }
 
 kernel void VertexWeldEmit(
@@ -277,7 +276,7 @@ kernel void VertexWeldWriteBack(
     if (welded == job.Count) return;
     const uint n = tile.y * ScanTileSize + lane;
     if (n >= welded) return;
-    // Repack each target's deltas with welded-count stride for the resized arena.
+    // Write canonical channels and repack host tangent deltas with welded-count stride.
     const WeldKeys keys = MakeWeldKeys(ctx, job);
     WeldMoveRecord(keys, ctx.Scratch() + job.CompactOffset + n * job.RecordWords, n, welded, true);
 }
@@ -295,7 +294,7 @@ kernel void VertexWeldRemapCorners(
     const uint c = tile.y * ScanTileSize + lane;
     if (c >= job.CornerCount) return;
     device uint *corners = ctx.Corners(job);
-    corners[c] = ctx.Scratch()[job.RemapOffset + corners[c]];
+    corners[c] = job.Positions.Offset + ctx.Scratch()[job.RemapOffset + corners[c] - job.Positions.Offset];
 }
 
 #endif

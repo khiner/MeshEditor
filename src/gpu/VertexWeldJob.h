@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu/SlotOffset.h"
+#include "gpu/ElementAttributeRef.h"
 #include "gpu/Types.h"
 
 // Defines one mesh's vertex-weld inputs, outputs, and scratch layout.
@@ -10,10 +11,10 @@ struct VertexWeldJob {
     SlotOffset Positions DEFAULT();
     // Corner array remapped to welded indices.
     SlotOffset Corners DEFAULT();
-    // Source-vertex skin joints and weights. InvalidSlot denotes no skin.
-    SlotOffset Deform DEFAULT();
-    // Target-major morph position and normal deltas. InvalidSlot denotes no morph targets.
-    SlotOffset Morph DEFAULT();
+    // Handle-addressed skin joints and weights. InvalidSlot denotes no skin.
+    ElementAttributeRef Skin DEFAULT();
+    // Handle-addressed morph position and normal deltas. InvalidSlot denotes no morph targets.
+    ElementAttributeRef Morph DEFAULT();
     uint32_t TargetCount DEFAULT();
     // Target-major three-word morph tangent deltas staged in scratch. InvalidOffset denotes no authored tangents.
     uint32_t TangentOffset DEFAULT(InvalidOffset);

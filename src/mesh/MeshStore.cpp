@@ -1,133 +1,278 @@
-#include "numeric/uvec2.h"
-#include "numeric/vec2.h"
 
 #include "MeshStore.h"
+#include "metal/Dispatch.h"
+#include "metal/MetalCpp.h"
 
 #include "CornerNormalOffset.h"
 #include "Profile.h"
-#include "ScratchChunks.h"
-#include "gpu/CornerClassEncoding.h"
-#include "gpu/FanItemEncoding.h"
-#include "project/store/History.h"
+#include "mesh/ElementMembershipWork.h"
+#include "mesh/ElementWorkSort.h"
+#include "mesh/MeshPipelines.h"
 #include "project/store/Pages.h"
-#include "project/store/Records.h"
 
-#include <bit>
-#include <format>
+#include <map>
 
 namespace {
-constexpr uint32_t ClassTagShift{uint32_t(CornerClassEncoding::TagShift)}, ClassIndexMask{uint32_t(CornerClassEncoding::IndexMask)};
-constexpr uint32_t UniformFaceOffset{uint32_t(CornerClassEncoding::UniformFaceOffset)};
-constexpr uint32_t FanLoopShift{uint32_t(FanItemEncoding::LoopShift)};
+constexpr uint32_t UniformFaceMode{uint32_t(CornerClassMode::UniformFace)};
 
-constexpr uint32_t ElementIndex(Element element) {
-    return element == Element::Vertex ? 0u : element == Element::Edge ? 1u :
-                                                                        2u;
+// A run of copied uint32 reference pairs.
+struct ReferencePairCopy { uint32_t Source, Destination, Count; };
+
+// Adds delta to copied uint32 arena references, preserving the null sentinel.
+// Range.Offset and stride are in uint32 words, and Range.Count counts references.
+// byte_base locates a record stream without narrowing its byte address.
+void EncodeRebaseIndices(MTL::CommandBuffer *command, const mtl::ComputePipeline &pipeline, MTL::Buffer *buffer, Range range, uint32_t delta, uint32_t stride = 1, uint64_t byte_base = 0) {
+    if (range.Count == 0 || delta == 0) return;
+    auto *encoder = command->computeCommandEncoder();
+    encoder->setComputePipelineState(pipeline.State());
+    encoder->setBuffer(buffer, byte_base + uint64_t(range.Offset) * sizeof(uint32_t), 0);
+    const uint32_t pc[]{range.Count, delta, stride, 0u};
+    encoder->setBytes(pc, sizeof(pc), 1);
+    encoder->dispatchThreads(MTL::Size(range.Count, 1, 1), MTL::Size(256, 1, 1));
+    encoder->endEncoding();
 }
 
-constexpr bool IsSharp(uint8_t sharpness) { return sharpness != 0; }
-
-// Outgoing halfedges, opposites, each halfedge's edge, an n-gon mesh's face starts, then each edge's first halfedge.
-constexpr uint32_t ConnectivityWords(uint32_t vertices, uint32_t halfedges, uint32_t faces, bool face_starts, uint32_t edges) {
-    return vertices + 2 * halfedges + (face_starts ? faces : 0u) + edges;
+// Copies each run of reference pairs, adding first_delta and second_delta to the non-null pair members.
+void EncodeCopyReferencePairs(MTL::CommandBuffer *command, const mtl::ComputePipeline &pipeline, MTL::Buffer *buffer,
+    std::span<const ReferencePairCopy> jobs, uint32_t first_delta, uint32_t second_delta) {
+    if (jobs.empty()) return;
+    static_assert(sizeof(ReferencePairCopy) == 12u);
+    std::vector<std::array<uint32_t, 2>> tiles;
+    for (uint32_t i = 0u; i < jobs.size(); ++i)
+        for (uint64_t first = 0u; first < jobs[i].Count; first += 32u) tiles.push_back({i, uint32_t(first)});
+    auto *device = buffer->device();
+    auto input = NS::TransferPtr(device->newBuffer(jobs.data(), jobs.size_bytes(), MTL::ResourceStorageModeShared));
+    auto work = NS::TransferPtr(device->newBuffer(tiles.data(), tiles.size() * sizeof(tiles[0]), MTL::ResourceStorageModeShared));
+    if (!input || !work) throw std::runtime_error("Reference copy descriptors failed.");
+    auto *encoder = command->computeCommandEncoder();
+    encoder->setComputePipelineState(pipeline.State());
+    encoder->setBuffer(buffer, 0, 0);
+    encoder->setBuffer(input.get(), 0, 1);
+    encoder->setBuffer(work.get(), 0, 2);
+    const uint32_t delta[]{first_delta, second_delta};
+    encoder->setBytes(delta, sizeof(delta), 3);
+    encoder->dispatchThreadgroups(MTL::Size(tiles.size(), 1, 1), MTL::Size(32, 1, 1));
+    encoder->endEncoding();
 }
-// CSR offsets then one item per halfedge, since every halfedge of a face-topology mesh belongs to a face loop.
-constexpr uint32_t FanAdjacencyWords(uint32_t vertices, uint32_t halfedges) { return vertices + 1 + halfedges; }
-// CSR offsets then two items per edge, one per endpoint.
-constexpr uint32_t EdgeAdjacencyWords(uint32_t vertices, uint32_t edges) { return vertices + 1 + 2 * edges; }
 
-template<typename... R> auto Ptrs(R &...ranges) { return std::array{&ranges...}; }
-auto ArrayPtrs(auto &ranges) {
-    return std::apply([](auto &...r) { return std::array{&r...}; }, ranges);
-}
-constexpr auto NoRanges = [](auto &, auto &) { return std::array<Range *, 0>{}; };
+constexpr auto NoAllocation = [](auto &) -> Range * { return nullptr; };
 
 // The change bits a tracked arena reports and its history name, with a derived arena left unnamed.
 // A mirror arena shares its ranges with a master arena earlier in the roster and allocates nothing of its own.
+using Domain = MeshStore::ElementDomain;
+
 struct ArenaInfo {
     uint32_t Bits{};
     const char *Name{};
     bool Mirror{false};
+    Domain Elements{Domain::None};
+    bool BlockIndexed{false};
+    const BufferArena<uint32_t> *ValueOwners{};
     bool Tracked() const { return Name != nullptr; }
 };
 
-// The arena roster: calls f(arena, info, ranges) for every arena, where ranges(record, derived) returns pointers to the ranges a mesh holds in it.
+// One roster owns optional attribute lifecycle, allocation and history routing.
+// entries(record) is the payload blocks each of the record's element blocks owns, and zero when the record lacks the attribute.
+void ForEachAttribute(auto &b, auto &&f) {
+    using R = MeshStore::Record;
+    using enum MeshStore::ChangeBits;
+    f(b.FacePrimitives, Domain::Face, AttributesChanged, "FacePrimitive", "FacePrimitiveBlocks", "FacePrimitiveOwners", [](const R &r) { return uint32_t(r.FacePrimitivesReady); });
+    f(b.VertexPrimitives, Domain::Vertex, AttributesChanged, "VertexPrimitive", "VertexPrimitiveBlocks", "VertexPrimitiveOwners", [](const R &r) { return uint32_t(r.VertexPrimitivesReady); });
+    f(b.Skin, Domain::Vertex, AttributesChanged, "Skin", "SkinBlocks", "SkinOwners", [](const R &r) { return uint32_t(r.SkinBlocksReady); });
+    f(b.CustomNormals, Domain::Halfedge, AttributesChanged, "CustomNormal", "CustomNormalBlocks", "CustomNormalOwners", [](const R &r) { return uint32_t((r.CornerAttributes & MeshAttributeBit_Normal) != 0u); });
+    f(b.CornerTangents, Domain::Halfedge, AttributesChanged, "CornerTangent", "CornerTangentBlocks", "CornerTangentOwners", [](const R &r) { return uint32_t((r.CornerAttributes & MeshAttributeBit_Tangent) != 0u); });
+    f(b.CornerColors, Domain::Halfedge, AttributesChanged, "CornerColor", "CornerColorBlocks", "CornerColorOwners", [](const R &r) { return uint32_t((r.CornerAttributes & MeshAttributeBit_Color0) != 0u); });
+    f(b.VertexColors, Domain::Vertex, AttributesChanged, "VertexColor", "VertexColorBlocks", "VertexColorOwners", [](const R &r) { return uint32_t((r.VertexAttributes & MeshAttributeBit_Color0) != 0u); });
+    constexpr std::array Names{"CornerUv0", "CornerUv1", "CornerUv2", "CornerUv3"};
+    constexpr std::array Blocks{"CornerUv0Blocks", "CornerUv1Blocks", "CornerUv2Blocks", "CornerUv3Blocks"};
+    constexpr std::array Owners{"CornerUv0Owners", "CornerUv1Owners", "CornerUv2Owners", "CornerUv3Owners"};
+    for (uint32_t i = 0; i < 4; ++i)
+        f(b.CornerUvs[i], Domain::Halfedge, AttributesChanged, Names[i], Blocks[i], Owners[i], [i](const R &r) { return uint32_t((r.CornerAttributes & (MeshAttributeBit_TexCoord0 << i)) != 0u); });
+    f(b.Morph, Domain::Vertex, DeformChanged, "MorphBlockValues", "MorphBlockBindings", "MorphBlockOwners", [](const R &r) { return r.MorphBlocksReady ? r.MorphTargetCount : 0u; });
+}
+
+// The arena roster: calls f(arena, info, allocation) for every arena, where allocation(record) borrows its sole allocation, or returns null.
 // Tracked arenas come first in their history order, then the derived arenas and the mirrors, each after its master.
 void ForEachArena(MeshArenas &b, auto &&f) {
     using enum MeshStore::ChangeBits;
-    f(b.Vertices, ArenaInfo{GeometryChanged, "Vertices"}, [](auto &e, auto &) { return Ptrs(e.Vertices); });
-    f(b.FaceFirstTriangles, ArenaInfo{TopologyChanged, "FaceFirstTriangle"}, [](auto &e, auto &) { return Ptrs(e.FaceData); });
-    f(b.ElementPrimitives, ArenaInfo{AttributesChanged, "ElementPrimitive"}, [](auto &e, auto &) { return Ptrs(e.ElementPrimitives); });
-    f(b.PrimitiveMaterials, ArenaInfo{AttributesChanged, "PrimitiveMaterial"}, [](auto &e, auto &) { return Ptrs(e.PrimitiveMaterials); });
-    f(b.BoneDeform, ArenaInfo{DeformChanged, "BoneDeform"}, [](auto &e, auto &) { return Ptrs(e.BoneDeform); });
-    f(b.MorphTargets, ArenaInfo{DeformChanged, "MorphTarget"}, [](auto &e, auto &) { return Ptrs(e.MorphTargets); });
-    f(b.SelectionBits, ArenaInfo{SelectionChanged, "SelectionBits"}, [](auto &e, auto &) { return ArrayPtrs(e.SelectionBits); });
-    f(b.SelectionSummary, ArenaInfo{SelectionChanged, "SelectionSummary"}, [](auto &e, auto &) { return Ptrs(e.SelectionSummary); });
-    f(b.TriangleFaceIds, ArenaInfo{TopologyChanged, "TriangleFaceId"}, [](auto &e, auto &) { return Ptrs(e.TriangleFaceIds); });
-    f(b.FaceCorners, ArenaInfo{TopologyChanged, "FaceCorner"}, [](auto &e, auto &) { return Ptrs(e.FaceCorners); });
-    f(b.Connectivity, ArenaInfo{TopologyChanged, "Connectivity"}, [](auto &e, auto &) { return Ptrs(e.Connectivity); });
-    f(b.EdgeSharpness, ArenaInfo{ShadingChanged, "EdgeSharpness"}, [](auto &e, auto &) { return Ptrs(e.EdgeSharpness); });
-    f(b.CustomCornerMasks, ArenaInfo{ShadingChanged, "CustomCornerMask"}, [](auto &e, auto &) { return Ptrs(e.CustomCornerMasks); });
-    f(b.CustomCornerNormals, ArenaInfo{ShadingChanged, "CustomCornerNormal"}, [](auto &e, auto &) { return Ptrs(e.CustomCornerNormals); });
-    f(b.CornerTangents, ArenaInfo{AttributesChanged, "CornerTangent"}, [](auto &e, auto &) { return Ptrs(e.CornerTangents); });
-    f(b.CornerColors, ArenaInfo{AttributesChanged, "CornerColor"}, [](auto &e, auto &) { return Ptrs(e.CornerColors); });
-    f(b.CornerUvs, ArenaInfo{AttributesChanged, "CornerUv"}, [](auto &e, auto &) { return ArrayPtrs(e.CornerUvs); });
-    f(b.PointNormals, ArenaInfo{ShadingChanged, "PointNormal"}, [](auto &e, auto &) { return Ptrs(e.PointNormals); });
-    f(b.TetPositions, ArenaInfo{0, "TetPosition"}, NoRanges);
-    f(b.TetEdgeIndices, ArenaInfo{0, "TetEdgeIndex"}, NoRanges);
-    f(b.FaceSharpness, ArenaInfo{ShadingChanged, "FaceSharpness", true}, [](auto &e, auto &) { return Ptrs(e.FaceData); });
-    f(b.SoundVertices, ArenaInfo{}, NoRanges);
-    f(b.Lists, ArenaInfo{}, NoRanges);
-    f(b.Adjacency, ArenaInfo{}, [](auto &, auto &d) { return Ptrs(d.VertexFanAdjacency, d.VertexEdgeAdjacency, d.SeamFans); });
-    f(b.CornerClasses, ArenaInfo{}, [](auto &, auto &d) { return Ptrs(d.CornerClasses); });
-    f(b.BaseSeamNormals, ArenaInfo{}, [](auto &, auto &d) { return Ptrs(d.BaseSeamNormals); });
-    f(b.SelectionBaseline, ArenaInfo{}, [](auto &, auto &d) { return Ptrs(d.SelectionBaseline); });
-    f(b.BaseVertexNormals, ArenaInfo{.Mirror = true}, [](auto &e, auto &) { return Ptrs(e.Vertices); });
-    f(b.BaseFaceNormals, ArenaInfo{.Mirror = true}, [](auto &e, auto &) { return Ptrs(e.FaceData); });
+    f(b.Vertices, ArenaInfo{GeometryChanged, "Vertices", false, Domain::Vertex}, [](auto &e) { return &e.Vertices; });
+    f(b.FaceTriangles, ArenaInfo{TopologyChanged, "FaceTriangleStart", false, Domain::Face}, [](auto &e) { return &e.FaceData; });
+    ForEachAttribute(b, [&](auto &a, Domain domain, uint32_t bits, const char *values, const char *blocks, const char *owners, auto &&) {
+        f(a.Values, ArenaInfo{bits, values, false, domain, false, &a.Owners}, NoAllocation);
+        f(a.Blocks, ArenaInfo{bits, blocks, false, domain, true}, NoAllocation);
+        f(a.Owners, ArenaInfo{0, owners}, NoAllocation);
+    });
+    f(b.PrimitiveMaterials, ArenaInfo{AttributesChanged, "PrimitiveMaterial"}, [](auto &e) { return &e.PrimitiveMaterials; });
+    f(b.VertexSelection, ArenaInfo{SelectionChanged, "VertexSelection", true, Domain::Vertex, true}, NoAllocation);
+    f(b.EdgeSelection, ArenaInfo{SelectionChanged, "EdgeSelection", true, Domain::Edge, true}, NoAllocation);
+    f(b.FaceSelection, ArenaInfo{SelectionChanged, "FaceSelection", true, Domain::Face, true}, NoAllocation);
+    f(b.SelectionSummary, ArenaInfo{SelectionChanged, "SelectionSummary"}, [](auto &e) { return &e.SelectionSummary; });
+    f(b.Triangles, ArenaInfo{TopologyChanged, "Triangle", false, Domain::Triangle}, [](auto &e) { return &e.TriangleData; });
+    f(b.FaceCorners, ArenaInfo{TopologyChanged, "FaceCorner", false, Domain::Halfedge}, [](auto &e) { return &e.FaceCorners; });
+    f(b.EdgeHalfedges, ArenaInfo{TopologyChanged, "EdgeHalfedge", false, Domain::Edge}, [](auto &e) { return &e.EdgeData; });
+    f(b.OutgoingHalfedges, ArenaInfo{TopologyChanged, "OutgoingHalfedge", true, Domain::Vertex}, [](auto &e) { return &e.Vertices; });
+    f(b.VertexCorners, ArenaInfo{TopologyChanged, "VertexCorner", true, Domain::Vertex}, [](auto &e) { return &e.Vertices; });
+    f(b.OppositeHalfedges, ArenaInfo{TopologyChanged, "OppositeHalfedge", true, Domain::Halfedge}, [](auto &e) { return &e.FaceCorners; });
+    f(b.HalfedgeEdges, ArenaInfo{TopologyChanged, "HalfedgeEdge", true, Domain::Halfedge}, [](auto &e) { return &e.FaceCorners; });
+    f(b.HalfedgeFaces, ArenaInfo{TopologyChanged, "HalfedgeFace", true, Domain::Halfedge}, [](auto &e) { return &e.FaceCorners; });
+    f(b.FaceRanges, ArenaInfo{TopologyChanged, "FaceRange", true, Domain::Face}, [](auto &e) { return &e.FaceData; });
+    f(b.EdgeSharpness, ArenaInfo{ShadingChanged, "EdgeSharpness", true, Domain::Edge}, [](auto &e) { return &e.EdgeData; });
+    f(b.PointNormals, ArenaInfo{ShadingChanged, "PointNormal"}, [](auto &e) { return &e.PointNormals; });
+    f(b.TetPositions, ArenaInfo{0, "TetPosition"}, NoAllocation);
+    f(b.TetEdgeIndices, ArenaInfo{0, "TetEdgeIndex"}, NoAllocation);
+    f(b.FaceSharpness, ArenaInfo{ShadingChanged, "FaceSharpness", true, Domain::Face}, [](auto &e) { return &e.FaceData; });
+    f(b.SoundVertices, ArenaInfo{}, NoAllocation);
+    f(b.VertexAggregates, ArenaInfo{0, nullptr, true, Domain::Vertex, true}, NoAllocation);
+    f(b.EdgeAggregates, ArenaInfo{0, nullptr, true, Domain::Edge, true}, NoAllocation);
+    f(b.FaceAggregates, ArenaInfo{0, nullptr, true, Domain::Face, true}, NoAllocation);
+    f(b.SelectionRoots, ArenaInfo{}, NoAllocation);
+    f(b.CornerSectors.Values, ArenaInfo{0,"CornerSectorsValues"}, NoAllocation);
+    f(b.CornerSectors.Blocks, ArenaInfo{0,"CornerSectorsBlocks"}, NoAllocation);
+    f(b.CornerSectors.Owners, ArenaInfo{0,"CornerSectorsOwners"}, NoAllocation);
+    f(b.NormalSectors.Values, ArenaInfo{0,"NormalSectorsValues"}, NoAllocation);
+    f(b.NormalSectors.Blocks, ArenaInfo{0,"NormalSectorsBlocks"}, NoAllocation);
+    f(b.NormalSectors.Owners, ArenaInfo{0,"NormalSectorsOwners"}, NoAllocation);
+    f(b.BaseVertexNormals, ArenaInfo{0,"BaseVertexNormal",true,Domain::Vertex}, [](auto &e) { return &e.Vertices; });
+    f(b.BaseFaceNormals, ArenaInfo{0,"BaseFaceNormal",true,Domain::Face}, [](auto &e) { return &e.FaceData; });
 }
 
 template<typename Arena> using ArenaValue = typename decltype(std::declval<const Arena &>().Get(Range{}))::value_type;
+
+decltype(auto) WithDomain(auto &b, Domain domain, auto &&fn) {
+    switch (domain) {
+        case Domain::Vertex: return fn(b.Vertices);
+        case Domain::Halfedge: return fn(b.FaceCorners);
+        case Domain::Edge: return fn(b.EdgeHalfedges);
+        case Domain::Face: return fn(b.FaceTriangles);
+        case Domain::Triangle: return fn(b.Triangles);
+        case Domain::None: throw std::logic_error("Missing element domain.");
+    }
+}
+
+auto &DomainSet(auto &record, Domain domain) {
+    switch (domain) {
+        case Domain::Vertex: return record.Vertices;
+        case Domain::Halfedge: return record.FaceCorners;
+        case Domain::Edge: return record.EdgeData;
+        case Domain::Face: return record.FaceData;
+        case Domain::Triangle: return record.TriangleData;
+        case Domain::None: throw std::invalid_argument("Missing element domain.");
+    }
+}
+
+constexpr bool SelectableDomain(Domain domain) { return domain == Domain::Vertex || domain == Domain::Edge || domain == Domain::Face; }
+
+constexpr std::array SelectionDomains{Domain::Vertex, Domain::Edge, Domain::Face};
+constexpr std::array SelectionElements{Element::Vertex, Element::Edge, Element::Face};
+Domain SelectionDomain(Element element) {
+    if (element == Element::Vertex) return Domain::Vertex;
+    if (element == Element::Edge) return Domain::Edge;
+    if (element == Element::Face) return Domain::Face;
+    throw std::invalid_argument("Missing selection domain.");
+}
+auto &SelectionArena(auto &arenas, Domain domain) {
+    if (domain == Domain::Vertex) return arenas.VertexSelection;
+    if (domain == Domain::Edge) return arenas.EdgeSelection;
+    if (domain == Domain::Face) return arenas.FaceSelection;
+    throw std::invalid_argument("Missing selection domain.");
+}
+
+uint32_t SelectableIndex(Domain domain) {
+    if (domain == Domain::Vertex) return 0u;
+    if (domain == Domain::Edge) return 1u;
+    if (domain == Domain::Face) return 2u;
+    throw std::invalid_argument("Missing selection domain.");
+}
+auto &AggregateArena(auto &arenas, Domain domain) {
+    if (domain == Domain::Vertex) return arenas.VertexAggregates;
+    if (domain == Domain::Edge) return arenas.EdgeAggregates;
+    if (domain == Domain::Face) return arenas.FaceAggregates;
+    throw std::invalid_argument("Missing selection domain.");
+}
+
+void ClearVertexRoots(MeshArenas &a, ElementSetRef vertices) {
+    a.Vertices.ForEachBlock(vertices,[&](uint32_t block, const auto &) {
+        const Range range{block*MeshElementBlockSize,MeshElementBlockSize};
+        a.VertexCorners.Buffer.CaptureWrite(uint64_t(range.Offset)*sizeof(uvec2),uint64_t(range.Count)*sizeof(uvec2));
+        std::ranges::fill(a.VertexCorners.GetMutable(range),uvec2{InvalidOffset,0u});
+    });
+}
+
+Range DenseRange(const MeshArenas &, const ArenaInfo &, Range range) { return range; }
+Range DenseRange(const MeshArenas &b, const ArenaInfo &info, ElementSetRef set) {
+    return WithDomain(b, info.Elements, [&](const auto &owner) { return owner.Dense(set); });
+}
+
 } // namespace
 
 MeshArenas::MeshArenas(mtl::BufferContext &ctx)
     : Vertices{ctx, SlotType::VertexBuffer},
-      FaceFirstTriangles{ctx, SlotType::ObjectIdBuffer},
+      FaceTriangles{ctx, SlotType::ObjectIdBuffer},
       FaceSharpness{ctx, SlotType::Buffer},
       FaceCorners{ctx, SlotType::IndexBuffer},
-      TriangleFaceIds{ctx, SlotType::ObjectIdBuffer},
-      Connectivity{ctx, SlotType::Buffer},
-      SelectionBits{ctx, SlotType::Buffer},
+      Triangles{ctx, SlotType::Buffer},
+      OutgoingHalfedges{ctx, SlotType::Buffer},
+      VertexCorners{ctx, SlotType::Buffer},
+      VertexFans{ctx},
+      OppositeHalfedges{ctx, SlotType::Buffer},
+      HalfedgeEdges{ctx, SlotType::Buffer},
+      HalfedgeFaces{ctx, SlotType::Buffer},
+      FaceRanges{ctx, SlotType::Buffer},
+      EdgeHalfedges{ctx, SlotType::Buffer},
+      VertexSelection{ctx, SlotType::Buffer},
+      EdgeSelection{ctx, SlotType::Buffer},
+      FaceSelection{ctx, SlotType::Buffer},
+      VertexAggregates{ctx, SlotType::Buffer}, EdgeAggregates{ctx, SlotType::Buffer}, FaceAggregates{ctx, SlotType::Buffer},
+      SelectionRoots{ctx, SlotType::Buffer},
+      Query{ctx},
       SelectionSummary{ctx, SlotType::Buffer},
       EdgeSharpness{ctx, SlotType::Buffer},
-      CustomCornerMasks{ctx, SlotType::Buffer},
-      CustomCornerNormals{ctx, SlotType::Buffer},
+      CustomNormals{ctx, SlotType::Buffer},
       PointNormals{ctx, SlotType::Buffer},
       CornerTangents{ctx, SlotType::CornerTangentBuffer},
       CornerColors{ctx, SlotType::CornerColorBuffer},
-      CornerUvs{ctx, SlotType::CornerUvBuffer},
-      ElementPrimitives{ctx, SlotType::ElementPrimitiveBuffer},
+      VertexColors{ctx, SlotType::CornerColorBuffer},
+      CornerUvs{{{ctx, SlotType::CornerUvBuffer}, {ctx, SlotType::CornerUvBuffer}, {ctx, SlotType::CornerUvBuffer}, {ctx, SlotType::CornerUvBuffer}}},
+      FacePrimitives{ctx, SlotType::ElementPrimitiveBuffer},
+      VertexPrimitives{ctx, SlotType::ElementPrimitiveBuffer},
       PrimitiveMaterials{ctx, SlotType::PrimitiveMaterialBuffer},
-      BoneDeform{ctx, SlotType::BoneDeformBuffer},
-      MorphTargets{ctx, SlotType::MorphTargetBuffer},
+      Skin{ctx, SlotType::BoneDeformBuffer},
+      Morph{ctx, SlotType::MorphTargetBuffer},
       TetPositions{ctx, SlotType::Buffer},
       TetEdgeIndices{ctx, SlotType::Buffer},
       SoundVertices{ctx, SlotType::Buffer},
-      Lists{ctx, SlotType::Buffer},
-      Adjacency{ctx, SlotType::Buffer},
-      CornerClasses{ctx, SlotType::Buffer},
-      BaseSeamNormals{ctx, SlotType::Buffer},
-      SelectionBaseline{ctx, SlotType::Buffer},
+      CornerSectors{ctx, SlotType::Buffer},
+      NormalSectors{ctx, SlotType::Buffer},
       BaseVertexNormals{ctx, SlotType::Buffer},
       BaseFaceNormals{ctx, SlotType::Buffer} {}
 
 struct MeshStore::HistoryState {
     struct Extent {
-        uint64_t Begin, End;
+        uint64_t End;
         uint32_t Id, Bits;
     };
+    enum class StreamKind { Values, Blocks, Sets };
+    struct DomainStream {
+        mtl::Buffer *Buffer;
+        Domain Elements;
+        uint32_t Stride, Bits;
+        StreamKind Kind;
+        const BufferArena<uint32_t> *ValueOwners{};
+    };
+    // The entries a record added to the index, so a changed record replaces only its own.
+    struct IndexedRecord {
+        std::vector<std::pair<uint32_t, uint32_t>> Sets; // Domain and set index.
+        std::vector<std::pair<mtl::Buffer *, uint64_t>> Extents; // Buffer and first byte.
+    };
     store::Records Entries, Free;
-    std::unordered_map<mtl::Buffer *, std::vector<Extent>> Ranges;
-    bool RangesDirty{true};
+    // Each non-domain arena's record extents, keyed by their disjoint first bytes.
+    std::unordered_map<mtl::Buffer *, std::map<uint64_t, Extent>> Ranges;
+    std::array<std::unordered_map<uint32_t, uint32_t>, uint32_t(Domain::Triangle) + 1u> Owners;
+    std::vector<DomainStream> Streams;
+    std::vector<IndexedRecord> Indexed;
+    // Records whose ranges or sets changed since the last index, and whether every record did.
+    std::vector<uint32_t> Dirty;
+    bool AllDirty{true};
 
     HistoryState(MeshStore &mesh, store::History &history) : Entries(mesh.Records), Free(mesh.FreeIds) {
         Entries.Trie.CollectChanged = true;
@@ -135,22 +280,51 @@ struct MeshStore::HistoryState {
         history.Track(Free, "mesh.free", 0);
     }
 
-    void Index(MeshStore &mesh) {
-        for (auto &[buffer, ranges] : Ranges) ranges.clear();
-        for (uint32_t id = 0; id < mesh.Records.size(); ++id) {
-            const auto &record = mesh.Records[id];
-            if (!record.Alive) continue;
-            const auto &derived = mesh.DerivedRecords[id];
-            ForEachArena(mesh.Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
-                if (!info.Tracked()) return;
-                constexpr auto Stride = sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>);
-                for (const auto *range : ranges(record, derived)) {
-                    if (range->Count) Ranges[&arena.Buffer].push_back({uint64_t(range->Offset) * Stride, uint64_t(range->Offset + range->Count) * Stride, id, info.Bits});
-                }
-            });
+    void Unindex(uint32_t id) {
+        if (id >= Indexed.size()) return;
+        auto &indexed = Indexed[id];
+        for (const auto [domain, set] : indexed.Sets)
+            if (const auto it = Owners[domain].find(set); it != Owners[domain].end() && it->second == id) Owners[domain].erase(it);
+        for (const auto [buffer, begin] : indexed.Extents) {
+            auto &ranges = Ranges[buffer];
+            if (const auto it = ranges.find(begin); it != ranges.end() && it->second.Id == id) ranges.erase(it);
         }
-        for (auto &[buffer, ranges] : Ranges) std::ranges::sort(ranges, {}, &Extent::Begin);
-        RangesDirty = false;
+        indexed = {};
+    }
+    void IndexRecord(MeshStore &mesh, uint32_t id) {
+        Unindex(id);
+        if (id >= mesh.Records.size() || !mesh.Records[id].Alive) return;
+        if (Indexed.size() <= id) Indexed.resize(id + 1u);
+        auto &indexed = Indexed[id];
+        ForEachArena(mesh.Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
+            if (!info.Tracked() || info.Mirror) return;
+            constexpr auto Stride = sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>);
+            if (const auto *allocation = ranges(mesh.Records[id])) {
+                if constexpr (std::is_same_v<std::remove_cvref_t<decltype(*allocation)>, ElementSetRef>) {
+                    if (!*allocation) return;
+                    Owners[uint32_t(info.Elements)][allocation->Index] = id;
+                    indexed.Sets.emplace_back(uint32_t(info.Elements), allocation->Index);
+                } else if (const auto range = *allocation; range.Count) {
+                    const auto begin = uint64_t(range.Offset) * Stride;
+                    Ranges[&arena.Buffer][begin] = {uint64_t(range.Offset + range.Count) * Stride, id, info.Bits};
+                    indexed.Extents.emplace_back(&arena.Buffer, begin);
+                }
+            }
+        });
+    }
+    void Index(MeshStore &mesh) {
+        if (AllDirty) {
+            for (auto &[buffer, ranges] : Ranges) ranges.clear();
+            for (auto &owners : Owners) owners.clear();
+            Indexed.clear();
+            for (uint32_t id = 0; id < mesh.Records.size(); ++id) IndexRecord(mesh, id);
+        } else {
+            std::ranges::sort(Dirty);
+            Dirty.erase(std::unique(Dirty.begin(), Dirty.end()), Dirty.end());
+            for (const auto id : Dirty) IndexRecord(mesh, id);
+        }
+        Dirty.clear();
+        AllDirty = false;
     }
 };
 
@@ -158,31 +332,28 @@ MeshStore::MeshStore(mtl::BufferContext &ctx)
     : Buffers{ctx},
       SlotTable{
           .Vertices = Buffers.Vertices.Buffer.Slot,
-          .FaceFirstTriangle = Buffers.FaceFirstTriangles.Buffer.Slot,
+          .FaceTriangleStart = Buffers.FaceTriangles.Buffer.Slot,
           .FaceSharpness = Buffers.FaceSharpness.Buffer.Slot,
-          .SelectionBits = Buffers.SelectionBits.Buffer.Slot,
           .EdgeSharpness = Buffers.EdgeSharpness.Buffer.Slot,
-          .CustomCornerMask = Buffers.CustomCornerMasks.Buffer.Slot,
-          .CustomCornerNormal = Buffers.CustomCornerNormals.Buffer.Slot,
-          .CornerTangent = Buffers.CornerTangents.Buffer.Slot,
-          .CornerColor = Buffers.CornerColors.Buffer.Slot,
-          .CornerUv = Buffers.CornerUvs.Buffer.Slot,
-          .ElementPrimitive = Buffers.ElementPrimitives.Buffer.Slot,
           .PrimitiveMaterial = Buffers.PrimitiveMaterials.Buffer.Slot,
-          .BoneDeform = Buffers.BoneDeform.Buffer.Slot,
-          .MorphTarget = Buffers.MorphTargets.Buffer.Slot,
+          .Skin = Buffers.Skin.Ref(),
+          .Morph = Buffers.Morph.Ref(),
           .TetPosition = Buffers.TetPositions.Buffer.Slot,
           .TetEdgeIndex = Buffers.TetEdgeIndices.Buffer.Slot,
           .SoundVertex = Buffers.SoundVertices.Buffer.Slot,
-          .Adjacency = Buffers.Adjacency.Buffer.Slot,
-          .CornerClass = Buffers.CornerClasses.Buffer.Slot,
-          .BaseSeamNormal = Buffers.BaseSeamNormals.Buffer.Slot,
+          .CornerSector = Buffers.CornerSectors.Ref(),
+          .NormalSector = Buffers.NormalSectors.Ref(),
           .BaseVertexNormal = Buffers.BaseVertexNormals.Buffer.Slot,
           .BaseFaceNormal = Buffers.BaseFaceNormals.Buffer.Slot,
-      } {}
+      },
+      BlockLists{ctx, SlotType::Buffer},
+      SelectionWork{ctx, SlotType::Buffer, mtl::BufferLifetime::Workspace},
+      SelectionDirty{ctx, SlotType::Buffer, mtl::BufferLifetime::Workspace} {}
 MeshStore::~MeshStore() = default;
 
 void MeshStore::Track(store::History &history) {
+    Buffers.VertexFans.Track(history,"mesh.vertexFans");
+    Buffers.VertexFans.Items.Buffer.History()->Trie.CollectChanged = false;
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
         if (!info.Tracked()) return;
         // A mirror owns no allocator, so only its bytes carry history.
@@ -190,10 +361,20 @@ void MeshStore::Track(store::History &history) {
         else arena.Track(history, std::string{"mesh."} + info.Name);
         // Changes map to records by byte extent rather than by page.
         arena.Buffer.History()->Trie.CollectChanged = false;
+        if constexpr (requires { arena.Blocks; }) {
+            arena.Blocks.Buffer.History()->Trie.CollectChanged = false;
+            arena.Sets.Buffer.History()->Trie.CollectChanged = false;
+        }
     });
     Tracked = std::make_unique<HistoryState>(*this, history);
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
-        if (info.Tracked()) Tracked->Ranges.try_emplace(&arena.Buffer);
+        if (!info.Tracked()) return;
+        if (info.Elements == Domain::None) Tracked->Ranges.try_emplace(&arena.Buffer);
+        else Tracked->Streams.push_back({&arena.Buffer, info.Elements, sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>), info.Bits, info.BlockIndexed || info.ValueOwners ? HistoryState::StreamKind::Blocks : HistoryState::StreamKind::Values, info.ValueOwners});
+        if constexpr (requires { arena.Blocks; }) {
+            Tracked->Streams.push_back({&arena.Blocks.Buffer, info.Elements, sizeof(MeshElementBlock), TopologyChanged, HistoryState::StreamKind::Blocks});
+            Tracked->Streams.push_back({&arena.Sets.Buffer, info.Elements, sizeof(MeshElementSet), TopologyChanged, HistoryState::StreamKind::Sets});
+        }
     });
 }
 
@@ -202,37 +383,51 @@ void CaptureRange(const auto &arena, Range range) {
     using Value = ArenaValue<std::remove_cvref_t<decltype(arena)>>;
     arena.Buffer.CaptureWrite(uint64_t(range.Offset) * sizeof(Value), uint64_t(range.Count) * sizeof(Value));
 }
+// Visits each run of consecutive blocks a set owns, in its block order, as a handle range.
+void ForEachBlockRun(const auto &elements, ElementSetRef set, auto &&fn) {
+    Range run{};
+    elements.ForEachBlock(set, [&](uint32_t block, const auto &) {
+        if (run.Count && block * MeshElementBlockSize != run.Offset + run.Count) {
+            fn(run);
+            run = {};
+        }
+        if (!run.Count) run.Offset = block * MeshElementBlockSize;
+        run.Count += MeshElementBlockSize;
+    });
+    if (run.Count) fn(run);
+}
+void CaptureElementSet(const auto &values, const auto &elements, ElementSetRef set) {
+    ForEachBlockRun(elements, set, [&](Range run) { CaptureRange(values, run); });
+}
+void CaptureRange(const auto &arena, ElementSetRef set) { CaptureElementSet(arena, arena, set); }
 
 // Requires selected indices in ascending order.
-void CaptureSelected(const mtl::Buffer &buffer, Range range, uint32_t stride, std::span<const uint32_t> bits) {
+void CaptureSelected(const mtl::Buffer &buffer, uint32_t stride, SelectionView selection) {
     const auto *history = buffer.History();
     if (!history) return;
     const uint64_t page_size = history->PageBytes;
-    uint64_t first = 0, end = 0;
-    ForEachSelected(bits, range.Count, [&](uint32_t index) {
-        const uint64_t offset = uint64_t(range.Offset + index) * stride;
-        const auto page = offset / page_size, last = (offset + stride + page_size - 1) / page_size;
-        if (first != end && page > end) {
-            buffer.CaptureWrite(first * page_size, (end - first) * page_size);
-            first = end = 0;
-        }
-        if (first == end) first = page;
-        end = last;
+    std::vector<uint32_t> pages;
+    selection.ForEach([&](uint32_t handle) {
+        const uint64_t offset = uint64_t(handle) * stride;
+        const auto first = offset / page_size, end = (offset + stride + page_size - 1) / page_size;
+        for (auto page=first;page<end;++page)
+            if (pages.empty() || pages.back()<page) pages.push_back(uint32_t(page));
     });
-    if (first != end) buffer.CaptureWrite(first * page_size, (end - first) * page_size);
+    buffer.CaptureWritePages(pages);
 }
 } // namespace
 
 void MeshStore::CaptureVertexEdit(uint32_t id) {
     if (!Tracked) return;
-    CaptureSelected(Buffers.Vertices.Buffer, Records.at(id).Vertices, sizeof(Vertex), GetSelectionBits(id, Element::Vertex));
+    CaptureSelected(Buffers.Vertices.Buffer, sizeof(Vertex), GetSelectedElements(id, Element::Vertex));
 }
 
-void MeshStore::CaptureSelectionWrite(uint32_t id) {
-    if (!Tracked) return;
-    const auto &record = Records.at(id);
-    for (const auto range : record.SelectionBits) CaptureRange(Buffers.SelectionBits, range);
-    CaptureRange(Buffers.SelectionSummary, record.SelectionSummary);
+void MeshStore::CaptureSelectionSummary(uint32_t id) {
+    if (Tracked) CaptureRange(Buffers.SelectionSummary, Records.at(id).SelectionSummary);
+}
+
+void MeshStore::CaptureSelectionBlocks(Element element, std::span<const uint32_t> blocks) {
+    if (Tracked) SelectionArena(Buffers, SelectionDomain(element)).Buffer.CaptureWriteElements(blocks, sizeof(MeshArenas::SelectionBlock));
 }
 
 void MeshStore::CaptureSharpnessWrite(uint32_t id, EditSharpnessOperation operation) {
@@ -240,31 +435,40 @@ void MeshStore::CaptureSharpnessWrite(uint32_t id, EditSharpnessOperation operat
     const auto &record = Records.at(id);
     switch (operation) {
         case EditSharpnessOperation::SetSelectedFaces:
-            CaptureSelected(Buffers.FaceSharpness.Buffer, record.FaceData, 1, GetSelectionBits(id, Element::Face));
+            CaptureSelected(Buffers.FaceSharpness.Buffer, 1, GetSelectedElements(id, Element::Face));
             break;
         case EditSharpnessOperation::SetSelectedEdges:
-            CaptureSelected(Buffers.EdgeSharpness.Buffer, record.EdgeSharpness, 1, GetSelectionBits(id, Element::Edge));
+            CaptureSelected(Buffers.EdgeSharpness.Buffer, 1, GetSelectedElements(id, Element::Edge));
             break;
         case EditSharpnessOperation::SetVertexEdges: {
-            const auto edges = GetVertexEdgeAdjacency(id);
-            ForEachSelected(GetSelectionBits(id, Element::Vertex), record.Vertices.Count, [&](uint32_t vertex) {
-                for (const auto edge : edges.Incident(vertex)) Buffers.EdgeSharpness.Buffer.CaptureWrite(record.EdgeSharpness.Offset + edge, 1);
+            const auto edges = GetVertexEdgeIncidence(id);
+            std::vector<uint32_t> touched;
+            GetSelectedElements(id, Element::Vertex).ForEach([&](uint32_t vertex) {
+                for (const auto edge : edges.Incident(vertex)) touched.push_back(edge);
             });
+            Buffers.EdgeSharpness.Buffer.CaptureWriteElements(touched, sizeof(uint8_t));
             break;
         }
         case EditSharpnessOperation::SetAllFaces:
-            CaptureRange(Buffers.FaceSharpness, record.FaceData);
+            CaptureElementSet(Buffers.FaceSharpness,Buffers.FaceTriangles,record.FaceData);
             break;
         case EditSharpnessOperation::SmoothAll:
         case EditSharpnessOperation::SmoothByAngle:
-            CaptureRange(Buffers.FaceSharpness, record.FaceData);
-            CaptureRange(Buffers.EdgeSharpness, record.EdgeSharpness);
+            CaptureElementSet(Buffers.FaceSharpness,Buffers.FaceTriangles,record.FaceData);
+            CaptureElementSet(Buffers.EdgeSharpness,Buffers.EdgeHalfedges,record.EdgeData);
             break;
     }
 }
 
 void MeshStore::CaptureConnectivityWrite(uint32_t id) {
-    if (Tracked) CaptureRange(Buffers.Connectivity, Records.at(id).Connectivity);
+    const auto &record = Records.at(id);
+    CaptureRange(Buffers.OutgoingHalfedges, Buffers.Vertices.Dense(record.Vertices));
+    CaptureRange(Buffers.VertexCorners, Buffers.Vertices.Dense(record.Vertices));
+    CaptureRange(Buffers.OppositeHalfedges, Buffers.FaceCorners.Dense(record.FaceCorners));
+    CaptureRange(Buffers.HalfedgeEdges, Buffers.FaceCorners.Dense(record.FaceCorners));
+    CaptureRange(Buffers.HalfedgeFaces, Buffers.FaceCorners.Dense(record.FaceCorners));
+    CaptureRange(Buffers.FaceRanges, Buffers.FaceTriangles.Dense(record.FaceData));
+    CaptureRange(Buffers.EdgeHalfedges, record.EdgeData);
 }
 
 void MeshStore::CaptureWeldWrite(uint32_t id) {
@@ -272,40 +476,80 @@ void MeshStore::CaptureWeldWrite(uint32_t id) {
     const auto &record = Records.at(id);
     CaptureRange(Buffers.Vertices, record.Vertices);
     CaptureRange(Buffers.FaceCorners, record.FaceCorners);
-    CaptureRange(Buffers.BoneDeform, record.BoneDeform);
-    CaptureRange(Buffers.MorphTargets, record.MorphTargets);
+    const auto vertices = Buffers.Vertices.Dense(record.Vertices);
+    if (record.SkinBlocksReady) Buffers.Skin.CaptureHandles(vertices);
+    if (record.MorphBlocksReady) Buffers.Morph.CaptureHandles(vertices, record.MorphTargetCount);
 }
 
 MeshStore::Record &MeshStore::WriteRecord(uint32_t id) {
     if (Tracked) {
         Tracked->Entries.Write(id, 1);
-        Tracked->RangesDirty = true;
+        Tracked->Dirty.push_back(id);
     }
+    ReleaseBlockLists(id);
     return Records.at(id);
+}
+
+void MeshStore::IndexHistory() {
+    if (!Tracked || (!Tracked->AllDirty && Tracked->Dirty.empty())) return;
+    const profile::CpuScope scope{"MeshStoreIndexHistory"};
+    Tracked->Index(*this);
 }
 
 std::vector<MeshStore::Change> MeshStore::TakeChanges() {
     if (!Tracked) return {};
-    if (Tracked->RangesDirty) Tracked->Index(*this);
+    // Fan replacements always change canonical roots, which map changes to the
+    // owning mesh. The item track still needs its extent queue drained.
+    Buffers.VertexFans.Items.Buffer.History()->TakeChangedExtents();
+    IndexHistory();
     struct ChangedRange {
         uint32_t Id, Bits;
         Range Vertices{};
+        uint32_t Domain{InvalidOffset}, Block{}; // A changed block in the order of Change::Blocks.
     };
     std::vector<ChangedRange> changed;
     for (const auto id : Tracked->Entries.Trie.TakeChanged()) changed.push_back({uint32_t(id), EntryChanged});
     for (const auto &[buffer, ranges] : Tracked->Ranges) {
         // Byte extents keep a record whose neighbor shares a page out of the changes.
         for (const auto [begin, end] : buffer->History()->TakeChangedExtents()) {
-            auto it = std::ranges::upper_bound(ranges, begin, {}, &HistoryState::Extent::End);
-            for (; it != ranges.end() && it->Begin < end; ++it) {
-                Range vertices{};
-                if (it->Bits == GeometryChanged) {
-                    const auto first = (std::max(begin, it->Begin) - it->Begin) / sizeof(Vertex);
-                    const auto last = (std::min(end, it->End) - it->Begin + sizeof(Vertex) - 1) / sizeof(Vertex);
-                    vertices = {uint32_t(first), uint32_t(last - first)};
+            auto it = ranges.upper_bound(begin);
+            if (it != ranges.begin() && std::prev(it)->second.End > begin) --it;
+            for (; it != ranges.end() && it->first < end; ++it) changed.push_back({it->second.Id, it->second.Bits, {}});
+        }
+    }
+    // Canonical streams resolve only dirty blocks through the current ownership
+    // metadata. No per-mesh range index is built for these streams.
+    for (const auto &stream : Tracked->Streams) {
+        const auto &owners = Tracked->Owners[uint32_t(stream.Elements)];
+        for (const auto [begin, end] : stream.Buffer->History()->TakeChangedExtents()) {
+            const uint64_t first = begin / stream.Stride, last = (end + stream.Stride - 1u) / stream.Stride;
+            WithDomain(Buffers, stream.Elements, [&](auto &arena) {
+                const auto blocks = arena.Blocks.Buffer.template GetSpan<MeshElementBlock>();
+                const auto values = stream.Kind == HistoryState::StreamKind::Values;
+                const uint64_t first_block = values ? first / MeshElementBlockSize : first;
+                const uint64_t last_block = values ? (last + MeshElementBlockSize - 1u) / MeshElementBlockSize : last;
+                if (stream.Buffer == &arena.Blocks.Buffer) arena.Reindex({uint32_t(first_block), uint32_t(last_block - first_block)});
+                for (uint64_t b = first_block; b < last_block; ++b) {
+                    auto block = b;
+                    if (stream.ValueOwners) {
+                        const auto reverse = stream.ValueOwners->Buffer.GetSpan<uint32_t>();
+                        if (b >= reverse.size() || reverse[b] == 0u) continue;
+                        block = reverse[b] - 1u;
+                    }
+                    const auto root = stream.Kind == HistoryState::StreamKind::Sets ? uint32_t(block) : block < blocks.size() ? blocks[block].Owner : InvalidOffset;
+                    const auto it = owners.find(root);
+                    if (it == owners.end()) continue;
+                    Range vertices{};
+                    if (stream.Bits == GeometryChanged) {
+                        const auto start = std::max(first, b * MeshElementBlockSize);
+                        const auto stop = std::min(last, (b + 1u) * MeshElementBlockSize);
+                        vertices = {uint32_t(start), uint32_t(stop - start)};
+                    }
+                    const auto domain = stream.Kind == HistoryState::StreamKind::Sets ? InvalidOffset :
+                        stream.Elements == Domain::Halfedge ? 3u : SelectableDomain(stream.Elements) ? SelectableIndex(stream.Elements) : InvalidOffset;
+                    changed.push_back({it->second, stream.Bits, vertices, domain, uint32_t(block)});
                 }
-                changed.push_back({it->Id, it->Bits, vertices});
-            }
+            });
         }
     }
     std::ranges::sort(changed, [](const auto &a, const auto &b) { return std::pair{a.Id, a.Vertices.Offset} < std::pair{b.Id, b.Vertices.Offset}; });
@@ -314,74 +558,191 @@ std::vector<MeshStore::Change> MeshStore::TakeChanges() {
         if (changes.empty() || changes.back().StoreId != range.Id) changes.push_back({range.Id, 0});
         auto &change = changes.back();
         change.Bits |= range.Bits;
+        if (range.Domain != InvalidOffset) change.Blocks[range.Domain].push_back(range.Block);
         if (!range.Vertices.Count) continue;
         auto &vertices = change.VertexRanges;
         if (!vertices.empty() && range.Vertices.Offset <= vertices.back().Offset + vertices.back().Count) {
             vertices.back().Count = std::max(vertices.back().Offset + vertices.back().Count, range.Vertices.Offset + range.Vertices.Count) - vertices.back().Offset;
         } else vertices.push_back(range.Vertices);
     }
+    for (auto &change : changes)
+        for (auto &blocks : change.Blocks) {
+            std::ranges::sort(blocks);
+            blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+        }
     return changes;
 }
 
-void MeshStore::SyncMirrors(uint32_t id) {
-    auto &record = Records.at(id);
-    auto &derived = DerivedRecords.at(id);
-    ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
+void MeshStore::SyncMirrors() {
+    const profile::CpuScope scope{"MeshStoreSyncMirrors"};
+    Buffers.CornerSectors.ReserveBlocks(Buffers.FaceCorners.Capacity() / MeshElementBlockSize);
+    Buffers.NormalSectors.ReserveBlocks(Buffers.FaceCorners.Capacity() / MeshElementBlockSize);
+    Buffers.Query.Reserve(std::max({Buffers.Vertices.Capacity(), Buffers.EdgeHalfedges.Capacity(), Buffers.FaceTriangles.Capacity()}));
+    ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
         if (!info.Mirror) return;
-        for (const auto *range : ranges(record, derived)) arena.Mirror(*range);
+        WithDomain(Buffers, info.Elements, [&](const auto &owner) {
+            arena.Mirror({0, info.BlockIndexed ? owner.Capacity() / MeshElementBlockSize : owner.Capacity()});
+        });
+    });
+    Buffers.SelectionRoots.Mirror({0, 3u * uint32_t(Records.size())});
+    ForEachAttribute(Buffers, [&](auto &a, Domain domain, uint32_t, const char *, const char *, const char *, auto &&) {
+        WithDomain(Buffers, domain, [&](const auto &owner) { a.ReserveBlocks(owner.Capacity() / MeshElementBlockSize); });
     });
 }
 
 void MeshStore::FinishRestore() {
-    if (!Tracked->Entries.Trie.ChangedSlots.empty()) Tracked->RangesDirty = true;
-    for (const auto id : Tracked->Entries.Trie.ChangedSlots) {
-        if (id < DerivedRecords.size()) ReleaseDerived(id);
-        RenderStale.push_back(uint32_t(id));
-    }
+    RenderStale.clear();
+    for (const auto id : Tracked->Entries.Trie.ChangedSlots) Tracked->Dirty.push_back(uint32_t(id));
+    for (const auto id : Tracked->Entries.Trie.ChangedSlots)
+        if (id < DerivedRecords.size()) DerivedRecords[id] = {};
     DerivedRecords.resize(Records.size());
-    for (const auto id : Tracked->Entries.Trie.ChangedSlots) {
-        if (id >= Records.size() || !Records[id].Alive) continue;
-        SyncMirrors(id);
-        FillBaseVertexNormalMirror(Records[id].Vertices, Records[id].PointNormals);
+    for (const auto id : Tracked->Entries.Trie.ChangedSlots)
+        if (id < Records.size() && Records[id].Alive) DerivedRecords[id].NormalRevision=++NextNormalRevision;
+    // A restore can return a set to an earlier revision with different membership, so every list refills on its next read.
+    {
+        const std::scoped_lock lock{BlockListLock};
+        ++BlockListEpoch;
+    }
+    SyncMirrors();
+}
+
+void MeshStore::FillBaseVertexNormalMirror(ElementSetRef vertices, Range point_normals) {
+    if (point_normals.Count > 0) {
+        std::ranges::copy(Buffers.PointNormals.Get(point_normals), Buffers.BaseVertexNormals.GetMutable(Buffers.Vertices.Dense(vertices)).begin());
+    } else {
+        ForEachBlockRun(Buffers.Vertices, vertices, [&](Range run) { std::ranges::fill(Buffers.BaseVertexNormals.GetMutable(run), vec3{0}); });
     }
 }
 
-void MeshStore::FillBaseVertexNormalMirror(Range vertices, Range point_normals) {
-    const auto normals = Buffers.BaseVertexNormals.GetMutable(vertices);
-    if (point_normals.Count > 0) std::ranges::copy(Buffers.PointNormals.Get(point_normals), normals.begin());
-    else std::ranges::fill(normals, vec3{0});
-}
-
-// Derived arena offsets follow rebuild order, so sort by store id for a deterministic layout.
-void MeshStore::RebuildDerived(std::span<Mesh> meshes) {
-    std::ranges::sort(meshes, {}, &Mesh::GetStoreId);
-    for (const auto &mesh : meshes) {
-        ReleaseDerived(mesh.GetStoreId());
-        BuildVertexAdjacency(mesh);
-        UpdateCornerClassification(mesh);
+ElementHandleRange MeshStore::InsertElements(uint32_t id, ElementDomain domain, uint32_t count, mtl::Buffer *list) {
+    if (!Records.at(id).Alive || domain == Domain::None) throw std::invalid_argument("Invalid element insertion request.");
+    if (!count) {
+        if (list) list->SetUsedSize(0);
+        return {};
     }
+    const auto set = DomainSet(Records[id], domain);
+    const bool first_face = domain == Domain::Face && !Buffers.FaceTriangles.Count(set);
+    // A new set, the triangle count and the first face's flags change the record.
+    auto &record = !set || first_face || domain == Domain::Triangle ? WriteRecord(id) : Records[id];
+    auto inserted = WithDomain(Buffers, domain, [&](auto &arena) {
+        return arena.Insert(DomainSet(record, domain), count, list);
+    });
+    auto &gains = inserted.Blocks;
+    std::ranges::sort(gains, {}, &ElementBlockGain::Block);
+    std::vector<uint32_t> blocks;
+    blocks.reserve(gains.size());
+    for (const auto &gain : gains) blocks.push_back(gain.Block);
+    SyncMirrors();
+    ForEachAttribute(Buffers, [&](auto &attributes, Domain owner, uint32_t, const char *, const char *, const char *, auto &&entries) {
+        if (owner == domain && (entries(record) || first_face)) attributes.Attach(blocks, {}, std::max(entries(record), 1u));
+    });
+    // The emitter writes the gained blocks and their mirrors, including holes sharing pages with surviving elements.
+    ForEachArena(Buffers, [&](auto &values, const ArenaInfo &info, auto &&) {
+        if (info.Elements != domain || info.ValueOwners || (info.BlockIndexed && !info.Mirror)) return;
+        ForEachIndexRun(blocks, [&](size_t first, size_t count) {
+            const Range run{blocks[first], uint32_t(count)};
+            CaptureRange(values, info.BlockIndexed ? run : Range{run.Offset * MeshElementBlockSize, run.Count * MeshElementBlockSize});
+        });
+    });
+    if (first_face) {
+        record.FacePrimitivesReady = true;
+        record.ConnectivityFaceStarts = true;
+    }
+    if (domain == Domain::Triangle) record.TriangleCount = Buffers.Triangles.Count(record.TriangleData);
+    return inserted.Handles;
 }
 
-uint32_t MeshStore::GetCornerClassOffset(uint32_t id) const {
-    const auto &derived = DerivedRecords.at(id);
-    if (derived.CornerClasses.Count > 0) return derived.CornerClasses.Offset;
-    return derived.UniformCornerClass == CornerClass::Face ? UniformFaceOffset : InvalidOffset;
+std::vector<uint32_t> MeshStore::EraseElements(uint32_t id, ElementDomain domain, const BufferArena<uint32_t> &storage, ElementWork work) {
+    if (!Records.at(id).Alive) throw std::invalid_argument("Retired mesh.");
+    if (domain == Domain::Triangle) WriteRecord(id);
+    const auto set = DomainSet(Records[id], domain);
+    auto blocks = WithDomain(Buffers, domain, [&](auto &arena) { return arena.Erase(set, storage.Buffer, work); });
+    if (SelectableDomain(domain) && !blocks.empty()) {
+        WithDomain(Buffers, domain, [&](const auto &arena) {
+            EditSelectionBlocks(SelectionElements[SelectableIndex(domain)], blocks, [&](uint32_t block, auto &words) {
+                const auto &live = arena.Blocks.Get({block, 1u})[0].Live;
+                for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) words[w] &= live[w];
+            });
+        });
+    }
+    FinishEraseElements(id, domain, blocks);
+    return blocks;
 }
 
-std::span<Vertex> MeshStore::EditVertices(uint32_t id) { return Buffers.Vertices.GetMutable(Records.at(id).Vertices); }
-std::span<uint32_t> MeshStore::EditPrimitiveMaterials(uint32_t id) { return Buffers.PrimitiveMaterials.GetMutable(Records.at(id).PrimitiveMaterials); }
-std::span<uint8_t> MeshStore::EditFaceSharpness(uint32_t id) { return Buffers.FaceSharpness.GetMutable(Records.at(id).FaceData); }
-std::span<uint8_t> MeshStore::EditEdgeSharpness(uint32_t id) { return Buffers.EdgeSharpness.GetMutable(Records.at(id).EdgeSharpness); }
-
-void MeshStore::SetCustomCornerNormals(uint32_t id, std::span<const uvec2> masks, std::span<const vec2> packed) {
+void MeshStore::TrimInsertedElements(uint32_t id, ElementDomain domain, ElementHandleRange &inserted, const mtl::Buffer &list, uint32_t used) {
+    if (used > inserted.Count) throw std::logic_error("An insertion's elements are fewer than the ones used.");
+    if (used == inserted.Count) return;
     auto &record = WriteRecord(id);
-    Buffers.CustomCornerMasks.Release(record.CustomCornerMasks);
-    Buffers.CustomCornerNormals.Release(record.CustomCornerNormals);
-    record.CustomCornerMasks = Buffers.CustomCornerMasks.Allocate(masks);
-    record.CustomCornerNormals = Buffers.CustomCornerNormals.Allocate(packed);
+    const auto blocks = WithDomain(Buffers, domain, [&](auto &arena) { return arena.Shrink(DomainSet(record, domain), inserted, list.GetSpan<uint32_t>(), used); });
+    FinishEraseElements(id, domain, blocks);
 }
 
-void MeshStore::SetMorphShadingAuthored(uint32_t id, bool authored) { DerivedRecords.at(id).MorphShadingAuthored = authored; }
+void MeshStore::FinishEraseElements(uint32_t id, ElementDomain domain, std::span<const uint32_t> blocks) {
+    if (blocks.empty()) return;
+    if (domain == Domain::Triangle) Records[id].TriangleCount = Buffers.Triangles.Count(Records[id].TriangleData);
+    if (domain == Domain::Halfedge) {
+        auto &derived = DerivedRecords.at(id);
+        const auto owner = Records[id].FaceCorners.Index;
+        for (const auto block : blocks) {
+            if (Buffers.FaceCorners.Blocks.Get({block, 1})[0].Owner == owner || !Buffers.CornerSectors.PayloadBlock(block)) continue;
+            Buffers.CornerSectors.Release(block);
+            Buffers.NormalSectors.Release(block);
+            derived.NormalRevision = ++NextNormalRevision;
+            --WriteRecord(id).SectorBlockCount;
+        }
+    }
+    if (domain == Domain::Vertex) {
+        // Dead slots, including every slot of a retired block, free their fans and clear their roots.
+        const auto owner=Records[id].Vertices;
+        std::vector<uvec2> released;
+        for (const auto b : blocks) {
+            const auto &block=Buffers.Vertices.Blocks.Get({b,1u})[0];
+            const auto live=block.Owner==owner.Index ? block.Live : decltype(block.Live){};
+            auto roots=Buffers.VertexCorners.GetMutable({b*256u,256u});
+            for (uint32_t i=0u; i<256u; ++i) {
+                if (live[i/32u] & (1u << (i%32u))) continue;
+                if (roots[i].y) released.push_back(roots[i]);
+                roots[i]={InvalidOffset,0u};
+            }
+        }
+        Buffers.VertexFans.Release(released);
+    }
+    const auto set = DomainSet(Records[id], domain);
+    ForEachAttribute(Buffers, [&](auto &attributes, Domain owner, uint32_t, const char *, const char *, const char *, auto &&entries) {
+        if (owner != domain || !entries(Records[id])) return;
+        WithDomain(Buffers, domain, [&](const auto &arena) {
+            for (const auto b : blocks)
+                if (arena.Blocks.Get({b, 1})[0].Owner != set.Index) attributes.Release(b);
+        });
+    });
+}
+
+uint32_t MeshStore::GetCornerClassMode(uint32_t id) const {
+    return Records.at(id).Classification;
+}
+
+std::span<uint32_t> MeshStore::EditPrimitiveMaterials(uint32_t id) { return Buffers.PrimitiveMaterials.GetMutable(Records.at(id).PrimitiveMaterials); }
+std::span<uint8_t> MeshStore::EditFaceSharpness(uint32_t id) { return Buffers.FaceSharpness.GetMutable(Buffers.FaceTriangles.Dense(Records.at(id).FaceData)); }
+std::span<uint8_t> MeshStore::EditEdgeSharpness(uint32_t id) { return Buffers.EdgeSharpness.GetMutable(Buffers.EdgeHalfedges.Dense(Records.at(id).EdgeData)); }
+
+void MeshStore::SetCustomCornerNormals(uint32_t id, std::span<const CustomNormal> offsets) {
+    auto &record = WriteRecord(id);
+    const auto corners = Buffers.FaceCorners.Dense(record.FaceCorners);
+    if (offsets.size() != corners.Count) throw std::invalid_argument("Custom normal count differs from polygon corners.");
+    bool any = false;
+    for (uint32_t i = 0; i < corners.Count; i += MeshElementBlockSize) {
+        const auto values = offsets.subspan(i, std::min(MeshElementBlockSize, corners.Count - i));
+        const uint32_t h = corners.Offset + i;
+        if (std::ranges::any_of(values, [](CustomNormal value) { return value.Offset.x >= 0.f; })) {
+            Buffers.CustomNormals.Initialize({h, uint32_t(values.size())}, values);
+            any = true;
+        } else Buffers.CustomNormals.Release(h / MeshElementBlockSize);
+    }
+    if (any) record.CornerAttributes |= MeshAttributeBit_Normal;
+    else record.CornerAttributes &= ~MeshAttributeBit_Normal;
+}
+
+void MeshStore::SetMorphShadingAuthored(uint32_t id, bool authored) { WriteRecord(id).MorphShadingAuthored = authored; }
 
 TetBuffers MeshStore::AllocateTets(std::span<const vec3> positions, std::span<const uint32_t> edge_indices) {
     return {Buffers.TetPositions.Allocate(positions), Buffers.TetEdgeIndices.Allocate(edge_indices)};
@@ -394,244 +755,145 @@ void MeshStore::ReleaseTets(TetBuffers tets) {
 
 Range MeshStore::AllocateSoundVertices(std::span<const uint32_t> vertices) { return Buffers.SoundVertices.Allocate(vertices); }
 void MeshStore::ReleaseSoundVertices(Range range) { Buffers.SoundVertices.Release(range); }
-Range MeshStore::AllocateList(std::span<const uint32_t> words) { return Buffers.Lists.Allocate(words); }
-void MeshStore::ReleaseList(Range range) { Buffers.Lists.Release(range); }
-
-void MeshStore::EnsureSelectionBits(const Mesh &mesh) {
-    auto &record = Records.at(mesh.GetStoreId());
-    auto &derived = DerivedRecords.at(mesh.GetStoreId());
-    const std::array counts{mesh.VertexCount(), mesh.EdgeCount(), mesh.FaceCount()};
-    bool domains_sized = true;
-    for (uint32_t i = 0; i < counts.size(); ++i) {
-        domains_sized &= record.SelectionBits[i].Count >= BitWords(counts[i]);
-    }
-    if (!domains_sized || record.SelectionSummary.Count == 0) WriteRecord(mesh.GetStoreId());
-    if (!domains_sized) {
-        for (const auto range : record.SelectionBits) Buffers.SelectionBits.Release(range);
-        for (uint32_t i = 0; i < counts.size(); ++i) {
-            record.SelectionBits[i] = Buffers.SelectionBits.Allocate(BitWords(counts[i]));
-            std::ranges::fill(Buffers.SelectionBits.GetMutable(record.SelectionBits[i]), 0u);
+void MeshStore::EnsureSelectionState(state::Scene &r, std::span<const uint32_t> ids) {
+    std::vector<SelectionUpdate> updates;
+    for (const auto id : ids) if (!Records.at(id).SelectionSummary.Count) updates.push_back({.StoreId = id});
+    if (updates.empty()) return;
+    SyncMirrors();
+    // Dead slots hold no selection, so the new state's masks are clear and only the aggregates need deriving.
+    for (auto &update : updates) {
+        WriteRecord(update.StoreId).SelectionSummary = Buffers.SelectionSummary.Allocate(1);
+        WriteSelectionSummary(update.StoreId) = {};
+        for (uint32_t d = 0u; d < 3u; ++d) {
+            const auto list = GetBlockList(update.StoreId, SelectionDomains[d]);
+            update.Blocks[d].assign(list.Blocks.begin(), list.Blocks.end());
         }
-        if (record.SelectionSummary.Count > 0) Buffers.SelectionSummary.GetMutable(record.SelectionSummary)[0] = {};
     }
-    // One trailing word preserves the active handle alongside the largest authoritative domain.
-    const uint32_t baseline_words = BitWords(std::ranges::max(counts)) + 1u;
-    if (derived.SelectionBaseline.Count < baseline_words) {
-        Buffers.SelectionBaseline.Release(derived.SelectionBaseline);
-        derived.SelectionBaseline = Buffers.SelectionBaseline.Allocate(baseline_words);
-        std::ranges::fill(Buffers.SelectionBaseline.GetMutable(derived.SelectionBaseline), 0u);
-    }
-    if (record.SelectionSummary.Count == 0) {
-        record.SelectionSummary = Buffers.SelectionSummary.Allocate(1);
-        Buffers.SelectionSummary.GetMutable(record.SelectionSummary)[0] = {};
-    }
+    UpdateSelection(r, updates);
+    for (const auto &update : updates) PublishSelectionSummary(update.StoreId);
 }
 
-std::span<const uint32_t> MeshStore::GetSelectionBits(uint32_t id, Element element) const { return Buffers.SelectionBits.Get(Records.at(id).SelectionBits[ElementIndex(element)]); }
-uint32_t MeshStore::GetSelectionBitOffset(uint32_t id, Element element) const { return Records.at(id).SelectionBits[ElementIndex(element)].Offset * 32; }
-SlottedRange MeshStore::GetSelectionBitsRange(uint32_t id, Element element) const {
-    const auto range = Records.at(id).SelectionBits[ElementIndex(element)];
-    return range.Count > 0 ? Buffers.SelectionBits.Slotted(range) : SlottedRange{};
+SelectionView MeshStore::GetSelectedElements(uint32_t id, Element element) const {
+    const auto domain = SelectionDomain(element);
+    const auto &root = GetSelectionRoot(id, element);
+    return {SelectionArena(Buffers, domain).Buffer.GetSpan<uint32_t>(), GetBlockList(id, domain).Blocks,
+            AggregateArena(Buffers, domain).Buffer.GetSpan<SelectionAggregate>(), root.Selected};
 }
-SlottedRange MeshStore::GetSelectionBaselineRange(uint32_t id) const {
-    const auto range = DerivedRecords.at(id).SelectionBaseline;
-    return range.Count > 0 ? Buffers.SelectionBaseline.Slotted(range) : SlottedRange{};
+
+BoundaryEdgeView MeshStore::GetBoundaryEdges(uint32_t id) const {
+    const auto &record = Records.at(id);
+    if (!record.FaceData || !record.EdgeData) return {};
+    return {
+        GetBlockList(id, Domain::Edge).Blocks, Buffers.EdgeAggregates.Buffer.GetSpan<SelectionAggregate>(),
+        Buffers.EdgeHalfedges.Blocks.Buffer.GetSpan<MeshElementBlock>(), Buffers.EdgeHalfedges.Buffer.GetSpan<uint32_t>(),
+        Buffers.OppositeHalfedges.Buffer.GetSpan<uint32_t>(), record.EdgeData.Index,
+    };
 }
+
+const SelectionAggregate &MeshStore::GetSelectionRoot(uint32_t id, Element element) const {
+    return Buffers.SelectionRoots.Get({3u * id + SelectableIndex(SelectionDomain(element)), 1u})[0];
+}
+SlotOffset MeshStore::GetSelectionRoots(uint32_t id) const { return {Buffers.SelectionRoots.Buffer.Slot, 3u * id}; }
+
+EditSelectionSummary &MeshStore::WriteSelectionSummary(uint32_t id) {
+    CaptureSelectionSummary(id);
+    return Buffers.SelectionSummary.GetMutable(Records.at(id).SelectionSummary)[0];
+}
+
+void MeshStore::PublishSelectionSummary(uint32_t id) {
+    auto &summary = WriteSelectionSummary(id);
+    const auto &vertices = GetSelectionRoot(id, Element::Vertex);
+    const auto *selected = summary.Mode == Element::None ? nullptr : &GetSelectionRoot(id, summary.Mode);
+    summary.PositionSum = vertices.PositionSum;
+    summary.SelectedCount = selected ? selected->Selected : 0u;
+    summary.SelectedVertexCount = vertices.Selected;
+    summary.SharpnessFlags = selected ? selected->Flags & (SelectionSelectedSharp | SelectionSelectedSmooth) : 0u;
+}
+
+void MeshStore::SetSelectionBaseline(uint32_t id, Element element, std::vector<std::pair<uint32_t, MeshArenas::SelectionBlock>> blocks, uint32_t active) {
+    auto &derived = DerivedRecords.at(id);
+    derived.SelectionBaseline = std::move(blocks);
+    derived.SelectionBaselineActive = active;
+    derived.SelectionBaselineElement = element;
+}
+
+bool MeshStore::IsLiveElement(uint32_t id, Element element, uint32_t handle) const {
+    const auto domain = SelectionDomain(element);
+    return WithDomain(Buffers, domain, [&](const auto &owner) {
+        const auto set = DomainSet(Records.at(id), domain);
+        if (!set || handle >= owner.Capacity()) return false;
+        const auto &block = owner.Blocks.Get({handle / MeshElementBlockSize, 1u})[0];
+        return block.Owner == set.Index && (block.Live[(handle & 255u) / 32u] & (1u << (handle & 31u))) != 0u;
+    });
+}
+uint32_t MeshStore::GetSelectionBitOffset(uint32_t id, Element element) const {
+    const auto domain = SelectionDomain(element);
+    return WithDomain(Buffers, domain, [&](const auto &owner) { return owner.First(DomainSet(Records.at(id), domain)); });
+}
+uint32_t MeshStore::GetSelectionSlot(Element element) const { return SelectionArena(Buffers, SelectionDomain(element)).Buffer.Slot; }
 EditSelectionStorage MeshStore::GetEditSelectionStorage(uint32_t id) const {
     const auto summary = Records.at(id).SelectionSummary;
+    const auto binding = [&](Element element) -> SlotOffset {
+        return {GetSelectionSlot(element), GetSelectionBitOffset(id, element) / 32u};
+    };
     return {
-        GetSelectionBitsRange(id, Element::Vertex), GetSelectionBitsRange(id, Element::Edge), GetSelectionBitsRange(id, Element::Face),
+        binding(Element::Vertex), binding(Element::Edge), binding(Element::Face),
         summary.Count > 0 ? Buffers.SelectionSummary.Slotted(summary) : SlottedRange{}
     };
 }
 const EditSelectionSummary &MeshStore::GetSelectionSummary(uint32_t id) const { return Buffers.SelectionSummary.Get(Records.at(id).SelectionSummary)[0]; }
 
-namespace {
-VertexAdjacency SliceAdjacency(std::span<const uint32_t> words, uint32_t bucket_count) {
-    if (words.empty()) return {};
-    return {words.first(bucket_count + 1), words.subspan(bucket_count + 1)};
+vec3 ComposeCornerNormal(CornerAttributeView<uint32_t> sectors, ElementAttributeView<NormalSector> normal_sectors, std::span<const uint8_t> sharpness, uint32_t mode, uint32_t ci, TriangleVertexView vertices, TriangleFaceView face_ids, const CornerNormalSources &sources) {
+    const auto face = face_ids[ci / 3u];
+    if (mode == UniformFaceMode || (mode == uint32_t(CornerClassMode::Mixed) && sharpness[face])) {
+        const auto posed = sources.PosedFaceNormals.Find(face);
+        return posed == InvalidOffset ? sources.FaceNormals[face] : sources.PosedFaceNormals.Values[posed];
+    }
+    const auto root = mode == uint32_t(CornerClassMode::Mixed) ? sectors.GetOr(ci, InvalidOffset) : InvalidOffset;
+    if (root == InvalidOffset) {
+        const auto v = vertices[ci];
+        const auto posed = sources.PosedVertexNormals.Find(v);
+        return posed == InvalidOffset ? sources.VertexNormals[v] : sources.PosedVertexNormals.Values[posed];
+    }
+    const auto posed = sources.PosedSectorNormals.Find(normal_sectors.Index(root));
+    return posed == InvalidOffset ? normal_sectors[root].Normal : sources.PosedSectorNormals.Values[posed];
 }
-} // namespace
 
-vec3 ComposeCornerNormal(std::span<const uint32_t> classes, CornerClass uniform_class, uint32_t ci, std::span<const uint32_t> indices, std::span<const uint32_t> face_ids, const CornerNormalSources &sources) {
-    const auto value = classes.empty() ? uint32_t(uniform_class) << ClassTagShift : classes[ci];
-    switch (CornerClass(value >> ClassTagShift)) {
-        case CornerClass::Face: return sources.FaceNormals[face_ids[ci / 3] - 1];
-        case CornerClass::Seam: return sources.SeamNormals[value & ClassIndexMask];
-        default: return sources.VertexNormals[indices[ci]];
-    }
-}
-
-void MeshStore::UpdateCornerClassification(const Mesh &mesh) {
-    const profile::CpuScope scope{"CornerClassification"};
-    const auto id = mesh.GetStoreId();
-    auto &record = Records.at(id);
-    auto &derived = DerivedRecords.at(id);
-    if (record.TriangleCount == 0) return;
-    const auto sharp_faces = Buffers.FaceSharpness.Get(record.FaceData);
-    const auto sharp_edges = Buffers.EdgeSharpness.Get(record.EdgeSharpness);
-    const auto [any_face_sharp, all_faces_sharp] = GetFaceSharpnessSummary(id);
-    const bool any_sharp = any_face_sharp || std::ranges::any_of(sharp_edges, IsSharp);
-    // Uniform classification avoids allocating a per-corner class buffer.
-    if (!any_sharp || all_faces_sharp) {
-        derived.UniformCornerClass = all_faces_sharp ? CornerClass::Face : CornerClass::Vertex;
-        Buffers.CornerClasses.Release(derived.CornerClasses);
-        Buffers.Adjacency.Release(derived.SeamFans);
-        Buffers.BaseSeamNormals.Release(derived.BaseSeamNormals);
-        derived.CornerClasses = derived.SeamFans = derived.BaseSeamNormals = {};
-        derived.SeamCornerCount = 0;
-        return;
-    }
-    if (derived.CornerClasses.Count == 0) derived.CornerClasses = Buffers.CornerClasses.Allocate(record.TriangleCount * 3);
-    const auto classes = Buffers.CornerClasses.GetMutable(derived.CornerClasses);
-    const auto &c = mesh.GetConnectivity();
-    const auto face_sharp = [&](Mesh::FH fh) { return *fh < sharp_faces.size() && IsSharp(sharp_faces[*fh]); };
-    const auto edge_sharp = [&](Mesh::HH hh) { const auto eh = mesh.GetEdge(hh); return *eh < sharp_edges.size() && IsSharp(sharp_edges[*eh]); };
-
-    // Assign seam sectors to vertices at a discontinuity and the vertex normal to all other vertices.
-    static thread_local std::vector<uint8_t> touched;
-    touched.assign(mesh.VertexCount(), 0);
-    for (uint32_t ei = 0; ei < sharp_edges.size(); ++ei) {
-        if (!sharp_edges[ei]) continue;
-        const auto hh = mesh.GetHalfedge(Mesh::EH{ei}, 0);
-        if (const auto to = mesh.GetToVertex(hh)) touched[*to] = 1;
-        if (const auto from = mesh.GetFromVertex(hh)) touched[*from] = 1;
-    }
-    for (uint32_t fi = 0; fi < sharp_faces.size(); ++fi) {
-        if (!sharp_faces[fi]) continue;
-        for (const auto vh : mesh.fv_range(Mesh::FH{fi})) touched[*vh] = 1;
-    }
-
-    static thread_local std::vector<uint32_t> seam_offsets, seam_items;
-    const auto add_incident = [&](Mesh::FH fh, uint32_t k) { seam_items.push_back(*fh | (k << FanLoopShift)); };
-    const auto loop_position = [&](Mesh::FH fh, Mesh::HH h_v) {
-        uint32_t k = 0;
-        for (auto h = c.FaceHalfedge(*fh); h != h_v; h = c.Next(h)) ++k;
-        return k;
+CornerNormalView MeshStore::GetCornerNormalView(uint32_t id) const {
+    const auto &record = Records.at(id);
+    return {
+        .ClassMode = record.Classification,
+        .CornerVertices = Buffers.FaceCorners.Buffer.GetSpan<uint32_t>(),
+        .Vertices = Buffers.Vertices.Buffer.GetSpan<Vertex>(),
+        .VertexNormals = Buffers.BaseVertexNormals.Buffer.GetSpan<vec3>(),
+        .FaceNormals = Buffers.BaseFaceNormals.Buffer.GetSpan<vec3>(),
+        .Connectivity = GetConnectivity(id),
+        .FaceSharpness = Buffers.FaceSharpness.Buffer.GetSpan<uint8_t>(),
+        .CornerSectors = Buffers.CornerSectors.View(record.SectorBlockCount != 0u),
+        .NormalSectors = Buffers.NormalSectors.View(),
+        .CustomNormals = Buffers.CustomNormals.View(record.CornerAttributes & MeshAttributeBit_Normal),
     };
-    seam_offsets.clear();
-    seam_items.clear();
-    seam_offsets.push_back(0);
-
-    // Collect the seam sector around `h_in`'s corner vertex, walking both ways from `fh` until a sharp edge, sharp face, or boundary cuts the fan.
-    const auto collect_sector = [&](Mesh::FH fh, Mesh::HH h_in, uint32_t k_in) {
-        constexpr uint32_t MaxFan{64};
-        add_incident(fh, k_in);
-        bool full_loop = false;
-        auto h = h_in;
-        for (uint32_t i = 0; i < MaxFan; ++i) {
-            const auto out = c.Next(h); // Advances within the current face while retaining the corner vertex.
-            if (edge_sharp(out)) break;
-            const auto opp = c.Opposites[*out];
-            if (!opp) break;
-            const auto nf = c.FaceOf(opp);
-            if (!nf) break;
-            if (nf == fh) {
-                full_loop = true;
-                break;
-            }
-            if (face_sharp(nf)) break;
-            add_incident(nf, loop_position(nf, opp));
-            h = opp;
-        }
-        if (!full_loop) {
-            h = h_in;
-            for (uint32_t i = 0; i < MaxFan; ++i) {
-                if (edge_sharp(h)) break;
-                const auto opp = c.Opposites[*h];
-                if (!opp) break;
-                const auto nf = c.FaceOf(opp);
-                if (!nf || nf == fh || face_sharp(nf)) break;
-                // Continue from the halfedge entering the corner vertex within `nf`.
-                auto prev = opp;
-                for (auto walk = c.Next(opp); walk != opp; walk = c.Next(walk)) prev = walk;
-                add_incident(nf, loop_position(nf, prev));
-                h = prev;
-            }
-        }
-        seam_offsets.push_back(uint32_t(seam_items.size()));
-    };
-
-    uint32_t ci = 0;
-    static thread_local std::vector<uint32_t> face_classes; // Per-face corner classes in vertex order, emitted in fan order.
-    for (const auto fh : mesh.faces()) {
-        const auto tri_count = mesh.GetValence(fh) - 2;
-        if (face_sharp(fh)) {
-            for (uint32_t t = 0; t < tri_count * 3; ++t) classes[ci++] = uint32_t(CornerClass::Face) << ClassTagShift;
-            continue;
-        }
-        face_classes.clear();
-        uint32_t k = 0;
-        for (const auto hh : mesh.fh_range(fh)) {
-            const auto vh = mesh.GetToVertex(hh);
-            if (touched[*vh]) {
-                const auto s = uint32_t(seam_offsets.size() - 1);
-                collect_sector(fh, hh, k);
-                face_classes.push_back((uint32_t(CornerClass::Seam) << ClassTagShift) | s);
-            } else {
-                face_classes.push_back(uint32_t(CornerClass::Vertex) << ClassTagShift);
-            }
-            ++k;
-        }
-        for (uint32_t i = 1; i + 1 < face_classes.size(); ++i) {
-            classes[ci++] = face_classes[0];
-            classes[ci++] = face_classes[i];
-            classes[ci++] = face_classes[i + 1];
-        }
-    }
-
-    derived.SeamCornerCount = uint32_t(seam_offsets.size() - 1);
-    const auto seam_words = derived.SeamCornerCount > 0 ? uint32_t(seam_offsets.size() + seam_items.size()) : 0u;
-    if (derived.SeamFans.Count != seam_words) {
-        Buffers.Adjacency.Release(derived.SeamFans);
-        derived.SeamFans = Buffers.Adjacency.Allocate(seam_words);
-    }
-    if (seam_words > 0) {
-        const auto out = Buffers.Adjacency.GetMutable(derived.SeamFans);
-        std::ranges::copy(seam_offsets, out.begin());
-        std::ranges::copy(seam_items, out.begin() + seam_offsets.size());
-    }
-    if (derived.BaseSeamNormals.Count != derived.SeamCornerCount) {
-        Buffers.BaseSeamNormals.Release(derived.BaseSeamNormals);
-        derived.BaseSeamNormals = Buffers.BaseSeamNormals.Allocate(derived.SeamCornerCount);
-    }
 }
 
 std::span<const vec3> MeshStore::GetCornerNormals(const Mesh &mesh) const {
-    return GetCornerNormals(mesh, mesh.CreateTriangleIndices());
-}
-
-std::span<const vec3> MeshStore::GetCornerNormals(const Mesh &mesh, std::span<const uint32_t> indices) const {
     const auto id = mesh.GetStoreId();
     const auto &record = Records.at(id);
-    const auto &derived = DerivedRecords.at(id);
     static thread_local std::vector<vec3> corners;
     corners.resize(size_t{record.TriangleCount} * 3);
-    if (corners.empty()) return corners;
-    const CornerNormalSources sources{Buffers.BaseVertexNormals.Get(record.Vertices), Buffers.BaseSeamNormals.Get(derived.BaseSeamNormals), Buffers.BaseFaceNormals.Get(record.FaceData)};
-    const auto classes = Buffers.CornerClasses.Get(derived.CornerClasses);
-    const auto face_ids = Buffers.TriangleFaceIds.Get(record.TriangleFaceIds);
-    for (uint32_t ci = 0; ci < corners.size(); ++ci) {
-        corners[ci] = ComposeCornerNormal(classes, derived.UniformCornerClass, ci, indices, face_ids, sources);
-    }
-    const auto masks = Buffers.CustomCornerMasks.Get(record.CustomCornerMasks);
-    if (masks.empty()) return corners;
-    const auto packed = Buffers.CustomCornerNormals.Get(record.CustomCornerNormals);
-    const auto vertices = Buffers.Vertices.Get(record.Vertices);
-    size_t next = 0;
-    for (size_t w = 0; w < masks.size(); ++w) {
-        for (auto word = masks[w].x; word != 0; word &= word - 1) {
-            const auto i = w * 32 + std::countr_zero(word);
-            corners[i] = DecodeNormalOffset(packed[next++], ComputeCornerFrame(corners[i], indices, vertices, i));
-        }
-    }
+    const auto normals = GetCornerNormalView(id);
+    const auto handles = GetTriangleCorners(id);
+    for (uint32_t ci = 0; ci < corners.size(); ++ci) corners[ci] = normals[handles[ci]];
     return corners;
 }
 
-SharpnessSummary MeshStore::GetFaceSharpnessSummary(uint32_t id) const {
-    const auto s = Buffers.FaceSharpness.Get(Records.at(id).FaceData);
-    return {std::ranges::any_of(s, IsSharp), !s.empty() && std::ranges::all_of(s, IsSharp)};
+namespace {
+SharpnessSummary LiveSharpness(uint32_t flags) {
+    return {(flags & SelectionLiveSharp) != 0u, (flags & SelectionLiveSharp) != 0u && !(flags & SelectionLiveSmooth)};
 }
+} // namespace
+
+SharpnessSummary MeshStore::GetFaceSharpnessSummary(uint32_t id) const { return LiveSharpness(GetSelectionRoot(id, Element::Face).Flags); }
+SharpnessSummary MeshStore::GetEdgeSharpnessSummary(uint32_t id) const { return LiveSharpness(GetSelectionRoot(id, Element::Edge).Flags); }
 
 namespace {
 void WriteVertices(std::span<Vertex> dst, std::span<const vec3> positions) {
@@ -640,100 +902,227 @@ void WriteVertices(std::span<Vertex> dst, std::span<const vec3> positions) {
 } // namespace
 
 namespace {
-auto SliceConnectivity(const auto &record, auto run) {
-    const auto vertices = record.ConnectivityVertices, halfedges = record.ConnectivityHalfedges;
-    const auto faces = record.ConnectivityFaceStarts ? record.ConnectivityFaces : 0u;
-    constexpr bool IsConst = std::is_const_v<typename decltype(run)::element_type>;
-    using Handle = std::conditional_t<IsConst, const he::HH, he::HH>;
-    using Edge = std::conditional_t<IsConst, const he::EH, he::EH>;
-    using Face = std::conditional_t<IsConst, const MeshConnectivity::Face, MeshConnectivity::Face>;
-    const auto as = [](auto words, auto *tag) { return std::span{reinterpret_cast<decltype(tag)>(words.data()), words.size()}; };
-    // The edge list spans the run's tail, at the halfedge bound until the build trims it.
-    const auto tail = vertices + 2 * halfedges + faces;
-    return std::tuple{
-        as(run.subspan(0, vertices), (Handle *)nullptr),
-        as(run.subspan(vertices, halfedges), (Handle *)nullptr),
-        as(run.subspan(vertices + halfedges, halfedges), (Edge *)nullptr),
-        as(run.subspan(vertices + 2 * halfedges, faces), (Face *)nullptr),
-        as(run.subspan(tail, run.size() - tail), (Handle *)nullptr),
-    };
+auto Handles(auto values, auto *tag) {
+    return std::span{reinterpret_cast<decltype(tag)>(values.data()), values.size()};
 }
 } // namespace
 
-void MeshStore::AllocateConnectivity(uint32_t id, uint32_t vertex_count, uint32_t halfedge_count, uint32_t face_count, bool face_starts, std::span<const uint32_t> face_offsets) {
+void MeshStore::AllocateConnectivity(uint32_t id, uint32_t halfedge_count, uint32_t face_count, bool face_starts,
+                                     std::span<const uint32_t> face_offsets,
+                                     std::span<const std::array<uint32_t,2>> wire_edges) {
     auto &record = WriteRecord(id);
-    record.ConnectivityVertices = vertex_count;
-    record.ConnectivityHalfedges = halfedge_count;
-    record.ConnectivityFaces = face_count;
     record.ConnectivityFaceStarts = face_starts;
-    record.Connectivity = Buffers.Connectivity.Allocate(ConnectivityWords(vertex_count, halfedge_count, face_count, face_starts, halfedge_count));
+    if (!record.FaceCorners) record.FaceCorners = Buffers.FaceCorners.Allocate(halfedge_count);
+    if (!record.FaceData) record.FaceData = Buffers.FaceTriangles.Allocate(face_count);
+    if (!record.EdgeData) record.EdgeData = Buffers.EdgeHalfedges.Allocate(halfedge_count);
+    SyncMirrors();
+    if (!wire_edges.empty()) {
+        if (face_count || uint64_t(wire_edges.size()) * 2u != halfedge_count) throw std::invalid_argument("Wire corner count differs from connectivity allocation.");
+        auto corners = Buffers.FaceCorners.GetMutable(record.FaceCorners);
+        const uint32_t first = Buffers.Vertices.First(record.Vertices);
+        for (uint32_t e = 0; e < wire_edges.size(); ++e) {
+            corners[2u * e] = first + wire_edges[e][1];
+            corners[2u * e + 1u] = first + wire_edges[e][0];
+        }
+    }
     if (!face_starts || face_offsets.empty()) return;
-    const auto faces = std::get<3>(SliceConnectivity(record, Buffers.Connectivity.GetMutable(record.Connectivity)));
-    for (uint32_t f = 0; f < face_count; ++f) faces[f] = {he::HH(face_offsets[f])};
-}
-
-ConnectivityStorage MeshStore::GetConnectivityStorage(uint32_t id) {
-    const auto &record = Records.at(id);
-    const auto [outgoing, opposites, halfedge_to_edge, faces, edges] = SliceConnectivity(record, Buffers.Connectivity.GetMutable(record.Connectivity));
-    return {outgoing, opposites, halfedge_to_edge, edges};
+    const auto faces = Buffers.FaceRanges.GetMutable(Buffers.FaceTriangles.Dense(record.FaceData));
+    const uint32_t first_corner = Buffers.FaceCorners.First(record.FaceCorners);
+    for (uint32_t f = 0; f < face_count; ++f) faces[f] = {first_corner + face_offsets[f], first_corner + (f + 1 < face_count ? face_offsets[f + 1] : halfedge_count)};
 }
 
 void MeshStore::FinishConnectivity(uint32_t id, uint32_t edge_count) {
     auto &record = WriteRecord(id);
-    record.ConnectivityEdgeCount = edge_count;
-    Buffers.Connectivity.Shrink(record.Connectivity, ConnectivityWords(record.ConnectivityVertices, record.ConnectivityHalfedges, record.ConnectivityFaces, record.ConnectivityFaceStarts, edge_count));
+    auto &edges = Buffers.EdgeHalfedges;
+    ElementHandleRange allocated{.First = edges.First(record.EdgeData), .Count = edges.Count(record.EdgeData)};
+    edges.Shrink(record.EdgeData, allocated, {}, edge_count);
 }
 
 MeshConnectivity MeshStore::GetConnectivity(uint32_t id) const {
-    const auto &record = Records.at(id);
-    if (record.Connectivity.Count == 0) return {.VertexCount = record.ConnectivityVertices, .EdgeCount = record.ConnectivityEdgeCount, .FaceCount = record.ConnectivityFaces};
-    const auto [outgoing, opposites, halfedge_to_edge, faces, edges] = SliceConnectivity(record, Buffers.Connectivity.Get(record.Connectivity));
+    const auto &r = Records.at(id);
     return {
-        .VertexCount = record.ConnectivityVertices,
-        .OutgoingHalfedges = outgoing,
-        .Opposites = opposites,
-        .HalfedgeToEdge = halfedge_to_edge,
-        .EdgeCount = record.ConnectivityEdgeCount,
-        .Edges = edges.first(record.ConnectivityEdgeCount),
-        .FaceCount = record.ConnectivityFaces,
-        .Faces = faces,
+        .VertexBlocks = Buffers.Vertices.Membership(r.Vertices),
+        .HalfedgeBlocks = Buffers.FaceCorners.Membership(r.FaceCorners),
+        .EdgeBlocks = Buffers.EdgeHalfedges.Membership(r.EdgeData),
+        .FaceBlocks = Buffers.FaceTriangles.Membership(r.FaceData),
+        .VertexFirst = Buffers.Vertices.First(r.Vertices),
+        .VertexCount = Buffers.Vertices.Count(r.Vertices),
+        .HalfedgeFirst = Buffers.FaceCorners.First(r.FaceCorners), .HalfedgeCount = Buffers.FaceCorners.Count(r.FaceCorners),
+        .EdgeFirst = Buffers.EdgeHalfedges.First(r.EdgeData), .FaceFirst = Buffers.FaceTriangles.First(r.FaceData),
+        .OutgoingHalfedges = Handles(Buffers.OutgoingHalfedges.Buffer.GetSpan<uint32_t>(), (const he::HH *)nullptr),
+        .Opposites = Handles(Buffers.OppositeHalfedges.Buffer.GetSpan<uint32_t>(), (const he::HH *)nullptr),
+        .HalfedgeToEdge = Handles(Buffers.HalfedgeEdges.Buffer.GetSpan<uint32_t>(), (const he::EH *)nullptr),
+        .HalfedgeToFace = Handles(Buffers.HalfedgeFaces.Buffer.GetSpan<uint32_t>(), (const he::FH *)nullptr),
+        .EdgeCount = Buffers.EdgeHalfedges.Count(r.EdgeData),
+        .Edges = Handles(Buffers.EdgeHalfedges.Buffer.GetSpan<uint32_t>(), (const he::HH *)nullptr),
+        .FaceCount = Buffers.FaceTriangles.Count(r.FaceData),
+        .Faces = Handles(Buffers.FaceRanges.Buffer.GetSpan<uvec2>(), (const MeshConnectivity::Face *)nullptr),
+        .VertexCorners = Buffers.VertexCorners.Buffer.GetSpan<uvec2>(),
+        .FanItems = Buffers.VertexFans.Items.Buffer.GetSpan<uvec2>(),
     };
 }
+
+void MeshStore::ReleaseBlockLists(uint32_t id) {
+    const std::scoped_lock lock{BlockListLock};
+    if (id >= BlockListEntries.size()) return;
+    for (auto &entry : BlockListEntries[id]) {
+        RetireBlockListWords(entry.Words);
+        entry = {};
+    }
+}
+
+void MeshStore::RetireBlockListWords(Range words) const {
+    if (!words.Count) return;
+    if (FrameReadsBlockLists) RetiredBlockLists.push_back(words);
+    else BlockLists.Release(words);
+}
+
+void MeshStore::FrameSubmitted() {
+    const std::scoped_lock lock{BlockListLock};
+    FrameReadsBlockLists = true;
+}
+
+void MeshStore::FrameCompleted() {
+    const std::scoped_lock lock{BlockListLock};
+    FrameReadsBlockLists = false;
+    for (const auto words : RetiredBlockLists) BlockLists.Release(words);
+    RetiredBlockLists.clear();
+}
+
+MeshStore::BlockList MeshStore::GetBlockList(uint32_t id, ElementDomain domain) const {
+    const std::scoped_lock lock{BlockListLock};
+    const auto set = DomainSet(Records.at(id), domain);
+    if (BlockListEntries.size() < Records.size()) BlockListEntries.resize(Records.size());
+    auto &entry = BlockListEntries[id][uint32_t(domain) - 1u];
+    WithDomain(Buffers, domain, [&](const auto &arena) {
+        const auto revision = set ? arena.Set(set).Revision : 0u;
+        if (entry.Set == set && entry.Revision == revision && entry.Epoch == BlockListEpoch) return;
+        const auto membership = arena.Blocks.Buffer.template GetSpan<MeshElementBlock>();
+        std::vector<uint32_t> blocks;
+        if (set && (arena.Set(set).Flags & 1u)) {
+            blocks.resize(arena.Set(set).BlockCount);
+            std::iota(blocks.begin(), blocks.end(), arena.Set(set).First);
+        } else {
+            for (auto b = set ? arena.Set(set).First : InvalidOffset; b != InvalidOffset; b = membership[b].Next) blocks.push_back(b);
+            if (!std::ranges::is_sorted(blocks)) std::ranges::sort(blocks);
+        }
+        const auto count = uint32_t(blocks.size());
+        RetireBlockListWords(entry.Words);
+        entry.Words = BlockLists.Allocate(2u * count);
+        auto words = BlockLists.GetMutable(entry.Words);
+        uint32_t live = 0u;
+        for (uint32_t i = 0u; i < count; ++i) {
+            words[i] = blocks[i];
+            words[count + i] = live += membership[blocks[i]].Count;
+        }
+        entry.Set = set;
+        entry.Revision = revision;
+        entry.Epoch = BlockListEpoch;
+    });
+    const auto count = entry.Words.Count / 2u;
+    return {BlockLists.Get({entry.Words.Offset, count}), BlockLists.Get({entry.Words.Offset + count, count}), {BlockLists.Buffer.Slot, entry.Words.Offset}};
+}
+
+namespace {
+// A dense set resolves ordinals by offset, and a sparse set through its cached block list.
+template<typename T>
+ElementView<T> LiveView(const MeshStore &store, const ElementArena<T> &arena, ElementSetRef set, uint32_t id, MeshStore::ElementDomain domain) {
+    if (!set) return {};
+    const auto &header = arena.Set(set);
+    const auto values = arena.Buffer.template GetSpan<T>();
+    if (header.Flags & 1u) return {values, header.First * MeshElementBlockSize, header.Count};
+    const auto list = store.GetBlockList(id, domain);
+    return {values, arena.Blocks.Buffer.template GetSpan<MeshElementBlock>(), list.Blocks, list.LivePrefix, header.Count};
+}
+} // namespace
+
+uint32_t MeshStore::LiveElementAt(uint32_t id, ElementDomain domain, uint32_t ordinal) const {
+    const auto set = DomainSet(Records.at(id), domain);
+    return WithDomain(Buffers, domain, [&](const auto &arena) {
+        const auto view = LiveView(*this, arena, set, id, domain);
+        if (ordinal >= view.size()) throw std::out_of_range("Live element ordinal.");
+        return view.Handle(ordinal);
+    });
+}
+
+uint32_t MeshStore::LiveElementOrdinal(uint32_t id, ElementDomain domain, uint32_t handle) const {
+    if (handle == InvalidOffset) return InvalidOffset;
+    const auto set = DomainSet(Records.at(id), domain);
+    return WithDomain(Buffers, domain, [&](const auto &arena) -> uint32_t {
+        const auto &header = arena.Set(set);
+        if (header.Flags & 1u) {
+            const auto first = header.First * MeshElementBlockSize;
+            return handle >= first && handle - first < header.Count ? handle - first : InvalidOffset;
+        }
+        const auto list = GetBlockList(id, domain);
+        const auto block = handle / MeshElementBlockSize, offset = handle % MeshElementBlockSize;
+        const auto it = std::ranges::lower_bound(list.Blocks, block);
+        if (it == list.Blocks.end() || *it != block) return InvalidOffset;
+        const auto &live = arena.Blocks.Get({block, 1u})[0].Live;
+        if (!(live[offset / 32u] & (1u << (offset % 32u)))) return InvalidOffset;
+        const auto at = uint32_t(it - list.Blocks.begin());
+        auto rank = at ? list.LivePrefix[at - 1u] : 0u;
+        for (uint32_t word = 0u; word < offset / 32u; ++word) rank += std::popcount(live[word]);
+        return rank + std::popcount(live[offset / 32u] & ((1u << (offset % 32u)) - 1u));
+    });
+}
+
+ConnectivityRef MeshStore::GetConnectivityRef(uint32_t id) const {
+    const auto &r = Records.at(id);
+    return {
+        {Buffers.OutgoingHalfedges.Buffer.Slot, Buffers.Vertices.First(r.Vertices)},
+        {Buffers.OppositeHalfedges.Buffer.Slot, Buffers.FaceCorners.First(r.FaceCorners)},
+        {Buffers.HalfedgeEdges.Buffer.Slot, Buffers.FaceCorners.First(r.FaceCorners)},
+        {Buffers.HalfedgeFaces.Buffer.Slot, Buffers.FaceCorners.First(r.FaceCorners)},
+        {Buffers.FaceRanges.Buffer.Slot, Buffers.FaceTriangles.First(r.FaceData)},
+        {Buffers.EdgeHalfedges.Buffer.Slot, Buffers.EdgeHalfedges.First(r.EdgeData)},
+        {Buffers.VertexCorners.Buffer.Slot, Buffers.Vertices.First(r.Vertices)},
+        Buffers.VertexFans.Items.Buffer.Slot,
+    };
+}
+
+TriangleCorners MeshStore::GetTriangleCorners(uint32_t id) const { return {TriangleView(id)}; }
+
+ElementView<uvec3> MeshStore::TriangleView(uint32_t id) const { return LiveView(*this, Buffers.Triangles, Records.at(id).TriangleData, id, ElementDomain::Triangle); }
+ElementView<Vertex> MeshStore::VertexView(uint32_t id) const { return LiveView(*this, Buffers.Vertices, Records.at(id).Vertices, id, ElementDomain::Vertex); }
 
 uint32_t MeshStore::CreateMeshSource(const MeshData &data) {
     const auto vertices = Buffers.Vertices.Allocate(data.Positions.size());
     WriteVertices(Buffers.Vertices.GetMutable(vertices), data.Positions);
     const auto id = AcquireId({.Vertices = vertices, .Alive = true});
-    SyncMirrors(id);
+    SyncMirrors();
+    ClearVertexRoots(Buffers,vertices);
     // A face mesh's corners are its face loops.
     // An edge mesh has no weld and receives its corners in CreateMesh.
-    if (data.FaceCount() > 0) WriteRecord(id).FaceCorners = Buffers.FaceCorners.Allocate(std::span<const uint32_t>{data.FaceCorners});
+    if (data.FaceCount() > 0) {
+        auto &record = WriteRecord(id);
+        record.FaceCorners = Buffers.FaceCorners.Allocate(uint32_t(data.FaceCorners.size()));
+        const auto corners = Buffers.FaceCorners.GetMutable(record.FaceCorners);
+        const uint32_t first_vertex = Buffers.Vertices.First(record.Vertices);
+        for (size_t h = 0; h < corners.size(); ++h) corners[h] = first_vertex + data.FaceCorners[h];
+    }
     return id;
 }
 
 void MeshStore::CreateDeformSource(uint32_t id, const std::optional<ArmatureDeformData> &deform, const std::optional<MorphTargetData> &morph) {
     auto &record = WriteRecord(id);
-    const uint32_t vertex_count = record.Vertices.Count;
+    const auto vertices = Buffers.Vertices.Dense(record.Vertices);
+    const uint32_t vertex_count = vertices.Count;
     if (vertex_count == 0) return;
     if (deform) {
-        record.BoneDeform = Buffers.BoneDeform.Allocate(vertex_count);
-        auto bone_deform = Buffers.BoneDeform.GetMutable(record.BoneDeform);
-        for (uint32_t i = 0; i < vertex_count; ++i) {
-            bone_deform[i] = {.Joints = deform->Joints[i], .Weights = deform->Weights[i]};
-        }
+        std::vector<BoneDeformVertex> skin(vertex_count);
+        for (uint32_t i = 0; i < vertex_count; ++i) skin[i] = {.Joints = deform->Joints[i], .Weights = deform->Weights[i]};
+        Buffers.Skin.Initialize(vertices, skin);
+        record.SkinBlocksReady = true;
     }
     if (morph && morph->TargetCount > 0) {
         record.MorphTargetCount = morph->TargetCount;
-        const uint32_t total = record.MorphTargetCount * vertex_count;
-        record.MorphTargets = Buffers.MorphTargets.Allocate(total);
-        auto morph_targets = Buffers.MorphTargets.GetMutable(record.MorphTargets);
         const bool has_normal_deltas = !morph->NormalDeltas.empty();
-        for (uint32_t i = 0; i < total; ++i) {
-            morph_targets[i] = {
-                .PositionDelta = morph->PositionDeltas[i],
-                .NormalDelta = has_normal_deltas ? morph->NormalDeltas[i] : vec3{0},
-            };
-        }
+        std::vector<MorphTargetVertex> targets(uint64_t(vertex_count) * record.MorphTargetCount);
+        for (size_t i = 0; i < targets.size(); ++i)
+            targets[i] = {.PositionDelta = morph->PositionDeltas[i], .NormalDelta = has_normal_deltas ? morph->NormalDeltas[i] : vec3{0}};
+        Buffers.Morph.Initialize(vertices, targets, record.MorphTargetCount);
+        record.MorphBlocksReady = true;
         record.DefaultMorphWeights = morph->DefaultWeights;
         record.DefaultMorphWeights.resize(record.MorphTargetCount, 0.f);
     }
@@ -741,18 +1130,26 @@ void MeshStore::CreateDeformSource(uint32_t id, const std::optional<ArmatureDefo
 
 void MeshStore::ShrinkMeshSource(uint32_t id, uint32_t welded_vertices) {
     auto &record = WriteRecord(id);
-    Buffers.Vertices.Shrink(record.Vertices, welded_vertices);
-    Buffers.BoneDeform.Shrink(record.BoneDeform, welded_vertices);
-    Buffers.MorphTargets.Shrink(record.MorphTargets, record.MorphTargetCount * welded_vertices);
+    const auto vertices = Buffers.Vertices.Dense(record.Vertices);
+    const uint32_t first_block = vertices.Offset / MeshElementBlockSize;
+    const uint32_t old_blocks = (vertices.Count + MeshElementBlockSize - 1u) / MeshElementBlockSize;
+    const uint32_t kept_blocks = (welded_vertices + MeshElementBlockSize - 1u) / MeshElementBlockSize;
+    for (uint32_t b = first_block + kept_blocks; b < first_block + old_blocks; ++b) {
+        if (record.SkinBlocksReady) Buffers.Skin.Release(b);
+        if (record.MorphBlocksReady) Buffers.Morph.Release(b);
+    }
+    ElementHandleRange allocated{.First = vertices.Offset, .Count = vertices.Count};
+    Buffers.Vertices.Shrink(record.Vertices, allocated, {}, welded_vertices);
 }
 
 uint32_t MeshStore::AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs) {
     const auto vertices = Buffers.Vertices.Allocate(positions.size());
     WriteVertices(Buffers.Vertices.GetMutable(vertices), positions);
-    // Face-less meshes keep authored normals as primary point normals, mirrored for shader reads.
+    // Imported normals initialize the canonical vertex normals of face-less meshes.
     const auto point_normals = attrs.Normals ? Buffers.PointNormals.Allocate(std::span<const vec3>{*attrs.Normals}) : Range{};
-    const auto id = AcquireId({.Vertices = vertices, .PointNormals = point_normals, .Alive = true});
-    SyncMirrors(id);
+    const auto id = AcquireId({.Vertices = vertices, .PointNormals = point_normals, .HasAuthoredNormals = attrs.Normals.has_value(), .Alive = true});
+    SyncMirrors();
+    ClearVertexRoots(Buffers,vertices);
     FillBaseVertexNormalMirror(vertices, point_normals);
     return id;
 }
@@ -762,105 +1159,44 @@ void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitive
     const uint32_t faces = data.FaceCount();
     const uint32_t halfedges = data.HalfedgeCount();
     const uint32_t triangles = uint32_t(data.FaceCorners.size()) - 2u * faces;
-    const uint32_t edges = (halfedges + 1) / 2; // manifold estimate: edges ≈ halfedges / 2
     Buffers.Vertices.PlanAdditional(vertices);
     Buffers.BaseVertexNormals.PlanAdditional(vertices);
-    Buffers.FaceFirstTriangles.PlanAdditional(faces);
+    Buffers.FaceTriangles.PlanAdditional(faces);
     Buffers.FaceSharpness.PlanAdditional(faces);
     Buffers.BaseFaceNormals.PlanAdditional(faces);
-    Buffers.TriangleFaceIds.PlanAdditional(triangles);
-    Buffers.CornerClasses.PlanAdditional(triangles * 3);
+    Buffers.Triangles.PlanAdditional(triangles);
     Buffers.FaceCorners.PlanAdditional(halfedges);
-    Buffers.EdgeSharpness.PlanAdditional(edges);
-    Buffers.Adjacency.PlanAdditional(FanAdjacencyWords(vertices, halfedges) + EdgeAdjacencyWords(vertices, edges));
-    Buffers.Connectivity.PlanAdditional(ConnectivityWords(vertices, halfedges, faces, faces > 0 && halfedges != 3 * faces, halfedges));
+    Buffers.EdgeHalfedges.PlanAdditional(halfedges);
     Buffers.PrimitiveMaterials.PlanAdditional(primitives.MaterialIndices.size());
-    if (has_deform) Buffers.BoneDeform.PlanAdditional(vertices);
-    if (morph_target_count > 0) Buffers.MorphTargets.PlanAdditional(morph_target_count * vertices);
-    // Point and line meshes index their primitive per vertex, triangle meshes per face.
-    Buffers.ElementPrimitives.PlanAdditional(faces > 0 ? faces : uint32_t(primitives.ElementPrimitiveIndices.size()));
-    if (triangles > 0) {
-        const uint32_t corners = triangles * 3;
-        if (attrs.Tangents) Buffers.CornerTangents.PlanAdditional(corners);
-        if (attrs.Colors0) Buffers.CornerColors.PlanAdditional(corners);
-        for (const auto *uvs : {&attrs.TexCoords0, &attrs.TexCoords1, &attrs.TexCoords2, &attrs.TexCoords3}) {
-            if (*uvs) Buffers.CornerUvs.PlanAdditional(corners);
-        }
-    } else if (attrs.Colors0) {
-        Buffers.CornerColors.PlanAdditional(vertices);
+    const auto corner_blocks = ElementArena<uint32_t>::BlockCount(halfedges);
+    if (faces) {
+        if (attrs.Tangents) Buffers.CornerTangents.Values.PlanAdditional(corner_blocks);
+        if (attrs.Colors0) Buffers.CornerColors.Values.PlanAdditional(corner_blocks);
+        const std::array uvs{&attrs.TexCoords0, &attrs.TexCoords1, &attrs.TexCoords2, &attrs.TexCoords3};
+        for (uint32_t set = 0; set < uvs.size(); ++set)
+            if (*uvs[set]) Buffers.CornerUvs[set].Values.PlanAdditional(corner_blocks);
+    } else if (attrs.Colors0) Buffers.VertexColors.Values.PlanAdditional(ElementArena<uint32_t>::BlockCount(vertices));
+    const auto vertex_blocks = ElementArena<uint32_t>::BlockCount(vertices);
+    if (has_deform) {
+        Buffers.Skin.Values.PlanAdditional(vertex_blocks);
+        Buffers.Skin.Owners.PlanAdditional(vertex_blocks);
     }
+    if (morph_target_count > 0) {
+        Buffers.Morph.Values.PlanAdditional(vertex_blocks * morph_target_count);
+        Buffers.Morph.Owners.PlanAdditional(vertex_blocks * morph_target_count);
+    }
+
 }
 
 void MeshStore::PlanClone(const Mesh &mesh) {
     const auto &record = Records.at(mesh.GetStoreId());
-    const auto &derived = DerivedRecords.at(mesh.GetStoreId());
-    ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &, auto &&ranges) {
-        for (const auto *range : ranges(record, derived)) arena.PlanAdditional(range->Count);
+    ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
+        if (const auto *allocation = ranges(record)) arena.PlanAdditional(DenseRange(Buffers, info, *allocation).Count);
     });
 }
 
 void MeshStore::CommitReserves() {
     ForEachArena(Buffers, [](auto &arena, const ArenaInfo &, auto &&) { arena.CommitPlanned(); });
-}
-
-namespace {
-// Fill `out` with CSR incidence over `bucket_count` buckets: (bucket_count + 1) item-start offsets, then the items.
-// `emit(add)` calls add(bucket, item) in a fixed order and runs twice (count, then scatter).
-void WriteCsr(std::span<uint32_t> out, uint32_t bucket_count, auto &&emit) {
-    const auto offsets = out.first(bucket_count + 1);
-    const auto items = out.subspan(bucket_count + 1);
-    std::ranges::fill(offsets, 0u);
-    emit([&](uint32_t bucket, uint32_t) { ++offsets[bucket + 1]; });
-    for (uint32_t b = 0; b < bucket_count; ++b) offsets[b + 1] += offsets[b];
-    std::vector<uint32_t> cursors(offsets.begin(), offsets.end() - 1);
-    emit([&](uint32_t bucket, uint32_t item) { items[cursors[bucket]++] = item; });
-}
-} // namespace
-
-bool BuildsAdjacencyOnGpu(const Mesh &mesh) { return mesh.GetConnectivity().FaceCount > 0; }
-
-namespace {
-// Calls `add(vertex, item)` once per vertex-fan incidence in table order.
-void EmitFanIncidence(const Mesh &mesh, auto &&add) {
-    const auto &c = mesh.GetConnectivity();
-    const auto corners = mesh.CornerVertices();
-    for (uint32_t face = 0; face < c.FaceCount; ++face) {
-        const auto first = *c.FaceHalfedge(face), last = c.FaceEnd(face);
-        for (auto h = first; h < last; ++h) add(corners[h], face | ((h - first) << FanLoopShift));
-    }
-}
-
-// Call `add(vertex, item)` once per vertex-edge incidence, in the order the table records it.
-void EmitEdgeIncidence(const Mesh &mesh, auto &&add) {
-    const auto &c = mesh.GetConnectivity();
-    const auto corners = mesh.CornerVertices();
-    for (uint32_t edge = 0; edge < c.EdgeCount; ++edge) {
-        const auto h = c.EdgeHalfedge(edge);
-        const auto opposite = c.Opposites[*h];
-        add(corners[*(opposite ? opposite : c.Previous(h))], edge);
-        add(corners[*h], edge);
-    }
-}
-} // namespace
-
-void MeshStore::BuildVertexAdjacency(const Mesh &mesh) {
-    const profile::CpuScope scope{"VertexAdjacency"};
-    const auto id = mesh.GetStoreId();
-    auto &record = Records.at(id);
-    auto &derived = DerivedRecords.at(id);
-    const uint32_t vertex_count = mesh.VertexCount();
-    if (record.TriangleCount > 0) {
-        derived.VertexFanAdjacency = Buffers.Adjacency.Allocate(FanAdjacencyWords(vertex_count, mesh.HalfEdgeCount()));
-        if (!BuildsAdjacencyOnGpu(mesh)) {
-            WriteCsr(Buffers.Adjacency.GetMutable(derived.VertexFanAdjacency), vertex_count, [&](auto &&add) { EmitFanIncidence(mesh, add); });
-        }
-    }
-    if (mesh.EdgeCount() > 0) {
-        derived.VertexEdgeAdjacency = Buffers.Adjacency.Allocate(EdgeAdjacencyWords(vertex_count, mesh.EdgeCount()));
-        if (!BuildsAdjacencyOnGpu(mesh)) {
-            WriteCsr(Buffers.Adjacency.GetMutable(derived.VertexEdgeAdjacency), vertex_count, [&](auto &&add) { EmitEdgeIncidence(mesh, add); });
-        }
-    }
 }
 
 void MeshStore::CreateMesh(uint32_t id, const MeshData &data, const MeshVertexAttributes &attrs, const MeshPrimitives &primitives, const CornerLayers &layers, bool has_authored_normals) {
@@ -869,16 +1205,17 @@ void MeshStore::CreateMesh(uint32_t id, const MeshData &data, const MeshVertexAt
 
     // Source creation and welding completed the vertex-domain arena ranges.
     auto &record = WriteRecord(id);
-    record.HasAuthoredNormals = has_authored_normals;
-    // A face-less mesh keeps its authored normals as primary point normals, mirrored for shader reads.
+    record.HasAuthoredNormals = has_authored_normals || attrs.Normals.has_value();
+    // Imported normals initialize the canonical vertex normals of face-less meshes.
     record.PointNormals = attrs.Normals ? Buffers.PointNormals.Allocate(std::span<const vec3>{*attrs.Normals}) : Range{};
     FillBaseVertexNormalMirror(record.Vertices, record.PointNormals);
 
-    const auto write_primitive_tables = [&](uint32_t element_count, uint32_t primitive_count) {
-        record.ElementPrimitives = Buffers.ElementPrimitives.Allocate(element_count);
-        auto fp_span = Buffers.ElementPrimitives.GetMutable(record.ElementPrimitives);
-        if (!primitives.ElementPrimitiveIndices.empty()) std::ranges::copy(primitives.ElementPrimitiveIndices, fp_span.begin());
-        else std::ranges::fill(fp_span, 0u);
+    const auto write_primitive_tables = [&](uint32_t primitive_count) {
+        record.FacePrimitivesReady = face_count!=0u;
+        record.VertexPrimitivesReady = face_count==0u;
+        auto &attributes = face_count ? Buffers.FacePrimitives : Buffers.VertexPrimitives;
+        const auto range = face_count ? Buffers.FaceTriangles.Dense(record.FaceData) : Buffers.Vertices.Dense(record.Vertices);
+        attributes.Initialize(range, primitives.ElementPrimitiveIndices);
 
         record.PrimitiveMaterials = Buffers.PrimitiveMaterials.Allocate(primitive_count);
         auto pm_span = Buffers.PrimitiveMaterials.GetMutable(record.PrimitiveMaterials);
@@ -887,9 +1224,8 @@ void MeshStore::CreateMesh(uint32_t id, const MeshData &data, const MeshVertexAt
     };
 
     if (face_count > 0) {
-        record.FaceData = Buffers.FaceFirstTriangles.Allocate(face_count);
-        SyncMirrors(id);
-        auto first_tri_span = Buffers.FaceFirstTriangles.GetMutable(record.FaceData);
+        SyncMirrors();
+        auto first_tri_span = Buffers.FaceTriangles.GetMutable(record.FaceData);
         uint32_t tri_offset = 0;
         for (uint32_t fi = 0; fi < face_count; ++fi) {
             first_tri_span[fi] = tri_offset;
@@ -897,186 +1233,295 @@ void MeshStore::CreateMesh(uint32_t id, const MeshData &data, const MeshVertexAt
         }
         record.TriangleCount = tri_offset;
 
-        if (!layers.Tangents.empty()) record.CornerTangents = Buffers.CornerTangents.Allocate(std::span<const vec4>{layers.Tangents});
-        if (!layers.Colors.empty()) record.CornerColors = Buffers.CornerColors.Allocate(std::span<const vec4>{layers.Colors});
+        const auto corners = Buffers.FaceCorners.Dense(record.FaceCorners);
+        if (!layers.Tangents.empty()) {
+            record.CornerAttributes |= MeshAttributeBit_Tangent;
+            Buffers.CornerTangents.Initialize(corners, layers.Tangents);
+        }
+        if (!layers.Colors.empty()) {
+            record.CornerAttributes |= MeshAttributeBit_Color0;
+            Buffers.CornerColors.Initialize(corners, layers.Colors);
+        }
         for (uint32_t set = 0; set < layers.Uvs.size(); ++set) {
-            if (!layers.Uvs[set].empty()) record.CornerUvs[set] = Buffers.CornerUvs.Allocate(std::span<const vec2>{layers.Uvs[set]});
+            if (layers.Uvs[set].empty()) continue;
+            record.CornerAttributes |= MeshAttributeBit_TexCoord0 << set;
+            Buffers.CornerUvs[set].Initialize(corners, layers.Uvs[set]);
         }
 
-        record.TriangleFaceIds = Buffers.TriangleFaceIds.Allocate(tri_offset);
-        auto tri_face_span = Buffers.TriangleFaceIds.GetMutable(record.TriangleFaceIds);
+        record.TriangleData = Buffers.Triangles.Allocate(tri_offset);
+        const uint32_t first_triangle = Buffers.Triangles.First(record.TriangleData);
+        for (auto &first : first_tri_span) first += first_triangle;
+        auto triangle_span = Buffers.Triangles.GetMutable(record.TriangleData);
         uint32_t ti = 0;
         for (uint32_t fi = 0; fi < face_count; ++fi) {
             const auto n_tris = data.FaceSize(fi) - 2u;
-            for (size_t t = 0; t < n_tris; ++t) tri_face_span[ti++] = fi + 1;
+            const auto first = corners.Offset + data.FaceStart(fi);
+            for (uint32_t t = 0; t < n_tris; ++t) triangle_span[ti++] = {first, first + t + 1u, first + t + 2u};
         }
 
         const auto primitive_count = !primitives.MaterialIndices.empty() ?
             (primitives.ElementPrimitiveIndices.empty() ? 1u : *std::ranges::max_element(primitives.ElementPrimitiveIndices) + 1u) :
             1u;
-        write_primitive_tables(face_count, primitive_count);
+        write_primitive_tables(primitive_count);
 
-        // Faces come sorted by primitive, so each primitive's triangles are one contiguous range.
-        {
-            const auto fp = Buffers.ElementPrimitives.Get(record.ElementPrimitives);
-            const auto fft = Buffers.FaceFirstTriangles.Get(record.FaceData);
-            auto &ranges = record.PrimitiveTriangleRanges;
-            uint32_t current_prim = fp[0];
-            uint32_t range_first_tri = fft[0];
-            for (uint32_t fi = 1; fi < face_count; ++fi) {
-                if (fp[fi] != current_prim) {
-                    ranges.push_back({current_prim, range_first_tri, fft[fi] - range_first_tri});
-                    current_prim = fp[fi];
-                    range_first_tri = fft[fi];
-                }
-            }
-            ranges.push_back({current_prim, range_first_tri, record.TriangleCount - range_first_tri});
-        }
     } else if (!primitives.ElementPrimitiveIndices.empty()) {
         // Point and line meshes carry one color and one primitive index per vertex.
-        if (attrs.Colors0) record.CornerColors = Buffers.CornerColors.Allocate(std::span<const vec4>{*attrs.Colors0});
         // Primitive indices are source-wide, so the material table spans every primitive of the source mesh.
         const auto primitive_count = primitives.MaterialIndices.empty() ? 1u : uint32_t(primitives.MaterialIndices.size());
-        write_primitive_tables(primitives.ElementPrimitiveIndices.size(), primitive_count);
+        write_primitive_tables(primitive_count);
     }
 
-    // Store face loops or edge endpoints as the canonical halfedge corner indices.
-    if (face_count == 0 && !data.Edges.empty()) {
-        record.FaceCorners = Buffers.FaceCorners.Allocate(uint32_t(data.Edges.size()) * 2u);
-        auto corners = Buffers.FaceCorners.GetMutable(record.FaceCorners);
-        for (uint32_t e = 0; e < data.Edges.size(); ++e) {
-            corners[e * 2u] = data.Edges[e][1];
-            corners[e * 2u + 1u] = data.Edges[e][0];
-        }
+    if (face_count == 0 && attrs.Colors0) {
+        record.VertexAttributes |= MeshAttributeBit_Color0;
+        Buffers.VertexColors.Initialize(Buffers.Vertices.Dense(record.Vertices), *attrs.Colors0);
     }
 
     // The sharpness stores start smooth.
     const Mesh mesh{*this, id};
-    record.EdgeSharpness = Buffers.EdgeSharpness.Allocate(mesh.EdgeCount());
-    std::ranges::fill(Buffers.FaceSharpness.GetMutable(record.FaceData), uint8_t{0});
-    std::ranges::fill(Buffers.EdgeSharpness.GetMutable(record.EdgeSharpness), uint8_t{0});
-    BuildVertexAdjacency(mesh);
+    std::ranges::fill(Buffers.FaceSharpness.GetMutable(Buffers.FaceTriangles.Dense(record.FaceData)), uint8_t{0});
+    std::ranges::fill(Buffers.EdgeSharpness.GetMutable(Buffers.EdgeHalfedges.Dense(record.EdgeData)), uint8_t{0});
 }
 
-uint32_t MeshStore::BeginTopologyOutput(uint32_t source, const TopologyCounts &counts) {
-    const Record src = Records.at(source);
-    const uint32_t triangles = counts.Halfedges - 2 * counts.Faces;
-    const auto allocate = [&](auto &arena, uint32_t count) {
-        const auto range = arena.Allocate(count);
-        CaptureRange(arena, range);
-        return range;
+void MeshStore::RetireLineConnectivity(state::Scene &r, uint32_t id) {
+    const auto &record=Records.at(id);
+    if (Mesh{*this,id}.FaceCount() || !Buffers.EdgeHalfedges.Count(record.EdgeData)) throw std::logic_error("Line retirement requires a face-less line mesh.");
+    mtl::ComputeChain chain{BufferContext()};
+    auto &storage=chain.Scratch;
+    const std::array seeds{
+        PrepareElementMembershipWork(storage,Buffers.EdgeHalfedges,record.EdgeData),
+        PrepareElementMembershipWork(storage,Buffers.FaceCorners,record.FaceCorners),
     };
+    const std::array work{seeds[0].Work,seeds[1].Work};
+    EncodeElementMembershipWork(r,chain,seeds);
+    EncodeSortElementWork(r,chain,work);
+    chain.Submit();
+    for (const auto &domain:work) CheckElementWork(storage,domain);
+
+    // Only vertices incident to retired lines can hold line roots. A point
+    // mesh can have many loose vertices outside these corner blocks.
+    std::vector<uint32_t> vertex_blocks;
+    ForEachWorkElement(storage,work[1],[&](uint32_t corner) {
+        vertex_blocks.push_back(Buffers.FaceCorners.Get({corner,1u})[0]/MeshElementBlockSize);
+    });
+    std::ranges::sort(vertex_blocks);
+    vertex_blocks.erase(std::unique(vertex_blocks.begin(),vertex_blocks.end()),vertex_blocks.end());
+    Buffers.VertexCorners.Buffer.CaptureWriteElements(vertex_blocks,sizeof(uvec2)*MeshElementBlockSize);
+    Buffers.OutgoingHalfedges.Buffer.CaptureWriteElements(vertex_blocks,sizeof(uint32_t)*MeshElementBlockSize);
+    for (const auto block:vertex_blocks) {
+        const auto roots=Buffers.VertexCorners.GetMutable({block*MeshElementBlockSize,MeshElementBlockSize});
+        Buffers.VertexFans.Release(roots);
+        std::ranges::fill(roots,uvec2{InvalidOffset,0u});
+        std::ranges::fill(Buffers.OutgoingHalfedges.GetMutable({block*MeshElementBlockSize,MeshElementBlockSize}),InvalidOffset);
+    }
+    EraseElements(id,Domain::Edge,storage,work[0]);
+    EraseElements(id,Domain::Halfedge,storage,work[1]);
+    auto &writable=WriteRecord(id);
+    writable.EdgeData={};
+    writable.FaceCorners={};
+}
+
+uint32_t MeshStore::BeginTopologyOutput(uint32_t source, std::span<const uint32_t> materials) {
+    const auto &src = Records.at(source);
     Record record{
-        .Vertices = allocate(Buffers.Vertices, counts.Vertices),
-        .FaceData = allocate(Buffers.FaceFirstTriangles, counts.Faces),
-        .EdgeSharpness = allocate(Buffers.EdgeSharpness, counts.Halfedges),
-        .TriangleFaceIds = allocate(Buffers.TriangleFaceIds, triangles),
-        .ElementPrimitives = allocate(Buffers.ElementPrimitives, counts.Faces),
-        .PrimitiveMaterials = Buffers.PrimitiveMaterials.Clone(src.PrimitiveMaterials),
-        .FaceCorners = allocate(Buffers.FaceCorners, counts.Halfedges),
-        .SelectionBits = {allocate(Buffers.SelectionBits, BitWords(counts.Vertices)), allocate(Buffers.SelectionBits, BitWords(counts.Halfedges)), allocate(Buffers.SelectionBits, BitWords(counts.Faces))},
+        .CornerAttributes = src.CornerAttributes,
+        .VertexAttributes = src.VertexAttributes,
+        .PrimitiveMaterials = Buffers.PrimitiveMaterials.Allocate(uint32_t(materials.size())),
+        .FacePrimitivesReady = true,
         .SelectionSummary = Buffers.SelectionSummary.Allocate(1),
-        .ConnectivityVertices = counts.Vertices,
-        .ConnectivityHalfedges = counts.Halfedges,
-        .ConnectivityFaces = counts.Faces,
-        .ConnectivityFaceStarts = counts.Faces > 0 && counts.Halfedges != 3 * counts.Faces,
+        .ConnectivityFaceStarts = true,
+        .SkinBlocksReady = src.SkinBlocksReady,
+        .MorphBlocksReady = src.MorphBlocksReady,
         .MorphTargetCount = src.MorphTargetCount,
-        .TriangleCount = triangles,
         .HasAuthoredNormals = src.HasAuthoredNormals,
         .DefaultMorphWeights = src.DefaultMorphWeights,
         .Alive = true,
     };
+    std::ranges::copy(materials, Buffers.PrimitiveMaterials.GetMutable(record.PrimitiveMaterials).begin());
     Buffers.SelectionSummary.GetMutable(record.SelectionSummary)[0] = {};
-    if (src.CustomCornerMasks.Count > 0) {
-        record.CustomCornerMasks = allocate(Buffers.CustomCornerMasks, BitWords(triangles * 3));
-        record.CustomCornerNormals = allocate(Buffers.CustomCornerNormals, src.CustomCornerNormals.Count);
-    }
-    if (src.CornerTangents.Count > 0) record.CornerTangents = allocate(Buffers.CornerTangents, triangles * 3);
-    if (src.CornerColors.Count > 0) record.CornerColors = allocate(Buffers.CornerColors, triangles * 3);
-    for (uint32_t set = 0; set < MaxUvSets; ++set) {
-        if (src.CornerUvs[set].Count > 0) record.CornerUvs[set] = allocate(Buffers.CornerUvs, triangles * 3);
-    }
-    if (src.BoneDeform.Count > 0) record.BoneDeform = allocate(Buffers.BoneDeform, counts.Vertices);
-    if (src.MorphTargets.Count > 0) record.MorphTargets = allocate(Buffers.MorphTargets, src.MorphTargetCount * counts.Vertices);
-    const bool face_starts = record.ConnectivityFaceStarts;
     const auto id = AcquireId(std::move(record));
-    AllocateConnectivity(id, counts.Vertices, counts.Halfedges, counts.Faces, face_starts);
-    const auto &placed = Records.at(id);
-    // The face sharpness mirror carries its own history over the face range.
-    CaptureRange(Buffers.FaceSharpness, placed.FaceData);
-    CaptureRange(Buffers.Connectivity, placed.Connectivity);
-    SyncMirrors(id);
-    FillBaseVertexNormalMirror(placed.Vertices, {});
+    CaptureSelectionSummary(id);
     return id;
 }
 
-void MeshStore::CompleteTopologyOutput(uint32_t id, uint32_t custom_corner_normals) {
-    auto &record = WriteRecord(id);
-    Buffers.EdgeSharpness.Shrink(record.EdgeSharpness, record.ConnectivityEdgeCount);
-    if (record.CustomCornerMasks.Count > 0) {
-        Buffers.CustomCornerNormals.Shrink(record.CustomCornerNormals, custom_corner_normals);
-        if (custom_corner_normals == 0) {
-            Buffers.CustomCornerMasks.Shrink(record.CustomCornerMasks, 0);
-            record.CustomCornerMasks = record.CustomCornerNormals = {};
-        }
-    }
-    record.PrimitiveTriangleRanges.clear();
-    const auto primitives = Buffers.ElementPrimitives.Get(record.ElementPrimitives);
-    const auto first_triangles = Buffers.FaceFirstTriangles.Get(record.FaceData);
-    auto &ranges = record.PrimitiveTriangleRanges;
-    for (uint32_t f = 0; f < primitives.size(); ++f) {
-        if (!ranges.empty() && ranges.back().PrimitiveIndex == primitives[f]) continue;
-        if (!ranges.empty()) ranges.back().TriangleCount = first_triangles[f] - ranges.back().FirstTriangle;
-        ranges.push_back({primitives[f], first_triangles[f], 0});
-    }
-    if (!ranges.empty()) ranges.back().TriangleCount = record.TriangleCount - ranges.back().FirstTriangle;
-    const Mesh mesh{*this, id};
-    BuildVertexAdjacency(mesh);
-    UpdateCornerClassification(mesh);
-}
-
-uint32_t MeshStore::CloneMesh(const Mesh &mesh) {
+uint32_t MeshStore::CloneMesh(const Mesh &mesh, const MeshPipelines &pipelines) {
     const auto src_id = mesh.GetStoreId();
+    // The current packed clone emitter must reject fragmented input before it
+    // acquires an output record. Local topology allocation does not use cloning.
+    ForEachArena(Buffers, [&](auto &, const ArenaInfo &info, auto &&ranges) {
+        if (const auto *allocation = ranges(Records.at(src_id)))
+            DenseRange(Buffers, info, *allocation);
+    });
     const auto id = AcquireId(Record{Records.at(src_id)});
     DerivedRecords[id] = DerivedRecords.at(src_id);
+    DerivedRecords[id].NormalRevision = ++NextNormalRevision;
     const auto &src = Records[src_id];
-    const auto &src_derived = DerivedRecords[src_id];
     auto &dst = Records[id];
     auto &dst_derived = DerivedRecords[id];
-    // Every range the source holds clones into fresh storage, and each mirror copies over the master's cloned range.
+    dst.SectorBlockCount=0u;
+    struct Copy { mtl::Buffer *Buffer; uint64_t Source, Destination, Bytes; };
+    std::vector<Copy> copies;
+    // Allocate every destination before recording copies, so virtual growth and
+    // history capture finish before the GPU reads either side.
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
-        const auto sources = ranges(src, src_derived);
-        const auto targets = ranges(dst, dst_derived);
-        for (size_t i = 0; i < sources.size(); ++i) {
-            if (info.Mirror) {
-                arena.Mirror(*targets[i]);
-                std::ranges::copy(arena.Get(*sources[i]), arena.GetMutable(*targets[i]).begin());
-            } else {
-                *targets[i] = arena.Clone(*sources[i]);
+        if (&arena.Buffer == &Buffers.VertexCorners.Buffer) return;
+        const auto *source_allocation = ranges(src);
+        if (!source_allocation) return;
+        auto *target_allocation = ranges(dst);
+        const auto source = DenseRange(Buffers, info, *source_allocation);
+        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(*target_allocation)>, ElementSetRef> && !requires { arena.Blocks; }) {
+            WithDomain(Buffers, info.Elements, [&](const auto &owner) { arena.Mirror({0, info.BlockIndexed ? owner.Capacity() / MeshElementBlockSize : owner.Capacity()}); });
+        } else {
+            *target_allocation = arena.Allocate(source.Count);
+        }
+        const auto target = DenseRange(Buffers, info, *target_allocation);
+        constexpr auto stride = sizeof(typename decltype(arena.Get(Range{}))::element_type);
+        const uint64_t bytes = uint64_t(source.Count) * stride;
+        if (!bytes) return;
+        arena.Buffer.CaptureWrite(uint64_t(target.Offset) * stride, bytes);
+        copies.push_back({&arena.Buffer, uint64_t(source.Offset) * stride, uint64_t(target.Offset) * stride, bytes});
+    });
+    const auto &ctx = BufferContext().Ctx;
+    SyncMirrors();
+    ClearVertexRoots(Buffers,dst.Vertices);
+    for (const auto domain : SelectionDomains) {
+        WithDomain(Buffers, domain, [&](const auto &owner) {
+            const auto from = owner.Dense(DomainSet(src, domain));
+            const auto to = owner.Dense(DomainSet(dst, domain));
+            const auto count = ElementArena<uint32_t>::BlockCount(from.Count);
+            if (!count) return;
+            auto &bits = SelectionArena(Buffers, domain);
+            const Range target{to.Offset / MeshElementBlockSize, count};
+            CaptureRange(bits, target);
+            copies.push_back({&bits.Buffer, uint64_t(from.Offset / MeshElementBlockSize) * sizeof(MeshArenas::SelectionBlock),
+                              uint64_t(target.Offset) * sizeof(MeshArenas::SelectionBlock), uint64_t(count) * sizeof(MeshArenas::SelectionBlock)});
+            // Equal block contents in the same order give the clone equal aggregates and roots.
+            copies.push_back({&AggregateArena(Buffers, domain).Buffer, uint64_t(from.Offset / MeshElementBlockSize) * sizeof(SelectionAggregate),
+                              uint64_t(target.Offset) * sizeof(SelectionAggregate), uint64_t(count) * sizeof(SelectionAggregate)});
+        });
+    }
+    std::ranges::copy(Buffers.SelectionRoots.Get({3u * src_id, 3u}), Buffers.SelectionRoots.GetMutable({3u * id, 3u}).begin());
+    // Authored layers and normal-sector layers clone through the same sparse payload ownership.
+    // Allocate all destination payloads before reading addresses: growth may move an arena.
+    const auto copy_attribute = [&](auto &attribute, Range source, uint32_t destination, uint32_t entries = 1u) {
+        using Value = typename std::remove_cvref_t<decltype(attribute)>::Block::value_type;
+        std::vector<uint32_t> blocks;
+        for (uint32_t i = 0u; i < source.Count; i += MeshElementBlockSize)
+            if (attribute.PayloadBlock((source.Offset + i) / MeshElementBlockSize))
+                blocks.push_back((destination + i) / MeshElementBlockSize);
+        attribute.Attach(blocks, {}, entries);
+        for (const auto block : blocks) {
+            const auto i = block * MeshElementBlockSize - destination;
+            const auto count = std::min(MeshElementBlockSize, source.Count - i);
+            for (uint32_t e = 0u; e < entries; ++e) {
+                const auto from = attribute.Payload(source.Offset + i, count, e);
+                const auto to = attribute.Payload(destination + i, count, e);
+                const uint64_t bytes = uint64_t(count) * sizeof(Value);
+                attribute.Values.Buffer.CaptureWrite(uint64_t(to.Offset) * sizeof(Value), bytes);
+                copies.push_back({&attribute.Values.Buffer, uint64_t(from.Offset) * sizeof(Value), uint64_t(to.Offset) * sizeof(Value), bytes});
             }
         }
+        return blocks;
+    };
+    ForEachAttribute(Buffers, [&](auto &attribute, Domain domain, uint32_t, const char *, const char *, const char *, auto &&entries) {
+        if (const auto count = entries(src)) WithDomain(Buffers, domain, [&](const auto &arena) {
+            copy_attribute(attribute, arena.Dense(DomainSet(src, domain)), arena.First(DomainSet(dst, domain)), count);
+        });
     });
+    const auto source_corners = Buffers.FaceCorners.Dense(src.FaceCorners);
+    const Range sector_source{source_corners.Offset, ElementArena<uint32_t>::BlockCount(source_corners.Count) * MeshElementBlockSize};
+    const auto destination_corners = Buffers.FaceCorners.First(dst.FaceCorners);
+    const auto sector_targets = copy_attribute(Buffers.CornerSectors, sector_source, destination_corners);
+    copy_attribute(Buffers.NormalSectors, sector_source, destination_corners);
+    dst.SectorBlockCount = uint32_t(sector_targets.size());
+    // The clone's fans fill one run in vertex order.
+    const auto source_vertices=Buffers.Vertices.Dense(src.Vertices), target_vertices=Buffers.Vertices.Dense(dst.Vertices);
+    const auto roots=Buffers.VertexCorners.Get(source_vertices);
+    uint64_t fan_items=0u;
+    for (const auto root : roots) fan_items+=root.y;
+    if (fan_items>=InvalidOffset) throw std::length_error("Cloned fan items exceed their address space.");
+    const auto fans=Buffers.VertexFans.Items.Allocate(uint32_t(fan_items));
+    Buffers.VertexFans.Items.Buffer.CaptureWrite(uint64_t(fans.Offset)*sizeof(uvec2),uint64_t(fans.Count)*sizeof(uvec2));
+    auto target_roots=Buffers.VertexCorners.GetMutable(target_vertices);
+    std::vector<ReferencePairCopy> fan_ranges;
+    for (uint32_t i=0u,next=fans.Offset; i<source_vertices.Count; ++i) {
+        if (!roots[i].y) continue;
+        target_roots[i]={next,roots[i].y};
+        if (!fan_ranges.empty() && uint64_t(fan_ranges.back().Source)+fan_ranges.back().Count==roots[i].x) {
+            fan_ranges.back().Count+=roots[i].y;
+        } else fan_ranges.push_back({roots[i].x,next,roots[i].y});
+        next+=roots[i].y;
+    }
+    auto *command = ctx.Queue->commandBuffer();
+    ctx.OrderAfterGpuWork(command);
+    auto *encoder = command->blitCommandEncoder();
+    for (const auto &copy : copies) encoder->copyFromBuffer(**copy.Buffer, copy.Source, **copy.Buffer, copy.Destination, copy.Bytes);
+    encoder->endEncoding();
+    const auto &rebase_indices = pipelines[MeshPass::CloneRebaseIndices];
+    EncodeRebaseIndices(command, rebase_indices, *Buffers.FaceCorners.Buffer, Buffers.FaceCorners.Dense(dst.FaceCorners), Buffers.Vertices.First(dst.Vertices) - Buffers.Vertices.First(src.Vertices));
+    const auto corner_delta = Buffers.FaceCorners.First(dst.FaceCorners) - Buffers.FaceCorners.First(src.FaceCorners);
+    EncodeCopyReferencePairs(command, pipelines[MeshPass::CloneCopyReferencePairs], *Buffers.VertexFans.Items.Buffer, fan_ranges, corner_delta,
+        Buffers.FaceTriangles.First(dst.FaceData) - Buffers.FaceTriangles.First(src.FaceData));
+    const auto rebase = [&](auto &arena, Range range, uint32_t delta, uint32_t stride = 1u) {
+        EncodeRebaseIndices(command, rebase_indices, *arena.Buffer, range, delta, stride);
+    };
+    if (!dst_derived.SelectionBaseline.empty()) {
+        const auto domain = SelectionDomain(dst_derived.SelectionBaselineElement);
+        const auto delta = WithDomain(Buffers, domain, [&](const auto &owner) {
+            return owner.First(DomainSet(dst, domain)) / MeshElementBlockSize - owner.First(DomainSet(src, domain)) / MeshElementBlockSize;
+        });
+        for (auto &[block, words] : dst_derived.SelectionBaseline) block += delta;
+    }
+    rebase(Buffers.OutgoingHalfedges, Buffers.Vertices.Dense(dst.Vertices), corner_delta);
+    rebase(Buffers.OppositeHalfedges, Buffers.FaceCorners.Dense(dst.FaceCorners), corner_delta);
+    rebase(Buffers.HalfedgeEdges, Buffers.FaceCorners.Dense(dst.FaceCorners), Buffers.EdgeHalfedges.First(dst.EdgeData) - Buffers.EdgeHalfedges.First(src.EdgeData));
+    rebase(Buffers.HalfedgeFaces, Buffers.FaceCorners.Dense(dst.FaceCorners), Buffers.FaceTriangles.First(dst.FaceData) - Buffers.FaceTriangles.First(src.FaceData));
+    rebase(Buffers.FaceTriangles, Buffers.FaceTriangles.Dense(dst.FaceData), Buffers.Triangles.First(dst.TriangleData) - Buffers.Triangles.First(src.TriangleData));
+    for (uint32_t c = 0; c < 3u; ++c)
+        EncodeRebaseIndices(command, rebase_indices, *Buffers.Triangles.Buffer, {c, Buffers.Triangles.Count(dst.TriangleData)}, corner_delta, 3u, uint64_t(Buffers.Triangles.First(dst.TriangleData)) * sizeof(uvec3));
+    rebase(Buffers.EdgeHalfedges, Buffers.EdgeHalfedges.Dense(dst.EdgeData), corner_delta);
+    rebase(Buffers.FaceRanges, {2u * Buffers.FaceTriangles.First(dst.FaceData), 2u * Buffers.FaceTriangles.Count(dst.FaceData)}, corner_delta);
+    for (const auto block : sector_targets)
+        rebase(Buffers.CornerSectors.Values, Buffers.CornerSectors.Payload(block * MeshElementBlockSize, MeshElementBlockSize), corner_delta);
+    command->commit();
+    command->waitUntilCompleted();
+    if (command->status() == MTL::CommandBufferStatusError) throw std::runtime_error("GPU mesh clone failed.");
     return id;
-}
-
-void MeshStore::ReleaseDerived(uint32_t id) {
-    // A restore can leave derived records past the restored record count, so the persistent side reads as empty here.
-    Record none{};
-    auto &derived = DerivedRecords.at(id);
-    ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
-        if (info.Tracked() || info.Mirror) return;
-        for (const auto *range : ranges(none, derived)) arena.Release(*range);
-    });
-    derived = {};
 }
 
 void MeshStore::Release(uint32_t id) {
     if (id >= Records.size() || !Records[id].Alive) return;
+    Buffers.Vertices.ForEachBlock(Records[id].Vertices,[&](uint32_t b, const auto &) {
+        Buffers.VertexFans.Release(Buffers.VertexCorners.Get({b*MeshElementBlockSize,MeshElementBlockSize}));
+    });
+    // Released blocks name no fan runs, so their next owner inherits empty roots.
+    ClearVertexRoots(Buffers,Records[id].Vertices);
     auto &record = WriteRecord(id);
     auto &derived = DerivedRecords.at(id);
+    Buffers.FaceCorners.ForEachBlock(record.FaceCorners, [&](uint32_t block, const auto &) {
+        Buffers.CornerSectors.Release(block);
+        Buffers.NormalSectors.Release(block);
+    });
+    // Released blocks hold no selection, so every dead slot's mask bit is clear for the blocks' next owner.
+    for (uint32_t d = 0u; d < 3u; ++d) {
+        const auto masks = SelectionArena(Buffers, SelectionDomains[d]).Buffer.template GetSpan<MeshArenas::SelectionBlock>();
+        std::vector<uint32_t> selected;
+        for (const auto block : GetBlockList(id, SelectionDomains[d]).Blocks)
+            if (block < masks.size() && std::ranges::any_of(masks[block], [](uint32_t word) { return word != 0u; })) selected.push_back(block);
+        EditSelectionBlocks(SelectionElements[d], selected, [](uint32_t, auto &words) { words = {}; });
+    }
+    ReleaseBlockLists(id);
+    std::ranges::fill(Buffers.SelectionRoots.GetMutable({3u * id, 3u}), SelectionAggregate{});
+    ForEachAttribute(Buffers, [&](auto &attributes, Domain domain, uint32_t, const char *, const char *, const char *, auto &&entries) {
+        if (!entries(record)) return;
+        const auto set = DomainSet(record, domain);
+        WithDomain(Buffers, domain, [&](const auto &arena) {
+            arena.ForEachBlock(set, [&](uint32_t block, const auto &) { attributes.Release(block); });
+        });
+    });
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
         if (info.Mirror) return;
-        for (const auto *range : ranges(record, derived)) arena.Release(*range);
+        if (const auto *range = ranges(record))
+            if constexpr (requires { arena.Release(*range); }) arena.Release(*range);
     });
     record = {};
     derived = {};
@@ -1089,17 +1534,24 @@ void MeshStore::Clear() {
     if (Tracked) {
         Tracked->Entries.Write(0, Records.size());
         Tracked->Free.Write(0, FreeIds.size());
-        Tracked->RangesDirty = true;
+        Tracked->AllDirty = true;
     }
+    Buffers.VertexFans.Reset();
     ForEachArena(Buffers, [](auto &arena, const ArenaInfo &, auto &&) { arena.Reset(); });
     Records.clear();
     DerivedRecords.clear();
+    {
+        const std::scoped_lock lock{BlockListLock};
+        BlockLists.Reset();
+        BlockListEntries.clear();
+        RetiredBlockLists.clear();
+    }
     FreeIds.clear();
     RenderStale.clear();
 }
 
-VertexAdjacency MeshStore::GetVertexEdgeAdjacency(uint32_t id) const {
-    return SliceAdjacency(Buffers.Adjacency.Get(DerivedRecords.at(id).VertexEdgeAdjacency), Records.at(id).Vertices.Count);
+VertexEdgeIncidence MeshStore::GetVertexEdgeIncidence(uint32_t id) const {
+    return {GetConnectivity(id)};
 }
 
 uint32_t MeshStore::AcquireId(Record &&record) {
@@ -1108,13 +1560,17 @@ uint32_t MeshStore::AcquireId(Record &&record) {
         if (Tracked) Tracked->Free.Write(FreeIds.size() - 1, 1);
         FreeIds.pop_back();
         WriteRecord(reused) = std::move(record);
+        std::ranges::fill(Buffers.SelectionRoots.GetMutable({3u * reused, 3u}), SelectionAggregate{});
         return reused;
     }
     if (Tracked) {
         Tracked->Entries.Write(Records.size(), 1);
-        Tracked->RangesDirty = true;
+        Tracked->Dirty.push_back(uint32_t(Records.size()));
     }
     Records.emplace_back(std::move(record));
     DerivedRecords.emplace_back();
-    return uint32_t(Records.size() - 1);
+    const auto id = uint32_t(Records.size() - 1);
+    Buffers.SelectionRoots.Mirror({0, 3u * uint32_t(Records.size())});
+    std::ranges::fill(Buffers.SelectionRoots.GetMutable({3u * id, 3u}), SelectionAggregate{});
+    return id;
 }

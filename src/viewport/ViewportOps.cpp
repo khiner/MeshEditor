@@ -34,7 +34,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
         if (element == Element::None) return ranges;
         for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
             const auto mesh = GetMesh(r, mesh_entity);
-            meshes.EnsureSelectionBits(mesh);
+            meshes.EnsureSelectionState(r, std::array{mesh.GetStoreId()});
             const auto count = mesh.ElementCount(element);
             if (count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), element), count);
         }
@@ -69,7 +69,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
                 const uint32_t count = mesh.ElementCount(edit_element);
                 if (count == 0) continue;
 
-                meshes.EnsureSelectionBits(mesh);
+                meshes.EnsureSelectionState(r, std::array{mesh.GetStoreId()});
                 r.emplace<MeshElementSelection>(mesh_entity);
                 initialize_selection.emplace_back(
                     mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), edit_element), count

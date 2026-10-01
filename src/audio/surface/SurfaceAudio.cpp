@@ -7,6 +7,8 @@
 #include "audio/Fft.h"
 #include "audio/ModalAudio.h"
 #include "gltf/SourceTexture.h"
+#include "mesh/Mesh.h"
+#include "mesh/MeshStore.h"
 #include "numeric/vec2.h"
 #include "physics/PhysicsContact.h"
 #include "physics/PhysicsTypes.h"
@@ -62,6 +64,26 @@ vec3 SampleNormal(const DecodedImage &image, float x, float y) {
     const vec3 bottom = Mix(texel(x0, y1), texel(x1, y1), fx);
     return Mix(top, bottom, fy);
 }
+
+// Surface length per unit UV distance: the square root of the mesh area over its area in `uv_set`.
+float UvLengthScale(const MeshStore &meshes, const Mesh &mesh, uint32_t uv_set) {
+    if (uv_set >= MeshStore::MaxUvSets || !(meshes.Get(mesh.GetStoreId()).CornerAttributes & (MeshAttributeBit_TexCoord0 << uv_set))) return 0.f;
+    const auto uvs = meshes.Arenas().CornerUvs[uv_set].View();
+    const auto &connectivity = mesh.GetConnectivity();
+    double area = 0.0, uv_area = 0.0;
+    for (const auto face : mesh.faces()) {
+        const auto first = *connectivity.FaceHalfedge(*face), end = connectivity.FaceEnd(*face);
+        const auto p0 = mesh.GetPosition(mesh.GetToVertex({first}));
+        const auto a = uvs.GetOr(first);
+        for (uint32_t h = first + 1u; h + 1u < end; ++h) {
+            const auto p1 = mesh.GetPosition(mesh.GetToVertex({h})), p2 = mesh.GetPosition(mesh.GetToVertex({h + 1u}));
+            area += 0.5 * double(Length(Cross(p1 - p0, p2 - p0)));
+            const auto b = uvs.GetOr(h), c = uvs.GetOr(h + 1u);
+            uv_area += 0.5 * std::abs(double((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)));
+        }
+    }
+    return uv_area > 0.0 ? float(std::sqrt(area / uv_area)) : 0.f;
+}
 } // namespace
 
 void UpdateSurfaceRelief(state::Scene &r, state::Entity node_entity, state::Entity mesh_entity, bool geometry_changed) {
@@ -78,13 +100,14 @@ void UpdateSurfaceRelief(state::Scene &r, state::Entity node_entity, state::Enti
         r.remove<SurfaceRelief>(node_entity);
         return;
     }
-    // Measuring the parameterization walks every triangle, so a surface edit that left the map alone stops here.
+    // Reuse the current relief when neither its map nor the mesh geometry changed.
     const auto source_key = HashParams(0xff51afd7ed558ccdull, normal_map->Image, normal_map->TexCoord, normal_map->Scale);
     const auto *existing = r.try_get<const SurfaceRelief>(node_entity);
     if (!geometry_changed && existing && existing->SourceKey == source_key) return;
 
     // Lengths stay mesh-local, so one track serves every node instancing it, each sizing it by its own world scale.
-    const float length_per_uv = LocalLengthPerUv(r, mesh_entity, normal_map->TexCoord);
+    const auto mesh = TryGetMesh(r, mesh_entity);
+    const float length_per_uv = mesh ? UvLengthScale(r.Context.get<const MeshStore>(), *mesh, normal_map->TexCoord) : 0.f;
     // The track is fixed by the map, its texel size, and its scale, so a mesh edit that left the parameterization alone keeps it.
     const auto key = HashParams(0x2545f4914f6cdd1dull, normal_map->Image, length_per_uv, normal_map->Scale);
     if (existing && existing->Key == key) return;

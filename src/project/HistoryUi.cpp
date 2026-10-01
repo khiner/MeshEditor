@@ -191,10 +191,14 @@ template<typename L> void DrawLeaf(const state::Scene &r, L &leaf, bool &changed
 void DrawNodeEditor(Project &session, int node, bool interactive) {
     auto &draft = session.DraftOf(node);
     size_t leaves = 0;
-    for (const auto &recorded_action : draft.RecordedActions) leaves += action::VisitLeaf(recorded_action.Action, []<typename L>(const L &) { return !std::is_empty_v<L>; });
+    for (const auto &recorded_action : draft.RecordedActions) {
+        if (recorded_action.Inputs.PreviewSeed) continue;
+        leaves += action::VisitLeaf(recorded_action.Action, []<typename L>(const L &) { return !std::is_empty_v<L>; });
+    }
     bool changed = false, finished = false;
     for (size_t i = 0; auto &recorded_action : draft.RecordedActions) {
         PushID(int(i++));
+        if (recorded_action.Inputs.PreviewSeed) { PopID(); continue; }
         if (leaves > 1) SeparatorText(SpacedName(Label(recorded_action.Action)).c_str());
         action::VisitLeaf(recorded_action.Action, [&]<typename L>(L &leaf) {
             if constexpr (!std::is_empty_v<L>) DrawLeaf(session.R, leaf, changed, finished);

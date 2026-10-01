@@ -256,7 +256,7 @@ void UpdateMeshDrag(state::Scene &r, FrameState &frame) {
     drag.WheelAccum += knife ? 0.f : std::exchange(frame.PreciseWheelDelta, vec2{0}).y;
     const int steps = int(drag.WheelAccum) + IsKeyPressed(ImGuiKey_Equal, true) - IsKeyPressed(ImGuiKey_Minus, true);
     drag.WheelAccum -= float(int(drag.WheelAccum));
-    const auto segments = uint32_t(std::clamp(int(drag.Segments) + steps, 1, 16));
+    const auto segments = uint32_t(std::clamp(int64_t(drag.Segments) + steps, int64_t{1}, int64_t{UINT32_MAX}));
     bool changed = std::exchange(drag.Segments, segments) != segments;
     if (drag.Value == Op::Inset && IsKeyPressed(ImGuiKey_I, false)) {
         drag.Individual = !drag.Individual;

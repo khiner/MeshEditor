@@ -78,12 +78,12 @@ kernel void WireRasterKernel(
         const uint local_triangle = thread_index / 3u;
         const uint edge_corner = thread_index % 3u;
         if (local_triangle >= work.Meshlet.TriangleCount) return;
-        const uint packed_edge = MeshletPackedEditEdge(
+        const uint edge = MeshletEditEdge(
             bindless, pc.Meshlet, work, local_triangle, edge_corner
         );
-        if (packed_edge == InvalidOffset) return;
+        if (edge == InvalidOffset) return;
         geometry = ResolveMeshletEditEdge(
-            scene, work, bindless, pc.Meshlet, local_triangle, edge_corner, packed_edge
+            scene, work, bindless, pc.Meshlet, local_triangle, edge_corner, edge
         );
     } else if (topology == uint(MeshPrimitiveTopology::Line)) {
         if (thread_index >= work.Meshlet.TriangleCount) return;

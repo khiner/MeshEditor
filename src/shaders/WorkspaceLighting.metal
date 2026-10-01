@@ -106,6 +106,58 @@ inline float4 ShadeWorkspace(MeshVaryings in, const thread Scene &scene, constan
     return float4(color, in.Color.a);
 }
 
+// Solid triangle shading needs only positions, normals, and face overlay state, which resolve directly per visibility sample.
+inline MeshVaryings DecodeWorkspaceTriangle(
+    const thread Scene &scene, const thread ResolvedVisibility &resolved,
+    float2 pixel, VisibilityShadingPushConstants pc
+) {
+    const DrawData draw = resolved.Draw;
+    const MeshletRecord meshlet = resolved.Meshlet;
+    const bool coarse = MeshletCoarse(meshlet);
+    const uint triangle = coarse ? 0u : BindlessBuffer(uint, scene.B.Buffer, pc.MeshletTriangleSlot)[
+        meshlet.TriangleOffset + resolved.LocalTriangle
+    ];
+    const uchar packed_first = BindlessBuffer(uchar, scene.B.Buffer, pc.MeshletLocalTriangleSlot)[
+        MeshletLocalTriangleOffset(meshlet) + resolved.LocalTriangle * 3u
+    ];
+    const bool flat_face = (packed_first & uint(MeshletGeometryEncoding::FlatTriangleBit)) != 0u;
+    const MeshletTriangleCorners corners = ResolveMeshletCorners(
+        scene, draw, pc.MeshletVertexSlot, pc.MeshletLocalTriangleSlot, meshlet, triangle, resolved.LocalTriangle
+    );
+    const Transform world = MeshletWorld(scene, draw);
+    float4 clip[3];
+    float3 world_positions[3];
+    float3 world_normals[3]{};
+    for (uint corner = 0u; corner < 3u; ++corner) {
+        const uint handle = corners.CornerIds[corner];
+        const uint vertex_id = corners.VertexIds[corner];
+        const float3 position = apply_object_pending_transform(
+            scene, draw, trs_transform_point(world, scene.GetLocalPosition(draw, vertex_id))
+        );
+        world_positions[corner] = position;
+        clip[corner] = scene.ViewProj() * float4(position, 1.0f);
+        if (!flat_face) {
+            const uint face = coarse ? InvalidOffset : scene.CornerFace(draw, handle);
+            world_normals[corner] = trs_transform_normal(
+                world, CornerNormal(scene, draw, handle, vertex_id, face, coarse, corners.CoarseNormal)
+            );
+        }
+    }
+    const float3 weights = TriangleWeights(
+        pixel, clip[0], clip[1], clip[2], float2(scene.View.ViewportSize)
+    ).Value;
+    const MeshletFaceValues face = coarse ? MeshletCoarseFace(scene, resolved.Primitive, resolved.Instance, world) :
+        MeshletFace(scene, draw, resolved.Instance, world, triangle, flat_face);
+    return {
+        .WorldNormal = flat_face ? float3(0.0f) :
+            PerspectiveValue(weights, world_normals[0], world_normals[1], world_normals[2]),
+        .FlatWorldNormal = face.FlatWorldNormal,
+        .WorldPosition = PerspectiveValue(weights, world_positions[0], world_positions[1], world_positions[2]),
+        .Color = float4(0.8f, 0.8f, 0.8f, 1.0f),
+        .FaceOverlayFlags = face.FaceOverlayFlags,
+    };
+}
+
 fragment float4 WorkspaceVisibilityFragment(
     QuadVaryings quad [[stage_in]],
     texture2d<uint, access::read> visibility [[texture(0)]],
@@ -115,12 +167,16 @@ fragment float4 WorkspaceVisibilityFragment(
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant VisibilityShadingPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
-    const DecodedVisibility decoded = DecodeVisibilityId(
-        visibility.read(uint2(quad.Position.xy)).r, quad.Position.xy,
-        bindless, view, theme, workspace, pc, false
-    );
-    if (!decoded.Valid) discard_fragment();
+    const uint id = visibility.read(uint2(quad.Position.xy)).r;
+    if (id == VisibilityBackground) discard_fragment();
     const Scene scene{bindless, view, theme, workspace};
+    const ResolvedVisibility resolved = ResolveVisibilityPrimitive(id, bindless, view, pc);
+    if (MeshletPrimitiveTopology(resolved.Meshlet) == uint(MeshPrimitiveTopology::Triangle) &&
+        resolved.Draw.TriangleSlot != InvalidSlot) {
+        return ShadeWorkspace(DecodeWorkspaceTriangle(scene, resolved, quad.Position.xy, pc), scene, view);
+    }
+    const ResolvedVisibility complete = ResolveVisibilityElement(resolved, bindless, view, theme, workspace, pc);
+    const DecodedVisibility decoded = DecodeVisibilityResolved(scene, complete, quad.Position.xy, pc, false);
     return ShadeWorkspace(decoded.V, scene, view);
 }
 

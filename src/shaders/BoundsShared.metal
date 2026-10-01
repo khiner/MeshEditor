@@ -10,23 +10,32 @@ constant float3 AabbEmptyMin = float3(3.402823466e38f);
 constant float3 AabbEmptyMax = float3(-3.402823466e38f);
 
 constant uint BoundsFoldLanes = 256;
-constant uint MeshletBoundsFoldLanes = 64;
 
 // Kernels provide the arrays because MSL prohibits threadgroup memory at namespace scope.
 inline void FoldSharedAabb(
     threadgroup float3 *shared_min, threadgroup float3 *shared_max,
     uint lanes, uint tid, float3 lo, float3 hi
 ) {
-    shared_min[tid] = lo;
-    shared_max[tid] = hi;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint stride = lanes / 2; stride > 0u; stride >>= 1u) {
-        if (tid < stride) {
-            shared_min[tid] = min(shared_min[tid], shared_min[tid + stride]);
-            shared_max[tid] = max(shared_max[tid], shared_max[tid + stride]);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    // Apple GPU SIMD groups have 32 lanes. Only their partials need shared memory.
+    lo = simd_min(lo);
+    hi = simd_max(hi);
+    if ((tid & 31u) == 0u) {
+        shared_min[tid >> 5u] = lo;
+        shared_max[tid >> 5u] = hi;
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < 32u) {
+        lo = tid < lanes / 32u ? shared_min[tid] : AabbEmptyMin;
+        hi = tid < lanes / 32u ? shared_max[tid] : AabbEmptyMax;
+        lo = simd_min(lo);
+        hi = simd_max(hi);
+        if (tid == 0u) {
+            shared_min[0] = lo;
+            shared_max[0] = hi;
+        }
+    }
+    // BoundsCombine consumes the result from every lane.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 }
 
 #endif

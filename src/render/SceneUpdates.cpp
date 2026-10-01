@@ -1,7 +1,6 @@
 #include "render/SceneUpdates.h"
 #include "Parallel.h"
 #include "Profile.h"
-#include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
@@ -11,66 +10,149 @@
 #include "render/GpuSceneState.h"
 #include "render/MeshBuffers.h"
 #include "render/MeshletBuild.h"
-#include "render/PickConstants.h"
+#include "render/MeshletBuildGpu.h"
+#include "render/ClusterLodRepair.h"
+#include "render/MaterialLodAttributes.h"
+#include "render/LodNodeEdit.h"
+#include "metal/Dispatch.h"
 #include "render/Pipelines.h"
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 #include "state/Scene.h"
-#include "viewport/FrameState.h"
-#include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportRenderGpu.h"
-#include <numeric>
-#include <print>
 
 using state::Change;
-using namespace he;
 uint8_t InstanceStateBits(const state::Scene &r, state::Entity e) {
     return (r.all_of<Selected>(e) ? ElementStateSelected : 0) | (r.all_of<Active>(e) ? ElementStateActive : 0);
 }
 
-static void UpdateMeshletInstance(state::Scene &r, state::Entity instance_entity) {
+namespace {
+// Refreshes an instance's meshlet counts in the scene totals and in the totals of the counted flags its record carries.
+// Returns whether the instance started or stopped drawing meshlets.
+bool UpdateMeshletInstance(state::Scene &r, state::Entity instance_entity) {
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &instance = r.edit<RenderInstance>(instance_entity);
-    buffers.MeshletRangeCount -= instance.MeshletRangeCount;
-    buffers.MeshletInstanceCount -= instance.MeshletCount;
+    const auto records = buffers.Instances.RecordBuffer.GetSpan<InstanceRecord>();
+    const auto flags = instance.BufferIndex < records.size() ? records[instance.BufferIndex].Flags & GpuBuffers::CountedMeshletFlags : 0u;
+    const auto tally = [&](bool add) {
+        const auto apply = [&](uint64_t &total, uint64_t value) { total = add ? total + value : total - value; };
+        apply(buffers.LodNodeCount, instance.LodNodeCount);
+        apply(buffers.MeshletInstanceCount, instance.MeshletCount);
+        if (!instance.MeshletCount) return;
+        for (auto bits = flags; bits; bits &= bits - 1u) {
+            auto &work = buffers.FlagWork(bits & (~bits + 1u));
+            apply(work.Nodes, instance.LodNodeCount);
+            apply(work.Meshlets, instance.MeshletCount);
+        }
+    };
+    const bool drawing = instance.MeshletCount > 0u;
+    tally(false);
     const auto *mesh_buffers = r.valid(instance.Entity) ? TryMeshBuffers(r, instance.Entity) : nullptr;
-    instance.MeshletRangeCount = mesh_buffers ? mesh_buffers->Primitives.Count : 0;
-    instance.MeshletCount = mesh_buffers ? mesh_buffers->Meshlets.Count : 0;
-    buffers.MeshletRangeCount += instance.MeshletRangeCount;
-    buffers.MeshletInstanceCount += instance.MeshletCount;
+    instance.LodNodeCount = mesh_buffers ? buffers.ActiveMeshlets.Count(mesh_buffers->NodeRoot) : 0;
+    instance.MeshletCount = mesh_buffers ? buffers.MeshletCount(*mesh_buffers) : 0;
+    tally(true);
+    return drawing != (instance.MeshletCount > 0u);
+}
+} // namespace
+
+// Assign placed primitives to the affected meshes' instance ranges.
+bool RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_entities) {
+    auto &buffers = r.Context.get<GpuBuffers>();
+    bool drawing_changed = false;
+    for (const auto mesh_entity : mesh_entities) {
+        const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
+        if (!models || !models->InstanceCount) continue;
+        const auto first = models->InstanceRange.Offset;
+        const auto ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>({first,models->InstanceCount});
+        auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({first,models->InstanceCount});
+        const auto &mesh_buffers = MeshBuffersOf(r,mesh_entity);
+        const auto primitive_count = buffers.PrimitiveCount(mesh_buffers);
+        for (uint32_t i=0u; i<ids.size(); ++i) {
+            if (!ids[i]) continue;
+            const auto instance_entity = r.EntityAt(ids[i]-1u);
+            if (instance_entity==state::Null) continue;
+            const auto *ri = r.try_get<const RenderInstance>(instance_entity);
+            if (!ri || ri->Entity!=mesh_entity || ri->BufferIndex!=first+i) continue;
+            auto &record = records[i];
+            record.PrimitiveRoot = mesh_buffers.PrimitiveRoot;
+            record.PrimitiveCount = primitive_count;
+            record.Mesh = OffsetOrInvalid(mesh_buffers.MeshRecord);
+            drawing_changed = UpdateMeshletInstance(r,instance_entity) || drawing_changed;
+        }
+    }
+    return drawing_changed;
 }
 
-// Assign placed primitives to instances while preserving mesh and instance iteration order.
-void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    if (mesh_entities.empty()) return;
+bool RepointChangedMeshes(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     auto &buffers = r.Context.get<GpuBuffers>();
-    std::vector<std::pair<state::Entity, uint32_t>> batch;
-    batch.reserve(mesh_entities.size());
-    for (uint32_t i = 0; i < mesh_entities.size(); ++i) batch.emplace_back(mesh_entities[i], i);
-    std::ranges::sort(batch);
-
-    std::vector<std::pair<uint32_t, state::Entity>> grouped;
-    for (const auto [instance_entity, ri] : r.view<const RenderInstance>().each()) {
-        if (ri.BufferIndex == UINT32_MAX) continue;
-        const auto it = std::ranges::lower_bound(batch, ri.Entity, {}, &std::pair<state::Entity, uint32_t>::first);
-        if (it == batch.end() || it->first != ri.Entity) continue;
-        grouped.emplace_back(it->second, instance_entity);
+    auto &scene = r.Context.get<GpuSceneState>();
+    const auto &meshes = r.Context.get<const MeshStore>();
+    bool changed = RepointMeshInstances(r, mesh_entities);
+    const EditSelectionStorage unbound{};
+    for (const auto entity : mesh_entities) {
+        const auto *models = r.try_get<const ModelsBuffer>(entity);
+        if (!models || !models->InstanceCount) continue;
+        const auto &owner = MeshBuffersOf(r, entity);
+        const auto work = scene.EditWork.find(entity);
+        changed = changed || scene.PosedByEntity.contains(entity) || (work != scene.EditWork.end() && work->second.RequiresPose) ||
+            owner.RenderTopology >= 32u || !(buffers.MeshletTopologyMask & (1u << owner.RenderTopology));
+        const auto &record = meshes.Get(owner.StoreId);
+        const auto storage = meshes.GetEditSelectionStorage(owner.StoreId);
+        const auto edge_offset = meshes.Arenas().EdgeHalfedges.First(record.EdgeData);
+        for (const auto &instance : buffers.Instances.RecordBuffer.GetSpan<InstanceRecord>({models->InstanceRange.Offset, models->InstanceCount})) {
+            const bool bound = std::memcmp(&instance.Selection, &unbound, sizeof(unbound)) != 0;
+            changed = changed || (bound && std::memcmp(&instance.Selection, &storage, sizeof(storage)) != 0) ||
+                (instance.EditEdgeSharpnessOffset != InvalidOffset && instance.EditEdgeSharpnessOffset != edge_offset);
+        }
+        if (scene.MeshletEditOverlayMeshes.contains(entity)) scene.MeshletEditHasSharpEdges |= meshes.GetEdgeSharpnessSummary(owner.StoreId).Any;
     }
-    std::ranges::stable_sort(grouped, {}, &std::pair<uint32_t, state::Entity>::first);
+    return changed;
+}
 
-    for (const auto [mesh_index, instance_entity] : grouped) {
-        const auto &mesh_buffers = MeshBuffersOf(r, mesh_entities[mesh_index]);
-        const auto &ri = r.get<const RenderInstance>(instance_entity);
-        auto &record = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({ri.BufferIndex, 1}).front();
-        record.PrimitiveOffset = OffsetOrInvalid(mesh_buffers.Primitives);
-        record.PrimitiveCount = mesh_buffers.Primitives.Count;
-        record.Mesh = OffsetOrInvalid(mesh_buffers.MeshRecord);
-        UpdateMeshletInstance(r, instance_entity);
+void RefreshClusterLodAttributes(state::Scene &r, std::span<const state::Entity> mesh_entities) {
+    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto materials = GetMaterials(r);
+    DebugChannel debug = DebugChannel::None;
+    for (const auto [_, display] : r.view<const ViewportDisplay>().each())
+        if (!WorkbenchShading(display.ViewportShading)) debug = display.DebugChannel;
+    for (const auto entity : mesh_entities) {
+        auto *owner = TryMeshBuffers(r, entity);
+        if (!owner) continue;
+        if (!ClusterLodApplies(owner->RenderTopology == uint32_t(MeshPrimitiveTopology::Triangle), owner->Level0Count)) continue;
+        const auto &record = meshes.Get(owner->StoreId);
+        const auto assignments = meshes.Arenas().PrimitiveMaterials.Get(record.PrimitiveMaterials);
+        const bool authored_tangents = (record.CornerAttributes & MeshAttributeBit_Tangent) != 0u;
+        const bool coarse = buffers.ClusterGroupCount(*owner) != 0u;
+        std::vector<uint32_t> changed;
+        buffers.ForEachPrimitive(*owner, [&](uint32_t id, const PrimitiveRecord &primitive) {
+            const uint32_t material = primitive.PrimitiveIndex < assignments.size() ? assignments[primitive.PrimitiveIndex] : 0u;
+            const uint32_t required = MaterialLodAttributes(materials[material], debug, authored_tangents);
+            if (required == primitive.LodAttributes) return;
+            if (coarse) changed.push_back(id);
+            buffers.Primitives.GetMutable({id, 1u})[0].LodAttributes = required;
+        });
+        if (changed.empty()) continue;
+        std::ranges::sort(changed);
+        std::vector<uint32_t> groups;
+        buffers.ActiveMeshlets.ForEach(owner->GroupRoot, [&](uint32_t group) {
+            const auto &links = buffers.GroupLinks.Get({group, 1u})[0];
+            if (!links.MemberCount) return;
+            const auto member = buffers.GroupClusterIds.Get({links.MemberOffset, 1u})[0];
+            const auto primitive = buffers.Meshlets.Get({member, 1u})[0].Primitive;
+            if (std::ranges::binary_search(changed, primitive)) groups.push_back(group);
+        });
+        auto touched = InvalidateClusterGroups(r, entity, groups);
+        if (touched.empty()) continue;
+        touched.erase(std::unique(touched.begin(), touched.end()), touched.end());
+        mtl::ComputeChain chain{buffers.Ctx};
+        EditLodNodes(r, chain, MeshBuffersOf(r, entity), {}, {}, touched);
+        chain.Submit();
     }
 }
 
@@ -81,18 +163,33 @@ void BuildMeshletsNow(state::Scene &r, std::span<const state::Entity> mesh_entit
     auto &buffers = r.Context.get<GpuBuffers>();
     buffers.PreludeStale = true;
     const auto &meshes = r.Context.get<const MeshStore>();
-    const uint32_t count = uint32_t(mesh_entities.size());
-    // Capture registry inputs before concurrent mesh builds.
-    std::vector<MeshletBuildInputs> inputs;
-    inputs.reserve(count);
+    std::vector<MeshletBuildSource> sources;
+    sources.reserve(mesh_entities.size());
     for (const auto entity : mesh_entities) {
-        inputs.push_back(CaptureMeshletInputs(buffers, MeshBuffersOf(r, entity), GetMesh(r, entity), meshes));
+        const auto mesh = GetMesh(r, entity);
+        const auto topology = mesh.PrimitiveTopology();
+        const bool faces = topology == 0u, lines = topology == 1u;
+        auto &mb=buffers.MeshOf(mesh.GetStoreId());
+        // A record changing topology releases its former render ranges.
+        if (mb.RenderTopology!=InvalidOffset && mb.RenderTopology!=topology) {
+            auto vertices=mb.Vertices;
+            vertices.Count=mesh.VertexCount();
+            buffers.Release(mb);
+            mb=MeshBuffers{.Vertices=vertices};
+        }
+        MeshletBuildSource source{
+            .Destination = &mb,
+            .Mesh = BuildMeshRecord(buffers, mb, meshes, mesh.GetStoreId(), faces, lines), .StoreId = mesh.GetStoreId(),
+            .Topology = topology,
+            .ElementCount = faces ? mesh.TriangleIndexCount() / 3u : lines ? mesh.EdgeCount() : mesh.VertexCount(),
+        };
+        sources.push_back(std::move(source));
     }
-    // Build meshes concurrently from independent captured inputs.
-    std::vector<MeshletBuild> builds(count);
-    ParallelFor(count, [&](uint32_t i) { builds[i] = BuildMeshlets(inputs[i]); });
-    for (uint32_t i = 0; i < count; ++i) CommitMeshlets(buffers, MeshBuffersOf(r, mesh_entities[i]), builds[i]);
+    mtl::ComputeChain chain{buffers.Ctx};
+    BuildGpuMeshlets(r, chain, sources);
+    RefreshClusterLodAttributes(r, mesh_entities);
     RepointMeshInstances(r, mesh_entities);
+    r.Context.get<GpuSceneState>().LodDemand.insert(mesh_entities.begin(), mesh_entities.end());
 }
 
 bool EditPinsFinest(const selection::PrimaryEditInstanceMap &primaries, const GpuSceneState &scene, state::Entity mesh_entity) {
@@ -100,90 +197,78 @@ bool EditPinsFinest(const selection::PrimaryEditInstanceMap &primaries, const Gp
 }
 
 bool BuildDemandedClusterLods(state::Scene &r, bool edit_mode) {
+    auto &scene = r.Context.get<GpuSceneState>();
+    if (scene.LodDemand.empty()) return false;
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &meshes = r.Context.get<const MeshStore>();
-    std::vector<state::Entity> demanded;
-    for (const auto [entity, handle] : r.view<const MeshHandle>().each()) {
-        const auto *mb = buffers.TryMeshOf(handle.StoreId);
-        if (mb && mb->ClusterGroups.Count == 0u && ClusterLodApplies(Mesh{meshes, handle.StoreId}.FaceCount() > 0u, mb->Meshlets.Count)) demanded.push_back(entity);
-    }
+    // A mesh leaves the demand set once it has a hierarchy or its meshlets take none.
+    std::erase_if(scene.LodDemand, [&](state::Entity entity) {
+        const auto *handle = r.valid(entity) ? r.try_get<const MeshHandle>(entity) : nullptr;
+        const auto *mb = handle ? buffers.TryMeshOf(handle->StoreId) : nullptr;
+        return !mb || buffers.ClusterGroupCount(*mb) != 0u || !ClusterLodApplies(Mesh{meshes, handle->StoreId}.FaceCount() > 0u, buffers.MeshletCount(*mb));
+    });
+    std::vector<state::Entity> demanded{scene.LodDemand.begin(), scene.LodDemand.end()};
     if (edit_mode && !demanded.empty()) {
         const auto primaries = selection::ComputePrimaryEditInstances(r);
-        const auto &scene = r.Context.get<const GpuSceneState>();
         std::erase_if(demanded, [&](state::Entity e) { return EditPinsFinest(primaries, scene, e); });
     }
     if (demanded.empty()) return false;
+    for (const auto entity : demanded) scene.LodDemand.erase(entity);
     // Arena offsets follow commit order.
     std::ranges::sort(demanded);
     const profile::CpuScope scope{"BuildClusterLods"};
+    RefreshClusterLodAttributes(r, demanded);
     const uint32_t count = uint32_t(demanded.size());
     std::vector<MeshletBuildInputs> inputs;
     inputs.reserve(count);
-    for (const auto entity : demanded) {
-        inputs.push_back(CaptureMeshletInputs(buffers, MeshBuffersOf(r, entity), GetMesh(r, entity), meshes));
+    std::vector<std::vector<uint32_t>> live_triangles(count), live_primitive_counts(count);
+    for (uint32_t i=0u;i<count;++i) {
+        const auto entity=demanded[i];
+        const auto &mb = MeshBuffersOf(r,entity);
+        const auto mesh=GetMesh(r,entity);
+        // After an edit, the build covers exactly the triangles the live finest clusters hold, per primitive in walk order.
+        if (mb.MeshletRevision>1u) {
+            auto &triangles=live_triangles[i];
+            auto &primitive_counts=live_primitive_counts[i];
+            buffers.ForEachPrimitive(mb,[&](uint32_t, const PrimitiveRecord &primitive) {
+                const auto root=primitive.LodFinestNode==InvalidOffset ? InvalidOffset :
+                    buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot;
+                const auto start=triangles.size();
+                buffers.ActiveMeshlets.ForEach(root,[&](uint32_t cluster) {
+                    const auto &record=buffers.Meshlets.Get({cluster,1u})[0];
+                    const auto ids=buffers.MeshletTriangleIds.Get({record.TriangleOffset,record.TriangleCount});
+                    triangles.insert(triangles.end(),ids.begin(),ids.end());
+                });
+                primitive_counts.push_back(uint32_t(triangles.size()-start));
+            });
+            inputs.push_back(CaptureMeshletInputs(mesh,meshes,
+                {meshes.Arenas().Triangles.Buffer.GetSpan<uvec3>(),triangles}));
+        } else inputs.push_back(CaptureMeshletInputs(mesh,meshes,
+            {meshes.Arenas().Triangles.Buffer.GetSpan<uvec3>(),buffers.MeshletTriangleIds.Get(mb.MeshletTriangles)}));
     }
     std::vector<ClusterLodBuild> lods(count);
-    ParallelFor(count, [&](uint32_t i) { lods[i] = BuildMeshletClusterLod(buffers, MeshBuffersOf(r, demanded[i]), inputs[i]); });
-    for (uint32_t i = 0; i < count; ++i) CommitClusterLod(buffers, MeshBuffersOf(r, demanded[i]), lods[i]);
+    ParallelFor(count, [&](uint32_t i) { lods[i] = BuildMeshletClusterLod(buffers, MeshBuffersOf(r, demanded[i]), inputs[i],live_primitive_counts[i]); });
+    for (uint32_t i = 0; i < count; ++i) {
+        auto &mb = MeshBuffersOf(r,demanded[i]);
+        CommitClusterLod(r,mb,lods[i]);
+        // Finest IDs remain stable, so their canonical owner entries do too.
+    }
     RepointMeshInstances(r, demanded);
     buffers.PreludeStale = true;
-    if (profile::Enabled) {
-        uint32_t lod_levels = 0, lod_clusters = 0, lod_groups = 0;
-        ClusterLodStats stats;
-        ClusterLodLevelStats level_stats;
-        for (const auto &lod : lods) {
-            lod_levels = std::max(lod_levels, lod.LevelCount);
-            lod_clusters += uint32_t(lod.Clusters.size());
-            lod_groups += uint32_t(lod.Groups.size());
-            stats.TotalMs += lod.Stats.TotalMs;
-            stats.WeldMs += lod.Stats.WeldMs;
-            stats.Level0Ms += lod.Stats.Level0Ms;
-            stats.HierarchyMs += lod.Stats.HierarchyMs;
-            for (const auto &level : lod.Stats.Levels) {
-                level_stats.PartitionMs += level.PartitionMs;
-                level_stats.LockMs += level.LockMs;
-                level_stats.MergeMs += level.MergeMs;
-                level_stats.SimplifyMs += level.SimplifyMs;
-                level_stats.ClusterizeMs += level.ClusterizeMs;
-                level_stats.EmitMs += level.EmitMs;
-            }
-        }
-        const double levels_ms = stats.TotalMs - stats.WeldMs - stats.Level0Ms - stats.HierarchyMs;
-        std::println(
-            "Cluster LOD: {} meshes, {} levels, {} coarse clusters, {} groups, {:.1f} ms of build ({:.1f} weld, {:.1f} source, {:.1f} levels, {:.1f} span trees)",
-            count, lod_levels, lod_clusters, lod_groups, stats.TotalMs,
-            stats.WeldMs, stats.Level0Ms, levels_ms, stats.HierarchyMs
-        );
-        std::println(
-            "Cluster LOD levels: {:.1f} ms partition, {:.1f} lock, {:.1f} merge; group CPU {:.1f} simplify, {:.1f} clusterize, {:.1f} emit",
-            level_stats.PartitionMs, level_stats.LockMs, level_stats.MergeMs,
-            level_stats.SimplifyMs, level_stats.ClusterizeMs, level_stats.EmitMs
-        );
-    }
     return true;
 }
 
 // Populate standard meshlet geometry so procedural bone shaders share bounds, culling, routing, and indirect dispatch.
 void BuildBoneMeshletsNow(state::Scene &r, std::span<const state::Entity> entities) {
     auto &buffers = r.Context.get<GpuBuffers>();
-    const auto &meshes = r.Context.get<const MeshStore>();
+    std::vector<MeshletBuildSource> sources;
+    sources.reserve(entities.size());
     for (const auto entity : entities) {
         auto &mb = MeshBuffersOf(r, entity);
         if (mb.FaceIndices.Count == 0u) continue;
-        const auto indices = buffers.FaceIndexBuffer.Get(mb.FaceIndices);
-        const auto vertices = meshes.Arenas().Vertices.Get(meshes.Get(r.get<const VertexStoreId>(entity).StoreId).Vertices);
-        const uint32_t triangle_count = uint32_t(indices.size() / 3u);
-        std::vector<uint32_t> face_ids(triangle_count), element_primitives(triangle_count, 0u);
-        std::iota(face_ids.begin(), face_ids.end(), 1u);
-        MeshletBuildInputs inputs{
-            .Indices = indices,
-            .Vertices = vertices,
-            .ElementPrimitives = element_primitives,
-            .TriangleEditEdges = std::vector<uint32_t>(indices.size(), InvalidOffset),
-            .PrimitiveTriangleRanges = {{0u, 0u, triangle_count}},
-            .Weld = {.TriangleFaceIds = face_ids},
-            .TriangleCount = triangle_count,
-            .FaceTopology = true,
+        const uint32_t triangle_count = mb.FaceIndices.Count / 3u;
+        sources.push_back({
+            .Destination = &mb,
             .Mesh = {
                 .VertexSlot = mb.Vertices.Slot,
                 .IndexSlotOffset = mb.FaceIndices,
@@ -192,63 +277,22 @@ void BuildBoneMeshletsNow(state::Scene &r, std::span<const state::Entity> entiti
                 .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
                 .VertexOffset = mb.Vertices.Offset,
             },
-        };
-        auto build = BuildMeshlets(inputs);
-        assert(build.Primitives.size() == 1u);
-        build.Primitives.front().AuxIndices = r.all_of<ArmatureObject>(entity) ?
-            r.get<const BoneAdjacencyIndices>(entity).Indices :
-            mb.EdgeIndices;
-        CommitMeshlets(buffers, mb, build);
+            .AuxIndices = mb.EdgeIndices,
+            .Topology = 0u,
+            .ElementCount = triangle_count,
+        });
     }
+    mtl::ComputeChain chain{buffers.Ctx};
+    BuildGpuMeshlets(r, chain, sources);
+    chain.Submit();
     RepointMeshInstances(r, entities);
 }
 
-// Allocate edge and vertex indices on demand for overlays, wireframe shading, and non-triangle meshes.
-// Vertex normal indicators require incident edge indices to determine their length.
-bool DrawsElementIndices(const state::Scene &r, state::Entity viewport) {
-    const auto mode = r.get<const Interaction>(viewport).Mode;
-    const auto &display = r.get<const ViewportDisplay>(viewport);
-    return display.ViewportShading == ViewportShadingMode::Wireframe ||
-        mode == InteractionMode::Edit || mode == InteractionMode::Excite ||
-        ElementMaskContains(display.NormalOverlays, Element::Vertex);
-}
-
-// Return the corner range directly for triangle-only meshes and a triangulated range for n-gons.
-bool DrawsStoredCorners(const Mesh &mesh) {
-    return mesh.TriangleIndexCount() > 0 && mesh.TriangleIndexCount() == mesh.CornerVertices().size();
-}
-
-// Use edge or vertex indices as geometry for meshes without faces.
-bool NeedsElementIndices(const Mesh &mesh, bool overlay_indices) {
-    return overlay_indices || mesh.FaceCount() == 0;
-}
-
-void WriteElementIndices(GpuBuffers &buffers, const MeshStore &meshes, const Mesh &mesh, MeshBuffers &mb, bool overlay_indices, std::vector<ElementIndicesWork> &pending) {
-    ElementIndicesWork work{mesh.GetStoreId()};
-    if (mesh.TriangleIndexCount() > 0 && mb.FaceIndices.Count == 0) {
-        if (DrawsStoredCorners(mesh)) {
-            mb.FaceIndices = meshes.Arenas().FaceCorners.Slotted(meshes.Get(mesh.GetStoreId()).FaceCorners);
-        } else {
-            mb.FaceIndices = buffers.AllocateIndices(mesh.TriangleIndexCount(), IndexKind::Face).first;
-            work.Triangles = mb.FaceIndices;
-        }
-    }
-    if (NeedsElementIndices(mesh, overlay_indices)) {
-        if (mesh.EdgeCount() > 0 && mb.EdgeIndices.Count == 0) {
-            auto [sr, dest] = buffers.AllocateIndices(mesh.EdgeCount() * 2, IndexKind::Edge);
-            if (mesh.FaceCount() > 0) work.Endpoints = sr;
-            else mesh.WriteEdgeIndices(dest);
-            mb.EdgeIndices = sr;
-            // The meshlet build captured the edge indices into the mesh's primitive records, so records built before the indices existed take them now.
-            for (auto &record : buffers.Primitives.Buffer.GetMutableSpan<PrimitiveRecord>(mb.Primitives)) record.AuxIndices = mb.EdgeIndices;
-        }
-        if (mesh.VertexCount() > 0 && mb.VertexIndices.Count == 0) {
-            auto [sr, dest] = buffers.AllocateIndices(mesh.VertexCount(), IndexKind::Vertex);
-            std::iota(dest.begin(), dest.end(), 0u);
-            mb.VertexIndices = sr;
-        }
-    }
-    if (work.Endpoints.Count > 0 || work.Triangles.Count > 0) pending.push_back(work);
+void AssignFaceIndices(const MeshStore &meshes, const Mesh &mesh, MeshBuffers &mb) {
+    if (mesh.TriangleIndexCount() == 0 || mb.FaceIndices.Count > 0) return;
+    const auto &corners=meshes.Arenas().FaceCorners;
+    const auto set=meshes.Get(mesh.GetStoreId()).FaceCorners;
+    if (corners.Set(set).Flags & 1u) mb.FaceIndices=corners.Slotted(set);
 }
 
 SyncResult SyncModelsBuffers(state::Scene &r) {
@@ -262,7 +306,9 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
         // A record keeps its render data across handle changes that leave it intact.
         const auto id = DrawnStoreId(r, e);
         if (!id || buffers.TryMeshOf(*id)) continue;
-        buffers.EmplaceMesh(*id, meshes.Arenas().Vertices.Slotted(meshes.Get(*id).Vertices));
+        const auto &vertices = meshes.Arenas().Vertices;
+        const auto set = meshes.Get(*id).Vertices;
+        buffers.EmplaceMesh(*id, {{vertices.First(set), vertices.Count(set)}, vertices.Buffer.Slot});
         if (HasMesh(r, e)) new_mesh_entities.emplace_back(e);
         else if (r.all_of<ObjectExtrasTag>(e) || r.all_of<ArmatureObject>(e) || r.all_of<BoneJoint>(e)) new_extras_entities.emplace_back(e);
     }
@@ -341,8 +387,8 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
             auto &record = instance_records[j];
             record.ObjectId = ObjectId(instance_entity);
             if (mesh_buffers) {
-                record.PrimitiveOffset = OffsetOrInvalid(mesh_buffers->Primitives);
-                record.PrimitiveCount = mesh_buffers->Primitives.Count;
+                record.PrimitiveRoot = mesh_buffers->PrimitiveRoot;
+                record.PrimitiveCount = buffers.PrimitiveCount(*mesh_buffers);
                 record.Mesh = OffsetOrInvalid(mesh_buffers->MeshRecord);
             }
         }

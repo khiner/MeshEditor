@@ -5,6 +5,7 @@
 #include "gpu/IblSamplers.h"
 #include "gpu/InteractionMode.h"
 #include "gpu/Types.h"
+#include "gpu/ElementAttributeRef.h"
 
 struct SceneViewUBO {
     mat4 ViewProj DEFAULT();
@@ -32,29 +33,29 @@ struct SceneViewUBO {
     vec2 ViewportSize DEFAULT();
     // Cluster LOD error threshold in pixels. Zero selects original geometry.
     float LodErrorPixels DEFAULT();
-    uint32_t CornerTangentSlot DEFAULT();
-    uint32_t CornerColorSlot DEFAULT();
-    uint32_t CornerUvSlot DEFAULT();
     uint32_t EdgeSharpnessSlot DEFAULT();
-    uint32_t CornerClassSlot DEFAULT();
-    uint32_t CustomCornerMaskSlot DEFAULT();
-    uint32_t CustomCornerNormalSlot DEFAULT();
-    uint32_t BaseSeamNormalSlot DEFAULT();
+    uint32_t FaceSharpnessSlot DEFAULT();
+    ElementAttributeRef CornerSectors DEFAULT();
+    ElementAttributeRef NormalSectors DEFAULT();
     // Derived base normals indexed by draw vertex and face offsets.
     uint32_t BaseVertexNormalSlot DEFAULT();
     uint32_t BaseFaceNormalSlot DEFAULT();
-    uint32_t FaceFirstTriangleSlot DEFAULT();
-    uint32_t AdjacencySlot DEFAULT();
-    uint32_t BoneDeformSlot DEFAULT();
+    uint32_t FaceTriangleStartSlot DEFAULT();
+    ElementAttributeRef Skin DEFAULT();
     uint32_t ArmatureDeformSlot DEFAULT();
-    uint32_t MorphDeformSlot DEFAULT();
+    ElementAttributeRef Morph DEFAULT();
     uint32_t MorphWeightsSlot DEFAULT();
     uint32_t PosedPositionSlot DEFAULT();
+    uint32_t PosedPositionNodesSlot DEFAULT();
     uint32_t PosedVertexNormalSlot DEFAULT();
-    uint32_t PosedSeamNormalSlot DEFAULT();
+    uint32_t PosedVertexNormalNodesSlot DEFAULT();
+    uint32_t PosedSectorNodesSlot DEFAULT();
+    uint32_t PosedSectorValuesSlot DEFAULT();
     uint32_t PosedFaceNormalSlot DEFAULT();
-    // Weighted authored morph-normal deltas indexed by posed vertex slot.
+    uint32_t PosedFaceNormalNodesSlot DEFAULT();
+    // Weighted authored morph-normal deltas keyed by canonical vertex.
     uint32_t PosedMorphNormalDeltaSlot DEFAULT();
+    uint32_t PosedMorphNormalNodesSlot DEFAULT();
     // GPU-reduced local-space instance bounds for emission-side frustum culling.
     uint32_t InstanceBoundsSlot DEFAULT(InvalidSlot);
     // Motion-blur steps use captured model transforms while preserving step-independent draw data.
@@ -63,7 +64,6 @@ struct SceneViewUBO {
     uint32_t PrimitiveMaterialSlot DEFAULT();
     uint32_t MeshRecordSlot DEFAULT();
     uint32_t InstanceRecordSlot DEFAULT();
-    uint32_t ElementPrimitiveSlot DEFAULT();
     uint32_t BoneXRay DEFAULT();
     // Opacity of every surface in the X-ray solid draw.
     float XRayAlpha DEFAULT(1);
@@ -81,4 +81,4 @@ struct SceneViewUBO {
     uint32_t UseRealTransmission DEFAULT();
     DebugChannel DebugChannel DEFAULT();
 };
-static_assert(sizeof(SceneViewUBO) == 460, "SceneViewUBO size");
+static_assert(sizeof(SceneViewUBO) == 472, "SceneViewUBO size");

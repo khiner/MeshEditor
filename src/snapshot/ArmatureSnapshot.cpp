@@ -35,6 +35,6 @@ void RegisterArmature(Tables &tables) {
     Persistent<
         Armature, ArmatureObject, BoneJointEntities, BoneJoint, BoneSubPartOf, BoneActive, BoneSelection, BoneConstraints,
         ArmatureModifier, BoneIndex, BoneDisplayScale, BoneAttachment, BoneDelta>(tables);
-    Derived<PosedLocal, BoneAdjacencyIndices, ArmaturePoseState>(tables);
+    Derived<PosedLocal, ArmaturePoseState>(tables);
 }
 } // namespace snapshot::detail

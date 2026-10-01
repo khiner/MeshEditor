@@ -23,13 +23,6 @@ void InitRenderStoreContext(state::Scene &r, const mtl::Context &ctx) {
     r.Context.emplace<EnvironmentStore>();
 }
 
-namespace {
-void EmplaceMeshShadingSummary(state::Scene &r, state::Entity e) {
-    const auto &meshes = r.Context.get<const MeshStore>();
-    const auto [any, all] = meshes.GetFaceSharpnessSummary(GetMesh(r, e).GetStoreId());
-    r.emplace_or_replace<MeshShadingSummary>(e, any, all);
-}
-} // namespace
 void RegisterRenderStoreHandlers(state::Scene &r) {
     r.on_destroy<ArmaturePoseState, [](state::Scene &r, state::Entity e) {
         auto &buffer = r.Context.get<GpuBuffers>().ArmatureDeformBuffer;
@@ -39,11 +32,10 @@ void RegisterRenderStoreHandlers(state::Scene &r) {
     r.on_destroy<MorphWeightRange, [](state::Scene &r, state::Entity e) {
         if (!r.Restoring) r.Context.get<GpuBuffers>().MorphWeightBuffer.Release(r.get<const MorphWeightRange>(e).Weights);
     }>();
-    r.on_destroy<MeshHandle, &state::Scene::remove<MeshShadingSummary>>();
     r.on_destroy<RenderInstance, [](state::Scene &r, state::Entity e) {
         const auto &ri = r.get<const RenderInstance>(e);
         if (auto *buffers = r.Context.find<GpuBuffers>()) {
-            buffers->MeshletRangeCount -= ri.MeshletRangeCount;
+            buffers->LodNodeCount -= ri.LodNodeCount;
             buffers->MeshletInstanceCount -= ri.MeshletCount;
         }
         if (ri.BufferIndex == UINT32_MAX) return;
@@ -56,7 +48,6 @@ void RegisterRenderStoreHandlers(state::Scene &r) {
     r.on_construct<Hidden, [](state::Scene &r, state::Entity e) {
         if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
     }>();
-    r.on_construct<MeshHandle, &EmplaceMeshShadingSummary>();
 }
 mtl::BufferContext &InitRenderStores(state::Scene &r) {
     auto &buffers = r.Context.emplace<GpuBuffers>(r.Context.get<const mtl::Context>(), r.Context.get<mtl::BindlessSet>());

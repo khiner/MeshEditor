@@ -1,9 +1,11 @@
 #pragma once
 
+#include "Range.h"
 #include "gpu/MeshRecord.h"
 #include "gpu/MeshletRecord.h"
 #include "gpu/PrimitiveRecord.h"
 #include "gpu/Vertex.h"
+#include "mesh/ElementAttributeView.h"
 #include "mesh/MeshStore.h"
 #include "render/ClusterLod.h"
 #include "render/CornerWeldKey.h"
@@ -18,45 +20,27 @@ struct MeshBuffers;
 
 // Borrows stable arena spans until the batch commits.
 struct MeshletBuildInputs {
-    std::span<const uint32_t> Indices;
+    TriangleVertexView Indices;
     std::span<const Vertex> Vertices;
-    std::span<const uint32_t> ElementPrimitives;
-    std::vector<uint32_t> TriangleEditEdges;
-    std::vector<PrimitiveTriangleRange> PrimitiveTriangleRanges;
+    uint32_t VertexFirst{};
+    Range DenseVertices{};
+    CornerNormalView Normals;
     // The corner attributes the render-vertex weld keys on, shared with the cluster LOD build.
     CornerWeldSource Weld;
-    uint32_t TriangleCount{};
-    uint32_t ElementCount{};
-    uint32_t EdgeCount{};
-    uint32_t SourcePrimitiveCount{};
-    bool FaceTopology{}, LineTopology{};
-    SlotOffset AuxIndices{};
-    MeshRecord Mesh{};
-    std::vector<uint32_t> EdgeIndices{};
-};
-
-// One mesh's finished meshlets, in the arena layout the commit places them at.
-// Offsets are relative to the mesh's own ranges until the commit rebases them.
-struct MeshletBuild {
-    MeshRecord Mesh{};
-    std::vector<MeshletRecord> Records{};
-    std::vector<uint32_t> Vertices{};
-    std::vector<PrimitiveRecord> Primitives{};
-    std::vector<uint32_t> TriangleIds{};
-    std::vector<uint8_t> LocalTriangles{};
-    std::vector<uint32_t> EditEdges{};
-    uint32_t TriangleIdCount{}, LocalTriangleCount{};
+    bool FaceTopology{};
 };
 
 // Captures stable input spans for the duration of the batch.
-MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &, const MeshBuffers &, const Mesh &, const MeshStore &);
-// Builds meshlets in host vectors and consumes TriangleEditEdges.
-MeshletBuild BuildMeshlets(MeshletBuildInputs &);
+MeshletBuildInputs CaptureMeshletInputs(const Mesh &, const MeshStore &, TriangleCorners);
 // Builds the DAG over the mesh's committed level-zero clusters.
 // A face-less mesh, and one whose clusters fit a single partition, returns an empty build.
-ClusterLodBuild BuildMeshletClusterLod(const GpuBuffers &, const MeshBuffers &, const MeshletBuildInputs &);
-// Release the mesh's previous meshlet ranges, place the finished build, and rebase its offsets.
-// Serial, because arena offsets follow call order.
-void CommitMeshlets(GpuBuffers &, MeshBuffers &, MeshletBuild &);
-// Places a finished DAG serially and appends coarse clusters after each primitive's original geometry.
-void CommitClusterLod(GpuBuffers &, MeshBuffers &, const ClusterLodBuild &);
+ClusterLodBuild BuildMeshletClusterLod(const GpuBuffers &, const MeshBuffers &, const MeshletBuildInputs &,
+                                      std::span<const uint32_t> primitive_triangle_counts = {});
+// Places a finished DAG, retaining finest identities and allocating only new coarse records.
+void CommitClusterLod(state::Scene &, MeshBuffers &, const ClusterLodBuild &);
+
+// Allocates coarse records and their geometry, then publishes each group's
+// member/proxy run and proxy IDs directly in UMA. Callers fill member IDs in
+// their established order and retain the returned coarse cluster run.
+Range PublishClusterLodStorage(GpuBuffers &, const ClusterLodBuild &, std::span<const uint32_t> primitive_ids,
+                               Range &groups, Range &vertices, Range &local_triangles);

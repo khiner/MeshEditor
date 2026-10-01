@@ -1,5 +1,4 @@
 #include "mesh/Mesh.h"
-#include "mesh/MeshBvh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/PrimitiveType.h"
 #include "mesh/TetBuffers.h"
@@ -17,6 +16,6 @@ void RegisterMesh(Tables &tables) {
     Persistent<
         MeshActiveElement, MeshHandle, VertexStoreId, MeshElementSelection, MeshMaterialAssignment,
         MeshMaterialSlotSelection, PrimitiveShape, ShadeSmoothAngle, TetBuffers>(tables);
-    Derived<MeshPositionsChanged, MeshPreview, MeshShadingSummary, MeshBvh, AuthoredCornerNormals>(tables);
+    Derived<MeshGeometryDirty, MeshPositionsChanged, AuthoredCornerNormals>(tables);
 }
 } // namespace snapshot::detail

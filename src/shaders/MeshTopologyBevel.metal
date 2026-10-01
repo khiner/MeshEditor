@@ -1,26 +1,24 @@
 #ifndef MESHTOPOLOGYBEVEL_MSL
 #define MESHTOPOLOGYBEVEL_MSL
 
-// Bevels selected edges or vertices by width Param0 with Param1 segments.
+// Bevels selected edges or vertices by width Param0 with Steps segments.
 // A face corner at a beveled vertex moves onto offset points: a corner point when both of its edges are beveled, or a point along its other edge when one is.
 // A corner with neither edge beveled uses the points its neighbors put on its edges.
 // Each beveled edge becomes a strip of quads between its two sides, and each beveled vertex a polygon of the points around it.
 #include "MeshTopologyContext.metal"
 #include "MeshTopologyFaces.metal"
 
-constant uint BevelMaxRing = 64u;
 
 inline bool TopoBevelVertices(MeshTopologyJob job) { return job.Op == MeshTopologyOp::BevelVertices; }
-inline uint TopoBevelSegments(MeshTopologyJob job) { return TopoBevelVertices(job) ? 1u : clamp(uint(job.Param1), 1u, 16u); }
+inline uint TopoBevelSegments(MeshTopologyJob job) { return max(job.Steps, 1u); }
 inline bool TopoEdgeBeveled(TopoContext ctx, MeshTopologyJob job, uint h) { return !TopoBevelVertices(job) && ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, h)); }
 
 // Whether a vertex is beveled: selected for a vertex bevel, or an end of a beveled edge.
 inline bool TopoVertexBeveled(TopoContext ctx, MeshTopologyJob job, uint v) {
     if (TopoBevelVertices(job)) return ctx.SrcSelectedVertex(job, v);
-    uint count;
-    device const uint *items = ctx.SrcFanItems(job, v, count);
-    for (uint i = 0u; i < count; ++i) {
-        const uint h = ctx.SrcFanHalfedge(job, items[i]);
+    const uint2 fan = ctx.SrcFan(job, v);
+    for (uint k = 0u; k < fan.y; ++k) {
+        const uint h = ctx.SrcFanCorner(job,fan.x+k);
         if (TopoEdgeBeveled(ctx, job, h) || TopoEdgeBeveled(ctx, job, ctx.SrcNext(job, h))) return true;
     }
     return false;
@@ -48,7 +46,7 @@ inline float3 TopoBevelEdgePointFrom(TopoContext ctx, MeshTopologyJob job, uint 
 
 // The point on unbeveled edge `rep` at its end `v`, from the corners on either side, or false when neither side contributes.
 inline bool TopoBevelEdgePoint(TopoContext ctx, MeshTopologyJob job, uint rep, bool at_to, thread float3 &point) {
-    device const uint *corners = ctx.SrcCorners(job);
+    const auto corners = ctx.SrcCorners(job);
     const uint opposite = ctx.SrcOpposite(job, rep);
     const uint v = at_to ? corners[rep] : corners[ctx.SrcPrev(job, rep)];
     const uint other = at_to ? corners[ctx.SrcPrev(job, rep)] : corners[rep];
@@ -82,7 +80,7 @@ inline bool TopoBevelEdgePoint(TopoContext ctx, MeshTopologyJob job, uint rep, b
 }
 
 inline float3 TopoBevelCornerPoint(TopoContext ctx, MeshTopologyJob job, uint h) {
-    device const uint *corners = ctx.SrcCorners(job);
+    const auto corners = ctx.SrcCorners(job);
     const uint prev = ctx.SrcPrev(job, h), next = ctx.SrcNext(job, h);
     return ctx.SrcPosition(job, corners[h]) + TopoInsetCorner(ctx.SrcPosition(job, corners[prev]), ctx.SrcPosition(job, corners[h]), ctx.SrcPosition(job, corners[next]), normalize(float3(ctx.SrcFaceNormals(job)[ctx.SrcFaceOf(job, h)])), job.Param0, 0.f, true);
 }
@@ -113,11 +111,20 @@ inline BevelHalfedgeOutputs TopoBevelOutputs(TopoContext ctx, MeshTopologyJob jo
     return o;
 }
 
-// A point's key is its count entry and its index within that entry's vertices, so keys compare before the scan.
-constant uint BevelKeyStride = 64u;
-inline uint TopoBevelKey(uint entry, uint local) { return entry * BevelKeyStride + local; }
-inline uint TopoBevelVertexOf(TopoContext ctx, MeshTopologyJob job, uint key) {
-    return key == InvalidOffset ? InvalidOffset : ctx.Counts(job, TopoCountVertices)[key / BevelKeyStride] + key % BevelKeyStride;
+// Count passes compare these keys before the scan.
+// Emission resolves them to output ordinals.
+// Keeping entry and local index separate imposes no per-entry vertex limit.
+inline uint2 TopoBevelKey(uint entry, uint local) { return uint2(entry, local); }
+inline bool TopoBevelKeyValid(uint2 key) { return key.x != InvalidOffset; }
+inline bool TopoBevelKeyEqual(uint2 a, uint2 b) { return all(a == b); }
+inline uint TopoBevelVertexOf(TopoContext ctx, MeshTopologyJob job, uint2 key) {
+    return TopoBevelKeyValid(key) ? ctx.Counts(job, TopoCountVertices)[key.x] + key.y : InvalidOffset;
+}
+
+inline uint TopoBevelVertexRingIndex(TopoContext ctx, MeshTopologyJob job, uint entry, uint2 boundary,
+                                   uint index, uint length, uint ring) {
+    return ring == 0u ? TopoBevelVertexOf(ctx, job, boundary) :
+        ctx.Counts(job, TopoCountVertices)[entry] + (ring - 1u) * length + index;
 }
 
 // The representative halfedge of `h`'s edge, and whether `h` is it.
@@ -127,29 +134,43 @@ inline uint TopoBevelRepresentative(TopoContext ctx, MeshTopologyJob job, uint h
 }
 
 // The key of the point on halfedge `h`'s edge at its end `at_to`, or InvalidOffset when the edge has none there.
-inline uint TopoBevelEdgeVertex(TopoContext ctx, MeshTopologyJob job, uint h, bool at_to) {
+inline uint2 TopoBevelEdgeVertex(TopoContext ctx, MeshTopologyJob job, uint h, bool at_to) {
     bool rep;
     const uint representative = TopoBevelRepresentative(ctx, job, h, rep);
-    if (representative == InvalidOffset) return InvalidOffset;
+    if (representative == InvalidOffset) return uint2(InvalidOffset);
     // The opposite halfedge runs the other way, so its ends swap.
     const bool end = rep ? at_to : !at_to;
     const BevelHalfedgeOutputs o = TopoBevelOutputs(ctx, job, representative);
-    if (end ? !o.EndTo : !o.EndFrom) return InvalidOffset;
+    if (end ? !o.EndTo : !o.EndFrom) return uint2(InvalidOffset);
     return TopoBevelKey(ctx.HalfedgeEntry(job, representative), o.EndIndex(end));
 }
 
-inline uint TopoBevelCornerVertex(TopoContext ctx, MeshTopologyJob job, uint h) {
+inline float3 TopoBevelVertexRingPosition(TopoContext ctx, MeshTopologyJob job, uint v, uint2 boundary,
+                                        uint source, uint ring) {
+    const auto corners = ctx.SrcCorners(job);
+    const uint along = TopoBevelKeyEqual(boundary, TopoBevelEdgeVertex(ctx, job, source, true)) ?
+        corners[ctx.SrcPrev(job, source)] : corners[ctx.SrcNext(job, source)];
+    const float3 center = ctx.SrcPosition(job, v);
+    const float3 radial = normalize(ctx.SrcPosition(job, along) - center);
+    const float t = float(ring) / float(TopoBevelSegments(job));
+    const float3 normal = normalize(float3(ctx.SrcVertexNormals(job)[v]));
+    const float convex = max(-dot(radial, normal), 0.f);
+    const float remaining = 1.f - t;
+    return center + job.Param0 * (radial * remaining * remaining - normal * (0.5f * convex * t * t));
+}
+
+inline uint2 TopoBevelCornerVertex(TopoContext ctx, MeshTopologyJob job, uint h) {
     return TopoBevelKey(ctx.HalfedgeEntry(job, h), TopoBevelOutputs(ctx, job, h).CornerIndex());
 }
 
 // A corner's replacement points: up to two point keys with the corner as their attribute source.
 struct BevelCornerPoints {
     uint Count;
-    uint Vertex[2];
+    uint2 Vertex[2];
 };
 
 inline BevelCornerPoints TopoBevelCornerPoints(TopoContext ctx, MeshTopologyJob job, uint h) {
-    BevelCornerPoints result{0u, {InvalidOffset, InvalidOffset}};
+    BevelCornerPoints result{0u, {uint2(InvalidOffset), uint2(InvalidOffset)}};
     const uint v = ctx.SrcCorners(job)[h];
     if (!TopoVertexBeveled(ctx, job, v)) {
         result.Vertex[result.Count++] = TopoBevelKey(ctx.VertexEntry(v), 0u);
@@ -162,10 +183,10 @@ inline BevelCornerPoints TopoBevelCornerPoints(TopoContext ctx, MeshTopologyJob 
     }
     // Each unbeveled edge at the corner contributes the point on it.
     const uint next = ctx.SrcNext(job, h);
-    const uint on_in = both.x ? InvalidOffset : TopoBevelEdgeVertex(ctx, job, h, true);
-    const uint on_out = both.y ? InvalidOffset : TopoBevelEdgeVertex(ctx, job, next, false);
-    if (on_in != InvalidOffset) result.Vertex[result.Count++] = on_in;
-    if (on_out != InvalidOffset && on_out != on_in) result.Vertex[result.Count++] = on_out;
+    const uint2 on_in = both.x ? uint2(InvalidOffset) : TopoBevelEdgeVertex(ctx, job, h, true);
+    const uint2 on_out = both.y ? uint2(InvalidOffset) : TopoBevelEdgeVertex(ctx, job, next, false);
+    if (TopoBevelKeyValid(on_in)) result.Vertex[result.Count++] = on_in;
+    if (TopoBevelKeyValid(on_out) && !TopoBevelKeyEqual(on_out, on_in)) result.Vertex[result.Count++] = on_out;
     if (result.Count == 0u && !both.x && !both.y) result.Vertex[result.Count++] = TopoBevelKey(ctx.VertexEntry(v), 0u);
     return result;
 }
@@ -185,7 +206,7 @@ inline float3 TopoBevelSidePosition(TopoContext ctx, MeshTopologyJob job, uint e
 }
 
 // The key of the side point of a beveled edge in its own halfedge's face at end `at_to`: the face's corner point there.
-inline uint TopoBevelSideVertex(TopoContext ctx, MeshTopologyJob job, uint edge_halfedge, bool at_to) {
+inline uint2 TopoBevelSideVertex(TopoContext ctx, MeshTopologyJob job, uint edge_halfedge, bool at_to) {
     // The corner of this halfedge's face at the end: the halfedge itself arrives at its to-vertex, and its predecessor at its from-vertex.
     const uint corner = at_to ? edge_halfedge : ctx.SrcPrev(job, edge_halfedge);
     const BevelCornerPoints points = TopoBevelCornerPoints(ctx, job, corner);
@@ -193,17 +214,18 @@ inline uint TopoBevelSideVertex(TopoContext ctx, MeshTopologyJob job, uint edge_
     return at_to ? points.Vertex[0] : points.Vertex[points.Count - 1u];
 }
 
-// Walks the corners around vertex `v` in rotation order from an open side, collecting the replacement points with profiles between them.
-// Returns the ring length, writing the points and their source corners.
-inline uint TopoBevelRing(TopoContext ctx, MeshTopologyJob job, uint v, thread uint *ring, thread uint *ring_source) {
-    uint count;
-    device const uint *items = ctx.SrcFanItems(job, v, count);
-    if (count == 0u) return 0u;
+// Walks the corners around vertex `v` in rotation order from an open side.
+// The count and scatter passes use the same walk.
+// Scatter writes directly to its counted output.
+struct BevelRingInfo { uint Length, FirstSource; };
+template<typename Emit>
+inline BevelRingInfo TopoBevelRing(TopoContext ctx, MeshTopologyJob job, uint v, Emit emit) {
+    const uint2 fan = ctx.SrcFan(job, v);
+    if (fan.y == 0u) return {0u, InvalidOffset};
     // Start from the corner whose arriving edge is open, or the lowest corner on a closed fan.
-    uint start = ctx.SrcFanHalfedge(job, items[0]);
-    for (uint i = 0u; i < count; ++i) start = min(start, ctx.SrcFanHalfedge(job, items[i]));
+    uint start = ctx.SrcFanCorner(job,fan.x);
     uint back = start;
-    for (uint step = 0u; step < 256u; ++step) {
+    for (uint step = 0u; step < fan.y; ++step) {
         const uint opposite = ctx.SrcOpposite(job, back);
         if (opposite == InvalidOffset) break;
         const uint previous = ctx.SrcPrev(job, opposite);
@@ -212,16 +234,17 @@ inline uint TopoBevelRing(TopoContext ctx, MeshTopologyJob job, uint v, thread u
     }
     start = back;
     const uint segments = TopoBevelSegments(job);
-    uint length = 0u, previous_vertex = InvalidOffset;
-    const auto push = [&](uint id, uint source) {
-        if (id == InvalidOffset || id == previous_vertex || length >= BevelMaxRing) return;
-        ring[length] = id;
-        ring_source[length] = source;
+    uint length = 0u, first_source = InvalidOffset;
+    uint2 previous_vertex = uint2(InvalidOffset), first_vertex = uint2(InvalidOffset);
+    const auto push = [&](uint2 id, uint source) {
+        if (!TopoBevelKeyValid(id) || TopoBevelKeyEqual(id, previous_vertex)) return;
+        if (length == 0u) { first_vertex = id; first_source = source; }
+        emit(id, source, length);
         ++length;
         previous_vertex = id;
     };
     uint h = start;
-    for (uint step = 0u; step < 256u; ++step) {
+    for (uint step = 0u; step < fan.y; ++step) {
         const BevelCornerPoints points = TopoBevelCornerPoints(ctx, job, h);
         for (uint i = 0u; i < points.Count; ++i) push(points.Vertex[i], h);
         const uint out = ctx.SrcNext(job, h);
@@ -244,8 +267,8 @@ inline uint TopoBevelRing(TopoContext ctx, MeshTopologyJob job, uint v, thread u
         h = opposite;
     }
     // A closed ring drops a repeated first point.
-    if (length > 1u && ring[0] == previous_vertex) --length;
-    return length;
+    if (length > 1u && TopoBevelKeyEqual(first_vertex, previous_vertex)) --length;
+    return {length, first_source};
 }
 
 #endif

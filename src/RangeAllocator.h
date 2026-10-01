@@ -4,102 +4,261 @@
 #include "project/store/Records.h"
 
 #include <algorithm>
+#include <array>
+#include <bit>
+#include <cassert>
+#include <deque>
 #include <limits>
-#include <map>
+#include <stdexcept>
+#include <vector>
 
-// Order-independent allocator over a linear index/offset space: a best-fit, coalesced free list plus a high-water mark.
-// History tracks the free list and high-water mark as one serialized record through AllocatorCodec.
+// Coalesced free ranges in a compressed binary radix tree, ordered by address.
+// A subtree's maximum free length finds the first fitting range in at most 32
+// branches. History versions individual nodes and the root state.
 struct RangeAllocator {
+    static constexpr uint32_t Null = std::numeric_limits<uint32_t>::max();
+    static constexpr uint32_t HistoryLevels = 7;
+
+    struct Node {
+        uint32_t First{}, Last{}, Count{};
+        uint32_t Left{Null}, Right{Null};
+        bool Leaf() const { return Left == Null; }
+        uint32_t Bit() const { return std::bit_width(First ^ Last) - 1u; }
+    };
+    struct State {
+        uint32_t Root{Null}, Free{Null}, End{};
+    };
+
+    // A reservation journals only changed allocator nodes. Abandoning it
+    // restores ownership without allocating memory or copying the arena.
+    // Nested operations retain their before-images in the enclosing scope.
+    class Transaction {
+    public:
+        explicit Transaction(RangeAllocator &owner)
+            : Owner(owner), Parent(owner.Active), Before(owner.S), NodeCount(owner.Nodes.size()) { Owner.Active = this; }
+        Transaction(const Transaction &) = delete;
+        ~Transaction() {
+            assert(Owner.Active == this);
+            Owner.Active = Parent;
+            if (Committed) return;
+            for (auto i = Changes.rbegin(); i != Changes.rend(); ++i) Owner.Nodes[i->Index] = i->Before;
+            while (Owner.Nodes.size() > NodeCount) Owner.Nodes.pop_back();
+            Owner.S = Before;
+        }
+        void Commit() { Committed = true; }
+    private:
+        friend struct RangeAllocator;
+        struct Change { uint32_t Index; Node Before; };
+        RangeAllocator &Owner;
+        Transaction *Parent;
+        State Before;
+        size_t NodeCount;
+        std::vector<Change> Changes;
+        bool Committed{};
+        void Capture(uint32_t index) {
+            if (index < NodeCount) Changes.push_back({index, Owner.Nodes[index]});
+        }
+    };
+
     store::Records *History{};
 
     Range Allocate(uint32_t count) {
         if (count == 0) return {};
-        if (History) History->Write(0, 1);
-
-        auto it = std::ranges::min_element(FreeBlocks, {}, [count](const auto &b) {
-            return b.second >= count ? b.second : std::numeric_limits<uint32_t>::max();
-        });
-        if (it != FreeBlocks.end() && it->second >= count) {
-            const auto [offset, block_count] = *it;
-            FreeBlocks.erase(it);
-            if (block_count > count) FreeBlocks.emplace(offset + count, block_count - count);
-            return {offset, count};
+        Transaction transaction{*this};
+        auto n = S.Root;
+        if (n == Null || Nodes[n].Count < count) {
+            if (count > Null - S.End) throw std::length_error("Arena index space exhausted.");
+            const auto first = S.End;
+            WriteState().End += count;
+            transaction.Commit();
+            return {first, count};
         }
-        return {std::exchange(EndOffset, EndOffset + count), count};
+        while (!Nodes[n].Leaf()) n = Nodes[Nodes[n].Left].Count >= count ? Nodes[n].Left : Nodes[n].Right;
+        const auto first = Nodes[n].First, available = Nodes[n].Count;
+        Remove(first);
+        if (available > count) Insert(first + count, available - count);
+        transaction.Commit();
+        return {first, count};
     }
 
     void Free(Range range) {
         if (range.Count == 0) return;
-        if (History) History->Write(0, 1);
-
-        auto it = FreeBlocks.lower_bound(range.Offset);
-        auto start = range.Offset, end = start + range.Count;
-        if (it != FreeBlocks.begin()) {
-            if (auto prev = std::prev(it); prev->first + prev->second == start) {
-                start = prev->first;
-                it = FreeBlocks.erase(prev);
-            }
+        if (range.Offset > S.End || range.Count > S.End - range.Offset) throw std::out_of_range("Free range exceeds its arena.");
+        auto first = range.Offset, end = first + range.Count;
+        const auto before = Predecessor(first), after = Successor(first);
+        if ((before != Null && Nodes[before].First + Nodes[before].Count > first) ||
+            (after != Null && Nodes[after].First < end))
+            throw std::logic_error("Arena range freed twice or overlaps free storage.");
+        Transaction transaction{*this};
+        if (before != Null && Nodes[before].First + Nodes[before].Count == first) {
+            first = Nodes[before].First;
+            Remove(first);
         }
-        if (it != FreeBlocks.end() && end == it->first) {
-            end = it->first + it->second;
-            it = FreeBlocks.erase(it);
+        const auto next = Successor(end);
+        if (next != Null && Nodes[next].First == end) {
+            const auto next_first = Nodes[next].First;
+            end += Nodes[next].Count;
+            Remove(next_first);
         }
-        FreeBlocks.emplace_hint(it, start, end - start);
+        Insert(first, end - first);
+        transaction.Commit();
     }
 
-    // Reserve a specific free range and return false if any part is allocated.
-    bool Reserve(Range r) {
-        if (r.Count == 0) return true;
-        if (History) History->Write(0, 1);
-        const auto r_end = r.Offset + r.Count;
-        if (r.Offset >= EndOffset) {
-            // Extend the high-water mark and add any skipped indices to the free list.
-            const auto old_end = EndOffset;
-            EndOffset = r_end;
-            if (r.Offset > old_end) Free({old_end, r.Offset - old_end});
+    // Failed fixed-address reservations do not dirty history.
+    bool Reserve(Range range) {
+        if (range.Count == 0) return true;
+        if (range.Count > Null - range.Offset) return false;
+        const auto end = range.Offset + range.Count;
+        Transaction transaction{*this};
+        if (range.Offset >= S.End) {
+            const auto previous = S.End;
+            WriteState().End = end;
+            if (range.Offset > previous) Free({previous, range.Offset - previous});
+            transaction.Commit();
             return true;
         }
-        auto it = FreeBlocks.upper_bound(r.Offset);
-        if (it == FreeBlocks.begin()) return false;
-        --it;
-        if (r_end > it->first + it->second) return false;
-        const Range left{it->first, r.Offset - it->first}, right{r_end, it->first + it->second - r_end};
-        FreeBlocks.erase(it);
-        if (left.Count) FreeBlocks.emplace(left.Offset, left.Count);
-        if (right.Count) FreeBlocks.emplace(right.Offset, right.Count);
+        const auto before = Predecessor(range.Offset);
+        if (before == Null) return false;
+        const auto first = Nodes[before].First, block_end = first + Nodes[before].Count;
+        if (end > block_end) return false;
+        Remove(first);
+        if (first < range.Offset) Insert(first, range.Offset - first);
+        if (end < block_end) Insert(end, block_end - end);
+        transaction.Commit();
         return true;
     }
 
-    uint32_t HighWaterMark() const { return EndOffset; }
+    uint32_t HighWaterMark() const { return S.End; }
 
     void Reset() {
-        if (History) History->Write(0, 1);
-        FreeBlocks.clear();
-        EndOffset = 0;
+        if (Active) throw std::logic_error("Cannot reset an arena with pending reservations.");
+        if (History) History->Write(0, RecordCount());
+        S = {};
+        Nodes.clear();
     }
 
-    // Free blocks by offset, each holding its count.
-    std::map<uint32_t, uint32_t> FreeBlocks;
-    uint32_t EndOffset{0};
+    uint64_t RecordCount() const { return uint64_t(Nodes.size()) + 1; }
+    void ResizeRecords(uint64_t count) { Nodes.resize(count ? count - 1 : 0); }
+    void EncodeRecord(uint64_t index, std::vector<std::byte> &out) const {
+        zpp::bits::out archive{out};
+        if (index == 0) archive(S).or_throw();
+        else archive(Nodes[index - 1]).or_throw();
+        out.resize(archive.position());
+    }
+    void DecodeRecord(uint64_t index, std::span<const std::byte> bytes) {
+        if (index == 0) zpp::bits::in{bytes}(S).or_throw();
+        else zpp::bits::in{bytes}(Nodes[index - 1]).or_throw();
+    }
+    void ResetRecord(uint64_t index) {
+        if (index == 0) S = {};
+        else Nodes[index - 1] = {};
+    }
+
+private:
+    State S;
+    Transaction *Active{};
+    // Node addresses remain stable as the pool grows. Freed nodes are reused.
+    std::deque<Node> Nodes;
+
+    State &WriteState() {
+        if (History) History->Write(0, 1);
+        return S;
+    }
+    Node &Write(uint32_t n) {
+        for (auto *transaction = Active; transaction; transaction = transaction->Parent) transaction->Capture(n);
+        if (History) History->Write(uint64_t(n) + 1, 1);
+        return Nodes[n];
+    }
+    uint32_t New(Node value) {
+        if (S.Free != Null) {
+            const auto n = S.Free;
+            WriteState().Free = Nodes[n].Left;
+            Write(n) = value;
+            return n;
+        }
+        if (Nodes.size() >= Null) throw std::length_error("Arena allocator node space exhausted.");
+        const auto n = uint32_t(Nodes.size());
+        if (History) History->Write(uint64_t(n) + 1, 1);
+        Nodes.push_back(value);
+        return n;
+    }
+    void Release(uint32_t n) {
+        Write(n) = {.Left = S.Free};
+        WriteState().Free = n;
+    }
+    void Refit(uint32_t n) {
+        const auto &a = Nodes[Nodes[n].Left], &b = Nodes[Nodes[n].Right];
+        auto &node = Write(n);
+        node.First = a.First;
+        node.Last = b.Last;
+        node.Count = std::max(a.Count, b.Count);
+    }
+    uint32_t Predecessor(uint32_t key) const {
+        auto n = S.Root;
+        if (n == Null || Nodes[n].First > key) return Null;
+        while (!Nodes[n].Leaf()) n = Nodes[Nodes[n].Right].First <= key ? Nodes[n].Right : Nodes[n].Left;
+        return n;
+    }
+    uint32_t Successor(uint32_t key) const {
+        auto n = S.Root;
+        if (n == Null || Nodes[n].Last < key) return Null;
+        while (!Nodes[n].Leaf()) n = Nodes[Nodes[n].Left].Last >= key ? Nodes[n].Left : Nodes[n].Right;
+        return n;
+    }
+    void Replace(uint32_t parent, uint32_t from, uint32_t to) {
+        if (parent == Null) WriteState().Root = to;
+        else {
+            auto &node = Write(parent);
+            (node.Left == from ? node.Left : node.Right) = to;
+        }
+    }
+    void Insert(uint32_t first, uint32_t count) {
+        if (S.Root == Null) {
+            const auto n = New({first, first, count});
+            WriteState().Root = n;
+            return;
+        }
+        auto leaf = S.Root;
+        while (!Nodes[leaf].Leaf()) leaf = ((first >> Nodes[leaf].Bit()) & 1u) ? Nodes[leaf].Right : Nodes[leaf].Left;
+        assert(first != Nodes[leaf].First);
+        const auto bit = std::bit_width(first ^ Nodes[leaf].First) - 1u;
+        std::array<uint32_t, 32> path;
+        uint32_t depth = 0, n = S.Root;
+        while (!Nodes[n].Leaf() && Nodes[n].Bit() > bit) {
+            path[depth++] = n;
+            n = ((first >> Nodes[n].Bit()) & 1u) ? Nodes[n].Right : Nodes[n].Left;
+        }
+        const auto added = New({first, first, count});
+        const auto left = ((first >> bit) & 1u) ? n : added;
+        const auto right = left == n ? added : n;
+        const auto branch = New({Nodes[left].First, Nodes[right].Last, std::max(Nodes[left].Count, Nodes[right].Count), left, right});
+        Replace(depth ? path[depth - 1] : Null, n, branch);
+        while (depth) Refit(path[--depth]);
+    }
+    void Remove(uint32_t first) {
+        std::array<uint32_t, 32> path;
+        uint32_t depth = 0, n = S.Root;
+        while (!Nodes[n].Leaf()) {
+            path[depth++] = n;
+            n = ((first >> Nodes[n].Bit()) & 1u) ? Nodes[n].Right : Nodes[n].Left;
+        }
+        assert(Nodes[n].First == first);
+        if (!depth) Replace(Null, n, Null);
+        else {
+            const auto parent = path[--depth];
+            const auto sibling = Nodes[parent].Left == n ? Nodes[parent].Right : Nodes[parent].Left;
+            Replace(depth ? path[depth - 1] : Null, parent, sibling);
+            Release(parent);
+        }
+        Release(n);
+        while (depth) Refit(path[--depth]);
+    }
 };
 
-// The one-record codec history tracks an allocator with.
 inline constexpr store::Records::Codec AllocatorCodec{
-    [](const void *) { return uint64_t{1}; },
-    [](void *, uint64_t) {},
-    [](const void *v, uint64_t, std::vector<std::byte> &out) {
-        const auto &a = *static_cast<const RangeAllocator *>(v);
-        zpp::bits::out archive{out};
-        archive(a.FreeBlocks, a.EndOffset).or_throw();
-        out.resize(archive.position());
-    },
-    [](void *v, uint64_t, std::span<const std::byte> bytes) {
-        auto &a = *static_cast<RangeAllocator *>(v);
-        zpp::bits::in{bytes}(a.FreeBlocks, a.EndOffset).or_throw();
-    },
-    [](void *v, uint64_t) {
-        auto &a = *static_cast<RangeAllocator *>(v);
-        a.FreeBlocks.clear();
-        a.EndOffset = 0;
-    },
+    [](const void *v) { return static_cast<const RangeAllocator *>(v)->RecordCount(); },
+    [](void *v, uint64_t n) { static_cast<RangeAllocator *>(v)->ResizeRecords(n); },
+    [](const void *v, uint64_t i, std::vector<std::byte> &out) { static_cast<const RangeAllocator *>(v)->EncodeRecord(i, out); },
+    [](void *v, uint64_t i, std::span<const std::byte> bytes) { static_cast<RangeAllocator *>(v)->DecodeRecord(i, bytes); },
+    [](void *v, uint64_t i) { static_cast<RangeAllocator *>(v)->ResetRecord(i); },
 };

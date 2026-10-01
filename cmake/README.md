@@ -6,7 +6,7 @@ The app and test executables link these libraries, so building both compiles eac
 | Library | Owns | Debug optimization |
 | --- | --- | --- |
 | MeshEditorMetal | Metal resources, shader compilation, command submission primitives | `-O2` |
-| MeshEditorMesh | Mesh storage, topology, CPU geometry, BVH, mesh compute pipelines | `-O2` |
+| MeshEditorMesh | Mesh storage, topology, CPU geometry, mesh compute pipelines | `-O2` |
 | MeshEditorScene | Entities, hierarchy, transforms, armatures, camera and selection state | `-O2` |
 | MeshEditorRender | GPU scene preparation, render pipelines, selection rendering, frame submission | `-O2` |
 | MeshEditorPhysics | RBP integration, colliders and contact collection | `-O1` backend, `-O2` stores |

@@ -5,10 +5,13 @@
 #include "gpu/BindlessBindings.h"
 #include "gpu/BoneDeformVertex.h"
 #include "gpu/BoundsEntry.h"
-#include "gpu/CornerClassEncoding.h"
+#include "gpu/CornerClassMode.h"
+#include "gpu/NormalSector.h"
+#include "gpu/PoseAttributeNode.h"
 #include "gpu/DrawData.h"
 #include "gpu/InstanceRecord.h"
 #include "gpu/MeshRecord.h"
+#include "gpu/MeshElementBlock.h"
 #include "gpu/LightRecord.h"
 #include "gpu/MorphTargetVertex.h"
 #include "gpu/PBRMaterial.h"
@@ -21,41 +24,68 @@
 constant uint STATE_SELECTED = 1u << 0;
 constant uint STATE_ACTIVE = 1u << 1;
 
-inline uint AdvancedOffset(uint offset, uint by) { return offset != InvalidOffset ? offset + by : offset; }
+// Select a live canonical handle by its ordinal within one element block.
+inline uint SelectLiveElement(device const uint *live, uint block, uint rank) {
+    for (uint word = 0u; word < MeshElementBlockWords; ++word) {
+        uint bits = live[word];
+        const uint count = popcount(bits);
+        if (rank >= count) { rank -= count; continue; }
+        while (rank) { bits &= bits - 1u; --rank; }
+        return block * MeshElementBlockSize + word * 32u + ctz(bits);
+    }
+    return InvalidOffset;
+}
 
-// The draw context: a mesh record advanced to a primitive's first triangle, with one instance's state and the selection in effect.
-inline DrawData ComposeDraw(MeshRecord mesh, uint first_triangle, InstanceRecord instance, uint instance_slot, EditSelectionStorage selection) {
-    const uint first_corner = first_triangle * 3u;
+// The value index of entry `entry` of `handle`, whose element block owns consecutive payload blocks named by `blocks`.
+inline uint ElementAttributeIndex(device const uint *blocks, uint handle, uint entry = 0u) {
+    return (blocks[handle / MeshElementBlockSize] - 1u + entry) * MeshElementBlockSize + handle % MeshElementBlockSize;
+}
+inline uint ElementAttributeIndex(device const BindlessSet &b, ElementAttributeRef attribute, uint handle, uint entry = 0u) {
+    return ElementAttributeIndex(BindlessBuffer(uint, b.Buffer, attribute.BlocksSlot), handle, entry);
+}
+
+// Each pose maps canonical record keys into shared typed value blocks.
+inline uint PoseAttributeIndex(device const BindlessSet &b, uint nodes_slot, uint root, uint record) {
+    if (root == InvalidOffset) return InvalidOffset;
+    device const PoseAttributeNode *nodes = BindlessBuffer(PoseAttributeNode,b.Buffer,nodes_slot);
+    const uint child = nodes[root].Children[record >> (8u + PoseAttributeRadixBits)];
+    if (!child) return InvalidOffset;
+    const uint value = nodes[child-1u].Children[(record >> 8u)&PoseAttributeRadixMask];
+    return value ? (value-1u)*256u+(record&255u) : InvalidOffset;
+}
+
+inline uint CornerSectorRoot(device const BindlessSet &b, ElementAttributeRef attribute, uint handle) {
+    const uint block = BindlessBuffer(uint, b.Buffer, attribute.BlocksSlot)[handle / MeshElementBlockSize];
+    return block ? BindlessBuffer(uint, b.Buffer, attribute.ValuesSlot)[(block - 1u) * MeshElementBlockSize + handle % MeshElementBlockSize] : InvalidOffset;
+}
+
+inline uint TriangleCornerHandle(device const BindlessSet &b, uint slot, uint corner, uint triangle_base) {
+    return BindlessBuffer(packed_uint3, b.Buffer, slot)[triangle_base + corner / 3u][corner % 3u];
+}
+inline uint TriangleFaceHandle(device const BindlessSet &b, ConnectivityRef connectivity, uint slot, uint triangle) {
+    const uint h = BindlessBuffer(packed_uint3, b.Buffer, slot)[triangle].x;
+    return BindlessBuffer(uint, b.Buffer, connectivity.HalfedgeFaces.Slot)[h];
+}
+
+// Compose mesh and instance state without rebasing canonical references.
+inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint instance_slot, EditSelectionStorage selection) {
     return DrawData{
         .VertexSlot = mesh.VertexSlot,
-        .IndexSlotOffset = {mesh.IndexSlotOffset.Slot, mesh.IndexSlotOffset.Offset + first_corner},
+        .IndexSlotOffset = mesh.IndexSlotOffset,
         .ModelSlot = mesh.ModelSlot,
         .FirstInstance = instance_slot,
-        .ObjectIdSlot = mesh.ObjectIdSlot,
-        .CornerClassOffset = mesh.CornerClassOffset < uint(CornerClassEncoding::UniformFaceOffset) ? mesh.CornerClassOffset + first_corner : mesh.CornerClassOffset,
-        .CustomCornerMaskOffset = mesh.CustomCornerMaskOffset,
-        .CustomCornerNormalOffset = mesh.CustomCornerNormalOffset,
-        .CornerBase = first_corner,
-        .BaseSeamNormalOffset = mesh.BaseSeamNormalOffset,
-        .CornerTangentOffset = AdvancedOffset(mesh.CornerTangentOffset, first_corner),
-        .CornerColorOffset = AdvancedOffset(mesh.CornerColorOffset, first_corner),
-        .CornerUvOffsets = {
-            AdvancedOffset(mesh.CornerUvOffsets[0], first_corner), AdvancedOffset(mesh.CornerUvOffsets[1], first_corner),
-            AdvancedOffset(mesh.CornerUvOffsets[2], first_corner), AdvancedOffset(mesh.CornerUvOffsets[3], first_corner)
-        },
-        .FaceIdOffset = mesh.FaceIdOffset + first_triangle,
-        .BaseFaceNormalOffset = mesh.BaseFaceNormalOffset,
-        .FaceFirstTriangleOffset = mesh.FaceFirstTriangleOffset,
-        .VertexEdgeAdjacencyOffset = mesh.VertexEdgeAdjacencyOffset,
-        .VertexFanAdjacencyOffset = mesh.VertexFanAdjacencyOffset,
+        .TriangleSlot = mesh.TriangleSlot,
+        .CornerClassMode = mesh.CornerClassMode,
+        .CustomNormals = mesh.CustomNormals,
+        .CornerTangent = mesh.CornerTangent,
+        .CornerColor = mesh.CornerColor,
+        .CornerUvs = mesh.CornerUvs,
         .Connectivity = mesh.Connectivity,
         .HalfedgeCount = mesh.HalfedgeCount,
         .FaceCount = mesh.FaceCount,
-        .ConnectivityFaceStarts = mesh.ConnectivityFaceStarts,
         .VertexCountOrHeadImageSlot = mesh.VertexCountOrHeadImageSlot,
         .ElementIdOffset = instance.ElementIdOffset,
         .Selection = selection,
-        .EditEdgeOffset = mesh.EditEdgeOffset,
         .InstanceStateSlot = mesh.InstanceStateSlot,
         .HasPendingVertexTransform = instance.HasPendingVertexTransform,
         .PrimaryEditInstanceIndex = instance.PrimaryEditInstanceIndex,
@@ -66,12 +96,13 @@ inline DrawData ComposeDraw(MeshRecord mesh, uint first_triangle, InstanceRecord
         .MorphWeightsOffset = instance.MorphWeightsOffset,
         .MorphTargetCount = instance.MorphTargetCount,
         .MorphShadingAuthored = mesh.MorphShadingAuthored != 0u && instance.MorphDeformOffset != InvalidOffset ? 1u : 0u,
-        .PosedPositionOffset = instance.PosedPositionOffset,
-        .PosedVertexNormalOffset = instance.PosedVertexNormalOffset,
-        .PosedSeamNormalOffset = instance.PosedSeamNormalOffset,
-        .PosedFaceNormalOffset = instance.PosedFaceNormalOffset,
+        .PositionNamespace = instance.PositionNamespace,
+        .MorphNormalNamespace = instance.MorphNormalNamespace,
+        .VertexNormalNamespace = instance.VertexNormalNamespace,
+        .SectorNamespace = instance.SectorNamespace,
+        .FaceNormalNamespace = instance.FaceNormalNamespace,
         .PrimitiveMaterialOffset = mesh.PrimitiveMaterialOffset,
-        .ElementPrimitiveOffset = mesh.ElementPrimitiveOffset,
+        .ElementPrimitives = mesh.ElementPrimitives,
     };
 }
 
@@ -92,9 +123,7 @@ struct SceneT {
     device const Transform *Models(uint slot) const { return BindlessBuffer(Transform, B.ModelBuffer, slot); }
     device const uint *Indices(uint slot) const { return BindlessBuffer(uint, B.IndexBuffer, slot); }
     device const uchar *Bytes(uint slot) const { return BindlessBuffer(uchar, B.Buffer, slot); }
-    device const uint *ObjectIds(uint slot) const { return BindlessBuffer(uint, B.ObjectIdBuffer, slot); }
-    device const uint *FaceFirstTriangles(uint slot) const { return BindlessBuffer(uint, B.ObjectIdBuffer, slot); }
-    device const uint *Adjacency(uint slot) const { return BindlessBuffer(uint, B.Buffer, slot); }
+    device const uint *FaceTriangles(uint slot) const { return BindlessBuffer(uint, B.ObjectIdBuffer, slot); }
     device const BoundsEntry *BoundsEntries(uint slot) const { return BindlessBuffer(BoundsEntry, B.BoundsEntryBuffer, slot); }
     device const MeshRecord *MeshRecords(uint slot) const { return BindlessBuffer(MeshRecord, B.Buffer, slot); }
     device const uchar *InstanceStates(uint slot) const { return BindlessBuffer(uchar, B.InstanceStateBuffer, slot); }
@@ -105,22 +134,27 @@ struct SceneT {
     device const LightRecord *Lights(uint slot) const { return BindlessBuffer(LightRecord, B.LightBuffer, slot); }
     device const PBRMaterial *Materials(uint slot) const { return BindlessBuffer(PBRMaterial, B.MaterialBuffer, slot); }
     device const uint *PrimitiveMaterials(uint slot) const { return BindlessBuffer(uint, B.PrimitiveMaterialBuffer, slot); }
-    device const uint *ElementPrimitives(uint slot) const { return BindlessBuffer(uint, B.ElementPrimitiveBuffer, slot); }
-    device const packed_float4 *CornerTangents(uint slot) const { return BindlessBuffer(packed_float4, B.CornerTangentBuffer, slot); }
-    device const packed_float4 *CornerColors(uint slot) const { return BindlessBuffer(packed_float4, B.CornerColorBuffer, slot); }
-    device const packed_float2 *CornerUvs(uint slot) const { return BindlessBuffer(packed_float2, B.CornerUvBuffer, slot); }
-    device const uint *CornerClasses(uint slot) const { return BindlessBuffer(uint, B.Buffer, slot); }
-    // Authored corner-normal (polar, azimuth) offsets from the derived normal, packed to the corners the mask marks present.
-    device const packed_float2 *CustomCornerNormals(uint slot) const { return BindlessBuffer(packed_float2, B.Buffer, slot); }
-    device const packed_uint2 *CustomCornerMasks(uint slot) const { return BindlessBuffer(packed_uint2, B.Buffer, slot); }
-    device const packed_float3 *BaseSeamNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
+    uint ElementPrimitive(ElementAttributeRef attribute, uint handle) const {
+        return BindlessBuffer(uint, B.ElementPrimitiveBuffer, attribute.ValuesSlot)[ElementAttributeIndex(B, attribute, handle)];
+    }
+    uint CornerVertexOrdinal(DrawData draw, uint handle) const {
+        return Indices(draw.IndexSlotOffset.Slot)[handle] - draw.VertexOffset;
+    }
+    uint CornerFace(DrawData draw, uint handle) const {
+        return BindlessBuffer(uint, B.Buffer, draw.Connectivity.HalfedgeFaces.Slot)[handle];
+    }
+    uint TriangleFace(DrawData draw, uint triangle) const {
+        return TriangleFaceHandle(B, draw.Connectivity, draw.TriangleSlot, triangle);
+    }
+    float4 CornerTangent(ElementAttributeRef at, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerTangentBuffer, at.ValuesSlot)[ElementAttributeIndex(B, at, h)]); }
+    float4 CornerColor(ElementAttributeRef at, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerColorBuffer, at.ValuesSlot)[ElementAttributeIndex(B, at, h)]); }
+    float2 CornerUv(ElementAttributeRef at, uint h) const { return float2(BindlessBuffer(packed_float2, B.CornerUvBuffer, at.ValuesSlot)[ElementAttributeIndex(B, at, h)]); }
+
     device const packed_float3 *BaseVertexNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
     device const packed_float3 *BaseFaceNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
-    device const packed_uint2 *TileMap(uint slot) const { return BindlessBuffer(packed_uint2, B.Buffer, slot); }
     // Current-pose vertex positions in mesh-local space, and the normals derived from them.
     device const packed_float3 *PosedPositions(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
     device const packed_float3 *PosedVertexNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
-    device const packed_float3 *PosedSeamNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
     device const packed_float3 *PosedFaceNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
     // Weight-summed authored morph normal deltas, indexed like the posed positions.
     device const packed_float3 *PosedMorphNormalDeltas(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
@@ -141,28 +175,36 @@ struct SceneT {
     // The draw context of a bounds entry: its first instance's mesh and deform state with the mesh's edit selection.
     DrawData BoundsDraw(BoundsEntry entry) const {
         const InstanceRecord instance = InstanceRecords(View.InstanceRecordSlot)[entry.FirstInstance];
-        return ComposeDraw(MeshRecords(View.MeshRecordSlot)[instance.Mesh], 0u, instance, entry.FirstInstance, entry.Selection);
+        return ComposeDraw(MeshRecords(View.MeshRecordSlot)[instance.Mesh], instance, entry.FirstInstance, entry.Selection);
     }
 
     // Mesh-local vertex position: the pose pre-pass's current-pose position when the draw has one.
     float3 GetLocalPosition(DrawData draw, uint idx) const {
-        return draw.PosedPositionOffset != InvalidOffset ?
-            float3(PosedPositions(View.PosedPositionSlot)[draw.PosedPositionOffset + idx]) :
-            float3(Vertices(draw.VertexSlot)[draw.VertexOffset + idx].Position);
+        const uint vertex_id = draw.VertexOffset + idx;
+        const uint posed = PoseAttributeIndex(B, View.PosedPositionNodesSlot, draw.PositionNamespace, vertex_id);
+        return posed != InvalidOffset ? float3(PosedPositions(View.PosedPositionSlot)[posed]) :
+            float3(Vertices(draw.VertexSlot)[vertex_id].Position);
     }
 
     // Per-vertex normal: the posed normal when the draw has one, else the base normal at the vertex-arena slot.
     float3 GetVertexNormal(DrawData draw, uint idx) const {
-        return draw.PosedVertexNormalOffset != InvalidOffset ?
-            float3(PosedVertexNormals(View.PosedVertexNormalSlot)[draw.PosedVertexNormalOffset + idx]) :
-            float3(BaseVertexNormals(View.BaseVertexNormalSlot)[draw.VertexOffset + idx]);
+        const uint handle = draw.VertexOffset + idx;
+        const uint posed = PoseAttributeIndex(B, View.PosedVertexNormalNodesSlot, draw.VertexNormalNamespace, handle);
+        return posed != InvalidOffset ? float3(PosedVertexNormals(View.PosedVertexNormalSlot)[posed]) :
+            float3(BaseVertexNormals(View.BaseVertexNormalSlot)[handle]);
     }
 
-    // Per-face normal: the posed normal when the draw has one, else the base normal.
+    // Canonical face handle, with a sparse pose override when present.
     float3 GetFaceNormal(DrawData draw, uint face) const {
-        return draw.PosedFaceNormalOffset != InvalidOffset ?
-            float3(PosedFaceNormals(View.PosedFaceNormalSlot)[draw.PosedFaceNormalOffset + face]) :
-            float3(BaseFaceNormals(View.BaseFaceNormalSlot)[draw.BaseFaceNormalOffset + face]);
+        const uint posed = PoseAttributeIndex(B, View.PosedFaceNormalNodesSlot, draw.FaceNormalNamespace, face);
+        return posed != InvalidOffset ? float3(PosedFaceNormals(View.PosedFaceNormalSlot)[posed]) :
+            float3(BaseFaceNormals(View.BaseFaceNormalSlot)[face]);
+    }
+
+    // Picking still addresses packed selection masks.
+    // Zero is its no-hit value.
+    uint FacePickId(DrawData draw, uint face) const {
+        return draw.ElementIdOffset + (face == InvalidOffset ? 0u : face - draw.Connectivity.FaceRanges.Offset + 1u);
     }
 
     uint InstanceState(DrawData draw) const {

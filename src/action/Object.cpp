@@ -9,6 +9,7 @@
 #include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
+#include "mesh/MeshPipelines.h"
 #include "mesh/Primitives.h"
 #include "numeric/VectorMath.h"
 #include "object/ObjectOps.h"
@@ -37,7 +38,8 @@ using state::Change;
 namespace {
 // Rebuild a primitive mesh entity's geometry from its current PrimitiveShape.
 void RegeneratePrimitive(state::Scene &r, state::Entity e) {
-    const bool was_flat = r.get<const MeshShadingSummary>(e).AllSharp;
+    const auto id=r.get<const MeshHandle>(e).StoreId;
+    const bool was_flat = r.Context.get<const MeshStore>().GetFaceSharpnessSummary(id).All;
     // Erasing MeshHandle fires on_destroy, releasing the old store entry.
     r.remove<MeshHandle>(e);
     const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(r.get<const PrimitiveShape>(e)), .FlatShaded = was_flat});
@@ -92,8 +94,9 @@ state::Entity DuplicateOne(state::Scene &r, state::Entity e) {
     }
 
     const auto mesh_entity = r.get<Instance>(e).Entity;
+    const auto clone=meshes.CloneMesh(GetMesh(r,mesh_entity),GetMeshPipelines(r));
     const auto e_new = ::AddMesh(
-        r, meshes.CloneMesh(GetMesh(r, mesh_entity)),
+        r, clone,
         MeshInstanceCreateInfo{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = r.all_of<RenderInstance>(e)}
     );
     if (auto *prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(e_new.first, *prim_shape);

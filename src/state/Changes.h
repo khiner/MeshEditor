@@ -20,10 +20,8 @@ enum class Change : uint8_t {
     // Meshes
     MeshGeometry,
     MeshMaterial,
-    MeshShading,
     TetMesh,
     NewBufferEntity,
-    MeshPreview, // An entity's drawn record moved between its mesh and a preview.
     RenderInstanceCreated,
     RenderInstanceDestroyed, // A live entity lost its render instance.
     // Sound vertices

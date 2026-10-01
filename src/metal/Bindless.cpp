@@ -2,45 +2,34 @@
 
 #include "metal/MetalCpp.h"
 
-#include <cstring>
 #include <format>
-#include <stdexcept>
 
 namespace mtl {
 BindlessSet::~BindlessSet() = default;
 BindlessSet::BindlessSet(const BindlessSet &) = default;
 BindlessSet::BindlessSet(BindlessSet &&) noexcept = default;
 
-namespace {
-MTL::ResourceUsage UsageFor(SlotType type) {
-    return BindingDefs[size_t(type)].Kind == BindKind::Sampler ? MTL::ResourceUsageRead : MTL::ResourceUsageRead | MTL::ResourceUsageWrite;
-}
-
-void ForEachResource(const auto &resources, auto use) {
-    for (size_t i = 0; i < resources.size(); ++i) {
-        for (auto *resource : resources[i]) {
-            if (resource) use(resource, UsageFor(SlotType(i)));
-        }
-    }
-}
-} // namespace
-
 BindlessSet::BindlessSet(const Context &ctx) : Ctx(ctx) {
     ArgumentBuffer = NS::TransferPtr(ctx.Device->newBuffer(BindlessTableSize, MTL::ResourceStorageModeShared));
     if (!ArgumentBuffer) throw std::runtime_error("Failed to allocate the bindless argument buffer.");
     std::memset(ArgumentBuffer->contents(), 0, BindlessTableSize);
     ctx.AddResident(ArgumentBuffer.get());
-    if (!ctx.Residency) {
-        for (size_t i = 0; i < Resources.size(); ++i) Resources[i].resize(SlotCapacity(BindingDefs[i].Kind));
-    }
 }
 
 // Lowest-free allocation keeps scene replay byte-identical regardless of release order.
 uint32_t BindlessSet::Allocate(SlotType type) {
-    const auto slot = Allocators[size_t(type)].Allocate(1).Offset;
-    if (slot >= SlotCapacity(BindingDefs[size_t(type)].Kind)) {
-        throw std::runtime_error(std::format("Ran out of '{}' bindless slots ({})", BindingDefs[size_t(type)].Name, slot));
+    const auto slot = TryAllocate(type);
+    if (slot == InvalidSlot) {
+        throw std::runtime_error(std::format("Ran out of '{}' bindless slots ({})", BindingDefs[size_t(type)].Name, SlotCapacity(BindingDefs[size_t(type)].Kind)));
     }
+    return slot;
+}
+uint32_t BindlessSet::TryAllocate(SlotType type) {
+    auto &allocator = Allocators[size_t(type)];
+    RangeAllocator::Transaction transaction{allocator};
+    const auto slot = allocator.Allocate(1).Offset;
+    if (slot >= SlotCapacity(BindingDefs[size_t(type)].Kind)) return InvalidSlot;
+    transaction.Commit();
     return slot;
 }
 bool BindlessSet::Reserve(SlotType type, uint32_t slot) { return Allocators[size_t(type)].Reserve({slot, 1}); }
@@ -58,8 +47,33 @@ uint64_t *BindlessSet::EntryAt(SlotType type, uint32_t slot) const {
 }
 
 void BindlessSet::Track(TypedSlot slot, MTL::Resource *resource) {
-    auto &resources = Resources[size_t(slot.Type)];
-    if (!resources.empty()) resources[slot.Slot] = resource;
+    auto &indices = BufferIndices[size_t(slot.Type)];
+    const bool buffer = resource && BindingDefs[size_t(slot.Type)].Kind == BindKind::Buffer;
+    if (buffer) {
+        ++Revision;
+        if (slot.Slot >= indices.size()) indices.resize(slot.Slot + 1u, InvalidSlot);
+        if (indices[slot.Slot] != InvalidSlot) BufferResources[indices[slot.Slot]] = resource;
+        else {
+            if (BufferResources.size() == BufferResources.capacity() || BufferOwners.size() == BufferOwners.capacity()) {
+                const auto capacity = std::max(size_t{8}, 2u * (BufferResources.size() + 1u));
+                BufferResources.reserve(capacity);
+                BufferOwners.reserve(capacity);
+            }
+            indices[slot.Slot] = uint32_t(BufferResources.size());
+            BufferResources.push_back(resource);
+            BufferOwners.push_back(slot);
+        }
+    } else if (slot.Slot < indices.size() && indices[slot.Slot] != InvalidSlot) {
+        ++Revision;
+        const auto at = indices[slot.Slot];
+        BufferResources[at] = BufferResources.back();
+        BufferOwners[at] = BufferOwners.back();
+        const auto moved = BufferOwners[at];
+        BufferIndices[size_t(moved.Type)][moved.Slot] = at;
+        BufferResources.pop_back();
+        BufferOwners.pop_back();
+        indices[slot.Slot] = InvalidSlot;
+    }
 }
 
 void BindlessSet::SetBuffer(TypedSlot slot, MTL::Buffer *buffer, uint64_t offset) {
@@ -71,7 +85,7 @@ void BindlessSet::SetBuffer(TypedSlot slot, MTL::Buffer *buffer, uint64_t offset
         return;
     }
     *EntryAt(slot.Type, slot.Slot) = buffer->gpuAddress() + offset;
-    Ctx.AddResident(buffer);
+    if (!Ctx.OwnsSparseAddresses(buffer)) Ctx.AddResident(buffer);
 }
 
 void BindlessSet::SetTexture(uint32_t slot, MTL::Texture *texture) {
@@ -96,13 +110,11 @@ void BindlessSet::Clear(TypedSlot slot) {
 }
 
 void BindlessSet::UseResources(MTL::RenderCommandEncoder *encoder) const {
-    if (Ctx.Residency) return;
     constexpr auto stages = MTL::RenderStageVertex | MTL::RenderStageMesh | MTL::RenderStageFragment;
-    ForEachResource(Resources, [&](auto *resource, auto usage) { encoder->useResource(resource, usage, stages); });
+    if (!BufferResources.empty()) encoder->useResources(BufferResources.data(), BufferResources.size(), MTL::ResourceUsageRead | MTL::ResourceUsageWrite, stages);
 }
 
 void BindlessSet::UseResources(MTL::ComputeCommandEncoder *encoder) const {
-    if (Ctx.Residency) return;
-    ForEachResource(Resources, [&](auto *resource, auto usage) { encoder->useResource(resource, usage); });
+    if (!BufferResources.empty()) encoder->useResources(BufferResources.data(), BufferResources.size(), MTL::ResourceUsageRead | MTL::ResourceUsageWrite);
 }
 } // namespace mtl

@@ -195,7 +195,7 @@ void TestExternalReferences() {
         expect(f.R.view<const MeshHandle>().size() == 1u);
         const auto mesh = GetMesh(f.R, *f.R.view<const MeshHandle>().begin());
         float largest = 0;
-        for (uint32_t i = 0; i < mesh.VertexCount(); ++i) largest = std::max(largest, mesh.GetPosition(Mesh::VH{i}).x);
+        for (uint32_t i = 0; i < mesh.VertexCount(); ++i) largest = std::max(largest, mesh.GetPosition(mesh.VertexAt(i)).x);
         return largest;
     };
     write_positions(1.f);

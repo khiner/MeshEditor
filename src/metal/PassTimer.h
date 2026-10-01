@@ -23,17 +23,19 @@ struct PassTimer {
 
     MTL::CounterSampleBuffer *Buffer() const { return SampleBuffer.get(); }
 
-    // Resolves completed sample pairs and omits unwritten pairs.
+    // Resolves completed sample pairs and omits unwritten or already resolved pairs.
     std::vector<Pass> Resolve();
 
     void Reset() { Names.clear(); }
 
 private:
     PassTimer(NS::SharedPtr<MTL::CounterSampleBuffer> buffer, uint32_t max_passes)
-        : SampleBuffer(std::move(buffer)), MaxPasses(max_passes) {}
+        : SampleBuffer(std::move(buffer)), MaxPasses(max_passes), LastTimestamps(max_passes * 2, 0u) {}
 
     NS::SharedPtr<MTL::CounterSampleBuffer> SampleBuffer;
     uint32_t MaxPasses;
     std::vector<std::string_view> Names;
+    // Reset only clears labels: unused slots can retain the preceding command's samples.
+    std::vector<uint64_t> LastTimestamps;
 };
 } // namespace mtl

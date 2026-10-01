@@ -3,7 +3,11 @@
 #include "gpu/Types.h"
 
 // Stores immutable mesh topology shared by all instances.
-// Non-triangle meshlets use triangle offset and count for logical line or point elements.
+// Triangle IDs name canonical triangle records.
+// Vertex references name canonical corners.
+// Procedural triangle soups use absolute index slots.
+// Line references remain mesh-local vertices.
+// Point references and IDs are canonical vertex handles relative to the render owner's stable vertex origin.
 struct MeshletRecord {
     uint32_t TriangleOffset DEFAULT();
     uint32_t TriangleCount DEFAULT();
@@ -20,5 +24,6 @@ struct MeshletRecord {
     uint32_t ConeAxisCutoff DEFAULT();
     vec3 Center DEFAULT();
     float Radius DEFAULT();
+    uint32_t Topology DEFAULT();
 };
-static_assert(sizeof(MeshletRecord) == 52, "MeshletRecord size");
+static_assert(sizeof(MeshletRecord) == 56, "MeshletRecord size");

@@ -51,10 +51,9 @@ void DestroyArmatureData(state::Scene &r, state::Entity arm_obj_entity) {
         r.destroy(arm.JointEntity);
         arm.JointEntity = state::Null;
     }
-    if (auto *adj = r.try_get<BoneAdjacencyIndices>(arm_obj_entity)) ReleaseEdgeIndices(r, adj->Indices);
     if (auto *ref = r.try_get<VertexStoreId>(arm_obj_entity)) meshes.Release(ref->StoreId);
     if (auto *models = r.try_get<ModelsBuffer>(arm_obj_entity)) FreeInstanceRange(r, models->InstanceRange);
-    r.remove<VertexStoreId, ModelsBuffer, BoneAdjacencyIndices, PendingHide>(arm_obj_entity);
+    r.remove<VertexStoreId, ModelsBuffer, PendingHide>(arm_obj_entity);
 }
 
 void Destroy(state::Scene &r, state::Entity viewport, state::Entity e) {

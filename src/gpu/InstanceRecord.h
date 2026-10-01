@@ -4,7 +4,7 @@
 #include "gpu/Types.h"
 
 struct InstanceRecord {
-    uint32_t PrimitiveOffset DEFAULT(InvalidOffset);
+    uint32_t PrimitiveRoot DEFAULT(InvalidOffset);
     uint32_t PrimitiveCount DEFAULT();
     uint32_t Mesh DEFAULT(InvalidOffset);
     uint32_t BoneDeformOffset DEFAULT(InvalidOffset);
@@ -12,11 +12,12 @@ struct InstanceRecord {
     uint32_t MorphDeformOffset DEFAULT(InvalidOffset);
     uint32_t MorphWeightsOffset DEFAULT(InvalidOffset);
     uint32_t MorphTargetCount DEFAULT();
-    uint32_t PosedPositionOffset DEFAULT(InvalidOffset);
-    uint32_t PosedVertexNormalOffset DEFAULT(InvalidOffset);
-    uint32_t PosedSeamNormalOffset DEFAULT(InvalidOffset);
-    uint32_t PosedFaceNormalOffset DEFAULT(InvalidOffset);
-    uint32_t PosedMeshletBoundsOffset DEFAULT(InvalidOffset);
+    uint32_t PositionNamespace DEFAULT(InvalidOffset);
+    uint32_t MorphNormalNamespace DEFAULT(InvalidOffset);
+    uint32_t VertexNormalNamespace DEFAULT(InvalidOffset);
+    uint32_t SectorNamespace DEFAULT(InvalidOffset);
+    uint32_t FaceNormalNamespace DEFAULT(InvalidOffset);
+    uint32_t MeshletBoundsNamespace DEFAULT(InvalidOffset);
     EditSelectionStorage Selection DEFAULT();
     uint32_t EditEdgeSharpnessOffset DEFAULT(InvalidOffset);
     uint32_t HasPendingVertexTransform DEFAULT();
@@ -27,4 +28,4 @@ struct InstanceRecord {
     uint32_t ActiveVertex DEFAULT(InvalidOffset);
     uint32_t ExcitedVertex DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(InstanceRecord) == 116, "InstanceRecord size");
+static_assert(sizeof(InstanceRecord) == 120, "InstanceRecord size");

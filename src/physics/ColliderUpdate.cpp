@@ -3,13 +3,13 @@
 
 #include "Variant.h"
 #include "mesh/Mesh.h"
+#include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "physics/ColliderUpdate.h"
 #include "physics/PhysicsTypes.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "state/Scene.h"
-#include <numbers>
 using numeric::Max;
 
 void RederiveCollider(state::Scene &r, state::Entity e) {
@@ -20,18 +20,16 @@ void RederiveCollider(state::Scene &r, state::Entity e) {
     const auto mesh = TryGetMesh(r, mesh_entity);
     if (!mesh) return;
 
-    const auto verts = mesh->GetVerticesSpan();
-    const bool has_verts = !verts.empty();
-    const auto aabb = mesh->CalcAABB();
-    const vec3 aabb_center = has_verts ? (aabb.Min + aabb.Max) * 0.5f : vec3{0};
-    const vec3 aabb_extents = has_verts ? (aabb.Max - aabb.Min) : vec3{0};
+    const bool has_verts = mesh->VertexCount()!=0u;
 
     PhysicsShape shape = cs->Shape;
     // Preserve manually configured dimensions and offset.
     vec3 local_offset = policy->AutoFitDims ? vec3{0} : cs->LocalOffset;
+    bool authored_primitive = false;
 
     if (policy->AutoFitDims && !policy->LockedKind) {
         if (const auto *prim = r.try_get<const PrimitiveShape>(mesh_entity)) {
+            authored_primitive = true;
             shape = std::visit(
                 overloaded{
                     [](const primitive::Cuboid &s) -> PhysicsShape { return physics::Box{s.HalfExtents * 2.f}; },
@@ -50,43 +48,18 @@ void RederiveCollider(state::Scene &r, state::Entity e) {
         }
     }
 
-    if (policy->AutoFitDims && has_verts) {
-        // Ritter's algorithm uses two farthest-point passes and one expansion pass (Real-Time Collision Detection section 4.3.5).
-        auto ritter = [&]() -> std::pair<vec3, float> {
-            const auto farthest_from = [&](vec3 from) {
-                vec3 best = from;
-                float best_d2 = 0;
-                for (const auto &v : verts) {
-                    const vec3 delta = v.Position - from;
-                    const float d2 = Dot(delta, delta);
-                    if (d2 > best_d2) {
-                        best_d2 = d2;
-                        best = v.Position;
-                    }
-                }
-                return best;
-            };
-            const vec3 q = farthest_from(verts[0].Position);
-            const vec3 ru = farthest_from(q);
-            vec3 c = (q + ru) * 0.5f;
-            float radius = Length(ru - c);
-            for (const auto &v : verts) {
-                const float d = Length(v.Position - c);
-                if (d > radius) {
-                    const float new_r = (radius + d) * 0.5f;
-                    c = c + ((d - radius) / (2.f * d)) * (v.Position - c);
-                    radius = new_r;
-                }
-            }
-            return {c, radius};
-        };
-        // Compute the tightest radius around the Y axis through aabb_center.
-        const auto xz_radius = [&] {
-            const vec2 c{aabb_center.x, aabb_center.z};
-            float r = 0;
-            for (const auto &v : verts) r = Max(r, Length(vec2{v.Position.x, v.Position.z} - c));
-            return r;
-        };
+    const bool fit_dimensions=policy->AutoFitDims && !authored_primitive && has_verts &&
+        (std::holds_alternative<physics::Box>(shape) || std::holds_alternative<physics::Sphere>(shape) ||
+         std::holds_alternative<physics::Cylinder>(shape) || std::holds_alternative<physics::Capsule>(shape));
+    if (fit_dimensions) {
+        auto &meshes=r.Context.get<MeshStore>();
+        meshes.EnsureSelectionState(r,std::array{mesh->GetStoreId()});
+        const auto aabb=meshes.GetSelectionRoot(mesh->GetStoreId(),Element::Vertex).Bounds;
+        const vec3 aabb_center = (aabb.Min + aabb.Max) * 0.5f;
+        const vec3 aabb_extents = aabb.Max - aabb.Min;
+        // The incrementally maintained bounds enclose every live vertex.
+        const float sphere_radius = 0.5f * Length(aabb_extents);
+        const float xz_radius = 0.5f * Length(vec2{aabb_extents.x, aabb_extents.z});
 
         std::visit(
             overloaded{
@@ -95,21 +68,18 @@ void RederiveCollider(state::Scene &r, state::Entity e) {
                     local_offset = aabb_center;
                 },
                 [&](physics::Sphere &s) {
-                    const auto [c, radius] = ritter();
-                    s.Radius = radius;
-                    local_offset = c;
+                    s.Radius = sphere_radius;
+                    local_offset = aabb_center;
                 },
                 [&](physics::Cylinder &s) {
-                    const float radius = xz_radius();
-                    s.RadiusTop = s.RadiusBottom = radius;
+                    s.RadiusTop = s.RadiusBottom = xz_radius;
                     s.Height = Max(physics::MinShapeHeight, aabb_extents.y);
                     local_offset = aabb_center;
                 },
                 [&](physics::Capsule &s) {
-                    const float radius = xz_radius();
-                    s.RadiusTop = s.RadiusBottom = radius;
+                    s.RadiusTop = s.RadiusBottom = xz_radius;
                     // 2r >= aabb.y degenerates toward a sphere, so clamp height to keep it spec-valid.
-                    s.Height = Max(physics::MinShapeHeight, aabb_extents.y - 2.f * radius);
+                    s.Height = Max(physics::MinShapeHeight, aabb_extents.y - 2.f * xz_radius);
                     local_offset = aabb_center;
                 },
                 [](auto &) {},
@@ -118,9 +88,10 @@ void RederiveCollider(state::Scene &r, state::Entity e) {
         );
     }
 
-    r.patch<ColliderShape>(e, [&](ColliderShape &x) {
-        x.Shape = std::move(shape);
-        x.MeshEntity = IsMeshBackedShape(x.Shape) ? mesh_entity : state::Null;
-        x.LocalOffset = local_offset;
-    });
+    const auto derived_mesh=IsMeshBackedShape(shape) ? mesh_entity : state::Null;
+    ColliderShape derived{.Shape=std::move(shape),
+                          .MeshEntity=derived_mesh,
+                          .LocalOffset=local_offset};
+    if (*cs==derived) return;
+    r.patch<ColliderShape>(e,[&](ColliderShape &x) { x=std::move(derived); });
 }

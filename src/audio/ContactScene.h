@@ -7,11 +7,13 @@
 #include "SurfaceContact.h"
 #include "TransformMath.h"
 #include "mesh/Mesh.h"
-#include "mesh/MeshBvh.h"
+#include "mesh/MeshStore.h"
 #include "numeric/VectorMath.h"
 #include "render/GpuBufferOps.h"
+#include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MeshBuffers.h"
+#include "render/MeshletSpatial.h"
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 
@@ -32,27 +34,23 @@ inline bool IsModalSounding(const state::Scene &r, state::Entity e) {
     return r.valid(e) && r.all_of<ModalModes, SoundVertices, SoundVerticesModel>(e) && r.get<SoundVerticesModel>(e) == SoundVerticesModel::Modal;
 }
 
-// A node's geometry is authored on the mesh it instances, so every lookup of one goes through its Instance.
-// Its acoustic surface and material are the node's own, two nodes being able to instance one mesh and differ in both.
-template<typename T> const T *AssetOf(const state::Scene &r, state::Entity node) {
-    const auto *inst = r.try_get<const Instance>(node);
-    return inst ? r.try_get<const T>(inst->Entity) : nullptr;
-}
-
 // Mean surface curvature (1/m) where a contact touches a node, read from that node's own mesh at `world_point`.
 // Empty when the node has no mesh.
 inline std::optional<double> SurfaceCurvature(const state::Scene &r, state::Entity node, vec3 world_point) {
     if (!r.valid(node)) return std::nullopt;
     const auto *inst = r.try_get<const Instance>(node);
-    const auto *bvh = inst ? r.try_get<const MeshBvh>(inst->Entity) : nullptr;
-    if (!bvh) return std::nullopt;
+    const auto *owner = inst ? TryMeshBuffers(r,inst->Entity) : nullptr;
+    if (!owner || owner->SpatialRoot==InvalidOffset) return std::nullopt;
     const auto &wt = r.get<const WorldTransform>(node);
     const auto mesh = GetMesh(r, inst->Entity);
-    const auto indices = GetFaceIndices(r, mesh);
-    const auto hit = bvh->ClosestPoint(mesh.GetVerticesSpan(), indices, InverseTransformPoint(wt, world_point));
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto hit = ClosestMeshletPoint(r.Context.get<const GpuBuffers>(),*owner,
+        meshes.Arenas().Vertices.Buffer.GetSpan<Vertex>(),mesh.TriangleVertices(),InverseTransformPoint(wt,world_point));
     // Interpolate the triangle's per-vertex curvature at the contact's barycentric weights.
     double local = 0;
-    for (uint32_t i = 0; i < 3; ++i) local += double(hit.Weights[i]) * bvh->MeanCurvature[hit.Vertices[i]];
+    const auto sharpness=meshes.Arenas().EdgeSharpness.Buffer.GetSpan<uint8_t>();
+    for (uint32_t i = 0; i < 3; ++i)
+        local += double(hit.Weights[i]) * mesh.CalcMeanCurvature(Mesh::VH{hit.Vertices[i]},sharpness);
     // Curvature is an inverse length, so the node's world scale converts the mesh's own units to meters.
     const float scale = MeanScale(wt.S);
     return scale > 0 ? local / scale : 0.0;
@@ -75,7 +73,11 @@ inline ContactNodes ResolveContactNodes(const state::Scene &r, state::Entity col
         // A body has one model however many colliders it has.
         NearestNodeWith(r, collider, body, [&r](state::Entity e) { return r.all_of<ModalModes>(e); }),
         ContactSurfaceNode(r, collider, body),
-        NearestNodeWith(r, collider, body, [&r](state::Entity e) { return AssetOf<MeshBvh>(r, e) != nullptr; }),
+        NearestNodeWith(r, collider, body, [&r](state::Entity e) {
+            const auto *inst=r.try_get<const Instance>(e);
+            const auto *owner=inst ? TryMeshBuffers(r,inst->Entity) : nullptr;
+            return owner && owner->SpatialRoot!=InvalidOffset;
+        }),
     };
 }
 

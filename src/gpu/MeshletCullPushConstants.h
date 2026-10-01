@@ -29,10 +29,12 @@ struct MeshletCullPushConstants {
     uint32_t InstanceSlot DEFAULT();
     uint32_t PrimitiveSlot DEFAULT();
     uint32_t MeshletSlot DEFAULT();
+    uint32_t MeshletIndexNodesSlot DEFAULT(), MeshletIndexLeavesSlot DEFAULT();
     uint32_t ClusterGroupSlot DEFAULT(InvalidSlot);
     uint32_t BoundsSlot DEFAULT();
     uint32_t ModelSlot DEFAULT();
     uint32_t PosedMeshletBoundsSlot DEFAULT();
+    uint32_t PosedMeshletBoundsNodesSlot DEFAULT();
     uint32_t RouteStateSlot DEFAULT();
     uint32_t DispatchArgsSlot DEFAULT();
     uint32_t DispatchChunkCount DEFAULT();
@@ -43,5 +45,8 @@ struct MeshletCullPushConstants {
     uint32_t PyramidSamplerSlot DEFAULT(InvalidSlot);
     // Counts coarse clusters selected across classification blocks.
     uint32_t CoarseCountSlot DEFAULT(InvalidSlot);
+    uint32_t ExactEditGeometry DEFAULT();
+    float MinEditOverlayDiameterPixels DEFAULT();
+    uint32_t EditOverlayHasSharpEdges DEFAULT();
 };
-static_assert(sizeof(MeshletCullPushConstants) == 140, "MeshletCullPushConstants size");
+static_assert(sizeof(MeshletCullPushConstants) == 164, "MeshletCullPushConstants size");

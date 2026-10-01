@@ -1,18 +1,12 @@
 #pragma once
 
+#include "gpu/BindlessBindings.h"
+#include "mesh/MeshPipelines.h"
+#include "metal/Buffer.h"
+#include "metal/Dispatch.h"
 #include "numeric/uvec2.h"
 
-#include "gpu/BindlessBindings.h"
-#include "gpu/Types.h"
-#include "mesh/MeshPipelines.h"
-#include "metal/Bindless.h"
-#include "metal/Buffer.h"
-#include "metal/MetalContext.h"
-
-#include <Metal/MTLCommandBuffer.hpp>
-#include <Metal/MTLCommandQueue.hpp>
 #include <Metal/MTLComputeCommandEncoder.hpp>
-
 #include <array>
 #include <span>
 #include <utility>
@@ -30,7 +24,7 @@ struct TiledPass {
 // Dispatches one threadgroup per job, which reads its job by threadgroup rather than by tile.
 constexpr uint32_t PerJob{~0u};
 
-// The jobs of one submit with their tile lists per domain, over scratch, job, and tile buffers reused across submits.
+// The jobs of one recording with their tile lists per domain, over scratch, job, and tile buffers reused across recordings.
 // Scratch begins with each domain's indirect dispatch arguments, three words per domain, that every encode refills from its tile counts.
 // A job lays its scratch out from the words AllocateScratch hands it, in the order it claims them.
 template<typename Job, size_t Domains>
@@ -38,18 +32,23 @@ struct TiledJobBatch {
     static constexpr uint32_t ArgumentWords{3 * Domains};
 
     TiledJobBatch(mtl::BufferContext &ctx, uint32_t widest_scratch_words, uint32_t most_jobs)
-        : Scratch{ctx, uint64_t(widest_scratch_words + ArgumentWords) * sizeof(uint32_t), SlotType::Buffer},
-          JobBuffer{ctx, uint64_t(most_jobs) * sizeof(Job), SlotType::Buffer},
-          TileBuffer{ctx, uint64_t(widest_scratch_words / 32u + most_jobs * 8u) * sizeof(uvec2), SlotType::Buffer} {}
+        : Scratch{ctx, 0u, SlotType::Buffer,mtl::BufferLifetime::Workspace},
+          JobBuffer{ctx, uint64_t(most_jobs) * sizeof(Job), SlotType::Buffer,mtl::BufferLifetime::Workspace},
+          TileBuffer{ctx, (uint64_t(widest_scratch_words) / 32u + uint64_t(most_jobs) * 8u) * sizeof(uvec2), SlotType::Buffer,mtl::BufferLifetime::Workspace} {
+        Scratch.SetUsedSize((uint64_t(widest_scratch_words) + ArgumentWords) * sizeof(uint32_t));
+    }
 
-    // Starts a submit's job list over a fresh scratch layout.
+    // Starts a recording's job list over a fresh scratch layout.
     void Begin() {
         Jobs.clear();
         for (auto &tiles : Tiles) tiles.clear();
         ScratchWords = ArgumentWords;
     }
     // Claims `words` of scratch for the next job and returns their first word.
-    uint32_t AllocateScratch(uint32_t words) { return std::exchange(ScratchWords, ScratchWords + words); }
+    uint32_t AllocateScratch(uint32_t words) {
+        if (uint64_t(ScratchWords) + words > UINT32_MAX) throw std::length_error("GPU batch scratch exceeds its address space.");
+        return std::exchange(ScratchWords, ScratchWords + words);
+    }
     // Adds a job covering `tile_counts[domain]` tiles per domain and returns its index.
     uint32_t AddJob(const Job &job, std::array<uint32_t, Domains> tile_counts) {
         const auto index = uint32_t(Jobs.size());
@@ -68,62 +67,66 @@ struct TiledJobBatch {
     }
     // A domain's indirect argument words, zero once a kernel has skipped its remaining indirect passes.
     uint32_t IndirectGroups(uint32_t domain) const { return ScratchSpan()[3 * domain]; }
-    // The submit's scratch words, for staging inputs before the passes are encoded and reading results after they complete.
+    // The recording's scratch words, for staging inputs before the passes are recorded and reading results after they complete.
     std::span<uint32_t> ScratchSpan() const { return Scratch.GetMutableSpan<uint32_t>({0, ScratchWords}); }
 
-    // Uploads the jobs and tiles, refills the indirect argument words, and encodes the passes in order into `encoder`.
+    // The job and per-domain tile counts of one upload, which the passes of its chain submit dispatch over.
+    struct Upload {
+        uint64_t Submission;
+        uint32_t Jobs;
+        std::array<uint32_t, Domains> Tiles;
+    };
+
+    // Uploads the jobs and tiles, refills the indirect argument words, and records the passes in order into `chain`.
     // `pc` carries the pass-specific push constants, whose job, tile-map, and scratch slots this fills.
-    // Each pass publishes its bindless-buffer writes before the next pass reads them.
+    // The uploads are CPU writes, so a batch uploads once per chain submit.
+    // Returns the upload, which later passes of the same chain submit record over.
     template<typename PC>
-    void Encode(const mtl::BindlessSet &slots, const MeshPipelines &pipelines, PC pc, std::span<const TiledPass> passes, MTL::ComputeCommandEncoder *encoder) {
-        std::array<uint32_t, Domains> first_tile{};
+    Upload Encode(mtl::ComputeChain &chain, const MeshPipelines &pipelines, PC pc, std::span<const TiledPass> passes) {
+        if (RecordedSubmission == chain.Submission()) throw std::logic_error("A tiled job batch records once per chain submit.");
+        RecordedSubmission = chain.Submission();
+        Upload upload{.Submission = chain.Submission(), .Jobs = uint32_t(Jobs.size()), .Tiles = {}};
         std::vector<uvec2> tiles;
         for (size_t d = 0; d < Domains; ++d) {
-            first_tile[d] = uint32_t(tiles.size());
+            upload.Tiles[d] = uint32_t(Tiles[d].size());
             tiles.insert(tiles.end(), Tiles[d].begin(), Tiles[d].end());
         }
         JobBuffer.Update(as_bytes(Jobs));
         TileBuffer.Update(as_bytes(tiles));
         const auto arguments = ScratchSpan();
         for (size_t d = 0; d < Domains; ++d) {
-            arguments[3 * d] = uint32_t(Tiles[d].size());
+            arguments[3 * d] = upload.Tiles[d];
             arguments[3 * d + 1] = arguments[3 * d + 2] = 1u;
         }
+        Record(chain, pipelines, upload, pc, passes);
+        return upload;
+    }
+    // Records more passes over the jobs and tiles of `upload`, which this chain submit's Encode returned.
+    template<typename PC>
+    void Record(mtl::ComputeChain &chain, const MeshPipelines &pipelines, const Upload &upload, PC pc, std::span<const TiledPass> passes) {
+        if (upload.Submission != chain.Submission()) throw std::logic_error("A tiled job batch records over its upload in the same chain submit.");
+        std::array<uint32_t, Domains> first_tile{};
+        for (size_t d = 1; d < Domains; ++d) first_tile[d] = first_tile[d - 1] + upload.Tiles[d - 1];
         pc.JobsSlot = JobBuffer.Slot;
         pc.TileMapSlot = TileBuffer.Slot;
         pc.ScratchSlot = Scratch.Slot;
+        // Eight simd-group sums and the threadgroup total, padded to Metal's 16-byte granule.
+        chain.Encoder()->setThreadgroupMemoryLength(48, 0);
         for (const auto &pass : passes) {
-            const auto groups = pass.Domain == PerJob ? Jobs.size() : Tiles[pass.Domain].size();
+            const auto groups = pass.Domain == PerJob ? upload.Jobs : upload.Tiles[pass.Domain];
             if (groups == 0) continue;
-            encoder->setComputePipelineState(pipelines[pass.Pipeline].State());
-            slots.UseResources(encoder);
-            encoder->setBuffer(slots.Table(), 0, BufferIndex_Bindless);
             pc.FirstTile = pass.Domain == PerJob ? 0u : first_tile[pass.Domain];
             if constexpr (requires { pc.PassParameter; }) pc.PassParameter = pass.Parameter;
-            encoder->setBytes(&pc, sizeof(pc), BufferIndex_PushConstants);
-            // Eight simd-group sums and the threadgroup total, padded to Metal's 16-byte granule.
-            encoder->setThreadgroupMemoryLength(48, 0);
-            if (pass.Indirect) encoder->dispatchThreadgroups(*Scratch, uint64_t(3 * pass.Domain) * sizeof(uint32_t), MTL::Size(256, 1, 1));
-            else encoder->dispatchThreadgroups(MTL::Size(groups, 1, 1), MTL::Size(256, 1, 1));
-            encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+            if (pass.Indirect) chain.Indirect(pipelines[pass.Pipeline], pc, Scratch, uint64_t(3 * pass.Domain) * sizeof(uint32_t));
+            else chain.Groups(pipelines[pass.Pipeline], pc, groups);
         }
-    }
-
-    // Encodes the passes into a command buffer of their own and waits for its completion.
-    template<typename PC>
-    void Submit(const mtl::Context &ctx, const mtl::BindlessSet &slots, const MeshPipelines &pipelines, PC pc, std::span<const TiledPass> passes) {
-        auto *command_buffer = ctx.Queue->commandBuffer();
-        auto *encoder = command_buffer->computeCommandEncoder();
-        Encode(slots, pipelines, pc, passes, encoder);
-        encoder->endEncoding();
-        // Encoding grows the job and tile buffers, so residency commits after it.
-        ctx.CommitResidency();
-        command_buffer->commit();
-        command_buffer->waitUntilCompleted();
     }
 
     std::vector<Job> Jobs;
     std::array<std::vector<uvec2>, Domains> Tiles;
     uint32_t ScratchWords{0};
     mtl::Buffer Scratch, JobBuffer, TileBuffer;
+
+private:
+    std::optional<uint64_t> RecordedSubmission;
 };

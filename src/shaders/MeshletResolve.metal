@@ -39,7 +39,7 @@ inline MeshletWork ResolveMeshletWork(
         .Instance = instance,
         .Meshlet = meshlet,
         .Primitive = primitive,
-        .Draw = ComposeDraw(mesh, primitive.FirstTriangle, instance, instance_slot, instance.Selection),
+        .Draw = ComposeDraw(mesh, instance, instance_slot, instance.Selection),
         .VisibleIndex = visible_index,
         .MeshletIndex = work.Meshlet,
         .Valid = true,
@@ -59,10 +59,11 @@ inline bool MeshletCoarse(MeshletRecord meshlet) { return meshlet.RefinedGroup !
 // Returns attribute corners from the cluster vertex list or original source triangle.
 inline uint3 MeshletCornerIds(
     device const BindlessSet &bindless, uint vertex_slot, uint local_triangle_slot,
-    MeshletRecord meshlet, PrimitiveRecord primitive, uint triangle, uint local_triangle
+    MeshletRecord meshlet, DrawData draw, uint triangle, uint local_triangle
 ) {
     if (!MeshletCoarse(meshlet)) {
-        const uint base = (triangle - primitive.FirstTriangle) * 3u;
+        if (draw.TriangleSlot != InvalidSlot) return uint3(BindlessBuffer(packed_uint3, bindless.Buffer, draw.TriangleSlot)[triangle]);
+        const uint base = draw.IndexSlotOffset.Offset + triangle * 3u;
         return uint3(base, base + 1u, base + 2u);
     }
     device const uchar *triangles = BindlessBuffer(uchar, bindless.Buffer, local_triangle_slot);
@@ -71,7 +72,7 @@ inline uint3 MeshletCornerIds(
     uint3 corners;
     for (uint c = 0u; c < 3u; ++c) {
         const uint local = uint(triangles[offset + c] & uint(MeshletGeometryEncoding::LocalIndexMask));
-        corners[c] = vertices[meshlet.VertexOffset + local] & uint(MeshletGeometryEncoding::CornerMask);
+        corners[c] = vertices[meshlet.VertexOffset + local];
     }
     return corners;
 }
@@ -92,16 +93,15 @@ struct MeshletTriangleCorners {
 
 inline MeshletTriangleCorners ResolveMeshletCorners(
     const thread Scene &scene, DrawData draw, uint vertex_slot, uint local_triangle_slot,
-    MeshletRecord meshlet, PrimitiveRecord primitive, uint triangle, uint local_triangle
+    MeshletRecord meshlet, uint triangle, uint local_triangle
 ) {
     const uint3 corner_ids = MeshletCornerIds(
-        scene.B, vertex_slot, local_triangle_slot, meshlet, primitive, triangle, local_triangle
+        scene.B, vertex_slot, local_triangle_slot, meshlet, draw, triangle, local_triangle
     );
-    device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
     const uint3 vertex_ids{
-        indices[draw.IndexSlotOffset.Offset + corner_ids.x],
-        indices[draw.IndexSlotOffset.Offset + corner_ids.y],
-        indices[draw.IndexSlotOffset.Offset + corner_ids.z],
+        scene.CornerVertexOrdinal(draw, corner_ids.x),
+        scene.CornerVertexOrdinal(draw, corner_ids.y),
+        scene.CornerVertexOrdinal(draw, corner_ids.z),
     };
     return {.CornerIds = corner_ids, .VertexIds = vertex_ids, .CoarseNormal = MeshletCoarse(meshlet) ? MeshletCoarseNormal(scene, draw, vertex_ids) : float3(0.0f)};
 }
@@ -124,21 +124,21 @@ inline MeshletFaceValues MeshletCoarseFace(
 inline uint MeshletFaceMaterialIndex(
     const thread Scene &scene, DrawData draw, uint face_id
 ) {
-    if (draw.ElementPrimitiveOffset == InvalidOffset || draw.PrimitiveMaterialOffset == InvalidOffset || face_id == 0u) return 0u;
-    const uint primitive_index = scene.ElementPrimitives(scene.View.ElementPrimitiveSlot)[draw.ElementPrimitiveOffset + face_id - 1u];
+    if (draw.ElementPrimitives.ValuesSlot == InvalidSlot || draw.PrimitiveMaterialOffset == InvalidOffset || face_id == InvalidOffset) return 0u;
+    const uint primitive_index = scene.ElementPrimitive(draw.ElementPrimitives, face_id);
     return scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[draw.PrimitiveMaterialOffset + primitive_index];
 }
 
 inline MeshletFaceValues MeshletFace(
-    const thread Scene &scene, DrawData draw, PrimitiveRecord primitive, InstanceRecord instance,
+    const thread Scene &scene, DrawData draw, InstanceRecord instance,
     Transform world, uint triangle, bool flat_face
 ) {
-    const uint face_id = scene.ObjectIds(draw.ObjectIdSlot)[draw.FaceIdOffset + triangle - primitive.FirstTriangle];
-    const uint element_state = scene.View.InteractionMode == InteractionMode::Edit && face_id != 0u ?
-        EditFaceState(scene, draw, face_id - 1u) : 0u;
+    const uint face_id = scene.TriangleFace(draw, triangle);
+    const uint element_state = scene.View.InteractionMode == InteractionMode::Edit && face_id != InvalidOffset ?
+        EditFaceState(scene, draw, face_id) : 0u;
     const uint material_index = MeshletFaceMaterialIndex(scene, draw, face_id);
     float3 flat_world_normal = float3(0.0f);
-    if (flat_face) flat_world_normal = trs_transform_normal(world, scene.GetFaceNormal(draw, face_id - 1u));
+    if (flat_face) flat_world_normal = trs_transform_normal(world, scene.GetFaceNormal(draw, face_id));
     const float3 scale = float3(world.S);
     return {
         flat_world_normal,
@@ -147,7 +147,7 @@ inline MeshletFaceValues MeshletFace(
         material_index,
         (scale.x + scale.y + scale.z) / 3.0f,
         instance.ObjectId,
-        instance.ElementIdOffset + face_id,
+        scene.FacePickId(draw, face_id),
     };
 }
 

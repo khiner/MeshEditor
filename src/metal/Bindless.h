@@ -25,6 +25,7 @@ struct BindlessSet {
     BindlessSet(BindlessSet &&) noexcept;
 
     uint32_t Allocate(SlotType);
+    uint32_t TryAllocate(SlotType); // InvalidSlot on capacity exhaustion, and no reservation remains.
     // Snapshot restore re-acquires slots baked into restored state.
     bool Reserve(SlotType, uint32_t slot);
     void Release(TypedSlot);
@@ -35,6 +36,8 @@ struct BindlessSet {
     void Clear(TypedSlot);
     void UseResources(MTL::RenderCommandEncoder *) const;
     void UseResources(MTL::ComputeCommandEncoder *) const;
+    // Changes whenever the buffers UseResources declares change.
+    uint64_t ResourceRevision() const { return Revision; }
 
     MTL::Buffer *Table() const { return ArgumentBuffer.get(); }
 
@@ -46,7 +49,10 @@ private:
     const Context &Ctx;
     NS::SharedPtr<MTL::Buffer> ArgumentBuffer;
     std::array<RangeAllocator, SlotTypeCount> Allocators;
-    std::array<std::vector<MTL::Resource *>, SlotTypeCount> Resources;
+    std::array<std::vector<uint32_t>, SlotTypeCount> BufferIndices;
+    std::vector<MTL::Resource *> BufferResources;
+    std::vector<TypedSlot> BufferOwners;
+    uint64_t Revision{};
 };
 
 // Slots allocated from one set and released together when the owner goes away.

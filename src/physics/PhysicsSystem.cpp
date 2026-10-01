@@ -656,7 +656,14 @@ void ProcessChanges(state::Scene &r, EventPass) {
         const auto &moved = reactive(r, Change::PhysicsTransform);
         return std::ranges::any_of(s.Input.Posers, [&](auto e) { return moved.contains(e); });
     };
-    if (!std::exchange(s.InputDirty, false) && !any(Change::PhysicsInput, Change::PhysicsMaterialDef, Change::CollisionSystemDef, Change::CollisionFilterDef, Change::PhysicsGeometry) && !poser_moved()) return;
+    const bool input_dirty=std::exchange(s.InputDirty,false);
+    const auto &geometry=reactive(r,Change::PhysicsGeometry);
+    const bool mesh_collider_changed=!geometry.empty() && std::ranges::any_of(s.Input.Colliders,[&](const auto &entry) {
+        const auto &shape=entry.second.Shape;
+        return IsMeshBackedShape(shape.Shape) && geometry.contains(shape.MeshEntity);
+    });
+    if (!input_dirty && !any(Change::PhysicsInput,Change::PhysicsMaterialDef,Change::CollisionSystemDef,Change::CollisionFilterDef) &&
+        !poser_moved() && !mesh_collider_changed) return;
     for (auto e : reactive(r, Change::PhysicsMaterialDef))
         if (!r.all_of<PhysicsMaterial>(e)) ClearDanglingRefs(r, e, &ColliderMaterial::PhysicsMaterialEntity);
     for (auto e : reactive(r, Change::CollisionSystemDef))
@@ -688,7 +695,7 @@ void ProcessChanges(state::Scene &r, EventPass) {
     std::set<state::Entity> recook, surfaces;
     for (const auto &[entity, leaf] : input.Colliders) {
         const auto &old = s.Input.Colliders.at(entity);
-        if (old.Shape != leaf.Shape || old.Local != leaf.Local || (IsMeshBackedShape(leaf.Shape.Shape) && reactive(r, Change::PhysicsGeometry).contains(leaf.Shape.MeshEntity))) recook.insert(leaf.Owner);
+        if (old.Shape != leaf.Shape || old.Local != leaf.Local || (IsMeshBackedShape(leaf.Shape.Shape) && geometry.contains(leaf.Shape.MeshEntity))) recook.insert(leaf.Owner);
         if (old != leaf) surfaces.insert(leaf.Owner);
     }
     const bool changed = !recook.empty() || !surfaces.empty() || s.Input.Bodies != input.Bodies || s.Input.Joints != input.Joints;

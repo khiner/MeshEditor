@@ -2,10 +2,6 @@
 
 #include "metal/MetalCpp.h"
 
-#include <algorithm>
-#include <stdexcept>
-#include <utility>
-
 namespace mtl {
 namespace {
 MTL::StorageMode StorageFor(MTL::TextureUsage usage) {
@@ -36,6 +32,7 @@ bool Blit(const Context &ctx, auto &&encode) {
     auto *blit = command_buffer->blitCommandEncoder();
     encode(blit);
     blit->endEncoding();
+    ctx.CommitResidency();
     command_buffer->commit();
     command_buffer->waitUntilCompleted();
     return command_buffer->error() == nullptr;

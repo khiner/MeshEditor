@@ -5,7 +5,7 @@
 // Defines a producer-independent meshlet range with deterministic flattened WorkOffset ordering.
 struct MeshletWorkRange {
     uint32_t Instance DEFAULT();
-    uint32_t MeshletOffset DEFAULT();
+    uint32_t MeshletRoot DEFAULT();
     uint32_t MeshletCount DEFAULT();
     uint32_t WorkOffset DEFAULT();
 };

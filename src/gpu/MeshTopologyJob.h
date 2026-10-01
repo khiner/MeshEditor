@@ -1,4 +1,7 @@
 #pragma once
+#include "gpu/MeshAttributeBit.h"
+#include "gpu/ElementWork.h"
+#include "gpu/ConnectivityRef.h"
 #include "gpu/MeshTopologyOp.h"
 #include "gpu/SlotOffset.h"
 #include "gpu/Types.h"
@@ -26,55 +29,39 @@ struct MeshTopologyJob {
     vec2 KnifeStart DEFAULT();
     vec2 KnifeEnd DEFAULT();
     // Source mesh.
-    uint32_t SrcVertexOffset DEFAULT();
-    uint32_t SrcCornerOffset DEFAULT();
-    uint32_t SrcConnectivityOffset DEFAULT();
+    ConnectivityRef SrcConnectivity DEFAULT();
     uint32_t SrcVertexCount DEFAULT();
     uint32_t SrcHalfedgeCount DEFAULT();
     uint32_t SrcFaceCount DEFAULT();
     uint32_t SrcEdgeCount DEFAULT();
-    uint32_t SrcFaceStarts DEFAULT();
-    uint32_t SrcVertexBitsOffset DEFAULT();
-    uint32_t SrcEdgeBitsOffset DEFAULT();
-    uint32_t SrcFaceBitsOffset DEFAULT();
-    uint32_t SrcFaceFirstTriangleOffset DEFAULT();
-    uint32_t SrcEdgeSharpnessOffset DEFAULT();
-    uint32_t SrcElementPrimitiveOffset DEFAULT();
-    uint32_t SrcBoneDeformOffset DEFAULT(InvalidOffset);
-    uint32_t SrcMorphTargetOffset DEFAULT(InvalidOffset);
-    uint32_t SrcCornerTangentOffset DEFAULT(InvalidOffset);
-    uint32_t SrcCornerColorOffset DEFAULT(InvalidOffset);
-    GpuArray<uint32_t, 4> SrcCornerUvOffsets DEFAULT(InvalidOffset, InvalidOffset, InvalidOffset, InvalidOffset);
-    uint32_t SrcCustomCornerMaskOffset DEFAULT(InvalidOffset);
-    uint32_t SrcCustomCornerNormalOffset DEFAULT(InvalidOffset);
-    uint32_t SrcFanAdjacencyOffset DEFAULT(InvalidOffset);
-    // Per source halfedge, its face, staged in scratch for a mesh whose faces are not all triangles.
-    uint32_t SrcFaceOffset DEFAULT(InvalidOffset);
+    // Compact work indices resolve to canonical arena handles without staging geometry.
+    ElementWork SrcVertexWork DEFAULT(), SrcHalfedgeWork DEFAULT(), SrcFaceWork DEFAULT(), SrcEdgeWork DEFAULT();
+    ElementWork PrimitiveWork DEFAULT(); // Fresh output remaps source primitive IDs to its compact palette.
+    SlotOffset SrcVertexBits DEFAULT();
+    SlotOffset SrcEdgeBits DEFAULT();
+    SlotOffset SrcFaceBits DEFAULT();
+    uint32_t HasSkin DEFAULT();
+    uint32_t CornerAttributes DEFAULT();
+    uint32_t VertexAttributes DEFAULT();
     // A face list: a count, then each face's length and vertex indices.
     uint32_t ListOffset DEFAULT(InvalidOffset);
     uint32_t MorphTargetCount DEFAULT();
+    uint32_t CollapseCount DEFAULT();
+    uint32_t CollapseVerticesSlot DEFAULT(InvalidSlot);
     // Output mesh.
-    uint32_t DstVertexOffset DEFAULT();
     uint32_t DstCornerOffset DEFAULT();
-    uint32_t DstConnectivityOffset DEFAULT();
+    ConnectivityRef DstConnectivity DEFAULT();
     uint32_t DstVertexCount DEFAULT();
     uint32_t DstHalfedgeCount DEFAULT();
     uint32_t DstFaceCount DEFAULT();
-    uint32_t DstFaceStarts DEFAULT();
-    uint32_t DstVertexBitsOffset DEFAULT();
-    uint32_t DstEdgeBitsOffset DEFAULT();
-    uint32_t DstFaceBitsOffset DEFAULT();
-    uint32_t DstFaceFirstTriangleOffset DEFAULT();
-    uint32_t DstTriangleFaceIdOffset DEFAULT();
+    // Compact-index -> canonical-handle maps. Corners and triangles
+    // are emitted into independently reserved contiguous runs.
+    SlotOffset DstVertexHandles DEFAULT(), DstFaceHandles DEFAULT();
+    SlotOffset DstVertexBits DEFAULT();
+    SlotOffset DstEdgeBits DEFAULT();
+    SlotOffset DstFaceBits DEFAULT();
+    uint32_t DstTriangleOffset DEFAULT();
     uint32_t DstEdgeSharpnessOffset DEFAULT();
-    uint32_t DstElementPrimitiveOffset DEFAULT();
-    uint32_t DstBoneDeformOffset DEFAULT(InvalidOffset);
-    uint32_t DstMorphTargetOffset DEFAULT(InvalidOffset);
-    uint32_t DstCornerTangentOffset DEFAULT(InvalidOffset);
-    uint32_t DstCornerColorOffset DEFAULT(InvalidOffset);
-    GpuArray<uint32_t, 4> DstCornerUvOffsets DEFAULT(InvalidOffset, InvalidOffset, InvalidOffset, InvalidOffset);
-    uint32_t DstCustomCornerMaskOffset DEFAULT(InvalidOffset);
-    uint32_t DstCustomCornerNormalOffset DEFAULT(InvalidOffset);
     // Scratch layout, in words.
     uint32_t StateOffset DEFAULT(); // Two words: whether an extruded region borders unselected faces, then whether a label pass changed a value this round
     uint32_t FlagVertexOffset DEFAULT(); // Per source vertex: tagged, kept, region, and copy bits
@@ -91,22 +78,28 @@ struct MeshTopologyJob {
     // Per output halfedge: source corners a and b, the weight of b as float bits, the source halfedge whose edge the output edge inherits, and 1 when the edge is selected.
     uint32_t CornerMapOffset DEFAULT();
     uint32_t FaceMapOffset DEFAULT(); // Per output face: source face or InvalidOffset
+    uint32_t CornerProvenanceOffset DEFAULT(); // Custom normals only: compact output vertex and face per corner
     // Iterating operators: per source face, its label, its region's boundary halfedge count and lowest boundary halfedge, and its walked loop length.
     // Then per source vertex, its edge count and its dissolved edge count.
     uint32_t LabelOffset DEFAULT();
     // Per source halfedge: an edge split's sector representative, or per source edge, a listed cut's parameter as float bits or InvalidOffset.
     uint32_t HalfedgeAuxOffset DEFAULT();
-    // Merge by distance: an open-addressing table of vertex indices keyed by grid cell, with its mask.
+    // Per affected face: expanded subdivision loop, chords, and face-walk work.
+    uint32_t FaceLoopOffset DEFAULT();
+    // An open-addressing table with its mask: a merge by distance's vertex indices keyed by grid cell, then a joining line core's lowest representative corner per output line.
     uint32_t TableOffset DEFAULT();
     uint32_t TableMask DEFAULT();
-    // Collapse: per source vertex, a flag word and the center position of its run.
-    uint32_t VertexOverrideOffset DEFAULT();
+    // Collapse: selected keys/order, radix histograms, and tiled segmented sums.
+    uint32_t CollapseOffset DEFAULT();
     // Per output vertex: two inward vectors, or one displacement and a zero, that the gather adds to its position.
     uint32_t VertexInwardOffset DEFAULT();
-    // Per output fan-corner word plus one terminator: custom normal popcounts, scanned in place.
-    uint32_t CustomPopcountOffset DEFAULT();
-    uint32_t CustomWordCount DEFAULT();
-    uint32_t CustomBlockOffset DEFAULT();
-    uint32_t CustomBlockCount DEFAULT();
+    // Retained neighborhood corners whose authored normals need rebasing after
+    // their derived frames change. SrcHalfedgeWork excludes replaced loops.
+    ElementWork RetainedNormalCorners DEFAULT();
+    uint32_t RetainedNormalCornerCount DEFAULT();
+    // Optional emitted-triangle ordinal -> original triangle, for local render ownership.
+    uint32_t DstTriangleSourceSlot DEFAULT(InvalidSlot);
+    // Optional output-vertex basis for staged inset parameter updates.
+    uint32_t DstInsetBasisSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(MeshTopologyJob) == 484, "MeshTopologyJob size");
+static_assert(sizeof(MeshTopologyJob) == 628, "MeshTopologyJob size");

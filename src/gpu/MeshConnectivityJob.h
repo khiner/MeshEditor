@@ -1,18 +1,34 @@
 #pragma once
+#include "gpu/ConnectivityRef.h"
+#include "gpu/ElementHandleRange.h"
+#include "gpu/ElementWork.h"
 #include "gpu/SlotOffset.h"
 #include "gpu/Types.h"
-// Defines one mesh's halfedge-connectivity output and scratch layout.
-// Output order is outgoing halfedges, opposites, each halfedge's edge, an n-gon mesh's face starts, then each edge's first halfedge.
-// The edge list is sized to the halfedge count, and the host trims it to the edge count.
+// Defines a connectivity rebuild's canonical work and scratch layout.
+// Work ordinals index scratch.
+// Every persistent reference is a canonical handle.
+// The caller reserves enough edge handles, then publishes the resulting count.
 struct MeshConnectivityJob {
     SlotOffset Corners DEFAULT();
-    SlotOffset Connectivity DEFAULT();
+    ConnectivityRef Connectivity DEFAULT();
+    // Sparse work contains canonical handles. An implicit range begins at the
+    // corresponding connectivity offset (or Corners.Offset for halfedges).
+    ElementWork Vertices DEFAULT(), Halfedges DEFAULT(), Faces DEFAULT();
+    ElementHandleRange EdgeHandles DEFAULT(); // New-edge ordinal -> canonical handle, from a run or a list.
+    // The old affected edges read source clones when canonical data is
+    // overwritten. Matching endpoint pairs keep their existing canonical handles.
+    ConnectivityRef SourceConnectivity DEFAULT();
+    uint32_t SourceCornerSlot DEFAULT(InvalidSlot);
+    ElementWork SourceEdges DEFAULT();
+    uint32_t SourceEdgeCount DEFAULT();
     uint32_t VertexCount DEFAULT();
     uint32_t HalfedgeCount DEFAULT();
     uint32_t FaceCount DEFAULT();
     // Nonzero when the run stores each face's first halfedge, which a mesh whose faces are not all triangles needs.
     uint32_t FaceStarts DEFAULT();
     uint32_t WordCount DEFAULT();
+    uint32_t SourceWordCount DEFAULT();
+    uint32_t ScanWordCount DEFAULT(); // New-edge words + terminator + retired-edge words + terminator.
     // Open-addressed table keyed by endpoint pair, each slot holding the lowest halfedge of its undirected edge.
     uint32_t TableOffset DEFAULT();
     uint32_t TableMask DEFAULT();
@@ -23,12 +39,14 @@ struct MeshConnectivityJob {
     uint32_t PopcountOffset DEFAULT();
     uint32_t WordBlockOffset DEFAULT();
     uint32_t WordBlockCount DEFAULT();
-    // Edge-first bits and their ranks per halfedge word, which number the edges.
+    // Bits contain new representatives then retired source edges. Ranks have
+    // an additional zero-count terminator after each of those two domains.
     uint32_t BitsOffset DEFAULT();
     uint32_t RanksOffset DEFAULT();
-    // Each halfedge's predecessor in its face loop, staged for a mesh whose faces are not all triangles.
-    uint32_t PrevOffset DEFAULT(InvalidOffset);
-    // Receives the edge count from the rank scan.
+    uint32_t RetainedEdgesOffset DEFAULT(InvalidOffset); // Per compact destination representative, an old edge or InvalidOffset.
+    uint32_t RetiredEdgesOffset DEFAULT(); // Dense canonical retirement handles, in source-work order.
+    // Two counts: newly required edges and retired source edges.
     uint32_t StateOffset DEFAULT();
+    ElementWork RetiredEdgeWork DEFAULT(); // Optional canonical retirement set, emitted with the dense scratch list.
 };
-static_assert(sizeof(MeshConnectivityJob) == 80, "MeshConnectivityJob size");
+static_assert(sizeof(MeshConnectivityJob) == 308, "MeshConnectivityJob size");

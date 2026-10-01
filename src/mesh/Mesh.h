@@ -4,15 +4,24 @@
 #include <array>
 #include <bit>
 
-#include "gpu/AABB.h"
 #include "gpu/Element.h"
 #include "gpu/Vertex.h"
+#include "mesh/ElementView.h"
 
+#include "gpu/MeshElementBlock.h"
+#include "gpu/MeshPrimitiveTopology.h"
 #include "state/Entity.h"
 
 #include <optional>
 #include <span>
 #include <vector>
+
+struct TriangleVertexView;
+
+struct TrianglePoint {
+    vec3 Position{0}, Weights{0};
+};
+TrianglePoint ClosestPointOnTriangle(vec3 p, vec3 a, vec3 b, vec3 c);
 
 namespace he {
 constexpr uint32_t null{std::numeric_limits<uint32_t>::max()};
@@ -57,21 +66,36 @@ using HH = Handle<tag::Halfedge>;
 using EH = Handle<tag::Edge>;
 using FH = Handle<tag::Face>;
 
-// The handles 0 to Count - 1 of one element domain.
+// Enumerates live canonical handles in membership order, borrowing the GPU metadata.
 template<typename H>
 struct HandleRange {
     struct Iterator {
-        uint32_t Index;
-        H operator*() const { return {Index}; }
+        std::span<const MeshElementBlock> Blocks;
+        uint32_t Block{null}, Word{}, Bits{};
+        H operator*() const { return {Block * MeshElementBlockSize + Word * 32u + uint32_t(std::countr_zero(Bits))}; }
         Iterator &operator++() {
-            ++Index;
+            Bits &= Bits - 1u;
+            if (!Bits) { ++Word; Seek(); }
             return *this;
         }
-        bool operator==(const Iterator &) const = default;
+        bool operator==(const Iterator &other) const {
+            return Block == other.Block && (Block == null || (Word == other.Word && Bits == other.Bits));
+        }
+        void Seek() {
+            while (Block != null) {
+                for (; Word < MeshElementBlockWords; ++Word) {
+                    Bits = Blocks[Block].Live[Word];
+                    if (Bits) return;
+                }
+                Block = Blocks[Block].Next;
+                Word = 0;
+            }
+        }
     };
-    uint32_t Count;
-    Iterator begin() const { return {0}; }
-    Iterator end() const { return {Count}; }
+    std::span<const MeshElementBlock> Blocks;
+    uint32_t FirstBlock{null};
+    Iterator begin() const { Iterator it{Blocks, FirstBlock}; it.Seek(); return it; }
+    Iterator end() const { return {Blocks}; }
 };
 } // namespace he
 
@@ -82,32 +106,35 @@ struct MeshStore;
 struct MeshConnectivity {
     struct Face {
         he::HH Halfedge;
+        uint32_t End;
     };
 
-    uint32_t VertexCount{0};
+    std::span<const MeshElementBlock> VertexBlocks, HalfedgeBlocks, EdgeBlocks, FaceBlocks;
+    uint32_t VertexFirst{}, VertexCount{0};
+    uint32_t HalfedgeFirst{}, HalfedgeCount{}, EdgeFirst{}, FaceFirst{};
     std::span<const he::HH> OutgoingHalfedges;
     std::span<const he::HH> Opposites;
     // Edges number by ascending first halfedge.
     std::span<const he::EH> HalfedgeToEdge;
+    std::span<const he::FH> HalfedgeToFace;
     uint32_t EdgeCount{0};
     std::span<const he::HH> Edges;
     uint32_t FaceCount{0};
-    // Stores each face's first halfedge.
-    // Triangle meshes omit this array because face f starts at halfedge 3f.
+    // Each face owns its loop range independently of neighboring faces.
     std::span<const Face> Faces;
+    std::span<const uvec2> VertexCorners;
+    std::span<const uvec2> FanItems;
 
-    he::HH FaceHalfedge(uint32_t face) const { return Faces.empty() ? he::HH(face * 3u) : Faces[face].Halfedge; }
-    uint32_t FaceEnd(uint32_t face) const { return face + 1 < FaceCount ? *FaceHalfedge(face + 1) : uint32_t(Opposites.size()); }
+    he::HH FaceHalfedge(uint32_t face) const { return Faces[face].Halfedge; }
+    uint32_t FaceEnd(uint32_t face) const { return Faces[face].End; }
 
     he::HH EdgeHalfedge(uint32_t edge) const { return Edges[edge]; }
     he::EH Edge(he::HH hh) const { return HalfedgeToEdge[*hh]; }
 
-    // Returns the face whose contiguous halfedge range contains `hh`, or empty for edge-only meshes.
+    // Returns the halfedge's owner, or empty for edge-only meshes.
     he::FH FaceOf(he::HH hh) const {
         if (FaceCount == 0) return {};
-        if (Faces.empty()) return he::FH(*hh / 3u);
-        const auto after = std::upper_bound(Faces.begin(), Faces.end(), *hh, [](uint32_t h, const Face &f) { return h < *f.Halfedge; });
-        return he::FH(uint32_t(after - Faces.begin()) - 1u);
+        return HalfedgeToFace[*hh];
     }
 
     he::HH Next(he::HH hh) const {
@@ -126,22 +153,24 @@ struct MeshConnectivity {
     }
 };
 
-// The arena spans a connectivity build fills, sized from the source counts before the build runs.
-// `Edges` comes sized at its bound, since the edge count only falls out of the build.
-// Face meshes build on the GPU, and edge meshes here.
-struct ConnectivityStorage {
-    std::span<he::HH> OutgoingHalfedges, Opposites;
-    std::span<he::EH> HalfedgeToEdge;
-    std::span<he::HH> Edges;
-};
-
-// Builds an edge mesh's connectivity into `storage` from its edge pairs and returns the edge count.
-uint32_t BuildConnectivity(std::span<const std::array<uint32_t, 2>> edges, uint32_t vertex_count, const ConnectivityStorage &);
-
-struct VertexAdjacency {
-    std::span<const uint32_t> Offsets;
-    std::span<const uint32_t> Items;
-    std::span<const uint32_t> Incident(uint32_t v) const { return Items.subspan(Offsets[v], Offsets[v + 1] - Offsets[v]); }
+struct VertexEdgeIncidence {
+    MeshConnectivity C;
+    struct Iterator {
+        using difference_type = std::ptrdiff_t;
+        using value_type = uint32_t;
+        const MeshConnectivity *C{};
+        uint32_t Item{}, Remaining{}, Side{}, Edge{he::null};
+        uint32_t operator*() const { return Edge; }
+        Iterator &operator++();
+        bool operator==(const Iterator &other) const { return Edge == other.Edge && Remaining == other.Remaining && Side == other.Side; }
+    };
+    struct Range {
+        const MeshConnectivity *C;
+        uint32_t First, Count;
+        Iterator begin() const { return ++Iterator{C, First, Count}; }
+        Iterator end() const { return {C}; }
+    };
+    Range Incident(uint32_t v) const { return {&C, C.VertexCorners[v].x,C.VertexCorners[v].y}; }
 };
 
 // Borrows connectivity and vertex data from MeshStore.
@@ -153,25 +182,41 @@ struct Mesh {
 
     Mesh() = default;
     Mesh(const MeshStore &store, uint32_t store_id);
-    std::span<const uint32_t> CornerVertices() const { return Corners; }
+    // Packed input/export view.
+    // Direct handle reads use GetToVertex.
+    std::span<const uint32_t> CornerVertices() const;
 
     uint32_t VertexCount() const { return C.VertexCount; }
+    uint32_t VertexFirst() const { return C.VertexFirst; }
+    VH VertexAt(uint32_t ordinal) const;
+    uint32_t VertexOrdinal(VH vertex) const;
     uint32_t EdgeCount() const { return C.EdgeCount; }
+    uint32_t EdgeFirst() const { return C.EdgeFirst; }
+    uint32_t FaceFirst() const { return C.FaceFirst; }
+    uint32_t HalfedgeFirst() const { return C.HalfedgeFirst; }
+    EH EdgeAt(uint32_t ordinal) const;
+    FH FaceAt(uint32_t ordinal) const;
+    uint32_t FaceOrdinal(FH f) const;
     uint32_t FaceCount() const { return C.FaceCount; }
-    uint32_t HalfEdgeCount() const { return C.Opposites.size(); }
+    // The MeshPrimitiveTopology its live elements draw as: faces, else edges, else points.
+    uint32_t PrimitiveTopology() const {
+        return uint32_t(FaceCount() ? MeshPrimitiveTopology::Triangle : EdgeCount() ? MeshPrimitiveTopology::Line : MeshPrimitiveTopology::Point);
+    }
+    uint32_t HalfEdgeCount() const { return C.HalfedgeCount; }
+    bool HasClosedSurface() const { return FaceCount() && uint64_t(HalfEdgeCount()) == 2ull * EdgeCount(); }
 
     const vec3 &GetPosition(VH) const;
     const vec3 &GetNormal(VH) const;
     vec3 GetNormal(FH) const;
-    std::span<const Vertex> GetVerticesSpan() const;
-    AABB CalcAABB() const;
 
     uint32_t GetStoreId() const { return StoreId; }
     const MeshConnectivity &GetConnectivity() const { return C; }
+    ElementView<uvec3> DerivedTriangles() const;
+    TriangleVertexView TriangleVertices() const;
     uint32_t TriangleIndexCount() const;
 
-    // CSR vertex-to-edge incidence, empty when the mesh has no edges.
-    VertexAdjacency GetVertexEdgeAdjacency() const;
+    // Incident edges derived from the canonical incoming-corner lists.
+    VertexEdgeIncidence GetVertexEdgeIncidence() const;
 
     HH GetHalfedge(EH eh, uint32_t i) const {
         const auto h0 = C.EdgeHalfedge(*eh);
@@ -188,22 +233,19 @@ struct Mesh {
     vec3 CalcFaceCentroid(FH) const;
     // Discrete mean curvature (1/length) averaged over the one-ring normal curvatures.
     // 1/R on a sphere of radius R, zero on a flat or boundary vertex.
-    // `edge_sharpness` is the mesh's canonical per-edge sharpness, 1 where shading is discontinuous.
+    // `edge_sharpness` is indexed by canonical edge handle, 1 where shading is discontinuous.
     // A sharp edge is where the surface turns rather than curves, so it has no curvature.
     float CalcMeanCurvature(VH, std::span<const uint8_t> edge_sharpness) const;
-    std::vector<float> CalcMeanCurvatures(std::span<const uint8_t> edge_sharpness) const;
-    // Returns the enclosed volume in the mesh's coordinate units.
-    // Returns empty unless the surface is closed and manifold.
-    std::optional<double> CalcEnclosedVolume() const;
     VH FindNearestVertex(vec3) const;
 
+    // Dense ordinals for CPU export/solver inputs.
+    // Canonical corner and draw arenas store handles.
     std::vector<uint32_t> CreateTriangleIndices() const;
     void WriteTriangleIndices(std::span<uint32_t> dest) const;
-    void WriteEdgeIndices(std::span<uint32_t> dest) const;
 
-    he::HandleRange<VH> vertices() const { return {VertexCount()}; }
-    he::HandleRange<EH> edges() const { return {EdgeCount()}; }
-    he::HandleRange<FH> faces() const { return {FaceCount()}; }
+    he::HandleRange<VH> vertices() const { return {C.VertexBlocks, VertexCount() ? VertexFirst() / MeshElementBlockSize : he::null}; }
+    he::HandleRange<EH> edges() const { return {C.EdgeBlocks, EdgeCount() ? EdgeFirst() / MeshElementBlockSize : he::null}; }
+    he::HandleRange<FH> faces() const { return {C.FaceBlocks, FaceCount() ? FaceFirst() / MeshElementBlockSize : he::null}; }
     uint32_t ElementCount(Element element) const {
         return element == Element::Vertex ? VertexCount() : element == Element::Edge ? EdgeCount() :
             element == Element::Face                                                 ? FaceCount() :
@@ -267,7 +309,7 @@ struct Mesh {
         VertexOutgoingHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; }
     };
     VertexOutgoingHalfedgeRange voh_range(VH vh) const {
-        return {this, vh && *vh < C.OutgoingHalfedges.size() ? C.OutgoingHalfedges[*vh] : HH{}};
+        return {this, vh && *vh >= C.VertexFirst && *vh - C.VertexFirst < C.VertexCount ? C.OutgoingHalfedges[*vh] : HH{}};
     }
 
     struct FaceHalfedgeIterator : CirculatorBase {
@@ -301,6 +343,3 @@ std::optional<Mesh> TryGetMesh(const state::Scene &, state::Entity);
 bool HasMesh(const state::Scene &, state::Entity);
 // The store record an entity's instances draw: its preview, its mesh, or the vertex record of a bone or joint.
 std::optional<uint32_t> DrawnStoreId(const state::Scene &, state::Entity);
-
-// Returns mesh-local surface length per texture-coordinate unit, or zero when the set is absent.
-float LocalLengthPerUv(const state::Scene &, state::Entity mesh_entity, uint32_t uv_set);

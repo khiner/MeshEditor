@@ -10,7 +10,6 @@ struct MeshletDrawPushConstants {
     uint32_t MeshletTriangleSlot DEFAULT();
     uint32_t MeshletVertexSlot DEFAULT();
     uint32_t MeshletLocalTriangleSlot DEFAULT();
-    uint32_t MeshletEditEdgeSlot DEFAULT();
     uint32_t VisibleMeshletSlot DEFAULT();
     uint32_t RouteStateSlot DEFAULT();
     uint32_t Route DEFAULT();
@@ -21,4 +20,4 @@ struct MeshletDrawPushConstants {
     uint32_t VisibilityTransmission DEFAULT();
     uint32_t EdgeSharpnessSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(MeshletDrawPushConstants) == 68, "MeshletDrawPushConstants size");
+static_assert(sizeof(MeshletDrawPushConstants) == 64, "MeshletDrawPushConstants size");

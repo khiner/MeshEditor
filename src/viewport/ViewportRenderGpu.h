@@ -45,6 +45,10 @@ struct MeshletCullConfig {
     uint32_t RouteMask{0x1ffu};
     uint32_t UboOffset{0};
     uint32_t PyramidSamplerSlot{InvalidSlot};
+    bool ExactEditGeometry{false};
+    float MinEditOverlayDiameterPixels{0.0f};
+    bool EditOverlayHasSharpEdges{false};
+    bool EditOutput{false};
 };
 
 void RecordMeshletCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, MeshletCullConfig);
@@ -63,6 +67,13 @@ void DrawMeshlets(
     MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route,
     uint32_t required_instance_flags = 0, uint32_t mesh_threads = 160u,
     uint32_t edit_edge_corner = 0u, uint32_t instance_filter = InvalidOffset
+);
+// Draws the instance record's live vertices of the mesh with the bound pipeline, per canonical vertex block of the mesh.
+// A block culls against its static or posed bounds, the depth pyramid at `pyramid_slot`, and a minimum projected diameter.
+// Sound points draw only the selected vertices.
+void DrawVertexBlocks(
+    MTL::RenderCommandEncoder *, const state::Scene &, state::Entity mesh_entity, uint32_t instance, bool sound_points = false,
+    uint32_t pyramid_slot = InvalidSlot, float min_diameter_pixels = 0.0f
 );
 
 // Which parts of a frame one recording covers.
@@ -88,13 +99,21 @@ void RecordRenderCommandBuffer(state::Scene &, state::Entity viewport, MTL::Comm
 void RecordBlurStepsCommandBuffer(state::Scene &, state::Entity viewport, MTL::CommandBuffer *, std::span<const uint32_t> sample_weights);
 
 // Derive the listed mesh entities' base normals in one batched GPU submit-and-wait, writing the base normal stores.
-// Meshes without triangles or adjacency are skipped.
+// Reads canonical polygon corners and incidence.
+// Meshes without faces are skipped.
 // Call on the main thread between frames, where the per-frame derive buffers have no live GPU reader.
 void DeriveBaseNormalsNow(state::Scene &, std::span<const state::Entity> mesh_entities);
 
+// Resolves whether the listed mesh entities retain authored shading normals under morphing.
+// The CPU resolves targets with authored normal deltas.
+// Position-only targets derive their full-weight poses in one batched submit-and-wait.
+// The derived pose tests whether derivation moves the normals authored shading would pin.
+// Call after the base derive, since the pin test compares against the base normal stores.
+void UpdateAuthoredMorphShadingNow(state::Scene &, std::span<const state::Entity> mesh_entities);
+
 // Complete the listed new or restored mesh entities' shading state.
 // Derives base normals, encodes stored authored corner normals, and returns the authored-morph-shading gate.
-// Call after the meshes' index buffers are written, under DeriveBaseNormalsNow's between-frames constraints.
+// Call after canonical connectivity is available, under DeriveBaseNormalsNow's between-frames constraints.
 void FinalizeNewMeshShadingNow(state::Scene &, std::span<const state::Entity> mesh_entities);
 
 // Evaluates the final pending edit into canonical positions and affected normals in one submission.

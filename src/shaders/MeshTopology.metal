@@ -7,7 +7,9 @@
 #include "MeshTopologyBevel.metal"
 #include "MeshTopologyContext.metal"
 #include "MeshTopologyFaces.metal"
+#include "MeshTopologyLines.metal"
 #include "MeshTopologySubdivide.metal"
+#include "gpu/InsetVertexBasis.h"
 
 // The vertices, faces, and corners a source face produces.
 inline uint3 TopoFaceOutputs(TopoContext ctx, MeshTopologyJob job, uint f) {
@@ -39,6 +41,12 @@ inline uint3 TopoFaceOutputs(TopoContext ctx, MeshTopologyJob job, uint f) {
             const uint interior = TopoSplitFace(ctx, job, f, emitter);
             return uint3(interior, emitter.Faces, emitter.Corners);
         }
+        case MeshTopologyOp::RotateEdges: {
+            const bool own_loop = TopoDissolveOwnLoop(ctx, job, f);
+            if (!own_loop && ctx.FaceLabels(job)[f] != f) return uint3(0u);
+            const uint2 output = TopoRotationOutputs(TopoMeasureRotation(ctx, job, f, own_loop));
+            return uint3(0u, output.x, output.y);
+        }
         case MeshTopologyOp::BevelEdges:
         case MeshTopologyOp::BevelVertices: {
             uint corners = 0u;
@@ -65,22 +73,6 @@ inline uint3 TopoFaceOutputs(TopoContext ctx, MeshTopologyJob job, uint f) {
     }
 }
 
-// Stages each halfedge's face for a source whose faces are not all triangles.
-kernel void TopologyFaceIndex(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const TopoContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint f = tile.y * ScanTileSize + lane;
-    if (job.SrcFaceOffset == InvalidOffset || f >= job.SrcFaceCount) return;
-    const uint2 range = ctx.SrcFaceRange(job, f);
-    device uint *faces = ctx.Scratch() + job.SrcFaceOffset;
-    for (uint h = range.x; h < range.y; ++h) faces[h] = f;
-}
-
 kernel void TopologyZero(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -91,9 +83,15 @@ kernel void TopologyZero(
     const MeshTopologyJob job = ctx.Jobs()[tile.x];
     const uint v = tile.y * ScanTileSize + lane;
     if (v >= job.SrcVertexCount) return;
-    ctx.FlagVertices(job)[v] = job.Op == MeshTopologyOp::DissolveVertices && ctx.SrcSelectedVertex(job, v) ? TopoDissolvable : 0u;
+    uint flags = job.Op == MeshTopologyOp::DissolveVertices && ctx.SrcSelectedVertex(job, v) ? TopoDissolvable : 0u;
+    // A line vertex stays while one of its lines survives the deletion.
+    if (job.Op == MeshTopologyOp::DeleteEdges && TopoLineCore(job)) {
+        const uint2 fan = ctx.SrcFan(job, v);
+        for (uint k = 0u; k < fan.y; ++k)
+            if (!ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, ctx.SrcFanCorner(job, fan.x + k)))) flags |= TopoKept;
+    }
+    ctx.FlagVertices(job)[v] = flags;
     ctx.VertexTargets(job)[v] = job.Op == MeshTopologyOp::MergeAtTarget && ctx.SrcSelectedVertex(job, v) ? job.TargetVertex : v;
-    if (job.Op == MeshTopologyOp::MergeCollapse) ctx.VertexOverride(job, v)[0] = 0u;
     if (TopologyIsDissolve(job.Op)) {
         ctx.VertexEdgeTotal(job)[v] = 0u;
         ctx.VertexEdgeDissolved(job)[v] = 0u;
@@ -103,14 +101,15 @@ kernel void TopologyZero(
 
 // Flags the halfedge's edge when the dissolve removes it, counts its ends' edges, and marks the ends the dissolve may drop.
 inline void TopoMarkDissolvedEdge(TopoContext ctx, MeshTopologyJob job, uint h) {
-    device const uint *corners = ctx.SrcCorners(job);
+    const auto corners = ctx.SrcCorners(job);
     const uint to = corners[h], from = corners[ctx.SrcPrev(job, h)];
     const uint opposite = ctx.SrcOpposite(job, h);
-    bool dissolved = opposite != InvalidOffset;
+    bool dissolved = !TopoLineCore(job) && opposite != InvalidOffset;
     if (dissolved) {
         switch (job.Op) {
             case MeshTopologyOp::DissolveVertices: dissolved = ctx.SrcSelectedVertex(job, to) || ctx.SrcSelectedVertex(job, from); break;
-            case MeshTopologyOp::DissolveEdges: dissolved = ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, h)); break;
+            case MeshTopologyOp::DissolveEdges:
+            case MeshTopologyOp::RotateEdges: dissolved = ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, h)); break;
             case MeshTopologyOp::DissolveLimited: {
                 const uint f = ctx.SrcFaceOf(job, h), g = ctx.SrcFaceOf(job, opposite);
                 dissolved = ctx.SrcSelectedFace(job, f) && ctx.SrcSelectedFace(job, g) &&
@@ -138,7 +137,7 @@ inline void TopoMarkDissolvedEdge(TopoContext ctx, MeshTopologyJob job, uint h) 
 // Collapses an edge shorter than the distance toward its lower vertex.
 inline void TopoMarkShortEdge(TopoContext ctx, MeshTopologyJob job, uint h) {
     if (!ctx.SrcEdgeFirst(job, h)) return;
-    device const uint *corners = ctx.SrcCorners(job);
+    const auto corners = ctx.SrcCorners(job);
     const uint a = corners[ctx.SrcPrev(job, h)], b = corners[h];
     if (!ctx.SrcSelectedVertex(job, a) || !ctx.SrcSelectedVertex(job, b)) return;
     if (distance(ctx.SrcPosition(job, a), ctx.SrcPosition(job, b)) >= job.Param0) return;
@@ -156,10 +155,11 @@ kernel void TopologyMarkHalfedges(
     const TopoContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
     const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint h = tile.y * ScanTileSize + lane;
-    if (h >= job.SrcHalfedgeCount) return;
+    const uint hi = tile.y * ScanTileSize + lane;
+    const uint h = ctx.SrcHalfedgeDomain(job).Handle(hi);
+    if (h == InvalidOffset) return;
     device atomic_uint *flags = ctx.Atomic(ctx.FlagVertices(job));
-    device const uint *corners = ctx.SrcCorners(job);
+    const auto corners = ctx.SrcCorners(job);
     const uint to = corners[h], from = corners[ctx.SrcPrev(job, h)];
     const auto mark_ends = [&](uint bits) {
         atomic_fetch_or_explicit(&flags[to], bits, memory_order_relaxed);
@@ -198,9 +198,12 @@ kernel void TopologyMarkHalfedges(
     ctx.FlagHalfedges(job)[h] = halfedge_flags;
     if (TopologyIsDissolve(job.Op)) TopoMarkDissolvedEdge(ctx, job, h);
     else if (job.Op == MeshTopologyOp::DissolveDegenerate) TopoMarkShortEdge(ctx, job, h);
-    else if (job.Op == MeshTopologyOp::EdgeSplit) ctx.HalfedgeAux(job)[h] = TopoSectorRep(ctx, job, h);
-    else if (job.Op == MeshTopologyOp::Subdivide && (job.Flags & (TopologyFlagListCuts | TopologyFlagScreenCuts)) && h < job.SrcEdgeCount) ctx.EdgeParams(job)[h] = InvalidOffset;
-    else if (job.Op == MeshTopologyOp::Subdivide && (job.Flags & TopologyFlagListSelects) && h < job.SrcEdgeCount) ctx.EdgeParams(job)[h] = 0u;
+    else if (job.Op == MeshTopologyOp::EdgeSplit) {
+        if (ctx.SrcEdgeFirst(job,h) && ctx.SrcSelectedEdge(job,ctx.SrcEdge(job,h))) mark_ends(TopoTagged);
+        ctx.HalfedgeAux(job)[h] = TopoSectorRep(ctx, job, h);
+    }
+    else if (job.Op == MeshTopologyOp::Subdivide && (job.Flags & (TopologyFlagListCuts | TopologyFlagScreenCuts)) && hi < job.SrcEdgeCount) ctx.EdgeParams(job)[hi] = InvalidOffset;
+    else if (job.Op == MeshTopologyOp::Subdivide && (job.Flags & TopologyFlagListSelects) && hi < job.SrcEdgeCount) ctx.EdgeParams(job)[hi] = 0u;
 }
 
 // Flags each surviving source face and marks its corner vertices as kept or tagged.
@@ -228,7 +231,7 @@ kernel void TopologyMarkFaces(
     }
     const uint2 range = ctx.SrcFaceRange(job, f);
     device atomic_uint *flags = ctx.Atomic(ctx.FlagVertices(job));
-    device const uint *corners = ctx.SrcCorners(job);
+    const auto corners = ctx.SrcCorners(job);
     const uint mark = (deleted ? TopoTagged : TopoKept) | (ctx.SrcSelectedFace(job, f) ? TopoInRegion : 0u);
     for (uint h = range.x; h < range.y; ++h) atomic_fetch_or_explicit(&flags[corners[h]], mark, memory_order_relaxed);
     // A bevel removes every vertex it moves corners off, marked as in the region.
@@ -248,11 +251,12 @@ kernel void TopologyLink(
     const TopoContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
     const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint h = tile.y * ScanTileSize + lane;
+    const uint hi = tile.y * ScanTileSize + lane;
+    const uint h = ctx.SrcHalfedgeDomain(job).Handle(hi);
     const bool dissolve = TopologyIsDissolve(job.Op);
-    if (h >= job.SrcHalfedgeCount || !(dissolve || job.Op == MeshTopologyOp::MergeCollapse)) return;
+    if (h == InvalidOffset || !(dissolve || job.Op == MeshTopologyOp::MergeCollapse)) return;
     if (dissolve ? !TopoEdgeDissolved(ctx, job, h) : !ctx.SrcEdgeFirst(job, h)) return;
-    device const uint *corners = ctx.SrcCorners(job);
+    const auto corners = ctx.SrcCorners(job);
     const uint a = dissolve ? ctx.SrcFaceOf(job, h) : corners[ctx.SrcPrev(job, h)];
     const uint b = dissolve ? ctx.SrcFaceOf(job, ctx.SrcOpposite(job, h)) : corners[h];
     if (!dissolve && (!ctx.SrcSelectedVertex(job, a) || !ctx.SrcSelectedVertex(job, b))) return;
@@ -351,17 +355,19 @@ kernel void TopologyDissolveRevert(
     const TopoContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
     const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint h = tile.y * ScanTileSize + lane;
-    if (!TopologyIsDissolve(job.Op) || h >= job.SrcHalfedgeCount || !TopoEdgeDissolved(ctx, job, h)) return;
+    const uint hi = tile.y * ScanTileSize + lane;
+    const uint h = ctx.SrcHalfedgeDomain(job).Handle(hi);
+    if (!TopologyIsDissolve(job.Op) || h == InvalidOffset || !TopoEdgeDissolved(ctx, job, h)) return;
     if (ctx.WalkLength(job)[ctx.FaceLabels(job)[ctx.SrcFaceOf(job, h)]] != 0u) return;
     ctx.FlagHalfedges(job)[h] &= ~TopoDissolved;
     if (!ctx.SrcEdgeFirst(job, h)) return;
-    device const uint *corners = ctx.SrcCorners(job);
+    const auto corners = ctx.SrcCorners(job);
     device atomic_uint *removed = ctx.Atomic(ctx.VertexEdgeDissolved(job));
     atomic_fetch_sub_explicit(&removed[corners[h]], 1u, memory_order_relaxed);
     atomic_fetch_sub_explicit(&removed[corners[ctx.SrcPrev(job, h)]], 1u, memory_order_relaxed);
 }
 
+// Empties a job's table, whose entries alone the host tiles.
 kernel void TopologyMergeTable(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -371,7 +377,7 @@ kernel void TopologyMergeTable(
     const uint2 tile = ctx.Tile(group_id);
     const MeshTopologyJob job = ctx.Jobs()[tile.x];
     const uint i = tile.y * ScanTileSize + lane;
-    if (job.Op != MeshTopologyOp::MergeByDistance || i > job.TableMask) return;
+    if (i > job.TableMask) return;
     ctx.Table(job)[i] = InvalidOffset;
 }
 
@@ -428,6 +434,36 @@ kernel void TopologyMergeQuery(
     ctx.VertexTargets(job)[v] = target;
 }
 
+// Records each kept output line of a joining line core in the table, at the lowest representative corner that leaves a line between its ends.
+kernel void TopologyLineKeys(
+    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    const TopoContext ctx{bindless, pc};
+    const uint2 tile = ctx.Tile(group_id);
+    const MeshTopologyJob job = ctx.Jobs()[tile.x];
+    const uint hi = tile.y * ScanTileSize + lane;
+    const uint h = ctx.SrcHalfedgeDomain(job).Handle(hi);
+    if (h == InvalidOffset || !TopoLineJoins(job) || !ctx.SrcEdgeFirst(job, h)) return;
+    const TopoLine line = TopoLineOutput(ctx, job, h);
+    if (!line.Kept) return;
+    const uint2 key = TopoLineKey(line);
+    device atomic_uint *table = ctx.Atomic(ctx.Table(job));
+    uint slot = TopoLineHash(key) & job.TableMask;
+    for (uint probe = 0u; probe <= job.TableMask;) {
+        uint occupant = InvalidOffset;
+        if (atomic_compare_exchange_weak_explicit(&table[slot], &occupant, hi, memory_order_relaxed, memory_order_relaxed)) return;
+        if (occupant == InvalidOffset) continue; // Weak CAS may fail spuriously.
+        if (all(TopoLineKey(TopoLineOutput(ctx, job, ctx.SrcHalfedgeDomain(job).Handle(occupant))) == key)) {
+            atomic_fetch_min_explicit(&table[slot], hi, memory_order_relaxed);
+            return;
+        }
+        slot = (slot + 1u) & job.TableMask;
+        ++probe;
+    }
+}
+
 // A limited dissolve drops vertices left with two edges that nearly continue each other.
 kernel void TopologyDissolveLimitVertices(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
@@ -441,13 +477,12 @@ kernel void TopologyDissolveLimitVertices(
     if (job.Op != MeshTopologyOp::DissolveLimited || v >= job.SrcVertexCount || !ctx.SrcSelectedVertex(job, v)) return;
     if (ctx.VertexEdgeTotal(job)[v] - ctx.VertexEdgeDissolved(job)[v] != 2u) return;
     // The two remaining edges are the undissolved edges at the vertex's corners.
-    uint count;
-    device const uint *items = ctx.SrcFanItems(job, v, count);
-    device const uint *corners = ctx.SrcCorners(job);
+    const uint2 fan = ctx.SrcFan(job, v);
+    const auto corners = ctx.SrcCorners(job);
     float3 directions[2];
     uint found = 0u;
-    for (uint i = 0u; i < count && found < 2u; ++i) {
-        const uint h = ctx.SrcFanHalfedge(job, items[i]);
+    for (uint k = 0u; k < fan.y && found < 2u; ++k) {
+        const uint h = ctx.SrcFanCorner(job,fan.x+k);
         const uint out = ctx.SrcNext(job, h);
         if (!TopoEdgeDissolved(ctx, job, h)) {
             const float3 d = normalize(ctx.SrcPosition(job, corners[ctx.SrcPrev(job, h)]) - ctx.SrcPosition(job, v));
@@ -476,7 +511,7 @@ kernel void TopologyListFill(
     const uint i = tile.y * ScanTileSize + lane;
     if (job.Flags & TopologyFlagScreenCuts) {
         if (i >= job.SrcEdgeCount) return;
-        device const uint *corners = ctx.SrcCorners(job);
+        const auto corners = ctx.SrcCorners(job);
         const uint h = ctx.SrcEdgeHalfedge(job, i);
         const float4x4 to_clip = job.ScreenTransform.Unpack();
         const float4 ca = to_clip * float4(ctx.SrcPosition(job, corners[ctx.SrcPrev(job, h)]), 1.f), cb = to_clip * float4(ctx.SrcPosition(job, corners[h]), 1.f);
@@ -527,7 +562,8 @@ kernel void TopologyJoinBest(
     float best_cost = 3.4e38f;
     for (uint h = range.x; h < range.y; ++h) {
         const uint opposite = ctx.SrcOpposite(job, h);
-        if (opposite == InvalidOffset || ctx.FaceLabels(job)[ctx.SrcFaceOf(job, opposite)] != InvalidOffset) continue;
+        const uint neighbor = ctx.SrcFaceOf(job, opposite);
+        if (neighbor == InvalidOffset || ctx.FaceLabels(job)[neighbor] != InvalidOffset) continue;
         const float cost = TopoJoinCost(ctx, job, h);
         if (cost >= 0.f && cost < best_cost) {
             best_cost = cost;
@@ -551,7 +587,7 @@ kernel void TopologyJoinMatch(
     if (h == InvalidOffset) return;
     const uint opposite = ctx.SrcOpposite(job, h);
     const uint g = ctx.SrcFaceOf(job, opposite);
-    if (ctx.WalkLength(job)[g] != opposite) return;
+    if (g == InvalidOffset || ctx.WalkLength(job)[g] != opposite) return;
     ctx.FaceLabels(job)[f] = g;
     ctx.RegionStart(job)[f] = h;
     ctx.State(job)[1] = 1u;
@@ -583,16 +619,23 @@ kernel void TopologyCountVertices(
     const uint v = tile.y * ScanTileSize + lane;
     if (v >= job.SrcVertexCount) return;
     const uint entry = ctx.VertexEntry(v);
-    const uint own = job.Op == MeshTopologyOp::EdgeSplit ? TopoSectorCount(ctx, job, v) : (TopoVertexKept(ctx, job, v) ? 1u : 0u);
+    uint own = job.Op == MeshTopologyOp::EdgeSplit ? TopoSectorCount(ctx, job, v) : (TopoVertexKept(ctx, job, v) ? 1u : 0u);
     uint faces = 0u, corners = 0u;
     if (TopologyIsBevel(job.Op) && (ctx.FlagVertices(job)[v] & TopoInRegion)) {
-        // The vertex's polygon indexes the halfedge outputs' offsets, so the ring is counted here and emitted after the scan.
-        uint ring[BevelMaxRing], ring_source[BevelMaxRing];
-        corners = TopoBevelRing(ctx, job, v, ring, ring_source);
-        faces = corners >= 3u ? 1u : 0u;
-        corners = faces * corners;
+        // The boundary indexes halfedge outputs. Interior profile rings belong
+        // to this vertex entry and are counted by the same scan.
+        corners = TopoBevelRing(ctx, job, v, [](uint2, uint, uint) {}).Length;
+        if (corners >= 3u) {
+            const uint rings = job.Op == MeshTopologyOp::BevelVertices ? TopoBevelSegments(job) - 1u : 0u;
+            own = rings * corners;
+            faces = 1u + rings * corners;
+            corners *= 1u + 4u * rings;
+        } else corners = 0u;
     }
-    ctx.WriteCounts(job, entry, uint3(own + TopoVertexCopies(ctx, job, v), faces, corners));
+    // A line extrusion joins each vertex to its copy.
+    const uint copies = TopoVertexCopies(ctx, job, v);
+    if (TopoLineCore(job)) corners += 2u * copies;
+    ctx.WriteCounts(job, entry, uint3(own + copies, faces, corners));
 }
 
 kernel void TopologyCountHalfedges(
@@ -603,11 +646,16 @@ kernel void TopologyCountHalfedges(
     const TopoContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
     const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint h = tile.y * ScanTileSize + lane;
-    if (h >= job.SrcHalfedgeCount) return;
+    const uint hi = tile.y * ScanTileSize + lane;
+    const uint h = ctx.SrcHalfedgeDomain(job).Handle(hi);
+    if (h == InvalidOffset) return;
     const uint entry = ctx.HalfedgeEntry(job, h);
     const bool side = TopoHalfedgeMakesSide(ctx, job, h);
     const bool cut = job.Op == MeshTopologyOp::Subdivide && ctx.SrcEdgeFirst(job, h) && TopoEdgeCut(ctx, job, h);
+    if (TopoLineCore(job)) {
+        ctx.WriteCounts(job, entry, uint3(cut ? TopoSubdivideCuts(job) : 0u, 0u, ctx.SrcEdgeFirst(job, h) ? TopoLineCorners(ctx, job, h) : 0u));
+        return;
+    }
     if (TopologyIsBevel(job.Op)) {
         const BevelHalfedgeOutputs o = TopoBevelOutputs(ctx, job, h);
         const bool strip = ctx.SrcEdgeFirst(job, h) && TopoEdgeBeveled(ctx, job, h);
@@ -639,7 +687,7 @@ kernel void TopologyCountFaces(
     if (f == job.SrcFaceCount && job.Op == MeshTopologyOp::AddFaces && job.ListOffset != InvalidOffset) {
         device const uint *list = ctx.Lists(job);
         listed.x = list[0];
-        uint cursor = 1u + 3u * listed.x;
+        uint cursor = 2u + 3u * listed.x;
         listed.y = list[cursor++];
         for (uint i = 0u; i < listed.y; ++i) {
             listed.z += list[cursor];
@@ -649,22 +697,16 @@ kernel void TopologyCountFaces(
     ctx.WriteCounts(job, entry, listed);
 }
 
-// One in-place scan the pass parameter selects: its counts, block sums, and whether the job runs it.
+// Count arrays and their block sums, shared by the three allocation quantities.
 struct TopoScan {
     device uint *Counts;
     uint Entries;
     device uint *Blocks;
     uint BlockCount;
-    bool Active;
 };
 
 inline TopoScan TopoScanOf(TopoContext ctx, MeshTopologyJob job, uint quantity) {
-    switch (TopologyScan(ctx.Pc.PassParameter)) {
-        case ScanCounts:
-            return {ctx.Counts(job, quantity), job.CountEntries, ctx.Scratch() + job.CountBlockOffset + quantity * job.CountBlockCount, job.CountBlockCount, true};
-        default:
-            return {ctx.Scratch() + job.CustomPopcountOffset, job.CustomWordCount + 1u, ctx.Scratch() + job.CustomBlockOffset, job.CustomBlockCount, job.DstCustomCornerMaskOffset != InvalidOffset};
-    }
+    return {ctx.Counts(job, quantity), job.CountEntries, ctx.Scratch() + job.CountBlockOffset + quantity * job.CountBlockCount, job.CountBlockCount};
 }
 kernel void TopologyScanBlockSum(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
@@ -679,7 +721,6 @@ kernel void TopologyScanBlockSum(
     const TopoScan probe = TopoScanOf(ctx, job, 0u);
     const uint quantity = tile.y / probe.BlockCount, block = tile.y % probe.BlockCount;
     const TopoScan scan = TopoScanOf(ctx, job, quantity);
-    if (!scan.Active) return;
     ScanBlockSum(scan.Counts, scan.Entries, block, scan.Blocks, lane, simd_lane, simd_group, sums);
 }
 
@@ -693,16 +734,14 @@ kernel void TopologyScanBlockPrefix(
     const TopoContext ctx{bindless, pc};
     const MeshTopologyJob job = ctx.Jobs()[group_id];
     // The count scan runs its three quantities quantity-major over the count blocks.
-    const uint quantities = TopologyScan(pc.PassParameter) == ScanCounts ? 3u : 1u;
+    const uint quantities = 3u;
     for (uint quantity = 0u; quantity < quantities; ++quantity) {
         const TopoScan scan = TopoScanOf(ctx, job, quantity);
-        if (!scan.Active) return;
         ScanBlockPrefix(scan.Blocks, scan.BlockCount, lane, simd_lane, simd_group, sums);
     }
 }
 
 // Each thread overwrites only its own counts with their exclusive offsets, permitting an in-place scan.
-// The custom normal scan writes each mask word's rank into the mask and keeps the total as its terminator.
 kernel void TopologyScanOffsets(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
@@ -716,35 +755,7 @@ kernel void TopologyScanOffsets(
     const TopoScan probe = TopoScanOf(ctx, job, 0u);
     const uint quantity = tile.y / probe.BlockCount, block = tile.y % probe.BlockCount;
     const TopoScan scan = TopoScanOf(ctx, job, quantity);
-    if (!scan.Active) return;
-    uint local[ScanPerThread];
-    uint start = ScanBlockStart(scan.Counts, scan.Entries, block, scan.Blocks, lane, simd_lane, simd_group, sums, local);
-    const bool masks = TopologyScan(pc.PassParameter) == ScanCustomNormals;
-    const uint base = block * ScanBlockElements + lane * ScanPerThread;
-    for (uint k = 0u; k < ScanPerThread; ++k) {
-        const uint i = base + k;
-        if (i >= scan.Entries) break;
-        if (masks && i < job.CustomWordCount) ctx.DstCustomMasks(job)[i].y = start;
-        else scan.Counts[i] = start;
-        start += local[k];
-    }
-}
-
-// Clears the output selection masks and custom-normal mask words before the scatter sets bits.
-kernel void TopologyZeroOutput(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const TopoContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint w = tile.y * ScanTileSize + lane;
-    device uint *bits = BindlessBufferMutable(uint, bindless.Buffer, pc.SelectionBitsSlot);
-    if (w < ConnectivityWordCount(job.DstVertexCount)) bits[job.DstVertexBitsOffset + w] = 0u;
-    if (w < ConnectivityWordCount(job.DstHalfedgeCount)) bits[job.DstEdgeBitsOffset + w] = 0u;
-    if (w < ConnectivityWordCount(job.DstFaceCount)) bits[job.DstFaceBitsOffset + w] = 0u;
-    if (job.DstCustomCornerMaskOffset != InvalidOffset && w < job.CustomWordCount) ctx.DstCustomMasks(job)[w] = packed_uint2(0u, 0u);
+    ScanBlockOffsets(scan.Counts, scan.Entries, block, scan.Blocks, scan.Counts, lane, simd_lane, simd_group, sums);
 }
 
 kernel void TopologyScatterVertices(
@@ -761,17 +772,50 @@ kernel void TopologyScatterVertices(
     device const uint *offsets = ctx.Counts(job, TopoCountVertices);
     const uint count = offsets[entry + 1u] - offsets[entry];
     if (TopologyIsBevel(job.Op)) {
-        // A beveled vertex becomes the polygon of the points around it, wound against the strips' rows.
+        // Every profile ring is built from the same counted boundary. The last
+        // ring receives the cap, wound against the surrounding quads.
         device const uint *face_offsets = ctx.Counts(job, TopoCountFaces);
         if (face_offsets[entry + 1u] == face_offsets[entry]) return;
-        uint ring[BevelMaxRing], ring_source[BevelMaxRing];
-        const uint length = TopoBevelRing(ctx, job, v, ring, ring_source);
+        const uint segments = job.Op == MeshTopologyOp::BevelVertices ? TopoBevelSegments(job) : 1u;
         const uint fd = face_offsets[entry], base = ctx.Counts(job, TopoCountCorners)[entry];
-        for (uint k = 0u; k < length; ++k) {
-            const uint i = length - 1u - k;
-            ctx.WriteCorner(job, base + k, TopoBevelVertexOf(ctx, job, ring[i]), ring_source[i], ring_source[i], 0.f, InvalidOffset, true);
-        }
-        TopoEmitFace(ctx, job, fd, base, ctx.SrcFaceOf(job, ring_source[0]), true);
+        const uint length = (ctx.Counts(job, TopoCountCorners)[entry + 1u] - base) /
+            (1u + 4u * (segments - 1u));
+        uint2 first_id = uint2(InvalidOffset), previous_id = uint2(InvalidOffset);
+        uint first_source = InvalidOffset, previous_source = InvalidOffset;
+        const auto quad = [&](uint2 current, uint current_source, uint current_index, uint2 previous, uint previous_source) {
+            for (uint ring = 0u; ring + 1u < segments; ++ring) {
+                const uint current_outer = TopoBevelVertexRingIndex(ctx, job, entry, current, current_index, length, ring);
+                const uint previous_outer = TopoBevelVertexRingIndex(ctx, job, entry, previous, (current_index + length - 1u) % length, length, ring);
+                const uint current_inner = TopoBevelVertexRingIndex(ctx, job, entry, current, current_index, length, ring + 1u);
+                const uint previous_inner = TopoBevelVertexRingIndex(ctx, job, entry, previous, (current_index + length - 1u) % length, length, ring + 1u);
+                const uint face = fd + ring * length + (current_index + length - 1u) % length;
+                const uint corner = base + 4u * (ring * length + (current_index + length - 1u) % length);
+                ctx.WriteCorner(job, corner, current_outer, current_source, current_source, 0.f, InvalidOffset, true);
+                ctx.WriteCorner(job, corner + 1u, previous_outer, previous_source, previous_source, 0.f, InvalidOffset, true);
+                ctx.WriteCorner(job, corner + 2u, previous_inner, previous_source, previous_source, 0.f, InvalidOffset, true);
+                ctx.WriteCorner(job, corner + 3u, current_inner, current_source, current_source, 0.f, InvalidOffset, true);
+                TopoEmitFace(ctx, job, face, corner, 4u, ctx.SrcFaceOf(job, current_source), true);
+            }
+        };
+        const BevelRingInfo boundary = TopoBevelRing(ctx, job, v, [&](uint2 id, uint source, uint index) {
+            if (index >= length) return; // A closed fan reports its first point twice before dropping the duplicate.
+            if (index == 0u) { first_id = id; first_source = source; }
+            else quad(id, source, index, previous_id, previous_source);
+            for (uint ring = 1u; ring < segments; ++ring) {
+                const uint d = TopoBevelVertexRingIndex(ctx, job, entry, id, index, length, ring);
+                const float3 center = ctx.SrcPosition(job, v);
+                ctx.WriteVertexMap(job, d, v, v, 0.f);
+                *ctx.Inward(job, d, 0u) = packed_float3(TopoBevelVertexRingPosition(ctx, job, v, id, source, ring) - center);
+                ctx.SelectDstVertex(job, d);
+            }
+            const uint cap = TopoBevelVertexRingIndex(ctx, job, entry, id, index, length, segments - 1u);
+            ctx.WriteCorner(job, base + 4u * (segments - 1u) * length + length - 1u - index,
+                cap, source, source, 0.f, InvalidOffset, true);
+            previous_id = id; previous_source = source;
+        });
+        if (segments > 1u) quad(first_id, first_source, 0u, previous_id, previous_source);
+        TopoEmitFace(ctx, job, fd + (segments - 1u) * length,
+            base + 4u * (segments - 1u) * length, length, ctx.SrcFaceOf(job, boundary.FirstSource), true);
         return;
     }
     if (count == 0u) return;
@@ -783,11 +827,15 @@ kernel void TopologyScatterVertices(
     const bool rip = job.Op == MeshTopologyOp::EdgeSplit && (job.Flags & TopologyFlagRipSelectCopies) != 0u;
     if (kept) {
         ctx.WriteVertexMap(job, d, v, v, 0.f);
-        if (TopoOriginalVertexSelected(ctx, job, v) && !(rip && count > 1u)) ctx.Select(job.DstVertexBitsOffset, d);
+        ctx.SelectDstVertex(job, d, TopoOriginalVertexSelected(ctx, job, v) && !(rip && count > 1u));
     }
     for (uint copy = first_copy; copy < d + count; ++copy) {
         ctx.WriteVertexMap(job, copy, v, v, 0.f);
-        if (!rip || copy == d + 1u) ctx.Select(job.DstVertexBitsOffset, copy);
+        if (!rip || copy == d + 1u) ctx.SelectDstVertex(job, copy);
+    }
+    if (TopoLineCore(job) && first_copy < d + count) {
+        const uint corner = ctx.SrcAnyCornerAt(job, v);
+        TopoEmitLine(ctx, job, ctx.Counts(job, TopoCountCorners)[entry], d, first_copy, corner, corner, InvalidOffset, false);
     }
     // A transform moves every vertex of the moved or duplicated faces: the copies, and the inner vertices a region moves in place.
     // A solidify pushes the copies in along the vertex normal.
@@ -815,19 +863,24 @@ kernel void TopologyScatterHalfedges(
     const TopoContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
     const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint h = tile.y * ScanTileSize + lane;
-    if (h >= job.SrcHalfedgeCount) return;
+    const uint hi = tile.y * ScanTileSize + lane;
+    const uint h = ctx.SrcHalfedgeDomain(job).Handle(hi);
+    if (h == InvalidOffset) return;
     const uint entry = ctx.HalfedgeEntry(job, h);
+    if (TopoLineCore(job)) {
+        if (ctx.SrcEdgeFirst(job, h)) TopoScatterLine(ctx, job, h, entry);
+        return;
+    }
     if (TopologyIsBevel(job.Op)) {
         const BevelHalfedgeOutputs o = TopoBevelOutputs(ctx, job, h);
-        device const uint *corners = ctx.SrcCorners(job);
+        const auto corners = ctx.SrcCorners(job);
         const uint v = corners[h], u = corners[ctx.SrcPrev(job, h)];
         const uint base = ctx.Counts(job, TopoCountVertices)[entry];
         // Every new vertex sits on an original one, displaced to its point.
         const auto place = [&](uint d, uint anchor, float3 p) {
             ctx.WriteVertexMap(job, d, anchor, anchor, 0.f);
             *ctx.Inward(job, d, 0u) = packed_float3(p - ctx.SrcPosition(job, anchor));
-            ctx.Select(job.DstVertexBitsOffset, d);
+            ctx.SelectDstVertex(job, d);
         };
         float3 point;
         if (o.EndFrom && TopoBevelEdgePoint(ctx, job, h, false, point)) place(base + o.EndIndex(false), u, point);
@@ -867,7 +920,7 @@ kernel void TopologyScatterHalfedges(
             const uint4 source_a = uint4(corner_v_a, corner_u_a, corner_u_a, corner_v_a), source_b = uint4(corner_v_b, corner_u_b, corner_u_b, corner_v_b);
             const float4 weights = float4(t0, t0, t1, t1);
             for (uint k = 0u; k < 4u; ++k) ctx.WriteCorner(job, corner_base + k, loop[k], source_a[k], source_b[k], weights[k], InvalidOffset, true);
-            TopoEmitFace(ctx, job, fd, corner_base, ctx.SrcFaceOf(job, h), true);
+            TopoEmitFace(ctx, job, fd, corner_base, 4u, ctx.SrcFaceOf(job, h), true);
             ++fd;
             corner_base += 4u;
         }
@@ -878,11 +931,11 @@ kernel void TopologyScatterHalfedges(
         device const uint *vertex_offsets = ctx.Counts(job, TopoCountVertices);
         const uint first = vertex_offsets[entry], count = vertex_offsets[entry + 1u] - first;
         if (count == 0u) return;
-        device const uint *corners = ctx.SrcCorners(job);
+        const auto corners = ctx.SrcCorners(job);
         const uint from = corners[ctx.SrcPrev(job, h)], to = corners[h];
         for (uint i = 0u; i < count; ++i) {
             ctx.WriteVertexMap(job, first + i, from, to, TopoCutParam(ctx, job, h, i, count));
-            ctx.Select(job.DstVertexBitsOffset, first + i);
+            ctx.SelectDstVertex(job, first + i);
         }
         return;
     }
@@ -891,7 +944,7 @@ kernel void TopologyScatterHalfedges(
     const uint fd = face_offsets[entry];
     const uint base = ctx.Counts(job, TopoCountCorners)[entry];
     device const uint *vertex_offsets = ctx.Counts(job, TopoCountVertices);
-    device const uint *corners = ctx.SrcCorners(job);
+    const auto corners = ctx.SrcCorners(job);
     const uint prev = ctx.SrcPrev(job, h);
     const uint a = corners[prev], b = corners[h];
     // The quad winds to match the face left beside it.
@@ -912,7 +965,7 @@ kernel void TopologyScatterHalfedges(
         const uint4 loop = flip ? uint4(b_below, a_below, a_copy, b_copy) : uint4(a_below, b_below, b_copy, a_copy);
         const uint quad = base + 4u * (layer - 1u);
         for (uint k = 0u; k < 4u; ++k) ctx.WriteCorner(job, quad + k, loop[k], sources[k], sources[k], 0.f, k == bottom || k == top ? h : InvalidOffset, k == top && layer == job.Steps);
-        TopoEmitFace(ctx, job, fd + layer - 1u, quad, ctx.SrcFaceOf(job, h), false);
+        TopoEmitFace(ctx, job, fd + layer - 1u, quad, 4u, ctx.SrcFaceOf(job, h), false);
     }
 }
 
@@ -937,11 +990,16 @@ kernel void TopologyScatterFaces(
     const uint n = range.y - range.x;
     const bool selected = !list_entry && ctx.SrcSelectedFace(job, f);
     device const uint *vertex_offsets = ctx.Counts(job, TopoCountVertices);
-    device const uint *src_corners = ctx.SrcCorners(job);
+    const auto src_corners = ctx.SrcCorners(job);
     device const uint *targets = ctx.VertexTargets(job);
     if (job.Op == MeshTopologyOp::Subdivide || job.Op == MeshTopologyOp::ConnectVertices) {
         SubdivideEmitter emitter{ctx, job, f, true, fd, base, 0u, 0u};
         TopoSplitFace(ctx, job, f, emitter);
+        return;
+    }
+    if (job.Op == MeshTopologyOp::RotateEdges) {
+        const bool own_loop = TopoDissolveOwnLoop(ctx, job, f);
+        if (own_loop || ctx.FaceLabels(job)[f] == f) TopoEmitRotation(ctx, job, f, own_loop, TopoMeasureRotation(ctx, job, f, own_loop), fd, base);
         return;
     }
     if (TopologyIsBevel(job.Op)) {
@@ -954,14 +1012,11 @@ kernel void TopologyScatterFaces(
                 ctx.WriteCorner(job, base + emitted++, TopoBevelVertexOf(ctx, job, points.Vertex[i]), h, h, 0.f, i == 0u && points.Count == 1u ? h : InvalidOffset, edge_selected);
             }
         }
-        TopoEmitFace(ctx, job, fd, base, f, selected);
+        TopoEmitFace(ctx, job, fd, base, emitted, f, selected);
         return;
     }
     if (job.Op == MeshTopologyOp::Triangulate && selected && n > 3u) {
-        uint3 triangles[FacesMaxCorners];
-        const uint count = TopoTriangulateFace(ctx, job, f, triangles);
-        for (uint t = 0u; t < count; ++t) {
-            const uint3 tri = triangles[t];
+        TopoTriangulateFace(ctx, job, f, [&](uint3 tri, uint t) {
             const uint corner_index[3] = {tri.x, tri.y, tri.z};
             for (uint q = 0u; q < 3u; ++q) {
                 const uint k = corner_index[q], from = corner_index[(q + 2u) % 3u];
@@ -970,9 +1025,9 @@ kernel void TopologyScatterFaces(
                 const bool along = (from + 1u) % n == k;
                 ctx.WriteCorner(job, base + q, vertex_offsets[src_corners[h]], h, h, 0.f, along ? h : InvalidOffset, true);
             }
-            TopoEmitFace(ctx, job, fd + t, base, f, true);
+            TopoEmitFace(ctx, job, fd + t, base, 3u, f, true);
             base += 3u;
-        }
+        });
         return;
     }
     if (job.Op == MeshTopologyOp::TrisToQuads && ctx.FaceLabels(job)[f] != InvalidOffset) {
@@ -987,7 +1042,7 @@ kernel void TopologyScatterFaces(
         for (uint q = 0u; q < 4u; ++q) {
             ctx.WriteCorner(job, base + q, vertex_offsets[src_corners[corners_out[q]]], corners_out[q], corners_out[q], 0.f, edges[q], ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, edges[q])));
         }
-        TopoEmitFace(ctx, job, fd, base, f, true);
+        TopoEmitFace(ctx, job, fd, base, 4u, f, true);
         return;
     }
     if (job.Op == MeshTopologyOp::Poke && selected) {
@@ -996,14 +1051,16 @@ kernel void TopologyScatterFaces(
         const uint h0 = range.x, h1 = range.x + (n >= 4u ? n / 4u : 1u), h2 = range.x + (n >= 4u ? n / 2u : 2u), h3 = range.x + (n >= 4u ? (3u * n) / 4u : 2u);
         const float t = n >= 4u ? 0.5f : 1.f / 3.f;
         ctx.WriteVertexMap4(job, center, uint4(src_corners[h0], src_corners[h1], src_corners[h2], src_corners[h3]), 0.5f, t);
-        *ctx.Inward(job, center, 0u) = packed_float3(normalize(float3(ctx.SrcFaceNormals(job)[f])) * job.Param0);
-        ctx.Select(job.DstVertexBitsOffset, center);
+        const float3 normal = float3(ctx.SrcFaceNormals(job)[f]);
+        const float normal_length2 = dot(normal, normal);
+        *ctx.Inward(job, center, 0u) = packed_float3(job.Param0 != 0.f && normal_length2 > 0.f ? normal * (job.Param0 * rsqrt(normal_length2)) : float3(0));
+        ctx.SelectDstVertex(job, center);
         for (uint k = 0u; k < n; ++k) {
             const uint h = range.x + k, next = range.x + (k + 1u) % n;
             ctx.WriteCorner(job, base, vertex_offsets[src_corners[h]], h, h, 0.f, InvalidOffset, true);
             ctx.WriteCorner(job, base + 1u, vertex_offsets[src_corners[next]], next, next, 0.f, next, ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, next)));
             ctx.WriteCorner4(job, base + 2u, center, uint4(h0, h1, h2, h3), 0.5f, t, InvalidOffset, true);
-            TopoEmitFace(ctx, job, fd + k, base, f, true);
+            TopoEmitFace(ctx, job, fd + k, base, 3u, f, true);
             base += 3u;
         }
         return;
@@ -1015,7 +1072,7 @@ kernel void TopologyScatterFaces(
             const uint h = range.x + k, edge = range.x + (k + 1u) % n;
             ctx.WriteCorner(job, base + j, vertex_offsets[src_corners[h]], h, h, 0.f, edge, ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, edge)));
         }
-        TopoEmitFace(ctx, job, fd, base, f, true);
+        TopoEmitFace(ctx, job, fd, base, n, f, true);
         return;
     }
     if (job.Op == MeshTopologyOp::EdgeSplit) {
@@ -1023,41 +1080,51 @@ kernel void TopologyScatterFaces(
             const uint h = range.x + k;
             ctx.WriteCorner(job, base + k, TopoSectorVertex(ctx, job, h), h, h, 0.f, h, ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, h)));
         }
-        TopoEmitFace(ctx, job, fd, base, f, selected);
+        TopoEmitFace(ctx, job, fd, base, n, f, selected);
         return;
     }
     if (TopologyIsDissolve(job.Op) && !TopoDissolveOwnLoop(ctx, job, f)) {
         // A region root emits its walked boundary as one face, selected when the face was selected or the region spans more faces.
         TopoWalkRegion(ctx, job, f, fd, base);
-        TopoEmitFace(ctx, job, fd, base, f, selected || ctx.RegionBoundary(job)[f] != n);
+        TopoEmitFace(ctx, job, fd, base, ctx.WalkLength(job)[f], f, selected || ctx.RegionBoundary(job)[f] != n);
         return;
     }
     const bool individual = TopologyBaseOp(job.Op) == MeshTopologyOp::ExtrudeFacesIndividual && selected;
     const bool duplicated = selected && TopoRegionDuplicates(ctx, job);
     // A deletion, merge, or keep leaves every surviving edge's selection alone, and an extrusion selects only the moved faces' edges.
-    const bool edges_from_source = job.Op <= MeshTopologyOp::DeleteLoose || job.Op == MeshTopologyOp::KeepSelectedFaces || TopologyIsDissolve(job.Op) || TopologyIsMerge(job.Op);
+    const bool edges_from_source = job.Op == MeshTopologyOp::DeleteVertices || job.Op == MeshTopologyOp::DeleteEdges ||
+        job.Op == MeshTopologyOp::DeleteFaces || job.Op == MeshTopologyOp::DeleteOnlyEdgesFaces ||
+        job.Op == MeshTopologyOp::DeleteOnlyFaces || job.Op == MeshTopologyOp::KeepSelectedFaces ||
+        TopologyIsDissolve(job.Op) || TopologyIsMerge(job.Op);
     const bool own_selected = individual || duplicated ? false : (job.Op == MeshTopologyOp::KeepSelectedFaces || selected) && job.Op != MeshTopologyOp::ExtrudeEdges;
     // The list entry appends the job's listed faces, whose corners inherit attributes from any corner at their vertex.
     if (f == job.SrcFaceCount) {
         if (job.Op != MeshTopologyOp::AddFaces || job.ListOffset == InvalidOffset) return;
         device const uint *list = ctx.Lists(job);
-        // Listed vertices sit on source vertex zero, displaced to their listed positions.
+        // New vertices inherit attributes from a vertex explicitly named by
+        // the face list, so local emission has no unrelated source dependency.
         const uint listed = list[0];
+        const uint attribute_source = list[1u + 3u * listed];
         for (uint i = 0u; i < listed; ++i) {
             const float3 p = float3(as_type<float>(list[1u + 3u * i]), as_type<float>(list[2u + 3u * i]), as_type<float>(list[3u + 3u * i]));
-            ctx.WriteVertexMap(job, new_vertices + i, 0u, 0u, 0.f);
-            *ctx.Inward(job, new_vertices + i, 0u) = packed_float3(p - ctx.SrcPosition(job, 0u));
-            ctx.Select(job.DstVertexBitsOffset, new_vertices + i);
+            ctx.WriteVertexMap(job, new_vertices + i, attribute_source, attribute_source, 0.f);
+            *ctx.Inward(job, new_vertices + i, 0u) = packed_float3(p - ctx.SrcPosition(job, attribute_source));
+            ctx.SelectDstVertex(job, new_vertices + i);
         }
-        uint cursor = 1u + 3u * listed;
+        uint cursor = 2u + 3u * listed;
         const uint faces = list[cursor++];
         for (uint i = 0u; i < faces; ++i) {
             const uint length = list[cursor++];
             // A listed vertex's corner inherits from the first source vertex in its face.
-            uint any = 0u;
+            uint any = job.SrcFaceCount ? ctx.SrcAnyCornerAt(job, attribute_source) : InvalidOffset;
+            uint source_face = job.SrcFaceCount ? ctx.SrcFaceOf(job, any) : InvalidOffset;
             for (uint k = 0u; k < length; ++k) {
                 if (list[cursor + k] < job.SrcVertexCount) {
                     any = ctx.SrcAnyCornerAt(job, list[cursor + k]);
+                    if (job.SrcFaceCount) {
+                        const uint incident = ctx.SrcFaceOf(job, any);
+                        if (incident != InvalidOffset) source_face = incident;
+                    }
                     break;
                 }
             }
@@ -1066,7 +1133,8 @@ kernel void TopologyScatterFaces(
                 const uint source_corner = v < job.SrcVertexCount ? ctx.SrcAnyCornerAt(job, v) : any;
                 ctx.WriteCorner(job, base + k, v < job.SrcVertexCount ? vertex_offsets[v] : new_vertices + (v - job.SrcVertexCount), source_corner, source_corner, 0.f, InvalidOffset, true);
             }
-            TopoEmitFace(ctx, job, fd, base, InvalidOffset, true);
+            // Local meshlet repair needs an adjacent source partition.
+            TopoEmitFace(ctx, job, fd, base, length, source_face, true);
             ++fd;
             base += length;
             cursor += length;
@@ -1079,15 +1147,17 @@ kernel void TopologyScatterFaces(
             const uint h = range.x + k;
             const uint copy = new_vertices + k;
             ctx.WriteVertexMap(job, copy, src_corners[h], src_corners[h], 0.f);
-            ctx.Select(job.DstVertexBitsOffset, copy);
+            ctx.SelectDstVertex(job, copy);
             if (job.Op == MeshTopologyOp::InsetIndividual) {
                 const uint prev = range.x + (k + n - 1u) % n, next = range.x + (k + 1u) % n;
-                const float3 displacement = TopoInsetCorner(ctx.SrcPosition(job, src_corners[prev]), ctx.SrcPosition(job, src_corners[h]), ctx.SrcPosition(job, src_corners[next]), normalize(float3(ctx.SrcFaceNormals(job)[f])), job.Param0, job.Param1, (job.Flags & TopologyFlagEvenOffset) != 0u);
-                *ctx.Inward(job, copy, 0u) = packed_float3(displacement);
+                const float3 normal = normalize(float3(ctx.SrcFaceNormals(job)[f]));
+                const float3 width = TopoInsetCorner(ctx.SrcPosition(job, src_corners[prev]), ctx.SrcPosition(job, src_corners[h]), ctx.SrcPosition(job, src_corners[next]), normal, 1.f, 0.f, (job.Flags & TopologyFlagEvenOffset) != 0u);
+                *ctx.Inward(job, copy, 0u) = packed_float3(width);
+                *ctx.Inward(job, copy, 1u) = packed_float3(normal);
             }
             ctx.WriteCorner(job, base + k, copy, h, h, 0.f, h, true);
         }
-        TopoEmitFace(ctx, job, fd, base, f, true);
+        TopoEmitFace(ctx, job, fd, base, n, f, true);
         ++fd;
         base += n;
         for (uint k = 0u; k < n; ++k) {
@@ -1096,7 +1166,7 @@ kernel void TopologyScatterFaces(
             const uint4 loop = uint4(a, b, new_vertices + k, new_vertices + (k == 0u ? n - 1u : k - 1u));
             const uint4 sources = uint4(prev, h, h, prev);
             for (uint j = 0u; j < 4u; ++j) ctx.WriteCorner(job, base + j, loop[j], sources[j], sources[j], 0.f, j == 1u || j == 3u ? h : InvalidOffset, j == 3u);
-            TopoEmitFace(ctx, job, fd, base, f, false);
+            TopoEmitFace(ctx, job, fd, base, 4u, f, false);
             ++fd;
             base += 4u;
         }
@@ -1114,7 +1184,7 @@ kernel void TopologyScatterFaces(
         const uint v_out = vertex_offsets[m] + (TopoFaceUsesCopy(ctx, job, selected, v) ? job.Steps : 0u);
         ctx.WriteCorner(job, base + emitted++, v_out, h, h, 0.f, h, (edges_from_source || own_selected) && ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, h)));
     }
-    TopoEmitFace(ctx, job, fd, base, f, own_selected && selected);
+    TopoEmitFace(ctx, job, fd, base, length, f, own_selected && selected);
     if (!duplicated) return;
     // Each layer's duplicate loop uses that layer's copies and is selected, reversed when the copies flip.
     const bool flipped = TopoFlipsCopies(job);
@@ -1126,7 +1196,7 @@ kernel void TopologyScatterFaces(
             const uint h = range.x + k, edge = flipped ? range.x + (k + 1u) % n : h;
             ctx.WriteCorner(job, base + j, vertex_offsets[src_corners[h]] + layer, h, h, 0.f, edge, true);
         }
-        TopoEmitFace(ctx, job, fd, base, f, true);
+        TopoEmitFace(ctx, job, fd, base, n, f, true);
     }
 }
 
@@ -1143,12 +1213,37 @@ kernel void TopologyFaceTables(
     // A fan gives a face two fewer triangles than corners, so its first triangle is its start less two per face before it.
     const uint2 range = ctx.DstFaceRange(job, fd);
     const uint first = range.x - 2u * fd, last = range.y - 2u * (fd + 1u);
-    ctx.DstFaceFirstTriangles(job)[fd] = first;
-    device uint *face_ids = ctx.DstTriangleFaceIds(job);
-    for (uint t = first; t < last; ++t) face_ids[t] = fd + 1u;
+    ctx.DstFaceTriangles(job)[fd] = job.DstTriangleOffset + first;
+    device packed_uint3 *triangles = ctx.DstTriangles(job);
+    const uint corner = job.DstCornerOffset + range.x;
     const uint source = ctx.FaceMap(job)[fd];
-    ctx.DstElementPrimitives(job)[fd] = source != InvalidOffset ? ctx.SrcElementPrimitives(job)[source] : 0u;
-    ctx.DstFaceSharpness(job)[fd] = source != InvalidOffset ? ctx.SrcFaceSharpness(job)[source] : uchar(0);
+    uint source_triangle = InvalidOffset;
+    if (job.DstTriangleSourceSlot != InvalidSlot && source != InvalidOffset) {
+        source_triangle = BindlessBuffer(uint,bindless.ObjectIdBuffer,pc.Source.FaceTriangleStartSlot)[ctx.SrcFaceDomain(job).Handle(source)];
+    }
+    for (uint t = first; t < last; ++t) {
+        triangles[t] = packed_uint3(corner, corner + t - first + 1u, corner + t - first + 2u);
+        if (job.DstTriangleSourceSlot != InvalidSlot) BindlessBufferMutable(uint,bindless.Buffer,job.DstTriangleSourceSlot)[t] = source_triangle;
+    }
+    const bool listed = job.Op == MeshTopologyOp::AddFaces && fd >= job.SrcFaceCount;
+    const uint primitive = source != InvalidOffset ? ctx.SrcElementPrimitive(job, source) : 0u;
+    ctx.SetDstElementPrimitive(job, fd, job.PrimitiveWork.Storage.Slot != InvalidSlot ? WorkRank(bindless, job.PrimitiveWork, primitive) : primitive);
+    ctx.DstFaceSharpness(job)[fd] = !listed && source != InvalidOffset ? ctx.SrcFaceSharpness(job)[source] : uchar(0);
+}
+
+// Copy transforms carry authored normal directions through each generated layer.
+inline float3 TopoCopyNormal(TopoContext ctx, MeshTopologyJob job, uint v, uint d, float3 normal) {
+    if (!TopoTransformsCopies(job)) return normal;
+    const uint first = ctx.Counts(job, TopoCountVertices)[v];
+    const uint end = ctx.Counts(job, TopoCountVertices)[v + 1u];
+    const bool kept = TopoVertexKept(ctx, job, v);
+    const uint first_copy = first + uint(kept);
+    uint steps = d >= first_copy && d < end ? d - first_copy + 1u : 0u;
+    if (d == first && kept && end == first + 1u && TopoRegionMoves(ctx, job) && (ctx.FlagVertices(job)[v] & TopoInRegion)) steps = job.Steps;
+    const float3x3 m = job.CopyRotation.Unpack();
+    const float3x3 cof{cross(m[1], m[2]), cross(m[2], m[0]), cross(m[0], m[1])};
+    for (uint step = 0u; step < steps; ++step) normal = NormalizeOrZero(cof * normal);
+    return normal;
 }
 
 // Carries every vertex-domain channel through the vertex map.
@@ -1165,44 +1260,64 @@ kernel void TopologyGatherVertices(
     device const uint *map = ctx.VertexMap(job) + TopoVertexMapWords * d;
     const uint4 v = uint4(map[0], map[1], map[2], map[3]);
     const float s = as_type<float>(map[4]), t = as_type<float>(map[5]);
-    device const Vertex *src = ctx.SrcVertices(job);
-    const bool merged = TopologyIsMerge(job.Op) && v.x == job.TargetVertex;
-    float3 position = merged ? float3(job.TargetPosition) : TopoBilinear(float3(src[v.x].Position), float3(src[v.y].Position), float3(src[v.z].Position), float3(src[v.w].Position), s, t);
-    if (job.Op == MeshTopologyOp::MergeCollapse && ctx.VertexOverride(job, v.x)[0] != 0u) {
-        device const uint *override = ctx.VertexOverride(job, v.x);
-        position = float3(as_type<float>(override[1]), as_type<float>(override[2]), as_type<float>(override[3]));
-    }
-    if (job.Op == MeshTopologyOp::InsetRegion) {
-        // A boundary copy sits between two inward directions, and an even offset keeps the inset width across the corner.
-        const float3 in_a = float3(*ctx.Inward(job, d, 0u)), in_b = float3(*ctx.Inward(job, d, 1u));
-        const bool has_a = dot(in_a, in_a) > 0.f, has_b = dot(in_b, in_b) > 0.f;
-        if (has_a || has_b) {
-            const float3 sum = in_a + in_b;
-            const float scale = has_a && has_b ? ((job.Flags & TopologyFlagEvenOffset) != 0u ? 1.f / max(1.f + dot(in_a, in_b), 1e-4f) : 0.5f) : 1.f;
-            position += sum * (job.Param0 * scale) + float3(ctx.SrcVertexNormals(job)[v.x]) * job.Param1;
+    if (job.Op != MeshTopologyOp::MergeCollapse || !ctx.SrcSelectedVertex(job, v.x)) {
+        const auto src = ctx.SrcVertices(job);
+        const bool merged = TopologyIsMerge(job.Op) && v.x == job.TargetVertex;
+        const float3 base = merged ? float3(job.TargetPosition) : TopoBilinear(float3(src[v.x].Position), float3(src[v.y].Position), float3(src[v.z].Position), float3(src[v.w].Position), s, t);
+        float3 position = base, width = float3(0.f), depth = float3(0.f);
+        if (job.Op == MeshTopologyOp::InsetRegion) {
+            // A boundary copy sits between two inward directions, and an even offset keeps the inset width across the corner.
+            const float3 in_a = float3(*ctx.Inward(job, d, 0u)), in_b = float3(*ctx.Inward(job, d, 1u));
+            const bool has_a = dot(in_a, in_a) > 0.f, has_b = dot(in_b, in_b) > 0.f;
+            if (has_a || has_b) {
+                const float3 sum = in_a + in_b;
+                const float scale = has_a && has_b ? ((job.Flags & TopologyFlagEvenOffset) != 0u ? 1.f / max(1.f + dot(in_a, in_b), 1e-4f) : 0.5f) : 1.f;
+                width = sum * scale;
+                depth = float3(ctx.SrcVertexNormals(job)[v.x]);
+            }
+        } else if (job.Op == MeshTopologyOp::InsetIndividual) {
+            width = float3(*ctx.Inward(job, d, 0u));
+            depth = float3(*ctx.Inward(job, d, 1u));
+        } else if (TopologyDisplaces(job.Op, job.Flags)) {
+            position += float3(*ctx.Inward(job, d, 0u));
         }
-    } else if (TopologyDisplaces(job.Op, job.Flags)) {
-        position += float3(*ctx.Inward(job, d, 0u));
+        if (job.Op == MeshTopologyOp::InsetRegion || job.Op == MeshTopologyOp::InsetIndividual) position += width * job.Param0 + depth * job.Param1;
+        ctx.DstVertices(job)[d].Position = position;
+        if (job.DstInsetBasisSlot != InvalidSlot) {
+            BindlessBufferMutable(InsetVertexBasis,bindless.Buffer,job.DstInsetBasisSlot)[d] =
+                {ctx.DstVertexDomain(job).Handle(d),packed_float3(base),packed_float3(width),packed_float3(depth)};
+        }
     }
-    ctx.DstVertices(job)[d].Position = position;
+    if (job.DstFaceCount == 0u) {
+        const auto src = ctx.SrcVertexNormals(job);
+        float3 normal = TopoBilinear(float3(src[v.x]), float3(src[v.y]), float3(src[v.z]), float3(src[v.w]), s, t);
+        if (s != 0.f || t != 0.f) normal = NormalizeOrZero(normal);
+        normal = TopoCopyNormal(ctx, job, v.x, d, normal);
+        BindlessBufferMutable(packed_float3, bindless.Buffer, pc.Destination.BaseVertexNormalSlot)[ctx.DstVertexDomain(job).Handle(d)] = packed_float3(normal);
+    }
+    if (job.VertexAttributes & MeshAttributeBit_Color0) {
+        ctx.SetDstVertexColor(job, d, TopoBilinear(ctx.SrcVertexColor(job, v.x), ctx.SrcVertexColor(job, v.y), ctx.SrcVertexColor(job, v.z), ctx.SrcVertexColor(job, v.w), s, t));
+    }
     // Skin weights take the nearest source.
     const uint nearest = t < 0.5f ? (s < 0.5f ? v.x : v.y) : (s < 0.5f ? v.w : v.z);
-    if (job.SrcBoneDeformOffset != InvalidOffset) ctx.DstBoneDeform(job)[d] = ctx.SrcBoneDeform(job)[nearest];
-    if (job.SrcMorphTargetOffset != InvalidOffset) {
-        device const MorphTargetVertex *targets = ctx.SrcMorphTargets(job);
-        device MorphTargetVertex *out = ctx.DstMorphTargets(job);
+    if (job.HasSkin) {
+        const auto skin=ctx.SrcBoneDeform(job,nearest);
+        ctx.SetDstSkin(job,d,skin);
+    }
+    if (job.MorphTargetCount) {
         for (uint k = 0u; k < job.MorphTargetCount; ++k) {
-            const uint base = k * job.SrcVertexCount;
-            const MorphTargetVertex ta = targets[base + v.x], tb = targets[base + v.y], tc = targets[base + v.z], td = targets[base + v.w];
-            out[k * job.DstVertexCount + d] = {
+            const MorphTargetVertex ta = ctx.SrcMorphTarget(job,v.x,k), tb = ctx.SrcMorphTarget(job,v.y,k);
+            const MorphTargetVertex tc = ctx.SrcMorphTarget(job,v.z,k), td = ctx.SrcMorphTarget(job,v.w,k);
+            const MorphTargetVertex value{
                 .PositionDelta = TopoBilinear(float3(ta.PositionDelta), float3(tb.PositionDelta), float3(tc.PositionDelta), float3(td.PositionDelta), s, t),
                 .NormalDelta = TopoBilinear(float3(ta.NormalDelta), float3(tb.NormalDelta), float3(tc.NormalDelta), float3(td.NormalDelta), s, t),
             };
+            ctx.SetDstMorphTarget(job,d,k,value);
         }
     }
 }
 
-// Carries the corner layers through the corner map, one thread per output fan corner, and marks custom normals present.
+// Each canonical output corner interpolates its attribute payload once.
 kernel void TopologyGatherCorners(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -1211,33 +1326,47 @@ kernel void TopologyGatherCorners(
     const TopoContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
     const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint i = tile.y * ScanTileSize + lane;
-    if (i >= ctx.DstFanCornerTotal(job)) return;
-    const uint hd = ctx.DstFanCornerHalfedge(job, i);
-    device const uint *map = ctx.CornerMap(job) + TopoCornerMapWords * hd;
-    const uint a = ctx.SrcFanCorner(job, map[0]), b = ctx.SrcFanCorner(job, map[1]), c = ctx.SrcFanCorner(job, map[2]), d = ctx.SrcFanCorner(job, map[3]);
+    const uint h = tile.y * ScanTileSize + lane;
+    if (h >= job.DstHalfedgeCount || job.CornerAttributes == 0u) return;
+    device const uint *map = ctx.CornerMap(job) + TopoCornerMapWords * h;
+    const uint a = map[0], b = map[1], c = map[2], d = map[3];
     const float s = as_type<float>(map[4]), t = as_type<float>(map[5]);
-    if (job.SrcCornerTangentOffset != InvalidOffset) {
-        device const packed_float4 *src = ctx.SrcCornerTangents(job);
-        ctx.DstCornerTangents(job)[i] = TopoBilinear(float4(src[a]), float4(src[b]), float4(src[c]), float4(src[d]), s, t);
+    if (job.CornerAttributes & MeshAttributeBit_Tangent) {
+        ctx.SetDstCornerTangent(job, h, TopoBilinear(ctx.SrcCornerTangent(job, a), ctx.SrcCornerTangent(job, b), ctx.SrcCornerTangent(job, c), ctx.SrcCornerTangent(job, d), s, t));
     }
-    if (job.SrcCornerColorOffset != InvalidOffset) {
-        device const packed_float4 *src = ctx.SrcCornerColors(job);
-        ctx.DstCornerColors(job)[i] = TopoBilinear(float4(src[a]), float4(src[b]), float4(src[c]), float4(src[d]), s, t);
+    if (job.CornerAttributes & MeshAttributeBit_Color0) {
+        ctx.SetDstCornerColor(job, h, TopoBilinear(ctx.SrcCornerColor(job, a), ctx.SrcCornerColor(job, b), ctx.SrcCornerColor(job, c), ctx.SrcCornerColor(job, d), s, t));
     }
-    for (uint set = 0u; set < 4u; ++set) {
-        if (job.SrcCornerUvOffsets[set] == InvalidOffset) continue;
-        device const packed_float2 *src = ctx.SrcCornerUvs(job, set);
-        ctx.DstCornerUvs(job, set)[i] = TopoBilinear(float2(src[a]), float2(src[b]), float2(src[c]), float2(src[d]), s, t);
-    }
-    // An exact copy keeps its authored corner normal, and an interpolated corner derives its normal.
-    if (job.SrcCustomCornerMaskOffset == InvalidOffset || a != b || s != 0.f || t != 0.f) return;
-    if ((ctx.SrcCustomMasks(job)[a >> 5u].x >> (a & 31u)) & 1u) {
-        atomic_fetch_or_explicit(&ctx.DstCustomMaskWords(job)[2u * (i >> 5u)], 1u << (i & 31u), memory_order_relaxed);
-    }
+    for (uint set = 0u; set < 4u; ++set)
+        if (job.CornerAttributes & (MeshAttributeBit_TexCoord0 << set)) {
+            ctx.SetDstCornerUv(job, set, h, TopoBilinear(ctx.SrcCornerUv(job, set, a), ctx.SrcCornerUv(job, set, b), ctx.SrcCornerUv(job, set, c), ctx.SrcCornerUv(job, set, d), s, t));
+        }
 }
 
-kernel void TopologyCustomPopcount(
+// Transfer directions between canonical polygon frames after output derivation.
+// A new corner interpolates actual normals, never polar/azimuth angles.
+inline float3 TopoDerivedCornerNormal(TopoContext ctx, constant MeshTopologyArenas &arenas, ConnectivityView conn, uint h) {
+    const uint face = conn.HalfedgeFace(h);
+    if (BindlessBuffer(uchar,ctx.B.Buffer, arenas.FaceSharpnessSlot)[face] != 0u) {
+        return float3(BindlessBuffer(packed_float3,ctx.B.Buffer, arenas.BaseFaceNormalSlot)[face]);
+    }
+    const uint root = CornerSectorRoot(ctx.B, arenas.CornerSectors, h);
+    if (root != InvalidOffset) {
+        return float3(BindlessBuffer(NormalSector,ctx.B.Buffer, arenas.NormalSectors.ValuesSlot)[ElementAttributeIndex(ctx.B, arenas.NormalSectors, root)].Normal);
+    }
+    const uint v = BindlessBuffer(uint,ctx.B.IndexBuffer, arenas.CornerSlot)[h];
+    return float3(BindlessBuffer(packed_float3,ctx.B.Buffer, arenas.BaseVertexNormalSlot)[v]);
+}
+
+inline CornerNormalFrame TopoCornerFrame(TopoContext ctx, constant MeshTopologyArenas &arenas, ConnectivityView conn, uint h, float3 normal) {
+    const auto position = [&](uint corner) {
+        const uint v = BindlessBuffer(uint,ctx.B.IndexBuffer, arenas.CornerSlot)[corner];
+        return float3(BindlessBuffer(Vertex,ctx.B.VertexBuffer, arenas.VertexSlot)[v].Position);
+    };
+    return ComputeCornerFrame(normal, position(h), position(conn.Next(h)), position(conn.Previous(h)));
+}
+
+kernel void TopologyCustomNormals(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
@@ -1245,31 +1374,61 @@ kernel void TopologyCustomPopcount(
     const TopoContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
     const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint w = tile.y * ScanTileSize + lane;
-    if (job.DstCustomCornerMaskOffset == InvalidOffset || w > job.CustomWordCount) return;
-    ctx.Scratch()[job.CustomPopcountOffset + w] = w < job.CustomWordCount ? popcount(ctx.DstCustomMasks(job)[w].x) : 0u;
+    const uint d = tile.y * ScanTileSize + lane;
+    if (!(job.CornerAttributes & MeshAttributeBit_Normal)) return;
+    if (d < job.RetainedNormalCornerCount) {
+        const uint h = WorkGroupElement(bindless,job.RetainedNormalCorners,d);
+        if (WorkRank(bindless,job.SrcHalfedgeWork,h) == InvalidOffset) {
+            const float2 offset = CustomNormalOffset(bindless,pc.Source.CustomNormals,h);
+            if (offset.x >= 0.f) {
+                const float3 before = TopoDerivedCornerNormal(ctx,pc.Source,ctx.Src(job),h);
+                const float3 normal = DecodeNormalOffset(offset,TopoCornerFrame(ctx,pc.Source,ctx.Src(job),h,before));
+                const float3 after = TopoDerivedCornerNormal(ctx,pc.Destination,ctx.Dst(job),h);
+                const float2 result = EncodeNormalOffset(normal,TopoCornerFrame(ctx,pc.Destination,ctx.Dst(job),h,after));
+                BindlessBufferMutable(packed_float2,bindless.Buffer,pc.Destination.CustomNormals.ValuesSlot)[ElementAttributeIndex(bindless,pc.Destination.CustomNormals,h)] = result;
+            }
+        }
+    }
+    if (d >= job.DstHalfedgeCount) return;
+    device const uint *map = ctx.CornerMap(job) + TopoCornerMapWords * d;
+    const float s = as_type<float>(map[4]), t = as_type<float>(map[5]);
+    const float4 weights = float4((1.f - s) * (1.f - t), s * (1.f - t), s * t, (1.f - s) * t);
+    const auto src = ctx.Src(job);
+    const auto dst = ctx.Dst(job);
+    float3 normal = float3(0);
+    bool authored = false;
+    for (uint k = 0u; k < 4u; ++k) {
+        if (weights[k] == 0.f) continue;
+        const uint h = map[k];
+        const float2 offset = CustomNormalOffset(bindless, pc.Source.CustomNormals, h);
+        float3 n = TopoDerivedCornerNormal(ctx, pc.Source, src, h);
+        if (offset.x >= 0.f) {
+            authored = true;
+            n = DecodeNormalOffset(offset, TopoCornerFrame(ctx, pc.Source, src, h, n));
+        }
+        normal += weights[k] * n;
+    }
+    const uint hd = job.DstCornerOffset + d;
+    float2 result = float2(-1.f, 0.f);
+    if (authored && dot(normal, normal) > 1e-20f) {
+        normal = TopoCopyNormal(ctx, job, ctx.SrcCorners(job)[map[0]], ctx.CornerProvenance(job)[d].x, normal);
+        const uint fd = ctx.CornerProvenance(job)[d].y;
+        const uint f = ctx.FaceMap(job)[fd];
+        if (f != InvalidOffset && ctx.SrcSelectedFace(job, f)) {
+            if (job.Op == MeshTopologyOp::FlipNormals) normal = -normal;
+            else if (TopoFlipsCopies(job) && TopoRegionDuplicates(ctx, job)) {
+                const uint first = ctx.Counts(job, TopoCountFaces)[ctx.FaceEntry(job, f)];
+                if (fd > first && fd - first <= job.Steps) normal = -normal;
+            }
+        }
+        normal = NormalizeOrZero(normal);
+        if (dot(normal, normal) > 0.f) {
+            result = EncodeNormalOffset(normal, TopoCornerFrame(ctx, pc.Destination, dst, hd, TopoDerivedCornerNormal(ctx, pc.Destination, dst, hd)));
+        }
+    }
+    BindlessBufferMutable(packed_float2, bindless.Buffer, pc.Destination.CustomNormals.ValuesSlot)[ElementAttributeIndex(bindless, pc.Destination.CustomNormals, hd)] = result;
 }
 
-// Packs each present custom normal to its ranked slot, copied from the source corner's slot.
-kernel void TopologyCustomPack(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const TopoContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint i = tile.y * ScanTileSize + lane;
-    if (job.DstCustomCornerMaskOffset == InvalidOffset || i >= ctx.DstFanCornerTotal(job)) return;
-    const packed_uint2 mask = ctx.DstCustomMasks(job)[i >> 5u];
-    if (((mask.x >> (i & 31u)) & 1u) == 0u) return;
-    const uint hd = ctx.DstFanCornerHalfedge(job, i);
-    const uint a = ctx.SrcFanCorner(job, ctx.CornerMap(job)[TopoCornerMapWords * hd]);
-    const packed_uint2 src_mask = ctx.SrcCustomMasks(job)[a >> 5u];
-    const uint src_rank = src_mask.y + popcount(src_mask.x & ((1u << (a & 31u)) - 1u));
-    const uint dst_rank = mask.y + popcount(mask.x & ((1u << (i & 31u)) - 1u));
-    ctx.DstCustomNormals(job)[dst_rank] = ctx.SrcCustomNormals(job)[src_rank];
-}
 
 // Carries edge sharpness and edge selection through the corner map once the output connectivity numbers its edges.
 kernel void TopologyEdgeAttributes(
@@ -1283,11 +1442,11 @@ kernel void TopologyEdgeAttributes(
     const uint hd = tile.y * ScanTileSize + lane;
     if (hd >= job.DstHalfedgeCount) return;
     const auto dst = ctx.Dst(job);
-    if (!dst.EdgeFirst(hd)) return;
-    const uint e = dst.Edge(hd);
+    if (!dst.EdgeFirst(job.DstCornerOffset + hd)) return;
+    const uint e = dst.Edge(job.DstCornerOffset + hd);
     const uint source = ctx.CornerEdgeSource(job, hd);
     ctx.DstEdgeSharpness(job)[e] = source != InvalidOffset ? ctx.SrcEdgeSharpness(job)[ctx.SrcEdge(job, source)] : uchar(0);
-    if (ctx.CornerSelected(job, hd)) ctx.Select(job.DstEdgeBitsOffset, e);
+    ctx.SelectDstEdge(job, e, ctx.CornerSelected(job, hd));
 }
 
 #endif

@@ -94,7 +94,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     const auto &impact_positions = source->Positions;
                     const auto &mesh = GetMesh(r, mesh_entity);
                     for (size_t i = 0; i < impact_positions.size(); ++i) {
-                        vertex_indices[i] = *mesh.FindNearestVertex(impact_positions[i]);
+                        vertex_indices[i] = mesh.VertexOrdinal(mesh.FindNearestVertex(impact_positions[i]));
                     }
                 }
 

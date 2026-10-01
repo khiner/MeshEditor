@@ -1,8 +1,11 @@
 #pragma once
 #include "viewport/ViewportRenderGpu.h"
+#include <Foundation/NSSharedPtr.hpp>
 // Metal command buffers are single-use, and RecordedPhase tracks the last build.
 struct ViewportRenderResources {
-    MTL::CommandBuffer *InFlight{nullptr}; // The submitted frame, until it completes.
+    ViewportRenderResources();
+    ~ViewportRenderResources();
+    NS::SharedPtr<MTL::CommandBuffer> InFlight;
     RenderPhase RecordedPhase{RenderPhase::Full};
 };
 

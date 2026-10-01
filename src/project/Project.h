@@ -7,7 +7,12 @@
 #include "project/EntityStore.h"
 #include "project/store/History.h"
 
+#include <memory>
 #include <span>
+
+namespace action::mesh {
+struct InsetPreviewCache;
+}
 
 namespace project {
 // An action's name, and for a field write the component and field it names.
@@ -64,6 +69,8 @@ struct Project {
         int CurrentFrame{};
         bool FixedFrameStep{};
         EventPass Pass{EventPass::Frame};
+        bool Staged{};
+        bool PreviewSeed{};
     };
     struct RecordedAction {
         ReplayInputs Inputs;
@@ -76,6 +83,7 @@ struct Project {
     size_t GestureStart{};
     // The action being applied is a staged preview, so mesh operators draw their output without replacing the mesh.
     bool Previewing{false};
+    std::unique_ptr<action::mesh::InsetPreviewCache> InsetPreview;
     std::optional<int> Navigation;
     std::optional<int> Editing; // The node the open gesture replaces on commit
 
@@ -94,7 +102,7 @@ struct Project {
     // The commit that follows replaces a leaf node and forks a node with children.
     void RequestRestage() { RestageRequested = true; }
 
-    void Tick(const action::Action &, EventPass = EventPass::Frame);
+    void Tick(const action::Action &, EventPass = EventPass::Frame, bool staged = false);
     // Applies the action and records it with the frame inputs it ran under.
     bool Record(action::Action, EventPass, bool staged = false);
     std::expected<void, std::string> RunRecorded(std::span<const RecordedAction>);

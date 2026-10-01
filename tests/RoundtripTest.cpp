@@ -1103,12 +1103,6 @@ int main(int argc, const char **argv) {
         CompareRegistries("destroyed", f.R, g.R);
     };
 
-    // Reclaim retired arena buffers after each clear because this test has no render frames in flight.
-    const auto clear_scene = [](state::Scene &r, state::Entity vp) {
-        ClearScene(r, vp);
-        r.Context.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
-    };
-
     // Check each sample through JSON comparison and byte-identical project restoration.
     // Compare registries for derived components omitted from the persistent image.
     SceneFixture fx;
@@ -1121,7 +1115,7 @@ int main(int argc, const char **argv) {
 
         test(sample_name) = [&] {
             ProcessComponentEvents(fx.R, fx.Viewport);
-            clear_scene(fx.R, fx.Viewport);
+            ClearScene(fx.R, fx.Viewport);
 
             const auto load = gltf::LoadGltf(src, fx.R, fx.Viewport);
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); skips both round-trips.
@@ -1137,7 +1131,7 @@ int main(int argc, const char **argv) {
 
             const auto before = fx.SaveTo(dir);
             ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
-            clear_scene(restore_fx.R, restore_fx.Viewport);
+            ClearScene(restore_fx.R, restore_fx.Viewport);
             const auto after = restore_fx.LoadFrom(dir);
             ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
 

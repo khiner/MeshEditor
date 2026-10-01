@@ -2,7 +2,6 @@
 #include "gpu/BackgroundConstant.h"
 #include "gpu/EditOverlayConstant.h"
 #include "gpu/MeshVertexConstant.h"
-#include "gpu/NormalIndicatorConstant.h"
 #include "gpu/PbrConstant.h"
 #include "state/Scene.h"
 
@@ -35,9 +34,6 @@ std::vector<mtl::FunctionConstant> MeshVertexConstants(bool non_triangle_topolog
     return {
         BoolConstant(MeshVertexConstant::NonTriangleTopology, non_triangle_topology),
     };
-}
-FunctionRef NormalIndicatorMesh(bool faces) {
-    return {"NormalIndicator.metal", "NormalIndicatorMesh", {BoolConstant(NormalIndicatorConstant::NormalIndicatorFaces, faces)}};
 }
 
 FunctionRef MeshletVertex(bool non_triangle_topology = false) {
@@ -137,9 +133,9 @@ MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
       MeshletVisibilityCoverage{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityPrimitiveFragment"}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
       MeshletEditEdges{StrokePipeline(libraries, {"MeshletEditOverlay.metal", "MeshletEditEdgeMesh"}, true)},
       MeshletEditSmoothEdges{StrokePipeline(libraries, {"MeshletEditOverlay.metal", "MeshletEditEdgeMesh"})},
-      MeshletEditPoint{CreateMeshPipeline(libraries, FunctionRef{"VertexPoint.metal", "VertexPointFragment"}, OverlayFormats(), {Blend}, DepthTestNoWriteLessEqual, {"MeshletEditOverlay.metal", "MeshletEditPointMesh"})},
-      FaceNormalMesh{StrokePipeline(libraries, NormalIndicatorMesh(true))},
-      VertexNormalMesh{StrokePipeline(libraries, NormalIndicatorMesh(false))},
+      VertexBlockPoints{CreateMeshPipeline(libraries, FunctionRef{"VertexPoint.metal", "VertexPointFragment"}, OverlayFormats(), {Blend}, DepthTestNoWriteLessEqual, {"VertexBlockOverlay.metal", "VertexBlockPointMesh"})},
+      FaceNormalMesh{StrokePipeline(libraries, {"NormalIndicator.metal", "FaceNormalIndicatorMesh"})},
+      VertexNormalMesh{StrokePipeline(libraries, {"NormalIndicator.metal", "VertexNormalIndicatorMesh"})},
       OverlayJobLines{StrokePipeline(libraries, {"OverlayJobLine.metal", "OverlayJobLineMesh"})},
       BoneFillMesh{CreateMeshPipeline(libraries, FunctionRef{"BoneSolid.metal", "BoneSolidFragment"}, OverlayFormats(), {Blend}, DepthTestWrite, {"BoneSolid.metal", "BoneSolidMesh"})},
       BoneWireMesh{StrokePipeline(libraries, {"BoneWire.metal", "BoneWireMesh"})},
@@ -155,11 +151,11 @@ SelectionFragmentPipeline::SelectionFragmentPipeline(mtl::LibraryCache &librarie
           CreateMeshPipeline(libraries, FunctionRef{"SelectionElementPick.metal", "SelectionElementPickFragment"}, SelectionFormats(), {}, DepthOff),
           CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"}, SelectionFormats(), {}, DepthOff),
       },
-      MeshletVertices{
-          MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectPointMesh"}, false, false),
-          MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectPointMesh"}, true, false),
-          MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectPointMesh"}, false, true),
-          MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectPointMesh"}, true, true),
+      VertexBlocks{
+          MeshletElementRaster(libraries, {"VertexBlockOverlay.metal", "VertexBlockSelectMesh"}, false, false),
+          MeshletElementRaster(libraries, {"VertexBlockOverlay.metal", "VertexBlockSelectMesh"}, true, false),
+          MeshletElementRaster(libraries, {"VertexBlockOverlay.metal", "VertexBlockSelectMesh"}, false, true),
+          MeshletElementRaster(libraries, {"VertexBlockOverlay.metal", "VertexBlockSelectMesh"}, true, true),
       },
       MeshletEdges{
           MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectEdgeMesh"}, false, false),
@@ -175,7 +171,7 @@ SelectionFragmentPipeline::SelectionFragmentPipeline(mtl::LibraryCache &librarie
       BoneSphere{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, SelectionFormats(), {}, DepthOff, {"BoneSphere.metal", "BoneSphereMesh"})} {}
 
 const RenderPipeline &SelectionFragmentPipeline::ElementRaster(Element element, bool bitset_box, bool xray) const {
-    const auto &variants = element == Element::Face ? MeshletFaces : element == Element::Vertex ? MeshletVertices :
+    const auto &variants = element == Element::Face ? MeshletFaces : element == Element::Vertex ? VertexBlocks :
                                                                                                   MeshletEdges;
     return variants[uint32_t(bitset_box) + 2u * uint32_t(xray)];
 }
@@ -185,20 +181,13 @@ Pipelines::Pipelines(mtl::LibraryCache &libraries)
       Silhouette{CreateMeshPipeline(libraries, FunctionRef{"VisibilitySelection.metal", "MeshletSilhouetteFragment"}, PassFormats{{Format::Float2}, Format::Depth}, {NoBlend}, DepthTestLessEqual, MeshletVisibilityVertex())},
       SelectionFragment{libraries},
       VisibilityObjectSelection{libraries, {"VisibilitySelection.metal", "VisibilityObjectSelectionKernel"}},
-      PrepareEditSelection{libraries, {"EditSelectionTransaction.metal", "PrepareEditSelectionKernel"}},
-      FillEditSelectionList{libraries, {"EditSelectionTransaction.metal", "FillEditSelectionListKernel"}},
-      ResetEditSelectionSummary{libraries, {"EditSelectionTransaction.metal", "ResetEditSelectionSummaryKernel"}},
-      DeriveEditSelection{libraries, {"EditSelectionTransaction.metal", "DeriveEditSelectionKernel"}},
-      SumEditSelectionPosition{libraries, {"EditSelectionTransaction.metal", "SumEditSelectionPositionKernel"}},
       EditSharpness{libraries, {"EditSharpness.metal", "EditSharpnessKernel"}},
       CommitPosedGeometry{libraries, {"CommitPosedGeometry.metal", "CommitPosedGeometryKernel"}},
-      GeometryWorkArgs{libraries, {"CommitPosedGeometry.metal", "GeometryWorkArgsKernel"}},
+      FinalizeElementWork{libraries, {"CommitPosedGeometry.metal", "FinalizeElementWorkKernel"}},
       PosePrepass{libraries, {"PosePrepass.metal", "PosePrepassKernel"}},
       PosedMeshletBounds{libraries, {"PosedMeshletBounds.metal", "PosedMeshletBoundsKernel"}},
-      VertexNormalDerive{libraries, {"VertexNormalDerive.metal", "VertexNormalDeriveKernel"}},
       BoundsReduce{libraries, {"BoundsReduce.metal", "BoundsReduceKernel"}},
       BoundsCombine{libraries, {"BoundsCombine.metal", "BoundsCombineKernel"}},
-      BoundsTree{libraries, {"BoundsTree.metal", "BoundsTreeKernel"}},
       WireRaster{libraries, {"WireRaster.metal", "WireRasterKernel"}},
       LodFrontierCount{libraries, {"MeshletCull.metal", "LodFrontierCount"}},
       LodFrontierPrefix{libraries, {"MeshletCull.metal", "LodFrontierPrefix"}},

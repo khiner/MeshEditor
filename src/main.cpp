@@ -1708,7 +1708,6 @@ bool RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initi
     if (driver.SeedFailed) {
         return false;
     }
-    r.Context.get<ViewportExtent>().Value = DefaultWindowSize;
     if (capture.NormalOverlays != 0) Perform(r, action::UpdateOf<&ViewportDisplay::NormalOverlays>(action::OnViewport{}, capture.NormalOverlays));
     if (capture.BoundingBoxes) Perform(r, action::UpdateOf<&ViewportDisplay::ShowBoundingBoxes>(action::OnViewport{}, true));
     if (capture.TetWireframe) Perform(r, action::UpdateOf<&ViewportDisplay::ShowTetWireframe>(action::OnViewport{}, true));

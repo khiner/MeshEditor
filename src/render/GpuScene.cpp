@@ -1,691 +1,282 @@
-#include "numeric/VectorMath.h"
 #include "render/GpuBuffers.h"
 #include "render/MeshletBuild.h"
+#include "render/MeshletBuildGpu.h"
 
-#include "FlatKeyMap.h"
-#include "Parallel.h"
-#include "gpu/CornerClassEncoding.h"
-#include "gpu/MeshPrimitiveTopology.h"
-#include "gpu/MeshletEditEdgeEncoding.h"
-#include "gpu/MeshletGeometryEncoding.h"
-#include "gpu/MeshletLimit.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
+#include "state/Scene.h"
 
-#include "meshoptimizer.h"
-
-#include <bit>
-#include <limits>
-#include <numeric>
-
-namespace {
-constexpr size_t MeshletMaxVertices{size_t(MeshletLimit::MaxVertices)};
-constexpr size_t MeshletMaxTriangles{size_t(MeshletLimit::MaxTriangles)};
-// Split large primitives deterministically into independently clustered spatial chunks.
-constexpr uint32_t ChunkTriangles{128u * 1024u};
-
-std::array<uint32_t, 3> CanonicalTriangle(std::array<uint32_t, 3> triangle) {
-    const std::array rotations{triangle, std::array{triangle[1], triangle[2], triangle[0]}, std::array{triangle[2], triangle[0], triangle[1]}};
-    return *std::ranges::min_element(rotations);
-}
-
-uint32_t PackLocalTriangleOffset(uint32_t offset, MeshPrimitiveTopology topology) {
-    assert((offset & ~uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask)) == 0u);
-    return offset | (uint32_t(topology) << uint32_t(MeshletGeometryEncoding::TopologyShift));
-}
-
-std::vector<uint32_t> BuildTriangleEditEdges(const Mesh &mesh, std::span<const uint32_t> face_first_triangles) {
-    std::vector<uint32_t> result(mesh.TriangleIndexCount(), InvalidOffset);
-    const auto write = [&](Mesh::HH halfedge, uint32_t slot) {
-        const uint32_t edge = *mesh.GetEdge(halfedge);
-        const auto canonical = mesh.GetHalfedge(Mesh::EH{edge}, 0u);
-        const bool reversed = mesh.GetFromVertex(canonical) != mesh.GetFromVertex(halfedge);
-        assert(mesh.GetFromVertex(canonical) == (reversed ? mesh.GetToVertex(halfedge) : mesh.GetFromVertex(halfedge)));
-        assert(mesh.GetToVertex(canonical) == (reversed ? mesh.GetFromVertex(halfedge) : mesh.GetToVertex(halfedge)));
-        assert(edge <= uint32_t(MeshletEditEdgeEncoding::EdgeMask));
-        result[slot] = edge | (reversed ? uint32_t(MeshletEditEdgeEncoding::ReversedBit) : 0u);
-    };
-    for (const auto face : mesh.faces()) {
-        const auto halfedges = mesh.fh_range(face);
-        auto it = halfedges.begin();
-        const auto end = halfedges.end();
-        const auto first_halfedge = *it++;
-        const auto second = *it++;
-        const uint32_t first_triangle = face_first_triangles[*face];
-        for (uint32_t triangle = 0u; it != end; ++it, ++triangle) {
-            const uint32_t base = (first_triangle + triangle) * 3u;
-            if (triangle == 0u) write(second, base);
-            write(*it, base + 1u);
-            if (auto next = it; ++next == end) write(first_halfedge, base + 2u);
-        }
-    }
-    return result;
-}
-
-// Stores meshlets for one spatial chunk of a primitive.
-// Vertex offsets stay relative to the chunk's vertex list until the merge places them.
-struct MeshletChunk {
-    uint32_t FirstTriangle{}, TriangleCount{}, TriangleIdBase{};
-    std::vector<MeshletRecord> Records{};
-    std::vector<uint32_t> Vertices{};
-};
-
-// Splits at the median of meshopt's widest centroid axis.
-void SplitTriangleChunks(std::span<uint32_t> triangles, std::span<const std::array<float, 3>> centroids, uint32_t first, std::vector<MeshletChunk> &chunks) {
-    if (triangles.size() <= ChunkTriangles) {
-        chunks.emplace_back(MeshletChunk{.FirstTriangle = first, .TriangleCount = uint32_t(triangles.size())});
-        return;
-    }
-    float mean[3]{}, vars[3]{};
-    float count = 1, inverse = 1;
-    for (const auto triangle : triangles) {
-        const auto &point = centroids[triangle];
-        for (uint32_t k = 0; k < 3u; ++k) {
-            const float delta = point[k] - mean[k];
-            mean[k] += delta * inverse;
-            vars[k] += delta * (point[k] - mean[k]);
-        }
-        count += 1.f;
-        inverse = 1.f / count;
-    }
-    const uint32_t axis = (vars[0] >= vars[1] && vars[0] >= vars[2]) ? 0u : (vars[1] >= vars[2] ? 1u : 2u);
-    const auto middle = triangles.size() / 2;
-    std::nth_element(triangles.begin(), triangles.begin() + middle, triangles.end(), [&](uint32_t a, uint32_t b) { return centroids[a][axis] < centroids[b][axis]; });
-    SplitTriangleChunks(triangles.first(middle), centroids, first, chunks);
-    SplitTriangleChunks(triangles.subspan(middle), centroids, first + uint32_t(middle), chunks);
-}
+#include <utility>
 
 // The mesh's shared arena locations, which ComposeDraw advances to each primitive's first triangle.
 MeshRecord BuildMeshRecord(const GpuBuffers &buffers, const MeshBuffers &mb, const MeshStore &meshes, uint32_t store_id, bool face_topology, bool line_topology) {
     const auto &record = meshes.Get(store_id);
-    const auto &derived = meshes.GetDerived(store_id);
     const auto &arenas = meshes.Arenas();
     if (!face_topology) {
         return {
             .VertexSlot = mb.Vertices.Slot,
-            .IndexSlotOffset = line_topology ? mb.EdgeIndices : mb.VertexIndices,
+            .IndexSlotOffset = line_topology ? SlotOffset{arenas.FaceCorners.Buffer.Slot, arenas.FaceCorners.First(record.FaceCorners)} : SlotOffset{},
             .ModelSlot = buffers.Instances.TransformBuffer.Slot,
-            .ObjectIdSlot = InvalidSlot,
-            .CornerColorOffset = OffsetOrInvalid(record.CornerColors),
+            .TriangleSlot = InvalidSlot,
+            .CornerColor = arenas.VertexColors.Ref(record.VertexAttributes & MeshAttributeBit_Color0),
+            .Connectivity = meshes.GetConnectivityRef(store_id),
             .VertexCountOrHeadImageSlot = mb.Vertices.Count,
             .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
             .VertexOffset = mb.Vertices.Offset,
             .PrimitiveMaterialOffset = OffsetOrInvalid(record.PrimitiveMaterials),
-            .ElementPrimitiveOffset = OffsetOrInvalid(record.ElementPrimitives),
+            .ElementPrimitives = record.VertexPrimitivesReady ? arenas.VertexPrimitives.Ref() : ElementAttributeRef{},
         };
     }
     return {
         .VertexSlot = mb.Vertices.Slot,
-        .IndexSlotOffset = mb.FaceIndices,
+        .IndexSlotOffset = {arenas.FaceCorners.Buffer.Slot,arenas.FaceCorners.First(record.FaceCorners)},
         .ModelSlot = buffers.Instances.TransformBuffer.Slot,
-        .ObjectIdSlot = arenas.TriangleFaceIds.Buffer.Slot,
-        .CornerClassOffset = meshes.GetCornerClassOffset(store_id),
-        .CustomCornerMaskOffset = OffsetOrInvalid(record.CustomCornerMasks),
-        .CustomCornerNormalOffset = OffsetOrInvalid(record.CustomCornerNormals),
-        .BaseSeamNormalOffset = OffsetOrInvalid(derived.BaseSeamNormals),
-        .CornerTangentOffset = OffsetOrInvalid(record.CornerTangents),
-        .CornerColorOffset = OffsetOrInvalid(record.CornerColors),
-        .CornerUvOffsets = {OffsetOrInvalid(record.CornerUvs[0]), OffsetOrInvalid(record.CornerUvs[1]), OffsetOrInvalid(record.CornerUvs[2]), OffsetOrInvalid(record.CornerUvs[3])},
-        .FaceIdOffset = record.TriangleFaceIds.Offset,
-        .BaseFaceNormalOffset = record.FaceData.Offset,
-        .FaceFirstTriangleOffset = record.FaceData.Offset,
-        .VertexEdgeAdjacencyOffset = OffsetOrInvalid(derived.VertexEdgeAdjacency),
-        .VertexFanAdjacencyOffset = OffsetOrInvalid(derived.VertexFanAdjacency),
-        .Connectivity = arenas.Connectivity.Slotted(record.Connectivity),
-        .HalfedgeCount = record.FaceCorners.Count,
-        .FaceCount = record.FaceData.Count,
-        .ConnectivityFaceStarts = record.ConnectivityFaceStarts ? 1u : 0u,
+        .TriangleSlot = arenas.Triangles.Buffer.Slot,
+        .CornerClassMode = meshes.GetCornerClassMode(store_id),
+        .CustomNormals = arenas.CustomNormals.Ref(record.CornerAttributes & MeshAttributeBit_Normal),
+        .CornerTangent = arenas.CornerTangents.Ref(record.CornerAttributes & MeshAttributeBit_Tangent),
+        .CornerColor = arenas.CornerColors.Ref(record.CornerAttributes & MeshAttributeBit_Color0),
+        .CornerUvs = {arenas.CornerUvs[0].Ref(record.CornerAttributes & MeshAttributeBit_TexCoord0), arenas.CornerUvs[1].Ref(record.CornerAttributes & MeshAttributeBit_TexCoord1), arenas.CornerUvs[2].Ref(record.CornerAttributes & MeshAttributeBit_TexCoord2), arenas.CornerUvs[3].Ref(record.CornerAttributes & MeshAttributeBit_TexCoord3)},
+        .TriangleOffset = arenas.Triangles.First(record.TriangleData),
+        .Connectivity = meshes.GetConnectivityRef(store_id),
+        .HalfedgeCount = meshes.Arenas().FaceCorners.Count(record.FaceCorners),
+        .FaceCount = meshes.Arenas().FaceTriangles.Count(record.FaceData),
         .VertexCountOrHeadImageSlot = mb.Vertices.Count,
-        .EditEdgeOffset = 0u,
         .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
         .VertexOffset = mb.Vertices.Offset,
-        .MorphShadingAuthored = derived.MorphShadingAuthored ? 1u : 0u,
+        .MorphShadingAuthored = meshes.Get(store_id).MorphShadingAuthored ? 1u : 0u,
         .PrimitiveMaterialOffset = OffsetOrInvalid(record.PrimitiveMaterials),
-        .ElementPrimitiveOffset = OffsetOrInvalid(record.ElementPrimitives),
+        .ElementPrimitives = arenas.FacePrimitives.Ref(),
     };
 }
-} // namespace
 
-MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &buffers, const MeshBuffers &mb, const Mesh &mesh, const MeshStore &meshes) {
+MeshletBuildInputs CaptureMeshletInputs(const Mesh &mesh, const MeshStore &meshes, TriangleCorners triangle_corners) {
     const uint32_t store_id = mesh.GetStoreId();
-    // Triangle meshes use store corners; n-gons use the prebuilt triangulated index buffer.
-    const auto corners = mesh.CornerVertices();
-    const auto indices = corners.size() == mesh.TriangleIndexCount() ? corners : buffers.FaceIndexBuffer.Get(mb.FaceIndices);
-    assert(indices.size() == mesh.TriangleIndexCount());
 
     const bool face_topology = mesh.FaceCount() > 0u;
-    const bool line_topology = !face_topology && mesh.EdgeCount() != 0u;
     const auto &record = meshes.Get(store_id);
-    const auto &derived = meshes.GetDerived(store_id);
     const auto &arenas = meshes.Arenas();
-    const auto &primitive_ranges = record.PrimitiveTriangleRanges;
     MeshletBuildInputs inputs{
-        .Indices = indices,
-        .Vertices = mesh.GetVerticesSpan(),
-        .ElementPrimitives = arenas.ElementPrimitives.Get(record.ElementPrimitives),
-        .TriangleEditEdges = face_topology ? BuildTriangleEditEdges(mesh, arenas.FaceFirstTriangles.Get(record.FaceData)) : std::vector<uint32_t>{},
-        .PrimitiveTriangleRanges = {primitive_ranges.begin(), primitive_ranges.end()},
+        .Indices = {triangle_corners,arenas.FaceCorners.Buffer.GetSpan<uint32_t>()},
+        .Vertices = arenas.Vertices.Buffer.GetSpan<Vertex>(),
+        .VertexFirst = 0u,
+        .DenseVertices = record.Vertices && (arenas.Vertices.Set(record.Vertices).Flags & 1u) ? arenas.Vertices.Dense(record.Vertices) : Range{},
+        .Normals = meshes.GetCornerNormalView(store_id),
         .Weld = {
-            .CornerClassOffset = meshes.GetCornerClassOffset(store_id),
-            .CornerClasses = arenas.CornerClasses.Get(derived.CornerClasses),
-            .TriangleFaceIds = arenas.TriangleFaceIds.Get(record.TriangleFaceIds),
-            .CustomCornerMasks = arenas.CustomCornerMasks.Get(record.CustomCornerMasks),
+            .CornerClassMode = meshes.GetCornerClassMode(store_id),
+            .CornerSectors = {arenas.CornerSectors.View(), triangle_corners},
+            .FaceSharpness = arenas.FaceSharpness.Buffer.GetSpan<uint8_t>(),
+            .TriangleFaces = {triangle_corners, arenas.HalfedgeFaces.Buffer.GetSpan<uint32_t>()},
+            .CustomNormals = {arenas.CustomNormals.View(record.CornerAttributes & MeshAttributeBit_Normal), triangle_corners},
             .CornerUvs = {
-                arenas.CornerUvs.Get(record.CornerUvs[0]),
-                arenas.CornerUvs.Get(record.CornerUvs[1]),
-                arenas.CornerUvs.Get(record.CornerUvs[2]),
-                arenas.CornerUvs.Get(record.CornerUvs[3]),
+                CornerAttributeView<vec2>{arenas.CornerUvs[0].View(record.CornerAttributes & (MeshAttributeBit_TexCoord0 << 0)), triangle_corners},
+                CornerAttributeView<vec2>{arenas.CornerUvs[1].View(record.CornerAttributes & (MeshAttributeBit_TexCoord0 << 1)), triangle_corners},
+                CornerAttributeView<vec2>{arenas.CornerUvs[2].View(record.CornerAttributes & (MeshAttributeBit_TexCoord0 << 2)), triangle_corners},
+                CornerAttributeView<vec2>{arenas.CornerUvs[3].View(record.CornerAttributes & (MeshAttributeBit_TexCoord0 << 3)), triangle_corners},
             },
-            .CornerTangents = arenas.CornerTangents.Get(record.CornerTangents),
-            .CornerColors = arenas.CornerColors.Get(record.CornerColors),
-            .MorphShadingAuthored = derived.MorphShadingAuthored,
+            .CornerTangents = CornerAttributeView<vec4>{arenas.CornerTangents.View(record.CornerAttributes & MeshAttributeBit_Tangent), triangle_corners},
+            .CornerColors = CornerAttributeView<vec4>{arenas.CornerColors.View(record.CornerAttributes & MeshAttributeBit_Color0), triangle_corners},
+            .MorphShadingAuthored = meshes.Get(store_id).MorphShadingAuthored,
         },
-        .TriangleCount = mesh.TriangleIndexCount() / 3u,
-        .ElementCount = face_topology ? 0u : (line_topology ? mesh.EdgeCount() : mesh.VertexCount()),
-        .EdgeCount = mesh.EdgeCount(),
-        .SourcePrimitiveCount = record.PrimitiveMaterials.Count,
         .FaceTopology = face_topology,
-        .LineTopology = line_topology,
-        .AuxIndices = mb.EdgeIndices,
-        .Mesh = BuildMeshRecord(buffers, mb, meshes, store_id, face_topology, line_topology),
     };
-    if (line_topology) {
-        inputs.EdgeIndices.resize(size_t(inputs.ElementCount) * 2u);
-        mesh.WriteEdgeIndices(inputs.EdgeIndices);
-    }
     return inputs;
 }
 
-// Touches only its own captured inputs and its own vectors, so this runs on any thread.
-MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
-    const auto vertices = in.Vertices;
-    const auto element_primitives = in.ElementPrimitives;
-
-    const bool face_topology = in.FaceTopology;
-    const bool line_topology = in.LineTopology;
-    // Position-only visibility shares four quad vertices and fits sixteen elements under the 64-vertex output limit.
-    constexpr uint32_t ElementsPerMeshlet{16u};
-    const uint32_t element_count = in.ElementCount;
-    const auto &edge_indices = in.EdgeIndices;
-    std::vector<std::vector<uint32_t>> primitive_elements;
-    if (!face_topology) {
-        primitive_elements.resize(std::max(in.SourcePrimitiveCount, 1u));
-        for (uint32_t element = 0u; element < element_count; ++element) {
-            const uint32_t first_vertex = line_topology ? edge_indices[element * 2u] : element;
-            const uint32_t primitive = element_primitives.empty() ? 0u : element_primitives[first_vertex];
-            assert(primitive < primitive_elements.size());
-            if (line_topology && !element_primitives.empty()) {
-                assert(element_primitives[edge_indices[element * 2u + 1u]] == primitive);
-            }
-            primitive_elements[primitive].push_back(element);
-        }
+ClusterLodBuild BuildMeshletClusterLod(const GpuBuffers &buffers, const MeshBuffers &mb, const MeshletBuildInputs &in,
+                                      std::span<const uint32_t> primitive_triangle_counts) {
+    std::vector<uint32_t> placed;
+    buffers.ForEachPrimitive(mb,[&](uint32_t id, const PrimitiveRecord &) { placed.push_back(id); });
+    if (!ClusterLodApplies(in.FaceTopology,mb.Level0Count)) return {};
+    assert(buffers.ClusterGroupCount(mb) == 0u);
+    std::vector<ClusterLodPrimitive> primitives;
+    std::vector<ClusterLodSourceCluster> clusters;
+    clusters.reserve(mb.Level0Count);
+    if (!primitive_triangle_counts.empty() && primitive_triangle_counts.size()!=placed.size()) {
+        throw std::invalid_argument("Live LOD primitive triangle counts do not match the owner.");
     }
-
-    // Allocate one source ID and three local indices per meshlet triangle.
-    MeshletBuild sink{
-        .Mesh = in.Mesh,
-        .TriangleIds = std::vector<uint32_t>(face_topology ? in.TriangleCount : element_count),
-        .LocalTriangles = std::vector<uint8_t>(face_topology ? size_t(in.TriangleCount) * 3 : 0),
-        .EditEdges = std::move(in.TriangleEditEdges),
-    };
-
-    std::vector<uint8_t> flat_face_triangles;
-    std::vector<uint32_t> chunk_triangles;
-    std::vector<MeshletChunk> chunks;
-    // Each chunk uses disjoint input and output ranges and can run concurrently.
-    const auto build_chunk = [&](const PrimitiveTriangleRange &primitive, std::span<const uint32_t> primitive_indices, uint32_t primitive_record, MeshletChunk &chunk) {
-        if (chunk.TriangleCount == 0u) return;
-
-        const uint32_t first_index = primitive.FirstTriangle * 3u;
-        const uint32_t corner_count = chunk.TriangleCount * 3u;
-        const auto chunk_triangle_ids = std::span{chunk_triangles}.subspan(chunk.FirstTriangle, chunk.TriangleCount);
-
-        // Source-primitive confinement makes coverage classification uniform per meshlet.
-#ifndef NDEBUG
-        const auto face_ids = in.Weld.TriangleFaceIds;
-        for (const auto triangle : chunk_triangle_ids) {
-            assert(face_ids[primitive.FirstTriangle + triangle] > 0u && face_ids[primitive.FirstTriangle + triangle] <= element_primitives.size());
-            assert(element_primitives[face_ids[primitive.FirstTriangle + triangle] - 1u] == primitive.PrimitiveIndex);
-        }
-#endif
-        const CornerWeldKey key{in.Weld, first_index};
-        for (const auto triangle : chunk_triangle_ids) flat_face_triangles[triangle] = key.FlatFaceTriangle(triangle);
-
-        std::vector<uint32_t> welded_indices(corner_count, 0u), representative_corners;
-        std::vector<std::array<float, 3>> welded_positions;
-        FlatKeyMap welded;
-        welded.Reset(key.WordCount(), corner_count);
-        const auto append_render_vertex = [&](uint32_t corner, uint32_t chunk_corner) {
-            const uint32_t render_vertex = uint32_t(representative_corners.size());
-            welded_indices[chunk_corner] = render_vertex;
-            representative_corners.push_back(corner | (flat_face_triangles[corner / 3u] ? uint32_t(MeshletGeometryEncoding::FlatVertexBit) : 0u));
-            const vec3 position = vertices[primitive_indices[corner]].Position;
-            welded_positions.push_back(std::bit_cast<std::array<float, 3>>(position));
-            return render_vertex;
-        };
-        std::array<uint32_t, MaxWeldKeyWords> words{};
-        for (uint32_t i = 0; i < chunk.TriangleCount; ++i) {
-            for (uint32_t c = 0; c < 3u; ++c) {
-                const uint32_t corner = chunk_triangle_ids[i] * 3u + c;
-                const uint32_t chunk_corner = i * 3u + c;
-                if (key.WeldsAlone(corner)) {
-                    append_render_vertex(corner, chunk_corner);
-                    continue;
-                }
-                key.Write(corner, primitive_indices[corner], flat_face_triangles[corner / 3u], words);
-                if (const auto *found = welded.Find(words.data())) {
-                    welded_indices[chunk_corner] = *found;
-                    continue;
-                }
-                welded.Insert(words.data(), append_render_vertex(corner, chunk_corner));
-            }
-        }
-
-        const auto bound = meshopt_buildMeshletsBound(corner_count, MeshletMaxVertices, MeshletMaxTriangles);
-        std::vector<meshopt_Meshlet> built(bound);
-        std::vector<uint32_t> local_vertices(bound * MeshletMaxVertices);
-        std::vector<uint8_t> local_meshlet_triangles(bound * MeshletMaxTriangles * 3u);
-        const auto meshlet_count = meshopt_buildMeshlets(
-            built.data(), local_vertices.data(), local_meshlet_triangles.data(), welded_indices.data(), welded_indices.size(),
-            welded_positions.front().data(), welded_positions.size(), sizeof(welded_positions.front()),
-            MeshletMaxVertices, MeshletMaxTriangles, 0.5f
-        );
-        built.resize(meshlet_count);
-
-        FlatKeyMap source_triangles;
-        source_triangles.Reset(3u, chunk.TriangleCount);
-        for (uint32_t i = 0; i < chunk.TriangleCount; ++i) {
-            const auto offset = size_t(i) * 3;
-            const auto source_key = CanonicalTriangle({welded_indices[offset], welded_indices[offset + 1], welded_indices[offset + 2]});
-            source_triangles.Insert(source_key.data(), i);
-        }
-
-        const auto triangle_ids = std::span{sink.TriangleIds}.subspan(chunk.TriangleIdBase, chunk.TriangleCount);
-        const auto local_triangles = std::span{sink.LocalTriangles}.subspan(size_t(chunk.TriangleIdBase) * 3, size_t(chunk.TriangleCount) * 3);
-        uint32_t triangle_id_count = 0, local_triangle_count = 0;
-        for (const auto &meshlet : built) {
-            const uint32_t first_triangle_id = triangle_id_count;
-            const uint32_t first_local_triangle = local_triangle_count;
-            const uint32_t first_vertex = uint32_t(chunk.Vertices.size());
-            for (uint32_t v = 0; v < meshlet.vertex_count; ++v) {
-                chunk.Vertices.push_back(representative_corners[local_vertices[meshlet.vertex_offset + v]]);
-            }
-            bool cone_cull_safe = true;
-            for (uint32_t t = 0; t < meshlet.triangle_count; ++t) {
-                std::array<uint32_t, 3> triangle;
-                std::array<uint8_t, 3> local_triangle;
-                for (uint32_t c = 0; c < 3; ++c) {
-                    local_triangle[c] = local_meshlet_triangles[meshlet.triangle_offset + t * 3 + c];
-                    triangle[c] = local_vertices[meshlet.vertex_offset + local_triangle[c]];
-                }
-                const auto key = CanonicalTriangle(triangle);
-                auto *source = source_triangles.Find(key.data());
-                assert(source != nullptr);
-                const uint32_t chunk_triangle = *source;
-                const uint32_t source_triangle = chunk_triangle_ids[chunk_triangle];
-                const uint32_t source_index = primitive.FirstTriangle + source_triangle;
-                *source = FlatKeyMap::Taken;
-                cone_cull_safe &= flat_face_triangles[source_triangle] != 0u;
-                uint32_t rotation = 0u;
-                for (; rotation < 3u; ++rotation) {
-                    bool matches = true;
-                    for (uint32_t c = 0u; c < 3u; ++c) {
-                        matches &= triangle[c] == welded_indices[chunk_triangle * 3u + (rotation + c) % 3u];
-                    }
-                    if (matches) break;
-                }
-                assert(rotation < 3u);
-                const std::array source_edit_edges{
-                    sink.EditEdges[source_index * 3u],
-                    sink.EditEdges[source_index * 3u + 1u],
-                    sink.EditEdges[source_index * 3u + 2u],
-                };
-                for (uint32_t c = 0; c < 3u; ++c) {
-                    local_triangles[local_triangle_count++] = uint8_t(local_triangle[c] | (c == 0u && flat_face_triangles[source_triangle] ? uint8_t(MeshletGeometryEncoding::FlatTriangleBit) : 0u));
-                    sink.EditEdges[source_index * 3u + c] = source_edit_edges[(rotation + c) % 3u];
-                }
-                triangle_ids[triangle_id_count++] = source_index;
-            }
-            const auto bounds = meshopt_computeMeshletBounds(
-                local_vertices.data() + meshlet.vertex_offset,
-                local_meshlet_triangles.data() + meshlet.triangle_offset,
-                meshlet.triangle_count, welded_positions.front().data(), welded_positions.size(), sizeof(welded_positions.front())
-            );
-            chunk.Records.emplace_back(MeshletRecord{
-                .TriangleOffset = chunk.TriangleIdBase + first_triangle_id,
-                .TriangleCount = meshlet.triangle_count,
-                .VertexOffset = first_vertex,
-                .VertexCount = meshlet.vertex_count,
-                .LocalTriangleOffset = PackLocalTriangleOffset(chunk.TriangleIdBase * 3u + first_local_triangle, MeshPrimitiveTopology::Triangle),
-                .Primitive = primitive_record,
-                .ConeAxisCutoff = PackCone(bounds, cone_cull_safe),
-                .Center = std::bit_cast<vec3>(bounds.center),
-                .Radius = bounds.radius,
+    uint32_t triangle_cursor=0u;
+    for (uint32_t p = 0u; p < placed.size(); ++p) {
+        const auto &primitive = buffers.Primitives.Get({placed[p],1u})[0];
+        const auto root = primitive.LodFinestNode == InvalidOffset ? InvalidOffset :
+            buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot;
+        const uint32_t first_triangle=primitive_triangle_counts.empty() ?
+            primitive.TriangleOffset-mb.MeshletTriangles.Offset : triangle_cursor;
+        const uint32_t triangle_count=primitive_triangle_counts.empty() ? primitive.TriangleCount : primitive_triangle_counts[p];
+        if (!primitive_triangle_counts.empty()) triangle_cursor+=triangle_count;
+        primitives.push_back({
+            .FirstTriangle=first_triangle,
+            .TriangleCount=triangle_count,
+            .FirstCluster=uint32_t(clusters.size()),.ClusterCount=buffers.ActiveMeshlets.Count(root),
+            .Attributes=primitive.LodAttributes,
+        });
+        buffers.ActiveMeshlets.ForEach(root,[&](uint32_t id) {
+            const auto &record = buffers.Meshlets.Get({id,1u})[0];
+            clusters.push_back({
+                .FirstVertex=record.VertexOffset,.VertexCount=record.VertexCount,
+                .FirstLocalTriangle=record.LocalTriangleOffset,.TriangleCount=record.TriangleCount,
+                .Center=record.Center,.Radius=record.Radius,.ConeCullSafe=(record.ConeAxisCutoff>>24u) != 127u,
             });
-        }
-        // Every source triangle belongs to exactly one meshlet.
-        assert(triangle_id_count == chunk.TriangleCount);
-    };
-
-    for (uint32_t primitive_record_index = 0u; primitive_record_index < in.PrimitiveTriangleRanges.size(); ++primitive_record_index) {
-        const auto &primitive = in.PrimitiveTriangleRanges[primitive_record_index];
-        const auto first_index = size_t(primitive.FirstTriangle) * 3;
-        const auto index_count = size_t(primitive.TriangleCount) * 3;
-        const auto primitive_indices = in.Indices.subspan(first_index, index_count);
-
-        flat_face_triangles.assign(primitive.TriangleCount, 0u);
-        chunk_triangles.resize(primitive.TriangleCount);
-        std::iota(chunk_triangles.begin(), chunk_triangles.end(), 0u);
-        chunks.clear();
-        if (primitive.TriangleCount <= ChunkTriangles) {
-            chunks.emplace_back(MeshletChunk{.TriangleCount = primitive.TriangleCount});
-        } else {
-            // Splitting reads every centroid once per level, so gather them once into their own array.
-            constexpr uint32_t CentroidBlock{16u * 1024u};
-            std::vector<std::array<float, 3>> centroids(primitive.TriangleCount);
-            ParallelFor((primitive.TriangleCount + CentroidBlock - 1u) / CentroidBlock, [&](uint32_t block) {
-                const uint32_t last = std::min((block + 1u) * CentroidBlock, primitive.TriangleCount);
-                for (uint32_t triangle = block * CentroidBlock; triangle < last; ++triangle) {
-                    const vec3 centroid = (vec3{vertices[primitive_indices[triangle * 3u]].Position} +
-                                           vec3{vertices[primitive_indices[triangle * 3u + 1u]].Position} +
-                                           vec3{vertices[primitive_indices[triangle * 3u + 2u]].Position}) /
-                        3.f;
-                    centroids[triangle] = std::bit_cast<std::array<float, 3>>(centroid);
-                }
-            });
-            SplitTriangleChunks(chunk_triangles, centroids, 0u, chunks);
-        }
-
-        uint32_t triangle_id_base = sink.TriangleIdCount;
-        for (auto &chunk : chunks) {
-            chunk.TriangleIdBase = triangle_id_base;
-            triangle_id_base += chunk.TriangleCount;
-        }
-        const uint32_t primitive_record = uint32_t(sink.Primitives.size());
-        ParallelFor(uint32_t(chunks.size()), [&](uint32_t i) { build_chunk(primitive, primitive_indices, primitive_record, chunks[i]); });
-
-        // Merge chunks in split order for deterministic meshlet ordering.
-        const uint32_t first_meshlet = uint32_t(sink.Records.size());
-        size_t record_total = 0, vertex_total = 0;
-        for (const auto &chunk : chunks) {
-            record_total += chunk.Records.size();
-            vertex_total += chunk.Vertices.size();
-        }
-        sink.Records.reserve(sink.Records.size() + record_total);
-        sink.Vertices.reserve(sink.Vertices.size() + vertex_total);
-        for (auto &chunk : chunks) {
-            const uint32_t vertex_base = uint32_t(sink.Vertices.size());
-            for (auto &record : chunk.Records) record.VertexOffset += vertex_base;
-            sink.Records.insert(sink.Records.end(), chunk.Records.begin(), chunk.Records.end());
-            sink.Vertices.insert(sink.Vertices.end(), chunk.Vertices.begin(), chunk.Vertices.end());
-            sink.TriangleIdCount += chunk.TriangleCount;
-            sink.LocalTriangleCount += chunk.TriangleCount * 3u;
-            chunk.Records = {};
-            chunk.Vertices = {};
-        }
-
-        sink.Primitives.emplace_back(PrimitiveRecord{
-            .AuxIndices = in.AuxIndices,
-            .PrimitiveIndex = primitive.PrimitiveIndex,
-            .PrimitiveMaterialOffset = in.Mesh.PrimitiveMaterialOffset,
-            .FirstTriangle = primitive.FirstTriangle,
-            .MeshletOffset = first_meshlet,
-            .MeshletCount = uint32_t(sink.Records.size()) - first_meshlet,
-            .Level0Count = uint32_t(sink.Records.size()) - first_meshlet,
         });
     }
-
-    if (!face_topology) {
-        for (uint32_t primitive_index = 0u; primitive_index < primitive_elements.size(); ++primitive_index) {
-            const auto &elements = primitive_elements[primitive_index];
-            if (elements.empty()) continue;
-            const uint32_t first_meshlet = uint32_t(sink.Records.size());
-            for (uint32_t base = 0u; base < elements.size(); base += ElementsPerMeshlet) {
-                const uint32_t count = std::min(ElementsPerMeshlet, uint32_t(elements.size()) - base);
-                const uint32_t first_element_id = sink.TriangleIdCount;
-                const uint32_t first_vertex = uint32_t(sink.Vertices.size());
-                vec3 lo(std::numeric_limits<float>::max());
-                vec3 hi(std::numeric_limits<float>::lowest());
-                for (uint32_t i = 0u; i < count; ++i) {
-                    const uint32_t element = elements[base + i];
-                    assert(sink.TriangleIdCount < sink.TriangleIds.size());
-                    sink.TriangleIds[sink.TriangleIdCount++] = element;
-                    const uint32_t vertex_count = line_topology ? 2u : 1u;
-                    for (uint32_t endpoint = 0u; endpoint < vertex_count; ++endpoint) {
-                        const uint32_t vertex = line_topology ? edge_indices[element * 2u + endpoint] : element;
-                        sink.Vertices.push_back(vertex);
-                        const vec3 position = vertices[vertex].Position;
-                        lo = Min(lo, position);
-                        hi = Max(hi, position);
-                    }
-                }
-                const vec3 center = (lo + hi) * 0.5f;
-                float radius = 0.0f;
-                for (uint32_t i = first_vertex; i < uint32_t(sink.Vertices.size()); ++i) {
-                    radius = std::max(radius, Distance(center, vec3(vertices[sink.Vertices[i]].Position)));
-                }
-                sink.Records.emplace_back(MeshletRecord{
-                    .TriangleOffset = first_element_id,
-                    .TriangleCount = count,
-                    .VertexOffset = first_vertex,
-                    .VertexCount = count * (line_topology ? 2u : 1u),
-                    .LocalTriangleOffset = PackLocalTriangleOffset(sink.LocalTriangleCount, line_topology ? MeshPrimitiveTopology::Line : MeshPrimitiveTopology::Point),
-                    .Primitive = uint32_t(sink.Primitives.size()),
-                    .ConeAxisCutoff = uint32_t(uint8_t(127)) << 24u,
-                    .Center = center,
-                    .Radius = radius,
-                });
-            }
-
-            sink.Primitives.emplace_back(PrimitiveRecord{
-                .AuxIndices = in.AuxIndices,
-                .PrimitiveIndex = primitive_index,
-                .PrimitiveMaterialOffset = in.Mesh.PrimitiveMaterialOffset,
-                .MeshletOffset = first_meshlet,
-                .MeshletCount = uint32_t(sink.Records.size()) - first_meshlet,
-                .Level0Count = uint32_t(sink.Records.size()) - first_meshlet,
-            });
-        }
+    if (!primitive_triangle_counts.empty() && uint64_t(triangle_cursor)*3u!=in.Indices.size()) {
+        throw std::invalid_argument("Live LOD triangle handles do not cover the primitive inputs.");
     }
-
-    // Assign one finest-LOD meshlet to each canonical vertex for edit routing.
-    std::vector<uint8_t> vertex_owned(vertices.size());
-    for (const auto &record : sink.Records) {
-        const auto topology = MeshPrimitiveTopology(record.LocalTriangleOffset >> uint32_t(MeshletGeometryEncoding::TopologyShift));
-        const uint32_t first_corner = topology == MeshPrimitiveTopology::Triangle ?
-            in.PrimitiveTriangleRanges[record.Primitive].FirstTriangle * 3u :
-            0u;
-        for (uint32_t v = 0u; v < record.VertexCount; ++v) {
-            auto &packed = sink.Vertices[record.VertexOffset + v];
-            const uint32_t source = packed & uint32_t(MeshletGeometryEncoding::CornerMask);
-            const uint32_t vertex = topology == MeshPrimitiveTopology::Triangle ? in.Indices[first_corner + source] : source;
-            if (vertex_owned[vertex] == 0u) {
-                vertex_owned[vertex] = 1u;
-                packed |= uint32_t(MeshletGeometryEncoding::EditVertexOwnerBit);
-            }
-        }
-    }
-
-    if (face_topology) {
-        // Select one meshlet per canonical edge.
-        std::vector<uint8_t> edge_owned(in.EdgeCount);
-        for (const auto &record : sink.Records) {
-            for (uint32_t t = 0u; t < record.TriangleCount; ++t) {
-                const uint32_t source_triangle = sink.TriangleIds[record.TriangleOffset + t];
-                for (uint32_t c = 0u; c < 3u; ++c) {
-                    auto &packed = sink.EditEdges[source_triangle * 3u + c];
-                    if (packed == InvalidOffset) continue;
-                    const uint32_t edge = packed & uint32_t(MeshletEditEdgeEncoding::EdgeMask);
-                    if (edge_owned[edge] != 0u) packed = InvalidOffset;
-                    else edge_owned[edge] = 1u;
-                }
-            }
-        }
-    }
-    return sink;
+    return BuildClusterLod(ClusterLodMesh{
+        .CornerVertices=in.Indices,.Positions=&in.Vertices.front().Position.x,.PositionStride=sizeof(Vertex),
+        .VertexFirst=in.VertexFirst,.DenseVertices=in.DenseVertices,.Normals=in.Normals,.Weld=in.Weld,.Primitives=primitives,.Clusters=clusters,
+        .SourceVertexCorners=buffers.MeshletVertexCorners.Buffer.GetSpan<uint32_t>(),
+        .SourceLocalTriangles=buffers.MeshletLocalTriangles.Buffer.GetSpan<uint8_t>(),
+    });
 }
 
-ClusterLodBuild BuildMeshletClusterLod(const GpuBuffers &buffers, const MeshBuffers &mb, const MeshletBuildInputs &in) {
-    const auto placed_primitives = buffers.Primitives.Get(mb.Primitives);
-    const auto records = buffers.Meshlets.Get(mb.Meshlets);
-    if (!ClusterLodApplies(in.FaceTopology, uint32_t(records.size()))) return {};
-    assert(mb.ClusterGroups.Count == 0u);
-    assert(placed_primitives.size() == in.PrimitiveTriangleRanges.size());
-
-    std::vector<ClusterLodPrimitive> primitives(placed_primitives.size());
-    for (uint32_t p = 0; p < primitives.size(); ++p) {
-        primitives[p] = {
-            .FirstTriangle = in.PrimitiveTriangleRanges[p].FirstTriangle,
-            .TriangleCount = in.PrimitiveTriangleRanges[p].TriangleCount,
-            .FirstCluster = placed_primitives[p].MeshletOffset - mb.Meshlets.Offset,
-            .ClusterCount = placed_primitives[p].MeshletCount,
+Range PublishClusterLodStorage(GpuBuffers &buffers,const ClusterLodBuild &build,std::span<const uint32_t> primitive_ids,
+                               Range &groups,Range &vertices,Range &local_triangles) {
+    groups=buffers.ClusterGroups.Allocate(uint32_t(build.Groups.size()));
+    const auto values=buffers.ClusterGroups.GetMutable(groups);
+    for (uint32_t g=0u;g<build.Groups.size();++g) {
+        const auto &group=build.Groups[g];
+        values[g]={.Center=group.Center,.Radius=group.Radius,.Error=group.Error};
+    }
+    const auto group_id=[&](uint32_t id) { return id==ClusterLodInvalid ? InvalidOffset : groups.Offset+id; };
+    vertices=buffers.MeshletVertexCorners.Allocate(build.VertexCorners);
+    local_triangles=buffers.MeshletLocalTriangles.Allocate(build.LocalTriangles);
+    const auto allocation=buffers.AllocateMeshlets(uint32_t(build.Clusters.size()));
+    const auto records=buffers.Meshlets.GetMutable(allocation);
+    for (uint32_t c=0u;c<build.Clusters.size();++c) {
+        const auto &cluster=build.Clusters[c];
+        records[c]={
+            .TriangleCount=cluster.TriangleCount,.VertexOffset=vertices.Offset+cluster.VertexOffset,.VertexCount=cluster.VertexCount,
+            .LocalTriangleOffset=local_triangles.Offset+cluster.LocalTriangleOffset,.Primitive=primitive_ids[cluster.Primitive],
+            .GroupIndex=group_id(cluster.GroupIndex),.RefinedGroup=group_id(cluster.RefinedGroup),
+            .ConeAxisCutoff=cluster.ConeAxisCutoff,.Center=cluster.Center,.Radius=cluster.Radius,
         };
     }
-    std::vector<ClusterLodSourceCluster> clusters(records.size());
-    for (uint32_t i = 0; i < clusters.size(); ++i) {
-        const auto &record = records[i];
-        clusters[i] = {
-            .FirstVertex = record.VertexOffset - mb.MeshletVertices.Offset,
-            .VertexCount = record.VertexCount,
-            .FirstLocalTriangle = (record.LocalTriangleOffset & uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask)) - mb.MeshletLocalTriangles.Offset,
-            .TriangleCount = record.TriangleCount,
-            .Center = record.Center,
-            .Radius = record.Radius,
-            // The never-culls cutoff marks a cluster whose geometric cone the material shader cannot trust.
-            .ConeCullSafe = (record.ConeAxisCutoff >> 24u) != 127u,
-        };
+    buffers.GroupLinks.Mirror(groups);
+    const auto links=buffers.GroupLinks.GetMutable(groups);
+    std::ranges::fill(links,ClusterGroupLinks{});
+    for (const auto &cluster : build.Clusters)
+        if (cluster.RefinedGroup!=ClusterLodInvalid) ++links[cluster.RefinedGroup].ProxyCount;
+    uint64_t count=build.GroupClusters.size();
+    for (const auto &link : links) count+=link.ProxyCount;
+    if (count>UINT32_MAX) throw std::length_error("Cluster group links exceed the canonical address domain.");
+    // One allocation and history capture cover every group's member/proxy run.
+    const auto runs=buffers.GroupClusterIds.Allocate(uint32_t(count));
+    const auto ids=buffers.GroupClusterIds.GetMutable(runs);
+    for (uint32_t g=0u,next=runs.Offset; g<links.size(); ++g) {
+        auto &link=links[g];
+        link.MemberOffset=next; next+=build.Groups[g].ClusterCount;
+        link.ProxyOffset=next; next+=std::exchange(link.ProxyCount,0u);
     }
-    const ClusterLodMesh mesh{
-        .CornerVertices = in.Indices,
-        .Positions = &in.Vertices.front().Position.x,
-        .PositionStride = sizeof(Vertex),
-        // Empty normals make simplification weight collapses from derived geometric normals.
-        .CornerNormals = {},
-        .Weld = in.Weld,
-        .Primitives = primitives,
-        .Clusters = clusters,
-        .SourceVertexCorners = buffers.MeshletVertexCorners.Get(mb.MeshletVertices),
-        .SourceLocalTriangles = buffers.MeshletLocalTriangles.Get(mb.MeshletLocalTriangles),
-    };
-    return BuildClusterLod(mesh);
+    for (uint32_t c=0u;c<build.Clusters.size();++c) {
+        const auto group=build.Clusters[c].RefinedGroup;
+        if (group==ClusterLodInvalid) continue;
+        auto &link=links[group];
+        ids[link.ProxyOffset-runs.Offset+link.ProxyCount++]=allocation.Offset+c;
+    }
+    return allocation;
 }
 
-// Places a finished build and rebases its relative offsets; call serially to preserve arena order.
-void CommitMeshlets(GpuBuffers &buffers, MeshBuffers &mb, MeshletBuild &build) {
-    buffers.ReleaseMeshlets(mb);
-
-    mb.MeshletTriangles = buffers.MeshletTriangleIds.Allocate(std::span{build.TriangleIds}.first(build.TriangleIdCount));
-    mb.MeshletLocalTriangles = buffers.MeshletLocalTriangles.Allocate(std::span{build.LocalTriangles}.first(build.LocalTriangleCount));
-    mb.MeshletEditEdges = buffers.MeshletEditEdgeIds.Allocate(build.EditEdges);
-    mb.MeshletVertices = buffers.MeshletVertexCorners.Allocate(build.Vertices);
-    for (auto &record : build.Records) {
-        record.TriangleOffset += mb.MeshletTriangles.Offset;
-        assert(((record.LocalTriangleOffset & uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask)) + mb.MeshletLocalTriangles.Offset) <= uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask));
-        record.LocalTriangleOffset += mb.MeshletLocalTriangles.Offset;
-        record.VertexOffset += mb.MeshletVertices.Offset;
-    }
-    mb.Meshlets = buffers.Meshlets.Allocate(build.Records);
-    if (build.Mesh.EditEdgeOffset != InvalidOffset) build.Mesh.EditEdgeOffset += mb.MeshletEditEdges.Offset;
-    mb.MeshRecord = buffers.MeshRecords.Allocate(std::span<const MeshRecord>{&build.Mesh, 1});
-    for (auto &record : build.Primitives) record.MeshletOffset += mb.Meshlets.Offset;
-    mb.Primitives = buffers.Primitives.Allocate(build.Primitives);
-    for (auto &record : buffers.Meshlets.GetMutable(mb.Meshlets)) record.Primitive += mb.Primitives.Offset;
-    // Give each non-DAG primitive one unpruned span node until a DAG commit replaces it.
-    auto placed_primitives = buffers.Primitives.GetMutable(mb.Primitives);
-    std::vector<LodNode> nodes;
-    nodes.reserve(placed_primitives.size());
-    for (const auto &primitive : placed_primitives) {
-        nodes.push_back(LodNode{
-            .Error = std::numeric_limits<float>::infinity(),
-            .FirstMeshlet = primitive.MeshletOffset,
-            .MeshletCount = primitive.MeshletCount,
-        });
-    }
-    mb.LodNodes = buffers.LodNodes.Allocate(nodes);
-    for (uint32_t p = 0; p < placed_primitives.size(); ++p) {
-        auto &primitive = placed_primitives[p];
-        const uint32_t node = primitive.MeshletCount == 0u ? InvalidOffset : mb.LodNodes.Offset + p;
-        primitive.LodRootNode = node;
-        primitive.LodFinestNode = node;
-    }
-}
-
-void CommitClusterLod(GpuBuffers &buffers, MeshBuffers &mb, const ClusterLodBuild &build) {
+void CommitClusterLod(state::Scene &r, MeshBuffers &mb, const ClusterLodBuild &build) {
+    auto &buffers = r.Context.get<GpuBuffers>();
     if (build.Groups.empty()) return;
-    assert(build.PrimitiveRanges.size() == mb.Primitives.Count);
-    // The meshlet commit that produced this DAG's input dropped whatever DAG came before it.
-    assert(mb.ClusterGroups.Count == 0);
-    // The DAG's span trees replace the whole-run nodes retained by the meshlet commit.
-    buffers.LodNodes.Release(mb.LodNodes);
-
-    std::vector<ClusterGroup> groups(build.Groups.size());
-    for (size_t i = 0; i < groups.size(); ++i) {
-        groups[i] = {.Center = build.Groups[i].Center, .Radius = build.Groups[i].Radius, .Error = build.Groups[i].Error};
-    }
-    mb.ClusterGroups = buffers.ClusterGroups.Allocate(groups);
-    const auto placed_group = [group_offset = mb.ClusterGroups.Offset](uint32_t group) {
-        return group == ClusterLodInvalid ? InvalidOffset : group + group_offset;
-    };
-
+    assert(build.PrimitiveRanges.size() == buffers.PrimitiveCount(mb) && buffers.ClusterGroupCount(mb) == 0u);
+    // Retain finest roots and record identities. Only newly constructed coarse
+    // records and traversal nodes receive new addresses.
+    std::vector<uint32_t> finest, primitive_ids;
+    buffers.ForEachPrimitive(mb,[&](uint32_t id, const PrimitiveRecord &primitive) {
+        primitive_ids.push_back(id);
+        finest.push_back(primitive.LodFinestNode == InvalidOffset ? InvalidOffset : buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot);
+    });
+    // Without coarse groups every old node holds a finest root retained above.
+    // Retire its descriptor only.
+    // The replacement node takes that membership.
+    buffers.ForEachLodNode(mb,[&](uint32_t id, const LodNode &) { buffers.LodNodes.Release({id,1u}); });
+    buffers.ActiveMeshlets.Release(mb.NodeRoot); mb.NodeRoot = InvalidOffset;
+    mb.LodNodes = {};
     mb.LodNodes = buffers.LodNodes.Allocate(build.Nodes);
-
-    mb.CoarseVertices = buffers.MeshletVertexCorners.Allocate(build.VertexCorners);
-    mb.CoarseLocalTriangles = buffers.MeshletLocalTriangles.Allocate(build.LocalTriangles);
-
-    // Append coarse clusters after original clusters so pinned instances retain the Level0Count prefix.
-    std::vector<MeshletRecord> records;
-    records.reserve(mb.Meshlets.Count + build.Clusters.size());
-    {
-        const auto level0 = buffers.Meshlets.Get(mb.Meshlets);
-        auto primitives = buffers.Primitives.GetMutable(mb.Primitives);
-        for (uint32_t p = 0; p < primitives.size(); ++p) {
-            auto &primitive = primitives[p];
-            const auto &range = build.PrimitiveRanges[p];
-            const uint32_t first = uint32_t(records.size());
-            const uint32_t first_level0 = primitive.MeshletOffset - mb.Meshlets.Offset;
-            for (uint32_t k = 0; k < primitive.Level0Count; ++k) {
-                auto record = level0[first_level0 + k];
-                record.GroupIndex = placed_group(build.Level0Groups[first_level0 + k]);
-                records.push_back(record);
-            }
-            for (uint32_t c = 0; c < range.ClusterCount; ++c) {
-                const auto &cluster = build.Clusters[range.FirstCluster + c];
-                assert((cluster.LocalTriangleOffset + mb.CoarseLocalTriangles.Offset) <= uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask));
-                records.push_back(MeshletRecord{
-                    // A coarse cluster names no source triangles.
-                    .TriangleOffset = 0u,
-                    .TriangleCount = cluster.TriangleCount,
-                    .VertexOffset = cluster.VertexOffset + mb.CoarseVertices.Offset,
-                    .VertexCount = cluster.VertexCount,
-                    .LocalTriangleOffset = PackLocalTriangleOffset(cluster.LocalTriangleOffset + mb.CoarseLocalTriangles.Offset, MeshPrimitiveTopology::Triangle),
-                    .Primitive = cluster.Primitive + mb.Primitives.Offset,
-                    .GroupIndex = placed_group(cluster.GroupIndex),
-                    .RefinedGroup = placed_group(cluster.RefinedGroup),
-                    .ConeAxisCutoff = cluster.ConeAxisCutoff,
-                    .Center = cluster.Center,
-                    .Radius = cluster.Radius,
-                });
-            }
-            primitive.MeshletOffset = first;
-            primitive.MeshletCount = uint32_t(records.size()) - first;
-        }
+    buffers.LodParents.Mirror(mb.LodNodes);
+    auto parents = buffers.LodParents.GetMutable(mb.LodNodes);
+    std::ranges::fill(parents,InvalidOffset);
+    const auto allocation=PublishClusterLodStorage(buffers,build,primitive_ids,mb.ClusterGroups,mb.CoarseVertices,mb.CoarseLocalTriangles);
+    const auto group_id=[&](uint32_t id) { return id==ClusterLodInvalid ? InvalidOffset : mb.ClusterGroups.Offset+id; };
+    const auto group_links=std::span{reinterpret_cast<ClusterGroupLinks *>(buffers.GroupLinks.Buffer.Contents().data())+mb.ClusterGroups.Offset,mb.ClusterGroups.Count};
+    auto *cluster_ids=reinterpret_cast<uint32_t *>(buffers.GroupClusterIds.Buffer.Contents().data());
+    // Initial members retain canonical cluster order; repair retains build order.
+    for (uint32_t i=0u;i<build.Clusters.size();++i) {
+        auto &link=group_links[build.Clusters[i].GroupIndex];
+        cluster_ids[link.MemberOffset+link.MemberCount++]=allocation.Offset+i;
     }
-    buffers.Meshlets.Release(mb.Meshlets);
-    mb.Meshlets = buffers.Meshlets.Allocate(records);
-    // Span nodes name records and children by mesh-local index, which the placed arenas rebase.
-    for (auto &node : buffers.LodNodes.GetMutable(mb.LodNodes)) {
-        node.FirstMeshlet += mb.Meshlets.Offset;
-        if (node.ChildCount != 0u) node.ChildOffset += mb.LodNodes.Offset;
-    }
-    const auto placed_node = [node_offset = mb.LodNodes.Offset](uint32_t node) {
-        return node == ClusterLodInvalid ? InvalidOffset : node + node_offset;
+    std::array ownership{
+        MeshletIndexEdit{.Root=mb.MeshletRoot,.Insert=allocation},
+        MeshletIndexEdit{.Insert=mb.LodNodes},
+        MeshletIndexEdit{.Insert=mb.ClusterGroups},
     };
-    auto placed_primitives = buffers.Primitives.GetMutable(mb.Primitives);
-    for (uint32_t p = 0; p < placed_primitives.size(); ++p) {
-        auto &primitive = placed_primitives[p];
-        primitive.MeshletOffset += mb.Meshlets.Offset;
-        primitive.LodRootNode = placed_node(build.PrimitiveRanges[p].RootNode);
-        primitive.LodFinestNode = placed_node(build.PrimitiveRanges[p].FinestNode);
+    buffers.ActiveMeshlets.Update(ownership);
+    mb.MeshletRoot = ownership[0].Root; mb.NodeRoot = ownership[1].Root; mb.GroupRoot = ownership[2].Root;
+
+    // Each traversal leaf takes a rank slice of its primitive's finest clusters and a run of new coarse clusters.
+    std::vector<std::vector<uint32_t>> fine_ids(primitive_ids.size());
+    std::vector<uint32_t> all_fine;
+    for (uint32_t p = 0u; p < primitive_ids.size(); ++p) buffers.ActiveMeshlets.ForEach(finest[p],[&](uint32_t id) { fine_ids[p].push_back(id); });
+    for (const auto &ids : fine_ids) all_fine.insert(all_fine.end(), ids.begin(), ids.end());
+    // The finest records and their leaf entries are captured once and written in place.
+    buffers.Meshlets.Buffer.CaptureWriteElements(all_fine, sizeof(MeshletRecord));
+    buffers.MeshletLodLeaves.Buffer.CaptureWriteElements(all_fine, sizeof(uint32_t));
+    auto *records = reinterpret_cast<MeshletRecord *>(buffers.Meshlets.Buffer.Contents().data());
+    auto *fine_leaves = reinterpret_cast<uint32_t *>(buffers.MeshletLodLeaves.Buffer.Contents().data());
+    auto coarse_leaves = buffers.MeshletLodLeaves.GetMutable(allocation);
+    auto nodes = buffers.LodNodes.GetMutable(mb.LodNodes);
+    std::vector<std::vector<uint32_t>> members;
+    std::vector<MeshletIndexEdit> edits;
+    std::vector<uint32_t> leaves;
+    uint32_t fine_index = 0u, first_virtual = 0u;
+    for (uint32_t p = 0u; p < primitive_ids.size(); ++p) {
+        auto &primitive = buffers.Primitives.GetMutable({primitive_ids[p],1u})[0];
+        const auto &range = build.PrimitiveRanges[p];
+        for (const auto id : fine_ids[p]) {
+            const auto group=build.Level0Groups[fine_index++];
+            records[id].GroupIndex = group_id(group);
+            auto &links=group_links[group];
+            cluster_ids[links.MemberOffset+links.MemberCount++]=id;
+        }
+        primitive.MeshletCount = primitive.Level0Count+range.ClusterCount;
+        primitive.SimplifyScale = range.SimplifyScale;
+        const auto node_id = [&](uint32_t id) { return id == ClusterLodInvalid ? InvalidOffset : mb.LodNodes.Offset+id; };
+        primitive.LodRootNode = node_id(range.RootNode); primitive.LodFinestNode = node_id(range.FinestNode);
+        if (primitive.LodFinestNode != InvalidOffset) nodes[primitive.LodFinestNode-mb.LodNodes.Offset].MeshletRoot = finest[p];
+        const auto visit = [&](auto &&self, uint32_t id) -> void {
+            auto &node = nodes[id];
+            if (node.ChildCount) {
+                const auto first = node.ChildOffset;
+                for (uint32_t c = 0u; c < node.ChildCount; ++c) {
+                    parents[first+c] = mb.LodNodes.Offset+id;
+                    self(self,first+c);
+                }
+                node.ChildOffset += mb.LodNodes.Offset;
+                return;
+            }
+            const auto leaf = mb.LodNodes.Offset+id;
+            const uint32_t start = node.FirstMeshlet-first_virtual, end = start+node.MeshletCount;
+            const uint32_t fine_end = std::min(end,primitive.Level0Count);
+            auto &fine = members.emplace_back();
+            if (start < fine_end) fine.assign(fine_ids[p].begin()+start,fine_ids[p].begin()+fine_end);
+            const auto coarse_start = std::max(start,primitive.Level0Count);
+            const Range coarse = coarse_start < end ? Range{allocation.Offset+range.FirstCluster+coarse_start-primitive.Level0Count,end-coarse_start} : Range{};
+            for (const auto cluster : fine) fine_leaves[cluster] = leaf;
+            if (coarse.Count) std::ranges::fill(coarse_leaves.subspan(coarse.Offset-allocation.Offset,coarse.Count),leaf);
+            leaves.push_back(leaf);
+            edits.push_back({.Insert=coarse});
+        };
+        if (range.RootNode != ClusterLodInvalid) visit(visit,range.RootNode);
+        first_virtual += primitive.MeshletCount;
     }
-    buffers.MeshletLodDepth = std::max(buffers.MeshletLodDepth, build.NodeDepth);
+    for (uint32_t i=0u; i<group_links.size(); ++i) assert(group_links[i].MemberCount==build.Groups[i].ClusterCount);
+    for (uint32_t i = 0u; i < edits.size(); ++i) edits[i].Added = members[i];
+    buffers.ActiveMeshlets.Update(edits);
+    for (uint32_t i = 0u; i < leaves.size(); ++i) nodes[leaves[i]-mb.LodNodes.Offset].MeshletRoot = edits[i].Root;
+    if (build.NodeDepth>buffers.MeshletLodDepth) {
+        if (buffers.LodDepthHistory) buffers.LodDepthHistory->Write(0u,1u);
+        buffers.MeshletLodDepth=build.NodeDepth;
+    }
 }

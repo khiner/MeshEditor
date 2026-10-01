@@ -14,13 +14,13 @@ target_compile_definitions(MeshEditorTests PRIVATE
     MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 mesheditor_test(MeshEditorActionSerializeTest ActionSerializeTest.cpp MeshEditorEditor)
+mesheditor_test(MeshEditorMetalBufferTest MetalBufferTest.cpp MeshEditorMetal)
 mesheditor_test(MeshEditorModalSolveIntegrationTest ModalSolveIntegrationTest.cpp MeshEditorAudio FastFEM::FastFEM)
 mesheditor_test(MeshEditorCompressTest CompressTest.cpp mesheditor_support)
 mesheditor_test(MeshEditorAudioFileTest AudioFileTest.cpp MeshEditorAudio)
 mesheditor_test(MeshEditorRbpBodyTest RbpBodyTest.cpp MeshEditorPhysics rbp)
 mesheditor_test(MeshEditorContactManifoldTest ContactManifoldTest.cpp MeshEditorPhysics rbp)
 mesheditor_test(MeshEditorClusterLodTest ClusterLodTest.cpp MeshEditorRender meshoptimizer)
-mesheditor_test(MeshEditorMeshBvhTest MeshBvhTest.cpp MeshEditorMesh)
 mesheditor_test(MeshEditorModalRenderTest ModalRenderTest.cpp MeshEditorAudio)
 mesheditor_test(MeshEditorContactModelTest ContactModelTest.cpp MeshEditorAudio)
 

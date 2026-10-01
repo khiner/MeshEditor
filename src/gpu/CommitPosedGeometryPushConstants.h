@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu/ElementWork.h"
+#include "gpu/ElementAttributeRef.h"
 #include "gpu/GeometryEditMode.h"
 #include "gpu/NormalDeriveEntry.h"
 #include "gpu/SlotOffset.h"
@@ -9,8 +10,9 @@
 
 struct CommitPosedGeometryPushConstants {
     SlotOffset Vertices DEFAULT();
-    SlotOffset Output DEFAULT();
-    SlotOffset Selection DEFAULT();
+    uint32_t PositionSlot DEFAULT();
+    uint32_t PositionNodesSlot DEFAULT();
+    uint32_t SelectionSlot DEFAULT(InvalidSlot);
     ElementWork Candidates DEFAULT();
     ElementWork ChangedVertices DEFAULT();
     ElementWork Faces DEFAULT();
@@ -21,15 +23,12 @@ struct CommitPosedGeometryPushConstants {
     Transform Primary DEFAULT();
     Transform Delta DEFAULT();
     vec3 Pivot DEFAULT();
-    uint32_t AdjacencySlot DEFAULT();
-    uint32_t FaceFirstTriangleSlot DEFAULT();
-    uint32_t CornerClassSlot DEFAULT();
-    uint32_t CornerClassOffset DEFAULT();
-    uint32_t VertexEdgeAdjacencyOffset DEFAULT(InvalidOffset);
+    uint32_t FaceTriangleStartSlot DEFAULT();
     uint32_t Topology DEFAULT();
-    SlotOffset TriangleMeshlets DEFAULT();
+    ElementAttributeRef ElementMeshlets DEFAULT();
     uint32_t Phase DEFAULT();
+    uint32_t BudgetOffset DEFAULT();
     uint32_t ApplyTransform DEFAULT(1);
     GeometryEditMode Mode DEFAULT();
 };
-static_assert(sizeof(CommitPosedGeometryPushConstants) == 292, "CommitPosedGeometryPushConstants size");
+static_assert(sizeof(CommitPosedGeometryPushConstants) == 408, "CommitPosedGeometryPushConstants size");

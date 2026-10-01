@@ -1,9 +1,8 @@
-#include "action/Errors.h"
 #include "ProcessEvents.h"
+#include "action/Errors.h"
 #include "mesh/MeshComponents.h"
 #include "numeric/VectorMath.h"
 #include "physics/ColliderUpdate.h"
-#include "render/MeshUpdates.h"
 #include "render/SceneUpdates.h"
 #include "state/Scene.h"
 
@@ -26,18 +25,18 @@
 #include "editor/AudioIntegration.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/GltfScene.h"
-#include "mesh/MeshBvh.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "mesh/TetBuffers.h"
-#include "mesh/VertexAdjacencyGpu.h"
 #include "object/ObjectOps.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "render/ElementWorkOps.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
+#include "render/MeshletBoundsRefit.h"
+#include "render/ClusterLodRepair.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
@@ -70,7 +69,6 @@
 #include "viewport/ViewportRenderGpu.h"
 
 #include <bit>
-#include <iostream>
 #include <numeric>
 #include <print>
 
@@ -92,19 +90,19 @@ bool FlushIndexedWrites(auto &writes, auto &&span_getter) {
     return true;
 }
 
-vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t handle) {
-    if (element == Element::Vertex) return mesh.GetPosition(VH{handle});
+vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t handle, bool canonical) {
+    if (element == Element::Vertex) return mesh.GetPosition(canonical ? Mesh::VH{handle} : mesh.VertexAt(handle));
     if (element == Element::Edge) {
-        const auto heh = mesh.GetHalfedge(EH{handle}, 0);
+        const auto heh = mesh.GetHalfedge(canonical ? Mesh::EH{handle} : mesh.EdgeAt(handle), 0);
         return (mesh.GetPosition(mesh.GetFromVertex(heh)) + mesh.GetPosition(mesh.GetToVertex(heh))) * 0.5f;
     }
-    return mesh.CalcFaceCentroid(FH{handle});
+    return mesh.CalcFaceCentroid(canonical ? Mesh::FH{handle} : mesh.FaceAt(handle));
 }
 
-vec3 ComputeElementWorldPosition(const state::Scene &r, state::Entity instance_entity, Element element, uint32_t handle) {
+vec3 ComputeElementWorldPosition(const state::Scene &r, state::Entity instance_entity, Element element, uint32_t handle, bool canonical) {
     const auto &mesh = GetMesh(r, r.get<Instance>(instance_entity).Entity);
     const auto &wt = r.get<WorldTransform>(instance_entity);
-    return {wt.P + Rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle))};
+    return {wt.P + Rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle, canonical))};
 }
 
 void SetEditMode(state::Scene &r, state::Entity viewport, Element mode) {
@@ -113,20 +111,33 @@ void SetEditMode(state::Scene &r, state::Entity viewport, Element mode) {
 
     auto &meshes = r.Context.get<MeshStore>();
     std::vector<ElementRange> ranges;
+    std::vector<state::Entity> unchanged_all;
     for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
         const auto mesh = GetMesh(r, mesh_entity);
         const auto id = mesh.GetStoreId();
-        meshes.EnsureSelectionBits(mesh);
+        meshes.EnsureSelectionState(r, std::array{id});
         r.remove<MeshActiveElement>(mesh_entity);
         const auto count = mesh.ElementCount(mode);
-        if (count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, mode), count);
+        if (mode == Element::None) continue;
+        const bool all_selected = std::ranges::all_of(std::array{Element::Vertex,Element::Edge,Element::Face},[&](Element element) {
+            return meshes.GetSelectedElements(id,element).Count()==mesh.ElementCount(element);
+        });
+        if (all_selected) unchanged_all.push_back(mesh_entity);
+        else if (count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, mode), count);
     }
 
     r.patch<EditMode>(viewport, [mode](auto &edit_mode) { edit_mode.Value = mode; });
     if (!ranges.empty()) ApplyEditSelectionCommand(r, ranges, mode, EditSelectionOperation::ClearActive);
+    if (!unchanged_all.empty()) RefreshElementSelectionSummaries(r,unchanged_all,mode);
 }
 
 } // namespace
+
+void RequestRender(state::Scene &r, RenderRequest request) {
+    auto &pending = r.Context.get<PendingRenderRequest>().Value;
+    pending = std::max(pending, request);
+    if (request != RenderRequest::None) r.Context.get<GpuBuffers>().MeshletOcclusionStale = true;
+}
 
 void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass pass) {
     const bool rendering = pass == EventPass::Sample || pass == EventPass::Render;
@@ -140,10 +151,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     const profile::CpuScope profile_scope{"ProcessEvents"};
 
     auto &pending_render = r.Context.get<PendingRenderRequest>().Value;
-    auto request = [&pending_render, &buffers](RenderRequest req) {
-        pending_render = std::max(pending_render, req);
-        if (req != RenderRequest::None) buffers.MeshletOcclusionStale = true;
-    };
+    auto request = [&r](RenderRequest req) { RequestRender(r, req); };
 
     // Armature objects whose bone instance state resyncs this frame.
     std::unordered_set<state::Entity> bone_state_dirty;
@@ -182,7 +190,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         for (const auto &item : textures.PendingUploads) {
             auto entry = MaterializeTextureEntry(r, batch, slots, item, gltf_images, r.Context.get<const ActiveSamplerAnisotropy>().Value);
             if (!entry) {
-                std::cerr << std::format("Warning: Failed to materialize texture '{}': {}\n", item.Params.Name, entry.error());
+                action::Fail(r, std::format("Cannot load texture '{}': {}", item.Params.Name, entry.error()));
                 slots.Release({SlotType::Sampler, item.SamplerSlot});
                 continue;
             }
@@ -221,7 +229,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 env.ImportedSceneWorld = std::move(*pre);
                 env.SceneWorld = {.Ibl = MakeIblSamplers(*env.ImportedSceneWorld, env), .Name = env.ImportedSceneWorld->Name};
             } else {
-                std::cerr << std::format("Warning: Failed to materialize EXT_lights_image_based '{}': {}\n", pending_env->Source.Name, pre.error());
+                action::Fail(r, std::format("Cannot load EXT_lights_image_based '{}': {}", pending_env->Source.Name, pre.error()));
                 ReleaseCubeSamplerSlot(slots, pending_env->DiffuseCubeSlot);
                 ReleaseCubeSamplerSlot(slots, pending_env->SpecularCubeSlot);
             }
@@ -466,24 +474,10 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     std::unordered_set<state::Entity> dirty_sound_selection_meshes;
 
     if (!sync.NewMeshEntities.empty()) {
-        const bool overlay_indices = DrawsElementIndices(r, viewport);
-        uint32_t total_face = 0, total_edge = 0, total_vertex = 0;
         for (auto entity : sync.NewMeshEntities) {
-            const auto &mesh = GetMesh(r, entity);
-            if (!DrawsStoredCorners(mesh)) total_face += mesh.TriangleIndexCount();
-            if (!NeedsElementIndices(mesh, overlay_indices)) continue;
-            total_edge += mesh.EdgeCount() * 2;
-            total_vertex += mesh.VertexCount();
+            const auto mesh = GetMesh(r, entity);
+            AssignFaceIndices(meshes, mesh, buffers.MeshOf(mesh.GetStoreId()));
         }
-        buffers.ReserveAdditionalIndices(total_face, total_edge, total_vertex);
-        std::vector<ElementIndicesWork> work;
-        for (auto entity : sync.NewMeshEntities) {
-            const auto &mesh = GetMesh(r, entity);
-            WriteElementIndices(buffers, meshes, mesh, buffers.MeshOf(mesh.GetStoreId()), overlay_indices, work);
-        }
-        WriteElementIndicesNow(r, work);
-        // Fill adjacency tables before normal derivation reads the vertex-fan CSR.
-        BuildVertexAdjacencyNow(r, sync.NewMeshEntities);
         // Derive shading state for all new and restored meshes in one batch.
         FinalizeNewMeshShadingNow(r, sync.NewMeshEntities);
         BuildMeshletsNow(r, sync.NewMeshEntities);
@@ -517,15 +511,15 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         for (auto entity : sync.NewExtrasEntities) {
             if (r.all_of<ArmatureObject>(entity)) {
                 auto &mb = MeshBuffersOf(r, entity);
-                mb.FaceIndices = buffers.CreateIndices(bone_faces, IndexKind::Face);
-                mb.VertexIndices = buffers.CreateIndices(bone_verts, IndexKind::Vertex);
-                r.emplace_or_replace<BoneAdjacencyIndices>(entity, buffers.CreateIndices(bone.AdjacencyIndices, IndexKind::Edge));
+                mb.FaceIndices = buffers.CreateIndices(bone_faces, IndexKind::Face, mb.Vertices.Offset);
+                mb.VertexIndices = buffers.CreateIndices(bone_verts, IndexKind::Vertex, mb.Vertices.Offset);
+                mb.EdgeIndices = buffers.CreateIndices(bone.AdjacencyIndices, IndexKind::Edge, mb.Vertices.Offset);
                 bone_mesh_entities.push_back(entity);
             } else if (r.all_of<BoneJoint>(entity)) {
                 auto &mb = MeshBuffersOf(r, entity);
-                mb.FaceIndices = buffers.CreateIndices(sphere_faces, IndexKind::Face);
-                mb.EdgeIndices = buffers.CreateIndices(sphere.OutlineIndices, IndexKind::Edge);
-                mb.VertexIndices = buffers.CreateIndices(sphere_verts, IndexKind::Vertex);
+                mb.FaceIndices = buffers.CreateIndices(sphere_faces, IndexKind::Face, mb.Vertices.Offset);
+                mb.EdgeIndices = buffers.CreateIndices(sphere.OutlineIndices, IndexKind::Edge, mb.Vertices.Offset);
+                mb.VertexIndices = buffers.CreateIndices(sphere_verts, IndexKind::Vertex, mb.Vertices.Offset);
                 bone_mesh_entities.push_back(entity);
             }
         }
@@ -611,25 +605,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
     }
 
-    for (auto entity : reactive(r, Change::MeshGeometry)) {
-        if (!r.all_of<MeshPositionsChanged>(entity)) continue;
-        const auto &work = r.Context.get<const GpuSceneState>().EditWork.at(entity);
-        if (auto *bvh = r.try_edit<MeshBvh>(entity)) {
-            const auto mesh = GetMesh(r, entity);
-            const auto indices = GetFaceIndices(r, mesh);
-            const auto first = meshes.Arenas().FaceFirstTriangles.Get(meshes.Get(mesh.GetStoreId()).FaceData);
-            std::vector<uint32_t> triangles;
-            ForEachWorkElement(buffers.GeometryWork, work.Faces, [&](uint32_t f) {
-                const auto end = f + 1 < first.size() ? first[f + 1] : uint32_t(indices.size() / 3);
-                for (auto t = first[f]; t < end; ++t) triangles.push_back(t);
-            });
-            bvh->Refit(mesh.GetVerticesSpan(), indices, triangles);
-            ForEachWorkElement(buffers.GeometryWork, work.Normals, [&](uint32_t v) {
-                if (v < mesh.VertexCount()) bvh->MeanCurvature[v] = mesh.CalcMeanCurvature(VH{v}, meshes.Arenas().EdgeSharpness.Get(meshes.Get(mesh.GetStoreId()).EdgeSharpness));
-            });
-            bvh->EnclosedVolume = mesh.CalcEnclosedVolume();
-        }
-    }
     // Restored collider shapes already hold their persisted derivation.
     if (pass != EventPass::Restore) {
         std::unordered_set<state::Entity> to_rederive;
@@ -658,30 +633,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             enabled_modes.insert(InteractionMode::Excite);
             if (interaction_mode == InteractionMode::Excite) request(RenderRequest::Rebuild);
             else SetInteractionMode(r, viewport, InteractionMode::Excite);
-        }
-    }
-
-    // Sound-model changes can enter Excite mode; selection derivation needs its indices in this pass.
-    if (const bool draws_element_indices = DrawsElementIndices(r, viewport); draws_element_indices != buffers.DrewElementIndices) {
-        buffers.DrewElementIndices = draws_element_indices;
-        if (draws_element_indices) {
-            uint32_t total_edge = 0, total_vertex = 0;
-            for (const auto [entity, handle] : r.view<const MeshHandle>().each()) {
-                const auto *mb = buffers.TryMeshOf(handle.StoreId);
-                if (!mb) continue;
-                const auto &mesh = GetMesh(r, entity);
-                if (mb->EdgeIndices.Count == 0) total_edge += mesh.EdgeCount() * 2;
-                if (mb->VertexIndices.Count == 0) total_vertex += mesh.VertexCount();
-            }
-            if (total_edge > 0 || total_vertex > 0) {
-                buffers.ReserveAdditionalIndices(0, total_edge, total_vertex);
-                std::vector<ElementIndicesWork> work;
-                for (const auto [entity, handle] : r.view<const MeshHandle>().each()) {
-                    if (auto *mb = buffers.TryMeshOf(handle.StoreId)) WriteElementIndices(buffers, meshes, GetMesh(r, entity), *mb, true, work);
-                }
-                WriteElementIndicesNow(r, work);
-                request(RenderRequest::Rebuild);
-            }
         }
     }
 
@@ -735,9 +686,9 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
 
-    const auto orbit_to_active = [&](state::Entity instance_entity, Element element, uint32_t handle) {
+    const auto orbit_to_active = [&](state::Entity instance_entity, Element element, uint32_t handle, bool canonical) {
         if (!r.get<const OrbitToActive>(viewport).Value) return;
-        const auto world_pos = ComputeElementWorldPosition(r, instance_entity, element, handle);
+        const auto world_pos = ComputeElementWorldPosition(r, instance_entity, element, handle, canonical);
         r.patch<ViewCamera>(viewport, [&](auto &camera) {
             if (const auto dir = world_pos - camera.Target; Dot(dir, dir) >= 1e-6f) {
                 camera.SetTargetDirection(Normalize(dir));
@@ -752,7 +703,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         for (auto mesh_entity : tracker) {
             if (const auto *active_element = r.try_get<MeshActiveElement>(mesh_entity);
                 active_element && edit_mode != Element::None && active_instance && active_instance->Entity == mesh_entity) {
-                orbit_to_active(active_entity, edit_mode, active_element->Handle);
+                orbit_to_active(active_entity, edit_mode, active_element->Handle, is_edit_mode);
             }
             if (interaction_mode == InteractionMode::Excite) dirty_sound_selection_meshes.insert(mesh_entity);
         }
@@ -761,7 +712,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (interaction_mode == InteractionMode::Excite) {
             if (const auto *inst = r.try_get<Instance>(instance_entity)) dirty_sound_selection_meshes.insert(inst->Entity);
         }
-        if (const auto *ev = r.try_get<VertexForce>(instance_entity)) orbit_to_active(instance_entity, Element::Vertex, ev->Vertex);
+        if (const auto *ev = r.try_get<VertexForce>(instance_entity)) orbit_to_active(instance_entity, Element::Vertex, ev->Vertex, false);
     }
     for (auto instance_entity : reactive(r, Change::SoundVerticesUpdated)) {
         if (interaction_mode == InteractionMode::Excite) {
@@ -782,63 +733,81 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         buffers.WorkspaceLightsUBO.Update(as_bytes(r.get<const WorkspaceLights>(viewport)));
         request(RenderRequest::Reuse);
     }
-    if (!is_edit_mode && !r.Context.get<GpuSceneState>().EditWork.empty()) {
-        auto &edit_work = r.Context.get<GpuSceneState>().EditWork;
-        std::vector<state::Entity> edited;
-        for (const auto &[e, work] : edit_work) {
-            if (work.Modified && r.valid(e) && r.all_of<MeshHandle>(e)) edited.push_back(e);
+    std::vector<state::Entity> material_meshes;
+    if (auto &tracker = reactive(r, Change::MeshMaterial); !tracker.empty()) {
+        for (auto mesh_entity : tracker) {
+            const auto *assignment = r.try_get<const MeshMaterialAssignment>(mesh_entity);
+            const auto mesh = TryGetMesh(r, mesh_entity);
+            if (!assignment || !mesh) continue;
+            const auto material_count = buffers.Materials.Count<PBRMaterial>();
+            if (material_count == 0u) continue;
+            auto primitive_materials = meshes.EditPrimitiveMaterials(mesh->GetStoreId());
+            if (assignment->PrimitiveIndex < primitive_materials.size()) {
+                primitive_materials[assignment->PrimitiveIndex] = std::min(assignment->MaterialIndex, material_count - 1u);
+                material_meshes.push_back(mesh_entity);
+            }
         }
+        request(RenderRequest::Rebuild);
+    }
+    if (!reactive(r, Change::ActiveMaterialVariant).empty()) {
+        const auto *mv = r.try_get<const MaterialVariants>(viewport);
+        const auto active = mv ? mv->Active : std::nullopt;
+        for (const auto [e, layout, _] : r.view<const MeshSourceLayout, const MeshHandle>().each()) {
+            const auto mesh = GetMesh(r, e);
+            auto primitive_materials = meshes.EditPrimitiveMaterials(mesh.GetStoreId());
+            material_meshes.push_back(e);
+            for (size_t i = 0; i < layout.DefaultMaterials.size(); ++i) {
+                const auto &mapping = layout.VariantMappings[i];
+                primitive_materials[i] = active && *active < mapping.size() && mapping[*active] ?
+                    *mapping[*active] :
+                    layout.DefaultMaterials[i];
+            }
+        }
+        request(RenderRequest::Rebuild);
+    }
+    const auto &lod_display = r.get<const ViewportDisplay>(viewport);
+    const auto lod_debug = WorkbenchShading(lod_display.ViewportShading) ? DebugChannel::None : lod_display.DebugChannel;
+    const auto prior_view = buffers.SceneViewUBO.GetSpan<SceneViewUBO>();
+    const bool lod_debug_changed = !reactive(r, Change::ViewportDisplay).empty() &&
+        lod_debug != (prior_view.empty() ? DebugChannel::None : prior_view.front().DebugChannel);
+    if (!reactive(r, Change::Materials).empty() || lod_debug_changed) {
+        material_meshes.clear();
+        for (const auto entity : r.view<const MeshHandle>()) material_meshes.push_back(entity);
+    }
+    if (!material_meshes.empty()) {
+        std::ranges::sort(material_meshes);
+        material_meshes.erase(std::unique(material_meshes.begin(), material_meshes.end()), material_meshes.end());
+        RefreshClusterLodAttributes(r, material_meshes);
+    }
+    if (auto &scene=r.Context.get<GpuSceneState>();
+        !is_edit_mode && (!scene.EditWork.empty() || !scene.PositionDirty.empty() || !scene.LodDirty.empty())) {
+        std::vector<state::Entity> edited;
+        for (const auto e:scene.PositionDirty)
+            if (r.valid(e) && r.all_of<MeshHandle>(e)) edited.push_back(e);
         std::ranges::sort(edited);
-        BuildMeshletsNow(r, edited);
-        for (auto e : edited)
-            if (r.all_of<MeshBvh>(e)) UpdateMeshBvh(r, e);
-        while (!edit_work.empty()) ReleaseMeshEditWork(r, edit_work.begin()->first);
+        for (const auto e:edited) StageDirtyPositionMeshlets(r,e);
+        // Stale coarse LOD rebuilds outside edit mode.
+        std::vector<state::Entity> repaired;
+        for (const auto e:scene.LodDirty)
+            if (r.valid(e) && r.all_of<MeshHandle>(e)) repaired.push_back(e);
+        std::ranges::sort(repaired);
+        for (const auto e:repaired) RepairDirtyClusterGroups(r,MeshBuffersOf(r,e));
+        edited.insert(edited.end(),repaired.begin(),repaired.end());
+        std::ranges::sort(edited);
+        edited.erase(std::unique(edited.begin(),edited.end()),edited.end());
+        RepointMeshInstances(r,edited);
+        scene.PositionDirty.clear();
+        scene.LodDirty.clear();
+        auto &edit_work=scene.EditWork;
+        while (!edit_work.empty()) ReleaseMeshEditWork(r,edit_work.begin()->first);
         buffers.PreludeStale = true;
         request(RenderRequest::Rebuild);
     }
-    if (auto &tracker = reactive(r, Change::MeshShading); !tracker.empty()) {
-        // Reclassify corners and derive base normals after sharpness changes.
-        std::vector<state::Entity> reclassified;
-        for (auto mesh_entity : tracker) {
-            if (const auto mesh = TryGetMesh(r, mesh_entity)) {
-                const auto [any, all] = meshes.GetFaceSharpnessSummary(mesh->GetStoreId());
-                r.emplace_or_replace<MeshShadingSummary>(mesh_entity, any, all);
-                meshes.UpdateCornerClassification(*mesh);
-                reclassified.emplace_back(mesh_entity);
-            }
-        }
-        if (!reclassified.empty()) {
-            DeriveBaseNormalsNow(r, reclassified);
-            BuildMeshletsNow(r, reclassified);
-            // Reclassification can reallocate arenas whose offsets persistent scene descriptors carry.
-            request(RenderRequest::Rebuild);
-        }
-    }
     // Persistent overlay jobs reference tet arena ranges.
     if (!reactive(r, Change::TetMesh).empty()) request(RenderRequest::Rebuild);
-    // Maintain closest-point hierarchies for meshes reachable from contact-reporting bodies.
     if (!reactive(r, Change::PhysicsBodyMesh).empty()) {
         // Collider parameters live in persistent overlay jobs.
         request(RenderRequest::Rebuild);
-
-        std::vector<state::Entity> demanded;
-        const auto is_body = [&r](state::Entity a) { return r.all_of<PhysicsBodyHandle>(a); };
-        for (const auto [node, inst] : r.view<const Instance>().each()) {
-            // Build hierarchies only for reachable mesh entities.
-            if (FindAncestorIf(r, node, is_body) != state::Null && HasMesh(r, inst.Entity)) demanded.push_back(inst.Entity);
-        }
-        std::ranges::sort(demanded);
-        const auto repeats = std::ranges::unique(demanded);
-        demanded.erase(repeats.begin(), repeats.end());
-        // Defer edited hierarchies to the geometry pass below.
-        for (const auto mesh_entity : demanded) {
-            if (!r.all_of<MeshBvh>(mesh_entity)) UpdateMeshBvh(r, mesh_entity);
-        }
-        std::vector<state::Entity> unreached;
-        for (const auto mesh_entity : r.view<const MeshBvh>()) {
-            if (!std::ranges::binary_search(demanded, mesh_entity)) unreached.push_back(mesh_entity);
-        }
-        for (const auto mesh_entity : unreached) r.remove<MeshBvh>(mesh_entity);
     }
     if (auto &tracker = reactive(r, Change::MeshGeometry); !tracker.empty()) {
         // Vertex-arena positions feed the pose pre-pass, so geometry edits re-run the prelude.
@@ -851,17 +820,20 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             if (r.all_of<MeshGeometryDirty>(e)) edited.push_back(e);
         // A new mesh's meshlets were built above.
         for (auto e : edited)
-            if (std::ranges::find(sync.NewMeshEntities, e) == sync.NewMeshEntities.end()) rebuilt.push_back(e);
+            if (!r.get<const MeshGeometryDirty>(e).RenderReady && std::ranges::find(sync.NewMeshEntities, e) == sync.NewMeshEntities.end()) rebuilt.push_back(e);
         BuildMeshletsNow(r, rebuilt);
+        // Meshes repaired or restored in place refresh only their own instances unless the scene structure changed with them.
+        std::vector<state::Entity> ready;
+        for (const auto e : edited)
+            if (r.get<const MeshGeometryDirty>(e).RenderReady) ready.push_back(e);
+        if (!ready.empty()) request(RepointChangedMeshes(r, ready) ? RenderRequest::Rebuild : RenderRequest::Reuse);
         for (auto mesh_entity : edited) {
-            // Rebuild existing closest-point hierarchies after geometry edits.
-            if (r.all_of<MeshBvh>(mesh_entity)) UpdateMeshBvh(r, mesh_entity);
             const auto selection_after = r.get<const MeshGeometryDirty>(mesh_entity).Selection;
             if (selection_after == EditSelectionAfter::Keep || !r.all_of<MeshElementSelection>(mesh_entity) || edit_mode == Element::None) continue;
             // Topology changed: size the bits to the new element counts, then drop a stale selection or derive a carried one.
             const auto mesh = GetMesh(r, mesh_entity);
-            meshes.EnsureSelectionBits(mesh);
             const auto id = mesh.GetStoreId();
+            meshes.EnsureSelectionState(r, std::array{id});
             const uint32_t count = mesh.ElementCount(edit_mode);
             if (count == 0) continue;
             auto &ranges = selection_after == EditSelectionAfter::Reset ? reset_ranges : carried_ranges;
@@ -871,61 +843,14 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (!carried_ranges.empty()) ApplyEditSelectionCommand(r, carried_ranges, edit_mode, EditSelectionOperation::Derive);
         request(RenderRequest::Reuse);
     }
-    // A preview change moves the entity's drawn record. A new preview took the new-record path above, and a dropped one returns the mesh.
-    if (auto &tracker = reactive(r, Change::MeshPreview); !tracker.empty()) {
-        std::vector<state::Entity> returned;
-        for (auto e : tracker) {
-            if (!r.valid(e) || !HasMesh(r, e)) continue;
-            const auto [any, all] = meshes.GetFaceSharpnessSummary(GetMesh(r, e).GetStoreId());
-            r.emplace_or_replace<MeshShadingSummary>(e, any, all);
-            if (!r.all_of<MeshGeometryDirty>(e)) returned.push_back(e);
-        }
-        if (!returned.empty()) {
-            std::ranges::sort(returned);
-            for (auto e : returned)
-                if (r.all_of<MeshBvh>(e)) UpdateMeshBvh(r, e);
-            RepointMeshInstances(r, returned);
-            buffers.PreludeStale = true;
-            request(RenderRequest::Rebuild);
-        }
-    }
     // Every meshlet build in this pass has committed, so unpinned meshes take their hierarchy here.
     if (BuildDemandedClusterLods(r, is_edit_mode)) request(RenderRequest::Rebuild);
-    if (auto &tracker = reactive(r, Change::MeshMaterial); !tracker.empty()) {
-        for (auto mesh_entity : tracker) {
-            const auto *assignment = r.try_get<const MeshMaterialAssignment>(mesh_entity);
-            const auto mesh = TryGetMesh(r, mesh_entity);
-            if (!assignment || !mesh) continue;
-            const auto material_count = buffers.Materials.Count<PBRMaterial>();
-            if (material_count == 0u) continue;
-            auto primitive_materials = meshes.EditPrimitiveMaterials(mesh->GetStoreId());
-            if (assignment->PrimitiveIndex < primitive_materials.size()) {
-                primitive_materials[assignment->PrimitiveIndex] = std::min(assignment->MaterialIndex, material_count - 1u);
-            }
-        }
-        request(RenderRequest::Rebuild);
-    }
     if (!reactive(r, Change::ViewportTheme).empty()) {
         auto theme = r.get<const ViewportTheme>(viewport);
         UpdateDerivedColors(theme);
         theme.EdgeWidth *= r.Context.get<FrameState>().DisplayFramebufferScale.x;
         buffers.ViewportThemeUBO.Update(as_bytes(theme));
         request(RenderRequest::Reuse);
-    }
-    if (!reactive(r, Change::ActiveMaterialVariant).empty()) {
-        const auto *mv = r.try_get<const MaterialVariants>(viewport);
-        const auto active = mv ? mv->Active : std::nullopt;
-        for (const auto [e, layout, _] : r.view<const MeshSourceLayout, const MeshHandle>().each()) {
-            const auto mesh = GetMesh(r, e);
-            auto primitive_materials = meshes.EditPrimitiveMaterials(mesh.GetStoreId());
-            for (size_t i = 0; i < layout.DefaultMaterials.size(); ++i) {
-                const auto &mapping = layout.VariantMappings[i];
-                primitive_materials[i] = active && *active < mapping.size() && mapping[*active] ?
-                    *mapping[*active] :
-                    layout.DefaultMaterials[i];
-            }
-        }
-        request(RenderRequest::Rebuild);
     }
     if (!reactive(r, Change::ViewportDisplay).empty()) {
         request(RenderRequest::Rebuild);
@@ -1313,33 +1238,32 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             .PendingRotation = pending ? pending->Delta.R : quat{1, 0, 0, 0},
             .PendingScale = pending ? pending->Delta.S : vec3{1},
             .LodErrorPixels = settings.LodErrorPixels,
-            .CornerTangentSlot = mesh_slots.CornerTangent,
-            .CornerColorSlot = mesh_slots.CornerColor,
-            .CornerUvSlot = mesh_slots.CornerUv,
             .EdgeSharpnessSlot = mesh_slots.EdgeSharpness,
-            .CornerClassSlot = mesh_slots.CornerClass,
-            .CustomCornerMaskSlot = mesh_slots.CustomCornerMask,
-            .CustomCornerNormalSlot = mesh_slots.CustomCornerNormal,
-            .BaseSeamNormalSlot = mesh_slots.BaseSeamNormal,
+            .FaceSharpnessSlot = mesh_slots.FaceSharpness,
+            .CornerSectors = mesh_slots.CornerSector,
+            .NormalSectors = mesh_slots.NormalSector,
             .BaseVertexNormalSlot = mesh_slots.BaseVertexNormal,
             .BaseFaceNormalSlot = mesh_slots.BaseFaceNormal,
-            .FaceFirstTriangleSlot = mesh_slots.FaceFirstTriangle,
-            .AdjacencySlot = mesh_slots.Adjacency,
-            .BoneDeformSlot = mesh_slots.BoneDeform,
+            .FaceTriangleStartSlot = mesh_slots.FaceTriangleStart,
+            .Skin = mesh_slots.Skin,
             .ArmatureDeformSlot = buffers.ArmatureDeformBuffer.Buffer.Slot,
-            .MorphDeformSlot = mesh_slots.MorphTarget,
+            .Morph = mesh_slots.Morph,
             .MorphWeightsSlot = buffers.MorphWeightBuffer.Buffer.Slot,
-            .PosedPositionSlot = buffers.PosedPositions.Slot,
-            .PosedVertexNormalSlot = buffers.PosedVertexNormals.Slot,
-            .PosedSeamNormalSlot = buffers.PosedSeamNormals.Slot,
-            .PosedFaceNormalSlot = buffers.PosedFaceNormals.Slot,
-            .PosedMorphNormalDeltaSlot = buffers.PosedMorphNormalDeltas.Slot,
+            .PosedPositionSlot = buffers.PosedPositions.Values.Buffer.Slot,
+            .PosedPositionNodesSlot = buffers.PosedPositions.Nodes.Buffer.Slot,
+            .PosedVertexNormalSlot = buffers.PosedVertexNormals.Values.Buffer.Slot,
+            .PosedVertexNormalNodesSlot = buffers.PosedVertexNormals.Nodes.Buffer.Slot,
+            .PosedSectorNodesSlot = buffers.PosedSectors.Nodes.Buffer.Slot,
+            .PosedSectorValuesSlot = buffers.PosedSectors.Values.Buffer.Slot,
+            .PosedFaceNormalSlot = buffers.PosedFaceNormals.Values.Buffer.Slot,
+            .PosedFaceNormalNodesSlot = buffers.PosedFaceNormals.Nodes.Buffer.Slot,
+            .PosedMorphNormalDeltaSlot = buffers.PosedMorphNormalDeltas.Values.Buffer.Slot,
+            .PosedMorphNormalNodesSlot = buffers.PosedMorphNormalDeltas.Nodes.Buffer.Slot,
             .InstanceBoundsSlot = buffers.Instances.BoundsBuffer.Slot,
             .MaterialSlot = buffers.Materials.Slot,
             .PrimitiveMaterialSlot = mesh_slots.PrimitiveMaterial,
             .MeshRecordSlot = buffers.MeshRecords.Buffer.Slot,
             .InstanceRecordSlot = buffers.Instances.RecordBuffer.Slot,
-            .ElementPrimitiveSlot = mesh_slots.ElementPrimitive,
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
             .XRayAlpha = XRayActive(settings) && settings.ViewportShading == ViewportShadingMode::Solid ? XRayOpacity(settings) : 1.f,
             .OverlayBehindOpacity = OverlayBehindOpacity(settings, r.get<const Interaction>(viewport).Mode),
@@ -1360,13 +1284,13 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 
     // Publish dirty excite-mode vertex lists in one GPU selection transaction.
     if (interaction_mode == InteractionMode::Excite) {
-        std::vector<std::pair<state::Entity, SlottedRange>> sound_selections;
+        std::vector<std::pair<state::Entity, std::span<const uint32_t>>> sound_selections;
         sound_selections.reserve(dirty_sound_selection_meshes.size());
         for (const auto mesh_entity : dirty_sound_selection_meshes) {
-            SlottedRange sound_vertices{};
+            std::span<const uint32_t> sound_vertices{};
             for (const auto [entity, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
                 if (instance.Entity != mesh_entity) continue;
-                sound_vertices = {excitable.Vertices, meshes.Slots().SoundVertex};
+                sound_vertices = meshes.Arenas().SoundVertices.Get(excitable.Vertices);
                 break;
             }
             sound_selections.emplace_back(mesh_entity, sound_vertices);
@@ -1422,8 +1346,7 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
     reactive(r, Change::SoundVerticesUpdated).on<SoundVertices>(On::Update);
     reactive(r, Change::VertexForce).on<VertexForce>(On::Create | On::Destroy);
     reactive(r, Change::TetMesh).on<TetBuffers>(On::Create | On::Update | On::Destroy);
-    reactive(r, Change::NewBufferEntity).on<MeshHandle>(On::Create).on<VertexStoreId>(On::Create).on<MeshPreview>(On::Create | On::Update);
-    reactive(r, Change::MeshPreview).on<MeshPreview>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::NewBufferEntity).on<MeshHandle>(On::Create).on<VertexStoreId>(On::Create);
     reactive(r, Change::RenderInstanceCreated).on<RenderInstance>(On::Create);
     reactive(r, Change::RenderInstanceDestroyed).on<RenderInstance>(On::Destroy);
     reactive(r, Change::ViewportDisplay).on<ViewportDisplay>(On::Create | On::Update);

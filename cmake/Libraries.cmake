@@ -70,6 +70,7 @@ mesheditor_library(MeshEditorMetal HOT
     src/Profile.cpp
     src/metal/Bindless.cpp
     src/metal/Buffer.cpp
+    src/metal/Dispatch.cpp
     src/metal/Image.cpp
     src/metal/MetalContext.cpp
     src/metal/MetalCppImpl.cpp
@@ -78,20 +79,33 @@ mesheditor_library(MeshEditorMetal HOT
     src/metal/PassTimer.cpp
     src/metal/RenderTarget.cpp
     src/metal/Shader.cpp
+    src/metal/SparseBuffer.cpp
+    src/metal/PhysicalPages.cpp
 )
 
 mesheditor_library(MeshEditorMesh HOT
     src/mesh/Mesh.cpp
     src/mesh/MeshCreate.cpp
-    src/mesh/MeshBvh.cpp
+    src/mesh/NormalDeriveGpu.cpp
+    src/mesh/CornerClassificationGpu.cpp
+    src/mesh/SelectionUpdateGpu.cpp
     src/mesh/MeshConnectivityGpu.cpp
+    src/mesh/VertexFanBuild.cpp
+    src/mesh/MeshClosure.cpp
+    src/mesh/ConnectivityEditWork.cpp
+    src/mesh/PageFootprint.cpp
+    src/mesh/ConnectivityWritePages.cpp
+    src/mesh/TopologyReadView.cpp
+    src/mesh/TopologyWritePages.cpp
+    src/mesh/TopologyOutputHandles.cpp
+    src/mesh/ElementWorkSort.cpp
     src/mesh/MeshPipelines.cpp
     src/mesh/MeshStore.cpp
     src/mesh/MeshStores.cpp
     src/mesh/MeshTopology.cpp
+    src/mesh/MeshTopologyLayout.cpp
+    src/mesh/SpatialFaceWork.cpp
     src/mesh/Primitives.cpp
-    src/mesh/VertexAdjacencyGpu.cpp
-    src/mesh/ElementIndicesGpu.cpp
     src/mesh/VertexWeldGpu.cpp
 )
 
@@ -115,10 +129,20 @@ mesheditor_library(MeshEditorRender HOT
     src/animation/Evaluate.cpp
     src/animation/Fields.cpp
     src/render/ClusterLod.cpp
+    src/render/ClusterLodRepair.cpp
     src/render/GpuBufferOps.cpp
     src/render/Materials.cpp
     src/render/GpuScene.cpp
-    src/render/MeshUpdates.cpp
+    src/render/MeshletPatchWork.cpp
+    src/render/LodNodeEdit.cpp
+    src/render/MeshTopologyRepair.cpp
+    src/render/RenderHistory.cpp
+    src/render/MeshletOwners.cpp
+    src/render/MeshletIndex.cpp
+    src/render/MeshletStorage.cpp
+    src/render/MeshletBuildGpu.cpp
+    src/render/MeshletSpatial.cpp
+    src/render/MeshletBoundsRefit.cpp
     src/render/Pipelines.cpp
     src/render/RenderStores.cpp
     src/render/RenderTargets.cpp

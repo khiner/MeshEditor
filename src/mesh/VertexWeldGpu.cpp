@@ -3,15 +3,11 @@
 #include "Profile.h"
 #include "gpu/TiledJobPushConstants.h"
 #include "gpu/VertexWeldJob.h"
-#include "mesh/MeshData.h"
 #include "mesh/MeshStore.h"
 #include "mesh/ScratchChunks.h"
 #include "mesh/TiledJobBatch.h"
 
 #include "state/Scene.h"
-
-#include <bit>
-#include <cstring>
 
 namespace {
 // A submit's scratch stays under this, so a batch of large meshes splits across submits.
@@ -48,7 +44,8 @@ constexpr uint32_t TangentWords{sizeof(vec3) / sizeof(uint32_t)};
 uint32_t TableSize(uint32_t count) { return std::bit_ceil(count + count / 2u + 1u); }
 
 struct WeldChannels {
-    SlottedRange Deform{}, Morph{};
+    ElementAttributeRef Skin{}, Morph{};
+    bool HasSkin{};
     uint32_t TargetCount{};
     uint32_t TangentWordsPerVertex{};
     uint32_t RecordWords{};
@@ -58,12 +55,13 @@ WeldChannels Channels(const MeshStore &meshes, const WeldTarget &target) {
     const auto &record = meshes.Get(target.StoreId);
     const uint32_t target_count = record.MorphTargetCount;
     WeldChannels c{
-        .Deform = meshes.Arenas().BoneDeform.Slotted(record.BoneDeform),
-        .Morph = meshes.Arenas().MorphTargets.Slotted(record.MorphTargets),
+        .Skin = meshes.Arenas().Skin.Ref(record.SkinBlocksReady),
+        .Morph = record.MorphBlocksReady ? meshes.Arenas().Morph.Ref() : ElementAttributeRef{},
+        .HasSkin = record.SkinBlocksReady,
         .TargetCount = target_count,
         .TangentWordsPerVertex = target.MorphTangentDeltas->empty() ? 0u : target_count * TangentWords,
     };
-    c.RecordWords = PositionWords + (c.Deform.Count > 0 ? DeformWords : 0u) + target_count * MorphWords + c.TangentWordsPerVertex;
+    c.RecordWords = PositionWords + (c.HasSkin ? DeformWords : 0u) + target_count * MorphWords + c.TangentWordsPerVertex;
     return c;
 }
 
@@ -99,8 +97,8 @@ void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, Batch &batc
             VertexWeldJob{
                 .Positions = {vertices.Slot, vertices.Offset},
                 .Corners = {corners.Slot, corners.Offset},
-                .Deform = channels.Deform.Count > 0 ? SlotOffset{channels.Deform.Slot, channels.Deform.Offset} : SlotOffset{},
-                .Morph = channels.TargetCount > 0 ? SlotOffset{channels.Morph.Slot, channels.Morph.Offset} : SlotOffset{},
+                .Skin = channels.Skin,
+                .Morph = channels.Morph,
                 .TargetCount = channels.TargetCount,
                 .TangentOffset = channels.TangentWordsPerVertex > 0 ? compact_offset + channels.RecordWords * count : InvalidOffset,
                 .Count = count,
@@ -127,7 +125,9 @@ void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, Batch &batc
         const auto &deltas = *chunk[i].MorphTangentDeltas;
         std::memcpy(scratch.data() + batch.Jobs[i].TangentOffset, deltas.data(), deltas.size() * sizeof(vec3));
     }
-    batch.Submit(r.Context.get<const mtl::Context>(), r.Context.get<const mtl::BindlessSet>(), GetMeshPipelines(r), TiledJobPushConstants{}, Passes);
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    batch.Encode(chain, GetMeshPipelines(r), TiledJobPushConstants{}, Passes);
+    chain.Submit();
 
     for (uint32_t i = 0; i < chunk.size(); ++i) {
         const auto &job = batch.Jobs[i];
@@ -148,13 +148,13 @@ void WeldMeshesNow(state::Scene &r, std::span<const WeldTarget> targets) {
     auto &meshes = r.Context.get<MeshStore>();
     std::vector<WeldTarget> work;
     for (const auto &target : targets) {
-        if (meshes.Get(target.StoreId).Vertices.Count == 0 || target.Data->FaceCount() == 0) continue;
+        if (meshes.Arenas().Vertices.Count(meshes.Get(target.StoreId).Vertices) == 0 || target.Data->FaceCount() == 0) continue;
         work.emplace_back(target);
     }
     if (work.empty()) return;
 
     const auto split = ChunkByScratch(uint32_t(work.size()), ScratchWordBudget, [&](uint32_t i) {
-        return ScratchWords(meshes.Get(work[i].StoreId).Vertices.Count, Channels(meshes, work[i]));
+        return ScratchWords(meshes.Arenas().Vertices.Count(meshes.Get(work[i].StoreId).Vertices), Channels(meshes, work[i]));
     });
     // Every chunk writes over the same buffers, so a many-mesh batch takes no fresh allocation per submit.
     Batch batch{meshes.BufferContext(), split.WidestWords, split.MostJobs};

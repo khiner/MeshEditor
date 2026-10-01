@@ -14,6 +14,9 @@ struct PendingRenderRequest {
     RenderRequest Value{RenderRequest::None};
 };
 
+// Queue a viewport frame and invalidate occlusion after geometry or view changes.
+void RequestRender(state::Scene &, RenderRequest);
+
 // Register the reactive trackers and scene lifecycle handlers used by ProcessComponentEvents.
 void RegisterSceneComponentHandlers(state::Scene &);
 

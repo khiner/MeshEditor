@@ -49,7 +49,6 @@ An earlier implementation rebuilt meshlets and LODs after position-only restorat
 For 32,514 vertices without rendering, a development run measured 31.477 ms hot and 32.423 ms cold.
 Updating only restored vertex ranges reduced those times to 0.493 ms and 0.703 ms in a matching run.
 These comparisons use single-process medians, separate from the repeated measurements above.
-Topology changes and geometry outside active edit meshes still require meshlet and LOD rebuilding.
 
 `MeshEditorProjectTest` checks Persistent state, surface rendering, and replay after dense and single-vertex undo, redo, and cold restoration.
 

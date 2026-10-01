@@ -1,13 +1,12 @@
 #pragma once
 #include "gpu/Types.h"
-// Edit-mode topology operators, each a transform from a source mesh and its selection to a new mesh.
+// Edit-mode topology operators over canonical element handles.
 enum class MeshTopologyOp : uint32_t {
     DeleteVertices = 0,
     DeleteEdges = 1,
     DeleteFaces = 2,
     DeleteOnlyEdgesFaces = 3,
     DeleteOnlyFaces = 4,
-    DeleteLoose = 5,
     // Merge every selected vertex into the job's target vertex at the target position.
     MergeAtTarget = 6,
     // Move the selected faces onto copied boundary vertices with side quads where they border unselected faces, or duplicate a region that borders nothing.
@@ -45,9 +44,9 @@ enum class MeshTopologyOp : uint32_t {
     AddFaces = 24,
     // Merge each selected vertex into the lowest selected vertex within Param0 of it.
     MergeByDistance = 25,
-    // Merge each connected run of selected vertices into one at a center the host computes.
+    // Merge each connected run of selected vertices into one at a GPU-reduced center.
     MergeCollapse = 26,
-    // Collapse every edge shorter than Param0 into its lower vertex.
+    // Collapse edges shorter than Param0 whose endpoints are both selected.
     DissolveDegenerate = 27,
     // Dissolve edges between selected faces whose normals differ by under Param0 radians, then vertices left with two nearly collinear edges.
     DissolveLimited = 28,
@@ -55,10 +54,12 @@ enum class MeshTopologyOp : uint32_t {
     Solidify = 29,
     // Split every face with two or more selected vertices along chords between consecutive selected corners.
     ConnectVertices = 30,
-    // Bevel the selected edges by width Param0 with Param1 segments.
+    // Bevel the selected edges by width Param0 with Steps segments.
     BevelEdges = 31,
-    // Bevel the selected vertices by width Param0.
+    // Bevel the selected vertices by width Param0 with Steps segments.
     BevelVertices = 32,
+    // Dissolve selected edges and split each resulting region between the vertices following their ends.
+    RotateEdges = 33,
 };
 
 // Flags a job's operator reads.
@@ -79,15 +80,11 @@ inline bool TopologyIsMerge(MeshTopologyOp op) {
     return op == MeshTopologyOp::MergeAtTarget || op == MeshTopologyOp::MergeByDistance || op == MeshTopologyOp::MergeCollapse || op == MeshTopologyOp::DissolveDegenerate;
 }
 inline bool TopologyIsDissolve(MeshTopologyOp op) {
-    return op == MeshTopologyOp::DissolveVertices || op == MeshTopologyOp::DissolveEdges || op == MeshTopologyOp::DissolveFaces || op == MeshTopologyOp::DissolveLimited;
+    return op == MeshTopologyOp::DissolveVertices || op == MeshTopologyOp::DissolveEdges || op == MeshTopologyOp::DissolveFaces || op == MeshTopologyOp::DissolveLimited || op == MeshTopologyOp::RotateEdges;
 }
 inline bool TopologyIsBevel(MeshTopologyOp op) { return op == MeshTopologyOp::BevelEdges || op == MeshTopologyOp::BevelVertices; }
-// The in-place scans a scan pass selects by its parameter.
-enum TopologyScan : uint32_t {
-    ScanCounts = 0, // The three count arrays, quantity-major over the count blocks
-    ScanCustomNormals = 1, // The custom normal mask popcounts
-};
-
+// Operators whose output lines can join at the same endpoints, of which a line core keeps one.
+inline bool TopologyJoinsLines(MeshTopologyOp op) { return TopologyIsMerge(op) || op == MeshTopologyOp::DissolveVertices; }
 // Operators that repeat a label or target pass until no value changes.
 inline bool TopologyIterates(MeshTopologyOp op) {
     return TopologyIsDissolve(op) || op == MeshTopologyOp::TrisToQuads || op == MeshTopologyOp::MergeByDistance || op == MeshTopologyOp::MergeCollapse || op == MeshTopologyOp::DissolveDegenerate;

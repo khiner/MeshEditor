@@ -133,8 +133,8 @@ StartPivot TransformPivot(state::Scene &r, state::Entity viewport) {
     StartPivot pivot{.R = active != state::Null ? r.get<const WorldTransform>(active).R : quat{1, 0, 0, 0}};
     if (mode == InteractionMode::Edit && !bone_edit_mode) {
         const auto element = r.get<const EditMode>(viewport).Value;
-        // Derive the summary now, since a restore leaves it stale until the next render.
-        if (r.Context.get<const GpuSceneState>().EditSelectionDirty) ApplyEditSelectionCommand(r, GetElementRangesForSelected(r, viewport), element, EditSelectionOperation::Derive);
+        // Selection, position edits and history restore publish the persistent
+        // aggregates together. Render dirtiness does not invalidate the center.
         pivot.P = EditSelectionCenter(r, element);
         return pivot;
     }

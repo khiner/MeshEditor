@@ -4,7 +4,6 @@
 // Face-splitting and face-joining rules: triangulation by ear clipping and quad beauty, quad joins, pokes, flips, edge-split sectors, and insets.
 #include "MeshTopologyContext.metal"
 
-constant uint FacesMaxCorners = 64u;
 constant float JoinAngleThreshold = 40.f * 3.14159265f / 180.f; // Blender's default face and shape thresholds
 
 inline float2 TopoProject(float3 p, float3 u, float3 v) { return float2(dot(p, u), dot(p, v)); }
@@ -34,9 +33,10 @@ inline bool TopoSplitQuad13(float2 p0, float2 p1, float2 p2, float2 p3) {
     return fac_13 > fac_02;
 }
 
-// Ear-clips a planar polygon of `n` corners into `n - 2` triangles of corner indices, in a fixed order.
-inline uint TopoEarClip(thread const float2 *points, uint n, thread uint3 *triangles) {
-    uint next[FacesMaxCorners], prev[FacesMaxCorners];
+// Ear-clips a planar polygon in a fixed order. Each face owns its source
+// halfedge slice of the job scratch, including its links and projected points.
+template<typename Emit>
+inline void TopoEarClip(device const float2 *points, device uint *next, device uint *prev, uint n, Emit emit) {
     for (uint i = 0u; i < n; ++i) {
         next[i] = (i + 1u) % n;
         prev[i] = (i + n - 1u) % n;
@@ -58,7 +58,7 @@ inline uint TopoEarClip(thread const float2 *points, uint n, thread uint3 *trian
                 if (inside) ear = false;
             }
             if (ear) {
-                triangles[count++] = uint3(a, i, b);
+                emit(uint3(a, i, b), count++);
                 next[a] = b;
                 prev[b] = a;
                 --remaining;
@@ -71,38 +71,42 @@ inline uint TopoEarClip(thread const float2 *points, uint n, thread uint3 *trian
         // A polygon without an ear is degenerate, so clip the cursor anyway.
         if (!clipped) {
             const uint i = cursor, a = prev[i], b = next[i];
-            triangles[count++] = uint3(a, i, b);
+            emit(uint3(a, i, b), count++);
             next[a] = b;
             prev[b] = a;
             --remaining;
             cursor = b;
         }
     }
-    if (remaining == 3u && count + 1u <= n - 2u) triangles[count++] = uint3(prev[cursor], cursor, next[cursor]);
-    return count;
+    if (remaining == 3u && count + 1u <= n - 2u) emit(uint3(prev[cursor], cursor, next[cursor]), count);
 }
 
-inline uint TopoTriangulateFace(TopoContext ctx, MeshTopologyJob job, uint f, thread uint3 *triangles) {
+template<typename Emit>
+inline void TopoTriangulateFace(TopoContext ctx, MeshTopologyJob job, uint f, Emit emit) {
     const uint2 range = ctx.SrcFaceRange(job, f);
-    const uint n = min(range.y - range.x, FacesMaxCorners);
-    device const uint *corners = ctx.SrcCorners(job);
+    const uint n = range.y - range.x;
+    const auto corners = ctx.SrcCorners(job);
     float3 u, v;
     TopoPlaneFrame(normalize(float3(ctx.SrcFaceNormals(job)[f])), u, v);
     if (n == 4u) {
         float2 p[4];
         for (uint k = 0u; k < 4u; ++k) p[k] = TopoProject(ctx.SrcPosition(job, corners[range.x + k]), u, v);
         if (TopoSplitQuad13(p[0], p[1], p[2], p[3])) {
-            triangles[0] = uint3(1u, 2u, 3u);
-            triangles[1] = uint3(1u, 3u, 0u);
+            emit(uint3(1u, 2u, 3u), 0u);
+            emit(uint3(1u, 3u, 0u), 1u);
         } else {
-            triangles[0] = uint3(0u, 1u, 2u);
-            triangles[1] = uint3(0u, 2u, 3u);
+            emit(uint3(0u, 1u, 2u), 0u);
+            emit(uint3(0u, 2u, 3u), 1u);
         }
-        return 2u;
+        return;
     }
-    float2 points[FacesMaxCorners];
+    const uint first = ctx.SrcHalfedgeDomain(job).Index(range.x);
+    device uint *scratch = ctx.Scratch() + job.HalfedgeAuxOffset;
+    device uint *next = scratch + first;
+    device uint *prev = scratch + job.SrcHalfedgeCount + first;
+    device float2 *points = reinterpret_cast<device float2 *>(scratch + 2u * job.SrcHalfedgeCount) + first;
     for (uint k = 0u; k < n; ++k) points[k] = TopoProject(ctx.SrcPosition(job, corners[range.x + k]), u, v);
-    return TopoEarClip(points, n, triangles);
+    TopoEarClip(points, next, prev, n, emit);
 }
 
 // The join cost of the quad a triangle would form with its neighbor across halfedge `h`, or a negative value when the pair does not join.
@@ -111,9 +115,10 @@ inline float TopoJoinCost(TopoContext ctx, MeshTopologyJob job, uint h) {
     const uint opposite = ctx.SrcOpposite(job, h);
     if (opposite == InvalidOffset) return -1.f;
     const uint f = ctx.SrcFaceOf(job, h), g = ctx.SrcFaceOf(job, opposite);
+    if (f == InvalidOffset || !ctx.SrcSelectedFace(job, g)) return -1.f;
     const uint2 fr = ctx.SrcFaceRange(job, f), gr = ctx.SrcFaceRange(job, g);
-    if (fr.y - fr.x != 3u || gr.y - gr.x != 3u || !ctx.SrcSelectedFace(job, g)) return -1.f;
-    device const uint *corners = ctx.SrcCorners(job);
+    if (fr.y - fr.x != 3u || gr.y - gr.x != 3u) return -1.f;
+    const auto corners = ctx.SrcCorners(job);
     const uint q = corners[ctx.SrcPrev(job, h)], r = corners[h];
     const uint p = corners[ctx.SrcNext(job, h)], s = corners[ctx.SrcNext(job, opposite)];
     const float3 P = ctx.SrcPosition(job, p), Q = ctx.SrcPosition(job, q), R = ctx.SrcPosition(job, r), S = ctx.SrcPosition(job, s);
@@ -138,9 +143,11 @@ inline float TopoJoinCost(TopoContext ctx, MeshTopologyJob job, uint h) {
 // The lowest halfedge arriving at corner `h`'s vertex reachable without crossing a selected edge or a boundary: its edge-split sector.
 inline uint TopoSectorRep(TopoContext ctx, MeshTopologyJob job, uint h) {
     uint rep = h;
+    const uint v = ctx.SrcCorners(job)[h];
+    const uint fan_length = ctx.SrcFan(job, v).y;
     // Forward: across the edge leaving the vertex in this face.
     uint current = h;
-    for (uint step = 0u; step < 256u; ++step) {
+    for (uint step = 0u; step < fan_length; ++step) {
         const uint out = ctx.SrcNext(job, current);
         if (ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, out))) break;
         const uint opposite = ctx.SrcOpposite(job, out);
@@ -150,7 +157,7 @@ inline uint TopoSectorRep(TopoContext ctx, MeshTopologyJob job, uint h) {
     }
     // Backward: across this corner's own arriving edge.
     current = h;
-    for (uint step = 0u; step < 256u; ++step) {
+    for (uint step = 0u; step < fan_length; ++step) {
         if (ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, current))) break;
         const uint opposite = ctx.SrcOpposite(job, current);
         if (opposite == InvalidOffset) break;
@@ -164,13 +171,16 @@ inline uint TopoSectorRep(TopoContext ctx, MeshTopologyJob job, uint h) {
 // The output vertex of corner `h` after an edge split: the vertex's own output plus its sector's rank among the sectors at the vertex.
 inline uint TopoSectorVertex(TopoContext ctx, MeshTopologyJob job, uint h) {
     const uint v = ctx.SrcCorners(job)[h];
+    // Faces in the affected closure include boundary vertices whose other incident faces stay untouched.
+    // They keep their original identity.
+    // Only endpoints of selected edges need their complete sector fan examined.
+    if (!(ctx.FlagVertices(job)[v] & TopoTagged)) return ctx.Counts(job, TopoCountVertices)[v];
     const uint rep = ctx.HalfedgeAux(job)[h];
-    uint count;
-    device const uint *items = ctx.SrcFanItems(job, v, count);
+    const uint2 fan = ctx.SrcFan(job, v);
     // Every sector's corners share one representative, so lower representatives count the sectors ranked below.
     uint sectors_below = 0u;
-    for (uint i = 0u; i < count; ++i) {
-        const uint corner = ctx.SrcFanHalfedge(job, items[i]);
+    for (uint k = 0u; k < fan.y; ++k) {
+        const uint corner = ctx.SrcFanCorner(job,fan.x+k);
         if (ctx.HalfedgeAux(job)[corner] == corner && corner < rep) ++sectors_below;
     }
     return ctx.Counts(job, TopoCountVertices)[v] + sectors_below;
@@ -178,12 +188,12 @@ inline uint TopoSectorVertex(TopoContext ctx, MeshTopologyJob job, uint h) {
 
 // How many sectors an edge split leaves at vertex `v`: one per representative corner, or one for a vertex without corners.
 inline uint TopoSectorCount(TopoContext ctx, MeshTopologyJob job, uint v) {
-    uint count;
-    device const uint *items = ctx.SrcFanItems(job, v, count);
-    if (count == 0u) return 1u;
+    if (!(ctx.FlagVertices(job)[v] & TopoTagged)) return 1u;
+    const uint2 fan = ctx.SrcFan(job, v);
+    if (fan.y == 0u) return 1u;
     uint sectors = 0u;
-    for (uint i = 0u; i < count; ++i) {
-        const uint corner = ctx.SrcFanHalfedge(job, items[i]);
+    for (uint k = 0u; k < fan.y; ++k) {
+        const uint corner = ctx.SrcFanCorner(job,fan.x+k);
         if (ctx.HalfedgeAux(job)[corner] == corner) ++sectors;
     }
     return sectors;

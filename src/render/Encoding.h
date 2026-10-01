@@ -23,7 +23,7 @@ inline VisibilityShadingPushConstants MeshletDecodePc(const GpuBuffers &buffers)
         .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
         .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
         .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
-        .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
+        .VisibleMeshletSlot = buffers.SceneCull.Visible.Slot,
     };
 }
 

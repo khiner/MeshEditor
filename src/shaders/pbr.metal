@@ -92,7 +92,7 @@ struct PbrContext {
     }
 
     NormalInfo GetNormalInfo(device const PBRMaterial &material) const {
-        const float2 uv = GetUv(material.NormalTexture);
+        const float2 uv = GetUv(material.NormalTexture.TexCoord);
         float3 ng = normalize(ShadingWorldNormal(In));
         float3 t;
         float3 b;
@@ -100,20 +100,30 @@ struct PbrContext {
             t = normalize(In.WorldTangent.xyz - ng * dot(ng, In.WorldTangent.xyz));
             b = normalize(cross(ng, t) * In.WorldTangent.w);
         } else {
-            // Use a fixed downward axis when the texture-coordinate derivative cannot define the frame.
             const float3 pos_dx = dfdx(In.WorldPosition);
             const float3 pos_dy = dfdy(In.WorldPosition);
             float2 uv_dx = dfdx(uv);
             float2 uv_dy = dfdy(uv);
-            if (length(uv_dx) <= 1e-2f) uv_dx = float2(1.0f, 0.0f);
-            if (length(uv_dy) <= 1e-2f) uv_dy = float2(0.0f, 1.0f);
-
+            // Rescale the UV Jacobian to preserve valid gradients at every screen scale.
+            const float uv_scale = max(max(abs(uv_dx.x), abs(uv_dx.y)), max(abs(uv_dy.x), abs(uv_dy.y)));
+            if (uv_scale > 0.0f) {
+                uv_dx /= uv_scale;
+                uv_dy /= uv_scale;
+            }
             const float det = uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y;
-            const float3 t_ = abs(det) > 1e-8f ?
-                (uv_dy.y * pos_dx - uv_dx.y * pos_dy) / det :
-                float3(1.0f, 0.0f, 0.0f);
-            t = normalize(t_ - ng * dot(ng, t_));
-            b = cross(ng, t);
+            const float3 derivative_t = sign(det) * (uv_dy.y * pos_dx - uv_dx.y * pos_dy);
+            const float3 derivative_b = sign(det) * (uv_dx.x * pos_dy - uv_dy.x * pos_dx);
+            const float3 projected_t = derivative_t - ng * dot(ng, derivative_t);
+            if (det != 0.0f && dot(projected_t, projected_t) > 0.0f) {
+                t = normalize(projected_t);
+                const float handedness = dot(cross(ng, t), derivative_b) < 0.0f ? -1.0f : 1.0f;
+                b = cross(ng, t) * handedness;
+            } else {
+                // A singular UV frame uses an axis that stays independent of the normal.
+                const float3 axis = abs(ng.x) < abs(ng.y) ? float3(1.0f, 0.0f, 0.0f) : float3(0.0f, 1.0f, 0.0f);
+                t = normalize(cross(axis, ng));
+                b = cross(ng, t);
+            }
         }
 
         if (!IsFrontFacing(S, ng, In.WorldPosition)) {

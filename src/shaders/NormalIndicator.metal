@@ -2,79 +2,95 @@
 #define NORMALINDICATOR_MSL
 
 #include "Bindless.metal"
+#include "ConnectivityRead.metal"
 #include "gpu/MeshletLimit.h"
 #include "MeshletResolve.metal"
 #include "SceneUBO.metal"
 #include "TransformUtils.metal"
 #include "LineQuad.metal"
-#include "gpu/NormalIndicatorConstant.h"
-
-constant bool NormalIndicatorFaces [[function_constant(uint(NormalIndicatorConstant::NormalIndicatorFaces))]];
+#include "VertexBlocks.metal"
 
 // Emits normal-indicator line groups scaled to local geometry size.
 constant float NormalIndicatorLengthScale = 0.25f;
-// Fan-triangulated faces enumerate distinct vertices from the first triangle, then each later triangle's final corner.
-constant uint NormalIndicatorMaxFaceCorners = 256u;
 constant uint NormalIndicatorThreads = uint(MeshletLimit::MaxVertices);
 constant uint NormalIndicatorSimdGroups = NormalIndicatorThreads / 32u;
 using NormalIndicatorOutput = metal::mesh<EdgeQuadVaryings, void, NormalIndicatorThreads * 4u, NormalIndicatorThreads * 2u, metal::topology::triangle>;
 
 inline float MeanIncidentEdgeLength(const thread Scene &scene, DrawData draw, uint vertex_id, float3 position) {
-    if (draw.VertexEdgeAdjacencyOffset == InvalidOffset) return 0.0f;
-    device const uint *adjacency = scene.Adjacency(scene.View.AdjacencySlot);
-    const uint offsets = draw.VertexEdgeAdjacencyOffset;
-    const uint items = offsets + draw.VertexCountOrHeadImageSlot + 1u;
-    const uint first = adjacency[offsets + vertex_id], last = adjacency[offsets + vertex_id + 1u];
-    if (last <= first) return 0.0f;
-
-    device const uint *edges = scene.Indices(draw.IndexSlotOffset.Slot);
+    const ConnectivityView conn{scene.B, draw.Connectivity, draw.FaceCount};
     float total = 0.0f;
-    for (uint i = first; i < last; ++i) {
-        const uint edge = adjacency[items + i];
-        const uint from = edges[draw.IndexSlotOffset.Offset + edge * 2u];
-        const uint to = edges[draw.IndexSlotOffset.Offset + edge * 2u + 1u];
-        total += length(scene.GetLocalPosition(draw, from == vertex_id ? to : from) - position);
+    uint count = 0u;
+    const auto add = [&](uint corner) {
+        total += length(scene.GetLocalPosition(draw, scene.CornerVertexOrdinal(draw, corner)) - position);
+        ++count;
+    };
+    // Each fan corner ends at the vertex, so its incoming edge starts at its opposite's corner, or at its previous corner on a boundary.
+    // A boundary edge leaving the vertex ends at the next corner.
+    for (const auto item : conn.Fan(draw.VertexOffset + vertex_id)) {
+        const uint h = item.x;
+        if (conn.IncomingEdge(h) != InvalidOffset) {
+            const uint opposite = conn.Opposite(h);
+            add(opposite != InvalidOffset ? opposite : conn.Previous(h));
+        }
+        if (conn.BoundaryOutgoingEdge(h) != InvalidOffset) add(conn.Next(h));
     }
-    return total / float(last - first);
+    return count ? total / float(count) : 0.0f;
 }
 
-// Returns a local-space indicator segment scaled to its element.
-inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uint element, thread float3 &start, thread float3 &end) {
-    if (!NormalIndicatorFaces) {
-        start = scene.GetLocalPosition(draw, element);
-        const float3 normal = scene.GetVertexNormal(draw, element);
-        end = start + NormalIndicatorLengthScale * MeanIncidentEdgeLength(scene, draw, element, start) * normal;
-        return;
-    }
+// Returns a vertex's local-space indicator segment scaled to its incident edges.
+inline void VertexNormalSegment(const thread Scene &scene, DrawData draw, uint vertex_id, thread float3 &start, thread float3 &end) {
+    start = scene.GetLocalPosition(draw, vertex_id);
+    const float3 normal = scene.GetVertexNormal(draw, vertex_id);
+    end = start + NormalIndicatorLengthScale * MeanIncidentEdgeLength(scene, draw, vertex_id, start) * normal;
+}
 
-    device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
-    device const uint *triangle_faces = scene.ObjectIds(draw.ObjectIdSlot);
-    const uint first_triangle = scene.FaceFirstTriangles(scene.View.FaceFirstTriangleSlot)[draw.FaceFirstTriangleOffset + element];
-
-    float3 sum = float3(0.0f);
-    float area = 0.0f;
-    uint corners = 0u;
-    for (uint i = 0u; i < NormalIndicatorMaxFaceCorners; ++i) {
-        const uint triangle = first_triangle + i;
-        if (triangle_faces[draw.FaceIdOffset + triangle] != element + 1u) break;
-        const uint base = draw.IndexSlotOffset.Offset + triangle * 3u;
-        const float3 a = scene.GetLocalPosition(draw, indices[base]);
-        const float3 b = scene.GetLocalPosition(draw, indices[base + 1u]);
-        const float3 c = scene.GetLocalPosition(draw, indices[base + 2u]);
+// Returns a face's local-space indicator segment scaled to its area.
+inline void FaceNormalSegment(const thread Scene &scene, DrawData draw, uint element, thread float3 &start, thread float3 &end) {
+    const ConnectivityView conn{scene.B, draw.Connectivity, draw.FaceCount};
+    const uint2 loop = conn.FaceHalfedges(element);
+    float3 sum = float3(0);
+    for (uint h = loop.x; h < loop.y; ++h) sum += scene.GetLocalPosition(draw, scene.CornerVertexOrdinal(draw, h));
+    float area = 0.f;
+    const uint first = scene.FaceTriangles(scene.View.FaceTriangleStartSlot)[element];
+    for (uint i = 0u; i < loop.y - loop.x - 2u; ++i) {
+        const uint3 h = uint3(BindlessBuffer(packed_uint3, scene.B.Buffer, draw.TriangleSlot)[first + i]);
+        const float3 a = scene.GetLocalPosition(draw, scene.CornerVertexOrdinal(draw, h.x));
+        const float3 b = scene.GetLocalPosition(draw, scene.CornerVertexOrdinal(draw, h.y));
+        const float3 c = scene.GetLocalPosition(draw, scene.CornerVertexOrdinal(draw, h.z));
         area += 0.5f * length(cross(b - a, c - a));
-        if (i == 0u) {
-            sum = a + b + c;
-            corners = 3u;
-        } else {
-            sum += c;
-            corners += 1u;
-        }
     }
-    start = corners > 0u ? sum / float(corners) : float3(0.0f);
+    start = sum / float(loop.y - loop.x);
     end = start + NormalIndicatorLengthScale * sqrt(area) * scene.GetFaceNormal(draw, element);
 }
 
-[[mesh]] void NormalIndicatorMesh(
+// Emits one stroke per present lane from its local-space segment.
+inline void EmitNormalIndicator(
+    thread NormalIndicatorOutput output, uint thread_index, uint lane, threadgroup uint *simd_counts,
+    const thread Scene &scene, DrawData draw, uint element, bool faces
+) {
+    const uint present = element != InvalidOffset ? 1u : 0u;
+    const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, NormalIndicatorSimdGroups);
+    if (thread_index == 0u) output.set_primitive_count(compact.y * 2u);
+    if (present == 0u) return;
+
+    const Transform world = MeshletWorld(scene, draw);
+    float3 start, end;
+    if (faces) FaceNormalSegment(scene, draw, element, start, end);
+    else VertexNormalSegment(scene, draw, element, start, end);
+
+    constant ViewportThemeColors &colors = scene.Theme.Colors;
+    const float4 color = float4(float3(faces ? colors.FaceNormal : colors.VertexNormal), 1.0f);
+    float4 clip[2];
+    for (uint endpoint = 0u; endpoint < 2u; ++endpoint) {
+        const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, endpoint == 0u ? start : end));
+        clip[endpoint] = scene.ViewProj() * float4(world_pos, 1.0f);
+        clip[endpoint].z -= NdcOffsetFactor(scene);
+    }
+    EmitStroke(output, compact.x, scene, clip[0], clip[1], color);
+}
+
+// Each finest cluster emits the faces whose first triangle it holds.
+[[mesh]] void FaceNormalIndicatorMesh(
     NormalIndicatorOutput output,
     uint thread_index [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]],
@@ -92,55 +108,34 @@ inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uin
         output.set_primitive_count(0u);
         return;
     }
-
     uint element = InvalidOffset;
-    DrawData draw = work.Draw;
-    if (NormalIndicatorFaces) {
-        if (!MeshletCoarse(work.Meshlet) && thread_index < work.Meshlet.TriangleCount) {
-            const uint triangle = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot)[
-                work.Meshlet.TriangleOffset + thread_index
-            ];
-            const uint encoded_face = scene.ObjectIds(draw.ObjectIdSlot)[
-                draw.FaceIdOffset + triangle - work.Primitive.FirstTriangle
-            ];
-            if (encoded_face != 0u) {
-                const uint face = encoded_face - 1u;
-                const uint first_triangle = scene.FaceFirstTriangles(scene.View.FaceFirstTriangleSlot)[
-                    draw.FaceFirstTriangleOffset + face
-                ];
-                if (triangle == first_triangle) element = face;
-            }
-        }
-        draw.IndexSlotOffset.Offset -= work.Primitive.FirstTriangle * 3u;
-        draw.FaceIdOffset -= work.Primitive.FirstTriangle;
-    } else if (thread_index < work.Meshlet.VertexCount) {
-        const uint packed = MeshletPackedVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, thread_index);
-        if ((packed & uint(MeshletGeometryEncoding::EditVertexOwnerBit)) != 0u) {
-            element = MeshletVertexId(scene, draw, MeshletPrimitiveTopology(work.Meshlet), packed);
-        }
-        draw.IndexSlotOffset = work.Primitive.AuxIndices;
+    if (!MeshletCoarse(work.Meshlet) && thread_index < work.Meshlet.TriangleCount) {
+        const uint triangle = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot)[work.Meshlet.TriangleOffset + thread_index];
+        const uint face = scene.TriangleFace(work.Draw, triangle);
+        if (face != InvalidOffset && triangle == scene.FaceTriangles(scene.View.FaceTriangleStartSlot)[face]) element = face;
     }
+    EmitNormalIndicator(output, thread_index, lane, simd_counts, scene, work.Draw, element, true);
+}
 
-    const uint present = element != InvalidOffset ? 1u : 0u;
-    const uint2 compact = CompactPresent(
-        present, thread_index, lane, simd_counts, NormalIndicatorSimdGroups
+// Each lane of a canonical vertex block emits its live vertex.
+[[mesh]] void VertexNormalIndicatorMesh(
+    NormalIndicatorOutput output,
+    uint thread_index [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    constant VertexBlockPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    threadgroup uint simd_counts[NormalIndicatorSimdGroups];
+    const Scene scene{bindless, view, theme, workspace};
+    // A stroke spans its half width around the vertex, pulled toward the camera as EmitNormalIndicator pulls it.
+    const VertexBlockLane work = ResolveVertexBlockLane(
+        scene, pc, threadgroup_position.x, thread_index, scene.Theme.EdgeWidth + 0.5f, NdcOffsetFactor(scene)
     );
-    if (thread_index == 0u) output.set_primitive_count(compact.y * 2u);
-    if (present == 0u) return;
-
-    const Transform world = MeshletWorld(scene, draw);
-    float3 start, end;
-    NormalIndicatorSegment(scene, draw, element, start, end);
-
-    constant ViewportThemeColors &colors = scene.Theme.Colors;
-    const float4 color = float4(float3(NormalIndicatorFaces ? colors.FaceNormal : colors.VertexNormal), 1.0f);
-    float4 clip[2];
-    for (uint endpoint = 0u; endpoint < 2u; ++endpoint) {
-        const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, endpoint == 0u ? start : end));
-        clip[endpoint] = scene.ViewProj() * float4(world_pos, 1.0f);
-        clip[endpoint].z -= NdcOffsetFactor(scene);
-    }
-    EmitStroke(output, compact.x, scene, clip[0], clip[1], color);
+    EmitNormalIndicator(output, thread_index, lane, simd_counts, scene, work.Draw, work.VertexId, false);
 }
 
 #endif

@@ -304,9 +304,9 @@ std::vector<uint32_t> GetSampleOpVertices(const state::Scene &r, state::Entity v
     }
     if (mode != InteractionMode::Edit || !r.all_of<MeshElementSelection>(mesh_entity)) return {};
 
-    const auto bits = r.Context.get<const MeshStore>().GetSelectionBits(mesh->GetStoreId(), Element::Vertex);
+    const auto selected = r.Context.get<const MeshStore>().GetSelectedElements(mesh->GetStoreId(), Element::Vertex);
     std::vector<uint32_t> vertices;
-    ForEachSelected(bits, mesh->VertexCount(), [&](uint32_t vertex) { vertices.push_back(vertex); });
+    selected.ForEach([&](uint32_t vertex) { vertices.push_back(mesh->VertexOrdinal(he::VH{vertex})); });
     return vertices;
 }
 

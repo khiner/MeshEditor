@@ -1,25 +1,33 @@
 #pragma once
 
 #include "gpu/SlotOffset.h"
+#include "gpu/ElementAttributeRef.h"
+#include "gpu/ConnectivityRef.h"
 #include "gpu/Types.h"
+#include "gpu/ElementWork.h"
 
 // Defines one normal-derivation item with optional posed positions and push-constant-selected outputs.
 struct NormalDeriveEntry {
-    uint32_t PosedPositionOffset DEFAULT(InvalidOffset);
+    uint32_t PositionNamespace DEFAULT(InvalidOffset);
+    // Full-weight morph probe reads base plus delta directly, without a position copy.
+    ElementAttributeRef Morph DEFAULT();
+    uint32_t MorphTargetIndex DEFAULT();
     SlotOffset Vertices DEFAULT();
-    SlotOffset FaceIndices DEFAULT();
+    SlotOffset Corners DEFAULT();
     uint32_t VertexCount DEFAULT();
-    // Vertex-fan CSR storage contains VertexCount + 1 offsets followed by FanItemEncoding values.
-    uint32_t VertexAdjacencyOffset DEFAULT();
-    // Normal-sector CSR storage contains SeamCount + 1 offsets followed by FanItemEncoding values.
-    uint32_t SeamFanOffset DEFAULT();
-    uint32_t SeamCount DEFAULT();
-    // Per-face first-triangle offsets bounded by TriangleCount.
+    uint32_t VertexBlocksSlot DEFAULT();
+    ConnectivityRef Connectivity DEFAULT();
+    // Face-data arena base, used for derived triangle ownership.
     uint32_t FaceDataOffset DEFAULT();
     uint32_t FaceCount DEFAULT();
-    uint32_t TriangleCount DEFAULT();
-    uint32_t VertexNormalOffset DEFAULT();
-    uint32_t SeamNormalOffset DEFAULT();
-    uint32_t FaceNormalOffset DEFAULT();
+    uint32_t FaceBlocksSlot DEFAULT();
+    uint32_t HasSectors DEFAULT(1u);
+    uint32_t VertexNormalNamespace DEFAULT(InvalidOffset);
+    uint32_t SectorNamespace DEFAULT(InvalidOffset);
+    uint32_t FaceNormalNamespace DEFAULT(InvalidOffset);
+    // Canonical handles with compact dispatch counts.
+    // Absent work uses live-block tiles.
+    ElementWork VerticesWork DEFAULT(), FacesWork DEFAULT();
+    uint32_t VertexWorkCount DEFAULT(), FaceWorkCount DEFAULT();
 };
-static_assert(sizeof(NormalDeriveEntry) == 60, "NormalDeriveEntry size");
+static_assert(sizeof(NormalDeriveEntry) == 168, "NormalDeriveEntry size");

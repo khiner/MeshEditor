@@ -1,6 +1,12 @@
+#include "Profile.h"
+#include "ProcessEvents.h"
 #include "action/Mesh.h"
+#include "action/InsetPreview.h"
 
+#include "gpu/InsetPreviewPushConstants.h"
+#include "gpu/InsetVertexBasis.h"
 #include "gpu/MeshTopologyOp.h"
+#include "gpu/Vertex.h"
 
 #include "TransformMath.h"
 #include "Variant.h"
@@ -8,18 +14,28 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/MeshTopology.h"
+#include "mesh/MeshTopologyEdit.h"
+#include "mesh/MeshPipelines.h"
+#include "metal/Dispatch.h"
+#include "render/MeshTopologyRepair.h"
+#include "render/MeshletBuildGpu.h"
+#include "render/MeshletBoundsRefit.h"
+#include "render/GpuBuffers.h"
+#include "render/SceneUpdates.h"
+#include "render/GpuSceneState.h"
+#include "render/ElementWorkOps.h"
+#include "viewport/ViewportRenderGpu.h"
 #include "mesh/PrimitiveType.h"
 #include "numeric/MatrixMath.h"
 #include "numeric/QuaternionMath.h"
-#include "numeric/VectorMath.h"
 #include "object/ObjectOps.h"
 #include "project/Project.h"
 #include "render/GpuBufferOps.h"
-#include "render/Instance.h"
 #include "render/MeshBuffers.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
+#include "selection/SelectionGpu.h"
 #include "selection/SelectionComponents.h"
 #include "state/Scene.h"
 #include "viewport/InteractionComponents.h"
@@ -35,9 +51,65 @@
 #include <limits>
 #include <numbers>
 #include <optional>
+#include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
+void UpdatePoseMembership(state::Scene &r,const MeshTopologyEdit &edit) {
+    auto &buffers=r.Context.get<GpuBuffers>();
+    const auto &meshes=r.Context.get<const MeshStore>();
+    const auto &a=meshes.Arenas();
+    const auto &record=meshes.Get(edit.StoreId);
+    std::vector<uint32_t> vertices,faces,normal_payloads=edit.OldNormalPayloadBlocks;
+    const auto &storage=edit.Chain.Scratch;
+    const auto gather=[&](std::vector<uint32_t> &blocks,ElementWork work) {
+        ForEachWorkBlock(storage,work,[&](uint32_t block,auto) { blocks.push_back(block); });
+    };
+    if (edit.Repair) {
+        gather(vertices,edit.Repair->Elements[0]);
+        gather(faces,edit.Repair->Elements[2]);
+        ForEachWorkBlock(storage,edit.Repair->Elements[1],[&](uint32_t block,auto) {
+            const auto payload=a.NormalSectors.PayloadBlock(block);
+            if (payload) normal_payloads.push_back(payload-1u);
+        });
+    }
+    if (edit.Output) {
+        gather(vertices,edit.Output->Retired[0]);
+        gather(faces,edit.Output->Retired[1]);
+    }
+    const auto unique=[](std::vector<uint32_t> &blocks) {
+        std::ranges::sort(blocks);
+        blocks.erase(std::unique(blocks.begin(),blocks.end()),blocks.end());
+    };
+    unique(vertices); unique(faces); unique(normal_payloads);
+    const auto vertex_owner=record.Vertices.Index;
+    const auto vertex_members=a.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>();
+    const auto has_vertex=[&](uint32_t block) {
+        return block<vertex_members.size() && vertex_members[block].Owner==vertex_owner && vertex_members[block].Count;
+    };
+    const auto vertex_revision=record.Vertices ? a.Vertices.Set(record.Vertices).Revision : 0u;
+    buffers.VertexBounds.UpdateBlocks(edit.StoreId,vertex_revision,vertices,has_vertex);
+    buffers.PosedPositions.UpdateBlocks(edit.StoreId,vertex_revision,vertices,has_vertex);
+    buffers.PosedMorphNormalDeltas.UpdateBlocks(edit.StoreId,vertex_revision,vertices,has_vertex);
+    buffers.PosedVertexNormals.UpdateBlocks(edit.StoreId,vertex_revision,vertices,has_vertex);
+    const auto face_owner=record.FaceData.Index;
+    const auto face_members=a.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>();
+    const auto has_face=[&](uint32_t block) {
+        return block<face_members.size() && face_members[block].Owner==face_owner && face_members[block].Count;
+    };
+    const auto face_revision=record.FaceData ? a.FaceTriangles.Set(record.FaceData).Revision : 0u;
+    buffers.PosedFaceNormals.UpdateBlocks(edit.StoreId,face_revision,faces,has_face);
+    const auto normal_owners=a.NormalSectors.Owners.Buffer.GetSpan<uint32_t>();
+    const auto has_normal=[&](uint32_t payload) {
+        if (payload>=normal_owners.size() || !normal_owners[payload]) return false;
+        const auto block=normal_owners[payload]-1u;
+        return a.FaceCorners.Blocks.Get({block,1u})[0].Owner==record.FaceCorners.Index &&
+            a.NormalSectors.PayloadBlock(block)==payload+1u;
+    };
+    buffers.PosedSectors.UpdateBlocks(edit.StoreId,meshes.GetDerived(edit.StoreId).NormalRevision,normal_payloads,has_normal);
+}
+
 // The edit-mode meshes with a selection in the viewport's edit element domain.
 std::vector<state::Entity> SelectedEditMeshes(const state::Scene &r, state::Entity viewport) {
     std::vector<state::Entity> result;
@@ -51,24 +123,112 @@ std::vector<state::Entity> SelectedEditMeshes(const state::Scene &r, state::Enti
     return result;
 }
 
-// Runs the tasks and replaces each entity's mesh with its output, or draws the output as a preview while the session previews.
-void RunTasks(state::Scene &r, std::span<const state::Entity> mesh_entities, std::span<const MeshTopologyTask> tasks) {
-    const auto outputs = RunMeshTopology(r, tasks);
-    const bool preview = project::Session(r).Previewing;
-    for (size_t i = 0; i < tasks.size(); ++i) {
-        if (outputs[i] == InvalidStoreId) continue;
-        const auto e = mesh_entities[i];
-        if (preview) {
-            // The base handle stays for the commit to adopt or the restore to return to.
-            r.remove<PrimitiveShape, MeshActiveElement>(e);
-            r.emplace_or_replace<MeshPreview>(e, MeshPreview{outputs[i]});
-        } else {
-            // Releasing the handle frees the source record, and the new handle takes the entity through the new-mesh path.
-            r.remove<MeshHandle, PrimitiveShape, MeshActiveElement>(e);
-            r.emplace<MeshHandle>(e, MeshHandle{outputs[i]});
+// Repairs a published in-place edit's triangle render ownership while its source identities stay reserved.
+// Fresh builds of other meshes ride the repair, or build on their own when the edit repairs no triangle render.
+// Returns whether the edit's record has a render owner, which a newly created canonical mesh lacks.
+bool RepairTopologyEditRender(state::Scene &r, state::Entity entity, const MeshTopologyTask &task, MeshTopologyEdit &edit,
+                              std::span<MeshletBuildSource> fresh = {}) {
+    const auto *owner=TryMeshBuffers(r,entity);
+    const bool ready=owner && owner->StoreId==task.SourceId;
+    // The unretired source faces still count, so the edit leaves faces when more than its retired faces are live.
+    const bool repairs=ready && owner->RenderTopology==0u && Mesh{r.Context.get<const MeshStore>(),task.SourceId}.FaceCount()>edit.Output->RetiredCounts[1];
+    if (repairs) RepairTopologyRender(r,entity,edit,fresh);
+    else BuildGpuMeshlets(r,edit.Chain,fresh);
+    return ready;
+}
+
+// Publishes a finished in-place edit's render, pose and selection summary state.
+// A record whose live elements now draw as another topology rebuilds through BuildMeshletsNow, since topologies never mix.
+void FinishTopologyEdit(state::Scene &r, state::Entity entity, const MeshTopologyTask &task,
+                        MeshTopologyEdit &edit, bool ready, bool preview) {
+    auto &buffers=r.Context.get<GpuBuffers>();
+    auto &meshes=r.Context.get<MeshStore>();
+    UpdatePoseMembership(r,edit);
+    bool repaired=false;
+    if (ready) {
+        auto &owner=buffers.MeshOf(task.SourceId);
+        const Mesh mesh{meshes,task.SourceId};
+        owner.Vertices.Count=mesh.VertexCount();
+        repaired=mesh.PrimitiveTopology()==owner.RenderTopology;
+        // The drawn topology changes, so the instance flags that depend on it are rederived.
+        if (!repaired) RequestRender(r,RenderRequest::Rebuild);
+        else if (owner.RenderTopology!=0u && edit.Repair) {
+            // A point record's repaired vertices, or a line record's retired edges and the edges of its repaired corners, move between its clusters.
+            const auto &storage=edit.Chain.Scratch;
+            std::vector<uint32_t> affected;
+            if (owner.RenderTopology==2u) ForEachWorkElement(storage,edit.Repair->Elements[0],[&](uint32_t v) { affected.push_back(v); });
+            else {
+                const auto edges=meshes.Arenas().HalfedgeEdges.Buffer.GetSpan<uint32_t>();
+                ForEachWorkElement(storage,edit.RetiredEdges,[&](uint32_t e) { affected.push_back(e); });
+                ForEachWorkElement(storage,edit.Repair->Elements[1],[&](uint32_t h) { affected.push_back(edges[h]); });
+            }
+            RepairElementMeshlets(r,edit.Chain,owner,affected);
         }
-        r.emplace_or_replace<MeshGeometryDirty>(e, EditSelectionAfter::Derive);
     }
+    RefreshElementSelectionSummaries(r,std::span{&entity,1u});
+    if (ready && edit.InsetBasis.Count<InsetVertexBasis>()) {
+        auto &session=project::Session(r);
+        if (!session.InsetPreview) session.InsetPreview=std::make_unique<action::mesh::InsetPreviewCache>();
+        std::vector<uint32_t> handles(edit.Output->Vertices.GetSpan<uint32_t>().begin(),edit.Output->Vertices.GetSpan<uint32_t>().end());
+        std::ranges::sort(handles);
+        handles.erase(std::unique(handles.begin(),handles.end()),handles.end());
+        std::vector<Range> ranges;
+        ForEachIndexRun(handles, [&](size_t first, size_t count) { ranges.push_back({handles[first],uint32_t(count)}); });
+        session.InsetPreview->Entries.push_back({entity,task.SourceId,task.Op,task.Flags,std::move(edit.InsetBasis),
+            std::move(ranges)});
+        if (preview) {
+            auto &pipelines=GetMeshPipelines(r);
+            (void)pipelines[MeshPass::InsetPreviewPositions].State();
+            (void)pipelines[MeshPass::MeshletBoundsRefit].State();
+        }
+    }
+    buffers.RefreshMeshBinding(r,task.SourceId);
+    r.remove<PrimitiveShape,MeshActiveElement>(entity);
+    r.emplace_or_replace<MeshGeometryDirty>(entity,EditSelectionAfter::Keep,repaired);
+    r.Context.get<GpuSceneState>().EditSelectionDirty=true;
+}
+
+// Every topology action prepares selection and edit work inside one history
+// transaction, including actions that publish more than one mesh output.
+void RunTopologyAction(state::Scene &r, std::span<const state::Entity> mesh_entities, auto &&run) {
+    auto &history=project::Session(r).History;
+    auto before=history.Pin();
+    bool changed=false;
+    try {
+        for (const auto entity:mesh_entities) ReleaseMeshEditWork(r,entity);
+        changed=run();
+    } catch (...) {
+        history.Restore(before); history.Release(before); throw;
+    }
+    history.Release(before);
+    if (changed) r.Context.get<GpuBuffers>().PreludeStale=true;
+}
+
+// Every mesh's edit shares the action's chain, construction's submits, one reservation, each publication submit and one selection update.
+// Render repairs read the reserved source identities, so every repair precedes the edits' finish.
+void RunTasks(state::Scene &r, std::span<const state::Entity> mesh_entities, std::span<const MeshTopologyTask> tasks) {
+    const profile::CpuScope scope{"TopologyAction"};
+    if (tasks.empty()) return;
+    if (tasks.size()!=mesh_entities.size()) throw std::invalid_argument("Topology task and entity counts differ.");
+    RunTopologyAction(r,mesh_entities,[&] {
+        const bool preview=project::Session(r).Previewing;
+        mtl::ComputeChain chain{r.Context.get<MeshStore>().BufferContext(),TopologyScratchWords};
+        auto edits=MeshTopologyEdit::Construct(r,chain,tasks,preview);
+        MeshTopologyEdit::PublishAll(r,edits);
+        std::vector<bool> ready;
+        std::vector<MeshTopologyEdit *> finished;
+        for (uint32_t i=0u;i<edits.size();++i) if (edits[i].Output) {
+            ready.push_back(RepairTopologyEditRender(r,mesh_entities[i],tasks[i],edits[i]));
+            finished.push_back(&edits[i]);
+        }
+        MeshTopologyEdit::FinishAll(r,finished);
+        for (uint32_t k=0u;k<finished.size();++k) {
+            const auto i = uint32_t(finished[k] - edits.data());
+            FinishTopologyEdit(r,mesh_entities[i],tasks[i],*finished[k],ready[k],preview);
+        }
+        chain.Submit();
+        return !finished.empty();
+    });
 }
 
 // Runs the task `make` builds for each mesh, skipping the meshes it returns nothing for.
@@ -89,58 +249,84 @@ void RunOperator(state::Scene &r, std::span<const state::Entity> mesh_entities, 
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) { return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = op, .Param0 = param0, .Param1 = param1, .Flags = flags}; });
 }
 
-// The lowest and highest selected vertex of a mesh, from its vertex mask.
+// The lowest and highest selected vertex of a mesh.
 std::pair<uint32_t, uint32_t> SelectedVertexSpan(const MeshStore &meshes, uint32_t id) {
-    const auto bits = meshes.GetSelectionBits(id, Element::Vertex);
-    uint32_t first = InvalidOffset, last = InvalidOffset;
-    for (uint32_t w = 0; w < bits.size(); ++w) {
-        if (!bits[w]) continue;
-        if (first == InvalidOffset) first = w * 32 + std::countr_zero(bits[w]);
-        last = w * 32 + 31 - std::countl_zero(bits[w]);
-    }
-    return {first, last};
+    const auto selected = meshes.GetSelectedElements(id, Element::Vertex);
+    const auto first = selected.First(), last = selected.Last();
+    return {first.value_or(InvalidOffset),last.value_or(InvalidOffset)};
 }
 
-// Moves the selected faces of each mesh into a new mesh object placed over the source's primary instance.
+// Emplaces a published copied output's render buffers as a mesh gaining its first faces, and returns the build of its finest meshlets.
+// The edit derived its normals and corner classes, so the output skips the new-mesh sync.
+MeshletBuildSource CopiedOutputBuild(state::Scene &r, const MeshTopologyEdit &edit) {
+    auto &buffers=r.Context.get<GpuBuffers>();
+    const auto &meshes=r.Context.get<const MeshStore>();
+    const auto &vertices=meshes.Arenas().Vertices;
+    const auto set=meshes.Get(edit.StoreId).Vertices;
+    auto &face=buffers.EmplaceMesh(edit.StoreId,{{vertices.First(set),vertices.Count(set)},vertices.Buffer.Slot});
+    AssignFaceIndices(meshes,Mesh{meshes,edit.StoreId},face);
+    return {.Destination=&face,.Mesh=BuildMeshRecord(buffers,face,meshes,edit.StoreId,true,false),
+        .StoreId=edit.StoreId,.Topology=0u,.ElementCount=edit.AddedTriangleCount,.Elements=edit.AddedTriangles};
+}
+
+// Moves one mesh's selected faces into a new mesh object placed over its primary instance.
+// The clone and the source deletion share one chain, construction's submits, one reservation and one selection update.
+bool SeparateMesh(state::Scene &r, state::Entity e, const auto &primaries) {
+    const auto id=r.get<const MeshHandle>(e).StoreId;
+    mtl::ComputeChain chain{r.Context.get<MeshStore>().BufferContext(),TopologyScratchWords};
+    const std::array tasks{MeshTopologyTask{.SourceId=id,.Op=MeshTopologyOp::KeepSelectedFaces},MeshTopologyTask{.SourceId=id,.Op=MeshTopologyOp::DeleteFaces}};
+    auto edits=MeshTopologyEdit::Construct(r,chain,tasks);
+    auto &clone=edits[0], &source=edits[1];
+    if (!clone.Output) return false;
+    if (!source.Output) throw std::logic_error("Separate Selected cloned faces without source deletion.");
+    MeshTopologyEdit::PublishAll(r,edits);
+    // The clone's build rides the source's render repair, which submits the passes both edits recorded, so the source finishes first and the clone completes without a wait.
+    auto build=CopiedOutputBuild(r,clone);
+    const bool ready=RepairTopologyEditRender(r,e,tasks[1],source,std::span{&build,1u});
+    MeshTopologyEdit::FinishAll(r,std::array{&source,&clone});
+    FinishTopologyEdit(r,e,tasks[1],source,ready,project::Session(r).Previewing);
+    const auto primary=primaries.find(e);
+    const auto instance=primary!=primaries.end() ? primary->second : state::Null;
+    MeshInstanceCreateInfo create{
+        .Name=std::format("{}.001",instance!=state::Null ? GetName(r,instance) : "Mesh"),
+        .Transform=instance!=state::Null ? Transform{r.get<const WorldTransform>(instance)} : Transform{},
+        .Select=MeshInstanceCreateInfo::SelectBehavior::None,
+    };
+    const auto entity=::AddMesh(r,clone.StoreId,std::move(create)).first;
+    RequestRender(r,RenderRequest::Rebuild);
+    r.Context.get<GpuSceneState>().LodDemand.insert(entity);
+    UpdateAuthoredMorphShadingNow(r,std::span{&entity,1u});
+    chain.Submit();
+    return true;
+}
+
+// Moves the selected faces of each mesh into a new mesh object.
 void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    std::vector<MeshTopologyTask> tasks;
-    for (const auto e : mesh_entities) tasks.push_back({.SourceId = r.get<const MeshHandle>(e).StoreId, .Op = MeshTopologyOp::KeepSelectedFaces});
-    const auto outputs = RunMeshTopology(r, tasks);
     const auto primaries = ::selection::ComputePrimaryEditInstances(r);
-    std::vector<state::Entity> separated;
-    for (size_t i = 0; i < mesh_entities.size(); ++i) {
-        if (outputs[i] == InvalidStoreId) continue;
-        const auto e = mesh_entities[i];
-        const auto primary = primaries.find(e);
-        const auto instance = primary != primaries.end() ? primary->second : state::Null;
-        ::AddMesh(r, outputs[i], MeshInstanceCreateInfo{
-                                     .Name = std::format("{}.001", instance != state::Null ? GetName(r, instance) : "Mesh"),
-                                     .Transform = instance != state::Null ? Transform{r.get<const WorldTransform>(instance)} : Transform{},
-                                     .Select = MeshInstanceCreateInfo::SelectBehavior::None,
-                                 });
-        separated.push_back(e);
-    }
-    RunOperator(r, separated, MeshTopologyOp::DeleteFaces);
+    RunTopologyAction(r,mesh_entities,[&] {
+        bool changed=false;
+        for (const auto e:mesh_entities) changed=SeparateMesh(r,e,primaries) || changed;
+        return changed;
+    });
 }
 
 // The lowest selected edge of a mesh, or the active one when the active element is an edge.
 std::optional<uint32_t> ActiveOrFirstSelectedEdge(const state::Scene &r, state::Entity mesh_entity, const Mesh &mesh) {
     const auto &meshes = r.Context.get<const MeshStore>();
-    const auto bits = meshes.GetSelectionBits(mesh.GetStoreId(), Element::Edge);
-    if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity); active && active->Handle < mesh.EdgeCount() && (bits[active->Handle / 32] >> (active->Handle % 32)) & 1u) return active->Handle;
-    for (uint32_t w = 0; w < bits.size(); ++w) {
-        if (bits[w]) return w * 32 + std::countr_zero(bits[w]);
-    }
+    const auto selected = meshes.GetSelectedElements(mesh.GetStoreId(), Element::Edge);
+    if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity);
+        active && meshes.IsLiveElement(mesh.GetStoreId(), Element::Edge, active->Handle) && selected.Contains(active->Handle))
+        return active->Handle;
+    if (const auto first = selected.First()) return *first;
     return {};
 }
 
 // The ring of edges across quads from `edge`, walked both ways until a non-quad, a boundary, or the ring closes.
 std::vector<uint32_t> EdgeRing(const Mesh &mesh, uint32_t edge) {
     std::vector<uint32_t> ring{edge};
-    std::vector<uint8_t> visited(mesh.EdgeCount(), 0);
-    visited[edge] = 1;
+    std::unordered_set<uint32_t> visited{edge};
     const auto &c = mesh.GetConnectivity();
-    const auto start = mesh.GetHalfedge(Mesh::EH{edge}, 0);
+    const auto start = mesh.GetHalfedge(he::EH{edge}, 0);
     for (const auto side : {start, c.Opposites[*start]}) {
         auto h = side;
         while (h) {
@@ -148,8 +334,7 @@ std::vector<uint32_t> EdgeRing(const Mesh &mesh, uint32_t edge) {
             if (!face || mesh.GetValence(face) != 4) break;
             const auto across = c.Next(c.Next(h));
             const auto e = mesh.GetEdge(across);
-            if (visited[*e]) break;
-            visited[*e] = 1;
+            if (!visited.insert(*e).second) break;
             ring.push_back(*e);
             h = c.Opposites[*across];
         }
@@ -158,57 +343,106 @@ std::vector<uint32_t> EdgeRing(const Mesh &mesh, uint32_t edge) {
 }
 
 // Each closed loop of boundary edges, selected ones or all of them, as its vertices in the boundary's own direction.
-std::vector<std::vector<uint32_t>> BoundaryChains(const MeshStore &meshes, const Mesh &mesh, bool selected_only) {
-    const auto bits = meshes.GetSelectionBits(mesh.GetStoreId(), Element::Edge);
+std::vector<std::vector<uint32_t>> BoundaryChains(state::Scene &r, const Mesh &mesh, bool selected_only, uint32_t max_sides=0u) {
+    const auto &meshes=r.Context.get<const MeshStore>();
     const auto &c = mesh.GetConnectivity();
-    // The boundary halfedge leaving each vertex, lowest first where a vertex has several.
-    std::vector<uint32_t> leaving(mesh.VertexCount(), InvalidOffset);
-    for (uint32_t e = 0; e < mesh.EdgeCount(); ++e) {
-        if (selected_only && !((bits[e / 32] >> (e % 32)) & 1u)) continue;
-        const auto h = mesh.GetHalfedge(Mesh::EH{e}, 0);
-        if (c.Opposites[*h]) continue;
-        const auto from = *mesh.GetFromVertex(h);
-        leaving[from] = std::min(leaving[from], *h);
+    // Both views visit their edges in ascending handle order.
+    std::vector<uint32_t> edges;
+    const auto collect=[&](const auto &view) { view.ForEach([&](uint32_t edge) { edges.push_back(edge); }); };
+    if (selected_only) collect(meshes.GetSelectedElements(mesh.GetStoreId(), Element::Edge));
+    else collect(meshes.GetBoundaryEdges(mesh.GetStoreId()));
+    std::vector<uint32_t> starts;
+    for (const auto edge : edges) {
+        const auto h = mesh.GetHalfedge(he::EH{edge}, 0);
+        if (!c.Opposites[*h]) starts.push_back(*h);
     }
+    std::ranges::sort(starts);
+    const auto candidate=[&](uint32_t h) {
+        return h!=InvalidOffset && !c.Opposites[h] && std::ranges::binary_search(edges,*mesh.GetEdge(Mesh::HH{h}));
+    };
+    std::unordered_map<uint32_t,uint32_t> selected_outgoing;
+    if (selected_only) for (const auto h:starts) {
+        const auto vertex=*mesh.GetFromVertex(Mesh::HH{h});
+        const auto [it,unique]=selected_outgoing.emplace(vertex,h);
+        if (!unique) it->second=InvalidOffset;
+    }
+    // Follow the face fan at the current boundary halfedge's destination to
+    // find the next boundary halfedge on the same surface sheet. Vertex-based
+    // pairing loses loops when distinct boundaries share a vertex.
+    const auto successor = [&](uint32_t h) -> uint32_t {
+        auto next=c.Next(Mesh::HH{h});
+        const auto across=[&](Mesh::HH at) -> Mesh::HH {
+            if (!at) return {};
+            const auto opposite=c.Opposites[*at];
+            return opposite ? c.Next(opposite) : Mesh::HH{};
+        };
+        auto fast=next;
+        while (next && c.Opposites[*next]) {
+            next=across(next);
+            fast=across(across(fast));
+            if (fast && next==fast) return InvalidOffset;
+        }
+        return next ? *next : InvalidOffset;
+    };
     std::vector<std::vector<uint32_t>> loops;
-    std::vector<uint8_t> used(mesh.HalfEdgeCount(), 0);
-    for (uint32_t v = 0; v < leaving.size(); ++v) {
-        if (leaving[v] == InvalidOffset || used[leaving[v]]) continue;
-        std::vector<uint32_t> loop;
-        auto h = leaving[v];
+    std::unordered_set<uint32_t> used;
+    used.reserve(starts.size());
+    for (const auto start : starts) {
+        if (used.contains(start)) continue;
+        std::vector<uint32_t> halfedges;
+        auto h = start;
         bool closed = false;
-        for (uint32_t step = 0; step <= mesh.HalfEdgeCount(); ++step) {
-            if (used[h]) {
-                closed = h == leaving[v];
+        uint32_t length=0u;
+        while (candidate(h)) {
+            if (!used.insert(h).second) {
+                closed = h == start;
                 break;
             }
-            used[h] = 1;
-            loop.push_back(*mesh.GetFromVertex(Mesh::HH{h}));
-            h = leaving[*mesh.GetToVertex(Mesh::HH{h})];
-            if (h == InvalidOffset) break;
+            ++length;
+            if (!max_sides || halfedges.size()<max_sides) halfedges.push_back(h);
+            const auto next=successor(h);
+            if (selected_only && !candidate(next)) {
+                // A selected hole may touch an unselected boundary at one
+                // vertex. Follow its sole selected outgoing edge there.
+                const auto it=selected_outgoing.find(*mesh.GetToVertex(Mesh::HH{h}));
+                h=it==selected_outgoing.end() ? InvalidOffset : it->second;
+            } else h=next;
         }
-        if (closed && loop.size() >= 3) loops.push_back(std::move(loop));
+        if (closed && length>=3u && (!max_sides || length<=max_sides)) {
+            auto &loop=loops.emplace_back();
+            loop.reserve(halfedges.size());
+            for (const auto edge:halfedges)
+                loop.push_back(*mesh.GetFromVertex(Mesh::HH{edge}));
+        }
     }
     return loops;
 }
 
 // Each closed boundary loop as the vertex loop of the face that fills it, wound against the boundary.
-std::vector<std::vector<uint32_t>> BoundaryLoops(const MeshStore &meshes, const Mesh &mesh, bool selected_only) {
-    auto loops = BoundaryChains(meshes, mesh, selected_only);
+std::vector<std::vector<uint32_t>> BoundaryLoops(state::Scene &r, const Mesh &mesh, bool selected_only, uint32_t max_sides=0u) {
+    auto loops = BoundaryChains(r, mesh, selected_only, max_sides);
     for (auto &loop : loops) std::ranges::reverse(loop);
     return loops;
 }
 
-// A face list task over `loops`, each a run of vertex indices.
-// `positions` append as new vertices, which the loops name by indices past the source count.
-MeshTopologyTask FaceListTask(uint32_t source, std::span<const std::vector<uint32_t>> loops, std::span<const vec3> positions = {}) {
-    MeshTopologyTask task{.SourceId = source, .Op = MeshTopologyOp::AddFaces};
+// A face list task over canonical vertex handles. New vertices use handles
+// starting at the current arena capacity, beyond every existing handle.
+MeshTopologyTask FaceListTask(state::Scene &r, const Mesh &mesh,
+                              std::span<const std::vector<uint32_t>> loops, std::span<const vec3> positions = {}) {
+    const auto appended_base=r.Context.get<const MeshStore>().Arenas().Vertices.Capacity();
+    if (uint64_t(appended_base)+positions.size()>UINT32_MAX) throw std::length_error("Face list exceeds the vertex handle address space.");
+    MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::AddFaces, .AppendedBase=appended_base};
     task.List.push_back(uint32_t(positions.size()));
     for (const auto &p : positions) {
         task.List.push_back(std::bit_cast<uint32_t>(p.x));
         task.List.push_back(std::bit_cast<uint32_t>(p.y));
         task.List.push_back(std::bit_cast<uint32_t>(p.z));
     }
+    uint32_t attribute_source=InvalidOffset;
+    for (const auto &loop:loops) for (const auto vertex:loop)
+        if (vertex<appended_base && attribute_source==InvalidOffset) attribute_source=vertex;
+    if (attribute_source==InvalidOffset) throw std::invalid_argument("Face creation needs a source vertex for attributes.");
+    task.List.push_back(attribute_source);
     task.List.push_back(uint32_t(loops.size()));
     for (const auto &loop : loops) {
         task.List.push_back(uint32_t(loop.size()));
@@ -219,9 +453,8 @@ MeshTopologyTask FaceListTask(uint32_t source, std::span<const std::vector<uint3
 
 // Bridges the two closed loops of selected boundary edges, pairing each vertex of the longer with its share of the shorter.
 void BridgeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    const auto &meshes = r.Context.get<const MeshStore>();
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
-        auto chains = BoundaryChains(meshes, mesh, true);
+        auto chains = BoundaryChains(r, mesh, true);
         if (chains.size() != 2) return {};
         if (chains[0].size() < chains[1].size()) std::swap(chains[0], chains[1]);
         const auto &a = chains[0], &b = chains[1];
@@ -246,19 +479,23 @@ void BridgeSelected(state::Scene &r, std::span<const state::Entity> mesh_entitie
             faces.push_back({a[(i + 1) % na], a[i], at_b(j0), at_b(j0 + 1)});
             for (uint32_t j = j0 + 1; j < j1; ++j) faces.push_back({a[(i + 1) % na], at_b(j), at_b(j + 1)});
         }
-        return FaceListTask(mesh.GetStoreId(), faces);
+        return FaceListTask(r, mesh, faces);
     });
 }
 
 // Fills one closed loop of selected boundary edges with a Coons patch of quads, `span` edges along its first side.
 void GridFillSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, uint32_t span) {
-    const auto &meshes = r.Context.get<const MeshStore>();
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
-        const auto chains = BoundaryChains(meshes, mesh, true);
+        const auto chains = BoundaryChains(r, mesh, true);
         if (chains.size() != 1 || chains[0].size() % 2 != 0 || chains[0].size() < 4) return {};
         const auto &loop = chains[0];
         const auto length = uint32_t(loop.size());
+        const auto appended_base=r.Context.get<const MeshStore>().Arenas().Vertices.Capacity();
         const uint32_t s = std::clamp(span == 0 ? std::max(length / 4, 1u) : span, 1u, length / 2 - 1), t = length / 2 - s;
+        const uint64_t interior=uint64_t(s-1u)*(t-1u), cells=uint64_t(s)*t;
+        if (uint64_t(appended_base)+interior>UINT32_MAX || 3ull+3u*interior+5u*cells>UINT32_MAX) {
+            throw std::length_error("Grid fill exceeds the vertex or face-list address space.");
+        }
         // Nodes run along the first side (u) and up the second (v), with the loop's four sides as the rails.
         const auto rail = [&](uint32_t k) { return mesh.GetPosition(Mesh::VH{loop[k % length]}); };
         std::vector<uint32_t> node((s + 1) * (t + 1), InvalidOffset);
@@ -279,7 +516,7 @@ void GridFillSelected(state::Scene &r, std::span<const state::Entity> mesh_entit
                 const vec3 p00 = rail(0), p10 = rail(s), p11 = rail(s + t), p01 = rail(2 * s + t);
                 const vec3 p = bottom * (1.f - v) + top * v + left * (1.f - u) + right * u -
                     (p00 * ((1.f - u) * (1.f - v)) + p10 * (u * (1.f - v)) + p01 * ((1.f - u) * v) + p11 * (u * v));
-                node[index(i, j)] = mesh.VertexCount() + uint32_t(positions.size());
+                node[index(i, j)] = appended_base + uint32_t(positions.size());
                 positions.push_back(p);
             }
         }
@@ -287,17 +524,15 @@ void GridFillSelected(state::Scene &r, std::span<const state::Entity> mesh_entit
         for (uint32_t j = 0; j < t; ++j) {
             for (uint32_t i = 0; i < s; ++i) faces.push_back({node[index(i + 1, j)], node[index(i, j)], node[index(i, j + 1)], node[index(i + 1, j + 1)]});
         }
-        return FaceListTask(mesh.GetStoreId(), faces, positions);
+        return FaceListTask(r, mesh, faces, positions);
     });
 }
 
 void FillHolesSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, uint32_t sides) {
-    const auto &meshes = r.Context.get<const MeshStore>();
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
-        auto loops = BoundaryLoops(meshes, mesh, false);
-        std::erase_if(loops, [&](const auto &loop) { return sides > 0 && loop.size() > sides; });
+        auto loops = BoundaryLoops(r, mesh, false, sides);
         if (loops.empty()) return {};
-        return FaceListTask(mesh.GetStoreId(), loops);
+        return FaceListTask(r, mesh, loops);
     });
 }
 
@@ -307,9 +542,9 @@ void ConvexHullSelected(state::Scene &r, std::span<const state::Entity> mesh_ent
     const auto &meshes = r.Context.get<const MeshStore>();
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
         std::vector<uint32_t> points;
-        ForEachSelected(meshes.GetSelectionBits(mesh.GetStoreId(), Element::Vertex), mesh.VertexCount(), [&](uint32_t v) { points.push_back(v); });
+        meshes.GetSelectedElements(mesh.GetStoreId(), Element::Vertex).ForEach([&](uint32_t v) { points.push_back(v); });
         if (points.size() < 4) return {};
-        const auto at = [&](uint32_t v) { return mesh.GetPosition(Mesh::VH{v}); };
+        const auto at = [&](uint32_t v) { return mesh.GetPosition(he::VH{v}); };
         // A starting tetrahedron from the first point, the farthest from it, the farthest from that line, and the farthest from that plane.
         std::array<uint32_t, 4> seed{points[0], points[0], points[0], points[0]};
         float best = 0.f;
@@ -459,45 +694,40 @@ void ConvexHullSelected(state::Scene &r, std::span<const state::Entity> mesh_ent
         for (const auto &face : faces)
             if (face.Alive) hull.push_back({face.V[0], face.V[1], face.V[2]});
         if (hull.empty()) return {};
-        return FaceListTask(mesh.GetStoreId(), hull);
+        return FaceListTask(r, mesh, hull);
     });
 }
 
-// Rotates each selected edge with two faces: dissolves it, then connects the vertices following its ends around the joined face.
-// Dissolves each selected edge and connects the far vertices of its two faces, which keep their numbering through the dissolve.
+// Dissolves selected edges and connects their far vertices in one local topology transaction.
 void EdgeRotateSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     const auto &meshes = r.Context.get<const MeshStore>();
-    std::vector<MeshTopologyTask> connects;
+    std::vector<MeshTopologyTask> tasks;
     std::vector<state::Entity> entities;
     for (const auto e : mesh_entities) {
         const auto id = r.get<const MeshHandle>(e).StoreId;
         const Mesh mesh{meshes, id};
         const auto &c = mesh.GetConnectivity();
-        MeshTopologyTask connect{.SourceId = id, .Op = MeshTopologyOp::ConnectVertices, .Flags = TopologyFlagListSelects, .List = {0}};
-        ForEachSelected(meshes.GetSelectionBits(id, Element::Edge), mesh.EdgeCount(), [&](uint32_t edge) {
-            const auto h = mesh.GetHalfedge(Mesh::EH{edge}, 0);
+        MeshTopologyTask task{.SourceId = id, .Op = MeshTopologyOp::RotateEdges, .Flags = TopologyFlagListSelects, .List = {0}};
+        meshes.GetSelectedElements(id, Element::Edge).ForEach([&](uint32_t edge) {
+            const auto h = mesh.GetHalfedge(he::EH{edge}, 0);
             const auto opposite = c.Opposites[*h];
             if (!opposite) return;
-            connect.List.push_back(*mesh.GetToVertex(c.Next(h)));
-            connect.List.push_back(*mesh.GetToVertex(c.Next(opposite)));
-            connect.List[0] += 2;
+            task.List.push_back(*mesh.GetToVertex(c.Next(h)));
+            task.List.push_back(*mesh.GetToVertex(c.Next(opposite)));
+            task.List[0] += 2;
         });
-        if (connect.List[0] == 0) continue;
-        connects.push_back(std::move(connect));
+        if (task.List[0] == 0) continue;
+        tasks.push_back(std::move(task));
         entities.push_back(e);
     }
-    if (entities.empty()) return;
-    RunOperator(r, entities, MeshTopologyOp::DissolveEdges, 0.f, 0.f, TopologyFlagKeepVertices);
-    for (size_t i = 0; i < entities.size(); ++i) connects[i].SourceId = r.get<const MeshHandle>(entities[i]).StoreId;
-    RunTasks(r, entities, connects);
+    RunTasks(r,entities,tasks);
 }
 
 void FillSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    const auto &meshes = r.Context.get<const MeshStore>();
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
-        const auto loops = BoundaryLoops(meshes, mesh, true);
+        const auto loops = BoundaryLoops(r, mesh, true);
         if (loops.empty()) return {};
-        return FaceListTask(mesh.GetStoreId(), loops);
+        return FaceListTask(r, mesh, loops);
     });
 }
 
@@ -506,7 +736,7 @@ void LoopCutSelected(state::Scene &r, std::span<const state::Entity> mesh_entiti
     RunPerMesh(r, mesh_entities, [&](state::Entity e, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
         const auto edge = ActiveOrFirstSelectedEdge(r, e, mesh);
         if (!edge) return {};
-        MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Param0 = float(std::clamp(cuts, 1u, 32u)), .Flags = TopologyFlagLoopCutSelect | TopologyFlagListSelects, .List = EdgeRing(mesh, *edge)};
+        MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Param0 = float(std::max(cuts, 1u)), .Flags = TopologyFlagLoopCutSelect | TopologyFlagListSelects, .List = EdgeRing(mesh, *edge)};
         task.List.insert(task.List.begin(), uint32_t(task.List.size()));
         return task;
     });
@@ -519,7 +749,7 @@ void ExtrudeSteps(state::Scene &r, std::span<const state::Entity> mesh_entities,
             .SourceId = mesh.GetStoreId(),
             .Op = MeshTopologyOp::ExtrudeRegion,
             .Flags = TopologyFlagTransformCopies,
-            .Steps = std::clamp(steps, 1u, 256u),
+            .Steps = std::max(steps, 1u),
             .CopyRotation = rotation,
             // Rotating about a center is a rotation about the origin followed by the center's own displacement.
             .CopyTranslation = center - rotation * center + translation,
@@ -577,6 +807,24 @@ void KnifeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities
     });
 }
 
+// Deletes each mesh's edges without a face, then its vertices without fan corners, as two transactions.
+// A mesh without faces has only edges without a face, and a mesh with faces has none.
+// Fans hold line corners too, so a vertex without fan corners has no edge.
+void DeleteLoose(state::Scene &r, std::span<const state::Entity> mesh_entities) {
+    RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
+        if (mesh.FaceCount() || !mesh.EdgeCount()) return {};
+        return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::DeleteEdges, .Flags = TopologyFlagSelectAll};
+    });
+    RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
+        const auto &fans = mesh.GetConnectivity().VertexCorners;
+        MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::DeleteVertices, .Flags = TopologyFlagListSelects, .List = {0u}};
+        for (const auto v : mesh.vertices()) if (!fans[*v].y) task.List.push_back(*v);
+        if (task.List.size() == 1u) return {};
+        task.List.front() = uint32_t(task.List.size() - 1u);
+        return task;
+    });
+}
+
 void MergeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, action::mesh::MergeMode mode, float distance) {
     using Mode = action::mesh::MergeMode;
     if (mode == Mode::Collapse) return RunOperator(r, mesh_entities, MeshTopologyOp::MergeCollapse);
@@ -588,32 +836,88 @@ void MergeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities
         if (first == InvalidOffset || first == last) return {};
         const auto &summary = meshes.GetSelectionSummary(id);
         const auto target = mode == Mode::Last ? last : first;
-        const vec3 position = mode == Mode::Center ? summary.PositionSum / float(std::max(summary.SelectedVertexCount, 1u)) : mesh.GetPosition(Mesh::VH{target});
+        const vec3 position = mode == Mode::Center ? summary.PositionSum / float(std::max(summary.SelectedVertexCount, 1u)) : mesh.GetPosition(he::VH{target});
         return MeshTopologyTask{.SourceId = id, .Op = MeshTopologyOp::MergeAtTarget, .TargetVertex = target, .TargetPosition = position};
     });
 }
 } // namespace
 
 namespace action::mesh {
-void CommitPreviews(state::Scene &r) {
-    std::vector<std::pair<state::Entity, uint32_t>> previews;
-    for (const auto [e, preview] : r.view<const MeshPreview>().each()) previews.emplace_back(e, preview.StoreId);
-    for (const auto [e, id] : previews) {
-        r.remove<MeshPreview>(e);
-        // Releasing the handle frees the base record, and the preview's render data stays with its record.
-        r.remove<MeshHandle>(e);
-        r.emplace<MeshHandle>(e, MeshHandle{id});
+bool UpdateInsetPreview(state::Scene &r, state::Entity viewport, const Inset &inset, InsetPreviewCache &cache) {
+    const profile::CpuScope scope{"UpdateInsetPreview"};
+    const auto targets=SelectedEditMeshes(r,viewport);
+    if (targets.empty() || targets.size()!=cache.Entries.size()) return false;
+    const auto op=inset.Individual ? MeshTopologyOp::InsetIndividual : MeshTopologyOp::InsetRegion;
+    const auto flags=inset.Even ? TopologyFlagEvenOffset : 0u;
+    auto &meshes=r.Context.get<MeshStore>();
+    // Project::Record discards this cache for every other action, including
+    // selection changes. Parameter updates retain the staged face selection.
+    for (size_t i=0u;i<targets.size();++i) {
+        const auto &entry=cache.Entries[i];
+        if (entry.Entity!=targets[i] || entry.Op!=op || entry.Flags!=flags ||
+            GetMesh(r,entry.Entity).GetStoreId()!=entry.StoreId || !entry.Basis.Count<InsetVertexBasis>()) return false;
     }
+    {
+        const profile::CpuScope capture{"InsetCaptureVertices"};
+        for (const auto &entry:cache.Entries)
+            meshes.Arenas().Vertices.Buffer.CaptureWriteRanges(entry.Ranges,sizeof(Vertex));
+    }
+    {
+        const profile::CpuScope positions{"InsetPositionPass"};
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        const auto &pipeline=GetMeshPipelines(r)[MeshPass::InsetPreviewPositions];
+        for (const auto &entry:cache.Entries) {
+            const InsetPreviewPushConstants pc{
+                .BasisSlot=entry.Basis.Slot,.VertexSlot=meshes.Slots().Vertices,
+                .Count=entry.Basis.Count<InsetVertexBasis>(),.Thickness=std::max(inset.Thickness,0.f),.Depth=inset.Depth};
+            chain.Groups(pipeline,pc,(pc.Count+255u)/256u);
+        }
+        chain.Submit();
+    }
+    std::vector<MeshVertexChanges> changed;
+    changed.reserve(cache.Entries.size());
+    for (const auto &entry:cache.Entries) changed.push_back({entry.Entity,entry.Ranges});
+    RefreshEditedPositions(r,changed);
+    std::vector<MeshStore::SelectionUpdate> aggregates;
+    for (const auto &entry:cache.Entries) {
+        if (!meshes.Get(entry.StoreId).SelectionSummary.Count) continue;
+        auto &blocks=aggregates.emplace_back(MeshStore::SelectionUpdate{.StoreId=entry.StoreId}).Blocks[0];
+        for (const auto &range:entry.Ranges)
+            for (uint64_t handle=range.Offset,end=uint64_t(range.Offset)+range.Count;handle<end;) {
+                blocks.push_back(uint32_t(handle/MeshElementBlockSize));
+                handle=(handle/MeshElementBlockSize+1u)*MeshElementBlockSize;
+            }
+    }
+    meshes.UpdateSelection(r,aggregates);
+    RefreshElementSelectionSummaries(r,targets);
+    // The canonical fine meshlet records are also used by static culling,
+    // coarse repair, and replay. Refit their bounds and cones from current
+    // positions without changing the meshlet topology or render vertex order.
+    const auto &gpu=r.Context.get<const GpuBuffers>();
+    const auto &scene=r.Context.get<const GpuSceneState>();
+    std::vector<MeshletBoundsRefitJob> refits;
+    for (const auto &entry:cache.Entries)
+        refits.push_back({&MeshBuffersOf(r,entry.Entity),&gpu.GeometryWork,scene.EditWork.at(entry.Entity).Meshlets});
+    {
+        const profile::CpuScope refit_scope{"InsetRefitPass"};
+        RefitCanonicalMeshletBounds(r,refits);
+    }
+    // This preview already repaired the canonical meshlet bounds. Its scratch
+    // edit work still serves later parameter updates, without a full pose.
+    for (const auto &entry:cache.Entries) r.Context.get<GpuSceneState>().EditWork.at(entry.Entity).RequiresPose=false;
+    RequestRender(r, RenderRequest::Reuse);
+    return true;
 }
 
 void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
-    // A restart has restored the base already, so any preview still present belongs to an earlier operator and becomes the source.
-    CommitPreviews(r);
     const auto targets = SelectedEditMeshes(r, viewport);
     const auto latch_translate = [&] { r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate); };
     std::visit(
         overloaded{
-            [&](const Delete &a) { RunOperator(r, targets, MeshTopologyOp(uint32_t(a.Mode))); },
+            [&](const Delete &a) {
+                if (a.Mode == DeleteMode::Loose) DeleteLoose(r, targets);
+                else RunOperator(r, targets, MeshTopologyOp(uint32_t(a.Mode)));
+            },
             [&](const Merge &a) { MergeSelected(r, targets, a.Mode, std::max(a.Distance, 0.f)); },
             [&](const Extrude &a) {
                 using Mode = ExtrudeMode;
@@ -628,7 +932,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](Split) { RunOperator(r, targets, MeshTopologyOp::SplitFaces); },
             [&](Separate) { SeparateSelected(r, targets); },
-            [&](const Subdivide &a) { RunOperator(r, targets, MeshTopologyOp::Subdivide, float(std::clamp(a.Cuts, 1u, 32u))); },
+            [&](const Subdivide &a) { RunOperator(r, targets, MeshTopologyOp::Subdivide, float(std::max(a.Cuts, 1u))); },
             [&](Triangulate) { RunOperator(r, targets, MeshTopologyOp::Triangulate); },
             [&](TrisToQuads) { RunOperator(r, targets, MeshTopologyOp::TrisToQuads); },
             [&](const Poke &a) { RunOperator(r, targets, MeshTopologyOp::Poke, a.Offset); },
@@ -656,7 +960,13 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](const FillHoles &a) { FillHolesSelected(r, targets, a.Sides); },
             [&](ConvexHull) { ConvexHullSelected(r, targets); },
             [&](EdgeRotate) { EdgeRotateSelected(r, targets); },
-            [&](const Bevel &a) { RunOperator(r, targets, a.Vertices ? MeshTopologyOp::BevelVertices : MeshTopologyOp::BevelEdges, std::max(a.Width, 0.f), float(std::clamp(a.Segments, 1u, 16u))); },
+            [&](const Bevel &a) {
+                RunPerMesh(r, targets, [&](state::Entity, const Mesh &mesh) {
+                    return MeshTopologyTask{.SourceId = mesh.GetStoreId(),
+                        .Op = a.Vertices ? MeshTopologyOp::BevelVertices : MeshTopologyOp::BevelEdges,
+                        .Param0 = std::max(a.Width, 0.f), .Steps = std::max(a.Segments, 1u)};
+                });
+            },
             [&](Rip) {
                 RunOperator(r, targets, MeshTopologyOp::EdgeSplit, 0.f, 0.f, TopologyFlagRipSelectCopies);
                 latch_translate();

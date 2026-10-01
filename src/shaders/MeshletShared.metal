@@ -9,16 +9,16 @@
 #include "gpu/MeshPrimitiveTopology.h"
 #include "gpu/PrimitiveRecord.h"
 
-inline uint MeshletPackedVertex(device const BindlessSet &bindless, uint vertex_slot, MeshletRecord meshlet, uint i) {
+inline uint MeshletSourceVertex(device const BindlessSet &bindless, uint vertex_slot, MeshletRecord meshlet, uint i) {
     return BindlessBuffer(uint, bindless.Buffer, vertex_slot)[meshlet.VertexOffset + i];
 }
 
 inline uint MeshletLocalTriangleOffset(MeshletRecord meshlet) {
-    return meshlet.LocalTriangleOffset & uint(MeshletGeometryEncoding::LocalTriangleOffsetMask);
+    return meshlet.LocalTriangleOffset;
 }
 
 inline uint MeshletPrimitiveTopology(MeshletRecord meshlet) {
-    return meshlet.LocalTriangleOffset >> uint(MeshletGeometryEncoding::TopologyShift);
+    return meshlet.Topology;
 }
 
 inline uint MeshletPrimitiveMaterialIndex(const thread Scene &scene, PrimitiveRecord primitive) {
@@ -28,12 +28,10 @@ inline uint MeshletPrimitiveMaterialIndex(const thread Scene &scene, PrimitiveRe
 
 
 inline uint MeshletVertexId(
-    const thread Scene &scene, DrawData draw, uint topology, uint packed_vertex
+    const thread Scene &scene, DrawData draw, uint topology, uint source_vertex
 ) {
-    if (topology != uint(MeshPrimitiveTopology::Triangle)) return packed_vertex & uint(MeshletGeometryEncoding::CornerMask);
-    return scene.Indices(draw.IndexSlotOffset.Slot)[
-        draw.IndexSlotOffset.Offset + (packed_vertex & uint(MeshletGeometryEncoding::CornerMask))
-    ];
+    if (topology != uint(MeshPrimitiveTopology::Triangle)) return source_vertex;
+    return scene.CornerVertexOrdinal(draw, source_vertex);
 }
 
 // Returns the motion-blur model override or the draw's current world transform.

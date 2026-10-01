@@ -29,10 +29,10 @@ inline BoneLineVertex BoneWireMeshVertexAt(const thread Scene &scene, DrawData d
 
     device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
     const uint adj_base = draw.IndexSlotOffset.Offset + edge_index * 4u;
-    const uint i0 = indices[adj_base + 0u];
-    const uint i1 = indices[adj_base + 1u];
-    const uint i2 = indices[adj_base + 2u];
-    const uint i3 = indices[adj_base + 3u];
+    const uint i0 = indices[adj_base + 0u] - draw.VertexOffset;
+    const uint i1 = indices[adj_base + 1u] - draw.VertexOffset;
+    const uint i2 = indices[adj_base + 2u] - draw.VertexOffset;
+    const uint i3 = indices[adj_base + 3u] - draw.VertexOffset;
 
     device const Vertex *vertices = scene.Vertices(draw.VertexSlot);
     const float3 p0 = float3(vertices[i0 + draw.VertexOffset].Position);

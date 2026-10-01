@@ -47,8 +47,11 @@ std::vector<PassTimer::Pass> PassTimer::Resolve() {
     passes.reserve(Names.size());
     for (size_t i = 0; i < Names.size(); ++i) {
         const auto start = timestamps[i * 2].timestamp, end = timestamps[i * 2 + 1].timestamp;
-        // Unwritten and wrapped sample pairs are unusable.
-        if (start == MTL::CounterErrorValue || end == MTL::CounterErrorValue || end < start) continue;
+        const auto previous_start = std::exchange(LastTimestamps[i * 2], start);
+        const auto previous_end = std::exchange(LastTimestamps[i * 2 + 1], end);
+        // An encoder with no executed work can leave either sample untouched.
+        if (!start || !end || start == MTL::CounterErrorValue || end == MTL::CounterErrorValue || end < start ||
+            start == previous_start || end == previous_end) continue;
         passes.emplace_back(Names[i], float(end - start) * 1e-6f);
     }
     return passes;

@@ -2,7 +2,6 @@
 
 #include "numeric/uvec2.h"
 
-#include "SlottedRange.h"
 #include "gpu/EditSelectionOperation.h"
 #include "gpu/EditSelectionSummary.h"
 #include "gpu/EditSharpnessOperation.h"
@@ -33,7 +32,8 @@ struct SelectionSlots {
 // Returns box hits in object-id order. X-ray display includes occluded objects.
 std::vector<state::Entity> RunBoxSelect(state::Scene &, state::Entity viewport, std::pair<uvec2, uvec2> box_px);
 
-// Element-level box selection: renders IDs into the authoritative masks and derives the other domains on the GPU.
+// Element-level box selection: collects query words, prepares their source-mask
+// changes for history, then publishes and derives the other domains on the GPU.
 void RunBoxSelectElements(state::Scene &, state::Entity viewport, std::span<const ElementRange> ranges, Element, std::pair<uvec2, uvec2> box_px, bool is_additive);
 
 // Returns click hits sorted by distance, depth, and object id, then advances the 8-bit epoch tag.
@@ -47,7 +47,11 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(state::Scene &, state::Entity
 std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(state::Scene &, state::Entity viewport, std::span<const ElementRange> ranges, Element, uvec2 mouse_px, bool toggle);
 
 void ApplyEditSelectionCommand(state::Scene &, std::span<const ElementRange>, Element, EditSelectionOperation);
-void ApplyEditSelectionLists(state::Scene &, std::span<const std::pair<state::Entity, SlottedRange>>, Element);
+// Replaces each mesh's selection with its listed elements, relative to the domain's first block.
+void ApplyEditSelectionLists(state::Scene &, std::span<const std::pair<state::Entity, std::span<const uint32_t>>>, Element);
+// Publish root counts into each summary.
+// An explicit mode also clears the active element.
+void RefreshElementSelectionSummaries(state::Scene &, std::span<const state::Entity>, std::optional<Element> mode = {});
 void ApplyEditSharpness(state::Scene &, state::Entity viewport, std::span<const state::Entity> mesh_entities, EditSharpnessOperation, bool value = false, float angle = 0.f);
 // Read the shared GPU summary after selection work has completed. Other element domains have no current summary.
 const EditSelectionSummary *GetElementSelectionSummary(const state::Scene &, state::Entity mesh_entity, Element);

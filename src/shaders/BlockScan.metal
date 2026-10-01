@@ -78,4 +78,21 @@ inline uint ScanBlockStart(
     return blocks[block] + rank;
 }
 
+// Writes exclusive offsets in place or to a separate rank array. Each thread
+// loads its own inputs before the group scan, then replaces only that run.
+inline void ScanBlockOffsets(
+    device const uint *values, uint count, uint block, device const uint *blocks, device uint *offsets,
+    uint lane, uint simd_lane, uint simd_group, threadgroup uint *sums
+) {
+    uint local[ScanPerThread];
+    uint start = ScanBlockStart(values, count, block, blocks, lane, simd_lane, simd_group, sums, local);
+    const uint base = block * ScanBlockElements + lane * ScanPerThread;
+    for (uint k = 0u; k < ScanPerThread; ++k) {
+        const uint i = base + k;
+        if (i >= count) break;
+        offsets[i] = start;
+        start += local[k];
+    }
+}
+
 #endif

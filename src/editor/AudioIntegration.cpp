@@ -103,10 +103,13 @@ void SetModalOutGain(const state::Scene &r, ModalBank &b, uint32_t slot, state::
 // Returns displaced air volume in cubic metres for recoil-filter corner calculation.
 // World scale converts node-local mesh volume, and mass divided by density supplies volume for open meshes.
 double DisplacedVolume(const state::Scene &r, state::Entity e, double mass, const AcousticMaterialProperties *props) {
-    const auto *bvh = AssetOf<MeshBvh>(r, e);
+    const auto *inst=r.try_get<const Instance>(e);
+    const auto *owner=inst ? TryMeshBuffers(r,inst->Entity) : nullptr;
     const auto *world = r.try_get<const WorldTransform>(e);
     const double world_scale = world ? double(MeanScale(world->S)) : 1.0;
-    const double enclosed = bvh && bvh->EnclosedVolume ? *bvh->EnclosedVolume * world_scale * world_scale * world_scale : 0.0;
+    const auto volume=owner && owner->SpatialRoot!=InvalidOffset ?
+        MeshletEnclosedVolume(r.Context.get<const GpuBuffers>(),*owner,GetMesh(r,inst->Entity)) : std::nullopt;
+    const double enclosed = volume ? *volume * world_scale * world_scale * world_scale : 0.0;
     if (enclosed > 0) return enclosed;
     return props && props->Density > 0 && mass > 0 ? mass / props->Density : 0.0;
 }
@@ -503,7 +506,7 @@ SolveInputs BuildSolveInputs(const state::Scene &r, state::Entity e, state::Enti
     const uint32_t num_vertices = mesh.VertexCount();
     const vec3 node_scale = r.get<const WorldTransform>(e).S;
     std::vector<vec3> positions(num_vertices);
-    for (uint32_t i = 0; i < num_vertices; ++i) positions[i] = mesh.GetPosition(Mesh::VH{i}) * node_scale;
+    for (uint32_t i = 0; i < num_vertices; ++i) positions[i] = mesh.GetPosition(mesh.VertexAt(i)) * node_scale;
     auto triangle_indices = mesh.CreateTriangleIndices();
     const auto operator_hash = HashOperatorInputs(positions, triangle_indices, settings);
     return {

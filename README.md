@@ -19,13 +19,13 @@ Real-time mesh viewer and editor supporting conversion of meshes to rigid body a
   - Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
   - Load `.obj` and `.ply` mesh files (via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply))
 * Select meshes, vertices, edges, or faces by clicking or box selection, through geometry with Blender's X-ray toggle (Alt+Z)
-* Blender-style edit-mode topology operators, each run on the GPU as a transform from the source mesh and its selection to a new mesh
+* Blender-style edit-mode topology operators on the GPU
   - Delete (X), dissolve (Ctrl+X), merge (M), extrude (E), duplicate (Shift+D), split (Y), separate (P), fill (F), triangulate (Ctrl+T), tris to quads (Alt+J), loop cut (Ctrl+R), and rip (V)
   - Mouse-sized inset (I), bevel edges (Ctrl+B) and vertices (Ctrl+Shift+B) with wheel or -/= segments, and knife cuts (K)
   - Right-click, Ctrl+V, Ctrl+E, and Ctrl+F menus list the rest: subdivide, poke, edge split, rotate edge, bridge edge loops, grid fill, fill holes, solidify, connect vertex path, flip normals, spin, extrude repeat, bisect, symmetrize, convex hull, and the clean-up dissolves
   - The history window edits any node's action parameters in place, previewing live and committing in the node's place
   - Extrude, duplicate, and rip commit with their placement drag as one history node, and cancelling the drag cancels the operator
-  - Not ported: wire edges (extruding lone vertices and ripping edges without faces), un-subdivide, decimate, wireframe, boolean, and intersect. Merges keep doubled faces, bevel vertices use one segment, and grid fill spans one loop
+  - Not ported: wire edges (extruding lone vertices and ripping edges without faces), un-subdivide, decimate, wireframe, boolean, and intersect. Merges keep doubled faces, and grid fill spans one loop
 * Flat/smooth/wireframe mesh rendering
 * Translate, rotate, and nonuniformly scale meshes and instances with numeric inputs or a Blender-style transform gizmo
 * Edit the camera with the mouse wheel, numeric inputs, or a Blender-style orientation gizmo

@@ -4,7 +4,6 @@
 #include "viewport/ViewportRenderGpu.h"
 
 #include "Camera.h"
-#include "ProcessEvents.h"
 #include "Profile.h"
 #include "Variant.h"
 #include "animation/AnimationTimeline.h"
@@ -14,13 +13,11 @@
 #include "gizmo/GizmoInteraction.h"
 #include "gpu/BoundsEntry.h"
 #include "gpu/BoundsReducePushConstants.h"
-#include "gpu/BoundsTreePushConstants.h"
 #include "gpu/CommitPosedGeometryPushConstants.h"
 #include "gpu/DepthPyramidReducePushConstants.h"
 #include "gpu/ExtrasLineKind.h"
 #include "gpu/MeshletCullPushConstants.h"
 #include "gpu/MeshletDrawPushConstants.h"
-#include "gpu/MeshletGeometryEncoding.h"
 #include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MotionBlurAccumulatePushConstants.h"
 #include "gpu/MotionBlurGatherPushConstants.h"
@@ -36,22 +33,27 @@
 #include "gpu/PosedMeshletBoundsPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouettePushConstants.h"
+#include "gpu/VertexBlockPushConstants.h"
 #include "gpu/ViewportCompositePushConstants.h"
 #include "gpu/VisibilityId.h"
 #include "gpu/WireRasterPushConstants.h"
 #include "gpu/WireResolvePushConstants.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/ElementMembershipWork.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshStore.h"
+#include "mesh/NormalDeriveGpu.h"
+#include "mesh/MeshPipelines.h"
+#include "metal/Dispatch.h"
 #include "metal/MetalCpp.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
-#include "numeric/Angles.h"
 #include "numeric/MatrixMath.h"
 #include "physics/PhysicsTypes.h"
 #include "render/ElementWorkOps.h"
 #include "render/Encoding.h"
 #include "render/GpuBufferOps.h"
+#include "render/MeshletBoundsRefit.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/Pipelines.h"
@@ -61,7 +63,6 @@
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
-#include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCamera.h"
@@ -216,14 +217,18 @@ void RecordSceneCounters(const GpuBuffers &buffers) {
             reinterpret_cast<const MeshDispatchArgs *>(buffers.OverlayJobDispatchArgs.Contents().data())->ThreadgroupsX
         );
     }
-    if (buffers.MeshletRoutes.Contents().size() >= sizeof(MeshletRouteState)) {
-        const auto &routes = *reinterpret_cast<const MeshletRouteState *>(buffers.MeshletRoutes.Contents().data());
+    if (buffers.SceneCull.Routes.Contents().size() >= sizeof(MeshletRouteState)) {
+        const auto &routes = *reinterpret_cast<const MeshletRouteState *>(buffers.SceneCull.Routes.Contents().data());
         const auto count = [&](MeshletRoute route) { return routes.Counts[uint32_t(route)]; };
         profile::RecordCounter("VisibleOpaqueMeshlets", count(MeshletRoute::OpaqueCullBack) + count(MeshletRoute::OpaqueCullFront) + count(MeshletRoute::OpaqueDoubleSided) + count(MeshletRoute::Coverage));
         profile::RecordCounter("VisibleCoverageMeshlets", count(MeshletRoute::Coverage));
         profile::RecordCounter("SelectedCoarseMeshlets", *reinterpret_cast<const uint32_t *>(buffers.MeshletCoarseCount.Contents().data()));
         profile::RecordCounter("VisibleBlendMeshlets", count(MeshletRoute::Blend));
         profile::RecordCounter("VisibleTransmissionMeshlets", count(MeshletRoute::Transmission));
+    }
+    if (buffers.EditCull.Routes.Contents().size() >= sizeof(MeshletRouteState)) {
+        const auto &routes = *reinterpret_cast<const MeshletRouteState *>(buffers.EditCull.Routes.Contents().data());
+        profile::RecordCounter("VisibleEditOverlayMeshlets", routes.Counts[uint32_t(MeshletRoute::EditOverlay)]);
     }
     profile::RecordCounter("DeviceAllocatedBytes", buffers.Ctx.Ctx.Device->currentAllocatedSize());
 }
@@ -257,14 +262,14 @@ struct DeformSlots {
 std::unordered_map<state::Entity, DeformSlots> BuildDeformSlots(const state::Scene &r, const MeshStore &meshes, RecordInputs &inputs) {
     std::unordered_map<state::Entity, DeformSlots> result;
     for (const auto [instance_entity, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
-        const auto bone_deform = meshes.Get(r.get<const MeshHandle>(instance.Entity).StoreId).BoneDeform;
-        if (bone_deform.Count == 0) continue;
+        const auto &mesh_record = meshes.Get(r.get<const MeshHandle>(instance.Entity).StoreId);
+        if (!mesh_record.SkinBlocksReady) continue;
         const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier.ArmatureEntity);
         if (!pose_state || modifier.SkinSlot >= pose_state->GpuDeformRanges.size()) continue;
         const auto deform_offset = pose_state->GpuDeformRanges[modifier.SkinSlot].Offset;
         auto &slots = result[instance.Entity];
         if (slots.BoneDeformOffset == InvalidOffset) {
-            slots.BoneDeformOffset = bone_deform.Offset;
+            slots.BoneDeformOffset = 0u;
             slots.ArmatureDeformOffset = deform_offset;
         }
         if (const auto *ri = r.try_get<const RenderInstance>(instance_entity)) {
@@ -276,9 +281,9 @@ std::unordered_map<state::Entity, DeformSlots> BuildDeformSlots(const state::Sce
     for (const auto [instance_entity, instance, gpu_range, ri] : r.view<const Instance, const MorphWeightRange, const RenderInstance>().each()) {
         const auto mesh_entity = instance.Entity;
         const auto &record = meshes.Get(r.get<const MeshHandle>(mesh_entity).StoreId);
-        if (record.MorphTargets.Count == 0) continue;
+        if (!record.MorphBlocksReady) continue;
         auto &slots = result[mesh_entity];
-        slots.MorphDeformOffset = record.MorphTargets.Offset;
+        slots.MorphDeformOffset = 0u;
         slots.MorphTargetCount = record.MorphTargetCount;
         slots.MorphWeightsByBufferIndex[ri.BufferIndex] = gpu_range.Weights.Offset;
         inputs.Mix(ri.BufferIndex);
@@ -287,89 +292,92 @@ std::unordered_map<state::Entity, DeformSlots> BuildDeformSlots(const state::Sce
     return result;
 }
 
+// Edit overlay draws skip geometry whose projected diameter falls below this many pixels.
+constexpr float MinEditOverlayDiameterPixels{2.0f};
+
 // Threadgroup memory lengths must be 16-byte multiples.
 constexpr uint32_t AlignedThreadgroupBytes(uint32_t bytes) { return (bytes + 15u) & ~15u; }
-
-// The tiled compute passes' threads per threadgroup.
-constexpr uint32_t TileSize{256};
-// Threadgroup count tiling `count` elements, min one so an empty entry still writes its outputs.
-constexpr uint32_t TileCountFor(uint32_t count) { return std::max((count + TileSize - 1) / TileSize, 1u); }
 
 // Slot of each prelude pass's args in GpuBuffers::PreludeDispatchArgs (PreludeGroups order).
 enum class PreludeSlot : uint32_t { PosePrepass,
                                     PosedMeshletBounds,
                                     DeriveFaces,
-                                    BoundsReduce,
+                                    BoundsLevel1,
                                     DeriveGather,
-                                    BoundsCombine };
+                                    BoundsLevel2, BoundsLevel3 };
 
 constexpr uint64_t PreludeArgsOffset(PreludeSlot slot) { return uint64_t(slot) * sizeof(MTL::DispatchThreadgroupsIndirectArguments); }
-
-void WritePreludeArg(GpuBuffers &buffers, PreludeSlot slot, uint32_t groups) {
-    const MTL::DispatchThreadgroupsIndirectArguments arg{groups, 1, 1};
-    buffers.PreludeDispatchArgs.Update(as_bytes(arg), PreludeArgsOffset(slot));
-}
 
 // Record one prelude pass's dispatch, reading its group count from the pass's indirect args slot.
 void DispatchPrelude(MTL::ComputeCommandEncoder *encoder, const GpuBuffers &buffers, PreludeSlot slot) {
     encoder->dispatchThreadgroups(*buffers.PreludeDispatchArgs, PreludeArgsOffset(slot), ThreadgroupSize::Linear256);
 }
 
-// The input fields of a mesh's normal-derive entry before assigning the position source and output offsets.
-// Empty when the mesh has no triangles or adjacency.
-std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &meshes, uint32_t store_id, SlottedRange face_indices) {
-    if (face_indices.Count == 0) return {};
-    const auto &record = meshes.Get(store_id);
-    const auto &derived = meshes.GetDerived(store_id);
-    if (derived.VertexFanAdjacency.Count == 0) return {};
-    return NormalDeriveEntry{
-        .Vertices = {meshes.Slots().Vertices, record.Vertices.Offset},
-        .FaceIndices = face_indices,
-        .VertexCount = record.Vertices.Count,
-        .VertexAdjacencyOffset = derived.VertexFanAdjacency.Offset,
-        .SeamFanOffset = derived.SeamFans.Offset,
-        .SeamCount = derived.SeamCornerCount,
-        .FaceDataOffset = record.FaceData.Offset,
-        .FaceCount = record.FaceData.Count,
-        .TriangleCount = record.TriangleCount,
-    };
+// Address metadata only.
+// Unchanged namespace revisions skip this enumeration.
+template<typename T>
+std::vector<uint32_t> PoseElementBlocks(const ElementArena<T> &arena, ElementSetRef set) {
+    std::vector<uint32_t> blocks;
+    for (auto b = set ? arena.Set(set).First : InvalidOffset; b != InvalidOffset; b = arena.Blocks.Get({b,1u})[0].Next)
+        blocks.push_back(b);
+    return blocks;
 }
+
+std::vector<uint32_t> NormalPayloadBlocks(const MeshStore &meshes, uint32_t store_id) {
+    std::vector<uint32_t> blocks;
+    for (const auto block : meshes.GetBlockList(store_id, MeshStore::ElementDomain::Halfedge).Blocks)
+        if (const auto payload = meshes.Arenas().NormalSectors.PayloadBlock(block)) blocks.push_back(payload - 1u);
+    return blocks;
+}
+
 
 } // namespace
 
 namespace {
-// Materialize each posed entry's current-pose vertex positions.
+// Materialize posed positions and reduce every entry's canonical vertex blocks.
 void RecordPosePrepass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t ubo_offset) {
     const auto &prepass = pipelines.PosePrepass;
     encode::BindCompute(encoder, prepass, slots, buffers, ubo_offset);
     const BoundsReducePushConstants pc{
         .BoundsEntrySlot = buffers.BoundsReduceEntries.Slot,
         .TileMapSlot = buffers.BoundsTiles.Slot,
+        .ValuesSlot = buffers.VertexBounds.Values.Buffer.Slot,
+        .NodesSlot = buffers.VertexBounds.Nodes.Buffer.Slot,
+        .MembersSlot = buffers.VertexBounds.Members.Slot,
     };
     encode::SetPushConstants(encoder, pc);
+    encoder->setThreadgroupMemoryLength(ThreadgroupMemory::BoundsFoldVector,0);
+    encoder->setThreadgroupMemoryLength(ThreadgroupMemory::BoundsFoldVector,1);
     DispatchPrelude(encoder, buffers, PreludeSlot::PosePrepass);
 }
 
 // One derive dispatch over the tiles at `pc.FirstTile`, running the face or gather phase per pc.Phase.
 // The tile count comes from `slot`'s indirect args.
-void RecordNormalDerive(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, const NormalDerivePushConstants &pc, PreludeSlot slot, uint32_t ubo_offset) {
-    const auto &pipeline = pipelines.VertexNormalDerive;
+void RecordNormalDerive(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const mtl::ComputePipeline &pipeline, const GpuBuffers &buffers, const NormalDerivePushConstants &pc, PreludeSlot slot, uint32_t ubo_offset) {
     encode::BindCompute(encoder, pipeline, slots, buffers, ubo_offset);
     encode::SetPushConstants(encoder, pc);
     DispatchPrelude(encoder, buffers, slot);
 }
 
-// The derive's shared input slots, plus the three output slots selecting the target buffers.
-NormalDerivePushConstants MakeNormalDerivePc(const GpuBuffers &buffers, const MeshStore &meshes, uint32_t vertex_normal_slot, uint32_t seam_normal_slot, uint32_t face_normal_slot) {
+// Shared derive resources.
+// Each entry selects base records or a posed namespace.
+NormalDerivePushConstants MakeNormalDerivePc(const GpuBuffers &buffers, const MeshStore &meshes, uint32_t vertex_normal_slot, uint32_t face_normal_slot) {
     return {
         .EntriesSlot = buffers.NormalDeriveEntries.Slot,
-        .AdjacencySlot = meshes.Slots().Adjacency,
+        .CornerSectors = meshes.Slots().CornerSector,
+        .EdgeSharpnessSlot = meshes.Slots().EdgeSharpness,
+        .FaceSharpnessSlot = meshes.Slots().FaceSharpness,
         .TileMapSlot = buffers.DeriveTiles.Slot,
-        .FaceFirstTriangleSlot = meshes.Slots().FaceFirstTriangle,
-        .PositionSlot = buffers.PosedPositions.Slot,
+        .PositionSlot = buffers.PosedPositions.Values.Buffer.Slot,
+        .PositionNodesSlot = buffers.PosedPositions.Nodes.Buffer.Slot,
         .VertexNormalSlot = vertex_normal_slot,
-        .SeamNormalSlot = seam_normal_slot,
+        .VertexNormalNodesSlot = buffers.PosedVertexNormals.Nodes.Buffer.Slot,
+        .NormalSectors = meshes.Slots().NormalSector,
+        .PosedSectorNodesSlot = buffers.PosedSectors.Nodes.Buffer.Slot,
+        .PosedSectorValuesSlot = buffers.PosedSectors.Values.Buffer.Slot,
         .FaceNormalSlot = face_normal_slot,
+        .FaceNormalNodesSlot = buffers.PosedFaceNormals.Nodes.Buffer.Slot,
+        .BaseFaceNormalSlot = meshes.Slots().BaseFaceNormal,
     };
 }
 
@@ -377,8 +385,10 @@ void RecordBoundsPass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSe
     pc.BoundsEntrySlot = buffers.BoundsReduceEntries.Slot;
     pc.BoundsSlot = buffers.Instances.BoundsBuffer.Slot;
     pc.TileMapSlot = buffers.BoundsTiles.Slot;
-    pc.PartialBoundsSlot = buffers.BoundsPartials.Slot;
-    pc.EntryFirstTileSlot = buffers.BoundsEntryFirstTiles.Slot;
+    pc.ValuesSlot = buffers.VertexBounds.Values.Buffer.Slot;
+    pc.NodesSlot = buffers.VertexBounds.Nodes.Buffer.Slot;
+    pc.MembersSlot = buffers.VertexBounds.Members.Slot;
+    pc.FirstTile = buffers.BoundsFirstTiles[pc.Level];
     encode::BindCompute(encoder, pipeline, slots, buffers, ubo_offset);
     encode::SetPushConstants(encoder, pc);
     encoder->setThreadgroupMemoryLength(ThreadgroupMemory::BoundsFoldVector, 0);
@@ -392,23 +402,22 @@ void RecordPosedMeshletBounds(
     const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t ubo_offset,
     PosedMeshletBoundsPushConstants pc = {}
 ) {
-    pc.BoundsEntrySlot = buffers.BoundsReduceEntries.Slot;
-    pc.TileMapSlot = buffers.PosedMeshletBoundsTiles.Slot;
+    pc.JobsSlot = buffers.PosedMeshletBoundsJobs.Slot;
+    pc.JobCount = buffers.PosedMeshletBoundsJobs.Count<PosedMeshletBoundsJob>();
     pc.MeshletSlot = buffers.Meshlets.Buffer.Slot;
-    pc.PrimitiveSlot = buffers.Primitives.Buffer.Slot;
     pc.MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot;
-    pc.PosedMeshletBoundsSlot = buffers.PosedMeshletBounds.Slot;
+    pc.PosedMeshletBoundsSlot = buffers.PosedMeshletBounds.Values.Buffer.Slot;
+    pc.PosedMeshletBoundsNodesSlot = buffers.PosedMeshletBounds.Nodes.Buffer.Slot;
     encode::BindCompute(encoder, pipelines.PosedMeshletBounds, slots, buffers, ubo_offset);
     encode::SetPushConstants(encoder, pc);
-    encoder->setThreadgroupMemoryLength(ThreadgroupMemory::MeshletBoundsFoldVector, 0);
-    encoder->setThreadgroupMemoryLength(ThreadgroupMemory::MeshletBoundsFoldVector, 1);
-    if (pc.Work.Storage.Slot == InvalidSlot)
-        encoder->dispatchThreadgroups(*buffers.PreludeDispatchArgs, PreludeArgsOffset(PreludeSlot::PosedMeshletBounds), ThreadgroupSize::Linear64);
-    else encoder->dispatchThreadgroups(*buffers.GeometryWork.Buffer, WorkArgsOffset(pc.Work, true), ThreadgroupSize::Linear64);
+    if (pc.Work.Storage.Slot == InvalidSlot) {
+        encoder->dispatchThreadgroups(*buffers.PreludeDispatchArgs, PreludeArgsOffset(PreludeSlot::PosedMeshletBounds), ThreadgroupSize::Linear32);
+    }
+    else encoder->dispatchThreadgroups(*buffers.GeometryWork.Buffer, WorkArgsOffset(pc.Work, true), ThreadgroupSize::Linear32);
 }
 
 // Buffer bindings shared by meshlet classification dispatches.
-MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers) {
+MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers, const MeshletCullOutput &output) {
     return {
         .WorkRangeSlot = buffers.MeshletWorkRanges.Slot,
         .WorkBlockSlot = buffers.MeshletWorkBlocks.Slot,
@@ -419,25 +428,28 @@ MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers) {
         .WorkDispatchArgsSlot = buffers.MeshletWorkDispatchArgs.Slot,
         .BlockStateSlot = buffers.MeshletCullBlocks.Slot,
         .ClassificationSlot = buffers.MeshletClassifications.Slot,
-        .VisibleSlot = buffers.VisibleMeshlets.Slot,
+        .VisibleSlot = output.Visible.Slot,
         .InstanceMapSlot = buffers.GpuInstanceSlots.Slot,
         .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
         .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
         .MeshletSlot = buffers.Meshlets.Buffer.Slot,
+        .MeshletIndexNodesSlot = buffers.ActiveMeshlets.Nodes.Buffer.Slot,
+        .MeshletIndexLeavesSlot = buffers.ActiveMeshlets.Leaves.Buffer.Slot,
         .ClusterGroupSlot = buffers.ClusterGroups.Buffer.Slot,
         .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
         .ModelSlot = buffers.Instances.TransformBuffer.Slot,
-        .PosedMeshletBoundsSlot = buffers.PosedMeshletBounds.Slot,
-        .RouteStateSlot = buffers.MeshletRoutes.Slot,
-        .DispatchArgsSlot = buffers.MeshletDispatchArgs.Slot,
-        .DispatchChunkCount = buffers.MeshletDispatchChunkCount,
+        .PosedMeshletBoundsSlot = buffers.PosedMeshletBounds.Values.Buffer.Slot,
+        .PosedMeshletBoundsNodesSlot = buffers.PosedMeshletBounds.Nodes.Buffer.Slot,
+        .RouteStateSlot = output.Routes.Slot,
+        .DispatchArgsSlot = output.DispatchArgs.Slot,
+        .DispatchChunkCount = output.ChunkCount,
         .DispatchChunkSize = GpuBuffers::MeshletDispatchChunkSize,
         .CoarseCountSlot = buffers.MeshletCoarseCount.Slot,
     };
 }
 
 MeshletDrawPushConstants MakeMeshletDrawPc(
-    const GpuBuffers &buffers,
+    const GpuBuffers &buffers, const MeshletCullOutput &output,
     uint32_t route, uint32_t required_instance_flags,
     bool visibility_transmission, uint32_t edge_sharpness_slot,
     uint32_t edit_edge_corner = 0u, uint32_t instance_filter = InvalidOffset
@@ -450,9 +462,8 @@ MeshletDrawPushConstants MakeMeshletDrawPc(
         .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
         .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
         .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
-        .MeshletEditEdgeSlot = buffers.MeshletEditEdgeIds.Buffer.Slot,
-        .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
-        .RouteStateSlot = buffers.MeshletRoutes.Slot,
+        .VisibleMeshletSlot = output.Visible.Slot,
+        .RouteStateSlot = output.Routes.Slot,
         .Route = route,
         .RequiredInstanceFlags = required_instance_flags,
         .InstanceFilter = instance_filter,
@@ -467,24 +478,25 @@ void DrawMeshletList(
     bool visibility_transmission = false, bool fragment_pc = false,
     uint32_t edge_sharpness_slot = InvalidSlot,
     uint32_t mesh_threads = 160u, uint32_t edit_edge_corner = 0u,
-    uint32_t instance_filter = InvalidOffset
+    uint32_t instance_filter = InvalidOffset, bool edit_output = false
 ) {
+    const auto &output = edit_output ? buffers.EditCull : buffers.SceneCull;
     // Visibility IDs reserve a fixed bit range for the visible-list index.
     if (fragment_pc) {
-        const auto visible_count = buffers.VisibleMeshlets.Count<VisibleMeshlet>();
+        const auto visible_count = output.Visible.Count<VisibleMeshlet>();
         constexpr uint64_t index_limit = uint64_t{1} << uint32_t(VisibilityId::IndexBits);
         profile::RecordCounter("VisibleMeshletIndexOverflow", visible_count > index_limit ? double(visible_count - index_limit) : 0.0);
     }
     auto pc = MakeMeshletDrawPc(
-        buffers, route, required_instance_flags,
+        buffers, output, route, required_instance_flags,
         visibility_transmission, edge_sharpness_slot, edit_edge_corner, instance_filter
     );
-    for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
+    for (uint32_t chunk = 0; chunk < output.ChunkCount; ++chunk) {
         pc.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
         if (fragment_pc) encode::SetPushConstants(encoder, pc);
         else encode::SetMeshPushConstants(encoder, pc);
-        const auto args_offset = (route * buffers.MeshletDispatchChunkCount + chunk) * sizeof(MeshDispatchArgs);
-        encoder->drawMeshThreadgroups(*buffers.MeshletDispatchArgs, args_offset, MTL::Size(1, 1, 1), MTL::Size(mesh_threads, 1, 1));
+        const auto args_offset = (route * output.ChunkCount + chunk) * sizeof(MeshDispatchArgs);
+        encoder->drawMeshThreadgroups(*output.DispatchArgs, args_offset, MTL::Size(1, 1, 1), MTL::Size(mesh_threads, 1, 1));
     }
 }
 
@@ -719,43 +731,48 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         // The mesh shades authored under morphing: rest normals plus weighted authored deltas.
         // Edit mode builds no deform slots, so edit-mode draws (including drags) derive.
         const auto morph_shading_authored = [&meshes](const MeshEntityData &e) {
-            return e.Deform.MorphDeformOffset != InvalidOffset && e.MeshComp && meshes.GetDerived(e.MeshComp->GetStoreId()).MorphShadingAuthored;
+            return e.Deform.MorphDeformOffset != InvalidOffset && e.MeshComp && meshes.Get(e.MeshComp->GetStoreId()).MorphShadingAuthored;
         };
 
         { // Bounds reduce entries.
             // Instances sharing one deform state share one entry, whose ElementIdOffset spans their consecutive slots.
-            // Entries with morph, armature, or pending edit-transform deformation come first.
-            // Each has a posed-position range the pose pre-pass materializes ahead of the bounds reduction.
+            // Entries with morph, armature, or pending edit-transform deformation own poses.
+            // Posed entries share a position namespace.
+            // The same pass writes leaf bounds.
             struct BoundsEntrySpec {
-                uint32_t Count{};
+                uint32_t Count{}, NormalVertexTiles{}, NormalFaceTiles{};
+                uint64_t VertexLayoutRevision{}, FaceLayoutRevision{};
                 bool PerInstanceDeform{}, Posed{}, Derive{};
                 const RenderInstance *PendingPrimary{};
                 NormalDeriveEntry Entry{}; // Derive-input fields, filled when Derive.
-                uint32_t Level0Count{}; // Original clusters the entry's posed bounds cover, filled when Posed.
+                PosedNamespaces Pose;
+                const VertexBoundsStore::Keys *BoundsKeys{};
             };
             std::vector<BoundsEntrySpec> specs(mesh_entities.size());
-            // Posed bounds cover a mesh's original clusters alone, concatenated in primitive order.
-            const auto mesh_level0_count = [&buffers](const MeshEntityData &e) {
-                uint32_t count = 0;
-                for (const auto &primitive : buffers.Primitives.Get(e.Buf.Primitives)) count += primitive.Level0Count;
-                return count;
-            };
-            // Posed entries and their tiles come first: the pose pre-pass dispatches over that tile prefix.
-            uint32_t entry_count = 0, posed_entry_count = 0, posed_vertex_count = 0;
-            uint32_t derive_entry_count = 0, vertex_normal_count = 0, seam_normal_count = 0, face_normal_count = 0;
-            uint32_t posed_tile_count = 0, bounds_tile_count = 0, derive_face_tile_count = 0, derive_gather_tile_count = 0;
+            // Leaf work covers canonical blocks.
+            // Parent work has three fixed levels.
+            uint32_t entry_count = 0;
+            uint32_t derive_entry_count = 0;
+            std::array<uint32_t,VertexBoundsLevels> bounds_tile_counts{};
+            uint32_t derive_face_tile_count = 0, derive_gather_tile_count = 0;
             uint32_t posed_meshlet_bounds_count = 0;
-            bool authored_morph_any = false;
-            RecordInputs prelude_layout;
+            RecordInputs prelude_layout, prelude_work;
+            buffers.VertexBounds.BeginUpdate();
+            buffers.PosedPositions.BeginUpdate();
+            buffers.PosedMorphNormalDeltas.BeginUpdate();
+            buffers.PosedVertexNormals.BeginUpdate();
+            buffers.PosedFaceNormals.BeginUpdate();
+            buffers.PosedSectors.BeginUpdate();
+            buffers.PosedMeshletBounds.BeginUpdate();
             for (size_t mi = 0; mi < mesh_entities.size(); ++mi) {
                 const auto &e = mesh_entities[mi];
                 auto &spec = specs[mi];
                 // Every mesh-keyed value an instance record reads, in the order the meshes come.
                 record_inputs.Mix(state::Integral(e.Entity));
-                record_inputs.Mix(e.Buf.Primitives.Offset);
-                record_inputs.Mix(e.Buf.Primitives.Count);
-                record_inputs.Mix(e.Buf.Meshlets.Offset);
-                record_inputs.Mix(e.Buf.Meshlets.Count);
+                record_inputs.Mix(e.Buf.PrimitiveRoot);
+                record_inputs.Mix(buffers.PrimitiveCount(e.Buf));
+                record_inputs.Mix(e.Buf.MeshletRoot);
+                record_inputs.Mix(buffers.MeshletCount(e.Buf));
                 record_inputs.Mix(e.Buf.Vertices.Count);
                 // Face presence controls silhouette eligibility.
                 record_inputs.Mix(e.Buf.FaceIndices.Count);
@@ -768,8 +785,8 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 record_inputs.Mix(e.PrimaryEditBufferIndex.value_or(InvalidOffset));
                 if (e.MeshComp) record_inputs.Mix(meshes.GetEditSelectionStorage(e.MeshComp->GetStoreId()));
                 record_inputs.Mix(sound_meshes.contains(e.Entity));
-                if (e.Buf.Meshlets.Count != 0u) {
-                    record_inputs.Mix(buffers.Meshlets.Buffer.GetSpan<MeshletRecord>({e.Buf.Meshlets.Offset, 1}).front().LocalTriangleOffset);
+                if (buffers.MeshletCount(e.Buf) != 0u) {
+                    record_inputs.Mix(buffers.Meshlets.Buffer.GetSpan<MeshletRecord>({buffers.FirstMeshlet(e.Buf), 1}).front().LocalTriangleOffset);
                 }
                 if (!e.MeshComp || e.Mod.InstanceCount == 0) continue;
                 if (has_pending_transform) {
@@ -779,151 +796,199 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 }
                 spec.PerInstanceDeform = !e.Deform.ArmatureDeformByBufferIndex.empty() || !e.Deform.MorphWeightsByBufferIndex.empty();
                 spec.Count = spec.PerInstanceDeform ? e.Mod.InstanceCount : 1u;
+                // Some canonical position edits need posed bounds until their
+                // meshlets are refitted. Inset previews refit them directly.
                 spec.Posed = e.Deform.BoneDeformOffset != InvalidOffset || e.Deform.MorphDeformOffset != InvalidOffset ||
-                    (is_edit_mode && (e.PrimaryEditBufferIndex.has_value() || scene_state.EditWork.contains(e.Entity)));
+                    (is_edit_mode && ((has_pending_transform && e.PrimaryEditBufferIndex.has_value()) ||
+                        (scene_state.EditWork.contains(e.Entity) && scene_state.EditWork.at(e.Entity).RequiresPose)));
                 entry_count += spec.Count;
-                bounds_tile_count += spec.Count * TileCountFor(e.Buf.Vertices.Count);
                 if (spec.Posed) {
+                    spec.Pose.FirstInstance = e.Mod.InstanceRange.Offset;
+                    spec.Pose.PerInstance = spec.PerInstanceDeform;
+                    const auto store_id=e.MeshComp->GetStoreId();
+                    const auto &vertex_arena=meshes.Arenas().Vertices;
+                    const auto vertex_set=meshes.Get(store_id).Vertices;
+                    const auto vertex_revision=vertex_set ? vertex_arena.Set(vertex_set).Revision : 0u;
+                    const auto vertex_bounds=buffers.VertexBounds.Prepare(e.Entity,store_id,vertex_revision,spec.Count,
+                        [&] { return PoseElementBlocks(vertex_arena,vertex_set); });
+                    spec.BoundsKeys=&vertex_bounds.Nodes;
+                    spec.VertexLayoutRevision=vertex_bounds.LayoutRevision;
+                    spec.Pose.VertexBoundsNamespaces.assign(vertex_bounds.Roots.begin(),vertex_bounds.Roots.end());
+                    for (uint32_t level=0u; level<VertexBoundsLevels; ++level)
+                        bounds_tile_counts[level] += spec.Count*uint32_t(vertex_bounds.Nodes[level].size());
+                    if (vertex_bounds.Changed) buffers.PreludeStale=true;
                     // Authored morph shading reads base normals.
                     const bool authored_morph = morph_shading_authored(e);
-                    authored_morph_any |= authored_morph;
-                    if (const auto derive_entry = authored_morph ? std::nullopt : MakeDeriveEntryInputs(meshes, e.MeshComp->GetStoreId(), e.Buf.FaceIndices)) {
+                    const auto &arena = meshes.Arenas().Vertices;
+                    const auto set = meshes.Get(store_id).Vertices;
+                    const auto vertex_blocks = [&] { return PoseElementBlocks(arena,set); };
+                    const auto positions = buffers.PosedPositions.Prepare(e.Entity,store_id,set ? arena.Set(set).Revision : 0u,spec.Count,vertex_blocks);
+                    spec.Pose.PositionNamespaces.assign(positions.Roots.begin(),positions.Roots.end());
+                    for (const auto root : positions.Roots) record_inputs.Mix(root);
+                    if (positions.Changed) buffers.PreludeStale = true;
+                    if (authored_morph) {
+                        const auto deltas = buffers.PosedMorphNormalDeltas.Prepare(e.Entity,store_id,set ? arena.Set(set).Revision : 0u,spec.Count,vertex_blocks);
+                        spec.Pose.MorphNormalNamespaces.assign(deltas.Roots.begin(),deltas.Roots.end());
+                        for (const auto root : deltas.Roots) record_inputs.Mix(root);
+                        if (deltas.Changed) buffers.PreludeStale = true;
+                    }
+                    if (const auto derive_entry = authored_morph ? std::nullopt : MakeDeriveEntryInputs(meshes, e.MeshComp->GetStoreId())) {
                         spec.Derive = true;
                         spec.Entry = *derive_entry;
+                        const auto vertex_normals = buffers.PosedVertexNormals.Prepare(e.Entity,store_id,set ? arena.Set(set).Revision : 0u,spec.Count,vertex_blocks);
+                        const auto &faces = meshes.Arenas().FaceTriangles;
+                        const auto face_set = meshes.Get(store_id).FaceData;
+                        const auto face_normals = buffers.PosedFaceNormals.Prepare(e.Entity,store_id,faces.Set(face_set).Revision,spec.Count,
+                            [&] { return PoseElementBlocks(faces,face_set); });
+                        spec.FaceLayoutRevision=face_normals.LayoutRevision;
+                        const auto prepared = buffers.PosedSectors.Prepare(e.Entity, store_id, meshes.GetDerived(store_id).NormalRevision, spec.Count,
+                            [&] { return NormalPayloadBlocks(meshes, store_id); });
+                        for (uint32_t i = 0u; i < spec.Count; ++i) {
+                            spec.Pose.Normals.push_back({vertex_normals.Roots[i],prepared.Roots[i],face_normals.Roots[i]});
+                            record_inputs.Mix(vertex_normals.Roots[i]);
+                            record_inputs.Mix(prepared.Roots[i]);
+                            record_inputs.Mix(face_normals.Roots[i]);
+                        }
+                        if (vertex_normals.Changed || face_normals.Changed || prepared.Changed) buffers.PreludeStale = true;
                         derive_entry_count += spec.Count;
-                        derive_face_tile_count += spec.Count * TileCountFor(spec.Entry.FaceCount);
-                        derive_gather_tile_count += spec.Count * TileCountFor(spec.Entry.VertexCount + spec.Entry.SeamCount);
-                        vertex_normal_count += spec.Count * spec.Entry.VertexCount;
-                        seam_normal_count += spec.Count * spec.Entry.SeamCount;
-                        face_normal_count += spec.Count * spec.Entry.FaceCount;
+                        spec.NormalVertexTiles = arena.Set(set).BlockCount;
+                        spec.NormalFaceTiles = faces.Set(face_set).BlockCount;
+                        derive_face_tile_count += spec.Count * spec.NormalFaceTiles;
+                        derive_gather_tile_count += spec.Count * spec.NormalVertexTiles;
                     }
-                    posed_entry_count += spec.Count;
-                    posed_tile_count += spec.Count * TileCountFor(e.Buf.Vertices.Count);
-                    posed_vertex_count += spec.Count * e.Buf.Vertices.Count;
-                    spec.Level0Count = mesh_level0_count(e);
-                    posed_meshlet_bounds_count += spec.Count * spec.Level0Count;
+                    const auto bounds = buffers.PosedMeshletBounds.Prepare(e.Entity,e.MeshComp->GetStoreId(),e.Buf.MeshletRevision,spec.Count,[&] {
+                        std::vector<uint32_t> blocks;
+                        buffers.ForEachPrimitive(e.Buf,[&](uint32_t, const PrimitiveRecord &primitive) {
+                            if (primitive.LodFinestNode == InvalidOffset) return;
+                            const auto root = buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot;
+                            buffers.ActiveMeshlets.ForEachBlock(root,[&](uint32_t b) { blocks.push_back(b); });
+                        });
+                        return blocks;
+                    },e.Buf.RenderTopology);
+                    spec.Pose.MeshletBoundsNamespaces.assign(bounds.Roots.begin(),bounds.Roots.end());
+                    for (const auto root : bounds.Roots) record_inputs.Mix(root);
+                    if (bounds.Changed) buffers.PreludeStale = true;
+                    posed_meshlet_bounds_count += spec.Count*e.Buf.Level0Count;
                 }
+                if (!spec.Posed) bounds_tile_counts.back()+=spec.Count;
                 prelude_layout.Mix(state::Integral(e.Entity));
+                prelude_layout.Mix(e.MeshComp->GetStoreId());
                 prelude_layout.Mix(spec.Count);
                 prelude_layout.Mix(uint32_t(spec.Posed) | uint32_t(spec.Derive) << 1u);
-                prelude_layout.Mix(e.Buf.Vertices.Count);
-                prelude_layout.Mix(spec.Entry.FaceCount);
-                prelude_layout.Mix(spec.Entry.SeamCount);
-                prelude_layout.Mix(e.Mod.InstanceRange.Offset);
-                prelude_layout.Mix(e.Mod.InstanceCount);
-                for (const auto &primitive : buffers.Primitives.Get(e.Buf.Primitives)) {
-                    prelude_layout.Mix(primitive.MeshletOffset);
-                    prelude_layout.Mix(primitive.Level0Count);
-                }
-                // The posed-buffer offsets a record reads follow from these, given the mesh order above.
+                prelude_layout.Mix(spec.VertexLayoutRevision);
+                prelude_layout.Mix(spec.FaceLayoutRevision);
+                prelude_layout.Mix(spec.NormalVertexTiles);
+                prelude_layout.Mix(spec.NormalFaceTiles);
+                prelude_work.Mix(state::Integral(e.Entity));
+                prelude_work.Mix(e.Buf.MeshletRevision);
+                prelude_work.Mix(e.Buf.Vertices.Count);
+                prelude_work.Mix(spec.Entry.FaceCount);
+                prelude_work.Mix(e.Mod.InstanceRange.Offset);
+                prelude_work.Mix(e.Mod.InstanceCount);
+                // Pose sharing and normal dispatch also depend on these inputs.
                 record_inputs.Mix(spec.Count);
                 record_inputs.Mix(uint32_t(spec.Posed) | uint32_t(spec.Derive) << 1u | uint32_t(spec.PerInstanceDeform) << 2u);
                 record_inputs.Mix(spec.PendingPrimary ? spec.PendingPrimary->BufferIndex : InvalidOffset);
-                record_inputs.Mix(spec.Entry.SeamCount);
                 record_inputs.Mix(spec.Entry.FaceCount);
                 record_inputs.Mix(spec.Entry.VertexCount);
             }
+            buffers.VertexBounds.EndUpdate();
+            buffers.PosedPositions.EndUpdate();
+            buffers.PosedMorphNormalDeltas.EndUpdate();
+            buffers.PosedVertexNormals.EndUpdate();
+            buffers.PosedFaceNormals.EndUpdate();
+            buffers.PosedSectors.EndUpdate();
+            buffers.PosedMeshletBounds.EndUpdate();
             const bool tiles_changed = prelude_layout.Value != scene_state.PreludeLayoutInputs;
             scene_state.PreludeLayoutInputs = prelude_layout.Value;
+            if (prelude_work.Value != scene_state.PreludeWorkInputs) buffers.PreludeStale = true;
+            scene_state.PreludeWorkInputs = prelude_work.Value;
             if (tiles_changed) buffers.PreludeStale = true;
             const auto entries = buffers.BoundsReduceEntries.SetCount<BoundsEntry>(entry_count);
             const auto derive_entries = buffers.NormalDeriveEntries.SetCount<NormalDeriveEntry>(derive_entry_count);
+            uint32_t bounds_tile_count=0u;
+            for (uint32_t level=0u; level<VertexBoundsLevels; ++level) {
+                buffers.BoundsFirstTiles[level]=bounds_tile_count;
+                bounds_tile_count+=bounds_tile_counts[level];
+            }
             const auto bounds_tiles = buffers.BoundsTiles.SetCount<uvec2>(bounds_tile_count);
             const auto derive_tiles = buffers.DeriveTiles.SetCount<uvec2>(derive_face_tile_count + derive_gather_tile_count);
-            const auto entry_first_tiles = buffers.BoundsEntryFirstTiles.SetCount<uint32_t>(entry_count);
-            buffers.BoundsPartials.SetCount<AABB>(bounds_tile_count);
-            buffers.PosedPositions.SetCount<vec3>(posed_vertex_count);
-            const auto posed_meshlet_tiles = buffers.PosedMeshletBoundsTiles.SetCount<uvec2>(posed_meshlet_bounds_count);
-            buffers.PosedMeshletBounds.SetCount<AABB>(posed_meshlet_bounds_count);
-            // Authored-morph entries index their deltas by posed-position offset.
-            // The buffer spans the full posed range whenever any authored-morph entry exists.
-            buffers.PosedMorphNormalDeltas.SetCount<vec3>(authored_morph_any ? posed_vertex_count : 0u);
-            buffers.PosedVertexNormals.SetCount<vec3>(vertex_normal_count);
-            buffers.PosedSeamNormals.SetCount<vec3>(seam_normal_count);
-            buffers.PosedFaceNormals.SetCount<vec3>(face_normal_count);
+            std::vector<PosedMeshletBoundsJob> meshlet_jobs;
             buffers.Prelude = {
-                .PosePrepass = posed_tile_count,
+                .PosePrepass = bounds_tile_counts[0],
                 .PosedMeshletBounds = posed_meshlet_bounds_count,
                 .DeriveFaces = derive_face_tile_count,
-                .BoundsReduce = bounds_tile_count,
                 .DeriveGather = derive_gather_tile_count,
-                .BoundsCombine = entry_count,
+                .BoundsCombine = {bounds_tile_counts[1],bounds_tile_counts[2],bounds_tile_counts[3]},
             };
 
-            uint32_t posed_write = 0, unposed_write = posed_entry_count, derive_write = 0;
-            uint32_t posed_tile_write = 0, unposed_tile_write = posed_tile_count;
+            uint32_t write = 0, derive_write = 0;
             uint32_t face_tile_write = 0, gather_tile_write = derive_face_tile_count;
-            uint32_t posed_offset = 0, vertex_normal_offset = 0, seam_normal_offset = 0, face_normal_offset = 0;
-            uint32_t meshlet_bounds_offset = 0, meshlet_tile_write = 0;
+            auto bounds_tile_write=buffers.BoundsFirstTiles;
+            uint32_t meshlet_groups = 0u;
             for (size_t mi = 0; mi < mesh_entities.size(); ++mi) {
                 const auto &e = mesh_entities[mi];
-                const auto &spec = specs[mi];
+                auto &spec = specs[mi];
                 if (spec.Count == 0) continue;
-                auto &write = spec.Posed ? posed_write : unposed_write;
-                const BoundsEntry entry{
+                BoundsEntry entry{
                     .FirstInstance = e.Mod.InstanceRange.Offset,
                     .InstanceCount = spec.PerInstanceDeform ? 1u : e.Mod.InstanceCount,
                     .Selection = meshes.GetEditSelectionStorage(e.MeshComp->GetStoreId()),
+                    .VertexBlocksSlot = meshes.Arenas().Vertices.Blocks.Buffer.Slot,
+                    .VertexOwner = meshes.Get(e.MeshComp->GetStoreId()).Vertices.Index,
+                    .VertexRoot = meshes.Get(e.MeshComp->GetStoreId()).SelectionSummary.Count ? meshes.GetSelectionRoots(e.MeshComp->GetStoreId()) : SlotOffset{},
                 };
-                // PosedRanges defines bases and per-instance offsets for the posed-buffer layout.
-                PosedRanges pr{};
+                auto &pr = spec.Pose;
                 NormalDeriveEntry derive_entry = spec.Entry;
-                if (spec.Posed) {
-                    pr = {
-                        .FirstInstance = e.Mod.InstanceRange.Offset,
-                        .PerInstance = spec.PerInstanceDeform,
-                        .PositionBase = posed_offset,
-                        .VertexCount = e.Buf.Vertices.Count,
-                        .MeshletBoundsBase = meshlet_bounds_offset,
-                        .Level0Count = spec.Level0Count,
-                        .Normals = spec.Derive ?
-                            std::optional{PosedRanges::NormalRanges{vertex_normal_offset, seam_normal_offset, face_normal_offset, spec.Entry.SeamCount, spec.Entry.FaceCount}} :
-                            std::nullopt,
-                    };
-                    scene_state.PosedByEntity.emplace(e.Entity, pr);
-                    posed_offset += spec.Count * pr.VertexCount;
-                    meshlet_bounds_offset += spec.Count * pr.Level0Count;
+                std::vector<uint32_t> face_blocks, vertex_blocks;
+                if (tiles_changed && spec.Derive) {
+                    const auto &record = meshes.Get(e.MeshComp->GetStoreId());
+                    face_blocks = PoseElementBlocks(meshes.Arenas().FaceTriangles,record.FaceData);
+                    vertex_blocks = PoseElementBlocks(meshes.Arenas().Vertices,record.Vertices);
+                    assert(face_blocks.size() == spec.NormalFaceTiles && vertex_blocks.size() == spec.NormalVertexTiles);
                 }
-                if (spec.Derive) {
-                    vertex_normal_offset += spec.Count * spec.Entry.VertexCount;
-                    seam_normal_offset += spec.Count * spec.Entry.SeamCount;
-                    face_normal_offset += spec.Count * spec.Entry.FaceCount;
-                }
-                const auto first = write;
-                const auto bounds_tiles_per = TileCountFor(e.Buf.Vertices.Count);
-                const auto face_tiles_per = TileCountFor(spec.Entry.FaceCount);
-                const auto gather_tiles_per = TileCountFor(spec.Entry.VertexCount + spec.Entry.SeamCount);
-                auto &tile_write = spec.Posed ? posed_tile_write : unposed_tile_write;
                 for (uint32_t i = 0; i < spec.Count; ++i) {
                     if (const auto normals = pr.NormalsAt(i)) {
-                        derive_entry.PosedPositionOffset = pr.PositionOffset(i);
-                        derive_entry.VertexNormalOffset = normals->VertexOffset;
-                        derive_entry.SeamNormalOffset = normals->SeamOffset;
-                        derive_entry.FaceNormalOffset = normals->FaceOffset;
+                        derive_entry.PositionNamespace = pr.PositionNamespace(i);
+                        derive_entry.VertexNormalNamespace = normals->Vertex;
+                        derive_entry.SectorNamespace = normals->Sector;
+                        derive_entry.FaceNormalNamespace = normals->Face;
                         if (tiles_changed) {
-                            for (uint32_t t = 0; t < face_tiles_per; ++t) derive_tiles[face_tile_write++] = {derive_write, t};
-                            for (uint32_t t = 0; t < gather_tiles_per; ++t) derive_tiles[gather_tile_write++] = {derive_write, t};
+                            for (const auto block : face_blocks) derive_tiles[face_tile_write++] = {derive_write,block};
+                            for (const auto block : vertex_blocks) derive_tiles[gather_tile_write++] = {derive_write,block};
                         }
                         derive_entries[derive_write++] = derive_entry;
                     }
-                    entry_first_tiles[write] = tile_write;
                     if (tiles_changed) {
-                        for (uint32_t t = 0; t < bounds_tiles_per; ++t) bounds_tiles[tile_write++] = {write, t};
-                    } else tile_write += bounds_tiles_per;
-                    entries[write++] = spec.PerInstanceDeform ? BoundsEntry{.FirstInstance = entry.FirstInstance + i, .InstanceCount = 1u, .Selection = entry.Selection} : entry;
-                }
-                // Shared-pose instances share one entry and one set of meshlet bounds, like positions.
-                if (spec.Posed && tiles_changed) {
-                    const auto mesh_primitives = buffers.Primitives.Get(e.Buf.Primitives);
-                    for (uint32_t i = 0; i < spec.Count; ++i) {
-                        for (const auto &primitive : mesh_primitives) {
-                            for (uint32_t m = 0; m < primitive.Level0Count; ++m) {
-                                posed_meshlet_tiles[meshlet_tile_write++] = {first + i, primitive.MeshletOffset + m};
-                            }
-                        }
+                        if (spec.Posed) {
+                            for (uint32_t level=0u; level<VertexBoundsLevels; ++level)
+                                for (const auto key : (*spec.BoundsKeys)[level]) bounds_tiles[bounds_tile_write[level]++]={write,key};
+                        } else bounds_tiles[bounds_tile_write.back()++]={write,0u};
                     }
+                    auto instance_entry=entry;
+                    if (spec.PerInstanceDeform) instance_entry.FirstInstance+=i;
+                    if (spec.Posed) instance_entry.BoundsNamespace=spec.Pose.VertexBoundsNamespaces[i];
+                    entries[write++]=instance_entry;
+                }
+                if (spec.Posed) scene_state.PosedByEntity.emplace(e.Entity,std::move(pr));
+                // Descriptors enumerate canonical clusters on the GPU.
+                // All instances sharing a pose use the same bounds namespace.
+                if (spec.Posed) for (uint32_t i = 0u; i < spec.Count; ++i) {
+                    const auto instance = spec.PerInstanceDeform ? entry.FirstInstance+i : entry.FirstInstance;
+                    buffers.ForEachPrimitive(e.Buf,[&](uint32_t, const PrimitiveRecord &primitive) {
+                        if (primitive.LodFinestNode == InvalidOffset) return;
+                        const auto root = buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot;
+                        const auto count = buffers.ActiveMeshlets.Count(root);
+                        if (!count) return;
+                        meshlet_jobs.push_back({meshlet_groups,count,instance,buffers.ActiveMeshlets.Ref(root)});
+                        meshlet_groups += count;
+                    });
                 }
             }
+            assert(meshlet_groups == posed_meshlet_bounds_count);
+            if (tiles_changed) assert(face_tile_write == derive_face_tile_count && gather_tile_write == derive_tiles.size());
+            const auto jobs = buffers.PosedMeshletBoundsJobs.SetCount<PosedMeshletBoundsJob>(meshlet_jobs.size());
+            std::ranges::copy(meshlet_jobs,jobs.begin());
         }
 
         // Reuse records and the topology mask when all hashed inputs match the previous rebuild.
@@ -947,18 +1012,18 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             for (const auto [instance_entity, instance, ri] : r.view<const Instance, const RenderInstance>().each()) {
                 if (ri.BufferIndex == UINT32_MAX) continue;
                 const auto *mesh_buffers = TryMeshBuffers(r, instance.Entity);
-                if (!mesh_buffers || mesh_buffers->Primitives.Count == 0) continue;
-                if (mesh_buffers->Meshlets.Count != 0u) {
+                if (!mesh_buffers || buffers.PrimitiveCount(*mesh_buffers) == 0) continue;
+                if (buffers.MeshletCount(*mesh_buffers) != 0u) {
                     const MeshletRecord &first_meshlet = buffers.Meshlets.Buffer.GetSpan<MeshletRecord>(
-                                                                                    {mesh_buffers->Meshlets.Offset, mesh_buffers->Meshlets.Count}
+                                                                                    {buffers.FirstMeshlet(*mesh_buffers), 1u}
                     )
                                                              .front();
-                    const uint32_t topology = first_meshlet.LocalTriangleOffset >> uint32_t(MeshletGeometryEncoding::TopologyShift);
+                    const uint32_t topology = first_meshlet.Topology;
                     buffers.MeshletTopologyMask |= 1u << topology;
                 }
                 InstanceRecord record{
-                    .PrimitiveOffset = mesh_buffers->Primitives.Offset,
-                    .PrimitiveCount = mesh_buffers->Primitives.Count,
+                    .PrimitiveRoot = mesh_buffers->PrimitiveRoot,
+                    .PrimitiveCount = buffers.PrimitiveCount(*mesh_buffers),
                     .Mesh = mesh_buffers->MeshRecord.Offset,
                     .ObjectId = ObjectId(instance_entity),
                 };
@@ -976,12 +1041,13 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 if (const auto it = scene_state.PosedByEntity.find(instance.Entity); it != scene_state.PosedByEntity.end()) {
                     const auto &posed = it->second;
                     const auto i = posed.PerInstance ? ri.BufferIndex - posed.FirstInstance : 0u;
-                    record.PosedPositionOffset = posed.PositionOffset(i);
-                    record.PosedMeshletBoundsOffset = posed.MeshletBoundsOffset(i);
+                    record.PositionNamespace = posed.PositionNamespace(i);
+                    record.MorphNormalNamespace = posed.MorphNormalNamespace(i);
+                    record.MeshletBoundsNamespace = posed.MeshletBoundsNamespace(i);
                     if (const auto normals = posed.NormalsAt(i)) {
-                        record.PosedVertexNormalOffset = normals->VertexOffset;
-                        record.PosedSeamNormalOffset = normals->SeamOffset;
-                        record.PosedFaceNormalOffset = normals->FaceOffset;
+                        record.VertexNormalNamespace = normals->Vertex;
+                        record.SectorNamespace = normals->Sector;
+                        record.FaceNormalNamespace = normals->Face;
                     }
                 }
                 const auto primary = primary_edit_instances.find(instance.Entity);
@@ -992,7 +1058,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 if (primary != primary_edit_instances.end() && primary->second == instance_entity) {
                     const uint32_t store_id = GetMesh(r, instance.Entity).GetStoreId();
                     record.Selection = meshes.GetEditSelectionStorage(store_id);
-                    record.EditEdgeSharpnessOffset = meshes.Get(store_id).EdgeSharpness.Offset;
+                    record.EditEdgeSharpnessOffset = meshes.Arenas().EdgeHalfedges.First(meshes.Get(store_id).EdgeData);
                     record.ElementIdOffset = meshes.GetSelectionBitOffset(store_id, edit_mode);
                 } else if (is_excite_mode && sound_meshes.contains(instance.Entity)) {
                     const uint32_t store_id = GetMesh(r, instance.Entity).GetStoreId();
@@ -1014,10 +1080,9 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         const bool meshlet_edit_overlay = show_overlays && is_edit_mode && draw_overlays;
         if (meshlet_edit_overlay) {
             for (const auto &e : mesh_entities) {
-                if (!e.PrimaryEditBufferIndex || !e.MeshComp || e.Buf.Meshlets.Count == 0u) continue;
+                if (!e.PrimaryEditBufferIndex || !e.MeshComp || buffers.MeshletCount(e.Buf) == 0u) continue;
                 scene_state.MeshletEditOverlayMeshes.insert(e.Entity);
-                const auto sharpness = meshes.Arenas().EdgeSharpness.Get(meshes.Get(e.MeshComp->GetStoreId()).EdgeSharpness);
-                scene_state.MeshletEditHasSharpEdges |= std::memchr(sharpness.data(), 1, sharpness.size()) != nullptr;
+                scene_state.MeshletEditHasSharpEdges |= meshes.GetEdgeSharpnessSummary(e.MeshComp->GetStoreId()).Any;
             }
         }
         scene_state.InstanceFlagsStale = true;
@@ -1036,13 +1101,11 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                  MeshletInstanceFlag::BoneJoint,
                  MeshletInstanceFlag::BoneJointWire,
                  MeshletInstanceFlag::FaceNormal,
-                 MeshletInstanceFlag::VertexNormal,
                  MeshletInstanceFlag::EdgeOverlay,
-                 MeshletInstanceFlag::PointOverlay,
-                 MeshletInstanceFlag::SoundPoint,
              }) {
             buffers.FlagWork(uint32_t(flag)) = {};
         }
+        scene_state.VertexOverlays.clear();
         for (const auto [instance_entity, ri] : r.view<const RenderInstance>().each()) {
             if (ri.BufferIndex == UINT32_MAX || ri.BufferIndex >= instance_records.size()) continue;
             auto &record = instance_records[ri.BufferIndex];
@@ -1051,37 +1114,41 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             const bool silhouette = selected && (!is_edit_mode || silhouette_instances.contains(instance_entity));
             record.Flags = silhouette ? uint32_t(MeshletInstanceFlag::Silhouette) : 0u;
             const auto *instance = r.try_get<const Instance>(instance_entity);
-            if (instance && EditPinsFinest(primary_edit_instances, scene_state, instance->Entity)) record.Flags |= uint32_t(MeshletInstanceFlag::LodPinFinest);
-            const auto primary = instance ? primary_edit_instances.find(instance->Entity) : primary_edit_instances.end();
             const auto *mesh_buffers = instance ? TryMeshBuffers(r, instance->Entity) : nullptr;
-            if (instance && mesh_buffers && mesh_buffers->Meshlets.Count > 0u &&
+            if (instance && (EditPinsFinest(primary_edit_instances, scene_state, instance->Entity) ||
+                (mesh_buffers && buffers.ActiveMeshlets.Count(mesh_buffers->PositionDirtyRoot) > 0u))) {
+                record.Flags |= uint32_t(MeshletInstanceFlag::LodPinFinest);
+            }
+            const auto primary = instance ? primary_edit_instances.find(instance->Entity) : primary_edit_instances.end();
+            if (instance && mesh_buffers && buffers.MeshletCount(*mesh_buffers) > 0u &&
                 primary != primary_edit_instances.end() && primary->second == instance_entity &&
                 GetMesh(r, instance->Entity).ElementCount(edit_mode) > 0u) {
                 record.Flags |= uint32_t(MeshletInstanceFlag::ElementSelection);
                 if (ri.MeshletCount > 0) {
-                    element_selection_work.Ranges += ri.MeshletRangeCount;
+                    element_selection_work.Nodes += ri.LodNodeCount;
                     element_selection_work.Meshlets += ri.MeshletCount;
                 }
             }
             if (instance && scene_state.MeshletEditOverlayMeshes.contains(instance->Entity) &&
                 primary != primary_edit_instances.end() && primary->second == instance_entity) {
                 record.Flags |= uint32_t(MeshletInstanceFlag::EditOverlay);
+                scene_state.VertexOverlays.push_back({instance->Entity, ri.BufferIndex, VertexOverlay::EditPoints});
                 if (ri.MeshletCount > 0) {
-                    edit_overlay_work.Ranges += ri.MeshletRangeCount;
+                    edit_overlay_work.Nodes += ri.LodNodeCount;
                     edit_overlay_work.Meshlets += ri.MeshletCount;
                 }
             }
             const auto mesh = instance ? TryGetMesh(r, instance->Entity) : std::nullopt;
             const bool shaded_face_less = mesh && show_rendered && mesh->FaceCount() == 0u &&
                 meshes.Get(mesh->GetStoreId()).PrimitiveMaterials.Count > 0u;
-            const bool wire = instance && mesh_buffers && mesh_buffers->Meshlets.Count > 0u &&
+            const bool wire = instance && mesh_buffers && buffers.MeshletCount(*mesh_buffers) > 0u &&
                 !r.all_of<ArmatureObject>(instance->Entity) && !r.all_of<BoneJoint>(instance->Entity) &&
-                !r.all_of<ObjectExtrasTag>(instance->Entity) && mesh_buffers->EdgeIndices.Count > 0u &&
-                (mesh_buffers->FaceIndices.Count == 0u || is_wireframe_mode) && !shaded_face_less;
+                !r.all_of<ObjectExtrasTag>(instance->Entity) && mesh && mesh->EdgeCount() > 0u &&
+                (mesh->FaceCount() == 0u || is_wireframe_mode) && !shaded_face_less;
             if (wire) {
                 record.Flags |= uint32_t(MeshletInstanceFlag::Wire);
                 if (ri.MeshletCount > 0) {
-                    wire_work.Ranges += ri.MeshletRangeCount;
+                    wire_work.Nodes += ri.LodNodeCount;
                     wire_work.Meshlets += ri.MeshletCount;
                 }
             }
@@ -1092,7 +1159,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 record.Flags |= uint32_t(flag);
                 if (ri.MeshletCount > 0) {
                     auto &work = buffers.FlagWork(uint32_t(flag));
-                    work.Ranges += ri.MeshletRangeCount;
+                    work.Nodes += ri.LodNodeCount;
                     work.Meshlets += ri.MeshletCount;
                 }
             };
@@ -1111,24 +1178,25 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 if (show_face_normals && mesh_buffers->FaceIndices.Count > 0u) {
                     mark(MeshletInstanceFlag::FaceNormal);
                 }
-                if (show_vertex_normals && mesh_buffers->EdgeIndices.Count > 0u) {
-                    mark(MeshletInstanceFlag::VertexNormal);
+                if (show_vertex_normals && mesh && mesh->EdgeCount() > 0u) {
+                    record.Flags |= uint32_t(MeshletInstanceFlag::LodPinFinest);
+                    scene_state.VertexOverlays.push_back({instance->Entity, ri.BufferIndex, VertexOverlay::Normals});
                 }
             }
             if (instance && mesh_buffers && show_overlays && is_excite_mode &&
-                sound_meshes.contains(instance->Entity) && mesh_buffers->EdgeIndices.Count > 0u) {
+                sound_meshes.contains(instance->Entity) && mesh && mesh->EdgeCount() > 0u) {
                 mark(MeshletInstanceFlag::EdgeOverlay);
             }
             if (instance && mesh_buffers && show_overlays && is_excite_mode &&
-                sound_meshes.contains(instance->Entity) && mesh_buffers->Meshlets.Count > 0u) {
-                mark(MeshletInstanceFlag::SoundPoint);
+                sound_meshes.contains(instance->Entity) && buffers.MeshletCount(*mesh_buffers) > 0u) {
+                scene_state.VertexOverlays.push_back({instance->Entity, ri.BufferIndex, VertexOverlay::SoundPoints});
             }
             const bool point_overlay = instance && mesh && mesh_buffers &&
-                mesh->FaceCount() == 0u && mesh->EdgeCount() == 0u &&
+                mesh->PrimitiveTopology() == uint32_t(MeshPrimitiveTopology::Point) &&
                 !primary_edit_instances.contains(instance->Entity) && !shaded_face_less;
-            if (point_overlay) mark(MeshletInstanceFlag::PointOverlay);
+            if (point_overlay) scene_state.VertexOverlays.push_back({instance->Entity, ri.BufferIndex, VertexOverlay::Points});
             if (silhouette && ri.MeshletCount > 0) {
-                silhouette_work.Ranges += ri.MeshletRangeCount;
+                silhouette_work.Nodes += ri.LodNodeCount;
                 silhouette_work.Meshlets += ri.MeshletCount;
             }
         }
@@ -1154,37 +1222,36 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
     const bool composite_transmission = transmission_active && phase == RenderPhase::Full && !is_edit_mode && settings.DebugChannel == DebugChannel::None;
     const bool meshlet_fill = buffers.MeshletInstanceCount > 0;
 
-    // The posed passes run every phase, since blur steps read their step's captured pose through the phase's UBO instance.
-    // Derived normals feed only the scene's face-fill draws, so only scene-drawing phases record the derive.
+    // Posed positions and bounds run before culling.
     // Every prelude pass dispatches indirectly.
     // A submit with unchanged deform inputs gets zero group counts, keeping the buffers' current results.
     if (buffers.Prelude.HasWork()) {
         const auto &prelude = buffers.Prelude;
-        // Every derive entry contributes at least one face tile and one gather tile.
-        const bool record_derive = prelude.DeriveFaces > 0;
-        const bool bounds_work = prelude.BoundsCombine > 0;
+        const bool bounds_work = prelude.BoundsCombine[2] > 0;
         auto *compute = chain.BeginCompute("Prelude", MTL::StageVertex | MTL::StageFragment | MTL::StageDispatch);
-        // Bindless dependencies require explicit barriers between pose, bounds, derive, gather, and combine dispatches.
+        // Bindless dependencies require explicit barriers between pose and bounds levels.
         if (prelude.PosePrepass > 0) {
             RecordPosePrepass(compute, slots, pipelines, buffers, ubo_offset);
             compute->memoryBarrier(MTL::BarrierScopeBuffers);
         }
-        if (prelude.PosedMeshletBounds > 0) RecordPosedMeshletBounds(compute, slots, pipelines, buffers, ubo_offset);
-        if (record_derive || bounds_work) {
-            auto derive_pc = MakeNormalDerivePc(buffers, meshes, buffers.PosedVertexNormals.Slot, buffers.PosedSeamNormals.Slot, buffers.PosedFaceNormals.Slot);
-            if (record_derive) RecordNormalDerive(compute, slots, pipelines, buffers, derive_pc, PreludeSlot::DeriveFaces, ubo_offset);
-            if (bounds_work) RecordBoundsPass(compute, slots, pipelines.BoundsReduce, buffers, PreludeSlot::BoundsReduce, ubo_offset);
+        if (prelude.DeriveFaces > 0) {
+            auto derive = MakeNormalDerivePc(buffers,meshes,buffers.PosedVertexNormals.Values.Buffer.Slot,buffers.PosedFaceNormals.Values.Buffer.Slot);
+            const auto &normal_pipeline = GetMeshPipelines(r)[MeshPass::VertexNormalDerive];
+            RecordNormalDerive(compute,slots,normal_pipeline,buffers,derive,PreludeSlot::DeriveFaces,ubo_offset);
             compute->memoryBarrier(MTL::BarrierScopeBuffers);
-            if (record_derive) {
-                derive_pc.Phase = 1;
-                derive_pc.FirstTile = prelude.DeriveFaces;
-                RecordNormalDerive(compute, slots, pipelines, buffers, derive_pc, PreludeSlot::DeriveGather, ubo_offset);
-            }
-            if (bounds_work) RecordBoundsPass(compute, slots, pipelines.BoundsCombine, buffers, PreludeSlot::BoundsCombine, ubo_offset);
+            derive.Phase = 1u;
+            derive.FirstTile = prelude.DeriveFaces;
+            RecordNormalDerive(compute,slots,normal_pipeline,buffers,derive,PreludeSlot::DeriveGather,ubo_offset);
+            compute->memoryBarrier(MTL::BarrierScopeBuffers);
         }
-    }
-    if (buffers.PreludeStale) {
-        for (auto &[_, work] : scene_state.EditWork) work.BoundsInitialized = false;
+        if (prelude.PosedMeshletBounds > 0) RecordPosedMeshletBounds(compute, slots, pipelines, buffers, ubo_offset);
+        if (bounds_work) {
+            RecordBoundsPass(compute, slots, pipelines.BoundsCombine, buffers, PreludeSlot::BoundsLevel1, ubo_offset, {.Level=1u});
+            compute->memoryBarrier(MTL::BarrierScopeBuffers);
+            RecordBoundsPass(compute, slots, pipelines.BoundsCombine, buffers, PreludeSlot::BoundsLevel2, ubo_offset, {.Level=2u});
+            compute->memoryBarrier(MTL::BarrierScopeBuffers);
+            RecordBoundsPass(compute, slots, pipelines.BoundsCombine, buffers, PreludeSlot::BoundsLevel3, ubo_offset, {.Level=3u});
+        }
     }
     if (is_edit_mode && std::exchange(scene_state.EditPreludePending, false)) RecordSparseEditPrelude(r, viewport, chain);
     if (phase == RenderPhase::Prepare) return;
@@ -1202,15 +1269,9 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::Bone)).Meshlets +
             buffers.FlagWork(uint32_t(MeshletInstanceFlag::BoneJoint)).Meshlets :
         0u;
-    const uint64_t normal_meshlets = draw_overlays ?
-        buffers.FlagWork(uint32_t(MeshletInstanceFlag::FaceNormal)).Meshlets +
-            buffers.FlagWork(uint32_t(MeshletInstanceFlag::VertexNormal)).Meshlets :
-        0u;
-    const uint64_t element_overlay_meshlets = draw_overlays ?
-        buffers.FlagWork(uint32_t(MeshletInstanceFlag::EdgeOverlay)).Meshlets +
-            buffers.FlagWork(uint32_t(MeshletInstanceFlag::PointOverlay)).Meshlets +
-            buffers.FlagWork(uint32_t(MeshletInstanceFlag::SoundPoint)).Meshlets :
-        0u;
+    const uint64_t normal_meshlets = draw_overlays ? buffers.FlagWork(uint32_t(MeshletInstanceFlag::FaceNormal)).Meshlets : 0u;
+    const uint64_t element_overlay_meshlets = draw_overlays ? buffers.FlagWork(uint32_t(MeshletInstanceFlag::EdgeOverlay)).Meshlets : 0u;
+    const bool vertex_overlays = draw_overlays && !scene_state.VertexOverlays.empty();
     const bool cull_scene_meshlets =
         (need_visibility || wire_meshlets || bone_meshlets > 0u || normal_meshlets > 0u ||
          element_overlay_meshlets > 0u);
@@ -1236,6 +1297,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                         normal_meshlets > 0u || element_overlay_meshlets > 0u ?
                     0u :
                     uint32_t(MeshletInstanceFlag::Silhouette),
+                .RouteMask = 0x1ffu & ~(1u << uint32_t(MeshletRoute::EditOverlay)),
                 .UboOffset = ubo_offset,
                 .PyramidSamplerSlot = pyramid,
             }
@@ -1379,7 +1441,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         wire->setTexture(*targets.Resources->VisibilityDepth, 0u);
         WireRasterPushConstants wire_pc{
             .Meshlet = MakeMeshletDrawPc(
-                buffers,
+                buffers, buffers.SceneCull,
                 uint32_t(MeshletRoute::Wire), uint32_t(MeshletInstanceFlag::Wire),
                 false, InvalidSlot
             ),
@@ -1387,20 +1449,38 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             .TestDepth = overlay_scene_depth,
             .BehindOpacity = overlay_behind,
         };
-        for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
+        for (uint32_t chunk = 0; chunk < buffers.SceneCull.ChunkCount; ++chunk) {
             wire_pc.Meshlet.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
             encode::SetPushConstants(wire, wire_pc);
-            const auto args_offset = (uint32_t(MeshletRoute::Wire) * buffers.MeshletDispatchChunkCount + chunk) *
+            const auto args_offset = (uint32_t(MeshletRoute::Wire) * buffers.SceneCull.ChunkCount + chunk) *
                 sizeof(MeshDispatchArgs);
-            wire->dispatchThreadgroups(*buffers.MeshletDispatchArgs, args_offset, MTL::Size(160, 1, 1));
+            wire->dispatchThreadgroups(*buffers.SceneCull.DispatchArgs, args_offset, MTL::Size(160, 1, 1));
         }
     }
     if (overlay_jobs) RecordOverlayJobCull(chain, slots, pipelines, buffers, false, ubo_offset);
+    // This frame's depth pyramid is valid here. Cull hidden edit edges and vertex overlays only
+    // when their render pass tests against that same scene depth.
+    const uint32_t overlay_pyramid = show_fill && !overlays_through && !xray && !has_silhouette &&
+            phase == RenderPhase::Full && cull_scene_meshlets ?
+        samplers.DepthPyramid : InvalidSlot;
+    if (meshlet_edit_overlay_drawn) {
+        RecordMeshletCull(chain, slots, pipelines, buffers, {
+            .Mode = MeshletRouteMode::Visibility,
+            .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::EditOverlay),
+            .RouteMask = 1u << uint32_t(MeshletRoute::EditOverlay),
+            .UboOffset = ubo_offset,
+            .PyramidSamplerSlot = overlay_pyramid,
+            .ExactEditGeometry = true,
+            .MinEditOverlayDiameterPixels = MinEditOverlayDiameterPixels,
+            .EditOverlayHasSharpEdges = scene_state.MeshletEditHasSharpEdges,
+            .EditOutput = true,
+        });
+    }
 
     // Initialize overlays even when no geometry contributes color.
     const bool overlay_pass_needed = has_silhouette ||
         (show_overlays && settings.ShowGrid) ||
-        meshlet_edit_overlay_drawn || element_overlay_meshlets > 0u || wire_meshlets ||
+        meshlet_edit_overlay_drawn || element_overlay_meshlets > 0u || vertex_overlays || wire_meshlets ||
         overlay_jobs ||
         normal_meshlets > 0u || bone_meshlets > 0u;
     if (overlay_pass_needed) { // Display-referred overlays, depth-tested against scene surfaces and outlines.
@@ -1443,12 +1523,14 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
 
         const auto draw_meshlet_overlay = [&](
                                               const mtl::RenderPipeline &pipeline, MeshletRoute route, MeshletInstanceFlag flag,
-                                              uint32_t threads, uint32_t corner = 0u, uint32_t sharpness_slot = InvalidSlot
+                                              uint32_t threads, uint32_t corner = 0u, uint32_t sharpness_slot = InvalidSlot,
+                                              bool edit_output = false
                                           ) {
             pipeline.Bind(encoder);
             DrawMeshletList(
                 encoder, buffers,
-                uint32_t(route), uint32_t(flag), false, false, sharpness_slot, threads, corner
+                uint32_t(route), uint32_t(flag), false, false, sharpness_slot, threads, corner,
+                InvalidOffset, edit_output
             );
         };
 
@@ -1458,7 +1540,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             for (uint32_t corner = 0u; corner < 3u; ++corner) {
                 draw_meshlet_overlay(
                     edit_edges, MeshletRoute::EditOverlay, MeshletInstanceFlag::EditOverlay,
-                    160u, corner, meshes.Slots().EdgeSharpness
+                    160u, corner, meshes.Slots().EdgeSharpness, true
                 );
             }
         }
@@ -1480,33 +1562,24 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             DrawOverlayJobs(encoder, buffers, meshes);
         }
 
-        if (normal_meshlets > 0u) {
-            const auto draw_normals = [&](const mtl::RenderPipeline &pipeline, MeshletInstanceFlag flag) {
-                if (buffers.FlagWork(uint32_t(flag)).Meshlets == 0u) return;
-                draw_meshlet_overlay(pipeline, MeshletRoute::Overlay, flag, 64u);
+        if (normal_meshlets > 0u) draw_meshlet_overlay(main.FaceNormalMesh, MeshletRoute::Overlay, MeshletInstanceFlag::FaceNormal, 64u);
+        if (vertex_overlays) {
+            const auto draw_vertex_overlays = [&](const mtl::RenderPipeline &pipeline, VertexOverlay kind) {
+                bool bound = false;
+                for (const auto &draw : scene_state.VertexOverlays) {
+                    if (draw.Kind != kind) continue;
+                    if (!std::exchange(bound, true)) pipeline.Bind(encoder);
+                    DrawVertexBlocks(
+                        encoder, r, draw.MeshEntity, draw.Instance, kind == VertexOverlay::SoundPoints, overlay_pyramid,
+                        kind == VertexOverlay::EditPoints ? MinEditOverlayDiameterPixels : 0.0f
+                    );
+                }
             };
-            draw_normals(main.FaceNormalMesh, MeshletInstanceFlag::FaceNormal);
-            draw_normals(main.VertexNormalMesh, MeshletInstanceFlag::VertexNormal);
-        }
-
-        // Selected vertices composite above strokes.
-        if (meshlet_edit_overlay_drawn && edit_mode == Element::Vertex) {
-            draw_meshlet_overlay(
-                main.MeshletEditPoint, MeshletRoute::EditOverlay,
-                MeshletInstanceFlag::EditOverlay, 64u
-            );
-        }
-        if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::PointOverlay)).Meshlets > 0u) {
-            draw_meshlet_overlay(
-                main.MeshletEditPoint, MeshletRoute::Overlay,
-                MeshletInstanceFlag::PointOverlay, 64u
-            );
-        }
-        if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::SoundPoint)).Meshlets > 0u) {
-            draw_meshlet_overlay(
-                main.MeshletEditPoint, MeshletRoute::Overlay,
-                MeshletInstanceFlag::SoundPoint, 64u
-            );
+            draw_vertex_overlays(main.VertexNormalMesh, VertexOverlay::Normals);
+            // Selected vertices composite above strokes.
+            if (edit_mode == Element::Vertex) draw_vertex_overlays(main.VertexBlockPoints, VertexOverlay::EditPoints);
+            draw_vertex_overlays(main.VertexBlockPoints, VertexOverlay::Points);
+            draw_vertex_overlays(main.VertexBlockPoints, VertexOverlay::SoundPoints);
         }
         // Bone X-ray preserves overlay color and clears scratch depth to order bones against each other.
         if (bone_meshlets > 0u) {
@@ -1652,18 +1725,20 @@ void RecordMeshletCull(
     mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
     GpuBuffers &buffers, MeshletCullConfig config
 ) {
-    ++buffers.MeshletVisibleGeneration;
+    auto &output = config.EditOutput ? buffers.EditCull : buffers.SceneCull;
+    if (!config.EditOutput) ++buffers.MeshletVisibleGeneration;
     auto *encoder = chain.BeginCompute("MeshletCull", MTL::StageMesh | MTL::StageFragment);
     const bool transmission = config.Mode == MeshletRouteMode::Transmission;
     // The requested flag's maintained totals bound this cull.
     const auto primary = config.RequiredInstanceFlags == 0u ?
-        GpuBuffers::MeshletFlagWork{buffers.MeshletRangeCount, buffers.MeshletInstanceCount} :
+        GpuBuffers::MeshletFlagWork{buffers.LodNodeCount, buffers.MeshletInstanceCount} :
         buffers.FlagWork(config.RequiredInstanceFlags);
     buffers.EnsureMeshletVisibilityCapacity(
-        primary.Meshlets * (1u + transmission), primary.Ranges, primary.Meshlets
+        output,
+        primary.Meshlets * (1u + transmission), primary.Nodes, primary.Meshlets
     );
     const auto pc = [&] {
-        auto pc = MakeMeshletCullSlotsPc(buffers);
+        auto pc = MakeMeshletCullSlotsPc(buffers, output);
         pc.InstanceCount = buffers.GpuInstanceSlots.Count<uint32_t>();
         pc.WorkBlockCount = (pc.InstanceCount + GpuBuffers::MeshletCullBlockSize - 1u) / GpuBuffers::MeshletCullBlockSize;
         pc.LodFrontierStateSlot = buffers.LodFrontierStates.Slot;
@@ -1671,6 +1746,10 @@ void RecordMeshletCull(
         pc.RequiredInstanceFlags = config.RequiredInstanceFlags;
         pc.RouteMask = config.RouteMask;
         pc.PyramidSamplerSlot = config.PyramidSamplerSlot;
+        pc.ExactEditGeometry = config.ExactEditGeometry;
+        pc.MinEditOverlayDiameterPixels = config.MinEditOverlayDiameterPixels;
+        pc.EditOverlayHasSharpEdges = config.EditOverlayHasSharpEdges;
+        if (config.EditOutput) pc.CoarseCountSlot = InvalidSlot;
         return pc;
     }();
     encode::BindScene(encoder, slots, buffers, config.UboOffset);
@@ -1761,6 +1840,40 @@ void DrawMeshlets(
     );
 }
 
+void DrawVertexBlocks(
+    MTL::RenderCommandEncoder *encoder, const state::Scene &r, state::Entity mesh_entity, uint32_t instance, bool sound_points,
+    uint32_t pyramid_slot, float min_diameter_pixels
+) {
+    const auto &buffers = r.Context.get<const GpuBuffers>();
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &scene = r.Context.get<const GpuSceneState>();
+    const auto store_id = r.get<const MeshHandle>(mesh_entity).StoreId;
+    VertexBlockPushConstants pc{
+        .Instance = instance,
+        .MembershipSlot = meshes.Arenas().Vertices.Blocks.Buffer.Slot,
+        .SoundPoints = sound_points ? 1u : 0u,
+        .PyramidSamplerSlot = pyramid_slot,
+        .MinDiameterPixels = min_diameter_pixels,
+    };
+    if (const auto posed = scene.PosedByEntity.find(mesh_entity); posed != scene.PosedByEntity.end()) {
+        pc.BoundsNamespace = posed->second.VertexBoundsNamespace(posed->second.PerInstance ? instance - posed->second.FirstInstance : 0u);
+        pc.BoundsNodesSlot = buffers.VertexBounds.Nodes.Buffer.Slot;
+        pc.BoundsValuesSlot = buffers.VertexBounds.Values.Buffer.Slot;
+        pc.BoundsMembersSlot = buffers.VertexBounds.Members.Slot;
+    } else if (meshes.Get(store_id).SelectionSummary.Count) {
+        pc.LeafSlot = meshes.Arenas().VertexAggregates.Buffer.Slot;
+    }
+    // Each dispatch stays within the mesh grid's dimension limit.
+    constexpr uint32_t BlocksPerDispatch{GpuBuffers::MeshletDispatchChunkSize / VertexBlockGroups};
+    const auto list = meshes.GetBlockList(store_id, MeshStore::ElementDomain::Vertex);
+    for (uint32_t first = 0u; first < list.Blocks.size(); first += BlocksPerDispatch) {
+        pc.Blocks = {list.Gpu.Slot, list.Gpu.Offset + first};
+        encode::SetMeshPushConstants(encoder, pc);
+        const auto blocks = std::min(BlocksPerDispatch, uint32_t(list.Blocks.size()) - first);
+        encoder->drawMeshThreadgroups(MTL::Size(blocks * VertexBlockGroups, 1, 1), MTL::Size(1, 1, 1), MTL::Size(MeshElementBlockSize / VertexBlockGroups, 1, 1));
+    }
+}
+
 void RecordRenderCommandBuffer(state::Scene &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, SceneUpdate update, RenderPhase phase) {
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
@@ -1782,130 +1895,73 @@ void RecordBlurStepsCommandBuffer(state::Scene &r, state::Entity viewport, MTL::
 namespace {
 // Upload `entries` and their tiles, then record and submit one batched two-phase derive and wait for completion.
 // The output slots select the target buffers.
-void SubmitNormalDeriveNow(state::Scene &r, std::span<const NormalDeriveEntry> entries, uint32_t vertex_normal_slot, uint32_t seam_normal_slot, uint32_t face_normal_slot) {
+void SubmitNormalDeriveNow(state::Scene &r, std::span<const NormalDeriveEntry> entries, uint32_t vertex_normal_slot, uint32_t face_normal_slot) {
     const auto &meshes = r.Context.get<const MeshStore>();
     auto &buffers = r.Context.get<GpuBuffers>();
-    std::vector<uvec2> face_tiles, gather_tiles;
-    for (uint32_t entry_index = 0; entry_index < entries.size(); ++entry_index) {
-        const auto &entry = entries[entry_index];
-        for (uint32_t t = 0, n = TileCountFor(entry.FaceCount); t < n; ++t) face_tiles.emplace_back(entry_index, t);
-        for (uint32_t t = 0, n = TileCountFor(entry.VertexCount + entry.SeamCount); t < n; ++t) gather_tiles.emplace_back(entry_index, t);
-    }
-    std::ranges::copy(entries, buffers.NormalDeriveEntries.SetCount<NormalDeriveEntry>(entries.size()).begin());
-    const auto tiles = buffers.DeriveTiles.SetCount<uvec2>(face_tiles.size() + gather_tiles.size());
-    std::ranges::copy(gather_tiles, std::ranges::copy(face_tiles, tiles.begin()).out);
-    // The one-shot shares the frame prelude's indirect slots, then requests their rebuild.
-    WritePreludeArg(buffers, PreludeSlot::DeriveFaces, uint32_t(face_tiles.size()));
-    WritePreludeArg(buffers, PreludeSlot::DeriveGather, uint32_t(gather_tiles.size()));
-
-    const auto &ctx = r.Context.get<const mtl::Context>();
-    const auto &slots = r.Context.get<const mtl::BindlessSet>();
-    const auto &pipelines = GetPipelines(r);
-    ctx.CommitResidency();
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    auto *encoder = command_buffer->computeCommandEncoder();
-    auto derive_pc = MakeNormalDerivePc(buffers, meshes, vertex_normal_slot, seam_normal_slot, face_normal_slot);
-    RecordNormalDerive(encoder, slots, pipelines, buffers, derive_pc, PreludeSlot::DeriveFaces, 0);
-    // The gather reads the face normals through bindless buffers the encoder cannot see.
-    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-    derive_pc.Phase = 1;
-    derive_pc.FirstTile = uint32_t(face_tiles.size());
-    RecordNormalDerive(encoder, slots, pipelines, buffers, derive_pc, PreludeSlot::DeriveGather, 0);
-    encoder->endEncoding();
-    command_buffer->commit();
-    command_buffer->waitUntilCompleted();
-    // The one-shot rewrote per-frame derive inputs, so the next submit refreshes persistent scene descriptors.
-    r.Context.get<PendingRenderRequest>().Value = RenderRequest::Rebuild;
+    auto pc = MakeNormalDerivePc(buffers, meshes, vertex_normal_slot, face_normal_slot);
+    DeriveNormalsNow(r, entries, pc);
 }
 } // namespace
 
 void DeriveBaseNormalsNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    const auto &meshes = r.Context.get<const MeshStore>();
-    std::vector<NormalDeriveEntry> entries;
-    entries.reserve(mesh_entities.size());
-    for (const auto entity : mesh_entities) {
-        const auto *mesh_buffers = TryMeshBuffers(r, entity);
-        const auto mesh = TryGetMesh(r, entity);
-        if (!mesh_buffers || !mesh) continue;
-        const auto store_id = mesh->GetStoreId();
-        auto entry = MakeDeriveEntryInputs(meshes, store_id, mesh_buffers->FaceIndices);
-        if (!entry) continue;
-        entry->VertexNormalOffset = entry->Vertices.Offset;
-        entry->SeamNormalOffset = meshes.GetDerived(store_id).BaseSeamNormals.Offset;
-        entry->FaceNormalOffset = entry->FaceDataOffset;
-        entries.emplace_back(*entry);
-    }
-    if (entries.empty()) return;
-    SubmitNormalDeriveNow(r, entries, meshes.Slots().BaseVertexNormal, meshes.Slots().BaseSeamNormal, meshes.Slots().BaseFaceNormal);
+    std::vector<uint32_t> ids;
+    ids.reserve(mesh_entities.size());
+    for (const auto entity : mesh_entities)
+        if (const auto mesh = TryGetMesh(r, entity)) ids.push_back(mesh->GetStoreId());
+    DeriveMeshNormalsNow(r, ids);
 }
 
-namespace {
-// Returns whether the listed mesh entities retain authored shading normals under morphing.
-// The CPU resolves targets with authored normal deltas.
-// Position-only targets derive their full-weight poses in one batched submit-and-wait.
-// The derived pose tests whether derivation moves the normals authored shading would pin.
-// Runs after the base derive, since the pin test compares against the base normal stores.
 void UpdateAuthoredMorphShadingNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     auto &meshes = r.Context.get<MeshStore>();
     auto &buffers = r.Context.get<GpuBuffers>();
-    // Each position-only target gets a derive entry at its full-weight pose, reading and writing the posed scratch.
+    // Each position-only target gets a derive entry reading its full-weight pose directly.
     struct PoseJob {
         state::Entity Entity;
-        uint32_t TargetIndex;
     };
     std::vector<NormalDeriveEntry> entries;
     std::vector<PoseJob> jobs;
-    uint32_t vertex_count_total = 0, seam_count_total = 0, face_count_total = 0;
+    PoseAttributeStore<vec3>::Temporary vertex_normals{buffers.PosedVertexNormals};
+    PoseAttributeStore<vec3>::Temporary face_normals{buffers.PosedFaceNormals};
+    PoseAttributeStore<vec3>::Temporary temporary{buffers.PosedSectors};
     for (const auto entity : mesh_entities) {
-        const auto *mesh_buffers = TryMeshBuffers(r, entity);
         const auto mesh = TryGetMesh(r, entity);
-        if (!mesh_buffers || !mesh) continue;
+        if (!mesh) continue;
         const auto store_id = mesh->GetStoreId();
         const auto &record = meshes.Get(store_id);
         const auto target_count = record.MorphTargetCount;
         // A mesh without authored normals shades by derivation alone, under any morph weights.
         if (target_count == 0 || !record.HasAuthoredNormals) continue;
-        const auto entry_inputs = MakeDeriveEntryInputs(meshes, store_id, mesh_buffers->FaceIndices);
+        const auto entry_inputs = MakeDeriveEntryInputs(meshes, store_id);
         if (!entry_inputs) continue;
         // Resolve the authored-normal gate from every morph target.
         UpdateMorphShadingAuthored(meshes, *mesh, {});
-        if (meshes.GetDerived(store_id).MorphShadingAuthored) continue;
-        const auto vertex_count = entry_inputs->VertexCount;
-        const auto targets = meshes.Arenas().MorphTargets.Get(record.MorphTargets);
+        if (meshes.Get(store_id).MorphShadingAuthored) continue;
+        const auto normal_blocks = NormalPayloadBlocks(meshes, store_id);
+        const auto vertex_blocks = PoseElementBlocks(meshes.Arenas().Vertices,record.Vertices);
+        const auto face_blocks = PoseElementBlocks(meshes.Arenas().FaceTriangles,record.FaceData);
+        const auto &morph = meshes.Arenas().Morph;
         for (uint32_t t = 0; t < target_count; ++t) {
             // Targets without position deltas use the rest pose and require no normal pinning.
-            const auto deltas = targets.subspan(size_t{t} * vertex_count, vertex_count);
-            if (std::ranges::all_of(deltas, [](const auto &d) { return d.PositionDelta == vec3{0}; })) continue;
+            bool has_position_delta = false;
+            meshes.Arenas().Vertices.ForEach(record.Vertices,[&](uint32_t vertex,uint32_t) {
+                if (!has_position_delta && morph.Get(vertex, t).PositionDelta != vec3{0}) has_position_delta = true;
+            });
+            if (!has_position_delta) continue;
             auto entry = *entry_inputs;
-            entry.PosedPositionOffset = vertex_count_total;
-            entry.VertexNormalOffset = vertex_count_total;
-            entry.SeamNormalOffset = seam_count_total;
-            entry.FaceNormalOffset = face_count_total;
+            entry.Morph = meshes.Slots().Morph;
+            entry.MorphTargetIndex = t;
+            entry.VertexNormalNamespace = vertex_normals.Add(vertex_blocks);
+            entry.SectorNamespace = temporary.Add(normal_blocks);
+            entry.FaceNormalNamespace = face_normals.Add(face_blocks);
             entries.emplace_back(entry);
-            jobs.emplace_back(entity, t);
-            vertex_count_total += vertex_count;
-            seam_count_total += entry.SeamCount;
-            face_count_total += entry.FaceCount;
+            jobs.emplace_back(entity);
         }
     }
     if (entries.empty()) return;
 
-    // Fill each job's scratch positions with the base positions plus its target's full-weight deltas.
-    // Then derive the whole batch in one submit.
-    const auto positions = buffers.PosedPositions.SetCount<vec3>(vertex_count_total);
-    const auto vertex_normals = buffers.PosedVertexNormals.SetCount<vec3>(vertex_count_total);
-    const auto seam_normals = buffers.PosedSeamNormals.SetCount<vec3>(seam_count_total);
-    const auto face_normals = buffers.PosedFaceNormals.SetCount<vec3>(face_count_total);
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        const auto &record = meshes.Get(r.get<const MeshHandle>(jobs[i].Entity).StoreId);
-        const auto base_vertices = meshes.Arenas().Vertices.Get(record.Vertices);
-        const auto vertex_count = uint32_t(base_vertices.size());
-        const auto deltas = meshes.Arenas().MorphTargets.Get(record.MorphTargets).subspan(size_t{jobs[i].TargetIndex} * vertex_count, vertex_count);
-        for (uint32_t v = 0; v < vertex_count; ++v) {
-            positions[entries[i].PosedPositionOffset + v] = base_vertices[v].Position + deltas[v].PositionDelta;
-        }
-    }
-    SubmitNormalDeriveNow(r, entries, buffers.PosedVertexNormals.Slot, buffers.PosedSeamNormals.Slot, buffers.PosedFaceNormals.Slot);
+    // Derivation reads each full-weight morph directly from canonical base vertices and target deltas.
+    // No temporary position buffer or CPU geometry copy.
+    SubmitNormalDeriveNow(r, entries, buffers.PosedVertexNormals.Values.Buffer.Slot, buffers.PosedFaceNormals.Values.Buffer.Slot);
 
     // Compare per mesh over its contiguous run of jobs.
     for (size_t i = 0; i < jobs.size();) {
@@ -1913,16 +1969,17 @@ void UpdateAuthoredMorphShadingNow(state::Scene &r, std::span<const state::Entit
         std::vector<CornerNormalSources> poses;
         for (; i < jobs.size() && jobs[i].Entity == entity; ++i) {
             const auto &entry = entries[i];
-            poses.emplace_back(
-                vertex_normals.subspan(entry.VertexNormalOffset, entry.VertexCount),
-                seam_normals.subspan(entry.SeamNormalOffset, entry.SeamCount),
-                face_normals.subspan(entry.FaceNormalOffset, entry.FaceCount)
-            );
+            poses.push_back({
+                .VertexNormals = meshes.Arenas().BaseVertexNormals.Buffer.GetSpan<vec3>(),
+                .FaceNormals = meshes.Arenas().BaseFaceNormals.Buffer.GetSpan<vec3>(),
+                .PosedVertexNormals = buffers.PosedVertexNormals.View(entry.VertexNormalNamespace),
+                .PosedSectorNormals = buffers.PosedSectors.View(entry.SectorNamespace),
+                .PosedFaceNormals = buffers.PosedFaceNormals.View(entry.FaceNormalNamespace),
+            });
         }
         UpdateMorphShadingAuthored(meshes, GetMesh(r, entity), poses);
     }
 }
-} // namespace
 
 void FinalizeNewMeshShadingNow(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     DeriveBaseNormalsNow(r, mesh_entities);
@@ -1941,46 +1998,39 @@ void DispatchWork(MTL::ComputeCommandEncoder *encoder, const GpuBuffers &buffers
     encoder->dispatchThreadgroups(*buffers.GeometryWork.Buffer, WorkArgsOffset(work), ThreadgroupSize::Linear256);
 }
 
+void FinalizeWork(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines,
+                  const GpuBuffers &buffers, std::initializer_list<ElementWork> work) {
+    encode::BindCompute(encoder, pipelines.FinalizeElementWork, slots, buffers);
+    encoder->setBytes(work.begin(), work.size() * sizeof(ElementWork), BufferIndex_PushConstants);
+    encoder->dispatchThreadgroups(MTL::Size(work.size(), 1, 1), ThreadgroupSize::Linear256);
+}
+
 MeshEditWork &PrepareMeshEditWork(state::Scene &r, state::Entity entity) {
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto mesh = GetMesh(r, entity);
     const auto id = mesh.GetStoreId();
-    auto &meshes = r.Context.get<MeshStore>();
-    auto &mb = MeshBuffersOf(r, entity);
-    auto &work = r.Context.get<GpuSceneState>().EditWork;
-    if (const auto it = work.find(entity); it != work.end() && it->second.StoreId != id) ReleaseMeshEditWork(r, entity);
-    auto [it, inserted] = work.try_emplace(entity);
-    auto &w = it->second;
-    if (inserted) {
-        w.StoreId = id;
-        w.Candidates = AllocateElementWork(buffers.GeometryWork, mesh.VertexCount());
-        w.Vertices = AllocateElementWork(buffers.GeometryWork, mesh.VertexCount());
-        w.Faces = AllocateElementWork(buffers.GeometryWork, mesh.FaceCount());
-        w.Normals = AllocateElementWork(buffers.GeometryWork, mesh.VertexCount() + meshes.GetDerived(id).SeamCornerCount);
-        uint32_t level0 = 0;
-        for (const auto &primitive : buffers.Primitives.Get(mb.Primitives)) level0 += primitive.Level0Count;
-        w.Meshlets = AllocateElementWork(buffers.GeometryWork, level0);
-        w.BoundsTiles = AllocateElementWork(buffers.GeometryWork, TileCountFor(mesh.VertexCount()));
-        for (uint32_t n = w.BoundsTiles.Count;;) {
-            n = (n + 255u) / 256u;
-            w.BoundsLevels.push_back({AllocateElementWork(buffers.GeometryWork, n), buffers.BoundsParents.Allocate(n)});
-            if (n <= 1u) break;
-        }
-        const uint32_t elements = mesh.FaceCount() ? meshes.Get(id).TriangleCount : mesh.EdgeCount() ? mesh.EdgeCount() :
-                                                                                                       mesh.VertexCount();
-        w.ElementMeshlets = buffers.ElementMeshlets.Allocate(elements);
-        auto map = buffers.ElementMeshlets.GetMutable(w.ElementMeshlets);
-        std::ranges::fill(map, InvalidOffset);
-        uint32_t ordinal = 0;
-        for (const auto &primitive : buffers.Primitives.Get(mb.Primitives)) {
-            for (uint32_t m = 0; m < primitive.Level0Count; ++m, ++ordinal) {
-                const auto index = primitive.MeshletOffset + m;
-                const auto &record = buffers.Meshlets.Get({index, 1}).front();
-                for (const auto element : buffers.MeshletTriangleIds.Get({record.TriangleOffset, record.TriangleCount})) map[element] = ordinal;
-            }
-        }
+    auto &scene = r.Context.get<GpuSceneState>();
+    auto &work = scene.EditWork;
+    if (const auto it = work.find(entity); it != work.end()) {
+        if (it->second.StoreId == id) return it->second;
+        ReleaseMeshEditWork(r, entity);
     }
-    return w;
+    // Edit work pins the mesh's instances to finest geometry.
+    scene.InstanceFlagsStale = true;
+    auto work_allocation = buffers.GeometryWork.BeginAllocation();
+    MeshEditWork w{.StoreId = id};
+    w.WorkBudget = buffers.GeometryWork.Allocate(3);
+    w.Candidates = AllocateElementWork(buffers.GeometryWork, InvalidOffset);
+    w.Vertices = AllocateElementWork(buffers.GeometryWork, InvalidOffset);
+    w.Faces = AllocateElementWork(buffers.GeometryWork, InvalidOffset);
+    w.Normals = AllocateElementWork(buffers.GeometryWork, InvalidOffset);
+    w.Meshlets = AllocateElementWork(buffers.GeometryWork, InvalidOffset);
+    w.BoundsTiles = AllocateElementWork(buffers.GeometryWork,1u<<24u);
+    for (uint32_t level=0u; level<w.BoundsLevels.size(); ++level)
+        w.BoundsLevels[level]=AllocateElementWork(buffers.GeometryWork,1u<<(16u-level*8u));
+    auto &result = work.emplace(entity, std::move(w)).first->second;
+    work_allocation.Commit();
+    return result;
 }
 } // namespace
 
@@ -1993,46 +2043,132 @@ void ReleaseMeshEditWork(state::Scene &r, state::Entity entity) {
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &w = it->second;
     for (auto range : {w.Candidates, w.Vertices, w.Faces, w.Normals, w.Meshlets, w.BoundsTiles}) buffers.GeometryWork.Release(WorkStorageRange(range));
-    for (const auto &level : w.BoundsLevels) {
-        buffers.GeometryWork.Release(WorkStorageRange(level.Work));
-        buffers.BoundsParents.Release(level.Values);
-    }
-    buffers.ElementMeshlets.Release(w.ElementMeshlets);
+    for (const auto level : w.BoundsLevels) buffers.GeometryWork.Release(WorkStorageRange(level));
+    buffers.GeometryWork.Release(w.WorkBudget);
     work.erase(it);
+    scene->InstanceFlagsStale = true;
 }
 
 namespace {
-CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Entity entity, state::Entity primary, const PendingTransform *pending, const PosedRanges *pose = nullptr, std::span<const Range> changed = {}) {
+// Prepare a reusable topological footprint before any geometry writes.
+// Counts bound sparse allocation.
+// Repeated parameter changes reuse the same tables.
+void PrepareGeometryFootprint(state::Scene &r, MeshEditWork &work, CommitPosedGeometryPushConstants &pc) {
+    if (work.FootprintReady) return;
+    const profile::CpuScope scope{"PrepareGeometryFootprint"};
+    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
+    const auto &pipelines = GetPipelines(r);
+    const auto update = [&] {
+        pc.Candidates = work.Candidates;
+        pc.ChangedVertices = work.Vertices;
+        pc.Faces = work.Faces;
+        pc.Normals = work.Normals;
+        pc.Meshlets = work.Meshlets;
+        pc.BoundsTiles = work.BoundsTiles;
+        pc.BudgetOffset = work.WorkBudget.Offset;
+    };
+    for (auto item : {work.Faces, work.Normals, work.Meshlets, work.BoundsTiles}) ClearElementWork(buffers.GeometryWork, item);
+    std::ranges::fill(buffers.GeometryWork.GetMutable(work.WorkBudget), 0u);
+    const auto submit = [&](std::initializer_list<uint32_t> phases) {
+        update();
+        auto *command = ctx.Queue->commandBuffer();
+        ctx.OrderAfterGpuWork(command);
+        auto *encoder = command->computeCommandEncoder();
+        for (const auto phase : phases) {
+            pc.Phase = phase;
+            encode::BindCompute(encoder, pipelines.CommitPosedGeometry, slots, buffers);
+            encode::SetPushConstants(encoder, pc);
+            DispatchWork(encoder, buffers, phase < 2u ? pc.Candidates : pc.Faces);
+            encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+            if (phase == 1u) FinalizeWork(encoder, slots, pipelines, buffers, {pc.Faces, pc.Meshlets, pc.BoundsTiles});
+            if (phase == 3u) FinalizeWork(encoder, slots, pipelines, buffers, {pc.Normals, pc.Meshlets});
+            if (phase == 1u || phase == 3u) encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+        }
+        encoder->endEncoding();
+        ctx.CommitResidency();
+        command->commit();
+        command->waitUntilCompleted();
+        if (command->status() != MTL::CommandBufferStatusCompleted) throw std::runtime_error("GPU geometry footprint preparation failed.");
+        for (auto item : {work.Faces, work.Normals, work.Meshlets, work.BoundsTiles}) CheckElementWork(buffers.GeometryWork, item);
+    };
+    submit({0u});
+    const auto candidates = WorkBlockCount(buffers.GeometryWork, work.Candidates);
+    ReserveElementWork(buffers.GeometryWork, work.Vertices, candidates);
+    ReserveElementWork(buffers.GeometryWork, work.BoundsTiles, candidates);
+    // A table's distinct blocks are at most the blocks its domain spans: the mesh's face and vertex sets, and its owner's meshlet index.
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &a = meshes.Arenas();
+    const auto &record = meshes.Get(work.StoreId);
+    const uint64_t face_blocks = record.FaceData ? a.FaceTriangles.Set(record.FaceData).BlockCount : 0u;
+    const uint64_t vertex_blocks = a.Vertices.Set(record.Vertices).BlockCount;
+    uint64_t meshlet_blocks = 0u;
+    if (const auto *owner = buffers.TryMeshOf(work.StoreId)) buffers.ActiveMeshlets.ForEachBlock(owner->MeshletRoot, [&](uint32_t) { ++meshlet_blocks; });
+    auto budget = buffers.GeometryWork.Get(work.WorkBudget);
+    ReserveElementWork(buffers.GeometryWork, work.Faces, std::min<uint64_t>(budget[0], face_blocks));
+    ReserveElementWork(buffers.GeometryWork, work.Meshlets, std::min<uint64_t>(budget[2], meshlet_blocks));
+    submit({1u, 2u});
+    budget = buffers.GeometryWork.Get(work.WorkBudget);
+    ReserveElementWork(buffers.GeometryWork, work.Normals, std::min<uint64_t>(budget[1], vertex_blocks));
+    ReserveElementWork(buffers.GeometryWork, work.Meshlets, std::min<uint64_t>(budget[2], meshlet_blocks));
+    submit({3u});
+    const auto bounds = WorkBlockCount(buffers.GeometryWork, work.BoundsTiles);
+    for (auto &level : work.BoundsLevels) ReserveElementWork(buffers.GeometryWork, level, bounds);
+    update();
+    work.FootprintReady = true;
+}
+
+CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Entity entity, state::Entity primary, const PendingTransform *pending, const PosedNamespaces *pose = nullptr, std::span<const Range> changed = {}) {
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &meshes = r.Context.get<MeshStore>();
     auto &w = PrepareMeshEditWork(r, entity);
     const auto mesh = GetMesh(r, entity);
     const auto id = w.StoreId;
-    if (!changed.empty()) SeedElementWorkRanges(buffers.GeometryWork, w.Candidates, changed, w.PreviewActive);
-    else if (!w.CandidateReady || (!pose && r.Context.get<const GpuSceneState>().EditSelectionDirty))
-        SeedElementWork(buffers.GeometryWork, w.Candidates, meshes.GetSelectionBits(id, Element::Vertex), w.PreviewActive);
-    else if (!w.PreviewActive)
-        IntersectElementWork(buffers.GeometryWork, w.Candidates, meshes.GetSelectionBits(id, Element::Vertex));
+    if (changed.empty()) w.RefreshRanges.clear();
+    if (!changed.empty()) {
+        const bool same_ranges = w.CandidateReady && w.FootprintReady && w.PreviewActive &&
+            std::ranges::equal(changed, w.RefreshRanges, [](Range a, Range b) {
+                return a.Offset == b.Offset && a.Count == b.Count;
+            });
+        if (!same_ranges) {
+            w.CandidateReady = w.FootprintReady = false;
+            SeedElementWorkRanges(buffers.GeometryWork, w.Candidates, changed, 0u, w.PreviewActive);
+            w.RefreshRanges.assign(changed.begin(), changed.end());
+        }
+    } else if (!w.CandidateReady || !w.PreviewActive || (!pose && r.Context.get<const GpuSceneState>().EditSelectionDirty)) {
+        w.CandidateReady = w.FootprintReady = false;
+        if (!w.PreviewActive) ClearElementWork(buffers.GeometryWork, w.Candidates);
+        std::vector<uint32_t> blocks;
+        meshes.GetSelectedElements(id, Element::Vertex).ForEachBlock([&](uint32_t block, uint32_t) { blocks.push_back(block); });
+        ReserveElementWork(buffers.GeometryWork, w.Candidates, uint64_t(WorkBlockCount(buffers.GeometryWork, w.Candidates)) + 2u * blocks.size());
+        BufferArena<uint32_t> ids{meshes.BufferContext(), SlotType::Buffer, mtl::BufferLifetime::Workspace};
+        const auto seed = PrepareBlockMembershipWork(ids, meshes.Arenas().Vertices, meshes.Get(id).Vertices, blocks, w.Candidates,
+                                                     meshes.GetSelectionSlot(Element::Vertex));
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        EncodeElementMembershipWork(r, chain, std::span{&seed, 1u});
+        FinalizeWork(chain.Encoder(), r.Context.get<const mtl::BindlessSet>(), GetPipelines(r), buffers, {w.Candidates});
+        chain.Submit();
+        CheckElementWork(buffers.GeometryWork, w.Candidates);
+    }
     w.CandidateReady = true;
-    for (auto work : {w.Vertices, w.Faces, w.Normals, w.Meshlets, w.BoundsTiles}) ClearElementWork(buffers.GeometryWork, work);
-    auto entry = MakeDeriveEntryInputs(meshes, id, MeshBuffersOf(r, entity).FaceIndices).value_or(NormalDeriveEntry{.VertexCount = mesh.VertexCount()});
-    entry.VertexNormalOffset = meshes.Get(id).Vertices.Offset;
-    entry.SeamNormalOffset = meshes.GetDerived(id).BaseSeamNormals.Offset;
-    entry.FaceNormalOffset = meshes.Get(id).FaceData.Offset;
+    ClearElementWork(buffers.GeometryWork, w.Vertices);
+    auto entry = MakeDeriveEntryInputs(meshes, id).value_or(NormalDeriveEntry{.VertexCount = mesh.VertexCount(), .Connectivity = meshes.GetConnectivityRef(id)});
     if (pose) {
-        for (const auto &level : w.BoundsLevels) ClearElementWork(buffers.GeometryWork, level.Work);
-        entry.PosedPositionOffset = pose->PositionBase;
-        if (pose->Normals) {
-            entry.VertexNormalOffset = pose->Normals->VertexOffset;
-            entry.SeamNormalOffset = pose->Normals->SeamOffset;
-            entry.FaceNormalOffset = pose->Normals->FaceOffset;
+        for (const auto &level : w.BoundsLevels) ClearElementWork(buffers.GeometryWork, level);
+        entry.PositionNamespace = pose->PositionNamespace(0);
+        if (const auto normals = pose->NormalsAt(0)) {
+            entry.VertexNormalNamespace = normals->Vertex;
+            entry.SectorNamespace = normals->Sector;
+            entry.FaceNormalNamespace = normals->Face;
         }
         w.PreviewActive = pending != nullptr;
     }
-    return {
-        .Vertices = meshes.Arenas().Vertices.Slotted(meshes.Get(id).Vertices),
-        .Output = pose ? SlotOffset{buffers.PosedPositions.Slot, pose->PositionBase} : SlotOffset{},
-        .Selection = meshes.GetEditSelectionStorage(id).VertexBits,
+    CommitPosedGeometryPushConstants pc{
+        .Vertices = {meshes.Slots().Vertices, meshes.Arenas().Vertices.First(meshes.Get(id).Vertices)},
+        .PositionSlot = buffers.PosedPositions.Values.Buffer.Slot,
+        .PositionNodesSlot = buffers.PosedPositions.Nodes.Buffer.Slot,
+        .SelectionSlot = meshes.GetSelectionSlot(Element::Vertex),
         .Candidates = w.Candidates,
         .ChangedVertices = w.Vertices,
         .Faces = w.Faces,
@@ -2043,18 +2179,15 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Ent
         .Primary = pending ? static_cast<Transform>(r.get<const WorldTransform>(primary)) : Transform{},
         .Delta = pending ? pending->Delta : Transform{},
         .Pivot = pending ? pending->Pivot : vec3{},
-        .AdjacencySlot = meshes.Slots().Adjacency,
-        .FaceFirstTriangleSlot = meshes.Slots().FaceFirstTriangle,
-        .CornerClassSlot = meshes.Slots().CornerClass,
-        .CornerClassOffset = meshes.GetCornerClassOffset(id),
-        .VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetDerived(id).VertexEdgeAdjacency),
-        .Topology = mesh.FaceCount() ? 0u : mesh.EdgeCount() ? 1u :
-                                                               2u,
-        .TriangleMeshlets = buffers.ElementMeshlets.Slotted(w.ElementMeshlets),
+        .FaceTriangleStartSlot = meshes.Slots().FaceTriangleStart,
+        .Topology = mesh.PrimitiveTopology(),
+        .ElementMeshlets = MeshBuffersOf(r,entity).RenderTopology == InvalidOffset ? ElementAttributeRef{} : buffers.ElementMeshlets[MeshBuffersOf(r,entity).RenderTopology].Ref(),
         .ApplyTransform = pending ? 1u : 0u,
         .Mode = !changed.empty() ? GeometryEditMode::Refresh : pose ? GeometryEditMode::Preview :
                                                                       GeometryEditMode::Commit,
     };
+    PrepareGeometryFootprint(r, w, pc);
+    return pc;
 }
 
 void RecordGeometryEditBatch(state::Scene &r, MTL::ComputeCommandEncoder *encoder, std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> &commits, bool posed) {
@@ -2065,23 +2198,24 @@ void RecordGeometryEditBatch(state::Scene &r, MTL::ComputeCommandEncoder *encode
     const auto entries = buffers.GeometryNormalEntries.SetCount<NormalDeriveEntry>(commits.size());
     for (uint32_t i = 0; i < commits.size(); ++i) entries[i] = commits[i].second.Entry;
     r.Context.get<const mtl::Context>().CommitResidency();
-    for (uint32_t phase = 0; phase < 3; ++phase) {
-        for (auto &[_, pc] : commits) {
-            pc.Phase = phase;
-            encode::BindCompute(encoder, pipelines.CommitPosedGeometry, slots, buffers);
-            encode::SetPushConstants(encoder, pc);
-            DispatchWork(encoder, buffers, phase == 0 ? pc.Candidates : phase == 1 ? pc.Faces :
-                                                                                     pc.Normals);
+    for (auto &[_, pc] : commits) {
+        // Posed outputs have no history. A commit writes the canonical base normals.
+        if (!posed && pc.Entry.FaceCount) {
+            auto entry=pc.Entry;
+            entry.VerticesWork=pc.Normals; entry.FacesWork=pc.Faces;
+            entry.VertexWorkCount=buffers.GeometryWork.Get({pc.Normals.Storage.Offset+5u,1u})[0];
+            entry.FaceWorkCount=buffers.GeometryWork.Get({pc.Faces.Storage.Offset+5u,1u})[0];
+            CaptureNormalWrites(r,entry,buffers.GeometryWork,buffers.GeometryWork);
         }
-        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-        for (const auto &[_, pc] : commits) {
-            encode::BindCompute(encoder, pipelines.GeometryWorkArgs, slots, buffers);
-            encode::SetPushConstants(encoder, pc);
-            encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
-        }
-        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+        pc.Phase = 4u;
+        encode::BindCompute(encoder, pipelines.CommitPosedGeometry, slots, buffers);
+        encode::SetPushConstants(encoder, pc);
+        DispatchWork(encoder, buffers, pc.Candidates);
     }
-    auto derive = MakeNormalDerivePc(buffers, meshes, posed ? buffers.PosedVertexNormals.Slot : meshes.Slots().BaseVertexNormal, posed ? buffers.PosedSeamNormals.Slot : meshes.Slots().BaseSeamNormal, posed ? buffers.PosedFaceNormals.Slot : meshes.Slots().BaseFaceNormal);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    for (const auto &[_, pc] : commits) FinalizeWork(encoder, slots, pipelines, buffers, {pc.ChangedVertices});
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    auto derive = MakeNormalDerivePc(buffers, meshes, posed ? buffers.PosedVertexNormals.Values.Buffer.Slot : meshes.Slots().BaseVertexNormal, posed ? buffers.PosedFaceNormals.Values.Buffer.Slot : meshes.Slots().BaseFaceNormal);
     derive.EntriesSlot = buffers.GeometryNormalEntries.Slot;
     for (uint32_t phase = 0; phase < 2; ++phase) {
         derive.Phase = phase;
@@ -2089,7 +2223,7 @@ void RecordGeometryEditBatch(state::Scene &r, MTL::ComputeCommandEncoder *encode
             if (commits[i].second.Entry.FaceCount == 0) continue;
             derive.EntryIndex = i;
             derive.Work = phase == 0 ? commits[i].second.Faces : commits[i].second.Normals;
-            encode::BindCompute(encoder, pipelines.VertexNormalDerive, slots, buffers);
+            encode::BindCompute(encoder, GetMeshPipelines(r)[MeshPass::VertexNormalDerive], slots, buffers);
             encode::SetPushConstants(encoder, derive);
             DispatchWork(encoder, buffers, derive.Work);
         }
@@ -2100,6 +2234,7 @@ void RecordGeometryEditBatch(state::Scene &r, MTL::ComputeCommandEncoder *encode
 
 void RefreshEditedPositions(state::Scene &r, std::span<const MeshVertexChanges> changes) {
     if (changes.empty()) return;
+    const profile::CpuScope scope{"RefreshEditedPositions"};
     std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> jobs;
     for (const auto &[entity, ranges] : changes) jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, state::Null, nullptr, nullptr, ranges));
     const auto &ctx = r.Context.get<const mtl::Context>();
@@ -2114,7 +2249,7 @@ void RefreshEditedPositions(state::Scene &r, std::span<const MeshVertexChanges> 
     scene.EditPreludePending = true;
     for (const auto &[entity, ranges] : changes) {
         auto &work = scene.EditWork.at(entity);
-        work.Modified = work.PreviewActive = true;
+        work.Modified = work.PreviewActive = work.RequiresPose = true;
     }
 }
 
@@ -2142,14 +2277,44 @@ std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, state::Entity vi
     cb->commit();
     cb->waitUntilCompleted();
     std::vector<state::Entity> changed;
+    std::vector<MeshStore::SelectionUpdate> aggregates;
+    std::vector<MeshletBoundsRefitJob> refits;
+    std::vector<MeshletIndexEdit> dirty_edits;
+    std::vector<std::vector<uint32_t>> dirty_meshlets;
+    std::vector<state::Entity> dirty_entities;
     for (const auto &[entity, pc] : commits) {
         if (!ElementWorkEmpty(buffers.GeometryWork, pc.ChangedVertices)) {
             changed.push_back(entity);
+            const auto id = GetMesh(r, entity).GetStoreId();
+            if (meshes.Get(id).SelectionSummary.Count) {
+                auto &blocks = aggregates.emplace_back(MeshStore::SelectionUpdate{.StoreId = id}).Blocks[0];
+                ForEachWorkBlock(buffers.GeometryWork, pc.ChangedVertices, [&](uint32_t block, auto) { blocks.push_back(block); });
+            }
             auto &w = r.Context.get<GpuSceneState>().EditWork.at(entity);
             w.Modified = true;
             w.PreviewActive = true;
+            w.RequiresPose = true;
+            auto &owner=MeshBuffersOf(r,entity);
+            refits.push_back({&owner,&buffers.GeometryWork,w.Meshlets});
+            if (buffers.ClusterGroupCount(owner)>0u && !ElementWorkEmpty(buffers.GeometryWork,w.Meshlets)) {
+                dirty_edits.push_back({.Root=owner.PositionDirtyRoot});
+                auto &meshlets=dirty_meshlets.emplace_back();
+                ForEachWorkElement(buffers.GeometryWork,w.Meshlets,[&](uint32_t id) { meshlets.push_back(id); });
+                dirty_entities.push_back(entity);
+            }
         }
     }
+    RefitCanonicalMeshletBounds(r,refits);
+    if (!dirty_edits.empty()) {
+        for (uint32_t i=0u;i<dirty_edits.size();++i) dirty_edits[i].Added=dirty_meshlets[i];
+        buffers.ActiveMeshlets.Update(dirty_edits);
+        for (uint32_t i=0u;i<dirty_edits.size();++i) {
+            MeshBuffersOf(r,dirty_entities[i]).PositionDirtyRoot=dirty_edits[i].Root;
+            r.Context.get<GpuSceneState>().PositionDirty.insert(dirty_entities[i]);
+        }
+    }
+    meshes.UpdateSelection(r, aggregates);
+    RefreshElementSelectionSummaries(r, changed);
     return changed;
 }
 
@@ -2179,39 +2344,18 @@ void RecordSparseEditPrelude(state::Scene &r, state::Entity viewport, mtl::PassC
         const auto entry_it = std::ranges::find(entries, pose.FirstInstance, &BoundsEntry::FirstInstance);
         assert(entry_it != entries.end());
         const auto entry_index = uint32_t(entry_it - entries.begin());
-        const auto first_tile = buffers.BoundsEntryFirstTiles.GetSpan<uint32_t>({entry_index, 1}).front();
-        RecordPosedMeshletBounds(encoder, slots, pipelines, buffers, 0, {.Work = w.Meshlets, .FirstTile = pose.MeshletBoundsBase});
-        RecordBoundsPass(encoder, slots, pipelines.BoundsReduce, buffers, PreludeSlot::BoundsReduce, 0, {.Work = w.BoundsTiles, .NextWork = w.BoundsLevels.front().Work, .EntryIndex = entry_index});
+        RecordPosedMeshletBounds(encoder,slots,pipelines,buffers,0,{.Work=w.Meshlets,.Instance=pose.FirstInstance});
+        RecordBoundsPass(encoder,slots,pipelines.BoundsReduce,buffers,PreludeSlot::PosePrepass,0,
+            {.Work=w.BoundsTiles,.NextWork=w.BoundsLevels[0],.EntryIndex=entry_index});
         encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-        SlotOffset input{buffers.BoundsPartials.Slot, first_tile};
-        uint32_t input_count = w.BoundsTiles.Count;
-        for (uint32_t i = 0; i < w.BoundsLevels.size(); ++i) {
-            const auto &level = w.BoundsLevels[i];
-            const bool last = i + 1 == w.BoundsLevels.size();
-            const CommitPosedGeometryPushConstants finish{.BoundsTiles = level.Work};
-            encode::BindCompute(encoder, pipelines.GeometryWorkArgs, slots, buffers);
-            encode::SetPushConstants(encoder, finish);
-            encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
+        for (uint32_t level=1u; level<VertexBoundsLevels; ++level) {
+            const auto work=w.BoundsLevels[level-1u];
+            FinalizeWork(encoder,slots,pipelines,buffers,{work});
             encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-            const BoundsTreePushConstants tree{
-                .Work = w.BoundsInitialized ? level.Work : ElementWork{.Count = level.Work.Count},
-                .NextWork = last ? ElementWork{} : w.BoundsLevels[i + 1].Work,
-                .Input = input,
-                .Output = buffers.BoundsParents.Slotted(level.Values),
-                .InputCount = input_count,
-                .InstanceBounds = {buffers.Instances.BoundsBuffer.Slot, entry_it->FirstInstance},
-                .InstanceCount = last ? entry_it->InstanceCount : 0u,
-            };
-            encode::BindCompute(encoder, pipelines.BoundsTree, slots, buffers);
-            encode::SetPushConstants(encoder, tree);
-            if (w.BoundsInitialized)
-                encoder->dispatchThreadgroups(*buffers.GeometryWork.Buffer, WorkArgsOffset(level.Work, true), ThreadgroupSize::Linear256);
-            else encoder->dispatchThreadgroups(MTL::Size(level.Work.Count, 1, 1), ThreadgroupSize::Linear256);
+            RecordBoundsPass(encoder,slots,pipelines.BoundsCombine,buffers,PreludeSlot::BoundsLevel1,0,
+                {.Work=work,.NextWork=level+1u<VertexBoundsLevels ? w.BoundsLevels[level] : ElementWork{},.EntryIndex=entry_index,.Level=level});
             encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-            input = tree.Output;
-            input_count = level.Work.Count;
         }
-        w.BoundsInitialized = true;
     }
 }
 } // namespace
@@ -2225,9 +2369,10 @@ void SyncPreludeDispatchArgs(GpuBuffers &buffers) {
         {live ? groups.PosePrepass : 0u, 1u, 1u},
         {live ? groups.PosedMeshletBounds : 0u, 1u, 1u},
         {live ? groups.DeriveFaces : 0u, 1u, 1u},
-        {live ? groups.BoundsReduce : 0u, 1u, 1u},
+        {live ? groups.BoundsCombine[0] : 0u, 1u, 1u},
         {live ? groups.DeriveGather : 0u, 1u, 1u},
-        {live ? groups.BoundsCombine : 0u, 1u, 1u},
+        {live ? groups.BoundsCombine[1] : 0u, 1u, 1u},
+        {live ? groups.BoundsCombine[2] : 0u, 1u, 1u},
     }};
     buffers.PreludeDispatchArgs.Update(as_bytes(args));
 }

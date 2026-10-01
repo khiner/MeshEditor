@@ -1,6 +1,8 @@
 #ifndef COMPACTPRESENT_MSL
 #define COMPACTPRESENT_MSL
 
+#include <metal_stdlib>
+
 // Returns a predicate's stable rank and the total set predicates across the threadgroup.
 inline uint2 CompactPresent(
     uint present, uint thread_index, uint lane, threadgroup uint *simd_counts, uint simd_group_count

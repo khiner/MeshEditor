@@ -41,7 +41,7 @@ struct MainPipeline {
     mtl::RenderPipeline TransparencyInit, TransparencyResolve;
     mtl::RenderPipeline MeshletVisibilityOpaque, MeshletVisibilityCoverage;
     mtl::RenderPipeline MeshletEditEdges, MeshletEditSmoothEdges;
-    mtl::RenderPipeline MeshletEditPoint;
+    mtl::RenderPipeline VertexBlockPoints;
     mtl::RenderPipeline FaceNormalMesh, VertexNormalMesh, OverlayJobLines;
     mtl::RenderPipeline BoneFillMesh, BoneWireMesh, BoneSphereFillMesh, BoneSphereWireMesh;
     mtl::RenderPipeline WireResolve;
@@ -54,22 +54,21 @@ struct SelectionFragmentPipeline {
     const mtl::RenderPipeline &ElementRaster(Element, bool bitset_box, bool xray) const;
 
     using ElementVariants = std::array<mtl::RenderPipeline, 4>;
-    ElementVariants MeshletFaces, MeshletVertices, MeshletEdges;
+    ElementVariants MeshletFaces, VertexBlocks, MeshletEdges;
     mtl::RenderPipeline MeshletFaceXRayPointsBitsetBox, MeshletEdgeXRayPointsBitsetBox;
     mtl::RenderPipeline ObjectPick, OverlayJobLines, BoneSolid, BoneSphere;
 };
 
 namespace ThreadgroupSize {
 inline const MTL::Size Linear256{256, 1, 1};
-inline const MTL::Size Linear64{64, 1, 1};
+inline const MTL::Size Linear32{32, 1, 1};
 inline const MTL::Size Tile16{16, 16, 1};
 inline const MTL::Size Tile8{8, 8, 1};
 } // namespace ThreadgroupSize
 
 namespace ThreadgroupMemory {
-// One min and max float4 per bounds lane.
-inline constexpr uint32_t BoundsFoldVector{256 * sizeof(float) * 4};
-inline constexpr uint32_t MeshletBoundsFoldVector{64 * sizeof(float) * 4};
+// One aligned float3 per SIMD group's partial min or max.
+inline constexpr uint32_t BoundsFoldVector{8 * sizeof(float) * 4};
 inline constexpr uint32_t DepthPyramidTile{32 * 32 * sizeof(float)};
 } // namespace ThreadgroupMemory
 
@@ -79,16 +78,13 @@ struct Pipelines {
     MainPipeline Main;
     mtl::RenderPipeline Silhouette;
     SelectionFragmentPipeline SelectionFragment;
-    mtl::ComputePipeline VisibilityObjectSelection, PrepareEditSelection, FillEditSelectionList, ResetEditSelectionSummary, DeriveEditSelection, SumEditSelectionPosition, EditSharpness, CommitPosedGeometry, GeometryWorkArgs;
+    mtl::ComputePipeline VisibilityObjectSelection, EditSharpness, CommitPosedGeometry, FinalizeElementWork;
     // Materializes current-pose positions before bounds and normal derivation.
     mtl::ComputePipeline PosePrepass;
     mtl::ComputePipeline PosedMeshletBounds;
-    // Fan-sums face areas, then gathers corner-angle-weighted vertex and seam normals.
-    mtl::ComputePipeline VertexNormalDerive;
     // Reduce 256-vertex tiles, then fold each entry's partial AABBs.
     mtl::ComputePipeline BoundsReduce;
     mtl::ComputePipeline BoundsCombine;
-    mtl::ComputePipeline BoundsTree;
     // Accumulates per-class wire coverage into the screen buffer.
     mtl::ComputePipeline WireRaster;
     // Descends every span tree in lockstep, one count/prefix/emit level at a time.

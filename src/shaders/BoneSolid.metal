@@ -7,7 +7,7 @@
 #include "Varyings.metal"
 
 inline BoneSolidVaryings BoneSolidMeshVertexAt(const thread Scene &scene, DrawData draw, uint object_id, uint vertex_id) {
-    const uint idx = scene.Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + vertex_id];
+    const uint idx = scene.CornerVertexOrdinal(draw, draw.IndexSlotOffset.Offset + vertex_id);
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
 

@@ -11,7 +11,9 @@
 
 // Edit-mode topology operators over the selected meshes' element selections.
 namespace action::mesh {
-// Values match the delete topology ops.
+struct InsetPreviewCache;
+// Values before Loose match the delete topology ops.
+// Loose deletes the edges without a face, then the vertices without an edge or face.
 enum class DeleteMode : uint32_t { Vertices,
                                    Edges,
                                    Faces,
@@ -143,7 +145,7 @@ struct ConvexHull {};
 struct EdgeRotate {};
 // Splits the faces along the selected edges and latches a translate for the split side.
 struct Rip {};
-// Bevels the selected edges, or the selected vertices, by Width with Segments across each strip.
+// Bevels selected edges or vertices by Width with Segments across the profile.
 struct Bevel {
     float Width{0.1f};
     uint32_t Segments{1};
@@ -155,29 +157,30 @@ using Action = std::variant<
     Spin, ExtrudeRepeat, Bisect, Symmetrize, Solidify, ConnectVertices, Knife, BridgeEdgeLoops, GridFill, FillHoles, ConvexHull, EdgeRotate, Rip, Bevel>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
-// Adopts every entity's preview as its mesh, releasing the base record.
-void CommitPreviews(state::Scene &);
+// Reuses the staged inset's topology when only its continuous parameters move.
+// Returns false without writing if topology, targets, or selection changed.
+bool UpdateInsetPreview(state::Scene &, state::Entity viewport, const Inset &, InsetPreviewCache &);
 } // namespace action::mesh
 
 template<> inline constexpr FieldSpec Spec<action::mesh::Merge, "Distance">{.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4};
 template<> inline constexpr FieldSpec Spec<action::mesh::Dissolve, "Angle">{.Min = 0, .Max = 3.14159265f, .Digits = 1, .Unit = FieldUnit::Radians};
 template<> inline constexpr FieldSpec Spec<action::mesh::Dissolve, "Distance">{.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4};
-template<> inline constexpr FieldSpec Spec<action::mesh::Subdivide, "Cuts">{.Min = 1, .Max = 32};
+template<> inline constexpr FieldSpec Spec<action::mesh::Subdivide, "Cuts">{.Min = 1};
 template<> inline constexpr FieldSpec Spec<action::mesh::Poke, "Offset">{.Min = -100, .Max = 100, .Speed = 0.01f};
 template<> inline constexpr FieldSpec Spec<action::mesh::Inset, "Thickness">{.Min = 0, .Max = 100, .Speed = 0.01f};
 template<> inline constexpr FieldSpec Spec<action::mesh::Inset, "Depth">{.Min = -100, .Max = 100, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::LoopCut, "Cuts">{.Min = 1, .Max = 32};
-template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Steps">{.Min = 1, .Max = 256};
+template<> inline constexpr FieldSpec Spec<action::mesh::LoopCut, "Cuts">{.Min = 1};
+template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Steps">{.Min = 1};
 template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Angle">{.Min = -6.2831853f, .Max = 6.2831853f, .Digits = 1, .Unit = FieldUnit::Radians};
 template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Axis">{.Speed = 0.01f};
 template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Center">{.Speed = 0.01f};
 template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Offset">{.Min = -100, .Max = 100, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::ExtrudeRepeat, "Steps">{.Min = 1, .Max = 256};
+template<> inline constexpr FieldSpec Spec<action::mesh::ExtrudeRepeat, "Steps">{.Min = 1};
 template<> inline constexpr FieldSpec Spec<action::mesh::ExtrudeRepeat, "Offset">{.Speed = 0.01f};
 template<> inline constexpr FieldSpec Spec<action::mesh::Bisect, "Point">{.Speed = 0.01f};
 template<> inline constexpr FieldSpec Spec<action::mesh::Bisect, "Normal">{.Speed = 0.01f};
 template<> inline constexpr FieldSpec Spec<action::mesh::Solidify, "Thickness">{.Min = -100, .Max = 100, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::GridFill, "Span">{.Min = 0, .Max = 256};
-template<> inline constexpr FieldSpec Spec<action::mesh::FillHoles, "Sides">{.Min = 0, .Max = 1000};
+template<> inline constexpr FieldSpec Spec<action::mesh::GridFill, "Span">{.Min = 0};
+template<> inline constexpr FieldSpec Spec<action::mesh::FillHoles, "Sides">{.Min = 0};
 template<> inline constexpr FieldSpec Spec<action::mesh::Bevel, "Width">{.Min = 0, .Max = 100, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Bevel, "Segments">{.Min = 1, .Max = 16};
+template<> inline constexpr FieldSpec Spec<action::mesh::Bevel, "Segments">{.Min = 1};

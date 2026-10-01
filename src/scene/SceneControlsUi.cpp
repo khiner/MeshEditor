@@ -889,10 +889,10 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                         // A fully smooth mesh has no sharp faces, while partial sharpness produces a mixed checkbox.
                         bool any_smooth = false, any_sharp = false, any_partial = false;
                         for (const auto me : face_mesh_entities) {
-                            const auto &summary = r.get<const MeshShadingSummary>(me);
-                            any_smooth |= !summary.AnySharp;
-                            any_sharp |= summary.AnySharp;
-                            any_partial |= summary.AnySharp && !summary.AllSharp;
+                            const auto summary = r.Context.get<const MeshStore>().GetFaceSharpnessSummary(GetMesh(r,me).GetStoreId());
+                            any_smooth |= !summary.Any;
+                            any_sharp |= summary.Any;
+                            any_partial |= summary.Any && !summary.All;
                             if ((any_smooth && any_sharp) || any_partial) break;
                         }
                         const bool mixed_smooth = (any_smooth && any_sharp) || any_partial;

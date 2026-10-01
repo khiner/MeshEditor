@@ -51,12 +51,12 @@ inline float4 VisibilityMotion(
             const uint topology = MeshletPrimitiveTopology(resolved.Meshlet);
             const bool triangle = topology == uint(MeshPrimitiveTopology::Triangle);
             const uint3 corners = MeshletCornerIds(scene.B, pc.Visibility.MeshletVertexSlot, pc.Visibility.MeshletLocalTriangleSlot,
-                resolved.Meshlet, resolved.Primitive, resolved.Triangle, resolved.LocalTriangle);
+                resolved.Meshlet, resolved.Draw, resolved.Triangle, resolved.LocalTriangle);
             float4 clip[3];
             float3 prev_position[3], next_position[3];
             for (uint i = 0; i < 3; ++i) {
                 const uint quad_corner = line_quad_corner((resolved.LocalTriangle & 1u) * 3u + i);
-                const uint vertex_id = triangle ? scene.Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + corners[i]] :
+                const uint vertex_id = triangle ? scene.CornerVertexOrdinal(draw, corners[i]) :
                     NonTriangleVertexId(scene.B, pc.Visibility.MeshletVertexSlot, resolved.Meshlet, topology, resolved.LocalTriangle / 2u, quad_corner);
                 clip[i] = triangle ? MeshletPosition(scene, draw, current, vertex_id) :
                     NonTrianglePosition(scene, scene.B, pc.Visibility.MeshletVertexSlot, draw, resolved.Meshlet, topology, resolved.LocalTriangle / 2u, quad_corner);

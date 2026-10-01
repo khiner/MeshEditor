@@ -17,8 +17,12 @@ fragment void SelectionElementBitsetBoxFragment(
     const uint4 box = uint4(pc.Query.Box);
     if (frag_px.x < box.x || frag_px.x > box.z || frag_px.y < box.y || frag_px.y > box.w) return;
     const uint bit_idx = in.ElementId - 1u;
-    device atomic_uint *bits = BindlessBufferMutable(atomic_uint, bindless.Buffer, pc.Query.BoxResultSlot);
-    atomic_fetch_or_explicit(&bits[bit_idx >> 5u], 1u << (bit_idx & 31u), memory_order_relaxed);
+    device atomic_uint *bits = BindlessBufferMutable(atomic_uint, bindless.Buffer, pc.Query.Results.MasksSlot);
+    if (atomic_fetch_or_explicit(&bits[bit_idx >> 5u], 1u << (bit_idx & 31u), memory_order_relaxed) == 0u) {
+        device atomic_uint *count = BindlessBufferMutable(atomic_uint, bindless.Buffer, pc.Query.Results.CountSlot);
+        const uint index = atomic_fetch_add_explicit(count, 1u, memory_order_relaxed);
+        BindlessBufferMutable(uint, bindless.Buffer, pc.Query.Results.WordsSlot)[index] = bit_idx >> 5u;
+    }
 }
 
 #endif

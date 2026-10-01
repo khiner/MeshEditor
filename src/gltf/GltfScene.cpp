@@ -1928,7 +1928,7 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
                 uint32_t nearest = 0;
                 float nearest_d2 = -1.f;
                 for (uint32_t v = 0; v < mesh.VertexCount(); ++v) {
-                    const auto d = model.Positions[i] - mesh.GetPosition(Mesh::VH{v});
+                    const auto d = model.Positions[i] - mesh.GetPosition(mesh.VertexAt(v));
                     if (const float d2 = Dot(d, d); nearest_d2 < 0.f || d2 < nearest_d2) {
                         nearest_d2 = d2;
                         nearest = v;

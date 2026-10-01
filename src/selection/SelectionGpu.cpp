@@ -3,6 +3,7 @@
 #include "numeric/uvec4.h"
 
 #include "selection/SelectionGpu.h"
+#include "ProcessEvents.h"
 #include "state/Scene.h"
 
 #include <Metal/MTLCommandQueue.hpp>
@@ -10,7 +11,6 @@
 #include "Profile.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
-#include "gpu/EditSelectionPushConstants.h"
 #include "gpu/EditSharpnessPushConstants.h"
 #include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MeshletRoute.h"
@@ -19,12 +19,19 @@
 #include "gpu/SelectionElementPushConstants.h"
 #include "gpu/VisibilitySelectionPushConstants.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/ElementMembershipWork.h"
+#include "mesh/ElementWorkSort.h"
+#include "mesh/MeshClosure.h"
 #include "mesh/MeshStore.h"
+#include "mesh/NormalDeriveGpu.h"
+#include "metal/Dispatch.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "render/Encoding.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuSceneState.h"
+#include "render/MeshTopologyRepair.h"
+#include "render/SceneUpdates.h"
 #include "render/Instance.h"
 #include "render/PickConstants.h"
 #include "render/Pipelines.h"
@@ -38,22 +45,45 @@
 
 #include <bit>
 #include <cmath>
+#include <memory>
 
 using state::Change;
 
 namespace {
-std::vector<EditSelectionPushConstants> BuildSelectionTransactions(
-    state::Scene &, std::span<const ElementRange>, Element, EditSelectionOperation, uint32_t pick_id_slot = InvalidSlot
-);
-void RecordSelectionPrepare(state::Scene &, mtl::PassChain &, std::span<const EditSelectionPushConstants>);
-void RecordSelectionDerive(state::Scene &, mtl::PassChain &, std::span<const EditSelectionPushConstants>);
+// One mesh's change to its selection in the transaction's source domain.
+struct SelectionRequest {
+    state::Entity MeshEntity;
+    EditSelectionOperation Operation;
+    std::span<const uint32_t> List{}; // Source elements relative to the domain's first block, for FillList.
+};
+
+// Writes the source-domain words in place, then derives the other domains and the aggregates on the GPU.
+// `picked` is a canonical handle, and `query` merges the pending box query.
+void ApplySelection(state::Scene &, std::span<const SelectionRequest>, Element, uint32_t picked = InvalidOffset, bool query = false);
+std::vector<SelectionRequest> SelectionRequests(std::span<const ElementRange> ranges, EditSelectionOperation operation) {
+    std::vector<SelectionRequest> requests;
+    requests.reserve(ranges.size());
+    for (const auto &range : ranges) requests.push_back({range.MeshEntity, operation});
+    return requests;
+}
 
 void SubmitAndWait(const mtl::Context &ctx, MTL::CommandBuffer *command_buffer) {
     const profile::CpuScope scope{"SelectionSubmit"};
     // Selection culling may allocate bindless buffers while encoding.
-    ctx.CommitResidency();
+    {
+        const profile::CpuScope residency_scope{"SelectionResidency"};
+        ctx.CommitResidency();
+    }
     command_buffer->commit();
-    command_buffer->waitUntilCompleted();
+    {
+        const profile::CpuScope wait_scope{"SelectionWait"};
+        command_buffer->waitUntilCompleted();
+    }
+    if (command_buffer->status() == MTL::CommandBufferStatusError) {
+        const auto *error = command_buffer->error();
+        throw std::runtime_error(std::string{"GPU selection command failed: "} +
+            (error ? error->localizedDescription()->utf8String() : "unknown Metal error"));
+    }
 }
 
 // Record selection passes into one command buffer and wait for them.
@@ -61,10 +91,15 @@ void SubmitSelectionPasses(state::Scene &r, auto &&record) {
     const auto &ctx = r.Context.get<const mtl::Context>();
     auto *command_buffer = ctx.Queue->commandBuffer();
     { // End the final pass before submission.
-        mtl::PassChain chain{command_buffer};
+        struct RecordingScope {
+            RecordingScope() { profile::BeginRecording(); }
+            ~RecordingScope() { profile::EndRecording(); }
+        } recording;
+        mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
         record(chain);
     }
     SubmitAndWait(ctx, command_buffer);
+    profile::Resolve(command_buffer);
 }
 
 struct ElementPickTarget {
@@ -100,11 +135,11 @@ uint32_t ElementPickRadiusSq(Element element) {
 }
 
 ElementSelectQuery MakeElementQuery(
-    const SelectionSlots &sel_slots, uvec4 box, uint32_t box_result_slot, const std::optional<ElementPickTarget> &pick, bool resolve_id
+    const SelectionSlots &sel_slots, uvec4 box, SelectionQueryRef results, const std::optional<ElementPickTarget> &pick, bool resolve_id
 ) {
     return {
         box,
-        box_result_slot,
+        results,
         pick ? pick->Px : uvec2{},
         pick ? pick->RadiusSq : 0u,
         pick ? sel_slots.ElementPickKey : InvalidSlot,
@@ -126,32 +161,33 @@ std::optional<uint32_t> ReadNearestPickedElement(const GpuBuffers &buffers, uint
     return id - 1;
 }
 
-uint32_t MaxElementBound(auto &&ranges) {
-    return std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &r) { return std::max(total, r.Offset + r.Count); });
-}
+
 
 // Rasterize ids and depth for the query rectangle with every surface opaque.
 // Selection mode adds lines and points so object queries can hit them.
 // Visibility mode leaves them out so elements are occluded by surfaces only, never by wire geometry.
-void RecordSelectionVisibility(state::Scene &r, mtl::PassChain &chain, const PixelRect &rect, MeshletRouteMode mode) {
+void RecordSelectionVisibility(
+    state::Scene &r, mtl::PassChain &chain, const PixelRect &rect, MeshletRouteMode mode,
+    bool exact_edit_geometry = false
+) {
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
-    RecordMeshletCull(chain, slots, pipelines, buffers, {.Mode = mode});
+    RecordMeshletCull(chain, slots, pipelines, buffers, {.Mode = mode, .ExactEditGeometry = exact_edit_geometry});
     RecordMeshletVisibilityPass(chain, slots, pipelines, r.Context.get<const RenderTargets>(), buffers, false, 0u, rect);
 }
 
-// A depth rectangle rasterizes selection depth for the query so the draws test against it.
+// A depth rectangle rasterizes selection depth for the query so the draws test against it, with exact edit geometry when `exact_depth`.
 // Picks raster twice; boxes raster once.
 void RunSelectionPass(
-    state::Scene &r, mtl::PassChain &chain, std::optional<PixelRect> depth_rect,
+    state::Scene &r, mtl::PassChain &chain, std::optional<PixelRect> depth_rect, bool exact_depth,
     std::optional<MeshletCullConfig> meshlet_cull, bool pick, auto &&record_draws
 ) {
     const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
     auto &buffers = r.Context.get<GpuBuffers>();
 
-    if (depth_rect) RecordSelectionVisibility(r, chain, *depth_rect, MeshletRouteMode::Visibility);
+    if (depth_rect) RecordSelectionVisibility(r, chain, *depth_rect, MeshletRouteMode::Visibility, exact_depth);
     if (meshlet_cull && buffers.MeshletInstanceCount > 0) {
         RecordMeshletCull(chain, slots, pipelines, buffers, *meshlet_cull);
     }
@@ -187,21 +223,24 @@ void RenderElementSelectionPass(
     const bool degenerate_point_pass = write_bitset && xray_selection && element != Element::Vertex;
     for (const auto &range : ranges) {
         [[maybe_unused]] const auto &mesh_buffers = MeshBuffersOf(r, range.MeshEntity);
-        assert(mesh_buffers.Meshlets.Count > 0u && "selectable mesh geometry must have persistent meshlets");
+        assert(buffers.MeshletCount(mesh_buffers) > 0u && "selectable mesh geometry must have persistent meshlets");
     }
 
     const auto target = r.Context.get<const RenderTargets>().Resources->ScratchDepth.Extent;
     const auto query_rect = write_bitset ? BoxRect({box_min.x, box_min.y, box_max.x, box_max.y}, target) : RadiusRect(pick->Px, pick->RadiusSq, target);
     if (!query_rect) return;
+    // Vertices draw from the canonical vertex blocks of each mesh's primary edit instance.
+    const auto primaries = element == Element::Vertex ? selection::ComputePrimaryEditInstances(r) : selection::PrimaryEditInstanceMap{};
     RunSelectionPass(
-        r, chain, xray_selection ? std::nullopt : query_rect,
-        MeshletCullConfig{
+        r, chain, xray_selection ? std::nullopt : query_rect, true,
+        element == Element::Vertex ? std::nullopt : std::optional{MeshletCullConfig{
             .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::ElementSelection),
             .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
-        },
+            .ExactEditGeometry = true,
+        }},
         pick.has_value(),
         [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
-            const SelectionElementPushConstants element_pc{MakeElementQuery(sel_slots, {box_min.x, box_min.y, box_max.x, box_max.y}, meshes.Slots().SelectionBits, pick, resolve_id)};
+            const SelectionElementPushConstants element_pc{MakeElementQuery(sel_slots, {box_min.x, box_min.y, box_max.x, box_max.y}, write_bitset ? meshes.Arenas().Query.Ref() : SelectionQueryRef{}, pick, resolve_id)};
             if (write_bitset) encoder->setScissorRect({query_rect->Origin.x, query_rect->Origin.y, query_rect->Extent.x, query_rect->Extent.y});
             // Edges draw once per triangle corner.
             const auto draw_edges = [&] {
@@ -213,7 +252,12 @@ void RenderElementSelectionPass(
             pipeline.Bind(encoder);
             encoder->setFragmentBytes(&element_pc, sizeof(element_pc), BufferIndex_PushConstants);
             if (element == Element::Edge) draw_edges();
-            else DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection), element == Element::Vertex ? 64u : 160u);
+            else if (element == Element::Face) DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection), 160u);
+            else for (const auto &range : ranges) {
+                const auto primary = primaries.find(range.MeshEntity);
+                const auto *instance = primary != primaries.end() ? r.try_get<const RenderInstance>(primary->second) : nullptr;
+                if (instance) DrawVertexBlocks(encoder, r, range.MeshEntity, instance->BufferIndex);
+            }
             if (degenerate_point_pass) {
                 const auto &point_pipeline = element == Element::Face ?
                     selection.MeshletFaceXRayPointsBitsetBox :
@@ -234,28 +278,21 @@ std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(
     std::span<const ElementRange> ranges, Element element, uvec2 mouse_px, bool toggle
 ) {
     if (ranges.empty() || element == Element::None) return {};
-    const auto element_count = MaxElementBound(ranges);
-    if (element_count == 0) return {};
 
     const profile::CpuScope scope{"RunElementPick"};
     auto &buffers = r.Context.get<GpuBuffers>();
     ResetElementPick(buffers);
-    const auto transactions = BuildSelectionTransactions(
-        r, ranges, element,
-        toggle ? EditSelectionOperation::PickToggle : EditSelectionOperation::PickReplace,
-        r.Context.get<const SelectionSlots>().ElementPickId
-    );
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RenderElementSelectionPass(r, chain, viewport, ranges, element, false, {}, {}, ElementPickTarget{mouse_px, ElementPickRadiusSq(element)});
-        RecordSelectionPrepare(r, chain, transactions);
-        RecordSelectionDerive(r, chain, transactions);
     });
-    r.Context.get<GpuSceneState>().EditSelectionDirty = true;
-    if (const auto index = ReadNearestPickedElement(buffers, element_count)) {
-        for (const auto &range : ranges) {
-            if (*index < range.Offset || *index >= range.Offset + range.Count) continue;
-            return std::pair{range.MeshEntity, *index - range.Offset};
-        }
+    const auto picked = ReadNearestPickedElement(buffers, UINT32_MAX);
+    const auto requests = SelectionRequests(ranges, toggle ? EditSelectionOperation::PickToggle : EditSelectionOperation::PickReplace);
+    ApplySelection(r, requests, element, picked.value_or(InvalidOffset));
+    if (!picked) return {};
+    const auto &meshes = r.Context.get<const MeshStore>();
+    for (const auto &range : ranges) {
+        const auto id = GetMesh(r, range.MeshEntity).GetStoreId();
+        if (meshes.IsLiveElement(id, element, *picked)) return std::pair{range.MeshEntity, *picked - meshes.GetSelectionBitOffset(id, element)};
     }
     return {};
 }
@@ -290,7 +327,8 @@ void RecordVisibilityObjectSelection(
 }
 
 // `through` rasters every covered surface for an object box instead of the visible surface alone.
-void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::optional<ObjectSelectQuery> object, bool through, std::optional<uint32_t> sound_instance = {}, std::optional<ElementPickTarget> pick = {}) {
+// A sound instance picks among its mesh's selected vertices.
+void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::optional<ObjectSelectQuery> object, bool through, state::Entity sound_instance = state::Null, std::optional<ElementPickTarget> pick = {}) {
     const auto &sel_slots = r.Context.get<const SelectionSlots>();
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &pipelines = GetPipelines(r);
@@ -303,23 +341,15 @@ void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::option
         } else RecordVisibilityObjectSelection(r, chain, *object);
         RecordOverlayJobCull(chain, r.Context.get<const mtl::BindlessSet>(), pipelines, buffers, true);
     }
-    const auto sound_cull = sound_instance ?
-        std::optional{MeshletCullConfig{
-            .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::SoundPoint),
-            .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
-        }} :
-        std::nullopt;
-    const auto sound_rect = sound_instance && pick ? RadiusRect(pick->Px, pick->RadiusSq, r.Context.get<const RenderTargets>().Resources->ScratchDepth.Extent) : std::nullopt;
-    if (sound_instance && !sound_rect) return;
-    RunSelectionPass(r, chain, sound_rect, sound_cull, pick.has_value(), [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
-        if (sound_instance) {
-            const SelectionElementPushConstants point_pc{MakeElementQuery(sel_slots, {}, InvalidSlot, pick, resolve_id)};
+    const bool sound = sound_instance != state::Null;
+    const auto sound_rect = sound && pick ? RadiusRect(pick->Px, pick->RadiusSq, r.Context.get<const RenderTargets>().Resources->ScratchDepth.Extent) : std::nullopt;
+    if (sound && !sound_rect) return;
+    RunSelectionPass(r, chain, sound_rect, false, std::nullopt, pick.has_value(), [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
+        if (sound) {
+            const SelectionElementPushConstants point_pc{MakeElementQuery(sel_slots, {}, {}, pick, resolve_id)};
             selection.ElementRaster(Element::Vertex, false, false).Bind(encoder);
             encoder->setFragmentBytes(&point_pc, sizeof(point_pc), BufferIndex_PushConstants);
-            DrawMeshlets(
-                encoder, buffers, uint32_t(MeshletRoute::OpaqueCullBack),
-                uint32_t(MeshletInstanceFlag::SoundPoint), 64u, 0u, *sound_instance
-            );
+            DrawVertexBlocks(encoder, r, r.get<const Instance>(sound_instance).Entity, r.get<const RenderInstance>(sound_instance).BufferIndex, true);
         }
         if (object) {
             const auto rect = ObjectQueryRect(*object, r.Context.get<const RenderTargets>().Resources->ScratchDepth.Extent);
@@ -363,18 +393,23 @@ void RunBoxSelectElements(state::Scene &r, state::Entity viewport, std::span<con
 
     const profile::CpuScope scope{"RunBoxSelectElements"};
 
+    // A query abandoned by a rejected transaction still holds its words.
+    const auto &query = r.Context.get<const MeshStore>().Arenas().Query;
+    if (const auto count = query.WordCount()) {
+        auto masks = query.Masks.GetMutableSpan<uint32_t>();
+        for (const auto word : query.Words.GetSpan<uint32_t>({0, count})) masks[word] = 0u;
+        query.Count.GetMutableSpan<uint32_t>()[0] = 0u;
+    }
+
     auto *baseline = is_additive ? r.try_edit<AdditiveBoxSelectBaseline>(viewport) : nullptr;
     const auto operation = !is_additive                 ? EditSelectionOperation::Clear :
         baseline && !baseline->ElementSelectionCaptured ? EditSelectionOperation::CaptureBaseline :
                                                           EditSelectionOperation::RestoreBaseline;
-    const auto transactions = BuildSelectionTransactions(r, ranges, element, operation);
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
-        RecordSelectionPrepare(r, chain, transactions);
         RenderElementSelectionPass(r, chain, viewport, ranges, element, true, box_min, box_max, {});
-        RecordSelectionDerive(r, chain, transactions);
     });
+    ApplySelection(r, SelectionRequests(ranges, operation), element, InvalidOffset, true);
     if (baseline) baseline->ElementSelectionCaptured = true;
-    r.Context.get<GpuSceneState>().EditSelectionDirty = true;
 }
 
 std::optional<uint32_t> RunSoundVerticesVertexPick(state::Scene &r, state::Entity instance_entity, uvec2 mouse_px) {
@@ -384,17 +419,16 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(state::Scene &r, state::Entit
     auto &buffers = r.Context.get<GpuBuffers>();
 
     const profile::CpuScope scope{"RunSoundVerticesVertexPick"};
-    const auto mesh_entity = instance->Entity;
-    const auto &mesh = GetMesh(r, mesh_entity);
-    const uint32_t vertex_count = mesh.VertexCount();
-    if (vertex_count == 0) return {};
+    const auto &mesh = GetMesh(r, instance->Entity);
+    if (mesh.VertexCount() == 0) return {};
 
-    const auto model_index = r.get<RenderInstance>(instance_entity).BufferIndex;
     ResetElementPick(buffers);
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
-        RenderSelectionPickPass(r, chain, std::nullopt, false, model_index, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex)});
+        RenderSelectionPickPass(r, chain, std::nullopt, false, instance_entity, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex)});
     });
-    return ReadNearestPickedElement(buffers, vertex_count);
+    // Pick ids are handles relative to the mesh's first vertex, which on a sparse set reach past the vertex count.
+    const auto &meshes = r.Context.get<const MeshStore>();
+    return ReadNearestPickedElement(buffers, meshes.Arenas().Vertices.Capacity() - meshes.GetSelectionBitOffset(mesh.GetStoreId(), Element::Vertex));
 }
 
 namespace {
@@ -512,116 +546,128 @@ std::vector<state::Entity> RunBoxSelect(state::Scene &r, state::Entity viewport,
 }
 
 namespace {
-std::vector<EditSelectionPushConstants> BuildSelectionTransactions(
-    state::Scene &r, std::span<const ElementRange> ranges, Element element,
-    EditSelectionOperation operation, uint32_t pick_id_slot
-) {
-    std::vector<EditSelectionPushConstants> result;
-    result.reserve(ranges.size());
+constexpr std::array SelectionElements{Element::Vertex, Element::Edge, Element::Face};
+constexpr std::array SelectionDomains{MeshStore::ElementDomain::Vertex, MeshStore::ElementDomain::Edge, MeshStore::ElementDomain::Face};
+
+void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests, Element element, uint32_t picked, bool query) {
+    if (requests.empty() || element == Element::None) return;
+    const profile::CpuScope scope{"ApplySelection"};
     auto &meshes = r.Context.get<MeshStore>();
-    for (const auto &range : ranges) {
-        const auto &mesh = GetMesh(r, range.MeshEntity);
-        const auto &mesh_buffers = MeshBuffersOf(r, range.MeshEntity);
-        const auto store_id = mesh.GetStoreId();
-        meshes.EnsureSelectionBits(mesh);
-        meshes.CaptureSelectionWrite(store_id);
-        const auto &record = meshes.Get(store_id);
-        const auto &derived = meshes.GetDerived(store_id);
-        const auto &arenas = meshes.Arenas();
-        const auto corners = arenas.FaceCorners.Slotted(record.FaceCorners);
-        result.emplace_back(EditSelectionPushConstants{
-            .Selection = meshes.GetEditSelectionStorage(store_id),
-            .EdgeIndices = mesh_buffers.EdgeIndices,
-            .Corners = corners,
-            .Connectivity = arenas.Connectivity.Slotted(record.Connectivity),
-            .Vertices = arenas.Vertices.Slotted(record.Vertices),
-            .VertexFanAdjacencyOffset = OffsetOrInvalid(derived.VertexFanAdjacency),
-            .VertexEdgeAdjacencyOffset = OffsetOrInvalid(derived.VertexEdgeAdjacency),
-            .AdjacencySlot = meshes.Slots().Adjacency,
-            .FaceSharpness = arenas.FaceSharpness.Slotted(record.FaceData),
-            .EdgeSharpness = arenas.EdgeSharpness.Slotted(record.EdgeSharpness),
-            .SelectionBaseline = meshes.GetSelectionBaselineRange(store_id),
-            .VertexCount = mesh.VertexCount(),
-            .EdgeCount = mesh.EdgeCount(),
-            .FaceCount = mesh.FaceCount(),
-            .HalfedgeCount = corners.Count,
-            .Element = element,
-            .ConnectivityFaceStarts = mesh.GetConnectivity().Faces.empty() ? 0u : 1u,
-            .Operation = operation,
-            .PickIdSlot = pick_id_slot,
-        });
-    }
-    return result;
-}
-
-void RecordSelectionPrepare(
-    state::Scene &r, mtl::PassChain &chain,
-    std::span<const EditSelectionPushConstants> transactions
-) {
-    if (transactions.empty() || std::ranges::all_of(transactions, [](const auto &pc) { return pc.Operation == EditSelectionOperation::Derive; })) return;
-    const auto &slots = r.Context.get<const mtl::BindlessSet>();
-    const auto &pipelines = GetPipelines(r);
-    const auto &buffers = r.Context.get<const GpuBuffers>();
-    auto *encoder = chain.BeginCompute("SelectionPrepare", MTL::StageFragment | MTL::StageDispatch);
-    for (const auto &pc : transactions) {
-        const uint32_t count = pc.Element == Element::Vertex ? pc.VertexCount :
-            pc.Element == Element::Edge                      ? pc.EdgeCount :
-                                                               pc.FaceCount;
-        if (count == 0) continue;
-        encode::BindCompute(encoder, pipelines.PrepareEditSelection, slots, buffers);
-        encode::SetPushConstants(encoder, pc);
-        encoder->dispatchThreadgroups(MTL::Size(((count + 31u) / 32u + 255u) / 256u, 1, 1), ThreadgroupSize::Linear256);
-        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-        if (pc.Operation == EditSelectionOperation::FillList && pc.SelectionListCount > 0u) {
-            encode::BindCompute(encoder, pipelines.FillEditSelectionList, slots, buffers);
-            encode::SetPushConstants(encoder, pc);
-            encoder->dispatchThreadgroups(MTL::Size((pc.SelectionListCount + 255u) / 256u, 1, 1), ThreadgroupSize::Linear256);
-            encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    const auto &arenas = meshes.Arenas();
+    const auto source = uint32_t(std::ranges::find(SelectionElements, element) - SelectionElements.begin());
+    const std::array memberships{arenas.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>(),
+        arenas.EdgeHalfedges.Blocks.Buffer.GetSpan<MeshElementBlock>(), arenas.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>()};
+    // The query holds one canonical word per first hit, across every queried mesh.
+    std::vector<std::pair<uint32_t, uint32_t>> query_words;
+    if (query) {
+        const auto &pending = arenas.Query;
+        const auto count = pending.WordCount();
+        auto masks = pending.Masks.GetMutableSpan<uint32_t>();
+        for (const auto word : pending.Words.GetSpan<uint32_t>({0, count})) {
+            if (masks[word]) query_words.emplace_back(word, masks[word]);
+            masks[word] = 0u;
         }
+        if (count) pending.Count.GetMutableSpan<uint32_t>()[0] = 0u;
     }
-}
-
-void RecordSelectionDerive(
-    state::Scene &r, mtl::PassChain &chain,
-    std::span<const EditSelectionPushConstants> transactions
-) {
-    if (transactions.empty()) return;
-    const auto &slots = r.Context.get<const mtl::BindlessSet>();
-    const auto &pipelines = GetPipelines(r);
-    auto &buffers = r.Context.get<GpuBuffers>();
-    uint32_t partial_count = 0;
-    for (const auto &pc : transactions) partial_count = std::max(partial_count, (pc.VertexCount + 511u) / 512u);
-    buffers.EditSelectionPositionSums.SetCount<vec3>(std::max(partial_count, 1u));
-    auto *encoder = chain.BeginCompute("SelectionDerive", MTL::StageFragment | MTL::StageDispatch);
-    for (auto pc : transactions) {
-        pc.PositionSumsSlot = buffers.EditSelectionPositionSums.Slot;
-        encode::BindCompute(encoder, pipelines.ResetEditSelectionSummary, slots, buffers);
-        encode::SetPushConstants(encoder, pc);
-        encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), MTL::Size(1, 1, 1));
-        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-
-        const uint32_t word_count = std::max({
-            (pc.VertexCount + 15u) / 16u,
-            (pc.EdgeCount + 15u) / 16u,
-            (pc.FaceCount + 15u) / 16u,
-        });
-        if (word_count == 0) continue;
-        encode::BindCompute(encoder, pipelines.DeriveEditSelection, slots, buffers);
-        encode::SetPushConstants(encoder, pc);
-        encoder->dispatchThreadgroups(MTL::Size((word_count + 255) / 256, 1, 1), ThreadgroupSize::Linear256);
-        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-        encode::BindCompute(encoder, pipelines.SumEditSelectionPosition, slots, buffers);
-        encode::SetPushConstants(encoder, pc);
-        encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), MTL::Size(32, 1, 1));
-        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    std::vector<MeshStore::SelectionUpdate> updates;
+    std::vector<uint32_t> ids;
+    for (const auto &request : requests) {
+        const auto mesh = GetMesh(r, request.MeshEntity);
+        const auto id = mesh.GetStoreId();
+        meshes.EnsureSelectionState(r, std::array{id});
+        ids.push_back(id);
+        const auto operation = request.Operation;
+        const auto origin = meshes.GetSelectionBitOffset(id, element);
+        const auto &record = meshes.Get(id);
+        const std::array owners{record.Vertices, record.EdgeData, record.FaceData};
+        const auto summary = meshes.GetSelectionSummary(id);
+        const bool rederive = operation == EditSelectionOperation::Derive || operation == EditSelectionOperation::ClearActive || summary.Mode != element;
+        const bool replace = operation == EditSelectionOperation::Clear || operation == EditSelectionOperation::FillList ||
+            operation == EditSelectionOperation::PickReplace || operation == EditSelectionOperation::RestoreBaseline;
+        const auto picked_local = picked != InvalidOffset && meshes.IsLiveElement(id, element, picked) ? picked - origin : InvalidOffset;
+        const auto bits = meshes.GetSelectedElements(id, element).Bits;
+        auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = id, .Source = element});
+        // Replacing or rederiving touches every block that holds a selected element in any domain.
+        std::array<std::vector<uint32_t>, 3> selected;
+        if (replace || rederive || operation == EditSelectionOperation::CaptureBaseline) {
+            for (uint32_t d = 0u; d < 3u; ++d) {
+                const auto words = meshes.GetSelectedElements(id, SelectionElements[d]).Bits;
+                for (const auto block : meshes.GetBlockList(id, SelectionDomains[d]).Blocks)
+                    if (std::ranges::any_of(words.subspan(block * MeshElementBlockWords, MeshElementBlockWords), [](uint32_t word) { return word != 0u; })) {
+                        selected[d].push_back(block);
+                    }
+            }
+        }
+        if (operation == EditSelectionOperation::CaptureBaseline) {
+            std::vector<std::pair<uint32_t, MeshArenas::SelectionBlock>> baseline;
+            for (const auto block : selected[source]) {
+                auto &entry = baseline.emplace_back(block, MeshArenas::SelectionBlock{});
+                std::ranges::copy(bits.subspan(block * MeshElementBlockWords, MeshElementBlockWords), entry.second.begin());
+            }
+            meshes.SetSelectionBaseline(id, element, std::move(baseline), summary.ActiveHandle);
+        }
+        if (replace || rederive) update.Blocks = selected;
+        // Words gain these bits after replacement clears the old source blocks.
+        std::vector<std::pair<uint32_t, uint32_t>> additions;
+        const auto add = [&](uint32_t handle) { additions.emplace_back(handle / 32u, 1u << (handle % 32u)); };
+        for (const auto local : request.List)
+            if (meshes.IsLiveElement(id, element, origin + local)) add(origin + local);
+        if (operation == EditSelectionOperation::PickReplace && picked_local != InvalidOffset) add(picked);
+        if (operation == EditSelectionOperation::RestoreBaseline) {
+            for (const auto &[block, words] : meshes.GetDerived(id).SelectionBaseline)
+                for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
+                    if (words[w]) additions.emplace_back(block * MeshElementBlockWords + w, words[w]);
+        }
+        for (const auto &[word, value] : query_words)
+            if (owners[source] && memberships[source][word / MeshElementBlockWords].Owner == owners[source].Index) additions.emplace_back(word, value);
+        const bool toggle = operation == EditSelectionOperation::PickToggle && picked_local != InvalidOffset;
+        if (toggle) additions.emplace_back(picked / 32u, 0u);
+        std::ranges::sort(additions);
+        std::vector<uint32_t> blocks = replace ? selected[source] : std::vector<uint32_t>{};
+        for (const auto &[word, value] : additions) blocks.push_back(word / MeshElementBlockWords);
+        std::ranges::sort(blocks);
+        blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+        if (operation == EditSelectionOperation::Fill) {
+            for (uint32_t d = 0u; d < 3u; ++d) {
+                const auto all = meshes.GetBlockList(id, SelectionDomains[d]).Blocks;
+                update.Blocks[d].assign(all.begin(), all.end());
+            }
+            blocks = update.Blocks[source];
+            meshes.EditSelectionBlocks(element, blocks, [&](uint32_t block, auto &words) {
+                std::ranges::copy(memberships[source][block].Live, words.begin());
+            });
+        } else {
+            // Replacement dirties the old selection's blocks, so only added bits seed their neighbors.
+            auto next = additions.begin();
+            meshes.EditSelectionBlocks(element, blocks, [&](uint32_t block, auto &words) {
+                for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) {
+                    const auto word = block * MeshElementBlockWords + w, before = words[w];
+                    auto after = replace ? 0u : before;
+                    for (; next != additions.end() && next->first == word; ++next) after |= next->second;
+                    if (toggle && word == picked / 32u) {
+                        const auto bit = 1u << (picked % 32u);
+                        after = summary.ActiveHandle == picked_local ? after & ~bit : after | bit;
+                    }
+                    words[w] = after;
+                    if (const auto seed = replace ? after & ~before : after ^ before) update.Seeds.push_back({source, word, seed});
+                }
+            });
+        }
+        if (rederive && operation != EditSelectionOperation::Fill) {
+            for (const auto block : selected[source])
+                for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
+                    if (const auto word = bits[block * MeshElementBlockWords + w]) update.Seeds.push_back({source, block * MeshElementBlockWords + w, word});
+        }
+        auto &written = meshes.WriteSelectionSummary(id);
+        written.Mode = element;
+        if (operation == EditSelectionOperation::Clear || operation == EditSelectionOperation::FillList ||
+            operation == EditSelectionOperation::ClearActive || operation == EditSelectionOperation::PickReplace) written.ActiveHandle = picked_local;
+        else if (operation == EditSelectionOperation::RestoreBaseline) written.ActiveHandle = meshes.GetDerived(id).SelectionBaselineActive;
+        else if (toggle) written.ActiveHandle = summary.ActiveHandle == picked_local ? InvalidOffset : picked_local;
+        if (std::ranges::all_of(update.Blocks, [](const auto &domain) { return domain.empty(); }) && update.Seeds.empty()) updates.pop_back();
     }
-}
-
-void ApplySelectionTransactions(state::Scene &r, std::span<const EditSelectionPushConstants> transactions) {
-    SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
-        RecordSelectionPrepare(r, chain, transactions);
-        RecordSelectionDerive(r, chain, transactions);
-    });
+    meshes.UpdateSelection(r, updates);
+    for (const auto id : ids) meshes.PublishSelectionSummary(id);
     r.Context.get<GpuSceneState>().EditSelectionDirty = true;
 }
 } // namespace
@@ -630,106 +676,173 @@ void ApplyEditSelectionCommand(
     state::Scene &r, std::span<const ElementRange> ranges,
     Element element, EditSelectionOperation operation
 ) {
-    if (ranges.empty() || element == Element::None) return;
-    const auto transactions = BuildSelectionTransactions(r, ranges, element, operation);
-    ApplySelectionTransactions(r, transactions);
+    ApplySelection(r, SelectionRequests(ranges, operation), element);
 }
 
 void ApplyEditSelectionLists(
     state::Scene &r,
-    std::span<const std::pair<state::Entity, SlottedRange>> lists, Element element
+    std::span<const std::pair<state::Entity, std::span<const uint32_t>>> lists, Element element
 ) {
-    if (lists.empty() || element == Element::None) return;
-    std::vector<ElementRange> ranges;
-    std::vector<SlottedRange> valid_lists;
-    ranges.reserve(lists.size());
-    valid_lists.reserve(lists.size());
-    for (const auto &[mesh_entity, list] : lists) {
-        if (!HasMesh(r, mesh_entity)) continue;
-        const auto mesh = GetMesh(r, mesh_entity);
-        ranges.emplace_back(mesh_entity, 0u, mesh.ElementCount(element));
-        valid_lists.push_back(list);
+    std::vector<SelectionRequest> requests;
+    requests.reserve(lists.size());
+    for (const auto &[mesh_entity, list] : lists)
+        if (HasMesh(r, mesh_entity)) requests.push_back({mesh_entity, EditSelectionOperation::FillList, list});
+    ApplySelection(r, requests, element);
+}
+
+void RefreshElementSelectionSummaries(state::Scene &r, std::span<const state::Entity> entities, std::optional<Element> mode) {
+    auto &meshes = r.Context.get<MeshStore>();
+    for (const auto entity : entities) {
+        const auto id = GetMesh(r, entity).GetStoreId();
+        if (!meshes.Get(id).SelectionSummary.Count) continue;
+        if (mode) {
+            auto &summary = meshes.WriteSelectionSummary(id);
+            summary.Mode = *mode;
+            summary.ActiveHandle = InvalidOffset;
+        }
+        meshes.PublishSelectionSummary(id);
     }
-    auto transactions = BuildSelectionTransactions(r, ranges, element, EditSelectionOperation::FillList);
-    if (transactions.empty()) return;
-    for (uint32_t i = 0; i < transactions.size(); ++i) {
-        transactions[i].SelectionList = valid_lists[i];
-        transactions[i].SelectionListCount = valid_lists[i].Count;
-    }
-    ApplySelectionTransactions(r, transactions);
 }
 
 void ApplyEditSharpness(
-    state::Scene &r, state::Entity viewport, std::span<const state::Entity> mesh_entities,
+    state::Scene &r, state::Entity, std::span<const state::Entity> mesh_entities,
     EditSharpnessOperation operation, bool value, float angle
 ) {
     if (mesh_entities.empty()) return;
     auto &meshes = r.Context.get<MeshStore>();
-    std::vector<EditSharpnessPushConstants> commands;
+    const auto &buffers = r.Context.get<const GpuBuffers>();
+    const auto &slots = r.Context.get<const mtl::BindlessSet>();
+    const auto &pipelines = GetPipelines(r);
+    struct Command {
+        EditSharpnessPushConstants Pc;
+        mtl::Buffer Selected;
+        BufferArena<uint32_t> WorkStorage;
+        ElementWorkSeedJob FaceSeed{}, EdgeSeed{};
+        explicit Command(mtl::BufferContext &ctx) : Selected(ctx, 0, SlotType::Buffer,mtl::BufferLifetime::Workspace),
+            WorkStorage(ctx,SlotType::Buffer,mtl::BufferLifetime::Workspace) {}
+    };
+    std::vector<Command> commands;
     std::vector<state::Entity> edited;
     commands.reserve(mesh_entities.size());
     edited.reserve(mesh_entities.size());
-    const bool uses_selection = operation == EditSharpnessOperation::SetSelectedFaces ||
-        operation == EditSharpnessOperation::SetSelectedEdges ||
-        operation == EditSharpnessOperation::SetVertexEdges;
+    const auto source = operation == EditSharpnessOperation::SetSelectedFaces ? Element::Face :
+        operation == EditSharpnessOperation::SetSelectedEdges ? Element::Edge :
+        operation == EditSharpnessOperation::SetVertexEdges ? Element::Vertex : Element::None;
     for (const auto mesh_entity : mesh_entities) {
         if (!HasMesh(r, mesh_entity) || !TryMeshBuffers(r, mesh_entity)) continue;
         const auto mesh = GetMesh(r, mesh_entity);
         if (mesh.FaceCount() == 0) continue;
         const auto id = mesh.GetStoreId();
-        if (uses_selection) meshes.EnsureSelectionBits(mesh);
+        if (source != Element::None) meshes.EnsureSelectionState(r, std::array{id});
+        if (source != Element::None && !meshes.GetSelectedElements(id,source).Count()) continue;
         meshes.CaptureSharpnessWrite(id, operation);
         const auto &record = meshes.Get(id);
         const auto &arenas = meshes.Arenas();
-        const auto corners = arenas.FaceCorners.Slotted(record.FaceCorners);
-        commands.emplace_back(EditSharpnessPushConstants{
-            .VertexSelectionBits = uses_selection ? meshes.GetSelectionBitsRange(id, Element::Vertex) : SlottedRange{},
-            .EdgeSelectionBits = uses_selection ? meshes.GetSelectionBitsRange(id, Element::Edge) : SlottedRange{},
-            .FaceSelectionBits = uses_selection ? meshes.GetSelectionBitsRange(id, Element::Face) : SlottedRange{},
-            .FaceSharpness = arenas.FaceSharpness.Slotted(record.FaceData),
-            .EdgeSharpness = arenas.EdgeSharpness.Slotted(record.EdgeSharpness),
-            .Connectivity = arenas.Connectivity.Slotted(record.Connectivity),
-            .EdgeIndices = MeshBuffersOf(r, mesh_entity).EdgeIndices,
-            .FaceNormals = arenas.BaseFaceNormals.Slotted(record.FaceData),
-            .VertexCount = mesh.VertexCount(),
+        auto &command = commands.emplace_back(meshes.BufferContext());
+        command.Pc = {
+            .VertexSelectionSlot = arenas.VertexSelection.Buffer.Slot,
+            .CornersSlot = arenas.FaceCorners.Buffer.Slot,
+            .FaceSharpnessSlot = arenas.FaceSharpness.Buffer.Slot,
+            .EdgeSharpnessSlot = arenas.EdgeSharpness.Buffer.Slot,
+            .FaceNormalsSlot = arenas.BaseFaceNormals.Buffer.Slot,
+            .Connectivity = meshes.GetConnectivityRef(id),
             .EdgeCount = mesh.EdgeCount(),
             .FaceCount = mesh.FaceCount(),
-            .HalfedgeCount = corners.Count,
-            .ConnectivityFaceStarts = mesh.GetConnectivity().Faces.empty() ? 0u : 1u,
             .Operation = operation,
             .Value = value ? 1u : 0u,
             .CosAngle = std::cos(angle),
-        });
+        };
+        auto &pc = command.Pc;
+        if (source != Element::None) {
+            meshes.GatherSelectedElements(r, id, source, command.Selected);
+            pc.Selected = {command.Selected.Slot, 0u};
+            pc.SelectedCount = command.Selected.Count<uint32_t>();
+        } else {
+            command.FaceSeed=PrepareElementMembershipWork(command.WorkStorage,arenas.FaceTriangles,record.FaceData);
+            pc.FaceWork=command.FaceSeed.Work;
+            if (operation != EditSharpnessOperation::SetAllFaces) {
+                command.EdgeSeed=PrepareElementMembershipWork(command.WorkStorage,arenas.EdgeHalfedges,record.EdgeData);
+                pc.EdgeWork=command.EdgeSeed.Work;
+            }
+        }
         edited.push_back(mesh_entity);
     }
     if (commands.empty()) return;
-    std::vector<ElementRange> selection_ranges;
-    const auto element = r.get<const EditMode>(viewport).Value;
-    if (element != Element::None) {
-        for (const auto mesh_entity : edited) {
-            if (!r.all_of<MeshElementSelection>(mesh_entity)) continue;
-            const auto mesh = GetMesh(r, mesh_entity);
-            const auto count = mesh.ElementCount(element);
-            if (count > 0) selection_ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), element), count);
+    if (source == Element::None) {
+        mtl::ComputeChain chain{r.Context.get<MeshStore>().BufferContext()};
+        for (auto &item:commands) {
+            const std::array seeds{item.FaceSeed,item.EdgeSeed};
+            EncodeElementMembershipWork(r,chain,seeds);
+            const std::array work{item.Pc.FaceWork,item.Pc.EdgeWork};
+            EncodeSortElementWork(r,chain,std::span<const ElementWork>{work.data(),operation == EditSharpnessOperation::SetAllFaces ? 1u : 2u});
+        }
+        chain.Submit();
+        for (auto &item:commands) {
+            CheckElementWork(item.WorkStorage,item.Pc.FaceWork);
+            if (operation != EditSharpnessOperation::SetAllFaces) CheckElementWork(item.WorkStorage,item.Pc.EdgeWork);
         }
     }
-    const auto selection_transactions = BuildSelectionTransactions(
-        r, selection_ranges, element, EditSelectionOperation::Derive
-    );
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         auto *encoder = chain.BeginCompute("EditSharpness");
-        const auto &slots = r.Context.get<const mtl::BindlessSet>();
-        const auto &pipelines = GetPipelines(r);
-        const auto &buffers = r.Context.get<const GpuBuffers>();
-        for (const auto &pc : commands) {
+        for (const auto &command : commands) {
+            const auto &pc = command.Pc;
+            const uint32_t count = source != Element::None ? pc.SelectedCount :
+                operation == EditSharpnessOperation::SetAllFaces ? pc.FaceCount : std::max(pc.EdgeCount, pc.FaceCount);
+            if (!count) continue;
             encode::BindCompute(encoder, pipelines.EditSharpness, slots, buffers);
             encode::SetPushConstants(encoder, pc);
-            const uint32_t count = std::max(pc.EdgeCount, pc.FaceCount);
             encoder->dispatchThreadgroups(MTL::Size((count + 255u) / 256u, 1, 1), ThreadgroupSize::Linear256);
         }
-        RecordSelectionDerive(r, chain, selection_transactions);
     });
-    for (const auto mesh_entity : edited) reactive(r, Change::MeshShading).emplace(mesh_entity);
+    r.Context.get<GpuSceneState>().EditSelectionDirty = true;
+    for (const auto mesh_entity : edited) {
+        const auto mesh=GetMesh(r,mesh_entity);
+        const auto id=mesh.GetStoreId();
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        // The written elements' vertices: the selected faces' loop vertices, the selected vertices or edge endpoints, or all vertices.
+        ClosureSeed vertices;
+        if (source==Element::Face) vertices=EncodeFaceClosure(r,chain,id,EncodeSelectionSeed(r,chain,id,Element::Face,false)).Seed(Element::Vertex);
+        else if (source==Element::Edge) vertices=EncodeEdgeVertices(r,chain,id,EncodeSelectionSeed(r,chain,id,Element::Edge,false));
+        else vertices=EncodeSelectionSeed(r,chain,id,Element::Vertex,source==Element::None);
+        if (!vertices.Count) continue;
+        if (operation==EditSharpnessOperation::SetVertexEdges) {
+            // Each edge at a selected vertex changes the fans at both of its endpoints.
+            auto incident=EncodeVertexClosure(r,chain,id,vertices);
+            incident.EncodeIncidence(r,chain,id,Element::Edge);
+            chain.Submit();
+            incident.Finish(chain);
+            vertices=EncodeEdgeVertices(r,chain,id,incident.Seed(Element::Edge));
+        }
+        auto neighborhood=EncodeVertexClosure(r,chain,id,vertices);
+        neighborhood.EncodeIncidence(r,chain,id,Element::Face);
+        chain.Submit();
+        neighborhood.Finish(chain);
+        if (!neighborhood.Counts[0]) continue;
+        auto triangles=EncodeFaceTriangles(r,chain,id,neighborhood.Seed(Element::Face));
+        // The neighborhood's corners include every corner at its vertices.
+        auto classes=meshes.EncodeCornerClassification(r,chain,id,neighborhood.Elements[0],neighborhood.Counts[0],
+            neighborhood.Counts[1],source==Element::None);
+        chain.Submit();
+        triangles.Finish(chain);
+        meshes.PlanCornerClassification(r,chain,classes);
+        EncodeDeriveMeshNormals(r,chain,id,chain.Scratch,neighborhood.Elements[0],neighborhood.Counts[0],neighborhood.Elements[2],neighborhood.Counts[2]);
+        chain.Submit();
+        meshes.FinishCornerClassification(chain,classes);
+        // The neighborhood holds every written element and each vertex whose incident edges changed.
+        if (meshes.Get(id).SelectionSummary.Count) {
+            MeshStore::SelectionUpdate update{.StoreId=id};
+            for (const auto [d,domain]:{std::pair{0u,0u},std::pair{1u,3u},std::pair{2u,2u}})
+                ForEachWorkBlock(chain.Scratch,neighborhood.Elements[domain],[&](uint32_t block,auto) { update.Blocks[d].push_back(block); });
+            meshes.UpdateSelection(r,std::span{&update,1u});
+            meshes.PublishSelectionSummary(id);
+        }
+        const auto *owner=TryMeshBuffers(r,mesh_entity);
+        if (owner && owner->PrimitiveRoot!=InvalidOffset) {
+            RepairShadingRender(r,chain,mesh_entity,triangles);
+            chain.Submit();
+        } else r.emplace_or_replace<MeshGeometryDirty>(mesh_entity,EditSelectionAfter::Keep,false);
+    }
+    RequestRender(r,RenderRequest::Rebuild);
 }
 
 const EditSelectionSummary *GetElementSelectionSummary(const state::Scene &r, state::Entity mesh_entity, Element element) {
