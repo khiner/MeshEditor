@@ -19,7 +19,6 @@
       Navigation and reset advance a separate epoch used to reject stale worker results.
 - Use ordered containers in Persistent components.
 - `Project::AfterRestore()` reconciles Derived state and must not mutate Persistent state.
-- Use current formats for MeshEditor-owned files and records.
-  Add legacy readers, migrations, compatibility encodings, or old-format tests only when explicitly requested.
-- Put an unbraced `if` body on the same line as its condition.
-  Use braces when the body starts on a new line.
+- MeshEditor-owned files and records use one unversioned current format.
+  Keep no schema revision fields, schema compatibility checks, legacy readers, migrations, or old-format tests.
+  Imported formats follow their external specifications.

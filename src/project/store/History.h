@@ -3,6 +3,7 @@
 #include "project/store/LiveTrie.h"
 
 #include <array>
+#include <expected>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -31,6 +32,7 @@ enum class RecordKind : uint8_t {
     Action,
     Navigate, // Restore Parent when reopening.
     Replace, // Give the node named by Parent new content and drop its descendants.
+    State, // Give the node named by Parent the content its replay produced.
 };
 
 struct HistoryNode {
@@ -39,9 +41,10 @@ struct HistoryNode {
     std::vector<std::byte> Actions; // The recorded actions, encoded by the project.
     std::string Label;
     int Depth{};
-    bool ReplayBaseline{true}; // Replay starts from this node's stored state instead of replaying its ancestors.
+    bool ReplayBaseline{true}; // Replay starts from this node's stored state, and a baseline without state runs its actions from the empty state.
     std::optional<Snapshot> Hot;
     // Stamps and Roots use track registration order and remain available after eviction.
+    // Both are empty until the node's first visit replays its actions from its nearest ancestor with state.
     std::vector<Stamp> Stamps;
     std::vector<Hash128> Roots;
     uint64_t LastVisited{}; // VisitCounter value at the last navigation to this node.
@@ -61,13 +64,15 @@ struct HistoryStats {
 struct History {
     struct Hooks {
         // Complete all writes caused by replay before returning.
-        std::function<void(const std::vector<std::byte> &action)> Replay{};
+        std::function<std::expected<void, std::string>(const std::vector<std::byte> &action)> Replay{};
+        // Replace live state with the empty state that baseline actions run from, resolving project files in dir.
+        std::function<void(const std::filesystem::path &dir)> Reset{};
         // Run before restoring any track.
         std::function<void()> BeforeRestore{};
         // Run after every track is restored and before enabling track writes.
         std::function<void()> AfterTracks{};
         // Reconcile Derived state after AfterTracks with track writes enabled.
-        std::function<void()> AfterRestore{};
+        std::function<std::expected<void, std::string>()> AfterRestore{};
     };
 
     ~History() { Close(); }
@@ -75,13 +80,11 @@ struct History {
     void Track(Pages &, std::string name, int phase);
     void Track(Records &, std::string name, int phase);
     void Track(project::ComponentPool &, std::string name, int phase);
-    // Increment when component or action encoding changes, including same-size layout changes.
-    uint32_t SchemaRevision{};
-
-    // Create a history with live state as node 0 in a directory other than the currently open project.
+    // Create a history with live state as node 0, reached by `actions` from the empty state, in a directory other than the currently open project.
     // Return false on failure and preserve the current tree.
-    bool Begin(const std::filesystem::path &dir);
+    bool Begin(const std::filesystem::path &dir, std::vector<std::byte> actions = {});
     // Restore position, or the latest working position when omitted, after validating the format and target.
+    // A directory without content logs holds only an actions log, which becomes the tree, and the present node replays from the empty state.
     // Return false on failure and preserve live state and the current tree.
     bool Open(const std::filesystem::path &dir, const HistoryPosition *position = nullptr);
     int FindPosition(const HistoryPosition &) const;
@@ -95,7 +98,7 @@ struct History {
     int Replace(int node, std::vector<std::byte> actions);
     // Call after CPU and GPU writes complete.
     void SettleHashes();
-    // Restore node using its snapshot or stored data and update Present.
+    // Restore node from its snapshot, its stored data, or a replay from its nearest ancestor with state, and update Present.
     void Navigate(int node);
     bool CanUndo() const { return Present > 0; }
     bool CanRedo() const { return Present >= 0 && !Nodes[Present].Children.empty(); }
@@ -110,7 +113,7 @@ struct History {
     void Revert();
     // Pin live state independently of the tree.
     Snapshot Pin();
-    void Restore(const Snapshot &);
+    std::expected<void, std::string> Restore(const Snapshot &);
     void Release(Snapshot &);
 
     // Record the present node, flush streams to the OS cache, and return whether all writes and flushes succeeded.
@@ -119,6 +122,9 @@ struct History {
     // Preserve content records for deduplication.
     // The saved state must reference this history's content records.
     bool Clear(const HistoryPosition *saved = nullptr);
+    // Write the present node and each reachable node's actions, label and parent, in index order, as an actions log, and return those nodes.
+    // Return why the tree cannot replay when its root holds state without actions.
+    std::expected<std::vector<int>, std::string> WriteActions(const std::filesystem::path &) const;
 
     // Eviction preserves snapshots for the present and this many ancestors, through its replay baseline.
     static constexpr int UndoWindow = 16;
@@ -128,12 +134,13 @@ struct History {
 
     // Serialize live state for byte comparisons.
     std::vector<std::byte> MaterializeLive();
-    // Replay from the baseline, returning an error or differing track name, or empty on success.
+    // The present node and its ancestors always hold state, which replays compare against.
+    // Replay the present node from its replay baseline, returning an error or differing track name, or empty on success.
     // Restore original live state on failure.
-    std::string Replay(int node);
-    // Replay one action from its parent, returning an error or differing track name, or empty on success.
+    std::string Replay();
+    // Replay the present node's actions from its parent, returning an error or differing track name, or empty on success.
     // Restore the present node before returning.
-    std::string ValidateReplay(int node);
+    std::string ValidateReplay();
 
     HistoryStats Stats() const;
     bool Check(std::string &why) const;
@@ -174,6 +181,7 @@ struct History {
     Hooks Callbacks;
     std::filesystem::path Dir;
     ContentLog LeafLog{"leaves.log", 0, {}, 0}, NodeLog{"nodes.log", 1, {}, 0};
+    static constexpr const char *TreeLogName{"tree.log"}, *ActionsLogName{"actions.log"};
     std::array<std::vector<char>, 3> StreamBuffers; // Appends reach the OS on flush or when a buffer fills.
     std::array<std::ofstream, 3> Streams; // Leaf, node, and tree logs, buffered by StreamBuffers.
     std::string IntegrityError;

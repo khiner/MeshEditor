@@ -53,6 +53,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     std::visit(
         overloaded{
             [&](const LoadDefaultScene &) { AddDefaultSceneContent(r); },
+            [](const LoadEmptyScene &) {},
             [&](const Load &a) {
                 const auto &path = a.Path;
                 const auto ext = path.extension().string();

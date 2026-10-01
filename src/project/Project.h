@@ -13,6 +13,13 @@ namespace project {
 // An action's name, and for a field write the component and field it names.
 std::string Label(const action::Action &);
 
+// A project archive holds the working directory, and an actions archive holds the recorded actions and their assets.
+// Both archive forms save one final workspace snapshot.
+enum class ArchiveForm : uint8_t { Project,
+                                   Actions };
+// Write the actions, their assets, and the final workspace, or return why it cannot.
+std::expected<void, std::string> WriteActionsArchive(const store::History &, const std::filesystem::path &path, std::span<const std::byte> workspace);
+
 // Construct before engine initialization so all document entities use the versioned allocator.
 // Close history before tearing down the scene's stores.
 struct Project {
@@ -23,9 +30,10 @@ struct Project {
     bool New(const std::filesystem::path &, bool empty = true);
     bool Open(const std::filesystem::path &working, const std::filesystem::path &saved = {});
     bool Save();
-    bool SaveArchive(const std::filesystem::path &, std::span<const std::byte> workspace = {});
+    // A project archive also records the saved position and workspace.
+    bool SaveArchive(const std::filesystem::path &, ArchiveForm, std::span<const std::byte> workspace);
     // Obtain user confirmation before replacing an existing project directory.
-    bool SaveAs(const std::filesystem::path &directory, std::span<const std::byte> workspace = {});
+    bool SaveAs(const std::filesystem::path &directory, std::span<const std::byte> workspace);
     bool RevertSaved();
     bool ClearHistory();
     bool Close();
@@ -89,19 +97,21 @@ struct Project {
     void Tick(const action::Action &, EventPass = EventPass::Frame);
     // Applies the action and records it with the frame inputs it ran under.
     bool Record(action::Action, EventPass, bool staged = false);
-    void RunRecorded(std::span<const RecordedAction>);
+    std::expected<void, std::string> RunRecorded(std::span<const RecordedAction>);
     // Records the actions as a new node, replacing `replace` when it has no children and adding a sibling otherwise.
     int Commit(std::string label, std::optional<int> replace = {});
     void FinishGesture(EventPass);
     // Removes the drag-start records a gesture's updates made.
     void EndGesture(EventPass);
     // Moves to `node`'s parent so the open gesture replaces the node on commit.
-    void EditNode(int node);
+    bool EditNode(int node);
     void RestageDraft();
     // Keys changed animated properties before a user commit while recording.
     void RecordKeys();
     void ReleaseGesture();
     void ClearInteraction();
+    // Replaces the document with the empty scene.
+    void ClearDocument();
     void AfterRestore();
     state::Scene &R;
     state::Entity Viewport{state::Null};

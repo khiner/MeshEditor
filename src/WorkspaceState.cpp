@@ -16,8 +16,6 @@
 
 namespace workspace {
 namespace {
-constexpr uint32_t Version = 5;
-
 void ApplyPendingIni(WindowsState &windows) {
     if (!ImGui::GetCurrentContext() || GImGui->WithinFrameScope || windows.PendingIni.empty()) return;
     // Previous focus would override the restored dock-tab selection.
@@ -134,7 +132,7 @@ std::vector<std::byte> Serialize(const State &state) {
     std::vector<std::byte> bytes;
     zpp::bits::out archive{bytes};
     const bool has_saved_view = state.ViewCamera.LookThroughSaved.has_value();
-    if (zpp::bits::failure(archive(Version, state.ViewCamera.Active, has_saved_view)) ||
+    if (zpp::bits::failure(archive(state.ViewCamera.Active, has_saved_view)) ||
         (has_saved_view && zpp::bits::failure(archive(*state.ViewCamera.LookThroughSaved))) ||
         zpp::bits::failure(archive(state.ViewportExtent, state.Windows, state.ImGuiIni, state.Tabs, state.WindowStates))) {
         return {};
@@ -145,10 +143,9 @@ std::vector<std::byte> Serialize(const State &state) {
 
 std::optional<State> Deserialize(std::span<const std::byte> bytes) {
     zpp::bits::in archive{bytes};
-    uint32_t version{};
     State state{.ViewCamera = {ViewCamera{vec3{0, 0, 1}, vec3{0}, CameraLens{}}, std::nullopt}};
     bool has_saved_view{};
-    if (zpp::bits::failure(archive(version)) || version != Version || zpp::bits::failure(archive(state.ViewCamera.Active, has_saved_view))) {
+    if (zpp::bits::failure(archive(state.ViewCamera.Active, has_saved_view))) {
         return std::nullopt;
     }
     if (has_saved_view) {

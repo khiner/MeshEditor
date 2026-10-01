@@ -82,7 +82,8 @@ void BenchScene(uint32_t slices, bool render) {
     }
     std::string why;
     expect(p.Audit(why));
-    expect(p.History.ValidateReplay(nodes.back()).empty());
+    p.Navigate(nodes.back());
+    expect(p.History.ValidateReplay().empty());
     expect(p.History.TakeIntegrityError().empty());
     std::printf("%u vertices: dense drag + commit %.3f ms, hot %.3f ms, cold %.3f ms (medians, %s render)\n", vertices, Median(edits), Median(hot), Median(cold), render ? "including" : "excluding");
     expect(p.Close());

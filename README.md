@@ -159,7 +159,8 @@ $ cd build && ./MeshEditor [file|--empty] [options]
   Unnamed interactive projects remain available under File → Restore, while headless jobs use temporary working directories.
   Clear history retains the current and last saved states as new replay baselines.
 * Open `.gltf`, `.glb`, `.obj`, `.ply`, `.project`, or `.actions` files.
-  `.project` extracts saved history into an unnamed working project, while `.actions` also replays the recorded actions from its archived baseline.
+  `.project` extracts saved history into an unnamed working project.
+  `.actions` holds only the history tree and the assets its actions load, and opening it replays every recorded action from the empty scene and fails on any divergence.
   Omit `file` to load the default scene.
 * `--empty` starts with an empty scene instead of the default scene.
 * `--quiet` / `-q` suppresses timer output.

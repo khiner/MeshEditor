@@ -33,7 +33,7 @@ bool Feed(ZSTD_CCtx *cctx, std::ostream &out, std::vector<char> &buf, ZSTD_inBuf
     }
     return true;
 }
-bool CompressToStream(const fs::path &src, std::ostream &out) {
+bool CompressToStream(const fs::path &src, std::span<const std::string_view> entries, std::ostream &out) {
     std::error_code ec;
     const std::unique_ptr<ZSTD_CCtx, decltype(&ZSTD_freeCCtx)> cctx{ZSTD_createCCtx(), ZSTD_freeCCtx};
     if (!cctx) return false;
@@ -41,11 +41,24 @@ bool CompressToStream(const fs::path &src, std::ostream &out) {
     ZSTD_CCtx_setParameter(cctx.get(), ZSTD_c_compressionLevel, CompressionLevel);
 
     std::vector<char> out_buf(ZSTD_CStreamOutSize()), chunk(ChunkSize);
+    // A path passes when it is an entry, lies under one, or leads to one.
+    const auto listed = [&](const fs::path &path) {
+        return std::ranges::any_of(entries, [&](std::string_view entry) {
+            const fs::path listed_path{entry};
+            const auto [at, at_entry] = std::ranges::mismatch(path, listed_path);
+            return at == path.end() || at_entry == listed_path.end();
+        });
+    };
     for (fs::recursive_directory_iterator it{src, ec}, end; !ec && it != end; it.increment(ec)) {
+        const auto relative = it->path().lexically_relative(src);
+        if (!entries.empty() && !listed(relative)) {
+            it.disable_recursion_pending();
+            continue;
+        }
         const bool regular = it->is_regular_file(ec);
         if (ec) return false;
         if (!regular) continue;
-        const auto rel = it->path().lexically_relative(src).generic_string();
+        const auto rel = relative.generic_string();
         const auto data_len = uint64_t(fs::file_size(it->path(), ec));
         if (ec) return false;
 
@@ -68,7 +81,7 @@ bool CompressToStream(const fs::path &src, std::ostream &out) {
 }
 } // namespace
 
-bool Compress(const fs::path &src, const fs::path &dst, std::span<const std::byte> metadata) {
+bool Compress(const fs::path &src, const fs::path &dst, std::span<const std::byte> metadata, std::span<const std::string_view> entries) {
     std::error_code ec;
     if (!fs::is_directory(src, ec)) return false;
     const auto relative = fs::weakly_canonical(dst, ec).lexically_relative(fs::weakly_canonical(src, ec));
@@ -80,7 +93,7 @@ bool Compress(const fs::path &src, const fs::path &dst, std::span<const std::byt
         out.write(reinterpret_cast<const char *>(&MetadataMagic), sizeof(MetadataMagic));
         out.write(reinterpret_cast<const char *>(&size), sizeof(size));
         out.write(reinterpret_cast<const char *>(metadata.data()), size);
-        return out && CompressToStream(src, out);
+        return out && CompressToStream(src, entries, out);
     }));
 }
 

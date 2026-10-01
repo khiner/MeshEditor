@@ -47,7 +47,7 @@ mesheditor_test(MeshEditorProjectBench ProjectBench.cpp MeshEditorEditor)
 target_compile_options(MeshEditorProjectBench PRIVATE -O2)
 target_compile_definitions(MeshEditorProjectBench PRIVATE MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}")
 rbp_copy_shaders(MeshEditorProjectBench)
-mesheditor_test(MeshEditorProjectTest ProjectTest.cpp MeshEditorEditor)
+mesheditor_test(MeshEditorProjectTest ProjectTest.cpp MeshEditorUi)
 target_compile_definitions(MeshEditorProjectTest PRIVATE
     MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 rbp_copy_shaders(MeshEditorProjectTest)

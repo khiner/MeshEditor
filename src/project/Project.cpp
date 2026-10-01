@@ -1,6 +1,7 @@
 #include "project/Project.h"
 
 #include "Compress.h"
+#include "File.h"
 #include "PathSerialize.h"
 #include "ProcessEvents.h"
 #include "action/Dispatch.h"
@@ -46,7 +47,6 @@ using state::Change;
 
 namespace project {
 namespace {
-constexpr uint32_t SavedStateVersion = 2;
 struct SavedState {
     store::HistoryPosition Position;
     std::vector<std::byte> Workspace;
@@ -55,16 +55,15 @@ struct SavedState {
 std::vector<std::byte> SaveMetadata(const store::History &history, std::span<const std::byte> workspace) {
     std::vector<std::byte> bytes;
     const auto &node = history.Nodes[history.Present];
-    zpp::bits::out{bytes}(SavedStateVersion, history.Present, node.Stamps, node.Roots, workspace).or_throw();
+    zpp::bits::out{bytes}(history.Present, node.Stamps, node.Roots, workspace).or_throw();
     return bytes;
 }
 
 std::optional<SavedState> ReadSavedState(Project &project, const std::filesystem::path &path) {
     if (const auto bytes = ReadArchiveMetadata(path)) {
         zpp::bits::in in{*bytes};
-        uint32_t version{};
         SavedState state;
-        if (zpp::bits::success(in(version, state)) && version == SavedStateVersion && in.position() == bytes->size() &&
+        if (zpp::bits::success(in(state)) && in.position() == bytes->size() &&
             state.Position.Stamps.size() == project.History.Tracks.size() && state.Position.Roots.size() == project.History.Tracks.size()) return state;
     }
     action::Fail(project.R, "Cannot read saved project position from '" + path.string() + "'.");
@@ -100,6 +99,23 @@ std::filesystem::path *SourcePath(action::Action &a) {
     },
                       a);
 }
+std::expected<std::vector<std::string>, std::string> ReferencedAssets(const store::History &history, std::span<const int> nodes) {
+    namespace fs = std::filesystem;
+    const Assets assets{.Directory = history.Dir};
+    std::set<std::string> found;
+    for (const int node : nodes) {
+        for (auto &recorded : Decode(history.Nodes[node].Actions)) {
+            const auto *path = SourcePath(recorded.Action);
+            if (!path || !path->native().starts_with("asset:/")) continue;
+            const auto relative = fs::path{path->native().substr(7)}.lexically_normal();
+            if (relative.empty() || relative.is_absolute() || *relative.begin() == "..") return std::unexpected{"Invalid asset reference: " + path->string()};
+            std::error_code ec;
+            if (!fs::is_regular_file(assets.Resolve(*path), ec)) return std::unexpected{"Cannot read referenced asset: " + path->string()};
+            found.insert((fs::path{Assets::DirectoryName} / relative).string());
+        }
+    }
+    return std::vector<std::string>{found.begin(), found.end()};
+}
 } // namespace
 
 std::string Label(const action::Action &a) {
@@ -117,6 +133,25 @@ std::string Label(const action::Action &a) {
             }(leaf);
         } else return std::string{state::LeafName<A>()};
     });
+}
+
+std::expected<void, std::string> WriteActionsArchive(const store::History &history, const std::filesystem::path &path, std::span<const std::byte> workspace) {
+    const auto log = history.Dir / store::History::ActionsLogName;
+    const auto written = history.WriteActions(log);
+    if (!written) return std::unexpected{written.error()};
+    const auto referenced = ReferencedAssets(history, *written);
+    if (!referenced) {
+        std::error_code ec;
+        std::filesystem::remove(log, ec);
+        return std::unexpected{referenced.error()};
+    }
+    std::vector<std::string_view> entries{store::History::ActionsLogName};
+    entries.append_range(*referenced);
+    const bool compressed = Compress(history.Dir, path, workspace, entries);
+    std::error_code ec;
+    std::filesystem::remove(log, ec);
+    if (!compressed) return std::unexpected{"cannot write " + path.string()};
+    return {};
 }
 
 Project &Session(state::Scene &r) { return *r.Context.get<Project *>(); }
@@ -138,9 +173,11 @@ void Project::TrackStores(state::Entity viewport) {
     R.Context.get<GpuBuffers>().Materials.Track(History, "material.values");
     R.Context.get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights");
     R.Context.get<MaterialStore>().Track(History);
-    History.SchemaRevision = 10;
     History.Callbacks = {
-        .Replay = [this](const std::vector<std::byte> &bytes) { RunRecorded(Decode(bytes)); },
+        .Replay = [this](const std::vector<std::byte> &bytes) { return RunRecorded(Decode(bytes)); },
+        .Reset = [this](const std::filesystem::path &dir) {
+            R.Context.get<Assets>().Directory = dir;
+            ClearDocument(); },
         .BeforeRestore = [this] {
             WaitForRender(R);
             CancelModalSolves(R);
@@ -160,7 +197,12 @@ void Project::TrackStores(state::Entity viewport) {
             }
             R.Context.get<MeshStore>().FinishRestore();
             Entities.FinishRestore(removed); },
-        .AfterRestore = [this] { AfterRestore(); },
+        .AfterRestore = [this]() -> std::expected<void, std::string> {
+            const auto errors = R.Context.get<action::Errors>().Messages.size();
+            AfterRestore();
+            const auto &messages = R.Context.get<action::Errors>().Messages;
+            if (messages.size() != errors) return std::unexpected{messages[errors]};
+            return {}; },
     };
 }
 
@@ -176,7 +218,8 @@ bool Project::Begin(const std::filesystem::path &dir) {
     const auto previous = std::exchange(directory, dir);
     WaitForRender(R);
     Settle(EventPass::Settle);
-    const bool begun = History.Begin(dir);
+    const bool begun = History.Begin(dir, Encode(RecordedActions));
+    RecordedActions.clear();
     if (begun) {
         DirectoryLock = std::move(lock);
         SavedPath.clear();
@@ -196,11 +239,10 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
     auto previous = History.Pin();
     const auto camera = GetViewCameraState(R, Viewport);
     RecordedActions.clear();
-    Deferred.clear();
-    ClearInteraction();
-    ClearScene(R, Viewport);
-    ClearAudioScene(R);
-    if (!empty) Tick(action::MakeAction(action::io::LoadDefaultScene{}), EventPass::Settle);
+    ClearDocument();
+    // The root records how its scene arises, so its state replays from the empty scene.
+    if (empty) Record(action::MakeAction(action::io::LoadEmptyScene{}), EventPass::Settle);
+    else Record(action::MakeAction(action::io::LoadDefaultScene{}), EventPass::Settle);
     const bool begun = Begin(dir);
     if (!begun) {
         History.Restore(previous);
@@ -225,12 +267,19 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
     }
     auto &directory = R.Context.get<Assets>().Directory;
     const auto previous = std::exchange(directory, dir);
+    const auto camera = GetViewCameraState(R, Viewport);
+    const auto errors = R.Context.get<action::Errors>().Messages.size();
     if (!History.Open(dir, saved ? &saved->Position : nullptr)) {
         directory = previous;
+        SetViewCameraState(R, Viewport, camera);
+        const auto error = History.TakeIntegrityError();
+        if (R.Context.get<action::Errors>().Messages.size() == errors && !error.empty()) action::Fail(R, error);
         return false;
     }
     ReleaseGesture();
     R.remove<SavedViewCamera>(Viewport);
+    // An actions open replays and pins every node on the path to the present node.
+    History.Evict(MemoryCap);
     if (lock) DirectoryLock = std::move(lock);
     SavedPath = saved_path;
     RestoredWorkspace = saved ? std::move(saved->Workspace) : std::vector<std::byte>{};
@@ -248,8 +297,13 @@ bool Project::Save() {
     Commit("Playback position");
     return History.Save();
 }
-bool Project::SaveArchive(const std::filesystem::path &path, std::span<const std::byte> workspace) {
+bool Project::SaveArchive(const std::filesystem::path &path, ArchiveForm form, std::span<const std::byte> workspace) {
     if (!Save()) return false;
+    if (form == ArchiveForm::Actions) {
+        const auto written = WriteActionsArchive(History, path, workspace);
+        if (!written) action::Fail(R, "Cannot save actions '" + path.string() + "': " + written.error() + ".");
+        return bool(written);
+    }
     if (Compress(History.Dir, path, SaveMetadata(History, workspace))) return true;
     action::Fail(R, "Failed to save project '" + path.string() + "'.");
     return false;
@@ -263,7 +317,7 @@ bool Project::SaveAs(const std::filesystem::path &directory, std::span<const std
         return false;
     }
     const auto source = fs::weakly_canonical(SavedPath.empty() ? History.Dir : SavedPath.parent_path(), ec);
-    if (!SavedPath.empty() && destination == source) return SaveArchive(SavedPath, workspace);
+    if (!SavedPath.empty() && destination == source) return SaveArchive(SavedPath, ArchiveForm::Project, workspace);
     const auto relative = destination.lexically_relative(source), inverse = source.lexically_relative(destination);
     if (ec || relative.empty() || *relative.begin() != ".." || inverse.empty() || *inverse.begin() != "..") {
         action::Fail(R, "Choose a location outside the current project and its parent directories.");
@@ -356,9 +410,10 @@ void Project::Tick(const action::Action &a, EventPass pass) {
     Previewing = false;
     Settle(pass);
 }
-void Project::RunRecorded(std::span<const RecordedAction> recorded_actions) {
+std::expected<void, std::string> Project::RunRecorded(std::span<const RecordedAction> recorded_actions) {
     auto &frame = R.Context.get<FrameState>();
     const auto saved = frame;
+    const auto errors = R.Context.get<action::Errors>().Messages.size();
     for (const auto &[inputs, a] : recorded_actions) {
         // Restore playback changes between recorded actions.
         if (R.get<const TimelinePlayback>(Viewport).CurrentFrame != inputs.CurrentFrame) {
@@ -370,9 +425,13 @@ void Project::RunRecorded(std::span<const RecordedAction> recorded_actions) {
         frame.DeltaTime = inputs.DeltaTime;
         frame.FixedFrameStep = inputs.FixedFrameStep;
         Tick(a, inputs.Pass);
+        if (R.Context.get<action::Errors>().Messages.size() != errors) break;
     }
     EndGesture(EventPass::Settle);
     frame = saved;
+    const auto &messages = R.Context.get<action::Errors>().Messages;
+    if (messages.size() != errors) return std::unexpected{messages[errors]};
+    return {};
 }
 void Project::Settle(EventPass pass) {
     ProcessComponentEvents(R, Viewport, pass);
@@ -389,6 +448,7 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
         }
         *path = assets.Reference(absolute);
     }
+    const auto errors = R.Context.get<action::Errors>().Messages.size();
     const bool recordable = action::IsRecordable(a);
     if (staged && !GestureBase && recordable) {
         GestureBase = History.Pin();
@@ -403,7 +463,7 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
         std::move(a),
     };
     Tick(recorded_action.Action, pass);
-    if (!recordable) return false;
+    if (!recordable || R.Context.get<action::Errors>().Messages.size() != errors) return false;
     ++Revision;
     // Only the latest update of a same-kind run is recorded.
     if (same_kind) RecordedActions.resize(*StageFirst);
@@ -472,16 +532,20 @@ Project::EditDraft &Project::DraftOf(int node) {
 }
 void Project::RestageDraft() {
     if (!Draft) return;
-    if (Editing != Draft->Node) EditNode(Draft->Node);
-    if (GestureBase) History.Restore(*GestureBase);
-    else {
+    if (Editing != Draft->Node && !EditNode(Draft->Node)) return;
+    if (GestureBase) {
+        if (!History.Restore(*GestureBase)) return;
+    } else {
         GestureBase = History.Pin();
         GestureStart = RecordedActions.size();
     }
     RecordedActions.resize(GestureStart);
     // Run a copy so the draft keeps its values for the next change.
     auto recorded_actions = Decode(Encode(Draft->RecordedActions));
-    RunRecorded(recorded_actions);
+    if (!RunRecorded(recorded_actions)) {
+        CancelGesture();
+        return;
+    }
     for (auto &recorded_action : recorded_actions) RecordedActions.push_back(std::move(recorded_action));
     ++Revision;
 }
@@ -497,6 +561,13 @@ void Project::ClearInteraction() {
     frame.BoxSelectStart.reset();
     frame.BoxSelectEnd.reset();
     frame.BoxSelectAdditive = false;
+}
+void Project::ClearDocument() {
+    WaitForRender(R);
+    Deferred.clear();
+    ClearInteraction();
+    ClearScene(R, Viewport);
+    ClearAudioScene(R);
 }
 void Project::CancelGesture() {
     if (!GestureBase) return;
@@ -573,14 +644,17 @@ void Project::Navigate(int node) {
     History.Evict(MemoryCap);
     ++Revision;
 }
-void Project::EditNode(int node) {
-    Navigate(History.Nodes[node].Parent);
+bool Project::EditNode(int node) {
+    const int parent = History.Nodes[node].Parent;
+    Navigate(parent);
+    if (History.Present != parent) return false;
     Editing = node;
+    return true;
 }
 bool Project::Replay() {
     FinishGesture(EventPass::Settle);
     RecordedActions.clear();
-    if (const auto diff = History.Replay(History.Present); !diff.empty()) {
+    if (const auto diff = History.Replay(); !diff.empty()) {
         action::Fail(R, "Action replay differs in " + diff);
         return false;
     }

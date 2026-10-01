@@ -350,7 +350,7 @@ struct RestoreTimings {
     double ResetMs{}, RestoreMs{}, RenderMs{}, CaptureMs{};
 };
 
-bool OpenProjectDir(state::Scene &r, state::Entity viewport, const fs::path &working_dir, bool replay = false, const fs::path &saved = {}) {
+bool OpenProjectDir(state::Scene &r, state::Entity viewport, const fs::path &working_dir, const fs::path &saved = {}) {
     auto &session = Session(r);
     if (session.History.Present >= 0 && (!SaveWorkspace(r, viewport) || !session.Save())) return false;
     WaitForRender(r);
@@ -361,17 +361,16 @@ bool OpenProjectDir(state::Scene &r, state::Entity viewport, const fs::path &wor
         return false;
     }
     ++RestoreGeneration;
-    const bool replayed = !replay || session.Replay();
     const auto stored = saved.empty() ? workspace::Load(working_dir / workspace::FileName) : workspace::Deserialize(session.RestoredWorkspace);
     if (stored) workspace::Apply(r, viewport, r.Context.get<WindowsState>(), *stored);
     PresentViewport(r, viewport);
-    return replayed;
+    return true;
 }
 
 bool OpenProjectFile(state::Scene &r, state::Entity viewport, const fs::path &path) {
     std::error_code ec;
     const bool directory = fs::is_directory(path, ec);
-    if (directory && HeadlessDirectory.empty()) return OpenProjectDir(r, viewport, path / "working", false, path / "Saved.project");
+    if (directory && HeadlessDirectory.empty()) return OpenProjectDir(r, viewport, path / "working", path / "Saved.project");
     const auto working = NewWorkingDirectory();
     if (working.empty()) return false;
     bool copied;
@@ -380,8 +379,14 @@ bool OpenProjectFile(state::Scene &r, state::Entity viewport, const fs::path &pa
         source_lock = File::DirectoryLock{path / "working"};
         if (source_lock) fs::copy(path / "working", working, fs::copy_options::recursive, ec);
         copied = source_lock && !ec;
-    } else copied = Decompress(path, working);
-    if (!copied || !OpenProjectDir(r, viewport, working, path.extension() == ActionsExt, directory ? path / "Saved.project" : fs::path{})) {
+    } else {
+        copied = Decompress(path, working);
+        if (copied && path.extension() == ActionsExt) {
+            const auto workspace_bytes = ReadArchiveMetadata(path);
+            copied = workspace_bytes && workspace::Deserialize(*workspace_bytes) && workspace::Save(working / workspace::FileName, *workspace_bytes);
+        }
+    }
+    if (!copied || !OpenProjectDir(r, viewport, working, directory ? path / "Saved.project" : fs::path{})) {
         if (Paths::Project() != working) fs::remove_all(working, ec);
         action::Fail(r, std::format("Failed to open project '{}'.", path.string()));
         return false;
@@ -397,7 +402,8 @@ void OpenFile(state::Scene &r, state::Entity viewport, const fs::path &path) {
 }
 
 bool SaveProjectFile(state::Scene &r, state::Entity viewport, const fs::path &archive_path) {
-    return SaveWorkspace(r, viewport) && Session(r).SaveArchive(archive_path, CachedWorkspaceBytes);
+    const auto form = archive_path.extension() == ActionsExt ? project::ArchiveForm::Actions : project::ArchiveForm::Project;
+    return SaveWorkspace(r, viewport) && Session(r).SaveArchive(archive_path, form, CachedWorkspaceBytes);
 }
 
 void SaveProjectAs(state::Scene &r, state::Entity viewport) {
@@ -562,9 +568,9 @@ struct ValidationImage {
     uint64_t Generation{};
 };
 
-void WriteValidationProject(const fs::path &dir) {
+void WriteValidationProject(const store::History &history, std::span<const std::byte> workspace) {
     const auto path = fs::temp_directory_path() / "MeshEditor-validation.actions";
-    if (Compress(dir, path)) std::println(stderr, "[validation] wrote action replay archive to {}", path.string());
+    if (project::WriteActionsArchive(history, path, workspace)) std::println(stderr, "[validation] wrote action replay archive to {}", path.string());
 }
 
 fs::path WriteValidationImage(const mtl::Context &ctx, std::string_view name, const mtl::Texture &image) {
@@ -753,7 +759,7 @@ struct ValidationResult {
 };
 
 ValidationResult RestoreForValidation(
-    ValidationEngine &engine, const ValidationInputs &inputs, bool replay
+    ValidationEngine &engine, const ValidationInputs &inputs, const store::History &live, bool replay
 ) {
     auto &restored = engine.Core->R;
     const auto viewport = engine.Core->Viewport;
@@ -778,7 +784,7 @@ ValidationResult RestoreForValidation(
     if (!engine.Core->P->Open(engine.Directory) || (replay && !engine.Core->P->Replay())) {
         for (const auto &error : restored.Context.get<action::Errors>().Messages) std::println(stderr, "[validation] {}", error);
         std::println(stderr, "[validation] {}", engine.Core->P->History.TakeIntegrityError());
-        WriteValidationProject(inputs.WorkingDir);
+        WriteValidationProject(live, workspace::Serialize(inputs.Workspace));
         std::abort();
     }
     timings.RestoreMs = ElapsedMs(begin);
@@ -798,13 +804,13 @@ ValidationResult RestoreForValidation(
     return result;
 }
 
-void RequireEqual(std::string_view what, std::span<const std::byte> expected, std::span<const std::byte> actual) {
+void RequireEqual(const store::History &live, std::string_view what, std::span<const std::byte> expected, std::span<const std::byte> actual, std::span<const std::byte> workspace) {
     if (!std::ranges::equal(expected, actual)) {
         std::println(
             stderr, "[validation] {} DIVERGED at byte {} (expected {} / actual {})",
             what, std::ranges::mismatch(expected, actual).in1 - expected.begin(), expected.size(), actual.size()
         );
-        WriteValidationProject(Paths::Project());
+        WriteValidationProject(live, workspace);
         std::abort();
     }
 }
@@ -850,7 +856,7 @@ void CompareValidationImages(state::Scene &r, ValidationSession &session, std::s
         const auto expected_path = WriteValidationImage(ctx, i == 0 ? "live-app" : "live-viewport", *expected[i]);
         const auto actual_path = WriteValidationImage(ctx, names[i], *restored[i]);
         if (!expected_path.empty() && !actual_path.empty()) std::println(stderr, "[validation] wrote {} and {}", expected_path.string(), actual_path.string());
-        WriteValidationProject(Paths::Project());
+        WriteValidationProject(Session(r).History, workspace::Serialize(CaptureWorkspace(r, Session(r).Viewport)));
         std::abort();
     }
 }
@@ -900,15 +906,17 @@ void ValidateRoundTrip(
     };
 
     const auto capture_ms = ElapsedMs(begin);
-    const auto replay = RestoreForValidation(session->Restored, inputs, true);
+    const auto &live = Session(r).History;
+    const auto replay = RestoreForValidation(session->Restored, inputs, live, true);
     begin = SteadyClock::now();
-    RequireEqual("replay state", live_state, replay.State);
+    const auto workspace_bytes = workspace::Serialize(inputs.Workspace);
+    RequireEqual(live, "replay state", live_state, replay.State, workspace_bytes);
     CompareValidationImages(r, *session, "replay");
     auto compare_ms = ElapsedMs(begin);
-    const auto restored = RestoreForValidation(session->Restored, inputs, false);
+    const auto restored = RestoreForValidation(session->Restored, inputs, live, false);
     begin = SteadyClock::now();
-    RequireEqual("stored state", live_state, restored.State);
-    RequireEqual("replay/stored workspace", replay.Workspace, restored.Workspace);
+    RequireEqual(live, "stored state", live_state, restored.State, workspace_bytes);
+    RequireEqual(live, "replay/stored workspace", replay.Workspace, restored.Workspace, workspace_bytes);
     CompareValidationImages(r, *session, "stored");
     compare_ms += ElapsedMs(begin);
     begin = SteadyClock::now();
@@ -1413,7 +1421,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 #endif
     bool done{driver.SeedFailed};
     uint8_t startup_frames_remaining{2};
-    MTL::CommandBuffer *last_frame{nullptr}; // Resize waits for resources sampled by the last submitted UI frame.
+    NS::SharedPtr<MTL::CommandBuffer> last_frame; // Retain across frame autorelease pools for resize waits.
     auto &windows = r.Context.get<WindowsState>();
     int bench_ticks{0};
     while (!done) {
@@ -1423,7 +1431,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             profile::ClearStats();
         }
         const profile::CpuScope frame_scope{"Frame"};
-        r.Context.get<ViewportConsumerFence>().Value = last_frame;
+        r.Context.get<ViewportConsumerFence>().Value = last_frame.get();
         auto events = window.PollEvents();
         r.Context.get<FrameState>().PreciseWheelDelta = vec2{events.ScrollX, events.ScrollY};
         for (const auto &path : events.DroppedFiles) OpenFile(r, viewport, path);
@@ -1644,7 +1652,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                         frame->waitUntilCompleted();
                         window.Show();
                     }
-                    last_frame = presented_frame = frame;
+                    presented_frame = frame;
+                    last_frame = NS::RetainPtr(frame);
                 }
             }
 

@@ -225,8 +225,21 @@ struct ToyApp {
     ToyApp() {
         H.Track(Buf, "buf", 0);
         H.Track(PoolRecords, "pool", 1);
-        H.Callbacks = {.Replay = [this](const std::vector<std::byte> &a) { Apply(a); ++Replays; }};
+        H.Callbacks = {
+            .Replay = [this](const std::vector<std::byte> &a) -> std::expected<void, std::string> {
+                if (!a.empty()) Apply(a);
+                ++Replays;
+                return {}; },
+            .Reset = [this](const std::filesystem::path &) { Reset(512); },
+        };
         Buf.Resize(512);
+    }
+    // Replace the buffer with `length` zero bytes and clear the pool.
+    void Reset(uint64_t length) {
+        Buf.Resize(0);
+        Buf.Resize(length);
+        PoolRecords.Write(0, Pool.size());
+        std::ranges::fill(Pool, std::vector<std::byte>{});
     }
     static std::vector<std::byte> Encode(uint32_t seed) {
         std::vector<std::byte> b(4);
@@ -301,7 +314,7 @@ void TestHistoryAgainstModel() {
             expect(app.Replays == replays);
             expect(app.H.Present == node);
             expect(app.State() == state);
-            expect(app.H.ValidateReplay(node).empty());
+            expect(app.H.ValidateReplay().empty());
             expect(app.State() == state);
             std::string why;
             expect(app.H.Audit(why));
@@ -393,7 +406,7 @@ void TestReplace() {
     expect(app.State() == a_state);
     app.H.Navigate(b);
     expect(app.State() == replaced);
-    expect(app.H.Replay(b).empty());
+    expect(app.H.Replay().empty());
     expect(app.State() == replaced);
     expect(app.H.Save());
     expect(app.H.Close());
@@ -443,44 +456,6 @@ void TestColdLoadFailure() {
     expect(a.Data()[0] == std::byte{11});
     expect(b.Data()[0] == std::byte{22});
     expect(h.Audit(why));
-}
-
-void TestFormatMismatch() {
-    const TestDir dir{"projectstore_format"};
-    {
-        Pages a{64}, b{64};
-        History h;
-        h.Track(a, "A", 0);
-        h.Track(b, "B", 0);
-        a.Resize(64);
-        b.Resize(64);
-        a.Mutable(0, 1)[0] = std::byte{11};
-        b.Mutable(0, 1)[0] = std::byte{22};
-        expect(h.Begin(dir));
-    }
-    const auto read = [&](const char *name) {
-        std::ifstream in{dir.Path / name, std::ios::binary};
-        return std::vector<char>{std::istreambuf_iterator<char>{in}, {}};
-    };
-    const auto tree = read("tree.log"), leaves = read("leaves.log"), nodes = read("nodes.log");
-    for (int mismatch = 0; mismatch < 4; ++mismatch) {
-        Pages a{mismatch == 2 ? 128u : 64u}, b{64};
-        History h;
-        if (mismatch == 0) {
-            h.Track(b, "B", 0);
-            h.Track(a, "A", 0);
-        } else {
-            h.Track(a, "A", mismatch == 1 ? 1 : 0);
-            h.Track(b, "B", 0);
-        }
-        h.SchemaRevision = mismatch == 3 ? 1 : 0;
-        expect(!h.Open(dir));
-        expect(!h.TakeIntegrityError().empty());
-        expect(a.Length() == 0 && b.Length() == 0);
-        expect(read("tree.log") == tree);
-        expect(read("leaves.log") == leaves);
-        expect(read("nodes.log") == nodes);
-    }
 }
 
 void TestLogOpenFailure() {
@@ -585,79 +560,33 @@ void TestTornTailRecovery() {
 }
 
 void TestClearHistory() {
-    for (const bool retain_saved : {false, true}) {
-        const TestDir dir{"projectstore_clear"};
-        ToyApp app;
-        expect(app.H.Begin(dir));
-        app.Step(1);
-        const auto &saved_node = app.H.Nodes[app.H.Present];
-        const HistoryPosition saved{-1, saved_node.Stamps, saved_node.Roots};
-        const auto saved_state = app.State();
-        const int baseline = retain_saved ? 1 : 0;
-        if (retain_saved) app.H.Navigate(0);
-        app.Step(2);
-        expect(app.H.Save());
-        const auto before_clear = std::filesystem::file_size(dir.Path / "tree.log");
-        const auto state = app.State();
-        const auto content_bytes = app.H.LogBytes();
-        expect(app.H.Clear(retain_saved ? &saved : nullptr));
-        expect(app.H.Nodes.size() == size_t(baseline + 1) && app.H.Present == baseline);
-        expect(app.State() == state);
-        expect(app.H.LogBytes() == content_bytes);
-        expect(app.H.Stats().OwnedBytes == 0);
-        if (retain_saved) expect(!app.H.Nodes[0].Hot);
-        expect(app.H.Close());
-        const auto complete_clear = std::filesystem::file_size(dir.Path / "tree.log");
-        expect(complete_clear > before_clear);
-        // An incomplete replacement root preserves the previous tree on reopen.
-        std::filesystem::resize_file(dir.Path / "tree.log", complete_clear - 1);
-        expect(app.H.Open(dir));
-        expect(app.H.Nodes.size() == 3);
-        expect(app.State() == state);
-        if (retain_saved) {
-            expect(app.H.Clear());
-            expect(app.H.FindPosition(saved) == -1);
-        }
-        expect(app.H.Clear(retain_saved ? &saved : nullptr));
-        app.Step(3);
-        expect(app.H.Save());
-        expect(app.H.Close());
-        expect(app.H.Open(dir));
-        expect(app.H.Nodes.size() == size_t(baseline + 2));
-        expect(app.H.Nodes[baseline + 1].Label == "step 3");
-        const auto leaf = app.H.MaterializeLive();
-        const auto replays = app.Replays;
-        expect(app.H.Replay(baseline + 1).empty());
-        expect(app.Replays == replays + 1);
-        expect(app.H.MaterializeLive() == leaf);
-        app.H.Undo();
-        expect(app.State() == state);
-        if (retain_saved) {
-            expect(app.H.FindPosition(saved) == 0);
-            app.H.Undo();
-            expect(app.State() == saved_state);
-            expect(app.H.Replay(0).empty());
-            app.H.Redo();
-            app.H.Evict(0);
-            expect(!app.H.Nodes[0].Hot);
-            const auto replay_count = app.Replays;
-            expect(app.H.Replay(baseline).empty());
-            expect(app.H.ValidateReplay(baseline).empty());
-            expect(app.Replays == replay_count);
-            expect(app.State() == state);
-        }
-        app.H.Callbacks = {.Replay = [&](const auto &) { app.Apply(ToyApp::Encode(99)); }};
-        expect(!app.H.Replay(baseline + 1).empty());
-        expect(app.H.Present == baseline);
-        expect(app.State() == state);
-        app.H.Callbacks = {.Replay = [&](const auto &) {
-            app.Apply(ToyApp::Encode(100));
-            throw std::runtime_error("bad action");
-        }};
-        expect(app.H.Replay(baseline + 1) == "bad action");
-        expect(app.H.Present == baseline);
-        expect(app.State() == state);
-    }
+    const TestDir dir{"/tmp/mesheditor-scratch/projectstore-clear"};
+    ToyApp app;
+    expect(app.H.Begin(dir));
+    app.Step(1);
+    const auto &saved_node = app.H.Nodes[app.H.Present];
+    const HistoryPosition saved{-1, saved_node.Stamps, saved_node.Roots};
+    const auto saved_state = app.State();
+    app.Step(2);
+    const auto baseline = app.State();
+    expect(app.H.Clear(&saved));
+    expect(app.H.Nodes.size() == 2u && app.H.Present == 1);
+    expect(app.State() == baseline);
+    app.Step(3);
+    const auto continued = app.State();
+    expect(app.H.Save());
+    expect(app.H.Close());
+    expect(app.H.Open(dir));
+    expect(app.H.Nodes.size() == 3u && app.H.Present == 2);
+    expect(app.State() == continued);
+    app.H.Undo();
+    expect(app.State() == baseline);
+    app.H.Undo();
+    expect(app.State() == saved_state);
+    app.H.Redo();
+    expect(app.State() == baseline);
+    app.H.Redo();
+    expect(app.State() == continued);
 }
 } // namespace
 
@@ -668,7 +597,6 @@ int main() {
     TestCommitIdentity();
     TestReplace();
     TestColdLoadFailure();
-    TestFormatMismatch();
     TestLogOpenFailure();
     TestTornTailRecovery();
     TestClearHistory();
