@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Write a glTF whose middle face has fixed neighbors as distant geometry grows."""
+
+import argparse
+import array
+import json
+from pathlib import Path
+
+
+def generate(size: int, output: Path, parts: int) -> None:
+    if size < 2:
+        raise ValueError("grid size must be at least two")
+    if parts < 1 or parts > (size - 1) ** 2:
+        raise ValueError("parts must be between one and the grid's cell count")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    blob = bytearray()
+    views = []
+    accessors = []
+    primitives = []
+    materials = []
+
+    def append_view(data: bytes, target: int) -> int:
+        offset = len(blob)
+        blob.extend(data)
+        views.append({"buffer": 0, "byteOffset": offset, "byteLength": len(data), "target": target})
+        return len(views) - 1
+
+    def grid(n: int, center_x: float, name: str, parts: int) -> int:
+        positions = array.array("f")
+        for y in range(n):
+            yy = -1.0 + 2.0 * y / (n - 1)
+            for x in range(n):
+                positions.extend((center_x - 1.0 + 2.0 * x / (n - 1), yy, 0.0))
+        position_view = append_view(positions.tobytes(), 34962)
+        position_accessor = len(accessors)
+        accessors.append({
+            "bufferView": position_view, "componentType": 5126, "count": n * n,
+            "type": "VEC3", "min": [center_x - 1.0, -1.0, 0.0],
+            "max": [center_x + 1.0, 1.0, 0.0],
+        })
+        cells = (n - 1) ** 2
+        for part in range(parts):
+            indices = array.array("I")
+            for cell in range(part * cells // parts, (part + 1) * cells // parts):
+                y, x = divmod(cell, n - 1)
+                a = y * n + x
+                indices.extend((a, a + 1, a + n + 1, a, a + n + 1, a + n))
+            index_view = append_view(indices.tobytes(), 34963)
+            index_accessor = len(accessors)
+            accessors.append({
+                "bufferView": index_view, "componentType": 5125, "count": len(indices),
+                "type": "SCALAR", "min": 0, "max": n * n - 1,
+            })
+            material = len(materials)
+            materials.append({"name": f"{name}-{part}"})
+            primitives.append({
+                "attributes": {"POSITION": position_accessor}, "indices": index_accessor,
+                "material": material, "mode": 4,
+            })
+        return 2 * (n - 1) * (n - 1)
+
+    outer_faces = grid(size, -100.0, "left", parts)
+    local_faces = grid(32, 0.0, "local", 1)
+    grid(size, 100.0, "right", parts)
+    scene = {
+        "asset": {"version": "2.0", "generator": "MeshEditor local scaling benchmark"},
+        "buffers": [{"uri": output.with_suffix(".bin").name, "byteLength": len(blob)}],
+        "bufferViews": views, "accessors": accessors,
+        "materials": materials,
+        "meshes": [{"name": "fixed-local-with-distant-grids", "primitives": primitives}],
+        "nodes": [{"mesh": 0}], "scenes": [{"nodes": [0]}], "scene": 0,
+    }
+    output.with_suffix(".bin").write_bytes(blob)
+    output.write_text(json.dumps(scene, separators=(",", ":")))
+    # EditBench chooses faces/2, which lands in the unchanged center grid.
+    print(f"{output}: {2 * outer_faces + local_faces} faces; {len(primitives)} primitives; local face {outer_faces + local_faces // 2}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("size", type=int, help="vertices per side of each distant grid")
+    parser.add_argument("output", type=Path, help="output .gltf path")
+    parser.add_argument("--parts", type=int, default=1, help="primitive count per distant grid")
+    args = parser.parse_args()
+    if args.output.suffix != ".gltf":
+        parser.error("output must end in .gltf")
+    generate(args.size, args.output, args.parts)
