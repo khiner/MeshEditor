@@ -3,12 +3,7 @@
 #include "metal/MetalCpp.h"
 
 #include <algorithm>
-#include <array>
 #include <format>
-#include <fstream>
-#include <stdexcept>
-
-#include <unistd.h>
 
 namespace mtl {
 LibraryCache::LibraryCache(LibraryCache &&) noexcept = default;
@@ -20,47 +15,6 @@ void RenderPipeline::Bind(MTL::RenderCommandEncoder *encoder) const {
 }
 
 namespace {
-std::optional<uint64_t> ShaderTreeFingerprint(const std::filesystem::path &root) {
-    std::vector<std::filesystem::path> files;
-    try {
-        for (const auto &entry : std::filesystem::recursive_directory_iterator(root, std::filesystem::directory_options::follow_directory_symlink)) {
-            if (entry.is_regular_file()) files.emplace_back(entry.path());
-        }
-    } catch (const std::filesystem::filesystem_error &) {
-        return std::nullopt;
-    }
-    std::ranges::sort(files);
-
-    uint64_t hash = 14695981039346656037ull;
-    const auto mix = [&hash](const char *data, size_t size) {
-        for (size_t i = 0; i < size; ++i) {
-            hash ^= uint8_t(data[i]);
-            hash *= 1099511628211ull;
-        }
-    };
-    std::array<char, 64 * 1024> bytes;
-    for (const auto &file : files) {
-        const auto relative = std::filesystem::relative(file, root).generic_string();
-        mix(relative.data(), relative.size());
-        const char separator = '\0';
-        mix(&separator, 1);
-        std::ifstream input(file, std::ios::binary);
-        if (!input) return std::nullopt;
-        while (input) {
-            input.read(bytes.data(), std::streamsize(bytes.size()));
-            mix(bytes.data(), size_t(input.gcount()));
-        }
-        if (!input.eof()) return std::nullopt;
-    }
-    return hash;
-}
-
-std::filesystem::path FingerprintPath(const std::filesystem::path &archive) {
-    auto path = archive;
-    path += ".fingerprint";
-    return path;
-}
-
 bool DepsUnchanged(const std::vector<std::pair<std::filesystem::path, std::filesystem::file_time_type>> &deps, const std::filesystem::path &root) {
     std::error_code ec;
     for (const auto &[relative, mtime] : deps) {
@@ -70,33 +24,52 @@ bool DepsUnchanged(const std::vector<std::pair<std::filesystem::path, std::files
     return true;
 }
 
-// Devices without the Metal 4 family create pipelines through the classic descriptors.
-template<typename Descriptor>
-void ConfigureAttachments(Descriptor *descriptor, const PassFormats &formats, const std::vector<BlendState> &blends) {
-    for (size_t i = 0; i < formats.Color.size(); ++i) {
-        auto *attachment = descriptor->colorAttachments()->object(i);
-        attachment->setPixelFormat(formats.Color[i]);
-        const auto blend = i < blends.size() ? blends[i] : NoBlend;
-        attachment->setWriteMask(blend.WriteMask ? MTL::ColorWriteMaskAll : MTL::ColorWriteMaskNone);
-        attachment->setBlendingEnabled(blend.Enabled);
-        if (!blend.Enabled) continue;
-        attachment->setSourceRGBBlendFactor(blend.SourceRgb);
-        attachment->setDestinationRGBBlendFactor(blend.DestRgb);
-        attachment->setRgbBlendOperation(MTL::BlendOperationAdd);
-        attachment->setSourceAlphaBlendFactor(blend.SourceAlpha);
-        attachment->setDestinationAlphaBlendFactor(blend.DestAlpha);
-        attachment->setAlphaBlendOperation(MTL::BlendOperationAdd);
+std::vector<std::filesystem::path> PipelineArchives(const std::filesystem::path &base) {
+    std::error_code ec;
+    std::vector<std::filesystem::path> paths;
+    const auto directory = base.parent_path().empty() ? std::filesystem::path{"."} : base.parent_path();
+    const auto prefix = base.stem().string() + ".";
+    const auto extension = base.extension().string();
+    for (std::filesystem::directory_iterator it{directory, ec}, end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        const auto name = it->path().filename().string();
+        if (name == base.filename().string() || (name.starts_with(prefix) && name.ends_with(extension))) paths.push_back(it->path());
     }
-    if (formats.Depth != MTL::PixelFormatInvalid) descriptor->setDepthAttachmentPixelFormat(formats.Depth);
+    std::sort(paths.begin(), paths.end(), [](const auto &a, const auto &b) {
+        std::error_code left_error, right_error;
+        return std::filesystem::last_write_time(a, left_error) > std::filesystem::last_write_time(b, right_error);
+    });
+    return paths;
 }
 
-void ConfigureAttachments(MTL4::RenderPipelineColorAttachmentDescriptorArray *attachments, const PassFormats &formats, const std::vector<BlendState> &blends) {
+void PrunePipelineArchives(const std::filesystem::path &base) {
+    constexpr uint32_t MaxDeltaArchives = 64u;
+    constexpr uint64_t MaxArchiveBytes = 256u << 20;
+    std::error_code ec;
+    uint64_t bytes = std::filesystem::file_size(base, ec);
+    if (ec) bytes = 0u;
+    uint32_t deltas = 0u;
+    for (const auto &path : PipelineArchives(base)) {
+        if (path.filename() == base.filename()) continue;
+        const auto size = std::filesystem::file_size(path, ec);
+        if (ec) continue;
+        if (deltas == 0u || (deltas < MaxDeltaArchives && bytes + size <= MaxArchiveBytes)) {
+            ++deltas;
+            bytes += size;
+        } else std::filesystem::remove(path, ec);
+    }
+}
+
+// Both Metal descriptor families share the attachment state; only the blend enable API differs.
+template<typename Attachments>
+void ConfigureColorAttachments(Attachments *attachments, const PassFormats &formats, const std::vector<BlendState> &blends) {
     for (size_t i = 0; i < formats.Color.size(); ++i) {
         auto *attachment = attachments->object(i);
         attachment->setPixelFormat(formats.Color[i]);
         const auto blend = i < blends.size() ? blends[i] : NoBlend;
         attachment->setWriteMask(blend.WriteMask ? MTL::ColorWriteMaskAll : MTL::ColorWriteMaskNone);
-        attachment->setBlendingState(blend.Enabled ? MTL4::BlendStateEnabled : MTL4::BlendStateDisabled);
+        if constexpr (requires { attachment->setBlendingEnabled(blend.Enabled); }) attachment->setBlendingEnabled(blend.Enabled);
+        else attachment->setBlendingState(blend.Enabled ? MTL4::BlendStateEnabled : MTL4::BlendStateDisabled);
         if (!blend.Enabled) continue;
         attachment->setSourceRGBBlendFactor(blend.SourceRgb);
         attachment->setDestinationRGBBlendFactor(blend.DestRgb);
@@ -105,6 +78,13 @@ void ConfigureAttachments(MTL4::RenderPipelineColorAttachmentDescriptorArray *at
         attachment->setDestinationAlphaBlendFactor(blend.DestAlpha);
         attachment->setAlphaBlendOperation(MTL::BlendOperationAdd);
     }
+}
+
+// Classic pipeline descriptors also specify their depth format here.
+template<typename Descriptor>
+void ConfigureAttachments(Descriptor *descriptor, const PassFormats &formats, const std::vector<BlendState> &blends) {
+    ConfigureColorAttachments(descriptor->colorAttachments(), formats, blends);
+    if (formats.Depth != MTL::PixelFormatInvalid) descriptor->setDepthAttachmentPixelFormat(formats.Depth);
 }
 
 NS::SharedPtr<MTL::DepthStencilState> MakeDepthState(LibraryCache &cache, const std::optional<DepthState> &depth) {
@@ -154,11 +134,14 @@ NS::SharedPtr<MTL4::FunctionDescriptor> MakeFunctionDescriptor(LibraryCache &cac
 }
 } // namespace
 
-LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive)
-    : Ctx(ctx), ShadersDir(std::move(shaders_dir)), ArchivePath(std::move(pipeline_archive)) {
+LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive,
+                           std::filesystem::path builtin_archive, bool prune_archive_chunks, bool archive_only)
+    : Ctx(ctx), ShadersDir(std::move(shaders_dir)), ArchivePath(std::move(pipeline_archive)),
+      BuiltinArchivePath(std::move(builtin_archive)),
+      PruneArchiveChunks(prune_archive_chunks), ReadArchiveOnly(archive_only) {
     if (!Ctx.Device->supportsFamily(MTL::GPUFamilyMetal4)) return;
     const auto compiler_descriptor = NS::TransferPtr(MTL4::CompilerDescriptor::alloc()->init());
-    if (!ArchivePath.empty()) {
+    if (!ArchivePath.empty() && !ReadArchiveOnly) {
         const auto serializer_descriptor = NS::TransferPtr(MTL4::PipelineDataSetSerializerDescriptor::alloc()->init());
         serializer_descriptor->setConfiguration(MTL4::PipelineDataSetSerializerConfigurationCaptureBinaries);
         Serializer = NS::TransferPtr(Ctx.Device->newPipelineDataSetSerializer(serializer_descriptor.get()));
@@ -170,57 +153,77 @@ LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir
         throw std::runtime_error(std::format("Failed to create the Metal pipeline compiler:\n{}", error ? error->localizedDescription()->utf8String() : "unknown"));
     }
 
-    std::error_code ec;
-    if (ArchivePath.empty()) return;
-    const auto fingerprint = ShaderTreeFingerprint(ShadersDir);
-    if (!fingerprint) return;
-    SourceFingerprint = fingerprint;
-    if (!std::filesystem::exists(ArchivePath, ec)) return;
-    uint64_t archived_fingerprint{};
-    std::ifstream fingerprint_input(FingerprintPath(ArchivePath), std::ios::binary);
-    fingerprint_input.read(reinterpret_cast<char *>(&archived_fingerprint), sizeof(archived_fingerprint));
-    if (!fingerprint_input || archived_fingerprint != *SourceFingerprint) return;
-    // Continue without the archive when loading fails; pipeline compilation remains available.
-    if (auto archive = NS::TransferPtr(Ctx.Device->newArchive(NS::URL::fileURLWithPath(Str(ArchivePath.string())), &error))) {
-        LoadedArchive = std::move(archive);
+    // Archive chunks are immutable. Rewriting a serializer's partial capture
+    // would discard pipelines this session did not request.
+    const auto load = [&](const std::filesystem::path &path) {
+        error = nullptr;
+        if (auto archive = NS::TransferPtr(Ctx.Device->newArchive(NS::URL::fileURLWithPath(Str(path.string())), &error))) Archives.push_back(std::move(archive));
+    };
+    if (!ArchivePath.empty()) {
+        for (const auto &path : PipelineArchives(ArchivePath)) load(path);
+    }
+    if (!BuiltinArchivePath.empty() && BuiltinArchivePath != ArchivePath) {
+        for (const auto &path : PipelineArchives(BuiltinArchivePath)) load(path);
     }
 }
 
-// Writes captured pipelines atomically to prevent concurrent readers from opening a partial archive.
+std::unique_ptr<LibraryCache> LibraryCache::PrewarmCache() const {
+    if ((BuiltinArchivePath.empty() || PipelineArchives(BuiltinArchivePath).empty()) &&
+        (ArchivePath.empty() || PipelineArchives(ArchivePath).empty()))
+        throw std::runtime_error("Offline pipeline archive is unavailable.");
+    return std::make_unique<LibraryCache>(Ctx,ShadersDir,ArchivePath,BuiltinArchivePath,false,true);
+}
+
+// Write only newly compiled pipelines into an immutable chunk. Existing
+// archives keep every pipeline the current process did not use.
 LibraryCache::~LibraryCache() {
-    if (ArchivePath.empty() || !Serializer || !PipelineCreated) return;
+    (void)FlushArchive();
+}
+
+bool LibraryCache::FlushArchive() {
+    if (ArchivePath.empty() || !Serializer || !PipelineCreated) return true;
     std::error_code ec;
     std::filesystem::create_directories(ArchivePath.parent_path(), ec);
-    auto tmp = ArchivePath;
-    tmp += std::format(".{}", getpid());
+    if (ec) return false;
+    auto destination = ArchivePath;
+    if (std::filesystem::exists(destination, ec)) {
+        const auto stamp = std::chrono::system_clock::now().time_since_epoch().count();
+        destination = ArchivePath.parent_path() /
+            std::format("{}.{}.{}{}", ArchivePath.stem().string(), stamp, getpid(), ArchivePath.extension().string());
+    }
+    auto tmp = destination;
+    tmp += std::format(".tmp.{}", getpid());
     NS::Error *error = nullptr;
-    if (Serializer->serializeAsArchiveAndFlushToURL(NS::URL::fileURLWithPath(Str(tmp.string())), &error)) {
-        std::filesystem::rename(tmp, ArchivePath, ec);
-        if (!ec && SourceFingerprint) {
-            auto fingerprint = FingerprintPath(ArchivePath);
-            auto fingerprint_tmp = fingerprint;
-            fingerprint_tmp += std::format(".{}", getpid());
-            {
-                std::ofstream output(fingerprint_tmp, std::ios::binary | std::ios::trunc);
-                output.write(reinterpret_cast<const char *>(&*SourceFingerprint), sizeof(*SourceFingerprint));
-            }
-            std::filesystem::rename(fingerprint_tmp, fingerprint, ec);
-            std::filesystem::remove(fingerprint_tmp, ec);
+    const bool serialized = Serializer->serializeAsArchiveAndFlushToURL(NS::URL::fileURLWithPath(Str(tmp.string())), &error);
+    if (serialized) std::filesystem::rename(tmp, destination, ec);
+    const bool saved = serialized && !ec;
+    std::filesystem::remove(tmp, ec);
+    if (!saved) return false;
+    PipelineCreated = false;
+    if (PruneArchiveChunks) PrunePipelineArchives(ArchivePath);
+    return true;
+}
+
+NS::SharedPtr<MTL::ComputePipelineState> LibraryCache::FindComputePipeline(const MTL4::ComputePipelineDescriptor *descriptor) const {
+    for (const auto &archive : Archives) {
+        NS::Error *error = nullptr;
+        if (auto state = NS::TransferPtr(archive->newComputePipelineState(descriptor, &error))) {
+            ++ArchiveHits;
+            return state;
         }
     }
-    std::filesystem::remove(tmp, ec);
+    return {};
 }
 
-MTL::RenderPipelineState *LibraryCache::ArchivedRenderPipeline(const MTL4::PipelineDescriptor *descriptor) const {
-    if (!LoadedArchive) return nullptr;
-    NS::Error *error = nullptr;
-    return LoadedArchive->newRenderPipelineState(descriptor, &error);
-}
-
-MTL::ComputePipelineState *LibraryCache::ArchivedComputePipeline(const MTL4::ComputePipelineDescriptor *descriptor) const {
-    if (!LoadedArchive) return nullptr;
-    NS::Error *error = nullptr;
-    return LoadedArchive->newComputePipelineState(descriptor, &error);
+NS::SharedPtr<MTL::RenderPipelineState> LibraryCache::FindRenderPipeline(const MTL4::PipelineDescriptor *descriptor) const {
+    for (const auto &archive : Archives) {
+        NS::Error *error = nullptr;
+        if (auto state = NS::TransferPtr(archive->newRenderPipelineState(descriptor, &error))) {
+            ++ArchiveHits;
+            return state;
+        }
+    }
+    return {};
 }
 
 MTL::Library *LibraryCache::Get(const std::filesystem::path &relative_path, const std::vector<std::string> &defines) {
@@ -230,12 +233,26 @@ MTL::Library *LibraryCache::Get(const std::filesystem::path &relative_path, cons
     if (entry.Library && DepsUnchanged(entry.Deps, ShadersDir)) return entry.Library.get();
 
     const auto source = msl::Load(ShadersDir, relative_path, defines);
-    NS::Error *error = nullptr;
-    auto library = NS::TransferPtr(Ctx.Device->newLibrary(Str(source.Text), static_cast<MTL::CompileOptions *>(nullptr), &error));
-    if (!library) {
-        throw std::runtime_error(std::format("Failed to compile shader '{}':\n{}", relative_path.string(), error ? error->localizedDescription()->utf8String() : "unknown"));
-    }
+    auto binary = ShadersDir / relative_path;
+    binary.replace_extension(".metallib");
     std::error_code ec;
+    const auto binary_time = std::filesystem::last_write_time(binary, ec);
+    bool fresh = !ec && defines.empty();
+    for (const auto &file : source.Files) {
+        std::error_code source_error;
+        const auto source_time = std::filesystem::last_write_time(ShadersDir / file, source_error);
+        if (source_error || source_time > binary_time) { fresh = false; break; }
+    }
+    if (ReadArchiveOnly && !fresh) throw std::runtime_error(std::format("Offline shader library is stale or missing: '{}'",relative_path.string()));
+    NS::Error *error = nullptr;
+    auto library = fresh ?
+        NS::TransferPtr(Ctx.Device->newLibrary(Str(binary.string()), &error)) :
+        NS::TransferPtr(Ctx.Device->newLibrary(Str(source.Text), static_cast<MTL::CompileOptions *>(nullptr), &error));
+    if (!library) {
+        throw std::runtime_error(std::format("Failed to load shader '{}' from {}:\n{}", relative_path.string(),
+            fresh ? binary.string() : "source", error ? error->localizedDescription()->utf8String() : "unknown"));
+    }
+    if (fresh) ++BinaryLibraries; else ++SourceLibraries;
     decltype(entry.Deps) deps;
     deps.reserve(source.Files.size());
     for (const auto &file : source.Files) deps.emplace_back(file, std::filesystem::last_write_time(ShadersDir / file, ec));
@@ -272,17 +289,16 @@ RenderPipeline MakeRenderPipeline(
         fragment_function = MakeFunctionDescriptor(cache, *fragment);
         descriptor->setFragmentFunctionDescriptor(fragment_function.get());
     }
-    ConfigureAttachments(descriptor->colorAttachments(), formats, blends);
+    ConfigureColorAttachments(descriptor->colorAttachments(), formats, blends);
 
-    auto state = NS::TransferPtr(cache.ArchivedRenderPipeline(descriptor.get()));
+    NS::Error *error = nullptr;
+    auto state = cache.FindRenderPipeline(descriptor.get());
+    const bool archive_hit = bool(state);
+    if (!state) state = NS::TransferPtr(cache.PipelineCompiler()->newRenderPipelineState(descriptor.get(), nullptr, &error));
     if (!state) {
-        NS::Error *error = nullptr;
-        state = NS::TransferPtr(cache.PipelineCompiler()->newRenderPipelineState(descriptor.get(), nullptr, &error));
-        if (!state) {
-            throw std::runtime_error(std::format("Failed to create the render pipeline for '{}':\n{}", vertex.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
-        }
+        throw std::runtime_error(std::format("Failed to create the render pipeline for '{}':\n{}", vertex.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
     }
-    cache.NotePipelineCreated();
+    if (!archive_hit) cache.NotePipelineCreated();
     return {std::move(state), MakeDepthState(cache, depth)};
 }
 
@@ -321,17 +337,16 @@ RenderPipeline MakeMeshPipeline(
         fragment_function = MakeFunctionDescriptor(cache, *fragment);
         descriptor->setFragmentFunctionDescriptor(fragment_function.get());
     }
-    ConfigureAttachments(descriptor->colorAttachments(), formats, blends);
+    ConfigureColorAttachments(descriptor->colorAttachments(), formats, blends);
 
-    auto state = NS::TransferPtr(cache.ArchivedRenderPipeline(descriptor.get()));
+    NS::Error *error = nullptr;
+    auto state = cache.FindRenderPipeline(descriptor.get());
+    const bool archive_hit = bool(state);
+    if (!state) state = NS::TransferPtr(cache.PipelineCompiler()->newRenderPipelineState(descriptor.get(), nullptr, &error));
     if (!state) {
-        NS::Error *error = nullptr;
-        state = NS::TransferPtr(cache.PipelineCompiler()->newRenderPipelineState(descriptor.get(), nullptr, &error));
-        if (!state) {
-            throw std::runtime_error(std::format("Failed to create the mesh render pipeline for '{}':\n{}", mesh.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
-        }
+        throw std::runtime_error(std::format("Failed to create the mesh render pipeline for '{}':\n{}", mesh.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
     }
-    cache.NotePipelineCreated();
+    if (!archive_hit) cache.NotePipelineCreated();
     return {std::move(state), MakeDepthState(cache, depth)};
 }
 
@@ -346,16 +361,17 @@ ComputePipeline::ComputePipeline(LibraryCache &cache, FunctionRef fn) {
         return;
     }
     const auto descriptor = NS::TransferPtr(MTL4::ComputePipelineDescriptor::alloc()->init());
+    descriptor->setLabel(Str(fn.Name));
     const auto function = MakeFunctionDescriptor(cache, fn);
     descriptor->setComputeFunctionDescriptor(function.get());
-    PipelineState = NS::TransferPtr(cache.ArchivedComputePipeline(descriptor.get()));
+    NS::Error *error = nullptr;
+    PipelineState = cache.FindComputePipeline(descriptor.get());
+    const bool archive_hit = bool(PipelineState);
+    if (!PipelineState && cache.ArchiveOnly()) throw std::runtime_error(std::format("Offline compute pipeline is absent: '{}'",fn.Name));
+    if (!PipelineState) PipelineState = NS::TransferPtr(cache.PipelineCompiler()->newComputePipelineState(descriptor.get(), nullptr, &error));
     if (!PipelineState) {
-        NS::Error *error = nullptr;
-        PipelineState = NS::TransferPtr(cache.PipelineCompiler()->newComputePipelineState(descriptor.get(), nullptr, &error));
-        if (!PipelineState) {
-            throw std::runtime_error(std::format("Failed to create the compute pipeline for '{}':\n{}", fn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
-        }
+        throw std::runtime_error(std::format("Failed to create the compute pipeline for '{}':\n{}", fn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
     }
-    cache.NotePipelineCreated();
+    if (!archive_hit) cache.NotePipelineCreated();
 }
 } // namespace mtl

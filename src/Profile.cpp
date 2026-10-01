@@ -32,6 +32,8 @@ struct Summary {
 };
 
 bool Recording{false};
+// CPU scopes measure wall time on the thread that initializes profiling.
+thread_local bool CpuOwner{false};
 std::unique_ptr<mtl::PassTimer> Timer;
 std::vector<CpuSpan> OpenCpu;
 std::vector<Stat> GpuStats, CpuStats, Counters;
@@ -143,11 +145,13 @@ void ReportJson() {
 
 void Init(const mtl::Context &ctx) {
     if (!Enabled) return;
+    CpuOwner = true;
     Timer = mtl::PassTimer::Create(ctx);
     if (!Timer) std::println(stderr, "Profile: this device cannot sample GPU counters, so passes go untimed.");
 }
 
 void Deinit() {
+    CpuOwner = false;
     Recording = false;
     Timer.reset();
 }
@@ -167,13 +171,13 @@ void EndRecording() {
 }
 
 void BeginCpu(std::string_view name) {
-    if (!Enabled) return;
+    if (!Enabled || !CpuOwner) return;
     // Allocate the report slot before nested scopes close.
     OpenCpu.emplace_back(StatIndex(CpuStats, name, OpenCpu.empty() ? NoParent : OpenCpu.back().Stat), std::chrono::steady_clock::now());
 }
 
 void EndCpu() {
-    if (!Enabled) return;
+    if (!Enabled || !CpuOwner) return;
     assert(!OpenCpu.empty() && "Profile: CPU scope closed without opening");
     const auto span = OpenCpu.back();
     OpenCpu.pop_back();

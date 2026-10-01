@@ -5,6 +5,8 @@
 #include "state/Entity.h"
 
 #include <array>
+#include <mutex>
+#include <thread>
 
 // Every mesh build pass, grouped by driver in dispatch order.
 enum class MeshPass : uint8_t {
@@ -128,10 +130,15 @@ enum class MeshPass : uint8_t {
 
 struct MeshPipelines {
     explicit MeshPipelines(mtl::LibraryCache &);
-    const mtl::ComputePipeline &operator[](MeshPass pass) const { return Pipelines[size_t(pass)]; }
+    const mtl::ComputePipeline &operator[](MeshPass pass) const;
+    void PrewarmAsync();
 
-    std::array<mtl::ComputePipeline, size_t(MeshPass::Count)> Pipelines;
+    mtl::LibraryCache &Libraries;
+    mutable std::mutex Mutex;
+    mutable std::array<std::optional<mtl::ComputePipeline>, size_t(MeshPass::Count)> Pipelines;
+    std::jthread PrewarmWorker;
 };
 
-// Returns the mesh build pipelines, compiling them on first use.
+// Returns mesh pipelines.
+// Each pass compiles when first requested.
 MeshPipelines &GetMeshPipelines(state::Scene &);

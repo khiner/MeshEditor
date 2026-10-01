@@ -17,6 +17,7 @@ namespace MTL4 {
 class PipelineDescriptor;
 class ComputePipelineDescriptor;
 class Compiler;
+class CompilerTaskOptions;
 class PipelineDataSetSerializer;
 class Archive;
 } // namespace MTL4
@@ -31,24 +32,33 @@ struct FunctionConstant {
 };
 
 // Caches shader libraries until their source or included files change.
-// Uses `pipeline_archive` for deterministic MTL4 pipeline binaries when the device supports Metal 4.
+// Reads the built-in archive for first launch and keeps newly compiled Metal 4
+// pipelines in immutable chunks under the writable user archive path.
 // PipelineCompiler() returns null on older devices, which use the classic APIs without archive caching.
 struct LibraryCache {
-    LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive = {});
+    LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive = {},
+                 std::filesystem::path builtin_archive = {}, bool prune_archive_chunks = true, bool archive_only = false);
     ~LibraryCache();
     LibraryCache(const LibraryCache &) = delete;
     LibraryCache &operator=(const LibraryCache &) = delete;
     LibraryCache(LibraryCache &&) noexcept;
 
     MTL::Library *Get(const std::filesystem::path &relative_path, const std::vector<std::string> &defines = {});
+    // Independent cache for background pipeline creation. Its archive is
+    // read-only, so it never races the foreground cache's serializer.
+    std::unique_ptr<LibraryCache> PrewarmCache() const;
     void Clear();
-
-    // Returns the archived pipeline for `descriptor`, or null after an archive miss.
-    MTL::RenderPipelineState *ArchivedRenderPipeline(const MTL4::PipelineDescriptor *) const;
-    MTL::ComputePipelineState *ArchivedComputePipeline(const MTL4::ComputePipelineDescriptor *) const;
+    bool FlushArchive();
 
     MTL4::Compiler *PipelineCompiler() const { return Compiler.get(); }
-    void NotePipelineCreated() { PipelineCreated = true; }
+    bool ArchiveOnly() const { return ReadArchiveOnly; }
+    NS::SharedPtr<MTL::ComputePipelineState> FindComputePipeline(const MTL4::ComputePipelineDescriptor *) const;
+    NS::SharedPtr<MTL::RenderPipelineState> FindRenderPipeline(const MTL4::PipelineDescriptor *) const;
+    void NotePipelineCreated() { PipelineCreated = true; ++CompileMisses; }
+    uint32_t ArchiveHitCount() const { return ArchiveHits; }
+    uint32_t CompileMissCount() const { return CompileMisses; }
+    uint32_t BinaryLibraryLoadCount() const { return BinaryLibraries; }
+    uint32_t SourceLibraryCompileCount() const { return SourceLibraries; }
 
     const Context &Ctx;
 
@@ -60,11 +70,16 @@ private:
     std::filesystem::path ShadersDir;
     std::unordered_map<std::string, Entry> Entries;
     std::filesystem::path ArchivePath;
+    std::filesystem::path BuiltinArchivePath;
     NS::SharedPtr<MTL4::PipelineDataSetSerializer> Serializer;
     NS::SharedPtr<MTL4::Compiler> Compiler;
-    NS::SharedPtr<MTL4::Archive> LoadedArchive;
-    std::optional<uint64_t> SourceFingerprint;
+    std::vector<NS::SharedPtr<MTL4::Archive>> Archives;
     bool PipelineCreated{false};
+    bool PruneArchiveChunks{true};
+    bool ReadArchiveOnly{false};
+    mutable uint32_t ArchiveHits{};
+    uint32_t CompileMisses{};
+    uint32_t BinaryLibraries{}, SourceLibraries{};
 };
 
 struct FunctionRef {

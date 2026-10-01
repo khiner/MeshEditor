@@ -36,6 +36,7 @@ foreach(test MslCompile Transparency)
     mesheditor_test(${target} ${test}Test.cpp MeshEditorMetal)
     set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 endforeach()
+add_dependencies(MeshEditorMslCompileTest MeshEditorShaderLibraries)
 
 foreach(target IN ITEMS MeshEditorTests MeshEditorActionSerializeTest
         MeshEditorRbpBodyTest MeshEditorContactManifoldTest)

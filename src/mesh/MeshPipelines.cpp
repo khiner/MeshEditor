@@ -1,5 +1,7 @@
+#include "metal/AutoreleaseScope.h"
 #include "mesh/MeshPipelines.h"
 
+#include "Profile.h"
 #include "state/Scene.h"
 
 namespace {
@@ -122,14 +124,47 @@ constexpr std::array<std::pair<const char *, const char *>, size_t(MeshPass::Cou
     {"MeshClone.metal", "CopyReferencePairs"},
 }};
 
-template<size_t... I>
-std::array<mtl::ComputePipeline, sizeof...(I)> CompilePasses(mtl::LibraryCache &libraries, std::index_sequence<I...>) {
-    return {{mtl::ComputePipeline{libraries, {PassFunctions[I].first, PassFunctions[I].second}}...}};
-}
 } // namespace
 
-MeshPipelines::MeshPipelines(mtl::LibraryCache &libraries)
-    : Pipelines{CompilePasses(libraries, std::make_index_sequence<size_t(MeshPass::Count)>{})} {}
+MeshPipelines::MeshPipelines(mtl::LibraryCache &libraries) : Libraries(libraries) {}
+
+void MeshPipelines::PrewarmAsync() {
+    if (PrewarmWorker.joinable() || !Libraries.PipelineCompiler()) return;
+    PrewarmWorker=std::jthread([this](std::stop_token stop) {
+        const mtl::AutoreleaseScope native_scope;
+        const auto pool=NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+        try {
+            auto cache=Libraries.PrewarmCache();
+            for (size_t i=0u;i<PassFunctions.size() && !stop.stop_requested();++i) {
+                {
+                    std::lock_guard lock{Mutex};
+                    if (Pipelines[i]) continue;
+                }
+                try {
+                    mtl::ComputePipeline pipeline{*cache,{PassFunctions[i].first,PassFunctions[i].second}};
+                    std::lock_guard lock{Mutex};
+                    if (!Pipelines[i]) Pipelines[i].emplace(std::move(pipeline));
+                } catch (...) {
+                    // Foreground use retains the normal error path for a shader
+                    // edited after the offline archive was built.
+                }
+            }
+        } catch (...) {
+            // A missing archive does not change foreground shader behavior.
+        }
+    });
+}
+
+const mtl::ComputePipeline &MeshPipelines::operator[](MeshPass pass) const {
+    const auto index = size_t(pass);
+    std::lock_guard lock{Mutex};
+    auto &pipeline = Pipelines.at(index);
+    if (!pipeline) {
+        const profile::CpuScope scope{"MeshPipelineCreate"};
+        pipeline.emplace(Libraries, mtl::FunctionRef{PassFunctions[index].first, PassFunctions[index].second});
+    }
+    return *pipeline;
+}
 
 MeshPipelines &GetMeshPipelines(state::Scene &r) {
     if (auto *pipelines = r.Context.find<MeshPipelines>()) return *pipelines;

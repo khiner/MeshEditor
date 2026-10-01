@@ -43,7 +43,7 @@ if(NOT EXISTS ${RESOURCE_DEST})
     file(CREATE_LINK "${CMAKE_SOURCE_DIR}/res" ${RESOURCE_DEST} SYMBOLIC)
 endif()
 
-# Put source shaders and the shared GPU headers under one runtime path.
+# Put editable shader sources, compiled libraries, and shared GPU headers under one runtime path.
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
 # Prune links whose source shader was deleted.
 file(GLOB SHADER_LINKS "${CMAKE_BINARY_DIR}/shaders/*")
@@ -53,13 +53,33 @@ foreach(dst IN LISTS SHADER_LINKS)
     endif()
 endforeach()
 file(GLOB SHADER_SOURCE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/shaders/*")
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shader-libraries")
+set(METAL_LIBRARIES)
 foreach(src IN LISTS SHADER_SOURCE_FILES)
     get_filename_component(name "${src}" NAME)
     set(dst "${CMAKE_BINARY_DIR}/shaders/${name}")
     if(NOT EXISTS "${dst}")
         file(CREATE_LINK "${src}" "${dst}" SYMBOLIC)
     endif()
+    if(name MATCHES "\\.metal$")
+        get_filename_component(stem "${src}" NAME_WE)
+        set(air "${CMAKE_BINARY_DIR}/shader-libraries/${stem}.air")
+        set(library "${CMAKE_BINARY_DIR}/shaders/${stem}.metallib")
+        add_custom_command(OUTPUT "${air}"
+            COMMAND xcrun metal -w -c -std=metal3.2
+                -I "${CMAKE_SOURCE_DIR}/src/shaders" -I "${CMAKE_SOURCE_DIR}/src"
+                -MMD -MF "${air}.d" "${src}" -o "${air}"
+            DEPENDS "${src}"
+            DEPFILE "${air}.d"
+            VERBATIM)
+        add_custom_command(OUTPUT "${library}"
+            COMMAND xcrun metallib "${air}" -o "${library}"
+            DEPENDS "${air}"
+            VERBATIM)
+        list(APPEND METAL_LIBRARIES "${library}")
+    endif()
 endforeach()
+add_custom_target(MeshEditorShaderLibraries DEPENDS ${METAL_LIBRARIES})
 set(GPU_HEADERS_LINK "${CMAKE_BINARY_DIR}/shaders/gpu")
 if(NOT EXISTS ${GPU_HEADERS_LINK})
     file(CREATE_LINK "${CMAKE_SOURCE_DIR}/src/gpu" ${GPU_HEADERS_LINK} SYMBOLIC)
@@ -79,9 +99,27 @@ endif()
 
 include(cmake/Libraries.cmake)
 
+add_executable(MeshEditorPipelineArchive tools/PipelineArchive.cpp)
+mesheditor_compile_policy(MeshEditorPipelineArchive COLD)
+target_link_libraries(MeshEditorPipelineArchive PRIVATE MeshEditorRender)
+set(PIPELINE_ARCHIVE "${CMAKE_BINARY_DIR}/cache/Pipelines.mtl4a")
+set(PIPELINE_ARCHIVE_STAMP "${CMAKE_BINARY_DIR}/cache/Pipelines.stamp")
+file(GLOB_RECURSE PIPELINE_SHADER_FILES CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/src/shaders/*.metal" "${CMAKE_SOURCE_DIR}/src/gpu/*.h")
+add_custom_command(OUTPUT "${PIPELINE_ARCHIVE_STAMP}"
+    BYPRODUCTS "${PIPELINE_ARCHIVE}"
+    COMMAND MeshEditorPipelineArchive "${CMAKE_BINARY_DIR}/shaders" "${PIPELINE_ARCHIVE}" "${PIPELINE_ARCHIVE_STAMP}"
+    DEPENDS MeshEditorPipelineArchive ${PIPELINE_SHADER_FILES}
+        src/metal/Shader.cpp src/mesh/MeshPipelines.cpp src/render/Pipelines.cpp
+    COMMENT "Precompiling Metal pipelines for cold startup"
+    VERBATIM)
+add_custom_target(MeshEditorPrecompilePipelines DEPENDS "${PIPELINE_ARCHIVE_STAMP}")
+add_dependencies(MeshEditorPrecompilePipelines MeshEditorShaderLibraries)
+
 if(MESHEDITOR_APP)
     add_executable(MeshEditor src/main.cpp)
     target_link_libraries(MeshEditor PRIVATE MeshEditorUi)
+    add_dependencies(MeshEditor MeshEditorPrecompilePipelines)
     rbp_copy_shaders(MeshEditor)
     mesheditor_compile_policy(MeshEditor COLD)
     target_compile_definitions(MeshEditor PRIVATE
