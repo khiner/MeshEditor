@@ -13,8 +13,7 @@ void ClearLookThrough(state::Scene &, state::Entity viewport);
 // Returns null when no look-through camera is active.
 state::Entity LookThroughCameraEntity(const state::Scene &);
 
-// The active view camera plus any look-through camera's saved view.
-// Replay doesn't record navigation, so this is captured before a clear/replay and restored afterward.
+// The viewport's active and saved editor views, owned by the workspace.
 struct ViewCameraState {
     ViewCamera Active;
     std::optional<ViewCamera> LookThroughSaved;

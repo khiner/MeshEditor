@@ -38,6 +38,7 @@
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCamera.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportRenderGpu.h"
@@ -186,7 +187,7 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
     }
     if (History.Present >= 0 && !Save()) return false;
     auto previous = History.Pin();
-    const auto camera = R.get<const ViewCamera>(Viewport);
+    const auto camera = GetViewCameraState(R, Viewport);
     RecordedActions.clear();
     Deferred.clear();
     ClearInteraction();
@@ -196,7 +197,7 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
     const bool begun = Begin(dir);
     if (!begun) {
         History.Restore(previous);
-        R.replace<ViewCamera>(Viewport, camera);
+        SetViewCameraState(R, Viewport, camera);
         Settle(EventPass::Settle);
     }
     History.Release(previous);
@@ -222,6 +223,7 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
         return false;
     }
     ReleaseGesture();
+    R.remove<SavedViewCamera>(Viewport);
     if (lock) DirectoryLock = std::move(lock);
     SavedPath = saved_path;
     RestoredWorkspace = saved ? std::move(saved->Workspace) : std::vector<std::byte>{};

@@ -151,6 +151,7 @@ inline constexpr std::string_view SchemaNames[] = {
     "RenderedLighting",
     "ReportContacts",
     "SamplePlayback",
+    "SavedViewCamera",
     "ScaleLocked",
     "Scene",
     "SceneMembership",

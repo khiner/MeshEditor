@@ -16,20 +16,13 @@
 #include "viewport/ViewportInteractionState.h"
 
 namespace snapshot::detail {
-// ViewCamera and LookingThrough require constructor seeds before deserialization.
+// ViewCamera requires a constructor seed before deserialization.
 void EmplaceViewCamera(state::Scene &r, state::Entity e, std::span<const std::byte> bytes) {
     ViewCamera v{vec3{0, 0, 1}, vec3{0}, CameraLens{}};
     if (zpp::bits::failure(zpp::bits::in{bytes}(v))) return;
     r.emplace_or_replace<ViewCamera>(e, v);
 }
-void EmplaceLookingThrough(state::Scene &r, state::Entity e, std::span<const std::byte> bytes) {
-    LookingThrough l{ViewCamera{vec3{0, 0, 1}, vec3{0}, CameraLens{}}};
-    if (zpp::bits::failure(zpp::bits::in{bytes}(l))) return;
-    r.emplace_or_replace<LookingThrough>(e, std::move(l));
-}
-
 template<> inline constexpr auto CustomEmplace<ViewCamera> = &EmplaceViewCamera;
-template<> inline constexpr auto CustomEmplace<LookingThrough> = &EmplaceLookingThrough;
 
 void RegisterViewport(Tables &tables) {
     Persistent<
@@ -37,7 +30,7 @@ void RegisterViewport(Tables &tables) {
         ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState>(tables);
     tables.Snapshots[state::Type<ViewCamera>()].History = false;
     Derived<
-        EnabledInteractionModes, AdditiveBoxSelectBaseline, ExciteSelectionBaseline,
+        SavedViewCamera, EnabledInteractionModes, AdditiveBoxSelectBaseline, ExciteSelectionBaseline,
         PendingEditElementClick, PendingBoxSelect, PendingPick, BoxSelectState,
         GizmoInteraction, PendingTransform, StartPivot, StartScreenTransform, StartTransform, StartBoneLength, action::DragFieldStart, VideoRecording>(tables);
 }

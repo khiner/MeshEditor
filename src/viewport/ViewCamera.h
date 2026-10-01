@@ -44,6 +44,10 @@ private:
     void ApplyDistance(float new_distance);
 };
 
-struct LookingThrough {
-    ViewCamera SavedViewCamera;
+// The scene camera the document selects for look-through.
+struct LookingThrough {};
+
+// The viewport's editor view to restore when leaving look-through.
+struct SavedViewCamera {
+    ViewCamera Value;
 };
