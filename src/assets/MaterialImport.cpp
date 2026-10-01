@@ -46,7 +46,7 @@ std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::S
     const auto sampler_index = uint32_t(sources.Samplers.size());
     sources.Samplers.emplace_back(gltf::Sampler{.MagFilter = gltf::Filter::Nearest, .MinFilter = gltf::Filter::Nearest, .WrapS = gltf::Wrap::Repeat, .WrapT = gltf::Wrap::Repeat});
 
-    auto obj_batch = BeginTextureUploadBatch(ctx);
+    TextureUploadBatch obj_batch{ctx};
     std::unordered_map<std::string, uint32_t> texture_slot_cache;
     std::unordered_map<uint32_t, uint32_t> source_texture_indices;
     const auto resolve_texture_slot =

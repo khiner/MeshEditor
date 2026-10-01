@@ -8,7 +8,6 @@
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
-#include "metal/MetalCpp.h"
 #include "numeric/MatrixMath.h"
 #include "object/ObjectOps.h"
 #include "project/Project.h"
@@ -395,17 +394,11 @@ int main(int argc, char **argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
     boost::ut::suite tests = [] {
-        const auto pooled = [](auto test) {
-            return [test] {
-                const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
-                test();
-            };
-        };
         using namespace boost::ut;
-        "cube selection toggle moves selected vertices"_test = pooled(TestCubeSelectionMove);
-        "face inset previews commit cancel and undo"_test = pooled(TestInsetGesture);
-        "tetrahedron hull returns to points after deleting faces"_test = pooled(TestPointHullDelete);
-        "middle line edge subdivides into two rendered segments"_test = pooled(TestLineSubdivide);
+        "cube selection toggle moves selected vertices"_test = TestCubeSelectionMove;
+        "face inset previews commit cancel and undo"_test = TestInsetGesture;
+        "tetrahedron hull returns to points after deleting faces"_test = TestPointHullDelete;
+        "middle line edge subdivides into two rendered segments"_test = TestLineSubdivide;
     };
     return RunSuites();
 }

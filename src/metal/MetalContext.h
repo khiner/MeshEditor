@@ -30,7 +30,7 @@ class CommandQueue;
 namespace mtl {
 struct PhysicalPagePool;
 struct PhysicalPage;
-NS::String *Str(std::string_view);
+NS::SharedPtr<NS::String> Str(std::string_view);
 
 // Queue-wide residency includes the physical heaps behind sparse GPU buffers.
 struct Context {
@@ -38,7 +38,7 @@ struct Context {
     ~Context();
     Context(const Context &) = delete;
     Context &operator=(const Context &) = delete;
-    Context(Context &&) noexcept;
+    Context(Context &&) = delete;
     Context &operator=(Context &&) = delete;
 
     void AddResident(MTL::Allocation *) const;

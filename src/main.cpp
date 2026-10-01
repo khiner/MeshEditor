@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "numeric/VectorMath.h"
 #include "numeric/uvec2.h"
 #include "numeric/vec2.h"
@@ -105,16 +106,17 @@ double ElapsedMs(SteadyClock::time_point begin) { return std::chrono::duration<d
 
 namespace {
 // Skip a frame when every drawable is in flight.
-MTL::CommandBuffer *RenderAndPresentFrame(const mtl::Context &ctx, CA::MetalLayer *layer, ImDrawData *draw_data) {
+NS::SharedPtr<MTL::CommandBuffer> RenderAndPresentFrame(const mtl::Context &ctx, CA::MetalLayer *layer, ImDrawData *draw_data) {
+    const mtl::AutoreleaseScope native_scope;
     const profile::CpuScope scope{"ImGuiRenderSubmit"};
     auto *drawable = layer->nextDrawable();
-    if (!drawable) return nullptr;
+    if (!drawable) return {};
 
     const std::array colors{mtl::ClearColor(drawable->texture(), {0.45, 0.55, 0.60, 1.0})};
-    auto *const pass = mtl::MakePassDescriptor(colors);
+    const auto pass = mtl::MakePassDescriptor(colors);
     auto *command_buffer = ctx.Queue->commandBuffer();
-    ImGui_ImplMetal_NewFrame(pass);
-    auto *encoder = command_buffer->renderCommandEncoder(pass);
+    ImGui_ImplMetal_NewFrame(pass.get());
+    auto *encoder = command_buffer->renderCommandEncoder(pass.get());
     ImGui_ImplMetal_RenderDrawData(draw_data, command_buffer, encoder);
     encoder->endEncoding();
     {
@@ -122,7 +124,7 @@ MTL::CommandBuffer *RenderAndPresentFrame(const mtl::Context &ctx, CA::MetalLaye
         command_buffer->presentDrawable(drawable);
     }
     command_buffer->commit();
-    return command_buffer;
+    return NS::RetainPtr(command_buffer);
 }
 
 using namespace ImGui;
@@ -585,6 +587,7 @@ fs::path WriteValidationImage(const mtl::Context &ctx, std::string_view name, co
 }
 
 void RenderAppImage(const mtl::Context &ctx, ImDrawData *draw_data, ValidationImage &image) {
+    const mtl::AutoreleaseScope native_scope;
     const mtl::Extent2D extent{
         uint32_t(std::ceil(draw_data->DisplaySize.x * draw_data->FramebufferScale.x)),
         uint32_t(std::ceil(draw_data->DisplaySize.y * draw_data->FramebufferScale.y)),
@@ -597,16 +600,17 @@ void RenderAppImage(const mtl::Context &ctx, ImDrawData *draw_data, ValidationIm
         );
     }
     const std::array colors{mtl::ClearColor(*image.Target, {0.45, 0.55, 0.60, 1.0})};
-    auto *pass = mtl::MakePassDescriptor(colors);
-    ImGui_ImplMetal_NewFrame(pass);
+    const auto pass = mtl::MakePassDescriptor(colors);
+    ImGui_ImplMetal_NewFrame(pass.get());
     auto *command_buffer = ctx.Queue->commandBuffer();
     {
         mtl::PassChain chain{command_buffer};
-        auto *encoder = chain.BeginRender(pass, "ValidationApp");
+        auto *encoder = chain.BeginRender(pass.get(), "ValidationApp");
         ImGui_ImplMetal_RenderDrawData(draw_data, command_buffer, encoder);
     }
     command_buffer->encodeSignalEvent(image.Ready.get(), ++image.Generation);
     command_buffer->addCompletedHandler([](MTL::CommandBuffer *completed) {
+        const mtl::AutoreleaseScope native_scope;
         if (const auto *error = completed->error()) {
             std::println(stderr, "[validation] app render failed: {}", error->localizedDescription()->utf8String());
             std::abort();
@@ -817,6 +821,7 @@ void RequireEqual(const store::History &live, std::string_view what, std::span<c
 
 // Compares the restored engine's app and viewport images with the live ones, naming a divergence by `restore`.
 void CompareValidationImages(state::Scene &r, ValidationSession &session, std::string_view restore) {
+    const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
     const std::array<const mtl::Texture *, 2> expected{&session.Live.Target, &r.Context.get<const RenderTargets>().Resources->FinalColorImage};
     const std::array<const mtl::Texture *, 2> restored{&session.Restored.App.Target, &session.Restored.Core->R.Context.get<const RenderTargets>().Resources->FinalColorImage};
@@ -1425,6 +1430,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     auto &windows = r.Context.get<WindowsState>();
     int bench_ticks{0};
     while (!done) {
+        const auto frame_pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
         // Report scene loading separately from frame timing.
         if (bench_ticks == 1) {
             profile::ReportCpuPhase("Scene load CPU timings");
@@ -1646,14 +1652,14 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
             MTL::CommandBuffer *presented_frame{nullptr};
             if (present_frame) {
-                if (auto *frame = RenderAndPresentFrame(ctx, layer, draw_data)) {
+                if (auto frame = RenderAndPresentFrame(ctx, layer, draw_data)) {
                     // ImGui makes newly bound dock nodes visible on the following frame.
                     if (startup_frames_remaining > 0 && --startup_frames_remaining == 0) {
                         frame->waitUntilCompleted();
                         window.Show();
                     }
-                    presented_frame = frame;
-                    last_frame = NS::RetainPtr(frame);
+                    presented_frame = frame.get();
+                    last_frame = std::move(frame);
                 }
             }
 
@@ -1725,6 +1731,7 @@ bool RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initi
     // Record readiness after the first submitted frame has complete meshlet data.
     std::chrono::steady_clock::time_point first_frame_at{};
     while (!done) {
+        const auto frame_pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
         if (driver.DurationElapsed(r, viewport)) break;
         const auto extent = r.Context.get<const ViewportExtent>().Value;
         // Require this scene's first submit because queue workers preserve ready images across scenes.

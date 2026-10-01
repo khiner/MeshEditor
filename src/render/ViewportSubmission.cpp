@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "render/ViewportSubmission.h"
 
 #include "Profile.h"
@@ -10,9 +11,10 @@
 #include "viewport/Viewport.h"
 #include <Metal/MTLCommandQueue.hpp>
 ViewportRenderResources::ViewportRenderResources() = default;
-ViewportRenderResources::~ViewportRenderResources() = default;
+ViewportRenderResources::~ViewportRenderResources() { mtl::AutoreleaseScope::Release(InFlight); }
 // Dispatch sizes follow scene recording because the rebuild determines their counts.
 void SubmitRecordedFrame(state::Scene &r, MTL::CommandBuffer *command_buffer) {
+    const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
     auto &buffers = r.Context.get<GpuBuffers>();
     SyncPreludeDispatchArgs(buffers);
@@ -27,6 +29,7 @@ void SubmitRecordedFrame(state::Scene &r, MTL::CommandBuffer *command_buffer) {
 }
 
 void RecordAndSubmitFrame(state::Scene &r, state::Entity viewport, SceneUpdate update, RenderPhase phase) {
+    const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
     auto &resources = r.Context.get<ViewportRenderResources>();
     auto *command_buffer = ctx.Queue->commandBuffer();
@@ -41,6 +44,7 @@ bool ViewportImageReady(const state::Scene &r) {
 }
 
 void WaitForRender(state::Scene &r) {
+    const mtl::AutoreleaseScope native_scope;
     auto &frame = r.Context.get<FrameState>();
     if (!frame.RenderPending) return;
 

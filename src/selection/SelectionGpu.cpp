@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "numeric/VectorMath.h"
 #include "numeric/uvec2.h"
 #include "numeric/uvec4.h"
@@ -88,6 +89,7 @@ void SubmitAndWait(const mtl::Context &ctx, MTL::CommandBuffer *command_buffer) 
 
 // Record selection passes into one command buffer and wait for them.
 void SubmitSelectionPasses(state::Scene &r, auto &&record) {
+    const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
     auto *command_buffer = ctx.Queue->commandBuffer();
     { // End the final pass before submission.
@@ -202,7 +204,7 @@ void RunSelectionPass(
         pass->setRenderTargetWidth(extent.Width);
         pass->setRenderTargetHeight(extent.Height);
         // The pick resolve reads the key an earlier raster wrote, and bindless buffers carry no tracked hazard.
-        auto *encoder = encode::BeginScenePass(chain, pass, "SelectionPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageBlit | MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers);
+        auto *encoder = encode::BeginScenePass(chain, pass.get(), "SelectionPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageBlit | MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers);
         record_draws(encoder, extent, index == 1u);
     }
 }

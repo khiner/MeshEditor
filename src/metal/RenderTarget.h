@@ -21,7 +21,7 @@ struct DepthAttachment {
     double Clear{1.0};
 };
 
-MTL::RenderPassDescriptor *MakePassDescriptor(std::span<const ColorAttachment>, DepthAttachment = {});
+NS::SharedPtr<MTL::RenderPassDescriptor> MakePassDescriptor(std::span<const ColorAttachment>, DepthAttachment = {});
 
 inline ColorAttachment ClearColor(MTL::Texture *texture, MTL::ClearColor clear = {0, 0, 0, 0}) {
     return {texture, MTL::LoadActionClear, MTL::StoreActionStore, clear};

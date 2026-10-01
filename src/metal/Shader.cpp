@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "metal/Shader.h"
 
 #include "metal/MetalCpp.h"
@@ -7,7 +8,7 @@
 
 namespace mtl {
 LibraryCache::LibraryCache(LibraryCache &&) noexcept = default;
-void LibraryCache::Clear() { Entries.clear(); }
+void LibraryCache::Clear() { const AutoreleaseScope pool; Entries.clear(); }
 
 void RenderPipeline::Bind(MTL::RenderCommandEncoder *encoder) const {
     encoder->setRenderPipelineState(PipelineState.get());
@@ -111,8 +112,8 @@ NS::SharedPtr<MTL::Function> MakeFunction(LibraryCache &cache, const FunctionRef
     auto *library = cache.Get(ref.Path, ref.Defines);
     NS::Error *error = nullptr;
     auto function = ref.Constants.empty() ?
-        NS::TransferPtr(library->newFunction(Str(ref.Name))) :
-        NS::TransferPtr(library->newFunction(Str(ref.Name), MakeConstantValues(ref).get(), &error));
+        NS::TransferPtr(library->newFunction(Str(ref.Name).get())) :
+        NS::TransferPtr(library->newFunction(Str(ref.Name).get(), MakeConstantValues(ref).get(), &error));
     if (!function) {
         throw std::runtime_error(std::format("No function '{}' in '{}':\n{}", ref.Name, ref.Path.string(), error ? error->localizedDescription()->utf8String() : "unknown"));
     }
@@ -122,7 +123,7 @@ NS::SharedPtr<MTL::Function> MakeFunction(LibraryCache &cache, const FunctionRef
 NS::SharedPtr<MTL4::FunctionDescriptor> MakeFunctionDescriptor(LibraryCache &cache, const FunctionRef &ref) {
     auto *library = cache.Get(ref.Path, ref.Defines);
     auto function = NS::TransferPtr(MTL4::LibraryFunctionDescriptor::alloc()->init());
-    function->setName(Str(ref.Name));
+    function->setName(Str(ref.Name).get());
     function->setLibrary(library);
     if (ref.Constants.empty()) return function;
 
@@ -139,25 +140,28 @@ LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir
     : Ctx(ctx), ShadersDir(std::move(shaders_dir)), ArchivePath(std::move(pipeline_archive)),
       BuiltinArchivePath(std::move(builtin_archive)),
       PruneArchiveChunks(prune_archive_chunks), ReadArchiveOnly(archive_only) {
+    const AutoreleaseScope pool;
     if (!Ctx.Device->supportsFamily(MTL::GPUFamilyMetal4)) return;
     const auto compiler_descriptor = NS::TransferPtr(MTL4::CompilerDescriptor::alloc()->init());
+    NS::SharedPtr<MTL4::PipelineDataSetSerializer> serializer;
     if (!ArchivePath.empty() && !ReadArchiveOnly) {
         const auto serializer_descriptor = NS::TransferPtr(MTL4::PipelineDataSetSerializerDescriptor::alloc()->init());
         serializer_descriptor->setConfiguration(MTL4::PipelineDataSetSerializerConfigurationCaptureBinaries);
-        Serializer = NS::TransferPtr(Ctx.Device->newPipelineDataSetSerializer(serializer_descriptor.get()));
-        compiler_descriptor->setPipelineDataSetSerializer(Serializer.get());
+        serializer = NS::TransferPtr(Ctx.Device->newPipelineDataSetSerializer(serializer_descriptor.get()));
+        compiler_descriptor->setPipelineDataSetSerializer(serializer.get());
     }
     NS::Error *error = nullptr;
-    Compiler = NS::TransferPtr(Ctx.Device->newCompiler(compiler_descriptor.get(), &error));
-    if (!Compiler) {
+    auto compiler = NS::TransferPtr(Ctx.Device->newCompiler(compiler_descriptor.get(), &error));
+    if (!compiler) {
         throw std::runtime_error(std::format("Failed to create the Metal pipeline compiler:\n{}", error ? error->localizedDescription()->utf8String() : "unknown"));
     }
 
     // Archive chunks are immutable. Rewriting a serializer's partial capture
     // would discard pipelines this session did not request.
+    std::vector<NS::SharedPtr<MTL4::Archive>> archives;
     const auto load = [&](const std::filesystem::path &path) {
         error = nullptr;
-        if (auto archive = NS::TransferPtr(Ctx.Device->newArchive(NS::URL::fileURLWithPath(Str(path.string())), &error))) Archives.push_back(std::move(archive));
+        if (auto archive = NS::TransferPtr(Ctx.Device->newArchive(NS::URL::fileURLWithPath(Str(path.string()).get()), &error))) archives.push_back(std::move(archive));
     };
     if (!ArchivePath.empty()) {
         for (const auto &path : PipelineArchives(ArchivePath)) load(path);
@@ -165,6 +169,9 @@ LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir
     if (!BuiltinArchivePath.empty() && BuiltinArchivePath != ArchivePath) {
         for (const auto &path : PipelineArchives(BuiltinArchivePath)) load(path);
     }
+    Serializer = std::move(serializer);
+    Compiler = std::move(compiler);
+    Archives = std::move(archives);
 }
 
 std::unique_ptr<LibraryCache> LibraryCache::PrewarmCache() const {
@@ -177,10 +184,13 @@ std::unique_ptr<LibraryCache> LibraryCache::PrewarmCache() const {
 // Write only newly compiled pipelines into an immutable chunk. Existing
 // archives keep every pipeline the current process did not use.
 LibraryCache::~LibraryCache() {
+    const AutoreleaseScope pool;
     (void)FlushArchive();
+    AutoreleaseScope::Release(Entries, Archives, Compiler, Serializer);
 }
 
 bool LibraryCache::FlushArchive() {
+    const AutoreleaseScope pool;
     if (ArchivePath.empty() || !Serializer || !PipelineCreated) return true;
     std::error_code ec;
     std::filesystem::create_directories(ArchivePath.parent_path(), ec);
@@ -194,7 +204,7 @@ bool LibraryCache::FlushArchive() {
     auto tmp = destination;
     tmp += std::format(".tmp.{}", getpid());
     NS::Error *error = nullptr;
-    const bool serialized = Serializer->serializeAsArchiveAndFlushToURL(NS::URL::fileURLWithPath(Str(tmp.string())), &error);
+    const bool serialized = Serializer->serializeAsArchiveAndFlushToURL(NS::URL::fileURLWithPath(Str(tmp.string()).get()), &error);
     if (serialized) std::filesystem::rename(tmp, destination, ec);
     const bool saved = serialized && !ec;
     std::filesystem::remove(tmp, ec);
@@ -205,6 +215,7 @@ bool LibraryCache::FlushArchive() {
 }
 
 NS::SharedPtr<MTL::ComputePipelineState> LibraryCache::FindComputePipeline(const MTL4::ComputePipelineDescriptor *descriptor) const {
+    const AutoreleaseScope pool;
     for (const auto &archive : Archives) {
         NS::Error *error = nullptr;
         if (auto state = NS::TransferPtr(archive->newComputePipelineState(descriptor, &error))) {
@@ -216,6 +227,7 @@ NS::SharedPtr<MTL::ComputePipelineState> LibraryCache::FindComputePipeline(const
 }
 
 NS::SharedPtr<MTL::RenderPipelineState> LibraryCache::FindRenderPipeline(const MTL4::PipelineDescriptor *descriptor) const {
+    const AutoreleaseScope pool;
     for (const auto &archive : Archives) {
         NS::Error *error = nullptr;
         if (auto state = NS::TransferPtr(archive->newRenderPipelineState(descriptor, &error))) {
@@ -227,6 +239,7 @@ NS::SharedPtr<MTL::RenderPipelineState> LibraryCache::FindRenderPipeline(const M
 }
 
 MTL::Library *LibraryCache::Get(const std::filesystem::path &relative_path, const std::vector<std::string> &defines) {
+    const AutoreleaseScope pool;
     auto key = relative_path.string();
     for (const auto &define : defines) key += "|" + define;
     auto &entry = Entries[key];
@@ -246,8 +259,8 @@ MTL::Library *LibraryCache::Get(const std::filesystem::path &relative_path, cons
     if (ReadArchiveOnly && !fresh) throw std::runtime_error(std::format("Offline shader library is stale or missing: '{}'",relative_path.string()));
     NS::Error *error = nullptr;
     auto library = fresh ?
-        NS::TransferPtr(Ctx.Device->newLibrary(Str(binary.string()), &error)) :
-        NS::TransferPtr(Ctx.Device->newLibrary(Str(source.Text), static_cast<MTL::CompileOptions *>(nullptr), &error));
+        NS::TransferPtr(Ctx.Device->newLibrary(Str(binary.string()).get(), &error)) :
+        NS::TransferPtr(Ctx.Device->newLibrary(Str(source.Text).get(), static_cast<MTL::CompileOptions *>(nullptr), &error));
     if (!library) {
         throw std::runtime_error(std::format("Failed to load shader '{}' from {}:\n{}", relative_path.string(),
             fresh ? binary.string() : "source", error ? error->localizedDescription()->utf8String() : "unknown"));
@@ -264,6 +277,7 @@ RenderPipeline MakeRenderPipeline(
     LibraryCache &cache, FunctionRef vertex, std::optional<FunctionRef> fragment, PassFormats formats,
     std::vector<BlendState> blends, std::optional<DepthState> depth
 ) {
+    const AutoreleaseScope pool;
     if (!cache.PipelineCompiler()) {
         const auto descriptor = NS::TransferPtr(MTL::RenderPipelineDescriptor::alloc()->init());
         const auto vertex_function = MakeFunction(cache, vertex);
@@ -306,6 +320,7 @@ RenderPipeline MakeMeshPipeline(
     LibraryCache &cache, FunctionRef mesh, std::optional<FunctionRef> fragment, PassFormats formats,
     std::vector<BlendState> blends, std::optional<DepthState> depth
 ) {
+    const AutoreleaseScope pool;
     if (!cache.PipelineCompiler()) {
         const auto descriptor = NS::TransferPtr(MTL::MeshRenderPipelineDescriptor::alloc()->init());
         const auto mesh_function = MakeFunction(cache, mesh);
@@ -351,6 +366,7 @@ RenderPipeline MakeMeshPipeline(
 }
 
 ComputePipeline::ComputePipeline(LibraryCache &cache, FunctionRef fn) {
+    const AutoreleaseScope pool;
     if (!cache.PipelineCompiler()) {
         const auto function = MakeFunction(cache, fn);
         NS::Error *error = nullptr;
@@ -361,7 +377,7 @@ ComputePipeline::ComputePipeline(LibraryCache &cache, FunctionRef fn) {
         return;
     }
     const auto descriptor = NS::TransferPtr(MTL4::ComputePipelineDescriptor::alloc()->init());
-    descriptor->setLabel(Str(fn.Name));
+    descriptor->setLabel(Str(fn.Name).get());
     const auto function = MakeFunctionDescriptor(cache, fn);
     descriptor->setComputeFunctionDescriptor(function.get());
     NS::Error *error = nullptr;

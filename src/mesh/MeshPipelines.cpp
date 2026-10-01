@@ -1,4 +1,3 @@
-#include "metal/AutoreleaseScope.h"
 #include "mesh/MeshPipelines.h"
 
 #include "Profile.h"
@@ -131,8 +130,6 @@ MeshPipelines::MeshPipelines(mtl::LibraryCache &libraries) : Libraries(libraries
 void MeshPipelines::PrewarmAsync() {
     if (PrewarmWorker.joinable() || !Libraries.PipelineCompiler()) return;
     PrewarmWorker=std::jthread([this](std::stop_token stop) {
-        const mtl::AutoreleaseScope native_scope;
-        const auto pool=NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
         try {
             auto cache=Libraries.PrewarmCache();
             for (size_t i=0u;i<PassFunctions.size() && !stop.stop_requested();++i) {

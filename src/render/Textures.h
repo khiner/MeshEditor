@@ -150,10 +150,13 @@ struct MaterializedTextures {
 
 // One command buffer carries every mip generation of a materialization pass.
 struct TextureUploadBatch {
-    MTL::CommandBuffer *Cb{nullptr};
+    explicit TextureUploadBatch(const mtl::Context &);
+    ~TextureUploadBatch();
+    TextureUploadBatch(const TextureUploadBatch &) = delete;
+    TextureUploadBatch &operator=(const TextureUploadBatch &) = delete;
+    NS::SharedPtr<MTL::CommandBuffer> Cb;
 };
 
-TextureUploadBatch BeginTextureUploadBatch(const mtl::Context &);
 void SubmitTextureUploadBatch(TextureUploadBatch &);
 
 void ReleaseTextureSlots(mtl::BindlessSet &, std::span<const TextureEntry>);

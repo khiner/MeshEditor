@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "numeric/uvec2.h"
 
 #include "render/LightComponents.h"
@@ -586,7 +587,7 @@ void RecordMotionBlurPostFx(state::Scene &r, state::Entity viewport, mtl::PassCh
 
     const std::array colors{mtl::DiscardColor(*blur.OutputImage)};
     const auto pass = mtl::MakePassDescriptor(colors);
-    auto *render = encode::BeginScenePass(chain, pass, "BlurGather", {{MTL::StageDispatch | MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers, ubo_offset);
+    auto *render = encode::BeginScenePass(chain, pass.get(), "BlurGather", {{MTL::StageDispatch | MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers, ubo_offset);
     main.MotionBlurGather.Bind(render);
     render->setFragmentBuffer(blur.TileIndirection.get(), 0, 5);
     render->setFragmentTexture(*blur.TileImage, 0);
@@ -1322,7 +1323,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         // The overlay composite adds the display-referred viewport backdrop.
         const std::array colors{mtl::ClearColor(*targets.Transmission->Mip0View)};
         const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*targets.Resources->VisibilityDepth));
-        encoder = encode::BeginScenePass(chain, pass, "TransmissionPrepass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
+        encoder = encode::BeginScenePass(chain, pass.get(), "TransmissionPrepass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
         main.PrepassBackground.Bind(encoder);
         draw_quad();
         if (meshlet_fill && show_fill) {
@@ -1351,7 +1352,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             pass->setTileHeight(16);
         }
         encoder = encode::BeginScenePass(
-            chain, pass, draw_scene ? "ScenePass" : "SceneDepthPass",
+            chain, pass.get(), draw_scene ? "ScenePass" : "SceneDepthPass",
             {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment | MTL::StageBlit, MTL::StageFragment}},
             main_extent, slots, buffers, ubo_offset
         );
@@ -1417,7 +1418,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             phase == RenderPhase::BlurAccumulateFirst ? mtl::ClearColor(*targets.MotionBlur->OutputImage) : mtl::LoadColor(*targets.MotionBlur->OutputImage)
         };
         const auto pass = mtl::MakePassDescriptor(colors);
-        encoder = encode::BeginScenePass(chain, pass, "BlurAccumulate", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
+        encoder = encode::BeginScenePass(chain, pass.get(), "BlurAccumulate", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
         main.MotionBlurAccumulate.Bind(encoder);
         const MotionBlurAccumulatePushConstants accum_pc{.SceneSamplerSlot = samplers.SceneColor, .Weight = float(sample_weight)};
         encode::SetPushConstants(encoder, accum_pc);
@@ -1492,7 +1493,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             overlays_through                      ? mtl::ClearDepth(*targets.Resources->ScratchDepth) :
                                                     mtl::LoadDepth(*targets.Resources->VisibilityDepth);
         const auto overlay_pass = mtl::MakePassDescriptor(overlay_colors, overlay_depth);
-        encoder = encode::BeginScenePass(chain, overlay_pass, "OverlayPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
+        encoder = encode::BeginScenePass(chain, overlay_pass.get(), "OverlayPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
 
         if (has_silhouette) {
             main.SilhouetteEdgeColor.Bind(encoder);
@@ -1587,7 +1588,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                 mtl::LoadColor(*targets.Resources->OverlayColorImage),
             };
             const auto bone_pass = mtl::MakePassDescriptor(bone_colors, {*targets.Resources->ScratchDepth, MTL::LoadActionClear, MTL::StoreActionDontCare});
-            encoder = encode::BeginScenePass(chain, bone_pass, "BoneXRay", {{MTL::StageDispatch, MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
+            encoder = encode::BeginScenePass(chain, bone_pass.get(), "BoneXRay", {{MTL::StageDispatch, MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
 
             const auto draw_bones = [&](const mtl::RenderPipeline &pipeline, MeshletInstanceFlag flag, uint32_t threads, float depth_bias = 0.f) {
                 if (buffers.FlagWork(uint32_t(flag)).Meshlets == 0u) return;
@@ -1621,7 +1622,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
         if (real_transmission && meshlet_fill) {
             const std::array colors{mtl::LoadColor(*targets.Resources->VisibilityImage)};
             const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*targets.Resources->VisibilityDepth));
-            auto *visibility = encode::BeginScenePass(chain, pass, "BlurTransmissionVisibility", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
+            auto *visibility = encode::BeginScenePass(chain, pass.get(), "BlurTransmissionVisibility", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
             main.MeshletVisibilityCoverage.Bind(visibility);
             visibility->setCullMode(MTL::CullModeNone);
             DrawMeshletList(visibility, buffers, uint32_t(MeshletRoute::Transmission), 0u, false, true);
@@ -1632,7 +1633,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
     { // View-transform the scene, then composite display-referred overlays.
         const std::array colors{mtl::ClearColor(*targets.Resources->FinalColorImage, {0, 0, 0, 1})};
         const auto pass = mtl::MakePassDescriptor(colors);
-        encoder = encode::BeginScenePass(chain, pass, "Composite", {{MTL::StageFragment, MTL::StageFragment}}, targets.Resources->FinalColorImage.Extent, slots, buffers, ubo_offset);
+        encoder = encode::BeginScenePass(chain, pass.get(), "Composite", {{MTL::StageFragment, MTL::StageFragment}}, targets.Resources->FinalColorImage.Extent, slots, buffers, ubo_offset);
         main.ViewportComposite.Bind(encoder);
         // Debug channels write their own already-viewable values, so they pass through untransformed.
         const uint32_t view_transform = settings.DebugChannel != DebugChannel::None ? 2u : show_rendered ? 1u :
@@ -1712,7 +1713,7 @@ void RecordMeshletVisibilityPass(
     };
     const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*targets.Resources->VisibilityDepth));
     auto *encoder = encode::BeginScenePass(
-        chain, pass, "MeshletVisibility", {{MTL::StageDispatch, MTL::StageMesh}},
+        chain, pass.get(), "MeshletVisibility", {{MTL::StageDispatch, MTL::StageMesh}},
         targets.Resources->VisibilityImage.Extent, slots, buffers, ubo_offset
     );
     if (scissor) encoder->setScissorRect({scissor->Origin.x, scissor->Origin.y, scissor->Extent.x, scissor->Extent.y});
@@ -1809,7 +1810,7 @@ void RecordSilhouetteDepthPass(
     // Outlined surfaces occlude each other in a private depth, so unselected geometry never hides an outline.
     const auto pass = mtl::MakePassDescriptor(colors, {*targets.Resources->ScratchDepth, MTL::LoadActionClear, MTL::StoreActionDontCare});
     auto *encoder = encode::BeginScenePass(
-        chain, pass, "SilhouetteDepth", {{MTL::StageDispatch, MTL::StageMesh}, {MTL::StageFragment, MTL::StageFragment}},
+        chain, pass.get(), "SilhouetteDepth", {{MTL::StageDispatch, MTL::StageMesh}, {MTL::StageFragment, MTL::StageFragment}},
         extent, slots, buffers, ubo_offset
     );
     if (!draw) return;
@@ -1875,6 +1876,7 @@ void DrawVertexBlocks(
 }
 
 void RecordRenderCommandBuffer(state::Scene &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, SceneUpdate update, RenderPhase phase) {
+    const mtl::AutoreleaseScope native_scope;
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
     RecordPhase(r, viewport, chain, update, phase, 0);
@@ -1882,6 +1884,7 @@ void RecordRenderCommandBuffer(state::Scene &r, state::Entity viewport, MTL::Com
 }
 
 void RecordBlurStepsCommandBuffer(state::Scene &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, std::span<const uint32_t> sample_weights) {
+    const mtl::AutoreleaseScope native_scope;
     const auto &buffers = r.Context.get<const GpuBuffers>();
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
@@ -2072,6 +2075,7 @@ void PrepareGeometryFootprint(state::Scene &r, MeshEditWork &work, CommitPosedGe
     for (auto item : {work.Faces, work.Normals, work.Meshlets, work.BoundsTiles}) ClearElementWork(buffers.GeometryWork, item);
     std::ranges::fill(buffers.GeometryWork.GetMutable(work.WorkBudget), 0u);
     const auto submit = [&](std::initializer_list<uint32_t> phases) {
+        const mtl::AutoreleaseScope native_scope;
         update();
         auto *command = ctx.Queue->commandBuffer();
         ctx.OrderAfterGpuWork(command);
@@ -2147,7 +2151,9 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Ent
                                                      meshes.GetSelectionSlot(Element::Vertex));
         mtl::ComputeChain chain{meshes.BufferContext()};
         EncodeElementMembershipWork(r, chain, std::span{&seed, 1u});
-        FinalizeWork(chain.Encoder(), r.Context.get<const mtl::BindlessSet>(), GetPipelines(r), buffers, {w.Candidates});
+        chain.Encode([&](MTL::ComputeCommandEncoder *encoder) {
+            FinalizeWork(encoder, r.Context.get<const mtl::BindlessSet>(), GetPipelines(r), buffers, {w.Candidates});
+        });
         chain.Submit();
         CheckElementWork(buffers.GeometryWork, w.Candidates);
     }
@@ -2233,6 +2239,7 @@ void RecordGeometryEditBatch(state::Scene &r, MTL::ComputeCommandEncoder *encode
 } // namespace
 
 void RefreshEditedPositions(state::Scene &r, std::span<const MeshVertexChanges> changes) {
+    const mtl::AutoreleaseScope native_scope;
     if (changes.empty()) return;
     const profile::CpuScope scope{"RefreshEditedPositions"};
     std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>> jobs;
@@ -2254,6 +2261,7 @@ void RefreshEditedPositions(state::Scene &r, std::span<const MeshVertexChanges> 
 }
 
 std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, state::Entity viewport, std::span<const state::Entity> mesh_entities) {
+    const mtl::AutoreleaseScope native_scope;
     const profile::CpuScope scope{"CommitGeometry"};
     const auto *pending = r.try_get<const PendingTransform>(viewport);
     if (!pending) return {};

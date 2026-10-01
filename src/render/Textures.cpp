@@ -1,4 +1,5 @@
 #include "render/Textures.h"
+#include "metal/AutoreleaseScope.h"
 #include "numeric/VectorMath.h"
 
 #include "File.h"
@@ -153,9 +154,15 @@ KtxFormatPair SelectKtx2Format(const mtl::Context &ctx, TextureColorSpace cs) {
 
 } // namespace
 
-TextureUploadBatch BeginTextureUploadBatch(const mtl::Context &ctx) { return {.Cb = ctx.Queue->commandBuffer()}; }
+TextureUploadBatch::TextureUploadBatch(const mtl::Context &ctx) {
+    const mtl::AutoreleaseScope native_scope;
+    Cb = NS::RetainPtr(ctx.Queue->commandBuffer());
+}
+
+TextureUploadBatch::~TextureUploadBatch() { mtl::AutoreleaseScope::Release(Cb); }
 
 void SubmitTextureUploadBatch(TextureUploadBatch &batch) {
+    const mtl::AutoreleaseScope native_scope;
     if (!batch.Cb) return;
     batch.Cb->commit();
     // Complete uploads before immediate readback and binding.
@@ -213,6 +220,7 @@ TextureEntry CreateTextureEntry(
     const mtl::Context &ctx, TextureUploadBatch &batch, mtl::BindlessSet &slots, uint32_t sampler_slot,
     const TexturePixels &pixels, TextureParams params, float max_anisotropy
 ) {
+    const mtl::AutoreleaseScope native_scope;
     mtl::Texture image;
     if (const auto *rgba = std::get_if<Rgba8Pixels>(&pixels)) {
         const uint32_t mip_levels = params.Sampler.UsesMipmaps ? mtl::MipLevelCount(rgba->Width, rgba->Height) : 1u;
@@ -333,6 +341,7 @@ EnvironmentPrefiltered BuildFlatColorEnvironment(
 EnvironmentPrefiltered CreateIblFromHdri(
     const mtl::Context &ctx, mtl::BindlessSet &slots, const Pipelines &pipelines, const std::filesystem::path &path, std::string name
 ) {
+    const mtl::AutoreleaseScope native_scope;
     const auto path_str = path.string();
     auto decoded = DecodeImageFileRgba32f(path, path_str);
     if (!decoded) throw std::runtime_error(std::format("Failed to load HDR '{}': {}", path_str, decoded.error()));

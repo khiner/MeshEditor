@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "metal/Bindless.h"
 
 #include "metal/MetalCpp.h"
@@ -5,11 +6,12 @@
 #include <format>
 
 namespace mtl {
-BindlessSet::~BindlessSet() = default;
+BindlessSet::~BindlessSet() { AutoreleaseScope::Release(ArgumentBuffer); }
 BindlessSet::BindlessSet(const BindlessSet &) = default;
 BindlessSet::BindlessSet(BindlessSet &&) noexcept = default;
 
 BindlessSet::BindlessSet(const Context &ctx) : Ctx(ctx) {
+    const AutoreleaseScope pool;
     ArgumentBuffer = NS::TransferPtr(ctx.Device->newBuffer(BindlessTableSize, MTL::ResourceStorageModeShared));
     if (!ArgumentBuffer) throw std::runtime_error("Failed to allocate the bindless argument buffer.");
     std::memset(ArgumentBuffer->contents(), 0, BindlessTableSize);

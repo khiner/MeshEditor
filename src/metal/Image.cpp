@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "metal/Image.h"
 
 #include "metal/MetalCpp.h"
@@ -13,6 +14,7 @@ Texture Create(
     MTL::TextureUsage usage, uint32_t mip_levels, MTL::StorageMode storage,
     uint32_t layers = 1, bool track_residency = true
 ) {
+    const AutoreleaseScope pool;
     const auto descriptor = NS::TransferPtr(MTL::TextureDescriptor::alloc()->init());
     descriptor->setTextureType(type);
     descriptor->setPixelFormat(format);
@@ -28,6 +30,7 @@ Texture Create(
 }
 
 bool Blit(const Context &ctx, auto &&encode) {
+    const AutoreleaseScope pool;
     auto *command_buffer = ctx.Queue->commandBuffer();
     auto *blit = command_buffer->blitCommandEncoder();
     encode(blit);
@@ -49,6 +52,7 @@ Texture::Texture(Texture &&other) noexcept
       ResidencyContext{std::exchange(other.ResidencyContext, nullptr)} {}
 
 Texture &Texture::operator=(Texture &&other) noexcept {
+    const AutoreleaseScope pool;
     if (this == &other) return *this;
     if (ResidencyContext && Handle) ResidencyContext->RemoveResident(Handle.get());
     Handle = std::move(other.Handle);
@@ -59,7 +63,9 @@ Texture &Texture::operator=(Texture &&other) noexcept {
 }
 
 Texture::~Texture() {
+    const AutoreleaseScope pool;
     if (ResidencyContext && Handle) ResidencyContext->RemoveResident(Handle.get());
+    Handle.reset();
 }
 
 Texture CreateTexture2D(const Context &ctx, MTL::PixelFormat format, Extent2D extent, MTL::TextureUsage usage, uint32_t mip_levels, std::optional<MTL::StorageMode> storage) {
@@ -75,6 +81,7 @@ Texture CreateTextureCube(const Context &ctx, MTL::PixelFormat format, uint32_t 
 }
 
 Texture CreateMipView(const Texture &texture, uint32_t mip) {
+    const AutoreleaseScope pool;
     auto handle = NS::TransferPtr(texture.Handle->newTextureView(
         texture.Handle->pixelFormat(), texture.Handle->textureType(),
         NS::Range::Make(mip, 1), NS::Range::Make(0, texture.Handle->arrayLength())
@@ -83,6 +90,7 @@ Texture CreateMipView(const Texture &texture, uint32_t mip) {
 }
 
 Texture CreateCubeMipView(const Texture &texture, uint32_t mip) {
+    const AutoreleaseScope pool;
     auto handle = NS::TransferPtr(texture.Handle->newTextureView(
         texture.Handle->pixelFormat(), MTL::TextureType2DArray, NS::Range::Make(mip, 1), NS::Range::Make(0, 6)
     ));
@@ -90,6 +98,7 @@ Texture CreateCubeMipView(const Texture &texture, uint32_t mip) {
 }
 
 NS::SharedPtr<MTL::SamplerState> CreateSampler(const Context &ctx, const SamplerDesc &desc) {
+    const AutoreleaseScope pool;
     const auto descriptor = NS::TransferPtr(MTL::SamplerDescriptor::alloc()->init());
     descriptor->setMinFilter(desc.MinFilter);
     descriptor->setMagFilter(desc.MagFilter);
@@ -131,6 +140,7 @@ bool CopyTextureRegion(const Context &ctx, const Texture &source, uint32_t x, ui
 }
 
 void Upload(const Texture &texture, uint32_t mip, std::span<const std::byte> bytes, uint32_t bytes_per_row, uint32_t layer) {
+    const AutoreleaseScope pool;
     const auto width = std::max(texture.Extent.Width >> mip, 1u);
     const auto height = std::max(texture.Extent.Height >> mip, 1u);
     texture.Handle->replaceRegion(MTL::Region::Make2D(0, 0, width, height), mip, layer, bytes.data(), bytes_per_row, 0);

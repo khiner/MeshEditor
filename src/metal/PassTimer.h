@@ -16,6 +16,8 @@ struct PassTimer {
         float Ms;
     };
 
+    ~PassTimer();
+
     static std::unique_ptr<PassTimer> Create(const Context &, uint32_t max_passes = 64);
 
     // Returns the start/end sample-pair index, or nullopt when full.

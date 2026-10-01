@@ -1,5 +1,6 @@
 #include "RunSuites.h"
 #include "metal/Buffer.h"
+#include "metal/Dispatch.h"
 #include "metal/MetalCpp.h"
 
 #include <array>
@@ -8,6 +9,52 @@
 using namespace boost::ut;
 
 int main() {
+    "a compute chain owns its recording across calls and intervening submissions"_test = [] {
+        const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+        mtl::Context ctx;
+        mtl::BindlessSet slots{ctx};
+        mtl::BufferContext buffers{ctx, slots};
+        mtl::Buffer output{buffers, as_bytes(uint32_t{10}), SlotType::Buffer, mtl::BufferLifetime::Workspace};
+        NS::Error *error = nullptr;
+        const auto library = NS::TransferPtr(ctx.Device->newLibrary(mtl::Str(R"(
+            #include <metal_stdlib>
+            kernel void add(device uint &value [[buffer(0)]], constant uint &amount [[buffer(1)]]) {
+                value += amount;
+            }
+        )").get(), nullptr, &error));
+        expect(bool(library));
+        if (!library) return;
+        const auto function = NS::TransferPtr(library->newFunction(mtl::Str("add").get()));
+        const auto pipeline = NS::TransferPtr(ctx.Device->newComputePipelineState(function.get(), &error));
+        expect(bool(pipeline));
+        if (!pipeline) return;
+
+        mtl::ComputeChain chain{buffers};
+        const auto add = [&](uint32_t amount) {
+            chain.Encode([&](MTL::ComputeCommandEncoder *encoder) {
+                encoder->setComputePipelineState(pipeline.get());
+                encoder->setBuffer(*output, 0u, 0u);
+                encoder->setBytes(&amount, sizeof(amount), 1u);
+                encoder->dispatchThreads(MTL::Size{1u, 1u, 1u}, MTL::Size{1u, 1u, 1u});
+                encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+            });
+        };
+        add(3u);
+        // This committed write executes before the chain and forces its next call to open a new encoder.
+        auto *write = ctx.Queue->commandBuffer();
+        ctx.OrderAfterGpuWork(write);
+        auto *blit = write->blitCommandEncoder();
+        blit->fillBuffer(*output, NS::Range::Make(0u, sizeof(uint32_t)), 1u);
+        blit->endEncoding();
+        write->commit();
+        add(5u);
+        chain.Submit();
+        expect(output.GetSpan<uint32_t>({0u, 1u})[0] == 0x01010109u);
+
+        add(7u);
+        chain.Submit();
+        expect(output.GetSpan<uint32_t>({0u, 1u})[0] == 0x01010110u);
+    };
     "a clone survives source changes and pending GPU reads"_test = [] {
         const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
         mtl::Context ctx;

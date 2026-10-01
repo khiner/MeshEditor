@@ -186,7 +186,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         const auto *src = r.try_get<const gltf::SourceAssets>(viewport);
         static const std::vector<gltf::Image> empty_images;
         const auto &gltf_images = src ? src->Images : empty_images;
-        auto batch = BeginTextureUploadBatch(ctx);
+        TextureUploadBatch batch{ctx};
         for (const auto &item : textures.PendingUploads) {
             auto entry = MaterializeTextureEntry(r, batch, slots, item, gltf_images, r.Context.get<const ActiveSamplerAnisotropy>().Value);
             if (!entry) {

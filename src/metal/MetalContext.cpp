@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "metal/MetalContext.h"
 #include "metal/PhysicalPages.h"
 
@@ -6,15 +7,18 @@
 #include <bit>
 #include <unordered_set>
 #include <format>
+#include <utility>
 
 namespace mtl {
 namespace {
 void ObserveCommand(MTL::CommandBuffer *command, std::string_view label, MTL::SharedEvent *mapping, MTL::SharedEvent *execution) {
-    command->setLabel(Str(label));
-    command->addCompletedHandler([mapping = NS::RetainPtr(mapping), execution = NS::RetainPtr(execution)](MTL::CommandBuffer *completed) {
+    command->setLabel(Str(label).get());
+    command->addCompletedHandler([mapping = NS::RetainPtr(mapping), execution = NS::RetainPtr(execution)](MTL::CommandBuffer *completed) mutable {
+        const AutoreleaseScope pool;
+        const auto [mapping_event, execution_event] = std::pair{std::move(mapping), std::move(execution)};
         if (const auto *error = completed->error()) {
             std::fprintf(stderr, "Metal command %s failed (mapping %llu, execution %llu): %s\n", completed->label()->utf8String(),
-                (unsigned long long)mapping->signaledValue(), (unsigned long long)execution->signaledValue(), error->description()->utf8String());
+                (unsigned long long)mapping_event->signaledValue(), (unsigned long long)execution_event->signaledValue(), error->description()->utf8String());
         }
     });
 }
@@ -44,39 +48,46 @@ struct Context::PageRetirement {
     std::vector<std::vector<std::shared_ptr<PhysicalPage>>> Pages;
 };
 
-NS::String *Str(std::string_view s) {
-    return NS::String::string(std::string{s}.c_str(), NS::UTF8StringEncoding);
+NS::SharedPtr<NS::String> Str(std::string_view s) {
+    const AutoreleaseScope pool;
+    return NS::TransferPtr(NS::String::alloc()->init(std::string{s}.c_str(), NS::UTF8StringEncoding));
 }
 
 Context::Context() {
-    Device = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
-    if (!Device) throw std::runtime_error("No Metal device.");
-    if (!Device->hasUnifiedMemory()) throw std::runtime_error("MeshEditor targets unified-memory Apple Silicon.");
-    if (!Device->supportsPlacementSparse()) throw std::runtime_error("MeshEditor requires Metal placement sparse buffers (macOS 26.4 or later, Apple M2 or later).");
-    if (Device->argumentBuffersSupport() < MTL::ArgumentBuffersTier2) {
+    const AutoreleaseScope pool;
+    auto device = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
+    if (!device) throw std::runtime_error("No Metal device.");
+    if (!device->hasUnifiedMemory()) throw std::runtime_error("MeshEditor targets unified-memory Apple Silicon.");
+    if (!device->supportsPlacementSparse()) throw std::runtime_error("MeshEditor requires Metal placement sparse buffers (macOS 26.4 or later, Apple M2 or later).");
+    if (device->argumentBuffersSupport() < MTL::ArgumentBuffersTier2) {
         throw std::runtime_error("The bindless argument buffer needs argument buffer tier 2.");
     }
 
-    Queue = NS::TransferPtr(Device->newCommandQueue());
-    if (!Queue) throw std::runtime_error("Failed to create a Metal command queue.");
-    MappingQueue = NS::TransferPtr(Device->newMTL4CommandQueue());
-    MappingEvent = NS::TransferPtr(Device->newSharedEvent());
-    ExecutionEvent = NS::TransferPtr(Device->newSharedEvent());
-    RetirementEvent = NS::TransferPtr(Device->newSharedEvent());
-    if (!MappingQueue || !MappingEvent || !ExecutionEvent || !RetirementEvent) throw std::runtime_error("Failed to create the Metal mapping queue.");
+    auto queue = NS::TransferPtr(device->newCommandQueue());
+    if (!queue) throw std::runtime_error("Failed to create a Metal command queue.");
+    auto mapping_queue = NS::TransferPtr(device->newMTL4CommandQueue());
+    auto mapping_event = NS::TransferPtr(device->newSharedEvent());
+    auto execution_event = NS::TransferPtr(device->newSharedEvent());
+    auto retirement_event = NS::TransferPtr(device->newSharedEvent());
+    if (!mapping_queue || !mapping_event || !execution_event || !retirement_event) throw std::runtime_error("Failed to create the Metal mapping queue.");
 
     const auto descriptor = NS::TransferPtr(MTL::ResidencySetDescriptor::alloc()->init());
-    Residency = NS::TransferPtr(Device->newResidencySet(descriptor.get(), nullptr));
-    if (!Residency) throw std::runtime_error("Failed to create the residency set for canonical Metal pages.");
-    Residency->commit();
-    Queue->addResidencySet(Residency.get());
-    MappingQueue->addResidencySet(Residency.get());
+    auto residency = NS::TransferPtr(device->newResidencySet(descriptor.get(), nullptr));
+    if (!residency) throw std::runtime_error("Failed to create the residency set for canonical Metal pages.");
+    residency->commit();
+    queue->addResidencySet(residency.get());
+    mapping_queue->addResidencySet(residency.get());
+    Device = std::move(device);
+    Queue = std::move(queue);
+    MappingQueue = std::move(mapping_queue);
+    MappingEvent = std::move(mapping_event);
+    ExecutionEvent = std::move(execution_event);
+    RetirementEvent = std::move(retirement_event);
+    Residency = std::move(residency);
 }
 
-Context::Context(Context &&) noexcept = default;
-
 Context::~Context() {
-    const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+    const AutoreleaseScope pool;
     if (MappingEvent) {
         auto *fence = Queue->commandBuffer();
         fence->encodeSignalEvent(ExecutionEvent.get(), ++ExecutionSerial);
@@ -91,9 +102,12 @@ Context::~Context() {
     SparseAddresses.clear();
     PagePool.reset();
     if (Queue && Residency) Queue->removeResidencySet(Residency.get());
+    AutoreleaseScope::Release(MappingSubmissions, MappingRetirements, PageRetirements, PendingMappings, PendingUnmaps, PendingSparseAddresses, PendingPageRetirements, PendingResidentRemovals);
+    AutoreleaseScope::Release(RetirementEvent, ExecutionEvent, MappingEvent, Residency, Queue, Device);
 }
 
 void Context::AddResident(MTL::Allocation *resource) const {
+    const AutoreleaseScope pool;
     // A membership change recommits the whole set, so a resident allocation leaves it untouched.
     if (!Residency || !resource || Residency->containsAllocation(resource)) return;
     Residency->addAllocation(resource);
@@ -106,7 +120,7 @@ void Context::RemoveResident(MTL::Allocation *resource) const {
 }
 
 void Context::CollectCompletedWork() const {
-    const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+    const AutoreleaseScope pool;
     // A dead alias cannot read its old physical pages. Recycle those pages as
     // soon as readers finish, independently of the virtual cleanup backlog.
     while (!PageRetirements.empty() && PageRetirements.front()->Readers->status()==MTL::CommandBufferStatusCompleted)
@@ -147,7 +161,7 @@ void Context::PublishRetirements() const {
 }
 
 void Context::CommitResidency() const {
-    const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+    const AutoreleaseScope pool;
     CollectCompletedWork();
     if (Residency && std::exchange(ResidencyDirty, false)) Residency->commit();
     if (!PendingMappings.empty()) {
@@ -224,7 +238,7 @@ void Context::CommitResidency() const {
 }
 
 bool Context::DrainMappings() const {
-    const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+    const AutoreleaseScope pool;
     CommitResidency();
     if (MappingEvent->signaledValue() < MappingSerial) {
         auto *fence = Queue->commandBuffer();
@@ -256,6 +270,7 @@ bool Context::DrainMappings() const {
 }
 
 void Context::TrimPageCache(uint64_t keep_bytes) const {
+    const AutoreleaseScope pool;
     if (!PagePool || PagePool->CachedBytes() <= keep_bytes) return;
     CommitResidency();
     // Empty slabs can be reused immediately, but their heaps may still back
@@ -270,6 +285,7 @@ void Context::TrimPageCache(uint64_t keep_bytes) const {
 }
 
 NS::SharedPtr<MTL::Buffer> Context::ReserveSparseAddresses(uint64_t bytes) const {
+    const AutoreleaseScope pool;
     if (!std::has_single_bit(bytes)) throw std::invalid_argument("Sparse address reservations require a power-of-two size.");
     auto buffer = NS::TransferPtr(Device->newBuffer(bytes, MTL::ResourceStorageModePrivate, MTL::SparsePageSize256));
     if (!buffer) throw std::runtime_error("Failed to reserve sparse Metal addresses.");
@@ -297,7 +313,7 @@ PhysicalPagePool &Context::Pages() const {
 }
 
 void Context::OrderAfterGpuWork(MTL::CommandBuffer *next) const {
-    const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+    const AutoreleaseScope pool;
     CommitResidency();
     auto *barrier = Queue->commandBuffer();
     barrier->encodeSignalEvent(ExecutionEvent.get(), ++ExecutionSerial);

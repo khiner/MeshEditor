@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "metal/PassTimer.h"
 
 #include "metal/MetalCpp.h"
@@ -14,7 +15,10 @@ MTL::CounterSet *TimestampCounterSet(const Context &ctx) {
 }
 } // namespace
 
+PassTimer::~PassTimer() { AutoreleaseScope::Release(SampleBuffer); }
+
 std::unique_ptr<PassTimer> PassTimer::Create(const Context &ctx, uint32_t max_passes) {
+    const AutoreleaseScope pool;
     if (!ctx.Device->supportsCounterSampling(MTL::CounterSamplingPointAtStageBoundary)) return nullptr;
     auto *counter_set = TimestampCounterSet(ctx);
     if (!counter_set) return nullptr;
@@ -36,6 +40,7 @@ std::optional<uint32_t> PassTimer::Claim(std::string_view name) {
 }
 
 std::vector<PassTimer::Pass> PassTimer::Resolve() {
+    const AutoreleaseScope pool;
     std::vector<Pass> passes;
     if (Names.empty()) return passes;
 

@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "viewport/Viewport.h"
 #include "mesh/MeshComponents.h"
 #include "render/LightComponents.h"
@@ -72,6 +73,7 @@ bool MotionBlurActive(const state::Scene &r, state::Entity viewport) {
 
 // Renders shutter samples with sharp overlays and restores the current frame afterward.
 void RenderMotionBlurredFrame(state::Scene &r, state::Entity viewport) {
+    const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
     auto &targets = r.Context.get<RenderTargets>();
     auto &resources = r.Context.get<ViewportRenderResources>();

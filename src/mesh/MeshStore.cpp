@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 
 #include "MeshStore.h"
 #include "metal/Dispatch.h"
@@ -1344,6 +1345,7 @@ uint32_t MeshStore::BeginTopologyOutput(uint32_t source, std::span<const uint32_
 }
 
 uint32_t MeshStore::CloneMesh(const Mesh &mesh, const MeshPipelines &pipelines) {
+    const mtl::AutoreleaseScope native_scope;
     const auto src_id = mesh.GetStoreId();
     // The current packed clone emitter must reject fragmented input before it
     // acquires an output record. Local topology allocation does not use cloning.

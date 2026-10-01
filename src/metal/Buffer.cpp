@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "metal/Buffer.h"
 #include "Parallel.h"
 #include "Profile.h"
@@ -24,8 +25,11 @@ void CopyBytes(std::byte *destination, const std::byte *source, uint64_t bytes) 
 
 BufferContext::BufferContext(const Context &ctx, BindlessSet &slots) : Ctx(ctx), Slots(slots) {}
 BufferContext::~BufferContext() {
+    const AutoreleaseScope pool;
     ReclaimRetiredBuffers(true);
-    for (auto &bin:WorkspaceCache) for (auto &buffer:bin) Ctx.RemoveResident(buffer.get());
+    for (const auto &bin : WorkspaceCache)
+        for (const auto &buffer : bin) Ctx.RemoveResident(buffer.get());
+    AutoreleaseScope::Release(WorkspaceCache, Retirements, Retired);
 }
 
 NS::SharedPtr<MTL::Buffer> BufferContext::AcquireWorkspace(uint64_t bytes, std::span<const std::byte> prefix) {
@@ -58,7 +62,7 @@ void BufferContext::RecycleWorkspace(NS::SharedPtr<MTL::Buffer> buffer) {
     CachedWorkspaceBytes+=bytes;
 }
 bool BufferContext::ReclaimRetiredBuffers(bool wait) {
-    const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+    const AutoreleaseScope pool;
     bool released = false;
     bool completed = true;
     if (!Retired.empty()) {
@@ -95,6 +99,7 @@ uint32_t BufferContext::AllocateSlot(SlotType type) {
 }
 
 NS::SharedPtr<MTL::Buffer> NewBuffer(const Context &ctx, uint64_t size) {
+    const AutoreleaseScope pool;
     if (size == 0) return {};
     auto buffer = NS::TransferPtr(ctx.Device->newBuffer(size, MTL::ResourceStorageModeShared));
     if (!buffer) throw std::runtime_error("Failed to allocate a Metal buffer.");
@@ -102,6 +107,7 @@ NS::SharedPtr<MTL::Buffer> NewBuffer(const Context &ctx, uint64_t size) {
 }
 
 std::string BufferContext::DebugHeapUsage() const {
+    const AutoreleaseScope pool;
     static constexpr std::array<std::string_view, 6> Suffixes{"B", "KB", "MB", "GB", "TB", "PB"};
     const auto format_bytes = [](uint64_t bytes) {
         auto value = float(bytes);
@@ -204,7 +210,7 @@ void Buffer::Reserve(uint64_t required_size) {
     if (required_size <= Contents().size()) return;
     if (Lifetime==BufferLifetime::Workspace) {
         const profile::CpuScope scope{"WorkspaceGrow"};
-        const auto pool=NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+        const AutoreleaseScope pool;
         auto next=Ctx.AcquireWorkspace(required_size,Contents().first(UsedSize));
         // An encoder may retain a direct binding made before this growth.
         // Keep old allocations owned until the workspace's consumers retire.

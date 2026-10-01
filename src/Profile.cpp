@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "Profile.h"
 
 #include <algorithm>
@@ -191,6 +192,7 @@ void RecordCounter(std::string_view name, double value) {
 }
 
 void Resolve(MTL::CommandBuffer *command_buffer) {
+    const mtl::AutoreleaseScope native_scope;
     if (!Enabled || !command_buffer) return;
     const auto ms = float((command_buffer->GPUEndTime() - command_buffer->GPUStartTime()) * 1e3);
     const auto submit = StatIndex(GpuStats, "Submit", NoParent);

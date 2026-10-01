@@ -1,3 +1,4 @@
+#include "metal/AutoreleaseScope.h"
 #include "metal/PhysicalPages.h"
 #include "metal/MetalContext.h"
 #include "metal/MetalCpp.h"
@@ -18,23 +19,28 @@ struct PhysicalPageSlab : std::enable_shared_from_this<PhysicalPageSlab> {
     PhysicalPageSlab *Previous{}, *Next{};
 
     explicit PhysicalPageSlab(std::shared_ptr<PhysicalPagePool> owner) : Owner(std::move(owner)) {
+        const AutoreleaseScope pool;
         const auto descriptor = NS::TransferPtr(MTL::HeapDescriptor::alloc()->init());
         descriptor->setType(MTL::HeapTypePlacement);
         descriptor->setStorageMode(MTL::StorageModeShared);
         descriptor->setMaxCompatiblePlacementSparsePageSize(MTL::SparsePageSize256);
         descriptor->setSize(PhysicalSlabBytes);
-        Heap = NS::TransferPtr(Owner->Ctx.Device->newHeap(descriptor.get()));
-        if (!Heap) throw std::runtime_error("Failed to allocate canonical Metal pages.");
-        Cpu = NS::TransferPtr(Heap->newBuffer(PhysicalSlabBytes, MTL::ResourceStorageModeShared, 0));
-        if (!Cpu) throw std::runtime_error("Failed to map canonical Metal pages for CPU access.");
-        if (reinterpret_cast<uintptr_t>(Cpu->contents())%(16u << 10u)) throw std::runtime_error("Shared heap CPU data is not aligned to a VM page.");
+        auto heap = NS::TransferPtr(Owner->Ctx.Device->newHeap(descriptor.get()));
+        if (!heap) throw std::runtime_error("Failed to allocate canonical Metal pages.");
+        auto cpu = NS::TransferPtr(heap->newBuffer(PhysicalSlabBytes, MTL::ResourceStorageModeShared, 0));
+        if (!cpu) throw std::runtime_error("Failed to map canonical Metal pages for CPU access.");
+        if (reinterpret_cast<uintptr_t>(cpu->contents()) % (16u << 10u)) throw std::runtime_error("Shared heap CPU data is not aligned to a VM page.");
         FreeBits.fill(UINT64_MAX);
-        Owner->Ctx.AddResident(Heap.get());
+        Owner->Ctx.AddResident(heap.get());
+        Heap = std::move(heap);
+        Cpu = std::move(cpu);
         Owner->HeapBytes += PhysicalSlabBytes;
     }
     ~PhysicalPageSlab() {
+        const AutoreleaseScope pool;
         Owner->Ctx.RemoveResident(Heap.get());
         Owner->HeapBytes -= PhysicalSlabBytes;
+        AutoreleaseScope::Release(Cpu, Heap);
     }
 };
 
@@ -75,6 +81,7 @@ void PhysicalPagePool::Release(PhysicalPageSlab &slab, uint32_t index) {
 }
 
 void PhysicalPagePool::TrimCache(uint64_t keep_bytes) {
+    const AutoreleaseScope pool;
     while (!Cached.empty() && CachedBytes() > keep_bytes) {
         RemoveAvailable(*Cached.back());
         Cached.pop_back();

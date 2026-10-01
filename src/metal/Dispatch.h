@@ -1,5 +1,6 @@
 #pragma once
 
+#include "metal/AutoreleaseScope.h"
 #include "metal/Buffer.h"
 #include "metal/BufferArena.h"
 
@@ -40,7 +41,11 @@ struct ComputeChain {
     }
     // The recording encoder with the bindless table bound, for passes that bind their own arguments.
     // Such a pass ends with its own memory barrier, and the chain's later passes rebind the table.
-    MTL::ComputeCommandEncoder *Encoder();
+    // The callback is synchronous: do not escape, end, or submit its encoder.
+    template<typename Fn> void Encode(Fn &&fn) {
+        const AutoreleaseScope pool;
+        std::forward<Fn>(fn)(Encoder());
+    }
     // Commits the recorded passes, waits for them, reclaims retired buffers, and throws when a pass failed or set the error word.
     void Submit();
     // Identifies the submit that completes the passes recorded now, unique across every chain.
@@ -55,11 +60,12 @@ struct ComputeChain {
     BufferArena<uint32_t> Scratch;
 
 private:
+    MTL::ComputeCommandEncoder *Encoder();
     void Dispatch(const ComputePipeline &, const void *pc, uint32_t bytes, uint32_t count, uint32_t depth, uint32_t width, bool threads);
     void DispatchIndirect(const ComputePipeline &, const void *pc, uint32_t bytes, const Buffer &arguments, uint64_t offset, uint32_t width);
 
     NS::SharedPtr<MTL::CommandBuffer> Recording;
-    MTL::ComputeCommandEncoder *Encoding{};
+    NS::SharedPtr<MTL::ComputeCommandEncoder> Encoding;
     uint64_t DeclaredResources{~0ull}, RecordingSignals{}, SubmissionSerial;
     std::vector<Buffer> Retained;
     std::vector<std::function<void()>> Completions;

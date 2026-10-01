@@ -111,7 +111,7 @@ struct TiledJobBatch {
         pc.TileMapSlot = TileBuffer.Slot;
         pc.ScratchSlot = Scratch.Slot;
         // Eight simd-group sums and the threadgroup total, padded to Metal's 16-byte granule.
-        chain.Encoder()->setThreadgroupMemoryLength(48, 0);
+        chain.Encode([](MTL::ComputeCommandEncoder *encoder) { encoder->setThreadgroupMemoryLength(48, 0); });
         for (const auto &pass : passes) {
             const auto groups = pass.Domain == PerJob ? upload.Jobs : upload.Tiles[pass.Domain];
             if (groups == 0) continue;

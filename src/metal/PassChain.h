@@ -14,6 +14,7 @@ struct Barrier {
 
 // Callers must declare cross-pass dependencies for bindless resources because Metal cannot track them automatically.
 // Opening a pass closes the previous encoder, and destruction closes the final encoder.
+// Borrows the command and encoders inside the containing operation's AutoreleaseScope.
 struct PassChain {
     PassChain(MTL::CommandBuffer *, PassTimer * = nullptr);
     ~PassChain();

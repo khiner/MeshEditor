@@ -4,6 +4,7 @@
 #include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
+#include "metal/AutoreleaseScope.h"
 #include "object/PendingSync.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
@@ -417,7 +418,10 @@ bool SyncViewportRenderResources(state::Scene &r, state::Entity viewport) {
     const auto &samplers = r.Context.get<const RenderSamplerSlots>();
     auto &slots = r.Context.get<mtl::BindlessSet>();
     // Wait for the live consumer (ImGui) to finish sampling the old resources before recreating them.
-    if (auto *consumer = r.Context.get<const ViewportConsumerFence>().Value) consumer->waitUntilCompleted();
+    if (auto *consumer = r.Context.get<const ViewportConsumerFence>().Value) {
+        const mtl::AutoreleaseScope native_scope;
+        consumer->waitUntilCompleted();
+    }
     targets.SetExtent(ctx, render_extent, slots);
     {
         const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
