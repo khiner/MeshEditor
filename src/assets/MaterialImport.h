@@ -2,10 +2,14 @@
 
 #include "state/Entity.h"
 
+#include <expected>
 #include <filesystem>
 #include <span>
+#include <string>
+#include <vector>
 
 struct ObjPlyMaterial;
 
-// Uploads textures and materials and remaps primitive material indices to the appended GPU slots.
-void ImportObjPlyMaterials(state::Scene &, state::Entity viewport, std::span<const ObjPlyMaterial>, const std::filesystem::path &mesh_path, uint32_t mesh_store_id);
+// Read and decode referenced textures before uploading textures and materials.
+// Return the appended GPU material slots in source material order.
+std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::Scene &, state::Entity viewport, std::span<const ObjPlyMaterial>, const std::filesystem::path &mesh_path);

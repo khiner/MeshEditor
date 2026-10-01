@@ -74,12 +74,18 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 }
 
                 ClearMeshes(r, viewport);
-                const auto [mesh_entity, instance_entity] = ImportMesh(
+                const auto imported = ImportMesh(
                     r, viewport,
                     source->Mesh,
                     MeshInstanceCreateInfo{.Name = std::move(source->Name), .Transform = {.R = RealImpact::ObjectRotationToYUp}},
                     true // Weld vertices
                 );
+
+                if (!imported) {
+                    Fail(r, imported.error());
+                    return;
+                }
+                const auto [mesh_entity, instance_entity] = *imported;
 
                 // The npy file's vertex indices use the source OBJ numbering, so look up by position instead.
                 std::vector<uint32_t> vertex_indices(RealImpact::NumImpactVertices);

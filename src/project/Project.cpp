@@ -11,11 +11,8 @@
 #include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
-#include "assets/ArchiveMesh.h"
-#include "audio/RealImpact.h"
 #include "editor/AudioIntegration.h"
 #include "gizmo/GizmoInteraction.h"
-#include "gltf/ArchiveSource.h"
 #include "gltf/SourceAssets.h"
 #include "gpu/PBRMaterial.h"
 #include "mesh/MeshComponents.h"
@@ -92,6 +89,16 @@ std::vector<Project::RecordedAction> Decode(const std::vector<std::byte> &bytes)
     std::vector<Project::RecordedAction> recorded_actions;
     if (!bytes.empty()) zpp::bits::in{bytes}(recorded_actions).or_throw();
     return recorded_actions;
+}
+std::filesystem::path *SourcePath(action::Action &a) {
+    return std::visit([](auto &domain) {
+        return std::visit([]<typename A>(A &leaf) -> std::filesystem::path * {
+            if constexpr (std::is_same_v<A, action::io::Load> || std::is_same_v<A, action::io::LoadGltf> || std::is_same_v<A, action::io::LoadRealImpact> || std::is_same_v<A, action::object::ImportMesh> || std::is_same_v<A, action::audio::AssignVertexSamples> || std::is_same_v<A, action::audio::ApplyModalModel>) return &leaf.Path;
+            else return nullptr;
+        },
+                          domain);
+    },
+                      a);
 }
 } // namespace
 
@@ -372,26 +379,15 @@ void Project::Settle(EventPass pass) {
     History.SettleHashes();
 }
 bool Project::Record(action::Action a, EventPass pass, bool staged) {
-    auto *path = std::visit([](auto &domain) {
-        return std::visit([]<typename A>(A &leaf) -> std::filesystem::path * {
-            if constexpr (std::is_same_v<A, action::io::Load> || std::is_same_v<A, action::io::LoadGltf> || std::is_same_v<A, action::io::LoadRealImpact> || std::is_same_v<A, action::object::ImportMesh> || std::is_same_v<A, action::audio::AssignVertexSamples>) return &leaf.Path;
-            else return nullptr;
-        },
-                          domain);
-    },
-                            a);
-    if (path) {
-        auto &assets = R.Context.get<Assets>();
-        const auto ext = path->extension();
-        const auto stored = Is<action::io::LoadRealImpact>(a) ? RealImpact::ArchiveSource(assets, *path) :
-            ext == ".gltf" || ext == ".glb"                   ? gltf::ArchiveSource(assets, *path) :
-            ext == ".obj"                                     ? ArchiveMesh(assets, *path) :
-                                                                assets.Store(*path);
-        if (!stored) {
-            action::Fail(R, stored.error());
+    if (auto *path = SourcePath(a); path && !path->native().starts_with("asset:/")) {
+        const auto &assets = R.Context.get<Assets>();
+        std::error_code ec;
+        const auto absolute = std::filesystem::absolute(*path, ec);
+        if (ec) {
+            action::Fail(R, "Cannot resolve '" + path->string() + "': " + ec.message());
             return false;
         }
-        *path = *stored;
+        *path = assets.Reference(absolute);
     }
     const bool recordable = action::IsRecordable(a);
     if (staged && !GestureBase && recordable) {

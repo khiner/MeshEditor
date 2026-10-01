@@ -155,8 +155,6 @@ mesheditor_library(MeshEditorAudio HOT
 )
 
 mesheditor_library(MeshEditorAssets COLD
-    src/assets/ArchiveMesh.cpp
-    src/gltf/ArchiveSource.cpp
     src/assets/MaterialImport.cpp
     src/assets/MeshImport.cpp
     src/audio/RealImpact.cpp

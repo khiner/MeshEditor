@@ -709,8 +709,20 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
     {
         const auto asset_a = gltf::ParseGltfAsset(a_path);
         const auto asset_b = gltf::ParseGltfAsset(b_path);
-        if (asset_a && asset_b) CompareMeshGeometry(*asset_a, *asset_b, all_diffs);
-        else all_diffs.emplace_back("meshes", std::format("geometry parse failed: {}", !asset_a ? asset_a.error() : asset_b.error()));
+        if (asset_a && asset_b) {
+            CompareMeshGeometry(*asset_a, *asset_b, all_diffs);
+            // External image URIs are relative to each exported document, so compare the referenced files.
+            for (size_t i = 0; i < std::min(asset_a->images.size(), asset_b->images.size()); ++i) {
+                const auto *uri_a = std::get_if<fastgltf::sources::URI>(&asset_a->images[i].data);
+                const auto *uri_b = std::get_if<fastgltf::sources::URI>(&asset_b->images[i].data);
+                if (!uri_a || !uri_b || !uri_a->uri.isLocalPath() || !uri_b->uri.isLocalPath()) continue;
+                const auto ref_path = std::format("images[{}].uri", i);
+                std::erase_if(all_diffs, [&](const auto &diff) { return diff.Path == ref_path; });
+                const auto file_a = (fs::absolute(a_path).parent_path() / uri_a->uri.fspath()).lexically_normal();
+                const auto file_b = (fs::absolute(b_path).parent_path() / uri_b->uri.fspath()).lexically_normal();
+                if (file_a != file_b) all_diffs.emplace_back(ref_path, std::format("referenced file '{}' vs '{}'", file_a.string(), file_b.string()));
+            }
+        } else all_diffs.emplace_back("meshes", std::format("geometry parse failed: {}", !asset_a ? asset_a.error() : asset_b.error()));
     }
 
     std::vector<Diff> unexpected;
@@ -835,9 +847,7 @@ const ModalModelData SampleModal{
 };
 
 struct SceneFixture : Engine {
-    // Imports keep source image URIs while no asset store is present, so the glTF comparison sees the source layout.
-    // Project operations need the store, so it exists only while a project is open.
-    SceneFixture() : Engine{false} { R.Context.erase<project::Assets>(); }
+    SceneFixture() : Engine{false} {}
     void Check(bool ok) {
         boost::ut::expect(ok);
         if (ok) return;
@@ -846,17 +856,14 @@ struct SceneFixture : Engine {
     }
     // Start a project at `dir`, save live state into it, close it, and return the persistent image.
     std::vector<std::byte> SaveTo(const std::filesystem::path &dir) {
-        R.Context.emplace<project::Assets>();
         Check(P->Begin(dir));
         Check(P->Save());
         auto image = P->History.MaterializeLive();
         Check(P->Close());
-        R.Context.erase<project::Assets>();
         return image;
     }
     // Restore the project at `dir` and return the persistent image.
     std::vector<std::byte> LoadFrom(const std::filesystem::path &dir) {
-        R.Context.emplace<project::Assets>();
         Check(P->Open(dir));
         return P->History.MaterializeLive();
     }
@@ -1148,6 +1155,9 @@ int main(int argc, const char **argv) {
             std::vector<std::byte> original_pixels;
             uint32_t width = 0, height = 0;
             const auto reloaded = RoundtripComponent<gltf::SourceAssets>(box_embedded, edit_root / "BoxTextured-dirty.gltf", [&](SceneFixture &fx, state::Entity) {
+                const auto &image = fx.R.get<const gltf::SourceAssets>(fx.Viewport).Images.front();
+                expect(!image.Bytes.empty()) << "embedded image lost its bytes";
+                expect(image.SourcePath.empty()) << "embedded image was copied to a file";
                 // A frame materializes the pending upload so the readback sees the texture.
                 ProcessComponentEvents(fx.R, fx.Viewport);
                 const auto &textures = fx.R.Context.get<TextureStore>().Textures;
@@ -1174,24 +1184,45 @@ int main(int argc, const char **argv) {
         };
     }
 
-    // Move the external PNG aside between load and save; the embed-as-PNG fallback should fire.
+    // An external image keeps its file reference and requires that file even after GPU upload.
     const fs::path box_external = SamplePath("external/glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf");
     if (fs::exists(box_external)) {
-        test("missing_external_source_falls_back_to_embedded_png") = [&] {
-            const auto stage_dir = edit_root / "BoxTextured-external";
+        test("missing_external_source_errors") = [&] {
+            const auto stage_dir = edit_root / "BoxTextured external";
             const auto staged_gltf = StageSample(box_external, stage_dir);
             const auto staged_png = stage_dir / "CesiumLogoFlat.png";
             expect(fs::exists(staged_png)) << "fixture missing PNG";
-            const auto reloaded = RoundtripComponent<gltf::SourceAssets>(staged_gltf, edit_root / "BoxTextured-fallback.gltf", [&](SceneFixture &fx, state::Entity) {
-                ProcessComponentEvents(fx.R, fx.Viewport);
-                fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
-            });
-            if (!reloaded.Value) return;
-            const auto &images = reloaded.Value->Images;
+            SceneFixture fx;
+            const auto loaded = gltf::LoadGltf(staged_gltf, fx.R, fx.Viewport);
+            expect(loaded.has_value()) << "load failed: " << (loaded ? "" : loaded.error());
+            if (!loaded) return;
+            const auto &images = fx.R.get<const gltf::SourceAssets>(fx.Viewport).Images;
             expect(images.size() == 1u);
             if (images.empty()) return;
-            expect(images.front().Source == gltf::Image::SourceKind::Embedded) << "fallback should embed";
-            expect(images.front().MimeType == gltf::MimeType::PNG);
+            expect(images.front().Source == gltf::Image::SourceKind::External);
+            expect(images.front().Bytes.empty()) << "external image bytes were copied";
+            expect(project::ResolveAsset(fx.R, images.front().SourcePath) == staged_png);
+            // OBJ imports supply a source path without an authored glTF URI.
+            fx.R.edit<gltf::SourceAssets>(fx.Viewport).Images.front().Uri.clear();
+            const auto relocated_path = edit_root / "relocated" / "BoxTextured.gltf";
+            fs::create_directories(relocated_path.parent_path());
+            const auto relocated_save = gltf::SaveGltf(relocated_path, fx.R, fx.Viewport);
+            expect(relocated_save.has_value()) << "relocated export failed: " << (relocated_save ? "" : relocated_save.error());
+            if (!relocated_save) return;
+            SceneFixture relocated;
+            const auto relocated_load = gltf::LoadGltf(relocated_path, relocated.R, relocated.Viewport);
+            expect(relocated_load.has_value()) << "relocated import failed: " << (relocated_load ? "" : relocated_load.error());
+            if (!relocated_load) return;
+            const auto &relocated_images = relocated.R.get<const gltf::SourceAssets>(relocated.Viewport).Images;
+            expect(relocated_images.size() == 1u);
+            if (!relocated_images.empty()) expect(project::ResolveAsset(relocated.R, relocated_images.front().SourcePath) == staged_png) << "relocated URI references another file";
+            ProcessComponentEvents(fx.R, fx.Viewport);
+            const auto &textures = fx.R.Context.get<TextureStore>().Textures;
+            expect(std::ranges::find(textures, 0u, &TextureEntry::SourceImageIndex) != textures.end()) << "image was not uploaded";
+            fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
+            const auto saved = gltf::SaveGltf(stage_dir / "BoxTextured-missing.gltf", fx.R, fx.Viewport);
+            expect(!saved.has_value()) << "missing external image exported";
+            if (!saved) expect(saved.error().contains(staged_png.string())) << saved.error();
         };
     }
 

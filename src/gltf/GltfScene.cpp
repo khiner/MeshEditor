@@ -956,7 +956,7 @@ void ApplyActiveSceneSelection(state::Scene &r) {
     for (const auto &[_, e] : ordered) r.emplace<Selected>(e);
 }
 // Header, samplers, images, textures, required extensions, and the default scene's IBL.
-// Image bytes move into the project store when one is open, and an image with a file to reload from keeps no bytes.
+// Embedded images keep their bytes, and external images keep a file reference.
 std::expected<SourceAssets, std::string> ReadSourceAssets(state::Scene &r, const fastgltf::Asset &asset, const std::filesystem::path &stored_path, ExtrasMap &&extras, uint32_t scene_index) {
     SourceAssets sa{
         .Copyright = asset.assetInfo ? std::string{asset.assetInfo->copyright} : std::string{},
@@ -984,13 +984,10 @@ std::expected<SourceAssets, std::string> ReadSourceAssets(state::Scene &r, const
     for (uint32_t image_index = 0; image_index < asset.images.size(); ++image_index) {
         auto image = ReadImage(asset, image_index, source_dir);
         if (!image) return std::unexpected{std::move(image.error())};
-        if (!image->SourcePath.empty()) image->SourcePath = project::AssetReference(r, image->SourcePath).string();
-        if (auto *files = r.Context.find<project::Assets>(); files && !project::Assets::IsReference(image->SourcePath)) {
-            const auto stored = files->Store("image.bin", image->Bytes);
-            if (!stored) return std::unexpected{stored.error()};
-            image->SourcePath = stored->string();
+        if (image->Source == Image::SourceKind::External) {
+            image->SourcePath = project::AssetReference(r, image->SourcePath).string();
+            image->Bytes = {};
         }
-        if (!image->SourcePath.empty()) image->Bytes = {};
         sa.Images.emplace_back(std::move(*image));
     }
     sa.Textures.reserve(asset.textures.size());

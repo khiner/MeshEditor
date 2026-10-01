@@ -611,32 +611,13 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             // KTX2 and DDS lack an encoder, so their source bytes stand.
             std::cerr << std::format("Warning: image '{}' is dirty but {} re-encoding isn't supported; emitting original bytes.\n", img.Name, img.MimeType == gltf::MimeType::KTX2 ? "KTX2" : "DDS");
         }
-        // A project archives external sources, so they embed on export.
-        if (form == Source::External && project::Assets::IsReference(img.SourcePath)) form = Source::Embedded;
         if (form == Source::External) {
+            const auto source_path = project::ResolveAsset(r, img.SourcePath);
             std::error_code ec;
-            if (!std::filesystem::is_regular_file(img.SourcePath, ec)) {
-                if (auto re = reencode_from_gpu(i, gltf::MimeType::PNG, img.Name)) {
-                    std::cerr << std::format("Warning: image '{}' source '{}' is missing; embedding as PNG.\n", img.Name, img.SourcePath);
-                    owned = std::move(re->first);
-                    mime = gltf::MimeType::PNG;
-                    bytes = owned;
-                    form = Source::Embedded;
-                } else {
-                    std::cerr << std::format("Warning: image '{}' source '{}' is missing and re-encoding failed ({}); emitting the URI as-is.\n", img.Name, img.SourcePath, re.error());
-                }
-            }
-        }
-        if (form != Source::External && bytes.empty() && !img.SourcePath.empty()) {
-            auto file = File::Read(project::ResolveAsset(r, img.SourcePath));
-            if (!file) return std::unexpected{std::move(file.error())};
-            owned = std::move(*file);
-            bytes = owned;
-        }
-
-        if (form == Source::External) {
+            if (!std::filesystem::is_regular_file(source_path, ec)) return std::unexpected{std::format("Image '{}' source '{}' is missing or unavailable.", img.Name, source_path.string())};
+            const auto uri_path = source_path.lexically_relative(std::filesystem::absolute(path).parent_path());
             asset.images.emplace_back(fastgltf::Image{
-                .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::URI{std::string_view{img.Uri}}, .mimeType = img.SourceHadMimeType ? FromMimeType(img.MimeType) : fastgltf::MimeType::None},
+                .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::URI{uri_path.generic_string()}, .mimeType = img.SourceHadMimeType ? FromMimeType(img.MimeType) : fastgltf::MimeType::None},
                 .name = ToFgStr(img.Name),
             });
         } else if (form == Source::DataUri && !bytes.empty()) {

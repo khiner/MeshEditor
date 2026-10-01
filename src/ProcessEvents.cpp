@@ -1,3 +1,4 @@
+#include "action/Errors.h"
 #include "ProcessEvents.h"
 #include "mesh/MeshComponents.h"
 #include "numeric/VectorMath.h"
@@ -242,7 +243,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         auto path = std::move(pending->Path);
         auto info = std::move(pending->Info);
         r.remove<PendingImportMesh>(viewport);
-        ImportMesh(r, viewport, path, std::move(info));
+        if (const auto imported = ImportMesh(r, viewport, path, std::move(info)); !imported) action::Fail(r, imported.error());
     }
     // Use the rendered camera for selection, culling, and LOD.
     const auto prepare_selection = [&](const RenderView &view) {

@@ -45,23 +45,26 @@ ObjPlyMaterial DefaultMaterial(std::string name = "Default") {
     return {.BaseColorFactor = {1.f, 1.f, 1.f, 1.f}, .MetallicFactor = 0.f, .RoughnessFactor = 1.f, .Name = std::move(name)};
 }
 
-MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
+struct MaterialReader : tinyobj::MaterialFileReader {
+    std::string Error;
+    explicit MaterialReader(const std::filesystem::path &directory) : MaterialFileReader(directory.string()) {}
+    bool operator()(const std::string &name, std::vector<tinyobj::material_t> *materials, std::map<std::string, int> *indices, std::string *warn, std::string *err) override {
+        const bool loaded = MaterialFileReader::operator()(name, materials, indices, warn, err);
+        if (!loaded) Error = "Cannot load OBJ material library: " + name;
+        return loaded;
+    }
+};
+
+std::expected<MeshDataWithMaterials, std::string> ReadObj(const std::filesystem::path &path) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
     std::string warn, err;
-    const auto mtl_base_dir = path.parent_path().string();
-    if (!tinyobj::LoadObj(
-            &attrib,
-            &shapes,
-            &materials,
-            &warn,
-            &err,
-            path.string().c_str(),
-            mtl_base_dir.empty() ? nullptr : mtl_base_dir.c_str()
-        )) {
-        throw std::runtime_error{"Failed to load OBJ: " + err};
-    }
+    std::ifstream input{path};
+    if (!input) return std::unexpected{"Cannot open OBJ: " + path.string()};
+    MaterialReader reader{path.parent_path()};
+    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, &input, &reader)) return std::unexpected{"Failed to load OBJ: " + err};
+    if (!reader.Error.empty()) return std::unexpected{std::move(reader.Error)};
 
     MeshDataWithMaterials result{};
     auto &data = result.Mesh;

@@ -5,6 +5,7 @@
 #include "render/LightComponents.h"
 #include "scene/Entity.h" // ObjectType
 
+#include <expected>
 #include <filesystem>
 #include <span>
 
@@ -29,7 +30,7 @@ state::Entity AddEmpty(state::Scene &, MeshStore &, const ObjectCreateInfo & = {
 state::Entity AddCamera(state::Scene &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<CameraLens> = {});
 state::Entity AddLight(state::Scene &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<PunctualLight> = {});
 
-std::pair<state::Entity, state::Entity> ImportMesh(state::Scene &, state::Entity viewport, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
+std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Scene &, state::Entity viewport, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
 
 void RequestImportMesh(state::Scene &, state::Entity viewport, std::filesystem::path, MeshInstanceCreateInfo);
 

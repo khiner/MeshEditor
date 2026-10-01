@@ -10,6 +10,8 @@ void Init(std::filesystem::path base, std::filesystem::path user_data);
 
 const std::filesystem::path &Base();
 const std::filesystem::path &Res();
+// The parent of `Res()` after resolving links, which is the repository root in a build.
+const std::filesystem::path &Repo();
 const std::filesystem::path &Shaders();
 const std::filesystem::path &UserData();
 

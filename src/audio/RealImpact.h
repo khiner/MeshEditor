@@ -13,10 +13,6 @@
 
 using numeric::quat, numeric::vec3;
 
-namespace project {
-struct Assets;
-} // namespace project
-
 /*
 Loads and provides access to a [RealImpact](https://github.com/samuel-clarke/RealImpact) dataset for a single object.
 Holds all listener point data except the audio samples.
@@ -66,8 +62,7 @@ struct Source {
     std::vector<ListenerPoint> Listeners;
 };
 
-// Store the mesh, metadata, and all microphone recordings as project assets.
-std::expected<fs::path, std::string> ArchiveSource(project::Assets &, const fs::path &directory);
+// Read the external dataset directory named by the action.
 std::expected<Source, std::string> LoadSource(const state::Scene &, const fs::path &);
 
 // Verifies `directory` is a RealImpact dataset directory (exists, contains required files, name matches).

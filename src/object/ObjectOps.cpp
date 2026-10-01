@@ -138,15 +138,19 @@ void ClearMeshes(state::Scene &r, state::Entity viewport) {
     for (const auto e : r.view<Instance>(state::Exclude<SubElementOf>) | to<std::vector>()) Destroy(r, viewport, e);
 }
 
-std::pair<state::Entity, state::Entity> ImportMesh(state::Scene &r, state::Entity viewport, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
+std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Scene &r, state::Entity viewport, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
     const auto stored_path = project::ResolveAsset(r, path);
     auto result = ReadMeshFile(stored_path);
-    if (!result) throw std::runtime_error(result.error());
+    if (!result) return std::unexpected{result.error()};
+
+    if (!result->Materials.empty()) {
+        const auto imported = ImportObjPlyMaterials(r, viewport, result->Materials, stored_path);
+        if (!imported) return std::unexpected{imported.error()};
+        for (auto &material : result->Primitives.MaterialIndices) material = (*imported)[material];
+    }
 
     // `deduplicate` merges vertices identical in every vertex-domain channel, keeping per-corner UVs and normals.
     auto created = CreateMesh(r, {.Data = std::move(result->Mesh), .Attrs = std::move(result->Attrs), .Primitives = std::move(result->Primitives), .Weld = deduplicate});
-    if (!result->Materials.empty()) ImportObjPlyMaterials(r, viewport, result->Materials, stored_path, created.StoreId);
-
     const auto entities = ::AddMesh(r, created.StoreId, std::move(info));
     if (!created.AuthoredCornerNormals.empty()) r.emplace<AuthoredCornerNormals>(entities.first, std::move(created.AuthoredCornerNormals));
     r.emplace<Path>(entities.first, path);
