@@ -1,4 +1,5 @@
 #include "project/store/LiveTrie.h"
+#include "Parallel.h"
 
 #include <algorithm>
 #include <atomic>
@@ -17,7 +18,7 @@ Node **AllocChildren() {
 
 Node *Alloc(LiveTrie &trie, NodeKind kind) {
     NodeBytes.fetch_add(sizeof(Node), std::memory_order_relaxed);
-    auto *n = new Node{1, kind, {}, nullptr, {}};
+    auto *n = new Node{.Refs = 1, .Kind = kind};
     ++trie.S.Nodes;
     if (kind == NodeKind::Aliased) ++trie.S.AliasedNodes;
     if (kind == NodeKind::Interior) {
@@ -71,10 +72,21 @@ void ToInterior(LiveTrie &trie, Node *n, Node *const *adopt = nullptr) {
 Hash128 ContentHash(const LiveTrie &trie, uint64_t slot, const Blob &value) {
     if (slot < trie.SlotHashes.size()) {
         const auto &e = trie.SlotHashes[slot];
-        if (e.State == LiveTrie::SlotState::Value && !e.Dirty) return e.H;
+        if (!e.Dirty) {
+            if (e.State == LiveTrie::SlotState::Value) return e.H;
+            if (e.State == LiveTrie::SlotState::Default && trie.PageBytes && value.Size == trie.PageBytes) return trie.DefaultPageHash;
+        }
     }
     assert(!value.Destroy && "native values require a settled hash");
     return HashBytes(value.View());
+}
+
+bool DefaultValue(const LiveTrie &trie, uint64_t slot, const Blob &value) {
+    if (!trie.PageBytes) return false;
+    if (value.Size != trie.PageBytes) return true;
+    if (slot >= trie.SlotHashes.size()) return IsZero(value.View());
+    const auto &e = trie.SlotHashes[slot];
+    return e.Dirty || e.State == LiveTrie::SlotState::Unhashed ? IsZero(value.View()) : e.State == LiveTrie::SlotState::Default;
 }
 
 void CaptureInto(LiveTrie &trie, Node *n, uint64_t slot, std::optional<Blob> value) {
@@ -84,6 +96,7 @@ void CaptureInto(LiveTrie &trie, Node *n, uint64_t slot, std::optional<Blob> val
         n->Kind = NodeKind::Owned;
         n->Value = *value;
         n->Hash = ContentHash(trie, slot, n->Value);
+        n->Default = DefaultValue(trie, slot, n->Value);
         ++trie.S.OwnedSlots;
         trie.S.OwnedBytes += n->Value.OwnedBytes();
     } else {
@@ -191,7 +204,7 @@ void PlanRec(LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base, Re
             c.Incoming = std::exchange(t->Value, {});
             const auto *e = base < trie.SlotHashes.size() ? &trie.SlotHashes[base] : nullptr;
             c.MaybeEqual = !(e && e->State == LiveTrie::SlotState::Value && !e->Dirty && !(e->H == t->Hash));
-            c.Default = trie.PageBytes && (c.Incoming.Size != trie.PageBytes || IsZero(c.Incoming.View()));
+            c.Default = t->Default;
         } else {
             c.Erase = true;
         }
@@ -222,15 +235,20 @@ Node *CommitRec(LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base,
         NodeKind old_kind;
         Blob old_value{};
         Hash128 old_hash{};
+        bool old_default{};
         if (t->Kind == NodeKind::Owned) {
             if (c.Unchanged) {
                 old_value = c.Incoming;
                 old_hash = t->Hash;
                 old_kind = NodeKind::Owned;
+                old_default = t->Default;
             } else {
                 old_value = c.Old;
                 old_kind = c.WasPresent ? NodeKind::Owned : NodeKind::Absent;
-                if (c.WasPresent) old_hash = ContentHash(trie, slot, old_value);
+                if (c.WasPresent) {
+                    old_hash = ContentHash(trie, slot, old_value);
+                    old_default = DefaultValue(trie, slot, old_value);
+                }
                 RehashSlot(trie, slot, t->Hash, c.Default);
             }
         } else if (c.Unchanged) {
@@ -240,6 +258,7 @@ Node *CommitRec(LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base,
             old_value = c.Old;
             old_kind = NodeKind::Owned;
             old_hash = ContentHash(trie, slot, old_value);
+            old_default = DefaultValue(trie, slot, old_value);
             RehashSlot(trie, slot, {}, true);
         }
         t->Kind = NodeKind::Aliased;
@@ -249,6 +268,7 @@ Node *CommitRec(LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base,
             p->Kind = old_kind;
             p->Value = old_value;
             p->Hash = old_hash;
+            p->Default = old_default;
             if (old_kind == NodeKind::Owned) {
                 ++trie.S.OwnedSlots;
                 trie.S.OwnedBytes += old_value.OwnedBytes();
@@ -336,14 +356,16 @@ bool CheckVersionRec(Node *n, const std::unordered_set<const Node *> &present_al
 uint64_t SharedNodeBytes() { return NodeBytes.load(std::memory_order_relaxed); }
 
 LiveTrie::LiveTrie(uint32_t levels, uint32_t page_bytes)
-    : Levels(levels), PageBytes(page_bytes), Root(Alloc(*this, NodeKind::Aliased)), Manifest(levels) {}
+    : Levels(levels), PageBytes(page_bytes), DefaultPageHash(page_bytes ? HashBytes(std::vector<std::byte>(page_bytes)) : Hash128{}),
+      Root(Alloc(*this, NodeKind::Aliased)), Manifest(levels) {}
 
 LiveTrie::~LiveTrie() { ReleaseNode(*this, Root); }
 
 void LiveTrie::Write(uint64_t first, uint64_t count, std::span<const std::byte> contents) {
     CaptureImpl(*this, first, count, [&](uint64_t slot) -> std::optional<Blob> {
-        const auto end = (slot + 1) * PageBytes;
-        if (end > contents.size()) return std::nullopt;
+        // A settled default page and a page never written hold zeros, which an absent value restores.
+        if ((slot + 1) * PageBytes > contents.size() || slot >= SlotHashes.size() ||
+            (!SlotHashes[slot].Dirty && SlotHashes[slot].State != SlotState::Value)) return std::nullopt;
         return CopyBlob(contents.subspan(slot * PageBytes, PageBytes));
     });
     // Mark hashes dirty after capturing values with their pre-write hashes.
@@ -379,10 +401,31 @@ void LiveTrie::Rehash(uint64_t slot, std::optional<std::span<const std::byte>> b
 }
 
 void LiveTrie::SettleFlat(std::span<const std::byte> contents) {
-    for (const auto slot : DirtySlots) {
-        const auto end = (slot + 1) * PageBytes;
-        if (end > contents.size()) Rehash(slot, std::nullopt);
-        else Rehash(slot, contents.subspan(slot * PageBytes, PageBytes));
+    // Hash independent dirty pages concurrently, then publish their terms and manifest dirtiness in the original slot order.
+    // The latter mutates the trie and remains serial.
+    // Unchanged pages are never read.
+    struct Result { Hash128 Hash; bool Default; };
+    std::vector<Result> results(DirtySlots.size());
+    constexpr uint32_t PagesPerChunk{16};
+    const uint32_t chunks = uint32_t((results.size() + PagesPerChunk - 1u) / PagesPerChunk);
+    ParallelFor(chunks, [&](uint32_t chunk) {
+        const auto end = std::min<size_t>((size_t(chunk) + 1u) * PagesPerChunk, results.size());
+        for (size_t i = size_t(chunk) * PagesPerChunk; i < end; ++i) {
+            const auto slot = DirtySlots[i];
+            if (PageBytes == 0 || slot >= contents.size() / PageBytes) {
+                results[i].Default = true;
+                continue;
+            }
+            const auto offset = slot * PageBytes;
+            const auto bytes = contents.subspan(offset, PageBytes);
+            results[i].Default = IsZero(bytes);
+            if (!results[i].Default) results[i].Hash = HashBytes(bytes);
+        }
+    });
+    for (size_t i = 0; i < DirtySlots.size(); ++i) {
+        const auto slot = DirtySlots[i];
+        SlotHashAt(*this, slot).Dirty = false;
+        RehashSlot(*this, slot, results[i].Hash, results[i].Default);
     }
     DirtySlots.clear();
 }

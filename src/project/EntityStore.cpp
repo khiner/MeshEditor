@@ -58,11 +58,17 @@ std::vector<state::Entity> EntityStore::RemovedEntities() const {
 
 void EntityStore::FinishRestore(std::span<const state::Entity> removed) {
     for (const auto e : removed) R.RemoveComponents(e);
+    // Only the changed generation pages can hold an entity whose liveness changed.
+    ForEachIdentityChange([&](uint32_t index) {
+        const auto before = R.Living.entity_at(index), after = R.EntityAt(index);
+        if (before == after) return;
+        if (before != state::Null) R.Living.erase(before);
+        if (after != state::Null) R.Living.insert(after);
+    });
     R.RestoringEvents = true;
     for (const auto &[type, e, event] : Changes)
         if (event != state::Event::Destroy) state::Notify(R, type, event, e);
     R.RestoringEvents = false;
     R.Restoring = false;
-    R.RebuildLiving();
 }
 } // namespace project

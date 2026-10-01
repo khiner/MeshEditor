@@ -193,7 +193,6 @@ struct Scene {
     uint32_t EntityCapacity() const;
     Entity EntityAt(uint32_t index) const;
     void ResetEntities();
-    void RebuildLiving();
     // The non-const form binds the table to its component type on first use.
     template<typename C> Table &storage() {
         if constexpr (std::is_same_v<std::remove_const_t<C>, Entity>) return Living;

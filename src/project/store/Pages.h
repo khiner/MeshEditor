@@ -2,6 +2,7 @@
 
 #include "project/store/LiveTrie.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 
@@ -97,18 +98,37 @@ private:
         vector.resize(bytes);
         return vector;
     }
-    // Records the page's bytes that differ between its old and new contents, as absolute offsets.
-    void NoteChanged(uint64_t slot, std::span<const std::byte> old_bytes, std::span<const std::byte> new_bytes) {
-        uint64_t first = 0, end = old_bytes.size();
-        while (first < end && old_bytes[first] == new_bytes[first]) ++first;
-        if (first == end) return;
-        while (old_bytes[end - 1] == new_bytes[end - 1]) --end;
-        ChangedExtents.emplace_back(slot * PageBytes + first, slot * PageBytes + end);
+    // The first and one past the last byte where two equal-size pages differ, or an empty extent when they are equal.
+    static std::pair<uint32_t, uint32_t> Difference(std::span<const std::byte> a, std::span<const std::byte> b) {
+        constexpr uint32_t Block = 256;
+        const auto size = uint32_t(a.size());
+        const auto differs = [&](uint32_t at) {
+            uint64_t bits = 0;
+            for (uint32_t i = at; i < at + Block; i += sizeof(uint64_t)) {
+                uint64_t x, y;
+                std::memcpy(&x, a.data() + i, sizeof(x));
+                std::memcpy(&y, b.data() + i, sizeof(y));
+                bits |= x ^ y;
+            }
+            return bits != 0;
+        };
+        uint32_t first = 0;
+        while (first + Block <= size && !differs(first)) first += Block;
+        while (first < size && a[first] == b[first]) ++first;
+        if (first == size) return {};
+        uint32_t end = size;
+        while (end - first >= Block && !differs(end - Block)) end -= Block;
+        while (a[end - 1] == b[end - 1]) --end;
+        return {first, end};
+    }
+    void NoteChanged(uint64_t slot, std::pair<uint32_t, uint32_t> extent) {
+        ChangedExtents.emplace_back(slot * PageBytes + extent.first, slot * PageBytes + extent.second);
     }
     void Apply(RestorePlan &plan) {
         for (auto &c : plan.Changes) {
             if (c.Erase) {
-                if (!Present(c.Slot)) {
+                // Settled hashes identify the present pages that hold only zeros.
+                if (!Present(c.Slot) || c.Slot >= Trie.SlotHashes.size() || Trie.SlotHashes[c.Slot].State != LiveTrie::SlotState::Value) {
                     c.Unchanged = true;
                     continue;
                 }
@@ -116,19 +136,22 @@ private:
                 c.Old = CopyBlob(page);
                 c.WasPresent = true;
                 std::memset(page.data(), 0, PageBytes);
-                NoteChanged(c.Slot, c.Old.View(), page);
+                NoteChanged(c.Slot, Difference(c.Old.View(), page));
                 continue;
             }
             Grow((c.Slot + 1) * PageBytes);
             const auto page = Storage.subspan(c.Slot * PageBytes, PageBytes);
-            if (c.MaybeEqual && Unchanged(page, c.Incoming.View())) {
+            assert(c.Incoming.Size == PageBytes);
+            const auto extent = Difference(page, c.Incoming.View());
+            if (extent.first == extent.second) {
                 c.Unchanged = true;
                 continue;
             }
-            c.Old = SwapBlob(page, c.Incoming);
+            // The pages agree outside the extent, so exchanging it exchanges the whole pages.
+            std::swap_ranges(page.begin() + extent.first, page.begin() + extent.second, c.Incoming.Data + extent.first);
+            c.Old = std::exchange(c.Incoming, {});
             c.WasPresent = true;
-            c.Incoming = {};
-            NoteChanged(c.Slot, c.Old.View(), page);
+            NoteChanged(c.Slot, extent);
         }
     }
 };

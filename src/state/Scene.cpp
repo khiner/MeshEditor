@@ -118,9 +118,4 @@ void Scene::ResetEntities() {
     AllocationStorage->Free.Clear();
     Living.clear();
 }
-void Scene::RebuildLiving() {
-    Living.clear();
-    for (uint32_t i = 0; i < AllocationStorage->Generations.size(); ++i)
-        if (const auto e = EntityAt(i); e != Null) Living.insert(e);
-}
 } // namespace state

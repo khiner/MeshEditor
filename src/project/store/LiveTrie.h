@@ -24,6 +24,7 @@ enum class NodeKind : uint8_t {
 struct Node {
     uint32_t Refs;
     NodeKind Kind;
+    bool Default{}; // Owned zero-default pages, recorded when the value is captured.
     Blob Value; // Owned only
     Node **Children; // Interior only
     Hash128 Hash; // Owned only: the content hash of Value
@@ -145,6 +146,7 @@ struct LiveTrie {
     };
 
     const uint32_t Levels, PageBytes;
+    const Hash128 DefaultPageHash;
 
     TrieStats S;
     Node *Root;
