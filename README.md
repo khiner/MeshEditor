@@ -317,7 +317,7 @@ $ ./build/tests/MeshEditorTests
 | `MeshEditorProjectTest` | Persistent state, rendering, replay, and archive relocation across mesh edits and glTF samples |
 | `MeshEditorStateTest` | Sparse native tables, entity generations, mutation capture, and dirty-set lifetime |
 | `MeshEditorProjectStoreTest` | Full-copy version/history models, manifest reconstruction, and persistence failures |
-| `MeshEditorProjectBench` | Sparse buffer edits and complete mesh-edit frames, with [measurements](tests/ProjectPerformance.md) |
+| `MeshEditorProjectBench` | Sparse buffer edits and complete mesh-edit frames |
 | `MeshEditorContactModelTest` | Hertz contact time, effective mass, inertia decomposition |
 | `MeshEditorModalRenderTest` | Superposition, thread independence, and the click's rate independence |
 | `MeshEditorCompressTest` | `.project` archive round trip |

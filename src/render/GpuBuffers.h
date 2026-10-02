@@ -53,8 +53,12 @@ struct InstanceArena {
 
     Range Allocate(uint32_t count);
     void Free(Range range) { Allocator.Free(range); }
+    void Free(std::vector<Range> ranges) { Allocator.Free(std::move(ranges)); }
 
-    void CompactErase(uint32_t global_index, uint32_t range_end);
+    template<typename T, typename Index = std::identity>
+    void CompactErase(Range active, const T &indices, Index index = {}) {
+        ForEachSurvivorRun(active, indices, [&](uint32_t from, uint32_t to, uint32_t count) { CopyInstances(from, to, count); }, index);
+    }
     void CopyInstances(uint32_t src_offset, uint32_t dst_offset, uint32_t count);
     void ReserveAdditional(uint32_t count);
     void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), uint64_t(index) * sizeof(uint8_t)); }
@@ -121,7 +125,9 @@ struct GpuBuffers {
 
     void Release(RenderBuffers &buffers);
     void Release(MeshBuffers &buffers);
+    void Release(std::span<MeshBuffers *const>);
     void ReleaseMeshlets(MeshBuffers &buffers);
+    void ReleaseMeshlets(std::span<MeshBuffers *const>);
     // Allocates `count` cluster records and extends the LOD leaf and spatial mirrors over them.
     Range AllocateMeshlets(uint32_t count);
     // Releases the clusters' payload ranges, which their host records name, and their identities.
@@ -157,7 +163,7 @@ struct GpuBuffers {
     }
     std::unique_ptr<store::Records> MeshHistory;
     std::unique_ptr<store::Records> LodDepthHistory;
-    void ReleaseMesh(uint32_t store_id);
+    void ReleaseMeshes(std::span<const uint32_t> store_ids);
 
     BufferArena<uint32_t> &GetIndexBuffer(IndexKind kind) {
         switch (kind) {

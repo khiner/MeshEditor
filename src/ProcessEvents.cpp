@@ -156,6 +156,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     // Armature objects whose bone instance state resyncs this frame.
     std::unordered_set<state::Entity> bone_state_dirty;
 
+    ProcessObjectRemovals(r, viewport);
     BuildMissingWorldTransforms(r);
 
     // Resize render resources before the pick handlers below resolve against the rendered scene.
@@ -565,24 +566,20 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             r.remove<LightIndex>(entity);
         }
     }
-    // Compact destroyed light indices in one batch.
+    // Compact surviving light records by runs, then remap each entity once.
     if (auto &indices = buffers.PendingLightRemovals; !indices.empty()) {
-        std::sort(indices.begin(), indices.end(), std::greater<>());
-        auto buffer_count = buffers.Lights.Count<LightRecord>();
-        for (const auto remove_index : indices) {
-            if (remove_index >= buffer_count) continue;
-            --buffer_count;
-            if (remove_index != buffer_count) {
-                buffers.Lights.Update(as_bytes(buffers.Lights.GetSpan<LightRecord>()[buffer_count]), uint64_t(remove_index) * sizeof(LightRecord));
-                for (auto [other_entity, other_light_index] : r.view<LightIndex>().each()) {
-                    if (other_light_index.Value == buffer_count) {
-                        r.replace<LightIndex>(other_entity, remove_index);
-                        break;
-                    }
-                }
-            }
+        const auto before = buffers.Lights.Count<LightRecord>();
+        std::ranges::sort(indices);
+        indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+        std::erase_if(indices, [before](uint32_t index) { return index >= before; });
+        ForEachSurvivorRun({0u, before}, indices, [&](uint32_t from, uint32_t to, uint32_t count) {
+            if (from != to && count) buffers.Lights.Move(uint64_t(from) * sizeof(LightRecord), uint64_t(to) * sizeof(LightRecord), uint64_t(count) * sizeof(LightRecord));
+        });
+        for (const auto [entity, index] : r.view<const LightIndex>().each()) {
+            const auto shift = uint32_t(std::ranges::lower_bound(indices, index.Value) - indices.begin());
+            if (shift) r.replace<LightIndex>(entity, index.Value - shift);
         }
-        buffers.Lights.SetCount<LightRecord>(buffer_count);
+        buffers.Lights.SetCount<LightRecord>(before - indices.size());
         indices.clear();
         request(RenderRequest::Rebuild);
     }

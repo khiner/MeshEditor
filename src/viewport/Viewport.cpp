@@ -27,6 +27,7 @@
 #include "mesh/MeshStores.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
+#include "object/PendingSync.h"
 #include "physics/PhysicsStores.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
@@ -303,6 +304,7 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
     // Clear physics while its components still exist, so the next load isn't tripped by stale entity keys.
     physics::Clear(r);
     ClearMeshes(r, viewport);
+    r.Context.erase<PendingObjectRemovals>();
 
     ResetImportedEnvironment(r);
 
@@ -317,11 +319,12 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
     r.Context.get<EnvironmentStore>().PendingImport.reset();
 
     // Destroy instances before the buffer entities they reference.
-    for (const auto e : r.view<RenderInstance>() | to<std::vector>()) r.destroy(e);
-    for (const auto e : r.view<state::Entity>() | to<std::vector>()) {
-        if (e != viewport) r.destroy(e);
-    }
+    r.destroy(SortedEntities(r.view<const RenderInstance>()));
+    auto remaining = SortedEntities(r.view<state::Entity>());
+    std::erase(remaining, viewport);
+    r.destroy(remaining);
     r.destroy(viewport);
+    r.Context.erase<PendingHide>();
 
     // Reset ordered allocators so scene replay reproduces entity IDs and GPU handles.
     // Bindless allocation is order-independent and requires no reset.

@@ -1,8 +1,11 @@
 #include "project/ComponentPool.h"
 #include "project/EntityStore.h"
+#include "project/store/RecordPage.h"
+#include "Range.h"
 #include "state/Scene.h"
 
 #include <cassert>
+#include <stdexcept>
 
 namespace project {
 namespace {
@@ -15,25 +18,40 @@ std::span<const std::byte> Serialize(const snapshot::SnapshotEntry &encoding, co
 } // namespace
 
 ComponentPool::ComponentPool(EntityStore &s, state::TypeId type, const snapshot::SnapshotEntry &encoding)
-    : S(s), Type(type), Encoding(encoding), Trie(4) {}
+    : S(s), Type(type), Encoding(encoding), Trie(4, 0, state::Table::PageCount) {
+    static_assert(state::Table::PageCount == store::RecordsPerPage);
+}
 
 state::Table &ComponentPool::Storage() const { return S.R.Tables[Type]; }
 state::Entity ComponentPool::Stored(uint32_t index) const { return Storage().entity_at(index); }
-store::Blob ComponentPool::Copy(uint32_t index) const { return Encoding.Copy(Storage().value(Stored(index))); }
+store::Blob ComponentPool::Copy(uint32_t page) { return Encoding.CopyPage(Storage(), page); }
 
 uint64_t ComponentPool::Length() const { return S.Table.size(); }
-bool ComponentPool::Present(uint64_t index) const { return Stored(uint32_t(index)) != state::Null; }
-std::span<const std::byte> ComponentPool::Read(uint64_t index) {
-    return Serialize(Encoding, Storage().value(Stored(uint32_t(index))), Scratch);
+bool ComponentPool::Present(uint64_t page) const { return Storage().mask(uint32_t(page)) != 0u; }
+std::span<const std::byte> ComponentPool::Read(uint64_t page) {
+    const auto &table = Storage();
+    return store::EncodeRecordPage(table.mask(uint32_t(page)), PageScratch, [&](uint32_t slot) {
+        return Serialize(Encoding, table.value(table.entity(uint32_t(page), slot)), Scratch);
+    });
 }
 std::span<const std::byte> ComponentPool::Encode(const store::Blob &value) {
-    return value.Destroy ? Serialize(Encoding, value.Data, SnapshotScratch) : value.View();
+    if (!value.Destroy) return value.View();
+    const auto mask = reinterpret_cast<const snapshot::NativePage *>(value.Data)->Mask;
+    return store::EncodeRecordPage(mask, SnapshotScratch, [&](uint32_t slot) {
+        return Serialize(Encoding, Encoding.PageValue(value, slot), Scratch);
+    });
 }
 
-void ComponentPool::Capture(uint32_t index) {
+void ComponentPool::Capture(std::span<const state::PageMask> pages) {
     assert(!Trie.ExternalWritesForbidden && "component write during track restoration");
-    if (Trie.Uncaptured(index)) Trie.Capture(index, Present(index) ? std::optional{Copy(index)} : std::nullopt);
-    Trie.MarkDirty(index, 1);
+    ForEachIndexRun(pages, [&](size_t begin, size_t count) {
+        const auto first = pages[begin].Page;
+        Trie.Capture(first, count, this, [](void *owner, uint64_t index) -> std::optional<store::Blob> {
+            auto &pool = *static_cast<ComponentPool *>(owner);
+            return pool.Present(index) ? std::optional{pool.Copy(uint32_t(index))} : std::nullopt;
+        });
+        Trie.MarkDirty(first, count);
+    }, &state::PageMask::Page);
 }
 
 void ComponentPool::Settle() {
@@ -44,39 +62,45 @@ void ComponentPool::Settle() {
 // Values move to the entity now at their index. A changed entity generation never counts as unchanged.
 void ComponentPool::Apply(store::RestorePlan &plan, bool compare) {
     for (auto &c : plan.Changes) {
-        const auto index = uint32_t(c.Slot);
-        const auto previous = Stored(index);
-        const auto entity = S.R.EntityAt(index);
-        const bool present = previous != state::Null;
-        if (c.Erase) {
-            if (!present) {
-                c.Unchanged = true;
-                continue;
-            }
-            c.Old = Copy(index);
-            c.WasPresent = true;
-            S.R.remove(Type, previous);
-            S.Changes.push_back({Type, previous, state::Event::Destroy});
-            continue;
+        const auto page = uint32_t(c.Slot);
+        const auto old_mask = Storage().mask(page);
+        const bool native = c.Incoming.Destroy != nullptr;
+        auto bytes = native ? std::span<const std::byte>{} : c.Incoming.View();
+        const auto mask = c.Erase ? 0u : native ? reinterpret_cast<const snapshot::NativePage *>(c.Incoming.Data)->Mask : store::RecordMask(bytes);
+        bool identities_match = true;
+        for (auto bits = old_mask; bits; bits &= bits - 1u) {
+            const auto index = page * state::Table::PageCount + uint32_t(std::countr_zero(bits));
+            if (Stored(index) != S.R.EntityAt(index)) identities_match = false;
         }
-        if (compare && present && previous == entity && c.MaybeEqual && store::Unchanged(Read(index), Encode(c.Incoming))) {
+        if ((c.Erase && !old_mask) || (compare && old_mask && identities_match && c.MaybeEqual && store::Unchanged(Read(page), Encode(c.Incoming)))) {
             c.Unchanged = true;
             continue;
         }
-        if (present) {
-            c.Old = Copy(index);
+        if (old_mask) {
+            c.Old = Copy(page);
             c.WasPresent = true;
-            if (previous != entity) S.R.remove(Type, previous);
         }
-        if (entity != state::Null) {
-            if (c.Incoming.Destroy) Encoding.Move(S.R, entity, c.Incoming);
-            else {
-                Encoding.Emplace(S.R, entity, c.Incoming.View());
-                store::FreeBlob(c.Incoming);
+        for (auto bits = old_mask | mask; bits; bits &= bits - 1u) {
+            const auto bit = 1u << std::countr_zero(bits);
+            const auto index = page * state::Table::PageCount + uint32_t(std::countr_zero(bits));
+            const auto previous = Stored(index), entity = S.R.EntityAt(index);
+            if (!(mask & bit)) {
+                S.R.remove(Type, previous);
+                S.Changes.push_back({Type, previous, state::Event::Destroy});
+                continue;
             }
-            S.Changes.push_back({Type, entity, previous == entity ? state::Event::Update : state::Event::Create});
-        } else store::FreeBlob(c.Incoming);
-        c.Incoming = {};
+            const auto slot = uint32_t(std::countr_zero(bits));
+            const auto value = native ? std::span<const std::byte>{} : store::TakeRecord(bytes);
+            if (compare && previous == entity && previous != state::Null && (native ? Encoding.Equal(Storage().value(previous), Encoding.PageValue(c.Incoming, slot)) : store::Unchanged(Serialize(Encoding, Storage().value(previous), Scratch), value))) continue;
+            if (previous != state::Null && previous != entity) S.R.remove(Type, previous);
+            if (entity != state::Null) {
+                if (native) Encoding.MovePageValue(S.R, entity, c.Incoming, slot);
+                else Encoding.Emplace(S.R, entity, value);
+                S.Changes.push_back({Type, entity, previous == entity ? state::Event::Update : state::Event::Create});
+            }
+        }
+        if (!bytes.empty()) throw std::invalid_argument("Trailing component page bytes.");
+        store::FreeBlob(c.Incoming);
     }
 }
 
@@ -94,17 +118,11 @@ void ComponentPool::Load(uint64_t length, std::span<const std::pair<uint64_t, st
     Trie.CommitLoad(std::move(plan));
     // Move values whose entity changed identity to the entity now at their index.
     S.ForEachIdentityChange([&](uint32_t index) {
-        if (Trie.IsDirty(index)) return; // Loaded slots already hold their values.
+        if (Trie.IsDirty(index / state::Table::PageCount)) return; // Loaded pages already hold their values.
         const auto previous = Stored(index), entity = S.R.EntityAt(index);
         if (previous == state::Null || previous == entity) return;
-        if (Trie.Uncaptured(index)) Trie.Capture(index, Copy(index));
-        Trie.MarkDirty(index, 1);
-        auto value = Copy(index);
-        S.R.remove(Type, previous);
-        if (entity != state::Null) {
-            Encoding.Move(S.R, entity, value);
-            S.Changes.push_back({Type, entity, state::Event::Create});
-        } else store::FreeBlob(value);
+        Encoding.Rebind(S.R, previous, entity);
+        if (entity != state::Null) S.Changes.push_back({Type, entity, state::Event::Create});
     });
 }
 } // namespace project

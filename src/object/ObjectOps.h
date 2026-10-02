@@ -35,6 +35,8 @@ std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(s
 void RequestImportMesh(state::Scene &, state::Entity viewport, std::filesystem::path, MeshInstanceCreateInfo);
 
 void Destroy(state::Scene &, state::Entity viewport, state::Entity);
+void Destroy(state::Scene &, state::Entity viewport, std::span<const state::Entity>);
+void ProcessObjectRemovals(state::Scene &, state::Entity viewport);
 void ClearMeshes(state::Scene &, state::Entity viewport);
 void DestroyArmatureData(state::Scene &, state::Entity arm_obj_entity);
 

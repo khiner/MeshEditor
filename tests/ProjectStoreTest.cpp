@@ -112,6 +112,34 @@ Version Pin(auto &owner) {
     return owner.Trie.Pin(owner.Length());
 }
 
+void TestRecordPagesAcrossResize() {
+    std::vector<std::optional<std::string>> values(35);
+    for (uint32_t i = 0; i < values.size(); ++i) values[i] = std::string(100u + i, char('a' + i % 26u));
+    Records records{values, 3};
+    records.Trie.CollectChanged = true;
+    std::vector<std::pair<Version, decltype(values)>> versions;
+    versions.emplace_back(Pin(records), values);
+    records.Write(31, 34);
+    values.resize(65);
+    for (uint32_t i = 31; i < values.size(); ++i) values[i] = std::to_string(i);
+    versions.emplace_back(Pin(records), values);
+    records.Write(15, 42);
+    for (uint32_t i = 15; i < 57u; ++i) values[i].reset();
+    versions.emplace_back(Pin(records), values);
+    records.Write(0, values.size());
+    values.resize(1);
+    versions.emplace_back(Pin(records), values);
+    for (uint32_t round = 0; round < 3u; ++round) {
+        for (auto &[version, expected] : versions) {
+            expect(records.Restore(version));
+            expect(values == expected);
+            expect(LiveManifest(records) == RebuiltManifest(records));
+            records.TakeChanged();
+        }
+    }
+    for (auto &[version, _] : versions) records.Trie.Release(version);
+}
+
 void TestPoolTrieAgainstModel() {
     std::mt19937 rng{7};
     MapOwner live{.Len = 4096};
@@ -593,6 +621,7 @@ void TestClearHistory() {
 } // namespace
 
 int main() {
+    TestRecordPagesAcrossResize();
     TestPoolTrieAgainstModel();
     TestBufferAgainstModel();
     TestHistoryAgainstModel();

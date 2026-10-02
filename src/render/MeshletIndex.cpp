@@ -186,14 +186,11 @@ void MeshletIndex::Update(std::span<MeshletIndexEdit> edits) {
 }
 
 void MeshletIndex::Release(uint32_t root) {
-    if (root == InvalidOffset) return;
-    const auto visit = [&](auto &&self, uint32_t id, uint32_t level) -> void {
-        const auto children = Nodes.Get({id,1u})[0].Children;
-        for (const auto child : children) if (child != InvalidOffset) {
-            if (level) self(self,child,level-1u);
-            else Leaves.Release({child,1u});
-        }
-        Nodes.Release({id,1u});
-    };
-    visit(visit,root,MeshletIndexLevels-1u);
+    Release(std::span{&root, 1u});
+}
+void MeshletIndex::Release(std::span<const uint32_t> roots) {
+    std::vector<Range> nodes, leaves;
+    Read().CollectOwned(roots, nodes, leaves, [](uint32_t, const auto &) {});
+    Leaves.Release(std::move(leaves));
+    Nodes.Release(std::move(nodes));
 }

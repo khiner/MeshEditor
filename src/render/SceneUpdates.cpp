@@ -297,10 +297,11 @@ void AssignFaceIndices(const MeshStore &meshes, const Mesh &mesh, MeshBuffers &m
 }
 
 SyncResult SyncModelsBuffers(state::Scene &r) {
+    const profile::CpuScope scope{"SyncModelsBuffers"};
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &meshes = r.Context.get<MeshStore>();
     // Released and restored records drop their render data ahead of this pass's builds.
-    for (const auto id : meshes.TakeRenderStale()) buffers.ReleaseMesh(id);
+    buffers.ReleaseMeshes(meshes.TakeRenderStale());
     std::vector<state::Entity> new_mesh_entities, new_extras_entities;
     for (auto e : reactive(r, Change::NewBufferEntity)) {
         if (!r.valid(e)) continue;
@@ -315,25 +316,29 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
     }
 
     bool compacted = false;
-    for (auto [buffer_entity, pending] : r.view<PendingHide>().each()) {
-        // Erase in descending order to keep remaining batch indices stable.
-        auto &indices = pending.BufferIndices;
-        std::sort(indices.begin(), indices.end(), std::greater<>());
-        auto &mb = r.edit<ModelsBuffer>(buffer_entity);
-        for (const auto global_idx : indices) {
-            buffers.Instances.CompactErase(global_idx, mb.InstanceRange.Offset + mb.InstanceCount);
-            --mb.InstanceCount;
+    if (auto *pending = r.Context.find<PendingHide>()) {
+        auto &removals = pending->Instances;
+        auto &retired = pending->Retired;
+        if (!std::ranges::is_sorted(retired)) std::ranges::sort(retired);
+        std::erase_if(removals, [&](const auto &removal) {
+            return !r.valid(removal.Owner) || std::ranges::binary_search(retired, removal.Owner) || !r.all_of<ModelsBuffer>(removal.Owner);
+        });
+        if (!std::ranges::is_sorted(removals)) std::ranges::sort(removals);
+        removals.erase(std::unique(removals.begin(), removals.end()), removals.end());
+        for (const auto erased : removals | std::views::chunk_by([](const auto &a, const auto &b) { return a.Owner == b.Owner; })) {
+            auto &mb = r.edit<ModelsBuffer>(erased.front().Owner);
+            buffers.Instances.CompactErase({mb.InstanceRange.Offset, mb.InstanceCount}, erased, &PendingHide::Removal::Index);
+            mb.InstanceCount -= erased.size();
         }
-        compacted = true;
-        for (auto [_, ri] : r.view<RenderInstance>().each()) {
-            if (ri.Entity != buffer_entity || ri.BufferIndex == UINT32_MAX) continue;
-            uint32_t shift = 0;
-            for (const auto erased_idx : indices) {
-                if (erased_idx < ri.BufferIndex) ++shift;
-            }
-            if (shift > 0) ri.BufferIndex -= shift;
+        compacted = !removals.empty();
+        if (compacted) for (const auto [entity, ri] : r.view<const RenderInstance>().each()) {
+            if (ri.BufferIndex == UINT32_MAX) continue;
+            const auto erased = std::ranges::equal_range(removals, ri.Entity, {}, &PendingHide::Removal::Owner);
+            const auto shift = uint32_t(std::ranges::lower_bound(erased, ri.BufferIndex, {}, &PendingHide::Removal::Index) - erased.begin());
+            if (shift) r.edit<RenderInstance>(entity).BufferIndex -= shift;
         }
-        r.remove<PendingHide>(buffer_entity);
+        removals.clear();
+        retired.clear();
     }
 
     // Return inserted instances so callers can write WorldTransform before submission.

@@ -5,25 +5,25 @@
 
 namespace state {
 struct Table;
+struct PageMask;
 }
 
 namespace project {
 struct EntityStore;
 
-// Versioned component values of one type, keyed by entity index.
-// Values live in the scene table. Restoration emplaces, moves, and removes them through the snapshot encoding.
+// Versioned component pages of one type, using the scene table's occupancy mask.
+// Values stay in the scene table; history copies one native page before its first write.
 struct ComponentPool {
     ComponentPool(EntityStore &, state::TypeId, const snapshot::SnapshotEntry &);
 
     uint64_t Length() const;
-    bool Present(uint64_t index) const;
+    bool Present(uint64_t page) const;
     // The returned span remains valid until the next Read.
-    std::span<const std::byte> Read(uint64_t index);
-    // Serialize a native copy, or view raw bytes. The returned span remains valid until the next Encode.
+    std::span<const std::byte> Read(uint64_t page);
     std::span<const std::byte> Encode(const store::Blob &);
 
-    // Capture the component at index before an external write.
-    void Capture(uint32_t index);
+    // Capture affected native pages before external writes.
+    void Capture(std::span<const state::PageMask>);
     void Settle();
     bool Restore(const store::Version &);
     void Load(uint64_t length, std::span<const std::pair<uint64_t, store::Hash128>> changes, const std::unordered_map<store::Hash128, std::vector<std::byte>, store::Hash128Hasher> &leaves);
@@ -31,13 +31,13 @@ struct ComponentPool {
     EntityStore &S;
     state::TypeId Type;
     const snapshot::SnapshotEntry &Encoding;
-    std::vector<std::byte> Scratch, SnapshotScratch;
+    std::vector<std::byte> Scratch, PageScratch, SnapshotScratch;
     store::LiveTrie Trie;
 
 private:
     state::Table &Storage() const;
     state::Entity Stored(uint32_t index) const;
-    store::Blob Copy(uint32_t index) const;
+    store::Blob Copy(uint32_t page);
     void Apply(store::RestorePlan &, bool compare);
 };
 } // namespace project

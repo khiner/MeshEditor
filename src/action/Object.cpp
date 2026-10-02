@@ -225,7 +225,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         overloaded{
             [&](Delete) {
                 if (!CanDelete(r, viewport)) return;
-                for (const auto e : SortedEntities(r.view<Selected>(state::Exclude<SubElementOf>))) Destroy(r, viewport, e);
+                Destroy(r, viewport, SortedEntities(r.view<Selected>(state::Exclude<SubElementOf>)));
             },
             [&](Duplicate) { duplicate(false); },
             [&](DuplicateLinked) { duplicate(true); },

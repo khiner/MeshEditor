@@ -12,7 +12,6 @@
 #include "metal/BufferArena.h"
 
 #include <set>
-#include <unordered_set>
 
 struct ElementSetRef {
     uint32_t Index{InvalidOffset};
@@ -216,24 +215,35 @@ struct ElementArena {
     }
     void Destroy(std::span<const ElementSetRef> sets) {
         if (sets.empty()) return;
-        std::vector<uint32_t> ids;
-        std::unordered_set<uint32_t> unique;
-        for (const auto set : sets) {
-            (void)Set(set);
-            if (!unique.insert(set.Index).second) throw std::invalid_argument("Repeated owner in element retirement.");
-            ForEachBlock(set, [&](uint32_t b, const auto &) { ids.push_back(b); });
-        }
-        std::ranges::sort(ids);
-        ForEachIndexRun(ids, [&](size_t first, size_t count) {
-            const Range range{ids[first], uint32_t(count)};
+        std::vector<uint32_t> blocks;
+        for (const auto set : sets) ForEachBlock(set, [&](uint32_t b, const auto &) { blocks.push_back(b); });
+        if (!std::ranges::is_sorted(blocks)) std::ranges::sort(blocks);
+        Destroy(sets, blocks);
+    }
+    // The caller already compiled and sorted the membership of these sets.
+    void Destroy(std::span<const ElementSetRef> sets, std::span<const uint32_t> blocks) {
+        if (sets.empty()) return;
+        std::vector<uint32_t> owners;
+        owners.reserve(sets.size());
+        for (const auto set : sets) owners.push_back(set.Index);
+        if (!std::ranges::is_sorted(owners)) std::ranges::sort(owners);
+        if (std::ranges::adjacent_find(owners) != owners.end()) throw std::invalid_argument("Repeated owner in element retirement.");
+        // The free-slot index is ordered by owner: unlink each retiring owner run once.
+        ForEachIndexRun(owners, [&](size_t first, size_t count) {
+            Available.erase(Available.lower_bound({owners[first], 0u, 0u}), Available.lower_bound({owners[first] + uint32_t(count), 0u, 0u}));
+        });
+        ForEachIndexRun(blocks, [&](size_t first, size_t count) {
+            const Range range{blocks[first], uint32_t(count)};
             std::ranges::fill(Blocks.GetMutable(range), MeshElementBlock{});
-            for (uint32_t b = range.Offset; b < range.Offset + range.Count; ++b) Index(b);
+            const auto end = std::min<size_t>(Indexed.size(), size_t(range.Offset) + range.Count);
+            if (range.Offset < end) std::fill(Indexed.begin() + range.Offset, Indexed.begin() + end, std::pair{InvalidOffset, 0u});
             Blocks.Release(range);
         });
-        for (const auto set : sets) {
-            Sets.GetMutable({set.Index, 1})[0] = {};
-            Sets.Release({set.Index, 1});
-        }
+        ForEachIndexRun(owners, [&](size_t first, size_t count) {
+            const Range range{owners[first], uint32_t(count)};
+            std::ranges::fill(Sets.GetMutable(range), MeshElementSet{});
+            Sets.Release(range);
+        });
     }
 
     // Import/current count-scatter emission consumes a dense view of a new set.

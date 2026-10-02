@@ -1,18 +1,19 @@
 #pragma once
 
 #include "project/store/LiveTrie.h"
+#include "project/store/RecordPage.h"
 
-#include <cassert>
 #include <zpp_bits.h>
 
 namespace store {
-// Versioned zpp-serialized records over an externally owned vector, or over one record.
+// Versioned pages of serialized records over externally owned storage.
 // Write before mutating a record and Settle after writes complete.
 struct Records {
     // Plain functions over the owner's storage, chosen once at construction.
     struct Codec {
         uint64_t (*Count)(const void *);
         void (*Resize)(void *, uint64_t);
+        // Replace out's contents; the scratch storage is reused between records.
         void (*Encode)(const void *, uint64_t index, std::vector<std::byte> &out);
         void (*Decode)(void *, uint64_t index, std::span<const std::byte>);
         void (*Reset)(void *, uint64_t index);
@@ -32,33 +33,20 @@ struct Records {
 
     template<typename T>
     explicit Records(std::vector<T> &values, uint32_t levels = 4) : Records(&values, VectorCodec<T>, levels) {}
-    Records(void *values, const Codec &codec, uint32_t levels) : Values(values), C(&codec), Trie(levels) { Trie.MarkDirty(0, Length()); }
+    Records(void *values, const Codec &codec, uint32_t levels) : Values(values), C(&codec), Trie(levels, 0, RecordsPerPage) { Trie.MarkDirty(0, Trie.SlotsFor(Length())); }
     Records(const Records &) = delete;
     Records &operator=(const Records &) = delete;
 
     uint64_t Length() const { return C->Count(Values); }
-    bool Present(uint64_t i) const { return i < Length(); }
-    // The returned span remains valid until the next Read or Encode.
-    std::span<const std::byte> Read(uint64_t i) {
-        Scratch.clear();
-        C->Encode(Values, i, Scratch);
-        return Scratch;
-    }
+    bool Present(uint64_t page) const { return page * RecordsPerPage < Length(); }
+    // Read an encoded page. The span remains valid until the next Read.
+    std::span<const std::byte> Read(uint64_t page);
     std::span<const std::byte> Encode(const Blob &value) const { return value.View(); }
 
     // Capture [first, first + count) before mutation.
-    void Write(uint64_t first, uint64_t count) {
-        assert(!Trie.ExternalWritesForbidden && "record write during track restoration");
-        for (uint64_t i = first, last = first + count; i < last; ++i) {
-            if (Trie.Uncaptured(i)) Trie.Capture(i, Present(i) ? std::optional{CopyBlob(Read(i))} : std::nullopt);
-        }
-        Trie.MarkDirty(first, count);
-    }
+    void Write(uint64_t first, uint64_t count);
 
-    void Settle() {
-        for (const auto i : Trie.Dirty()) Trie.Rehash(i, Present(i) ? std::optional{Read(i)} : std::nullopt);
-        Trie.ClearDirty();
-    }
+    void Settle();
 
     bool Restore(const Version &v) {
         Settle();
@@ -75,36 +63,14 @@ struct Records {
 
     void *Values;
     const Codec *C;
-    std::vector<std::byte> Scratch;
+    std::vector<std::byte> Scratch, PageScratch;
     LiveTrie Trie;
 
+    std::vector<uint32_t> Changed() const;
+    std::vector<uint32_t> TakeChanged();
+
 private:
-    void Apply(RestorePlan &plan) {
-        const auto original = Length();
-        for (auto &c : plan.Changes) {
-            const bool present = c.Slot < original;
-            if (c.Erase) {
-                if (!present) {
-                    c.Unchanged = true;
-                    continue;
-                }
-                c.Old = CopyBlob(Read(c.Slot));
-                c.WasPresent = true;
-                C->Reset(Values, c.Slot);
-                continue;
-            }
-            if (present && c.MaybeEqual && Unchanged(Read(c.Slot), c.Incoming.View())) {
-                c.Unchanged = true;
-                continue;
-            }
-            if (present) {
-                c.Old = CopyBlob(Read(c.Slot));
-                c.WasPresent = true;
-            } else if (c.Slot >= Length()) C->Resize(Values, c.Slot + 1);
-            C->Decode(Values, c.Slot, c.Incoming.View());
-            FreeBlob(c.Incoming);
-        }
-        C->Resize(Values, plan.Length);
-    }
+    uint64_t ChangedLength{};
+    void Apply(RestorePlan &plan);
 };
 } // namespace store

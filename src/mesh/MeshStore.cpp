@@ -509,7 +509,7 @@ std::vector<MeshStore::Change> MeshStore::TakeChanges() {
         uint32_t Domain{InvalidOffset}, Block{}; // A changed block in the order of Change::Blocks.
     };
     std::vector<ChangedRange> changed;
-    for (const auto id : Tracked->Entries.Trie.TakeChanged()) changed.push_back({uint32_t(id), EntryChanged});
+    for (const auto id : Tracked->Entries.TakeChanged()) changed.push_back({id, EntryChanged});
     for (const auto &[buffer, ranges] : Tracked->Ranges) {
         // Byte extents keep a record whose neighbor shares a page out of the changes.
         for (const auto [begin, end] : buffer->History()->TakeChangedExtents()) {
@@ -593,12 +593,13 @@ void MeshStore::SyncMirrors() {
 
 void MeshStore::FinishRestore() {
     RenderStale.clear();
-    for (const auto id : Tracked->Entries.Trie.ChangedSlots) Tracked->Dirty.push_back(uint32_t(id));
-    for (const auto id : Tracked->Entries.Trie.ChangedSlots)
-        if (id < DerivedRecords.size()) DerivedRecords[id] = {};
+    const auto changed = Tracked->Entries.Changed();
+    Tracked->Dirty.append_range(changed);
     DerivedRecords.resize(Records.size());
-    for (const auto id : Tracked->Entries.Trie.ChangedSlots)
-        if (id < Records.size() && Records[id].Alive) DerivedRecords[id].NormalRevision=++NextNormalRevision;
+    for (const auto id : changed) if (id < Records.size()) {
+        DerivedRecords[id] = {};
+        if (Records[id].Alive) DerivedRecords[id].NormalRevision = ++NextNormalRevision;
+    }
     // A restore can return a set to an earlier revision with different membership, so every list refills on its next read.
     {
         const std::scoped_lock lock{BlockListLock};
@@ -964,12 +965,21 @@ MeshConnectivity MeshStore::GetConnectivity(uint32_t id) const {
 }
 
 void MeshStore::ReleaseBlockLists(uint32_t id) {
+    ReleaseBlockLists(std::span{&id, 1u});
+}
+
+void MeshStore::ReleaseBlockLists(std::span<const uint32_t> ids) {
     const std::scoped_lock lock{BlockListLock};
-    if (id >= BlockListEntries.size()) return;
-    for (auto &entry : BlockListEntries[id]) {
-        RetireBlockListWords(entry.Words);
-        entry = {};
+    std::vector<Range> words;
+    for (const auto id : ids) {
+        if (id >= BlockListEntries.size()) continue;
+        for (auto &entry : BlockListEntries[id]) {
+            if (entry.Words.Count) words.push_back(entry.Words);
+            entry = {};
+        }
     }
+    if (FrameReadsBlockLists) RetiredBlockLists.append_range(words);
+    else BlockLists.Release(std::move(words));
 }
 
 void MeshStore::RetireBlockListWords(Range words) const {
@@ -986,8 +996,7 @@ void MeshStore::FrameSubmitted() {
 void MeshStore::FrameCompleted() {
     const std::scoped_lock lock{BlockListLock};
     FrameReadsBlockLists = false;
-    for (const auto words : RetiredBlockLists) BlockLists.Release(words);
-    RetiredBlockLists.clear();
+    BlockLists.Release(std::exchange(RetiredBlockLists, {}));
 }
 
 MeshStore::BlockList MeshStore::GetBlockList(uint32_t id, ElementDomain domain) const {
@@ -1491,45 +1500,90 @@ uint32_t MeshStore::CloneMesh(const Mesh &mesh, const MeshPipelines &pipelines) 
 }
 
 void MeshStore::Release(uint32_t id) {
-    if (id >= Records.size() || !Records[id].Alive) return;
-    Buffers.Vertices.ForEachBlock(Records[id].Vertices,[&](uint32_t b, const auto &) {
-        Buffers.VertexFans.Release(Buffers.VertexCorners.Get({b*MeshElementBlockSize,MeshElementBlockSize}));
+    if (id < Records.size() && Records[id].Alive) Release(std::span{&id, 1u});
+}
+
+void MeshStore::Release(std::span<const uint32_t> requested) {
+    std::vector<uint32_t> ids{requested.begin(), requested.end()};
+    std::ranges::sort(ids);
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    std::erase_if(ids, [&](uint32_t id) { return id >= Records.size() || !Records[id].Alive; });
+    if (ids.empty()) return;
+    const profile::CpuScope scope{"ReleaseMeshStorage"};
+    struct DomainRetirement {
+        std::vector<ElementSetRef> Sets;
+        std::vector<uint32_t> Blocks;
+        std::span<const MeshElementSet> Headers;
+        std::span<const MeshElementBlock> Membership;
+    };
+    std::array<DomainRetirement, 6> closure;
+    constexpr std::array domains{Domain::Vertex, Domain::Halfedge, Domain::Edge, Domain::Face, Domain::Triangle};
+    for (const auto domain : domains) WithDomain(Buffers, domain, [&](const auto &arena) {
+        auto &c = closure[uint32_t(domain)];
+        c.Headers = arena.Sets.Buffer.template GetSpan<MeshElementSet>();
+        c.Membership = arena.Blocks.Buffer.template GetSpan<MeshElementBlock>();
     });
-    // Released blocks name no fan runs, so their next owner inherits empty roots.
-    ClearVertexRoots(Buffers,Records[id].Vertices);
-    auto &record = WriteRecord(id);
-    auto &derived = DerivedRecords.at(id);
-    Buffers.FaceCorners.ForEachBlock(record.FaceCorners, [&](uint32_t block, const auto &) {
-        Buffers.CornerSectors.Release(block);
-        Buffers.NormalSectors.Release(block);
+    std::vector<Range> materials, summaries, normals;
+    for (const auto id : ids) {
+        const auto &record = Records[id];
+        for (const auto domain : domains) {
+            const auto set = DomainSet(record, domain);
+            if (!set) continue;
+            auto &c = closure[uint32_t(domain)];
+            if (set.Index >= c.Headers.size() || c.Headers[set.Index].First == InvalidOffset) throw std::invalid_argument("Invalid element set in mesh retirement.");
+            c.Sets.push_back(set);
+            for (auto block = c.Headers[set.Index].First; block != InvalidOffset; block = c.Membership[block].Next) c.Blocks.push_back(block);
+        }
+        if (record.PrimitiveMaterials.Count) materials.push_back(record.PrimitiveMaterials);
+        if (record.SelectionSummary.Count) summaries.push_back(record.SelectionSummary);
+        if (record.PointNormals.Count) normals.push_back(record.PointNormals);
+    }
+    for (auto &c : closure)
+        if (!std::ranges::is_sorted(c.Blocks)) std::ranges::sort(c.Blocks);
+    const auto &vertices = closure[uint32_t(Domain::Vertex)];
+    uint32_t live_vertices = 0u;
+    for (const auto set : vertices.Sets) live_vertices += vertices.Headers[set.Index].Count;
+    Buffers.VertexFans.Release(ElementView<uvec2>{Buffers.VertexCorners.Buffer.GetSpan<uvec2>(), vertices.Membership, vertices.Blocks, {}, live_vertices});
+    ForEachIndexRun(vertices.Blocks, [&](size_t first, size_t count) {
+        const Range range{vertices.Blocks[first] * MeshElementBlockSize, uint32_t(count) * MeshElementBlockSize};
+        std::ranges::fill(Buffers.VertexCorners.GetMutable(range), uvec2{InvalidOffset, 0u});
     });
-    // Released blocks hold no selection, so every dead slot's mask bit is clear for the blocks' next owner.
+    const auto &corners = closure[uint32_t(Domain::Halfedge)].Blocks;
+    Buffers.CornerSectors.Release(corners);
+    Buffers.NormalSectors.Release(corners);
     for (uint32_t d = 0u; d < 3u; ++d) {
         const auto masks = SelectionArena(Buffers, SelectionDomains[d]).Buffer.template GetSpan<MeshArenas::SelectionBlock>();
-        std::vector<uint32_t> selected;
-        for (const auto block : GetBlockList(id, SelectionDomains[d]).Blocks)
-            if (block < masks.size() && std::ranges::any_of(masks[block], [](uint32_t word) { return word != 0u; })) selected.push_back(block);
+        auto selected = closure[uint32_t(SelectionDomains[d])].Blocks;
+        std::erase_if(selected, [&](uint32_t block) {
+            return block >= masks.size() || std::ranges::none_of(masks[block], [](uint32_t word) { return word != 0u; });
+        });
         EditSelectionBlocks(SelectionElements[d], selected, [](uint32_t, auto &words) { words = {}; });
     }
-    ReleaseBlockLists(id);
-    std::ranges::fill(Buffers.SelectionRoots.GetMutable({3u * id, 3u}), SelectionAggregate{});
-    ForEachAttribute(Buffers, [&](auto &attributes, Domain domain, uint32_t, const char *, const char *, const char *, auto &&entries) {
-        if (!entries(record)) return;
-        const auto set = DomainSet(record, domain);
-        WithDomain(Buffers, domain, [&](const auto &arena) {
-            arena.ForEachBlock(set, [&](uint32_t block, const auto &) { attributes.Release(block); });
-        });
+    ForEachIndexRun(ids, [&](size_t first, size_t count) {
+        std::ranges::fill(Buffers.SelectionRoots.GetMutable({3u * ids[first], 3u * uint32_t(count)}), SelectionAggregate{});
+        if (Tracked) Tracked->Entries.Write(ids[first], count);
     });
-    ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
-        if (info.Mirror) return;
-        if (const auto *range = ranges(record))
-            if constexpr (requires { arena.Release(*range); }) arena.Release(*range);
+    ForEachAttribute(Buffers, [&](auto &attributes, Domain domain, uint32_t, const char *, const char *, const char *, auto &&) {
+        attributes.Release(closure[uint32_t(domain)].Blocks);
     });
-    record = {};
-    derived = {};
-    RenderStale.push_back(id);
-    if (Tracked) Tracked->Free.Write(FreeIds.size(), 1);
-    FreeIds.emplace_back(id);
+    for (const auto domain : domains) WithDomain(Buffers, domain, [&](auto &arena) {
+        const auto &c = closure[uint32_t(domain)];
+        arena.Destroy(c.Sets, c.Blocks);
+    });
+    Buffers.PrimitiveMaterials.Release(std::move(materials));
+    Buffers.SelectionSummary.Release(std::move(summaries));
+    Buffers.PointNormals.Release(std::move(normals));
+    if (Tracked) {
+        Tracked->Free.Write(FreeIds.size(), ids.size());
+        Tracked->Dirty.append_range(ids);
+    }
+    ReleaseBlockLists(ids);
+    for (const auto id : ids) {
+        Records[id] = {};
+        DerivedRecords[id] = {};
+    }
+    RenderStale.append_range(ids);
+    FreeIds.append_range(ids);
 }
 
 void MeshStore::Clear() {

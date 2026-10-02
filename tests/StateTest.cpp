@@ -1,4 +1,5 @@
 #include "RunSuites.h"
+#include "RangeAllocator.h"
 #include "scene/Entity.h"
 #include "state/Scene.h"
 
@@ -81,12 +82,79 @@ int main() {
         std::set<state::Entity> allocated{current};
         for (unsigned i = 0; i < 70; ++i) expect(allocated.insert(r.create()).second);
     };
+    "batch destruction captures page runs and preserves sparse survivors"_test = [] {
+        state::Scene r;
+        std::vector<state::Entity> entities, targets;
+        for (uint32_t i = 0; i < 160u; ++i) {
+            const auto e = r.create();
+            entities.push_back(e);
+            r.emplace<Name>(e, std::to_string(i));
+            r.emplace<Selected>(e);
+        }
+        // Reused slots exercise generation matching as well as page masks.
+        const auto stale = entities[64];
+        r.destroy(stale);
+        entities[64] = r.create();
+        r.emplace<Name>(entities[64], "64");
+        r.emplace<Selected>(entities[64]);
+        r.ClearChanges();
+        struct Capture { std::vector<std::string> Values; uint32_t Calls{}; };
+        Capture captured;
+        std::vector<std::string> notified;
+        r.HistoryOwner = &captured;
+        r.Capture = [](state::Scene &r, state::TypeId type, std::span<const state::PageMask> pages) {
+            if (type != state::Type<Name>()) return;
+            auto &capture = *static_cast<Capture *>(r.HistoryOwner);
+            ++capture.Calls;
+            auto &values = capture.Values;
+            for (const auto [page, mask] : pages)
+                for (auto bits = mask; bits; bits &= bits - 1u) values.push_back(r.get<Name>(r.EntityAt(page * state::Table::PageCount + std::countr_zero(bits))).Value);
+        };
+        state::DirtySet destroyed;
+        destroyed.bind(r);
+        destroyed.on<Name>(state::On::Destroy);
+        r.on_destroy<Name, [](state::Scene &r, state::Entity e) {
+            // Dependent component removals during a callback must not be erased twice.
+            expect(!r.get<Name>(e).Value.empty());
+            r.remove<Selected>(e);
+        }>();
+        for (uint32_t i = 0; i < entities.size(); ++i) {
+            if (i < 96u || i % 3u == 0u) {
+                targets.push_back(entities[i]);
+                notified.push_back(std::to_string(i));
+            }
+        }
+        std::ranges::reverse(targets);
+        targets.push_back(targets.front());
+        r.destroy(targets);
+        expect(captured.Values == notified);
+        expect(captured.Calls == 1u);
+        expect(destroyed.size() == notified.size());
+        expect(r.Living.size() == entities.size() - notified.size());
+        for (uint32_t i = 0; i < entities.size(); ++i) {
+            const bool removed = i < 96u || i % 3u == 0u;
+            expect(r.valid(entities[i]) == !removed);
+            expect(r.all_of<Name, Selected>(entities[i]) == !removed);
+            if (!removed) expect(r.get<Name>(entities[i]).Value == std::to_string(i));
+        }
+        r.Capture = nullptr;
+        const auto reused = r.create();
+        expect(std::ranges::find(entities, reused) == entities.end());
+        r.emplace<Name>(reused, "survivor");
+        r.RemoveComponents(stale);
+        expect(r.get<Name>(reused).Value == "survivor");
+    };
     "capture precedes mutation and dirty lifetime respects generation and reset"_test = [] {
         state::Scene r;
         std::vector<std::string> old;
         r.HistoryOwner = &old;
-        r.Capture = [](state::Scene &r, state::TypeId type, state::Entity e) {
-            if (type == state::Type<Name>()) static_cast<std::vector<std::string> *>(r.HistoryOwner)->push_back(r.all_of<Name>(e) ? r.get<Name>(e).Value : "absent");
+        r.Capture = [](state::Scene &r, state::TypeId type, std::span<const state::PageMask> pages) {
+            if (type == state::Type<Name>()) {
+                for (const auto [page, mask] : pages) for (auto bits = mask; bits; bits &= bits - 1u) {
+                    const auto e = r.EntityAt(page * state::Table::PageCount + std::countr_zero(bits));
+                    static_cast<std::vector<std::string> *>(r.HistoryOwner)->push_back(r.all_of<Name>(e) ? r.get<Name>(e).Value : "absent");
+                }
+            }
         };
         auto &managed = reactive(r, state::Change::Selected);
         managed.on<Name>(state::On::Create | state::On::Destroy);
@@ -107,6 +175,34 @@ int main() {
         r.ResetEntities();
         expect(removed.empty() && managed.empty());
         expect(state::Integral(r.create()) == 0u);
+    };
+    "bulk range retirement preserves unrelated allocations and address ordering"_test = [] {
+        RangeAllocator batch, scalar;
+        std::mt19937 random{934};
+        std::vector<Range> retired;
+        for (uint32_t i = 0u; i < 512u; ++i) {
+            const auto count = 1000000u + random() % 6000000u;
+            const auto range = batch.Allocate(count);
+            const auto other = scalar.Allocate(count);
+            expect(range.Offset == other.Offset && range.Count == other.Count);
+            if (i % 3u) retired.push_back(range);
+        }
+        std::shuffle(retired.begin(), retired.end(), random);
+        for (const auto range : retired) scalar.Free(range);
+        batch.Free(retired);
+        for (uint32_t i = 0u; i < 256u; ++i) {
+            const auto count = 1u + random() % 1000000u;
+            const auto actual = batch.Allocate(count), expected = scalar.Allocate(count);
+            expect(actual.Offset == expected.Offset && actual.Count == expected.Count);
+        }
+        RangeAllocator all;
+        std::vector<Range> ranges;
+        for (uint32_t i = 0u; i < 512u; ++i) ranges.push_back(all.Allocate(3000000u + random() % 4000000u));
+        const auto end = all.HighWaterMark();
+        std::shuffle(ranges.begin(), ranges.end(), random);
+        all.Free(std::move(ranges));
+        const auto restored = all.Allocate(end);
+        expect(restored.Offset == 0u && restored.Count == end);
     };
     return RunSuites();
 }

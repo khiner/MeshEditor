@@ -118,6 +118,7 @@ inline constexpr std::string_view SchemaNames[] = {
     "PendingEditElementClick",
     "PendingHide",
     "PendingImportMesh",
+    "PendingObjectRemovals",
     "PendingPick",
     "PendingRenderRequest",
     "PendingSetEditMode",

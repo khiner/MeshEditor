@@ -23,6 +23,18 @@ inline constexpr void (*CustomEmplace)(state::Scene &, state::Entity, std::span<
 template<typename C> C CopyNative(const C &value) { return value; }
 template<typename C> void PrepareNative(C &) {}
 
+template<typename C> struct ComponentPage : NativePage {
+    union Slot {
+        C Value;
+        Slot() {}
+        ~Slot() {}
+    };
+    std::array<Slot, state::Table::PageCount> Values;
+    ~ComponentPage() {
+        for (auto bits = Mask; bits; bits &= bits - 1u) std::destroy_at(&Values[std::countr_zero(bits)].Value);
+    }
+};
+
 template<typename C>
 void EmplaceTag(state::Scene &r, state::Entity e, std::span<const std::byte>) {
     r.emplace_or_replace<C>(e);
@@ -140,17 +152,35 @@ void Add(Tables &tables) {
     if constexpr (Persistent) {
         auto entry = MakeEntry<C>();
         entry.Name = state::TypeName<C>();
-        entry.Copy = [](const void *p) {
-            auto value = std::make_unique<C>(CopyNative(*static_cast<const C *>(p)));
-            const auto bytes = sizeof(C) + NativeExtra(*value);
-            return store::Blob{reinterpret_cast<std::byte *>(value.release()), sizeof(C), [](void *v) { delete static_cast<C *>(v); }, bytes};
+        entry.Rebind = [](state::Scene &r, state::Entity previous, state::Entity current) {
+            auto value = CopyNative(r.get<C>(previous));
+            r.remove<C>(previous);
+            if (current != state::Null) {
+                PrepareNative(value);
+                r.emplace_or_replace<C>(current, std::move(value));
+            }
         };
-        entry.Move = [](state::Scene &r, state::Entity e, store::Blob value) {
-            auto &native = *reinterpret_cast<C *>(value.Data);
+        entry.CopyPage = [](const state::Table &table, uint32_t page) {
+            auto value = std::make_unique<ComponentPage<C>>();
+            auto bytes = uint64_t(sizeof(ComponentPage<C>));
+            for (auto bits = table.mask(page); bits; bits &= bits - 1u) {
+                const auto slot = uint32_t(std::countr_zero(bits));
+                auto &copy = *std::construct_at(&value->Values[slot].Value, CopyNative(*table.at<C>(table.entity(page, slot))));
+                value->Mask |= 1u << slot;
+                bytes += NativeExtra(copy);
+            }
+            auto *header = static_cast<NativePage *>(value.release());
+            return store::Blob{reinterpret_cast<std::byte *>(header), sizeof(ComponentPage<C>), [](void *p) { delete static_cast<ComponentPage<C> *>(static_cast<NativePage *>(p)); }, bytes};
+        };
+        entry.PageValue = [](const store::Blob &value, uint32_t slot) -> const void * {
+            return &static_cast<const ComponentPage<C> *>(reinterpret_cast<const NativePage *>(value.Data))->Values[slot].Value;
+        };
+        entry.MovePageValue = [](state::Scene &r, state::Entity e, store::Blob &value, uint32_t slot) {
+            auto &native = static_cast<ComponentPage<C> *>(reinterpret_cast<NativePage *>(value.Data))->Values[slot].Value;
             PrepareNative(native);
             r.emplace_or_replace<C>(e, std::move(native));
-            store::FreeBlob(value);
         };
+        entry.Equal = MakeComparator<C, Persistent>();
         tables.Snapshots[id] = entry;
     }
 }

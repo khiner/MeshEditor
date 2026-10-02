@@ -11,16 +11,10 @@ struct VertexFanStore {
     explicit VertexFanStore(mtl::BufferContext &ctx) : Items{ctx,SlotType::Buffer} {}
 
     void Track(store::History &history, const std::string &name) { Items.Track(history,name+".items"); }
-    // Frees the runs the roots own, in root order.
-    void Release(std::span<const uvec2> roots) {
-        Range run{};
-        for (const auto root : roots) {
-            if (!root.y) continue;
-            if (run.Count && run.Offset+run.Count == root.x) { run.Count += root.y; continue; }
-            Items.Release(run);
-            run = {root.x,root.y};
-        }
-        Items.Release(run);
+    void Release(const auto &roots) {
+        std::vector<Range> ranges;
+        for (const auto root : roots) AppendRange(ranges, {root.x, root.y});
+        Items.Release(std::move(ranges));
     }
     void Reset() { Items.Reset(); }
 

@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <ranges>
+#include <span>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -46,6 +47,10 @@ struct Services {
     void Clear() {
         for (auto &slot : Slots) slot.Reset();
     }
+};
+
+struct PageMask {
+    uint32_t Page{}, Mask{};
 };
 
 // Paged sparse set of raw values. Each page holds its slot owners and then the values.
@@ -96,6 +101,7 @@ struct Table {
     void *insert(Entity);
     // Destroys the value and unlinks the slot.
     void erase(Entity);
+    void erase(uint32_t page, uint32_t mask);
     void clear();
 
 private:
@@ -182,13 +188,15 @@ struct Scene {
     Allocation &AllocationState() { return *AllocationStorage; }
     const Allocation &AllocationState() const { return *AllocationStorage; }
     Table Living;
-    void (*Capture)(Scene &, TypeId, Entity){};
+    void (*Capture)(Scene &, TypeId, std::span<const PageMask>){};
     void *HistoryOwner{};
     bool Restoring{}, DocumentReadOnly{}, RestoringEvents{};
     uint64_t Epoch{1};
     Entity create();
     void destroy(Entity);
+    void destroy(std::span<const Entity>);
     void RemoveComponents(Entity);
+    void RemoveComponents(std::span<const Entity>);
     bool valid(Entity e) const;
     uint32_t EntityCapacity() const;
     Entity EntityAt(uint32_t index) const;

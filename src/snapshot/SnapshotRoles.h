@@ -10,7 +10,14 @@
 #include <string_view>
 #include <vector>
 
+namespace state {
+struct Table;
+}
+
 namespace snapshot {
+struct NativePage {
+    uint32_t Mask{};
+};
 enum class Encoding : uint8_t {
     Tag,
     Bytes, // The value's object representation is its encoding.
@@ -24,8 +31,11 @@ struct SnapshotEntry {
     uint32_t Size{}; // Bytes only.
     std::string_view Name{};
     bool History{true}; // Workspace-only values stay out of history.
-    store::Blob (*Copy)(const void *){};
-    void (*Move)(state::Scene &, state::Entity, store::Blob){};
+    void (*Rebind)(state::Scene &, state::Entity previous, state::Entity current){};
+    store::Blob (*CopyPage)(const state::Table &, uint32_t page){};
+    const void *(*PageValue)(const store::Blob &, uint32_t slot){};
+    void (*MovePageValue)(state::Scene &, state::Entity, store::Blob &, uint32_t slot){};
+    bool (*Equal)(const void *, const void *){};
 };
 
 // Returns the serializer table for Persistent components.

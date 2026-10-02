@@ -1,4 +1,5 @@
 #include "object/ObjectOps.h"
+#include "Profile.h"
 #include "assets/MeshImport.h"
 #include "project/Assets.h"
 #include "state/Scene.h"
@@ -31,13 +32,37 @@
 
 #include <format>
 
-using std::ranges::any_of, std::ranges::find, std::ranges::to;
-
 namespace {
-// True if any component of type C has `C.*field == target`.
-template<typename C, typename F>
-bool AnyComponentRefersTo(state::Scene &r, F C::*field, state::Entity target) {
-    return any_of(r.view<C>().each(), [=](const auto &entry) { return std::get<1>(entry).*field == target; });
+// Unlink each affected sibling list once, including surviving children of deleted parents.
+void ClearRelationships(state::Scene &r, std::span<const state::Entity> entities) {
+    state::DirtySet detached, parents;
+    const auto add = [&](state::Entity e) {
+        const auto *node = r.try_get<SceneNode>(e);
+        if (!node || (node->Parent == state::Null && node->FirstChild == state::Null)) return;
+        detached.emplace(e);
+        for (const auto child : Children{&r, e}) detached.emplace(child);
+    };
+    for (const auto e : entities) {
+        add(e);
+        if (const auto *arm = r.try_get<ArmatureObject>(e)) {
+            for (const auto bone : arm->BoneEntities) add(bone);
+        }
+    }
+    for (const auto e : detached) {
+        if (const auto *node = r.try_get<SceneNode>(e); node && node->Parent != state::Null) parents.emplace(node->Parent);
+    }
+    for (const auto parent : parents) {
+        auto previous = state::Null;
+        for (auto child = r.get<SceneNode>(parent).FirstChild; child != state::Null;) {
+            const auto next = r.get<SceneNode>(child).NextSibling;
+            if (detached.contains(child)) {
+                if (previous == state::Null) r.patch<SceneNode>(parent, [next](auto &n) { n.FirstChild = next; });
+                else r.patch<SceneNode>(previous, [next](auto &n) { n.NextSibling = next; });
+                r.patch<SceneNode>(child, [](auto &n) { n.Parent = n.NextSibling = state::Null; });
+            } else previous = child;
+            child = next;
+        }
+    }
 }
 } // namespace
 
@@ -47,82 +72,99 @@ void DestroyArmatureData(state::Scene &r, state::Entity arm_obj_entity) {
     if (arm.JointEntity != state::Null) {
         if (auto *ref = r.try_get<VertexStoreId>(arm.JointEntity)) meshes.Release(ref->StoreId);
         if (auto *models = r.try_get<ModelsBuffer>(arm.JointEntity)) FreeInstanceRange(r, models->InstanceRange);
-        r.remove<VertexStoreId, ModelsBuffer, PendingHide>(arm.JointEntity);
+        r.remove<VertexStoreId, ModelsBuffer>(arm.JointEntity);
         r.destroy(arm.JointEntity);
         arm.JointEntity = state::Null;
     }
     if (auto *ref = r.try_get<VertexStoreId>(arm_obj_entity)) meshes.Release(ref->StoreId);
     if (auto *models = r.try_get<ModelsBuffer>(arm_obj_entity)) FreeInstanceRange(r, models->InstanceRange);
-    r.remove<VertexStoreId, ModelsBuffer, PendingHide>(arm_obj_entity);
+    r.remove<VertexStoreId, ModelsBuffer>(arm_obj_entity);
 }
 
 void Destroy(state::Scene &r, state::Entity viewport, state::Entity e) {
-    auto &meshes = r.Context.get<MeshStore>();
-    if (r.all_of<LookingThrough>(e)) ClearLookThrough(r, viewport);
-    { // Clear relationships
-        ClearParent(r, e);
-        std::vector<state::Entity> children;
-        for (auto child : Children{&r, e}) children.emplace_back(child);
-        for (const auto child : children) ClearParent(r, child);
-    }
+    Destroy(r, viewport, std::span{&e, 1u});
+}
 
-    state::Entity buffer_entity = state::Null;
-    if (const auto *instance = r.try_get<Instance>(e)) {
-        if (HasMesh(r, instance->Entity) || r.all_of<ObjectExtrasTag>(instance->Entity)) buffer_entity = instance->Entity;
-        Hide(r, e);
-    }
-    std::vector<state::Entity> armature_data_entities;
-    auto try_add_armature_data = [&](state::Entity data_entity) {
-        if (r.valid(data_entity) && find(armature_data_entities, data_entity) == armature_data_entities.end()) {
-            armature_data_entities.emplace_back(data_entity);
+void Destroy(state::Scene &r, state::Entity viewport, std::span<const state::Entity> entities) {
+    if (entities.empty()) return;
+    const profile::CpuScope scope{"DestroyObjects"};
+    auto &pending = r.Context.emplace<PendingObjectRemovals>();
+    ClearRelationships(r, entities);
+    std::vector<state::Entity> destroyed;
+    destroyed.reserve(entities.size());
+    for (const auto e : entities) {
+        if (!r.valid(e)) continue;
+        if (r.all_of<LookingThrough>(e)) ClearLookThrough(r, viewport);
+
+        if (const auto *instance = r.try_get<Instance>(e)) {
+            if (HasMesh(r, instance->Entity) || r.all_of<ObjectExtrasTag>(instance->Entity)) pending.Buffers.emplace(instance->Entity);
         }
-    };
-    if (const auto *armature = r.try_get<ArmatureObject>(e)) try_add_armature_data(armature->Entity);
-    if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) try_add_armature_data(armature_modifier->ArmatureEntity);
-    if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
-
-    if (const auto *light_index = r.try_get<LightIndex>(e)) {
-        r.Context.get<GpuBuffers>().PendingLightRemovals.emplace_back(light_index->Value);
-    }
-
-    if (r.all_of<ArmatureObject>(e)) {
-        auto &arm = r.get<ArmatureObject>(e);
-        auto destroy_visible = [&](state::Entity entity) {
-            Hide(r, entity);
-            r.destroy(entity);
+        auto try_add_armature_data = [&](state::Entity data_entity) {
+            if (r.valid(data_entity)) pending.Armatures.emplace(data_entity);
         };
-        for (const auto bone_entity : arm.BoneEntities) {
-            if (auto *joints = r.try_get<BoneJointEntities>(bone_entity)) {
-                if (joints->Head != state::Null) destroy_visible(joints->Head);
-                if (joints->Tail != state::Null) destroy_visible(joints->Tail);
+        if (const auto *armature = r.try_get<ArmatureObject>(e)) try_add_armature_data(armature->Entity);
+        if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) try_add_armature_data(armature_modifier->ArmatureEntity);
+        if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
+
+        if (const auto *light_index = r.try_get<LightIndex>(e)) {
+            r.Context.get<GpuBuffers>().PendingLightRemovals.emplace_back(light_index->Value);
+        }
+
+        if (r.all_of<ArmatureObject>(e)) {
+            const auto &arm = r.get<ArmatureObject>(e);
+            const auto retire_buffers = [&](state::Entity owner) {
+                if (const auto *ref = r.try_get<VertexStoreId>(owner)) pending.StoreIds.push_back(ref->StoreId);
+                if (const auto *models = r.try_get<ModelsBuffer>(owner)) pending.InstanceRanges.push_back(models->InstanceRange);
+            };
+            retire_buffers(e);
+            if (arm.JointEntity != state::Null) {
+                retire_buffers(arm.JointEntity);
+                destroyed.push_back(arm.JointEntity);
             }
-            r.remove<BoneJointEntities>(bone_entity);
+            for (const auto bone_entity : arm.BoneEntities) {
+                if (auto *joints = r.try_get<BoneJointEntities>(bone_entity)) {
+                    if (joints->Head != state::Null) destroyed.push_back(joints->Head);
+                    if (joints->Tail != state::Null) destroyed.push_back(joints->Tail);
+                }
+            }
+
+            destroyed.append_range(arm.BoneEntities);
         }
 
-        // Destroy children before parents (reverse of topological order) so ClearParent can access the parent's SceneNode to unlink the child.
-        for (auto it = arm.BoneEntities.rbegin(); it != arm.BoneEntities.rend(); ++it) {
-            ClearParent(r, *it);
-            destroy_visible(*it);
-        }
-        DestroyArmatureData(r, e);
+        destroyed.push_back(e);
     }
+    const profile::CpuScope component_scope{"DestroyObjectComponents"};
+    r.destroy(destroyed);
+}
 
-    r.destroy(e);
-
-    if (r.valid(buffer_entity)) {
-        if (!AnyComponentRefersTo(r, &Instance::Entity, buffer_entity)) {
-            if (const auto *vs = r.try_get<VertexStoreId>(buffer_entity)) meshes.Release(vs->StoreId);
-            if (const auto *models = r.try_get<ModelsBuffer>(buffer_entity)) FreeInstanceRange(r, models->InstanceRange);
-            r.destroy(buffer_entity);
-        }
+void ProcessObjectRemovals(state::Scene &r, state::Entity viewport) {
+    auto *pending = r.Context.find<PendingObjectRemovals>();
+    if (!pending || (pending->Buffers.empty() && pending->Armatures.empty() && pending->StoreIds.empty() && pending->InstanceRanges.empty())) return;
+    const profile::CpuScope scope{"ProcessObjectRemovals"};
+    auto &meshes = r.Context.get<MeshStore>();
+    auto &buffer_entities = pending->Buffers, &armature_data_entities = pending->Armatures;
+    // Retain shared data referenced by any survivor, including hidden instances.
+    for (const auto [_, instance] : r.view<const Instance>().each()) buffer_entities.remove(instance.Entity);
+    for (const auto [_, arm] : r.view<const ArmatureObject>().each()) armature_data_entities.remove(arm.Entity);
+    for (const auto [_, modifier] : r.view<const ArmatureModifier>().each()) armature_data_entities.remove(modifier.ArmatureEntity);
+    for (const auto [_, attachment] : r.view<const BoneAttachment>().each()) armature_data_entities.remove(attachment.ArmatureEntity);
+    auto store_ids = std::exchange(pending->StoreIds, {});
+    auto instance_ranges = std::exchange(pending->InstanceRanges, {});
+    auto buffers_to_destroy = SortedEntities(buffer_entities);
+    for (const auto entity : buffers_to_destroy) {
+        if (const auto *ref = r.try_get<MeshHandle>(entity)) store_ids.push_back(ref->StoreId);
+        if (const auto *ref = r.try_get<VertexStoreId>(entity)) store_ids.push_back(ref->StoreId);
+        if (const auto *models = r.try_get<ModelsBuffer>(entity)) instance_ranges.push_back(models->InstanceRange);
     }
-    for (const auto armature_data_entity : armature_data_entities) {
-        if (r.valid(armature_data_entity)) {
-            const bool is_used = AnyComponentRefersTo(r, &ArmatureObject::Entity, armature_data_entity) ||
-                AnyComponentRefersTo(r, &ArmatureModifier::ArmatureEntity, armature_data_entity) ||
-                AnyComponentRefersTo(r, &BoneAttachment::ArmatureEntity, armature_data_entity);
-            if (!is_used) r.destroy(armature_data_entity);
-        }
+    meshes.Release(store_ids);
+    r.Context.get<GpuBuffers>().Instances.Free(std::move(instance_ranges));
+    buffers_to_destroy.append_range(armature_data_entities);
+    buffer_entities.clear();
+    armature_data_entities.clear();
+    std::erase_if(buffers_to_destroy, [&](state::Entity e) { return !r.valid(e); });
+    {
+        const profile::CpuScope scope{"DestroyDataComponents"};
+        r.destroy(buffers_to_destroy);
     }
 
     // Release imported textures and reset the material when the final instance is removed.
@@ -134,7 +176,7 @@ void Destroy(state::Scene &r, state::Entity viewport, state::Entity e) {
 }
 
 void ClearMeshes(state::Scene &r, state::Entity viewport) {
-    for (const auto e : r.view<Instance>(state::Exclude<SubElementOf>) | to<std::vector>()) Destroy(r, viewport, e);
+    Destroy(r, viewport, SortedEntities(r.view<Instance>(state::Exclude<SubElementOf>)));
 }
 
 std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Scene &r, state::Entity viewport, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {

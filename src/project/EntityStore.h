@@ -11,6 +11,7 @@ struct History;
 }
 namespace state {
 enum class Event : uint8_t;
+struct PageMask;
 }
 
 namespace project {
@@ -20,7 +21,7 @@ struct EntityStore {
     EntityStore(state::Scene &, store::History &, const snapshot::SnapshotEntries &);
     ~EntityStore();
 
-    void Capture(state::TypeId, state::Entity);
+    void Capture(state::TypeId, std::span<const state::PageMask>);
 
     void BeginRestore();
     std::vector<state::Entity> RemovedEntities() const;

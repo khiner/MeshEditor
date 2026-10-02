@@ -355,8 +355,8 @@ bool CheckVersionRec(Node *n, const std::unordered_set<const Node *> &present_al
 
 uint64_t SharedNodeBytes() { return NodeBytes.load(std::memory_order_relaxed); }
 
-LiveTrie::LiveTrie(uint32_t levels, uint32_t page_bytes)
-    : Levels(levels), PageBytes(page_bytes), DefaultPageHash(page_bytes ? HashBytes(std::vector<std::byte>(page_bytes)) : Hash128{}),
+LiveTrie::LiveTrie(uint32_t levels, uint32_t page_bytes, uint32_t records_per_slot)
+    : Levels(levels), PageBytes(page_bytes), SlotStride(page_bytes ? page_bytes : records_per_slot), DefaultPageHash(page_bytes ? HashBytes(std::vector<std::byte>(page_bytes)) : Hash128{}),
       Root(Alloc(*this, NodeKind::Aliased)), Manifest(levels) {}
 
 LiveTrie::~LiveTrie() { ReleaseNode(*this, Root); }
@@ -387,6 +387,10 @@ bool LiveTrie::Uncaptured(uint64_t slot) const {
 void LiveTrie::Capture(uint64_t slot, std::optional<Blob> value) {
     CaptureImpl(*this, slot, 1, [&](uint64_t) { return std::exchange(value, std::nullopt); });
     if (value) FreeBlob(*value);
+}
+
+void LiveTrie::Capture(uint64_t first, uint64_t count, void *owner, CaptureFn fetch) {
+    CaptureImpl(*this, first, count, [&](uint64_t slot) { return fetch(owner, slot); });
 }
 
 void LiveTrie::MarkDirty(uint64_t first, uint64_t count) {

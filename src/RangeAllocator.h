@@ -104,6 +104,9 @@ struct RangeAllocator {
         transaction.Commit();
     }
 
+    // Free each contiguous run once, preserving the other live allocations.
+    void Free(std::vector<Range>);
+
     // Failed fixed-address reservations do not dirty history.
     bool Reserve(Range range) {
         if (range.Count == 0) return true;

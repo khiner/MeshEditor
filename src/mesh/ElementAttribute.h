@@ -80,12 +80,30 @@ struct ElementAttribute {
         });
     }
     void Release(uint32_t block) {
-        const auto first = PayloadBlock(block);
-        if (!first) return;
-        const Range payload{first - 1u, EntryCount(block)};
-        Values.Release(payload);
-        std::ranges::fill(Owners.GetMutable(payload), 0u);
-        Blocks.GetMutable({block, 1})[0] = 0u;
+        Release(std::span{&block, 1u});
+    }
+    void Release(std::span<const uint32_t> blocks) {
+        std::vector<Range> payloads;
+        std::vector<uint32_t> attached;
+        const auto bindings = Blocks.Buffer.template GetSpan<uint32_t>();
+        const auto owners = Owners.Buffer.template GetSpan<uint32_t>();
+        for (const auto block : blocks) {
+            if (const auto first = block < bindings.size() ? bindings[block] : 0u) {
+                uint32_t count = 1u;
+                while (first - 1u + count < owners.size() && owners[first - 1u + count] == block + 1u) ++count;
+                payloads.push_back({first - 1u, count});
+                attached.push_back(block);
+            }
+        }
+        std::ranges::sort(attached);
+        ForEachIndexRun(attached, [&](size_t first, size_t count) {
+            std::ranges::fill(Blocks.GetMutable({attached[first], uint32_t(count)}), 0u);
+        });
+        CoalesceRanges(payloads);
+        for (const auto run : payloads) {
+            std::ranges::fill(Owners.GetMutable(run), 0u);
+            Values.Release(run);
+        }
     }
     // The value index of `handle`'s entry, below its block's entry count.
     uint32_t Index(uint32_t handle, uint32_t entry = 0u) const {

@@ -9,8 +9,8 @@
 namespace project {
 EntityStore::EntityStore(state::Scene &r, store::History &history, const snapshot::SnapshotEntries &components) : R(r), Table(r.AllocationState().Generations) {
     R.HistoryOwner = this;
-    R.Capture = [](state::Scene &r, state::TypeId type, state::Entity e) {
-        if (!r.Restoring) static_cast<EntityStore *>(r.HistoryOwner)->Capture(type, e);
+    R.Capture = [](state::Scene &r, state::TypeId type, std::span<const state::PageMask> pages) {
+        if (!r.Restoring) static_cast<EntityStore *>(r.HistoryOwner)->Capture(type, pages);
     };
     Table.P.Trie.CollectChanged = true;
     history.Track(Table.P, "entity.table", 0);
@@ -32,10 +32,10 @@ EntityStore::~EntityStore() {
     R.HistoryOwner = nullptr;
 }
 
-void EntityStore::Capture(state::TypeId type, state::Entity e) {
+void EntityStore::Capture(state::TypeId type, std::span<const state::PageMask> pages) {
     if (const auto &pool = Pools[type]) {
         if (R.DocumentReadOnly) throw std::logic_error("Persistent component mutation during history restoration: " + std::string(pool->Encoding.Name));
-        pool->Capture(state::Index(e));
+        pool->Capture(pages);
     }
 }
 
@@ -57,7 +57,7 @@ std::vector<state::Entity> EntityStore::RemovedEntities() const {
 }
 
 void EntityStore::FinishRestore(std::span<const state::Entity> removed) {
-    for (const auto e : removed) R.RemoveComponents(e);
+    R.RemoveComponents(removed);
     // Only the changed generation pages can hold an entity whose liveness changed.
     ForEachIdentityChange([&](uint32_t index) {
         const auto before = R.Living.entity_at(index), after = R.EntityAt(index);

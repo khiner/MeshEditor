@@ -278,6 +278,7 @@ struct MeshStore {
     // Returns a vertex-only store ID that must be released with Release.
     uint32_t AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &);
     void Release(uint32_t id);
+    void Release(std::span<const uint32_t> ids);
     // Reset all arenas and the StoreId table to empty, keeping GPU allocations for reuse.
     // Requires a full scene clear without live StoreId references so allocation restarts deterministically.
     void Clear();
@@ -404,6 +405,7 @@ private:
 
     Record &WriteRecord(uint32_t id);
     void ReleaseBlockLists(uint32_t id);
+    void ReleaseBlockLists(std::span<const uint32_t> ids);
     // Releases replaced list words, or keeps them until the submitted frame completes.
     void RetireBlockListWords(Range) const;
     void FinishEraseElements(uint32_t id, ElementDomain, std::span<const uint32_t> blocks);

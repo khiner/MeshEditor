@@ -24,6 +24,9 @@ void InitRenderStoreContext(state::Scene &r, const mtl::Context &ctx) {
 }
 
 void RegisterRenderStoreHandlers(state::Scene &r) {
+    r.on_destroy<ModelsBuffer, [](state::Scene &r, state::Entity e) {
+        r.Context.emplace<PendingHide>().Retired.push_back(e);
+    }>();
     r.on_destroy<ArmaturePoseState, [](state::Scene &r, state::Entity e) {
         auto &buffer = r.Context.get<GpuBuffers>().ArmatureDeformBuffer;
         for (const auto range : r.get<const ArmaturePoseState>(e).GpuDeformRanges) buffer.Release(range);
@@ -39,7 +42,7 @@ void RegisterRenderStoreHandlers(state::Scene &r) {
             buffers->MeshletInstanceCount -= ri.MeshletCount;
         }
         if (ri.BufferIndex == UINT32_MAX) return;
-        r.get_or_emplace<PendingHide>(ri.Entity).BufferIndices.push_back(ri.BufferIndex);
+        r.Context.emplace<PendingHide>().Instances.push_back({ri.Entity, ri.BufferIndex});
     }>();
     // Keep RenderInstance synchronized with Instance and Hidden regardless of snapshot insertion order.
     r.on_construct<Instance, [](state::Scene &r, state::Entity e) {

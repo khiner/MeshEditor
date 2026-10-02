@@ -35,9 +35,12 @@ function(mesheditor_library target policy)
 endfunction()
 
 mesheditor_library(MeshEditorProjectStore HOT
+    src/RangeAllocator.cpp
     src/state/Scene.cpp
     src/project/EntityStore.cpp
     src/project/ComponentPool.cpp
+    src/project/store/Records.cpp
+    src/project/store/RecordPage.cpp
     src/project/store/LiveTrie.cpp
     src/project/store/History.cpp)
 target_link_libraries(MeshEditorProjectStore PUBLIC mesheditor_serialization)
@@ -188,6 +191,17 @@ mesheditor_library(MeshEditorAssets COLD
     src/gltf/SourceTexture.cpp
 )
 
+# History copy, move and encoding callbacks run over component pages.
+set(native_snapshots
+    src/snapshot/ArmatureSnapshot.cpp
+    src/snapshot/AssetsSnapshot.cpp
+    src/snapshot/AudioSnapshot.cpp
+    src/snapshot/MeshSnapshot.cpp
+    src/snapshot/PhysicsSnapshot.cpp
+    src/snapshot/SceneComponentsSnapshot.cpp
+    src/snapshot/ViewportSnapshot.cpp)
+set_property(SOURCE ${native_snapshots} APPEND PROPERTY COMPILE_OPTIONS -O2)
+
 mesheditor_library(MeshEditorEditor COLD
     src/project/Project.cpp
     src/ProcessEvents.cpp
@@ -212,14 +226,8 @@ mesheditor_library(MeshEditorEditor COLD
     src/editor/Engine.cpp
     src/editor/Timeline.cpp
     src/object/ObjectOps.cpp
-    src/snapshot/ArmatureSnapshot.cpp
-    src/snapshot/AssetsSnapshot.cpp
-    src/snapshot/AudioSnapshot.cpp
-    src/snapshot/MeshSnapshot.cpp
-    src/snapshot/PhysicsSnapshot.cpp
-    src/snapshot/SceneComponentsSnapshot.cpp
+    ${native_snapshots}
     src/snapshot/SnapshotRoles.cpp
-    src/snapshot/ViewportSnapshot.cpp
     src/viewport/Viewport.cpp
     src/viewport/ViewportOps.cpp
 )

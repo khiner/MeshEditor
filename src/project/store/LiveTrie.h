@@ -77,7 +77,7 @@ struct TrieStats {
 struct LiveTrie {
     // Capacity is Fanout^levels slots.
     // page_bytes is the size of zero-default byte pages, or zero for records.
-    LiveTrie(uint32_t levels, uint32_t page_bytes = 0);
+    LiveTrie(uint32_t levels, uint32_t page_bytes = 0, uint32_t records_per_slot = 1);
     ~LiveTrie();
     LiveTrie(const LiveTrie &) = delete;
     LiveTrie &operator=(const LiveTrie &) = delete;
@@ -89,6 +89,9 @@ struct LiveTrie {
     bool Uncaptured(uint64_t slot) const;
     // Record slot's live value for pinned versions. Absent slots pass nullopt.
     void Capture(uint64_t slot, std::optional<Blob>);
+    // Fetch only leaves that pinned versions still alias, traversing the range once.
+    using CaptureFn = std::optional<Blob> (*)(void *, uint64_t);
+    void Capture(uint64_t first, uint64_t count, void *owner, CaptureFn);
     // Schedule [first, first + count) for rehashing.
     void MarkDirty(uint64_t first, uint64_t count);
     bool IsDirty(uint64_t slot) const { return slot < SlotHashes.size() && SlotHashes[slot].Dirty; }
@@ -122,7 +125,7 @@ struct LiveTrie {
     Hash128 ManifestRoot(uint64_t length);
     // Requires current slot hashes and child-level hashes.
     ManifestChildren ChildrenAt(uint32_t level, uint64_t index, uint64_t length) const;
-    uint64_t SlotsFor(uint64_t length) const { return PageBytes ? (length + PageBytes - 1) / PageBytes : length; }
+    uint64_t SlotsFor(uint64_t length) const { return (length + SlotStride - 1) / SlotStride; }
 
     // Restore and load append slot indices when CollectChanged is set.
     // The consumer clears ChangedSlots after use.
@@ -145,7 +148,7 @@ struct LiveTrie {
         bool Dirty{};
     };
 
-    const uint32_t Levels, PageBytes;
+    const uint32_t Levels, PageBytes, SlotStride;
     const Hash128 DefaultPageHash;
 
     TrieStats S;

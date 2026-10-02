@@ -78,12 +78,7 @@ struct BufferArena {
     void Release(Range range) { Allocator.Free(range); }
     // Releases every range, freeing each run of adjacent ranges at once.
     void Release(std::vector<Range> ranges) {
-        std::ranges::sort(ranges, {}, &Range::Offset);
-        for (size_t i = 0u; i < ranges.size();) {
-            auto run = ranges[i];
-            while (++i < ranges.size() && ranges[i].Offset == run.Offset + run.Count) run.Count += ranges[i].Count;
-            Allocator.Free(run);
-        }
+        Allocator.Free(std::move(ranges));
     }
     uint32_t HighWaterMark() const { return Allocator.HighWaterMark(); }
 
