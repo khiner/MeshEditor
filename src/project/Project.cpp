@@ -60,7 +60,7 @@ struct SavedState {
 
 std::vector<std::byte> SaveMetadata(const store::History &history, std::span<const std::byte> workspace) {
     std::vector<std::byte> bytes;
-    const auto &node = history.Nodes[history.Present];
+    const auto &node = history.Nodes[*history.Present];
     zpp::bits::out{bytes}(history.Present, node.Stamps, node.Roots, workspace).or_throw();
     return bytes;
 }
@@ -107,11 +107,11 @@ std::filesystem::path *SourcePath(action::Action &a) {
                       a);
 }
 // Generated files directly named by the written actions.
-std::expected<std::vector<std::string>, std::string> ReferencedAssets(const store::History &history, std::span<const int> nodes) {
+std::expected<std::vector<std::string>, std::string> ReferencedAssets(const store::History &history, std::span<const uint32_t> nodes) {
     namespace fs = std::filesystem;
     const Assets assets{.Directory = history.Dir};
     std::set<std::string> found;
-    for (const int node : nodes) {
+    for (const auto node : nodes) {
         for (auto &recorded : Decode(history.Nodes[node].Actions)) {
             const auto *path = SourcePath(recorded.Action);
             if (!path || !path->native().starts_with("asset:/")) continue;
@@ -245,7 +245,7 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
         action::Fail(R, "Cannot create project directory: " + ec.message());
         return false;
     }
-    if (History.Present >= 0 && !Save()) return false;
+    if (History.Present && !Save()) return false;
     auto previous = History.Pin();
     const auto camera = GetViewCameraState(R, Viewport);
     RecordedActions.clear();
@@ -299,7 +299,7 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
     return true;
 }
 bool Project::Save() {
-    if (History.Present < 0) return true;
+    if (!History.Present) return true;
     WaitForRender(R);
     FinishGesture(EventPass::Settle);
     // Save playback progress since the last edit.
@@ -380,13 +380,13 @@ bool Project::RevertSaved() {
     if (SavedPath.empty()) return false;
     auto saved = ReadSavedState(*this, SavedPath);
     if (!saved) return false;
-    const int node = History.FindPosition(saved->Position);
-    if (node < 0) {
+    const auto node = History.FindPosition(saved->Position);
+    if (!node) {
         action::Fail(R, "Saved position is missing from project history.");
         return false;
     }
     if (!Save()) return false;
-    Navigate(node);
+    Navigate(*node);
     if (History.Present != node) return false;
     RestoredWorkspace = std::move(saved->Workspace);
     return true;
@@ -507,7 +507,7 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
     RecordedActions.push_back(std::move(recorded_action));
     return true;
 }
-int Project::Do(action::Action a, std::string label) {
+std::optional<uint32_t> Project::Do(action::Action a, std::string label) {
     WaitForRender(R);
     if (label.empty()) label = Label(a);
     FinishGesture(EventPass::Settle);
@@ -520,7 +520,7 @@ void Project::RecordKeys() {
     const auto seconds = animation::FrameSeconds(R, Viewport, R.get<const TimelinePlayback>(Viewport).CurrentFrame);
     if (animation::AnyChanged(R, Viewport, seconds)) Record(action::MakeAction(action::animation::RecordChanged{}), EventPass::Settle);
 }
-int Project::Commit(std::string label, std::optional<int> replace) {
+uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
     // A commit indexes the mesh records its actions wrote, so a later restore costs only its own change.
     R.Context.get<MeshStore>().IndexHistory();
     auto bytes = Encode(RecordedActions);
@@ -557,14 +557,14 @@ void Project::EndGesture(EventPass pass) {
     R.remove<StartScreenTransform>(Viewport);
     Settle(pass);
 }
-bool Project::Editable(int node) const {
+bool Project::Editable(uint32_t node) const {
     for (const auto &recorded_action : Decode(History.Nodes[node].Actions)) {
         if (recorded_action.Inputs.PreviewSeed) continue;
         if (action::VisitLeaf(recorded_action.Action, []<typename L>(const L &) { return !std::is_empty_v<L>; })) return true;
     }
     return false;
 }
-Project::EditDraft &Project::DraftOf(int node) {
+Project::EditDraft &Project::DraftOf(uint32_t node) {
     if (!Draft || Draft->Node != node || Draft->Revision != History.Revision) Draft = EditDraft{node, History.Revision, Decode(History.Nodes[node].Actions)};
     return *Draft;
 }
@@ -675,7 +675,7 @@ void Project::Frame(action::Drained drained) {
     }
     if (pass == EventPass::Frame) Settle();
 }
-void Project::Navigate(int node) {
+void Project::Navigate(uint32_t node) {
     const profile::CpuScope scope{"Navigate"};
     CancelGesture();
     Editing.reset();
@@ -685,9 +685,10 @@ void Project::Navigate(int node) {
     History.Evict(MemoryCap);
     ++Revision;
 }
-bool Project::EditNode(int node) {
-    const int parent = History.Nodes[node].Parent;
-    Navigate(parent);
+bool Project::EditNode(uint32_t node) {
+    const auto parent = History.Nodes[node].Parent;
+    if (!parent) return false;
+    Navigate(*parent);
     if (History.Present != parent) return false;
     Editing = node;
     return true;
@@ -705,11 +706,11 @@ bool Project::Replay() {
 }
 void Project::Undo() {
     CancelGesture();
-    if (History.CanUndo()) Navigate(History.Nodes[History.Present].Parent);
+    if (const auto node = History.UndoTarget()) Navigate(*node);
 }
 void Project::Redo() {
     CancelGesture();
-    if (History.CanRedo()) Navigate(History.Nodes[History.Present].Children.back());
+    if (const auto node = History.RedoTarget()) Navigate(*node);
 }
 bool Project::Audit(std::string &why) {
     try {

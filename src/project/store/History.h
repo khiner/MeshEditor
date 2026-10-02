@@ -36,11 +36,12 @@ enum class RecordKind : uint8_t {
 };
 
 struct HistoryNode {
-    int Parent{-1};
-    std::vector<int> Children;
+    std::optional<uint32_t> Parent;
+    std::vector<uint32_t> Children;
+    std::optional<uint32_t> RedoChild; // The child on the most recently active lineage.
     std::vector<std::byte> Actions; // The recorded actions, encoded by the project.
     std::string Label;
-    int Depth{};
+    uint32_t Depth{};
     bool ReplayBaseline{true}; // Replay starts from this node's stored state, and a baseline without state runs its actions from the empty state.
     std::optional<Snapshot> Hot;
     // Stamps and Roots use track registration order and remain available after eviction.
@@ -51,7 +52,7 @@ struct HistoryNode {
 };
 
 struct HistoryPosition {
-    int Node{-1}; // Preferred node when it still matches the stored state.
+    std::optional<uint32_t> Node; // Preferred node when it still matches the stored state.
     std::vector<Stamp> Stamps;
     std::vector<Hash128> Roots;
 };
@@ -87,27 +88,29 @@ struct History {
     // A directory without content logs holds only an actions log, which becomes the tree, and the present node replays from the empty state.
     // Return false on failure and preserve live state and the current tree.
     bool Open(const std::filesystem::path &dir, const HistoryPosition *position = nullptr);
-    int FindPosition(const HistoryPosition &) const;
+    std::optional<uint32_t> FindPosition(const HistoryPosition &) const;
     bool Close();
     // Continue writing the current records at their copied or moved directory.
     bool Relocate(const std::filesystem::path &dir);
 
     // Record live state and return its node ID, reusing a matching present, child, or parent node.
-    int Commit(std::string label, std::vector<std::byte> actions);
+    uint32_t Commit(std::string label, std::vector<std::byte> actions);
     // Record live state as `node`'s new content under its label, drop the node's descendants, and make it present.
-    int Replace(int node, std::vector<std::byte> actions);
+    uint32_t Replace(uint32_t node, std::vector<std::byte> actions);
     // Call after CPU and GPU writes complete.
     void SettleHashes();
     // Restore node from its snapshot, its stored data, or a replay from its nearest ancestor with state, and update Present.
-    void Navigate(int node);
-    bool CanUndo() const { return Present > 0; }
-    bool CanRedo() const { return Present >= 0 && !Nodes[Present].Children.empty(); }
+    void Navigate(uint32_t node);
+    std::optional<uint32_t> UndoTarget() const { return Present ? Nodes[*Present].Parent : std::nullopt; }
+    bool CanUndo() const { return UndoTarget().has_value(); }
+    std::optional<uint32_t> RedoTarget() const { return Present ? Nodes[*Present].RedoChild : std::nullopt; }
+    bool CanRedo() const { return RedoTarget().has_value(); }
     void Undo() {
-        if (CanUndo()) Navigate(Nodes[Present].Parent);
+        if (const auto node = UndoTarget()) Navigate(*node);
     }
-    // Redo follows the most recently created child.
+    // Redo follows the most recently active lineage.
     void Redo() {
-        if (CanRedo()) Navigate(Nodes[Present].Children.back());
+        if (const auto node = RedoTarget()) Navigate(*node);
     }
     // Discard uncommitted edits and restore the present node.
     void Revert();
@@ -124,10 +127,10 @@ struct History {
     bool Clear(const HistoryPosition *saved = nullptr);
     // Write the present node and each reachable node's actions, label and parent, in index order, as an actions log, and return those nodes.
     // Return why the tree cannot replay when its root holds state without actions.
-    std::expected<std::vector<int>, std::string> WriteActions(const std::filesystem::path &) const;
+    std::expected<std::vector<uint32_t>, std::string> WriteActions(const std::filesystem::path &) const;
 
     // Eviction preserves snapshots for the present and this many ancestors, through its replay baseline.
-    static constexpr int UndoWindow = 16;
+    static constexpr uint32_t UndoWindow = 16;
     // Flush writes and evict snapshots until OwnedBytes meets the cap or only protected nodes remain.
     void Evict(uint64_t owned_bytes_cap);
     uint64_t LogBytes() const { return LeafLog.Size + NodeLog.Size; }
@@ -175,7 +178,7 @@ struct History {
     std::vector<project::ComponentPool *> PoolTracks;
     std::vector<size_t> Order; // Track indices in restore order.
     std::vector<HistoryNode> Nodes;
-    int Present{-1};
+    std::optional<uint32_t> Present;
     uint64_t VisitCounter{};
     uint64_t Revision{}; // changes when nodes are added, replaced, or removed
     Hooks Callbacks;

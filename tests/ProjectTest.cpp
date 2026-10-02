@@ -41,10 +41,10 @@ struct Fixture : Engine {
         expect(valid);
         expect(R.Context.get<action::Errors>().Messages.empty());
     }
-    template<typename A> int Do(A a) {
+    template<typename A> auto Do(A a) {
         const auto node = P->Do(action::MakeAction(std::move(a)));
         expect(R.Context.get<action::Errors>().Messages.empty());
-        return node;
+        return node.value();
     }
     std::vector<std::byte> Image() {
         SubmitViewport(R, Viewport);
@@ -163,6 +163,11 @@ void TestActionsArchive() {
     restored.Audit();
     restored.P->Navigate(present);
     expect(restored.P->History.MaterializeLive() == present_state);
+    restored.P->Undo();
+    expect(restored.P->History.Present == base);
+    restored.P->Redo();
+    expect(restored.P->History.Present == present);
+    expect(restored.P->History.MaterializeLive() == present_state);
     restored.P->Navigate(final_node);
     expect(restored.P->History.MaterializeLive() == final_state);
     workspace::Apply(restored.R, restored.Viewport, restored_windows, *workspace);
@@ -188,7 +193,7 @@ void TestExternalReferences() {
         bin.write(reinterpret_cast<const char *>(positions.data()), sizeof(positions));
     };
     const auto recorded_path = [](Fixture &f) {
-        const auto &actions = f.P->DraftOf(f.P->History.Present).RecordedActions;
+        const auto &actions = f.P->DraftOf(*f.P->History.Present).RecordedActions;
         return std::get<action::io::LoadGltf>(std::get<action::io::Action>(actions.front().Action)).Path;
     };
     const auto max_x = [](Fixture &f) {

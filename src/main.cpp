@@ -354,7 +354,7 @@ struct RestoreTimings {
 
 bool OpenProjectDir(state::Scene &r, state::Entity viewport, const fs::path &working_dir, const fs::path &saved = {}) {
     auto &session = Session(r);
-    if (session.History.Present >= 0 && (!SaveWorkspace(r, viewport) || !session.Save())) return false;
+    if (session.History.Present && (!SaveWorkspace(r, viewport) || !session.Save())) return false;
     WaitForRender(r);
     const auto old_dir = Paths::Project();
     Paths::SetProject(working_dir);
@@ -1573,9 +1573,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             }
             if (BeginMenu("Edit")) {
                 auto &history = Session(r).History;
-                const int present = history.Present;
-                if (MenuItem("Undo", "Cmd+Z", false, history.CanUndo())) Session(r).RequestNavigate(history.Nodes[present].Parent);
-                if (MenuItem("Redo", "Cmd+Shift+Z", false, history.CanRedo())) Session(r).RequestNavigate(history.Nodes[present].Children.back());
+                const auto undo_target = history.UndoTarget(), redo_target = history.RedoTarget();
+                if (MenuItem("Undo", "Cmd+Z", false, undo_target.has_value())) Session(r).RequestNavigate(*undo_target);
+                if (MenuItem("Redo", "Cmd+Shift+Z", false, redo_target.has_value())) Session(r).RequestNavigate(*redo_target);
                 EndMenu();
             }
             if (BeginMenu("Windows")) {

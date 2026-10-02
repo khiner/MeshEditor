@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <filesystem>
 #include <format>
 #include <memory>
@@ -188,7 +189,7 @@ template<typename L> void DrawLeaf(const state::Scene &r, L &leaf, bool &changed
 
 // A change re-runs the node's actions with the edited values on its parent.
 // A release commits them in the node's place.
-void DrawNodeEditor(Project &session, int node, bool interactive) {
+void DrawNodeEditor(Project &session, uint32_t node, bool interactive) {
     auto &draft = session.DraftOf(node);
     size_t leaves = 0;
     for (const auto &recorded_action : draft.RecordedActions) {
@@ -214,9 +215,10 @@ void DrawNodeEditor(Project &session, int node, bool interactive) {
 void HandleHistoryShortcuts(Project &session) {
     if (GetIO().WantTextInput) return;
     auto &history = session.History;
-    const int present = history.Present;
-    if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat) && history.CanUndo()) session.RequestNavigate(history.Nodes[present].Parent);
-    if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat) && history.CanRedo()) session.RequestNavigate(history.Nodes[present].Children.back());
+    const auto undo_target = history.UndoTarget();
+    const auto redo_target = history.RedoTarget();
+    if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat) && undo_target) session.RequestNavigate(*undo_target);
+    if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat) && redo_target) session.RequestNavigate(*redo_target);
 }
 
 bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive) {
@@ -225,13 +227,15 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
     if (Begin(window.Name, &window.Visible)) {
         auto &history = session.History;
         const auto &nodes = history.Nodes;
-        const int present = history.Present;
-        BeginDisabled(!history.CanUndo());
-        if (Button("Undo") && interactive) session.RequestNavigate(nodes[present].Parent);
+        const auto present = history.Present;
+        const auto undo_target = history.UndoTarget();
+        const auto redo_target = history.RedoTarget();
+        BeginDisabled(!undo_target);
+        if (Button("Undo") && interactive && undo_target) session.RequestNavigate(*undo_target);
         EndDisabled();
         SameLine();
-        BeginDisabled(!history.CanRedo());
-        if (Button("Redo") && interactive) session.RequestNavigate(nodes[present].Children.back());
+        BeginDisabled(!redo_target);
+        if (Button("Redo") && interactive && redo_target) session.RequestNavigate(*redo_target);
         EndDisabled();
         SameLine();
         if (Button("Memory...") && interactive) OpenPopup("History memory");
@@ -245,7 +249,7 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
                 session.MemoryCap = uint64_t(std::max(0, cap)) << 20;
                 history.Evict(session.MemoryCap);
             }
-            Text("The current state and up to %d recent edits stay cached.", store::History::UndoWindow);
+            Text("The current state and up to %u recent edits stay cached.", store::History::UndoWindow);
             EndPopup();
         }
 #ifdef DEBUG_BUILD
@@ -255,35 +259,95 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
         clear = Button("Clear history") && interactive;
         SetItemTooltip("Keep the current and last saved states. Discard other undo/redo states.");
         Separator();
+        const auto rail_bit = [](uint32_t depth) { return uint32_t{1} << (std::min(depth, 20u) - 1); };
         if (window.TreeRevision != history.Revision) {
             window.Rows.clear();
-            std::vector<int> pending;
-            if (!nodes.empty()) pending.push_back(0);
+            window.RowByNode.assign(nodes.size(), std::nullopt);
+            std::vector<HistoryRow> pending;
+            if (!nodes.empty()) pending.push_back({0, 0, session.Editable(0)});
             while (!pending.empty()) {
-                const auto id = pending.back();
+                const auto row = pending.back();
                 pending.pop_back();
-                window.Rows.push_back({id, session.Editable(id)});
-                for (auto it = nodes[id].Children.rbegin(); it != nodes[id].Children.rend(); ++it) pending.push_back(*it);
+                window.RowByNode[row.Node] = uint32_t(window.Rows.size());
+                window.Rows.push_back(row);
+                const auto &children = nodes[row.Node].Children;
+                for (const auto child : children) {
+                    const bool branch = child != children.front();
+                    const auto depth = row.Depth + branch;
+                    const auto rails = row.Rails | (branch && child != children[1] ? rail_bit(depth) : 0);
+                    pending.push_back({child, depth, session.Editable(child), rails});
+                }
             }
             window.TreeRevision = history.Revision;
         }
+        std::vector<uint32_t> lineage;
+        for (auto node = present; node; node = nodes[*node].Parent) lineage.push_back(*node);
+        std::ranges::reverse(lineage);
+        for (auto node = redo_target; node; node = nodes[*node].RedoChild) lineage.push_back(*node);
+        const auto active = [&](uint32_t node) { return nodes[node].Depth < lineage.size() && lineage[nodes[node].Depth] == node; };
+        struct ActiveRail {
+            uint32_t Bit, First, Last;
+        };
+        std::vector<ActiveRail> active_rails;
+        for (const auto node : lineage) {
+            const auto parent = nodes[node].Parent;
+            if (!parent || node == nodes[*parent].Children.front()) continue;
+            const auto first = window.RowByNode[*parent], last = window.RowByNode[node];
+            if (first && last) active_rails.push_back({rail_bit(window.Rows[*last].Depth), *first, *last});
+        }
+        const auto active_mask = [&](size_t row, bool below) {
+            auto mask = uint32_t{0};
+            for (const auto &rail : active_rails)
+                if (below ? rail.First <= row && row < rail.Last : rail.First < row && row <= rail.Last) mask |= rail.Bit;
+            return mask;
+        };
         // An open edit highlights its node while the present node is its parent.
         // The highlighted node's editor opens below it, and the arrow collapses it.
-        const int shown = session.Editing.value_or(present);
+        const auto shown = session.Editing ? session.Editing : present;
         if (window.EditorNode != shown) {
             window.EditorNode = shown;
             window.EditorOpen = true;
         }
-        const float x = GetCursorPosX();
-        const auto indent = [&](int id) { return float(std::min(nodes[id].Depth, 20)) * 12.f; };
-        const auto draw_row = [&](const HistoryRow &row) {
-            const int id = row.Node;
-            SetCursorPosX(x + indent(id));
+        const auto x = GetCursorPosX();
+        const auto screen_x = GetCursorScreenPos().x;
+        const auto indent = [](const HistoryRow &row) { return float(std::min(row.Depth, 20u)) * 12.f; };
+        const auto rail_x = [&](uint32_t depth) { return screen_x + float(std::min(depth, 20u)) * 12.f - 6.f; };
+        const auto rail_color = GetColorU32(ImGuiCol_TextDisabled);
+        const auto active_color = GetColorU32(ImGuiCol_CheckMark);
+        const auto draw_rails = [&](uint32_t rails, uint32_t highlighted, float top, float bottom) {
+            while (rails) {
+                const auto bit = uint32_t{1} << std::countr_zero(rails);
+                const auto x = rail_x(std::countr_zero(rails) + 1);
+                GetWindowDrawList()->AddLine({x, top}, {x, bottom}, highlighted & bit ? active_color : rail_color);
+                rails &= rails - 1;
+            }
+        };
+        const auto below_rails = [&](const HistoryRow &row) { return row.Rails | (nodes[row.Node].Children.size() > 1 ? rail_bit(row.Depth + 1) : 0); };
+        const auto draw_row = [&](size_t index) {
+            const auto &row = window.Rows[index];
+            const auto id = row.Node;
+            SetCursorPosX(x + indent(row));
             auto flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_NoTreePushOnOpen;
             if (!row.Editable) flags |= ImGuiTreeNodeFlags_Leaf;
             if (id == shown) flags |= ImGuiTreeNodeFlags_Selected;
             SetNextItemOpen(id == shown && window.EditorOpen);
+            const auto highlight = active(id) && id != shown;
+            if (highlight) PushStyleColor(ImGuiCol_Text, GetStyleColorVec4(ImGuiCol_CheckMark));
             TreeNodeEx(std::format("{}##{}", nodes[id].Label, id).c_str(), flags);
+            if (highlight) PopStyleColor();
+            const auto min = GetItemRectMin(), max = GetItemRectMax();
+            const auto center = (min.y + max.y) * .5f;
+            const auto bottom = max.y + GetStyle().ItemSpacing.y;
+            const auto above = active_mask(index, false), below = active_mask(index, true);
+            draw_rails(row.Rails, above, min.y, center);
+            draw_rails(row.Rails, below, center, bottom);
+            const auto parent = nodes[id].Parent;
+            if (parent && id != nodes[*parent].Children.front()) {
+                const auto branch_x = rail_x(row.Depth);
+                if (!(row.Rails & rail_bit(row.Depth))) draw_rails(rail_bit(row.Depth), above, min.y, center);
+                GetWindowDrawList()->AddLine({branch_x, center}, {min.x - 2.f, center}, active(id) ? active_color : rail_color);
+            }
+            draw_rails(below_rails(row) & ~row.Rails, below, max.y, bottom);
             if (!interactive) return;
             if (IsItemToggledOpen()) {
                 if (id == shown) window.EditorOpen = !window.EditorOpen;
@@ -296,20 +360,22 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
             ImGuiListClipper clipper;
             clipper.Begin(int(end - begin), GetFrameHeightWithSpacing());
             while (clipper.Step()) {
-                for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) draw_row(window.Rows[begin + size_t(i)]);
+                for (auto i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) draw_row(begin + size_t(i));
             }
         };
-        const auto shown_row = size_t(std::ranges::find(window.Rows, shown, &HistoryRow::Node) - window.Rows.begin());
+        const auto shown_row = shown && window.RowByNode[*shown] ? size_t(*window.RowByNode[*shown]) : window.Rows.size();
         draw_rows(0, std::min(shown_row, window.Rows.size()));
         if (shown_row < window.Rows.size()) {
-            draw_row(window.Rows[shown_row]);
+            draw_row(shown_row);
             if (window.EditorOpen && window.Rows[shown_row].Editable) {
-                const float editor_indent = indent(shown) + GetTreeNodeToLabelSpacing();
+                const auto top = GetCursorScreenPos().y;
+                const auto editor_indent = indent(window.Rows[shown_row]) + GetTreeNodeToLabelSpacing();
                 Indent(editor_indent);
-                PushID(shown);
-                DrawNodeEditor(session, shown, interactive);
+                PushID(int(*shown));
+                DrawNodeEditor(session, *shown, interactive);
                 PopID();
                 Unindent(editor_indent);
+                draw_rails(below_rails(window.Rows[shown_row]), active_mask(shown_row, true), top, GetCursorScreenPos().y);
             }
             draw_rows(shown_row + 1, window.Rows.size());
         }

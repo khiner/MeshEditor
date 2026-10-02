@@ -39,6 +39,22 @@ template<typename T> bool Take(std::span<const std::byte> &in, T &v) {
     return true;
 }
 
+void Put(std::vector<std::byte> &out, const std::optional<uint32_t> &node) {
+    Put(out, uint8_t(node.has_value()));
+    if (node) Put(out, *node);
+}
+bool Take(std::span<const std::byte> &in, std::optional<uint32_t> &node) {
+    uint8_t present;
+    if (!Take(in, present) || present > 1) return false;
+    node.reset();
+    if (present) {
+        uint32_t id;
+        if (!Take(in, id)) return false;
+        node = id;
+    }
+    return true;
+}
+
 void PutState(std::vector<std::byte> &out, const std::vector<Stamp> &stamps, const std::vector<Hash128> &roots) {
     for (size_t i = 0; i < stamps.size(); ++i) {
         Put(out, stamps[i].H);
@@ -236,39 +252,50 @@ void Adopt(History &history, const Snapshot &s) {
     }
 }
 
-void ReleaseNode(History &history, int node) {
+void ReleaseNode(History &history, uint32_t node) {
     auto &n = history.Nodes[node];
     if (!n.Hot) return;
     history.Release(*n.Hot);
     n.Hot.reset();
 }
 
-void SetPresent(History &history, int node) {
+void SelectLineage(History &history, uint32_t node) {
+    for (auto child = node; history.Nodes[child].Parent;) {
+        const auto parent = *history.Nodes[child].Parent;
+        history.Nodes[parent].RedoChild = child;
+        child = parent;
+    }
+}
+
+void SetPresent(History &history, uint32_t node) {
     history.Present = node;
+    SelectLineage(history, node);
     history.Nodes[node].LastVisited = ++history.VisitCounter;
 }
 
 // Releases a node's descendants' snapshots and detaches them, leaving them unreachable from the root.
-void DropDescendants(History &history, int node) {
-    std::vector<int> pending(history.Nodes[node].Children);
+void DropDescendants(History &history, uint32_t node) {
+    auto pending = history.Nodes[node].Children;
     history.Nodes[node].Children.clear();
+    history.Nodes[node].RedoChild.reset();
     while (!pending.empty()) {
         auto &n = history.Nodes[pending.back()];
         pending.pop_back();
         pending.append_range(n.Children);
         n.Children.clear();
+        n.RedoChild.reset();
         if (n.Hot) history.Release(*n.Hot);
         n.Hot.reset();
     }
 }
 
-int TreeDistance(const History &history, int a, int b) {
-    int x = a, y = b;
-    while (history.Nodes[x].Depth > history.Nodes[y].Depth) x = history.Nodes[x].Parent;
-    while (history.Nodes[y].Depth > history.Nodes[x].Depth) y = history.Nodes[y].Parent;
+uint32_t TreeDistance(const History &history, uint32_t a, uint32_t b) {
+    auto x = a, y = b;
+    while (history.Nodes[x].Depth > history.Nodes[y].Depth) x = *history.Nodes[x].Parent;
+    while (history.Nodes[y].Depth > history.Nodes[x].Depth) y = *history.Nodes[y].Parent;
     while (x != y) {
-        x = history.Nodes[x].Parent;
-        y = history.Nodes[y].Parent;
+        x = *history.Nodes[x].Parent;
+        y = *history.Nodes[y].Parent;
     }
     return history.Nodes[a].Depth + history.Nodes[b].Depth - 2 * history.Nodes[x].Depth;
 }
@@ -403,19 +430,20 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
     while (!rest.empty()) {
         uint32_t len;
         RecordKind kind;
-        int32_t parent;
-        if (!Take(rest, len) || rest.size() < len || len < 5 || !Take(rest, kind) || !Take(rest, parent)) break;
-        auto payload = rest.subspan(0, len - 5);
-        rest = rest.subspan(len - 5);
+        std::optional<uint32_t> parent;
+        if (!Take(rest, len) || rest.size() < len) break;
+        auto payload = rest.first(len);
+        rest = rest.subspan(len);
+        if (!Take(payload, kind) || !Take(payload, parent)) break;
         if (kind == RecordKind::State) {
             HistoryNode state;
-            if (parent < 0 || parent >= int(history.Nodes.size()) || !TakeState(payload, state, history.Tracks.size()) || !payload.empty() || !std::ranges::all_of(state.Roots, resolvable)) break;
-            history.Nodes[parent].Stamps = std::move(state.Stamps);
-            history.Nodes[parent].Roots = std::move(state.Roots);
+            if (!parent || *parent >= history.Nodes.size() || !TakeState(payload, state, history.Tracks.size()) || !payload.empty() || !std::ranges::all_of(state.Roots, resolvable)) break;
+            history.Nodes[*parent].Stamps = std::move(state.Stamps);
+            history.Nodes[*parent].Roots = std::move(state.Roots);
         } else if (kind != RecordKind::Navigate) {
             HistoryNode n;
             if (!TakeActions(payload, n) || (!payload.empty() && !TakeState(payload, n, history.Tracks.size()))) break;
-            if (kind != RecordKind::Root && (parent < 0 || parent >= int(history.Nodes.size()))) break;
+            if (kind == RecordKind::Root ? parent.has_value() : !parent || *parent >= history.Nodes.size()) break;
             if (!std::ranges::all_of(n.Roots, resolvable)) break;
             std::optional<HistoryNode> saved;
             if (kind == RecordKind::Root && !payload.empty()) {
@@ -426,13 +454,14 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
             }
             if (!payload.empty()) break;
             if (kind == RecordKind::Replace) {
-                DropDescendants(history, parent);
-                auto &target = history.Nodes[parent];
+                DropDescendants(history, *parent);
+                auto &target = history.Nodes[*parent];
                 target.Actions = std::move(n.Actions);
                 target.Label = std::move(n.Label);
                 target.Stamps = std::move(n.Stamps);
                 target.Roots = std::move(n.Roots);
                 history.Present = parent;
+                SelectLineage(history, *parent);
                 tree_size += 4 + len;
                 continue;
             }
@@ -445,15 +474,17 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
                 }
             } else {
                 n.Parent = parent;
-                n.Depth = history.Nodes[parent].Depth + 1;
+                n.Depth = history.Nodes[*parent].Depth + 1;
                 n.ReplayBaseline = false;
-                history.Nodes[parent].Children.push_back(int(history.Nodes.size()));
+                history.Nodes[*parent].Children.push_back(uint32_t(history.Nodes.size()));
             }
             history.Nodes.push_back(std::move(n));
-            history.Present = int(history.Nodes.size()) - 1;
-        } else if (parent >= 0 && parent < int(history.Nodes.size())) {
+            history.Present = uint32_t(history.Nodes.size() - 1);
+            SelectLineage(history, *history.Present);
+        } else if (parent && *parent < history.Nodes.size() && payload.empty()) {
             history.Present = parent;
-        }
+            SelectLineage(history, *parent);
+        } else break;
         tree_size += 4 + len;
     }
     // Exclude manifests with missing descendants from deduplication after a partial write.
@@ -462,24 +493,25 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
 }
 
 // Build the tree of an actions log, whose nodes have no state and whose root is the only baseline.
-// Actions log format: [u64 magic][u32 node count][i32 present], then per node [i32 parent] and its actions.
+// Actions log format: [u64 magic][u32 node count][u32 present], then per node its optional parent and actions.
 bool ReadActions(History &history, const std::filesystem::path &dir) {
     std::vector<std::byte> bytes;
     if (!ReadFile(dir / History::ActionsLogName, bytes)) return false;
     std::span<const std::byte> in{bytes};
     uint64_t magic;
     uint32_t count;
-    int32_t present;
-    if (!Take(in, magic) || magic != ActionsMagic || !Take(in, count) || !Take(in, present) || present < 0 || uint32_t(present) >= count) return false;
-    for (uint32_t i = 0; i < count; ++i) {
-        int32_t parent;
+    uint32_t present;
+    if (!Take(in, magic) || magic != ActionsMagic || !Take(in, count) || !Take(in, present) || present >= count) return false;
+    for (auto i = uint32_t{0}; i < count; ++i) {
+        std::optional<uint32_t> parent;
         HistoryNode n;
-        if (!Take(in, parent) || (i ? parent < 0 || uint32_t(parent) >= i : parent != -1) || !TakeActions(in, n)) return false;
+        if (!Take(in, parent) || (i ? !parent || *parent >= i : parent.has_value()) || !TakeActions(in, n)) return false;
         if (i) {
             n.Parent = parent;
-            n.Depth = history.Nodes[parent].Depth + 1;
+            n.Depth = history.Nodes[*parent].Depth + 1;
             n.ReplayBaseline = false;
-            history.Nodes[parent].Children.push_back(int(i));
+            history.Nodes[*parent].Children.push_back(i);
+            history.Nodes[*parent].RedoChild = i;
         }
         history.Nodes.push_back(std::move(n));
     }
@@ -492,7 +524,7 @@ bool ReadActions(History &history, const std::filesystem::path &dir) {
 bool AdoptProject(History &history, History &candidate) {
     if (!CheckIO(history, Flush(candidate))) return false;
     CloseStreams(history);
-    for (int i = 0; i < int(history.Nodes.size()); ++i) ReleaseNode(history, i);
+    for (auto i = uint32_t{0}; i < history.Nodes.size(); ++i) ReleaseNode(history, i);
     history.Nodes = std::move(candidate.Nodes);
     history.LeafLog = std::move(candidate.LeafLog);
     history.NodeLog = std::move(candidate.NodeLog);
@@ -507,7 +539,7 @@ bool AdoptProject(History &history, History &candidate) {
 }
 
 // Validate against current live data, including uncommitted edits, before mutating any track.
-bool PrepareLoad(History &history, int node, LoadPlan &plan) {
+bool PrepareLoad(History &history, uint32_t node, LoadPlan &plan) {
     const auto &n = history.Nodes[node];
     std::ifstream leaves{history.Dir / history.LeafLog.Name, std::ios::binary}, nodes_in{history.Dir / history.NodeLog.Name, std::ios::binary};
     if (!leaves || !nodes_in) return false;
@@ -557,7 +589,7 @@ bool PrepareLoad(History &history, int node, LoadPlan &plan) {
     return true;
 }
 
-std::expected<void, std::string> ApplyLoad(History &history, int node, const LoadPlan &plan) {
+std::expected<void, std::string> ApplyLoad(History &history, uint32_t node, const LoadPlan &plan) {
     const auto &n = history.Nodes[node];
     const auto restored = RunPipeline(history, [&](size_t i) { LoadTrack(history, i, n.Stamps[i].Length, plan); });
     if (!restored) return restored;
@@ -605,20 +637,20 @@ Hash128 BuildManifest(History &history, size_t track) {
     });
 }
 
-void AppendTreeRecord(History &history, RecordKind kind, int parent, const std::vector<std::byte> &payload) {
+void AppendTreeRecord(History &history, RecordKind kind, std::optional<uint32_t> parent, const std::vector<std::byte> &payload) {
     assert(history.Streams[FileTree].is_open() && "the tree log requires Begin or Open");
-    // Tree record format: [u32 len][u8 kind][i32 parent][payload].
+    // Tree record format: [u32 len][u8 kind][u8 has parent][u32 parent if present][payload].
     std::vector<std::byte> record;
-    Put(record, uint32_t(1 + 4 + payload.size()));
+    Put(record, uint32_t(2 + (parent ? sizeof(uint32_t) : 0) + payload.size()));
     Put(record, uint8_t(kind));
-    Put(record, int32_t(parent));
+    Put(record, parent);
     record.insert(record.end(), payload.begin(), payload.end());
     Append(history, FileTree, record);
 }
 
 // Persist live content as the node's, returning its manifest roots with its parent's roots for unchanged tracks.
 std::vector<Hash128> PersistContent(History &history, const HistoryNode &n) {
-    const auto *parent = n.Parent >= 0 ? &history.Nodes[n.Parent] : nullptr;
+    const auto *parent = n.Parent ? &history.Nodes[*n.Parent] : nullptr;
     std::vector<Hash128> roots;
     for (size_t i = 0; i < history.Tracks.size(); ++i) {
         if (parent && parent->Roots.size() == history.Tracks.size() && parent->Stamps[i] == n.Stamps[i]) roots.push_back(parent->Roots[i]);
@@ -627,14 +659,14 @@ std::vector<Hash128> PersistContent(History &history, const HistoryNode &n) {
     return roots;
 }
 
-void PersistNode(History &history, RecordKind kind, int node) {
+void PersistNode(History &history, RecordKind kind, uint32_t node) {
     assert(history.Streams[FileTree].is_open() && "commit requires Begin or Open");
     auto &n = history.Nodes[node];
     n.Roots = PersistContent(history, n);
     AppendTreeRecord(history, kind, kind == RecordKind::Replace ? node : n.Parent, NodePayload(n));
 }
 
-std::expected<void, std::string> RestoreNode(History &history, int node) {
+std::expected<void, std::string> RestoreNode(History &history, uint32_t node) {
     if (history.Nodes[node].Hot) return history.Restore(*history.Nodes[node].Hot);
     const auto failed = [&](std::string error) -> std::expected<void, std::string> {
         CheckIO(history, std::move(error));
@@ -647,20 +679,21 @@ std::expected<void, std::string> RestoreNode(History &history, int node) {
     return restored ? restored : failed(restored.error());
 }
 
-// The nearest node at or above `node` that has state, or -1 when none does.
-int StateOrigin(const History &history, int node) {
-    while (node >= 0 && history.Nodes[node].Stamps.empty()) node = history.Nodes[node].Parent;
-    return node;
+// The nearest node at or above `node` that has state.
+std::optional<uint32_t> StateOrigin(const History &history, uint32_t node) {
+    std::optional<uint32_t> origin = node;
+    while (origin && history.Nodes[*origin].Stamps.empty()) origin = history.Nodes[*origin].Parent;
+    return origin;
 }
 
-// Replay each node below `origin` down to `node` from `origin`'s live state, or from the empty state when `origin` is -1.
+// Replay each node below `origin` down to `node` from `origin`'s live state, or from the empty state when it is absent.
 // Persist, pin and record the content of each replayed node.
-std::expected<void, std::string> ReplayPath(History &history, int origin, int node) {
-    std::vector<int> path;
-    for (int id = node; id != origin; id = history.Nodes[id].Parent) path.push_back(id);
+std::expected<void, std::string> ReplayPath(History &history, std::optional<uint32_t> origin, uint32_t node) {
+    std::vector<uint32_t> path;
+    for (auto id = std::optional{node}; id != origin; id = history.Nodes[*id].Parent) path.push_back(*id);
     std::ranges::reverse(path);
-    if (origin < 0) history.Callbacks.Reset(history.Dir);
-    for (const int id : path) {
+    if (!origin) history.Callbacks.Reset(history.Dir);
+    for (const auto id : path) {
         auto &n = history.Nodes[id];
         const auto replayed = history.Callbacks.Replay(n.Actions);
         if (!replayed) return replayed;
@@ -746,10 +779,10 @@ bool History::Begin(const std::filesystem::path &dir, std::vector<std::byte> act
 
 bool History::Close() {
     const bool saved = CheckIO(*this, Flush(*this)) && CheckIO(*this, CloseStreams(*this));
-    for (int i = 0; i < int(Nodes.size()); ++i) ReleaseNode(*this, i);
+    for (auto i = uint32_t{0}; i < Nodes.size(); ++i) ReleaseNode(*this, i);
     Nodes.clear();
     ++Revision;
-    Present = -1;
+    Present.reset();
     VisitCounter = 0;
     Dir.clear();
     LeafLog.Idx.clear();
@@ -770,14 +803,14 @@ bool History::Relocate(const std::filesystem::path &dir) {
     return true;
 }
 
-int History::Commit(std::string label, std::vector<std::byte> actions) {
-    assert(Present >= 0);
+uint32_t History::Commit(std::string label, std::vector<std::byte> actions) {
+    assert(Present);
     const auto stamps = CurrentStamps(*this);
-    if (stamps == Nodes[Present].Stamps) {
-        Adopt(*this, *Nodes[Present].Hot); // Release redundant copies for equal state.
-        return Present;
+    if (stamps == Nodes[*Present].Stamps) {
+        Adopt(*this, *Nodes[*Present].Hot); // Release redundant copies for equal state.
+        return *Present;
     }
-    const auto adopt = [&](int node) {
+    const auto adopt = [&](uint32_t node) {
         auto &n = Nodes[node];
         if (n.Hot) Adopt(*this, *n.Hot);
         else n.Hot = Pin();
@@ -785,21 +818,21 @@ int History::Commit(std::string label, std::vector<std::byte> actions) {
         AppendTreeRecord(*this, RecordKind::Navigate, node, {});
         return node;
     };
-    for (const int child : Nodes[Present].Children)
+    for (const auto child : Nodes[*Present].Children)
         if (Nodes[child].Stamps == stamps) return adopt(child);
-    if (const int parent = Nodes[Present].Parent; parent >= 0 && Nodes[parent].Stamps == stamps) return adopt(parent);
-    const int id = int(Nodes.size());
-    HistoryNode n{.Parent = Present, .Actions = std::move(actions), .Label = std::move(label), .Depth = Nodes[Present].Depth + 1, .ReplayBaseline = false, .Hot = Pin(), .Stamps = stamps};
+    if (const auto parent = Nodes[*Present].Parent; parent && Nodes[*parent].Stamps == stamps) return adopt(*parent);
+    const auto id = uint32_t(Nodes.size());
+    HistoryNode n{.Parent = Present, .Actions = std::move(actions), .Label = std::move(label), .Depth = Nodes[*Present].Depth + 1, .ReplayBaseline = false, .Hot = Pin(), .Stamps = stamps};
     Nodes.push_back(std::move(n));
-    Nodes[Present].Children.push_back(id);
+    Nodes[*Present].Children.push_back(id);
     ++Revision;
     SetPresent(*this, id);
     PersistNode(*this, RecordKind::Action, id);
     return id;
 }
 
-int History::Replace(int node, std::vector<std::byte> actions) {
-    assert(node > 0 && node < int(Nodes.size()));
+uint32_t History::Replace(uint32_t node, std::vector<std::byte> actions) {
+    assert(node < Nodes.size() && Nodes[node].Parent);
     DropDescendants(*this, node);
     auto &n = Nodes[node];
     if (n.Hot) Release(*n.Hot);
@@ -812,14 +845,14 @@ int History::Replace(int node, std::vector<std::byte> actions) {
     return node;
 }
 
-void History::Navigate(int node) {
-    if (node == Present || node < 0 || node >= int(Nodes.size())) return;
+void History::Navigate(uint32_t node) {
+    if (node == Present || node >= Nodes.size()) return;
     auto original = Pin();
-    const int origin = StateOrigin(*this, node);
+    const auto origin = StateOrigin(*this, node);
     std::expected<void, std::string> restored;
-    if (origin >= 0) {
-        restored = RestoreNode(*this, origin);
-        if (restored && !Nodes[origin].Hot) Nodes[origin].Hot = Pin();
+    if (origin) {
+        restored = RestoreNode(*this, *origin);
+        if (restored && !Nodes[*origin].Hot) Nodes[*origin].Hot = Pin();
     }
     if (restored) restored = ReplayPath(*this, origin, node);
     if (restored) {
@@ -833,12 +866,12 @@ void History::Navigate(int node) {
 }
 
 void History::Revert() {
-    assert(Present >= 0 && Nodes[Present].Hot);
-    Restore(*Nodes[Present].Hot);
+    assert(Present && Nodes[*Present].Hot);
+    Restore(*Nodes[*Present].Hot);
 }
 
 bool History::Save() {
-    AppendTreeRecord(*this, RecordKind::Navigate, Present, {});
+    if (Present) AppendTreeRecord(*this, RecordKind::Navigate, Present, {});
     return CheckIO(*this, Flush(*this));
 }
 
@@ -853,22 +886,22 @@ bool History::Clear(const HistoryPosition *saved) {
         root.Stamps = saved->Stamps;
         root.Roots = saved->Roots;
     }
-    const int current = int(retained.size());
+    const auto current = uint32_t(retained.size());
     auto &live = retained.emplace_back();
     live.Label = current ? "Current" : "Root";
-    live.Parent = current - 1;
+    if (current) live.Parent = 0;
     live.Depth = current;
     live.Hot = Pin();
     live.Stamps = std::move(stamps);
     for (size_t i = 0; i < Tracks.size(); ++i) live.Roots.push_back(BuildManifest(*this, i));
     auto payload = NodePayload(live);
     if (current) PutState(payload, saved->Stamps, saved->Roots);
-    AppendTreeRecord(*this, RecordKind::Root, -1, payload);
+    AppendTreeRecord(*this, RecordKind::Root, std::nullopt, payload);
     if (!CheckIO(*this, Flush(*this))) {
         Release(*live.Hot);
         return false;
     }
-    for (int i = 0; i < int(Nodes.size()); ++i) ReleaseNode(*this, i);
+    for (auto i = uint32_t{0}; i < Nodes.size(); ++i) ReleaseNode(*this, i);
     Nodes = std::move(retained);
     VisitCounter = 0;
     ++Revision;
@@ -877,27 +910,28 @@ bool History::Clear(const HistoryPosition *saved) {
 }
 
 void History::Evict(uint64_t cap) {
-    if (OwnedBytes(*this) <= cap) return;
-    std::vector<int> protected_nodes;
-    for (int n = Present, k = 0; n >= 0 && k <= UndoWindow; n = Nodes[n].Parent, ++k) {
-        protected_nodes.push_back(n);
-        if (Nodes[n].ReplayBaseline) break;
+    if (!Present || OwnedBytes(*this) <= cap) return;
+    std::vector<uint32_t> protected_nodes;
+    auto node = Present;
+    for (auto k = uint32_t{0}; node && k <= UndoWindow; node = Nodes[*node].Parent, ++k) {
+        protected_nodes.push_back(*node);
+        if (Nodes[*node].ReplayBaseline) break;
     }
-    std::vector<int> victims;
-    for (int i = 0; i < int(Nodes.size()); ++i) {
+    std::vector<uint32_t> victims;
+    for (auto i = uint32_t{0}; i < Nodes.size(); ++i) {
         if (!Nodes[i].Hot) continue;
         if (std::find(protected_nodes.begin(), protected_nodes.end(), i) != protected_nodes.end()) continue;
         victims.push_back(i);
     }
     if (victims.empty() || !CheckIO(*this, Flush(*this))) return;
-    std::vector<int> distance(Nodes.size());
-    for (const int v : victims) distance[v] = TreeDistance(*this, v, Present);
+    std::vector<uint32_t> distance(Nodes.size());
+    for (const auto v : victims) distance[v] = TreeDistance(*this, v, *Present);
     // Evict farthest nodes first, breaking ties by least recent visit.
-    std::sort(victims.begin(), victims.end(), [&](int a, int b) {
+    std::sort(victims.begin(), victims.end(), [&](auto a, auto b) {
         if (distance[a] != distance[b]) return distance[a] > distance[b];
         return Nodes[a].LastVisited < Nodes[b].LastVisited;
     });
-    for (const int victim : victims) {
+    for (const auto victim : victims) {
         if (OwnedBytes(*this) <= cap) return;
         ReleaseNode(*this, victim);
     }
@@ -911,33 +945,33 @@ std::vector<std::byte> History::MaterializeLive() {
 }
 
 std::string History::Replay() {
-    if (Present < 0) return "no present node";
+    if (!Present) return "no present node";
     auto original = Pin();
-    std::vector<int> path;
-    int baseline = Present;
+    std::vector<uint32_t> path;
+    auto baseline = *Present;
     while (!Nodes[baseline].ReplayBaseline) {
         path.push_back(baseline);
-        baseline = Nodes[baseline].Parent;
+        baseline = *Nodes[baseline].Parent;
     }
     std::string diff;
     if (const auto restored = RestoreNode(*this, baseline); !restored) diff = restored.error();
     for (auto it = path.rbegin(); diff.empty() && it != path.rend(); ++it) diff = ReplayStep(*this, Nodes[*it]);
     if (diff.empty()) {
-        if (Nodes[Present].Hot) Adopt(*this, *Nodes[Present].Hot);
-        else Nodes[Present].Hot = Pin();
-        SetPresent(*this, Present);
+        if (Nodes[*Present].Hot) Adopt(*this, *Nodes[*Present].Hot);
+        else Nodes[*Present].Hot = Pin();
+        SetPresent(*this, *Present);
     } else Restore(original);
     Release(original);
     return diff;
 }
 
 std::string History::ValidateReplay() {
-    if (Present < 0) return "no present node";
-    if (Nodes[Present].ReplayBaseline) return {};
-    assert(Nodes[Present].Hot);
-    const auto &n = Nodes[Present];
+    if (!Present) return "no present node";
+    if (Nodes[*Present].ReplayBaseline) return {};
+    assert(Nodes[*Present].Hot);
+    const auto &n = Nodes[*Present];
     std::string diff;
-    if (const auto restored = RestoreNode(*this, n.Parent); !restored) diff = restored.error();
+    if (const auto restored = RestoreNode(*this, *n.Parent); !restored) diff = restored.error();
     if (diff.empty()) diff = ReplayStep(*this, n);
     Restore(*n.Hot);
     return diff;
@@ -965,11 +999,12 @@ bool History::Check(std::string &why) const {
 
 bool History::Audit(std::string &why) { return Check(why) && CheckHashes(*this, why); }
 
-int History::FindPosition(const HistoryPosition &position) const {
+std::optional<uint32_t> History::FindPosition(const HistoryPosition &position) const {
     const auto matches = [&](const HistoryNode &node) { return node.Stamps == position.Stamps && node.Roots == position.Roots; };
-    if (position.Node >= 0 && position.Node < int(Nodes.size()) && matches(Nodes[position.Node])) return position.Node;
+    if (position.Node && *position.Node < Nodes.size() && matches(Nodes[*position.Node])) return position.Node;
     const auto it = std::ranges::find_if(Nodes, matches);
-    return it == Nodes.end() ? -1 : int(it - Nodes.begin());
+    if (it == Nodes.end()) return std::nullopt;
+    return uint32_t(it - Nodes.begin());
 }
 
 bool History::Open(const std::filesystem::path &dir, const HistoryPosition *position) {
@@ -983,9 +1018,9 @@ bool History::Open(const std::filesystem::path &dir, const HistoryPosition *posi
         return CheckIO(*this, "cannot open project: invalid format or missing or corrupt records");
     if (position) candidate.Present = candidate.FindPosition(*position);
     // The present node replays from its nearest ancestor with state, which loads from the content logs.
-    const int origin = candidate.Present < 0 ? -1 : StateOrigin(candidate, candidate.Present);
+    const auto origin = candidate.Present ? StateOrigin(candidate, *candidate.Present) : std::nullopt;
     LoadPlan plan;
-    if (candidate.Present < 0 || (origin >= 0 && !PrepareLoad(candidate, origin, plan)))
+    if (!candidate.Present || (origin && !PrepareLoad(candidate, *origin, plan)))
         return CheckIO(*this, "cannot restore project position: missing or corrupt records");
     if (pages) {
         // Truncate incomplete records after validating the target state.
@@ -998,17 +1033,17 @@ bool History::Open(const std::filesystem::path &dir, const HistoryPosition *posi
     if (!pages) {
         // The actions log becomes a tree log of nodes without state.
         Append(candidate, FileTree, std::as_bytes(std::span{&TreeMagic, 1u}));
-        for (int i = 0; i < int(candidate.Nodes.size()); ++i) AppendTreeRecord(candidate, i ? RecordKind::Action : RecordKind::Root, candidate.Nodes[i].Parent, NodePayload(candidate.Nodes[i]));
+        for (auto i = uint32_t{0}; i < candidate.Nodes.size(); ++i) AppendTreeRecord(candidate, i ? RecordKind::Action : RecordKind::Root, candidate.Nodes[i].Parent, NodePayload(candidate.Nodes[i]));
         AppendTreeRecord(candidate, RecordKind::Navigate, candidate.Present, {});
     }
     auto original = Pin();
     std::expected<void, std::string> restored;
-    if (origin >= 0) {
-        restored = ApplyLoad(candidate, origin, plan);
-        if (restored) candidate.Nodes[origin].Hot = candidate.Pin();
+    if (origin) {
+        restored = ApplyLoad(candidate, *origin, plan);
+        if (restored) candidate.Nodes[*origin].Hot = candidate.Pin();
     }
-    if (restored) restored = ReplayPath(candidate, origin, candidate.Present);
-    if (restored) SetPresent(candidate, candidate.Present);
+    if (restored) restored = ReplayPath(candidate, origin, *candidate.Present);
+    if (restored) SetPresent(candidate, *candidate.Present);
     const bool adopted = restored && AdoptProject(*this, candidate);
     if (!adopted) {
         if (!restored) AddIntegrityError(*this, restored.error());
@@ -1021,19 +1056,20 @@ bool History::Open(const std::filesystem::path &dir, const HistoryPosition *posi
     return true;
 }
 
-std::expected<std::vector<int>, std::string> History::WriteActions(const std::filesystem::path &path) const {
+std::expected<std::vector<uint32_t>, std::string> History::WriteActions(const std::filesystem::path &path) const {
     if (Nodes.empty() || Nodes[0].Actions.empty()) return std::unexpected{"the history starts from a cleared state that no recorded actions rebuild"};
-    std::vector<int> kept{0};
+    std::vector<uint32_t> kept{0};
     for (size_t i = 0; i < kept.size(); ++i) kept.append_range(Nodes[kept[i]].Children);
     std::ranges::sort(kept);
-    std::vector<int> ids(Nodes.size(), -1);
-    for (int i = 0; i < int(kept.size()); ++i) ids[kept[i]] = i;
+    std::vector<std::optional<uint32_t>> ids(Nodes.size());
+    for (auto i = uint32_t{0}; i < kept.size(); ++i) ids[kept[i]] = i;
+    if (!Present || !ids[*Present]) return std::unexpected{"the current history node is not reachable"};
     std::vector<std::byte> out;
     Put(out, ActionsMagic);
     Put(out, uint32_t(kept.size()));
-    Put(out, int32_t(ids[Present]));
-    for (const int id : kept) {
-        Put(out, int32_t(id ? ids[Nodes[id].Parent] : -1));
+    Put(out, *ids[*Present]);
+    for (const auto id : kept) {
+        Put(out, Nodes[id].Parent ? ids[*Nodes[id].Parent] : std::nullopt);
         PutActions(out, Nodes[id]);
     }
     std::ofstream file{path, std::ios::binary | std::ios::trunc};

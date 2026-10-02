@@ -282,15 +282,15 @@ void TestHistoryAgainstModel() {
     const TestDir dir{"projectstore_model"};
     ToyApp app;
     expect(app.H.Begin(dir));
-    std::map<int, decltype(app.State())> expected{{0, app.State()}};
+    std::map<uint32_t, decltype(app.State())> expected{{0, app.State()}};
     std::mt19937 rng{19};
     for (uint32_t seed = 1; seed <= 80; ++seed) {
         if (seed % 7 == 0) app.H.Navigate(rng() % app.H.Nodes.size());
-        expect(app.State() == expected.at(app.H.Present));
+        expect(app.State() == expected.at(*app.H.Present));
         app.Step(seed);
-        expected.emplace(app.H.Present, app.State());
-        expect(app.State() == expected.at(app.H.Present));
-        const auto &roots = app.H.Nodes[app.H.Present].Roots;
+        expected.emplace(*app.H.Present, app.State());
+        expect(app.State() == expected.at(*app.H.Present));
+        const auto &roots = app.H.Nodes[*app.H.Present].Roots;
         expect(roots[0] == RebuiltManifest(app.Buf));
         expect(roots[1] == RebuiltManifest(app.PoolRecords));
     }
@@ -299,7 +299,7 @@ void TestHistoryAgainstModel() {
         if (pass == 2) {
             expect(app.H.Close());
             expect(app.H.Open(dir));
-            expect(app.State() == expected.at(app.H.Present));
+            expect(app.State() == expected.at(*app.H.Present));
         }
         for (const auto &[node, state] : expected) {
             if (pass) {
@@ -323,7 +323,7 @@ void TestHistoryAgainstModel() {
     }
     app.Apply(ToyApp::Encode(999));
     app.H.Revert();
-    expect(app.State() == expected.at(app.H.Present));
+    expect(app.State() == expected.at(*app.H.Present));
     // Verify that the independent audit detects an uncaptured write.
     app.Buf.Resize(64);
     app.Buf.Settle();
@@ -340,9 +340,9 @@ void TestCommitIdentity() {
     app.H.Begin(dir);
     constexpr uint32_t Fill1 = 0x80000000u | 1, Fill2 = 0x80000000u | 2;
     app.Step(Fill1);
-    const int a = app.H.Present;
+    const auto a = *app.H.Present;
     app.Step(Fill2);
-    const int b = app.H.Present;
+    const auto b = *app.H.Present;
     expect(a != b);
     const auto count = app.H.Nodes.size();
     app.Step(Fill2);
@@ -385,13 +385,13 @@ void TestReplace() {
     ToyApp app;
     app.H.Begin(dir);
     app.Step(1);
-    const int a = app.H.Present;
+    const auto a = *app.H.Present;
     app.Step(2);
-    const int b = app.H.Present;
+    const auto b = *app.H.Present;
     app.Step(3);
-    const int c = app.H.Present;
+    const auto c = *app.H.Present;
     app.Step(4);
-    const int d = app.H.Present;
+    const auto d = *app.H.Present;
     app.H.Navigate(a);
     const auto a_state = app.State();
     app.Apply(ToyApp::Encode(5));
@@ -400,6 +400,7 @@ void TestReplace() {
     expect(app.H.Present == b);
     expect(app.H.Nodes.size() == 5u);
     expect(app.H.Nodes[b].Children.empty());
+    expect(!app.H.CanRedo());
     expect(app.H.Nodes[a].Children == std::vector{b});
     expect(!app.H.Nodes[c].Hot && !app.H.Nodes[d].Hot);
     app.H.Navigate(a);
@@ -413,6 +414,7 @@ void TestReplace() {
     expect(app.H.Open(dir));
     expect(app.H.Present == b);
     expect(app.H.Nodes[b].Children.empty());
+    expect(!app.H.CanRedo());
     app.H.Navigate(a);
     app.H.Navigate(b);
     expect(app.State() == replaced);
@@ -495,20 +497,20 @@ void TestLogOpenFailure() {
 // Truncate records used only by the final committed step.
 void TestTornTailRecovery() {
     const TestDir dir{"projectstore_torn"};
-    std::map<int, std::pair<std::vector<std::byte>, ToyApp::Values>> expected;
-    int last_node = -1;
+    std::map<uint32_t, std::pair<std::vector<std::byte>, ToyApp::Values>> expected;
+    std::optional<uint32_t> last_node;
     {
         ToyApp app;
         app.H.Begin(dir);
         expected[0] = app.State();
         for (uint32_t s = 1; s <= 8; ++s) {
             app.Step(s);
-            expected[app.H.Present] = app.State();
+            expected[*app.H.Present] = app.State();
         }
         // Use unique data to make the final leaf record exclusive to this node.
         app.Step(0x80000000u | 42);
         last_node = app.H.Present;
-        expected[last_node] = app.State();
+        expected[*last_node] = app.State();
         app.H.Save();
         app.H.Close();
     }
@@ -536,8 +538,8 @@ void TestTornTailRecovery() {
         ToyApp app;
         expect(app.H.Open(dir));
         expect(app.H.Nodes.size() == expected.size() - 1);
-        const auto lost = expected.at(last_node);
-        expected.erase(last_node);
+        const auto lost = expected.at(*last_node);
+        expected.erase(*last_node);
         for (const auto &[node, state] : expected) {
             app.H.Navigate(node);
             expect(app.State() == state);
@@ -547,7 +549,7 @@ void TestTornTailRecovery() {
         app.Step(0x80000000u | 42);
         app.H.Navigate(0);
         app.H.Evict(0);
-        app.H.Navigate(last_node);
+        app.H.Navigate(*last_node);
         expect(app.H.Present == last_node);
         expect(app.State() == lost);
         expect(app.H.TakeIntegrityError().empty());
@@ -564,8 +566,8 @@ void TestClearHistory() {
     ToyApp app;
     expect(app.H.Begin(dir));
     app.Step(1);
-    const auto &saved_node = app.H.Nodes[app.H.Present];
-    const HistoryPosition saved{-1, saved_node.Stamps, saved_node.Roots};
+    const auto &saved_node = app.H.Nodes[*app.H.Present];
+    const HistoryPosition saved{std::nullopt, saved_node.Stamps, saved_node.Roots};
     const auto saved_state = app.State();
     app.Step(2);
     const auto baseline = app.State();

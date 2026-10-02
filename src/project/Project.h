@@ -43,17 +43,17 @@ struct Project {
     bool ClearHistory();
     bool Close();
 
-    int Do(action::Action, std::string label = {});
+    std::optional<uint32_t> Do(action::Action, std::string label = {});
     void Frame(action::Drained);
     void Enqueue(action::Action a) { Deferred.push_back(std::move(a)); }
     bool HasStaged() const { return GestureBase.has_value(); }
     void CancelGesture();
     void Settle(EventPass = EventPass::Frame);
-    void Navigate(int node);
+    void Navigate(uint32_t node);
     void Undo();
     void Redo();
     bool Replay();
-    void RequestNavigate(int node) { Navigation = node; }
+    void RequestNavigate(uint32_t node) { Navigation = node; }
     bool Audit(std::string &why);
 
     store::History History;
@@ -84,20 +84,20 @@ struct Project {
     // The action being applied is a staged preview, so mesh operators draw their output without replacing the mesh.
     bool Previewing{false};
     std::unique_ptr<action::mesh::InsetPreviewCache> InsetPreview;
-    std::optional<int> Navigation;
-    std::optional<int> Editing; // The node the open gesture replaces on commit
+    std::optional<uint32_t> Navigation;
+    std::optional<uint32_t> Editing; // The node the open gesture replaces on commit
 
     struct EditDraft {
-        int Node;
+        uint32_t Node;
         uint64_t Revision; // The history revision the actions were decoded at.
         std::vector<RecordedAction> RecordedActions;
     };
     std::optional<EditDraft> Draft;
     bool RestageRequested{false};
     // The draft of `node`, decoded anew when the node or the history changed.
-    EditDraft &DraftOf(int node);
+    EditDraft &DraftOf(uint32_t node);
     // Whether any of the node's actions has parameters to edit.
-    bool Editable(int node) const;
+    bool Editable(uint32_t node) const;
     // Re-runs the draft on its node's parent at frame end.
     // The commit that follows replaces a leaf node and forks a node with children.
     void RequestRestage() { RestageRequested = true; }
@@ -107,12 +107,12 @@ struct Project {
     bool Record(action::Action, EventPass, bool staged = false);
     std::expected<void, std::string> RunRecorded(std::span<const RecordedAction>);
     // Records the actions as a new node, replacing `replace` when it has no children and adding a sibling otherwise.
-    int Commit(std::string label, std::optional<int> replace = {});
+    uint32_t Commit(std::string label, std::optional<uint32_t> replace = {});
     void FinishGesture(EventPass);
     // Removes the drag-start records a gesture's updates made.
     void EndGesture(EventPass);
     // Moves to `node`'s parent so the open gesture replaces the node on commit.
-    bool EditNode(int node);
+    bool EditNode(uint32_t node);
     void RestageDraft();
     // Keys changed animated properties before a user commit while recording.
     void RecordKeys();

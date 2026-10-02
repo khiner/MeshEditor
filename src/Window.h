@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,14 +32,17 @@ struct Window {
 };
 
 struct HistoryRow {
-    int Node;
+    uint32_t Node;
+    uint32_t Depth; // The original continuation stays inline; later branches nest.
     bool Editable; // Whether any of the node's actions has parameters.
+    uint32_t Rails{}; // Ancestor forks with another branch below this row.
 };
 struct HistoryWindow : Window {
     bool ValidateRequested{false};
     uint64_t TreeRevision{UINT64_MAX};
     std::vector<HistoryRow> Rows{};
-    int EditorNode{-1}; // The node whose editor the open state belongs to.
+    std::vector<std::optional<uint32_t>> RowByNode{};
+    std::optional<uint32_t> EditorNode; // The node whose editor the open state belongs to.
     bool EditorOpen{true};
 };
 

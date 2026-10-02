@@ -306,7 +306,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         // Include the renderer's first meshlet and LOD publication in the
         // baseline used for replay, as well as the edit selection.
         p.History.Commit("benchmark selection", {});
-        const auto base = p.History.Present;
+        const auto base = *p.History.Present;
         const auto allocated = [&] { return uint64_t(r.Context.get<const mtl::Context>().Device->currentAllocatedSize()); };
         const auto row = [&](std::string_view name, double ms, size_t count) {
             std::printf("mesh,%u,%u,%zu,%.*s,%.6f,%llu\n", vertices, faces, count, int(name.size()), name.data(), ms, (unsigned long long)allocated());
@@ -374,7 +374,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             if (after.GetStoreId() != original.GetStoreId()) return std::unexpected{"spatial cut replaced its canonical mesh"};
             row("spatial_cut", elapsed, after.FaceCount() - faces);
             if (std::getenv("MESHEDITOR_SPATIAL_VERIFY")) {
-                const auto edited = p.History.Present;
+                const auto edited = *p.History.Present;
                 const auto changed = after.FaceCount();
                 draw("spatial_render_commit", changed - faces);
                 const auto undo_ms = Milliseconds([&] { p.Navigate(base); });
@@ -451,7 +451,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 } else if (single_edit == SingleEdit::SharpFace) toggle_sharp();
                 else p.Do(action::MakeAction(action::mesh::Bevel{.Width = 0.01f, .Vertices = single_edit == SingleEdit::BevelVertex}));
             });
-            const auto edited = p.History.Present;
+            const auto edited = *p.History.Present;
             const auto edited_counts = counts();
             if (GetMesh(r, entity).GetStoreId() != original.GetStoreId()) return std::unexpected{"operator replaced the canonical mesh"};
             if (filling && (edited_counts[1] != faces)) return std::unexpected{"fill did not restore the deleted face"};
@@ -512,7 +512,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             if (!warm_preview_ms.empty()) row("warm_preview_p95", P95(warm_preview_ms), selected_count);
             edit_phase.second = Milliseconds([&] { action::Commit(); p.Frame(action::Drain()); });
         }
-        const auto edited = p.History.Present;
+        const auto edited = *p.History.Present;
         if (staged && edited == base) return std::unexpected{"edit was not committed"};
         const auto edited_counts = counts();
         const auto undo_ms = Milliseconds([&] { p.Navigate(base); });

@@ -50,10 +50,10 @@ void BenchScene(uint32_t slices, bool render) {
         }
     };
     finish_frame();
-    const auto base = p.History.Present;
+    const auto base = *p.History.Present;
     const auto mesh = GetMesh(r, GetActiveMeshEntity(r));
     const auto vertices = mesh.VertexCount();
-    std::vector<int> nodes;
+    std::vector<uint32_t> nodes;
     std::vector<double> edits, hot, cold;
     for (int i = 0; i < 30; ++i) {
         edits.push_back(Ms([&] {
@@ -63,11 +63,11 @@ void BenchScene(uint32_t slices, bool render) {
             p.Frame(action::Drain());
             finish_frame();
         }));
-        nodes.push_back(p.History.Present);
+        nodes.push_back(*p.History.Present);
         expect(nodes.back() != (i ? nodes[i - 1] : base));
     }
     expect(p.Save());
-    const auto navigate = [&](int node) {
+    const auto navigate = [&](uint32_t node) {
         p.Navigate(node);
         finish_frame();
     };
@@ -127,7 +127,7 @@ int main() {
         history.Navigate(0);
         history.Evict(0);
         history.Navigate(30);
-        for (int node = 29; node > 0; --node) {
+        for (auto node = uint32_t{29}; node > 0; --node) {
             expect(!history.Nodes[node].Hot);
             cold.push_back(Ms([&] { history.Navigate(node); }));
             expect(history.Present == node);
