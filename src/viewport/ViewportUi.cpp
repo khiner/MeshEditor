@@ -428,7 +428,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
     const auto active_entity = FindActiveEntity(r);
     const bool has_frozen_selected = !r.view<const Selected, const ScaleLocked>().empty();
     const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
-        any_of(selection::GetSelectedMeshEntities(r), [&](state::Entity mesh_entity) { return selection::HasScaleLockedInstance(r, mesh_entity); });
+        any_of(selection::GetSelectedMeshEntities(r), [scale_locked = selection::ScaleLockedMeshEntities(r)](state::Entity mesh_entity) { return scale_locked.contains(mesh_entity); });
     const bool transform_shortcuts_enabled = !edit_transform_locked;
     const bool scale_shortcut_enabled = transform_shortcuts_enabled && !has_frozen_selected;
     // Route shortcuts globally while preserving ImGui ownership for active widgets, navigation, and text input.
@@ -657,7 +657,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
         const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
         const bool has_frozen_selected = !r.view<const Selected, const ScaleLocked>().empty();
         const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
-            any_of(selection::GetSelectedMeshEntities(r), [&](state::Entity mesh_entity) { return selection::HasScaleLockedInstance(r, mesh_entity); });
+            any_of(selection::GetSelectedMeshEntities(r), [scale_locked = selection::ScaleLockedMeshEntities(r)](state::Entity mesh_entity) { return scale_locked.contains(mesh_entity); });
         const bool transform_enabled = !edit_transform_locked;
         const bool scale_enabled = transform_enabled && !has_frozen_selected;
 

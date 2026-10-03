@@ -82,6 +82,6 @@ std::vector<uint32_t> GpuBuffers::RestoreMeshBindings(state::Scene &r) {
     if (!MeshHistory) return {};
     auto ids = MeshHistory->TakeChanged();
     for (const auto id : ids) RefreshMeshBinding(r, id);
-    PreludeStale=true;
+    if (!ids.empty()) PreludeStale=true;
     return ids;
 }

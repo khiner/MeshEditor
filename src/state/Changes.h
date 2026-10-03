@@ -13,6 +13,7 @@ enum class Change : uint8_t {
     MeshActiveElement,
     InteractionMode,
     TransformPending,
+    TransformStart,
     TransformEnd,
     TransformDirty,
     BonePose, // A bone's pose delta changed.
@@ -22,6 +23,7 @@ enum class Change : uint8_t {
     MeshMaterial,
     TetMesh,
     NewBufferEntity,
+    InstanceVisibility, // An Instance or Hidden change that the settle pass derives RenderInstance from.
     RenderInstanceCreated,
     RenderInstanceDestroyed, // A live entity lost its render instance.
     // Sound vertices

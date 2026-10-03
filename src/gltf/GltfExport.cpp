@@ -369,10 +369,10 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return roots;
     };
 
-    // KHR_node_visibility: a node is hidden iff it has no RenderInstance and every child is hidden too.
+    // KHR_node_visibility: a node is hidden iff it is not a shown Instance and every child is hidden too.
     // Stubs are unreachable from scene roots, so they default to not-hidden and emit no spurious visible:false.
     // A post-order walk from the roots fills Hidden so parents can check children without recursion or multi-pass.
-    // Nodes only in non-active scenes count as not-hidden, since their missing RenderInstance is a switch-time artifact, not a user-set hide.
+    // Nodes only in non-active scenes count as not-hidden, since their Hidden is a scene-switch artifact, not a user-set hide.
     {
         const auto node_in_active_scene = [&](state::Entity entity) {
             const auto *sm = entity != state::Null ? r.try_get<const SceneMembership>(entity) : nullptr;
@@ -380,7 +380,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         };
         const auto dfs = [&](this const auto &self, uint32_t ni) -> bool {
             auto &node = nodes[ni];
-            bool hidden = node.Entity != state::Null && node_in_active_scene(node.Entity) && !r.all_of<RenderInstance>(node.Entity);
+            bool hidden = node.Entity != state::Null && node_in_active_scene(node.Entity) && (!r.all_of<Instance>(node.Entity) || r.all_of<Hidden>(node.Entity));
             for (const auto child : node.Children) {
                 if (!self(child)) hidden = false;
             }

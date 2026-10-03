@@ -237,70 +237,84 @@ void CommitPool(GpuBuffers &buffers, const PoolBuild &pool, std::vector<uint32_t
 }
 } // namespace
 
-void RepairDirtyClusterGroups(state::Scene &r, MeshBuffers &owner) {
+void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities) {
     auto &buffers = r.Context.get<GpuBuffers>();
-    if (!buffers.ActiveMeshlets.Count(owner.DirtyGroupRoot)) {
+    // One owner's stale closure, the coarse clusters it retires and its pools by primitive.
+    struct OwnerRepair {
+        state::Entity Entity;
+        std::vector<uint32_t> Closure, Removed;
+        std::map<uint32_t, PoolBuild> Pools;
+    };
+    std::vector<OwnerRepair> repairs;
+    for (const auto entity : entities) {
+        auto &owner = MeshBuffersOf(r, entity);
+        if (buffers.ActiveMeshlets.Count(owner.DirtyGroupRoot)) {
+            repairs.push_back({.Entity = entity});
+            continue;
+        }
         buffers.ActiveMeshlets.Release(owner.DirtyGroupRoot);
         owner.DirtyGroupRoot = InvalidOffset;
-        return;
     }
+    if (repairs.empty()) return;
     const profile::CpuScope scope{"ClusterLodRepair"};
     const auto &meshes = r.Context.get<const MeshStore>();
-    const Mesh mesh{meshes, owner.StoreId};
-    std::vector<uint32_t> seeds;
-    buffers.ActiveMeshlets.ForEach(owner.DirtyGroupRoot, [&](uint32_t group) { seeds.push_back(group); });
-    std::unordered_map<uint32_t, uint32_t> levels;
-    std::map<uint32_t, std::vector<uint32_t>> by_level;
-    const auto closure = ClusterGroupClosure(buffers, seeds);
-    for (const auto group : closure) by_level[GroupLevel(buffers, group, levels)].push_back(group);
-    profile::RecordCounter("LodRepairGroups", closure.size());
-
-    // Every stale group retires with the clusters it simplified to.
-    std::vector<uint32_t> removed;
-    for (const auto group : closure) {
-        const auto links = buffers.GroupLinks.Get({group, 1u})[0];
-        const auto proxies = buffers.GroupClusterIds.Get({links.ProxyOffset, links.ProxyCount});
-        removed.insert(removed.end(), proxies.begin(), proxies.end());
-    }
-    // Each primitive's pool re-partitions every level as a full build does, and its kept members join at their groups' levels.
-    std::map<uint32_t, PoolBuild> pools;
     {
         const profile::CpuScope stage{"LodRepairGather"};
         const auto records = buffers.Meshlets.Buffer.GetSpan<MeshletRecord>();
-        const auto first_level = by_level.begin()->first, level_count = by_level.rbegin()->first - first_level + 1u;
-        const auto pool_of = [&](uint32_t id) -> PoolBuild & {
-            auto &pool = pools[records[id].Primitive];
-            pool.Primitive = records[id].Primitive;
-            pool.Replaced.resize(level_count, InvalidOffset);
-            return pool;
-        };
-        // Levels ascend, so each pool's members arrive in level order.
-        for (const auto &[level, groups] : by_level) {
-            for (const auto group : groups) {
+        for (auto &repair : repairs) {
+            const auto &owner = MeshBuffersOf(r, repair.Entity);
+            const Mesh mesh{meshes, owner.StoreId};
+            std::vector<uint32_t> seeds;
+            buffers.ActiveMeshlets.ForEach(owner.DirtyGroupRoot, [&](uint32_t group) { seeds.push_back(group); });
+            std::unordered_map<uint32_t, uint32_t> levels;
+            std::map<uint32_t, std::vector<uint32_t>> by_level;
+            repair.Closure = ClusterGroupClosure(buffers, seeds);
+            for (const auto group : repair.Closure) by_level[GroupLevel(buffers, group, levels)].push_back(group);
+            profile::RecordCounter("LodRepairGroups", repair.Closure.size());
+            // Every stale group retires with the clusters it simplified to.
+            for (const auto group : repair.Closure) {
                 const auto links = buffers.GroupLinks.Get({group, 1u})[0];
-                for (const auto id : buffers.GroupClusterIds.Get({links.ProxyOffset, links.ProxyCount})) {
-                    auto &replaced = pool_of(id).Replaced[level - first_level];
-                    replaced = std::min(replaced, id);
-                }
-                // A stale group's error is infinite, so a member simplified from one retires with it.
-                for (const auto id : buffers.GroupClusterIds.Get({links.MemberOffset, links.MemberCount})) {
-                    const auto refined = records[id].RefinedGroup;
-                    if (refined != InvalidOffset && std::isinf(buffers.ClusterGroups.Get({refined, 1u})[0].Error)) continue;
-                    auto &pool = pool_of(id);
-                    pool.Members.push_back(id);
-                    pool.Levels.push_back(level - first_level);
+                const auto proxies = buffers.GroupClusterIds.Get({links.ProxyOffset, links.ProxyCount});
+                repair.Removed.insert(repair.Removed.end(), proxies.begin(), proxies.end());
+            }
+            // Each primitive's pool re-partitions every level as a full build does, and its kept members join at their groups' levels.
+            auto &pools = repair.Pools;
+            const auto first_level = by_level.begin()->first, level_count = by_level.rbegin()->first - first_level + 1u;
+            const auto pool_of = [&](uint32_t id) -> PoolBuild & {
+                auto &pool = pools[records[id].Primitive];
+                pool.Primitive = records[id].Primitive;
+                pool.Replaced.resize(level_count, InvalidOffset);
+                return pool;
+            };
+            // Levels ascend, so each pool's members arrive in level order.
+            for (const auto &[level, groups] : by_level) {
+                for (const auto group : groups) {
+                    const auto links = buffers.GroupLinks.Get({group, 1u})[0];
+                    for (const auto id : buffers.GroupClusterIds.Get({links.ProxyOffset, links.ProxyCount})) {
+                        auto &replaced = pool_of(id).Replaced[level - first_level];
+                        replaced = std::min(replaced, id);
+                    }
+                    // A stale group's error is infinite, so a member simplified from one retires with it.
+                    for (const auto id : buffers.GroupClusterIds.Get({links.MemberOffset, links.MemberCount})) {
+                        const auto refined = records[id].RefinedGroup;
+                        if (refined != InvalidOffset && std::isinf(buffers.ClusterGroups.Get({refined, 1u})[0].Error)) continue;
+                        auto &pool = pool_of(id);
+                        pool.Members.push_back(id);
+                        pool.Levels.push_back(level - first_level);
+                    }
                 }
             }
+            std::erase_if(pools, [](const auto &entry) { return entry.second.Members.empty(); });
+            for (auto &[primitive, pool] : pools) GatherPool(buffers, meshes, mesh, pool);
         }
-        std::erase_if(pools, [](const auto &entry) { return entry.second.Members.empty(); });
-        for (auto &[primitive, pool] : pools) GatherPool(buffers, meshes, mesh, pool);
     }
     {
         const profile::CpuScope stage{"LodRepairSimplify"};
         const auto vertex_corners = buffers.MeshletVertexCorners.Buffer.GetSpan<uint32_t>();
         const auto local_triangles = buffers.MeshletLocalTriangles.Buffer.GetSpan<uint8_t>();
         std::vector<PoolBuild *> work;
-        for (auto &[primitive, pool] : pools) work.push_back(&pool);
+        for (auto &repair : repairs)
+            for (auto &[primitive, pool] : repair.Pools) work.push_back(&pool);
         ParallelFor(uint32_t(work.size()), [&](uint32_t i) {
             auto &pool = *work[i];
             pool.Build = RebuildClusterLod(ClusterLodMesh{
@@ -314,48 +328,56 @@ void RepairDirtyClusterGroups(state::Scene &r, MeshBuffers &owner) {
             }, pool.Levels, pool.Scale);
         });
     }
-    std::vector<uint32_t> added, new_groups, touched;
-    {
-        const profile::CpuScope stage{"LodRepairCommit"};
-        for (const auto &[primitive, pool] : pools) {
-            CommitPool(buffers, pool, added, new_groups);
-            // The kept members joined new groups, so their leaves refit.
-            touched.insert(touched.end(), pool.Members.begin(), pool.Members.end());
+    for (const auto &repair : repairs) {
+        auto &owner = MeshBuffersOf(r, repair.Entity);
+        std::vector<uint32_t> added, new_groups, touched;
+        {
+            const profile::CpuScope stage{"LodRepairCommit"};
+            for (const auto &[primitive, pool] : repair.Pools) {
+                CommitPool(buffers, pool, added, new_groups);
+                // The kept members joined new groups, so their leaves refit.
+                touched.insert(touched.end(), pool.Members.begin(), pool.Members.end());
+            }
         }
+        const profile::CpuScope stage{"LodRepairPublish"};
+        std::ranges::sort(added);
+        std::array ownership{
+            MeshletIndexEdit{.Root = owner.MeshletRoot, .Added = added},
+            MeshletIndexEdit{.Root = owner.GroupRoot, .Added = new_groups, .Removed = repair.Closure},
+        };
+        buffers.ActiveMeshlets.Update(ownership);
+        owner.MeshletRoot = ownership[0].Root;
+        owner.GroupRoot = ownership[1].Root;
+        ++owner.MeshletRevision;
+        std::vector<uint32_t> blocks;
+        for (const auto id : added) if (blocks.empty() || blocks.back() != id / 256u) blocks.push_back(id / 256u);
+        buffers.PosedMeshletBounds.UpdateBlocks(owner.StoreId, owner.MeshletRevision, blocks,
+            [&](uint32_t block) { return buffers.ActiveMeshlets.HasBlock(owner.MeshletRoot, block); }, owner.RenderTopology);
+        std::vector<LodClusterRun> runs;
+        for (const auto id : added) {
+            const auto primitive = buffers.Meshlets.Get({id, 1u})[0].Primitive;
+            if (!runs.empty() && runs.back().First + runs.back().Count == id && runs.back().Primitive == primitive) ++runs.back().Count;
+            else runs.push_back({id, 1u, primitive, false});
+        }
+        EditLodNodes(r, chain, owner, repair.Removed, runs, touched);
     }
-    const profile::CpuScope stage{"LodRepairPublish"};
-    std::ranges::sort(added);
-    std::array ownership{
-        MeshletIndexEdit{.Root = owner.MeshletRoot, .Added = added},
-        MeshletIndexEdit{.Root = owner.GroupRoot, .Added = new_groups, .Removed = closure},
-    };
-    buffers.ActiveMeshlets.Update(ownership);
-    owner.MeshletRoot = ownership[0].Root;
-    owner.GroupRoot = ownership[1].Root;
-    ++owner.MeshletRevision;
-    std::vector<uint32_t> blocks;
-    for (const auto id : added) if (blocks.empty() || blocks.back() != id / 256u) blocks.push_back(id / 256u);
-    buffers.PosedMeshletBounds.UpdateBlocks(owner.StoreId, owner.MeshletRevision, blocks,
-        [&](uint32_t block) { return buffers.ActiveMeshlets.HasBlock(owner.MeshletRoot, block); }, owner.RenderTopology);
-    std::vector<LodClusterRun> runs;
-    for (const auto id : added) {
-        const auto primitive = buffers.Meshlets.Get({id, 1u})[0].Primitive;
-        if (!runs.empty() && runs.back().First + runs.back().Count == id && runs.back().Primitive == primitive) ++runs.back().Count;
-        else runs.push_back({id, 1u, primitive, false});
-    }
-    mtl::ComputeChain chain{buffers.Ctx};
-    EditLodNodes(r, chain, owner, removed, runs, touched);
-    chain.Submit();
-    RetireMeshletStorage(r, owner, removed);
-    std::vector<Range> runs_released, groups_released;
-    for (const auto group : closure) {
-        const auto links = buffers.GroupLinks.Get({group, 1u})[0];
-        runs_released.insert(runs_released.end(), {Range{links.MemberOffset, links.MemberCount}, Range{links.ProxyOffset, links.ProxyCount}});
-        groups_released.push_back({group, 1u});
-    }
-    buffers.GroupClusterIds.Release(std::move(runs_released));
-    buffers.ClusterGroups.Release(std::move(groups_released));
-    buffers.ActiveMeshlets.Release(owner.DirtyGroupRoot);
-    owner.DirtyGroupRoot = InvalidOffset;
-    buffers.PreludeStale = true;
+    // The retired clusters and groups stay allocated until the recorded refits complete.
+    chain.AfterSubmit([&r, repairs = std::move(repairs)] {
+        auto &buffers = r.Context.get<GpuBuffers>();
+        for (const auto &repair : repairs) {
+            auto &owner = MeshBuffersOf(r, repair.Entity);
+            RetireMeshletStorage(r, owner, repair.Removed);
+            std::vector<Range> runs_released, groups_released;
+            for (const auto group : repair.Closure) {
+                const auto links = buffers.GroupLinks.Get({group, 1u})[0];
+                runs_released.insert(runs_released.end(), {Range{links.MemberOffset, links.MemberCount}, Range{links.ProxyOffset, links.ProxyCount}});
+                groups_released.push_back({group, 1u});
+            }
+            buffers.GroupClusterIds.Release(std::move(runs_released));
+            buffers.ClusterGroups.Release(std::move(groups_released));
+            buffers.ActiveMeshlets.Release(owner.DirtyGroupRoot);
+            owner.DirtyGroupRoot = InvalidOffset;
+        }
+        buffers.PreludeStale = true;
+    });
 }

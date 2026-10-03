@@ -47,7 +47,7 @@ struct MeshTopologyJob {
     uint32_t ListOffset DEFAULT(InvalidOffset);
     uint32_t MorphTargetCount DEFAULT();
     uint32_t CollapseCount DEFAULT();
-    uint32_t CollapseVerticesSlot DEFAULT(InvalidSlot);
+    SlotOffset CollapseVertices DEFAULT(); // The selected vertex handles a collapse ranks, or none when it collapses every source vertex
     // Output mesh.
     uint32_t DstCornerOffset DEFAULT();
     ConnectivityRef DstConnectivity DEFAULT();
@@ -98,8 +98,8 @@ struct MeshTopologyJob {
     ElementWork RetainedNormalCorners DEFAULT();
     uint32_t RetainedNormalCornerCount DEFAULT();
     // Optional emitted-triangle ordinal -> original triangle, for local render ownership.
-    uint32_t DstTriangleSourceSlot DEFAULT(InvalidSlot);
+    SlotOffset DstTriangleSources DEFAULT();
     // Optional output-vertex basis for staged inset parameter updates.
-    uint32_t DstInsetBasisSlot DEFAULT(InvalidSlot);
+    SlotOffset DstInsetBasis DEFAULT();
 };
-static_assert(sizeof(MeshTopologyJob) == 628, "MeshTopologyJob size");
+static_assert(sizeof(MeshTopologyJob) == 640, "MeshTopologyJob size");

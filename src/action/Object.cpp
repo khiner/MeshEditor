@@ -40,7 +40,7 @@ namespace {
 void RegeneratePrimitive(state::Scene &r, state::Entity e) {
     const auto id=r.get<const MeshHandle>(e).StoreId;
     const bool was_flat = r.Context.get<const MeshStore>().GetFaceSharpnessSummary(id).All;
-    // Erasing MeshHandle fires on_destroy, releasing the old store entry.
+    // Erasing MeshHandle queues the old store entry for release in the settle pass.
     r.remove<MeshHandle>(e);
     const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(r.get<const PrimitiveShape>(e)), .FlatShaded = was_flat});
     r.emplace<MeshHandle>(e, MeshHandle{created.StoreId});
@@ -63,7 +63,8 @@ state::Entity CreateArmatureObject(state::Scene &r, MeshStore &meshes, state::En
     return entity;
 }
 
-state::Entity DuplicateOne(state::Scene &r, state::Entity e) {
+// A mesh instance's duplicate takes `clone`, its mesh's cloned store record.
+state::Entity DuplicateOne(state::Scene &r, state::Entity e, uint32_t clone) {
     auto &meshes = r.Context.get<MeshStore>();
     const ObjectCreateInfo create_info{
         .Name = std::format("{}_copy", GetName(r, e)),
@@ -94,16 +95,23 @@ state::Entity DuplicateOne(state::Scene &r, state::Entity e) {
     }
 
     const auto mesh_entity = r.get<Instance>(e).Entity;
-    const auto clone=meshes.CloneMesh(GetMesh(r,mesh_entity),GetMeshPipelines(r));
     const auto e_new = ::AddMesh(
         r, clone,
-        MeshInstanceCreateInfo{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = r.all_of<RenderInstance>(e)}
+        MeshInstanceCreateInfo{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = !r.all_of<Hidden>(e)}
     );
     if (auto *prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(e_new.first, *prim_shape);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new.second, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new.second, *bone_attachment);
     if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(e_new.second, r.Context.get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
     return e_new.second;
+}
+
+// The name without one trailing `_<digits>` suffix, which a duplicate renumbers.
+std::string_view NameStem(std::string_view name) {
+    const auto underscore = name.find_last_of('_');
+    if (underscore == std::string_view::npos || underscore == 0u || underscore + 1u == name.size()) return name;
+    const bool numbered = std::ranges::all_of(name.substr(underscore + 1u), [](char c) { return c >= '0' && c <= '9'; });
+    return numbered ? name.substr(0u, underscore) : name;
 }
 
 state::Entity DuplicateLinkedOne(state::Scene &r, state::Entity e) {
@@ -120,18 +128,11 @@ state::Entity DuplicateLinkedOne(state::Scene &r, state::Entity e) {
 
     const auto mesh_entity = r.get<Instance>(e).Entity;
     const auto e_new = r.create();
-    {
-        uint32_t instance_count{0}; // Count instances for naming (first duplicated instance is _1, etc.)
-        for (const auto [_, instance] : r.view<Instance>().each()) {
-            if (instance.Entity == mesh_entity) ++instance_count;
-        }
-        EmplaceUniqueName(r, e_new, std::format("{}_{}", GetName(r, e), instance_count));
-    }
+    EmplaceUniqueName(r, e_new, NameStem(GetName(r, e)));
     r.emplace<Instance>(e_new, mesh_entity);
     r.emplace<ObjectKind>(e_new, ObjectType::Mesh);
     const Transform t_new{r.get<const WorldTransform>(e)};
     r.emplace_or_replace<Transform>(e_new, t_new);
-    Show(r, e_new);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new, *bone_attachment);
     if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(e_new, r.Context.get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
@@ -177,18 +178,28 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         if (!(linked ? CanDuplicateLinked(r, viewport) : CanDuplicate(r, viewport))) return;
         const profile::CpuScope scope{linked ? "DuplicateLinked" : "Duplicate"};
         const auto entities = SortedEntities(r.view<Selected>());
+        // Every duplicated mesh instance's mesh clones in one batch, with its arenas reserved once.
+        std::vector<uint32_t> clones(entities.size(), InvalidOffset);
         if (!linked) {
-            // Pre-reserve arenas to avoid per-CloneMesh buffer growth.
-            for (const auto e : entities) {
+            std::vector<uint32_t> sources, cloned;
+            for (uint32_t i = 0u; i < entities.size(); ++i) {
+                const auto e = entities[i];
                 if (r.all_of<Instance>(e) && !r.all_of<BoneSubPartOf>(e)) {
                     const auto mesh_entity = r.get<Instance>(e).Entity;
-                    if (!r.all_of<ObjectExtrasTag>(mesh_entity) && HasMesh(r, mesh_entity)) meshes.PlanClone(GetMesh(r, mesh_entity));
+                    if (!r.all_of<ObjectExtrasTag>(mesh_entity) && HasMesh(r, mesh_entity)) {
+                        meshes.PlanClone(GetMesh(r, mesh_entity));
+                        sources.push_back(r.get<const MeshHandle>(mesh_entity).StoreId);
+                        cloned.push_back(i);
+                    }
                 }
             }
             meshes.CommitReserves();
+            const auto ids = meshes.CloneMeshes(sources, GetMeshPipelines(r));
+            for (uint32_t k = 0u; k < cloned.size(); ++k) clones[cloned[k]] = ids[k];
         }
-        for (const auto src : entities) {
-            const auto dup = linked ? DuplicateLinkedOne(r, src) : DuplicateOne(r, src);
+        for (uint32_t i = 0u; i < entities.size(); ++i) {
+            const auto src = entities[i];
+            const auto dup = linked ? DuplicateLinkedOne(r, src) : DuplicateOne(r, src, clones[i]);
             if (r.all_of<Active>(src)) {
                 r.remove<Active>(src);
                 r.emplace<Active>(dup);
@@ -264,12 +275,10 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](ParentToActive) {
                 const auto active = FindActiveEntity(r);
                 if (active == state::Null) return;
-                for (const auto e : r.view<Selected>()) {
-                    if (e != active) SetParentKeepWorld(r, e, active);
-                }
+                SetParentKeepWorld(r, r.view<const Selected>() | std::ranges::to<std::vector>(), active);
             },
             [&](ClearParent) {
-                for (const auto e : r.view<Selected>()) ::ClearParent(r, e);
+                ::ClearParents(r, r.view<const Selected>() | std::ranges::to<std::vector>());
             },
             [&](const AddEmpty &a) { ::AddEmpty(r, meshes, *a.Info); begin_translate(); },
             [&](const AddArmature &a) {

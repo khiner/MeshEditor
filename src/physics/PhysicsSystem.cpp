@@ -92,6 +92,10 @@ struct PhysicsState {
     bool CacheInvalid = false;
     std::map<state::Entity, physics::RbpBody> Bodies;
     std::vector<state::Entity> Entities;
+    // Destroyed bodies whose world bodies and shapes the next ProcessChanges removes.
+    std::set<state::Entity> RemovedBodies;
+    // Posed bodies with parents before children, rebuilt after input or body set changes.
+    std::optional<std::vector<state::Entity>> SampleOrder;
     std::map<state::Entity, rbp::CollisionMask> Masks;
     std::vector<rbp::SensorFollower> SensorFollowers;
     rbp::Index WorldAnchor = rbp::NoIndex;
@@ -221,15 +225,18 @@ SceneInput ReadScene(const PhysicsState &s, const state::Scene &r) {
     return input;
 }
 
-bool RequiresRebuild(const SceneInput &before, const SceneInput &after) {
-    if (before.Bodies.size() != after.Bodies.size() || before.Colliders.size() != after.Colliders.size()) return true;
-    for (const auto &[e, body] : after.Bodies) {
-        const auto old = before.Bodies.find(e);
-        if (old == before.Bodies.end() || old->second.Motion.has_value() != body.Motion.has_value() || old->second.Sensor != body.Sensor) return true;
+// Returns whether `after` changes a surviving body's kind or a collider's owner, or drops a body that was not destroyed.
+// Added bodies and colliders build in place, and destroyed bodies drain from the world.
+bool RequiresRebuild(const PhysicsState &s, const SceneInput &after) {
+    for (const auto &[e, body] : s.Input.Bodies) {
+        const auto next = after.Bodies.find(e);
+        if (next == after.Bodies.end()) {
+            if (!s.RemovedBodies.contains(e)) return true;
+        } else if (next->second.Motion.has_value() != body.Motion.has_value() || next->second.Sensor != body.Sensor) return true;
     }
     for (const auto &[e, leaf] : after.Colliders) {
-        const auto old = before.Colliders.find(e);
-        if (old == before.Colliders.end() || old->second.Owner != leaf.Owner) return true;
+        const auto old = s.Input.Colliders.find(e);
+        if (old != s.Input.Colliders.end() && old->second.Owner != leaf.Owner) return true;
     }
     return false;
 }
@@ -263,6 +270,8 @@ void ClearSimulation(PhysicsState &s, state::Scene &r) {
     s.Clearing = false;
     s.Bodies.clear();
     s.Entities.clear();
+    s.RemovedBodies.clear();
+    s.SampleOrder.reset();
     s.SensorFollowers.clear();
     s.World.reset();
     s.WorldAnchor = rbp::NoIndex;
@@ -272,16 +281,11 @@ void ClearSimulation(PhysicsState &s, state::Scene &r) {
 
 void OnDestroyPhysicsBody(state::Scene &r, state::Entity e) {
     auto *s = r.Context.find<PhysicsState>();
-    if (!s || s->Clearing || !s->World) return;
-    const auto it = s->Bodies.find(e);
-    if (it == s->Bodies.end()) return;
-    s->World->RemoveBody(it->second.Body);
-    if (it->second.Shape != rbp::NoIndex) s->World->RemoveShape(it->second.Shape);
-    s->Entities[it->second.Body] = state::Null;
-    s->Bodies.erase(it);
-    s->Baked.reset();
-    s->Contacts.clear();
-    r.Context.get<PhysicsSustainedContacts>().Active.clear();
+    if (!s || s->Clearing || !s->Bodies.contains(e)) return;
+    // An unparented body without children has no SceneNode, and destruction discards its reactive entries, so the flag records the change.
+    s->InputDirty = true;
+    s->RemovedBodies.insert(e);
+    s->SampleOrder.reset();
 }
 
 void OnDestroyPhysicsConstraint(state::Scene &r, state::Entity e) {
@@ -296,6 +300,9 @@ void OnDestroyPhysicsInput(state::Scene &r, state::Entity) {
     if (auto *s = r.Context.find<PhysicsState>()) s->InputDirty = true;
 }
 
+// Every pool reserves twice its current need, with room for at least HeadroomColliders hull colliders, so added bodies build in place.
+constexpr uint64_t HeadroomColliders = 16;
+
 rbp::WorldLimits Limits(const state::Scene &r) {
     const uint32_t colliders = uint32_t(r.view<const ColliderShape>().size());
     const uint32_t motions = uint32_t(r.view<const PhysicsMotion>().size());
@@ -307,21 +314,22 @@ rbp::WorldLimits Limits(const state::Scene &r) {
         triangles += mesh ? uint64_t(mesh->TriangleIndexCount() / 3) : 4;
     }
     if (vertices * 3 > UINT32_MAX || triangles * 6 > UINT32_MAX) throw std::runtime_error("Physics geometry exceeds RBP pool indexing.");
+    const auto room = [](uint64_t need, uint64_t floor) { return uint32_t(std::min<uint64_t>(std::max(2 * need, floor), UINT32_MAX)); };
     return {
-        .Bodies = std::max(1u, colliders + motions + 1),
-        .Shapes = std::max(4u, 4 * colliders + motions + 4),
+        .Bodies = room(colliders + motions + 1, HeadroomColliders + 1),
+        .Shapes = room(4 * colliders + motions + 4, 4 * HeadroomColliders + 4),
         .Joints = std::max(8u, joints + joints / 2),
-        .ShapeVertices = uint32_t(vertices * 3),
-        .HullFaces = std::max(1u, colliders * 384),
-        .Triangles = uint32_t(triangles * 3),
-        .BvhNodes = uint32_t(triangles * 6),
-        .CompoundChildren = std::max(1u, 2 * colliders),
+        .ShapeVertices = room(vertices * 3, HeadroomColliders * rbp::MaxHullVertices * 3),
+        .HullFaces = room(colliders * 384, HeadroomColliders * 384),
+        .Triangles = room(triangles * 3, HeadroomColliders * 4 * 3),
+        .BvhNodes = room(triangles * 6, HeadroomColliders * 4 * 6),
+        .CompoundChildren = room(2 * colliders, 2 * HeadroomColliders),
     };
 }
 
-auto GeometryOverflows(const rbp::World &world) {
+auto PoolOverflows(const rbp::World &world) {
     const auto &o = world.Overflow;
-    return std::array{o.Shapes, o.ShapeVertices, o.HullFaces, o.Triangles, o.BvhNodes, o.CompoundChildren};
+    return std::array{o.Bodies, o.Shapes, o.ShapeVertices, o.HullFaces, o.Triangles, o.BvhNodes, o.CompoundChildren};
 }
 
 physics::RbpBody CookBody(PhysicsState &s, const SceneInput &scene, state::Scene &r, state::Entity entity, const physics::RbpBody *previous = nullptr) {
@@ -352,14 +360,21 @@ physics::RbpBody CookBody(PhysicsState &s, const SceneInput &scene, state::Scene
     }
 }
 
-void BuildBody(PhysicsState &s, state::Scene &r, state::Entity entity) {
+void BuildBody(PhysicsState &s, const SceneInput &input, state::Scene &r, state::Entity entity) {
     if (s.Bodies.contains(entity)) return;
-    const auto body = CookBody(s, s.Input, r, entity);
+    const auto body = CookBody(s, input, r, entity);
     s.Bodies.emplace(entity, body);
     if (s.Entities.size() <= body.Body) s.Entities.resize(body.Body + 1, state::Null);
     s.Entities[body.Body] = entity;
     r.emplace_or_replace<PhysicsBodyHandle>(entity, PhysicsBodyHandle{body.Body});
-    if (s.Input.Bodies.at(entity).Motion) r.emplace_or_replace<BodyPoseCache>(entity, BodyPoseCache{{physics::RbpNodePose(body.InitialPose, body.Frame)}});
+    if (input.Bodies.at(entity).Motion) r.emplace_or_replace<BodyPoseCache>(entity, BodyPoseCache{{physics::RbpNodePose(body.InitialPose, body.Frame)}});
+}
+
+// Builds every input body missing from the world, motion bodies first, each group in entity order.
+void BuildBodies(PhysicsState &s, const SceneInput &input, state::Scene &r) {
+    for (auto entity : SortedEntities(r.view<const PhysicsMotion>())) BuildBody(s, input, r, entity);
+    for (auto entity : SortedEntities(r.view<const ColliderShape>()))
+        if (input.Bodies.contains(entity)) BuildBody(s, input, r, entity);
 }
 
 void BuildJoint(PhysicsState &s, state::Scene &r, state::Entity entity) {
@@ -448,19 +463,32 @@ void Rebuild(state::Scene &r) {
     if (!s.Context) return;
     if (!s.Solver) s.Solver.emplace(*s.Context);
     s.World.emplace(*s.Context, Limits(r));
-    for (auto entity : SortedEntities(r.view<const PhysicsMotion>())) BuildBody(s, r, entity);
-    for (auto entity : SortedEntities(r.view<const ColliderShape>()))
-        if (s.Input.Bodies.contains(entity)) BuildBody(s, r, entity);
+    BuildBodies(s, s.Input, r);
     for (auto entity : SortedEntities(r.view<const PhysicsJoint>())) BuildJoint(s, r, entity);
     s.JointUpdates.clear();
     s.Evaluate = true;
 }
 
+const std::vector<state::Entity> &SampleOrder(PhysicsState &s, const state::Scene &r) {
+    if (!s.SampleOrder) {
+        std::vector<std::pair<uint32_t, state::Entity>> depths;
+        for (auto entity : r.view<const PhysicsBodyHandle, const BodyPoseCache>()) {
+            uint32_t depth = 0;
+            for (auto parent = ParentOrNull(r, entity); parent != state::Null; parent = ParentOrNull(r, parent)) ++depth;
+            depths.emplace_back(depth, entity);
+        }
+        std::ranges::sort(depths);
+        s.SampleOrder = depths | std::views::values | std::ranges::to<std::vector>();
+    }
+    return *s.SampleOrder;
+}
+
 void Restart(PhysicsState &s, state::Scene &r) {
     const profile::CpuScope scope{"PhysicsReset"};
     ClearContacts(s, r);
-    for (auto [entity, transform] : r.view<const Transform>().each())
-        if (ParentOrNull(r, entity) == state::Null) UpdateWorldTransformRecursive(r, entity);
+    // Sampling writes the world transforms of posed bodies and their descendants, so each outermost posed subtree returns to its authored pose.
+    for (const auto entity : SampleOrder(s, r))
+        if (FindAncestorIf(r, ParentOrNull(r, entity), [&](auto node) { return r.all_of<BodyPoseCache>(node); }) == state::Null) UpdateWorldTransformRecursive(r, entity);
     for (const auto &[entity, body] : s.Bodies) {
         s.World->Poses[body.Body] = body.InitialPose;
         s.World->Velocities[body.Body] = body.InitialVelocity;
@@ -664,6 +692,7 @@ void ProcessChanges(state::Scene &r, EventPass) {
     });
     if (!input_dirty && !any(Change::PhysicsInput,Change::PhysicsMaterialDef,Change::CollisionSystemDef,Change::CollisionFilterDef) &&
         !poser_moved() && !mesh_collider_changed) return;
+    if (input_dirty || any(Change::PhysicsInput)) s.SampleOrder.reset();
     for (auto e : reactive(r, Change::PhysicsMaterialDef))
         if (!r.all_of<PhysicsMaterial>(e)) ClearDanglingRefs(r, e, &ColliderMaterial::PhysicsMaterialEntity);
     for (auto e : reactive(r, Change::CollisionSystemDef))
@@ -687,18 +716,30 @@ void ProcessChanges(state::Scene &r, EventPass) {
         return;
     }
     const auto joints = std::ranges::count_if(input.Joints, [](const auto &entry) { return IsActiveJoint(entry.second); });
-    if (!s.World || RequiresRebuild(s.Input, input) || joints > s.World->Joints.Capacity) {
+    if (!s.World || RequiresRebuild(s, input) || joints > s.World->Joints.Capacity) {
         s.Input = std::move(input);
         Rebuild(r);
         return;
     }
+    // Destroyed bodies leave the world with their shapes.
+    const bool removed = !s.RemovedBodies.empty();
+    for (const auto entity : std::exchange(s.RemovedBodies, {})) {
+        const auto it = s.Bodies.find(entity);
+        s.World->RemoveBody(it->second.Body);
+        if (it->second.Shape != rbp::NoIndex) s.World->RemoveShape(it->second.Shape);
+        s.Entities[it->second.Body] = state::Null;
+        s.Bodies.erase(it);
+    }
+    if (removed) ClearContacts(s, r);
     std::set<state::Entity> recook, surfaces;
     for (const auto &[entity, leaf] : input.Colliders) {
-        const auto &old = s.Input.Colliders.at(entity);
-        if (old.Shape != leaf.Shape || old.Local != leaf.Local || (IsMeshBackedShape(leaf.Shape.Shape) && geometry.contains(leaf.Shape.MeshEntity))) recook.insert(leaf.Owner);
-        if (old != leaf) surfaces.insert(leaf.Owner);
+        const auto old = s.Input.Colliders.find(entity);
+        if (old == s.Input.Colliders.end() || old->second.Shape != leaf.Shape || old->second.Local != leaf.Local || (IsMeshBackedShape(leaf.Shape.Shape) && geometry.contains(leaf.Shape.MeshEntity))) recook.insert(leaf.Owner);
+        else if (old->second != leaf) surfaces.insert(leaf.Owner);
     }
-    const bool changed = !recook.empty() || !surfaces.empty() || s.Input.Bodies != input.Bodies || s.Input.Joints != input.Joints;
+    for (const auto &[entity, next] : input.Bodies)
+        if (const auto old = s.Input.Bodies.find(entity); old != s.Input.Bodies.end() && old->second.Colliders != next.Colliders) recook.insert(entity);
+    const bool changed = removed || !recook.empty() || !surfaces.empty() || s.Input.Bodies != input.Bodies || s.Input.Joints != input.Joints;
     if (!changed) {
         s.Input.Posers = std::move(input.Posers);
         return;
@@ -706,15 +747,22 @@ void ProcessChanges(state::Scene &r, EventPass) {
     s.Invalidate();
     for (auto entity : r.view<const PhysicsConstraintHandle>()) {
         const auto it = input.Joints.find(entity);
-        if (it == input.Joints.end() || !IsActiveJoint(it->second)) r.remove<PhysicsConstraintHandle>(entity);
+        const bool active = it != input.Joints.end() && IsActiveJoint(it->second);
+        // Removing a body retires its world joints, which then rebuild on restart.
+        if (active && s.World->Joints[r.get<const PhysicsConstraintHandle>(entity).ConstraintIndex].Active) continue;
+        r.remove<PhysicsConstraintHandle>(entity);
+        if (active) s.JointUpdates.insert(entity);
     }
     std::set<rbp::Index> reframed;
-    const auto overflows = GeometryOverflows(*s.World);
+    const auto overflows = PoolOverflows(*s.World);
     try {
         for (const auto &[entity, next] : input.Bodies) {
+            // Bodies new to the world build below.
+            const auto found = s.Bodies.find(entity);
+            if (found == s.Bodies.end()) continue;
             const bool replace = recook.contains(entity);
             if (!replace && s.Input.Bodies.at(entity) == next) continue;
-            auto &body = s.Bodies.at(entity);
+            auto &body = found->second;
             const auto old_pose = body.InitialPose;
             const auto old_mass = s.World->Masses[body.Body];
             if (replace) body = CookBody(s, input, r, entity, &body);
@@ -722,8 +770,10 @@ void ProcessChanges(state::Scene &r, EventPass) {
             const auto mass = s.World->Masses[body.Body];
             if (replace || simd::any(old_pose.Position != body.InitialPose.Position) || simd::any(old_pose.Orientation != body.InitialPose.Orientation) || old_mass.InvMass != mass.InvMass || simd::any(old_mass.InvInertiaLocal != mass.InvInertiaLocal)) reframed.insert(body.Body);
         }
+        // Surviving bodies are a subset of the input, so a size gap means new bodies.
+        if (s.Bodies.size() < input.Bodies.size()) BuildBodies(s, input, r);
     } catch (...) {
-        if (GeometryOverflows(*s.World) == overflows) throw;
+        if (PoolOverflows(*s.World) == overflows) throw;
         s.Input = std::move(input);
         Rebuild(r);
         return;
@@ -812,17 +862,14 @@ void SamplePosesAtFrame(state::Scene &r, float frame) {
     const float t = clamped - float(lo);
     const auto lo_idx = lo - s.CacheStartFrame, hi_idx = hi - s.CacheStartFrame;
     // Update parents before restoring the independent poses of nested bodies.
-    std::vector<std::pair<uint32_t, state::Entity>> entities;
-    for (auto entity : r.view<const PhysicsBodyHandle, const BodyPoseCache>()) {
-        uint32_t depth = 0;
-        for (auto parent = ParentOrNull(r, entity); parent != state::Null; parent = ParentOrNull(r, parent)) ++depth;
-        entities.emplace_back(depth, entity);
-    }
-    std::ranges::sort(entities);
-    for (auto [depth, entity] : entities) {
+    for (const auto entity : SampleOrder(s, r)) {
         const auto &cache = r.get<const BodyPoseCache>(entity);
         const auto &a = cache.Frames[lo_idx], &b = cache.Frames[hi_idx];
-        SyncBodyWorldTransform(r, entity, Mix(a.P, b.P, t), Slerp(a.R, b.R, t));
+        const auto position = Mix(a.P, b.P, t);
+        const auto rotation = Slerp(a.R, b.R, t);
+        // A body already at its sampled pose has a consistent subtree.
+        if (const auto &world = r.get<const WorldTransform>(entity); world.P == position && world.R == rotation) continue;
+        SyncBodyWorldTransform(r, entity, position, rotation);
     }
 }
 

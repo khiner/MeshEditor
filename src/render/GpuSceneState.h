@@ -68,6 +68,8 @@ struct GpuSceneState {
     // Meshes whose meshlets were built, edited or restored since their cluster hierarchy was last checked.
     std::unordered_set<state::Entity> LodDemand;
     std::unordered_set<state::Entity> MeshletEditOverlayMeshes;
+    // Each material's required LOD attributes without and with authored tangents, as the live primitives hold them.
+    std::vector<std::array<uint32_t, 2>> RequiredMaterialAttributes;
     // Refreshed with the instance flags.
     std::vector<VertexOverlayDraw> VertexOverlays;
     bool MeshletEditHasSharpEdges{};

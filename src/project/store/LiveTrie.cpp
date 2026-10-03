@@ -157,11 +157,13 @@ void CaptureImpl(LiveTrie &trie, uint64_t first, uint64_t count, auto &&fetch) {
     if (count == 0) return;
     assert(!trie.Busy && "capture between a plan and its commit");
     assert(first + count <= SlotSpan(trie.Levels));
+    if (count == 1 && SlotHashAt(trie, first).Epoch == trie.CaptureEpoch) return;
     auto *root = WriteRec(trie, trie.Root, trie.Levels, 0, first, first + count - 1, true, fetch);
     if (root != trie.Root) {
         ReleaseNode(trie, trie.Root);
         trie.Root = root;
     }
+    if (count == 1) SlotHashAt(trie, first).Epoch = trie.CaptureEpoch;
 }
 
 void DirtyManifest(LiveTrie &trie, uint32_t level, uint64_t index) {
@@ -181,10 +183,13 @@ void RehashSlot(LiveTrie &trie, uint64_t slot, Hash128 incoming, bool incoming_d
         trie.Lane0 -= t.L0;
         trie.Lane1 -= t.L1;
     }
+    e.Dirty = false;
     if (incoming_default) {
-        e = {{}, LiveTrie::SlotState::Default, false};
+        e.H = {};
+        e.State = LiveTrie::SlotState::Default;
     } else {
-        e = {incoming, LiveTrie::SlotState::Value, false};
+        e.H = incoming;
+        e.State = LiveTrie::SlotState::Value;
         const Term t{slot, incoming};
         trie.Lane0 += t.L0;
         trie.Lane1 += t.L1;
@@ -442,6 +447,7 @@ Stamp LiveTrie::CurrentStamp(uint64_t length) const {
 Version LiveTrie::Pin(uint64_t length) {
     const auto s = CurrentStamp(length);
     ++Root->Refs;
+    ++CaptureEpoch;
     return {Root, s};
 }
 
@@ -467,6 +473,7 @@ bool LiveTrie::CommitRestore(RestorePlan &&plan) {
     ++root->Refs;
     ReleaseNode(*this, Root);
     Root = root;
+    ++CaptureEpoch;
     Busy = false;
     return Hash128{Lane0, Lane1} == plan.Hash;
 }

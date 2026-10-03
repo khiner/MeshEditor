@@ -64,9 +64,9 @@ void ComputeDeformMatrices(const Armature &, uint32_t skin_slot, std::span<const
 // Preserves scale from `pre_local`.
 Transform ApplyBoneConstraint(const BoneConstraint &, const Transform &pre_local, const mat4 &parent_pose_world, const mat4 &armature_world_inv, const mat4 &target_world);
 
-// Returns the minimum nonzero distance to a child for non-leaf bones.
-// Returns the parent scale or 1.0 for leaf bones.
-float ComputeBoneDisplayScale(const Armature &, uint32_t bone_index);
+// Returns each bone's display scale, in bone order.
+// A non-leaf bone's scale is the minimum nonzero distance to a child, and a leaf bone takes its parent's scale or 1.0.
+std::vector<float> ComputeBoneDisplayScales(const Armature &);
 
 // Returns a basis whose Y axis follows `direction` with `roll` radians of axial rotation.
 mat3 BoneVecRollToMat3(vec3 direction, float roll);

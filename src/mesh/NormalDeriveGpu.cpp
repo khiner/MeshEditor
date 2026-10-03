@@ -101,15 +101,18 @@ void EncodeDeriveBaseEntries(state::Scene &r, mtl::ComputeChain &chain, std::spa
 }
 } // namespace
 
-void EncodeDeriveMeshNormals(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, const BufferArena<uint32_t> &work,
-                             ElementWork vertices, uint32_t vertex_count, ElementWork faces, uint32_t face_count) {
+void EncodeDeriveMeshNormals(state::Scene &r, mtl::ComputeChain &chain, const BufferArena<uint32_t> &work, std::span<const LocalNormalWork> changes) {
     const auto &meshes = r.Context.get<const MeshStore>();
-    auto entry = MakeDeriveEntryInputs(meshes,id);
-    if (!entry) return;
-    if (vertices.Storage.Slot == InvalidSlot || faces.Storage.Slot == InvalidSlot) throw std::invalid_argument("Local normal derivation requires canonical membership.");
-    entry->VerticesWork = vertices; entry->FacesWork = faces;
-    entry->VertexWorkCount = vertex_count; entry->FaceWorkCount = face_count;
-    EncodeDeriveBaseEntries(r,chain,std::span{&*entry,1u},work);
+    std::vector<NormalDeriveEntry> entries;
+    for (const auto &change : changes) {
+        auto entry = MakeDeriveEntryInputs(meshes,change.StoreId);
+        if (!entry) continue;
+        if (change.Vertices.Storage.Slot == InvalidSlot || change.Faces.Storage.Slot == InvalidSlot) throw std::invalid_argument("Local normal derivation requires canonical membership.");
+        entry->VerticesWork = change.Vertices; entry->FacesWork = change.Faces;
+        entry->VertexWorkCount = change.VertexCount; entry->FaceWorkCount = change.FaceCount;
+        entries.push_back(*entry);
+    }
+    EncodeDeriveBaseEntries(r,chain,entries,work);
 }
 
 void DeriveMeshNormalsNow(state::Scene &r, std::span<const uint32_t> ids) {

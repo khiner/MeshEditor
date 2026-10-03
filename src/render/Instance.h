@@ -7,7 +7,7 @@ struct Instance {
 };
 
 // Canonical per-object visibility, present == hidden (sparse, since most objects are visible).
-// RenderInstance is reactively created for an Instance without Hidden, and removed when Hidden appears.
+// The settle pass derives a RenderInstance for each Instance without Hidden.
 struct Hidden {};
 
 // A node's own KHR_node_visibility flag. Hidden follows this flag and the flags of every ancestor.

@@ -164,7 +164,7 @@ FaceListReferences ParseFaceListReferences(const MeshTopologyTask &task) {
 }
 
 MeshTopologyJob TopologyJob(const MeshStore &meshes, const MeshTopologyTask &task, const MeshClosure &source,
-                            Range list, uint32_t collapse_count, const mtl::Buffer *collapse_vertices) {
+                            Range list, uint32_t collapse_count, SlotOffset collapse_vertices) {
     const auto &src = meshes.Get(task.SourceId);
     return {
         .Op = task.Op,
@@ -194,7 +194,7 @@ MeshTopologyJob TopologyJob(const MeshStore &meshes, const MeshTopologyTask &tas
         .ListOffset = OffsetOrInvalid(list),
         .MorphTargetCount = src.MorphBlocksReady ? src.MorphTargetCount : 0u,
         .CollapseCount = collapse_count,
-        .CollapseVerticesSlot = collapse_vertices ? collapse_vertices->Slot : InvalidSlot,
+        .CollapseVertices = collapse_vertices,
     };
 }
 
@@ -358,25 +358,24 @@ std::vector<uint32_t> InsertedBlocks(ElementHandleRange handles, const mtl::Buff
 }
 } // namespace
 
+// Every workspace of a prepared edit is a range of its chain's scratch.
 struct MeshTopologyEdit::Prepared {
     MeshStore::TopologyCounts Bounds;
-    std::unique_ptr<mtl::Buffer> CollapseVertices;
     TopologyIdentityPolicy Identity;
     std::vector<uint32_t> OutputMaterials;
     MeshClosure Core, Neighborhood;
-    std::optional<TopologyReadView> SourceView;
+    // The batch's source clones, which an in-place edit's recorded passes read until it completes.
+    std::shared_ptr<const TopologyReadView> SourceView;
     Batch Jobs;
     MeshTopologyPushConstants Constants{};
     MeshStore::TopologyCounts Counts{};
-    mtl::Buffer FaceList, EdgeList;
     ElementHandleRange NewFaces{}, NewEdges{};
     std::optional<ConnectivityBatch> Connectivity;
     MeshStore::CornerClassUpdate Classes{};
 
-    Prepared(mtl::BufferContext &buffers, MeshStore::TopologyCounts bounds, std::unique_ptr<mtl::Buffer> collapse_vertices,
-             TopologyIdentityPolicy identity, std::vector<uint32_t> materials, uint32_t scratch_words)
-        : Bounds{bounds}, CollapseVertices{std::move(collapse_vertices)}, Identity{identity}, OutputMaterials{std::move(materials)}, Jobs{buffers,scratch_words,1u},
-          FaceList{buffers,0u,SlotType::Buffer,mtl::BufferLifetime::Workspace}, EdgeList{buffers,0u,SlotType::Buffer,mtl::BufferLifetime::Workspace} {}
+    Prepared(BufferArena<uint32_t> &scratch, MeshStore::TopologyCounts bounds, TopologyIdentityPolicy identity, std::vector<uint32_t> materials,
+             std::shared_ptr<const TopologyReadView> source_view, uint32_t scratch_words)
+        : Bounds{bounds}, Identity{identity}, OutputMaterials{std::move(materials)}, SourceView{std::move(source_view)}, Jobs{scratch,scratch_words} {}
 };
 
 // The closures an edit records before construction's first submit.
@@ -387,36 +386,37 @@ struct MeshTopologyEdit::Closures {
     MeshClosure Core, Neighborhood;
     bool Listed;
     uint32_t CollapseCount{};
-    std::unique_ptr<mtl::Buffer> CollapseVertices;
+    SlotOffset CollapseVertices{};
 };
 
 MeshTopologyEdit::MeshTopologyEdit(mtl::ComputeChain &chain, const MeshTopologyTask &task)
-    : Chain{chain}, SourceId{task.SourceId}, StoreId{task.SourceId}, Op{task.Op},
-      SourceTriangles{chain.Buffers, 0u, SlotType::Buffer,mtl::BufferLifetime::Workspace}, NewVertexList{chain.Buffers, 0u, SlotType::Buffer,mtl::BufferLifetime::Workspace},
-      InsetBasis{chain.Buffers,0u,SlotType::Buffer,mtl::BufferLifetime::Workspace} {}
+    : Chain{chain}, SourceId{task.SourceId}, StoreId{task.SourceId}, Op{task.Op} {}
 MeshTopologyEdit::MeshTopologyEdit(MeshTopologyEdit &&) noexcept = default;
 MeshTopologyEdit::~MeshTopologyEdit() = default;
+
+namespace {
+// A mesh without faces edits its lines through an edge core.
+// An operator without a line rule, or a subdivide that cuts by a list, a plane or a screen segment, has no source there.
+bool HasTopologySource(const MeshStore &meshes, const MeshTopologyTask &task) {
+    const auto policy=TopologyPolicy(task.Op);
+    if (!policy) throw std::invalid_argument("Topology source closure is not defined for this operator.");
+    constexpr auto CutFlags = TopologyFlagListSelects | TopologyFlagListCuts | TopologyFlagPlaneCuts | TopologyFlagScreenCuts;
+    return Mesh{meshes,task.SourceId}.FaceCount() || (policy->Lines && !(task.Op==MeshTopologyOp::Subdivide && (task.Flags & CutFlags)));
+}
+} // namespace
 
 std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state::Scene &r, const MeshTopologyTask &task) {
     auto &chain = Chain;
     // Every topology operator enters through this transaction's affected source closure.
     const bool fresh = task.Op == MeshTopologyOp::KeepSelectedFaces;
-    const auto policy=TopologyPolicy(task.Op);
-    if (!policy) throw std::invalid_argument("Topology source closure is not defined for this operator.");
     auto &meshes = r.Context.get<MeshStore>();
+    if (!HasTopologySource(meshes, task)) return std::nullopt;
+    const auto policy=TopologyPolicy(task.Op);
     const auto original = meshes.Get(StoreId);
-    // A mesh without faces edits its lines through an edge core.
-    // An operator without a line rule, or a subdivide that cuts by a list, a plane or a screen segment, has no source there.
     const bool lines = !Mesh{meshes,StoreId}.FaceCount();
-    constexpr auto CutFlags = TopologyFlagListSelects | TopologyFlagListCuts | TopologyFlagPlaneCuts | TopologyFlagScreenCuts;
-    if (lines && (!policy->Lines || (task.Op==MeshTopologyOp::Subdivide && (task.Flags & CutFlags)))) return std::nullopt;
     OriginalClassMode = original.Classification;
-    {
-        const profile::CpuScope stage{"TopologySelectionState"};
-        meshes.EnsureSelectionState(r, std::array{StoreId});
-    }
     uint32_t collapse_count{};
-    std::unique_ptr<mtl::Buffer> collapse_vertices;
+    SlotOffset collapse_vertices{};
     std::optional<FaceListReferences> face_list;
     if (task.Op==MeshTopologyOp::AddFaces) {
         // Per-mesh action tasks may be prepared together.
@@ -467,8 +467,7 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
         if (task.Op==MeshTopologyOp::MergeCollapse) {
             collapse_count=seed.Count;
             if (collapse_count && !select_all) {
-                collapse_vertices=std::make_unique<mtl::Buffer>(chain.Buffers,0u,SlotType::Buffer,mtl::BufferLifetime::Workspace);
-                meshes.GatherSelectedElements(r,StoreId,Element::Vertex,*collapse_vertices);
+                collapse_vertices={chain.Scratch.Buffer.Slot,meshes.GatherSelectedElements(r,chain,StoreId,Element::Vertex,chain.Scratch).Offset};
             }
         }
         if (!seed.Count) {
@@ -496,28 +495,33 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
         neighborhood.EncodeIncidence(r, chain, StoreId, Element::Face);
     }
     return Closures{.FaceList=std::move(face_list), .Around=std::move(around), .Core=core, .Neighborhood=neighborhood,
-        .Listed=listed, .CollapseCount=collapse_count, .CollapseVertices=std::move(collapse_vertices)};
+        .Listed=listed, .CollapseCount=collapse_count, .CollapseVertices=collapse_vertices};
 }
 
-void MeshTopologyEdit::RecordCounts(state::Scene &r, const MeshTopologyTask &task, Closures &closures) {
+bool MeshTopologyEdit::FinishClosures(const MeshTopologyTask &task, Closures &closures) {
+    auto &[face_list, around, core, neighborhood, listed, collapse_count, collapse_vertices] = closures;
+    if (around) {
+        around->Finish(Chain);
+        if (!around->Counts[0]) {
+            if (listed) throw std::invalid_argument("Topology element list contains no live source elements.");
+            return false;
+        }
+        if (!around->Counts[1] && !RetainsSeedVertices(task.Op)) return false;
+    }
+    core.Finish(Chain);
+    if (task.Op != MeshTopologyOp::KeepSelectedFaces) neighborhood.Finish(Chain);
+    if (task.Op==MeshTopologyOp::RotateEdges &&
+        ((task.Flags & TopologyFlagListSelects)==0u || task.List.empty() || task.List.front()!=task.List.size()-1u))
+        throw std::invalid_argument("Rotate Edges has an invalid vertex selection list.");
+    return core.Counts[1] || RetainsSeedVertices(task.Op);
+}
+
+void MeshTopologyEdit::RecordCounts(state::Scene &r, const MeshTopologyTask &task, Closures &closures, const std::shared_ptr<const TopologyReadView> &view) {
     auto &chain = Chain;
     auto &meshes = r.Context.get<MeshStore>();
     const bool fresh = task.Op == MeshTopologyOp::KeepSelectedFaces;
     const auto identity = fresh ? TopologyIdentityPolicy::Fresh : TopologyIdentityPolicy::Preserve;
     auto &[face_list, around, core, neighborhood, listed, collapse_count, collapse_vertices] = closures;
-    if (around) {
-        around->Finish(chain);
-        if (!around->Counts[0]) {
-            if (listed) throw std::invalid_argument("Topology element list contains no live source elements.");
-            return;
-        }
-        if (!around->Counts[1] && !RetainsSeedVertices(task.Op)) return;
-    }
-    core.Finish(chain);
-    if (!fresh) neighborhood.Finish(chain);
-    if (task.Op==MeshTopologyOp::RotateEdges &&
-        ((task.Flags & TopologyFlagListSelects)==0u || task.List.empty() || task.List.front()!=task.List.size()-1u))
-        throw std::invalid_argument("Rotate Edges has an invalid vertex selection list.");
     Range list_range{};
     if ((task.Op==MeshTopologyOp::ConnectVertices || task.Op==MeshTopologyOp::DeleteVertices || task.Op==MeshTopologyOp::RotateEdges) &&
         (task.Flags & TopologyFlagListSelects)) {
@@ -528,7 +532,6 @@ void MeshTopologyEdit::RecordCounts(state::Scene &r, const MeshTopologyTask &tas
         list_range=RemapTopologyFaceList(task.List,face_list->Offsets,task.AppendedBase,core.Counts[0],chain.Scratch,core.Elements[0]);
     }
     const MeshStore::TopologyCounts source_counts{core.Counts[0], core.Counts[1], core.Counts[2]};
-    if (!source_counts.Halfedges && !RetainsSeedVertices(task.Op)) return;
     ElementWork primitive_work{};
     std::vector<uint32_t> output_materials;
     if (fresh) {
@@ -546,9 +549,9 @@ void MeshTopologyEdit::RecordCounts(state::Scene &r, const MeshTopologyTask &tas
         for (const auto primitive : primitives) output_materials.push_back(palette[primitive]);
     }
     const auto bounds = TopologyOutputBounds(task,source_counts);
-    auto initial_job = TopologyJob(meshes,task,core,list_range,collapse_count,collapse_vertices.get());
+    auto initial_job = TopologyJob(meshes,task,core,list_range,collapse_count,collapse_vertices);
     const auto scratch_words = LayoutTopologyScratch(initial_job,source_counts,bounds,Batch::ArgumentWords);
-    Plan=std::make_unique<Prepared>(chain.Buffers,bounds,std::move(collapse_vertices),identity,std::move(output_materials),scratch_words);
+    Plan=std::make_unique<Prepared>(chain.Scratch,bounds,identity,std::move(output_materials),fresh ? nullptr : view,scratch_words);
     auto &plan=*Plan;
     plan.Core = core;
     if (!fresh) {
@@ -560,7 +563,6 @@ void MeshTopologyEdit::RecordCounts(state::Scene &r, const MeshTopologyTask &tas
         std::ranges::sort(OldNormalPayloadBlocks);
         OldNormalPayloadBlocks.erase(std::unique(OldNormalPayloadBlocks.begin(),OldNormalPayloadBlocks.end()),OldNormalPayloadBlocks.end());
         ChangedTriangles = EncodeFaceTriangles(r, chain, StoreId, neighborhood.Seed(Element::Face));
-        plan.SourceView.emplace(r, StoreId, neighborhood, chain.Scratch);
     }
     auto &batch = plan.Jobs;
     {
@@ -578,7 +580,7 @@ void MeshTopologyEdit::RecordCounts(state::Scene &r, const MeshTopologyTask &tas
         job.TargetVertex=ordinal;
     }
     const auto &source_view = plan.SourceView;
-    job.SrcConnectivity = fresh ? meshes.GetConnectivityRef(SourceId) : source_view->Connectivity;
+    job.SrcConnectivity = fresh ? meshes.GetConnectivityRef(SourceId) : source_view->SourceConnectivity(meshes, SourceId);
     job.SrcVertexBits = fresh ? SlotOffset{meshes.GetSelectionSlot(Element::Vertex),0u} : source_view->Selection[0];
     job.SrcEdgeBits = fresh ? SlotOffset{meshes.GetSelectionSlot(Element::Edge),0u} : source_view->Selection[1];
     job.SrcFaceBits = fresh ? SlotOffset{meshes.GetSelectionSlot(Element::Face),0u} : source_view->Selection[2];
@@ -588,10 +590,10 @@ void MeshTopologyEdit::RecordCounts(state::Scene &r, const MeshTopologyTask &tas
     if (!fresh) pc.Source = source_view->Arenas;
     // A line dissolve joins no faces, so it takes no label rounds.
     PrepareTopology(r, chain, batch, pc, TopologyIterates(task.Op) && !(TopologyIsDissolve(task.Op) && !source_counts.Faces));
-    Output = std::make_unique<TopologyOutputHandles>(r, chain, job, bounds, batch.Scratch.Slot, pc.Source, identity);
+    Output = std::make_unique<TopologyOutputHandles>(r, chain, job, bounds, batch.ScratchBinding(), pc.Source, identity);
 }
 
-void MeshTopologyEdit::ReadCounts(bool capture_inset_basis) {
+void MeshTopologyEdit::ReadCounts(BufferArena<uint32_t> *inset_basis) {
     auto &plan = *Plan;
     auto &job = plan.Jobs.Jobs[0];
     const bool fresh = plan.Identity == TopologyIdentityPolicy::Fresh;
@@ -606,9 +608,9 @@ void MeshTopologyEdit::ReadCounts(bool capture_inset_basis) {
         return;
     }
     if (!fresh) ChangedTriangles.Finish(Chain);
-    if (capture_inset_basis && (Op == MeshTopologyOp::InsetRegion || Op == MeshTopologyOp::InsetIndividual)) {
-        InsetBasis.SetUsedSize(uint64_t(counts.Vertices) * sizeof(InsetVertexBasis));
-        job.DstInsetBasisSlot = InsetBasis.Slot;
+    if (inset_basis && (Op == MeshTopologyOp::InsetRegion || Op == MeshTopologyOp::InsetIndividual)) {
+        InsetBasis = inset_basis->Allocate(uint32_t(uint64_t(counts.Vertices) * sizeof(InsetVertexBasis) / sizeof(uint32_t)));
+        job.DstInsetBasis = {inset_basis->Buffer.Slot, InsetBasis.Offset};
     }
     const auto retirement = TopologyPolicy(Op)->Retirement;
     if ((Output->RetiredCounts[0] && !(retirement & RetireVertices)) ||
@@ -617,17 +619,31 @@ void MeshTopologyEdit::ReadCounts(bool capture_inset_basis) {
             std::to_string(Output->RetiredCounts[0])+", faces="+std::to_string(Output->RetiredCounts[1]));
 }
 
-std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshTopologyTask> tasks, bool capture_inset_basis) {
+std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshTopologyTask> tasks, BufferArena<uint32_t> *inset_basis) {
     const profile::CpuScope scope{"TopologyEditConstruct"};
     std::vector<MeshTopologyEdit> edits;
     std::vector<std::optional<Closures>> closures;
     edits.reserve(tasks.size());
+    {
+        const profile::CpuScope stage{"TopologySelectionState"};
+        auto &meshes = r.Context.get<MeshStore>();
+        std::vector<uint32_t> ids;
+        for (const auto &task : tasks) if (HasTopologySource(meshes, task)) ids.push_back(task.SourceId);
+        meshes.EnsureSelectionState(r, ids);
+    }
     for (const auto &task : tasks) closures.push_back(edits.emplace_back(MeshTopologyEdit{chain, task}).RecordClosures(r, task));
     chain.Submit();
-    for (uint32_t i = 0u; i < edits.size(); ++i) if (closures[i]) edits[i].RecordCounts(r, tasks[i], *closures[i]);
+    // Every in-place edit reads its neighborhood through the batch's one set of source clones.
+    const auto view = std::make_shared<TopologyReadView>();
+    for (uint32_t i = 0u; i < edits.size(); ++i) {
+        if (closures[i] && !edits[i].FinishClosures(tasks[i], *closures[i])) closures[i].reset();
+        if (closures[i] && tasks[i].Op != MeshTopologyOp::KeepSelectedFaces) view->Add(r, edits[i].StoreId, closures[i]->Neighborhood, chain.Scratch);
+    }
+    view->Clone(r);
+    for (uint32_t i = 0u; i < edits.size(); ++i) if (closures[i]) edits[i].RecordCounts(r, tasks[i], *closures[i], view);
     // Identity planning reads the scanned counts on the GPU, so the host reads both after one submit.
     chain.Submit();
-    for (auto &edit : edits) if (edit.Output) edit.ReadCounts(capture_inset_basis);
+    for (auto &edit : edits) if (edit.Output) edit.ReadCounts(inset_basis);
     return edits;
 }
 
@@ -655,10 +671,10 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
         auto &job = plan.Jobs.Jobs[0];
         // A face derives two triangles fewer than its corners, and a line corner derives none.
         edit->AddedTriangleCount = counts.Faces ? counts.Halfedges - 2u*counts.Faces : 0u;
-        edit->SourceTriangles.SetUsedSize(uint64_t(edit->AddedTriangleCount)*sizeof(uint32_t));
-        job.DstTriangleSourceSlot = edit->SourceTriangles.Slot;
-        edit->NewVertices = meshes.InsertElements(edit->StoreId,D::Vertex,edit->Output->NewCounts[0],&edit->NewVertexList);
-        plan.NewFaces = meshes.InsertElements(edit->StoreId,D::Face,edit->Output->NewCounts[1],&plan.FaceList);
+        edit->SourceTriangles = chain.Scratch.Allocate(edit->AddedTriangleCount);
+        job.DstTriangleSources = {chain.Scratch.Buffer.Slot, edit->SourceTriangles.Offset};
+        edit->NewVertices = meshes.InsertElements(edit->StoreId,D::Vertex,edit->Output->NewCounts[0],&chain.Scratch);
+        plan.NewFaces = meshes.InsertElements(edit->StoreId,D::Face,edit->Output->NewCounts[1],&chain.Scratch);
         job.DstCornerOffset = meshes.InsertElements(edit->StoreId,D::Halfedge,counts.Halfedges,nullptr).First;
         job.DstTriangleOffset = edit->FirstTriangle = meshes.InsertElements(edit->StoreId,D::Triangle,edit->AddedTriangleCount,nullptr).First;
         edit->Output->Assign(r,chain,{edit->NewVertices,plan.NewFaces});
@@ -676,11 +692,11 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
         auto &job = batch.Jobs[0];
         const auto counts = plan.Counts;
         // Retained outputs keep core handles, and new outputs take the inserted ones.
-        const auto inserted_vertices = InsertedBlocks(edit->NewVertices, edit->NewVertexList), inserted_faces = InsertedBlocks(plan.NewFaces, plan.FaceList);
+        const auto inserted_vertices = InsertedBlocks(edit->NewVertices, chain.Scratch.Buffer), inserted_faces = InsertedBlocks(plan.NewFaces, chain.Scratch.Buffer);
         const auto vertex_blocks = fresh ? inserted_vertices : Union(WorkBlocks(chain.Scratch, plan.Core.Elements[0], 0u), inserted_vertices);
         const auto face_blocks = fresh ? inserted_faces : Union(WorkBlocks(chain.Scratch, plan.Core.Elements[2], 0u), inserted_faces);
-        job.DstVertexHandles = {edit->Output->Vertices.Slot, 0u};
-        job.DstFaceHandles = {edit->Output->Faces.Slot, 0u};
+        job.DstVertexHandles = {chain.Scratch.Buffer.Slot, edit->Output->Vertices.Offset};
+        job.DstFaceHandles = {chain.Scratch.Buffer.Slot, edit->Output->Faces.Offset};
         job.DstConnectivity = meshes.GetConnectivityRef(edit->StoreId);
         job.DstVertexBits = {meshes.GetSelectionSlot(Element::Vertex), 0u};
         job.DstEdgeBits = {meshes.GetSelectionSlot(Element::Edge), 0u};
@@ -701,7 +717,7 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
             before.Counts[2] - plan.Core.Counts[2] + counts.Faces};
         edit->RetiredEdges = AllocateElementWork(chain.Scratch, a.EdgeHalfedges.Capacity(), before.Counts[3]);
         // Every new edge holds an emitted halfedge, and a line holds two.
-        plan.NewEdges = meshes.InsertElements(edit->StoreId, D::Edge, counts.Faces ? counts.Halfedges : counts.Halfedges / 2u, &plan.EdgeList);
+        plan.NewEdges = meshes.InsertElements(edit->StoreId, D::Edge, counts.Faces ? counts.Halfedges : counts.Halfedges / 2u, &chain.Scratch);
         MeshConnectivityJob connectivity{
             .Corners = {a.FaceCorners.Buffer.Slot, 0u}, .Connectivity = job.DstConnectivity,
             .Vertices = edit->Repair->Elements[0], .Halfedges = edit->Repair->Elements[1], .Faces = edit->Repair->Elements[2],
@@ -711,12 +727,12 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
             .VertexCount = repaired[0], .HalfedgeCount = repaired[1], .FaceCount = repaired[2], .FaceStarts = 1u,
             .RetiredEdgeWork = edit->RetiredEdges,
         };
-        auto &rebuilt = plan.Connectivity.emplace(chain.Buffers, LayoutConnectivityScratch(connectivity), 1u);
+        auto &rebuilt = plan.Connectivity.emplace(chain.Scratch, LayoutConnectivityScratch(connectivity));
         rebuilt.Begin();
         AddConnectivityJob(rebuilt, connectivity);
         const auto run_blocks = RunBlocks(job.DstCornerOffset, counts.Halfedges);
         // Retained edges are neighborhood edges.
-        auto edge_blocks = Union(WorkBlocks(chain.Scratch, before.Elements[3], 0u), InsertedBlocks(plan.NewEdges, plan.EdgeList));
+        auto edge_blocks = Union(WorkBlocks(chain.Scratch, before.Elements[3], 0u), InsertedBlocks(plan.NewEdges, chain.Scratch.Buffer));
         auto repaired_face_blocks = Union(WorkBlocks(chain.Scratch, before.Elements[2], 0u), face_blocks);
         CaptureConnectivityPrepareWrites(r, rebuilt.Jobs[0], vertex_blocks, Union(WorkBlocks(chain.Scratch, before.Elements[1], 0u), run_blocks),
             repaired_face_blocks);
@@ -743,23 +759,28 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
     }
 
     // Corner classes, base normals and authored normals complete the canonical edit in the chain's next submit.
+    // Every edit plans its corner classes before one derive records the base normals the authored normals rebase on.
+    std::vector<LocalNormalWork> normals;
+    normals.reserve(edits.size());
     for (auto *edit : edits) {
         const profile::CpuScope stage{"TopologyNormals"};
         auto &plan = *edit->Plan;
-        const bool fresh = plan.Identity == TopologyIdentityPolicy::Fresh;
-        auto &job = plan.Jobs.Jobs[0];
         const auto &connected = plan.Connectivity->Jobs[0];
         edit->Repair->Finish(chain);
         if (edit->Repair->Counts != std::array{connected.VertexCount, connected.HalfedgeCount, connected.FaceCount}) {
             throw std::logic_error("Connectivity repair disagrees with its emitted closure.");
         }
-        meshes.TrimInsertedElements(edit->StoreId, D::Edge, plan.NewEdges, plan.EdgeList, plan.Connectivity->ScratchSpan()[connected.StateOffset]);
+        meshes.TrimInsertedElements(edit->StoreId, D::Edge, plan.NewEdges, chain.Scratch, plan.Connectivity->ScratchSpan()[connected.StateOffset]);
         CheckElementWork(chain.Scratch, edit->RetiredEdges);
         meshes.PlanCornerClassification(r, chain, plan.Classes);
-        EncodeDeriveMeshNormals(r, chain, edit->StoreId, chain.Scratch, edit->Repair->Elements[0], edit->Repair->Counts[0],
-            edit->Repair->Elements[2], edit->Repair->Counts[2]);
+        normals.push_back({edit->StoreId, edit->Repair->Elements[0], edit->Repair->Counts[0], edit->Repair->Elements[2], edit->Repair->Counts[2]});
+    }
+    EncodeDeriveMeshNormals(r, chain, chain.Scratch, normals);
+    for (auto *edit : edits) {
+        auto &plan = *edit->Plan;
+        auto &job = plan.Jobs.Jobs[0];
         if (job.CornerAttributes & MeshAttributeBit_Normal) {
-            if (!fresh) {
+            if (plan.Identity == TopologyIdentityPolicy::Preserve) {
                 job.RetainedNormalCorners = plan.Neighborhood.Elements[1];
                 job.RetainedNormalCornerCount = plan.Neighborhood.Counts[1];
             }

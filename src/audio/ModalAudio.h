@@ -125,6 +125,7 @@ struct ModalBank {
     // Pressure attenuation to the view camera, ListenerDistance/max(distance, ListenerDistance), scaling an object's three output legs.
     std::vector<float> ListenerGain;
     std::vector<float> RadiantRadius; // Radius of the disc holding the sample surface's area, m at the baked size
+    std::vector<float> RetunedWorldScale; // Mean world scale the object was last tuned at, read on the main thread only
     std::vector<float> DeflectionScale;
     std::vector<uint8_t> Ringing; // Nonzero while the object has audible state
     // Object motion on contact springs relative to the physics trajectory.

@@ -315,9 +315,9 @@ void EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers &owner,
         primitive.Level0Count = buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletCount;
     }
     if (jobs.empty()) return;
-    mtl::Buffer job_buffer{chain.Buffers,std::as_bytes(std::span{jobs}),SlotType::Buffer,mtl::BufferLifetime::Workspace};
+    const auto job_words=chain.Scratch.Allocate(std::span<const uint32_t>{jobs});
     LodNodeRefitPushConstants pc{
-        .Jobs={job_buffer.Slot,0u},
+        .Jobs={chain.Scratch.Buffer.Slot,job_words.Offset},
         .Nodes=index.Ref(owner.NodeRoot),.Meshlets=index.Ref(owner.MeshletRoot),.Groups=index.Ref(owner.GroupRoot),
         .NodeSlot=buffers.LodNodes.Buffer.Slot,.ParentSlot=buffers.LodParents.Buffer.Slot,
         .MeshletSlot=buffers.Meshlets.Buffer.Slot,.GroupSlot=buffers.ClusterGroups.Buffer.Slot,.ErrorSlot=chain.Scratch.Buffer.Slot,
@@ -326,9 +326,8 @@ void EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers &owner,
     };
     const auto &pipeline = GetMeshPipelines(r)[MeshPass::LodNodeRefit];
     for (const auto batch : batches) {
-        pc.Jobs.Offset = batch.Offset;
+        pc.Jobs.Offset = job_words.Offset+batch.Offset;
         pc.Count = batch.Count;
         chain.Groups(pipeline,pc,pc.Count,128u);
     }
-    chain.Retain(std::move(job_buffer));
 }

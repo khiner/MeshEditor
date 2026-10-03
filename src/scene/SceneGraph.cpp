@@ -37,47 +37,27 @@ state::Entity ParentOrNull(const state::Scene &r, state::Entity e) {
     return p == e ? state::Null : p;
 }
 
-void ClearParent(state::Scene &r, state::Entity child) {
-    if (child == state::Null || !r.all_of<SceneNode>(child)) return;
-
-    const auto &child_node = r.get<const SceneNode>(child);
-    const auto parent = child_node.Parent;
-    if (parent == state::Null) return;
-
-    const auto next_sibling = child_node.NextSibling;
-    if (const auto &parent_node = r.get<const SceneNode>(parent);
-        parent_node.FirstChild == child) {
-        r.patch<SceneNode>(parent, [next_sibling](auto &n) { n.FirstChild = next_sibling; });
-    } else {
-        for (const auto sibling : Children(&r, parent)) {
-            if (r.get<const SceneNode>(sibling).NextSibling == child) {
-                r.patch<SceneNode>(sibling, [next_sibling](auto &n) { n.NextSibling = next_sibling; });
-                break;
-            }
+void ClearParents(state::Scene &r, std::span<const state::Entity> children) {
+    state::DirtySet detached, parents;
+    for (const auto child : children) {
+        const auto *node = r.try_get<const SceneNode>(child);
+        if (!node || node->Parent == state::Null) continue;
+        detached.emplace(child);
+        parents.emplace(node->Parent);
+    }
+    for (const auto parent : parents) {
+        auto previous = state::Null;
+        for (auto child = r.get<const SceneNode>(parent).FirstChild; child != state::Null;) {
+            const auto next = r.get<const SceneNode>(child).NextSibling;
+            if (detached.contains(child)) {
+                if (previous == state::Null) r.patch<SceneNode>(parent, [next](auto &n) { n.FirstChild = next; });
+                else r.patch<SceneNode>(previous, [next](auto &n) { n.NextSibling = next; });
+                r.patch<SceneNode>(child, [](auto &n) { n.Parent = n.NextSibling = state::Null; });
+            } else previous = child;
+            child = next;
         }
     }
-
-    r.patch<SceneNode>(child, [](auto &n) {
-        n.Parent = state::Null;
-        n.NextSibling = state::Null;
-    });
 }
-
-namespace {
-void LinkChildToParent(state::Scene &r, state::Entity child, state::Entity parent) {
-    if (!r.all_of<SceneNode>(child)) r.emplace<SceneNode>(child);
-    if (!r.all_of<SceneNode>(parent)) r.emplace<SceneNode>(parent);
-
-    ClearParent(r, child);
-
-    const auto first_child = r.get<const SceneNode>(parent).FirstChild;
-    r.patch<SceneNode>(child, [parent, first_child](auto &n) {
-        n.Parent = parent;
-        n.NextSibling = first_child;
-    });
-    r.patch<SceneNode>(parent, [child](auto &n) { n.FirstChild = child; });
-}
-} // namespace
 
 const Transform *ComposedLocal(const state::Scene &r, state::Entity e) {
     if (const auto *posed = r.try_get<const PosedLocal>(e)) return &posed->Value;
@@ -126,17 +106,36 @@ void BuildMissingWorldTransforms(state::Scene &r) {
 
 void SetParent(state::Scene &r, state::Entity child, state::Entity parent) {
     if (child == state::Null || parent == state::Null || child == parent) return;
-    LinkChildToParent(r, child, parent);
-    UpdateWorldTransformRecursive(r, child);
+    if (!r.all_of<SceneNode>(child)) r.emplace<SceneNode>(child);
+    if (!r.all_of<SceneNode>(parent)) r.emplace<SceneNode>(parent);
+    // Unlink the child from its former parent's sibling list.
+    const auto &node = r.get<const SceneNode>(child);
+    if (const auto old_parent = node.Parent, next_sibling = node.NextSibling; old_parent != state::Null) {
+        if (r.get<const SceneNode>(old_parent).FirstChild == child) r.patch<SceneNode>(old_parent, [next_sibling](auto &n) { n.FirstChild = next_sibling; });
+        else
+            for (const auto sibling : Children(&r, old_parent)) {
+                if (r.get<const SceneNode>(sibling).NextSibling != child) continue;
+                r.patch<SceneNode>(sibling, [next_sibling](auto &n) { n.NextSibling = next_sibling; });
+                break;
+            }
+    }
+    const auto first_child = r.get<const SceneNode>(parent).FirstChild;
+    r.patch<SceneNode>(child, [parent, first_child](auto &n) {
+        n.Parent = parent;
+        n.NextSibling = first_child;
+    });
+    r.patch<SceneNode>(parent, [child](auto &n) { n.FirstChild = child; });
 }
 
-void SetParentKeepWorld(state::Scene &r, state::Entity child, state::Entity parent) {
-    if (child == state::Null || parent == state::Null || child == parent) return;
-    EnsureWorldTransform(r, child);
+void SetParentKeepWorld(state::Scene &r, std::span<const state::Entity> children, state::Entity parent) {
+    if (parent == state::Null) return;
     EnsureWorldTransform(r, parent);
-    const auto child_world = ToMatrix(r.get<const WorldTransform>(child));
     const auto parent_world_inv = Inverse(ToMatrix(r.get<const WorldTransform>(parent)));
-    LinkChildToParent(r, child, parent);
-    r.emplace_or_replace<Transform>(child, ToTransform(parent_world_inv * child_world));
-    UpdateWorldTransformRecursive(r, child);
+    for (const auto child : children) {
+        if (child == state::Null || child == parent) continue;
+        EnsureWorldTransform(r, child);
+        const auto child_world = ToMatrix(r.get<const WorldTransform>(child));
+        SetParent(r, child, parent);
+        r.emplace_or_replace<Transform>(child, ToTransform(parent_world_inv * child_world));
+    }
 }

@@ -100,13 +100,18 @@ void SetModalOutGain(const state::Scene &r, ModalBank &b, uint32_t slot, state::
     std::atomic_ref{b.OutGain[slot]}.store(ModalOutGain(r, e, UniformScaleRatio(r, e, modes)), std::memory_order_relaxed);
 }
 
+// The mean scale of the entity's world transform, which sizes its modes and displaced volume.
+float WorldMeanScale(const state::Scene &r, state::Entity e) {
+    const auto *world = r.try_get<const WorldTransform>(e);
+    return world ? MeanScale(world->S) : 1.f;
+}
+
 // Returns displaced air volume in cubic metres for recoil-filter corner calculation.
 // World scale converts node-local mesh volume, and mass divided by density supplies volume for open meshes.
 double DisplacedVolume(const state::Scene &r, state::Entity e, double mass, const AcousticMaterialProperties *props) {
     const auto *inst=r.try_get<const Instance>(e);
     const auto *owner=inst ? TryMeshBuffers(r,inst->Entity) : nullptr;
-    const auto *world = r.try_get<const WorldTransform>(e);
-    const double world_scale = world ? double(MeanScale(world->S)) : 1.0;
+    const double world_scale = WorldMeanScale(r, e);
     const auto volume=owner && owner->SpatialRoot!=InvalidOffset ?
         MeshletEnclosedVolume(r.Context.get<const GpuBuffers>(),*owner,GetMesh(r,inst->Entity)) : std::nullopt;
     const double enclosed = volume ? *volume * world_scale * world_scale * world_scale : 0.0;
@@ -165,6 +170,7 @@ void RetuneModalObject(const state::Scene &r, ModalBank &b, uint32_t slot, state
     }
     TuneModalObject(b, slot, freqs, t60s, scale);
     std::atomic_ref{b.OutGain[slot]}.store(ModalOutGain(r, e, scale), std::memory_order_relaxed);
+    b.RetunedWorldScale[slot] = WorldMeanScale(r, e);
 }
 
 // Builds a replacement bank from every modal sound object and installs it atomically for the audio thread.
@@ -676,7 +682,6 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
     }
     // Rebuild SoundVertices from VertexSamples/ModalModes, selected by SoundVerticesModel.
     // Runs before any handler that reads SoundVertices.
-    bool reporting_stale = !reactive(r, Change::ContactReportingDerivation).empty();
     for (auto e : reactive(r, Change::SoundVerticesDerivation)) {
         const auto *model = r.try_get<const SoundVerticesModel>(e);
         std::vector<uint32_t> new_vertices;
@@ -689,7 +694,6 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
                 new_vertices = modes->Vertices;
             }
         }
-        reporting_stale = true;
         if (new_vertices.empty()) {
             r.remove<SoundVertices>(e);
             continue;
@@ -697,7 +701,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         auto &meshes = r.Context.get<MeshStore>();
         if (auto *sv = r.try_get<SoundVertices>(e)) {
             if (!std::ranges::equal(meshes.Arenas().SoundVertices.Get(sv->Vertices), new_vertices)) {
-                meshes.ReleaseSoundVertices(sv->Vertices);
+                meshes.ReleaseSoundVertices({sv->Vertices});
                 r.replace<SoundVertices>(e, SoundVertices{meshes.AllocateSoundVertices(new_vertices)});
             }
         } else {
@@ -713,8 +717,20 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
     }
     // A body reports contacts when anything under it can sound.
     // Stop traversal at nested rigid bodies so each node maps to one body.
+    // Only the bodies owning a node whose sounding, body, or hierarchy changed rederive.
     // Intentional registry write outside Apply: derived from the sound models under each body.
-    if (reporting_stale) {
+    {
+        const auto owning_body = [&r](state::Entity e) { return FindAncestorIf(r, e, [&r](state::Entity node) { return r.all_of<PhysicsBodyHandle>(node); }); };
+        state::DirtySet bodies;
+        const auto add_owners = [&](state::Entity e) {
+            if (!r.valid(e)) return;
+            if (const auto body = owning_body(e); body != state::Null) bodies.emplace(body);
+            // A body's subtree leaves or joins the body enclosing it.
+            if (r.all_of<PhysicsBodyHandle>(e))
+                if (const auto outer = owning_body(ParentOrNull(r, e)); outer != state::Null) bodies.emplace(outer);
+        };
+        for (const auto e : reactive(r, Change::ContactReportingDerivation)) add_owners(e);
+        for (const auto e : reactive(r, Change::SoundVerticesDerivation)) add_owners(e);
         const auto sounds = [&r](this auto &self, state::Entity node) -> bool {
             if (IsModalSounding(r, node)) return true;
             for (auto child : Children{&r, node}) {
@@ -722,7 +738,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
             }
             return false;
         };
-        for (const auto body : r.view<const PhysicsBodyHandle>()) {
+        for (const auto body : bodies) {
             if (sounds(body)) r.emplace_or_replace<ReportContacts>(body);
             else r.remove<ReportContacts>(body);
         }
@@ -820,10 +836,13 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
             m.RenderPool.SetWorkgroup(device ? device->RenderWorkgroup : nullptr);
             for (uint32_t slot = 0; slot < uint32_t(bank.Entities.size()); ++slot) SetModalOutGain(r, bank, slot, bank.Entities[slot]);
         }
-        // Retune objects whose node was rescaled.
+        // Retune objects whose world scale changed.
         auto &trackers = r.Context.get<AudioTrackers>();
-        for (auto e : trackers.Scale) {
-            if (auto slot = FindModalObject(bank, e)) RetuneModalObject(r, bank, *slot, e);
+        if (!trackers.Scale.empty()) {
+            for (uint32_t slot = 0; slot < uint32_t(bank.Entities.size()); ++slot) {
+                const auto e = bank.Entities[slot];
+                if (trackers.Scale.contains(e) && WorldMeanScale(r, e) != bank.RetunedWorldScale[slot]) RetuneModalObject(r, bank, slot, e);
+            }
         }
         trackers.Scale.clear();
         trackers.Modes.clear();

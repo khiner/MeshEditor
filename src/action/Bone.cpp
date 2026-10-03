@@ -26,7 +26,8 @@ void RebuildBoneStructure(state::Scene &r, state::Entity viewport, state::Entity
 
     for (const auto [_, arm_obj] : r.view<const ArmatureObject>().each()) {
         if (arm_obj.Entity != arm_data_entity) continue;
-        for (const auto b : arm_obj.BoneEntities) r.emplace_or_replace<BoneDelta>(b);
+        for (const auto b : arm_obj.BoneEntities)
+            if (!r.all_of<BoneDelta>(b)) r.emplace<BoneDelta>(b);
     }
     if (auto *ps = r.try_edit<ArmaturePoseState>(arm_data_entity)) {
         ps->BoneUserOffset.assign(armature.Bones.size(), Transform{});
@@ -35,13 +36,14 @@ void RebuildBoneStructure(state::Scene &r, state::Entity viewport, state::Entity
     r.edit<LastEvaluatedFrame>(viewport).Value = -1;
 }
 
-state::Entity CreateSingleBoneInstance(state::Scene &r, state::Entity arm_obj_entity, BoneId bone_id) {
+// `display_scales` holds every bone's display scale, in bone order.
+state::Entity CreateSingleBoneInstance(state::Scene &r, state::Entity arm_obj_entity, BoneId bone_id, std::span<const float> display_scales) {
     auto &arm_obj = r.edit<ArmatureObject>(arm_obj_entity);
     const auto &armature = r.get<const Armature>(arm_obj.Entity);
     const auto new_index = *armature.FindBoneIndex(bone_id);
     const auto parent_index = armature.Bones[new_index].ParentIndex;
     const auto parent_entity = parent_index == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[parent_index];
-    const auto bone_entity = ::CreateBoneEntity(r, arm_obj_entity, armature, new_index, parent_entity);
+    const auto bone_entity = ::CreateBoneEntity(r, arm_obj_entity, armature, new_index, parent_entity, display_scales[new_index]);
     if (arm_obj.JointEntity != state::Null && r.valid(arm_obj.JointEntity)) {
         ::CreateBoneJoints(r, arm_obj_entity, bone_entity, arm_obj.JointEntity);
     }
@@ -64,7 +66,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 const auto new_id = armature.AddBone("Bone", {}, {.P = (Conjugate(Normalize(arm_wt.R)) * -arm_wt.P) / arm_wt.S});
                 RebuildBoneStructure(r, viewport, r.get<ArmatureObject>(arm_obj_entity).Entity);
 
-                const auto bone_entity = CreateSingleBoneInstance(r, arm_obj_entity, new_id);
+                const auto bone_entity = CreateSingleBoneInstance(r, arm_obj_entity, new_id, ComputeBoneDisplayScales(armature));
                 SelectBone(r, bone_entity);
                 r.emplace_or_replace<BoneSelection>(bone_entity, false, true, false);
             },
@@ -102,14 +104,15 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 RebuildBoneStructure(r, viewport, arm_obj.Entity);
                 r.clear<BoneSelection, BoneActive>();
 
+                const auto display_scales = ComputeBoneDisplayScales(armature);
                 for (const auto id : new_bone_ids) {
-                    const auto bone_entity = CreateSingleBoneInstance(r, arm_obj_entity, id);
+                    const auto bone_entity = CreateSingleBoneInstance(r, arm_obj_entity, id, display_scales);
                     r.replace<BoneDisplayScale>(bone_entity, 0.f);
                     r.emplace<BoneSelection>(bone_entity, false, true, false);
                     r.emplace_or_replace<BoneActive>(bone_entity);
                 }
                 for (const auto idx : updated_parent_indices) {
-                    r.replace<BoneDisplayScale>(arm_obj.BoneEntities[idx], ComputeBoneDisplayScale(armature, idx));
+                    r.replace<BoneDisplayScale>(arm_obj.BoneEntities[idx], display_scales[idx]);
                 }
                 r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate);
             },
@@ -118,10 +121,11 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 if (arm_obj_entity == state::Null) return;
 
                 auto &armature = r.edit<Armature>(r.get<ArmatureObject>(arm_obj_entity).Entity);
+                std::unordered_set<std::string> names;
+                for (const auto &bone : armature.Bones) names.insert(bone.Name);
                 auto unique_name = [&](std::string_view base) {
                     for (uint32_t i = 1;; ++i) {
-                        if (auto c = std::format("{}.{:03d}", base, i);
-                            std::ranges::none_of(armature.Bones, [&](const auto &b) { return b.Name == c; })) return c;
+                        if (auto c = std::format("{}.{:03d}", base, i); names.insert(c).second) return c;
                     }
                 };
                 std::unordered_map<BoneId, BoneId> orig_to_new;
@@ -144,9 +148,10 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 RebuildBoneStructure(r, viewport, r.get<ArmatureObject>(arm_obj_entity).Entity);
                 r.clear<BoneSelection, BoneActive>();
 
+                const auto display_scales = ComputeBoneDisplayScales(armature);
                 state::Entity last_bone{};
                 for (const auto &[orig_entity, new_id] : duplicated) {
-                    last_bone = CreateSingleBoneInstance(r, arm_obj_entity, new_id);
+                    last_bone = CreateSingleBoneInstance(r, arm_obj_entity, new_id, display_scales);
                     r.replace<BoneDisplayScale>(last_bone, r.get<const BoneDisplayScale>(orig_entity).Value);
                     r.emplace<BoneSelection>(last_bone);
                 }
@@ -174,21 +179,15 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 const auto to_delete = CollectBonesForDeletion(r, arm_obj_entity);
                 if (to_delete.empty()) return;
 
+                std::vector<state::Entity> destroyed;
                 for (const auto idx : to_delete) {
                     const auto bone_entity = arm_obj.BoneEntities[idx];
                     const auto &bone = armature.Bones[idx];
                     const auto grandparent = bone.ParentIndex == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[bone.ParentIndex];
 
-                    if (auto *joints = r.try_get<BoneJointEntities>(bone_entity)) {
-                        if (joints->Head != state::Null) {
-                            Hide(r, joints->Head);
-                            r.destroy(joints->Head);
-                        }
-                        if (joints->Tail != state::Null) {
-                            Hide(r, joints->Tail);
-                            r.destroy(joints->Tail);
-                        }
-                        r.remove<BoneJointEntities>(bone_entity);
+                    if (const auto *joints = r.try_get<const BoneJointEntities>(bone_entity)) {
+                        if (joints->Head != state::Null) destroyed.push_back(joints->Head);
+                        if (joints->Tail != state::Null) destroyed.push_back(joints->Tail);
                     }
 
                     std::vector<state::Entity> children;
@@ -197,14 +196,13 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                         const auto ct = *EditedLocal(r, child);
                         const auto t = ComposeLocalTransforms(bone.RestLocal, ct);
                         PatchEditedLocal(r, child, [&](auto &local) { local = Transform{t.P, t.R, r.all_of<ScaleLocked>(child) ? ct.S : t.S}; });
-                        ClearParent(r, child);
                         SetParent(r, child, grandparent);
                     }
 
-                    ClearParent(r, bone_entity);
-                    Hide(r, bone_entity);
-                    r.destroy(bone_entity);
+                    ClearParents(r, std::span{&bone_entity, 1u});
+                    destroyed.push_back(bone_entity);
                 }
+                r.destroy(destroyed);
 
                 for (const auto idx : to_delete) {
                     armature.RemoveBone(armature.Bones[idx].Id);

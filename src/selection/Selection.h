@@ -57,5 +57,7 @@ PrimaryEditInstanceMap ComputePrimaryEditInstances(const state::Scene &, bool in
 PrimaryEditInstanceMaps ComputePrimaryEditInstanceMaps(const state::Scene &);
 
 bool HasScaleLockedInstance(const state::Scene &, state::Entity);
+// The mesh entities with any scale-locked instance.
+std::unordered_set<state::Entity> ScaleLockedMeshEntities(const state::Scene &);
 std::unordered_set<state::Entity> GetSelectedMeshEntities(const state::Scene &);
 } // namespace selection

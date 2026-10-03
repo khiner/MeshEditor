@@ -144,6 +144,37 @@ int main() {
         r.RemoveComponents(stale);
         expect(r.get<Name>(reused).Value == "survivor");
     };
+    "clearing a component captures each page once and notifies every holder"_test = [] {
+        state::Scene r;
+        std::vector<state::Entity> holders;
+        for (uint32_t i = 0; i < 200u; ++i) {
+            const auto e = r.create();
+            if (i % 7u == 0u || (i >= 64u && i < 96u)) continue;
+            r.emplace<Selected>(e);
+            holders.push_back(e);
+        }
+        std::map<uint32_t, uint32_t> captured;
+        r.HistoryOwner = &captured;
+        r.Capture = [](state::Scene &r, state::TypeId type, std::span<const state::PageMask> pages) {
+            if (type != state::Type<Selected>()) return;
+            for (const auto [page, mask] : pages) {
+                expect(r.storage<Selected>().mask(page) == mask);
+                ++(*static_cast<std::map<uint32_t, uint32_t> *>(r.HistoryOwner))[page];
+            }
+        };
+        state::DirtySet destroyed;
+        destroyed.bind(r);
+        destroyed.on<Selected>(state::On::Destroy);
+        r.clear<Selected>();
+        r.Capture = nullptr;
+        std::map<uint32_t, uint32_t> expected;
+        for (const auto e : holders) expected[state::Index(e) / state::Table::PageCount] = 1u;
+        const bool each_page_once = captured == expected;
+        expect(each_page_once);
+        expect(destroyed.size() == holders.size());
+        for (const auto e : holders) expect(destroyed.contains(e) && !r.all_of<Selected>(e));
+        expect(r.view<const Selected>().empty());
+    };
     "capture precedes mutation and dirty lifetime respects generation and reset"_test = [] {
         state::Scene r;
         std::vector<std::string> old;

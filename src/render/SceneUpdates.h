@@ -9,6 +9,7 @@ struct GpuBuffers;
 struct GpuSceneState;
 struct MeshBuffers;
 struct MeshStore;
+namespace mtl { struct ComputeChain; }
 
 struct SyncResult {
     std::vector<state::Entity> NewlyInserted;
@@ -24,8 +25,10 @@ bool RepointMeshInstances(state::Scene &, std::span<const state::Entity>);
 bool RepointChangedMeshes(state::Scene &, std::span<const state::Entity>);
 // Builds and places level-zero meshlets for the meshes, in input order.
 void BuildMeshletsNow(state::Scene &, std::span<const state::Entity>);
-// Refreshes primitive dependencies and invalidates coarse groups when those dependencies change.
-void RefreshClusterLodAttributes(state::Scene &, std::span<const state::Entity>);
+// Recomputes each material's required LOD attributes and returns whether any differ from the attributes the primitives hold.
+bool RefreshMaterialLodAttributes(state::Scene &);
+// Refreshes primitive dependencies and records the refit of coarse groups those changes invalidate.
+void RefreshClusterLodAttributes(state::Scene &, mtl::ComputeChain &, std::span<const state::Entity>);
 // Every instance of an edited mesh draws original geometry, since an element pick can land on any of them.
 bool EditPinsFinest(const selection::PrimaryEditInstanceMap &, const GpuSceneState &, state::Entity mesh_entity);
 // Builds the cluster hierarchy for each face mesh that lacks one and that an unpinned instance draws, and returns whether any mesh took one.
@@ -33,6 +36,8 @@ bool BuildDemandedClusterLods(state::Scene &, bool edit_mode);
 void BuildBoneMeshletsNow(state::Scene &, std::span<const state::Entity>);
 // Borrows a dense canonical face corner set as the mesh's triangle indices.
 void AssignFaceIndices(const MeshStore &, const Mesh &, MeshBuffers &);
+// Derives RenderInstance from the Instance and Hidden of each entity in Change::InstanceVisibility.
+void DeriveRenderInstances(state::Scene &);
 SyncResult SyncModelsBuffers(state::Scene &);
 bool SyncViewportRenderResources(state::Scene &, state::Entity);
 uint8_t InstanceStateBits(const state::Scene &, state::Entity);

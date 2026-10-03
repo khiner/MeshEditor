@@ -12,6 +12,7 @@
 #include "metal/MetalCpp.h"
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
+#include "render/GpuSceneState.h"
 #include "render/MaterialComponents.h"
 #include "render/Pipelines.h"
 #include "render/TextureRefs.h"
@@ -607,5 +608,7 @@ void ResetImportedTexturesAndMaterials(state::Scene &r) {
     ReleaseImportedTextures(r);
     auto &buffers = r.Context.get<GpuBuffers>();
     if (buffers.Materials.Count<PBRMaterial>() > 1) buffers.Materials.SetCount<PBRMaterial>(1u);
+    // The next material change compares against no prior attributes, since later imports reuse the released indices.
+    if (auto *scene = r.Context.find<GpuSceneState>()) scene->RequiredMaterialAttributes.clear();
     if (auto &ms = r.Context.get<MaterialStore>(); ms.Names.size() > 1) ms.ResizeNames(1);
 }

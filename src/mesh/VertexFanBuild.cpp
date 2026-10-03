@@ -35,7 +35,16 @@ void ReleaseFormerFans(MeshStore &meshes, const FanBatch &batch) {
 
 void EncodeVertexFans(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshConnectivityJob> sources,
                       std::span<const uint32_t> vertex_blocks, bool fresh) {
-    const auto batch = std::make_shared<FanBatch>(chain.Buffers,0u,uint32_t(sources.size()));
+    // A source's scratch holds its vertex metadata, corner keys, order and temporaries, radix histograms, totals and tile data.
+    const auto scratch_words=[&](const MeshConnectivityJob &source) {
+        const uint64_t h=source.HalfedgeCount, v=source.VertexCount;
+        return (fresh ? 1u : 4u)*v+(fresh ? 3u : 4u)*h+16u*((h+255u)/256u)+17u+(v+255u)/256u;
+    };
+    uint64_t total_words=0u;
+    for (const auto &source : sources) if (source.VertexCount) total_words+=scratch_words(source);
+    if (!total_words) return;
+    if (total_words > UINT32_MAX) throw std::length_error("Vertex fan scratch exceeds its address space.");
+    const auto batch = std::make_shared<FanBatch>(chain.Scratch,uint32_t(total_words));
     auto &meshes = r.Context.get<MeshStore>();
     auto &fans = meshes.VertexFans();
     std::vector<Range> runs;
@@ -51,13 +60,11 @@ void EncodeVertexFans(state::Scene &r, mtl::ComputeChain &chain, std::span<const
         // Truncating InvalidOffset to this many radix bits still leaves it
         // above every valid vertex rank, including power-of-two domains.
         job.VertexKeyPasses=std::max(1u,(std::bit_width(job.Vertices.Count)+3u)/4u);
-        const uint64_t h=job.HalfedgeCount, v=job.VertexCount, blocks=(h+255u)/256u, tiles=(v+255u)/256u;
+        const uint64_t h=job.HalfedgeCount, v=job.VertexCount, blocks=(h+255u)/256u;
         if (fresh && (job.Vertices.Storage.Slot!=InvalidSlot || job.Halfedges.Storage.Slot!=InvalidSlot || job.Roots.Offset%256u)) {
             throw std::invalid_argument("Fresh vertex fans require aligned dense vertices and corners.");
         }
-        const uint64_t words=(fresh ? 1u : 4u)*v+(fresh ? 3u : 4u)*h+16u*blocks+17u+tiles;
-        if (words > UINT32_MAX) throw std::length_error("Vertex fan scratch exceeds its address space.");
-        job.Metadata=batch->AllocateScratch(uint32_t(words));
+        job.Metadata=batch->AllocateScratch(uint32_t(scratch_words(source)));
         job.Keys=job.Metadata+uint32_t((fresh ? 1u : 4u)*v); job.Order=job.Keys+uint32_t((fresh ? 1u : 2u)*h);
         job.Temporary=job.Order+uint32_t(h); job.Histogram=job.Temporary+uint32_t(h);
         job.Totals=job.Histogram+uint32_t(16u*blocks); job.TileData=job.Totals+16u;
@@ -68,12 +75,10 @@ void EncodeVertexFans(state::Scene &r, mtl::ComputeChain &chain, std::span<const
         }
         batch->AddJob(job,{uint32_t((std::max(v,h)+255u)/256u),uint32_t(blocks),h ? 16u : 0u});
     }
-    if (batch->Jobs.empty()) return;
     fans.Items.Buffer.CaptureWriteRanges(runs,sizeof(uvec2));
     PageFootprint roots;
     roots.Add(meshes.Arenas().VertexCorners.Buffer,vertex_blocks,BlockBytes<uvec2>);
     roots.CaptureWrites();
-    batch->Scratch.SetUsedSize(uint64_t(batch->ScratchWords)*sizeof(uint32_t));
     std::vector<TiledPass> passes{{MeshPass::VertexFanInit,0u},{MeshPass::VertexFanKeys,1u},{MeshPass::VertexFanTileScan,0u},
         {MeshPass::VertexFanTilePrefix,PerJob}};
     // Dense halfedge work is already in canonical corner order. A stable

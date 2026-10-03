@@ -200,16 +200,16 @@ struct MeshStore {
     uint32_t BeginTopologyOutput(uint32_t source, std::span<const uint32_t> materials);
 
     // Adds live elements to a mesh domain for a topology emitter to fill, and returns their handles.
-    // Without a list the handles form one run, and otherwise a list of nonconsecutive handles goes to `list`, which needs a bindless slot.
+    // Without a list the handles form one run, and otherwise a list of nonconsecutive handles goes to a range of `list`, which needs a bindless slot.
     // New elements have their enabled attributes at defaults and no selection, and their value pages are captured.
     // After emitting values, refresh aggregates for affected selectable blocks before publishing the completed edit.
-    ElementHandleRange InsertElements(uint32_t id, ElementDomain, uint32_t count, mtl::Buffer *list);
+    ElementHandleRange InsertElements(uint32_t id, ElementDomain, uint32_t count, BufferArena<uint32_t> *list);
     // Clears the elements the work names, with their selection, and returns the blocks whose membership changed.
     // The caller refreshes those blocks' aggregates.
     std::vector<uint32_t> EraseElements(uint32_t id, ElementDomain, const BufferArena<uint32_t> &storage, ElementWork);
     // Clears the handles after the first `used` of an insertion made for a bound, listed in `list` when not a run, and shrinks `inserted` to the used ones.
     // The cleared handles never held selection.
-    void TrimInsertedElements(uint32_t id, ElementDomain, ElementHandleRange &inserted, const mtl::Buffer &list, uint32_t used);
+    void TrimInsertedElements(uint32_t id, ElementDomain, ElementHandleRange &inserted, const BufferArena<uint32_t> &list, uint32_t used);
 
     void Track(store::History &);
     void FinishRestore();
@@ -273,8 +273,8 @@ struct MeshStore {
     // A face-less line mesh changes its entire render domain when its first
     // face is created. Retire line incidence while preserving vertex handles.
     void RetireLineConnectivity(state::Scene &, uint32_t id);
-    // Returns the clone's store ID.
-    uint32_t CloneMesh(const Mesh &, const MeshPipelines &);
+    // Clones each source record with one GPU submit, and returns the clones' store IDs in source order.
+    std::vector<uint32_t> CloneMeshes(std::span<const uint32_t> source_ids, const MeshPipelines &);
     // Returns a vertex-only store ID that must be released with Release.
     uint32_t AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &);
     void Release(uint32_t id);
@@ -301,7 +301,7 @@ struct MeshStore {
     TetBuffers AllocateTets(std::span<const vec3> positions, std::span<const uint32_t> edge_indices);
     void ReleaseTets(TetBuffers);
     Range AllocateSoundVertices(std::span<const uint32_t>);
-    void ReleaseSoundVertices(Range);
+    void ReleaseSoundVertices(std::vector<Range>);
 
     // Selection masks mirror canonical element blocks.
     // Only summaries, roots and gesture state are per mesh.
@@ -336,8 +336,8 @@ struct MeshStore {
     void PublishSelectionSummary(uint32_t id);
     EditSelectionSummary &WriteSelectionSummary(uint32_t id);
     void SetSelectionBaseline(uint32_t id, Element, std::vector<std::pair<uint32_t, MeshArenas::SelectionBlock>>, uint32_t active);
-    // Writes the selected handles in ascending order.
-    void GatherSelectedElements(state::Scene &, uint32_t id, Element, mtl::Buffer &output) const;
+    // Records the gather of the selected handles in ascending order into a range it allocates in `output`, and returns that range.
+    Range GatherSelectedElements(state::Scene &, mtl::ComputeChain &, uint32_t id, Element, BufferArena<uint32_t> &output) const;
     bool IsLiveElement(uint32_t id, Element, uint32_t handle) const;
     uint32_t GetSelectionBitOffset(uint32_t id, Element) const;
     uint32_t GetSelectionSlot(Element) const;

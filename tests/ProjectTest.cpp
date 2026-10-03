@@ -11,6 +11,7 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStores.h"
 #include "project/Assets.h"
+#include "render/Instance.h"
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
@@ -231,6 +232,44 @@ void TestExternalReferences() {
     errors.clear();
     restored.Audit();
 }
+
+// The settle pass derives RenderInstance from Instance and Hidden, through actions and history.
+void TestRenderInstanceDerivation() {
+    const TestDir dir{"/tmp/mesheditor-scratch/project-render-instance"};
+    Fixture f;
+    auto &p = *f.P;
+    auto &r = f.R;
+    expect(p.New(dir));
+    state::DirtySet created;
+    created.bind(r);
+    created.on<RenderInstance>(state::On::Create);
+    f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>()});
+    const auto entity = FindActiveEntity(r);
+    expect(r.all_of<RenderInstance>(entity));
+    f.Do(action::object::SetSelectedVisible{false});
+    expect(r.all_of<Hidden>(entity) && !r.all_of<RenderInstance>(entity));
+    f.Do(action::object::SetSelectedVisible{true});
+    expect(r.all_of<RenderInstance>(entity));
+    f.Do(action::object::SetSelectedVisible{false});
+    expect(!r.all_of<RenderInstance>(entity));
+    p.Undo();
+    expect(!r.all_of<Hidden>(entity) && r.all_of<RenderInstance>(entity));
+    p.Redo();
+    expect(!r.all_of<RenderInstance>(entity));
+    created.clear();
+    f.Do(action::object::Duplicate{});
+    const auto duplicate = FindActiveEntity(r);
+    expect(duplicate != entity && r.all_of<Instance, Hidden>(duplicate));
+    expect(!r.all_of<RenderInstance>(duplicate) && !created.contains(duplicate));
+    f.Do(action::object::SetSelectedVisible{true});
+    f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>()});
+    const auto other_mesh = r.get<const Instance>(FindActiveEntity(r)).Entity;
+    r.replace<Instance>(duplicate, other_mesh);
+    p.Settle();
+    p.History.Commit("Retarget duplicate", {});
+    expect(r.get<const RenderInstance>(duplicate).Entity == other_mesh);
+    f.Audit();
+}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -245,5 +284,6 @@ int main(int argc, char **argv) {
     TestSavedProject();
     TestActionsArchive();
     TestExternalReferences();
+    TestRenderInstanceDerivation();
     return RunSuites();
 }

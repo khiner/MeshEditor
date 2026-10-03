@@ -913,7 +913,8 @@ bool EntityInActiveScene(const state::Scene &r, state::Entity active_scene, stat
     return !sm || std::ranges::find(sm->Scenes, active_scene) != sm->Scenes.end();
 }
 
-// Toggle RenderInstance so only nodes in the active scene render. No-op for single-scene assets.
+// Hide the nodes outside the active scene.
+// No-op for single-scene assets.
 void ApplySceneVisibility(state::Scene &r) {
     const auto active = ActiveSceneEntity(r);
     for (auto [e, sm, _i] : r.view<const SceneMembership, const Instance>().each()) {
@@ -1136,6 +1137,8 @@ SourceMaterials ReadMaterials(const fastgltf::Asset &asset) {
 // Node facts derived from the document before any scene mutation.
 struct NodePlan {
     std::vector<std::optional<uint32_t>> Parents;
+    // Each child's position in its parent's bounds-filtered children list.
+    std::vector<std::optional<uint32_t>> Siblings;
     std::vector<Transform> LocalTransforms;
     std::vector<std::optional<mat4>> SourceMatrices;
     // Merged over every scene with the default scene first, so a node shared between scenes keeps the default scene's placement.
@@ -1156,6 +1159,7 @@ NodePlan PlanNodes(const fastgltf::Asset &asset, uint32_t scene_index) {
     const auto node_count = asset.nodes.size();
     NodePlan plan{
         .Parents = BuildNodeParentTable(asset),
+        .Siblings = std::vector<std::optional<uint32_t>>(node_count),
         .LocalTransforms = std::vector<Transform>(node_count),
         .SourceMatrices = std::vector<std::optional<mat4>>(node_count),
         .InScene = std::vector(node_count, false),
@@ -1168,6 +1172,15 @@ NodePlan PlanNodes(const fastgltf::Asset &asset, uint32_t scene_index) {
         .SkinArmaNode = std::vector<std::optional<uint32_t>>(asset.skins.size()),
         .SkinJointNodes = std::vector<std::vector<uint32_t>>(asset.skins.size()),
     };
+    for (uint32_t parent = 0; parent < node_count; ++parent) {
+        uint32_t sibling = 0;
+        for (const auto child_raw : asset.nodes[parent].children) {
+            const auto child = ToIndex(child_raw, node_count);
+            if (!child) continue;
+            if (plan.Parents[*child] == parent && !plan.Siblings[*child]) plan.Siblings[*child] = sibling;
+            ++sibling;
+        }
+    }
     for (uint32_t node_index = 0; node_index < node_count; ++node_index) {
         const auto &fg_transform = asset.nodes[node_index].transform;
         if (std::holds_alternative<fastgltf::TRS>(fg_transform)) {
@@ -1254,6 +1267,11 @@ NodePlan PlanNodes(const fastgltf::Asset &asset, uint32_t scene_index) {
         plan.NearestObjectAncestor[node_index] = FindNearestMarkedAncestor(node_index, plan.Parents, plan.IsObjectEmitted);
     }
     return plan;
+}
+
+// The source placement of a node's entity: its index, source parent, sibling position, and retained matrix.
+GltfNode SourceGltfNode(const NodePlan &plan, uint32_t node_index) {
+    return {.Index = node_index, .Parent = plan.Parents[node_index], .Sibling = plan.Siblings[node_index], .Matrix = plan.SourceMatrices[node_index]};
 }
 
 // One armature per distinct armature root, consuming every skin anchored there, with its bones validated and rest-posed.
@@ -1586,7 +1604,7 @@ ImportedObjects ImportObjects(state::Scene &r, const fastgltf::Asset &asset, con
             const auto name = instanced[node_index] ? std::format("{}.{}", base_name, i) : base_name;
             const auto transform = instanced[node_index] ? ToTransform(plan.WorldTransforms[node_index] * ToMatrix(instance_transforms[i])) : plan.LocalTransforms[node_index];
             const ObjectCreateInfo info{.Name = name, .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None};
-            GltfNode node{.Index = node_index};
+            auto node = SourceGltfNode(plan, node_index);
             state::Entity e = state::Null;
             if (primary_mesh != state::Null) {
                 e = ::AddMeshInstance(r, primary_mesh, {.Name = name, .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true});
@@ -1632,7 +1650,7 @@ ImportedObjects ImportObjects(state::Scene &r, const fastgltf::Asset &asset, con
         if (plan.InScene[node_index]) continue;
         const auto &source_node = asset.nodes[node_index];
         const auto e = r.create();
-        GltfNode node{.Index = node_index};
+        auto node = SourceGltfNode(plan, node_index);
         r.emplace<Transform>(e, plan.LocalTransforms[node_index]);
         r.emplace<WorldTransform>(e);
         if (const auto mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size()); mesh_index && mesh_entities[*mesh_index][size_t(MeshKind::Triangles)] != state::Null) {
@@ -2036,7 +2054,7 @@ std::vector<state::Entity> ImportArmatures(state::Scene &r, const fastgltf::Asse
         // Follow the root node's entity when it is an object (it may be animated), else the nearest object above it.
         if (arma_node) {
             const auto parent_node = objects.Of(*arma_node) != state::Null ? arma_node : plan.NearestObjectAncestor[*arma_node];
-            if (const auto parent_entity = parent_node ? objects.Of(*parent_node) : state::Null; parent_entity != state::Null) SetParentKeepWorld(r, armature_entity, parent_entity);
+            if (const auto parent_entity = parent_node ? objects.Of(*parent_node) : state::Null; parent_entity != state::Null) SetParentKeepWorld(r, std::span{&armature_entity, 1u}, parent_entity);
         }
 
         for (uint32_t skin_slot = 0; skin_slot < group.SkinIndices.size(); ++skin_slot) {
@@ -2062,7 +2080,8 @@ std::vector<state::Entity> ImportArmatures(state::Scene &r, const fastgltf::Asse
         for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
             const auto joint_node_index = armature.Bones[i].JointNodeIndex;
             if (!joint_node_index) continue;
-            GltfNode bone_node{.Index = *joint_node_index, .EmptyName = *joint_node_index < asset.nodes.size() && asset.nodes[*joint_node_index].name.empty()};
+            auto bone_node = SourceGltfNode(plan, *joint_node_index);
+            bone_node.EmptyName = asset.nodes[*joint_node_index].name.empty();
             r.emplace<GltfNode>(bone_entities[i], std::move(bone_node));
         }
 
@@ -2074,6 +2093,7 @@ std::vector<state::Entity> ImportArmatures(state::Scene &r, const fastgltf::Asse
             }
             return state::Null;
         };
+        EnsureWorldTransform(r, armature_entity);
         const mat4 armature_world = ToMatrix(r.get<const WorldTransform>(armature_entity));
         for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
             const auto &bone = armature.Bones[i];
@@ -2091,31 +2111,8 @@ std::vector<state::Entity> ImportArmatures(state::Scene &r, const fastgltf::Asse
     return data_entities;
 }
 
-// Records each source-derived entity's source parent, sibling position, and matrix form, then applies KHR_node_visibility.
-void RecordSourceHierarchy(state::Scene &r, const fastgltf::Asset &asset, const NodePlan &plan) {
-    for (const auto [entity, node] : r.view<const GltfNode>().each()) {
-        if (!node.Index || *node.Index >= asset.nodes.size()) continue;
-        const auto parent_idx = plan.Parents[*node.Index];
-        if (!parent_idx && !plan.SourceMatrices[*node.Index]) continue;
-        auto &edited = r.edit<GltfNode>(entity);
-        if (parent_idx) {
-            edited.Parent = *parent_idx;
-            // Sibling position in the parent's bounds-filtered children list.
-            uint32_t sibling_idx = 0;
-            for (const auto child_raw : asset.nodes[*parent_idx].children) {
-                const auto child = ToIndex(child_raw, asset.nodes.size());
-                if (!child) continue;
-                if (*child == *node.Index) {
-                    edited.Sibling = sibling_idx;
-                    break;
-                }
-                ++sibling_idx;
-            }
-        }
-        if (plan.SourceMatrices[*node.Index]) edited.Matrix = *plan.SourceMatrices[*node.Index];
-    }
-
-    // KHR_node_visibility: a false flag hides the node and its descendants.
+// Applies KHR_node_visibility: a false flag hides the node and its descendants.
+void ApplySourceVisibility(state::Scene &r, const fastgltf::Asset &asset) {
     for (const auto [entity, node] : r.view<const GltfNode>().each()) {
         if (node.Index && *node.Index < asset.nodes.size() && !asset.nodes[*node.Index].visible) r.emplace_or_replace<Visibility>(entity, 0u);
     }
@@ -2373,7 +2370,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     ImportNodePhysics(r, asset, objects, mesh_entities, physics);
     ImportAudio(r, asset, objects);
     const auto armature_data_entities = ImportArmatures(r, asset, plan, *armature_plans, objects, source_path.stem().string());
-    RecordSourceHierarchy(r, asset, plan);
+    ApplySourceVisibility(r, asset);
     const auto image_light = ToIndex(asset.scenes[scene_index].imageBasedLightIndex, asset.imageBasedLights.size());
     if (image_light) {
         const auto &src_ibl = asset.imageBasedLights[*image_light];

@@ -147,6 +147,13 @@ void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<Meshl
         }
     }
     membership.ReserveAdditional(MeshletBuildScratchWords(meshes,sources));
+    uint64_t triangle_ids=0u, local_triangles=0u;
+    for (const auto &source : sources) {
+        triangle_ids+=source.ElementCount;
+        if (source.Topology==0u) local_triangles+=uint64_t(source.ElementCount)*3u;
+    }
+    buffers.MeshletTriangleIds.ReserveAdditional(triangle_ids);
+    buffers.MeshletLocalTriangles.ReserveAdditional(local_triangles);
     for (auto &source : sources) {
         auto &mb = *source.Destination;
         buffers.ReleaseMeshlets(mb);
@@ -286,6 +293,24 @@ void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<Meshl
         dispatch(MeshPass::MeshletBuildOffsets,JobDomain);
         chain.Submit();
     }
+    uint64_t meshlets=0u, vertices=0u, primitives=0u, records=0u;
+    for (uint32_t i = 0; i < jobs.size(); ++i) {
+        const auto results = scratch.GetSpan<uint32_t>({jobs[i].StatsOffset + 8u, 2u});
+        meshlets+=results[0];
+        vertices+=results[1];
+        if (!sources[i].Owner) {
+            primitives+=jobs[i].PrimitiveCount;
+            ++records;
+        }
+    }
+    buffers.Meshlets.ReserveAdditional(meshlets);
+    buffers.MeshletLodLeaves.ReserveAdditional(meshlets);
+    buffers.MeshletSpatialNodes.ReserveAdditional(meshlets);
+    buffers.MeshletVertexCorners.ReserveAdditional(vertices);
+    buffers.Primitives.ReserveAdditional(primitives);
+    buffers.LodNodes.ReserveAdditional(primitives);
+    buffers.LodParents.ReserveAdditional(primitives);
+    buffers.MeshRecords.ReserveAdditional(records);
     for (uint32_t i = 0; i < jobs.size(); ++i) {
         auto &job = jobs[i];
         auto &mb = *sources[i].Destination;
@@ -374,13 +399,15 @@ void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<Meshl
     }
     if (!ownership.empty()) buffers.ActiveMeshlets.Update(ownership);
     for (uint32_t j=0u;j<leaves.size();++j) buffers.LodNodes.GetMutable({leaves[j],1u})[0].MeshletRoot=ownership[owned_sources.size()*3u+j].Root;
+    std::vector<MeshBuffers *> spatial;
     for (uint32_t j=0u;j<owned_sources.size();++j) {
         const auto i=owned_sources[j];
         sources[i].Destination->MeshletRoot = ownership[j*3u].Root;
         sources[i].Destination->PrimitiveRoot = ownership[j*3u+1u].Root;
         sources[i].Destination->NodeRoot = ownership[j*3u+2u].Root;
-        if (sources[i].StoreId!=InvalidOffset && sources[i].Topology==0u) BuildMeshletSpatial(r,*sources[i].Destination);
+        if (sources[i].StoreId!=InvalidOffset && sources[i].Topology==0u) spatial.push_back(sources[i].Destination);
     }
+    BuildMeshletSpatial(r,spatial);
     buffers.Ctx.ReclaimRetiredBuffers();
 }
 

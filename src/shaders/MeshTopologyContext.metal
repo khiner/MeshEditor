@@ -73,9 +73,10 @@ struct TopoContext {
     device const BindlessSet &B;
     constant MeshTopologyPushConstants &Pc;
 
-    device const MeshTopologyJob *Jobs() const { return BindlessBuffer(MeshTopologyJob, B.Buffer, Pc.JobsSlot); }
-    device const uint2 *Tiles() const { return BindlessBuffer(uint2, B.Buffer, Pc.TileMapSlot); }
-    device uint *Scratch() const { return BindlessBufferMutable(uint, B.Buffer, Pc.ScratchSlot); }
+    device uint *Storage() const { return BindlessBufferMutable(uint, B.Buffer, Pc.StorageSlot); }
+    device const MeshTopologyJob *Jobs() const { return reinterpret_cast<device const MeshTopologyJob *>(Storage() + Pc.JobsOffset); }
+    device const uint2 *Tiles() const { return reinterpret_cast<device const uint2 *>(Storage() + Pc.TileMapOffset); }
+    device uint *Scratch() const { return Storage() + Pc.ScratchOffset; }
     device atomic_uint *Atomic(device uint *p) const { return reinterpret_cast<device atomic_uint *>(p); }
     uint2 Tile(uint group_id) const { return Tiles()[Pc.FirstTile + group_id]; }
 

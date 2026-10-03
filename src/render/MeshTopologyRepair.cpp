@@ -48,55 +48,76 @@ struct FragmentBuild {
     std::vector<LodClusterRun> Runs;
 };
 
-// Every topology seeds, builds and adopts the same primitive-bound fragments.
+// One owner's partitions and the finest clusters they retire.
+struct OwnerFragments {
+    MeshBuffers *Owner;
+    std::span<const MeshletPatchPartition> Partitions;
+    std::span<const uint32_t> Retired{};
+};
+
+// Every topology seeds, builds and adopts the same primitive-bound fragments, and every owner's fragments share one build.
 // Reserve the seeds and builder work together before recording any dispatch.
-FragmentBuild BuildFragments(state::Scene &r,mtl::ComputeChain &chain,MeshBuffers &owner,
-                             std::span<const MeshletPatchPartition> partitions,std::span<const uint32_t> retired={},
-                             std::span<MeshletBuildSource> fresh={}) {
+std::vector<FragmentBuild> BuildFragments(state::Scene &r,mtl::ComputeChain &chain,std::span<const OwnerFragments> owners,
+                                          std::span<MeshletBuildSource> fresh={}) {
     auto &buffers=r.Context.get<GpuBuffers>();
     const auto &meshes=r.Context.get<const MeshStore>();
     const auto &a=meshes.Arenas();
-    const auto topology=owner.RenderTopology;
-    const auto domain=topology==0u ? a.Triangles.Capacity() : topology==1u ? a.EdgeHalfedges.Capacity() : a.Vertices.Capacity();
-    const auto mesh=BuildMeshRecord(buffers,owner,meshes,owner.StoreId,topology==0u,topology==1u);
-    std::vector<MeshBuffers> fragments(partitions.size());
+    size_t fragment_count=0u;
+    for (const auto &owner:owners) fragment_count+=owner.Partitions.size();
+    std::vector<MeshBuffers> fragments(fragment_count);
     try {
         std::vector<MeshletBuildSource> sources;
-        sources.reserve(partitions.size()+fresh.size());
-        std::vector<uint32_t> blocks,seed_blocks;
-        seed_blocks.reserve(partitions.size());
+        sources.reserve(fragment_count+fresh.size());
+        std::vector<std::vector<uint32_t>> blocks(owners.size());
+        // Each fragment's partition, element domain and seed block count.
+        struct Seed { const MeshletPatchPartition *Partition; uint32_t Domain, Blocks; };
+        std::vector<Seed> seeds;
+        seeds.reserve(fragment_count);
         uint64_t seed_words=0u;
-        for (uint32_t i=0u;i<partitions.size();++i) {
-            const auto &partition=partitions[i];
-            const auto first=blocks.size();
-            for (const auto element:partition.Elements) PushBlock(blocks,element,first);
-            seed_blocks.push_back(topology==0u ? UniqueTail(blocks,first) : uint32_t(blocks.size()-first));
-            fragments[i].Vertices=owner.Vertices;
-            sources.push_back({.Destination=&fragments[i],.Mesh=mesh,.StoreId=owner.StoreId,.Topology=topology,
-                .ElementCount=uint32_t(partition.Elements.size()),.Owner=&owner,.Primitive=partition.Primitive,.Group=partition.Group});
-            seed_words+=ElementWorkWords(domain,seed_blocks.back());
+        for (uint32_t o=0u;o<owners.size();++o) {
+            auto &owner=*owners[o].Owner;
+            const auto topology=owner.RenderTopology;
+            const auto domain=topology==0u ? a.Triangles.Capacity() : topology==1u ? a.EdgeHalfedges.Capacity() : a.Vertices.Capacity();
+            const auto mesh=BuildMeshRecord(buffers,owner,meshes,owner.StoreId,topology==0u,topology==1u);
+            auto &owner_blocks=blocks[o];
+            for (const auto &partition:owners[o].Partitions) {
+                const auto first=owner_blocks.size();
+                for (const auto element:partition.Elements) PushBlock(owner_blocks,element,first);
+                const auto &seed=seeds.emplace_back(Seed{&partition,domain,topology==0u ? UniqueTail(owner_blocks,first) : uint32_t(owner_blocks.size()-first)});
+                seed_words+=ElementWorkWords(domain,seed.Blocks);
+                auto &fragment=fragments[sources.size()];
+                fragment.Vertices=owner.Vertices;
+                sources.push_back({.Destination=&fragment,.Mesh=mesh,.StoreId=owner.StoreId,.Topology=topology,
+                    .ElementCount=uint32_t(partition.Elements.size()),.Owner=&owner,.Primitive=partition.Primitive,.Group=partition.Group});
+            }
+            if (!std::ranges::is_sorted(owner_blocks)) std::ranges::sort(owner_blocks);
+            owner_blocks.erase(std::unique(owner_blocks.begin(),owner_blocks.end()),owner_blocks.end());
         }
         sources.insert(sources.end(),fresh.begin(),fresh.end());
         chain.Scratch.ReserveAdditional(seed_words+MeshletBuildScratchWords(meshes,sources));
-        for (uint32_t i=0u;i<partitions.size();++i)
-            sources[i].Elements=SeedElementWorkHandles(chain.Scratch,domain,partitions[i].Elements,seed_blocks[i]);
-        if (!std::ranges::is_sorted(blocks)) std::ranges::sort(blocks);
-        blocks.erase(std::unique(blocks.begin(),blocks.end()),blocks.end());
+        for (uint32_t i=0u;i<fragment_count;++i)
+            sources[i].Elements=SeedElementWorkHandles(chain.Scratch,seeds[i].Domain,seeds[i].Partition->Elements,seeds[i].Blocks);
         BuildGpuMeshlets(r,chain,sources);
-        RetireMeshletOwners(r,owner,retired);
-        std::vector<MeshletPatchAdoptJob> jobs;
-        jobs.reserve(partitions.size());
-        FragmentBuild result;
-        result.Runs.reserve(partitions.size());
-        for (uint32_t i=0u;i<partitions.size();++i) {
-            const auto &partition=partitions[i];
-            const auto range=fragments[i].Meshlets;
-            jobs.push_back({.First=range.Offset,.Count=range.Count,
-                .Group=partition.Group,.Primitive=partition.Primitive,.Leaf=partition.Leaf});
-            result.Runs.push_back({range.Offset,range.Count,partition.Primitive,true});
+        std::vector<FragmentBuild> results(owners.size());
+        for (uint32_t o=0u,first=0u;o<owners.size();++o) {
+            auto &owner=*owners[o].Owner;
+            const auto owner_partitions=owners[o].Partitions;
+            RetireMeshletOwners(r,owner,owners[o].Retired);
+            std::vector<MeshletPatchAdoptJob> jobs;
+            jobs.reserve(owner_partitions.size());
+            auto &result=results[o];
+            result.Runs.reserve(owner_partitions.size());
+            for (uint32_t i=0u;i<owner_partitions.size();++i) {
+                const auto &partition=owner_partitions[i];
+                const auto range=fragments[first+i].Meshlets;
+                jobs.push_back({.First=range.Offset,.Count=range.Count,
+                    .Group=partition.Group,.Primitive=partition.Primitive,.Leaf=partition.Leaf});
+                result.Runs.push_back({range.Offset,range.Count,partition.Primitive,true});
+            }
+            result.Added=AdoptMeshletFragments(r,chain,owner,std::span{fragments}.subspan(first,owner_partitions.size()),jobs,blocks[o]);
+            first+=uint32_t(owner_partitions.size());
         }
-        result.Added=AdoptMeshletFragments(r,chain,owner,fragments,jobs,blocks);
-        return result;
+        return results;
     } catch (...) {
         for (auto &fragment:fragments) buffers.ReleaseMeshlets(fragment);
         throw;
@@ -216,64 +237,98 @@ void RepairElementMeshlets(state::Scene &r, mtl::ComputeChain &chain, MeshBuffer
         const auto primitive=EnsureMeshletPrimitive(r,owner,material);
         partitions.push_back({.Primitive=primitive,.Leaf=buffers.Primitives.Get({primitive,1u})[0].LodFinestNode,.Elements=std::move(members)});
     }
-    const auto built=BuildFragments(r,chain,owner,partitions);
-    EditLodNodes(r,chain,owner,{},built.Runs,{});
+    const auto built=BuildFragments(r,chain,std::array{OwnerFragments{&owner,partitions}});
+    EditLodNodes(r,chain,owner,{},built[0].Runs,{});
     buffers.PreludeStale=true;
 }
 
 namespace {
-void RepairTriangleRender(state::Scene &r,mtl::ComputeChain &chain,state::Entity entity,const MeshletPatchInput &input,
-                          std::span<MeshletBuildSource> fresh) {
+// One owner's triangle edit.
+struct TriangleRepair {
+    state::Entity Entity;
+    MeshletPatchInput Input;
+};
+
+// Repairs every owner's triangle render with one fragment build and one submit, before which the host cannot read the fragments' records.
+void RepairTriangleRender(state::Scene &r,mtl::ComputeChain &chain,std::span<const TriangleRepair> repairs,std::span<MeshletBuildSource> fresh) {
     const profile::CpuScope scope{"TriangleRenderRepair"};
     auto &buffers=r.Context.get<GpuBuffers>();
-    auto &owner=MeshBuffersOf(r,entity);
-    const auto patch=PlanMeshletPatch(r,owner,chain.Scratch,input);
-    if (patch.Clusters.empty() && patch.Partitions.empty()) return BuildGpuMeshlets(r,chain,fresh);
-    profile::RecordCounter("EditTouchedMeshlets", patch.Clusters.size());
-    profile::RecordCounter("EditPatchPartitions", patch.Partitions.size());
-    const auto built=BuildFragments(r,chain,owner,patch.Partitions,patch.Clusters,fresh);
-    profile::RecordCounter("TopologyAddedMeshlets", built.Added.size());
-    r.Context.get<GpuSceneState>().LodDemand.insert(entity);
-    // Retired members leave their groups; the remaining stale members refit.
-    auto stale=InvalidateClusterGroups(r,entity,patch.Groups);
-    std::erase_if(stale,[&](uint32_t cluster) { return std::ranges::binary_search(patch.Clusters,cluster); });
-    EditLodNodes(r,chain,owner,patch.Clusters,built.Runs,stale);
+    std::vector<state::Entity> entities;
+    std::vector<MeshletPatch> patches;
+    for (const auto &repair:repairs) {
+        auto patch=PlanMeshletPatch(r,MeshBuffersOf(r,repair.Entity),chain.Scratch,repair.Input);
+        if (patch.Clusters.empty() && patch.Partitions.empty()) continue;
+        profile::RecordCounter("EditTouchedMeshlets", patch.Clusters.size());
+        profile::RecordCounter("EditPatchPartitions", patch.Partitions.size());
+        entities.push_back(repair.Entity);
+        patches.push_back(std::move(patch));
+    }
+    if (patches.empty()) return BuildGpuMeshlets(r,chain,fresh);
+    std::vector<OwnerFragments> owners;
+    owners.reserve(patches.size());
+    for (uint32_t i=0u;i<patches.size();++i) owners.push_back({&MeshBuffersOf(r,entities[i]),patches[i].Partitions,patches[i].Clusters});
+    const auto built=BuildFragments(r,chain,owners,fresh);
+    for (uint32_t i=0u;i<patches.size();++i) {
+        const auto &patch=patches[i];
+        profile::RecordCounter("TopologyAddedMeshlets", built[i].Added.size());
+        r.Context.get<GpuSceneState>().LodDemand.insert(entities[i]);
+        // Retired members leave their groups, and the remaining stale members refit.
+        auto stale=InvalidateClusterGroups(r,entities[i],patch.Groups);
+        std::erase_if(stale,[&](uint32_t cluster) { return std::ranges::binary_search(patch.Clusters,cluster); });
+        EditLodNodes(r,chain,*owners[i].Owner,patch.Clusters,built[i].Runs,stale);
+    }
     // The host reads the fragments' records once the build has emitted them.
     chain.Submit();
-    ReplaceGroupClusters(buffers,patch.Clusters,built.Added);
-    ReplaceMeshletSpatial(r,owner,patch.Clusters,built.Added);
-    RetireMeshletStorage(r,owner,patch.Clusters);
+    for (uint32_t i=0u;i<patches.size();++i) {
+        auto &owner=*owners[i].Owner;
+        ReplaceGroupClusters(buffers,patches[i].Clusters,built[i].Added);
+        ReplaceMeshletSpatial(r,owner,patches[i].Clusters,built[i].Added);
+        RetireMeshletStorage(r,owner,patches[i].Clusters);
+    }
 }
 } // namespace
 
-void RepairTopologyRender(state::Scene &r,state::Entity entity,const MeshTopologyEdit &topology,std::span<MeshletBuildSource> fresh) {
-    if (!topology.Output) return;
-    auto &owner=MeshBuffersOf(r,entity);
+void RepairTopologyRender(state::Scene &r,mtl::ComputeChain &chain,std::span<const std::pair<state::Entity,const MeshTopologyEdit *>> edits,
+                          std::span<MeshletBuildSource> fresh) {
     const auto &meshes=r.Context.get<const MeshStore>();
     const auto &a=meshes.Arenas();
-    const auto &record=meshes.Get(topology.StoreId);
-    owner.Vertices={{a.Vertices.First(record.Vertices),a.Vertices.Count(record.Vertices)},a.Vertices.Buffer.Slot};
-    // Unchanged uniform keys can retain their meshlets unless their vertex
-    // representative was a corner retired by this topology edit.
-    const bool stable_keys = (topology.Op == MeshTopologyOp::InsetRegion || topology.Op == MeshTopologyOp::InsetIndividual) &&
-        !(record.CornerAttributes & MeshAttributeBit_Normal) &&
-        topology.OriginalClassMode == record.Classification &&
-        record.Classification != uint32_t(CornerClassMode::Mixed);
-    RepairTriangleRender(r,topology.Chain,entity,{
-        .Changed=topology.ChangedTriangles.Triangles,.Removed=topology.Output->Replaced[1],.ReplacedCorners=topology.Output->Replaced[0],
-        .Added={topology.FirstTriangle,topology.AddedTriangleCount},.Sources=topology.SourceTriangles.GetSpan<uint32_t>(),.StableKeys=stable_keys,
-    },fresh);
+    std::vector<TriangleRepair> repairs;
+    repairs.reserve(edits.size());
+    for (const auto &[entity,topology]:edits) {
+        auto &owner=MeshBuffersOf(r,entity);
+        const auto &record=meshes.Get(topology->StoreId);
+        owner.Vertices={{a.Vertices.First(record.Vertices),a.Vertices.Count(record.Vertices)},a.Vertices.Buffer.Slot};
+        // Unchanged uniform keys can retain their meshlets unless their vertex
+        // representative was a corner retired by this topology edit.
+        const bool stable_keys = (topology->Op == MeshTopologyOp::InsetRegion || topology->Op == MeshTopologyOp::InsetIndividual) &&
+            !(record.CornerAttributes & MeshAttributeBit_Normal) &&
+            topology->OriginalClassMode == record.Classification &&
+            record.Classification != uint32_t(CornerClassMode::Mixed);
+        // Patch planning reads the sources before the repair allocates chain scratch.
+        repairs.push_back({entity,{
+            .Changed=topology->ChangedTriangles.Triangles,.Removed=topology->Output->Replaced[1],.ReplacedCorners=topology->Output->Replaced[0],
+            .Added={topology->FirstTriangle,topology->AddedTriangleCount},.Sources=chain.Scratch.Get(topology->SourceTriangles),.StableKeys=stable_keys,
+        }});
+    }
+    RepairTriangleRender(r,chain,repairs,fresh);
 }
 
-void RepairShadingRender(state::Scene &r,mtl::ComputeChain &chain,state::Entity entity,const FaceTriangles &changed) {
-    if (!changed.Count) return;
+void RepairShadingRender(state::Scene &r,mtl::ComputeChain &chain,std::span<const std::pair<state::Entity,FaceTriangles>> changes) {
     auto &buffers=r.Context.get<GpuBuffers>();
-    auto &owner=MeshBuffersOf(r,entity);
-    if (owner.StoreId==InvalidOffset || owner.PrimitiveRoot==InvalidOffset) throw std::invalid_argument("Local shading repair requires published render ownership.");
-    // Runtime slots rebuild on history restore, and the descriptor's canonical values reflect the changed corner class now.
-    buffers.MeshRecords.GetMutable(owner.MeshRecord)[0]=BuildMeshRecord(
-        buffers,owner,r.Context.get<const MeshStore>(),owner.StoreId,true,false);
-    RepairTriangleRender(r,chain,entity,{.Changed=changed.Triangles},{});
+    std::vector<TriangleRepair> repairs;
+    std::vector<state::Entity> entities;
+    for (const auto &[entity,changed]:changes) {
+        if (!changed.Count) continue;
+        auto &owner=MeshBuffersOf(r,entity);
+        if (owner.StoreId==InvalidOffset || owner.PrimitiveRoot==InvalidOffset) throw std::invalid_argument("Local shading repair requires published render ownership.");
+        // Runtime slots rebuild on history restore, and the descriptor's canonical values reflect the changed corner class.
+        buffers.MeshRecords.GetMutable(owner.MeshRecord)[0]=BuildMeshRecord(
+            buffers,owner,r.Context.get<const MeshStore>(),owner.StoreId,true,false);
+        repairs.push_back({entity,{.Changed=changed.Triangles}});
+        entities.push_back(entity);
+    }
+    if (repairs.empty()) return;
+    RepairTriangleRender(r,chain,repairs,{});
     buffers.PreludeStale=true;
-    RepointMeshInstances(r,std::span{&entity,1u});
+    RepointMeshInstances(r,entities);
 }

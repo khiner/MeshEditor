@@ -1218,12 +1218,14 @@ kernel void TopologyFaceTables(
     const uint corner = job.DstCornerOffset + range.x;
     const uint source = ctx.FaceMap(job)[fd];
     uint source_triangle = InvalidOffset;
-    if (job.DstTriangleSourceSlot != InvalidSlot && source != InvalidOffset) {
+    device uint *triangle_sources = job.DstTriangleSources.Slot != InvalidSlot ?
+        BindlessBufferMutable(uint,bindless.Buffer,job.DstTriangleSources.Slot) + job.DstTriangleSources.Offset : nullptr;
+    if (triangle_sources && source != InvalidOffset) {
         source_triangle = BindlessBuffer(uint,bindless.ObjectIdBuffer,pc.Source.FaceTriangleStartSlot)[ctx.SrcFaceDomain(job).Handle(source)];
     }
     for (uint t = first; t < last; ++t) {
         triangles[t] = packed_uint3(corner, corner + t - first + 1u, corner + t - first + 2u);
-        if (job.DstTriangleSourceSlot != InvalidSlot) BindlessBufferMutable(uint,bindless.Buffer,job.DstTriangleSourceSlot)[t] = source_triangle;
+        if (triangle_sources) triangle_sources[t] = source_triangle;
     }
     const bool listed = job.Op == MeshTopologyOp::AddFaces && fd >= job.SrcFaceCount;
     const uint primitive = source != InvalidOffset ? ctx.SrcElementPrimitive(job, source) : 0u;
@@ -1283,8 +1285,8 @@ kernel void TopologyGatherVertices(
         }
         if (job.Op == MeshTopologyOp::InsetRegion || job.Op == MeshTopologyOp::InsetIndividual) position += width * job.Param0 + depth * job.Param1;
         ctx.DstVertices(job)[d].Position = position;
-        if (job.DstInsetBasisSlot != InvalidSlot) {
-            BindlessBufferMutable(InsetVertexBasis,bindless.Buffer,job.DstInsetBasisSlot)[d] =
+        if (job.DstInsetBasis.Slot != InvalidSlot) {
+            reinterpret_cast<device InsetVertexBasis *>(BindlessBufferMutable(uint,bindless.Buffer,job.DstInsetBasis.Slot) + job.DstInsetBasis.Offset)[d] =
                 {ctx.DstVertexDomain(job).Handle(d),packed_float3(base),packed_float3(width),packed_float3(depth)};
         }
     }

@@ -146,6 +146,7 @@ struct LiveTrie {
         Hash128 H{};
         SlotState State{};
         bool Dirty{};
+        uint32_t Epoch{}; // The CaptureEpoch of the slot's last single-slot capture.
     };
 
     const uint32_t Levels, PageBytes, SlotStride;
@@ -153,6 +154,9 @@ struct LiveTrie {
 
     TrieStats S;
     Node *Root;
+    // Advances whenever the present root becomes shared, by a pin or a restore.
+    // A slot captured alone in the current epoch keeps a uniquely owned path to an aliased leaf.
+    uint32_t CaptureEpoch{1};
 
     std::vector<SlotHash> SlotHashes; // grown to the highest touched slot
     std::vector<uint64_t> DirtySlots;

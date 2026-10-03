@@ -267,11 +267,8 @@ struct Scene {
         return true;
     }
     template<typename... C> size_t remove(Entity e) { return (size_t{0} + ... + remove(Type<C>(), e)); }
-    void clear(TypeId type) {
-        auto &t = Tables[type];
-        for (uint32_t p = 0; p < t.pages(); ++p)
-            while (const auto m = t.mask(p)) remove(type, t.entity(p, std::countr_zero(m)));
-    }
+    // Captures the type's occupied pages once and notifies each removed value before its page is unlinked.
+    void clear(TypeId);
     template<typename... C> void clear() { (clear(Type<C>()), ...); }
     void ClearChanges() {
         for (auto &c : Changes) c.clear();

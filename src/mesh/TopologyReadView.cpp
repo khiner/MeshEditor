@@ -3,16 +3,14 @@
 
 #include "mesh/MeshClosure.h"
 #include "mesh/MeshStore.h"
-#include "mesh/PageFootprint.h"
 #include "state/Scene.h"
 
-TopologyReadView::TopologyReadView(state::Scene &r, uint32_t id, const MeshClosure &neighborhood, const BufferArena<uint32_t> &storage) {
+void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neighborhood, const BufferArena<uint32_t> &storage) {
     const profile::CpuScope scope{"TopologyReadView"};
     if (!neighborhood.Counts[0]) return;
-    auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
-    Connectivity = meshes.GetConnectivityRef(id);
     const auto vertex_origin = a.Vertices.First(record.Vertices);
     const auto vertices = WorkBlocks(storage, neighborhood.Elements[0], neighborhood.Counts[0], vertex_origin);
     const auto halfedges = WorkBlocks(storage, neighborhood.Elements[1], neighborhood.Counts[1]);
@@ -52,36 +50,40 @@ TopologyReadView::TopologyReadView(state::Scene &r, uint32_t id, const MeshClosu
             if (root != InvalidOffset) AddBlock(roots, root);
         });
     }
-    PageFootprint pages;
-    pages.Add(a.Vertices.Buffer, ring, BlockBytes<Vertex>);
-    pages.Add(a.BaseVertexNormals.Buffer, ring, BlockBytes<vec3>);
-    pages.Add(a.OutgoingHalfedges.Buffer, vertices, BlockBytes<uint32_t>);
-    pages.Add(a.VertexCorners.Buffer, vertices, BlockBytes<uvec2>);
-    pages.Add(a.VertexFans.Items.Buffer, fans, BlockBytes<uvec2>);
-    pages.Add(a.VertexSelection.Buffer, vertices, sizeof(MeshArenas::SelectionBlock));
-    if (record.VertexAttributes & MeshAttributeBit_Color0) pages.Attribute(a.VertexColors, vertices);
-    if (record.SkinBlocksReady) pages.Attribute(a.Skin, vertices);
-    if (record.MorphBlocksReady) pages.Attribute(a.Morph, vertices, record.MorphTargetCount);
-    pages.Add(a.FaceCorners.Buffer, corners, BlockBytes<uint32_t>);
+    Pages.Add(a.Vertices.Buffer, ring, BlockBytes<Vertex>);
+    Pages.Add(a.BaseVertexNormals.Buffer, ring, BlockBytes<vec3>);
+    Pages.Add(a.OutgoingHalfedges.Buffer, vertices, BlockBytes<uint32_t>);
+    Pages.Add(a.VertexCorners.Buffer, vertices, BlockBytes<uvec2>);
+    Pages.Add(a.VertexFans.Items.Buffer, fans, BlockBytes<uvec2>);
+    Pages.Add(a.VertexSelection.Buffer, vertices, sizeof(MeshArenas::SelectionBlock));
+    if (record.VertexAttributes & MeshAttributeBit_Color0) Pages.Attribute(a.VertexColors, vertices);
+    if (record.SkinBlocksReady) Pages.Attribute(a.Skin, vertices);
+    if (record.MorphBlocksReady) Pages.Attribute(a.Morph, vertices, record.MorphTargetCount);
+    Pages.Add(a.FaceCorners.Buffer, corners, BlockBytes<uint32_t>);
     for (const auto *buffer : {&a.OppositeHalfedges.Buffer, &a.HalfedgeEdges.Buffer, &a.HalfedgeFaces.Buffer})
-        pages.Add(*buffer, halfedges, BlockBytes<uint32_t>);
-    if (record.CornerAttributes & MeshAttributeBit_Tangent) pages.Attribute(a.CornerTangents, halfedges);
-    if (record.CornerAttributes & MeshAttributeBit_Color0) pages.Attribute(a.CornerColors, halfedges);
+        Pages.Add(*buffer, halfedges, BlockBytes<uint32_t>);
+    if (record.CornerAttributes & MeshAttributeBit_Tangent) Pages.Attribute(a.CornerTangents, halfedges);
+    if (record.CornerAttributes & MeshAttributeBit_Color0) Pages.Attribute(a.CornerColors, halfedges);
     for (uint32_t uv = 0u; uv < 4u; ++uv)
-        if (record.CornerAttributes & (MeshAttributeBit_TexCoord0 << uv)) pages.Attribute(a.CornerUvs[uv], halfedges);
-    pages.Attribute(a.CustomNormals, halfedges);
-    pages.Attribute(a.CornerSectors, halfedges);
-    pages.Attribute(a.NormalSectors, roots);
-    pages.Add(a.FaceTriangles.Buffer, faces, BlockBytes<uint32_t>);
-    pages.Add(a.FaceRanges.Buffer, faces, BlockBytes<uvec2>);
-    pages.Add(a.FaceSharpness.Buffer, faces, BlockBytes<uint8_t>);
-    pages.Add(a.BaseFaceNormals.Buffer, faces, BlockBytes<vec3>);
-    pages.Add(a.FaceSelection.Buffer, faces, sizeof(MeshArenas::SelectionBlock));
-    pages.Attribute(a.FacePrimitives, faces);
-    pages.Add(a.EdgeHalfedges.Buffer, edges, BlockBytes<uint32_t>);
-    pages.Add(a.EdgeSharpness.Buffer, edges, BlockBytes<uint8_t>);
-    pages.Add(a.EdgeSelection.Buffer, edges, sizeof(MeshArenas::SelectionBlock));
+        if (record.CornerAttributes & (MeshAttributeBit_TexCoord0 << uv)) Pages.Attribute(a.CornerUvs[uv], halfedges);
+    Pages.Attribute(a.CustomNormals, halfedges);
+    Pages.Attribute(a.CornerSectors, halfedges);
+    Pages.Attribute(a.NormalSectors, roots);
+    Pages.Add(a.FaceTriangles.Buffer, faces, BlockBytes<uint32_t>);
+    Pages.Add(a.FaceRanges.Buffer, faces, BlockBytes<uvec2>);
+    Pages.Add(a.FaceSharpness.Buffer, faces, BlockBytes<uint8_t>);
+    Pages.Add(a.BaseFaceNormals.Buffer, faces, BlockBytes<vec3>);
+    Pages.Add(a.FaceSelection.Buffer, faces, sizeof(MeshArenas::SelectionBlock));
+    Pages.Attribute(a.FacePrimitives, faces);
+    Pages.Add(a.EdgeHalfedges.Buffer, edges, BlockBytes<uint32_t>);
+    Pages.Add(a.EdgeSharpness.Buffer, edges, BlockBytes<uint8_t>);
+    Pages.Add(a.EdgeSelection.Buffer, edges, sizeof(MeshArenas::SelectionBlock));
+}
 
+void TopologyReadView::Clone(state::Scene &r) {
+    const profile::CpuScope scope{"TopologyReadViewClone"};
+    auto &meshes = r.Context.get<MeshStore>();
+    const auto &a = meshes.Arenas();
     // Each binding reads its clone at canonical offsets.
     std::vector<std::pair<const mtl::Buffer *, uint32_t *>> bindings{
         {&a.Vertices.Buffer, &Arenas.VertexSlot}, {&a.FaceCorners.Buffer, &Arenas.CornerSlot},
@@ -113,11 +115,21 @@ TopologyReadView::TopologyReadView(state::Scene &r, uint32_t id, const MeshClosu
     std::vector<uint32_t *> slots;
     for (const auto &[buffer, slot] : bindings) {
         *slot = InvalidSlot;
-        if (const auto read = pages.Pages(*buffer); !read.empty()) {
+        if (const auto read = Pages.Pages(*buffer); !read.empty()) {
             footprints.push_back({buffer, read});
             slots.push_back(slot);
         }
     }
     Clones = mtl::CloneFootprints(meshes.BufferContext(), footprints);
     for (size_t i = 0u; i < slots.size(); ++i) *slots[i] = Clones[i].Slot;
+}
+
+ConnectivityRef TopologyReadView::SourceConnectivity(const MeshStore &meshes, uint32_t id) const {
+    const auto source = meshes.GetConnectivityRef(id);
+    return {
+        {Connectivity.Outgoing.Slot, source.Outgoing.Offset}, {Connectivity.Opposites.Slot, source.Opposites.Offset},
+        {Connectivity.HalfedgeEdges.Slot, source.HalfedgeEdges.Offset}, {Connectivity.HalfedgeFaces.Slot, source.HalfedgeFaces.Offset},
+        {Connectivity.FaceRanges.Slot, source.FaceRanges.Offset}, {Connectivity.Edges.Slot, source.Edges.Offset},
+        {Connectivity.VertexCorners.Slot, source.VertexCorners.Offset}, Connectivity.FanItemsSlot,
+    };
 }

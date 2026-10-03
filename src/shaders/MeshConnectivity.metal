@@ -21,10 +21,11 @@ struct ConnContext {
     device const BindlessSet &B;
     constant TiledJobPushConstants &Pc;
 
-    device const MeshConnectivityJob *Jobs() const { return BindlessBuffer(MeshConnectivityJob, B.Buffer, Pc.JobsSlot); }
-    device const uint2 *Tiles() const { return BindlessBuffer(uint2, B.Buffer, Pc.TileMapSlot); }
-    device uint *Scratch() const { return BindlessBufferMutable(uint, B.Buffer, Pc.ScratchSlot); }
-    device atomic_uint *AtomicScratch() const { return BindlessBufferMutable(atomic_uint, B.Buffer, Pc.ScratchSlot); }
+    device uint *Storage() const { return BindlessBufferMutable(uint, B.Buffer, Pc.StorageSlot); }
+    device const MeshConnectivityJob *Jobs() const { return reinterpret_cast<device const MeshConnectivityJob *>(Storage() + Pc.JobsOffset); }
+    device const uint2 *Tiles() const { return reinterpret_cast<device const uint2 *>(Storage() + Pc.TileMapOffset); }
+    device uint *Scratch() const { return Storage() + Pc.ScratchOffset; }
+    device atomic_uint *AtomicScratch() const { return reinterpret_cast<device atomic_uint *>(Scratch()); }
     device const uint *Corners(MeshConnectivityJob job) const { return BindlessBuffer(uint, B.IndexBuffer, job.Corners.Slot); }
     device uint *Words(SlotOffset at) const { return BindlessBufferMutable(uint, B.Buffer, at.Slot); }
     device uint *Outgoing(MeshConnectivityJob job) const { return Words(job.Connectivity.Outgoing); }

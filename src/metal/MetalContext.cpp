@@ -11,6 +11,7 @@
 
 namespace mtl {
 namespace {
+
 void ObserveCommand(MTL::CommandBuffer *command, std::string_view label, MTL::SharedEvent *mapping, MTL::SharedEvent *execution) {
     command->setLabel(Str(label).get());
     command->addCompletedHandler([mapping = NS::RetainPtr(mapping), execution = NS::RetainPtr(execution)](MTL::CommandBuffer *completed) mutable {

@@ -1,4 +1,5 @@
 #include "render/MeshletSpatial.h"
+#include "Parallel.h"
 #include "Profile.h"
 
 #include "mesh/Mesh.h"
@@ -178,54 +179,65 @@ struct Tree {
 
 } // namespace
 
-void BuildMeshletSpatial(state::Scene &r,MeshBuffers &owner) {
+void BuildMeshletSpatial(state::Scene &r,std::span<MeshBuffers *const> owners) {
     auto &gpu=r.Context.get<GpuBuffers>();
-    if (owner.SpatialRoot!=InvalidOffset) throw std::logic_error("Spatial tree already exists.");
-    if (owner.StoreId==InvalidOffset) return;
-    std::vector<uint32_t> ids;
-    ids.reserve(owner.Level0Count);
-    gpu.ActiveMeshlets.ForEach(owner.MeshletRoot,[&](uint32_t id) {
-        const auto record=gpu.Meshlets.Get({id,1u})[0];
-        if (record.RefinedGroup==InvalidOffset && record.Topology==0u) ids.push_back(id);
+    std::vector<std::vector<uint32_t>> finest(owners.size());
+    for (uint32_t i=0u;i<owners.size();++i) {
+        const auto &owner=*owners[i];
+        if (owner.SpatialRoot!=InvalidOffset) throw std::logic_error("Spatial tree already exists.");
+        if (owner.StoreId==InvalidOffset) continue;
+        auto &ids=finest[i];
+        ids.reserve(owner.Level0Count);
+        gpu.ActiveMeshlets.ForEach(owner.MeshletRoot,[&](uint32_t id) {
+            const auto record=gpu.Meshlets.Get({id,1u})[0];
+            if (record.RefinedGroup==InvalidOffset && record.Topology==0u) ids.push_back(id);
+        });
+        if (!ids.empty()) gpu.MeshletSpatialNodes.Buffer.CaptureWrite(uint64_t(owner.Meshlets.Offset)*sizeof(Node),uint64_t(owner.Meshlets.Count)*sizeof(Node));
+    }
+    // Each owner writes only its own node range, so the trees build concurrently after the serial history capture.
+    auto *all=reinterpret_cast<Node *>(gpu.MeshletSpatialNodes.Buffer.Contents().data());
+    ParallelFor(uint32_t(owners.size()),[&](uint32_t i) {
+        auto &ids=finest[i];
+        if (ids.empty()) return;
+        auto &owner=*owners[i];
+        const auto source=Source(r,owner);
+        const std::span nodes{all+owner.Meshlets.Offset,owner.Meshlets.Count};
+        std::ranges::fill(nodes,Node{});
+        for (const auto id:ids) {
+            const auto record=gpu.Meshlets.Get({id,1u})[0];
+            const auto volume=VolumeBits(MeshletVolume(gpu,source,id));
+            nodes[id-owner.Meshlets.Offset]={.Box=Bounds(record),.Key=KeyWords(Key(record.Center)),.Meshlet=id,
+                .LocalVolume=volume,.SubtreeVolume=volume};
+        }
+        const auto read=[&](uint32_t id)->Node & { return nodes[id-owner.Meshlets.Offset]; };
+        std::ranges::sort(ids,[&](uint32_t a,uint32_t b) { return Before(Key(read(a)),a,Key(read(b)),b); });
+        std::vector<uint32_t> stack;
+        stack.reserve(ids.size());
+        for (const auto id:ids) {
+            uint32_t last=InvalidOffset;
+            while (!stack.empty() && Higher(id,stack.back())) { last=stack.back(); stack.pop_back(); }
+            if (!stack.empty()) { read(stack.back()).Right=id; read(id).Parent=stack.back(); }
+            if (last!=InvalidOffset) { read(id).Left=last; read(last).Parent=id; }
+            stack.push_back(id);
+        }
+        owner.SpatialRoot=stack.front();
+        std::vector<uint32_t> order{owner.SpatialRoot},postorder;
+        postorder.reserve(ids.size());
+        while (!order.empty()) {
+            const auto id=order.back(); order.pop_back(); postorder.push_back(id);
+            const auto &node=read(id);
+            if (node.Left!=InvalidOffset) order.push_back(node.Left);
+            if (node.Right!=InvalidOffset) order.push_back(node.Right);
+        }
+        for (auto it=postorder.rbegin();it!=postorder.rend();++it) {
+            auto &node=read(*it);
+            auto box=Bounds(gpu.Meshlets.Get({*it,1u})[0]);
+            double volume=UnpackVolume(node.LocalVolume);
+            if (node.Left!=InvalidOffset) { const auto &child=read(node.Left); box=Join(box,child.Box); volume+=UnpackVolume(child.SubtreeVolume); }
+            if (node.Right!=InvalidOffset) { const auto &child=read(node.Right); box=Join(box,child.Box); volume+=UnpackVolume(child.SubtreeVolume); }
+            node.Box=box; node.SubtreeVolume=VolumeBits(volume);
+        }
     });
-    if (ids.empty()) return;
-    const auto source=Source(r,owner);
-    auto nodes=gpu.MeshletSpatialNodes.GetMutable(owner.Meshlets);
-    std::ranges::fill(nodes,Node{});
-    for (const auto id:ids) {
-        const auto record=gpu.Meshlets.Get({id,1u})[0];
-        const auto volume=VolumeBits(MeshletVolume(gpu,source,id));
-        nodes[id-owner.Meshlets.Offset]={.Box=Bounds(record),.Key=KeyWords(Key(record.Center)),.Meshlet=id,
-            .LocalVolume=volume,.SubtreeVolume=volume};
-    }
-    const auto read=[&](uint32_t id)->Node & { return nodes[id-owner.Meshlets.Offset]; };
-    std::ranges::sort(ids,[&](uint32_t a,uint32_t b) { return Before(Key(read(a)),a,Key(read(b)),b); });
-    std::vector<uint32_t> stack;
-    stack.reserve(ids.size());
-    for (const auto id:ids) {
-        uint32_t last=InvalidOffset;
-        while (!stack.empty() && Higher(id,stack.back())) { last=stack.back(); stack.pop_back(); }
-        if (!stack.empty()) { read(stack.back()).Right=id; read(id).Parent=stack.back(); }
-        if (last!=InvalidOffset) { read(id).Left=last; read(last).Parent=id; }
-        stack.push_back(id);
-    }
-    owner.SpatialRoot=stack.front();
-    std::vector<uint32_t> order{owner.SpatialRoot},postorder;
-    postorder.reserve(ids.size());
-    while (!order.empty()) {
-        const auto id=order.back(); order.pop_back(); postorder.push_back(id);
-        const auto &node=read(id);
-        if (node.Left!=InvalidOffset) order.push_back(node.Left);
-        if (node.Right!=InvalidOffset) order.push_back(node.Right);
-    }
-    for (auto it=postorder.rbegin();it!=postorder.rend();++it) {
-        auto &node=read(*it);
-        auto box=Bounds(gpu.Meshlets.Get({*it,1u})[0]);
-        double volume=UnpackVolume(node.LocalVolume);
-        if (node.Left!=InvalidOffset) { const auto &child=read(node.Left); box=Join(box,child.Box); volume+=UnpackVolume(child.SubtreeVolume); }
-        if (node.Right!=InvalidOffset) { const auto &child=read(node.Right); box=Join(box,child.Box); volume+=UnpackVolume(child.SubtreeVolume); }
-        node.Box=box; node.SubtreeVolume=VolumeBits(volume);
-    }
 }
 
 void ReplaceMeshletSpatial(state::Scene &r,MeshBuffers &owner,std::span<const uint32_t> removed,std::span<const uint32_t> added) {

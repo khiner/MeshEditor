@@ -8,18 +8,19 @@
 #include "state/Scene.h"
 
 TopologyOutputHandles::TopologyOutputHandles(state::Scene &r, mtl::ComputeChain &chain, const MeshTopologyJob &job, MeshStore::TopologyCounts bounds,
-                                             uint32_t scratch_slot, const MeshTopologyArenas &source, TopologyIdentityPolicy policy)
-    : Vertices{chain.Buffers,0u,SlotType::Buffer,mtl::BufferLifetime::Workspace}, Faces{chain.Buffers,0u,SlotType::Buffer,mtl::BufferLifetime::Workspace} {
+                                             SlotOffset scratch, const MeshTopologyArenas &source, TopologyIdentityPolicy policy) {
     const profile::CpuScope scope{"TopologyOutputHandles"};
     const bool preserve = policy == TopologyIdentityPolicy::Preserve;
     if (preserve && job.SrcFaceCount && source.FaceTriangleStartSlot == InvalidSlot) {
         throw std::invalid_argument("Topology identity planning requires source triangle ownership.");
     }
     const std::array output{bounds.Vertices,bounds.Faces};
-    Vertices.SetUsedSize(uint64_t(output[0])*4u);
-    Faces.SetUsedSize(uint64_t(output[1])*4u);
-    TopologyIdentityPushConstants pc{.Job = job, .OutputSlots = {Vertices.Slot,Faces.Slot}, .Error = {chain.Scratch.Buffer.Slot,0u}};
-    pc.Topology.ScratchSlot = scratch_slot;
+    Vertices = chain.Scratch.Allocate(output[0]);
+    Faces = chain.Scratch.Allocate(output[1]);
+    const auto slot = chain.Scratch.Buffer.Slot;
+    TopologyIdentityPushConstants pc{.Job = job, .Outputs = {SlotOffset{slot,Vertices.Offset},SlotOffset{slot,Faces.Offset}}, .Error = {slot,0u}};
+    pc.Topology.StorageSlot = scratch.Slot;
+    pc.Topology.ScratchOffset = scratch.Offset;
     pc.Topology.Source = source;
     for (uint32_t d = 0u; d < 2u; ++d) pc.NewElements[d] = New[d] = AllocateElementWork(chain.Scratch,output[d],WorkDomainBlocks(output[d]));
     if (preserve) {
@@ -52,7 +53,8 @@ void TopologyOutputHandles::Finish(const mtl::ComputeChain &chain) {
 void TopologyOutputHandles::Assign(state::Scene &r, mtl::ComputeChain &chain, std::array<ElementHandleRange,2> inserted) const {
     for (uint32_t d = 0u; d < 2u; ++d)
         if (inserted[d].Count != NewCounts[d]) throw std::invalid_argument("Topology identity allocation count differs from its plan.");
-    const TopologyIdentityPushConstants pc{.OutputSlots = {Vertices.Slot,Faces.Slot}, .NewElements = {New[0],New[1]},
-        .Error = {chain.Scratch.Buffer.Slot,0u}, .Inserted = {inserted[0],inserted[1]}};
+    const auto slot = chain.Scratch.Buffer.Slot;
+    const TopologyIdentityPushConstants pc{.Outputs = {SlotOffset{slot,Vertices.Offset},SlotOffset{slot,Faces.Offset}}, .NewElements = {New[0],New[1]},
+        .Error = {slot,0u}, .Inserted = {inserted[0],inserted[1]}};
     chain.Groups(GetMeshPipelines(r)[MeshPass::TopologyIdentityAssign],pc,(std::max(NewCounts[0],NewCounts[1])+255u)/256u,256u,2u);
 }

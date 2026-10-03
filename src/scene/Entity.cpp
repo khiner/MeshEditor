@@ -5,13 +5,14 @@
 #include "render/Instance.h"
 
 #include <format>
-#include <limits>
 #include <unordered_map>
 
 namespace {
 // Counts rather than set membership keep the derived index correct when loading source data with duplicate names.
 struct EntityNameCounts {
     std::unordered_map<std::string, size_t> Counts;
+    // Per taken prefix, the first suffix a probe tries, past every suffix an earlier probe took.
+    std::unordered_map<std::string, uint32_t> NextSuffix;
 };
 
 void TrackName(state::Scene &r, state::Entity e) {
@@ -21,18 +22,18 @@ void UntrackName(state::Scene &r, state::Entity e) {
     auto *names = r.Context.find<EntityNameCounts>();
     if (!names) return;
     const auto it = names->Counts.find(r.get<const Name>(e).Value);
-    if (it != names->Counts.end() && --it->second == 0) names->Counts.erase(it);
+    if (it == names->Counts.end() || --it->second != 0) return;
+    names->NextSuffix.erase(it->first);
+    names->Counts.erase(it);
 }
 
-std::string ChooseUniqueName(const state::Scene &r, std::string_view prefix) {
-    const auto &counts = r.Context.get<const EntityNameCounts>().Counts;
-    const std::string base{prefix};
-    for (uint32_t i = 0; i < std::numeric_limits<uint32_t>::max(); ++i) {
-        auto candidate = i == 0 ? base : std::format("{}_{}", prefix, i);
-        if (!counts.contains(candidate)) return candidate;
-    }
-    assert(false);
-    return base;
+std::string ChooseUniqueName(state::Scene &r, std::string_view prefix) {
+    auto &names = r.Context.get<EntityNameCounts>();
+    std::string base{prefix};
+    if (!names.Counts.contains(base)) return base;
+    auto &next = names.NextSuffix.try_emplace(std::move(base), 1u).first->second;
+    for (;;)
+        if (auto candidate = std::format("{}_{}", prefix, next++); !names.Counts.contains(candidate)) return candidate;
 }
 } // namespace
 
@@ -42,9 +43,10 @@ void InitEntityNames(state::Scene &r) {
     r.on_destroy<Name, &UntrackName>();
 }
 void RebuildEntityNames(state::Scene &r) {
-    auto &counts = r.Context.get<EntityNameCounts>().Counts;
-    counts.clear();
-    for (const auto &[e, name] : r.view<const Name>().each()) ++counts[name.Value];
+    auto &names = r.Context.get<EntityNameCounts>();
+    names.Counts.clear();
+    names.NextSuffix.clear();
+    for (const auto &[e, name] : r.view<const Name>().each()) ++names.Counts[name.Value];
 }
 void DeinitEntityNames(state::Scene &r) { r.Context.erase<EntityNameCounts>(); }
 void ReserveEntityNames(state::Scene &r, size_t additional) {

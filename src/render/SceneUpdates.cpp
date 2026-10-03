@@ -9,6 +9,7 @@
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
+#include "render/Instance.h"
 #include "render/MeshBuffers.h"
 #include "render/MeshletBuild.h"
 #include "render/MeshletBuildGpu.h"
@@ -33,12 +34,9 @@ uint8_t InstanceStateBits(const state::Scene &r, state::Entity e) {
 }
 
 namespace {
-// Refreshes an instance's meshlet counts in the scene totals and in the totals of the counted flags its record carries.
+// Refreshes an instance's meshlet counts from its mesh's counts, in the scene totals and in the totals of the counted flags its record carries.
 // Returns whether the instance started or stopped drawing meshlets.
-bool UpdateMeshletInstance(state::Scene &r, state::Entity instance_entity) {
-    auto &buffers = r.Context.get<GpuBuffers>();
-    auto &instance = r.edit<RenderInstance>(instance_entity);
-    const auto records = buffers.Instances.RecordBuffer.GetSpan<InstanceRecord>();
+bool UpdateMeshletInstance(GpuBuffers &buffers, std::span<const InstanceRecord> records, RenderInstance &instance, uint32_t lod_node_count, uint32_t meshlet_count) {
     const auto flags = instance.BufferIndex < records.size() ? records[instance.BufferIndex].Flags & GpuBuffers::CountedMeshletFlags : 0u;
     const auto tally = [&](bool add) {
         const auto apply = [&](uint64_t &total, uint64_t value) { total = add ? total + value : total - value; };
@@ -53,9 +51,8 @@ bool UpdateMeshletInstance(state::Scene &r, state::Entity instance_entity) {
     };
     const bool drawing = instance.MeshletCount > 0u;
     tally(false);
-    const auto *mesh_buffers = r.valid(instance.Entity) ? TryMeshBuffers(r, instance.Entity) : nullptr;
-    instance.LodNodeCount = mesh_buffers ? buffers.ActiveMeshlets.Count(mesh_buffers->NodeRoot) : 0;
-    instance.MeshletCount = mesh_buffers ? buffers.MeshletCount(*mesh_buffers) : 0;
+    instance.LodNodeCount = lod_node_count;
+    instance.MeshletCount = meshlet_count;
     tally(true);
     return drawing != (instance.MeshletCount > 0u);
 }
@@ -71,8 +68,11 @@ bool RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_e
         const auto first = models->InstanceRange.Offset;
         const auto ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>({first,models->InstanceCount});
         auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({first,models->InstanceCount});
+        const auto all_records = buffers.Instances.RecordBuffer.GetSpan<InstanceRecord>();
         const auto &mesh_buffers = MeshBuffersOf(r,mesh_entity);
         const auto primitive_count = buffers.PrimitiveCount(mesh_buffers);
+        const auto lod_node_count = buffers.ActiveMeshlets.Count(mesh_buffers.NodeRoot);
+        const auto meshlet_count = buffers.MeshletCount(mesh_buffers);
         for (uint32_t i=0u; i<ids.size(); ++i) {
             if (!ids[i]) continue;
             const auto instance_entity = r.EntityAt(ids[i]-1u);
@@ -83,7 +83,7 @@ bool RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_e
             record.PrimitiveRoot = mesh_buffers.PrimitiveRoot;
             record.PrimitiveCount = primitive_count;
             record.Mesh = OffsetOrInvalid(mesh_buffers.MeshRecord);
-            drawing_changed = UpdateMeshletInstance(r,instance_entity) || drawing_changed;
+            drawing_changed = UpdateMeshletInstance(buffers, all_records, r.edit<RenderInstance>(instance_entity), lod_node_count, meshlet_count) || drawing_changed;
         }
     }
     return drawing_changed;
@@ -115,13 +115,32 @@ bool RepointChangedMeshes(state::Scene &r, std::span<const state::Entity> mesh_e
     return changed;
 }
 
-void RefreshClusterLodAttributes(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    auto &buffers = r.Context.get<GpuBuffers>();
-    const auto &meshes = r.Context.get<const MeshStore>();
-    const auto materials = GetMaterials(r);
+namespace {
+// The debug channel material-shaded viewports show, which the LOD attributes preserve.
+DebugChannel LodDebugChannel(const state::Scene &r) {
     DebugChannel debug = DebugChannel::None;
     for (const auto [_, display] : r.view<const ViewportDisplay>().each())
         if (!WorkbenchShading(display.ViewportShading)) debug = display.DebugChannel;
+    return debug;
+}
+} // namespace
+
+bool RefreshMaterialLodAttributes(state::Scene &r) {
+    const auto materials = GetMaterials(r);
+    const auto debug = LodDebugChannel(r);
+    std::vector<std::array<uint32_t, 2>> required(materials.size());
+    for (size_t i = 0; i < materials.size(); ++i) required[i] = {MaterialLodAttributes(materials[i], debug, false), MaterialLodAttributes(materials[i], debug, true)};
+    auto &cached = r.Context.get<GpuSceneState>().RequiredMaterialAttributes;
+    if (required == cached) return false;
+    cached = std::move(required);
+    return true;
+}
+
+void RefreshClusterLodAttributes(state::Scene &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities) {
+    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto materials = GetMaterials(r);
+    const auto debug = LodDebugChannel(r);
     for (const auto entity : mesh_entities) {
         auto *owner = TryMeshBuffers(r, entity);
         if (!owner) continue;
@@ -151,9 +170,7 @@ void RefreshClusterLodAttributes(state::Scene &r, std::span<const state::Entity>
         auto touched = InvalidateClusterGroups(r, entity, groups);
         if (touched.empty()) continue;
         touched.erase(std::unique(touched.begin(), touched.end()), touched.end());
-        mtl::ComputeChain chain{buffers.Ctx};
         EditLodNodes(r, chain, MeshBuffersOf(r, entity), {}, {}, touched);
-        chain.Submit();
     }
 }
 
@@ -188,7 +205,8 @@ void BuildMeshletsNow(state::Scene &r, std::span<const state::Entity> mesh_entit
     }
     mtl::ComputeChain chain{buffers.Ctx};
     BuildGpuMeshlets(r, chain, sources);
-    RefreshClusterLodAttributes(r, mesh_entities);
+    RefreshClusterLodAttributes(r, chain, mesh_entities);
+    chain.Submit();
     RepointMeshInstances(r, mesh_entities);
     r.Context.get<GpuSceneState>().LodDemand.insert(mesh_entities.begin(), mesh_entities.end());
 }
@@ -218,7 +236,11 @@ bool BuildDemandedClusterLods(state::Scene &r, bool edit_mode) {
     // Arena offsets follow commit order.
     std::ranges::sort(demanded);
     const profile::CpuScope scope{"BuildClusterLods"};
-    RefreshClusterLodAttributes(r, demanded);
+    {
+        mtl::ComputeChain chain{buffers.Ctx};
+        RefreshClusterLodAttributes(r, chain, demanded);
+        chain.Submit();
+    }
     const uint32_t count = uint32_t(demanded.size());
     std::vector<MeshletBuildInputs> inputs;
     inputs.reserve(count);
@@ -296,6 +318,19 @@ void AssignFaceIndices(const MeshStore &meshes, const Mesh &mesh, MeshBuffers &m
     if (corners.Set(set).Flags & 1u) mb.FaceIndices=corners.Slotted(set);
 }
 
+void DeriveRenderInstances(state::Scene &r) {
+    for (const auto e : reactive(r, state::Change::InstanceVisibility).Entities) {
+        if (!r.valid(e)) continue;
+        const auto *instance = r.try_get<const Instance>(e);
+        const bool visible = instance && !r.all_of<Hidden>(e);
+        if (const auto *render = r.try_get<const RenderInstance>(e)) {
+            if (visible && render->Entity == instance->Entity) continue;
+            r.remove<RenderInstance>(e);
+        }
+        if (visible) r.emplace<RenderInstance>(e, instance->Entity, UINT32_MAX);
+    }
+}
+
 SyncResult SyncModelsBuffers(state::Scene &r) {
     const profile::CpuScope scope{"SyncModelsBuffers"};
     auto &buffers = r.Context.get<GpuBuffers>();
@@ -356,6 +391,12 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
         for (const auto &[_, entities] : shows_by_buffer) total_new_instances += entities.size();
         if (total_new_instances > 0) buffers.Instances.ReserveAdditional(total_new_instances);
     }
+    // Each grown buffer's prior range, re-based onto its new range in one pass after the inserts.
+    struct Regrowth {
+        state::Entity Buffer;
+        uint32_t OldOffset, Count, NewOffset;
+    };
+    std::vector<Regrowth> regrowths;
     std::vector<uint32_t> object_ids;
     std::vector<uint8_t> states;
     std::vector<InstanceRecord> instance_records;
@@ -372,11 +413,7 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
             const auto new_capacity = std::max(mb.InstanceRange.Count * 2, new_total);
             mb.InstanceRange = buffers.Instances.Allocate(new_capacity);
             buffers.Instances.CopyInstances(old_range.Offset, mb.InstanceRange.Offset, mb.InstanceCount);
-            for (auto [other_entity, ri] : r.view<RenderInstance>().each()) {
-                if (ri.Entity == buffer_entity && ri.BufferIndex != UINT32_MAX) {
-                    ri.BufferIndex = mb.InstanceRange.Offset + (ri.BufferIndex - old_range.Offset);
-                }
-            }
+            regrowths.push_back({buffer_entity, old_range.Offset, mb.InstanceCount, mb.InstanceRange.Offset});
             buffers.Instances.Free(old_range);
         }
         object_ids.resize(n);
@@ -405,8 +442,21 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
         // Bounds reduction populates mesh instances; extras retain empty bounds and bypass culling.
         std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), AABB{});
         mb.InstanceCount = new_total;
-        for (const auto instance_entity : entities) UpdateMeshletInstance(r, instance_entity);
+        const auto records = buffers.Instances.RecordBuffer.GetSpan<InstanceRecord>();
+        const auto lod_node_count = mesh_buffers ? buffers.ActiveMeshlets.Count(mesh_buffers->NodeRoot) : 0u;
+        const auto meshlet_count = mesh_buffers ? buffers.MeshletCount(*mesh_buffers) : 0u;
+        for (const auto instance_entity : entities) UpdateMeshletInstance(buffers, records, r.edit<RenderInstance>(instance_entity), lod_node_count, meshlet_count);
         newly_inserted.append_range(entities);
+    }
+    // Instances placed before their buffer grew move with its prior range.
+    if (!regrowths.empty()) {
+        std::ranges::sort(regrowths, {}, &Regrowth::Buffer);
+        for (const auto [entity, ri] : r.view<const RenderInstance>().each()) {
+            if (ri.BufferIndex == UINT32_MAX) continue;
+            const auto it = std::ranges::lower_bound(regrowths, ri.Entity, {}, &Regrowth::Buffer);
+            if (it == regrowths.end() || it->Buffer != ri.Entity || ri.BufferIndex < it->OldOffset || ri.BufferIndex - it->OldOffset >= it->Count) continue;
+            r.edit<RenderInstance>(entity).BufferIndex = it->NewOffset + (ri.BufferIndex - it->OldOffset);
+        }
     }
     return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities), compacted};
 }

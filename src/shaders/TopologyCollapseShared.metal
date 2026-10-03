@@ -32,8 +32,8 @@ inline device CollapseSum *CollapseSums(TopoContext ctx, MeshTopologyJob job, ui
     return reinterpret_cast<device CollapseSum *>(sort.Totals + 16u) + CollapseLevelOffset(job.CollapseCount, level);
 }
 inline uint CollapseVertex(TopoContext ctx, MeshTopologyJob job, uint rank) {
-    return job.CollapseVerticesSlot == InvalidSlot ? rank :
-        ctx.SrcVertexDomain(job).Index(BindlessBuffer(uint, ctx.B.Buffer, job.CollapseVerticesSlot)[rank]);
+    return job.CollapseVertices.Slot == InvalidSlot ? rank :
+        ctx.SrcVertexDomain(job).Index(BindlessBuffer(uint, ctx.B.Buffer, job.CollapseVertices.Slot)[job.CollapseVertices.Offset + rank]);
 }
 inline uint CollapseKey(RadixSortView sort, uint i, uint level) {
     const ulong end = min((ulong(i) + 1u) << (8u * level), ulong(sort.Count));

@@ -40,6 +40,6 @@ void ProcessObjectRemovals(state::Scene &, state::Entity viewport);
 void ClearMeshes(state::Scene &, state::Entity viewport);
 void DestroyArmatureData(state::Scene &, state::Entity arm_obj_entity);
 
-state::Entity CreateBoneEntity(state::Scene &, state::Entity arm_obj_entity, const Armature &, uint32_t bone_index, state::Entity parent_entity);
+state::Entity CreateBoneEntity(state::Scene &, state::Entity arm_obj_entity, const Armature &, uint32_t bone_index, state::Entity parent_entity, float display_scale);
 void CreateBoneJoints(state::Scene &, state::Entity arm_obj_entity, state::Entity bone_entity, state::Entity joint_entity);
 void CreateBoneInstances(state::Scene &, MeshStore &, state::Entity arm_obj_entity, state::Entity arm_data_entity);

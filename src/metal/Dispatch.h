@@ -47,6 +47,7 @@ struct ComputeChain {
         std::forward<Fn>(fn)(Encoder());
     }
     // Commits the recorded passes, waits for them, reclaims retired buffers, and throws when a pass failed or set the error word.
+    // Without recorded passes it only runs the completions.
     void Submit();
     // Identifies the submit that completes the passes recorded now, unique across every chain.
     // A recorder that uploads inputs on the CPU compares it to detect a second recording before the passes of the first complete.

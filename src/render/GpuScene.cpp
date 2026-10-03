@@ -191,7 +191,9 @@ void CommitClusterLod(state::Scene &r, MeshBuffers &mb, const ClusterLodBuild &b
     // Without coarse groups every old node holds a finest root retained above.
     // Retire its descriptor only.
     // The replacement node takes that membership.
-    buffers.ForEachLodNode(mb,[&](uint32_t id, const LodNode &) { buffers.LodNodes.Release({id,1u}); });
+    std::vector<Range> released;
+    buffers.ForEachLodNode(mb,[&](uint32_t id, const LodNode &) { released.push_back({id,1u}); });
+    buffers.LodNodes.Release(std::move(released));
     buffers.ActiveMeshlets.Release(mb.NodeRoot); mb.NodeRoot = InvalidOffset;
     mb.LodNodes = {};
     mb.LodNodes = buffers.LodNodes.Allocate(build.Nodes);

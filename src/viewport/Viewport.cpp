@@ -304,7 +304,6 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
     // Clear physics while its components still exist, so the next load isn't tripped by stale entity keys.
     physics::Clear(r);
     ClearMeshes(r, viewport);
-    r.Context.erase<PendingObjectRemovals>();
 
     ResetImportedEnvironment(r);
 
@@ -324,6 +323,8 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
     std::erase(remaining, viewport);
     r.destroy(remaining);
     r.destroy(viewport);
+    // The arena resets below supersede the releases the destroyed components queued.
+    r.Context.erase<PendingObjectRemovals>();
     r.Context.erase<PendingHide>();
 
     // Reset ordered allocators so scene replay reproduces entity IDs and GPU handles.

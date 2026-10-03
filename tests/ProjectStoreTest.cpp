@@ -190,6 +190,53 @@ void TestPoolTrieAgainstModel() {
     expect(trie.Stats().OwnedSlots == 0);
 }
 
+// A slot captured alone skips recapture until a pin or a restore shares the present again.
+void TestCaptureEpoch() {
+    MapOwner live{.Len = 64};
+    auto &trie = live.Trie;
+    struct Fetch {
+        MapOwner &Live;
+        uint32_t Count{};
+    } fetch{live};
+    const auto write = [&](uint64_t slot, uint8_t value) {
+        trie.Capture(slot, 1, &fetch, [](void *owner, uint64_t s) -> std::optional<Blob> {
+            auto &f = *static_cast<Fetch *>(owner);
+            ++f.Count;
+            return f.Live.Present(s) ? std::optional{CopyBlob(f.Live.Read(s))} : std::nullopt;
+        });
+        trie.MarkDirty(slot, 1);
+        live.Values[slot] = {std::byte{value}};
+    };
+    const auto check = [&](const std::vector<Version> &versions) {
+        live.Settle();
+        std::vector<std::pair<uint64_t, Hash128>> hashes;
+        for (const auto &[slot, bytes] : live.Values) hashes.emplace_back(slot, HashBytes(bytes));
+        std::string why;
+        expect(trie.Check(why, versions));
+        expect(trie.CheckHashes(why, hashes));
+    };
+    auto base = Pin(live);
+    write(5, 1);
+    write(5, 2);
+    expect(fetch.Count == 1u);
+    auto pinned = Pin(live);
+    write(5, 3);
+    expect(fetch.Count == 2u);
+    check({base, pinned});
+    expect(live.Restore(pinned));
+    write(5, 4);
+    expect(fetch.Count == 3u);
+    check({base, pinned});
+    expect(live.Materialize(base).empty());
+    expect(live.Materialize(pinned) == Model{{5, {std::byte{2}}}});
+    expect(live.Restore(base));
+    expect(live.Values.empty());
+    expect(live.Restore(pinned));
+    expect(live.Values == Model{{5, {std::byte{2}}}});
+    trie.Release(base);
+    trie.Release(pinned);
+}
+
 void TestBufferAgainstModel() {
     std::mt19937 rng{11};
     Pages buf{64, 3}; // Use small pages to test edits across page boundaries.
@@ -623,6 +670,7 @@ void TestClearHistory() {
 int main() {
     TestRecordPagesAcrossResize();
     TestPoolTrieAgainstModel();
+    TestCaptureEpoch();
     TestBufferAgainstModel();
     TestHistoryAgainstModel();
     TestCommitIdentity();

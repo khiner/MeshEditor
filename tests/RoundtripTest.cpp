@@ -896,6 +896,7 @@ template<typename T> Roundtripped<T> RoundtripComponent(const fs::path &sample, 
     expect(node != state::Null) << "no mesh instance node in " << sample.stem().string();
     if (node == state::Null) return out;
     author(fx, node);
+    ProcessComponentEvents(fx.R, fx.Viewport); // mirror prod: a frame settles world transforms before save
     const auto save = gltf::SaveGltf(out_path, fx.R, fx.Viewport);
     expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
     if (!save) return out;
@@ -1198,6 +1199,7 @@ int main(int argc, const char **argv) {
             expect(project::ResolveAsset(fx.R, images.front().SourcePath) == staged_png);
             // OBJ imports supply a source path without an authored glTF URI.
             fx.R.edit<gltf::SourceAssets>(fx.Viewport).Images.front().Uri.clear();
+            ProcessComponentEvents(fx.R, fx.Viewport); // mirror prod: a frame settles world transforms before save
             const auto relocated_path = edit_root / "relocated" / "BoxTextured.gltf";
             fs::create_directories(relocated_path.parent_path());
             const auto relocated_save = gltf::SaveGltf(relocated_path, fx.R, fx.Viewport);

@@ -8,9 +8,10 @@
 struct FanBuildContext {
     device const BindlessSet &B;
     constant VertexFanBuildPushConstants &Pc;
-    device uint *Scratch() const { return BindlessBufferMutable(uint,B.Buffer,Pc.ScratchSlot); }
-    uint2 Tile(uint group) const { return BindlessBuffer(uint2,B.Buffer,Pc.TileMapSlot)[Pc.FirstTile+group]; }
-    VertexFanBuildJob Job(uint index) const { return BindlessBuffer(VertexFanBuildJob,B.Buffer,Pc.JobsSlot)[index]; }
+    device uint *Storage() const { return BindlessBufferMutable(uint,B.Buffer,Pc.StorageSlot); }
+    device uint *Scratch() const { return Storage()+Pc.ScratchOffset; }
+    uint2 Tile(uint group) const { return reinterpret_cast<device const uint2 *>(Storage()+Pc.TileMapOffset)[Pc.FirstTile+group]; }
+    VertexFanBuildJob Job(uint index) const { return reinterpret_cast<device const VertexFanBuildJob *>(Storage()+Pc.JobsOffset)[index]; }
     ElementWorkDomain Vertices(VertexFanBuildJob job) const { return {B,job.Vertices,job.Vertices.Storage.Slot == InvalidSlot ? job.Roots.Offset : 0u}; }
     ElementWorkDomain Halfedges(VertexFanBuildJob job) const { return {B,job.Halfedges,job.Halfedges.Storage.Slot == InvalidSlot ? job.Corners.Offset : 0u}; }
     uint CountWord(VertexFanBuildJob job, uint i) const { return job.Metadata+(job.Fresh ? i : 4u*i+1u); }

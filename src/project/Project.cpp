@@ -740,12 +740,6 @@ void Project::AfterRestore() {
     std::vector<state::Entity> restored_meshes;
     for (const auto &[type, entity, event] : Entities.TakeChanges()) {
         names_changed |= type == state::Type<Name>();
-        if (type == state::Type<Instance>() || type == state::Type<Hidden>()) {
-            const auto *instance = R.try_get<const Instance>(entity);
-            const bool visible = instance && !R.all_of<Hidden>(entity);
-            if (const auto *render = R.try_get<const RenderInstance>(entity); render && (!visible || render->Entity != instance->Entity)) R.remove<RenderInstance>(entity);
-            if (visible && !R.all_of<RenderInstance>(entity)) R.emplace<RenderInstance>(entity, instance->Entity, UINT32_MAX);
-        }
         if (type == state::Type<Armature>()) R.remove<ArmaturePoseState>(entity);
         if (type == state::Type<MeshHandle>() && R.all_of<MeshHandle>(entity)) restored_meshes.push_back(entity);
         textures_changed |= type == state::Type<gltf::SourceAssets>() || type == state::Type<MaterializedTextures>();
@@ -764,18 +758,22 @@ void Project::AfterRestore() {
     for (const auto id : buffers.RestoreMeshBindings(R))
         if (const auto entity = MeshEntityOf(R, id); entity != state::Null) restored_meshes.push_back(entity);
     auto &scene=R.Context.get<GpuSceneState>();
+    std::ranges::sort(restored_meshes);
+    restored_meshes.erase(std::unique(restored_meshes.begin(), restored_meshes.end()), restored_meshes.end());
+    std::vector<state::Entity> repointed;
     for (const auto entity : restored_meshes) {
         scene.PositionDirty.erase(entity);
         scene.LodDirty.erase(entity);
         const auto id = R.get<const MeshHandle>(entity).StoreId;
         const auto *owner = std::as_const(buffers).TryMeshOf(id);
         if (!owner) continue;
-        // The restored render records change the meshlet and LOD node counts that size each instance's cull.
-        if (RepointMeshInstances(R, std::span{&entity, 1u})) RequestRender(R, RenderRequest::Rebuild);
+        repointed.push_back(entity);
         if (buffers.ActiveMeshlets.Count(owner->PositionDirtyRoot)) scene.PositionDirty.insert(entity);
         if (buffers.ActiveMeshlets.Count(owner->DirtyGroupRoot)) scene.LodDirty.insert(entity);
         if (!buffers.ClusterGroupCount(*owner) && ClusterLodApplies(Mesh{meshes, id}.FaceCount() > 0u, buffers.MeshletCount(*owner))) scene.LodDemand.insert(entity);
     }
+    // The restored render records change the meshlet and LOD node counts that size each instance's cull.
+    if (RepointMeshInstances(R, repointed)) RequestRender(R, RenderRequest::Rebuild);
     std::vector<MeshVertexChanges> positions;
     for (const auto &change : changes) {
         const auto entity = MeshEntityOf(R, change.StoreId);

@@ -7,6 +7,7 @@
 
 template<typename T> struct BufferArena;
 struct MeshBuffers;
+namespace mtl { struct ComputeChain; }
 namespace state { struct Scene; }
 
 struct MeshletBoundsRefitJob {
@@ -17,5 +18,5 @@ struct MeshletBoundsRefitJob {
 
 // Refit only the finest meshlets affected by canonical vertex-position writes.
 void RefitCanonicalMeshletBounds(state::Scene &,std::span<const MeshletBoundsRefitJob>);
-// Refit the moved finest clusters' traversal leaves and mark their coarse ancestors stale.
-void StageDirtyPositionMeshlets(state::Scene &,state::Entity);
+// Records the refit of each entity's moved finest clusters' traversal leaves and marks their coarse ancestors stale.
+void StageDirtyPositionMeshlets(state::Scene &,mtl::ComputeChain &,std::span<const state::Entity>);

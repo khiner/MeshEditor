@@ -14,18 +14,7 @@
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
 #include "state/Scene.h"
-namespace {
-// RenderInstance is derived from Instance + !Hidden.
-// ObjectId is derived from the entity slot. BufferIndex UINT32_MAX means SyncModelsBuffers assigns it.
-void EnsureRenderInstance(state::Scene &r, state::Entity e) {
-    if (!r.all_of<RenderInstance>(e)) r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX);
-}
-} // namespace
-
-void Show(state::Scene &r, state::Entity e) {
-    r.remove<Hidden>(e);
-    if (r.all_of<Instance>(e)) EnsureRenderInstance(r, e); // re-show after a prior Hide
-}
+void Show(state::Scene &r, state::Entity e) { r.remove<Hidden>(e); }
 
 void Hide(state::Scene &r, state::Entity e) {
     r.emplace_or_replace<Hidden>(e);
@@ -63,7 +52,6 @@ state::Entity AddMeshInstance(state::Scene &r, state::Entity mesh_entity, const 
     r.emplace<ObjectKind>(e, ObjectType::Mesh);
     r.emplace<Transform>(e, info.Transform);
     EmplaceUniqueName(r, e, info.Name);
-    Show(r, e);
     if (!info.Visible) Hide(r, e);
     ApplySelectBehavior(r, e, info.Select);
     return e;
@@ -84,7 +72,6 @@ state::Entity CreateExtrasObject(state::Scene &r, ObjectType type, const ObjectC
     r.emplace<Instance>(e, buffer_entity);
     r.emplace<Transform>(e, info.Transform);
     EmplaceUniqueName(r, e, info.Name.empty() ? default_name : info.Name);
-    Show(r, e);
     ApplySelectBehavior(r, e, info.Select);
     return e;
 }
@@ -99,18 +86,17 @@ state::Entity AddCamera(state::Scene &r, MeshStore &, const ObjectCreateInfo &in
     return entity;
 }
 
-state::Entity CreateBoneEntity(state::Scene &r, state::Entity arm_obj_entity, const Armature &armature, uint32_t bone_index, state::Entity parent_entity) {
+state::Entity CreateBoneEntity(state::Scene &r, state::Entity arm_obj_entity, const Armature &armature, uint32_t bone_index, state::Entity parent_entity, float display_scale) {
     const auto &bone = armature.Bones[bone_index];
     const auto bone_entity = r.create();
     r.emplace<BoneIndex>(bone_entity, bone_index);
     r.emplace<SubElementOf>(bone_entity, arm_obj_entity);
     r.emplace<Instance>(bone_entity, arm_obj_entity);
     EmplaceUniqueName(r, bone_entity, bone.Name);
-    r.emplace<BoneDisplayScale>(bone_entity, ComputeBoneDisplayScale(armature, bone_index));
+    r.emplace<BoneDisplayScale>(bone_entity, display_scale);
     r.emplace<PosedLocal>(bone_entity, Transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}});
     r.emplace<BoneDelta>(bone_entity);
     SetParent(r, bone_entity, parent_entity);
-    Show(r, bone_entity);
     return bone_entity;
 }
 
@@ -120,7 +106,6 @@ void CreateBoneJoints(state::Scene &r, state::Entity arm_obj_entity, state::Enti
         r.emplace<SubElementOf>(e, arm_obj_entity);
         r.emplace<Instance>(e, joint_entity);
         r.emplace<BoneSubPartOf>(e, bone_entity, is_tail);
-        Show(r, e);
         return e;
     };
     r.emplace<BoneJointEntities>(bone_entity, make(false), make(true));
@@ -136,10 +121,11 @@ void CreateBoneInstances(state::Scene &r, MeshStore &meshes, state::Entity arm_o
     r.emplace<VertexStoreId>(arm_obj_entity, bone_store_id);
 
     std::vector<state::Entity> bone_entities(n);
+    const auto display_scales = ComputeBoneDisplayScales(armature);
     for (uint32_t i = 0; i < n; ++i) {
         const auto parent_index = armature.Bones[i].ParentIndex;
         const auto parent = parent_index == InvalidBoneIndex ? arm_obj_entity : bone_entities[parent_index];
-        bone_entities[i] = CreateBoneEntity(r, arm_obj_entity, armature, i, parent);
+        bone_entities[i] = CreateBoneEntity(r, arm_obj_entity, armature, i, parent, display_scales[i]);
     }
     auto &arm_obj = r.edit<ArmatureObject>(arm_obj_entity);
     arm_obj.BoneEntities = std::move(bone_entities);

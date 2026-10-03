@@ -19,12 +19,13 @@ struct WeldContext {
     device const BindlessSet &B;
     constant TiledJobPushConstants &Pc;
 
-    device const VertexWeldJob *Jobs() const { return BindlessBuffer(VertexWeldJob, B.Buffer, Pc.JobsSlot); }
-    device const uint2 *Tiles() const { return BindlessBuffer(uint2, B.Buffer, Pc.TileMapSlot); }
-    device uint *Scratch() const { return BindlessBufferMutable(uint, B.Buffer, Pc.ScratchSlot); }
+    device uint *Storage() const { return BindlessBufferMutable(uint, B.Buffer, Pc.StorageSlot); }
+    device const VertexWeldJob *Jobs() const { return reinterpret_cast<device const VertexWeldJob *>(Storage() + Pc.JobsOffset); }
+    device const uint2 *Tiles() const { return reinterpret_cast<device const uint2 *>(Storage() + Pc.TileMapOffset); }
+    device uint *Scratch() const { return Storage() + Pc.ScratchOffset; }
     device uint *PositionWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.VertexBuffer, job.Positions.Slot) + job.Positions.Offset * WeldPositionWords; }
     device uint *Corners(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.IndexBuffer, job.Corners.Slot) + job.Corners.Offset; }
-    device atomic_uint *AtomicScratch() const { return BindlessBufferMutable(atomic_uint, B.Buffer, Pc.ScratchSlot); }
+    device atomic_uint *AtomicScratch() const { return reinterpret_cast<device atomic_uint *>(Scratch()); }
     device uint *DeformWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.BoneDeformBuffer, job.Skin.ValuesSlot); }
     device uint *MorphWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.MorphTargetBuffer, job.Morph.ValuesSlot); }
 

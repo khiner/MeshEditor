@@ -6,10 +6,11 @@
 #include <vector>
 
 // Data owners affected by object destruction, resolved against survivors after the frame's actions.
+// Destroyed components queue their store entries and buffer ranges, released together in the settle pass.
 struct PendingObjectRemovals {
     state::DirtySet Buffers, Armatures;
     std::vector<uint32_t> StoreIds;
-    std::vector<Range> InstanceRanges;
+    std::vector<Range> InstanceRanges, DeformRanges, MorphRanges, SoundVertexRanges;
 };
 
 // Old instance slots and retired owners, resolved together by SyncModelsBuffers.

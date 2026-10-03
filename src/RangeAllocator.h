@@ -35,29 +35,28 @@ struct RangeAllocator {
     class Transaction {
     public:
         explicit Transaction(RangeAllocator &owner)
-            : Owner(owner), Parent(owner.Active), Before(owner.S), NodeCount(owner.Nodes.size()) { Owner.Active = this; }
+            : Owner(owner), Parent(owner.Active), Before(owner.S), NodeCount(owner.Nodes.size()), JournalStart(owner.Journal.size()) { Owner.Active = this; }
         Transaction(const Transaction &) = delete;
         ~Transaction() {
             assert(Owner.Active == this);
             Owner.Active = Parent;
-            if (Committed) return;
-            for (auto i = Changes.rbegin(); i != Changes.rend(); ++i) Owner.Nodes[i->Index] = i->Before;
+            if (Committed) {
+                if (!Parent) Owner.Journal.clear();
+                return;
+            }
+            for (auto i = Owner.Journal.size(); i-- > JournalStart;) Owner.Nodes[Owner.Journal[i].Index] = Owner.Journal[i].Before;
+            Owner.Journal.resize(JournalStart);
             while (Owner.Nodes.size() > NodeCount) Owner.Nodes.pop_back();
             Owner.S = Before;
         }
         void Commit() { Committed = true; }
     private:
         friend struct RangeAllocator;
-        struct Change { uint32_t Index; Node Before; };
         RangeAllocator &Owner;
         Transaction *Parent;
         State Before;
-        size_t NodeCount;
-        std::vector<Change> Changes;
+        size_t NodeCount, JournalStart;
         bool Committed{};
-        void Capture(uint32_t index) {
-            if (index < NodeCount) Changes.push_back({index, Owner.Nodes[index]});
-        }
     };
 
     store::Records *History{};
@@ -158,8 +157,13 @@ struct RangeAllocator {
     }
 
 private:
+    struct Change { uint32_t Index; Node Before; };
+
     State S;
     Transaction *Active{};
+    // Before-images of the nodes the active transactions changed, oldest first.
+    // The innermost transaction's node count bounds the captured nodes, since every enclosing one discards the nodes created after it began.
+    std::vector<Change> Journal;
     // Node addresses remain stable as the pool grows. Freed nodes are reused.
     std::deque<Node> Nodes;
 
@@ -168,7 +172,7 @@ private:
         return S;
     }
     Node &Write(uint32_t n) {
-        for (auto *transaction = Active; transaction; transaction = transaction->Parent) transaction->Capture(n);
+        if (Active && n < Active->NodeCount) Journal.push_back({n, Nodes[n]});
         if (History) History->Write(uint64_t(n) + 1, 1);
         return Nodes[n];
     }

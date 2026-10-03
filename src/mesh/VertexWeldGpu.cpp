@@ -72,7 +72,7 @@ uint32_t ScratchWords(uint32_t count, const WeldChannels &c) {
         (c.RecordWords + c.TangentWordsPerVertex) * count;
 }
 
-void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, Batch &batch) {
+void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, mtl::ComputeChain &chain, Batch &batch) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto &arenas = meshes.Arenas();
     batch.Begin();
@@ -119,16 +119,16 @@ void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, Batch &batc
     }
 
     // Stage host-owned tangent deltas so the same passes compare and compact them.
-    const auto scratch = batch.ScratchSpan();
+    const auto staged = batch.ScratchSpan();
     for (uint32_t i = 0; i < chunk.size(); ++i) {
         if (batch.Jobs[i].TangentOffset == InvalidOffset) continue;
         const auto &deltas = *chunk[i].MorphTangentDeltas;
-        std::memcpy(scratch.data() + batch.Jobs[i].TangentOffset, deltas.data(), deltas.size() * sizeof(vec3));
+        std::memcpy(staged.data() + batch.Jobs[i].TangentOffset, deltas.data(), deltas.size() * sizeof(vec3));
     }
-    mtl::ComputeChain chain{meshes.BufferContext()};
     batch.Encode(chain, GetMeshPipelines(r), TiledJobPushConstants{}, Passes);
     chain.Submit();
 
+    const auto scratch = batch.ScratchSpan();
     for (uint32_t i = 0; i < chunk.size(); ++i) {
         const auto &job = batch.Jobs[i];
         const uint32_t welded = scratch[job.FlagsOffset + job.Count];
@@ -156,7 +156,8 @@ void WeldMeshesNow(state::Scene &r, std::span<const WeldTarget> targets) {
     const auto split = ChunkByScratch(uint32_t(work.size()), ScratchWordBudget, [&](uint32_t i) {
         return ScratchWords(meshes.Arenas().Vertices.Count(meshes.Get(work[i].StoreId).Vertices), Channels(meshes, work[i]));
     });
-    // Every chunk writes over the same buffers, so a many-mesh batch takes no fresh allocation per submit.
-    Batch batch{meshes.BufferContext(), split.WidestWords, split.MostJobs};
-    for (const auto chunk : split.Chunks) SubmitChunk(r, std::span{work}.subspan(chunk.Offset, chunk.Count), batch);
+    // Every chunk writes over the same scratch, so a many-mesh batch takes no fresh allocation per submit.
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    Batch batch{chain.Scratch, split.WidestWords};
+    for (const auto chunk : split.Chunks) SubmitChunk(r, std::span{work}.subspan(chunk.Offset, chunk.Count), chain, batch);
 }

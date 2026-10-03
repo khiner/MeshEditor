@@ -22,8 +22,15 @@ std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &, uint32
 void EncodeDeriveNormals(state::Scene &, mtl::ComputeChain &, std::span<const NormalDeriveEntry>, NormalDerivePushConstants);
 void DeriveNormalsNow(state::Scene &, std::span<const NormalDeriveEntry>, NormalDerivePushConstants);
 void DeriveMeshNormalsNow(state::Scene &, std::span<const uint32_t> store_ids);
-// Records base normals after a local change.
+// One mesh's local normal change.
 // Faces cover the changed face normals, and vertices cover every affected normal fan.
-// Both inputs are finished canonical membership in `work`.
-void EncodeDeriveMeshNormals(state::Scene &, mtl::ComputeChain &, uint32_t store_id, const BufferArena<uint32_t> &work,
-                             ElementWork vertices, uint32_t vertex_count, ElementWork faces, uint32_t face_count);
+struct LocalNormalWork {
+    uint32_t StoreId;
+    ElementWork Vertices;
+    uint32_t VertexCount;
+    ElementWork Faces;
+    uint32_t FaceCount;
+};
+// Records base normals after local changes to the meshes, in one derive.
+// Every change's vertices and faces are finished canonical membership in `work`.
+void EncodeDeriveMeshNormals(state::Scene &, mtl::ComputeChain &, const BufferArena<uint32_t> &work, std::span<const LocalNormalWork>);

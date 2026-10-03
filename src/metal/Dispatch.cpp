@@ -92,10 +92,10 @@ void ComputeChain::Submit() {
         command->commit();
         command->waitUntilCompleted();
         if (command->status() == MTL::CommandBufferStatusError) throw std::runtime_error("GPU compute chain failed.");
+        Retained.clear();
+        Buffers.ReclaimRetiredBuffers();
     }
-    Retained.clear();
     SubmissionSerial = NextSubmissionSerial.fetch_add(1u, std::memory_order_relaxed);
-    Buffers.ReclaimRetiredBuffers();
     if (Scratch.Get({0u, 1u})[0]) throw std::invalid_argument("GPU work found invalid canonical ownership or topology.");
     for (const auto &completion : completions) completion();
 }

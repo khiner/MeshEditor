@@ -29,6 +29,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "mesh/TetBuffers.h"
+#include "metal/Dispatch.h"
 #include "object/ObjectOps.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
@@ -112,10 +113,12 @@ void SetEditMode(state::Scene &r, state::Entity viewport, Element mode) {
     auto &meshes = r.Context.get<MeshStore>();
     std::vector<ElementRange> ranges;
     std::vector<state::Entity> unchanged_all;
+    std::vector<uint32_t> ids;
+    for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) ids.push_back(GetMesh(r, mesh_entity).GetStoreId());
+    meshes.EnsureSelectionState(r, ids);
     for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
         const auto mesh = GetMesh(r, mesh_entity);
         const auto id = mesh.GetStoreId();
-        meshes.EnsureSelectionState(r, std::array{id});
         r.remove<MeshActiveElement>(mesh_entity);
         const auto count = mesh.ElementCount(mode);
         if (mode == Element::None) continue;
@@ -419,6 +422,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (anim_advanced || rendering || pass == EventPass::Restore) animation::Evaluate(r, viewport, eval_seconds, pass != EventPass::Restore);
     }
 
+    // Animated visibility is the last writer of Hidden in this pass, so render instances derive after it.
+    DeriveRenderInstances(r);
     auto sync = SyncModelsBuffers(r);
     if (!sync.NewlyInserted.empty() || sync.Compacted) {
         request(RenderRequest::Reuse);
@@ -590,8 +595,9 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             if (const auto *pending = r.try_get<const PendingTransform>(viewport); pending && pending->Delta != Transform{}) {
                 // Evaluate the final edit before geometry and physics consumers run.
                 std::vector<state::Entity> commit_meshes;
+                const auto scale_locked = selection::ScaleLockedMeshEntities(r);
                 for (const auto &[mesh_entity, instance_entity] : selection::ComputePrimaryEditInstances(r, false)) {
-                    if (!selection::HasScaleLockedInstance(r, mesh_entity)) commit_meshes.push_back(mesh_entity);
+                    if (!scale_locked.contains(mesh_entity)) commit_meshes.push_back(mesh_entity);
                 }
                 for (const auto mesh_entity : CommitPosedGeometry(r, viewport, commit_meshes)) {
                     r.remove<PrimitiveShape>(mesh_entity);
@@ -604,15 +610,15 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 
     // Restored collider shapes already hold their persisted derivation.
     if (pass != EventPass::Restore) {
-        std::unordered_set<state::Entity> to_rederive;
-        for (auto e : reactive(r, Change::ColliderPolicy)) to_rederive.insert(e);
+        state::DirtySet to_rederive;
+        for (auto e : reactive(r, Change::ColliderPolicy)) to_rederive.emplace(e);
         if (const auto &mesh_dirty = reactive(r, Change::MeshGeometry); !mesh_dirty.empty()) {
             for (auto [ce, cs] : r.view<const ColliderShape>().each()) {
                 const auto me = cs.MeshEntity != state::Null ? cs.MeshEntity : FindMeshEntity(r, ce);
-                if (mesh_dirty.contains(me)) to_rederive.insert(ce);
+                if (mesh_dirty.contains(me)) to_rederive.emplace(ce);
             }
         }
-        for (auto e : to_rederive) RederiveCollider(r, e);
+        RederiveColliders(r, to_rederive.Entities);
     }
 
     if (!rendering) {
@@ -636,11 +642,13 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     {
         auto &selected_tracker = reactive(r, Change::Selected);
         auto &active_tracker = reactive(r, Change::ActiveInstance);
-        if ((!selected_tracker.empty() || !active_tracker.empty()) && r.get<const Interaction>(viewport).Mode == InteractionMode::Edit)
-            r.Context.get<GpuSceneState>().EditPreludePending = true;
-        if (!selected_tracker.empty()) {
-            // Edit-mode selection changes the fill, edge, and point batches.
-            const auto mode = r.get<const Interaction>(viewport).Mode;
+        const auto mode = r.get<const Interaction>(viewport).Mode;
+        if ((!selected_tracker.empty() || !active_tracker.empty()) && mode == InteractionMode::Edit) r.Context.get<GpuSceneState>().EditPreludePending = true;
+        // Edit-mode selection changes the fill, edge, and point batches.
+        // The active instance picks each mesh's primary edit instance, which the instance records hash.
+        // Edit and Pose modes draw the active armature's bone wires.
+        // Object mode shows the active object through its state bits and the silhouette pass.
+        if (!selected_tracker.empty() || (!active_tracker.empty() && mode != InteractionMode::Object)) {
             request(mode == InteractionMode::Edit ? RenderRequest::Rebuild : RenderRequest::Silhouette);
             r.Context.get<GpuSceneState>().InstanceFlagsStale = true;
         }
@@ -682,6 +690,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
+    // An edit transform's start and end change the pending-transform instances, which the records and bounds entries hash.
+    if (is_edit_mode && (!reactive(r, Change::TransformStart).empty() || !reactive(r, Change::TransformEnd).empty())) request(RenderRequest::Rebuild);
 
     const auto orbit_to_active = [&](state::Entity instance_entity, Element element, uint32_t handle, bool canonical) {
         if (!r.get<const OrbitToActive>(viewport).Value) return;
@@ -762,19 +772,19 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
         request(RenderRequest::Rebuild);
     }
-    const auto &lod_display = r.get<const ViewportDisplay>(viewport);
-    const auto lod_debug = WorkbenchShading(lod_display.ViewportShading) ? DebugChannel::None : lod_display.DebugChannel;
-    const auto prior_view = buffers.SceneViewUBO.GetSpan<SceneViewUBO>();
-    const bool lod_debug_changed = !reactive(r, Change::ViewportDisplay).empty() &&
-        lod_debug != (prior_view.empty() ? DebugChannel::None : prior_view.front().DebugChannel);
-    if (!reactive(r, Change::Materials).empty() || lod_debug_changed) {
+    // A material or debug channel change walks every mesh only when it changes some material's required attributes.
+    // Those attributes are the only material values the scene rebuild keeps, since routing and shading read the live materials every frame.
+    if ((!reactive(r, Change::Materials).empty() || !reactive(r, Change::ViewportDisplay).empty()) && RefreshMaterialLodAttributes(r)) {
         material_meshes.clear();
         for (const auto entity : r.view<const MeshHandle>()) material_meshes.push_back(entity);
+        request(RenderRequest::Rebuild);
     }
     if (!material_meshes.empty()) {
         std::ranges::sort(material_meshes);
         material_meshes.erase(std::unique(material_meshes.begin(), material_meshes.end()), material_meshes.end());
-        RefreshClusterLodAttributes(r, material_meshes);
+        mtl::ComputeChain chain{buffers.Ctx};
+        RefreshClusterLodAttributes(r, chain, material_meshes);
+        chain.Submit();
     }
     if (auto &scene=r.Context.get<GpuSceneState>();
         !is_edit_mode && (!scene.EditWork.empty() || !scene.PositionDirty.empty() || !scene.LodDirty.empty())) {
@@ -782,14 +792,20 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         for (const auto e:scene.PositionDirty)
             if (r.valid(e) && r.all_of<MeshHandle>(e)) edited.push_back(e);
         std::ranges::sort(edited);
-        for (const auto e:edited) StageDirtyPositionMeshlets(r,e);
-        // Stale coarse LOD rebuilds outside edit mode.
-        std::vector<state::Entity> repaired;
-        for (const auto e:scene.LodDirty)
-            if (r.valid(e) && r.all_of<MeshHandle>(e)) repaired.push_back(e);
-        std::ranges::sort(repaired);
-        for (const auto e:repaired) RepairDirtyClusterGroups(r,MeshBuffersOf(r,e));
-        edited.insert(edited.end(),repaired.begin(),repaired.end());
+        if (!edited.empty() || !scene.LodDirty.empty()) {
+            mtl::ComputeChain chain{buffers.Ctx};
+            StageDirtyPositionMeshlets(r,chain,edited);
+            // The repair rewrites the traversal nodes and memberships the staged refits read, so they complete first.
+            chain.Submit();
+            // Stale coarse LOD rebuilds outside edit mode, including the groups staging marked.
+            std::vector<state::Entity> repaired;
+            for (const auto e:scene.LodDirty)
+                if (r.valid(e) && r.all_of<MeshHandle>(e)) repaired.push_back(e);
+            std::ranges::sort(repaired);
+            RepairDirtyClusterGroups(r,chain,repaired);
+            chain.Submit();
+            edited.insert(edited.end(),repaired.begin(),repaired.end());
+        }
         std::ranges::sort(edited);
         edited.erase(std::unique(edited.begin(),edited.end()),edited.end());
         RepointMeshInstances(r,edited);
@@ -824,13 +840,19 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         for (const auto e : edited)
             if (r.get<const MeshGeometryDirty>(e).RenderReady) ready.push_back(e);
         if (!ready.empty()) request(RepointChangedMeshes(r, ready) ? RenderRequest::Rebuild : RenderRequest::Reuse);
+        // Topology changed: size the bits to the new element counts, then drop a stale selection or derive a carried one.
+        const auto resets = [&](state::Entity mesh_entity) {
+            return r.get<const MeshGeometryDirty>(mesh_entity).Selection != EditSelectionAfter::Keep && r.all_of<MeshElementSelection>(mesh_entity) && edit_mode != Element::None;
+        };
+        std::vector<uint32_t> reset_ids;
+        for (const auto mesh_entity : edited)
+            if (resets(mesh_entity)) reset_ids.push_back(GetMesh(r, mesh_entity).GetStoreId());
+        meshes.EnsureSelectionState(r, reset_ids);
         for (auto mesh_entity : edited) {
+            if (!resets(mesh_entity)) continue;
             const auto selection_after = r.get<const MeshGeometryDirty>(mesh_entity).Selection;
-            if (selection_after == EditSelectionAfter::Keep || !r.all_of<MeshElementSelection>(mesh_entity) || edit_mode == Element::None) continue;
-            // Topology changed: size the bits to the new element counts, then drop a stale selection or derive a carried one.
             const auto mesh = GetMesh(r, mesh_entity);
             const auto id = mesh.GetStoreId();
-            meshes.EnsureSelectionState(r, std::array{id});
             const uint32_t count = mesh.ElementCount(edit_mode);
             if (count == 0) continue;
             auto &ranges = selection_after == EditSelectionAfter::Reset ? reset_ranges : carried_ranges;
@@ -877,7 +899,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (!rendering && physics::AdvancePlayback(r, viewport, evaluated_from, r.get<const TimelinePlayback>(viewport).CurrentFrame, range.StartFrame, range.EndFrame, range.Fps)) request(RenderRequest::Reuse);
     }
     // Evaluation writes materials and morph weights, so their consumers follow it.
-    if (!reactive(r, Change::Materials).empty()) request(RenderRequest::Rebuild);
+    if (!reactive(r, Change::Materials).empty()) request(RenderRequest::Reuse);
     if (!reactive(r, Change::MorphWeights).empty()) {
         buffers.PreludeStale = true;
         request(RenderRequest::Reuse);
@@ -1085,17 +1107,18 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         // Recompute changed world transforms and their descendants.
         if (const auto &dirty = reactive(r, Change::TransformDirty); !dirty.empty()) {
             const bool bone_edit = is_edit_mode && FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
-            std::unordered_set<state::Entity> recompute;
+            state::DirtySet recompute;
             const auto collect = [&](this const auto &self, state::Entity e, bool propagate) -> void {
-                if (!recompute.insert(e).second) return;
+                if (recompute.contains(e)) return;
+                recompute.emplace(e);
                 if (propagate)
                     for (const auto child : Children{&r, e}) self(child, true);
             };
             for (const auto e : dirty) collect(e, !(bone_edit && r.all_of<StartTransform>(e)));
 
-            std::unordered_set<state::Entity> done;
+            // The set holds the entities whose world transforms are stale, and each leaves it as it computes.
             const auto compute = [&](this const auto &self, state::Entity e) -> void {
-                if (!done.insert(e).second) return;
+                recompute.remove(e);
                 const auto *node = r.try_get<const SceneNode>(e);
                 if (node && node->Parent != state::Null && (recompute.contains(node->Parent) || !r.all_of<WorldTransform>(node->Parent))) {
                     self(node->Parent); // Update the parent before reading its delta.
@@ -1104,7 +1127,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 if (node && node->Parent != state::Null) r.emplace_or_replace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(t)));
                 else r.emplace_or_replace<WorldTransform>(e, t);
             };
-            for (const auto e : recompute) compute(e);
+            while (!recompute.empty()) compute(recompute.Entities.back());
         }
         {
             const auto &wt_reactive = reactive(r, Change::WorldTransform);
@@ -1283,14 +1306,16 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     if (interaction_mode == InteractionMode::Excite) {
         std::vector<std::pair<state::Entity, std::span<const uint32_t>>> sound_selections;
         sound_selections.reserve(dirty_sound_selection_meshes.size());
-        for (const auto mesh_entity : dirty_sound_selection_meshes) {
-            std::span<const uint32_t> sound_vertices{};
+        // Each mesh's first sound instance supplies its vertex list.
+        std::unordered_map<state::Entity, std::span<const uint32_t>> sound_vertices_by_mesh;
+        if (!dirty_sound_selection_meshes.empty()) {
             for (const auto [entity, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
-                if (instance.Entity != mesh_entity) continue;
-                sound_vertices = meshes.Arenas().SoundVertices.Get(excitable.Vertices);
-                break;
+                sound_vertices_by_mesh.try_emplace(instance.Entity, meshes.Arenas().SoundVertices.Get(excitable.Vertices));
             }
-            sound_selections.emplace_back(mesh_entity, sound_vertices);
+        }
+        for (const auto mesh_entity : dirty_sound_selection_meshes) {
+            const auto it = sound_vertices_by_mesh.find(mesh_entity);
+            sound_selections.emplace_back(mesh_entity, it != sound_vertices_by_mesh.end() ? it->second : std::span<const uint32_t>{});
         }
         ApplyEditSelectionLists(r, sound_selections, Element::Vertex);
         if (!dirty_sound_selection_meshes.empty()) {
@@ -1329,11 +1354,7 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
     reactive(r, Change::Selected).on<Selected>(On::Create | On::Destroy);
     reactive(r, Change::ActiveInstance).on<Active>(On::Create | On::Destroy);
     reactive(r, Change::BoneSelection).on<BoneSelection>(On::Create | On::Update | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
-    reactive(r, Change::Rerecord)
-        .on<RenderInstance>(On::Create | On::Destroy)
-        .on<Active>(On::Create | On::Destroy)
-        .on<StartTransform>(On::Create | On::Destroy)
-        .on<EditMode>(On::Create | On::Update);
+    reactive(r, Change::Rerecord).on<RenderInstance>(On::Create | On::Destroy).on<EditMode>(On::Create | On::Update);
     reactive(r, Change::MeshActiveElement).on<MeshActiveElement>(On::Create | On::Update);
     reactive(r, Change::MeshGeometry).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     // Refresh body-mesh reachability after collider or body changes.
@@ -1344,6 +1365,7 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
     reactive(r, Change::VertexForce).on<VertexForce>(On::Create | On::Destroy);
     reactive(r, Change::TetMesh).on<TetBuffers>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::NewBufferEntity).on<MeshHandle>(On::Create).on<VertexStoreId>(On::Create);
+    reactive(r, Change::InstanceVisibility).on<Instance>(On::Create | On::Update | On::Destroy).on<Hidden>(On::Create | On::Destroy);
     reactive(r, Change::RenderInstanceCreated).on<RenderInstance>(On::Create);
     reactive(r, Change::RenderInstanceDestroyed).on<RenderInstance>(On::Destroy);
     reactive(r, Change::ViewportDisplay).on<ViewportDisplay>(On::Create | On::Update);
@@ -1369,20 +1391,17 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
     reactive(r, Change::CameraLens).on<Perspective>(On::Create | On::Update).on<Orthographic>(On::Create | On::Update).on<LookingThrough>(On::Create | On::Destroy);
     reactive(r, Change::WorldTransform).on<WorldTransform>(On::Create | On::Update);
     reactive(r, Change::TransformPending).on<PendingTransform>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::TransformStart).on<StartTransform>(On::Create);
     reactive(r, Change::TransformEnd).on<StartTransform>(On::Destroy);
     reactive(r, Change::BonePose).on<BoneDelta>(On::Update);
     reactive(r, Change::TransformDirty)
         .on<Transform>(On::Create | On::Update)
         .on<PosedLocal>(On::Create | On::Update)
         .on<SceneNode>(On::Create | On::Update)
-        .on<BoneDisplayScale>(On::Update);
+        .on<BoneDisplayScale>(On::Update)
+        .on<BoneConstraints>(On::Update);
     reactive(r, Change::AnimationEdited)
         .on<AnimationClips>(On::Create | On::Update | On::Destroy)
         .on<Animations>(On::Update);
     r.Context.emplace<EntityDestroyTracker>().Bind(r);
-
-    // Mark local transforms after constraint edits to trigger world-transform recomputation.
-    r.on_update<BoneConstraints, [](state::Scene &r, state::Entity e) {
-        PatchEditedLocal(r, e, [](auto &) {});
-    }>();
 }

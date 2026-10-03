@@ -5,7 +5,7 @@
 #include <vector>
 
 struct GpuBuffers;
-struct MeshBuffers;
+namespace mtl { struct ComputeChain; }
 
 // Returns the seed groups and every group their proxies feed, transitively, in ascending order.
 std::vector<uint32_t> ClusterGroupClosure(const GpuBuffers &, std::span<const uint32_t> seeds);
@@ -16,7 +16,7 @@ void ReplaceGroupClusters(GpuBuffers &, std::span<const uint32_t> removed, std::
 // A stale group's error is infinite, so the cut refines through it to current geometry.
 // Returns the members of the stale groups, whose traversal leaves carry those errors.
 std::vector<uint32_t> InvalidateClusterGroups(state::Scene &, state::Entity, std::span<const uint32_t> seeds);
-// Rebuilds the DAG above the owner's stale groups and every group they feed.
+// Rebuilds the DAG above each entity's stale groups and every group they feed, with the pools of every owner simplifying together.
 // Each primitive's kept members pool by level and re-partition as a full build of them does, and the stale groups retire with their coarse clusters.
-// The owner has no stale groups afterward.
-void RepairDirtyClusterGroups(state::Scene &, MeshBuffers &);
+// The chain records each owner's traversal refit, and its next submit retires the stale groups, after which the owners have none.
+void RepairDirtyClusterGroups(state::Scene &, mtl::ComputeChain &, std::span<const state::Entity>);

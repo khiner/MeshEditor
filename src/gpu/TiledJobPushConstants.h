@@ -2,11 +2,10 @@
 
 #include "gpu/Types.h"
 
-// The slots a tiled job batch binds, with each pass's tiles beginning at FirstTile.
+// A tiled job batch's word storage slot and the word offsets of its jobs, tile map and scratch, with each pass's tiles beginning at FirstTile.
 struct TiledJobPushConstants {
-    uint32_t JobsSlot DEFAULT(InvalidSlot);
-    uint32_t TileMapSlot DEFAULT(InvalidSlot);
-    uint32_t ScratchSlot DEFAULT(InvalidSlot);
+    uint32_t StorageSlot DEFAULT(InvalidSlot);
+    uint32_t JobsOffset DEFAULT(), TileMapOffset DEFAULT(), ScratchOffset DEFAULT();
     uint32_t FirstTile DEFAULT();
 };
-static_assert(sizeof(TiledJobPushConstants) == 16, "TiledJobPushConstants size");
+static_assert(sizeof(TiledJobPushConstants) == 20, "TiledJobPushConstants size");

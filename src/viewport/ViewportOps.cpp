@@ -32,9 +32,11 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
     const auto edit_ranges = [&](Element element) {
         std::vector<ElementRange> ranges;
         if (element == Element::None) return ranges;
+        std::vector<uint32_t> ids;
+        for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) ids.push_back(GetMesh(r, mesh_entity).GetStoreId());
+        meshes.EnsureSelectionState(r, ids);
         for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
             const auto mesh = GetMesh(r, mesh_entity);
-            meshes.EnsureSelectionState(r, std::array{mesh.GetStoreId()});
             const auto count = mesh.ElementCount(element);
             if (count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), element), count);
         }
@@ -63,16 +65,19 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
         // Take bits only for selected meshes without them.
         // A mesh that has them keeps its remembered selection.
         if (const auto edit_element = r.get<const EditMode>(viewport).Value; edit_element != Element::None) {
+            std::vector<state::Entity> taking;
+            std::vector<uint32_t> ids;
             for (const auto mesh_entity : selection::GetSelectedMeshEntities(r)) {
-                if (r.all_of<MeshElementSelection>(mesh_entity)) continue;
+                if (r.all_of<MeshElementSelection>(mesh_entity) || GetMesh(r, mesh_entity).ElementCount(edit_element) == 0) continue;
+                taking.push_back(mesh_entity);
+                ids.push_back(GetMesh(r, mesh_entity).GetStoreId());
+            }
+            meshes.EnsureSelectionState(r, ids);
+            for (const auto mesh_entity : taking) {
                 const auto mesh = GetMesh(r, mesh_entity);
-                const uint32_t count = mesh.ElementCount(edit_element);
-                if (count == 0) continue;
-
-                meshes.EnsureSelectionState(r, std::array{mesh.GetStoreId()});
                 r.emplace<MeshElementSelection>(mesh_entity);
                 initialize_selection.emplace_back(
-                    mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), edit_element), count
+                    mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), edit_element), mesh.ElementCount(edit_element)
                 );
             }
         }

@@ -22,19 +22,17 @@ struct ReferencePairCopy { uint32_t Source, Destination, Count; };
 // Adds delta to copied uint32 arena references, preserving the null sentinel.
 // Range.Offset and stride are in uint32 words, and Range.Count counts references.
 // byte_base locates a record stream without narrowing its byte address.
-void EncodeRebaseIndices(MTL::CommandBuffer *command, const mtl::ComputePipeline &pipeline, MTL::Buffer *buffer, Range range, uint32_t delta, uint32_t stride = 1, uint64_t byte_base = 0) {
+void EncodeRebaseIndices(MTL::ComputeCommandEncoder *encoder, const mtl::ComputePipeline &pipeline, MTL::Buffer *buffer, Range range, uint32_t delta, uint32_t stride = 1, uint64_t byte_base = 0) {
     if (range.Count == 0 || delta == 0) return;
-    auto *encoder = command->computeCommandEncoder();
     encoder->setComputePipelineState(pipeline.State());
     encoder->setBuffer(buffer, byte_base + uint64_t(range.Offset) * sizeof(uint32_t), 0);
     const uint32_t pc[]{range.Count, delta, stride, 0u};
     encoder->setBytes(pc, sizeof(pc), 1);
     encoder->dispatchThreads(MTL::Size(range.Count, 1, 1), MTL::Size(256, 1, 1));
-    encoder->endEncoding();
 }
 
 // Copies each run of reference pairs, adding first_delta and second_delta to the non-null pair members.
-void EncodeCopyReferencePairs(MTL::CommandBuffer *command, const mtl::ComputePipeline &pipeline, MTL::Buffer *buffer,
+void EncodeCopyReferencePairs(MTL::ComputeCommandEncoder *encoder, const mtl::ComputePipeline &pipeline, MTL::Buffer *buffer,
     std::span<const ReferencePairCopy> jobs, uint32_t first_delta, uint32_t second_delta) {
     if (jobs.empty()) return;
     static_assert(sizeof(ReferencePairCopy) == 12u);
@@ -45,7 +43,6 @@ void EncodeCopyReferencePairs(MTL::CommandBuffer *command, const mtl::ComputePip
     auto input = NS::TransferPtr(device->newBuffer(jobs.data(), jobs.size_bytes(), MTL::ResourceStorageModeShared));
     auto work = NS::TransferPtr(device->newBuffer(tiles.data(), tiles.size() * sizeof(tiles[0]), MTL::ResourceStorageModeShared));
     if (!input || !work) throw std::runtime_error("Reference copy descriptors failed.");
-    auto *encoder = command->computeCommandEncoder();
     encoder->setComputePipelineState(pipeline.State());
     encoder->setBuffer(buffer, 0, 0);
     encoder->setBuffer(input.get(), 0, 1);
@@ -53,7 +50,6 @@ void EncodeCopyReferencePairs(MTL::CommandBuffer *command, const mtl::ComputePip
     const uint32_t delta[]{first_delta, second_delta};
     encoder->setBytes(delta, sizeof(delta), 3);
     encoder->dispatchThreadgroups(MTL::Size(tiles.size(), 1, 1), MTL::Size(32, 1, 1));
-    encoder->endEncoding();
 }
 
 constexpr auto NoAllocation = [](auto &) -> Range * { return nullptr; };
@@ -605,7 +601,7 @@ void MeshStore::FinishRestore() {
         const std::scoped_lock lock{BlockListLock};
         ++BlockListEpoch;
     }
-    SyncMirrors();
+    if (!changed.empty()) SyncMirrors();
 }
 
 void MeshStore::FillBaseVertexNormalMirror(ElementSetRef vertices, Range point_normals) {
@@ -616,12 +612,9 @@ void MeshStore::FillBaseVertexNormalMirror(ElementSetRef vertices, Range point_n
     }
 }
 
-ElementHandleRange MeshStore::InsertElements(uint32_t id, ElementDomain domain, uint32_t count, mtl::Buffer *list) {
+ElementHandleRange MeshStore::InsertElements(uint32_t id, ElementDomain domain, uint32_t count, BufferArena<uint32_t> *list) {
     if (!Records.at(id).Alive || domain == Domain::None) throw std::invalid_argument("Invalid element insertion request.");
-    if (!count) {
-        if (list) list->SetUsedSize(0);
-        return {};
-    }
+    if (!count) return {};
     const auto set = DomainSet(Records[id], domain);
     const bool first_face = domain == Domain::Face && !Buffers.FaceTriangles.Count(set);
     // A new set, the triangle count and the first face's flags change the record.
@@ -671,11 +664,11 @@ std::vector<uint32_t> MeshStore::EraseElements(uint32_t id, ElementDomain domain
     return blocks;
 }
 
-void MeshStore::TrimInsertedElements(uint32_t id, ElementDomain domain, ElementHandleRange &inserted, const mtl::Buffer &list, uint32_t used) {
+void MeshStore::TrimInsertedElements(uint32_t id, ElementDomain domain, ElementHandleRange &inserted, const BufferArena<uint32_t> &list, uint32_t used) {
     if (used > inserted.Count) throw std::logic_error("An insertion's elements are fewer than the ones used.");
     if (used == inserted.Count) return;
     auto &record = WriteRecord(id);
-    const auto blocks = WithDomain(Buffers, domain, [&](auto &arena) { return arena.Shrink(DomainSet(record, domain), inserted, list.GetSpan<uint32_t>(), used); });
+    const auto blocks = WithDomain(Buffers, domain, [&](auto &arena) { return arena.Shrink(DomainSet(record, domain), inserted, list.Buffer.GetSpan<uint32_t>(), used); });
     FinishEraseElements(id, domain, blocks);
 }
 
@@ -756,8 +749,11 @@ void MeshStore::ReleaseTets(TetBuffers tets) {
 }
 
 Range MeshStore::AllocateSoundVertices(std::span<const uint32_t> vertices) { return Buffers.SoundVertices.Allocate(vertices); }
-void MeshStore::ReleaseSoundVertices(Range range) { Buffers.SoundVertices.Release(range); }
-void MeshStore::EnsureSelectionState(state::Scene &r, std::span<const uint32_t> ids) {
+void MeshStore::ReleaseSoundVertices(std::vector<Range> ranges) { Buffers.SoundVertices.Release(std::move(ranges)); }
+void MeshStore::EnsureSelectionState(state::Scene &r, std::span<const uint32_t> requested) {
+    std::vector<uint32_t> ids{requested.begin(), requested.end()};
+    std::ranges::sort(ids);
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
     std::vector<SelectionUpdate> updates;
     for (const auto id : ids) if (!Records.at(id).SelectionSummary.Count) updates.push_back({.StoreId = id});
     if (updates.empty()) return;
@@ -1353,64 +1349,58 @@ uint32_t MeshStore::BeginTopologyOutput(uint32_t source, std::span<const uint32_
     return id;
 }
 
-uint32_t MeshStore::CloneMesh(const Mesh &mesh, const MeshPipelines &pipelines) {
+std::vector<uint32_t> MeshStore::CloneMeshes(std::span<const uint32_t> source_ids, const MeshPipelines &pipelines) {
     const mtl::AutoreleaseScope native_scope;
-    const auto src_id = mesh.GetStoreId();
     // The current packed clone emitter must reject fragmented input before it
     // acquires an output record. Local topology allocation does not use cloning.
-    ForEachArena(Buffers, [&](auto &, const ArenaInfo &info, auto &&ranges) {
-        if (const auto *allocation = ranges(Records.at(src_id)))
-            DenseRange(Buffers, info, *allocation);
-    });
-    const auto id = AcquireId(Record{Records.at(src_id)});
-    DerivedRecords[id] = DerivedRecords.at(src_id);
-    DerivedRecords[id].NormalRevision = ++NextNormalRevision;
-    const auto &src = Records[src_id];
-    auto &dst = Records[id];
-    auto &dst_derived = DerivedRecords[id];
-    dst.SectorBlockCount=0u;
-    struct Copy { mtl::Buffer *Buffer; uint64_t Source, Destination, Bytes; };
-    std::vector<Copy> copies;
-    // Allocate every destination before recording copies, so virtual growth and
-    // history capture finish before the GPU reads either side.
-    ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
-        if (&arena.Buffer == &Buffers.VertexCorners.Buffer) return;
-        const auto *source_allocation = ranges(src);
-        if (!source_allocation) return;
-        auto *target_allocation = ranges(dst);
-        const auto source = DenseRange(Buffers, info, *source_allocation);
-        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(*target_allocation)>, ElementSetRef> && !requires { arena.Blocks; }) {
-            WithDomain(Buffers, info.Elements, [&](const auto &owner) { arena.Mirror({0, info.BlockIndexed ? owner.Capacity() / MeshElementBlockSize : owner.Capacity()}); });
-        } else {
-            *target_allocation = arena.Allocate(source.Count);
-        }
-        const auto target = DenseRange(Buffers, info, *target_allocation);
-        constexpr auto stride = sizeof(typename decltype(arena.Get(Range{}))::element_type);
-        const uint64_t bytes = uint64_t(source.Count) * stride;
-        if (!bytes) return;
-        arena.Buffer.CaptureWrite(uint64_t(target.Offset) * stride, bytes);
-        copies.push_back({&arena.Buffer, uint64_t(source.Offset) * stride, uint64_t(target.Offset) * stride, bytes});
-    });
-    const auto &ctx = BufferContext().Ctx;
-    SyncMirrors();
-    ClearVertexRoots(Buffers,dst.Vertices);
-    for (const auto domain : SelectionDomains) {
-        WithDomain(Buffers, domain, [&](const auto &owner) {
-            const auto from = owner.Dense(DomainSet(src, domain));
-            const auto to = owner.Dense(DomainSet(dst, domain));
-            const auto count = ElementArena<uint32_t>::BlockCount(from.Count);
-            if (!count) return;
-            auto &bits = SelectionArena(Buffers, domain);
-            const Range target{to.Offset / MeshElementBlockSize, count};
-            CaptureRange(bits, target);
-            copies.push_back({&bits.Buffer, uint64_t(from.Offset / MeshElementBlockSize) * sizeof(MeshArenas::SelectionBlock),
-                              uint64_t(target.Offset) * sizeof(MeshArenas::SelectionBlock), uint64_t(count) * sizeof(MeshArenas::SelectionBlock)});
-            // Equal block contents in the same order give the clone equal aggregates and roots.
-            copies.push_back({&AggregateArena(Buffers, domain).Buffer, uint64_t(from.Offset / MeshElementBlockSize) * sizeof(SelectionAggregate),
-                              uint64_t(target.Offset) * sizeof(SelectionAggregate), uint64_t(count) * sizeof(SelectionAggregate)});
+    for (const auto src_id : source_ids) {
+        ForEachArena(Buffers, [&](auto &, const ArenaInfo &info, auto &&ranges) {
+            if (const auto *allocation = ranges(Records.at(src_id)))
+                DenseRange(Buffers, info, *allocation);
         });
     }
-    std::ranges::copy(Buffers.SelectionRoots.Get({3u * src_id, 3u}), Buffers.SelectionRoots.GetMutable({3u * id, 3u}).begin());
+    struct Copy { mtl::Buffer *Buffer; uint64_t Source, Destination, Bytes; };
+    std::vector<Copy> copies;
+    std::vector<uint32_t> ids;
+    ids.reserve(source_ids.size());
+    // Allocate every clone's destinations before recording copies, so virtual growth and
+    // history capture finish before the GPU reads either side.
+    for (const auto src_id : source_ids) {
+        const auto id = AcquireId(Record{Records.at(src_id)});
+        DerivedRecords[id] = DerivedRecords.at(src_id);
+        DerivedRecords[id].NormalRevision = ++NextNormalRevision;
+        const auto &src = Records[src_id];
+        auto &dst = Records[id];
+        dst.SectorBlockCount=0u;
+        ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
+            if (&arena.Buffer == &Buffers.VertexCorners.Buffer) return;
+            const auto *source_allocation = ranges(src);
+            if (!source_allocation) return;
+            auto *target_allocation = ranges(dst);
+            const auto source = DenseRange(Buffers, info, *source_allocation);
+            if constexpr (std::is_same_v<std::remove_cvref_t<decltype(*target_allocation)>, ElementSetRef> && !requires { arena.Blocks; }) {
+                WithDomain(Buffers, info.Elements, [&](const auto &owner) { arena.Mirror({0, info.BlockIndexed ? owner.Capacity() / MeshElementBlockSize : owner.Capacity()}); });
+            } else {
+                *target_allocation = arena.Allocate(source.Count);
+            }
+            const auto target = DenseRange(Buffers, info, *target_allocation);
+            constexpr auto stride = sizeof(typename decltype(arena.Get(Range{}))::element_type);
+            const uint64_t bytes = uint64_t(source.Count) * stride;
+            if (!bytes) return;
+            arena.Buffer.CaptureWrite(uint64_t(target.Offset) * stride, bytes);
+            copies.push_back({&arena.Buffer, uint64_t(source.Offset) * stride, uint64_t(target.Offset) * stride, bytes});
+        });
+        ids.push_back(id);
+    }
+    SyncMirrors();
+    // Index rebases and fan copies record after the copies, and every clone's GPU work shares one command buffer.
+    struct Rebase { mtl::Buffer *Buffer; Range Range; uint32_t Delta, Stride; uint64_t ByteBase; };
+    struct FanCopy { std::vector<ReferencePairCopy> Ranges; uint32_t CornerDelta, FaceDelta; };
+    std::vector<Rebase> rebases;
+    std::vector<FanCopy> fan_copies;
+    const auto rebase = [&](auto &arena, Range range, uint32_t delta, uint32_t stride = 1u, uint64_t byte_base = 0u) {
+        rebases.push_back({&arena.Buffer, range, delta, stride, byte_base});
+    };
     // Authored layers and normal-sector layers clone through the same sparse payload ownership.
     // Allocate all destination payloads before reading addresses: growth may move an arena.
     const auto copy_attribute = [&](auto &attribute, Range source, uint32_t destination, uint32_t entries = 1u) {
@@ -1433,70 +1423,98 @@ uint32_t MeshStore::CloneMesh(const Mesh &mesh, const MeshPipelines &pipelines) 
         }
         return blocks;
     };
-    ForEachAttribute(Buffers, [&](auto &attribute, Domain domain, uint32_t, const char *, const char *, const char *, auto &&entries) {
-        if (const auto count = entries(src)) WithDomain(Buffers, domain, [&](const auto &arena) {
-            copy_attribute(attribute, arena.Dense(DomainSet(src, domain)), arena.First(DomainSet(dst, domain)), count);
+    for (uint32_t i = 0u; i < ids.size(); ++i) {
+        const auto src_id = source_ids[i], id = ids[i];
+        const auto &src = Records[src_id];
+        auto &dst = Records[id];
+        auto &dst_derived = DerivedRecords[id];
+        ClearVertexRoots(Buffers,dst.Vertices);
+        for (const auto domain : SelectionDomains) {
+            WithDomain(Buffers, domain, [&](const auto &owner) {
+                const auto from = owner.Dense(DomainSet(src, domain));
+                const auto to = owner.Dense(DomainSet(dst, domain));
+                const auto count = ElementArena<uint32_t>::BlockCount(from.Count);
+                if (!count) return;
+                auto &bits = SelectionArena(Buffers, domain);
+                const Range target{to.Offset / MeshElementBlockSize, count};
+                CaptureRange(bits, target);
+                copies.push_back({&bits.Buffer, uint64_t(from.Offset / MeshElementBlockSize) * sizeof(MeshArenas::SelectionBlock),
+                                  uint64_t(target.Offset) * sizeof(MeshArenas::SelectionBlock), uint64_t(count) * sizeof(MeshArenas::SelectionBlock)});
+                // Equal block contents in the same order give the clone equal aggregates and roots.
+                copies.push_back({&AggregateArena(Buffers, domain).Buffer, uint64_t(from.Offset / MeshElementBlockSize) * sizeof(SelectionAggregate),
+                                  uint64_t(target.Offset) * sizeof(SelectionAggregate), uint64_t(count) * sizeof(SelectionAggregate)});
+            });
+        }
+        std::ranges::copy(Buffers.SelectionRoots.Get({3u * src_id, 3u}), Buffers.SelectionRoots.GetMutable({3u * id, 3u}).begin());
+        ForEachAttribute(Buffers, [&](auto &attribute, Domain domain, uint32_t, const char *, const char *, const char *, auto &&entries) {
+            if (const auto count = entries(src)) WithDomain(Buffers, domain, [&](const auto &arena) {
+                copy_attribute(attribute, arena.Dense(DomainSet(src, domain)), arena.First(DomainSet(dst, domain)), count);
+            });
         });
-    });
-    const auto source_corners = Buffers.FaceCorners.Dense(src.FaceCorners);
-    const Range sector_source{source_corners.Offset, ElementArena<uint32_t>::BlockCount(source_corners.Count) * MeshElementBlockSize};
-    const auto destination_corners = Buffers.FaceCorners.First(dst.FaceCorners);
-    const auto sector_targets = copy_attribute(Buffers.CornerSectors, sector_source, destination_corners);
-    copy_attribute(Buffers.NormalSectors, sector_source, destination_corners);
-    dst.SectorBlockCount = uint32_t(sector_targets.size());
-    // The clone's fans fill one run in vertex order.
-    const auto source_vertices=Buffers.Vertices.Dense(src.Vertices), target_vertices=Buffers.Vertices.Dense(dst.Vertices);
-    const auto roots=Buffers.VertexCorners.Get(source_vertices);
-    uint64_t fan_items=0u;
-    for (const auto root : roots) fan_items+=root.y;
-    if (fan_items>=InvalidOffset) throw std::length_error("Cloned fan items exceed their address space.");
-    const auto fans=Buffers.VertexFans.Items.Allocate(uint32_t(fan_items));
-    Buffers.VertexFans.Items.Buffer.CaptureWrite(uint64_t(fans.Offset)*sizeof(uvec2),uint64_t(fans.Count)*sizeof(uvec2));
-    auto target_roots=Buffers.VertexCorners.GetMutable(target_vertices);
-    std::vector<ReferencePairCopy> fan_ranges;
-    for (uint32_t i=0u,next=fans.Offset; i<source_vertices.Count; ++i) {
-        if (!roots[i].y) continue;
-        target_roots[i]={next,roots[i].y};
-        if (!fan_ranges.empty() && uint64_t(fan_ranges.back().Source)+fan_ranges.back().Count==roots[i].x) {
-            fan_ranges.back().Count+=roots[i].y;
-        } else fan_ranges.push_back({roots[i].x,next,roots[i].y});
-        next+=roots[i].y;
+        const auto source_corners = Buffers.FaceCorners.Dense(src.FaceCorners);
+        const Range sector_source{source_corners.Offset, ElementArena<uint32_t>::BlockCount(source_corners.Count) * MeshElementBlockSize};
+        const auto destination_corners = Buffers.FaceCorners.First(dst.FaceCorners);
+        const auto sector_targets = copy_attribute(Buffers.CornerSectors, sector_source, destination_corners);
+        copy_attribute(Buffers.NormalSectors, sector_source, destination_corners);
+        dst.SectorBlockCount = uint32_t(sector_targets.size());
+        // The clone's fans fill one run in vertex order.
+        const auto source_vertices=Buffers.Vertices.Dense(src.Vertices), target_vertices=Buffers.Vertices.Dense(dst.Vertices);
+        const auto roots=Buffers.VertexCorners.Get(source_vertices);
+        uint64_t fan_items=0u;
+        for (const auto root : roots) fan_items+=root.y;
+        if (fan_items>=InvalidOffset) throw std::length_error("Cloned fan items exceed their address space.");
+        const auto fans=Buffers.VertexFans.Items.Allocate(uint32_t(fan_items));
+        Buffers.VertexFans.Items.Buffer.CaptureWrite(uint64_t(fans.Offset)*sizeof(uvec2),uint64_t(fans.Count)*sizeof(uvec2));
+        auto target_roots=Buffers.VertexCorners.GetMutable(target_vertices);
+        const auto corner_delta = Buffers.FaceCorners.First(dst.FaceCorners) - Buffers.FaceCorners.First(src.FaceCorners);
+        const auto face_delta = Buffers.FaceTriangles.First(dst.FaceData) - Buffers.FaceTriangles.First(src.FaceData);
+        auto &fan_ranges = fan_copies.emplace_back(FanCopy{.CornerDelta = corner_delta, .FaceDelta = face_delta}).Ranges;
+        for (uint32_t v=0u,next=fans.Offset; v<source_vertices.Count; ++v) {
+            if (!roots[v].y) continue;
+            target_roots[v]={next,roots[v].y};
+            if (!fan_ranges.empty() && uint64_t(fan_ranges.back().Source)+fan_ranges.back().Count==roots[v].x) {
+                fan_ranges.back().Count+=roots[v].y;
+            } else fan_ranges.push_back({roots[v].x,next,roots[v].y});
+            next+=roots[v].y;
+        }
+        if (!dst_derived.SelectionBaseline.empty()) {
+            const auto domain = SelectionDomain(dst_derived.SelectionBaselineElement);
+            const auto delta = WithDomain(Buffers, domain, [&](const auto &owner) {
+                return owner.First(DomainSet(dst, domain)) / MeshElementBlockSize - owner.First(DomainSet(src, domain)) / MeshElementBlockSize;
+            });
+            for (auto &[block, words] : dst_derived.SelectionBaseline) block += delta;
+        }
+        rebase(Buffers.FaceCorners, Buffers.FaceCorners.Dense(dst.FaceCorners), Buffers.Vertices.First(dst.Vertices) - Buffers.Vertices.First(src.Vertices));
+        rebase(Buffers.OutgoingHalfedges, Buffers.Vertices.Dense(dst.Vertices), corner_delta);
+        rebase(Buffers.OppositeHalfedges, Buffers.FaceCorners.Dense(dst.FaceCorners), corner_delta);
+        rebase(Buffers.HalfedgeEdges, Buffers.FaceCorners.Dense(dst.FaceCorners), Buffers.EdgeHalfedges.First(dst.EdgeData) - Buffers.EdgeHalfedges.First(src.EdgeData));
+        rebase(Buffers.HalfedgeFaces, Buffers.FaceCorners.Dense(dst.FaceCorners), face_delta);
+        rebase(Buffers.FaceTriangles, Buffers.FaceTriangles.Dense(dst.FaceData), Buffers.Triangles.First(dst.TriangleData) - Buffers.Triangles.First(src.TriangleData));
+        for (uint32_t c = 0; c < 3u; ++c)
+            rebase(Buffers.Triangles, {c, Buffers.Triangles.Count(dst.TriangleData)}, corner_delta, 3u, uint64_t(Buffers.Triangles.First(dst.TriangleData)) * sizeof(uvec3));
+        rebase(Buffers.EdgeHalfedges, Buffers.EdgeHalfedges.Dense(dst.EdgeData), corner_delta);
+        rebase(Buffers.FaceRanges, {2u * Buffers.FaceTriangles.First(dst.FaceData), 2u * Buffers.FaceTriangles.Count(dst.FaceData)}, corner_delta);
+        for (const auto block : sector_targets)
+            rebase(Buffers.CornerSectors.Values, Buffers.CornerSectors.Payload(block * MeshElementBlockSize, MeshElementBlockSize), corner_delta);
     }
+    if (ids.empty()) return ids;
+    const auto &ctx = BufferContext().Ctx;
     auto *command = ctx.Queue->commandBuffer();
     ctx.OrderAfterGpuWork(command);
-    auto *encoder = command->blitCommandEncoder();
-    for (const auto &copy : copies) encoder->copyFromBuffer(**copy.Buffer, copy.Source, **copy.Buffer, copy.Destination, copy.Bytes);
-    encoder->endEncoding();
+    auto *blit = command->blitCommandEncoder();
+    for (const auto &copy : copies) blit->copyFromBuffer(**copy.Buffer, copy.Source, **copy.Buffer, copy.Destination, copy.Bytes);
+    blit->endEncoding();
+    // Each clone's rebases and fan copies write disjoint ranges of the copies above.
+    auto *encoder = command->computeCommandEncoder();
     const auto &rebase_indices = pipelines[MeshPass::CloneRebaseIndices];
-    EncodeRebaseIndices(command, rebase_indices, *Buffers.FaceCorners.Buffer, Buffers.FaceCorners.Dense(dst.FaceCorners), Buffers.Vertices.First(dst.Vertices) - Buffers.Vertices.First(src.Vertices));
-    const auto corner_delta = Buffers.FaceCorners.First(dst.FaceCorners) - Buffers.FaceCorners.First(src.FaceCorners);
-    EncodeCopyReferencePairs(command, pipelines[MeshPass::CloneCopyReferencePairs], *Buffers.VertexFans.Items.Buffer, fan_ranges, corner_delta,
-        Buffers.FaceTriangles.First(dst.FaceData) - Buffers.FaceTriangles.First(src.FaceData));
-    const auto rebase = [&](auto &arena, Range range, uint32_t delta, uint32_t stride = 1u) {
-        EncodeRebaseIndices(command, rebase_indices, *arena.Buffer, range, delta, stride);
-    };
-    if (!dst_derived.SelectionBaseline.empty()) {
-        const auto domain = SelectionDomain(dst_derived.SelectionBaselineElement);
-        const auto delta = WithDomain(Buffers, domain, [&](const auto &owner) {
-            return owner.First(DomainSet(dst, domain)) / MeshElementBlockSize - owner.First(DomainSet(src, domain)) / MeshElementBlockSize;
-        });
-        for (auto &[block, words] : dst_derived.SelectionBaseline) block += delta;
-    }
-    rebase(Buffers.OutgoingHalfedges, Buffers.Vertices.Dense(dst.Vertices), corner_delta);
-    rebase(Buffers.OppositeHalfedges, Buffers.FaceCorners.Dense(dst.FaceCorners), corner_delta);
-    rebase(Buffers.HalfedgeEdges, Buffers.FaceCorners.Dense(dst.FaceCorners), Buffers.EdgeHalfedges.First(dst.EdgeData) - Buffers.EdgeHalfedges.First(src.EdgeData));
-    rebase(Buffers.HalfedgeFaces, Buffers.FaceCorners.Dense(dst.FaceCorners), Buffers.FaceTriangles.First(dst.FaceData) - Buffers.FaceTriangles.First(src.FaceData));
-    rebase(Buffers.FaceTriangles, Buffers.FaceTriangles.Dense(dst.FaceData), Buffers.Triangles.First(dst.TriangleData) - Buffers.Triangles.First(src.TriangleData));
-    for (uint32_t c = 0; c < 3u; ++c)
-        EncodeRebaseIndices(command, rebase_indices, *Buffers.Triangles.Buffer, {c, Buffers.Triangles.Count(dst.TriangleData)}, corner_delta, 3u, uint64_t(Buffers.Triangles.First(dst.TriangleData)) * sizeof(uvec3));
-    rebase(Buffers.EdgeHalfedges, Buffers.EdgeHalfedges.Dense(dst.EdgeData), corner_delta);
-    rebase(Buffers.FaceRanges, {2u * Buffers.FaceTriangles.First(dst.FaceData), 2u * Buffers.FaceTriangles.Count(dst.FaceData)}, corner_delta);
-    for (const auto block : sector_targets)
-        rebase(Buffers.CornerSectors.Values, Buffers.CornerSectors.Payload(block * MeshElementBlockSize, MeshElementBlockSize), corner_delta);
+    for (const auto &rebase : rebases) EncodeRebaseIndices(encoder, rebase_indices, **rebase.Buffer, rebase.Range, rebase.Delta, rebase.Stride, rebase.ByteBase);
+    for (const auto &fan : fan_copies)
+        EncodeCopyReferencePairs(encoder, pipelines[MeshPass::CloneCopyReferencePairs], *Buffers.VertexFans.Items.Buffer, fan.Ranges, fan.CornerDelta, fan.FaceDelta);
+    encoder->endEncoding();
     command->commit();
     command->waitUntilCompleted();
     if (command->status() == MTL::CommandBufferStatusError) throw std::runtime_error("GPU mesh clone failed.");
-    return id;
+    return ids;
 }
 
 void MeshStore::Release(uint32_t id) {

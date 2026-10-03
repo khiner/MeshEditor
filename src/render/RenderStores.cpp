@@ -28,12 +28,11 @@ void RegisterRenderStoreHandlers(state::Scene &r) {
         r.Context.emplace<PendingHide>().Retired.push_back(e);
     }>();
     r.on_destroy<ArmaturePoseState, [](state::Scene &r, state::Entity e) {
-        auto &buffer = r.Context.get<GpuBuffers>().ArmatureDeformBuffer;
-        for (const auto range : r.get<const ArmaturePoseState>(e).GpuDeformRanges) buffer.Release(range);
+        r.Context.emplace<PendingObjectRemovals>().DeformRanges.append_range(r.get<const ArmaturePoseState>(e).GpuDeformRanges);
     }>();
     // History restores the tracked allocator, so a restore releases nothing.
     r.on_destroy<MorphWeightRange, [](state::Scene &r, state::Entity e) {
-        if (!r.Restoring) r.Context.get<GpuBuffers>().MorphWeightBuffer.Release(r.get<const MorphWeightRange>(e).Weights);
+        if (!r.Restoring) r.Context.emplace<PendingObjectRemovals>().MorphRanges.push_back(r.get<const MorphWeightRange>(e).Weights);
     }>();
     r.on_destroy<RenderInstance, [](state::Scene &r, state::Entity e) {
         const auto &ri = r.get<const RenderInstance>(e);
@@ -43,13 +42,6 @@ void RegisterRenderStoreHandlers(state::Scene &r) {
         }
         if (ri.BufferIndex == UINT32_MAX) return;
         r.Context.emplace<PendingHide>().Instances.push_back({ri.Entity, ri.BufferIndex});
-    }>();
-    // Keep RenderInstance synchronized with Instance and Hidden regardless of snapshot insertion order.
-    r.on_construct<Instance, [](state::Scene &r, state::Entity e) {
-        if (!r.all_of<Hidden>(e) && !r.all_of<RenderInstance>(e)) r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX);
-    }>();
-    r.on_construct<Hidden, [](state::Scene &r, state::Entity e) {
-        if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
     }>();
 }
 mtl::BufferContext &InitRenderStores(state::Scene &r) {

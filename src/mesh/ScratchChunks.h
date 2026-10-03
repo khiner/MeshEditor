@@ -18,18 +18,16 @@ constexpr uint32_t BitWords(uint32_t bits) { return bits / 32u + (bits % 32u != 
 struct ScratchChunks {
     std::vector<Range> Chunks;
     uint32_t WidestWords{}; // Scratch words the widest chunk takes
-    uint32_t MostJobs{};
 };
 
 // Split `count` items into budgeted chunks, `words_of(i)` giving item i's scratch demand.
-// The widest and fullest counts size buffers every chunk writes over.
+// The widest count sizes the scratch every chunk writes over.
 ScratchChunks ChunkByScratch(uint32_t count, uint32_t budget_words, auto &&words_of) {
     ScratchChunks split;
     uint32_t first = 0, words = 0;
     const auto close = [&](uint32_t end) {
         split.Chunks.emplace_back(first, end - first);
         split.WidestWords = std::max(split.WidestWords, words);
-        split.MostJobs = std::max(split.MostJobs, end - first);
         first = end;
         words = 0;
     };

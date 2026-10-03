@@ -103,11 +103,10 @@ struct ElementArena {
     }
 
     // Adds `count` live elements to the set, creating it as a dense set when absent, and returns their handles and the blocks that gained them.
-    // Without a list the handles form one run, and otherwise they form a run whenever they are consecutive and are listed in `list` when they are not.
+    // Without a list the handles form one run, and otherwise they form a run whenever they are consecutive and are listed in a range of `list` when they are not.
     // At most one block of handles fills free slots of the set's own blocks, and more take fresh blocks.
-    ElementInsert Insert(ElementSetRef &set, uint32_t count, mtl::Buffer *list) {
+    ElementInsert Insert(ElementSetRef &set, uint32_t count, BufferArena<uint32_t> *list) {
         ElementInsert result;
-        if (list) list->SetUsedSize(0);
         if (!count) return result;
         if (uint64_t(Count(set)) + count >= InvalidOffset) throw std::length_error("Element count overflow.");
         if (!set) {
@@ -171,9 +170,8 @@ struct ElementArena {
         if (consecutive) {
             result.Handles = {.First = handles.front(), .Count = count};
         } else {
-            if (list->Slot == InvalidSlot) throw std::invalid_argument("A handle list requires a bound buffer.");
-            std::ranges::copy(handles, list->SetCount<uint32_t>(count).begin());
-            result.Handles = {.Handles = {list->Slot, 0u}, .Count = count};
+            if (list->Buffer.Slot == InvalidSlot) throw std::invalid_argument("A handle list requires a bound buffer.");
+            result.Handles = {.Handles = {list->Buffer.Slot, list->Allocate(std::span<const uint32_t>{handles}).Offset}, .Count = count};
         }
         return result;
     }

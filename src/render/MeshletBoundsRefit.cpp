@@ -42,30 +42,30 @@ void RefitCanonicalMeshletBounds(state::Scene &r,std::span<const MeshletBoundsRe
     for (const auto &[owner,ids]:refitted) if (owner->SpatialRoot!=InvalidOffset) RefitMeshletSpatial(r,*owner,ids);
 }
 
-void StageDirtyPositionMeshlets(state::Scene &r,state::Entity entity) {
+void StageDirtyPositionMeshlets(state::Scene &r,mtl::ComputeChain &chain,std::span<const state::Entity> entities) {
     auto &buffers=r.Context.get<GpuBuffers>();
-    auto &owner=MeshBuffersOf(r,entity);
-    const auto root=owner.PositionDirtyRoot;
-    if (root==InvalidOffset) return;
-    const auto count=buffers.ActiveMeshlets.Count(root);
-    if (count && buffers.ClusterGroupCount(owner)) {
-        const profile::CpuScope scope{"PositionCoarseInvalidate"};
-        std::vector<uint32_t> moved,groups;
-        buffers.ActiveMeshlets.ForEach(root,[&](uint32_t meshlet) {
-            if (!buffers.ActiveMeshlets.Contains(owner.MeshletRoot,meshlet)) return;
-            moved.push_back(meshlet);
-            if (const auto group=buffers.Meshlets.Get({meshlet,1u})[0].GroupIndex; group!=InvalidOffset) groups.push_back(group);
-        });
-        // The moved clusters refit their leaves along with every stale member.
-        auto touched=InvalidateClusterGroups(r,entity,groups);
-        touched.insert(touched.end(),moved.begin(),moved.end());
-        std::ranges::sort(touched);
-        touched.erase(std::unique(touched.begin(),touched.end()),touched.end());
-        mtl::ComputeChain chain{buffers.Ctx};
-        EditLodNodes(r,chain,owner,{},{},touched);
-        chain.Submit();
+    for (const auto entity:entities) {
+        auto &owner=MeshBuffersOf(r,entity);
+        const auto root=owner.PositionDirtyRoot;
+        if (root==InvalidOffset) continue;
+        const auto count=buffers.ActiveMeshlets.Count(root);
+        if (count && buffers.ClusterGroupCount(owner)) {
+            const profile::CpuScope scope{"PositionCoarseInvalidate"};
+            std::vector<uint32_t> moved,groups;
+            buffers.ActiveMeshlets.ForEach(root,[&](uint32_t meshlet) {
+                if (!buffers.ActiveMeshlets.Contains(owner.MeshletRoot,meshlet)) return;
+                moved.push_back(meshlet);
+                if (const auto group=buffers.Meshlets.Get({meshlet,1u})[0].GroupIndex; group!=InvalidOffset) groups.push_back(group);
+            });
+            // The moved clusters refit their leaves along with every stale member.
+            auto touched=InvalidateClusterGroups(r,entity,groups);
+            touched.insert(touched.end(),moved.begin(),moved.end());
+            std::ranges::sort(touched);
+            touched.erase(std::unique(touched.begin(),touched.end()),touched.end());
+            EditLodNodes(r,chain,owner,{},{},touched);
+        }
+        buffers.ActiveMeshlets.Release(root);
+        owner.PositionDirtyRoot=InvalidOffset;
+        buffers.PreludeStale=true;
     }
-    buffers.ActiveMeshlets.Release(root);
-    owner.PositionDirtyRoot=InvalidOffset;
-    buffers.PreludeStale=true;
 }

@@ -210,20 +210,25 @@ Transform ApplyBoneConstraint(
     return {Mix(pre_local.P, tl.P, c.Influence), Slerp(pre_local.R, tl.R, c.Influence), pre_local.S};
 }
 
-float ComputeBoneDisplayScale(const Armature &armature, uint32_t bone_index) {
+std::vector<float> ComputeBoneDisplayScales(const Armature &armature) {
     static constexpr float MinBoneLength = 0.004f;
-    float min_child_dist = std::numeric_limits<float>::max();
-    for (uint32_t j = 0; j < armature.Bones.size(); ++j) {
-        if (armature.Bones[j].ParentIndex == bone_index) {
-            const float d = Length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[bone_index].RestWorld[3]});
+    const auto &bones = armature.Bones;
+    // Zero marks an unresolved bone, since every resolved scale is positive.
+    std::vector<float> scales(bones.size(), 0.f);
+    const auto resolve = [&](this const auto &self, uint32_t i) -> float {
+        if (scales[i] > 0.f) return scales[i];
+        float min_child_dist = std::numeric_limits<float>::max();
+        for (auto child = bones[i].FirstChild; child != InvalidBoneIndex; child = bones[child].NextSibling) {
+            const float d = Length(vec3{bones[child].RestWorld[3]} - vec3{bones[i].RestWorld[3]});
             if (d > MinBoneLength) min_child_dist = std::min(min_child_dist, d);
         }
-    }
-    if (min_child_dist < std::numeric_limits<float>::max()) return min_child_dist;
-    if (armature.Bones[bone_index].ParentIndex != InvalidBoneIndex) {
-        return ComputeBoneDisplayScale(armature, armature.Bones[bone_index].ParentIndex);
-    }
-    return 1.f;
+        scales[i] = min_child_dist < std::numeric_limits<float>::max() ? min_child_dist :
+            bones[i].ParentIndex != InvalidBoneIndex                   ? self(bones[i].ParentIndex) :
+                                                                          1.f;
+        return scales[i];
+    };
+    for (uint32_t i = 0; i < bones.size(); ++i) resolve(i);
+    return scales;
 }
 
 std::vector<uint32_t> CollectBonesForDeletion(const state::Scene &r, state::Entity arm_obj_entity) {

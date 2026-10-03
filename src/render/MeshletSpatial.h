@@ -11,9 +11,9 @@ struct MeshBuffers;
 struct Mesh;
 namespace state { struct Scene; }
 
-// The initial build visits the mesh once. Thereafter these operations touch
-// only changed finest meshlets and their spatial ancestors.
-void BuildMeshletSpatial(state::Scene &, MeshBuffers &);
+// The initial build visits each owner's mesh once, and the owners build concurrently.
+// Thereafter these operations touch only changed finest meshlets and their spatial ancestors.
+void BuildMeshletSpatial(state::Scene &, std::span<MeshBuffers *const>);
 void ReplaceMeshletSpatial(state::Scene &, MeshBuffers &, std::span<const uint32_t> removed, std::span<const uint32_t> added);
 void RefitMeshletSpatial(state::Scene &, MeshBuffers &, std::span<const uint32_t> changed);
 

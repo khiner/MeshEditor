@@ -628,7 +628,7 @@ Hash128 BuildManifest(History &history, size_t track) {
                 const auto child = children[digit];
                 if (child == Hash128{}) continue;
                 if (level) self(child, level - 1, index * Fanout + digit);
-                else AppendContent(history, history.LeafLog, child, owner.Read(index * Fanout + digit));
+                else if (!history.LeafLog.Idx.contains(child)) AppendContent(history, history.LeafLog, child, owner.Read(index * Fanout + digit));
             }
             AppendContent(history, history.NodeLog, hash, ManifestRecord{level, children}.View());
         };

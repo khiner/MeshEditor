@@ -75,7 +75,7 @@ void BuildConnectivityNow(state::Scene &r, std::span<const uint32_t> store_ids) 
         uint32_t words = 0;
         for (const auto id : chunk) words += ScratchWords(meshes, id);
         mtl::ComputeChain chain{meshes.BufferContext()};
-        ConnectivityBatch batch{meshes.BufferContext(), words, range.Count};
+        ConnectivityBatch batch{chain.Scratch, words};
         batch.Begin();
         std::vector<uint32_t> vertex_blocks;
         for (const auto id : chunk) {

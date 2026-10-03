@@ -196,6 +196,24 @@ void Scene::RemoveComponents(Entity e) {
 void Scene::RemoveComponents(std::span<const Entity> entities) {
     RemoveComponentPages(*this, RemovalPages(*this, entities));
 }
+void Scene::clear(TypeId type) {
+    auto &table = Tables[type];
+    if (table.empty()) return;
+    std::vector<PageMask> pages;
+    for (uint32_t word = 0; word < table.Occupied.size(); ++word) {
+        for (auto bits = table.Occupied[word]; bits; bits &= bits - 1u) {
+            const auto page = word * 64u + uint32_t(std::countr_zero(bits));
+            pages.push_back({page, table.mask(page)});
+        }
+    }
+    if (Capture) Capture(*this, type, pages);
+    for (const auto [page, _] : pages) {
+        const auto mask = table.mask(page);
+        if (!mask) continue;
+        for (auto bits = mask; bits; bits &= bits - 1u) Notify(*this, type, Event::Destroy, table.entity(page, uint32_t(std::countr_zero(bits))));
+        table.erase(page, mask);
+    }
+}
 void Scene::ResetEntities() {
     ++Epoch;
     for (auto &type : Dirty)
