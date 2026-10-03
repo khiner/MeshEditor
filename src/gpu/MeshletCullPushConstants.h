@@ -48,5 +48,7 @@ struct MeshletCullPushConstants {
     uint32_t ExactEditGeometry DEFAULT();
     float MinEditOverlayDiameterPixels DEFAULT();
     uint32_t EditOverlayHasSharpEdges DEFAULT();
+    uint32_t SourceVisibleSlot DEFAULT(InvalidSlot);
+    uint32_t SourceRouteStateSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(MeshletCullPushConstants) == 164, "MeshletCullPushConstants size");
+static_assert(sizeof(MeshletCullPushConstants) == 172, "MeshletCullPushConstants size");

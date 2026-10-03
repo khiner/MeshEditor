@@ -76,9 +76,9 @@ struct Pipelines {
     Pipelines(mtl::LibraryCache &);
 
     MainPipeline Main;
-    mtl::RenderPipeline Silhouette;
+    mtl::RenderPipeline SilhouetteSeed, Silhouette;
     SelectionFragmentPipeline SelectionFragment;
-    mtl::ComputePipeline VisibilityObjectSelection, EditSharpness, CommitPosedGeometry, FinalizeElementWork;
+    mtl::ComputePipeline VisibilityObjectSelection, OutlineOccluderSeed, EditSharpness, CommitPosedGeometry, FinalizeElementWork;
     // Materializes current-pose positions before bounds and normal derivation.
     mtl::ComputePipeline PosePrepass;
     mtl::ComputePipeline PosedMeshletBounds;
@@ -89,7 +89,7 @@ struct Pipelines {
     mtl::ComputePipeline WireRaster;
     // Descends every span tree in lockstep, one count/prefix/emit level at a time.
     mtl::ComputePipeline LodFrontierCount, LodFrontierPrefix, LodFrontierEmit;
-    mtl::ComputePipeline MeshletCullBlockCount, MeshletCullPrefix, MeshletCullEmit;
+    mtl::ComputePipeline MeshletCullBlockCount, MeshletCullPrefix, MeshletCullEmit, SilhouetteCullSize;
     mtl::ComputePipeline OverlayJobBlockCount, OverlayJobPrefix, OverlayJobEmit;
     mtl::ComputePipeline DepthPyramidReduce;
     // The environment prefilter passes run once per loaded environment and bind their textures directly.

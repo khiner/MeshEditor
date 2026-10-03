@@ -11,14 +11,16 @@ inline float ProjectedDiameterPixels(const thread Scene &scene, float3 center, f
     return 2.0f * radius / (distance * scene.View.ScreenPixelScale);
 }
 
-// Whether the depth pyramid hides a world-space box whose raster footprint grows by `margin` pixels.
+// Whether a world-space box whose raster footprint grows by `margin` pixels lies wholly behind the depth pyramid.
+// With `nearest`, whether it lies wholly in front of a nearest-depth pyramid.
 // A positive `depth_pull` tests the box at its nearest depth after that clip-space pull toward the camera.
-inline bool BoxOccluded(
-    const thread Scene &scene, uint pyramid_slot, float3 center, float3 ax, float3 ay, float3 az, float margin, float depth_pull
+inline bool BoxPastPyramid(
+    const thread Scene &scene, uint pyramid_slot, float3 center, float3 ax, float3 ay, float3 az, float margin, float depth_pull,
+    bool nearest = false
 ) {
     const float4x4 view_proj = scene.ViewProj();
     float2 uv_min = float2(1e30f), uv_max = float2(-1e30f);
-    float min_depth = 1e30f;
+    float min_depth = 1e30f, max_depth = 0.0f;
     for (uint c = 0; c < 8; ++c) {
         const float3 corner = center + ((c & 1u) ? ax : -ax) + ((c & 2u) ? ay : -ay) + ((c & 4u) ? az : -az);
         const float4 clip = view_proj * float4(corner, 1.0f);
@@ -28,6 +30,7 @@ inline bool BoxOccluded(
         uv_min = min(uv_min, uv);
         uv_max = max(uv_max, uv);
         min_depth = min(min_depth, depth_pull > 0.0f ? (clip.z - depth_pull) / clip.w - 5e-7f : ndc.z);
+        max_depth = max(max_depth, ndc.z);
     }
     if (min_depth <= 0.0f) return false;
     const float2 viewport_size = float2(scene.View.ViewportSize);
@@ -41,11 +44,14 @@ inline bool BoxOccluded(
     const int2 lo = clamp(int2(min_px) >> level, int2(0), data_max);
     const int2 hi = clamp(int2(max_px) >> level, int2(0), data_max);
     if (hi.x - lo.x > 3 || hi.y - lo.y > 3) return false;
-    float occluder = 0.0f;
+    float occluder = nearest ? 1.0f : 0.0f;
     for (int y = lo.y; y <= hi.y; ++y) {
-        for (int x = lo.x; x <= hi.x; ++x) occluder = max(occluder, scene.FetchTex(pyramid_slot, int2(x, y), uint(level)).r);
+        for (int x = lo.x; x <= hi.x; ++x) {
+            const float depth = scene.FetchTex(pyramid_slot, int2(x, y), uint(level)).r;
+            occluder = nearest ? min(occluder, depth) : max(occluder, depth);
+        }
     }
-    return min_depth > occluder;
+    return nearest ? max_depth <= occluder : min_depth > occluder;
 }
 
 #endif

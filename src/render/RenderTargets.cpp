@@ -7,6 +7,21 @@
 
 namespace Format = mtl::Format;
 
+namespace {
+RenderTargets::ResourcesT::Pyramid MakePyramid(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots) {
+    const mtl::Extent2D padded{std::bit_ceil((extent.Width + 1) / 2), std::bit_ceil((extent.Height + 1) / 2)};
+    auto image = mtl::CreateTexture2D(ctx, Format::Float, padded, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite, mtl::MipLevelCount(padded.Width, padded.Height));
+    std::vector<RenderTargets::ResourcesT::PyramidMip> mips;
+    mips.reserve(image.MipLevels);
+    for (uint32_t mip = 0; mip < image.MipLevels; ++mip) {
+        const mtl::Extent2D data_extent{((extent.Width - 1) >> (mip + 1)) + 1, ((extent.Height - 1) >> (mip + 1)) + 1};
+        mips.push_back({mtl::CreateMipView(image, mip), slots.Allocate(SlotType::Image), data_extent});
+        slots.SetTexture(mips.back().Slot, *mips.back().View);
+    }
+    return {std::move(image), std::move(mips)};
+}
+} // namespace
+
 RenderTargets::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots)
     // Visibility depth remains paired with its IDs throughout shading and selection.
     : VisibilityDepth{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
@@ -16,26 +31,15 @@ RenderTargets::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D ext
       SceneColorImage{mtl::CreateTexture2D(ctx, Format::HdrColor, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       OverlayColorImage{mtl::CreateTexture2D(ctx, Format::Color, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       FinalColorImage{mtl::CreateTexture2D(ctx, Format::Color, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      DepthPyramidImage{[&] {
-          const mtl::Extent2D padded{std::bit_ceil((extent.Width + 1) / 2), std::bit_ceil((extent.Height + 1) / 2)};
-          return mtl::CreateTexture2D(ctx, Format::Float, padded, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite, mtl::MipLevelCount(padded.Width, padded.Height));
-      }()},
-      DepthPyramidMips{[&] {
-          std::vector<PyramidMip> mips;
-          mips.reserve(DepthPyramidImage.MipLevels);
-          for (uint32_t mip = 0; mip < DepthPyramidImage.MipLevels; ++mip) {
-              const mtl::Extent2D data_extent{((extent.Width - 1) >> (mip + 1)) + 1, ((extent.Height - 1) >> (mip + 1)) + 1};
-              mips.push_back({mtl::CreateMipView(DepthPyramidImage, mip), slots.Allocate(SlotType::Image), data_extent});
-          }
-          return mips;
-      }()},
+      DepthPyramid{MakePyramid(ctx, extent, slots)},
+      OutlineOccluderPyramid{MakePyramid(ctx, extent, slots)},
       NearestSampler{mtl::CreateSampler(ctx, MTL::SamplerMinMagFilterNearest, MTL::SamplerMipFilterNearest, MTL::SamplerAddressModeClampToEdge)},
-      Slots{slots} {
-    for (const auto &mip : DepthPyramidMips) slots.SetTexture(mip.Slot, *mip.View);
-}
+      Slots{slots} {}
 
 RenderTargets::ResourcesT::~ResourcesT() {
-    for (const auto &mip : DepthPyramidMips) Slots.Release({SlotType::Image, mip.Slot});
+    for (const auto *pyramid : {&DepthPyramid, &OutlineOccluderPyramid}) {
+        for (const auto &mip : pyramid->Mips) Slots.Release({SlotType::Image, mip.Slot});
+    }
 }
 
 RenderTargets::TransmissionResourcesT::TransmissionResourcesT(const mtl::Context &ctx, mtl::Extent2D extent)
@@ -84,7 +88,8 @@ SampledTexture RenderTargets::Nearest(const mtl::Texture *image) const {
 SampledTexture RenderTargets::SceneColorSampler() const { return Nearest(nullptr); }
 SampledTexture RenderTargets::OverlayColorSampler() const { return Nearest(Resources ? &Resources->OverlayColorImage : nullptr); }
 SampledTexture RenderTargets::SceneDepthSampler() const { return Nearest(Resources ? &Resources->VisibilityDepth : nullptr); }
-SampledTexture RenderTargets::DepthPyramidSampler() const { return Nearest(Resources ? &Resources->DepthPyramidImage : nullptr); }
+SampledTexture RenderTargets::DepthPyramidSampler() const { return Nearest(Resources ? &Resources->DepthPyramid.Image : nullptr); }
+SampledTexture RenderTargets::OutlineOccluderPyramidSampler() const { return Nearest(Resources ? &Resources->OutlineOccluderPyramid.Image : nullptr); }
 SampledTexture RenderTargets::MotionBlurOutputSampler() const { return Nearest(MotionBlur ? &MotionBlur->OutputImage : nullptr); }
 SampledTexture RenderTargets::TransmissionSampler() const {
     if (!Resources) return {};

@@ -42,7 +42,7 @@ inline bool VertexBlockVisible(
     if (pc.MinDiameterPixels > 0.0f &&
         ProjectedDiameterPixels(scene, box.Center, length(box.Ax) + length(box.Ay) + length(box.Az)) < pc.MinDiameterPixels) return false;
     return pc.PyramidSamplerSlot == InvalidSlot ||
-        !BoxOccluded(scene, pc.PyramidSamplerSlot, box.Center, box.Ax, box.Ay, box.Az, margin, depth_pull);
+        !BoxPastPyramid(scene, pc.PyramidSamplerSlot, box.Center, box.Ax, box.Ay, box.Az, margin, depth_pull);
 }
 
 // The threadgroup's quarter of its block, with each lane gated by the block's live mask and the block's visibility.

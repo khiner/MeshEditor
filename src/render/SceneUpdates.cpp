@@ -495,6 +495,7 @@ bool SyncViewportRenderResources(state::Scene &r, state::Entity viewport) {
         set_sampler(samplers.Velocity, targets.Nearest(nullptr));
         set_sampler(samplers.SceneDepth, targets.SceneDepthSampler());
         set_sampler(samplers.DepthPyramid, targets.DepthPyramidSampler());
+        set_sampler(samplers.OutlineOccluderPyramid, targets.OutlineOccluderPyramidSampler());
     }
     return true;
 }

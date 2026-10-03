@@ -214,6 +214,7 @@ struct GpuBuffers {
     mtl::Buffer LodFrontierStates, LodFrontierBlockStates, LodExpandArgs;
     MeshletCullOutput SceneCull{Ctx}, EditCull{Ctx};
     mtl::Buffer MeshletClassifications, MeshletCullBlocks;
+    MeshletCullOutput SilhouetteCull{Ctx}; // Outlined surfaces the visibility image cannot resolve.
     // Coarse clusters the last cull's cut selected, which the classification accumulates.
     mtl::Buffer MeshletCoarseCount;
     // Persistent procedural line jobs, deterministically compacted into one indirect submission.

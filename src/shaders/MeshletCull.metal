@@ -185,7 +185,7 @@ inline float MeshletDiameterPixels(const thread Scene &scene, MeshletBounds boun
 inline bool MeshletOccluded(
     const thread Scene &scene, uint pyramid_slot, float3 center, float3 ax, float3 ay, float3 az, float edge_margin
 ) {
-    return BoxOccluded(scene, pyramid_slot, center, ax, ay, az, edge_margin, edge_margin > 0.0f ? scene.View.NdcOffsetFactor : 0.0f);
+    return BoxPastPyramid(scene, pyramid_slot, center, ax, ay, az, edge_margin, edge_margin > 0.0f ? scene.View.NdcOffsetFactor : 0.0f);
 }
 
 // Reject occluded instances before expanding their span trees.
@@ -294,6 +294,58 @@ inline uint CandidateMesh(device const BindlessSet &bindless, MeshletCullPushCon
     if (candidate.Instance == InvalidOffset) return InvalidOffset;
     const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[candidate.Instance];
     return instance_slot == InvalidOffset ? InvalidOffset : BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot].Mesh;
+}
+
+// The routes that draw surfaces.
+constant MeshletRoute SurfaceRoutes[]{
+    MeshletRoute::OpaqueCullBack, MeshletRoute::Blend, MeshletRoute::Transmission,
+    MeshletRoute::OpaqueCullFront, MeshletRoute::OpaqueDoubleSided, MeshletRoute::Coverage,
+};
+
+// The source cull's surface route holding entry `i`, or CullRouteCount.
+inline uint SourceSurfaceRoute(device const BindlessSet &bindless, MeshletCullPushConstants pc, uint i) {
+    const MeshletRouteState source = BindlessBuffer(MeshletRouteState, bindless.Buffer, pc.SourceRouteStateSlot)[0];
+    for (const MeshletRoute route : SurfaceRoutes) {
+        if (i - source.Offsets[uint(route)] < source.Counts[uint(route)]) return uint(route);
+    }
+    return CullRouteCount;
+}
+
+// A cull filtering a source cull reads the source's surface entries in place of traversal work.
+inline VisibleMeshlet ResolveCullEntry(device const BindlessSet &bindless, MeshletCullPushConstants pc, uint block_id, uint i) {
+    if (pc.SourceVisibleSlot == InvalidSlot) return ResolveMeshlet(bindless, pc, block_id, i);
+    if (SourceSurfaceRoute(bindless, pc, i) == CullRouteCount) return {InvalidOffset, InvalidOffset, InvalidOffset};
+    return BindlessBuffer(VisibleMeshlet, bindless.Buffer, pc.SourceVisibleSlot)[i];
+}
+
+// Keeps an outlined surface entry in its route.
+// The silhouette seed resolves every opaque outline except where an unoutlined surface may lie in front.
+inline uint SilhouetteRoutes(
+    const thread Scene &scene, MeshletCullPushConstants pc, VisibleMeshlet entry, uint instance_slot, InstanceRecord instance, uint i
+) {
+    if ((instance.Flags & uint(MeshletInstanceFlag::Silhouette)) == 0u) return 0u;
+    const uint route = SourceSurfaceRoute(scene.B, pc, i);
+    if (route == uint(MeshletRoute::Blend) || route == uint(MeshletRoute::Transmission)) return 1u << route;
+    const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, scene.B.Buffer, pc.MeshletSlot)[entry.Meshlet];
+    const MeshletBounds bounds = ResolveMeshletBounds(scene, pc, entry, instance_slot, instance, meshlet, scene.Models(pc.ModelSlot)[instance_slot]);
+    const bool hidden = !bounds.Valid ||
+        !BoxPastPyramid(scene, pc.PyramidSamplerSlot, bounds.Center, bounds.Ax, bounds.Ay, bounds.Az, 0.0f, 0.0f, true);
+    return hidden ? 1u << route : 0u;
+}
+
+// Sizes a filtering cull's block dispatches to the source cull's surface entries.
+kernel void SilhouetteCullSize(
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant MeshletCullPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    const MeshletRouteState source = BindlessBuffer(MeshletRouteState, bindless.Buffer, pc.SourceRouteStateSlot)[0];
+    uint end = 0u;
+    for (const MeshletRoute route : SurfaceRoutes) {
+        if (source.Counts[uint(route)] > 0u) end = max(end, source.Offsets[uint(route)] + source.Counts[uint(route)]);
+    }
+    const uint blocks = (end + CullBlockSize - 1u) / CullBlockSize;
+    BindlessBufferMutable(MeshletWorkState, bindless.Buffer, pc.WorkStateSlot)[0].CullBlockCount = blocks;
+    BindlessBufferMutable(MeshDispatchArgs, bindless.Buffer, pc.WorkDispatchArgsSlot)[0] = {blocks, 1u, 1u};
 }
 
 // Node error and bounds conservatively cover every record in the span, so pruning preserves classification results.
@@ -499,14 +551,15 @@ kernel void MeshletCullBlockCount(
 ) {
     device MeshletCullBlockState *blocks = BindlessBufferMutable(MeshletCullBlockState, bindless.Buffer, pc.BlockStateSlot);
     const uint i = block_id * CullBlockSize + lane;
-    const VisibleMeshlet work = ResolveMeshlet(bindless, pc, block_id, i);
+    const VisibleMeshlet work = ResolveCullEntry(bindless, pc, block_id, i);
     uint routes = 0u, coarse = 0u;
     if (work.Instance != InvalidOffset) {
         const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[work.Instance];
         if (instance_slot != InvalidOffset) {
             const InstanceRecord instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
             const Scene scene{bindless, view, theme, workspace};
-            const RoutedMeshlet routed = ClassifyMeshlet(scene, pc, work, instance_slot, instance);
+            const RoutedMeshlet routed = pc.SourceVisibleSlot == InvalidSlot ? ClassifyMeshlet(scene, pc, work, instance_slot, instance) :
+                                                                              RoutedMeshlet{SilhouetteRoutes(scene, pc, work, instance_slot, instance, i), false};
             routes = routed.Routes;
             coarse = routed.Routes != 0u && routed.Coarse ? 1u : 0u;
         }
@@ -580,7 +633,7 @@ kernel void MeshletCullEmit(
     threadgroup uint *group_prefixes [[threadgroup(0)]]
 ) {
     const uint i = block_id * CullBlockSize + lane;
-    const VisibleMeshlet work = ResolveMeshlet(bindless, pc, block_id, i);
+    const VisibleMeshlet work = ResolveCullEntry(bindless, pc, block_id, i);
     const bool valid = work.Instance != InvalidOffset;
     const uint mesh = CandidateMesh(bindless, pc, work);
     const uint classification = valid ? BindlessBuffer(uint, bindless.Buffer, pc.ClassificationSlot)[i] : 0u;

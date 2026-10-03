@@ -390,7 +390,8 @@ void GpuBuffers::EnsureMeshletVisibilityCapacity(
     output.Visible.Reserve(bytes);
     output.Visible.UsedSize = bytes;
     const auto instance_count = GpuInstanceSlots.Count<uint32_t>();
-    const auto block_count = (work_meshlet_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
+    // Classification also covers the visible entries a silhouette cull filters.
+    const auto block_count = (visible_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
     // A traversal level holds each drawing instance's live nodes at most once, and the final level emits at most one work range per entry.
     // The seed level's block states cover every instance slot.
     const auto frontier_count = std::max<uint64_t>(work_node_count, instance_count);
@@ -399,7 +400,7 @@ void GpuBuffers::EnsureMeshletVisibilityCapacity(
     MeshletWorkBlocks.SetCount<uint32_t>(block_count);
     for (auto &frontier : LodFrontiers) frontier.SetCount<LodFrontierEntry>(frontier_count);
     LodFrontierBlockStates.SetCount<LodFrontierBlockState>(frontier_block_count);
-    MeshletClassifications.SetCount<uint32_t>(work_meshlet_count);
+    MeshletClassifications.SetCount<uint32_t>(visible_count);
     MeshletCullBlocks.SetCount<MeshletCullBlockState>(block_count);
     output.ChunkCount = static_cast<uint32_t>((work_meshlet_count + MeshletDispatchChunkSize - 1) / MeshletDispatchChunkSize);
     output.DispatchArgs.SetCount<MeshDispatchArgs>(MeshletRouteCount * output.ChunkCount);

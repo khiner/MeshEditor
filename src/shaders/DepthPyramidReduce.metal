@@ -6,7 +6,9 @@
 
 constant int PyramidTileDim = 32;
 
-inline float max4(float a, float b, float c, float d) { return max(max(a, b), max(c, d)); }
+inline float Reduce4(constant DepthPyramidReducePushConstants &pc, float a, float b, float c, float d) {
+    return pc.Nearest != 0u ? min(min(a, b), min(c, d)) : max(max(a, b), max(c, d));
+}
 
 kernel void DepthPyramidReduceKernel(
     uint2 local_id [[thread_position_in_threadgroup]],
@@ -28,7 +30,8 @@ kernel void DepthPyramidReduceKernel(
             const int2 local = thread_px * 2 + int2(i, j);
             const int2 dst = tile_base + local;
             const int2 src = dst * 2;
-            const float v = max4(
+            const float v = Reduce4(
+                pc,
                 scene.FetchTex(pc.SrcSamplerSlot, min(src, src_max), pc.SrcLod).r,
                 scene.FetchTex(pc.SrcSamplerSlot, min(src + int2(1, 0), src_max), pc.SrcLod).r,
                 scene.FetchTex(pc.SrcSamplerSlot, min(src + int2(0, 1), src_max), pc.SrcLod).r,
@@ -47,7 +50,8 @@ kernel void DepthPyramidReduceKernel(
         float v = 0.0f;
         if (reducing) {
             const int2 s = thread_px * 2;
-            v = max4(
+            v = Reduce4(
+                pc,
                 tile[s.y * PyramidTileDim + s.x], tile[s.y * PyramidTileDim + s.x + 1],
                 tile[(s.y + 1) * PyramidTileDim + s.x], tile[(s.y + 1) * PyramidTileDim + s.x + 1]
             );

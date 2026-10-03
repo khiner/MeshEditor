@@ -19,10 +19,11 @@ struct RenderSamplerSlots {
         : Owner(slots),
           Silhouette(Owner.Allocate(SlotType::Sampler)), SceneColor(Owner.Allocate(SlotType::Sampler)), OverlayColor(Owner.Allocate(SlotType::Sampler)),
           Transmission(Owner.Allocate(SlotType::Sampler)), MotionBlurOutput(Owner.Allocate(SlotType::Sampler)), Velocity(Owner.Allocate(SlotType::Sampler)),
-          SceneDepth(Owner.Allocate(SlotType::Sampler)), DepthPyramid(Owner.Allocate(SlotType::Sampler)) {}
+          SceneDepth(Owner.Allocate(SlotType::Sampler)), DepthPyramid(Owner.Allocate(SlotType::Sampler)),
+          OutlineOccluderPyramid(Owner.Allocate(SlotType::Sampler)) {}
 
     mtl::SlotOwner Owner;
-    uint32_t Silhouette, SceneColor, OverlayColor, Transmission, MotionBlurOutput, Velocity, SceneDepth, DepthPyramid;
+    uint32_t Silhouette, SceneColor, OverlayColor, Transmission, MotionBlurOutput, Velocity, SceneDepth, DepthPyramid, OutlineOccluderPyramid;
 };
 
 // The viewport-sized attachments and the lazily allocated transmission and motion-blur targets.
@@ -36,12 +37,16 @@ struct RenderTargets {
             uint32_t Slot;
             mtl::Extent2D Extent;
         };
+        struct Pyramid {
+            mtl::Texture Image;
+            std::vector<PyramidMip> Mips;
+        };
 
         // Visibility IDs and their raster depth stay immutable until visibility consumers finish.
         // Scene-linear color and display-referred overlays stay separate until compositing.
         mtl::Texture VisibilityDepth, ScratchDepth, VisibilityImage, SilhouetteImage, SceneColorImage, OverlayColorImage, FinalColorImage;
-        mtl::Texture DepthPyramidImage;
-        std::vector<PyramidMip> DepthPyramidMips;
+        Pyramid DepthPyramid; // Farthest visibility depth, for the next frame's occlusion cull.
+        Pyramid OutlineOccluderPyramid; // Nearest depth of unoutlined surfaces, for the silhouette cull.
         NS::SharedPtr<MTL::SamplerState> NearestSampler;
         mtl::BindlessSet &Slots;
         bool DepthPyramidValid{false};
@@ -77,6 +82,7 @@ struct RenderTargets {
     SampledTexture MotionBlurOutputSampler() const;
     SampledTexture SceneDepthSampler() const;
     SampledTexture DepthPyramidSampler() const;
+    SampledTexture OutlineOccluderPyramidSampler() const;
 
     mtl::Extent2D BuiltColorExtent() const { return Resources ? Resources->SceneColorImage.Extent : mtl::Extent2D{}; }
 

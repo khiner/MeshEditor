@@ -25,6 +25,7 @@ struct PassChain;
 struct GpuBuffers;
 struct MeshStore;
 struct Pipelines;
+struct RenderSamplerSlots;
 struct RenderTargets;
 
 struct MeshVertexChanges {
@@ -62,7 +63,7 @@ void RecordMeshletVisibilityPass(
     mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const RenderTargets &, GpuBuffers &,
     bool transmission, uint32_t ubo_offset, std::optional<PixelRect> scissor
 );
-void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const RenderTargets &, GpuBuffers &, uint32_t ubo_offset = 0);
+void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const RenderTargets &, const RenderSamplerSlots &, GpuBuffers &, uint32_t ubo_offset = 0);
 void DrawMeshlets(
     MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route,
     uint32_t required_instance_flags = 0, uint32_t mesh_threads = 160u,
