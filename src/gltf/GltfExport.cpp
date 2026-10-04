@@ -1320,8 +1320,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (const auto it = rest_world.find(e); it != rest_world.end()) return it->second;
         const auto bit = bone_rest.find(e);
         const mat4 local = ToMatrix(bit != bone_rest.end() ? bit->second : r.get<const Transform>(e));
-        const auto *node = r.try_get<const SceneNode>(e);
-        const mat4 world = node && node->Parent != state::Null ? self(node->Parent) * local : local;
+        const auto *parent = r.try_get<const SceneParent>(e);
+        const mat4 world = parent ? self(parent->Parent) * local : local;
         rest_world.emplace(e, world);
         return world;
     };
@@ -1380,16 +1380,15 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             else if (const auto *nm = r.try_get<const Name>(entity)) node_name = nm->Value;
         }
 
-        const auto &world_transform = r.get<const WorldTransform>(entity);
+        const auto &world_transform = *WorldTransformOf(r, entity);
 
         // The source parent restores non-joint ancestors removed from the runtime bone hierarchy.
         // Derive local transforms from rest-world transforms when source and runtime parents differ.
         const Transform local_transform = [&] {
             if (r.all_of<ArmatureModifier>(entity)) return Transform{}; // Skinned mesh node transform is spec-ignored.
-            const auto *node = r.try_get<const SceneNode>(entity);
             if (export_node.Parent) {
                 const auto src_parent = nodes[*export_node.Parent].Entity;
-                if (src_parent != state::Null && (!node || node->Parent != src_parent)) {
+                if (src_parent != state::Null && ParentOrNull(r, entity) != src_parent) {
                     return ToTransform(Inverse(rest_world_of(src_parent)) * rest_world_of(entity));
                 }
             }
@@ -1402,7 +1401,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         // spec requires >=1 attribute so fall back to TRANSLATION when everything's default.
         std::vector<Transform> instance_worlds;
         instance_worlds.reserve(export_node.Instances.size());
-        for (const auto instance : export_node.Instances) instance_worlds.emplace_back(r.get<const WorldTransform>(instance));
+        for (const auto instance : export_node.Instances) instance_worlds.emplace_back(*WorldTransformOf(r, instance));
         const bool needs_instancing = mesh_index.has_value() && instance_worlds.size() > 1;
         if (needs_instancing) uses_gpu_instancing = true;
         std::pmr::vector<fastgltf::Attribute> instancing;

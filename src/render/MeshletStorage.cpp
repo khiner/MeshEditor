@@ -30,8 +30,5 @@ void RetireMeshletStorage(state::Scene &r, MeshBuffers &owner, std::span<const u
     buffers.ReleaseMeshletStorage(sorted);
     owner.Level0Count -= finest;
     ++owner.MeshletRevision;
-    std::vector<uint32_t> blocks;
-    for (const auto id : sorted) if (blocks.empty() || blocks.back() != id/256u) blocks.push_back(id/256u);
-    buffers.PosedMeshletBounds.UpdateBlocks(owner.StoreId,owner.MeshletRevision,blocks,
-        [&](uint32_t block) { return buffers.ActiveMeshlets.HasBlock(owner.MeshletRoot,block); },owner.RenderTopology);
+    buffers.UpdatePosedMeshletBlocks(owner,sorted);
 }

@@ -43,6 +43,7 @@ struct HistoryNode {
     std::string Label;
     uint32_t Depth{};
     bool ReplayBaseline{true}; // Replay starts from this node's stored state, and a baseline without state runs its actions from the empty state.
+    bool Editable{false}; // Whether any of the node's actions has parameters to edit, set by the project that records them.
     std::optional<Snapshot> Hot;
     // Stamps and Roots use track registration order and remain available after eviction.
     // Both are empty until the node's first visit replays its actions from its nearest ancestor with state.

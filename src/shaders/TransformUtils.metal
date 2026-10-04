@@ -26,8 +26,8 @@ inline float3 trs_inverse_transform_point(Transform t, float3 pos) {
 // Applies the pending object-mode transform to selected instances.
 template<typename SetT>
 inline float3 apply_object_pending_transform(const thread SceneT<SetT> &scene, DrawData draw, float3 world_pos) {
-    if (scene.View.IsTransforming == 0u || scene.View.InteractionMode == InteractionMode::Edit || draw.InstanceStateSlot == InvalidSlot) return world_pos;
-    const uint instance_state = uint(scene.InstanceStates(draw.InstanceStateSlot)[draw.FirstInstance]);
+    if (scene.View.IsTransforming == 0u || scene.View.InteractionMode == InteractionMode::Edit) return world_pos;
+    const uint instance_state = scene.InstanceState(draw);
     if ((instance_state & STATE_SELECTED) == 0u) return world_pos;
     return apply_pending_transform_world(scene, world_pos);
 }

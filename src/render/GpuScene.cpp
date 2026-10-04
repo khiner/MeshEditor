@@ -21,7 +21,6 @@ MeshRecord BuildMeshRecord(const GpuBuffers &buffers, const MeshBuffers &mb, con
             .CornerColor = arenas.VertexColors.Ref(record.VertexAttributes & MeshAttributeBit_Color0),
             .Connectivity = meshes.GetConnectivityRef(store_id),
             .VertexCountOrHeadImageSlot = mb.Vertices.Count,
-            .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
             .VertexOffset = mb.Vertices.Offset,
             .PrimitiveMaterialOffset = OffsetOrInvalid(record.PrimitiveMaterials),
             .ElementPrimitives = record.VertexPrimitivesReady ? arenas.VertexPrimitives.Ref() : ElementAttributeRef{},
@@ -42,7 +41,6 @@ MeshRecord BuildMeshRecord(const GpuBuffers &buffers, const MeshBuffers &mb, con
         .HalfedgeCount = meshes.Arenas().FaceCorners.Count(record.FaceCorners),
         .FaceCount = meshes.Arenas().FaceTriangles.Count(record.FaceData),
         .VertexCountOrHeadImageSlot = mb.Vertices.Count,
-        .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
         .VertexOffset = mb.Vertices.Offset,
         .MorphShadingAuthored = meshes.Get(store_id).MorphShadingAuthored ? 1u : 0u,
         .PrimitiveMaterialOffset = OffsetOrInvalid(record.PrimitiveMaterials),
@@ -177,108 +175,146 @@ Range PublishClusterLodStorage(GpuBuffers &buffers,const ClusterLodBuild &build,
     return allocation;
 }
 
-void CommitClusterLod(state::Scene &r, MeshBuffers &mb, const ClusterLodBuild &build) {
+void CommitClusterLods(state::Scene &r, std::span<MeshBuffers *const> owners, std::span<const ClusterLodBuild> builds) {
     auto &buffers = r.Context.get<GpuBuffers>();
-    if (build.Groups.empty()) return;
-    assert(build.PrimitiveRanges.size() == buffers.PrimitiveCount(mb) && buffers.ClusterGroupCount(mb) == 0u);
-    // Retain finest roots and record identities. Only newly constructed coarse
-    // records and traversal nodes receive new addresses.
-    std::vector<uint32_t> finest, primitive_ids;
-    buffers.ForEachPrimitive(mb,[&](uint32_t id, const PrimitiveRecord &primitive) {
-        primitive_ids.push_back(id);
-        finest.push_back(primitive.LodFinestNode == InvalidOffset ? InvalidOffset : buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot);
-    });
-    // Without coarse groups every old node holds a finest root retained above.
-    // Retire its descriptor only.
-    // The replacement node takes that membership.
-    std::vector<Range> released;
-    buffers.ForEachLodNode(mb,[&](uint32_t id, const LodNode &) { released.push_back({id,1u}); });
-    buffers.LodNodes.Release(std::move(released));
-    buffers.ActiveMeshlets.Release(mb.NodeRoot); mb.NodeRoot = InvalidOffset;
-    mb.LodNodes = {};
-    mb.LodNodes = buffers.LodNodes.Allocate(build.Nodes);
-    buffers.LodParents.Mirror(mb.LodNodes);
-    auto parents = buffers.LodParents.GetMutable(mb.LodNodes);
-    std::ranges::fill(parents,InvalidOffset);
-    const auto allocation=PublishClusterLodStorage(buffers,build,primitive_ids,mb.ClusterGroups,mb.CoarseVertices,mb.CoarseLocalTriangles);
-    const auto group_id=[&](uint32_t id) { return id==ClusterLodInvalid ? InvalidOffset : mb.ClusterGroups.Offset+id; };
-    const auto group_links=std::span{reinterpret_cast<ClusterGroupLinks *>(buffers.GroupLinks.Buffer.Contents().data())+mb.ClusterGroups.Offset,mb.ClusterGroups.Count};
-    auto *cluster_ids=reinterpret_cast<uint32_t *>(buffers.GroupClusterIds.Buffer.Contents().data());
-    // Initial members retain canonical cluster order; repair retains build order.
-    for (uint32_t i=0u;i<build.Clusters.size();++i) {
-        auto &link=group_links[build.Clusters[i].GroupIndex];
-        cluster_ids[link.MemberOffset+link.MemberCount++]=allocation.Offset+i;
+    // Every arena grows once for the whole batch.
+    uint64_t node_count = 0u, groups = 0u, clusters = 0u, vertex_corners = 0u, local_triangles = 0u, group_ids = 0u;
+    for (const auto &build : builds) {
+        if (build.Groups.empty()) continue;
+        node_count += build.Nodes.size();
+        groups += build.Groups.size();
+        clusters += build.Clusters.size();
+        vertex_corners += build.VertexCorners.size();
+        local_triangles += build.LocalTriangles.size();
+        group_ids += build.GroupClusters.size();
+        for (const auto &cluster : build.Clusters) group_ids += cluster.RefinedGroup != ClusterLodInvalid;
     }
-    std::array ownership{
-        MeshletIndexEdit{.Root=mb.MeshletRoot,.Insert=allocation},
-        MeshletIndexEdit{.Insert=mb.LodNodes},
-        MeshletIndexEdit{.Insert=mb.ClusterGroups},
+    buffers.LodNodes.ReserveAdditional(node_count);
+    buffers.LodParents.ReserveAdditional(node_count);
+    buffers.ClusterGroups.ReserveAdditional(groups);
+    buffers.GroupLinks.ReserveAdditional(groups);
+    buffers.GroupClusterIds.ReserveAdditional(group_ids);
+    buffers.Meshlets.ReserveAdditional(clusters);
+    buffers.MeshletLodLeaves.ReserveAdditional(clusters);
+    buffers.MeshletSpatialNodes.ReserveAdditional(clusters);
+    buffers.MeshletVertexCorners.ReserveAdditional(vertex_corners);
+    buffers.MeshletLocalTriangles.ReserveAdditional(local_triangles);
+    // One mesh's committed records, with its primitives' retained finest roots.
+    struct Commit {
+        MeshBuffers *Owner;
+        const ClusterLodBuild *Build;
+        std::vector<uint32_t> Finest, PrimitiveIds;
+        Range Allocation;
     };
+    std::vector<Commit> commits;
+    std::vector<MeshletIndexEdit> ownership;
+    for (uint32_t i = 0u; i < owners.size(); ++i) {
+        auto &mb = *owners[i];
+        const auto &build = builds[i];
+        if (build.Groups.empty()) continue;
+        assert(build.PrimitiveRanges.size() == buffers.PrimitiveCount(mb) && buffers.ClusterGroupCount(mb) == 0u);
+        auto &commit = commits.emplace_back(Commit{.Owner = &mb, .Build = &build});
+        // Retain finest roots and record identities.
+        // Only newly constructed coarse records and traversal nodes receive new addresses.
+        buffers.ForEachPrimitive(mb,[&](uint32_t id, const PrimitiveRecord &primitive) {
+            commit.PrimitiveIds.push_back(id);
+            commit.Finest.push_back(primitive.LodFinestNode == InvalidOffset ? InvalidOffset : buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot);
+        });
+        // Without coarse groups every old node holds a finest root retained above.
+        // Retire its descriptor only.
+        // The replacement node takes that membership.
+        std::vector<Range> released;
+        buffers.ForEachLodNode(mb,[&](uint32_t id, const LodNode &) { released.push_back({id,1u}); });
+        buffers.LodNodes.Release(std::move(released));
+        buffers.ActiveMeshlets.Release(mb.NodeRoot); mb.NodeRoot = InvalidOffset;
+        mb.LodNodes = {};
+        mb.LodNodes = buffers.LodNodes.Allocate(build.Nodes);
+        buffers.LodParents.Mirror(mb.LodNodes);
+        std::ranges::fill(buffers.LodParents.GetMutable(mb.LodNodes),InvalidOffset);
+        commit.Allocation=PublishClusterLodStorage(buffers,build,commit.PrimitiveIds,mb.ClusterGroups,mb.CoarseVertices,mb.CoarseLocalTriangles);
+        ownership.push_back({.Root=mb.MeshletRoot,.Insert=commit.Allocation});
+        ownership.push_back({.Insert=mb.LodNodes});
+        ownership.push_back({.Insert=mb.ClusterGroups});
+    }
+    if (commits.empty()) return;
     buffers.ActiveMeshlets.Update(ownership);
-    mb.MeshletRoot = ownership[0].Root; mb.NodeRoot = ownership[1].Root; mb.GroupRoot = ownership[2].Root;
-
     // Each traversal leaf takes a rank slice of its primitive's finest clusters and a run of new coarse clusters.
-    std::vector<std::vector<uint32_t>> fine_ids(primitive_ids.size());
-    std::vector<uint32_t> all_fine;
-    for (uint32_t p = 0u; p < primitive_ids.size(); ++p) buffers.ActiveMeshlets.ForEach(finest[p],[&](uint32_t id) { fine_ids[p].push_back(id); });
-    for (const auto &ids : fine_ids) all_fine.insert(all_fine.end(), ids.begin(), ids.end());
-    // The finest records and their leaf entries are captured once and written in place.
-    buffers.Meshlets.Buffer.CaptureWriteElements(all_fine, sizeof(MeshletRecord));
-    buffers.MeshletLodLeaves.Buffer.CaptureWriteElements(all_fine, sizeof(uint32_t));
-    auto *records = reinterpret_cast<MeshletRecord *>(buffers.Meshlets.Buffer.Contents().data());
-    auto *fine_leaves = reinterpret_cast<uint32_t *>(buffers.MeshletLodLeaves.Buffer.Contents().data());
-    auto coarse_leaves = buffers.MeshletLodLeaves.GetMutable(allocation);
-    auto nodes = buffers.LodNodes.GetMutable(mb.LodNodes);
     std::vector<std::vector<uint32_t>> members;
     std::vector<MeshletIndexEdit> edits;
     std::vector<uint32_t> leaves;
-    uint32_t fine_index = 0u, first_virtual = 0u;
-    for (uint32_t p = 0u; p < primitive_ids.size(); ++p) {
-        auto &primitive = buffers.Primitives.GetMutable({primitive_ids[p],1u})[0];
-        const auto &range = build.PrimitiveRanges[p];
-        for (const auto id : fine_ids[p]) {
-            const auto group=build.Level0Groups[fine_index++];
-            records[id].GroupIndex = group_id(group);
-            auto &links=group_links[group];
-            cluster_ids[links.MemberOffset+links.MemberCount++]=id;
+    for (uint32_t i = 0u; i < commits.size(); ++i) {
+        const auto &[owner, build_ptr, finest, primitive_ids, allocation] = commits[i];
+        auto &mb = *owner;
+        const auto &build = *build_ptr;
+        mb.MeshletRoot = ownership[3u*i].Root; mb.NodeRoot = ownership[3u*i+1u].Root; mb.GroupRoot = ownership[3u*i+2u].Root;
+        const auto group_id=[&](uint32_t id) { return id==ClusterLodInvalid ? InvalidOffset : mb.ClusterGroups.Offset+id; };
+        const auto group_links=buffers.GroupLinks.GetMutable(mb.ClusterGroups);
+        auto *cluster_ids=reinterpret_cast<uint32_t *>(buffers.GroupClusterIds.Buffer.Contents().data());
+        // Initial members retain canonical cluster order, and repair retains build order.
+        for (uint32_t c=0u;c<build.Clusters.size();++c) {
+            auto &link=group_links[build.Clusters[c].GroupIndex];
+            cluster_ids[link.MemberOffset+link.MemberCount++]=allocation.Offset+c;
         }
-        primitive.MeshletCount = primitive.Level0Count+range.ClusterCount;
-        primitive.SimplifyScale = range.SimplifyScale;
-        const auto node_id = [&](uint32_t id) { return id == ClusterLodInvalid ? InvalidOffset : mb.LodNodes.Offset+id; };
-        primitive.LodRootNode = node_id(range.RootNode); primitive.LodFinestNode = node_id(range.FinestNode);
-        if (primitive.LodFinestNode != InvalidOffset) nodes[primitive.LodFinestNode-mb.LodNodes.Offset].MeshletRoot = finest[p];
-        const auto visit = [&](auto &&self, uint32_t id) -> void {
-            auto &node = nodes[id];
-            if (node.ChildCount) {
-                const auto first = node.ChildOffset;
-                for (uint32_t c = 0u; c < node.ChildCount; ++c) {
-                    parents[first+c] = mb.LodNodes.Offset+id;
-                    self(self,first+c);
-                }
-                node.ChildOffset += mb.LodNodes.Offset;
-                return;
+        std::vector<std::vector<uint32_t>> fine_ids(primitive_ids.size());
+        std::vector<uint32_t> all_fine;
+        for (uint32_t p = 0u; p < primitive_ids.size(); ++p) buffers.ActiveMeshlets.ForEach(finest[p],[&](uint32_t id) { fine_ids[p].push_back(id); });
+        for (const auto &ids : fine_ids) all_fine.insert(all_fine.end(), ids.begin(), ids.end());
+        // The finest records and their leaf entries are captured once and written in place.
+        buffers.Meshlets.Buffer.CaptureWriteElements(all_fine, sizeof(MeshletRecord));
+        buffers.MeshletLodLeaves.Buffer.CaptureWriteElements(all_fine, sizeof(uint32_t));
+        auto *records = reinterpret_cast<MeshletRecord *>(buffers.Meshlets.Buffer.Contents().data());
+        auto *fine_leaves = reinterpret_cast<uint32_t *>(buffers.MeshletLodLeaves.Buffer.Contents().data());
+        auto coarse_leaves = buffers.MeshletLodLeaves.GetMutable(allocation);
+        auto nodes = buffers.LodNodes.GetMutable(mb.LodNodes);
+        auto parents = buffers.LodParents.GetMutable(mb.LodNodes);
+        uint32_t fine_index = 0u, first_virtual = 0u;
+        for (uint32_t p = 0u; p < primitive_ids.size(); ++p) {
+            auto &primitive = buffers.Primitives.GetMutable({primitive_ids[p],1u})[0];
+            const auto &range = build.PrimitiveRanges[p];
+            for (const auto id : fine_ids[p]) {
+                const auto group=build.Level0Groups[fine_index++];
+                records[id].GroupIndex = group_id(group);
+                auto &links=group_links[group];
+                cluster_ids[links.MemberOffset+links.MemberCount++]=id;
             }
-            const auto leaf = mb.LodNodes.Offset+id;
-            const uint32_t start = node.FirstMeshlet-first_virtual, end = start+node.MeshletCount;
-            const uint32_t fine_end = std::min(end,primitive.Level0Count);
-            auto &fine = members.emplace_back();
-            if (start < fine_end) fine.assign(fine_ids[p].begin()+start,fine_ids[p].begin()+fine_end);
-            const auto coarse_start = std::max(start,primitive.Level0Count);
-            const Range coarse = coarse_start < end ? Range{allocation.Offset+range.FirstCluster+coarse_start-primitive.Level0Count,end-coarse_start} : Range{};
-            for (const auto cluster : fine) fine_leaves[cluster] = leaf;
-            if (coarse.Count) std::ranges::fill(coarse_leaves.subspan(coarse.Offset-allocation.Offset,coarse.Count),leaf);
-            leaves.push_back(leaf);
-            edits.push_back({.Insert=coarse});
-        };
-        if (range.RootNode != ClusterLodInvalid) visit(visit,range.RootNode);
-        first_virtual += primitive.MeshletCount;
+            primitive.MeshletCount = primitive.Level0Count+range.ClusterCount;
+            primitive.SimplifyScale = range.SimplifyScale;
+            const auto node_id = [&](uint32_t id) { return id == ClusterLodInvalid ? InvalidOffset : mb.LodNodes.Offset+id; };
+            primitive.LodRootNode = node_id(range.RootNode); primitive.LodFinestNode = node_id(range.FinestNode);
+            if (primitive.LodFinestNode != InvalidOffset) nodes[primitive.LodFinestNode-mb.LodNodes.Offset].MeshletRoot = finest[p];
+            const auto visit = [&](auto &&self, uint32_t id) -> void {
+                auto &node = nodes[id];
+                if (node.ChildCount) {
+                    const auto first = node.ChildOffset;
+                    for (uint32_t c = 0u; c < node.ChildCount; ++c) {
+                        parents[first+c] = mb.LodNodes.Offset+id;
+                        self(self,first+c);
+                    }
+                    node.ChildOffset += mb.LodNodes.Offset;
+                    return;
+                }
+                const auto leaf = mb.LodNodes.Offset+id;
+                const uint32_t start = node.FirstMeshlet-first_virtual, end = start+node.MeshletCount;
+                const uint32_t fine_end = std::min(end,primitive.Level0Count);
+                auto &fine = members.emplace_back();
+                if (start < fine_end) fine.assign(fine_ids[p].begin()+start,fine_ids[p].begin()+fine_end);
+                const auto coarse_start = std::max(start,primitive.Level0Count);
+                const Range coarse = coarse_start < end ? Range{allocation.Offset+range.FirstCluster+coarse_start-primitive.Level0Count,end-coarse_start} : Range{};
+                for (const auto cluster : fine) fine_leaves[cluster] = leaf;
+                if (coarse.Count) std::ranges::fill(coarse_leaves.subspan(coarse.Offset-allocation.Offset,coarse.Count),leaf);
+                leaves.push_back(leaf);
+                edits.push_back({.Insert=coarse});
+            };
+            if (range.RootNode != ClusterLodInvalid) visit(visit,range.RootNode);
+            first_virtual += primitive.MeshletCount;
+        }
+        for (uint32_t g=0u; g<group_links.size(); ++g) assert(group_links[g].MemberCount==build.Groups[g].ClusterCount);
+        if (build.NodeDepth>buffers.MeshletLodDepth) {
+            if (buffers.LodDepthHistory) buffers.LodDepthHistory->Write(0u,1u);
+            buffers.MeshletLodDepth=build.NodeDepth;
+        }
     }
-    for (uint32_t i=0u; i<group_links.size(); ++i) assert(group_links[i].MemberCount==build.Groups[i].ClusterCount);
     for (uint32_t i = 0u; i < edits.size(); ++i) edits[i].Added = members[i];
     buffers.ActiveMeshlets.Update(edits);
-    for (uint32_t i = 0u; i < leaves.size(); ++i) nodes[leaves[i]-mb.LodNodes.Offset].MeshletRoot = edits[i].Root;
-    if (build.NodeDepth>buffers.MeshletLodDepth) {
-        if (buffers.LodDepthHistory) buffers.LodDepthHistory->Write(0u,1u);
-        buffers.MeshletLodDepth=build.NodeDepth;
-    }
+    for (uint32_t i = 0u; i < leaves.size(); ++i) buffers.LodNodes.GetMutable({leaves[i],1u})[0].MeshletRoot = edits[i].Root;
 }

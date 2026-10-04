@@ -7,6 +7,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
+#include "mesh/ScratchChunks.h"
 #include "metal/Dispatch.h"
 #include "render/GpuBuffers.h"
 #include "render/MeshBuffers.h"
@@ -60,6 +61,27 @@ SourceWork WorkOf(const MeshStore &meshes, const MeshletBuildSource &source) {
     };
 }
 
+// Lays out the job's build scratch from its element and primitive counts.
+void LayoutJob(Layout &layout, MeshletBuildJob &job) {
+    const auto n = job.ElementCount, p = job.PrimitiveCount;
+    const uint64_t tile_bound = uint64_t(BuildTiles(n)) + p;
+    const uint64_t record_bound = std::min(uint64_t(n),uint64_t(n)/16u+2u*p+BuildTiles(n));
+    if (tile_bound > UINT32_MAX) throw std::length_error("Meshlet tile count exceeds GPU address space.");
+    job.TileBound = uint32_t(tile_bound);
+    job.RadixPassCount = 8u+(std::bit_width(p ? p-1u : 0u)+3u)/4u;
+    job.StatsOffset = layout.Take(16);
+    job.KeysOffset = layout.Take(uint64_t(n)*2u);
+    job.OrderOffset = layout.Take(n);
+    job.TempOrderOffset = layout.Take(n);
+    job.HistogramOffset = layout.Take(uint64_t(job.BlockCount)*16u);
+    job.DigitTotalsOffset = layout.Take(16);
+    job.PrimitiveScratchOffset = layout.Take(uint64_t(p)*8u);
+    job.TileScratchOffset = layout.Take(tile_bound*4u);
+    job.TileCountsOffset = layout.Take(tile_bound*4u);
+    job.RecordScratchOffset = layout.Take(record_bound*RecordWords);
+    job.VertexScratchOffset = layout.Take(uint64_t(n)*(job.Topology == 0u ? 3u : job.Topology == 1u ? 2u : 1u));
+}
+
 MeshletBuildPushConstants PushConstants(const GpuBuffers &b, const MeshStore &meshes) {
     return {
         .VertexRefsSlot = b.MeshletVertexCorners.Buffer.Slot,
@@ -92,8 +114,18 @@ uint64_t MeshletBuildScratchWords(const MeshStore &meshes, std::span<const Meshl
     return words;
 }
 
-void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuildSource> sources) {
-    if (sources.empty()) return;
+namespace {
+// The words one source's build takes: its membership in the chain's scratch and its build scratch with its primitives at their bound.
+uint64_t SourceBuildWords(const MeshStore &meshes, const MeshletBuildSource &source) {
+    const auto work = WorkOf(meshes,source);
+    MeshletBuildJob job{.Topology = source.Topology, .ElementCount = source.ElementCount,
+        .PrimitiveCount = source.Owner ? 1u : work.MaterialBound, .BlockCount = Tiles(source.ElementCount)};
+    Layout layout;
+    LayoutJob(layout, job);
+    return MeshletBuildScratchWords(meshes,std::span{&source,1u}) + layout.Words;
+}
+
+void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuildSource> sources) {
     const profile::CpuScope scope{"MeshletBuild"};
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &meshes = r.Context.get<const MeshStore>();
@@ -154,9 +186,14 @@ void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<Meshl
     }
     buffers.MeshletTriangleIds.ReserveAdditional(triangle_ids);
     buffers.MeshletLocalTriangles.ReserveAdditional(local_triangles);
+    {
+        std::vector<MeshBuffers *> released;
+        released.reserve(sources.size());
+        for (const auto &source : sources) released.push_back(source.Destination);
+        buffers.ReleaseMeshlets(released);
+    }
     for (auto &source : sources) {
         auto &mb = *source.Destination;
-        buffers.ReleaseMeshlets(mb);
         mb.StoreId = source.StoreId; ++mb.MeshletRevision;
         if (!source.Owner) mb.RenderTopology=source.Topology;
         const auto n = source.ElementCount;
@@ -237,23 +274,7 @@ void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<Meshl
             CheckElementWork(membership,job.Materials);
             job.PrimitiveCount = membership.Get({job.Materials.Storage.Offset+5u,1u})[0];
         }
-        const auto n = job.ElementCount, p = job.PrimitiveCount;
-        const uint64_t tile_bound = uint64_t(BuildTiles(n)) + p;
-        const uint64_t record_bound = std::min(uint64_t(n),uint64_t(n)/16u+2u*p+BuildTiles(n));
-        if (tile_bound > UINT32_MAX) throw std::length_error("Meshlet tile count exceeds GPU address space.");
-        job.TileBound = uint32_t(tile_bound);
-        job.RadixPassCount = 8u+(std::bit_width(p ? p-1u : 0u)+3u)/4u;
-        job.StatsOffset = layout.Take(16);
-        job.KeysOffset = layout.Take(uint64_t(n)*2u);
-        job.OrderOffset = layout.Take(n);
-        job.TempOrderOffset = layout.Take(n);
-        job.HistogramOffset = layout.Take(uint64_t(job.BlockCount)*16u);
-        job.DigitTotalsOffset = layout.Take(16);
-        job.PrimitiveScratchOffset = layout.Take(uint64_t(p)*8u);
-        job.TileScratchOffset = layout.Take(tile_bound*4u);
-        job.TileCountsOffset = layout.Take(tile_bound*4u);
-        job.RecordScratchOffset = layout.Take(record_bound*RecordWords);
-        job.VertexScratchOffset = layout.Take(uint64_t(n)*(job.Topology == 0u ? 3u : job.Topology == 1u ? 2u : 1u));
+        LayoutJob(layout, job);
     }
     domain(InitDomain,[](const auto &job) { return Tiles(std::max(16u,job.PrimitiveCount)); });
     domain(DigitDomain,[](const auto &job) { return job.BlockCount ? 16u : 0u; });
@@ -343,17 +364,12 @@ void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<Meshl
         }
         job.PrimitiveRoutes = mb.PrimitiveRoutes.Offset;
     }
-    // Newly allocated addresses can reuse pages pinned by an older edit view.
-    const auto capture = [](const auto &arena, Range range) {
-        using Value = typename decltype(arena.Get(range))::element_type;
-        if (range.Count) arena.Buffer.CaptureWrite(uint64_t(range.Offset)*sizeof(Value),uint64_t(range.Count)*sizeof(Value));
-    };
     for (const auto &source : sources) {
         const auto &mb = *source.Destination;
-        capture(buffers.Meshlets,mb.Meshlets); capture(buffers.MeshletTriangleIds,mb.MeshletTriangles);
-        capture(buffers.MeshletVertexCorners,mb.MeshletVertices); capture(buffers.MeshletLocalTriangles,mb.MeshletLocalTriangles);
-        capture(buffers.Primitives,mb.Primitives); capture(buffers.LodNodes,mb.LodNodes);
-        capture(buffers.MeshletLodLeaves,mb.Meshlets); capture(buffers.LodParents,mb.LodNodes);
+        buffers.Meshlets.CaptureWrite(mb.Meshlets); buffers.MeshletTriangleIds.CaptureWrite(mb.MeshletTriangles);
+        buffers.MeshletVertexCorners.CaptureWrite(mb.MeshletVertices); buffers.MeshletLocalTriangles.CaptureWrite(mb.MeshletLocalTriangles);
+        buffers.Primitives.CaptureWrite(mb.Primitives); buffers.LodNodes.CaptureWrite(mb.LodNodes);
+        buffers.MeshletLodLeaves.CaptureWrite(mb.Meshlets); buffers.LodParents.CaptureWrite(mb.LodNodes);
     }
     job_buffer.Update(as_bytes(jobs));
     {
@@ -365,14 +381,16 @@ void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<Meshl
     chain.Retain(std::move(scratch)); chain.Retain(std::move(job_buffer)); chain.Retain(std::move(tile_buffer));
     if (owned) return;
     // A canonical source that is its own render owner publishes the owners of the element blocks its work names.
-    for (uint32_t i = 0u; i < sources.size(); ++i) {
-        const auto &source = sources[i];
-        if (source.Owner || source.StoreId == InvalidOffset) continue;
-        std::vector<uint32_t> blocks;
-        ForEachWorkBlock(membership,jobs[i].Elements,[&](uint32_t block,auto) { blocks.push_back(block); });
-        std::ranges::sort(blocks);
-        PublishMeshletOwners(r,chain,*source.Destination,std::array{source.Destination->Meshlets},blocks);
-    }
+    chain.Concurrent([&] {
+        for (uint32_t i = 0u; i < sources.size(); ++i) {
+            const auto &source = sources[i];
+            if (source.Owner || source.StoreId == InvalidOffset) continue;
+            std::vector<uint32_t> blocks;
+            ForEachWorkBlock(membership,jobs[i].Elements,[&](uint32_t block,auto) { blocks.push_back(block); });
+            std::ranges::sort(blocks);
+            PublishMeshletOwners(r,chain,*source.Destination,std::array{source.Destination->Meshlets},blocks);
+        }
+    });
     chain.Submit();
     const profile::CpuScope membership_scope{"MeshletMembership"};
     // A new owner publishes its clusters, primitives and nodes, and each populated traversal leaf its cluster run.
@@ -409,6 +427,17 @@ void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<Meshl
     }
     BuildMeshletSpatial(r,spatial);
     buffers.Ctx.ReclaimRetiredBuffers();
+}
+} // namespace
+
+void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuildSource> sources) {
+    if (sources.empty()) return;
+    // Chunks build one after another, so the chain holds one chunk's build scratch at a time.
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto split = ChunkByScratch(uint32_t(sources.size()), ScratchWordBudget, [&](uint32_t i) {
+        return uint32_t(std::min<uint64_t>(SourceBuildWords(meshes,sources[i]),UINT32_MAX));
+    });
+    for (const auto chunk : split.Chunks) BuildChunk(r, chain, sources.subspan(chunk.Offset, chunk.Count));
 }
 
 uint32_t EnsureMeshletPrimitive(state::Scene &r, MeshBuffers &owner, uint32_t source_primitive) {

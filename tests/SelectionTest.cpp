@@ -1,4 +1,4 @@
-#include "selection/Selection.h"
+#include "selection/SelectionState.h"
 #include "mesh/MeshComponents.h"
 #include "render/Instance.h"
 #include "scene/Entity.h"
@@ -25,16 +25,15 @@ const boost::ut::suite selection_tests = [] {
                 r.emplace<ObjectKind>(e, ObjectType::Mesh);
                 r.emplace<RenderInstance>(e);
             }
-            expect(selection::ComputePrimaryEditInstances(r).at(mesh) == instances[0]);
+            expect(ComputeEditPrimaries(r).All.at(mesh) == instances[0]);
             r.emplace<Active>(instances[2]);
-            expect(selection::ComputePrimaryEditInstances(r).at(mesh) == instances[2]);
+            expect(ComputeEditPrimaries(r).All.at(mesh) == instances[2]);
             r.emplace<ScaleLocked>(instances[2]);
-            auto primaries = selection::ComputePrimaryEditInstanceMaps(r);
+            const auto primaries = ComputeEditPrimaries(r);
             expect(primaries.All.at(mesh) == instances[2]);
             expect(primaries.Transformable.at(mesh) == instances[0]);
-            expect(selection::ComputePrimaryEditInstances(r, false) == primaries.Transformable);
             r.remove<Selected>(instances[0]);
-            expect(selection::ComputePrimaryEditInstances(r, false).at(mesh) == instances[1]);
+            expect(ComputeEditPrimaries(r).Transformable.at(mesh) == instances[1]);
         } while (std::next_permutation(order.begin(), order.end()));
     };
 };

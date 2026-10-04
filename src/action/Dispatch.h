@@ -67,7 +67,7 @@ template<typename C>
 struct ComponentUpdateTraits {
     static bool Has(const state::Scene &r, state::Entity e) { return r.all_of<C>(e); }
     static state::Entity Active(const state::Scene &r) { return ActiveWith<C>(r); }
-    static void ForEachSelected(state::Scene &r, const std::function<void(state::Entity)> &fn) { ForEachSelectedWith<C>(r, fn); }
+    static void ForEachSelected(state::Scene &r, state::Entity, const std::function<void(state::Entity)> &fn) { ForEachSelectedWith<C>(r, fn); }
     static void Read(const state::Scene &r, state::Entity e, uint16_t offset, void *dst, size_t size) {
         std::memcpy(dst, reinterpret_cast<const std::byte *>(&r.get<const C>(e)) + offset, size);
     }
@@ -86,7 +86,7 @@ struct UpdateTraits<BoneDelta> : ComponentUpdateTraits<BoneDelta> {
         const auto e = FindActiveBone(r);
         return e != state::Null && Has(r, e) ? e : state::Null;
     }
-    static void ForEachSelected(state::Scene &r, const std::function<void(state::Entity)> &fn) {
+    static void ForEachSelected(state::Scene &r, state::Entity, const std::function<void(state::Entity)> &fn) {
         for (const auto e : r.view<BoneSelection>())
             if (Has(r, e)) fn(e);
     }
@@ -103,12 +103,12 @@ struct UpdateTraits<PosedLocal> : ComponentUpdateTraits<PosedLocal> {
 };
 
 // PrimitiveShape lives on the mesh entity behind an instance.
-// Fields address the current shape alternative, the selection covers meshes sharing the active shape, and each write rebuilds the mesh.
+// Fields address the current shape alternative, the selection covers meshes sharing the active shape, and the settle pass rebuilds each written mesh.
 template<>
 struct UpdateTraits<PrimitiveShape> {
     static bool Has(const state::Scene &, state::Entity);
     static state::Entity Active(const state::Scene &);
-    static void ForEachSelected(state::Scene &, const std::function<void(state::Entity)> &);
+    static void ForEachSelected(state::Scene &, state::Entity viewport, const std::function<void(state::Entity)> &);
     static void Read(const state::Scene &, state::Entity, uint16_t offset, void *dst, size_t size);
     static void Write(state::Scene &, state::Entity, uint16_t offset, const void *src, size_t size);
     static const FieldSpec &Bounds(const state::Scene &, state::Entity, uint16_t offset);

@@ -1,9 +1,9 @@
 #include "action/Timeline.h"
 #include "Variant.h"
 #include "animation/AnimationTimeline.h"
-#include "animation/Keyframes.h"
 #include "gltf/SourceAssets.h"
 #include "render/LightComponents.h"
+#include "selection/SelectionState.h"
 #include "state/Scene.h"
 #include "viewport/ViewportDisplay.h"
 
@@ -81,7 +81,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 step_frame(int(std::lround(a.Backward ? -frames : frames)));
             },
             [&](const JumpKeyframe &a) {
-                const auto keys = CollectKeyframes(r, viewport);
+                const auto &keys = r.get<const SelectedKeyframes>(viewport).Frames;
                 const int current = r.get<const TimelinePlayback>(viewport).CurrentFrame;
                 const auto &range = r.get<const TimelineRange>(viewport);
                 const bool wrap = r.get<const TimelineNavigation>(viewport).Wrap;

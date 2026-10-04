@@ -18,18 +18,27 @@ void Evaluate(state::Scene &r, state::Entity viewport, float seconds, bool persi
     for (const auto [entity, clips] : r.view<const AnimationClips>().each()) {
         const auto *clip = ActiveClip(r, viewport, clips);
         if (!clip) continue;
-        bool node_posed = false;
+        // The node's pose, seeded from its Transform so unanimated components follow edits to it.
+        std::optional<Transform> pose;
         for (const auto &channel : clip->Channels) {
-            const bool pose = channel.Target.Component == state::Key<PosedLocal>();
-            if (!pose && !persistent) continue;
-            // Seed the pose from the Transform so unanimated components follow edits to it.
-            if (pose && !std::exchange(node_posed, true)) {
-                if (!r.all_of<Transform>(entity)) break;
-                r.emplace_or_replace<PosedLocal>(entity, r.get<const Transform>(entity));
+            const bool posing = channel.Target.Component == state::Key<PosedLocal>();
+            if (!posing && !persistent) continue;
+            if (posing && !pose) {
+                const auto *transform = r.try_get<const Transform>(entity);
+                if (!transform) break;
+                pose = *transform;
             }
             value.resize(channel.Target.Count);
             EvaluateChannel(channel, seconds, value);
-            WriteField(r, entity, channel.Target, value);
+            if (posing) std::memcpy(reinterpret_cast<std::byte *>(&*pose) + channel.Target.Offset, value.data(), value.size() * sizeof(float));
+            else WriteField(r, entity, channel.Target, value);
+        }
+        // The pose writes only when it changed, so a held pose triggers none of its consumers.
+        if (!pose) continue;
+        if (const auto *posed = r.try_get<const PosedLocal>(entity)) {
+            if (posed->Value != *pose) r.replace<PosedLocal>(entity, *pose);
+        } else {
+            r.emplace<PosedLocal>(entity, *pose);
         }
     }
 }

@@ -61,7 +61,7 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         const bool flat_face = (triangles[MeshletLocalTriangleOffset(work.Meshlet) + local_triangle * 3u] & uint(MeshletGeometryEncoding::FlatTriangleBit)) != 0u;
         auto out = ToMeshletVertexVaryings(TransformVertex(scene, work.Draw, vertex_index, vertex_index, vertex_id, false, !flat_face, coarse, corners.CoarseNormal));
         const Transform world = MeshletWorld(scene, work.Draw);
-        const auto face = coarse ? MeshletCoarseFace(scene, work.Primitive, work.Instance, world) :
+        const auto face = coarse ? MeshletCoarseFace(scene, work.Primitive, work.Instance, work.Draw, world) :
                                    MeshletFace(scene, work.Draw, work.Instance, world, triangle, flat_face);
         out.FlatWorldNormal = face.FlatWorldNormal;
         out.FaceOverlayFlags = face.FaceOverlayFlags;
@@ -91,7 +91,7 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         const float3 scale = float3(MeshletWorld(scene, work.Draw).S);
         out.WorldScale = (scale.x + scale.y + scale.z) / 3.0f;
         out.ObjectId = work.Instance.ObjectId;
-        out.ElementId = work.Instance.ElementIdOffset + element + 1u;
+        out.ElementId = work.Draw.ElementIdOffset + element + 1u;
         out.Topology = topology;
         out.PointCoord = PointQuadCorners[corner] * 0.5f + 0.5f;
         // Alpha zero marks an unselected instance for fill recoloring during shading.

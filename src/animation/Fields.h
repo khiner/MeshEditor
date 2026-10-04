@@ -63,6 +63,7 @@ bool IsChannelStore(state::TypeKey);
 // Reads the target's current value. Returns false when the entity lacks the field.
 // A node without a pose reads its Transform.
 bool ReadField(const state::Scene &, state::Entity, const ChannelTarget &, std::span<float> out);
+// Writes the target's value when it differs from the current one.
 void WriteField(state::Scene &, state::Entity, const ChannelTarget &, std::span<const float>);
 
 // Whether two values of the target are the same, allowing float rounding and quaternion sign.

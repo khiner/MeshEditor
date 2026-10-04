@@ -12,6 +12,7 @@
 #include "gpu/InstanceRecord.h"
 #include "gpu/MeshRecord.h"
 #include "gpu/MeshElementBlock.h"
+#include "gpu/MeshletInstanceFlag.h"
 #include "gpu/LightRecord.h"
 #include "gpu/MorphTargetVertex.h"
 #include "gpu/PBRMaterial.h"
@@ -23,6 +24,8 @@
 
 constant uint STATE_SELECTED = 1u << 0;
 constant uint STATE_ACTIVE = 1u << 1;
+// A hidden instance keeps its slot, and every draw, pick and overlay pass skips it.
+constant uint STATE_HIDDEN = 1u << 2;
 
 // Select a live canonical handle by its ordinal within one element block.
 inline uint SelectLiveElement(device const uint *live, uint block, uint rank) {
@@ -67,8 +70,28 @@ inline uint TriangleFaceHandle(device const BindlessSet &b, ConnectivityRef conn
     return BindlessBuffer(uint, b.Buffer, connectivity.HalfedgeFaces.Slot)[h];
 }
 
+// The pose namespace an instance draws with: its own under per-instance deformation, else its mesh's shared one.
+inline uint PoseNamespace(uint instance_namespace, uint mesh_namespace) {
+    return instance_namespace != InvalidOffset ? instance_namespace : mesh_namespace;
+}
+
+// The flags an instance draws with: its mesh's, without the primary-only flags on other instances, plus Silhouette from its selection state.
+inline uint InstanceFlags(uint mesh_flags, uint primary_edit_instance, uint instance_slot, uint instance_state) {
+    const uint primary_only = uint(MeshletInstanceFlag::ElementSelection) | uint(MeshletInstanceFlag::EditOverlay);
+    const bool primary = primary_edit_instance == instance_slot;
+    const bool silhouette = (instance_state & STATE_SELECTED) != 0u && !primary &&
+        (mesh_flags & uint(MeshletInstanceFlag::SilhouetteEligible)) != 0u;
+    return (primary ? mesh_flags : mesh_flags & ~primary_only) | (silhouette ? uint(MeshletInstanceFlag::Silhouette) : 0u);
+}
+
+// Storage that holds no element selection, since a zero slot names a live buffer.
+constant EditSelectionStorage NoEditSelection{{InvalidSlot, 0u}, {InvalidSlot, 0u}, {InvalidSlot, 0u}, {InvalidSlot, 0u}};
+
 // Compose mesh and instance state without rebasing canonical references.
-inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint instance_slot, EditSelectionStorage selection) {
+// The mesh's primary edit instance draws its element selection, and every instance does when it has none.
+inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint instance_slot) {
+    const MeshDisplay display = mesh.Display;
+    const bool selection = display.PrimaryEditInstanceIndex == InvalidOffset || display.PrimaryEditInstanceIndex == instance_slot;
     return DrawData{
         .VertexSlot = mesh.VertexSlot,
         .IndexSlotOffset = mesh.IndexSlotOffset,
@@ -84,23 +107,23 @@ inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint insta
         .HalfedgeCount = mesh.HalfedgeCount,
         .FaceCount = mesh.FaceCount,
         .VertexCountOrHeadImageSlot = mesh.VertexCountOrHeadImageSlot,
-        .ElementIdOffset = instance.ElementIdOffset,
-        .Selection = selection,
-        .InstanceStateSlot = mesh.InstanceStateSlot,
-        .HasPendingVertexTransform = instance.HasPendingVertexTransform,
-        .PrimaryEditInstanceIndex = instance.PrimaryEditInstanceIndex,
+        .ElementIdOffset = selection ? display.ElementIdOffset : 0u,
+        .EditEdgeSharpnessOffset = selection ? display.EditEdgeSharpnessOffset : InvalidOffset,
+        .Selection = selection ? display.Selection : NoEditSelection,
+        .HasPendingVertexTransform = display.HasPendingVertexTransform,
+        .PrimaryEditInstanceIndex = display.PrimaryEditInstanceIndex,
         .VertexOffset = mesh.VertexOffset,
-        .BoneDeformOffset = instance.BoneDeformOffset,
+        .BoneDeformOffset = display.BoneDeformOffset,
         .ArmatureDeformOffset = instance.ArmatureDeformOffset,
-        .MorphDeformOffset = instance.MorphDeformOffset,
+        .MorphDeformOffset = display.MorphDeformOffset,
         .MorphWeightsOffset = instance.MorphWeightsOffset,
-        .MorphTargetCount = instance.MorphTargetCount,
-        .MorphShadingAuthored = mesh.MorphShadingAuthored != 0u && instance.MorphDeformOffset != InvalidOffset ? 1u : 0u,
-        .PositionNamespace = instance.PositionNamespace,
-        .MorphNormalNamespace = instance.MorphNormalNamespace,
-        .VertexNormalNamespace = instance.VertexNormalNamespace,
-        .SectorNamespace = instance.SectorNamespace,
-        .FaceNormalNamespace = instance.FaceNormalNamespace,
+        .MorphTargetCount = display.MorphTargetCount,
+        .MorphShadingAuthored = mesh.MorphShadingAuthored != 0u && display.MorphDeformOffset != InvalidOffset ? 1u : 0u,
+        .PositionNamespace = PoseNamespace(instance.PositionNamespace, display.PositionNamespace),
+        .MorphNormalNamespace = PoseNamespace(instance.MorphNormalNamespace, display.MorphNormalNamespace),
+        .VertexNormalNamespace = PoseNamespace(instance.VertexNormalNamespace, display.VertexNormalNamespace),
+        .SectorNamespace = PoseNamespace(instance.SectorNamespace, display.SectorNamespace),
+        .FaceNormalNamespace = PoseNamespace(instance.FaceNormalNamespace, display.FaceNormalNamespace),
         .PrimitiveMaterialOffset = mesh.PrimitiveMaterialOffset,
         .ElementPrimitives = mesh.ElementPrimitives,
     };
@@ -175,7 +198,9 @@ struct SceneT {
     // The draw context of a bounds entry: its first instance's mesh and deform state with the mesh's edit selection.
     DrawData BoundsDraw(BoundsEntry entry) const {
         const InstanceRecord instance = InstanceRecords(View.InstanceRecordSlot)[entry.FirstInstance];
-        return ComposeDraw(MeshRecords(View.MeshRecordSlot)[instance.Mesh], instance, entry.FirstInstance, entry.Selection);
+        DrawData draw = ComposeDraw(MeshRecords(View.MeshRecordSlot)[instance.Mesh], instance, entry.FirstInstance);
+        draw.Selection = entry.Selection;
+        return draw;
     }
 
     // Mesh-local vertex position: the pose pre-pass's current-pose position when the draw has one.
@@ -208,9 +233,7 @@ struct SceneT {
     }
 
     uint InstanceState(DrawData draw) const {
-        return draw.InstanceStateSlot != InvalidSlot ?
-            uint(InstanceStates(draw.InstanceStateSlot)[draw.FirstInstance]) :
-            0u;
+        return uint(InstanceStates(View.InstanceStateSlot)[draw.FirstInstance]);
     }
 
     float4 ObjectSelectionColor(uint instance_state, float4 unselected) const {

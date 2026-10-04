@@ -37,9 +37,9 @@
 #include "scene/SceneControlsUi.h"
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
-#include "selection/Selection.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
+#include "selection/SelectionState.h"
 #include "state/Scene.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
@@ -58,8 +58,6 @@
 #include <format>
 
 using numeric::Degrees;
-
-using std::ranges::any_of, std::ranges::distance, std::ranges::find, std::ranges::to;
 
 using namespace ImGui;
 
@@ -277,11 +275,9 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
     Text("Active entity: %s", GetName(r, active_entity).c_str());
     Indent();
 
-    if (const auto *node = r.try_get<SceneNode>(active_entity)) {
-        if (auto parent_entity = node->Parent; parent_entity != state::Null) {
-            AlignTextToFramePadding();
-            Text("Parent: %s", GetName(r, parent_entity).c_str());
-        }
+    if (const auto *parent = r.try_get<const SceneParent>(active_entity)) {
+        AlignTextToFramePadding();
+        Text("Parent: %s", GetName(r, parent->Parent).c_str());
     }
 
     if (const auto *instance = r.try_get<Instance>(active_entity)) {
@@ -315,7 +311,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
     const bool is_bone_edit = r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && active_bone_entity != state::Null && r.all_of<BoneDisplayScale>(active_bone_entity);
     if (CollapsingHeader("Transform")) {
         if (is_bone_edit) {
-            const auto &wt = r.get<WorldTransform>(active_bone_entity);
+            const auto &wt = *WorldTransformOf(r, active_bone_entity);
             const float bone_length = r.get<BoneDisplayScale>(active_bone_entity).Value;
 
             vec3 head = wt.P;
@@ -388,7 +384,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             TreePop();
         }
         if (TreeNode("World transform")) {
-            const auto &wt = r.get<WorldTransform>(active_entity);
+            const auto &wt = *WorldTransformOf(r, active_entity);
             Text("Position: %.3f, %.3f, %.3f", wt.P.x, wt.P.y, wt.P.z);
             Text("Rotation: %.3f, %.3f, %.3f, %.3f", wt.R.x, wt.R.y, wt.R.z, wt.R.w);
             Text("Scale: %.3f, %.3f, %.3f", wt.S.x, wt.S.y, wt.S.z);
@@ -410,9 +406,12 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             },
             [&](uint32_t i) {
                 const auto &c = constraints->Stack[i];
-                std::vector<state::Entity> targets{state::Null};
-                for (const auto te : r.view<const ObjectKind, const Name>())
-                    if (!r.any_of<BoneIndex, BoneSubPartOf, BoneJoint, SubElementOf>(te)) targets.push_back(te);
+                const auto targets = [&] {
+                    std::vector<state::Entity> objects{state::Null};
+                    for (const auto te : r.view<const ObjectKind, const Name>())
+                        if (!r.any_of<BoneIndex, BoneSubPartOf, BoneJoint, SubElementOf>(te)) objects.push_back(te);
+                    return objects;
+                };
                 const auto target_name = [&](state::Entity e) {
                     const auto *name = e != state::Null && r.valid(e) ? r.try_get<const Name>(e) : nullptr;
                     return e == state::Null ? std::string{"None"} : name && !name->Value.empty() ? name->Value :
@@ -464,13 +463,9 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             } else if (material_count == 0) {
                 TextUnformatted("No materials.");
             } else {
-                const uint32_t max_primitive = primitive_materials.size() - 1;
+                // A missing or out-of-range slot selection shows the nearest slot.
                 const auto *existing_slot = r.try_get<const MeshMaterialSlotSelection>(active_mesh_entity);
-                uint32_t slot_primitive = existing_slot ? existing_slot->PrimitiveIndex : 0u;
-                if (!existing_slot || slot_primitive > max_primitive) {
-                    slot_primitive = std::min(slot_primitive, max_primitive);
-                    action::Emit(action::object::SetMaterialSlotSelection{slot_primitive});
-                }
+                uint32_t slot_primitive = std::min(existing_slot ? existing_slot->PrimitiveIndex : 0u, uint32_t(primitive_materials.size() - 1));
 
                 BeginChild("MaterialSlots", ImVec2(0, 110), true);
                 for (uint32_t primitive_index = 0; primitive_index < primitive_materials.size(); ++primitive_index) {
@@ -682,7 +677,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                 }
             }
             if (target == state::Null) {
-                for (auto [e, _, inst] : r.view<SoundVerticesModel, Instance>().each()) {
+                for (const auto [e, _, inst] : r.view<const SoundVerticesModel, const Instance>().each()) {
                     if (r.all_of<Path>(inst.Entity)) {
                         target = e;
                         break;
@@ -759,7 +754,8 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 bool interaction_mode_changed = false;
                 const auto active_entity_rc = FindActiveEntity(r);
                 const bool active_is_armature_rc = FindArmatureObject(r, active_entity_rc) != state::Null;
-                const bool edit_allowed = AllSelectedAreMeshes(r) || active_is_armature_rc;
+                const auto &flags = r.get<const SelectionFlags>(viewport);
+                const bool edit_allowed = flags.AllMeshes || active_is_armature_rc;
                 const bool pose_allowed = active_is_armature_rc;
                 for (const auto mode : r.get<const EnabledInteractionModes>(viewport).Value) {
                     if (mode == InteractionMode::Edit && !edit_allowed) continue;
@@ -787,24 +783,17 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                     const auto active_mesh = active_instance && HasMesh(r, active_instance->Entity) ? active_instance->Entity : state::Null;
                     const auto *active_stats = active_mesh != state::Null ? GetElementSelectionSummary(r, active_mesh, edit_mode) : nullptr;
                     const uint32_t selected_count = active_stats ? active_stats->SelectedCount : 0u;
-                    bool any_sharp = false, any_smooth = false;
-                    for (const auto entity : r.view<const MeshElementSelection, const MeshHandle>()) {
-                        const auto *summary = GetElementSelectionSummary(r, entity, edit_mode);
-                        if (!summary) continue;
-                        any_sharp |= (summary->SharpnessFlags & 1u) != 0u;
-                        any_smooth |= (summary->SharpnessFlags & 2u) != 0u;
-                        if (any_sharp && any_smooth) break;
-                    }
+                    const auto sharpness = flags.ElementSharpness;
                     if (active_mesh != state::Null) Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
                     // Apply face shading or sharp-edge updates to selected elements.
                     // Vertex mode marks every edge incident to a selected vertex.
                     if (edit_mode != Element::None) {
-                        if (any_sharp || any_smooth) {
-                            const bool mixed = any_sharp && any_smooth;
+                        if (sharpness != SelectionSharpness::None) {
+                            const bool mixed = sharpness == SelectionSharpness::Mixed;
                             if (mixed) PushItemFlag(ImGuiItemFlags_MixedValue, true);
                             if (edit_mode == Element::Face) {
-                                if (bool set_smooth = !any_sharp; Checkbox("Smooth faces", &set_smooth)) action::Emit(action::object::SetSelectedSharp{Element::Face, !set_smooth});
-                            } else if (bool set_sharp = any_sharp && !any_smooth; Checkbox(edit_mode == Element::Edge ? "Sharp edges" : "Sharp vertices", &set_sharp)) {
+                                if (bool set_smooth = sharpness == SelectionSharpness::Smooth; Checkbox("Smooth faces", &set_smooth)) action::Emit(action::object::SetSelectedSharp{Element::Face, !set_smooth});
+                            } else if (bool set_sharp = sharpness == SelectionSharpness::Sharp; Checkbox(edit_mode == Element::Edge ? "Sharp edges" : "Sharp vertices", &set_sharp)) {
                                 action::Emit(action::object::SetSelectedSharp{edit_mode == Element::Edge ? Element::Edge : Element::Vertex, set_sharp});
                             }
                             if (mixed) PopItemFlag();
@@ -869,36 +858,18 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
             }
             if (!r.view<const Selected>().empty()) {
                 SeparatorText("Selection actions");
-                std::vector<state::Entity> selected_mesh_instances;
-                for (const auto entity : r.view<const Selected, const Instance>()) {
-                    if (!r.all_of<SubElementOf>(entity)) selected_mesh_instances.emplace_back(entity);
-                }
-
-                if (!selected_mesh_instances.empty()) {
-                    const bool any_visible = any_of(selected_mesh_instances, [&](state::Entity e) { return r.all_of<RenderInstance>(e); });
-                    const bool any_hidden = any_of(selected_mesh_instances, [&](state::Entity e) { return !r.all_of<RenderInstance>(e); });
-                    const bool mixed_visible = any_visible && any_hidden;
+                const auto &flags = r.get<const SelectionFlags>(viewport);
+                if (flags.AnyVisible || flags.AnyHidden) {
+                    const bool mixed_visible = flags.AnyVisible && flags.AnyHidden;
                     if (mixed_visible) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                    if (bool set_visible = any_visible && !any_hidden; Checkbox("Visible", &set_visible)) action::Emit(action::object::SetSelectedVisible{set_visible});
+                    if (bool set_visible = flags.AnyVisible && !flags.AnyHidden; Checkbox("Visible", &set_visible)) action::Emit(action::object::SetSelectedVisible{set_visible});
                     if (mixed_visible) PopItemFlag();
 
-                    const auto face_mesh_entities = selection::GetSelectedMeshEntities(r) |
-                        std::views::filter([&](state::Entity me) { return GetMesh(r, me).FaceCount() > 0; }) |
-                        to<std::vector>();
-                    if (!face_mesh_entities.empty()) {
-                        // A fully smooth mesh has no sharp faces, while partial sharpness produces a mixed checkbox.
-                        bool any_smooth = false, any_sharp = false, any_partial = false;
-                        for (const auto me : face_mesh_entities) {
-                            const auto summary = r.Context.get<const MeshStore>().GetFaceSharpnessSummary(GetMesh(r,me).GetStoreId());
-                            any_smooth |= !summary.Any;
-                            any_sharp |= summary.Any;
-                            any_partial |= summary.Any && !summary.All;
-                            if ((any_smooth && any_sharp) || any_partial) break;
-                        }
-                        const bool mixed_smooth = (any_smooth && any_sharp) || any_partial;
+                    if (const auto sharpness = flags.FaceSharpness; sharpness != SelectionSharpness::None) {
+                        const bool mixed_smooth = sharpness == SelectionSharpness::Mixed;
                         SameLine();
                         if (mixed_smooth) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                        if (bool set_smooth = any_smooth && !any_sharp; Checkbox("Smooth shading", &set_smooth)) action::Emit(action::object::SetSelectedSmoothShading{set_smooth});
+                        if (bool set_smooth = sharpness == SelectionSharpness::Smooth; Checkbox("Smooth shading", &set_smooth)) action::Emit(action::object::SetSelectedSmoothShading{set_smooth});
                         if (mixed_smooth) PopItemFlag();
                         if (Button("Smooth by angle")) action::Emit(action::object::ShadeSelectedSmoothByAngle{r.get<const ShadeSmoothAngle>(viewport).Value});
                         SameLine();
@@ -1159,7 +1130,8 @@ static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
         if (r.all_of<ObjectKind>(e)) return ObjectTypeName(r.get<const ObjectKind>(e).Value);
         return ObjectTypeName(ObjectType::Empty);
     };
-    std::vector<state::Entity> visible_entities;
+    const auto &outliner = r.get<const OutlinerRows>(viewport);
+    const auto &rows = outliner.Rows;
     // Mutates `out` so begin and end batches fold into a single action.
     using Clear = action::selection::ApplyTreeSelection::ClearKind;
     const auto resolve_into = [&](action::selection::ApplyTreeSelection &out, std::span<const ImGuiSelectionRequest> requests, ImGuiSelectionUserData nav_item) {
@@ -1170,7 +1142,7 @@ static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
         for (const auto &request : requests) {
             if (request.Type == ImGuiSelectionRequestType_SetAll) {
                 if (request.Selected) {
-                    for (const auto e : visible_entities) add_target(e, true);
+                    for (const auto &row : rows) add_target(row.Entity, true);
                     if (const auto nav = FromSelectionUserData(nav_item); nav != state::Null) out.NavToActive = nav;
                 } else {
                     const auto nav = FromSelectionUserData(nav_item);
@@ -1184,16 +1156,14 @@ static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
             if (request.Selected) out.NavToActive = FromSelectionUserData(request.RangeDirection >= 0 ? request.RangeLastItem : request.RangeFirstItem);
 
             const auto first = FromSelectionUserData(request.RangeFirstItem), last = FromSelectionUserData(request.RangeLastItem);
-            const auto first_it = find(visible_entities, first), last_it = find(visible_entities, last);
-            if (first_it == visible_entities.end() || last_it == visible_entities.end()) {
+            const auto first_row = outliner.Find(first), last_row = outliner.Find(last);
+            if (!first_row || !last_row) {
                 add_target(first, request.Selected);
                 add_target(last, request.Selected);
                 continue;
             }
-            const auto first_i = distance(visible_entities.begin(), first_it);
-            const auto last_i = distance(visible_entities.begin(), last_it);
-            const auto [i0, i1] = std::minmax(first_i, last_i);
-            for (auto i = i0; i <= i1; ++i) add_target(visible_entities[i], request.Selected);
+            const auto [i0, i1] = std::minmax(*first_row, *last_row);
+            for (auto i = i0; i <= i1; ++i) add_target(rows[i].Entity, request.Selected);
         }
     };
 
@@ -1204,31 +1174,19 @@ static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
     for (const auto &request : ms_begin->Requests) begin_requests.emplace_back(request);
     const auto begin_nav_item = ms_begin->NavIdItem;
 
-    // Build the set of ancestors of any selected entity (for secondary highlight).
-    std::unordered_set<state::Entity> ancestor_of_selected;
-    const auto mark_ancestors = [&](state::Entity selected_entity) {
-        const auto *n = r.try_get<SceneNode>(selected_entity);
-        auto parent = n ? n->Parent : state::Null;
-        while (parent != state::Null) {
-            if (!ancestor_of_selected.insert(parent).second) break; // already inserted, so parents are already covered
-            const auto *pn = r.try_get<SceneNode>(parent);
-            parent = pn ? pn->Parent : state::Null;
-        }
-    };
-    for (const auto e : r.view<Selected>()) mark_ancestors(e);
-    for (const auto e : r.view<BoneSelection>()) mark_ancestors(e);
-
-    const auto render_entity = [&](const auto &self, state::Entity e) -> void {
-        const auto *node = r.try_get<SceneNode>(e);
-        const bool has_children = node && node->FirstChild != state::Null;
+    const auto &theme = r.get<const ViewportTheme>(viewport);
+    const float row_x = GetCursorPosX(), indent = GetStyle().IndentSpacing;
+    // The rows whose open state ImGui toggled or restored this frame.
+    std::vector<state::Entity> toggled;
+    const auto render_row = [&](const OutlinerRows::Row &row) {
+        const auto e = row.Entity;
         const bool is_selected = r.any_of<Selected, BoneSelection>(e);
-        const bool is_ancestor_selected = !is_selected && ancestor_of_selected.contains(e);
+        const bool is_ancestor_selected = !is_selected && outliner.SelectedAncestors.contains(e);
 
         auto flags =
             ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanFullWidth |
-            ImGuiTreeNodeFlags_FramePadding |
-            ImGuiTreeNodeFlags_NavLeftJumpsToParent;
-        if (!has_children) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+            ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+        if (!row.HasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
         if (is_selected || is_ancestor_selected) flags |= ImGuiTreeNodeFlags_Selected;
 
         if (is_ancestor_selected) {
@@ -1237,33 +1195,29 @@ static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
             PushStyleColor(ImGuiCol_HeaderHovered, ImVec4{col.x, col.y, col.z, col.w * 0.6f});
         }
 
+        SetCursorPosX(row_x + float(row.Depth) * indent);
         SetNextItemSelectionUserData(ToSelectionUserData(e));
+        // ImGui keeps each row's open state, so the rows follow it and the workspace restores it.
         const bool open = TreeNodeEx(reinterpret_cast<void *>(uintptr_t(uint32_t(e))), flags, "%s", GetName(r, e).c_str());
+        if (row.HasChildren && open != outliner.Open.contains(e)) toggled.push_back(e);
         SameLine();
         if (const auto type_suffix = GetEntityTypeName(e); r.any_of<Active, BoneActive>(e)) {
-            const auto &theme = r.get<const ViewportTheme>(viewport);
             const auto color = r.all_of<BoneActive>(e) ? theme.Colors.BoneActive : theme.Colors.ObjectActive;
             TextColored(ImVec4{color.x, color.y, color.z, 1.f}, "[%s]", type_suffix.data());
         } else {
             TextDisabled("[%s]", type_suffix.data());
         }
         if (is_ancestor_selected) PopStyleColor(2);
-        visible_entities.emplace_back(e);
-        if (open && has_children) {
-            for (const auto child : Children{&r, e}) self(self, child);
-            TreePop();
-        }
     };
 
-    const auto roots = SortedEntities(
-        r.view<const Name>() |
-        std::views::filter([&](auto e) {
-            const auto *node = r.try_get<const SceneNode>(e);
-            return !node || node->Parent == state::Null;
-        })
-    );
-    for (const auto e : roots) render_entity(render_entity, e);
-    if (roots.empty()) TextDisabled("No objects");
+    ImGuiListClipper clipper;
+    clipper.Begin(int(rows.size()));
+    // The range source row stays submitted while scrolled out of view.
+    if (const auto source = outliner.Find(FromSelectionUserData(ms_begin->RangeSrcItem))) clipper.IncludeItemByIndex(int(*source));
+    while (clipper.Step()) {
+        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) render_row(rows[i]);
+    }
+    if (rows.empty()) TextDisabled("No objects");
 
     // BeginMultiSelect and EndMultiSelect can produce the same selection update.
     action::selection::ApplyTreeSelection tree_selection;
@@ -1273,6 +1227,12 @@ static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
     if (!tree_selection.Entities.empty() ||
         tree_selection.Clear != Clear::None || tree_selection.NavToActive != state::Null) {
         action::Emit(std::move(tree_selection));
+    }
+    if (!toggled.empty()) {
+        auto &edited = r.edit<OutlinerRows>(viewport);
+        for (const auto e : toggled)
+            if (!edited.Open.erase(e)) edited.Open.insert(e);
+        BuildOutlinerRows(r, edited);
     }
 
     PopStyleVar();

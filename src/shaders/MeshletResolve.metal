@@ -28,18 +28,18 @@ inline MeshletWork ResolveMeshletWork(
     const VisibleMeshlet work = BindlessBuffer(VisibleMeshlet, bindless.Buffer, pc.VisibleMeshletSlot)[visible_index];
     const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[work.Instance];
     const InstanceRecord instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
-    if ((pc.InstanceFilter != InvalidOffset && pc.InstanceFilter != instance_slot) ||
-        (instance.Flags & pc.RequiredInstanceFlags) != pc.RequiredInstanceFlags) {
+    const MeshRecord mesh = scene.MeshRecords(scene.View.MeshRecordSlot)[work.Mesh];
+    const uint flags = InstanceFlags(mesh.Display.Flags, mesh.Display.PrimaryEditInstanceIndex, instance_slot, uint(scene.InstanceStates(scene.View.InstanceStateSlot)[instance_slot]));
+    if ((flags & pc.RequiredInstanceFlags) != pc.RequiredInstanceFlags) {
         return {.Instance = instance, .VisibleIndex = visible_index, .MeshletIndex = work.Meshlet};
     }
-    const MeshRecord mesh = scene.MeshRecords(scene.View.MeshRecordSlot)[work.Mesh];
     const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[work.Meshlet];
     const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
     return {
         .Instance = instance,
         .Meshlet = meshlet,
         .Primitive = primitive,
-        .Draw = ComposeDraw(mesh, instance, instance_slot, instance.Selection),
+        .Draw = ComposeDraw(mesh, instance, instance_slot),
         .VisibleIndex = visible_index,
         .MeshletIndex = work.Meshlet,
         .Valid = true,
@@ -108,7 +108,7 @@ inline MeshletTriangleCorners ResolveMeshletCorners(
 
 // Returns coarse face values with primitive material and no source-face selection state.
 inline MeshletFaceValues MeshletCoarseFace(
-    const thread Scene &scene, PrimitiveRecord primitive, InstanceRecord instance, Transform world
+    const thread Scene &scene, PrimitiveRecord primitive, InstanceRecord instance, DrawData draw, Transform world
 ) {
     const float3 scale = float3(world.S);
     return {
@@ -117,7 +117,7 @@ inline MeshletFaceValues MeshletCoarseFace(
         MeshletPrimitiveMaterialIndex(scene, primitive),
         (scale.x + scale.y + scale.z) / 3.0f,
         instance.ObjectId,
-        instance.ElementIdOffset,
+        draw.ElementIdOffset,
     };
 }
 

@@ -4,8 +4,12 @@
 #include <span>
 
 struct MeshBuffers;
+struct MeshStore;
 namespace mtl { struct ComputeChain; }
 namespace state { struct Scene; }
+
+// The first element handle of the store record's domain in the render topology, which its element owner blocks start from.
+uint32_t ElementDomainFirst(const MeshStore &, uint32_t store_id, uint32_t topology);
 
 // Publishes the finest cluster of every element the clusters' payloads name, in the owner's render topology.
 // Blocks names the canonical element blocks those elements occupy, which the host attaches owner payloads to.

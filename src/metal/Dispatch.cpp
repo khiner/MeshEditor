@@ -28,6 +28,21 @@ ComputeChain::~ComputeChain() {
     }
     if (const auto encoder = std::exchange(Encoding, {})) encoder->endEncoding();
     Recording.reset();
+    // A chain that never committed leaves its scratch unread, so the scratch releases without a fence.
+    if (!Committed) {
+        const auto first = Buffers.Retired.size();
+        Scratch.Buffer = Buffer{Buffers, 0u};
+        Buffers.ReleaseRetiredBuffers(first);
+    }
+}
+
+void ComputeChain::Barrier() {
+    if (std::exchange(DeferredBarrier, false) && Encoding) Encoding->memoryBarrier(MTL::BarrierScopeBuffers);
+}
+
+void ComputeChain::EndEncoding() {
+    Barrier();
+    if (const auto encoder = std::exchange(Encoding, {})) encoder->endEncoding();
 }
 
 MTL::ComputeCommandEncoder *ComputeChain::Encoder() {
@@ -36,11 +51,13 @@ MTL::ComputeCommandEncoder *ComputeChain::Encoder() {
         Recording = NS::RetainPtr(ctx.Queue->commandBuffer());
         ctx.OrderAfterGpuWork(Recording.get());
         RecordingSignals = ctx.ExecutionSignals();
+        OrderedCommits = CommittedCommandBuffers();
     } else if (ctx.ExecutionSignals() != RecordingSignals) {
         // Work committed since the recording began can write what later passes read, so later passes wait for it.
-        if (const auto encoder = std::exchange(Encoding, {})) encoder->endEncoding();
+        EndEncoding();
         ctx.OrderAfterGpuWork(Recording.get());
         RecordingSignals = ctx.ExecutionSignals();
+        OrderedCommits = CommittedCommandBuffers();
     }
     if (!Encoding) {
         Encoding = NS::RetainPtr(Recording->computeCommandEncoder());
@@ -63,7 +80,8 @@ void ComputeChain::Dispatch(const ComputePipeline &pipeline, const void *pc, uin
     encoder->setBytes(pc, bytes, BufferIndex_PushConstants);
     if (threads) encoder->dispatchThreads(MTL::Size(count, 1, 1), MTL::Size(width, 1, 1));
     else encoder->dispatchThreadgroups(MTL::Size(count, 1, depth), MTL::Size(width, 1, 1));
-    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    if (Deferring) DeferredBarrier = true;
+    else encoder->memoryBarrier(MTL::BarrierScopeBuffers);
 }
 
 void ComputeChain::DispatchIndirect(const ComputePipeline &pipeline, const void *pc, uint32_t bytes, const Buffer &arguments, uint64_t offset, uint32_t width) {
@@ -72,7 +90,8 @@ void ComputeChain::DispatchIndirect(const ComputePipeline &pipeline, const void 
     encoder->setComputePipelineState(pipeline.State());
     encoder->setBytes(pc, bytes, BufferIndex_PushConstants);
     encoder->dispatchThreadgroups(*arguments, offset, MTL::Size(width, 1, 1));
-    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    if (Deferring) DeferredBarrier = true;
+    else encoder->memoryBarrier(MTL::BarrierScopeBuffers);
 }
 
 void ComputeChain::Retain(Buffer &&buffer) { Retained.push_back(std::move(buffer)); }
@@ -83,16 +102,21 @@ void ComputeChain::Submit() {
     // A failed submit drops its completions.
     const auto completions = std::exchange(Completions, {});
     if (Recording) {
-        // Buffers retired while recording fence ahead of these passes, so the reclaim after their wait releases them.
-        Buffers.ReclaimRetiredBuffers();
-        if (const auto encoder = std::exchange(Encoding, {})) encoder->endEncoding();
+        EndEncoding();
+        // The command buffer fences the buffers retired while recording, so it runs after every command buffer committed before it.
+        if (CommittedCommandBuffers() != OrderedCommits) Buffers.Ctx.OrderAfterGpuWork(Recording.get());
+        Buffers.FenceRetiredBuffers(Recording.get());
         // Encoding can allocate buffers, so residency commits after it.
         Buffers.Ctx.CommitResidency();
         const auto command = std::exchange(Recording, {});
-        command->commit();
+        Commit(command.get());
+        Committed = true;
         command->waitUntilCompleted();
         if (command->status() == MTL::CommandBufferStatusError) throw std::runtime_error("GPU compute chain failed.");
+        // The retained buffers and the scratch workspaces growth replaced had their last readers in the command buffer.
         Retained.clear();
+        Scratch.Buffer.RetirePreviousWorkspaces();
+        Buffers.ReleaseRetiredBuffers();
         Buffers.ReclaimRetiredBuffers();
     }
     SubmissionSerial = NextSubmissionSerial.fetch_add(1u, std::memory_order_relaxed);

@@ -38,9 +38,9 @@
 #include "render/Textures.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
-#include "scene/EntityDestroyTracker.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
+#include "selection/SelectionState.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportConsumerFence.h"
@@ -276,6 +276,12 @@ void SetupScene(state::Scene &r, state::Entity viewport) {
     r.emplace_or_replace<ShadeSmoothAngle>(viewport);
     r.emplace_or_replace<BoxSelectState>(viewport);
     r.emplace_or_replace<GizmoInteraction>(viewport);
+    // The empty scene's selection aggregates, which the settle pass keeps current.
+    r.emplace_or_replace<TransformRoots>(viewport);
+    r.emplace_or_replace<EditPrimaries>(viewport);
+    r.emplace_or_replace<SelectionFlags>(viewport);
+    r.emplace_or_replace<SelectedKeyframes>(viewport);
+    r.emplace_or_replace<OutlinerRows>(viewport);
     SurfaceSetupScene(r, viewport);
 }
 
@@ -325,7 +331,7 @@ void ClearScene(state::Scene &r, state::Entity viewport) {
     r.destroy(viewport);
     // The arena resets below supersede the releases the destroyed components queued.
     r.Context.erase<PendingObjectRemovals>();
-    r.Context.erase<PendingHide>();
+    r.Context.erase<PendingSlotRemovals>();
 
     // Reset ordered allocators so scene replay reproduces entity IDs and GPU handles.
     // Bindless allocation is order-independent and requires no reset.
@@ -349,7 +355,6 @@ void DeinitViewport(state::Scene &r, state::Entity viewport) {
     r.Context.erase<FrameState>();
     r.Context.erase<PendingRenderRequest>();
     r.Context.erase<GpuSceneState>();
-    r.Context.erase<EntityDestroyTracker>();
     physics::Deinit(r);
     r.Context.erase<MeshPipelines>();
     r.Context.erase<Pipelines>();

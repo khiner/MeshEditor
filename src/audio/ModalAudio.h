@@ -124,6 +124,7 @@ struct ModalBank {
     std::vector<float> OutGain; // Output level
     // Pressure attenuation to the view camera, ListenerDistance/max(distance, ListenerDistance), scaling an object's three output legs.
     std::vector<float> ListenerGain;
+    std::optional<vec3> GainListener; // The listener position ListenerGain was computed at, read on the main thread only
     std::vector<float> RadiantRadius; // Radius of the disc holding the sample surface's area, m at the baked size
     std::vector<float> RetunedWorldScale; // Mean world scale the object was last tuned at, read on the main thread only
     std::vector<float> DeflectionScale;

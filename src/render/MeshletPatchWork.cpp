@@ -133,9 +133,6 @@ std::vector<uint32_t> AdoptMeshletFragments(state::Scene &r, mtl::ComputeChain &
     // The owner now owns every new payload, so exception cleanup finds no provisional range to release.
     for (auto &fragment : fragments) fragment = {};
     PublishMeshletOwners(r,chain,owner,ranges,blocks);
-    std::vector<uint32_t> meshlet_blocks;
-    for (const auto id : added) if (meshlet_blocks.empty() || meshlet_blocks.back()!=id/256u) meshlet_blocks.push_back(id/256u);
-    buffers.PosedMeshletBounds.UpdateBlocks(owner.StoreId,owner.MeshletRevision,meshlet_blocks,
-        [&](uint32_t block) { return buffers.ActiveMeshlets.HasBlock(owner.MeshletRoot,block); },owner.RenderTopology);
+    buffers.UpdatePosedMeshletBlocks(owner,added);
     return added;
 }

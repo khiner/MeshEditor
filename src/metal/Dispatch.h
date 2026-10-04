@@ -46,6 +46,14 @@ struct ComputeChain {
         const AutoreleaseScope pool;
         std::forward<Fn>(fn)(Encoder());
     }
+    // Records the passes of `fn` without memory barriers between them, followed by one barrier.
+    // The passes must not read what another of them writes.
+    template<typename Fn> void Concurrent(Fn &&fn) {
+        const bool outer = std::exchange(Deferring, true);
+        std::forward<Fn>(fn)();
+        Deferring = outer;
+        if (!outer) Barrier();
+    }
     // Commits the recorded passes, waits for them, reclaims retired buffers, and throws when a pass failed or set the error word.
     // Without recorded passes it only runs the completions.
     void Submit();
@@ -62,12 +70,21 @@ struct ComputeChain {
 
 private:
     MTL::ComputeCommandEncoder *Encoder();
+    // Records the barrier a concurrent group deferred.
+    void Barrier();
+    // Ends the compute encoder after the barrier a concurrent group deferred.
+    void EndEncoding();
     void Dispatch(const ComputePipeline &, const void *pc, uint32_t bytes, uint32_t count, uint32_t depth, uint32_t width, bool threads);
     void DispatchIndirect(const ComputePipeline &, const void *pc, uint32_t bytes, const Buffer &arguments, uint64_t offset, uint32_t width);
 
     NS::SharedPtr<MTL::CommandBuffer> Recording;
     NS::SharedPtr<MTL::ComputeCommandEncoder> Encoding;
-    uint64_t DeclaredResources{~0ull}, RecordingSignals{}, SubmissionSerial;
+    // OrderedCommits counts the command buffers committed when the recording last waited for prior GPU work.
+    uint64_t DeclaredResources{~0ull}, RecordingSignals{}, OrderedCommits{}, SubmissionSerial;
+    // A submit has committed the chain's passes, which read its scratch.
+    bool Committed{false};
+    // A concurrent group is recording, and a barrier its passes deferred is pending.
+    bool Deferring{false}, DeferredBarrier{false};
     std::vector<Buffer> Retained;
     std::vector<std::function<void()>> Completions;
 };

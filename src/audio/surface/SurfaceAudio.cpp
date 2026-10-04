@@ -226,7 +226,7 @@ SideTracks ResolveSideTracks(const state::Scene &r, ModalAudio &m, const Sustain
     // An edit whose derived key is not yet computed is hashed here instead.
     const auto *memo = r.try_get<const SurfaceFinishKey>(node);
     const uint64_t finish_key = authored ? (memo ? memo->Value : FinishTrackKey(*authored)) : default_key;
-    const auto *node_transform = r.try_get<const WorldTransform>(node);
+    const auto *node_transform = WorldTransformOf(r, node);
     const float node_scale = node_transform ? MeanScale(node_transform->S) : 0.f;
     // Both tracks are read at the sweep speed, so a sample advances the same surface distance whatever their spacings are.
     const float step = Length(side.SweepVelocity) / sample_rate;
@@ -385,7 +385,7 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
         curvature[i] = SurfaceCurvature(r, nodes[i].Geometry, c.Point).value_or(0.0);
         // Reject sides with inconsistent shape and position counts or missing bodies.
         const auto *modes = r.valid(nodes[i].Model) ? r.try_get<const ModalModes>(nodes[i].Model) : nullptr;
-        const auto *transform = modes ? r.try_get<const WorldTransform>(nodes[i].Model) : nullptr;
+        const auto *transform = modes ? WorldTransformOf(r, nodes[i].Model) : nullptr;
         if (!transform || modes->Positions.empty() || modes->Shapes.size() != modes->Positions.size()) continue;
 
         // Physics reports the contact in world space oriented toward the second body.
@@ -1039,7 +1039,7 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                 auto &side = out.Sides[i];
                 if (side.ModelEntity == state::Null) continue;
                 const auto *modes = r.try_get<const ModalModes>(side.ModelEntity);
-                const auto *transform = r.try_get<const WorldTransform>(side.ModelEntity);
+                const auto *transform = WorldTransformOf(r, side.ModelEntity);
                 if (!modes || !transform) continue;
                 for (uint32_t bb = 0; bb < bin_count; ++bb) {
                     const float u = SpringBinOffset(bb, bin_count, half_extent);
@@ -1066,7 +1066,7 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                 if (side.ModelEntity == state::Null) continue;
                 if (Length(c.Sides[i].SweepVelocity) > 0.01f * speed) continue;
                 const auto *modes = r.try_get<const ModalModes>(side.ModelEntity);
-                const auto *transform = r.try_get<const WorldTransform>(side.ModelEntity);
+                const auto *transform = WorldTransformOf(r, side.ModelEntity);
                 const auto slot = FindModalObject(bank, side.ModelEntity);
                 if (!modes || !transform || !slot) continue;
                 // The anchor engagement quantized to quarter octaves, so load wobble reuses a table.

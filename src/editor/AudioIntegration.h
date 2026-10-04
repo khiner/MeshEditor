@@ -6,6 +6,8 @@ enum class EventPass;
 void RegisterAudioComponentHandlers(state::Scene &);
 // Install finished modal solves and apply pending model rescales.
 void ApplyCompletedModalSolves(state::Scene &, EventPass);
+// Retune objects whose world scale changed and refresh listener gains, after the world transforms settle.
+void UpdateModalPlacement(state::Scene &);
 // Strike the objects hit by the displayed frame's contacts.
 void UpdateAudioContacts(state::Scene &);
 // Drop the cleared scene's bank slots, samples, warm-start data, and in-flight solves.

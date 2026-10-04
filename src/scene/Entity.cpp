@@ -4,36 +4,43 @@
 #include "mesh/Mesh.h"
 #include "render/Instance.h"
 
+#include <charconv>
 #include <format>
 #include <unordered_map>
 
 namespace {
+struct NameHash {
+    using is_transparent = void;
+    size_t operator()(std::string_view name) const { return std::hash<std::string_view>{}(name); }
+};
+template<typename V> using NameMap = std::unordered_map<std::string, V, NameHash, std::equal_to<>>;
+
 // Counts rather than set membership keep the derived index correct when loading source data with duplicate names.
 struct EntityNameCounts {
-    std::unordered_map<std::string, size_t> Counts;
-    // Per taken prefix, the first suffix a probe tries, past every suffix an earlier probe took.
-    std::unordered_map<std::string, uint32_t> NextSuffix;
+    NameMap<size_t> Counts;
+    // Per stem, at least the largest N of every live "{stem}_{N}" name.
+    NameMap<uint64_t> MaxSuffix;
 };
 
+void Track(EntityNameCounts &names, std::string_view name) {
+    if (const auto it = names.Counts.find(name); it != names.Counts.end()) ++it->second;
+    else names.Counts.emplace(name, 1u);
+    const auto stem = NameStem(name);
+    if (stem.size() == name.size()) return;
+    uint64_t suffix = 0;
+    if (std::from_chars(name.data() + stem.size() + 1u, name.data() + name.size(), suffix).ec != std::errc{}) return;
+    if (const auto it = names.MaxSuffix.find(stem); it != names.MaxSuffix.end()) it->second = std::max(it->second, suffix);
+    else names.MaxSuffix.emplace(stem, suffix);
+}
+
 void TrackName(state::Scene &r, state::Entity e) {
-    if (auto *names = r.Context.find<EntityNameCounts>()) ++names->Counts[r.get<const Name>(e).Value];
+    if (auto *names = r.Context.find<EntityNameCounts>()) Track(*names, r.get<const Name>(e).Value);
 }
 void UntrackName(state::Scene &r, state::Entity e) {
     auto *names = r.Context.find<EntityNameCounts>();
     if (!names) return;
     const auto it = names->Counts.find(r.get<const Name>(e).Value);
-    if (it == names->Counts.end() || --it->second != 0) return;
-    names->NextSuffix.erase(it->first);
-    names->Counts.erase(it);
-}
-
-std::string ChooseUniqueName(state::Scene &r, std::string_view prefix) {
-    auto &names = r.Context.get<EntityNameCounts>();
-    std::string base{prefix};
-    if (!names.Counts.contains(base)) return base;
-    auto &next = names.NextSuffix.try_emplace(std::move(base), 1u).first->second;
-    for (;;)
-        if (auto candidate = std::format("{}_{}", prefix, next++); !names.Counts.contains(candidate)) return candidate;
+    if (it != names->Counts.end() && --it->second == 0) names->Counts.erase(it);
 }
 } // namespace
 
@@ -45,8 +52,8 @@ void InitEntityNames(state::Scene &r) {
 void RebuildEntityNames(state::Scene &r) {
     auto &names = r.Context.get<EntityNameCounts>();
     names.Counts.clear();
-    names.NextSuffix.clear();
-    for (const auto &[e, name] : r.view<const Name>().each()) ++names.Counts[name.Value];
+    names.MaxSuffix.clear();
+    for (const auto &[e, name] : r.view<const Name>().each()) Track(names, name.Value);
 }
 void DeinitEntityNames(state::Scene &r) { r.Context.erase<EntityNameCounts>(); }
 void ReserveEntityNames(state::Scene &r, size_t additional) {
@@ -54,7 +61,18 @@ void ReserveEntityNames(state::Scene &r, size_t additional) {
     counts.reserve(counts.size() + additional);
 }
 Name &EmplaceUniqueName(state::Scene &r, state::Entity e, std::string_view prefix) {
-    return r.emplace<Name>(e, ChooseUniqueName(r, prefix));
+    const auto &names = r.Context.get<const EntityNameCounts>();
+    if (!names.Counts.contains(prefix)) return r.emplace<Name>(e, std::string{prefix});
+    const auto it = names.MaxSuffix.find(prefix);
+    for (auto suffix = (it != names.MaxSuffix.end() ? it->second : 0u) + 1u;; ++suffix)
+        if (auto candidate = std::format("{}_{}", prefix, suffix); !names.Counts.contains(candidate)) return r.emplace<Name>(e, std::move(candidate));
+}
+
+std::string_view NameStem(std::string_view name) {
+    const auto underscore = name.find_last_of('_');
+    if (underscore == std::string_view::npos || underscore == 0u || underscore + 1u == name.size()) return name;
+    const bool numbered = std::ranges::all_of(name.substr(underscore + 1u), [](char c) { return c >= '0' && c <= '9'; });
+    return numbered ? name.substr(0u, underscore) : name;
 }
 
 std::string IdString(state::Entity e) { return std::format("0x{:08x}", uint32_t(e)); }

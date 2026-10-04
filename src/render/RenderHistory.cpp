@@ -73,7 +73,7 @@ void GpuBuffers::RefreshMeshBinding(state::Scene &r,uint32_t id) {
         MeshRecords.Mirror(mb.MeshRecord);
         MeshRecords.GetMutable(mb.MeshRecord)[0]=mb.StoreId==InvalidOffset ? MeshRecord{
             .VertexSlot=mb.Vertices.Slot,.IndexSlotOffset=mb.FaceIndices,.ModelSlot=Instances.TransformBuffer.Slot,
-            .VertexCountOrHeadImageSlot=mb.Vertices.Count,.InstanceStateSlot=Instances.StateBuffer.Slot,.VertexOffset=mb.Vertices.Offset,
+            .VertexCountOrHeadImageSlot=mb.Vertices.Count,.VertexOffset=mb.Vertices.Offset,
         } : BuildMeshRecord(*this,mb,meshes,id,mb.RenderTopology==0u,mb.RenderTopology==1u);
     }
 }
@@ -81,7 +81,11 @@ void GpuBuffers::RefreshMeshBinding(state::Scene &r,uint32_t id) {
 std::vector<uint32_t> GpuBuffers::RestoreMeshBindings(state::Scene &r) {
     if (!MeshHistory) return {};
     auto ids = MeshHistory->TakeChanged();
-    for (const auto id : ids) RefreshMeshBinding(r, id);
+    for (const auto id : ids) {
+        RefreshMeshBinding(r, id);
+        // A record the restore removed leaves the flag totals.
+        if (id >= Meshes.size() || !Meshes[id]) Retally(id, {});
+    }
     if (!ids.empty()) PreludeStale=true;
     return ids;
 }

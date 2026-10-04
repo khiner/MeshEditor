@@ -88,6 +88,7 @@ mesheditor_library(MeshEditorMetal HOT
 
 mesheditor_library(MeshEditorMesh HOT
     src/mesh/Mesh.cpp
+    src/mesh/MeshClone.cpp
     src/mesh/MeshCreate.cpp
     src/mesh/NormalDeriveGpu.cpp
     src/mesh/CornerClassificationGpu.cpp
@@ -139,6 +140,7 @@ mesheditor_library(MeshEditorRender HOT
     src/render/MeshletPatchWork.cpp
     src/render/LodNodeEdit.cpp
     src/render/MeshTopologyRepair.cpp
+    src/render/RenderClone.cpp
     src/render/RenderHistory.cpp
     src/render/MeshletOwners.cpp
     src/render/MeshletIndex.cpp
@@ -153,6 +155,7 @@ mesheditor_library(MeshEditorRender HOT
     src/render/Textures.cpp
     src/render/ViewportSubmission.cpp
     src/selection/SelectionGpu.cpp
+    src/selection/SelectionState.cpp
     src/viewport/ViewportRenderGpu.cpp
 )
 
@@ -219,7 +222,6 @@ mesheditor_library(MeshEditorEditor COLD
     src/action/Selection.cpp
     src/action/Timeline.cpp
     src/action/View.cpp
-    src/animation/Keyframes.cpp
     src/animation/Keying.cpp
     src/editor/AudioExcitation.cpp
     src/editor/AudioIntegration.cpp

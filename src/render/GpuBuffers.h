@@ -48,19 +48,27 @@
 #include <optional>
 
 // Per-instance GPU data behind one RangeAllocator, so every buffer shares the same instance offsets.
+// A slot without an instance holds a zero state, so a pass over every slot skips it.
 struct InstanceArena {
     InstanceArena(mtl::BufferContext &ctx);
 
     Range Allocate(uint32_t count);
-    void Free(Range range) { Allocator.Free(range); }
-    void Free(std::vector<Range> ranges) { Allocator.Free(std::move(ranges)); }
+    void Free(Range range) {
+        ClearStates(range);
+        Allocator.Free(range);
+    }
+    void Free(std::vector<Range> ranges) {
+        for (const auto range : ranges) ClearStates(range);
+        Allocator.Free(std::move(ranges));
+    }
 
     template<typename T, typename Index = std::identity>
     void CompactErase(Range active, const T &indices, Index index = {}) {
         ForEachSurvivorRun(active, indices, [&](uint32_t from, uint32_t to, uint32_t count) { CopyInstances(from, to, count); }, index);
+        const auto erased = uint32_t(std::ranges::size(indices));
+        ClearStates({active.Offset + active.Count - erased, erased});
     }
     void CopyInstances(uint32_t src_offset, uint32_t dst_offset, uint32_t count);
-    void ReserveAdditional(uint32_t count);
     void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), uint64_t(index) * sizeof(uint8_t)); }
     const AABB &GetBounds(uint32_t index) const { return reinterpret_cast<const AABB *>(BoundsBuffer.Contents().data())[index]; }
     std::span<AABB> GetMutableBounds(Range range) const { return BoundsBuffer.GetMutableSpan<AABB>(range); }
@@ -76,6 +84,7 @@ struct InstanceArena {
     mtl::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer, BoundsBuffer, RecordBuffer;
 
 private:
+    void ClearStates(Range range) { std::ranges::fill(StateBuffer.GetMutableSpan<uint8_t>(range), uint8_t{0}); }
     void ForEachBuffer(auto &&fn) {
         fn(TransformBuffer, sizeof(Transform));
         fn(ObjectIdBuffer, sizeof(uint32_t));
@@ -203,6 +212,7 @@ struct GpuBuffers {
     // Each render owner's run of render primitive handles, indexed by source primitive and InvalidOffset where absent.
     BufferArena<uint32_t> PrimitiveRoutes{Ctx,SlotType::Buffer};
     BufferArena<MeshRecord> MeshRecords;
+    // Every instance slot in drawing order, by descending object ID, so coplanar ties resolve the same way across loads.
     mtl::Buffer GpuInstanceSlots;
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, SlotType::ArmatureDeformBuffer};
     BufferArena<float> MorphWeightBuffer{Ctx, SlotType::MorphWeightBuffer};
@@ -219,33 +229,46 @@ struct GpuBuffers {
     mtl::Buffer MeshletCoarseCount;
     // Persistent procedural line jobs, deterministically compacted into one indirect submission.
     mtl::Buffer OverlayJobs, OverlayJobBlocks, VisibleOverlayJobs, OverlayJobDispatchArgs;
-    // Live LOD nodes and meshlets over the drawing instances, which bound each cull's traversal and work.
+    // Live LOD nodes and meshlets over the drawing instances, which bound each cull's traversal and work, summed over the mesh tallies.
     uint64_t LodNodeCount{0};
     uint64_t MeshletInstanceCount{0};
     // Maximum traversal depth among resident mesh span trees.
     uint32_t MeshletLodDepth{0};
     uint32_t MeshletTopologyMask{0};
+    // Whether drawing the topology needs a pipeline the topology mask lacks.
+    bool DrawsNewTopology(uint32_t topology) const { return topology >= 32u || !(MeshletTopologyMask & (1u << topology)); }
 
     // Maintained totals for culls restricted to one instance flag.
     struct MeshletFlagWork {
         uint64_t Nodes{0}, Meshlets{0};
     };
     // One entry per MeshletInstanceFlag bit, indexed by that bit's position.
-    static constexpr size_t MeshletInstanceFlagCount = std::bit_width(uint32_t(MeshletInstanceFlag::EdgeOverlay));
+    static constexpr size_t MeshletInstanceFlagCount = std::bit_width(uint32_t(MeshletInstanceFlag::SilhouetteEligible));
     std::array<MeshletFlagWork, MeshletInstanceFlagCount> MeshletFlagWorkByBit{};
 
     MeshletFlagWork &FlagWork(uint32_t flag) { return MeshletFlagWorkByBit[std::countr_zero(flag)]; }
     const MeshletFlagWork &FlagWork(uint32_t flag) const { return MeshletFlagWorkByBit[std::countr_zero(flag)]; }
-    // The flags whose work totals count the meshlet work of their drawing instances.
+    // The mesh flags whose totals count the meshlet work of the mesh's instances.
+    // The settle pass totals Silhouette over the selected instances.
     static constexpr uint32_t CountedMeshletFlags = ((1u << MeshletInstanceFlagCount) - 1u) &
-        ~(uint32_t(MeshletInstanceFlag::LodPinFinest) | uint32_t(MeshletInstanceFlag::OverlayOnly));
+        ~(uint32_t(MeshletInstanceFlag::Silhouette) | uint32_t(MeshletInstanceFlag::LodPinFinest) |
+          uint32_t(MeshletInstanceFlag::OverlayOnly) | uint32_t(MeshletInstanceFlag::SilhouetteEligible));
+    // One mesh record's contribution to the scene and flag totals: its visible instances' meshlet work, under its record's flags.
+    struct MeshFlagTally {
+        uint32_t Flags{0}, Instances{0}, Nodes{0}, Meshlets{0};
+    };
+    // Each mesh record's tally, beside Meshes.
+    std::vector<MeshFlagTally> FlagTallies;
+    // Moves the mesh record's contribution to the scene and flag totals to `tally`.
+    void Retally(uint32_t store_id, MeshFlagTally tally);
 
     static constexpr uint32_t MeshletDispatchChunkSize{65'535};
     static constexpr uint32_t MeshletCullBlockSize{1024};
     static constexpr uint32_t MeshletRouteCount{uint32_t(MeshletRoute::Count)};
     static constexpr uint32_t OverlayJobBlockSize{256};
 
-    void SetOverlayJobs(std::span<const OverlayJob> jobs);
+    // Sizes the overlay job list and its cull scratch to `count` jobs, and returns the list for writing.
+    std::span<OverlayJob> ResizeOverlayJobs(uint32_t count);
 
     void EnsureMeshletVisibilityCapacity(
         MeshletCullOutput &, uint64_t visible_count, uint64_t work_node_count, uint64_t work_meshlet_count
@@ -302,6 +325,8 @@ struct GpuBuffers {
     // (posed entry, global meshlet) per posed-meshlet bounds threadgroup, plus its local-space AABB output.
     mtl::Buffer PosedMeshletBoundsJobs{Ctx, 0, SlotType::Buffer};
     PoseAttributeStore<AABB> PosedMeshletBounds{Ctx};
+    // Updates the posed bounds of the owner's meshlet blocks holding the ascending ids, at the owner's meshlet revision.
+    void UpdatePosedMeshletBlocks(const MeshBuffers &owner, std::span<const uint32_t> ids);
     // One entry per normal-derive dispatch item.
     // Contains one entry per posed triangle range or one per mesh during base derivation.
     mtl::Buffer NormalDeriveEntries{Ctx, 0, SlotType::Buffer};
@@ -313,19 +338,15 @@ struct GpuBuffers {
     PoseAttributeStore<vec3> PosedMorphNormalDeltas{Ctx};
     // Group counts of the posed prelude's passes, in recorded order (their arg slot order in PreludeDispatchArgs).
     // Set when persistent scene descriptors refresh.
-    struct PreludeGroups {
-        static constexpr uint32_t PassCount{7};
-        uint32_t PosePrepass{0}, PosedMeshletBounds{0}, DeriveFaces{0}, DeriveGather{0};
-        std::array<uint32_t,3> BoundsCombine{};
-
-        // Empty entries still dispatch their root to publish neutral bounds.
-        bool HasWork() const { return PosePrepass > 0 || PosedMeshletBounds > 0 || DeriveFaces > 0 || BoundsCombine[2] > 0; }
-    };
-    PreludeGroups Prelude{};
+    static constexpr uint32_t PreludePassCount{7};
+    std::array<uint32_t, PreludePassCount> PreludeGroups{};
+    // Empty entries still dispatch their root to publish neutral bounds.
+    bool PreludeHasWork() const { return std::ranges::any_of(PreludeGroups, [](uint32_t g) { return g > 0u; }); }
     // Stores recorded group counts or zeros for unchanged deform inputs.
     mtl::Buffer PreludeDispatchArgs;
-    // A deform input was written since the last submit wrote live prelude counts.
-    // Deform inputs are morph weights, armature poses, transform gestures, geometry edits, and scene refreshes.
+    // The tiles and posed meshlet jobs of the entries a prelude over some entries recomputes, each level's tiles after the previous level's.
+    mtl::Buffer SparseBoundsTiles{Ctx, 0, SlotType::Buffer}, SparseDeriveTiles{Ctx, 0, SlotType::Buffer}, SparsePosedMeshletBoundsJobs{Ctx, 0, SlotType::Buffer};
+    // Every entry's inputs may have changed since the last submit wrote live prelude counts, so the next submit recomputes them all.
     bool PreludeStale{true};
     // Tracks visibility or material changes that can reveal geometry without requiring the posed prelude.
     bool MeshletOcclusionStale{true};

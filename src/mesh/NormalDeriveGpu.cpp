@@ -60,12 +60,6 @@ void EncodeDeriveNormals(state::Scene &r, mtl::ComputeChain &chain, std::span<co
     chain.Retain(std::move(tile_buffer));
 }
 
-void DeriveNormalsNow(state::Scene &r, std::span<const NormalDeriveEntry> entries, NormalDerivePushConstants pc) {
-    mtl::ComputeChain chain{r.Context.get<const MeshStore>().BufferContext()};
-    EncodeDeriveNormals(r,chain,entries,pc);
-    chain.Submit();
-}
-
 void CaptureNormalWrites(state::Scene &r, const NormalDeriveEntry &entry, const BufferArena<uint32_t> &vertex_work, const BufferArena<uint32_t> &face_work) {
     if (!entry.VertexWorkCount && !entry.FaceWorkCount) return;
     const auto &a = r.Context.get<const MeshStore>().Arenas();
@@ -115,9 +109,8 @@ void EncodeDeriveMeshNormals(state::Scene &r, mtl::ComputeChain &chain, const Bu
     EncodeDeriveBaseEntries(r,chain,entries,work);
 }
 
-void DeriveMeshNormalsNow(state::Scene &r, std::span<const uint32_t> ids) {
+void EncodeDeriveAllNormals(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
     const auto &meshes = r.Context.get<const MeshStore>();
-    mtl::ComputeChain chain{meshes.BufferContext()};
     std::vector<ElementWorkSeedJob> seeds;
     std::vector<ElementWork> work;
     std::vector<NormalDeriveEntry> entries;
@@ -139,5 +132,4 @@ void DeriveMeshNormalsNow(state::Scene &r, std::span<const uint32_t> ids) {
     chain.Submit();
     for (const auto domain : work) CheckElementWork(chain.Scratch,domain);
     EncodeDeriveBaseEntries(r,chain,entries,chain.Scratch);
-    chain.Submit();
 }

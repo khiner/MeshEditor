@@ -16,6 +16,7 @@ struct MeshStore;
 void Show(state::Scene &, state::Entity);
 void Hide(state::Scene &, state::Entity);
 // Hides or shows the node and its descendants from their Visibility flags and the parent's Hidden state.
+// Runs only when the node's own effective visibility changed.
 void ApplyVisibility(state::Scene &, state::Entity);
 
 void ApplySelectBehavior(state::Scene &, state::Entity, MeshInstanceCreateInfo::SelectBehavior);

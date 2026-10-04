@@ -4,6 +4,7 @@
 #include "state/Scene.h"
 
 #include "Job.h"
+#include "SortUnique.h"
 #include "action/Audio.h"
 #include "action/Errors.h"
 #include "audio/AudioDevice.h"
@@ -24,6 +25,7 @@
 #include "project/Project.h"
 #include "scene/Entity.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/ViewCamera.h"
 #include "viewport/ViewportEvents.h"
 
 #include <FastFEM/SolveMonitor.h>
@@ -102,7 +104,7 @@ void SetModalOutGain(const state::Scene &r, ModalBank &b, uint32_t slot, state::
 
 // The mean scale of the entity's world transform, which sizes its modes and displaced volume.
 float WorldMeanScale(const state::Scene &r, state::Entity e) {
-    const auto *world = r.try_get<const WorldTransform>(e);
+    const auto *world = WorldTransformOf(r, e);
     return world ? MeanScale(world->S) : 1.f;
 }
 
@@ -252,7 +254,7 @@ void TriggerModalStrike(state::Scene &r, state::Entity e, uint32_t excitable_ind
             const auto *striker_ptr = device ? r.try_get<const Striker>(device->Viewport) : nullptr;
             imp = StrikerImpactor(striker_ptr ? *striker_ptr : Striker{});
         }
-        const vec3 strike_point = physics ? physics->Point : TransformPoint(r.get<const WorldTransform>(e), modes.Positions[excitable_index]);
+        const vec3 strike_point = physics ? physics->Point : TransformPoint(*WorldTransformOf(r, e), modes.Positions[excitable_index]);
         const double curvature = SurfaceCurvature(r, physics ? physics->GeometryEntity : e, strike_point).value_or(0.0);
         // The elastic constants belong to the surface that was struck, as they do for a contact that persists.
         // Use the target node surface for external mallet impacts.
@@ -291,14 +293,12 @@ void TriggerModalStrike(state::Scene &r, state::Entity e, uint32_t excitable_ind
 }
 
 // Retain notifications after entity destruction.
-// Process scale changes recorded after this handler in the next frame.
 struct AudioTrackers {
-    state::DirtySet Modes, Samples, Scale;
+    state::DirtySet Modes, Samples;
     void Bind(state::Scene &r) {
-        for (auto *storage : {&Modes, &Samples, &Scale}) storage->bind(r);
+        for (auto *storage : {&Modes, &Samples}) storage->bind(r);
         Modes.on<ModalModes>(On::Create | On::Update | On::Destroy);
         Samples.on<VertexSamples>(On::Create | On::Update | On::Destroy);
-        Scale.on<WorldTransform>(On::Update);
     }
 };
 
@@ -510,7 +510,7 @@ std::vector<uint32_t> RelabelSampleTriangles(std::span<const uint32_t> triangles
 SolveInputs BuildSolveInputs(const state::Scene &r, state::Entity e, state::Entity mesh_entity, const ModalSolveSettings &settings) {
     const auto &mesh = GetMesh(r, mesh_entity);
     const uint32_t num_vertices = mesh.VertexCount();
-    const vec3 node_scale = r.get<const WorldTransform>(e).S;
+    const vec3 node_scale = WorldTransformOf(r, e)->S;
     std::vector<vec3> positions(num_vertices);
     for (uint32_t i = 0; i < num_vertices; ++i) positions[i] = mesh.GetPosition(mesh.VertexAt(i)) * node_scale;
     auto triangle_indices = mesh.CreateTriangleIndices();
@@ -617,7 +617,7 @@ void RegisterAudioComponentHandlers(state::Scene &r) {
         .on<::ModalModes>(On::Create | On::Update | On::Destroy)
         .on<SoundVerticesModel>(On::Create | On::Update | On::Destroy);
     // Refresh body-dependent sound tags after body or hierarchy changes.
-    reactive(r, Change::ContactReportingDerivation).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<SceneNode>(On::Update | On::Destroy);
+    reactive(r, Change::ContactReportingDerivation).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<SceneParent>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::ContactDynamicsDerivation)
         .on<MassProperties>(On::Create | On::Update | On::Destroy)
         .on<::ModalModes>(On::Create | On::Update | On::Destroy);
@@ -721,16 +721,17 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
     // Intentional registry write outside Apply: derived from the sound models under each body.
     {
         const auto owning_body = [&r](state::Entity e) { return FindAncestorIf(r, e, [&r](state::Entity node) { return r.all_of<PhysicsBodyHandle>(node); }); };
-        state::DirtySet bodies;
+        std::vector<state::Entity> bodies;
         const auto add_owners = [&](state::Entity e) {
             if (!r.valid(e)) return;
-            if (const auto body = owning_body(e); body != state::Null) bodies.emplace(body);
+            if (const auto body = owning_body(e); body != state::Null) bodies.push_back(body);
             // A body's subtree leaves or joins the body enclosing it.
             if (r.all_of<PhysicsBodyHandle>(e))
-                if (const auto outer = owning_body(ParentOrNull(r, e)); outer != state::Null) bodies.emplace(outer);
+                if (const auto outer = owning_body(ParentOrNull(r, e)); outer != state::Null) bodies.push_back(outer);
         };
         for (const auto e : reactive(r, Change::ContactReportingDerivation)) add_owners(e);
         for (const auto e : reactive(r, Change::SoundVerticesDerivation)) add_owners(e);
+        SortUnique(bodies);
         const auto sounds = [&r](this auto &self, state::Entity node) -> bool {
             if (IsModalSounding(r, node)) return true;
             for (auto child : Children{&r, node}) {
@@ -836,20 +837,28 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
             m.RenderPool.SetWorkgroup(device ? device->RenderWorkgroup : nullptr);
             for (uint32_t slot = 0; slot < uint32_t(bank.Entities.size()); ++slot) SetModalOutGain(r, bank, slot, bank.Entities[slot]);
         }
-        // Retune objects whose world scale changed.
         auto &trackers = r.Context.get<AudioTrackers>();
-        if (!trackers.Scale.empty()) {
-            for (uint32_t slot = 0; slot < uint32_t(bank.Entities.size()); ++slot) {
-                const auto e = bank.Entities[slot];
-                if (trackers.Scale.contains(e) && WorldMeanScale(r, e) != bank.RetunedWorldScale[slot]) RetuneModalObject(r, bank, slot, e);
-            }
-        }
-        trackers.Scale.clear();
         trackers.Modes.clear();
         trackers.Samples.clear();
-        // Publish camera-derived object attenuation because the audio thread cannot access the registry.
-        if (const auto *res = r.Context.find<AudioDeviceResource>()) UpdateListenerGains(r, bank, res->Viewport);
     }
+}
+
+void UpdateModalPlacement(state::Scene &r) {
+    auto *m = r.Context.find<ModalAudio>();
+    if (!m) return;
+    auto &bank = LiveBank(*m);
+    const bool moved = !reactive(r, Change::WorldTransform).empty();
+    // Retune objects whose world scale changed.
+    if (moved) {
+        for (uint32_t slot = 0; slot < uint32_t(bank.Entities.size()); ++slot) {
+            const auto e = bank.Entities[slot];
+            if (WorldMeanScale(r, e) != bank.RetunedWorldScale[slot]) RetuneModalObject(r, bank, slot, e);
+        }
+    }
+    // Publish camera-derived object attenuation because the audio thread cannot access the registry.
+    const auto *device = r.Context.find<AudioDeviceResource>();
+    const auto *camera = device && r.valid(device->Viewport) ? r.try_get<const ViewCamera>(device->Viewport) : nullptr;
+    if (camera && (moved || bank.GainListener != camera->Position())) UpdateListenerGains(r, bank, device->Viewport);
 }
 
 void UpdateAudioContacts(state::Scene &r) {
@@ -864,7 +873,7 @@ void UpdateAudioContacts(state::Scene &r) {
             const auto &modes = r.get<const ModalModes>(own.Model);
             if (modes.Positions.empty()) continue;
             // Bring the world-space contact into the node-local frame the modes are defined in.
-            const auto &wt = r.get<const WorldTransform>(own.Model);
+            const auto &wt = *WorldTransformOf(r, own.Model);
             const vec3 local_point = InverseTransformPoint(wt, c.Point);
             const vec3 local_dir = InverseTransformDir(wt, c.Direction);
             const auto sample_point = NearestSamplePoint(modes.Positions, local_point);

@@ -54,8 +54,6 @@ void AddConnectivityJob(ConnectivityBatch &batch, MeshConnectivityJob job) {
 }
 
 namespace {
-constexpr uint32_t ScratchWordBudget{96u << 20};
-
 uint32_t ScratchWords(const MeshStore &meshes, uint32_t id) {
     const auto &record = meshes.Get(id);
     MeshConnectivityJob job{.HalfedgeCount = meshes.Arenas().FaceCorners.Count(record.FaceCorners)};

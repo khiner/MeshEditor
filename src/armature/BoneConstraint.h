@@ -23,4 +23,10 @@ struct BoneConstraints {
     std::vector<BoneConstraint> Stack;
 };
 
+// The armature objects whose bone constraints read each entity's world transform: every constraint target, and each constrained armature object itself.
+// Derived from the constraint stacks.
+struct ConstraintTargets {
+    std::unordered_map<state::Entity, std::vector<state::Entity>> Armatures;
+};
+
 // User-authored pose constraint stack.

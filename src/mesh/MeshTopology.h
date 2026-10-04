@@ -34,3 +34,6 @@ struct MeshStore;
 struct MeshTopologyPushConstants;
 // Canonical arena bindings shared by topology emission and transfer passes.
 MeshTopologyPushConstants TopologyPushConstants(const MeshStore &);
+// A bound on the operator scratch words the task's edit lays out, as if its local source were its whole mesh.
+// A mesh past the scratch budget counts as one at the budget's scale, since it takes a chunk to itself either way.
+uint32_t TopologyScratchBound(const MeshStore &, const MeshTopologyTask &);

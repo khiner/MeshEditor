@@ -33,13 +33,20 @@ struct EntityStore {
     };
     std::vector<Change> TakeChanges() { return std::exchange(Changes, {}); }
 
-    // Visit every entity index whose generation page changed during the current restoration.
-    void ForEachIdentityChange(auto &&fn) const {
+    // Visit the entity index range [first, last) of each generation page that changed during the current restoration.
+    void ForEachIdentityChangeRun(auto &&fn) const {
         const auto per_page = Table.P.PageBytes / sizeof(uint32_t);
         const auto end = std::max(Table.size(), PreviousLength);
         for (const auto page : Table.P.Trie.ChangedSlots) {
-            for (uint64_t i = page * per_page, last = std::min<uint64_t>(end, (page + 1) * per_page); i < last; ++i) fn(uint32_t(i));
+            const auto first = page * per_page;
+            if (first < end) fn(uint32_t(first), uint32_t(std::min<uint64_t>(end, (page + 1) * per_page)));
         }
+    }
+    // Visit every entity index whose generation page changed during the current restoration.
+    void ForEachIdentityChange(auto &&fn) const {
+        ForEachIdentityChangeRun([&](uint32_t first, uint32_t last) {
+            for (auto i = first; i < last; ++i) fn(i);
+        });
     }
 
     state::Scene &R;

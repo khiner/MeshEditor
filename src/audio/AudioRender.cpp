@@ -57,9 +57,10 @@ void UpdateListenerGains(const state::Scene &r, ModalBank &b, state::Entity view
     const auto *camera = r.valid(viewport) ? r.try_get<const ViewCamera>(viewport) : nullptr;
     if (!camera) return;
     const auto listener_pos = camera->Position();
+    b.GainListener = listener_pos;
     for (uint32_t slot = 0; slot < uint32_t(b.Entities.size()); ++slot) {
         const auto e = b.Entities[slot];
-        const auto *world = r.valid(e) ? r.try_get<const WorldTransform>(e) : nullptr;
+        const auto *world = r.valid(e) ? WorldTransformOf(r, e) : nullptr;
         const float distance = world ? Distance(listener_pos, world->P) : ListenerDistance;
         std::atomic_ref{b.ListenerGain[slot]}.store(ListenerDistance / std::max(distance, ListenerDistance), std::memory_order_relaxed);
     }
@@ -136,7 +137,7 @@ void ProcessAudio(state::Scene &r, state::Entity viewport, float *output, uint32
     const auto *controls = r.try_get<const ModalSoundControls>(viewport);
     // Recorded samples are normalized, so they enter the pressure mix at the monitor calibration and a full-scale sample plays at full scale.
     const float sample_gain = (controls ? controls->SampleGain : ModalSoundControls{}.SampleGain) * FullScalePressure;
-    for (const auto [entity, model] : r.view<SoundVerticesModel>().each()) {
+    for (const auto [entity, model] : r.view<const SoundVerticesModel>().each()) {
         if (model == SoundVerticesModel::Samples) {
             auto *samples = r.try_edit<SamplePlayback>(entity);
             if (!samples || samples->Stopped) continue;

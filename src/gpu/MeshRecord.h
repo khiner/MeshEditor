@@ -1,13 +1,14 @@
 #pragma once
 #include "gpu/ConnectivityRef.h"
 #include "gpu/ElementAttributeRef.h"
-
+#include "gpu/MeshDisplay.h"
 #include "gpu/SlotOffset.h"
 #include "gpu/Types.h"
 
-// Stores one mesh's arena locations once, shared by every primitive and instance that draws it.
+// Stores one mesh's display state and arena locations once, shared by every primitive and instance that draws it.
 // Corner offsets locate the mesh's first corner, and ComposeDraw advances them to a primitive's.
 struct MeshRecord {
+    MeshDisplay Display DEFAULT();
     uint32_t VertexSlot DEFAULT(InvalidSlot);
     SlotOffset IndexSlotOffset DEFAULT();
     uint32_t ModelSlot DEFAULT(InvalidSlot);
@@ -22,10 +23,11 @@ struct MeshRecord {
     uint32_t HalfedgeCount DEFAULT();
     uint32_t FaceCount DEFAULT();
     uint32_t VertexCountOrHeadImageSlot DEFAULT();
-    uint32_t InstanceStateSlot DEFAULT(InvalidSlot);
     uint32_t VertexOffset DEFAULT();
     uint32_t MorphShadingAuthored DEFAULT();
     uint32_t PrimitiveMaterialOffset DEFAULT(InvalidOffset);
     ElementAttributeRef ElementPrimitives DEFAULT();
+    // Rounds the record to whole cache lines, so each record's display fields start one.
+    GpuArray<uint32_t, 11> Padding DEFAULT();
 };
-static_assert(sizeof(MeshRecord) == 180, "MeshRecord size");
+static_assert(sizeof(MeshRecord) == 320, "MeshRecord size");

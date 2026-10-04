@@ -142,6 +142,7 @@ MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
       BoneSphereFillMesh{CreateMeshPipeline(libraries, FunctionRef{"BoneSphere.metal", "BoneSphereFragment"}, OverlayFormats(), {Blend}, DepthTestLessEqual, {"BoneSphere.metal", "BoneSphereMesh"})},
       BoneSphereWireMesh{StrokePipeline(libraries, {"BoneSphereWire.metal", "BoneSphereWireMesh"})},
       WireResolve{mtl::MakeRenderPipeline(libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"WireResolve.metal", "WireResolveFragment"}, OverlayFormats(), {PremultipliedBlend}, DepthOff)},
+      ObjectOrigins{mtl::MakeRenderPipeline(libraries, {"ObjectOrigin.metal", "ObjectOriginVertex"}, FunctionRef{"ObjectOrigin.metal", "ObjectOriginFragment"}, OverlayFormats(), {PremultipliedBlend}, DepthOff)},
       Compiler{libraries, SceneFormats()} {}
 
 SelectionFragmentPipeline::SelectionFragmentPipeline(mtl::LibraryCache &libraries)

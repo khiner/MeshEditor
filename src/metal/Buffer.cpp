@@ -61,6 +61,13 @@ void BufferContext::RecycleWorkspace(NS::SharedPtr<MTL::Buffer> buffer) {
     WorkspaceCache[std::countr_zero(bytes)].push_back(std::move(buffer));
     CachedWorkspaceBytes+=bytes;
 }
+void BufferContext::Release(std::span<RetiredBuffer> buffers) {
+    for (auto &buffer : buffers) {
+        if (buffer.Binding.Slot != InvalidSlot) Slots.Release(buffer.Binding);
+        if (buffer.Workspace) RecycleWorkspace(std::move(buffer.Workspace));
+    }
+}
+
 bool BufferContext::ReclaimRetiredBuffers(bool wait) {
     const AutoreleaseScope pool;
     bool released = false;
@@ -68,10 +75,10 @@ bool BufferContext::ReclaimRetiredBuffers(bool wait) {
     if (!Retired.empty()) {
         // Mapping work can still be pending after the last render submit.
         // Publish it before fencing the storage and slots that it references.
-        auto fence = NS::RetainPtr(Ctx.Queue->commandBuffer());
-        Ctx.OrderAfterGpuWork(fence.get());
-        Retirements.push_back({std::move(Retired), std::move(fence)});
-        Retirements.back().Fence->commit();
+        auto *fence = Ctx.Queue->commandBuffer();
+        Ctx.OrderAfterGpuWork(fence);
+        FenceRetiredBuffers(fence);
+        Commit(fence);
     }
     while (!Retirements.empty()) {
         auto &batch = Retirements.front();
@@ -79,10 +86,7 @@ bool BufferContext::ReclaimRetiredBuffers(bool wait) {
         const auto status = batch.Fence->status();
         if (status != MTL::CommandBufferStatusCompleted && status != MTL::CommandBufferStatusError) break;
         completed &= status == MTL::CommandBufferStatusCompleted;
-        for (auto &buffer : batch.Buffers) {
-            if (buffer.Binding.Slot != InvalidSlot) Slots.Release(buffer.Binding);
-            if (buffer.Workspace) RecycleWorkspace(std::move(buffer.Workspace));
-        }
+        Release(batch.Buffers);
         Retirements.pop_front();
         released = true;
     }
@@ -90,6 +94,19 @@ bool BufferContext::ReclaimRetiredBuffers(bool wait) {
     if (wait) completed &= Ctx.DrainMappings();
     return completed;
 }
+
+void BufferContext::FenceRetiredBuffers(MTL::CommandBuffer *command) {
+    if (!Retired.empty()) Retirements.push_back({std::exchange(Retired, {}), NS::RetainPtr(command)});
+}
+
+void BufferContext::ReleaseRetiredBuffers(size_t first) {
+    if (Retired.size() <= first) return;
+    const AutoreleaseScope pool;
+    // The next residency commit drops recycled workspaces that leave the cache.
+    Release(std::span{Retired}.subspan(first));
+    Retired.resize(first);
+}
+
 uint32_t BufferContext::AllocateSlot(SlotType type) {
     const auto slot = Slots.TryAllocate(type);
     if (slot != InvalidSlot) return slot;
@@ -167,9 +184,13 @@ Buffer::~Buffer() {
     if (Slot != InvalidSlot) Ctx.Slots.Release({Type, Slot});
 }
 
-void Buffer::Retire() {
+void Buffer::RetirePreviousWorkspaces() {
     for (auto &previous:PreviousWorkspaces) Ctx.Retired.push_back({.Workspace=std::move(previous)});
     PreviousWorkspaces.clear();
+}
+
+void Buffer::Retire() {
+    RetirePreviousWorkspaces();
     if (Workspace) {
         Ctx.Retired.push_back({.Binding={Type,Slot},.Workspace=std::move(Workspace)});
         Slot=InvalidSlot;

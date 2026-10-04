@@ -36,7 +36,7 @@ using VertexBlockSelectOutput = metal::mesh<ElementIdVaryings, void, VertexBlock
     if (pc.SoundPoints != 0u) {
         constant ViewportThemeColors &colors = scene.Theme.Colors;
         out.Color = work.VertexId == work.Instance.ExcitedVertex ? float4(colors.ElementExcited) :
-            work.VertexId == work.Instance.ActiveVertex ? float4(float4(colors.ElementActive).rgb, 1.0f) :
+            work.VertexId == work.ActiveVertex ? float4(float4(colors.ElementActive).rgb, 1.0f) :
                                                          float4(float3(colors.VertexSelected), 1.0f);
     }
     output.set_vertex(compact.x, out);

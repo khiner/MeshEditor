@@ -41,7 +41,7 @@
 #include <mutex>
 
 namespace mtl { struct ComputeChain; }
-struct MeshPipelines;
+struct CloneCopies;
 
 struct ArmatureDeformData {
     std::vector<uvec4> Joints;
@@ -215,9 +215,10 @@ struct MeshStore {
     void FinishRestore();
     // Indexes the records written since the last index, so a restore maps its changed bytes to records in proportion to the change.
     void IndexHistory();
+    // The records a restore changed, whose cached block lists refill on their next read.
     std::vector<Change> TakeChanges();
-    // Refreshes the selection aggregates of restored blocks and their incident blocks.
-    void ReconcileSelection(state::Scene &, std::span<const Change>);
+    // Records the refresh of the selection aggregates of restored blocks and their incident blocks.
+    void ReconcileSelection(state::Scene &, mtl::ComputeChain &, std::span<const Change>);
     // Records whose render data is stale, released or changed by a restore, for the render sync to drop.
     std::vector<uint32_t> TakeRenderStale() { return std::exchange(RenderStale, {}); }
 
@@ -270,11 +271,12 @@ struct MeshStore {
     ElementView<Vertex> VertexView(uint32_t id) const;
     // Completes the record created by CreateMeshSource: face tables, corner layers, primitive tables, and smooth sharpness stores.
     void CreateMesh(uint32_t id, const MeshData &, const MeshVertexAttributes &, const MeshPrimitives &, const CornerLayers &, bool has_authored_normals);
-    // A face-less line mesh changes its entire render domain when its first
-    // face is created. Retire line incidence while preserving vertex handles.
-    void RetireLineConnectivity(state::Scene &, uint32_t id);
-    // Clones each source record with one GPU submit, and returns the clones' store IDs in source order.
-    std::vector<uint32_t> CloneMeshes(std::span<const uint32_t> source_ids, const MeshPipelines &);
+    // A face-less line mesh changes its entire render domain when its first face is created.
+    // Records the gather of each listed line mesh's edges and corners, and retires its line incidence once the chain submits, preserving vertex handles.
+    void RetireLineConnectivity(state::Scene &, mtl::ComputeChain &, std::span<const uint32_t> ids);
+    // Clones each source record, queueing its GPU copies on `copies`, and returns the clones' store IDs in source order.
+    // The clones read their copied ranges once the copies record and their chain submits.
+    std::vector<uint32_t> CloneMeshes(CloneCopies &, std::span<const uint32_t> source_ids);
     // Returns a vertex-only store ID that must be released with Release.
     uint32_t AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &);
     void Release(uint32_t id);
@@ -306,7 +308,8 @@ struct MeshStore {
     // Selection masks mirror canonical element blocks.
     // Only summaries, roots and gesture state are per mesh.
     // Creates cleared masks, a summary and the aggregates of every owned block, once per record.
-    void EnsureSelectionState(state::Scene &, std::span<const uint32_t> ids);
+    // A record without them submits the chain, so their summaries publish before this returns.
+    void EnsureSelectionState(state::Scene &, mtl::ComputeChain &, std::span<const uint32_t> ids);
     SelectionView GetSelectedElements(uint32_t id, Element) const;
     // Empty for a mesh without faces.
     BoundaryEdgeView GetBoundaryEdges(uint32_t id) const;
@@ -323,15 +326,15 @@ struct MeshStore {
         });
     }
     // Aggregates of `Blocks` refresh on the GPU, and each seed's incident blocks join them.
-    // A valid Source first rewrites the other two domains' words in those blocks from its words.
-    // The mesh's roots are then reduced again.
+    // A valid Source first rewrites the other two domains' words in those blocks from its words, which submits the chain once to capture them.
+    // The mesh's roots are then reduced again, and the host reads them once the chain submits.
     struct SelectionUpdate {
         uint32_t StoreId;
         Element Source{Element::None};
         std::array<std::vector<uint32_t>, 3> Blocks{};
         std::vector<SelectionSeed> Seeds{};
     };
-    void UpdateSelection(state::Scene &, std::span<const SelectionUpdate>);
+    void UpdateSelection(state::Scene &, mtl::ComputeChain &, std::span<const SelectionUpdate>);
     // Copies the root counts, sums and sharpness of the summary's mode into the summary.
     void PublishSelectionSummary(uint32_t id);
     EditSelectionSummary &WriteSelectionSummary(uint32_t id);
@@ -370,8 +373,9 @@ struct MeshStore {
                                                  uint32_t vertex_count = 0u, uint32_t incoming = 0u, bool complete = false);
     void PlanCornerClassification(state::Scene &, mtl::ComputeChain &, CornerClassUpdate &);
     void FinishCornerClassification(const mtl::ComputeChain &, const CornerClassUpdate &);
-    // Classifies every corner of each listed mesh, through the three steps over one chain.
-    void UpdateCornerClassification(state::Scene &, std::span<const uint32_t> ids);
+    // Classifies every corner of each listed mesh, through the three steps over the chain.
+    // It submits the chain once for the plan, and the finish runs with the chain's next submit.
+    void UpdateCornerClassification(state::Scene &, mtl::ComputeChain &, std::span<const uint32_t> ids);
     // Enumerates incident edges from canonical corner links, including boundaries.
     VertexEdgeIncidence GetVertexEdgeIncidence(uint32_t id) const;
 
@@ -380,22 +384,18 @@ private:
     MeshSlots SlotTable;
     std::vector<Record> Records{};
     std::vector<DerivedRecord> DerivedRecords{};
-    // Block lists, keyed by record and element domain, with the membership revision and restore epoch they describe.
+    // Block lists, keyed by record and element domain, with the membership revision they describe.
     // Const reads fill a stale list under the lock, so concurrent reads between membership changes stay safe.
     struct BlockListEntry {
         ElementSetRef Set{};
         uint32_t Revision{};
-        uint64_t Epoch{};
         Range Words{};
     };
     mutable std::mutex BlockListLock;
-    uint64_t BlockListEpoch{}; // Advances with each restore
     mutable BufferArena<uint32_t> BlockLists;
     mutable std::vector<std::array<BlockListEntry, 5>> BlockListEntries{};
     bool FrameReadsBlockLists{};
     mutable std::vector<Range> RetiredBlockLists{}; // Replaced list words a submitted frame can still read
-    BufferArena<uint32_t> SelectionWork; // Selection update scratch, retained so its capacity is reused
-    BufferArena<uint32_t> SelectionDirty; // Dirty-block bits at SelectionDirtyWord, clear between updates
     uint64_t NextNormalRevision{};
     std::vector<uint32_t> FreeIds{};
     std::vector<uint32_t> RenderStale{};

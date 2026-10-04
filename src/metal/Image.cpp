@@ -36,7 +36,7 @@ bool Blit(const Context &ctx, auto &&encode) {
     encode(blit);
     blit->endEncoding();
     ctx.CommitResidency();
-    command_buffer->commit();
+    Commit(command_buffer);
     command_buffer->waitUntilCompleted();
     return command_buffer->error() == nullptr;
 }

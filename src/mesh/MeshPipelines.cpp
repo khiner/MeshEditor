@@ -119,7 +119,8 @@ constexpr std::array<std::pair<const char *, const char *>, size_t(MeshPass::Cou
     {"MeshletBuild.metal", "MeshletBuildOffsets"},
     {"MeshletBuild.metal", "MeshletBuildEmit"},
     {"MeshletBuild.metal", "MeshletBuildPrimitives"},
-    {"MeshClone.metal", "RebaseIndices"},
+    {"MeshClone.metal", "CopyByteRuns"},
+    {"MeshClone.metal", "RebaseIndexRuns"},
     {"MeshClone.metal", "CopyReferencePairs"},
 }};
 

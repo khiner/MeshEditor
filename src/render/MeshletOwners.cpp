@@ -6,12 +6,16 @@
 #include "render/GpuBuffers.h"
 #include "state/Scene.h"
 
+uint32_t ElementDomainFirst(const MeshStore &meshes, uint32_t store_id, uint32_t topology) {
+    const auto &a = meshes.Arenas();
+    const auto &record = meshes.Get(store_id);
+    return topology == 0u ? a.Triangles.First(record.TriangleData) : topology == 1u ? a.EdgeHalfedges.First(record.EdgeData) : a.Vertices.First(record.Vertices);
+}
+
 namespace {
 // Payload element IDs are relative to this canonical handle of the owner's element domain.
 uint32_t ElementOrigin(const MeshStore &meshes, const MeshBuffers &owner) {
-    if (owner.RenderTopology == 0u) return 0u;
-    if (owner.RenderTopology == 1u) return meshes.Arenas().EdgeHalfedges.First(meshes.Get(owner.StoreId).EdgeData);
-    return owner.Vertices.Offset;
+    return owner.RenderTopology == 0u ? 0u : ElementDomainFirst(meshes, owner.StoreId, owner.RenderTopology);
 }
 uint32_t ElementBlockCapacity(const MeshStore &meshes, uint32_t topology) {
     const auto &a = meshes.Arenas();
@@ -47,11 +51,14 @@ void PublishMeshletOwners(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers
         .ErrorSlot=chain.Scratch.Buffer.Slot,
     };
     const auto &pipeline = GetMeshPipelines(r)[MeshPass::MeshletOwners];
-    for (const auto range : clusters) {
-        pc.First = range.Offset;
-        pc.Count = range.Count;
-        chain.Groups(pipeline,pc,range.Count,64u);
-    }
+    // Each cluster names the owners of its own elements.
+    chain.Concurrent([&] {
+        for (const auto range : clusters) {
+            pc.First = range.Offset;
+            pc.Count = range.Count;
+            chain.Groups(pipeline,pc,range.Count,64u);
+        }
+    });
 }
 
 void RetireMeshletOwners(state::Scene &r, MeshBuffers &owner, std::span<const uint32_t> clusters) {

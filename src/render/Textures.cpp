@@ -165,7 +165,7 @@ TextureUploadBatch::~TextureUploadBatch() { mtl::AutoreleaseScope::Release(Cb); 
 void SubmitTextureUploadBatch(TextureUploadBatch &batch) {
     const mtl::AutoreleaseScope native_scope;
     if (!batch.Cb) return;
-    batch.Cb->commit();
+    mtl::Commit(batch.Cb.get());
     // Complete uploads before immediate readback and binding.
     batch.Cb->waitUntilCompleted();
     batch.Cb = nullptr;
@@ -407,7 +407,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
         compute->endEncoding();
     }
     // Complete GPU work before releasing temporary textures.
-    command_buffer->commit();
+    mtl::Commit(command_buffer);
     command_buffer->waitUntilCompleted();
 
     auto diff_sampler = MakeLinearSampler(ctx, MTL::SamplerAddressModeClampToEdge);
@@ -594,13 +594,22 @@ HdriRefs GetHdriRefs(state::Scene &r) {
     return refs;
 }
 
-void ReleaseImportedTextures(state::Scene &r) {
+void ReleaseUnlistedTextures(state::Scene &r, std::span<const MaterializedTexture> manifest) {
     auto &slots = r.Context.get<mtl::BindlessSet>();
     auto &textures = r.Context.get<TextureStore>();
-    // The raw-pixel entries materialized at engine init lead the list, and every imported entry follows them.
-    const auto imported = std::ranges::find_if(textures.Textures, [](const auto &t) { return t.SourceImageIndex != UINT32_MAX; });
-    ReleaseTextureSlots(slots, std::span<const TextureEntry>{imported, textures.Textures.end()});
-    textures.Textures.erase(imported, textures.Textures.end());
+    const auto unlisted = [&](const TextureEntry &t) {
+        return t.SourceImageIndex != UINT32_MAX && std::ranges::none_of(manifest, [&](const MaterializedTexture &item) {
+            return item.SamplerSlot == t.SamplerSlot && item.SourceImageIndex == t.SourceImageIndex && item.Params == t.Params;
+        });
+    };
+    for (const auto &t : textures.Textures)
+        if (unlisted(t)) ReleaseTextureSlots(slots, std::span{&t, 1u});
+    std::erase_if(textures.Textures, unlisted);
+}
+
+void ReleaseImportedTextures(state::Scene &r) {
+    ReleaseUnlistedTextures(r, {});
+    auto &textures = r.Context.get<TextureStore>();
     textures.WhiteTextureSlot = textures.Textures.empty() ? InvalidSlot : textures.Textures.front().SamplerSlot;
 }
 

@@ -30,11 +30,11 @@ kernel void PosedMeshletBoundsKernel(
     } else meshlet_id = WorkGroupElement(bindless,pc.Work,group_id);
     if (meshlet_id == InvalidOffset) return;
     const InstanceRecord instance = scene.InstanceRecords(view.InstanceRecordSlot)[instance_id];
-    const uint destination = PoseAttributeIndex(bindless,pc.PosedMeshletBoundsNodesSlot,instance.MeshletBoundsNamespace,meshlet_id);
+    const MeshRecord mesh = scene.MeshRecords(view.MeshRecordSlot)[instance.Mesh];
+    const uint destination = PoseAttributeIndex(bindless,pc.PosedMeshletBoundsNodesSlot,PoseNamespace(instance.MeshletBoundsNamespace,mesh.Display.MeshletBoundsNamespace),meshlet_id);
     if (destination == InvalidOffset) return;
     const MeshletRecord meshlet = BindlessBuffer(MeshletRecord,bindless.Buffer,pc.MeshletSlot)[meshlet_id];
-    const MeshRecord mesh = scene.MeshRecords(view.MeshRecordSlot)[instance.Mesh];
-    const DrawData draw = ComposeDraw(mesh, instance, 0u, EditSelectionStorage{});
+    const DrawData draw = ComposeDraw(mesh, instance, instance_id);
     float3 lo = AabbEmptyMin;
     float3 hi = AabbEmptyMax;
     // One 32-lane SIMD group owns a meshlet. Each lane folds up to two vertices.

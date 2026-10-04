@@ -1,56 +1,18 @@
-#include "metal/AutoreleaseScope.h"
-
 #include "MeshStore.h"
+#include "mesh/MeshClone.h"
 #include "metal/Dispatch.h"
-#include "metal/MetalCpp.h"
 
 #include "CornerNormalOffset.h"
 #include "Profile.h"
+#include "SortUnique.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
-#include "mesh/MeshPipelines.h"
 #include "project/store/Pages.h"
 
 #include <map>
 
 namespace {
 constexpr uint32_t UniformFaceMode{uint32_t(CornerClassMode::UniformFace)};
-
-// A run of copied uint32 reference pairs.
-struct ReferencePairCopy { uint32_t Source, Destination, Count; };
-
-// Adds delta to copied uint32 arena references, preserving the null sentinel.
-// Range.Offset and stride are in uint32 words, and Range.Count counts references.
-// byte_base locates a record stream without narrowing its byte address.
-void EncodeRebaseIndices(MTL::ComputeCommandEncoder *encoder, const mtl::ComputePipeline &pipeline, MTL::Buffer *buffer, Range range, uint32_t delta, uint32_t stride = 1, uint64_t byte_base = 0) {
-    if (range.Count == 0 || delta == 0) return;
-    encoder->setComputePipelineState(pipeline.State());
-    encoder->setBuffer(buffer, byte_base + uint64_t(range.Offset) * sizeof(uint32_t), 0);
-    const uint32_t pc[]{range.Count, delta, stride, 0u};
-    encoder->setBytes(pc, sizeof(pc), 1);
-    encoder->dispatchThreads(MTL::Size(range.Count, 1, 1), MTL::Size(256, 1, 1));
-}
-
-// Copies each run of reference pairs, adding first_delta and second_delta to the non-null pair members.
-void EncodeCopyReferencePairs(MTL::ComputeCommandEncoder *encoder, const mtl::ComputePipeline &pipeline, MTL::Buffer *buffer,
-    std::span<const ReferencePairCopy> jobs, uint32_t first_delta, uint32_t second_delta) {
-    if (jobs.empty()) return;
-    static_assert(sizeof(ReferencePairCopy) == 12u);
-    std::vector<std::array<uint32_t, 2>> tiles;
-    for (uint32_t i = 0u; i < jobs.size(); ++i)
-        for (uint64_t first = 0u; first < jobs[i].Count; first += 32u) tiles.push_back({i, uint32_t(first)});
-    auto *device = buffer->device();
-    auto input = NS::TransferPtr(device->newBuffer(jobs.data(), jobs.size_bytes(), MTL::ResourceStorageModeShared));
-    auto work = NS::TransferPtr(device->newBuffer(tiles.data(), tiles.size() * sizeof(tiles[0]), MTL::ResourceStorageModeShared));
-    if (!input || !work) throw std::runtime_error("Reference copy descriptors failed.");
-    encoder->setComputePipelineState(pipeline.State());
-    encoder->setBuffer(buffer, 0, 0);
-    encoder->setBuffer(input.get(), 0, 1);
-    encoder->setBuffer(work.get(), 0, 2);
-    const uint32_t delta[]{first_delta, second_delta};
-    encoder->setBytes(delta, sizeof(delta), 3);
-    encoder->dispatchThreadgroups(MTL::Size(tiles.size(), 1, 1), MTL::Size(32, 1, 1));
-}
 
 constexpr auto NoAllocation = [](auto &) -> Range * { return nullptr; };
 
@@ -343,9 +305,7 @@ MeshStore::MeshStore(mtl::BufferContext &ctx)
           .BaseVertexNormal = Buffers.BaseVertexNormals.Buffer.Slot,
           .BaseFaceNormal = Buffers.BaseFaceNormals.Buffer.Slot,
       },
-      BlockLists{ctx, SlotType::Buffer},
-      SelectionWork{ctx, SlotType::Buffer, mtl::BufferLifetime::Workspace},
-      SelectionDirty{ctx, SlotType::Buffer, mtl::BufferLifetime::Workspace} {}
+      BlockLists{ctx, SlotType::Buffer} {}
 MeshStore::~MeshStore() = default;
 
 void MeshStore::Track(store::History &history) {
@@ -567,6 +527,11 @@ std::vector<MeshStore::Change> MeshStore::TakeChanges() {
             std::ranges::sort(blocks);
             blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
         }
+    // A restore can return a set to an earlier revision with different membership, so each changed record's lists refill on their next read.
+    std::vector<uint32_t> ids;
+    ids.reserve(changes.size());
+    for (const auto &change : changes) ids.push_back(change.StoreId);
+    ReleaseBlockLists(ids);
     return changes;
 }
 
@@ -595,11 +560,6 @@ void MeshStore::FinishRestore() {
     for (const auto id : changed) if (id < Records.size()) {
         DerivedRecords[id] = {};
         if (Records[id].Alive) DerivedRecords[id].NormalRevision = ++NextNormalRevision;
-    }
-    // A restore can return a set to an earlier revision with different membership, so every list refills on its next read.
-    {
-        const std::scoped_lock lock{BlockListLock};
-        ++BlockListEpoch;
     }
     if (!changed.empty()) SyncMirrors();
 }
@@ -750,7 +710,7 @@ void MeshStore::ReleaseTets(TetBuffers tets) {
 
 Range MeshStore::AllocateSoundVertices(std::span<const uint32_t> vertices) { return Buffers.SoundVertices.Allocate(vertices); }
 void MeshStore::ReleaseSoundVertices(std::vector<Range> ranges) { Buffers.SoundVertices.Release(std::move(ranges)); }
-void MeshStore::EnsureSelectionState(state::Scene &r, std::span<const uint32_t> requested) {
+void MeshStore::EnsureSelectionState(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> requested) {
     std::vector<uint32_t> ids{requested.begin(), requested.end()};
     std::ranges::sort(ids);
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
@@ -767,7 +727,8 @@ void MeshStore::EnsureSelectionState(state::Scene &r, std::span<const uint32_t> 
             update.Blocks[d].assign(list.Blocks.begin(), list.Blocks.end());
         }
     }
-    UpdateSelection(r, updates);
+    UpdateSelection(r, chain, updates);
+    chain.Submit();
     for (const auto &update : updates) PublishSelectionSummary(update.StoreId);
 }
 
@@ -1002,7 +963,7 @@ MeshStore::BlockList MeshStore::GetBlockList(uint32_t id, ElementDomain domain) 
     auto &entry = BlockListEntries[id][uint32_t(domain) - 1u];
     WithDomain(Buffers, domain, [&](const auto &arena) {
         const auto revision = set ? arena.Set(set).Revision : 0u;
-        if (entry.Set == set && entry.Revision == revision && entry.Epoch == BlockListEpoch) return;
+        if (entry.Set == set && entry.Revision == revision) return;
         const auto membership = arena.Blocks.Buffer.template GetSpan<MeshElementBlock>();
         std::vector<uint32_t> blocks;
         if (set && (arena.Set(set).Flags & 1u)) {
@@ -1023,7 +984,6 @@ MeshStore::BlockList MeshStore::GetBlockList(uint32_t id, ElementDomain domain) 
         }
         entry.Set = set;
         entry.Revision = revision;
-        entry.Epoch = BlockListEpoch;
     });
     const auto count = entry.Words.Count / 2u;
     return {BlockLists.Get({entry.Words.Offset, count}), BlockLists.Get({entry.Words.Offset + count, count}), {BlockLists.Buffer.Slot, entry.Words.Offset}};
@@ -1288,42 +1248,49 @@ void MeshStore::CreateMesh(uint32_t id, const MeshData &data, const MeshVertexAt
     std::ranges::fill(Buffers.EdgeSharpness.GetMutable(Buffers.EdgeHalfedges.Dense(record.EdgeData)), uint8_t{0});
 }
 
-void MeshStore::RetireLineConnectivity(state::Scene &r, uint32_t id) {
-    const auto &record=Records.at(id);
-    if (Mesh{*this,id}.FaceCount() || !Buffers.EdgeHalfedges.Count(record.EdgeData)) throw std::logic_error("Line retirement requires a face-less line mesh.");
-    mtl::ComputeChain chain{BufferContext()};
+void MeshStore::RetireLineConnectivity(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
+    if (ids.empty()) return;
     auto &storage=chain.Scratch;
-    const std::array seeds{
-        PrepareElementMembershipWork(storage,Buffers.EdgeHalfedges,record.EdgeData),
-        PrepareElementMembershipWork(storage,Buffers.FaceCorners,record.FaceCorners),
-    };
-    const std::array work{seeds[0].Work,seeds[1].Work};
+    std::vector<ElementWorkSeedJob> seeds;
+    for (const auto id:ids) {
+        const auto &record=Records.at(id);
+        if (Mesh{*this,id}.FaceCount() || !Buffers.EdgeHalfedges.Count(record.EdgeData)) throw std::logic_error("Line retirement requires a face-less line mesh.");
+        seeds.push_back(PrepareElementMembershipWork(storage,Buffers.EdgeHalfedges,record.EdgeData));
+        seeds.push_back(PrepareElementMembershipWork(storage,Buffers.FaceCorners,record.FaceCorners));
+    }
+    std::vector<ElementWork> work;
+    for (const auto &seed:seeds) work.push_back(seed.Work);
     EncodeElementMembershipWork(r,chain,seeds);
     EncodeSortElementWork(r,chain,work);
-    chain.Submit();
-    for (const auto &domain:work) CheckElementWork(storage,domain);
-
-    // Only vertices incident to retired lines can hold line roots. A point
-    // mesh can have many loose vertices outside these corner blocks.
-    std::vector<uint32_t> vertex_blocks;
-    ForEachWorkElement(storage,work[1],[&](uint32_t corner) {
-        vertex_blocks.push_back(Buffers.FaceCorners.Get({corner,1u})[0]/MeshElementBlockSize);
+    chain.AfterSubmit([this,&chain,ids=std::vector<uint32_t>(ids.begin(),ids.end()),work=std::move(work)] {
+        const auto &storage=chain.Scratch;
+        for (uint32_t i=0u;i<ids.size();++i) {
+            const auto id=ids[i];
+            const auto edges=work[2u*i],corners=work[2u*i+1u];
+            CheckElementWork(storage,edges);
+            CheckElementWork(storage,corners);
+            // Only vertices incident to retired lines can hold line roots.
+            // A point mesh can have many loose vertices outside these corner blocks.
+            std::vector<uint32_t> vertex_blocks;
+            ForEachWorkElement(storage,corners,[&](uint32_t corner) {
+                vertex_blocks.push_back(Buffers.FaceCorners.Get({corner,1u})[0]/MeshElementBlockSize);
+            });
+            SortUnique(vertex_blocks);
+            Buffers.VertexCorners.Buffer.CaptureWriteElements(vertex_blocks,sizeof(uvec2)*MeshElementBlockSize);
+            Buffers.OutgoingHalfedges.Buffer.CaptureWriteElements(vertex_blocks,sizeof(uint32_t)*MeshElementBlockSize);
+            for (const auto block:vertex_blocks) {
+                const auto roots=Buffers.VertexCorners.GetMutable({block*MeshElementBlockSize,MeshElementBlockSize});
+                Buffers.VertexFans.Release(roots);
+                std::ranges::fill(roots,uvec2{InvalidOffset,0u});
+                std::ranges::fill(Buffers.OutgoingHalfedges.GetMutable({block*MeshElementBlockSize,MeshElementBlockSize}),InvalidOffset);
+            }
+            EraseElements(id,Domain::Edge,storage,edges);
+            EraseElements(id,Domain::Halfedge,storage,corners);
+            auto &writable=WriteRecord(id);
+            writable.EdgeData={};
+            writable.FaceCorners={};
+        }
     });
-    std::ranges::sort(vertex_blocks);
-    vertex_blocks.erase(std::unique(vertex_blocks.begin(),vertex_blocks.end()),vertex_blocks.end());
-    Buffers.VertexCorners.Buffer.CaptureWriteElements(vertex_blocks,sizeof(uvec2)*MeshElementBlockSize);
-    Buffers.OutgoingHalfedges.Buffer.CaptureWriteElements(vertex_blocks,sizeof(uint32_t)*MeshElementBlockSize);
-    for (const auto block:vertex_blocks) {
-        const auto roots=Buffers.VertexCorners.GetMutable({block*MeshElementBlockSize,MeshElementBlockSize});
-        Buffers.VertexFans.Release(roots);
-        std::ranges::fill(roots,uvec2{InvalidOffset,0u});
-        std::ranges::fill(Buffers.OutgoingHalfedges.GetMutable({block*MeshElementBlockSize,MeshElementBlockSize}),InvalidOffset);
-    }
-    EraseElements(id,Domain::Edge,storage,work[0]);
-    EraseElements(id,Domain::Halfedge,storage,work[1]);
-    auto &writable=WriteRecord(id);
-    writable.EdgeData={};
-    writable.FaceCorners={};
 }
 
 uint32_t MeshStore::BeginTopologyOutput(uint32_t source, std::span<const uint32_t> materials) {
@@ -1349,8 +1316,7 @@ uint32_t MeshStore::BeginTopologyOutput(uint32_t source, std::span<const uint32_
     return id;
 }
 
-std::vector<uint32_t> MeshStore::CloneMeshes(std::span<const uint32_t> source_ids, const MeshPipelines &pipelines) {
-    const mtl::AutoreleaseScope native_scope;
+std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<const uint32_t> source_ids) {
     // The current packed clone emitter must reject fragmented input before it
     // acquires an output record. Local topology allocation does not use cloning.
     for (const auto src_id : source_ids) {
@@ -1359,8 +1325,6 @@ std::vector<uint32_t> MeshStore::CloneMeshes(std::span<const uint32_t> source_id
                 DenseRange(Buffers, info, *allocation);
         });
     }
-    struct Copy { mtl::Buffer *Buffer; uint64_t Source, Destination, Bytes; };
-    std::vector<Copy> copies;
     std::vector<uint32_t> ids;
     ids.reserve(source_ids.size());
     // Allocate every clone's destinations before recording copies, so virtual growth and
@@ -1388,18 +1352,13 @@ std::vector<uint32_t> MeshStore::CloneMeshes(std::span<const uint32_t> source_id
             const uint64_t bytes = uint64_t(source.Count) * stride;
             if (!bytes) return;
             arena.Buffer.CaptureWrite(uint64_t(target.Offset) * stride, bytes);
-            copies.push_back({&arena.Buffer, uint64_t(source.Offset) * stride, uint64_t(target.Offset) * stride, bytes});
+            copies.Copy(arena.Buffer, uint64_t(source.Offset) * stride, uint64_t(target.Offset) * stride, bytes);
         });
         ids.push_back(id);
     }
     SyncMirrors();
-    // Index rebases and fan copies record after the copies, and every clone's GPU work shares one command buffer.
-    struct Rebase { mtl::Buffer *Buffer; Range Range; uint32_t Delta, Stride; uint64_t ByteBase; };
-    struct FanCopy { std::vector<ReferencePairCopy> Ranges; uint32_t CornerDelta, FaceDelta; };
-    std::vector<Rebase> rebases;
-    std::vector<FanCopy> fan_copies;
     const auto rebase = [&](auto &arena, Range range, uint32_t delta, uint32_t stride = 1u, uint64_t byte_base = 0u) {
-        rebases.push_back({&arena.Buffer, range, delta, stride, byte_base});
+        copies.Rebase(arena.Buffer, byte_base + uint64_t(range.Offset) * sizeof(uint32_t), range.Count, delta, stride);
     };
     // Authored layers and normal-sector layers clone through the same sparse payload ownership.
     // Allocate all destination payloads before reading addresses: growth may move an arena.
@@ -1418,7 +1377,7 @@ std::vector<uint32_t> MeshStore::CloneMeshes(std::span<const uint32_t> source_id
                 const auto to = attribute.Payload(destination + i, count, e);
                 const uint64_t bytes = uint64_t(count) * sizeof(Value);
                 attribute.Values.Buffer.CaptureWrite(uint64_t(to.Offset) * sizeof(Value), bytes);
-                copies.push_back({&attribute.Values.Buffer, uint64_t(from.Offset) * sizeof(Value), uint64_t(to.Offset) * sizeof(Value), bytes});
+                copies.Copy(attribute.Values.Buffer, uint64_t(from.Offset) * sizeof(Value), uint64_t(to.Offset) * sizeof(Value), bytes);
             }
         }
         return blocks;
@@ -1438,11 +1397,11 @@ std::vector<uint32_t> MeshStore::CloneMeshes(std::span<const uint32_t> source_id
                 auto &bits = SelectionArena(Buffers, domain);
                 const Range target{to.Offset / MeshElementBlockSize, count};
                 CaptureRange(bits, target);
-                copies.push_back({&bits.Buffer, uint64_t(from.Offset / MeshElementBlockSize) * sizeof(MeshArenas::SelectionBlock),
-                                  uint64_t(target.Offset) * sizeof(MeshArenas::SelectionBlock), uint64_t(count) * sizeof(MeshArenas::SelectionBlock)});
+                copies.Copy(bits.Buffer, uint64_t(from.Offset / MeshElementBlockSize) * sizeof(MeshArenas::SelectionBlock),
+                            uint64_t(target.Offset) * sizeof(MeshArenas::SelectionBlock), uint64_t(count) * sizeof(MeshArenas::SelectionBlock));
                 // Equal block contents in the same order give the clone equal aggregates and roots.
-                copies.push_back({&AggregateArena(Buffers, domain).Buffer, uint64_t(from.Offset / MeshElementBlockSize) * sizeof(SelectionAggregate),
-                                  uint64_t(target.Offset) * sizeof(SelectionAggregate), uint64_t(count) * sizeof(SelectionAggregate)});
+                copies.Copy(AggregateArena(Buffers, domain).Buffer, uint64_t(from.Offset / MeshElementBlockSize) * sizeof(SelectionAggregate),
+                            uint64_t(target.Offset) * sizeof(SelectionAggregate), uint64_t(count) * sizeof(SelectionAggregate));
             });
         }
         std::ranges::copy(Buffers.SelectionRoots.Get({3u * src_id, 3u}), Buffers.SelectionRoots.GetMutable({3u * id, 3u}).begin());
@@ -1468,13 +1427,10 @@ std::vector<uint32_t> MeshStore::CloneMeshes(std::span<const uint32_t> source_id
         auto target_roots=Buffers.VertexCorners.GetMutable(target_vertices);
         const auto corner_delta = Buffers.FaceCorners.First(dst.FaceCorners) - Buffers.FaceCorners.First(src.FaceCorners);
         const auto face_delta = Buffers.FaceTriangles.First(dst.FaceData) - Buffers.FaceTriangles.First(src.FaceData);
-        auto &fan_ranges = fan_copies.emplace_back(FanCopy{.CornerDelta = corner_delta, .FaceDelta = face_delta}).Ranges;
         for (uint32_t v=0u,next=fans.Offset; v<source_vertices.Count; ++v) {
             if (!roots[v].y) continue;
             target_roots[v]={next,roots[v].y};
-            if (!fan_ranges.empty() && uint64_t(fan_ranges.back().Source)+fan_ranges.back().Count==roots[v].x) {
-                fan_ranges.back().Count+=roots[v].y;
-            } else fan_ranges.push_back({roots[v].x,next,roots[v].y});
+            copies.CopyPairs(Buffers.VertexFans.Items.Buffer,roots[v].x,next,roots[v].y,corner_delta,face_delta);
             next+=roots[v].y;
         }
         if (!dst_derived.SelectionBaseline.empty()) {
@@ -1497,23 +1453,6 @@ std::vector<uint32_t> MeshStore::CloneMeshes(std::span<const uint32_t> source_id
         for (const auto block : sector_targets)
             rebase(Buffers.CornerSectors.Values, Buffers.CornerSectors.Payload(block * MeshElementBlockSize, MeshElementBlockSize), corner_delta);
     }
-    if (ids.empty()) return ids;
-    const auto &ctx = BufferContext().Ctx;
-    auto *command = ctx.Queue->commandBuffer();
-    ctx.OrderAfterGpuWork(command);
-    auto *blit = command->blitCommandEncoder();
-    for (const auto &copy : copies) blit->copyFromBuffer(**copy.Buffer, copy.Source, **copy.Buffer, copy.Destination, copy.Bytes);
-    blit->endEncoding();
-    // Each clone's rebases and fan copies write disjoint ranges of the copies above.
-    auto *encoder = command->computeCommandEncoder();
-    const auto &rebase_indices = pipelines[MeshPass::CloneRebaseIndices];
-    for (const auto &rebase : rebases) EncodeRebaseIndices(encoder, rebase_indices, **rebase.Buffer, rebase.Range, rebase.Delta, rebase.Stride, rebase.ByteBase);
-    for (const auto &fan : fan_copies)
-        EncodeCopyReferencePairs(encoder, pipelines[MeshPass::CloneCopyReferencePairs], *Buffers.VertexFans.Items.Buffer, fan.Ranges, fan.CornerDelta, fan.FaceDelta);
-    encoder->endEncoding();
-    command->commit();
-    command->waitUntilCompleted();
-    if (command->status() == MTL::CommandBufferStatusError) throw std::runtime_error("GPU mesh clone failed.");
     return ids;
 }
 

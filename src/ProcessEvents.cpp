@@ -1,17 +1,16 @@
 #include "ProcessEvents.h"
 #include "action/Errors.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/MeshCreate.h"
 #include "numeric/VectorMath.h"
 #include "physics/ColliderUpdate.h"
 #include "render/SceneUpdates.h"
 #include "state/Scene.h"
 
 #include "Camera.h"
-#include "File.h"
-#include "Parallel.h"
 #include "Profile.h"
+#include "SortUnique.h"
 #include "TransformMath.h"
-#include "Variant.h"
 #include "action/Selection.h"
 #include "animation/AnimationData.h"
 #include "animation/AnimationTimeline.h"
@@ -19,8 +18,6 @@
 #include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
-#include "audio/AudioTypes.h"
-#include "audio/ContactModel.h"
 #include "audio/SoundVertices.h"
 #include "editor/AudioIntegration.h"
 #include "gizmo/GizmoInteraction.h"
@@ -50,12 +47,11 @@
 #include "render/ViewportSubmission.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
-#include "scene/EntityDestroyTracker.h"
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
-#include "selection/Selection.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
+#include "selection/SelectionState.h"
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
@@ -70,8 +66,7 @@
 #include "viewport/ViewportRenderGpu.h"
 
 #include <bit>
-#include <numeric>
-#include <print>
+#include <format>
 
 using state::Change;
 using state::On;
@@ -81,15 +76,6 @@ using std::views::iota;
 
 namespace {
 using namespace he;
-
-// Sort indexed writes, apply them to the target span, and return whether any were present.
-bool FlushIndexedWrites(auto &writes, auto &&span_getter) {
-    if (writes.empty()) return false;
-    std::sort(writes.begin(), writes.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
-    auto span = span_getter();
-    for (const auto &[index, value] : writes) span[index] = value;
-    return true;
-}
 
 vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t handle, bool canonical) {
     if (element == Element::Vertex) return mesh.GetPosition(canonical ? Mesh::VH{handle} : mesh.VertexAt(handle));
@@ -102,7 +88,7 @@ vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t han
 
 vec3 ComputeElementWorldPosition(const state::Scene &r, state::Entity instance_entity, Element element, uint32_t handle, bool canonical) {
     const auto &mesh = GetMesh(r, r.get<Instance>(instance_entity).Entity);
-    const auto &wt = r.get<WorldTransform>(instance_entity);
+    const auto &wt = *WorldTransformOf(r, instance_entity);
     return {wt.P + Rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle, canonical))};
 }
 
@@ -110,36 +96,37 @@ void SetEditMode(state::Scene &r, state::Entity viewport, Element mode) {
     const auto current_mode = r.get<const EditMode>(viewport).Value;
     if (current_mode == mode) return;
 
-    auto &meshes = r.Context.get<MeshStore>();
-    std::vector<ElementRange> ranges;
-    std::vector<state::Entity> unchanged_all;
-    std::vector<uint32_t> ids;
-    for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) ids.push_back(GetMesh(r, mesh_entity).GetStoreId());
-    meshes.EnsureSelectionState(r, ids);
-    for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
-        const auto mesh = GetMesh(r, mesh_entity);
-        const auto id = mesh.GetStoreId();
-        r.remove<MeshActiveElement>(mesh_entity);
-        const auto count = mesh.ElementCount(mode);
-        if (mode == Element::None) continue;
-        const bool all_selected = std::ranges::all_of(std::array{Element::Vertex,Element::Edge,Element::Face},[&](Element element) {
-            return meshes.GetSelectedElements(id,element).Count()==mesh.ElementCount(element);
-        });
-        if (all_selected) unchanged_all.push_back(mesh_entity);
-        else if (count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, mode), count);
+    // The meshes in edit convert their remembered selections now, and every other mesh converts when it next enters edit.
+    std::vector<state::Entity> editing;
+    if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit) {
+        for (const auto mesh_entity : r.get<const SelectionFlags>(viewport).Meshes)
+            if (r.all_of<MeshElementSelection>(mesh_entity)) editing.push_back(mesh_entity);
     }
-
     r.patch<EditMode>(viewport, [mode](auto &edit_mode) { edit_mode.Value = mode; });
-    if (!ranges.empty()) ApplyEditSelectionCommand(r, ranges, mode, EditSelectionOperation::ClearActive);
-    if (!unchanged_all.empty()) RefreshElementSelectionSummaries(r,unchanged_all,mode);
+    ConvertElementSelections(r, editing, mode);
 }
 
+// Totals the silhouette cull's work over the selected instances that outline: the placed visible instances of silhouette-eligible meshes, apart from each mesh's primary edit instance.
+void UpdateSilhouetteWork(state::Scene &r, state::Entity viewport) {
+    const auto &primaries = r.get<const EditPrimaries>(viewport).All;
+    auto &buffers = r.Context.get<GpuBuffers>();
+    GpuBuffers::MeshletFlagWork work{};
+    for (const auto [entity, instance, render_instance] : r.view<const Selected, const Instance, const RenderInstance>(state::Exclude<Hidden>).each()) {
+        if (render_instance.BufferIndex == UINT32_MAX || !IsSilhouetteEligible(r, instance.Entity)) continue;
+        if (const auto primary = primaries.find(instance.Entity); primary != primaries.end() && primary->second == entity) continue;
+        const auto &mb = MeshBuffersOf(std::as_const(r), instance.Entity);
+        work.Nodes += buffers.ActiveMeshlets.Count(mb.NodeRoot);
+        work.Meshlets += buffers.MeshletCount(mb);
+    }
+    buffers.FlagWork(uint32_t(MeshletInstanceFlag::Silhouette)) = work;
+}
 } // namespace
 
 void RequestRender(state::Scene &r, RenderRequest request) {
     auto &pending = r.Context.get<PendingRenderRequest>().Value;
     pending = std::max(pending, request);
-    if (request != RenderRequest::None) r.Context.get<GpuBuffers>().MeshletOcclusionStale = true;
+    // A selection change cannot disocclude anything.
+    if (request != RenderRequest::None && request != RenderRequest::Silhouette) r.Context.get<GpuBuffers>().MeshletOcclusionStale = true;
 }
 
 void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass pass) {
@@ -160,7 +147,28 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     std::unordered_set<state::Entity> bone_state_dirty;
 
     ProcessObjectRemovals(r, viewport);
-    BuildMissingWorldTransforms(r);
+
+    // Primitives whose shape changed regenerate their meshes in one batch, keeping each mesh's flat shading.
+    // History restores the handles and store records, so a restore regenerates nothing.
+    if (const auto &tracker = reactive(r, Change::PrimitiveShape); pass != EventPass::Restore && !tracker.empty()) {
+        std::vector<state::Entity> primitives;
+        for (const auto e : tracker)
+            if (r.valid(e) && r.all_of<PrimitiveShape, MeshHandle>(e)) primitives.push_back(e);
+        // Arena layout follows source order.
+        std::ranges::sort(primitives);
+        std::vector<MeshSource> sources;
+        sources.reserve(primitives.size());
+        for (const auto e : primitives) {
+            sources.push_back({.Data = primitive::CreateMesh(r.get<const PrimitiveShape>(e)), .FlatShaded = meshes.GetFaceSharpnessSummary(r.get<const MeshHandle>(e).StoreId).All});
+        }
+        const auto created = CreateMeshes(r, sources);
+        for (uint32_t i = 0u; i < primitives.size(); ++i) {
+            // Erasing the handle queues the old store entry for release.
+            r.remove<MeshHandle>(primitives[i]);
+            r.emplace<MeshHandle>(primitives[i], created[i].StoreId);
+            r.emplace_or_replace<MeshGeometryDirty>(primitives[i]);
+        }
+    }
 
     // Resize render resources before the pick handlers below resolve against the rendered scene.
     const bool resized = SyncViewportRenderResources(r, viewport);
@@ -322,26 +330,49 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             const bool bone_mode = interaction.Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
             const auto hits = ResolveHits(r, RunBoxSelect(r, viewport, box_px), bone_mode, true);
             const auto *baseline = additive ? r.try_get<const AdditiveBoxSelectBaseline>(viewport) : nullptr;
+            // The selection becomes the baseline united with the hits, writing only the entities whose selection changes.
+            state::DirtySet target;
             if (bone_mode) {
-                r.clear<BoneSelection>();
+                // Each target bone's parts, in the order the target set holds the bones.
+                std::vector<std::pair<state::Entity, BoneSelection>> parts;
                 if (baseline) {
                     for (const auto &[e, sel] : baseline->BoneSelections) {
-                        if (r.valid(e)) r.emplace_or_replace<BoneSelection>(e, sel);
+                        if (!r.valid(e)) continue;
+                        target.emplace(e);
+                        parts.emplace_back(e, sel);
                     }
                 }
                 for (const auto &hit : hits) {
                     const auto sel = hit.Part ? BoneSelection::From(*hit.Part) : BoneSelection{};
-                    const auto *cur = r.try_get<BoneSelection>(hit.Entity);
-                    r.emplace_or_replace<BoneSelection>(hit.Entity, additive && cur ? *cur | sel : sel);
-                }
-            } else {
-                r.clear<Selected>();
-                if (baseline) {
-                    for (const auto e : baseline->SelectedEntities) {
-                        if (r.valid(e)) r.emplace_or_replace<Selected>(e);
+                    if (target.contains(hit.Entity)) {
+                        auto &part = parts[target.Positions[state::Index(hit.Entity)]].second;
+                        part = additive ? part | sel : sel;
+                    } else {
+                        target.emplace(hit.Entity);
+                        parts.emplace_back(hit.Entity, sel);
                     }
                 }
-                for (const auto &hit : hits) r.emplace_or_replace<Selected>(hit.Entity);
+                std::vector<state::Entity> deselected;
+                for (const auto e : r.view<const BoneSelection>())
+                    if (!target.contains(e)) deselected.push_back(e);
+                for (const auto e : deselected) r.remove<BoneSelection>(e);
+                for (const auto &[e, sel] : parts) {
+                    const auto *current = r.try_get<const BoneSelection>(e);
+                    if (!current) r.emplace<BoneSelection>(e, sel);
+                    else if (*current != sel) r.replace<BoneSelection>(e, sel);
+                }
+            } else {
+                if (baseline) {
+                    for (const auto e : baseline->SelectedEntities)
+                        if (r.valid(e)) target.emplace(e);
+                }
+                for (const auto &hit : hits) target.emplace(hit.Entity);
+                std::vector<state::Entity> deselected;
+                for (const auto e : r.view<const Selected>())
+                    if (!target.contains(e)) deselected.push_back(e);
+                for (const auto e : deselected) r.remove<Selected>(e);
+                for (const auto e : target.Entities)
+                    if (!r.all_of<Selected>(e)) r.emplace<Selected>(e);
             }
         }
     }
@@ -380,13 +411,9 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
     }
 
-    // Refresh camera overlay descriptors after lens changes.
-    if (!reactive(r, Change::CameraLens).empty()) request(RenderRequest::Rebuild);
-
     // Advance playback and evaluate the animation before the render sync, so this frame renders what it writes.
     bool anim_advanced;
     int evaluated_from;
-    float eval_seconds{}, frame_seconds{};
     {
         const auto &range = r.get<const TimelineRange>(viewport);
         const auto &playback = r.get<const TimelinePlayback>(viewport);
@@ -413,28 +440,35 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }();
 
         evaluated_from = r.edit<LastEvaluatedFrame>(viewport).Value;
+        // A restore reposes animated nodes when it changed the frame, the animation data, or a pose's seed transform.
+        const bool restore_poses = pass == EventPass::Restore &&
+            (playback.CurrentFrame != evaluated_from || AnyChanged(r, Change::AnimationEdited, Change::TransformDirty));
         if (anim_advanced || pass == EventPass::Restore) r.edit<LastEvaluatedFrame>(viewport).Value = playback.CurrentFrame;
         // Convert 1-based display frames to animation time and preserve fractional motion-blur samples.
-        frame_seconds = float(std::max(0, playback.CurrentFrame - 1)) / range.Fps;
-        eval_seconds = pass == EventPass::Sample ? std::max(0.f, pf - 1.f) / range.Fps : frame_seconds;
+        const float frame_seconds = float(std::max(0, playback.CurrentFrame - 1)) / range.Fps;
+        const float eval_seconds = pass == EventPass::Sample ? std::max(0.f, pf - 1.f) / range.Fps : frame_seconds;
 
         // A restore rebuilds only the derived node poses, since history restores every other animated value.
-        if (anim_advanced || rendering || pass == EventPass::Restore) animation::Evaluate(r, viewport, eval_seconds, pass != EventPass::Restore);
+        if (anim_advanced || rendering || restore_poses) animation::Evaluate(r, viewport, eval_seconds, pass != EventPass::Restore);
+        // Every frame playback reaches renders, including one where every animated value holds.
+        if (anim_advanced) request(RenderRequest::Reuse);
     }
 
     // Animated visibility is the last writer of Hidden in this pass, so render instances derive after it.
-    DeriveRenderInstances(r);
+    // A visibility change writes the state bit, and an Edit-mode primary's record names an instance that may have hidden.
+    if (DeriveRenderInstances(r)) request(r.get<const Interaction>(viewport).Mode == InteractionMode::Edit ? RenderRequest::Rebuild : RenderRequest::Reuse);
     auto sync = SyncModelsBuffers(r);
-    if (!sync.NewlyInserted.empty() || sync.Compacted) {
-        request(RenderRequest::Reuse);
-        // Insertion and compaction both reassign the record slots instances write into.
-        MarkInstanceRecordsStale(r.Context.get<GpuSceneState>());
+    if (sync.SlotsChanged) request(RenderRequest::Reuse);
+    // An Edit-mode primary's record names its instance slot.
+    if (sync.LayoutChanged || (sync.SlotsChanged && r.get<const Interaction>(viewport).Mode == InteractionMode::Edit)) request(RenderRequest::Rebuild);
+    if (!sync.NewlyInserted.empty()) {
+        const auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>();
+        for (const auto instance_entity : sync.NewlyInserted)
+            if (const auto *force = r.try_get<const VertexForce>(instance_entity)) records[r.get<const RenderInstance>(instance_entity).BufferIndex].ExcitedVertex = force->Vertex;
     }
-    const std::unordered_set<state::Entity> newly_inserted_set(sync.NewlyInserted.begin(), sync.NewlyInserted.end());
-    const auto is_newly_inserted = [&](state::Entity e) { return newly_inserted_set.contains(e); };
 
     // Reconstruct missing derived armature pose state from the canonical pose or rest state.
-    bool pose_state_created = false;
+    std::vector<state::Entity> created_pose_armatures;
     for (const auto [arm_obj_entity, arm_obj_comp] : r.view<const ArmatureObject>().each()) {
         const auto data_entity = arm_obj_comp.Entity;
         const auto *armature = r.try_get<const Armature>(data_entity);
@@ -449,7 +483,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             const auto posed = ComposeWithDelta(rest, r.get<const BoneDelta>(b).Value);
             r.emplace_or_replace<PosedLocal>(b, Transform{posed.P, posed.R, rest.S});
         }
-        pose_state_created = true;
+        created_pose_armatures.push_back(arm_obj_entity);
     }
 
     {
@@ -479,14 +513,17 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
 
     std::unordered_set<state::Entity> dirty_sound_selection_meshes;
 
+    // New, restored and rebuilt meshes and new bone meshes build their meshlets in one batch after the geometry block.
+    std::vector<state::Entity> meshlet_meshes{sync.NewMeshEntities}, bone_mesh_entities;
     if (!sync.NewMeshEntities.empty()) {
         for (auto entity : sync.NewMeshEntities) {
             const auto mesh = GetMesh(r, entity);
             AssignFaceIndices(meshes, mesh, buffers.MeshOf(mesh.GetStoreId()));
         }
         // Derive shading state for all new and restored meshes in one batch.
-        FinalizeNewMeshShadingNow(r, sync.NewMeshEntities);
-        BuildMeshletsNow(r, sync.NewMeshEntities);
+        mtl::ComputeChain chain{buffers.Ctx};
+        FinalizeNewMeshShading(r, chain, sync.NewMeshEntities);
+        chain.Submit();
         request(RenderRequest::Rebuild);
     }
 
@@ -500,7 +537,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         static const auto sphere_verts = iota(0u, uint32_t(sphere.Mesh.Positions.size())) | to<std::vector>();
 
         uint32_t total_face = 0, total_edge = 0, total_vertex = 0;
-        std::vector<state::Entity> bone_mesh_entities;
         for (auto entity : sync.NewExtrasEntities) {
             if (r.all_of<ArmatureObject>(entity)) {
                 total_face += bone_faces.size();
@@ -529,14 +565,14 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 bone_mesh_entities.push_back(entity);
             }
         }
-        BuildBoneMeshletsNow(r, bone_mesh_entities);
         request(RenderRequest::Rebuild);
     }
 
-    { // Register changed lights into the GPU Lights buffer, the single path for both new and restored lights.
+    auto &scene_state = r.Context.get<GpuSceneState>();
+    { // Register changed and shown lights into the GPU Lights buffer, the single path for both new and restored lights.
         bool synced = false;
         for (const auto entity : reactive(r, Change::PunctualLight)) {
-            if (!r.all_of<PunctualLight, Instance>(entity)) continue;
+            if (!r.all_of<PunctualLight, Instance>(entity) || r.all_of<Hidden>(entity)) continue;
             const auto *ri = r.try_get<const RenderInstance>(entity);
             if (!ri || ri->BufferIndex == UINT32_MAX) continue;
             const auto index = r.all_of<LightIndex>(entity) ? r.get<const LightIndex>(entity).Value : buffers.Lights.Count<LightRecord>();
@@ -551,11 +587,12 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 .OuterConeCos = std::cos(light.OuterConeAngle),
                 .Type = light.Type,
             };
-            if (index >= buffers.Lights.Count<LightRecord>()) request(RenderRequest::Rebuild);
+            // A new light's gizmo, or a changed gizmo shape, rebuilds the overlay jobs.
+            if (index >= buffers.Lights.Count<LightRecord>()) scene_state.OverlayJobsDirty = true;
             else {
                 const auto old = buffers.Lights.GetSpan<LightRecord>()[index];
                 if (old.Type != gpu_light.Type || old.Range != gpu_light.Range || old.OuterConeCos != gpu_light.OuterConeCos || old.InnerConeCos != gpu_light.InnerConeCos) {
-                    request(RenderRequest::Rebuild);
+                    scene_state.OverlayJobsDirty = true;
                 }
             }
             buffers.Lights.Update(as_bytes(gpu_light), uint64_t(index) * sizeof(LightRecord));
@@ -564,13 +601,16 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (synced) request(RenderRequest::Reuse);
     }
 
-    // A hidden light leaves the light buffer.
-    for (const auto entity : reactive(r, Change::RenderInstanceDestroyed)) {
+    // A hidden light, and a light that lost its instance, leaves the light buffer.
+    const auto remove_light = [&](state::Entity entity) {
         if (const auto *light_index = r.try_get<const LightIndex>(entity)) {
             buffers.PendingLightRemovals.emplace_back(light_index->Value);
             r.remove<LightIndex>(entity);
         }
-    }
+    };
+    for (const auto entity : reactive(r, Change::RenderInstanceDestroyed)) remove_light(entity);
+    for (const auto entity : reactive(r, Change::InstanceVisibility))
+        if (r.valid(entity) && r.all_of<Hidden>(entity)) remove_light(entity);
     // Compact surviving light records by runs, then remap each entity once.
     if (auto &indices = buffers.PendingLightRemovals; !indices.empty()) {
         const auto before = buffers.Lights.Count<LightRecord>();
@@ -586,7 +626,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
         buffers.Lights.SetCount<LightRecord>(before - indices.size());
         indices.clear();
-        request(RenderRequest::Rebuild);
+        request(RenderRequest::Reuse);
     }
 
     // Commit mesh edit transforms after StartTransform is cleared.
@@ -594,35 +634,55 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == state::Null) {
             if (const auto *pending = r.try_get<const PendingTransform>(viewport); pending && pending->Delta != Transform{}) {
                 // Evaluate the final edit before geometry and physics consumers run.
+                // A mesh with a scale-locked instance keeps its geometry.
+                std::unordered_set<state::Entity> scale_locked;
+                for (const auto [_, instance] : r.view<const Instance, const ScaleLocked>().each()) scale_locked.insert(instance.Entity);
                 std::vector<state::Entity> commit_meshes;
-                const auto scale_locked = selection::ScaleLockedMeshEntities(r);
-                for (const auto &[mesh_entity, instance_entity] : selection::ComputePrimaryEditInstances(r, false)) {
+                for (const auto &[mesh_entity, instance_entity] : r.get<const EditPrimaries>(viewport).Transformable) {
                     if (!scale_locked.contains(mesh_entity)) commit_meshes.push_back(mesh_entity);
                 }
-                for (const auto mesh_entity : CommitPosedGeometry(r, viewport, commit_meshes)) {
+                mtl::ComputeChain chain{meshes.BufferContext()};
+                for (const auto mesh_entity : CommitPosedGeometry(r, chain, viewport, commit_meshes)) {
                     r.remove<PrimitiveShape>(mesh_entity);
                     r.emplace_or_replace<MeshPositionsChanged>(mesh_entity);
                 }
+                chain.Submit();
             }
             r.remove<PendingTransform>(viewport);
         }
     }
 
+    UpdateMeshColliders(r);
     // Restored collider shapes already hold their persisted derivation.
     if (pass != EventPass::Restore) {
-        state::DirtySet to_rederive;
-        for (auto e : reactive(r, Change::ColliderPolicy)) to_rederive.emplace(e);
-        if (const auto &mesh_dirty = reactive(r, Change::MeshGeometry); !mesh_dirty.empty()) {
-            for (auto [ce, cs] : r.view<const ColliderShape>().each()) {
-                const auto me = cs.MeshEntity != state::Null ? cs.MeshEntity : FindMeshEntity(r, ce);
-                if (mesh_dirty.contains(me)) to_rederive.emplace(ce);
-            }
+        std::vector<state::Entity> to_rederive;
+        for (auto e : reactive(r, Change::ColliderPolicy)) to_rederive.push_back(e);
+        const auto &colliders = r.Context.get<const MeshColliders>();
+        for (const auto mesh_entity : reactive(r, Change::MeshGeometry)) to_rederive.append_range(colliders.Of(mesh_entity));
+        SortUnique(to_rederive);
+        RederiveColliders(r, to_rederive);
+    }
+
+    // Moved nodes outside the armatures recompose before physics poses bodies under them and bone constraints read them.
+    // Bones recompose after the bone block poses them, together with any node dirtied after this first pass.
+    const auto &transform_dirty = reactive(r, Change::TransformDirty);
+    const size_t first_pass_end = transform_dirty.size();
+    std::vector<state::Entity> dirty_bones;
+    {
+        std::vector<state::Entity> roots;
+        for (const auto e : transform_dirty.Entities) {
+            if (r.all_of<BoneIndex>(e)) dirty_bones.push_back(e);
+            else roots.push_back(e);
         }
-        RederiveColliders(r, to_rederive.Entities);
+        // A newly placed instance slot takes its world transform here, and an armature part's slot takes its display transform after the bone block.
+        for (const auto e : sync.NewlyInserted)
+            if (!transform_dirty.contains(e) && !r.all_of<SubElementOf>(e)) roots.push_back(e);
+        // Physics writes the world transforms of the bodies it poses and of their subtrees.
+        if (!roots.empty()) RecomputeWorldTransforms(r, roots, r.view<const BodyPoseCache>() | to<std::vector>(), {});
     }
 
     if (!rendering) {
-        physics::ProcessChanges(r, pass);
+        physics::ProcessChanges(r);
         ApplyCompletedModalSolves(r, pass);
     }
 
@@ -643,34 +703,42 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         auto &selected_tracker = reactive(r, Change::Selected);
         auto &active_tracker = reactive(r, Change::ActiveInstance);
         const auto mode = r.get<const Interaction>(viewport).Mode;
-        if ((!selected_tracker.empty() || !active_tracker.empty()) && mode == InteractionMode::Edit) r.Context.get<GpuSceneState>().EditPreludePending = true;
-        // Edit-mode selection changes the fill, edge, and point batches.
-        // The active instance picks each mesh's primary edit instance, which the instance records hash.
+        if ((!selected_tracker.empty() || !active_tracker.empty()) && mode == InteractionMode::Edit) scene_state.EditPreludePending = true;
+        // A mesh selected in Edit mode converts a remembered selection it stored in another element mode.
+        if (const auto element = r.get<const EditMode>(viewport).Value; mode == InteractionMode::Edit && element != Element::None && !selected_tracker.empty()) {
+            std::vector<state::Entity> converting;
+            for (const auto e : selected_tracker) {
+                const auto *instance = r.valid(e) && r.all_of<Selected>(e) ? r.try_get<const Instance>(e) : nullptr;
+                if (!instance || !r.all_of<MeshElementSelection>(instance->Entity)) continue;
+                const auto id = GetMesh(r, instance->Entity).GetStoreId();
+                if (meshes.Get(id).SelectionSummary.Count && meshes.GetSelectionSummary(id).Mode != element) converting.push_back(instance->Entity);
+            }
+            SortUnique(converting);
+            ConvertElementSelections(r, converting, element);
+        }
+        // Edit-mode selection changes the fill, edge, and point batches through each mesh's primary edit instance, which its record holds.
         // Edit and Pose modes draw the active armature's bone wires.
-        // Object mode shows the active object through its state bits and the silhouette pass.
+        // Object mode shows the selection through the state bits and the silhouette pass.
         if (!selected_tracker.empty() || (!active_tracker.empty() && mode != InteractionMode::Object)) {
             request(mode == InteractionMode::Edit ? RenderRequest::Rebuild : RenderRequest::Silhouette);
-            r.Context.get<GpuSceneState>().InstanceFlagsStale = true;
+            // Normals draw for the selected meshes.
+            if (const auto &display = r.get<const ViewportDisplay>(viewport); display.ShowOverlays && display.NormalOverlays != 0u) request(RenderRequest::Rebuild);
         }
 
-        // SyncModelsBuffers writes the full initial state for newly inserted instances, so they are skipped here.
-        std::vector<std::pair<uint32_t, uint8_t>> state_writes;
-        const auto collect_instance_state = [&](state::Entity instance_entity) {
-            if (is_newly_inserted(instance_entity)) return;
-            if (const auto *ri = r.try_get<RenderInstance>(instance_entity); ri && ri->BufferIndex != UINT32_MAX) {
-                state_writes.emplace_back(ri->BufferIndex, InstanceStateBits(r, instance_entity));
+        std::span<uint8_t> states;
+        const auto write_instance_state = [&](state::Entity instance_entity) {
+            if (const auto *ri = r.try_get<const RenderInstance>(instance_entity); ri && ri->BufferIndex != UINT32_MAX) {
+                if (states.empty()) states = buffers.Instances.GetMutableStates();
+                states[ri->BufferIndex] = InstanceStateBits(r, instance_entity);
             }
         };
-        for (auto instance_entity : selected_tracker) {
-            collect_instance_state(instance_entity);
-            if (const auto arm = FindArmatureObject(r, instance_entity); arm != state::Null) bone_state_dirty.insert(arm);
+        for (const auto *tracker : {&selected_tracker, &active_tracker}) {
+            for (const auto instance_entity : *tracker) {
+                write_instance_state(instance_entity);
+                if (const auto arm = FindArmatureObject(r, instance_entity); arm != state::Null) bone_state_dirty.insert(arm);
+            }
         }
-        for (auto instance_entity : active_tracker) {
-            collect_instance_state(instance_entity);
-            if (const auto arm = FindArmatureObject(r, instance_entity); arm != state::Null) bone_state_dirty.insert(arm);
-        }
-
-        if (FlushIndexedWrites(state_writes, [&] { return buffers.Instances.GetMutableStates(); })) request(RenderRequest::Reuse);
+        if (!states.empty()) request(RenderRequest::Reuse);
     }
     {
         auto &bone_sel_tracker = reactive(r, Change::BoneSelection);
@@ -681,17 +749,10 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             }
         }
     }
-    auto &destroy_tracker = r.Context.get<EntityDestroyTracker>();
-    if (!reactive(r, Change::Rerecord).empty() || !destroy_tracker.Storage.empty()) {
-        request(RenderRequest::Rebuild);
-        // Instance lifecycle and slot changes invalidate meshlet records because mesh-keyed signatures omit instance slots and object IDs.
-        MarkInstanceRecordsStale(r.Context.get<GpuSceneState>());
-    }
-
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
-    // An edit transform's start and end change the pending-transform instances, which the records and bounds entries hash.
-    if (is_edit_mode && (!reactive(r, Change::TransformStart).empty() || !reactive(r, Change::TransformEnd).empty())) request(RenderRequest::Rebuild);
+    // An edit transform's start and end change the pending-transform meshes, which their records and bounds entries hold.
+    if (is_edit_mode && AnyChanged(r, Change::TransformStart, Change::TransformEnd)) request(RenderRequest::Rebuild);
 
     const auto orbit_to_active = [&](state::Entity instance_entity, Element element, uint32_t handle, bool canonical) {
         if (!r.get<const OrbitToActive>(viewport).Value) return;
@@ -726,9 +787,14 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             if (const auto *inst = r.try_get<const Instance>(instance_entity)) dirty_sound_selection_meshes.insert(inst->Entity);
         }
     }
-    for (auto camera_entity : reactive(r, Change::CameraLens)) {
-        // Update the viewport FOV when it uses the changed scene camera.
-        if (HasLens(r, camera_entity) && r.all_of<LookingThrough>(camera_entity)) r.patch<ViewCamera>(viewport, [](auto &) {});
+    // Camera overlays read the lenses animation evaluated above.
+    if (const auto &lenses = reactive(r, Change::CameraLens); !lenses.empty()) {
+        scene_state.OverlayJobsDirty = true;
+        request(RenderRequest::Reuse);
+        for (const auto camera_entity : lenses) {
+            // Update the viewport FOV when it uses the changed scene camera.
+            if (HasLens(r, camera_entity) && r.all_of<LookingThrough>(camera_entity)) r.patch<ViewCamera>(viewport, [](auto &) {});
+        }
     }
     bool light_count_changed = false;
     if (const uint32_t required_count = r.view<const LightIndex>().size();
@@ -754,12 +820,15 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 material_meshes.push_back(mesh_entity);
             }
         }
-        request(RenderRequest::Rebuild);
     }
+    // A variant switch rewrites the meshes that map a primitive for some variant, each primitive from its mapping or else its default.
+    // Every other mesh keeps its assignments.
     if (!reactive(r, Change::ActiveMaterialVariant).empty()) {
         const auto *mv = r.try_get<const MaterialVariants>(viewport);
         const auto active = mv ? mv->Active : std::nullopt;
         for (const auto [e, layout, _] : r.view<const MeshSourceLayout, const MeshHandle>().each()) {
+            const bool mapped = std::ranges::any_of(layout.VariantMappings, [](const auto &mapping) { return std::ranges::any_of(mapping, [](const auto &m) { return m.has_value(); }); });
+            if (!mapped) continue;
             const auto mesh = GetMesh(r, e);
             auto primitive_materials = meshes.EditPrimitiveMaterials(mesh.GetStoreId());
             material_meshes.push_back(e);
@@ -770,75 +839,71 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                     layout.DefaultMaterials[i];
             }
         }
-        request(RenderRequest::Rebuild);
     }
     // A material or debug channel change walks every mesh only when it changes some material's required attributes.
-    // Those attributes are the only material values the scene rebuild keeps, since routing and shading read the live materials every frame.
-    if ((!reactive(r, Change::Materials).empty() || !reactive(r, Change::ViewportDisplay).empty()) && RefreshMaterialLodAttributes(r)) {
+    // Those attributes are the only material values the cluster hierarchy keeps, since routing and shading read the live materials every frame.
+    const bool every_mesh = AnyChanged(r, Change::Materials, Change::ViewportDisplay) && RefreshMaterialLodAttributes(r);
+    if (every_mesh) {
+        // The table walk lists each mesh once in entity order.
         material_meshes.clear();
+        material_meshes.reserve(r.view<const MeshHandle>().size());
         for (const auto entity : r.view<const MeshHandle>()) material_meshes.push_back(entity);
-        request(RenderRequest::Rebuild);
     }
+    // The material refresh, the position staging and the meshlet batch record on one chain.
+    mtl::ComputeChain meshlet_chain{buffers.Ctx};
     if (!material_meshes.empty()) {
-        std::ranges::sort(material_meshes);
-        material_meshes.erase(std::unique(material_meshes.begin(), material_meshes.end()), material_meshes.end());
-        mtl::ComputeChain chain{buffers.Ctx};
-        RefreshClusterLodAttributes(r, chain, material_meshes);
-        chain.Submit();
+        if (!every_mesh) SortUnique(material_meshes);
+        RefreshClusterLodAttributes(r, meshlet_chain, material_meshes);
+        // A material change can make a mesh draw as a wire, which its record holds.
+        scene_state.DisplayDirty.insert(material_meshes.begin(), material_meshes.end());
+        request(RenderRequest::Reuse);
     }
-    if (auto &scene=r.Context.get<GpuSceneState>();
-        !is_edit_mode && (!scene.EditWork.empty() || !scene.PositionDirty.empty() || !scene.LodDirty.empty())) {
+    if (!is_edit_mode && (!scene_state.EditWork.empty() || !scene_state.PositionDirty.empty() || !scene_state.LodDirty.empty())) {
         std::vector<state::Entity> edited;
-        for (const auto e:scene.PositionDirty)
+        for (const auto e : scene_state.PositionDirty)
             if (r.valid(e) && r.all_of<MeshHandle>(e)) edited.push_back(e);
         std::ranges::sort(edited);
-        if (!edited.empty() || !scene.LodDirty.empty()) {
-            mtl::ComputeChain chain{buffers.Ctx};
-            StageDirtyPositionMeshlets(r,chain,edited);
+        if (!edited.empty() || !scene_state.LodDirty.empty()) {
+            StageDirtyPositionMeshlets(r, meshlet_chain, edited);
             // The repair rewrites the traversal nodes and memberships the staged refits read, so they complete first.
-            chain.Submit();
+            meshlet_chain.Submit();
             // Stale coarse LOD rebuilds outside edit mode, including the groups staging marked.
             std::vector<state::Entity> repaired;
-            for (const auto e:scene.LodDirty)
+            for (const auto e : scene_state.LodDirty)
                 if (r.valid(e) && r.all_of<MeshHandle>(e)) repaired.push_back(e);
             std::ranges::sort(repaired);
-            RepairDirtyClusterGroups(r,chain,repaired);
-            chain.Submit();
-            edited.insert(edited.end(),repaired.begin(),repaired.end());
+            RepairDirtyClusterGroups(r, meshlet_chain, repaired);
+            edited.insert(edited.end(), repaired.begin(), repaired.end());
         }
-        std::ranges::sort(edited);
-        edited.erase(std::unique(edited.begin(),edited.end()),edited.end());
-        RepointMeshInstances(r,edited);
-        scene.PositionDirty.clear();
-        scene.LodDirty.clear();
-        auto &edit_work=scene.EditWork;
-        while (!edit_work.empty()) ReleaseMeshEditWork(r,edit_work.begin()->first);
+        SortUnique(edited);
+        RepointMeshInstances(r, edited);
+        scene_state.PositionDirty.clear();
+        scene_state.LodDirty.clear();
+        auto &edit_work = scene_state.EditWork;
+        while (!edit_work.empty()) ReleaseMeshEditWork(r, edit_work.begin()->first);
         buffers.PreludeStale = true;
         request(RenderRequest::Rebuild);
     }
-    // Persistent overlay jobs reference tet arena ranges.
-    if (!reactive(r, Change::TetMesh).empty()) request(RenderRequest::Rebuild);
-    if (!reactive(r, Change::PhysicsBodyMesh).empty()) {
-        // Collider parameters live in persistent overlay jobs.
-        request(RenderRequest::Rebuild);
+    // Overlay jobs reference tet arena ranges and hold collider parameters.
+    if (AnyChanged(r, Change::TetMesh, Change::PhysicsBodyMesh)) {
+        scene_state.OverlayJobsDirty = true;
+        request(RenderRequest::Reuse);
     }
     if (auto &tracker = reactive(r, Change::MeshGeometry); !tracker.empty()) {
         // Vertex-arena positions feed the pose pre-pass, so geometry edits re-run the prelude.
         if (std::ranges::any_of(tracker, [&](auto e) { return r.all_of<MeshGeometryDirty>(e); })) buffers.PreludeStale = true;
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
         std::vector<ElementRange> reset_ranges, carried_ranges;
-        // Rebuild edited meshlets before rendering the same frame.
-        std::vector<state::Entity> edited, rebuilt;
-        for (auto e : tracker)
-            if (r.all_of<MeshGeometryDirty>(e)) edited.push_back(e);
-        // A new mesh's meshlets were built above.
-        for (auto e : edited)
-            if (!r.get<const MeshGeometryDirty>(e).RenderReady && std::ranges::find(sync.NewMeshEntities, e) == sync.NewMeshEntities.end()) rebuilt.push_back(e);
-        BuildMeshletsNow(r, rebuilt);
         // Meshes repaired or restored in place refresh only their own instances unless the scene structure changed with them.
-        std::vector<state::Entity> ready;
-        for (const auto e : edited)
-            if (r.get<const MeshGeometryDirty>(e).RenderReady) ready.push_back(e);
+        // Every other edited mesh, apart from a new one, rebuilds its meshlets in the batch with the new meshes.
+        std::vector<state::Entity> edited, ready;
+        for (const auto e : tracker) {
+            const auto *dirty = r.try_get<const MeshGeometryDirty>(e);
+            if (!dirty) continue;
+            edited.push_back(e);
+            if (dirty->RenderReady) ready.push_back(e);
+            else if (!std::ranges::contains(sync.NewMeshEntities, e)) meshlet_meshes.push_back(e);
+        }
         if (!ready.empty()) request(RepointChangedMeshes(r, ready) ? RenderRequest::Rebuild : RenderRequest::Reuse);
         // Topology changed: size the bits to the new element counts, then drop a stale selection or derive a carried one.
         const auto resets = [&](state::Entity mesh_entity) {
@@ -847,7 +912,10 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         std::vector<uint32_t> reset_ids;
         for (const auto mesh_entity : edited)
             if (resets(mesh_entity)) reset_ids.push_back(GetMesh(r, mesh_entity).GetStoreId());
-        meshes.EnsureSelectionState(r, reset_ids);
+        if (!reset_ids.empty()) {
+            mtl::ComputeChain chain{meshes.BufferContext()};
+            meshes.EnsureSelectionState(r, chain, reset_ids);
+        }
         for (auto mesh_entity : edited) {
             if (!resets(mesh_entity)) continue;
             const auto selection_after = r.get<const MeshGeometryDirty>(mesh_entity).Selection;
@@ -862,8 +930,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (!carried_ranges.empty()) ApplyEditSelectionCommand(r, carried_ranges, edit_mode, EditSelectionOperation::Derive);
         request(RenderRequest::Reuse);
     }
-    // Every meshlet build in this pass has committed, so unpinned meshes take their hierarchy here.
-    if (BuildDemandedClusterLods(r, is_edit_mode)) request(RenderRequest::Rebuild);
+    BuildMeshlets(r, meshlet_chain, meshlet_meshes, bone_mesh_entities);
+    meshlet_chain.Submit();
     if (!reactive(r, Change::ViewportTheme).empty()) {
         auto theme = r.get<const ViewportTheme>(viewport);
         UpdateDerivedColors(theme);
@@ -872,14 +940,16 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         request(RenderRequest::Reuse);
     }
     if (!reactive(r, Change::ViewportDisplay).empty()) {
-        request(RenderRequest::Rebuild);
+        // The record phase rebuilds the layout when a display setting it reads changed.
+        request(RenderRequest::Reuse);
         if (const float requested = ClampMaxAnisotropy(ToMaxAnisotropy(r.get<const ViewportDisplay>(viewport).AnisotropicFilter));
             requested != r.Context.get<const ActiveSamplerAnisotropy>().Value) {
             r.Context.get<ActiveSamplerAnisotropy>().Value = requested;
             RebuildTextureSamplers(ctx, slots, textures, requested);
         }
     }
-    if (!reactive(r, Change::InteractionMode).empty()) {
+    const bool mode_changed = !reactive(r, Change::InteractionMode).empty();
+    if (mode_changed) {
         // Entering edit mode replaces animation deformation with the rest pose even when storage is unchanged.
         buffers.PreludeStale = true;
         request(RenderRequest::Rebuild);
@@ -892,7 +962,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         for (const auto arm : r.view<const ArmatureObject>()) bone_state_dirty.insert(arm);
     }
 
-    const bool mode_changed = !reactive(r, Change::InteractionMode).empty();
     {
         const auto &range = r.get<const TimelineRange>(viewport);
         // Use interpolation instead of advancing physics during motion-blur sub-frames.
@@ -901,7 +970,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     // Evaluation writes materials and morph weights, so their consumers follow it.
     if (!reactive(r, Change::Materials).empty()) request(RenderRequest::Reuse);
     if (!reactive(r, Change::MorphWeights).empty()) {
-        buffers.PreludeStale = true;
+        scene_state.DirtyBoundsEntries.append_range(scene_state.MorphEntries);
         request(RenderRequest::Reuse);
     }
     {
@@ -909,6 +978,9 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         for (const auto arm_obj_entity : bone_state_dirty) {
             if (!r.valid(arm_obj_entity) || !TryMeshBuffers(r, arm_obj_entity)) continue;
             const auto &arm_obj = r.get<const ArmatureObject>(arm_obj_entity);
+            // Whether the bones draw their wires follows the armature's selection.
+            scene_state.DisplayDirty.insert(arm_obj_entity);
+            if (arm_obj.JointEntity != state::Null) scene_state.DisplayDirty.insert(arm_obj.JointEntity);
             const auto &bone_entities = arm_obj.BoneEntities;
             // Use object-level state in Object mode and per-bone state in Edit and Pose modes.
             uint8_t max_state = 0;
@@ -919,11 +991,10 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                     if (r.all_of<Active>(arm_obj_entity)) max_state |= ElementStateActive;
                 }
             }
-            const bool is_edit = interaction_mode == InteractionMode::Edit;
             auto compute_state = [&](state::Entity b, BoneSel part) {
                 if (is_object_mode) return max_state;
                 const auto *parts = r.try_get<const BoneSelection>(b);
-                const bool selected = is_edit ?
+                const bool selected = is_edit_mode ?
                     parts && (part == BoneSel::Body ? parts->Body : part == BoneSel::Root ? parts->Root :
                                                                                             parts->Tip) :
                     r.all_of<BoneSelection>(b);
@@ -932,263 +1003,258 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 return s;
             };
 
+            const auto hidden = [&](state::Entity e) { return r.all_of<Hidden>(e) ? InstanceStateHidden : uint8_t{0}; };
+            const bool joints_live = arm_obj.JointEntity != state::Null && r.valid(arm_obj.JointEntity);
             for (const auto b : bone_entities) {
-                if (const auto *ri = r.try_get<RenderInstance>(b)) {
-                    const auto state = compute_state(b, BoneSel::Body);
-                    buffers.Instances.UpdateState(ri->BufferIndex, state);
-                }
-            }
-            if (arm_obj.JointEntity != state::Null && r.valid(arm_obj.JointEntity)) {
-                for (const auto b : bone_entities) {
-                    const auto *joints = r.try_get<const BoneJointEntities>(b);
-                    if (!joints) continue;
-                    for (const auto &[je, part] : {std::pair{joints->Head, BoneSel::Root}, {joints->Tail, BoneSel::Tip}}) {
-                        if (je != state::Null) {
-                            if (const auto *ri = r.try_get<const RenderInstance>(je)) {
-                                const auto state = compute_state(b, part);
-                                buffers.Instances.UpdateState(ri->BufferIndex, state);
-                            }
-                        }
-                    }
+                if (const auto *ri = r.try_get<RenderInstance>(b)) buffers.Instances.UpdateState(ri->BufferIndex, uint8_t(compute_state(b, BoneSel::Body) | hidden(b)));
+                const auto *joints = joints_live ? r.try_get<const BoneJointEntities>(b) : nullptr;
+                if (!joints) continue;
+                for (const auto &[je, part] : {std::pair{joints->Head, BoneSel::Root}, {joints->Tail, BoneSel::Tip}}) {
+                    if (const auto *ri = je != state::Null ? r.try_get<const RenderInstance>(je) : nullptr) buffers.Instances.UpdateState(ri->BufferIndex, uint8_t(compute_state(b, part) | hidden(je)));
                 }
             }
             request(RenderRequest::Reuse);
         }
 
-        // Update bone pose state before WorldTransform consumes its Transform patches.
-        const bool bones_need_refresh = rendering || pass == EventPass::Restore || anim_advanced || mode_changed || pose_state_created;
-        if (bones_need_refresh || !reactive(r, Change::TransformDirty).empty() || !reactive(r, Change::TransformEnd).empty() || !reactive(r, Change::BonePose).empty()) {
-            const auto &local_changes = reactive(r, Change::TransformDirty);
-            const auto &transform_end = reactive(r, Change::TransformEnd);
-            const auto &pose_changes = reactive(r, Change::BonePose);
-            for (const auto [arm_obj_entity, arm_obj_comp] : r.view<const ArmatureObject>().each()) {
-                auto *pose_state = r.try_edit<ArmaturePoseState>(arm_obj_comp.Entity);
-                if (!pose_state) continue;
-                const auto &armature = r.get<Armature>(arm_obj_comp.Entity);
-                if (armature.Skins.empty()) continue;
+        const auto &constraint_changes = reactive(r, Change::BoneConstraints);
+        auto &constraint_targets = r.Context.get<ConstraintTargets>().Armatures;
+        if (!constraint_changes.empty() || pass == EventPass::Restore) {
+            constraint_targets.clear();
+            for (const auto [bone, constraints] : r.view<const BoneConstraints>().each()) {
+                if (constraints.Stack.empty()) continue;
+                const auto arm_obj_entity = r.get<const SubElementOf>(bone).Parent;
+                const auto add = [&](state::Entity target) {
+                    auto &armatures = constraint_targets[target];
+                    if (!std::ranges::contains(armatures, arm_obj_entity)) armatures.push_back(arm_obj_entity);
+                };
+                add(arm_obj_entity);
+                for (const auto &c : constraints.Stack)
+                    if (c.TargetEntity != state::Null) add(c.TargetEntity);
+            }
+        }
 
-                // Constraints can depend on external targets (e.g. physics bodies), so bone-dirty alone does not allow an early out.
-                const bool has_any_constraint = std::any_of(
-                    arm_obj_comp.BoneEntities.begin(), arm_obj_comp.BoneEntities.end(),
-                    [&](auto e) { return r.all_of<BoneConstraints>(e); }
-                );
+        // The armatures whose bone poses recompose: those whose bones moved or whose pose deltas or constraints changed, and those reading a moved constraint target.
+        // A restore reaches them the same way, since a restored armature recreates its pose state and restored deltas and poses publish their changes.
+        const auto &transform_end = reactive(r, Change::TransformEnd);
+        const auto &pose_changes = reactive(r, Change::BonePose);
+        std::vector<state::Entity> posed_armatures;
+        if (rendering || mode_changed) {
+            for (const auto arm_obj_entity : r.view<const ArmatureObject>()) posed_armatures.push_back(arm_obj_entity);
+        } else {
+            posed_armatures = created_pose_armatures;
+            const auto add_bone = [&](state::Entity e) {
+                if (r.all_of<BoneIndex>(e)) posed_armatures.push_back(r.get<const SubElementOf>(e).Parent);
+            };
+            for (const auto b : dirty_bones) add_bone(b);
+            for (const auto e : transform_end) add_bone(e);
+            for (const auto b : pose_changes) add_bone(b);
+            for (const auto b : constraint_changes) add_bone(b);
+            const auto &moved = reactive(r, Change::WorldTransform);
+            for (const auto &[target, armatures] : constraint_targets)
+                if (moved.contains(target)) posed_armatures.append_range(armatures);
+            SortUnique(posed_armatures);
+        }
+        for (const auto arm_obj_entity : posed_armatures) {
+            // The constraint target map can name an armature deleted since it was built.
+            const auto *arm_obj = r.try_get<const ArmatureObject>(arm_obj_entity);
+            if (!arm_obj) continue;
+            const auto &arm_obj_comp = *arm_obj;
+            auto *pose_state = r.try_edit<ArmaturePoseState>(arm_obj_comp.Entity);
+            if (!pose_state) continue;
+            const auto &armature = r.get<Armature>(arm_obj_comp.Entity);
+            const bool created = std::ranges::contains(created_pose_armatures, arm_obj_entity);
+            const bool has_any_constraint = std::ranges::any_of(arm_obj_comp.BoneEntities, [&](auto e) { return r.all_of<BoneConstraints>(e); });
+            const mat4 armature_world_inv = has_any_constraint ? Inverse(ToMatrix(*WorldTransformOf(r, arm_obj_entity))) : I4;
 
-                if (!bones_need_refresh && !has_any_constraint) {
-                    bool has_dirty = false;
-                    for (const auto b : arm_obj_comp.BoneEntities) {
-                        if (local_changes.contains(b) || transform_end.contains(b) || pose_changes.contains(b)) {
-                            has_dirty = true;
-                            break;
-                        }
-                    }
-                    if (!has_dirty) continue;
-                }
-
-                const mat4 armature_world_inv = has_any_constraint ? Inverse(ToMatrix(r.get<const WorldTransform>(arm_obj_entity))) : I4;
-
-                bool need_sync = has_any_constraint || pose_state_created;
-                bool rest_pose_edited = false;
-                for (uint32_t i = 0; i < arm_obj_comp.BoneEntities.size(); ++i) {
-                    const auto b = arm_obj_comp.BoneEntities[i];
-                    if (!r.all_of<BoneDelta>(b)) continue;
-                    const auto &rest = armature.Bones[i].RestLocal;
-                    // Every pass composes the pose the same way so a restored pose matches a live one bit for bit.
-                    const auto posed = [&] { return ComposeWithDelta(rest, ComposeWithDelta(r.get<const BoneDelta>(b).Value, pose_state->BoneUserOffset[i])); };
-                    const auto &bt = r.get<const PosedLocal>(b).Value;
-                    Transform local{bt.P, bt.R, rest.S};
-                    bool should_patch = false;
-                    if (pass == EventPass::Restore) {
-                        local = is_edit_mode ? rest : posed();
-                        should_patch = need_sync = true;
-                    } else if (rendering) {
-                        if (!is_edit_mode) {
-                            local = posed();
-                            should_patch = true;
-                        }
-                        need_sync = true;
-                    } else if (is_edit_mode) {
-                        if (mode_changed) {
-                            // Start Edit mode from the rest pose.
-                            local = {rest.P, rest.R, rest.S};
-                            should_patch = need_sync = true;
-                        } else if (transform_end.contains(b) || (local_changes.contains(b) && !r.all_of<StartTransform>(b))) {
-                            // Commit an Edit-mode transform.
-                            auto &edited = r.edit<Armature>(arm_obj_comp.Entity).Bones[i].RestLocal;
-                            edited.P = bt.P;
-                            edited.R = bt.R;
-                            rest_pose_edited = need_sync = true;
-                        }
-                    } else if (const auto *st = r.try_get<const StartTransform>(b)) {
-                        // Apply an active drag as a user offset after animation.
-                        const auto &pd = st->ParentDelta;
-                        const auto grab_delta = AbsoluteToDelta(
-                            rest,
-                            {
-                                .P = Conjugate(pd.R) * ((st->T.P - pd.P) / pd.S),
-                                .R = Conjugate(pd.R) * st->T.R,
-                                .S = st->T.S / pd.S,
-                            }
-                        );
-                        const Transform gizmo_local{bt.P, bt.R, rest.S};
-                        pose_state->BoneUserOffset[i] = AbsoluteToDelta(grab_delta, AbsoluteToDelta(rest, gizmo_local));
+            bool need_sync = has_any_constraint || created;
+            bool rest_pose_edited = false;
+            for (uint32_t i = 0; i < arm_obj_comp.BoneEntities.size(); ++i) {
+                const auto b = arm_obj_comp.BoneEntities[i];
+                if (!r.all_of<BoneDelta>(b)) continue;
+                const auto &rest = armature.Bones[i].RestLocal;
+                // Every pass composes the pose the same way so a restored pose matches a live one bit for bit.
+                const auto posed = [&] { return ComposeWithDelta(rest, ComposeWithDelta(r.get<const BoneDelta>(b).Value, pose_state->BoneUserOffset[i])); };
+                const auto &bt = r.get<const PosedLocal>(b).Value;
+                Transform local{bt.P, bt.R, rest.S};
+                bool should_patch = false;
+                if (pass == EventPass::Restore) {
+                    local = is_edit_mode ? rest : posed();
+                    should_patch = need_sync = true;
+                } else if (rendering) {
+                    if (!is_edit_mode) {
                         local = posed();
+                        should_patch = true;
+                    }
+                    need_sync = true;
+                } else if (is_edit_mode) {
+                    if (mode_changed) {
+                        // Start Edit mode from the rest pose.
+                        local = {rest.P, rest.R, rest.S};
                         should_patch = need_sync = true;
-                    } else if (transform_end.contains(b)) {
-                        // Commit the drag into the pose delta and reconstruct Transform from rest and delta.
+                    } else if (transform_end.contains(b) || (transform_dirty.contains(b) && !r.all_of<StartTransform>(b))) {
+                        // Commit an Edit-mode transform.
+                        auto &edited = r.edit<Armature>(arm_obj_comp.Entity).Bones[i].RestLocal;
+                        edited.P = bt.P;
+                        edited.R = bt.R;
+                        rest_pose_edited = need_sync = true;
+                    }
+                } else if (const auto *st = r.try_get<const StartTransform>(b)) {
+                    // Apply an active drag as a user offset after animation.
+                    const auto &pd = st->ParentDelta;
+                    const auto grab_delta = AbsoluteToDelta(
+                        rest,
+                        {
+                            .P = Conjugate(pd.R) * ((st->T.P - pd.P) / pd.S),
+                            .R = Conjugate(pd.R) * st->T.R,
+                            .S = st->T.S / pd.S,
+                        }
+                    );
+                    const Transform gizmo_local{bt.P, bt.R, rest.S};
+                    pose_state->BoneUserOffset[i] = AbsoluteToDelta(grab_delta, AbsoluteToDelta(rest, gizmo_local));
+                    local = posed();
+                    should_patch = need_sync = true;
+                } else if (transform_end.contains(b)) {
+                    // Commit the drag into the pose delta and reconstruct Transform from rest and delta.
+                    r.edit<BoneDelta>(b).Value = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
+                    pose_state->BoneUserOffset[i] = {};
+                    local = posed();
+                    should_patch = need_sync = true;
+                } else if (mode_changed || created || pose_changes.contains(b)) {
+                    // Reconstruct entity position and rotation from the pose delta.
+                    local = posed();
+                    should_patch = need_sync = true;
+                } else if (transform_dirty.contains(b)) {
+                    // Commit manual position or rotation changes into the pose delta.
+                    if (const auto expected = posed();
+                        bt.P != expected.P || bt.R != expected.R) {
                         r.edit<BoneDelta>(b).Value = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
                         pose_state->BoneUserOffset[i] = {};
                         local = posed();
                         should_patch = need_sync = true;
-                    } else if (anim_advanced || mode_changed || pose_state_created || pose_changes.contains(b)) {
-                        // Reconstruct entity position and rotation from the pose delta.
-                        local = posed();
-                        should_patch = need_sync = true;
-                    } else if (local_changes.contains(b)) {
-                        // Commit manual position or rotation changes into the pose delta.
-                        if (const auto expected = posed();
-                            bt.P != expected.P || bt.R != expected.R) {
-                            r.edit<BoneDelta>(b).Value = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
-                            pose_state->BoneUserOffset[i] = {};
-                            local = posed();
-                            should_patch = need_sync = true;
-                        }
                     }
-
-                    const uint32_t parent_idx = armature.Bones[i].ParentIndex;
-                    const mat4 parent_pose_world = (parent_idx == InvalidBoneIndex) ? I4 : pose_state->BonePoseWorld[parent_idx];
-
-                    // Apply pose constraints outside rest-pose editing.
-                    if (!is_edit_mode) {
-                        if (const auto *cs = r.try_get<const BoneConstraints>(b); cs && !cs->Stack.empty()) {
-                            const auto before = local;
-                            for (const auto &c : cs->Stack) {
-                                if (c.TargetEntity == state::Null || !r.valid(c.TargetEntity)) continue;
-                                const auto *twt = r.try_get<const WorldTransform>(c.TargetEntity);
-                                if (twt) local = ApplyBoneConstraint(c, local, parent_pose_world, armature_world_inv, ToMatrix(*twt));
-                            }
-                            if (local.P != before.P || local.R != before.R) should_patch = true;
-                        }
-                    }
-
-                    if (should_patch) r.patch<PosedLocal>(b, [&](auto &posed) { posed.Value.P = local.P; posed.Value.R = local.R; });
-                    pose_state->BonePoseWorld[i] = parent_pose_world * ToMatrix(local);
                 }
-                if (rest_pose_edited) {
-                    auto &edited = r.edit<Armature>(arm_obj_comp.Entity);
-                    // Recompute RestWorld in topological order while preserving unchanged bone positions.
-                    for (uint32_t i = 0; i < edited.Bones.size(); ++i) {
-                        const auto parent = edited.Bones[i].ParentIndex;
-                        const mat4 parent_world = (parent == InvalidBoneIndex) ? I4 : edited.Bones[parent].RestWorld;
-                        const auto b = arm_obj_comp.BoneEntities[i];
-                        if (transform_end.contains(b) || (local_changes.contains(b) && !r.all_of<StartTransform>(b))) {
-                            edited.Bones[i].RestWorld = parent_world * ToMatrix(edited.Bones[i].RestLocal);
-                        } else {
-                            // Adjust RestLocal to preserve the previous world position after a parent change.
-                            const mat4 new_local_mat = Inverse(parent_world) * edited.Bones[i].RestWorld;
-                            edited.Bones[i].RestLocal.P = vec3(new_local_mat[3]);
-                            edited.Bones[i].RestLocal.R = Normalize(ToQuat(ToMat3(new_local_mat)));
-                            r.patch<PosedLocal>(b, [&](auto &posed) { posed.Value.P = edited.Bones[i].RestLocal.P; posed.Value.R = edited.Bones[i].RestLocal.R; });
+
+                const uint32_t parent_idx = armature.Bones[i].ParentIndex;
+                const mat4 parent_pose_world = (parent_idx == InvalidBoneIndex) ? I4 : pose_state->BonePoseWorld[parent_idx];
+
+                // Apply pose constraints outside rest-pose editing.
+                // Constraints apply to the bone's own pose, so a bone re-posed under unmoved targets lands where it was.
+                if (!is_edit_mode) {
+                    if (const auto *cs = r.try_get<const BoneConstraints>(b); cs && !cs->Stack.empty()) {
+                        if (!should_patch) local = posed();
+                        for (const auto &c : cs->Stack) {
+                            if (c.TargetEntity == state::Null || !r.valid(c.TargetEntity)) continue;
+                            const auto *twt = WorldTransformOf(r, c.TargetEntity);
+                            if (twt) local = ApplyBoneConstraint(c, local, parent_pose_world, armature_world_inv, ToMatrix(*twt));
                         }
-                        edited.Bones[i].InvRestWorld = Inverse(edited.Bones[i].RestWorld);
+                        if (local.P != bt.P || local.R != bt.R) should_patch = true;
                     }
-                    edited.RecomputeInverseBindMatrices();
                 }
-                if (need_sync) {
-                    if (!is_edit_mode) {
-                        for (uint32_t s = 0; s < pose_state->GpuDeformRanges.size(); ++s) {
-                            ComputeDeformMatrices(armature, s, pose_state->BonePoseWorld, buffers.ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRanges[s]));
-                        }
-                        buffers.PreludeStale = true;
+
+                if (should_patch) r.patch<PosedLocal>(b, [&](auto &posed) { posed.Value.P = local.P; posed.Value.R = local.R; });
+                pose_state->BonePoseWorld[i] = parent_pose_world * ToMatrix(local);
+            }
+            if (rest_pose_edited) {
+                auto &edited = r.edit<Armature>(arm_obj_comp.Entity);
+                // Recompute RestWorld in topological order while preserving unchanged bone positions.
+                for (uint32_t i = 0; i < edited.Bones.size(); ++i) {
+                    const auto parent = edited.Bones[i].ParentIndex;
+                    const mat4 parent_world = (parent == InvalidBoneIndex) ? I4 : edited.Bones[parent].RestWorld;
+                    const auto b = arm_obj_comp.BoneEntities[i];
+                    if (transform_end.contains(b) || (transform_dirty.contains(b) && !r.all_of<StartTransform>(b))) {
+                        edited.Bones[i].RestWorld = parent_world * ToMatrix(edited.Bones[i].RestLocal);
+                    } else {
+                        // Adjust RestLocal to preserve the previous world position after a parent change.
+                        const mat4 new_local_mat = Inverse(parent_world) * edited.Bones[i].RestWorld;
+                        edited.Bones[i].RestLocal.P = vec3(new_local_mat[3]);
+                        edited.Bones[i].RestLocal.R = Normalize(ToQuat(ToMat3(new_local_mat)));
+                        r.patch<PosedLocal>(b, [&](auto &posed) { posed.Value.P = edited.Bones[i].RestLocal.P; posed.Value.R = edited.Bones[i].RestLocal.R; });
                     }
-                    request(RenderRequest::Reuse);
+                    edited.Bones[i].InvRestWorld = Inverse(edited.Bones[i].RestWorld);
                 }
+                edited.RecomputeInverseBindMatrices();
+            }
+            if (need_sync) {
+                // A skinless armature has no deform ranges and no posed bounds entries.
+                if (!is_edit_mode) {
+                    for (uint32_t s = 0; s < pose_state->GpuDeformRanges.size(); ++s) {
+                        ComputeDeformMatrices(armature, s, pose_state->BonePoseWorld, buffers.ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRanges[s]));
+                    }
+                    if (const auto entries = scene_state.ArmatureEntries.find(arm_obj_comp.Entity); entries != scene_state.ArmatureEntries.end()) {
+                        scene_state.DirtyBoundsEntries.append_range(entries->second);
+                    }
+                }
+                request(RenderRequest::Reuse);
             }
         }
-        // Recompute changed world transforms and their descendants.
-        if (const auto &dirty = reactive(r, Change::TransformDirty); !dirty.empty()) {
-            const bool bone_edit = is_edit_mode && FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
-            state::DirtySet recompute;
-            const auto collect = [&](this const auto &self, state::Entity e, bool propagate) -> void {
-                if (recompute.contains(e)) return;
-                recompute.emplace(e);
-                if (propagate)
-                    for (const auto child : Children{&r, e}) self(child, true);
-            };
-            for (const auto e : dirty) collect(e, !(bone_edit && r.all_of<StartTransform>(e)));
 
-            // The set holds the entities whose world transforms are stale, and each leaves it as it computes.
-            const auto compute = [&](this const auto &self, state::Entity e) -> void {
-                recompute.remove(e);
-                const auto *node = r.try_get<const SceneNode>(e);
-                if (node && node->Parent != state::Null && (recompute.contains(node->Parent) || !r.all_of<WorldTransform>(node->Parent))) {
-                    self(node->Parent); // Update the parent before reading its delta.
-                }
-                const Transform &t = *ComposedLocal(r, e);
-                if (node && node->Parent != state::Null) r.emplace_or_replace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(t)));
-                else r.emplace_or_replace<WorldTransform>(e, t);
-            };
-            while (!recompute.empty()) compute(recompute.Entities.back());
-        }
+        // The bones the block posed, any node dirtied since the first pass, and their descendants recompose.
         {
-            const auto &wt_reactive = reactive(r, Change::WorldTransform);
-            std::vector<std::pair<uint32_t, WorldTransform>> wt_writes;
-            wt_writes.reserve(wt_reactive.size() + sync.NewlyInserted.size());
-
-            const auto collect_wt = [&](state::Entity e) {
-                const auto *ri = r.try_get<const RenderInstance>(e);
-                if (!ri || ri->BufferIndex == UINT32_MAX) return;
-
-                const auto *wt = r.try_get<const WorldTransform>(e);
-                if (!wt) return;
-
-                auto display_wt = *wt;
-                if (const auto *ds = r.try_get<BoneDisplayScale>(e)) display_wt.S = vec3{ds->Value};
-                wt_writes.emplace_back(ri->BufferIndex, display_wt);
-                if (const auto *joints = r.try_get<const BoneJointEntities>(e); joints && r.all_of<BoneDisplayScale>(e)) {
-                    const float bone_length = r.get<BoneDisplayScale>(e).Value;
-                    const float sphere_scale = bone_length * 0.06f;
-                    if (joints->Head != state::Null) {
-                        if (const auto *jri = r.try_get<const RenderInstance>(joints->Head)) {
-                            wt_writes.emplace_back(jri->BufferIndex, Transform{wt->P, {1, 0, 0, 0}, vec3{sphere_scale}});
-                        }
-                    }
-                    if (joints->Tail != state::Null) {
-                        if (const auto *jri = r.try_get<const RenderInstance>(joints->Tail)) {
-                            const vec3 tail_pos = wt->P + wt->R * vec3{0, bone_length, 0};
-                            wt_writes.emplace_back(jri->BufferIndex, Transform{tail_pos, {1, 0, 0, 0}, vec3{sphere_scale}});
-                        }
-                    }
-                }
-            };
-            for (auto e : wt_reactive) collect_wt(e);
-            // Include newly visible entities absent from the reactive transform set.
-            for (auto e : sync.NewlyInserted) {
-                if (!wt_reactive.contains(e)) collect_wt(e);
+            auto roots = std::move(dirty_bones);
+            roots.append_range(std::span{transform_dirty.Entities}.subspan(first_pass_end));
+            if (!roots.empty()) {
+                // A bone dragged in bone edit mode moves without its children.
+                std::vector<state::Entity> held;
+                if (is_edit_mode && FindArmatureObject(r, FindActiveEntity(r)) != state::Null) held = r.view<const StartTransform>() | to<std::vector>();
+                RecomputeWorldTransforms(r, roots, r.view<const BodyPoseCache>() | to<std::vector>(), held);
             }
-            if (FlushIndexedWrites(wt_writes, [&] { return buffers.Instances.GetMutableTransforms(); })) request(RenderRequest::Reuse);
+        }
+        // Moved and newly placed bones write their display transforms and their joint spheres' into the instance transform buffer.
+        // Every other instance slot holds its world transform, which the recompute writes.
+        {
+            const auto &moved = reactive(r, Change::WorldTransform);
+            std::span<Transform> transforms;
+            const auto write = [&](state::Entity e) {
+                const auto *display_scale = r.try_get<const BoneDisplayScale>(e);
+                const auto *ri = display_scale ? r.try_get<const RenderInstance>(e) : nullptr;
+                if (!ri || ri->BufferIndex == UINT32_MAX) return;
+                const auto &wt = *WorldTransformOf(r, e);
+                if (transforms.empty()) transforms = buffers.Instances.GetMutableTransforms();
+                transforms[ri->BufferIndex] = Transform{wt.P, wt.R, vec3{display_scale->Value}};
+                const auto *joints = r.try_get<const BoneJointEntities>(e);
+                if (!joints) return;
+                const float bone_length = display_scale->Value;
+                const auto place_joint = [&](state::Entity joint, vec3 position) {
+                    if (const auto *jri = joint != state::Null ? r.try_get<const RenderInstance>(joint) : nullptr) transforms[jri->BufferIndex] = Transform{position, {1, 0, 0, 0}, vec3{bone_length * 0.06f}};
+                };
+                place_joint(joints->Head, wt.P);
+                place_joint(joints->Tail, wt.P + wt.R * vec3{0, bone_length, 0});
+            };
+            for (const auto e : moved) write(e);
+            for (const auto e : sync.NewlyInserted)
+                if (!moved.contains(e)) write(e);
+            if (!moved.empty()) request(RenderRequest::Reuse);
         }
     }
+    // The selection aggregates read this pass's world transforms.
+    UpdateSelectionState(r, viewport);
+    // Every meshlet build in this pass has committed, so unpinned meshes take their hierarchy here, pinned by the current edit primaries.
+    if (BuildDemandedClusterLods(r, viewport)) request(RenderRequest::Rebuild);
     // Update an active scene camera before processing SceneView changes.
     if (const auto camera = LookThroughCameraEntity(r); camera != state::Null &&
         reactive(r, Change::WorldTransform).contains(camera)) {
-        const auto &wt = r.get<WorldTransform>(camera);
+        const auto &wt = *WorldTransformOf(r, camera);
         r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, *LensOf(r, camera)});
     }
     {
         // Update transmission specialization before the UBO reads its pipeline state.
         const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
-        if (recompiled || !reactive(r, Change::ViewportDisplay).empty() || !reactive(r, Change::PbrSpecialization).empty()) {
+        const bool mesh_features = !reactive(r, Change::PbrMeshFeatures).empty();
+        if (mesh_features) {
+            scene_state.MeshPbrFeatures = 0u;
+            for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) scene_state.MeshPbrFeatures |= feat.Mask;
+        }
+        if (recompiled || mesh_features || AnyChanged(r, Change::ViewportDisplay, Change::PbrSpecialization)) {
             // SubmitViewport refreshes all slots only on resize, so update this lazy sampler inline.
             const auto refresh_transmission_sampler = [&] {
                 const auto info = targets.TransmissionSampler();
                 slots.SetSampler({SlotType::Sampler, r.Context.get<const RenderSamplerSlots>().Transmission}, info.Texture, info.Sampler);
                 request(RenderRequest::Rebuild);
             };
-            if (shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered) {
-                PbrFeatureMask pbr_mask{0};
+            if (!WorkbenchShading(shading)) {
+                PbrFeatureMask pbr_mask{scene_state.MeshPbrFeatures};
                 const auto &active_lighting = GetActivePbrLighting(r, viewport, shading);
                 if (active_lighting.UseSceneLights) pbr_mask |= PbrFeature::Punctual;
-                for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
                 const bool non_triangle_topology = (buffers.MeshletTopologyMask & ~1u) != 0u;
                 if (GetPipelines(r).Main.Compiler.CompilePipelines(pbr_mask, non_triangle_topology)) request(RenderRequest::Rebuild);
                 const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
@@ -1201,18 +1267,13 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
 
     // Send pending pose deltas through the view UBO.
-    if (!reactive(r, Change::TransformPending).empty() || !reactive(r, Change::TransformEnd).empty()) {
-        if (is_edit_mode) r.Context.get<GpuSceneState>().EditPreludePending = true;
-        else buffers.PreludeStale = true;
-    }
+    // Instance bounds are local, so an object transform leaves the prelude alone.
+    if (is_edit_mode && AnyChanged(r, Change::TransformPending, Change::TransformEnd)) scene_state.EditPreludePending = true;
 
     const auto render_extent = RenderExtentPx(r);
     if (buffers.FrameView != RenderView{r.get<const ViewCamera>(viewport), render_extent} ||
-        !reactive(r, Change::SceneView).empty() ||
-        !reactive(r, Change::TransformPending).empty() ||
-        !reactive(r, Change::ViewportDisplay).empty() ||
-        !reactive(r, Change::InteractionMode).empty() ||
-        !reactive(r, Change::TransformEnd).empty() ||
+        AnyChanged(r, Change::SceneView, Change::TransformPending, Change::ViewportDisplay, Change::TransformEnd) ||
+        mode_changed ||
         light_count_changed ||
         resized) {
         const float aspect = render_extent.x == 0 || render_extent.y == 0 ? 1.f : float(render_extent.x) / float(render_extent.y);
@@ -1222,7 +1283,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
         const auto &camera = r.get<const ViewCamera>(viewport);
         const auto &settings = r.get<const ViewportDisplay>(viewport);
-        const bool is_pbr_mode = settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered;
+        const bool is_pbr_mode = !WorkbenchShading(settings.ViewportShading);
         const auto &active_lighting = GetActivePbrLighting(r, viewport, settings.ViewportShading);
         const bool use_scene_lights = is_pbr_mode && active_lighting.UseSceneLights;
         const bool use_scene_world = is_pbr_mode && active_lighting.UseSceneWorld;
@@ -1284,6 +1345,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             .PrimitiveMaterialSlot = mesh_slots.PrimitiveMaterial,
             .MeshRecordSlot = buffers.MeshRecords.Buffer.Slot,
             .InstanceRecordSlot = buffers.Instances.RecordBuffer.Slot,
+            .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
             .XRayAlpha = XRayActive(settings) && settings.ViewportShading == ViewportShadingMode::Solid ? XRayOpacity(settings) : 1.f,
             .OverlayBehindOpacity = OverlayBehindOpacity(settings, r.get<const Interaction>(viewport).Mode),
@@ -1303,49 +1365,56 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
 
     // Publish dirty excite-mode vertex lists in one GPU selection transaction.
-    if (interaction_mode == InteractionMode::Excite) {
+    // Only Excite mode dirties sound selections.
+    if (!dirty_sound_selection_meshes.empty()) {
         std::vector<std::pair<state::Entity, std::span<const uint32_t>>> sound_selections;
         sound_selections.reserve(dirty_sound_selection_meshes.size());
         // Each mesh's first sound instance supplies its vertex list.
         std::unordered_map<state::Entity, std::span<const uint32_t>> sound_vertices_by_mesh;
-        if (!dirty_sound_selection_meshes.empty()) {
-            for (const auto [entity, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
-                sound_vertices_by_mesh.try_emplace(instance.Entity, meshes.Arenas().SoundVertices.Get(excitable.Vertices));
-            }
+        for (const auto [entity, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
+            sound_vertices_by_mesh.try_emplace(instance.Entity, meshes.Arenas().SoundVertices.Get(excitable.Vertices));
         }
         for (const auto mesh_entity : dirty_sound_selection_meshes) {
             const auto it = sound_vertices_by_mesh.find(mesh_entity);
             sound_selections.emplace_back(mesh_entity, it != sound_vertices_by_mesh.end() ? it->second : std::span<const uint32_t>{});
         }
         ApplyEditSelectionLists(r, sound_selections, Element::Vertex);
-        if (!dirty_sound_selection_meshes.empty()) {
-            auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>(
-                {0u, buffers.Instances.RecordBuffer.Count<InstanceRecord>()}
-            );
-            for (const auto [instance_entity, instance, render_instance] :
-                 r.view<const Instance, const RenderInstance>().each()) {
-                if (!dirty_sound_selection_meshes.contains(instance.Entity) ||
-                    render_instance.BufferIndex >= records.size()) continue;
-                auto &record = records[render_instance.BufferIndex];
-                const auto *active = r.try_get<const MeshActiveElement>(instance.Entity);
-                const auto *force = r.try_get<const VertexForce>(instance_entity);
-                record.ActiveVertex = active ? active->Handle : InvalidOffset;
-                record.ExcitedVertex = force ? force->Vertex : InvalidOffset;
+        // A sound mesh's record holds its selection and active vertex, and each instance's record its excited vertex.
+        const auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>();
+        const auto object_ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>();
+        for (const auto mesh_entity : dirty_sound_selection_meshes) {
+            scene_state.DisplayDirty.insert(mesh_entity);
+            const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
+            if (!models) continue;
+            for (uint32_t slot = models->InstanceRange.Offset; slot < models->InstanceRange.Offset + models->InstanceCount; ++slot) {
+                const auto *force = r.try_get<const VertexForce>(r.EntityAt(ObjectIndex(object_ids[slot])));
+                records[slot].ExcitedVertex = force ? force->Vertex : InvalidOffset;
             }
         }
-    }
-    if (!dirty_sound_selection_meshes.empty()) {
         request(RenderRequest::Reuse);
     }
-    if (auto &state = r.Context.get<GpuSceneState>(); state.EditSelectionDirty) {
-        for (auto &[_, work] : state.EditWork) work.CandidateReady = false;
-        state.EditPreludePending = is_edit_mode;
-        state.EditSelectionDirty = false;
+    if (scene_state.EditSelectionDirty) {
+        for (auto &[_, work] : scene_state.EditWork) work.CandidateReady = false;
+        scene_state.EditPreludePending = is_edit_mode;
+        scene_state.EditSelectionDirty = false;
         request(RenderRequest::Reuse);
     }
-    if (!rendering) UpdateAudioContacts(r);
+    // Meshes whose render data changed this pass rederive their record display fields.
+    const bool displays_refreshed = !scene_state.DisplayDirty.empty();
+    if (displays_refreshed) {
+        const std::vector<state::Entity> dirty{scene_state.DisplayDirty.begin(), scene_state.DisplayDirty.end()};
+        scene_state.DisplayDirty.clear();
+        request(RefreshMeshDisplays(r, viewport, dirty) ? RenderRequest::Rebuild : RenderRequest::Reuse);
+    }
+    if (displays_refreshed || mode_changed ||
+        AnyChanged(r, Change::Selected, Change::ActiveInstance, Change::InstanceVisibility, Change::RenderInstanceDestroyed, Change::MeshGeometry)) {
+        UpdateSilhouetteWork(r, viewport);
+    }
+    if (!rendering) {
+        UpdateModalPlacement(r);
+        UpdateAudioContacts(r);
+    }
     r.ClearChanges();
-    destroy_tracker.Storage.clear();
     r.clear<MeshGeometryDirty, MeshPositionsChanged, MeshMaterialAssignment>();
 }
 
@@ -1354,12 +1423,12 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
     reactive(r, Change::Selected).on<Selected>(On::Create | On::Destroy);
     reactive(r, Change::ActiveInstance).on<Active>(On::Create | On::Destroy);
     reactive(r, Change::BoneSelection).on<BoneSelection>(On::Create | On::Update | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
-    reactive(r, Change::Rerecord).on<RenderInstance>(On::Create | On::Destroy).on<EditMode>(On::Create | On::Update);
     reactive(r, Change::MeshActiveElement).on<MeshActiveElement>(On::Create | On::Update);
     reactive(r, Change::MeshGeometry).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     // Refresh body-mesh reachability after collider or body changes.
     reactive(r, Change::PhysicsBodyMesh).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<ColliderShape>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::MeshMaterial).on<MeshMaterialAssignment>(On::Create | On::Update);
+    reactive(r, Change::PrimitiveShape).on<PrimitiveShape>(On::Update);
     reactive(r, Change::SoundVertices).on<SoundVertices>(On::Create | On::Destroy);
     reactive(r, Change::SoundVerticesUpdated).on<SoundVertices>(On::Update);
     reactive(r, Change::VertexForce).on<VertexForce>(On::Create | On::Destroy);
@@ -1375,10 +1444,10 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
     reactive(r, Change::MaterializedTextures).on<MaterializedTextures>(On::Create | On::Update);
     reactive(r, Change::StudioEnvironment).on<StudioEnvironment>(On::Create | On::Update);
     reactive(r, Change::SceneWorld).on<gltf::SourceAssets>(On::Create | On::Update);
-    reactive(r, Change::PunctualLight).on<PunctualLight>(On::Create | On::Update).on<RenderInstance>(On::Create);
+    reactive(r, Change::PunctualLight).on<PunctualLight>(On::Create | On::Update).on<RenderInstance>(On::Create).on<Hidden>(On::Destroy);
     reactive(r, Change::ActiveMaterialVariant).on<MaterialVariants>(On::Create | On::Update);
+    reactive(r, Change::PbrMeshFeatures).on<PbrMeshFeatures>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::PbrSpecialization)
-        .on<PbrMeshFeatures>(On::Create | On::Update | On::Destroy)
         .on<MaterialPreviewLighting>(On::Create | On::Update)
         .on<RenderedLighting>(On::Create | On::Update);
     reactive(r, Change::SceneView)
@@ -1389,19 +1458,25 @@ void RegisterSceneComponentHandlers(state::Scene &r) {
         .on<LightIndex>(On::Create | On::Destroy)
         .on<EditMode>(On::Create | On::Update);
     reactive(r, Change::CameraLens).on<Perspective>(On::Create | On::Update).on<Orthographic>(On::Create | On::Update).on<LookingThrough>(On::Create | On::Destroy);
-    reactive(r, Change::WorldTransform).on<WorldTransform>(On::Create | On::Update);
+    // SetWorldTransform publishes every world transform write, and a bone's display scale reaches its instance transform.
+    reactive(r, Change::WorldTransform).on<BoneDisplayScale>(On::Update);
+    reactive(r, Change::SceneParent).on<SceneParent>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::SceneHierarchy).on<SceneParent>(On::Create | On::Update | On::Destroy).on<SceneChildren>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::Names).on<Name>(On::Create | On::Destroy);
+    reactive(r, Change::ScaleLocked).on<ScaleLocked>(On::Create | On::Destroy);
+    reactive(r, Change::EditMode).on<EditMode>(On::Create | On::Update);
+    reactive(r, Change::KeyframeSources).on<TimelineRange>(On::Create | On::Update).on<MeshMaterialSlotSelection>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::TransformPending).on<PendingTransform>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::TransformStart).on<StartTransform>(On::Create);
     reactive(r, Change::TransformEnd).on<StartTransform>(On::Destroy);
     reactive(r, Change::BonePose).on<BoneDelta>(On::Update);
+    reactive(r, Change::BoneConstraints).on<BoneConstraints>(On::Create | On::Update | On::Destroy);
+    r.Context.emplace<ConstraintTargets>();
     reactive(r, Change::TransformDirty)
         .on<Transform>(On::Create | On::Update)
-        .on<PosedLocal>(On::Create | On::Update)
-        .on<SceneNode>(On::Create | On::Update)
-        .on<BoneDisplayScale>(On::Update)
-        .on<BoneConstraints>(On::Update);
+        .on<PosedLocal>(On::Create | On::Update | On::Destroy)
+        .on<SceneParent>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::AnimationEdited)
         .on<AnimationClips>(On::Create | On::Update | On::Destroy)
         .on<Animations>(On::Update);
-    r.Context.emplace<EntityDestroyTracker>().Bind(r);
 }

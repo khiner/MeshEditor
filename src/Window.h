@@ -34,7 +34,6 @@ struct Window {
 struct HistoryRow {
     uint32_t Node;
     uint32_t Depth; // The original continuation stays inline; later branches nest.
-    bool Editable; // Whether any of the node's actions has parameters.
     uint32_t Rails{}; // Ancestor forks with another branch below this row.
 };
 struct HistoryWindow : Window {

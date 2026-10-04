@@ -16,6 +16,7 @@
 #include "mesh/MeshTopology.h"
 #include "mesh/MeshTopologyEdit.h"
 #include "mesh/MeshPipelines.h"
+#include "mesh/ScratchChunks.h"
 #include "metal/Dispatch.h"
 #include "render/MeshTopologyRepair.h"
 #include "render/MeshletBuildGpu.h"
@@ -34,7 +35,7 @@
 #include "render/MeshBuffers.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
-#include "selection/Selection.h"
+#include "selection/SelectionState.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionComponents.h"
 #include "state/Scene.h"
@@ -132,9 +133,10 @@ bool RepairsTriangleRender(const state::Scene &r, state::Entity entity, const Me
 }
 
 // Publishes a finished in-place edit's render, pose and selection summary state.
-// A record whose live elements now draw as another topology rebuilds through BuildMeshletsNow, since topologies never mix.
+// A record whose live elements now draw as another topology rebuilds through the settle pass's meshlet batch, since topologies never mix.
 // A record without a render owner is a newly created canonical mesh.
-void FinishTopologyEdit(state::Scene &r, state::Entity entity, const MeshTopologyTask &task, MeshTopologyEdit &edit) {
+// A point or line record's moved elements join `element_repairs`, which repair together.
+void FinishTopologyEdit(state::Scene &r, state::Entity entity, const MeshTopologyTask &task, MeshTopologyEdit &edit, std::vector<ElementMeshletRepair> &element_repairs) {
     auto &buffers=r.Context.get<GpuBuffers>();
     auto &meshes=r.Context.get<MeshStore>();
     const auto *render_owner=TryMeshBuffers(r,entity);
@@ -151,17 +153,15 @@ void FinishTopologyEdit(state::Scene &r, state::Entity entity, const MeshTopolog
         else if (owner.RenderTopology!=0u && edit.Repair) {
             // A point record's repaired vertices, or a line record's retired edges and the edges of its repaired corners, move between its clusters.
             const auto &storage=edit.Chain.Scratch;
-            std::vector<uint32_t> affected;
+            auto &affected=element_repairs.emplace_back(ElementMeshletRepair{.StoreId=task.SourceId}).Elements;
             if (owner.RenderTopology==2u) ForEachWorkElement(storage,edit.Repair->Elements[0],[&](uint32_t v) { affected.push_back(v); });
             else {
                 const auto edges=meshes.Arenas().HalfedgeEdges.Buffer.GetSpan<uint32_t>();
                 ForEachWorkElement(storage,edit.RetiredEdges,[&](uint32_t e) { affected.push_back(e); });
                 ForEachWorkElement(storage,edit.Repair->Elements[1],[&](uint32_t h) { affected.push_back(edges[h]); });
             }
-            RepairElementMeshlets(r,edit.Chain,owner,affected);
         }
     }
-    RefreshElementSelectionSummaries(r,std::span{&entity,1u});
     if (ready && edit.InsetBasis.Count) {
         // The staged edit captured its basis into the session's preview cache.
         auto &session=project::Session(r);
@@ -243,17 +243,34 @@ std::vector<std::optional<uint32_t>> EditTopology(state::Scene &r, std::span<con
     }
     RepairTopologyRender(r,chain,repairs,copies);
     MeshTopologyEdit::FinishAll(r,finished);
-    for (uint32_t i=0u;i<edits.size();++i)
-        if (outputs[i]==edits[i].SourceId) FinishTopologyEdit(r,mesh_entities[i],tasks[i],edits[i]);
+    std::vector<state::Entity> in_place;
+    std::vector<ElementMeshletRepair> element_repairs;
+    for (uint32_t i=0u;i<edits.size();++i) {
+        if (outputs[i]!=edits[i].SourceId) continue;
+        FinishTopologyEdit(r,mesh_entities[i],tasks[i],edits[i],element_repairs);
+        in_place.push_back(mesh_entities[i]);
+    }
+    RepairElementMeshlets(r,chain,element_repairs);
     chain.Submit();
+    RefreshElementSelectionSummaries(r,in_place);
     return outputs;
 }
 
 // Runs the tasks as one topology action.
+// Spans of tasks edit one after another, each under the scratch budget, so a batch of large meshes holds one span's scratch at a time.
 void RunTasks(state::Scene &r, std::span<const state::Entity> mesh_entities, std::span<const MeshTopologyTask> tasks) {
     const profile::CpuScope scope{"TopologyAction"};
     if (tasks.empty()) return;
-    RunTopologyAction(r,mesh_entities,[&] { return std::ranges::any_of(EditTopology(r,mesh_entities,tasks),[](const auto &output) { return output.has_value(); }); });
+    const auto &meshes=r.Context.get<const MeshStore>();
+    const auto split=ChunkByScratch(uint32_t(tasks.size()),ScratchWordBudget,[&](uint32_t i) { return TopologyScratchBound(meshes,tasks[i]); });
+    RunTopologyAction(r,mesh_entities,[&] {
+        bool changed=false;
+        for (const auto span:split.Chunks) {
+            const auto outputs=EditTopology(r,mesh_entities.subspan(span.Offset,span.Count),tasks.subspan(span.Offset,span.Count));
+            changed|=std::ranges::any_of(outputs,[](const auto &output) { return output.has_value(); });
+        }
+        return changed;
+    });
 }
 
 // Runs the task `make` builds for each mesh, skipping the meshes it returns nothing for.
@@ -283,8 +300,7 @@ std::pair<uint32_t, uint32_t> SelectedVertexSpan(const MeshStore &meshes, uint32
 
 // Moves the selected faces of each mesh into a new mesh object placed over the mesh's primary instance.
 // Each mesh copies its selected faces into a new record and deletes them from its source, and every mesh's edits share one batch.
-void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    const auto primaries = ::selection::ComputePrimaryEditInstances(r);
+void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, const ::selection::PrimaryEditInstanceMap &primaries) {
     std::vector<state::Entity> entities;
     std::vector<MeshTopologyTask> tasks;
     for (const auto e:mesh_entities) {
@@ -302,7 +318,7 @@ void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entit
             const auto instance=primary!=primaries.end() ? primary->second : state::Null;
             MeshInstanceCreateInfo create{
                 .Name=std::format("{}.001",instance!=state::Null ? GetName(r,instance) : "Mesh"),
-                .Transform=instance!=state::Null ? Transform{r.get<const WorldTransform>(instance)} : Transform{},
+                .Transform=instance!=state::Null ? *WorldTransformOf(r, instance) : Transform{},
                 .Select=MeshInstanceCreateInfo::SelectBehavior::None,
             };
             created.push_back(::AddMesh(r,*outputs[i],std::move(create)).first);
@@ -310,7 +326,9 @@ void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entit
         if (created.empty()) return false;
         RequestRender(r,RenderRequest::Rebuild);
         r.Context.get<GpuSceneState>().LodDemand.insert(created.begin(),created.end());
-        UpdateAuthoredMorphShadingNow(r,created);
+        mtl::ComputeChain chain{r.Context.get<const MeshStore>().BufferContext()};
+        UpdateAuthoredMorphShading(r,chain,created);
+        chain.Submit();
         return true;
     });
 }
@@ -792,8 +810,7 @@ void SymmetrizeSelected(state::Scene &r, std::span<const state::Entity> mesh_ent
 }
 
 // Cuts every edge whose screen segment crosses the knife segment, at the crossing.
-void KnifeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, vec2 start, vec2 end, const RenderView &view) {
-    const auto primaries = ::selection::ComputePrimaryEditInstances(r);
+void KnifeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, const ::selection::PrimaryEditInstanceMap &primaries, vec2 start, vec2 end, const RenderView &view) {
     const float aspect = view.Extent.y > 0.f ? view.Extent.x / view.Extent.y : 1.f;
     const auto view_projection = view.Camera.Projection(aspect) * view.Camera.View();
     RunPerMesh(r, mesh_entities, [&](state::Entity e, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
@@ -804,7 +821,7 @@ void KnifeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities
             .Op = MeshTopologyOp::Subdivide,
             .Param0 = 1.f,
             .Flags = TopologyFlagScreenCuts | TopologyFlagLoopCutSelect,
-            .ScreenTransform = view_projection * ToMatrix(Transform{r.get<const WorldTransform>(primary->second)}),
+            .ScreenTransform = view_projection * ToMatrix(*WorldTransformOf(r, primary->second)),
             .Extent = view.Extent,
             .KnifeStart = start,
             .KnifeEnd = end,
@@ -867,22 +884,25 @@ bool UpdateInsetPreview(state::Scene &r, state::Entity viewport, const Inset &in
         for (const auto &entry:cache.Entries)
             meshes.Arenas().Vertices.Buffer.CaptureWriteRanges(entry.Ranges,sizeof(Vertex));
     }
+    // The positions, their refresh, the selection aggregates and the meshlet refit share one submit.
+    mtl::ComputeChain chain{meshes.BufferContext()};
     {
         const profile::CpuScope positions{"InsetPositionPass"};
-        mtl::ComputeChain chain{meshes.BufferContext()};
         const auto &pipeline=GetMeshPipelines(r)[MeshPass::InsetPreviewPositions];
-        for (const auto &entry:cache.Entries) {
-            const InsetPreviewPushConstants pc{
-                .Basis={cache.Basis.Buffer.Slot,entry.Basis.Offset},.VertexSlot=meshes.Slots().Vertices,
-                .Count=uint32_t(uint64_t(entry.Basis.Count)*sizeof(uint32_t)/sizeof(InsetVertexBasis)),.Thickness=std::max(inset.Thickness,0.f),.Depth=inset.Depth};
-            chain.Groups(pipeline,pc,(pc.Count+255u)/256u);
-        }
-        chain.Submit();
+        // Each entry writes its own mesh's vertices.
+        chain.Concurrent([&] {
+            for (const auto &entry:cache.Entries) {
+                const InsetPreviewPushConstants pc{
+                    .Basis={cache.Basis.Buffer.Slot,entry.Basis.Offset},.VertexSlot=meshes.Slots().Vertices,
+                    .Count=uint32_t(uint64_t(entry.Basis.Count)*sizeof(uint32_t)/sizeof(InsetVertexBasis)),.Thickness=std::max(inset.Thickness,0.f),.Depth=inset.Depth};
+                chain.Groups(pipeline,pc,(pc.Count+255u)/256u);
+            }
+        });
     }
     std::vector<MeshVertexChanges> changed;
     changed.reserve(cache.Entries.size());
     for (const auto &entry:cache.Entries) changed.push_back({entry.Entity,entry.Ranges});
-    RefreshEditedPositions(r,changed);
+    RefreshEditedPositions(r,chain,changed);
     std::vector<MeshStore::SelectionUpdate> aggregates;
     for (const auto &entry:cache.Entries) {
         if (!meshes.Get(entry.StoreId).SelectionSummary.Count) continue;
@@ -893,8 +913,7 @@ bool UpdateInsetPreview(state::Scene &r, state::Entity viewport, const Inset &in
                 handle=(handle/MeshElementBlockSize+1u)*MeshElementBlockSize;
             }
     }
-    meshes.UpdateSelection(r,aggregates);
-    RefreshElementSelectionSummaries(r,targets);
+    meshes.UpdateSelection(r,chain,aggregates);
     // The canonical fine meshlet records are also used by static culling,
     // coarse repair, and replay. Refit their bounds and cones from current
     // positions without changing the meshlet topology or render vertex order.
@@ -905,8 +924,10 @@ bool UpdateInsetPreview(state::Scene &r, state::Entity viewport, const Inset &in
         refits.push_back({&MeshBuffersOf(r,entry.Entity),&gpu.GeometryWork,scene.EditWork.at(entry.Entity).Meshlets});
     {
         const profile::CpuScope refit_scope{"InsetRefitPass"};
-        RefitCanonicalMeshletBounds(r,refits);
+        RefitCanonicalMeshletBounds(r,chain,refits);
     }
+    chain.Submit();
+    RefreshElementSelectionSummaries(r,targets);
     // This preview already repaired the canonical meshlet bounds. Its scratch
     // edit work still serves later parameter updates, without a full pose.
     for (const auto &entry:cache.Entries) r.Context.get<GpuSceneState>().EditWork.at(entry.Entity).RequiresPose=false;
@@ -936,7 +957,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 latch_translate();
             },
             [&](Split) { RunOperator(r, targets, MeshTopologyOp::SplitFaces); },
-            [&](Separate) { SeparateSelected(r, targets); },
+            [&](Separate) { SeparateSelected(r, targets, r.get<const EditPrimaries>(viewport).All); },
             [&](const Subdivide &a) { RunOperator(r, targets, MeshTopologyOp::Subdivide, float(std::max(a.Cuts, 1u))); },
             [&](Triangulate) { RunOperator(r, targets, MeshTopologyOp::Triangulate); },
             [&](TrisToQuads) { RunOperator(r, targets, MeshTopologyOp::TrisToQuads); },
@@ -959,7 +980,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](const Symmetrize &a) { SymmetrizeSelected(r, targets, uint8_t(a.Axis), a.Negative); },
             [&](const Solidify &a) { RunOperator(r, targets, MeshTopologyOp::Solidify, a.Thickness); },
             [&](ConnectVertices) { RunOperator(r, targets, MeshTopologyOp::ConnectVertices); },
-            [&](const Knife &a) { KnifeSelected(r, targets, a.Start, a.End, *a.View); },
+            [&](const Knife &a) { KnifeSelected(r, targets, r.get<const EditPrimaries>(viewport).All, a.Start, a.End, *a.View); },
             [&](BridgeEdgeLoops) { BridgeSelected(r, targets); },
             [&](const GridFill &a) { GridFillSelected(r, targets, a.Span); },
             [&](const FillHoles &a) { FillHolesSelected(r, targets, a.Sides); },

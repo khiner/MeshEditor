@@ -113,15 +113,19 @@ RbpBody BuildRbpBody(rbp::World &world, std::span<const rbp::Index> colliders, c
 
 void UpdateRbpBody(rbp::World &world, RbpBody &body, const Transform &node, const PhysicsMotion *motion, const PhysicsVelocity *velocity) {
     auto updated = body;
+    // A body cooked without motion weighs its geometry once it moves.
+    if (motion && updated.Shape != rbp::NoIndex && !(updated.NaturalMass.InvMass > 0)) {
+        updated.NaturalMass = rbp::MassProperties(world.Shapes[updated.Shape], 1, world.ShapeVertices.All(), world.Shapes.All(), world.CompoundChildren.All());
+    }
     const auto desc = DescribeBody(updated, node, motion, velocity, world.Filters[body.Body].Sensor);
     const auto mass = *desc.Mass;
-    world.Masses[body.Body] = {
+    world.SetBodyMass(body.Body, {
         .InvInertiaLocal = {mass.Inertia.x > 0 ? 1 / mass.Inertia.x : 0, mass.Inertia.y > 0 ? 1 / mass.Inertia.y : 0, mass.Inertia.z > 0 ? 1 / mass.Inertia.z : 0},
         .InvMass = mass.Mass > 0 ? 1 / mass.Mass : 0,
         .GravityScale = desc.GravityScale,
         .LinearDamping = desc.LinearDamping,
         .AngularDamping = desc.AngularDamping,
-    };
+    });
     body = updated;
     StoreInitialState(world, body, desc);
 }

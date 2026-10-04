@@ -1,31 +1,21 @@
 #pragma once
 
-#include "gpu/EditSelectionStorage.h"
 #include "gpu/Types.h"
 
+// One instance's own draw state.
+// Its mesh's record holds everything its instances share.
 struct InstanceRecord {
-    uint32_t PrimitiveRoot DEFAULT(InvalidOffset);
-    uint32_t PrimitiveCount DEFAULT();
     uint32_t Mesh DEFAULT(InvalidOffset);
-    uint32_t BoneDeformOffset DEFAULT(InvalidOffset);
+    uint32_t ObjectId DEFAULT();
     uint32_t ArmatureDeformOffset DEFAULT(InvalidOffset);
-    uint32_t MorphDeformOffset DEFAULT(InvalidOffset);
     uint32_t MorphWeightsOffset DEFAULT(InvalidOffset);
-    uint32_t MorphTargetCount DEFAULT();
+    // Pose namespaces of an instance deformed apart from its mesh's other instances.
     uint32_t PositionNamespace DEFAULT(InvalidOffset);
+    uint32_t MeshletBoundsNamespace DEFAULT(InvalidOffset);
     uint32_t MorphNormalNamespace DEFAULT(InvalidOffset);
     uint32_t VertexNormalNamespace DEFAULT(InvalidOffset);
     uint32_t SectorNamespace DEFAULT(InvalidOffset);
     uint32_t FaceNormalNamespace DEFAULT(InvalidOffset);
-    uint32_t MeshletBoundsNamespace DEFAULT(InvalidOffset);
-    EditSelectionStorage Selection DEFAULT();
-    uint32_t EditEdgeSharpnessOffset DEFAULT(InvalidOffset);
-    uint32_t HasPendingVertexTransform DEFAULT();
-    uint32_t PrimaryEditInstanceIndex DEFAULT(InvalidOffset);
-    uint32_t ObjectId DEFAULT();
-    uint32_t Flags DEFAULT();
-    uint32_t ElementIdOffset DEFAULT();
-    uint32_t ActiveVertex DEFAULT(InvalidOffset);
     uint32_t ExcitedVertex DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(InstanceRecord) == 120, "InstanceRecord size");
+static_assert(sizeof(InstanceRecord) == 44, "InstanceRecord size");

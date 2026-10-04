@@ -41,7 +41,8 @@ struct RbpBody {
 // Throw on invalid mass properties or exhausted pools and release partial allocations.
 RbpBody BuildRbpBody(rbp::World &, std::span<const rbp::Index> colliders, const Transform &node, const PhysicsMotion *motion, const PhysicsVelocity *velocity = nullptr, bool sensor = false, const RbpBody *previous = nullptr);
 
-// Update authored properties without recooking geometry; restore initial states and reset dynamics before advancing.
+// Update authored properties, including a change between static and moving, without recooking geometry.
+// Restore initial states and reset dynamics before advancing.
 void UpdateRbpBody(rbp::World &, RbpBody &, const Transform &, const PhysicsMotion *, const PhysicsVelocity *);
 
 CachedPose RbpNodePose(rbp::Pose body_pose, rbp::Pose frame);

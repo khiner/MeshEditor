@@ -23,7 +23,6 @@
 #include "action/Selection.h"
 #include "action/View.h"
 #include "animation/AnimationData.h"
-#include "animation/Keyframes.h"
 #include "animation/TimelineUi.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/AudioDevice.h"
@@ -59,6 +58,7 @@
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
 #include "selection/SelectionComponents.h"
+#include "selection/SelectionState.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/MacBackend.h"
 #include "viewport/FrameState.h"
@@ -123,7 +123,7 @@ NS::SharedPtr<MTL::CommandBuffer> RenderAndPresentFrame(const mtl::Context &ctx,
         const profile::CpuScope present_scope{"Present"};
         command_buffer->presentDrawable(drawable);
     }
-    command_buffer->commit();
+    mtl::Commit(command_buffer);
     return NS::RetainPtr(command_buffer);
 }
 
@@ -519,7 +519,7 @@ EditorWindowsFrame BeginEditorWindows(
             Spacing();
             Unindent(6);
             PopStyleVar();
-            const auto keyframes = CollectKeyframes(r, viewport);
+            const auto &keyframes = r.get<const SelectedKeyframes>(viewport).Frames;
             if (auto action = RenderAnimationTimeline(
                     r.get<const TimelineRange>(viewport), r.get<const TimelinePlayback>(viewport),
                     r.get<const AnimationTimelineView>(viewport), r.get<const TimelineNavigation>(viewport), r.get<const Animations>(viewport),
@@ -616,7 +616,7 @@ void RenderAppImage(const mtl::Context &ctx, ImDrawData *draw_data, ValidationIm
             std::abort();
         }
     });
-    command_buffer->commit();
+    mtl::Commit(command_buffer);
 }
 
 struct ValidationUi {
@@ -850,7 +850,7 @@ void CompareValidationImages(state::Scene &r, ValidationSession &session, std::s
             encoder->dispatchThreads(MTL::Size(extent.Width, extent.Height, 1), MTL::Size(16, 16, 1));
         }
     }
-    command_buffer->commit();
+    mtl::Commit(command_buffer);
     command_buffer->waitUntilCompleted();
     if (const auto *error = command_buffer->error()) throw std::runtime_error(error->localizedDescription()->utf8String());
     for (uint32_t i = 0; i < restored.size(); ++i) {
@@ -970,14 +970,15 @@ bool FrameScene(state::Scene &r, state::Entity viewport, float aspect_ratio) {
     const auto &buffers = r.Context.get<const GpuBuffers>();
     AABB scene;
     bool any_bounded_instance = false;
-    for (const auto [e, ri, wt] : r.view<const RenderInstance, const WorldTransform>().each()) {
-        if (ri.BufferIndex == UINT32_MAX) continue;
+    for (const auto [e, ri] : r.view<const RenderInstance>(state::Exclude<Hidden>).each()) {
+        const auto *world = WorldTransformOf(r, e);
+        if (ri.BufferIndex == UINT32_MAX || !world) continue;
         any_bounded_instance = true;
         // Exclude empty bounds from gizmo and wireframe instances.
         const auto &local = buffers.Instances.GetBounds(ri.BufferIndex);
         if (local.Min.x > local.Max.x || local.Min.y > local.Max.y || local.Min.z > local.Max.z) continue;
 
-        const auto m = ToMatrix(wt);
+        const auto m = ToMatrix(*world);
         for (int c = 0; c < 8; ++c) {
             const vec3 v{m * vec4{(c & 1) ? local.Max.x : local.Min.x, (c & 2) ? local.Max.y : local.Min.y, (c & 4) ? local.Max.z : local.Min.z, 1.f}};
             scene.Min = Min(scene.Min, v);
@@ -1090,7 +1091,7 @@ struct BenchmarkDriver {
         if (Action != CaptureRequest::BenchmarkAction::Transform && Action != CaptureRequest::BenchmarkAction::Visibility) return;
         std::vector<state::Entity> entities;
         for (const auto [entity, kind] : r.view<const ObjectKind>(state::Exclude<SubElementOf>).each()) {
-            if (kind.Value == ObjectType::Mesh && r.all_of<Instance, Transform, RenderInstance>(entity)) entities.emplace_back(entity);
+            if (kind.Value == ObjectType::Mesh && r.all_of<Instance, Transform>(entity) && !r.all_of<Hidden>(entity)) entities.emplace_back(entity);
         }
         std::ranges::sort(entities);
         entities.resize(std::min<size_t>(entities.size(), capture.BenchActionCount));

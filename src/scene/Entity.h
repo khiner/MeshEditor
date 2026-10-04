@@ -20,7 +20,10 @@ void RebuildEntityNames(state::Scene &);
 void ReserveEntityNames(state::Scene &, size_t additional);
 
 // Choose an unused editor name and attach it to an entity.
+// A taken prefix gets a suffix past every live "{prefix}_{N}".
 Name &EmplaceUniqueName(state::Scene &, state::Entity, std::string_view prefix);
+// The name without one trailing `_<digits>` suffix, which a unique name or a duplicate renumbers.
+std::string_view NameStem(std::string_view);
 
 // A scene: a named, possibly empty grouping of objects.
 struct Scene {
@@ -73,6 +76,12 @@ std::vector<state::Entity> SortedEntities(std::ranges::input_range auto &&entiti
     auto sorted = entities | std::ranges::to<std::vector<state::Entity>>();
     std::ranges::sort(sorted, compare);
     return sorted;
+}
+
+// Whether `entities`, in the entity index order views run in, hold `e`.
+inline bool ContainsInIndexOrder(std::span<const state::Entity> entities, state::Entity e) {
+    const auto it = std::ranges::lower_bound(entities, state::Index(e), {}, state::Index);
+    return it != entities.end() && *it == e;
 }
 
 std::string IdString(state::Entity);

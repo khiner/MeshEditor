@@ -7,8 +7,9 @@ struct Instance {
 };
 
 // Canonical per-object visibility, present == hidden (sparse, since most objects are visible).
-// The settle pass derives a RenderInstance for each Instance without Hidden.
+// The settle pass writes it into the instance's state byte, and every draw, pick and overlay pass skips a hidden instance.
 struct Hidden {};
+constexpr uint8_t InstanceStateHidden{1u << 2};
 
 // A node's own KHR_node_visibility flag. Hidden follows this flag and the flags of every ancestor.
 struct Visibility {

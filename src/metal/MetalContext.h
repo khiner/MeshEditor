@@ -31,6 +31,10 @@ namespace mtl {
 struct PhysicalPagePool;
 struct PhysicalPage;
 NS::SharedPtr<NS::String> Str(std::string_view);
+// Commits the command buffer and counts it in CommittedCommandBuffers.
+void Commit(MTL::CommandBuffer *);
+// The number of command buffers this process has committed.
+uint64_t CommittedCommandBuffers();
 
 // Queue-wide residency includes the physical heaps behind sparse GPU buffers.
 struct Context {

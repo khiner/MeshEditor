@@ -12,8 +12,8 @@
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
-#include "selection/Selection.h"
 #include "selection/SelectionComponents.h"
+#include "selection/SelectionState.h"
 #include "state/Scene.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
@@ -59,14 +59,14 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 const auto e = FindActiveEntity(r);
                 if (e == state::Null || !HasLens(r, e)) return;
                 SetLookThrough(r, viewport, e);
-                const auto &wt = r.get<WorldTransform>(e);
+                const auto &wt = *WorldTransformOf(r, e);
                 r.patch<ViewCamera>(viewport, [&](auto &vc) { vc.AnimateToLookThrough(wt.P, wt.R, 1.f); });
             },
             [&](ExitLookThroughCamera) { ClearLookThrough(r, viewport); },
             [&](const SetLookThroughCamera &a) {
-                if (!HasLens(r, a.Entity) || !r.all_of<WorldTransform>(a.Entity)) return;
+                if (!HasLens(r, a.Entity) || !WorldTransformOf(r, a.Entity)) return;
                 SetLookThrough(r, viewport, a.Entity);
-                const auto &wt = r.get<WorldTransform>(a.Entity);
+                const auto &wt = *WorldTransformOf(r, a.Entity);
                 r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, *LensOf(r, a.Entity)});
             },
             [&](const OrbitViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.RotateBy(a.DeltaRad); }); },
@@ -86,7 +86,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](const SetViewCameraTargetDirection &a) { r.patch<ViewCamera>(viewport, [&](auto &c) { c.SetTargetDirection(a.Direction); }); },
             [&](const TransformSelection &a) {
                 const bool bone_edit_mode = IsBoneEditMode(r, viewport);
-                const auto root_selected = RootSelectedForTransform(r, viewport);
+                const auto &root_selected = r.get<const TransformRoots>(viewport).Roots;
 
                 const auto &pivot = StartPivotOf(r, viewport);
                 const auto &td = a.Delta;
@@ -95,13 +95,13 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 std::vector<std::pair<state::Entity, Transform>> locals;
                 std::vector<std::pair<state::Entity, float>> bone_scales;
                 const auto make_local = [&](state::Entity e, const Transform &world, const Transform &pd) {
-                    Transform local{.P = Conjugate(pd.R) * ((world.P - pd.P) / pd.S), .R = Conjugate(pd.R) * world.R, .S = r.all_of<ScaleLocked>(e) ? EditedLocal(r, e)->S : world.S / pd.S};
+                    Transform local{.P = Conjugate(pd.R) * ((world.P - pd.P) / pd.S), .R = Conjugate(pd.R) * world.R, .S = r.all_of<ScaleLocked>(e) ? ComposedLocal(r, e)->S : world.S / pd.S};
                     locals.emplace_back(e, local);
                 };
-                // On the first drag frame StartTransform isn't snapshotted yet, so current WorldTransform is the start.
+                // On the first drag frame StartTransform isn't snapshotted yet, so the current world transform is the start.
                 const auto get_start = [&](state::Entity e) -> std::pair<Transform, Transform> {
                     if (const auto *st = r.try_get<const StartTransform>(e)) return {st->T, st->ParentDelta};
-                    return {r.get<const WorldTransform>(e), ToTransform(GetParentDelta(r, e))};
+                    return {*WorldTransformOf(r, e), ToTransform(GetParentDelta(r, e))};
                 };
                 const auto get_start_bone_length = [&](state::Entity e) -> std::optional<float> {
                     if (const auto *sbl = r.try_get<const StartBoneLength>(e)) return sbl->Value;
@@ -153,7 +153,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
 
                 // Snapshot starts before patching so later patches don't perturb the snapshot, then apply.
                 for (const auto &[e, _] : locals)
-                    if (!r.all_of<StartTransform>(e)) r.emplace<StartTransform>(e, r.get<WorldTransform>(e), ToTransform(GetParentDelta(r, e)));
+                    if (!r.all_of<StartTransform>(e)) r.emplace<StartTransform>(e, *WorldTransformOf(r, e), ToTransform(GetParentDelta(r, e)));
                 for (const auto &[e, _] : bone_scales)
                     if (!r.all_of<StartBoneLength>(e))
                         if (const auto *ds = r.try_get<BoneDisplayScale>(e)) r.emplace<StartBoneLength>(e, ds->Value);
@@ -161,9 +161,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 for (const auto &[e, length] : bone_scales) r.emplace_or_replace<BoneDisplayScale>(e, length);
             },
             [&](const TransformElements &a) {
-                for (const auto &[_, instance_entity] : ::selection::ComputePrimaryEditInstances(r, false)) {
+                for (const auto &[_, instance_entity] : r.get<const EditPrimaries>(viewport).Transformable) {
                     if (!r.all_of<StartTransform>(instance_entity)) {
-                        r.emplace<StartTransform>(instance_entity, r.get<WorldTransform>(instance_entity), ToTransform(GetParentDelta(r, instance_entity)));
+                        r.emplace<StartTransform>(instance_entity, *WorldTransformOf(r, instance_entity), ToTransform(GetParentDelta(r, instance_entity)));
                     }
                 }
                 const auto &pivot = StartPivotOf(r, viewport);

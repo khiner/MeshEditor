@@ -1,6 +1,5 @@
 #include "render/LodNodeEdit.h"
 #include "Profile.h"
-#include "gpu/LodNodeRefitPushConstants.h"
 #include "mesh/MeshPipelines.h"
 #include "metal/Dispatch.h"
 #include "render/GpuBuffers.h"
@@ -180,9 +179,9 @@ void RestructureLeaves(GpuBuffers &buffers, MeshBuffers &owner, const LeafEdits 
 }
 } // namespace
 
-void EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers &owner, std::span<const uint32_t> removed, std::span<const LodClusterRun> added,
-                  std::span<const uint32_t> touched) {
-    if (removed.empty() && added.empty() && touched.empty()) return;
+LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers &owner, std::span<const uint32_t> removed, std::span<const LodClusterRun> added,
+                          std::span<const uint32_t> touched) {
+    if (removed.empty() && added.empty() && touched.empty()) return {};
     const profile::CpuScope scope{"LodNodeEdit"};
     auto &buffers = r.Context.get<GpuBuffers>();
     if (owner.MeshletRoot==InvalidOffset || owner.NodeRoot==InvalidOffset) throw std::invalid_argument("LOD membership edit requires a live render owner.");
@@ -291,7 +290,7 @@ void EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers &owner,
         buffers.MeshletLodDepth = tree_depth;
     }
     std::vector<uint32_t> jobs;
-    std::vector<Range> batches;
+    std::vector<std::pair<uint32_t, Range>> batches;
     for (const auto &[depth,level] : levels) {
         const auto first = uint32_t(jobs.size());
         for (const auto id : level) {
@@ -307,16 +306,17 @@ void EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers &owner,
             else jobs.push_back(id);
             buffers.LodNodes.GetMutable({id,1u})[0] = node;
         }
-        batches.push_back({first,uint32_t(jobs.size())-first});
+        if (jobs.size()>first) batches.push_back({depth,{first,uint32_t(jobs.size())-first}});
     }
     for (const auto id : primitives) {
         auto &primitive = buffers.Primitives.GetMutable({id,1u})[0];
         primitive.MeshletCount = buffers.LodNodes.Get({primitive.LodRootNode,1u})[0].MeshletCount;
         primitive.Level0Count = buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletCount;
     }
-    if (jobs.empty()) return;
+    if (jobs.empty()) return {};
     const auto job_words=chain.Scratch.Allocate(std::span<const uint32_t>{jobs});
-    LodNodeRefitPushConstants pc{
+    for (auto &[depth,batch] : batches) batch.Offset+=job_words.Offset;
+    const LodNodeRefitPushConstants pc{
         .Jobs={chain.Scratch.Buffer.Slot,job_words.Offset},
         .Nodes=index.Ref(owner.NodeRoot),.Meshlets=index.Ref(owner.MeshletRoot),.Groups=index.Ref(owner.GroupRoot),
         .NodeSlot=buffers.LodNodes.Buffer.Slot,.ParentSlot=buffers.LodParents.Buffer.Slot,
@@ -324,10 +324,24 @@ void EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers &owner,
         .NodeCapacity=std::min(buffers.LodNodes.Buffer.Count<LodNode>(),buffers.LodParents.Buffer.Count<uint32_t>()),.MeshletCapacity=buffers.Meshlets.Buffer.Count<MeshletRecord>(),
         .GroupCapacity=buffers.ClusterGroups.Buffer.Count<ClusterGroup>(),.IndexNodeCapacity=index.Nodes.Buffer.Count<MeshletIndexNode>(),
     };
+    return {pc,std::move(batches)};
+}
+
+void RecordLodNodeRefits(state::Scene &r, mtl::ComputeChain &chain, std::span<const LodNodeRefit> refits) {
+    uint32_t deepest = 0u;
+    for (const auto &refit : refits)
+        for (const auto &[depth,batch] : refit.Depths) deepest = std::max(deepest,depth);
     const auto &pipeline = GetMeshPipelines(r)[MeshPass::LodNodeRefit];
-    for (const auto batch : batches) {
-        pc.Jobs.Offset = job_words.Offset+batch.Offset;
-        pc.Count = batch.Count;
-        chain.Groups(pipeline,pc,pc.Count,128u);
+    for (uint32_t depth = deepest+1u; depth--;) {
+        chain.Concurrent([&] {
+            for (const auto &refit : refits)
+                for (const auto &[at,batch] : refit.Depths) {
+                    if (at != depth) continue;
+                    auto pc = refit.Pc;
+                    pc.Jobs.Offset = batch.Offset;
+                    pc.Count = batch.Count;
+                    chain.Groups(pipeline,pc,pc.Count,128u);
+                }
+        });
     }
 }

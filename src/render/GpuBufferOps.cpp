@@ -51,7 +51,10 @@ void GpuBuffers::ReleaseMeshes(std::span<const uint32_t> store_ids) {
     std::vector<MeshBuffers *> records;
     for (const auto id : ids) records.push_back(&*Meshes[id]);
     Release(records);
-    for (const auto id : ids) Meshes[id].reset();
+    for (const auto id : ids) {
+        Meshes[id].reset();
+        Retally(id, {});
+    }
 }
 
 void FreeInstanceRange(state::Scene &r, Range range) { r.Context.get<GpuBuffers>().Instances.Free(range); }
@@ -67,6 +70,7 @@ Range InstanceArena::Allocate(uint32_t count) {
     const auto range = Allocator.Allocate(count);
     if (range.Count == 0) return range;
     EnsureCapacity(range.Offset + range.Count);
+    ClearStates(range);
     return range;
 }
 
@@ -76,8 +80,6 @@ void InstanceArena::CopyInstances(uint32_t src_offset, uint32_t dst_offset, uint
         buf.Move(uint64_t(src_offset) * sz, uint64_t(dst_offset) * sz, count * sz);
     });
 }
-
-void InstanceArena::ReserveAdditional(uint32_t count) { EnsureCapacity(uint64_t(Allocator.HighWaterMark()) + count); }
 
 void InstanceArena::Reset() {
     Allocator = {};
@@ -128,7 +130,7 @@ GpuBuffers::GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
       SceneViewUBO{Ctx, ViewUboStride() * (MaxBlurSteps + 1)},
       ViewportThemeUBO{Ctx, sizeof(ViewportTheme)},
       WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights)},
-      PreludeDispatchArgs{Ctx, PreludeGroups::PassCount * sizeof(MTL::DispatchThreadgroupsIndirectArguments)},
+      PreludeDispatchArgs{Ctx, PreludePassCount * sizeof(MTL::DispatchThreadgroupsIndirectArguments)},
       ObjectPickKeys{Ctx, sizeof(uint32_t)},
       ObjectPickSeenBitset{Ctx, sizeof(uint32_t)},
       ObjectBoxBitset{Ctx, sizeof(uint32_t)},
@@ -213,6 +215,12 @@ std::vector<uint32_t> GpuBuffers::MeshletOwnerBlocks(const MeshBuffers &mb) cons
     std::ranges::sort(blocks);
     blocks.erase(std::unique(blocks.begin(),blocks.end()),blocks.end());
     return blocks;
+}
+
+void GpuBuffers::UpdatePosedMeshletBlocks(const MeshBuffers &owner, std::span<const uint32_t> ids) {
+    std::vector<uint32_t> blocks;
+    for (const auto id : ids) if (blocks.empty() || blocks.back() != id / 256u) blocks.push_back(id / 256u);
+    PosedMeshletBounds.UpdateBlocks(owner.StoreId, owner.MeshletRevision, blocks, [&](uint32_t block) { return ActiveMeshlets.HasBlock(owner.MeshletRoot, block); }, owner.RenderTopology);
 }
 
 void GpuBuffers::ReleaseMeshlets(MeshBuffers &buffers) {
@@ -362,6 +370,7 @@ void GpuBuffers::ResetSceneArenas() {
     if (MeshletLodDepth && LodDepthHistory) LodDepthHistory->Write(0u,1u);
     MeshletLodDepth = 0;
     MeshletFlagWorkByBit = {};
+    FlagTallies.clear();
     MeshletTopologyMask = 0;
     OverlayJobs.UsedSize = 0;
     OverlayJobBlocks.UsedSize = 0;
@@ -373,14 +382,29 @@ void GpuBuffers::ResetSceneArenas() {
     Instances.Reset();
 }
 
-void GpuBuffers::SetOverlayJobs(std::span<const OverlayJob> jobs) {
-    OverlayJobs.SetCount<OverlayJob>(uint32_t(jobs.size()));
-    if (!jobs.empty()) OverlayJobs.Update(as_bytes(jobs));
-    OverlayJobBlocks.SetCount<uint32_t>(
-        uint32_t((jobs.size() + OverlayJobBlockSize - 1u) / OverlayJobBlockSize)
-    );
-    VisibleOverlayJobs.SetCount<uint32_t>(uint32_t(jobs.size()));
+void GpuBuffers::Retally(uint32_t store_id, MeshFlagTally tally) {
+    if (FlagTallies.size() <= store_id) FlagTallies.resize(store_id + 1u);
+    const auto apply = [&](const MeshFlagTally &t, bool add) {
+        if (!t.Meshlets) return;
+        const uint64_t nodes = uint64_t(t.Nodes) * t.Instances, meshlets = uint64_t(t.Meshlets) * t.Instances;
+        LodNodeCount = add ? LodNodeCount + nodes : LodNodeCount - nodes;
+        MeshletInstanceCount = add ? MeshletInstanceCount + meshlets : MeshletInstanceCount - meshlets;
+        for (auto bits = t.Flags & CountedMeshletFlags; bits; bits &= bits - 1u) {
+            auto &work = FlagWork(bits & (~bits + 1u));
+            work.Nodes = add ? work.Nodes + nodes : work.Nodes - nodes;
+            work.Meshlets = add ? work.Meshlets + meshlets : work.Meshlets - meshlets;
+        }
+    };
+    apply(std::exchange(FlagTallies[store_id], tally), false);
+    apply(tally, true);
+}
+
+std::span<OverlayJob> GpuBuffers::ResizeOverlayJobs(uint32_t count) {
+    const auto jobs = OverlayJobs.SetCount<OverlayJob>(count);
+    OverlayJobBlocks.SetCount<uint32_t>((count + OverlayJobBlockSize - 1u) / OverlayJobBlockSize);
+    VisibleOverlayJobs.SetCount<uint32_t>(count);
     *OverlayJobDispatchArgs.GetMutableSpan<MeshDispatchArgs>({0, 1}).data() = {0u, 1u, 1u};
+    return jobs;
 }
 
 void GpuBuffers::EnsureMeshletVisibilityCapacity(

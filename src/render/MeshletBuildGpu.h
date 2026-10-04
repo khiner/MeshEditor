@@ -26,8 +26,8 @@ struct MeshletBuildSource {
     uint32_t Primitive{InvalidOffset}, Group{InvalidOffset};
 };
 
-// Membership and element work live in the chain's scratch, which the build reserves once.
-// The build submits the chain for its meshlet counts.
+// Membership and element work live in the chain's scratch, which each chunk of sources reserves once.
+// Each chunk submits the chain for its meshlet counts, and a chunk stays under the scratch budget unless one source exceeds it alone.
 // A build without an owner also submits for its gathered counts and for its publication, which publishes a canonical source's element owners.
 void BuildGpuMeshlets(state::Scene &, mtl::ComputeChain &, std::span<MeshletBuildSource>);
 // The chain scratch words BuildGpuMeshlets allocates for `sources`.

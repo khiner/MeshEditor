@@ -238,7 +238,7 @@ inline float4 OverlayJobClipVertex(
         scene, bindless, pc, job, job.FirstElement + thread_index, 0u, vertex_class
     );
 
-    const uint instance_state = uint(scene.InstanceStates(pc.StateSlot)[job.InstanceIndex]);
+    const uint instance_state = uint(scene.InstanceStates(view.InstanceStateSlot)[job.InstanceIndex]);
     float4 color = job.Kind == OverlayJobKind::TetWire ? WireBaseColor(scene) :
         scene.ObjectSelectionColor(instance_state, WireBaseColor(scene));
     if (job.Kind == OverlayJobKind::Bounds) {

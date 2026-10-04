@@ -45,6 +45,7 @@ struct MainPipeline {
     mtl::RenderPipeline FaceNormalMesh, VertexNormalMesh, OverlayJobLines;
     mtl::RenderPipeline BoneFillMesh, BoneWireMesh, BoneSphereFillMesh, BoneSphereWireMesh;
     mtl::RenderPipeline WireResolve;
+    mtl::RenderPipeline ObjectOrigins;
 
     PbrCompiler Compiler;
 };

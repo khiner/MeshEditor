@@ -98,11 +98,13 @@ bool ReadField(const state::Scene &r, state::Entity e, const ChannelTarget &targ
 
 void WriteField(state::Scene &r, state::Entity e, const ChannelTarget &target, std::span<const float> in) {
     if (in.size() != target.Count) return;
-    const auto bytes = target.Count * sizeof(float);
+    const auto source = std::as_bytes(in);
     if (target.Component == state::Key<MaterialStore>()) {
         auto &materials = r.Context.get<GpuBuffers>().Materials;
         if (target.Index >= materials.Count<PBRMaterial>()) return;
-        materials.Update(std::as_bytes(in), uint64_t(target.Index) * sizeof(PBRMaterial) + target.Offset);
+        const auto offset = uint64_t(target.Index) * sizeof(PBRMaterial) + target.Offset;
+        if (std::ranges::equal(materials.Contents().subspan(offset, source.size()), source)) return;
+        materials.Update(source, offset);
         reactive(r, state::Change::Materials).emplace(e);
         return;
     }
@@ -110,24 +112,27 @@ void WriteField(state::Scene &r, state::Entity e, const ChannelTarget &target, s
         const auto *weights = r.try_get<const MorphWeightRange>(e);
         const auto first = target.Offset / sizeof(float);
         if (!weights || first + target.Count > weights->Weights.Count) return;
-        std::ranges::copy(in, r.Context.get<GpuBuffers>().MorphWeightBuffer.GetMutable(weights->Weights).begin() + first);
+        auto &buffer = r.Context.get<GpuBuffers>().MorphWeightBuffer;
+        if (std::ranges::equal(std::as_bytes(buffer.Get(weights->Weights).subspan(first, target.Count)), source)) return;
+        std::ranges::copy(in, buffer.GetMutable(weights->Weights).begin() + first);
         reactive(r, state::Change::MorphWeights).emplace(e);
         return;
     }
     ForChannelComponent(target.Component, [&]<typename C> {
+        // The field's new bytes, written only when they differ from the record's.
+        const uint32_t flag = in[0] != 0.f;
+        const auto written = target.Kind == ValueKind::Bool ? std::as_bytes(std::span{&flag, 1u}) : source;
+        const auto *record = r.try_get<const C>(e);
         if constexpr (std::same_as<C, Visibility>) {
-            if (!r.all_of<C>(e)) r.emplace<C>(e);
-        }
-        if (!r.all_of<C>(e)) return;
-        r.patch<C>(e, [&](C &record) {
-            auto *field = reinterpret_cast<std::byte *>(&record) + target.Offset;
-            if (target.Kind == ValueKind::Bool) {
-                const uint32_t flag = in[0] != 0.f;
-                std::memcpy(field, &flag, sizeof flag);
-            } else {
-                std::memcpy(field, in.data(), bytes);
+            // A node without a Visibility flag is visible.
+            if (!record) {
+                if (flag) return;
+                record = &r.emplace<C>(e);
             }
-        });
+        }
+        if (!record) return;
+        if (std::ranges::equal(std::span{reinterpret_cast<const std::byte *>(record) + target.Offset, written.size()}, written)) return;
+        r.patch<C>(e, [&](C &patched) { std::memcpy(reinterpret_cast<std::byte *>(&patched) + target.Offset, written.data(), written.size()); });
         if constexpr (std::same_as<C, Visibility>) ApplyVisibility(r, e);
     });
 }

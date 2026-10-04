@@ -1,9 +1,11 @@
 #pragma once
 
 #include "numeric/vec2.h"
+#include "viewport/RenderView.h"
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 
 using numeric::vec2;
 
@@ -30,6 +32,7 @@ struct FrameState {
     vec2 PreciseWheelDelta{0, 0};
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
     bool BoxSelectAdditive{false}; // Shift was held at the box's click.
+    std::optional<std::pair<std::pair<vec2, vec2>, RenderView>> BoxSelectEmitted; // The box and view the drag last staged.
     std::optional<MeshOperatorDrag> MeshDrag;
     bool OverlayControlsHovered{false};
     bool RenderPending{false};

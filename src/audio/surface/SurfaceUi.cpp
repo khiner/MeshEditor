@@ -50,7 +50,7 @@ void DrawContactSurfaceControls(state::Scene &r, state::Entity e, const ContactS
     const auto &props = material.Properties;
     const auto *cd = r.try_get<const ContactDynamics>(e);
     const auto *modes = r.try_get<const ModalModes>(e);
-    const auto sample_curvature = modes && !modes->Positions.empty() ? SurfaceCurvature(r, e, TransformPoint(r.get<const WorldTransform>(e), modes->Positions.front())) : std::nullopt;
+    const auto sample_curvature = modes && !modes->Positions.empty() ? SurfaceCurvature(r, e, TransformPoint(*WorldTransformOf(r, e), modes->Positions.front())) : std::nullopt;
     const double curvature = CombinedCurvature(sample_curvature.value_or(0.0), 0.0);
     const double inv_modulus = InvEffectiveModulus(props, props);
     const double load = (cd ? cd->Mass : 0.0) * 9.81;

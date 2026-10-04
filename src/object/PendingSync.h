@@ -13,8 +13,8 @@ struct PendingObjectRemovals {
     std::vector<Range> InstanceRanges, DeformRanges, MorphRanges, SoundVertexRanges;
 };
 
-// Old instance slots and retired owners, resolved together by SyncModelsBuffers.
-struct PendingHide {
+// Slots of destroyed render instances and retired owners, resolved together by SyncModelsBuffers.
+struct PendingSlotRemovals {
     struct Removal {
         state::Entity Owner;
         uint32_t Index;

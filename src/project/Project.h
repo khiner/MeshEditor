@@ -96,8 +96,6 @@ struct Project {
     bool RestageRequested{false};
     // The draft of `node`, decoded anew when the node or the history changed.
     EditDraft &DraftOf(uint32_t node);
-    // Whether any of the node's actions has parameters to edit.
-    bool Editable(uint32_t node) const;
     // Re-runs the draft on its node's parent at frame end.
     // The commit that follows replaces a leaf node and forks a node with children.
     void RequestRestage() { RestageRequested = true; }

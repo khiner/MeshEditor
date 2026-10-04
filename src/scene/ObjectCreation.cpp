@@ -17,19 +17,24 @@
 void Show(state::Scene &r, state::Entity e) { r.remove<Hidden>(e); }
 
 void Hide(state::Scene &r, state::Entity e) {
-    r.emplace_or_replace<Hidden>(e);
+    if (!r.all_of<Hidden>(e)) r.emplace<Hidden>(e);
 }
 
 void ApplyVisibility(state::Scene &r, state::Entity e) {
-    const auto parent = ParentOrNull(r, e);
-    const auto apply = [&](this const auto &self, state::Entity node, bool hidden) -> void {
+    const auto hidden_under = [&](state::Entity node, bool parent_hidden) {
         const auto *visibility = r.try_get<const Visibility>(node);
-        hidden = hidden || (visibility && !visibility->Visible);
-        if (hidden) Hide(r, node);
-        else Show(r, node);
-        for (const auto child : Children{&r, node}) self(child, hidden);
+        return parent_hidden || (visibility && !visibility->Visible);
     };
-    apply(e, parent != state::Null && r.all_of<Hidden>(parent));
+    const auto parent = ParentOrNull(r, e);
+    const bool hidden = hidden_under(e, parent != state::Null && r.all_of<Hidden>(parent));
+    // A node keeping its effective visibility keeps its subtree's.
+    if (hidden == r.all_of<Hidden>(e)) return;
+    const auto apply = [&](this const auto &self, state::Entity node, bool node_hidden) -> void {
+        if (node_hidden) Hide(r, node);
+        else Show(r, node);
+        for (const auto child : Children{&r, node}) self(child, hidden_under(child, node_hidden));
+    };
+    apply(e, hidden);
 }
 
 void ApplySelectBehavior(state::Scene &r, state::Entity e, MeshInstanceCreateInfo::SelectBehavior behavior) {

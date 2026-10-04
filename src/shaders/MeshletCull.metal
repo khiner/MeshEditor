@@ -4,7 +4,6 @@
 #include "Bindless.metal"
 #include "gpu/ClusterGroup.h"
 #include "Frustum.metal"
-#include "gpu/InstanceRecord.h"
 #include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MeshletRouteMode.h"
 #include "gpu/MaterialAlphaMode.h"
@@ -44,20 +43,38 @@ inline MeshletRoute OpaqueVisibilityRoute(PBRMaterial material, Transform world)
     return scale.x * scale.y * scale.z < 0.0f ? MeshletRoute::OpaqueCullFront : MeshletRoute::OpaqueCullBack;
 }
 
-inline bool InstanceDeformed(InstanceRecord instance) {
-    return instance.ArmatureDeformOffset != InvalidOffset || instance.MorphDeformOffset != InvalidOffset ||
-        instance.PositionNamespace != InvalidOffset || instance.HasPendingVertexTransform != 0u;
+// The draw state the cull reads from an instance's record and its mesh's.
+struct CullInstance {
+    uint Flags, PrimitiveRoot, PrimitiveCount, MeshletBoundsNamespace;
+    bool Deformed;
+};
+
+// An instance without a mesh, like an empty's, and a hidden instance draw no meshlets.
+inline CullInstance ResolveCullInstance(const thread Scene &scene, MeshletCullPushConstants pc, uint instance_slot) {
+    const InstanceRecord record = BindlessBuffer(InstanceRecord, scene.B.Buffer, pc.InstanceSlot)[instance_slot];
+    const uint state = uint(scene.InstanceStates(scene.View.InstanceStateSlot)[instance_slot]);
+    if (record.Mesh == InvalidOffset || (state & STATE_HIDDEN) != 0u) return {0u, InvalidOffset, 0u, InvalidOffset, false};
+    device const MeshDisplay &display = scene.MeshRecords(scene.View.MeshRecordSlot)[record.Mesh].Display;
+    const bool deformed = record.ArmatureDeformOffset != InvalidOffset || display.MorphDeformOffset != InvalidOffset ||
+        PoseNamespace(record.PositionNamespace, display.PositionNamespace) != InvalidOffset || display.HasPendingVertexTransform != 0u;
+    return {
+        InstanceFlags(display.Flags, display.PrimaryEditInstanceIndex, instance_slot, state),
+        display.PrimitiveRoot,
+        display.PrimitiveCount,
+        PoseNamespace(record.MeshletBoundsNamespace, display.MeshletBoundsNamespace),
+        deformed,
+    };
 }
 
 // Edited and deformed instances use original geometry covered by their posed bounds.
-inline bool InstancePinsFinest(InstanceRecord instance) {
+inline bool InstancePinsFinest(CullInstance instance) {
     return (instance.Flags & (uint(MeshletInstanceFlag::LodPinFinest) | uint(MeshletInstanceFlag::Wire) |
         uint(MeshletInstanceFlag::FaceNormal) | uint(MeshletInstanceFlag::EdgeOverlay))) != 0u ||
-        InstanceDeformed(instance);
+        instance.Deformed;
 }
 
 // Nonpositive thresholds select original geometry.
-inline bool InstanceFinestOnly(const thread Scene &scene, MeshletCullPushConstants pc, InstanceRecord instance) {
+inline bool InstanceFinestOnly(const thread Scene &scene, MeshletCullPushConstants pc, CullInstance instance) {
     const uint edit_flags = uint(MeshletInstanceFlag::ElementSelection) | uint(MeshletInstanceFlag::EditOverlay);
     return scene.View.LodErrorPixels <= 0.0f || InstancePinsFinest(instance) ||
         (pc.ExactEditGeometry != 0u && (instance.Flags & edit_flags) != 0u);
@@ -119,7 +136,7 @@ inline OrientedBounds InstanceBounds(const thread Scene &scene, MeshletCullPushC
 // Each pose stores bounds at stable canonical cluster keys.
 inline OrientedBounds DeformedMeshletBounds(
     const thread Scene &scene, MeshletCullPushConstants pc, VisibleMeshlet candidate,
-    InstanceRecord instance, MeshletRecord meshlet, Transform world
+    CullInstance instance, Transform world
 ) {
     if (instance.MeshletBoundsNamespace == InvalidOffset || pc.PosedMeshletBoundsSlot == InvalidSlot) return {};
     const uint index = PoseAttributeIndex(scene.B,pc.PosedMeshletBoundsNodesSlot,instance.MeshletBoundsNamespace,candidate.Meshlet);
@@ -140,10 +157,10 @@ struct MeshletBounds {
 
 inline MeshletBounds ResolveMeshletBounds(
     const thread Scene &scene, MeshletCullPushConstants pc, VisibleMeshlet candidate,
-    uint instance_slot, InstanceRecord instance, MeshletRecord meshlet, Transform world
+    uint instance_slot, CullInstance instance, MeshletRecord meshlet, Transform world
 ) {
-    if (InstanceDeformed(instance)) {
-        OrientedBounds bounds = DeformedMeshletBounds(scene, pc, candidate, instance, meshlet, world);
+    if (instance.Deformed) {
+        OrientedBounds bounds = DeformedMeshletBounds(scene, pc, candidate, instance, world);
         if (!bounds.Valid) bounds = InstanceBounds(scene, pc, instance_slot);
         if (!bounds.Valid) return {};
         return {bounds.Center, bounds.Ax, bounds.Ay, bounds.Az, 0.0f, false, true};
@@ -190,7 +207,7 @@ inline bool MeshletOccluded(
 
 // Reject occluded instances before expanding their span trees.
 inline uint ClassifyInstanceRange(
-    const thread Scene &scene, MeshletCullPushConstants pc, uint instance_slot, InstanceRecord instance
+    const thread Scene &scene, MeshletCullPushConstants pc, uint instance_slot, CullInstance instance
 ) {
     if (instance.PrimitiveCount == 0u || (instance.Flags & pc.RequiredInstanceFlags) != pc.RequiredInstanceFlags) return 0u;
     // Posed meshlet bounds supersede the instance AABB, which may represent another motion-blur step.
@@ -207,7 +224,7 @@ inline uint ClassifyInstanceRange(
 
 inline RoutedMeshlet ClassifyMeshlet(
     const thread Scene &scene, MeshletCullPushConstants pc, VisibleMeshlet candidate,
-    uint instance_slot, InstanceRecord instance
+    uint instance_slot, CullInstance instance
 ) {
     RoutedMeshlet result{0u, false};
     const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, scene.B.Buffer, pc.MeshletSlot)[candidate.Meshlet];
@@ -228,7 +245,7 @@ inline RoutedMeshlet ClassifyMeshlet(
     const bool edit_overlay = (instance.Flags & uint(MeshletInstanceFlag::EditOverlay)) != 0u;
     const bool overlay_only = (instance.Flags & uint(MeshletInstanceFlag::OverlayOnly)) != 0u;
     const bool cone_visible = mode == MeshletRouteMode::Single || material.DoubleSided != 0u ||
-        MeshletConeVisible(scene, meshlet, world, InstanceDeformed(instance));
+        MeshletConeVisible(scene, meshlet, world, instance.Deformed);
     const bool occluded = !overlay_only && can_occlude && pc.PyramidSamplerSlot != InvalidSlot &&
         MeshletOccluded(scene, pc.PyramidSamplerSlot, world_center, bounds.Ax, bounds.Ay, bounds.Az,
                         EditEdgeMarginPixels(scene, pc));
@@ -321,7 +338,7 @@ inline VisibleMeshlet ResolveCullEntry(device const BindlessSet &bindless, Meshl
 // Keeps an outlined surface entry in its route.
 // The silhouette seed resolves every opaque outline except where an unoutlined surface may lie in front.
 inline uint SilhouetteRoutes(
-    const thread Scene &scene, MeshletCullPushConstants pc, VisibleMeshlet entry, uint instance_slot, InstanceRecord instance, uint i
+    const thread Scene &scene, MeshletCullPushConstants pc, VisibleMeshlet entry, uint instance_slot, CullInstance instance, uint i
 ) {
     if ((instance.Flags & uint(MeshletInstanceFlag::Silhouette)) == 0u) return 0u;
     const uint route = SourceSurfaceRoute(scene.B, pc, i);
@@ -372,7 +389,7 @@ inline LodWork ResolveLodSeed(const thread Scene &scene, MeshletCullPushConstant
     if (id >= pc.InstanceCount) return {};
     const uint instance_slot = BindlessBuffer(uint, scene.B.Buffer, pc.InstanceMapSlot)[id];
     if (instance_slot == InvalidOffset) return {};
-    const InstanceRecord instance = BindlessBuffer(InstanceRecord, scene.B.Buffer, pc.InstanceSlot)[instance_slot];
+    const CullInstance instance = ResolveCullInstance(scene, pc, instance_slot);
     const uint visibility = ClassifyInstanceRange(scene, pc, instance_slot, instance);
     if (visibility == 0u) return {};
     // Membership contains only primitives with finest geometry. Each emits
@@ -522,7 +539,7 @@ kernel void LodFrontierEmit(
     device LodFrontierEntry *next = BindlessBufferMutable(LodFrontierEntry, bindless.Buffer, pc.LodFrontierAltSlot);
     if (pc.LodSeedLevel != 0u) {
         const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[work.Instance];
-        const InstanceRecord instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
+        const CullInstance instance = ResolveCullInstance(scene, pc, instance_slot);
         const bool finest_only = InstanceFinestOnly(scene, pc, instance);
         for (uint p = 0u; p < instance.PrimitiveCount; ++p) {
             const PrimitiveRecord primitive = primitives[MeshletIndexSelect(scene.B,{pc.MeshletIndexNodesSlot,pc.MeshletIndexLeavesSlot,instance.PrimitiveRoot},p)];
@@ -556,8 +573,8 @@ kernel void MeshletCullBlockCount(
     if (work.Instance != InvalidOffset) {
         const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[work.Instance];
         if (instance_slot != InvalidOffset) {
-            const InstanceRecord instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
             const Scene scene{bindless, view, theme, workspace};
+            const CullInstance instance = ResolveCullInstance(scene, pc, instance_slot);
             const RoutedMeshlet routed = pc.SourceVisibleSlot == InvalidSlot ? ClassifyMeshlet(scene, pc, work, instance_slot, instance) :
                                                                               RoutedMeshlet{SilhouetteRoutes(scene, pc, work, instance_slot, instance, i), false};
             routes = routed.Routes;

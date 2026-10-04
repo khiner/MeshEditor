@@ -5,6 +5,7 @@
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
 #include "selection/SelectionComponents.h"
+#include "selection/SelectionState.h"
 #include "snapshot/SnapshotRegistration.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
@@ -32,6 +33,7 @@ void RegisterViewport(Tables &tables) {
     Derived<
         SavedViewCamera, EnabledInteractionModes, AdditiveBoxSelectBaseline, ExciteSelectionBaseline,
         PendingEditElementClick, PendingBoxSelect, PendingPick, BoxSelectState,
-        GizmoInteraction, PendingTransform, StartPivot, StartScreenTransform, StartTransform, StartBoneLength, action::DragFieldStart, VideoRecording>(tables);
+        GizmoInteraction, PendingTransform, StartPivot, StartScreenTransform, StartTransform, StartBoneLength, action::DragFieldStart, VideoRecording,
+        TransformRoots, EditPrimaries, SelectionFlags, SelectedKeyframes, OutlinerRows>(tables);
 }
 } // namespace snapshot::detail

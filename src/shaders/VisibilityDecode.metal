@@ -18,7 +18,6 @@ struct DecodedVisibility {
     float2 UvDy[4];
     uint ObjectId;
     uint ElementId;
-    uint InstanceFlags;
     uint Topology;
     float2 PointCoord;
     bool Valid;
@@ -38,7 +37,6 @@ struct ResolvedVisibility {
 struct VisibilityMetadata {
     uint ObjectId;
     uint ElementId;
-    uint InstanceFlags;
     bool Valid;
 };
 
@@ -195,7 +193,8 @@ inline ResolvedVisibility ResolveVisibilityPrimitive(
     const MeshRecord mesh = BindlessBuffer(MeshRecord, bindless.Buffer, view.MeshRecordSlot)[visible.Mesh];
     const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[visible.Meshlet];
     const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
-    return {.Instance = instance, .Meshlet = meshlet, .Primitive = primitive, .Draw = ComposeDraw(mesh, instance, instance_slot, instance.Selection), .ElementId = instance.ElementIdOffset, .LocalTriangle = id & VisibilityTriangleMask, .Valid = true};
+    const DrawData draw = ComposeDraw(mesh, instance, instance_slot);
+    return {.Instance = instance, .Meshlet = meshlet, .Primitive = primitive, .Draw = draw, .ElementId = draw.ElementIdOffset, .LocalTriangle = id & VisibilityTriangleMask, .Valid = true};
 }
 
 inline ResolvedVisibility ResolveVisibilityElement(
@@ -215,7 +214,7 @@ inline ResolvedVisibility ResolveVisibilityElement(
     result.Triangle = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot)[result.Meshlet.TriangleOffset + logical_element];
     result.ElementId = topology == uint(MeshPrimitiveTopology::Triangle) ?
         scene.FacePickId(result.Draw, scene.TriangleFace(result.Draw, result.Triangle)) :
-        result.Instance.ElementIdOffset + result.Triangle + 1u;
+        result.Draw.ElementIdOffset + result.Triangle + 1u;
     return result;
 }
 
@@ -243,7 +242,6 @@ inline VisibilityMetadata DecodeVisibilityMetadata(
     return {
         resolved.Instance.ObjectId,
         resolved.ElementId,
-        resolved.Instance.Flags,
         true,
     };
 }
@@ -297,7 +295,6 @@ inline DecodedVisibility DecodeVisibilityResolved(
         result.V.WorldScale = (scale.x + scale.y + scale.z) / 3.0f;
         result.ObjectId = instance.ObjectId;
         result.ElementId = resolved.ElementId;
-        result.InstanceFlags = instance.Flags;
         result.Topology = topology;
         result.PointCoord = PerspectiveValue(weights.Value, point_coords[0], point_coords[1], point_coords[2]);
         result.Valid = true;
@@ -344,7 +341,7 @@ inline DecodedVisibility DecodeVisibilityResolved(
     }
 
     const Transform world = MeshletWorld(scene, draw);
-    const MeshletFaceValues face = coarse ? MeshletCoarseFace(scene, primitive, instance, world) :
+    const MeshletFaceValues face = coarse ? MeshletCoarseFace(scene, primitive, instance, draw, world) :
                                             MeshletFace(scene, draw, instance, world, triangle, flat_face);
     result.V.FlatWorldNormal = face.FlatWorldNormal;
     result.V.FaceOverlayFlags = face.FaceOverlayFlags;
@@ -352,7 +349,6 @@ inline DecodedVisibility DecodeVisibilityResolved(
     result.V.WorldScale = face.WorldScale;
     result.ObjectId = face.ObjectId;
     result.ElementId = face.ElementId;
-    result.InstanceFlags = instance.Flags;
     result.Topology = uint(uint(MeshPrimitiveTopology::Triangle));
     result.PointCoord = float2(0.0f);
     result.Valid = true;

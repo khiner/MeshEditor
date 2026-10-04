@@ -70,13 +70,19 @@ template<typename T> void DrawValue(const state::Scene &r, const char *label, T 
                 v = state::Null;
                 edited = true;
             }
-            for (const auto [e, name] : r.view<const Name>().each()) {
-                PushID(int(state::Integral(e)));
-                if (Selectable(name.Value.c_str(), e == v)) {
-                    v = e;
-                    edited = true;
+            const auto named = r.view<const Name>() | std::ranges::to<std::vector>();
+            ImGuiListClipper clipper;
+            clipper.Begin(int(named.size()));
+            while (clipper.Step()) {
+                for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                    const auto e = named[i];
+                    PushID(int(state::Integral(e)));
+                    if (Selectable(r.get<const Name>(e).Value.c_str(), e == v)) {
+                        v = e;
+                        edited = true;
+                    }
+                    PopID();
                 }
-                PopID();
             }
             EndCombo();
         }
@@ -125,27 +131,38 @@ template<typename T> void DrawValue(const state::Scene &r, const char *label, T 
         DrawValue(r, std::format("{} First", label).c_str(), v.first, spec, changed, finished);
         DrawValue(r, std::format("{} Second", label).c_str(), v.second, spec, changed, finished);
         PopID();
-    } else if constexpr (field::IsArray<T> || Vector<T>) {
+    } else if constexpr (field::IsArray<T>) {
         group([&] {
             for (size_t i = 0; i < v.size(); ++i) {
                 PushID(int(i));
                 DrawValue(r, std::format("{}", i).c_str(), v[i], spec, changed, finished);
                 PopID();
             }
-            if constexpr (Vector<T>) {
-                if (SmallButton("Add")) {
-                    v.emplace_back();
-                    changed = finished = true;
-                }
-                if (!v.empty()) {
-                    SameLine();
-                    if (SmallButton("Remove")) {
-                        v.pop_back();
-                        changed = finished = true;
-                    }
-                }
-            }
         });
+    } else if constexpr (Vector<T>) {
+        // A recorded vector can hold a whole selection, so it opens on request and draws its visible elements.
+        if (!TreeNodeEx(label, ImGuiTreeNodeFlags_None, "%s (%zu)", label, v.size())) return;
+        ImGuiListClipper clipper;
+        clipper.Begin(int(v.size()));
+        while (clipper.Step()) {
+            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                PushID(i);
+                DrawValue(r, std::format("{}", i).c_str(), v[i], spec, changed, finished);
+                PopID();
+            }
+        }
+        if (SmallButton("Add")) {
+            v.emplace_back();
+            changed = finished = true;
+        }
+        if (!v.empty()) {
+            SameLine();
+            if (SmallButton("Remove")) {
+                v.pop_back();
+                changed = finished = true;
+            }
+        }
+        TreePop();
     } else if constexpr (ui::HasEditor<T>) {
         group([&] {
             ui::ValueEdit edit{v, changed, &finished};
@@ -264,7 +281,7 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
             window.Rows.clear();
             window.RowByNode.assign(nodes.size(), std::nullopt);
             std::vector<HistoryRow> pending;
-            if (!nodes.empty()) pending.push_back({0, 0, session.Editable(0)});
+            if (!nodes.empty()) pending.push_back({0, 0});
             while (!pending.empty()) {
                 const auto row = pending.back();
                 pending.pop_back();
@@ -275,7 +292,7 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
                     const bool branch = child != children.front();
                     const auto depth = row.Depth + branch;
                     const auto rails = row.Rails | (branch && child != children[1] ? rail_bit(depth) : 0);
-                    pending.push_back({child, depth, session.Editable(child), rails});
+                    pending.push_back({child, depth, rails});
                 }
             }
             window.TreeRevision = history.Revision;
@@ -328,7 +345,7 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
             const auto id = row.Node;
             SetCursorPosX(x + indent(row));
             auto flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-            if (!row.Editable) flags |= ImGuiTreeNodeFlags_Leaf;
+            if (!nodes[id].Editable) flags |= ImGuiTreeNodeFlags_Leaf;
             if (id == shown) flags |= ImGuiTreeNodeFlags_Selected;
             SetNextItemOpen(id == shown && window.EditorOpen);
             const auto highlight = active(id) && id != shown;
@@ -367,7 +384,7 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
         draw_rows(0, std::min(shown_row, window.Rows.size()));
         if (shown_row < window.Rows.size()) {
             draw_row(shown_row);
-            if (window.EditorOpen && window.Rows[shown_row].Editable) {
+            if (window.EditorOpen && nodes[*shown].Editable) {
                 const auto top = GetCursorScreenPos().y;
                 const auto editor_indent = indent(window.Rows[shown_row]) + GetTreeNodeToLabelSpacing();
                 Indent(editor_indent);

@@ -40,6 +40,10 @@ struct BufferContext {
     // Fences the buffers retired since the last reclaim behind committed GPU work and releases the batches whose fence completed.
     // Chain submits, finished frames and scene resets reclaim, so allocations never wait for retired readers.
     bool ReclaimRetiredBuffers(bool wait = false);
+    // Fences the buffers retired since the last reclaim behind `command`, which runs after every committed GPU command buffer.
+    void FenceRetiredBuffers(MTL::CommandBuffer *command);
+    // Releases the retired buffers from `first` on at once, since every GPU reader of theirs has completed or none read them.
+    void ReleaseRetiredBuffers(size_t first = 0u);
     // A free slot, reclaiming retired readers' slots only when the table is full.
     uint32_t AllocateSlot(SlotType);
     // A workspace of at least `bytes` that starts with `prefix` and reads zero after it.
@@ -62,6 +66,7 @@ struct BufferContext {
     std::deque<RetirementBatch> Retirements;
 private:
     void RecycleWorkspace(NS::SharedPtr<MTL::Buffer>);
+    void Release(std::span<RetiredBuffer>);
     std::array<std::vector<NS::SharedPtr<MTL::Buffer>>,64> WorkspaceCache;
     uint64_t CachedWorkspaceBytes{};
 };
@@ -103,6 +108,8 @@ struct Buffer {
     void CaptureWriteElements(std::span<const uint32_t> elements, uint32_t stride) const;
     void CaptureWriteRanges(std::span<const Range> ranges, uint32_t stride) const;
     void Track(store::History &, std::string name);
+    // Retires the workspaces growth replaced, once no recorded pass binds them directly.
+    void RetirePreviousWorkspaces();
     store::Pages *History() const { return Tracked.get(); }
 
     MTL::Buffer *operator*() const;

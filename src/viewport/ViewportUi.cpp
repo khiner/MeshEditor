@@ -34,6 +34,7 @@
 #include "selection/Selection.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
+#include "selection/SelectionState.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/DashedLine.h"
 #include "ui/FieldEdit.h"
@@ -56,9 +57,6 @@
 #include "gizmo/OrientationGizmo.h"
 
 using numeric::Min;
-
-using std::ranges::any_of, std::ranges::fold_left;
-using std::views::transform;
 
 using namespace ImGui;
 
@@ -240,7 +238,7 @@ void BeginMeshDrag(state::Scene &r, state::Entity viewport, FrameState &frame, M
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
     const auto &camera = r.get<const ViewCamera>(viewport);
     const auto vp = camera.Projection(viewport_rect.size.x / viewport_rect.size.y) * camera.View();
-    const auto center = EditSelectionCenter(r, r.get<const EditMode>(viewport).Value);
+    const auto center = EditSelectionCenter(r, viewport);
     const auto center_px = ScreenPx(vp, viewport_rect, center);
     // World units per logical pixel at the center, measured along camera right.
     const float pixels = Length(ScreenPx(vp, viewport_rect, center + camera.Basis()[0]) - center_px);
@@ -364,7 +362,7 @@ void DrawMeshOperatorMenus(state::Scene &r, state::Entity viewport) {
     const auto mesh_items = [&] {
         // The bisect plane and spin axis follow the view through the selection center.
         const auto &camera = r.get<const ViewCamera>(viewport);
-        const auto center = EditSelectionCenter(r, r.get<const EditMode>(viewport).Value);
+        const auto center = EditSelectionCenter(r, viewport);
         op("Duplicate", action::mesh::Duplicate{}, action::Phase::Stage);
         op("Extrude Region", Extrude{}, action::Phase::Stage);
         op("Split", Split{});
@@ -400,6 +398,14 @@ void DrawMeshOperatorMenus(state::Scene &r, state::Entity viewport) {
     PopStyleVar();
 }
 
+// The gizmo's tool: the stored one, or the nearest the selection allows.
+TransformGizmo::Type EffectiveGizmoType(const state::Scene &r, state::Entity viewport) {
+    using enum TransformGizmo::Type;
+    const auto type = r.get<const TransformGizmoState>(viewport).Config.Type;
+    const auto &flags = r.get<const SelectionFlags>(viewport);
+    if (!flags.Transformable) return None;
+    return !flags.Scalable && type == Scale ? Translate : type;
+}
 } // namespace
 
 void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
@@ -426,18 +432,14 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
 
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const auto active_entity = FindActiveEntity(r);
-    const bool has_frozen_selected = !r.view<const Selected, const ScaleLocked>().empty();
-    const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
-        any_of(selection::GetSelectedMeshEntities(r), [scale_locked = selection::ScaleLockedMeshEntities(r)](state::Entity mesh_entity) { return scale_locked.contains(mesh_entity); });
-    const bool transform_shortcuts_enabled = !edit_transform_locked;
-    const bool scale_shortcut_enabled = transform_shortcuts_enabled && !has_frozen_selected;
+    const auto &flags = r.get<const SelectionFlags>(viewport);
     // Route shortcuts globally while preserving ImGui ownership for active widgets, navigation, and text input.
     constexpr auto VKey = ImGuiInputFlags_RouteGlobal;
     if (r.get<const GizmoInteraction>(viewport).IsUsing()) {
         // During an active transform, only allow transform switching shortcuts.
-        if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
-        else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
-        else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
+        if (Shortcut(ImGuiKey_G, VKey) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
+        else if (Shortcut(ImGuiKey_R, VKey) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
+        else if (Shortcut(ImGuiKey_S, VKey) && flags.Scalable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
     } else {
         if (interaction_mode != InteractionMode::Edit) {
             if (Shortcut(ImGuiKey_I, VKey)) action::Emit(action::animation::InsertKey{{.Target = action::OnSelected{}}});
@@ -533,13 +535,13 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_G, VKey)) action::Emit(action::bone::ClearSelectedTransforms{.Position = true});
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_R, VKey)) action::Emit(action::bone::ClearSelectedTransforms{.Rotation = true});
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_S, VKey)) action::Emit(action::bone::ClearSelectedTransforms{.Scale = true});
-            else if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) {
+            else if (Shortcut(ImGuiKey_G, VKey) && flags.Transformable) {
                 // Start transform gizmo in both Object and Edit modes.
                 // In Edit mode, shader applies transform to selected vertices.
                 // In Object mode, shader applies transform to selected instances.
                 action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
-            } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
-            else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
+            } else if (Shortcut(ImGuiKey_R, VKey) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
+            else if (Shortcut(ImGuiKey_S, VKey) && flags.Scalable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
             else if (Shortcut(ImGuiKey_H, VKey)) action::Emit(action::object::ToggleHidden{});
             else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_P, VKey)) action::Emit(action::object::ParentToActive{});
             else if (Shortcut(ImGuiMod_Alt | ImGuiKey_P, VKey)) action::Emit(action::object::ClearParent{});
@@ -577,15 +579,20 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             frame.BoxSelectStart = frame.BoxSelectEnd = ToVec2(GetMousePos());
             frame.BoxSelectAdditive = IsKeyDown(ImGuiMod_Shift);
+            frame.BoxSelectEmitted.reset();
         } else if (IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
             frame.BoxSelectEnd = ToVec2(GetMousePos());
-            if (const auto box = ComputeBoxSelect(*frame.BoxSelectStart, *frame.BoxSelectEnd, ToVec2(GetCursorScreenPos()), logical_extent); box) {
+            // A box or view the drag already resolved selects nothing new.
+            if (const auto box = ComputeBoxSelect(*frame.BoxSelectStart, *frame.BoxSelectEnd, ToVec2(GetCursorScreenPos()), logical_extent);
+                box && frame.BoxSelectEmitted != std::pair{*box, selection_view}) {
+                frame.BoxSelectEmitted = {*box, selection_view};
                 // The hit set (object/bone instances or edit-mode elements) is resolved later.
                 action::Emit(action::selection::ApplyBoxSelect{.Box = *box, .Additive = frame.BoxSelectAdditive, .View = std::make_unique<RenderView>(selection_view)}, action::Phase::Stage);
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
             frame.BoxSelectStart.reset();
             frame.BoxSelectEnd.reset();
+            frame.BoxSelectEmitted.reset();
             action::Commit();
         }
         if (frame.BoxSelectStart) return;
@@ -654,20 +661,8 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
 
     { // Transform mode pill buttons (top-left overlay)
         using enum TransformGizmo::Type;
-        const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
-        const bool has_frozen_selected = !r.view<const Selected, const ScaleLocked>().empty();
-        const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
-            any_of(selection::GetSelectedMeshEntities(r), [scale_locked = selection::ScaleLockedMeshEntities(r)](state::Entity mesh_entity) { return scale_locked.contains(mesh_entity); });
-        const bool transform_enabled = !edit_transform_locked;
-        const bool scale_enabled = transform_enabled && !has_frozen_selected;
-
-        const ui::Edit gizmo_edit{r, viewport};
-        const auto transform_type = r.get<const TransformGizmoState>(viewport).Config.Type;
-        if (!transform_enabled && transform_type != None) {
-            gizmo_edit.Set<&TransformGizmoState::Config, &TransformGizmo::Config::Type>(None);
-        } else if (!scale_enabled && transform_type == Scale) {
-            gizmo_edit.Set<&TransformGizmoState::Config, &TransformGizmo::Config::Type>(Translate);
-        }
+        const auto &flags = r.get<const SelectionFlags>(viewport);
+        const auto transform_type = EffectiveGizmoType(r, viewport);
 
         const auto start_pos = std::bit_cast<ImVec2>(viewport_rect.pos) + GetWindowContentRegionMin() + ImVec2{overlay_corner_gap, overlay_corner_gap};
         static constexpr float gap{4}; // Gap between select buttons and transform buttons
@@ -679,10 +674,10 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
         const OverlayIconButtonInfo buttons[]{
             make_button(icons.Transform.SelectBox.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersTop, true, transform_type == None && gesture == SelectionGesture::Box),
             make_button(icons.Transform.Select.get(), {0.f, button_h}, ImDrawFlags_RoundCornersBottom, true, transform_type == None && gesture == SelectionGesture::Click),
-            make_button(icons.Transform.Move.get(), {0.f, button_h * 2.f + gap}, ImDrawFlags_RoundCornersTop, transform_enabled, transform_type == Translate),
-            make_button(icons.Transform.Rotate.get(), {0.f, button_h * 3.f + gap}, ImDrawFlags_RoundCornersNone, transform_enabled, transform_type == Rotate),
-            make_button(icons.Transform.Scale.get(), {0.f, button_h * 4.f + gap}, ImDrawFlags_RoundCornersNone, scale_enabled, transform_type == Scale),
-            make_button(icons.Transform.Universal.get(), {0.f, button_h * 5.f + gap}, ImDrawFlags_RoundCornersBottom, transform_enabled, transform_type == Universal),
+            make_button(icons.Transform.Move.get(), {0.f, button_h * 2.f + gap}, ImDrawFlags_RoundCornersTop, flags.Transformable, transform_type == Translate),
+            make_button(icons.Transform.Rotate.get(), {0.f, button_h * 3.f + gap}, ImDrawFlags_RoundCornersNone, flags.Transformable, transform_type == Rotate),
+            make_button(icons.Transform.Scale.get(), {0.f, button_h * 4.f + gap}, ImDrawFlags_RoundCornersNone, flags.Scalable, transform_type == Scale),
+            make_button(icons.Transform.Universal.get(), {0.f, button_h * 5.f + gap}, ImDrawFlags_RoundCornersBottom, flags.Transformable, transform_type == Universal),
         };
 
         if (const auto clicked = DrawOverlayIconButtonGroup("TransformModes", start_pos, buttons, !active_transform, &frame.OverlayControlsHovered, overlay_button_style)) {
@@ -831,7 +826,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                     if (changed) action::Emit(action::view::SetWorkspaceLights{std::make_unique<WorkspaceLights>(lights)});
                 }
 
-                if (current_mode == ViewportShadingMode::MaterialPreview || current_mode == ViewportShadingMode::Rendered) {
+                if (!WorkbenchShading(current_mode)) {
                     SeparatorText("Debug");
                     struct DebugChannelEntry {
                         DebugChannel Value;
@@ -980,39 +975,23 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
             );
         }
     }
-    const auto selected_view = r.view<const Selected>();
-    const auto bone_selected_view = r.view<const BoneSelection>();
-    const auto edit_mode = r.get<const EditMode>(viewport).Value;
-    const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
-    const auto active_entity = FindActiveEntity(r);
-    const auto arm_obj = FindArmatureObject(r, active_entity);
-    const bool bone_edit_mode = interaction_mode == InteractionMode::Edit && arm_obj != state::Null;
-    const bool bone_mode = bone_edit_mode || (interaction_mode == InteractionMode::Pose && arm_obj != state::Null);
-    const bool mesh_edit_mode = interaction_mode == InteractionMode::Edit && !bone_edit_mode;
+    const auto mode_scope = ScopeOf(r, viewport);
 
-    const auto has_transform_target = [&]() {
-        if (bone_mode) return !bone_selected_view.empty();
-        if (selected_view.empty()) return false;
-        if (!mesh_edit_mode) return true;
-        for (const auto [e, instance] : r.view<const Instance, const Selected>(state::Exclude<ScaleLocked>).each()) {
-            const auto *stats = GetElementSelectionSummary(r, instance.Entity, edit_mode);
-            if (stats && stats->SelectedCount > 0) return true;
-        }
-        return false;
-    }();
-    if (has_transform_target) { // Transform gizmo
+    if (r.get<const SelectionFlags>(viewport).HasTransformTarget) { // Transform gizmo
         // Transform root selections around their average position using the active entity's rotation and scale.
-        const auto gizmo_active_entity = bone_mode ? FindActiveBone(r) : active_entity;
-        const auto active_scale = gizmo_active_entity == state::Null ? vec3{1} : r.get<const WorldTransform>(gizmo_active_entity).S;
+        const auto gizmo_active_entity = mode_scope.Bone ? FindActiveBone(r) : FindActiveEntity(r);
+        const auto active_scale = gizmo_active_entity == state::Null ? vec3{1} : WorldTransformOf(r, gizmo_active_entity)->S;
         // Edit-mode vertices only move on commit, so the pivot previews the pending delta.
         const auto *start_pivot = r.try_get<const StartPivot>(viewport);
         auto pivot = start_pivot ? *start_pivot : TransformPivot(r, viewport);
-        if (mesh_edit_mode) {
+        if (mode_scope.MeshEdit) {
             if (const auto *pending = r.try_get<const PendingTransform>(viewport)) pivot.P += pending->Delta.P;
         }
 
         const auto start_transform_view = r.view<const StartTransform>();
         const auto &gizmo_state = r.get<const TransformGizmoState>(viewport);
+        auto gizmo_config = gizmo_state.Config;
+        gizmo_config.Type = EffectiveGizmoType(r, viewport);
         auto &gizmo = r.edit<GizmoInteraction>(viewport);
         const auto gizmo_transform = GizmoTransform{{.P = pivot.P, .R = pivot.R, .S = active_scale}, gizmo_state.Mode};
         const auto *start_screen = r.try_get<const StartScreenTransform>(viewport);
@@ -1020,7 +999,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
         auto interact_result = TransformGizmo::Interact(
             gizmo,
             gizmo_transform,
-            gizmo_state.Config, camera, viewport_rect, ToVec2(GetMousePos()) + frame.AccumulatedWrapMouseDelta,
+            gizmo_config, camera, viewport_rect, ToVec2(GetMousePos()) + frame.AccumulatedWrapMouseDelta,
             start_screen ? std::optional{start_screen->Value} : std::nullopt
         );
         if (gizmo.Cancelled) {
@@ -1029,7 +1008,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
             action::Cancel();
         } else if (interact_result) {
             const auto &td = interact_result->Delta;
-            if (mesh_edit_mode) {
+            if (mode_scope.MeshEdit) {
                 // Mesh Edit mode: store pending transform for shader-based preview.
                 // Actual vertex positions are only modified on commit.
                 action::Emit(action::view::TransformElements{td}, action::Phase::Stage);
@@ -1045,7 +1024,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
         if (interact_result) gizmo.RenderTransform->P = interact_result->Start.P + interact_result->Delta.P;
     }
 
-    if (mesh_edit_mode) {
+    if (mode_scope.MeshEdit) {
         DrawMeshOperatorMenus(r, viewport);
     }
 
@@ -1059,32 +1038,9 @@ void DrawOverlay(state::Scene &r, state::Entity viewport, FrameState &frame) {
     const auto &camera = r.get<const ViewCamera>(viewport);
 
     OrientationGizmo::Render(axes);
-    TransformGizmo::Render(r.edit<GizmoInteraction>(viewport), r.get<const TransformGizmoState>(viewport).Config.Type, camera, viewport_rect, axes);
+    TransformGizmo::Render(r.edit<GizmoInteraction>(viewport), EffectiveGizmoType(r, viewport), camera, viewport_rect, axes);
     // Inset and bevel size by the mouse's distance from the selection center, so they show the same guide as scale and rotate.
     if (frame.MeshDrag && frame.MeshDrag->Value != MeshOperatorDrag::Op::Knife) DrawDashedGuide(*GetWindowDrawList(), std::bit_cast<ImVec2>(frame.MeshDrag->CenterPx), GetMousePos());
-
-    const auto &settings = r.get<const ViewportDisplay>(viewport);
-    if (settings.ShowOverlays && settings.ShowOrigins && (!r.view<const Selected>().empty() || !r.view<const Active>().empty())) {
-        const auto &theme = r.get<const ViewportTheme>(viewport);
-        const auto vp = camera.Projection(viewport_rect.size.x / viewport_rect.size.y) * camera.View();
-        auto draw_dot = [&](vec3 pos, bool is_active) {
-            const auto p_cs = vp * vec4{pos, 1.f};
-            if (p_cs.w <= 0) return; // Behind camera
-
-            const auto p_ndc = vec3{p_cs} / p_cs.w;
-            const auto p_uv = NdcToUv(vec2{p_ndc});
-            const auto p_px = std::bit_cast<ImVec2>(viewport_rect.pos + p_uv * viewport_rect.size);
-            auto &dl = *GetWindowDrawList();
-            dl.AddCircleFilled(p_px, 3.5f, colors::RgbToU32(is_active ? theme.Colors.ObjectActive : theme.Colors.ObjectSelected), 10);
-            dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
-        };
-        const auto origins = SortedEntities(
-            r.view<const WorldTransform>(state::Exclude<SubElementOf>) |
-                std::views::filter([&](auto e) { return r.any_of<Active, Selected>(e); }),
-            std::ranges::greater{}
-        );
-        for (const auto e : origins) draw_dot(r.get<const WorldTransform>(e).P, r.all_of<Active>(e));
-    }
 
     if (frame.BoxSelectStart && frame.BoxSelectEnd) {
         auto &dl = *GetWindowDrawList();

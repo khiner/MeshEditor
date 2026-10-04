@@ -20,8 +20,9 @@ std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &, uint32
 // Records the same two-phase kernel as frame and sparse edit derivation.
 // Only job metadata is uploaded, and geometry and normal values stay in their GPU arenas.
 void EncodeDeriveNormals(state::Scene &, mtl::ComputeChain &, std::span<const NormalDeriveEntry>, NormalDerivePushConstants);
-void DeriveNormalsNow(state::Scene &, std::span<const NormalDeriveEntry>, NormalDerivePushConstants);
-void DeriveMeshNormalsNow(state::Scene &, std::span<const uint32_t> store_ids);
+// Records the base normals of every vertex and face of the meshes.
+// It submits the chain once to gather their membership, and the derive runs with the chain's next submit.
+void EncodeDeriveAllNormals(state::Scene &, mtl::ComputeChain &, std::span<const uint32_t> store_ids);
 // One mesh's local normal change.
 // Faces cover the changed face normals, and vertices cover every affected normal fan.
 struct LocalNormalWork {

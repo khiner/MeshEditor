@@ -21,7 +21,7 @@ namespace snapshot::detail {
 void RegisterScene(Tables &tables) {
     Persistent<
         Transform, PunctualLight, Name, Selected, Active, ObjectKind, Scene, ActiveScene, SceneMembership, SubElementOf,
-        ScaleLocked, Instance, Hidden, SceneNode, ObjectExtrasTag, Path, Perspective, Orthographic, TimelineRange,
+        ScaleLocked, Instance, Hidden, SceneParent, SceneChildren, ObjectExtrasTag, Path, Perspective, Orthographic, TimelineRange,
         TimelinePlayback, TimelineNavigation, AnimationTimelineView, AnimationClips, Animations, MorphWeightRange, ImageLight, Visibility>(tables);
     Derived<
         RenderInstance, WorldTransform, ModelsBuffer, LightIndex, LastEvaluatedFrame,

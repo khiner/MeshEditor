@@ -9,7 +9,6 @@ enum class Change : uint8_t {
     Selected,
     ActiveInstance,
     BoneSelection,
-    Rerecord,
     MeshActiveElement,
     InteractionMode,
     TransformPending,
@@ -17,10 +16,18 @@ enum class Change : uint8_t {
     TransformEnd,
     TransformDirty,
     BonePose, // A bone's pose delta changed.
-    WorldTransform,
+    BoneConstraints, // A bone's constraint stack changed.
+    WorldTransform, // A world transform or a bone's display scale changed.
+    SceneParent, // A node's parent changed.
+    SceneHierarchy, // A scene graph link changed.
+    Names, // A name was created or destroyed.
+    ScaleLocked,
+    EditMode,
+    KeyframeSources, // The timeline rate or a mesh's displayed material slot changed.
     // Meshes
     MeshGeometry,
     MeshMaterial,
+    PrimitiveShape, // A primitive mesh's shape fields changed.
     TetMesh,
     NewBufferEntity,
     InstanceVisibility, // An Instance or Hidden change that the settle pass derives RenderInstance from.
@@ -35,7 +42,8 @@ enum class Change : uint8_t {
     ViewportTheme,
     WorkspaceLights,
     Materials,
-    PbrSpecialization,
+    PbrSpecialization, // The lighting the PBR pipelines specialize on changed.
+    PbrMeshFeatures, // A mesh's PBR features changed.
     ActiveMaterialVariant,
     MaterializedTextures,
     StudioEnvironment,
@@ -54,6 +62,8 @@ enum class Change : uint8_t {
     PhysicsGeometry,
     PhysicsBodyMesh,
     ColliderPolicy,
+    Colliders, // A collider shape was created, changed or destroyed.
+    PhysicsDefinitionUses, // A reference to a physics material, collision system, collision filter, or joint definition changed.
     // Audio
     AudioVertexForce,
     ModalGain,

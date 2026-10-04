@@ -5,6 +5,8 @@
 
 #include "state/Entity.h"
 
+#include <array>
+#include <map>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,17 +48,12 @@ struct MeshEditWork {
     Range WorkBudget;
 };
 
-// An instance's overlay over its mesh's canonical vertex blocks.
+// An overlay over a mesh's canonical vertex blocks, a bit in its mesh's VertexOverlays mask.
 enum class VertexOverlay : uint8_t {
-    EditPoints,
+    EditPoints, // On the mesh's primary edit instance.
     Points,
     SoundPoints,
     Normals,
-};
-struct VertexOverlayDraw {
-    state::Entity MeshEntity;
-    uint32_t Instance; // The instance record.
-    VertexOverlay Kind;
 };
 
 // Host metadata for the persistent GPU scene, refreshed when scene structure or routing changes.
@@ -67,24 +64,39 @@ struct GpuSceneState {
     std::unordered_set<state::Entity> PositionDirty, LodDirty;
     // Meshes whose meshlets were built, edited or restored since their cluster hierarchy was last checked.
     std::unordered_set<state::Entity> LodDemand;
-    std::unordered_set<state::Entity> MeshletEditOverlayMeshes;
+    // Meshes whose record's display fields rederive at the end of the settle pass, after their render data changed.
+    std::unordered_set<state::Entity> DisplayDirty;
     // Each material's required LOD attributes without and with authored tangents, as the live primitives hold them.
     std::vector<std::array<uint32_t, 2>> RequiredMaterialAttributes;
-    // Refreshed with the instance flags.
-    std::vector<VertexOverlayDraw> VertexOverlays;
+    // The vertex overlays each mesh's instances draw, as masks of VertexOverlay bits, in mesh order.
+    std::map<state::Entity, uint8_t> VertexOverlays;
+    // Each laid-out mesh's run of bounds entries, which a mesh without per-instance deformation keeps across instance changes.
+    struct BoundsRun {
+        uint32_t First{}, Count{};
+        bool Posed{};
+    };
+    std::unordered_map<state::Entity, BoundsRun> BoundsRuns;
+    // Each bounds entry's tiles in every prelude pass, by entry.
+    struct EntryTiles {
+        std::array<Range, 4> Bounds{}; // By vertex bounds level.
+        Range DeriveFaces{}, DeriveGather{}, MeshletJobs{};
+    };
+    std::vector<EntryTiles> BoundsEntryTiles;
+    // Entries whose bounds the next submit recomputes apart from a full prelude, in any order with repeats.
+    std::vector<uint32_t> DirtyBoundsEntries;
+    // The entries morph weights pose, and the entries each armature data entity's skins pose.
+    std::vector<uint32_t> MorphEntries;
+    std::unordered_map<state::Entity, std::vector<uint32_t>> ArmatureEntries;
+    // The OR of every mesh's PBR features.
+    uint32_t MeshPbrFeatures{0};
+    // The display settings the last layout rebuild read.
+    uint64_t LayoutDisplayInputs{0};
     bool MeshletEditHasSharpEdges{};
     bool EditPreludePending{};
     // Element selection bits changed, so edit work candidates reseed.
     bool EditSelectionDirty{};
-    bool InstanceRecordsStale{true};
-    bool InstanceFlagsStale{true};
-    uint64_t InstanceRecordInputs{0};
+    // Camera lenses, lights, colliders, tets or instance slots changed, so the overlay jobs rebuild before the next record.
+    bool OverlayJobsDirty{true};
     uint64_t PreludeLayoutInputs{0};
     uint64_t PreludeWorkInputs{0};
 };
-
-// Mark every instance record for a rewrite, for a change the record-input signature does not see.
-inline void MarkInstanceRecordsStale(GpuSceneState &scene) {
-    scene.InstanceRecordsStale = true;
-    scene.InstanceFlagsStale = true;
-}

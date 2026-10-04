@@ -41,7 +41,7 @@ inline std::optional<double> SurfaceCurvature(const state::Scene &r, state::Enti
     const auto *inst = r.try_get<const Instance>(node);
     const auto *owner = inst ? TryMeshBuffers(r,inst->Entity) : nullptr;
     if (!owner || owner->SpatialRoot==InvalidOffset) return std::nullopt;
-    const auto &wt = r.get<const WorldTransform>(node);
+    const auto &wt = *WorldTransformOf(r, node);
     const auto mesh = GetMesh(r, inst->Entity);
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto hit = ClosestMeshletPoint(r.Context.get<const GpuBuffers>(),*owner,
@@ -89,7 +89,7 @@ inline const AcousticMaterialProperties &MaterialOf(const state::Scene &r, state
 
 // Reduce a (possibly non-uniform or mirrored) world scale to a positive size ratio relative to the baked size.
 inline float UniformScaleRatio(const state::Scene &r, state::Entity e, const ModalModes &modes) {
-    const auto *world = r.try_get<const WorldTransform>(e);
+    const auto *world = WorldTransformOf(r, e);
     const float baked = MeanScale(modes.BakedScale);
     return world && baked > 0 ? std::clamp(MeanScale(world->S) / baked, 0.001f, 1000.f) : 1.f;
 }

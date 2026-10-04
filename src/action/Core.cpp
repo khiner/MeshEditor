@@ -57,7 +57,7 @@ void ApplyUpdate(state::Scene &r, state::Entity viewport, const Update<Field> &a
                     return FieldGestureStart<Field>(r, e, state::Type<C>(), a.Offset, [&](Field &v) { Traits::Read(r, e, a.Offset, &v, sizeof(Field)); });
                 };
                 const auto active_start = start(active);
-                Traits::ForEachSelected(r, [&](state::Entity e) {
+                Traits::ForEachSelected(r, viewport, [&](state::Entity e) {
                     if (e == active) {
                         write(e, a.Value);
                     } else if constexpr (std::integral<Field>) {
@@ -77,7 +77,7 @@ void ApplyUpdate(state::Scene &r, state::Entity viewport, const Update<Field> &a
         ForEachTarget(
             a.Target, viewport,
             [&] { return Traits::Active(r); },
-            [&](auto &&fn) { Traits::ForEachSelected(r, fn); },
+            [&](auto &&fn) { Traits::ForEachSelected(r, viewport, fn); },
             [&](state::Entity e) {
                 if (Traits::Has(r, e)) write(e, a.Value);
             }

@@ -146,7 +146,7 @@ inline MeshVaryings DecodeWorkspaceTriangle(
     const float3 weights = TriangleWeights(
         pixel, clip[0], clip[1], clip[2], float2(scene.View.ViewportSize)
     ).Value;
-    const MeshletFaceValues face = coarse ? MeshletCoarseFace(scene, resolved.Primitive, resolved.Instance, world) :
+    const MeshletFaceValues face = coarse ? MeshletCoarseFace(scene, resolved.Primitive, resolved.Instance, draw, world) :
         MeshletFace(scene, draw, resolved.Instance, world, triangle, flat_face);
     return {
         .WorldNormal = flat_face ? float3(0.0f) :

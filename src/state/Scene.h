@@ -8,6 +8,7 @@
 #include <array>
 #include <bit>
 #include <cassert>
+#include <concepts>
 #include <functional>
 #include <memory>
 #include <ranges>
@@ -289,6 +290,8 @@ struct Scene {
 
 inline DirtySet &reactive(Scene &r, Change c) { return r.Changes[size_t(c)]; }
 inline const DirtySet &reactive(const Scene &r, Change c) { return r.Changes[size_t(c)]; }
+// Whether any of the changes holds an entity.
+inline bool AnyChanged(const Scene &r, std::same_as<Change> auto... changes) { return (... || !reactive(r, changes).empty()); }
 
 // Entities holding every listed component and none of the excluded ones, joined page by page on the table masks.
 template<typename R, typename... X, typename... C>

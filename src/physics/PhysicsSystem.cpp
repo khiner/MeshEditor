@@ -1,16 +1,17 @@
 #include "PhysicsSystem.h"
 #include "PhysicsContact.h"
+#include "ColliderUpdate.h"
 #include "Profile.h"
 #include "RbpBody.h"
 #include "RbpShape.h"
 #include "Solver.h"
+#include "SortUnique.h"
 #include "TransformMath.h"
 #include "mesh/Mesh.h"
 #include "metal/MetalContext.h"
 #include "numeric/VectorMath.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
-#include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "state/Scene.h"
 #include "viewport/ViewportEvents.h"
@@ -44,6 +45,7 @@ struct ContactSum {
     rbp::float3 Point{}, Normal{}, Slip{}, LocalA{}, LocalB{}, FrictionImpulse{};
     float NormalImpulse = 0;
 };
+// A body's authored inputs: its node's world transform, its parent, its motion and the colliders its compound holds.
 struct BodyInput {
     Transform Node;
     state::Entity Parent = state::Null;
@@ -53,14 +55,20 @@ struct BodyInput {
     std::vector<state::Entity> Colliders;
     bool operator==(const BodyInput &) const = default;
 };
+// A collider leaf in its owner's rigid frame, with the surface and filter it collides with.
 struct ColliderInput {
-    state::Entity Owner;
     ColliderShape Shape;
     Transform Local{};
     PhysicsMaterial Material{};
     uint32_t Layer = ~0u, Collides = ~0u;
     bool HasFilter = false;
     bool operator==(const ColliderInput &) const = default;
+};
+// A body in the world with the inputs it was cooked from, one leaf per collider.
+struct BodyRecord {
+    physics::RbpBody Cooked;
+    BodyInput Input;
+    std::vector<ColliderInput> Leaves;
 };
 struct JointInput {
     PhysicsJoint Joint;
@@ -70,30 +78,23 @@ struct JointInput {
     std::optional<Transform> Connected;
     bool operator==(const JointInput &) const = default;
 };
-struct SceneInput {
-    std::map<state::Entity, BodyInput> Bodies;
-    std::map<state::Entity, ColliderInput> Colliders;
-    std::map<state::Entity, JointInput> Joints;
-    // Every entity whose local transform poses a body, collider, or joint, including their ancestors.
-    std::set<state::Entity> Posers;
-};
 struct PhysicsState {
     // The solver runs on Metal 4 devices only, so this stays empty on other devices and no world is built.
     std::optional<rbp::mtl::Context> Context;
     std::optional<rbp::Solver> Solver;
     std::optional<rbp::World> World;
     rbp::StepSettings Settings;
-    SceneInput Input;
+    std::map<state::Entity, BodyRecord> Bodies;
+    // The body whose compound holds each collider.
+    std::unordered_map<state::Entity, state::Entity> LeafOwners;
+    std::map<state::Entity, JointInput> Joints;
     std::set<state::Entity> JointUpdates;
     PhysicsSimulationSettings AppliedSettings;
     float CacheFps = 0;
-    bool InputDirty = false;
-    bool Evaluate = false;
     bool CacheInvalid = false;
-    std::map<state::Entity, physics::RbpBody> Bodies;
     std::vector<state::Entity> Entities;
-    // Destroyed bodies whose world bodies and shapes the next ProcessChanges removes.
-    std::set<state::Entity> RemovedBodies;
+    // Entities whose motion, colliders or joints were destroyed with them, which the next ProcessChanges resolves to their bodies.
+    std::vector<state::Entity> Destroyed;
     // Posed bodies with parents before children, rebuilt after input or body set changes.
     std::optional<std::vector<state::Entity>> SampleOrder;
     std::map<state::Entity, rbp::CollisionMask> Masks;
@@ -110,10 +111,8 @@ struct PhysicsState {
     uint64_t NextContactId{1}, ContactStep{0}, Substep{0};
     bool Clearing = false;
 
-    void Invalidate() {
-        Baked.reset();
-        Evaluate = true;
-    }
+    // The next playback advance restarts the simulation from its authored state.
+    void Invalidate() { Baked.reset(); }
 };
 
 rbp::Pose PoseOf(const Transform &t) { return rbp::At(ToRbp(t.P), ToRbp(Normalize(t.R))); }
@@ -152,93 +151,75 @@ Transform ComposeAuthored(const Transform &parent, Transform result) {
     return result;
 }
 
-SceneInput ReadScene(const PhysicsState &s, const state::Scene &r) {
-    SceneInput input;
-    std::map<state::Entity, Transform> transforms;
-    const auto transform = [&](this auto &self, state::Entity e) -> Transform {
-        if (const auto it = transforms.find(e); it != transforms.end()) return it->second;
-        input.Posers.insert(e);
-        Transform result;
-        if (const auto *local = r.try_get<const Transform>(e)) {
-            result = *local;
-            if (const auto parent = ParentOrNull(r, e); parent != state::Null) result = ComposeAuthored(self(parent), *local);
-        }
-        transforms.emplace(e, result);
-        return result;
-    };
-    const auto add_body = [&](state::Entity entity) {
-        if (input.Bodies.contains(entity)) return;
-        const auto *motion = r.try_get<const PhysicsMotion>(entity);
-        const bool sensor = r.all_of<TriggerTag, ColliderShape>(entity);
-        if (!motion && !sensor && MotionOwner(r, entity) != state::Null) return;
-        auto &body = input.Bodies[entity];
-        body.Node = transform(entity);
-        body.Parent = ParentOrNull(r, entity);
-        if (motion) {
-            body.Motion = *motion;
-            if (const auto *velocity = r.try_get<const PhysicsVelocity>(entity)) body.Velocity = *velocity;
-        }
-        body.Sensor = sensor;
-        if (r.all_of<ColliderShape>(entity)) body.Colliders.push_back(entity);
-        if (motion && !sensor) {
-            const auto gather = [&](this auto &self, state::Entity node) -> void {
-                for (auto child : Children{&r, node}) {
-                    if (r.all_of<PhysicsMotion>(child)) continue;
-                    if (r.all_of<ColliderShape>(child) && !r.all_of<TriggerTag>(child)) body.Colliders.push_back(child);
-                    self(child);
-                }
-            };
-            gather(entity);
-        }
-        const auto local_transform = [&](this auto &self, state::Entity node) -> Transform {
-            if (node == entity) return {.S = body.Node.S};
-            input.Posers.insert(node);
-            return ComposeAuthored(self(ParentOrNull(r, node)), r.get<const Transform>(node));
-        };
-        for (auto collider : body.Colliders) {
-            ColliderInput leaf{.Owner = entity, .Shape = r.get<const ColliderShape>(collider), .Local = local_transform(collider)};
-            if (const auto *material = r.try_get<const ColliderMaterial>(collider)) {
-                if (const auto *definition = r.try_get<const PhysicsMaterial>(material->PhysicsMaterialEntity)) leaf.Material = *definition;
-                if (const auto it = s.Masks.find(material->CollisionFilterEntity); it != s.Masks.end()) {
-                    leaf.Layer = it->second.Layer;
-                    leaf.Collides = it->second.Collides;
-                    leaf.HasFilter = true;
-                }
-            }
-            leaf.Material.Name.clear();
-            input.Colliders.emplace(collider, std::move(leaf));
-        }
-    };
-    for (auto e : SortedEntities(r.view<const PhysicsMotion>())) add_body(e);
-    for (auto e : SortedEntities(r.view<const ColliderShape>())) add_body(e);
-    for (auto [e, joint] : r.view<const PhysicsJoint>().each()) {
-        JointInput value{.Joint = joint, .Node = transform(e), .Connected = r.valid(joint.ConnectedNode) ? std::optional{transform(joint.ConnectedNode)} : std::nullopt};
-        const auto owner = [&](state::Entity node) { return FindAncestorIf(r, node, [&](auto ancestor) { return input.Bodies.contains(ancestor); }); };
-        value.Owner = owner(e);
-        value.ConnectedOwner = owner(joint.ConnectedNode);
-        if (const auto *definition = r.try_get<const PhysicsJointDef>(joint.JointDefEntity)) {
-            value.Definition = *definition;
-            value.Definition->Name.clear();
-        }
-        input.Joints.emplace(e, std::move(value));
-    }
-    return input;
+// The node's authored world transform, composed from the local transforms of its ancestors.
+Transform AuthoredWorld(const state::Scene &r, state::Entity e) {
+    const auto *local = r.try_get<const Transform>(e);
+    if (!local) return {};
+    const auto parent = ParentOrNull(r, e);
+    return parent != state::Null ? ComposeAuthored(AuthoredWorld(r, parent), *local) : *local;
 }
 
-// Returns whether `after` changes a surviving body's kind or a collider's owner, or drops a body that was not destroyed.
-// Added bodies and colliders build in place, and destroyed bodies drain from the world.
-bool RequiresRebuild(const PhysicsState &s, const SceneInput &after) {
-    for (const auto &[e, body] : s.Input.Bodies) {
-        const auto next = after.Bodies.find(e);
-        if (next == after.Bodies.end()) {
-            if (!s.RemovedBodies.contains(e)) return true;
-        } else if (next->second.Motion.has_value() != body.Motion.has_value() || next->second.Sensor != body.Sensor) return true;
+// The body an entity forms, with a leaf per collider, or none for an entity that forms no body.
+// A motion holder forms one, as does a collider that is a sensor or has no motion owner.
+std::optional<BodyInput> ReadBody(const PhysicsState &s, const state::Scene &r, state::Entity entity, std::vector<ColliderInput> &leaves) {
+    leaves.clear();
+    if (!r.valid(entity)) return {};
+    const auto *motion = r.try_get<const PhysicsMotion>(entity);
+    const bool sensor = r.all_of<TriggerTag, ColliderShape>(entity);
+    if (!motion && !(r.all_of<ColliderShape>(entity) && (sensor || MotionOwner(r, entity) == state::Null))) return {};
+    BodyInput body{.Node = AuthoredWorld(r, entity), .Parent = ParentOrNull(r, entity), .Sensor = sensor};
+    if (motion) {
+        body.Motion = *motion;
+        if (const auto *velocity = r.try_get<const PhysicsVelocity>(entity)) body.Velocity = *velocity;
     }
-    for (const auto &[e, leaf] : after.Colliders) {
-        const auto old = s.Input.Colliders.find(e);
-        if (old != s.Input.Colliders.end() && old->second.Owner != leaf.Owner) return true;
+    if (r.all_of<ColliderShape>(entity)) body.Colliders.push_back(entity);
+    // A solid motion body's compound holds the solid colliders below it, down to the next motion body.
+    if (motion && !sensor) {
+        const auto gather = [&](this const auto &self, state::Entity node) -> void {
+            for (const auto child : Children{&r, node}) {
+                if (r.all_of<PhysicsMotion>(child)) continue;
+                if (r.all_of<ColliderShape>(child) && !r.all_of<TriggerTag>(child)) body.Colliders.push_back(child);
+                self(child);
+            }
+        };
+        gather(entity);
     }
-    return false;
+    const auto local_transform = [&](this const auto &self, state::Entity node) -> Transform {
+        if (node == entity) return {.S = body.Node.S};
+        return ComposeAuthored(self(ParentOrNull(r, node)), r.get<const Transform>(node));
+    };
+    leaves.reserve(body.Colliders.size());
+    for (const auto collider : body.Colliders) {
+        auto &leaf = leaves.emplace_back(ColliderInput{.Shape = r.get<const ColliderShape>(collider), .Local = local_transform(collider)});
+        if (const auto *material = r.try_get<const ColliderMaterial>(collider)) {
+            if (const auto *definition = r.try_get<const PhysicsMaterial>(material->PhysicsMaterialEntity)) leaf.Material = *definition;
+            if (const auto it = s.Masks.find(material->CollisionFilterEntity); it != s.Masks.end()) {
+                leaf.Layer = it->second.Layer;
+                leaf.Collides = it->second.Collides;
+                leaf.HasFilter = true;
+            }
+        }
+        leaf.Material.Name.clear();
+    }
+    return body;
+}
+
+// A joint's authored inputs, with the bodies holding its node and its connected node.
+// A dangling definition leaves the joint inactive.
+JointInput ReadJoint(const PhysicsState &s, const state::Scene &r, state::Entity entity, const PhysicsJoint &joint) {
+    const auto owner = [&](state::Entity node) { return FindAncestorIf(r, node, [&](auto ancestor) { return s.Bodies.contains(ancestor); }); };
+    JointInput input{
+        .Joint = joint,
+        .Owner = owner(entity),
+        .ConnectedOwner = owner(joint.ConnectedNode),
+        .Node = AuthoredWorld(r, entity),
+        .Connected = r.valid(joint.ConnectedNode) ? std::optional{AuthoredWorld(r, joint.ConnectedNode)} : std::nullopt,
+    };
+    if (const auto *definition = r.try_get<const PhysicsJointDef>(joint.JointDefEntity)) {
+        input.Definition = *definition;
+        input.Definition->Name.clear();
+    }
+    return input;
 }
 
 bool IsActiveJoint(const JointInput &input) {
@@ -269,23 +250,17 @@ void ClearSimulation(PhysicsState &s, state::Scene &r) {
     r.clear<BodyPoseCache>();
     s.Clearing = false;
     s.Bodies.clear();
+    s.LeafOwners.clear();
+    s.Joints.clear();
+    s.JointUpdates.clear();
     s.Entities.clear();
-    s.RemovedBodies.clear();
+    s.Destroyed.clear();
     s.SampleOrder.reset();
     s.SensorFollowers.clear();
     s.World.reset();
     s.WorldAnchor = rbp::NoIndex;
     s.Baked.reset();
     ClearContacts(s, r);
-}
-
-void OnDestroyPhysicsBody(state::Scene &r, state::Entity e) {
-    auto *s = r.Context.find<PhysicsState>();
-    if (!s || s->Clearing || !s->Bodies.contains(e)) return;
-    // An unparented body without children has no SceneNode, and destruction discards its reactive entries, so the flag records the change.
-    s->InputDirty = true;
-    s->RemovedBodies.insert(e);
-    s->SampleOrder.reset();
 }
 
 void OnDestroyPhysicsConstraint(state::Scene &r, state::Entity e) {
@@ -295,9 +270,9 @@ void OnDestroyPhysicsConstraint(state::Scene &r, state::Entity e) {
     s->Invalidate();
 }
 
-void OnDestroyPhysicsInput(state::Scene &r, state::Entity) {
-    // Entity destruction can erase entries from reactive storage after component destruction signals.
-    if (auto *s = r.Context.find<PhysicsState>()) s->InputDirty = true;
+// A destroyed entity's reactive entries are discarded, so its motion, collider and joint inputs record their entity here.
+void OnDestroyPhysicsInput(state::Scene &r, state::Entity e) {
+    if (auto *s = r.Context.find<PhysicsState>()) s->Destroyed.push_back(e);
 }
 
 // Every pool reserves twice its current need, with room for at least HeadroomColliders hull colliders, so added bodies build in place.
@@ -307,11 +282,19 @@ rbp::WorldLimits Limits(const state::Scene &r) {
     const uint32_t colliders = uint32_t(r.view<const ColliderShape>().size());
     const uint32_t motions = uint32_t(r.view<const PhysicsMotion>().size());
     const auto joints = uint32_t(r.view<const PhysicsJoint>().size());
-    uint64_t vertices = 1, triangles = 1;
+    // Hulls take vertex and face runs, and triangle meshes take vertex, triangle and BVH runs.
+    // Spheres, capsules and cylinders cook as hulls under a taper or a nonuniform scale.
+    uint64_t hulls = 0, vertices = 1, triangles = 1;
     for (const auto [e, collider] : r.view<const ColliderShape>().each()) {
-        const auto mesh = IsMeshBackedShape(collider.Shape) ? TryGetMesh(r, collider.MeshEntity) : std::nullopt;
-        vertices += mesh && std::holds_alternative<physics::TriangleMesh>(collider.Shape) ? mesh->VertexCount() : rbp::MaxHullVertices;
-        triangles += mesh ? uint64_t(mesh->TriangleIndexCount() / 3) : 4;
+        if (std::holds_alternative<physics::TriangleMesh>(collider.Shape)) {
+            if (const auto mesh = TryGetMesh(r, collider.MeshEntity)) {
+                vertices += mesh->VertexCount();
+                triangles += uint64_t(mesh->TriangleIndexCount() / 3);
+            }
+        } else if (!std::holds_alternative<physics::Box>(collider.Shape) && !std::holds_alternative<physics::Plane>(collider.Shape)) {
+            ++hulls;
+            vertices += rbp::MaxHullVertices;
+        }
     }
     if (vertices * 3 > UINT32_MAX || triangles * 6 > UINT32_MAX) throw std::runtime_error("Physics geometry exceeds RBP pool indexing.");
     const auto room = [](uint64_t need, uint64_t floor) { return uint32_t(std::min<uint64_t>(std::max(2 * need, floor), UINT32_MAX)); };
@@ -320,7 +303,7 @@ rbp::WorldLimits Limits(const state::Scene &r) {
         .Shapes = room(4 * colliders + motions + 4, 4 * HeadroomColliders + 4),
         .Joints = std::max(8u, joints + joints / 2),
         .ShapeVertices = room(vertices * 3, HeadroomColliders * rbp::MaxHullVertices * 3),
-        .HullFaces = room(colliders * 384, HeadroomColliders * 384),
+        .HullFaces = room(hulls * 384, HeadroomColliders * 384),
         .Triangles = room(triangles * 3, HeadroomColliders * 4 * 3),
         .BvhNodes = room(triangles * 6, HeadroomColliders * 4 * 6),
         .CompoundChildren = room(2 * colliders, 2 * HeadroomColliders),
@@ -332,54 +315,61 @@ auto PoolOverflows(const rbp::World &world) {
     return std::array{o.Bodies, o.Shapes, o.ShapeVertices, o.HullFaces, o.Triangles, o.BvhNodes, o.CompoundChildren};
 }
 
-physics::RbpBody CookBody(PhysicsState &s, const SceneInput &scene, state::Scene &r, state::Entity entity, const physics::RbpBody *previous = nullptr) {
+physics::RbpBody CookBody(PhysicsState &s, const state::Scene &r, const BodyInput &input, std::span<const ColliderInput> leaves, const physics::RbpBody *previous = nullptr) {
     auto &world = *s.World;
-    const auto &input = scene.Bodies.at(entity);
-    const auto *motion = input.Motion ? &*input.Motion : nullptr;
-    const auto &colliders = input.Colliders;
     std::vector<rbp::Index> shapes;
-    shapes.reserve(colliders.size());
+    shapes.reserve(leaves.size());
     try {
-        for (auto collider : colliders) {
-            const auto &leaf = scene.Colliders.at(collider);
+        for (uint32_t i = 0; i < leaves.size(); ++i) {
+            const auto &leaf = leaves[i];
             const auto &desc = leaf.Shape;
-            const auto &transform = leaf.Local;
-            auto local = PoseOf(transform);
-            local.Position += rbp::Rotate(local.Orientation, ToRbp(desc.LocalOffset * transform.S));
+            auto local = PoseOf(leaf.Local);
+            local.Position += rbp::Rotate(local.Orientation, ToRbp(desc.LocalOffset * leaf.Local.S));
             const auto mesh = IsMeshBackedShape(desc.Shape) ? TryGetMesh(r, desc.MeshEntity) : std::nullopt;
-            const auto shape = physics::BuildRbpShape(world, desc.Shape, mesh ? &*mesh : nullptr, transform.S, local);
+            const auto shape = physics::BuildRbpShape(world, desc.Shape, mesh ? &*mesh : nullptr, leaf.Local.S, local);
             shapes.push_back(shape);
-            ApplyCollider(world.Shapes[shape], collider, leaf);
+            ApplyCollider(world.Shapes[shape], input.Colliders[i], leaf);
         }
-        const auto body = physics::BuildRbpBody(world, shapes, input.Node, motion, &input.Velocity, input.Sensor, previous);
-        for (auto shape : shapes) world.RemoveShape(shape);
+        const auto body = physics::BuildRbpBody(world, shapes, input.Node, input.Motion ? &*input.Motion : nullptr, &input.Velocity, input.Sensor, previous);
+        world.RemoveShapes(shapes);
         return body;
     } catch (...) {
-        for (auto shape : shapes) world.RemoveShape(shape);
+        world.RemoveShapes(shapes);
         throw;
     }
 }
 
-void BuildBody(PhysicsState &s, const SceneInput &input, state::Scene &r, state::Entity entity) {
-    if (s.Bodies.contains(entity)) return;
-    const auto body = CookBody(s, input, r, entity);
-    s.Bodies.emplace(entity, body);
+// Drops the leaf owner entries that still name `body` for its colliders.
+void ReleaseLeaves(PhysicsState &s, state::Entity body, std::span<const state::Entity> colliders) {
+    for (const auto collider : colliders) {
+        if (const auto leaf = s.LeafOwners.find(collider); leaf != s.LeafOwners.end() && leaf->second == body) s.LeafOwners.erase(leaf);
+    }
+}
+
+void BuildBody(PhysicsState &s, state::Scene &r, state::Entity entity, BodyInput input, std::vector<ColliderInput> leaves) {
+    const auto body = CookBody(s, r, input, leaves);
+    for (const auto collider : input.Colliders) s.LeafOwners[collider] = entity;
     if (s.Entities.size() <= body.Body) s.Entities.resize(body.Body + 1, state::Null);
     s.Entities[body.Body] = entity;
     r.emplace_or_replace<PhysicsBodyHandle>(entity, PhysicsBodyHandle{body.Body});
-    if (input.Bodies.at(entity).Motion) r.emplace_or_replace<BodyPoseCache>(entity, BodyPoseCache{{physics::RbpNodePose(body.InitialPose, body.Frame)}});
+    if (input.Motion) r.emplace_or_replace<BodyPoseCache>(entity, BodyPoseCache{{physics::RbpNodePose(body.InitialPose, body.Frame)}});
+    s.Bodies.emplace(entity, BodyRecord{body, std::move(input), std::move(leaves)});
 }
 
-// Builds every input body missing from the world, motion bodies first, each group in entity order.
-void BuildBodies(PhysicsState &s, const SceneInput &input, state::Scene &r) {
-    for (auto entity : SortedEntities(r.view<const PhysicsMotion>())) BuildBody(s, input, r, entity);
-    for (auto entity : SortedEntities(r.view<const ColliderShape>()))
-        if (input.Bodies.contains(entity)) BuildBody(s, input, r, entity);
+// Builds every body of the scene, motion bodies first, each group in entity order.
+void BuildBodies(PhysicsState &s, state::Scene &r) {
+    std::vector<ColliderInput> leaves;
+    const auto build = [&](state::Entity entity) {
+        if (s.Bodies.contains(entity)) return;
+        if (auto input = ReadBody(s, r, entity, leaves)) BuildBody(s, r, entity, std::move(*input), std::move(leaves));
+    };
+    for (const auto entity : SortedEntities(r.view<const PhysicsMotion>())) build(entity);
+    for (const auto entity : SortedEntities(r.view<const ColliderShape>())) build(entity);
 }
 
 void BuildJoint(PhysicsState &s, state::Scene &r, state::Entity entity) {
-    const auto it = s.Input.Joints.find(entity);
-    if (it == s.Input.Joints.end() || !IsActiveJoint(it->second)) return;
+    const auto it = s.Joints.find(entity);
+    if (it == s.Joints.end() || !IsActiveJoint(it->second)) return;
     const auto &input = it->second;
     const auto &joint = input.Joint;
     const auto &def = *input.Definition;
@@ -389,8 +379,8 @@ void BuildJoint(PhysicsState &s, state::Scene &r, state::Entity entity) {
     // KHR measures the connected frame in the joint node's frame. RBP measures A in B.
     const auto a = PoseOf(*input.Connected), b = PoseOf(input.Node);
     rbp::JointDesc desc{
-        .BodyA = connected == state::Null ? s.WorldAnchor : s.Bodies.at(connected).Body,
-        .BodyB = s.Bodies.at(owner).Body,
+        .BodyA = connected == state::Null ? s.WorldAnchor : s.Bodies.at(connected).Cooked.Body,
+        .BodyB = s.Bodies.at(owner).Cooked.Body,
         .AtA = a.Position,
         .AtB = b.Position,
         .FrameA = a.Orientation,
@@ -462,11 +452,13 @@ void Rebuild(state::Scene &r) {
     ClearSimulation(s, r);
     if (!s.Context) return;
     if (!s.Solver) s.Solver.emplace(*s.Context);
+    UpdateMasks(s, r);
     s.World.emplace(*s.Context, Limits(r));
-    BuildBodies(s, s.Input, r);
-    for (auto entity : SortedEntities(r.view<const PhysicsJoint>())) BuildJoint(s, r, entity);
-    s.JointUpdates.clear();
-    s.Evaluate = true;
+    BuildBodies(s, r);
+    for (const auto entity : SortedEntities(r.view<const PhysicsJoint>())) {
+        s.Joints.emplace(entity, ReadJoint(s, r, entity, r.get<const PhysicsJoint>(entity)));
+        BuildJoint(s, r, entity);
+    }
 }
 
 const std::vector<state::Entity> &SampleOrder(PhysicsState &s, const state::Scene &r) {
@@ -486,10 +478,10 @@ const std::vector<state::Entity> &SampleOrder(PhysicsState &s, const state::Scen
 void Restart(PhysicsState &s, state::Scene &r) {
     const profile::CpuScope scope{"PhysicsReset"};
     ClearContacts(s, r);
-    // Sampling writes the world transforms of posed bodies and their descendants, so each outermost posed subtree returns to its authored pose.
-    for (const auto entity : SampleOrder(s, r))
-        if (FindAncestorIf(r, ParentOrNull(r, entity), [&](auto node) { return r.all_of<BodyPoseCache>(node); }) == state::Null) UpdateWorldTransformRecursive(r, entity);
-    for (const auto &[entity, body] : s.Bodies) {
+    // Sampling writes the world transforms of posed bodies and their descendants, so each posed subtree returns to its authored pose.
+    RecomputeWorldTransforms(r, SampleOrder(s, r), {}, {});
+    for (const auto &[entity, record] : s.Bodies) {
+        const auto &body = record.Cooked;
         s.World->Poses[body.Body] = body.InitialPose;
         s.World->Velocities[body.Body] = body.InitialVelocity;
         if (auto *cache = r.try_edit<BodyPoseCache>(entity)) cache->Frames = {physics::RbpNodePose(body.InitialPose, body.Frame)};
@@ -498,12 +490,12 @@ void Restart(PhysicsState &s, state::Scene &r) {
     for (auto entity : s.JointUpdates) BuildJoint(s, r, entity);
     s.JointUpdates.clear();
     s.SensorFollowers.clear();
-    for (const auto &[entity, body] : s.Bodies) {
+    for (const auto &[entity, record] : s.Bodies) {
         if (!r.all_of<TriggerTag>(entity) || r.all_of<PhysicsMotion>(entity)) continue;
-        const auto owner = MotionOwner(r, GetParentEntity(r, entity));
+        const auto owner = MotionOwner(r, entity);
         if (owner == state::Null) continue;
-        const auto owner_body = s.Bodies.at(owner).Body;
-        s.SensorFollowers.push_back({body.Body, owner_body, rbp::ComposePose(Inverse(s.World->Poses[owner_body]), s.World->Poses[body.Body])});
+        const auto body = record.Cooked.Body, owner_body = s.Bodies.at(owner).Cooked.Body;
+        s.SensorFollowers.push_back({body, owner_body, rbp::ComposePose(Inverse(s.World->Poses[owner_body]), s.World->Poses[body])});
     }
     s.World->WeldStatic();
     s.Baked = s.CacheStartFrame;
@@ -635,33 +627,16 @@ void StepSimulation(PhysicsState &s, state::Scene &r, float sim_dt, uint32_t sub
     }
 }
 
-void SyncBodyWorldTransform(state::Scene &r, state::Entity entity, const vec3 &pos, const quat &rot) {
-    r.patch<WorldTransform>(entity, [&](WorldTransform &t) { t.P = pos; t.R = rot; });
-    for (const auto child : Children{&r, entity}) UpdateWorldTransformRecursive(r, child);
-}
-
 void BakeFrame(state::Scene &r, state::Entity viewport, PhysicsState &s, uint32_t frame, float fps) {
     const auto &settings = r.get<const PhysicsSimulationSettings>(viewport);
     const float sim_dt = (fps > 0 ? 1.f / fps : 1.f / 60) * settings.TimeScale;
     StepSimulation(s, r, sim_dt, settings.SubstepsPerFrame);
     for (auto [entity, handle, cache] : r.view<const PhysicsBodyHandle, BodyPoseCache>().each()) {
-        const auto &body = s.Bodies.at(entity);
+        const auto &body = s.Bodies.at(entity).Cooked;
         cache.Frames.push_back(physics::RbpNodePose(s.World->Poses[body.Body], body.Frame));
     }
     s.ContactFrames.push_back({std::move(r.Context.get<PhysicsContactImpacts>()), std::move(r.Context.get<PhysicsSustainedContacts>())});
     s.Baked = frame;
-}
-
-template<typename C>
-void ClearDanglingRefs(state::Scene &r, state::Entity deleted, state::Entity C::*field) {
-    for (auto [e, c] : r.view<C>().each())
-        if (c.*field == deleted) r.patch<C>(e, [field](C &x) { x.*field = state::Null; });
-}
-
-template<typename C>
-void ClearDanglingRefs(state::Scene &r, state::Entity deleted, std::vector<state::Entity> C::*field) {
-    for (auto [e, c] : r.view<C>().each())
-        if (std::ranges::contains(c.*field, deleted)) r.patch<C>(e, [field, deleted](C &x) { std::erase(x.*field, deleted); });
 }
 
 void UpdateSettings(state::Scene &r, state::Entity viewport, float fps) {
@@ -674,139 +649,186 @@ void UpdateSettings(state::Scene &r, state::Entity viewport, float fps) {
     s.Invalidate();
 }
 
+// A filter uses each system once, whether as a member or as a collision target.
+void CountDefinitionUses(state::Scene &r) {
+    auto &counts = r.Context.get<PhysicsDefinitionUses>().Counts;
+    counts.clear();
+    const auto use = [&](state::Entity definition) {
+        if (definition != state::Null) ++counts[definition];
+    };
+    for (const auto [_, material] : r.view<const ColliderMaterial>().each()) {
+        use(material.PhysicsMaterialEntity);
+        use(material.CollisionFilterEntity);
+    }
+    for (const auto [_, trigger] : r.view<const TriggerNodes>().each()) use(trigger.CollisionFilterEntity);
+    for (const auto [_, filter] : r.view<const CollisionFilter>().each()) {
+        for (const auto system : filter.Systems) use(system);
+        for (const auto system : filter.CollideSystems)
+            if (std::ranges::find(filter.Systems, system) == filter.Systems.end()) use(system);
+    }
+    for (const auto [_, joint] : r.view<const PhysicsJoint>().each()) use(joint.JointDefEntity);
+}
 } // namespace
 
 namespace physics {
-void ProcessChanges(state::Scene &r, EventPass) {
+void ProcessChanges(state::Scene &r) {
+    if (!reactive(r, Change::PhysicsDefinitionUses).empty()) CountDefinitionUses(r);
     auto &s = r.Context.get<PhysicsState>();
-    const auto any = [&](auto... changes) { return (... || !reactive(r, changes).empty()); };
-    const auto poser_moved = [&] {
-        const auto &moved = reactive(r, Change::PhysicsTransform);
-        return std::ranges::any_of(s.Input.Posers, [&](auto e) { return moved.contains(e); });
-    };
-    const bool input_dirty=std::exchange(s.InputDirty,false);
-    const auto &geometry=reactive(r,Change::PhysicsGeometry);
-    const bool mesh_collider_changed=!geometry.empty() && std::ranges::any_of(s.Input.Colliders,[&](const auto &entry) {
-        const auto &shape=entry.second.Shape;
-        return IsMeshBackedShape(shape.Shape) && geometry.contains(shape.MeshEntity);
-    });
-    if (!input_dirty && !any(Change::PhysicsInput,Change::PhysicsMaterialDef,Change::CollisionSystemDef,Change::CollisionFilterDef) &&
-        !poser_moved() && !mesh_collider_changed) return;
-    if (input_dirty || any(Change::PhysicsInput)) s.SampleOrder.reset();
-    for (auto e : reactive(r, Change::PhysicsMaterialDef))
-        if (!r.all_of<PhysicsMaterial>(e)) ClearDanglingRefs(r, e, &ColliderMaterial::PhysicsMaterialEntity);
-    for (auto e : reactive(r, Change::CollisionSystemDef))
-        if (!r.all_of<CollisionSystem>(e)) {
-            ClearDanglingRefs(r, e, &CollisionFilter::Systems);
-            ClearDanglingRefs(r, e, &CollisionFilter::CollideSystems);
-        }
-    for (auto e : reactive(r, Change::CollisionFilterDef))
-        if (!r.all_of<CollisionFilter>(e)) {
-            ClearDanglingRefs(r, e, &ColliderMaterial::CollisionFilterEntity);
-            ClearDanglingRefs(r, e, &TriggerNodes::CollisionFilterEntity);
-        }
-    for (auto [entity, joint] : r.view<const PhysicsJoint>().each())
-        if (joint.JointDefEntity != state::Null && !r.all_of<PhysicsJointDef>(joint.JointDefEntity))
-            r.patch<PhysicsJoint>(entity, [](auto &j) { j.JointDefEntity = state::Null; });
-    UpdateMasks(s, r);
-    auto input = ReadScene(s, r);
-    if (input.Bodies.empty()) {
+    const auto &inputs = reactive(r, Change::PhysicsInput), &moved = reactive(r, Change::PhysicsTransform), &geometry = reactive(r, Change::PhysicsGeometry);
+    const bool definitions = AnyChanged(r, Change::PhysicsMaterialDef, Change::CollisionSystemDef, Change::CollisionFilterDef);
+    if (inputs.empty() && moved.empty() && geometry.empty() && !definitions && s.Destroyed.empty()) return;
+    const auto destroyed = std::exchange(s.Destroyed, {});
+    // Without motion or colliders, the scene forms no body.
+    if (r.view<const PhysicsMotion>().empty() && r.view<const ColliderShape>().empty()) {
         if (s.World) ClearSimulation(s, r);
-        s.Input = std::move(input);
         return;
     }
-    const auto joints = std::ranges::count_if(input.Joints, [](const auto &entry) { return IsActiveJoint(entry.second); });
-    if (!s.World || RequiresRebuild(s, input) || joints > s.World->Joints.Capacity) {
-        s.Input = std::move(input);
+    if (!s.World) {
         Rebuild(r);
         return;
     }
-    // Destroyed bodies leave the world with their shapes.
-    const bool removed = !s.RemovedBodies.empty();
-    for (const auto entity : std::exchange(s.RemovedBodies, {})) {
-        const auto it = s.Bodies.find(entity);
-        s.World->RemoveBody(it->second.Body);
-        if (it->second.Shape != rbp::NoIndex) s.World->RemoveShape(it->second.Shape);
-        s.Entities[it->second.Body] = state::Null;
-        s.Bodies.erase(it);
+    if (definitions) UpdateMasks(s, r);
+
+    // The bodies a change reaches: each body and collider at or under a changed node, with each collider's former and current owner.
+    std::vector<state::Entity> candidates;
+    const auto touch = [&](state::Entity e) {
+        if (const auto owner = s.LeafOwners.find(e); owner != s.LeafOwners.end()) candidates.push_back(owner->second);
+        if (s.Bodies.contains(e)) candidates.push_back(e);
+        if (!r.valid(e) || !r.any_of<PhysicsMotion, ColliderShape>(e)) return;
+        candidates.push_back(e);
+        if (const auto owner = MotionOwner(r, e); owner != state::Null) candidates.push_back(owner);
+    };
+    const auto touch_subtree = [&](this const auto &self, state::Entity e) -> void {
+        touch(e);
+        if (!r.valid(e)) return;
+        for (const auto child : Children{&r, e}) self(child);
+    };
+    for (const auto e : inputs) touch_subtree(e);
+    for (const auto e : moved) touch_subtree(e);
+    for (const auto e : destroyed) touch(e);
+    const auto &mesh_colliders = r.Context.get<const MeshColliders>();
+    for (const auto mesh_entity : geometry)
+        for (const auto collider : mesh_colliders.Of(mesh_entity)) touch(collider);
+    // A definition reaches every leaf that names one.
+    if (definitions)
+        for (const auto e : r.view<const ColliderMaterial>()) touch(e);
+    SortUnique(candidates);
+
+    // Each candidate leaves the world, joins it, or compares its inputs with the ones it was cooked from.
+    struct Pending {
+        state::Entity Entity;
+        BodyInput Input;
+        std::vector<ColliderInput> Leaves;
+        bool Recook = false;
+    };
+    std::vector<state::Entity> removed;
+    std::vector<Pending> changed, added;
+    std::vector<ColliderInput> leaves;
+    const auto mesh_edited = [&](const ColliderInput &leaf) { return IsMeshBackedShape(leaf.Shape.Shape) && geometry.contains(leaf.Shape.MeshEntity); };
+    for (const auto e : candidates) {
+        auto input = ReadBody(s, r, e, leaves);
+        const auto it = s.Bodies.find(e);
+        if (it == s.Bodies.end()) {
+            if (input) added.push_back({e, std::move(*input), std::move(leaves)});
+            continue;
+        }
+        // A body that stops forming one leaves the world, and one turning sensor or solid joins it again.
+        if (!input || input->Sensor != it->second.Input.Sensor) {
+            removed.push_back(e);
+            if (input) added.push_back({e, std::move(*input), std::move(leaves)});
+            continue;
+        }
+        const auto &record = it->second;
+        const bool recook = input->Colliders != record.Input.Colliders || std::ranges::any_of(leaves, mesh_edited) ||
+            !std::ranges::equal(leaves, record.Leaves, [](const auto &a, const auto &b) { return a.Shape == b.Shape && a.Local == b.Local; });
+        if (recook || *input != record.Input || leaves != record.Leaves) changed.push_back({e, std::move(*input), std::move(leaves), recook});
     }
-    if (removed) ClearContacts(s, r);
-    std::set<state::Entity> recook, surfaces;
-    for (const auto &[entity, leaf] : input.Colliders) {
-        const auto old = s.Input.Colliders.find(entity);
-        if (old == s.Input.Colliders.end() || old->second.Shape != leaf.Shape || old->second.Local != leaf.Local || (IsMeshBackedShape(leaf.Shape.Shape) && geometry.contains(leaf.Shape.MeshEntity))) recook.insert(leaf.Owner);
-        else if (old->second != leaf) surfaces.insert(leaf.Owner);
+    // Motion bodies join first, each group in entity order, as a full build adds them.
+    std::ranges::stable_partition(added, [](const Pending &p) { return p.Input.Motion.has_value(); });
+
+    // Entities whose world transforms physics stops writing.
+    std::vector<state::Entity> released;
+    if (!removed.empty()) {
+        std::vector<rbp::Index> bodies, shapes;
+        for (const auto e : removed) {
+            const auto it = s.Bodies.find(e);
+            const auto &body = it->second.Cooked;
+            bodies.push_back(body.Body);
+            if (body.Shape != rbp::NoIndex) shapes.push_back(body.Shape);
+            ReleaseLeaves(s, e, it->second.Input.Colliders);
+            s.Entities[body.Body] = state::Null;
+            if (r.remove<BodyPoseCache>(e)) released.push_back(e);
+            r.remove<PhysicsBodyHandle>(e);
+            s.Bodies.erase(it);
+        }
+        s.World->RemoveBodies(bodies);
+        s.World->RemoveShapes(shapes);
+        ClearContacts(s, r);
     }
-    for (const auto &[entity, next] : input.Bodies)
-        if (const auto old = s.Input.Bodies.find(entity); old != s.Input.Bodies.end() && old->second.Colliders != next.Colliders) recook.insert(entity);
-    const bool changed = removed || !recook.empty() || !surfaces.empty() || s.Input.Bodies != input.Bodies || s.Input.Joints != input.Joints;
-    if (!changed) {
-        s.Input.Posers = std::move(input.Posers);
+
+    std::set<rbp::Index> reframed;
+    const auto overflows = PoolOverflows(*s.World);
+    try {
+        for (auto &[e, input, next_leaves, recook] : changed) {
+            auto &record = s.Bodies.at(e);
+            auto &body = record.Cooked;
+            const auto old_pose = body.InitialPose;
+            const auto old_mass = s.World->Masses[body.Body];
+            if (recook) {
+                body = CookBody(s, r, input, next_leaves, &body);
+            } else {
+                if (input != record.Input) physics::UpdateRbpBody(*s.World, body, input.Node, input.Motion ? &*input.Motion : nullptr, &input.Velocity);
+                // Compound children follow the collider order, so each changed leaf updates its surface in place.
+                for (uint32_t i = 0; i < next_leaves.size(); ++i) {
+                    if (next_leaves[i] != record.Leaves[i]) ApplyCollider(s.World->Shapes[s.World->Child(body.Shape, i)], input.Colliders[i], next_leaves[i]);
+                }
+            }
+            const auto mass = s.World->Masses[body.Body];
+            if (recook || simd::any(old_pose.Position != body.InitialPose.Position) || simd::any(old_pose.Orientation != body.InitialPose.Orientation) || old_mass.InvMass != mass.InvMass || simd::any(old_mass.InvInertiaLocal != mass.InvInertiaLocal)) reframed.insert(body.Body);
+            // A body changing between static and moving takes or gives up its pose cache.
+            if (input.Motion && !record.Input.Motion) r.emplace<BodyPoseCache>(e, BodyPoseCache{{physics::RbpNodePose(body.InitialPose, body.Frame)}});
+            else if (!input.Motion && record.Input.Motion && r.remove<BodyPoseCache>(e)) released.push_back(e);
+            ReleaseLeaves(s, e, record.Input.Colliders);
+            for (const auto collider : input.Colliders) s.LeafOwners[collider] = e;
+            record.Input = std::move(input);
+            record.Leaves = std::move(next_leaves);
+        }
+        for (auto &[e, input, next_leaves, _] : added) BuildBody(s, r, e, std::move(input), std::move(next_leaves));
+    } catch (...) {
+        if (PoolOverflows(*s.World) == overflows) throw;
+        Rebuild(r);
         return;
     }
+
+    std::map<state::Entity, JointInput> joints;
+    for (const auto [e, joint] : r.view<const PhysicsJoint>().each()) joints.emplace(e, ReadJoint(s, r, e, joint));
+    if (uint32_t(std::ranges::count_if(joints, [](const auto &entry) { return IsActiveJoint(entry.second); })) > s.World->Joints.Capacity) {
+        Rebuild(r);
+        return;
+    }
+    if (!released.empty()) RecomputeWorldTransforms(r, released, r.view<const BodyPoseCache>() | std::ranges::to<std::vector>(), {});
+    if (removed.empty() && changed.empty() && added.empty() && joints == s.Joints) return;
     s.Invalidate();
-    for (auto entity : r.view<const PhysicsConstraintHandle>()) {
-        const auto it = input.Joints.find(entity);
-        const bool active = it != input.Joints.end() && IsActiveJoint(it->second);
+    s.SampleOrder.reset();
+    for (const auto entity : r.view<const PhysicsConstraintHandle>()) {
+        const auto it = joints.find(entity);
+        const bool active = it != joints.end() && IsActiveJoint(it->second);
         // Removing a body retires its world joints, which then rebuild on restart.
         if (active && s.World->Joints[r.get<const PhysicsConstraintHandle>(entity).ConstraintIndex].Active) continue;
         r.remove<PhysicsConstraintHandle>(entity);
         if (active) s.JointUpdates.insert(entity);
     }
-    std::set<rbp::Index> reframed;
-    const auto overflows = PoolOverflows(*s.World);
-    try {
-        for (const auto &[entity, next] : input.Bodies) {
-            // Bodies new to the world build below.
-            const auto found = s.Bodies.find(entity);
-            if (found == s.Bodies.end()) continue;
-            const bool replace = recook.contains(entity);
-            if (!replace && s.Input.Bodies.at(entity) == next) continue;
-            auto &body = found->second;
-            const auto old_pose = body.InitialPose;
-            const auto old_mass = s.World->Masses[body.Body];
-            if (replace) body = CookBody(s, input, r, entity, &body);
-            else physics::UpdateRbpBody(*s.World, body, next.Node, next.Motion ? &*next.Motion : nullptr, &next.Velocity);
-            const auto mass = s.World->Masses[body.Body];
-            if (replace || simd::any(old_pose.Position != body.InitialPose.Position) || simd::any(old_pose.Orientation != body.InitialPose.Orientation) || old_mass.InvMass != mass.InvMass || simd::any(old_mass.InvInertiaLocal != mass.InvInertiaLocal)) reframed.insert(body.Body);
-        }
-        // Surviving bodies are a subset of the input, so a size gap means new bodies.
-        if (s.Bodies.size() < input.Bodies.size()) BuildBodies(s, input, r);
-    } catch (...) {
-        if (PoolOverflows(*s.World) == overflows) throw;
-        s.Input = std::move(input);
-        Rebuild(r);
-        return;
-    }
-    for (const auto &[entity, next] : input.Joints) {
-        const auto old = s.Input.Joints.find(entity);
-        bool update = old == s.Input.Joints.end() || old->second != next;
+    for (const auto &[entity, next] : joints) {
+        const auto old = s.Joints.find(entity);
+        bool update = old == s.Joints.end() || old->second != next;
         if (const auto *handle = r.try_get<const PhysicsConstraintHandle>(entity)) {
             const auto &joint = s.World->Joints[handle->ConstraintIndex];
             update |= reframed.contains(joint.BodyA) || reframed.contains(joint.BodyB);
         }
         if (update) s.JointUpdates.insert(entity);
     }
-    for (auto entity : surfaces) {
-        if (recook.contains(entity)) continue;
-        const auto &body = s.Bodies.at(entity);
-        if (body.Shape == rbp::NoIndex) continue;
-        const auto &compound = s.World->Shapes[body.Shape];
-        for (uint32_t i = 0; i < compound.VertexCount; ++i) {
-            auto &leaf = s.World->Shapes[s.World->Child(body.Shape, i)];
-            const auto collider = state::Entity(uint32_t(leaf.UserData - 1));
-            const auto &next = input.Colliders.at(collider);
-            if (s.Input.Colliders.at(collider) != next) ApplyCollider(leaf, collider, next);
-        }
-    }
-    s.Input = std::move(input);
+    s.Joints = std::move(joints);
 }
-} // namespace physics
-
-namespace {
-} // namespace
-
-namespace physics {
 
 void ApplySimulationSettings(state::Scene &r, const PhysicsSimulationSettings &settings) {
     auto &step = r.Context.get<PhysicsState>().Settings;
@@ -828,9 +850,11 @@ bool AdvancePlayback(state::Scene &r, state::Entity viewport, int from_frame, in
     s.CacheStartFrame = range_start_frame;
     s.CacheEndFrame = range_end_frame;
     if (s.Bodies.empty()) return false;
-    if (!s.Baked) Restart(s, r);
-    if (!std::exchange(s.Evaluate, false) && from_frame == to_frame) return false;
-    BakeThrough(r, viewport, to_frame, fps);
+    // An edit restarts the simulation at once, and the bake waits for the next frame change, showing the cached start until then.
+    const bool restarted = !s.Baked;
+    if (restarted) Restart(s, r);
+    if (from_frame == to_frame && !restarted) return false;
+    if (from_frame != to_frame) BakeThrough(r, viewport, to_frame, fps);
     SamplePosesAtFrame(r, float(to_frame));
     const auto &contacts = s.ContactFrames[std::clamp(uint32_t(to_frame), s.CacheStartFrame, *s.Baked) - s.CacheStartFrame];
     r.Context.get<PhysicsContactImpacts>() = contacts.Impacts;
@@ -862,32 +886,39 @@ void SamplePosesAtFrame(state::Scene &r, float frame) {
     const float t = clamped - float(lo);
     const auto lo_idx = lo - s.CacheStartFrame, hi_idx = hi - s.CacheStartFrame;
     // Update parents before restoring the independent poses of nested bodies.
+    // The posed bodies in entity index order, as `owned` requires.
+    const auto bodies = r.view<const BodyPoseCache>() | std::ranges::to<std::vector>();
     for (const auto entity : SampleOrder(s, r)) {
         const auto &cache = r.get<const BodyPoseCache>(entity);
         const auto &a = cache.Frames[lo_idx], &b = cache.Frames[hi_idx];
         const auto position = Mix(a.P, b.P, t);
         const auto rotation = Slerp(a.R, b.R, t);
+        const auto &world = *WorldTransformOf(r, entity);
         // A body already at its sampled pose has a consistent subtree.
-        if (const auto &world = r.get<const WorldTransform>(entity); world.P == position && world.R == rotation) continue;
-        SyncBodyWorldTransform(r, entity, position, rotation);
+        if (world.P == position && world.R == rotation) continue;
+        // The sampled pose recomposes the body's subtree, leaving the other posed bodies to their own samples.
+        SetWorldTransform(r, entity, {position, rotation, world.S});
+        RecomputeWorldTransforms(r, Children{&r, entity} | std::ranges::to<std::vector>(), bodies, {});
     }
 }
 
 void Init(state::Scene &r) {
     auto &s = r.Context.emplace<PhysicsState>();
+    r.Context.emplace<PhysicsDefinitionUses>();
     if (r.Context.get<const mtl::Context>().Device->supportsFamily(MTL::GPUFamilyMetal4)) s.Context.emplace();
     r.Context.emplace<PhysicsContactImpacts>();
     r.Context.emplace<PhysicsSustainedContacts>();
-    r.on_destroy<PhysicsBodyHandle, &OnDestroyPhysicsBody>();
+    r.Context.emplace<MeshColliders>();
     r.on_destroy<PhysicsConstraintHandle, &OnDestroyPhysicsConstraint>();
+    r.on_destroy<PhysicsMotion, &OnDestroyPhysicsInput>();
+    r.on_destroy<ColliderShape, &OnDestroyPhysicsInput>();
     r.on_destroy<PhysicsJoint, &OnDestroyPhysicsInput>();
     r.on_destroy<PhysicsJointDef, &OnDestroyPhysicsInput>();
-    r.on_destroy<SceneNode, &OnDestroyPhysicsInput>();
     reactive(r, Change::PhysicsInput)
         .on<PhysicsMotion>(On::Create | On::Update | On::Destroy)
         .on<PhysicsVelocity>(On::Create | On::Update | On::Destroy)
         .on<ColliderShape>(On::Create | On::Update | On::Destroy)
-        .on<SceneNode>(On::Create | On::Update | On::Destroy)
+        .on<SceneParent>(On::Create | On::Update | On::Destroy)
         .on<ColliderMaterial>(On::Create | On::Update | On::Destroy)
         .on<TriggerTag>(On::Create | On::Destroy)
         .on<PhysicsJoint>(On::Create | On::Update | On::Destroy)
@@ -895,11 +926,21 @@ void Init(state::Scene &r) {
     reactive(r, Change::PhysicsTransform).on<Transform>(On::Update);
     reactive(r, Change::PhysicsGeometry).on<MeshGeometryDirty>(On::Create | On::Update).on<MeshPositionsChanged>(On::Create | On::Update);
     reactive(r, Change::ColliderPolicy).on<::ColliderPolicy>(On::Create | On::Update);
+    reactive(r, Change::Colliders).on<ColliderShape>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::PhysicsMaterialDef).on<::PhysicsMaterial>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::CollisionSystemDef).on<CollisionSystem>(On::Create | On::Update | On::Destroy);
     reactive(r, Change::CollisionFilterDef).on<CollisionFilter>(On::Create | On::Update | On::Destroy);
+    reactive(r, Change::PhysicsDefinitionUses)
+        .on<ColliderMaterial>(On::Create | On::Update | On::Destroy)
+        .on<TriggerNodes>(On::Create | On::Update | On::Destroy)
+        .on<CollisionFilter>(On::Create | On::Update | On::Destroy)
+        .on<PhysicsJoint>(On::Create | On::Update | On::Destroy);
 }
-void Deinit(state::Scene &r) { r.Context.erase<PhysicsState>(); }
+void Deinit(state::Scene &r) {
+    r.Context.erase<MeshColliders>();
+    r.Context.erase<PhysicsDefinitionUses>();
+    r.Context.erase<PhysicsState>();
+}
 void Clear(state::Scene &r) {
     if (auto *s = r.Context.find<PhysicsState>()) ClearSimulation(*s, r);
 }

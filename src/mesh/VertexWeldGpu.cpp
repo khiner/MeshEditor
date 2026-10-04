@@ -10,9 +10,6 @@
 #include "state/Scene.h"
 
 namespace {
-// A submit's scratch stays under this, so a batch of large meshes splits across submits.
-constexpr uint32_t ScratchWordBudget{96u << 20};
-
 enum Domain : uint32_t { Table,
                          Vertices,
                          Blocks,

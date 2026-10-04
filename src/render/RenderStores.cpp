@@ -25,7 +25,7 @@ void InitRenderStoreContext(state::Scene &r, const mtl::Context &ctx) {
 
 void RegisterRenderStoreHandlers(state::Scene &r) {
     r.on_destroy<ModelsBuffer, [](state::Scene &r, state::Entity e) {
-        r.Context.emplace<PendingHide>().Retired.push_back(e);
+        r.Context.emplace<PendingSlotRemovals>().Retired.push_back(e);
     }>();
     r.on_destroy<ArmaturePoseState, [](state::Scene &r, state::Entity e) {
         r.Context.emplace<PendingObjectRemovals>().DeformRanges.append_range(r.get<const ArmaturePoseState>(e).GpuDeformRanges);
@@ -36,12 +36,8 @@ void RegisterRenderStoreHandlers(state::Scene &r) {
     }>();
     r.on_destroy<RenderInstance, [](state::Scene &r, state::Entity e) {
         const auto &ri = r.get<const RenderInstance>(e);
-        if (auto *buffers = r.Context.find<GpuBuffers>()) {
-            buffers->LodNodeCount -= ri.LodNodeCount;
-            buffers->MeshletInstanceCount -= ri.MeshletCount;
-        }
         if (ri.BufferIndex == UINT32_MAX) return;
-        r.Context.emplace<PendingHide>().Instances.push_back({ri.Entity, ri.BufferIndex});
+        r.Context.emplace<PendingSlotRemovals>().Instances.push_back({ri.Entity, ri.BufferIndex});
     }>();
 }
 mtl::BufferContext &InitRenderStores(state::Scene &r) {

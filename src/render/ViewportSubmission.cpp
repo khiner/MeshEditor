@@ -21,7 +21,7 @@ void SubmitRecordedFrame(state::Scene &r, MTL::CommandBuffer *command_buffer) {
     ctx.CommitResidency();
     {
         const profile::CpuScope scope{"QueueSubmit"};
-        command_buffer->commit();
+        mtl::Commit(command_buffer);
     }
     r.Context.get<ViewportRenderResources>().InFlight = NS::RetainPtr(command_buffer);
     r.Context.get<FrameState>().RenderPending = true;

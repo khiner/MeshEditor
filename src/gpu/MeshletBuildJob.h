@@ -41,4 +41,4 @@ struct MeshletBuildJob {
     ElementWork Elements DEFAULT(), Materials DEFAULT();
     uint32_t ExistingPrimitive DEFAULT(InvalidOffset), ExistingGroup DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(MeshletBuildJob) == 324);
+static_assert(sizeof(MeshletBuildJob) == 464);

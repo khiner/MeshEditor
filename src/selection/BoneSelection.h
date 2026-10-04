@@ -11,6 +11,7 @@ enum class BoneSel : uint8_t {
 struct BoneSelection {
     bool Root{true}, Tip{true}, Body{true};
 
+    bool operator==(const BoneSelection &) const = default;
     static BoneSelection From(BoneSel part) { return {part != BoneSel::Tip, part != BoneSel::Root, part == BoneSel::Body}; }
     BoneSelection operator|(BoneSelection o) const {
         const bool r = Root || o.Root, t = Tip || o.Tip;

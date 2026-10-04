@@ -65,6 +65,12 @@ struct TiledJobBatch {
             for (uint32_t t = 0; t < tile_counts[job]; ++t) Tiles[domain].emplace_back(job, t);
         }
     }
+    // The storage words the next Encode allocates for the current jobs and tiles, with its alignment slack.
+    uint64_t UploadWords() const {
+        uint64_t tile_count = 0u;
+        for (const auto &domain : Tiles) tile_count += domain.size();
+        return uint64_t(Jobs.size()) * (sizeof(Job) / sizeof(uint32_t)) + 3u + 2u * tile_count + 3u;
+    }
     // A domain's indirect argument words, zero once a kernel has skipped its remaining indirect passes.
     uint32_t IndirectGroups(uint32_t domain) const { return ScratchSpan()[3 * domain]; }
     // The recording's scratch words, for staging inputs before the passes are recorded and reading results after they complete.

@@ -13,7 +13,8 @@ uint32_t SortElementWorkWords(uint32_t capacity) { return TemporaryWords(capacit
 
 void EncodeElementMembershipWork(state::Scene &r, mtl::ComputeChain &chain, std::span<const ElementWorkSeedJob> jobs) {
     const auto &pipeline = GetMeshPipelines(r)[MeshPass::ElementWorkSeed];
-    for (const auto &job : jobs) chain.Groups(pipeline, job, job.BlockCount);
+    // Each seed fills its own work.
+    chain.Concurrent([&] { for (const auto &job : jobs) chain.Groups(pipeline, job, job.BlockCount); });
 }
 
 void EncodeSortElementWork(state::Scene &r, mtl::ComputeChain &chain, std::span<const ElementWork> work) {

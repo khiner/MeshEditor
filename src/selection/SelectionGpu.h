@@ -52,6 +52,8 @@ void ApplyEditSelectionLists(state::Scene &, std::span<const std::pair<state::En
 // Publish root counts into each summary.
 // An explicit mode also clears the active element.
 void RefreshElementSelectionSummaries(state::Scene &, std::span<const state::Entity>, std::optional<Element> mode = {});
+// Brings each mesh's remembered element selection into `mode` and clears its active element.
+void ConvertElementSelections(state::Scene &, std::span<const state::Entity> mesh_entities, Element mode);
 void ApplyEditSharpness(state::Scene &, state::Entity viewport, std::span<const state::Entity> mesh_entities, EditSharpnessOperation, bool value = false, float angle = 0.f);
 // Read the shared GPU summary after selection work has completed. Other element domains have no current summary.
 const EditSelectionSummary *GetElementSelectionSummary(const state::Scene &, state::Entity mesh_entity, Element);

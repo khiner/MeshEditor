@@ -46,7 +46,7 @@ using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(M
     EditEdgeOverlay edge{
         geometry.Clip0, geometry.Clip1, color(geometry.Vertex0), color(geometry.Vertex1),
         pc.EdgeSharpnessSlot != InvalidSlot &&
-            uint(scene.Bytes(pc.EdgeSharpnessSlot)[work.Instance.EditEdgeSharpnessOffset + geometry.Edge]) != 0u,
+            uint(scene.Bytes(pc.EdgeSharpnessSlot)[work.Draw.EditEdgeSharpnessOffset + geometry.Edge]) != 0u,
     };
     edge.Clip0.z -= NdcOffsetFactor(scene);
     edge.Clip1.z -= NdcOffsetFactor(scene);

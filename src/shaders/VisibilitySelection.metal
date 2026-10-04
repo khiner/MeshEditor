@@ -4,14 +4,15 @@
 #include "gpu/VisibilitySelectionPushConstants.h"
 
 // The outlined owner's object ID, or zero.
-inline uint OutlinedObjectId(uint id, device const BindlessSet &bindless, VisibilityShadingPushConstants pc) {
+inline uint OutlinedObjectId(uint id, device const BindlessSet &bindless, constant SceneViewUBO &view, VisibilityShadingPushConstants pc) {
     if (id == VisibilityBackground) return 0u;
     const uint visible_index = (id >> uint(VisibilityId::TriangleBits)) & VisibilityIndexMask;
-    const uint instance = BindlessBuffer(VisibleMeshlet, bindless.Buffer, pc.VisibleMeshletSlot)[visible_index].Instance;
-    device const InstanceRecord &record = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[
-        BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[instance]
-    ];
-    return (record.Flags & uint(MeshletInstanceFlag::Silhouette)) != 0u ? record.ObjectId : 0u;
+    const VisibleMeshlet visible = BindlessBuffer(VisibleMeshlet, bindless.Buffer, pc.VisibleMeshletSlot)[visible_index];
+    const uint slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[visible.Instance];
+    device const MeshDisplay &display = BindlessBuffer(MeshRecord, bindless.Buffer, view.MeshRecordSlot)[visible.Mesh].Display;
+    const uint state = uint(BindlessBuffer(uchar, bindless.InstanceStateBuffer, view.InstanceStateSlot)[slot]);
+    const uint flags = InstanceFlags(display.Flags, display.PrimaryEditInstanceIndex, slot, state);
+    return (flags & uint(MeshletInstanceFlag::Silhouette)) != 0u ? BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[slot].ObjectId : 0u;
 }
 
 // Writes each 2x2 block's nearest unoutlined depth to the occluder pyramid's first level.
@@ -21,6 +22,7 @@ kernel void OutlineOccluderSeedKernel(
     texture2d<float, access::read> depth [[texture(1)]],
     texture2d<float, access::write> occluders [[texture(2)]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant VisibilityShadingPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const uint2 extent{visibility.get_width(), visibility.get_height()};
@@ -28,7 +30,7 @@ kernel void OutlineOccluderSeedKernel(
     float nearest = 1.0f;
     for (uint i = 0u; i < 4u; ++i) {
         const uint2 pixel = block * 2u + uint2(i & 1u, i >> 1u);
-        if (all(pixel < extent) && OutlinedObjectId(visibility.read(pixel).r, bindless, pc) == 0u) nearest = min(nearest, depth.read(pixel).r);
+        if (all(pixel < extent) && OutlinedObjectId(visibility.read(pixel).r, bindless, view, pc) == 0u) nearest = min(nearest, depth.read(pixel).r);
     }
     occluders.write(float4(nearest), block);
 }
@@ -44,10 +46,11 @@ fragment VisibilitySilhouetteTarget SilhouetteSeedFragment(
     texture2d<uint, access::read> visibility [[texture(0)]],
     texture2d<float, access::read> depth [[texture(1)]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant VisibilityShadingPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const uint2 pixel = uint2(position.xy);
-    const uint object_id = OutlinedObjectId(visibility.read(pixel).r, bindless, pc);
+    const uint object_id = OutlinedObjectId(visibility.read(pixel).r, bindless, view, pc);
     if (object_id == 0u) discard_fragment();
     const float z = depth.read(pixel).r;
     return {{z, float(object_id)}, z};

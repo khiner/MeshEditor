@@ -18,6 +18,7 @@ constant uint VertexBlockSimdGroups = VertexBlockLanes / 32u;
 struct VertexBlockLane {
     InstanceRecord Instance;
     DrawData Draw;
+    uint ActiveVertex; // The mesh's active vertex in Excite mode.
     // The lane's live vertex relative to the draw's vertex origin, InvalidOffset for a dead slot or a culled block.
     uint VertexId;
 };
@@ -52,14 +53,15 @@ inline VertexBlockLane ResolveVertexBlockLane(
 ) {
     const uint block = BindlessBuffer(uint, scene.B.Buffer, pc.Blocks.Slot)[pc.Blocks.Offset + group / VertexBlockGroups];
     const InstanceRecord instance = scene.InstanceRecords(scene.View.InstanceRecordSlot)[pc.Instance];
-    const DrawData draw = ComposeDraw(scene.MeshRecords(scene.View.MeshRecordSlot)[instance.Mesh], instance, pc.Instance, instance.Selection);
+    const MeshRecord mesh = scene.MeshRecords(scene.View.MeshRecordSlot)[instance.Mesh];
+    const DrawData draw = ComposeDraw(mesh, instance, pc.Instance);
     uint visible = 0u;
     if (simd_is_first()) visible = VertexBlockVisible(scene, pc, block, MeshletWorld(scene, draw), margin, depth_pull) ? 1u : 0u;
     visible = simd_broadcast_first(visible);
     const uint slot = (group % VertexBlockGroups) * VertexBlockLanes + lane;
     const uint live = BindlessBuffer(MeshElementBlock, scene.B.Buffer, pc.MembershipSlot)[block].Live[slot / 32u];
     const bool present = visible != 0u && (live & (1u << (slot % 32u))) != 0u;
-    return {instance, draw, present ? block * MeshElementBlockSize + slot - draw.VertexOffset : InvalidOffset};
+    return {instance, draw, mesh.Display.ActiveVertex, present ? block * MeshElementBlockSize + slot - draw.VertexOffset : InvalidOffset};
 }
 
 #endif

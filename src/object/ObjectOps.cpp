@@ -35,12 +35,10 @@
 namespace {
 // Unlink each affected sibling list once, including surviving children of deleted parents.
 void ClearRelationships(state::Scene &r, std::span<const state::Entity> entities) {
-    state::DirtySet detached;
+    std::vector<state::Entity> detached;
     const auto add = [&](state::Entity e) {
-        const auto *node = r.try_get<SceneNode>(e);
-        if (!node || (node->Parent == state::Null && node->FirstChild == state::Null)) return;
-        detached.emplace(e);
-        for (const auto child : Children{&r, e}) detached.emplace(child);
+        if (r.all_of<SceneParent>(e)) detached.push_back(e);
+        detached.append_range(Children{&r, e});
     };
     for (const auto e : entities) {
         add(e);
@@ -48,7 +46,7 @@ void ClearRelationships(state::Scene &r, std::span<const state::Entity> entities
             for (const auto bone : arm->BoneEntities) add(bone);
         }
     }
-    ClearParents(r, detached.Entities);
+    ClearParents(r, detached);
 }
 } // namespace
 
@@ -130,11 +128,24 @@ void ProcessObjectRemovals(state::Scene &r, state::Entity viewport) {
     auto &buffer_entities = pending->Buffers, &armature_data_entities = pending->Armatures;
     const bool removed_objects = !buffer_entities.empty() || !armature_data_entities.empty();
     if (removed_objects) {
-        // Retain shared data referenced by any survivor, including hidden instances.
-        for (const auto [_, instance] : r.view<const Instance>().each()) buffer_entities.remove(instance.Entity);
-        for (const auto [_, arm] : r.view<const ArmatureObject>().each()) armature_data_entities.remove(arm.Entity);
-        for (const auto [_, modifier] : r.view<const ArmatureModifier>().each()) armature_data_entities.remove(modifier.ArmatureEntity);
-        for (const auto [_, attachment] : r.view<const BoneAttachment>().each()) armature_data_entities.remove(attachment.ArmatureEntity);
+        // Shared data survives while an instance uses it: a placed instance in its slot range, or one created since the last settle.
+        if (!buffer_entities.empty()) {
+            const auto object_ids = r.Context.get<const GpuBuffers>().Instances.ObjectIdBuffer.GetSpan<uint32_t>();
+            std::vector<state::Entity> survivors;
+            for (const auto data_entity : buffer_entities) {
+                const auto *models = r.try_get<const ModelsBuffer>(data_entity);
+                const auto slots = models ? object_ids.subspan(models->InstanceRange.Offset, models->InstanceCount) : std::span<const uint32_t>{};
+                if (std::ranges::any_of(slots, [&](uint32_t id) { const auto *instance = r.try_get<const Instance>(r.EntityAt(ObjectIndex(id))); return instance && instance->Entity == data_entity; })) survivors.push_back(data_entity);
+            }
+            for (const auto e : reactive(r, state::Change::InstanceVisibility))
+                if (const auto *instance = r.try_get<const Instance>(e)) survivors.push_back(instance->Entity);
+            for (const auto data_entity : survivors) buffer_entities.remove(data_entity);
+        }
+        if (!armature_data_entities.empty()) {
+            for (const auto [_, arm] : r.view<const ArmatureObject>().each()) armature_data_entities.remove(arm.Entity);
+            for (const auto [_, modifier] : r.view<const ArmatureModifier>().each()) armature_data_entities.remove(modifier.ArmatureEntity);
+            for (const auto [_, attachment] : r.view<const BoneAttachment>().each()) armature_data_entities.remove(attachment.ArmatureEntity);
+        }
         auto buffers_to_destroy = SortedEntities(buffer_entities);
         for (const auto entity : buffers_to_destroy) {
             if (const auto *ref = r.try_get<VertexStoreId>(entity)) pending->StoreIds.push_back(ref->StoreId);

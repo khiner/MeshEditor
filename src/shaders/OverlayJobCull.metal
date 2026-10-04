@@ -13,7 +13,7 @@ constant uint OverlayCullBlockSize = 256u;
 constant uint OverlayCullSimdGroups = OverlayCullBlockSize / 32u;
 
 inline bool OverlayJobEnabled(constant SceneViewUBO &view, OverlayJob job, uint instance_state, bool extras_only) {
-    if (view.ShowOverlays == 0u) return false;
+    if (view.ShowOverlays == 0u || (instance_state & STATE_HIDDEN) != 0u) return false;
     if (extras_only) return job.Kind == OverlayJobKind::Extras && view.ShowExtras != 0u;
     if (job.Kind == OverlayJobKind::Extras) return view.ShowExtras != 0u;
     if ((instance_state & STATE_SELECTED) == 0u) return false;
@@ -28,7 +28,7 @@ inline uint OverlayJobPresent(
     constant OverlayJobCullPushConstants &pc, uint i
 ) {
     const OverlayJob job = BindlessBuffer(OverlayJob, bindless.Buffer, pc.JobsSlot)[i];
-    const uint state = uint(BindlessBuffer(uchar, bindless.InstanceStateBuffer, pc.InstanceStateSlot)[job.InstanceIndex]);
+    const uint state = uint(BindlessBuffer(uchar, bindless.InstanceStateBuffer, view.InstanceStateSlot)[job.InstanceIndex]);
     return OverlayJobEnabled(view, job, state, pc.ExtrasOnly != 0u) ? 1u : 0u;
 }
 

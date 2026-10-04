@@ -2,7 +2,10 @@
 
 #include "gpu/Types.h"
 
+// Mesh records hold every flag except Silhouette, which an instance takes from its selection state.
+// ElementSelection and EditOverlay apply to the mesh's primary edit instance only.
 enum class MeshletInstanceFlag : uint32_t {
+    // A selected instance of a SilhouetteEligible mesh, apart from its mesh's primary edit instance.
     Silhouette = 1u,
     ElementSelection = 2u,
     // Restrict edited and deformed instances and those showing vertex normals to original source geometry.
@@ -19,4 +22,6 @@ enum class MeshletInstanceFlag : uint32_t {
     BoneJointWire = 512u,
     FaceNormal = 1024u,
     EdgeOverlay = 2048u,
+    // A face mesh, whose selected instances outline through the screen-space silhouette.
+    SilhouetteEligible = 4096u,
 };

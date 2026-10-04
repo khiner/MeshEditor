@@ -332,18 +332,21 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             const vec3 normal = Normalize(vec3{0.3f, 0.8f, 0.5f});
             const char *plane_offset = std::getenv("MESHEDITOR_SPATIAL_PLANE_OFFSET");
             float offset = plane_offset ? std::strtof(plane_offset, nullptr) : Dot(normal, original.CalcFaceCentroid(face));
+            // Runs one spatial face query on its own chain and returns its candidate meshlets, candidate triangles and exact faces.
+            const auto spatial_counts = [&](const MeshTopologyTask &task) {
+                mtl::ComputeChain chain{meshes.BufferContext()};
+                SpatialFaceWork work{r, chain, task};
+                chain.Submit();
+                work.RecordFaces(r, chain);
+                chain.Submit();
+                return std::array{work.CandidateMeshlets, work.CandidateTriangles, work.Count};
+            };
             if (single_edit == SingleEdit::SpatialPlane) {
                 const MeshTopologyTask task{.SourceId = original.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts, .PlaneNormal = normal, .PlaneOffset = offset};
-                uint32_t exact_faces{}, candidate_triangles{}, candidate_meshlets{};
-                const auto elapsed = Milliseconds([&] {
-                    mtl::ComputeChain chain{meshes.BufferContext()};
-                    const SpatialFaceWork work{r, chain, task};
-                    exact_faces = work.Count;
-                    candidate_triangles = work.CandidateTriangles;
-                    candidate_meshlets = work.CandidateMeshlets;
-                });
-                std::printf("spatial_plane_work,%u,%u,%u\n", candidate_meshlets, candidate_triangles, exact_faces);
-                row("spatial_plane", elapsed, exact_faces);
+                std::array<uint32_t, 3> counts{};
+                const auto elapsed = Milliseconds([&] { counts = spatial_counts(task); });
+                std::printf("spatial_plane_work,%u,%u,%u\n", counts[0], counts[1], counts[2]);
+                row("spatial_plane", elapsed, counts[2]);
                 return {};
             }
             if (const char *fraction_text = std::getenv("MESHEDITOR_SPATIAL_NEAR_MAX")) {
@@ -361,10 +364,9 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 offset = hi - fraction * (hi - lo);
                 std::printf("spatial_cut_setup,%.9g,%.9g,%.9g\n", lo, hi, offset);
                 const MeshTopologyTask probe{.SourceId = original.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts, .PlaneNormal = normal, .PlaneOffset = offset};
-                mtl::ComputeChain chain{meshes.BufferContext()};
-                const SpatialFaceWork candidates{r, chain, probe};
-                std::printf("spatial_cut_candidates,%u,%u,%u\n", candidates.CandidateMeshlets, candidates.CandidateTriangles, candidates.Count);
-                if (!(candidates.Count > 0u && candidates.Count <= 4096u)) return std::unexpected{"near-max cut needs 1 to 4096 candidate faces"};
+                const auto [meshlets, triangles, candidate_faces] = spatial_counts(probe);
+                std::printf("spatial_cut_candidates,%u,%u,%u\n", meshlets, triangles, candidate_faces);
+                if (!(candidate_faces > 0u && candidate_faces <= 4096u)) return std::unexpected{"near-max cut needs 1 to 4096 candidate faces"};
                 profile::ClearStats();
             }
             const auto elapsed = Milliseconds([&] {
@@ -492,7 +494,9 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                     refit_ms.reserve(20u);
                     for (uint32_t sample = 0u; sample < 20u; ++sample) {
                         const auto duration = Milliseconds([&] {
-                            RefreshEditedPositions(r, std::array{MeshVertexChanges{entity, ranges}});
+                            mtl::ComputeChain chain{meshes.BufferContext()};
+                            RefreshEditedPositions(r, chain, std::array{MeshVertexChanges{entity, ranges}});
+                            chain.Submit();
                         });
                         row("refit" + std::to_string(sample), duration, ranges.size());
                         if (sample) refit_ms.push_back(duration);

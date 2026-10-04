@@ -3,9 +3,9 @@
 #include <cstdint>
 #include <span>
 #include <utility>
+#include <vector>
 struct MeshTopologyEdit;
 struct FaceTriangles;
-struct MeshBuffers;
 struct MeshletBuildSource;
 namespace mtl { struct ComputeChain; }
 
@@ -17,6 +17,11 @@ namespace mtl { struct ComputeChain; }
 void RepairTopologyRender(state::Scene &,mtl::ComputeChain &,std::span<const std::pair<state::Entity,const MeshTopologyEdit *>>,std::span<MeshletBuildSource> fresh = {});
 // Repairs the finest render of each entity's changed triangles after a shading edit, with one fragment build and one submit for all of them.
 void RepairShadingRender(state::Scene &,mtl::ComputeChain &,std::span<const std::pair<state::Entity,FaceTriangles>>);
-// Moves the affected vertices of a point record, or the affected edges of a line record, between its owner's clusters, which draw every live element.
-// Retired elements leave their clusters, and live elements without one build as fragments the owner adopts, recorded on the chain.
-void RepairElementMeshlets(state::Scene &, mtl::ComputeChain &, MeshBuffers &owner, std::span<const uint32_t> elements);
+// A point or line record's affected vertices or edges.
+struct ElementMeshletRepair {
+    uint32_t StoreId;
+    std::vector<uint32_t> Elements;
+};
+// Moves the affected vertices of each point record, or the affected edges of each line record, between its owner's clusters, which draw every live element.
+// Retired elements leave their clusters, and live elements without one build as fragments the owners adopt, in one build recorded on the chain.
+void RepairElementMeshlets(state::Scene &, mtl::ComputeChain &, std::span<const ElementMeshletRepair>);

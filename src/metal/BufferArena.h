@@ -95,6 +95,10 @@ struct BufferArena {
 
     std::span<const T> Get(Range range) const { return Buffer.GetSpan<T>(range); }
     std::span<T> GetMutable(Range range) { return Buffer.GetMutableSpan<T>(range); }
+    // Captures the range's pages before a GPU write, which a new range needs where it reuses pages an older edit view pins.
+    void CaptureWrite(Range range) const {
+        if (range.Count) Buffer.CaptureWrite(uint64_t(range.Offset) * sizeof(T), uint64_t(range.Count) * sizeof(T));
+    }
 
     Range Clone(Range src) { return src.Count > 0 ? Allocate(Get(src)) : Range{}; }
 

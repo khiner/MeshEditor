@@ -24,8 +24,8 @@ struct DrawData {
     uint32_t FaceCount DEFAULT();
     uint32_t VertexCountOrHeadImageSlot DEFAULT();
     uint32_t ElementIdOffset DEFAULT();
+    uint32_t EditEdgeSharpnessOffset DEFAULT(InvalidOffset);
     EditSelectionStorage Selection DEFAULT();
-    uint32_t InstanceStateSlot DEFAULT(InvalidSlot);
     uint32_t HasPendingVertexTransform DEFAULT();
     uint32_t PrimaryEditInstanceIndex DEFAULT(InvalidOffset);
     uint32_t VertexOffset DEFAULT();

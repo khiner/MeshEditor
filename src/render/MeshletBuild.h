@@ -36,8 +36,8 @@ MeshletBuildInputs CaptureMeshletInputs(const Mesh &, const MeshStore &, Triangl
 // A face-less mesh, and one whose clusters fit a single partition, returns an empty build.
 ClusterLodBuild BuildMeshletClusterLod(const GpuBuffers &, const MeshBuffers &, const MeshletBuildInputs &,
                                       std::span<const uint32_t> primitive_triangle_counts = {});
-// Places a finished DAG, retaining finest identities and allocating only new coarse records.
-void CommitClusterLod(state::Scene &, MeshBuffers &, const ClusterLodBuild &);
+// Places each owner's finished DAG, retaining finest identities and allocating only new coarse records.
+void CommitClusterLods(state::Scene &, std::span<MeshBuffers *const>, std::span<const ClusterLodBuild>);
 
 // Allocates coarse records and their geometry, then publishes each group's
 // member/proxy run and proxy IDs directly in UMA. Callers fill member IDs in

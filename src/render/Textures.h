@@ -34,6 +34,7 @@ struct SamplerConfig {
     MTL::SamplerMinMagFilter MinFilter, MagFilter;
     MTL::SamplerMipFilter MipmapMode;
     bool UsesMipmaps;
+    bool operator==(const SamplerConfig &) const = default;
 };
 
 enum class TextureColorSpace : uint8_t {
@@ -47,6 +48,7 @@ struct TextureParams {
     MTL::SamplerAddressMode WrapS, WrapT;
     SamplerConfig Sampler;
     std::string Name;
+    bool operator==(const TextureParams &) const = default;
 };
 
 struct TextureEntry {
@@ -200,6 +202,8 @@ std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
 void ResetImportedEnvironment(state::Scene &);
 // Release imported GPU textures while retaining the default white texture.
 void ReleaseImportedTextures(state::Scene &);
+// Release the imported GPU textures that no manifest item names by slot, source image and parameters.
+void ReleaseUnlistedTextures(state::Scene &, std::span<const MaterializedTexture>);
 // Release imported textures and reset to the default material.
 void ResetImportedTexturesAndMaterials(state::Scene &);
 EnvironmentPrefiltered CreateIblFromHdri(const mtl::Context &, mtl::BindlessSet &, const Pipelines &, const std::filesystem::path &, std::string);

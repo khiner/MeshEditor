@@ -55,8 +55,11 @@ MeshStore::CornerClassUpdate MeshStore::EncodeCornerClassification(state::Scene 
     pc.NeededBlocks = AllocateElementWork(chain.Scratch,corner_blocks,block_bound);
     const auto &pipelines = GetMeshPipelines(r);
     const auto groups = uint32_t((uint64_t(vertex_count)+255u)/256u);
-    chain.Groups(pipelines[MeshPass::CornerClassificationCount],pc,groups);
-    chain.Groups(pipelines[MeshPass::CornerClassificationPlan],pc,groups);
+    // The count and the plan read the same fans and write separate results.
+    chain.Concurrent([&] {
+        chain.Groups(pipelines[MeshPass::CornerClassificationCount],pc,groups);
+        chain.Groups(pipelines[MeshPass::CornerClassificationPlan],pc,groups);
+    });
     return update;
 }
 
@@ -114,13 +117,13 @@ void MeshStore::FinishCornerClassification(const mtl::ComputeChain &chain, const
     }
 }
 
-void MeshStore::UpdateCornerClassification(state::Scene &r, std::span<const uint32_t> ids) {
-    mtl::ComputeChain chain{BufferContext()};
+void MeshStore::UpdateCornerClassification(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
     std::vector<CornerClassUpdate> updates;
     updates.reserve(ids.size());
-    for (const auto id : ids) updates.push_back(EncodeCornerClassification(r,chain,id));
+    chain.Concurrent([&] { for (const auto id : ids) updates.push_back(EncodeCornerClassification(r,chain,id)); });
     chain.Submit();
     for (auto &update : updates) PlanCornerClassification(r,chain,update);
-    chain.Submit();
-    for (const auto &update : updates) FinishCornerClassification(chain,update);
+    chain.AfterSubmit([this,&chain,updates=std::move(updates)] {
+        for (const auto &update : updates) FinishCornerClassification(chain,update);
+    });
 }

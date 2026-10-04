@@ -15,9 +15,8 @@ struct MeshletDrawPushConstants {
     uint32_t Route DEFAULT();
     uint32_t VisibleOffset DEFAULT();
     uint32_t RequiredInstanceFlags DEFAULT();
-    uint32_t InstanceFilter DEFAULT(InvalidOffset);
     uint32_t EditEdgeCorner DEFAULT();
     uint32_t VisibilityTransmission DEFAULT();
     uint32_t EdgeSharpnessSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(MeshletDrawPushConstants) == 64, "MeshletDrawPushConstants size");
+static_assert(sizeof(MeshletDrawPushConstants) == 60, "MeshletDrawPushConstants size");

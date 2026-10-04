@@ -4,6 +4,7 @@
 
 #include "metal/MetalCpp.h"
 
+#include <atomic>
 #include <bit>
 #include <unordered_set>
 #include <format>
@@ -11,6 +12,7 @@
 
 namespace mtl {
 namespace {
+std::atomic<uint64_t> CommittedCount;
 
 void ObserveCommand(MTL::CommandBuffer *command, std::string_view label, MTL::SharedEvent *mapping, MTL::SharedEvent *execution) {
     command->setLabel(Str(label).get());
@@ -48,6 +50,13 @@ struct Context::PageRetirement {
     NS::SharedPtr<MTL::CommandBuffer> Readers;
     std::vector<std::vector<std::shared_ptr<PhysicalPage>>> Pages;
 };
+
+void Commit(MTL::CommandBuffer *command) {
+    command->commit();
+    CommittedCount.fetch_add(1u, std::memory_order_relaxed);
+}
+
+uint64_t CommittedCommandBuffers() { return CommittedCount.load(std::memory_order_relaxed); }
 
 NS::SharedPtr<NS::String> Str(std::string_view s) {
     const AutoreleaseScope pool;
@@ -92,7 +101,7 @@ Context::~Context() {
     if (MappingEvent) {
         auto *fence = Queue->commandBuffer();
         fence->encodeSignalEvent(ExecutionEvent.get(), ++ExecutionSerial);
-        fence->commit();
+        Commit(fence);
         fence->waitUntilCompleted();
         DrainMappings();
         TrimPageCache(0u);
@@ -205,7 +214,7 @@ void Context::CommitResidency() const {
         auto *before = Queue->commandBuffer();
         ObserveCommand(before, std::format("Before sparse mapping {} (execution {})", MappingSerial, ExecutionSerial + 1u), MappingEvent.get(), ExecutionEvent.get());
         before->encodeSignalEvent(ExecutionEvent.get(), ++ExecutionSerial);
-        before->commit();
+        Commit(before);
         MappingQueue->wait(ExecutionEvent.get(), ExecutionSerial);
         for (const auto &operation:submission->Commands)
             MappingQueue->updateBufferMappings(operation.Destination,operation.Heap,operation.Updates.data(),operation.Updates.size());
@@ -216,7 +225,7 @@ void Context::CommitResidency() const {
         ObserveCommand(barrier, std::format("After sparse mapping {} ({} commands, {} pages)",
             MappingSerial,submission->Commands.size(),mapped), MappingEvent.get(), ExecutionEvent.get());
         barrier->encodeWait(MappingEvent.get(), MappingSerial);
-        barrier->commit();
+        Commit(barrier);
     }
     if (!PendingUnmaps.empty() || !PendingSparseAddresses.empty() || !PendingPageRetirements.empty()) {
         auto retirement=std::make_unique<MappingRetirement>();
@@ -230,7 +239,7 @@ void Context::CommitResidency() const {
                 if (heaps.insert(page->Heap()).second) retirement->Heaps.push_back(NS::RetainPtr(page->Heap()));
         retirement->Readers=NS::RetainPtr(Queue->commandBuffer());
         retirement->Readers->encodeSignalEvent(ExecutionEvent.get(),++ExecutionSerial);
-        retirement->Readers->commit();
+        Commit(retirement->Readers.get());
         pages->Readers=retirement->Readers;
         PageRetirements.push_back(std::move(pages));
         MappingRetirements.push_back(std::move(retirement));
@@ -244,7 +253,7 @@ bool Context::DrainMappings() const {
     if (MappingEvent->signaledValue() < MappingSerial) {
         auto *fence = Queue->commandBuffer();
         fence->encodeWait(MappingEvent.get(), MappingSerial);
-        fence->commit();
+        Commit(fence);
         fence->waitUntilCompleted();
         if (fence->status() == MTL::CommandBufferStatusError) return false;
     }
@@ -279,7 +288,7 @@ void Context::TrimPageCache(uint64_t keep_bytes) const {
     if (!MappingRetirements.empty() || MappingEvent->signaledValue()!=MappingSerial) return;
     auto *fence = Queue->commandBuffer();
     OrderAfterGpuWork(fence);
-    fence->commit();
+    Commit(fence);
     fence->waitUntilCompleted();
     PagePool->TrimCache(keep_bytes);
     CommitResidency();
@@ -318,7 +327,7 @@ void Context::OrderAfterGpuWork(MTL::CommandBuffer *next) const {
     CommitResidency();
     auto *barrier = Queue->commandBuffer();
     barrier->encodeSignalEvent(ExecutionEvent.get(), ++ExecutionSerial);
-    barrier->commit();
+    Commit(barrier);
     next->encodeWait(ExecutionEvent.get(), ExecutionSerial);
 }
 

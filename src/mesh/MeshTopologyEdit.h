@@ -10,6 +10,8 @@
 #include "metal/BufferArena.h"
 
 namespace mtl { struct ComputeChain; }
+struct FaceListReferences;
+struct SpatialFaceWork;
 struct TopologyReadView;
 
 // The scratch words a topology transaction's chain starts with.
@@ -19,6 +21,7 @@ inline constexpr uint32_t TopologyScratchWords = 64u << 10;
 // Sparse topology emission and incidence repair, recorded into a chain the edits of one action share.
 // Every workspace an edit holds is a range of the chain's scratch, and the in-place edits read one clone of their sources' pages, so a batch of edits takes a fixed number of bindless slots.
 // Construction gathers every edit's source closure in one submit and runs every operator through its output counts in a second.
+// Iterating operators converge together first, one submit per doubling of their label rounds.
 // Publication inserts the outputs, emits them and repairs incidence, edges, fans and corner classes through one submit.
 // New edges and fan items are inserted for host bounds and trimmed to the counts that submit reports.
 // The corner class writes and the normals it then records run with the chain's next submit.
@@ -36,8 +39,9 @@ struct MeshTopologyEdit {
     // The corner class writes and normals stay recorded on the chain, and the chain's next submit runs them.
     // Until then the host reads no normals or corner sectors and writes nothing those passes read.
     static void PublishAll(state::Scene &, std::span<MeshTopologyEdit>);
-    // Completes the edits in order, retires the in-place edits' sources, and refreshes the selection aggregates every edit changed in one update.
+    // Completes the edits in order, retires the in-place edits' sources, and records the refresh of the selection aggregates every edit changed in one update.
     // Completion submits the chain and releases the corner sector payloads the repaired blocks leave unused.
+    // The host reads the refreshed selection once the chain submits again.
     static void FinishAll(state::Scene &, std::span<MeshTopologyEdit *const>);
 
     mtl::ComputeChain &Chain;
@@ -76,11 +80,12 @@ private:
     bool Published{}, Finished{};
     MeshTopologyEdit(mtl::ComputeChain &, const MeshTopologyTask &);
     // Records the task's source closures, or returns none when the task selects no source.
-    std::optional<Closures> RecordClosures(state::Scene &, const MeshTopologyTask &);
+    // A face list task takes its parsed face list, and a spatial task takes its finished face query.
+    std::optional<Closures> RecordClosures(state::Scene &, const MeshTopologyTask &, std::optional<FaceListReferences>, const SpatialFaceWork *);
     // Reads the submitted closures and returns whether the task has source elements to edit.
     bool FinishClosures(const MeshTopologyTask &, Closures &);
-    // Records the operator through its output counts and identity plan, an in-place edit reading its source through `view`.
-    void RecordCounts(state::Scene &, const MeshTopologyTask &, Closures &, const std::shared_ptr<const TopologyReadView> &view);
+    // Lays out the operator's job and workspaces for its count passes, an in-place edit reading its source through `view`.
+    void PrepareCounts(state::Scene &, const MeshTopologyTask &, Closures &, const std::shared_ptr<const TopologyReadView> &view);
     // Reads the output counts and identity plan once the chain has submitted them.
     void ReadCounts(BufferArena<uint32_t> *inset_basis);
 };

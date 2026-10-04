@@ -16,6 +16,7 @@
 #include "viewport/ViewportInteractionState.h"
 
 #include <format>
+#include <unordered_set>
 
 namespace {
 // Finalize armature structure after AddBone/RemoveBone. Resets pose state, re-resolves animation indices, and forces a re-evaluation of the current frame.
@@ -62,7 +63,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 if (arm_obj_entity == state::Null) return;
 
                 auto &armature = r.edit<Armature>(r.get<ArmatureObject>(arm_obj_entity).Entity);
-                const auto &arm_wt = r.get<WorldTransform>(arm_obj_entity);
+                const auto &arm_wt = *WorldTransformOf(r, arm_obj_entity);
                 const auto new_id = armature.AddBone("Bone", {}, {.P = (Conjugate(Normalize(arm_wt.R)) * -arm_wt.P) / arm_wt.S});
                 RebuildBoneStructure(r, viewport, r.get<ArmatureObject>(arm_obj_entity).Entity);
 
@@ -192,8 +193,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
 
                     std::vector<state::Entity> children;
                     for (const auto child : Children{&r, bone_entity}) children.emplace_back(child);
+                    ClearParents(r, children);
                     for (const auto child : children) {
-                        const auto ct = *EditedLocal(r, child);
+                        const auto ct = *ComposedLocal(r, child);
                         const auto t = ComposeLocalTransforms(bone.RestLocal, ct);
                         PatchEditedLocal(r, child, [&](auto &local) { local = Transform{t.P, t.R, r.all_of<ScaleLocked>(child) ? ct.S : t.S}; });
                         SetParent(r, child, grandparent);
@@ -234,8 +236,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 const auto bone = FindActiveBone(r);
                 r.patch<BoneConstraints>(bone, [&](auto &cs) {
                     const auto target = cs.Stack[a.Index].TargetEntity;
-                    const auto *twt = r.try_get<const WorldTransform>(target);
-                    const auto *bwt = r.try_get<const WorldTransform>(bone);
+                    const auto *twt = WorldTransformOf(r, target);
+                    const auto *bwt = WorldTransformOf(r, bone);
                     // Bake inverse(target_world) * bone_world so the current relative pose becomes the new rest.
                     if (twt && bwt) std::get<ChildOfData>(cs.Stack[a.Index].Data).InverseMatrix = Inverse(ToMatrix(*twt)) * ToMatrix(*bwt);
                 });

@@ -22,6 +22,7 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/MeshStores.h"
+#include "metal/Dispatch.h"
 #include "numeric/Serialize.h"
 #include "project/Assets.h"
 #include "project/store/Pages.h"
@@ -94,6 +95,12 @@ std::vector<Project::RecordedAction> Decode(const std::vector<std::byte> &bytes)
     std::vector<Project::RecordedAction> recorded_actions;
     if (!bytes.empty()) zpp::bits::in{bytes}(recorded_actions).or_throw();
     return recorded_actions;
+}
+// Whether any of the actions has parameters to edit.
+bool Editable(std::span<const Project::RecordedAction> recorded_actions) {
+    return std::ranges::any_of(recorded_actions, [](const auto &recorded_action) {
+        return !recorded_action.Inputs.PreviewSeed && action::VisitLeaf(recorded_action.Action, []<typename L>(const L &) { return !std::is_empty_v<L>; });
+    });
 }
 // The file an action loads, or null for an action that loads none.
 std::filesystem::path *SourcePath(action::Action &a) {
@@ -196,14 +203,18 @@ void Project::TrackStores(state::Entity viewport) {
         .AfterTracks = [this] {
             const profile::CpuScope scope{"RestoreAfterTracks"};
             const auto removed = Entities.RemovedEntities();
-            // Destroy instances before their referenced mesh entities.
-            if (!removed.empty()) {
-                for (const auto [e, instance] : R.view<const RenderInstance>().each()) {
-                    if (R.EntityAt(state::Index(e)) != e || R.EntityAt(state::Index(instance.Entity)) != instance.Entity) R.remove<RenderInstance>(e);
-                }
-            }
+            // Destroy instances before their referenced mesh entities: each removed instance, and each instance placed in a removed mesh's range.
+            const auto &render_instances = std::as_const(R).storage<RenderInstance>();
+            const auto object_ids = R.Context.get<const GpuBuffers>().Instances.ObjectIdBuffer.GetSpan<uint32_t>();
             for (const auto e : removed) {
-                if (const auto *models = R.try_get<ModelsBuffer>(e)) FreeInstanceRange(R, models->InstanceRange);
+                R.remove<RenderInstance>(e);
+                const auto *models = R.try_get<const ModelsBuffer>(e);
+                if (!models) continue;
+                for (uint32_t slot = models->InstanceRange.Offset; slot < models->InstanceRange.Offset + models->InstanceCount; ++slot) {
+                    const auto instance_entity = render_instances.entity_at(ObjectIndex(object_ids[slot]));
+                    if (const auto *ri = instance_entity != state::Null ? R.try_get<const RenderInstance>(instance_entity) : nullptr; ri && ri->Entity == e) R.remove<RenderInstance>(instance_entity);
+                }
+                FreeInstanceRange(R, models->InstanceRange);
             }
             R.Context.get<MeshStore>().FinishRestore();
             Entities.FinishRestore(removed); },
@@ -228,9 +239,11 @@ bool Project::Begin(const std::filesystem::path &dir) {
     const auto previous = std::exchange(directory, dir);
     WaitForRender(R);
     Settle(EventPass::Settle);
+    const bool editable = Editable(RecordedActions);
     const bool begun = History.Begin(dir, Encode(RecordedActions));
     RecordedActions.clear();
     if (begun) {
+        History.Nodes.front().Editable = editable;
         DirectoryLock = std::move(lock);
         SavedPath.clear();
         RestoredWorkspace.clear();
@@ -288,6 +301,7 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
     }
     ReleaseGesture();
     R.remove<SavedViewCamera>(Viewport);
+    for (auto &node : History.Nodes) node.Editable = Editable(Decode(node.Actions));
     // An actions open replays and pins every node on the path to the present node.
     History.Evict(MemoryCap);
     if (lock) DirectoryLock = std::move(lock);
@@ -523,9 +537,13 @@ void Project::RecordKeys() {
 uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
     // A commit indexes the mesh records its actions wrote, so a later restore costs only its own change.
     R.Context.get<MeshStore>().IndexHistory();
+    const bool editable = Editable(RecordedActions);
     auto bytes = Encode(RecordedActions);
     const bool in_place = replace && History.Nodes[*replace].Children.empty();
+    const auto created = uint32_t(History.Nodes.size());
     const auto node = in_place ? History.Replace(*replace, std::move(bytes)) : History.Commit(std::move(label), std::move(bytes));
+    // A commit matching an existing node's state keeps that node and its actions.
+    if (in_place || node == created) History.Nodes[node].Editable = editable;
     Editing.reset();
     RecordedActions.clear();
     History.Evict(MemoryCap);
@@ -556,13 +574,6 @@ void Project::EndGesture(EventPass pass) {
     R.clear<StartTransform, StartBoneLength, StartPivot, action::DragFieldStart, AdditiveBoxSelectBaseline>();
     R.remove<StartScreenTransform>(Viewport);
     Settle(pass);
-}
-bool Project::Editable(uint32_t node) const {
-    for (const auto &recorded_action : Decode(History.Nodes[node].Actions)) {
-        if (recorded_action.Inputs.PreviewSeed) continue;
-        if (action::VisitLeaf(recorded_action.Action, []<typename L>(const L &) { return !std::is_empty_v<L>; })) return true;
-    }
-    return false;
 }
 Project::EditDraft &Project::DraftOf(uint32_t node) {
     if (!Draft || Draft->Node != node || Draft->Revision != History.Revision) Draft = EditDraft{node, History.Revision, Decode(History.Nodes[node].Actions)};
@@ -600,6 +611,7 @@ void Project::ClearInteraction() {
     auto &frame = R.Context.get<FrameState>();
     frame.BoxSelectStart.reset();
     frame.BoxSelectEnd.reset();
+    frame.BoxSelectEmitted.reset();
     frame.BoxSelectAdditive = false;
 }
 void Project::ClearDocument() {
@@ -735,25 +747,34 @@ void Project::AfterRestore() {
         explicit ReadOnly(state::Scene &r) : R(r) { R.DocumentReadOnly = true; }
         ~ReadOnly() { R.DocumentReadOnly = false; }
     } read_only{R};
-    bool textures_changed = false, names_changed = false;
+    bool sources_changed = false, manifest_changed = false, names_changed = false;
     // The meshes whose handles or render records the restore changed rederive their dirty roots.
     std::vector<state::Entity> restored_meshes;
     for (const auto &[type, entity, event] : Entities.TakeChanges()) {
-        names_changed |= type == state::Type<Name>();
+        // The name hooks track created and destroyed names, and an overwritten name escapes them.
+        names_changed |= type == state::Type<Name>() && event == state::Event::Update;
         if (type == state::Type<Armature>()) R.remove<ArmaturePoseState>(entity);
         if (type == state::Type<MeshHandle>() && R.all_of<MeshHandle>(entity)) restored_meshes.push_back(entity);
-        textures_changed |= type == state::Type<gltf::SourceAssets>() || type == state::Type<MaterializedTextures>();
+        sources_changed |= type == state::Type<gltf::SourceAssets>();
+        manifest_changed |= type == state::Type<MaterializedTextures>();
     }
     if (names_changed) RebuildEntityNames(R);
-    if (textures_changed) {
+    // Restored sources can hold other pixels at a manifest's slots, so every texture and the IBL decode again.
+    // A manifest restored over unchanged sources keeps each texture it still lists, and the settle pass uploads the rest.
+    if (sources_changed) {
         ReleaseImportedTextures(R);
         ResetImportedEnvironment(R);
-        reactive(R, Change::MaterializedTextures).emplace(Viewport);
         reactive(R, Change::SceneWorld).emplace(Viewport);
+    } else if (manifest_changed) {
+        const auto *manifest = R.try_get<const MaterializedTextures>(Viewport);
+        ReleaseUnlistedTextures(R, manifest ? std::span{manifest->Items} : std::span<const MaterializedTexture>{});
     }
+    if (sources_changed || manifest_changed) reactive(R, Change::MaterializedTextures).emplace(Viewport);
     auto &meshes = R.Context.get<MeshStore>();
     const auto changes = meshes.TakeChanges();
-    meshes.ReconcileSelection(R, changes);
+    // The restored selection and positions refresh in one submit.
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    meshes.ReconcileSelection(R, chain, changes);
     auto &buffers = R.Context.get<GpuBuffers>();
     for (const auto id : buffers.RestoreMeshBindings(R))
         if (const auto entity = MeshEntityOf(R, id); entity != state::Null) restored_meshes.push_back(entity);
@@ -773,7 +794,7 @@ void Project::AfterRestore() {
         if (!buffers.ClusterGroupCount(*owner) && ClusterLodApplies(Mesh{meshes, id}.FaceCount() > 0u, buffers.MeshletCount(*owner))) scene.LodDemand.insert(entity);
     }
     // The restored render records change the meshlet and LOD node counts that size each instance's cull.
-    if (RepointMeshInstances(R, repointed)) RequestRender(R, RenderRequest::Rebuild);
+    RepointMeshInstances(R, repointed);
     std::vector<MeshVertexChanges> positions;
     for (const auto &change : changes) {
         const auto entity = MeshEntityOf(R, change.StoreId);
@@ -788,7 +809,8 @@ void Project::AfterRestore() {
         }
         if (change.Bits & MeshStore::SelectionChanged) scene.EditSelectionDirty=true;
     }
-    RefreshEditedPositions(R,positions);
+    RefreshEditedPositions(R,chain,positions);
+    chain.Submit();
     if (!buffers.Materials.History()->Trie.TakeChanged().empty()) reactive(R, Change::Materials).emplace(Viewport);
     if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) reactive(R, Change::MorphWeights).emplace(Viewport);
     Settle(EventPass::Restore);

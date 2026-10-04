@@ -5,12 +5,33 @@
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
+#include "metal/Dispatch.h"
 #include "physics/ColliderUpdate.h"
 #include "physics/PhysicsTypes.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "state/Scene.h"
 using numeric::Max;
+
+namespace {
+state::Entity ColliderMesh(const state::Scene &r, state::Entity collider, const ColliderShape &shape) {
+    return shape.MeshEntity != state::Null ? shape.MeshEntity : FindMeshEntity(r, collider);
+}
+} // namespace
+
+void UpdateMeshColliders(state::Scene &r) {
+    const auto &changed = reactive(r, state::Change::Colliders);
+    if (changed.empty()) return;
+    auto &index = r.Context.get<MeshColliders>();
+    // A collider keeping its mesh, as a dimension fit does, leaves the index in place.
+    const bool placed = std::ranges::all_of(changed, [&](state::Entity e) {
+        const auto *shape = r.valid(e) ? r.try_get<const ColliderShape>(e) : nullptr;
+        return shape && std::ranges::contains(index.Of(ColliderMesh(r, e, *shape)), e);
+    });
+    if (placed) return;
+    index.ByMesh.clear();
+    for (const auto [e, shape] : r.view<const ColliderShape>().each()) index.ByMesh[ColliderMesh(r, e, shape)].push_back(e);
+}
 
 void RederiveColliders(state::Scene &r, std::span<const state::Entity> entities) {
     // A collider's shape before fitting, with the store whose vertex bounds fit its dimensions, or none.
@@ -26,7 +47,7 @@ void RederiveColliders(state::Scene &r, std::span<const state::Entity> entities)
         const auto *cs = r.try_get<const ColliderShape>(e);
         const auto *policy = r.try_get<const ColliderPolicy>(e);
         if (!cs || !policy) continue;
-        const auto mesh_entity = cs->MeshEntity != state::Null ? cs->MeshEntity : FindMeshEntity(r, e);
+        const auto mesh_entity = ColliderMesh(r, e, *cs);
         const auto mesh = TryGetMesh(r, mesh_entity);
         if (!mesh) continue;
 
@@ -66,7 +87,10 @@ void RederiveColliders(state::Scene &r, std::span<const state::Entity> entities)
         derivations.push_back({e, mesh_entity, std::move(shape), local_offset, fit_id});
     }
     auto &meshes = r.Context.get<MeshStore>();
-    meshes.EnsureSelectionState(r, fit_ids);
+    if (!fit_ids.empty()) {
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        meshes.EnsureSelectionState(r, chain, fit_ids);
+    }
     for (auto &[e, mesh_entity, shape, local_offset, fit_id] : derivations) {
         if (fit_id != InvalidOffset) {
             const auto aabb = meshes.GetSelectionRoot(fit_id, Element::Vertex).Bounds;

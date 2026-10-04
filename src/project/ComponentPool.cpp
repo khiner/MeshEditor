@@ -117,12 +117,19 @@ void ComponentPool::Load(uint64_t length, std::span<const std::pair<uint64_t, st
     Apply(plan, false);
     Trie.CommitLoad(std::move(plan));
     // Move values whose entity changed identity to the entity now at their index.
-    S.ForEachIdentityChange([&](uint32_t index) {
-        if (Trie.IsDirty(index / state::Table::PageCount)) return; // Loaded pages already hold their values.
-        const auto previous = Stored(index), entity = S.R.EntityAt(index);
-        if (previous == state::Null || previous == entity) return;
-        Encoding.Rebind(S.R, previous, entity);
-        if (entity != state::Null) S.Changes.push_back({Type, entity, state::Event::Create});
+    // Only the table's occupied slots hold values, and loaded pages already hold theirs.
+    S.ForEachIdentityChangeRun([&](uint32_t first, uint32_t last) {
+        for (auto page = first / state::Table::PageCount; page * state::Table::PageCount < last; ++page) {
+            if (Trie.IsDirty(page)) continue;
+            for (auto bits = Storage().mask(page); bits; bits &= bits - 1u) {
+                const auto index = page * state::Table::PageCount + uint32_t(std::countr_zero(bits));
+                if (index < first || index >= last) continue;
+                const auto previous = Stored(index), entity = S.R.EntityAt(index);
+                if (previous == entity) continue;
+                Encoding.Rebind(S.R, previous, entity);
+                if (entity != state::Null) S.Changes.push_back({Type, entity, state::Event::Create});
+            }
+        }
     });
 }
 } // namespace project
