@@ -1160,18 +1160,26 @@ bool SelectSceneCamera(state::Scene &r, std::string_view name) {
     return false;
 }
 
-// Report and clear action failures, returning whether any occurred.
-bool ReportActionErrors(state::Scene &r) {
-    auto &errors = r.Context.get<action::Errors>().Messages;
-    if (auto error = Session(r).History.TakeIntegrityError(); !error.empty()) errors.push_back(std::move(error));
-    if (errors.empty()) return false;
-    for (const auto &message : errors) std::cerr << message << std::endl;
-    errors.clear();
-    return true;
+// Ordered by severity so combined statuses preserve real failures.
+enum class SceneStatus {
+    Ok,
+    Unsupported,
+    Failed
+};
+
+// Report and clear action errors. A real failure takes precedence over unsupported extensions.
+SceneStatus ReportActionErrors(state::Scene &r) {
+    auto &errors = r.Context.get<action::Errors>();
+    if (auto error = Session(r).History.TakeIntegrityError(); !error.empty()) action::Fail(r, std::move(error));
+    if (errors.Messages.empty()) return SceneStatus::Ok;
+    const auto status = errors.OnlyUnsupportedExtensions ? SceneStatus::Unsupported : SceneStatus::Failed;
+    for (const auto &message : errors.Messages) std::cerr << message << std::endl;
+    errors.Messages.clear();
+    return status;
 }
 
-// Return false if the initial file fails to load.
-bool SeedScene(state::Scene &r, state::Entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty) {
+// Preserve the initial load's error classification for capture and queue results.
+SceneStatus SeedScene(state::Scene &r, state::Entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty) {
     const fs::path path = initial_file ? initial_file : "";
     bool loaded;
     std::error_code ec;
@@ -1180,10 +1188,10 @@ bool SeedScene(state::Scene &r, state::Entity viewport, const CaptureRequest &ca
         loaded = NewScene(r, viewport, initial_file || empty);
         if (loaded && initial_file) {
             Perform(r, action::io::Load{.Path = initial_file});
-            loaded = !ReportActionErrors(r);
+            if (const auto status = ReportActionErrors(r); status != SceneStatus::Ok) return status;
         }
     }
-    return loaded && SelectSceneCamera(r, capture.CameraName);
+    return loaded && SelectSceneCamera(r, capture.CameraName) ? SceneStatus::Ok : SceneStatus::Failed;
 }
 
 // Coordinate scene framing, playback, screenshots, recording, and completion for both run loops.
@@ -1291,7 +1299,7 @@ struct CaptureDriver {
     }
 
     bool Play;
-    bool SeedFailed{false};
+    SceneStatus SeedStatus{SceneStatus::Ok};
     float PlayDuration;
     bool FixedStep;
     fs::path RecordPath, ScreenshotPath, RenderBasename;
@@ -1307,14 +1315,14 @@ struct CaptureDriver {
 
 // Initialize a capture session and configure its presentation state.
 CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty, bool fixed_step) {
-    const bool seeded = SeedScene(r, viewport, capture, initial_file, empty);
+    const auto seeded = SeedScene(r, viewport, capture, initial_file, empty);
     std::error_code ec;
     if (const auto parent = capture.RenderBasename.parent_path(); !parent.empty()) fs::create_directories(parent, ec);
-    if (!seeded || ec) {
+    if (seeded != SceneStatus::Ok || ec) {
         if (ec) action::Fail(r, "Cannot create capture directory: " + ec.message());
-        ReportActionErrors(r);
+        const auto errors = ReportActionErrors(r);
         CaptureDriver failed{r, viewport, capture, false, fixed_step};
-        failed.SeedFailed = true;
+        failed.SeedStatus = std::max(seeded, errors);
         return failed;
     }
     if (capture.EditMode) {
@@ -1425,7 +1433,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 #ifdef VALIDATE_ACTIONS
     auto validated_revision = previous_ui_revision;
 #endif
-    bool done{driver.SeedFailed};
+    bool done{driver.SeedStatus != SceneStatus::Ok};
     uint8_t startup_frames_remaining{2};
     NS::SharedPtr<MTL::CommandBuffer> last_frame; // Retain across frame autorelease pools for resize waits.
     auto &windows = r.Context.get<WindowsState>();
@@ -1703,7 +1711,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     ImGui::DestroyContext();
 }
 
-bool RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initial_file, bool empty, const CaptureRequest &capture) {
+SceneStatus RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initial_file, bool empty, const CaptureRequest &capture) {
     // Initialize recorded inputs independently of the previous queued scene.
     auto &frame_state = r.Context.get<FrameState>();
     frame_state.DeltaTime = 0;
@@ -1712,8 +1720,8 @@ bool RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initi
     const auto scene_start = std::chrono::steady_clock::now();
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/true);
     // Stop after reporting an initial scene-load failure.
-    if (driver.SeedFailed) {
-        return false;
+    if (driver.SeedStatus != SceneStatus::Ok) {
+        return driver.SeedStatus;
     }
     if (capture.NormalOverlays != 0) Perform(r, action::UpdateOf<&ViewportDisplay::NormalOverlays>(action::OnViewport{}, capture.NormalOverlays));
     if (capture.BoundingBoxes) Perform(r, action::UpdateOf<&ViewportDisplay::ShowBoundingBoxes>(action::OnViewport{}, true));
@@ -1796,8 +1804,8 @@ bool RunHeadlessScene(state::Scene &r, state::Entity viewport, const char *initi
         }
         driver.ElapsedPlayTime += frame_state.DeltaTime;
     }
-    if (!capture.RenderBasename.empty()) return SaveProjectFile(r, viewport, fs::path{capture.RenderBasename.string() + ".actions"});
-    return Session(r).Save();
+    const bool saved = !capture.RenderBasename.empty() ? SaveProjectFile(r, viewport, fs::path{capture.RenderBasename.string() + ".actions"}) : Session(r).Save();
+    return saved ? SceneStatus::Ok : SceneStatus::Failed;
 }
 
 // Run scenes offscreen on a fixed-step, GPU-paced clock.
@@ -1836,24 +1844,24 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     HeadlessDirectory.clear();
 }
 
-bool FinishHeadlessScene(state::Scene &r, state::Entity viewport, bool ok) {
+SceneStatus FinishHeadlessScene(state::Scene &r, state::Entity viewport, SceneStatus status) {
     QuiesceScene(r, viewport);
     r.remove<VideoRecording>(viewport);
     EndAudioCapture(r);
     const auto working = Paths::Project();
     const bool closed = Session(r).Close();
-    const bool errors = ReportActionErrors(r);
+    const auto errors = ReportActionErrors(r);
     Paths::SetProject({});
     std::error_code ec;
     if (!working.empty()) fs::remove_all(working, ec);
-    return ok && closed && !errors;
+    return std::max(status, closed ? errors : SceneStatus::Failed);
 }
 
 // Run one headless scene and return its capture or load status.
 bool RunHeadless(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
     bool ok = true;
     RunHeadlessEngine(quiet, [&](state::Scene &r, state::Entity viewport) {
-        ok = FinishHeadlessScene(r, viewport, RunHeadlessScene(r, viewport, initial_file, empty, capture));
+        ok = FinishHeadlessScene(r, viewport, RunHeadlessScene(r, viewport, initial_file, empty, capture)) == SceneStatus::Ok;
     });
     return ok;
 }
@@ -1978,8 +1986,9 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
     return options;
 }
 
-// Each job contains an output basename, then one command-line argument per line.
+// Numbered .job files contain an output basename, then one command-line argument per line.
 struct RenderJob {
+    size_t Index;
     fs::path OutBasename;
     std::vector<std::string> Args{};
 };
@@ -2001,7 +2010,7 @@ std::optional<RenderJob> ClaimRenderJob(const fs::path &spool) {
         std::ifstream in{claimed};
         std::string line;
         if (!std::getline(in, line)) continue;
-        RenderJob job{.OutBasename = std::move(line)};
+        RenderJob job{.Index = std::stoull(path.stem().string()), .OutBasename = std::move(line)};
         while (std::getline(in, line)) job.Args.push_back(std::move(line));
         return job;
     }
@@ -2023,19 +2032,18 @@ bool RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
                 ::dup2(log_fd, STDERR_FILENO);
                 ::close(log_fd);
             }
-            bool ok = false;
+            auto status = SceneStatus::Failed;
             if (const auto options = ParseLaunchOptions(job->Args, harness)) {
                 const auto &file = options->InitialFile;
-                ok = RunHeadlessScene(r, viewport, file.empty() ? nullptr : file.c_str(), options->Empty, options->Capture);
+                status = RunHeadlessScene(r, viewport, file.empty() ? nullptr : file.c_str(), options->Empty, options->Capture);
             }
-            ok = FinishHeadlessScene(r, viewport, ok);
-            succeeded &= ok;
+            status = FinishHeadlessScene(r, viewport, status);
+            succeeded &= status != SceneStatus::Failed;
             std::fflush(stdout);
             std::fflush(stderr);
             ::dup2(launcher_out, STDOUT_FILENO);
             ::dup2(launcher_err, STDERR_FILENO);
-            if (ok) std::println("ok   {} ({:.2f} s)", out, ElapsedMs(begin) / 1000.0);
-            else std::println("FAIL {} (render or project save failed)", out);
+            std::println("{{\"job\":{},\"status\":\"{}\",\"seconds\":{:.2f}}}", job->Index, std::array{"ok", "unsupported", "failed"}[size_t(status)], ElapsedMs(begin) / 1000.0);
             std::fflush(stdout);
         }
         ::close(launcher_out);

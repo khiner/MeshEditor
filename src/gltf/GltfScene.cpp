@@ -536,13 +536,13 @@ std::filesystem::path AbsoluteScenePath(const std::filesystem::path &p) {
     return p.is_absolute() ? p : std::filesystem::absolute(p);
 }
 
-std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::path &given_path, ExtrasMap *extras_out = nullptr) {
+std::expected<fastgltf::Asset, LoadError> ParseAsset(const std::filesystem::path &given_path, ExtrasMap *extras_out = nullptr) {
     const auto path = AbsoluteScenePath(given_path);
     if (std::error_code ec; !std::filesystem::exists(path, ec)) {
-        return std::unexpected{std::string{"File does not exist"}};
+        return std::unexpected{LoadError{.Message = "File does not exist"}};
     }
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
-    if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF: {}", fastgltf::getErrorMessage(gltf_file.error()))};
+    if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{LoadError{.Message = std::format("Failed to open glTF: {}", fastgltf::getErrorMessage(gltf_file.error()))}};
 
     static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_meshopt_compression | fastgltf::Extensions::KHR_meshopt_compression | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies | fastgltf::Extensions::KHR_audio_rigid_bodies | fastgltf::Extensions::KHR_animation_pointer;
     fastgltf::Parser parser{EnabledExtensions};
@@ -570,15 +570,15 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
                         missing += req;
                     }
                 }
-                if (!missing.empty()) return std::unexpected{std::format("Missing required extensions: {}", missing)};
+                if (!missing.empty()) return std::unexpected{LoadError{.Message = std::format("Missing required extensions: {}", missing), .UnsupportedExtensions = true}};
             }
         }
-        return std::unexpected{std::format("Failed to parse glTF: {}", fastgltf::getErrorMessage(parsed.error()))};
+        return std::unexpected{LoadError{.Message = std::format("Failed to parse glTF: {}", fastgltf::getErrorMessage(parsed.error())), .UnsupportedExtensions = parsed.error() == fastgltf::Error::MissingExtensions}};
     }
 
     auto &asset = parsed.get();
     if (auto decoded = DecodeMeshoptCompression(asset); !decoded) {
-        return std::unexpected{std::format("Failed to decode meshopt compression: {}", decoded.error())};
+        return std::unexpected{LoadError{.Message = std::format("Failed to decode meshopt compression: {}", decoded.error())}};
     }
     return std::move(asset);
 }
@@ -2296,9 +2296,9 @@ void ImportScenes(state::Scene &r, const fastgltf::Asset &asset, uint32_t scene_
 }
 } // namespace
 
-std::expected<fastgltf::Asset, std::string> ParseGltfAsset(const std::filesystem::path &path) { return ParseAsset(path); }
+std::expected<fastgltf::Asset, LoadError> ParseGltfAsset(const std::filesystem::path &path) { return ParseAsset(path); }
 
-std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &source_path, state::Scene &r, state::Entity viewport) {
+std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &source_path, state::Scene &r, state::Entity viewport) {
     const profile::CpuScope scope{"LoadGltf"};
 
     // Parse and validate everything that can fail before the first entity or store write.
@@ -2307,12 +2307,12 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     auto parsed_asset = ParseAsset(stored_path, &extras);
     if (!parsed_asset) return std::unexpected{parsed_asset.error()};
     const auto &asset = *parsed_asset;
-    if (asset.scenes.empty()) return std::unexpected{std::format("glTF '{}' has no scenes.", source_path.string())};
+    if (asset.scenes.empty()) return std::unexpected{LoadError{.Message = std::format("glTF '{}' has no scenes.", source_path.string())}};
     const auto scene_index = uint32_t(asset.defaultScene.value_or(0));
-    if (scene_index >= asset.scenes.size()) return std::unexpected{std::format("glTF '{}' has invalid default scene index.", source_path.string())};
+    if (scene_index >= asset.scenes.size()) return std::unexpected{LoadError{.Message = std::format("glTF '{}' has invalid default scene index.", source_path.string())}};
 
     auto source_assets = ReadSourceAssets(r, asset, stored_path, std::move(extras), scene_index);
-    if (!source_assets) return std::unexpected{std::move(source_assets.error())};
+    if (!source_assets) return std::unexpected{LoadError{.Message = std::move(source_assets.error())}};
     auto source_materials = ReadMaterials(asset);
     source_assets->MaterialMetas = std::move(source_materials.Metas);
 
@@ -2321,7 +2321,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     std::vector<SourceMesh> source_meshes;
     source_meshes.reserve(read_meshes.size());
     for (auto &source_mesh : read_meshes) {
-        if (!source_mesh) return std::unexpected{std::move(source_mesh.error())};
+        if (!source_mesh) return std::unexpected{LoadError{.Message = std::move(source_mesh.error())}};
         source_meshes.emplace_back(std::move(*source_mesh));
     }
 
@@ -2329,9 +2329,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     const auto plan = PlanNodes(asset, scene_index, owns_scenes);
     const bool any_object = std::ranges::any_of(plan.IsObjectEmitted, [](bool emitted) { return emitted; });
     const bool any_usable_skin = std::ranges::any_of(plan.SkinJointNodes, [](const auto &joints) { return !joints.empty(); });
-    if (!any_object && !any_usable_skin) return std::unexpected{std::format("glTF '{}' has no importable source objects or skins.", source_path.string())};
+    if (!any_object && !any_usable_skin) return std::unexpected{LoadError{.Message = std::format("glTF '{}' has no importable source objects or skins.", source_path.string())}};
     auto armature_plans = PlanArmatures(asset, plan, source_meshes, source_path);
-    if (!armature_plans) return std::unexpected{std::move(armature_plans.error())};
+    if (!armature_plans) return std::unexpected{LoadError{.Message = std::move(armature_plans.error())}};
 
     // Commit. Nothing below can fail.
     const auto physics = ImportPhysicsResources(r, asset);

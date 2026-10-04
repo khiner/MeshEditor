@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import queue
@@ -82,8 +83,8 @@ def count_jobs(spool: Path) -> int:
     return sum(1 for _ in spool.glob("*.job"))
 
 
-def run_worker(spool: Path, extra_args: list[str], reported_failures: set[str]) -> None:
-    """Process the spool, restarting after timeouts and recording reported job failures."""
+def run_worker(spool: Path, extra_args: list[str], scenes: list[Scene], reported_results: dict[Path, str]) -> None:
+    """Process the spool, restarting after timeouts and recording structured job results."""
     while (remaining := count_jobs(spool)) > 0:
         proc = subprocess.Popen([Exe, "--render-queue", str(spool), "-q", *extra_args], stdout=subprocess.PIPE, text=True)
         lines: queue.Queue[str | None] = queue.Queue()
@@ -94,8 +95,14 @@ def run_worker(spool: Path, extra_args: list[str], reported_failures: set[str]) 
                 proc.kill()
                 break
             if line is None: break
-            print(f"  {line}")
-            if line.startswith("FAIL "): reported_failures.add(line[len("FAIL "):].split(" (", 1)[0])
+            if not line.startswith('{"job":'):
+                print(f"  {line}")
+                continue
+            result = json.loads(line)
+            out = scenes[result["job"]][0]
+            status = reported_results[out] = result["status"]
+            label = "FAIL" if status == "failed" else status
+            print(f"  {label:4s} {out} ({result['seconds']:.2f} s)")
         proc.wait()
         # Stop respawning when a worker exits before claiming a job.
         if count_jobs(spool) == remaining: break
@@ -163,18 +170,18 @@ def main() -> None:
     spool = Path(tempfile.mkdtemp(prefix="MeshEditorRenderSpool."))
     try:
         spool_jobs(spool, scenes, extra_args)
-        reported_failures: set[str] = set()
-        workers = [threading.Thread(target=run_worker, args=(spool, extra_args, reported_failures)) for _ in range(jobs)]
+        reported_results: dict[Path, str] = {}
+        workers = [threading.Thread(target=run_worker, args=(spool, extra_args, scenes, reported_results)) for _ in range(jobs)]
         for w in workers: w.start()
         for w in workers: w.join()
 
         # Retry once when no worker reports a scene after a crash or timeout.
         if retries := [(out, arg, flags) for out, arg, flags in scenes
-                       if str(out) not in reported_failures and not has_output(out, require_actions=not flags)]:
+                       if reported_results.get(out) not in ("unsupported", "failed") and not has_output(out, require_actions=not flags)]:
             for f in spool.iterdir(): f.unlink()
             for out, _, _ in retries: print(f"  retrying {out}")
             spool_jobs(spool, retries, extra_args)
-            run_worker(spool, extra_args, reported_failures)
+            run_worker(spool, extra_args, retries, reported_results)
 
         if os.environ.get("COMPARE_VIDEOS") and render_dir == CorpusDir: restore_noise_only_videos(spool)
     finally:
@@ -182,11 +189,9 @@ def main() -> None:
 
     failures, unsupported = [], []
     for out, _, flags in scenes:
-        log = Path(f"{out}.log")
-        messages = log.read_text() if log.is_file() else ""
-        if not has_output(out) and "Missing required extensions:" in messages:
+        if reported_results.get(out) == "unsupported":
             unsupported.append(out)
-        elif str(out) in reported_failures or not has_output(out, require_actions=not flags):
+        elif reported_results.get(out) == "failed" or not has_output(out, require_actions=not flags):
             failures.append(out)
     print(f"\nDone: {len(scenes) - len(unsupported) - len(failures)} rendered, {len(unsupported)} unsupported, "
           f"{len(failures)} failed in {time.monotonic() - started:.1f} s.")

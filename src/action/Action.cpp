@@ -21,7 +21,11 @@ void Emit(Action a, Phase phase) {
 template<typename ActionType> void EmitSystem(ActionType a) { SystemEmitted.emplace_back(MakeAction(std::move(a))); }
 void Commit() { CommitRequested = true; }
 void Cancel() { CancelRequested = true; }
-void Fail(state::Scene &r, std::string message) { r.Context.get<Errors>().Messages.push_back(std::move(message)); }
+void Fail(state::Scene &r, std::string message, bool unsupported_extensions) {
+    auto &errors = r.Context.get<Errors>();
+    errors.OnlyUnsupportedExtensions = unsupported_extensions && (errors.Messages.empty() || errors.OnlyUnsupportedExtensions);
+    errors.Messages.push_back(std::move(message));
+}
 
 Drained Drain() {
     return {std::exchange(Emitted, {}), std::exchange(SystemEmitted, {}), std::exchange(CommitRequested, false), std::exchange(CancelRequested, false)};

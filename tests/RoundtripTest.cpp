@@ -722,7 +722,7 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
                 const auto file_b = (fs::absolute(b_path).parent_path() / uri_b->uri.fspath()).lexically_normal();
                 if (file_a != file_b) all_diffs.emplace_back(ref_path, std::format("referenced file '{}' vs '{}'", file_a.string(), file_b.string()));
             }
-        } else all_diffs.emplace_back("meshes", std::format("geometry parse failed: {}", !asset_a ? asset_a.error() : asset_b.error()));
+        } else all_diffs.emplace_back("meshes", std::format("geometry parse failed: {}", !asset_a ? asset_a.error().Message : asset_b.error().Message));
     }
 
     std::vector<Diff> unexpected;
@@ -890,7 +890,7 @@ template<typename T> Roundtripped<T> RoundtripComponent(const fs::path &sample, 
     Roundtripped<T> out;
     SceneFixture fx;
     const auto load = gltf::LoadGltf(sample, fx.R, fx.Viewport);
-    expect(load.has_value()) << "load failed: " << (load ? "" : load.error());
+    expect(load.has_value()) << "load failed: " << (load ? "" : load.error().Message);
     if (!load) return out;
     const auto node = FirstMeshNode(fx.R);
     expect(node != state::Null) << "no mesh instance node in " << sample.stem().string();
@@ -902,7 +902,7 @@ template<typename T> Roundtripped<T> RoundtripComponent(const fs::path &sample, 
     if (!save) return out;
     out.Scene = std::make_unique<SceneFixture>();
     const auto reload = gltf::LoadGltf(out_path, out.Scene->R, out.Scene->Viewport);
-    expect(reload.has_value()) << "reload failed: " << (reload ? "" : reload.error());
+    expect(reload.has_value()) << "reload failed: " << (reload ? "" : reload.error().Message);
     if (!reload) return out;
     out.Node = NodeWith<T>(out.Scene->R);
     expect(out.Node != state::Null) << "no entity carries the component after reload";
@@ -1189,7 +1189,7 @@ int main(int argc, const char **argv) {
             expect(fs::exists(staged_png)) << "fixture missing PNG";
             SceneFixture fx;
             const auto loaded = gltf::LoadGltf(staged_gltf, fx.R, fx.Viewport);
-            expect(loaded.has_value()) << "load failed: " << (loaded ? "" : loaded.error());
+            expect(loaded.has_value()) << "load failed: " << (loaded ? "" : loaded.error().Message);
             if (!loaded) return;
             const auto &images = fx.R.get<const gltf::SourceAssets>(fx.Viewport).Images;
             expect(images.size() == 1u);
@@ -1207,7 +1207,7 @@ int main(int argc, const char **argv) {
             if (!relocated_save) return;
             SceneFixture relocated;
             const auto relocated_load = gltf::LoadGltf(relocated_path, relocated.R, relocated.Viewport);
-            expect(relocated_load.has_value()) << "relocated import failed: " << (relocated_load ? "" : relocated_load.error());
+            expect(relocated_load.has_value()) << "relocated import failed: " << (relocated_load ? "" : relocated_load.error().Message);
             if (!relocated_load) return;
             const auto &relocated_images = relocated.R.get<const gltf::SourceAssets>(relocated.Viewport).Images;
             expect(relocated_images.size() == 1u);
@@ -1401,7 +1401,7 @@ int main(int argc, const char **argv) {
 
             SceneFixture fx;
             const auto load = gltf::LoadGltf(staged_gltf, fx.R, fx.Viewport);
-            expect(load.has_value()) << "NormalTangentTest load failed: " << (load ? "" : load.error());
+            expect(load.has_value()) << "NormalTangentTest load failed: " << (load ? "" : load.error().Message);
             if (!load) return;
 
             const auto node = FirstMeshNode(fx.R);
@@ -1453,7 +1453,7 @@ int main(int argc, const char **argv) {
             std::ofstream{path} << BrokenSkinnedTriangleGltf(drop_weights);
             const auto load = gltf::LoadGltf(path, fx.R, fx.Viewport);
             expect(!load.has_value()) << "broken document loaded";
-            if (!load) expect(load.error().contains(expected_error)) << "unexpected error: " << load.error();
+            if (!load) expect(!load.error().UnsupportedExtensions && load.error().Message.contains(expected_error)) << "unexpected error: " << load.error().Message;
             const auto after = CountScene(fx);
             expect(after == before) << "failed load changed the scene or a store: entities " << before.Entities << " -> " << after.Entities << ", materials " << before.Materials << " -> " << after.Materials;
             std::cerr << std::format("  failed load '{}': entities {} -> {}, mesh handles {} -> {}, textures {} -> {}, materials {} -> {}, vertex bytes {} -> {}\n", path.filename().string(), before.Entities, after.Entities, before.MeshHandles, after.MeshHandles, before.Textures, after.Textures, before.Materials, after.Materials, before.VertexBytes, after.VertexBytes);

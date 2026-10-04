@@ -62,6 +62,11 @@ struct MeshSourceLayout {
 };
 
 namespace gltf {
+struct LoadError {
+    std::string Message;
+    bool UnsupportedExtensions{false};
+};
+
 struct LoadResult {
     state::Entity FirstCameraObject{state::Null};
     bool ImportedAnimation{false};
@@ -73,12 +78,12 @@ struct SaveOptions {
 
 // Parses and validates the whole document before creating any entity or touching any store, so a failed load leaves the scene unchanged.
 // The first import into a document brings every scene, and a later import brings its default scene without scene entities or membership.
-std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &, state::Scene &, state::Entity viewport);
+std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &, state::Scene &, state::Entity viewport);
 // Re-encodes dirty images through the Metal context when one is registered.
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const state::Scene &, state::Entity viewport, SaveOptions = {});
 
 // Parses with import extensions, loads external buffers, and decodes meshopt buffer views.
-std::expected<fastgltf::Asset, std::string> ParseGltfAsset(const std::filesystem::path &);
+std::expected<fastgltf::Asset, LoadError> ParseGltfAsset(const std::filesystem::path &);
 
 // Activates `scene` when it names an inactive scene.
 void SwitchActiveScene(state::Scene &, state::Entity scene);

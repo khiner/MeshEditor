@@ -37,7 +37,7 @@ void LoadGltfFile(state::Scene &r, state::Entity viewport, const std::filesystem
     const profile::CpuScope scope{"LoadGltfFile"};
     auto result = gltf::LoadGltf(path, r, viewport);
     if (!result) {
-        Fail(r, std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
+        Fail(r, std::format("Error loading glTF file '{}': {}", path.string(), result.error().Message), result.error().UnsupportedExtensions);
         return;
     }
 
