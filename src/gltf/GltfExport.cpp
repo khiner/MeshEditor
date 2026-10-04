@@ -3,6 +3,7 @@
 
 #include "GltfConvert.h"
 #include "GltfScene.h"
+#include "MaterialTable.h"
 #include "project/Assets.h"
 #include "render/LightComponents.h"
 
@@ -147,6 +148,22 @@ fastgltf::Optional<fastgltf::NormalTextureInfo> ToFgNormalTexInfo(const ::Textur
 fastgltf::Optional<fastgltf::OcclusionTextureInfo> ToFgOcclusionTexInfo(const ::TextureInfo &ti, float strength, const TextureTransformMeta *meta, bool &transform_used) {
     if (ti.Slot == InvalidSlot) return {};
     return fastgltf::OcclusionTextureInfo{ToFgTextureInfo(ti, meta, transform_used), strength};
+}
+
+// Writes one table field of a material extension into its fastgltf block.
+template<typename O, typename T, typename OF, typename TF>
+void WriteField(T &theirs, const O &ours, const MaterialField<O, T, OF, TF> &field, bool &transform_used) {
+    if constexpr (std::same_as<OF, ::TextureInfo>) theirs.*field.Theirs = ToFgTexInfo(ours.*field.Ours, nullptr, transform_used);
+    else theirs.*field.Theirs = std::bit_cast<TF>(ours.*field.Ours);
+}
+template<typename O, typename T>
+void WriteField(T &theirs, const O &ours, const MaterialNormalField<O, T> &field, bool &transform_used) {
+    theirs.*field.Theirs = ToFgNormalTexInfo(ours.*field.Texture, ours.*field.Scale, nullptr, transform_used);
+}
+template<typename O, typename T>
+void WriteField(T &theirs, const O &ours, const MaterialDistanceField<O, T> &field, bool &) {
+    const auto distance = ours.*field.Ours;
+    theirs.*field.Theirs = distance > 0.f ? distance : std::numeric_limits<fastgltf::num>::infinity();
 }
 
 fastgltf::Camera ConvertCameraToFg(const CameraLens &cam, std::string_view name) {
@@ -659,7 +676,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     std::vector<fastgltf::Optional<size_t>> material_indices(material_count);
     asset.materials.reserve(material_count);
     bool uses_texture_transform = false;
-    using M = MaterialSourceMeta;
     static const MaterialSourceMeta DefaultMeta{};
     for (uint32_t i = 1; i < material_count; ++i) {
         const auto source_idx = i - 1;
@@ -690,75 +706,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .alphaCutoff = pbr.AlphaCutoff,
             .name = ToFgStr(name),
         };
-        if (bits & M::ExtEmissiveStrength || pbr.EmissiveStrength != 1.f) out.emissiveStrength = fastgltf::Optional<fastgltf::num>{pbr.EmissiveStrength};
-        if (bits & M::ExtIor) out.ior = fastgltf::Optional<fastgltf::num>{pbr.Ior};
-        if (bits & M::ExtDispersion) out.dispersion = fastgltf::Optional<fastgltf::num>{pbr.Dispersion};
-
-        if (bits & M::ExtSheen) {
-            out.sheen = std::make_unique<fastgltf::MaterialSheen>(fastgltf::MaterialSheen{
-                .sheenColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.Sheen.ColorFactor),
-                .sheenColorTexture = ToFgTexInfo(pbr.Sheen.ColorTexture, nullptr, uses_texture_transform),
-                .sheenRoughnessFactor = pbr.Sheen.RoughnessFactor,
-                .sheenRoughnessTexture = ToFgTexInfo(pbr.Sheen.RoughnessTexture, nullptr, uses_texture_transform),
-            });
-        }
-        if (bits & M::ExtSpecular) {
-            out.specular = std::make_unique<fastgltf::MaterialSpecular>(fastgltf::MaterialSpecular{
-                .specularFactor = pbr.Specular.Factor,
-                .specularTexture = ToFgTexInfo(pbr.Specular.Texture, nullptr, uses_texture_transform),
-                .specularColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.Specular.ColorFactor),
-                .specularColorTexture = ToFgTexInfo(pbr.Specular.ColorTexture, nullptr, uses_texture_transform),
-            });
-        }
-        if (bits & M::ExtTransmission) {
-            out.transmission = std::make_unique<fastgltf::MaterialTransmission>(fastgltf::MaterialTransmission{
-                .transmissionFactor = pbr.Transmission.Factor,
-                .transmissionTexture = ToFgTexInfo(pbr.Transmission.Texture, nullptr, uses_texture_transform),
-            });
-        }
-        if (bits & M::ExtDiffuseTransmission) {
-            out.diffuseTransmission = std::make_unique<fastgltf::MaterialDiffuseTransmission>(fastgltf::MaterialDiffuseTransmission{
-                .diffuseTransmissionFactor = pbr.DiffuseTransmission.Factor,
-                .diffuseTransmissionTexture = ToFgTexInfo(pbr.DiffuseTransmission.Texture, nullptr, uses_texture_transform),
-                .diffuseTransmissionColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.DiffuseTransmission.ColorFactor),
-                .diffuseTransmissionColorTexture = ToFgTexInfo(pbr.DiffuseTransmission.ColorTexture, nullptr, uses_texture_transform),
-            });
-        }
-        if (bits & M::ExtVolume) {
-            out.volume = std::make_unique<fastgltf::MaterialVolume>(fastgltf::MaterialVolume{
-                .thicknessFactor = pbr.Volume.ThicknessFactor,
-                .thicknessTexture = ToFgTexInfo(pbr.Volume.ThicknessTexture, nullptr, uses_texture_transform),
-                .attenuationDistance = pbr.Volume.AttenuationDistance > 0.f ? pbr.Volume.AttenuationDistance : std::numeric_limits<float>::infinity(),
-                .attenuationColor = std::bit_cast<fastgltf::math::nvec3>(pbr.Volume.AttenuationColor),
-            });
-        }
-        if (bits & M::ExtClearcoat) {
-            out.clearcoat = std::make_unique<fastgltf::MaterialClearcoat>(fastgltf::MaterialClearcoat{
-                .clearcoatFactor = pbr.Clearcoat.Factor,
-                .clearcoatTexture = ToFgTexInfo(pbr.Clearcoat.Texture, nullptr, uses_texture_transform),
-                .clearcoatRoughnessFactor = pbr.Clearcoat.RoughnessFactor,
-                .clearcoatRoughnessTexture = ToFgTexInfo(pbr.Clearcoat.RoughnessTexture, nullptr, uses_texture_transform),
-                .clearcoatNormalTexture = ToFgNormalTexInfo(pbr.Clearcoat.NormalTexture, pbr.Clearcoat.NormalScale, nullptr, uses_texture_transform),
-            });
-        }
-        if (bits & M::ExtAnisotropy) {
-            out.anisotropy = std::make_unique<fastgltf::MaterialAnisotropy>(fastgltf::MaterialAnisotropy{
-                .anisotropyStrength = pbr.Anisotropy.Strength,
-                .anisotropyRotation = pbr.Anisotropy.Rotation,
-                .anisotropyTexture = ToFgTexInfo(pbr.Anisotropy.Texture, nullptr, uses_texture_transform),
-            });
-        }
-        if (bits & M::ExtIridescence) {
-            out.iridescence = std::make_unique<fastgltf::MaterialIridescence>(fastgltf::MaterialIridescence{
-                .iridescenceFactor = pbr.Iridescence.Factor,
-                .iridescenceTexture = ToFgTexInfo(pbr.Iridescence.Texture, nullptr, uses_texture_transform),
-                .iridescenceIor = pbr.Iridescence.Ior,
-                .iridescenceThicknessMinimum = pbr.Iridescence.ThicknessMinimum,
-                .iridescenceThicknessMaximum = pbr.Iridescence.ThicknessMaximum,
-                .iridescenceThicknessTexture = ToFgTexInfo(pbr.Iridescence.ThicknessTexture, nullptr, uses_texture_transform),
-            });
-        }
-
+        for (const auto &scalar : MaterialScalarExtensions)
+            if (bits & scalar.Bit || pbr.*scalar.Ours != scalar.Default) out.*scalar.Theirs = fastgltf::Optional<fastgltf::num>{pbr.*scalar.Ours};
+        ForEachMaterialExtension([&](const auto &extension) {
+            if (!(bits & extension.Bit)) return;
+            auto theirs = std::make_unique<typename std::remove_cvref_t<decltype(out.*extension.Theirs)>::element_type>();
+            ForEachMaterialField(extension, [&](const auto &field) { WriteField(*theirs, pbr.*extension.Ours, field, uses_texture_transform); });
+            out.*extension.Theirs = std::move(theirs);
+        });
         asset.materials.emplace_back(std::move(out));
     }
 
@@ -1683,17 +1638,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     if (!asset.imageBasedLights.empty()) asset.extensionsUsed.emplace_back("EXT_lights_image_based");
     const auto any_material = [&](auto pred) { return std::ranges::any_of(asset.materials, pred); };
     if (any_material([](const auto &m) { return m.unlit; })) asset.extensionsUsed.emplace_back("KHR_materials_unlit");
-    if (any_material([](const auto &m) { return m.ior.has_value(); })) asset.extensionsUsed.emplace_back("KHR_materials_ior");
-    if (any_material([](const auto &m) { return m.emissiveStrength.has_value(); })) asset.extensionsUsed.emplace_back("KHR_materials_emissive_strength");
-    if (any_material([](const auto &m) { return m.dispersion.has_value(); })) asset.extensionsUsed.emplace_back("KHR_materials_dispersion");
-    if (any_material([](const auto &m) { return m.sheen != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_sheen");
-    if (any_material([](const auto &m) { return m.specular != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_specular");
-    if (any_material([](const auto &m) { return m.transmission != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_transmission");
-    if (any_material([](const auto &m) { return m.diffuseTransmission != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_diffuse_transmission");
-    if (any_material([](const auto &m) { return m.volume != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_volume");
-    if (any_material([](const auto &m) { return m.clearcoat != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_clearcoat");
-    if (any_material([](const auto &m) { return m.anisotropy != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_anisotropy");
-    if (any_material([](const auto &m) { return m.iridescence != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_iridescence");
+    for (const auto &scalar : MaterialScalarExtensions)
+        if (any_material([&](const auto &m) { return (m.*scalar.Theirs).has_value(); })) asset.extensionsUsed.emplace_back(scalar.Name);
+    ForEachMaterialExtension([&](const auto &extension) {
+        if (any_material([&](const auto &m) { return m.*extension.Theirs != nullptr; })) asset.extensionsUsed.emplace_back(extension.Name);
+    });
     if (const auto *mv = r.try_get<const ::MaterialVariants>(viewport); mv && !mv->Names.empty()) {
         asset.materialVariants.reserve(mv->Names.size());
         for (const auto &v : mv->Names) asset.materialVariants.emplace_back(v);

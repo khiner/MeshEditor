@@ -4,6 +4,7 @@
 
 #include "GltfConvert.h"
 #include "GltfScene.h"
+#include "MaterialTable.h"
 #include "project/Assets.h"
 #include "render/LightComponents.h"
 #include "state/Scene.h"
@@ -102,6 +103,24 @@ template<typename OptT>
         }
     }
     return out;
+}
+
+// Reads one table field of a material extension from its fastgltf block.
+template<typename O, typename T, typename OF, typename TF>
+void ReadField(O &ours, const T &theirs, const MaterialField<O, T, OF, TF> &field, const fastgltf::Asset &asset) {
+    if constexpr (std::same_as<OF, ::TextureInfo>) ours.*field.Ours = ToTextureIndex(theirs.*field.Theirs, asset);
+    else ours.*field.Ours = std::bit_cast<OF>(theirs.*field.Theirs);
+}
+template<typename O, typename T>
+void ReadField(O &ours, const T &theirs, const MaterialNormalField<O, T> &field, const fastgltf::Asset &asset) {
+    const auto &texture = theirs.*field.Theirs;
+    ours.*field.Texture = ToTextureIndex(texture, asset);
+    ours.*field.Scale = texture ? texture->scale : 1.f;
+}
+template<typename O, typename T>
+void ReadField(O &ours, const T &theirs, const MaterialDistanceField<O, T> &field, const fastgltf::Asset &) {
+    const auto distance = theirs.*field.Theirs;
+    ours.*field.Ours = std::isinf(distance) || distance <= 0.f ? 0.f : distance;
 }
 
 std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32_t image_index, const std::filesystem::path &base_dir) {
@@ -1011,7 +1030,6 @@ SourceMaterials ReadMaterials(const fastgltf::Asset &asset) {
     out.Metas.reserve(asset.materials.size() + 1u);
     for (uint32_t material_index = 0; material_index < asset.materials.size(); ++material_index) {
         const auto &material = asset.materials[material_index];
-        using M = MaterialSourceMeta;
         MaterialSourceMeta meta{.NameWasEmpty = material.name.empty()};
         PBRMaterial pbr{
             .BaseColorFactor = ToVec4(material.pbrData.baseColorFactor),
@@ -1030,94 +1048,18 @@ SourceMaterials ReadMaterials(const fastgltf::Asset &asset) {
             .OcclusionTexture = ToTextureIndex(material.occlusionTexture, asset, &meta.BaseSlotMeta[3]),
             .EmissiveTexture = ToTextureIndex(material.emissiveTexture, asset, &meta.BaseSlotMeta[4]),
         };
-        if (material.ior) {
-            pbr.Ior = *material.ior;
-            meta.ExtensionPresence |= M::ExtIor;
+        for (const auto &scalar : MaterialScalarExtensions) {
+            if (const auto &value = material.*scalar.Theirs) {
+                pbr.*scalar.Ours = *value;
+                meta.ExtensionPresence |= scalar.Bit;
+            }
         }
-        if (material.dispersion) {
-            pbr.Dispersion = *material.dispersion;
-            meta.ExtensionPresence |= M::ExtDispersion;
-        }
-        if (material.emissiveStrength) {
-            pbr.EmissiveStrength = *material.emissiveStrength;
-            meta.ExtensionPresence |= M::ExtEmissiveStrength;
-        }
-
-        if (material.sheen) {
-            meta.ExtensionPresence |= M::ExtSheen;
-            pbr.Sheen = ::Sheen{
-                .ColorFactor = ToVec3(material.sheen->sheenColorFactor),
-                .RoughnessFactor = material.sheen->sheenRoughnessFactor,
-                .ColorTexture = ToTextureIndex(material.sheen->sheenColorTexture, asset),
-                .RoughnessTexture = ToTextureIndex(material.sheen->sheenRoughnessTexture, asset),
-            };
-        }
-        if (material.specular) {
-            meta.ExtensionPresence |= M::ExtSpecular;
-            pbr.Specular = ::Specular{
-                .Factor = material.specular->specularFactor,
-                .ColorFactor = ToVec3(material.specular->specularColorFactor),
-                .Texture = ToTextureIndex(material.specular->specularTexture, asset),
-                .ColorTexture = ToTextureIndex(material.specular->specularColorTexture, asset),
-            };
-        }
-        if (material.transmission) {
-            meta.ExtensionPresence |= M::ExtTransmission;
-            pbr.Transmission = ::Transmission{
-                .Factor = material.transmission->transmissionFactor,
-                .Texture = ToTextureIndex(material.transmission->transmissionTexture, asset),
-            };
-        }
-        if (material.diffuseTransmission) {
-            meta.ExtensionPresence |= M::ExtDiffuseTransmission;
-            pbr.DiffuseTransmission = ::DiffuseTransmission{
-                .Factor = material.diffuseTransmission->diffuseTransmissionFactor,
-                .ColorFactor = ToVec3(material.diffuseTransmission->diffuseTransmissionColorFactor),
-                .Texture = ToTextureIndex(material.diffuseTransmission->diffuseTransmissionTexture, asset),
-                .ColorTexture = ToTextureIndex(material.diffuseTransmission->diffuseTransmissionColorTexture, asset),
-            };
-        }
-        if (material.volume) {
-            meta.ExtensionPresence |= M::ExtVolume;
-            const float ad = material.volume->attenuationDistance;
-            pbr.Volume = ::Volume{
-                .ThicknessFactor = material.volume->thicknessFactor,
-                .AttenuationColor = ToVec3(material.volume->attenuationColor),
-                .AttenuationDistance = (std::isinf(ad) || ad <= 0.f) ? 0.f : ad,
-                .ThicknessTexture = ToTextureIndex(material.volume->thicknessTexture, asset),
-            };
-        }
-        if (material.clearcoat) {
-            meta.ExtensionPresence |= M::ExtClearcoat;
-            pbr.Clearcoat = ::Clearcoat{
-                .Factor = material.clearcoat->clearcoatFactor,
-                .RoughnessFactor = material.clearcoat->clearcoatRoughnessFactor,
-                .NormalScale = material.clearcoat->clearcoatNormalTexture ? material.clearcoat->clearcoatNormalTexture->scale : 1.f,
-                .Texture = ToTextureIndex(material.clearcoat->clearcoatTexture, asset),
-                .RoughnessTexture = ToTextureIndex(material.clearcoat->clearcoatRoughnessTexture, asset),
-                .NormalTexture = ToTextureIndex(material.clearcoat->clearcoatNormalTexture, asset),
-            };
-        }
-        if (material.anisotropy) {
-            meta.ExtensionPresence |= M::ExtAnisotropy;
-            pbr.Anisotropy = ::Anisotropy{
-                .Strength = material.anisotropy->anisotropyStrength,
-                .Rotation = material.anisotropy->anisotropyRotation,
-                .Texture = ToTextureIndex(material.anisotropy->anisotropyTexture, asset),
-            };
-        }
-        if (material.iridescence) {
-            meta.ExtensionPresence |= M::ExtIridescence;
-            pbr.Iridescence = ::Iridescence{
-                .Factor = material.iridescence->iridescenceFactor,
-                .Ior = material.iridescence->iridescenceIor,
-                .ThicknessMinimum = material.iridescence->iridescenceThicknessMinimum,
-                .ThicknessMaximum = material.iridescence->iridescenceThicknessMaximum,
-                .Texture = ToTextureIndex(material.iridescence->iridescenceTexture, asset),
-                .ThicknessTexture = ToTextureIndex(material.iridescence->iridescenceThicknessTexture, asset),
-            };
-        }
-
+        ForEachMaterialExtension([&](const auto &extension) {
+            const auto &theirs = material.*extension.Theirs;
+            if (!theirs) return;
+            meta.ExtensionPresence |= extension.Bit;
+            ForEachMaterialField(extension, [&](const auto &field) { ReadField(pbr.*extension.Ours, *theirs, field, asset); });
+        });
         for (uint32_t s = 0; s < MTS_Count; ++s) meta.TextureSlots[s] = MaterialTextureSlots[s].Get(pbr).Slot;
         out.Metas.emplace_back(std::move(meta));
         out.Materials.emplace_back(std::move(pbr));

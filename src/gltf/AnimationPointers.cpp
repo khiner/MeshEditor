@@ -7,6 +7,7 @@
 #include "animation/Fields.h"
 #include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
+#include "gltf/MaterialTable.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MaterialTextureSlots.h"
@@ -18,6 +19,25 @@ namespace gltf {
 namespace {
 using animation::Target;
 using animation::TextureTarget;
+
+// A material field `offset` bytes into PBRMaterial.
+template<animation::KeyableField F>
+ChannelTarget MaterialTarget(std::ptrdiff_t offset) {
+    return {animation::StoreOf<PBRMaterial>(), uint16_t(offset), 0, animation::FieldCount<F>(), animation::FieldKind<F>()};
+}
+// The pointer row of one table field of a material extension, which a texture field lacks.
+template<typename O, typename T, typename OF, typename TF>
+void MaterialRow(std::vector<PointerRow> &rows, const std::string &prefix, std::ptrdiff_t offset, const detail::MaterialField<O, T, OF, TF> &field) {
+    if constexpr (animation::KeyableField<OF>) rows.emplace_back(prefix + std::string{field.Key}, PointerSpace::Material, MaterialTarget<OF>(offset + action::detail::MemPtrOffset(field.Ours)));
+}
+template<typename O, typename T>
+void MaterialRow(std::vector<PointerRow> &rows, const std::string &prefix, std::ptrdiff_t offset, const detail::MaterialNormalField<O, T> &field) {
+    rows.emplace_back(prefix + std::string{field.Key} + "/scale", PointerSpace::Material, MaterialTarget<float>(offset + action::detail::MemPtrOffset(field.Scale)));
+}
+template<typename O, typename T>
+void MaterialRow(std::vector<PointerRow> &rows, const std::string &prefix, std::ptrdiff_t offset, const detail::MaterialDistanceField<O, T> &field) {
+    rows.emplace_back(prefix + std::string{field.Key}, PointerSpace::Material, MaterialTarget<float>(offset + action::detail::MemPtrOffset(field.Ours)));
+}
 
 std::vector<PointerRow> BuildRows() {
     using enum PointerSpace;
@@ -32,31 +52,9 @@ std::vector<PointerRow> BuildRows() {
         {"/materials/{}/pbrMetallicRoughness/metallicFactor", Material, Target<&PBRMaterial::MetallicFactor>()},
         {"/materials/{}/pbrMetallicRoughness/roughnessFactor", Material, Target<&PBRMaterial::RoughnessFactor>()},
         {"/materials/{}/emissiveFactor", Material, Target<&PBRMaterial::EmissiveFactor>()},
-        {"/materials/{}/extensions/KHR_materials_emissive_strength/emissiveStrength", Material, Target<&PBRMaterial::EmissiveStrength>()},
         {"/materials/{}/alphaCutoff", Material, Target<&PBRMaterial::AlphaCutoff>()},
         {"/materials/{}/normalTexture/scale", Material, Target<&PBRMaterial::NormalScale>()},
         {"/materials/{}/occlusionTexture/strength", Material, Target<&PBRMaterial::OcclusionStrength>()},
-        {"/materials/{}/extensions/KHR_materials_ior/ior", Material, Target<&PBRMaterial::Ior>()},
-        {"/materials/{}/extensions/KHR_materials_dispersion/dispersion", Material, Target<&PBRMaterial::Dispersion>()},
-        {"/materials/{}/extensions/KHR_materials_transmission/transmissionFactor", Material, Target<&PBRMaterial::Transmission, &Transmission::Factor>()},
-        {"/materials/{}/extensions/KHR_materials_volume/thicknessFactor", Material, Target<&PBRMaterial::Volume, &Volume::ThicknessFactor>()},
-        {"/materials/{}/extensions/KHR_materials_volume/attenuationDistance", Material, Target<&PBRMaterial::Volume, &Volume::AttenuationDistance>()},
-        {"/materials/{}/extensions/KHR_materials_volume/attenuationColor", Material, Target<&PBRMaterial::Volume, &Volume::AttenuationColor>()},
-        {"/materials/{}/extensions/KHR_materials_clearcoat/clearcoatFactor", Material, Target<&PBRMaterial::Clearcoat, &Clearcoat::Factor>()},
-        {"/materials/{}/extensions/KHR_materials_clearcoat/clearcoatRoughnessFactor", Material, Target<&PBRMaterial::Clearcoat, &Clearcoat::RoughnessFactor>()},
-        {"/materials/{}/extensions/KHR_materials_clearcoat/clearcoatNormalTexture/scale", Material, Target<&PBRMaterial::Clearcoat, &Clearcoat::NormalScale>()},
-        {"/materials/{}/extensions/KHR_materials_sheen/sheenColorFactor", Material, Target<&PBRMaterial::Sheen, &Sheen::ColorFactor>()},
-        {"/materials/{}/extensions/KHR_materials_sheen/sheenRoughnessFactor", Material, Target<&PBRMaterial::Sheen, &Sheen::RoughnessFactor>()},
-        {"/materials/{}/extensions/KHR_materials_specular/specularFactor", Material, Target<&PBRMaterial::Specular, &Specular::Factor>()},
-        {"/materials/{}/extensions/KHR_materials_specular/specularColorFactor", Material, Target<&PBRMaterial::Specular, &Specular::ColorFactor>()},
-        {"/materials/{}/extensions/KHR_materials_diffuse_transmission/diffuseTransmissionFactor", Material, Target<&PBRMaterial::DiffuseTransmission, &DiffuseTransmission::Factor>()},
-        {"/materials/{}/extensions/KHR_materials_diffuse_transmission/diffuseTransmissionColorFactor", Material, Target<&PBRMaterial::DiffuseTransmission, &DiffuseTransmission::ColorFactor>()},
-        {"/materials/{}/extensions/KHR_materials_anisotropy/anisotropyStrength", Material, Target<&PBRMaterial::Anisotropy, &Anisotropy::Strength>()},
-        {"/materials/{}/extensions/KHR_materials_anisotropy/anisotropyRotation", Material, Target<&PBRMaterial::Anisotropy, &Anisotropy::Rotation>()},
-        {"/materials/{}/extensions/KHR_materials_iridescence/iridescenceFactor", Material, Target<&PBRMaterial::Iridescence, &Iridescence::Factor>()},
-        {"/materials/{}/extensions/KHR_materials_iridescence/iridescenceIor", Material, Target<&PBRMaterial::Iridescence, &Iridescence::Ior>()},
-        {"/materials/{}/extensions/KHR_materials_iridescence/iridescenceThicknessMinimum", Material, Target<&PBRMaterial::Iridescence, &Iridescence::ThicknessMinimum>()},
-        {"/materials/{}/extensions/KHR_materials_iridescence/iridescenceThicknessMaximum", Material, Target<&PBRMaterial::Iridescence, &Iridescence::ThicknessMaximum>()},
         {"/cameras/{}/perspective/aspectRatio", Camera, Target<&Perspective::AspectRatio>()},
         {"/cameras/{}/perspective/yfov", Camera, Target<&Perspective::FieldOfViewRad>()},
         {"/cameras/{}/perspective/znear", Camera, Target<&Perspective::NearClip>()},
@@ -73,6 +71,13 @@ std::vector<PointerRow> BuildRows() {
         {"/extensions/EXT_lights_image_based/lights/{}/rotation", ImageLight, Target<&ImageLight::Rotation>()},
         {"/extensions/EXT_lights_image_based/lights/{}/intensity", ImageLight, Target<&ImageLight::Intensity>()},
     };
+    for (const auto &scalar : detail::MaterialScalarExtensions)
+        rows.emplace_back(std::format("/materials/{{}}/extensions/{}/{}", scalar.Name, scalar.Key), Material, MaterialTarget<float>(action::detail::MemPtrOffset(scalar.Ours)));
+    detail::ForEachMaterialExtension([&](const auto &extension) {
+        const auto prefix = std::format("/materials/{{}}/extensions/{}/", extension.Name);
+        const auto offset = action::detail::MemPtrOffset(extension.Ours);
+        detail::ForEachMaterialField(extension, [&](const auto &field) { MaterialRow(rows, prefix, offset, field); });
+    });
     for (uint8_t slot = 0; slot < MTS_Count; ++slot) {
         const auto prefix = std::format("/materials/{{}}/{}/extensions/KHR_texture_transform/", MaterialTextureSlots[slot].Pointer);
         rows.emplace_back(prefix + "offset", Material, TextureTarget(slot, &TextureInfo::UvOffset, 0));
