@@ -1,6 +1,7 @@
 #include "render/GpuBuffers.h"
 #include "render/MeshletBuild.h"
 #include "render/MeshletBuildGpu.h"
+#include "state/Scene.h"
 
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
@@ -9,25 +10,37 @@
 #include <utility>
 
 // The mesh's shared arena locations, which ComposeDraw advances to each primitive's first triangle.
-MeshRecord BuildMeshRecord(const GpuBuffers &buffers, const MeshBuffers &mb, const MeshStore &meshes, uint32_t store_id, bool face_topology, bool line_topology) {
+// An extras record draws its bone or joint faces with the instance transforms.
+MeshRecord BuildMeshRecord(const GpuBuffers &buffers, const MeshStore &meshes, uint32_t store_id, uint32_t topology) {
     const auto &record = meshes.Get(store_id);
     const auto &arenas = meshes.Arenas();
-    if (!face_topology) {
+    const auto &render = meshes.Render();
+    const auto vertex_count = arenas.Vertices.Count(record.Vertices), vertex_offset = arenas.Vertices.First(record.Vertices);
+    if (record.ExtrasFaces.Count) {
         return {
-            .VertexSlot = mb.Vertices.Slot,
-            .IndexSlotOffset = line_topology ? SlotOffset{arenas.FaceCorners.Buffer.Slot, arenas.FaceCorners.First(record.FaceCorners)} : SlotOffset{},
+            .VertexSlot = arenas.Vertices.Buffer.Slot,
+            .IndexSlotOffset = {render.ExtrasFaces.Buffer.Slot, record.ExtrasFaces.Offset},
+            .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+            .VertexCountOrHeadImageSlot = vertex_count,
+            .VertexOffset = vertex_offset,
+        };
+    }
+    if (topology != 0u) {
+        return {
+            .VertexSlot = arenas.Vertices.Buffer.Slot,
+            .IndexSlotOffset = topology == 1u ? SlotOffset{arenas.FaceCorners.Buffer.Slot, arenas.FaceCorners.First(record.FaceCorners)} : SlotOffset{},
             .ModelSlot = buffers.Instances.TransformBuffer.Slot,
             .TriangleSlot = InvalidSlot,
             .CornerColor = arenas.VertexColors.Ref(record.VertexAttributes & MeshAttributeBit_Color0),
             .Connectivity = meshes.GetConnectivityRef(store_id),
-            .VertexCountOrHeadImageSlot = mb.Vertices.Count,
-            .VertexOffset = mb.Vertices.Offset,
+            .VertexCountOrHeadImageSlot = vertex_count,
+            .VertexOffset = vertex_offset,
             .PrimitiveMaterialOffset = OffsetOrInvalid(record.PrimitiveMaterials),
             .ElementPrimitives = record.VertexPrimitivesReady ? arenas.VertexPrimitives.Ref() : ElementAttributeRef{},
         };
     }
     return {
-        .VertexSlot = mb.Vertices.Slot,
+        .VertexSlot = arenas.Vertices.Buffer.Slot,
         .IndexSlotOffset = {arenas.FaceCorners.Buffer.Slot,arenas.FaceCorners.First(record.FaceCorners)},
         .ModelSlot = buffers.Instances.TransformBuffer.Slot,
         .TriangleSlot = arenas.Triangles.Buffer.Slot,
@@ -38,14 +51,21 @@ MeshRecord BuildMeshRecord(const GpuBuffers &buffers, const MeshBuffers &mb, con
         .CornerUvs = {arenas.CornerUvs[0].Ref(record.CornerAttributes & MeshAttributeBit_TexCoord0), arenas.CornerUvs[1].Ref(record.CornerAttributes & MeshAttributeBit_TexCoord1), arenas.CornerUvs[2].Ref(record.CornerAttributes & MeshAttributeBit_TexCoord2), arenas.CornerUvs[3].Ref(record.CornerAttributes & MeshAttributeBit_TexCoord3)},
         .TriangleOffset = arenas.Triangles.First(record.TriangleData),
         .Connectivity = meshes.GetConnectivityRef(store_id),
-        .HalfedgeCount = meshes.Arenas().FaceCorners.Count(record.FaceCorners),
-        .FaceCount = meshes.Arenas().FaceTriangles.Count(record.FaceData),
-        .VertexCountOrHeadImageSlot = mb.Vertices.Count,
-        .VertexOffset = mb.Vertices.Offset,
-        .MorphShadingAuthored = meshes.Get(store_id).MorphShadingAuthored ? 1u : 0u,
+        .HalfedgeCount = arenas.FaceCorners.Count(record.FaceCorners),
+        .FaceCount = arenas.FaceTriangles.Count(record.FaceData),
+        .VertexCountOrHeadImageSlot = vertex_count,
+        .VertexOffset = vertex_offset,
+        .MorphShadingAuthored = record.MorphShadingAuthored ? 1u : 0u,
         .PrimitiveMaterialOffset = OffsetOrInvalid(record.PrimitiveMaterials),
         .ElementPrimitives = arenas.FacePrimitives.Ref(),
     };
+}
+
+void RefreshMeshBinding(state::Scene &r, uint32_t store_id) {
+    auto &meshes = r.Context.get<MeshStore>();
+    const auto *record = meshes.TryGet(store_id);
+    if (!record || record->RenderTopology == InvalidOffset) return;
+    meshes.Render().MeshRecords.GetMutable({store_id, 1u})[0] = BuildMeshRecord(r.Context.get<const GpuBuffers>(), meshes, store_id, record->RenderTopology);
 }
 
 MeshletBuildInputs CaptureMeshletInputs(const Mesh &mesh, const MeshStore &meshes, TriangleCorners triangle_corners) {
@@ -81,12 +101,13 @@ MeshletBuildInputs CaptureMeshletInputs(const Mesh &mesh, const MeshStore &meshe
     return inputs;
 }
 
-ClusterLodBuild BuildMeshletClusterLod(const GpuBuffers &buffers, const MeshBuffers &mb, const MeshletBuildInputs &in,
+ClusterLodBuild BuildMeshletClusterLod(const MeshStore &meshes, const MeshStore::Record &mb, const MeshletBuildInputs &in,
                                       std::span<const uint32_t> primitive_triangle_counts) {
+    const auto &render = meshes.Render();
     std::vector<uint32_t> placed;
-    buffers.ForEachPrimitive(mb,[&](uint32_t id, const PrimitiveRecord &) { placed.push_back(id); });
+    meshes.ForEachPrimitive(mb,[&](uint32_t id, const PrimitiveRecord &) { placed.push_back(id); });
     if (!ClusterLodApplies(in.FaceTopology,mb.Level0Count)) return {};
-    assert(buffers.ClusterGroupCount(mb) == 0u);
+    assert(meshes.ClusterGroupCount(mb) == 0u);
     std::vector<ClusterLodPrimitive> primitives;
     std::vector<ClusterLodSourceCluster> clusters;
     clusters.reserve(mb.Level0Count);
@@ -95,9 +116,9 @@ ClusterLodBuild BuildMeshletClusterLod(const GpuBuffers &buffers, const MeshBuff
     }
     uint32_t triangle_cursor=0u;
     for (uint32_t p = 0u; p < placed.size(); ++p) {
-        const auto &primitive = buffers.Primitives.Get({placed[p],1u})[0];
+        const auto &primitive = render.Primitives.Get({placed[p],1u})[0];
         const auto root = primitive.LodFinestNode == InvalidOffset ? InvalidOffset :
-            buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot;
+            render.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot;
         const uint32_t first_triangle=primitive_triangle_counts.empty() ?
             primitive.TriangleOffset-mb.MeshletTriangles.Offset : triangle_cursor;
         const uint32_t triangle_count=primitive_triangle_counts.empty() ? primitive.TriangleCount : primitive_triangle_counts[p];
@@ -105,11 +126,11 @@ ClusterLodBuild BuildMeshletClusterLod(const GpuBuffers &buffers, const MeshBuff
         primitives.push_back({
             .FirstTriangle=first_triangle,
             .TriangleCount=triangle_count,
-            .FirstCluster=uint32_t(clusters.size()),.ClusterCount=buffers.ActiveMeshlets.Count(root),
+            .FirstCluster=uint32_t(clusters.size()),.ClusterCount=render.ActiveMeshlets.Count(root),
             .Attributes=primitive.LodAttributes,
         });
-        buffers.ActiveMeshlets.ForEach(root,[&](uint32_t id) {
-            const auto &record = buffers.Meshlets.Get({id,1u})[0];
+        render.ActiveMeshlets.ForEach(root,[&](uint32_t id) {
+            const auto &record = render.Meshlets.Get({id,1u})[0];
             clusters.push_back({
                 .FirstVertex=record.VertexOffset,.VertexCount=record.VertexCount,
                 .FirstLocalTriangle=record.LocalTriangleOffset,.TriangleCount=record.TriangleCount,
@@ -123,12 +144,12 @@ ClusterLodBuild BuildMeshletClusterLod(const GpuBuffers &buffers, const MeshBuff
     return BuildClusterLod(ClusterLodMesh{
         .CornerVertices=in.Indices,.Positions=&in.Vertices.front().Position.x,.PositionStride=sizeof(Vertex),
         .VertexFirst=in.VertexFirst,.DenseVertices=in.DenseVertices,.Normals=in.Normals,.Weld=in.Weld,.Primitives=primitives,.Clusters=clusters,
-        .SourceVertexCorners=buffers.MeshletVertexCorners.Buffer.GetSpan<uint32_t>(),
-        .SourceLocalTriangles=buffers.MeshletLocalTriangles.Buffer.GetSpan<uint8_t>(),
+        .SourceVertexCorners=render.MeshletVertexCorners.Buffer.GetSpan<uint32_t>(),
+        .SourceLocalTriangles=render.MeshletLocalTriangles.Buffer.GetSpan<uint8_t>(),
     });
 }
 
-Range PublishClusterLodStorage(GpuBuffers &buffers,const ClusterLodBuild &build,std::span<const uint32_t> primitive_ids,
+Range PublishClusterLodStorage(RenderArenas &buffers,const ClusterLodBuild &build,std::span<const uint32_t> primitive_ids,
                                Range &groups,Range &vertices,Range &local_triangles) {
     groups=buffers.ClusterGroups.Allocate(uint32_t(build.Groups.size()));
     const auto values=buffers.ClusterGroups.GetMutable(groups);
@@ -175,8 +196,9 @@ Range PublishClusterLodStorage(GpuBuffers &buffers,const ClusterLodBuild &build,
     return allocation;
 }
 
-void CommitClusterLods(state::Scene &r, std::span<MeshBuffers *const> owners, std::span<const ClusterLodBuild> builds) {
-    auto &buffers = r.Context.get<GpuBuffers>();
+void CommitClusterLods(state::Scene &r, std::span<MeshStore::Record *const> owners, std::span<const ClusterLodBuild> builds) {
+    auto &meshes = r.Context.get<MeshStore>();
+    auto &buffers = meshes.Render();
     // Every arena grows once for the whole batch.
     uint64_t node_count = 0u, groups = 0u, clusters = 0u, vertex_corners = 0u, local_triangles = 0u, group_ids = 0u;
     for (const auto &build : builds) {
@@ -201,7 +223,7 @@ void CommitClusterLods(state::Scene &r, std::span<MeshBuffers *const> owners, st
     buffers.MeshletLocalTriangles.ReserveAdditional(local_triangles);
     // One mesh's committed records, with its primitives' retained finest roots.
     struct Commit {
-        MeshBuffers *Owner;
+        MeshStore::Record *Owner;
         const ClusterLodBuild *Build;
         std::vector<uint32_t> Finest, PrimitiveIds;
         Range Allocation;
@@ -212,11 +234,11 @@ void CommitClusterLods(state::Scene &r, std::span<MeshBuffers *const> owners, st
         auto &mb = *owners[i];
         const auto &build = builds[i];
         if (build.Groups.empty()) continue;
-        assert(build.PrimitiveRanges.size() == buffers.PrimitiveCount(mb) && buffers.ClusterGroupCount(mb) == 0u);
+        assert(build.PrimitiveRanges.size() == meshes.PrimitiveCount(mb) && meshes.ClusterGroupCount(mb) == 0u);
         auto &commit = commits.emplace_back(Commit{.Owner = &mb, .Build = &build});
         // Retain finest roots and record identities.
         // Only newly constructed coarse records and traversal nodes receive new addresses.
-        buffers.ForEachPrimitive(mb,[&](uint32_t id, const PrimitiveRecord &primitive) {
+        meshes.ForEachPrimitive(mb,[&](uint32_t id, const PrimitiveRecord &primitive) {
             commit.PrimitiveIds.push_back(id);
             commit.Finest.push_back(primitive.LodFinestNode == InvalidOffset ? InvalidOffset : buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot);
         });
@@ -224,7 +246,7 @@ void CommitClusterLods(state::Scene &r, std::span<MeshBuffers *const> owners, st
         // Retire its descriptor only.
         // The replacement node takes that membership.
         std::vector<Range> released;
-        buffers.ForEachLodNode(mb,[&](uint32_t id, const LodNode &) { released.push_back({id,1u}); });
+        meshes.ForEachLodNode(mb,[&](uint32_t id, const LodNode &) { released.push_back({id,1u}); });
         buffers.LodNodes.Release(std::move(released));
         buffers.ActiveMeshlets.Release(mb.NodeRoot); mb.NodeRoot = InvalidOffset;
         mb.LodNodes = {};
@@ -309,10 +331,7 @@ void CommitClusterLods(state::Scene &r, std::span<MeshBuffers *const> owners, st
             first_virtual += primitive.MeshletCount;
         }
         for (uint32_t g=0u; g<group_links.size(); ++g) assert(group_links[g].MemberCount==build.Groups[g].ClusterCount);
-        if (build.NodeDepth>buffers.MeshletLodDepth) {
-            if (buffers.LodDepthHistory) buffers.LodDepthHistory->Write(0u,1u);
-            buffers.MeshletLodDepth=build.NodeDepth;
-        }
+        mb.LodDepth = std::max(mb.LodDepth, build.NodeDepth);
     }
     for (uint32_t i = 0u; i < edits.size(); ++i) edits[i].Added = members[i];
     buffers.ActiveMeshlets.Update(edits);

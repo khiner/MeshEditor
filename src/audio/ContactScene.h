@@ -9,10 +9,7 @@
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "numeric/VectorMath.h"
-#include "render/GpuBufferOps.h"
-#include "render/GpuBuffers.h"
 #include "render/Instance.h"
-#include "render/MeshBuffers.h"
 #include "render/MeshletSpatial.h"
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
@@ -39,12 +36,12 @@ inline bool IsModalSounding(const state::Scene &r, state::Entity e) {
 inline std::optional<double> SurfaceCurvature(const state::Scene &r, state::Entity node, vec3 world_point) {
     if (!r.valid(node)) return std::nullopt;
     const auto *inst = r.try_get<const Instance>(node);
-    const auto *owner = inst ? TryMeshBuffers(r,inst->Entity) : nullptr;
+    const auto *owner = inst ? TryRecordOf(r,inst->Entity) : nullptr;
     if (!owner || owner->SpatialRoot==InvalidOffset) return std::nullopt;
     const auto &wt = *WorldTransformOf(r, node);
     const auto mesh = GetMesh(r, inst->Entity);
     const auto &meshes = r.Context.get<const MeshStore>();
-    const auto hit = ClosestMeshletPoint(r.Context.get<const GpuBuffers>(),*owner,
+    const auto hit = ClosestMeshletPoint(meshes.Render(),*owner,
         meshes.Arenas().Vertices.Buffer.GetSpan<Vertex>(),mesh.TriangleVertices(),InverseTransformPoint(wt,world_point));
     // Interpolate the triangle's per-vertex curvature at the contact's barycentric weights.
     double local = 0;
@@ -75,7 +72,7 @@ inline ContactNodes ResolveContactNodes(const state::Scene &r, state::Entity col
         ContactSurfaceNode(r, collider, body),
         NearestNodeWith(r, collider, body, [&r](state::Entity e) {
             const auto *inst=r.try_get<const Instance>(e);
-            const auto *owner=inst ? TryMeshBuffers(r,inst->Entity) : nullptr;
+            const auto *owner=inst ? TryRecordOf(r,inst->Entity) : nullptr;
             return owner && owner->SpatialRoot!=InvalidOffset;
         }),
     };

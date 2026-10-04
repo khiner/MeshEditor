@@ -195,11 +195,11 @@ void BuildOverlayJobs(const state::Scene &r, GpuBuffers &buffers, bool bounding_
 
 void RecordSceneCounters(const GpuBuffers &buffers) {
     profile::RecordCounter("InstanceSlots", buffers.Instances.TransformBuffer.UsedSize / sizeof(Transform));
-    profile::RecordCounter("MeshletRecords", buffers.Meshlets.Buffer.Count<MeshletRecord>());
+    profile::RecordCounter("MeshletRecords", buffers.Render->Meshlets.Buffer.Count<MeshletRecord>());
     profile::RecordCounter("MeshletInstances", buffers.MeshletInstanceCount);
-    profile::RecordCounter("MeshletRecordBytes", buffers.Meshlets.Buffer.UsedSize);
-    profile::RecordCounter("MeshletTriangleIdBytes", buffers.MeshletTriangleIds.Buffer.UsedSize);
-    profile::RecordCounter("PrimitiveRecordBytes", buffers.Primitives.Buffer.UsedSize);
+    profile::RecordCounter("MeshletRecordBytes", buffers.Render->Meshlets.Buffer.UsedSize);
+    profile::RecordCounter("MeshletTriangleIdBytes", buffers.Render->MeshletTriangleIds.Buffer.UsedSize);
+    profile::RecordCounter("PrimitiveRecordBytes", buffers.Render->Primitives.Buffer.UsedSize);
     profile::RecordCounter("InstanceRecordBytes", buffers.Instances.RecordBuffer.UsedSize);
     profile::RecordCounter("OverlayJobs", buffers.OverlayJobs.Count<OverlayJob>());
     if (buffers.OverlayJobDispatchArgs.Contents().size() >= sizeof(MeshDispatchArgs)) {
@@ -418,8 +418,8 @@ void RecordPosedMeshletBounds(MTL::ComputeCommandEncoder *encoder, const Pipelin
         pc.JobsSlot = source->MeshletJobsSlot;
         pc.JobCount = source->MeshletJobCount;
     }
-    pc.MeshletSlot = buffers.Meshlets.Buffer.Slot;
-    pc.MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot;
+    pc.MeshletSlot = buffers.Render->Meshlets.Buffer.Slot;
+    pc.MeshletVertexSlot = buffers.Render->MeshletVertexCorners.Buffer.Slot;
     pc.PosedMeshletBoundsSlot = buffers.PosedMeshletBounds.Values.Buffer.Slot;
     pc.PosedMeshletBoundsNodesSlot = buffers.PosedMeshletBounds.Nodes.Buffer.Slot;
     encoder->setComputePipelineState(pipelines.PosedMeshletBounds.State());
@@ -502,7 +502,7 @@ MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers, const
     return {
         .WorkRangeSlot = buffers.MeshletWorkRanges.Slot,
         .WorkBlockSlot = buffers.MeshletWorkBlocks.Slot,
-        .LodNodeSlot = buffers.LodNodes.Buffer.Slot,
+        .LodNodeSlot = buffers.Render->LodNodes.Buffer.Slot,
         .LodFrontierBlockStateSlot = buffers.LodFrontierBlockStates.Slot,
         .LodExpandArgsSlot = buffers.LodExpandArgs.Slot,
         .WorkStateSlot = buffers.MeshletWorkState.Slot,
@@ -512,11 +512,11 @@ MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers, const
         .VisibleSlot = output.Visible.Slot,
         .InstanceMapSlot = buffers.GpuInstanceSlots.Slot,
         .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
-        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
-        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
-        .MeshletIndexNodesSlot = buffers.ActiveMeshlets.Nodes.Buffer.Slot,
-        .MeshletIndexLeavesSlot = buffers.ActiveMeshlets.Leaves.Buffer.Slot,
-        .ClusterGroupSlot = buffers.ClusterGroups.Buffer.Slot,
+        .PrimitiveSlot = buffers.Render->Primitives.Buffer.Slot,
+        .MeshletSlot = buffers.Render->Meshlets.Buffer.Slot,
+        .MeshletIndexNodesSlot = buffers.Render->ActiveMeshlets.Nodes.Buffer.Slot,
+        .MeshletIndexLeavesSlot = buffers.Render->ActiveMeshlets.Leaves.Buffer.Slot,
+        .ClusterGroupSlot = buffers.Render->ClusterGroups.Buffer.Slot,
         .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
         .ModelSlot = buffers.Instances.TransformBuffer.Slot,
         .PosedMeshletBoundsSlot = buffers.PosedMeshletBounds.Values.Buffer.Slot,
@@ -553,13 +553,13 @@ MeshletDrawPushConstants MakeMeshletDrawPc(
     uint32_t edit_edge_corner = 0u
 ) {
     return {
-        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
+        .PrimitiveSlot = buffers.Render->Primitives.Buffer.Slot,
         .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
         .InstanceMapSlot = buffers.GpuInstanceSlots.Slot,
-        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
-        .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
-        .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
-        .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
+        .MeshletSlot = buffers.Render->Meshlets.Buffer.Slot,
+        .MeshletTriangleSlot = buffers.Render->MeshletTriangleIds.Buffer.Slot,
+        .MeshletVertexSlot = buffers.Render->MeshletVertexCorners.Buffer.Slot,
+        .MeshletLocalTriangleSlot = buffers.Render->MeshletLocalTriangles.Buffer.Slot,
         .VisibleMeshletSlot = output.Visible.Slot,
         .RouteStateSlot = output.Routes.Slot,
         .Route = route,
@@ -754,12 +754,12 @@ struct MeshDisplayState {
     uint8_t Overlays{0};
 };
 
-MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_entity, const MeshBuffers &mb, const DeformSlots &deform, const PosedNamespaces *pose) {
+MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_entity, const MeshStore::Record &mb, const DeformSlots &deform, const PosedNamespaces *pose) {
     const auto &r = c.R;
     const auto &meshes = c.Meshes;
     MeshDisplay d{
         .PrimitiveRoot = mb.PrimitiveRoot,
-        .PrimitiveCount = c.Buffers.PrimitiveCount(mb),
+        .PrimitiveCount = c.Meshes.PrimitiveCount(mb),
         .MorphDeformOffset = deform.MorphDeformOffset,
         .BoneDeformOffset = deform.BoneDeformOffset,
         .MorphTargetCount = deform.MorphTargetCount,
@@ -774,7 +774,7 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
     const auto *record = handle ? &meshes.Get(handle->StoreId) : nullptr;
     const auto &arenas = meshes.Arenas();
     const uint32_t faces = record ? arenas.FaceTriangles.Count(record->FaceData) : 0u, edges = record ? arenas.EdgeHalfedges.Count(record->EdgeData) : 0u;
-    const bool meshlets = c.Buffers.MeshletCount(mb) > 0u;
+    const bool meshlets = c.Meshes.MeshletCount(mb) > 0u;
     const auto primary = c.Primaries.find(mesh_entity);
     const bool has_primary = primary != c.Primaries.end();
     const bool sound = c.SoundMeshes.contains(mesh_entity);
@@ -799,7 +799,7 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
     const auto set = [&](MeshletInstanceFlag flag) { flags |= uint32_t(flag); };
     const auto draw = [&](VertexOverlay overlay) { vertex_overlays |= uint8_t(1u << uint32_t(overlay)); };
     if (IsSilhouetteEligible(r, mesh_entity)) set(MeshletInstanceFlag::SilhouetteEligible);
-    if (EditPinsFinest(c.Primaries, c.State, mesh_entity) || c.Buffers.ActiveMeshlets.Count(mb.PositionDirtyRoot) > 0u) set(MeshletInstanceFlag::LodPinFinest);
+    if (EditPinsFinest(c.Primaries, c.State, mesh_entity) || c.Meshes.Render().ActiveMeshlets.Count(mb.PositionDirtyRoot) > 0u) set(MeshletInstanceFlag::LodPinFinest);
     if (has_primary && meshlets && record && GetMesh(r, mesh_entity).ElementCount(c.EditElement) > 0u) set(MeshletInstanceFlag::ElementSelection);
     if (overlays && c.Mode == InteractionMode::Edit && has_primary && record && meshlets) {
         set(MeshletInstanceFlag::EditOverlay);
@@ -817,7 +817,7 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
             if (const auto owner = JointArmature(r, mesh_entity); owner == state::Null || c.DrawsArmatureBones(owner)) set(MeshletInstanceFlag::BoneJointWire);
         }
     }
-    if (normals && he::ElementMaskContains(c.Settings.NormalOverlays, Element::Face) && mb.FaceIndices.Count > 0u) set(MeshletInstanceFlag::FaceNormal);
+    if (normals && he::ElementMaskContains(c.Settings.NormalOverlays, Element::Face) && faces > 0u) set(MeshletInstanceFlag::FaceNormal);
     if (normals && he::ElementMaskContains(c.Settings.NormalOverlays, Element::Vertex) && edges > 0u) {
         set(MeshletInstanceFlag::LodPinFinest);
         draw(VertexOverlay::Normals);
@@ -833,14 +833,14 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
 }
 
 // Rederives the mesh's vertex overlays and writes its record display fields when they changed, moving its flag totals to them.
-void RefreshMeshDisplay(state::Scene &r, const DisplayContext &c, state::Entity mesh_entity, const MeshBuffers &mb, const DeformSlots &deform, const PosedNamespaces *pose) {
+void RefreshMeshDisplay(state::Scene &r, const DisplayContext &c, state::Entity mesh_entity, const MeshStore::Record &mb, const DeformSlots &deform, const PosedNamespaces *pose) {
     auto &scene = r.Context.get<GpuSceneState>();
     const auto [display, overlays] = ComputeMeshDisplay(c, mesh_entity, mb, deform, pose);
     if (display.Flags & uint32_t(MeshletInstanceFlag::EditOverlay)) scene.MeshletEditHasSharpEdges |= c.Meshes.GetEdgeSharpnessSummary(GetMesh(c.R, mesh_entity).GetStoreId()).Any;
     if (overlays) scene.VertexOverlays[mesh_entity] = overlays;
     else scene.VertexOverlays.erase(mesh_entity);
-    if (!mb.MeshRecord.Count) return;
-    if (auto &record = r.Context.get<GpuBuffers>().MeshRecords.GetMutable(mb.MeshRecord)[0]; std::memcmp(&record.Display, &display, sizeof(MeshDisplay)) != 0) {
+    if (mb.RenderTopology == InvalidOffset) return;
+    if (auto &record = r.Context.get<MeshStore>().Render().MeshRecords.GetMutable({mb.StoreId, 1u})[0]; std::memcmp(&record.Display, &display, sizeof(MeshDisplay)) != 0) {
         record.Display = display;
         RetallyMesh(r, mesh_entity);
     }
@@ -852,6 +852,7 @@ void RebuildMeshLayout(state::Scene &r, state::Entity viewport) {
     const profile::CpuScope build_scope{"UpdateGpuScene"};
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &meshes = r.Context.get<MeshStore>();
+    auto &render = meshes.Render();
     auto &scene_state = r.Context.get<GpuSceneState>();
     const DisplayContext context{r, viewport};
     const bool is_edit_mode = context.Mode == InteractionMode::Edit;
@@ -867,7 +868,7 @@ void RebuildMeshLayout(state::Scene &r, state::Entity viewport) {
     // A mesh buffer entity the layout covers, with its mesh and deform state.
     struct LayoutMesh {
         state::Entity Entity;
-        const MeshBuffers &Buf;
+        const MeshStore::Record &Buf;
         const ModelsBuffer &Mod;
         std::optional<Mesh> MeshComp;
         const DeformSlots &Deform;
@@ -879,7 +880,7 @@ void RebuildMeshLayout(state::Scene &r, state::Entity viewport) {
     std::vector<LayoutMesh> mesh_entities;
     mesh_entities.reserve(mesh_entity_order.size());
     for (const auto entity : mesh_entity_order) {
-        const auto *mesh_buffers = TryMeshBuffers(r, entity);
+        const auto *mesh_buffers = TryRecordOf(r, entity);
         if (!mesh_buffers) continue;
         const auto deform = mesh_deform_slots.find(entity);
         mesh_entities.emplace_back(
@@ -971,10 +972,10 @@ void RebuildMeshLayout(state::Scene &r, state::Entity viewport) {
                 }
                 const auto bounds = buffers.PosedMeshletBounds.Prepare(e.Entity,store_id,e.Buf.MeshletRevision,spec.Count,[&] {
                     std::vector<uint32_t> blocks;
-                    buffers.ForEachPrimitive(e.Buf,[&](uint32_t, const PrimitiveRecord &primitive) {
+                    meshes.ForEachPrimitive(e.Buf,[&](uint32_t, const PrimitiveRecord &primitive) {
                         if (primitive.LodFinestNode == InvalidOffset) return;
-                        const auto root = buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot;
-                        buffers.ActiveMeshlets.ForEachBlock(root,[&](uint32_t b) { blocks.push_back(b); });
+                        const auto root = render.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot;
+                        render.ActiveMeshlets.ForEachBlock(root,[&](uint32_t b) { blocks.push_back(b); });
                     });
                     return blocks;
                 },e.Buf.RenderTopology);
@@ -993,7 +994,7 @@ void RebuildMeshLayout(state::Scene &r, state::Entity viewport) {
             prelude_layout.Mix(spec.NormalFaceTiles);
             prelude_work.Mix(state::Integral(e.Entity));
             prelude_work.Mix(e.Buf.MeshletRevision);
-            prelude_work.Mix(e.Buf.Vertices.Count);
+            prelude_work.Mix(meshes.Arenas().Vertices.Count(e.Buf.Vertices));
             prelude_work.Mix(spec.Entry.FaceCount);
             prelude_work.Mix(e.Mod.InstanceRange.Offset);
             prelude_work.Mix(e.Mod.InstanceCount);
@@ -1089,12 +1090,12 @@ void RebuildMeshLayout(state::Scene &r, state::Entity viewport) {
             if (spec.Posed) for (uint32_t i = 0u; i < spec.Count; ++i) {
                 const auto instance = spec.PerInstanceDeform ? entry.FirstInstance+i : entry.FirstInstance;
                 const auto first_job = uint32_t(meshlet_jobs.size());
-                buffers.ForEachPrimitive(e.Buf,[&](uint32_t, const PrimitiveRecord &primitive) {
+                meshes.ForEachPrimitive(e.Buf,[&](uint32_t, const PrimitiveRecord &primitive) {
                     if (primitive.LodFinestNode == InvalidOffset) return;
-                    const auto root = buffers.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot;
-                    const auto count = buffers.ActiveMeshlets.Count(root);
+                    const auto root = render.LodNodes.Get({primitive.LodFinestNode,1u})[0].MeshletRoot;
+                    const auto count = render.ActiveMeshlets.Count(root);
                     if (!count) return;
-                    meshlet_jobs.push_back({meshlet_groups,count,instance,buffers.ActiveMeshlets.Ref(root)});
+                    meshlet_jobs.push_back({meshlet_groups,count,instance,render.ActiveMeshlets.Ref(root)});
                     meshlet_groups += count;
                 });
                 scene_state.BoundsEntryTiles[first_entry + i].MeshletJobs = {first_job, uint32_t(meshlet_jobs.size()) - first_job};
@@ -1118,8 +1119,8 @@ void RebuildMeshLayout(state::Scene &r, state::Entity viewport) {
     scene_state.MeshletEditHasSharpEdges = false;
     scene_state.VertexOverlays.clear();
     for (const auto &e : mesh_entities) {
-        if (e.Mod.InstanceCount > 0u && buffers.MeshletCount(e.Buf) != 0u) {
-            buffers.MeshletTopologyMask |= 1u << buffers.Meshlets.Buffer.GetSpan<MeshletRecord>({buffers.FirstMeshlet(e.Buf), 1u}).front().Topology;
+        if (e.Mod.InstanceCount > 0u && meshes.MeshletCount(e.Buf) != 0u) {
+            buffers.MeshletTopologyMask |= 1u << render.Meshlets.Buffer.GetSpan<MeshletRecord>({meshes.FirstMeshlet(e.Buf), 1u}).front().Topology;
         }
     }
     for (const auto &e : mesh_entities) {
@@ -2126,7 +2127,7 @@ void PrepareGeometryFootprints(state::Scene &r, mtl::ComputeChain &chain, Geomet
         const auto &record = meshes.Get(work.StoreId);
         const uint64_t face_blocks = record.FaceData ? a.FaceTriangles.Set(record.FaceData).BlockCount : 0u;
         footprint.VertexBlocks = a.Vertices.Set(record.Vertices).BlockCount;
-        if (const auto *owner = buffers.TryMeshOf(work.StoreId)) buffers.ActiveMeshlets.ForEachBlock(owner->MeshletRoot, [&](uint32_t) { ++footprint.MeshletBlocks; });
+        if (const auto *owner = meshes.TryGet(work.StoreId)) meshes.Render().ActiveMeshlets.ForEachBlock(owner->MeshletRoot, [&](uint32_t) { ++footprint.MeshletBlocks; });
         const auto budget = buffers.GeometryWork.Get(work.WorkBudget);
         ReserveElementWork(buffers.GeometryWork, work.Faces, std::min<uint64_t>(budget[0], face_blocks));
         ReserveElementWork(buffers.GeometryWork, work.Meshlets, std::min<uint64_t>(budget[2], footprint.MeshletBlocks));
@@ -2178,6 +2179,7 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Ent
         SetPoseNamespaces(entry, *pose, 0);
         w.PreviewActive = pending != nullptr;
     }
+    const auto render_topology = RecordOf(r,entity).RenderTopology;
     return {
         .Vertices = {meshes.Slots().Vertices, meshes.Arenas().Vertices.First(meshes.Get(id).Vertices)},
         .PositionSlot = buffers.PosedPositions.Values.Buffer.Slot,
@@ -2195,7 +2197,7 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Ent
         .Pivot = pending ? pending->Pivot : vec3{},
         .FaceTriangleStartSlot = meshes.Slots().FaceTriangleStart,
         .Topology = mesh.PrimitiveTopology(),
-        .ElementMeshlets = MeshBuffersOf(r,entity).RenderTopology == InvalidOffset ? ElementAttributeRef{} : buffers.ElementMeshlets[MeshBuffersOf(r,entity).RenderTopology].Ref(),
+        .ElementMeshlets = render_topology == InvalidOffset ? ElementAttributeRef{} : meshes.Render().ElementMeshlets[render_topology].Ref(),
         .ApplyTransform = pending ? 1u : 0u,
         .Mode = !changed.empty() ? GeometryEditMode::Refresh : pose ? GeometryEditMode::Preview :
                                                                       GeometryEditMode::Commit,
@@ -2296,9 +2298,9 @@ std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, mtl::ComputeChai
             }
             auto &w = scene.EditWork.at(entity);
             w.Modified = w.PreviewActive = w.RequiresPose = true;
-            auto &owner=MeshBuffersOf(r,entity);
+            const auto &owner=RecordOf(r,entity);
             refits.push_back({&owner,&buffers.GeometryWork,w.Meshlets});
-            if (buffers.ClusterGroupCount(owner)>0u && !ElementWorkEmpty(buffers.GeometryWork,w.Meshlets)) {
+            if (meshes.ClusterGroupCount(owner)>0u && !ElementWorkEmpty(buffers.GeometryWork,w.Meshlets)) {
                 dirty_edits.push_back({.Root=owner.PositionDirtyRoot});
                 auto &meshlets=dirty_meshlets.emplace_back();
                 ForEachWorkElement(buffers.GeometryWork,w.Meshlets,[&](uint32_t id) { meshlets.push_back(id); });
@@ -2309,9 +2311,9 @@ std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, mtl::ComputeChai
     RefitCanonicalMeshletBounds(r,chain,refits);
     if (!dirty_edits.empty()) {
         for (uint32_t i=0u;i<dirty_edits.size();++i) dirty_edits[i].Added=dirty_meshlets[i];
-        buffers.ActiveMeshlets.Update(dirty_edits);
+        meshes.Render().ActiveMeshlets.Update(dirty_edits);
         for (uint32_t i=0u;i<dirty_edits.size();++i) {
-            MeshBuffersOf(r,dirty_entities[i]).PositionDirtyRoot=dirty_edits[i].Root;
+            if (RecordOf(r,dirty_entities[i]).PositionDirtyRoot!=dirty_edits[i].Root) EditRecordOf(r,dirty_entities[i]).PositionDirtyRoot=dirty_edits[i].Root;
             // Position-dirty meshlets pin their mesh's instances to finest geometry.
             scene.PositionDirty.insert(dirty_entities[i]);
             scene.DisplayDirty.insert(dirty_entities[i]);
@@ -2388,7 +2390,7 @@ bool RefreshMeshDisplays(state::Scene &r, state::Entity viewport, std::span<cons
     auto &buffers = r.Context.get<GpuBuffers>();
     const DisplayContext context{r, viewport};
     for (const auto mesh_entity : mesh_entities) {
-        const auto *mb = r.valid(mesh_entity) ? TryMeshBuffers(r, mesh_entity) : nullptr;
+        const auto *mb = r.valid(mesh_entity) ? TryRecordOf(r, mesh_entity) : nullptr;
         if (!mb) continue;
         // A posed mesh's display fields come with its pose layout.
         if (scene_state.PosedByEntity.contains(mesh_entity)) return true;

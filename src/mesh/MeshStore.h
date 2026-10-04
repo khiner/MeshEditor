@@ -7,6 +7,8 @@
 #include "Range.h"
 #include "TetBuffers.h"
 #include "gpu/BoneDeformVertex.h"
+#include "gpu/ClusterGroup.h"
+#include "gpu/ClusterGroupLinks.h"
 #include "gpu/ConnectivityRef.h"
 #include "gpu/CornerClass.h"
 #include "gpu/CornerClassMode.h"
@@ -19,14 +21,20 @@
 #include "gpu/ElementAttributeRef.h"
 #include "gpu/ElementHandleRange.h"
 #include "gpu/ElementWork.h"
+#include "gpu/LodNode.h"
+#include "gpu/MeshRecord.h"
+#include "gpu/MeshletRecord.h"
+#include "gpu/MeshletSpatialNode.h"
 #include "gpu/MorphTargetVertex.h"
 #include "gpu/NormalSector.h"
+#include "gpu/PrimitiveRecord.h"
 #include "gpu/SelectionAggregate.h"
 #include "gpu/SelectionUpdatePushConstants.h"
 #include "gpu/SlotOffset.h"
 #include "mesh/ElementArena.h"
 #include "mesh/ElementAttribute.h"
 #include "mesh/ElementAttributeView.h"
+#include "mesh/MeshletIndex.h"
 #include "mesh/CornerNormalView.h"
 #include "mesh/PoseAttributeView.h"
 #include "mesh/SelectionQuery.h"
@@ -41,6 +49,7 @@
 #include <mutex>
 
 namespace mtl { struct ComputeChain; }
+namespace state { struct Scene; }
 struct CloneCopies;
 
 struct ArmatureDeformData {
@@ -69,6 +78,37 @@ struct MeshPrimitives {
 struct CornerLayers {
     std::vector<vec4> Tangents, Colors;
     std::array<std::vector<vec2>, 4> Uvs;
+};
+
+// The render arenas store records own: finest clusters and their payloads, the cluster LOD DAG and its traversal nodes, element owners and GPU mesh records.
+struct RenderArenas {
+    explicit RenderArenas(mtl::BufferContext &);
+
+    BufferArena<uint32_t> ExtrasFaces, ExtrasEdges; // Bone and joint index data, offset by each record's first vertex
+    BufferArena<MeshletRecord> Meshlets;
+    BufferArena<MeshletSpatialNode> MeshletSpatialNodes; // Mirrors Meshlets, so an edit's new clusters extend it by their own count
+    MeshletIndex ActiveMeshlets;
+    BufferArena<uint32_t> MeshletTriangleIds, MeshletVertexCorners;
+    BufferArena<uint8_t> MeshletLocalTriangles;
+    // The cluster LOD DAG: one group per simplification step, and the selection forest over them.
+    BufferArena<ClusterGroup> ClusterGroups;
+    BufferArena<LodNode> LodNodes;
+    // Reverse edit dependencies, read only by repairs. MeshletLodLeaves mirrors Meshlets and LodParents mirrors LodNodes.
+    BufferArena<uint32_t> MeshletLodLeaves, LodParents;
+    // A group's inputs and proxies occupy packed runs of GroupClusterIds that group addresses own.
+    BufferArena<ClusterGroupLinks> GroupLinks;
+    BufferArena<uint32_t> GroupClusterIds;
+    BufferArena<PrimitiveRecord> Primitives;
+    // Each render owner's run of render primitive handles, indexed by source primitive and InvalidOffset where absent.
+    BufferArena<uint32_t> PrimitiveRoutes;
+    BufferArena<MeshRecord> MeshRecords; // One GPU mesh record per store id, rebuilt from the record's current bindings
+    // Canonical triangle, edge, and vertex handles map to global finest meshlet IDs.
+    std::array<ElementAttribute<uint32_t>, 3> ElementMeshlets;
+
+    // Allocates `count` cluster records and extends the LOD leaf and spatial mirrors over them.
+    Range AllocateMeshlets(uint32_t count);
+    // Releases the clusters' payload ranges, which their records name, and their identities.
+    void ReleaseMeshletStorage(std::span<const uint32_t> handles);
 };
 
 // Every mesh arena, one per GPU-readable stream.
@@ -113,6 +153,7 @@ struct MeshArenas {
     ElementAttribute<NormalSector> NormalSectors; // Canonical base normals at sector roots
     BufferArena<vec3> BaseVertexNormals; // Mirrors Vertices: derived smooth normals for triangle meshes, authored normals for face-less meshes
     BufferArena<vec3> BaseFaceNormals; // Mirrors FaceTriangles, one derived face normal per face slot
+    RenderArenas Render;
 };
 
 // Bindless slots of the arenas shaders address, fixed for the store's lifetime.
@@ -156,7 +197,9 @@ struct MeshStore {
     };
 
     // Canonical domains own stable sets, selection masks and optional attribute blocks.
+    // The render fields name the record's finest clusters, hierarchy, traversal nodes and GPU mesh record in the render arenas.
     struct Record {
+        uint32_t StoreId{InvalidOffset}; // The record's own id, and InvalidOffset for a fragment outside the store.
         ElementSetRef Vertices{};
         ElementSetRef FaceData{}; // Shared by FaceRanges, FaceTriangles, FaceSharpness and BaseFaceNormals
         uint32_t CornerAttributes{}, VertexAttributes{};
@@ -178,6 +221,25 @@ struct MeshStore {
         uint32_t SectorBlockCount{}; // Corner blocks holding sector roots.
         uint32_t Classification{uint32_t(CornerClassMode::UniformVertex)};
         bool MorphShadingAuthored{};
+        Range ExtrasFaces{}, ExtrasEdges{}; // Bone and joint index data, present only on an extras record.
+        Range Primitives{}, Meshlets{}, MeshletTriangles{}, MeshletVertices{}, MeshletLocalTriangles{};
+        // Published sparse roots own cluster/payload and primitive allocations.
+        // Before publication, construction ranges own their provisional storage.
+        uint32_t MeshletRoot{InvalidOffset}, PrimitiveRoot{InvalidOffset}, SpatialRoot{InvalidOffset};
+        Range PrimitiveRoutes{}; // Render primitive handles indexed by source primitive.
+        uint64_t MeshletRevision{};
+        uint32_t Level0Count{};
+        uint32_t RenderTopology{InvalidOffset}; // The topology the finest clusters draw, and InvalidOffset before the first build.
+        uint32_t ElementMeshletOrigin{InvalidOffset}, ElementMeshletBlockCount{};
+        // Meshes without coarse geometry use one unpruned span node per primitive.
+        // Ranges describe construction placement, and roots own the live allocations.
+        Range ClusterGroups{}, LodNodes{}, CoarseVertices{}, CoarseLocalTriangles{};
+        uint32_t GroupRoot{InvalidOffset}, NodeRoot{InvalidOffset};
+        uint32_t LodDepth{}; // The depth of the record's deepest traversal tree.
+        // Finest meshlets whose canonical positions changed since coarse repair.
+        uint32_t PositionDirtyRoot{InvalidOffset};
+        // Stale LOD groups, whose coarse clusters rebuild when the mesh leaves edit mode.
+        uint32_t DirtyGroupRoot{InvalidOffset};
         bool Alive{false};
     };
 
@@ -219,8 +281,6 @@ struct MeshStore {
     std::vector<Change> TakeChanges();
     // Records the refresh of the selection aggregates of restored blocks and their incident blocks.
     void ReconcileSelection(state::Scene &, mtl::ComputeChain &, std::span<const Change>);
-    // Records whose render data is stale, released or changed by a restore, for the render sync to drop.
-    std::vector<uint32_t> TakeRenderStale() { return std::exchange(RenderStale, {}); }
 
     // Capture destination pages before dispatching GPU writes to Persistent mesh data.
     void CaptureVertexEdit(uint32_t id);
@@ -279,16 +339,53 @@ struct MeshStore {
     std::vector<uint32_t> CloneMeshes(CloneCopies &, std::span<const uint32_t> source_ids);
     // Returns a vertex-only store ID that must be released with Release.
     uint32_t AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &);
+    // Stores bone or joint index data for a vertex-only record, offset by its first vertex.
+    void SetExtrasIndices(uint32_t id, std::span<const uint32_t> faces, std::span<const uint32_t> edges);
+    // Releases the records' canonical and render storage.
     void Release(uint32_t id);
     void Release(std::span<const uint32_t> ids);
+    // Releases the records' clusters, hierarchy, nodes and owners and resets those fields, for store records and fragments alike.
+    void ReleaseRender(std::span<Record *const>);
+    // The ids Release retired since the last call, whose render tallies drop.
+    std::vector<uint32_t> TakeReleased() { return std::exchange(Released, {}); }
     // Reset all arenas and the StoreId table to empty, keeping GPU allocations for reuse.
     // Requires a full scene clear without live StoreId references so allocation restarts deterministically.
     void Clear();
 
     const Record &Get(uint32_t id) const { return Records.at(id); }
+    // The live record with this id, or null.
+    const Record *TryGet(uint32_t id) const { return id < Records.size() && Records[id].Alive ? &Records[id] : nullptr; }
+    // Captures the record before a write.
+    Record &WriteRecord(uint32_t id);
     const DerivedRecord &GetDerived(uint32_t id) const { return DerivedRecords.at(id); }
     const MeshArenas &Arenas() const { return Buffers; }
+    RenderArenas &Render() { return Buffers.Render; }
+    const RenderArenas &Render() const { return Buffers.Render; }
     const MeshSlots &Slots() const { return SlotTable; }
+
+    uint32_t MeshletCount(const Record &r) const { return Buffers.Render.ActiveMeshlets.Count(r.MeshletRoot); }
+    uint32_t FirstMeshlet(const Record &r) const { return Buffers.Render.ActiveMeshlets.First(r.MeshletRoot); }
+    uint32_t PrimitiveCount(const Record &r) const { return Buffers.Render.ActiveMeshlets.Count(r.PrimitiveRoot); }
+    uint32_t ClusterGroupCount(const Record &r) const { return Buffers.Render.ActiveMeshlets.Count(r.GroupRoot); }
+    void ForEachPrimitive(const Record &r, auto &&fn) const {
+        Buffers.Render.ActiveMeshlets.ForEach(r.PrimitiveRoot, [&](uint32_t id) { fn(id, Buffers.Render.Primitives.Get({id, 1u})[0]); });
+    }
+    void ForEachLodNode(const Record &r, auto &&fn) const {
+        Buffers.Render.ActiveMeshlets.ForEach(r.NodeRoot, [&](uint32_t id) { fn(id, Buffers.Render.LodNodes.Get({id, 1u})[0]); });
+    }
+    uint32_t PrimitiveRoute(const Record &r, uint32_t source_primitive) const {
+        return source_primitive < r.PrimitiveRoutes.Count ? Buffers.Render.PrimitiveRoutes.Get({r.PrimitiveRoutes.Offset + source_primitive, 1u})[0] : InvalidOffset;
+    }
+    // Grows the record's routes to cover `count` source primitives, keeping its routes.
+    void ReservePrimitiveRoutes(Record &, uint32_t count);
+    // The element blocks holding the record's meshlet owner payloads, in ascending order.
+    std::vector<uint32_t> MeshletOwnerBlocks(const Record &) const;
+    // The element domain the finest clusters of a render topology name: triangles, edges or vertices.
+    static ElementDomain RenderDomain(uint32_t topology) { return topology == 0u ? ElementDomain::Triangle : topology == 1u ? ElementDomain::Edge : ElementDomain::Vertex; }
+    // Visits the arena of the record's elements drawn as `topology` with the record's set in it.
+    decltype(auto) WithRenderDomain(const Record &, uint32_t topology, auto &&fn) const;
+    // The first element handle of the record's elements drawn as `topology`.
+    uint32_t RenderDomainFirst(const Record &, uint32_t topology) const;
 
     // Mutable views over Persistent arena data, capturing the pages they expose.
     std::span<uint32_t> EditPrimitiveMaterials(uint32_t id);
@@ -398,12 +495,14 @@ private:
     mutable std::vector<Range> RetiredBlockLists{}; // Replaced list words a submitted frame can still read
     uint64_t NextNormalRevision{};
     std::vector<uint32_t> FreeIds{};
-    std::vector<uint32_t> RenderStale{};
+    std::vector<uint32_t> Released{};
 
     struct HistoryState;
     std::unique_ptr<HistoryState> Tracked;
 
-    Record &WriteRecord(uint32_t id);
+    // Copies each source's finest clusters, hierarchy, traversal nodes, spatial tree and element owners onto its clone, with every reference rebased.
+    // The clones' GPU mesh records are left for RefreshMeshBinding.
+    void CloneRenderRecords(CloneCopies &, std::span<const uint32_t> source_ids, std::span<const uint32_t> clone_ids);
     void ReleaseBlockLists(uint32_t id);
     void ReleaseBlockLists(std::span<const uint32_t> ids);
     // Releases replaced list words, or keeps them until the submitted frame completes.
@@ -415,3 +514,36 @@ private:
     // Fill the base vertex-normal mirror over `vertices`: a face-less mesh's point normals, zero otherwise (triangle meshes rederive the region).
     void FillBaseVertexNormalMirror(ElementSetRef vertices, Range point_normals);
 };
+
+// Visits the arena of one element domain, which every caller resolves before calling.
+decltype(auto) WithDomain(auto &arenas, MeshStore::ElementDomain domain, auto &&fn) {
+    switch (domain) {
+        case MeshStore::ElementDomain::Vertex: return fn(arenas.Vertices);
+        case MeshStore::ElementDomain::Halfedge: return fn(arenas.FaceCorners);
+        case MeshStore::ElementDomain::Edge: return fn(arenas.EdgeHalfedges);
+        case MeshStore::ElementDomain::Face: return fn(arenas.FaceTriangles);
+        case MeshStore::ElementDomain::Triangle: return fn(arenas.Triangles);
+        case MeshStore::ElementDomain::None: std::unreachable();
+    }
+}
+// The record's set in one element domain.
+auto &DomainSet(auto &record, MeshStore::ElementDomain domain) {
+    switch (domain) {
+        case MeshStore::ElementDomain::Vertex: return record.Vertices;
+        case MeshStore::ElementDomain::Halfedge: return record.FaceCorners;
+        case MeshStore::ElementDomain::Edge: return record.EdgeData;
+        case MeshStore::ElementDomain::Face: return record.FaceData;
+        case MeshStore::ElementDomain::Triangle: return record.TriangleData;
+        case MeshStore::ElementDomain::None: std::unreachable();
+    }
+}
+decltype(auto) MeshStore::WithRenderDomain(const Record &r, uint32_t topology, auto &&fn) const {
+    const auto domain = RenderDomain(topology);
+    return WithDomain(Buffers, domain, [&](const auto &arena) { return fn(arena, DomainSet(r, domain)); });
+}
+
+// The live record the entity's instances draw, or null.
+const MeshStore::Record *TryRecordOf(const state::Scene &, state::Entity);
+const MeshStore::Record &RecordOf(const state::Scene &, state::Entity);
+// Captures the record the entity's instances draw before a write.
+MeshStore::Record &EditRecordOf(state::Scene &, state::Entity);

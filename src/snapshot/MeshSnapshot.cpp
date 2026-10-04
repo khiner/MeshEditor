@@ -3,7 +3,6 @@
 #include "mesh/PrimitiveType.h"
 #include "mesh/TetBuffers.h"
 #include "render/MaterialComponents.h"
-#include "render/MeshBuffers.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 #include "snapshot/SnapshotRegistration.h"

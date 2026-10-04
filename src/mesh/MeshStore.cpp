@@ -93,31 +93,39 @@ void ForEachArena(MeshArenas &b, auto &&f) {
     f(b.NormalSectors.Owners, ArenaInfo{0,"NormalSectorsOwners"}, NoAllocation);
     f(b.BaseVertexNormals, ArenaInfo{0,"BaseVertexNormal",true,Domain::Vertex}, [](auto &e) { return &e.Vertices; });
     f(b.BaseFaceNormals, ArenaInfo{0,"BaseFaceNormal",true,Domain::Face}, [](auto &e) { return &e.FaceData; });
+    // Render arenas, whose records the roots and construction ranges of the records own.
+    // A mirror of a render arena holds bytes only, sized by its master's allocations.
+    auto &render = b.Render;
+    f(render.ExtrasFaces, ArenaInfo{0,"ExtrasFaces"}, NoAllocation);
+    f(render.ExtrasEdges, ArenaInfo{0,"ExtrasEdges"}, NoAllocation);
+    f(render.Meshlets, ArenaInfo{0,"Meshlets"}, NoAllocation);
+    f(render.MeshletSpatialNodes, ArenaInfo{0,"MeshletSpatialNodes",true}, NoAllocation);
+    f(render.ActiveMeshlets.Nodes, ArenaInfo{0,"MeshletIndexNodes"}, NoAllocation);
+    f(render.ActiveMeshlets.Leaves, ArenaInfo{0,"MeshletIndexLeaves"}, NoAllocation);
+    f(render.MeshletTriangleIds, ArenaInfo{0,"MeshletTriangleIds"}, NoAllocation);
+    f(render.MeshletVertexCorners, ArenaInfo{0,"MeshletVertexCorners"}, NoAllocation);
+    f(render.MeshletLocalTriangles, ArenaInfo{0,"MeshletLocalTriangles"}, NoAllocation);
+    f(render.ClusterGroups, ArenaInfo{0,"ClusterGroups"}, NoAllocation);
+    f(render.LodNodes, ArenaInfo{0,"LodNodes"}, NoAllocation);
+    f(render.MeshletLodLeaves, ArenaInfo{0,"MeshletLodLeaves",true}, NoAllocation);
+    f(render.LodParents, ArenaInfo{0,"LodParents",true}, NoAllocation);
+    f(render.GroupLinks, ArenaInfo{0,"GroupLinks",true}, NoAllocation);
+    f(render.GroupClusterIds, ArenaInfo{0,"GroupClusterIds"}, NoAllocation);
+    f(render.Primitives, ArenaInfo{0,"Primitives"}, NoAllocation);
+    f(render.PrimitiveRoutes, ArenaInfo{0,"PrimitiveRoutes"}, NoAllocation);
+    // GPU mesh records hold runtime slots, which the restore rebuilds, so they have no history.
+    f(render.MeshRecords, ArenaInfo{}, NoAllocation);
+    constexpr std::array OwnerNames{"ElementMeshlets0", "ElementMeshlets1", "ElementMeshlets2"};
+    constexpr std::array OwnerBlockNames{"ElementMeshlets0Blocks", "ElementMeshlets1Blocks", "ElementMeshlets2Blocks"};
+    constexpr std::array OwnerOwnerNames{"ElementMeshlets0Owners", "ElementMeshlets1Owners", "ElementMeshlets2Owners"};
+    for (uint32_t i = 0u; i < 3u; ++i) {
+        f(render.ElementMeshlets[i].Values, ArenaInfo{0, OwnerNames[i]}, NoAllocation);
+        f(render.ElementMeshlets[i].Blocks, ArenaInfo{0, OwnerBlockNames[i]}, NoAllocation);
+        f(render.ElementMeshlets[i].Owners, ArenaInfo{0, OwnerOwnerNames[i]}, NoAllocation);
+    }
 }
 
 template<typename Arena> using ArenaValue = typename decltype(std::declval<const Arena &>().Get(Range{}))::value_type;
-
-decltype(auto) WithDomain(auto &b, Domain domain, auto &&fn) {
-    switch (domain) {
-        case Domain::Vertex: return fn(b.Vertices);
-        case Domain::Halfedge: return fn(b.FaceCorners);
-        case Domain::Edge: return fn(b.EdgeHalfedges);
-        case Domain::Face: return fn(b.FaceTriangles);
-        case Domain::Triangle: return fn(b.Triangles);
-        case Domain::None: throw std::logic_error("Missing element domain.");
-    }
-}
-
-auto &DomainSet(auto &record, Domain domain) {
-    switch (domain) {
-        case Domain::Vertex: return record.Vertices;
-        case Domain::Halfedge: return record.FaceCorners;
-        case Domain::Edge: return record.EdgeData;
-        case Domain::Face: return record.FaceData;
-        case Domain::Triangle: return record.TriangleData;
-        case Domain::None: throw std::invalid_argument("Missing element domain.");
-    }
-}
 
 constexpr bool SelectableDomain(Domain domain) { return domain == Domain::Vertex || domain == Domain::Edge || domain == Domain::Face; }
 
@@ -157,12 +165,75 @@ void ClearVertexRoots(MeshArenas &a, ElementSetRef vertices) {
     });
 }
 
+// Clears the cluster, hierarchy and owner fields, keeping the record's canonical fields, extras index data and id.
+void ResetRender(MeshStore::Record &r) {
+    const MeshStore::Record fresh{};
+    r.Primitives = fresh.Primitives;
+    r.Meshlets = fresh.Meshlets;
+    r.MeshletTriangles = fresh.MeshletTriangles;
+    r.MeshletVertices = fresh.MeshletVertices;
+    r.MeshletLocalTriangles = fresh.MeshletLocalTriangles;
+    r.MeshletRoot = r.PrimitiveRoot = r.SpatialRoot = InvalidOffset;
+    r.PrimitiveRoutes = fresh.PrimitiveRoutes;
+    r.MeshletRevision = 0u;
+    r.Level0Count = 0u;
+    r.RenderTopology = InvalidOffset;
+    r.ElementMeshletOrigin = InvalidOffset;
+    r.ElementMeshletBlockCount = 0u;
+    r.ClusterGroups = r.LodNodes = r.CoarseVertices = r.CoarseLocalTriangles = fresh.ClusterGroups;
+    r.GroupRoot = r.NodeRoot = InvalidOffset;
+    r.LodDepth = 0u;
+    r.PositionDirtyRoot = r.DirtyGroupRoot = InvalidOffset;
+}
+
 Range DenseRange(const MeshArenas &, const ArenaInfo &, Range range) { return range; }
 Range DenseRange(const MeshArenas &b, const ArenaInfo &info, ElementSetRef set) {
     return WithDomain(b, info.Elements, [&](const auto &owner) { return owner.Dense(set); });
 }
 
 } // namespace
+
+RenderArenas::RenderArenas(mtl::BufferContext &ctx)
+    : ExtrasFaces{ctx, SlotType::IndexBuffer},
+      ExtrasEdges{ctx, SlotType::IndexBuffer},
+      Meshlets{ctx, SlotType::Buffer},
+      MeshletSpatialNodes{ctx, SlotType::Buffer},
+      ActiveMeshlets{ctx},
+      MeshletTriangleIds{ctx, SlotType::Buffer},
+      MeshletVertexCorners{ctx, SlotType::Buffer},
+      MeshletLocalTriangles{ctx, SlotType::Buffer},
+      ClusterGroups{ctx, SlotType::Buffer},
+      LodNodes{ctx, SlotType::Buffer},
+      MeshletLodLeaves{ctx, SlotType::Buffer},
+      LodParents{ctx, SlotType::Buffer},
+      GroupLinks{ctx, SlotType::Buffer},
+      GroupClusterIds{ctx, SlotType::Buffer},
+      Primitives{ctx, SlotType::Buffer},
+      PrimitiveRoutes{ctx, SlotType::Buffer},
+      MeshRecords{ctx, SlotType::Buffer},
+      ElementMeshlets{{{ctx, SlotType::Buffer}, {ctx, SlotType::Buffer}, {ctx, SlotType::Buffer}}} {}
+
+Range RenderArenas::AllocateMeshlets(uint32_t count) {
+    const auto range = Meshlets.Allocate(count);
+    MeshletLodLeaves.Mirror(range);
+    MeshletSpatialNodes.Mirror(range);
+    return range;
+}
+
+void RenderArenas::ReleaseMeshletStorage(std::span<const uint32_t> handles) {
+    std::array<std::vector<Range>, 4> ranges;
+    for (const auto handle : handles) {
+        const auto &record = Meshlets.Get({handle, 1u})[0];
+        if (record.RefinedGroup == InvalidOffset) ranges[0].push_back({record.TriangleOffset, record.TriangleCount});
+        ranges[1].push_back({record.VertexOffset, record.VertexCount});
+        if (record.Topology == 0u) ranges[2].push_back({record.LocalTriangleOffset, record.TriangleCount * 3u});
+        ranges[3].push_back({handle, 1u});
+    }
+    MeshletTriangleIds.Release(std::move(ranges[0]));
+    MeshletVertexCorners.Release(std::move(ranges[1]));
+    MeshletLocalTriangles.Release(std::move(ranges[2]));
+    Meshlets.Release(std::move(ranges[3]));
+}
 
 MeshArenas::MeshArenas(mtl::BufferContext &ctx)
     : Vertices{ctx, SlotType::VertexBuffer},
@@ -203,7 +274,8 @@ MeshArenas::MeshArenas(mtl::BufferContext &ctx)
       CornerSectors{ctx, SlotType::Buffer},
       NormalSectors{ctx, SlotType::Buffer},
       BaseVertexNormals{ctx, SlotType::Buffer},
-      BaseFaceNormals{ctx, SlotType::Buffer} {}
+      BaseFaceNormals{ctx, SlotType::Buffer},
+      Render{ctx} {}
 
 struct MeshStore::HistoryState {
     struct Extent {
@@ -443,7 +515,6 @@ MeshStore::Record &MeshStore::WriteRecord(uint32_t id) {
         Tracked->Entries.Write(id, 1);
         Tracked->Dirty.push_back(id);
     }
-    ReleaseBlockLists(id);
     return Records.at(id);
 }
 
@@ -541,19 +612,19 @@ void MeshStore::SyncMirrors() {
     Buffers.NormalSectors.ReserveBlocks(Buffers.FaceCorners.Capacity() / MeshElementBlockSize);
     Buffers.Query.Reserve(std::max({Buffers.Vertices.Capacity(), Buffers.EdgeHalfedges.Capacity(), Buffers.FaceTriangles.Capacity()}));
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
-        if (!info.Mirror) return;
+        if (!info.Mirror || info.Elements == Domain::None) return;
         WithDomain(Buffers, info.Elements, [&](const auto &owner) {
             arena.Mirror({0, info.BlockIndexed ? owner.Capacity() / MeshElementBlockSize : owner.Capacity()});
         });
     });
     Buffers.SelectionRoots.Mirror({0, 3u * uint32_t(Records.size())});
+    Buffers.Render.MeshRecords.Mirror({0, uint32_t(Records.size())});
     ForEachAttribute(Buffers, [&](auto &a, Domain domain, uint32_t, const char *, const char *, const char *, auto &&) {
         WithDomain(Buffers, domain, [&](const auto &owner) { a.ReserveBlocks(owner.Capacity() / MeshElementBlockSize); });
     });
 }
 
 void MeshStore::FinishRestore() {
-    RenderStale.clear();
     const auto changed = Tracked->Entries.Changed();
     Tracked->Dirty.append_range(changed);
     DerivedRecords.resize(Records.size());
@@ -1330,7 +1401,9 @@ std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<cons
     // Allocate every clone's destinations before recording copies, so virtual growth and
     // history capture finish before the GPU reads either side.
     for (const auto src_id : source_ids) {
-        const auto id = AcquireId(Record{Records.at(src_id)});
+        Record copy{Records.at(src_id)};
+        ResetRender(copy);
+        const auto id = AcquireId(std::move(copy));
         DerivedRecords[id] = DerivedRecords.at(src_id);
         DerivedRecords[id].NormalRevision = ++NextNormalRevision;
         const auto &src = Records[src_id];
@@ -1453,7 +1526,264 @@ std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<cons
         for (const auto block : sector_targets)
             rebase(Buffers.CornerSectors.Values, Buffers.CornerSectors.Payload(block * MeshElementBlockSize, MeshElementBlockSize), corner_delta);
     }
+    CloneRenderRecords(copies, source_ids, ids);
     return ids;
+}
+
+namespace {
+// A source's handles of one kind in ascending order, and the clone's handle of each at its rank.
+// A render record references only its owner's handles of each kind, so every handle it maps is one of Sources.
+struct HandleMap {
+    std::vector<uint32_t> Sources;
+    uint32_t First{InvalidOffset};
+    uint32_t operator()(uint32_t handle) const {
+        return handle == InvalidOffset ? InvalidOffset : First + uint32_t(std::ranges::lower_bound(Sources, handle) - Sources.begin());
+    }
+};
+} // namespace
+
+void MeshStore::CloneRenderRecords(CloneCopies &copies, std::span<const uint32_t> source_ids, std::span<const uint32_t> clone_ids) {
+    auto &render = Buffers.Render;
+    auto &index = render.ActiveMeshlets;
+    const auto members = [&](uint32_t root) {
+        HandleMap map;
+        index.ForEach(root, [&](uint32_t id) { map.Sources.push_back(id); });
+        return map;
+    };
+    struct Clone {
+        uint32_t SourceId, CloneId;
+        HandleMap Meshlets, Primitives, Nodes, Groups;
+    };
+    // A membership root the batch's index update creates for a clone: a leaf node's members, or a dirty root's.
+    struct MemberRoot {
+        enum class Kind : uint8_t { Leaf, PositionDirty, DirtyGroups };
+        uint32_t Clone;
+        Kind Type;
+        uint32_t Node{InvalidOffset};
+        std::vector<uint32_t> Members;
+    };
+    std::vector<Clone> clones;
+    uint64_t meshlet_count = 0u, primitive_count = 0u, node_count = 0u, group_count = 0u;
+    for (uint32_t i = 0u; i < source_ids.size(); ++i) {
+        const auto &source = Records[source_ids[i]];
+        if (source.MeshletRoot == InvalidOffset) continue;
+        auto &clone = clones.emplace_back(Clone{.SourceId = source_ids[i], .CloneId = clone_ids[i]});
+        clone.Meshlets = members(source.MeshletRoot);
+        clone.Primitives = members(source.PrimitiveRoot);
+        clone.Nodes = members(source.NodeRoot);
+        clone.Groups = members(source.GroupRoot);
+        meshlet_count += clone.Meshlets.Sources.size();
+        primitive_count += clone.Primitives.Sources.size();
+        node_count += clone.Nodes.Sources.size();
+        group_count += clone.Groups.Sources.size();
+    }
+    if (clones.empty()) return;
+    // Every arena grows once for the batch.
+    render.Meshlets.ReserveAdditional(meshlet_count);
+    render.MeshletLodLeaves.ReserveAdditional(meshlet_count);
+    render.MeshletSpatialNodes.ReserveAdditional(meshlet_count);
+    render.Primitives.ReserveAdditional(primitive_count);
+    render.LodNodes.ReserveAdditional(node_count);
+    render.LodParents.ReserveAdditional(node_count);
+    render.ClusterGroups.ReserveAdditional(group_count);
+    render.GroupLinks.ReserveAdditional(group_count);
+    const auto copy = [&](auto &arena, uint64_t from, uint64_t to, uint64_t count) {
+        constexpr uint64_t Size = sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>);
+        copies.Copy(arena.Buffer, from * Size, to * Size, count * Size);
+    };
+    std::vector<MeshletIndexEdit> ownership;
+    std::vector<MemberRoot> roots;
+    for (uint32_t c = 0u; c < clones.size(); ++c) {
+        auto &clone = clones[c];
+        const auto &source = Records[clone.SourceId];
+        auto &target = Records[clone.CloneId];
+        target.RenderTopology = source.RenderTopology;
+        target.Level0Count = source.Level0Count;
+        target.MeshletRevision = source.MeshletRevision;
+        target.LodDepth = source.LodDepth;
+        target.Meshlets = render.AllocateMeshlets(uint32_t(clone.Meshlets.Sources.size()));
+        clone.Meshlets.First = target.Meshlets.Offset;
+        target.Primitives = render.Primitives.Allocate(uint32_t(clone.Primitives.Sources.size()));
+        clone.Primitives.First = target.Primitives.Offset;
+        target.LodNodes = render.LodNodes.Allocate(uint32_t(clone.Nodes.Sources.size()));
+        render.LodParents.Mirror(target.LodNodes);
+        clone.Nodes.First = target.LodNodes.Offset;
+        target.ClusterGroups = render.ClusterGroups.Allocate(uint32_t(clone.Groups.Sources.size()));
+        render.GroupLinks.Mirror(target.ClusterGroups);
+        clone.Groups.First = target.ClusterGroups.Offset;
+        // The chain gathers the source's records by rank and rebases their references to the clone's handle at the same rank.
+        const auto clusters = index.Ref(source.MeshletRoot), nodes_index = index.Ref(source.NodeRoot);
+        // Cluster payloads pack in cluster order, so a source built in one pass keeps its construction layout and copies in a few runs.
+        {
+            const auto source_records = render.Meshlets.Buffer.GetSpan<MeshletRecord>();
+            uint64_t triangle_ids = 0u, vertex_corners = 0u, local_triangles = 0u;
+            for (const auto id : clone.Meshlets.Sources) {
+                const auto &record = source_records[id];
+                if (record.RefinedGroup == InvalidOffset) triangle_ids += record.TriangleCount;
+                vertex_corners += record.VertexCount;
+                if (record.Topology == 0u) local_triangles += uint64_t(record.TriangleCount) * 3u;
+            }
+            target.MeshletTriangles = render.MeshletTriangleIds.Allocate(uint32_t(triangle_ids));
+            target.MeshletVertices = render.MeshletVertexCorners.Allocate(uint32_t(vertex_corners));
+            target.MeshletLocalTriangles = render.MeshletLocalTriangles.Allocate(uint32_t(local_triangles));
+            render.MeshletTriangleIds.CaptureWrite(target.MeshletTriangles);
+            render.MeshletVertexCorners.CaptureWrite(target.MeshletVertices);
+            render.MeshletLocalTriangles.CaptureWrite(target.MeshletLocalTriangles);
+            auto records = render.Meshlets.GetMutable(target.Meshlets);
+            uint32_t next_triangle = target.MeshletTriangles.Offset, next_vertex = target.MeshletVertices.Offset, next_local = target.MeshletLocalTriangles.Offset;
+            for (uint32_t m = 0u; m < clone.Meshlets.Sources.size(); ++m) {
+                const auto id = clone.Meshlets.Sources[m];
+                auto record = source_records[id];
+                if (record.RefinedGroup == InvalidOffset) {
+                    copy(render.MeshletTriangleIds, record.TriangleOffset, next_triangle, record.TriangleCount);
+                    record.TriangleOffset = std::exchange(next_triangle, next_triangle + record.TriangleCount);
+                }
+                copy(render.MeshletVertexCorners, record.VertexOffset, next_vertex, record.VertexCount);
+                record.VertexOffset = std::exchange(next_vertex, next_vertex + record.VertexCount);
+                if (record.Topology == 0u) {
+                    copy(render.MeshletLocalTriangles, record.LocalTriangleOffset, next_local, uint64_t(record.TriangleCount) * 3u);
+                    record.LocalTriangleOffset = std::exchange(next_local, next_local + record.TriangleCount * 3u);
+                }
+                records[m] = record;
+            }
+            constexpr auto RecordWords = uint32_t(sizeof(MeshletRecord) / sizeof(uint32_t)), SpatialWords = uint32_t(sizeof(MeshletSpatialNode) / sizeof(uint32_t));
+            const auto record_bytes = uint64_t(target.Meshlets.Offset) * sizeof(MeshletRecord);
+            copies.RebaseByRank(render.Meshlets.Buffer, record_bytes + offsetof(MeshletRecord, Primitive), target.Meshlets.Count, index.Ref(source.PrimitiveRoot), target.Primitives.Offset, RecordWords);
+            for (const auto field : {offsetof(MeshletRecord, GroupIndex), offsetof(MeshletRecord, RefinedGroup)})
+                copies.RebaseByRank(render.Meshlets.Buffer, record_bytes + field, target.Meshlets.Count, index.Ref(source.GroupRoot), target.ClusterGroups.Offset, RecordWords);
+            render.MeshletLodLeaves.CaptureWrite(target.Meshlets);
+            copies.GatherByRank(render.MeshletLodLeaves.Buffer, target.Meshlets.Offset, target.Meshlets.Count, sizeof(uint32_t), clusters);
+            copies.RebaseByRank(render.MeshletLodLeaves.Buffer, uint64_t(target.Meshlets.Offset) * sizeof(uint32_t), target.Meshlets.Count, nodes_index, target.LodNodes.Offset);
+            render.MeshletSpatialNodes.CaptureWrite(target.Meshlets);
+            copies.GatherByRank(render.MeshletSpatialNodes.Buffer, target.Meshlets.Offset, target.Meshlets.Count, sizeof(MeshletSpatialNode), clusters);
+            const auto spatial_bytes = uint64_t(target.Meshlets.Offset) * sizeof(MeshletSpatialNode);
+            for (const auto field : {offsetof(MeshletSpatialNode, Parent), offsetof(MeshletSpatialNode, Left), offsetof(MeshletSpatialNode, Right), offsetof(MeshletSpatialNode, Meshlet)})
+                copies.RebaseByRank(render.MeshletSpatialNodes.Buffer, spatial_bytes + field, target.Meshlets.Count, clusters, target.Meshlets.Offset, SpatialWords);
+            target.SpatialRoot = clone.Meshlets(source.SpatialRoot);
+            // Triangle clusters name canonical triangles and corners, which the clone holds at a fixed offset from its source's.
+            // Point and line clusters name elements and vertices relative to their owner's origin.
+            if (source.RenderTopology == 0u) {
+                copies.Rebase(render.MeshletTriangleIds.Buffer, uint64_t(target.MeshletTriangles.Offset) * sizeof(uint32_t), target.MeshletTriangles.Count,
+                              Buffers.Triangles.First(target.TriangleData) - Buffers.Triangles.First(source.TriangleData));
+                copies.Rebase(render.MeshletVertexCorners.Buffer, uint64_t(target.MeshletVertices.Offset) * sizeof(uint32_t), target.MeshletVertices.Count,
+                              Buffers.FaceCorners.First(target.FaceCorners) - Buffers.FaceCorners.First(source.FaceCorners));
+            }
+        }
+        // Primitives and their routes. A primitive's construction slice keeps its place in the clone's packed triangle IDs.
+        {
+            const auto materials = OffsetOrInvalid(target.PrimitiveMaterials);
+            auto primitives = render.Primitives.GetMutable(target.Primitives);
+            for (uint32_t p = 0u; p < clone.Primitives.Sources.size(); ++p) {
+                auto primitive = render.Primitives.Get({clone.Primitives.Sources[p], 1u})[0];
+                primitive.PrimitiveMaterialOffset = materials;
+                primitive.TriangleOffset = primitive.TriangleOffset - source.MeshletTriangles.Offset + target.MeshletTriangles.Offset;
+                primitive.LodRootNode = clone.Nodes(primitive.LodRootNode);
+                primitive.LodFinestNode = clone.Nodes(primitive.LodFinestNode);
+                primitives[p] = primitive;
+            }
+            if (source.PrimitiveRoutes.Count) {
+                std::vector<uint32_t> routes;
+                for (const auto route : render.PrimitiveRoutes.Get(source.PrimitiveRoutes)) routes.push_back(clone.Primitives(route));
+                target.PrimitiveRoutes = render.PrimitiveRoutes.Allocate(routes);
+            }
+        }
+        // LOD nodes and parents, with each leaf's members listed for a membership root of its own.
+        {
+            auto nodes = render.LodNodes.GetMutable(target.LodNodes);
+            render.LodParents.CaptureWrite(target.LodNodes);
+            copies.GatherByRank(render.LodParents.Buffer, target.LodNodes.Offset, target.LodNodes.Count, sizeof(uint32_t), nodes_index);
+            copies.RebaseByRank(render.LodParents.Buffer, uint64_t(target.LodNodes.Offset) * sizeof(uint32_t), target.LodNodes.Count, nodes_index, target.LodNodes.Offset);
+            for (uint32_t n = 0u; n < clone.Nodes.Sources.size(); ++n) {
+                const auto id = clone.Nodes.Sources[n];
+                auto node = render.LodNodes.Get({id, 1u})[0];
+                if (node.ChildCount) node.ChildOffset = clone.Nodes(node.ChildOffset);
+                if (node.MeshletRoot != InvalidOffset) {
+                    auto &leaf = roots.emplace_back(MemberRoot{.Clone = c, .Type = MemberRoot::Kind::Leaf, .Node = target.LodNodes.Offset + n});
+                    index.ForEach(node.MeshletRoot, [&](uint32_t member) { leaf.Members.push_back(clone.Meshlets(member)); });
+                }
+                node.MeshletRoot = InvalidOffset;
+                nodes[n] = node;
+            }
+        }
+        // Cluster groups, with each group's member run then proxy run filling one allocation.
+        {
+            uint64_t group_ids = 0u;
+            for (const auto group : clone.Groups.Sources) {
+                const auto &links = render.GroupLinks.Get({group, 1u})[0];
+                group_ids += links.MemberCount + links.ProxyCount;
+            }
+            const auto runs = render.GroupClusterIds.Allocate(uint32_t(group_ids));
+            render.GroupClusterIds.CaptureWrite(runs);
+            auto groups = render.ClusterGroups.GetMutable(target.ClusterGroups);
+            auto links = render.GroupLinks.GetMutable(target.ClusterGroups);
+            uint32_t next = 0u;
+            const auto copy_run = [&](uint32_t offset, uint32_t count) {
+                const auto first = runs.Offset + next;
+                copy(render.GroupClusterIds, offset, first, count);
+                copies.RebaseByRank(render.GroupClusterIds.Buffer, uint64_t(first) * sizeof(uint32_t), count, clusters, target.Meshlets.Offset);
+                next += count;
+                return first;
+            };
+            for (uint32_t g = 0u; g < clone.Groups.Sources.size(); ++g) {
+                const auto group = clone.Groups.Sources[g];
+                groups[g] = render.ClusterGroups.Get({group, 1u})[0];
+                const auto source_links = render.GroupLinks.Get({group, 1u})[0];
+                const auto member_offset = copy_run(source_links.MemberOffset, source_links.MemberCount);
+                links[g] = {.MemberOffset = member_offset, .MemberCount = source_links.MemberCount,
+                            .ProxyOffset = copy_run(source_links.ProxyOffset, source_links.ProxyCount), .ProxyCount = source_links.ProxyCount};
+            }
+        }
+        // Element owners of the source's element blocks move onto the clone's blocks, naming the clone's clusters.
+        // A clone's elements sit at its source's offsets within its own domain, so each owner block moves by whole blocks.
+        if (source.ElementMeshletBlockCount) {
+            const auto topology = source.RenderTopology;
+            auto &owners = render.ElementMeshlets[topology];
+            const auto source_blocks = MeshletOwnerBlocks(source);
+            const auto clone_first = RenderDomainFirst(target, topology);
+            const auto block_delta = int64_t(clone_first / MeshElementBlockSize) - int64_t(RenderDomainFirst(source, topology) / MeshElementBlockSize);
+            std::vector<uint32_t> target_blocks;
+            for (const auto block : source_blocks) target_blocks.push_back(uint32_t(int64_t(block) + block_delta));
+            owners.Attach(target_blocks, InvalidOffset);
+            for (uint32_t b = 0u; b < source_blocks.size(); ++b) {
+                const auto from = owners.Payload(source_blocks[b] * MeshElementBlockSize, MeshElementBlockSize);
+                const auto to = owners.Payload(target_blocks[b] * MeshElementBlockSize, MeshElementBlockSize);
+                owners.Values.Buffer.CaptureWrite(uint64_t(to.Offset) * sizeof(uint32_t), uint64_t(to.Count) * sizeof(uint32_t));
+                copies.Copy(owners.Values.Buffer, uint64_t(from.Offset) * sizeof(uint32_t), uint64_t(to.Offset) * sizeof(uint32_t), uint64_t(to.Count) * sizeof(uint32_t));
+                copies.RebaseByRank(owners.Values.Buffer, uint64_t(to.Offset) * sizeof(uint32_t), to.Count, clusters, target.Meshlets.Offset);
+            }
+            target.ElementMeshletBlockCount = uint32_t(source_blocks.size());
+            // Triangle owners name absolute triangle handles, and point and line owners name elements from the domain's first handle.
+            target.ElementMeshletOrigin = topology == 0u ? 0u : clone_first;
+        }
+        for (const auto range : {target.Meshlets, target.Primitives, target.LodNodes, target.ClusterGroups}) ownership.push_back({.Insert = range});
+        for (const auto [root, kind] : {std::pair{source.PositionDirtyRoot, MemberRoot::Kind::PositionDirty}, std::pair{source.DirtyGroupRoot, MemberRoot::Kind::DirtyGroups}}) {
+            if (root == InvalidOffset) continue;
+            auto &dirty = roots.emplace_back(MemberRoot{.Clone = c, .Type = kind});
+            const auto &map = kind == MemberRoot::Kind::PositionDirty ? clone.Meshlets : clone.Groups;
+            index.ForEach(root, [&](uint32_t member) { dirty.Members.push_back(map(member)); });
+        }
+    }
+    const auto first_root = uint32_t(ownership.size());
+    for (const auto &root : roots) ownership.push_back({.Added = root.Members});
+    index.Update(ownership);
+    for (uint32_t i = 0u; i < roots.size(); ++i) {
+        const auto &[c, kind, node, _] = roots[i];
+        const auto root = ownership[first_root + i].Root;
+        auto &target = Records[clones[c].CloneId];
+        switch (kind) {
+            case MemberRoot::Kind::Leaf: render.LodNodes.GetMutable({node, 1u})[0].MeshletRoot = root; break;
+            case MemberRoot::Kind::PositionDirty: target.PositionDirtyRoot = root; break;
+            case MemberRoot::Kind::DirtyGroups: target.DirtyGroupRoot = root; break;
+        }
+    }
+    for (uint32_t c = 0u; c < clones.size(); ++c) {
+        auto &target = Records[clones[c].CloneId];
+        const auto *edits = &ownership[4u * c];
+        target.MeshletRoot = edits[0].Root;
+        target.PrimitiveRoot = edits[1].Root;
+        target.NodeRoot = edits[2].Root;
+        target.GroupRoot = edits[3].Root;
+    }
 }
 
 void MeshStore::Release(uint32_t id) {
@@ -1497,6 +1827,18 @@ void MeshStore::Release(std::span<const uint32_t> requested) {
     }
     for (auto &c : closure)
         if (!std::ranges::is_sorted(c.Blocks)) std::ranges::sort(c.Blocks);
+    // Render records release while their element domains still exist, since owner blocks are found through them.
+    if (Tracked) ForEachIndexRun(ids, [&](size_t first, size_t count) { Tracked->Entries.Write(ids[first], count); });
+    std::vector<Record *> records;
+    std::vector<Range> extras_faces, extras_edges;
+    for (const auto id : ids) {
+        records.push_back(&Records[id]);
+        AppendRange(extras_faces, Records[id].ExtrasFaces);
+        AppendRange(extras_edges, Records[id].ExtrasEdges);
+    }
+    ReleaseRender(records);
+    Buffers.Render.ExtrasFaces.Release(std::move(extras_faces));
+    Buffers.Render.ExtrasEdges.Release(std::move(extras_edges));
     const auto &vertices = closure[uint32_t(Domain::Vertex)];
     uint32_t live_vertices = 0u;
     for (const auto set : vertices.Sets) live_vertices += vertices.Headers[set.Index].Count;
@@ -1518,7 +1860,6 @@ void MeshStore::Release(std::span<const uint32_t> requested) {
     }
     ForEachIndexRun(ids, [&](size_t first, size_t count) {
         std::ranges::fill(Buffers.SelectionRoots.GetMutable({3u * ids[first], 3u * uint32_t(count)}), SelectionAggregate{});
-        if (Tracked) Tracked->Entries.Write(ids[first], count);
     });
     ForEachAttribute(Buffers, [&](auto &attributes, Domain domain, uint32_t, const char *, const char *, const char *, auto &&) {
         attributes.Release(closure[uint32_t(domain)].Blocks);
@@ -1539,8 +1880,116 @@ void MeshStore::Release(std::span<const uint32_t> requested) {
         Records[id] = {};
         DerivedRecords[id] = {};
     }
-    RenderStale.append_range(ids);
+    Released.append_range(ids);
     FreeIds.append_range(ids);
+}
+
+void MeshStore::ReleaseRender(std::span<Record *const> records) {
+    const profile::CpuScope scope{"ReleaseRenderStorage"};
+    auto &render = Buffers.Render;
+    std::vector<Range> groups, group_ids, nodes, primitives, routes;
+    std::vector<Range> membership_nodes, membership_leaves;
+    std::vector<uint32_t> meshlets;
+    std::array<std::vector<uint32_t>, 3> owner_blocks;
+    const auto membership = render.ActiveMeshlets.Read();
+    const auto lod_nodes = render.LodNodes.Buffer.GetSpan<LodNode>();
+    const auto links = render.GroupLinks.Get({0u, render.GroupLinks.Buffer.Count<ClusterGroupLinks>()});
+    enum class Kind { Group, Node, Meshlet, Primitive };
+    std::vector<uint32_t> roots, additional_roots;
+    std::vector<Kind> jobs;
+    const auto collect = [&](uint32_t root, Kind kind) {
+        if (root == InvalidOffset) return;
+        roots.push_back(root);
+        jobs.push_back(kind);
+    };
+    const auto release_group = [&](uint32_t id) {
+        const auto &group = links[id];
+        AppendRange(group_ids, {group.MemberOffset, group.MemberCount});
+        AppendRange(group_ids, {group.ProxyOffset, group.ProxyCount});
+        AppendRange(groups, {id, 1u});
+    };
+    const auto release_node = [&](uint32_t id) {
+        if (lod_nodes[id].MeshletRoot != InvalidOffset) additional_roots.push_back(lod_nodes[id].MeshletRoot);
+        AppendRange(nodes, {id, 1u});
+    };
+    for (const auto *record : records) {
+        const auto &b = *record;
+        for (const auto root : {b.PositionDirtyRoot, b.DirtyGroupRoot})
+            if (root != InvalidOffset) additional_roots.push_back(root);
+        if (b.GroupRoot == InvalidOffset) {
+            for (uint32_t i = 0u; i < b.ClusterGroups.Count; ++i) release_group(b.ClusterGroups.Offset + i);
+        } else collect(b.GroupRoot, Kind::Group);
+        if (b.NodeRoot == InvalidOffset) {
+            for (uint32_t i = 0u; i < b.LodNodes.Count; ++i) release_node(b.LodNodes.Offset + i);
+        } else collect(b.NodeRoot, Kind::Node);
+        if (b.MeshletRoot == InvalidOffset) {
+            for (uint32_t i = 0u; i < b.Meshlets.Count; ++i) meshlets.push_back(b.Meshlets.Offset + i);
+        } else {
+            collect(b.MeshletRoot, Kind::Meshlet);
+            if (b.ElementMeshletBlockCount) owner_blocks.at(b.RenderTopology).append_range(MeshletOwnerBlocks(b));
+        }
+        if (b.PrimitiveRoot == InvalidOffset) AppendRange(primitives, b.Primitives);
+        else collect(b.PrimitiveRoot, Kind::Primitive);
+        AppendRange(routes, b.PrimitiveRoutes);
+    }
+    membership.CollectOwned(roots, membership_nodes, membership_leaves, [&](uint32_t root, const MeshletIndexLeaf &leaf) {
+        MeshletIndex::ForEach(leaf, [&](uint32_t handle) {
+            switch (jobs[root]) {
+                case Kind::Group: release_group(handle); break;
+                case Kind::Node: release_node(handle); break;
+                case Kind::Meshlet: meshlets.push_back(handle); break;
+                case Kind::Primitive: AppendRange(primitives, {handle, 1u}); break;
+            }
+        });
+    });
+    membership.CollectOwned(additional_roots, membership_nodes, membership_leaves, [](uint32_t, const auto &) {});
+    for (auto *record : records) ResetRender(*record);
+    for (uint32_t i = 0u; i < owner_blocks.size(); ++i) {
+        SortUnique(owner_blocks[i]);
+        render.ElementMeshlets[i].Release(owner_blocks[i]);
+    }
+    render.ActiveMeshlets.Leaves.Release(std::move(membership_leaves));
+    render.ActiveMeshlets.Nodes.Release(std::move(membership_nodes));
+    render.ReleaseMeshletStorage(meshlets);
+    render.GroupClusterIds.Release(std::move(group_ids));
+    render.ClusterGroups.Release(std::move(groups));
+    render.LodNodes.Release(std::move(nodes));
+    render.Primitives.Release(std::move(primitives));
+    render.PrimitiveRoutes.Release(std::move(routes));
+}
+
+void MeshStore::ReservePrimitiveRoutes(Record &record, uint32_t count) {
+    if (count <= record.PrimitiveRoutes.Count) return;
+    std::vector<uint32_t> routes(count, InvalidOffset);
+    std::ranges::copy(Buffers.Render.PrimitiveRoutes.Get(record.PrimitiveRoutes), routes.begin());
+    Buffers.Render.PrimitiveRoutes.Update(record.PrimitiveRoutes, routes);
+}
+
+std::vector<uint32_t> MeshStore::MeshletOwnerBlocks(const Record &record) const {
+    // Owners attach to whole blocks of the record's element domain, which no other record shares.
+    const auto &owners = Buffers.Render.ElementMeshlets[record.RenderTopology];
+    std::vector<uint32_t> blocks;
+    WithRenderDomain(record, record.RenderTopology, [&](const auto &arena, ElementSetRef set) {
+        arena.ForEachBlock(set, [&](uint32_t block, const auto &) { if (owners.PayloadBlock(block)) blocks.push_back(block); });
+    });
+    std::ranges::sort(blocks);
+    return blocks;
+}
+
+uint32_t MeshStore::RenderDomainFirst(const Record &record, uint32_t topology) const {
+    return WithRenderDomain(record, topology, [](const auto &arena, ElementSetRef set) { return arena.First(set); });
+}
+
+void MeshStore::SetExtrasIndices(uint32_t id, std::span<const uint32_t> faces, std::span<const uint32_t> edges) {
+    auto &record = WriteRecord(id);
+    const auto first = Buffers.Vertices.First(record.Vertices);
+    const auto offset = [&](auto &arena, std::span<const uint32_t> indices) {
+        const auto range = arena.Allocate(uint32_t(indices.size()));
+        std::ranges::transform(indices, arena.GetMutable(range).begin(), [first](uint32_t v) { return first + v; });
+        return range;
+    };
+    record.ExtrasFaces = offset(Buffers.Render.ExtrasFaces, faces);
+    record.ExtrasEdges = offset(Buffers.Render.ExtrasEdges, edges);
 }
 
 void MeshStore::Clear() {
@@ -1560,7 +2009,7 @@ void MeshStore::Clear() {
         RetiredBlockLists.clear();
     }
     FreeIds.clear();
-    RenderStale.clear();
+    Released.clear();
 }
 
 VertexEdgeIncidence MeshStore::GetVertexEdgeIncidence(uint32_t id) const {
@@ -1572,6 +2021,7 @@ uint32_t MeshStore::AcquireId(Record &&record) {
         const auto reused = FreeIds.back();
         if (Tracked) Tracked->Free.Write(FreeIds.size() - 1, 1);
         FreeIds.pop_back();
+        record.StoreId = reused;
         WriteRecord(reused) = std::move(record);
         std::ranges::fill(Buffers.SelectionRoots.GetMutable({3u * reused, 3u}), SelectionAggregate{});
         return reused;
@@ -1583,7 +2033,9 @@ uint32_t MeshStore::AcquireId(Record &&record) {
     Records.emplace_back(std::move(record));
     DerivedRecords.emplace_back();
     const auto id = uint32_t(Records.size() - 1);
+    Records[id].StoreId = id;
     Buffers.SelectionRoots.Mirror({0, 3u * uint32_t(Records.size())});
+    Buffers.Render.MeshRecords.Mirror({0, uint32_t(Records.size())});
     std::ranges::fill(Buffers.SelectionRoots.GetMutable({3u * id, 3u}), SelectionAggregate{});
     return id;
 }

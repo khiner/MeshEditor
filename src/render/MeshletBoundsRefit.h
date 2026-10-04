@@ -1,4 +1,5 @@
 #pragma once
+#include "mesh/MeshStore.h"
 
 #include "gpu/ElementWork.h"
 #include "state/Entity.h"
@@ -6,12 +7,11 @@
 #include <span>
 
 template<typename T> struct BufferArena;
-struct MeshBuffers;
 namespace mtl { struct ComputeChain; }
 namespace state { struct Scene; }
 
 struct MeshletBoundsRefitJob {
-    MeshBuffers *Owner;
+    const MeshStore::Record *Owner;
     const BufferArena<uint32_t> *Storage;
     ElementWork Meshlets;
 };

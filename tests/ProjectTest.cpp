@@ -377,10 +377,9 @@ void TestDuplicateDrawsAsItsSource() {
     const TestDir dir{"/tmp/mesheditor-scratch/project-duplicate-records"};
     Fixture f{dir};
     auto &r = f.R;
-    const auto &buffers = r.Context.get<const GpuBuffers>();
     const auto &meshes = r.Context.get<const MeshStore>();
-    const auto render_owner = [&](state::Entity e) -> const MeshBuffers & {
-        return buffers.MeshOf(r.get<const MeshHandle>(r.get<const Instance>(e).Entity).StoreId);
+    const auto render_owner = [&](state::Entity e) -> const MeshStore::Record & {
+        return meshes.Get(r.get<const MeshHandle>(r.get<const Instance>(e).Entity).StoreId);
     };
     // Duplicates the selected source and returns the copy, checking that its render records are its own.
     const auto duplicate = [&](state::Entity source) {
@@ -388,8 +387,8 @@ void TestDuplicateDrawsAsItsSource() {
         const auto copy = f.Add(action::object::Duplicate{});
         expect(copy != source);
         const auto &copied = render_owner(copy);
-        expect(buffers.MeshletCount(copied) == buffers.MeshletCount(render_owner(source)));
-        expect(buffers.ClusterGroupCount(copied) == buffers.ClusterGroupCount(render_owner(source)));
+        expect(meshes.MeshletCount(copied) == meshes.MeshletCount(render_owner(source)));
+        expect(meshes.ClusterGroupCount(copied) == meshes.ClusterGroupCount(render_owner(source)));
         const auto topology = copied.RenderTopology;
         const auto &record = meshes.Get(copied.StoreId);
         const auto &a = meshes.Arenas();
@@ -397,12 +396,12 @@ void TestDuplicateDrawsAsItsSource() {
         const auto count = topology == 0u ? a.Triangles.Count(record.TriangleData) : topology == 1u ? a.EdgeHalfedges.Count(record.EdgeData) : a.Vertices.Count(record.Vertices);
         const auto origin = topology == 0u ? 0u : copied.ElementMeshletOrigin;
         bool owned = true;
-        buffers.ActiveMeshlets.ForEach(copied.MeshletRoot, [&](uint32_t id) {
-            const auto &meshlet = buffers.Meshlets.Get({id, 1u})[0];
+        meshes.Render().ActiveMeshlets.ForEach(copied.MeshletRoot, [&](uint32_t id) {
+            const auto &meshlet = meshes.Render().Meshlets.Get({id, 1u})[0];
             if (meshlet.RefinedGroup != InvalidOffset) return;
-            for (const auto element : buffers.MeshletTriangleIds.Get({meshlet.TriangleOffset, meshlet.TriangleCount})) {
+            for (const auto element : meshes.Render().MeshletTriangleIds.Get({meshlet.TriangleOffset, meshlet.TriangleCount})) {
                 const auto handle = origin + element;
-                owned &= handle >= first && handle < first + count && buffers.ElementMeshlets[topology].Get(handle) == id;
+                owned &= handle >= first && handle < first + count && meshes.Render().ElementMeshlets[topology].Get(handle) == id;
             }
         });
         expect(owned);
@@ -439,7 +438,7 @@ void TestDuplicateDrawsAsItsSource() {
 
     // Enough triangles to take a cluster hierarchy, with 128-face fans at the poles.
     const auto source = f.Add(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = 128u, .Stacks = 64u}, std::make_unique<MeshInstanceCreateInfo>()});
-    expect(buffers.ClusterGroupCount(render_owner(source)) > 0u);
+    expect(meshes.ClusterGroupCount(render_owner(source)) > 0u);
     // Only the sphere draws in both images.
     f.Do(action::selection::SelectAll{});
     f.Do(action::object::SetSelectedVisible{false});

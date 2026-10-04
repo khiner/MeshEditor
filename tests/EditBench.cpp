@@ -531,8 +531,8 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         }
         const auto exit_ms = Milliseconds([&] { p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Object})); });
         if (staged && !r.Context.get<const GpuSceneState>().EditWork.empty()) return std::unexpected{"Edit mode exit retained geometry work"};
-        if (r.Context.get<const GpuBuffers>().MeshOf(original.GetStoreId()).DirtyGroupRoot != InvalidOffset) return std::unexpected{"edit mode exit left stale LOD groups"};
-        if (position && (r.Context.get<const GpuBuffers>().MeshOf(original.GetStoreId()).PositionDirtyRoot != InvalidOffset)) return std::unexpected{"position edit exit retained coarse dirt"};
+        if (r.Context.get<const MeshStore>().Get(original.GetStoreId()).DirtyGroupRoot != InvalidOffset) return std::unexpected{"edit mode exit left stale LOD groups"};
+        if (position && (r.Context.get<const MeshStore>().Get(original.GetStoreId()).PositionDirtyRoot != InvalidOffset)) return std::unexpected{"position edit exit retained coarse dirt"};
         if (auto result = render_step("render_exit_mode"); !result) return result;
         if (staged && render) {
             if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE_EXIT"); !result) return result;

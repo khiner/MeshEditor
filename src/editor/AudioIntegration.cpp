@@ -112,10 +112,10 @@ float WorldMeanScale(const state::Scene &r, state::Entity e) {
 // World scale converts node-local mesh volume, and mass divided by density supplies volume for open meshes.
 double DisplacedVolume(const state::Scene &r, state::Entity e, double mass, const AcousticMaterialProperties *props) {
     const auto *inst=r.try_get<const Instance>(e);
-    const auto *owner=inst ? TryMeshBuffers(r,inst->Entity) : nullptr;
+    const auto *owner=inst ? TryRecordOf(r,inst->Entity) : nullptr;
     const double world_scale = WorldMeanScale(r, e);
     const auto volume=owner && owner->SpatialRoot!=InvalidOffset ?
-        MeshletEnclosedVolume(r.Context.get<const GpuBuffers>(),*owner,GetMesh(r,inst->Entity)) : std::nullopt;
+        MeshletEnclosedVolume(r.Context.get<const MeshStore>().Render(),*owner,GetMesh(r,inst->Entity)) : std::nullopt;
     const double enclosed = volume ? *volume * world_scale * world_scale * world_scale : 0.0;
     if (enclosed > 0) return enclosed;
     return props && props->Density > 0 && mass > 0 ? mass / props->Density : 0.0;

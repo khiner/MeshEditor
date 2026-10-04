@@ -4,14 +4,14 @@
 #include <span>
 #include <vector>
 
-struct GpuBuffers;
+struct RenderArenas;
 namespace mtl { struct ComputeChain; }
 
 // Returns the seed groups and every group their proxies feed, transitively, in ascending order.
-std::vector<uint32_t> ClusterGroupClosure(const GpuBuffers &, std::span<const uint32_t> seeds);
+std::vector<uint32_t> ClusterGroupClosure(const RenderArenas &, std::span<const uint32_t> seeds);
 // Rewrites the member and proxy runs of every group a removed or added cluster names.
 // Removed records still carry the group fields they were linked under.
-void ReplaceGroupClusters(GpuBuffers &, std::span<const uint32_t> removed, std::span<const uint32_t> added);
+void ReplaceGroupClusters(RenderArenas &, std::span<const uint32_t> removed, std::span<const uint32_t> added);
 // One render owner's seed groups.
 struct ClusterGroupSeeds {
     state::Entity Entity;

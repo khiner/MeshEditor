@@ -7,7 +7,6 @@
 #include "mesh/MeshTopology.h"
 #include "metal/Dispatch.h"
 #include "render/ElementWorkOps.h"
-#include "render/GpuBuffers.h"
 #include "state/Scene.h"
 
 namespace {
@@ -18,11 +17,11 @@ void CheckSpatialState(const mtl::ComputeChain &chain, Range state) {
 
 SpatialFaceWork::SpatialFaceWork(state::Scene &r, mtl::ComputeChain &chain, const MeshTopologyTask &task) {
     const profile::CpuScope scope{"SpatialFaceCount"};
-    const auto &buffers = r.Context.get<const GpuBuffers>();
-    const auto *owner = buffers.TryMeshOf(task.SourceId);
+    const auto &meshes = r.Context.get<const MeshStore>();
+    auto &render = meshes.Render();
+    const auto *owner = meshes.TryGet(task.SourceId);
     if (!owner || owner->MeshletRoot == InvalidOffset) throw std::invalid_argument("Spatial topology query needs current meshlet ownership.");
     if (owner->SpatialRoot == InvalidOffset) return;
-    const auto &meshes = r.Context.get<const MeshStore>();
     const auto &record = meshes.Get(task.SourceId);
     const auto &a = meshes.Arenas();
     const uint32_t mode = task.Flags & TopologyFlagScreenCuts ? 2u :
@@ -36,13 +35,13 @@ SpatialFaceWork::SpatialFaceWork(state::Scene &r, mtl::ComputeChain &chain, cons
     State = storage.Allocate(4u);
     std::ranges::fill(storage.GetMutable(State), 0u);
     Pc = {
-        .Meshlets = buffers.ActiveMeshlets.Ref(owner->MeshletRoot),
+        .Meshlets = render.ActiveMeshlets.Ref(owner->MeshletRoot),
         .SpatialRoot = owner->SpatialRoot,
-        .SpatialNodeSlot = buffers.MeshletSpatialNodes.Buffer.Slot,
-        .SpatialNodeCapacity = buffers.MeshletSpatialNodes.Buffer.Count<MeshletSpatialNode>(),
+        .SpatialNodeSlot = render.MeshletSpatialNodes.Buffer.Slot,
+        .SpatialNodeCapacity = render.MeshletSpatialNodes.Buffer.Count<MeshletSpatialNode>(),
         .SeedDepth = 8u+std::countr_zero(Groups),
-        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
-        .TriangleIdSlot = buffers.MeshletTriangleIds.Buffer.Slot,
+        .MeshletSlot = render.Meshlets.Buffer.Slot,
+        .TriangleIdSlot = render.MeshletTriangleIds.Buffer.Slot,
         .TriangleSlot = a.Triangles.Buffer.Slot,
         .HalfedgeFaceSlot = a.HalfedgeFaces.Buffer.Slot,
         .FaceRangeSlot = a.FaceRanges.Buffer.Slot,
@@ -55,8 +54,8 @@ SpatialFaceWork::SpatialFaceWork(state::Scene &r, mtl::ComputeChain &chain, cons
         .TriangleCapacity = a.Triangles.Capacity(),
         .CornerCapacity = a.FaceCorners.Capacity(),
         .VertexCapacity = a.Vertices.Capacity(),
-        .TriangleIdCapacity = buffers.MeshletTriangleIds.Buffer.Count<uint32_t>(),
-        .MeshletCapacity = buffers.Meshlets.Buffer.Count<MeshletRecord>(),
+        .TriangleIdCapacity = render.MeshletTriangleIds.Buffer.Count<uint32_t>(),
+        .MeshletCapacity = render.Meshlets.Buffer.Count<MeshletRecord>(),
         .ResultSlot = storage.Buffer.Slot,
         .ResultOffset = State.Offset,
         .Mode = mode,

@@ -2,7 +2,8 @@
 #include "Profile.h"
 #include "mesh/MeshPipelines.h"
 #include "metal/Dispatch.h"
-#include "render/GpuBuffers.h"
+#include "mesh/MeshStore.h"
+#include "render/ClusterLod.h"
 #include "state/Scene.h"
 #include <map>
 #include <optional>
@@ -27,7 +28,7 @@ struct NodeEntry {
 
 // Places span-tree nodes in new contiguous runs, and each placed node's children or members point back at it.
 struct SpanPlacement {
-    GpuBuffers &Buffers;
+    RenderArenas &Buffers;
     std::vector<uint32_t> Placed, Formers;
     // Each placed leaf's members with their new leaf, written together once every node is placed.
     std::vector<std::pair<uint32_t, uint32_t>> Leaves;
@@ -83,7 +84,7 @@ struct SpanPlacement {
 
     // Writes the members' leaves, publishes node ownership, and releases the moved nodes' former ids.
     // The refit covers every placed node in place of the id it moved from.
-    void Commit(MeshBuffers &owner, std::set<uint32_t> &affected) {
+    void Commit(MeshStore::Record &owner, std::set<uint32_t> &affected) {
         std::vector<uint32_t> clusters;
         for (const auto &[cluster, leaf] : Leaves) clusters.push_back(cluster);
         Buffers.MeshletLodLeaves.Buffer.CaptureWriteElements(clusters, sizeof(uint32_t));
@@ -106,7 +107,7 @@ using LeafEdits = std::map<uint32_t, std::array<std::vector<uint32_t>, 2>>;
 // Splits each overfull leaf's final members into even runs of at most one leaf span in cluster order, and removes each emptied leaf from its parent's run.
 // An ancestor that outgrows twice the node width splits the same way, and one left without children leaves its parent in turn.
 // A primitive's root stays, and a root left without children becomes an empty leaf.
-void RestructureLeaves(GpuBuffers &buffers, MeshBuffers &owner, const LeafEdits &leaves, std::span<const uint32_t> overfull, std::span<const uint32_t> emptied,
+void RestructureLeaves(RenderArenas &buffers, MeshStore::Record &owner, const LeafEdits &leaves, std::span<const uint32_t> overfull, std::span<const uint32_t> emptied,
                        std::set<uint32_t> &affected) {
     const profile::CpuScope scope{"LodNodeSplit"};
     auto &index = buffers.ActiveMeshlets;
@@ -179,11 +180,11 @@ void RestructureLeaves(GpuBuffers &buffers, MeshBuffers &owner, const LeafEdits 
 }
 } // namespace
 
-LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers &owner, std::span<const uint32_t> removed, std::span<const LodClusterRun> added,
+LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshStore::Record &owner, std::span<const uint32_t> removed, std::span<const LodClusterRun> added,
                           std::span<const uint32_t> touched) {
     if (removed.empty() && added.empty() && touched.empty()) return {};
     const profile::CpuScope scope{"LodNodeEdit"};
-    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &buffers = r.Context.get<MeshStore>().Render();
     if (owner.MeshletRoot==InvalidOffset || owner.NodeRoot==InvalidOffset) throw std::invalid_argument("LOD membership edit requires a live render owner.");
     const auto &index = buffers.ActiveMeshlets;
     const auto meshlet_capacity = std::min(buffers.Meshlets.Buffer.Count<MeshletRecord>(),buffers.MeshletLodLeaves.Buffer.Count<uint32_t>());
@@ -285,10 +286,7 @@ LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers
         tree_depth = std::max(tree_depth,depth);
     }
     // A root that split adds a level the traversal descends.
-    if (tree_depth>buffers.MeshletLodDepth) {
-        if (buffers.LodDepthHistory) buffers.LodDepthHistory->Write(0u,1u);
-        buffers.MeshletLodDepth = tree_depth;
-    }
+    owner.LodDepth = std::max(owner.LodDepth, tree_depth);
     std::vector<uint32_t> jobs;
     std::vector<std::pair<uint32_t, Range>> batches;
     for (const auto &[depth,level] : levels) {

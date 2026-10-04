@@ -9,7 +9,6 @@
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
-#include "render/MeshBuffers.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"

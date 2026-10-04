@@ -29,3 +29,10 @@ state::Entity MeshEntityOf(const state::Scene &r, uint32_t store_id) {
     const auto *handle = r.try_get<const MeshHandle>(it->second);
     return handle && handle->StoreId == store_id ? it->second : state::Null;
 }
+
+const MeshStore::Record *TryRecordOf(const state::Scene &r, state::Entity e) {
+    const auto id = DrawnStoreId(r, e);
+    return id ? r.Context.get<const MeshStore>().TryGet(*id) : nullptr;
+}
+const MeshStore::Record &RecordOf(const state::Scene &r, state::Entity e) { return r.Context.get<const MeshStore>().Get(*DrawnStoreId(r, e)); }
+MeshStore::Record &EditRecordOf(state::Scene &r, state::Entity e) { return r.Context.get<MeshStore>().WriteRecord(*DrawnStoreId(r, e)); }

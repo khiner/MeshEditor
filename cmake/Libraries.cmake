@@ -106,6 +106,7 @@ mesheditor_library(MeshEditorMesh HOT
     src/mesh/MeshPipelines.cpp
     src/mesh/MeshStore.cpp
     src/mesh/MeshStores.cpp
+    src/mesh/MeshletIndex.cpp
     src/mesh/MeshTopology.cpp
     src/mesh/MeshTopologyLayout.cpp
     src/mesh/SpatialFaceWork.cpp
@@ -140,10 +141,7 @@ mesheditor_library(MeshEditorRender HOT
     src/render/MeshletPatchWork.cpp
     src/render/LodNodeEdit.cpp
     src/render/MeshTopologyRepair.cpp
-    src/render/RenderClone.cpp
-    src/render/RenderHistory.cpp
     src/render/MeshletOwners.cpp
-    src/render/MeshletIndex.cpp
     src/render/MeshletStorage.cpp
     src/render/MeshletBuildGpu.cpp
     src/render/MeshletSpatial.cpp

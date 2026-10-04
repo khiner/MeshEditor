@@ -1,4 +1,4 @@
-#include "render/MeshletIndex.h"
+#include "mesh/MeshletIndex.h"
 #include <algorithm>
 #include <unordered_set>
 #include <vector>

@@ -32,7 +32,7 @@
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
-#include "render/MeshBuffers.h"
+#include "render/MeshletBuildGpu.h"
 #include "render/SceneUpdates.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
@@ -185,7 +185,7 @@ void Project::TrackStores(state::Entity viewport) {
     Viewport = viewport;
     auto &meshes = R.Context.get<MeshStore>();
     meshes.Track(History);
-    R.Context.get<GpuBuffers>().Track(History);
+
     R.Context.get<GpuBuffers>().Materials.Track(History, "material.values");
     R.Context.get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights");
     R.Context.get<MaterialStore>().Track(History);
@@ -771,13 +771,20 @@ void Project::AfterRestore() {
     }
     if (sources_changed || manifest_changed) reactive(R, Change::MaterializedTextures).emplace(Viewport);
     auto &meshes = R.Context.get<MeshStore>();
+    auto &render = meshes.Render();
     const auto changes = meshes.TakeChanges();
     // The restored selection and positions refresh in one submit.
     mtl::ComputeChain chain{meshes.BufferContext()};
     meshes.ReconcileSelection(R, chain, changes);
     auto &buffers = R.Context.get<GpuBuffers>();
-    for (const auto id : buffers.RestoreMeshBindings(R))
-        if (const auto entity = MeshEntityOf(R, id); entity != state::Null) restored_meshes.push_back(entity);
+    // A restored record rebinds its GPU mesh record, and a retired one leaves the flag totals.
+    for (const auto &change : changes) {
+        if (!(change.Bits & MeshStore::EntryChanged)) continue;
+        RefreshMeshBinding(R, change.StoreId);
+        if (!meshes.TryGet(change.StoreId)) buffers.Retally(change.StoreId, {});
+        if (const auto entity = MeshEntityOf(R, change.StoreId); entity != state::Null) restored_meshes.push_back(entity);
+    }
+    buffers.PreludeStale = true;
     auto &scene=R.Context.get<GpuSceneState>();
     std::ranges::sort(restored_meshes);
     restored_meshes.erase(std::unique(restored_meshes.begin(), restored_meshes.end()), restored_meshes.end());
@@ -786,12 +793,12 @@ void Project::AfterRestore() {
         scene.PositionDirty.erase(entity);
         scene.LodDirty.erase(entity);
         const auto id = R.get<const MeshHandle>(entity).StoreId;
-        const auto *owner = std::as_const(buffers).TryMeshOf(id);
-        if (!owner) continue;
+        const auto *owner = meshes.TryGet(id);
+        if (!owner || owner->RenderTopology == InvalidOffset) continue;
         repointed.push_back(entity);
-        if (buffers.ActiveMeshlets.Count(owner->PositionDirtyRoot)) scene.PositionDirty.insert(entity);
-        if (buffers.ActiveMeshlets.Count(owner->DirtyGroupRoot)) scene.LodDirty.insert(entity);
-        if (!buffers.ClusterGroupCount(*owner) && ClusterLodApplies(Mesh{meshes, id}.FaceCount() > 0u, buffers.MeshletCount(*owner))) scene.LodDemand.insert(entity);
+        if (render.ActiveMeshlets.Count(owner->PositionDirtyRoot)) scene.PositionDirty.insert(entity);
+        if (render.ActiveMeshlets.Count(owner->DirtyGroupRoot)) scene.LodDirty.insert(entity);
+        if (!meshes.ClusterGroupCount(*owner) && ClusterLodApplies(Mesh{meshes, id}.FaceCount() > 0u, meshes.MeshletCount(*owner))) scene.LodDemand.insert(entity);
     }
     // The restored render records change the meshlet and LOD node counts that size each instance's cull.
     RepointMeshInstances(R, repointed);
@@ -804,7 +811,7 @@ void Project::AfterRestore() {
             if ((change.Bits & ~MeshStore::SelectionChanged)==MeshStore::GeometryChanged && !change.VertexRanges.empty()) {
                 positions.push_back({entity,change.VertexRanges});
             }
-            buffers.RefreshMeshBinding(R,change.StoreId);
+            RefreshMeshBinding(R,change.StoreId);
             R.emplace_or_replace<MeshGeometryDirty>(entity,EditSelectionAfter::Keep,true);
         }
         if (change.Bits & MeshStore::SelectionChanged) scene.EditSelectionDirty=true;

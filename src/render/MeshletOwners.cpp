@@ -3,38 +3,26 @@
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
-#include "render/GpuBuffers.h"
 #include "state/Scene.h"
-
-uint32_t ElementDomainFirst(const MeshStore &meshes, uint32_t store_id, uint32_t topology) {
-    const auto &a = meshes.Arenas();
-    const auto &record = meshes.Get(store_id);
-    return topology == 0u ? a.Triangles.First(record.TriangleData) : topology == 1u ? a.EdgeHalfedges.First(record.EdgeData) : a.Vertices.First(record.Vertices);
-}
 
 namespace {
 // Payload element IDs are relative to this canonical handle of the owner's element domain.
-uint32_t ElementOrigin(const MeshStore &meshes, const MeshBuffers &owner) {
-    return owner.RenderTopology == 0u ? 0u : ElementDomainFirst(meshes, owner.StoreId, owner.RenderTopology);
-}
-uint32_t ElementBlockCapacity(const MeshStore &meshes, uint32_t topology) {
-    const auto &a = meshes.Arenas();
-    const auto capacity = topology == 0u ? a.Triangles.Capacity() : topology == 1u ? a.EdgeHalfedges.Capacity() : a.Vertices.Capacity();
-    return capacity/MeshElementBlockSize;
+uint32_t ElementOrigin(const MeshStore &meshes, const MeshStore::Record &owner) {
+    return owner.RenderTopology == 0u ? 0u : meshes.RenderDomainFirst(owner, owner.RenderTopology);
 }
 } // namespace
 
-void PublishMeshletOwners(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers &owner, std::span<const Range> clusters, std::span<const uint32_t> blocks) {
+void PublishMeshletOwners(state::Scene &r, mtl::ComputeChain &chain, MeshStore::Record &owner, std::span<const Range> clusters, std::span<const uint32_t> blocks) {
     if (std::ranges::all_of(clusters,[](Range range) { return !range.Count; })) return;
-    if (owner.RenderTopology >= 3u || owner.StoreId == InvalidOffset) throw std::invalid_argument("Meshlet owners require a canonical render owner.");
-    auto &buffers = r.Context.get<GpuBuffers>();
-    const auto &meshes = r.Context.get<const MeshStore>();
+    if (owner.RenderTopology >= 3u || owner.ExtrasFaces.Count) throw std::invalid_argument("Meshlet owners require a canonical render owner.");
+    auto &meshes = r.Context.get<MeshStore>();
+    auto &render = meshes.Render();
     const auto origin = ElementOrigin(meshes,owner);
     if (owner.ElementMeshletOrigin != InvalidOffset && owner.ElementMeshletOrigin != origin) {
         throw std::invalid_argument("Meshlet element origin changed without retiring its owners.");
     }
-    auto &owners = buffers.ElementMeshlets[owner.RenderTopology];
-    const auto capacity = ElementBlockCapacity(meshes,owner.RenderTopology);
+    auto &owners = render.ElementMeshlets[owner.RenderTopology];
+    const auto capacity = meshes.WithRenderDomain(owner,owner.RenderTopology,[](const auto &arena, ElementSetRef) { return arena.Capacity(); })/MeshElementBlockSize;
     if (std::ranges::any_of(blocks,[&](uint32_t block) { return block >= capacity; })) throw std::out_of_range("Meshlet owner block exceeds its element domain.");
     owners.ReserveBlocks(capacity);
     // A payload block belongs to the one mesh owning its element block, so an unbound block is new to this owner.
@@ -46,7 +34,7 @@ void PublishMeshletOwners(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers
     owners.Values.Buffer.CaptureWriteRanges(payloads,sizeof(uint32_t));
     owner.ElementMeshletOrigin = origin;
     MeshletOwnersPushConstants pc{
-        .MeshletSlot=buffers.Meshlets.Buffer.Slot,.TriangleIdsSlot=buffers.MeshletTriangleIds.Buffer.Slot,
+        .MeshletSlot=render.Meshlets.Buffer.Slot,.TriangleIdsSlot=render.MeshletTriangleIds.Buffer.Slot,
         .Topology=owner.RenderTopology,.ElementOrigin=origin,.Owners=owners.Ref(),.BlockCount=capacity,
         .ErrorSlot=chain.Scratch.Buffer.Slot,
     };
@@ -61,18 +49,19 @@ void PublishMeshletOwners(state::Scene &r, mtl::ComputeChain &chain, MeshBuffers
     });
 }
 
-void RetireMeshletOwners(state::Scene &r, MeshBuffers &owner, std::span<const uint32_t> clusters) {
+void RetireMeshletOwners(state::Scene &r, MeshStore::Record &owner, std::span<const uint32_t> clusters) {
     if (clusters.empty() || owner.ElementMeshletOrigin == InvalidOffset) return;
-    auto &buffers = r.Context.get<GpuBuffers>();
-    auto &owners = buffers.ElementMeshlets[owner.RenderTopology];
+    auto &meshes = r.Context.get<MeshStore>();
+    auto &render = meshes.Render();
+    auto &owners = render.ElementMeshlets[owner.RenderTopology];
     std::vector<uint32_t> retired(clusters.begin(),clusters.end()), elements;
     std::ranges::sort(retired);
     for (const auto cluster : retired) {
-        const auto &record = buffers.Meshlets.Get({cluster,1u})[0];
+        const auto &record = render.Meshlets.Get({cluster,1u})[0];
         if (record.Topology != owner.RenderTopology || record.RefinedGroup != InvalidOffset) {
             throw std::invalid_argument("Meshlet owner retirement requires finest clusters of the owner's topology.");
         }
-        for (const auto id : buffers.MeshletTriangleIds.Get({record.TriangleOffset,record.TriangleCount}))
+        for (const auto id : render.MeshletTriangleIds.Get({record.TriangleOffset,record.TriangleCount}))
             elements.push_back(owner.ElementMeshletOrigin+id);
     }
     std::ranges::sort(elements);

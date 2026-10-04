@@ -10,7 +10,7 @@
 #include "render/LodNodeEdit.h"
 #include "metal/Dispatch.h"
 #include "render/MeshletBuild.h"
-#include "render/MeshletIndex.h"
+#include "mesh/MeshletIndex.h"
 #include "render/MeshletStorage.h"
 #include "state/Scene.h"
 
@@ -21,7 +21,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-std::vector<uint32_t> ClusterGroupClosure(const GpuBuffers &buffers, std::span<const uint32_t> seeds) {
+std::vector<uint32_t> ClusterGroupClosure(const RenderArenas &buffers, std::span<const uint32_t> seeds) {
     std::vector<uint32_t> closure(seeds.begin(), seeds.end());
     std::ranges::sort(closure);
     closure.erase(std::unique(closure.begin(), closure.end()), closure.end());
@@ -40,7 +40,7 @@ std::vector<uint32_t> ClusterGroupClosure(const GpuBuffers &buffers, std::span<c
     return closure;
 }
 
-void ReplaceGroupClusters(GpuBuffers &buffers, std::span<const uint32_t> removed, std::span<const uint32_t> added) {
+void ReplaceGroupClusters(RenderArenas &buffers, std::span<const uint32_t> removed, std::span<const uint32_t> added) {
     std::vector<uint32_t> groups;
     for (const auto list : {removed, added}) {
         for (const auto id : list) {
@@ -109,7 +109,7 @@ std::vector<std::vector<uint32_t>> InvalidateClusterGroups(state::Scene &r, std:
     std::vector<std::vector<uint32_t>> members(seeds.size());
     if (std::ranges::all_of(seeds, [](const auto &seed) { return seed.Groups.empty(); })) return members;
     const profile::CpuScope scope{"InvalidateClusterGroups"};
-    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &buffers = r.Context.get<MeshStore>().Render();
     std::vector<std::vector<uint32_t>> closures(seeds.size());
     std::vector<MeshletIndexEdit> edits;
     std::vector<uint32_t> edited;
@@ -124,14 +124,14 @@ std::vector<std::vector<uint32_t>> InvalidateClusterGroups(state::Scene &r, std:
             members[i].insert(members[i].end(), ids.begin(), ids.end());
         }
         std::ranges::sort(members[i]);
-        edits.push_back({.Root = MeshBuffersOf(r, seeds[i].Entity).DirtyGroupRoot, .Added = closure});
+        edits.push_back({.Root = RecordOf(r, seeds[i].Entity).DirtyGroupRoot, .Added = closure});
         edited.push_back(i);
     }
     buffers.ActiveMeshlets.Update(edits);
     auto &lod_dirty = r.Context.get<GpuSceneState>().LodDirty;
     for (uint32_t e = 0u; e < edited.size(); ++e) {
         const auto entity = seeds[edited[e]].Entity;
-        MeshBuffersOf(r, entity).DirtyGroupRoot = edits[e].Root;
+        EditRecordOf(r, entity).DirtyGroupRoot = edits[e].Root;
         lod_dirty.insert(entity);
     }
     return members;
@@ -154,7 +154,7 @@ struct PoolBuild {
     ClusterLodBuild Build;
 };
 
-void GatherPool(const GpuBuffers &buffers, const MeshStore &meshes, const Mesh &mesh, PoolBuild &pool) {
+void GatherPool(const RenderArenas &buffers, const MeshStore &meshes, const Mesh &mesh, PoolBuild &pool) {
     const auto records = buffers.Meshlets.Buffer.GetSpan<MeshletRecord>();
     const auto corners = buffers.MeshletVertexCorners.Buffer.GetSpan<uint32_t>();
     const auto local = buffers.MeshletLocalTriangles.Buffer.GetSpan<uint8_t>();
@@ -194,7 +194,7 @@ void GatherPool(const GpuBuffers &buffers, const MeshStore &meshes, const Mesh &
 
 // A group of original geometry sits at level zero, and any other group sits one level above the groups its members came from.
 // Members of one group share a level, so the first member decides.
-uint32_t GroupLevel(const GpuBuffers &buffers, uint32_t group, std::unordered_map<uint32_t, uint32_t> &levels) {
+uint32_t GroupLevel(const RenderArenas &buffers, uint32_t group, std::unordered_map<uint32_t, uint32_t> &levels) {
     if (const auto found = levels.find(group); found != levels.end()) return found->second;
     const auto links = buffers.GroupLinks.Get({group, 1u})[0];
     uint32_t level = 0;
@@ -209,7 +209,7 @@ uint32_t GroupLevel(const GpuBuffers &buffers, uint32_t group, std::unordered_ma
 
 // Places the pool's rebuilt groups and new clusters, points its members at their new groups, and links every new group.
 // Appends the new clusters and groups.
-void CommitPool(GpuBuffers &buffers, const PoolBuild &pool, std::vector<uint32_t> &added, std::vector<uint32_t> &new_groups) {
+void CommitPool(RenderArenas &buffers, const PoolBuild &pool, std::vector<uint32_t> &added, std::vector<uint32_t> &new_groups) {
     const auto &build = pool.Build;
     Range groups,vertices,triangles;
     const auto allocation=PublishClusterLodStorage(buffers,build,std::array{pool.Primitive},groups,vertices,triangles);
@@ -248,7 +248,8 @@ void CommitPool(GpuBuffers &buffers, const PoolBuild &pool, std::vector<uint32_t
 } // namespace
 
 void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities) {
-    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &meshes = r.Context.get<MeshStore>();
+    auto &buffers = meshes.Render();
     // One owner's stale closure, the coarse clusters it retires and its pools by primitive.
     struct OwnerRepair {
         state::Entity Entity;
@@ -257,7 +258,7 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
     };
     std::vector<OwnerRepair> repairs;
     for (const auto entity : entities) {
-        auto &owner = MeshBuffersOf(r, entity);
+        auto &owner = EditRecordOf(r, entity);
         if (buffers.ActiveMeshlets.Count(owner.DirtyGroupRoot)) {
             repairs.push_back({.Entity = entity});
             continue;
@@ -267,12 +268,11 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
     }
     if (repairs.empty()) return;
     const profile::CpuScope scope{"ClusterLodRepair"};
-    const auto &meshes = r.Context.get<const MeshStore>();
     {
         const profile::CpuScope stage{"LodRepairGather"};
         const auto records = buffers.Meshlets.Buffer.GetSpan<MeshletRecord>();
         for (auto &repair : repairs) {
-            const auto &owner = MeshBuffersOf(r, repair.Entity);
+            const auto &owner = RecordOf(r, repair.Entity);
             const Mesh mesh{meshes, owner.StoreId};
             std::vector<uint32_t> seeds;
             buffers.ActiveMeshlets.ForEach(owner.DirtyGroupRoot, [&](uint32_t group) { seeds.push_back(group); });
@@ -350,7 +350,7 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
                 touched[i].insert(touched[i].end(), pool.Members.begin(), pool.Members.end());
             }
             std::ranges::sort(added[i]);
-            const auto &owner = MeshBuffersOf(r, repairs[i].Entity);
+            const auto &owner = RecordOf(r, repairs[i].Entity);
             ownership.push_back({.Root = owner.MeshletRoot, .Added = added[i]});
             ownership.push_back({.Root = owner.GroupRoot, .Added = new_groups[i], .Removed = repairs[i].Closure});
         }
@@ -360,11 +360,11 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
     std::vector<LodNodeRefit> refits;
     for (uint32_t i = 0u; i < repairs.size(); ++i) {
         const auto &repair = repairs[i];
-        auto &owner = MeshBuffersOf(r, repair.Entity);
+        auto &owner = EditRecordOf(r, repair.Entity);
         owner.MeshletRoot = ownership[2u * i].Root;
         owner.GroupRoot = ownership[2u * i + 1u].Root;
         ++owner.MeshletRevision;
-        buffers.UpdatePosedMeshletBlocks(owner, added[i]);
+        UpdatePosedMeshletBlocks(r,owner, added[i]);
         std::vector<LodClusterRun> runs;
         for (const auto id : added[i]) {
             const auto primitive = buffers.Meshlets.Get({id, 1u})[0].Primitive;
@@ -376,9 +376,9 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
     RecordLodNodeRefits(r, chain, refits);
     // The retired clusters and groups stay allocated until the recorded refits complete.
     chain.AfterSubmit([&r, repairs = std::move(repairs)] {
-        auto &buffers = r.Context.get<GpuBuffers>();
+        auto &buffers = r.Context.get<MeshStore>().Render();
         for (const auto &repair : repairs) {
-            auto &owner = MeshBuffersOf(r, repair.Entity);
+            auto &owner = EditRecordOf(r, repair.Entity);
             RetireMeshletStorage(r, owner, repair.Removed);
             std::vector<Range> runs_released, groups_released;
             for (const auto group : repair.Closure) {
@@ -391,6 +391,6 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
             buffers.ActiveMeshlets.Release(owner.DirtyGroupRoot);
             owner.DirtyGroupRoot = InvalidOffset;
         }
-        buffers.PreludeStale = true;
+        r.Context.get<GpuBuffers>().PreludeStale = true;
     });
 }

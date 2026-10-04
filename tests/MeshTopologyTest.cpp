@@ -149,13 +149,13 @@ struct Fixture : Engine {
 
 // The small mesh's finest render clusters must contain the expected kind and primitive count.
 void ExpectRenderTopology(const Fixture &f, uint32_t id, uint32_t topology, uint32_t primitives) {
-    const auto &buffers = f.R.Context.get<const GpuBuffers>();
-    const auto &owner = buffers.MeshOf(id);
+    const auto &meshes = f.R.Context.get<const MeshStore>();
+    const auto &owner = meshes.Get(id);
     expect(owner.RenderTopology == topology);
-    expect(buffers.MeshletCount(owner) > 0u);
+    expect(meshes.MeshletCount(owner) > 0u);
     uint32_t actual = 0u;
-    buffers.ActiveMeshlets.ForEach(owner.MeshletRoot, [&](uint32_t handle) {
-        const auto &meshlet = buffers.Meshlets.Get({handle, 1u})[0];
+    meshes.Render().ActiveMeshlets.ForEach(owner.MeshletRoot, [&](uint32_t handle) {
+        const auto &meshlet = meshes.Render().Meshlets.Get({handle, 1u})[0];
         expect(meshlet.Topology == topology);
         actual += meshlet.TriangleCount;
     });

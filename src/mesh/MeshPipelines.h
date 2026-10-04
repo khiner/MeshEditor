@@ -124,7 +124,9 @@ enum class MeshPass : uint8_t {
     MeshletBuildEmit,
     MeshletBuildPrimitives,
     CloneCopyByteRuns,
+    CloneGatherByRank,
     CloneRebaseIndexRuns,
+    CloneRebaseByRank,
     CloneCopyReferencePairs,
     Count,
 };

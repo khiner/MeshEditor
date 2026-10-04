@@ -4,7 +4,6 @@
 
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
-#include "render/GpuBuffers.h"
 #include "state/Scene.h"
 #include "numeric/dvec3.h"
 
@@ -30,11 +29,11 @@ struct VolumeSource {
     std::span<const Vertex> Vertices;
     TriangleVertexView Triangles;
 };
-VolumeSource Source(const state::Scene &r,const MeshBuffers &owner) {
+VolumeSource Source(const state::Scene &r,const MeshStore::Record &owner) {
     const auto &meshes=r.Context.get<const MeshStore>();
     return {meshes.Arenas().Vertices.Buffer.GetSpan<Vertex>(),Mesh{meshes,owner.StoreId}.TriangleVertices()};
 }
-double MeshletVolume(const GpuBuffers &gpu,const VolumeSource &source,uint32_t id) {
+double MeshletVolume(const RenderArenas &gpu,const VolumeSource &source,uint32_t id) {
     const auto meshlet=gpu.Meshlets.Get({id,1u})[0];
     double sum=0.0;
     for (const auto triangle:gpu.MeshletTriangleIds.Get({meshlet.TriangleOffset,meshlet.TriangleCount})) {
@@ -78,9 +77,10 @@ uint64_t Key(const Node &node) { return uint64_t(node.Key.y)<<32u | node.Key.x; 
 uvec2 KeyWords(uint64_t key) { return {uint32_t(key),uint32_t(key>>32u)}; }
 bool Before(uint64_t a,uint32_t ai,uint64_t b,uint32_t bi) { return a==b ? ai<bi : a<b; }
 
+// The root is a local copy, which the caller records only when the edit moved it.
 struct Tree {
-    GpuBuffers &Gpu;
-    MeshBuffers &Owner;
+    RenderArenas &Gpu;
+    uint32_t Root;
     VolumeSource Source;
     std::unordered_map<uint32_t,Node> Pending;
     Node Read(uint32_t id) const {
@@ -111,7 +111,7 @@ struct Tree {
         while (id!=InvalidOffset) { Fix(id); id=Read(id).Parent; }
     }
     void Link(uint32_t parent,uint32_t old_child,uint32_t child) {
-        if (parent==InvalidOffset) { Owner.SpatialRoot=child; return; }
+        if (parent==InvalidOffset) { Root=child; return; }
         auto node=Read(parent);
         if (node.Left==old_child) node.Left=child;
         else if (node.Right==old_child) node.Right=child;
@@ -143,8 +143,8 @@ struct Tree {
         const auto volume=VolumeBits(MeshletVolume(Gpu,Source,id));
         Write(id,{.Box=Bounds(record),.Key=KeyWords(key),.Meshlet=id,
             .LocalVolume=volume,.SubtreeVolume=volume});
-        if (Owner.SpatialRoot==InvalidOffset) { Owner.SpatialRoot=id; return; }
-        auto parent=Owner.SpatialRoot;
+        if (Root==InvalidOffset) { Root=id; return; }
+        auto parent=Root;
         for (;;) {
             auto value=Read(parent);
             const bool left=Before(key,id,Key(value),parent);
@@ -179,13 +179,13 @@ struct Tree {
 
 } // namespace
 
-void BuildMeshletSpatial(state::Scene &r,std::span<MeshBuffers *const> owners) {
-    auto &gpu=r.Context.get<GpuBuffers>();
+void BuildMeshletSpatial(state::Scene &r,std::span<MeshStore::Record *const> owners) {
+    auto &gpu=r.Context.get<MeshStore>().Render();
     std::vector<std::vector<uint32_t>> finest(owners.size());
     for (uint32_t i=0u;i<owners.size();++i) {
         const auto &owner=*owners[i];
         if (owner.SpatialRoot!=InvalidOffset) throw std::logic_error("Spatial tree already exists.");
-        if (owner.StoreId==InvalidOffset) continue;
+        if (owner.ExtrasFaces.Count) continue;
         auto &ids=finest[i];
         ids.reserve(owner.Level0Count);
         gpu.ActiveMeshlets.ForEach(owner.MeshletRoot,[&](uint32_t id) {
@@ -240,21 +240,32 @@ void BuildMeshletSpatial(state::Scene &r,std::span<MeshBuffers *const> owners) {
     });
 }
 
-void ReplaceMeshletSpatial(state::Scene &r,MeshBuffers &owner,std::span<const uint32_t> removed,std::span<const uint32_t> added) {
+namespace {
+// Runs `edit` over the owner's tree and records the root only when the edit moved it.
+void EditTree(state::Scene &r,const MeshStore::Record &owner,auto &&edit) {
+    auto &meshes=r.Context.get<MeshStore>();
+    Tree tree{meshes.Render(),owner.SpatialRoot,Source(r,owner)};
+    edit(tree);
+    tree.Flush();
+    if (tree.Root!=owner.SpatialRoot) meshes.WriteRecord(owner.StoreId).SpatialRoot=tree.Root;
+}
+} // namespace
+
+void ReplaceMeshletSpatial(state::Scene &r,const MeshStore::Record &owner,std::span<const uint32_t> removed,std::span<const uint32_t> added) {
     const profile::CpuScope scope{"ReplaceMeshletSpatial"};
-    Tree tree{r.Context.get<GpuBuffers>(),owner,Source(r,owner)};
-    for (const auto id:removed) tree.Remove(id);
-    for (const auto id:added) tree.Insert(id);
-    tree.Flush();
+    EditTree(r,owner,[&](Tree &tree) {
+        for (const auto id:removed) tree.Remove(id);
+        for (const auto id:added) tree.Insert(id);
+    });
 }
 
-void RefitMeshletSpatial(state::Scene &r,MeshBuffers &owner,std::span<const uint32_t> changed) {
-    Tree tree{r.Context.get<GpuBuffers>(),owner,Source(r,owner)};
-    for (const auto id:changed) { tree.Remove(id); tree.Insert(id); }
-    tree.Flush();
+void RefitMeshletSpatial(state::Scene &r,const MeshStore::Record &owner,std::span<const uint32_t> changed) {
+    EditTree(r,owner,[&](Tree &tree) {
+        for (const auto id:changed) { tree.Remove(id); tree.Insert(id); }
+    });
 }
 
-SpatialSurfacePoint ClosestMeshletPoint(const GpuBuffers &gpu,const MeshBuffers &owner,
+SpatialSurfacePoint ClosestMeshletPoint(const RenderArenas &gpu,const MeshStore::Record &owner,
     std::span<const Vertex> vertices,TriangleVertexView triangles,vec3 point) {
     SpatialSurfacePoint best;
     if (owner.SpatialRoot==InvalidOffset) return best;
@@ -298,7 +309,7 @@ SpatialSurfacePoint ClosestMeshletPoint(const GpuBuffers &gpu,const MeshBuffers 
     return best;
 }
 
-std::optional<double> MeshletEnclosedVolume(const GpuBuffers &gpu,const MeshBuffers &owner,const Mesh &mesh) {
+std::optional<double> MeshletEnclosedVolume(const RenderArenas &gpu,const MeshStore::Record &owner,const Mesh &mesh) {
     if (owner.SpatialRoot==InvalidOffset || !mesh.HasClosedSurface()) return std::nullopt;
     return std::abs(UnpackVolume(gpu.MeshletSpatialNodes.Get({owner.SpatialRoot,1u})[0].SubtreeVolume));
 }

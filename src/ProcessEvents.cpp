@@ -31,7 +31,6 @@
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "render/ElementWorkOps.h"
-#include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/MeshletBoundsRefit.h"
 #include "render/ClusterLodRepair.h"
@@ -110,13 +109,14 @@ void SetEditMode(state::Scene &r, state::Entity viewport, Element mode) {
 void UpdateSilhouetteWork(state::Scene &r, state::Entity viewport) {
     const auto &primaries = r.get<const EditPrimaries>(viewport).All;
     auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &meshes = r.Context.get<const MeshStore>();
     GpuBuffers::MeshletFlagWork work{};
     for (const auto [entity, instance, render_instance] : r.view<const Selected, const Instance, const RenderInstance>(state::Exclude<Hidden>).each()) {
         if (render_instance.BufferIndex == UINT32_MAX || !IsSilhouetteEligible(r, instance.Entity)) continue;
         if (const auto primary = primaries.find(instance.Entity); primary != primaries.end() && primary->second == entity) continue;
-        const auto &mb = MeshBuffersOf(std::as_const(r), instance.Entity);
-        work.Nodes += buffers.ActiveMeshlets.Count(mb.NodeRoot);
-        work.Meshlets += buffers.MeshletCount(mb);
+        const auto &mb = RecordOf(r, instance.Entity);
+        work.Nodes += meshes.Render().ActiveMeshlets.Count(mb.NodeRoot);
+        work.Meshlets += meshes.MeshletCount(mb);
     }
     buffers.FlagWork(uint32_t(MeshletInstanceFlag::Silhouette)) = work;
 }
@@ -135,6 +135,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     auto &slots = r.Context.get<mtl::BindlessSet>();
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &meshes = r.Context.get<MeshStore>();
+    auto &render = meshes.Render();
     auto &textures = r.Context.get<TextureStore>();
     auto &environments = r.Context.get<EnvironmentStore>();
     auto &targets = r.Context.get<RenderTargets>();
@@ -516,10 +517,6 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     // New, restored and rebuilt meshes and new bone meshes build their meshlets in one batch after the geometry block.
     std::vector<state::Entity> meshlet_meshes{sync.NewMeshEntities}, bone_mesh_entities;
     if (!sync.NewMeshEntities.empty()) {
-        for (auto entity : sync.NewMeshEntities) {
-            const auto mesh = GetMesh(r, entity);
-            AssignFaceIndices(meshes, mesh, buffers.MeshOf(mesh.GetStoreId()));
-        }
         // Derive shading state for all new and restored meshes in one batch.
         mtl::ComputeChain chain{buffers.Ctx};
         FinalizeNewMeshShading(r, chain, sync.NewMeshEntities);
@@ -536,32 +533,25 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         static const auto &sphere_faces = sphere.Mesh.FaceCorners;
         static const auto sphere_verts = iota(0u, uint32_t(sphere.Mesh.Positions.size())) | to<std::vector>();
 
-        uint32_t total_face = 0, total_edge = 0, total_vertex = 0;
+        uint32_t total_face = 0, total_edge = 0;
         for (auto entity : sync.NewExtrasEntities) {
             if (r.all_of<ArmatureObject>(entity)) {
                 total_face += bone_faces.size();
                 total_edge += bone.AdjacencyIndices.size();
-                total_vertex += bone_verts.size();
             } else if (r.all_of<BoneJoint>(entity)) {
                 total_face += sphere_faces.size();
                 total_edge += sphere.OutlineIndices.size();
-                total_vertex += sphere_verts.size();
             }
         }
-        buffers.ReserveAdditionalIndices(total_face, total_edge, total_vertex);
+        render.ExtrasFaces.ReserveAdditional(total_face);
+        render.ExtrasEdges.ReserveAdditional(total_edge);
 
         for (auto entity : sync.NewExtrasEntities) {
             if (r.all_of<ArmatureObject>(entity)) {
-                auto &mb = MeshBuffersOf(r, entity);
-                mb.FaceIndices = buffers.CreateIndices(bone_faces, IndexKind::Face, mb.Vertices.Offset);
-                mb.VertexIndices = buffers.CreateIndices(bone_verts, IndexKind::Vertex, mb.Vertices.Offset);
-                mb.EdgeIndices = buffers.CreateIndices(bone.AdjacencyIndices, IndexKind::Edge, mb.Vertices.Offset);
+                meshes.SetExtrasIndices(*DrawnStoreId(r, entity), bone_faces, bone.AdjacencyIndices);
                 bone_mesh_entities.push_back(entity);
             } else if (r.all_of<BoneJoint>(entity)) {
-                auto &mb = MeshBuffersOf(r, entity);
-                mb.FaceIndices = buffers.CreateIndices(sphere_faces, IndexKind::Face, mb.Vertices.Offset);
-                mb.EdgeIndices = buffers.CreateIndices(sphere.OutlineIndices, IndexKind::Edge, mb.Vertices.Offset);
-                mb.VertexIndices = buffers.CreateIndices(sphere_verts, IndexKind::Vertex, mb.Vertices.Offset);
+                meshes.SetExtrasIndices(*DrawnStoreId(r, entity), sphere_faces, sphere.OutlineIndices);
                 bone_mesh_entities.push_back(entity);
             }
         }
@@ -976,7 +966,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     {
         const bool is_object_mode = interaction_mode == InteractionMode::Object;
         for (const auto arm_obj_entity : bone_state_dirty) {
-            if (!r.valid(arm_obj_entity) || !TryMeshBuffers(r, arm_obj_entity)) continue;
+            if (!r.valid(arm_obj_entity) || !TryRecordOf(r, arm_obj_entity)) continue;
             const auto &arm_obj = r.get<const ArmatureObject>(arm_obj_entity);
             // Whether the bones draw their wires follows the armature's selection.
             scene_state.DisplayDirty.insert(arm_obj_entity);
@@ -1343,7 +1333,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             .InstanceBoundsSlot = buffers.Instances.BoundsBuffer.Slot,
             .MaterialSlot = buffers.Materials.Slot,
             .PrimitiveMaterialSlot = mesh_slots.PrimitiveMaterial,
-            .MeshRecordSlot = buffers.MeshRecords.Buffer.Slot,
+            .MeshRecordSlot = render.MeshRecords.Buffer.Slot,
             .InstanceRecordSlot = buffers.Instances.RecordBuffer.Slot,
             .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,

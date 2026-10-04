@@ -1,4 +1,5 @@
 #pragma once
+#include "mesh/MeshStore.h"
 #include "Range.h"
 #include "gpu/ElementWork.h"
 #include "metal/BufferArena.h"
@@ -6,7 +7,6 @@
 #include <span>
 #include <vector>
 
-struct MeshBuffers;
 namespace mtl { struct ComputeChain; }
 
 // A triangle edit's canonical membership, as finished work in one storage arena.
@@ -34,7 +34,7 @@ struct MeshletPatch {
 
 // Plans a triangle edit's render repair on the host from the owner's triangle owners and cluster payloads.
 // Source owners and cluster/group records must remain live throughout.
-MeshletPatch PlanMeshletPatch(state::Scene &, const MeshBuffers &, const BufferArena<uint32_t> &storage, const MeshletPatchInput &);
+MeshletPatch PlanMeshletPatch(state::Scene &, const MeshStore::Record &, const BufferArena<uint32_t> &storage, const MeshletPatchInput &);
 
 // One fragment's clusters and the primitive, group and traversal leaf they join.
 struct MeshletPatchAdoptJob {
@@ -47,5 +47,5 @@ struct MeshletPatchAdoptJob {
 // The host publishes their membership, traversal leaves and element owner blocks, and the chain writes their owner values.
 // Blocks names the canonical element blocks the fragments hold, and the fragments become empty.
 // Returns the adopted clusters in ascending order.
-std::vector<uint32_t> AdoptMeshletFragments(state::Scene &, mtl::ComputeChain &, MeshBuffers &, std::span<MeshBuffers> fragments,
+std::vector<uint32_t> AdoptMeshletFragments(state::Scene &, mtl::ComputeChain &, MeshStore::Record &, std::span<MeshStore::Record> fragments,
                                             std::span<const MeshletPatchAdoptJob> jobs, std::span<const uint32_t> blocks);

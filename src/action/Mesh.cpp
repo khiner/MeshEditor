@@ -31,8 +31,6 @@
 #include "numeric/QuaternionMath.h"
 #include "object/ObjectOps.h"
 #include "project/Project.h"
-#include "render/GpuBufferOps.h"
-#include "render/MeshBuffers.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/SelectionState.h"
@@ -127,7 +125,7 @@ std::vector<state::Entity> SelectedEditMeshes(const state::Scene &r, state::Enti
 // Whether a published in-place edit repairs its record's triangle render, which needs a triangle render owner and faces left after the edit.
 // The unretired source faces still count, so the edit leaves faces when more than its retired faces are live.
 bool RepairsTriangleRender(const state::Scene &r, state::Entity entity, const MeshTopologyEdit &edit) {
-    const auto *owner=TryMeshBuffers(r,entity);
+    const auto *owner=TryRecordOf(r,entity);
     return owner && owner->StoreId==edit.SourceId && owner->RenderTopology==0u &&
         Mesh{r.Context.get<const MeshStore>(),edit.SourceId}.FaceCount()>edit.Output->RetiredCounts[1];
 }
@@ -137,16 +135,14 @@ bool RepairsTriangleRender(const state::Scene &r, state::Entity entity, const Me
 // A record without a render owner is a newly created canonical mesh.
 // A point or line record's moved elements join `element_repairs`, which repair together.
 void FinishTopologyEdit(state::Scene &r, state::Entity entity, const MeshTopologyTask &task, MeshTopologyEdit &edit, std::vector<ElementMeshletRepair> &element_repairs) {
-    auto &buffers=r.Context.get<GpuBuffers>();
     auto &meshes=r.Context.get<MeshStore>();
-    const auto *render_owner=TryMeshBuffers(r,entity);
-    const bool ready=render_owner && render_owner->StoreId==task.SourceId;
+    const auto *render_owner=TryRecordOf(r,entity);
+    const bool ready=render_owner && render_owner->StoreId==task.SourceId && render_owner->RenderTopology!=InvalidOffset;
     UpdatePoseMembership(r,edit);
     bool repaired=false;
     if (ready) {
-        auto &owner=buffers.MeshOf(task.SourceId);
+        auto &owner=meshes.WriteRecord(task.SourceId);
         const Mesh mesh{meshes,task.SourceId};
-        owner.Vertices.Count=mesh.VertexCount();
         repaired=mesh.PrimitiveTopology()==owner.RenderTopology;
         // The drawn topology changes, so the instance flags that depend on it are rederived.
         if (!repaired) RequestRender(r,RenderRequest::Rebuild);
@@ -178,7 +174,7 @@ void FinishTopologyEdit(state::Scene &r, state::Entity entity, const MeshTopolog
             (void)pipelines[MeshPass::MeshletBoundsRefit].State();
         }
     }
-    buffers.RefreshMeshBinding(r,task.SourceId);
+    RefreshMeshBinding(r,task.SourceId);
     r.remove<PrimitiveShape,MeshActiveElement>(entity);
     r.emplace_or_replace<MeshGeometryDirty>(entity,EditSelectionAfter::Keep,repaired);
     r.Context.get<GpuSceneState>().EditSelectionDirty=true;
@@ -203,14 +199,8 @@ void RunTopologyAction(state::Scene &r, std::span<const state::Entity> mesh_enti
 // Emplaces a published copied output's render buffers as a mesh gaining its first faces, and returns the build of its finest meshlets.
 // The edit derived its normals and corner classes, so the output skips the new-mesh sync.
 MeshletBuildSource CopiedOutputBuild(state::Scene &r, const MeshTopologyEdit &edit) {
-    auto &buffers=r.Context.get<GpuBuffers>();
-    const auto &meshes=r.Context.get<const MeshStore>();
-    const auto &vertices=meshes.Arenas().Vertices;
-    const auto set=meshes.Get(edit.StoreId).Vertices;
-    auto &face=buffers.EmplaceMesh(edit.StoreId,{{vertices.First(set),vertices.Count(set)},vertices.Buffer.Slot});
-    AssignFaceIndices(meshes,Mesh{meshes,edit.StoreId},face);
-    return {.Destination=&face,.Mesh=BuildMeshRecord(buffers,face,meshes,edit.StoreId,true,false),
-        .StoreId=edit.StoreId,.Topology=0u,.ElementCount=edit.AddedTriangleCount,.Elements=edit.AddedTriangles};
+    auto &face=r.Context.get<MeshStore>().WriteRecord(edit.StoreId);
+    return {.Destination=&face,.Topology=0u,.ElementCount=edit.AddedTriangleCount,.Elements=edit.AddedTriangles};
 }
 
 // Every mesh's edit shares the action's chain, construction's submits, each publication submit, one render repair and one selection update.
@@ -921,7 +911,7 @@ bool UpdateInsetPreview(state::Scene &r, state::Entity viewport, const Inset &in
     const auto &scene=r.Context.get<const GpuSceneState>();
     std::vector<MeshletBoundsRefitJob> refits;
     for (const auto &entry:cache.Entries)
-        refits.push_back({&MeshBuffersOf(r,entry.Entity),&gpu.GeometryWork,scene.EditWork.at(entry.Entity).Meshlets});
+        refits.push_back({&EditRecordOf(r,entry.Entity),&gpu.GeometryWork,scene.EditWork.at(entry.Entity).Meshlets});
     {
         const profile::CpuScope refit_scope{"InsetRefitPass"};
         RefitCanonicalMeshletBounds(r,chain,refits);

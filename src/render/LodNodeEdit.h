@@ -1,11 +1,11 @@
 #pragma once
+#include "mesh/MeshStore.h"
 #include "Range.h"
 #include "gpu/LodNodeRefitPushConstants.h"
 #include <cstdint>
 #include <span>
 #include <vector>
 
-struct MeshBuffers;
 namespace mtl { struct ComputeChain; }
 namespace state { struct Scene; }
 
@@ -31,7 +31,7 @@ struct LodNodeRefit {
 // An emptied leaf, and a node its removal leaves without children, leave their parents and release their ids, while a primitive's root stays.
 // Each change moves the parent's children to one new contiguous run, and a root that splits adds a level below itself, so each tree stays as balanced as the build makes it.
 // Coarse geometry and group errors stay as they are.
-[[nodiscard]] LodNodeRefit EditLodNodes(state::Scene &, mtl::ComputeChain &, MeshBuffers &, std::span<const uint32_t> removed, std::span<const LodClusterRun> added,
+[[nodiscard]] LodNodeRefit EditLodNodes(state::Scene &, mtl::ComputeChain &, MeshStore::Record &, std::span<const uint32_t> removed, std::span<const LodClusterRun> added,
                                        std::span<const uint32_t> touched);
 // Records the refits depth by depth, deepest first, with every owner's nodes at a depth in one concurrent group.
 // A node at a depth reads only its children's bounds, which the deeper groups write first.

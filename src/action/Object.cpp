@@ -17,13 +17,12 @@
 #include "metal/Dispatch.h"
 #include "numeric/VectorMath.h"
 #include "object/ObjectOps.h"
-#include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
+#include "render/GpuSceneState.h"
+#include "render/MeshletBuildGpu.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
-#include "render/MeshBuffers.h"
-#include "render/RenderClone.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/SceneGraphOps.h"
@@ -197,9 +196,20 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         }
         if (!clones.empty()) {
             mtl::ComputeChain chain{meshes.BufferContext()};
-            CloneRenderRecords(r, chain, copies, sources, clones);
             copies.Encode(chain, GetMeshPipelines(r));
             chain.Submit();
+            // A clone with render records draws them at once and takes its source's pending repairs.
+            auto &scene = r.Context.get<GpuSceneState>();
+            for (const auto id : clones) {
+                RefreshMeshBinding(r, id);
+                const auto &record = meshes.Get(id);
+                const auto entity = MeshEntityOf(r, id);
+                if (entity == state::Null || record.RenderTopology == InvalidOffset) continue;
+                if (record.PositionDirtyRoot != InvalidOffset) scene.PositionDirty.insert(entity);
+                if (record.DirtyGroupRoot != InvalidOffset) scene.LodDirty.insert(entity);
+                if (!meshes.ClusterGroupCount(record)) scene.LodDemand.insert(entity);
+            }
+            r.Context.get<GpuBuffers>().PreludeStale = true;
         }
         begin_translate();
     };

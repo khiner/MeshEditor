@@ -1,14 +1,12 @@
 #pragma once
+#include "mesh/MeshStore.h"
 
 #include "selection/Selection.h"
 #include "state/Entity.h"
 #include <span>
 #include <vector>
-struct Mesh;
 struct GpuBuffers;
 struct GpuSceneState;
-struct MeshBuffers;
-struct MeshStore;
 namespace mtl { struct ComputeChain; }
 
 struct SyncResult {
@@ -39,8 +37,6 @@ void RefreshClusterLodAttributes(state::Scene &, mtl::ComputeChain &, std::span<
 bool EditPinsFinest(const selection::PrimaryEditInstanceMap &, const GpuSceneState &, state::Entity mesh_entity);
 // Builds the cluster hierarchy for each face mesh that lacks one and that an unpinned instance draws, and returns whether any mesh took one.
 bool BuildDemandedClusterLods(state::Scene &, state::Entity viewport);
-// Borrows a dense canonical face corner set as the mesh's triangle indices.
-void AssignFaceIndices(const MeshStore &, const Mesh &, MeshBuffers &);
 // Derives a RenderInstance for the Instance of each entity in Change::InstanceVisibility, and writes its Hidden bit into a placed instance's state.
 // Returns whether a placed instance's visibility changed.
 bool DeriveRenderInstances(state::Scene &);

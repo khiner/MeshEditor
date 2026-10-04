@@ -1,6 +1,5 @@
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
-#include "render/MeshBuffers.h"
 #include "scene/WorldTransform.h"
 #include "selection/BoneSelection.h"
 #include "snapshot/SnapshotRegistration.h"

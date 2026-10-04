@@ -5,39 +5,28 @@
 #include "SlottedRange.h"
 #include "gpu/AABB.h"
 #include "gpu/BindlessBindings.h"
-#include "gpu/ClusterGroup.h"
-#include "gpu/ClusterGroupLinks.h"
 #include "gpu/InstanceRecord.h"
 #include "gpu/LightRecord.h"
 #include "gpu/LodFrontierBlockState.h"
 #include "gpu/LodFrontierEntry.h"
 #include "gpu/LodFrontierState.h"
-#include "gpu/LodNode.h"
 #include "gpu/MeshDispatchArgs.h"
-#include "gpu/MeshRecord.h"
 #include "gpu/MeshletCullBlockState.h"
 #include "gpu/MeshletInstanceFlag.h"
-#include "gpu/MeshletRecord.h"
 #include "gpu/MeshletRoute.h"
 #include "gpu/MeshletRouteState.h"
-#include "gpu/MeshletSpatialNode.h"
 #include "gpu/MeshletWorkRange.h"
 #include "gpu/MeshletWorkState.h"
 #include "gpu/OverlayJob.h"
 #include "gpu/PBRMaterial.h"
-#include "gpu/PrimitiveRecord.h"
 #include "gpu/SceneViewUBO.h"
 #include "gpu/Transform.h"
 #include "gpu/Vertex.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/VisibleMeshlet.h"
 #include "gpu/WorkspaceLights.h"
-#include "mesh/ElementAttribute.h"
 #include "metal/Buffer.h"
 #include "metal/BufferArena.h"
-#include "render/ClusterLod.h"
-#include "render/MeshBuffers.h"
-#include "render/MeshletIndex.h"
 #include "render/PoseAttributeStore.h"
 #include "render/VertexBoundsStore.h"
 #include "viewport/RenderView.h"
@@ -110,6 +99,8 @@ struct MeshletCullOutput {
     uint32_t ChunkCount{};
 };
 
+struct RenderArenas;
+
 struct GpuBuffers {
     static constexpr uint32_t MaxSelectableObjects{1u << 20};
     // Motion-blur steps use separate dynamic view-UBO offsets in one submission.
@@ -123,95 +114,14 @@ struct GpuBuffers {
     }
 
     GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots);
-    void Track(store::History &);
-    // Rebinds the render records a restore changed and returns their store IDs.
-    std::vector<uint32_t> RestoreMeshBindings(state::Scene &);
-    void RefreshMeshBinding(state::Scene &,uint32_t store_id);
-
-    void ReserveAdditionalIndices(uint32_t face, uint32_t edge, uint32_t vertex);
-
-    SlottedRange CreateIndices(std::span<const uint32_t> indices, IndexKind index_kind, uint32_t vertex_first);
-
-    void Release(RenderBuffers &buffers);
-    void Release(MeshBuffers &buffers);
-    void Release(std::span<MeshBuffers *const>);
-    void ReleaseMeshlets(MeshBuffers &buffers);
-    void ReleaseMeshlets(std::span<MeshBuffers *const>);
-    // Allocates `count` cluster records and extends the LOD leaf and spatial mirrors over them.
-    Range AllocateMeshlets(uint32_t count);
-    // Releases the clusters' payload ranges, which their host records name, and their identities.
-    void ReleaseMeshletStorage(std::span<const uint32_t> handles);
-    uint32_t MeshletCount(const MeshBuffers &mb) const { return ActiveMeshlets.Count(mb.MeshletRoot); }
-    uint32_t FirstMeshlet(const MeshBuffers &mb) const { return ActiveMeshlets.First(mb.MeshletRoot); }
-    uint32_t PrimitiveCount(const MeshBuffers &mb) const { return ActiveMeshlets.Count(mb.PrimitiveRoot); }
-    void ForEachPrimitive(const MeshBuffers &mb, auto &&fn) const {
-        ActiveMeshlets.ForEach(mb.PrimitiveRoot,[&](uint32_t id) { fn(id,Primitives.Get({id,1u})[0]); });
-    }
-    uint32_t ClusterGroupCount(const MeshBuffers &mb) const { return ActiveMeshlets.Count(mb.GroupRoot); }
-    uint32_t PrimitiveRoute(const MeshBuffers &mb, uint32_t source_primitive) const {
-        return source_primitive < mb.PrimitiveRoutes.Count ? PrimitiveRoutes.Get({mb.PrimitiveRoutes.Offset + source_primitive, 1u})[0] : InvalidOffset;
-    }
-    // Grows the owner's routes to cover `count` source primitives, keeping its routes.
-    void ReservePrimitiveRoutes(MeshBuffers &, uint32_t count);
-    // The element blocks holding the owner's meshlet owner payloads, which each hold an element of a live finest meshlet.
-    std::vector<uint32_t> MeshletOwnerBlocks(const MeshBuffers &) const;
-    void ForEachLodNode(const MeshBuffers &mb, auto &&fn) const {
-        ActiveMeshlets.ForEach(mb.NodeRoot,[&](uint32_t id) { fn(id,LodNodes.Get({id,1u})[0]); });
-    }
-
-    // The render ranges of each mesh record, present from its first sync until the record is released.
-    std::vector<std::optional<MeshBuffers>> Meshes;
-    MeshBuffers &EmplaceMesh(uint32_t store_id, SlottedRange vertices);
-    auto &MeshOf(this auto &self, uint32_t store_id) {
-        if constexpr (!std::is_const_v<std::remove_reference_t<decltype(self)>>)
-            if (self.MeshHistory) self.MeshHistory->Write(store_id,1u);
-        return *self.Meshes.at(store_id);
-    }
-    auto *TryMeshOf(this auto &self, uint32_t store_id) {
-        return store_id < self.Meshes.size() && self.Meshes[store_id] ? &self.MeshOf(store_id) : nullptr;
-    }
-    std::unique_ptr<store::Records> MeshHistory;
-    std::unique_ptr<store::Records> LodDepthHistory;
-    void ReleaseMeshes(std::span<const uint32_t> store_ids);
-
-    BufferArena<uint32_t> &GetIndexBuffer(IndexKind kind) {
-        switch (kind) {
-            case IndexKind::Face: return FaceIndexBuffer;
-            case IndexKind::Edge: return EdgeIndexBuffer;
-            case IndexKind::Vertex: return VertexIndexBuffer;
-        }
-    }
+    // The mesh store's render arenas, whose slots the culls and draws bind.
+    const RenderArenas *Render{};
 
     // Reset derived handles to a deterministic scene-load baseline.
     void ResetSceneArenas();
 
     mtl::BufferContext Ctx;
 
-    BufferArena<Vertex> VertexBuffer;
-    BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
-    BufferArena<MeshletRecord> Meshlets;
-    // Mirrors every Meshlets allocation, so an edit's new clusters extend it by their own count.
-    BufferArena<MeshletSpatialNode> MeshletSpatialNodes{Ctx,SlotType::Buffer};
-    MeshletIndex ActiveMeshlets{Ctx};
-    BufferArena<uint32_t> MeshletTriangleIds;
-    BufferArena<uint32_t> MeshletVertexCorners;
-    BufferArena<uint8_t> MeshletLocalTriangles;
-    // The cluster LOD DAG: one group per simplification step, and the selection forest over them.
-    BufferArena<ClusterGroup> ClusterGroups;
-    BufferArena<LodNode> LodNodes;
-    // Reverse edit dependencies mirror canonical record addresses.
-    // Their lifetime follows Meshlets/LodNodes.
-    // Drawing never reads these arenas.
-    BufferArena<uint32_t> MeshletLodLeaves{Ctx,SlotType::Buffer}, LodParents{Ctx,SlotType::Buffer};
-    // A group's inputs and proxies occupy packed runs.
-    // Group addresses own the ranges.
-    // The draw records carry no dependency fields.
-    BufferArena<ClusterGroupLinks> GroupLinks{Ctx,SlotType::Buffer};
-    BufferArena<uint32_t> GroupClusterIds{Ctx,SlotType::Buffer};
-    BufferArena<PrimitiveRecord> Primitives;
-    // Each render owner's run of render primitive handles, indexed by source primitive and InvalidOffset where absent.
-    BufferArena<uint32_t> PrimitiveRoutes{Ctx,SlotType::Buffer};
-    BufferArena<MeshRecord> MeshRecords;
     // Every instance slot in drawing order, by descending object ID, so coplanar ties resolve the same way across loads.
     mtl::Buffer GpuInstanceSlots;
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, SlotType::ArmatureDeformBuffer};
@@ -232,7 +142,7 @@ struct GpuBuffers {
     // Live LOD nodes and meshlets over the drawing instances, which bound each cull's traversal and work, summed over the mesh tallies.
     uint64_t LodNodeCount{0};
     uint64_t MeshletInstanceCount{0};
-    // Maximum traversal depth among resident mesh span trees.
+    // Maximum traversal depth among resident mesh span trees, the deepest tally.
     uint32_t MeshletLodDepth{0};
     uint32_t MeshletTopologyMask{0};
     // Whether drawing the topology needs a pipeline the topology mask lacks.
@@ -255,9 +165,9 @@ struct GpuBuffers {
           uint32_t(MeshletInstanceFlag::OverlayOnly) | uint32_t(MeshletInstanceFlag::SilhouetteEligible));
     // One mesh record's contribution to the scene and flag totals: its visible instances' meshlet work, under its record's flags.
     struct MeshFlagTally {
-        uint32_t Flags{0}, Instances{0}, Nodes{0}, Meshlets{0};
+        uint32_t Flags{0}, Instances{0}, Nodes{0}, Meshlets{0}, Depth{0};
     };
-    // Each mesh record's tally, beside Meshes.
+    // Each mesh record's tally, by store id.
     std::vector<MeshFlagTally> FlagTallies;
     // Moves the mesh record's contribution to the scene and flag totals to `tally`.
     void Retally(uint32_t store_id, MeshFlagTally tally);
@@ -325,8 +235,6 @@ struct GpuBuffers {
     // (posed entry, global meshlet) per posed-meshlet bounds threadgroup, plus its local-space AABB output.
     mtl::Buffer PosedMeshletBoundsJobs{Ctx, 0, SlotType::Buffer};
     PoseAttributeStore<AABB> PosedMeshletBounds{Ctx};
-    // Updates the posed bounds of the owner's meshlet blocks holding the ascending ids, at the owner's meshlet revision.
-    void UpdatePosedMeshletBlocks(const MeshBuffers &owner, std::span<const uint32_t> ids);
     // One entry per normal-derive dispatch item.
     // Contains one entry per posed triangle range or one per mesh during base derivation.
     mtl::Buffer NormalDeriveEntries{Ctx, 0, SlotType::Buffer};
@@ -361,7 +269,5 @@ struct GpuBuffers {
     mtl::Buffer ElementPickKey, ElementPickId;
     BufferArena<uint32_t> GeometryWork{Ctx, SlotType::Buffer};
     mtl::Buffer GeometryNormalEntries{Ctx, 0, SlotType::Buffer};
-    // Canonical triangle, edge, and vertex handles map to global finest meshlet IDs.
-    std::array<ElementAttribute<uint32_t>,3> ElementMeshlets{{{Ctx,SlotType::Buffer},{Ctx,SlotType::Buffer},{Ctx,SlotType::Buffer}}};
     mtl::Buffer WireCoverageBuffer{Ctx, 0, SlotType::Buffer};
 };

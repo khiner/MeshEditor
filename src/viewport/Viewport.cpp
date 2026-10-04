@@ -202,7 +202,8 @@ state::Entity InitEngine(state::Scene &r) {
     InitEntityNames(r);
     RegisterRenderStoreHandlers(r);
     const auto viewport = r.create();
-    r.Context.emplace<MeshStore>(InitRenderStores(r));
+    auto &meshes = r.Context.emplace<MeshStore>(InitRenderStores(r));
+    r.Context.get<GpuBuffers>().Render = &meshes.Render();
     auto &buffers = r.Context.get<GpuBuffers>();
     r.Context.emplace<action::Errors>();
     InitDefaultMaterial(r);

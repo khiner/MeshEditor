@@ -223,8 +223,8 @@ void RenderElementSelectionPass(
     const auto &selection = pipelines.SelectionFragment;
     const bool degenerate_point_pass = write_bitset && xray_selection && element != Element::Vertex;
     for (const auto &range : ranges) {
-        [[maybe_unused]] const auto &mesh_buffers = MeshBuffersOf(r, range.MeshEntity);
-        assert(buffers.MeshletCount(mesh_buffers) > 0u && "selectable mesh geometry must have persistent meshlets");
+        [[maybe_unused]] const auto &mesh_buffers = RecordOf(r, range.MeshEntity);
+        assert(meshes.MeshletCount(mesh_buffers) > 0u && "selectable mesh geometry must have persistent meshlets");
     }
 
     const auto target = r.Context.get<const RenderTargets>().Resources->ScratchDepth.Extent;
@@ -749,7 +749,8 @@ void ApplyEditSharpness(
     std::vector<state::Entity> faced;
     std::vector<uint32_t> faced_ids;
     for (const auto mesh_entity : mesh_entities) {
-        if (!HasMesh(r, mesh_entity) || !TryMeshBuffers(r, mesh_entity)) continue;
+        const auto *owner = HasMesh(r, mesh_entity) ? TryRecordOf(r, mesh_entity) : nullptr;
+        if (!owner || owner->RenderTopology == InvalidOffset) continue;
         const auto mesh = GetMesh(r, mesh_entity);
         if (mesh.FaceCount() == 0) continue;
         faced.push_back(mesh_entity);
@@ -878,7 +879,7 @@ void ApplyEditSharpness(
             for (const auto [d,domain]:{std::pair{0u,0u},std::pair{1u,3u},std::pair{2u,2u}})
                 ForEachWorkBlock(chain.Scratch,edit.Neighborhood.Elements[domain],[&](uint32_t block,auto) { update.Blocks[d].push_back(block); });
         }
-        const auto *owner=TryMeshBuffers(r,edit.Entity);
+        const auto *owner=TryRecordOf(r,edit.Entity);
         if (owner && owner->PrimitiveRoot!=InvalidOffset) repairs.emplace_back(edit.Entity,edit.Triangles);
         else r.emplace_or_replace<MeshGeometryDirty>(edit.Entity,EditSelectionAfter::Keep,false);
     }

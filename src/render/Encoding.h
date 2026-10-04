@@ -16,13 +16,13 @@ namespace encode {
 // Decode primitive IDs against the current meshlet list.
 inline VisibilityShadingPushConstants MeshletDecodePc(const GpuBuffers &buffers) {
     return {
-        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
+        .PrimitiveSlot = buffers.Render->Primitives.Buffer.Slot,
         .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
         .InstanceMapSlot = buffers.GpuInstanceSlots.Slot,
-        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
-        .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
-        .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
-        .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
+        .MeshletSlot = buffers.Render->Meshlets.Buffer.Slot,
+        .MeshletTriangleSlot = buffers.Render->MeshletTriangleIds.Buffer.Slot,
+        .MeshletLocalTriangleSlot = buffers.Render->MeshletLocalTriangles.Buffer.Slot,
+        .MeshletVertexSlot = buffers.Render->MeshletVertexCorners.Buffer.Slot,
         .VisibleMeshletSlot = buffers.SceneCull.Visible.Slot,
     };
 }
