@@ -35,7 +35,7 @@ struct ConnectivityView {
         return {BindlessBuffer(packed_uint2,B.Buffer,At.FanItemsSlot),range.x,range.y};
     }
     uint Next(uint h, uint face) const {
-        if (FaceCount == 0u || face == InvalidOffset) return InvalidOffset;
+        if (face == InvalidOffset) return InvalidOffset;
         const uint2 range = FaceHalfedges(face);
         return h + 1u < range.y ? h + 1u : range.x;
     }
@@ -75,7 +75,7 @@ struct ConnectivityView {
     uint EdgeHalfedge(uint e) const { return Edges()[e]; }
     bool EdgeFirst(uint h) const { return EdgeHalfedge(Edge(h)) == h; }
     uint2 FaceHalfedges(uint f) const { return uint2(Ranges()[f]); }
-    uint HalfedgeFace(uint h) const { return FaceCount == 0u ? InvalidOffset : HalfedgeToFace()[h]; }
+    uint HalfedgeFace(uint h) const { return HalfedgeToFace()[h]; }
     // A line corner's previous corner is its pair, the corner at the line's other end.
     uint Previous(uint h) const {
         const uint face = HalfedgeFace(h);

@@ -141,6 +141,7 @@ kernel void VertexWeldTableInit(
     const uint i = tile.y * ScanTileSize + lane;
     if (i > job.TableMask) return;
     ctx.Scratch()[job.TableOffset + i] = WeldEmptySlot;
+    if (i <= job.Count) ctx.Scratch()[job.FlagsOffset + i] = 0u;
 }
 
 kernel void VertexWeldInsert(
@@ -179,11 +180,12 @@ kernel void VertexWeldMarkReps(
     const uint2 tile = ctx.Tile(group_id);
     const VertexWeldJob job = ctx.Jobs()[tile.x];
     const uint i = tile.y * ScanTileSize + lane;
-    if (i > job.Count) return;
+    if (i >= (job.KeepLooseVertices ? job.Count : job.CornerCount)) return;
     device uint *scratch = ctx.Scratch();
-    // The unmarked terminator receives the welded count from the exclusive scan.
-    const bool represents = i < job.Count && scratch[job.TableOffset + scratch[job.SlotOffset + i]] == i;
-    scratch[job.FlagsOffset + i] = represents ? 1u : 0u;
+    // Importers may retain only referenced vertices; both modes use the same channel compaction.
+    const uint v = job.KeepLooseVertices ? i : ctx.Corners(job)[i] - job.Positions.Offset;
+    const uint representative = scratch[job.TableOffset + scratch[job.SlotOffset + v]];
+    atomic_store_explicit(ctx.AtomicScratch() + job.FlagsOffset + representative, 1u, memory_order_relaxed);
 }
 
 kernel void VertexWeldBlockSum(
@@ -242,7 +244,7 @@ kernel void VertexWeldEmit(
     device const uint *welded_index = scratch + job.FlagsOffset;
     const uint representative = scratch[job.TableOffset + scratch[job.SlotOffset + i]];
     scratch[job.RemapOffset + i] = welded_index[representative];
-    if (representative == i) scratch[job.RepsOffset + welded_index[i]] = i;
+    if (representative == i && welded_index[i] != welded_index[i + 1u]) scratch[job.RepsOffset + welded_index[i]] = i;
 }
 
 kernel void VertexWeldCompact(

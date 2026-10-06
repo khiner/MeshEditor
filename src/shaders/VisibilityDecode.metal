@@ -193,7 +193,7 @@ inline ResolvedVisibility ResolveVisibilityPrimitive(
     const MeshRecord mesh = BindlessBuffer(MeshRecord, bindless.Buffer, view.MeshRecordSlot)[visible.Mesh];
     const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[visible.Meshlet];
     const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
-    const DrawData draw = ComposeDraw(mesh, instance, instance_slot);
+    const DrawData draw = ComposeDraw(mesh, instance, instance_slot, meshlet.Topology);
     return {.Instance = instance, .Meshlet = meshlet, .Primitive = primitive, .Draw = draw, .ElementId = draw.ElementIdOffset, .LocalTriangle = id & VisibilityTriangleMask, .Valid = true};
 }
 

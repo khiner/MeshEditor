@@ -46,4 +46,4 @@ struct DrawData {
     uint32_t PrimitiveMaterialOffset DEFAULT(InvalidOffset);
     ElementAttributeRef ElementPrimitives DEFAULT();
 };
-static_assert(sizeof(DrawData) == 264, "DrawData size");
+static_assert(sizeof(DrawData) == 276, "DrawData size");

@@ -3,7 +3,9 @@
 #include "state/Entity.h"
 #include <span>
 
-namespace mtl { struct ComputeChain; }
+namespace mtl {
+struct ComputeChain;
+}
 
 // Records sorting occupied block keys and publishing compact prefixes, with temporaries in the chain's scratch.
 void EncodeSortElementWork(state::Scene &, mtl::ComputeChain &, std::span<const ElementWork>);

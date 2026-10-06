@@ -1,11 +1,11 @@
 #pragma once
 
-#include "mesh/CornerNormalOffset.h"
-#include "mesh/ElementAttributeView.h"
 #include "gpu/CornerClassMode.h"
 #include "gpu/CustomNormal.h"
 #include "gpu/NormalSector.h"
 #include "gpu/Vertex.h"
+#include "mesh/CornerNormalOffset.h"
+#include "mesh/ElementAttributeView.h"
 
 // Borrows current base shading sources and resolves canonical polygon corners.
 struct CornerNormalView {
@@ -25,7 +25,8 @@ struct CornerNormalView {
         const uint32_t face = mixed || uniform_face ? *Connectivity.HalfedgeToFace[corner] : InvalidOffset;
         const bool flat = uniform_face || (mixed && FaceSharpness[face]);
         const auto root = mixed && !flat ? CornerSectors.GetOr(corner, InvalidOffset) : InvalidOffset;
-        vec3 normal = flat ? FaceNormals[face] : root == InvalidOffset ? VertexNormals[CornerVertices[corner]] : NormalSectors[root].Normal;
+        vec3 normal = flat ? FaceNormals[face] : root == InvalidOffset ? VertexNormals[CornerVertices[corner]] :
+                                                                         NormalSectors[root].Normal;
         const auto offset = CustomNormals.GetOr(corner).Offset;
         if (offset.x >= 0.f) {
             const Mesh::HH h{corner};

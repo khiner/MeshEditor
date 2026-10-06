@@ -21,7 +21,9 @@ int main() {
             kernel void add(device uint &value [[buffer(0)]], constant uint &amount [[buffer(1)]]) {
                 value += amount;
             }
-        )").get(), nullptr, &error));
+        )")
+                                                                        .get(),
+                                                                    nullptr, &error));
         expect(bool(library));
         if (!library) return;
         const auto function = NS::TransferPtr(library->newFunction(mtl::Str("add").get()));

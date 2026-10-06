@@ -3,8 +3,8 @@
 #include "Range.h"
 #include "gpu/LodNode.h"
 #include "gpu/MeshletLimit.h"
-#include "mesh/ElementAttributeView.h"
 #include "mesh/CornerNormalView.h"
+#include "mesh/ElementAttributeView.h"
 #include "numeric/vec3.h"
 #include "render/CornerWeldKey.h"
 

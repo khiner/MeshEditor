@@ -6,7 +6,7 @@
 namespace state {
 struct Table;
 struct PageMask;
-}
+} // namespace state
 
 namespace project {
 struct EntityStore;

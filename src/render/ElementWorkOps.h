@@ -52,17 +52,17 @@ inline uint32_t ElementWorkCount(const BufferArena<uint32_t> &arena, ElementWork
 inline uint32_t ElementWorkRank(std::span<const uint32_t> data, ElementWork work, uint32_t element) {
     if (element >= work.Count) return InvalidOffset;
     if (work.Storage.Slot == InvalidSlot) return element;
-    const auto key=element/256u+1u;
-    auto slot=WorkHash(key-1u,work.Capacity);
-    for (uint32_t probe=0u;probe<work.Capacity;++probe,slot=(slot+1u)&(work.Capacity-1u)) {
-        const auto block=data.subspan(WorkHeaderWords+slot*WorkBlockWords,WorkBlockWords);
+    const auto key = element / 256u + 1u;
+    auto slot = WorkHash(key - 1u, work.Capacity);
+    for (uint32_t probe = 0u; probe < work.Capacity; ++probe, slot = (slot + 1u) & (work.Capacity - 1u)) {
+        const auto block = data.subspan(WorkHeaderWords + slot * WorkBlockWords, WorkBlockWords);
         if (!block[0]) return InvalidOffset;
-        if (block[0]!=key) continue;
-        const auto word=(element%256u)/32u,bit=element%32u;
-        if (!(block[word+1u]&(1u<<bit))) return InvalidOffset;
-        uint32_t rank=data[WorkHeaderWords+work.Capacity*(WorkBlockWords+1u)+slot];
-        for (uint32_t w=word+1u;w<8u;++w) rank-=std::popcount(block[w+1u]);
-        return rank-std::popcount(block[word+1u]&(~0u<<bit));
+        if (block[0] != key) continue;
+        const auto word = (element % 256u) / 32u, bit = element % 32u;
+        if (!(block[word + 1u] & (1u << bit))) return InvalidOffset;
+        uint32_t rank = data[WorkHeaderWords + work.Capacity * (WorkBlockWords + 1u) + slot];
+        for (uint32_t w = word + 1u; w < 8u; ++w) rank -= std::popcount(block[w + 1u]);
+        return rank - std::popcount(block[word + 1u] & (~0u << bit));
     }
     return InvalidOffset;
 }
@@ -111,8 +111,7 @@ inline void MarkElementWorkWord(std::span<uint32_t> data, ElementWork work, uint
     throw std::length_error("Sparse element work exceeds its reserved block count.");
 }
 
-inline ElementWork SeedElementWorkHandles(BufferArena<uint32_t> &arena, uint32_t domain_count,
-                                         std::span<const uint32_t> handles, uint64_t block_bound = UINT64_MAX) {
+inline ElementWork SeedElementWorkHandles(BufferArena<uint32_t> &arena, uint32_t domain_count, std::span<const uint32_t> handles, uint64_t block_bound = UINT64_MAX) {
     auto work = AllocateElementWork(arena, domain_count, std::min<uint64_t>(handles.size(), block_bound));
     auto data = arena.GetMutable(WorkStorageRange(work));
     for (const auto handle : handles) {

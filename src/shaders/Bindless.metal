@@ -85,24 +85,26 @@ inline uint InstanceFlags(uint mesh_flags, uint primary_edit_instance, uint inst
 }
 
 // Storage that holds no element selection, since a zero slot names a live buffer.
-constant EditSelectionStorage NoEditSelection{{InvalidSlot, 0u}, {InvalidSlot, 0u}, {InvalidSlot, 0u}, {InvalidSlot, 0u}};
+constant EditSelectionStorage NoEditSelection{{InvalidSlot, 0u}, {InvalidSlot, 0u}, {InvalidSlot, 0u}, {InvalidSlot, 0u}, InvalidSlot, InvalidSlot, InvalidSlot};
 
 // Compose mesh and instance state without rebasing canonical references.
 // The mesh's primary edit instance draws its element selection, and every instance does when it has none.
-inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint instance_slot) {
+inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint instance_slot, uint topology = 0u) {
     const MeshDisplay display = mesh.Display;
     const bool selection = display.PrimaryEditInstanceIndex == InvalidOffset || display.PrimaryEditInstanceIndex == instance_slot;
+    const bool faces = topology == 0u && mesh.TriangleSlot != InvalidSlot;
+    const ElementAttributeRef absent{InvalidSlot, InvalidSlot};
     return DrawData{
         .VertexSlot = mesh.VertexSlot,
         .IndexSlotOffset = mesh.IndexSlotOffset,
         .ModelSlot = mesh.ModelSlot,
         .FirstInstance = instance_slot,
-        .TriangleSlot = mesh.TriangleSlot,
+        .TriangleSlot = faces ? mesh.TriangleSlot : InvalidSlot,
         .CornerClassMode = mesh.CornerClassMode,
-        .CustomNormals = mesh.CustomNormals,
-        .CornerTangent = mesh.CornerTangent,
-        .CornerColor = mesh.CornerColor,
-        .CornerUvs = mesh.CornerUvs,
+        .CustomNormals = faces ? mesh.CustomNormals : absent,
+        .CornerTangent = faces ? mesh.CornerTangent : absent,
+        .CornerColor = faces ? mesh.CornerColor : mesh.VertexColor,
+        .CornerUvs = faces ? mesh.CornerUvs : GpuArray<ElementAttributeRef, 4>{absent, absent, absent, absent},
         .Connectivity = mesh.Connectivity,
         .HalfedgeCount = mesh.HalfedgeCount,
         .FaceCount = mesh.FaceCount,
@@ -125,7 +127,7 @@ inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint insta
         .SectorNamespace = PoseNamespace(instance.SectorNamespace, display.SectorNamespace),
         .FaceNormalNamespace = PoseNamespace(instance.FaceNormalNamespace, display.FaceNormalNamespace),
         .PrimitiveMaterialOffset = mesh.PrimitiveMaterialOffset,
-        .ElementPrimitives = mesh.ElementPrimitives,
+        .ElementPrimitives = faces ? mesh.FacePrimitives : mesh.VertexPrimitives,
     };
 }
 

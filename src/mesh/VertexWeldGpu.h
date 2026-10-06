@@ -16,6 +16,7 @@ struct WeldTarget {
     uint32_t StoreId;
     MeshData *Data;
     std::vector<vec3> *MorphTangentDeltas;
+    bool KeepLooseVertices{true};
 };
 
 // Merges vertices identical across every vertex-domain channel and compacts their GPU arenas.

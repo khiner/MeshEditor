@@ -39,7 +39,7 @@ inline MeshletWork ResolveMeshletWork(
         .Instance = instance,
         .Meshlet = meshlet,
         .Primitive = primitive,
-        .Draw = ComposeDraw(mesh, instance, instance_slot),
+        .Draw = ComposeDraw(mesh, instance, instance_slot, meshlet.Topology),
         .VisibleIndex = visible_index,
         .MeshletIndex = work.Meshlet,
         .Valid = true,
@@ -55,6 +55,18 @@ struct MeshletFaceValues {
 
 // Returns true for clusters with independent triangles and no source-triangle or source-face identity.
 inline bool MeshletCoarse(MeshletRecord meshlet) { return meshlet.RefinedGroup != InvalidOffset; }
+
+// Finest element visibility is independent of cluster ownership and geometry.
+inline bool MeshletElementHidden(const thread Scene &scene,const thread MeshletWork &work,
+    constant MeshletDrawPushConstants &pc,uint element) {
+    if (scene.View.InteractionMode!=InteractionMode::Edit || MeshletCoarse(work.Meshlet)) return false;
+    const uint handle=BindlessBuffer(uint,scene.B.Buffer,pc.MeshletTriangleSlot)[work.Meshlet.TriangleOffset+element];
+    const uint topology=MeshletPrimitiveTopology(work.Meshlet);
+    if (topology==uint(MeshPrimitiveTopology::Triangle)) return EditElementHidden(scene,work.Draw,Element::Face,scene.TriangleFace(work.Draw,handle));
+    const bool line=topology==uint(MeshPrimitiveTopology::Line);
+    return EditElementHidden(scene,work.Draw,line ? Element::Edge : Element::Vertex,
+        handle+(line ? work.Draw.Connectivity.Edges.Offset : work.Draw.VertexOffset));
+}
 
 // Returns attribute corners from the cluster vertex list or original source triangle.
 inline uint3 MeshletCornerIds(

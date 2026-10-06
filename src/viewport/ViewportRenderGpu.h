@@ -33,10 +33,19 @@ struct MeshVertexChanges {
     state::Entity Entity;
     std::span<const Range> Ranges;
 };
-// Records the recompute of normals and edit work for restored vertex ranges without mutating the vertices.
-// The chain submits where stale footprints size the edit work, and the refresh runs with its next submit.
+// Recomputes normals, polygon triangles and edit work for changed vertex ranges without mutating the vertices.
+// Submits where stale footprints or changed polygon triangles require host-side render repair.
 // One refresh records per chain submit.
-void RefreshEditedPositions(state::Scene &, mtl::ComputeChain &, std::span<const MeshVertexChanges>);
+// History restoration already restores triangle pages and their render ownership.
+void RefreshEditedPositions(state::Scene &, mtl::ComputeChain &, std::span<const MeshVertexChanges>, bool retessellate = true);
+// Updates captured render triangles against the pending transform and repairs changed clusters.
+bool RefreshPreviewTessellation(state::Scene &, state::Entity viewport);
+enum class PositionPublication { Commit,
+                                 Preview };
+// Publishes submitted edits, or a cached preview using its prepared candidate footprint without a readback.
+// Preview preserves edit work and updates selection and bounds; commit also invalidates LODs.
+// Records the remaining GPU updates on the chain and returns the meshes being published.
+std::vector<state::Entity> PublishEditedPositions(state::Scene &, mtl::ComputeChain &, std::span<const state::Entity>, PositionPublication = PositionPublication::Commit);
 
 // A pixel rectangle on a render target.
 struct PixelRect {

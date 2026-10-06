@@ -7,7 +7,9 @@
 #include "state/Entity.h"
 
 struct MeshStore;
-namespace mtl { struct ComputeChain; }
+namespace mtl {
+struct ComputeChain;
+}
 
 // Captures the canonical base normal pages the entry's work writes.
 // These are its vertex and face normals and the sector normals around its vertices.

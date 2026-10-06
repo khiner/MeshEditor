@@ -45,9 +45,9 @@ int main(int argc, char **argv) {
     uint32_t functions = 0;
     const auto names = [](MTL::Library *library) {
         std::vector<std::string> result;
-        auto *functions=library->functionNames();
+        auto *functions = library->functionNames();
         result.reserve(functions->count());
-        for (NS::UInteger i=0u;i<functions->count();++i)
+        for (NS::UInteger i = 0u; i < functions->count(); ++i)
             result.emplace_back(functions->object<NS::String>(i)->utf8String());
         std::ranges::sort(result);
         return result;
@@ -67,14 +67,14 @@ int main(int argc, char **argv) {
             continue;
         }
         functions += uint32_t(library->functionNames()->count());
-        auto binary=shaders_dir / name;
+        auto binary = shaders_dir / name;
         binary.replace_extension(".metallib");
-        error=nullptr;
-        auto *compiled=device->newLibrary(NS::String::string(binary.string().c_str(),NS::UTF8StringEncoding),&error);
+        error = nullptr;
+        auto *compiled = device->newLibrary(NS::String::string(binary.string().c_str(), NS::UTF8StringEncoding), &error);
         if (!compiled) {
-            failures.emplace_back(name.string(),error ? error->localizedDescription()->utf8String() : "missing offline Metal library");
+            failures.emplace_back(name.string(), error ? error->localizedDescription()->utf8String() : "missing offline Metal library");
         } else {
-            if (names(compiled)!=names(library)) failures.emplace_back(name.string(),"offline library functions differ from source");
+            if (names(compiled) != names(library)) failures.emplace_back(name.string(), "offline library functions differ from source");
             compiled->release();
         }
         library->release();

@@ -14,4 +14,4 @@ struct BoundsEntry {
     uint32_t BoundsNamespace DEFAULT(InvalidOffset);
     SlotOffset VertexRoot DEFAULT(); // The mesh's live vertex bounds, when it has selection state.
 };
-static_assert(sizeof(BoundsEntry) == 60, "BoundsEntry size");
+static_assert(sizeof(BoundsEntry) == 72, "BoundsEntry size");

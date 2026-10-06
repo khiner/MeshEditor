@@ -12,7 +12,7 @@ struct History;
 namespace state {
 enum class Event : uint8_t;
 struct PageMask;
-}
+} // namespace state
 
 namespace project {
 struct ComponentPool;

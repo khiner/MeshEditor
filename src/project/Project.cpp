@@ -1,4 +1,5 @@
 #include "project/Project.h"
+#include "SortUnique.h"
 #include <utility>
 
 #include "Compress.h"
@@ -448,16 +449,16 @@ std::expected<void, std::string> Project::RunRecorded(std::span<const RecordedAc
         R.edit<PlaybackFrame>(Viewport).Value = inputs.PlaybackFrame;
         frame.DeltaTime = inputs.DeltaTime;
         frame.FixedFrameStep = inputs.FixedFrameStep;
-        bool updated_inset=false;
+        bool updated_inset = false;
         if (inputs.Staged && InsetPreview) {
-            if (const auto *mesh=std::get_if<action::mesh::Action>(&a); mesh) {
-                if (const auto *inset=std::get_if<action::mesh::Inset>(mesh)) updated_inset=action::mesh::UpdateInsetPreview(R,Viewport,*inset,*InsetPreview);
+            if (const auto *mesh = std::get_if<action::mesh::Action>(&a); mesh) {
+                if (const auto *inset = std::get_if<action::mesh::Inset>(mesh)) updated_inset = action::mesh::UpdateInsetPreview(R, Viewport, *inset, *InsetPreview);
             }
         }
         if (updated_inset) Settle(inputs.Pass);
         else {
             InsetPreview.reset();
-            Tick(a,inputs.Pass,inputs.Staged);
+            Tick(a, inputs.Pass, inputs.Staged);
         }
         if (R.Context.get<action::Errors>().Messages.size() != errors) break;
     }
@@ -492,10 +493,10 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
     // Reapply from the gesture base. Canonical geometry, normals and render
     // dependencies restore only their changed pages and allocation paths.
     const bool same_kind = staged && StageFirst && Kind(RecordedActions[*StageFirst].Action) == Kind(a);
-    bool updated_inset=false;
+    bool updated_inset = false;
     if (same_kind && action::IsPreview(a)) {
-        if (const auto *mesh=std::get_if<action::mesh::Action>(&a); mesh && InsetPreview) {
-            if (const auto *inset=std::get_if<action::mesh::Inset>(mesh)) updated_inset=action::mesh::UpdateInsetPreview(R,Viewport,*inset,*InsetPreview);
+        if (const auto *mesh = std::get_if<action::mesh::Action>(&a); mesh && InsetPreview) {
+            if (const auto *inset = std::get_if<action::mesh::Inset>(mesh)) updated_inset = action::mesh::UpdateInsetPreview(R, Viewport, *inset, *InsetPreview);
         }
         if (!updated_inset) {
             InsetPreview.reset();
@@ -514,10 +515,9 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
     // A staged inset keeps its construction action and final parameter
     // update so replay repeats the same meshlet partition and GPU refit.
     if (same_kind) {
-        RecordedActions.resize(*StageFirst+(updated_inset ? 1u : 0u));
-        if (updated_inset) RecordedActions[*StageFirst].Inputs.PreviewSeed=true;
-    }
-    else if (staged) StageFirst = RecordedActions.size();
+        RecordedActions.resize(*StageFirst + (updated_inset ? 1u : 0u));
+        if (updated_inset) RecordedActions[*StageFirst].Inputs.PreviewSeed = true;
+    } else if (staged) StageFirst = RecordedActions.size();
     RecordedActions.push_back(std::move(recorded_action));
     return true;
 }
@@ -785,16 +785,15 @@ void Project::AfterRestore() {
         if (const auto entity = MeshEntityOf(R, change.StoreId); entity != state::Null) restored_meshes.push_back(entity);
     }
     buffers.PreludeStale = true;
-    auto &scene=R.Context.get<GpuSceneState>();
-    std::ranges::sort(restored_meshes);
-    restored_meshes.erase(std::unique(restored_meshes.begin(), restored_meshes.end()), restored_meshes.end());
+    auto &scene = R.Context.get<GpuSceneState>();
+    SortUnique(restored_meshes);
     std::vector<state::Entity> repointed;
     for (const auto entity : restored_meshes) {
         scene.PositionDirty.erase(entity);
         scene.LodDirty.erase(entity);
         const auto id = R.get<const MeshHandle>(entity).StoreId;
         const auto *owner = meshes.TryGet(id);
-        if (!owner || owner->RenderTopology == InvalidOffset) continue;
+        if (!owner || owner->RenderTopologies == 0u) continue;
         repointed.push_back(entity);
         if (render.ActiveMeshlets.Count(owner->PositionDirtyRoot)) scene.PositionDirty.insert(entity);
         if (render.ActiveMeshlets.Count(owner->DirtyGroupRoot)) scene.LodDirty.insert(entity);
@@ -807,16 +806,16 @@ void Project::AfterRestore() {
         const auto entity = MeshEntityOf(R, change.StoreId);
         if (entity == state::Null) continue;
         if (change.Bits & ~MeshStore::SelectionChanged) {
-            ReleaseMeshEditWork(R,entity);
-            if ((change.Bits & ~MeshStore::SelectionChanged)==MeshStore::GeometryChanged && !change.VertexRanges.empty()) {
-                positions.push_back({entity,change.VertexRanges});
+            ReleaseMeshEditWork(R, entity);
+            if ((change.Bits & ~MeshStore::SelectionChanged) == MeshStore::GeometryChanged && !change.VertexRanges.empty()) {
+                positions.push_back({entity, change.VertexRanges});
             }
-            RefreshMeshBinding(R,change.StoreId);
-            R.emplace_or_replace<MeshGeometryDirty>(entity,EditSelectionAfter::Keep,true);
+            RefreshMeshBinding(R, change.StoreId);
+            R.emplace_or_replace<MeshGeometryDirty>(entity, EditSelectionAfter::Keep, true);
         }
-        if (change.Bits & MeshStore::SelectionChanged) scene.EditSelectionDirty=true;
+        if (change.Bits & MeshStore::SelectionChanged) scene.EditSelectionDirty = true;
     }
-    RefreshEditedPositions(R,chain,positions);
+    RefreshEditedPositions(R, chain, positions, false);
     chain.Submit();
     if (!buffers.Materials.History()->Trie.TakeChanged().empty()) reactive(R, Change::Materials).emplace(Viewport);
     if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) reactive(R, Change::MorphWeights).emplace(Viewport);

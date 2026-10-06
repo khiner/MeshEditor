@@ -30,14 +30,14 @@
 #include "object/ObjectOps.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
+#include "render/ClusterLodRepair.h"
 #include "render/ElementWorkOps.h"
 #include "render/GpuBuffers.h"
-#include "render/MeshletBoundsRefit.h"
-#include "render/ClusterLodRepair.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
+#include "render/MeshletBoundsRefit.h"
 #include "render/MeshletBuild.h"
 #include "render/PickConstants.h"
 #include "render/Pipelines.h"
@@ -604,8 +604,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     // Compact surviving light records by runs, then remap each entity once.
     if (auto &indices = buffers.PendingLightRemovals; !indices.empty()) {
         const auto before = buffers.Lights.Count<LightRecord>();
-        std::ranges::sort(indices);
-        indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+        SortUnique(indices);
         std::erase_if(indices, [before](uint32_t index) { return index >= before; });
         ForEachSurvivorRun({0u, before}, indices, [&](uint32_t from, uint32_t to, uint32_t count) {
             if (from != to && count) buffers.Lights.Move(uint64_t(from) * sizeof(LightRecord), uint64_t(to) * sizeof(LightRecord), uint64_t(count) * sizeof(LightRecord));
@@ -843,7 +842,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     mtl::ComputeChain meshlet_chain{buffers.Ctx};
     if (!material_meshes.empty()) {
         if (!every_mesh) SortUnique(material_meshes);
-        RefreshClusterLodAttributes(r, meshlet_chain, material_meshes);
+        // History restores the hierarchy's attribute contract along with its geometry.
+        if (pass != EventPass::Restore) RefreshClusterLodAttributes(r, meshlet_chain, material_meshes);
         // A material change can make a mesh draw as a wire, which its record holds.
         scene_state.DisplayDirty.insert(material_meshes.begin(), material_meshes.end());
         request(RenderRequest::Reuse);
@@ -922,6 +922,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
     BuildMeshlets(r, meshlet_chain, meshlet_meshes, bone_mesh_entities);
     meshlet_chain.Submit();
+    if (is_edit_mode && pass != EventPass::Restore && !reactive(r, Change::TransformPending).empty() && RefreshPreviewTessellation(r, viewport))
+        request(RenderRequest::Rebuild);
     if (!reactive(r, Change::ViewportTheme).empty()) {
         auto theme = r.get<const ViewportTheme>(viewport);
         UpdateDerivedColors(theme);

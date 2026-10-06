@@ -1,5 +1,5 @@
-#include "metal/AutoreleaseScope.h"
 #include "metal/Shader.h"
+#include "metal/AutoreleaseScope.h"
 
 #include "metal/MetalCpp.h"
 
@@ -8,7 +8,10 @@
 
 namespace mtl {
 LibraryCache::LibraryCache(LibraryCache &&) noexcept = default;
-void LibraryCache::Clear() { const AutoreleaseScope pool; Entries.clear(); }
+void LibraryCache::Clear() {
+    const AutoreleaseScope pool;
+    Entries.clear();
+}
 
 void RenderPipeline::Bind(MTL::RenderCommandEncoder *encoder) const {
     encoder->setRenderPipelineState(PipelineState.get());
@@ -135,8 +138,7 @@ NS::SharedPtr<MTL4::FunctionDescriptor> MakeFunctionDescriptor(LibraryCache &cac
 }
 } // namespace
 
-LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive,
-                           std::filesystem::path builtin_archive, bool prune_archive_chunks, bool archive_only)
+LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive, std::filesystem::path builtin_archive, bool prune_archive_chunks, bool archive_only)
     : Ctx(ctx), ShadersDir(std::move(shaders_dir)), ArchivePath(std::move(pipeline_archive)),
       BuiltinArchivePath(std::move(builtin_archive)),
       PruneArchiveChunks(prune_archive_chunks), ReadArchiveOnly(archive_only) {
@@ -178,7 +180,7 @@ std::unique_ptr<LibraryCache> LibraryCache::PrewarmCache() const {
     if ((BuiltinArchivePath.empty() || PipelineArchives(BuiltinArchivePath).empty()) &&
         (ArchivePath.empty() || PipelineArchives(ArchivePath).empty()))
         throw std::runtime_error("Offline pipeline archive is unavailable.");
-    return std::make_unique<LibraryCache>(Ctx,ShadersDir,ArchivePath,BuiltinArchivePath,false,true);
+    return std::make_unique<LibraryCache>(Ctx, ShadersDir, ArchivePath, BuiltinArchivePath, false, true);
 }
 
 // Write only newly compiled pipelines into an immutable chunk. Existing
@@ -254,18 +256,21 @@ MTL::Library *LibraryCache::Get(const std::filesystem::path &relative_path, cons
     for (const auto &file : source.Files) {
         std::error_code source_error;
         const auto source_time = std::filesystem::last_write_time(ShadersDir / file, source_error);
-        if (source_error || source_time > binary_time) { fresh = false; break; }
+        if (source_error || source_time > binary_time) {
+            fresh = false;
+            break;
+        }
     }
-    if (ReadArchiveOnly && !fresh) throw std::runtime_error(std::format("Offline shader library is stale or missing: '{}'",relative_path.string()));
+    if (ReadArchiveOnly && !fresh) throw std::runtime_error(std::format("Offline shader library is stale or missing: '{}'", relative_path.string()));
     NS::Error *error = nullptr;
     auto library = fresh ?
         NS::TransferPtr(Ctx.Device->newLibrary(Str(binary.string()).get(), &error)) :
         NS::TransferPtr(Ctx.Device->newLibrary(Str(source.Text).get(), static_cast<MTL::CompileOptions *>(nullptr), &error));
     if (!library) {
-        throw std::runtime_error(std::format("Failed to load shader '{}' from {}:\n{}", relative_path.string(),
-            fresh ? binary.string() : "source", error ? error->localizedDescription()->utf8String() : "unknown"));
+        throw std::runtime_error(std::format("Failed to load shader '{}' from {}:\n{}", relative_path.string(), fresh ? binary.string() : "source", error ? error->localizedDescription()->utf8String() : "unknown"));
     }
-    if (fresh) ++BinaryLibraries; else ++SourceLibraries;
+    if (fresh) ++BinaryLibraries;
+    else ++SourceLibraries;
     decltype(entry.Deps) deps;
     deps.reserve(source.Files.size());
     for (const auto &file : source.Files) deps.emplace_back(file, std::filesystem::last_write_time(ShadersDir / file, ec));
@@ -383,7 +388,7 @@ ComputePipeline::ComputePipeline(LibraryCache &cache, FunctionRef fn) {
     NS::Error *error = nullptr;
     PipelineState = cache.FindComputePipeline(descriptor.get());
     const bool archive_hit = bool(PipelineState);
-    if (!PipelineState && cache.ArchiveOnly()) throw std::runtime_error(std::format("Offline compute pipeline is absent: '{}'",fn.Name));
+    if (!PipelineState && cache.ArchiveOnly()) throw std::runtime_error(std::format("Offline compute pipeline is absent: '{}'", fn.Name));
     if (!PipelineState) PipelineState = NS::TransferPtr(cache.PipelineCompiler()->newComputePipelineState(descriptor.get(), nullptr, &error));
     if (!PipelineState) {
         throw std::runtime_error(std::format("Failed to create the compute pipeline for '{}':\n{}", fn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));

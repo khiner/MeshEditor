@@ -2,10 +2,10 @@
 
 #include "gpu/DebugChannel.h"
 #include "gpu/Element.h"
+#include "gpu/ElementAttributeRef.h"
 #include "gpu/IblSamplers.h"
 #include "gpu/InteractionMode.h"
 #include "gpu/Types.h"
-#include "gpu/ElementAttributeRef.h"
 
 struct SceneViewUBO {
     mat4 ViewProj DEFAULT();

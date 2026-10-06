@@ -68,7 +68,7 @@ inline void EmitNormalIndicator(
     thread NormalIndicatorOutput output, uint thread_index, uint lane, threadgroup uint *simd_counts,
     const thread Scene &scene, DrawData draw, uint element, bool faces
 ) {
-    const uint present = element != InvalidOffset ? 1u : 0u;
+    const uint present = element != InvalidOffset && !EditElementHidden(scene,draw,faces ? Element::Face : Element::Vertex,faces ? element : draw.VertexOffset+element) ? 1u : 0u;
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, NormalIndicatorSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y * 2u);
     if (present == 0u) return;

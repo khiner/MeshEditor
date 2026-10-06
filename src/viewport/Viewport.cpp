@@ -1,6 +1,6 @@
-#include "metal/AutoreleaseScope.h"
 #include "viewport/Viewport.h"
 #include "mesh/MeshComponents.h"
+#include "metal/AutoreleaseScope.h"
 #include "render/LightComponents.h"
 #include "state/Scene.h"
 
@@ -189,8 +189,7 @@ state::Entity InitEngine(state::Scene &r) {
     const auto &ctx = r.Context.get<const mtl::Context>();
     InitRenderStoreContext(r, ctx);
     auto &slots = r.Context.get<mtl::BindlessSet>();
-    r.Context.emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a",
-                                         Paths::Base() / "cache" / "Pipelines.mtl4a");
+    r.Context.emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a", Paths::Base() / "cache" / "Pipelines.mtl4a");
     GetMeshPipelines(r).PrewarmAsync();
     r.Context.emplace<RenderTargets>();
     physics::Init(r);

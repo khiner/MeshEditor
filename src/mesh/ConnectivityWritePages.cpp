@@ -4,8 +4,7 @@
 #include "mesh/PageFootprint.h"
 #include "state/Scene.h"
 
-void CaptureConnectivityPrepareWrites(state::Scene &r, const MeshConnectivityJob &job, std::span<const uint32_t> vertex_blocks,
-                                      std::span<const uint32_t> halfedge_blocks, std::span<const uint32_t> face_blocks) {
+void CaptureConnectivityPrepareWrites(state::Scene &r, const MeshConnectivityJob &job, std::span<const uint32_t> vertex_blocks, std::span<const uint32_t> halfedge_blocks, std::span<const uint32_t> face_blocks) {
     const auto &a = r.Context.get<MeshStore>().Arenas();
     PageFootprint pages;
     pages.Add(a.OutgoingHalfedges.Buffer, vertex_blocks, BlockBytes<uint32_t>);

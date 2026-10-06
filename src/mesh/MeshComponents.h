@@ -29,7 +29,7 @@ struct MeshHandle {
     uint32_t StoreId{~0u};
 };
 
-// A new triangle mesh's authored normals in fan order, held until its base normals derive and the custom corner-normal layer encodes them.
+// A new mesh's authored normals in polygon-corner order, held until its base normals derive and the custom corner-normal layer encodes them.
 struct AuthoredCornerNormals {
     std::vector<vec3> Corners;
 };

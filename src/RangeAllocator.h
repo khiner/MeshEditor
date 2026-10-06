@@ -50,6 +50,7 @@ struct RangeAllocator {
             Owner.S = Before;
         }
         void Commit() { Committed = true; }
+
     private:
         friend struct RangeAllocator;
         RangeAllocator &Owner;
@@ -157,7 +158,10 @@ struct RangeAllocator {
     }
 
 private:
-    struct Change { uint32_t Index; Node Before; };
+    struct Change {
+        uint32_t Index;
+        Node Before;
+    };
 
     State S;
     Transaction *Active{};

@@ -1,8 +1,8 @@
 #include "mesh/NormalDeriveGpu.h"
 
-#include "mesh/MeshPipelines.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
+#include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/PageFootprint.h"
 #include "mesh/ScratchChunks.h"
@@ -35,18 +35,18 @@ void EncodeDeriveNormals(state::Scene &r, mtl::ComputeChain &chain, std::span<co
         const auto work = faces ? entry.FacesWork : entry.VerticesWork;
         if (work.Storage.Slot != InvalidSlot) {
             const auto count = faces ? entry.FaceWorkCount : entry.VertexWorkCount;
-            for (uint32_t t = 0u; t < TileCount(count,TileElements); ++t) tiles.emplace_back(i,t);
+            for (uint32_t t = 0u; t < TileCount(count, TileElements); ++t) tiles.emplace_back(i, t);
         } else if (faces ? entry.FaceCount : entry.VertexCount) {
             const auto &blocks = faces ? meshes.Arenas().FaceTriangles.Blocks : meshes.Arenas().Vertices.Blocks;
-            for (auto b = (faces ? entry.FaceDataOffset : entry.Vertices.Offset)/256u; b != InvalidOffset; b = blocks.Get({b,1u})[0].Next)
-                if (blocks.Get({b,1u})[0].Count) tiles.emplace_back(i,b);
+            for (auto b = (faces ? entry.FaceDataOffset : entry.Vertices.Offset) / 256u; b != InvalidOffset; b = blocks.Get({b, 1u})[0].Next)
+                if (blocks.Get({b, 1u})[0].Count) tiles.emplace_back(i, b);
         }
     };
-    for (uint32_t i = 0u; i < entries.size(); ++i) append(i,true);
+    for (uint32_t i = 0u; i < entries.size(); ++i) append(i, true);
     const auto face_tiles = uint32_t(tiles.size());
-    for (uint32_t i = 0u; i < entries.size(); ++i) append(i,false);
-    mtl::Buffer jobs{chain.Buffers, std::as_bytes(entries), SlotType::Buffer,mtl::BufferLifetime::Workspace};
-    mtl::Buffer tile_buffer{chain.Buffers, as_bytes(tiles), SlotType::Buffer,mtl::BufferLifetime::Workspace};
+    for (uint32_t i = 0u; i < entries.size(); ++i) append(i, false);
+    mtl::Buffer jobs{chain.Buffers, std::as_bytes(entries), SlotType::Buffer, mtl::BufferLifetime::Workspace};
+    mtl::Buffer tile_buffer{chain.Buffers, as_bytes(tiles), SlotType::Buffer, mtl::BufferLifetime::Workspace};
     pc.EntriesSlot = jobs.Slot;
     pc.TileMapSlot = tile_buffer.Slot;
     pc.Work = {};
@@ -54,7 +54,7 @@ void EncodeDeriveNormals(state::Scene &r, mtl::ComputeChain &chain, std::span<co
     for (uint32_t phase = 0; phase < 2; ++phase) {
         pc.Phase = phase;
         pc.FirstTile = phase == 0 ? 0u : face_tiles;
-        chain.Groups(pipeline,pc,phase == 0 ? face_tiles : uint32_t(tiles.size()) - face_tiles,TileElements);
+        chain.Groups(pipeline, pc, phase == 0 ? face_tiles : uint32_t(tiles.size()) - face_tiles, TileElements);
     }
     chain.Retain(std::move(jobs));
     chain.Retain(std::move(tile_buffer));
@@ -84,14 +84,14 @@ void EncodeDeriveBaseEntries(state::Scene &r, mtl::ComputeChain &chain, std::spa
     const auto &meshes = r.Context.get<const MeshStore>();
     for (const auto &entry : entries) CaptureNormalWrites(r, entry, work, work);
     EncodeDeriveNormals(r, chain, entries, {
-        .CornerSectors = meshes.Slots().CornerSector,
-        .EdgeSharpnessSlot = meshes.Slots().EdgeSharpness,
-        .FaceSharpnessSlot = meshes.Slots().FaceSharpness,
-        .VertexNormalSlot = meshes.Slots().BaseVertexNormal,
-        .NormalSectors = meshes.Slots().NormalSector,
-        .FaceNormalSlot = meshes.Slots().BaseFaceNormal,
-        .BaseFaceNormalSlot = meshes.Slots().BaseFaceNormal,
-    });
+                                               .CornerSectors = meshes.Slots().CornerSector,
+                                               .EdgeSharpnessSlot = meshes.Slots().EdgeSharpness,
+                                               .FaceSharpnessSlot = meshes.Slots().FaceSharpness,
+                                               .VertexNormalSlot = meshes.Slots().BaseVertexNormal,
+                                               .NormalSectors = meshes.Slots().NormalSector,
+                                               .FaceNormalSlot = meshes.Slots().BaseFaceNormal,
+                                               .BaseFaceNormalSlot = meshes.Slots().BaseFaceNormal,
+                                           });
 }
 } // namespace
 
@@ -99,14 +99,16 @@ void EncodeDeriveMeshNormals(state::Scene &r, mtl::ComputeChain &chain, const Bu
     const auto &meshes = r.Context.get<const MeshStore>();
     std::vector<NormalDeriveEntry> entries;
     for (const auto &change : changes) {
-        auto entry = MakeDeriveEntryInputs(meshes,change.StoreId);
+        auto entry = MakeDeriveEntryInputs(meshes, change.StoreId);
         if (!entry) continue;
         if (change.Vertices.Storage.Slot == InvalidSlot || change.Faces.Storage.Slot == InvalidSlot) throw std::invalid_argument("Local normal derivation requires canonical membership.");
-        entry->VerticesWork = change.Vertices; entry->FacesWork = change.Faces;
-        entry->VertexWorkCount = change.VertexCount; entry->FaceWorkCount = change.FaceCount;
+        entry->VerticesWork = change.Vertices;
+        entry->FacesWork = change.Faces;
+        entry->VertexWorkCount = change.VertexCount;
+        entry->FaceWorkCount = change.FaceCount;
         entries.push_back(*entry);
     }
-    EncodeDeriveBaseEntries(r,chain,entries,work);
+    EncodeDeriveBaseEntries(r, chain, entries, work);
 }
 
 void EncodeDeriveAllNormals(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
@@ -115,21 +117,25 @@ void EncodeDeriveAllNormals(state::Scene &r, mtl::ComputeChain &chain, std::span
     std::vector<ElementWork> work;
     std::vector<NormalDeriveEntry> entries;
     for (const auto id : ids) {
-        auto entry = MakeDeriveEntryInputs(meshes,id);
+        auto entry = MakeDeriveEntryInputs(meshes, id);
         if (!entry) continue;
         const auto &record = meshes.Get(id);
-        const auto v = PrepareElementMembershipWork(chain.Scratch,meshes.Arenas().Vertices,record.Vertices);
-        const auto f = PrepareElementMembershipWork(chain.Scratch,meshes.Arenas().FaceTriangles,record.FaceData);
-        seeds.push_back(v); seeds.push_back(f);
-        work.push_back(v.Work); work.push_back(f.Work);
-        entry->VerticesWork = v.Work; entry->FacesWork = f.Work;
-        entry->VertexWorkCount = entry->VertexCount; entry->FaceWorkCount = entry->FaceCount;
+        const auto v = PrepareElementMembershipWork(chain.Scratch, meshes.Arenas().Vertices, record.Vertices);
+        const auto f = PrepareElementMembershipWork(chain.Scratch, meshes.Arenas().FaceTriangles, record.FaceData);
+        seeds.push_back(v);
+        seeds.push_back(f);
+        work.push_back(v.Work);
+        work.push_back(f.Work);
+        entry->VerticesWork = v.Work;
+        entry->FacesWork = f.Work;
+        entry->VertexWorkCount = entry->VertexCount;
+        entry->FaceWorkCount = entry->FaceCount;
         entries.push_back(*entry);
     }
     if (entries.empty()) return;
-    EncodeElementMembershipWork(r,chain,seeds);
-    EncodeSortElementWork(r,chain,work);
+    EncodeElementMembershipWork(r, chain, seeds);
+    EncodeSortElementWork(r, chain, work);
     chain.Submit();
-    for (const auto domain : work) CheckElementWork(chain.Scratch,domain);
-    EncodeDeriveBaseEntries(r,chain,entries,chain.Scratch);
+    for (const auto domain : work) CheckElementWork(chain.Scratch, domain);
+    EncodeDeriveBaseEntries(r, chain, entries, chain.Scratch);
 }

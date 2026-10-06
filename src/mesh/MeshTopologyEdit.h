@@ -9,8 +9,10 @@
 #include "mesh/TopologyOutputHandles.h"
 #include "metal/BufferArena.h"
 
-namespace mtl { struct ComputeChain; }
-struct FaceListReferences;
+namespace mtl {
+struct ComputeChain;
+}
+struct PrimitiveListReferences;
 struct SpatialFaceWork;
 struct TopologyReadView;
 
@@ -71,7 +73,8 @@ struct MeshTopologyEdit {
     // Output order is local to this edit and includes retained and newly created vertices.
     Range InsetBasis{};
     // Blocks whose edges and faces can border the repaired vertices after publication: the neighborhood's and the new ones.
-    std::array<std::vector<uint32_t>,2> RepairedBlocks; // Edges, faces
+    std::array<std::vector<uint32_t>, 2> RepairedBlocks; // Edges, faces
+
 private:
     struct Closures;
     struct Prepared;
@@ -81,7 +84,7 @@ private:
     MeshTopologyEdit(mtl::ComputeChain &, const MeshTopologyTask &);
     // Records the task's source closures, or returns none when the task selects no source.
     // A face list task takes its parsed face list, and a spatial task takes its finished face query.
-    std::optional<Closures> RecordClosures(state::Scene &, const MeshTopologyTask &, std::optional<FaceListReferences>, const SpatialFaceWork *);
+    std::optional<Closures> RecordClosures(state::Scene &, const MeshTopologyTask &, std::optional<PrimitiveListReferences>, const SpatialFaceWork *);
     // Reads the submitted closures and returns whether the task has source elements to edit.
     bool FinishClosures(const MeshTopologyTask &, Closures &);
     // Lays out the operator's job and workspaces for its count passes, an in-place edit reading its source through `view`.

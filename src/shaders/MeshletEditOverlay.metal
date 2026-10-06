@@ -142,6 +142,7 @@ using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(M
     const Transform world = MeshletWorld(scene, work.Draw);
     for (uint corner = 0u; corner < 3u; ++corner) {
         ElementIdVaryings out{.Position = MeshletPosition(scene, work.Draw, world, corners.VertexIds[corner]), .PointSize = 1.0f, .ElementId = scene.FacePickId(work.Draw, face_id)};
+        if (EditElementHidden(scene,work.Draw,Element::Face,face_id)) { out.Position=float4(0.f); out.PointSize=0.f; out.ElementId=0u; }
         const uint output_index = thread_index * 3u + corner;
         output.set_vertex(output_index, out);
         output.set_index(output_index, output_index);

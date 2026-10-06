@@ -16,6 +16,10 @@ struct PoseAttributeView {
         const auto value = Nodes[child - 1u].Children[(record >> 8u) & PoseAttributeRadixMask];
         return value ? (value - 1u) * 256u + (record & 255u) : InvalidOffset;
     }
-    uint32_t Index(uint32_t record) const { const auto index = Find(record); assert(index != InvalidOffset); return index; }
+    uint32_t Index(uint32_t record) const {
+        const auto index = Find(record);
+        assert(index != InvalidOffset);
+        return index;
+    }
     const T &operator[](uint32_t record) const { return Values[Index(record)]; }
 };

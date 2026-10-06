@@ -15,7 +15,7 @@ struct SubdivideLoop {
     device uint *EdgeSource; // The source halfedge whose edge the corner's arriving segment belongs to
     device uint *Cut; // A cut vertex rather than an original corner
     device uint *Selected; // The arriving segment is a piece of a selected edge
-    device uint *Order, *ViaChord, *Visited, *SelectedIndices;
+    device uint *Order, *ViaChord, *Visited;
     device packed_uint2 *Chords;
     uint CutEdges; // Selected edges around the face
     uint CutStart; // The expanded index of the first cut on the first selected edge, for pattern rotation
@@ -28,7 +28,7 @@ inline uint TopoSubdivideCuts(MeshTopologyJob job) { return (job.Flags & (Topolo
 // slots, so adjacent faces never share scratch even when handles are sparse.
 inline SubdivideLoop TopoSplitLoop(TopoContext ctx, MeshTopologyJob job, uint f) {
     const uint2 range = ctx.SrcFaceRange(job, f);
-    const uint width = job.Op == MeshTopologyOp::Subdivide ? TopoSubdivideCuts(job) + 1u : 1u;
+    const uint width = TopoSubdivideCuts(job) + 1u;
     const uint total = job.SrcHalfedgeCount * width;
     const uint first = ctx.SrcHalfedgeDomain(job).Index(range.x) * width;
     device uint *base = ctx.Scratch() + job.FaceLoopOffset;
@@ -36,8 +36,7 @@ inline SubdivideLoop TopoSplitLoop(TopoContext ctx, MeshTopologyJob job, uint f)
         reinterpret_cast<device float *>(base + 3u * total + first),
         base + 4u * total + first, base + 5u * total + first, base + 6u * total + first,
         base + 7u * total + first, base + 8u * total + first, base + 9u * total + first,
-        base + 10u * total + first,
-        reinterpret_cast<device packed_uint2 *>(base + 11u * total) + first,
+        reinterpret_cast<device packed_uint2 *>(base + 10u * total) + first,
         0u, InvalidOffset};
 }
 
@@ -82,7 +81,7 @@ inline void TopoSubdivideExpand(TopoContext ctx, MeshTopologyJob job, uint f, th
             // The cuts run along the edge's representative halfedge, so a corner against it takes them in reverse order.
             const uint rep = ctx.SrcEdgeHalfedge(job, ctx.SrcEdge(job, h));
             const uint first = vertex_offsets[ctx.HalfedgeEntry(job, rep)];
-            const bool along = rep == h;
+            const bool along = corners[rep] == corners[h];
             if (loop.CutStart == InvalidOffset) loop.CutStart = loop.Length;
             for (uint k = 0u; k < cuts; ++k) {
                 const uint i = along ? k : cuts - 1u - k;
@@ -256,22 +255,6 @@ inline void TopoSubdivideByChords(thread SubdivideEmitter &emitter, thread const
     }
 }
 
-// Fills the loop with the face's own corners on their vertices' outputs, with each segment's source edge selection kept when `edges_selected`.
-inline void TopoPlainLoop(TopoContext ctx, MeshTopologyJob job, uint f, thread SubdivideLoop &loop, bool edges_selected) {
-    const uint2 range = ctx.SrcFaceRange(job, f);
-    const auto corners = ctx.SrcCorners(job);
-    device const uint *vertex_offsets = ctx.Counts(job, TopoCountVertices);
-    loop.Length = range.y - range.x;
-    for (uint k = 0u; k < loop.Length; ++k) {
-        const uint h = range.x + k;
-        loop.Vertex[k] = vertex_offsets[corners[h]];
-        loop.SourceA[k] = loop.SourceB[k] = loop.EdgeSource[k] = h;
-        loop.Weight[k] = 0.f;
-        loop.Cut[k] = false;
-        loop.Selected[k] = edges_selected && ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, h));
-    }
-}
-
 // Emits the faces of a subdivided face: its pattern's split, or its expanded loop as one face.
 // Returns the interior vertices the face adds, which only a grid fill uses.
 inline uint TopoSubdivideFace(TopoContext ctx, MeshTopologyJob job, uint f, thread SubdivideEmitter &emitter) {
@@ -361,59 +344,27 @@ inline uint TopoSubdivideFace(TopoContext ctx, MeshTopologyJob job, uint f, thre
     return 0u;
 }
 
-// Splits a loop along chords between its consecutive selected corners, skipping pairs the loop already joins.
-inline void TopoConnectLoop(TopoContext ctx, MeshTopologyJob job, thread SubdivideLoop &loop, thread SubdivideEmitter &emitter, bool selected_face) {
-    const uint n = loop.Length;
-    uint selected_count = 0u;
-    for (uint k = 0u; k < n; ++k) {
-        if (ctx.SrcSelectedVertex(job, ctx.SrcCorners(job)[loop.SourceA[k]])) loop.SelectedIndices[selected_count++] = k;
-    }
-    uint chord_count = 0u;
-    if (selected_count >= 2u && n > 3u) {
-        for (uint i = 0u; i < selected_count; ++i) {
-            const uint a = loop.SelectedIndices[i], b = loop.SelectedIndices[(i + 1u) % selected_count];
-            const uint gap = (b + n - a) % n;
-            // Two selected corners that are neighbors, or the only pair closing on itself, need no chord.
-            if (gap <= 1u || gap == n - 1u || (selected_count == 2u && i == 1u)) continue;
-            loop.Chords[chord_count++] = packed_uint2(a, b);
-        }
-    }
-    if (chord_count == 0u) {
-        emitter.Whole(loop, selected_face);
-        return;
-    }
-    TopoSubdivideByChords(emitter, loop, chord_count);
-}
-
-// Returns zero, since a connect adds no interior vertices.
-inline uint TopoConnectFace(TopoContext ctx, MeshTopologyJob job, uint f, thread SubdivideEmitter &emitter) {
-    SubdivideLoop loop = TopoSplitLoop(ctx, job, f);
-    TopoPlainLoop(ctx, job, f, loop, true);
-    TopoConnectLoop(ctx, job, loop, emitter, ctx.SrcSelectedFace(job, f));
-    return 0u;
-}
-
-// Rotation connects consecutive listed vertices around the dissolved boundary. Walk the boundary directly so its
-// cost and storage follow the affected region even when its loop is longer than the bounded subdivide emitter.
-inline uint TopoRotateNext(TopoContext ctx, MeshTopologyJob job, uint h, bool own_loop) {
+// Connect and edge rotation split consecutive selected corners around a source or dissolved loop.
+// Walk the boundary directly: no expanded loop or chord graph is needed, regardless of region size.
+inline uint TopoConnectNext(TopoContext ctx, MeshTopologyJob job, uint h, bool own_loop) {
     return own_loop ? ctx.SrcNext(job, h) : TopoNextBoundary(ctx, job, h);
 }
-inline bool TopoRotateKept(TopoContext ctx, MeshTopologyJob job, uint h) {
+inline bool TopoConnectKept(TopoContext ctx, MeshTopologyJob job, uint h) {
     return !TopoVertexRemoved(ctx, job, ctx.SrcCorners(job)[h]);
 }
-struct TopoRotateMeasure {
+struct TopoConnectMeasure {
     uint Start, FirstSelected, Length, Selected, Ears, EarCorners, FirstGap;
 };
-inline TopoRotateMeasure TopoMeasureRotation(TopoContext ctx, MeshTopologyJob job, uint f, bool own_loop) {
+inline TopoConnectMeasure TopoMeasureConnect(TopoContext ctx, MeshTopologyJob job, uint f, bool own_loop) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint start = own_loop ? range.x : ctx.RegionStart(job)[f];
     const uint limit = own_loop ? range.y - range.x : ctx.RegionBoundary(job)[f];
-    TopoRotateMeasure result{start, InvalidOffset, 0u, 0u, 0u, 0u, 0u};
+    TopoConnectMeasure result{start, InvalidOffset, 0u, 0u, 0u, 0u, 0u};
     uint previous_selected = 0u, first_selected = 0u, h = start, steps = 0u;
     if (start == InvalidOffset || limit == 0u) return result;
     do {
         if (++steps > limit) return {start, InvalidOffset, 0u, 0u, 0u, 0u, 0u};
-        if (TopoRotateKept(ctx, job, h)) {
+        if (TopoConnectKept(ctx, job, h)) {
             if (ctx.SrcSelectedVertex(job, ctx.SrcCorners(job)[h])) {
                 if (result.Selected == 0u) {
                     result.FirstSelected = h;
@@ -427,7 +378,7 @@ inline TopoRotateMeasure TopoMeasureRotation(TopoContext ctx, MeshTopologyJob jo
             }
             ++result.Length;
         }
-        h = TopoRotateNext(ctx, job, h, own_loop);
+        h = TopoConnectNext(ctx, job, h, own_loop);
     } while (h != start);
     if (steps != limit) return {start, InvalidOffset, 0u, 0u, 0u, 0u, 0u};
     if (result.Selected > 1u) {
@@ -437,45 +388,47 @@ inline TopoRotateMeasure TopoMeasureRotation(TopoContext ctx, MeshTopologyJob jo
     return result;
 }
 
-inline uint2 TopoRotationOutputs(TopoRotateMeasure m) {
+inline uint2 TopoConnectOutputs(TopoConnectMeasure m) {
     if (m.Length < 3u) return uint2(0u);
     if (m.Selected < 3u) return m.Selected == 2u && m.Ears == 2u ? uint2(2u, m.EarCorners) : uint2(1u, m.Length);
     return uint2(m.Ears + 1u, m.EarCorners + m.Selected);
 }
 
-inline void TopoRotateWriteCorner(TopoContext ctx, MeshTopologyJob job, uint dst, uint h, bool chord) {
+inline void TopoConnectWriteCorner(TopoContext ctx, MeshTopologyJob job, uint dst, uint h, bool chord) {
     const uint v = ctx.SrcCorners(job)[h];
     const uint output = ctx.Counts(job, TopoCountVertices)[v];
     ctx.WriteCorner(job, dst, output, h, h, 0.f, chord ? InvalidOffset : h,
-        chord || ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, h)));
+        chord || (ctx.SrcSelectedEdge(job, ctx.SrcEdge(job, h)) &&
+            (job.Op != MeshTopologyOp::ConnectVertices || (job.Flags & TopologyFlagLoopCutSelect) == 0u)));
 }
 
-inline uint TopoRotateWriteEar(TopoContext ctx, MeshTopologyJob job, uint f, bool own_loop,
+inline uint TopoConnectWriteEar(TopoContext ctx, MeshTopologyJob job, uint f, bool own_loop,
                                uint first, uint gap, uint face, uint base) {
     uint h = first;
     uint written = 0u;
     while (written <= gap) {
-        if (TopoRotateKept(ctx, job, h)) {
-            TopoRotateWriteCorner(ctx, job, base + written, h, written == 0u);
+        if (TopoConnectKept(ctx, job, h)) {
+            TopoConnectWriteCorner(ctx, job, base + written, h, written == 0u);
             ++written;
         }
-        h = TopoRotateNext(ctx, job, h, own_loop);
+        h = TopoConnectNext(ctx, job, h, own_loop);
     }
     TopoEmitFace(ctx, job, face, base, written, f, true);
     return written;
 }
 
-inline void TopoEmitRotation(TopoContext ctx, MeshTopologyJob job, uint f, bool own_loop,
-                             TopoRotateMeasure m, uint face, uint base) {
-    const uint2 output = TopoRotationOutputs(m);
+inline void TopoEmitConnect(TopoContext ctx, MeshTopologyJob job, uint f, bool own_loop,
+                             TopoConnectMeasure m, uint face, uint base) {
+    const uint2 output = TopoConnectOutputs(m);
     if (output.x == 0u) return;
     const uint start = m.Selected ? m.FirstSelected : m.Start;
     if (output.x == 1u && (m.Selected < 3u || m.Ears == 0u)) {
-        uint h = start, written = 0u;
+        const uint whole_start = job.Op == MeshTopologyOp::ConnectVertices ? m.Start : start;
+        uint h = whole_start, written = 0u;
         do {
-            if (TopoRotateKept(ctx, job, h)) TopoRotateWriteCorner(ctx, job, base + written++, h, false);
-            h = TopoRotateNext(ctx, job, h, own_loop);
-        } while (h != start);
+            if (TopoConnectKept(ctx, job, h)) TopoConnectWriteCorner(ctx, job, base + written++, h, false);
+            h = TopoConnectNext(ctx, job, h, own_loop);
+        } while (h != whole_start);
         const uint2 source_range = ctx.SrcFaceRange(job, f);
         const bool selected = own_loop ? ctx.SrcSelectedFace(job, f) :
             ctx.SrcSelectedFace(job, f) || ctx.RegionBoundary(job)[f] != source_range.y - source_range.x;
@@ -484,39 +437,34 @@ inline void TopoEmitRotation(TopoContext ctx, MeshTopologyJob job, uint f, bool 
     }
     uint h = start, previous = start, gap = 0u;
     do {
-        if (TopoRotateKept(ctx, job, h)) {
+        if (TopoConnectKept(ctx, job, h)) {
             if (ctx.SrcSelectedVertex(job, ctx.SrcCorners(job)[h]) && h != start) {
                 if (gap >= 2u) {
-                    base += TopoRotateWriteEar(ctx, job, f, own_loop, previous, gap, face++, base);
+                    base += TopoConnectWriteEar(ctx, job, f, own_loop, previous, gap, face++, base);
                 }
                 previous = h;
                 gap = 0u;
             }
             ++gap;
         }
-        h = TopoRotateNext(ctx, job, h, own_loop);
+        h = TopoConnectNext(ctx, job, h, own_loop);
     } while (h != start);
-    if (gap >= 2u) base += TopoRotateWriteEar(ctx, job, f, own_loop, previous, gap, face++, base);
+    if (gap >= 2u) base += TopoConnectWriteEar(ctx, job, f, own_loop, previous, gap, face++, base);
     if (m.Selected < 3u) return;
     h = start;
     uint written = 0u;
     gap = m.FirstGap;
     do {
-        if (TopoRotateKept(ctx, job, h)) {
+        if (TopoConnectKept(ctx, job, h)) {
             if (ctx.SrcSelectedVertex(job, ctx.SrcCorners(job)[h])) {
-                TopoRotateWriteCorner(ctx, job, base + written++, h, gap >= 2u);
+                TopoConnectWriteCorner(ctx, job, base + written++, h, gap >= 2u);
                 gap = 0u;
             }
             ++gap;
         }
-        h = TopoRotateNext(ctx, job, h, own_loop);
+        h = TopoConnectNext(ctx, job, h, own_loop);
     } while (h != start);
     TopoEmitFace(ctx, job, face, base, written, f, true);
-}
-
-// Emits a face's split for the subdivide or connect operator and returns the interior vertices it adds.
-inline uint TopoSplitFace(TopoContext ctx, MeshTopologyJob job, uint f, thread SubdivideEmitter &emitter) {
-    return job.Op == MeshTopologyOp::Subdivide ? TopoSubdivideFace(ctx, job, f, emitter) : TopoConnectFace(ctx, job, f, emitter);
 }
 
 #endif

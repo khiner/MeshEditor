@@ -8,6 +8,7 @@ struct PrimitiveRecord {
     // Optional kind-specific indices for bone adjacency and ring geometry.
     SlotOffset AuxIndices DEFAULT();
     uint32_t PrimitiveIndex DEFAULT();
+    uint32_t Topology DEFAULT(); // Triangle, line or point; one material can have all three.
     // The mesh's primitive-material offset, kept here so the cull resolves a material without the mesh record.
     uint32_t PrimitiveMaterialOffset DEFAULT(InvalidOffset);
     // Construction slice in the canonical triangle-ID render arena.
@@ -23,4 +24,4 @@ struct PrimitiveRecord {
     // Channels the current hierarchy preserves for material and debug shading.
     uint32_t LodAttributes DEFAULT(~0u);
 };
-static_assert(sizeof(PrimitiveRecord) == 48, "PrimitiveRecord size");
+static_assert(sizeof(PrimitiveRecord) == 52, "PrimitiveRecord size");

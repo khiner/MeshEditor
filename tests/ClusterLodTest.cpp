@@ -2,6 +2,7 @@
 #include "RunSuites.h"
 #include "meshoptimizer.h"
 
+#include <bit>
 #include <cmath>
 #include <numbers>
 #include <set>
@@ -163,9 +164,9 @@ ClusterLodMesh MeshOf(const Fixture &fixture) {
         .CornerVertices = fixture.CornerVertices,
         .Positions = &fixture.Positions.front().x,
         .PositionStride = sizeof(vec3),
-        .DenseVertices = {0u,uint32_t(fixture.Positions.size())},
+        .DenseVertices = {0u, uint32_t(fixture.Positions.size())},
         .Normals = {.CornerVertices = fixture.CornerVertices, .VertexNormals = fixture.VertexNormals},
-        .Weld = {.TriangleFaces = {TriangleRefs(fixture.Triangles), fixture.HalfedgeFaces}, .CornerUvs = {CornerAttributeView<vec2>{{fixture.AttributeBlocks, fixture.CornerUvs}, TriangleRefs(fixture.Triangles)}}},
+        .Weld = {.CornerClassMode = uint32_t(CornerClassMode::UniformVertex), .TriangleFaces = {TriangleRefs(fixture.Triangles), fixture.HalfedgeFaces}, .CornerUvs = {CornerAttributeView<vec2>{{fixture.AttributeBlocks, fixture.CornerUvs}, TriangleRefs(fixture.Triangles)}}},
         .Primitives = fixture.Primitives,
         .Clusters = fixture.Clusters,
         .SourceVertexCorners = fixture.ClusterVertices,
@@ -173,9 +174,63 @@ ClusterLodMesh MeshOf(const Fixture &fixture) {
     };
 }
 
+// Compare every published field without depending on struct padding.
+std::vector<uint32_t> LodWords(const ClusterLodBuild &build) {
+    std::vector<uint32_t> words;
+    const auto put = [&](auto... values) { (words.push_back(std::bit_cast<uint32_t>(values)), ...); };
+    const auto list = [&](const auto &values) { put(uint32_t(values.size())); for (const auto value:values) put(uint32_t(value)); };
+    put(build.LevelCount, build.NodeDepth, uint32_t(build.Clusters.size()));
+    for (const auto &c : build.Clusters) put(c.VertexOffset, c.VertexCount, c.LocalTriangleOffset, c.TriangleCount, c.Primitive, c.ConeAxisCutoff, c.Center.x, c.Center.y, c.Center.z, c.Radius, c.GroupIndex, c.RefinedGroup);
+    list(build.VertexCorners);
+    list(build.LocalTriangles);
+    put(uint32_t(build.Groups.size()));
+    for (const auto &g : build.Groups) put(g.Center.x, g.Center.y, g.Center.z, g.Radius, g.Error, g.FirstCluster, g.ClusterCount, g.Primitive);
+    list(build.GroupClusters);
+    list(build.Level0Groups);
+    put(uint32_t(build.Nodes.size()));
+    for (const auto &n : build.Nodes) put(n.Center.x, n.Center.y, n.Center.z, n.Radius, n.Error, n.FirstMeshlet, n.MeshletCount, n.ChildOffset, n.ChildCount, n.MeshletRoot);
+    put(uint32_t(build.PrimitiveRanges.size()));
+    for (const auto &p : build.PrimitiveRanges) put(p.FirstCluster, p.ClusterCount, p.FirstGroup, p.GroupCount, p.RootNode, p.FinestNode, p.SimplifyScale);
+    return words;
+}
+
 } // namespace
 
 int main() {
+    "serial and parallel LOD builds preserve identical geometry bounds and errors"_test = [] {
+        for (const bool seam : {false, true}) {
+            const auto fixture = seam ? SeamGridFixture(48u) : SphereFixture(48u, 96u);
+            const auto mesh = MeshOf(fixture);
+            const auto reference = BuildClusterLod(mesh, true);
+            expect(reference.LevelCount > 2u);
+            for (uint32_t repeat = 0u; repeat < 3u; ++repeat) expect(LodWords(BuildClusterLod(mesh)) == LodWords(reference));
+        }
+    };
+    "LOD repair handles members joining across levels deterministically"_test = [] {
+        const auto fixture = SeamGridFixture(48u);
+        auto mesh = MeshOf(fixture);
+        std::vector<uvec3> triangles;
+        std::vector<uint32_t> levels;
+        for (uint32_t i = 0u; i < fixture.Clusters.size(); ++i) {
+            const auto &c = fixture.Clusters[i];
+            levels.push_back((i % 3u) * 2u);
+            for (uint32_t t = 0u; t < c.TriangleCount; ++t) {
+                uvec3 triangle;
+                for (uint32_t k = 0u; k < 3u; ++k) triangle[k] = fixture.ClusterVertices[c.FirstVertex + fixture.ClusterLocalTriangles[c.FirstLocalTriangle + 3u * t + k]];
+                triangles.push_back(triangle);
+            }
+        }
+        const auto refs = TriangleRefs(triangles);
+        mesh.CornerVertices = {refs, fixture.CornerVertices};
+        mesh.Weld.TriangleFaces.Corners = refs;
+        mesh.Weld.CornerUvs[0].Corners = refs;
+        const auto scale = meshopt_simplifyScale(&fixture.Positions.front().x, fixture.Positions.size(), sizeof(vec3));
+        const auto reference = RebuildClusterLod(mesh, levels, scale);
+        expect(reference.LevelCount >= 5u);
+        expect(reference.Level0Count() == levels.size());
+        for (const auto group : reference.Level0Groups) expect(group < reference.Groups.size());
+        for (uint32_t repeat = 0u; repeat < 3u; ++repeat) expect(LodWords(RebuildClusterLod(mesh, levels, scale)) == LodWords(reference));
+    };
     "simplification retains an original-geometry cut"_test = [] {
         const auto fixture = SphereFixture(32u, 64u);
         const auto build = BuildClusterLod(MeshOf(fixture));

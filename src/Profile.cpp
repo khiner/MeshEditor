@@ -1,5 +1,5 @@
-#include "metal/AutoreleaseScope.h"
 #include "Profile.h"
+#include "metal/AutoreleaseScope.h"
 
 #include <algorithm>
 #include <cassert>

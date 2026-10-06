@@ -28,7 +28,9 @@ struct CornerClassificationContext {
     uint Flags(uint2 fan) const {
         uint flags = 0u;
         for (uint i = 0u; i < fan.y; ++i) {
-            const uint h = Conn.FanCorner(fan.x+i);
+            const uint2 item = Conn.FanItem(fan.x+i);
+            if (item.y==InvalidOffset) continue;
+            const uint h=item.x;
             flags |= Flat(h) ? 1u : 2u;
             if (Sharp(h) || Sharp(Conn.Next(h))) flags |= 4u;
         }
@@ -66,7 +68,7 @@ kernel void CornerClassificationPlan(
     for (uint n = 0u; n < fan.y; ++n) {
         const uint h = ctx.Conn.FanCorner(fan.x+n);
         const uint block = h/256u;
-        const bool needed = touched && !ctx.Flat(h);
+        const bool needed = touched && ctx.Conn.HalfedgeFace(h)!=InvalidOffset && !ctx.Flat(h);
         if (needed) MarkWork(b,pc.NeededBlocks,block);
         if (needed || ctx.Payload(h) != InvalidOffset) MarkWork(b,pc.DirtyBlocks,block);
     }
@@ -87,7 +89,7 @@ kernel void CornerClassificationWrite(
     // first unlabelled smooth corner is its component's canonical minimum.
     for (uint n = 0u; n < fan.y; ++n) {
         const uint h = ctx.Conn.FanCorner(fan.x+n);
-        if (!ctx.Flat(h) && ctx.Root(h) == InvalidOffset) ctx.Sector(h,fan.y);
+        if (ctx.Conn.HalfedgeFace(h)!=InvalidOffset && !ctx.Flat(h) && ctx.Root(h) == InvalidOffset) ctx.Sector(h,fan.y);
     }
 }
 

@@ -1,11 +1,11 @@
 #pragma once
 
-#include "numeric/uvec2.h"
 #include "mesh/ElementAttributeView.h"
+#include "numeric/uvec2.h"
 
 #include "gpu/CornerClass.h"
-#include "gpu/CustomNormal.h"
 #include "gpu/CornerClassMode.h"
+#include "gpu/CustomNormal.h"
 #include "numeric/vec2.h"
 #include "numeric/vec4.h"
 

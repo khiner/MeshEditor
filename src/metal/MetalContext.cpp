@@ -1,13 +1,13 @@
-#include "metal/AutoreleaseScope.h"
 #include "metal/MetalContext.h"
+#include "metal/AutoreleaseScope.h"
 #include "metal/PhysicalPages.h"
 
 #include "metal/MetalCpp.h"
 
 #include <atomic>
 #include <bit>
-#include <unordered_set>
 #include <format>
+#include <unordered_set>
 #include <utility>
 
 namespace mtl {
@@ -20,12 +20,11 @@ void ObserveCommand(MTL::CommandBuffer *command, std::string_view label, MTL::Sh
         const AutoreleaseScope pool;
         const auto [mapping_event, execution_event] = std::pair{std::move(mapping), std::move(execution)};
         if (const auto *error = completed->error()) {
-            std::fprintf(stderr, "Metal command %s failed (mapping %llu, execution %llu): %s\n", completed->label()->utf8String(),
-                (unsigned long long)mapping_event->signaledValue(), (unsigned long long)execution_event->signaledValue(), error->description()->utf8String());
+            std::fprintf(stderr, "Metal command %s failed (mapping %llu, execution %llu): %s\n", completed->label()->utf8String(), (unsigned long long)mapping_event->signaledValue(), (unsigned long long)execution_event->signaledValue(), error->description()->utf8String());
         }
     });
 }
-}
+} // namespace
 struct Context::MappingSubmission {
     struct Command {
         MTL::Buffer *Destination{};
@@ -133,9 +132,9 @@ void Context::CollectCompletedWork() const {
     const AutoreleaseScope pool;
     // A dead alias cannot read its old physical pages. Recycle those pages as
     // soon as readers finish, independently of the virtual cleanup backlog.
-    while (!PageRetirements.empty() && PageRetirements.front()->Readers->status()==MTL::CommandBufferStatusCompleted)
+    while (!PageRetirements.empty() && PageRetirements.front()->Readers->status() == MTL::CommandBufferStatusCompleted)
         PageRetirements.pop_front();
-    const auto completed=MappingEvent->signaledValue();
+    const auto completed = MappingEvent->signaledValue();
     // Native resource teardown must not overlap mapping work.
     // Reap as a batch only at an idle point on the mapping timeline.
     // No CPU wait is needed.
@@ -175,19 +174,19 @@ void Context::CommitResidency() const {
     CollectCompletedWork();
     if (Residency && std::exchange(ResidencyDirty, false)) Residency->commit();
     if (!PendingMappings.empty()) {
-        auto submission=std::make_shared<MappingSubmission>();
+        auto submission = std::make_shared<MappingSubmission>();
         // Collect each buffer's consecutive heap runs into one native update with multiple mapping operations.
-        auto &commands=submission->Commands;
-        std::unordered_map<MTL::Buffer *,size_t> last_batch;
+        auto &commands = submission->Commands;
+        std::unordered_map<MTL::Buffer *, size_t> last_batch;
         for (const auto &mapping : PendingMappings) {
-            const auto destination=mapping.Destination.get();
-            auto entry=last_batch.find(destination);
-            if (entry==last_batch.end() || commands[entry->second].Heap!=mapping.Heap.get()) {
-                last_batch[destination]=commands.size();
-                commands.push_back({destination,mapping.Heap.get(),{}});
-                entry=last_batch.find(destination);
+            const auto destination = mapping.Destination.get();
+            auto entry = last_batch.find(destination);
+            if (entry == last_batch.end() || commands[entry->second].Heap != mapping.Heap.get()) {
+                last_batch[destination] = commands.size();
+                commands.push_back({destination, mapping.Heap.get(), {}});
+                entry = last_batch.find(destination);
             }
-            auto &operations=commands[entry->second].Updates;
+            auto &operations = commands[entry->second].Updates;
             for (uint64_t offset = 0u; offset < mapping.Count;) {
                 const auto first = mapping.First + offset, heap_first = mapping.HeapFirst + offset;
                 if (!operations.empty()) {
@@ -201,11 +200,11 @@ void Context::CommitResidency() const {
                     }
                 }
                 const auto count = std::min(uint64_t(PhysicalSlabPages), mapping.Count - offset);
-                operations.push_back({MTL::SparseTextureMappingModeMap,NS::Range{first,count},heap_first});
+                operations.push_back({MTL::SparseTextureMappingModeMap, NS::Range{first, count}, heap_first});
                 offset += count;
             }
         }
-        submission->Resources=std::move(PendingMappings);
+        submission->Resources = std::move(PendingMappings);
         ++MappingSerial;
         MappingSubmissions.push_back(submission);
         // Mapping updates touch the page tables of resources whose aliases may
@@ -216,31 +215,30 @@ void Context::CommitResidency() const {
         before->encodeSignalEvent(ExecutionEvent.get(), ++ExecutionSerial);
         Commit(before);
         MappingQueue->wait(ExecutionEvent.get(), ExecutionSerial);
-        for (const auto &operation:submission->Commands)
-            MappingQueue->updateBufferMappings(operation.Destination,operation.Heap,operation.Updates.data(),operation.Updates.size());
-        MappingQueue->signalEvent(MappingEvent.get(),MappingSerial);
+        for (const auto &operation : submission->Commands)
+            MappingQueue->updateBufferMappings(operation.Destination, operation.Heap, operation.Updates.data(), operation.Updates.size());
+        MappingQueue->signalEvent(MappingEvent.get(), MappingSerial);
         auto *barrier = Queue->commandBuffer();
-        uint64_t mapped=0u;
+        uint64_t mapped = 0u;
         for (const auto &mapping : submission->Resources) mapped += mapping.Count;
-        ObserveCommand(barrier, std::format("After sparse mapping {} ({} commands, {} pages)",
-            MappingSerial,submission->Commands.size(),mapped), MappingEvent.get(), ExecutionEvent.get());
+        ObserveCommand(barrier, std::format("After sparse mapping {} ({} commands, {} pages)", MappingSerial, submission->Commands.size(), mapped), MappingEvent.get(), ExecutionEvent.get());
         barrier->encodeWait(MappingEvent.get(), MappingSerial);
         Commit(barrier);
     }
     if (!PendingUnmaps.empty() || !PendingSparseAddresses.empty() || !PendingPageRetirements.empty()) {
-        auto retirement=std::make_unique<MappingRetirement>();
-        retirement->Ranges=std::move(PendingUnmaps);
-        retirement->Addresses=std::move(PendingSparseAddresses);
-        auto pages=std::make_unique<PageRetirement>();
-        pages->Pages=std::move(PendingPageRetirements);
+        auto retirement = std::make_unique<MappingRetirement>();
+        retirement->Ranges = std::move(PendingUnmaps);
+        retirement->Addresses = std::move(PendingSparseAddresses);
+        auto pages = std::make_unique<PageRetirement>();
+        pages->Pages = std::move(PendingPageRetirements);
         std::unordered_set<MTL::Heap *> heaps;
-        for (const auto &batch:pages->Pages)
-            for (const auto &page:batch)
+        for (const auto &batch : pages->Pages)
+            for (const auto &page : batch)
                 if (heaps.insert(page->Heap()).second) retirement->Heaps.push_back(NS::RetainPtr(page->Heap()));
-        retirement->Readers=NS::RetainPtr(Queue->commandBuffer());
-        retirement->Readers->encodeSignalEvent(ExecutionEvent.get(),++ExecutionSerial);
+        retirement->Readers = NS::RetainPtr(Queue->commandBuffer());
+        retirement->Readers->encodeSignalEvent(ExecutionEvent.get(), ++ExecutionSerial);
         Commit(retirement->Readers.get());
-        pages->Readers=retirement->Readers;
+        pages->Readers = retirement->Readers;
         PageRetirements.push_back(std::move(pages));
         MappingRetirements.push_back(std::move(retirement));
     }
@@ -258,9 +256,9 @@ bool Context::DrainMappings() const {
         if (fence->status() == MTL::CommandBufferStatusError) return false;
     }
     while (!PageRetirements.empty()) {
-        auto &retirement=*PageRetirements.front();
+        auto &retirement = *PageRetirements.front();
         retirement.Readers->waitUntilCompleted();
-        if (retirement.Readers->status()==MTL::CommandBufferStatusError) return false;
+        if (retirement.Readers->status() == MTL::CommandBufferStatusError) return false;
         CollectCompletedWork();
     }
     // Teardown and explicit memory reclamation may wait for inactive storage.
@@ -269,11 +267,11 @@ bool Context::DrainMappings() const {
     for (;;) {
         CollectCompletedWork();
         if (MappingRetirements.empty()) break;
-        auto &retirement=*MappingRetirements.front();
+        auto &retirement = *MappingRetirements.front();
         retirement.Readers->waitUntilCompleted();
-        if (retirement.Readers->status()==MTL::CommandBufferStatusError) return false;
+        if (retirement.Readers->status() == MTL::CommandBufferStatusError) return false;
         PublishRetirements();
-        if (*retirement.Serial && !RetirementEvent->waitUntilSignaledValue(*retirement.Serial,30000u)) return false;
+        if (*retirement.Serial && !RetirementEvent->waitUntilSignaledValue(*retirement.Serial, 30000u)) return false;
         CollectCompletedWork();
     }
     return MappingEvent->signaledValue() == MappingSerial;
@@ -285,7 +283,7 @@ void Context::TrimPageCache(uint64_t keep_bytes) const {
     CommitResidency();
     // Empty slabs can be reused immediately, but their heaps may still back
     // inactive aliases. A frame never waits for that cleanup just to trim cache.
-    if (!MappingRetirements.empty() || MappingEvent->signaledValue()!=MappingSerial) return;
+    if (!MappingRetirements.empty() || MappingEvent->signaledValue() != MappingSerial) return;
     auto *fence = Queue->commandBuffer();
     OrderAfterGpuWork(fence);
     Commit(fence);
@@ -334,12 +332,12 @@ void Context::OrderAfterGpuWork(MTL::CommandBuffer *next) const {
 void Context::MapBufferPages(MTL::Buffer *buffer, MTL::Heap *heap, uint64_t first, uint64_t count, uint64_t heap_first) const {
     if (!count) return;
     if (!PendingMappings.empty()) {
-        auto &last=PendingMappings.back();
-        if (last.Destination.get()==buffer && last.Heap.get()==heap && last.First+last.Count==first && last.HeapFirst+last.Count==heap_first) {
-            last.Count+=count;
+        auto &last = PendingMappings.back();
+        if (last.Destination.get() == buffer && last.Heap.get() == heap && last.First + last.Count == first && last.HeapFirst + last.Count == heap_first) {
+            last.Count += count;
             return;
         }
     }
-    PendingMappings.push_back({NS::RetainPtr(buffer),NS::RetainPtr(heap),first,count,heap_first});
+    PendingMappings.push_back({NS::RetainPtr(buffer), NS::RetainPtr(heap), first, count, heap_first});
 }
 } // namespace mtl

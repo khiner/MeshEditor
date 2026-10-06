@@ -29,4 +29,4 @@ struct MeshDisplay {
     EditSelectionStorage Selection DEFAULT();
     uint32_t ActiveVertex DEFAULT(InvalidOffset); // The excited mesh's active vertex, in Excite mode.
 };
-static_assert(sizeof(MeshDisplay) == 100, "MeshDisplay size");
+static_assert(sizeof(MeshDisplay) == 112, "MeshDisplay size");

@@ -3,7 +3,9 @@
 #include <cstdint>
 #include <span>
 
-namespace state { struct Scene; }
+namespace state {
+struct Scene;
+}
 
 // Releases the payload ranges the retired clusters' host records name, then their identities.
 // Live draw memberships and other consumers must stop using retired IDs first.

@@ -268,7 +268,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         auto &g = mesh_groups[idx];
         const auto *layout = r.try_get<const MeshSourceLayout>(entity);
         const auto mesh = GetMesh(r, entity);
-        const auto k = mesh.FaceCount() ? MeshKind::Triangles : mesh.EdgeCount() ? MeshKind::Lines : MeshKind::Points;
+        const auto k = mesh.FaceCount() ? MeshKind::Triangles : mesh.EdgeCount() ? MeshKind::Lines :
+                                                                                   MeshKind::Points;
         if (k == MeshKind::Triangles) g.Triangles.push_back(entity);
         else if (k == MeshKind::Lines) g.Lines.push_back(entity);
         else g.Points.push_back(entity);
@@ -848,7 +849,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const auto &record = meshes.Get(store_id);
             const auto total_vcount = mesh.VertexCount();
             std::vector<uint32_t> vertex_handles(total_vcount);
-            arenas.Vertices.ForEach(record.Vertices,[&](uint32_t handle,uint32_t ordinal) { vertex_handles[ordinal]=handle; });
+            arenas.Vertices.ForEach(record.Vertices, [&](uint32_t handle, uint32_t ordinal) { vertex_handles[ordinal] = handle; });
             const auto primitive_materials = arenas.PrimitiveMaterials.Get(record.PrimitiveMaterials);
             const auto corner_normals = meshes.GetCornerNormals(mesh);
             const auto triangle_corners = meshes.GetTriangleCorners(store_id);
@@ -877,27 +878,27 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const bool dense_triangles = (arenas.Triangles.Set(record.TriangleData).Flags & 1u) != 0u;
             std::vector<uint32_t> triangle_block_first;
             if (!dense_triangles) {
-                triangle_block_first.resize(arenas.Triangles.Capacity()/MeshElementBlockSize,InvalidOffset);
-                arenas.Triangles.ForEach(record.TriangleData,[&](uint32_t handle,uint32_t ordinal) {
-                    auto &first = triangle_block_first[handle/MeshElementBlockSize];
+                triangle_block_first.resize(arenas.Triangles.Capacity() / MeshElementBlockSize, InvalidOffset);
+                arenas.Triangles.ForEach(record.TriangleData, [&](uint32_t handle, uint32_t ordinal) {
+                    auto &first = triangle_block_first[handle / MeshElementBlockSize];
                     if (first == InvalidOffset) first = ordinal;
                 });
             }
             const auto triangle_ordinal = [&](uint32_t handle) {
                 if (dense_triangles) return handle - arenas.Triangles.First(record.TriangleData);
-                const uint32_t block = handle/MeshElementBlockSize, offset = handle%MeshElementBlockSize;
-                const auto &bits = arenas.Triangles.Blocks.Get({block,1u})[0].Live;
+                const uint32_t block = handle / MeshElementBlockSize, offset = handle % MeshElementBlockSize;
+                const auto &bits = arenas.Triangles.Blocks.Get({block, 1u})[0].Live;
                 uint32_t ordinal = triangle_block_first.at(block);
-                if (ordinal == InvalidOffset || !(bits[offset/32u] & (1u << (offset%32u)))) throw std::out_of_range("Face triangle is outside its mesh.");
-                for (uint32_t w=0u;w<offset/32u;++w) ordinal += std::popcount(bits[w]);
-                return ordinal + std::popcount(bits[offset/32u] & ((1u << (offset%32u))-1u));
+                if (ordinal == InvalidOffset || !(bits[offset / 32u] & (1u << (offset % 32u)))) throw std::out_of_range("Face triangle is outside its mesh.");
+                for (uint32_t w = 0u; w < offset / 32u; ++w) ordinal += std::popcount(bits[w]);
+                return ordinal + std::popcount(bits[offset / 32u] & ((1u << (offset % 32u)) - 1u));
             };
             std::vector<std::vector<CornerRef>> corners_per_prim(prim_count);
             for (const auto fh : mesh.faces()) {
                 const uint32_t p = arenas.FacePrimitives.Get(*fh);
                 if (p < prim_count) {
                     auto &out = corners_per_prim[p];
-                    const auto first = triangle_ordinal(arenas.FaceTriangles.Get({*fh,1u})[0]) * 3u;
+                    const auto first = triangle_ordinal(arenas.FaceTriangles.Get({*fh, 1u})[0]) * 3u;
                     const auto count = (mesh.GetValence(fh) - 2u) * 3u;
                     for (uint32_t k = 0; k < count; ++k) {
                         const auto h = Mesh::HH{triangle_corners[first + k]};
@@ -980,7 +981,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
                 std::vector<vec3> positions(export_count);
                 for (uint32_t i = 0; i < export_count; ++i)
-                    positions[i] = arenas.Vertices.Get({vertex_handles[export_refs[i].Vertex],1u})[0].Position;
+                    positions[i] = arenas.Vertices.Get({vertex_handles[export_refs[i].Vertex], 1u})[0].Position;
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> prim_attrs;
                 prim_attrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(positions, true, fastgltf::BufferTarget::ArrayBuffer)});
 
@@ -1082,8 +1083,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto vertex_data = [&](const Mesh &mesh) {
             std::vector<Vertex> out;
             out.reserve(mesh.VertexCount());
-            const auto all=meshes.Arenas().Vertices.Buffer.GetSpan<Vertex>();
-            for (const auto vertex:mesh.vertices()) out.push_back(all[*vertex]);
+            const auto all = meshes.Arenas().Vertices.Buffer.GetSpan<Vertex>();
+            for (const auto vertex : mesh.vertices()) out.push_back(all[*vertex]);
             return out;
         };
         for (const auto entity : group.Lines) {

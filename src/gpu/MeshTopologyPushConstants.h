@@ -1,6 +1,6 @@
 #pragma once
-#include "gpu/Types.h"
 #include "gpu/MeshTopologyArenas.h"
+#include "gpu/Types.h"
 // Shared topology-operator slots with per-pass tiles beginning at FirstTile.
 // The jobs, tile map and scratch are word offsets into the batch's storage slot.
 struct MeshTopologyPushConstants {
@@ -11,4 +11,4 @@ struct MeshTopologyPushConstants {
     MeshTopologyArenas Source DEFAULT(), Destination DEFAULT();
     uint32_t ListSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(MeshTopologyPushConstants) == 300, "MeshTopologyPushConstants size");
+static_assert(sizeof(MeshTopologyPushConstants) == 340, "MeshTopologyPushConstants size");

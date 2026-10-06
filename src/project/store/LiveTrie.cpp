@@ -413,7 +413,10 @@ void LiveTrie::SettleFlat(std::span<const std::byte> contents) {
     // Hash independent dirty pages concurrently, then publish their terms and manifest dirtiness in the original slot order.
     // The latter mutates the trie and remains serial.
     // Unchanged pages are never read.
-    struct Result { Hash128 Hash; bool Default; };
+    struct Result {
+        Hash128 Hash;
+        bool Default;
+    };
     std::vector<Result> results(DirtySlots.size());
     constexpr uint32_t PagesPerChunk{16};
     const uint32_t chunks = uint32_t((results.size() + PagesPerChunk - 1u) / PagesPerChunk);

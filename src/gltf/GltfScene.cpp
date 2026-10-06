@@ -658,6 +658,7 @@ std::expected<SourceMesh, std::string> ReadSourceMesh(const fastgltf::Asset &ass
         out.Triangles->Deform = std::move(deform);
         out.Triangles->Morph = std::move(morph);
         out.Triangles->Weld = true;
+        out.Triangles->KeepLooseVertices = false;
         out.Triangles->FlatShaded = !any_normals;
     }
     if (!lines.Positions.empty()) out.Lines = make_source(lines, line_attrs, line_primitives);
@@ -1480,7 +1481,7 @@ MeshEntities ImportMeshes(state::Scene &r, std::span<SourceMesh> source_meshes, 
         }
         // The last part takes the layout and the others copy it.
         const auto last_kind = source_mesh.Points ? MeshKind::Points : source_mesh.Lines ? MeshKind::Lines :
-                                                                                          MeshKind::Triangles;
+                                                                                           MeshKind::Triangles;
         const auto add_part = [&](std::optional<MeshSource> &source, MeshKind kind) {
             if (!source) return;
             source->Primitives.MaterialIndices = layout.DefaultMaterials;

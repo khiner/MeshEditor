@@ -1,6 +1,6 @@
 #include "state/Scene.h"
-#include "state/Allocation.h"
 #include "Range.h"
+#include "state/Allocation.h"
 #include <new>
 #include <stdexcept>
 namespace state {
@@ -183,8 +183,7 @@ void Scene::destroy(std::span<const Entity> entities) {
                 if (value < 0xfffu) freed.push_back(index);
             }
             Living.erase(pages[j].Page, pages[j].Mask);
-        }
-    }, &PageMask::Page);
+        } }, &PageMask::Page);
     auto &free = AllocationStorage->Free;
     const auto before = free.P.Length();
     free.P.Resize(before + freed.size() * sizeof(uint32_t));

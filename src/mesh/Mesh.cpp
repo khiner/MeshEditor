@@ -178,7 +178,8 @@ VertexEdgeIncidence::Iterator &VertexEdgeIncidence::Iterator::operator++() {
             }
         } else {
             const auto next = C->Next(h);
-            ++Item; --Remaining;
+            ++Item;
+            --Remaining;
             Side = 0;
             if (next && !C->Opposites[*next] && C->EdgeHalfedge(*C->Edge(next)) == next) {
                 Edge = *C->Edge(next);

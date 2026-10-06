@@ -5,7 +5,9 @@
 #include "gpu/SlotOffset.h"
 #include "mesh/PageFootprint.h"
 
-namespace state { struct Scene; }
+namespace state {
+struct Scene;
+}
 struct MeshClosure;
 struct MeshStore;
 
@@ -23,7 +25,7 @@ struct TopologyReadView {
     ConnectivityRef SourceConnectivity(const MeshStore &, uint32_t source_id) const;
 
     MeshTopologyArenas Arenas;
-    std::array<SlotOffset,3> Selection; // V, E, F, canonical bit indices
+    std::array<SlotOffset, 3> Selection; // V, E, F, canonical bit indices
     std::vector<mtl::Buffer> Clones;
 
 private:

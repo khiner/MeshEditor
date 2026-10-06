@@ -74,23 +74,9 @@ kernel void WireRasterKernel(
     if (!work.Valid) return;
     const uint topology = MeshletPrimitiveTopology(work.Meshlet);
     MeshletEditEdgeGeometry geometry;
-    if (topology == uint(MeshPrimitiveTopology::Triangle)) {
-        const uint local_triangle = thread_index / 3u;
-        const uint edge_corner = thread_index % 3u;
-        if (local_triangle >= work.Meshlet.TriangleCount) return;
-        const uint edge = MeshletEditEdge(
-            bindless, pc.Meshlet, work, local_triangle, edge_corner
-        );
-        if (edge == InvalidOffset) return;
-        geometry = ResolveMeshletEditEdge(
-            scene, work, bindless, pc.Meshlet, local_triangle, edge_corner, edge
-        );
-    } else if (topology == uint(MeshPrimitiveTopology::Line)) {
-        if (thread_index >= work.Meshlet.TriangleCount) return;
-        geometry = ResolveMeshletLineEdge(scene, work, bindless, pc.Meshlet, thread_index);
-    } else {
-        return;
-    }
+    const bool triangles = topology == uint(MeshPrimitiveTopology::Triangle);
+    if (!ResolveMeshletEditEdgeCandidate(scene, work, bindless, pc.Meshlet,
+        triangles ? thread_index / 3u : thread_index, triangles ? thread_index % 3u : 0u, geometry)) return;
 
     float4 clip0 = geometry.Clip0;
     float4 clip1 = geometry.Clip1;

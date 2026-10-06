@@ -1,7 +1,7 @@
 #pragma once
 
-#include "gpu/SlotOffset.h"
 #include "gpu/ElementAttributeRef.h"
+#include "gpu/SlotOffset.h"
 #include "gpu/Types.h"
 
 // Defines one mesh's vertex-weld inputs, outputs, and scratch layout.
@@ -20,6 +20,7 @@ struct VertexWeldJob {
     uint32_t TangentOffset DEFAULT(InvalidOffset);
     uint32_t Count DEFAULT();
     uint32_t CornerCount DEFAULT();
+    uint32_t KeepLooseVertices DEFAULT(1u);
     uint32_t TableOffset DEFAULT();
     uint32_t TableMask DEFAULT();
     uint32_t SlotOffset DEFAULT();
@@ -33,4 +34,4 @@ struct VertexWeldJob {
     // Word stride of one staged welded vertex across all vertex-domain channels.
     uint32_t RecordWords DEFAULT();
 };
-static_assert(sizeof(VertexWeldJob) == 88, "VertexWeldJob size");
+static_assert(sizeof(VertexWeldJob) == 92, "VertexWeldJob size");

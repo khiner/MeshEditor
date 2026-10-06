@@ -19,5 +19,6 @@ struct SelectionAggregate {
     AABB Bounds DEFAULT();
     uint32_t LiveCount DEFAULT();
     uint32_t Flags DEFAULT();
+    uint32_t Hidden DEFAULT();
 };
-static_assert(sizeof(SelectionAggregate) == 48, "SelectionAggregate size");
+static_assert(sizeof(SelectionAggregate) == 52, "SelectionAggregate size");

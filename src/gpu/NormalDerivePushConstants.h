@@ -1,8 +1,8 @@
 #pragma once
 
+#include "gpu/ElementAttributeRef.h"
 #include "gpu/ElementWork.h"
 #include "gpu/Types.h"
-#include "gpu/ElementAttributeRef.h"
 
 // Configures two-phase normal derivation over 256-element tiles.
 // Phase 0 derives face normals. Phase 1 gathers vertex and normal-sector values through FaceNormalSlot.

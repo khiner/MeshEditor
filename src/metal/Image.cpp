@@ -1,5 +1,5 @@
-#include "metal/AutoreleaseScope.h"
 #include "metal/Image.h"
+#include "metal/AutoreleaseScope.h"
 
 #include "metal/MetalCpp.h"
 

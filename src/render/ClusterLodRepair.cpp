@@ -4,13 +4,13 @@
 #include "gpu/MeshletGeometryEncoding.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
+#include "mesh/MeshletIndex.h"
+#include "metal/Dispatch.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
 #include "render/LodNodeEdit.h"
-#include "metal/Dispatch.h"
 #include "render/MeshletBuild.h"
-#include "mesh/MeshletIndex.h"
 #include "render/MeshletStorage.h"
 #include "state/Scene.h"
 
@@ -83,7 +83,8 @@ void ReplaceGroupClusters(RenderArenas &buffers, std::span<const uint32_t> remov
     // Every rewritten run shares one allocation, so its history capture is a single range.
     uint64_t total = 0u;
     for (const auto &run : runs)
-        for (uint32_t side = 0; side < 2u; ++side) if (run.Changed[side]) total += run.Ids[side].size();
+        for (uint32_t side = 0; side < 2u; ++side)
+            if (run.Changed[side]) total += run.Ids[side].size();
     if (total > UINT32_MAX) throw std::length_error("Cluster group links exceed the canonical address domain.");
     const auto allocation = buffers.GroupClusterIds.Allocate(uint32_t(total));
     const auto ids = buffers.GroupClusterIds.GetMutable(allocation);
@@ -177,16 +178,21 @@ void GatherPool(const RenderArenas &buffers, const MeshStore &meshes, const Mesh
                 ClusterGroup{.Center = record.Center, .Radius = record.Radius} :
                 buffers.ClusterGroups.Get({record.RefinedGroup, 1u})[0];
             pool.Clusters[i] = {
-                .FirstVertex = record.VertexOffset, .VertexCount = record.VertexCount,
-                .FirstLocalTriangle = record.LocalTriangleOffset, .TriangleCount = record.TriangleCount,
-                .Center = sphere.Center, .Radius = sphere.Radius, .Error = sphere.Error,
+                .FirstVertex = record.VertexOffset,
+                .VertexCount = record.VertexCount,
+                .FirstLocalTriangle = record.LocalTriangleOffset,
+                .TriangleCount = record.TriangleCount,
+                .Center = sphere.Center,
+                .Radius = sphere.Radius,
+                .Error = sphere.Error,
                 .ConeCullSafe = (record.ConeAxisCutoff >> 24u) != 127u,
             };
         }
     });
     pool.Scale = buffers.Primitives.Get({pool.Primitive, 1u})[0].SimplifyScale;
     pool.Triangles = {
-        .TriangleCount = uint32_t(pool.Corners.size()), .ClusterCount = uint32_t(pool.Members.size()),
+        .TriangleCount = uint32_t(pool.Corners.size()),
+        .ClusterCount = uint32_t(pool.Members.size()),
         .Attributes = buffers.Primitives.Get({pool.Primitive, 1u})[0].LodAttributes,
     };
     pool.Inputs = CaptureMeshletInputs(mesh, meshes, {ElementView<uvec3>{pool.Corners}, {}});
@@ -211,9 +217,9 @@ uint32_t GroupLevel(const RenderArenas &buffers, uint32_t group, std::unordered_
 // Appends the new clusters and groups.
 void CommitPool(RenderArenas &buffers, const PoolBuild &pool, std::vector<uint32_t> &added, std::vector<uint32_t> &new_groups) {
     const auto &build = pool.Build;
-    Range groups,vertices,triangles;
-    const auto allocation=PublishClusterLodStorage(buffers,build,std::array{pool.Primitive},groups,vertices,triangles);
-    const auto group_id=[&](uint32_t group) { return group==ClusterLodInvalid ? InvalidOffset : groups.Offset+group; };
+    Range groups, vertices, triangles;
+    const auto allocation = PublishClusterLodStorage(buffers, build, std::array{pool.Primitive}, groups, vertices, triangles);
+    const auto group_id = [&](uint32_t group) { return group == ClusterLodInvalid ? InvalidOffset : groups.Offset + group; };
     buffers.Meshlets.Buffer.CaptureWriteElements(pool.Members, sizeof(MeshletRecord));
     auto *meshlets = reinterpret_cast<MeshletRecord *>(buffers.Meshlets.Buffer.Contents().data());
     for (uint32_t i = 0; i < pool.Members.size(); ++i) meshlets[pool.Members[i]].GroupIndex = group_id(build.Level0Groups[i]);
@@ -234,13 +240,13 @@ void CommitPool(RenderArenas &buffers, const PoolBuild &pool, std::vector<uint32
     const auto leaves = buffers.MeshletLodLeaves.GetMutable(allocation);
     for (uint32_t c = 0; c < build.Clusters.size(); ++c) leaves[c] = anchors[group_levels[build.Clusters[c].RefinedGroup]];
 
-    const auto links=std::span{reinterpret_cast<ClusterGroupLinks *>(buffers.GroupLinks.Buffer.Contents().data())+groups.Offset,groups.Count};
-    auto *ids=reinterpret_cast<uint32_t *>(buffers.GroupClusterIds.Buffer.Contents().data());
-    for (uint32_t g=0u;g<build.Groups.size();++g) {
-        const auto &group=build.Groups[g];
-        auto &link=links[g];
-        for (const auto id : std::span{build.GroupClusters}.subspan(group.FirstCluster,group.ClusterCount))
-            ids[link.MemberOffset+link.MemberCount++]=record_of(id);
+    const auto links = std::span{reinterpret_cast<ClusterGroupLinks *>(buffers.GroupLinks.Buffer.Contents().data()) + groups.Offset, groups.Count};
+    auto *ids = reinterpret_cast<uint32_t *>(buffers.GroupClusterIds.Buffer.Contents().data());
+    for (uint32_t g = 0u; g < build.Groups.size(); ++g) {
+        const auto &group = build.Groups[g];
+        auto &link = links[g];
+        for (const auto id : std::span{build.GroupClusters}.subspan(group.FirstCluster, group.ClusterCount))
+            ids[link.MemberOffset + link.MemberCount++] = record_of(id);
     }
     for (uint32_t i = 0; i < allocation.Count; ++i) added.push_back(allocation.Offset + i);
     for (uint32_t i = 0; i < groups.Count; ++i) new_groups.push_back(groups.Offset + i);
@@ -328,14 +334,19 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
         ParallelFor(uint32_t(work.size()), [&](uint32_t i) {
             auto &pool = *work[i];
             pool.Build = RebuildClusterLod(ClusterLodMesh{
-                .CornerVertices = pool.Inputs.Indices,
-                .Positions = &pool.Inputs.Vertices.front().Position.x, .PositionStride = sizeof(Vertex),
-                .VertexFirst = pool.Inputs.VertexFirst, .DenseVertices = pool.Inputs.DenseVertices,
-                .Normals = pool.Inputs.Normals,
-                .Weld = pool.Inputs.Weld,
-                .Primitives = std::span{&pool.Triangles, 1u}, .Clusters = pool.Clusters,
-                .SourceVertexCorners = vertex_corners, .SourceLocalTriangles = local_triangles,
-            }, pool.Levels, pool.Scale);
+                                               .CornerVertices = pool.Inputs.Indices,
+                                               .Positions = &pool.Inputs.Vertices.front().Position.x,
+                                               .PositionStride = sizeof(Vertex),
+                                               .VertexFirst = pool.Inputs.VertexFirst,
+                                               .DenseVertices = pool.Inputs.DenseVertices,
+                                               .Normals = pool.Inputs.Normals,
+                                               .Weld = pool.Inputs.Weld,
+                                               .Primitives = std::span{&pool.Triangles, 1u},
+                                               .Clusters = pool.Clusters,
+                                               .SourceVertexCorners = vertex_corners,
+                                               .SourceLocalTriangles = local_triangles,
+                                           },
+                                           pool.Levels, pool.Scale);
         });
     }
     // Each owner's new clusters, new groups and kept members.
@@ -364,7 +375,7 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
         owner.MeshletRoot = ownership[2u * i].Root;
         owner.GroupRoot = ownership[2u * i + 1u].Root;
         ++owner.MeshletRevision;
-        UpdatePosedMeshletBlocks(r,owner, added[i]);
+        UpdatePosedMeshletBlocks(r, owner, added[i]);
         std::vector<LodClusterRun> runs;
         for (const auto id : added[i]) {
             const auto primitive = buffers.Meshlets.Get({id, 1u})[0].Primitive;

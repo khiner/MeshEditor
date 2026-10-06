@@ -3,6 +3,7 @@
 
 // Face-splitting and face-joining rules: triangulation by ear clipping and quad beauty, quad joins, pokes, flips, edge-split sectors, and insets.
 #include "MeshTopologyContext.metal"
+#include "gpu/PolygonTriangulation.h"
 
 constant float JoinAngleThreshold = 40.f * 3.14159265f / 180.f; // Blender's default face and shape thresholds
 
@@ -33,54 +34,6 @@ inline bool TopoSplitQuad13(float2 p0, float2 p1, float2 p2, float2 p3) {
     return fac_13 > fac_02;
 }
 
-// Ear-clips a planar polygon in a fixed order. Each face owns its source
-// halfedge slice of the job scratch, including its links and projected points.
-template<typename Emit>
-inline void TopoEarClip(device const float2 *points, device uint *next, device uint *prev, uint n, Emit emit) {
-    for (uint i = 0u; i < n; ++i) {
-        next[i] = (i + 1u) % n;
-        prev[i] = (i + n - 1u) % n;
-    }
-    float area = 0.f;
-    for (uint i = 0u; i < n; ++i) area += points[i].x * points[next[i]].y - points[next[i]].x * points[i].y;
-    const float sign = area >= 0.f ? 1.f : -1.f;
-    uint count = 0u, remaining = n, cursor = 0u;
-    while (remaining > 3u && count + 1u < n) {
-        bool clipped = false;
-        for (uint attempt = 0u; attempt < remaining && !clipped; ++attempt) {
-            const uint i = cursor, a = prev[i], b = next[i];
-            const float2 pa = points[a], pi = points[i], pb = points[b];
-            const bool convex = sign * TopoCross2(pa, pi, pb) > 0.f;
-            bool ear = convex;
-            for (uint j = next[b]; ear && j != a; j = next[j]) {
-                const float2 q = points[j];
-                const bool inside = sign * TopoCross2(pa, pi, q) >= 0.f && sign * TopoCross2(pi, pb, q) >= 0.f && sign * TopoCross2(pb, pa, q) >= 0.f;
-                if (inside) ear = false;
-            }
-            if (ear) {
-                emit(uint3(a, i, b), count++);
-                next[a] = b;
-                prev[b] = a;
-                --remaining;
-                cursor = b;
-                clipped = true;
-            } else {
-                cursor = b;
-            }
-        }
-        // A polygon without an ear is degenerate, so clip the cursor anyway.
-        if (!clipped) {
-            const uint i = cursor, a = prev[i], b = next[i];
-            emit(uint3(a, i, b), count++);
-            next[a] = b;
-            prev[b] = a;
-            --remaining;
-            cursor = b;
-        }
-    }
-    if (remaining == 3u && count + 1u <= n - 2u) emit(uint3(prev[cursor], cursor, next[cursor]), count);
-}
-
 template<typename Emit>
 inline void TopoTriangulateFace(TopoContext ctx, MeshTopologyJob job, uint f, Emit emit) {
     const uint2 range = ctx.SrcFaceRange(job, f);
@@ -106,7 +59,7 @@ inline void TopoTriangulateFace(TopoContext ctx, MeshTopologyJob job, uint f, Em
     device uint *prev = scratch + job.SrcHalfedgeCount + first;
     device float2 *points = reinterpret_cast<device float2 *>(scratch + 2u * job.SrcHalfedgeCount) + first;
     for (uint k = 0u; k < n; ++k) points[k] = TopoProject(ctx.SrcPosition(job, corners[range.x + k]), u, v);
-    TopoEarClip(points, next, prev, n, emit);
+    PolygonEarClip(points, next, prev, n, emit);
 }
 
 // The join cost of the quad a triangle would form with its neighbor across halfedge `h`, or a negative value when the pair does not join.

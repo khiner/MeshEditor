@@ -26,7 +26,7 @@ struct TriangleCorners {
     ElementView<uvec3> Values;
     std::span<const uint32_t> Handles; // Optional canonical triangle enumeration, borrowed from render membership.
     size_t size() const { return Handles.empty() ? Values.size() : Handles.size(); }
-    uint32_t operator[](uint32_t corner) const { return Values[Handles.empty() ? corner/3u : Handles[corner/3u]][corner%3u]; }
+    uint32_t operator[](uint32_t corner) const { return Values[Handles.empty() ? corner / 3u : Handles[corner / 3u]][corner % 3u]; }
 };
 
 // Borrow canonical corners and vertices.
@@ -38,28 +38,35 @@ struct TriangleVertexView {
     size_t First{}, Count{size_t(-1)};
     TriangleVertexView() = default;
     TriangleVertexView(TriangleCorners corners, std::span<const uint32_t> vertices) : Vertices(vertices), Corners(corners) {}
-    template<std::ranges::contiguous_range R> requires std::same_as<std::ranges::range_value_t<R>, uint32_t>
+    template<std::ranges::contiguous_range R>
+        requires std::same_as<std::ranges::range_value_t<R>, uint32_t>
     TriangleVertexView(const R &indices) : Vertices(indices) {}
-    size_t size() const { return Count != size_t(-1) ? Count : Corners.Values.empty() ? Vertices.size() : Corners.size() * 3u; }
+    size_t size() const { return Count != size_t(-1) ? Count : Corners.Values.empty() ? Vertices.size() :
+                                                                                        Corners.size() * 3u; }
     bool empty() const { return size() == 0; }
     uint32_t operator[](size_t i) const { return Vertices[Corners.Values.empty() ? First + i : Corners[uint32_t(First + i)]]; }
-    std::array<uint32_t,3> TriangleAt(size_t triangle) const {
+    std::array<uint32_t, 3> TriangleAt(size_t triangle) const {
         assert(triangle * 3u + 2u < size());
         const size_t first = First + triangle * 3u;
-        if (Corners.Values.empty()) return {Vertices[first],Vertices[first + 1u],Vertices[first + 2u]};
+        if (Corners.Values.empty()) return {Vertices[first], Vertices[first + 1u], Vertices[first + 2u]};
         assert(first % 3u == 0u);
         const auto &corners = Corners.Values[Corners.Handles.empty() ? uint32_t(first / 3u) : Corners.Handles[first / 3u]];
-        return {Vertices[corners[0]],Vertices[corners[1]],Vertices[corners[2]]};
+        return {Vertices[corners[0]], Vertices[corners[1]], Vertices[corners[2]]};
     }
-    std::array<uint32_t,3> TriangleAtHandle(uint32_t handle) const {
+    std::array<uint32_t, 3> TriangleAtHandle(uint32_t handle) const {
         if (Corners.Values.empty()) {
-            const size_t first=size_t(handle)*3u;
-            return {Vertices[first],Vertices[first+1u],Vertices[first+2u]};
+            const size_t first = size_t(handle) * 3u;
+            return {Vertices[first], Vertices[first + 1u], Vertices[first + 2u]};
         }
-        const auto corners=Corners.Values.Values[handle];
-        return {Vertices[corners[0]],Vertices[corners[1]],Vertices[corners[2]]};
+        const auto corners = Corners.Values.Values[handle];
+        return {Vertices[corners[0]], Vertices[corners[1]], Vertices[corners[2]]};
     }
-    TriangleVertexView subspan(size_t first, size_t count) const { auto result = *this; result.First += first; result.Count = count; return result; }
+    TriangleVertexView subspan(size_t first, size_t count) const {
+        auto result = *this;
+        result.First += first;
+        result.Count = count;
+        return result;
+    }
 };
 
 // Face ownership follows the first canonical corner.

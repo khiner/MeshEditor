@@ -14,13 +14,14 @@ enum Domain : uint32_t { Table,
                          Vertices,
                          Blocks,
                          Corners,
+                         Representatives,
                          DomainCount };
 using Batch = TiledJobBatch<VertexWeldJob, DomainCount>;
 
 constexpr std::array Passes{
     TiledPass{MeshPass::WeldTableInit, Table},
     TiledPass{MeshPass::WeldInsert, Vertices},
-    TiledPass{MeshPass::WeldMarkReps, Vertices},
+    TiledPass{MeshPass::WeldMarkReps, Representatives},
     TiledPass{MeshPass::WeldBlockSum, Blocks},
     TiledPass{MeshPass::WeldBlockPrefix, PerJob},
     TiledPass{MeshPass::WeldScan, Blocks},
@@ -100,6 +101,7 @@ void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, mtl::Comput
                 .TangentOffset = channels.TangentWordsPerVertex > 0 ? compact_offset + channels.RecordWords * count : InvalidOffset,
                 .Count = count,
                 .CornerCount = corners.Count,
+                .KeepLooseVertices = target.KeepLooseVertices,
                 .TableOffset = table_offset,
                 .TableMask = table_size - 1,
                 .SlotOffset = slot_offset,
@@ -111,7 +113,7 @@ void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, mtl::Comput
                 .CompactOffset = compact_offset,
                 .RecordWords = channels.RecordWords,
             },
-            {TileCount(table_size, TileElements), TileCount(marks, TileElements), block_count, TileCount(corners.Count, TileElements)}
+            {TileCount(table_size, TileElements), TileCount(marks, TileElements), block_count, TileCount(corners.Count, TileElements), TileCount(target.KeepLooseVertices ? count : corners.Count, TileElements)}
         );
     }
 

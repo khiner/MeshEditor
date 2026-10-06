@@ -7,7 +7,7 @@ namespace MTL {
 class Buffer;
 class Heap;
 class CommandBuffer;
-}
+} // namespace MTL
 
 namespace mtl {
 // CPU and GPU virtual ranges map the same placement-heap pages.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gpu/Element.h"
 #include "gpu/MeshTopologyOp.h"
 #include "gpu/Types.h"
 #include <vector>
@@ -21,13 +22,23 @@ struct MeshTopologyTask {
     // A knife: the mesh-to-clip transform, the target extent in pixels, and the segment in those pixels.
     mat4 ScreenTransform{};
     vec2 Extent{}, KnifeStart{}, KnifeEnd{};
-    // A face list: new vertex count and positions, an existing attribute-source handle, then a face count and each face's length and vertex handles.
+    // A primitive list: new vertex count, grid boundary length and span, attribute-source handle,
+    // boundary handles, then primitive count and loops of (vertex, source-edge halfedge) pairs.
+    // Grid interior positions derive on the GPU from the boundary; other lists append no vertices.
+    // Length two creates a loose edge; larger loops create faces. InvalidOffset means a new edge.
     // AppendedBase + i names the i-th listed vertex.
     // Existing handles are below AppendedBase.
     uint32_t AppendedBase{};
     // A cut list: a count then edge and parameter pairs.
     // A selection list: a count then canonical element handles.
+    // FlipNormals may narrow the selected faces to this explicit face list.
+    // ReplaceFaces: removed count and vertices, source face count and record offsets;
+    // each record is (source face, polygon count, then corner count and corner/edge pairs per polygon).
+    // Decimate: count then (vertex, surviving vertex, replacement x/y/z float bits).
     std::vector<uint32_t> List{};
+    // An explicit sparse selection, independent of the document's current selection.
+    Element SelectionElement{Element::None};
+    std::vector<uint32_t> Selected{};
 };
 
 struct MeshStore;

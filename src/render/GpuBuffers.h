@@ -146,7 +146,7 @@ struct GpuBuffers {
     uint32_t MeshletLodDepth{0};
     uint32_t MeshletTopologyMask{0};
     // Whether drawing the topology needs a pipeline the topology mask lacks.
-    bool DrawsNewTopology(uint32_t topology) const { return topology >= 32u || !(MeshletTopologyMask & (1u << topology)); }
+    bool DrawsNewTopologies(uint32_t mask) const { return (mask & ~MeshletTopologyMask) != 0u; }
 
     // Maintained totals for culls restricted to one instance flag.
     struct MeshletFlagWork {
@@ -226,7 +226,7 @@ struct GpuBuffers {
     // (entry index, canonical node key within its level).
     // Leaves precede parents.
     mtl::Buffer BoundsTiles{Ctx, 0, SlotType::Buffer};
-    std::array<uint32_t,VertexBoundsLevels> BoundsFirstTiles{};
+    std::array<uint32_t, VertexBoundsLevels> BoundsFirstTiles{};
     VertexBoundsStore VertexBounds{Ctx};
     // (entry index, canonical block) per normal-derive threadgroup, face blocks in a leading prefix.
     mtl::Buffer DeriveTiles{Ctx, 0, SlotType::Buffer};
@@ -249,7 +249,9 @@ struct GpuBuffers {
     static constexpr uint32_t PreludePassCount{7};
     std::array<uint32_t, PreludePassCount> PreludeGroups{};
     // Empty entries still dispatch their root to publish neutral bounds.
-    bool PreludeHasWork() const { return std::ranges::any_of(PreludeGroups, [](uint32_t g) { return g > 0u; }); }
+    bool PreludeHasWork() const {
+        return std::ranges::any_of(PreludeGroups, [](uint32_t g) { return g > 0u; });
+    }
     // Stores recorded group counts or zeros for unchanged deform inputs.
     mtl::Buffer PreludeDispatchArgs;
     // The tiles and posed meshlet jobs of the entries a prelude over some entries recomputes, each level's tiles after the previous level's.

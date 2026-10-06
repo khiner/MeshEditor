@@ -1,11 +1,12 @@
+#include "SortUnique.h"
 #include "metal/AutoreleaseScope.h"
 #include "numeric/VectorMath.h"
 #include "numeric/uvec2.h"
 #include "numeric/uvec4.h"
 
+#include "ProcessEvents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
-#include "ProcessEvents.h"
 #include "state/Scene.h"
 
 #include <Metal/MTLCommandQueue.hpp>
@@ -20,10 +21,10 @@
 #include "gpu/OverlayDispatch.h"
 #include "gpu/SelectionElementPushConstants.h"
 #include "gpu/VisibilitySelectionPushConstants.h"
-#include "mesh/MeshComponents.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
 #include "mesh/MeshClosure.h"
+#include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/NormalDeriveGpu.h"
 #include "metal/Dispatch.h"
@@ -32,13 +33,13 @@
 #include "render/Encoding.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuSceneState.h"
-#include "render/MeshTopologyRepair.h"
-#include "render/SceneUpdates.h"
 #include "render/Instance.h"
+#include "render/MeshTopologyRepair.h"
 #include "render/PickConstants.h"
-#include "scene/Entity.h"
 #include "render/Pipelines.h"
 #include "render/RenderTargets.h"
+#include "render/SceneUpdates.h"
+#include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportDisplay.h"
@@ -83,8 +84,7 @@ void SubmitAndWait(const mtl::Context &ctx, MTL::CommandBuffer *command_buffer) 
     }
     if (command_buffer->status() == MTL::CommandBufferStatusError) {
         const auto *error = command_buffer->error();
-        throw std::runtime_error(std::string{"GPU selection command failed: "} +
-            (error ? error->localizedDescription()->utf8String() : "unknown Metal error"));
+        throw std::runtime_error(std::string{"GPU selection command failed: "} + (error ? error->localizedDescription()->utf8String() : "unknown Metal error"));
     }
 }
 
@@ -235,10 +235,10 @@ void RenderElementSelectionPass(
     RunSelectionPass(
         r, chain, xray_selection ? std::nullopt : query_rect, true,
         element == Element::Vertex ? std::nullopt : std::optional{MeshletCullConfig{
-            .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::ElementSelection),
-            .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
-            .ExactEditGeometry = true,
-        }},
+                                                        .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::ElementSelection),
+                                                        .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
+                                                        .ExactEditGeometry = true,
+                                                    }},
         pick.has_value(),
         [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
             const SelectionElementPushConstants element_pc{MakeElementQuery(sel_slots, {box_min.x, box_min.y, box_max.x, box_max.y}, write_bitset ? meshes.Arenas().Query.Ref() : SelectionQueryRef{}, pick, resolve_id)};
@@ -254,10 +254,11 @@ void RenderElementSelectionPass(
             encoder->setFragmentBytes(&element_pc, sizeof(element_pc), BufferIndex_PushConstants);
             if (element == Element::Edge) draw_edges();
             else if (element == Element::Face) DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection), 160u);
-            else for (const auto &range : ranges) {
-                const auto primary = primaries.find(range.MeshEntity);
-                if (primary != primaries.end()) DrawVertexBlocks(encoder, r, range.MeshEntity, r.get<const RenderInstance>(primary->second).BufferIndex);
-            }
+            else
+                for (const auto &range : ranges) {
+                    const auto primary = primaries.find(range.MeshEntity);
+                    if (primary != primaries.end()) DrawVertexBlocks(encoder, r, range.MeshEntity, r.get<const RenderInstance>(primary->second).BufferIndex);
+                }
             if (degenerate_point_pass) {
                 const auto &point_pipeline = element == Element::Face ?
                     selection.MeshletFaceXRayPointsBitsetBox :
@@ -557,8 +558,7 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
     auto &meshes = r.Context.get<MeshStore>();
     const auto &arenas = meshes.Arenas();
     const auto source = uint32_t(std::ranges::find(SelectionElements, element) - SelectionElements.begin());
-    const std::array memberships{arenas.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>(),
-        arenas.EdgeHalfedges.Blocks.Buffer.GetSpan<MeshElementBlock>(), arenas.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>()};
+    const std::array memberships{arenas.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>(), arenas.EdgeHalfedges.Blocks.Buffer.GetSpan<MeshElementBlock>(), arenas.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>()};
     // The query holds one canonical word per first hit, across every queried mesh.
     std::vector<std::pair<uint32_t, uint32_t>> query_words;
     if (query) {
@@ -589,16 +589,13 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
             operation == EditSelectionOperation::PickReplace || operation == EditSelectionOperation::RestoreBaseline;
         const auto picked_local = picked != InvalidOffset && meshes.IsLiveElement(id, element, picked) ? picked - origin : InvalidOffset;
         const auto bits = meshes.GetSelectedElements(id, element).Bits;
+        const auto hidden = meshes.GetHiddenElements(id, element).Bits;
         auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = id, .Source = element});
         // Replacing or rederiving touches every block that holds a selected element in any domain.
         std::array<std::vector<uint32_t>, 3> selected;
         if (replace || rederive || operation == EditSelectionOperation::CaptureBaseline) {
             for (uint32_t d = 0u; d < 3u; ++d) {
-                const auto words = meshes.GetSelectedElements(id, SelectionElements[d]).Bits;
-                for (const auto block : meshes.GetBlockList(id, SelectionDomains[d]).Blocks)
-                    if (std::ranges::any_of(words.subspan(block * MeshElementBlockWords, MeshElementBlockWords), [](uint32_t word) { return word != 0u; })) {
-                        selected[d].push_back(block);
-                    }
+                meshes.GetSelectedElements(id, SelectionElements[d]).ForEachBlock([&](uint32_t block, uint32_t) { selected[d].push_back(block); });
             }
         }
         if (operation == EditSelectionOperation::CaptureBaseline) {
@@ -628,8 +625,7 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
         std::ranges::sort(additions);
         std::vector<uint32_t> blocks = replace ? selected[source] : std::vector<uint32_t>{};
         for (const auto &[word, value] : additions) blocks.push_back(word / MeshElementBlockWords);
-        std::ranges::sort(blocks);
-        blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+        SortUnique(blocks);
         if (operation == EditSelectionOperation::Fill) {
             for (uint32_t d = 0u; d < 3u; ++d) {
                 const auto all = meshes.GetBlockList(id, SelectionDomains[d]).Blocks;
@@ -637,7 +633,7 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
             }
             blocks = update.Blocks[source];
             meshes.EditSelectionBlocks(element, blocks, [&](uint32_t block, auto &words) {
-                std::ranges::copy(memberships[source][block].Live, words.begin());
+                for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) words[w] = memberships[source][block].Live[w] & ~hidden[block * MeshElementBlockWords + w];
             });
         } else {
             // Replacement dirties the old selection's blocks, so only added bits seed their neighbors.
@@ -651,6 +647,7 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
                         const auto bit = 1u << (picked % 32u);
                         after = summary.ActiveHandle == picked_local ? after & ~bit : after | bit;
                     }
+                    after &= ~hidden[word];
                     words[w] = after;
                     if (const auto seed = replace ? after & ~before : after ^ before) update.Seeds.push_back({source, word, seed});
                 }
@@ -744,13 +741,14 @@ void ApplyEditSharpness(
     const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
     const auto source = operation == EditSharpnessOperation::SetSelectedFaces ? Element::Face :
-        operation == EditSharpnessOperation::SetSelectedEdges ? Element::Edge :
-        operation == EditSharpnessOperation::SetVertexEdges ? Element::Vertex : Element::None;
+        operation == EditSharpnessOperation::SetSelectedEdges                 ? Element::Edge :
+        operation == EditSharpnessOperation::SetVertexEdges                   ? Element::Vertex :
+                                                                                Element::None;
     std::vector<state::Entity> faced;
     std::vector<uint32_t> faced_ids;
     for (const auto mesh_entity : mesh_entities) {
         const auto *owner = HasMesh(r, mesh_entity) ? TryRecordOf(r, mesh_entity) : nullptr;
-        if (!owner || owner->RenderTopology == InvalidOffset) continue;
+        if (!owner || owner->RenderTopologies == 0u) continue;
         const auto mesh = GetMesh(r, mesh_entity);
         if (mesh.FaceCount() == 0) continue;
         faced.push_back(mesh_entity);
@@ -767,7 +765,7 @@ void ApplyEditSharpness(
     chain.Concurrent([&] {
         for (uint32_t i = 0u; i < faced.size(); ++i) {
             const auto id = faced_ids[i];
-            if (source != Element::None && !meshes.GetSelectedElements(id,source).Count()) continue;
+            if (source != Element::None && !meshes.GetSelectedElements(id, source).Count()) continue;
             meshes.CaptureSharpnessWrite(id, operation);
             const auto mesh = GetMesh(r, faced[i]);
             const auto &record = meshes.Get(id);
@@ -789,8 +787,8 @@ void ApplyEditSharpness(
                 pc.Selected = {chain.Scratch.Buffer.Slot, selected.Offset};
                 pc.SelectedCount = selected.Count;
             } else {
-                pc.FaceWork = seeds.emplace_back(PrepareElementMembershipWork(chain.Scratch,arenas.FaceTriangles,record.FaceData)).Work;
-                if (operation != EditSharpnessOperation::SetAllFaces) pc.EdgeWork = seeds.emplace_back(PrepareElementMembershipWork(chain.Scratch,arenas.EdgeHalfedges,record.EdgeData)).Work;
+                pc.FaceWork = seeds.emplace_back(PrepareElementMembershipWork(chain.Scratch, arenas.FaceTriangles, record.FaceData)).Work;
+                if (operation != EditSharpnessOperation::SetAllFaces) pc.EdgeWork = seeds.emplace_back(PrepareElementMembershipWork(chain.Scratch, arenas.EdgeHalfedges, record.EdgeData)).Work;
             }
             edited.push_back(faced[i]);
         }
@@ -798,15 +796,16 @@ void ApplyEditSharpness(
     if (commands.empty()) return;
     std::vector<ElementWork> seeded;
     for (const auto &seed : seeds) seeded.push_back(seed.Work);
-    EncodeElementMembershipWork(r,chain,seeds);
-    EncodeSortElementWork(r,chain,seeded);
+    EncodeElementMembershipWork(r, chain, seeds);
+    EncodeSortElementWork(r, chain, seeded);
     chain.Submit();
-    for (const auto work : seeded) CheckElementWork(chain.Scratch,work);
+    for (const auto work : seeded) CheckElementWork(chain.Scratch, work);
     // The closures record after the sharpness writes, and the next submit commits both.
     chain.Encode([&](MTL::ComputeCommandEncoder *encoder) {
         for (const auto &pc : commands) {
-            const uint32_t count = source != Element::None ? pc.SelectedCount :
-                operation == EditSharpnessOperation::SetAllFaces ? pc.FaceCount : std::max(pc.EdgeCount, pc.FaceCount);
+            const uint32_t count = source != Element::None       ? pc.SelectedCount :
+                operation == EditSharpnessOperation::SetAllFaces ? pc.FaceCount :
+                                                                   std::max(pc.EdgeCount, pc.FaceCount);
             if (!count) continue;
             encode::BindCompute(encoder, pipelines.EditSharpness, slots, buffers);
             encode::SetPushConstants(encoder, pc);
@@ -826,70 +825,69 @@ void ApplyEditSharpness(
     };
     std::vector<Edit> edits;
     for (const auto mesh_entity : edited) {
-        const auto id = GetMesh(r,mesh_entity).GetStoreId();
+        const auto id = GetMesh(r, mesh_entity).GetStoreId();
         // The written elements' vertices: the selected faces' loop vertices, the selected vertices or edge endpoints, or all vertices.
         ClosureSeed vertices;
-        if (source==Element::Face) vertices=EncodeFaceClosure(r,chain,id,EncodeSelectionSeed(r,chain,id,Element::Face,false)).Seed(Element::Vertex);
-        else if (source==Element::Edge) vertices=EncodeEdgeVertices(r,chain,id,EncodeSelectionSeed(r,chain,id,Element::Edge,false));
-        else vertices=EncodeSelectionSeed(r,chain,id,Element::Vertex,source==Element::None);
-        if (vertices.Count) edits.push_back({.Entity=mesh_entity,.Id=id,.Vertices=std::move(vertices)});
+        if (source == Element::Face) vertices = EncodePrimitiveClosure(r, chain, id, EncodeSelectionSeed(r, chain, id, Element::Face, false)).Seed(Element::Vertex);
+        else if (source == Element::Edge) vertices = EncodeEdgeVertices(r, chain, id, EncodeSelectionSeed(r, chain, id, Element::Edge, false));
+        else vertices = EncodeSelectionSeed(r, chain, id, Element::Vertex, source == Element::None);
+        if (vertices.Count) edits.push_back({.Entity = mesh_entity, .Id = id, .Vertices = std::move(vertices)});
     }
-    if (operation==EditSharpnessOperation::SetVertexEdges) {
+    if (operation == EditSharpnessOperation::SetVertexEdges) {
         // Each edge at a selected vertex changes the fans at both of its endpoints.
         for (auto &edit : edits) {
-            edit.Incident=EncodeVertexClosure(r,chain,edit.Id,edit.Vertices);
-            edit.Incident.EncodeIncidence(r,chain,edit.Id,Element::Edge);
+            edit.Incident = EncodeVertexClosure(r, chain, edit.Id, edit.Vertices);
+            edit.Incident.EncodeIncidence(r, chain, edit.Id, Element::Edge);
         }
         chain.Submit();
         for (auto &edit : edits) {
             edit.Incident.Finish(chain);
-            edit.Vertices=EncodeEdgeVertices(r,chain,edit.Id,edit.Incident.Seed(Element::Edge));
+            edit.Vertices = EncodeEdgeVertices(r, chain, edit.Id, edit.Incident.Seed(Element::Edge));
         }
     }
     for (auto &edit : edits) {
-        edit.Neighborhood=EncodeVertexClosure(r,chain,edit.Id,edit.Vertices);
-        edit.Neighborhood.EncodeIncidence(r,chain,edit.Id,Element::Face);
+        edit.Neighborhood = EncodeVertexClosure(r, chain, edit.Id, edit.Vertices);
+        edit.Neighborhood.EncodeIncidence(r, chain, edit.Id, Element::Face);
     }
     chain.Submit();
     for (auto &edit : edits) edit.Neighborhood.Finish(chain);
-    std::erase_if(edits,[](const Edit &edit) { return !edit.Neighborhood.Counts[0]; });
+    std::erase_if(edits, [](const Edit &edit) { return !edit.Neighborhood.Counts[0]; });
     for (auto &edit : edits) {
-        edit.Triangles=EncodeFaceTriangles(r,chain,edit.Id,edit.Neighborhood.Seed(Element::Face));
+        edit.Triangles = EncodeFaceTriangles(r, chain, edit.Id, edit.Neighborhood.Seed(Element::Face));
         // The neighborhood's corners include every corner at its vertices.
-        edit.Classes=meshes.EncodeCornerClassification(r,chain,edit.Id,edit.Neighborhood.Elements[0],edit.Neighborhood.Counts[0],
-            edit.Neighborhood.Counts[1],source==Element::None);
+        edit.Classes = meshes.EncodeCornerClassification(r, chain, edit.Id, edit.Neighborhood.Elements[0], edit.Neighborhood.Counts[0], edit.Neighborhood.Counts[1], source == Element::None);
     }
     chain.Submit();
     std::vector<LocalNormalWork> normals;
     for (auto &edit : edits) {
         edit.Triangles.Finish(chain);
-        meshes.PlanCornerClassification(r,chain,edit.Classes);
-        const auto &neighborhood=edit.Neighborhood;
-        normals.push_back({edit.Id,neighborhood.Elements[0],neighborhood.Counts[0],neighborhood.Elements[2],neighborhood.Counts[2]});
+        meshes.PlanCornerClassification(r, chain, edit.Classes);
+        const auto &neighborhood = edit.Neighborhood;
+        normals.push_back({edit.Id, neighborhood.Elements[0], neighborhood.Counts[0], neighborhood.Elements[2], neighborhood.Counts[2]});
     }
-    EncodeDeriveMeshNormals(r,chain,chain.Scratch,normals);
+    EncodeDeriveMeshNormals(r, chain, chain.Scratch, normals);
     chain.Submit();
     std::vector<MeshStore::SelectionUpdate> updates;
-    std::vector<std::pair<state::Entity,FaceTriangles>> repairs;
+    std::vector<std::pair<state::Entity, FaceTriangles>> repairs;
     for (const auto &edit : edits) {
-        meshes.FinishCornerClassification(chain,edit.Classes);
+        meshes.FinishCornerClassification(chain, edit.Classes);
         // The neighborhood holds every written element and each vertex whose incident edges changed.
         if (meshes.Get(edit.Id).SelectionSummary.Count) {
-            auto &update=updates.emplace_back(MeshStore::SelectionUpdate{.StoreId=edit.Id});
-            for (const auto [d,domain]:{std::pair{0u,0u},std::pair{1u,3u},std::pair{2u,2u}})
-                ForEachWorkBlock(chain.Scratch,edit.Neighborhood.Elements[domain],[&](uint32_t block,auto) { update.Blocks[d].push_back(block); });
+            auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = edit.Id});
+            for (const auto [d, domain] : {std::pair{0u, 0u}, std::pair{1u, 3u}, std::pair{2u, 2u}})
+                ForEachWorkBlock(chain.Scratch, edit.Neighborhood.Elements[domain], [&](uint32_t block, auto) { update.Blocks[d].push_back(block); });
         }
-        const auto *owner=TryRecordOf(r,edit.Entity);
-        if (owner && owner->PrimitiveRoot!=InvalidOffset) repairs.emplace_back(edit.Entity,edit.Triangles);
-        else r.emplace_or_replace<MeshGeometryDirty>(edit.Entity,EditSelectionAfter::Keep,false);
+        const auto *owner = TryRecordOf(r, edit.Entity);
+        if (owner && owner->PrimitiveRoot != InvalidOffset) repairs.emplace_back(edit.Entity, edit.Triangles);
+        else r.emplace_or_replace<MeshGeometryDirty>(edit.Entity, EditSelectionAfter::Keep, false);
     }
-    meshes.UpdateSelection(r,chain,updates);
-    chain.AfterSubmit([&meshes,updates=std::move(updates)] {
+    meshes.UpdateSelection(r, chain, updates);
+    chain.AfterSubmit([&meshes, updates = std::move(updates)] {
         for (const auto &update : updates) meshes.PublishSelectionSummary(update.StoreId);
     });
-    RepairShadingRender(r,chain,repairs);
+    RepairFaceRender(r, chain, repairs);
     chain.Submit();
-    RequestRender(r,RenderRequest::Rebuild);
+    RequestRender(r, RenderRequest::Rebuild);
 }
 
 const EditSelectionSummary *GetElementSelectionSummary(const state::Scene &r, state::Entity mesh_entity, Element element) {

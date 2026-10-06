@@ -11,6 +11,7 @@
 #include "gpu/MeshElementBlock.h"
 #include "gpu/SelectionAggregate.h"
 #include "gpu/VertexBlockPushConstants.h"
+#include "EditSelection.metal"
 
 constant uint VertexBlockLanes = MeshElementBlockSize / VertexBlockGroups;
 constant uint VertexBlockSimdGroups = VertexBlockLanes / 32u;
@@ -60,7 +61,8 @@ inline VertexBlockLane ResolveVertexBlockLane(
     visible = simd_broadcast_first(visible);
     const uint slot = (group % VertexBlockGroups) * VertexBlockLanes + lane;
     const uint live = BindlessBuffer(MeshElementBlock, scene.B.Buffer, pc.MembershipSlot)[block].Live[slot / 32u];
-    const bool present = visible != 0u && (live & (1u << (slot % 32u))) != 0u;
+    const bool present = visible != 0u && (live & (1u << (slot % 32u))) != 0u &&
+        !EditElementHidden(scene,draw,Element::Vertex,block*MeshElementBlockSize+slot);
     return {instance, draw, mesh.Display.ActiveVertex, present ? block * MeshElementBlockSize + slot - draw.VertexOffset : InvalidOffset};
 }
 

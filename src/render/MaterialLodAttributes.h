@@ -11,14 +11,25 @@ inline uint32_t MaterialLodAttributes(const PBRMaterial &material, DebugChannel 
     uint32_t attributes = MeshAttributeBit_Normal | MeshAttributeBit_Color0;
     const auto uv_bit = [](uint32_t set) { return uint32_t(MeshAttributeBit_TexCoord0) << std::min(set, 3u); };
     const TextureInfo *textures[]{
-        &material.BaseColorTexture, &material.MetallicRoughnessTexture, &material.NormalTexture,
-        &material.OcclusionTexture, &material.EmissiveTexture,
-        &material.Sheen.ColorTexture, &material.Sheen.RoughnessTexture,
-        &material.Specular.Texture, &material.Specular.ColorTexture,
-        &material.Transmission.Texture, &material.DiffuseTransmission.Texture, &material.DiffuseTransmission.ColorTexture,
-        &material.Volume.ThicknessTexture, &material.Clearcoat.Texture, &material.Clearcoat.RoughnessTexture,
-        &material.Clearcoat.NormalTexture, &material.Anisotropy.Texture,
-        &material.Iridescence.Texture, &material.Iridescence.ThicknessTexture,
+        &material.BaseColorTexture,
+        &material.MetallicRoughnessTexture,
+        &material.NormalTexture,
+        &material.OcclusionTexture,
+        &material.EmissiveTexture,
+        &material.Sheen.ColorTexture,
+        &material.Sheen.RoughnessTexture,
+        &material.Specular.Texture,
+        &material.Specular.ColorTexture,
+        &material.Transmission.Texture,
+        &material.DiffuseTransmission.Texture,
+        &material.DiffuseTransmission.ColorTexture,
+        &material.Volume.ThicknessTexture,
+        &material.Clearcoat.Texture,
+        &material.Clearcoat.RoughnessTexture,
+        &material.Clearcoat.NormalTexture,
+        &material.Anisotropy.Texture,
+        &material.Iridescence.Texture,
+        &material.Iridescence.ThicknessTexture,
     };
     for (const auto *texture : textures)
         if (texture->Slot != InvalidSlot) attributes |= uv_bit(texture->TexCoord);

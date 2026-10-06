@@ -33,6 +33,7 @@ struct DeriveContext {
 
     // Returns the corner-angle-weighted face normal, or zero for a degenerate face or corner.
     float3 FanContributionKnownOwner(NormalDeriveEntry entry, uint h, float3 position, uint face) const {
+        if (face==InvalidOffset) return float3(0);
         const ConnectivityView conn{B, entry.Connectivity, entry.FaceCount};
         const uint posed = PoseAttributeIndex(B, Pc.FaceNormalNodesSlot, entry.FaceNormalNamespace, face);
         const float3 fn = posed != InvalidOffset ? float3(FaceNormals()[posed]) :
@@ -131,7 +132,7 @@ kernel void VertexNormalDeriveKernel(
                 const uint2 item = conn.FanItem(fan.x + index);
                 const uint h = item.x;
                 contribution = ctx.FanContributionKnownOwner(entry,h,position,item.y);
-                if (entry.HasSectors && CornerSectorRoot(bindless, pc.CornerSectors, h) == h) {
+                if (item.y!=InvalidOffset && entry.HasSectors && CornerSectorRoot(bindless, pc.CornerSectors, h) == h) {
                     const packed_float3 sector = packed_float3(ctx.GatherSectorNormal(entry,h,position));
                     const uint record = ElementAttributeIndex(bindless, pc.NormalSectors, h);
                     if (entry.SectorNamespace != InvalidOffset) {

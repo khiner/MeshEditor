@@ -1,51 +1,63 @@
-#include "Profile.h"
-#include "ProcessEvents.h"
 #include "action/Mesh.h"
+#include "ProcessEvents.h"
+#include "Profile.h"
+#include "SortUnique.h"
 #include "action/InsetPreview.h"
 
+#include "gpu/FaceAttributeEditPushConstants.h"
 #include "gpu/InsetPreviewPushConstants.h"
 #include "gpu/InsetVertexBasis.h"
 #include "gpu/MeshTopologyOp.h"
 #include "gpu/Vertex.h"
+#include "gpu/VertexPositionEditPushConstants.h"
 
 #include "TransformMath.h"
 #include "Variant.h"
+#include "mesh/BeautifyFaces.h"
+#include "mesh/Decimate.h"
+#include "mesh/EdgeChains.h"
+#include "mesh/EdgeSlide.h"
+#include "mesh/EditVisibility.h"
+#include "mesh/ElementWorkSort.h"
+#include "mesh/Flatten.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/MeshEdgeUsers.h"
+#include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/MeshTopology.h"
 #include "mesh/MeshTopologyEdit.h"
-#include "mesh/MeshPipelines.h"
-#include "mesh/ScratchChunks.h"
-#include "metal/Dispatch.h"
-#include "render/MeshTopologyRepair.h"
-#include "render/MeshletBuildGpu.h"
-#include "render/MeshletBoundsRefit.h"
-#include "render/GpuBuffers.h"
-#include "render/SceneUpdates.h"
-#include "render/GpuSceneState.h"
-#include "render/ElementWorkOps.h"
-#include "viewport/ViewportRenderGpu.h"
 #include "mesh/PrimitiveType.h"
+#include "mesh/RecalculateNormals.h"
+#include "mesh/ScratchChunks.h"
+#include "mesh/SnapSymmetry.h"
+#include "mesh/Unsubdivide.h"
+#include "metal/Dispatch.h"
 #include "numeric/MatrixMath.h"
 #include "numeric/QuaternionMath.h"
 #include "object/ObjectOps.h"
 #include "project/Project.h"
+#include "render/ElementWorkOps.h"
+#include "render/GpuBuffers.h"
+#include "render/GpuSceneState.h"
+#include "render/MeshTopologyRepair.h"
+#include "render/MeshletBuildGpu.h"
+#include "render/SceneUpdates.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
-#include "selection/SelectionState.h"
-#include "selection/SelectionGpu.h"
 #include "selection/SelectionComponents.h"
+#include "selection/SelectionGpu.h"
+#include "selection/SelectionState.h"
 #include "state/Scene.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
+#include "viewport/ViewportRenderGpu.h"
 
 #include <format>
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cmath>
 #include <limits>
 #include <numbers>
@@ -55,58 +67,49 @@
 #include <unordered_set>
 
 namespace {
-void UpdatePoseMembership(state::Scene &r,const MeshTopologyEdit &edit) {
-    auto &buffers=r.Context.get<GpuBuffers>();
-    const auto &meshes=r.Context.get<const MeshStore>();
-    const auto &a=meshes.Arenas();
-    const auto &record=meshes.Get(edit.StoreId);
-    std::vector<uint32_t> vertices,faces,normal_payloads=edit.OldNormalPayloadBlocks;
-    const auto &storage=edit.Chain.Scratch;
-    const auto gather=[&](std::vector<uint32_t> &blocks,ElementWork work) {
-        ForEachWorkBlock(storage,work,[&](uint32_t block,auto) { blocks.push_back(block); });
+void UpdatePoseMembership(state::Scene &r, const MeshTopologyEdit &edit) {
+    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &a = meshes.Arenas();
+    const auto &record = meshes.Get(edit.StoreId);
+    std::vector<uint32_t> vertices, faces, normal_payloads = edit.OldNormalPayloadBlocks;
+    const auto &storage = edit.Chain.Scratch;
+    const auto gather = [&](std::vector<uint32_t> &blocks, ElementWork work) {
+        ForEachWorkBlock(storage, work, [&](uint32_t block, auto) { blocks.push_back(block); });
     };
     if (edit.Repair) {
-        gather(vertices,edit.Repair->Elements[0]);
-        gather(faces,edit.Repair->Elements[2]);
-        ForEachWorkBlock(storage,edit.Repair->Elements[1],[&](uint32_t block,auto) {
-            const auto payload=a.NormalSectors.PayloadBlock(block);
-            if (payload) normal_payloads.push_back(payload-1u);
+        gather(vertices, edit.Repair->Elements[0]);
+        gather(faces, edit.Repair->Elements[2]);
+        ForEachWorkBlock(storage, edit.Repair->Elements[1], [&](uint32_t block, auto) {
+            const auto payload = a.NormalSectors.PayloadBlock(block);
+            if (payload) normal_payloads.push_back(payload - 1u);
         });
     }
     if (edit.Output) {
-        gather(vertices,edit.Output->Retired[0]);
-        gather(faces,edit.Output->Retired[1]);
+        gather(vertices, edit.Output->Retired[0]);
+        gather(faces, edit.Output->Retired[1]);
     }
-    const auto unique=[](std::vector<uint32_t> &blocks) {
-        std::ranges::sort(blocks);
-        blocks.erase(std::unique(blocks.begin(),blocks.end()),blocks.end());
+    SortUnique(vertices);
+    SortUnique(faces);
+    SortUnique(normal_payloads);
+    const auto update = [&](const auto &arena, ElementSetRef set, const auto &blocks, auto &...stores) {
+        const auto members = arena.Blocks.Buffer.template GetSpan<MeshElementBlock>();
+        const auto present = [&](uint32_t block) {
+            return block < members.size() && members[block].Owner == set.Index && members[block].Count;
+        };
+        const auto revision = set ? arena.Set(set).Revision : 0u;
+        (stores.UpdateBlocks(edit.StoreId, revision, blocks, present), ...);
     };
-    unique(vertices); unique(faces); unique(normal_payloads);
-    const auto vertex_owner=record.Vertices.Index;
-    const auto vertex_members=a.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>();
-    const auto has_vertex=[&](uint32_t block) {
-        return block<vertex_members.size() && vertex_members[block].Owner==vertex_owner && vertex_members[block].Count;
+    update(a.Vertices, record.Vertices, vertices, buffers.VertexBounds, buffers.PosedPositions, buffers.PosedMorphNormalDeltas, buffers.PosedVertexNormals);
+    update(a.FaceTriangles, record.FaceData, faces, buffers.PosedFaceNormals);
+    const auto normal_owners = a.NormalSectors.Owners.Buffer.GetSpan<uint32_t>();
+    const auto has_normal = [&](uint32_t payload) {
+        if (payload >= normal_owners.size() || !normal_owners[payload]) return false;
+        const auto block = normal_owners[payload] - 1u;
+        return a.FaceCorners.Blocks.Get({block, 1u})[0].Owner == record.FaceCorners.Index &&
+            a.NormalSectors.PayloadBlock(block) == payload + 1u;
     };
-    const auto vertex_revision=record.Vertices ? a.Vertices.Set(record.Vertices).Revision : 0u;
-    buffers.VertexBounds.UpdateBlocks(edit.StoreId,vertex_revision,vertices,has_vertex);
-    buffers.PosedPositions.UpdateBlocks(edit.StoreId,vertex_revision,vertices,has_vertex);
-    buffers.PosedMorphNormalDeltas.UpdateBlocks(edit.StoreId,vertex_revision,vertices,has_vertex);
-    buffers.PosedVertexNormals.UpdateBlocks(edit.StoreId,vertex_revision,vertices,has_vertex);
-    const auto face_owner=record.FaceData.Index;
-    const auto face_members=a.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>();
-    const auto has_face=[&](uint32_t block) {
-        return block<face_members.size() && face_members[block].Owner==face_owner && face_members[block].Count;
-    };
-    const auto face_revision=record.FaceData ? a.FaceTriangles.Set(record.FaceData).Revision : 0u;
-    buffers.PosedFaceNormals.UpdateBlocks(edit.StoreId,face_revision,faces,has_face);
-    const auto normal_owners=a.NormalSectors.Owners.Buffer.GetSpan<uint32_t>();
-    const auto has_normal=[&](uint32_t payload) {
-        if (payload>=normal_owners.size() || !normal_owners[payload]) return false;
-        const auto block=normal_owners[payload]-1u;
-        return a.FaceCorners.Blocks.Get({block,1u})[0].Owner==record.FaceCorners.Index &&
-            a.NormalSectors.PayloadBlock(block)==payload+1u;
-    };
-    buffers.PosedSectors.UpdateBlocks(edit.StoreId,meshes.GetDerived(edit.StoreId).NormalRevision,normal_payloads,has_normal);
+    buffers.PosedSectors.UpdateBlocks(edit.StoreId, meshes.GetDerived(edit.StoreId).NormalRevision, normal_payloads, has_normal);
 }
 
 // The edit-mode meshes with a selection in the viewport's edit element domain.
@@ -122,85 +125,80 @@ std::vector<state::Entity> SelectedEditMeshes(const state::Scene &r, state::Enti
     return result;
 }
 
-// Whether a published in-place edit repairs its record's triangle render, which needs a triangle render owner and faces left after the edit.
-// The unretired source faces still count, so the edit leaves faces when more than its retired faces are live.
+// A published owner repairs its old triangles and any new faces, including its first or last faces.
 bool RepairsTriangleRender(const state::Scene &r, state::Entity entity, const MeshTopologyEdit &edit) {
-    const auto *owner=TryRecordOf(r,entity);
-    return owner && owner->StoreId==edit.SourceId && owner->RenderTopology==0u &&
-        Mesh{r.Context.get<const MeshStore>(),edit.SourceId}.FaceCount()>edit.Output->RetiredCounts[1];
+    const auto *owner = TryRecordOf(r, entity);
+    return owner && owner->StoreId == edit.SourceId && owner->RenderTopologies != 0u &&
+        ((owner->RenderTopologies & 1u) != 0u || edit.AddedTriangleCount);
 }
 
 // Publishes a finished in-place edit's render, pose and selection summary state.
-// A record whose live elements now draw as another topology rebuilds through the settle pass's meshlet batch, since topologies never mix.
 // A record without a render owner is a newly created canonical mesh.
-// A point or line record's moved elements join `element_repairs`, which repair together.
+// Affected vertices and edges join the point and wire repairs, including elements
+// that gain or lose incidence while remaining live.
 void FinishTopologyEdit(state::Scene &r, state::Entity entity, const MeshTopologyTask &task, MeshTopologyEdit &edit, std::vector<ElementMeshletRepair> &element_repairs) {
-    auto &meshes=r.Context.get<MeshStore>();
-    const auto *render_owner=TryRecordOf(r,entity);
-    const bool ready=render_owner && render_owner->StoreId==task.SourceId && render_owner->RenderTopology!=InvalidOffset;
-    UpdatePoseMembership(r,edit);
-    bool repaired=false;
-    if (ready) {
-        auto &owner=meshes.WriteRecord(task.SourceId);
-        const Mesh mesh{meshes,task.SourceId};
-        repaired=mesh.PrimitiveTopology()==owner.RenderTopology;
-        // The drawn topology changes, so the instance flags that depend on it are rederived.
-        if (!repaired) RequestRender(r,RenderRequest::Rebuild);
-        else if (owner.RenderTopology!=0u && edit.Repair) {
-            // A point record's repaired vertices, or a line record's retired edges and the edges of its repaired corners, move between its clusters.
-            const auto &storage=edit.Chain.Scratch;
-            auto &affected=element_repairs.emplace_back(ElementMeshletRepair{.StoreId=task.SourceId}).Elements;
-            if (owner.RenderTopology==2u) ForEachWorkElement(storage,edit.Repair->Elements[0],[&](uint32_t v) { affected.push_back(v); });
-            else {
-                const auto edges=meshes.Arenas().HalfedgeEdges.Buffer.GetSpan<uint32_t>();
-                ForEachWorkElement(storage,edit.RetiredEdges,[&](uint32_t e) { affected.push_back(e); });
-                ForEachWorkElement(storage,edit.Repair->Elements[1],[&](uint32_t h) { affected.push_back(edges[h]); });
-            }
-        }
+    auto &meshes = r.Context.get<MeshStore>();
+    const auto *render_owner = TryRecordOf(r, entity);
+    const bool ready = render_owner && render_owner->StoreId == task.SourceId && render_owner->RenderTopologies != 0u;
+    UpdatePoseMembership(r, edit);
+    if (ready && edit.Repair) {
+        const auto &storage = edit.Chain.Scratch;
+        auto &points = element_repairs.emplace_back(ElementMeshletRepair{.StoreId = task.SourceId, .Topology = 2u}).Elements;
+        ForEachWorkElement(storage, edit.Repair->Elements[0], [&](uint32_t v) { points.push_back(v); });
+        ForEachWorkElement(storage, edit.Output->Retired[0], [&](uint32_t v) { points.push_back(v); });
+        auto &wires = element_repairs.emplace_back(ElementMeshletRepair{.StoreId = task.SourceId, .Topology = 1u}).Elements;
+        const auto edges = meshes.Arenas().HalfedgeEdges.Buffer.GetSpan<uint32_t>();
+        ForEachWorkElement(storage, edit.RetiredEdges, [&](uint32_t e) { wires.push_back(e); });
+        ForEachWorkElement(storage, edit.Repair->Elements[1], [&](uint32_t h) { wires.push_back(edges[h]); });
     }
     if (ready && edit.InsetBasis.Count) {
         // The staged edit captured its basis into the session's preview cache.
-        auto &session=project::Session(r);
-        const auto output=edit.Chain.Scratch.Get(edit.Output->Vertices);
-        std::vector<uint32_t> handles(output.begin(),output.end());
-        std::ranges::sort(handles);
-        handles.erase(std::unique(handles.begin(),handles.end()),handles.end());
+        auto &session = project::Session(r);
+        const auto output = edit.Chain.Scratch.Get(edit.Output->Vertices);
+        std::vector<uint32_t> handles(output.begin(), output.end());
+        SortUnique(handles);
         std::vector<Range> ranges;
-        ForEachIndexRun(handles, [&](size_t first, size_t count) { ranges.push_back({handles[first],uint32_t(count)}); });
-        session.InsetPreview->Entries.push_back({entity,task.SourceId,task.Op,task.Flags,edit.InsetBasis,std::move(ranges)});
+        ForEachIndexRun(handles, [&](size_t first, size_t count) { ranges.push_back({handles[first], uint32_t(count)}); });
+        session.InsetPreview->Entries.push_back({entity, task.SourceId, task.Op, task.Flags, edit.InsetBasis, std::move(ranges)});
         if (session.Previewing) {
-            auto &pipelines=GetMeshPipelines(r);
+            auto &pipelines = GetMeshPipelines(r);
             (void)pipelines[MeshPass::InsetPreviewPositions].State();
             (void)pipelines[MeshPass::MeshletBoundsRefit].State();
         }
     }
-    RefreshMeshBinding(r,task.SourceId);
-    r.remove<PrimitiveShape,MeshActiveElement>(entity);
-    r.emplace_or_replace<MeshGeometryDirty>(entity,EditSelectionAfter::Keep,repaired);
-    r.Context.get<GpuSceneState>().EditSelectionDirty=true;
+    RefreshMeshBinding(r, task.SourceId);
+    r.remove<PrimitiveShape, MeshActiveElement>(entity);
+    r.emplace_or_replace<MeshGeometryDirty>(entity, EditSelectionAfter::Keep, ready);
+    r.Context.get<GpuSceneState>().EditSelectionDirty = true;
 }
 
 // Every topology action prepares selection and edit work inside one history
 // transaction, including actions that publish more than one mesh output.
 void RunTopologyAction(state::Scene &r, std::span<const state::Entity> mesh_entities, auto &&run) {
-    auto &history=project::Session(r).History;
-    auto before=history.Pin();
-    bool changed=false;
+    auto &history = project::Session(r).History;
+    auto before = history.Pin();
+    bool changed = false;
     try {
-        for (const auto entity:mesh_entities) ReleaseMeshEditWork(r,entity);
-        changed=run();
+        for (const auto entity : mesh_entities) ReleaseMeshEditWork(r, entity);
+        changed = run();
     } catch (...) {
-        history.Restore(before); history.Release(before); throw;
+        history.Restore(before);
+        history.Release(before);
+        throw;
     }
     history.Release(before);
-    if (changed) r.Context.get<GpuBuffers>().PreludeStale=true;
+    if (changed) r.Context.get<GpuBuffers>().PreludeStale = true;
 }
 
-// Emplaces a published copied output's render buffers as a mesh gaining its first faces, and returns the build of its finest meshlets.
-// The edit derived its normals and corner classes, so the output skips the new-mesh sync.
-MeshletBuildSource CopiedOutputBuild(state::Scene &r, const MeshTopologyEdit &edit) {
-    auto &face=r.Context.get<MeshStore>().WriteRecord(edit.StoreId);
-    return {.Destination=&face,.Topology=0u,.ElementCount=edit.AddedTriangleCount,.Elements=edit.AddedTriangles};
+// A copied output builds all its drawable domains through the same render batch.
+// Its canonical geometry is new, so gathering it visits only the copied elements.
+void CopiedOutputBuild(state::Scene &r, const MeshTopologyEdit &edit, std::vector<MeshletBuildSource> &sources) {
+    auto &meshes = r.Context.get<MeshStore>();
+    auto &record = meshes.WriteRecord(edit.StoreId);
+    const Mesh mesh{meshes, edit.StoreId};
+    if (mesh.FaceCount()) sources.push_back({.Destination = &record, .Topology = 0u, .ElementCount = edit.AddedTriangleCount, .Elements = edit.AddedTriangles});
+    if (mesh.EdgeCount()) sources.push_back({.Destination = &record, .Topology = 1u, .ElementCount = mesh.EdgeCount()});
+    sources.push_back({.Destination = &record, .Topology = 2u, .ElementCount = mesh.VertexCount()});
 }
 
 // Every mesh's edit shares the action's chain, construction's submits, each publication submit, one render repair and one selection update.
@@ -208,41 +206,50 @@ MeshletBuildSource CopiedOutputBuild(state::Scene &r, const MeshTopologyEdit &ed
 // A KeepSelectedFaces edit copies into a new canonical record, whose meshlet build rides the repair.
 // Returns each task's output record, the source for an in-place edit, or none when the edit changed nothing.
 std::vector<std::optional<uint32_t>> EditTopology(state::Scene &r, std::span<const state::Entity> mesh_entities, std::span<const MeshTopologyTask> tasks) {
-    if (tasks.size()!=mesh_entities.size()) throw std::invalid_argument("Topology task and entity counts differ.");
-    auto &session=project::Session(r);
-    auto &meshes=r.Context.get<MeshStore>();
+    if (tasks.size() != mesh_entities.size()) throw std::invalid_argument("Topology task and entity counts differ.");
+    auto &session = project::Session(r);
+    auto &meshes = r.Context.get<MeshStore>();
     // A staged inset captures every mesh's basis into the session's preview cache.
-    const bool insets=session.Previewing && std::ranges::any_of(tasks,[](const auto &task) {
-        return task.Op==MeshTopologyOp::InsetRegion || task.Op==MeshTopologyOp::InsetIndividual;
-    });
-    if (insets && !session.InsetPreview) session.InsetPreview=std::make_unique<action::mesh::InsetPreviewCache>(meshes.BufferContext());
-    mtl::ComputeChain chain{meshes.BufferContext(),TopologyScratchWords};
-    auto edits=MeshTopologyEdit::Construct(r,chain,tasks,insets ? &session.InsetPreview->Basis : nullptr);
-    MeshTopologyEdit::PublishAll(r,edits);
+    const bool insets = session.Previewing && std::ranges::any_of(tasks, [](const auto &task) {
+                            return task.Op == MeshTopologyOp::InsetRegion || task.Op == MeshTopologyOp::InsetIndividual;
+                        });
+    if (insets && !session.InsetPreview) session.InsetPreview = std::make_unique<action::mesh::InsetPreviewCache>(meshes.BufferContext());
+    mtl::ComputeChain chain{meshes.BufferContext(), TopologyScratchWords};
+    auto edits = MeshTopologyEdit::Construct(r, chain, tasks, insets ? &session.InsetPreview->Basis : nullptr);
+    MeshTopologyEdit::PublishAll(r, edits);
     std::vector<std::optional<uint32_t>> outputs(edits.size());
     std::vector<MeshletBuildSource> copies;
-    std::vector<std::pair<state::Entity,const MeshTopologyEdit *>> repairs;
+    std::vector<std::pair<state::Entity, const MeshTopologyEdit *>> repairs;
     std::vector<MeshTopologyEdit *> finished;
-    for (uint32_t i=0u;i<edits.size();++i) {
-        auto &edit=edits[i];
+    for (uint32_t i = 0u; i < edits.size(); ++i) {
+        auto &edit = edits[i];
         if (!edit.Output) continue;
-        outputs[i]=edit.StoreId;
+        outputs[i] = edit.StoreId;
         finished.push_back(&edit);
-        if (edit.StoreId!=edit.SourceId) copies.push_back(CopiedOutputBuild(r,edit));
-        else if (RepairsTriangleRender(r,mesh_entities[i],edit)) repairs.emplace_back(mesh_entities[i],&edit);
+        if (edit.StoreId != edit.SourceId) CopiedOutputBuild(r, edit, copies);
+        else if (RepairsTriangleRender(r, mesh_entities[i], edit)) repairs.emplace_back(mesh_entities[i], &edit);
     }
-    RepairTopologyRender(r,chain,repairs,copies);
-    MeshTopologyEdit::FinishAll(r,finished);
+    RepairTopologyRender(r, chain, repairs, copies);
+    MeshTopologyEdit::FinishAll(r, finished);
     std::vector<state::Entity> in_place;
     std::vector<ElementMeshletRepair> element_repairs;
-    for (uint32_t i=0u;i<edits.size();++i) {
-        if (outputs[i]!=edits[i].SourceId) continue;
-        FinishTopologyEdit(r,mesh_entities[i],tasks[i],edits[i],element_repairs);
+    for (uint32_t i = 0u; i < edits.size(); ++i) {
+        if (outputs[i] != edits[i].SourceId) continue;
+        FinishTopologyEdit(r, mesh_entities[i], tasks[i], edits[i], element_repairs);
         in_place.push_back(mesh_entities[i]);
     }
-    RepairElementMeshlets(r,chain,element_repairs);
+    RepairElementMeshlets(r, chain, element_repairs);
     chain.Submit();
-    RefreshElementSelectionSummaries(r,in_place);
+    // Owner maps count only rendered elements, so topology changes need no mesh scan.
+    for (const auto entity : in_place) {
+        auto &owner = EditRecordOf(r, entity);
+        if (!owner.RenderTopologies) continue;
+        uint32_t mask = 0u;
+        for (uint32_t t = 0u; t < 3u; ++t)
+            if (owner.ElementMeshletBlockCounts[t]) mask |= 1u << t;
+        owner.RenderTopologies = mask ? mask : 4u;
+    }
+    RefreshElementSelectionSummaries(r, in_place);
     return outputs;
 }
 
@@ -251,13 +258,13 @@ std::vector<std::optional<uint32_t>> EditTopology(state::Scene &r, std::span<con
 void RunTasks(state::Scene &r, std::span<const state::Entity> mesh_entities, std::span<const MeshTopologyTask> tasks) {
     const profile::CpuScope scope{"TopologyAction"};
     if (tasks.empty()) return;
-    const auto &meshes=r.Context.get<const MeshStore>();
-    const auto split=ChunkByScratch(uint32_t(tasks.size()),ScratchWordBudget,[&](uint32_t i) { return TopologyScratchBound(meshes,tasks[i]); });
-    RunTopologyAction(r,mesh_entities,[&] {
-        bool changed=false;
-        for (const auto span:split.Chunks) {
-            const auto outputs=EditTopology(r,mesh_entities.subspan(span.Offset,span.Count),tasks.subspan(span.Offset,span.Count));
-            changed|=std::ranges::any_of(outputs,[](const auto &output) { return output.has_value(); });
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto split = ChunkByScratch(uint32_t(tasks.size()), ScratchWordBudget, [&](uint32_t i) { return TopologyScratchBound(meshes, tasks[i]); });
+    RunTopologyAction(r, mesh_entities, [&] {
+        bool changed = false;
+        for (const auto span : split.Chunks) {
+            const auto outputs = EditTopology(r, mesh_entities.subspan(span.Offset, span.Count), tasks.subspan(span.Offset, span.Count));
+            changed |= std::ranges::any_of(outputs, [](const auto &output) { return output.has_value(); });
         }
         return changed;
     });
@@ -285,39 +292,88 @@ void RunOperator(state::Scene &r, std::span<const state::Entity> mesh_entities, 
 std::pair<uint32_t, uint32_t> SelectedVertexSpan(const MeshStore &meshes, uint32_t id) {
     const auto selected = meshes.GetSelectedElements(id, Element::Vertex);
     const auto first = selected.First(), last = selected.Last();
-    return {first.value_or(InvalidOffset),last.value_or(InvalidOffset)};
+    return {first.value_or(InvalidOffset), last.value_or(InvalidOffset)};
 }
 
-// Moves the selected faces of each mesh into a new mesh object placed over the mesh's primary instance.
-// Each mesh copies its selected faces into a new record and deletes them from its source, and every mesh's edits share one batch.
-void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, const ::selection::PrimaryEditInstanceMap &primaries) {
+// Partition outputs copy before one removal per source; shared boundary vertices are retained by the transaction.
+void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, const ::selection::PrimaryEditInstanceMap &primaries, action::mesh::SeparateMode mode) {
     std::vector<state::Entity> entities;
     std::vector<MeshTopologyTask> tasks;
-    for (const auto e:mesh_entities) {
-        const auto id=r.get<const MeshHandle>(e).StoreId;
-        tasks.push_back({.SourceId=id,.Op=MeshTopologyOp::KeepSelectedFaces});
-        tasks.push_back({.SourceId=id,.Op=MeshTopologyOp::DeleteFaces});
-        entities.insert(entities.end(),{e,e});
+    const auto &meshes = r.Context.get<const MeshStore>();
+    for (const auto e : mesh_entities) {
+        const auto id = r.get<const MeshHandle>(e).StoreId;
+        const Mesh mesh{meshes, id};
+        Element element = Element::Vertex;
+        std::vector<std::vector<uint32_t>> groups;
+        if (mode == action::mesh::SeparateMode::Selected) {
+            element = mesh.FaceCount() ? Element::Face : Element::Vertex;
+            auto &group = groups.emplace_back();
+            meshes.GetSelectedElements(id, element).ForEach([&](uint32_t h) { group.push_back(h); });
+            if (group.empty()) groups.clear();
+        } else if (mode == action::mesh::SeparateMode::LooseParts) {
+            const auto incidence = mesh.GetVertexEdgeIncidence();
+            std::unordered_set<uint32_t> visited;
+            for (const auto v : mesh.vertices()) {
+                if (!visited.insert(*v).second) continue;
+                auto &group = groups.emplace_back(1u, *v);
+                for (size_t at = 0u; at < group.size(); ++at)
+                    for (const auto edge : incidence.Incident(group[at])) {
+                        const auto h = mesh.GetHalfedge(he::EH{edge}, 0u);
+                        const auto a = *mesh.GetFromVertex(h), b = *mesh.GetToVertex(h), other = a == group[at] ? b : a;
+                        if (visited.insert(other).second) group.push_back(other);
+                    }
+            }
+            // Blender keeps the first connected component in the original object.
+            if (!groups.empty()) groups.erase(groups.begin());
+        } else {
+            element = Element::Face;
+            const auto &a = meshes.Arenas();
+            const auto palette = a.PrimitiveMaterials.Get(meshes.Get(id).PrimitiveMaterials);
+            std::unordered_map<uint32_t, uint32_t> materials;
+            for (const auto face : mesh.faces()) {
+                const auto material = palette[a.FacePrimitives.Get(*face)];
+                const auto [entry, inserted] = materials.try_emplace(material, uint32_t(groups.size()));
+                if (inserted) groups.emplace_back();
+                groups[entry->second].push_back(*face);
+            }
+            // Blender extracts successive material groups, leaving the last in place.
+            if (!groups.empty()) groups.pop_back();
+        }
+        if (groups.empty()) continue;
+        std::vector<uint32_t> removed;
+        for (auto &group : groups) {
+            std::ranges::sort(group);
+            removed.insert(removed.end(), group.begin(), group.end());
+            tasks.push_back({.SourceId = id, .Op = MeshTopologyOp::KeepSelectedFaces, .SelectionElement = element, .Selected = std::move(group)});
+            entities.push_back(e);
+        }
+        std::ranges::sort(removed);
+        tasks.push_back({.SourceId = id, .Op = element == Element::Face ? MeshTopologyOp::DeleteFaces : mesh.FaceCount() ? MeshTopologyOp::DeleteVertices :
+                                                                                                                           MeshTopologyOp::DeleteEdges,
+                         .SelectionElement = element,
+                         .Selected = std::move(removed)});
+        entities.push_back(e);
     }
-    RunTopologyAction(r,mesh_entities,[&] {
-        const auto outputs=EditTopology(r,entities,tasks);
+    if (tasks.empty()) return;
+    RunTopologyAction(r, mesh_entities, [&] {
+        const auto outputs = EditTopology(r, entities, tasks);
         std::vector<state::Entity> created;
-        for (uint32_t i=0u;i<tasks.size();++i) {
-            if (tasks[i].Op!=MeshTopologyOp::KeepSelectedFaces || !outputs[i]) continue;
-            const auto primary=primaries.find(entities[i]);
-            const auto instance=primary!=primaries.end() ? primary->second : state::Null;
+        for (uint32_t i = 0u; i < tasks.size(); ++i) {
+            if (tasks[i].Op != MeshTopologyOp::KeepSelectedFaces || !outputs[i]) continue;
+            const auto primary = primaries.find(entities[i]);
+            const auto instance = primary != primaries.end() ? primary->second : state::Null;
             MeshInstanceCreateInfo create{
-                .Name=std::format("{}.001",instance!=state::Null ? GetName(r,instance) : "Mesh"),
-                .Transform=instance!=state::Null ? *WorldTransformOf(r, instance) : Transform{},
-                .Select=MeshInstanceCreateInfo::SelectBehavior::None,
+                .Name = std::format("{}.001", instance != state::Null ? GetName(r, instance) : "Mesh"),
+                .Transform = instance != state::Null ? *WorldTransformOf(r, instance) : Transform{},
+                .Select = MeshInstanceCreateInfo::SelectBehavior::None,
             };
-            created.push_back(::AddMesh(r,*outputs[i],std::move(create)).first);
+            created.push_back(::AddMesh(r, *outputs[i], std::move(create)).first);
         }
         if (created.empty()) return false;
-        RequestRender(r,RenderRequest::Rebuild);
-        r.Context.get<GpuSceneState>().LodDemand.insert(created.begin(),created.end());
+        RequestRender(r, RenderRequest::Rebuild);
+        r.Context.get<GpuSceneState>().LodDemand.insert(created.begin(), created.end());
         mtl::ComputeChain chain{r.Context.get<const MeshStore>().BufferContext()};
-        UpdateAuthoredMorphShading(r,chain,created);
+        UpdateAuthoredMorphShading(r, chain, created);
         chain.Submit();
         return true;
     });
@@ -355,13 +411,13 @@ std::vector<uint32_t> EdgeRing(const Mesh &mesh, uint32_t edge) {
     return ring;
 }
 
-// Each closed loop of boundary edges, selected ones or all of them, as its vertices in the boundary's own direction.
-std::vector<std::vector<uint32_t>> BoundaryChains(state::Scene &r, const Mesh &mesh, bool selected_only, uint32_t max_sides=0u) {
-    const auto &meshes=r.Context.get<const MeshStore>();
+// Closed boundary loops wound against the surface, ready to fill.
+std::vector<std::vector<uint32_t>> BoundaryLoops(state::Scene &r, const Mesh &mesh, bool selected_only, uint32_t max_sides = 0u) {
+    const auto &meshes = r.Context.get<const MeshStore>();
     const auto &c = mesh.GetConnectivity();
     // Both views visit their edges in ascending handle order.
     std::vector<uint32_t> edges;
-    const auto collect=[&](const auto &view) { view.ForEach([&](uint32_t edge) { edges.push_back(edge); }); };
+    const auto collect = [&](const auto &view) { view.ForEach([&](uint32_t edge) { edges.push_back(edge); }); };
     if (selected_only) collect(meshes.GetSelectedElements(mesh.GetStoreId(), Element::Edge));
     else collect(meshes.GetBoundaryEdges(mesh.GetStoreId()));
     std::vector<uint32_t> starts;
@@ -370,30 +426,31 @@ std::vector<std::vector<uint32_t>> BoundaryChains(state::Scene &r, const Mesh &m
         if (!c.Opposites[*h]) starts.push_back(*h);
     }
     std::ranges::sort(starts);
-    const auto candidate=[&](uint32_t h) {
-        return h!=InvalidOffset && !c.Opposites[h] && std::ranges::binary_search(edges,*mesh.GetEdge(Mesh::HH{h}));
+    const auto candidate = [&](uint32_t h) {
+        return h != InvalidOffset && !c.Opposites[h] && std::ranges::binary_search(edges, *mesh.GetEdge(Mesh::HH{h}));
     };
-    std::unordered_map<uint32_t,uint32_t> selected_outgoing;
-    if (selected_only) for (const auto h:starts) {
-        const auto vertex=*mesh.GetFromVertex(Mesh::HH{h});
-        const auto [it,unique]=selected_outgoing.emplace(vertex,h);
-        if (!unique) it->second=InvalidOffset;
-    }
+    std::unordered_map<uint32_t, uint32_t> selected_outgoing;
+    if (selected_only)
+        for (const auto h : starts) {
+            const auto vertex = *mesh.GetFromVertex(Mesh::HH{h});
+            const auto [it, unique] = selected_outgoing.emplace(vertex, h);
+            if (!unique) it->second = InvalidOffset;
+        }
     // Follow the face fan at the current boundary halfedge's destination to
     // find the next boundary halfedge on the same surface sheet. Vertex-based
     // pairing loses loops when distinct boundaries share a vertex.
     const auto successor = [&](uint32_t h) -> uint32_t {
-        auto next=c.Next(Mesh::HH{h});
-        const auto across=[&](Mesh::HH at) -> Mesh::HH {
+        auto next = c.Next(Mesh::HH{h});
+        const auto across = [&](Mesh::HH at) -> Mesh::HH {
             if (!at) return {};
-            const auto opposite=c.Opposites[*at];
+            const auto opposite = c.Opposites[*at];
             return opposite ? c.Next(opposite) : Mesh::HH{};
         };
-        auto fast=next;
+        auto fast = next;
         while (next && c.Opposites[*next]) {
-            next=across(next);
-            fast=across(across(fast));
-            if (fast && next==fast) return InvalidOffset;
+            next = across(next);
+            fast = across(across(fast));
+            if (fast && next == fast) return InvalidOffset;
         }
         return next ? *next : InvalidOffset;
     };
@@ -402,142 +459,197 @@ std::vector<std::vector<uint32_t>> BoundaryChains(state::Scene &r, const Mesh &m
     used.reserve(starts.size());
     for (const auto start : starts) {
         if (used.contains(start)) continue;
-        std::vector<uint32_t> halfedges;
+        std::vector<uint32_t> loop;
         auto h = start;
         bool closed = false;
-        uint32_t length=0u;
+        uint32_t length = 0u;
         while (candidate(h)) {
             if (!used.insert(h).second) {
                 closed = h == start;
                 break;
             }
             ++length;
-            if (!max_sides || halfedges.size()<max_sides) halfedges.push_back(h);
-            const auto next=successor(h);
+            if (!max_sides || loop.size() < max_sides) loop.push_back(*mesh.GetFromVertex(Mesh::HH{h}));
+            const auto next = successor(h);
             if (selected_only && !candidate(next)) {
                 // A selected hole may touch an unselected boundary at one
                 // vertex. Follow its sole selected outgoing edge there.
-                const auto it=selected_outgoing.find(*mesh.GetToVertex(Mesh::HH{h}));
-                h=it==selected_outgoing.end() ? InvalidOffset : it->second;
-            } else h=next;
+                const auto it = selected_outgoing.find(*mesh.GetToVertex(Mesh::HH{h}));
+                h = it == selected_outgoing.end() ? InvalidOffset : it->second;
+            } else h = next;
         }
-        if (closed && length>=3u && (!max_sides || length<=max_sides)) {
-            auto &loop=loops.emplace_back();
-            loop.reserve(halfedges.size());
-            for (const auto edge:halfedges)
-                loop.push_back(*mesh.GetFromVertex(Mesh::HH{edge}));
+        if (closed && length >= 3u && (!max_sides || length <= max_sides)) {
+            std::ranges::reverse(loop);
+            loops.push_back(std::move(loop));
         }
     }
-    return loops;
-}
-
-// Each closed boundary loop as the vertex loop of the face that fills it, wound against the boundary.
-std::vector<std::vector<uint32_t>> BoundaryLoops(state::Scene &r, const Mesh &mesh, bool selected_only, uint32_t max_sides=0u) {
-    auto loops = BoundaryChains(r, mesh, selected_only, max_sides);
-    for (auto &loop : loops) std::ranges::reverse(loop);
     return loops;
 }
 
 // A face list task over canonical vertex handles. New vertices use handles
 // starting at the current arena capacity, beyond every existing handle.
-MeshTopologyTask FaceListTask(state::Scene &r, const Mesh &mesh,
-                              std::span<const std::vector<uint32_t>> loops, std::span<const vec3> positions = {}) {
-    const auto appended_base=r.Context.get<const MeshStore>().Arenas().Vertices.Capacity();
-    if (uint64_t(appended_base)+positions.size()>UINT32_MAX) throw std::length_error("Face list exceeds the vertex handle address space.");
-    MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::AddFaces, .AppendedBase=appended_base};
-    task.List.push_back(uint32_t(positions.size()));
-    for (const auto &p : positions) {
-        task.List.push_back(std::bit_cast<uint32_t>(p.x));
-        task.List.push_back(std::bit_cast<uint32_t>(p.y));
-        task.List.push_back(std::bit_cast<uint32_t>(p.z));
-    }
-    uint32_t attribute_source=InvalidOffset;
-    for (const auto &loop:loops) for (const auto vertex:loop)
-        if (vertex<appended_base && attribute_source==InvalidOffset) attribute_source=vertex;
-    if (attribute_source==InvalidOffset) throw std::invalid_argument("Face creation needs a source vertex for attributes.");
-    task.List.push_back(attribute_source);
+MeshTopologyTask PrimitiveListTask(state::Scene &r, const Mesh &mesh, std::span<const std::vector<uint32_t>> loops, const std::unordered_map<uint64_t, uint32_t> &edge_sources = {}, std::span<const uint32_t> grid_loop = {}, uint32_t grid_span = 0u) {
+    const auto appended_base = r.Context.get<const MeshStore>().Arenas().Vertices.Capacity();
+    const uint64_t vertices = grid_loop.empty() ? 0u : uint64_t(grid_span - 1u) * (grid_loop.size() / 2u - grid_span - 1u);
+    if (uint64_t(appended_base) + vertices > UINT32_MAX) throw std::length_error("Face list exceeds the vertex handle address space.");
+    MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::AddPrimitives, .AppendedBase = appended_base};
+    uint32_t attribute_source = InvalidOffset;
+    for (const auto &loop : loops)
+        for (const auto vertex : loop)
+            if (vertex < appended_base && attribute_source == InvalidOffset) attribute_source = vertex;
+    if (attribute_source == InvalidOffset) throw std::invalid_argument("Face creation needs a source vertex for attributes.");
+    task.List = {uint32_t(vertices), uint32_t(grid_loop.size()), grid_span, attribute_source};
+    task.List.insert(task.List.end(), grid_loop.begin(), grid_loop.end());
     task.List.push_back(uint32_t(loops.size()));
     for (const auto &loop : loops) {
         task.List.push_back(uint32_t(loop.size()));
-        task.List.insert(task.List.end(), loop.begin(), loop.end());
+        for (uint32_t i = 0u; i < loop.size(); ++i) {
+            task.List.push_back(loop[i]);
+            const auto edge = edge_sources.find(MeshEdgeUsers::Key(loop[(i + loop.size() - 1u) % loop.size()], loop[i]));
+            task.List.push_back(edge == edge_sources.end() ? InvalidOffset : edge->second);
+        }
     }
     return task;
 }
 
-// Bridges the two closed loops of selected boundary edges, pairing each vertex of the longer with its share of the shorter.
+std::unordered_map<uint64_t, uint32_t> SelectedEdgeSources(const MeshStore &meshes, const Mesh &mesh, bool boundary_only) {
+    std::unordered_map<uint64_t, uint32_t> sources;
+    MeshEdgeUsers users{mesh};
+    meshes.GetSelectedElements(mesh.GetStoreId(), Element::Edge).ForEach([&](uint32_t edge) {
+        const auto h = mesh.GetHalfedge(he::EH{edge}, 0u);
+        if (mesh.GetFromVertex(h) == mesh.GetToVertex(h)) return;
+        const auto key = users.Key(h);
+        // Retain the selected surface corner even when a coincident wire supplied a different radial corner first.
+        if (!boundary_only && mesh.GetConnectivity().FaceOf(h)) {
+            sources[key] = *h;
+            return;
+        }
+        const auto adjacent = users.Get(h);
+        if (!boundary_only || adjacent.Count <= 1u) sources.try_emplace(key, adjacent.Count ? adjacent.First : *h);
+    });
+    return sources;
+}
+
+struct SelectedChain {
+    std::vector<uint32_t> Vertices;
+    bool Closed{};
+    int Winding{};
+};
+
+// Selected boundary and loose edges, with a corner source for each reusable edge.
+std::vector<SelectedChain> SelectedChains(state::Scene &r, const Mesh &mesh, std::unordered_map<uint64_t, uint32_t> &sources) {
+    sources = SelectedEdgeSources(r.Context.get<const MeshStore>(), mesh, true);
+    const auto &c = mesh.GetConnectivity();
+    EdgeGraph neighbors;
+    for (const auto &[key, h] : sources) {
+        const auto a = uint32_t(key >> 32u), b = uint32_t(key);
+        neighbors[a].push_back(b);
+        neighbors[b].push_back(a);
+    }
+    for (const auto &[v, adjacent] : neighbors)
+        if (adjacent.size() > 2u) return {};
+    std::vector<SelectedChain> chains;
+    VisitEdgeChains(neighbors, [&](const auto &vertices, bool closed) {
+        auto &chain = chains.emplace_back(SelectedChain{vertices, closed});
+        for (size_t i = 0u; i < vertices.size() - (closed ? 0u : 1u); ++i) {
+            const auto v = vertices[i], next = vertices[(i + 1u) % vertices.size()];
+            const auto h = he::HH{sources.at(MeshEdgeUsers::Key(v, next))};
+            if (c.FaceOf(h)) chain.Winding += *mesh.GetFromVertex(h) == v ? 1 : -1;
+        }
+    });
+    return chains;
+}
+
 void BridgeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
-        auto chains = BoundaryChains(r, mesh, true);
-        if (chains.size() != 2) return {};
-        if (chains[0].size() < chains[1].size()) std::swap(chains[0], chains[1]);
-        const auto &a = chains[0], &b = chains[1];
-        // The strip runs along the longer loop and against the shorter one, starting at the shorter's nearest vertex.
-        uint32_t start = 0;
-        float best = std::numeric_limits<float>::max();
-        for (uint32_t j = 0; j < b.size(); ++j) {
-            if (const auto d = Distance2(mesh.GetPosition(Mesh::VH{a[0]}), mesh.GetPosition(Mesh::VH{b[j]})); d < best) {
-                best = d;
-                start = j;
+        std::unordered_map<uint64_t, uint32_t> sources;
+        auto chains = SelectedChains(r, mesh, sources);
+        if (chains.size() != 2u || chains[0].Closed != chains[1].Closed) return {};
+        if (chains[0].Vertices.size() < chains[1].Vertices.size()) std::swap(chains[0], chains[1]);
+        const bool closed = chains[0].Closed;
+        auto &a = chains[0].Vertices, &b = chains[1].Vertices;
+        const auto flip = [&](auto &chain) { std::reverse(chain.begin() + (closed ? 1u : 0u), chain.end()); };
+        // New faces oppose the existing face along each rail.
+        if (chains[0].Winding < 0) flip(a);
+        if (chains[1].Winding > 0) flip(b);
+        const auto position = [&](uint32_t v) { return mesh.GetPosition(he::VH{v}); };
+        const auto normal = [&](const auto &loop) {
+            vec3 n{};
+            const auto origin = position(loop[0]);
+            for (uint32_t i = 1u; i + 1u < loop.size(); ++i) n += Cross(position(loop[i]) - origin, position(loop[i + 1u]) - origin);
+            return n;
+        };
+        const auto align = [&](const auto &fixed, auto &free) {
+            if (closed) {
+                if (Dot(normal(fixed), normal(free)) < 0.f) flip(free);
+            } else {
+                const auto same = Distance2(position(fixed.front()), position(free.front())) + Distance2(position(fixed.back()), position(free.back()));
+                const auto crossed = Distance2(position(fixed.front()), position(free.back())) + Distance2(position(fixed.back()), position(free.front()));
+                if (crossed < same) flip(free);
             }
+        };
+        if (!chains[1].Winding) align(a, b);
+        else if (!chains[0].Winding) align(b, a);
+        if (closed) {
+            if (!chains[0].Winding && !chains[1].Winding) {
+                vec3 separation{};
+                for (const auto v : a) separation += position(v) / float(a.size());
+                for (const auto v : b) separation -= position(v) / float(b.size());
+                if (Dot(normal(a), separation) < 0.f) {
+                    flip(a);
+                    flip(b);
+                }
+            }
+            uint32_t start = 0u;
+            float best = std::numeric_limits<float>::max();
+            for (uint32_t j = 0u; j < b.size(); ++j)
+                if (const auto distance = Distance2(position(a[0]), position(b[j])); distance < best) {
+                    best = distance;
+                    start = j;
+                }
+            std::rotate(b.begin(), b.begin() + start, b.end());
         }
-        const auto na = uint32_t(a.size()), nb = uint32_t(b.size());
-        const auto at_b = [&](uint32_t steps) { return b[(start + nb - steps % nb) % nb]; };
+        const auto na = uint32_t(a.size()) - uint32_t(!closed), nb = uint32_t(b.size()) - uint32_t(!closed);
         std::vector<std::vector<uint32_t>> faces;
-        for (uint32_t i = 0; i < na; ++i) {
-            const uint32_t j0 = (i * nb) / na, j1 = ((i + 1) * nb) / na;
-            if (j0 == j1) {
-                faces.push_back({a[(i + 1) % na], a[i], at_b(j0)});
-                continue;
-            }
-            faces.push_back({a[(i + 1) % na], a[i], at_b(j0), at_b(j0 + 1)});
-            for (uint32_t j = j0 + 1; j < j1; ++j) faces.push_back({a[(i + 1) % na], at_b(j), at_b(j + 1)});
+        faces.reserve(na);
+        for (uint32_t i = 0u; i < na; ++i) {
+            const auto j0 = uint32_t(uint64_t(i) * nb / na), j1 = uint32_t(uint64_t(i + 1u) * nb / na);
+            const auto next = a[(i + 1u) % a.size()];
+            if (j0 == j1) faces.push_back({next, a[i], b[j0]});
+            else faces.push_back({next, a[i], b[j0], b[j1 % b.size()]});
         }
-        return FaceListTask(r, mesh, faces);
+        return PrimitiveListTask(r, mesh, faces, sources);
     });
 }
 
 // Fills one closed loop of selected boundary edges with a Coons patch of quads, `span` edges along its first side.
 void GridFillSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, uint32_t span) {
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
-        const auto chains = BoundaryChains(r, mesh, true);
-        if (chains.size() != 1 || chains[0].size() % 2 != 0 || chains[0].size() < 4) return {};
-        const auto &loop = chains[0];
+        std::unordered_map<uint64_t, uint32_t> sources;
+        auto chains = SelectedChains(r, mesh, sources);
+        if (chains.size() != 1u || !chains[0].Closed || chains[0].Vertices.size() % 2u || chains[0].Vertices.size() < 4u) return {};
+        auto &loop = chains[0].Vertices;
+        if (chains[0].Winding < 0) std::reverse(loop.begin() + 1u, loop.end());
         const auto length = uint32_t(loop.size());
-        const auto appended_base=r.Context.get<const MeshStore>().Arenas().Vertices.Capacity();
+        const auto appended_base = r.Context.get<const MeshStore>().Arenas().Vertices.Capacity();
         const uint32_t s = std::clamp(span == 0 ? std::max(length / 4, 1u) : span, 1u, length / 2 - 1), t = length / 2 - s;
-        const uint64_t interior=uint64_t(s-1u)*(t-1u), cells=uint64_t(s)*t;
-        if (uint64_t(appended_base)+interior>UINT32_MAX || 3ull+3u*interior+5u*cells>UINT32_MAX) {
+        const uint64_t interior = uint64_t(s - 1u) * (t - 1u), cells = uint64_t(s) * t;
+        if (uint64_t(appended_base) + interior > UINT32_MAX || 5ull + length + 9u * cells > UINT32_MAX) {
             throw std::length_error("Grid fill exceeds the vertex or face-list address space.");
         }
         // Nodes run along the first side (u) and up the second (v), with the loop's four sides as the rails.
-        const auto rail = [&](uint32_t k) { return mesh.GetPosition(Mesh::VH{loop[k % length]}); };
-        std::vector<uint32_t> node((s + 1) * (t + 1), InvalidOffset);
-        std::vector<vec3> positions;
-        const auto index = [&](uint32_t i, uint32_t j) { return j * (s + 1) + i; };
-        for (uint32_t i = 0; i <= s; ++i) {
-            node[index(i, 0)] = loop[i];
-            node[index(i, t)] = loop[(2 * s + t - i) % length];
-        }
-        for (uint32_t j = 0; j <= t; ++j) {
-            node[index(s, j)] = loop[s + j];
-            node[index(0, j)] = loop[(2 * s + 2 * t - j) % length];
-        }
-        for (uint32_t j = 1; j < t; ++j) {
-            for (uint32_t i = 1; i < s; ++i) {
-                const float u = float(i) / float(s), v = float(j) / float(t);
-                const vec3 bottom = rail(i), top = rail(2 * s + t - i), right = rail(s + j), left = rail(2 * s + 2 * t - j);
-                const vec3 p00 = rail(0), p10 = rail(s), p11 = rail(s + t), p01 = rail(2 * s + t);
-                const vec3 p = bottom * (1.f - v) + top * v + left * (1.f - u) + right * u -
-                    (p00 * ((1.f - u) * (1.f - v)) + p10 * (u * (1.f - v)) + p01 * ((1.f - u) * v) + p11 * (u * v));
-                node[index(i, j)] = appended_base + uint32_t(positions.size());
-                positions.push_back(p);
-            }
-        }
+        const auto node = [&](uint32_t i, uint32_t j) {
+            if (j == 0u) return loop[i];
+            if (j == t) return loop[(2u * s + t - i) % length];
+            if (i == 0u) return loop[(length - j) % length];
+            if (i == s) return loop[s + j];
+            return appended_base + (j - 1u) * (s - 1u) + i - 1u;
+        };
         std::vector<std::vector<uint32_t>> faces;
         for (uint32_t j = 0; j < t; ++j) {
-            for (uint32_t i = 0; i < s; ++i) faces.push_back({node[index(i + 1, j)], node[index(i, j)], node[index(i, j + 1)], node[index(i + 1, j + 1)]});
+            for (uint32_t i = 0; i < s; ++i) faces.push_back({node(i + 1, j), node(i, j), node(i, j + 1), node(i + 1, j + 1)});
         }
-        return FaceListTask(r, mesh, faces, positions);
+        return PrimitiveListTask(r, mesh, faces, sources, loop, s);
     });
 }
 
@@ -545,7 +657,7 @@ void FillHolesSelected(state::Scene &r, std::span<const state::Entity> mesh_enti
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
         auto loops = BoundaryLoops(r, mesh, false, sides);
         if (loops.empty()) return {};
-        return FaceListTask(r, mesh, loops);
+        return PrimitiveListTask(r, mesh, loops);
     });
 }
 
@@ -560,27 +672,19 @@ void ConvexHullSelected(state::Scene &r, std::span<const state::Entity> mesh_ent
         const auto at = [&](uint32_t v) { return mesh.GetPosition(he::VH{v}); };
         // A starting tetrahedron from the first point, the farthest from it, the farthest from that line, and the farthest from that plane.
         std::array<uint32_t, 4> seed{points[0], points[0], points[0], points[0]};
-        float best = 0.f;
-        for (const auto v : points)
-            if (const auto d = Distance2(at(v), at(seed[0])); d > best) {
-                best = d;
-                seed[1] = v;
-            }
-        const float extent = std::sqrt(best);
-        best = 0.f;
-        for (const auto v : points)
-            if (const auto d = Length(Cross(at(seed[1]) - at(seed[0]), at(v) - at(seed[0]))); d > best) {
-                best = d;
-                seed[2] = v;
-            }
-        best = 0.f;
+        const auto farthest = [&](uint32_t &vertex, auto &&distance) {
+            float best = 0.f;
+            for (const auto v : points)
+                if (const auto d = distance(v); d > best) {
+                    best = d;
+                    vertex = v;
+                }
+            return best;
+        };
+        const float extent = std::sqrt(farthest(seed[1], [&](uint32_t v) { return Distance2(at(v), at(seed[0])); }));
+        farthest(seed[2], [&](uint32_t v) { return Length(Cross(at(seed[1]) - at(seed[0]), at(v) - at(seed[0]))); });
         const auto seed_normal = Cross(at(seed[1]) - at(seed[0]), at(seed[2]) - at(seed[0]));
-        for (const auto v : points)
-            if (const auto d = std::abs(Dot(seed_normal, at(v) - at(seed[0]))); d > best) {
-                best = d;
-                seed[3] = v;
-            }
-        if (best < 1e-12f) return {};
+        if (farthest(seed[3], [&](uint32_t v) { return std::abs(Dot(seed_normal, at(v) - at(seed[0]))); }) < 1e-12f) return {};
 
         struct Face {
             std::array<uint32_t, 3> V;
@@ -707,21 +811,17 @@ void ConvexHullSelected(state::Scene &r, std::span<const state::Entity> mesh_ent
         for (const auto &face : faces)
             if (face.Alive) hull.push_back({face.V[0], face.V[1], face.V[2]});
         if (hull.empty()) return {};
-        return FaceListTask(r, mesh, hull);
+        return PrimitiveListTask(r, mesh, hull);
     });
 }
 
 // Dissolves selected edges and connects their far vertices in one local topology transaction.
 void EdgeRotateSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     const auto &meshes = r.Context.get<const MeshStore>();
-    std::vector<MeshTopologyTask> tasks;
-    std::vector<state::Entity> entities;
-    for (const auto e : mesh_entities) {
-        const auto id = r.get<const MeshHandle>(e).StoreId;
-        const Mesh mesh{meshes, id};
+    RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
         const auto &c = mesh.GetConnectivity();
-        MeshTopologyTask task{.SourceId = id, .Op = MeshTopologyOp::RotateEdges, .Flags = TopologyFlagListSelects, .List = {0}};
-        meshes.GetSelectedElements(id, Element::Edge).ForEach([&](uint32_t edge) {
+        MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::RotateEdges, .Flags = TopologyFlagListSelects, .List = {0}};
+        meshes.GetSelectedElements(mesh.GetStoreId(), Element::Edge).ForEach([&](uint32_t edge) {
             const auto h = mesh.GetHalfedge(he::EH{edge}, 0);
             const auto opposite = c.Opposites[*h];
             if (!opposite) return;
@@ -729,18 +829,99 @@ void EdgeRotateSelected(state::Scene &r, std::span<const state::Entity> mesh_ent
             task.List.push_back(*mesh.GetToVertex(c.Next(opposite)));
             task.List[0] += 2;
         });
-        if (task.List[0] == 0) continue;
-        tasks.push_back(std::move(task));
-        entities.push_back(e);
-    }
-    RunTasks(r,entities,tasks);
+        if (task.List[0] == 0) return {};
+        return task;
+    });
 }
 
 void FillSelected(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
-        const auto loops = BoundaryLoops(r, mesh, true);
+        const auto &meshes = r.Context.get<const MeshStore>();
+        std::vector<uint32_t> vertices;
+        meshes.GetSelectedElements(mesh.GetStoreId(), Element::Vertex).ForEach([&](uint32_t v) { vertices.push_back(v); });
+        if (vertices.size() < 2u) return {};
+        const auto sources = SelectedEdgeSources(meshes, mesh, false);
+        const auto &c = mesh.GetConnectivity();
+        if (vertices.size() == 2u) {
+            if (sources.contains(MeshEdgeUsers::Key(vertices[0], vertices[1]))) return {};
+            return PrimitiveListTask(r, mesh, std::array{vertices});
+        }
+        const auto selected_faces = meshes.GetSelectedElements(mesh.GetStoreId(), Element::Face).Count();
+        if (selected_faces) {
+            if (selected_faces == 1u) return {};
+            return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::DissolveFaces};
+        }
+        auto loops = BoundaryLoops(r, mesh, true);
+        if (loops.empty()) {
+            EdgeGraph neighbors;
+            for (const auto &[key, h] : sources) {
+                const auto a = uint32_t(key >> 32u), b = uint32_t(key);
+                neighbors[a].push_back(b);
+                neighbors[b].push_back(a);
+            }
+            if (std::ranges::all_of(neighbors, [](const auto &entry) { return entry.second.size() <= 2u; })) {
+                std::vector<std::vector<uint32_t>> chains;
+                VisitEdgeChains(neighbors, [&](const auto &chain, bool) { chains.push_back(chain); });
+                // Complete an open chain through the single free selected point.
+                if (chains.size() == 1u && neighbors.size() + 1u == vertices.size()) {
+                    for (const auto v : vertices)
+                        if (!neighbors.contains(v)) chains[0].push_back(v);
+                }
+                for (auto &chain : chains)
+                    if (chain.size() >= 3u) loops.push_back(std::move(chain));
+            }
+            if (loops.empty()) {
+                // Blender's vertex-cloud fallback orders points radially in their plane.
+                // Read canonical positions directly; only handles and angular keys are stored on the host.
+                vec3 center{};
+                for (const auto v : vertices) center += mesh.GetPosition(he::VH{v}) / float(vertices.size());
+                vec3 tangent{};
+                for (const auto v : vertices) {
+                    const auto delta = mesh.GetPosition(he::VH{v}) - center;
+                    if (Dot(delta, delta) > Dot(tangent, tangent)) tangent = delta;
+                }
+                if (Dot(tangent, tangent) == 0.f) return {};
+                tangent = Normalize(tangent);
+                vec3 across{};
+                for (const auto v : vertices) {
+                    auto delta = mesh.GetPosition(he::VH{v}) - center;
+                    delta -= tangent * Dot(delta, tangent);
+                    if (Dot(delta, delta) > Dot(across, across)) across = delta;
+                }
+                if (Dot(across, across) < 1e-20f) return {};
+                across = Normalize(across);
+                std::vector<std::pair<float, uint32_t>> angles;
+                for (const auto v : vertices) {
+                    const auto delta = mesh.GetPosition(he::VH{v}) - center;
+                    angles.emplace_back(std::atan2(Dot(delta, across), Dot(delta, tangent)), v);
+                }
+                std::ranges::sort(angles);
+                auto &loop = loops.emplace_back();
+                for (const auto &[angle, v] : angles) loop.push_back(v);
+            }
+        }
+        std::erase_if(loops, [&](const auto &loop) {
+            const std::unordered_set<uint32_t> members(loop.begin(), loop.end());
+            const auto fan = c.VertexCorners[loop.front()];
+            for (uint32_t i = 0u; i < fan.y; ++i) {
+                const auto face = c.FaceOf(he::HH{c.FanItems[fan.x + i].x});
+                if (face && mesh.GetValence(face) == loop.size() &&
+                    std::ranges::all_of(mesh.fv_range(face), [&](auto v) { return members.contains(*v); })) return true;
+            }
+            return false;
+        });
         if (loops.empty()) return {};
-        return FaceListTask(r, mesh, loops);
+        for (auto &loop : loops) {
+            int winding = 0;
+            for (uint32_t i = 0u; i < loop.size(); ++i) {
+                const auto a = loop[(i + loop.size() - 1u) % loop.size()], b = loop[i];
+                const auto found = sources.find(MeshEdgeUsers::Key(a, b));
+                if (found != sources.end() && c.FaceOf(he::HH{found->second}))
+                    winding += *mesh.GetFromVertex(he::HH{found->second}) == a ? 1 : -1;
+            }
+            if (winding > 0) std::ranges::reverse(loop);
+        }
+        return PrimitiveListTask(r, mesh, loops, sources);
     });
 }
 
@@ -794,7 +975,7 @@ void SymmetrizeSelected(state::Scene &r, std::span<const state::Entity> mesh_ent
     for (int i = 0; i < 3; ++i) mirror[i][i] = i == axis % 3 ? -1.f : 1.f;
     // The whole kept side duplicates, and the plane's vertices weld afterward.
     RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) {
-        return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::DuplicateFaces, .Flags = TopologyFlagTransformCopies | TopologyFlagFlipCopies | TopologyFlagSelectAll, .CopyRotation = mirror};
+        return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::DuplicateGeometry, .Flags = TopologyFlagTransformCopies | TopologyFlagFlipCopies | TopologyFlagSelectAll, .CopyRotation = mirror};
     });
     RunOperator(r, mesh_entities, MeshTopologyOp::MergeByDistance, 1e-5f, 0.f, TopologyFlagSelectAll);
 }
@@ -819,24 +1000,6 @@ void KnifeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities
     });
 }
 
-// Deletes each mesh's edges without a face, then its vertices without fan corners, as two transactions.
-// A mesh without faces has only edges without a face, and a mesh with faces has none.
-// Fans hold line corners too, so a vertex without fan corners has no edge.
-void DeleteLoose(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
-        if (mesh.FaceCount() || !mesh.EdgeCount()) return {};
-        return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::DeleteEdges, .Flags = TopologyFlagSelectAll};
-    });
-    RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
-        const auto &fans = mesh.GetConnectivity().VertexCorners;
-        MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::DeleteVertices, .Flags = TopologyFlagListSelects, .List = {0u}};
-        for (const auto v : mesh.vertices()) if (!fans[*v].y) task.List.push_back(*v);
-        if (task.List.size() == 1u) return {};
-        task.List.front() = uint32_t(task.List.size() - 1u);
-        return task;
-    });
-}
-
 void MergeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities, action::mesh::MergeMode mode, float distance) {
     using Mode = action::mesh::MergeMode;
     if (mode == Mode::Collapse) return RunOperator(r, mesh_entities, MeshTopologyOp::MergeCollapse);
@@ -852,107 +1015,593 @@ void MergeSelected(state::Scene &r, std::span<const state::Entity> mesh_entities
         return MeshTopologyTask{.SourceId = id, .Op = MeshTopologyOp::MergeAtTarget, .TargetVertex = target, .TargetPosition = position};
     });
 }
+// Only selected face ranges and attribute pages participate; vertex fans are irrelevant.
+void EditSelectedFaceAttributes(state::Scene &r, std::span<const state::Entity> targets, bool colors, uint32_t uv_set, uint32_t operation) {
+    if (uv_set >= MeshStore::MaxUvSets) return;
+    auto &meshes = r.Context.get<MeshStore>();
+    auto &a = meshes.Arenas();
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    struct Job {
+        state::Entity Entity;
+        uint32_t Id;
+        ClosureSeed Seed;
+        FaceAttributeEditPushConstants Pc;
+    };
+    std::vector<Job> jobs;
+    uint64_t triangle_words = 0u, corners = 0u, face_count = 0u;
+    for (const auto entity : targets) {
+        const auto mesh = GetMesh(r, entity);
+        const auto id = mesh.GetStoreId();
+        const auto &record = meshes.Get(id);
+        if (!(record.CornerAttributes & (colors ? MeshAttributeBit_Color0 : MeshAttributeBit_TexCoord0 << uv_set))) continue;
+        const bool clear_tangents = !colors && (record.CornerAttributes & MeshAttributeBit_Tangent);
+        std::vector<uint32_t> faces;
+        uint32_t incidence = 0u;
+        meshes.GetSelectedElements(id, Element::Face).ForEach([&](uint32_t f) {
+            const auto range = a.FaceRanges.Get({f, 1u})[0];
+            const Range handles{range.x, range.y - range.x};
+            if (colors) a.CornerColors.CaptureHandles(handles);
+            else a.CornerUvs[uv_set].CaptureHandles(handles);
+            if (clear_tangents) a.CornerTangents.CaptureHandles(handles);
+            faces.push_back(f);
+            incidence += handles.Count;
+        });
+        if (faces.empty()) continue;
+        ClosureSeed seed{.Work = SeedElementWorkHandles(chain.Scratch, a.FaceTriangles.Capacity(), faces), .Count = uint32_t(faces.size()), .Incidence = incidence};
+        jobs.push_back({entity, id, seed, {
+                                              .Connectivity = meshes.GetConnectivityRef(id),
+                                              .Faces = seed.Work,
+                                              .Attribute = colors ? a.CornerColors.Ref() : a.CornerUvs[uv_set].Ref(),
+                                              .Tangents = a.CornerTangents.Ref(clear_tangents),
+                                              .FaceCount = mesh.FaceCount(),
+                                              .Count = seed.Count,
+                                              .Operation = operation,
+                                          }});
+        const auto bound = std::min(incidence, a.Triangles.Set(record.TriangleData).BlockCount);
+        triangle_words += 1u + ElementWorkWords(a.Triangles.Capacity(), bound) + SortElementWorkWords(WorkCapacity(a.Triangles.Capacity(), bound));
+        corners += incidence;
+        face_count += seed.Count;
+    }
+    if (jobs.empty()) return;
+    chain.Scratch.ReserveAdditional(triangle_words);
+    const auto &pipeline = GetMeshPipelines(r)[colors ? MeshPass::EditFaceColors : MeshPass::EditFaceUvs];
+    chain.Concurrent([&] { for (const auto &job : jobs) chain.Threads(pipeline, job.Pc, job.Pc.Count); });
+    std::vector<std::pair<state::Entity, FaceTriangles>> repairs;
+    for (const auto &job : jobs) repairs.emplace_back(job.Entity, EncodeFaceTriangles(r, chain, job.Id, job.Seed));
+    chain.Submit();
+    for (auto &[entity, triangles] : repairs) triangles.Finish(chain);
+    RepairFaceRender(r, chain, repairs);
+    chain.Submit();
+    profile::RecordCounter("AttributeEditFaces", face_count);
+    profile::RecordCounter("AttributeEditCorners", corners);
+    RequestRender(r, RenderRequest::Rebuild);
+}
+
+struct PositionEditOptions {
+    uint32_t Axes{7u}, Flags{};
+    vec3 Direction{}, Gradient{};
+    const action::mesh::Warp *Warp{};
+    const action::mesh::Bend *Bend{};
+    const action::mesh::Randomize *Randomize{};
+    const action::mesh::VertexSlide *Slide{};
+    const action::mesh::EdgeSlide *EdgeSlide{};
+    const action::mesh::SnapSymmetry *SnapSymmetry{};
+    const action::mesh::CurveBetweenSelected *Curve{};
+    const action::mesh::Circularize *Circle{};
+};
+
+bool ValidPositionPlane(const quat *orientation, vec3 center, float roll) {
+    if (!orientation) return false;
+    const auto q = *orientation;
+    const float norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    return norm > 0.f && std::isfinite(norm) && std::isfinite(roll) &&
+        std::isfinite(center.x) && std::isfinite(center.y) && std::isfinite(center.z);
+}
+
+// Position operators share sparse capture, iterative GPU writes, and publication.
+void EditSelectedPositions(state::Scene &r, state::Entity viewport, std::span<const state::Entity> targets, PositionEditOp operation, float factor, uint32_t repeat, PositionEditOptions options = {}) {
+    const auto &[axes, flags, direction, gradient, warp, bend, randomize, slide, edge_slide, symmetry, curve, circle] = options;
+    const bool zero_moves = symmetry || warp || (slide && slide->Even && slide->Flipped) || (edge_slide && edge_slide->Even);
+    if (targets.empty() || !axes || (!zero_moves && factor == 0.f) || !std::isfinite(factor)) return;
+    const bool planar = operation == PositionEditOp::Planar;
+    const bool ordered_chains = curve || circle;
+    const bool flatten = operation == PositionEditOp::Copy && !ordered_chains;
+    const bool flatten_view = flatten && (flags & PositionEditFlattenView);
+    const bool relax = operation == PositionEditOp::RelaxEdgeLoops;
+    const bool edge_chains = relax || operation == PositionEditOp::SpaceEvenly;
+    const bool sphere = operation == PositionEditOp::ToSphere;
+    const auto gather = edge_chains ? (relax ? MeshPass::RelaxEdgeLoopsGather : MeshPass::SpaceEvenlyGather) : MeshPass::PositionVerticesGather;
+    const bool centered = sphere || operation == PositionEditOp::PushPull || operation == PositionEditOp::Shear;
+    const bool transformed = centered || warp || bend || slide || edge_slide || flatten_view;
+    if (sphere) factor = std::clamp(factor, 0.f, 1.f);
+    else if (planar || operation == PositionEditOp::Smooth) factor = std::clamp(factor, -10.f, 10.f);
+    if (!zero_moves && factor == 0.f) return;
+    const auto &primaries = r.get<const EditPrimaries>(viewport).Transformable;
+    const vec3 center = centered ? EditSelectionCenter(r, viewport) : vec3{};
+    vec3 plane_x{}, plane_y{}, plane_center{};
+    float bend_pivot = 0.f;
+    if (warp || bend) {
+        const auto rotation = Normalize(warp ? *warp->Orientation : *bend->Orientation);
+        const auto right = rotation * vec3{1, 0, 0}, up = rotation * vec3{0, 1, 0};
+        const float roll = warp ? warp->OffsetAngle : bend->OffsetAngle;
+        const float c = std::cos(roll), s = std::sin(roll);
+        plane_x = c * right - s * up;
+        plane_y = s * right + c * up;
+        plane_center = warp ? warp->Center : bend->Center;
+        if (bend) {
+            // Equivalent to Blender's shell_angle_to_dist, with a stable
+            // small-angle denominator and saturation past a quarter turn.
+            const float angle = std::abs(factor);
+            const float shell = angle >= std::numbers::pi_v<float> * .5f ? 1.f : 1.f / std::sin(angle);
+            bend_pivot = -std::copysign(1.f, factor) * bend->Radius * shell;
+            if (!std::isfinite(bend_pivot)) return;
+        }
+    }
+    auto &meshes = r.Context.get<MeshStore>();
+    auto &pipelines = GetMeshPipelines(r);
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    uint64_t selected_count = 0u;
+    uint32_t reduction_blocks = 0u;
+    if (!planar) {
+        for (const auto entity : targets) {
+            if (transformed && !primaries.contains(entity)) continue;
+            const auto count = meshes.GetSelectedElements(GetMesh(r, entity).GetStoreId(), Element::Vertex).Count();
+            selected_count += count;
+            if (sphere || (warp && warp->AutoRange)) reduction_blocks += (count + 255u) / 256u;
+        }
+        // Symmetry can also move an unselected partner for each selected vertex.
+        const uint32_t vertex_words = edge_slide || symmetry ? 10u : 4u;
+        const uint32_t parameter_words = warp || bend ? 18u : randomize ? 3u :
+            slide                                                       ? 8u :
+            edge_slide                                                  ? 1u :
+                                                                          0u;
+        chain.Scratch.ReserveAdditional(vertex_words * selected_count + 4ull * reduction_blocks + 1u + uint64_t(parameter_words) * targets.size());
+    }
+    const bool statistics = sphere || (warp && warp->AutoRange);
+    const auto partials = chain.Scratch.Allocate(2u * reduction_blocks);
+    uint32_t partial_offset = partials.Offset;
+    std::vector<VertexPositionEditPushConstants> jobs;
+    struct PositionBatch {
+        uint32_t Index;
+        std::vector<Range> Batches;
+    };
+    std::vector<PositionBatch> batches;
+    std::vector<std::vector<Range>> ranges;
+    std::vector<state::Entity> entities;
+    for (const auto entity : targets) {
+        if (transformed && !primaries.contains(entity)) continue;
+        const auto mesh = GetMesh(r, entity);
+        const auto id = mesh.GetStoreId();
+        VertexPositionEditPushConstants pc{
+            .Connectivity = meshes.GetConnectivityRef(id),
+            .VertexSlot = meshes.Slots().Vertices,
+            .CornerSlot = meshes.Arenas().FaceCorners.Buffer.Slot,
+            .FaceCount = mesh.FaceCount(),
+            .Axes = axes,
+            .Factor = factor,
+            .FaceNormalSlot = meshes.Arenas().BaseFaceNormals.Buffer.Slot,
+            .VertexNormalSlot = meshes.Arenas().BaseVertexNormals.Buffer.Slot,
+            .FaceSelectionSlot = meshes.GetSelectionSlot(Element::Face),
+            .Flags = flags,
+            .Operation = operation,
+        };
+        PositionBatch batch{.Index = uint32_t(jobs.size())};
+        const auto world = transformed ? *WorldTransformOf(r, primaries.at(entity)) : Transform{};
+        const auto inverse = Conjugate(world.R);
+        const auto local_direction = [&](vec3 direction) {
+            auto local = inverse * direction;
+            for (uint32_t axis = 0u; axis < 3u; ++axis) local[axis] = world.S[axis] != 0.f ? local[axis] / world.S[axis] : 0.f;
+            return local;
+        };
+        if (flatten_view) {
+            pc.Direction = local_direction(direction);
+            const float length = Length(pc.Direction);
+            if (!(length > 0.f) || !std::isfinite(length)) continue;
+            pc.Direction /= length;
+        }
+        if (centered) {
+            pc.Center = local_direction(center - world.P);
+            pc.Direction = local_direction(direction);
+            pc.Gradient = (inverse * gradient) * world.S;
+        }
+        if (warp || bend) {
+            const PositionPlane plane{(inverse * plane_x) * world.S, (inverse * plane_y) * world.S, local_direction(plane_x), local_direction(plane_y), {Dot(world.P - plane_center, plane_x), Dot(world.P - plane_center, plane_y)}};
+            if (warp) pc.Parameters = chain.Upload(as_bytes(WarpParameters{plane, std::min(warp->Min, warp->Max), std::max(warp->Min, warp->Max)}));
+            else pc.Parameters = chain.Upload(as_bytes(BendParameters{plane, bend->Radius, bend_pivot}));
+        }
+        if (randomize) pc.Parameters = chain.Upload(as_bytes(RandomizeParameters{std::clamp(randomize->Uniform, 0.f, 1.f), std::clamp(randomize->Normal, 0.f, 1.f), randomize->Seed}));
+        if (slide || edge_slide) {
+            const auto selected = meshes.GetSelectedElements(id, Element::Vertex);
+            uint32_t reference = selected.First().value_or(InvalidOffset);
+            if (const auto *active = r.try_get<const MeshActiveElement>(entity);
+                active && r.get<const EditMode>(viewport).Value == Element::Vertex &&
+                meshes.IsLiveElement(id, Element::Vertex, active->Handle) && selected.Contains(active->Handle)) reference = active->Handle;
+            if (edge_slide) {
+                const auto directions = PlanEdgeSlide(meshes, mesh, inverse * Normalize(edge_slide->Direction), world.S, reference);
+                if (directions.empty()) continue;
+                pc.Parameters = chain.Upload(as_bytes(directions));
+                if (edge_slide->Even) {
+                    uint32_t rank = 0u, reference_rank = 0u;
+                    selected.ForEach([&](uint32_t v) { if (v==reference) reference_rank=rank; ++rank; });
+                    const auto &ref = directions[reference_rank];
+                    pc.ReductionResult = chain.Upload(as_bytes(Length(ref.Positive - ref.Negative)));
+                }
+            } else {
+                const VertexSlideParameters parameters{inverse * Normalize(slide->Direction), world.S, reference};
+                pc.Parameters = chain.Upload(as_bytes(parameters));
+                if (slide->Even) pc.ReductionResult = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(1u).Offset};
+            }
+        }
+        std::vector<uint32_t> vertices;
+        if (flatten) {
+            auto plan = PlanFlatten(meshes, mesh);
+            if (plan.Vertices.empty()) continue;
+            chain.Scratch.ReserveAdditional(plan.Words.size() + plan.Groups.size() + 4ull * plan.Vertices.size());
+            // Flatten's parameters hold packed groups; Planes indexes their offsets.
+            pc.Parameters = chain.Upload(as_bytes(plan.Words));
+            pc.Planes = chain.Upload(as_bytes(plan.Groups));
+            pc.PlaneCount = uint32_t(plan.Groups.size());
+            batch.Batches = std::move(plan.Batches);
+            vertices = std::move(plan.Vertices);
+        } else if (planar) {
+            std::vector<uint32_t> faces;
+            meshes.GetSelectedElements(id, Element::Face).ForEach([&](uint32_t f) {
+                if (mesh.GetValence(he::FH{f}) > 3u) faces.push_back(f);
+            });
+            if (faces.empty()) continue;
+            // The existing face seed gathers only connectivity handles on the host.
+            // Its vertex list also gives history the exact pages to capture.
+            auto seed = ListSeed(r, chain, id, Element::Face, faces);
+            pc.Faces = seed.Work;
+            pc.PlaneCount = seed.Count;
+            pc.Planes = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(4u * seed.Count).Offset};
+            vertices = std::move(seed.Vertices);
+        } else if (edge_chains || ordered_chains) {
+            auto plan = circle ? PlanCircularize(meshes, mesh) : curve ? PlanCurveBetweenSelected(meshes, mesh, curve->Extend) :
+                                                                         PlanSelectedEdgeChains(meshes, mesh, relax);
+            if (plan.Outputs.empty()) continue;
+            const uint32_t stride = circle ? 0u : curve ? 7u :
+                relax                                   ? 10u :
+                                                          6u;
+            const uint32_t extra = circle ? 0u : curve ? 2u :
+                                                         1u;
+            chain.Scratch.ReserveAdditional(uint64_t(stride + 1u) * plan.Inputs.size() + (sizeof(EdgeChain) / sizeof(uint32_t) + extra) * plan.Chains.size() + 4ull * plan.Outputs.size() + plan.Phases.size());
+            const auto inputs = chain.Scratch.Allocate(std::span<const uint32_t>{plan.Inputs});
+            const auto phases = chain.Scratch.Allocate(std::span<const uint32_t>{plan.Phases});
+            const auto work = chain.Scratch.Allocate(stride * uint32_t(plan.Inputs.size()) + extra * uint32_t(plan.Chains.size()));
+            uint32_t work_offset = work.Offset;
+            for (uint32_t i = 0u; i < plan.Chains.size(); ++i) {
+                auto &descriptor = plan.Chains[i];
+                descriptor.WorkOffset = work_offset;
+                work_offset += stride * descriptor.Count + extra;
+                descriptor.InputOffset += inputs.Offset;
+                if (relax || curve) descriptor.PhaseOffset += phases.Offset;
+            }
+            pc.Parameters = chain.Upload(as_bytes(plan.Chains));
+            pc.ChainCount = uint32_t(plan.Chains.size());
+            if (ordered_chains) batch.Batches = std::move(plan.Batches);
+            if (circle) pc.Direction = {circle->Radius, circle->Angle, 0.f};
+            vertices = std::move(plan.Outputs);
+        } else if (symmetry) {
+            const auto plan = PlanSymmetrySnap(meshes, mesh, uint32_t(symmetry->Axis), symmetry->Threshold, symmetry->Center);
+            if (plan.empty()) continue;
+            std::vector<uint32_t> partners;
+            for (const auto [v, partner] : plan) {
+                vertices.push_back(v);
+                partners.push_back(partner);
+            }
+            pc.Parameters = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(std::span<const uint32_t>{partners}).Offset};
+        } else {
+            meshes.GetSelectedElements(id, Element::Vertex).ForEach([&](uint32_t v) { vertices.push_back(v); });
+        }
+        if (vertices.empty()) continue;
+        pc.Handles = chain.Upload(as_bytes(vertices));
+        pc.Count = uint32_t(vertices.size());
+        // Fitting jobs keep their own output order; only history capture needs sorted handles.
+        if (edge_chains || ordered_chains) std::ranges::sort(vertices);
+        std::vector<Range> runs;
+        ForEachIndexRun(vertices, [&](size_t first, size_t count) { runs.push_back({vertices[first], uint32_t(count)}); });
+        if (statistics) {
+            pc.ReductionBlocks = {chain.Scratch.Buffer.Slot, partial_offset};
+            partial_offset += 2u * ((pc.Count + 255u) / 256u);
+        }
+        pc.Positions = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(3u * pc.Count).Offset};
+        meshes.Arenas().Vertices.Buffer.CaptureWriteRanges(runs, sizeof(Vertex));
+        entities.push_back(entity);
+        ranges.push_back(std::move(runs));
+        jobs.push_back(pc);
+        if (!batch.Batches.empty()) batches.push_back(std::move(batch));
+        ReleaseMeshEditWork(r, entity);
+    }
+    if (jobs.empty()) return;
+    uint64_t vertex_count = 0u, plane_count = 0u;
+    for (const auto &pc : jobs) {
+        vertex_count += pc.Count;
+        plane_count += pc.PlaneCount;
+    }
+    profile::RecordCounter("PositionEditVertices", vertex_count);
+    profile::RecordCounter("PositionEditPlanes", plane_count);
+    uint64_t curve_chain_count = 0u, curve_batch_count = 0u;
+    if (ordered_chains)
+        for (const auto &job : batches) {
+            curve_chain_count += jobs[job.Index].ChainCount;
+            curve_batch_count += job.Batches.size();
+        }
+    profile::RecordCounter("CurveEditChains", curve_chain_count);
+    profile::RecordCounter("CurveEditBatches", curve_batch_count);
+    if (statistics) {
+        chain.Concurrent([&] {
+            for (const auto &pc : jobs) chain.Groups(pipelines[MeshPass::PositionStatisticsGather], pc, (pc.Count + 255u) / 256u);
+        });
+        const auto reduce = [&](SlotOffset input, uint32_t count) {
+            // Sphere needs a final normalization even for one partial; bounds
+            // already contain their result when a mesh fits in one group.
+            if (sphere || count > 1u) {
+                do {
+                    const uint32_t next = (count + 255u) / 256u;
+                    const SlotOffset output{chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(2u * next).Offset};
+                    const PositionReducePushConstants pc{.Input = input, .Output = output, .Count = count, .Scale = sphere && next == 1u ? 1.f / float(selected_count) : 1.f, .Bounds = !sphere};
+                    chain.Groups(pipelines[MeshPass::PositionStatisticsReduce], pc, next);
+                    input = output;
+                    count = next;
+                } while (count > 1u);
+            }
+            return input;
+        };
+        if (sphere) {
+            const auto result = reduce({chain.Scratch.Buffer.Slot, partials.Offset}, reduction_blocks);
+            for (auto &pc : jobs) pc.ReductionResult = result;
+        } else
+            for (auto &pc : jobs) pc.ReductionResult = reduce(pc.ReductionBlocks, (pc.Count + 255u) / 256u);
+        profile::RecordCounter(sphere ? "PositionRadiusBlocks" : "PositionWarpBoundsBlocks", reduction_blocks);
+    }
+    if (planar) chain.Concurrent([&] {
+        for (const auto &pc : jobs) chain.Threads(pipelines[MeshPass::PlanarFacePlanes], pc, pc.PlaneCount);
+    });
+    if (slide && slide->Even) chain.Concurrent([&] {
+        for (const auto &pc : jobs) chain.Threads(pipelines[MeshPass::VertexSlideReference], pc, 1u);
+    });
+    for (uint32_t step = 0u; step < repeat; ++step) {
+        chain.Concurrent([&] {
+            for (const auto &pc : jobs) chain.Threads(pipelines[gather], pc, edge_chains ? pc.ChainCount : pc.Count);
+        });
+        uint32_t depths = 0u;
+        for (const auto &job : batches) depths = std::max(depths, uint32_t(job.Batches.size()));
+        for (uint32_t depth = 0u; depth < depths; ++depth) chain.Concurrent([&] {
+            for (const auto &job : batches)
+                if (depth < job.Batches.size()) {
+                    const auto batch = job.Batches[depth];
+                    auto pc = jobs[job.Index];
+                    if (flatten) {
+                        pc.Planes.Offset += batch.Offset;
+                        chain.Groups(pipelines[MeshPass::FlattenGroups], pc, batch.Count);
+                    } else {
+                        pc.Parameters.Offset += batch.Offset * uint32_t(sizeof(EdgeChain) / sizeof(uint32_t));
+                        pc.ChainCount = batch.Count;
+                        chain.Threads(pipelines[circle ? MeshPass::Circularize : MeshPass::CurveBetweenSelected], pc, pc.ChainCount);
+                    }
+                }
+        });
+        chain.Concurrent([&] {
+            for (const auto &pc : jobs) chain.Threads(pipelines[MeshPass::WriteEditedPositions], pc, pc.Count);
+        });
+    }
+    std::vector<MeshVertexChanges> changes;
+    for (uint32_t i = 0u; i < entities.size(); ++i) changes.push_back({entities[i], ranges[i]});
+    RefreshEditedPositions(r, chain, changes);
+    chain.Submit();
+    for (const auto entity : PublishEditedPositions(r, chain, entities)) {
+        r.remove<PrimitiveShape>(entity);
+        r.emplace_or_replace<MeshPositionsChanged>(entity);
+    }
+    chain.Submit();
+}
+
 } // namespace
 
 namespace action::mesh {
 bool UpdateInsetPreview(state::Scene &r, state::Entity viewport, const Inset &inset, InsetPreviewCache &cache) {
     const profile::CpuScope scope{"UpdateInsetPreview"};
-    const auto targets=SelectedEditMeshes(r,viewport);
-    if (targets.empty() || targets.size()!=cache.Entries.size()) return false;
-    const auto op=inset.Individual ? MeshTopologyOp::InsetIndividual : MeshTopologyOp::InsetRegion;
-    const auto flags=inset.Even ? TopologyFlagEvenOffset : 0u;
-    auto &meshes=r.Context.get<MeshStore>();
+    const auto targets = SelectedEditMeshes(r, viewport);
+    if (targets.empty() || targets.size() != cache.Entries.size()) return false;
+    const auto op = inset.Individual ? MeshTopologyOp::InsetIndividual : MeshTopologyOp::InsetRegion;
+    const auto flags = inset.Even ? TopologyFlagEvenOffset : 0u;
+    auto &meshes = r.Context.get<MeshStore>();
     // Project::Record discards this cache for every other action, including
     // selection changes. Parameter updates retain the staged face selection.
-    for (size_t i=0u;i<targets.size();++i) {
-        const auto &entry=cache.Entries[i];
-        if (entry.Entity!=targets[i] || entry.Op!=op || entry.Flags!=flags ||
-            GetMesh(r,entry.Entity).GetStoreId()!=entry.StoreId || !entry.Basis.Count) return false;
+    for (size_t i = 0u; i < targets.size(); ++i) {
+        const auto &entry = cache.Entries[i];
+        if (entry.Entity != targets[i] || entry.Op != op || entry.Flags != flags ||
+            GetMesh(r, entry.Entity).GetStoreId() != entry.StoreId || !entry.Basis.Count) return false;
     }
     {
         const profile::CpuScope capture{"InsetCaptureVertices"};
-        for (const auto &entry:cache.Entries)
-            meshes.Arenas().Vertices.Buffer.CaptureWriteRanges(entry.Ranges,sizeof(Vertex));
+        for (const auto &entry : cache.Entries)
+            meshes.Arenas().Vertices.Buffer.CaptureWriteRanges(entry.Ranges, sizeof(Vertex));
     }
-    // The positions, their refresh, the selection aggregates and the meshlet refit share one submit.
+    // Keep the position update and its dependent geometry work on one chain.
     mtl::ComputeChain chain{meshes.BufferContext()};
     {
         const profile::CpuScope positions{"InsetPositionPass"};
-        const auto &pipeline=GetMeshPipelines(r)[MeshPass::InsetPreviewPositions];
+        const auto &pipeline = GetMeshPipelines(r)[MeshPass::InsetPreviewPositions];
         // Each entry writes its own mesh's vertices.
         chain.Concurrent([&] {
-            for (const auto &entry:cache.Entries) {
+            for (const auto &entry : cache.Entries) {
                 const InsetPreviewPushConstants pc{
-                    .Basis={cache.Basis.Buffer.Slot,entry.Basis.Offset},.VertexSlot=meshes.Slots().Vertices,
-                    .Count=uint32_t(uint64_t(entry.Basis.Count)*sizeof(uint32_t)/sizeof(InsetVertexBasis)),.Thickness=std::max(inset.Thickness,0.f),.Depth=inset.Depth};
-                chain.Groups(pipeline,pc,(pc.Count+255u)/256u);
+                    .Basis = {cache.Basis.Buffer.Slot, entry.Basis.Offset}, .VertexSlot = meshes.Slots().Vertices, .Count = uint32_t(uint64_t(entry.Basis.Count) * sizeof(uint32_t) / sizeof(InsetVertexBasis)), .Thickness = std::max(inset.Thickness, 0.f), .Depth = inset.Depth
+                };
+                chain.Groups(pipeline, pc, (pc.Count + 255u) / 256u);
             }
         });
     }
     std::vector<MeshVertexChanges> changed;
     changed.reserve(cache.Entries.size());
-    for (const auto &entry:cache.Entries) changed.push_back({entry.Entity,entry.Ranges});
-    RefreshEditedPositions(r,chain,changed);
-    std::vector<MeshStore::SelectionUpdate> aggregates;
-    for (const auto &entry:cache.Entries) {
-        if (!meshes.Get(entry.StoreId).SelectionSummary.Count) continue;
-        auto &blocks=aggregates.emplace_back(MeshStore::SelectionUpdate{.StoreId=entry.StoreId}).Blocks[0];
-        for (const auto &range:entry.Ranges)
-            for (uint64_t handle=range.Offset,end=uint64_t(range.Offset)+range.Count;handle<end;) {
-                blocks.push_back(uint32_t(handle/MeshElementBlockSize));
-                handle=(handle/MeshElementBlockSize+1u)*MeshElementBlockSize;
-            }
-    }
-    meshes.UpdateSelection(r,chain,aggregates);
-    // The canonical fine meshlet records are also used by static culling,
-    // coarse repair, and replay. Refit their bounds and cones from current
-    // positions without changing the meshlet topology or render vertex order.
-    const auto &gpu=r.Context.get<const GpuBuffers>();
-    const auto &scene=r.Context.get<const GpuSceneState>();
-    std::vector<MeshletBoundsRefitJob> refits;
-    for (const auto &entry:cache.Entries)
-        refits.push_back({&EditRecordOf(r,entry.Entity),&gpu.GeometryWork,scene.EditWork.at(entry.Entity).Meshlets});
-    {
-        const profile::CpuScope refit_scope{"InsetRefitPass"};
-        RefitCanonicalMeshletBounds(r,chain,refits);
-    }
+    for (const auto &entry : cache.Entries) changed.push_back({entry.Entity, entry.Ranges});
+    RefreshEditedPositions(r, chain, changed);
+    PublishEditedPositions(r, chain, targets, PositionPublication::Preview);
     chain.Submit();
-    RefreshElementSelectionSummaries(r,targets);
-    // This preview already repaired the canonical meshlet bounds. Its scratch
-    // edit work still serves later parameter updates, without a full pose.
-    for (const auto &entry:cache.Entries) r.Context.get<GpuSceneState>().EditWork.at(entry.Entity).RequiresPose=false;
     RequestRender(r, RenderRequest::Reuse);
     return true;
 }
 
 void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     const auto targets = SelectedEditMeshes(r, viewport);
+    const auto visibility = [&](EditVisibilityOperation operation) {
+        std::vector<uint32_t> ids;
+        for (const auto &[entity, instance] : r.get<const EditPrimaries>(viewport).All)
+            if (HasMesh(r, entity)) ids.push_back(GetMesh(r, entity).GetStoreId());
+        if (EditVisibility(r, ids, r.get<const EditMode>(viewport).Value, operation)) {
+            r.Context.get<GpuSceneState>().EditSelectionDirty = true;
+            for (const auto &[entity, instance] : r.get<const EditPrimaries>(viewport).All) r.remove<MeshActiveElement>(entity);
+        }
+    };
     const auto latch_translate = [&] { r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate); };
     std::visit(
         overloaded{
+            [&](const Hide &a) { visibility(a.Unselected ? EditVisibilityOperation::HideUnselected : EditVisibilityOperation::HideSelected); },
+            [&](const Reveal &a) { visibility(a.Select ? EditVisibilityOperation::RevealSelected : EditVisibilityOperation::Reveal); },
+            [&](const RotateUVs &a) { EditSelectedFaceAttributes(r, targets, false, a.UVSet, a.CounterClockwise ? 1u : 0u); },
+            [&](const ReverseUVs &a) { EditSelectedFaceAttributes(r, targets, false, a.UVSet, 2u); },
+            [&](const RotateColors &a) { EditSelectedFaceAttributes(r, targets, true, 0u, a.CounterClockwise ? 1u : 0u); },
+            [&](ReverseColors) { EditSelectedFaceAttributes(r, targets, true, 0u, 2u); },
             [&](const Delete &a) {
-                if (a.Mode == DeleteMode::Loose) DeleteLoose(r, targets);
-                else RunOperator(r, targets, MeshTopologyOp(uint32_t(a.Mode)));
+                RunOperator(r, targets, MeshTopologyOp(uint32_t(a.Mode)));
+                if (a.Mode == DeleteMode::Loose) {
+                    std::vector<std::pair<state::Entity, std::span<const uint32_t>>> empty;
+                    for (const auto entity : targets) empty.emplace_back(entity, std::span<const uint32_t>{});
+                    ApplyEditSelectionLists(r, empty, r.get<const EditMode>(viewport).Value);
+                }
             },
             [&](const Merge &a) { MergeSelected(r, targets, a.Mode, std::max(a.Distance, 0.f)); },
             [&](const Extrude &a) {
                 using Mode = ExtrudeMode;
-                const auto op = a.Mode == Mode::Edges ? MeshTopologyOp::ExtrudeEdges : a.Mode == Mode::FacesIndividual ? MeshTopologyOp::ExtrudeFacesIndividual :
-                                                                                                                         MeshTopologyOp::ExtrudeRegion;
+                const auto op = a.Mode == Mode::Vertices ? MeshTopologyOp::ExtrudeVertices : a.Mode == Mode::Edges ? MeshTopologyOp::ExtrudeEdges :
+                    a.Mode == Mode::FacesIndividual                                                                ? MeshTopologyOp::ExtrudeFacesIndividual :
+                                                                                                                     MeshTopologyOp::ExtrudeRegion;
                 RunOperator(r, targets, op);
                 latch_translate();
             },
             [&](Duplicate) {
-                RunOperator(r, targets, MeshTopologyOp::DuplicateFaces);
+                RunOperator(r, targets, MeshTopologyOp::DuplicateGeometry);
                 latch_translate();
             },
-            [&](Split) { RunOperator(r, targets, MeshTopologyOp::SplitFaces); },
-            [&](Separate) { SeparateSelected(r, targets, r.get<const EditPrimaries>(viewport).All); },
+            [&](Split) { RunOperator(r, targets, MeshTopologyOp::SplitGeometry); },
+            [&](const Separate &a) {
+                const auto &primaries = r.get<const EditPrimaries>(viewport).All;
+                std::vector<state::Entity> sources;
+                for (const auto &[entity, instance] : primaries)
+                    if (HasMesh(r, entity)) sources.push_back(entity);
+                SeparateSelected(r, sources, primaries, a.Mode);
+            },
             [&](const Subdivide &a) { RunOperator(r, targets, MeshTopologyOp::Subdivide, float(std::max(a.Cuts, 1u))); },
+            [&](const SnapSymmetry &a) {
+                if (uint32_t(a.Axis) > 2u || !std::isfinite(a.Threshold) || a.Threshold <= 0.f) return;
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::SnapSymmetry, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = 1u << uint32_t(a.Axis), .Flags = a.Negative ? PositionEditSymmetryNegative : 0u, .SnapSymmetry = &a});
+            },
+            [&](const Decimate &a) { RunPerMesh(r, targets, [&](state::Entity, const Mesh &mesh) { return DecimateTask(r.Context.get<const MeshStore>(), mesh, a.Ratio); }); },
+            [&](const Unsubdivide &a) {
+                for (uint32_t i = 0u; i < std::clamp(a.Iterations, 1u, 1000u); ++i) {
+                    bool changed = false;
+                    RunPerMesh(r, targets, [&](state::Entity, const Mesh &mesh) {
+                        auto task = UnsubdivideTask(r.Context.get<const MeshStore>(), mesh);
+                        changed |= task.has_value();
+                        return task;
+                    });
+                    if (!changed) break;
+                }
+            },
             [&](Triangulate) { RunOperator(r, targets, MeshTopologyOp::Triangulate); },
+            [&](const BeautifyFaces &a) {
+                RunPerMesh(r, targets, [&](state::Entity, const Mesh &mesh) {
+                    return BeautifyFaceTask(r.Context.get<const MeshStore>(), mesh, a.Method == BeautifyMethod::Angle);
+                });
+            },
             [&](TrisToQuads) { RunOperator(r, targets, MeshTopologyOp::TrisToQuads); },
+            [&](const SmoothVertices &a) {
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::Smooth, a.Factor, std::clamp(a.Repeat, 1u, 1000u), {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u)});
+            },
+            [&](const SpaceEvenly &a) {
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::SpaceEvenly, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = a.Interpolation == EdgeLoopInterpolation::Cubic ? PositionEditCurveCubic : 0u});
+            },
+            [&](const RelaxEdgeLoops &a) {
+                if (!a.Iterations) return;
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::RelaxEdgeLoops, 1.f, std::min(a.Iterations, 1000u), {.Flags = (a.Interpolation == EdgeLoopInterpolation::Cubic ? PositionEditCurveCubic : 0u) | (a.EvenSpacing ? PositionEditRelaxEven : 0u)});
+            },
+            [&](const ToSphere &a) { EditSelectedPositions(r, viewport, targets, PositionEditOp::ToSphere, a.Factor, 1u); },
+            [&](const PushPull &a) { EditSelectedPositions(r, viewport, targets, PositionEditOp::PushPull, a.Distance, 1u); },
+            [&](const Shear &a) {
+                const auto axis = uint32_t(a.Axis), ortho = uint32_t(a.AxisOrtho);
+                if (axis > 2u || ortho > 2u || axis == ortho) return;
+                vec3 normal{}, direction{};
+                normal[axis] = 1.f;
+                direction[ortho] = 1.f;
+                if (a.Local) {
+                    const auto &primaries = r.get<const EditPrimaries>(viewport).Transformable;
+                    const auto active = primaries.find(GetActiveMeshEntity(r));
+                    if (active == primaries.end()) return;
+                    const auto &world = *WorldTransformOf(r, active->second);
+                    normal = world.R * normal * (world.S[axis] < 0.f ? -1.f : 1.f);
+                    direction = world.R * direction * (world.S[ortho] < 0.f ? -1.f : 1.f);
+                }
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::Shear, std::tan(a.Angle), 1u, {.Direction = direction, .Gradient = Cross(direction, normal)});
+            },
+            [&](const Warp &a) {
+                if (!ValidPositionPlane(a.Orientation.get(), a.Center, a.OffsetAngle)) return;
+                if (!a.AutoRange && (!std::isfinite(a.Min) || !std::isfinite(a.Max) || a.Min == a.Max)) return;
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::Warp, a.Angle, 1u, {.Flags = a.AutoRange ? PositionEditWarpAutoRange : 0u, .Warp = &a});
+            },
+            [&](const Bend &a) {
+                if (!ValidPositionPlane(a.Orientation.get(), a.Center, a.OffsetAngle) || a.Radius == 0.f || !std::isfinite(a.Radius)) return;
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::Bend, a.Angle, 1u, {.Flags = a.Clamp ? PositionEditBendClamp : 0u, .Bend = &a});
+            },
+            [&](const Randomize &a) {
+                if (!std::isfinite(a.Uniform) || !std::isfinite(a.Normal)) return;
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::Randomize, a.Amount, 1u, {.Randomize = &a});
+            },
+            [&](const VertexSlide &a) {
+                const float length = Length(a.Direction);
+                if (!(length > 0.f) || !std::isfinite(length)) return;
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::VertexSlide, a.Clamp ? std::clamp(a.Factor, 0.f, 1.f) : a.Factor, 1u, {.Flags = (a.Even ? PositionEditSlideEven : 0u) | (a.Flipped ? PositionEditSlideFlipped : 0u), .Slide = &a});
+            },
+            [&](const EdgeSlide &a) {
+                const float length = Length(a.Direction);
+                if (!(length > 0.f) || !std::isfinite(length)) return;
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::EdgeSlide, a.Clamp ? std::clamp(a.Factor, -1.f, 1.f) : a.Factor, 1u, {.Flags = (a.Even ? PositionEditSlideEven : 0u) | (a.Flipped ? PositionEditSlideFlipped : 0u) | (a.Clamp ? 0u : PositionEditSlideUnclamped), .EdgeSlide = &a});
+            },
+            [&](const Circularize &a) {
+                if (!std::isfinite(a.Radius) || !std::isfinite(a.Angle)) return;
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::Copy, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = (a.Regular ? PositionEditCurveRegular : 0u) | (a.Method == CircleFit::Contract ? PositionEditCircleContract : 0u), .Circle = &a});
+            },
+            [&](const CurveBetweenSelected &a) {
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::Copy, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = (a.Interpolation == EdgeLoopInterpolation::Cubic ? PositionEditCurveCubic : 0u) | (a.Regular ? PositionEditCurveRegular : 0u) | (a.Elevation == CurveElevation::Raise ? PositionEditCurveRaise : a.Elevation == CurveElevation::Lower ? PositionEditCurveLower :
+                                                                                                                                                                                                                                                                                                                                                                                                                                               0u),
+                                                                                                                       .Curve = &a});
+            },
+            [&](const MakePlanarFaces &a) { EditSelectedPositions(r, viewport, targets, PositionEditOp::Planar, a.Factor, std::clamp(a.Repeat, 1u, 10000u)); },
+            [&](const Flatten &a) {
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::Copy, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = a.Method == FlattenMethod::View ? PositionEditFlattenView : a.Method == FlattenMethod::FaceNormals ? PositionEditFlattenNormals :
+                                                                                                                                                                                                                                                                                                            0u,
+                                                                                                                       .Direction = a.ViewNormal});
+            },
+            [&](const ShrinkFatten &a) {
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::ShrinkFatten, a.Distance, 1u, {.Flags = (a.Even ? PositionEditEvenOffset : 0u) | (r.get<const EditMode>(viewport).Value == Element::Face ? PositionEditSelectedFaceNormals : 0u)});
+            },
+            [&](const SplitNonplanarFaces &a) { RunOperator(r, targets, MeshTopologyOp::SplitNonplanarFaces, std::clamp(a.Angle, 0.f, std::numbers::pi_v<float>)); },
+            [&](SplitConcaveFaces) { RunOperator(r, targets, MeshTopologyOp::SplitConcaveFaces); },
             [&](const Poke &a) { RunOperator(r, targets, MeshTopologyOp::Poke, a.Offset); },
             [&](FlipNormals) { RunOperator(r, targets, MeshTopologyOp::FlipNormals); },
+            [&](const RecalculateNormals &a) {
+                std::vector<uint32_t> ids;
+                for (const auto entity : targets) ids.push_back(GetMesh(r, entity).GetStoreId());
+                auto faces = RecalculateFaceFlips(r, ids, a.Inside);
+                uint32_t i = 0u;
+                RunPerMesh(r, targets, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
+                    auto &list = faces[i++];
+                    if (list.empty()) return {};
+                    list.insert(list.begin(), uint32_t(list.size()));
+                    return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::FlipNormals, .List = std::move(list)};
+                });
+            },
             [&](EdgeSplit) { RunOperator(r, targets, MeshTopologyOp::EdgeSplit); },
             [&](const Inset &a) { RunOperator(r, targets, a.Individual ? MeshTopologyOp::InsetIndividual : MeshTopologyOp::InsetRegion, std::max(a.Thickness, 0.f), a.Depth, a.Even ? 1u : 0u); },
             [&](Fill) { FillSelected(r, targets); },
@@ -969,6 +1618,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const Symmetrize &a) { SymmetrizeSelected(r, targets, uint8_t(a.Axis), a.Negative); },
             [&](const Solidify &a) { RunOperator(r, targets, MeshTopologyOp::Solidify, a.Thickness); },
+            [&](const Wireframe &a) {
+                RunOperator(r, targets, MeshTopologyOp::Wireframe, std::max(a.Thickness, 0.f), std::clamp(a.Offset, -1.f, 1.f), (a.Even ? TopologyFlagEvenOffset : 0u) | (a.Boundary ? TopologyFlagWireBoundary : 0u) | (a.Relative ? TopologyFlagWireRelative : 0u) | (a.Replace ? TopologyFlagWireReplace : 0u));
+            },
             [&](ConnectVertices) { RunOperator(r, targets, MeshTopologyOp::ConnectVertices); },
             [&](const Knife &a) { KnifeSelected(r, targets, r.get<const EditPrimaries>(viewport).All, a.Start, a.End, *a.View); },
             [&](BridgeEdgeLoops) { BridgeSelected(r, targets); },
@@ -978,9 +1630,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](EdgeRotate) { EdgeRotateSelected(r, targets); },
             [&](const Bevel &a) {
                 RunPerMesh(r, targets, [&](state::Entity, const Mesh &mesh) {
-                    return MeshTopologyTask{.SourceId = mesh.GetStoreId(),
-                        .Op = a.Vertices ? MeshTopologyOp::BevelVertices : MeshTopologyOp::BevelEdges,
-                        .Param0 = std::max(a.Width, 0.f), .Steps = std::max(a.Segments, 1u)};
+                    return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = a.Vertices ? MeshTopologyOp::BevelVertices : MeshTopologyOp::BevelEdges, .Param0 = std::max(a.Width, 0.f), .Steps = std::max(a.Segments, 1u)};
                 });
             },
             [&](Rip) {
@@ -991,9 +1641,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 using Mode = DissolveMode;
                 switch (a.Mode) {
                     case Mode::Vertices: return RunOperator(r, targets, MeshTopologyOp::DissolveVertices);
-                    case Mode::Edges: return RunOperator(r, targets, MeshTopologyOp::DissolveEdges);
+                    case Mode::Edges: return RunOperator(r, targets, MeshTopologyOp::DissolveEdges, 0.f, 0.f, a.KeepVertices ? TopologyFlagKeepVertices : 0u);
                     case Mode::Faces: return RunOperator(r, targets, MeshTopologyOp::DissolveFaces);
-                    case Mode::Limited: return RunOperator(r, targets, MeshTopologyOp::DissolveLimited, std::clamp(a.Angle, 0.f, std::numbers::pi_v<float>));
+                    case Mode::Limited: return RunOperator(r, targets, MeshTopologyOp::DissolveLimited, std::clamp(a.Angle, 0.f, .5f * std::numbers::pi_v<float>), 0.f, (r.get<const EditMode>(viewport).Value == Element::Face ? TopologyFlagFaceSelection : 0u) | (a.AllBoundaries ? TopologyFlagAllBoundaries : 0u) | (a.DelimitMaterials ? TopologyFlagDelimitMaterial : 0u) | (a.DelimitSharpEdges ? TopologyFlagDelimitSharp : 0u) | (a.DelimitUVs ? TopologyFlagDelimitUV : 0u));
                     case Mode::Degenerate: return RunOperator(r, targets, MeshTopologyOp::DissolveDegenerate, std::max(a.Distance, 0.f));
                 }
             },

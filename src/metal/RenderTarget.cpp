@@ -1,5 +1,5 @@
-#include "metal/AutoreleaseScope.h"
 #include "metal/RenderTarget.h"
+#include "metal/AutoreleaseScope.h"
 
 namespace mtl {
 NS::SharedPtr<MTL::RenderPassDescriptor> MakePassDescriptor(std::span<const ColorAttachment> colors, DepthAttachment depth) {

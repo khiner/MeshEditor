@@ -25,10 +25,11 @@ SpatialFaceWork::SpatialFaceWork(state::Scene &r, mtl::ComputeChain &chain, cons
     const auto &record = meshes.Get(task.SourceId);
     const auto &a = meshes.Arenas();
     const uint32_t mode = task.Flags & TopologyFlagScreenCuts ? 2u :
-        task.Flags & TopologyFlagPlaneSide ? 1u : 0u;
+        task.Flags & TopologyFlagPlaneSide                    ? 1u :
+                                                                0u;
     if (mode == 0u && !(task.Flags & TopologyFlagPlaneCuts)) throw std::invalid_argument("Spatial face query requires a plane or screen predicate.");
-    const uint32_t group_bound = std::max(1u,owner->Level0Count/256u+(owner->Level0Count%256u!=0u));
-    Groups = std::min(16u,std::bit_ceil(group_bound));
+    const uint32_t group_bound = std::max(1u, owner->Level0Count / 256u + (owner->Level0Count % 256u != 0u));
+    Groups = std::min(16u, std::bit_ceil(group_bound));
     profile::RecordCounter("SpatialFaceQueryGroups", Groups);
     FaceBlocks = record.FaceData ? a.FaceTriangles.Set(record.FaceData).BlockCount : 0u;
     auto &storage = chain.Scratch;
@@ -39,7 +40,7 @@ SpatialFaceWork::SpatialFaceWork(state::Scene &r, mtl::ComputeChain &chain, cons
         .SpatialRoot = owner->SpatialRoot,
         .SpatialNodeSlot = render.MeshletSpatialNodes.Buffer.Slot,
         .SpatialNodeCapacity = render.MeshletSpatialNodes.Buffer.Count<MeshletSpatialNode>(),
-        .SeedDepth = 8u+std::countr_zero(Groups),
+        .SeedDepth = 8u + std::countr_zero(Groups),
         .MeshletSlot = render.Meshlets.Buffer.Slot,
         .TriangleIdSlot = render.MeshletTriangleIds.Buffer.Slot,
         .TriangleSlot = a.Triangles.Buffer.Slot,

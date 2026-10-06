@@ -1,5 +1,5 @@
-#include "metal/AutoreleaseScope.h"
 #include "metal/PassTimer.h"
+#include "metal/AutoreleaseScope.h"
 
 #include "metal/MetalCpp.h"
 

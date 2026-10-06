@@ -4,8 +4,8 @@
 #include "FlatKeyMap.h"
 #include "Parallel.h"
 #include "Profile.h"
-#include "gpu/MeshletGeometryEncoding.h"
 #include "gpu/MeshAttributeBit.h"
+#include "gpu/MeshletGeometryEncoding.h"
 
 #include "meshoptimizer.h"
 
@@ -15,9 +15,9 @@
 #include <cassert>
 #include <cfloat>
 #include <cmath>
-#include <limits>
-#include <format>
 #include <exception>
+#include <format>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 
@@ -192,9 +192,9 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
             weld.VertexFirst = std::min(weld.VertexFirst, first);
             max_source_vertex = std::max(max_source_vertex, last);
         }
-        vertex_span = uint64_t(max_source_vertex)-weld.VertexFirst+1u;
+        vertex_span = uint64_t(max_source_vertex) - weld.VertexFirst + 1u;
     }
-    const bool dense_source_vertices = vertex_span <= size_t(corner_count)*2u;
+    const bool dense_source_vertices = vertex_span <= size_t(corner_count) * 2u;
     const bool uniform_face = mesh.Weld.CornerClassMode == uint32_t(CornerClassMode::UniformFace);
     const bool source_vertex_only = key.WordCount() == 3u && mesh.Weld.CornerClassMode != uint32_t(CornerClassMode::Mixed) &&
         mesh.Weld.CustomNormals.empty() && (!uniform_face || !mesh.Weld.MorphShadingAuthored);
@@ -202,71 +202,71 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
         weld.SourceVertices.assign(size_t(vertex_span), ClusterLodInvalid);
         if (!serial && corner_count >= 256u * 1024u) {
             constexpr uint32_t BlockTriangles{16u * 1024u};
-            const uint32_t block_count=(primitive.TriangleCount+BlockTriangles-1u)/BlockTriangles;
-            const auto for_each_triangle_block=[&](auto &&body) {
-                ParallelFor(block_count,[&](uint32_t block) {
-                    const uint32_t first=block*BlockTriangles;
-                    const uint32_t last=std::min(first+BlockTriangles,primitive.TriangleCount);
-                    body(block,first,last);
+            const uint32_t block_count = (primitive.TriangleCount + BlockTriangles - 1u) / BlockTriangles;
+            const auto for_each_triangle_block = [&](auto &&body) {
+                ParallelFor(block_count, [&](uint32_t block) {
+                    const uint32_t first = block * BlockTriangles;
+                    const uint32_t last = std::min(first + BlockTriangles, primitive.TriangleCount);
+                    body(block, first, last);
                 });
             };
             // The earliest corner of each source vertex determines the serial
             // weld's render-vertex order. Store source handles directly in the
             // final corner array while finding these minima concurrently.
-            for_each_triangle_block([&](uint32_t, uint32_t first,uint32_t last) {
-                for (uint32_t triangle=first;triangle<last;++triangle) {
-                    const auto vertices=primitive_indices.TriangleAt(triangle);
-                    for (uint32_t k=0u;k<3u;++k) {
-                        const uint32_t corner=triangle*3u+k,source=vertices[k];
-                        weld.CornerVertices[corner]=source;
-                        std::atomic_ref entry{weld.SourceVertices[source-weld.VertexFirst]};
-                        uint32_t prior=entry.load(std::memory_order_relaxed);
-                        while (corner<prior && !entry.compare_exchange_weak(prior,corner,std::memory_order_relaxed)) {}
+            for_each_triangle_block([&](uint32_t, uint32_t first, uint32_t last) {
+                for (uint32_t triangle = first; triangle < last; ++triangle) {
+                    const auto vertices = primitive_indices.TriangleAt(triangle);
+                    for (uint32_t k = 0u; k < 3u; ++k) {
+                        const uint32_t corner = triangle * 3u + k, source = vertices[k];
+                        weld.CornerVertices[corner] = source;
+                        std::atomic_ref entry{weld.SourceVertices[source - weld.VertexFirst]};
+                        uint32_t prior = entry.load(std::memory_order_relaxed);
+                        while (corner < prior && !entry.compare_exchange_weak(prior, corner, std::memory_order_relaxed)) {}
                     }
                 }
             });
-            std::vector<uint32_t> offsets(block_count+1u);
-            for_each_triangle_block([&](uint32_t block,uint32_t first,uint32_t last) {
-                uint32_t count=0u;
-                for (uint32_t corner=first*3u;corner<last*3u;++corner) {
-                    const uint32_t source=weld.CornerVertices[corner];
-                    count+=uint32_t(weld.SourceVertices[source-weld.VertexFirst]==corner);
+            std::vector<uint32_t> offsets(block_count + 1u);
+            for_each_triangle_block([&](uint32_t block, uint32_t first, uint32_t last) {
+                uint32_t count = 0u;
+                for (uint32_t corner = first * 3u; corner < last * 3u; ++corner) {
+                    const uint32_t source = weld.CornerVertices[corner];
+                    count += uint32_t(weld.SourceVertices[source - weld.VertexFirst] == corner);
                 }
-                offsets[block]=count;
+                offsets[block] = count;
             });
-            uint32_t total=0u;
-            for (uint32_t block=0u;block<block_count;++block) {
-                const uint32_t count=offsets[block];
-                offsets[block]=total;
-                total+=count;
+            uint32_t total = 0u;
+            for (uint32_t block = 0u; block < block_count; ++block) {
+                const uint32_t count = offsets[block];
+                offsets[block] = total;
+                total += count;
             }
-            offsets[block_count]=total;
+            offsets[block_count] = total;
             weld.Representative.resize(total);
             weld.Positions.resize(total);
-            for_each_triangle_block([&](uint32_t block,uint32_t first,uint32_t last) {
-                uint32_t render_vertex=offsets[block];
-                for (uint32_t corner=first*3u;corner<last*3u;++corner) {
-                    const uint32_t source=weld.CornerVertices[corner];
-                    if (weld.SourceVertices[source-weld.VertexFirst]!=corner) continue;
-                    weld.Representative[render_vertex]=corner;
-                    const float *position=mesh.Positions+(mesh.PositionStride/sizeof(float))*(source-mesh.VertexFirst);
-                    weld.Positions[render_vertex]={position[0],position[1],position[2]};
+            for_each_triangle_block([&](uint32_t block, uint32_t first, uint32_t last) {
+                uint32_t render_vertex = offsets[block];
+                for (uint32_t corner = first * 3u; corner < last * 3u; ++corner) {
+                    const uint32_t source = weld.CornerVertices[corner];
+                    if (weld.SourceVertices[source - weld.VertexFirst] != corner) continue;
+                    weld.Representative[render_vertex] = corner;
+                    const float *position = mesh.Positions + (mesh.PositionStride / sizeof(float)) * (source - mesh.VertexFirst);
+                    weld.Positions[render_vertex] = {position[0], position[1], position[2]};
                     ++render_vertex;
                 }
-                assert(render_vertex==offsets[block+1u]);
+                assert(render_vertex == offsets[block + 1u]);
             });
-            constexpr uint32_t VertexBlock{64u*1024u};
-            ParallelFor((total+VertexBlock-1u)/VertexBlock,[&](uint32_t block) {
-                const uint32_t last=std::min((block+1u)*VertexBlock,total);
-                for (uint32_t vertex=block*VertexBlock;vertex<last;++vertex) {
-                    const uint32_t corner=weld.Representative[vertex];
-                    const uint32_t source=weld.CornerVertices[corner];
-                    weld.SourceVertices[source-weld.VertexFirst]=vertex;
+            constexpr uint32_t VertexBlock{64u * 1024u};
+            ParallelFor((total + VertexBlock - 1u) / VertexBlock, [&](uint32_t block) {
+                const uint32_t last = std::min((block + 1u) * VertexBlock, total);
+                for (uint32_t vertex = block * VertexBlock; vertex < last; ++vertex) {
+                    const uint32_t corner = weld.Representative[vertex];
+                    const uint32_t source = weld.CornerVertices[corner];
+                    weld.SourceVertices[source - weld.VertexFirst] = vertex;
                 }
             });
-            for_each_triangle_block([&](uint32_t,uint32_t first,uint32_t last) {
-                for (uint32_t corner=first*3u;corner<last*3u;++corner)
-                    weld.CornerVertices[corner]=weld.SourceVertices[weld.CornerVertices[corner]-weld.VertexFirst];
+            for_each_triangle_block([&](uint32_t, uint32_t first, uint32_t last) {
+                for (uint32_t corner = first * 3u; corner < last * 3u; ++corner)
+                    weld.CornerVertices[corner] = weld.SourceVertices[weld.CornerVertices[corner] - weld.VertexFirst];
             });
         } else {
             weld.Representative.reserve(corner_count);
@@ -322,7 +322,8 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
         float *attribute = &weld.Attributes[size_t(v) * weld.AttributeCount];
         // Flat-face curvature uses the shared vertex normal at geometric error scale.
         const auto normal = key.FlatFaceTriangle(weld.Representative[v] / 3u) ?
-            mesh.Normals.VertexNormals[mesh.CornerVertices[first_index + weld.Representative[v]]] / ShadingAttributeScale : mesh.Normals[handle];
+            mesh.Normals.VertexNormals[mesh.CornerVertices[first_index + weld.Representative[v]]] / ShadingAttributeScale :
+            mesh.Normals[handle];
         *attribute++ = normal.x;
         *attribute++ = normal.y;
         *attribute++ = normal.z;
@@ -365,6 +366,7 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
     // Distinct render keys at one position keep every side of the seam fixed at every level.
     weld.Locks.assign(weld_count, 0u);
     weld.SeamLocks.assign(weld_count, 0u);
+    weld.Owners.resize(weld_count);
     for (uint32_t v = 0; v < weld_count; ++v) {
         const uint32_t canonical = weld.Remap[v];
         if (canonical != v) weld.SeamLocks[v] = weld.SeamLocks[canonical] = uint8_t(meshopt_SimplifyVertex_Lock);
@@ -386,15 +388,25 @@ struct WorkCluster {
 
 // Counts a group's edges without allocating per edge or sorting its corners.
 struct GroupEdges {
-    struct Entry { uint64_t Key{}; uint32_t Count{}, OutputCount{}, Epoch{}; bool Physical{}, Reversed{}; };
+    struct Entry {
+        uint64_t Key{};
+        uint32_t Count{}, OutputCount{}, Epoch{};
+        bool Physical{}, Reversed{};
+    };
     std::vector<Entry> Table;
     std::vector<uint32_t> Occupied;
     uint32_t Epoch{};
 
     void Reset(size_t edges) {
-        const auto capacity=std::bit_ceil(std::max<size_t>(edges*2u,64u));
-        if (Table.size()<capacity) { Table.assign(capacity,Entry{}); Epoch=0u; }
-        if (++Epoch==0u) { std::ranges::fill(Table,Entry{}); Epoch=1u; }
+        const auto capacity = std::bit_ceil(std::max<size_t>(edges * 2u, 64u));
+        if (Table.size() < capacity) {
+            Table.assign(capacity, Entry{});
+            Epoch = 0u;
+        }
+        if (++Epoch == 0u) {
+            std::ranges::fill(Table, Entry{});
+            Epoch = 1u;
+        }
         Occupied.clear();
         Occupied.reserve(edges);
     }
@@ -403,31 +415,35 @@ struct GroupEdges {
         const uint64_t mixed = (a * 0x9e3779b185ebca87ull) ^ (b * 0xc2b2ae3d27d4eb4full);
         return mixed ^ (mixed >> 32u);
     }
-    Entry &Add(uint64_t key,bool physical,bool output=false,bool reversed=false) {
-        const auto mask=Table.size()-1u;
-        for (auto i=Hash(key)&mask;;i=(i+1u)&mask) {
-            auto &entry=Table[i];
-            if (entry.Epoch!=Epoch) {
-                entry={.Key=key,.Count=uint32_t(!output),.OutputCount=uint32_t(output),.Epoch=Epoch,.Physical=physical,.Reversed=reversed};
-                Occupied.push_back(uint32_t(i)); return entry;
+    Entry &Add(uint64_t key, bool physical, bool output = false, bool reversed = false) {
+        const auto mask = Table.size() - 1u;
+        for (auto i = Hash(key) & mask;; i = (i + 1u) & mask) {
+            auto &entry = Table[i];
+            if (entry.Epoch != Epoch) {
+                entry = {.Key = key, .Count = uint32_t(!output), .OutputCount = uint32_t(output), .Epoch = Epoch, .Physical = physical, .Reversed = reversed};
+                Occupied.push_back(uint32_t(i));
+                return entry;
             }
-            if (entry.Key==key) { if (output) ++entry.OutputCount; else ++entry.Count; return entry; }
+            if (entry.Key == key) {
+                if (output) ++entry.OutputCount;
+                else ++entry.Count;
+                return entry;
+            }
         }
     }
-    Entry &AddOutput(uint64_t key) { return Add(key,false,true); }
+    Entry &AddOutput(uint64_t key) { return Add(key, false, true); }
     const Entry *Find(uint64_t key) const {
-        const auto mask=Table.size()-1u;
-        for (auto i=Hash(key)&mask;;i=(i+1u)&mask) {
-            const auto &entry=Table[i];
-            if (entry.Epoch!=Epoch) return nullptr;
-            if (entry.Key==key) return &entry;
+        const auto mask = Table.size() - 1u;
+        for (auto i = Hash(key) & mask;; i = (i + 1u) & mask) {
+            const auto &entry = Table[i];
+            if (entry.Epoch != Epoch) return nullptr;
+            if (entry.Key == key) return &entry;
         }
     }
 };
 
 // Lock every weld vertex shared by two groups to preserve their boundary during simplification.
-std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, const std::vector<WorkCluster> &clusters,
-    const std::vector<std::vector<uint32_t>> &groups, bool serial) {
+std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, const std::vector<WorkCluster> &clusters, const std::vector<std::vector<uint32_t>> &groups, bool serial) {
     constexpr uint8_t LockBit{uint8_t(meshopt_SimplifyVertex_Lock)};
     constexpr auto Relaxed{std::memory_order_relaxed};
     const bool parallel = !serial && groups.size() > 1u;
@@ -445,10 +461,22 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, const std::
         for (const auto member : groups[group])
             for (const auto vertex : clusters[member].Vertices) function(vertex);
     };
-    // Each level starts with the primitive's seam locks and no group owners.
+    // Only this level's vertices participate. Other levels may reference most
+    // of the repair pool, so resetting that whole pool here repeats unrelated work.
     const auto lock_of = [&](uint32_t vertex) { return std::atomic_ref<uint8_t>{weld.Locks[vertex]}; };
-    weld.Locks = weld.SeamLocks;
-    weld.Owners.assign(weld.VertexCount(), ClusterLodInvalid);
+    const auto owner_of = [&](uint32_t vertex) { return std::atomic_ref<uint32_t>{weld.Owners[vertex]}; };
+    uint64_t level_vertices = 0u;
+    for (const auto &group : groups)
+        for (const auto member : group) level_vertices += clusters[member].Vertices.size();
+    profile::RecordCounter("LodBoundaryVertices", level_vertices);
+    profile::RecordCounter("LodBoundaryPoolVertices", weld.VertexCount());
+    for (size_t group = 0u; group < groups.size(); ++group) {
+        for_each_vertex(group, [&](uint32_t vertex) {
+            const uint32_t canonical = weld.Remap[vertex];
+            weld.Locks[canonical] = weld.SeamLocks[canonical];
+            weld.Owners[canonical] = ClusterLodInvalid;
+        });
+    }
 
     // A material seam or a boundary against a terminal group is absent from this primitive's pending groups.
     // Its nonphysical open edges must still stay fixed.
@@ -458,24 +486,24 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, const std::
     const auto lock_group_edges = [&](GroupEdges &edges, size_t group_index) {
         const auto &group = groups[group_index];
         auto &artificial = artificial_edges[group_index];
-        size_t count=0u;
-        for (const auto member:group) count+=clusters[member].LocalTriangles.size();
+        size_t count = 0u;
+        for (const auto member : group) count += clusters[member].LocalTriangles.size();
         edges.Reset(count);
         for (const auto member : group) {
             const auto &cluster = clusters[member];
             for (uint32_t c = 0u; c < cluster.LocalTriangles.size(); ++c) {
                 const uint32_t a = weld.Remap[cluster.Vertices[cluster.LocalTriangles[c]]];
                 const uint32_t d = weld.Remap[cluster.Vertices[cluster.LocalTriangles[c / 3u * 3u + (c + 1u) % 3u]]];
-                edges.Add(uint64_t(std::min(a,d))<<32u | std::max(a,d),cluster.PhysicalBoundaries[c]!=0u,false,a>d);
+                edges.Add(uint64_t(std::min(a, d)) << 32u | std::max(a, d), cluster.PhysicalBoundaries[c] != 0u, false, a > d);
             }
         }
-        for (const auto slot:edges.Occupied) {
-            const auto &entry=edges.Table[slot];
-            if (entry.Count==1u && !entry.Physical) {
-                const uint32_t a=uint32_t(entry.Key>>32u),d=uint32_t(entry.Key);
+        for (const auto slot : edges.Occupied) {
+            const auto &entry = edges.Table[slot];
+            if (entry.Count == 1u && !entry.Physical) {
+                const uint32_t a = uint32_t(entry.Key >> 32u), d = uint32_t(entry.Key);
                 // A unique undirected edge has one directed input occurrence.
                 // Self-edges have a matching reverse and were never artificial.
-                if (a!=d) artificial.push_back(entry.Reversed ? (uint64_t(d)<<32u | a) : entry.Key);
+                if (a != d) artificial.push_back(entry.Reversed ? (uint64_t(d) << 32u | a) : entry.Key);
                 lock_of(a).fetch_or(LockBit, Relaxed);
                 lock_of(d).fetch_or(LockBit, Relaxed);
             }
@@ -487,14 +515,18 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, const std::
     for_each_group([&](size_t group) {
         for_each_vertex(group, [&](uint32_t vertex) {
             const uint32_t canonical = weld.Remap[vertex];
-            const auto owner = std::atomic_ref<uint32_t>{weld.Owners[canonical]};
+            const auto owner = owner_of(canonical);
             uint32_t expected = ClusterLodInvalid;
             if (!owner.compare_exchange_strong(expected, uint32_t(group), Relaxed) && expected != group) lock_of(canonical).fetch_or(LockBit, Relaxed);
         });
         lock_group_edges(edges, group);
     });
 
-    for (uint32_t vertex = 0; vertex < weld.VertexCount(); ++vertex) weld.Locks[vertex] = weld.Locks[weld.Remap[vertex]];
+    for (size_t group = 0u; group < groups.size(); ++group) {
+        for_each_vertex(group, [&](uint32_t vertex) {
+            weld.Locks[vertex] = weld.Locks[weld.Remap[vertex]];
+        });
+    }
     return artificial_edges;
 }
 
@@ -598,7 +630,7 @@ void EmitCluster(auto &&sink, const PrimitiveWeld &weld, const WorkCluster &clus
     });
     assert(cluster.Corners.size() == vertex_count);
     sink.VertexCorners.insert(sink.VertexCorners.end(), cluster.Corners.begin(), cluster.Corners.end());
-    for (uint32_t c=0u;c<cluster.LocalTriangles.size();++c)
+    for (uint32_t c = 0u; c < cluster.LocalTriangles.size(); ++c)
         sink.LocalTriangles.push_back(cluster.LocalTriangles[c] | (cluster.PhysicalBoundaries[c] ? uint8_t(MeshletGeometryEncoding::PhysicalBoundaryBit) : 0u));
 }
 
@@ -606,29 +638,29 @@ void EmitCluster(auto &&sink, const PrimitiveWeld &weld, const WorkCluster &clus
 // Shared partition edges keep both endpoints locked, so every newly created
 // open edge follows a physical boundary. Unchanged partition edges retain their
 // identity in the geometric position domain, independently of shading wedges.
-void ClassifyOutputBoundaries(const PrimitiveWeld &weld,const std::vector<uint64_t> &artificial,
-    std::vector<WorkCluster> &output) {
-    const auto edge=[&](const WorkCluster &cluster,uint32_t c) {
-        return std::pair{weld.Remap[cluster.Vertices[cluster.LocalTriangles[c]]],
-            weld.Remap[cluster.Vertices[cluster.LocalTriangles[c/3u*3u+(c+1u)%3u]]]};
+void ClassifyOutputBoundaries(const PrimitiveWeld &weld, const std::vector<uint64_t> &artificial, std::vector<WorkCluster> &output) {
+    const auto edge = [&](const WorkCluster &cluster, uint32_t c) {
+        return std::pair{weld.Remap[cluster.Vertices[cluster.LocalTriangles[c]]], weld.Remap[cluster.Vertices[cluster.LocalTriangles[c / 3u * 3u + (c + 1u) % 3u]]]};
     };
-    const auto key=[](uint32_t a,uint32_t d) { return (uint64_t(a)<<32u)|d; };
+    const auto key = [](uint32_t a, uint32_t d) { return (uint64_t(a) << 32u) | d; };
     // LockBoundary already identified the input's open nonphysical edges.
     // Only output edges need a table to find newly exposed boundaries.
     thread_local GroupEdges edges;
-    size_t output_count=0u;
-    for (const auto &cluster:output) output_count+=cluster.LocalTriangles.size();
+    size_t output_count = 0u;
+    for (const auto &cluster : output) output_count += cluster.LocalTriangles.size();
     edges.Reset(output_count);
-    for (const auto &cluster:output) for (uint32_t c=0u;c<cluster.LocalTriangles.size();++c) {
-        const auto [a,d]=edge(cluster,c); edges.AddOutput(key(a,d));
-    }
-    for (auto &cluster:output) {
+    for (const auto &cluster : output)
+        for (uint32_t c = 0u; c < cluster.LocalTriangles.size(); ++c) {
+            const auto [a, d] = edge(cluster, c);
+            edges.AddOutput(key(a, d));
+        }
+    for (auto &cluster : output) {
         cluster.PhysicalBoundaries.resize(cluster.LocalTriangles.size());
-        for (uint32_t c=0u;c<cluster.LocalTriangles.size();++c) {
-            const auto [a,d]=edge(cluster,c);
-            const auto *forward=edges.Find(key(a,d)),*reverse=edges.Find(key(d,a));
-            cluster.PhysicalBoundaries[c]=forward->OutputCount==1u && (!reverse || !reverse->OutputCount) &&
-                !std::binary_search(artificial.begin(),artificial.end(),key(a,d));
+        for (uint32_t c = 0u; c < cluster.LocalTriangles.size(); ++c) {
+            const auto [a, d] = edge(cluster, c);
+            const auto *forward = edges.Find(key(a, d)), *reverse = edges.Find(key(d, a));
+            cluster.PhysicalBoundaries[c] = forward->OutputCount == 1u && (!reverse || !reverse->OutputCount) &&
+                !std::binary_search(artificial.begin(), artificial.end(), key(a, d));
         }
     }
 }
@@ -653,8 +685,7 @@ void AssignMemberCorners(const std::vector<WorkCluster> &clusters, const std::ve
     }
 }
 
-void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, const std::vector<WorkCluster> &clusters,
-    const std::vector<uint32_t> &members, const std::vector<uint64_t> &artificial, uint32_t primitive, uint32_t group) {
+void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, const std::vector<WorkCluster> &clusters, const std::vector<uint32_t> &members, const std::vector<uint64_t> &artificial, uint32_t primitive, uint32_t group) {
     std::vector<Bounds> member_bounds(members.size());
     std::vector<uint32_t> merged;
     size_t merged_size = 0;
@@ -689,7 +720,7 @@ void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, const std::vecto
 
     scratch.Sphere.Error = std::max(scratch.Sphere.Error, error);
     scratch.NewClusters = Clusterize(weld, simplified);
-    ClassifyOutputBoundaries(weld,artificial,scratch.NewClusters);
+    ClassifyOutputBoundaries(weld, artificial, scratch.NewClusters);
     AssignMemberCorners(clusters, members, scratch.NewClusters);
     // Inherit group bounds and error to preserve conservative tests at the next level.
     for (auto &cluster : scratch.NewClusters) {
@@ -703,8 +734,7 @@ void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, const std::vecto
 // joining[l] lists the existing clusters that enter the pending pool at level l.
 // A single remaining cluster forms a terminal group, and the loop ends once no later level has clusters to join.
 // Returns the number of levels.
-uint32_t BuildLevels(ClusterLodBuild &build, PrimitiveWeld &weld, std::vector<WorkCluster> &clusters, std::vector<uint32_t> &pending,
-    std::span<const std::vector<uint32_t>> joining, uint32_t primitive, bool serial) {
+uint32_t BuildLevels(ClusterLodBuild &build, PrimitiveWeld &weld, std::vector<WorkCluster> &clusters, std::vector<uint32_t> &pending, std::span<const std::vector<uint32_t>> joining, uint32_t primitive, bool serial) {
     const auto terminal = [&] {
         const auto &cluster = clusters[pending.front()];
         const uint32_t group = uint32_t(build.Groups.size());
@@ -938,8 +968,8 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
         clusters.assign(range.ClusterCount, WorkCluster{});
         pending.resize(range.ClusterCount);
         const CornerWeldKey key{mesh.Weld, range.FirstTriangle * 3u};
-        const auto initialize_cluster=[&](uint32_t i) {
-            pending[i]=i;
+        const auto initialize_cluster = [&](uint32_t i) {
+            pending[i] = i;
             const auto &source = mesh.Clusters[range.FirstCluster + i];
             auto &cluster = clusters[i];
             cluster.Vertices.resize(source.VertexCount);
@@ -950,11 +980,9 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
             cluster.PhysicalBoundaries.resize(cluster.LocalTriangles.size());
             for (uint32_t c = 0; c < source.TriangleCount * 3u; ++c) {
                 const uint8_t local = mesh.SourceLocalTriangles[source.FirstLocalTriangle + c] & uint8_t(MeshletGeometryEncoding::LocalIndexMask);
-                if (local>=source.VertexCount) throw std::runtime_error(std::format(
-                    "LOD input has invalid local vertex: primitive {}, cluster {}, corner {}, byte {}, local {}, vertex count {}, first vertex {}, first triangle byte {}, triangle count {}.",
-                    primitive,i,c,uint32_t(mesh.SourceLocalTriangles[source.FirstLocalTriangle+c]),uint32_t(local),source.VertexCount,source.FirstVertex,source.FirstLocalTriangle,source.TriangleCount));
+                if (local >= source.VertexCount) throw std::runtime_error(std::format("LOD input has invalid local vertex: primitive {}, cluster {}, corner {}, byte {}, local {}, vertex count {}, first vertex {}, first triangle byte {}, triangle count {}.", primitive, i, c, uint32_t(mesh.SourceLocalTriangles[source.FirstLocalTriangle + c]), uint32_t(local), source.VertexCount, source.FirstVertex, source.FirstLocalTriangle, source.TriangleCount));
                 cluster.LocalTriangles[c] = local;
-                cluster.PhysicalBoundaries[c]=(mesh.SourceLocalTriangles[source.FirstLocalTriangle+c]&uint8_t(MeshletGeometryEncoding::PhysicalBoundaryBit))!=0u;
+                cluster.PhysicalBoundaries[c] = (mesh.SourceLocalTriangles[source.FirstLocalTriangle + c] & uint8_t(MeshletGeometryEncoding::PhysicalBoundaryBit)) != 0u;
                 flat_vertices[local] = (mesh.SourceLocalTriangles[source.FirstLocalTriangle + c / 3u * 3u] & uint8_t(MeshletGeometryEncoding::FlatTriangleBit)) != 0u;
             }
             for (uint32_t v = 0; v < source.VertexCount; ++v) {
@@ -966,9 +994,7 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
                     std::array<uint32_t, MaxWeldKeyWords> words;
                     key.WriteHandle(corner, vertex, flat_vertices[v], words);
                     const auto *found = weld.Keys.Find(words.data());
-                    if (!found) throw std::runtime_error(std::format(
-                        "LOD cluster key is absent from source: primitive {}, cluster {}, local vertex {}, corner {}, vertex {}, flat {}, class {}, identity {}, mode {}, words {}, input corners {}.",
-                        primitive,i,v,corner,vertex,uint32_t(flat_vertices[v]),words[1],words[2],mesh.Weld.CornerClassMode,key.WordCount(),range.TriangleCount*3u));
+                    if (!found) throw std::runtime_error(std::format("LOD cluster key is absent from source: primitive {}, cluster {}, local vertex {}, corner {}, vertex {}, flat {}, class {}, identity {}, mode {}, words {}, input corners {}.", primitive, i, v, corner, vertex, uint32_t(flat_vertices[v]), words[1], words[2], mesh.Weld.CornerClassMode, key.WordCount(), range.TriangleCount * 3u));
                     cluster.Vertices[v] = *found;
                 }
             }
@@ -976,19 +1002,19 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
             cluster.Level0Id = range.FirstCluster + i;
             cluster.ConeSafe = source.ConeCullSafe;
         };
-        if (serial || range.ClusterCount<1024u) {
-            for (uint32_t i=0u;i<range.ClusterCount;++i) initialize_cluster(i);
+        if (serial || range.ClusterCount < 1024u) {
+            for (uint32_t i = 0u; i < range.ClusterCount; ++i) initialize_cluster(i);
         } else {
             constexpr uint32_t ClustersPerBlock{2048u};
             std::mutex failure_mutex;
             std::exception_ptr failure;
-            ParallelFor((range.ClusterCount+ClustersPerBlock-1u)/ClustersPerBlock,[&](uint32_t block) {
+            ParallelFor((range.ClusterCount + ClustersPerBlock - 1u) / ClustersPerBlock, [&](uint32_t block) {
                 try {
-                    const uint32_t last=std::min((block+1u)*ClustersPerBlock,range.ClusterCount);
-                    for (uint32_t i=block*ClustersPerBlock;i<last;++i) initialize_cluster(i);
+                    const uint32_t last = std::min((block + 1u) * ClustersPerBlock, range.ClusterCount);
+                    for (uint32_t i = block * ClustersPerBlock; i < last; ++i) initialize_cluster(i);
                 } catch (...) {
                     std::lock_guard lock{failure_mutex};
-                    if (!failure) failure=std::current_exception();
+                    if (!failure) failure = std::current_exception();
                 }
             });
             if (failure) std::rethrow_exception(failure);

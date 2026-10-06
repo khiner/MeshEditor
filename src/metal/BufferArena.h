@@ -15,10 +15,10 @@ struct BufferArena {
 
     void Track(store::History &history, const std::string &name) {
         Buffer.Track(history, name + ".bytes");
-        TrackAllocator(history,name);
+        TrackAllocator(history, name);
     }
     // Runtime binding records restore allocation identity and rebuild their small descriptor from canonical addresses.
-    void TrackAllocator(store::History &history,const std::string &name) {
+    void TrackAllocator(store::History &history, const std::string &name) {
         Tracked = std::make_unique<store::Records>(&Allocator, AllocatorCodec, RangeAllocator::HistoryLevels);
         Allocator.History = Tracked.get();
         history.Track(*Tracked, name + ".alloc", 0);

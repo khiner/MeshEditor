@@ -599,8 +599,8 @@ void ReleaseUnlistedTextures(state::Scene &r, std::span<const MaterializedTextur
     auto &textures = r.Context.get<TextureStore>();
     const auto unlisted = [&](const TextureEntry &t) {
         return t.SourceImageIndex != UINT32_MAX && std::ranges::none_of(manifest, [&](const MaterializedTexture &item) {
-            return item.SamplerSlot == t.SamplerSlot && item.SourceImageIndex == t.SourceImageIndex && item.Params == t.Params;
-        });
+                   return item.SamplerSlot == t.SamplerSlot && item.SourceImageIndex == t.SourceImageIndex && item.Params == t.Params;
+               });
     };
     for (const auto &t : textures.Textures)
         if (unlisted(t)) ReleaseTextureSlots(slots, std::span{&t, 1u});

@@ -5,8 +5,12 @@
 #include "gpu/SpatialFaceQueryPushConstants.h"
 
 struct MeshTopologyTask;
-namespace mtl { struct ComputeChain; }
-namespace state { struct Scene; }
+namespace mtl {
+struct ComputeChain;
+}
+namespace state {
+struct Scene;
+}
 
 // Exact GPU face membership for geometric topology predicates.
 // Traversal prunes the live meshlet spans.

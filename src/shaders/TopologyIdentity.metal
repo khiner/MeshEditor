@@ -58,7 +58,7 @@ kernel void TopologyIdentityReplaced(
     const auto fail = [&] { atomic_store_explicit(BindlessBufferMutable(atomic_uint,b.Buffer,pc.Error.Slot)+pc.Error.Offset,1u,memory_order_relaxed); };
     const uint h = ctx.SrcHalfedgeDomain(job).Handle(i);
     if (h >= pc.ReplacedElements[0].Count) { fail(); return; }
-    if (TopoLineCore(job)) {
+    if (ctx.Src(job).HalfedgeFace(h) == InvalidOffset) {
         MarkWork(b,pc.ReplacedElements[0],h);
         return;
     }

@@ -19,7 +19,7 @@ struct FanBuildContext {
         device uint *s = Scratch();
         return {s+job.Keys,s+job.Order,s+job.Temporary,s+job.Histogram,s+job.Totals,
             job.HalfedgeCount,(job.HalfedgeCount+255u)/256u,job.Fresh ? 1u : 2u,
-            job.Fresh ? 0u : Pc.PassParameter/8u,(Pc.PassParameter%8u)*4u,bool(Pc.PassParameter&1u)};
+            job.Fresh ? 0u : 1u,Pc.PassParameter*4u,bool(Pc.PassParameter&1u)};
     }
 };
 
@@ -85,7 +85,7 @@ kernel void VertexFanHistogram(device const BindlessSet &b [[buffer(BufferIndex_
     uint lane [[thread_index_in_threadgroup]], uint group [[threadgroup_position_in_grid]]) {
     const FanBuildContext ctx{b,pc}; const uint2 tile = ctx.Tile(group);
     const auto job=ctx.Job(tile.x);
-    if ((pc.PassParameter<8u && job.Halfedges.Storage.Slot==InvalidSlot) || pc.PassParameter>=8u+job.VertexKeyPasses) return;
+    if (pc.PassParameter>=job.VertexKeyPasses) return;
     threadgroup atomic_uint counts[16];
     RadixHistogram(ctx.Sort(job),lane,tile.y,counts);
 }
@@ -95,7 +95,7 @@ kernel void VertexFanPrefix(device const BindlessSet &b [[buffer(BufferIndex_Bin
     uint sl [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
     const FanBuildContext ctx{b,pc}; const uint2 tile = ctx.Tile(group);
     const auto job=ctx.Job(tile.x);
-    if ((pc.PassParameter<8u && job.Halfedges.Storage.Slot==InvalidSlot) || pc.PassParameter>=8u+job.VertexKeyPasses) return;
+    if (pc.PassParameter>=job.VertexKeyPasses) return;
     threadgroup uint sums[9];
     RadixPrefix(ctx.Sort(job),lane,tile.y,sl,sg,sums);
 }
@@ -105,7 +105,7 @@ kernel void VertexFanScatter(device const BindlessSet &b [[buffer(BufferIndex_Bi
     uint sl [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
     const FanBuildContext ctx{b,pc}; const uint2 tile = ctx.Tile(group);
     const auto job=ctx.Job(tile.x);
-    if ((pc.PassParameter<8u && job.Halfedges.Storage.Slot==InvalidSlot) || pc.PassParameter>=8u+job.VertexKeyPasses) return;
+    if (pc.PassParameter>=job.VertexKeyPasses) return;
     threadgroup uint groups[128];
     RadixScatter(ctx.Sort(job),lane,tile.y,sl,sg,groups);
 }

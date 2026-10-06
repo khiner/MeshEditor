@@ -16,10 +16,12 @@ struct MeshConnectivityJob {
     ElementWork Vertices DEFAULT(), Halfedges DEFAULT(), Faces DEFAULT();
     ElementHandleRange EdgeHandles DEFAULT(); // New-edge ordinal -> canonical handle, from a run or a list.
     // The old affected edges read source clones when canonical data is
-    // overwritten. Matching endpoint pairs keep their existing canonical handles.
+    // overwritten. Matching face endpoint pairs or explicit wire pairs keep their canonical handles.
     ConnectivityRef SourceConnectivity DEFAULT();
     uint32_t SourceCornerSlot DEFAULT(InvalidSlot);
     ElementWork SourceEdges DEFAULT();
+    ElementWork ConvertedEdges DEFAULT(); // Explicit changes between surface and loose-edge ownership.
+    SlotOffset ConvertedWirePairs DEFAULT(); // Per converted-edge ordinal: wire pair's first halfedge + 1, zero for a surface, or InvalidOffset to retire. Absent means all become surfaces.
     uint32_t SourceEdgeCount DEFAULT();
     uint32_t VertexCount DEFAULT();
     uint32_t HalfedgeCount DEFAULT();
@@ -49,4 +51,4 @@ struct MeshConnectivityJob {
     uint32_t StateOffset DEFAULT();
     ElementWork RetiredEdgeWork DEFAULT(); // Optional canonical retirement set, emitted with the dense scratch list.
 };
-static_assert(sizeof(MeshConnectivityJob) == 308, "MeshConnectivityJob size");
+static_assert(sizeof(MeshConnectivityJob) == 332, "MeshConnectivityJob size");

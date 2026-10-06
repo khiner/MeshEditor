@@ -36,18 +36,17 @@ inline bool IsModalSounding(const state::Scene &r, state::Entity e) {
 inline std::optional<double> SurfaceCurvature(const state::Scene &r, state::Entity node, vec3 world_point) {
     if (!r.valid(node)) return std::nullopt;
     const auto *inst = r.try_get<const Instance>(node);
-    const auto *owner = inst ? TryRecordOf(r,inst->Entity) : nullptr;
-    if (!owner || owner->SpatialRoot==InvalidOffset) return std::nullopt;
+    const auto *owner = inst ? TryRecordOf(r, inst->Entity) : nullptr;
+    if (!owner || owner->SpatialRoot == InvalidOffset) return std::nullopt;
     const auto &wt = *WorldTransformOf(r, node);
     const auto mesh = GetMesh(r, inst->Entity);
     const auto &meshes = r.Context.get<const MeshStore>();
-    const auto hit = ClosestMeshletPoint(meshes.Render(),*owner,
-        meshes.Arenas().Vertices.Buffer.GetSpan<Vertex>(),mesh.TriangleVertices(),InverseTransformPoint(wt,world_point));
+    const auto hit = ClosestMeshletPoint(meshes.Render(), *owner, meshes.Arenas().Vertices.Buffer.GetSpan<Vertex>(), mesh.TriangleVertices(), InverseTransformPoint(wt, world_point));
     // Interpolate the triangle's per-vertex curvature at the contact's barycentric weights.
     double local = 0;
-    const auto sharpness=meshes.Arenas().EdgeSharpness.Buffer.GetSpan<uint8_t>();
+    const auto sharpness = meshes.Arenas().EdgeSharpness.Buffer.GetSpan<uint8_t>();
     for (uint32_t i = 0; i < 3; ++i)
-        local += double(hit.Weights[i]) * mesh.CalcMeanCurvature(Mesh::VH{hit.Vertices[i]},sharpness);
+        local += double(hit.Weights[i]) * mesh.CalcMeanCurvature(Mesh::VH{hit.Vertices[i]}, sharpness);
     // Curvature is an inverse length, so the node's world scale converts the mesh's own units to meters.
     const float scale = MeanScale(wt.S);
     return scale > 0 ? local / scale : 0.0;
@@ -71,9 +70,9 @@ inline ContactNodes ResolveContactNodes(const state::Scene &r, state::Entity col
         NearestNodeWith(r, collider, body, [&r](state::Entity e) { return r.all_of<ModalModes>(e); }),
         ContactSurfaceNode(r, collider, body),
         NearestNodeWith(r, collider, body, [&r](state::Entity e) {
-            const auto *inst=r.try_get<const Instance>(e);
-            const auto *owner=inst ? TryRecordOf(r,inst->Entity) : nullptr;
-            return owner && owner->SpatialRoot!=InvalidOffset;
+            const auto *inst = r.try_get<const Instance>(e);
+            const auto *owner = inst ? TryRecordOf(r, inst->Entity) : nullptr;
+            return owner && owner->SpatialRoot != InvalidOffset;
         }),
     };
 }

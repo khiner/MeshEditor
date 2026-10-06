@@ -31,11 +31,11 @@
 #include "gpu/SelectionAggregate.h"
 #include "gpu/SelectionUpdatePushConstants.h"
 #include "gpu/SlotOffset.h"
+#include "mesh/CornerNormalView.h"
 #include "mesh/ElementArena.h"
 #include "mesh/ElementAttribute.h"
 #include "mesh/ElementAttributeView.h"
 #include "mesh/MeshletIndex.h"
-#include "mesh/CornerNormalView.h"
 #include "mesh/PoseAttributeView.h"
 #include "mesh/SelectionQuery.h"
 #include "mesh/SelectionView.h"
@@ -48,8 +48,12 @@
 
 #include <mutex>
 
-namespace mtl { struct ComputeChain; }
-namespace state { struct Scene; }
+namespace mtl {
+struct ComputeChain;
+}
+namespace state {
+struct Scene;
+}
 struct CloneCopies;
 
 struct ArmatureDeformData {
@@ -74,7 +78,7 @@ struct MeshPrimitives {
     std::vector<uint32_t> AttributeFlags{}; // bitmask of MeshAttributeBit_*
 };
 
-// Corner-domain attribute layers in polygon loop order, empty where the source lacks the channel.
+// Corner-domain layers in polygon loop order followed by wire endpoint order, empty for absent channels.
 struct CornerLayers {
     std::vector<vec4> Tangents, Colors;
     std::array<std::vector<vec2>, 4> Uvs;
@@ -129,10 +133,10 @@ struct MeshArenas {
     ElementArena<uint32_t> EdgeHalfedges; // Owns the edge domain, and EdgeSharpness mirrors it
     using SelectionBlock = std::array<uint32_t, MeshElementBlockWords>;
     BufferArena<SelectionBlock> VertexSelection, EdgeSelection, FaceSelection; // Canonical domain block masks
+    BufferArena<SelectionBlock> VertexHidden, EdgeHidden, FaceHidden; // Persistent edit-mode visibility masks
     // Derived aggregates mirroring each selectable domain's blocks, rebuilt from masks, positions, sharpness and connectivity.
     BufferArena<SelectionAggregate> VertexAggregates, EdgeAggregates, FaceAggregates;
-    // Derived, each record's vertex, edge and face roots: its block aggregates reduced in ascending block order.
-    BufferArena<SelectionAggregate> SelectionRoots;
+    SelectionIndex SelectionTree;
     SelectionQuery Query;
     BufferArena<EditSelectionSummary> SelectionSummary; // One summary per mesh
     BufferArena<uint8_t> EdgeSharpness; // One byte per edge, 1 = sharp (canonical sharpness store)
@@ -178,7 +182,12 @@ struct MeshStore {
     mtl::BufferContext &BufferContext() const { return Buffers.Vertices.Buffer.Ctx; }
 
     static constexpr uint32_t MaxUvSets{4};
-    enum class ElementDomain { None, Vertex, Halfedge, Edge, Face, Triangle };
+    enum class ElementDomain { None,
+                               Vertex,
+                               Halfedge,
+                               Edge,
+                               Face,
+                               Triangle };
 
     enum ChangeBits : uint32_t {
         GeometryChanged = 1u << 0,
@@ -226,11 +235,12 @@ struct MeshStore {
         // Published sparse roots own cluster/payload and primitive allocations.
         // Before publication, construction ranges own their provisional storage.
         uint32_t MeshletRoot{InvalidOffset}, PrimitiveRoot{InvalidOffset}, SpatialRoot{InvalidOffset};
-        Range PrimitiveRoutes{}; // Render primitive handles indexed by source primitive.
+        Range PrimitiveRoutes{}; // Three render primitive handles per source material, indexed by topology.
         uint64_t MeshletRevision{};
         uint32_t Level0Count{};
-        uint32_t RenderTopology{InvalidOffset}; // The topology the finest clusters draw, and InvalidOffset before the first build.
-        uint32_t ElementMeshletOrigin{InvalidOffset}, ElementMeshletBlockCount{};
+        uint32_t RenderTopologies{}; // Bit mask of published triangle, line and point topology; zero before the first build.
+        // Element ownership is independent for triangles, loose edges and isolated vertices.
+        std::array<uint32_t, 3> ElementMeshletOrigins{InvalidOffset, InvalidOffset, InvalidOffset}, ElementMeshletBlockCounts{};
         // Meshes without coarse geometry use one unpruned span node per primitive.
         // Ranges describe construction placement, and roots own the live allocations.
         Range ClusterGroups{}, LodNodes{}, CoarseVertices{}, CoarseLocalTriangles{};
@@ -295,7 +305,7 @@ struct MeshStore {
     void PlanClone(const Mesh &);
     void CommitReserves();
 
-    // Takes source positions and corners into the arenas and returns their store ID.
+    // Takes source positions and corners into the arenas, seeds connectivity storage, and returns their store ID.
     uint32_t CreateMeshSource(const MeshData &);
     // Takes skin and morph channels into arenas at the source vertex count for in-place welding.
     void CreateDeformSource(uint32_t id, const std::optional<ArmatureDeformData> &, const std::optional<MorphTargetData> &);
@@ -303,9 +313,7 @@ struct MeshStore {
     void ShrinkMeshSource(uint32_t id, uint32_t welded_vertices);
     // Allocates connectivity storage from source counts in call order, with the edge list at its halfedge bound.
     // `face_offsets` fills the face starts of a mesh whose faces are not all triangles, and is empty when a GPU pass writes them.
-    void AllocateConnectivity(uint32_t id, uint32_t halfedge_count, uint32_t face_count, bool face_starts,
-                              std::span<const uint32_t> face_offsets = {},
-                              std::span<const std::array<uint32_t,2>> wire_edges = {});
+    void AllocateConnectivity(uint32_t id, uint32_t halfedge_count, uint32_t face_count, bool face_starts, std::span<const uint32_t> face_offsets = {}, std::span<const std::array<uint32_t, 2>> wire_edges = {});
     // Completes a build: records the edge count and trims the edge list to it.
     void FinishConnectivity(uint32_t id, uint32_t edge_count);
     MeshConnectivity GetConnectivity(uint32_t id) const;
@@ -331,9 +339,6 @@ struct MeshStore {
     ElementView<Vertex> VertexView(uint32_t id) const;
     // Completes the record created by CreateMeshSource: face tables, corner layers, primitive tables, and smooth sharpness stores.
     void CreateMesh(uint32_t id, const MeshData &, const MeshVertexAttributes &, const MeshPrimitives &, const CornerLayers &, bool has_authored_normals);
-    // A face-less line mesh changes its entire render domain when its first face is created.
-    // Records the gather of each listed line mesh's edges and corners, and retires its line incidence once the chain submits, preserving vertex handles.
-    void RetireLineConnectivity(state::Scene &, mtl::ComputeChain &, std::span<const uint32_t> ids);
     // Clones each source record, queueing its GPU copies on `copies`, and returns the clones' store IDs in source order.
     // The clones read their copied ranges once the copies record and their chain submits.
     std::vector<uint32_t> CloneMeshes(CloneCopies &, std::span<const uint32_t> source_ids);
@@ -373,15 +378,17 @@ struct MeshStore {
     void ForEachLodNode(const Record &r, auto &&fn) const {
         Buffers.Render.ActiveMeshlets.ForEach(r.NodeRoot, [&](uint32_t id) { fn(id, Buffers.Render.LodNodes.Get({id, 1u})[0]); });
     }
-    uint32_t PrimitiveRoute(const Record &r, uint32_t source_primitive) const {
-        return source_primitive < r.PrimitiveRoutes.Count ? Buffers.Render.PrimitiveRoutes.Get({r.PrimitiveRoutes.Offset + source_primitive, 1u})[0] : InvalidOffset;
+    uint32_t PrimitiveRoute(const Record &r, uint32_t source_primitive, uint32_t topology) const {
+        const uint64_t route = 3ull * source_primitive + topology;
+        return topology < 3u && route < r.PrimitiveRoutes.Count ? Buffers.Render.PrimitiveRoutes.Get({r.PrimitiveRoutes.Offset + uint32_t(route), 1u})[0] : InvalidOffset;
     }
     // Grows the record's routes to cover `count` source primitives, keeping its routes.
     void ReservePrimitiveRoutes(Record &, uint32_t count);
     // The element blocks holding the record's meshlet owner payloads, in ascending order.
-    std::vector<uint32_t> MeshletOwnerBlocks(const Record &) const;
+    std::vector<uint32_t> MeshletOwnerBlocks(const Record &, uint32_t topology) const;
     // The element domain the finest clusters of a render topology name: triangles, edges or vertices.
-    static ElementDomain RenderDomain(uint32_t topology) { return topology == 0u ? ElementDomain::Triangle : topology == 1u ? ElementDomain::Edge : ElementDomain::Vertex; }
+    static ElementDomain RenderDomain(uint32_t topology) { return topology == 0u ? ElementDomain::Triangle : topology == 1u ? ElementDomain::Edge :
+                                                                                                                              ElementDomain::Vertex; }
     // Visits the arena of the record's elements drawn as `topology` with the record's set in it.
     decltype(auto) WithRenderDomain(const Record &, uint32_t topology, auto &&fn) const;
     // The first element handle of the record's elements drawn as `topology`.
@@ -408,14 +415,26 @@ struct MeshStore {
     // A record without them submits the chain, so their summaries publish before this returns.
     void EnsureSelectionState(state::Scene &, mtl::ComputeChain &, std::span<const uint32_t> ids);
     SelectionView GetSelectedElements(uint32_t id, Element) const;
+    SelectionView GetHiddenElements(uint32_t id, Element) const;
+    uint32_t GetHiddenSlot(Element) const;
+    void EditHiddenBlocks(Element element, std::span<const uint32_t> blocks, auto &&write) {
+        auto &bits = element == Element::Vertex ? Buffers.VertexHidden : element == Element::Edge ? Buffers.EdgeHidden :
+                                                                                                    Buffers.FaceHidden;
+        bits.Buffer.CaptureWriteElements(blocks, sizeof(MeshArenas::SelectionBlock));
+        ForEachIndexRun(blocks, [&](size_t first, size_t count) {
+            auto words = bits.GetMutable({blocks[first], uint32_t(count)});
+            for (size_t j = 0u; j < count; ++j) write(blocks[first + j], words[j]);
+        });
+    }
     // Empty for a mesh without faces.
     BoundaryEdgeView GetBoundaryEdges(uint32_t id) const;
     const SelectionAggregate &GetSelectionRoot(uint32_t id, Element) const;
     // The vertex root, followed by the edge and face roots.
-    SlotOffset GetSelectionRoots(uint32_t id) const;
+    SlotOffset GetVertexSelectionRoot(uint32_t id) const;
     // Captures the listed ascending mask blocks and writes each with `write(block, words)`.
     void EditSelectionBlocks(Element element, std::span<const uint32_t> blocks, auto &&write) {
-        auto &bits = element == Element::Vertex ? Buffers.VertexSelection : element == Element::Edge ? Buffers.EdgeSelection : Buffers.FaceSelection;
+        auto &bits = element == Element::Vertex ? Buffers.VertexSelection : element == Element::Edge ? Buffers.EdgeSelection :
+                                                                                                       Buffers.FaceSelection;
         bits.Buffer.CaptureWriteElements(blocks, sizeof(MeshArenas::SelectionBlock));
         ForEachIndexRun(blocks, [&](size_t first, size_t count) {
             auto words = bits.GetMutable({blocks[first], uint32_t(count)});
@@ -436,6 +455,8 @@ struct MeshStore {
     void PublishSelectionSummary(uint32_t id);
     EditSelectionSummary &WriteSelectionSummary(uint32_t id);
     void SetSelectionBaseline(uint32_t id, Element, std::vector<std::pair<uint32_t, MeshArenas::SelectionBlock>>, uint32_t active);
+    // Builds a new clone's index after its GPU block copies have completed.
+    void RebuildSelectionIndex(std::span<const uint32_t> ids);
     // Records the gather of the selected handles in ascending order into a range it allocates in `output`, and returns that range.
     Range GatherSelectedElements(state::Scene &, mtl::ComputeChain &, uint32_t id, Element, BufferArena<uint32_t> &output) const;
     bool IsLiveElement(uint32_t id, Element, uint32_t handle) const;
@@ -466,8 +487,7 @@ struct MeshStore {
         std::vector<uint32_t> Dirty{};
         bool Complete{};
     };
-    CornerClassUpdate EncodeCornerClassification(state::Scene &, mtl::ComputeChain &, uint32_t id, ElementWork vertices = {},
-                                                 uint32_t vertex_count = 0u, uint32_t incoming = 0u, bool complete = false);
+    CornerClassUpdate EncodeCornerClassification(state::Scene &, mtl::ComputeChain &, uint32_t id, ElementWork vertices = {}, uint32_t vertex_count = 0u, uint32_t incoming = 0u, bool complete = false);
     void PlanCornerClassification(state::Scene &, mtl::ComputeChain &, CornerClassUpdate &);
     void FinishCornerClassification(const mtl::ComputeChain &, const CornerClassUpdate &);
     // Classifies every corner of each listed mesh, through the three steps over the chain.
@@ -502,7 +522,7 @@ private:
 
     // Copies each source's finest clusters, hierarchy, traversal nodes, spatial tree and element owners onto its clone, with every reference rebased.
     // The clones' GPU mesh records are left for RefreshMeshBinding.
-    void CloneRenderRecords(CloneCopies &, std::span<const uint32_t> source_ids, std::span<const uint32_t> clone_ids);
+    void CloneRenderRecords(CloneCopies &, std::span<const uint32_t> source_ids, std::span<const uint32_t> clone_ids, std::span<const std::array<Range, 6>> maps);
     void ReleaseBlockLists(uint32_t id);
     void ReleaseBlockLists(std::span<const uint32_t> ids);
     // Releases replaced list words, or keeps them until the submitted frame completes.

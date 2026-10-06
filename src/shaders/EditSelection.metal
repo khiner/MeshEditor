@@ -12,6 +12,13 @@ inline bool EditSelectionBit(const thread Scene &scene, SlotOffset range, uint e
     return ((word >> (element & 31u)) & 1u) != 0u;
 }
 
+// Visibility masks use canonical handles and apply only while editing this mesh.
+inline bool EditElementHidden(const thread Scene &scene,DrawData draw,Element element,uint handle) {
+    if (scene.View.InteractionMode!=InteractionMode::Edit || handle==InvalidOffset) return false;
+    const uint slot=element==Element::Vertex ? draw.Selection.VertexHiddenSlot : element==Element::Edge ? draw.Selection.EdgeHiddenSlot : draw.Selection.FaceHiddenSlot;
+    return EditSelectionBit(scene,{slot,0u},handle);
+}
+
 inline EditSelectionSummary EditSelectionInfo(const thread Scene &scene, DrawData draw) {
     if (draw.Selection.Summary.Slot == InvalidSlot) {
         return {.ActiveHandle = InvalidOffset};

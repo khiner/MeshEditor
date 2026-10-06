@@ -26,8 +26,10 @@ struct MeshRecord {
     uint32_t VertexOffset DEFAULT();
     uint32_t MorphShadingAuthored DEFAULT();
     uint32_t PrimitiveMaterialOffset DEFAULT(InvalidOffset);
-    ElementAttributeRef ElementPrimitives DEFAULT();
+    ElementAttributeRef FacePrimitives DEFAULT();
+    ElementAttributeRef VertexPrimitives DEFAULT();
+    ElementAttributeRef VertexColor DEFAULT();
     // Rounds the record to whole cache lines, so each record's display fields start one.
-    GpuArray<uint32_t, 11> Padding DEFAULT();
+    GpuArray<uint32_t, 4> Padding DEFAULT();
 };
 static_assert(sizeof(MeshRecord) == 320, "MeshRecord size");

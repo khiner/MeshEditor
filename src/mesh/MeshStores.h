@@ -3,7 +3,9 @@
 
 #include <unordered_map>
 
-namespace state { struct Scene; }
+namespace state {
+struct Scene;
+}
 
 // Derived: the entity holding each store record's mesh handle.
 struct MeshEntities {

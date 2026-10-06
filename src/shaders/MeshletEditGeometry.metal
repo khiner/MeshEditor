@@ -73,11 +73,11 @@ inline bool ResolveMeshletEditEdgeCandidate(
     const uint topology = MeshletPrimitiveTopology(work.Meshlet);
     if (topology == uint(MeshPrimitiveTopology::Line) && edge_corner == 0u) {
         geometry = ResolveMeshletLineEdge(scene, work, bindless, pc, element);
-        return true;
+        return !EditElementHidden(scene,work.Draw,Element::Edge,geometry.Edge+work.Draw.Connectivity.Edges.Offset);
     }
     if (topology != uint(MeshPrimitiveTopology::Triangle)) return false;
     const uint edge = MeshletEditEdge(bindless, pc, work, element, edge_corner);
-    if (edge == InvalidOffset) return false;
+    if (edge == InvalidOffset || EditElementHidden(scene,work.Draw,Element::Edge,edge)) return false;
     geometry = ResolveMeshletEditEdge(scene, work, bindless, pc, element, edge_corner, edge);
     return true;
 }

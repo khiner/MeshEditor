@@ -26,7 +26,8 @@ struct SparseBuffer;
 // Canonical storage has stable CPU views and versioned physical pages.
 // Workspaces have no history or page clones, and their growth preserves the used bytes and zeroes the rest.
 // Growth invalidates borrowed CPU spans and direct GPU bindings, so finish or reserve them before encoding consumers.
-enum class BufferLifetime { Canonical, Workspace };
+enum class BufferLifetime { Canonical,
+                            Workspace };
 // Tracked buffers capture and restore history in pages of this size.
 inline constexpr uint64_t HistoryPageBytes = 16u << 10;
 // Commit GPU consumers before retiring their owners. Slots, virtual mappings,
@@ -64,10 +65,11 @@ struct BufferContext {
         NS::SharedPtr<MTL::CommandBuffer> Fence;
     };
     std::deque<RetirementBatch> Retirements;
+
 private:
     void RecycleWorkspace(NS::SharedPtr<MTL::Buffer>);
     void Release(std::span<RetiredBuffer>);
-    std::array<std::vector<NS::SharedPtr<MTL::Buffer>>,64> WorkspaceCache;
+    std::array<std::vector<NS::SharedPtr<MTL::Buffer>>, 64> WorkspaceCache;
     uint64_t CachedWorkspaceBytes{};
 };
 

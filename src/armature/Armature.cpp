@@ -224,7 +224,7 @@ std::vector<float> ComputeBoneDisplayScales(const Armature &armature) {
         }
         scales[i] = min_child_dist < std::numeric_limits<float>::max() ? min_child_dist :
             bones[i].ParentIndex != InvalidBoneIndex                   ? self(bones[i].ParentIndex) :
-                                                                          1.f;
+                                                                         1.f;
         return scales[i];
     };
     for (uint32_t i = 0; i < bones.size(); ++i) resolve(i);

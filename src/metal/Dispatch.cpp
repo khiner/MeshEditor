@@ -1,4 +1,5 @@
 #include "metal/Dispatch.h"
+#include "Profile.h"
 
 #include "metal/MetalCpp.h"
 #include "metal/Shader.h"
@@ -75,6 +76,10 @@ MTL::ComputeCommandEncoder *ComputeChain::Encoder() {
 void ComputeChain::Dispatch(const ComputePipeline &pipeline, const void *pc, uint32_t bytes, uint32_t count, uint32_t depth, uint32_t width, bool threads) {
     const AutoreleaseScope pool;
     if (!count || !depth) return;
+    if (profile::Enabled) {
+        const auto groups = (threads ? (uint64_t(count) + width - 1u) / width : count) * depth;
+        profile::RecordCounter("ComputeThreadgroups", groups);
+    }
     auto *encoder = Encoder();
     encoder->setComputePipelineState(pipeline.State());
     encoder->setBytes(pc, bytes, BufferIndex_PushConstants);
@@ -86,6 +91,7 @@ void ComputeChain::Dispatch(const ComputePipeline &pipeline, const void *pc, uin
 
 void ComputeChain::DispatchIndirect(const ComputePipeline &pipeline, const void *pc, uint32_t bytes, const Buffer &arguments, uint64_t offset, uint32_t width) {
     const AutoreleaseScope pool;
+    profile::RecordCounter("ComputeIndirectDispatches", 1u);
     auto *encoder = Encoder();
     encoder->setComputePipelineState(pipeline.State());
     encoder->setBytes(pc, bytes, BufferIndex_PushConstants);
@@ -102,6 +108,7 @@ void ComputeChain::Submit() {
     // A failed submit drops its completions.
     const auto completions = std::exchange(Completions, {});
     if (Recording) {
+        const profile::CpuScope scope{"ComputeChainSubmit"};
         EndEncoding();
         // The command buffer fences the buffers retired while recording, so it runs after every command buffer committed before it.
         if (CommittedCommandBuffers() != OrderedCommits) Buffers.Ctx.OrderAfterGpuWork(Recording.get());
@@ -113,6 +120,7 @@ void ComputeChain::Submit() {
         Committed = true;
         command->waitUntilCompleted();
         if (command->status() == MTL::CommandBufferStatusError) throw std::runtime_error("GPU compute chain failed.");
+        if (profile::Enabled) profile::RecordCounter("ComputeGpuMicroseconds", (command->GPUEndTime() - command->GPUStartTime()) * 1e6);
         // The retained buffers and the scratch workspaces growth replaced had their last readers in the command buffer.
         Retained.clear();
         Scratch.Buffer.RetirePreviousWorkspaces();

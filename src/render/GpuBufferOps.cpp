@@ -18,8 +18,9 @@ mtl::BufferContext &GetBufferContext(state::Scene &r) { return r.Context.get<Gpu
 void UpdatePosedMeshletBlocks(state::Scene &r, const MeshStore::Record &owner, std::span<const uint32_t> ids) {
     const auto &index = r.Context.get<const MeshStore>().Render().ActiveMeshlets;
     std::vector<uint32_t> blocks;
-    for (const auto id : ids) if (blocks.empty() || blocks.back() != id / 256u) blocks.push_back(id / 256u);
-    r.Context.get<GpuBuffers>().PosedMeshletBounds.UpdateBlocks(owner.StoreId, owner.MeshletRevision, blocks, [&](uint32_t block) { return index.HasBlock(owner.MeshletRoot, block); }, owner.RenderTopology);
+    for (const auto id : ids)
+        if (blocks.empty() || blocks.back() != id / 256u) blocks.push_back(id / 256u);
+    r.Context.get<GpuBuffers>().PosedMeshletBounds.UpdateBlocks(owner.StoreId, owner.MeshletRevision, blocks, [&](uint32_t block) { return index.HasBlock(owner.MeshletRoot, block); }, owner.RenderTopologies);
 }
 
 void FreeInstanceRange(state::Scene &r, Range range) { r.Context.get<GpuBuffers>().Instances.Free(range); }

@@ -1,7 +1,7 @@
-#include "metal/AutoreleaseScope.h"
 #include "metal/Buffer.h"
 #include "Parallel.h"
 #include "Profile.h"
+#include "metal/AutoreleaseScope.h"
 
 #include "metal/MetalCpp.h"
 #include "metal/SparseBuffer.h"
@@ -33,33 +33,37 @@ BufferContext::~BufferContext() {
 }
 
 NS::SharedPtr<MTL::Buffer> BufferContext::AcquireWorkspace(uint64_t bytes, std::span<const std::byte> prefix) {
-    if (bytes>std::bit_floor(uint64_t(Ctx.Device->maxBufferLength()))) throw std::length_error("Metal workspace address space exhausted.");
-    const auto capacity=std::bit_ceil(std::max(bytes,uint64_t{16u<<10}));
-    if (!capacity || capacity>Ctx.Device->maxBufferLength()) throw std::length_error("Metal workspace address space exhausted.");
-    auto &bin=WorkspaceCache[std::countr_zero(capacity)];
-    const bool recycled=!bin.empty();
+    if (bytes > std::bit_floor(uint64_t(Ctx.Device->maxBufferLength()))) throw std::length_error("Metal workspace address space exhausted.");
+    const auto capacity = std::bit_ceil(std::max(bytes, uint64_t{16u << 10}));
+    if (!capacity || capacity > Ctx.Device->maxBufferLength()) throw std::length_error("Metal workspace address space exhausted.");
+    auto &bin = WorkspaceCache[std::countr_zero(capacity)];
+    const bool recycled = !bin.empty();
     NS::SharedPtr<MTL::Buffer> result;
     if (recycled) {
-        result=std::move(bin.back()); bin.pop_back();
-        CachedWorkspaceBytes-=capacity;
+        result = std::move(bin.back());
+        bin.pop_back();
+        CachedWorkspaceBytes -= capacity;
     } else {
         // A new Metal buffer starts zeroed.
-        result=NewBuffer(Ctx,capacity);
+        result = NewBuffer(Ctx, capacity);
         Ctx.AddResident(result.get());
     }
-    auto *contents=static_cast<std::byte *>(result->contents());
-    CopyBytes(contents,prefix.data(),prefix.size());
+    auto *contents = static_cast<std::byte *>(result->contents());
+    CopyBytes(contents, prefix.data(), prefix.size());
     // A recycled workspace has no pending GPU users, so the host clears the bytes after the prefix.
-    if (recycled) CopyBytes(contents+prefix.size(),nullptr,capacity-prefix.size());
+    if (recycled) CopyBytes(contents + prefix.size(), nullptr, capacity - prefix.size());
     return result;
 }
 
 void BufferContext::RecycleWorkspace(NS::SharedPtr<MTL::Buffer> buffer) {
-    constexpr uint64_t cache_limit=32u<<20;
-    const auto bytes=uint64_t(buffer->length());
-    if (bytes>cache_limit-CachedWorkspaceBytes) { Ctx.RemoveResident(buffer.get()); return; }
+    constexpr uint64_t cache_limit = 32u << 20;
+    const auto bytes = uint64_t(buffer->length());
+    if (bytes > cache_limit - CachedWorkspaceBytes) {
+        Ctx.RemoveResident(buffer.get());
+        return;
+    }
     WorkspaceCache[std::countr_zero(bytes)].push_back(std::move(buffer));
-    CachedWorkspaceBytes+=bytes;
+    CachedWorkspaceBytes += bytes;
 }
 void BufferContext::Release(std::span<RetiredBuffer> buffers) {
     for (auto &buffer : buffers) {
@@ -185,15 +189,15 @@ Buffer::~Buffer() {
 }
 
 void Buffer::RetirePreviousWorkspaces() {
-    for (auto &previous:PreviousWorkspaces) Ctx.Retired.push_back({.Workspace=std::move(previous)});
+    for (auto &previous : PreviousWorkspaces) Ctx.Retired.push_back({.Workspace = std::move(previous)});
     PreviousWorkspaces.clear();
 }
 
 void Buffer::Retire() {
     RetirePreviousWorkspaces();
     if (Workspace) {
-        Ctx.Retired.push_back({.Binding={Type,Slot},.Workspace=std::move(Workspace)});
-        Slot=InvalidSlot;
+        Ctx.Retired.push_back({.Binding = {Type, Slot}, .Workspace = std::move(Workspace)});
+        Slot = InvalidSlot;
     }
     if (Storage) {
         Ctx.Retired.push_back({std::move(Storage), {Type, Slot}});
@@ -206,10 +210,12 @@ void Buffer::UpdateSlot() {
     Ctx.Slots.SetBuffer({Type, Slot}, **this);
 }
 
-MTL::Buffer *Buffer::operator*() const { return Workspace ? Workspace.get() : Storage ? Storage->Gpu.get() : nullptr; }
+MTL::Buffer *Buffer::operator*() const { return Workspace ? Workspace.get() : Storage ? Storage->Gpu.get() :
+                                                                                        nullptr; }
 
 std::span<std::byte> Buffer::Contents() const {
-    return Workspace ? std::span{static_cast<std::byte *>(Workspace->contents()),Workspace->length()} : Storage ? Storage->Contents() : std::span<std::byte>{};
+    return Workspace ? std::span{static_cast<std::byte *>(Workspace->contents()), Workspace->length()} : Storage ? Storage->Contents() :
+                                                                                                                   std::span<std::byte>{};
 }
 
 void Buffer::Move(uint64_t from, uint64_t to, uint64_t size) const {
@@ -229,21 +235,22 @@ std::span<std::byte> Buffer::GetMutableRange(uint64_t offset, uint64_t size) con
 
 void Buffer::Reserve(uint64_t required_size) {
     if (required_size <= Contents().size()) return;
-    if (Lifetime==BufferLifetime::Workspace) {
+    if (Lifetime == BufferLifetime::Workspace) {
         const profile::CpuScope scope{"WorkspaceGrow"};
         const AutoreleaseScope pool;
-        auto next=Ctx.AcquireWorkspace(required_size,Contents().first(UsedSize));
+        auto next = Ctx.AcquireWorkspace(required_size, Contents().first(UsedSize));
         // An encoder may retain a direct binding made before this growth.
         // Keep old allocations owned until the workspace's consumers retire.
         if (Workspace) PreviousWorkspaces.push_back(std::move(Workspace));
-        Workspace=std::move(next);
+        Workspace = std::move(next);
         UpdateSlot();
         return;
     }
     const auto *previous = **this;
     if (!Storage) Storage = std::make_shared<SparseBuffer>(Ctx.Ctx, required_size);
-    try { Storage->Reserve(required_size); }
-    catch (...) {
+    try {
+        Storage->Reserve(required_size);
+    } catch (...) {
         // Growth can replace the GPU address before a later page allocation
         // fails. Keep the bindless entry valid for the original resident data.
         if (previous != **this) UpdateSlot();
@@ -269,8 +276,8 @@ void Buffer::CaptureWrite(uint64_t offset, uint64_t size) const {
 
 void Buffer::CaptureWritePages(std::span<const uint32_t> pages) const {
     if (pages.empty()) return;
-    for (size_t i=0u;i<pages.size();++i)
-        if (uint64_t(pages[i])>=Contents().size()/HistoryPageBytes || (i && pages[i]<=pages[i-1u])) {
+    for (size_t i = 0u; i < pages.size(); ++i)
+        if (uint64_t(pages[i]) >= Contents().size() / HistoryPageBytes || (i && pages[i] <= pages[i - 1u])) {
             throw std::out_of_range("Write pages must be ordered, unique, and resident.");
         }
     if (!Tracked) return;
@@ -281,23 +288,23 @@ void Buffer::CaptureWritePages(std::span<const uint32_t> pages) const {
     });
 }
 
-void Buffer::CaptureWriteElements(std::span<const uint32_t> elements,uint32_t stride) const {
+void Buffer::CaptureWriteElements(std::span<const uint32_t> elements, uint32_t stride) const {
     if (elements.empty() || !stride || !Tracked) return;
     std::vector<uint32_t> sorted;
     if (!std::ranges::is_sorted(elements)) {
-        sorted.assign(elements.begin(),elements.end());
+        sorted.assign(elements.begin(), elements.end());
         std::ranges::sort(sorted);
-        elements=sorted;
+        elements = sorted;
     }
     std::vector<uint32_t> pages;
     pages.reserve(elements.size());
-    for (size_t i=0;i<elements.size();++i) {
-        const auto element=elements[i];
-        if (i && element==elements[i-1u]) continue;
-        const auto first=uint64_t(element)*stride, end=first+stride;
-        if (!Storage || end>Storage->ResidentBytes) throw std::out_of_range("Write elements must be resident.");
-        for (auto page=first/HistoryPageBytes;page<=(end-1u)/HistoryPageBytes;++page)
-            if (pages.empty() || pages.back()!=page) pages.push_back(uint32_t(page));
+    for (size_t i = 0; i < elements.size(); ++i) {
+        const auto element = elements[i];
+        if (i && element == elements[i - 1u]) continue;
+        const auto first = uint64_t(element) * stride, end = first + stride;
+        if (!Storage || end > Storage->ResidentBytes) throw std::out_of_range("Write elements must be resident.");
+        for (auto page = first / HistoryPageBytes; page <= (end - 1u) / HistoryPageBytes; ++page)
+            if (pages.empty() || pages.back() != page) pages.push_back(uint32_t(page));
     }
     CaptureWritePages(pages);
 }
@@ -305,22 +312,22 @@ void Buffer::CaptureWriteElements(std::span<const uint32_t> elements,uint32_t st
 void Buffer::CaptureWriteRanges(std::span<const Range> ranges, uint32_t stride) const {
     if (ranges.empty() || !stride || !Tracked) return;
     std::vector<uint32_t> pages;
-    for (const auto range:ranges) {
+    for (const auto range : ranges) {
         if (!range.Count) continue;
-        const auto first=uint64_t(range.Offset)*stride;
-        const auto end=(uint64_t(range.Offset)+range.Count)*stride;
-        if (!Storage || end>Storage->ResidentBytes) throw std::out_of_range("Write ranges must be resident.");
-        for (auto page=first/HistoryPageBytes;page<=(end-1u)/HistoryPageBytes;++page)
-            if (pages.empty() || pages.back()!=page) pages.push_back(uint32_t(page));
+        const auto first = uint64_t(range.Offset) * stride;
+        const auto end = (uint64_t(range.Offset) + range.Count) * stride;
+        if (!Storage || end > Storage->ResidentBytes) throw std::out_of_range("Write ranges must be resident.");
+        for (auto page = first / HistoryPageBytes; page <= (end - 1u) / HistoryPageBytes; ++page)
+            if (pages.empty() || pages.back() != page) pages.push_back(uint32_t(page));
     }
     if (!std::ranges::is_sorted(pages)) std::ranges::sort(pages);
-    pages.erase(std::unique(pages.begin(),pages.end()),pages.end());
+    pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
     CaptureWritePages(pages);
 }
 
 void Buffer::SetUsedSize(uint64_t size) {
     if (!size) {
-        for (auto &previous:PreviousWorkspaces) Ctx.Retired.push_back({.Workspace=std::move(previous)});
+        for (auto &previous : PreviousWorkspaces) Ctx.Retired.push_back({.Workspace = std::move(previous)});
         PreviousWorkspaces.clear();
     }
     Reserve(size);
@@ -334,7 +341,7 @@ void Buffer::SetUsedSize(uint64_t size) {
 }
 
 void Buffer::Track(store::History &history, std::string name) {
-    if (Lifetime==BufferLifetime::Workspace) throw std::logic_error("A compute workspace cannot own document history.");
+    if (Lifetime == BufferLifetime::Workspace) throw std::logic_error("A compute workspace cannot own document history.");
     Tracked = std::make_unique<store::Pages>(uint32_t(HistoryPageBytes), 5, this, [](void *backing, uint64_t bytes) {
         auto &buffer = *static_cast<Buffer *>(backing);
         buffer.Reserve(bytes);

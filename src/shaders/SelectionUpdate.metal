@@ -19,6 +19,9 @@ struct SelectionContext {
         const uint word = BindlessBuffer(MeshElementBlock, B.Buffer, Pc.Blocks[domain])[handle / MeshElementBlockSize].Live[(handle % MeshElementBlockSize) / 32u];
         return (word & (1u << (handle % 32u))) != 0u;
     }
+    bool Hidden(uint domain,uint handle) const {
+        return handle!=InvalidOffset && (BindlessBuffer(uint,B.Buffer,Pc.Hidden[domain])[handle/32u] & (1u<<(handle%32u)))!=0u;
+    }
     bool Selected(uint domain, uint handle) const {
         return handle != InvalidOffset && (BindlessBuffer(uint, B.Buffer, Pc.Masks[domain])[handle / 32u] & (1u << (handle % 32u))) != 0u;
     }
@@ -30,6 +33,7 @@ struct SelectionContext {
         return uint2(Corner(h), from == InvalidOffset ? InvalidOffset : Corner(from));
     }
     bool Derived(uint domain, uint handle) const {
+        if (Hidden(domain,handle)) return false;
         const auto conn = Connectivity();
         const uint source = Mesh().Source;
         if (domain == 0u) {
@@ -56,13 +60,20 @@ struct SelectionContext {
     // The first mark of a block appends it to the dirty list with this update.
     void Mark(uint domain, uint handle) const {
         if (handle == InvalidOffset) return;
-        const uint block = handle / MeshElementBlockSize, bit = 1u << (block % 32u);
-        device atomic_uint *word = BindlessBufferMutable(atomic_uint, B.Buffer, Pc.DirtySlot) + SelectionDirtyWord(domain, block);
-        if (atomic_fetch_or_explicit(word, bit, memory_order_relaxed) & bit) return;
+        const uint block = handle / MeshElementBlockSize;
+        const uint key = ((domain << 30u) | block) + 1u;
+        auto at = SelectionDirtyHash(key, Pc.DirtyMask);
+        device atomic_uint *table = reinterpret_cast<device atomic_uint *>(Work());
+        while (true) {
+            uint expected = 0u;
+            if (atomic_compare_exchange_weak_explicit(table + at, &expected, key, memory_order_relaxed, memory_order_relaxed)) break;
+            if (expected == key) return;
+            if (expected != 0u) at = (at + 1u) & Pc.DirtyMask;
+        }
         device uint *list = Work() + Pc.List;
-        const uint at = atomic_fetch_add_explicit(reinterpret_cast<device atomic_uint *>(list), 1u, memory_order_relaxed);
-        list[3u + 2u * at] = (domain << 30u) | block;
-        list[4u + 2u * at] = Update;
+        const uint output = atomic_fetch_add_explicit(reinterpret_cast<device atomic_uint *>(list), 1u, memory_order_relaxed);
+        list[3u + 2u * output] = (domain << 30u) | block;
+        list[4u + 2u * output] = Update;
     }
 };
 
@@ -104,20 +115,21 @@ kernel void MarkSelectionNeighbors(
     }
 }
 
-// Both block and root aggregation use the same fixed SIMD/word fold order.
+// Block aggregation uses a fixed SIMD/word fold order.
 // Only the first lane of each SIMD group publishes its partial.
 inline SelectionAggregate ReduceSelectionAggregate(
     threadgroup SelectionAggregate *scratch, uint lane, uint simd_group,
-    float3 sum, float3 low, float3 high, uint selected, uint live, uint flags
+    float3 sum, float3 low, float3 high, uint selected, uint live, uint flags, uint hidden
 ) {
     sum = float3(simd_sum(sum.x), simd_sum(sum.y), simd_sum(sum.z));
     low = float3(simd_min(low.x), simd_min(low.y), simd_min(low.z));
     high = float3(simd_max(high.x), simd_max(high.y), simd_max(high.z));
     selected = simd_sum(selected);
     live = simd_sum(live);
+    hidden = simd_sum(hidden);
     flags = simd_or(flags);
     if ((lane & 31u) == 0u) {
-        scratch[simd_group] = {packed_float3(sum), selected, {packed_float3(low), packed_float3(high)}, live, flags};
+        scratch[simd_group] = {packed_float3(sum), selected, {packed_float3(low), packed_float3(high)}, live, flags, hidden};
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     SelectionAggregate result{};
@@ -129,6 +141,7 @@ inline SelectionAggregate ReduceSelectionAggregate(
         hi = max(hi, float3(scratch[w].Bounds.Max));
         result.Selected += scratch[w].Selected;
         result.LiveCount += scratch[w].LiveCount;
+        result.Hidden += scratch[w].Hidden;
         result.Flags |= scratch[w].Flags;
     }
     result.PositionSum = packed_float3(total);
@@ -137,7 +150,7 @@ inline SelectionAggregate ReduceSelectionAggregate(
 }
 
 // One 256-lane group per dirty list entry: each SIMD group owns one mask word.
-// The group clears the entry's dirty bit and refreshes the block when the entry's mesh owns it.
+// The group refreshes the block when the entry's mesh owns it.
 // Lane partials fold in a fixed order, so a block's aggregate depends only on its contents.
 kernel void UpdateSelectionBlocks(
     uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]],
@@ -150,7 +163,6 @@ kernel void UpdateSelectionBlocks(
     const SelectionContext ctx{b, pc, pair[1]};
     const uint entry = pair[0];
     const uint domain = entry >> 30u, block = entry & ((1u << 30u) - 1u);
-    if (lane == 0u) atomic_fetch_and_explicit(BindlessBufferMutable(atomic_uint, b.Buffer, pc.DirtySlot) + SelectionDirtyWord(domain, block), ~(1u << (block % 32u)), memory_order_relaxed);
     const uint source = ctx.Mesh().Source;
     if (BindlessBuffer(MeshElementBlock, b.Buffer, pc.Blocks[domain])[block].Owner != ctx.Mesh().Owners[domain]) return;
     const uint handle = block * MeshElementBlockSize + lane;
@@ -181,38 +193,8 @@ kernel void UpdateSelectionBlocks(
             if (h != InvalidOffset && conn.Opposite(h) == InvalidOffset) flags |= SelectionBoundary;
         }
     }
-    const auto aggregate = ReduceSelectionAggregate(scratch, lane, simd_group, sum, low, high, uint(selected && live), uint(live), flags);
+    const auto aggregate = ReduceSelectionAggregate(scratch, lane, simd_group, sum, low, high, uint(selected && live), uint(live), flags, uint(live && ctx.Hidden(domain,handle)));
     if (lane == 0u) BindlessBufferMutable(SelectionAggregate, b.Buffer, pc.Leaves[domain])[block] = aggregate;
-}
-
-// One group per mesh update and domain folds its leaves in ascending block order.
-// Each lane owns a fixed contiguous span, so the sum is independent of which blocks changed.
-kernel void ReduceSelectionRoots(
-    uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]],
-    uint simd_group [[simdgroup_index_in_threadgroup]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant SelectionUpdatePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    threadgroup SelectionAggregate scratch[8];
-    const uint domain = group % 3u;
-    const SelectionContext ctx{b, pc, group / 3u};
-    device const SelectionMeshUpdate &mesh = ctx.Mesh();
-    device const uint *blocks = BindlessBuffer(uint, b.Buffer, mesh.Lists[domain].Slot) + mesh.Lists[domain].Offset;
-    device const SelectionAggregate *leaves = BindlessBuffer(SelectionAggregate, b.Buffer, pc.Leaves[domain]);
-    const uint count = mesh.Counts[domain], span = (count + 255u) / 256u;
-    float3 sum = 0.0f, low = FLT_MAX, high = -FLT_MAX;
-    uint selected = 0u, live = 0u, flags = 0u;
-    for (uint i = lane * span, end = min(count, i + span); i < end; ++i) {
-        const SelectionAggregate leaf = leaves[blocks[i]];
-        sum += float3(leaf.PositionSum);
-        low = min(low, float3(leaf.Bounds.Min));
-        high = max(high, float3(leaf.Bounds.Max));
-        selected += leaf.Selected;
-        live += leaf.LiveCount;
-        flags |= leaf.Flags;
-    }
-    const auto root = ReduceSelectionAggregate(scratch, lane, simd_group, sum, low, high, selected, live, flags);
-    if (lane == 0u) BindlessBufferMutable(SelectionAggregate, b.Buffer, pc.RootsSlot)[mesh.Root + domain] = root;
 }
 
 // One 256-lane group per listed block writes its selected handles after the block's first output index.

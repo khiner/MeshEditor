@@ -3,7 +3,7 @@
 
 // Builds vertex-outgoing halfedges, opposites, each halfedge's edge, and each edge's first halfedge for one mesh.
 // Face halfedges hash by endpoint pair into an open-addressed table whose slot holds the lowest halfedge of each undirected edge.
-// A mesh without faces holds line corners, which pair in consecutive work order, each pair one edge.
+// A wire corner has no face owner and names its other endpoint through its explicit pair.
 // Each edge links its lowest forward halfedge to its lowest reverse halfedge and leaves every other incidence unlinked.
 // Edge ranks follow compact work order.
 // An explicit map preserves caller-owned edge handles.
@@ -55,6 +55,7 @@ struct ConnContext {
     }
     uint Prev(MeshConnectivityJob job, uint h) const {
         const uint f = Owners(job)[h];
+        if (f == InvalidOffset) return Opposites(job)[h];
         device const uint *range = Ranges(job) + 2u * f;
         return h == range[0] ? range[1] - 1u : h - 1u;
     }
@@ -64,15 +65,20 @@ struct ConnContext {
 
 inline uint2 ConnEndpoints(ConnContext ctx, MeshConnectivityJob job, device const uint *corners, uint h) { return uint2(corners[ctx.Prev(job, h)], corners[h]); }
 
-// The undirected edge of a halfedge, as its endpoints in ascending order.
-inline uint2 ConnEdgeKey(uint2 ends) { return uint2(min(ends.x, ends.y), max(ends.x, ends.y)); }
+// Faces share endpoint keys; explicit wire pairs remain distinct, including coincident lines.
+inline uint3 ConnEdgeKey(uint2 ends, uint wire_pair = 0u) { return uint3(min(ends.x, ends.y), max(ends.x, ends.y), wire_pair); }
+inline uint3 ConnKey(ConnContext ctx, MeshConnectivityJob job, device const uint *corners, uint h) {
+    const uint pair = ctx.Owners(job)[h] == InvalidOffset ? min(h, ctx.Opposites(job)[h]) + 1u : 0u;
+    return ConnEdgeKey(ConnEndpoints(ctx, job, corners, h), pair);
+}
 
 // A halfedge runs in reverse when it leaves the higher endpoint.
 inline bool ConnReverse(uint2 ends) { return ends.x > ends.y; }
 
-inline uint ConnEdgeHash(uint2 key) {
+inline uint ConnEdgeHash(uint3 key) {
     uint hash = key.x * 0x9E3779B1u;
     hash ^= key.y * 0x85EBCA77u;
+    hash ^= key.z * 0x27D4EB2Du;
     hash ^= hash >> 15u;
     hash *= 0xC2B2AE3Du;
     hash ^= hash >> 13u;
@@ -119,7 +125,6 @@ kernel void MeshConnectivityInit(
     }
     if (i < job.HalfedgeCount) {
         ctx.Partner(job)[i] = ConnNullHalfedge;
-        if (job.FaceCount == 0u) ctx.Owners(job)[ctx.Halfedges(job).Handle(i)] = InvalidOffset;
         if (job.RetainedEdgesOffset != InvalidOffset) ctx.Scratch()[job.RetainedEdgesOffset + i] = InvalidOffset;
     }
     if (i == 0u) {
@@ -141,17 +146,11 @@ kernel void MeshConnectivityInsert(
     if (i >= job.HalfedgeCount) return;
     const uint h = ctx.Halfedges(job).Handle(i);
     device const uint *corners = ctx.Corners(job);
-    const uint2 ends = job.FaceCount == 0u ? uint2(corners[ctx.Halfedges(job).Handle(i ^ 1u)], corners[h]) : ConnEndpoints(ctx, job, corners, h);
-    const uint2 key = ConnEdgeKey(ends);
+    const uint2 ends = ConnEndpoints(ctx, job, corners, h);
+    const uint3 key = ConnKey(ctx, job, corners, h);
     // A closure may include corners belonging to vertices outside the writable
     // vertex domain. Their incidence lists and outgoing handles remain intact.
     if (ctx.Vertices(job).Index(ends.x) != InvalidOffset) atomic_fetch_min_explicit(&ctx.AtomicOutgoing(job)[ends.x], h, memory_order_relaxed);
-    if (job.FaceCount == 0u) {
-        const uint pair = i / 2u;
-        if ((i & 1u) == 0u) ctx.Scratch()[job.TableOffset + pair] = h;
-        ctx.Rep(job)[i] = pair;
-        return;
-    }
     device atomic_uint *table = ctx.AtomicScratch() + job.TableOffset;
     // Equal keys share a probe sequence, and atomic min selects their lowest halfedge.
     uint slot = ConnEdgeHash(key) & job.TableMask;
@@ -159,7 +158,7 @@ kernel void MeshConnectivityInsert(
         uint occupant = ConnEmptySlot;
         if (atomic_compare_exchange_weak_explicit(&table[slot], &occupant, h, memory_order_relaxed, memory_order_relaxed)) break;
         if (occupant == ConnEmptySlot) continue;
-        if (all(ConnEdgeKey(ConnEndpoints(ctx, job, corners, occupant)) == key)) {
+        if (all(ConnKey(ctx, job, corners, occupant) == key)) {
             atomic_fetch_min_explicit(&table[slot], h, memory_order_relaxed);
             break;
         }
@@ -170,10 +169,10 @@ kernel void MeshConnectivityInsert(
 
 // Match the old affected edges against the new endpoint-pair table. Source
 // bindings may name page clones while destination corners/owners are live.
-// Canonical source connectivity has exactly one edge per unordered endpoint pair.
+// Face edges match endpoint pairs. A wire keeps its explicit pair identity,
+// including coincident lines and zero-length input edges.
 kernel void MeshConnectivityMatchEdges(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
@@ -181,32 +180,54 @@ kernel void MeshConnectivityMatchEdges(
     const uint2 tile = ctx.Tile(group_id);
     const MeshConnectivityJob job = ctx.Jobs()[tile.x];
     const uint i = tile.y * ScanTileSize + lane;
-    bool retired = false;
-    if (i < job.SourceEdgeCount && job.FaceCount == 0u) {
-        // A line edge's first corner leads its pair, so the edge stays exactly when that corner stays in the work.
-        const uint e = ctx.SourceEdges(job).Handle(i);
-        const uint rank = ctx.Halfedges(job).Index(BindlessBuffer(uint,bindless.Buffer,job.SourceConnectivity.Edges.Slot)[e]);
-        if (rank != InvalidOffset) ctx.Scratch()[job.RetainedEdgesOffset + rank] = e;
-        retired = rank == InvalidOffset;
-    } else if (i < job.SourceEdgeCount) {
+    uint match=InvalidOffset;
+    if (i < job.SourceEdgeCount) {
         const uint e = ctx.SourceEdges(job).Handle(i);
         const uint h = BindlessBuffer(uint,bindless.Buffer,job.SourceConnectivity.Edges.Slot)[e];
         const uint f = BindlessBuffer(uint,bindless.Buffer,job.SourceConnectivity.HalfedgeFaces.Slot)[h];
-        const auto ranges = BindlessBuffer(packed_uint2,bindless.Buffer,job.SourceConnectivity.FaceRanges.Slot);
-        const uint2 loop = uint2(ranges[f]);
+        uint previous;
+        if (f == InvalidOffset) previous = BindlessBuffer(uint, bindless.Buffer, job.SourceConnectivity.Opposites.Slot)[h];
+        else {
+            const auto ranges = BindlessBuffer(packed_uint2,bindless.Buffer,job.SourceConnectivity.FaceRanges.Slot);
+            const uint2 loop = uint2(ranges[f]);
+            previous = h == loop.x ? loop.y - 1u : h - 1u;
+        }
         const auto corners = BindlessBuffer(uint,bindless.IndexBuffer,job.SourceCornerSlot);
-        const uint2 key = ConnEdgeKey(uint2(corners[h == loop.x ? loop.y - 1u : h - 1u], corners[h]));
+        const uint converted=job.ConvertedEdges.Storage.Slot!=InvalidSlot ? WorkRank(bindless,job.ConvertedEdges,e) : InvalidOffset;
+        uint pair=f==InvalidOffset ? min(h,previous)+1u : 0u;
+        if (converted!=InvalidOffset) pair=job.ConvertedWirePairs.Slot!=InvalidSlot ? ctx.Words(job.ConvertedWirePairs)[job.ConvertedWirePairs.Offset+converted] : 0u;
+        const uint3 key = ConnEdgeKey(uint2(corners[previous], corners[h]),pair);
         uint slot = ConnEdgeHash(key) & job.TableMask;
-        retired = true;
-        for (uint probe = 0u; probe <= job.TableMask; ++probe, slot = (slot + 1u) & job.TableMask) {
+        for (uint probe = 0u; pair!=InvalidOffset && probe <= job.TableMask; ++probe, slot = (slot + 1u) & job.TableMask) {
             const uint representative = ctx.Scratch()[job.TableOffset + slot];
             if (representative == ConnEmptySlot) break;
-            if (all(ConnEdgeKey(ConnEndpoints(ctx, job, ctx.Corners(job), representative)) == key)) {
-                ctx.Scratch()[job.RetainedEdgesOffset + ctx.Halfedges(job).Index(representative)] = e;
-                retired = false;
+            if (all(ConnKey(ctx, job, ctx.Corners(job), representative) == key)) {
+                match=ctx.Halfedges(job).Index(representative);
+                atomic_fetch_min_explicit(ctx.AtomicScratch()+job.RetainedEdgesOffset+match,e,memory_order_relaxed);
                 break;
             }
         }
+        // Reuse the eventual retired-edge list until its compaction pass.
+        ctx.Scratch()[job.RetiredEdgesOffset+i]=match;
+    }
+}
+
+// Several source edges can become one surface edge. Retain one deterministic
+// handle and retire the other claimants after all matches have been published.
+kernel void MeshConnectivityClassifyEdges(
+    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    const ConnContext ctx{bindless,pc};
+    const uint2 tile=ctx.Tile(group_id);
+    const MeshConnectivityJob job=ctx.Jobs()[tile.x];
+    const uint i=tile.y*ScanTileSize+lane;
+    bool retired=false;
+    if (i<job.SourceEdgeCount) {
+        const uint match=ctx.Scratch()[job.RetiredEdgesOffset+i];
+        retired=match==InvalidOffset || ctx.RetainedEdge(job,match)!=ctx.SourceEdges(job).Handle(i);
     }
     const uint bits = uint((simd_vote::vote_t)simd_ballot(retired));
     const uint word = tile.y * ScanSimdGroups + simd_group;
@@ -232,13 +253,10 @@ kernel void MeshConnectivityResolve(
     const uint representative = ctx.Scratch()[job.TableOffset + rep[i]];
     rep[i] = representative;
     device const uint *corners = ctx.Corners(job);
-    if (job.FaceCount == 0u) {
-        if (i & 1u) ctx.Partner(job)[ctx.Halfedges(job).Index(representative)] = h;
-        return;
-    }
-    const bool reverse = ConnReverse(ConnEndpoints(ctx, job, corners, h));
+    const bool wire = ctx.Owners(job)[h] == InvalidOffset;
+    const bool reverse = wire ? h > ctx.Opposites(job)[h] : ConnReverse(ConnEndpoints(ctx, job, corners, h));
     // The partner is the lowest halfedge running against the representative.
-    if (reverse != ConnReverse(ConnEndpoints(ctx, job, corners, representative))) {
+    if (reverse != (wire ? representative > ctx.Opposites(job)[representative] : ConnReverse(ConnEndpoints(ctx, job, corners, representative)))) {
         atomic_fetch_min_explicit(&ctx.AtomicPartner(job)[ctx.Halfedges(job).Index(representative)], h, memory_order_relaxed);
     }
 }

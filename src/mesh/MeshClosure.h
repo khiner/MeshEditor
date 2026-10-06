@@ -6,8 +6,12 @@
 #include <span>
 #include <vector>
 
-namespace mtl { struct ComputeChain; }
-namespace state { struct Scene; }
+namespace mtl {
+struct ComputeChain;
+}
+namespace state {
+struct Scene;
+}
 template<typename T> struct BufferArena;
 
 // Canonical vertices, faces or edges a closure level reads, as work of at most Count elements.
@@ -24,8 +28,7 @@ struct ClosureSeed {
 };
 
 // One closure level's sparse canonical sets in a chain's scratch.
-// A face level holds its faces with their loop corners, corner vertices and edges, and any retained vertices.
-// An edge level holds line edges with both corners of each and their vertices, and any retained vertices.
+// A primitive level holds face loops and explicit wire pairs with their vertices and edges, and any retained vertices.
 // A vertex level holds its vertices with their fan corners, each fan corner's face and edge, and each fan corner's next corner, or a line corner's pair, and its edge.
 // A face or edge level's vertex seed is bounded on the host, so the vertex level it seeds records before the chain submits.
 // Counts, face and edge incidences and their seeds are valid once the chain has submitted.
@@ -45,9 +48,9 @@ private:
     std::array<uint32_t, 2> Incidences{};
 };
 
-MeshClosure EncodeFaceClosure(state::Scene &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &faces, const ClosureSeed &retained = {});
+// Edge seeds contribute only loose wires; face-owned edges arrive through the face seeds.
+MeshClosure EncodePrimitiveClosure(state::Scene &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &faces, const ClosureSeed &wires = {}, const ClosureSeed &retained = {}, bool retain_isolated_only = false);
 MeshClosure EncodeVertexClosure(state::Scene &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &vertices);
-MeshClosure EncodeEdgeClosure(state::Scene &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &edges, const ClosureSeed &retained = {});
 // The endpoints of seed edges, as a vertex seed.
 ClosureSeed EncodeEdgeVertices(state::Scene &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &edges);
 // The selected elements of a domain, or all its live elements, with host bounds read from the canonical masks and connectivity.

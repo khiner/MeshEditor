@@ -1,7 +1,7 @@
 #pragma once
 
-#include "gpu/Types.h"
 #include "gpu/ElementAttributeRef.h"
+#include "gpu/Types.h"
 
 struct MeshletBuildPushConstants {
     uint32_t JobsSlot DEFAULT();

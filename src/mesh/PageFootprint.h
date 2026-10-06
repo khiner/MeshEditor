@@ -6,7 +6,6 @@
 #include "metal/BufferArena.h"
 #include "render/ElementWorkOps.h"
 
-
 // The bytes of one element block of T records.
 template<typename T> inline constexpr uint64_t BlockBytes = uint64_t(MeshElementBlockSize) * sizeof(T);
 
@@ -22,7 +21,8 @@ std::vector<uint32_t> WorkBlocks(const BufferArena<uint32_t> &, ElementWork, uin
 // Visits the ascending handles of sparse work, or the `count` handles from `origin` when the work has no storage.
 void ForEachWorkHandle(const BufferArena<uint32_t> &arena, ElementWork work, uint32_t count, uint32_t origin, auto &&visit) {
     if (work.Storage.Slot != InvalidSlot) ForEachWorkElement(arena, work, visit);
-    else for (uint32_t i = 0u; i < count; ++i) visit(origin + i);
+    else
+        for (uint32_t i = 0u; i < count; ++i) visit(origin + i);
 }
 // The payload blocks a table of payload block plus one names for element blocks.
 // A zero or missing entry has no payload, which throws when the payload is required.

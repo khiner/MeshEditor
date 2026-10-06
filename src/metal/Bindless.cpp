@@ -1,5 +1,5 @@
-#include "metal/AutoreleaseScope.h"
 #include "metal/Bindless.h"
+#include "metal/AutoreleaseScope.h"
 
 #include "metal/MetalCpp.h"
 

@@ -33,13 +33,11 @@ struct MeshletBuildInputs {
 MeshletBuildInputs CaptureMeshletInputs(const Mesh &, const MeshStore &, TriangleCorners);
 // Builds the DAG over the mesh's committed level-zero clusters.
 // A face-less mesh, and one whose clusters fit a single partition, returns an empty build.
-ClusterLodBuild BuildMeshletClusterLod(const MeshStore &, const MeshStore::Record &, const MeshletBuildInputs &,
-                                      std::span<const uint32_t> primitive_triangle_counts = {});
+ClusterLodBuild BuildMeshletClusterLod(const MeshStore &, const MeshStore::Record &, const MeshletBuildInputs &, std::span<const uint32_t> primitive_triangle_counts = {});
 // Places each owner's finished DAG, retaining finest identities and allocating only new coarse records.
 void CommitClusterLods(state::Scene &, std::span<MeshStore::Record *const>, std::span<const ClusterLodBuild>);
 
 // Allocates coarse records and their geometry, then publishes each group's
 // member/proxy run and proxy IDs directly in UMA. Callers fill member IDs in
 // their established order and retain the returned coarse cluster run.
-Range PublishClusterLodStorage(RenderArenas &, const ClusterLodBuild &, std::span<const uint32_t> primitive_ids,
-                               Range &groups, Range &vertices, Range &local_triangles);
+Range PublishClusterLodStorage(RenderArenas &, const ClusterLodBuild &, std::span<const uint32_t> primitive_ids, Range &groups, Range &vertices, Range &local_triangles);

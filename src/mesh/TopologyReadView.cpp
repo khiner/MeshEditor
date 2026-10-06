@@ -17,7 +17,7 @@ void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neig
     const auto faces = WorkBlocks(storage, neighborhood.Elements[2], neighborhood.Counts[2]);
     const auto edges = WorkBlocks(storage, neighborhood.Elements[3], neighborhood.Counts[3]);
     // Face loops name the neighboring corners and the ring vertices that rules read around each halfedge.
-    // Line corners belong to no loop, so a neighborhood without faces names them and their vertices directly.
+    // Wire corners belong to no loop, so the neighborhood also names its corners directly.
     std::vector<uint32_t> corners, ring = vertices, fans, roots;
     {
         const auto ranges = a.FaceRanges.Buffer.GetSpan<uvec2>();
@@ -29,7 +29,7 @@ void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neig
         ForEachWorkHandle(storage, neighborhood.Elements[2], neighborhood.Counts[2], 0u, [&](uint32_t face) {
             for (auto h = ranges[face].x; h < ranges[face].y; ++h) add(h);
         });
-        if (!neighborhood.Counts[2]) ForEachWorkHandle(storage, neighborhood.Elements[1], neighborhood.Counts[1], 0u, add);
+        ForEachWorkHandle(storage, neighborhood.Elements[1], neighborhood.Counts[1], 0u, add);
     }
     {
         const auto incoming = a.VertexCorners.Buffer.GetSpan<uvec2>();
@@ -56,6 +56,7 @@ void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neig
     Pages.Add(a.VertexCorners.Buffer, vertices, BlockBytes<uvec2>);
     Pages.Add(a.VertexFans.Items.Buffer, fans, BlockBytes<uvec2>);
     Pages.Add(a.VertexSelection.Buffer, vertices, sizeof(MeshArenas::SelectionBlock));
+    Pages.Add(a.VertexHidden.Buffer, vertices, sizeof(MeshArenas::SelectionBlock));
     if (record.VertexAttributes & MeshAttributeBit_Color0) Pages.Attribute(a.VertexColors, vertices);
     if (record.SkinBlocksReady) Pages.Attribute(a.Skin, vertices);
     if (record.MorphBlocksReady) Pages.Attribute(a.Morph, vertices, record.MorphTargetCount);
@@ -74,10 +75,13 @@ void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neig
     Pages.Add(a.FaceSharpness.Buffer, faces, BlockBytes<uint8_t>);
     Pages.Add(a.BaseFaceNormals.Buffer, faces, BlockBytes<vec3>);
     Pages.Add(a.FaceSelection.Buffer, faces, sizeof(MeshArenas::SelectionBlock));
+    Pages.Add(a.FaceHidden.Buffer, faces, sizeof(MeshArenas::SelectionBlock));
     Pages.Attribute(a.FacePrimitives, faces);
+    if (record.VertexPrimitivesReady) Pages.Attribute(a.VertexPrimitives, vertices);
     Pages.Add(a.EdgeHalfedges.Buffer, edges, BlockBytes<uint32_t>);
     Pages.Add(a.EdgeSharpness.Buffer, edges, BlockBytes<uint8_t>);
     Pages.Add(a.EdgeSelection.Buffer, edges, sizeof(MeshArenas::SelectionBlock));
+    Pages.Add(a.EdgeHidden.Buffer, edges, sizeof(MeshArenas::SelectionBlock));
 }
 
 void TopologyReadView::Clone(state::Scene &r) {
@@ -86,22 +90,34 @@ void TopologyReadView::Clone(state::Scene &r) {
     const auto &a = meshes.Arenas();
     // Each binding reads its clone at canonical offsets.
     std::vector<std::pair<const mtl::Buffer *, uint32_t *>> bindings{
-        {&a.Vertices.Buffer, &Arenas.VertexSlot}, {&a.FaceCorners.Buffer, &Arenas.CornerSlot},
-        {&a.FaceTriangles.Buffer, &Arenas.FaceTriangleStartSlot}, {&a.FaceSharpness.Buffer, &Arenas.FaceSharpnessSlot},
+        {&a.Vertices.Buffer, &Arenas.VertexSlot},
+        {&a.FaceCorners.Buffer, &Arenas.CornerSlot},
+        {&a.FaceTriangles.Buffer, &Arenas.FaceTriangleStartSlot},
+        {&a.FaceSharpness.Buffer, &Arenas.FaceSharpnessSlot},
         {&a.EdgeSharpness.Buffer, &Arenas.EdgeSharpnessSlot},
-        {&a.BaseVertexNormals.Buffer, &Arenas.BaseVertexNormalSlot}, {&a.BaseFaceNormals.Buffer, &Arenas.BaseFaceNormalSlot},
-        {&a.OutgoingHalfedges.Buffer, &Connectivity.Outgoing.Slot}, {&a.OppositeHalfedges.Buffer, &Connectivity.Opposites.Slot},
-        {&a.HalfedgeEdges.Buffer, &Connectivity.HalfedgeEdges.Slot}, {&a.HalfedgeFaces.Buffer, &Connectivity.HalfedgeFaces.Slot},
-        {&a.FaceRanges.Buffer, &Connectivity.FaceRanges.Slot}, {&a.EdgeHalfedges.Buffer, &Connectivity.Edges.Slot},
-        {&a.VertexCorners.Buffer, &Connectivity.VertexCorners.Slot}, {&a.VertexFans.Items.Buffer, &Connectivity.FanItemsSlot},
-        {&a.VertexSelection.Buffer, &Selection[0].Slot}, {&a.EdgeSelection.Buffer, &Selection[1].Slot},
+        {&a.BaseVertexNormals.Buffer, &Arenas.BaseVertexNormalSlot},
+        {&a.BaseFaceNormals.Buffer, &Arenas.BaseFaceNormalSlot},
+        {&a.OutgoingHalfedges.Buffer, &Connectivity.Outgoing.Slot},
+        {&a.OppositeHalfedges.Buffer, &Connectivity.Opposites.Slot},
+        {&a.HalfedgeEdges.Buffer, &Connectivity.HalfedgeEdges.Slot},
+        {&a.HalfedgeFaces.Buffer, &Connectivity.HalfedgeFaces.Slot},
+        {&a.FaceRanges.Buffer, &Connectivity.FaceRanges.Slot},
+        {&a.EdgeHalfedges.Buffer, &Connectivity.Edges.Slot},
+        {&a.VertexCorners.Buffer, &Connectivity.VertexCorners.Slot},
+        {&a.VertexFans.Items.Buffer, &Connectivity.FanItemsSlot},
+        {&a.VertexSelection.Buffer, &Selection[0].Slot},
+        {&a.EdgeSelection.Buffer, &Selection[1].Slot},
         {&a.FaceSelection.Buffer, &Selection[2].Slot},
+        {&a.VertexHidden.Buffer, &Arenas.VertexHiddenSlot},
+        {&a.EdgeHidden.Buffer, &Arenas.EdgeHiddenSlot},
+        {&a.FaceHidden.Buffer, &Arenas.FaceHiddenSlot},
     };
     const auto attribute = [&](const auto &source, ElementAttributeRef &ref) {
         bindings.push_back({&source.Blocks.Buffer, &ref.BlocksSlot});
         bindings.push_back({&source.Values.Buffer, &ref.ValuesSlot});
     };
     attribute(a.FacePrimitives, Arenas.FacePrimitives);
+    attribute(a.VertexPrimitives, Arenas.VertexPrimitives);
     attribute(a.Skin, Arenas.Skin);
     attribute(a.Morph, Arenas.Morph);
     attribute(a.CornerTangents, Arenas.CornerTangent);
@@ -127,9 +143,13 @@ void TopologyReadView::Clone(state::Scene &r) {
 ConnectivityRef TopologyReadView::SourceConnectivity(const MeshStore &meshes, uint32_t id) const {
     const auto source = meshes.GetConnectivityRef(id);
     return {
-        {Connectivity.Outgoing.Slot, source.Outgoing.Offset}, {Connectivity.Opposites.Slot, source.Opposites.Offset},
-        {Connectivity.HalfedgeEdges.Slot, source.HalfedgeEdges.Offset}, {Connectivity.HalfedgeFaces.Slot, source.HalfedgeFaces.Offset},
-        {Connectivity.FaceRanges.Slot, source.FaceRanges.Offset}, {Connectivity.Edges.Slot, source.Edges.Offset},
-        {Connectivity.VertexCorners.Slot, source.VertexCorners.Offset}, Connectivity.FanItemsSlot,
+        {Connectivity.Outgoing.Slot, source.Outgoing.Offset},
+        {Connectivity.Opposites.Slot, source.Opposites.Offset},
+        {Connectivity.HalfedgeEdges.Slot, source.HalfedgeEdges.Offset},
+        {Connectivity.HalfedgeFaces.Slot, source.HalfedgeFaces.Offset},
+        {Connectivity.FaceRanges.Slot, source.FaceRanges.Offset},
+        {Connectivity.Edges.Slot, source.Edges.Offset},
+        {Connectivity.VertexCorners.Slot, source.VertexCorners.Offset},
+        Connectivity.FanItemsSlot,
     };
 }

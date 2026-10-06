@@ -36,8 +36,7 @@ struct FunctionConstant {
 // pipelines in immutable chunks under the writable user archive path.
 // PipelineCompiler() returns null on older devices, which use the classic APIs without archive caching.
 struct LibraryCache {
-    LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive = {},
-                 std::filesystem::path builtin_archive = {}, bool prune_archive_chunks = true, bool archive_only = false);
+    LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive = {}, std::filesystem::path builtin_archive = {}, bool prune_archive_chunks = true, bool archive_only = false);
     ~LibraryCache();
     LibraryCache(const LibraryCache &) = delete;
     LibraryCache &operator=(const LibraryCache &) = delete;
@@ -54,7 +53,10 @@ struct LibraryCache {
     bool ArchiveOnly() const { return ReadArchiveOnly; }
     NS::SharedPtr<MTL::ComputePipelineState> FindComputePipeline(const MTL4::ComputePipelineDescriptor *) const;
     NS::SharedPtr<MTL::RenderPipelineState> FindRenderPipeline(const MTL4::PipelineDescriptor *) const;
-    void NotePipelineCreated() { PipelineCreated = true; ++CompileMisses; }
+    void NotePipelineCreated() {
+        PipelineCreated = true;
+        ++CompileMisses;
+    }
     uint32_t ArchiveHitCount() const { return ArchiveHits; }
     uint32_t CompileMissCount() const { return CompileMisses; }
     uint32_t BinaryLibraryLoadCount() const { return BinaryLibraries; }

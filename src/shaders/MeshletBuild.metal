@@ -6,6 +6,7 @@
 #include "BlockScan.metal"
 #include "RadixSort.metal"
 #include "ElementWorkShared.metal"
+#include "ElementMembershipRead.metal"
 #include "EnclosingSphere.metal"
 #include "ConnectivityRead.metal"
 #include "gpu/CornerClass.h"
@@ -37,7 +38,7 @@ struct MeshletBuilder {
     ConnectivityView Conn() const { return {B, J.Mesh.Connectivity, J.Mesh.FaceCount}; }
     uint Element(uint e) const {
         return J.Elements.Storage.Slot != InvalidSlot ? WorkGroupElement(B,J.Elements,e) :
-            J.Mesh.TriangleSlot != InvalidSlot ? J.Mesh.TriangleOffset+e : e;
+            J.Topology == 0u && J.Mesh.TriangleSlot != InvalidSlot ? J.Mesh.TriangleOffset+e : e;
     }
     uint TriangleCorner(uint t, uint c) const {
         return J.Mesh.TriangleSlot != InvalidSlot ? TriangleCornerHandle(B,J.Mesh.TriangleSlot,c,t) : J.Mesh.IndexSlotOffset.Offset+t*3u+c;
@@ -66,10 +67,11 @@ struct MeshletBuilder {
         return p / float(count);
     }
     uint SourcePrimitive(uint e) const {
-        if (J.Mesh.ElementPrimitives.ValuesSlot == InvalidSlot) return 0u;
+        const auto attributes = J.Topology == 0u ? J.Mesh.FacePrimitives : J.Mesh.VertexPrimitives;
+        if (attributes.ValuesSlot == InvalidSlot) return 0u;
         const uint owner = J.Topology == 0u ? TriangleFaceHandle(B,J.Mesh.Connectivity,J.Mesh.TriangleSlot,Element(e)) :
             J.Mesh.VertexOffset + VertexIndex(e * CornersPerElement());
-        return BindlessBuffer(uint,B.ElementPrimitiveBuffer,J.Mesh.ElementPrimitives.ValuesSlot)[ElementAttributeIndex(B,J.Mesh.ElementPrimitives,owner)];
+        return BindlessBuffer(uint,B.ElementPrimitiveBuffer,attributes.ValuesSlot)[ElementAttributeIndex(B,attributes,owner)];
     }
     uint Primitive(uint e) const { return WorkRank(B,J.Materials,SourcePrimitive(e)); }
     CornerRenderKey Keys() const { return {B,J.Mesh,Pc.CornerSectors,Pc.FaceSharpnessSlot}; }
@@ -110,13 +112,26 @@ inline uint SpatialKeyCoordinate(float value, float lo, float hi, uint mask) {
 #define BUILD_ARGS uint batch_group [[threadgroup_position_in_grid]], device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]], constant MeshletBuildPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 #define BUILD_CONTEXT const uint2 tile_entry = BindlessBuffer(uint2,bindless.Buffer,pc.TilesSlot)[pc.FirstTile+batch_group]; const MeshletBuilder b{bindless, pc, BindlessBuffer(MeshletBuildJob, bindless.Buffer, pc.JobsSlot)[tile_entry.x]}; const auto j = b.J
 
+// Full scene builds select drawable membership directly from canonical blocks.
+// Face edges and incident vertices are already represented by their higher-dimensional geometry.
+kernel void MeshletBuildElements(uint lane [[thread_index_in_threadgroup]], BUILD_ARGS) {
+    BUILD_CONTEXT;
+    const ElementWorkSeedJob source{.Work=j.Elements,.BlockIds=j.ElementBlockIds,.BlockCount=j.ElementBlockCount,
+        .BlocksSlot=j.ElementBlocksSlot,.Owner=j.ElementOwner,.SelectionSlot=InvalidSlot};
+    const uint element=MembershipElement(bindless,source,tile_entry.y,lane);
+    if (element==InvalidOffset) return;
+    if (j.Topology==1u && b.Conn().HalfedgeFace(b.Conn().EdgeHalfedge(element))!=InvalidOffset) return;
+    if (j.Topology==2u && b.Conn().Incoming(element).y!=0u) return;
+    MarkWork(bindless,j.Elements,element);
+}
+
 kernel void MeshletBuildMaterials(uint lane [[thread_index_in_threadgroup]], BUILD_ARGS) {
     BUILD_CONTEXT;
     const uint i=tile_entry.y*256u+lane;
     if (i >= j.ElementCount) return;
     if (j.Elements.Storage.Slot != InvalidSlot) {
         const uint count = BindlessBuffer(uint,bindless.Buffer,j.Elements.Storage.Slot)[j.Elements.Storage.Offset+5u];
-        if (count != j.ElementCount && i == 0u) {
+        if ((count > j.ElementCount || (j.ElementBlockIds.Slot == InvalidSlot && count != j.ElementCount)) && i == 0u) {
             atomic_store_explicit(BindlessBufferMutable(atomic_uint,bindless.Buffer,j.Materials.Storage.Slot)+j.Materials.Storage.Offset+1u,1u,memory_order_relaxed);
         }
         if (i >= count) return;
@@ -506,9 +521,9 @@ kernel void MeshletBuildPrimitives(uint lane [[thread_index_in_threadgroup]], BU
     const uint node = prim[7] ? j.NodeOffset + p : InvalidOffset;
     BindlessBufferMutable(uint,bindless.Buffer,pc.LodParentsSlot)[j.NodeOffset+p] = InvalidOffset;
     const uint source_primitive = WorkGroupElement(bindless,j.Materials,p);
-    BindlessBufferMutable(uint,bindless.Buffer,pc.PrimitiveRoutesSlot)[j.PrimitiveRoutes + source_primitive] = j.PrimitiveOffset+p;
+    BindlessBufferMutable(uint,bindless.Buffer,pc.PrimitiveRoutesSlot)[j.PrimitiveRoutes + 3u*source_primitive + j.Topology] = j.PrimitiveOffset+p;
     BindlessBufferMutable(PrimitiveRecord, bindless.Buffer, pc.PrimitivesSlot)[j.PrimitiveOffset + p] = {
-        .AuxIndices = j.AuxIndices, .PrimitiveIndex = source_primitive, .PrimitiveMaterialOffset = j.Mesh.PrimitiveMaterialOffset,
+        .AuxIndices = j.AuxIndices, .PrimitiveIndex = source_primitive, .Topology = j.Topology, .PrimitiveMaterialOffset = j.Mesh.PrimitiveMaterialOffset,
         .TriangleOffset = j.TriangleOffset + prim[1], .TriangleCount = prim[0],
         .MeshletCount = prim[7], .Level0Count = prim[7], .LodRootNode = node, .LodFinestNode = node,
         .LodAttributes = ~0u,

@@ -39,12 +39,12 @@ struct MeshEditWork {
     // Canonical element handles.
     // Bounds work names canonical vertex blocks.
     ElementWork Candidates, Vertices, Faces, Normals, Meshlets, BoundsTiles;
-    std::array<ElementWork,3> BoundsLevels;
+    std::array<ElementWork, 3> BoundsLevels;
     // A repeated position refresh has the same local dependency footprint.
     // Keep only its address ranges.
     // The actual work and values remain on GPU.
     std::vector<Range> RefreshRanges;
-    bool CandidateReady{}, FootprintReady{}, Modified{}, PreviewActive{}, RequiresPose{};
+    bool CandidateReady{}, FootprintReady{}, Modified{}, PreviewActive{}, RequiresPose{}, TessellationPreview{};
     Range WorkBudget;
 };
 

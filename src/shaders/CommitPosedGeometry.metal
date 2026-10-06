@@ -25,11 +25,12 @@ inline void CountWorkBlocks(device const BindlessSet &b, constant CommitPosedGeo
     atomic_fetch_add_explicit(count, total, memory_order_relaxed);
 }
 
-inline void MarkOwnedMeshlet(device const BindlessSet &b, constant CommitPosedGeometryPushConstants &pc, uint element) {
-    if (pc.ElementMeshlets.ValuesSlot == InvalidSlot) return;
-    const uint block = BindlessBuffer(uint,b.Buffer,pc.ElementMeshlets.BlocksSlot)[element/256u];
+inline void MarkOwnedMeshlet(device const BindlessSet &b, constant CommitPosedGeometryPushConstants &pc, uint topology, uint element) {
+    const auto map=pc.ElementMeshlets[topology];
+    if (map.ValuesSlot == InvalidSlot) return;
+    const uint block = BindlessBuffer(uint,b.Buffer,map.BlocksSlot)[element/256u];
     if (!block) return;
-    const uint owner = BindlessBuffer(uint,b.Buffer,pc.ElementMeshlets.ValuesSlot)[(block-1u)*256u+element%256u];
+    const uint owner = BindlessBuffer(uint,b.Buffer,map.ValuesSlot)[(block-1u)*256u+element%256u];
     if (owner != InvalidOffset) MarkWork(b,pc.Meshlets,owner);
 }
 
@@ -64,21 +65,23 @@ kernel void CommitPosedGeometryKernel(
         const uint i = WorkElement(bindless, pc.Candidates, invocation);
         if (i == InvalidOffset) return;
         const ConnectivityView conn{bindless, pc.Entry.Connectivity, pc.Entry.FaceCount};
+        const auto fan=conn.Fan(i);
         if (pc.Phase == 0u) {
-            const uint incident = conn.Incoming(i).y;
-            CountWorkBlocks(bindless, pc, 0u, incident);
-            if (pc.Entry.FaceCount == 0u) CountWorkBlocks(bindless, pc, 2u, pc.Topology == 2u ? 1u : incident);
+            uint faces=0u, wires=0u;
+            for (const auto item : fan) {
+                if (item.y==InvalidOffset) ++wires;
+                else ++faces;
+            }
+            CountWorkBlocks(bindless, pc, 0u, faces);
+            CountWorkBlocks(bindless, pc, 2u, fan.Count ? wires : 1u);
             return;
         }
         MarkWork(bindless, pc.BoundsTiles, i / 256u);
-        if (pc.Entry.FaceCount == 0u) {
-            if (pc.Topology == 2u) MarkOwnedMeshlet(bindless,pc,i);
-            else {
-                conn.ForEachIncidentEdge(i, [&](uint edge) { MarkOwnedMeshlet(bindless,pc,edge); });
-            }
-            return;
+        if (!fan.Count) MarkOwnedMeshlet(bindless,pc,2u,i);
+        for (const auto item : fan) {
+            if (item.y==InvalidOffset) MarkOwnedMeshlet(bindless,pc,1u,conn.Edge(item.x));
+            else MarkWork(bindless, pc.Faces, item.y);
         }
-        for (const auto item : conn.Fan(i)) MarkWork(bindless, pc.Faces, item.y);
     } else {
         const uint f = WorkElement(bindless, pc.Faces, invocation);
         if (f == InvalidOffset) return;
@@ -92,7 +95,7 @@ kernel void CommitPosedGeometryKernel(
         }
         const uint first = triangles[f], end = first + loop.y - loop.x - 2u;
         device const uint *corners = BindlessBuffer(uint, bindless.IndexBuffer, pc.Entry.Corners.Slot);
-        for (uint t = first; t < end; ++t) MarkOwnedMeshlet(bindless,pc,t);
+        for (uint t = first; t < end; ++t) MarkOwnedMeshlet(bindless,pc,0u,t);
         for (uint h = loop.x; h < loop.y; ++h) MarkWork(bindless, pc.Normals, corners[h]);
     }
 }

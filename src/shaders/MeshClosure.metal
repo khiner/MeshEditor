@@ -51,13 +51,16 @@ kernel void MeshClosureExpand(
             }
         }
     } else if (element != InvalidOffset && pc.InputDomain == 3u) {
-        // A line holds its two corners and their vertices.
-        const uint h = conn.EdgeHalfedge(element), pair = conn.Previous(h);
+        // Face-owned edges enter through their faces; a wire owns its explicit pair.
+        const uint h = conn.EdgeHalfedge(element);
+        if (conn.HalfedgeFace(h) != InvalidOffset) return;
+        const uint pair = conn.Previous(h);
         device const uint *corners = BindlessBuffer(uint, b.IndexBuffer, pc.CornerSlot);
         MarkWork(b, pc.Work[1], h);
         MarkWork(b, pc.Work[1], pair);
         MarkWork(b, pc.Work[0], corners[h]);
         MarkWork(b, pc.Work[0], corners[pair]);
+        MarkWork(b, pc.Work[3], element);
     } else if (element != InvalidOffset) {
         const uint2 loop = conn.FaceHalfedges(element);
         device const uint *corners = BindlessBuffer(uint, b.IndexBuffer, pc.CornerSlot);
@@ -71,7 +74,7 @@ kernel void MeshClosureExpand(
     const uint i = group * 256u + lane;
     if (i < pc.RetainedBound) {
         const uint v = WorkGroupElement(b, pc.Retained, i);
-        if (v != InvalidOffset) MarkWork(b, pc.Work[0], v);
+        if (v != InvalidOffset && (!pc.RetainIsolatedOnly || !conn.Incoming(v).y)) MarkWork(b, pc.Work[0], v);
     }
 }
 

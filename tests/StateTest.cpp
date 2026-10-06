@@ -1,5 +1,5 @@
-#include "RunSuites.h"
 #include "RangeAllocator.h"
+#include "RunSuites.h"
 #include "scene/Entity.h"
 #include "state/Scene.h"
 
@@ -98,7 +98,10 @@ int main() {
         r.emplace<Name>(entities[64], "64");
         r.emplace<Selected>(entities[64]);
         r.ClearChanges();
-        struct Capture { std::vector<std::string> Values; uint32_t Calls{}; };
+        struct Capture {
+            std::vector<std::string> Values;
+            uint32_t Calls{};
+        };
         Capture captured;
         std::vector<std::string> notified;
         r.HistoryOwner = &captured;
@@ -181,10 +184,11 @@ int main() {
         r.HistoryOwner = &old;
         r.Capture = [](state::Scene &r, state::TypeId type, std::span<const state::PageMask> pages) {
             if (type == state::Type<Name>()) {
-                for (const auto [page, mask] : pages) for (auto bits = mask; bits; bits &= bits - 1u) {
-                    const auto e = r.EntityAt(page * state::Table::PageCount + std::countr_zero(bits));
-                    static_cast<std::vector<std::string> *>(r.HistoryOwner)->push_back(r.all_of<Name>(e) ? r.get<Name>(e).Value : "absent");
-                }
+                for (const auto [page, mask] : pages)
+                    for (auto bits = mask; bits; bits &= bits - 1u) {
+                        const auto e = r.EntityAt(page * state::Table::PageCount + std::countr_zero(bits));
+                        static_cast<std::vector<std::string> *>(r.HistoryOwner)->push_back(r.all_of<Name>(e) ? r.get<Name>(e).Value : "absent");
+                    }
             }
         };
         auto &managed = reactive(r, state::Change::Selected);

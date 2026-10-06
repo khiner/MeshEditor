@@ -1,7 +1,7 @@
 #include "project/ComponentPool.h"
+#include "Range.h"
 #include "project/EntityStore.h"
 #include "project/store/RecordPage.h"
-#include "Range.h"
 #include "state/Scene.h"
 
 #include <cassert>
@@ -50,8 +50,7 @@ void ComponentPool::Capture(std::span<const state::PageMask> pages) {
             auto &pool = *static_cast<ComponentPool *>(owner);
             return pool.Present(index) ? std::optional{pool.Copy(uint32_t(index))} : std::nullopt;
         });
-        Trie.MarkDirty(first, count);
-    }, &state::PageMask::Page);
+        Trie.MarkDirty(first, count); }, &state::PageMask::Page);
 }
 
 void ComponentPool::Settle() {
@@ -66,7 +65,8 @@ void ComponentPool::Apply(store::RestorePlan &plan, bool compare) {
         const auto old_mask = Storage().mask(page);
         const bool native = c.Incoming.Destroy != nullptr;
         auto bytes = native ? std::span<const std::byte>{} : c.Incoming.View();
-        const auto mask = c.Erase ? 0u : native ? reinterpret_cast<const snapshot::NativePage *>(c.Incoming.Data)->Mask : store::RecordMask(bytes);
+        const auto mask = c.Erase ? 0u : native ? reinterpret_cast<const snapshot::NativePage *>(c.Incoming.Data)->Mask :
+                                                  store::RecordMask(bytes);
         bool identities_match = true;
         for (auto bits = old_mask; bits; bits &= bits - 1u) {
             const auto index = page * state::Table::PageCount + uint32_t(std::countr_zero(bits));

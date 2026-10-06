@@ -216,7 +216,10 @@ void DrawNodeEditor(Project &session, uint32_t node, bool interactive) {
     bool changed = false, finished = false;
     for (size_t i = 0; auto &recorded_action : draft.RecordedActions) {
         PushID(int(i++));
-        if (recorded_action.Inputs.PreviewSeed) { PopID(); continue; }
+        if (recorded_action.Inputs.PreviewSeed) {
+            PopID();
+            continue;
+        }
         if (leaves > 1) SeparatorText(SpacedName(Label(recorded_action.Action)).c_str());
         action::VisitLeaf(recorded_action.Action, [&]<typename L>(L &leaf) {
             if constexpr (!std::is_empty_v<L>) DrawLeaf(session.R, leaf, changed, finished);

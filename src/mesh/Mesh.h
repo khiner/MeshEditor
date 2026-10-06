@@ -75,7 +75,10 @@ struct HandleRange {
         H operator*() const { return {Block * MeshElementBlockSize + Word * 32u + uint32_t(std::countr_zero(Bits))}; }
         Iterator &operator++() {
             Bits &= Bits - 1u;
-            if (!Bits) { ++Word; Seek(); }
+            if (!Bits) {
+                ++Word;
+                Seek();
+            }
             return *this;
         }
         bool operator==(const Iterator &other) const {
@@ -94,7 +97,11 @@ struct HandleRange {
     };
     std::span<const MeshElementBlock> Blocks;
     uint32_t FirstBlock{null};
-    Iterator begin() const { Iterator it{Blocks, FirstBlock}; it.Seek(); return it; }
+    Iterator begin() const {
+        Iterator it{Blocks, FirstBlock};
+        it.Seek();
+        return it;
+    }
     Iterator end() const { return {Blocks}; }
 };
 } // namespace he
@@ -131,9 +138,8 @@ struct MeshConnectivity {
     he::HH EdgeHalfedge(uint32_t edge) const { return Edges[edge]; }
     he::EH Edge(he::HH hh) const { return HalfedgeToEdge[*hh]; }
 
-    // Returns the halfedge's owner, or empty for edge-only meshes.
+    // Returns the halfedge's face owner, or empty for a wire corner.
     he::FH FaceOf(he::HH hh) const {
-        if (FaceCount == 0) return {};
         return HalfedgeToFace[*hh];
     }
 
@@ -147,7 +153,7 @@ struct MeshConnectivity {
 
     he::HH Previous(he::HH hh) const {
         const auto face = FaceOf(hh);
-        if (!face) return {};
+        if (!face) return Opposites[*hh];
         const auto first = *FaceHalfedge(*face);
         return he::HH(*hh == first ? FaceEnd(*face) - 1u : *hh - 1u);
     }
@@ -170,7 +176,7 @@ struct VertexEdgeIncidence {
         Iterator begin() const { return ++Iterator{C, First, Count}; }
         Iterator end() const { return {C}; }
     };
-    Range Incident(uint32_t v) const { return {&C, C.VertexCorners[v].x,C.VertexCorners[v].y}; }
+    Range Incident(uint32_t v) const { return {&C, C.VertexCorners[v].x, C.VertexCorners[v].y}; }
 };
 
 // Borrows connectivity and vertex data from MeshStore.
@@ -200,7 +206,8 @@ struct Mesh {
     uint32_t FaceCount() const { return C.FaceCount; }
     // The MeshPrimitiveTopology its live elements draw as: faces, else edges, else points.
     uint32_t PrimitiveTopology() const {
-        return uint32_t(FaceCount() ? MeshPrimitiveTopology::Triangle : EdgeCount() ? MeshPrimitiveTopology::Line : MeshPrimitiveTopology::Point);
+        return uint32_t(FaceCount() ? MeshPrimitiveTopology::Triangle : EdgeCount() ? MeshPrimitiveTopology::Line :
+                                                                                      MeshPrimitiveTopology::Point);
     }
     uint32_t HalfEdgeCount() const { return C.HalfedgeCount; }
     bool HasClosedSurface() const { return FaceCount() && uint64_t(HalfEdgeCount()) == 2ull * EdgeCount(); }

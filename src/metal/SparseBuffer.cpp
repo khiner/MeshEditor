@@ -75,9 +75,7 @@ void SparseBuffer::MapCpu(uint64_t first, std::span<const PhysicalPageRef> pages
     ForEachPhysicalRun(pages, [&](size_t i, size_t count) {
         mach_vm_address_t destination = CpuAddress + (first + i) * PhysicalPageBytes;
         vm_prot_t current{}, maximum{};
-        CheckVm(mach_vm_remap(mach_task_self(), &destination, count * PhysicalPageBytes, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
-                             mach_task_self(), reinterpret_cast<mach_vm_address_t>(pages[i]->Contents().data()), false,
-                             &current, &maximum, VM_INHERIT_NONE), "Map canonical CPU arena pages");
+        CheckVm(mach_vm_remap(mach_task_self(), &destination, count * PhysicalPageBytes, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(), reinterpret_cast<mach_vm_address_t>(pages[i]->Contents().data()), false, &current, &maximum, VM_INHERIT_NONE), "Map canonical CPU arena pages");
     });
 }
 

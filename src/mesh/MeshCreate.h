@@ -17,11 +17,12 @@ struct MeshSource {
     std::optional<ArmatureDeformData> Deform{};
     std::optional<MorphTargetData> Morph{};
     bool Weld{false};
+    bool KeepLooseVertices{true}; // When welding, retain vertices not referenced by faces or wires.
     bool FlatShaded{false};
 };
 
 // MorphTangentDeltas returns the target-major tangent deltas the arena doesn't store, compacted to the welded vertex set.
-// AuthoredCornerNormals returns a triangle mesh's authored normals in fan order for EncodeAuthoredCornerNormals once its base normals derive.
+// AuthoredCornerNormals returns authored normals in polygon-corner order for EncodeAuthoredCornerNormals once its base normals derive.
 struct CreatedMesh {
     uint32_t StoreId;
     std::vector<vec3> MorphTangentDeltas{};

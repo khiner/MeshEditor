@@ -93,9 +93,19 @@ mesheditor_library(MeshEditorMesh HOT
     src/mesh/NormalDeriveGpu.cpp
     src/mesh/CornerClassificationGpu.cpp
     src/mesh/SelectionUpdateGpu.cpp
+    src/mesh/SelectionIndex.cpp
     src/mesh/MeshConnectivityGpu.cpp
     src/mesh/VertexFanBuild.cpp
     src/mesh/MeshClosure.cpp
+    src/mesh/RecalculateNormals.cpp
+    src/mesh/BeautifyFaces.cpp
+    src/mesh/EdgeSlide.cpp
+    src/mesh/EdgeChains.cpp
+    src/mesh/Flatten.cpp
+    src/mesh/Unsubdivide.cpp
+    src/mesh/Decimate.cpp
+    src/mesh/SnapSymmetry.cpp
+    src/mesh/EditVisibility.cpp
     src/mesh/ConnectivityEditWork.cpp
     src/mesh/PageFootprint.cpp
     src/mesh/ConnectivityWritePages.cpp

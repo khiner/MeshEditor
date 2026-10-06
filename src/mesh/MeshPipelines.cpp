@@ -10,6 +10,7 @@ constexpr std::array<std::pair<const char *, const char *>, size_t(MeshPass::Cou
     {"MeshConnectivity.metal", "MeshConnectivityInit"},
     {"MeshConnectivity.metal", "MeshConnectivityInsert"},
     {"MeshConnectivity.metal", "MeshConnectivityMatchEdges"},
+    {"MeshConnectivity.metal", "MeshConnectivityClassifyEdges"},
     {"MeshConnectivity.metal", "MeshConnectivityResolve"},
     {"MeshConnectivity.metal", "MeshConnectivityLink"},
     {"MeshConnectivity.metal", "MeshConnectivityWordBlockSum"},
@@ -37,6 +38,7 @@ constexpr std::array<std::pair<const char *, const char *>, size_t(MeshPass::Cou
     {"VertexWeld.metal", "VertexWeldCompact"},
     {"VertexWeld.metal", "VertexWeldWriteBack"},
     {"VertexNormalDerive.metal", "VertexNormalDeriveKernel"},
+    {"RetessellateFaces.metal", "RetessellateFaces"},
     {"ElementWorkSeed.metal", "ElementWorkSeed"},
     {"CornerClassification.metal", "CornerClassificationCount"},
     {"CornerClassification.metal", "CornerClassificationPlan"},
@@ -48,7 +50,6 @@ constexpr std::array<std::pair<const char *, const char *>, size_t(MeshPass::Cou
     {"MeshClosure.metal", "MeshClosureTriangles"},
     {"SelectionUpdate.metal", "MarkSelectionNeighbors"},
     {"SelectionUpdate.metal", "UpdateSelectionBlocks"},
-    {"SelectionUpdate.metal", "ReduceSelectionRoots"},
     {"SelectionUpdate.metal", "GatherSelectedElements"},
     {"ConnectivityEdit.metal", "ConnectivityEditWork"},
     {"SpatialFaceQuery.metal", "SpatialFaceQueryCount"},
@@ -70,9 +71,11 @@ constexpr std::array<std::pair<const char *, const char *>, size_t(MeshPass::Cou
     {"TopologyCollapse.metal", "TopologyCollapseReduce"},
     {"TopologyCollapse.metal", "TopologyCollapseCarry"},
     {"TopologyCollapse.metal", "TopologyCollapseCenters"},
+    {"MeshTopology.metal", "TopologySelection"},
     {"MeshTopology.metal", "TopologyZero"},
     {"MeshTopology.metal", "TopologyMarkHalfedges"},
     {"MeshTopology.metal", "TopologyMarkFaces"},
+    {"MeshTopology.metal", "TopologyMarkRetainedEdges"},
     {"MeshTopology.metal", "TopologyLink"},
     {"MeshTopology.metal", "TopologyJump"},
     {"MeshTopology.metal", "TopologyConverge"},
@@ -86,7 +89,7 @@ constexpr std::array<std::pair<const char *, const char *>, size_t(MeshPass::Cou
     {"MeshTopology.metal", "TopologyMergeInsert"},
     {"MeshTopology.metal", "TopologyMergeQuery"},
     {"MeshTopology.metal", "TopologyLineKeys"},
-    {"MeshTopology.metal", "TopologyDissolveLimitVertices"},
+    {"MeshTopology.metal", "TopologyFinalizeVertices"},
     {"MeshTopology.metal", "TopologyListFill"},
     {"MeshTopology.metal", "TopologyCountVertices"},
     {"MeshTopology.metal", "TopologyCountHalfedges"},
@@ -100,12 +103,30 @@ constexpr std::array<std::pair<const char *, const char *>, size_t(MeshPass::Cou
     {"MeshTopology.metal", "TopologyFaceTables"},
     {"MeshTopology.metal", "TopologyGatherVertices"},
     {"InsetPreview.metal", "InsetPreviewPositions"},
+    {"VertexPositionEdit.metal", "PositionVerticesGather"},
+    {"EdgeChains.metal", "SpaceEvenlyGather"},
+    {"EdgeChains.metal", "RelaxEdgeLoopsGather"},
+    {"EdgeChains.metal", "CurveBetweenSelected"},
+    {"Circularize.metal", "Circularize"},
+    {"Flatten.metal", "FlattenGroups"},
+    {"VertexPositionEdit.metal", "PositionStatisticsGather"},
+    {"VertexPositionEdit.metal", "PositionStatisticsReduce"},
+    {"VertexPositionEdit.metal", "VertexSlideReference"},
+    {"RecalculateNormals.metal", "RecalculateNormalFaceCenters"},
+    {"RecalculateNormals.metal", "RecalculateNormalCenters"},
+    {"RecalculateNormals.metal", "RecalculateNormalCandidates"},
+    {"RecalculateNormals.metal", "RecalculateNormalOrientation"},
+    {"VertexPositionEdit.metal", "PlanarFacePlanes"},
+    {"VertexPositionEdit.metal", "WriteEditedPositions"},
+    {"FaceAttributeEdit.metal", "EditFaceUvs"},
+    {"FaceAttributeEdit.metal", "EditFaceColors"},
     {"MeshletBoundsRefit.metal", "MeshletBoundsRefit"},
     {"MeshTopology.metal", "TopologyGatherCorners"},
     {"MeshTopology.metal", "TopologyCustomNormals"},
     {"MeshTopology.metal", "TopologyEdgeAttributes"},
     {"LodNodeRefit.metal", "LodNodeRefit"},
     {"MeshletOwners.metal", "MeshletOwners"},
+    {"MeshletBuild.metal", "MeshletBuildElements"},
     {"MeshletBuild.metal", "MeshletBuildMaterials"},
     {"MeshletBuild.metal", "MeshletBuildInit"},
     {"MeshletBuild.metal", "MeshletBuildBounds"},
@@ -121,9 +142,8 @@ constexpr std::array<std::pair<const char *, const char *>, size_t(MeshPass::Cou
     {"MeshletBuild.metal", "MeshletBuildPrimitives"},
     {"MeshClone.metal", "CopyByteRuns"},
     {"MeshClone.metal", "GatherByRank"},
-    {"MeshClone.metal", "RebaseIndexRuns"},
+    {"MeshClone.metal", "RebaseByBlock"},
     {"MeshClone.metal", "RebaseByRank"},
-    {"MeshClone.metal", "CopyReferencePairs"},
 }};
 
 } // namespace
@@ -132,16 +152,16 @@ MeshPipelines::MeshPipelines(mtl::LibraryCache &libraries) : Libraries(libraries
 
 void MeshPipelines::PrewarmAsync() {
     if (PrewarmWorker.joinable() || !Libraries.PipelineCompiler()) return;
-    PrewarmWorker=std::jthread([this](std::stop_token stop) {
+    PrewarmWorker = std::jthread([this](std::stop_token stop) {
         try {
-            auto cache=Libraries.PrewarmCache();
-            for (size_t i=0u;i<PassFunctions.size() && !stop.stop_requested();++i) {
+            auto cache = Libraries.PrewarmCache();
+            for (size_t i = 0u; i < PassFunctions.size() && !stop.stop_requested(); ++i) {
                 {
                     std::lock_guard lock{Mutex};
                     if (Pipelines[i]) continue;
                 }
                 try {
-                    mtl::ComputePipeline pipeline{*cache,{PassFunctions[i].first,PassFunctions[i].second}};
+                    mtl::ComputePipeline pipeline{*cache, {PassFunctions[i].first, PassFunctions[i].second}};
                     std::lock_guard lock{Mutex};
                     if (!Pipelines[i]) Pipelines[i].emplace(std::move(pipeline));
                 } catch (...) {

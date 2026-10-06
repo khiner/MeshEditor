@@ -5,7 +5,9 @@
 #include <vector>
 
 struct RenderArenas;
-namespace mtl { struct ComputeChain; }
+namespace mtl {
+struct ComputeChain;
+}
 
 // Returns the seed groups and every group their proxies feed, transitively, in ascending order.
 std::vector<uint32_t> ClusterGroupClosure(const RenderArenas &, std::span<const uint32_t> seeds);

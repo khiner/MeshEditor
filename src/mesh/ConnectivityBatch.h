@@ -16,6 +16,7 @@ inline constexpr std::array ConnectivityPasses{
     TiledPass{MeshPass::ConnectivityInit, 0},
     TiledPass{MeshPass::ConnectivityInsert, 1},
     TiledPass{MeshPass::ConnectivityMatchEdges, 5},
+    TiledPass{MeshPass::ConnectivityClassifyEdges, 5},
     TiledPass{MeshPass::ConnectivityResolve, 1},
     TiledPass{MeshPass::ConnectivityLink, 1},
     TiledPass{MeshPass::ConnectivityWordBlockSum, 2},

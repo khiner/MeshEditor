@@ -5,7 +5,10 @@
 #include <span>
 #include <vector>
 
-namespace MTL { class Buffer; class Heap; }
+namespace MTL {
+class Buffer;
+class Heap;
+} // namespace MTL
 
 // Canonical buffers and page clones map physical pages of this size.
 inline constexpr uint64_t PhysicalPageBytes = 256u << 10;

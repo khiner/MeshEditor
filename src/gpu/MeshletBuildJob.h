@@ -37,8 +37,11 @@ struct MeshletBuildJob {
     uint32_t MeshletOffset DEFAULT();
     uint32_t PrimitiveOffset DEFAULT();
     uint32_t NodeOffset DEFAULT();
-    uint32_t PrimitiveRoutes DEFAULT(); // The destination's first route, indexed by source primitive.
+    uint32_t PrimitiveRoutes DEFAULT(); // The destination's first route, indexed by source material * 3 + topology.
+    // Canonical membership to gather; absent when Elements is supplied by a local edit.
+    SlotOffset ElementBlockIds DEFAULT();
+    uint32_t ElementBlockCount DEFAULT(), ElementBlocksSlot DEFAULT(InvalidSlot), ElementOwner DEFAULT(InvalidOffset);
     ElementWork Elements DEFAULT(), Materials DEFAULT();
     uint32_t ExistingPrimitive DEFAULT(InvalidOffset), ExistingGroup DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(MeshletBuildJob) == 464);
+static_assert(sizeof(MeshletBuildJob) == 484);

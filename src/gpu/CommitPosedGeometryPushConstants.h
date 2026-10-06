@@ -1,7 +1,7 @@
 #pragma once
 
-#include "gpu/ElementWork.h"
 #include "gpu/ElementAttributeRef.h"
+#include "gpu/ElementWork.h"
 #include "gpu/GeometryEditMode.h"
 #include "gpu/NormalDeriveEntry.h"
 #include "gpu/SlotOffset.h"
@@ -24,11 +24,10 @@ struct CommitPosedGeometryPushConstants {
     Transform Delta DEFAULT();
     vec3 Pivot DEFAULT();
     uint32_t FaceTriangleStartSlot DEFAULT();
-    uint32_t Topology DEFAULT();
-    ElementAttributeRef ElementMeshlets DEFAULT();
+    ElementAttributeRef ElementMeshlets[3] DEFAULT();
     uint32_t Phase DEFAULT();
     uint32_t BudgetOffset DEFAULT();
     uint32_t ApplyTransform DEFAULT(1);
     GeometryEditMode Mode DEFAULT();
 };
-static_assert(sizeof(CommitPosedGeometryPushConstants) == 408, "CommitPosedGeometryPushConstants size");
+static_assert(sizeof(CommitPosedGeometryPushConstants) == 420, "CommitPosedGeometryPushConstants size");

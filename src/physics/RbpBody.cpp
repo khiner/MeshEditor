@@ -120,12 +120,12 @@ void UpdateRbpBody(rbp::World &world, RbpBody &body, const Transform &node, cons
     const auto desc = DescribeBody(updated, node, motion, velocity, world.Filters[body.Body].Sensor);
     const auto mass = *desc.Mass;
     world.SetBodyMass(body.Body, {
-        .InvInertiaLocal = {mass.Inertia.x > 0 ? 1 / mass.Inertia.x : 0, mass.Inertia.y > 0 ? 1 / mass.Inertia.y : 0, mass.Inertia.z > 0 ? 1 / mass.Inertia.z : 0},
-        .InvMass = mass.Mass > 0 ? 1 / mass.Mass : 0,
-        .GravityScale = desc.GravityScale,
-        .LinearDamping = desc.LinearDamping,
-        .AngularDamping = desc.AngularDamping,
-    });
+                                     .InvInertiaLocal = {mass.Inertia.x > 0 ? 1 / mass.Inertia.x : 0, mass.Inertia.y > 0 ? 1 / mass.Inertia.y : 0, mass.Inertia.z > 0 ? 1 / mass.Inertia.z : 0},
+                                     .InvMass = mass.Mass > 0 ? 1 / mass.Mass : 0,
+                                     .GravityScale = desc.GravityScale,
+                                     .LinearDamping = desc.LinearDamping,
+                                     .AngularDamping = desc.AngularDamping,
+                                 });
     body = updated;
     StoreInitialState(world, body, desc);
 }

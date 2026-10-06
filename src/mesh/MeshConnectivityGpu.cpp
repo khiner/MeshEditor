@@ -1,12 +1,12 @@
 #include "mesh/MeshConnectivityGpu.h"
 
 #include "Profile.h"
-#include "mesh/ConnectivityBatch.h"
-#include "mesh/VertexFanBuild.h"
 #include "gpu/TiledJobPushConstants.h"
+#include "mesh/ConnectivityBatch.h"
 #include "mesh/MeshStore.h"
 #include "mesh/PageFootprint.h"
 #include "mesh/ScratchChunks.h"
+#include "mesh/VertexFanBuild.h"
 #include "state/Scene.h"
 
 // Probing stays short at a load factor below three quarters. Layout arithmetic
@@ -46,11 +46,13 @@ void AddConnectivityJob(ConnectivityBatch &batch, MeshConnectivityJob job) {
     if (job.SourceEdges.Storage.Slot == InvalidSlot) job.SourceEdges.Count = job.SourceEdgeCount;
     batch.AllocateScratch(LayoutConnectivityScratch(job, batch.ScratchWords));
     batch.AddJob(job, {
-        TileCount(std::max({job.TableMask + 1u, job.HalfedgeCount, job.VertexCount}), TileElements),
-        TileCount(job.HalfedgeCount, TileElements), job.WordBlockCount,
-        TileCount(job.VertexCount, TileElements), TileCount(job.FaceCount, TileElements),
-        TileCount(job.SourceEdgeCount, TileElements),
-    });
+                          TileCount(std::max({job.TableMask + 1u, job.HalfedgeCount, job.VertexCount}), TileElements),
+                          TileCount(job.HalfedgeCount, TileElements),
+                          job.WordBlockCount,
+                          TileCount(job.VertexCount, TileElements),
+                          TileCount(job.FaceCount, TileElements),
+                          TileCount(job.SourceEdgeCount, TileElements),
+                      });
 }
 
 namespace {
@@ -83,14 +85,14 @@ void BuildConnectivityNow(state::Scene &r, std::span<const uint32_t> store_ids) 
             const auto blocks = RunBlocks(arenas.Vertices.First(record.Vertices), arenas.Vertices.Count(record.Vertices));
             vertex_blocks.insert(vertex_blocks.end(), blocks.begin(), blocks.end());
             AddConnectivityJob(batch, MeshConnectivityJob{
-                .Corners = {corners.Slot, corners.Offset},
-                .Connectivity = meshes.GetConnectivityRef(id),
-                .EdgeHandles = {.First = arenas.EdgeHalfedges.First(record.EdgeData)},
-                .VertexCount = arenas.Vertices.Count(record.Vertices),
-                .HalfedgeCount = corners.Count,
-                .FaceCount = arenas.FaceTriangles.Count(record.FaceData),
-                .FaceStarts = record.ConnectivityFaceStarts ? 1u : 0u,
-            });
+                                          .Corners = {corners.Slot, corners.Offset},
+                                          .Connectivity = meshes.GetConnectivityRef(id),
+                                          .EdgeHandles = {.First = arenas.EdgeHalfedges.First(record.EdgeData)},
+                                          .VertexCount = arenas.Vertices.Count(record.Vertices),
+                                          .HalfedgeCount = corners.Count,
+                                          .FaceCount = arenas.FaceTriangles.Count(record.FaceData),
+                                          .FaceStarts = record.ConnectivityFaceStarts ? 1u : 0u,
+                                      });
         }
         // Full output allocations already reserve their edge capacity.
         batch.Encode(chain, GetMeshPipelines(r), TiledJobPushConstants{}, ConnectivityPasses);

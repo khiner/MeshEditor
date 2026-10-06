@@ -37,60 +37,45 @@ struct PreparedMesh {
 PreparedMesh PrepareMeshSources(MeshData &data, MeshVertexAttributes &attrs, MeshPrimitives &primitives) {
     const uint32_t face_count = data.FaceCount();
 
-    // Sort faces by primitive index so triangles are grouped by primitive in the index buffer.
-    if (!primitives.ElementPrimitiveIndices.empty() && primitives.ElementPrimitiveIndices.size() == face_count &&
-        !std::ranges::all_of(primitives.ElementPrimitiveIndices, [&](uint32_t pi) { return pi == primitives.ElementPrimitiveIndices[0]; })) {
+    // Sort only when needed; gathering corners below follows the reordered faces.
+    auto &indices = primitives.ElementPrimitiveIndices;
+    if (indices.size() == face_count && !std::ranges::is_sorted(indices)) {
         std::vector<uint32_t> perm(face_count);
         std::iota(perm.begin(), perm.end(), 0u);
-        std::stable_sort(perm.begin(), perm.end(), [&](uint32_t a, uint32_t b) {
-            return primitives.ElementPrimitiveIndices[a] < primitives.ElementPrimitiveIndices[b];
-        });
-        bool already_sorted = true;
-        for (uint32_t i = 0; i < face_count; ++i) {
-            if (perm[i] != i) {
-                already_sorted = false;
-                break;
-            }
+        std::stable_sort(perm.begin(), perm.end(), [&](uint32_t a, uint32_t b) { return indices[a] < indices[b]; });
+        // A triangle mesh keeps arithmetic offsets, so only its corners permute.
+        const bool spelled_offsets = !data.FaceOffsets.empty();
+        std::vector<uint32_t> sorted_offsets, sorted_corners, sorted_indices;
+        if (spelled_offsets) {
+            sorted_offsets.reserve(face_count + 1u);
+            sorted_offsets.push_back(0u);
         }
-        if (!already_sorted) {
-            // A mesh of triangles keeps its offsets arithmetic, so only the corners permute.
-            const bool spelled_offsets = !data.FaceOffsets.empty();
-            std::vector<uint32_t> sorted_offsets, sorted_corners, sorted_fpi(face_count);
-            if (spelled_offsets) {
-                sorted_offsets.reserve(face_count + 1);
-                sorted_offsets.emplace_back(0u);
-            }
-            sorted_corners.reserve(data.FaceCorners.size());
-            for (uint32_t i = 0; i < face_count; ++i) {
-                const auto face = data.Face(perm[i]);
-                sorted_corners.insert(sorted_corners.end(), face.begin(), face.end());
-                if (spelled_offsets) sorted_offsets.emplace_back(uint32_t(sorted_corners.size()));
-                sorted_fpi[i] = primitives.ElementPrimitiveIndices[perm[i]];
-            }
-            data.FaceOffsets = std::move(sorted_offsets);
-            data.FaceCorners = std::move(sorted_corners);
-            primitives.ElementPrimitiveIndices = std::move(sorted_fpi);
+        sorted_corners.reserve(data.FaceCorners.size());
+        sorted_indices.reserve(face_count);
+        for (const auto source : perm) {
+            const auto face = data.Face(source);
+            sorted_corners.insert(sorted_corners.end(), face.begin(), face.end());
+            if (spelled_offsets) sorted_offsets.push_back(uint32_t(sorted_corners.size()));
+            sorted_indices.push_back(indices[source]);
         }
+        data.FaceOffsets = std::move(sorted_offsets);
+        data.FaceCorners = std::move(sorted_corners);
+        indices = std::move(sorted_indices);
     }
 
     // Tangents, colors and UVs attach to polygon corners before welding rewrites vertex indices.
     // The vertex buffer keeps defaults for these channels.
     PreparedMesh prepared;
     if (face_count > 0) {
-        const uint32_t corner_total = (uint32_t(data.FaceCorners.size()) - 2u * face_count) * 3u;
-        const auto gather_corners = [&]<typename T>(std::optional<std::vector<T>> &src, std::vector<T> &out, bool fan_order = false) {
+        const auto gather_corners = [&]<typename T>(std::optional<std::vector<T>> &src, std::vector<T> &out, bool wires = true) {
             if (!src) return;
-            out.reserve(fan_order ? corner_total : data.FaceCorners.size());
-            for (uint32_t fi = 0; fi < face_count; ++fi) {
-                const auto face = data.Face(fi);
-                if (fan_order) {
-                    for (uint32_t k = 1; k + 1 < face.size(); ++k) {
-                        out.emplace_back((*src)[face[0]]);
-                        out.emplace_back((*src)[face[k]]);
-                        out.emplace_back((*src)[face[k + 1]]);
-                    }
-                } else for (const auto v : face) out.emplace_back((*src)[v]);
-            }
+            out.reserve(wires ? data.HalfedgeCount() : data.FaceCorners.size());
+            for (const auto v : data.FaceCorners) out.emplace_back((*src)[v]);
+            if (wires)
+                for (const auto &edge : data.Edges) {
+                    out.emplace_back((*src)[edge[1]]);
+                    out.emplace_back((*src)[edge[0]]);
+                }
             src.reset();
         };
         gather_corners(attrs.Tangents, prepared.Layers.Tangents);
@@ -100,7 +85,7 @@ PreparedMesh PrepareMeshSources(MeshData &data, MeshVertexAttributes &attrs, Mes
         gather_corners(attrs.TexCoords2, prepared.Layers.Uvs[2]);
         gather_corners(attrs.TexCoords3, prepared.Layers.Uvs[3]);
         // Shading normals derive, so the authored stream only seeds the sharpness stores and the custom corner-normal layer.
-        gather_corners(attrs.Normals, prepared.AuthoredCornerNormals, true);
+        gather_corners(attrs.Normals, prepared.AuthoredCornerNormals, false);
     }
     return prepared;
 }
@@ -128,9 +113,11 @@ void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &da
     uint32_t ci = 0;
     for (uint32_t fi = 0; fi < mesh.FaceCount(); ++fi) {
         const auto face = corners.subspan(data.FaceStart(fi), data.FaceSize(fi));
-        const uint32_t corner_count = (face.size() - 2) * 3;
+        const auto corner_count = uint32_t(face.size());
         const auto p0 = vertices[face[0] - meshes.Arenas().Vertices.First(record.Vertices)].Position;
-        const auto cross = Cross(vertices[face[1] - meshes.Arenas().Vertices.First(record.Vertices)].Position - p0, vertices[face[2] - meshes.Arenas().Vertices.First(record.Vertices)].Position - p0);
+        vec3 cross{};
+        for (uint32_t k = 1u; k + 1u < face.size(); ++k)
+            cross += Cross(vertices[face[k] - meshes.Arenas().Vertices.First(record.Vertices)].Position - p0, vertices[face[k + 1u] - meshes.Arenas().Vertices.First(record.Vertices)].Position - p0);
         const auto cross_len = Length(cross);
         bool flat = cross_len > 0.f;
         if (flat) {
@@ -149,15 +136,10 @@ void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &da
     // Sharp-edge inference: an interior edge whose authored corner normals disagree across it at either endpoint splits shading there.
     // The split records as edge sharpness so seam sectors derive.
     if (mesh.EdgeCount() == 0) return;
-    const auto first_triangles = meshes.Arenas().FaceTriangles.Get(record.FaceData);
     const auto sharp_edges = meshes.EditEdgeSharpness(id);
     const auto &c = mesh.GetConnectivity();
-    // The authored normal at face loop position `k`, read from any of its fan-corner slots.
     const auto authored_at = [&](Mesh::FH fh, uint32_t k) {
-        const auto base = 3 * (first_triangles[mesh.FaceOrdinal(fh)] - meshes.Arenas().Triangles.First(record.TriangleData));
-        if (k == 0) return authored[base];
-        const auto tri_count = mesh.GetValence(fh) - 2;
-        return k - 1 < tri_count ? authored[base + 3 * (k - 1) + 1] : authored[base + 3 * (k - 2) + 2];
+        return authored[data.FaceStart(mesh.FaceOrdinal(fh)) + k];
     };
     const auto vertex_position = [&](Mesh::FH fh, Mesh::VH vh) -> std::optional<uint32_t> {
         uint32_t k = 0;
@@ -215,6 +197,7 @@ std::vector<CreatedMesh> CreateMeshes(state::Scene &r, std::span<MeshSource> sou
             if (source.Morph) prepared[i].MorphTangentDeltas = std::move(source.Morph->TangentDeltas);
             source.Data.Positions = std::vector<vec3>{};
             if (source.Data.FaceCount() > 0) source.Data.FaceCorners = std::vector<uint32_t>{};
+            source.Data.Edges = std::vector<std::array<uint32_t, 2>>{};
             source.Deform.reset();
             source.Morph.reset();
         }
@@ -224,23 +207,11 @@ std::vector<CreatedMesh> CreateMeshes(state::Scene &r, std::span<MeshSource> sou
         std::vector<WeldTarget> weld_targets;
         weld_targets.reserve(sources.size());
         for (uint32_t i = 0; i < sources.size(); ++i) {
-            if (sources[i].Weld) weld_targets.emplace_back(ids[i], &sources[i].Data, &prepared[i].MorphTangentDeltas);
+            if (sources[i].Weld) weld_targets.emplace_back(ids[i], &sources[i].Data, &prepared[i].MorphTangentDeltas, sources[i].KeepLooseVertices);
         }
         WeldMeshesNow(r, weld_targets);
     }
-    {
-        // Allocate connectivity in source order, then build every mesh on the GPU.
-        const profile::CpuScope scope{"BuildConnectivity"};
-        for (uint32_t i = 0; i < sources.size(); ++i) {
-            const auto &data = sources[i].Data;
-            const auto &record = meshes.Get(ids[i]);
-            const uint32_t halfedges = data.FaceCount() > 0 ? meshes.Arenas().FaceCorners.Count(record.FaceCorners) : data.HalfedgeCount();
-            const bool face_starts = data.FaceCount() > 0 && halfedges != 3 * data.FaceCount();
-            meshes.AllocateConnectivity(ids[i], halfedges, data.FaceCount(), face_starts,
-                face_starts ? data.FaceOffsets : std::span<const uint32_t>{}, data.FaceCount() ? std::span<const std::array<uint32_t,2>>{} : data.Edges);
-        }
-        BuildConnectivityNow(r, ids);
-    }
+    BuildConnectivityNow(r, ids);
 
     std::vector<CreatedMesh> created;
     created.reserve(sources.size());
@@ -265,19 +236,19 @@ void EncodeAuthoredCornerNormals(MeshStore &meshes, const Mesh &mesh, std::span<
     const auto id = mesh.GetStoreId();
     const auto &record = meshes.Get(id);
     if (authored.empty() || record.TriangleCount == 0) return;
-    // The custom layer is empty, so this is the raw derived normal per corner.
-    const auto derived = meshes.GetCornerNormals(mesh);
-    const auto handles = meshes.GetTriangleCorners(id);
+    // Source normals stay in polygon-corner order, independently of tessellation.
+    const auto derived = meshes.GetCornerNormalView(id);
     const auto first = mesh.HalfedgeFirst();
     std::vector<CustomNormal> offsets(mesh.HalfEdgeCount());
     bool any = false;
-    for (uint32_t i = 0; i < derived.size() && i < authored.size(); ++i) {
-        const auto authored_normal = authored[i];
-        if (NormalsMatch(authored_normal, derived[i]).value_or(true)) continue;
-        const auto h = handles[i];
-        offsets[h - first].Offset = EncodeNormalOffset(authored_normal / Length(authored_normal), ComputeCornerFrame(derived[i], mesh, h));
-        any = true;
-    }
+    for (const auto face : mesh.faces())
+        for (const auto corner : mesh.fh_range(face)) {
+            const uint32_t h = *corner, i = h - first;
+            const auto authored_normal = authored[i], normal = derived[h];
+            if (NormalsMatch(authored_normal, normal).value_or(true)) continue;
+            offsets[i].Offset = EncodeNormalOffset(authored_normal / Length(authored_normal), ComputeCornerFrame(normal, mesh, h));
+            any = true;
+        }
     if (any) meshes.SetCustomCornerNormals(id, offsets);
 }
 
@@ -289,9 +260,9 @@ void UpdateMorphShadingAuthored(MeshStore &meshes, const Mesh &mesh, std::span<c
     if (!record.HasAuthoredNormals || record.TriangleCount == 0 || record.MorphTargetCount == 0) return;
     // A target authoring normal deltas states the morphed shading normals directly.
     bool has_authored_delta = false;
-    arenas.Vertices.ForEach(record.Vertices,[&](uint32_t vertex,uint32_t) {
-        for (uint32_t target=0;target<record.MorphTargetCount && !has_authored_delta;++target)
-            has_authored_delta = arenas.Morph.Get(vertex,target).NormalDelta != vec3{0};
+    arenas.Vertices.ForEach(record.Vertices, [&](uint32_t vertex, uint32_t) {
+        for (uint32_t target = 0; target < record.MorphTargetCount && !has_authored_delta; ++target)
+            has_authored_delta = arenas.Morph.Get(vertex, target).NormalDelta != vec3{0};
     });
     if (has_authored_delta) {
         meshes.SetMorphShadingAuthored(id, true);
@@ -306,7 +277,7 @@ void UpdateMorphShadingAuthored(MeshStore &meshes, const Mesh &mesh, std::span<c
     const auto compose = [&](const CornerNormalSources &normals, uint32_t ci) {
         return ComposeCornerNormal(classes, arenas.NormalSectors.View(), arenas.FaceSharpness.Buffer.GetSpan<uint8_t>(), record.Classification, ci, vertices, face_ids, normals);
     };
-    const CornerNormalSources rest{.VertexNormals=arenas.BaseVertexNormals.Buffer.GetSpan<vec3>(), .FaceNormals=arenas.BaseFaceNormals.Buffer.GetSpan<vec3>()};
+    const CornerNormalSources rest{.VertexNormals = arenas.BaseVertexNormals.Buffer.GetSpan<vec3>(), .FaceNormals = arenas.BaseFaceNormals.Buffer.GetSpan<vec3>()};
     for (uint32_t ci = 0; ci < vertices.size(); ++ci) {
         const auto rest_normal = compose(rest, ci);
         if (rest_normal == vec3{0}) continue;

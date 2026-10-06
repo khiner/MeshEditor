@@ -1,5 +1,5 @@
-#include "metal/AutoreleaseScope.h"
 #include "render/ViewportSubmission.h"
+#include "metal/AutoreleaseScope.h"
 
 #include "Profile.h"
 #include "mesh/MeshStore.h"

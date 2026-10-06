@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gpu/ElementWork.h"
+#include "gpu/MeshElementBlock.h"
 #include "gpu/MeshletIndex.h"
 #include "gpu/Types.h"
 
@@ -7,23 +9,25 @@
 GPU_CONSTANT uint32_t CloneRunThreads = 256u;
 GPU_CONSTANT uint32_t CloneCopyThreadBytes = 16u;
 GPU_CONSTANT uint32_t CloneCopyTileBytes = CloneRunThreads * CloneCopyThreadBytes;
-GPU_CONSTANT uint32_t ClonePairThreads = 32u;
 // Clone kernels bind their data buffer, job table, and tile table after the bindless table.
 GPU_CONSTANT uint32_t CloneBufferIndex_Jobs = 1u;
 GPU_CONSTANT uint32_t CloneBufferIndex_Tiles = 2u;
 GPU_CONSTANT uint32_t CloneBufferIndex_Data = 3u;
+GPU_CONSTANT uint32_t CloneBufferIndex_Maps = 4u;
 
 // A run of bytes copied within one buffer.
 struct ByteCopy {
     uint64_t Source, Destination, Bytes;
 };
 static_assert(sizeof(ByteCopy) == 24);
-// A run of uint32 references Stride words apart from ByteOffset, each non-null one taking Delta.
-struct IndexRebase {
+// Canonical or origin-relative references remapped through a hash table of owned blocks.
+struct BlockRebase {
     uint64_t ByteOffset;
-    uint32_t Count, Delta, Stride;
+    uint32_t Count, Stride;
+    uint32_t MapOffset, MapCapacity;
+    uint32_t SourceOrigin, DestinationOrigin, Span;
 };
-static_assert(sizeof(IndexRebase) == 24);
+static_assert(sizeof(BlockRebase) == 40);
 // A run of uint32 handles Stride words apart from ByteOffset, each live one replaced by First plus its rank among Index's members.
 struct RankRebase {
     uint64_t ByteOffset;
@@ -37,8 +41,3 @@ struct RankGather {
     MeshletIndexRef Index;
 };
 static_assert(sizeof(RankGather) == 24);
-// A run of copied reference pairs and the deltas its non-null pair members take.
-struct ReferencePairCopy {
-    uint32_t Source, Destination, Count, FirstDelta, SecondDelta;
-};
-static_assert(sizeof(ReferencePairCopy) == 20);

@@ -65,6 +65,13 @@ struct ComputeChain {
     // Runs `fn` on the host once the next submit completes the passes recorded before it without error.
     void AfterSubmit(std::function<void()> fn);
 
+    // Copies packed parameters into word-aligned scratch, returning their GPU address.
+    SlotOffset Upload(std::span<const std::byte> bytes) {
+        const auto range = Scratch.Allocate(uint32_t((bytes.size() + 3u) / 4u));
+        Scratch.Buffer.Update(bytes, uint64_t(range.Offset) * 4u);
+        return {Scratch.Buffer.Slot, range.Offset};
+    }
+
     BufferContext &Buffers;
     BufferArena<uint32_t> Scratch;
 

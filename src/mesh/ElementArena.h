@@ -92,8 +92,7 @@ struct ElementArena {
         auto members = Blocks.GetMutable(blocks);
         for (uint32_t i = 0; i < blocks.Count; ++i) {
             const auto live = std::min(MeshElementBlockSize, count > i * MeshElementBlockSize ? count - i * MeshElementBlockSize : 0u);
-            members[i] = {.Next = i + 1u < blocks.Count ? blocks.Offset + i + 1u : InvalidOffset, .Previous = i ? blocks.Offset + i - 1u : InvalidOffset,
-                          .Owner = set.Index, .Count = live, .Live = Prefix(live)};
+            members[i] = {.Next = i + 1u < blocks.Count ? blocks.Offset + i + 1u : InvalidOffset, .Previous = i ? blocks.Offset + i - 1u : InvalidOffset, .Owner = set.Index, .Count = live, .Live = Prefix(live)};
         }
         Sets.GetMutable({set.Index, 1})[0] = {.First = blocks.Offset, .Last = blocks.Offset + blocks.Count - 1u, .Count = count, .BlockCount = blocks.Count, .Flags = 1u};
         Index(blocks.Offset + blocks.Count - 1u);
@@ -149,10 +148,10 @@ struct ElementArena {
             auto members = Blocks.GetMutable(fresh);
             for (uint32_t i = 0; i < fresh.Count; ++i) {
                 const auto live = std::min(remaining, MeshElementBlockSize);
-                members[i] = {.Next = i + 1u < fresh.Count ? fresh.Offset + i + 1u : InvalidOffset, .Previous = i ? fresh.Offset + i - 1u : header.Last,
-                              .Owner = set.Index, .Count = live, .Live = Prefix(live)};
+                members[i] = {.Next = i + 1u < fresh.Count ? fresh.Offset + i + 1u : InvalidOffset, .Previous = i ? fresh.Offset + i - 1u : header.Last, .Owner = set.Index, .Count = live, .Live = Prefix(live)};
                 result.Blocks.push_back({fresh.Offset + i, members[i].Live});
-                if (count <= MeshElementBlockSize) for (uint32_t s = 0; s < live; ++s) handles.push_back((fresh.Offset + i) * MeshElementBlockSize + s);
+                if (count <= MeshElementBlockSize)
+                    for (uint32_t s = 0; s < live; ++s) handles.push_back((fresh.Offset + i) * MeshElementBlockSize + s);
                 remaining -= live;
             }
             if (count > MeshElementBlockSize) handles.push_back(fresh.Offset * MeshElementBlockSize);
@@ -165,8 +164,7 @@ struct ElementArena {
         header.Flags = 0u;
         Sets.GetMutable({set.Index, 1})[0] = header;
         for (const auto &gain : result.Blocks) Index(gain.Block);
-        const bool consecutive = handles.size() == 1u || (handles.back() - handles.front() == count - 1u &&
-            std::ranges::adjacent_find(handles, [](uint32_t a, uint32_t b) { return b != a + 1u; }) == handles.end());
+        const bool consecutive = handles.size() == 1u || (handles.back() - handles.front() == count - 1u && std::ranges::adjacent_find(handles, [](uint32_t a, uint32_t b) { return b != a + 1u; }) == handles.end());
         if (consecutive) {
             result.Handles = {.First = handles.front(), .Count = count};
         } else {
@@ -180,7 +178,7 @@ struct ElementArena {
     // Blocks left empty leave the set, except its first block.
     // Work naming another owner's block or a slot outside its domain is rejected before any write.
     std::vector<uint32_t> Erase(ElementSetRef set, const mtl::Buffer &storage, ElementWork work) {
-        const auto occupied=CheckWork(storage,work);
+        const auto occupied = CheckWork(storage, work);
         if (!occupied) return {};
         auto header = Set(set);
         const auto data = storage.GetSpan<uint32_t>({work.Storage.Offset, WorkHeaderWords + work.Capacity * (WorkBlockWords + 2u)});
@@ -209,7 +207,7 @@ struct ElementArena {
     }
 
     void Destroy(ElementSetRef set) {
-        Destroy(std::span{&set,1u});
+        Destroy(std::span{&set, 1u});
     }
     void Destroy(std::span<const ElementSetRef> sets) {
         if (sets.empty()) return;
@@ -249,6 +247,26 @@ struct ElementArena {
         if (!count) return {};
         return Create(count);
     }
+    // Preserve live slots while placing the source's owned blocks in one new run.
+    // References remap by block; holes never require copied geometry on the CPU.
+    ElementSetRef CloneMembership(ElementSetRef source) {
+        if (!source) return {};
+        const auto header = Set(source);
+        const auto target = Create(header.BlockCount * MeshElementBlockSize);
+        const auto first = Set(target).First;
+        uint32_t ordinal = 0u;
+        ForEachBlock(source, [&](uint32_t, const auto &before) {
+            const auto block = first + ordinal++;
+            auto &after = Blocks.GetMutable({block, 1u})[0];
+            after.Live = before.Live;
+            after.Count = before.Count;
+            Index(block);
+        });
+        auto &after = Sets.GetMutable({target.Index, 1u})[0];
+        after.Count = header.Count;
+        after.Flags = header.Flags;
+        return target;
+    }
     ElementSetRef Allocate(std::span<const T> values) {
         const auto set = Allocate(uint32_t(values.size()));
         Buffer.Update(as_bytes(values), uint64_t(First(set)) * sizeof(T));
@@ -286,10 +304,15 @@ struct ElementArena {
         }
         return blocks;
     }
-    void Release(ElementSetRef set) { if (set) Destroy(set); }
+    void Release(ElementSetRef set) {
+        if (set) Destroy(set);
+    }
     void Reset() {
-        Blocks.Reset(); Sets.Reset(); Buffer.SetUsedSize(0);
-        Indexed.clear(); Available.clear();
+        Blocks.Reset();
+        Sets.Reset();
+        Buffer.SetUsedSize(0);
+        Indexed.clear();
+        Available.clear();
     }
     // Refreshes the free-run index of blocks whose metadata a history restore changed.
     void Reindex(Range blocks) {
@@ -436,16 +459,16 @@ private:
         for (const auto b : blocks) Index(b);
         return blocks;
     }
-    uint32_t CheckWork(const mtl::Buffer &storage,ElementWork work) const {
+    uint32_t CheckWork(const mtl::Buffer &storage, ElementWork work) const {
         if (work.Storage.Slot != storage.Slot || work.Storage.Slot == InvalidSlot || !std::has_single_bit(work.Capacity)) {
             throw std::invalid_argument("Element mutation requires a sparse work table in its supplied buffer.");
         }
-        const uint64_t words=WorkHeaderWords+uint64_t(work.Capacity)*(WorkBlockWords+2u);
-        if ((uint64_t(work.Storage.Offset)+words)*4u>storage.UsedSize || work.Count>Capacity()) {
+        const uint64_t words = WorkHeaderWords + uint64_t(work.Capacity) * (WorkBlockWords + 2u);
+        if ((uint64_t(work.Storage.Offset) + words) * 4u > storage.UsedSize || work.Count > Capacity()) {
             throw std::out_of_range("Element mutation work exceeds its storage or canonical domain.");
         }
-        const auto header=storage.GetSpan<uint32_t>({work.Storage.Offset,WorkHeaderWords});
-        if (header[1] || header[0]>work.Capacity || header[0]!=header[2]) throw std::invalid_argument("Element mutation work is incomplete or overflowed.");
+        const auto header = storage.GetSpan<uint32_t>({work.Storage.Offset, WorkHeaderWords});
+        if (header[1] || header[0] > work.Capacity || header[0] != header[2]) throw std::invalid_argument("Element mutation work is incomplete or overflowed.");
         return header[0];
     }
     void ReserveBlocks(uint32_t blocks) {
