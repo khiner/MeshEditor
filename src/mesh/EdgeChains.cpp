@@ -2,7 +2,6 @@
 #include "SortUnique.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshEdgeUsers.h"
-#include "mesh/MeshStore.h"
 
 #include <algorithm>
 #include <array>
@@ -120,9 +119,9 @@ void AppendRelaxPhases(EdgeChainPlan &plan, EdgeChain &chain) {
 }
 } // namespace
 
-EdgeChainPlan PlanSelectedEdgeChains(const MeshStore &meshes, const Mesh &mesh, bool relax) {
+EdgeChainPlan PlanSelectedEdgeChains(const Mesh &mesh, const GeometrySelection &selection, bool relax) {
     EdgeGraph neighbors;
-    meshes.GetSelectedElements(mesh.GetStoreId(), Element::Edge).ForEach([&](uint32_t edge) {
+    std::ranges::for_each(selection.Edges, [&](uint32_t edge) {
         const auto h = mesh.GetHalfedge(he::EH{edge}, 0u);
         const auto a = *mesh.GetFromVertex(h), b = *mesh.GetToVertex(h);
         if (a == b) return;
@@ -140,9 +139,7 @@ EdgeChainPlan PlanSelectedEdgeChains(const MeshStore &meshes, const Mesh &mesh, 
     return plan;
 }
 
-EdgeChainPlan PlanCurveBetweenSelected(const MeshStore &meshes, const Mesh &mesh, bool extend) {
-    const auto selection = meshes.GetSelectedElements(mesh.GetStoreId(), Element::Vertex);
-    const auto hidden = meshes.GetHiddenElements(mesh.GetStoreId(), Element::Edge);
+EdgeChainPlan PlanCurveBetweenSelected(const Mesh &mesh, const GeometrySelection &selection, const GeometrySelection &excluded, bool extend) {
     const auto incidence = mesh.GetVertexEdgeIncidence();
     const auto &connectivity = mesh.GetConnectivity();
     const auto wire = [&](uint32_t e) { return !mesh.GetFace(mesh.GetHalfedge(he::EH{e}, 0u)); };
@@ -158,7 +155,7 @@ EdgeChainPlan PlanCurveBetweenSelected(const MeshStore &meshes, const Mesh &mesh
         if (inserted) {
             auto &out = entry->second;
             for (const auto e : incidence.Incident(v))
-                if (!hidden.Contains(e)) {
+                if (!std::ranges::binary_search(excluded.Edges, e)) {
                     out.Edges.push_back(e);
                     ++out.Counts[wire(e)];
                 }
@@ -221,12 +218,12 @@ EdgeChainPlan PlanCurveBetweenSelected(const MeshStore &meshes, const Mesh &mesh
         return forward;
     };
     std::vector<Path> paths;
-    selection.ForEach([&](uint32_t v) {
+    std::ranges::for_each(selection.Vertices, [&](uint32_t v) {
         for (const auto e : node(v).Edges) {
             if (visited.contains(e)) continue;
             auto path = build(e);
             if (path.Vertices.size() < 3u) continue;
-            const auto count = size_t(std::ranges::count_if(path.Vertices, [&](uint32_t x) { return selection.Contains(x); }));
+            const auto count = size_t(std::ranges::count_if(path.Vertices, [&](uint32_t x) { return std::ranges::binary_search(selection.Vertices, x); }));
             if (count == path.Vertices.size()) {
                 for (const auto x : path.Vertices)
                     for (const auto other : node(x).Edges)
@@ -241,7 +238,7 @@ EdgeChainPlan PlanCurveBetweenSelected(const MeshStore &meshes, const Mesh &mesh
         if (n < 3u) continue;
         std::vector<uint32_t> selected;
         for (uint32_t i = 0u; i < n; ++i)
-            if (selection.Contains(vertices[i])) selected.push_back(i);
+            if (std::ranges::binary_search(selection.Vertices, vertices[i])) selected.push_back(i);
         if (selected.empty()) continue;
         if (path.Closed) {
             uint32_t gap = 0u, gap_start = 0u;
@@ -263,14 +260,14 @@ EdgeChainPlan PlanCurveBetweenSelected(const MeshStore &meshes, const Mesh &mesh
             } else std::rotate(vertices.begin(), vertices.begin() + selected.front(), vertices.end());
         }
         if (!extend) {
-            const auto is_selected = [&](uint32_t v) { return selection.Contains(v); };
+            const auto is_selected = [&](uint32_t v) { return std::ranges::binary_search(selection.Vertices, v); };
             const auto first = std::ranges::find_if(vertices, is_selected), last = std::find_if(vertices.rbegin(), vertices.rend(), is_selected).base();
             vertices = std::vector<uint32_t>(first, last);
         }
         if (vertices.size() < 3u) continue;
         std::vector<uint32_t> knots, points;
         for (uint32_t i = 0u; i < vertices.size(); ++i) {
-            if (selection.Contains(vertices[i]) || (!path.Closed && (i == 0u || i + 1u == vertices.size()))) knots.push_back(i);
+            if (std::ranges::binary_search(selection.Vertices, vertices[i]) || (!path.Closed && (i == 0u || i + 1u == vertices.size()))) knots.push_back(i);
             else points.push_back(i);
         }
         if (points.empty()) continue;
@@ -287,17 +284,15 @@ EdgeChainPlan PlanCurveBetweenSelected(const MeshStore &meshes, const Mesh &mesh
     return plan;
 }
 
-EdgeChainPlan PlanCircularize(const MeshStore &meshes, const Mesh &mesh) {
-    const auto id = mesh.GetStoreId();
-    const auto hidden_edges = meshes.GetHiddenElements(id, Element::Edge), hidden_faces = meshes.GetHiddenElements(id, Element::Face);
+EdgeChainPlan PlanCircularize(const Mesh &mesh, const GeometrySelection &selection, const GeometrySelection &excluded) {
     std::unordered_map<uint32_t, uint32_t> selected_faces;
-    meshes.GetSelectedElements(id, Element::Face).ForEach([&](uint32_t f) {
-        if (!hidden_faces.Contains(f))
+    std::ranges::for_each(selection.Faces, [&](uint32_t f) {
+        if (!std::ranges::binary_search(excluded.Faces, f))
             for (const auto h : mesh.fh_range(he::FH{f})) ++selected_faces[*mesh.GetEdge(h)];
     });
     std::array<EdgeGraph, 2> graphs;
     std::unordered_set<uint32_t> surface_vertices;
-    meshes.GetSelectedElements(id, Element::Edge).ForEach([&](uint32_t e) {
+    std::ranges::for_each(selection.Edges, [&](uint32_t e) {
         const auto h = mesh.GetHalfedge(he::EH{e}, 0u);
         const auto a = *mesh.GetFromVertex(h), b = *mesh.GetToVertex(h);
         const bool wire = !mesh.GetFace(h);
@@ -305,7 +300,7 @@ EdgeChainPlan PlanCircularize(const MeshStore &meshes, const Mesh &mesh) {
             surface_vertices.insert(a);
             surface_vertices.insert(b);
         }
-        if (hidden_edges.Contains(e) || a == b || selected_faces[e] > 1u) return;
+        if (std::ranges::binary_search(excluded.Edges, e) || a == b || selected_faces[e] > 1u) return;
         graphs[wire][a].push_back(b);
         graphs[wire][b].push_back(a);
     });

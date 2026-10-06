@@ -112,6 +112,12 @@ void ExpectSelectionIndex(const MeshStore &meshes, uint32_t id) {
                     bounds.Min = Min(bounds.Min, p);
                     bounds.Max = Max(bounds.Max, p);
                     if (selected) sum += p;
+                } else if (d == 2u) {
+                    for (const auto vertex : mesh.fv_range(he::FH{v})) {
+                        const auto p = mesh.GetPosition(vertex);
+                        bounds.Min = Min(bounds.Min, p);
+                        bounds.Max = Max(bounds.Max, p);
+                    }
                 }
             });
         });
@@ -3588,12 +3594,15 @@ void TestConnectVertices() {
 
 } // namespace
 
+void RegisterGeometryOperationsTests();
+
 int main(int argc, char **argv) {
     if (argc > 1) boost::ut::cfg<> = {.filter = argv[1]};
     setvbuf(stdout, nullptr, _IONBF, 0);
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
     boost::ut::suite tests = [] {
         using namespace boost::ut;
+        RegisterGeometryOperationsTests();
         "connect splits selected corners and preserves attributes"_test = TestConnectVertices;
         "mixed meshlet LOD preserves wire and point leaves"_test = TestMixedMeshletLod;
         "mixed meshlet builds group topologies and preserve clone ownership"_test = TestMixedMeshletBuild;

@@ -40,8 +40,7 @@ kernel void RetessellateFaces(
         const float3 base=float3(vertices[v].Position);
         const bool selected=pc.ApplyTransform && pc.SelectionSlot!=InvalidSlot &&
             (BindlessBuffer(uint,b.Buffer,pc.SelectionSlot)[v/32u]&(1u<<(v%32u)));
-        return vec3(selected ? trs_inverse_transform_point(pc.Primary,
-            apply_edit_transform(trs_transform_point(pc.Primary,base),pc.Pivot,pc.Delta)) : base);
+        return vec3(selected ? apply_geometry_edit_transform(base,pc.Primary,pc.Pivot,pc.Delta) : base);
     },points,next,previous,[&](uvec3 local,uint t) {
         const uint3 triangle=uint3(local)+loop.x;
         if (all(uint3(triangles[first+t])==triangle)) return;

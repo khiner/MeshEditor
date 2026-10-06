@@ -184,7 +184,6 @@ Pipelines::Pipelines(mtl::LibraryCache &libraries)
       SelectionFragment{libraries},
       VisibilityObjectSelection{libraries, {"VisibilitySelection.metal", "VisibilityObjectSelectionKernel"}},
       OutlineOccluderSeed{libraries, {"VisibilitySelection.metal", "OutlineOccluderSeedKernel"}},
-      EditSharpness{libraries, {"EditSharpness.metal", "EditSharpnessKernel"}},
       CommitPosedGeometry{libraries, {"CommitPosedGeometry.metal", "CommitPosedGeometryKernel"}},
       FinalizeElementWork{libraries, {"CommitPosedGeometry.metal", "FinalizeElementWorkKernel"}},
       PosePrepass{libraries, {"PosePrepass.metal", "PosePrepassKernel"}},

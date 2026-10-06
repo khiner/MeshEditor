@@ -5,18 +5,17 @@
 #include <array>
 #include <unordered_set>
 
-std::vector<SymmetrySnapVertex> PlanSymmetrySnap(const MeshStore &meshes, const Mesh &mesh, uint32_t axis, float threshold, bool center) {
+std::vector<SymmetrySnapVertex> PlanSymmetrySnap(const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection, uint32_t axis, float threshold, bool center) {
     const profile::CpuScope scope{"PlanSymmetrySnap"};
-    const auto selected = meshes.GetSelectedElements(mesh.GetStoreId(), Element::Vertex);
-    const auto &tree = selected.Tree;
-    if (!selected.Count() || tree.Root == InvalidOffset) return {};
     const auto &a = meshes.Arenas();
+    const auto tree = a.SelectionTree.Read(3u * mesh.GetStoreId(), a.VertexAggregates.Buffer.GetSpan<SelectionAggregate>());
+    if (selection.Vertices.empty() || tree.Root == InvalidOffset) return {};
     const auto aggregates = a.SelectionTree.Aggregates.Buffer.GetSpan<SelectionAggregate>();
     const auto membership = a.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>();
     std::unordered_set<uint32_t> used;
     std::vector<SymmetrySnapVertex> output;
     uint64_t visited_nodes = 0u, visited_vertices = 0u;
-    selected.ForEach([&](uint32_t v) {
+    std::ranges::for_each(selection.Vertices, [&](uint32_t v) {
         if (used.contains(v)) return;
         auto mirrored = mesh.GetPosition(he::VH{v});
         mirrored[axis] = -mirrored[axis];

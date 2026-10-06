@@ -16,4 +16,4 @@ struct TopologyIdentityPushConstants {
     SlotOffset Error DEFAULT();
     GpuArray<ElementHandleRange, 2> Inserted DEFAULT(); // The inserted handles of the new outputs, in compact order
 };
-static_assert(sizeof(TopologyIdentityPushConstants) == 1164);
+static_assert(sizeof(TopologyIdentityPushConstants) == 1176);

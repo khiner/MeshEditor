@@ -17,6 +17,9 @@
 #include <vector>
 
 struct ElementRange;
+struct MeshStore;
+struct GeometrySelection;
+GeometrySelection EditorGeometrySelection(const MeshStore &, uint32_t id);
 
 // Bindless slots of the object and element pick buffers.
 struct SelectionSlots {

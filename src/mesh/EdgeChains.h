@@ -1,4 +1,5 @@
 #pragma once
+#include "mesh/GeometrySelection.h"
 
 #include "Range.h"
 #include "gpu/VertexPositionEditPushConstants.h"
@@ -7,7 +8,6 @@
 #include <vector>
 
 struct Mesh;
-struct MeshStore;
 
 using EdgeGraph = std::unordered_map<uint32_t, std::vector<uint32_t>>;
 // Visit maximal paths in canonical order: endpoints/junctions first, then cycles.
@@ -19,11 +19,11 @@ struct EdgeChainPlan {
     std::vector<EdgeChain> Chains;
     std::vector<Range> Batches; // Ordered nonconflicting paths
 };
-EdgeChainPlan PlanSelectedEdgeChains(const MeshStore &, const Mesh &, bool relax);
+EdgeChainPlan PlanSelectedEdgeChains(const Mesh &, const GeometrySelection &, bool relax);
 
 // Outputs are unique canonical handles; Inputs index Outputs. Phases store knot/point
 // counts, knot indices, point indices, and each point's surface membership.
-EdgeChainPlan PlanCurveBetweenSelected(const MeshStore &, const Mesh &, bool extend);
+EdgeChainPlan PlanCurveBetweenSelected(const Mesh &, const GeometrySelection &, const GeometrySelection &excluded, bool extend);
 
 // Selected surface boundaries and isolated wire chains, using shared position ranks.
-EdgeChainPlan PlanCircularize(const MeshStore &, const Mesh &);
+EdgeChainPlan PlanCircularize(const Mesh &, const GeometrySelection &, const GeometrySelection &excluded = {});

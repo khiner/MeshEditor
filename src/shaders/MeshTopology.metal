@@ -102,24 +102,23 @@ kernel void TopologySelection(
     const TopoContext ctx{bindless,pc};
     const uint2 tile=ctx.Tile(group_id);
     const MeshTopologyJob job=ctx.Jobs()[tile.x];
-    if (job.SelectionElement==Element::None) return;
     const uint i=tile.y*ScanTileSize+lane;
     device uint *selected=ctx.Scratch()+job.SelectionOffset;
-    const auto contains=[&](uint h) { return WorkRank(bindless,job.SelectionWork,h)!=InvalidOffset; };
+    const auto contains=[&](ElementWork work, uint h) { return WorkRank(bindless,work,h)!=InvalidOffset; };
     if (pc.PassParameter==0u) {
-        if (job.SelectionElement==Element::Vertex && i<job.SrcVertexCount) selected[i]=contains(ctx.SrcVertexDomain(job).Handle(i));
+        if (i<job.SrcVertexCount) selected[i]=contains(job.VertexSelection,ctx.SrcVertexDomain(job).Handle(i));
     } else if (pc.PassParameter==1u) {
         const auto h=ctx.SrcHalfedgeDomain(job).Handle(i);
         if (h==InvalidOffset || !ctx.SrcEdgeFirst(job,h)) return;
         const auto e=ctx.SrcEdge(job,h);
-        if (job.SelectionElement==Element::Edge) selected[job.SrcVertexCount+e]=contains(ctx.SrcEdgeDomain(job).Handle(e));
+        if (job.SelectionElement!=Element::Vertex) selected[job.SrcVertexCount+e]=contains(job.EdgeSelection,ctx.SrcEdgeDomain(job).Handle(e));
         else if (job.SelectionElement==Element::Vertex) {
             const auto corners=ctx.SrcCorners(job);
             selected[job.SrcVertexCount+e]=selected[corners[h]] && selected[corners[ctx.SrcPrev(job,h)]];
         }
     } else if (i<job.SrcFaceCount) {
         uint value=0u;
-        if (job.SelectionElement==Element::Face) value=contains(ctx.SrcFaceDomain(job).Handle(i));
+        if (job.SelectionElement!=Element::Vertex) value=contains(job.FaceSelection,ctx.SrcFaceDomain(job).Handle(i));
         else if (job.SelectionElement==Element::Vertex) {
             value=1u;
             const auto range=ctx.SrcFaceRange(job,i); const auto corners=ctx.SrcCorners(job);
@@ -1618,10 +1617,10 @@ kernel void TopologyGatherVertices(
     const uint4 v = uint4(map[0], map[1], map[2], map[3]);
     const float s = as_type<float>(map[4]), t = as_type<float>(map[5]);
     const float4 weights=float4((1.f-s)*(1.f-t),s*(1.f-t),s*t,(1.f-s)*t);
-    bool hidden=true;
-    for (uint k=0u;k<4u;++k) if (weights[k]!=0.f)
+    bool hidden=job.EditorState;
+    for (uint k=0u;job.EditorState && k<4u;++k) if (weights[k]!=0.f)
         hidden=hidden && v[k]<job.SrcVertexCount && ctx.Selected({pc.Source.VertexHiddenSlot,0u},ctx.SrcVertexDomain(job).Handle(v[k]));
-    ctx.Select({pc.Destination.VertexHiddenSlot,0u},ctx.DstVertexDomain(job).Handle(d),hidden);
+    if (job.EditorState) ctx.Select({pc.Destination.VertexHiddenSlot,0u},ctx.DstVertexDomain(job).Handle(d),hidden);
     if (hidden) ctx.SelectDstVertex(job,d,false);
     if (job.Op != MeshTopologyOp::MergeCollapse || !ctx.SrcSelectedVertex(job, v.x)) {
         const auto src = ctx.SrcVertices(job);
@@ -1845,8 +1844,8 @@ kernel void TopologyEdgeAttributes(
     const uint e = dst.Edge(job.DstCornerOffset + hd);
     const uint source = ctx.CornerEdgeSource(job, hd);
     ctx.DstEdgeSharpness(job)[e] = source != InvalidOffset ? ctx.SrcEdgeSharpness(job)[ctx.SrcEdge(job, source)] : uchar(0);
-    const bool hidden=source!=InvalidOffset && ctx.Selected({pc.Source.EdgeHiddenSlot,0u},ctx.SrcEdgeDomain(job).Handle(ctx.SrcEdge(job,source)));
-    ctx.Select({pc.Destination.EdgeHiddenSlot,0u},e,hidden);
+    const bool hidden=job.EditorState && source!=InvalidOffset && ctx.Selected({pc.Source.EdgeHiddenSlot,0u},ctx.SrcEdgeDomain(job).Handle(ctx.SrcEdge(job,source)));
+    if (job.EditorState) ctx.Select({pc.Destination.EdgeHiddenSlot,0u},e,hidden);
     ctx.SelectDstEdge(job, e, !hidden && ctx.CornerSelected(job, hd));
 }
 

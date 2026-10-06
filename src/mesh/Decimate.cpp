@@ -9,6 +9,7 @@
 #include <map>
 #include <queue>
 #include <set>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace {
@@ -190,17 +191,16 @@ struct Planner {
                 for (const auto other : Neighbors(v)) edges.emplace(std::min(v, other), std::max(v, other));
         for (const auto [a, b] : edges) Propose(a, b);
     }
-    void Gather() {
+    void Gather(const GeometrySelection &selection, std::span<const uint32_t> locked_faces) {
         const auto &a = Store.Arenas();
         const auto &record = Store.Get(M.GetStoreId());
         const auto &connectivity = M.GetConnectivity();
         std::set<uint32_t> faces;
-        Store.GetSelectedElements(M.GetStoreId(), Element::Vertex).ForEach([&](uint32_t handle) {
+        std::ranges::for_each(selection.Vertices, [&](uint32_t handle) {
             Vertices[AddVertex(handle)].Selected = true;
             const auto fan = connectivity.VertexCorners[handle];
             for (uint32_t i = 0u; i < fan.y; ++i) faces.insert(connectivity.FanItems[fan.x + i].y);
         });
-        const auto hidden = Store.GetHiddenElements(M.GetStoreId(), Element::Face);
         for (const auto face : faces) {
             Face f{.Handle = face};
             for (const auto v : M.fv_range(he::FH{face})) f.Vertices.push_back(AddVertex(*v));
@@ -210,7 +210,7 @@ struct Planner {
             for (const auto v : f.Vertices) {
                 Vertices[v].Faces.insert(uint32_t(Faces.size()));
                 Vertices[v].Error.Add(n, d);
-                Vertices[v].Locked |= hidden.Contains(face);
+                Vertices[v].Locked |= std::ranges::binary_search(locked_faces, face);
             }
             Triangles += uint32_t(f.Vertices.size()) - 2u;
             Faces.push_back(std::move(f));
@@ -261,11 +261,15 @@ struct Planner {
 };
 } // namespace
 
-std::optional<MeshTopologyTask> DecimateTask(const MeshStore &store, const Mesh &mesh, float ratio) {
+std::optional<MeshTopologyTask> DecimateTask(const MeshStore &store, const Mesh &mesh, const GeometrySelection &selection, float ratio, std::span<const uint32_t> locked_faces) {
+    mesh.ValidateSelection(selection);
     const profile::CpuScope scope{"PlanDecimate"};
+    if (!std::ranges::is_sorted(locked_faces) || std::ranges::adjacent_find(locked_faces) != locked_faces.end()) throw std::invalid_argument("Decimate locked faces must be sorted and unique.");
+    for (const auto face : locked_faces)
+        if (!store.IsLiveElement(mesh.GetStoreId(), Element::Face, face)) throw std::invalid_argument("Decimate locked face is not owned by its mesh.");
     if (!std::isfinite(ratio) || ratio >= 1.f || !mesh.FaceCount()) return {};
     Planner plan{mesh, store};
-    plan.Gather();
+    plan.Gather(selection, locked_faces);
     const auto target = uint32_t(std::ceil(double(plan.Triangles) * std::max(0.f, ratio)));
     while (plan.Triangles > target && !plan.Heap.empty()) {
         const auto candidate = plan.Heap.top();
@@ -276,7 +280,7 @@ std::optional<MeshTopologyTask> DecimateTask(const MeshStore &store, const Mesh 
         plan.Collapse(candidate);
     }
     if (!plan.Collapses) return {};
-    MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::Decimate, .List = {0u}};
+    MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::Decimate, .List = {0u}, .Selection = selection};
     for (uint32_t v = 0u; v < plan.Vertices.size(); ++v) {
         const auto root = plan.Root(v);
         if (v == root && !plan.Vertices[v].Replacement) continue;

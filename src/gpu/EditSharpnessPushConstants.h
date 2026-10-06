@@ -8,7 +8,7 @@
 #include "gpu/Types.h"
 
 struct EditSharpnessPushConstants {
-    uint32_t VertexSelectionSlot DEFAULT(InvalidSlot);
+    ElementWork VertexSelection DEFAULT();
     uint32_t CornersSlot DEFAULT(InvalidSlot);
     uint32_t FaceSharpnessSlot DEFAULT(InvalidSlot);
     uint32_t EdgeSharpnessSlot DEFAULT(InvalidSlot);
@@ -24,4 +24,4 @@ struct EditSharpnessPushConstants {
     uint32_t Value DEFAULT();
     float CosAngle DEFAULT();
 };
-static_assert(sizeof(EditSharpnessPushConstants) == 144, "EditSharpnessPushConstants size");
+static_assert(sizeof(EditSharpnessPushConstants) == 156, "EditSharpnessPushConstants size");

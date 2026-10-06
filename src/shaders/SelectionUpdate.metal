@@ -192,6 +192,15 @@ kernel void UpdateSelectionBlocks(
             const uint h = conn.EdgeHalfedge(handle);
             if (h != InvalidOffset && conn.Opposite(h) == InvalidOffset) flags |= SelectionBoundary;
         }
+        else {
+            const uint2 loop = ctx.Connectivity().FaceHalfedges(handle);
+            device const Vertex *vertices = BindlessBuffer(Vertex, b.VertexBuffer, pc.VerticesSlot);
+            for (uint h = loop.x; h < loop.y; ++h) {
+                const float3 position = float3(vertices[ctx.Corner(h)].Position);
+                low = min(low, position);
+                high = max(high, position);
+            }
+        }
     }
     const auto aggregate = ReduceSelectionAggregate(scratch, lane, simd_group, sum, low, high, uint(selected && live), uint(live), flags, uint(live && ctx.Hidden(domain,handle)));
     if (lane == 0u) BindlessBufferMutable(SelectionAggregate, b.Buffer, pc.Leaves[domain])[block] = aggregate;

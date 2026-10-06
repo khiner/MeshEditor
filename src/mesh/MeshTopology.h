@@ -3,6 +3,8 @@
 #include "gpu/Element.h"
 #include "gpu/MeshTopologyOp.h"
 #include "gpu/Types.h"
+#include "mesh/GeometrySelection.h"
+#include <span>
 #include <vector>
 
 struct MeshTopologyTask {
@@ -36,9 +38,11 @@ struct MeshTopologyTask {
     // each record is (source face, polygon count, then corner count and corner/edge pairs per polygon).
     // Decimate: count then (vertex, surviving vertex, replacement x/y/z float bits).
     std::vector<uint32_t> List{};
-    // An explicit sparse selection, independent of the document's current selection.
+    // Explicit canonical masks. None reads all three masks directly; Vertex derives
+    // selected edges/faces from selected vertices. Edge/Face preserve those domains.
+    // Empty masks select nothing; SelectAll deliberately selects all canonical elements.
     Element SelectionElement{Element::None};
-    std::vector<uint32_t> Selected{};
+    GeometrySelection Selection{};
 };
 
 struct MeshStore;
@@ -48,3 +52,23 @@ MeshTopologyPushConstants TopologyPushConstants(const MeshStore &);
 // A bound on the operator scratch words the task's edit lays out, as if its local source were its whole mesh.
 // A mesh past the scratch budget counts as one at the budget's scale, since it takes a chunk to itself either way.
 uint32_t TopologyScratchBound(const MeshStore &, const MeshTopologyTask &);
+
+namespace state {
+struct Scene;
+}
+struct GeometryTopologyResult {
+    uint32_t GeometryId{};
+    bool Changed{};
+    GeometrySelection Created, Retained;
+};
+
+// Execute canonical geometry without viewport, objects, history, or render publication.
+// A batch reads the common input geometry: source mutations must be independent.
+// KeepSelectedFaces copies may precede their source's one mutation (separation).
+// Dependent planner stages, such as BisectTasks/SymmetrizeTasks, use ExecuteGeometryTopologyStages.
+// Results describe emitted elements; untouched elements keep their canonical handles.
+std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Scene &, std::span<const MeshTopologyTask>);
+
+// Execute dependent tasks in order; each task reads the preceding task's completed geometry.
+// Returns one result per stage, including no-op stages; later stages may retire earlier handles.
+std::vector<GeometryTopologyResult> ExecuteGeometryTopologyStages(state::Scene &, std::span<const MeshTopologyTask>);

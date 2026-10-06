@@ -16,6 +16,9 @@ struct PrimitiveListReferences;
 struct SpatialFaceWork;
 struct TopologyReadView;
 
+enum class TopologyPublication { Geometry,
+                                 Editor };
+
 // The scratch words a topology transaction's chain starts with.
 // They hold a local edit and its render repair.
 inline constexpr uint32_t TopologyScratchWords = 64u << 10;
@@ -34,7 +37,7 @@ struct MeshTopologyEdit {
     // A KeepSelectedFaces task copies its faces into a new mesh, and every other task edits its source in place.
     // An edit whose task selects no source or produces no change has no Output.
     // An inset edit captures its staged basis into a range of `inset_basis` when one is given.
-    static std::vector<MeshTopologyEdit> Construct(state::Scene &, mtl::ComputeChain &, std::span<const MeshTopologyTask>, BufferArena<uint32_t> *inset_basis = nullptr);
+    static std::vector<MeshTopologyEdit> Construct(state::Scene &, mtl::ComputeChain &, std::span<const MeshTopologyTask>, BufferArena<uint32_t> *inset_basis = nullptr, TopologyPublication = TopologyPublication::Geometry);
     MeshTopologyEdit(MeshTopologyEdit &&) noexcept;
     ~MeshTopologyEdit();
     // The edits of one construction share publication's submit.
@@ -45,6 +48,8 @@ struct MeshTopologyEdit {
     // Completion submits the chain and releases the corner sector payloads the repaired blocks leave unused.
     // The host reads the refreshed selection once the chain submits again.
     static void FinishAll(state::Scene &, std::span<MeshTopologyEdit *const>);
+
+    GeometryTopologyResult Result(const MeshStore &) const;
 
     mtl::ComputeChain &Chain;
     uint32_t SourceId;
@@ -81,7 +86,8 @@ private:
     // Publication's recorded passes use the plan's buffers until Complete.
     std::unique_ptr<Prepared> Plan;
     bool Published{}, Finished{};
-    MeshTopologyEdit(mtl::ComputeChain &, const MeshTopologyTask &);
+    TopologyPublication Publication;
+    MeshTopologyEdit(mtl::ComputeChain &, const MeshTopologyTask &, TopologyPublication);
     // Records the task's source closures, or returns none when the task selects no source.
     // A face list task takes its parsed face list, and a spatial task takes its finished face query.
     std::optional<Closures> RecordClosures(state::Scene &, const MeshTopologyTask &, std::optional<PrimitiveListReferences>, const SpatialFaceWork *);

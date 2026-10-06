@@ -6,12 +6,13 @@
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
-#include "state/Scene.h"
+#include <algorithm>
+#include <stdexcept>
 #include <unordered_set>
 
-std::vector<std::vector<uint32_t>> RecalculateFaceFlips(state::Scene &r, std::span<const uint32_t> ids, bool inside) {
+std::vector<std::vector<uint32_t>> RecalculateFaceFlips(MeshStore &meshes, const MeshPipelines &pipelines, std::span<const uint32_t> ids, std::span<const GeometrySelection> selections, bool inside) {
     if (ids.empty()) return {};
-    auto &meshes = r.Context.get<MeshStore>();
+    if (ids.size() != selections.size()) throw std::invalid_argument("Normal selections must match mesh inputs.");
     mtl::ComputeChain chain{meshes.BufferContext()};
     struct Job {
         RecalculateNormalsPushConstants Pc;
@@ -20,21 +21,23 @@ std::vector<std::vector<uint32_t>> RecalculateFaceFlips(state::Scene &r, std::sp
     };
     std::vector<Job> jobs;
     uint64_t source_faces = 0u, source_corners = 0u;
-    for (const auto id : ids) {
+    for (size_t input = 0u; input < ids.size(); ++input) {
+        const auto id = ids[input];
         const Mesh mesh{meshes, id};
+        mesh.ValidateSelection(selections[input]);
         Job job;
         std::vector<uvec4> groups;
         std::vector<uvec2> tiles;
         std::unordered_set<uint32_t> visited;
         MeshEdgeUsers edges{mesh};
-        const auto selection = meshes.GetSelectedElements(id, Element::Face);
-        selection.ForEach([&](uint32_t start) {
+        const auto &selection = selections[input].Faces;
+        std::ranges::for_each(selection, [&](uint32_t start) {
             if (!visited.insert(start).second) return;
             const uint32_t first = uint32_t(job.Faces.size()), group = uint32_t(groups.size());
             job.Faces.push_back({start, 0u});
             for (uint32_t at = first; at < job.Faces.size(); ++at) {
                 const auto entry = job.Faces[at];
-                if (selection.Contains(entry.x)) job.Selected.push_back({at, group});
+                if (std::ranges::binary_search(selection, entry.x)) job.Selected.push_back({at, group});
                 for (const auto h : mesh.fh_range(he::FH{entry.x})) {
                     ++source_corners;
                     const auto users = edges.Get(h);
@@ -58,7 +61,6 @@ std::vector<std::vector<uint32_t>> RecalculateFaceFlips(state::Scene &r, std::sp
         jobs.push_back(std::move(job));
     }
     if (!source_faces) return std::vector<std::vector<uint32_t>>(ids.size());
-    const auto &pipelines = GetMeshPipelines(r);
     for (const auto pass : {MeshPass::RecalculateNormalFaceCenters, MeshPass::RecalculateNormalCenters, MeshPass::RecalculateNormalCandidates, MeshPass::RecalculateNormalOrientation})
         chain.Concurrent([&] {
             for (const auto &job : jobs) chain.Groups(pipelines[pass], job.Pc, pass == MeshPass::RecalculateNormalFaceCenters || pass == MeshPass::RecalculateNormalCandidates ? job.Tiles : job.Groups);

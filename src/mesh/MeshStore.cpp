@@ -466,22 +466,21 @@ void MeshStore::CaptureSelectionBlocks(Element element, std::span<const uint32_t
     if (Tracked) SelectionArena(Buffers, SelectionDomain(element)).Buffer.CaptureWriteElements(blocks, sizeof(MeshArenas::SelectionBlock));
 }
 
-void MeshStore::CaptureSharpnessWrite(uint32_t id, EditSharpnessOperation operation) {
+void MeshStore::CaptureSharpnessWrite(uint32_t id, EditSharpnessOperation operation, const GeometrySelection &selection) {
     if (!Tracked) return;
     const auto &record = Records.at(id);
     switch (operation) {
         case EditSharpnessOperation::SetSelectedFaces:
-            CaptureSelected(Buffers.FaceSharpness.Buffer, 1, GetSelectedElements(id, Element::Face));
+            Buffers.FaceSharpness.Buffer.CaptureWriteElements(selection.Faces, sizeof(uint8_t));
             break;
         case EditSharpnessOperation::SetSelectedEdges:
-            CaptureSelected(Buffers.EdgeSharpness.Buffer, 1, GetSelectedElements(id, Element::Edge));
+            Buffers.EdgeSharpness.Buffer.CaptureWriteElements(selection.Edges, sizeof(uint8_t));
             break;
         case EditSharpnessOperation::SetVertexEdges: {
             const auto edges = GetVertexEdgeIncidence(id);
             std::vector<uint32_t> touched;
-            GetSelectedElements(id, Element::Vertex).ForEach([&](uint32_t vertex) {
+            for (const auto vertex : selection.Vertices)
                 for (const auto edge : edges.Incident(vertex)) touched.push_back(edge);
-            });
             Buffers.EdgeSharpness.Buffer.CaptureWriteElements(touched, sizeof(uint8_t));
             break;
         }

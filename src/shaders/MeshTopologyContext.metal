@@ -92,6 +92,7 @@ struct TopoContext {
     device uint *Bits(SlotOffset range) const { return BindlessBufferMutable(uint, B.Buffer, range.Slot) + range.Offset; }
     bool Selected(SlotOffset range, uint i) const { return (BindlessBuffer(uint,B.Buffer,range.Slot)[range.Offset+(i >> 5u)] >> (i & 31u)) & 1u; }
     void Select(SlotOffset range, uint i, bool selected = true) const {
+        if (range.Slot == InvalidSlot) return;
         device atomic_uint *word = &Atomic(Bits(range))[i >> 5u];
         const uint mask = 1u << (i & 31u);
         if (selected) atomic_fetch_or_explicit(word, mask, memory_order_relaxed);
@@ -173,24 +174,22 @@ struct TopoContext {
     // The job's flags may select everything, or the elements its list names in place of the source bits.
     bool SrcSelectedVertex(MeshTopologyJob job, uint v) const {
         if (v >= job.SrcVertexCount) return false;
-        if (job.SelectionElement==Element::Vertex) return Scratch()[job.SelectionOffset+v]!=0u;
+        if (!(job.Flags & (TopologyFlagSelectAll | TopologyFlagListSelects))) return Scratch()[job.SelectionOffset+v]!=0u;
         if (job.Flags & TopologyFlagSelectAll) return true;
         if (job.Flags & TopologyFlagListSelects) return (FlagVertices(job)[v] & TopoListed) != 0u;
-        return Selected({job.SrcVertexBits.Slot, 0u}, SrcVertexDomain(job).Handle(v));
+        return Scratch()[job.SelectionOffset+v]!=0u;
     }
     bool SrcSelectedEdge(MeshTopologyJob job, uint e) const {
         if (e >= job.SrcEdgeCount) return false;
-        if (job.SelectionElement==Element::Edge || job.SelectionElement==Element::Vertex)
+        if (!(job.Flags & (TopologyFlagSelectAll | TopologyFlagListSelects)))
             return Scratch()[job.SelectionOffset+job.SrcVertexCount+e]!=0u;
         if (job.Flags & TopologyFlagSelectAll) return true;
         if ((job.Flags & TopologyFlagListSelects) && job.Op == MeshTopologyOp::Subdivide) return EdgeParams(job)[e] != 0u;
-        return Selected({job.SrcEdgeBits.Slot, 0u}, SrcEdgeDomain(job).Handle(e));
+        return Scratch()[job.SelectionOffset+job.SrcVertexCount+e]!=0u;
     }
     bool SrcSelectedFace(MeshTopologyJob job,uint f) const {
         if (f>=job.SrcFaceCount) return false;
-        if (job.SelectionElement==Element::Face || job.SelectionElement==Element::Vertex)
-            return Scratch()[job.SelectionOffset+job.SrcVertexCount+job.SrcHalfedgeCount+f]!=0u;
-        return (job.Flags&TopologyFlagSelectAll) || Selected({job.SrcFaceBits.Slot,0u},SrcFaceDomain(job).Handle(f));
+        return (job.Flags&TopologyFlagSelectAll) || Scratch()[job.SelectionOffset+job.SrcVertexCount+job.SrcHalfedgeCount+f]!=0u;
     }
 
     // Scratch runs.
@@ -477,7 +476,7 @@ inline bool TopoOriginalVertexSelected(TopoContext ctx, MeshTopologyJob job, uin
     switch (TopologyBaseOp(job.Op)) {
         case MeshTopologyOp::ExtrudeVertices: return false;
         case MeshTopologyOp::DissolveVertices:
-            return (job.Flags & TopologyFlagListSelects) ? ctx.Selected({job.SrcVertexBits.Slot,0u},ctx.SrcVertexDomain(job).Handle(v)) : ctx.SrcSelectedVertex(job,v);
+            return (job.Flags & TopologyFlagListSelects) ? ctx.Scratch()[job.SelectionOffset+v]!=0u : ctx.SrcSelectedVertex(job,v);
         case MeshTopologyOp::Wireframe: return false;
         case MeshTopologyOp::ExtrudeRegion: return ctx.DelOrig(job) && (flags & TopoInRegion) && TopoVertexCopies(ctx, job, v) == 0u;
         case MeshTopologyOp::SplitGeometry: return (flags & TopoInRegion) && !(flags & TopoNeedsCopy);
@@ -497,8 +496,8 @@ inline void TopoEmitFace(TopoContext ctx, MeshTopologyJob job, uint fd, uint bas
         ctx.DstHalfedgeFaces(job)[h] = ctx.DstFaceDomain(job).Handle(fd);
         if (job.CornerAttributes & MeshAttributeBit_Normal) ctx.CornerProvenance(job)[h].y = fd;
     }
-    const bool hidden=source<job.SrcFaceCount && (!selected || job.Op==MeshTopologyOp::KeepSelectedFaces) && ctx.Selected({ctx.Pc.Source.FaceHiddenSlot,0u},ctx.SrcFaceDomain(job).Handle(source));
-    ctx.Select({ctx.Pc.Destination.FaceHiddenSlot,0u},ctx.DstFaceDomain(job).Handle(fd),hidden);
+    const bool hidden=job.EditorState && source<job.SrcFaceCount && (!selected || job.Op==MeshTopologyOp::KeepSelectedFaces) && ctx.Selected({ctx.Pc.Source.FaceHiddenSlot,0u},ctx.SrcFaceDomain(job).Handle(source));
+    if (job.EditorState) ctx.Select({ctx.Pc.Destination.FaceHiddenSlot,0u},ctx.DstFaceDomain(job).Handle(fd),hidden);
     ctx.SelectDstFace(job, fd, selected && !hidden);
 }
 

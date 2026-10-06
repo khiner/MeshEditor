@@ -2,6 +2,7 @@
 #include "ElementWorkShared.metal"
 #include "gpu/VertexPositionEditPushConstants.h"
 #include "gpu/Vertex.h"
+#include "EditTransform.metal"
 
 inline float3 SnapSymmetryPosition(uint i,uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
     const uint partner=BindlessBuffer(uint,b.Buffer,pc.Parameters.Slot)[pc.Parameters.Offset+i];
@@ -47,7 +48,6 @@ inline float3 ShrinkFattenPosition(uint v,float3 before,device const BindlessSet
     const auto vertices = BindlessBuffer(Vertex, b.VertexBuffer, pc.VertexSlot);
     const auto corners = BindlessBuffer(uint, b.IndexBuffer, pc.CornerSlot);
     const auto normals = BindlessBuffer(packed_float3, b.Buffer, pc.FaceNormalSlot);
-    const auto selected = BindlessBuffer(uint, b.Buffer, pc.FaceSelectionSlot);
     const ConnectivityView topology{b, pc.Connectivity, pc.FaceCount};
     float3 normal = float3(BindlessBuffer(packed_float3, b.Buffer, pc.VertexNormalSlot)[v]);
     // Blender's bm_vert_calc_normals uses the radial direction when the full fan has no normal.
@@ -59,7 +59,7 @@ inline float3 ShrinkFattenPosition(uint v,float3 before,device const BindlessSet
         const float3 z = NormalizeOrZero(float3(vertices[corners[next]].Position) - before);
         return acos(clamp(dot(a, z), -1.f, 1.f));
     };
-    const auto is_selected = [&](uint face) { return (selected[face / 32u] & (1u << (face % 32u))) != 0u; };
+    const auto is_selected = [&](uint face) { return WorkRank(b, pc.Faces, face) != InvalidOffset; };
     if (pc.Flags & PositionEditSelectedFaceNormals) {
         float3 sum = 0.f;
         uint count = 0u;
@@ -336,6 +336,14 @@ inline float3 EdgeSlidePosition(uint i,float3 before,device const BindlessSet &b
     return before+delta;
 }
 
+inline float3 TransformPosition(float3 before, device const BindlessSet &b, constant VertexPositionEditPushConstants &pc) {
+    const auto parameters = reinterpret_cast<device const TransformPositionParameters *>(BindlessBuffer(uint, b.Buffer, pc.Parameters.Slot) + pc.Parameters.Offset);
+    float3 position = mix(before, apply_geometry_edit_transform(before, parameters->Frame, float3(parameters->Pivot), parameters->Delta), pc.Factor);
+    for (uint axis = 0u; axis < 3u; ++axis)
+        if (!(pc.Axes & (1u << axis))) position[axis] = before[axis];
+    return position;
+}
+
 // All per-vertex transforms share the same canonical read and scratch write.
 // Operation is uniform across the dispatch; only its own transform is evaluated.
 kernel void PositionVerticesGather(
@@ -348,6 +356,7 @@ kernel void PositionVerticesGather(
     const float3 before=float3(BindlessBuffer(Vertex,b.VertexBuffer,pc.VertexSlot)[v].Position);
     float3 position=before;
     switch (pc.Operation) {
+        case PositionEditOp::Transform: position=TransformPosition(before,b,pc); break;
         case PositionEditOp::SnapSymmetry: position=SnapSymmetryPosition(i,v,before,b,pc); break;
         case PositionEditOp::Smooth: position=SmoothPosition(v,before,b,pc); break;
         case PositionEditOp::ShrinkFatten: position=ShrinkFattenPosition(v,before,b,pc); break;

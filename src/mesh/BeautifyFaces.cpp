@@ -1,7 +1,8 @@
 #include "mesh/BeautifyFaces.h"
 #include "Profile.h"
+#include "mesh/Mesh.h"
 #include "mesh/MeshEdgeUsers.h"
-#include "mesh/MeshStore.h"
+#include "numeric/VectorMath.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -143,10 +144,11 @@ struct Planner {
 };
 } // namespace
 
-std::optional<MeshTopologyTask> BeautifyFaceTask(const MeshStore &store, const Mesh &mesh, bool angle) {
+std::optional<MeshTopologyTask> BeautifyFaceTask(const Mesh &mesh, const GeometrySelection &selection, bool angle) {
+    mesh.ValidateSelection(selection);
     Planner p{mesh, angle};
-    const auto selected_edges = store.GetSelectedElements(mesh.GetStoreId(), Element::Edge);
-    store.GetSelectedElements(mesh.GetStoreId(), Element::Face).ForEach([&](uint32_t f) {
+    const auto &selected_edges = selection.Edges;
+    std::ranges::for_each(selection.Faces, [&](uint32_t f) {
         if (mesh.GetValence(he::FH{f}) != 3u) return;
         p.Faces.push_back(f);
         for (const auto h : mesh.fh_range(he::FH{f})) {
@@ -168,7 +170,7 @@ std::optional<MeshTopologyTask> BeautifyFaceTask(const MeshStore &store, const M
         auto &e = p.Edges[i];
         const auto all = p.Canonical.Get(he::HH{e.Source}).Count;
         e.External = all > e.Count ? all - e.Count : 0u;
-        e.Eligible = all == 2u && e.Count == 2u && selected_edges.Contains(*mesh.GetEdge(he::HH{e.Source}));
+        e.Eligible = all == 2u && e.Count == 2u && std::ranges::binary_search(selected_edges, *mesh.GetEdge(he::HH{e.Source}));
         if (e.Eligible) p.Update(i);
     }
     while (!p.Heap.empty()) {
@@ -179,7 +181,7 @@ std::optional<MeshTopologyTask> BeautifyFaceTask(const MeshStore &store, const M
     }
     profile::RecordCounter("BeautifyRotations", p.Rotations);
     if (!p.Rotations) return {};
-    MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::ReplaceFaces, .List = {0u, uint32_t(p.Faces.size())}};
+    MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::ReplaceFaces, .List = {0u, uint32_t(p.Faces.size())}, .Selection = selection};
     task.List.resize(2u + p.Faces.size());
     for (uint32_t f = 0u; f < p.Faces.size(); ++f) {
         task.List[2u + f] = uint32_t(task.List.size());

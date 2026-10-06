@@ -1,5 +1,6 @@
 #include "numeric/VectorMath.h"
 
+#include "GeometrySelection.h"
 #include "Mesh.h"
 
 #include "MeshComponents.h"
@@ -189,4 +190,21 @@ VertexEdgeIncidence::Iterator &VertexEdgeIncidence::Iterator::operator++() {
     }
     Side = 0;
     return *this;
+}
+
+void Mesh::ValidateSelection(const GeometrySelection &selection) const {
+    if (!Store) throw std::invalid_argument("Geometry planning requires a bound mesh.");
+    ValidateGeometrySelection(*Store, StoreId, selection);
+}
+
+void ValidateGeometrySelection(const MeshStore &meshes, uint32_t id, const GeometrySelection &selection) {
+    if (!meshes.TryGet(id)) throw std::invalid_argument("Geometry selection requires a live mesh.");
+    for (const auto element : he::Elements) {
+        const auto &handles = selection.Get(element);
+        if (!std::ranges::is_sorted(handles) || std::ranges::adjacent_find(handles) != handles.end())
+            throw std::invalid_argument("Geometry selections require sorted unique handles.");
+        for (const auto handle : handles)
+            if (!meshes.IsLiveElement(id, element, handle))
+                throw std::invalid_argument("Geometry selection handle is not owned by its mesh.");
+    }
 }

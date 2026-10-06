@@ -535,21 +535,22 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             const vec3 normal = Normalize(vec3{0.3f, 0.8f, 0.5f});
             const char *plane_offset = std::getenv("MESHEDITOR_SPATIAL_PLANE_OFFSET");
             float offset = plane_offset ? std::strtof(plane_offset, nullptr) : Dot(normal, original.CalcFaceCentroid(face));
-            // Runs one spatial face query on its own chain and returns its candidate meshlets, candidate triangles and exact faces.
+            std::printf("spatial_work,visited_nodes,candidate_blocks,candidate_faces,exact_faces\n");
+            // Report canonical broad-phase traversal, candidate membership and exact face matches.
             const auto spatial_counts = [&](const MeshTopologyTask &task) {
                 mtl::ComputeChain chain{meshes.BufferContext()};
                 SpatialFaceWork work{r, chain, task};
                 chain.Submit();
                 work.RecordFaces(r, chain);
                 chain.Submit();
-                return std::array{work.CandidateMeshlets, work.CandidateTriangles, work.Count};
+                return std::array{work.VisitedNodes, work.CandidateBlocks, work.CandidateCount, work.Count};
             };
             if (single_edit == SingleEdit::SpatialPlane) {
-                const MeshTopologyTask task{.SourceId = original.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts, .PlaneNormal = normal, .PlaneOffset = offset};
-                std::array<uint32_t, 3> counts{};
+                const MeshTopologyTask task{.SourceId = original.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts | TopologyFlagSelectAll, .PlaneNormal = normal, .PlaneOffset = offset};
+                std::array<uint32_t, 4> counts{};
                 const auto elapsed = Milliseconds([&] { counts = spatial_counts(task); });
-                std::printf("spatial_plane_work,%u,%u,%u\n", counts[0], counts[1], counts[2]);
-                row("spatial_plane", elapsed, counts[2]);
+                std::printf("spatial_plane_work,%u,%u,%u,%u\n", counts[0], counts[1], counts[2], counts[3]);
+                row("spatial_plane", elapsed, counts[3]);
                 return {};
             }
             if (const char *fraction_text = std::getenv("MESHEDITOR_SPATIAL_NEAR_MAX")) {
@@ -566,10 +567,10 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 });
                 offset = hi - fraction * (hi - lo);
                 std::printf("spatial_cut_setup,%.9g,%.9g,%.9g\n", lo, hi, offset);
-                const MeshTopologyTask probe{.SourceId = original.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts, .PlaneNormal = normal, .PlaneOffset = offset};
-                const auto [meshlets, triangles, candidate_faces] = spatial_counts(probe);
-                std::printf("spatial_cut_candidates,%u,%u,%u\n", meshlets, triangles, candidate_faces);
-                if (!(candidate_faces > 0u && candidate_faces <= 4096u)) return std::unexpected{"near-max cut needs 1 to 4096 candidate faces"};
+                const MeshTopologyTask probe{.SourceId = original.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts | TopologyFlagSelectAll, .PlaneNormal = normal, .PlaneOffset = offset};
+                const auto [nodes, blocks, candidate_faces, exact_faces] = spatial_counts(probe);
+                std::printf("spatial_cut_candidates,%u,%u,%u,%u\n", nodes, blocks, candidate_faces, exact_faces);
+                if (!(exact_faces > 0u && exact_faces <= 4096u)) return std::unexpected{"near-max cut needs 1 to 4096 exact faces"};
                 profile::ClearStats();
             }
             const auto elapsed = Milliseconds([&] {

@@ -136,7 +136,7 @@ uint32_t LayoutTopologyScratch(MeshTopologyJob &job, MeshStore::TopologyCounts s
     const auto table = TopologyTableWords(op, source);
     job.TableMask = table > 0 ? table - 1 : 0u;
     job.StateOffset = take(2);
-    job.SelectionOffset = take(job.SelectionElement != Element::None ? V + H + F : 0u);
+    job.SelectionOffset = take(V + H + F);
     job.FlagVertexOffset = take(V);
     job.VertexTargetOffset = take(V);
     job.FlagHalfedgeOffset = take(H);

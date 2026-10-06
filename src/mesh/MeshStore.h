@@ -35,6 +35,7 @@
 #include "mesh/ElementArena.h"
 #include "mesh/ElementAttribute.h"
 #include "mesh/ElementAttributeView.h"
+#include "mesh/GeometrySelection.h"
 #include "mesh/MeshletIndex.h"
 #include "mesh/PoseAttributeView.h"
 #include "mesh/SelectionQuery.h"
@@ -296,7 +297,7 @@ struct MeshStore {
     void CaptureVertexEdit(uint32_t id);
     void CaptureSelectionSummary(uint32_t id);
     void CaptureSelectionBlocks(Element, std::span<const uint32_t> blocks);
-    void CaptureSharpnessWrite(uint32_t id, EditSharpnessOperation);
+    void CaptureSharpnessWrite(uint32_t id, EditSharpnessOperation, const GeometrySelection &);
     void CaptureConnectivityWrite(uint32_t id);
     void CaptureWeldWrite(uint32_t id);
 

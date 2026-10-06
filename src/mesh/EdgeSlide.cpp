@@ -1,7 +1,7 @@
 #include "mesh/EdgeSlide.h"
 #include "Profile.h"
 #include "mesh/MeshEdgeUsers.h"
-#include "mesh/MeshStore.h"
+#include "numeric/VectorMath.h"
 #include <array>
 #include <cmath>
 #include <limits>
@@ -55,7 +55,7 @@ vec3 RailIntersection(vec3 before, vec3 a, vec3 b, vec3 c, vec3 d) {
 }
 } // namespace
 
-std::vector<EdgeSlideDirections> PlanEdgeSlide(const MeshStore &meshes, const Mesh &mesh, vec3 direction, vec3 scale, uint32_t reference) {
+std::vector<EdgeSlideDirections> PlanEdgeSlide(const Mesh &mesh, const GeometrySelection &selection, vec3 direction, vec3 scale, uint32_t reference) {
     const profile::CpuScope scope{"PlanEdgeSlide"};
     if (!mesh.FaceCount()) return {};
     struct Link {
@@ -70,8 +70,7 @@ std::vector<EdgeSlideDirections> PlanEdgeSlide(const MeshStore &meshes, const Me
     };
     std::vector<Node> nodes;
     std::unordered_map<uint32_t, uint32_t> index;
-    const auto id = mesh.GetStoreId();
-    meshes.GetSelectedElements(id, Element::Vertex).ForEach([&](uint32_t v) {
+    std::ranges::for_each(selection.Vertices, [&](uint32_t v) {
         index.emplace(v, uint32_t(nodes.size()));
         nodes.push_back({.Vertex = he::VH{v}});
     });
@@ -79,7 +78,7 @@ std::vector<EdgeSlideDirections> PlanEdgeSlide(const MeshStore &meshes, const Me
     const auto &c = mesh.GetConnectivity();
     MeshEdgeUsers users{mesh};
     bool invalid = false;
-    meshes.GetSelectedElements(id, Element::Edge).ForEach([&](uint32_t e) {
+    std::ranges::for_each(selection.Edges, [&](uint32_t e) {
         if (invalid) return;
         const auto h = mesh.GetHalfedge(he::EH{e}, 0u);
         const auto count = users.Get(h).Count;

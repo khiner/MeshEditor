@@ -153,8 +153,8 @@ void MeshStore::ReconcileSelection(state::Scene &r, mtl::ComputeChain &chain, st
         }
         auto &update = updates.emplace_back(SelectionUpdate{.StoreId = id});
         std::ranges::copy(std::span{change.Blocks}.first(3u), update.Blocks.begin());
-        // Edge sharpness reaches the flags of incident vertices, and halfedge links reach edges and vertices.
-        for (const auto d : {1u, SelectionHalfedgeDomain})
+        // Position writes reach incident face bounds; edge sharpness and halfedge links reach neighboring flags.
+        for (const auto d : {0u, 1u, SelectionHalfedgeDomain})
             for (const auto block : change.Blocks[d])
                 for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) update.Seeds.push_back({d, block * MeshElementBlockWords + w, ~0u});
     }

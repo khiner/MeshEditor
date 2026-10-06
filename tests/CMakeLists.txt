@@ -59,5 +59,6 @@ rbp_copy_shaders(MeshEditorProjectTest)
 
 mesheditor_test(MeshEditorStateTest StateTest.cpp MeshEditorProjectStore)
 mesheditor_test(MeshEditorMeshTopologyTest MeshTopologyTest.cpp MeshEditorEditor)
+target_sources(MeshEditorMeshTopologyTest PRIVATE GeometryOperationsTest.cpp)
 target_compile_definitions(MeshEditorMeshTopologyTest PRIVATE MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 rbp_copy_shaders(MeshEditorMeshTopologyTest)

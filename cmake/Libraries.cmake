@@ -118,6 +118,10 @@ mesheditor_library(MeshEditorMesh HOT
     src/mesh/MeshStores.cpp
     src/mesh/MeshletIndex.cpp
     src/mesh/MeshTopology.cpp
+    src/mesh/TopologyOperations.cpp
+    src/mesh/PositionOperations.cpp
+    src/mesh/SharpnessOperations.cpp
+    src/mesh/GeometryRefresh.cpp
     src/mesh/MeshTopologyLayout.cpp
     src/mesh/SpatialFaceWork.cpp
     src/mesh/Primitives.cpp

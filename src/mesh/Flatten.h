@@ -1,10 +1,10 @@
 #pragma once
+#include "mesh/GeometrySelection.h"
 
 #include "Range.h"
 #include <vector>
 
 struct Mesh;
-struct MeshStore;
 
 // Group records: vertex count, face count, vertex ranks, face-record offsets.
 // Face records: canonical face, corner count, vertex ranks.
@@ -13,4 +13,4 @@ struct FlattenPlan {
     std::vector<uint32_t> Vertices, Words, Groups;
     std::vector<Range> Batches;
 };
-FlattenPlan PlanFlatten(const MeshStore &, const Mesh &);
+FlattenPlan PlanFlatten(const Mesh &, const GeometrySelection &);

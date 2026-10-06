@@ -34,7 +34,6 @@
 #include "gpu/OverlayJobDrawPushConstants.h"
 #include "gpu/OverlayJobKind.h"
 #include "gpu/PosedMeshletBoundsPushConstants.h"
-#include "gpu/RetessellateFacesPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/VertexBlockPushConstants.h"
 #include "gpu/ViewportCompositePushConstants.h"
@@ -43,6 +42,7 @@
 #include "gpu/WireResolvePushConstants.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
+#include "mesh/GeometryRefresh.h"
 #include "mesh/MeshClosure.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
@@ -2259,80 +2259,26 @@ void RecordGeometryEditBatch(state::Scene &r, MTL::ComputeCommandEncoder *encode
 // Faces keep their identities and triangle ranges. Canonical position edits discard
 // affected authored tangents; those render keys and changed diagonals share one repair.
 bool RetessellateGeometry(state::Scene &r, mtl::ComputeChain &chain, GeometryEditJobs &geometry, bool preview) {
-    auto &meshes = r.Context.get<MeshStore>();
-    const auto &a = meshes.Arenas();
-    const auto &buffers = r.Context.get<const GpuBuffers>();
-    struct Job {
-        state::Entity Entity;
-        RetessellateFacesPushConstants Pc;
-        std::vector<uvec2> Faces;
-        uint32_t Corners{};
-        uint64_t TriangleBlocks{};
-    };
-    std::vector<Job> jobs;
-    uint64_t words = 0u;
-    for (const auto &[entity, edit] : geometry) {
-        const auto tangents = a.CornerTangents.Ref(!preview && (meshes.Get(GetMesh(r, entity).GetStoreId()).CornerAttributes & MeshAttributeBit_Tangent));
-        Job job{.Entity = entity, .Pc = {.ChangedVertices = edit.ChangedVertices, .Tangents = tangents, .VertexSlot = meshes.Slots().Vertices, .CornerSlot = a.FaceCorners.Buffer.Slot, .FaceRangesSlot = a.FaceRanges.Buffer.Slot, .FaceTrianglesSlot = a.FaceTriangles.Buffer.Slot, .TriangleSlot = a.Triangles.Buffer.Slot, .SelectionSlot = edit.SelectionSlot, .ApplyTransform = uint32_t(preview && edit.ApplyTransform), .Primary = edit.Primary, .Delta = edit.Delta, .Pivot = edit.Pivot}};
-        std::vector<Range> triangle_ranges;
-        ForEachWorkElement(buffers.GeometryWork, edit.Faces, [&](uint32_t face) {
-            const auto loop = a.FaceRanges.Get({face, 1u})[0];
-            const uint32_t n = loop.y - loop.x;
-            if (n <= 3u && tangents.ValuesSlot == InvalidSlot) return;
-            if (uint64_t(job.Corners) + n > UINT32_MAX / 4u) throw std::length_error("Polygon tessellation scratch exceeds its address space.");
-            if (tangents.ValuesSlot != InvalidSlot) a.CornerTangents.CaptureHandles({loop.x, n});
-            job.Faces.push_back({face, job.Corners});
-            const uint32_t first = a.FaceTriangles.Get({face, 1u})[0];
-            if (n > 3u) {
-                job.Corners += n;
-                triangle_ranges.push_back({first, n - 2u});
-            }
-            job.TriangleBlocks += (uint64_t(first % MeshElementBlockSize) + n - 2u + MeshElementBlockSize - 1u) / MeshElementBlockSize;
-        });
-        if (job.Faces.empty()) continue;
-        a.Triangles.Buffer.CaptureWriteRanges(triangle_ranges, sizeof(uvec3));
-        job.Pc.Count = uint32_t(job.Faces.size());
-        const auto capacity = WorkCapacity(a.Triangles.Capacity(), job.TriangleBlocks);
-        words += 4ull * job.Corners + 2ull * job.Faces.size() + ElementWorkWords(a.Triangles.Capacity(), job.TriangleBlocks) + SortElementWorkWords(capacity);
-        jobs.push_back(std::move(job));
-    }
-    if (jobs.empty()) return false;
-    const profile::CpuScope scope{"RetessellateGeometry"};
-    chain.Scratch.ReserveAdditional(words);
-    std::vector<ElementWork> changed;
-    uint64_t faces = 0u, corners = 0u;
-    for (auto &job : jobs) {
-        job.Pc.Faces = chain.Upload(as_bytes(job.Faces));
-        job.Pc.Scratch = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(4u * job.Corners).Offset};
-        job.Pc.ChangedTriangles = AllocateElementWork(chain.Scratch, a.Triangles.Capacity(), job.TriangleBlocks);
-        changed.push_back(job.Pc.ChangedTriangles);
-        faces += job.Pc.Count;
-        corners += job.Corners;
-    }
-    const auto &pipeline = GetMeshPipelines(r)[MeshPass::RetessellateFaces];
-    chain.Concurrent([&] { for (const auto &job:jobs) chain.Threads(pipeline,job.Pc,job.Pc.Count); });
-    EncodeSortElementWork(r, chain, changed);
-    chain.Submit();
+    const auto &work = r.Context.get<const GpuBuffers>().GeometryWork;
+    std::vector<MeshRetessellation> inputs;
+    for (const auto &[entity, edit] : geometry) inputs.push_back({
+        .StoreId = GetMesh(r, entity).GetStoreId(),
+        .Work = &work,
+        .Faces = edit.Faces,
+        .Parameters = {.ChangedVertices = edit.ChangedVertices, .SelectionSlot = edit.SelectionSlot, .ApplyTransform = uint32_t(preview && edit.ApplyTransform), .Primary = edit.Primary, .Delta = edit.Delta, .Pivot = edit.Pivot},
+        .Preview = preview,
+    });
+    const auto changed = RetessellateMeshes(r, chain, inputs);
     std::vector<std::pair<state::Entity, FaceTriangles>> repairs;
-    uint64_t triangles = 0u;
-    for (const auto &job : jobs) {
-        FaceTriangles changed;
-        changed.Triangles = job.Pc.ChangedTriangles;
-        changed.Count = ElementWorkCount(chain.Scratch, changed.Triangles);
-        if (!changed.Count) continue;
-        triangles += changed.Count;
-        repairs.emplace_back(job.Entity, changed);
-    }
+    for (uint32_t i = 0u; i < changed.size(); ++i)
+        if (changed[i].Count) repairs.emplace_back(geometry[i].first, changed[i]);
     RepairFaceRender(r, chain, repairs);
     if (!repairs.empty()) {
-        // The face/vertex closure is unchanged, but its triangle owners now name new clusters.
-        auto &work = r.Context.get<GpuSceneState>().EditWork;
-        for (const auto &[entity, _] : repairs) work.at(entity).FootprintReady = false;
+        // New triangle owners invalidate the cached render footprint.
+        auto &edit_work = r.Context.get<GpuSceneState>().EditWork;
+        for (const auto &[entity, _] : repairs) edit_work.at(entity).FootprintReady = false;
         PrepareGeometryFootprints(r, chain, geometry);
     }
-    profile::RecordCounter("RetessellatedFaces", faces);
-    profile::RecordCounter("RetessellatedCorners", corners);
-    profile::RecordCounter("RetessellatedTriangles", triangles);
     return !repairs.empty();
 }
 
@@ -2416,6 +2362,7 @@ std::vector<state::Entity> PublishEditedPositions(state::Scene &r, mtl::ComputeC
             if (meshes.Get(id).SelectionSummary.Count) {
                 auto &blocks = aggregates.emplace_back(MeshStore::SelectionUpdate{.StoreId = id}).Blocks[0];
                 ForEachWorkBlock(buffers.GeometryWork, vertices, [&](uint32_t block, auto) { blocks.push_back(block); });
+                ForEachWorkBlock(buffers.GeometryWork, w.Faces, [&](uint32_t block, auto) { aggregates.back().Blocks[2].push_back(block); });
             }
             w.Modified = w.PreviewActive = true;
             w.RequiresPose = !preview;

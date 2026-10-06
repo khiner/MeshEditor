@@ -217,14 +217,13 @@ ClosureSeed EncodeSelectionSeed(state::Scene &r, mtl::ComputeChain &chain, uint3
     const HostIncidence incidence{meshes, a, a.FaceCorners.Count(record.FaceCorners)};
     ClosureSeed result;
     const auto gather = [&](const auto &arena, ElementSetRef set) {
-        const auto selection = meshes.GetSelectedElements(id, element);
-        // A selection of every live element bounds as the whole mesh, with no host enumeration.
-        if (select_all || selection.Count() == arena.Count(set)) {
+        if (select_all) {
             result.Count = arena.Count(set);
             result.Incidence = result.LoopFans = incidence.Corners;
             result.All = true;
             return PrepareElementMembershipWork(chain.Scratch, arena, set);
         }
+        const auto selection = meshes.GetSelectedElements(id, element);
         uint64_t sum = 0u;
         selection.ForEach([&](uint32_t handle) { sum += incidence.Add(element, handle, result.Vertices); });
         result.Count = selection.Count();

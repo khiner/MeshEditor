@@ -38,12 +38,10 @@ struct MeshTopologyJob {
     // Compact work indices resolve to canonical arena handles without staging geometry.
     ElementWork SrcVertexWork DEFAULT(), SrcHalfedgeWork DEFAULT(), SrcFaceWork DEFAULT(), SrcEdgeWork DEFAULT();
     Element SelectionElement DEFAULT();
-    ElementWork SelectionWork DEFAULT();
+    ElementWork VertexSelection DEFAULT(), EdgeSelection DEFAULT(), FaceSelection DEFAULT();
+    uint32_t EditorState DEFAULT();
     uint32_t SelectionOffset DEFAULT(); // Explicit selection classified once over the compact source domains
     ElementWork PrimitiveWork DEFAULT(); // Fresh output remaps source primitive IDs to its compact palette.
-    SlotOffset SrcVertexBits DEFAULT();
-    SlotOffset SrcEdgeBits DEFAULT();
-    SlotOffset SrcFaceBits DEFAULT();
     uint32_t HasSkin DEFAULT();
     uint32_t HasVertexPrimitives DEFAULT(); // Bit 0: source, bit 1: destination
     uint32_t CornerAttributes DEFAULT();
@@ -110,4 +108,4 @@ struct MeshTopologyJob {
     // Optional output-vertex basis for staged inset parameter updates.
     SlotOffset DstInsetBasis DEFAULT();
 };
-static_assert(sizeof(MeshTopologyJob) == 672, "MeshTopologyJob size");
+static_assert(sizeof(MeshTopologyJob) == 684, "MeshTopologyJob size");

@@ -1,7 +1,6 @@
 #include "mesh/Flatten.h"
 #include "SortUnique.h"
 #include "mesh/Mesh.h"
-#include "mesh/MeshStore.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -13,7 +12,7 @@ struct Group {
 };
 } // namespace
 
-FlattenPlan PlanFlatten(const MeshStore &meshes, const Mesh &mesh) {
+FlattenPlan PlanFlatten(const Mesh &mesh, const GeometrySelection &selection) {
     std::vector<Group> groups;
     std::unordered_set<uint32_t> covered_edges;
     // Face groups join across edges. The remaining selected edges join across vertices.
@@ -27,7 +26,7 @@ FlattenPlan PlanFlatten(const MeshStore &meshes, const Mesh &mesh) {
             }
             return i;
         };
-        meshes.GetSelectedElements(mesh.GetStoreId(), domain).ForEach([&](uint32_t handle) {
+        std::ranges::for_each(selection.Get(domain), [&](uint32_t handle) {
             if (domain == Element::Edge && covered_edges.contains(handle)) return;
             const auto i = uint32_t(elements.size());
             elements.push_back(handle);

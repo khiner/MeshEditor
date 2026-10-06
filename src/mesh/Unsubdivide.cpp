@@ -1,12 +1,13 @@
 #include "mesh/Unsubdivide.h"
 #include "Profile.h"
+#include "mesh/Mesh.h"
 #include "mesh/MeshEdgeUsers.h"
-#include "mesh/MeshStore.h"
 #include <algorithm>
 #include <map>
 #include <set>
 
-std::optional<MeshTopologyTask> UnsubdivideTask(const MeshStore &store, const Mesh &mesh) {
+std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const GeometrySelection &selection) {
+    mesh.ValidateSelection(selection);
     const profile::CpuScope scope{"PlanUnsubdivide"};
     const auto &c = mesh.GetConnectivity();
     const auto incidence = mesh.GetVertexEdgeIncidence();
@@ -20,7 +21,7 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const MeshStore &store, const Me
     };
     std::vector<Node> nodes;
     std::unordered_map<uint32_t, uint32_t> index;
-    store.GetSelectedElements(mesh.GetStoreId(), Element::Vertex).ForEach([&](uint32_t v) {
+    std::ranges::for_each(selection.Vertices, [&](uint32_t v) {
         const auto fan = c.VertexCorners[v];
         if (fan.y > 4u) return;
         Node node{.Vertex = v};
@@ -168,6 +169,7 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const MeshStore &store, const Me
     if (!mesh.FaceCount()) {
         MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::DissolveVertices, .Flags = TopologyFlagListSelects, .List = {uint32_t(removed.size())}};
         task.List.insert(task.List.end(), removed.begin(), removed.end());
+        task.Selection = selection;
         return task;
     }
     for (const auto v : removed)
@@ -206,5 +208,6 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const MeshStore &store, const Me
         }
     }
     profile::RecordCounter("UnsubdivideRemovedVertices", removed.size());
+    task.Selection = selection;
     return task;
 }

@@ -79,7 +79,7 @@ struct Pipelines {
     MainPipeline Main;
     mtl::RenderPipeline SilhouetteSeed, Silhouette;
     SelectionFragmentPipeline SelectionFragment;
-    mtl::ComputePipeline VisibilityObjectSelection, OutlineOccluderSeed, EditSharpness, CommitPosedGeometry, FinalizeElementWork;
+    mtl::ComputePipeline VisibilityObjectSelection, OutlineOccluderSeed, CommitPosedGeometry, FinalizeElementWork;
     // Materializes current-pose positions before bounds and normal derivation.
     mtl::ComputePipeline PosePrepass;
     mtl::ComputePipeline PosedMeshletBounds;

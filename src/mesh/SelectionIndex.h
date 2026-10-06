@@ -52,6 +52,25 @@ struct SelectionIndex {
     SelectionIndexView Read(uint32_t root, std::span<const SelectionAggregate> leaves) const {
         return {Nodes, leaves, root < Roots.size() ? Roots[root] : InvalidOffset};
     }
+    // Prune canonical block ownership by its existing reduced geometry bounds.
+    // Bounds stay in UMA; traversal reads no vertex values and uploads only leaf block IDs.
+    uint32_t VisitBounds(uint32_t root, std::span<const SelectionAggregate> leaves, auto &&overlap, auto &&visit) const {
+        if (root >= Roots.size() || Roots[root] == InvalidOffset) return 0u;
+        uint32_t visited = 0u;
+        const auto values = Aggregates.Buffer.GetSpan<SelectionAggregate>();
+        const auto walk = [&](auto &&self, uint32_t id, uint32_t level) -> void {
+            ++visited;
+            if (!overlap(values[id].Bounds)) return;
+            const auto &node = Nodes[id];
+            for (auto mask = node.Active; mask; mask &= mask - 1u) {
+                const auto child = node.Children[uint32_t(std::countr_zero(mask))];
+                if (level) self(self, child, level - 1u);
+                else if (overlap(leaves[child].Bounds)) visit(child);
+            }
+        };
+        walk(walk, Roots[root], SelectionIndexLevels - 1u);
+        return visited;
+    }
     const SelectionAggregate &Get(uint32_t root) const {
         static const SelectionAggregate empty{};
         return root < Roots.size() && Roots[root] != InvalidOffset ? Aggregates.Get({Roots[root], 1u})[0] : empty;

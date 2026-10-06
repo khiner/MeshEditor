@@ -14,19 +14,15 @@
 #include "Profile.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
-#include "gpu/EditSharpnessPushConstants.h"
 #include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MeshletRoute.h"
 #include "gpu/ObjectSelectionPushConstants.h"
 #include "gpu/OverlayDispatch.h"
 #include "gpu/SelectionElementPushConstants.h"
 #include "gpu/VisibilitySelectionPushConstants.h"
-#include "mesh/ElementMembershipWork.h"
-#include "mesh/ElementWorkSort.h"
-#include "mesh/MeshClosure.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
-#include "mesh/NormalDeriveGpu.h"
+#include "mesh/SharpnessOperations.h"
 #include "metal/Dispatch.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
@@ -731,159 +727,46 @@ void ConvertElementSelections(state::Scene &r, std::span<const state::Entity> me
     if (!all_selected.empty()) RefreshElementSelectionSummaries(r, all_selected, mode);
 }
 
-void ApplyEditSharpness(
-    state::Scene &r, state::Entity, std::span<const state::Entity> mesh_entities,
-    EditSharpnessOperation operation, bool value, float angle
-) {
-    if (mesh_entities.empty()) return;
-    auto &meshes = r.Context.get<MeshStore>();
-    const auto &buffers = r.Context.get<const GpuBuffers>();
-    const auto &slots = r.Context.get<const mtl::BindlessSet>();
-    const auto &pipelines = GetPipelines(r);
-    const auto source = operation == EditSharpnessOperation::SetSelectedFaces ? Element::Face :
-        operation == EditSharpnessOperation::SetSelectedEdges                 ? Element::Edge :
-        operation == EditSharpnessOperation::SetVertexEdges                   ? Element::Vertex :
-                                                                                Element::None;
-    std::vector<state::Entity> faced;
-    std::vector<uint32_t> faced_ids;
-    for (const auto mesh_entity : mesh_entities) {
-        const auto *owner = HasMesh(r, mesh_entity) ? TryRecordOf(r, mesh_entity) : nullptr;
-        if (!owner || owner->RenderTopologies == 0u) continue;
-        const auto mesh = GetMesh(r, mesh_entity);
-        if (mesh.FaceCount() == 0) continue;
-        faced.push_back(mesh_entity);
-        faced_ids.push_back(mesh.GetStoreId());
-    }
-    // Every mesh's selected handles, membership work and closures share one chain's scratch, and each phase submits once for every mesh.
-    mtl::ComputeChain chain{meshes.BufferContext()};
-    if (source != Element::None) meshes.EnsureSelectionState(r, chain, faced_ids);
-    std::vector<EditSharpnessPushConstants> commands;
-    std::vector<ElementWorkSeedJob> seeds;
-    std::vector<state::Entity> edited;
-    const auto &arenas = meshes.Arenas();
-    // Each mesh gathers its selected handles into its own range.
-    chain.Concurrent([&] {
-        for (uint32_t i = 0u; i < faced.size(); ++i) {
-            const auto id = faced_ids[i];
-            if (source != Element::None && !meshes.GetSelectedElements(id, source).Count()) continue;
-            meshes.CaptureSharpnessWrite(id, operation);
-            const auto mesh = GetMesh(r, faced[i]);
-            const auto &record = meshes.Get(id);
-            auto &pc = commands.emplace_back(EditSharpnessPushConstants{
-                .VertexSelectionSlot = arenas.VertexSelection.Buffer.Slot,
-                .CornersSlot = arenas.FaceCorners.Buffer.Slot,
-                .FaceSharpnessSlot = arenas.FaceSharpness.Buffer.Slot,
-                .EdgeSharpnessSlot = arenas.EdgeSharpness.Buffer.Slot,
-                .FaceNormalsSlot = arenas.BaseFaceNormals.Buffer.Slot,
-                .Connectivity = meshes.GetConnectivityRef(id),
-                .EdgeCount = mesh.EdgeCount(),
-                .FaceCount = mesh.FaceCount(),
-                .Operation = operation,
-                .Value = value ? 1u : 0u,
-                .CosAngle = std::cos(angle),
-            });
-            if (source != Element::None) {
-                const auto selected = meshes.GatherSelectedElements(r, chain, id, source, chain.Scratch);
-                pc.Selected = {chain.Scratch.Buffer.Slot, selected.Offset};
-                pc.SelectedCount = selected.Count;
-            } else {
-                pc.FaceWork = seeds.emplace_back(PrepareElementMembershipWork(chain.Scratch, arenas.FaceTriangles, record.FaceData)).Work;
-                if (operation != EditSharpnessOperation::SetAllFaces) pc.EdgeWork = seeds.emplace_back(PrepareElementMembershipWork(chain.Scratch, arenas.EdgeHalfedges, record.EdgeData)).Work;
-            }
-            edited.push_back(faced[i]);
-        }
-    });
-    if (commands.empty()) return;
-    std::vector<ElementWork> seeded;
-    for (const auto &seed : seeds) seeded.push_back(seed.Work);
-    EncodeElementMembershipWork(r, chain, seeds);
-    EncodeSortElementWork(r, chain, seeded);
-    chain.Submit();
-    for (const auto work : seeded) CheckElementWork(chain.Scratch, work);
-    // The closures record after the sharpness writes, and the next submit commits both.
-    chain.Encode([&](MTL::ComputeCommandEncoder *encoder) {
-        for (const auto &pc : commands) {
-            const uint32_t count = source != Element::None       ? pc.SelectedCount :
-                operation == EditSharpnessOperation::SetAllFaces ? pc.FaceCount :
-                                                                   std::max(pc.EdgeCount, pc.FaceCount);
-            if (!count) continue;
-            encode::BindCompute(encoder, pipelines.EditSharpness, slots, buffers);
-            encode::SetPushConstants(encoder, pc);
-            encoder->dispatchThreadgroups(MTL::Size((count + 255u) / 256u, 1, 1), ThreadgroupSize::Linear256);
-        }
-        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-    });
-    r.Context.get<GpuSceneState>().EditSelectionDirty = true;
-    // One edited mesh's closures, changed triangles and corner classes.
-    struct Edit {
-        state::Entity Entity;
-        uint32_t Id;
-        ClosureSeed Vertices;
-        MeshClosure Incident{}, Neighborhood{};
-        FaceTriangles Triangles{};
-        MeshStore::CornerClassUpdate Classes{};
+GeometrySelection EditorGeometrySelection(const MeshStore &meshes, uint32_t id) {
+    GeometrySelection selection;
+    const auto gather = [&](Element domain, auto &handles) {
+        const auto selected = meshes.GetSelectedElements(id, domain);
+        handles.reserve(selected.Count());
+        selected.ForEach([&](uint32_t handle) { handles.push_back(handle); });
     };
-    std::vector<Edit> edits;
-    for (const auto mesh_entity : edited) {
-        const auto id = GetMesh(r, mesh_entity).GetStoreId();
-        // The written elements' vertices: the selected faces' loop vertices, the selected vertices or edge endpoints, or all vertices.
-        ClosureSeed vertices;
-        if (source == Element::Face) vertices = EncodePrimitiveClosure(r, chain, id, EncodeSelectionSeed(r, chain, id, Element::Face, false)).Seed(Element::Vertex);
-        else if (source == Element::Edge) vertices = EncodeEdgeVertices(r, chain, id, EncodeSelectionSeed(r, chain, id, Element::Edge, false));
-        else vertices = EncodeSelectionSeed(r, chain, id, Element::Vertex, source == Element::None);
-        if (vertices.Count) edits.push_back({.Entity = mesh_entity, .Id = id, .Vertices = std::move(vertices)});
+    gather(Element::Vertex, selection.Vertices);
+    gather(Element::Edge, selection.Edges);
+    gather(Element::Face, selection.Faces);
+    return selection;
+}
+
+void ApplyEditSharpness(state::Scene &r, state::Entity, std::span<const state::Entity> mesh_entities, EditSharpnessOperation operation, bool value, float angle) {
+    auto &meshes = r.Context.get<MeshStore>();
+    std::vector<state::Entity> entities;
+    std::vector<SharpnessOperationTarget> targets;
+    for (const auto entity : mesh_entities) {
+        const auto *owner = HasMesh(r, entity) ? TryRecordOf(r, entity) : nullptr;
+        if (!owner || !owner->RenderTopologies || !GetMesh(r, entity).FaceCount()) continue;
+        const auto id = GetMesh(r, entity).GetStoreId();
+        targets.push_back({id, EditorGeometrySelection(meshes, id)});
+        entities.push_back(entity);
     }
-    if (operation == EditSharpnessOperation::SetVertexEdges) {
-        // Each edge at a selected vertex changes the fans at both of its endpoints.
-        for (auto &edit : edits) {
-            edit.Incident = EncodeVertexClosure(r, chain, edit.Id, edit.Vertices);
-            edit.Incident.EncodeIncidence(r, chain, edit.Id, Element::Edge);
-        }
-        chain.Submit();
-        for (auto &edit : edits) {
-            edit.Incident.Finish(chain);
-            edit.Vertices = EncodeEdgeVertices(r, chain, edit.Id, edit.Incident.Seed(Element::Edge));
-        }
-    }
-    for (auto &edit : edits) {
-        edit.Neighborhood = EncodeVertexClosure(r, chain, edit.Id, edit.Vertices);
-        edit.Neighborhood.EncodeIncidence(r, chain, edit.Id, Element::Face);
-    }
-    chain.Submit();
-    for (auto &edit : edits) edit.Neighborhood.Finish(chain);
-    std::erase_if(edits, [](const Edit &edit) { return !edit.Neighborhood.Counts[0]; });
-    for (auto &edit : edits) {
-        edit.Triangles = EncodeFaceTriangles(r, chain, edit.Id, edit.Neighborhood.Seed(Element::Face));
-        // The neighborhood's corners include every corner at its vertices.
-        edit.Classes = meshes.EncodeCornerClassification(r, chain, edit.Id, edit.Neighborhood.Elements[0], edit.Neighborhood.Counts[0], edit.Neighborhood.Counts[1], source == Element::None);
-    }
-    chain.Submit();
-    std::vector<LocalNormalWork> normals;
-    for (auto &edit : edits) {
-        edit.Triangles.Finish(chain);
-        meshes.PlanCornerClassification(r, chain, edit.Classes);
-        const auto &neighborhood = edit.Neighborhood;
-        normals.push_back({edit.Id, neighborhood.Elements[0], neighborhood.Counts[0], neighborhood.Elements[2], neighborhood.Counts[2]});
-    }
-    EncodeDeriveMeshNormals(r, chain, chain.Scratch, normals);
-    chain.Submit();
-    std::vector<MeshStore::SelectionUpdate> updates;
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    const auto changes = ExecuteGeometrySharpness(r, chain, targets, operation, value, angle);
+    if (changes.empty()) return;
+    r.Context.get<GpuSceneState>().EditSelectionDirty = true;
+    std::vector<uint32_t> summaries;
     std::vector<std::pair<state::Entity, FaceTriangles>> repairs;
-    for (const auto &edit : edits) {
-        meshes.FinishCornerClassification(chain, edit.Classes);
-        // The neighborhood holds every written element and each vertex whose incident edges changed.
-        if (meshes.Get(edit.Id).SelectionSummary.Count) {
-            auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = edit.Id});
-            for (const auto [d, domain] : {std::pair{0u, 0u}, std::pair{1u, 3u}, std::pair{2u, 2u}})
-                ForEachWorkBlock(chain.Scratch, edit.Neighborhood.Elements[domain], [&](uint32_t block, auto) { update.Blocks[d].push_back(block); });
-        }
-        const auto *owner = TryRecordOf(r, edit.Entity);
-        if (owner && owner->PrimitiveRoot != InvalidOffset) repairs.emplace_back(edit.Entity, edit.Triangles);
-        else r.emplace_or_replace<MeshGeometryDirty>(edit.Entity, EditSelectionAfter::Keep, false);
+    for (const auto &change : changes) {
+        const auto id = targets[change.TargetIndex].StoreId;
+        const auto entity = entities[change.TargetIndex];
+        if (meshes.Get(id).SelectionSummary.Count) summaries.push_back(id);
+        const auto *owner = TryRecordOf(r, entity);
+        if (owner && owner->PrimitiveRoot != InvalidOffset) repairs.emplace_back(entity, change.Triangles);
+        else r.emplace_or_replace<MeshGeometryDirty>(entity, EditSelectionAfter::Keep, false);
     }
-    meshes.UpdateSelection(r, chain, updates);
-    chain.AfterSubmit([&meshes, updates = std::move(updates)] {
-        for (const auto &update : updates) meshes.PublishSelectionSummary(update.StoreId);
+    chain.AfterSubmit([&meshes, summaries = std::move(summaries)] {
+        for (const auto id : summaries) meshes.PublishSelectionSummary(id);
     });
     RepairFaceRender(r, chain, repairs);
     chain.Submit();

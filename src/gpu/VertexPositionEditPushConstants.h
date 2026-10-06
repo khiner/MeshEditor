@@ -2,6 +2,7 @@
 
 #include "gpu/ConnectivityRef.h"
 #include "gpu/ElementWork.h"
+#include "gpu/Transform.h"
 
 enum VertexPositionEditFlags : uint32_t {
     PositionEditSelectedFaceNormals = 1u,
@@ -38,6 +39,7 @@ enum class PositionEditOp : uint32_t {
     EdgeSlide,
     SpaceEvenly,
     RelaxEdgeLoops,
+    Transform,
 };
 
 struct VertexPositionEditPushConstants {
@@ -48,7 +50,7 @@ struct VertexPositionEditPushConstants {
     ElementWork Faces DEFAULT();
     SlotOffset Planes;
     uint32_t PlaneCount DEFAULT(), FaceNormalSlot DEFAULT(InvalidSlot);
-    uint32_t VertexNormalSlot DEFAULT(InvalidSlot), FaceSelectionSlot DEFAULT(InvalidSlot), Flags DEFAULT();
+    uint32_t VertexNormalSlot DEFAULT(InvalidSlot), Flags DEFAULT();
     vec3 Center DEFAULT();
     SlotOffset ReductionBlocks, ReductionResult;
     vec3 Direction DEFAULT(), Gradient DEFAULT();
@@ -56,7 +58,7 @@ struct VertexPositionEditPushConstants {
     uint32_t ChainCount DEFAULT();
     PositionEditOp Operation DEFAULT(PositionEditOp::Copy);
 };
-static_assert(sizeof(VertexPositionEditPushConstants) == 212);
+static_assert(sizeof(VertexPositionEditPushConstants) == 208);
 
 struct EdgeChain {
     uint32_t InputOffset, OutputOffset, Count, Closed;
@@ -101,3 +103,9 @@ struct PositionReducePushConstants {
     uint32_t Bounds DEFAULT();
 };
 static_assert(sizeof(PositionReducePushConstants) == 28);
+
+struct TransformPositionParameters {
+    Transform Frame, Delta;
+    vec3 Pivot;
+};
+static_assert(sizeof(TransformPositionParameters) == 92);

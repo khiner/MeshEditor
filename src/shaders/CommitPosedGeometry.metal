@@ -48,8 +48,7 @@ kernel void CommitPosedGeometryKernel(
                 (BindlessBuffer(uint, bindless.Buffer, pc.SelectionSlot)[i / 32u] & (1u << (i % 32u))) != 0u;
             if (pc.Mode == GeometryEditMode::Commit && !selected) return;
             const float3 base = float3(vertices[i].Position);
-            const float3 world = trs_transform_point(pc.Primary, base);
-            const float3 posed = pc.ApplyTransform != 0u && selected ? trs_inverse_transform_point(pc.Primary, apply_edit_transform(world, pc.Pivot, pc.Delta)) : base;
+            const float3 posed = pc.ApplyTransform != 0u && selected ? apply_geometry_edit_transform(base, pc.Primary, pc.Pivot, pc.Delta) : base;
             if (pc.Mode == GeometryEditMode::Commit) {
                 if (all(base == posed)) return;
                 vertices[i].Position = packed_float3(posed);

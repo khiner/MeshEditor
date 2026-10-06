@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Field.h"
+#include "mesh/TopologyOperations.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 #include "state/Entity.h"
@@ -32,11 +33,7 @@ struct Delete {
 
 // Merges the selected vertices: all into one at their center or at the first or last selected vertex.
 // Collapse merges each connected run into its center, and ByDistance merges every pair within Distance.
-enum class MergeMode : uint8_t { Center,
-                                 First,
-                                 Last,
-                                 Collapse,
-                                 ByDistance };
+using MergeMode = GeometryMergeMode;
 struct Merge {
     MergeMode Mode{MergeMode::Center};
     float Distance{0.0001f};
@@ -54,9 +51,7 @@ struct Extrude {
 struct Duplicate {};
 // Detaches the selected faces from the rest of the mesh.
 struct Split {};
-enum class SeparateMode : uint8_t { Selected,
-                                    LooseParts,
-                                    Material };
+using SeparateMode = GeometrySeparateMode;
 // Splits selected geometry, connected components, or face material groups into objects.
 struct Separate {
     SeparateMode Mode{SeparateMode::Selected};

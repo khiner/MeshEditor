@@ -12,7 +12,7 @@ struct EditSharpnessContext {
 
     ConnectivityView Connectivity() const { return {B, Pc.Connectivity, Pc.FaceCount}; }
     bool VertexSelected(uint vertex_id) const {
-        return (BindlessBuffer(uint, B.Buffer, Pc.VertexSelectionSlot)[vertex_id >> 5u] & (1u << (vertex_id & 31u))) != 0u;
+        return WorkRank(B, Pc.VertexSelection, vertex_id) != InvalidOffset;
     }
     uint Selected(SlotOffset at, uint i) const { return BindlessBuffer(uint, B.Buffer, at.Slot)[at.Offset + i]; }
     void WriteFace(uint face, uint value) const { BindlessBufferMutable(uchar, B.Buffer, Pc.FaceSharpnessSlot)[face] = uchar(value); }

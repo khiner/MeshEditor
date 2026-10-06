@@ -109,6 +109,7 @@ struct HandleRange {
 static constexpr uint32_t InvalidStoreId{~0u};
 
 struct MeshStore;
+struct GeometrySelection;
 
 struct MeshConnectivity {
     struct Face {
@@ -217,6 +218,7 @@ struct Mesh {
     vec3 GetNormal(FH) const;
 
     uint32_t GetStoreId() const { return StoreId; }
+    void ValidateSelection(const GeometrySelection &) const;
     const MeshConnectivity &GetConnectivity() const { return C; }
     ElementView<uvec3> DerivedTriangles() const;
     TriangleVertexView TriangleVertices() const;

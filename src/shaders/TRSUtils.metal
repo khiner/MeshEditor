@@ -35,6 +35,12 @@ inline float3 trs_transform_point(Transform t, float3 pos) {
     return float3(t.P) + quat_rotate(float4(t.R), float3(t.S) * pos);
 }
 
+inline float4 quat_conjugate(float4 q) { return float4(-q.xyz, q.w); }
+
+inline float3 trs_inverse_transform_point(Transform t, float3 pos) {
+    return quat_rotate(quat_conjugate(float4(t.R)), pos - float3(t.P)) / float3(t.S);
+}
+
 inline float3 trs_transform_normal(Transform t, float3 normal) {
     return quat_rotate(float4(t.R), normal / float3(t.S));
 }

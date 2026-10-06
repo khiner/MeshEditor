@@ -5,6 +5,7 @@
 #include "Profile.h"
 #include "mesh/CornerNormalOffset.h"
 #include "mesh/MeshConnectivityGpu.h"
+#include "mesh/NormalDeriveGpu.h"
 #include "mesh/VertexWeldGpu.h"
 #include "metal/Dispatch.h"
 
@@ -226,6 +227,7 @@ std::vector<CreatedMesh> CreateMeshes(state::Scene &r, std::span<MeshSource> sou
     // The selection state's submit also runs the corner class writes.
     mtl::ComputeChain chain{meshes.BufferContext()};
     meshes.UpdateCornerClassification(r, chain, ids);
+    EncodeDeriveAllNormals(r, chain, ids);
     meshes.EnsureSelectionState(r, chain, ids);
     return created;
 }
