@@ -76,7 +76,9 @@ std::optional<Mesh> TryGetMesh(const state::Scene &r, state::Entity e) {
     return GetMesh(r, e);
 }
 bool HasMesh(const state::Scene &r, state::Entity e) { return r.all_of<MeshHandle>(e); }
+Mesh GetDrawnMesh(const state::Scene &r, state::Entity e) { return {r.Context.get<const MeshStore>(), *DrawnStoreId(r, e)}; }
 std::optional<uint32_t> DrawnStoreId(const state::Scene &r, state::Entity e) {
+    if (const auto *evaluated = r.try_get<const EvaluatedMesh>(e)) return evaluated->StoreId;
     if (HasMesh(r, e)) return r.get<const MeshHandle>(e).StoreId;
     if (const auto *vertices = r.try_get<const VertexStoreId>(e)) return vertices->StoreId;
     return std::nullopt;
@@ -209,6 +211,14 @@ void ValidateGeometrySelection(const MeshStore &meshes, uint32_t id, const Geome
     }
 }
 
+GeometrySelection AllHandles(const Mesh &mesh) {
+    GeometrySelection all;
+    for (const auto v : mesh.vertices()) all.Vertices.push_back(*v);
+    for (const auto e : mesh.edges()) all.Edges.push_back(*e);
+    for (const auto f : mesh.faces()) all.Faces.push_back(*f);
+    return all;
+}
+
 SlotOffset MaskBinding(SelectionMasks masks) { return {masks.Arena->Buffer.Slot, masks.First * MeshElementBlockWords}; }
 
 std::vector<uint32_t> ReadMasks(const MeshStore &meshes, uint32_t id, Element element, SelectionMasks masks) {
@@ -230,6 +240,10 @@ std::vector<uint32_t> ReadMasks(const MeshStore &meshes, uint32_t id, Element el
     return handles;
 }
 
+GeometrySelection ReadMasks(const MeshStore &meshes, uint32_t id, const GeometryMasks &masks) {
+    return {ReadMasks(meshes, id, Element::Vertex, masks.Vertices), ReadMasks(meshes, id, Element::Edge, masks.Edges), ReadMasks(meshes, id, Element::Face, masks.Faces)};
+}
+
 SelectedHandles::SelectedHandles(const MeshStore &meshes, uint32_t id, const SelectionSource &source) : Lists{std::get_if<GeometrySelection>(&source)} {
-    if (const auto *masks = std::get_if<GeometryMasks>(&source)) Read = {ReadMasks(meshes, id, Element::Vertex, masks->Vertices), ReadMasks(meshes, id, Element::Edge, masks->Edges), ReadMasks(meshes, id, Element::Face, masks->Faces)};
+    if (const auto *masks = std::get_if<GeometryMasks>(&source)) Read = ReadMasks(meshes, id, *masks);
 }

@@ -46,12 +46,17 @@ struct GeometryMasks {
 // Handle lists or resident masks.
 using SelectionSource = std::variant<GeometrySelection, GeometryMasks>;
 
+struct Mesh;
 struct MeshStore;
 void ValidateGeometrySelection(const MeshStore &, uint32_t id, const GeometrySelection &);
+// Every live element of the mesh in each domain.
+GeometrySelection AllHandles(const Mesh &);
 // The mask words of canonical handle h start at word Offset + h / 32 of the binding.
 SlotOffset MaskBinding(SelectionMasks);
 // The live handles of a mesh domain its masks select, ascending.
 std::vector<uint32_t> ReadMasks(const MeshStore &, uint32_t id, Element, SelectionMasks);
+// The live handles of each mesh domain its masks select, ascending.
+GeometrySelection ReadMasks(const MeshStore &, uint32_t id, const GeometryMasks &);
 // The handles a source selects: its own lists, or the masked live handles read on construction.
 class SelectedHandles {
 public:

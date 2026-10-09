@@ -184,7 +184,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         }
         // The clones' store records and render records copy together, in one submit after their entities exist.
         CloneCopies copies;
-        const auto clones = meshes.CloneMeshes(copies, sources);
+        const auto clones = meshes.CloneMeshes(copies, sources, true, {});
         for (uint32_t i = 0u; i < entities.size(); ++i) {
             const auto src = entities[i];
             const auto dup = linked ? DuplicateLinkedOne(r, src) : DuplicateOne(r, src, source_of[i] == InvalidOffset ? InvalidOffset : clones[source_of[i]]);

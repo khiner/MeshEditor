@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Range.h"
+#include "gpu/NamedAttributeRef.h"
 #include "gpu/Transform.h"
 #include "gpu/VertexPositionEditPushConstants.h"
 #include "mesh/GeometrySelection.h"
@@ -64,6 +65,7 @@ struct PositionOperationOptions {
     std::optional<PositionCurve> Curve;
     std::optional<PositionCircle> Circle;
     std::optional<PositionTransform> Transform;
+    std::optional<NamedAttributeRef> Attribute; // A vec3 vertex attribute the positions take, or add with PositionEditAttributeOffset
 };
 struct PositionOperationChange {
     uint32_t TargetIndex;

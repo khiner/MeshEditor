@@ -344,6 +344,16 @@ inline float3 TransformPosition(float3 before, device const BindlessSet &b, cons
     return position;
 }
 
+// The vertex's named attribute value as its position, or as an offset with PositionEditAttributeOffset.
+inline float3 AttributePosition(uint v, float3 before, device const BindlessSet &b, constant VertexPositionEditPushConstants &pc) {
+    const auto attribute = *reinterpret_cast<device const NamedAttributeRef *>(BindlessBuffer(uint, b.Buffer, pc.Parameters.Slot) + pc.Parameters.Offset);
+    const float3 value = as_type<float3>(ReadNamedAttribute(b, attribute, AttributeType::Vec3, v).xyz);
+    float3 position = mix(before, pc.Flags & PositionEditAttributeOffset ? before + value : value, pc.Factor);
+    for (uint axis = 0u; axis < 3u; ++axis)
+        if (!(pc.Axes & (1u << axis))) position[axis] = before[axis];
+    return position;
+}
+
 // All per-vertex transforms share the same canonical read and scratch write.
 // Operation is uniform across the dispatch; only its own transform is evaluated.
 kernel void PositionVerticesGather(
@@ -357,6 +367,7 @@ kernel void PositionVerticesGather(
     float3 position=before;
     switch (pc.Operation) {
         case PositionEditOp::Transform: position=TransformPosition(before,b,pc); break;
+        case PositionEditOp::Attribute: position=AttributePosition(v,before,b,pc); break;
         case PositionEditOp::SnapSymmetry: position=SnapSymmetryPosition(i,v,before,b,pc); break;
         case PositionEditOp::Smooth: position=SmoothPosition(v,before,b,pc); break;
         case PositionEditOp::ShrinkFatten: position=ShrinkFattenPosition(v,before,b,pc); break;

@@ -3443,7 +3443,7 @@ void TestMixedMeshletBuild() {
     for (const auto id : ids) meshes.PlanClone(Mesh{meshes, id});
     meshes.CommitReserves();
     CloneCopies copies;
-    const auto clones = meshes.CloneMeshes(copies, ids);
+    const auto clones = meshes.CloneMeshes(copies, ids, true, {});
     mtl::ComputeChain chain{meshes.BufferContext()};
     copies.Encode(chain, GetMeshPipelines(f.R));
     chain.Submit();

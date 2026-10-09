@@ -20,10 +20,10 @@ struct SelectionContext {
         return (word & (1u << (handle % 32u))) != 0u;
     }
     bool Hidden(uint domain,uint handle) const {
-        return handle!=InvalidOffset && (BindlessBuffer(uint,B.Buffer,Pc.Hidden[domain])[handle/32u] & (1u<<(handle%32u)))!=0u;
+        return handle!=InvalidOffset && Pc.Hidden[domain]!=InvalidSlot && (BindlessBuffer(uint,B.Buffer,Pc.Hidden[domain])[handle/32u] & (1u<<(handle%32u)))!=0u;
     }
     bool Selected(uint domain, uint handle) const {
-        return handle != InvalidOffset && (BindlessBuffer(uint, B.Buffer, Pc.Masks[domain])[handle / 32u] & (1u << (handle % 32u))) != 0u;
+        return handle != InvalidOffset && (BindlessBuffer(uint, B.Buffer, Pc.Masks[domain].Slot)[Pc.Masks[domain].Offset + handle / 32u] & (1u << (handle % 32u))) != 0u;
     }
     // Both endpoints, with an invalid second endpoint for an unpaired face-less halfedge.
     uint2 EdgeVertices(uint edge) const {
@@ -150,7 +150,7 @@ inline SelectionAggregate ReduceSelectionAggregate(
 }
 
 // One 256-lane group per dirty list entry: each SIMD group owns one mask word.
-// The group refreshes the block when the entry's mesh owns it.
+// The group refreshes the block when the entry's mesh owns it, and its aggregate when the domain has leaves.
 // Lane partials fold in a fixed order, so a block's aggregate depends only on its contents.
 kernel void UpdateSelectionBlocks(
     uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]],
@@ -171,8 +171,9 @@ kernel void UpdateSelectionBlocks(
     if (source != InvalidOffset && domain != source) {
         selected = live && ctx.Derived(domain, handle);
         const uint word = uint((simd_vote::vote_t)simd_ballot(selected));
-        if (simd_lane == 0u) BindlessBufferMutable(uint, b.Buffer, pc.Masks[domain])[block * MeshElementBlockWords + simd_group] = word;
+        if (simd_lane == 0u) BindlessBufferMutable(uint, b.Buffer, pc.Masks[domain].Slot)[pc.Masks[domain].Offset + block * MeshElementBlockWords + simd_group] = word;
     }
+    if (pc.Leaves[domain] == InvalidSlot) return;
     float3 sum = 0.0f, low = FLT_MAX, high = -FLT_MAX;
     uint flags = 0u;
     if (live && domain == 0u) {

@@ -11,6 +11,7 @@ struct PendingObjectRemovals {
     state::DirtySet Buffers, Armatures;
     std::vector<uint32_t> StoreIds;
     std::vector<Range> InstanceRanges, DeformRanges, MorphRanges, SoundVertexRanges;
+    std::vector<state::Entity> Dependents; // Entities a destroyed entity owned, destroyed after it
 };
 
 // Slots of destroyed render instances and retired owners, resolved together by SyncModelsBuffers.

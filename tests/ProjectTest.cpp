@@ -31,7 +31,6 @@
 #include <cstdio>
 #include <fstream>
 #include <map>
-#include <set>
 
 using boost::ut::expect;
 
@@ -538,60 +537,6 @@ void TestDuplicateDrawsAsItsSource() {
     f.Audit();
 }
 
-// A named attribute's values travel through a subdivision and restore through undo and redo.
-void TestNamedAttributeHistory() {
-    const TestDir dir{"/tmp/mesheditor-scratch/project-named-attribute"};
-    Fixture f{dir};
-    auto &r = f.R;
-    auto &meshes = r.Context.get<MeshStore>();
-    const auto cube = f.AddCube();
-    const auto id = r.get<const MeshHandle>(r.get<const Instance>(cube).Entity).StoreId;
-    const auto heat = meshes.AddAttribute(id, AttributeDomain::Vertex, AttributeType::Float, "heat");
-    expect(heat.has_value());
-    if (!heat) return;
-    const auto vertices = meshes.Arenas().Vertices.Dense(meshes.Get(id).Vertices);
-    std::vector<float> values(vertices.Count);
-    for (uint32_t i = 0u; i < vertices.Count; ++i) values[i] = float(i * i);
-    meshes.SetAttribute<float>(*heat, vertices.Offset, values);
-    f.P->Settle();
-    const auto heated = f.P->History.Commit("Heat cube", {});
-    const State before{f};
-    // Each live vertex's handle and heat.
-    const auto read = [&] {
-        std::map<uint32_t, float> out;
-        const auto view = meshes.AttributeView<float>(meshes.FindAttribute(id, "heat"));
-        meshes.Arenas().Vertices.ForEach(meshes.Get(id).Vertices, [&](uint32_t v, uint32_t) { out.emplace(v, view[v]); });
-        return out;
-    };
-    const auto original = read();
-    f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
-    f.Do(action::view::SetEditMode{.Mode = Element::Vertex});
-    f.Do(action::selection::SelectAll{});
-    const auto subdivided = f.Do(action::mesh::Subdivide{1u});
-    const auto split = read();
-    expect(split.size() > original.size());
-    // Retained vertices keep their heat, and an edge midpoint takes the mean of two corners and a face center the mean of four.
-    for (const auto [v, value] : original) expect(split.at(v) == value);
-    std::vector<float> corners;
-    for (const auto [v, value] : original) corners.push_back(value);
-    std::set<float> means;
-    for (size_t a = 0u; a < corners.size(); ++a)
-        for (size_t b = a + 1u; b < corners.size(); ++b) {
-            means.insert(.5f * (corners[a] + corners[b]));
-            for (size_t c = b + 1u; c < corners.size(); ++c)
-                for (size_t d = c + 1u; d < corners.size(); ++d) means.insert(.25f * (corners[a] + corners[b] + corners[c] + corners[d]));
-        }
-    for (const auto [v, value] : split)
-        if (!original.contains(v)) expect(means.contains(value)) << "vertex" << v << "heat" << value;
-    const State after{f};
-    f.P->Navigate(heated);
-    expect(read() == original);
-    before.Check(f);
-    f.P->Navigate(subdivided);
-    expect(read() == split);
-    after.Check(f);
-}
-
 // Parenting an object to its own descendant fails and leaves the hierarchy without a cycle.
 void TestParentToDescendantFails() {
     const TestDir dir{"/tmp/mesheditor-scratch/project-parent-cycle"};
@@ -610,6 +555,8 @@ void TestParentToDescendantFails() {
 
 } // namespace
 
+void TestProcedures();
+
 int main(int argc, char **argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc == 2 && std::string_view{argv[1]} == "--no-render") Render = false;
@@ -627,7 +574,7 @@ int main(int argc, char **argv) {
     TestSelectedGrandchildMovesOnce();
     TestInstanceLifecycleRendersBack();
     TestDuplicateDrawsAsItsSource();
-    TestNamedAttributeHistory();
     TestParentToDescendantFails();
+    TestProcedures();
     return RunSuites();
 }

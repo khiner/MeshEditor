@@ -1,6 +1,7 @@
 #include "MeshStore.h"
 #include "gpu/PolygonTriangulation.h"
 #include "mesh/MeshClone.h"
+#include "mesh/MeshPipelines.h"
 #include "metal/Dispatch.h"
 
 #include "CornerNormalOffset.h"
@@ -139,15 +140,6 @@ template<typename Arena> using ArenaValue = typename decltype(std::declval<const
 
 constexpr bool SelectableDomain(Domain domain) { return domain == Domain::Vertex || domain == Domain::Edge || domain == Domain::Face; }
 
-Domain ElementDomainOf(AttributeDomain domain) {
-    switch (domain) {
-        case AttributeDomain::Vertex: return Domain::Vertex;
-        case AttributeDomain::Edge: return Domain::Edge;
-        case AttributeDomain::Face: return Domain::Face;
-        case AttributeDomain::Corner: return Domain::Halfedge;
-    }
-    std::unreachable();
-}
 // A payload block holding `value` at every element.
 template<typename Block> Block FilledBlock(AttributeValue value) {
     Block block;
@@ -159,6 +151,12 @@ template<typename Block> Block FilledBlock(AttributeValue value) {
         block.fill(element);
     }
     return block;
+}
+
+// Captures the `count` values of `stride` bytes at `to` and queues their copy from `from`.
+void CaptureCopy(CloneCopies &copies, mtl::Buffer &buffer, uint64_t stride, uint64_t from, uint64_t to, uint64_t count = 1u) {
+    buffer.CaptureWrite(to * stride, count * stride);
+    copies.Copy(buffer, from * stride, to * stride, count * stride);
 }
 
 constexpr std::array SelectionDomains{Domain::Vertex, Domain::Edge, Domain::Face};
@@ -300,8 +298,8 @@ MeshArenas::MeshArenas(mtl::BufferContext &ctx)
       CustomNormals{ctx, SlotType::Buffer},
       PointNormals{ctx, SlotType::Buffer},
       CornerTangents{ctx, SlotType::CornerTangentBuffer},
-      CornerColors{ctx, SlotType::CornerColorBuffer},
-      VertexColors{ctx, SlotType::CornerColorBuffer},
+      CornerColors{ctx, SlotType::CornerColorBuffer, vec4{1.f}},
+      VertexColors{ctx, SlotType::CornerColorBuffer, vec4{1.f}},
       CornerUvs{{{ctx, SlotType::CornerUvBuffer}, {ctx, SlotType::CornerUvBuffer}, {ctx, SlotType::CornerUvBuffer}, {ctx, SlotType::CornerUvBuffer}}},
       FacePrimitives{ctx, SlotType::ElementPrimitiveBuffer},
       VertexPrimitives{ctx, SlotType::ElementPrimitiveBuffer},
@@ -426,8 +424,48 @@ MeshStore::MeshStore(mtl::BufferContext &ctx)
           .BaseVertexNormal = Buffers.BaseVertexNormals.Buffer.Slot,
           .BaseFaceNormal = Buffers.BaseFaceNormals.Buffer.Slot,
       },
-      BlockLists{ctx, SlotType::Buffer} {}
+      BlockLists{ctx, SlotType::Buffer} {
+    // Element value arenas, their mirrors and layers, and their membership log their writes, and selection state derives from the blocks they name.
+    ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
+        if (info.Elements == Domain::None || info.Bits == SelectionChanged || !info.Tracked()) return;
+        const auto stride = uint32_t(sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>));
+        if (info.ValueOwners) WriteLogs.push_back({&arena.Buffer, info.Elements, WriteIndex::Payloads, stride, info.ValueOwners});
+        else WriteLogs.push_back({&arena.Buffer, info.Elements, info.BlockIndexed ? WriteIndex::Blocks : WriteIndex::Elements, stride});
+        if constexpr (requires { arena.Blocks; }) WriteLogs.push_back({&arena.Blocks.Buffer, info.Elements, WriteIndex::Blocks, uint32_t(sizeof(MeshElementBlock))});
+    });
+    WriteLogs.push_back({&Buffers.CornerSectors.Values.Buffer, Domain::Halfedge, WriteIndex::Payloads, uint32_t(sizeof(decltype(Buffers.CornerSectors)::Block)), &Buffers.CornerSectors.Owners});
+    WriteLogs.push_back({&Buffers.NormalSectors.Values.Buffer, Domain::Halfedge, WriteIndex::Payloads, uint32_t(sizeof(decltype(Buffers.NormalSectors)::Block)), &Buffers.NormalSectors.Owners});
+    for (auto &log : WriteLogs) log.Buffer->Writes = &log.Extents;
+}
 MeshStore::~MeshStore() = default;
+
+MeshStore::Writes MeshStore::TakeWrites() {
+    Writes writes;
+    for (auto &log : WriteLogs) {
+        auto &blocks = writes.Blocks[uint32_t(log.Domain)];
+        const auto owners = log.Owners ? log.Owners->Buffer.GetSpan<uint32_t>() : std::span<const uint32_t>{};
+        for (const auto [begin, end] : log.Extents) {
+            const auto first = begin / log.Stride, last = (end + log.Stride - 1u) / log.Stride;
+            switch (log.Index) {
+                case WriteIndex::Elements:
+                    for (auto block = first / MeshElementBlockSize; block <= (last - 1u) / MeshElementBlockSize; ++block) blocks.push_back(uint32_t(block));
+                    break;
+                case WriteIndex::Blocks:
+                    for (auto block = first; block < last; ++block) blocks.push_back(uint32_t(block));
+                    break;
+                case WriteIndex::Payloads:
+                    for (auto payload = first; payload < last; ++payload)
+                        if (payload < owners.size() && owners[payload]) blocks.push_back(owners[payload] - 1u);
+                    break;
+            }
+        }
+        log.Extents.clear();
+    }
+    for (auto &blocks : writes.Blocks) SortUnique(blocks);
+    writes.Attributes = std::exchange(WrittenAttributes, {});
+    SortUnique(writes.Attributes);
+    return writes;
+}
 
 void MeshStore::Track(store::History &history) {
     Buffers.VertexFans.Track(history, "mesh.vertexFans");
@@ -483,11 +521,12 @@ void CaptureRange(const auto &arena, ElementSetRef set) { CaptureElementSet(aren
 // Requires selected indices in ascending order.
 void CaptureSelected(const mtl::Buffer &buffer, uint32_t stride, SelectionView selection) {
     const auto *history = buffer.History();
-    if (!history) return;
-    const uint64_t page_size = history->PageBytes;
+    if (!history && !buffer.Writes) return;
+    const uint64_t page_size = history ? history->PageBytes : mtl::HistoryPageBytes;
     std::vector<uint32_t> pages;
     selection.ForEach([&](uint32_t handle) {
         const uint64_t offset = uint64_t(handle) * stride;
+        buffer.LogWrite(offset, offset + stride);
         const auto first = offset / page_size, end = (offset + stride + page_size - 1) / page_size;
         for (auto page = first; page < end; ++page)
             if (pages.empty() || pages.back() < page) pages.push_back(uint32_t(page));
@@ -724,7 +763,7 @@ ElementHandleRange MeshStore::InsertElements(uint32_t id, ElementDomain domain, 
     for (const auto &gain : gains) blocks.push_back(gain.Block);
     SyncMirrors();
     ForEachAttribute(Buffers, [&](auto &attributes, Domain owner, uint32_t, const char *, const char *, const char *, auto &&entries) {
-        if (owner == domain && (entries(record) || first_face)) attributes.Attach(blocks, {}, std::max(entries(record), 1u));
+        if (owner == domain && (entries(record) || first_face)) attributes.Attach(blocks, attributes.Absent, std::max(entries(record), 1u));
     });
     ForEachNamedAttribute(id, [&](uint32_t attribute, const NamedAttribute &entry) {
         if (ElementDomainOf(entry.Domain) == domain) AttachAttributeBlocks(attribute, blocks);
@@ -907,6 +946,34 @@ void MeshStore::ReleaseAttribute(uint32_t attribute) {
     ReleaseAttributeBlocks(attribute, blocks);
     if (entry.Table.Count) Buffers.Named.Tables.Release(entry.Table);
     WriteAttribute(attribute) = {};
+    WrittenAttributes.push_back(attribute);
+}
+
+std::expected<void, MeshStore::AttributeError> MeshStore::RenameAttribute(uint32_t attribute, std::string_view name) {
+    if (name.empty() || name.size() >= AttributeName{}.size()) return std::unexpected{AttributeError::InvalidName};
+    if (FindAttribute(NamedAttributes.at(attribute).Record, name) != InvalidOffset) return std::unexpected{AttributeError::Duplicate};
+    auto &entry = WriteAttribute(attribute);
+    entry.Name = {};
+    std::ranges::copy(name, entry.Name.begin());
+    WrittenAttributes.push_back(attribute);
+    return {};
+}
+
+std::expected<uint32_t, MeshStore::AttributeError> MeshStore::CopyAttribute(uint32_t attribute, std::string_view name) {
+    const auto entry = NamedAttributes.at(attribute);
+    const auto copy = AddAttribute(entry.Record, entry.Domain, entry.Type, name, entry.Default);
+    if (!copy) return copy;
+    // Both attributes hold a payload at each element block of their record's domain.
+    std::vector<uint32_t> blocks(entry.Table.Count);
+    std::iota(blocks.begin(), blocks.end(), entry.FirstBlock);
+    const auto from = AttributePayloadBlocks(attribute, blocks), to = AttributePayloadBlocks(*copy, blocks);
+    WithPayloads(Buffers.Named, entry.Type, [&](auto &payloads) {
+        using Block = typename std::remove_cvref_t<decltype(payloads)>::Block;
+        payloads.Values.Buffer.CaptureWriteElements(to, sizeof(Block));
+        auto *values = reinterpret_cast<Block *>(payloads.Values.Buffer.Contents().data());
+        for (size_t i = 0u; i < from.size(); ++i) values[to[i]] = values[from[i]];
+    });
+    return copy;
 }
 
 void MeshStore::AttachAttributeBlocks(uint32_t attribute, std::span<const uint32_t> blocks) {
@@ -1011,28 +1078,30 @@ void MeshStore::CaptureAttributeWrites(uint32_t id, AttributeDomain domain, std:
     });
 }
 
-void MeshStore::CloneAttributes(CloneCopies &copies, uint32_t source, uint32_t clone, const std::array<Range, 6> &maps) {
-    std::vector<uint32_t> attributes;
-    ForEachNamedAttribute(source, [&](uint32_t attribute, const NamedAttribute &) { attributes.push_back(attribute); });
-    for (const auto from : attributes) {
-        const auto entry = NamedAttributes[from];
-        const auto domain = ElementDomainOf(entry.Domain);
-        const auto to = AcquireAttribute({.Record = clone, .Domain = entry.Domain, .Type = entry.Type, .Name = entry.Name, .Default = entry.Default});
-        // The clone's blocks follow its source's block order, so the targets ascend.
-        std::vector<uint32_t> sources, targets;
-        WithDomain(Buffers, domain, [&](const auto &arena) {
-            arena.ForEachBlock(DomainSet(Records[source], domain), [&](uint32_t block, const auto &) {
-                sources.push_back(block);
-                targets.push_back(copies.MapHandle(maps[uint32_t(domain)], block * MeshElementBlockSize) / MeshElementBlockSize);
-            });
-        });
-        AttachAttributeBlocks(to, targets);
-        const auto from_payloads = AttributePayloadBlocks(from, sources), to_payloads = AttributePayloadBlocks(to, targets);
-        WithPayloads(Buffers.Named, entry.Type, [&](auto &payloads) {
-            constexpr auto Bytes = sizeof(typename std::remove_cvref_t<decltype(payloads)>::Block);
-            for (size_t i = 0u; i < from_payloads.size(); ++i) copies.Copy(payloads.Values.Buffer, from_payloads[i] * Bytes, to_payloads[i] * Bytes, Bytes);
-        });
-    }
+void MeshStore::CopyAttributeBlocks(CloneCopies &copies, uint32_t from, uint32_t to, Range map, std::span<const uint32_t> sources) {
+    if (sources.empty()) return;
+    std::vector<uvec2> pairs;
+    pairs.reserve(sources.size());
+    for (const auto block : sources) pairs.push_back({block, copies.MapHandle(map, block * MeshElementBlockSize) / MeshElementBlockSize});
+    std::ranges::sort(pairs, {}, &uvec2::y);
+    std::vector<uint32_t> targets;
+    targets.reserve(pairs.size());
+    for (const auto pair : pairs) targets.push_back(pair.y);
+    AttachAttributeBlocks(to, targets);
+    const auto &source = NamedAttributes[from], &target = NamedAttributes[to];
+    const auto tables = Buffers.Named.Tables.Buffer.GetSpan<uint32_t>();
+    const auto payload = [&](const NamedAttribute &entry, uint32_t block) {
+        const auto word = block - entry.FirstBlock;
+        return word < entry.Table.Count ? tables[entry.Table.Offset + word] : 0u;
+    };
+    WithPayloads(Buffers.Named, source.Type, [&](auto &payloads) {
+        constexpr auto Bytes = sizeof(typename std::remove_cvref_t<decltype(payloads)>::Block);
+        for (const auto pair : pairs) {
+            const auto read = payload(source, pair.x), write = payload(target, pair.y);
+            if (!read || !write) continue;
+            CaptureCopy(copies, payloads.Values.Buffer, Bytes, read - 1u, write - 1u);
+        }
+    });
 }
 
 TetBuffers MeshStore::AllocateTets(std::span<const vec3> positions, std::span<const uint32_t> edge_indices) {
@@ -1646,7 +1715,140 @@ uint32_t MeshStore::BeginTopologyOutput(uint32_t source, std::span<const uint32_
     return id;
 }
 
-std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<const uint32_t> source_ids) {
+void MeshStore::CopyBlocks(CloneCopies &copies, uint32_t destination, uint32_t source, const std::array<Range, 6> &maps, const DomainBlocks &sources, std::span<const uvec2> attributes) {
+    const auto &src = Records[source];
+    const auto &dst = Records[destination];
+    const auto map = [&](Domain domain) { return maps[uint32_t(domain)]; };
+    const auto target = [&](Domain domain, uint32_t block) { return copies.MapHandle(map(domain), block * MeshElementBlockSize) / MeshElementBlockSize; };
+    const auto targets = [&](Domain domain) {
+        std::vector<uint32_t> blocks;
+        blocks.reserve(sources[uint32_t(domain)].size());
+        for (const auto block : sources[uint32_t(domain)]) blocks.push_back(target(domain, block));
+        return blocks;
+    };
+    // Element values and their mirrors, apart from the vertex fan roots, which take new fan runs below.
+    ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
+        using Allocation = std::remove_cvref_t<decltype(*ranges(src))>;
+        if constexpr (std::is_same_v<Allocation, ElementSetRef>) {
+            if (&arena.Buffer == &Buffers.VertexCorners.Buffer) return;
+            constexpr auto Bytes = uint64_t(MeshElementBlockSize) * sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>);
+            for (const auto block : sources[uint32_t(info.Elements)]) CaptureCopy(copies, arena.Buffer, Bytes, block, target(info.Elements, block));
+        }
+    });
+    for (const auto domain : SelectionDomains)
+        for (const auto block : sources[uint32_t(domain)]) {
+            const auto to = target(domain, block);
+            CaptureCopy(copies, SelectionArena(Buffers, domain).Buffer, sizeof(SelectionBlock), block, to);
+            CaptureCopy(copies, HiddenArena(Buffers, domain).Buffer, sizeof(SelectionBlock), block, to);
+            CaptureCopy(copies, AggregateArena(Buffers, domain).Buffer, sizeof(SelectionAggregate), block, to);
+        }
+    // A layer the destination carries holds a payload at each of its blocks.
+    ForEachAttribute(Buffers, [&](auto &attribute, Domain domain, uint32_t, const char *, const char *, const char *, auto &&entries) {
+        const auto &from = sources[uint32_t(domain)];
+        if (from.empty()) return;
+        const auto to = targets(domain);
+        const auto count = entries(dst);
+        if (!count) return attribute.Release(to);
+        attribute.Attach(to, attribute.Absent, count);
+        constexpr auto Bytes = uint64_t(MeshElementBlockSize) * sizeof(typename std::remove_cvref_t<decltype(attribute)>::Block::value_type);
+        for (uint32_t i = 0u; i < from.size(); ++i)
+            if (attribute.PayloadBlock(from[i]))
+                for (uint32_t e = 0u; e < std::min(count, entries(src)); ++e) CaptureCopy(copies, attribute.Values.Buffer, Bytes, attribute.PayloadBlock(from[i]) - 1u + e, attribute.PayloadBlock(to[i]) - 1u + e);
+    });
+    // Sector roots are sparse corner payloads.
+    std::vector<uint32_t> sectors;
+    if (const auto &from = sources[uint32_t(Domain::Halfedge)]; !from.empty()) {
+        const auto to = targets(Domain::Halfedge);
+        std::vector<uint32_t> attach, release;
+        for (uint32_t i = 0u; i < from.size(); ++i) {
+            const bool has = Buffers.CornerSectors.PayloadBlock(from[i]), had = Buffers.CornerSectors.PayloadBlock(to[i]);
+            if (has && !had) attach.push_back(to[i]);
+            else if (!has && had) release.push_back(to[i]);
+        }
+        Buffers.CornerSectors.Attach(attach);
+        Buffers.NormalSectors.Attach(attach);
+        Buffers.CornerSectors.Release(release);
+        Buffers.NormalSectors.Release(release);
+        if (!attach.empty() || !release.empty()) WriteRecord(destination).SectorBlockCount += uint32_t(attach.size()) - uint32_t(release.size());
+        constexpr auto CornerBytes = sizeof(decltype(Buffers.CornerSectors)::Block), NormalBytes = sizeof(decltype(Buffers.NormalSectors)::Block);
+        for (uint32_t i = 0u; i < from.size(); ++i) {
+            if (!Buffers.CornerSectors.PayloadBlock(from[i])) continue;
+            CaptureCopy(copies, Buffers.CornerSectors.Values.Buffer, CornerBytes, Buffers.CornerSectors.PayloadBlock(from[i]) - 1u, Buffers.CornerSectors.PayloadBlock(to[i]) - 1u);
+            CaptureCopy(copies, Buffers.NormalSectors.Values.Buffer, NormalBytes, Buffers.NormalSectors.PayloadBlock(from[i]) - 1u, Buffers.NormalSectors.PayloadBlock(to[i]) - 1u);
+            sectors.push_back(to[i]);
+        }
+    }
+    for (const auto [from, to] : attributes) CopyAttributeBlocks(copies, from, to, map(ElementDomainOf(NamedAttributes[from].Domain)), sources[uint32_t(ElementDomainOf(NamedAttributes[from].Domain))]);
+    // Each copied vertex takes a new fan run, and the destination's runs at the copied blocks release.
+    if (const auto &from = sources[uint32_t(Domain::Vertex)]; !from.empty()) {
+        const auto to = targets(Domain::Vertex);
+        const auto roots = Buffers.VertexCorners.Buffer.GetSpan<uvec2>();
+        std::vector<uvec2> released;
+        uint64_t fan_count = 0u;
+        for (uint32_t i = 0u; i < from.size(); ++i) {
+            for (uint32_t slot = 0u; slot < MeshElementBlockSize; ++slot)
+                if (const auto root = roots[to[i] * MeshElementBlockSize + slot]; root.y) released.push_back(root);
+            Buffers.Vertices.ForEachLive(from[i], [&](uint32_t v) { fan_count += roots[v].y; });
+        }
+        Buffers.VertexFans.Release(released);
+        if (fan_count >= InvalidOffset) throw std::length_error("Copied fan items exceed their address space.");
+        const auto fans = Buffers.VertexFans.Items.Allocate(uint32_t(fan_count));
+        Buffers.VertexFans.Items.CaptureWrite(fans);
+        uint32_t next = fans.Offset;
+        for (uint32_t i = 0u; i < from.size(); ++i) {
+            auto written = Buffers.VertexCorners.GetMutable({to[i] * MeshElementBlockSize, MeshElementBlockSize});
+            std::ranges::fill(written, uvec2{InvalidOffset, 0u});
+            Buffers.Vertices.ForEachLive(from[i], [&](uint32_t v) {
+                const auto root = roots[v];
+                if (!root.y) return;
+                written[v % MeshElementBlockSize] = {next, root.y};
+                copies.Copy(Buffers.VertexFans.Items.Buffer, uint64_t(root.x) * sizeof(uvec2), uint64_t(next) * sizeof(uvec2), uint64_t(root.y) * sizeof(uvec2));
+                next += root.y;
+            });
+        }
+        for (const auto [domain, word] : {std::pair{Domain::Halfedge, 0u}, std::pair{Domain::Face, 1u}})
+            copies.RebaseByBlock(Buffers.VertexFans.Items.Buffer, uint64_t(fans.Offset) * sizeof(uvec2) + word * 4u, fans.Count, map(domain), 2u);
+    }
+    const auto rebase = [&](auto &arena, Domain values, Domain references, uint32_t words = 1u, bool span = false) {
+        for (const auto block : targets(values)) {
+            const auto offset = uint64_t(block) * MeshElementBlockSize * words * 4u;
+            copies.RebaseByBlock(arena.Buffer, offset, MeshElementBlockSize * (span ? 1u : words), map(references), span ? words : 1u, 0u, 0u, span);
+        }
+    };
+    rebase(Buffers.FaceCorners, Domain::Halfedge, Domain::Vertex);
+    rebase(Buffers.OutgoingHalfedges, Domain::Vertex, Domain::Halfedge);
+    rebase(Buffers.OppositeHalfedges, Domain::Halfedge, Domain::Halfedge);
+    rebase(Buffers.HalfedgeEdges, Domain::Halfedge, Domain::Edge);
+    rebase(Buffers.HalfedgeFaces, Domain::Halfedge, Domain::Face);
+    rebase(Buffers.FaceTriangles, Domain::Face, Domain::Triangle);
+    rebase(Buffers.Triangles, Domain::Triangle, Domain::Halfedge, 3u);
+    rebase(Buffers.EdgeHalfedges, Domain::Edge, Domain::Halfedge);
+    rebase(Buffers.FaceRanges, Domain::Face, Domain::Halfedge, 2u, true);
+    for (const auto block : sectors) {
+        const auto payload = Buffers.CornerSectors.Payload(block * MeshElementBlockSize, MeshElementBlockSize);
+        copies.RebaseByBlock(Buffers.CornerSectors.Values.Buffer, uint64_t(payload.Offset) * 4u, payload.Count, map(Domain::Halfedge));
+    }
+    DerivedRecords[destination].NormalRevision = ++NextNormalRevision;
+}
+
+namespace {
+// A domain's index among a Change's blocks, or InvalidOffset for a domain it does not list.
+constexpr uint32_t ChangeIndex(Domain domain) {
+    return domain == Domain::Halfedge ? 3u : SelectableDomain(domain) ? SelectableIndex(domain) :
+                                                                        InvalidOffset;
+}
+// Maps the active handle of the copy's selection summary, copied from the source's, onto the copy's handles.
+void RebaseActiveHandle(CloneCopies &copies, MeshArenas &arenas, const MeshStore::Record &source, const MeshStore::Record &copy, const std::array<Range, 6> &maps) {
+    if (!source.SelectionSummary.Count) return;
+    const auto &summary = arenas.SelectionSummary.Get(source.SelectionSummary)[0];
+    if (summary.ActiveHandle == InvalidOffset) return;
+    const auto domain = SelectionDomain(summary.Mode);
+    const auto [from, to] = WithDomain(arenas, domain, [&](const auto &arena) { return std::pair{arena.First(DomainSet(source, domain)), arena.First(DomainSet(copy, domain))}; });
+    copies.RebaseByBlock(arenas.SelectionSummary.Buffer, uint64_t(copy.SelectionSummary.Offset) * sizeof(EditSelectionSummary) + offsetof(EditSelectionSummary, ActiveHandle), 1u, maps[uint32_t(domain)], 1u, from, to);
+}
+} // namespace
+
+std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<const uint32_t> source_ids, bool render, std::span<BlockPairs> pairs) {
     const profile::CpuScope scope{"CloneMeshes"};
     std::vector<uint32_t> ids;
     std::vector<std::array<Range, 6>> maps(source_ids.size());
@@ -1673,143 +1875,316 @@ std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<cons
     SyncMirrors();
     for (uint32_t i = 0u; i < ids.size(); ++i) {
         const auto &src = Records[source_ids[i]];
-        const auto &dst = Records[ids[i]];
-        for (const auto domain : {Domain::Vertex, Domain::Halfedge, Domain::Edge, Domain::Face, Domain::Triangle}) {
+        DomainBlocks sources;
+        for (const auto domain : ElementDomains) {
             std::vector<uvec2> blocks;
             WithDomain(Buffers, domain, [&](const auto &arena) {
-                auto next = arena.First(DomainSet(dst, domain)) / MeshElementBlockSize;
+                auto next = arena.First(DomainSet(Records[ids[i]], domain)) / MeshElementBlockSize;
                 arena.ForEachBlock(DomainSet(src, domain), [&](uint32_t block, const auto &) { blocks.push_back({block, next++}); });
             });
             maps[i][uint32_t(domain)] = copies.MapBlocks(blocks);
+            for (const auto block : blocks) sources[uint32_t(domain)].push_back(block.x);
+            if (!pairs.empty()) pairs[i][uint32_t(domain)] = std::move(blocks);
         }
-        ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
-            if (&arena.Buffer == &Buffers.VertexCorners.Buffer) return;
+        // The record's own ranges copy whole.
+        ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &, auto &&ranges) {
             const auto *from = ranges(src);
-            if (!from) return;
-            constexpr auto stride = sizeof(typename decltype(arena.Get(Range{}))::element_type);
-            const auto copy_run = [&](Range source, Range target) {
-                const auto bytes = uint64_t(source.Count) * stride;
-                if (!bytes) return;
-                arena.Buffer.CaptureWrite(uint64_t(target.Offset) * stride, bytes);
-                copies.Copy(arena.Buffer, uint64_t(source.Offset) * stride, uint64_t(target.Offset) * stride, bytes);
-            };
-            if constexpr (std::is_same_v<std::remove_cvref_t<decltype(*from)>, Range>) copy_run(*from, *ranges(dst));
-            else WithDomain(Buffers, info.Elements, [&](const auto &owner) {
-                owner.ForEachBlock(*from, [&](uint32_t block, const auto &) {
-                    const auto target = copies.MapHandle(maps[i][uint32_t(info.Elements)], block * MeshElementBlockSize);
-                    copy_run({block * MeshElementBlockSize, MeshElementBlockSize}, {target, MeshElementBlockSize});
-                });
-            });
+            if constexpr (std::is_same_v<std::remove_cvref_t<decltype(*from)>, Range>) {
+                if (from && from->Count) CaptureCopy(copies, arena.Buffer, sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>), from->Offset, ranges(Records[ids[i]])->Offset, from->Count);
+            }
         });
-    }
-    for (uint32_t i = 0u; i < ids.size(); ++i) {
-        const auto &src = Records[source_ids[i]];
-        auto &dst = Records[ids[i]];
+        std::vector<uvec2> attributes;
+        ForEachNamedAttribute(source_ids[i], [&](uint32_t attribute, const NamedAttribute &) { attributes.push_back({attribute, 0u}); });
+        for (auto &attribute : attributes) {
+            const auto entry = NamedAttributes[attribute.x];
+            attribute.y = AcquireAttribute({.Record = ids[i], .Domain = entry.Domain, .Type = entry.Type, .Name = entry.Name, .Default = entry.Default});
+        }
+        CopyBlocks(copies, ids[i], source_ids[i], maps[i], sources, attributes);
+        const auto &dst = Records[ids[i]];
         auto &derived = DerivedRecords[ids[i]];
-        const auto map = [&](Domain domain) { return maps[i][uint32_t(domain)]; };
-        const auto mapped = [&](Domain domain, uint32_t h) { return copies.MapHandle(map(domain), h); };
-        const auto copy_attribute = [&](auto &attribute, Domain domain, uint32_t entries = 1u) {
-            using Value = typename std::remove_cvref_t<decltype(attribute)>::Block::value_type;
-            std::vector<uvec2> blocks;
-            WithDomain(Buffers, domain, [&](const auto &arena) {
-                arena.ForEachBlock(DomainSet(src, domain), [&](uint32_t block, const auto &) {
-                    if (attribute.PayloadBlock(block)) blocks.push_back({block, mapped(domain, block * MeshElementBlockSize) / MeshElementBlockSize});
-                });
-            });
-            std::vector<uint32_t> targets;
-            for (const auto block : blocks) targets.push_back(block.y);
-            attribute.Attach(targets, {}, entries);
-            for (const auto block : blocks)
-                for (uint32_t e = 0u; e < entries; ++e) {
-                    const auto from = attribute.Payload(block.x * MeshElementBlockSize, MeshElementBlockSize, e);
-                    const auto to = attribute.Payload(block.y * MeshElementBlockSize, MeshElementBlockSize, e);
-                    const auto bytes = uint64_t(MeshElementBlockSize) * sizeof(Value);
-                    attribute.Values.Buffer.CaptureWrite(uint64_t(to.Offset) * sizeof(Value), bytes);
-                    copies.Copy(attribute.Values.Buffer, uint64_t(from.Offset) * sizeof(Value), uint64_t(to.Offset) * sizeof(Value), bytes);
-                }
-            return targets;
-        };
-        ClearVertexRoots(Buffers, dst.Vertices);
-        for (const auto domain : SelectionDomains) WithDomain(Buffers, domain, [&](const auto &owner) {
-            owner.ForEachBlock(DomainSet(src, domain), [&](uint32_t block, const auto &) {
-                const auto target = mapped(domain, block * MeshElementBlockSize) / MeshElementBlockSize;
-                for (auto *bits : {&SelectionArena(Buffers, domain), &HiddenArena(Buffers, domain)}) {
-                    CaptureRange(*bits, {target, 1u});
-                    copies.Copy(bits->Buffer, uint64_t(block) * sizeof(SelectionBlock), uint64_t(target) * sizeof(SelectionBlock), sizeof(SelectionBlock));
-                }
-                copies.Copy(AggregateArena(Buffers, domain).Buffer, uint64_t(block) * sizeof(SelectionAggregate), uint64_t(target) * sizeof(SelectionAggregate), sizeof(SelectionAggregate));
-            });
-        });
-        ForEachAttribute(Buffers, [&](auto &attribute, Domain domain, uint32_t, const char *, const char *, const char *, auto &&entries) {
-            if (const auto count = entries(src)) copy_attribute(attribute, domain, count);
-        });
-        CloneAttributes(copies, source_ids[i], ids[i], maps[i]);
-        const auto sectors = copy_attribute(Buffers.CornerSectors, Domain::Halfedge);
-        copy_attribute(Buffers.NormalSectors, Domain::Halfedge);
-        dst.SectorBlockCount = uint32_t(sectors.size());
-        const auto roots = Buffers.VertexCorners.Buffer.GetSpan<uvec2>();
-        uint64_t fan_count = 0u;
-        Buffers.Vertices.ForEach(src.Vertices, [&](uint32_t v, uint32_t) { fan_count += roots[v].y; });
-        if (fan_count >= InvalidOffset) throw std::length_error("Cloned fan items exceed their address space.");
-        const auto fans = Buffers.VertexFans.Items.Allocate(uint32_t(fan_count));
-        Buffers.VertexFans.Items.CaptureWrite(fans);
-        uint32_t next = fans.Offset;
-        Buffers.Vertices.ForEachBlock(src.Vertices, [&](uint32_t block, const auto &members) {
-            const auto target = Buffers.VertexCorners.GetMutable({mapped(Domain::Vertex, block * MeshElementBlockSize), MeshElementBlockSize});
-            for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
-                for (auto bits = members.Live[w]; bits; bits &= bits - 1u) {
-                    const auto slot = w * 32u + uint32_t(std::countr_zero(bits));
-                    const auto root = roots[block * MeshElementBlockSize + slot];
-                    if (!root.y) continue;
-                    target[slot] = {next, root.y};
-                    copies.Copy(Buffers.VertexFans.Items.Buffer, uint64_t(root.x) * sizeof(uvec2), uint64_t(next) * sizeof(uvec2), uint64_t(root.y) * sizeof(uvec2));
-                    next += root.y;
-                }
-        });
-        for (const auto [domain, word] : {std::pair{Domain::Halfedge, 0u}, std::pair{Domain::Face, 1u}})
-            copies.RebaseByBlock(Buffers.VertexFans.Items.Buffer, uint64_t(fans.Offset) * sizeof(uvec2) + word * 4u, fans.Count, map(domain), 2u);
+        const auto mapped = [&](Domain domain, uint32_t h) { return copies.MapHandle(maps[i][uint32_t(domain)], h); };
         for (auto &[block, words] : derived.SelectionBaseline) block = mapped(SelectionDomain(derived.SelectionBaselineElement), block * MeshElementBlockSize) / MeshElementBlockSize;
         std::ranges::sort(derived.SelectionBaseline, {}, &std::pair<uint32_t, SelectionBlock>::first);
-        const auto origins = [&](Element element) {
-            return WithDomain(Buffers, SelectionDomain(element), [&](const auto &owner) {
-                return std::pair{owner.First(DomainSet(src, SelectionDomain(element))), owner.First(DomainSet(dst, SelectionDomain(element)))};
-            });
-        };
         if (derived.SelectionBaselineActive != InvalidOffset) {
-            const auto [from, to] = origins(derived.SelectionBaselineElement);
-            derived.SelectionBaselineActive = mapped(SelectionDomain(derived.SelectionBaselineElement), from + derived.SelectionBaselineActive) - to;
+            const auto domain = SelectionDomain(derived.SelectionBaselineElement);
+            const auto [from, to] = WithDomain(Buffers, domain, [&](const auto &owner) { return std::pair{owner.First(DomainSet(src, domain)), owner.First(DomainSet(dst, domain))}; });
+            derived.SelectionBaselineActive = mapped(domain, from + derived.SelectionBaselineActive) - to;
         }
-        if (src.SelectionSummary.Count) {
-            const auto &summary = Buffers.SelectionSummary.Get(src.SelectionSummary)[0];
-            if (summary.ActiveHandle != InvalidOffset) {
-                const auto [from, to] = origins(summary.Mode);
-                copies.RebaseByBlock(Buffers.SelectionSummary.Buffer, uint64_t(dst.SelectionSummary.Offset) * sizeof(EditSelectionSummary) + offsetof(EditSelectionSummary, ActiveHandle), 1u, map(SelectionDomain(summary.Mode)), 1u, from, to);
-            }
-        }
-        const auto rebase = [&](auto &arena, Domain values, Domain references, uint32_t words = 1u, bool span = false) {
-            WithDomain(Buffers, values, [&](const auto &owner) {
-                owner.ForEachBlock(DomainSet(dst, values), [&](uint32_t block, const auto &) {
-                    const auto offset = uint64_t(block) * MeshElementBlockSize * words * 4u;
-                    copies.RebaseByBlock(arena.Buffer, offset, MeshElementBlockSize * (span ? 1u : words), map(references), span ? words : 1u, 0u, 0u, span);
-                });
-            });
-        };
-        rebase(Buffers.FaceCorners, Domain::Halfedge, Domain::Vertex);
-        rebase(Buffers.OutgoingHalfedges, Domain::Vertex, Domain::Halfedge);
-        rebase(Buffers.OppositeHalfedges, Domain::Halfedge, Domain::Halfedge);
-        rebase(Buffers.HalfedgeEdges, Domain::Halfedge, Domain::Edge);
-        rebase(Buffers.HalfedgeFaces, Domain::Halfedge, Domain::Face);
-        rebase(Buffers.FaceTriangles, Domain::Face, Domain::Triangle);
-        rebase(Buffers.Triangles, Domain::Triangle, Domain::Halfedge, 3u);
-        rebase(Buffers.EdgeHalfedges, Domain::Edge, Domain::Halfedge);
-        rebase(Buffers.FaceRanges, Domain::Face, Domain::Halfedge, 2u, true);
-        for (const auto block : sectors) {
-            const auto payload = Buffers.CornerSectors.Payload(block * MeshElementBlockSize, MeshElementBlockSize);
-            copies.RebaseByBlock(Buffers.CornerSectors.Values.Buffer, uint64_t(payload.Offset) * 4u, payload.Count, map(Domain::Halfedge));
-        }
+        RebaseActiveHandle(copies, Buffers, src, dst, maps[i]);
     }
-    CloneRenderRecords(copies, source_ids, ids, maps);
+    if (render) CloneRenderRecords(copies, source_ids, ids, maps);
     return ids;
+}
+
+void MeshStore::ReleaseDomain(uint32_t id, ElementDomain domain) {
+    WithDomain(Buffers, domain, [&](auto &arena) {
+        auto &set = DomainSet(WriteRecord(id), domain);
+        std::vector<uint32_t> blocks;
+        arena.ForEachBlock(set, [&](uint32_t block, const auto &) { blocks.push_back(block); });
+        std::ranges::sort(blocks);
+        if (domain == Domain::Halfedge) {
+            Buffers.CornerSectors.Release(blocks);
+            Buffers.NormalSectors.Release(blocks);
+            WriteRecord(id).SectorBlockCount = 0u;
+        }
+        ForEachAttribute(Buffers, [&](auto &attributes, Domain owner, uint32_t, const char *, const char *, const char *, auto &&) {
+            if (owner == domain) attributes.Release(blocks);
+        });
+        arena.Destroy(std::span{&set, 1u}, blocks);
+        set = {};
+    });
+}
+
+void MeshStore::DetachBlocks(uint32_t id, ElementDomain domain, std::span<const uint32_t> blocks) {
+    if (blocks.empty()) return;
+    const auto cleared = WithDomain(Buffers, domain, [&](auto &arena) { return arena.Clear(DomainSet(Records[id], domain), blocks); });
+    if (SelectableDomain(domain)) EditSelectionBlocks(SelectionElements[SelectableIndex(domain)], cleared, [](uint32_t, auto &words) { words = {}; });
+    FinishEraseElements(id, domain, cleared);
+}
+
+std::optional<MeshStore::Change> MeshStore::Resync(CloneCopies &copies, uint32_t id, uint32_t source, BlockPairs &pairs, const DomainBlocks &written, std::span<const uint32_t> written_attributes, std::vector<uint32_t> &attributes) {
+    const profile::CpuScope scope{"ResyncMesh"};
+    std::array<Range, 6> maps{};
+    // The source keeps every paired block, and each block of its own it wrote is paired.
+    for (const auto domain : ElementDomains) {
+        const auto d = uint32_t(domain);
+        const auto from = DomainSet(Records.at(source), domain), to = DomainSet(Records.at(id), domain);
+        const bool shaped = WithDomain(Buffers, domain, [&](const auto &arena) {
+            if (bool(from) != bool(to) || (from ? arena.Set(from).BlockCount : 0u) != pairs[d].size()) return false;
+            maps[d] = copies.MapBlocks(pairs[d]);
+            const auto members = arena.Blocks.Buffer.template GetSpan<MeshElementBlock>();
+            return std::ranges::all_of(written[d], [&](uint32_t block) {
+                return !from || block >= members.size() || members[block].Owner != from.Index || copies.MapHandle(maps[d], block * MeshElementBlockSize) != InvalidOffset;
+            });
+        });
+        if (!shaped) return {};
+    }
+    ReleaseRender(std::array{&WriteRecord(id)});
+    Change change{.StoreId = id, .Bits = GeometryChanged | TopologyChanged};
+    // Each written pair restores, each written block only the copy holds leaves it, and a paired block the copy lost takes a new block.
+    struct Plan {
+        std::vector<uint32_t> Touched, Detached, Lost;
+    };
+    std::array<Plan, 6> plans;
+    for (const auto domain : ElementDomains) {
+        const auto d = uint32_t(domain);
+        const auto &paired = pairs[d];
+        if (paired.empty()) continue;
+        auto &plan = plans[d];
+        const auto from = DomainSet(Records[source], domain), to = DomainSet(Records[id], domain);
+        const auto pair_of = [&](uint32_t block) {
+            const auto it = std::ranges::lower_bound(paired, block, {}, &uvec2::y);
+            return it != paired.end() && it->y == block ? uint32_t(it - paired.begin()) : InvalidOffset;
+        };
+        WithDomain(Buffers, domain, [&](const auto &arena) {
+            const auto owner = [&](uint32_t block) { return block < arena.Blocks.Buffer.template Count<MeshElementBlock>() ? arena.Blocks.Get({block, 1u})[0].Owner : InvalidOffset; };
+            for (const auto block : written[d]) {
+                if (owner(block) == from.Index) plan.Touched.push_back(pair_of(copies.MapHandle(maps[d], block * MeshElementBlockSize) / MeshElementBlockSize));
+                else if (const auto i = pair_of(block); i != InvalidOffset) plan.Touched.push_back(i);
+                else if (owner(block) == to.Index) plan.Detached.push_back(block);
+            }
+            SortUnique(plan.Touched);
+            for (const auto i : plan.Touched)
+                if (owner(paired[i].y) != to.Index) plan.Lost.push_back(i);
+        });
+    }
+    // A face runs through adjacent corner and triangle blocks, so one of those domains that lost a block takes fresh blocks laid out as the source's, and every pair then restores to the moved handles.
+    std::array<bool, 6> relaid{};
+    for (const auto domain : {Domain::Halfedge, Domain::Triangle}) relaid[uint32_t(domain)] = !plans[uint32_t(domain)].Lost.empty();
+    const bool moved = std::ranges::any_of(relaid, std::identity{});
+    DomainBlocks restored;
+    for (const auto domain : ElementDomains) {
+        const auto d = uint32_t(domain);
+        auto &paired = pairs[d];
+        if (paired.empty()) continue;
+        auto &[touched, detached, lost] = plans[d];
+        const auto from = DomainSet(Records[source], domain);
+        WithDomain(Buffers, domain, [&](auto &arena) {
+            if (relaid[d]) {
+                ReleaseDomain(id, domain);
+                std::ranges::sort(paired, {}, &uvec2::x);
+                const auto fresh = DomainSet(WriteRecord(id), domain) = arena.Create(uint32_t(paired.size()) * MeshElementBlockSize);
+                for (uint32_t k = 0u; k < paired.size(); ++k) paired[k].y = arena.Set(fresh).First + k;
+            } else {
+                DetachBlocks(id, domain, detached);
+                const auto added = arena.Extend(DomainSet(Records[id], domain), uint32_t(lost.size()));
+                for (uint32_t k = 0u; k < lost.size(); ++k) paired[lost[k]].y = added[k];
+            }
+            if (moved) {
+                touched.resize(paired.size());
+                std::iota(touched.begin(), touched.end(), 0u);
+            }
+            if (!lost.empty()) {
+                std::ranges::sort(paired, {}, &uvec2::y);
+                maps[d] = copies.MapBlocks(paired);
+            }
+            if (touched.empty() && detached.empty()) return;
+            std::vector<uvec2> live;
+            live.reserve(touched.size());
+            for (const auto i : touched) live.push_back(paired[i]);
+            const auto to = DomainSet(Records[id], domain);
+            // The copy is dense again when its blocks pair with the dense source's in order from its first block.
+            const auto &header = arena.Set(from);
+            const bool dense = (header.Flags & 1u) && paired.front().y == arena.Set(to).First &&
+                std::ranges::all_of(std::views::iota(size_t{0}, paired.size()), [&](size_t k) { return paired[k].x == paired[0].x + k && paired[k].y == paired[0].y + k; });
+            arena.AssignLive(to, live, dense ? header.Flags : 0u);
+            for (const auto pair : live) restored[d].push_back(pair.x);
+            if (const auto index = ChangeIndex(domain); index != InvalidOffset) {
+                auto &blocks = change.Blocks[index];
+                for (const auto pair : live) blocks.push_back(pair.y);
+                blocks.append_range(detached);
+                SortUnique(blocks);
+            }
+        });
+        std::ranges::sort(restored[d]);
+    }
+    SyncMirrors();
+    // The record takes the source's fields over its own sets, ranges and sector count.
+    {
+        const auto &src = Records[source];
+        auto &record = WriteRecord(id);
+        const auto own = record;
+        record = src;
+        record.StoreId = id;
+        record.Vertices = own.Vertices;
+        record.FaceData = own.FaceData;
+        record.EdgeData = own.EdgeData;
+        record.TriangleData = own.TriangleData;
+        record.FaceCorners = own.FaceCorners;
+        record.PrimitiveMaterials = own.PrimitiveMaterials;
+        record.SelectionSummary = own.SelectionSummary;
+        record.PointNormals = own.PointNormals;
+        record.SectorBlockCount = own.SectorBlockCount;
+        record.ExtrasFaces = own.ExtrasFaces;
+        record.ExtrasEdges = own.ExtrasEdges;
+        ResetRender(record);
+        record.TriangleCount = Buffers.Triangles.Count(record.TriangleData);
+        const auto copy_range = [&](auto &arena, Range &to, Range from) {
+            if (to.Count != from.Count) {
+                if (to.Count) arena.Release(to);
+                to = from.Count ? arena.Allocate(from.Count) : Range{};
+            }
+            if (from.Count) CaptureCopy(copies, arena.Buffer, sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>), from.Offset, to.Offset, from.Count);
+        };
+        copy_range(Buffers.PrimitiveMaterials, record.PrimitiveMaterials, src.PrimitiveMaterials);
+        copy_range(Buffers.SelectionSummary, record.SelectionSummary, src.SelectionSummary);
+        copy_range(Buffers.PointNormals, record.PointNormals, src.PointNormals);
+        RebaseActiveHandle(copies, Buffers, src, record, maps);
+        DerivedRecords[id] = {};
+    }
+    // An attribute keeps its payloads when it still holds its source attribute's copy, and the others copy anew.
+    std::vector<uvec2> kept, whole;
+    std::vector<uint32_t> released;
+    ForEachNamedAttribute(id, [&](uint32_t attribute, const NamedAttribute &entry) {
+        const bool intact = std::ranges::binary_search(attributes, attribute) && !std::ranges::binary_search(written_attributes, attribute) && !relaid[uint32_t(ElementDomainOf(entry.Domain))];
+        const auto from = intact ? FindAttribute(source, entry.NameView()) : InvalidOffset;
+        if (from != InvalidOffset && NamedAttributes[from].Type == entry.Type && NamedAttributes[from].Domain == entry.Domain) kept.push_back({from, attribute});
+        else released.push_back(attribute);
+    });
+    for (const auto attribute : released) ReleaseAttribute(attribute);
+    ForEachNamedAttribute(source, [&](uint32_t attribute, const NamedAttribute &) {
+        if (std::ranges::find(kept, attribute, &uvec2::x) == kept.end()) whole.push_back({attribute, 0u});
+    });
+    for (auto &pair : whole) {
+        const auto entry = NamedAttributes[pair.x];
+        pair.y = AcquireAttribute({.Record = id, .Domain = entry.Domain, .Type = entry.Type, .Name = entry.Name, .Default = entry.Default});
+    }
+    attributes.clear();
+    for (const auto pair : kept) attributes.push_back(pair.y);
+    for (const auto pair : whole) attributes.push_back(pair.y);
+    std::ranges::sort(attributes);
+    CopyBlocks(copies, id, source, maps, restored, kept);
+    for (const auto [from, to] : whole) {
+        const auto domain = ElementDomainOf(NamedAttributes[from].Domain);
+        std::vector<uint32_t> blocks;
+        for (const auto pair : pairs[uint32_t(domain)]) blocks.push_back(pair.x);
+        CopyAttributeBlocks(copies, from, to, maps[uint32_t(domain)], blocks);
+    }
+    return change;
+}
+
+void MeshStore::Join(state::Scene &r, uint32_t id, uint32_t source) {
+    const profile::CpuScope scope{"JoinMeshes"};
+    // Layers either record carries cover the join, and the destination's blocks take defaults for the source's.
+    {
+        std::vector<uint32_t> before;
+        ForEachAttribute(Buffers, [&](auto &, Domain, uint32_t, const char *, const char *, const char *, auto &&entries) { before.push_back(entries(Records[id])); });
+        auto &record = WriteRecord(id);
+        const auto &src = Records.at(source);
+        record.CornerAttributes |= src.CornerAttributes;
+        record.VertexAttributes |= src.VertexAttributes;
+        record.FacePrimitivesReady |= src.FacePrimitivesReady;
+        record.VertexPrimitivesReady |= src.VertexPrimitivesReady;
+        record.ConnectivityFaceStarts |= src.ConnectivityFaceStarts;
+        record.HasAuthoredNormals |= src.HasAuthoredNormals;
+        uint32_t i = 0u;
+        ForEachAttribute(Buffers, [&](auto &attribute, Domain domain, uint32_t, const char *, const char *, const char *, auto &&entries) {
+            if (before[i++] || !entries(record)) return;
+            std::vector<uint32_t> blocks;
+            WithDomain(Buffers, domain, [&](const auto &arena) { arena.ForEachBlock(DomainSet(record, domain), [&](uint32_t block, const auto &) { blocks.push_back(block); }); });
+            attribute.Attach(blocks, attribute.Absent, entries(record));
+        });
+    }
+    CloneCopies copies;
+    std::array<Range, 6> maps{};
+    DomainBlocks sources, targets;
+    for (const auto domain : ElementDomains) WithDomain(Buffers, domain, [&](auto &arena) {
+        const auto d = uint32_t(domain);
+        arena.ForEachBlock(DomainSet(Records[source], domain), [&](uint32_t block, const auto &) { sources[d].push_back(block); });
+        if (sources[d].empty()) return;
+        auto &set = DomainSet(WriteRecord(id), domain);
+        targets[d] = arena.Extend(set, uint32_t(sources[d].size()));
+        std::vector<uvec2> pairs;
+        pairs.reserve(sources[d].size());
+        for (uint32_t i = 0u; i < sources[d].size(); ++i) pairs.push_back({sources[d][i], targets[d][i]});
+        arena.AssignLive(set, pairs, 0u);
+        maps[d] = copies.MapBlocks(pairs);
+        std::ranges::sort(targets[d]);
+    });
+    SyncMirrors();
+    // Attributes of one name, type and domain join, and an attribute of either side holds its default on the other's elements.
+    std::vector<uvec2> joined;
+    std::vector<uint32_t> own;
+    ForEachNamedAttribute(id, [&](uint32_t attribute, const NamedAttribute &) { own.push_back(attribute); });
+    for (const auto attribute : own) {
+        const auto &entry = NamedAttributes[attribute];
+        const auto from = FindAttribute(source, entry.NameView());
+        if (from != InvalidOffset && NamedAttributes[from].Type == entry.Type && NamedAttributes[from].Domain == entry.Domain) joined.push_back({from, attribute});
+        else AttachAttributeBlocks(attribute, targets[uint32_t(ElementDomainOf(entry.Domain))]);
+    }
+    std::vector<uint32_t> theirs;
+    ForEachNamedAttribute(source, [&](uint32_t attribute, const NamedAttribute &) { theirs.push_back(attribute); });
+    for (const auto attribute : theirs) {
+        const auto entry = NamedAttributes[attribute];
+        if (FindAttribute(id, entry.NameView()) != InvalidOffset) continue;
+        joined.push_back({attribute, AddAttribute(id, entry.Domain, entry.Type, entry.NameView(), entry.Default).value()});
+    }
+    // The source's primitives follow the destination's in its material table.
+    // Each side takes one primitive at least, so a side without a primitive table reads primitive 0 of its own run.
+    const auto own_table = Records[id].PrimitiveMaterials, their_table = Records[source].PrimitiveMaterials;
+    const bool tabled = own_table.Count || their_table.Count;
+    const auto primitives = std::max(own_table.Count, 1u);
+    if (tabled) {
+        std::vector<uint32_t> merged(primitives + std::max(their_table.Count, 1u), 0u);
+        std::ranges::copy(Buffers.PrimitiveMaterials.Get(own_table), merged.begin());
+        std::ranges::copy(Buffers.PrimitiveMaterials.Get(their_table), merged.begin() + primitives);
+        auto &record = WriteRecord(id);
+        if (own_table.Count) Buffers.PrimitiveMaterials.Release(own_table);
+        record.PrimitiveMaterials = Buffers.PrimitiveMaterials.Allocate(std::span<const uint32_t>{merged});
+    }
+    CopyBlocks(copies, id, source, maps, sources, joined);
+    WriteRecord(id).TriangleCount = Buffers.Triangles.Count(Records[id].TriangleData);
+    mtl::ComputeChain chain{BufferContext()};
+    copies.Encode(chain, GetMeshPipelines(r));
+    chain.Submit();
+    if (tabled)
+        for (const auto [layer, domain] : {std::pair{&Buffers.FacePrimitives, Domain::Face}, std::pair{&Buffers.VertexPrimitives, Domain::Vertex}})
+            for (const auto block : targets[uint32_t(domain)])
+                if (layer->PayloadBlock(block))
+                    for (auto &primitive : layer->Edit(block * MeshElementBlockSize, MeshElementBlockSize)) primitive += primitives;
+    if (Records[id].Classification != Records[source].Classification) UpdateCornerClassification(r, chain, std::array{id});
+    UpdateSelection(r, chain, std::array{SelectionUpdate{.StoreId = id, .Blocks = {targets[uint32_t(Domain::Vertex)], targets[uint32_t(Domain::Edge)], targets[uint32_t(Domain::Face)]}}});
+    chain.Submit();
 }
 
 namespace {
@@ -2320,6 +2695,8 @@ void MeshStore::Clear() {
     }
     FreeIds.clear();
     Released.clear();
+    for (auto &log : WriteLogs) log.Extents.clear();
+    WrittenAttributes.clear();
 }
 
 VertexEdgeIncidence MeshStore::GetVertexEdgeIncidence(uint32_t id) const {

@@ -350,5 +350,7 @@ private:
 Mesh GetMesh(const state::Scene &, state::Entity);
 std::optional<Mesh> TryGetMesh(const state::Scene &, state::Entity);
 bool HasMesh(const state::Scene &, state::Entity);
-// The store record an entity's instances draw: its preview, its mesh, or the vertex record of a bone or joint.
+// The store record an entity's instances draw: its evaluated procedure output, its mesh, or the vertex record of a bone or joint.
 std::optional<uint32_t> DrawnStoreId(const state::Scene &, state::Entity);
+// The geometry a mesh entity's instances draw.
+Mesh GetDrawnMesh(const state::Scene &, state::Entity);

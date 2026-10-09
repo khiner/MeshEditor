@@ -31,6 +31,7 @@
 #include "physics/PhysicsStores.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
+#include "procedure/Cook.h"
 #include "render/GpuSceneState.h"
 #include "render/Pipelines.h"
 #include "render/RenderStores.h"
@@ -196,6 +197,7 @@ state::Entity InitEngine(state::Scene &r) {
     RegisterSceneComponentHandlers(r);
 
     RegisterMeshStoreHandlers(r);
+    RegisterProcedureHandlers(r);
     RegisterAudioStoreHandlers(r);
     RegisterPhysicsStoreHandlers(r);
     InitEntityNames(r);

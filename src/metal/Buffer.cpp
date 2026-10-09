@@ -153,7 +153,7 @@ Buffer::Buffer(BufferContext &ctx, std::span<const std::byte> data, SlotType slo
 Buffer::Buffer(BufferContext &ctx, uint64_t size) : Ctx(ctx) { Reserve(size); }
 
 Buffer::Buffer(Buffer &&other) noexcept
-    : Ctx(other.Ctx), Slot(other.Slot), UsedSize(other.UsedSize),
+    : Ctx(other.Ctx), Slot(other.Slot), UsedSize(other.UsedSize), Writes(other.Writes),
       Storage(std::move(other.Storage)), Workspace(std::move(other.Workspace)), PreviousWorkspaces(std::move(other.PreviousWorkspaces)), Lifetime(other.Lifetime), Tracked(std::move(other.Tracked)), Type(other.Type) {
     if (Tracked) {
         Tracked->Backing = this;
@@ -168,6 +168,7 @@ Buffer &Buffer::operator=(Buffer &&other) noexcept {
         if (Slot != InvalidSlot) Ctx.Slots.Release({Type, Slot});
         Slot = other.Slot;
         UsedSize = other.UsedSize;
+        Writes = other.Writes;
         Storage = std::move(other.Storage);
         Workspace = std::move(other.Workspace);
         PreviousWorkspaces = std::move(other.PreviousWorkspaces);
@@ -269,9 +270,16 @@ void Buffer::Update(std::span<const std::byte> data, uint64_t offset) {
 }
 
 void Buffer::CaptureWrite(uint64_t offset, uint64_t size) const {
+    if (size) LogWrite(offset, offset + size);
     if (!Tracked) return;
     const profile::CpuScope scope{"HistoryCapturePages"};
     Tracked->Write(offset, size);
+}
+
+void Buffer::LogWrite(uint64_t begin, uint64_t end) const {
+    if (!Writes) return;
+    if (!Writes->empty() && Writes->back().second == begin) Writes->back().second = end;
+    else Writes->emplace_back(begin, end);
 }
 
 void Buffer::CaptureWritePages(std::span<const uint32_t> pages) const {
@@ -289,7 +297,10 @@ void Buffer::CaptureWritePages(std::span<const uint32_t> pages) const {
 }
 
 void Buffer::CaptureWriteElements(std::span<const uint32_t> elements, uint32_t stride) const {
-    if (elements.empty() || !stride || !Tracked) return;
+    if (elements.empty() || !stride) return;
+    if (Writes)
+        for (const auto element : elements) LogWrite(uint64_t(element) * stride, uint64_t(element + 1u) * stride);
+    if (!Tracked) return;
     std::vector<uint32_t> sorted;
     if (!std::ranges::is_sorted(elements)) {
         sorted.assign(elements.begin(), elements.end());
@@ -310,7 +321,11 @@ void Buffer::CaptureWriteElements(std::span<const uint32_t> elements, uint32_t s
 }
 
 void Buffer::CaptureWriteRanges(std::span<const Range> ranges, uint32_t stride) const {
-    if (ranges.empty() || !stride || !Tracked) return;
+    if (ranges.empty() || !stride) return;
+    if (Writes)
+        for (const auto range : ranges)
+            if (range.Count) LogWrite(uint64_t(range.Offset) * stride, (uint64_t(range.Offset) + range.Count) * stride);
+    if (!Tracked) return;
     std::vector<uint32_t> pages;
     for (const auto range : ranges) {
         if (!range.Count) continue;

@@ -30,9 +30,11 @@ std::vector<uint32_t> PayloadBlocks(const BufferArena<uint32_t> &table, std::spa
 void PageFootprint::Add(const mtl::Buffer &buffer, std::span<const uint32_t> blocks, uint64_t block_bytes) {
     if (blocks.empty()) return;
     auto found = std::ranges::find(Entries, &buffer, &Entry::Buffer);
-    auto &pages = found == Entries.end() ? Entries.emplace_back(&buffer).Pages : found->Pages;
+    auto &entry = found == Entries.end() ? Entries.emplace_back(&buffer) : *found;
+    auto &pages = entry.Pages;
     for (const auto block : blocks) {
         const auto first = uint64_t(block) * block_bytes;
+        if (buffer.Writes) entry.Extents.emplace_back(first, first + block_bytes);
         for (auto page = uint32_t(first / mtl::HistoryPageBytes); page <= (first + block_bytes - 1u) / mtl::HistoryPageBytes; ++page)
             if (pages.empty() || pages.back() != page) pages.push_back(page);
     }
@@ -50,5 +52,8 @@ std::span<const uint32_t> PageFootprint::Pages(const mtl::Buffer &buffer) {
 }
 
 void PageFootprint::CaptureWrites() {
-    for (auto &entry : Entries) entry.Buffer->CaptureWritePages(Sort(entry));
+    for (auto &entry : Entries) {
+        for (const auto [begin, end] : entry.Extents) entry.Buffer->LogWrite(begin, end);
+        entry.Buffer->CaptureWritePages(Sort(entry));
+    }
 }

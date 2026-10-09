@@ -222,6 +222,7 @@ struct MeshStore {
                                Edge,
                                Face,
                                Triangle };
+    static constexpr std::array ElementDomains{ElementDomain::Vertex, ElementDomain::Halfedge, ElementDomain::Edge, ElementDomain::Face, ElementDomain::Triangle};
 
     enum ChangeBits : uint32_t {
         GeometryChanged = 1u << 0,
@@ -373,9 +374,30 @@ struct MeshStore {
     ElementView<Vertex> VertexView(uint32_t id) const;
     // Completes the record created by CreateMeshSource: face tables, corner layers, primitive tables, and smooth sharpness stores.
     void CreateMesh(uint32_t id, const MeshData &, const MeshVertexAttributes &, const MeshPrimitives &, const CornerLayers &, bool has_authored_normals);
+    // Each element domain's pairs of a record's block and the block of a record copying it, indexed by ElementDomain.
+    using BlockPairs = std::array<std::vector<uvec2>, 6>;
+    // Each element domain's ascending blocks, indexed by ElementDomain.
+    using DomainBlocks = std::array<std::vector<uint32_t>, 6>;
     // Clones each source record, queueing its GPU copies on `copies`, and returns the clones' store IDs in source order.
+    // `render` copies the sources' render records too, and `pairs`, when not empty, receives each clone's block pairs ascending by the clone's block.
     // The clones read their copied ranges once the copies record and their chain submits.
-    std::vector<uint32_t> CloneMeshes(CloneCopies &, std::span<const uint32_t> source_ids);
+    std::vector<uint32_t> CloneMeshes(CloneCopies &, std::span<const uint32_t> source_ids, bool render, std::span<BlockPairs> pairs);
+    // Restores `id`, a copy of `source` without render records, to `source` at the blocks either record wrote since `pairs` (ascending by the copy's block) described it.
+    // Its written blocks without a pair leave it, a paired block it lost takes a new block, and a lost corner or triangle block relays that domain as the source lays it out and restores every pair.
+    // Its attributes outside the ascending `attributes` take fresh copies of the source's, which `attributes` then lists.
+    // The copies record on `copies`, and the returned change names the restored and removed blocks for ReconcileSelection.
+    // No change returns when the source gained or lost blocks since the pairs, and nothing is restored then.
+    std::optional<Change> Resync(CloneCopies &, uint32_t id, uint32_t source, BlockPairs &, const DomainBlocks &written, std::span<const uint32_t> written_attributes, std::vector<uint32_t> &attributes);
+    // Appends `source`'s elements to `id` in new blocks of its sets, with their references rebased and their primitives after `id`'s in its material table.
+    // Element layers and named attributes present on either record hold their defaults on the other's elements, and deform channels follow `id`.
+    // Each record's primitives take one table entry at least, so a record without a primitive table reads primitive 0 of its own entries.
+    void Join(state::Scene &, uint32_t id, uint32_t source);
+    // The element blocks whose canonical values or membership captured writes since the last call, and the named attributes released or renamed since then, each ascending.
+    struct Writes {
+        DomainBlocks Blocks{};
+        std::vector<uint32_t> Attributes{};
+    };
+    Writes TakeWrites();
     // Returns a vertex-only store ID that must be released with Release.
     uint32_t AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &);
     // Stores bone or joint index data for a vertex-only record, offset by its first vertex.
@@ -447,6 +469,10 @@ struct MeshStore {
     // The record's attribute with this name, or InvalidOffset.
     uint32_t FindAttribute(uint32_t id, std::string_view name) const;
     void ReleaseAttribute(uint32_t attribute);
+    // Names the attribute anew, under the same rules as AddAttribute.
+    std::expected<void, AttributeError> RenameAttribute(uint32_t attribute, std::string_view name);
+    // Adds an attribute on the same record and domain holding the attribute's values.
+    std::expected<uint32_t, AttributeError> CopyAttribute(uint32_t attribute, std::string_view name);
     const NamedAttribute &GetAttribute(uint32_t attribute) const { return NamedAttributes.at(attribute); }
     // Visits the record's attributes in slot order, a scan of every attribute that authoring, cloning, release and topology setup make.
     void ForEachNamedAttribute(uint32_t id, auto &&visit) const {
@@ -532,6 +558,9 @@ struct MeshStore {
         std::vector<SelectionSeed> Seeds{};
     };
     void UpdateSelection(state::Scene &, mtl::ComputeChain &, std::span<const SelectionUpdate>);
+    // Records the rewrite of the masks' words in the record's blocks of the two domains other than `source`, derived from the source domain's words the way UpdateSelection derives them.
+    // The store's selection, aggregates and hidden masks are unchanged, and hidden elements stay selectable.
+    void DeriveSelectionMasks(state::Scene &, mtl::ComputeChain &, uint32_t id, const GeometryMasks &, Element source) const;
     // Copies the root counts, sums and sharpness of the summary's mode into the summary.
     void PublishSelectionSummary(uint32_t id);
     EditSelectionSummary &WriteSelectionSummary(uint32_t id);
@@ -629,8 +658,29 @@ private:
     void AttachAttributeBlocks(uint32_t attribute, std::span<const uint32_t> blocks);
     // Releases the attribute's payloads at the element blocks.
     void ReleaseAttributeBlocks(uint32_t attribute, std::span<const uint32_t> blocks);
-    // Gives the clone a copy of each source attribute, its payloads copied on `copies` to the clone's mapped blocks.
-    void CloneAttributes(CloneCopies &, uint32_t source, uint32_t clone, const std::array<Range, 6> &maps);
+    // Copies attribute `from`'s payloads at the source blocks to attribute `to` at their mapped blocks, attaching the missing ones.
+    void CopyAttributeBlocks(CloneCopies &, uint32_t from, uint32_t to, Range map, std::span<const uint32_t> sources);
+    // Copies the listed source blocks of each domain into their mapped blocks of `destination`, which owns them with the source blocks' live slots.
+    // Values, mirrors, masks, layers, sector roots, vertex fans and the attribute pairs' payloads copy, and the copied references rebase by the maps.
+    void CopyBlocks(CloneCopies &, uint32_t destination, uint32_t source, const std::array<Range, 6> &maps, const DomainBlocks &sources, std::span<const uvec2> attributes);
+    // Releases every block of the record's domain with the sector roots and layer payloads attached to them, leaving the record without the domain's set.
+    void ReleaseDomain(uint32_t id, ElementDomain);
+    // Clears every element of the record's ascending blocks of the domain, which leave it.
+    void DetachBlocks(uint32_t id, ElementDomain, std::span<const uint32_t> blocks);
+    // A logged buffer names element handles, element blocks, or layer payload blocks whose owners name their element block plus one.
+    enum class WriteIndex : uint8_t { Elements,
+                                      Blocks,
+                                      Payloads };
+    struct WriteLog {
+        mtl::Buffer *Buffer;
+        ElementDomain Domain;
+        WriteIndex Index;
+        uint32_t Stride;
+        const BufferArena<uint32_t> *Owners{};
+        std::vector<std::pair<uint64_t, uint64_t>> Extents{};
+    };
+    std::vector<WriteLog> WriteLogs{}; // Fixed at construction, so each buffer keeps its log's address
+    std::vector<uint32_t> WrittenAttributes{};
 };
 
 // Visits the arena of one element domain, which every caller resolves before calling.
@@ -643,6 +693,16 @@ decltype(auto) WithDomain(auto &arenas, MeshStore::ElementDomain domain, auto &&
         case MeshStore::ElementDomain::Triangle: return fn(arenas.Triangles);
         case MeshStore::ElementDomain::None: std::unreachable();
     }
+}
+// The element domain holding an attribute domain's elements.
+constexpr MeshStore::ElementDomain ElementDomainOf(AttributeDomain domain) {
+    switch (domain) {
+        case AttributeDomain::Vertex: return MeshStore::ElementDomain::Vertex;
+        case AttributeDomain::Edge: return MeshStore::ElementDomain::Edge;
+        case AttributeDomain::Face: return MeshStore::ElementDomain::Face;
+        case AttributeDomain::Corner: return MeshStore::ElementDomain::Halfedge;
+    }
+    std::unreachable();
 }
 // The record's set in one element domain.
 auto &DomainSet(auto &record, MeshStore::ElementDomain domain) {

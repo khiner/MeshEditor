@@ -67,6 +67,12 @@ struct ElementArena {
         const auto blocks = Membership(set);
         for (auto b = Set(set).First; b != InvalidOffset; b = blocks[b].Next) visit(b, blocks[b]);
     }
+    // Visits the live handles of one block in ascending order.
+    void ForEachLive(uint32_t block, auto &&visit) const {
+        const auto &members = Blocks.Get({block, 1})[0];
+        for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
+            for (auto bits = members.Live[w]; bits; bits &= bits - 1u) visit(block * MeshElementBlockSize + w * 32u + uint32_t(std::countr_zero(bits)));
+    }
     void ForEach(ElementSetRef set, auto &&visit) const {
         uint32_t ordinal = 0u;
         ForEachBlock(set, [&](uint32_t b, const auto &block) {
@@ -303,6 +309,59 @@ struct ElementArena {
             set = {};
         }
         return blocks;
+    }
+    // Clears every live slot of the set's ascending blocks, which leave the set unless one is its first block.
+    std::vector<uint32_t> Clear(ElementSetRef set, std::span<const uint32_t> blocks) {
+        std::vector<std::pair<uint32_t, LiveMask>> cleared;
+        cleared.reserve(blocks.size());
+        for (const auto b : blocks) cleared.emplace_back(b, Blocks.Get({b, 1})[0].Live);
+        auto header = Set(set);
+        header.Flags = 0u;
+        return ClearSlots(set, header, cleared);
+    }
+    // Links `count` blocks without live slots after the set's last block, creating the set when absent, and returns them in link order.
+    std::vector<uint32_t> Extend(ElementSetRef &set, uint32_t count) {
+        std::vector<uint32_t> added;
+        if (!count) return added;
+        if (!set) {
+            set = Create();
+            added.push_back(Set(set).First);
+            --count;
+        }
+        if (count) {
+            auto header = Set(set);
+            auto allocation = Blocks.BeginAllocation();
+            const auto fresh = AllocateBlocks(count);
+            Blocks.GetMutable({header.Last, 1})[0].Next = fresh.Offset;
+            auto members = Blocks.GetMutable(fresh);
+            for (uint32_t i = 0; i < fresh.Count; ++i) {
+                members[i] = {.Next = i + 1u < fresh.Count ? fresh.Offset + i + 1u : InvalidOffset, .Previous = i ? fresh.Offset + i - 1u : header.Last, .Owner = set.Index};
+                added.push_back(fresh.Offset + i);
+            }
+            header.Last = fresh.Offset + fresh.Count - 1u;
+            header.BlockCount += fresh.Count;
+            ++header.Revision;
+            Sets.GetMutable({set.Index, 1})[0] = header;
+            allocation.Commit();
+        }
+        for (const auto b : added) Index(b);
+        return added;
+    }
+    // Gives each pair's second block, owned by the set, the live slots of its first block, and the set the flags.
+    void AssignLive(ElementSetRef set, std::span<const uvec2> pairs, uint32_t flags) {
+        auto header = Set(set);
+        for (const auto [from, to] : pairs) {
+            const auto live = Blocks.Get({from, 1})[0].Live;
+            auto &block = Blocks.GetMutable({to, 1})[0];
+            const auto count = LiveCount(live);
+            header.Count = header.Count - block.Count + count;
+            block.Live = live;
+            block.Count = count;
+        }
+        header.Flags = flags;
+        ++header.Revision;
+        Sets.GetMutable({set.Index, 1})[0] = header;
+        for (const auto pair : pairs) Index(pair.y);
     }
     void Release(ElementSetRef set) {
         if (set) Destroy(set);

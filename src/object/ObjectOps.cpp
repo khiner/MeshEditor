@@ -6,6 +6,7 @@
 
 #include "CameraTypes.h"
 #include "Path.h"
+#include "SortUnique.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "assets/MaterialImport.h"
@@ -156,6 +157,11 @@ void ProcessObjectRemovals(state::Scene &r, state::Entity viewport) {
         const profile::CpuScope scope{"DestroyDataComponents"};
         r.destroy(buffers_to_destroy);
     }
+    // The entities destroyed above queue theirs too.
+    auto &dependents = pending->Dependents;
+    std::erase_if(dependents, [&](state::Entity e) { return !r.valid(e); });
+    SortUnique(dependents);
+    if (!dependents.empty()) r.destroy(dependents);
     auto &meshes = r.Context.get<MeshStore>();
     auto &buffers = r.Context.get<GpuBuffers>();
     meshes.Release(pending->StoreIds);

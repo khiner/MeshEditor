@@ -8,6 +8,7 @@
 #include "action/Emit.h"
 #include "action/Io.h"
 #include "action/Mesh.h"
+#include "action/Nodes.h"
 #include "action/Object.h"
 #include "action/Physics.h"
 #include "action/Selection.h"
@@ -19,7 +20,7 @@ namespace action {
 using Action = std::variant<
     Core,
     selection::Action, object::Action, view::Action,
-    physics::Action, audio::Action, bone::Action, timeline::Action, io::Action, animation::Action, mesh::Action>;
+    physics::Action, audio::Action, bone::Action, timeline::Action, io::Action, animation::Action, mesh::Action, nodes::Action>;
 
 static_assert(sizeof(Action) <= 64, "Keep actions at or below 64 bytes");
 

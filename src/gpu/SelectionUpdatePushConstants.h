@@ -34,6 +34,7 @@ struct SelectionMeshUpdate {
 static_assert(sizeof(SelectionMeshUpdate) == 84, "SelectionMeshUpdate size");
 
 // The canonical streams and the batch's records, which are word offsets into the work slot.
+// Mask word Masks[d].Offset + h / 32 holds handle h's bit, and InvalidSlot Leaves and Hidden leave aggregates unwritten and nothing hidden.
 // A sparse dirty-block hash table occupies the first DirtyMask+1 words.
 // Seeds holds SeedCount seeds, and SeedUpdates the index of each seed's mesh update.
 // The dirty list starts with its entry count and the other two indirect dispatch dimensions, followed by (domain << 30 | block, update) pairs.
@@ -41,14 +42,14 @@ struct SelectionUpdatePushConstants {
     uint32_t CornersSlot DEFAULT(InvalidSlot), VerticesSlot DEFAULT(InvalidSlot);
     uint32_t EdgeSharpnessSlot DEFAULT(InvalidSlot), FaceSharpnessSlot DEFAULT(InvalidSlot);
     GpuArray<uint32_t, 4> Blocks DEFAULT(); // Vertex, edge, face and halfedge membership.
-    GpuArray<uint32_t, 3> Masks DEFAULT();
+    GpuArray<SlotOffset, 3> Masks DEFAULT();
     GpuArray<uint32_t, 3> Leaves DEFAULT();
     GpuArray<uint32_t, 3> Hidden DEFAULT();
     uint32_t DirtyMask DEFAULT(), WorkSlot DEFAULT(InvalidSlot);
     uint32_t Updates DEFAULT(), Seeds DEFAULT(), SeedUpdates DEFAULT(), List DEFAULT();
     uint32_t SeedCount DEFAULT();
 };
-static_assert(sizeof(SelectionUpdatePushConstants) == 96, "SelectionUpdatePushConstants size");
+static_assert(sizeof(SelectionUpdatePushConstants) == 108, "SelectionUpdatePushConstants size");
 
 // Scatters the selected handles of listed (block, first output index) word pairs in ascending handle order.
 struct SelectionGatherPushConstants {

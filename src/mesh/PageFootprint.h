@@ -55,6 +55,7 @@ private:
     struct Entry {
         const mtl::Buffer *Buffer;
         std::vector<uint32_t> Pages;
+        std::vector<std::pair<uint64_t, uint64_t>> Extents; // The added byte extents, kept for a buffer that logs its writes
     };
     std::vector<Entry> Entries;
     static std::span<const uint32_t> Sort(Entry &);

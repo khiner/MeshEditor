@@ -175,7 +175,7 @@ void BuildMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<const st
     std::vector<MeshletBuildSource> sources;
     sources.reserve(mesh_entities.size() * 3u + bone_entities.size());
     for (const auto entity : mesh_entities) {
-        const auto mesh = GetMesh(r, entity);
+        const auto mesh = GetDrawnMesh(r, entity);
         auto &mb = meshes.WriteRecord(mesh.GetStoreId());
         if (mesh.FaceCount()) sources.push_back({.Destination = &mb, .Topology = 0u, .ElementCount = mesh.TriangleIndexCount() / 3u});
         if (mesh.EdgeCount()) sources.push_back({.Destination = &mb, .Topology = 1u, .ElementCount = mesh.EdgeCount()});
@@ -212,9 +212,8 @@ bool BuildDemandedClusterLods(state::Scene &r, state::Entity viewport) {
     auto &render = meshes.Render();
     // A mesh leaves the demand set once it has a hierarchy or its meshlets take none.
     std::erase_if(scene.LodDemand, [&](state::Entity entity) {
-        const auto *handle = r.valid(entity) ? r.try_get<const MeshHandle>(entity) : nullptr;
-        const auto *mb = handle ? meshes.TryGet(handle->StoreId) : nullptr;
-        return !mb || meshes.ClusterGroupCount(*mb) != 0u || !ClusterLodApplies(Mesh{meshes, handle->StoreId}.FaceCount() > 0u, meshes.MeshletCount(*mb));
+        const auto *mb = r.valid(entity) && HasMesh(r, entity) ? TryRecordOf(r, entity) : nullptr;
+        return !mb || meshes.ClusterGroupCount(*mb) != 0u || !ClusterLodApplies(Mesh{meshes, mb->StoreId}.FaceCount() > 0u, meshes.MeshletCount(*mb));
     });
     std::vector<state::Entity> demanded{scene.LodDemand.begin(), scene.LodDemand.end()};
     if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && !demanded.empty()) {
@@ -238,7 +237,7 @@ bool BuildDemandedClusterLods(state::Scene &r, state::Entity viewport) {
     for (uint32_t i = 0u; i < count; ++i) {
         const auto entity = demanded[i];
         const auto &mb = RecordOf(r, entity);
-        const auto mesh = GetMesh(r, entity);
+        const auto mesh = GetDrawnMesh(r, entity);
         // After an edit, the build covers exactly the triangles the live finest clusters hold, per primitive in walk order.
         if (mb.MeshletRevision > 1u || mb.RenderTopologies != 1u) {
             auto &triangles = live_triangles[i];

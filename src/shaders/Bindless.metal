@@ -51,6 +51,30 @@ inline uint ElementAttributeIndex(device const BindlessSet &b, ElementAttributeR
 inline uint ElementAttributeIndex(device const BindlessSet &b, NamedAttributeRef attribute, uint handle) {
     return ElementAttributeIndex(BindlessBuffer(uint, b.Buffer, attribute.TablesSlot) + attribute.TableOffset, handle - attribute.FirstBlock * MeshElementBlockSize);
 }
+// A named attribute's value at a handle, as the words of its components.
+inline uint4 ReadNamedAttribute(device const BindlessSet &b, NamedAttributeRef attribute, AttributeType type, uint handle) {
+    const uint index = ElementAttributeIndex(b, attribute, handle);
+    device const uint *words = BindlessBuffer(uint, b.Buffer, attribute.ValuesSlot);
+    if (type == AttributeType::Bool) return uint4((words[index >> 5u] >> (index & 31u)) & 1u, 0u, 0u, 0u);
+    const uint n = AttributeComponents(type);
+    uint4 value = uint4(0u);
+    for (uint c = 0u; c < n; ++c) value[c] = words[index * n + c];
+    return value;
+}
+// Bools share mask words with neighboring elements, so their bits write atomically.
+inline void WriteNamedAttribute(device const BindlessSet &b, NamedAttributeRef attribute, AttributeType type, uint handle, uint4 value) {
+    const uint index = ElementAttributeIndex(b, attribute, handle);
+    device uint *words = BindlessBufferMutable(uint, b.Buffer, attribute.ValuesSlot);
+    if (type == AttributeType::Bool) {
+        device atomic_uint *word = reinterpret_cast<device atomic_uint *>(words) + (index >> 5u);
+        const uint mask = 1u << (index & 31u);
+        if (value.x != 0u) atomic_fetch_or_explicit(word, mask, memory_order_relaxed);
+        else atomic_fetch_and_explicit(word, ~mask, memory_order_relaxed);
+        return;
+    }
+    const uint n = AttributeComponents(type);
+    for (uint c = 0u; c < n; ++c) words[index * n + c] = value[c];
+}
 
 // Each pose maps canonical record keys into shared typed value blocks.
 inline uint PoseAttributeIndex(device const BindlessSet &b, uint nodes_slot, uint root, uint record) {

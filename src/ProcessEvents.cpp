@@ -30,6 +30,7 @@
 #include "object/ObjectOps.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
+#include "procedure/Cook.h"
 #include "render/ClusterLodRepair.h"
 #include "render/ElementWorkOps.h"
 #include "render/GpuBuffers.h"
@@ -170,6 +171,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             r.emplace_or_replace<MeshGeometryDirty>(primitives[i]);
         }
     }
+    // Procedures cook from the regenerated sources, and a restore, which restores their outputs, only replans them.
+    SettleProcedures(r, pass == EventPass::Frame || pass == EventPass::Settle);
 
     // Resize render resources before the pick handlers below resolve against the rendered scene.
     const bool resized = SyncViewportRenderResources(r, viewport);

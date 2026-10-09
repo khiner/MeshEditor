@@ -46,13 +46,6 @@ struct GeometryFixture {
 MeshData Quad() {
     return MeshData{{{-1.f, -1.f, 0.f}, {1.f, -1.f, 0.f}, {1.f, 1.f, 0.f}, {-1.f, 1.f, 0.f}}, {{0u, 1u, 2u, 3u}}};
 }
-GeometrySelection All(const Mesh &mesh) {
-    GeometrySelection result;
-    for (const auto v : mesh.vertices()) result.Vertices.push_back(*v);
-    for (const auto e : mesh.edges()) result.Edges.push_back(*e);
-    for (const auto f : mesh.faces()) result.Faces.push_back(*f);
-    return result;
-}
 
 // Writes selections as mask blocks into an arena the test owns, one block run per domain with room for the blocks an edit inserts.
 struct MaskWriter {
@@ -104,7 +97,7 @@ struct Outcome {
 Outcome Describe(const MeshStore &meshes, uint32_t source, const GeometryTopologyResult &result) {
     const Mesh mesh{meshes, result.GeometryId};
     Outcome outcome{result.Changed, result.GeometryId != source};
-    const auto all = All(mesh);
+    const auto all = AllHandles(mesh);
     for (uint32_t d = 0u; const auto element : {Element::Vertex, Element::Edge, Element::Face}) {
         outcome.Elements[d] = Shapes(mesh, element, result.Created.Get(element));
         outcome.Elements[3u + d] = Shapes(mesh, element, result.Retained.Get(element));
@@ -274,7 +267,7 @@ void RegisterGeometryOperationsTests() {
     "headless topology uses explicit masks and returns created geometry"_test = [] {
         GeometryFixture f;
         const auto id = f.Create(Quad());
-        const auto selected = All(f.Get(id));
+        const auto selected = AllHandles(f.Get(id));
         expect(f.Store().Get(id).MeshletRoot == InvalidOffset);
         for (const auto op : {MeshTopologyOp::DuplicateGeometry, MeshTopologyOp::ExtrudeRegion, MeshTopologyOp::DeleteLoose}) {
             const auto empty = f.Run({.SourceId = id, .Op = op});
@@ -296,7 +289,7 @@ void RegisterGeometryOperationsTests() {
         expect(f.Store().GetSelectedElements(id, Element::Vertex).Count() == 0u);
         expect(f.Store().Get(id).MeshletRoot == InvalidOffset);
         const auto extrude_id = f.Create(Quad());
-        const auto extruded = f.Run({.SourceId = extrude_id, .Op = MeshTopologyOp::ExtrudeRegion, .Selection = All(f.Get(extrude_id))});
+        const auto extruded = f.Run({.SourceId = extrude_id, .Op = MeshTopologyOp::ExtrudeRegion, .Selection = AllHandles(f.Get(extrude_id))});
         expect(extruded.Changed);
         expect(extruded.Created.Vertices.size() == 4u);
         expect(f.Get(extrude_id).FaceCount() == 6u);
@@ -314,7 +307,7 @@ void RegisterGeometryOperationsTests() {
         MeshData data{{{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {2.f, 0.f, 0.f}, {3.f, 0.f, 0.f}}};
         data.Edges.push_back({0u, 1u});
         const auto id = f.Create(std::move(data));
-        const auto selected = All(f.Get(id));
+        const auto selected = AllHandles(f.Get(id));
         const std::array blocks{selected.Vertices.front() / MeshElementBlockSize};
         f.Store().EditHiddenBlocks(Element::Vertex, blocks, [](uint32_t, auto &words) { std::ranges::fill(words, ~0u); });
         const auto removed = f.Run({.SourceId = id, .Op = MeshTopologyOp::DeleteLoose, .Selection = selected});
@@ -330,7 +323,7 @@ void RegisterGeometryOperationsTests() {
         attributes.Colors0 = std::vector<vec4>(4u, {.1f, .3f, .5f, 1.f});
         attributes.Colors0ComponentCount = 4u;
         const auto source = CreateMesh(f.Scene, {.Data = Quad(), .Attrs = std::move(attributes)}).StoreId;
-        const auto extracted = f.Run({.SourceId = source, .Op = MeshTopologyOp::KeepSelectedFaces, .SelectionElement = Element::Face, .Selection = All(f.Get(source))});
+        const auto extracted = f.Run({.SourceId = source, .Op = MeshTopologyOp::KeepSelectedFaces, .SelectionElement = Element::Face, .Selection = AllHandles(f.Get(source))});
         const auto output_id = extracted.GeometryId;
         const auto selection = extracted.Created;
         expect(extracted.Changed);
@@ -369,7 +362,7 @@ void RegisterGeometryOperationsTests() {
     "headless affine transforms share editor frame math"_test = [] {
         GeometryFixture f;
         const auto id = f.Create(Quad());
-        const auto selection = All(f.Get(id));
+        const auto selection = AllHandles(f.Get(id));
         const auto first = selection.Vertices.front();
         const auto untouched = f.Get(id).GetPosition(he::VH{selection.Vertices.back()});
         const quat quarter_turn{.7071067811865475f, 0.f, 0.f, .7071067811865475f};
@@ -392,7 +385,7 @@ void RegisterGeometryOperationsTests() {
         GeometryFixture f;
         const auto id = f.Create(Quad()), other = f.Create(Quad());
         const auto mesh = f.Get(id);
-        const auto selected = All(mesh), foreign = All(f.Get(other));
+        const auto selected = AllHandles(mesh), foreign = AllHandles(f.Get(other));
         const auto rejects = [](auto &&plan) {
             try {
                 plan();
@@ -413,7 +406,7 @@ void RegisterGeometryOperationsTests() {
     "headless sharpness uses explicit masks and refreshes canonical normals"_test = [] {
         GeometryFixture f;
         const auto id = f.Create(Quad());
-        const auto all = All(f.Get(id));
+        const auto all = AllHandles(f.Get(id));
         mtl::ComputeChain chain{f.Store().BufferContext()};
         const auto apply = [&](EditSharpnessOperation operation, GeometrySelection selection = {}, bool value = true) {
             const SharpnessOperationTarget target{id, std::move(selection)};
@@ -445,7 +438,7 @@ void RegisterGeometryOperationsTests() {
     "headless knife restricts canonical candidates without render caches"_test = [] {
         GeometryFixture f;
         const auto id = f.Create(Quad());
-        const auto selected = All(f.Get(id));
+        const auto selected = AllHandles(f.Get(id));
         const auto cut = f.Run({.SourceId = id, .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagScreenCuts, .ScreenTransform = mat4{1.f}, .Extent = {100.f, 100.f}, .KnifeStart = {50.f, 0.f}, .KnifeEnd = {50.f, 100.f}, .SelectionElement = Element::Face, .Selection = GeometrySelection{.Faces = selected.Faces}});
         expect(cut.Changed);
         expect(f.Get(id).VertexCount() == 6u);
@@ -471,7 +464,7 @@ void RegisterGeometryOperationsTests() {
             chain.Submit();
             expect(work.Count == 256u);
         }
-        auto moved = All(f.Get(separated_id));
+        auto moved = AllHandles(f.Get(separated_id));
         moved.Vertices.resize(1024u);
         const PositionOperationTarget moving{.StoreId = separated_id, .Selection = GeometrySelection{.Vertices = moved.Vertices}};
         ExecuteGeometryPositions(f.Scene, std::span{&moving, 1u}, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{.Delta = {.P = {200.f, 0.f, 0.f}}}});
@@ -555,7 +548,7 @@ void RegisterGeometryOperationsTests() {
         const std::array values{1.f, 2.f, 3.f, 4.f};
         meshes.SetAttribute<float>(*weight, vertices.Offset, values);
         CloneCopies copies;
-        const auto clone = meshes.CloneMeshes(copies, std::array{id}).front();
+        const auto clone = meshes.CloneMeshes(copies, std::array{id}, true, {}).front();
         {
             mtl::ComputeChain chain{meshes.BufferContext()};
             copies.Encode(chain, GetMeshPipelines(f.Scene));
@@ -589,7 +582,7 @@ void RegisterGeometryOperationsTests() {
         MaskWriter masks{f.Buffers};
         const auto id = f.Create(Quad());
         const auto output = masks.Write(f.Store(), {});
-        const auto duplicated = f.Run({.SourceId = id, .Op = MeshTopologyOp::DuplicateGeometry, .Flags = TopologyFlagTransformCopies, .CopyRotation = mat3{1.f}, .CopyTranslation = {4.f, 0.f, 0.f}, .Selection = All(f.Get(id)), .SelectionOutput = output});
+        const auto duplicated = f.Run({.SourceId = id, .Op = MeshTopologyOp::DuplicateGeometry, .Flags = TopologyFlagTransformCopies, .CopyRotation = mat3{1.f}, .CopyTranslation = {4.f, 0.f, 0.f}, .Selection = AllHandles(f.Get(id)), .SelectionOutput = output});
         expect(duplicated.Changed);
         for (const auto element : {Element::Vertex, Element::Edge, Element::Face})
             expect(ReadMasks(f.Store(), id, element, output.Get(element)) == duplicated.Created.Get(element));

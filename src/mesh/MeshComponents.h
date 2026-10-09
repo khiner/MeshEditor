@@ -28,6 +28,19 @@ struct VertexStoreId {
 struct MeshHandle {
     uint32_t StoreId{~0u};
 };
+// The record a mesh entity's geometry procedure evaluates to, which its instances draw.
+struct EvaluatedMesh {
+    uint32_t StoreId;
+    uint32_t Source{InvalidOffset}; // The source record the evaluated record copies, or InvalidOffset for a record made otherwise
+};
+// Derived on a mesh entity whose evaluated record copies its source, so the next cook restores only the blocks either record wrote.
+// Each element domain's pairs of source block and evaluated block ascend by the evaluated block.
+struct ResyncState {
+    std::array<std::vector<uvec2>, 6> Blocks{};
+    std::array<std::vector<uint32_t>, 6> Written{}; // The evaluated blocks the last cook wrote
+    std::vector<uint32_t> Attributes{}; // The evaluated record's attributes holding their source attribute's copy
+    uint32_t Resyncs{}; // The cooks that restored the record since the pairs were made
+};
 
 // A new mesh's authored normals in polygon-corner order, held until its base normals derive and the custom corner-normal layer encodes them.
 struct AuthoredCornerNormals {

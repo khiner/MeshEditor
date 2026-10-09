@@ -109,6 +109,8 @@ struct Buffer {
     void CaptureWritePages(std::span<const uint32_t> pages) const;
     void CaptureWriteElements(std::span<const uint32_t> elements, uint32_t stride) const;
     void CaptureWriteRanges(std::span<const Range> ranges, uint32_t stride) const;
+    // Appends a written byte extent to the write log when one is set, extending the log's last extent when they meet.
+    void LogWrite(uint64_t begin, uint64_t end) const;
     void Track(store::History &, std::string name);
     // Retires the workspaces growth replaced, once no recorded pass binds them directly.
     void RetirePreviousWorkspaces();
@@ -144,6 +146,9 @@ struct Buffer {
     BufferContext &Ctx;
     uint32_t Slot{InvalidSlot};
     uint64_t UsedSize{0};
+    // While set, each capture by element, range or byte extent also appends the byte extents it names, tracked or not.
+    // A page capture's caller logs its own extents.
+    std::vector<std::pair<uint64_t, uint64_t>> *Writes{};
 
 private:
     friend std::vector<Buffer> CloneFootprints(BufferContext &, std::span<const BufferFootprint>);

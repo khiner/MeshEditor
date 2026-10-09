@@ -21,6 +21,7 @@ enum VertexPositionEditFlags : uint32_t {
     PositionEditCurveRaise = 8192u,
     PositionEditCurveLower = 16384u,
     PositionEditCircleContract = 32768u,
+    PositionEditAttributeOffset = 65536u,
 };
 
 enum class PositionEditOp : uint32_t {
@@ -40,6 +41,7 @@ enum class PositionEditOp : uint32_t {
     SpaceEvenly,
     RelaxEdgeLoops,
     Transform,
+    Attribute,
 };
 
 struct VertexPositionEditPushConstants {

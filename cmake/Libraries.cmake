@@ -229,6 +229,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/project/Sessions.cpp
     src/action/LogSerialize.cpp
     src/action/Mesh.cpp
+    src/action/Nodes.cpp
     src/action/Object.cpp
     src/action/Physics.cpp
     src/action/Selection.cpp
@@ -240,6 +241,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/editor/Engine.cpp
     src/editor/Timeline.cpp
     src/object/ObjectOps.cpp
+    src/procedure/Cook.cpp
     ${native_snapshots}
     src/snapshot/SnapshotRoles.cpp
     src/viewport/Viewport.cpp

@@ -28,6 +28,8 @@ enum class Change : uint8_t {
     MeshGeometry,
     MeshMaterial,
     PrimitiveShape, // A primitive mesh's shape fields changed.
+    Procedure, // A geometry procedure's graph changed.
+    ProcedureInputs, // A procedure's source record, a node's parameters or a node's inline selection changed.
     TetMesh,
     NewBufferEntity,
     InstanceVisibility, // An Instance or Hidden change that the settle pass derives RenderInstance from.

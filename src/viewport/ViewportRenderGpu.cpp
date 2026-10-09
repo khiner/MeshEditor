@@ -897,7 +897,7 @@ void RebuildMeshLayout(state::Scene &r, state::Entity viewport) {
         if (!mesh_buffers) continue;
         const auto deform = mesh_deform_slots.find(entity);
         mesh_entities.emplace_back(
-            entity, *mesh_buffers, r.get<const ModelsBuffer>(entity), TryGetMesh(r, entity), deform != mesh_deform_slots.end() ? deform->second : NoDeform
+            entity, *mesh_buffers, r.get<const ModelsBuffer>(entity), HasMesh(r, entity) ? std::optional{GetDrawnMesh(r, entity)} : std::nullopt, deform != mesh_deform_slots.end() ? deform->second : NoDeform
         );
     }
 
@@ -2467,7 +2467,7 @@ bool RefreshMeshDisplays(state::Scene &r, state::Entity viewport, std::span<cons
         // A static run's entry rereads the mesh's vertex selection root and recomputes its instances' bounds.
         const auto run = scene_state.BoundsRuns.find(mesh_entity);
         if (const auto *models = r.try_get<const ModelsBuffer>(mesh_entity); models && run != scene_state.BoundsRuns.end() && HasMesh(r, mesh_entity)) {
-            buffers.BoundsReduceEntries.GetMutableSpan<BoundsEntry>({run->second.First, 1u})[0] = MeshBoundsEntry(context.Meshes, GetMesh(r, mesh_entity).GetStoreId(), *models);
+            buffers.BoundsReduceEntries.GetMutableSpan<BoundsEntry>({run->second.First, 1u})[0] = MeshBoundsEntry(context.Meshes, mb->StoreId, *models);
             scene_state.DirtyBoundsEntries.push_back(run->second.First);
         }
         RefreshMeshDisplay(r, context, mesh_entity, *mb, NoDeform, nullptr);

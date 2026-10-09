@@ -17,10 +17,11 @@
 // An attached element block owns one or more consecutive payload blocks, its entries, and entry e of handle h is at Index(h, e).
 // The forward table names each element block's first payload block plus one, and the reverse table names each payload block's element block plus one.
 // Both tables are allocation metadata, and values have one canonical copy.
+// `Absent` is the value of an element whose source gave the layer none, which a join or a boolean attaches for the side without it.
 template<typename T>
 struct ElementAttribute {
     using Block = std::array<T, MeshElementBlockSize>;
-    ElementAttribute(mtl::BufferContext &ctx, SlotType type) : Values(ctx, type), Blocks(ctx, SlotType::Buffer), Owners(ctx) {}
+    ElementAttribute(mtl::BufferContext &ctx, SlotType type, T absent = T{}) : Absent{absent}, Values(ctx, type), Blocks(ctx, SlotType::Buffer), Owners(ctx) {}
 
     ElementAttributeRef Ref(bool present = true) const { return present ? ElementAttributeRef{Blocks.Buffer.Slot, Values.Buffer.Slot} : ElementAttributeRef{}; }
     ElementAttributeView<T> View(bool present = true) const {
@@ -144,6 +145,7 @@ struct ElementAttribute {
                 i += count;
             }
     }
+    T Absent;
     BufferArena<Block> Values;
     BufferArena<uint32_t> Blocks, Owners;
 

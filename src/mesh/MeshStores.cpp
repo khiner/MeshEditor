@@ -5,21 +5,29 @@
 #include "state/Scene.h"
 
 namespace {
-void MapMeshEntity(state::Scene &r, state::Entity e) { r.Context.get<MeshEntities>().ByStore[r.get<const MeshHandle>(e).StoreId] = e; }
+// Each record a mesh entity owns, its source and its evaluated output, maps to the entity.
+template<typename C> void MapMeshEntity(state::Scene &r, state::Entity e) { r.Context.get<MeshEntities>().ByStore[r.get<const C>(e).StoreId] = e; }
+template<typename C> void UnmapMeshEntity(state::Scene &r, state::Entity e) {
+    auto &entities = r.Context.get<MeshEntities>().ByStore;
+    if (const auto it = entities.find(r.get<const C>(e).StoreId); it != entities.end() && it->second == e) entities.erase(it);
+}
+// A record its owner drops outside a restore releases at the next settle.
+template<typename C> void QueueRelease(state::Scene &r, state::Entity e) {
+    if (r.Restoring) return;
+    r.Context.emplace<PendingObjectRemovals>().StoreIds.push_back(r.get<const C>(e).StoreId);
+}
+template<typename C> void TrackRecord(state::Scene &r) {
+    r.on_construct<C, &MapMeshEntity<C>>();
+    r.on_update<C, &MapMeshEntity<C>>();
+    r.on_destroy<C, &UnmapMeshEntity<C>>();
+    r.on_destroy<C, &QueueRelease<C>>();
+}
 } // namespace
 
 void RegisterMeshStoreHandlers(state::Scene &r) {
     r.Context.emplace<MeshEntities>();
-    r.on_construct<MeshHandle, &MapMeshEntity>();
-    r.on_update<MeshHandle, &MapMeshEntity>();
-    r.on_destroy<MeshHandle, [](state::Scene &r, state::Entity e) {
-        auto &entities = r.Context.get<MeshEntities>().ByStore;
-        if (const auto it = entities.find(r.get<const MeshHandle>(e).StoreId); it != entities.end() && it->second == e) entities.erase(it);
-    }>();
-    r.on_destroy<MeshHandle, [](state::Scene &r, state::Entity e) {
-        if (r.Restoring) return;
-        r.Context.emplace<PendingObjectRemovals>().StoreIds.push_back(r.get<const MeshHandle>(e).StoreId);
-    }>();
+    TrackRecord<MeshHandle>(r);
+    TrackRecord<EvaluatedMesh>(r);
 }
 
 state::Entity MeshEntityOf(const state::Scene &r, uint32_t store_id) {
@@ -27,7 +35,8 @@ state::Entity MeshEntityOf(const state::Scene &r, uint32_t store_id) {
     const auto it = entities.find(store_id);
     if (it == entities.end() || !r.valid(it->second)) return state::Null;
     const auto *handle = r.try_get<const MeshHandle>(it->second);
-    return handle && handle->StoreId == store_id ? it->second : state::Null;
+    const auto *evaluated = r.try_get<const EvaluatedMesh>(it->second);
+    return (handle && handle->StoreId == store_id) || (evaluated && evaluated->StoreId == store_id) ? it->second : state::Null;
 }
 
 const MeshStore::Record *TryRecordOf(const state::Scene &r, state::Entity e) {

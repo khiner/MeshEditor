@@ -98,7 +98,7 @@ void MeshStore::UpdateSelection(state::Scene &r, mtl::ComputeChain &chain, std::
         .EdgeSharpnessSlot = Buffers.EdgeSharpness.Buffer.Slot,
         .FaceSharpnessSlot = Buffers.FaceSharpness.Buffer.Slot,
         .Blocks = {Buffers.Vertices.Blocks.Buffer.Slot, Buffers.EdgeHalfedges.Blocks.Buffer.Slot, Buffers.FaceTriangles.Blocks.Buffer.Slot, Buffers.FaceCorners.Blocks.Buffer.Slot},
-        .Masks = {Buffers.VertexSelection.Buffer.Slot, Buffers.EdgeSelection.Buffer.Slot, Buffers.FaceSelection.Buffer.Slot},
+        .Masks = {SlotOffset{Buffers.VertexSelection.Buffer.Slot, 0u}, SlotOffset{Buffers.EdgeSelection.Buffer.Slot, 0u}, SlotOffset{Buffers.FaceSelection.Buffer.Slot, 0u}},
         .Leaves = {Buffers.VertexAggregates.Buffer.Slot, Buffers.EdgeAggregates.Buffer.Slot, Buffers.FaceAggregates.Buffer.Slot},
         .Hidden = {Buffers.VertexHidden.Buffer.Slot, Buffers.EdgeHidden.Buffer.Slot, Buffers.FaceHidden.Buffer.Slot},
         .DirtyMask = uint32_t(dirty_words - 1u),
@@ -141,6 +141,41 @@ void MeshStore::UpdateSelection(state::Scene &r, mtl::ComputeChain &chain, std::
             for (uint32_t d = 0u; d < 3u; ++d)
                 Buffers.SelectionTree.Update(meshes[i].Root + d, blocks[i][d], meshes[i].Owners[d], members[d], leaves[d]);
     });
+}
+
+void MeshStore::DeriveSelectionMasks(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, const GeometryMasks &masks, Element source) const {
+    const auto &record = Records.at(id);
+    const auto source_index = uint32_t(std::ranges::find(Elements, source) - Elements.begin());
+    const SelectionMeshUpdate mesh{
+        .Connectivity = GetConnectivityRef(id),
+        .Owners = {record.Vertices.Index, record.EdgeData.Index, record.FaceData.Index},
+        .FaceCount = Buffers.FaceTriangles.Count(record.FaceData),
+        .Source = source_index,
+    };
+    // The dirty list's count and indirect dimensions, then each derived block with the one update.
+    std::vector<uint32_t> list{0u, 1u, 1u};
+    for (uint32_t d = 0u; d < 3u; ++d)
+        if (d != source_index)
+            for (const auto block : GetBlockList(id, Domains[d]).Blocks) list.insert(list.end(), {(d << 30u) | block, 0u});
+    const auto count = uint32_t(list.size() - 3u) / 2u;
+    if (!count) return;
+    list[0] = count;
+    const auto updates = chain.Upload(std::as_bytes(std::span{&mesh, 1u}));
+    const auto entries = chain.Upload(std::as_bytes(std::span{list}));
+    const SelectionUpdatePushConstants pc{
+        .CornersSlot = Buffers.FaceCorners.Buffer.Slot,
+        .VerticesSlot = Buffers.Vertices.Buffer.Slot,
+        .EdgeSharpnessSlot = Buffers.EdgeSharpness.Buffer.Slot,
+        .FaceSharpnessSlot = Buffers.FaceSharpness.Buffer.Slot,
+        .Blocks = {Buffers.Vertices.Blocks.Buffer.Slot, Buffers.EdgeHalfedges.Blocks.Buffer.Slot, Buffers.FaceTriangles.Blocks.Buffer.Slot, Buffers.FaceCorners.Blocks.Buffer.Slot},
+        .Masks = {MaskBinding(masks.Vertices), MaskBinding(masks.Edges), MaskBinding(masks.Faces)},
+        .Leaves = {InvalidSlot, InvalidSlot, InvalidSlot},
+        .Hidden = {InvalidSlot, InvalidSlot, InvalidSlot},
+        .WorkSlot = updates.Slot,
+        .Updates = updates.Offset,
+        .List = entries.Offset,
+    };
+    chain.Groups(GetMeshPipelines(r)[MeshPass::UpdateSelectionBlocks], pc, count);
 }
 
 void MeshStore::ReconcileSelection(state::Scene &r, mtl::ComputeChain &chain, std::span<const Change> changes) {

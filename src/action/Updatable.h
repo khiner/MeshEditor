@@ -32,6 +32,48 @@ struct TransformGizmoState;
 struct TriggerNodes;
 struct ViewportTheme;
 
+namespace action::mesh {
+struct Delete;
+struct Merge;
+struct Extrude;
+struct Duplicate;
+struct Split;
+struct Dissolve;
+struct Subdivide;
+struct Triangulate;
+struct TrisToQuads;
+struct Poke;
+struct FlipNormals;
+struct EdgeSplit;
+struct Inset;
+struct Solidify;
+struct Wireframe;
+struct Bevel;
+struct SmoothVertices;
+struct ShrinkFatten;
+struct Randomize;
+struct Spin;
+struct ExtrudeRepeat;
+struct Bisect;
+struct Symmetrize;
+struct FillHoles;
+struct ConvexHull;
+struct Decimate;
+struct RecalculateNormals;
+} // namespace action::mesh
+namespace procedure {
+struct Position;
+struct Normal;
+struct Index;
+struct NamedAttribute;
+struct VectorMath;
+struct FloatMath;
+struct Compare;
+struct BooleanMath;
+struct StoreNamedAttribute;
+struct SetPosition;
+} // namespace procedure
+
 namespace action {
 template<typename... Cs> struct TypeList {};
 
@@ -42,7 +84,14 @@ using UpdatableComponents = TypeList<
     PunctualLight, ImageLight, Perspective, Orthographic, MaterialVariants, PrimitiveShape,
     Animations,
     PhysicsSimulationSettings, PhysicsMaterial, PhysicsMotion, PhysicsVelocity, ColliderPolicy, CollisionFilter, PhysicsJoint, ColliderMaterial, TriggerNodes,
-    ModalGain, ModalTuning, ModalSoundControls, Striker, SurfaceSoundControls, AudioOutputMix, AudioOutputConfig>;
+    ModalGain, ModalTuning, ModalSoundControls, Striker, SurfaceSoundControls, AudioOutputMix, AudioOutputConfig,
+    // Geometry procedure node parameters.
+    mesh::Delete, mesh::Merge, mesh::Extrude, mesh::Duplicate, mesh::Split, mesh::Dissolve, mesh::Subdivide, mesh::Triangulate, mesh::TrisToQuads,
+    mesh::Poke, mesh::FlipNormals, mesh::EdgeSplit, mesh::Inset, mesh::Solidify, mesh::Wireframe, mesh::Bevel, mesh::SmoothVertices, mesh::ShrinkFatten,
+    mesh::Randomize, mesh::Spin, mesh::ExtrudeRepeat, mesh::Bisect, mesh::Symmetrize, mesh::FillHoles, mesh::ConvexHull, mesh::Decimate, mesh::RecalculateNormals,
+    procedure::Position, procedure::Normal, procedure::Index, procedure::NamedAttribute, procedure::VectorMath, procedure::FloatMath, procedure::Compare,
+    procedure::BooleanMath, procedure::StoreNamedAttribute, procedure::SetPosition,
+    primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
 
 template<typename C, typename List> inline constexpr bool InTypeList = false;
 template<typename C, typename... Cs> inline constexpr bool InTypeList<C, TypeList<Cs...>> = (std::same_as<C, Cs> || ...);

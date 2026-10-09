@@ -750,11 +750,13 @@ void Project::AfterRestore() {
     bool sources_changed = false, manifest_changed = false, names_changed = false;
     // The meshes whose handles or render records the restore changed rederive their dirty roots.
     std::vector<state::Entity> restored_meshes;
+    // A restored output record no longer matches its resync state, so the next cook copies the source anew.
+    R.clear<ResyncState>();
     for (const auto &[type, entity, event] : Entities.TakeChanges()) {
         // The name hooks track created and destroyed names, and an overwritten name escapes them.
         names_changed |= type == state::Type<Name>() && event == state::Event::Update;
         if (type == state::Type<Armature>()) R.remove<ArmaturePoseState>(entity);
-        if (type == state::Type<MeshHandle>() && R.all_of<MeshHandle>(entity)) restored_meshes.push_back(entity);
+        if ((type == state::Type<MeshHandle>() || type == state::Type<EvaluatedMesh>()) && R.all_of<MeshHandle>(entity)) restored_meshes.push_back(entity);
         sources_changed |= type == state::Type<gltf::SourceAssets>();
         manifest_changed |= type == state::Type<MaterializedTextures>();
     }
@@ -791,7 +793,7 @@ void Project::AfterRestore() {
     for (const auto entity : restored_meshes) {
         scene.PositionDirty.erase(entity);
         scene.LodDirty.erase(entity);
-        const auto id = R.get<const MeshHandle>(entity).StoreId;
+        const auto id = *DrawnStoreId(R, entity);
         const auto *owner = meshes.TryGet(id);
         if (!owner || owner->RenderTopologies == 0u) continue;
         repointed.push_back(entity);
@@ -807,7 +809,8 @@ void Project::AfterRestore() {
         if (entity == state::Null) continue;
         if (change.Bits & ~MeshStore::SelectionChanged) {
             ReleaseMeshEditWork(R, entity);
-            if ((change.Bits & ~MeshStore::SelectionChanged) == MeshStore::GeometryChanged && !change.VertexRanges.empty()) {
+            // Edited positions refresh through the source record, and an evaluated record restores whole.
+            if ((change.Bits & ~MeshStore::SelectionChanged) == MeshStore::GeometryChanged && !change.VertexRanges.empty() && change.StoreId == R.get<const MeshHandle>(entity).StoreId) {
                 positions.push_back({entity, change.VertexRanges});
             }
             RefreshMeshBinding(R, change.StoreId);

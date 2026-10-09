@@ -90,13 +90,13 @@ std::vector<FaceAttributeOperationChange> EncodeFaceAttributeOperation(MeshStore
 
 // Position operators share sparse capture and iterative canonical GPU writes.
 std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes, MeshPipelines &pipelines, mtl::ComputeChain &chain, std::span<const PositionOperationTarget> targets, PositionEditOp operation, float factor, uint32_t repeat, const PositionOperationOptions &options) {
-    const auto &[axes, requested_flags, direction, gradient, center, warp, bend, randomize, slide, edge_slide, symmetry, curve, circle, transform] = options;
+    const auto &[axes, requested_flags, direction, gradient, center, warp, bend, randomize, slide, edge_slide, symmetry, curve, circle, transform, attribute] = options;
     uint32_t flags = requested_flags;
-    if (!repeat || axes > 7u || uint32_t(operation) > uint32_t(PositionEditOp::Transform)) return {};
+    if (!repeat || axes > 7u || uint32_t(operation) > uint32_t(PositionEditOp::Attribute)) return {};
     if (bool(warp) != (operation == PositionEditOp::Warp) || bool(bend) != (operation == PositionEditOp::Bend) ||
         bool(randomize) != (operation == PositionEditOp::Randomize) || bool(slide) != (operation == PositionEditOp::VertexSlide) ||
         bool(edge_slide) != (operation == PositionEditOp::EdgeSlide) || bool(symmetry) != (operation == PositionEditOp::SnapSymmetry) ||
-        bool(transform) != (operation == PositionEditOp::Transform) || ((curve || circle) && operation != PositionEditOp::Copy) || (curve && circle)) return {};
+        bool(transform) != (operation == PositionEditOp::Transform) || bool(attribute) != (operation == PositionEditOp::Attribute) || ((curve || circle) && operation != PositionEditOp::Copy) || (curve && circle)) return {};
     if (!Finite(center) || !Finite(direction) || !Finite(gradient)) return {};
     if (warp && (!ValidPlane(warp->Orientation, warp->Center, warp->OffsetAngle) || (!warp->AutoRange && (!std::isfinite(warp->Min) || !std::isfinite(warp->Max) || warp->Min == warp->Max)))) return {};
     if (bend && (!ValidPlane(bend->Orientation, bend->Center, bend->OffsetAngle) || !std::isfinite(bend->Radius) || bend->Radius == 0.f)) return {};
@@ -127,7 +127,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
     const bool transformed = centered || warp || bend || slide || edge_slide || flatten_direction || transform;
     if (slide && !(flags & PositionEditSlideUnclamped)) factor = std::clamp(factor, 0.f, 1.f);
     else if (edge_slide && !(flags & PositionEditSlideUnclamped)) factor = std::clamp(factor, -1.f, 1.f);
-    else if (transform || sphere || symmetry || flatten || ordered_chains || operation == PositionEditOp::SpaceEvenly) factor = std::clamp(factor, 0.f, 1.f);
+    else if (transform || attribute || sphere || symmetry || flatten || ordered_chains || operation == PositionEditOp::SpaceEvenly) factor = std::clamp(factor, 0.f, 1.f);
     else if (planar || operation == PositionEditOp::Smooth) factor = std::clamp(factor, -10.f, 10.f);
     if (!zero_moves && factor == 0.f) return {};
     vec3 plane_x{}, plane_y{}, plane_center{};
@@ -165,11 +165,12 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
         }
         // Symmetry can also move an unselected partner for each selected vertex.
         const uint32_t vertex_words = edge_slide || symmetry ? 10u : 4u;
-        const uint32_t parameter_words = transform ? sizeof(TransformPositionParameters) / sizeof(uint32_t) : warp || bend ? 18u :
-            randomize                                                                                                      ? 3u :
-            slide                                                                                                          ? 8u :
-            edge_slide                                                                                                     ? 1u :
-                                                                                                                             0u;
+        const uint32_t parameter_words = transform ? sizeof(TransformPositionParameters) / sizeof(uint32_t) : attribute ? sizeof(NamedAttributeRef) / sizeof(uint32_t) :
+            warp || bend                                                                                                ? 18u :
+            randomize                                                                                                   ? 3u :
+            slide                                                                                                       ? 8u :
+            edge_slide                                                                                                  ? 1u :
+                                                                                                                          0u;
         chain.Scratch.ReserveAdditional(vertex_words * selected_count + 4ull * reduction_blocks + 1u + uint64_t(parameter_words) * targets.size());
     }
     const bool statistics = sphere || (warp && warp->AutoRange);
@@ -233,6 +234,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             delta.R = Normalize(delta.R);
             pc.Parameters = chain.Upload(as_bytes(TransformPositionParameters{frame, delta, transform->Pivot}));
         }
+        if (attribute) pc.Parameters = chain.Upload(as_bytes(*attribute));
         if (randomize) pc.Parameters = chain.Upload(as_bytes(RandomizeParameters{std::clamp(randomize->Uniform, 0.f, 1.f), std::clamp(randomize->Normal, 0.f, 1.f), randomize->Seed}));
         if (slide || edge_slide) {
             const auto &selected = selection.Vertices;
