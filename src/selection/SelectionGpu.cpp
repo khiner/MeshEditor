@@ -595,9 +595,9 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
             }
         }
         if (operation == EditSelectionOperation::CaptureBaseline) {
-            std::vector<std::pair<uint32_t, MeshArenas::SelectionBlock>> baseline;
+            std::vector<std::pair<uint32_t, SelectionBlock>> baseline;
             for (const auto block : selected[source]) {
-                auto &entry = baseline.emplace_back(block, MeshArenas::SelectionBlock{});
+                auto &entry = baseline.emplace_back(block, SelectionBlock{});
                 std::ranges::copy(bits.subspan(block * MeshElementBlockWords, MeshElementBlockWords), entry.second.begin());
             }
             meshes.SetSelectionBaseline(id, element, std::move(baseline), summary.ActiveHandle);

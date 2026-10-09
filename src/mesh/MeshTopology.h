@@ -4,6 +4,7 @@
 #include "gpu/MeshTopologyOp.h"
 #include "gpu/Types.h"
 #include "mesh/GeometrySelection.h"
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -38,11 +39,15 @@ struct MeshTopologyTask {
     // each record is (source face, polygon count, then corner count and corner/edge pairs per polygon).
     // Decimate: count then (vertex, surviving vertex, replacement x/y/z float bits).
     std::vector<uint32_t> List{};
-    // Explicit canonical masks. None reads all three masks directly; Vertex derives
-    // selected edges/faces from selected vertices. Edge/Face preserve those domains.
-    // Empty masks select nothing; SelectAll deliberately selects all canonical elements.
+    // Explicit canonical selection. None reads all three domains directly.
+    // Vertex derives selected edges/faces from selected vertices. Edge/Face preserve those domains.
+    // An empty selection selects nothing, and TopologyFlagSelectAll selects every live element in its place.
     Element SelectionElement{Element::None};
-    GeometrySelection Selection{};
+    SelectionSource Selection{};
+    // Masks that receive each emitted element's selection, or none.
+    std::optional<GeometryMasks> SelectionOutput{};
+    // A domain whose store selection masks rewrite the other two domains' store masks across the edited blocks, or None.
+    Element StoreSelectionSource{Element::None};
 };
 
 struct MeshStore;

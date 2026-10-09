@@ -207,30 +207,18 @@ ClosureSeed EncodeEdgeVertices(state::Scene &r, mtl::ComputeChain &chain, uint32
     return {.Work = pc.Work[0], .Count = count, .Incidence = edges.Incidence, .Vertices = edges.Vertices, .All = edges.All};
 }
 
-ClosureSeed EncodeSelectionSeed(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, Element element, bool select_all) {
+ClosureSeed EncodeAllSeed(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, Element element) {
     if (element != Element::Vertex && element != Element::Edge && element != Element::Face) {
         throw std::invalid_argument("A closure seed requires vertices, edges or faces.");
     }
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
-    const HostIncidence incidence{meshes, a, a.FaceCorners.Count(record.FaceCorners)};
-    ClosureSeed result;
+    const auto corners = a.FaceCorners.Count(record.FaceCorners);
+    ClosureSeed result{.Incidence = corners, .LoopFans = corners, .All = true};
     const auto gather = [&](const auto &arena, ElementSetRef set) {
-        if (select_all) {
-            result.Count = arena.Count(set);
-            result.Incidence = result.LoopFans = incidence.Corners;
-            result.All = true;
-            return PrepareElementMembershipWork(chain.Scratch, arena, set);
-        }
-        const auto selection = meshes.GetSelectedElements(id, element);
-        uint64_t sum = 0u;
-        selection.ForEach([&](uint32_t handle) { sum += incidence.Add(element, handle, result.Vertices); });
-        result.Count = selection.Count();
-        result.Incidence = uint32_t(std::min<uint64_t>(sum, incidence.Corners));
-        const auto fans = incidence.Fans(result.Vertices);
-        if (element == Element::Face) result.LoopFans = fans;
-        return PrepareSelectedMembershipWork(chain.Scratch, arena, set, selection, meshes.GetSelectionSlot(element));
+        result.Count = arena.Count(set);
+        return PrepareElementMembershipWork(chain.Scratch, arena, set);
     };
     const auto job = element == Element::Vertex ? gather(a.Vertices, record.Vertices) :
         element == Element::Face                ? gather(a.FaceTriangles, record.FaceData) :

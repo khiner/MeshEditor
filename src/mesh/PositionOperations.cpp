@@ -26,20 +26,25 @@ bool ValidPlane(quat orientation, vec3 center, float roll) {
     const float norm = orientation.x * orientation.x + orientation.y * orientation.y + orientation.z * orientation.z + orientation.w * orientation.w;
     return norm > 0.f && std::isfinite(norm) && Finite(center) && std::isfinite(roll);
 }
-void ValidateTargets(const MeshStore &meshes, std::span<const PositionOperationTarget> targets) {
-    std::unordered_set<uint32_t> ids;
-    for (const auto &target : targets) {
-        if (!ids.insert(target.StoreId).second) throw std::invalid_argument("Position operations require distinct meshes.");
-        ValidateGeometrySelection(meshes, target.StoreId, target.Selection);
-        ValidateGeometrySelection(meshes, target.StoreId, target.Excluded);
+// Each target's validated selection and exclusions as handles.
+struct TargetHandles {
+    TargetHandles(const MeshStore &meshes, std::span<const PositionOperationTarget> targets) {
+        std::unordered_set<uint32_t> ids;
+        for (const auto &target : targets) {
+            if (!ids.insert(target.StoreId).second) throw std::invalid_argument("Position operations require distinct meshes.");
+            ValidateGeometrySelection(meshes, target.StoreId, *Selected.emplace_back(meshes, target.StoreId, target.Selection));
+            ValidateGeometrySelection(meshes, target.StoreId, *Excluded.emplace_back(meshes, target.StoreId, target.Excluded));
+        }
     }
-}
+
+    std::vector<SelectedHandles> Selected, Excluded;
+};
 } // namespace
 
 // Only selected face ranges and attribute pages participate; vertex fans are irrelevant.
 std::vector<FaceAttributeOperationChange> EncodeFaceAttributeOperation(MeshStore &meshes, MeshPipelines &pipelines, mtl::ComputeChain &chain, std::span<const PositionOperationTarget> targets, bool colors, uint32_t uv_set, uint32_t operation) {
     if (uv_set >= MeshStore::MaxUvSets || operation > 2u) return {};
-    ValidateTargets(meshes, targets);
+    const TargetHandles handles{meshes, targets};
     auto &a = meshes.Arenas();
     std::vector<FaceAttributeEditPushConstants> jobs;
     std::vector<FaceAttributeOperationChange> changes;
@@ -51,7 +56,7 @@ std::vector<FaceAttributeOperationChange> EncodeFaceAttributeOperation(MeshStore
         const auto &record = meshes.Get(id);
         if (!(record.CornerAttributes & (colors ? MeshAttributeBit_Color0 : MeshAttributeBit_TexCoord0 << uv_set))) continue;
         const bool clear_tangents = !colors && (record.CornerAttributes & MeshAttributeBit_Tangent);
-        const auto &faces = target.Selection.Faces;
+        const auto &faces = handles.Selected[target_index]->Faces;
         uint32_t incidence = 0u;
         for (const auto f : faces) {
             const auto range = a.FaceRanges.Get({f, 1u})[0];
@@ -101,7 +106,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
     if (circle && (!std::isfinite(circle->Radius) || !std::isfinite(circle->Angle))) return {};
     if (symmetry && (!std::has_single_bit(axes) || !std::isfinite(symmetry->Threshold) || symmetry->Threshold <= 0.f)) return {};
     if (transform && (!Finite(transform->Delta.P) || !Finite(transform->Delta.S) || !Finite(transform->Pivot) || !ValidPlane(transform->Delta.R, {}, 0.f))) return {};
-    ValidateTargets(meshes, targets);
+    const TargetHandles handles{meshes, targets};
     if (warp) flags = (flags & ~PositionEditWarpAutoRange) | (warp->AutoRange ? PositionEditWarpAutoRange : 0u);
     for (const auto &parameters : {slide, edge_slide})
         if (parameters) {
@@ -113,13 +118,13 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
     const bool planar = operation == PositionEditOp::Planar;
     const bool ordered_chains = curve || circle;
     const bool flatten = operation == PositionEditOp::Copy && !ordered_chains;
-    const bool flatten_view = flatten && (flags & PositionEditFlattenView);
+    const bool flatten_direction = flatten && (flags & PositionEditFlattenDirection);
     const bool relax = operation == PositionEditOp::RelaxEdgeLoops;
     const bool edge_chains = relax || operation == PositionEditOp::SpaceEvenly;
     const bool sphere = operation == PositionEditOp::ToSphere;
     const auto gather = edge_chains ? (relax ? MeshPass::RelaxEdgeLoopsGather : MeshPass::SpaceEvenlyGather) : MeshPass::PositionVerticesGather;
     const bool centered = sphere || operation == PositionEditOp::PushPull || operation == PositionEditOp::Shear;
-    const bool transformed = centered || warp || bend || slide || edge_slide || flatten_view || transform;
+    const bool transformed = centered || warp || bend || slide || edge_slide || flatten_direction || transform;
     if (slide && !(flags & PositionEditSlideUnclamped)) factor = std::clamp(factor, 0.f, 1.f);
     else if (edge_slide && !(flags & PositionEditSlideUnclamped)) factor = std::clamp(factor, -1.f, 1.f);
     else if (transform || sphere || symmetry || flatten || ordered_chains || operation == PositionEditOp::SpaceEvenly) factor = std::clamp(factor, 0.f, 1.f);
@@ -153,8 +158,8 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
     uint64_t selected_count = 0u;
     uint32_t reduction_blocks = 0u;
     if (!planar) {
-        for (const auto &target : targets) {
-            const auto count = target.Selection.Vertices.size();
+        for (const auto &selection : handles.Selected) {
+            const auto count = selection->Vertices.size();
             selected_count += count;
             if (sphere || (warp && warp->AutoRange)) reduction_blocks += (count + 255u) / 256u;
         }
@@ -179,6 +184,8 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
     std::vector<PositionOperationChange> changes;
     for (uint32_t target_index = 0u; target_index < targets.size(); ++target_index) {
         const auto &target = targets[target_index];
+        const auto &selection = *handles.Selected[target_index];
+        const auto &excluded = *handles.Excluded[target_index];
         const auto id = target.StoreId;
         const Mesh mesh{meshes, id};
         VertexPositionEditPushConstants pc{
@@ -194,7 +201,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             .Operation = operation,
         };
         if (!planar && operation == PositionEditOp::ShrinkFatten)
-            pc.Faces = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().FaceTriangles.Capacity(), target.Selection.Faces);
+            pc.Faces = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().FaceTriangles.Capacity(), selection.Faces);
         PositionBatch batch{.Index = uint32_t(jobs.size())};
         const auto world = transformed ? target.World : Transform{};
         const auto inverse = Conjugate(world.R);
@@ -203,7 +210,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             for (uint32_t axis = 0u; axis < 3u; ++axis) local[axis] = world.S[axis] != 0.f ? local[axis] / world.S[axis] : 0.f;
             return local;
         };
-        if (flatten_view) {
+        if (flatten_direction) {
             pc.Direction = local_direction(direction);
             const float length = Length(pc.Direction);
             if (!(length > 0.f) || !std::isfinite(length)) continue;
@@ -228,11 +235,11 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
         }
         if (randomize) pc.Parameters = chain.Upload(as_bytes(RandomizeParameters{std::clamp(randomize->Uniform, 0.f, 1.f), std::clamp(randomize->Normal, 0.f, 1.f), randomize->Seed}));
         if (slide || edge_slide) {
-            const auto &selected = target.Selection.Vertices;
+            const auto &selected = selection.Vertices;
             uint32_t reference = selected.empty() ? InvalidOffset : selected.front();
             if (std::ranges::binary_search(selected, target.Reference)) reference = target.Reference;
             if (edge_slide) {
-                const auto directions = PlanEdgeSlide(mesh, target.Selection, inverse * Normalize(edge_slide->Direction), world.S, reference);
+                const auto directions = PlanEdgeSlide(mesh, selection, inverse * Normalize(edge_slide->Direction), world.S, reference);
                 if (directions.empty()) continue;
                 pc.Parameters = chain.Upload(as_bytes(directions));
                 if (edge_slide->Even) {
@@ -252,7 +259,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
         }
         std::vector<uint32_t> vertices;
         if (flatten) {
-            auto plan = PlanFlatten(mesh, target.Selection);
+            auto plan = PlanFlatten(mesh, selection);
             if (plan.Vertices.empty()) continue;
             chain.Scratch.ReserveAdditional(plan.Words.size() + plan.Groups.size() + 4ull * plan.Vertices.size());
             // Flatten's parameters hold packed groups; Planes indexes their offsets.
@@ -263,7 +270,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             vertices = std::move(plan.Vertices);
         } else if (planar) {
             std::vector<uint32_t> faces;
-            for (const auto f : target.Selection.Faces)
+            for (const auto f : selection.Faces)
                 if (mesh.GetValence(he::FH{f}) > 3u) faces.push_back(f);
             if (faces.empty()) continue;
             // The existing face seed gathers only connectivity handles on the host.
@@ -277,8 +284,8 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             pc.Planes = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(4u * seed.Count).Offset};
             vertices = std::move(seed.Vertices);
         } else if (edge_chains || ordered_chains) {
-            auto plan = circle ? PlanCircularize(mesh, target.Selection, target.Excluded) : curve ? PlanCurveBetweenSelected(mesh, target.Selection, target.Excluded, curve->Extend) :
-                                                                                                    PlanSelectedEdgeChains(mesh, target.Selection, relax);
+            auto plan = circle ? PlanCircularize(mesh, selection, excluded) : curve ? PlanCurveBetweenSelected(mesh, selection, excluded, curve->Extend) :
+                                                                                      PlanSelectedEdgeChains(mesh, selection, relax);
             if (plan.Outputs.empty()) continue;
             const uint32_t stride = circle ? 0u : curve ? 7u :
                 relax                                   ? 10u :
@@ -303,7 +310,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             if (circle) pc.Direction = {circle->Radius, circle->Angle, 0.f};
             vertices = std::move(plan.Outputs);
         } else if (symmetry) {
-            const auto plan = PlanSymmetrySnap(meshes, mesh, target.Selection, std::countr_zero(axes), symmetry->Threshold, symmetry->Center);
+            const auto plan = PlanSymmetrySnap(meshes, mesh, selection, std::countr_zero(axes), symmetry->Threshold, symmetry->Center);
             if (plan.empty()) continue;
             std::vector<uint32_t> partners;
             for (const auto [v, partner] : plan) {
@@ -312,7 +319,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             }
             pc.Parameters = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(std::span<const uint32_t>{partners}).Offset};
         } else {
-            vertices = target.Selection.Vertices;
+            vertices = selection.Vertices;
         }
         if (vertices.empty()) continue;
         pc.Handles = chain.Upload(as_bytes(vertices));

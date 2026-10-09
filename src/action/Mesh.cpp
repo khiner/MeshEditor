@@ -215,7 +215,7 @@ std::vector<std::optional<uint32_t>> EditTopology(state::Scene &r, std::span<con
                         });
     if (insets && !session.InsetPreview) session.InsetPreview = std::make_unique<action::mesh::InsetPreviewCache>(meshes.BufferContext());
     mtl::ComputeChain chain{meshes.BufferContext(), TopologyScratchWords};
-    auto edits = MeshTopologyEdit::Construct(r, chain, tasks, insets ? &session.InsetPreview->Basis : nullptr, TopologyPublication::Editor);
+    auto edits = MeshTopologyEdit::Construct(r, chain, tasks, insets ? &session.InsetPreview->Basis : nullptr);
     MeshTopologyEdit::PublishAll(r, edits);
     std::vector<std::optional<uint32_t>> outputs(edits.size());
     std::vector<MeshletBuildSource> copies;
@@ -270,6 +270,14 @@ void RunTasks(state::Scene &r, std::span<const state::Entity> mesh_entities, std
     });
 }
 
+// Emitted elements publish their selection into the store's masks.
+// The vertex-only rule leaves incident primitives in place, so their masks follow the new vertex selection.
+void PublishEditSelection(const MeshStore &meshes, MeshTopologyTask &task) {
+    const auto &a = meshes.Arenas();
+    task.SelectionOutput = GeometryMasks{{&a.VertexSelection}, {&a.EdgeSelection}, {&a.FaceSelection}};
+    if (task.Op == MeshTopologyOp::ExtrudeVertices) task.StoreSelectionSource = Element::Vertex;
+}
+
 // Runs the task `make` builds for each mesh, skipping the meshes it returns nothing for.
 void RunPerMesh(state::Scene &r, std::span<const state::Entity> mesh_entities, auto &&make) {
     const auto &meshes = r.Context.get<const MeshStore>();
@@ -278,6 +286,7 @@ void RunPerMesh(state::Scene &r, std::span<const state::Entity> mesh_entities, a
     for (const auto e : mesh_entities) {
         if (std::optional<MeshTopologyTask> task = make(e, Mesh{meshes, r.get<const MeshHandle>(e).StoreId})) {
             if (task->Op == MeshTopologyOp::AddPrimitives) task->Selection = EditorGeometrySelection(meshes, task->SourceId);
+            PublishEditSelection(meshes, *task);
             tasks.push_back(std::move(*task));
             entities.push_back(e);
         }
@@ -298,6 +307,7 @@ void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entit
         const Mesh mesh{meshes, id};
         auto planned = SeparateGeometryTasks(meshes, mesh, EditorGeometrySelection(meshes, id), mode);
         for (auto &task : planned) {
+            PublishEditSelection(meshes, task);
             tasks.push_back(std::move(task));
             entities.push_back(e);
         }
@@ -406,7 +416,7 @@ void EditSelectedFaceAttributes(state::Scene &r, std::span<const state::Entity> 
 void EditSelectedPositions(state::Scene &r, state::Entity viewport, std::span<const state::Entity> targets, PositionEditOp operation, float factor, uint32_t repeat, PositionOperationOptions options = {}) {
     const bool centered = operation == PositionEditOp::ToSphere || operation == PositionEditOp::PushPull || operation == PositionEditOp::Shear;
     const bool transformed = centered || options.Warp || options.Bend || options.Slide || options.EdgeSlide ||
-        (operation == PositionEditOp::Copy && (options.Flags & PositionEditFlattenView));
+        (operation == PositionEditOp::Copy && (options.Flags & PositionEditFlattenDirection));
     const auto &primaries = r.get<const EditPrimaries>(viewport).Transformable;
     if (centered) options.Center = EditSelectionCenter(r, viewport);
     auto &meshes = r.Context.get<MeshStore>();
@@ -419,8 +429,8 @@ void EditSelectedPositions(state::Scene &r, state::Entity viewport, std::span<co
         PositionOperationTarget input{id, EditorGeometrySelection(meshes, id)};
         if (transformed) input.World = *WorldTransformOf(r, primaries.at(entity));
         if (options.Curve || options.Circle) {
-            meshes.GetHiddenElements(id, Element::Edge).ForEach([&](uint32_t edge) { input.Excluded.Edges.push_back(edge); });
-            meshes.GetHiddenElements(id, Element::Face).ForEach([&](uint32_t face) { input.Excluded.Faces.push_back(face); });
+            const auto &a = meshes.Arenas();
+            input.Excluded = GeometryMasks{{&a.VertexHidden}, {&a.EdgeHidden}, {&a.FaceHidden}};
         }
         if (const auto *active = r.try_get<const MeshActiveElement>(entity);
             active && r.get<const EditMode>(viewport).Value == Element::Vertex) input.Reference = active->Handle;
@@ -632,8 +642,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const MakePlanarFaces &a) { EditSelectedPositions(r, viewport, targets, PositionEditOp::Planar, a.Factor, std::clamp(a.Repeat, 1u, 10000u)); },
             [&](const Flatten &a) {
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::Copy, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = a.Method == FlattenMethod::View ? PositionEditFlattenView : a.Method == FlattenMethod::FaceNormals ? PositionEditFlattenNormals :
-                                                                                                                                                                                                                                                                                                            0u,
+                EditSelectedPositions(r, viewport, targets, PositionEditOp::Copy, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = a.Method == FlattenMethod::View ? PositionEditFlattenDirection : a.Method == FlattenMethod::FaceNormals ? PositionEditFlattenNormals :
+                                                                                                                                                                                                                                                                                                                 0u,
                                                                                                                        .Direction = a.ViewNormal});
             },
             [&](const ShrinkFatten &a) {

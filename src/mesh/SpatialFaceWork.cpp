@@ -68,7 +68,7 @@ SpatialFaceWork::SpatialFaceWork(state::Scene &r, mtl::ComputeChain &chain, cons
     if (mode == 0u && !(task.Flags & TopologyFlagPlaneCuts)) throw std::invalid_argument("Spatial face query requires a plane or screen predicate.");
     ElementWork candidates;
     if (!(task.Flags & TopologyFlagSelectAll)) {
-        const auto selected = ListSeed(r, chain, task.SourceId, Element::Face, task.Selection.Faces);
+        const auto selected = ListSeed(r, chain, task.SourceId, Element::Face, SelectedHandles{meshes, task.SourceId, task.Selection}->Faces);
         candidates = selected.Work;
         CandidateCount = selected.Count;
         CandidateBlocks = WorkBlockCount(chain.Scratch, candidates);

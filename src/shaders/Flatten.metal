@@ -59,7 +59,7 @@ kernel void FlattenGroups(
     float3 sum=0.f;
     for (uint k=lane;k<count;k+=256u) sum+=float3(positions[vertices[k]])-origin;
     const float3 center=origin+FlattenSum(float4(sum,0.f),lane,work).xyz/float(count);
-    if (pc.Flags & PositionEditFlattenView) {
+    if (pc.Flags & PositionEditFlattenDirection) {
         if (!lane) normal=pc.Direction;
     } else if ((pc.Flags & PositionEditFlattenNormals) && faces) {
         const auto normals=BindlessBuffer(packed_float3,b.Buffer,pc.FaceNormalSlot);

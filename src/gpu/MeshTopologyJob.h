@@ -39,7 +39,6 @@ struct MeshTopologyJob {
     ElementWork SrcVertexWork DEFAULT(), SrcHalfedgeWork DEFAULT(), SrcFaceWork DEFAULT(), SrcEdgeWork DEFAULT();
     Element SelectionElement DEFAULT();
     ElementWork VertexSelection DEFAULT(), EdgeSelection DEFAULT(), FaceSelection DEFAULT();
-    uint32_t EditorState DEFAULT();
     uint32_t SelectionOffset DEFAULT(); // Explicit selection classified once over the compact source domains
     ElementWork PrimitiveWork DEFAULT(); // Fresh output remaps source primitive IDs to its compact palette.
     uint32_t HasSkin DEFAULT();
@@ -60,6 +59,7 @@ struct MeshTopologyJob {
     // Compact-index -> canonical-handle maps. Corners and triangles
     // are emitted into independently reserved contiguous runs.
     SlotOffset DstVertexHandles DEFAULT(), DstFaceHandles DEFAULT();
+    // Output selection mask words by canonical handle, or none.
     SlotOffset DstVertexBits DEFAULT();
     SlotOffset DstEdgeBits DEFAULT();
     SlotOffset DstFaceBits DEFAULT();
@@ -108,4 +108,4 @@ struct MeshTopologyJob {
     // Optional output-vertex basis for staged inset parameter updates.
     SlotOffset DstInsetBasis DEFAULT();
 };
-static_assert(sizeof(MeshTopologyJob) == 684, "MeshTopologyJob size");
+static_assert(sizeof(MeshTopologyJob) == 680, "MeshTopologyJob size");

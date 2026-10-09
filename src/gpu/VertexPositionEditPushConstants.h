@@ -16,7 +16,7 @@ enum VertexPositionEditFlags : uint32_t {
     PositionEditCurveCubic = 256u,
     PositionEditRelaxEven = 512u,
     PositionEditFlattenNormals = 1024u,
-    PositionEditFlattenView = 2048u,
+    PositionEditFlattenDirection = 2048u,
     PositionEditCurveRegular = 4096u,
     PositionEditCurveRaise = 8192u,
     PositionEditCurveLower = 16384u,

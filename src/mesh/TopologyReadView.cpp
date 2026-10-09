@@ -5,7 +5,7 @@
 #include "mesh/MeshStore.h"
 #include "state/Scene.h"
 
-void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neighborhood, const BufferArena<uint32_t> &storage, bool editor_state) {
+void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neighborhood, const BufferArena<uint32_t> &storage) {
     const profile::CpuScope scope{"TopologyReadView"};
     if (!neighborhood.Counts[0]) return;
     const auto &meshes = r.Context.get<const MeshStore>();
@@ -55,7 +55,7 @@ void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neig
     Pages.Add(a.OutgoingHalfedges.Buffer, vertices, BlockBytes<uint32_t>);
     Pages.Add(a.VertexCorners.Buffer, vertices, BlockBytes<uvec2>);
     Pages.Add(a.VertexFans.Items.Buffer, fans, BlockBytes<uvec2>);
-    if (editor_state) Pages.Add(a.VertexHidden.Buffer, vertices, sizeof(MeshArenas::SelectionBlock));
+    Pages.Add(a.VertexHidden.Buffer, vertices, sizeof(SelectionBlock));
     if (record.VertexAttributes & MeshAttributeBit_Color0) Pages.Attribute(a.VertexColors, vertices);
     if (record.SkinBlocksReady) Pages.Attribute(a.Skin, vertices);
     if (record.MorphBlocksReady) Pages.Attribute(a.Morph, vertices, record.MorphTargetCount);
@@ -73,12 +73,12 @@ void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neig
     Pages.Add(a.FaceRanges.Buffer, faces, BlockBytes<uvec2>);
     Pages.Add(a.FaceSharpness.Buffer, faces, BlockBytes<uint8_t>);
     Pages.Add(a.BaseFaceNormals.Buffer, faces, BlockBytes<vec3>);
-    if (editor_state) Pages.Add(a.FaceHidden.Buffer, faces, sizeof(MeshArenas::SelectionBlock));
+    Pages.Add(a.FaceHidden.Buffer, faces, sizeof(SelectionBlock));
     Pages.Attribute(a.FacePrimitives, faces);
     if (record.VertexPrimitivesReady) Pages.Attribute(a.VertexPrimitives, vertices);
     Pages.Add(a.EdgeHalfedges.Buffer, edges, BlockBytes<uint32_t>);
     Pages.Add(a.EdgeSharpness.Buffer, edges, BlockBytes<uint8_t>);
-    if (editor_state) Pages.Add(a.EdgeHidden.Buffer, edges, sizeof(MeshArenas::SelectionBlock));
+    Pages.Add(a.EdgeHidden.Buffer, edges, sizeof(SelectionBlock));
 }
 
 void TopologyReadView::Clone(state::Scene &r) {

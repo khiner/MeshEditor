@@ -1617,10 +1617,10 @@ kernel void TopologyGatherVertices(
     const uint4 v = uint4(map[0], map[1], map[2], map[3]);
     const float s = as_type<float>(map[4]), t = as_type<float>(map[5]);
     const float4 weights=float4((1.f-s)*(1.f-t),s*(1.f-t),s*t,(1.f-s)*t);
-    bool hidden=job.EditorState;
-    for (uint k=0u;job.EditorState && k<4u;++k) if (weights[k]!=0.f)
+    bool hidden=true;
+    for (uint k=0u;k<4u;++k) if (weights[k]!=0.f)
         hidden=hidden && v[k]<job.SrcVertexCount && ctx.Selected({pc.Source.VertexHiddenSlot,0u},ctx.SrcVertexDomain(job).Handle(v[k]));
-    if (job.EditorState) ctx.Select({pc.Destination.VertexHiddenSlot,0u},ctx.DstVertexDomain(job).Handle(d),hidden);
+    ctx.Select({pc.Destination.VertexHiddenSlot,0u},ctx.DstVertexDomain(job).Handle(d),hidden);
     if (hidden) ctx.SelectDstVertex(job,d,false);
     if (job.Op != MeshTopologyOp::MergeCollapse || !ctx.SrcSelectedVertex(job, v.x)) {
         const auto src = ctx.SrcVertices(job);
@@ -1844,8 +1844,8 @@ kernel void TopologyEdgeAttributes(
     const uint e = dst.Edge(job.DstCornerOffset + hd);
     const uint source = ctx.CornerEdgeSource(job, hd);
     ctx.DstEdgeSharpness(job)[e] = source != InvalidOffset ? ctx.SrcEdgeSharpness(job)[ctx.SrcEdge(job, source)] : uchar(0);
-    const bool hidden=job.EditorState && source!=InvalidOffset && ctx.Selected({pc.Source.EdgeHiddenSlot,0u},ctx.SrcEdgeDomain(job).Handle(ctx.SrcEdge(job,source)));
-    if (job.EditorState) ctx.Select({pc.Destination.EdgeHiddenSlot,0u},e,hidden);
+    const bool hidden=source!=InvalidOffset && ctx.Selected({pc.Source.EdgeHiddenSlot,0u},ctx.SrcEdgeDomain(job).Handle(ctx.SrcEdge(job,source)));
+    ctx.Select({pc.Destination.EdgeHiddenSlot,0u},e,hidden);
     ctx.SelectDstEdge(job, e, !hidden && ctx.CornerSelected(job, hd));
 }
 

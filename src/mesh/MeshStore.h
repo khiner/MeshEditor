@@ -132,7 +132,6 @@ struct MeshArenas {
     BufferArena<uint32_t> OppositeHalfedges, HalfedgeEdges, HalfedgeFaces; // Mirror FaceCorners
     BufferArena<uvec2> FaceRanges; // Mirrors FaceTriangles
     ElementArena<uint32_t> EdgeHalfedges; // Owns the edge domain, and EdgeSharpness mirrors it
-    using SelectionBlock = std::array<uint32_t, MeshElementBlockWords>;
     BufferArena<SelectionBlock> VertexSelection, EdgeSelection, FaceSelection; // Canonical domain block masks
     BufferArena<SelectionBlock> VertexHidden, EdgeHidden, FaceHidden; // Persistent edit-mode visibility masks
     // Derived aggregates mirroring each selectable domain's blocks, rebuilt from masks, positions, sharpness and connectivity.
@@ -258,7 +257,7 @@ struct MeshStore {
     // and their sparse ownership restore with the canonical mesh.
     struct DerivedRecord {
         // The source-domain mask blocks and active element saved when an additive gesture began.
-        std::vector<std::pair<uint32_t, MeshArenas::SelectionBlock>> SelectionBaseline{};
+        std::vector<std::pair<uint32_t, SelectionBlock>> SelectionBaseline{};
         uint32_t SelectionBaselineActive{InvalidOffset};
         Element SelectionBaselineElement{Element::None};
         // One canonical corner per connected smooth normal sector.
@@ -421,7 +420,7 @@ struct MeshStore {
     void EditHiddenBlocks(Element element, std::span<const uint32_t> blocks, auto &&write) {
         auto &bits = element == Element::Vertex ? Buffers.VertexHidden : element == Element::Edge ? Buffers.EdgeHidden :
                                                                                                     Buffers.FaceHidden;
-        bits.Buffer.CaptureWriteElements(blocks, sizeof(MeshArenas::SelectionBlock));
+        bits.Buffer.CaptureWriteElements(blocks, sizeof(SelectionBlock));
         ForEachIndexRun(blocks, [&](size_t first, size_t count) {
             auto words = bits.GetMutable({blocks[first], uint32_t(count)});
             for (size_t j = 0u; j < count; ++j) write(blocks[first + j], words[j]);
@@ -436,7 +435,7 @@ struct MeshStore {
     void EditSelectionBlocks(Element element, std::span<const uint32_t> blocks, auto &&write) {
         auto &bits = element == Element::Vertex ? Buffers.VertexSelection : element == Element::Edge ? Buffers.EdgeSelection :
                                                                                                        Buffers.FaceSelection;
-        bits.Buffer.CaptureWriteElements(blocks, sizeof(MeshArenas::SelectionBlock));
+        bits.Buffer.CaptureWriteElements(blocks, sizeof(SelectionBlock));
         ForEachIndexRun(blocks, [&](size_t first, size_t count) {
             auto words = bits.GetMutable({blocks[first], uint32_t(count)});
             for (size_t j = 0u; j < count; ++j) write(blocks[first + j], words[j]);
@@ -455,7 +454,7 @@ struct MeshStore {
     // Copies the root counts, sums and sharpness of the summary's mode into the summary.
     void PublishSelectionSummary(uint32_t id);
     EditSelectionSummary &WriteSelectionSummary(uint32_t id);
-    void SetSelectionBaseline(uint32_t id, Element, std::vector<std::pair<uint32_t, MeshArenas::SelectionBlock>>, uint32_t active);
+    void SetSelectionBaseline(uint32_t id, Element, std::vector<std::pair<uint32_t, SelectionBlock>>, uint32_t active);
     // Builds a new clone's index after its GPU block copies have completed.
     void RebuildSelectionIndex(std::span<const uint32_t> ids);
     // Records the gather of the selected handles in ascending order into a range it allocates in `output`, and returns that range.

@@ -208,3 +208,28 @@ void ValidateGeometrySelection(const MeshStore &meshes, uint32_t id, const Geome
                 throw std::invalid_argument("Geometry selection handle is not owned by its mesh.");
     }
 }
+
+SlotOffset MaskBinding(SelectionMasks masks) { return {masks.Arena->Buffer.Slot, masks.First * MeshElementBlockWords}; }
+
+std::vector<uint32_t> ReadMasks(const MeshStore &meshes, uint32_t id, Element element, SelectionMasks masks) {
+    const auto &a = meshes.Arenas();
+    const auto &record = meshes.Get(id);
+    const auto words = masks.Arena->Buffer.GetSpan<uint32_t>();
+    std::vector<uint32_t> handles;
+    const auto read = [&](const auto &arena, ElementSetRef set) {
+        arena.ForEachBlock(set, [&](uint32_t b, const auto &block) {
+            const auto mask = words.subspan(uint64_t(masks.First + b) * MeshElementBlockWords, MeshElementBlockWords);
+            for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
+                for (auto bits = block.Live[w] & mask[w]; bits; bits &= bits - 1u) handles.push_back(b * MeshElementBlockSize + w * 32u + uint32_t(std::countr_zero(bits)));
+        });
+    };
+    if (element == Element::Vertex) read(a.Vertices, record.Vertices);
+    else if (element == Element::Edge) read(a.EdgeHalfedges, record.EdgeData);
+    else read(a.FaceTriangles, record.FaceData);
+    if (!std::ranges::is_sorted(handles)) std::ranges::sort(handles);
+    return handles;
+}
+
+SelectedHandles::SelectedHandles(const MeshStore &meshes, uint32_t id, const SelectionSource &source) : Lists{std::get_if<GeometrySelection>(&source)} {
+    if (const auto *masks = std::get_if<GeometryMasks>(&source)) Read = {ReadMasks(meshes, id, Element::Vertex, masks->Vertices), ReadMasks(meshes, id, Element::Edge, masks->Edges), ReadMasks(meshes, id, Element::Face, masks->Faces)};
+}

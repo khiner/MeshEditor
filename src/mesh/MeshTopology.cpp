@@ -445,6 +445,7 @@ struct MeshTopologyEdit::Prepared {
 
 // The closures an edit records before construction's first submit.
 // Listed marks a task naming seeds that must be live.
+// Selection holds the task's selected vertices, edges and faces, which the job classifies over its source domains.
 struct MeshTopologyEdit::Closures {
     std::optional<PrimitiveListReferences> FaceList;
     std::optional<MeshClosure> Around;
@@ -452,10 +453,11 @@ struct MeshTopologyEdit::Closures {
     bool Listed;
     uint32_t CollapseCount{};
     SlotOffset CollapseVertices{};
+    std::array<ElementWork, 3> Selection{};
 };
 
-MeshTopologyEdit::MeshTopologyEdit(mtl::ComputeChain &chain, const MeshTopologyTask &task, TopologyPublication publication)
-    : Chain{chain}, SourceId{task.SourceId}, StoreId{task.SourceId}, Op{task.Op}, Publication{publication} {}
+MeshTopologyEdit::MeshTopologyEdit(mtl::ComputeChain &chain, const MeshTopologyTask &task)
+    : Chain{chain}, SourceId{task.SourceId}, StoreId{task.SourceId}, Op{task.Op}, SelectionOutput{task.SelectionOutput}, StoreSelectionSource{task.StoreSelectionSource} {}
 MeshTopologyEdit::MeshTopologyEdit(MeshTopologyEdit &&) noexcept = default;
 MeshTopologyEdit::~MeshTopologyEdit() = default;
 
@@ -490,8 +492,9 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
     const bool fresh = task.Op == MeshTopologyOp::KeepSelectedFaces;
     auto &meshes = r.Context.get<MeshStore>();
     if (!HasTopologySource(meshes, task)) return std::nullopt;
+    const SelectedHandles handles{meshes, StoreId, task.Selection};
     if (!(task.Flags & TopologyFlagSelectAll) && task.Op != MeshTopologyOp::AddPrimitives &&
-        task.Selection.Vertices.empty() && task.Selection.Edges.empty() && task.Selection.Faces.empty()) return std::nullopt;
+        handles->Vertices.empty() && handles->Edges.empty() && handles->Faces.empty()) return std::nullopt;
     const auto policy = TopologyPolicy(task.Op);
     const auto original = meshes.Get(StoreId);
     const bool lines = !Mesh{meshes, StoreId}.FaceCount();
@@ -508,8 +511,8 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
     }
     const bool select_all = (task.Flags & TopologyFlagSelectAll) != 0u;
     const auto selected = [&](Element element) {
-        return select_all ? EncodeSelectionSeed(r, chain, StoreId, element, true) :
-                            ListSeed(r, chain, StoreId, element, task.Selection.Get(element));
+        return select_all ? EncodeAllSeed(r, chain, StoreId, element) :
+                            ListSeed(r, chain, StoreId, element, handles->Get(element));
     };
     // Every level is bounded on the host, so the closure records in one submit.
     // A vertex or edge seed's vertex level decides after it whether the edit has any source.
@@ -660,11 +663,13 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
         neighborhood = EncodeVertexClosure(r, chain, StoreId, core.Seed(Element::Vertex));
         neighborhood.EncodeIncidence(r, chain, StoreId, Element::Face);
     }
-    return Closures{.FaceList = std::move(face_list), .Around = std::move(around), .Core = core, .Neighborhood = neighborhood, .Listed = listed, .CollapseCount = collapse_count, .CollapseVertices = collapse_vertices};
+    const auto &a = meshes.Arenas();
+    const std::array selection{SeedElementWorkHandles(chain.Scratch, a.Vertices.Capacity(), handles->Vertices), SeedElementWorkHandles(chain.Scratch, a.EdgeHalfedges.Capacity(), handles->Edges), SeedElementWorkHandles(chain.Scratch, a.FaceTriangles.Capacity(), handles->Faces)};
+    return Closures{.FaceList = std::move(face_list), .Around = std::move(around), .Core = core, .Neighborhood = neighborhood, .Listed = listed, .CollapseCount = collapse_count, .CollapseVertices = collapse_vertices, .Selection = selection};
 }
 
 bool MeshTopologyEdit::FinishClosures(const MeshTopologyTask &task, Closures &closures) {
-    auto &[face_list, around, core, neighborhood, listed, collapse_count, collapse_vertices] = closures;
+    auto &[face_list, around, core, neighborhood, listed, collapse_count, collapse_vertices, selection] = closures;
     if (around) {
         around->Finish(Chain);
         if (!around->Counts[0]) {
@@ -687,7 +692,7 @@ void MeshTopologyEdit::PrepareCounts(state::Scene &r, const MeshTopologyTask &ta
     auto &meshes = r.Context.get<MeshStore>();
     const bool fresh = task.Op == MeshTopologyOp::KeepSelectedFaces;
     const auto identity = fresh ? TopologyIdentityPolicy::Fresh : TopologyIdentityPolicy::Preserve;
-    auto &[face_list, around, core, neighborhood, listed, collapse_count, collapse_vertices] = closures;
+    auto &[face_list, around, core, neighborhood, listed, collapse_count, collapse_vertices, selection] = closures;
     const auto list_range = PrepareTopologyList(task, face_list ? &*face_list : nullptr, core, chain.Scratch);
     const MeshStore::TopologyCounts source_counts{core.Counts[0], core.Counts[1], core.Counts[2]};
     profile::RecordCounter("TopologySourceVertices", source_counts.Vertices);
@@ -735,10 +740,9 @@ void MeshTopologyEdit::PrepareCounts(state::Scene &r, const MeshTopologyTask &ta
     }
     auto &job = batch.Jobs[0];
     job.PrimitiveWork = primitive_work;
-    job.VertexSelection = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().Vertices.Capacity(), task.Selection.Vertices);
-    job.EdgeSelection = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().EdgeHalfedges.Capacity(), task.Selection.Edges);
-    job.FaceSelection = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().FaceTriangles.Capacity(), task.Selection.Faces);
-    job.EditorState = Publication == TopologyPublication::Editor;
+    job.VertexSelection = selection[0];
+    job.EdgeSelection = selection[1];
+    job.FaceSelection = selection[2];
     if (task.Op == MeshTopologyOp::MergeAtTarget) {
         // The local job indexes the selected face closure in canonical handle order.
         const auto ordinal = ElementWorkRank(chain.Scratch.Get(WorkStorageRange(core.Elements[0])), core.Elements[0], task.TargetVertex);
@@ -782,7 +786,7 @@ void MeshTopologyEdit::ReadCounts(BufferArena<uint32_t> *inset_basis) {
         throw std::logic_error("Local topology retired unsupported source identities: vertices=" + std::to_string(Output->RetiredCounts[0]) + ", faces=" + std::to_string(Output->RetiredCounts[1]));
 }
 
-std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshTopologyTask> tasks, BufferArena<uint32_t> *inset_basis, TopologyPublication publication) {
+std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshTopologyTask> tasks, BufferArena<uint32_t> *inset_basis) {
     const profile::CpuScope scope{"TopologyEditConstruct"};
     std::vector<MeshTopologyEdit> edits;
     std::vector<std::optional<Closures>> closures;
@@ -796,7 +800,7 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Scene &r, mtl::
         auto &meshes = r.Context.get<MeshStore>();
         for (uint32_t i = 0u; i < tasks.size(); ++i) {
             const auto &task = tasks[i];
-            ValidateGeometrySelection(meshes, task.SourceId, task.Selection);
+            if (const auto *handles = std::get_if<GeometrySelection>(&task.Selection)) ValidateGeometrySelection(meshes, task.SourceId, *handles);
             if (!HasTopologySource(meshes, task)) continue;
             if (task.Op == MeshTopologyOp::AddPrimitives) {
                 face_lists[i] = ParsePrimitiveListReferences(task);
@@ -811,14 +815,14 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Scene &r, mtl::
         chain.Submit();
     }
     for (uint32_t i = 0u; i < tasks.size(); ++i) {
-        closures.push_back(edits.emplace_back(MeshTopologyEdit{chain, tasks[i], publication}).RecordClosures(r, tasks[i], std::move(face_lists[i]), spatial[i] ? &*spatial[i] : nullptr));
+        closures.push_back(edits.emplace_back(MeshTopologyEdit{chain, tasks[i]}).RecordClosures(r, tasks[i], std::move(face_lists[i]), spatial[i] ? &*spatial[i] : nullptr));
     }
     chain.Submit();
     // Every in-place edit reads its neighborhood through the batch's one set of source clones.
     const auto view = std::make_shared<TopologyReadView>();
     for (uint32_t i = 0u; i < edits.size(); ++i) {
         if (closures[i] && !edits[i].FinishClosures(tasks[i], *closures[i])) closures[i].reset();
-        if (closures[i] && tasks[i].Op != MeshTopologyOp::KeepSelectedFaces) view->Add(r, edits[i].StoreId, closures[i]->Neighborhood, chain.Scratch, publication == TopologyPublication::Editor);
+        if (closures[i] && tasks[i].Op != MeshTopologyOp::KeepSelectedFaces) view->Add(r, edits[i].StoreId, closures[i]->Neighborhood, chain.Scratch);
     }
     view->Clone(r);
     std::vector<MeshTopologyEdit *> counted;
@@ -907,13 +911,15 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
         job.DstVertexHandles = {chain.Scratch.Buffer.Slot, edit->Output->Vertices.Offset};
         job.DstFaceHandles = {chain.Scratch.Buffer.Slot, edit->Output->Faces.Offset};
         job.DstConnectivity = meshes.GetConnectivityRef(edit->StoreId);
-        job.DstVertexBits = {job.EditorState ? meshes.GetSelectionSlot(Element::Vertex) : InvalidSlot, 0u};
-        job.DstEdgeBits = {job.EditorState ? meshes.GetSelectionSlot(Element::Edge) : InvalidSlot, 0u};
-        job.DstFaceBits = {job.EditorState ? meshes.GetSelectionSlot(Element::Face) : InvalidSlot, 0u};
+        if (const auto &output = edit->SelectionOutput) {
+            job.DstVertexBits = MaskBinding(output->Vertices);
+            job.DstEdgeBits = MaskBinding(output->Edges);
+            job.DstFaceBits = MaskBinding(output->Faces);
+        }
         batch.SetDomainTiles(DstVertices, std::array{TileCount(counts.Vertices, TileElements)});
         batch.SetDomainTiles(DstHalfedges, std::array{TileCount(counts.Halfedges, TileElements)});
         batch.SetDomainTiles(DstFaces, std::array{TileCount(counts.Faces, TileElements)});
-        CaptureTopologyEmitWrites(r, job, edit->AddedTriangleCount, vertex_blocks, face_blocks);
+        CaptureTopologyEmitWrites(r, job, edit->AddedTriangleCount, vertex_blocks, face_blocks, edit->SelectionOutput);
         emissions.push_back(batch.Encode(chain, pipelines, plan.Constants, TopologyEmissionPasses(job.CollapseCount != 0u)));
         const auto &before = plan.Neighborhood;
         const std::array emitted{ElementHandleRange{.Handles = job.DstVertexHandles, .Count = counts.Vertices}, ElementHandleRange{.First = job.DstCornerOffset, .Count = counts.Halfedges}, ElementHandleRange{.Handles = job.DstFaceHandles, .Count = counts.Faces}};
@@ -950,7 +956,7 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
         auto edge_blocks = Union(WorkBlocks(chain.Scratch, before.Elements[3], 0u), InsertedBlocks(plan.NewEdges, chain.Scratch.Buffer));
         auto repaired_face_blocks = Union(WorkBlocks(chain.Scratch, before.Elements[2], 0u), face_blocks);
         CaptureConnectivityPrepareWrites(r, rebuilt.Jobs[0], vertex_blocks, Union(WorkBlocks(chain.Scratch, before.Elements[1], 0u), run_blocks), repaired_face_blocks);
-        CaptureTopologyEdgeWrites(r, edge_blocks, job.EditorState);
+        CaptureTopologyEdgeWrites(r, edge_blocks, edit->SelectionOutput);
         rebuilt.Encode(chain, pipelines, TiledJobPushConstants{}, ConnectivityPasses);
         fan_jobs.push_back(rebuilt.Jobs[0]);
         fan_vertex_blocks.insert(fan_vertex_blocks.end(), vertex_blocks.begin(), vertex_blocks.end());
@@ -1020,9 +1026,7 @@ void MeshTopologyEdit::FinishAll(state::Scene &r, std::span<MeshTopologyEdit *co
             edit->Plan.reset();
         }
         if (!edit->Output) continue;
-        auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = edit->StoreId});
-        // The vertex-only rule leaves incident primitives in place; their masks follow the new vertex selection.
-        if (edit->Publication == TopologyPublication::Editor && edit->Op == MeshTopologyOp::ExtrudeVertices) update.Source = Element::Vertex;
+        auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = edit->StoreId, .Source = edit->StoreSelectionSource});
         if (edit->StoreId != edit->SourceId) {
             // A copied output emitted its masks, and every block's aggregate is new.
             for (uint32_t d = 0u; const auto domain : {MeshStore::ElementDomain::Vertex, MeshStore::ElementDomain::Edge, MeshStore::ElementDomain::Face}) {

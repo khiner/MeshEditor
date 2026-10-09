@@ -228,19 +228,20 @@ std::vector<MeshTopologyTask> SeparateGeometryTasks(const MeshStore &meshes, con
         if (!groups.empty()) groups.pop_back();
     }
     if (groups.empty()) return {};
+    const auto group_selection = [&](std::vector<uint32_t> handles) {
+        return element == Element::Face ? GeometrySelection{.Faces = std::move(handles)} : GeometrySelection{.Vertices = std::move(handles)};
+    };
     std::vector<uint32_t> removed;
     for (auto &group : groups) {
         std::ranges::sort(group);
         removed.insert(removed.end(), group.begin(), group.end());
-        tasks.push_back({.SourceId = id, .Op = MeshTopologyOp::KeepSelectedFaces, .SelectionElement = element});
-        (element == Element::Face ? tasks.back().Selection.Faces : tasks.back().Selection.Vertices) = std::move(group);
+        tasks.push_back({.SourceId = id, .Op = MeshTopologyOp::KeepSelectedFaces, .SelectionElement = element, .Selection = group_selection(std::move(group))});
     }
     std::ranges::sort(removed);
     tasks.push_back({.SourceId = id, .Op = element == Element::Face ? MeshTopologyOp::DeleteFaces : mesh.FaceCount() ? MeshTopologyOp::DeleteVertices :
                                                                                                                        MeshTopologyOp::DeleteEdges,
                      .SelectionElement = element,
-                     .Selection = {}});
-    (element == Element::Face ? tasks.back().Selection.Faces : tasks.back().Selection.Vertices) = std::move(removed);
+                     .Selection = group_selection(std::move(removed))});
     return tasks;
 }
 
@@ -598,8 +599,9 @@ MeshTopologyTask LoopCutTask(const Mesh &mesh, uint32_t edge, uint32_t cuts) {
     mesh.ValidateSelection({.Edges = {edge}});
     MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Param0 = float(std::max(cuts, 1u)), .Flags = TopologyFlagLoopCutSelect | TopologyFlagListSelects, .List = EdgeRing(mesh, edge)};
     task.List.insert(task.List.begin(), uint32_t(task.List.size()));
-    task.Selection.Edges.assign(task.List.begin() + 1u, task.List.end());
-    std::ranges::sort(task.Selection.Edges);
+    GeometrySelection selection{.Edges = {task.List.begin() + 1u, task.List.end()}};
+    std::ranges::sort(selection.Edges);
+    task.Selection = std::move(selection);
     return task;
 }
 

@@ -2,7 +2,6 @@
 #include "gpu/ElementWork.h"
 #include "gpu/ElementWorkSeedJob.h"
 #include "mesh/ElementArena.h"
-#include "mesh/SelectionView.h"
 #include "metal/BufferArena.h"
 #include "render/ElementWorkOps.h"
 #include "state/Entity.h"
@@ -25,14 +24,6 @@ ElementWorkSeedJob PrepareElementMembershipWork(BufferArena<uint32_t> &storage, 
     std::vector<uint32_t> blocks;
     arena.ForEachBlock(set, [&](uint32_t b, const auto &) { blocks.push_back(b); });
     return PrepareBlockMembershipWork(storage, arena, set, blocks, AllocateElementWork(storage, arena.Capacity(), blocks.size()));
-}
-
-// Only the blocks holding selected elements are listed.
-template<typename T>
-ElementWorkSeedJob PrepareSelectedMembershipWork(BufferArena<uint32_t> &storage, const ElementArena<T> &arena, ElementSetRef set, const SelectionView &selection, uint32_t mask_slot) {
-    std::vector<uint32_t> blocks;
-    selection.ForEachBlock([&](uint32_t block, uint32_t) { blocks.push_back(block); });
-    return PrepareBlockMembershipWork(storage, arena, set, blocks, AllocateElementWork(storage, arena.Capacity(), blocks.size()), mask_slot);
 }
 
 // Records membership gathering before the shared compact work sorter.

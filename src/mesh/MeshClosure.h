@@ -53,8 +53,8 @@ MeshClosure EncodePrimitiveClosure(state::Scene &, mtl::ComputeChain &, uint32_t
 MeshClosure EncodeVertexClosure(state::Scene &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &vertices);
 // The endpoints of seed edges, as a vertex seed.
 ClosureSeed EncodeEdgeVertices(state::Scene &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &edges);
-// The selected elements of a domain, or all its live elements, with host bounds read from the canonical masks and connectivity.
-ClosureSeed EncodeSelectionSeed(state::Scene &, mtl::ComputeChain &, uint32_t id, Element, bool select_all);
+// All live elements of a domain, bounded by the record's counts.
+ClosureSeed EncodeAllSeed(state::Scene &, mtl::ComputeChain &, uint32_t id, Element);
 // Listed live handles of a domain, finished on the host.
 ClosureSeed ListSeed(state::Scene &, mtl::ComputeChain &, uint32_t id, Element, std::span<const uint32_t> handles);
 // Finished face work, with its incidences read on the host.

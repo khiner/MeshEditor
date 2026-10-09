@@ -106,9 +106,9 @@ struct TopoContext {
     TopoCornerVertices SrcCorners(MeshTopologyJob job) const { return {BindlessBuffer(uint,B.IndexBuffer, Pc.Source.CornerSlot), SrcVertexDomain(job)}; }
     TopoOutputDomain DstVertexDomain(MeshTopologyJob job) const { return {B, job.DstVertexHandles}; }
     TopoOutputDomain DstFaceDomain(MeshTopologyJob job) const { return {B, job.DstFaceHandles}; }
-    void SelectDstVertex(MeshTopologyJob job, uint v, bool selected = true) const { Select({job.DstVertexBits.Slot, 0u}, DstVertexDomain(job).Handle(v), selected); }
-    void SelectDstFace(MeshTopologyJob job, uint f, bool selected) const { Select({job.DstFaceBits.Slot, 0u}, DstFaceDomain(job).Handle(f), selected); }
-    void SelectDstEdge(MeshTopologyJob job, uint e, bool selected) const { Select({job.DstEdgeBits.Slot, 0u}, e, selected); }
+    void SelectDstVertex(MeshTopologyJob job, uint v, bool selected = true) const { Select(job.DstVertexBits, DstVertexDomain(job).Handle(v), selected); }
+    void SelectDstFace(MeshTopologyJob job, uint f, bool selected) const { Select(job.DstFaceBits, DstFaceDomain(job).Handle(f), selected); }
+    void SelectDstEdge(MeshTopologyJob job, uint e, bool selected) const { Select(job.DstEdgeBits, e, selected); }
     device uint *DstCorners(MeshTopologyJob job) const { return BindlessBufferMutable(uint, B.IndexBuffer, Pc.Destination.CornerSlot) + job.DstCornerOffset; }
     ConnectivityView Src(MeshTopologyJob job) const {
         return {B, job.SrcConnectivity, job.SrcFaceCount};
@@ -496,8 +496,8 @@ inline void TopoEmitFace(TopoContext ctx, MeshTopologyJob job, uint fd, uint bas
         ctx.DstHalfedgeFaces(job)[h] = ctx.DstFaceDomain(job).Handle(fd);
         if (job.CornerAttributes & MeshAttributeBit_Normal) ctx.CornerProvenance(job)[h].y = fd;
     }
-    const bool hidden=job.EditorState && source<job.SrcFaceCount && (!selected || job.Op==MeshTopologyOp::KeepSelectedFaces) && ctx.Selected({ctx.Pc.Source.FaceHiddenSlot,0u},ctx.SrcFaceDomain(job).Handle(source));
-    if (job.EditorState) ctx.Select({ctx.Pc.Destination.FaceHiddenSlot,0u},ctx.DstFaceDomain(job).Handle(fd),hidden);
+    const bool hidden=source<job.SrcFaceCount && (!selected || job.Op==MeshTopologyOp::KeepSelectedFaces) && ctx.Selected({ctx.Pc.Source.FaceHiddenSlot,0u},ctx.SrcFaceDomain(job).Handle(source));
+    ctx.Select({ctx.Pc.Destination.FaceHiddenSlot,0u},ctx.DstFaceDomain(job).Handle(fd),hidden);
     ctx.SelectDstFace(job, fd, selected && !hidden);
 }
 

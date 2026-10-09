@@ -463,7 +463,7 @@ void MeshStore::CaptureSelectionSummary(uint32_t id) {
 }
 
 void MeshStore::CaptureSelectionBlocks(Element element, std::span<const uint32_t> blocks) {
-    if (Tracked) SelectionArena(Buffers, SelectionDomain(element)).Buffer.CaptureWriteElements(blocks, sizeof(MeshArenas::SelectionBlock));
+    if (Tracked) SelectionArena(Buffers, SelectionDomain(element)).Buffer.CaptureWriteElements(blocks, sizeof(SelectionBlock));
 }
 
 void MeshStore::CaptureSharpnessWrite(uint32_t id, EditSharpnessOperation operation, const GeometrySelection &selection) {
@@ -879,7 +879,7 @@ void MeshStore::PublishSelectionSummary(uint32_t id) {
     summary.SharpnessFlags = selected ? selected->Flags & (SelectionSelectedSharp | SelectionSelectedSmooth) : 0u;
 }
 
-void MeshStore::SetSelectionBaseline(uint32_t id, Element element, std::vector<std::pair<uint32_t, MeshArenas::SelectionBlock>> blocks, uint32_t active) {
+void MeshStore::SetSelectionBaseline(uint32_t id, Element element, std::vector<std::pair<uint32_t, SelectionBlock>> blocks, uint32_t active) {
     auto &derived = DerivedRecords.at(id);
     derived.SelectionBaseline = std::move(blocks);
     derived.SelectionBaselineActive = active;
@@ -1491,7 +1491,7 @@ std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<cons
                 const auto target = mapped(domain, block * MeshElementBlockSize) / MeshElementBlockSize;
                 for (auto *bits : {&SelectionArena(Buffers, domain), &HiddenArena(Buffers, domain)}) {
                     CaptureRange(*bits, {target, 1u});
-                    copies.Copy(bits->Buffer, uint64_t(block) * sizeof(MeshArenas::SelectionBlock), uint64_t(target) * sizeof(MeshArenas::SelectionBlock), sizeof(MeshArenas::SelectionBlock));
+                    copies.Copy(bits->Buffer, uint64_t(block) * sizeof(SelectionBlock), uint64_t(target) * sizeof(SelectionBlock), sizeof(SelectionBlock));
                 }
                 copies.Copy(AggregateArena(Buffers, domain).Buffer, uint64_t(block) * sizeof(SelectionAggregate), uint64_t(target) * sizeof(SelectionAggregate), sizeof(SelectionAggregate));
             });
@@ -1524,7 +1524,7 @@ std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<cons
         for (const auto [domain, word] : {std::pair{Domain::Halfedge, 0u}, std::pair{Domain::Face, 1u}})
             copies.RebaseByBlock(Buffers.VertexFans.Items.Buffer, uint64_t(fans.Offset) * sizeof(uvec2) + word * 4u, fans.Count, map(domain), 2u);
         for (auto &[block, words] : derived.SelectionBaseline) block = mapped(SelectionDomain(derived.SelectionBaselineElement), block * MeshElementBlockSize) / MeshElementBlockSize;
-        std::ranges::sort(derived.SelectionBaseline, {}, &std::pair<uint32_t, MeshArenas::SelectionBlock>::first);
+        std::ranges::sort(derived.SelectionBaseline, {}, &std::pair<uint32_t, SelectionBlock>::first);
         const auto origins = [&](Element element) {
             return WithDomain(Buffers, SelectionDomain(element), [&](const auto &owner) {
                 return std::pair{owner.First(DomainSet(src, SelectionDomain(element))), owner.First(DomainSet(dst, SelectionDomain(element)))};
@@ -1902,13 +1902,13 @@ void MeshStore::Release(std::span<const uint32_t> requested) {
     Buffers.CornerSectors.Release(corners);
     Buffers.NormalSectors.Release(corners);
     for (uint32_t d = 0u; d < 3u; ++d) {
-        const auto masks = SelectionArena(Buffers, SelectionDomains[d]).Buffer.template GetSpan<MeshArenas::SelectionBlock>();
+        const auto masks = SelectionArena(Buffers, SelectionDomains[d]).Buffer.template GetSpan<SelectionBlock>();
         auto selected = closure[uint32_t(SelectionDomains[d])].Blocks;
         std::erase_if(selected, [&](uint32_t block) {
             return block >= masks.size() || std::ranges::none_of(masks[block], [](uint32_t word) { return word != 0u; });
         });
         EditSelectionBlocks(SelectionElements[d], selected, [](uint32_t, auto &words) { words = {}; });
-        const auto hidden = HiddenArena(Buffers, SelectionDomains[d]).Buffer.GetSpan<MeshArenas::SelectionBlock>();
+        const auto hidden = HiddenArena(Buffers, SelectionDomains[d]).Buffer.GetSpan<SelectionBlock>();
         auto hidden_blocks = closure[uint32_t(SelectionDomains[d])].Blocks;
         std::erase_if(hidden_blocks, [&](uint32_t block) { return block >= hidden.size() || std::ranges::none_of(hidden[block], [](uint32_t word) { return word != 0u; }); });
         EditHiddenBlocks(SelectionElements[d], hidden_blocks, [](uint32_t, auto &words) { words = {}; });

@@ -16,9 +16,6 @@ struct PrimitiveListReferences;
 struct SpatialFaceWork;
 struct TopologyReadView;
 
-enum class TopologyPublication { Geometry,
-                                 Editor };
-
 // The scratch words a topology transaction's chain starts with.
 // They hold a local edit and its render repair.
 inline constexpr uint32_t TopologyScratchWords = 64u << 10;
@@ -37,7 +34,7 @@ struct MeshTopologyEdit {
     // A KeepSelectedFaces task copies its faces into a new mesh, and every other task edits its source in place.
     // An edit whose task selects no source or produces no change has no Output.
     // An inset edit captures its staged basis into a range of `inset_basis` when one is given.
-    static std::vector<MeshTopologyEdit> Construct(state::Scene &, mtl::ComputeChain &, std::span<const MeshTopologyTask>, BufferArena<uint32_t> *inset_basis = nullptr, TopologyPublication = TopologyPublication::Geometry);
+    static std::vector<MeshTopologyEdit> Construct(state::Scene &, mtl::ComputeChain &, std::span<const MeshTopologyTask>, BufferArena<uint32_t> *inset_basis = nullptr);
     MeshTopologyEdit(MeshTopologyEdit &&) noexcept;
     ~MeshTopologyEdit();
     // The edits of one construction share publication's submit.
@@ -86,8 +83,9 @@ private:
     // Publication's recorded passes use the plan's buffers until Complete.
     std::unique_ptr<Prepared> Plan;
     bool Published{}, Finished{};
-    TopologyPublication Publication;
-    MeshTopologyEdit(mtl::ComputeChain &, const MeshTopologyTask &, TopologyPublication);
+    std::optional<GeometryMasks> SelectionOutput;
+    Element StoreSelectionSource;
+    MeshTopologyEdit(mtl::ComputeChain &, const MeshTopologyTask &);
     // Records the task's source closures, or returns none when the task selects no source.
     // A face list task takes its parsed face list, and a spatial task takes its finished face query.
     std::optional<Closures> RecordClosures(state::Scene &, const MeshTopologyTask &, std::optional<PrimitiveListReferences>, const SpatialFaceWork *);

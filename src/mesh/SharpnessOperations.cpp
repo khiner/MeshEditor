@@ -22,9 +22,10 @@ std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Scene &r, 
         operation == EditSharpnessOperation::SetVertexEdges                   ? Element::Vertex :
                                                                                 Element::None;
     std::unordered_set<uint32_t> ids;
+    std::vector<SelectedHandles> selections;
     for (const auto &target : targets) {
         if (!ids.insert(target.StoreId).second) throw std::invalid_argument("Sharpness operations require distinct meshes.");
-        ValidateGeometrySelection(meshes, target.StoreId, target.Selection);
+        ValidateGeometrySelection(meshes, target.StoreId, *selections.emplace_back(meshes, target.StoreId, target.Selection));
     }
     struct Edit {
         uint32_t TargetIndex, Id;
@@ -38,15 +39,15 @@ std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Scene &r, 
     std::vector<ElementWorkSeedJob> seeds;
     const auto &arenas = meshes.Arenas();
     for (uint32_t i = 0u; i < targets.size(); ++i) {
-        const auto &target = targets[i];
-        const auto id = target.StoreId;
+        const auto id = targets[i].StoreId;
+        const auto &selection = *selections[i];
         const Mesh mesh{meshes, id};
-        if (!mesh.FaceCount() || (source != Element::None && target.Selection.Get(source).empty())) continue;
-        meshes.CaptureSharpnessWrite(id, operation, target.Selection);
+        if (!mesh.FaceCount() || (source != Element::None && selection.Get(source).empty())) continue;
+        meshes.CaptureSharpnessWrite(id, operation, selection);
         const auto &record = meshes.Get(id);
         auto &pc = edits.emplace_back(Edit{.TargetIndex = i, .Id = id}).Pc;
         pc = {
-            .VertexSelection = source == Element::Vertex ? SeedElementWorkHandles(chain.Scratch, arenas.Vertices.Capacity(), target.Selection.Vertices) : ElementWork{},
+            .VertexSelection = source == Element::Vertex ? SeedElementWorkHandles(chain.Scratch, arenas.Vertices.Capacity(), selection.Vertices) : ElementWork{},
             .CornersSlot = arenas.FaceCorners.Buffer.Slot,
             .FaceSharpnessSlot = arenas.FaceSharpness.Buffer.Slot,
             .EdgeSharpnessSlot = arenas.EdgeSharpness.Buffer.Slot,
@@ -59,7 +60,7 @@ std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Scene &r, 
             .CosAngle = std::cos(angle),
         };
         if (source != Element::None) {
-            const auto &selected = target.Selection.Get(source);
+            const auto &selected = selection.Get(source);
             pc.Selected = chain.Upload(std::as_bytes(std::span{selected}));
             pc.SelectedCount = uint32_t(selected.size());
         } else {
@@ -85,11 +86,11 @@ std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Scene &r, 
         }
     });
     for (auto &edit : edits) {
-        const auto &selection = targets[edit.TargetIndex].Selection;
+        const auto &selection = *selections[edit.TargetIndex];
         const auto id = edit.Id;
         if (source == Element::Face) edit.Vertices = EncodePrimitiveClosure(r, chain, id, ListSeed(r, chain, id, Element::Face, selection.Faces)).Seed(Element::Vertex);
         else if (source == Element::Edge) edit.Vertices = EncodeEdgeVertices(r, chain, id, ListSeed(r, chain, id, Element::Edge, selection.Edges));
-        else edit.Vertices = source == Element::None ? EncodeSelectionSeed(r, chain, id, Element::Vertex, true) : ListSeed(r, chain, id, Element::Vertex, selection.Vertices);
+        else edit.Vertices = source == Element::None ? EncodeAllSeed(r, chain, id, Element::Vertex) : ListSeed(r, chain, id, Element::Vertex, selection.Vertices);
     }
     std::erase_if(edits, [](const Edit &edit) { return !edit.Vertices.Count; });
     if (operation == EditSharpnessOperation::SetVertexEdges) {

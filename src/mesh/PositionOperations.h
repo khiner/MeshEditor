@@ -12,11 +12,11 @@
 struct MeshStore;
 struct MeshPipelines;
 
-// Selections and traversal exclusions contain sorted canonical handles. World,
-// Center, Direction and reference frames are supplied by the caller.
+// Selections and traversal exclusions are canonical handles or masks, which operations read on the host.
+// World, Center, Direction and reference frames are supplied by the caller.
 struct PositionOperationTarget {
     uint32_t StoreId;
-    GeometrySelection Selection, Excluded;
+    SelectionSource Selection, Excluded;
     Transform World{};
     uint32_t Reference{InvalidOffset};
 };

@@ -1,5 +1,6 @@
 #include "Paths.h"
 #include "RunSuites.h"
+#include "TopologyCases.h"
 #include "mesh/BeautifyFaces.h"
 #include "mesh/Decimate.h"
 #include "mesh/GeometryRefresh.h"
@@ -21,6 +22,8 @@
 using namespace boost::ut;
 
 namespace {
+using ::test::Op, ::test::Patchwork, ::test::PlanCase, ::test::Region, ::test::TopologyCase, ::test::TopologyCases;
+
 struct GeometryFixture {
     NS::SharedPtr<NS::AutoreleasePool> Pool{NS::TransferPtr(NS::AutoreleasePool::alloc()->init())};
     mtl::Context Context;
@@ -46,6 +49,65 @@ GeometrySelection All(const Mesh &mesh) {
     for (const auto e : mesh.edges()) result.Edges.push_back(*e);
     for (const auto f : mesh.faces()) result.Faces.push_back(*f);
     return result;
+}
+
+// Writes selections as mask blocks into an arena the test owns, one block run per domain with room for the blocks an edit inserts.
+struct MaskWriter {
+    BufferArena<SelectionBlock> Blocks;
+    explicit MaskWriter(mtl::BufferContext &buffers) : Blocks{buffers, SlotType::Buffer} {}
+    SelectionMasks Write(std::span<const uint32_t> handles, uint32_t capacity) {
+        const auto range = Blocks.Allocate((capacity + MeshElementBlockSize - 1u) / MeshElementBlockSize + 64u);
+        auto blocks = Blocks.GetMutable(range);
+        std::ranges::fill(blocks, SelectionBlock{});
+        for (const auto h : handles) blocks[h / MeshElementBlockSize][(h % MeshElementBlockSize) / 32u] |= 1u << (h % 32u);
+        return {&Blocks, range.Offset};
+    }
+    GeometryMasks Write(const MeshStore &meshes, const GeometrySelection &selection) {
+        const auto &a = meshes.Arenas();
+        return {Write(selection.Vertices, a.Vertices.Capacity()), Write(selection.Edges, a.EdgeHalfedges.Capacity()), Write(selection.Faces, a.FaceTriangles.Capacity())};
+    }
+};
+
+// Positions rounded so that results compare across meshes whose handles differ.
+using Point = std::array<int64_t, 3>;
+Point Key(vec3 p) { return {std::llround(p.x * 1e4f), std::llround(p.y * 1e4f), std::llround(p.z * 1e4f)}; }
+std::vector<Point> Points(const Mesh &mesh) {
+    std::vector<Point> points;
+    for (const auto v : mesh.vertices()) points.push_back(Key(mesh.GetPosition(v)));
+    return points;
+}
+// Each element's sorted corner points, sorted.
+std::vector<std::vector<Point>> Shapes(const Mesh &mesh, Element element, std::span<const uint32_t> handles) {
+    std::vector<std::vector<Point>> shapes;
+    for (const auto handle : handles) {
+        auto &shape = shapes.emplace_back();
+        if (element == Element::Vertex) shape.push_back(Key(mesh.GetPosition(he::VH{handle})));
+        else if (element == Element::Edge) {
+            const auto h = mesh.GetHalfedge(he::EH{handle}, 0u);
+            shape = {Key(mesh.GetPosition(mesh.GetFromVertex(h))), Key(mesh.GetPosition(mesh.GetToVertex(h)))};
+        } else
+            for (const auto v : mesh.fv_range(he::FH{handle})) shape.push_back(Key(mesh.GetPosition(v)));
+        std::ranges::sort(shape);
+    }
+    std::ranges::sort(shapes);
+    return shapes;
+}
+// The created, retained and output elements of each domain, as shapes.
+struct Outcome {
+    bool Changed, Copied;
+    std::array<std::vector<std::vector<Point>>, 9> Elements;
+    bool operator==(const Outcome &) const = default;
+};
+Outcome Describe(const MeshStore &meshes, uint32_t source, const GeometryTopologyResult &result) {
+    const Mesh mesh{meshes, result.GeometryId};
+    Outcome outcome{result.Changed, result.GeometryId != source};
+    const auto all = All(mesh);
+    for (uint32_t d = 0u; const auto element : {Element::Vertex, Element::Edge, Element::Face}) {
+        outcome.Elements[d] = Shapes(mesh, element, result.Created.Get(element));
+        outcome.Elements[3u + d] = Shapes(mesh, element, result.Retained.Get(element));
+        outcome.Elements[6u + d++] = Shapes(mesh, element, all.Get(element));
+    }
+    return outcome;
 }
 } // namespace
 
@@ -80,7 +142,7 @@ void RegisterGeometryOperationsTests() {
         expect(extruded.Created.Vertices.size() == 4u);
         expect(f.Get(extrude_id).FaceCount() == 6u);
         expect(f.Get(extrude_id).HasClosedSurface());
-        const auto extracted = f.Run({.SourceId = id, .Op = MeshTopologyOp::KeepSelectedFaces, .SelectionElement = Element::Face, .Selection = {.Faces = duplicated.Created.Faces}});
+        const auto extracted = f.Run({.SourceId = id, .Op = MeshTopologyOp::KeepSelectedFaces, .SelectionElement = Element::Face, .Selection = GeometrySelection{.Faces = duplicated.Created.Faces}});
         expect(extracted.Changed);
         expect(extracted.GeometryId != id);
         expect(f.Get(extracted.GeometryId).VertexCount() == 4u);
@@ -152,7 +214,7 @@ void RegisterGeometryOperationsTests() {
         const auto first = selection.Vertices.front();
         const auto untouched = f.Get(id).GetPosition(he::VH{selection.Vertices.back()});
         const quat quarter_turn{.7071067811865475f, 0.f, 0.f, .7071067811865475f};
-        const PositionOperationTarget target{.StoreId = id, .Selection = {.Vertices = {first}}, .World = {.P = {10.f, 20.f, 3.f}, .R = quarter_turn, .S = {2.f, 3.f, 4.f}}};
+        const PositionOperationTarget target{.StoreId = id, .Selection = GeometrySelection{.Vertices = {first}}, .World = {.P = {10.f, 20.f, 3.f}, .R = quarter_turn, .S = {2.f, 3.f, 4.f}}};
         const PositionOperationOptions options{.Transform = PositionTransform{.Delta = {.P = {1.f, 2.f, 3.f}, .R = quarter_turn, .S = {2.f, .5f, 1.f}}, .Pivot = {10.f, 20.f, 3.f}}};
         const auto changed = ExecuteGeometryPositions(f.Scene, std::span{&target, 1u}, PositionEditOp::Transform, 1.f, 1u, options);
         expect(changed.size() == 1u);
@@ -225,7 +287,7 @@ void RegisterGeometryOperationsTests() {
         GeometryFixture f;
         const auto id = f.Create(Quad());
         const auto selected = All(f.Get(id));
-        const auto cut = f.Run({.SourceId = id, .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagScreenCuts, .ScreenTransform = mat4{1.f}, .Extent = {100.f, 100.f}, .KnifeStart = {50.f, 0.f}, .KnifeEnd = {50.f, 100.f}, .SelectionElement = Element::Face, .Selection = {.Faces = selected.Faces}});
+        const auto cut = f.Run({.SourceId = id, .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagScreenCuts, .ScreenTransform = mat4{1.f}, .Extent = {100.f, 100.f}, .KnifeStart = {50.f, 0.f}, .KnifeEnd = {50.f, 100.f}, .SelectionElement = Element::Face, .Selection = GeometrySelection{.Faces = selected.Faces}});
         expect(cut.Changed);
         expect(f.Get(id).VertexCount() == 6u);
         expect(f.Get(id).FaceCount() == 2u);
@@ -252,7 +314,7 @@ void RegisterGeometryOperationsTests() {
         }
         auto moved = All(f.Get(separated_id));
         moved.Vertices.resize(1024u);
-        const PositionOperationTarget moving{.StoreId = separated_id, .Selection = {.Vertices = moved.Vertices}};
+        const PositionOperationTarget moving{.StoreId = separated_id, .Selection = GeometrySelection{.Vertices = moved.Vertices}};
         ExecuteGeometryPositions(f.Scene, std::span{&moving, 1u}, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{.Delta = {.P = {200.f, 0.f, 0.f}}}});
         const MeshTopologyTask query{.SourceId = separated_id, .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts | TopologyFlagSelectAll, .PlaneNormal = {1.f, 0.f, 0.f}};
         mtl::ComputeChain chain{f.Buffers};
@@ -278,5 +340,116 @@ void RegisterGeometryOperationsTests() {
         vertex_work.RecordFaces(f.Scene, chain);
         chain.Submit();
         expect(vertex_work.Count == 1u);
+    };
+    "topology operators read mask selections like handle lists"_test = [] {
+        GeometryFixture f;
+        MaskWriter masks{f.Buffers};
+        for (const auto &c : TopologyCases) {
+            boost::ut::test(std::string{c.Name}) = [&] {
+                const auto listed_id = f.Create(Patchwork()), masked_id = f.Create(Patchwork());
+                const auto listed = PlanCase(c, f.Store(), f.Get(listed_id));
+                auto masked = PlanCase(c, f.Store(), f.Get(masked_id));
+                expect(fatal(listed.has_value() && masked.has_value()));
+                masked->Selection = masks.Write(f.Store(), std::get<GeometrySelection>(masked->Selection));
+                const auto by_list = Describe(f.Store(), listed_id, f.Run(*listed));
+                const auto by_masks = Describe(f.Store(), masked_id, f.Run(*masked));
+                expect(by_list.Changed);
+                expect(by_list == by_masks);
+            };
+        }
+    };
+    "topology writes emitted selection into explicit destination masks"_test = [] {
+        GeometryFixture f;
+        MaskWriter masks{f.Buffers};
+        const auto id = f.Create(Quad());
+        const auto output = masks.Write(f.Store(), {});
+        const auto duplicated = f.Run({.SourceId = id, .Op = MeshTopologyOp::DuplicateGeometry, .Flags = TopologyFlagTransformCopies, .CopyRotation = mat3{1.f}, .CopyTranslation = {4.f, 0.f, 0.f}, .Selection = All(f.Get(id)), .SelectionOutput = output});
+        expect(duplicated.Changed);
+        for (const auto element : {Element::Vertex, Element::Edge, Element::Face})
+            expect(ReadMasks(f.Store(), id, element, output.Get(element)) == duplicated.Created.Get(element));
+        // The store's own masks receive nothing.
+        for (const auto element : {Element::Vertex, Element::Edge, Element::Face})
+            expect(f.Store().GetSelectedElements(id, element).Count() == 0u);
+    };
+    "position and sharpness operations read mask selections like handle lists"_test = [] {
+        GeometryFixture f;
+        MaskWriter masks{f.Buffers};
+        struct PositionCase {
+            std::string_view Name;
+            PositionEditOp Op;
+            float Factor;
+            PositionOperationOptions Options;
+        };
+        const std::array<PositionCase, 6> positions{{
+            {"Smooth", PositionEditOp::Smooth, .5f, {}},
+            {"PushPull", PositionEditOp::PushPull, .25f, {.Center = {0.f, 0.f, 2.f}}},
+            {"Flatten", PositionEditOp::Copy, 1.f, {}},
+            {"Circularize", PositionEditOp::Copy, 1.f, {.Circle = PositionCircle{}}},
+            {"ShrinkFatten", PositionEditOp::ShrinkFatten, .1f, {.Flags = PositionEditSelectedFaceNormals}},
+            {"VertexSlide", PositionEditOp::VertexSlide, .5f, {.Slide = PositionSlide{}}},
+        }};
+        // Exclusions name the triangulated cell's faces.
+        const auto excluded = [](const Mesh &mesh) {
+            GeometrySelection result;
+            for (const auto face : mesh.faces())
+                if (mesh.GetValence(face) == 3u) result.Faces.push_back(*face);
+            return result;
+        };
+        for (const auto &c : positions) {
+            boost::ut::test(std::string{c.Name}) = [&] {
+                const auto listed_id = f.Create(Patchwork()), masked_id = f.Create(Patchwork());
+                const auto listed_selection = Region(f.Get(listed_id)), masked_selection = Region(f.Get(masked_id));
+                const PositionOperationTarget listed{.StoreId = listed_id, .Selection = listed_selection, .Excluded = excluded(f.Get(listed_id)), .Reference = listed_selection.Vertices[4]};
+                const PositionOperationTarget masked{.StoreId = masked_id, .Selection = masks.Write(f.Store(), masked_selection), .Excluded = masks.Write(f.Store(), excluded(f.Get(masked_id))), .Reference = masked_selection.Vertices[4]};
+                const auto before = Points(f.Get(listed_id));
+                const auto listed_changes = ExecuteGeometryPositions(f.Scene, std::span{&listed, 1u}, c.Op, c.Factor, 1u, c.Options);
+                const auto masked_changes = ExecuteGeometryPositions(f.Scene, std::span{&masked, 1u}, c.Op, c.Factor, 1u, c.Options);
+                expect(listed_changes.size() == masked_changes.size());
+                expect(!std::ranges::equal(Points(f.Get(listed_id)), before));
+                expect(std::ranges::equal(Points(f.Get(listed_id)), Points(f.Get(masked_id))));
+            };
+        }
+        "face attributes"_test = [&] {
+            const auto uvs = [] {
+                MeshVertexAttributes attributes;
+                std::vector<vec2> texcoords;
+                for (uint32_t i = 0u; i < 28u; ++i) texcoords.push_back({float(i) / 28.f, 1.f - float(i) / 28.f});
+                attributes.TexCoords0 = std::move(texcoords);
+                return attributes;
+            };
+            const auto listed_id = CreateMesh(f.Scene, {.Data = Patchwork(), .Attrs = uvs()}).StoreId, masked_id = CreateMesh(f.Scene, {.Data = Patchwork(), .Attrs = uvs()}).StoreId;
+            const PositionOperationTarget listed{.StoreId = listed_id, .Selection = Region(f.Get(listed_id))};
+            const PositionOperationTarget masked{.StoreId = masked_id, .Selection = masks.Write(f.Store(), Region(f.Get(masked_id)))};
+            mtl::ComputeChain chain{f.Store().BufferContext()};
+            expect(EncodeFaceAttributeOperation(f.Store(), GetMeshPipelines(f.Scene), chain, std::span{&listed, 1u}, false, 0u, 1u).size() == 1u);
+            expect(EncodeFaceAttributeOperation(f.Store(), GetMeshPipelines(f.Scene), chain, std::span{&masked, 1u}, false, 0u, 1u).size() == 1u);
+            chain.Submit();
+            const auto corner_uvs = [&](uint32_t id) {
+                std::vector<vec2> result;
+                for (const auto face : f.Get(id).faces())
+                    for (const auto corner : f.Get(id).fh_range(face)) result.push_back(f.Store().Arenas().CornerUvs[0].Get(*corner));
+                return result;
+            };
+            expect(std::ranges::equal(corner_uvs(listed_id), corner_uvs(masked_id)));
+        };
+        for (const auto operation : {EditSharpnessOperation::SetSelectedFaces, EditSharpnessOperation::SetSelectedEdges, EditSharpnessOperation::SetVertexEdges, EditSharpnessOperation::SetAllFaces, EditSharpnessOperation::SmoothByAngle}) {
+            boost::ut::test("sharpness " + std::to_string(uint32_t(operation))) = [&] {
+                const auto listed_id = f.Create(Patchwork()), masked_id = f.Create(Patchwork());
+                const SharpnessOperationTarget listed{listed_id, Region(f.Get(listed_id))};
+                const SharpnessOperationTarget masked{masked_id, masks.Write(f.Store(), Region(f.Get(masked_id)))};
+                mtl::ComputeChain chain{f.Store().BufferContext()};
+                const auto listed_changes = ExecuteGeometrySharpness(f.Scene, chain, std::span{&listed, 1u}, operation, true, .1f);
+                const auto masked_changes = ExecuteGeometrySharpness(f.Scene, chain, std::span{&masked, 1u}, operation, true, .1f);
+                expect(listed_changes.size() == 1u);
+                expect(masked_changes.size() == 1u);
+                const auto sharpness = [&](uint32_t id) {
+                    std::vector<uint8_t> result;
+                    for (const auto face : f.Get(id).faces()) result.push_back(f.Store().Arenas().FaceSharpness.Get({*face, 1u})[0]);
+                    for (const auto edge : f.Get(id).edges()) result.push_back(f.Store().Arenas().EdgeSharpness.Get({*edge, 1u})[0]);
+                    return result;
+                };
+                expect(std::ranges::equal(sharpness(listed_id), sharpness(masked_id)));
+            };
+        }
     };
 }
