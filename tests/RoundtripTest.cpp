@@ -480,6 +480,23 @@ std::vector<vec4> DecodeColorAccessor(const fastgltf::Asset &asset, size_t acces
     return DecodeAccessor<vec4>(asset, accessor_index);
 }
 
+// A custom attribute decodes to floats, padded to four components.
+std::vector<vec4> DecodeCustomAccessor(const fastgltf::Asset &asset, size_t accessor_index) {
+    const auto pad = [](const auto &values, auto &&widen) {
+        std::vector<vec4> out;
+        out.reserve(values.size());
+        for (const auto &value : values) out.push_back(widen(value));
+        return out;
+    };
+    switch (asset.accessors[accessor_index].type) {
+        case fastgltf::AccessorType::Scalar: return pad(DecodeAccessor<float>(asset, accessor_index), [](float v) { return vec4{v, 0.f, 0.f, 0.f}; });
+        case fastgltf::AccessorType::Vec2: return pad(DecodeAccessor<vec2>(asset, accessor_index), [](vec2 v) { return vec4{v.x, v.y, 0.f, 0.f}; });
+        case fastgltf::AccessorType::Vec3: return pad(DecodeAccessor<vec3>(asset, accessor_index), [](vec3 v) { return vec4{v, 0.f}; });
+        case fastgltf::AccessorType::Vec4: return DecodeAccessor<vec4>(asset, accessor_index);
+        default: return {};
+    }
+}
+
 void CompareGeometryAttr(
     const fastgltf::Asset &a, const fastgltf::Asset &b,
     size_t acc_a, size_t acc_b, std::string_view name, bool morph_delta,
@@ -502,9 +519,10 @@ void CompareGeometryAttr(
         compare(DecodeColorAccessor, VecEq<vec4>);
     } else if (name.starts_with("TEXCOORD_")) {
         compare(DecodeAccessor<vec2>, VecEq<vec2>);
+    } else if (name.starts_with('_')) {
+        compare(DecodeCustomAccessor, VecEq<vec4>);
     }
     // JOINTS_n/WEIGHTS_n compare jointly in ComparePrimitiveGeometry.
-    // Custom attributes stay uncompared since import drops them.
 }
 
 void ComparePrimitiveGeometry(
@@ -962,6 +980,86 @@ std::string BrokenSkinnedTriangleGltf(bool drop_weights) {
   "buffers": [{{"byteLength": 96, "uri": "data:application/octet-stream;base64,{}"}}]
 }})",
                        drop_weights ? "" : ", \"WEIGHTS_0\": 2", buffer);
+}
+
+// Two triangles of a quad as six unindexed vertices, which weld at the shared diagonal.
+// _TEMPERATURE, _CUSTOM and the integer _ID agree across the weld, and _SEAM differs there.
+void WriteCustomAttributeGltf(const fs::path &gltf) {
+    const std::array<vec3, 6> positions{{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 0, 0}, {1, 1, 0}, {0, 1, 0}}};
+    const auto temperature = [](vec3 p) { return 1.f + p.x + 2.f * p.y; };
+    std::array<float, 6> temperatures;
+    std::array<vec3, 6> custom;
+    std::array<uint16_t, 6> ids;
+    for (size_t i = 0; i < positions.size(); ++i) {
+        temperatures[i] = temperature(positions[i]);
+        custom[i] = {positions[i].x + 1.f, 2.f * positions[i].y, -3.f};
+        ids[i] = uint16_t(7.f + temperature(positions[i]));
+    }
+    const std::array<vec2, 6> seams{{{0, 0}, {1, 0}, {1, 1}, {5, 5}, {6, 6}, {0, 1}}};
+    std::ofstream bin{gltf.parent_path() / "custom.bin", std::ios::binary};
+    const auto write = [&](const auto &values) { bin.write(reinterpret_cast<const char *>(values.data()), std::streamsize(values.size() * sizeof(values[0]))); };
+    write(positions);
+    write(temperatures);
+    write(custom);
+    write(seams);
+    write(ids);
+    std::ofstream{gltf} << R"({
+  "asset": {"version": "2.0"},
+  "scene": 0,
+  "scenes": [{"nodes": [0]}],
+  "nodes": [{"mesh": 0}],
+  "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "_TEMPERATURE": 1, "_CUSTOM": 2, "_SEAM": 3, "_ID": 4}}]}],
+  "accessors": [
+    {"bufferView": 0, "componentType": 5126, "count": 6, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]},
+    {"bufferView": 1, "componentType": 5126, "count": 6, "type": "SCALAR"},
+    {"bufferView": 2, "componentType": 5126, "count": 6, "type": "VEC3"},
+    {"bufferView": 3, "componentType": 5126, "count": 6, "type": "VEC2"},
+    {"bufferView": 4, "componentType": 5123, "count": 6, "type": "SCALAR"}
+  ],
+  "bufferViews": [
+    {"buffer": 0, "byteOffset": 0, "byteLength": 72},
+    {"buffer": 0, "byteOffset": 72, "byteLength": 24},
+    {"buffer": 0, "byteOffset": 96, "byteLength": 72},
+    {"buffer": 0, "byteOffset": 168, "byteLength": 48},
+    {"buffer": 0, "byteOffset": 216, "byteLength": 12}
+  ],
+  "buffers": [{"byteLength": 228, "uri": "custom.bin"}]
+})";
+}
+
+// Checks the welded quad's custom attributes, with _ID an integer when `integer_ids`.
+void CheckCustomAttributes(state::Scene &r, bool integer_ids) {
+    using namespace boost::ut;
+    const auto node = FirstMeshNode(r);
+    expect(fatal(node != state::Null));
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto id = r.get<const MeshHandle>(r.get<const Instance>(node).Entity).StoreId;
+    const Mesh mesh{meshes, id};
+    expect(mesh.VertexCount() == 4u);
+    const auto find = [&](std::string_view name, AttributeDomain domain, AttributeType type) {
+        const auto attribute = meshes.FindAttribute(id, name);
+        expect(fatal(attribute != InvalidOffset)) << name;
+        expect(meshes.GetAttribute(attribute).Domain == domain) << name;
+        expect(meshes.GetAttribute(attribute).Type == type) << name;
+        return attribute;
+    };
+    const auto temperature = meshes.AttributeView<float>(find("_TEMPERATURE", AttributeDomain::Vertex, AttributeType::Float));
+    const auto custom = meshes.AttributeView<vec3>(find("_CUSTOM", AttributeDomain::Vertex, AttributeType::Vec3));
+    const auto id_attribute = find("_ID", AttributeDomain::Vertex, integer_ids ? AttributeType::Int : AttributeType::Float);
+    for (const auto v : mesh.vertices()) {
+        const auto p = mesh.GetPosition(v);
+        const auto expected = 1.f + p.x + 2.f * p.y;
+        expect(temperature[*v] == expected);
+        expect(custom[*v] == vec3{p.x + 1.f, 2.f * p.y, -3.f});
+        const auto ids = integer_ids ? float(meshes.AttributeView<int32_t>(id_attribute)[*v]) : meshes.AttributeView<float>(id_attribute)[*v];
+        expect(ids == 7.f + expected);
+    }
+    const auto seam = meshes.AttributeView<vec2>(find("_SEAM", AttributeDomain::Corner, AttributeType::Vec2));
+    std::vector<std::pair<float, float>> seams;
+    for (const auto face : mesh.faces())
+        for (const auto corner : mesh.fh_range(face)) seams.emplace_back(seam[*corner].x, seam[*corner].y);
+    std::ranges::sort(seams);
+    expect(seams == std::vector<std::pair<float, float>>{{0, 0}, {0, 1}, {1, 0}, {1, 1}, {5, 5}, {6, 6}});
 }
 
 // Every count a load changes, so a failed load can prove it changed none of them.
@@ -1442,6 +1540,34 @@ int main(int argc, const char **argv) {
         };
     }
 #endif
+
+    // Custom attributes import per vertex where the weld agrees and per corner where it does not, and export back as `_NAME` attributes.
+    // Integers export as floats, since glTF vertex attributes have no 32-bit integers.
+    "custom_attribute_round_trip"_test = [&] {
+        const auto dir = tmp_root / "custom";
+        fs::create_directories(dir);
+        const auto source = dir / "Custom.gltf";
+        WriteCustomAttributeGltf(source);
+        SceneFixture fx;
+        const auto load = gltf::LoadGltf(source, fx.R, fx.Viewport);
+        expect(fatal(load.has_value())) << (load ? "" : load.error().Message);
+        CheckCustomAttributes(fx.R, true);
+        ProcessComponentEvents(fx.R, fx.Viewport);
+        const auto out_path = dir / "Custom-out.gltf";
+        const auto save = gltf::SaveGltf(out_path, fx.R, fx.Viewport);
+        expect(fatal(save.has_value())) << (save ? "" : save.error());
+        expect(CompareGltfJson(source, out_path, "custom") == 0u);
+        SceneFixture reloaded;
+        const auto reload = gltf::LoadGltf(out_path, reloaded.R, reloaded.Viewport);
+        expect(fatal(reload.has_value())) << (reload ? "" : reload.error().Message);
+        CheckCustomAttributes(reloaded.R, false);
+        // The attributes restore byte for byte through a saved project.
+        const auto before = fx.SaveTo(dir / "Custom.project");
+        SceneFixture restored;
+        const auto after = restored.LoadFrom(dir / "Custom.project");
+        expect(after == before);
+        CheckCustomAttributes(restored.R, true);
+    };
 
     // A load that fails validation leaves the scene and every store as they were.
     "failed_import_leaves_scene_untouched"_test = [&] {

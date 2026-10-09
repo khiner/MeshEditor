@@ -215,6 +215,25 @@ fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name)
     };
 }
 
+// The record's attributes glTF carries as `_NAME` vertex attributes: its vertex and corner attributes whose names start with an underscore.
+std::vector<uint32_t> ExportedAttributes(const MeshStore &meshes, uint32_t id, bool corners) {
+    std::vector<uint32_t> attributes;
+    meshes.ForEachNamedAttribute(id, [&](uint32_t attribute, const NamedAttribute &entry) {
+        if (entry.NameView().starts_with('_') && (entry.Domain == AttributeDomain::Vertex || (corners && entry.Domain == AttributeDomain::Corner))) attributes.push_back(attribute);
+    });
+    return attributes;
+}
+// A value's components as floats, which also hold integers and bools since glTF vertex attributes have no 32-bit integers.
+std::array<float, 4> AttributeFloats(const MeshStore &meshes, uint32_t attribute, uint32_t handle) {
+    return WithAttributeScalar(meshes.GetAttribute(attribute).Type, [&]<AttributeScalar T>() {
+        const T value = meshes.AttributeView<T>(attribute)[handle];
+        std::array<float, 4> floats{};
+        if constexpr (std::integral<T>) floats[0] = float(value);
+        else std::memcpy(floats.data(), &value, sizeof(T));
+        return floats;
+    });
+}
+
 } // namespace
 
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const state::Scene &r, state::Entity viewport, SaveOptions options) {
@@ -561,6 +580,21 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         );
     };
 
+    // Emits a custom attribute's value at each item, its type's component count of floats per vertex.
+    const auto EmitCustom = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, uint32_t attribute, const auto &items, auto &&value) {
+        static constexpr std::array Types{fastgltf::AccessorType::Scalar, fastgltf::AccessorType::Vec2, fastgltf::AccessorType::Vec3, fastgltf::AccessorType::Vec4};
+        const auto &entry = meshes.GetAttribute(attribute);
+        const auto components = AttributeComponents(entry.Type);
+        std::vector<float> floats;
+        for (const auto &item : items) {
+            const auto item_floats = value(item);
+            floats.insert(floats.end(), item_floats.begin(), item_floats.begin() + components);
+        }
+        const uint32_t off = AppendAligned<float>(bin, floats);
+        const uint32_t bv = AddBufferView(off, floats.size() * sizeof(float), {}, fastgltf::BufferTarget::ArrayBuffer);
+        out.emplace_back(fastgltf::Attribute{ToFgStr(entry.NameView()), AddAccessor(bv, floats.size() / components, Types[components - 1u], fastgltf::ComponentType::Float)});
+    };
+
     // Emit COLOR_0 from gathered per-corner values, preserving source component count.
     const auto EmitColor0Values = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, std::span<const vec4> colors, uint8_t component_count) {
         if (component_count == 3) {
@@ -831,6 +865,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             for (const auto v : Mesh{meshes, store_id}.vertices()) colors.push_back(source[*v]);
             out.emplace_back(fastgltf::Attribute{"COLOR_0", AddDataAccessor(std::span<const vec4>{colors}, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
+        for (const auto attribute : ExportedAttributes(meshes, store_id, false))
+            EmitCustom(out, attribute, Mesh{meshes, store_id}.vertices(), [&](Mesh::VH v) { return AttributeFloats(meshes, attribute, *v); });
     };
     for (uint32_t mi = 0; mi < mesh_groups.size(); ++mi) {
         const auto &group = mesh_groups[mi];
@@ -874,6 +910,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             // Gather the stored tessellation and its canonical corner attributes.
             struct CornerRef {
                 uint32_t Vertex, Corner;
+            };
+            const auto custom = ExportedAttributes(meshes, store_id, true);
+            // A custom attribute's value at an export vertex, by its vertex or by its corner.
+            const auto custom_value = [&](uint32_t attribute, const CornerRef &ref) {
+                return AttributeFloats(meshes, attribute, meshes.GetAttribute(attribute).Domain == AttributeDomain::Vertex ? vertex_handles[ref.Vertex] : triangle_corners[ref.Corner]);
             };
             const bool dense_triangles = (arenas.Triangles.Set(record.TriangleData).Flags & 1u) != 0u;
             std::vector<uint32_t> triangle_block_first;
@@ -942,6 +983,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 if (emit_indices) {
                     uint32_t stride = sizeof(uint32_t) + (emit_normal ? sizeof(vec3) : 0u) + (emit_tangent ? sizeof(vec4) : 0u) + (emit_color ? sizeof(vec4) : 0u);
                     for (const auto uv : emit_uv) stride += uv ? sizeof(vec2) : 0u;
+                    stride += uint32_t(custom.size() * sizeof(std::array<float, 4>));
                     std::vector<std::byte> keys(prim_corners.size() * size_t(stride));
                     for (size_t i = 0; i < prim_corners.size(); ++i) {
                         auto *dst = keys.data() + i * stride;
@@ -957,6 +999,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                         for (uint32_t set = 0; set < emit_uv.size(); ++set) {
                             if (emit_uv[set]) append(corner_uv_sets[set][c.Corner]);
                         }
+                        for (const auto attribute : custom) append(custom_value(attribute, c));
                     }
                     export_refs.reserve(prim_corners.size());
                     indices.reserve(prim_corners.size());
@@ -1003,6 +1046,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     const auto uvs = gather_corner(corner_uv_sets[set]);
                     prim_attrs.emplace_back(fastgltf::Attribute{UvNames[set], AddDataAccessor(std::span<const vec2>(uvs), fastgltf::AccessorType::Vec2, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
                 }
+                for (const auto attribute : custom) EmitCustom(prim_attrs, attribute, export_refs, [&](const CornerRef &ref) { return custom_value(attribute, ref); });
 
                 if (has_skin) {
                     // Convert uvec4 joints to uint16_t[4] strided directly into bin.

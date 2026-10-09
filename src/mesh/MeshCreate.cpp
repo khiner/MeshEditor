@@ -29,6 +29,7 @@ std::optional<bool> NormalsMatch(vec3 normal, vec3 reference) {
 // Contains source-derived data without arena or store ownership.
 struct PreparedMesh {
     CornerLayers Layers;
+    std::vector<CustomAttribute> CustomCorners; // A face mesh's custom attributes in the corner order of its layers
     std::vector<vec3> AuthoredCornerNormals;
     // Target-major morph tangent deltas remain host-owned through welding.
     std::vector<vec3> MorphTangentDeltas;
@@ -87,8 +88,58 @@ PreparedMesh PrepareMeshSources(MeshData &data, MeshVertexAttributes &attrs, Mes
         gather_corners(attrs.TexCoords3, prepared.Layers.Uvs[3]);
         // Shading normals derive, so the authored stream only seeds the sharpness stores and the custom corner-normal layer.
         gather_corners(attrs.Normals, prepared.AuthoredCornerNormals, false);
+        for (auto &custom : attrs.Custom) {
+            const auto n = AttributeComponents(custom.Type);
+            auto &corners = prepared.CustomCorners.emplace_back(custom.Name, custom.Type);
+            corners.Words.reserve(size_t(data.HalfedgeCount()) * n);
+            const auto gather = [&](uint32_t v) { corners.Words.insert(corners.Words.end(), custom.Words.begin() + size_t(v) * n, custom.Words.begin() + size_t(v + 1u) * n); };
+            for (const auto v : data.FaceCorners) gather(v);
+            for (const auto &edge : data.Edges) {
+                gather(edge[1]);
+                gather(edge[0]);
+            }
+        }
+        attrs.Custom.clear();
     }
     return prepared;
+}
+
+// Adds each custom attribute to the created mesh: per vertex when every corner of each vertex agrees, and per corner otherwise.
+// A face-less mesh's attributes are per vertex.
+void CreateCustomAttributes(MeshStore &meshes, uint32_t id, std::span<const CustomAttribute> attributes, bool per_corner) {
+    const auto &a = meshes.Arenas();
+    const auto &record = meshes.Get(id);
+    const auto vertices = a.Vertices.Dense(record.Vertices), corners = a.FaceCorners.Dense(record.FaceCorners);
+    for (const auto &custom : attributes) {
+        const auto n = AttributeComponents(custom.Type);
+        std::vector<uint32_t> vertex_words;
+        bool uniform = true;
+        if (per_corner) {
+            vertex_words.assign(size_t(vertices.Count) * n, 0u);
+            std::vector<uint8_t> seen(vertices.Count, 0u);
+            const auto corner_vertices = a.FaceCorners.Get(corners);
+            for (uint32_t c = 0u; c < corners.Count && uniform; ++c) {
+                const auto v = corner_vertices[c] - vertices.Offset;
+                const auto value = std::span{custom.Words}.subspan(size_t(c) * n, n);
+                const auto stored = std::span{vertex_words}.subspan(size_t(v) * n, n);
+                if (!seen[v]) std::ranges::copy(value, stored.begin());
+                else uniform = std::ranges::equal(value, stored);
+                seen[v] = 1u;
+            }
+        }
+        const auto &words = per_corner && uniform ? vertex_words : custom.Words;
+        const auto handles = uniform ? vertices : corners;
+        const auto domain = uniform ? AttributeDomain::Vertex : AttributeDomain::Corner;
+        const auto attribute = meshes.AddAttribute(id, domain, custom.Type, {custom.Name.data(), strnlen(custom.Name.data(), custom.Name.size())}).value();
+        WithAttributeScalar(custom.Type, [&]<AttributeScalar T>() {
+            const auto values = std::make_unique<T[]>(handles.Count);
+            for (uint32_t i = 0u; i < handles.Count; ++i) {
+                if constexpr (std::same_as<T, bool>) values[i] = words[i] != 0u;
+                else std::memcpy(&values[i], &words[size_t(i) * n], sizeof(T));
+            }
+            meshes.SetAttribute<T>(attribute, handles.Offset, std::span<const T>{values.get(), handles.Count});
+        });
+    }
 }
 
 // Seed the sharpness stores of a new face mesh: flat where the source shades flat, then where its authored normals say so.
@@ -220,6 +271,8 @@ std::vector<CreatedMesh> CreateMeshes(state::Scene &r, std::span<MeshSource> sou
         auto &source = sources[i];
         auto &authored = prepared[i].AuthoredCornerNormals;
         meshes.CreateMesh(ids[i], source.Data, source.Attrs, source.Primitives, prepared[i].Layers, !authored.empty());
+        const bool faces = source.Data.FaceCount() > 0u;
+        CreateCustomAttributes(meshes, ids[i], faces ? prepared[i].CustomCorners : source.Attrs.Custom, faces);
         const Mesh mesh{meshes, ids[i]};
         InitializeSharpness(meshes, mesh, source.Data, source.Primitives, source.FlatShaded, authored);
         created.emplace_back(ids[i], std::move(prepared[i].MorphTangentDeltas), std::move(authored));

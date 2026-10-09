@@ -263,6 +263,53 @@ struct TopoContext {
 template<typename T>
 inline T TopoBilinear(T a, T b, T c, T d, float s, float t) { return mix(mix(a, b, s), mix(d, c, s), t); }
 
+// Named attributes travel as the words of their values, whose types use their component counts.
+inline TopologyAttribute TopoAttribute(TopoContext ctx, MeshTopologyJob job, uint i) {
+    return reinterpret_cast<device const TopologyAttribute *>(BindlessBuffer(uint, ctx.B.Buffer, job.Attributes.Slot) + job.Attributes.Offset)[i];
+}
+// The first and end records of a domain's attributes.
+inline uint2 TopoAttributeRun(MeshTopologyJob job, AttributeDomain domain) {
+    const uint d = uint(domain);
+    return uint2(d ? job.AttributeEnds[d - 1u] : 0u, job.AttributeEnds[d]);
+}
+// The attribute's source value at a handle, and its default without a source.
+inline uint4 TopoReadAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle) {
+    if (handle == InvalidOffset) return uint4(attribute.Default[0], attribute.Default[1], attribute.Default[2], attribute.Default[3]);
+    const uint index = ElementAttributeIndex(ctx.B, attribute.Source, handle);
+    device const uint *words = BindlessBuffer(uint, ctx.B.Buffer, attribute.Source.ValuesSlot);
+    if (attribute.Type == AttributeType::Bool) return uint4((words[index >> 5u] >> (index & 31u)) & 1u, 0u, 0u, 0u);
+    const uint n = AttributeComponents(attribute.Type);
+    uint4 value = uint4(0u);
+    for (uint c = 0u; c < n; ++c) value[c] = words[index * n + c];
+    return value;
+}
+// Bools share mask words with neighboring elements, so their bits write atomically.
+inline void TopoWriteAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle, uint4 value) {
+    const uint index = ElementAttributeIndex(ctx.B, attribute.Destination, handle);
+    device uint *words = BindlessBufferMutable(uint, ctx.B.Buffer, attribute.Destination.ValuesSlot);
+    if (attribute.Type == AttributeType::Bool) {
+        const uint mask = 1u << (index & 31u);
+        if (value.x != 0u) atomic_fetch_or_explicit(ctx.Atomic(words) + (index >> 5u), mask, memory_order_relaxed);
+        else atomic_fetch_and_explicit(ctx.Atomic(words) + (index >> 5u), ~mask, memory_order_relaxed);
+        return;
+    }
+    const uint n = AttributeComponents(attribute.Type);
+    for (uint c = 0u; c < n; ++c) words[index * n + c] = value[c];
+}
+// Writes each attribute of the domain at a handle from its value at a source handle.
+inline void TopoCopyAttributes(TopoContext ctx, MeshTopologyJob job, AttributeDomain domain, uint handle, uint source) {
+    const uint2 run = TopoAttributeRun(job, domain);
+    for (uint i = run.x; i < run.y; ++i) {
+        const TopologyAttribute attribute = TopoAttribute(ctx, job, i);
+        TopoWriteAttribute(ctx, attribute, handle, TopoReadAttribute(ctx, attribute, source));
+    }
+}
+// Floats interpolate bilinearly, and ints and bools take the source of the dominant weight.
+inline uint4 TopoInterpolateAttribute(TopologyAttribute attribute, uint4 a, uint4 b, uint4 c, uint4 d, float s, float t) {
+    if (attribute.Type == AttributeType::Int || attribute.Type == AttributeType::Bool) return t < 0.5f ? (s < 0.5f ? a : b) : (s < 0.5f ? d : c);
+    return as_type<uint4>(TopoBilinear(as_type<float4>(a), as_type<float4>(b), as_type<float4>(c), as_type<float4>(d), s, t));
+}
+
 inline bool TopoTransformsCopies(MeshTopologyJob job) { return (job.Flags & TopologyFlagTransformCopies) != 0u; }
 inline bool TopoFlipsCopies(MeshTopologyJob job) { return (job.Flags & TopologyFlagFlipCopies) != 0u || job.Op == MeshTopologyOp::Solidify; }
 

@@ -107,5 +107,9 @@ struct MeshTopologyJob {
     SlotOffset DstTriangleSources DEFAULT();
     // Optional output-vertex basis for staged inset parameter updates.
     SlotOffset DstInsetBasis DEFAULT();
+    // The words of the named attributes the gathers carry, as TopologyAttribute records ordered by domain.
+    // AttributeEnds holds the end of each AttributeDomain's run, which starts at the previous domain's end.
+    SlotOffset Attributes DEFAULT();
+    GpuArray<uint32_t, 4> AttributeEnds DEFAULT();
 };
-static_assert(sizeof(MeshTopologyJob) == 680, "MeshTopologyJob size");
+static_assert(sizeof(MeshTopologyJob) == 704, "MeshTopologyJob size");

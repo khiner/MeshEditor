@@ -5,6 +5,7 @@
 #include "mesh/Decimate.h"
 #include "mesh/GeometryRefresh.h"
 #include "mesh/Mesh.h"
+#include "mesh/MeshClone.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshTopology.h"
@@ -17,6 +18,8 @@
 #include "metal/Shader.h"
 #include "state/Scene.h"
 #include <cmath>
+#include <numeric>
+#include <set>
 #include <stdexcept>
 
 using namespace boost::ut;
@@ -108,6 +111,162 @@ Outcome Describe(const MeshStore &meshes, uint32_t source, const GeometryTopolog
         outcome.Elements[6u + d++] = Shapes(mesh, element, all.Get(element));
     }
     return outcome;
+}
+
+// Named attributes of every type on every domain, each following fixed channels the gathers carry by the same rule, so outputs check against those channels.
+// Vertices follow the morph target and the skin, and corners the first UV set and the color, whose blue holds the integers.
+// Faces follow their primitive and sharpness, and edges hold distinct integers, raised by 1000 on sharp edges, beside their sharpness.
+constexpr std::array AttributeDomains{AttributeDomain::Vertex, AttributeDomain::Edge, AttributeDomain::Face, AttributeDomain::Corner};
+constexpr std::array AttributeKinds{AttributeType::Float, AttributeType::Vec3, AttributeType::Int, AttributeType::Bool};
+constexpr std::array<std::array<std::string_view, 4>, 4> AttributeNames{{
+    {"vertex_float", "vertex_vec3", "vertex_int", "vertex_bool"},
+    {"edge_float", "edge_vec3", "edge_int", "edge_bool"},
+    {"face_float", "face_vec3", "face_int", "face_bool"},
+    {"corner_float", "corner_vec3", "corner_int", "corner_bool"},
+}};
+constexpr std::array Blues{1.f, 1000.f, 1000000.f};
+
+template<AttributeScalar T> AttributeValue Bits(T value) {
+    AttributeValue bits{};
+    std::memcpy(bits.data(), &value, sizeof(T));
+    return bits;
+}
+
+vec3 FaceVector(int32_t p) { return {float(p), -float(p), 2.f * float(p)}; }
+float FaceFloat(int32_t p) { return 1.5f * float(p) + .25f; }
+vec3 EdgeVector(int32_t v) { return {float(v), -float(v), .5f * float(v)}; }
+float EdgeFloat(int32_t v) { return .5f * float(v); }
+
+// Writes an attribute over a dense record domain from the value of each handle.
+template<AttributeScalar T> void Fill(MeshStore &meshes, uint32_t id, std::string_view name, Range handles, auto &&value) {
+    const auto values = std::make_unique<T[]>(handles.Count);
+    for (uint32_t i = 0u; i < handles.Count; ++i) values[i] = value(handles.Offset + i);
+    meshes.SetAttribute<T>(meshes.FindAttribute(id, name), handles.Offset, std::span<const T>{values.get(), handles.Count});
+}
+
+// The patchwork with a morph target, skin, UVs, colors, a primitive per face and every third face and edge sharp, and the named attributes over them.
+// Returns the mesh and its edge integers.
+std::pair<uint32_t, std::set<int32_t>> CreateAttributed(GeometryFixture &f) {
+    auto data = Patchwork();
+    const auto vertex_count = uint32_t(data.Positions.size()), face_count = data.FaceCount();
+    MeshSource source{.Data = std::move(data)};
+    ArmatureDeformData deform;
+    MorphTargetData morph{.TargetCount = 1u, .DefaultWeights = {0.f}};
+    std::vector<vec2> uvs;
+    std::vector<vec4> colors;
+    for (uint32_t i = 0u; i < vertex_count; ++i) {
+        uvs.push_back({.5f * float(i), 1.f - .25f * float(i)});
+        colors.push_back({.1f * float(i), 2.f - .3f * float(i), Blues[i % 3u], 1.f});
+        deform.Joints.push_back({i * 3u % 17u, i % 2u, 0u, 0u});
+        deform.Weights.push_back({1.f, 0.f, 0.f, 0.f});
+        morph.PositionDeltas.push_back({.25f * float(i), .5f * float(i) + .25f, -.25f * float(i)});
+        morph.NormalDeltas.push_back({3.f * float(i) - 7.f, 0.f, 0.f});
+    }
+    source.Attrs.TexCoords0 = std::move(uvs);
+    source.Attrs.Colors0 = std::move(colors);
+    source.Attrs.Colors0ComponentCount = 4u;
+    std::vector<uint32_t> primitives(face_count);
+    std::iota(primitives.begin(), primitives.end(), 0u);
+    source.Primitives = {.ElementPrimitiveIndices = std::move(primitives), .MaterialIndices = std::vector<uint32_t>(face_count, 0u)};
+    source.Deform = std::move(deform);
+    source.Morph = std::move(morph);
+    const auto id = CreateMesh(f.Scene, std::move(source)).StoreId;
+    auto &meshes = f.Store();
+    {
+        const auto mesh = f.Get(id);
+        GeometrySelection faces, edges;
+        for (const auto face : mesh.faces())
+            if (mesh.FaceOrdinal(face) % 3u == 0u) faces.Faces.push_back(*face);
+        for (uint32_t e = 0u; e < mesh.EdgeCount(); e += 3u) edges.Edges.push_back(*mesh.EdgeAt(e));
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        const SharpnessOperationTarget sharp_faces{id, faces}, sharp_edges{id, edges};
+        ExecuteGeometrySharpness(f.Scene, chain, std::span{&sharp_faces, 1u}, EditSharpnessOperation::SetSelectedFaces, true);
+        ExecuteGeometrySharpness(f.Scene, chain, std::span{&sharp_edges, 1u}, EditSharpnessOperation::SetSelectedEdges, true);
+    }
+    const std::array<std::array<AttributeValue, 4>, 4> defaults{{
+        {},
+        {Bits(EdgeFloat(-1)), Bits(EdgeVector(-1)), Bits(int32_t{-1}), {}},
+        {Bits(FaceFloat(0)), Bits(FaceVector(0)), {}, {}},
+        {Bits(1.f), Bits(vec3{0.f, 0.f, 1.f}), Bits(int32_t{1}), {}},
+    }};
+    for (uint32_t d = 0u; d < 4u; ++d)
+        for (uint32_t k = 0u; k < 4u; ++k) expect(fatal(meshes.AddAttribute(id, AttributeDomains[d], AttributeKinds[k], AttributeNames[d][k], defaults[d][k]).has_value()));
+    const auto &a = meshes.Arenas();
+    const auto &record = meshes.Get(id);
+    const auto vertices = a.Vertices.Dense(record.Vertices), edges = a.EdgeHalfedges.Dense(record.EdgeData), faces = a.FaceTriangles.Dense(record.FaceData), corners = a.FaceCorners.Dense(record.FaceCorners);
+    Fill<float>(meshes, id, "vertex_float", vertices, [&](uint32_t v) { return a.Morph.Get(v, 0u).NormalDelta.x; });
+    Fill<vec3>(meshes, id, "vertex_vec3", vertices, [&](uint32_t v) { return a.Morph.Get(v, 0u).PositionDelta; });
+    Fill<int32_t>(meshes, id, "vertex_int", vertices, [&](uint32_t v) { return int32_t(a.Skin.Get(v).Joints.x); });
+    Fill<bool>(meshes, id, "vertex_bool", vertices, [&](uint32_t v) { return a.Skin.Get(v).Joints.y != 0u; });
+    const auto edge_value = [&](uint32_t e) { return int32_t(e - edges.Offset) + (a.EdgeSharpness.Get({e, 1u})[0] ? 1000 : 0); };
+    std::set<int32_t> edge_values;
+    for (uint32_t e = edges.Offset; e < edges.Offset + edges.Count; ++e) edge_values.insert(edge_value(e));
+    Fill<float>(meshes, id, "edge_float", edges, [&](uint32_t e) { return EdgeFloat(edge_value(e)); });
+    Fill<vec3>(meshes, id, "edge_vec3", edges, [&](uint32_t e) { return EdgeVector(edge_value(e)); });
+    Fill<int32_t>(meshes, id, "edge_int", edges, edge_value);
+    Fill<bool>(meshes, id, "edge_bool", edges, [&](uint32_t e) { return a.EdgeSharpness.Get({e, 1u})[0] != 0u; });
+    const auto primitive = [&](uint32_t face) { return int32_t(a.FacePrimitives.Get(face)); };
+    Fill<float>(meshes, id, "face_float", faces, [&](uint32_t face) { return FaceFloat(primitive(face)); });
+    Fill<vec3>(meshes, id, "face_vec3", faces, [&](uint32_t face) { return FaceVector(primitive(face)); });
+    Fill<int32_t>(meshes, id, "face_int", faces, primitive);
+    Fill<bool>(meshes, id, "face_bool", faces, [&](uint32_t face) { return a.FaceSharpness.Get({face, 1u})[0] != 0u; });
+    Fill<float>(meshes, id, "corner_float", corners, [&](uint32_t h) { return a.CornerColors.Get(h).y; });
+    Fill<vec3>(meshes, id, "corner_vec3", corners, [&](uint32_t h) { return vec3{a.CornerUvs[0].Get(h).x, a.CornerUvs[0].Get(h).y, a.CornerColors.Get(h).x}; });
+    Fill<int32_t>(meshes, id, "corner_int", corners, [&](uint32_t h) { return int32_t(a.CornerColors.Get(h).z); });
+    Fill<bool>(meshes, id, "corner_bool", corners, [&](uint32_t h) { return a.CornerColors.Get(h).z >= 1000.f; });
+    return {id, std::move(edge_values)};
+}
+
+// Checks every element of the record against the fixed channels its attributes follow.
+// A copied output renumbers its primitives, so its face integers only come from the source.
+void CheckAttributed(const MeshStore &meshes, uint32_t id, const std::set<int32_t> &edge_values, uint32_t face_count, bool copied) {
+    const auto &a = meshes.Arenas();
+    const auto &record = meshes.Get(id);
+    // The attributes of a domain in AttributeKinds order.
+    const auto views = [&](uint32_t d) {
+        const auto find = [&](uint32_t k) { return meshes.FindAttribute(id, AttributeNames[d][k]); };
+        return std::tuple{meshes.AttributeView<float>(find(0u)), meshes.AttributeView<vec3>(find(1u)), meshes.AttributeView<int32_t>(find(2u)), meshes.AttributeView<bool>(find(3u))};
+    };
+    const auto [vf, vv, vi, vb] = views(0u);
+    a.Vertices.ForEach(record.Vertices, [&](uint32_t v, uint32_t) {
+        const auto morph = a.Morph.Get(v, 0u);
+        const auto skin = a.Skin.Get(v);
+        expect(vf[v] == morph.NormalDelta.x);
+        expect(vv[v] == morph.PositionDelta);
+        expect(vi[v] == int32_t(skin.Joints.x));
+        expect(vb[v] == (skin.Joints.y != 0u));
+    });
+    const auto [ef, ev, ei, eb] = views(1u);
+    a.EdgeHalfedges.ForEach(record.EdgeData, [&](uint32_t e, uint32_t) {
+        const auto value = ei[e];
+        const bool sharp = a.EdgeSharpness.Get({e, 1u})[0] != 0u;
+        expect(edge_values.contains(value) || value == -1) << "edge" << e << "holds" << value;
+        expect((value >= 1000) == sharp);
+        expect(eb[e] == sharp);
+        expect(ef[e] == EdgeFloat(value));
+        expect(ev[e] == EdgeVector(value));
+    });
+    const auto [ff, fv, fi, fb] = views(2u);
+    a.FaceTriangles.ForEach(record.FaceData, [&](uint32_t face, uint32_t) {
+        const auto value = fi[face];
+        if (copied) expect(value >= 0 && uint32_t(value) < face_count);
+        else expect(value == int32_t(a.FacePrimitives.Get(face)));
+        expect(ff[face] == FaceFloat(value));
+        expect(fv[face] == FaceVector(value));
+        expect(fb[face] == (a.FaceSharpness.Get({face, 1u})[0] != 0u));
+    });
+    const auto [cf, cv, ci, cb] = views(3u);
+    const auto blue = [](float value) { return std::ranges::contains(Blues, value); };
+    a.FaceCorners.ForEach(record.FaceCorners, [&](uint32_t h, uint32_t) {
+        const auto uv = a.CornerUvs[0].Get(h);
+        const auto color = a.CornerColors.Get(h);
+        expect(cf[h] == color.y);
+        expect(cv[h] == vec3{uv.x, uv.y, color.x});
+        // Blue mixes where corner sources differ, and the integer takes the dominant source.
+        expect(blue(float(ci[h])));
+        if (blue(color.z)) expect(ci[h] == int32_t(color.z));
+        expect(cb[h] == (ci[h] >= 1000));
+    });
 }
 } // namespace
 
@@ -357,6 +516,73 @@ void RegisterGeometryOperationsTests() {
                 expect(by_list == by_masks);
             };
         }
+    };
+    "named attributes carry through topology operators on every domain"_test = [] {
+        using enum MeshTopologyOp;
+        const std::array<TopologyCase, 7> cases{{
+            {"ExtrudeRegion", Op(ExtrudeRegion)},
+            {"Subdivide", Op(Subdivide, 1.f)},
+            {"DuplicateGeometry", Op(DuplicateGeometry)},
+            {"DeleteFaces", Op(DeleteFaces)},
+            {"InsetRegion", Op(InsetRegion, .1f)},
+            {"MergeByDistance", {}, [](const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection) { return MergeTask(meshes, mesh, selection, GeometryMergeMode::ByDistance, .1f, InvalidOffset); }},
+            {"KeepSelectedFaces", Op(KeepSelectedFaces, 0.f, 0u, 1u, Element::Face)},
+        }};
+        GeometryFixture f;
+        for (const auto &c : cases) {
+            boost::ut::test(std::string{c.Name}) = [&] {
+                const auto [id, edge_values] = CreateAttributed(f);
+                const auto face_count = f.Get(id).FaceCount();
+                CheckAttributed(f.Store(), id, edge_values, face_count, false);
+                const auto task = PlanCase(c, f.Store(), f.Get(id));
+                expect(fatal(task.has_value()));
+                const auto result = f.Run(*task);
+                expect(result.Changed);
+                CheckAttributed(f.Store(), result.GeometryId, edge_values, face_count, result.GeometryId != id);
+            };
+        }
+    };
+    "named attributes clone independently and release their payloads"_test = [] {
+        GeometryFixture f;
+        auto &meshes = f.Store();
+        const auto id = f.Create(Quad());
+        expect(meshes.AddAttribute(id, AttributeDomain::Vertex, AttributeType::Float, "") == std::unexpected{MeshStore::AttributeError::InvalidName});
+        expect(meshes.AddAttribute(id, AttributeDomain::Vertex, AttributeType::Float, std::string(64u, 'x')) == std::unexpected{MeshStore::AttributeError::InvalidName});
+        const auto weight = meshes.AddAttribute(id, AttributeDomain::Vertex, AttributeType::Float, "weight");
+        expect(fatal(weight.has_value()));
+        expect(meshes.AddAttribute(id, AttributeDomain::Face, AttributeType::Int, "weight") == std::unexpected{MeshStore::AttributeError::Duplicate});
+        const auto vertices = meshes.Arenas().Vertices.Dense(meshes.Get(id).Vertices);
+        const std::array values{1.f, 2.f, 3.f, 4.f};
+        meshes.SetAttribute<float>(*weight, vertices.Offset, values);
+        CloneCopies copies;
+        const auto clone = meshes.CloneMeshes(copies, std::array{id}).front();
+        {
+            mtl::ComputeChain chain{meshes.BufferContext()};
+            copies.Encode(chain, GetMeshPipelines(f.Scene));
+            chain.Submit();
+        }
+        const auto copy = meshes.FindAttribute(clone, "weight");
+        expect(fatal(copy != InvalidOffset && copy != *weight));
+        const auto clone_vertices = meshes.Arenas().Vertices.Dense(meshes.Get(clone).Vertices);
+        for (uint32_t i = 0u; i < 4u; ++i) expect(meshes.AttributeView<float>(copy)[clone_vertices.Offset + i] == values[i]);
+        const std::array changed{9.f, 9.f, 9.f, 9.f};
+        meshes.SetAttribute<float>(copy, clone_vertices.Offset, changed);
+        for (uint32_t i = 0u; i < 4u; ++i) {
+            expect(meshes.AttributeView<float>(*weight)[vertices.Offset + i] == values[i]);
+            expect(meshes.AttributeView<float>(copy)[clone_vertices.Offset + i] == 9.f);
+        }
+        // Released payloads are free, so the next attribute takes them.
+        const std::array clone_blocks{clone_vertices.Offset / MeshElementBlockSize};
+        const auto payloads = meshes.AttributePayloadBlocks(copy, clone_blocks);
+        expect(payloads.size() == 1u);
+        meshes.Release(clone);
+        const auto again = meshes.AddAttribute(id, AttributeDomain::Vertex, AttributeType::Float, "again");
+        expect(fatal(again.has_value()));
+        const std::array blocks{vertices.Offset / MeshElementBlockSize};
+        expect(meshes.AttributePayloadBlocks(*again, blocks) == payloads);
+        meshes.ReleaseAttribute(*again);
+        expect(meshes.FindAttribute(id, "again") == InvalidOffset);
+        expect(meshes.FindAttribute(id, "weight") == *weight);
     };
     "topology writes emitted selection into explicit destination masks"_test = [] {
         GeometryFixture f;

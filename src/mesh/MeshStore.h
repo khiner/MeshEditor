@@ -37,6 +37,7 @@
 #include "mesh/ElementAttributeView.h"
 #include "mesh/GeometrySelection.h"
 #include "mesh/MeshletIndex.h"
+#include "mesh/NamedAttribute.h"
 #include "mesh/PoseAttributeView.h"
 #include "mesh/SelectionQuery.h"
 #include "mesh/SelectionView.h"
@@ -47,6 +48,7 @@
 #include "numeric/uvec4.h"
 #include "numeric/vec2.h"
 
+#include <expected>
 #include <mutex>
 
 namespace mtl {
@@ -116,6 +118,37 @@ struct RenderArenas {
     void ReleaseMeshletStorage(std::span<const uint32_t> handles);
 };
 
+// The payload blocks of every named attribute of one value type, shared by all records and domains.
+template<AttributeScalar T>
+struct AttributePayloads {
+    using Block = AttributeBlock<T>;
+    explicit AttributePayloads(mtl::BufferContext &ctx) : Values{ctx, SlotType::Buffer}, Owners{ctx, SlotType::Buffer} {}
+    BufferArena<Block> Values;
+    BufferArena<uint32_t> Owners; // Mirrors Values: each payload block's attribute plus one, and zero when free
+};
+struct AttributeArenas {
+    explicit AttributeArenas(mtl::BufferContext &);
+    AttributePayloads<float> Floats;
+    AttributePayloads<vec2> Vec2s;
+    AttributePayloads<vec3> Vec3s;
+    AttributePayloads<vec4> Vec4s;
+    AttributePayloads<int32_t> Ints;
+    AttributePayloads<bool> Bools;
+    BufferArena<uint32_t> Tables; // Every named attribute's table run
+};
+template<AttributeScalar T> auto &PayloadsOf(auto &arenas) {
+    if constexpr (std::same_as<T, float>) return arenas.Floats;
+    else if constexpr (std::same_as<T, vec2>) return arenas.Vec2s;
+    else if constexpr (std::same_as<T, vec3>) return arenas.Vec3s;
+    else if constexpr (std::same_as<T, vec4>) return arenas.Vec4s;
+    else if constexpr (std::same_as<T, int32_t>) return arenas.Ints;
+    else return arenas.Bools;
+}
+// Visits the payloads of one value type.
+decltype(auto) WithPayloads(auto &arenas, AttributeType type, auto &&fn) {
+    return WithAttributeScalar(type, [&]<AttributeScalar T>() -> decltype(auto) { return fn(PayloadsOf<T>(arenas)); });
+}
+
 // Every mesh arena, one per GPU-readable stream.
 // Mirrors use canonical element or block indices from their owning domain.
 struct MeshArenas {
@@ -157,6 +190,7 @@ struct MeshArenas {
     ElementAttribute<NormalSector> NormalSectors; // Canonical base normals at sector roots
     BufferArena<vec3> BaseVertexNormals; // Mirrors Vertices: derived smooth normals for triangle meshes, authored normals for face-less meshes
     BufferArena<vec3> BaseFaceNormals; // Mirrors FaceTriangles, one derived face normal per face slot
+    AttributeArenas Named;
     RenderArenas Render;
 };
 
@@ -403,6 +437,53 @@ struct MeshStore {
     void SetCustomCornerNormals(uint32_t id, std::span<const CustomNormal> offsets);
     void SetMorphShadingAuthored(uint32_t id, bool);
 
+    // Named attributes hold a value at every element of a domain of their record, in payload blocks attached to the domain's element blocks.
+    // An attribute's id is its slot, and payloads attach and release with the record's membership, clone with the record and release with it.
+    enum class AttributeError { InvalidName,
+                                Duplicate };
+    // Adds an attribute holding `fallback` at every element, which also fills elements an edit creates without a source.
+    // A name is unique within its record and fits AttributeName with its terminator.
+    std::expected<uint32_t, AttributeError> AddAttribute(uint32_t id, AttributeDomain, AttributeType, std::string_view name, AttributeValue fallback = {});
+    // The record's attribute with this name, or InvalidOffset.
+    uint32_t FindAttribute(uint32_t id, std::string_view name) const;
+    void ReleaseAttribute(uint32_t attribute);
+    const NamedAttribute &GetAttribute(uint32_t attribute) const { return NamedAttributes.at(attribute); }
+    // Visits the record's attributes in slot order, a scan of every attribute that authoring, cloning, release and topology setup make.
+    void ForEachNamedAttribute(uint32_t id, auto &&visit) const {
+        for (uint32_t a = 0u; a < NamedAttributes.size(); ++a)
+            if (NamedAttributes[a].Record == id) visit(a, NamedAttributes[a]);
+    }
+    template<AttributeScalar T> NamedAttributeView<T> AttributeView(uint32_t attribute) const {
+        const auto &entry = TypedAttribute<T>(attribute);
+        return {Buffers.Named.Tables.Get(entry.Table), entry.FirstBlock, PayloadsOf<T>(Buffers.Named).Values.Buffer.template GetSpan<AttributeBlock<T>>()};
+    }
+    // Writes `values` to the consecutive handles from `first`, capturing their pages.
+    template<AttributeScalar T> void SetAttribute(uint32_t attribute, uint32_t first, std::span<const T> values) {
+        const auto &entry = TypedAttribute<T>(attribute);
+        const auto table = Buffers.Named.Tables.Get(entry.Table);
+        auto &payloads = PayloadsOf<T>(Buffers.Named).Values;
+        for (uint32_t i = 0u; i < values.size();) {
+            const auto handle = first + i, slot = handle % MeshElementBlockSize;
+            const auto count = std::min(uint32_t(values.size()) - i, MeshElementBlockSize - slot);
+            const auto word = handle / MeshElementBlockSize - entry.FirstBlock;
+            if (word >= table.size() || !table[word]) throw std::out_of_range("Attribute payload is absent.");
+            auto &block = payloads.GetMutable({table[word] - 1u, 1u})[0];
+            for (uint32_t j = 0u; j < count; ++j) {
+                if constexpr (std::same_as<T, bool>) {
+                    const auto bit = 1u << ((slot + j) % 32u);
+                    auto &mask = block[(slot + j) / 32u];
+                    mask = values[i + j] ? mask | bit : mask & ~bit;
+                } else block[slot + j] = values[i + j];
+            }
+            i += count;
+        }
+    }
+    NamedAttributeRef AttributeRef(uint32_t attribute) const;
+    // The payload blocks of the attribute at the element blocks that have one.
+    std::vector<uint32_t> AttributePayloadBlocks(uint32_t attribute, std::span<const uint32_t> blocks) const;
+    // Captures the payload pages of the record's attributes of `domain` at the element blocks before a GPU write.
+    void CaptureAttributeWrites(uint32_t id, AttributeDomain, std::span<const uint32_t> blocks) const;
+
     // Copies tetrahedral wireframe geometry into GPU-only canonical arenas.
     TetBuffers AllocateTets(std::span<const vec3> positions, std::span<const uint32_t> edge_indices);
     void ReleaseTets(TetBuffers);
@@ -516,6 +597,7 @@ private:
     uint64_t NextNormalRevision{};
     std::vector<uint32_t> FreeIds{};
     std::vector<uint32_t> Released{};
+    std::vector<NamedAttribute> NamedAttributes{};
 
     struct HistoryState;
     std::unique_ptr<HistoryState> Tracked;
@@ -533,6 +615,22 @@ private:
     void SyncMirrors();
     // Fill the base vertex-normal mirror over `vertices`: a face-less mesh's point normals, zero otherwise (triangle meshes rederive the region).
     void FillBaseVertexNormalMirror(ElementSetRef vertices, Range point_normals);
+
+    template<AttributeScalar T> const NamedAttribute &TypedAttribute(uint32_t attribute) const {
+        const auto &entry = NamedAttributes.at(attribute);
+        if (entry.Record == InvalidOffset || entry.Type != AttributeTypeOf<T>) throw std::invalid_argument("Attribute type differs from its access.");
+        return entry;
+    }
+    // Captures the attribute before a write.
+    NamedAttribute &WriteAttribute(uint32_t attribute);
+    // Takes the lowest free slot for the entry.
+    uint32_t AcquireAttribute(NamedAttribute &&);
+    // Attaches a payload holding the attribute's default to each ascending element block without one, growing its table run to cover them.
+    void AttachAttributeBlocks(uint32_t attribute, std::span<const uint32_t> blocks);
+    // Releases the attribute's payloads at the element blocks.
+    void ReleaseAttributeBlocks(uint32_t attribute, std::span<const uint32_t> blocks);
+    // Gives the clone a copy of each source attribute, its payloads copied on `copies` to the clone's mapped blocks.
+    void CloneAttributes(CloneCopies &, uint32_t source, uint32_t clone, const std::array<Range, 6> &maps);
 };
 
 // Visits the arena of one element domain, which every caller resolves before calling.

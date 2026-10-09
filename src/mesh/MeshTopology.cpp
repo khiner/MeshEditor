@@ -412,6 +412,24 @@ std::vector<uint32_t> Union(std::vector<uint32_t> a, std::span<const uint32_t> b
     return a;
 }
 
+// Uploads a record of each named attribute of the source, which carries it to the output's attribute of the same name, in runs by domain.
+// An in-place edit reads its source payloads through the batch's clones.
+void UploadTopologyAttributes(const MeshStore &meshes, uint32_t source, uint32_t output, const TopologyReadView *view, BufferArena<uint32_t> &scratch, MeshTopologyJob &job) {
+    std::vector<TopologyAttribute> attributes;
+    for (uint32_t d = 0u; d < job.AttributeEnds.size(); ++d) {
+        meshes.ForEachNamedAttribute(source, [&](uint32_t attribute, const NamedAttribute &entry) {
+            if (uint32_t(entry.Domain) != d) return;
+            auto read = meshes.AttributeRef(attribute);
+            if (view) read.ValuesSlot = view->AttributeValues[uint32_t(entry.Type)];
+            attributes.push_back({.Type = entry.Type, .Source = read, .Destination = meshes.AttributeRef(meshes.FindAttribute(output, entry.NameView())), .Default = entry.Default});
+        });
+        job.AttributeEnds[d] = uint32_t(attributes.size());
+    }
+    if (attributes.empty()) return;
+    const auto words = scratch.Allocate(std::span{reinterpret_cast<const uint32_t *>(attributes.data()), attributes.size() * sizeof(TopologyAttribute) / sizeof(uint32_t)});
+    job.Attributes = {scratch.Buffer.Slot, words.Offset};
+}
+
 // Ascending blocks of inserted handles, a run or a list in `list`.
 std::vector<uint32_t> InsertedBlocks(ElementHandleRange handles, const mtl::Buffer &list) {
     if (handles.Handles.Slot == InvalidSlot) return RunBlocks(handles.First, handles.Count);
@@ -889,10 +907,12 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
         plan.NewFaces = meshes.InsertElements(edit->StoreId, D::Face, edit->Output->NewCounts[1], &chain.Scratch);
         job.DstCornerOffset = meshes.InsertElements(edit->StoreId, D::Halfedge, counts.Halfedges, nullptr).First;
         job.DstTriangleOffset = edit->FirstTriangle = meshes.InsertElements(edit->StoreId, D::Triangle, edit->AddedTriangleCount, nullptr).First;
+        // Every new edge holds an emitted halfedge, and a line holds two.
+        plan.NewEdges = meshes.InsertElements(edit->StoreId, D::Edge, counts.Faces ? counts.Halfedges : counts.Halfedges / 2u, &chain.Scratch);
         edit->Output->Assign(r, chain, {edit->NewVertices, plan.NewFaces});
     }
     // Emission, incidence repair, edges, fans, edge attributes and the corner class counts share one submit.
-    // New edges and fan items are inserted for bounds the host knows, then trimmed to the counts that submit reports.
+    // New edges and fan items take bounds the host knows, then trim to the counts that submit reports.
     std::vector<Batch::Upload> emissions;
     std::vector<MeshConnectivityJob> fan_jobs;
     std::vector<uint32_t> fan_vertex_blocks;
@@ -919,7 +939,11 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
         batch.SetDomainTiles(DstVertices, std::array{TileCount(counts.Vertices, TileElements)});
         batch.SetDomainTiles(DstHalfedges, std::array{TileCount(counts.Halfedges, TileElements)});
         batch.SetDomainTiles(DstFaces, std::array{TileCount(counts.Faces, TileElements)});
+        UploadTopologyAttributes(meshes, edit->SourceId, edit->StoreId, plan.SourceView.get(), chain.Scratch, job);
         CaptureTopologyEmitWrites(r, job, edit->AddedTriangleCount, vertex_blocks, face_blocks, edit->SelectionOutput);
+        meshes.CaptureAttributeWrites(edit->StoreId, AttributeDomain::Vertex, vertex_blocks);
+        meshes.CaptureAttributeWrites(edit->StoreId, AttributeDomain::Face, face_blocks);
+        meshes.CaptureAttributeWrites(edit->StoreId, AttributeDomain::Corner, RunBlocks(job.DstCornerOffset, counts.Halfedges));
         emissions.push_back(batch.Encode(chain, pipelines, plan.Constants, TopologyEmissionPasses(job.CollapseCount != 0u)));
         const auto &before = plan.Neighborhood;
         const std::array emitted{ElementHandleRange{.Handles = job.DstVertexHandles, .Count = counts.Vertices}, ElementHandleRange{.First = job.DstCornerOffset, .Count = counts.Halfedges}, ElementHandleRange{.Handles = job.DstFaceHandles, .Count = counts.Faces}};
@@ -927,8 +951,6 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
         // Emission replaces the core's loops inside the neighborhood, so the repaired counts are known before the pass runs.
         const std::array<uint32_t, 3> repaired = fresh ? std::array{counts.Vertices, counts.Halfedges, counts.Faces} : std::array{before.Counts[0] + edit->Output->NewCounts[0], before.Counts[1] - plan.Core.Counts[1] + counts.Halfedges, before.Counts[2] - plan.Core.Counts[2] + counts.Faces};
         edit->RetiredEdges = AllocateElementWork(chain.Scratch, a.EdgeHalfedges.Capacity(), before.Counts[3]);
-        // Every new edge holds an emitted halfedge, and a line holds two.
-        plan.NewEdges = meshes.InsertElements(edit->StoreId, D::Edge, counts.Faces ? counts.Halfedges : counts.Halfedges / 2u, &chain.Scratch);
         MeshConnectivityJob connectivity{
             .Corners = {a.FaceCorners.Buffer.Slot, 0u},
             .Connectivity = job.DstConnectivity,
@@ -957,6 +979,7 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
         auto repaired_face_blocks = Union(WorkBlocks(chain.Scratch, before.Elements[2], 0u), face_blocks);
         CaptureConnectivityPrepareWrites(r, rebuilt.Jobs[0], vertex_blocks, Union(WorkBlocks(chain.Scratch, before.Elements[1], 0u), run_blocks), repaired_face_blocks);
         CaptureTopologyEdgeWrites(r, edge_blocks, edit->SelectionOutput);
+        meshes.CaptureAttributeWrites(edit->StoreId, AttributeDomain::Edge, edge_blocks);
         rebuilt.Encode(chain, pipelines, TiledJobPushConstants{}, ConnectivityPasses);
         fan_jobs.push_back(rebuilt.Jobs[0]);
         fan_vertex_blocks.insert(fan_vertex_blocks.end(), vertex_blocks.begin(), vertex_blocks.end());

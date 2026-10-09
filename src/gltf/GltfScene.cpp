@@ -225,6 +225,49 @@ std::expected<void, std::string> AppendColor0(
     return {};
 }
 
+// Appends each `_NAME` attribute of the primitive, and keeps every custom attribute aligned with the merged vertices.
+// A scalar of integers that are not normalized is an integer attribute, and other accessors are floats of their component count.
+std::expected<void, std::string> AppendCustomAttributes(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, ::MeshVertexAttributes &attrs, uint32_t base_vertex, size_t count) {
+    for (const auto &attribute : primitive.attributes) {
+        const std::string_view name{attribute.name};
+        if (!name.starts_with('_')) continue;
+        const auto &accessor = asset.accessors[attribute.accessorIndex];
+        if (accessor.count != count) return std::unexpected{std::format("glTF primitive {} count ({}) must match POSITION count ({}).", name, accessor.count, count)};
+        if (name.size() >= AttributeName{}.size()) {
+            std::cerr << std::format("Warning: glTF attribute {} exceeds {} bytes; ignoring it.\n", name, AttributeName{}.size() - 1u);
+            continue;
+        }
+        const bool integer = accessor.type == fastgltf::AccessorType::Scalar && accessor.componentType != fastgltf::ComponentType::Float && !accessor.normalized;
+        AttributeType type;
+        switch (accessor.type) {
+            case fastgltf::AccessorType::Scalar: type = integer ? AttributeType::Int : AttributeType::Float; break;
+            case fastgltf::AccessorType::Vec2: type = AttributeType::Vec2; break;
+            case fastgltf::AccessorType::Vec3: type = AttributeType::Vec3; break;
+            case fastgltf::AccessorType::Vec4: type = AttributeType::Vec4; break;
+            default: return std::unexpected{std::format("glTF attribute {} must be a scalar or a vector.", name)};
+        }
+        auto custom = std::ranges::find_if(attrs.Custom, [&](const auto &c) { return std::string_view{c.Name.data()} == name; });
+        if (custom == attrs.Custom.end()) {
+            custom = attrs.Custom.insert(attrs.Custom.end(), {.Type = type, .Words = std::vector<uint32_t>(size_t(base_vertex) * AttributeComponents(type), 0u)});
+            std::ranges::copy(name, custom->Name.begin());
+        } else if (custom->Type != type) return std::unexpected{std::format("glTF attribute {} changes type between primitives of a mesh.", name)};
+        const auto n = AttributeComponents(type);
+        custom->Words.resize((size_t(base_vertex) + count) * n, 0u);
+        auto *words = custom->Words.data() + size_t(base_vertex) * n;
+        WithAttributeScalar(type, [&]<AttributeScalar T>() {
+            if constexpr (std::same_as<T, bool>) {
+                std::unreachable();
+            } else {
+                std::vector<T> values(count);
+                fastgltf::copyFromAccessor<T>(asset, accessor, values.data());
+                std::memcpy(words, values.data(), values.size() * sizeof(T));
+            }
+        });
+    }
+    for (auto &custom : attrs.Custom) custom.Words.resize((size_t(base_vertex) + count) * AttributeComponents(custom.Type), 0u);
+    return {};
+}
+
 // Primitive indices, or iota over the vertex range when the primitive is non-indexed.
 std::vector<uint32_t> ReadIndices(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, size_t vertex_count) {
     std::vector<uint32_t> indices;
@@ -240,12 +283,12 @@ std::vector<uint32_t> ReadIndices(const fastgltf::Asset &asset, const fastgltf::
 }
 
 // Appends a line or point primitive while preserving channel alignment across merged primitives.
-void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, ::MeshData &target, ::MeshVertexAttributes &attrs) {
+std::expected<void, std::string> AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, ::MeshData &target, ::MeshVertexAttributes &attrs) {
     const auto *const position_it = primitive.findAttribute("POSITION");
-    if (position_it == primitive.attributes.end()) return;
+    if (position_it == primitive.attributes.end()) return {};
 
     const auto &position_accessor = asset.accessors[position_it->accessorIndex];
-    if (position_accessor.count == 0) return;
+    if (position_accessor.count == 0) return {};
 
     const uint32_t base_vertex = target.Positions.size();
     target.Positions.resize(base_vertex + position_accessor.count);
@@ -253,8 +296,9 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
 
     std::ignore = AppendVertexAttr(asset, primitive, "NORMAL", attrs.Normals, base_vertex, position_accessor.count, vec3{0.f});
     std::ignore = AppendColor0(asset, primitive, attrs, base_vertex, position_accessor.count);
+    if (auto result = AppendCustomAttributes(asset, primitive, attrs, base_vertex, position_accessor.count); !result) return result;
 
-    if (primitive.type == fastgltf::PrimitiveType::Points) return;
+    if (primitive.type == fastgltf::PrimitiveType::Points) return {};
 
     const auto indices = ReadIndices(asset, primitive, position_accessor.count);
 
@@ -275,6 +319,7 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
             if (indices.size() >= 2) target.Edges.emplace_back(std::array{base_vertex + indices.back(), base_vertex + indices.front()});
             break;
     }
+    return {};
 }
 
 bool IsTriangleType(fastgltf::PrimitiveType type) {
@@ -316,6 +361,7 @@ std::expected<void, std::string> AppendPrimitive(
     for (uint32_t set_index = 0; set_index < uv_sets.size(); ++set_index) {
         if (auto result = AppendVertexAttr(asset, primitive, std::format("TEXCOORD_{}", set_index), *uv_sets[set_index], base_vertex, vertex_count, vec2{0.f}, &attribute_flags, MeshAttributeBit_TexCoord0 << set_index, true); !result) return result;
     }
+    if (auto result = AppendCustomAttributes(asset, primitive, attrs, base_vertex, vertex_count); !result) return result;
 
     if (has_joints && !deform) deform.emplace();
     const bool mesh_has_skin = deform && (!deform->Joints.empty() || !deform->Weights.empty());
@@ -639,7 +685,7 @@ std::expected<SourceMesh, std::string> ReadSourceMesh(const fastgltf::Asset &ass
         auto &data = is_points ? points : lines;
         auto &element_primitives = is_points ? point_primitives : line_primitives;
         const auto prev_vertex_count = data.Positions.size();
-        AppendNonTrianglePrimitive(asset, primitive, data, is_points ? point_attrs : line_attrs);
+        if (auto appended = AppendNonTrianglePrimitive(asset, primitive, data, is_points ? point_attrs : line_attrs); !appended) return std::unexpected{std::move(appended.error())};
         element_primitives.insert(element_primitives.end(), data.Positions.size() - prev_vertex_count, primitive_index);
     }
     if (morph) {

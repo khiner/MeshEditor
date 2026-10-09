@@ -79,6 +79,13 @@ void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neig
     Pages.Add(a.EdgeHalfedges.Buffer, edges, BlockBytes<uint32_t>);
     Pages.Add(a.EdgeSharpness.Buffer, edges, BlockBytes<uint8_t>);
     Pages.Add(a.EdgeHidden.Buffer, edges, sizeof(SelectionBlock));
+    // Named attributes read their payloads through these clones and their tables in place, since an edit attaches payloads without moving existing ones.
+    const std::array domain_blocks{&vertices, &edges, &faces, &halfedges}; // By AttributeDomain
+    meshes.ForEachNamedAttribute(id, [&](uint32_t attribute, const NamedAttribute &entry) {
+        WithPayloads(a.Named, entry.Type, [&](const auto &payloads) {
+            Pages.Add(payloads.Values.Buffer, meshes.AttributePayloadBlocks(attribute, *domain_blocks[uint32_t(entry.Domain)]), sizeof(typename std::remove_cvref_t<decltype(payloads)>::Block));
+        });
+    });
 }
 
 void TopologyReadView::Clone(state::Scene &r) {
@@ -121,6 +128,7 @@ void TopologyReadView::Clone(state::Scene &r) {
     attribute(a.CustomNormals, Arenas.CustomNormals);
     attribute(a.CornerSectors, Arenas.CornerSectors);
     attribute(a.NormalSectors, Arenas.NormalSectors);
+    for (const auto type : AttributeTypes) WithPayloads(a.Named, type, [&](const auto &payloads) { bindings.push_back({&payloads.Values.Buffer, &AttributeValues[uint32_t(type)]}); });
     std::vector<mtl::BufferFootprint> footprints;
     std::vector<uint32_t *> slots;
     for (const auto &[buffer, slot] : bindings) {

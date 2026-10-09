@@ -2,6 +2,7 @@
 
 #include "gpu/ConnectivityRef.h"
 #include "gpu/MeshTopologyArenas.h"
+#include "gpu/NamedAttributeRef.h"
 #include "gpu/SlotOffset.h"
 #include "mesh/PageFootprint.h"
 
@@ -25,6 +26,8 @@ struct TopologyReadView {
     ConnectivityRef SourceConnectivity(const MeshStore &, uint32_t source_id) const;
 
     MeshTopologyArenas Arenas;
+    // The clone of each named attribute payload arena, by AttributeType.
+    std::array<uint32_t, AttributeTypeCount> AttributeValues;
     std::vector<mtl::Buffer> Clones;
 
 private:

@@ -1584,6 +1584,8 @@ kernel void TopologyFaceTables(
     const uint primitive = source != InvalidOffset ? ctx.SrcElementPrimitive(job, source) : 0u;
     ctx.SetDstElementPrimitive(job, fd, job.PrimitiveWork.Storage.Slot != InvalidSlot ? WorkRank(bindless, job.PrimitiveWork, primitive) : primitive);
     ctx.DstFaceSharpness(job)[fd] = !listed && source != InvalidOffset ? ctx.SrcFaceSharpness(job)[source] : uchar(0);
+    const uint source_face = !listed && source != InvalidOffset ? ctx.SrcFaceDomain(job).Handle(source) : InvalidOffset;
+    TopoCopyAttributes(ctx, job, AttributeDomain::Face, ctx.DstFaceDomain(job).Handle(fd), source_face);
 }
 
 // Copy transforms carry authored normal directions through each generated layer.
@@ -1685,6 +1687,14 @@ kernel void TopologyGatherVertices(
             ctx.SetDstMorphTarget(job,d,k,value);
         }
     }
+    // A source past the job's source vertices, which an appended vertex names, holds the default.
+    const uint2 vertices = TopoAttributeRun(job, AttributeDomain::Vertex);
+    for (uint i = vertices.x; i < vertices.y; ++i) {
+        const TopologyAttribute attribute = TopoAttribute(ctx, job, i);
+        uint4 values[4];
+        for (uint k = 0u; k < 4u; ++k) values[k] = TopoReadAttribute(ctx, attribute, v[k] < job.SrcVertexCount ? ctx.SrcVertexDomain(job).Handle(v[k]) : InvalidOffset);
+        TopoWriteAttribute(ctx, attribute, ctx.DstVertexDomain(job).Handle(d), TopoInterpolateAttribute(attribute, values[0], values[1], values[2], values[3], s, t));
+    }
 }
 
 // Each canonical output corner interpolates its attribute payload once.
@@ -1697,13 +1707,15 @@ kernel void TopologyGatherCorners(
     const uint2 tile = ctx.Tile(group_id);
     const MeshTopologyJob job = ctx.Jobs()[tile.x];
     const uint h = tile.y * ScanTileSize + lane;
-    if (h >= job.DstHalfedgeCount || job.CornerAttributes == 0u) return;
+    const uint2 corners = TopoAttributeRun(job, AttributeDomain::Corner);
+    if (h >= job.DstHalfedgeCount || (job.CornerAttributes == 0u && corners.x == corners.y)) return;
     // Loose edges have no face-corner attributes, including when their endpoints lie on a surface.
     if (ctx.DstHalfedgeFaces(job)[h] == InvalidOffset || ctx.CornerMap(job)[TopoCornerMapWords*h]==InvalidOffset) {
         if (job.CornerAttributes & MeshAttributeBit_Tangent) ctx.SetDstCornerTangent(job,h,float4(0));
         if (job.CornerAttributes & MeshAttributeBit_Color0) ctx.SetDstCornerColor(job,h,float4(1));
         for (uint set=0u;set<4u;++set)
             if (job.CornerAttributes & (MeshAttributeBit_TexCoord0 << set)) ctx.SetDstCornerUv(job,set,h,float2(0));
+        TopoCopyAttributes(ctx, job, AttributeDomain::Corner, job.DstCornerOffset + h, InvalidOffset);
         return;
     }
     device const uint *map = ctx.CornerMap(job) + TopoCornerMapWords * h;
@@ -1728,6 +1740,11 @@ kernel void TopologyGatherCorners(
         if (job.CornerAttributes & (MeshAttributeBit_TexCoord0 << set)) {
             ctx.SetDstCornerUv(job, set, h, TopoBilinear(ctx.SrcCornerUv(job, set, a), ctx.SrcCornerUv(job, set, b), ctx.SrcCornerUv(job, set, c), ctx.SrcCornerUv(job, set, d), s, t));
         }
+    for (uint i = corners.x; i < corners.y; ++i) {
+        const TopologyAttribute attribute = TopoAttribute(ctx, job, i);
+        const uint4 value = TopoInterpolateAttribute(attribute, TopoReadAttribute(ctx, attribute, a), TopoReadAttribute(ctx, attribute, b), TopoReadAttribute(ctx, attribute, c), TopoReadAttribute(ctx, attribute, d), s, t);
+        TopoWriteAttribute(ctx, attribute, job.DstCornerOffset + h, value);
+    }
 }
 
 // Transfer directions between canonical polygon frames after output derivation.
@@ -1844,6 +1861,8 @@ kernel void TopologyEdgeAttributes(
     const uint e = dst.Edge(job.DstCornerOffset + hd);
     const uint source = ctx.CornerEdgeSource(job, hd);
     ctx.DstEdgeSharpness(job)[e] = source != InvalidOffset ? ctx.SrcEdgeSharpness(job)[ctx.SrcEdge(job, source)] : uchar(0);
+    const uint source_edge = source != InvalidOffset ? ctx.SrcEdgeDomain(job).Handle(ctx.SrcEdge(job, source)) : InvalidOffset;
+    TopoCopyAttributes(ctx, job, AttributeDomain::Edge, e, source_edge);
     const bool hidden=source!=InvalidOffset && ctx.Selected({pc.Source.EdgeHiddenSlot,0u},ctx.SrcEdgeDomain(job).Handle(ctx.SrcEdge(job,source)));
     ctx.Select({pc.Destination.EdgeHiddenSlot,0u},e,hidden);
     ctx.SelectDstEdge(job, e, !hidden && ctx.CornerSelected(job, hd));

@@ -15,6 +15,7 @@
 #include "gpu/MeshletInstanceFlag.h"
 #include "gpu/LightRecord.h"
 #include "gpu/MorphTargetVertex.h"
+#include "gpu/NamedAttributeRef.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/SceneViewUBO.h"
 #include "gpu/Transform.h"
@@ -45,6 +46,10 @@ inline uint ElementAttributeIndex(device const uint *blocks, uint handle, uint e
 }
 inline uint ElementAttributeIndex(device const BindlessSet &b, ElementAttributeRef attribute, uint handle, uint entry = 0u) {
     return ElementAttributeIndex(BindlessBuffer(uint, b.Buffer, attribute.BlocksSlot), handle, entry);
+}
+// A named attribute's table run starts at its first element block.
+inline uint ElementAttributeIndex(device const BindlessSet &b, NamedAttributeRef attribute, uint handle) {
+    return ElementAttributeIndex(BindlessBuffer(uint, b.Buffer, attribute.TablesSlot) + attribute.TableOffset, handle - attribute.FirstBlock * MeshElementBlockSize);
 }
 
 // Each pose maps canonical record keys into shared typed value blocks.
