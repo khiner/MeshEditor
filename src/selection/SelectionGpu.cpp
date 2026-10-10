@@ -26,6 +26,7 @@
 #include "metal/Dispatch.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
+#include "procedure/Procedure.h"
 #include "render/Encoding.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuSceneState.h"
@@ -288,7 +289,7 @@ std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(
     if (!picked) return {};
     const auto &meshes = r.Context.get<const MeshStore>();
     for (const auto &range : ranges) {
-        const auto id = GetMesh(r, range.MeshEntity).GetStoreId();
+        const auto id = *DrawnStoreId(r, range.MeshEntity);
         if (meshes.IsLiveElement(id, element, *picked)) return std::pair{range.MeshEntity, *picked - meshes.GetSelectionBitOffset(id, element)};
     }
     return {};
@@ -569,7 +570,7 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
     }
     std::vector<MeshStore::SelectionUpdate> updates;
     std::vector<uint32_t> ids;
-    for (const auto &request : requests) ids.push_back(GetMesh(r, request.MeshEntity).GetStoreId());
+    for (const auto &request : requests) ids.push_back(*DrawnStoreId(r, request.MeshEntity));
     mtl::ComputeChain chain{meshes.BufferContext()};
     meshes.EnsureSelectionState(r, chain, ids);
     for (uint32_t i = 0u; i < requests.size(); ++i) {
@@ -690,7 +691,7 @@ void ApplyEditSelectionLists(
 void RefreshElementSelectionSummaries(state::Scene &r, std::span<const state::Entity> entities, std::optional<Element> mode) {
     auto &meshes = r.Context.get<MeshStore>();
     for (const auto entity : entities) {
-        const auto id = GetMesh(r, entity).GetStoreId();
+        const auto id = *DrawnStoreId(r, entity);
         if (!meshes.Get(id).SelectionSummary.Count) continue;
         if (mode) {
             auto &summary = meshes.WriteSelectionSummary(id);
@@ -706,7 +707,7 @@ void ConvertElementSelections(state::Scene &r, std::span<const state::Entity> me
     auto &meshes = r.Context.get<MeshStore>();
     std::vector<uint32_t> ids;
     ids.reserve(mesh_entities.size());
-    for (const auto mesh_entity : mesh_entities) ids.push_back(GetMesh(r, mesh_entity).GetStoreId());
+    for (const auto mesh_entity : mesh_entities) ids.push_back(*DrawnStoreId(r, mesh_entity));
     {
         mtl::ComputeChain chain{meshes.BufferContext()};
         meshes.EnsureSelectionState(r, chain, ids);
@@ -718,7 +719,7 @@ void ConvertElementSelections(state::Scene &r, std::span<const state::Entity> me
         const auto id = ids[i];
         r.remove<MeshActiveElement>(mesh_entity);
         if (mode == Element::None) continue;
-        const auto mesh = GetMesh(r, mesh_entity);
+        const Mesh mesh{meshes, id};
         // A mesh with every element selected keeps its bits in every domain.
         if (std::ranges::all_of(SelectionElements, [&](Element element) { return meshes.GetSelectedElements(id, element).Count() == mesh.ElementCount(element); })) all_selected.push_back(mesh_entity);
         else if (const auto count = mesh.ElementCount(mode); count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, mode), count);
@@ -762,7 +763,8 @@ void ApplyEditSharpness(state::Scene &r, state::Entity, std::span<const state::E
         const auto entity = entities[change.TargetIndex];
         if (meshes.Get(id).SelectionSummary.Count) summaries.push_back(id);
         const auto *owner = TryRecordOf(r, entity);
-        if (owner && owner->PrimitiveRoot != InvalidOffset) repairs.emplace_back(entity, change.Triangles);
+        // A procedure mesh's drawn record takes the source's shading when the geometry change cooks it.
+        if (owner && owner->PrimitiveRoot != InvalidOffset && !r.all_of<procedure::GeometryProcedure>(entity)) repairs.emplace_back(entity, change.Triangles);
         else r.emplace_or_replace<MeshGeometryDirty>(entity, EditSelectionAfter::Keep, false);
     }
     chain.AfterSubmit([&meshes, summaries = std::move(summaries)] {
@@ -776,7 +778,6 @@ void ApplyEditSharpness(state::Scene &r, state::Entity, std::span<const state::E
 const EditSelectionSummary *GetElementSelectionSummary(const state::Scene &r, state::Entity mesh_entity, Element element) {
     if (element == Element::None || !r.all_of<MeshElementSelection, MeshHandle>(mesh_entity)) return nullptr;
     const auto &meshes = r.Context.get<const MeshStore>();
-    const auto id = GetMesh(r, mesh_entity).GetStoreId();
-    const auto &summary = meshes.GetSelectionSummary(id);
+    const auto &summary = meshes.GetSelectionSummary(*DrawnStoreId(r, mesh_entity));
     return summary.Mode == element ? &summary : nullptr;
 }

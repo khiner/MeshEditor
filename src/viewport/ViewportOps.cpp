@@ -36,11 +36,11 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
         std::vector<ElementRange> ranges;
         if (element == Element::None) return ranges;
         std::vector<uint32_t> ids;
-        for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) ids.push_back(GetMesh(r, mesh_entity).GetStoreId());
+        for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) ids.push_back(*DrawnStoreId(r, mesh_entity));
         mtl::ComputeChain chain{meshes.BufferContext()};
         meshes.EnsureSelectionState(r, chain, ids);
         for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
-            const auto mesh = GetMesh(r, mesh_entity);
+            const auto mesh = GetDrawnMesh(r, mesh_entity);
             const auto count = mesh.ElementCount(element);
             if (count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), element), count);
         }
@@ -52,7 +52,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
             const auto ranges = edit_ranges(baseline->Mode);
             ApplyEditSelectionCommand(r, ranges, baseline->Mode, EditSelectionOperation::RestoreBaseline);
             for (const auto &range : ranges) {
-                const auto &summary = meshes.GetSelectionSummary(GetMesh(r, range.MeshEntity).GetStoreId());
+                const auto &summary = meshes.GetSelectionSummary(*DrawnStoreId(r, range.MeshEntity));
                 if (summary.ActiveHandle < range.Count) r.emplace_or_replace<MeshActiveElement>(range.MeshEntity, summary.ActiveHandle);
                 else r.remove<MeshActiveElement>(range.MeshEntity);
             }
@@ -74,18 +74,18 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
             std::vector<uint32_t> ids;
             for (const auto mesh_entity : flags.Meshes) {
                 if (r.all_of<MeshElementSelection>(mesh_entity)) {
-                    const auto id = GetMesh(r, mesh_entity).GetStoreId();
+                    const auto id = *DrawnStoreId(r, mesh_entity);
                     if (meshes.Get(id).SelectionSummary.Count && meshes.GetSelectionSummary(id).Mode != edit_element) converting.push_back(mesh_entity);
                     continue;
                 }
-                if (GetMesh(r, mesh_entity).ElementCount(edit_element) == 0) continue;
+                if (GetDrawnMesh(r, mesh_entity).ElementCount(edit_element) == 0) continue;
                 taking.push_back(mesh_entity);
-                ids.push_back(GetMesh(r, mesh_entity).GetStoreId());
+                ids.push_back(*DrawnStoreId(r, mesh_entity));
             }
             mtl::ComputeChain chain{meshes.BufferContext()};
             meshes.EnsureSelectionState(r, chain, ids);
             for (const auto mesh_entity : taking) {
-                const auto mesh = GetMesh(r, mesh_entity);
+                const auto mesh = GetDrawnMesh(r, mesh_entity);
                 r.emplace<MeshElementSelection>(mesh_entity);
                 initialize_selection.emplace_back(
                     mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), edit_element), mesh.ElementCount(edit_element)

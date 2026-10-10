@@ -2,7 +2,9 @@
 
 #include "Field.h"
 #include "action/Core.h"
+#include "action/Nodes.h"
 #include "action/ScopeResolve.h"
+#include "action/Updatable.h"
 #include "armature/ArmatureComponents.h"
 #include "mesh/PrimitiveType.h"
 #include "scene/SceneGraph.h"
@@ -78,6 +80,17 @@ struct ComponentUpdateTraits {
 };
 template<typename C>
 struct UpdateTraits : ComponentUpdateTraits<C> {};
+
+// Inset and Bevel parameters on the selection address the node each edited procedure mesh's result reads, which a viewport drag's first step appended.
+template<typename C>
+    requires std::same_as<C, mesh::Inset> || std::same_as<C, mesh::Bevel>
+struct UpdateTraits<C> : ComponentUpdateTraits<C> {
+    static void ForEachSelected(state::Scene &r, state::Entity viewport, const std::function<void(state::Entity)> &fn) {
+        nodes::ForEachResultNode(r, viewport, [&](state::Entity, state::Entity node) {
+            if (r.all_of<C>(node)) fn(node);
+        });
+    }
+};
 
 // A bone delta edits the active bone, and a selection edit fans out to the selected bones.
 template<>

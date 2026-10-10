@@ -38,8 +38,7 @@ uint8_t InstanceStateBits(const state::Scene &r, state::Entity e) {
 
 bool IsSilhouetteEligible(const state::Scene &r, state::Entity mesh_entity) {
     if (!r.valid(mesh_entity) || r.any_of<ObjectExtrasTag, ArmatureObject, BoneJoint>(mesh_entity)) return false;
-    const auto mesh = TryGetMesh(r, mesh_entity);
-    return mesh && mesh->FaceCount() > 0;
+    return HasMesh(r, mesh_entity) && GetDrawnMesh(r, mesh_entity).FaceCount() > 0;
 }
 
 void RetallyMesh(state::Scene &r, state::Entity mesh_entity) {

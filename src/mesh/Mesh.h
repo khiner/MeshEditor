@@ -345,12 +345,13 @@ private:
     std::span<const uint32_t> Corners{};
 };
 
-// GetMesh requires a mesh entity, and reads its preview while a staged operator has one.
+// GetMesh reads a mesh entity's source record, which asset-level readers such as export, audio and physics take.
 // TryGetMesh returns empty for other entities.
 Mesh GetMesh(const state::Scene &, state::Entity);
 std::optional<Mesh> TryGetMesh(const state::Scene &, state::Entity);
 bool HasMesh(const state::Scene &, state::Entity);
 // The store record an entity's instances draw: its evaluated procedure output, its mesh, or the vertex record of a bone or joint.
+// A mesh entity's drawn record is also the one edit mode edits, picks, selects and overlays.
 std::optional<uint32_t> DrawnStoreId(const state::Scene &, state::Entity);
-// The geometry a mesh entity's instances draw.
+// The geometry a mesh entity's instances draw and edit mode edits.
 Mesh GetDrawnMesh(const state::Scene &, state::Entity);

@@ -80,7 +80,7 @@ std::vector<ElementRange> GetElementRangesForSelected(const state::Scene &r, sta
     std::vector<ElementRange> ranges;
     for (const auto mesh_entity : r.get<const SelectionFlags>(viewport).Meshes) {
         if (!r.all_of<MeshElementSelection>(mesh_entity)) continue;
-        const auto mesh = GetMesh(r, mesh_entity);
+        const auto mesh = GetDrawnMesh(r, mesh_entity);
         if (const auto count = mesh.ElementCount(element); count > 0) {
             ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), element), count);
         }

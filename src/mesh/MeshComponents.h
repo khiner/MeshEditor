@@ -33,7 +33,8 @@ struct EvaluatedMesh {
     uint32_t StoreId;
     uint32_t Source{InvalidOffset}; // The source record the evaluated record copies, or InvalidOffset for a record made otherwise
 };
-// Derived on a mesh entity whose evaluated record copies its source, so the next cook restores only the blocks either record wrote.
+// Persistent on a mesh entity whose evaluated record copies its source, so the next cook restores only the blocks either record wrote.
+// It restores with the record it describes, so a cook after a restore takes the path a replay of the same actions takes.
 // Each element domain's pairs of source block and evaluated block ascend by the evaluated block.
 struct ResyncState {
     std::array<std::vector<uvec2>, 6> Blocks{};

@@ -2,9 +2,12 @@
 #include "TestMeshOrdinals.h"
 #include "TestPaths.h"
 #include "TopologyCases.h"
+#include "action/ActionDrain.h"
 #include "action/Build.h"
+#include "action/Emit.h"
 #include "action/Errors.h"
 #include "editor/Engine.h"
+#include "gpu/SceneViewUBO.h"
 #include "mesh/GeometryRefresh.h"
 #include "mesh/MeshClone.h"
 #include "mesh/MeshComponents.h"
@@ -13,9 +16,11 @@
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "metal/Dispatch.h"
+#include "numeric/MatrixMath.h"
 #include "object/ObjectOps.h"
 #include "procedure/Cook.h"
 #include "project/Project.h"
+#include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
@@ -27,6 +32,7 @@
 
 #include <boost/ut.hpp>
 
+#include <bit>
 #include <cstdio>
 #include <functional>
 #include <map>
@@ -40,7 +46,7 @@ using boost::ut::expect, boost::ut::fatal;
 namespace {
 using namespace procedure;
 using action::UpdateOf;
-using action::nodes::AddNode, action::nodes::AddProcedure, action::nodes::Link, action::nodes::SetAttributeName;
+using action::nodes::AddNode, action::nodes::AddProcedure, action::nodes::ApplyProcedure, action::nodes::Link, action::nodes::SetAttributeName, action::nodes::SetInlineSelection;
 using ::test::Op, ::test::Patchwork, ::test::PlanCase, ::test::Region, ::test::TopologyCases;
 
 // One engine whose tests each begin a new project in a scratch directory of their own, which clears after the engine closes.
@@ -81,6 +87,17 @@ struct Fixture : TestDir, Engine {
         for (const auto &node : R.get<const GeometryProcedure>(mesh_entity).Nodes) entities.push_back(node.Entity);
         return entities;
     }
+    // Stages the action as the open gesture's next step.
+    template<typename A> void Stage(A a) {
+        action::Emit(std::move(a), action::Phase::Stage);
+        P->Frame(action::Drain());
+        expect(R.Context.get<action::Errors>().Messages.empty());
+    }
+    void CommitGesture() {
+        action::Commit();
+        P->Frame(action::Drain());
+        expect(!P->HasStaged());
+    }
     void EnterEdit(Element element) {
         Do(action::view::SetInteractionMode{InteractionMode::Edit});
         Do(action::view::SetEditMode{.Mode = element});
@@ -93,6 +110,13 @@ struct Fixture : TestDir, Engine {
         Render();
         const auto &image = R.Context.get<const RenderTargets>().Resources->FinalColorImage;
         return ReadbackImageRgba8(R.Context.get<const mtl::Context>(), image, 0, 0, image.Extent);
+    }
+    const SceneViewUBO &View() const { return *reinterpret_cast<const SceneViewUBO *>(R.Context.get<const GpuBuffers>().SceneViewUBO.Contents().data()); }
+    // Renders a frame and clicks the element nearest the world position, adding it to the selection with `toggle`.
+    void Click(vec3 position, bool toggle) {
+        Render();
+        const auto clip = View().ViewProj * vec4{position.x, position.y, position.z, 1.f};
+        Do(action::selection::ApplyEditElementClick{{.5f + .5f * clip.x / clip.w, .5f - .5f * clip.y / clip.w}, toggle, std::make_unique<RenderView>(R.Context.get<const GpuBuffers>().FrameView)});
     }
     // Settles direct scene writes and commits them as one history node.
     void Commit(std::string label) {
@@ -123,6 +147,7 @@ struct Fixture : TestDir, Engine {
     uint32_t Source(state::Entity mesh_entity) const { return R.get<const MeshHandle>(mesh_entity).StoreId; }
     // The record the mesh entity draws: its procedure's evaluated record, or its source.
     uint32_t Output(state::Entity mesh_entity) const { return *DrawnStoreId(R, mesh_entity); }
+    uint64_t Cooks() const { return R.Context.get<const CookCount>().Value; }
     uint32_t Resyncs(state::Entity mesh_entity) const { return R.get<const ResyncState>(mesh_entity).Resyncs; }
     uint32_t AttributeCount(uint32_t id) {
         uint32_t count = 0u;
@@ -197,12 +222,14 @@ struct Step {
 // The present node as a step of the mesh.
 Step PresentStep(Fixture &f, state::Entity mesh, bool replays = true) { return {*f.P->History.Present, f.P->History.MaterializeLive(), Describe(f.Store(), f.Output(mesh)), f.Image(), replays}; }
 // Navigates back through the steps to the first and forward again to the last.
-// Each move restores its step's node, persistent state, output and image, and `restored` holds.
+// Each move cooks nothing and restores its step's node, persistent state, output and image, and `restored` holds.
 // Each step that replays reaches its state from its parent's, checked here because the check's restore clears the cook marks a builder reads.
 void ExpectRestores(Fixture &f, state::Entity mesh, std::span<const Step> steps, auto &&restored) {
     auto &p = *f.P;
     const auto move = [&](const Step &step) {
+        const auto cooks = f.Cooks();
         p.Navigate(step.Node);
+        expect(f.Cooks() == cooks);
         expect(p.History.Present == step.Node);
         expect(p.History.MaterializeLive() == step.Persistent);
         expect(Describe(f.Store(), f.Output(mesh)) == step.Output);
@@ -391,19 +418,20 @@ void TestOperatorKinds(Fixture &f) {
             const auto records = f.LiveRecords();
             const auto [index, entity] = f.Add(mesh, node->Kind);
             if (node->Set) node->Set(f, entity, *task);
-            // The region as one mask block per block the source owns in each domain.
+            // The region as one mask block per block the source owns in each domain, as CaptureSelection captures a drawn selection.
             const auto region = Region(Mesh{meshes, source_id});
-            InlineSelection selection;
+            SetInlineSelection selection{.Node = entity};
             using D = MeshStore::ElementDomain;
-            for (const auto [domain, handles, blocks] : {std::tuple{D::Vertex, &region.Vertices, &selection.Vertices}, std::tuple{D::Edge, &region.Edges, &selection.Edges}, std::tuple{D::Face, &region.Faces, &selection.Faces}}) {
+            for (const auto [domain, handles] : {std::pair{D::Vertex, &region.Vertices}, std::pair{D::Edge, &region.Edges}, std::pair{D::Face, &region.Faces}}) {
                 for (const auto block : meshes.GetBlockList(source_id, domain).Blocks) {
-                    auto &words = blocks->emplace_back();
+                    auto &words = selection.Blocks.emplace_back();
                     for (const auto h : *handles)
                         if (h / MeshElementBlockSize == block) words[(h % MeshElementBlockSize) / 32u] |= 1u << (h % 32u);
                 }
+                if (domain == D::Vertex) selection.Vertices = uint32_t(selection.Blocks.size());
+                if (domain == D::Edge) selection.Edges = uint32_t(selection.Blocks.size()) - selection.Vertices;
             }
-            r.emplace<InlineSelection>(entity, std::move(selection));
-            f.Commit("Select region");
+            f.Do(std::move(selection));
             f.Route(mesh, {0u, index, 1u});
             const auto reference = [&](float param0) {
                 return Reference(f, source_id, [&](uint32_t clone) {
@@ -477,9 +505,9 @@ struct GraphRow {
     Graph (*Build)(Fixture &);
 };
 
-// Each row's graph, built action by action, has a final output that passes the row's oracle.
-// Navigating its history restores every step's state, output and image, each action replays from its parent's state, and replaying the whole history reproduces it.
-// Deleting a procedure mesh's object destroys its nodes until undo.
+// Each row's graph, built action by action, cooks its procedure once per action, and its final output passes the row's oracle.
+// Navigating its history restores every step's state, output and image without cooking, each action replays from its parent's state, and replaying the whole history reproduces it.
+// Deleting a procedure mesh's object destroys its nodes until undo, and applying its procedure makes the output its source until undo.
 // A row that writes the scene directly skips the whole-history replays, which replay only actions.
 void Survives(Fixture &f, std::span<const GraphRow> rows) {
     auto &r = f.R;
@@ -490,8 +518,11 @@ void Survives(Fixture &f, std::span<const GraphRow> rows) {
             auto &p = *f.P;
             std::vector<Step> steps;
             bool replays = true;
+            auto cooks = f.Cooks();
             f.Observe = [&](bool replayable) {
                 const auto mesh = r.get<const Instance>(FindActiveEntity(r)).Entity;
+                expect(f.Cooks() == cooks + (r.all_of<GeometryProcedure>(mesh) ? 1u : 0u));
+                cooks = f.Cooks();
                 replays = replays && replayable;
                 f.Audit();
                 steps.push_back(PresentStep(f, mesh, replayable));
@@ -507,6 +538,7 @@ void Survives(Fixture &f, std::span<const GraphRow> rows) {
 
             const auto output = Describe(meshes, f.Output(mesh));
             const auto nodes = f.NodeEntities(mesh);
+            const auto records = f.LiveRecords();
             const auto present = [&] {
                 return r.valid(mesh) && r.all_of<GeometryProcedure>(mesh) && std::ranges::all_of(nodes, [&](state::Entity e) { return r.valid(e); });
             };
@@ -525,6 +557,26 @@ void Survives(Fixture &f, std::span<const GraphRow> rows) {
             expect(absent());
             f.Audit();
             p.Undo();
+
+            const auto output_id = f.Output(mesh);
+            f.Do(ApplyProcedure{mesh});
+            f.ValidateReplay();
+            expect(!r.any_of<GeometryProcedure, EvaluatedMesh, ResyncState, CookPlan>(mesh));
+            expect(std::ranges::none_of(nodes, [&](state::Entity e) { return r.valid(e); }));
+            expect(f.Source(mesh) == output_id);
+            expect(Describe(meshes, f.Source(mesh)) == output);
+            expect(f.LiveRecords() == records - 1u);
+            f.Audit();
+            if (replays) f.ExpectReplay();
+            p.Undo();
+            expect(present());
+            expect(Describe(meshes, f.Output(mesh)) == output);
+            expect(f.LiveRecords() == records);
+            f.Audit();
+            p.Redo();
+            expect(!r.any_of<GeometryProcedure, EvaluatedMesh>(mesh));
+            expect(Describe(meshes, f.Source(mesh)) == output);
+            f.Audit();
         };
     }
 }
@@ -551,7 +603,7 @@ Graph ExtrudeSubdivide(Fixture &f) {
 
 // A sphere's cap above y = 0.9 insets through Position, Compare and Inset.
 // Thickness edits after the first cook resync the output record in place and keep the record count, and the default thickness returns the first output.
-// An edit after an undo copies the source anew and the edit after it resyncs, and moving a source vertex re-cooks through the output record, which follows the moved source.
+// An edit after an undo resyncs from the restored state, and moving a source vertex re-cooks through the output record, which follows the moved source.
 Graph CapResync(Fixture &f) {
     auto &r = f.R;
     const auto &meshes = f.Store();
@@ -565,7 +617,7 @@ Graph CapResync(Fixture &f) {
     f.Do(Link{mesh, position, 0u, compare, 0u});
     f.Do(Link{mesh, compare, 2u, inset, 1u});
     f.Route(mesh, {0u, inset, 1u});
-    auto output = f.Output(mesh);
+    const auto output = f.Output(mesh);
     const auto records = f.LiveRecords();
     const auto first = Describe(meshes, output);
     // Each edit resyncs once and keeps the output record and the record count.
@@ -583,12 +635,9 @@ Graph CapResync(Fixture &f) {
     const auto thin = set(.01f);
     expect(set(action::mesh::Inset{}.Thickness) == first);
     f.P->Undo();
-    expect(!r.all_of<ResyncState>(mesh));
+    expect(r.all_of<ResyncState>(mesh));
     expect(Describe(meshes, f.Output(mesh)) == thin);
-    f.Do(UpdateOf<&action::mesh::Inset::Thickness>(inset_entity, .03f));
-    expect(f.Resyncs(mesh) == 0u);
-    expect(f.LiveRecords() == records);
-    output = f.Output(mesh);
+    set(.03f);
     set(.06f);
     const auto source = f.Source(mesh);
     const PositionOperationTarget target{.StoreId = source, .Selection = GeometrySelection{.Vertices = {**Mesh{meshes, source}.vertices().begin()}}};
@@ -878,7 +927,7 @@ Graph HeatSubdivide(Fixture &f) {
 }
 
 // The rows that write attributes or positions directly, the cap, named attribute, join and heat rows, skip the whole-history replays.
-// The heat row edits a plain mesh, which has no procedure to delete.
+// The heat row edits a plain mesh, which has no procedure to delete or apply.
 constexpr std::array<GraphRow, 9> AttributeGraphs{{
     {"ExtrudeSubdivide", ExtrudeSubdivide},
     {"CapResync", CapResync},
@@ -936,7 +985,153 @@ void TestJoinPrimitiveTables(Fixture &f) {
     f.Audit();
 }
 
-// A bevel that selects nothing marks its node and forwards its input.
+// The elements the record selects, in each domain.
+GeometrySelection Selection(const MeshStore &meshes, uint32_t id) {
+    GeometrySelection selection;
+    for (const auto [element, handles] : {std::pair{Element::Vertex, &selection.Vertices}, std::pair{Element::Edge, &selection.Edges}, std::pair{Element::Face, &selection.Faces}})
+        meshes.GetSelectedElements(id, element).ForEach([&](uint32_t handle) { handles->push_back(handle); });
+    return selection;
+}
+
+// A viewport operator on the clicked elements of a procedure cube: the domain and count it clicks, the node kind it appends, its gesture's step values, and the kernel it plans.
+struct ViewportRow {
+    std::string_view Name;
+    Element Domain;
+    uint32_t Clicks;
+    uint16_t Kind;
+    std::vector<float> Values;
+    // Takes the gesture's step with the value, the first step appending the node.
+    void (*Gesture)(Fixture &, float value, bool first);
+    // Runs the operator with the value on the clone at the clicked handles, and returns the elements it selects.
+    GeometrySelection (*Kernel)(Fixture &, uint32_t clone, const GeometrySelection &clicked, float value);
+};
+// Runs the topology task on the clone, publishing its emitted selection, and returns the clone's selection.
+GeometrySelection PublishedKernel(Fixture &f, uint32_t clone, MeshTopologyTask task) {
+    task.SourceId = clone;
+    PublishStoreSelection(f.Store(), task);
+    f.Run(clone, {task});
+    return Selection(f.Store(), clone);
+}
+
+// Each operator appends its node kind between the source and the output, holding the clicked selection and publishing its edit's selection, and each later gesture step resyncs the output in place.
+// The commit leaves one history node after the start, an operator without a node kind fails and leaves the mesh, and undo and redo restore both nodes without cooking.
+// Leaving edit mode cooks nothing, replay reproduces the history, the source stays as it was, and the output and its selection match the kernel on a clone at the clicked ordinals.
+void TestViewportOperators(Fixture &f) {
+    auto &r = f.R;
+    const auto &meshes = f.Store();
+    using D = MeshStore::ElementDomain;
+    // The domains of each element type, with their lists in a selection.
+    const auto domains = [](GeometrySelection &selection) {
+        return std::array{std::tuple{D::Vertex, Element::Vertex, &selection.Vertices}, std::tuple{D::Edge, Element::Edge, &selection.Edges}, std::tuple{D::Face, Element::Face, &selection.Faces}};
+    };
+    const std::array<ViewportRow, 3> rows{{
+        {"Extrude", Element::Face, 2u, KindOf<action::mesh::Extrude>, {0.f}, [](Fixture &f, float, bool) { f.Do(action::mesh::Extrude{}); }, [](Fixture &f, uint32_t clone, const GeometrySelection &clicked, float) { return PublishedKernel(f, clone, {.Op = MeshTopologyOp::ExtrudeRegion, .Selection = clicked}); }},
+        {"BevelDrag", Element::Edge, 1u, KindOf<action::mesh::Bevel>, {.05f, .1f, .2f, .3f}, [](Fixture &f, float width, bool first) {
+             if (first) f.Stage(action::mesh::Bevel{.Width = width});
+             else f.Stage(UpdateOf<&action::mesh::Bevel::Width>(action::OnSelected{}, width)); }, [](Fixture &f, uint32_t clone, const GeometrySelection &clicked, float width) { return PublishedKernel(f, clone, {.Op = MeshTopologyOp::BevelEdges, .Param0 = width, .Steps = 1u, .Selection = clicked}); }},
+        {"TransformDrag", Element::Vertex, 1u, KindOf<TransformElements>, {.5f, 1.f, 1.5f}, [](Fixture &f, float z, bool) { f.Stage(action::view::TransformElements{{.P = {0.f, 0.f, z}}}); }, [](Fixture &f, uint32_t clone, const GeometrySelection &clicked, float z) {
+             const PositionOperationTarget target{.StoreId = clone, .Selection = clicked};
+             expect(!ExecuteGeometryPositions(f.R, std::span{&target, 1u}, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{.Delta = {.P = {0.f, 0.f, z}}}}).empty());
+             return clicked; }},
+    }};
+    for (const auto &row : rows) {
+        boost::ut::test(std::string{row.Name}) = [&] {
+            f.Reset(row.Name);
+            f.Observe = [&](bool replays) { if (replays) f.ValidateReplay(); };
+            const auto mesh = f.AddMesh(primitive::Cuboid{});
+            f.Do(AddProcedure{mesh});
+            f.EnterEdit(row.Domain);
+            f.Render();
+            {
+                // The row clicks the centers of the first elements of its domain whose faces all look toward the eye.
+                const Mesh cube{meshes, f.Output(mesh)};
+                const auto eye = f.View().CameraPosition;
+                const auto facing = [&](he::FH face) { return Dot(cube.GetNormal(face), eye - cube.CalcFaceCentroid(face)) > 0.f; };
+                std::vector<vec3> centers;
+                if (row.Domain == Element::Vertex) {
+                    for (const auto v : cube.vertices())
+                        if (std::ranges::all_of(cube.voh_range(v), [&](he::HH h) { return facing(cube.GetFace(h)); })) centers.push_back(cube.GetPosition(v));
+                } else if (row.Domain == Element::Edge) {
+                    for (const auto e : cube.edges()) {
+                        const auto h = cube.GetHalfedge(e, 0u);
+                        if (facing(cube.GetFace(h)) && facing(cube.GetFace(cube.GetOppositeHalfedge(h)))) centers.push_back(.5f * (cube.GetPosition(cube.GetFromVertex(h)) + cube.GetPosition(cube.GetToVertex(h))));
+                    }
+                } else {
+                    for (const auto face : cube.faces())
+                        if (facing(face)) centers.push_back(cube.CalcFaceCentroid(face));
+                }
+                expect(fatal(centers.size() >= row.Clicks));
+                for (uint32_t i = 0u; i < row.Clicks; ++i) f.Click(centers[i], i > 0u);
+            }
+            // A replay's validation restores its node, which clears the cook marks, so the gesture's marks check first.
+            f.Observe = {};
+            GeometrySelection ordinals;
+            for (const auto [domain, element, list] : domains(ordinals))
+                meshes.GetSelectedElements(f.Output(mesh), element).ForEach([&](uint32_t handle) { list->push_back(meshes.LiveElementOrdinal(f.Output(mesh), domain, handle)); });
+            expect(ordinals.Get(row.Domain).size() == row.Clicks);
+            const auto source = Describe(meshes, f.Source(mesh));
+            const auto start = PresentStep(f, mesh);
+            const auto node_count = uint32_t(r.get<const GeometryProcedure>(mesh).Nodes.size());
+            auto previous = start.Output;
+            for (uint32_t i = 0u; i < row.Values.size(); ++i) {
+                const auto resyncs = f.Resyncs(mesh);
+                row.Gesture(f, row.Values[i], i == 0u);
+                expect(r.get<const GeometryProcedure>(mesh).Nodes.size() == node_count + 1u);
+                if (i > 0u) expect(f.Resyncs(mesh) == resyncs + 1u);
+                const auto shape = Describe(meshes, f.Output(mesh));
+                expect(shape != previous);
+                previous = shape;
+            }
+            if (f.P->HasStaged()) f.CommitGesture();
+            const auto &procedure = r.get<const GeometryProcedure>(mesh);
+            const auto [node, kind] = procedure.Nodes.back();
+            expect(procedure.Nodes.size() == node_count + 1u && kind == row.Kind);
+            expect(procedure.Inputs[InputFirst(procedure, procedure.OutputNode)].FromNode == node_count);
+            expect(procedure.Inputs[InputFirst(procedure, node_count)].FromNode == 0u);
+            const auto &inline_selection = r.get<const InlineSelection>(node);
+            uint32_t inline_count = 0u;
+            for (const auto &block : row.Domain == Element::Vertex ? inline_selection.Vertices : row.Domain == Element::Edge ? inline_selection.Edges :
+                                                                                                                               inline_selection.Faces)
+                for (const auto word : block) inline_count += uint32_t(std::popcount(word));
+            expect(inline_count == row.Clicks);
+            expect(r.all_of<PublishSelection>(node) && !r.any_of<NodeError>(node));
+            const auto done = PresentStep(f, mesh);
+            expect(done.Output == previous);
+            expect(f.P->History.Nodes[done.Node].Parent == start.Node);
+            const auto selection = Selection(meshes, f.Output(mesh));
+            const auto selected = Describe(meshes, f.Output(mesh), selection);
+            expect(meshes.GetSelectionSummary(f.Output(mesh)).SelectedCount == selection.Get(row.Domain).size());
+            f.Audit();
+            f.P->Do(action::MakeAction(action::mesh::ToSphere{}));
+            expect(!r.Context.get<action::Errors>().Messages.empty());
+            r.Context.get<action::Errors>().Messages.clear();
+            expect(Describe(meshes, f.Output(mesh)) == done.Output);
+            ExpectRestores(f, mesh, std::array{start, done}, [&] { expect(r.valid(node) == (f.P->History.Present == done.Node)); });
+            state::DirtySet cooks;
+            cooks.bind(r);
+            cooks.on<EvaluatedMesh>(state::On::Create | state::On::Update);
+            f.Do(action::view::SetInteractionMode{InteractionMode::Object});
+            expect(cooks.empty());
+            expect(Describe(meshes, f.Output(mesh)) == done.Output);
+            f.ValidateReplay();
+            f.ExpectReplay();
+            expect(Describe(meshes, f.Source(mesh)) == source);
+            const auto kernel = Reference(f, f.Source(mesh), [&](uint32_t clone) {
+                GeometrySelection clicked;
+                for (const auto [domain, element, list] : domains(clicked)) {
+                    for (const auto ordinal : ordinals.Get(element)) list->push_back(meshes.LiveElementAt(clone, domain, ordinal));
+                    std::ranges::sort(*list);
+                }
+                return row.Kernel(f, clone, clicked, row.Values.back());
+            });
+            expect(kernel.Output == done.Output);
+            expect(kernel.Selected == selected);
+            f.Audit();
+        };
+    }
+}
+
+// A bevel that selects nothing marks its node and forwards its input, a restore clears the mark, and the next cook marks the node again.
 void TestNodeError(Fixture &f) {
     f.Reset("node-error");
     auto &r = f.R;
@@ -952,6 +1147,16 @@ void TestNodeError(Fixture &f) {
     f.Commit("Select nothing");
     expect(r.any_of<NodeError>(bevel_entity));
     expect(Describe(meshes, f.Output(mesh)) == source);
+    f.ValidateReplay();
+    f.Do(UpdateOf<&action::mesh::Bevel::Width>(bevel_entity, .2f));
+    expect(r.any_of<NodeError>(bevel_entity));
+    f.P->Undo();
+    expect(!r.any_of<NodeError>(bevel_entity));
+    f.P->Redo();
+    expect(!r.any_of<NodeError>(bevel_entity));
+    f.Do(UpdateOf<&action::mesh::Bevel::Width>(bevel_entity, .3f));
+    expect(r.any_of<NodeError>(bevel_entity));
+    f.ValidateReplay();
     f.Audit();
 }
 } // namespace
@@ -961,5 +1166,6 @@ void TestProcedures() {
     boost::ut::test("every operator kind cooks like its kernel") = [&] { TestOperatorKinds(f); };
     boost::ut::test("every attribute graph survives history") = [&] { Survives(f, AttributeGraphs); };
     boost::ut::test("join primitive tables") = [&] { TestJoinPrimitiveTables(f); };
+    boost::ut::test("viewport operators append nodes") = [&] { TestViewportOperators(f); };
     boost::ut::test("node error") = [&] { TestNodeError(f); };
 }

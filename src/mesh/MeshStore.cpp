@@ -2103,6 +2103,39 @@ std::optional<MeshStore::Change> MeshStore::Resync(CloneCopies &copies, uint32_t
     return change;
 }
 
+void MeshStore::ResetEditState(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, const BlockPairs &pairs) {
+    SelectionUpdate update{.StoreId = id};
+    for (uint32_t s = 0u; s < SelectionDomains.size(); ++s) {
+        const auto &paired = pairs[uint32_t(SelectionDomains[s])];
+        const auto selection = SelectionArena(Buffers, SelectionDomains[s]).Buffer.GetSpan<SelectionBlock>();
+        const auto hidden = HiddenArena(Buffers, SelectionDomains[s]).Buffer.GetSpan<SelectionBlock>();
+        std::vector<uint32_t> selected, shown;
+        for (const auto [from, to] : paired) {
+            if (selection[to] != SelectionBlock{}) selected.push_back(to);
+            if (hidden[to] != hidden[from]) shown.push_back(to);
+        }
+        EditSelectionBlocks(SelectionElements[s], selected, [](uint32_t, auto &words) { words = {}; });
+        EditHiddenBlocks(SelectionElements[s], shown, [&](uint32_t block, auto &words) {
+            words = hidden[std::ranges::lower_bound(paired, block, {}, &uvec2::y)->x];
+        });
+        std::ranges::set_union(selected, shown, std::back_inserter(update.Blocks[s]));
+    }
+    if (Records.at(id).SelectionSummary.Count) UpdateSelection(r, chain, std::array{update});
+}
+
+void MeshStore::SelectMasks(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, const GeometryMasks &masks) {
+    SelectionUpdate update{.StoreId = id};
+    for (uint32_t s = 0u; s < SelectionDomains.size(); ++s) {
+        const auto from = masks.Get(SelectionElements[s]);
+        const auto selection = SelectionArena(Buffers, SelectionDomains[s]).Buffer.GetSpan<SelectionBlock>();
+        const auto mask = [&](uint32_t block) { return from.Arena->Get({from.First + block, 1u})[0]; };
+        for (const auto block : GetBlockList(id, SelectionDomains[s]).Blocks)
+            if (selection[block] != mask(block)) update.Blocks[s].push_back(block);
+        EditSelectionBlocks(SelectionElements[s], update.Blocks[s], [&](uint32_t block, auto &words) { words = mask(block); });
+    }
+    if (Records.at(id).SelectionSummary.Count) UpdateSelection(r, chain, std::array{update});
+}
+
 void MeshStore::Join(state::Scene &r, uint32_t id, uint32_t source) {
     const profile::CpuScope scope{"JoinMeshes"};
     // Layers either record carries cover the join, and the destination's blocks take defaults for the source's.

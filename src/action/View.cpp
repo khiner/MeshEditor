@@ -2,11 +2,14 @@
 #include "TransformMath.h"
 #include "Variant.h"
 #include "action/Dispatch.h"
+#include "action/Mesh.h"
+#include "action/Nodes.h"
 #include "action/ScopeResolve.h"
 #include "armature/ArmatureComponents.h"
 #include "gltf/GltfScene.h"
 #include "gltf/SourceAssets.h"
 #include "numeric/VectorMath.h"
+#include "procedure/Procedure.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
@@ -166,7 +169,23 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                         r.emplace<StartTransform>(instance_entity, *WorldTransformOf(r, instance_entity), ToTransform(GetParentDelta(r, instance_entity)));
                     }
                 }
+                // A transformable procedure mesh appends a transform node at the drag's first update, and each later update moves its delta.
+                const bool started = r.all_of<StartPivot>(viewport);
                 const auto &pivot = StartPivotOf(r, viewport);
+                const auto &primaries = r.get<const EditPrimaries>(viewport).Transformable;
+                if (started) {
+                    nodes::ForEachResultNode(r, viewport, [&](state::Entity mesh_entity, state::Entity node) {
+                        if (primaries.contains(mesh_entity) && r.all_of<procedure::TransformElements>(node)) r.patch<procedure::TransformElements>(node, [&](auto &p) { p.Delta = a.Delta; });
+                    });
+                } else {
+                    for (const auto mesh_entity : mesh::SelectedEditMeshes(r, viewport)) {
+                        const auto primary = primaries.find(mesh_entity);
+                        if (primary == primaries.end() || !r.all_of<procedure::GeometryProcedure>(mesh_entity)) continue;
+                        const auto node = nodes::AppendNode(r, viewport, mesh_entity, procedure::KindOf<procedure::TransformElements>);
+                        if (node == state::Null) return;
+                        r.replace<procedure::TransformElements>(node, a.Delta, pivot.P, *WorldTransformOf(r, primary->second));
+                    }
+                }
                 r.emplace_or_replace<PendingTransform>(viewport, pivot.P, pivot.R, a.Delta);
             },
             [&](const SetActiveTool &a) {

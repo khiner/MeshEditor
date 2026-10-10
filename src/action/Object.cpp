@@ -17,6 +17,7 @@
 #include "metal/Dispatch.h"
 #include "numeric/VectorMath.h"
 #include "object/ObjectOps.h"
+#include "procedure/Procedure.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
@@ -228,8 +229,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         if (r.get<const EditMode>(viewport).Value != element) return result;
         for (const auto me : r.view<const MeshElementSelection>()) {
             if (!HasMesh(r, me)) continue;
-            const auto mesh = GetMesh(r, me);
-            const auto &summary = meshes.GetSelectionSummary(mesh.GetStoreId());
+            const auto &summary = meshes.GetSelectionSummary(*DrawnStoreId(r, me));
             if (summary.Mode == element && summary.SelectedCount > 0) result.push_back(me);
         }
         return result;
@@ -269,6 +269,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const SetSelectedSharp &a) {
                 const auto targets = edit_selection_meshes(a.Element);
+                if (std::ranges::any_of(targets, [&](state::Entity e) { return r.all_of<procedure::GeometryProcedure>(e); })) return action::Fail(r, "Sharp marks have no node form for a mesh with a geometry procedure");
                 const auto operation = a.Element == Element::Face ? EditSharpnessOperation::SetSelectedFaces :
                     a.Element == Element::Edge                    ? EditSharpnessOperation::SetSelectedEdges :
                                                                     EditSharpnessOperation::SetVertexEdges;

@@ -33,7 +33,11 @@ using state::On;
 namespace procedure {
 namespace {
 using namespace action::mesh;
-using Masks = std::optional<GeometryMasks>;
+// A node's selection input as each domain's masks, or none for every element, and whether its edit publishes its emitted selection into its record's masks.
+struct Masks {
+    std::optional<GeometryMasks> In;
+    bool Publish{};
+};
 
 // A socket's value during a cook: a record for geometry, each domain's first mask block in the cook's arena for a selection, or an attribute of the record its consumer reads.
 // A selection without mask blocks selects every element, and an absent attribute is InvalidOffset.
@@ -114,87 +118,98 @@ void KeepWritten(const MeshStore &meshes, uint32_t id, ResyncState &resync, Mesh
     }
 }
 
-GeometrySelection Handles(const MeshStore &meshes, uint32_t id, const Masks &masks) { return masks ? ReadMasks(meshes, id, *masks) : AllHandles(Mesh{meshes, id}); }
+GeometrySelection Handles(const MeshStore &meshes, uint32_t id, const Masks &masks) { return masks.In ? ReadMasks(meshes, id, *masks.In) : AllHandles(Mesh{meshes, id}); }
 
 MeshTopologyTask Task(uint32_t id, MeshTopologyOp op, const Masks &masks, float param0 = 0.f, float param1 = 0.f, uint32_t flags = 0u) {
     MeshTopologyTask task{.SourceId = id, .Op = op, .Param0 = param0, .Param1 = param1, .Flags = flags};
-    if (masks) task.Selection = *masks;
+    if (masks.In) task.Selection = *masks.In;
     else task.Flags |= TopologyFlagSelectAll;
     return task;
 }
 // The record a task leaves, or none when it changed nothing.
-std::optional<uint32_t> Execute(state::Scene &r, const std::optional<MeshTopologyTask> &task) {
+std::optional<uint32_t> Execute(state::Scene &r, std::optional<MeshTopologyTask> task, const Masks &masks) {
     if (!task) return {};
+    if (masks.Publish) PublishStoreSelection(r.Context.get<const MeshStore>(), *task);
     const auto result = ExecuteGeometryTopology(r, std::span{&*task, 1u}).front();
     return result.Changed ? std::optional{result.GeometryId} : std::nullopt;
 }
 // A planned primitive list takes the handles it was planned from as its selection.
-std::optional<uint32_t> ExecutePlanned(state::Scene &r, std::optional<MeshTopologyTask> task, const GeometrySelection &selection) {
+std::optional<uint32_t> ExecutePlanned(state::Scene &r, std::optional<MeshTopologyTask> task, const GeometrySelection &selection, const Masks &masks) {
     if (task && task->Op == MeshTopologyOp::AddPrimitives) task->Selection = selection;
-    return Execute(r, task);
+    return Execute(r, std::move(task), masks);
 }
-std::optional<uint32_t> ExecuteStages(state::Scene &r, std::span<const MeshTopologyTask> tasks) {
+std::optional<uint32_t> ExecuteStages(state::Scene &r, std::vector<MeshTopologyTask> tasks, const Masks &masks) {
+    if (masks.Publish)
+        for (auto &task : tasks) PublishStoreSelection(r.Context.get<const MeshStore>(), task);
     const auto results = ExecuteGeometryTopologyStages(r, tasks);
     if (std::ranges::none_of(results, &GeometryTopologyResult::Changed)) return {};
     return results.back().GeometryId;
 }
-std::optional<uint32_t> Reposition(state::Scene &r, uint32_t id, const Masks &masks, PositionEditOp op, float factor, uint32_t repeat, const PositionOperationOptions &options = {}) {
-    const PositionOperationTarget target{.StoreId = id, .Selection = masks ? SelectionSource{*masks} : SelectionSource{AllHandles(Mesh{r.Context.get<const MeshStore>(), id})}};
+// A publishing position edit keeps every element, so its record selects the edit's selection.
+std::optional<uint32_t> Reposition(state::Scene &r, uint32_t id, const Masks &masks, PositionEditOp op, float factor, uint32_t repeat, const PositionOperationOptions &options = {}, const Transform &world = {}) {
+    auto &meshes = r.Context.get<MeshStore>();
+    const PositionOperationTarget target{.StoreId = id, .Selection = masks.In ? SelectionSource{*masks.In} : SelectionSource{AllHandles(Mesh{meshes, id})}, .World = world};
     if (ExecuteGeometryPositions(r, std::span{&target, 1u}, op, factor, repeat, options).empty()) return {};
+    if (masks.Publish && masks.In) {
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        meshes.SelectMasks(r, chain, id, *masks.In);
+        chain.Submit();
+    }
     return id;
 }
 uint32_t Axes(bool x, bool y, bool z) { return uint32_t(x) | uint32_t(y) << 1u | uint32_t(z) << 2u; }
 
 // Each operator edits record `id` where `masks` select, or every element without masks.
-std::optional<uint32_t> Run(state::Scene &r, const Delete &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp(uint32_t(p.Mode)), m)); }
+std::optional<uint32_t> Run(state::Scene &r, const Delete &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp(uint32_t(p.Mode)), m), m); }
 std::optional<uint32_t> Run(state::Scene &r, const Merge &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
     const auto &vertices = selection.Vertices;
     const auto reference = vertices.empty() ? InvalidOffset : p.Mode == MergeMode::Last ? vertices.back() :
                                                                                           vertices.front();
-    return ExecutePlanned(r, MergeTask(meshes, Mesh{meshes, id}, selection, p.Mode, std::max(p.Distance, 0.f), reference), selection);
+    return ExecutePlanned(r, MergeTask(meshes, Mesh{meshes, id}, selection, p.Mode, std::max(p.Distance, 0.f), reference), selection, m);
 }
 std::optional<uint32_t> Run(state::Scene &r, const Extrude &p, uint32_t id, const Masks &m) {
     const auto op = p.Mode == ExtrudeMode::Vertices ? MeshTopologyOp::ExtrudeVertices : p.Mode == ExtrudeMode::Edges ? MeshTopologyOp::ExtrudeEdges :
         p.Mode == ExtrudeMode::FacesIndividual                                                                       ? MeshTopologyOp::ExtrudeFacesIndividual :
                                                                                                                        MeshTopologyOp::ExtrudeRegion;
-    return Execute(r, Task(id, op, m));
+    return Execute(r, Task(id, op, m), m);
 }
-std::optional<uint32_t> Run(state::Scene &r, Duplicate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::DuplicateGeometry, m)); }
-std::optional<uint32_t> Run(state::Scene &r, Split, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::SplitGeometry, m)); }
+std::optional<uint32_t> Run(state::Scene &r, Duplicate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::DuplicateGeometry, m), m); }
+std::optional<uint32_t> Run(state::Scene &r, Split, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::SplitGeometry, m), m); }
 // A limited dissolve reads every selected domain, since a node has no face edit mode to protect unselected faces by.
 std::optional<uint32_t> Run(state::Scene &r, const Dissolve &p, uint32_t id, const Masks &m) {
     switch (p.Mode) {
-        case DissolveMode::Vertices: return Execute(r, Task(id, MeshTopologyOp::DissolveVertices, m));
-        case DissolveMode::Edges: return Execute(r, Task(id, MeshTopologyOp::DissolveEdges, m, 0.f, 0.f, p.KeepVertices ? TopologyFlagKeepVertices : 0u));
-        case DissolveMode::Faces: return Execute(r, Task(id, MeshTopologyOp::DissolveFaces, m));
+        case DissolveMode::Vertices: return Execute(r, Task(id, MeshTopologyOp::DissolveVertices, m), m);
+        case DissolveMode::Edges: return Execute(r, Task(id, MeshTopologyOp::DissolveEdges, m, 0.f, 0.f, p.KeepVertices ? TopologyFlagKeepVertices : 0u), m);
+        case DissolveMode::Faces: return Execute(r, Task(id, MeshTopologyOp::DissolveFaces, m), m);
         case DissolveMode::Limited: {
             const auto flags = (p.AllBoundaries ? TopologyFlagAllBoundaries : 0u) | (p.DelimitMaterials ? TopologyFlagDelimitMaterial : 0u) | (p.DelimitSharpEdges ? TopologyFlagDelimitSharp : 0u) | (p.DelimitUVs ? TopologyFlagDelimitUV : 0u);
-            return Execute(r, Task(id, MeshTopologyOp::DissolveLimited, m, std::clamp(p.Angle, 0.f, .5f * std::numbers::pi_v<float>), 0.f, flags));
+            return Execute(r, Task(id, MeshTopologyOp::DissolveLimited, m, std::clamp(p.Angle, 0.f, .5f * std::numbers::pi_v<float>), 0.f, flags), m);
         }
-        case DissolveMode::Degenerate: return Execute(r, Task(id, MeshTopologyOp::DissolveDegenerate, m, std::max(p.Distance, 0.f)));
+        case DissolveMode::Degenerate: return Execute(r, Task(id, MeshTopologyOp::DissolveDegenerate, m, std::max(p.Distance, 0.f)), m);
     }
     std::unreachable();
 }
-std::optional<uint32_t> Run(state::Scene &r, const Subdivide &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Subdivide, m, float(std::max(p.Cuts, 1u)))); }
-std::optional<uint32_t> Run(state::Scene &r, Triangulate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Triangulate, m)); }
-std::optional<uint32_t> Run(state::Scene &r, TrisToQuads, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::TrisToQuads, m)); }
-std::optional<uint32_t> Run(state::Scene &r, const Poke &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Poke, m, p.Offset)); }
-std::optional<uint32_t> Run(state::Scene &r, FlipNormals, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::FlipNormals, m)); }
-std::optional<uint32_t> Run(state::Scene &r, EdgeSplit, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m)); }
+std::optional<uint32_t> Run(state::Scene &r, const Subdivide &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Subdivide, m, float(std::max(p.Cuts, 1u))), m); }
+std::optional<uint32_t> Run(state::Scene &r, Triangulate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Triangulate, m), m); }
+std::optional<uint32_t> Run(state::Scene &r, TrisToQuads, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::TrisToQuads, m), m); }
+std::optional<uint32_t> Run(state::Scene &r, const Poke &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Poke, m, p.Offset), m); }
+std::optional<uint32_t> Run(state::Scene &r, FlipNormals, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::FlipNormals, m), m); }
+std::optional<uint32_t> Run(state::Scene &r, EdgeSplit, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m), m); }
+std::optional<uint32_t> Run(state::Scene &r, Rip, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m, 0.f, 0.f, TopologyFlagRipSelectCopies), m); }
 std::optional<uint32_t> Run(state::Scene &r, const Inset &p, uint32_t id, const Masks &m) {
-    return Execute(r, Task(id, p.Individual ? MeshTopologyOp::InsetIndividual : MeshTopologyOp::InsetRegion, m, std::max(p.Thickness, 0.f), p.Depth, p.Even ? TopologyFlagEvenOffset : 0u));
+    return Execute(r, Task(id, p.Individual ? MeshTopologyOp::InsetIndividual : MeshTopologyOp::InsetRegion, m, std::max(p.Thickness, 0.f), p.Depth, p.Even ? TopologyFlagEvenOffset : 0u), m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const Solidify &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Solidify, m, p.Thickness)); }
+std::optional<uint32_t> Run(state::Scene &r, const Solidify &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Solidify, m, p.Thickness), m); }
 std::optional<uint32_t> Run(state::Scene &r, const Wireframe &p, uint32_t id, const Masks &m) {
     const auto flags = (p.Even ? TopologyFlagEvenOffset : 0u) | (p.Boundary ? TopologyFlagWireBoundary : 0u) | (p.Relative ? TopologyFlagWireRelative : 0u) | (p.Replace ? TopologyFlagWireReplace : 0u);
-    return Execute(r, Task(id, MeshTopologyOp::Wireframe, m, std::max(p.Thickness, 0.f), std::clamp(p.Offset, -1.f, 1.f), flags));
+    return Execute(r, Task(id, MeshTopologyOp::Wireframe, m, std::max(p.Thickness, 0.f), std::clamp(p.Offset, -1.f, 1.f), flags), m);
 }
 std::optional<uint32_t> Run(state::Scene &r, const Bevel &p, uint32_t id, const Masks &m) {
     auto task = Task(id, p.Vertices ? MeshTopologyOp::BevelVertices : MeshTopologyOp::BevelEdges, m, std::max(p.Width, 0.f));
     task.Steps = std::max(p.Segments, 1u);
-    return Execute(r, task);
+    return Execute(r, task, m);
 }
 std::optional<uint32_t> Run(state::Scene &r, const SmoothVertices &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::Smooth, p.Factor, std::clamp(p.Repeat, 1u, 1000u), {.Axes = Axes(p.X, p.Y, p.Z)});
@@ -212,33 +227,33 @@ std::optional<uint32_t> Run(state::Scene &r, const Spin &p, uint32_t id, const M
     const auto selection = Handles(meshes, id, m);
     const auto axis = Normalize(p.Axis);
     const auto steps = float(std::max(p.Steps, 1u));
-    return ExecutePlanned(r, ExtrudeStepsTask(Mesh{meshes, id}, selection, Element::None, p.Steps, ToMat3(AngleAxis(p.Angle / steps, axis)), axis * (p.Offset / steps), p.Center), selection);
+    return ExecutePlanned(r, ExtrudeStepsTask(Mesh{meshes, id}, selection, Element::None, p.Steps, ToMat3(AngleAxis(p.Angle / steps, axis)), axis * (p.Offset / steps), p.Center), selection, m);
 }
 std::optional<uint32_t> Run(state::Scene &r, const ExtrudeRepeat &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
-    return ExecutePlanned(r, ExtrudeStepsTask(Mesh{meshes, id}, selection, Element::None, p.Steps, mat3{1.f}, p.Offset, vec3{0.f}), selection);
+    return ExecutePlanned(r, ExtrudeStepsTask(Mesh{meshes, id}, selection, Element::None, p.Steps, mat3{1.f}, p.Offset, vec3{0.f}), selection, m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const Bisect &p, uint32_t id, const Masks &) {
+std::optional<uint32_t> Run(state::Scene &r, const Bisect &p, uint32_t id, const Masks &m) {
     if (Dot(p.Normal, p.Normal) <= 0.f) return {};
-    return ExecuteStages(r, BisectTasks(Mesh{r.Context.get<const MeshStore>(), id}, p.Point, p.Normal, p.ClearInner, p.ClearOuter));
+    return ExecuteStages(r, BisectTasks(Mesh{r.Context.get<const MeshStore>(), id}, p.Point, p.Normal, p.ClearInner, p.ClearOuter), m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const Symmetrize &p, uint32_t id, const Masks &) {
-    return ExecuteStages(r, SymmetrizeTasks(Mesh{r.Context.get<const MeshStore>(), id}, uint8_t(p.Axis), p.Negative));
+std::optional<uint32_t> Run(state::Scene &r, const Symmetrize &p, uint32_t id, const Masks &m) {
+    return ExecuteStages(r, SymmetrizeTasks(Mesh{r.Context.get<const MeshStore>(), id}, uint8_t(p.Axis), p.Negative), m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const FillHoles &p, uint32_t id, const Masks &) {
+std::optional<uint32_t> Run(state::Scene &r, const FillHoles &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
-    return Execute(r, FillHolesTask(meshes, Mesh{meshes, id}, p.Sides));
+    return Execute(r, FillHolesTask(meshes, Mesh{meshes, id}, p.Sides), m);
 }
 std::optional<uint32_t> Run(state::Scene &r, ConvexHull, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
-    return ExecutePlanned(r, ConvexHullTask(meshes, Mesh{meshes, id}, selection), selection);
+    return ExecutePlanned(r, ConvexHullTask(meshes, Mesh{meshes, id}, selection), selection, m);
 }
 std::optional<uint32_t> Run(state::Scene &r, const Decimate &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
-    return ExecutePlanned(r, DecimateTask(meshes, Mesh{meshes, id}, selection, p.Ratio), selection);
+    return ExecutePlanned(r, DecimateTask(meshes, Mesh{meshes, id}, selection, p.Ratio), selection, m);
 }
 std::optional<uint32_t> Run(state::Scene &r, const RecalculateNormals &p, uint32_t id, const Masks &m) {
     auto &meshes = r.Context.get<MeshStore>();
@@ -246,7 +261,10 @@ std::optional<uint32_t> Run(state::Scene &r, const RecalculateNormals &p, uint32
     auto faces = std::move(RecalculateFaceFlips(meshes, GetMeshPipelines(r), std::array{id}, std::span{&selection, 1u}, p.Inside).front());
     if (faces.empty()) return {};
     faces.insert(faces.begin(), uint32_t(faces.size()));
-    return Execute(r, MeshTopologyTask{.SourceId = id, .Op = MeshTopologyOp::FlipNormals, .List = std::move(faces), .Selection = selection});
+    return Execute(r, MeshTopologyTask{.SourceId = id, .Op = MeshTopologyOp::FlipNormals, .List = std::move(faces), .Selection = selection}, m);
+}
+std::optional<uint32_t> Run(state::Scene &r, const TransformElements &p, uint32_t id, const Masks &m) {
+    return Reposition(r, id, m, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{p.Delta, p.Pivot}}, p.Frame);
 }
 std::optional<uint32_t> Run(state::Scene &r, const SetPosition &p, uint32_t id, uint32_t attribute, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
@@ -490,8 +508,9 @@ std::optional<uint32_t> RunNode(state::Scene &r, const GeometryProcedure &proced
         auto &selection = values[first + selection_socket];
         selection.Type = SocketType::Selection;
         selection.MaskFirst = evaluation.MaskFirst ? *evaluation.MaskFirst : UploadSelection(meshes, arena, id, r.try_get<const InlineSelection>(entity));
-        if (const auto &f = selection.MaskFirst; f != EveryElement) masks = GeometryMasks{{&*arena, f[0]}, {&*arena, f[1]}, {&*arena, f[2]}};
+        if (const auto &f = selection.MaskFirst; f != EveryElement) masks.In = GeometryMasks{{&*arena, f[0]}, {&*arena, f[1]}, {&*arena, f[2]}};
     }
+    masks.Publish = r.all_of<PublishSelection>(entity);
     std::optional<uint32_t> edited;
     VisitKind(kind, [&]<typename K> {
         if constexpr (std::same_as<K, StoreNamedAttribute>) {
@@ -527,8 +546,13 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
     const bool sourced = unlinked || std::ranges::any_of(plan.Order, [&](uint32_t node) { return procedure.Nodes[node].Kind == KindOf<Source> && read(node); });
     // The records the cook made, which release at its end apart from the result.
     std::vector<uint32_t> created;
-    if (sourced) created.push_back(SourceCopy(r, source, evaluated, resync, between));
-    else {
+    if (sourced) {
+        created.push_back(SourceCopy(r, source, evaluated, resync, between));
+        // The copy selects nothing and hides what the source hides whether it resynced or cloned anew, so the result selects only what its publishing nodes select.
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        meshes.ResetEditState(r, chain, evaluated.StoreId, resync->Blocks);
+        chain.Submit();
+    } else {
         meshes.Release(evaluated.StoreId);
         evaluated = {.StoreId = InvalidOffset};
         resync.reset();
@@ -617,7 +641,8 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
     meshes.Release(created);
     r.emplace_or_replace<EvaluatedMesh>(mesh_entity, evaluated);
     RefreshMeshBinding(r, result);
-    r.get_or_emplace<MeshGeometryDirty>(mesh_entity, EditSelectionAfter::Keep).RenderReady = false;
+    // The editor derives the record's selection anew from its edit domain, which also refreshes its summary.
+    r.get_or_emplace<MeshGeometryDirty>(mesh_entity, EditSelectionAfter::Derive).RenderReady = false;
 }
 
 // Socket slots and input slots in node order, the consumers of each socket slot, and an order in which every node follows the nodes it reads.
@@ -688,6 +713,7 @@ void QueueNodeRemovals(state::Scene &r, state::Entity mesh_entity) {
 
 void RegisterProcedureHandlers(state::Scene &r) {
     using namespace procedure;
+    r.Context.emplace<CookCount>();
     reactive(r, Change::Procedure).on<GeometryProcedure>(On::Create | On::Update);
     r.on_destroy<GeometryProcedure, &QueueNodeRemovals>();
     auto &inputs = reactive(r, Change::ProcedureInputs);
@@ -722,4 +748,5 @@ void SettleProcedures(state::Scene &r, bool cook) {
     SortUnique(cooked);
     std::optional<BufferArena<SelectionBlock>> arena;
     for (const auto e : cooked) Cook(r, e, arena, writes);
+    r.Context.get<CookCount>().Value += cooked.size();
 }

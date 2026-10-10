@@ -3,6 +3,7 @@
 #include "action/Mesh.h"
 #include "action/Updatable.h"
 #include "gpu/AttributeNode.h"
+#include "gpu/Transform.h"
 #include "mesh/GeometrySelection.h"
 #include "mesh/NamedAttribute.h"
 #include "mesh/PrimitiveType.h"
@@ -74,6 +75,12 @@ struct StoreNamedAttribute {
 struct SetPosition {
     bool Offset{true};
 };
+// Moves the selected vertices by Delta about Pivot, both in the space Frame maps the record's positions into.
+struct TransformElements {
+    Transform Delta{};
+    vec3 Pivot{};
+    Transform Frame{};
+};
 
 // A node's kind is the index of its parameter component here.
 using NodeKinds = action::TypeList<
@@ -83,7 +90,7 @@ using NodeKinds = action::TypeList<
     action::mesh::Subdivide, action::mesh::Triangulate, action::mesh::TrisToQuads, action::mesh::Poke, action::mesh::FlipNormals, action::mesh::EdgeSplit,
     action::mesh::Inset, action::mesh::Solidify, action::mesh::Wireframe, action::mesh::Bevel, action::mesh::SmoothVertices, action::mesh::ShrinkFatten,
     action::mesh::Randomize, action::mesh::Spin, action::mesh::ExtrudeRepeat, action::mesh::Bisect, action::mesh::Symmetrize, action::mesh::FillHoles,
-    action::mesh::ConvexHull, action::mesh::Decimate, action::mesh::RecalculateNormals,
+    action::mesh::ConvexHull, action::mesh::Decimate, action::mesh::RecalculateNormals, action::mesh::Rip, TransformElements,
     Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, SetPosition>;
 
 // An attribute socket carries an attribute of the record at its consumer's geometry input.
@@ -240,6 +247,8 @@ struct NodeLayout {
 struct InlineSelection {
     std::vector<SelectionBlock> Vertices, Edges, Faces;
 };
+// Persistent on a node a viewport operator appended, whose edit selects the elements it emits in its output record the way the operator does.
+struct PublishSelection {};
 // Derived on a node whose input is missing or whose operation changed nothing, which forwards its input.
 struct NodeError {};
 // Derived on the mesh entity, rebuilt with its procedure.

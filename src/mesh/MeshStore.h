@@ -561,6 +561,12 @@ struct MeshStore {
     // Records the rewrite of the masks' words in the record's blocks of the two domains other than `source`, derived from the source domain's words the way UpdateSelection derives them.
     // The store's selection, aggregates and hidden masks are unchanged, and hidden elements stay selectable.
     void DeriveSelectionMasks(state::Scene &, mtl::ComputeChain &, uint32_t id, const GeometryMasks &, Element source) const;
+    // Clears the record's selection and gives each block `pairs` pairs with a source block, ascending by the record's block, the source block's hidden mask.
+    // A record with selection state records the refresh of the changed blocks' aggregates.
+    void ResetEditState(state::Scene &, mtl::ComputeChain &, uint32_t id, const BlockPairs &pairs);
+    // Gives the record's selection the masks' bits at each block it owns.
+    // A record with selection state records the refresh of the changed blocks' aggregates.
+    void SelectMasks(state::Scene &, mtl::ComputeChain &, uint32_t id, const GeometryMasks &);
     // Copies the root counts, sums and sharpness of the summary's mode into the summary.
     void PublishSelectionSummary(uint32_t id);
     EditSelectionSummary &WriteSelectionSummary(uint32_t id);

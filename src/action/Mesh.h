@@ -331,6 +331,8 @@ using Action = std::variant<
     Spin, ExtrudeRepeat, Bisect, Symmetrize, Solidify, ConnectVertices, Knife, BridgeEdgeLoops, GridFill, FillHoles, ConvexHull, EdgeRotate, Rip, Bevel, SmoothVertices, SpaceEvenly, RelaxEdgeLoops, CurveBetweenSelected, Circularize, MakePlanarFaces, Flatten, Wireframe, SplitNonplanarFaces, SplitConcaveFaces, RotateUVs, ReverseUVs, RotateColors, ReverseColors, ShrinkFatten, ToSphere, PushPull, RecalculateNormals, BeautifyFaces, Shear, Warp, Bend, Randomize, VertexSlide, EdgeSlide, Unsubdivide, SnapSymmetry, Hide, Reveal, Decimate>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
+// The edit-mode meshes with a selection in the viewport's edit element domain, which the operators edit.
+std::vector<state::Entity> SelectedEditMeshes(const state::Scene &, state::Entity viewport);
 // Reuses the staged inset's topology when only its continuous parameters move.
 // Returns false without writing if topology, targets, or selection changed.
 bool UpdateInsetPreview(state::Scene &, state::Entity viewport, const Inset &, InsetPreviewCache &);

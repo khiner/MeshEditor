@@ -100,7 +100,7 @@ void ComputeFlags(const state::Scene &r, state::Entity viewport, const ModeScope
     // Every live face marks its mesh's face root sharp or smooth, so a root with neither belongs to a mesh without faces.
     bool any_smooth = false, any_sharp = false, any_partial = false;
     for (const auto mesh_entity : out.Meshes) {
-        const auto faces = meshes.GetSelectionRoot(r.get<const MeshHandle>(mesh_entity).StoreId, Element::Face).Flags;
+        const auto faces = meshes.GetSelectionRoot(*DrawnStoreId(r, mesh_entity), Element::Face).Flags;
         const bool sharp = faces & SelectionLiveSharp, smooth = faces & SelectionLiveSmooth;
         if (!sharp && !smooth) continue;
         any_smooth |= !sharp;

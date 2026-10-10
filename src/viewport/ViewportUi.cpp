@@ -10,6 +10,7 @@
 #include "action/Animation.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
+#include "action/Build.h"
 #include "action/Mesh.h"
 #include "action/Object.h"
 #include "action/Selection.h"
@@ -22,6 +23,7 @@
 #include "gizmo/TransformGizmo.h"
 #include "gltf/SourceAssets.h"
 #include "numeric/MatrixMath.h"
+#include "procedure/Procedure.h"
 #include "project/Project.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
@@ -246,7 +248,7 @@ void BeginMeshDrag(state::Scene &r, state::Entity viewport, FrameState &frame, M
 }
 
 // Sizes the active mesh drag from the mouse, commits on release and cancels on Escape.
-void UpdateMeshDrag(state::Scene &r, FrameState &frame) {
+void UpdateMeshDrag(state::Scene &r, state::Entity viewport, FrameState &frame) {
     using Op = MeshOperatorDrag::Op;
     auto &drag = *frame.MeshDrag;
     const auto mouse = ToVec2(GetMousePos());
@@ -284,7 +286,15 @@ void UpdateMeshDrag(state::Scene &r, FrameState &frame) {
     const float travel = Length(mouse - drag.CenterPx) - Length(drag.StartPx - drag.CenterPx);
     const float value = std::max((drag.Value == Op::Inset ? -travel : travel) * drag.WorldPerPx, 0.f);
     if ((value <= 0.f && !drag.Staged) || (drag.Staged == value && !changed)) return;
-    if (drag.Value == Op::Inset) action::Emit(action::mesh::Inset{.Thickness = value, .Depth = 0.f, .Individual = drag.Individual, .Even = true}, action::Phase::Stage);
+    // A drag over procedure meshes alone moves the parameters of the nodes its first step appended, one field per frame.
+    if (drag.Staged && std::ranges::all_of(r.get<const EditPrimaries>(viewport).All, [&](const auto &entry) { return r.all_of<procedure::GeometryProcedure>(entry.first); })) {
+        using action::mesh::Inset, action::mesh::Bevel;
+        const action::Target nodes{action::OnSelected{}};
+        if (changed && drag.Value == Op::Inset) return action::Emit(action::UpdateOf<&Inset::Individual>(nodes, drag.Individual), action::Phase::Stage);
+        if (changed) return action::Emit(action::UpdateOf<&Bevel::Segments>(nodes, drag.Segments), action::Phase::Stage);
+        if (drag.Value == Op::Inset) action::Emit(action::UpdateOf<&Inset::Thickness>(nodes, value), action::Phase::Stage);
+        else action::Emit(action::UpdateOf<&Bevel::Width>(nodes, value), action::Phase::Stage);
+    } else if (drag.Value == Op::Inset) action::Emit(action::mesh::Inset{.Thickness = value, .Depth = 0.f, .Individual = drag.Individual, .Even = true}, action::Phase::Stage);
     else action::Emit(action::mesh::Bevel{.Width = value, .Segments = drag.Segments, .Vertices = drag.Value == Op::BevelVertices}, action::Phase::Stage);
     drag.Staged = value;
 }
@@ -476,7 +486,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
 
     if (frame.MeshDrag) {
         if (frame.MeshDrag->Staged && !project::Session(r).HasStaged()) frame.MeshDrag.reset();
-        else return UpdateMeshDrag(r, frame);
+        else return UpdateMeshDrag(r, viewport, frame);
     }
 
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;

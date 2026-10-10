@@ -48,6 +48,12 @@ MeshTopologyPushConstants TopologyPushConstants(const MeshStore &meshes) {
     return {.Source = arenas, .Destination = arenas};
 }
 
+void PublishStoreSelection(const MeshStore &meshes, MeshTopologyTask &task) {
+    const auto &a = meshes.Arenas();
+    task.SelectionOutput = GeometryMasks{{&a.VertexSelection}, {&a.EdgeSelection}, {&a.FaceSelection}};
+    if (task.Op == MeshTopologyOp::ExtrudeVertices) task.StoreSelectionSource = Element::Vertex;
+}
+
 // A face list task's existing vertex references and their list offsets.
 struct PrimitiveListReferences {
     std::vector<uint32_t> ExistingVertices;

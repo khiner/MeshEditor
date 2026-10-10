@@ -55,6 +55,7 @@
 #include "metal/RenderTarget.h"
 #include "numeric/MatrixMath.h"
 #include "physics/PhysicsTypes.h"
+#include "procedure/Procedure.h"
 #include "render/ElementWorkOps.h"
 #include "render/Encoding.h"
 #include "render/GpuBufferOps.h"
@@ -256,7 +257,7 @@ const DeformSlots NoDeform{};
 std::unordered_map<state::Entity, DeformSlots> BuildDeformSlots(const state::Scene &r, const MeshStore &meshes) {
     std::unordered_map<state::Entity, DeformSlots> result;
     for (const auto [instance_entity, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
-        const auto &mesh_record = meshes.Get(r.get<const MeshHandle>(instance.Entity).StoreId);
+        const auto &mesh_record = meshes.Get(*DrawnStoreId(r, instance.Entity));
         if (!mesh_record.SkinBlocksReady) continue;
         const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier.ArmatureEntity);
         if (!pose_state || modifier.SkinSlot >= pose_state->GpuDeformRanges.size()) continue;
@@ -271,7 +272,7 @@ std::unordered_map<state::Entity, DeformSlots> BuildDeformSlots(const state::Sce
     }
     for (const auto [instance_entity, instance, gpu_range, ri] : r.view<const Instance, const MorphWeightRange, const RenderInstance>().each()) {
         const auto mesh_entity = instance.Entity;
-        const auto &record = meshes.Get(r.get<const MeshHandle>(mesh_entity).StoreId);
+        const auto &record = meshes.Get(*DrawnStoreId(r, mesh_entity));
         if (!record.MorphBlocksReady) continue;
         auto &slots = result[mesh_entity];
         slots.MorphDeformOffset = 0u;
@@ -782,30 +783,30 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
         d.MeshletBoundsNamespace = pose->MeshletBoundsNamespace(0);
         d.MorphNormalNamespace = pose->MorphNormalNamespace(0);
     }
-    // A mesh object's canonical record, which bones, joints and extras lack.
-    const auto *handle = r.try_get<const MeshHandle>(mesh_entity);
-    const auto *record = handle ? &meshes.Get(handle->StoreId) : nullptr;
+    // Whether `mb` is a mesh object's drawn record, which bones, joints and extras lack.
+    const bool mesh_record = r.all_of<MeshHandle>(mesh_entity);
     const auto &arenas = meshes.Arenas();
-    const uint32_t faces = record ? arenas.FaceTriangles.Count(record->FaceData) : 0u, edges = record ? arenas.EdgeHalfedges.Count(record->EdgeData) : 0u;
+    const uint32_t faces = mesh_record ? arenas.FaceTriangles.Count(mb.FaceData) : 0u, edges = mesh_record ? arenas.EdgeHalfedges.Count(mb.EdgeData) : 0u;
     const bool meshlets = c.Meshes.MeshletCount(mb) > 0u;
     const auto primary = c.Primaries.find(mesh_entity);
     const bool has_primary = primary != c.Primaries.end();
     const bool sound = c.SoundMeshes.contains(mesh_entity);
     const bool overlays = c.Settings.ShowOverlays;
-    if (has_primary && record) {
-        d.HasPendingVertexTransform = c.Transforming ? 1u : 0u;
+    if (has_primary && mesh_record) {
+        // A procedure mesh's transform moves its drawn record through the node it cooks.
+        d.HasPendingVertexTransform = c.Transforming && !r.all_of<procedure::GeometryProcedure>(mesh_entity) ? 1u : 0u;
         d.PrimaryEditInstanceIndex = r.get<const RenderInstance>(primary->second).BufferIndex;
-        d.Selection = meshes.GetEditSelectionStorage(handle->StoreId);
-        d.EditEdgeSharpnessOffset = arenas.EdgeHalfedges.First(record->EdgeData);
-        d.ElementIdOffset = meshes.GetSelectionBitOffset(handle->StoreId, c.EditElement);
-    } else if (sound && record) {
-        d.Selection = meshes.GetEditSelectionStorage(handle->StoreId);
+        d.Selection = meshes.GetEditSelectionStorage(mb.StoreId);
+        d.EditEdgeSharpnessOffset = arenas.EdgeHalfedges.First(mb.EdgeData);
+        d.ElementIdOffset = meshes.GetSelectionBitOffset(mb.StoreId, c.EditElement);
+    } else if (sound && mesh_record) {
+        d.Selection = meshes.GetEditSelectionStorage(mb.StoreId);
         const auto *active = r.try_get<const MeshActiveElement>(mesh_entity);
         d.ActiveVertex = active ? active->Handle : InvalidOffset;
     }
 
     const bool armature = r.all_of<ArmatureObject>(mesh_entity), joint = r.all_of<BoneJoint>(mesh_entity);
-    const bool shaded_face_less = record && !WorkbenchShading(c.Settings.ViewportShading) && faces == 0u && record->PrimitiveMaterials.Count > 0u;
+    const bool shaded_face_less = mesh_record && !WorkbenchShading(c.Settings.ViewportShading) && faces == 0u && mb.PrimitiveMaterials.Count > 0u;
     const bool normals = overlays && c.Settings.NormalOverlays != 0u && std::ranges::binary_search(c.SelectedMeshes, mesh_entity);
     uint32_t flags = 0u;
     uint8_t vertex_overlays = 0u;
@@ -813,12 +814,12 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
     const auto draw = [&](VertexOverlay overlay) { vertex_overlays |= uint8_t(1u << uint32_t(overlay)); };
     if (IsSilhouetteEligible(r, mesh_entity)) set(MeshletInstanceFlag::SilhouetteEligible);
     if (EditPinsFinest(c.Primaries, c.State, mesh_entity) || c.Meshes.Render().ActiveMeshlets.Count(mb.PositionDirtyRoot) > 0u) set(MeshletInstanceFlag::LodPinFinest);
-    if (has_primary && meshlets && record && GetMesh(r, mesh_entity).ElementCount(c.EditElement) > 0u) set(MeshletInstanceFlag::ElementSelection);
-    if (overlays && c.Mode == InteractionMode::Edit && has_primary && record && meshlets) {
+    if (has_primary && meshlets && mesh_record && Mesh{meshes, mb.StoreId}.ElementCount(c.EditElement) > 0u) set(MeshletInstanceFlag::ElementSelection);
+    if (overlays && c.Mode == InteractionMode::Edit && has_primary && mesh_record && meshlets) {
         set(MeshletInstanceFlag::EditOverlay);
         draw(VertexOverlay::EditPoints);
     }
-    if (meshlets && !armature && !joint && !r.all_of<ObjectExtrasTag>(mesh_entity) && record && edges > 0u &&
+    if (meshlets && !armature && !joint && !r.all_of<ObjectExtrasTag>(mesh_entity) && mesh_record && edges > 0u &&
         (faces == 0u || c.Wireframe()) && !shaded_face_less) set(MeshletInstanceFlag::Wire);
     if (armature || joint) set(MeshletInstanceFlag::OverlayOnly);
     if (overlays && c.Settings.ShowBones) {
@@ -840,7 +841,7 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
         if (meshlets) draw(VertexOverlay::SoundPoints);
     }
     // A mesh without faces or edges draws points.
-    if (record && faces == 0u && edges == 0u && !has_primary && !shaded_face_less) draw(VertexOverlay::Points);
+    if (mesh_record && faces == 0u && edges == 0u && !has_primary && !shaded_face_less) draw(VertexOverlay::Points);
     d.Flags = flags;
     return {d, vertex_overlays};
 }
@@ -849,7 +850,7 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
 void RefreshMeshDisplay(state::Scene &r, const DisplayContext &c, state::Entity mesh_entity, const MeshStore::Record &mb, const DeformSlots &deform, const PosedNamespaces *pose) {
     auto &scene = r.Context.get<GpuSceneState>();
     const auto [display, overlays] = ComputeMeshDisplay(c, mesh_entity, mb, deform, pose);
-    if (display.Flags & uint32_t(MeshletInstanceFlag::EditOverlay)) scene.MeshletEditHasSharpEdges |= c.Meshes.GetEdgeSharpnessSummary(GetMesh(c.R, mesh_entity).GetStoreId()).Any;
+    if (display.Flags & uint32_t(MeshletInstanceFlag::EditOverlay)) scene.MeshletEditHasSharpEdges |= c.Meshes.GetEdgeSharpnessSummary(mb.StoreId).Any;
     if (overlays) scene.VertexOverlays[mesh_entity] = overlays;
     else scene.VertexOverlays.erase(mesh_entity);
     if (mb.RenderTopologies == 0u) return;
@@ -1849,7 +1850,7 @@ void DrawVertexBlocks(
     const auto &buffers = r.Context.get<const GpuBuffers>();
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &scene = r.Context.get<const GpuSceneState>();
-    const auto store_id = r.get<const MeshHandle>(mesh_entity).StoreId;
+    const auto store_id = *DrawnStoreId(r, mesh_entity);
     VertexBlockPushConstants pc{
         .Instance = instance,
         .MembershipSlot = meshes.Arenas().Vertices.Blocks.Buffer.Slot,
@@ -1995,7 +1996,7 @@ void FinalizeWork(MTL::ComputeCommandEncoder *encoder, const Pipelines &pipeline
 
 MeshEditWork &PrepareMeshEditWork(state::Scene &r, state::Entity entity) {
     auto &buffers = r.Context.get<GpuBuffers>();
-    const auto mesh = GetMesh(r, entity);
+    const auto mesh = GetDrawnMesh(r, entity);
     const auto id = mesh.GetStoreId();
     auto &scene = r.Context.get<GpuSceneState>();
     auto &work = scene.EditWork;
@@ -2164,7 +2165,7 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Ent
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &meshes = r.Context.get<MeshStore>();
     auto &w = PrepareMeshEditWork(r, entity);
-    const auto mesh = GetMesh(r, entity);
+    const auto mesh = GetDrawnMesh(r, entity);
     const auto id = w.StoreId;
     if (changed.empty()) w.RefreshRanges.clear();
     if (!changed.empty()) {
@@ -2262,7 +2263,7 @@ bool RetessellateGeometry(state::Scene &r, mtl::ComputeChain &chain, GeometryEdi
     const auto &work = r.Context.get<const GpuBuffers>().GeometryWork;
     std::vector<MeshRetessellation> inputs;
     for (const auto &[entity, edit] : geometry) inputs.push_back({
-        .StoreId = GetMesh(r, entity).GetStoreId(),
+        .StoreId = *DrawnStoreId(r, entity),
         .Work = &work,
         .Faces = edit.Faces,
         .Parameters = {.ChangedVertices = edit.ChangedVertices, .SelectionSlot = edit.SelectionSlot, .ApplyTransform = uint32_t(preview && edit.ApplyTransform), .Primary = edit.Primary, .Delta = edit.Delta, .Pivot = edit.Pivot},
@@ -2305,9 +2306,11 @@ bool RefreshPreviewTessellation(state::Scene &r, state::Entity viewport) {
     const auto *pending = r.try_get<const PendingTransform>(viewport);
     GeometryEditJobs jobs;
     for (const auto &[entity, primary] : r.get<const EditPrimaries>(viewport).Transformable) {
+        // A procedure mesh's transform cooks into its drawn record instead of previewing over it.
+        const auto *previewed = r.all_of<procedure::GeometryProcedure>(entity) ? nullptr : pending;
         const auto old = scene.EditWork.find(entity);
-        if (!pending && (old == scene.EditWork.end() || !old->second.TessellationPreview)) continue;
-        jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, primary, pending));
+        if (!previewed && (old == scene.EditWork.end() || !old->second.TessellationPreview)) continue;
+        jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, primary, previewed));
     }
     if (jobs.empty()) return false;
     mtl::ComputeChain chain{r.Context.get<MeshStore>().BufferContext()};
@@ -2331,7 +2334,7 @@ std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, mtl::ComputeChai
     if (commits.empty()) return {};
     PrepareGeometryFootprints(r, chain, commits);
     auto &meshes = r.Context.get<MeshStore>();
-    for (const auto &[entity, pc] : commits) meshes.CaptureVertexEdit(GetMesh(r, entity).GetStoreId());
+    for (const auto &[entity, pc] : commits) meshes.CaptureVertexEdit(*DrawnStoreId(r, entity));
     chain.Encode([&](MTL::ComputeCommandEncoder *encoder) { RecordGeometryEditBatch(r, encoder, commits, false); });
     RetessellateGeometry(r, chain, commits, false);
     for (const auto &[entity, _] : commits) r.Context.get<GpuSceneState>().EditWork.at(entity).TessellationPreview = false;
@@ -2358,7 +2361,7 @@ std::vector<state::Entity> PublishEditedPositions(state::Scene &r, mtl::ComputeC
         const auto vertices = preview ? w.Candidates : w.Vertices;
         if (!ElementWorkEmpty(buffers.GeometryWork, vertices)) {
             changed.push_back(entity);
-            const auto id = GetMesh(r, entity).GetStoreId();
+            const auto id = *DrawnStoreId(r, entity);
             if (meshes.Get(id).SelectionSummary.Count) {
                 auto &blocks = aggregates.emplace_back(MeshStore::SelectionUpdate{.StoreId = id}).Blocks[0];
                 ForEachWorkBlock(buffers.GeometryWork, vertices, [&](uint32_t block, auto) { blocks.push_back(block); });
@@ -2405,7 +2408,7 @@ void RecordSparseEditPrelude(state::Scene &r, state::Entity viewport, mtl::PassC
     GeometryEditJobs jobs;
     for (const auto &[entity, pose] : state.PosedByEntity) {
         const auto primary = primaries.find(entity);
-        const bool preview = pending && primary != primaries.end();
+        const bool preview = pending && primary != primaries.end() && !r.all_of<procedure::GeometryProcedure>(entity);
         const auto old = state.EditWork.find(entity);
         if (!preview && (old == state.EditWork.end() || !old->second.PreviewActive)) continue;
         jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, preview ? primary->second : state::Null, preview ? pending : nullptr, &pose));

@@ -31,6 +31,7 @@
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "procedure/Cook.h"
+#include "procedure/Procedure.h"
 #include "render/ClusterLodRepair.h"
 #include "render/ElementWorkOps.h"
 #include "render/GpuBuffers.h"
@@ -87,7 +88,7 @@ vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t han
 }
 
 vec3 ComputeElementWorldPosition(const state::Scene &r, state::Entity instance_entity, Element element, uint32_t handle, bool canonical) {
-    const auto &mesh = GetMesh(r, r.get<Instance>(instance_entity).Entity);
+    const auto mesh = GetDrawnMesh(r, r.get<Instance>(instance_entity).Entity);
     const auto &wt = *WorldTransformOf(r, instance_entity);
     return {wt.P + Rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle, canonical))};
 }
@@ -301,7 +302,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
         if (hit) {
             const auto mesh_entity = hit->first;
-            const auto &summary = meshes.GetSelectionSummary(GetMesh(r, mesh_entity).GetStoreId());
+            const auto &summary = meshes.GetSelectionSummary(*DrawnStoreId(r, mesh_entity));
             if (summary.ActiveHandle == InvalidOffset) r.remove<MeshActiveElement>(mesh_entity);
             else r.emplace_or_replace<MeshActiveElement>(mesh_entity, summary.ActiveHandle);
         }
@@ -626,12 +627,12 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == state::Null) {
             if (const auto *pending = r.try_get<const PendingTransform>(viewport); pending && pending->Delta != Transform{}) {
                 // Evaluate the final edit before geometry and physics consumers run.
-                // A mesh with a scale-locked instance keeps its geometry.
+                // A mesh with a scale-locked instance keeps its geometry, and a procedure mesh's transform node holds its edit.
                 std::unordered_set<state::Entity> scale_locked;
                 for (const auto [_, instance] : r.view<const Instance, const ScaleLocked>().each()) scale_locked.insert(instance.Entity);
                 std::vector<state::Entity> commit_meshes;
                 for (const auto &[mesh_entity, instance_entity] : r.get<const EditPrimaries>(viewport).Transformable) {
-                    if (!scale_locked.contains(mesh_entity)) commit_meshes.push_back(mesh_entity);
+                    if (!scale_locked.contains(mesh_entity) && !r.all_of<procedure::GeometryProcedure>(mesh_entity)) commit_meshes.push_back(mesh_entity);
                 }
                 mtl::ComputeChain chain{meshes.BufferContext()};
                 for (const auto mesh_entity : CommitPosedGeometry(r, chain, viewport, commit_meshes)) {
@@ -702,7 +703,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             for (const auto e : selected_tracker) {
                 const auto *instance = r.valid(e) && r.all_of<Selected>(e) ? r.try_get<const Instance>(e) : nullptr;
                 if (!instance || !r.all_of<MeshElementSelection>(instance->Entity)) continue;
-                const auto id = GetMesh(r, instance->Entity).GetStoreId();
+                const auto id = *DrawnStoreId(r, instance->Entity);
                 if (meshes.Get(id).SelectionSummary.Count && meshes.GetSelectionSummary(id).Mode != element) converting.push_back(instance->Entity);
             }
             SortUnique(converting);
@@ -904,7 +905,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         };
         std::vector<uint32_t> reset_ids;
         for (const auto mesh_entity : edited)
-            if (resets(mesh_entity)) reset_ids.push_back(GetMesh(r, mesh_entity).GetStoreId());
+            if (resets(mesh_entity)) reset_ids.push_back(*DrawnStoreId(r, mesh_entity));
         if (!reset_ids.empty()) {
             mtl::ComputeChain chain{meshes.BufferContext()};
             meshes.EnsureSelectionState(r, chain, reset_ids);
@@ -912,7 +913,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         for (auto mesh_entity : edited) {
             if (!resets(mesh_entity)) continue;
             const auto selection_after = r.get<const MeshGeometryDirty>(mesh_entity).Selection;
-            const auto mesh = GetMesh(r, mesh_entity);
+            const auto mesh = GetDrawnMesh(r, mesh_entity);
             const auto id = mesh.GetStoreId();
             const uint32_t count = mesh.ElementCount(edit_mode);
             if (count == 0) continue;

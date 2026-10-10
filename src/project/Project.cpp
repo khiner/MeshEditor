@@ -25,6 +25,7 @@
 #include "mesh/MeshStores.h"
 #include "metal/Dispatch.h"
 #include "numeric/Serialize.h"
+#include "procedure/Cook.h"
 #include "project/Assets.h"
 #include "project/store/Pages.h"
 #include "render/ClusterLod.h"
@@ -493,8 +494,9 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
     // Reapply from the gesture base. Canonical geometry, normals and render
     // dependencies restore only their changed pages and allocation paths.
     const bool same_kind = staged && StageFirst && Kind(RecordedActions[*StageFirst].Action) == Kind(a);
+    const bool preview = action::IsPreview(a);
     bool updated_inset = false;
-    if (same_kind && action::IsPreview(a)) {
+    if (same_kind && preview) {
         if (const auto *mesh = std::get_if<action::mesh::Action>(&a); mesh && InsetPreview) {
             if (const auto *inset = std::get_if<action::mesh::Inset>(mesh)) updated_inset = action::mesh::UpdateInsetPreview(R, Viewport, *inset, *InsetPreview);
         }
@@ -508,13 +510,15 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
         {frame.DeltaTime, R.get<const PlaybackFrame>(Viewport).Value, R.get<const TimelinePlayback>(Viewport).CurrentFrame, frame.FixedFrameStep, pass, staged},
         std::move(a),
     };
+    const auto cooks = R.Context.get<const CookCount>().Value;
     if (updated_inset) Settle(pass);
     else Tick(recorded_action.Action, pass, staged);
     if (!recordable || R.Context.get<action::Errors>().Messages.size() != errors) return false;
     ++Revision;
     // A staged inset keeps its construction action and final parameter
     // update so replay repeats the same meshlet partition and GPU refit.
-    if (same_kind) {
+    // A step that cooked a procedure over the previous step stays recorded, since the next step builds on the record it cooked.
+    if (same_kind && (preview || R.Context.get<const CookCount>().Value == cooks)) {
         RecordedActions.resize(*StageFirst + (updated_inset ? 1u : 0u));
         if (updated_inset) RecordedActions[*StageFirst].Inputs.PreviewSeed = true;
     } else if (staged) StageFirst = RecordedActions.size();
@@ -750,8 +754,6 @@ void Project::AfterRestore() {
     bool sources_changed = false, manifest_changed = false, names_changed = false;
     // The meshes whose handles or render records the restore changed rederive their dirty roots.
     std::vector<state::Entity> restored_meshes;
-    // A restored output record no longer matches its resync state, so the next cook copies the source anew.
-    R.clear<ResyncState>();
     for (const auto &[type, entity, event] : Entities.TakeChanges()) {
         // The name hooks track created and destroyed names, and an overwritten name escapes them.
         names_changed |= type == state::Type<Name>() && event == state::Event::Update;

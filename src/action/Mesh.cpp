@@ -2,7 +2,9 @@
 #include "ProcessEvents.h"
 #include "Profile.h"
 #include "SortUnique.h"
+#include "action/Errors.h"
 #include "action/InsetPreview.h"
+#include "action/Nodes.h"
 
 #include "gpu/FaceAttributeEditPushConstants.h"
 #include "gpu/InsetPreviewPushConstants.h"
@@ -33,6 +35,7 @@
 #include "numeric/MatrixMath.h"
 #include "numeric/QuaternionMath.h"
 #include "object/ObjectOps.h"
+#include "procedure/Procedure.h"
 #include "project/Project.h"
 #include "render/ElementWorkOps.h"
 #include "render/GpuBuffers.h"
@@ -110,19 +113,6 @@ void UpdatePoseMembership(state::Scene &r, const MeshTopologyEdit &edit) {
             a.NormalSectors.PayloadBlock(block) == payload + 1u;
     };
     buffers.PosedSectors.UpdateBlocks(edit.StoreId, meshes.GetDerived(edit.StoreId).NormalRevision, normal_payloads, has_normal);
-}
-
-// The edit-mode meshes with a selection in the viewport's edit element domain.
-std::vector<state::Entity> SelectedEditMeshes(const state::Scene &r, state::Entity viewport) {
-    std::vector<state::Entity> result;
-    const auto element = r.get<const EditMode>(viewport).Value;
-    const auto &meshes = r.Context.get<const MeshStore>();
-    for (const auto e : r.view<const MeshElementSelection>()) {
-        if (!HasMesh(r, e)) continue;
-        const auto &summary = meshes.GetSelectionSummary(r.get<const MeshHandle>(e).StoreId);
-        if (summary.Mode == element && summary.SelectedCount > 0) result.push_back(e);
-    }
-    return result;
 }
 
 // A published owner repairs its old triangles and any new faces, including its first or last faces.
@@ -270,23 +260,15 @@ void RunTasks(state::Scene &r, std::span<const state::Entity> mesh_entities, std
     });
 }
 
-// Emitted elements publish their selection into the store's masks.
-// The vertex-only rule leaves incident primitives in place, so their masks follow the new vertex selection.
-void PublishEditSelection(const MeshStore &meshes, MeshTopologyTask &task) {
-    const auto &a = meshes.Arenas();
-    task.SelectionOutput = GeometryMasks{{&a.VertexSelection}, {&a.EdgeSelection}, {&a.FaceSelection}};
-    if (task.Op == MeshTopologyOp::ExtrudeVertices) task.StoreSelectionSource = Element::Vertex;
-}
-
 // Runs the task `make` builds for each mesh, skipping the meshes it returns nothing for.
 void RunPerMesh(state::Scene &r, std::span<const state::Entity> mesh_entities, auto &&make) {
     const auto &meshes = r.Context.get<const MeshStore>();
     std::vector<MeshTopologyTask> tasks;
     std::vector<state::Entity> entities;
     for (const auto e : mesh_entities) {
-        if (std::optional<MeshTopologyTask> task = make(e, Mesh{meshes, r.get<const MeshHandle>(e).StoreId})) {
+        if (std::optional<MeshTopologyTask> task = make(e, GetDrawnMesh(r, e))) {
             if (task->Op == MeshTopologyOp::AddPrimitives) task->Selection = EditorGeometrySelection(meshes, task->SourceId);
-            PublishEditSelection(meshes, *task);
+            PublishStoreSelection(meshes, *task);
             tasks.push_back(std::move(*task));
             entities.push_back(e);
         }
@@ -303,11 +285,11 @@ void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entit
     std::vector<MeshTopologyTask> tasks;
     const auto &meshes = r.Context.get<const MeshStore>();
     for (const auto e : mesh_entities) {
-        const auto id = r.get<const MeshHandle>(e).StoreId;
+        const auto id = *DrawnStoreId(r, e);
         const Mesh mesh{meshes, id};
         auto planned = SeparateGeometryTasks(meshes, mesh, EditorGeometrySelection(meshes, id), mode);
         for (auto &task : planned) {
-            PublishEditSelection(meshes, task);
+            PublishStoreSelection(meshes, task);
             tasks.push_back(std::move(task));
             entities.push_back(e);
         }
@@ -359,7 +341,7 @@ void RunTopologyStages(state::Scene &r, std::span<const state::Entity> mesh_enti
     std::vector<std::vector<MeshTopologyTask>> plans;
     size_t stages = 0u;
     for (const auto entity : mesh_entities) {
-        const auto mesh = GetMesh(r, entity);
+        const auto mesh = GetDrawnMesh(r, entity);
         plans.push_back(plan(mesh));
         stages = std::max(stages, plans.back().size());
     }
@@ -390,7 +372,7 @@ void EditSelectedFaceAttributes(state::Scene &r, std::span<const state::Entity> 
     mtl::ComputeChain chain{meshes.BufferContext()};
     std::vector<PositionOperationTarget> inputs;
     for (const auto entity : targets) {
-        const auto id = GetMesh(r, entity).GetStoreId();
+        const auto id = *DrawnStoreId(r, entity);
         inputs.push_back({id, EditorGeometrySelection(meshes, id)});
     }
     const auto changes = EncodeFaceAttributeOperation(meshes, GetMeshPipelines(r), chain, inputs, colors, uv_set, operation);
@@ -425,7 +407,7 @@ void EditSelectedPositions(state::Scene &r, state::Entity viewport, std::span<co
     std::vector<state::Entity> entities;
     for (const auto entity : targets) {
         if (transformed && !primaries.contains(entity)) continue;
-        const auto id = GetMesh(r, entity).GetStoreId();
+        const auto id = *DrawnStoreId(r, entity);
         PositionOperationTarget input{id, EditorGeometrySelection(meshes, id)};
         if (transformed) input.World = *WorldTransformOf(r, primaries.at(entity));
         if (options.Curve || options.Circle) {
@@ -459,6 +441,18 @@ void EditSelectedPositions(state::Scene &r, state::Entity viewport, std::span<co
 } // namespace
 
 namespace action::mesh {
+std::vector<state::Entity> SelectedEditMeshes(const state::Scene &r, state::Entity viewport) {
+    std::vector<state::Entity> result;
+    const auto element = r.get<const EditMode>(viewport).Value;
+    const auto &meshes = r.Context.get<const MeshStore>();
+    for (const auto e : r.view<const MeshElementSelection>()) {
+        if (!HasMesh(r, e)) continue;
+        const auto &summary = meshes.GetSelectionSummary(*DrawnStoreId(r, e));
+        if (summary.Mode == element && summary.SelectedCount > 0) result.push_back(e);
+    }
+    return result;
+}
+
 bool UpdateInsetPreview(state::Scene &r, state::Entity viewport, const Inset &inset, InsetPreviewCache &cache) {
     const profile::CpuScope scope{"UpdateInsetPreview"};
     const auto targets = SelectedEditMeshes(r, viewport);
@@ -471,7 +465,7 @@ bool UpdateInsetPreview(state::Scene &r, state::Entity viewport, const Inset &in
     for (size_t i = 0u; i < targets.size(); ++i) {
         const auto &entry = cache.Entries[i];
         if (entry.Entity != targets[i] || entry.Op != op || entry.Flags != flags ||
-            GetMesh(r, entry.Entity).GetStoreId() != entry.StoreId || !entry.Basis.Count) return false;
+            *DrawnStoreId(r, entry.Entity) != entry.StoreId || !entry.Basis.Count) return false;
     }
     {
         const profile::CpuScope capture{"InsetCaptureVertices"};
@@ -504,7 +498,27 @@ bool UpdateInsetPreview(state::Scene &r, state::Entity viewport, const Inset &in
 }
 
 void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
-    const auto targets = SelectedEditMeshes(r, viewport);
+    // An operator appends a node of its kind with its parameters to each procedure mesh, and edits the other meshes in place.
+    // Hide and Reveal edit every mesh's drawn record, and an operator without a node kind fails when an edited mesh has a procedure.
+    std::vector<state::Entity> targets, procedural;
+    for (const auto e : SelectedEditMeshes(r, viewport)) (r.all_of<procedure::GeometryProcedure>(e) ? procedural : targets).push_back(e);
+    const bool unformed = std::visit(
+        [&]<typename A>(const A &a) {
+            if constexpr (procedure::KindOf<A> < procedure::KindCount) {
+                for (const auto e : procedural) {
+                    const auto node = nodes::AppendNode(r, viewport, e, procedure::KindOf<A>);
+                    if (node == state::Null) break;
+                    r.replace<A>(node, a);
+                    r.remove<MeshActiveElement>(e);
+                }
+                return false;
+            } else {
+                return !std::same_as<A, Hide> && !std::same_as<A, Reveal> && std::ranges::any_of(r.get<const EditPrimaries>(viewport).All, [&](const auto &entry) { return r.all_of<procedure::GeometryProcedure>(entry.first); });
+            }
+        },
+        action
+    );
+    if (unformed) return Fail(r, "The operator has no node form for a mesh with a geometry procedure");
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selected = [&](auto &&make) {
         RunPerMesh(r, targets, [&](state::Entity, const Mesh &mesh) { return make(mesh, EditorGeometrySelection(meshes, mesh.GetStoreId())); });
@@ -512,7 +526,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     const auto visibility = [&](EditVisibilityOperation operation) {
         std::vector<uint32_t> ids;
         for (const auto &[entity, instance] : r.get<const EditPrimaries>(viewport).All)
-            if (HasMesh(r, entity)) ids.push_back(GetMesh(r, entity).GetStoreId());
+            if (HasMesh(r, entity)) ids.push_back(*DrawnStoreId(r, entity));
         if (EditVisibility(r, ids, r.get<const EditMode>(viewport).Value, operation)) {
             r.Context.get<GpuSceneState>().EditSelectionDirty = true;
             for (const auto &[entity, instance] : r.get<const EditPrimaries>(viewport).All) r.remove<MeshActiveElement>(entity);
@@ -655,7 +669,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](FlipNormals) { RunOperator(r, targets, MeshTopologyOp::FlipNormals); },
             [&](const RecalculateNormals &a) {
                 std::vector<uint32_t> ids;
-                for (const auto entity : targets) ids.push_back(GetMesh(r, entity).GetStoreId());
+                for (const auto entity : targets) ids.push_back(*DrawnStoreId(r, entity));
                 std::vector<GeometrySelection> selections;
                 for (const auto id : ids) selections.push_back(EditorGeometrySelection(r.Context.get<const MeshStore>(), id));
                 auto faces = RecalculateFaceFlips(r.Context.get<MeshStore>(), GetMeshPipelines(r), ids, selections, a.Inside);

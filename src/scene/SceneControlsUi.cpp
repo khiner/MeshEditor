@@ -299,7 +299,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
     const bool is_mesh_instance = active_instance && HasMesh(r, active_instance->Entity);
     if (is_mesh_instance) {
         const auto active_mesh_entity = active_instance->Entity;
-        const auto &active_mesh = GetMesh(r, active_mesh_entity);
+        const auto active_mesh = GetDrawnMesh(r, active_mesh_entity);
         TextUnformatted(
             std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
         );

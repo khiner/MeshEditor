@@ -1,11 +1,14 @@
 #pragma once
 
+#include "mesh/GeometrySelection.h"
 #include "numeric/vec2.h"
 #include "state/Entity.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace state {
 struct Scene;
@@ -52,7 +55,26 @@ struct SetAttributeName {
     std::string Name;
 };
 
-using Action = std::variant<AddProcedure, AddNode, Link, Unlink, SetOutput, SetAttributeName>;
+// Sets a node's inline selection to the vertex, edge and face mask blocks in turn, each domain's blocks over the blocks its input record owns in ascending order.
+// No blocks select every element.
+struct SetInlineSelection {
+    state::Entity Node;
+    std::vector<SelectionBlock> Blocks;
+    uint32_t Vertices, Edges; // The vertex and edge block counts, with the face blocks after them
+};
+// Makes the mesh's evaluated record its source and removes its procedure with its nodes.
+struct ApplyProcedure {
+    state::Entity MeshEntity;
+};
+
+using Action = std::variant<AddProcedure, AddNode, Link, Unlink, SetOutput, SetAttributeName, SetInlineSelection, ApplyProcedure>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
+
+// Appends a node of the kind with its default parameters to the mesh's procedure, between its result and the node its result read.
+// It selects what the mesh's drawn record selects and publishes the selection its edit emits, and the append applies as AddNode, SetInlineSelection and two Links.
+// Returns the node's entity, or null after failing the action.
+state::Entity AppendNode(state::Scene &, state::Entity viewport, state::Entity mesh_entity, uint16_t kind);
+// Visits each edit-mode mesh with a selection in the edit element domain and the node its procedure result reads.
+void ForEachResultNode(const state::Scene &, state::Entity viewport, const std::function<void(state::Entity mesh_entity, state::Entity node)> &);
 } // namespace action::nodes

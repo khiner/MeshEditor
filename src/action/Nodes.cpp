@@ -1,7 +1,11 @@
 #include "action/Nodes.h"
 #include "Variant.h"
 #include "action/Errors.h"
+#include "action/Mesh.h"
 #include "mesh/Mesh.h"
+#include "mesh/MeshComponents.h"
+#include "mesh/MeshStore.h"
+#include "object/PendingSync.h"
 #include "procedure/Procedure.h"
 #include "state/Scene.h"
 
@@ -19,6 +23,31 @@ state::Entity CreateNode(state::Scene &r, uint16_t kind, vec2 position) {
 constexpr bool Links(Socket from, Socket to) {
     const bool typed = from.Type == to.Type || (from.Type == SocketType::Attribute && to.Type == SocketType::Selection);
     return typed && (from.Type == SocketType::Geometry || (from.Types & to.Types));
+}
+
+// The kind of the node's parameter component, or KindCount for an entity without one.
+uint16_t KindOfNode(const state::Scene &r, state::Entity node) {
+    uint16_t kind = KindCount;
+    if (r.valid(node)) ForEachKind([&]<typename K> {
+        if (r.all_of<K>(node)) kind = KindOf<K>;
+    });
+    return kind;
+}
+
+// The record's selection masks at each block it owns, vertices then edges then faces.
+SetInlineSelection SelectionOf(const MeshStore &meshes, uint32_t id, state::Entity node) {
+    SetInlineSelection selection{.Node = node};
+    using D = MeshStore::ElementDomain;
+    for (const auto [domain, element] : {std::pair{D::Vertex, Element::Vertex}, std::pair{D::Edge, Element::Edge}, std::pair{D::Face, Element::Face}}) {
+        const auto bits = meshes.GetSelectedElements(id, element).Bits;
+        for (const auto block : meshes.GetBlockList(id, domain).Blocks) {
+            auto &words = selection.Blocks.emplace_back();
+            std::ranges::copy(bits.subspan(block * MeshElementBlockWords, MeshElementBlockWords), words.begin());
+        }
+        if (domain == D::Vertex) selection.Vertices = uint32_t(selection.Blocks.size());
+        if (domain == D::Edge) selection.Edges = uint32_t(selection.Blocks.size()) - selection.Vertices;
+    }
+    return selection;
 }
 
 // Writes the name into the node's NamedAttribute or StoreNamedAttribute parameters.
@@ -85,8 +114,53 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 if (a.Name.empty() || a.Name.size() >= AttributeName{}.size() || a.Name.front() == '.') return Fail(r, "An attribute name needs 1 to 63 characters and no leading '.'");
                 if (!Rename<procedure::NamedAttribute>(r, a.Node, a.Name) && !Rename<StoreNamedAttribute>(r, a.Node, a.Name)) Fail(r, "Only attribute name nodes take a name");
             },
+            [&](const SetInlineSelection &a) {
+                const auto kind = KindOfNode(r, a.Node);
+                if (kind == KindCount || !std::ranges::contains(KindSockets(kind), SocketType::Selection, &Socket::Type)) return Fail(r, "Only a node with a selection input takes an inline selection");
+                if (uint64_t(a.Vertices) + a.Edges > a.Blocks.size()) return Fail(r, "An inline selection's domain block counts exceed its blocks");
+                const auto vertices = a.Blocks.begin() + a.Vertices, edges = vertices + a.Edges;
+                r.emplace_or_replace<InlineSelection>(a.Node, std::vector(a.Blocks.begin(), vertices), std::vector(vertices, edges), std::vector(edges, a.Blocks.end()));
+            },
+            [&](const ApplyProcedure &a) {
+                const auto *evaluated = procedure_of(a.MeshEntity) ? r.try_get<const EvaluatedMesh>(a.MeshEntity) : nullptr;
+                if (!evaluated) return;
+                const auto output = evaluated->StoreId;
+                // The output record becomes the source, so the evaluated mesh leaving after it keeps the record.
+                r.remove<MeshHandle>(a.MeshEntity);
+                r.emplace<MeshHandle>(a.MeshEntity, output);
+                r.remove<GeometryProcedure, EvaluatedMesh, ResyncState, CookPlan, PrimitiveShape>(a.MeshEntity);
+            },
         },
         action
     );
+}
+
+state::Entity AppendNode(state::Scene &r, state::Entity viewport, state::Entity mesh_entity, uint16_t kind) {
+    const auto &procedure = r.get<const GeometryProcedure>(mesh_entity);
+    const auto output = procedure.OutputNode;
+    if (output == NoNode) {
+        Fail(r, "The geometry procedure has no Output node");
+        return state::Null;
+    }
+    const auto read = procedure.Inputs[InputFirst(procedure, output)];
+    const auto node = uint32_t(procedure.Nodes.size());
+    // The node takes the Output node's place, and the Output node moves past it.
+    const auto position = r.get<const NodeLayout>(procedure.Nodes[output].Entity).Position;
+    r.patch<NodeLayout>(procedure.Nodes[output].Entity, [](NodeLayout &layout) { layout.Position.x += 240.f; });
+    Apply(r, viewport, AddNode{mesh_entity, kind, position});
+    const auto entity = r.get<const GeometryProcedure>(mesh_entity).Nodes.back().Entity;
+    Apply(r, viewport, SelectionOf(r.Context.get<const MeshStore>(), *DrawnStoreId(r, mesh_entity), entity));
+    if (read.FromNode != NoNode) Apply(r, viewport, Link{mesh_entity, read.FromNode, read.FromSocket, node, 0u});
+    Apply(r, viewport, Link{mesh_entity, node, InputCount[kind], output, 0u});
+    r.emplace<PublishSelection>(entity);
+    return entity;
+}
+
+void ForEachResultNode(const state::Scene &r, state::Entity viewport, const std::function<void(state::Entity, state::Entity)> &fn) {
+    for (const auto mesh_entity : mesh::SelectedEditMeshes(r, viewport)) {
+        const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
+        if (!procedure || procedure->OutputNode == NoNode) continue;
+        if (const auto read = procedure->Inputs[InputFirst(*procedure, procedure->OutputNode)]; read.FromNode != NoNode) fn(mesh_entity, procedure->Nodes[read.FromNode].Entity);
+    }
 }
 } // namespace action::nodes

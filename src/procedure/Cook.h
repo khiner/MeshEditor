@@ -1,8 +1,15 @@
 #pragma once
 
+#include <cstdint>
+
 namespace state {
 struct Scene;
 } // namespace state
+
+// The procedure cooks the settle pass has run.
+struct CookCount {
+    uint64_t Value{};
+};
 
 // Binds the procedure change sets and removes a destroyed node from its procedure.
 void RegisterProcedureHandlers(state::Scene &);
