@@ -1,5 +1,10 @@
 #pragma once
 
+#include "action/Nodes.h"
+#include "numeric/vec2.h"
+#include "state/Entity.h"
+
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -45,6 +50,37 @@ struct HistoryWindow : Window {
     bool EditorOpen{true};
 };
 
+// The node canvas draws a node position p at the screen point Origin + Offset + p * Zoom, where Origin is the canvas's top left.
+struct NodeCanvas {
+    numeric::vec2 Offset{40, 40};
+    float Zoom{1};
+};
+enum class NodeDrag : uint8_t { None,
+                                Pan,
+                                Move,
+                                Grab, // The selected nodes follow the mouse until a click confirms
+                                Wire,
+                                Box };
+struct NodesWindow : Window {
+    NodeCanvas Canvas{};
+    NodeDrag Drag{NodeDrag::None};
+    numeric::vec2 Press{}; // The drag's start on the screen
+    numeric::vec2 MoveStart{}; // The held node's position when a move started
+    numeric::vec2 AddAt{}; // The canvas position the Add menu adds a node at
+    uint32_t DragNode{UINT32_MAX}; // The node a move, a grab or a wire holds
+    uint32_t GrabAfter{}; // The node count a grab waits to grow past before it holds the new active node
+    uint32_t LinkAfter{UINT32_MAX}; // The node count a linking add waits to grow past before it links the new node, or none
+    std::vector<action::nodes::Link> PendingLinks; // The links a Make Link press stages one per frame, committing with the last
+    uint16_t DragSocket{}; // The socket a wire holds
+    bool Moved{false}; // A move passed the drag threshold and staged its first step
+    bool Hovered{false}; // The canvas is under the mouse this frame, which routes the editing shortcuts to it
+    bool Linking{false}; // The Add menu offers the kinds that link with the socket a dropped wire held, and links its node to that socket
+    std::array<char, 64> Search{}; // The Add menu's search text
+    int SearchHighlight{}; // The search result Enter adds
+    std::array<char, 64> NameEdit{}; // The attribute name the active name field edits
+    uint32_t NameEditId{}; // The name field editing NameEdit, or zero
+};
+
 struct WindowsState {
     Window
         SceneControls{"Scene controls"},
@@ -55,6 +91,7 @@ struct WindowsState {
         ImPlotDemo{"ImPlot Demo", false},
         Debug{"Debug", false};
     HistoryWindow History{{"History"}};
+    NodesWindow Nodes{{"Nodes"}};
     std::string PendingIni;
     std::vector<TabSelection> PendingTabs;
     std::vector<PendingWindowState> PendingWindows;
@@ -70,6 +107,7 @@ struct WindowVisibility {
     bool ImPlotDemo{false};
     bool Debug{false};
     bool History{true};
+    bool Nodes{true};
 };
 
 inline WindowVisibility GetWindowVisibility(const WindowsState &windows) {
@@ -82,6 +120,7 @@ inline WindowVisibility GetWindowVisibility(const WindowsState &windows) {
         windows.ImPlotDemo.Visible,
         windows.Debug.Visible,
         windows.History.Visible,
+        windows.Nodes.Visible,
     };
 }
 
@@ -94,4 +133,5 @@ inline void SetWindowVisibility(WindowsState &windows, const WindowVisibility &v
     windows.ImPlotDemo.Visible = visibility.ImPlotDemo;
     windows.Debug.Visible = visibility.Debug;
     windows.History.Visible = visibility.History;
+    windows.Nodes.Visible = visibility.Nodes;
 }

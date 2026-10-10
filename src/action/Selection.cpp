@@ -1,5 +1,6 @@
 #include "action/Selection.h"
 #include "Variant.h"
+#include "action/Errors.h"
 #include "armature/ArmatureComponents.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
@@ -20,13 +21,23 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     };
     // Click selection ends an active box-select drag.
     auto end_box_select_interaction = [&] { r.remove<AdditiveBoxSelectBaseline>(viewport); };
+    // Object selection names scene-graph objects, which the gizmo and pivot read through their transforms.
+    const auto object = [&](state::Entity e) {
+        if (e == state::Null || r.all_of<Transform>(e)) return true;
+        Fail(r, "Only an object can be selected");
+        return false;
+    };
 
     std::visit(
         overloaded{
-            [&](Select a) { end_box_select_interaction(); ::Select(r, a.Entity); },
-            [&](ToggleSelected a) {
+            [&](Select a) {
+                if (!object(a.Entity)) return;
                 end_box_select_interaction();
-                if (a.Entity == state::Null) return;
+                ::Select(r, a.Entity);
+            },
+            [&](ToggleSelected a) {
+                if (a.Entity == state::Null || !object(a.Entity)) return;
+                end_box_select_interaction();
                 if (r.all_of<Selected>(a.Entity)) r.remove<Selected>(a.Entity);
                 else r.emplace_or_replace<Selected>(a.Entity);
             },
@@ -36,6 +47,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 if (a.Part) merge_bone_sel(a.Entity, a.Part, a.Additive);
             },
             [&](ExtendActive a) {
+                if (a.Entity == state::Null || !object(a.Entity)) return;
                 end_box_select_interaction();
                 r.clear<Active>();
                 r.emplace<Active>(a.Entity);
@@ -75,6 +87,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const ApplyTreeSelection &a) {
                 using Clear = ApplyTreeSelection::ClearKind;
+                for (const auto e : a.ToSelect())
+                    if (!r.all_of<BoneIndex>(e) && !object(e)) return;
                 if (a.Clear == Clear::BonesOnly) r.clear<BoneSelection>();
                 else if (a.Clear == Clear::All) r.clear<Selected, BoneSelection>();
                 for (const auto e : a.ToSelect()) {

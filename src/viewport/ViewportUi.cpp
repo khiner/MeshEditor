@@ -7,6 +7,7 @@
 #include "Field.h"
 #include "Profile.h"
 #include "Variant.h"
+#include "Window.h"
 #include "action/Animation.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
@@ -494,33 +495,37 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
     const auto &flags = r.get<const SelectionFlags>(viewport);
     // Route shortcuts globally while preserving ImGui ownership for active widgets, navigation, and text input.
     constexpr auto VKey = ImGuiInputFlags_RouteGlobal;
+    // The hovered node canvas takes the editing shortcuts instead.
+    const bool nodes_hovered = r.Context.get<const WindowsState>().Nodes.Hovered;
+    const auto key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && Shortcut(chord, route); };
+    const auto ctrl_key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && CtrlShortcut(chord, route); };
     if (r.get<const GizmoInteraction>(viewport).IsUsing()) {
         // During an active transform, only allow transform switching shortcuts.
-        if (Shortcut(ImGuiKey_G, VKey) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
-        else if (Shortcut(ImGuiKey_R, VKey) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
-        else if (Shortcut(ImGuiKey_S, VKey) && flags.Scalable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
+        if (key(ImGuiKey_G) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
+        else if (key(ImGuiKey_R) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
+        else if (key(ImGuiKey_S) && flags.Scalable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
     } else {
         if (interaction_mode != InteractionMode::Edit) {
-            if (Shortcut(ImGuiKey_I, VKey)) action::Emit(action::animation::InsertKey{{.Target = action::OnSelected{}}});
-            else if (Shortcut(ImGuiMod_Alt | ImGuiKey_I, VKey)) action::Emit(action::animation::DeleteKey{{.Target = action::OnSelected{}}});
+            if (key(ImGuiKey_I)) action::Emit(action::animation::InsertKey{{.Target = action::OnSelected{}}});
+            else if (key(ImGuiMod_Alt | ImGuiKey_I)) action::Emit(action::animation::DeleteKey{{.Target = action::OnSelected{}}});
         }
-        if (Shortcut(ImGuiKey_Space, VKey)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(viewport).CurrentFrame});
-        else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Space, VKey)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(viewport).CurrentFrame, /*Reverse=*/true});
-        else if (Shortcut(ImGuiKey_Z, VKey)) {
+        if (key(ImGuiKey_Space)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(viewport).CurrentFrame});
+        else if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Space)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(viewport).CurrentFrame, /*Reverse=*/true});
+        else if (key(ImGuiKey_Z)) {
             const auto current = r.get<const ViewportDisplay>(viewport).ViewportShading;
             const auto next = current == ViewportShadingMode::Solid ? ViewportShadingMode::MaterialPreview :
                 current == ViewportShadingMode::MaterialPreview     ? ViewportShadingMode::Rendered :
                                                                       ViewportShadingMode::Solid;
             action::Emit(action::view::SetViewportShading{.Mode = next});
-        } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_Z, VKey)) {
+        } else if (key(ImGuiMod_Shift | ImGuiKey_Z)) {
             const auto &settings = r.get<const ViewportDisplay>(viewport);
             action::Emit(action::view::SetViewportShading{.Mode = settings.ViewportShading == ViewportShadingMode::Wireframe ? settings.FillMode : ViewportShadingMode::Wireframe});
-        } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_Z, VKey)) {
+        } else if (key(ImGuiMod_Alt | ImGuiKey_Z)) {
             action::Emit(action::view::ToggleXRay{});
         }
         // Tab uses default RouteFocused (not VKey/RouteGlobal) so widget tabbing in panels keeps working.
-        const bool tab_no_mods = Shortcut(ImGuiKey_Tab);
-        const bool tab_ctrl = CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_Tab);
+        const bool tab_no_mods = key(ImGuiKey_Tab, ImGuiInputFlags_None);
+        const bool tab_ctrl = ctrl_key(ImGuiMod_Ctrl | ImGuiKey_Tab, ImGuiInputFlags_None);
         if (tab_no_mods || tab_ctrl) {
             const bool is_armature = FindArmatureObject(r, active_entity) != state::Null;
             if (is_armature && tab_ctrl) {
@@ -532,12 +537,12 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
             }
         }
         if (interaction_mode == InteractionMode::Edit) {
-            if (Shortcut(ImGuiKey_1, VKey)) action::Emit(action::view::SetEditMode{.Mode = Element::Vertex});
-            else if (Shortcut(ImGuiKey_2, VKey)) action::Emit(action::view::SetEditMode{.Mode = Element::Edge});
-            else if (Shortcut(ImGuiKey_3, VKey)) action::Emit(action::view::SetEditMode{.Mode = Element::Face});
+            if (key(ImGuiKey_1)) action::Emit(action::view::SetEditMode{.Mode = Element::Vertex});
+            else if (key(ImGuiKey_2)) action::Emit(action::view::SetEditMode{.Mode = Element::Edge});
+            else if (key(ImGuiKey_3)) action::Emit(action::view::SetEditMode{.Mode = Element::Face});
         }
-        if (Shortcut(ImGuiKey_A, VKey)) action::Emit(action::selection::SelectAll{});
-        if (Shortcut(ImGuiMod_Alt | ImGuiKey_A, VKey)) action::Emit(action::selection::DeselectAll{});
+        if (key(ImGuiKey_A)) action::Emit(action::selection::SelectAll{});
+        if (key(ImGuiMod_Alt | ImGuiKey_A)) action::Emit(action::selection::DeselectAll{});
         const bool bone_edit = interaction_mode == InteractionMode::Edit && FindArmatureObject(r, active_entity) != state::Null;
         const bool mesh_edit = interaction_mode == InteractionMode::Edit && !bone_edit;
         if (mesh_edit) {
@@ -546,67 +551,67 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
             using mesh::DissolveMode;
             const auto element = r.get<const EditMode>(viewport).Value;
             // Placement drags join the gesture, so an extrude, duplicate, or rip and its move commit as one node.
-            if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_X, VKey)) action::Emit(mesh::Dissolve{element == Element::Face ? DissolveMode::Faces : element == Element::Edge ? DissolveMode::Edges :
-                                                                                                                                                                        DissolveMode::Vertices});
-            else if (Shortcut(ImGuiKey_X, VKey) || Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey)) OpenPopup("##MeshDelete");
-            else if (Shortcut(ImGuiKey_E, VKey)) action::Emit(mesh::Extrude{element == Element::Edge ? mesh::ExtrudeMode::Edges : mesh::ExtrudeMode::Region}, action::Phase::Stage);
-            else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) action::Emit(mesh::Duplicate{}, action::Phase::Stage);
-            else if (Shortcut(ImGuiKey_H, VKey)) action::Emit(mesh::Hide{});
-            else if (Shortcut(ImGuiMod_Shift | ImGuiKey_H, VKey)) action::Emit(mesh::Hide{true});
-            else if (Shortcut(ImGuiMod_Alt | ImGuiKey_H, VKey)) action::Emit(mesh::Reveal{});
-            else if (Shortcut(ImGuiKey_Y, VKey)) action::Emit(mesh::Split{});
-            else if (Shortcut(ImGuiKey_P, VKey)) action::Emit(mesh::Separate{});
-            else if (Shortcut(ImGuiKey_M, VKey)) OpenPopup("##MeshMerge");
-            else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_T, VKey)) action::Emit(mesh::Triangulate{});
-            else if (Shortcut(ImGuiMod_Alt | ImGuiKey_J, VKey)) action::Emit(mesh::TrisToQuads{});
-            else if (Shortcut(ImGuiKey_F, VKey)) action::Emit(mesh::Fill{});
-            else if (Shortcut(ImGuiKey_V, VKey)) action::Emit(mesh::Rip{}, action::Phase::Stage);
-            else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_V, VKey)) OpenPopup("##MeshVertex");
-            else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_E, VKey)) OpenPopup("##MeshEdge");
-            else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_F, VKey)) OpenPopup("##MeshFace");
+            if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_X)) action::Emit(mesh::Dissolve{element == Element::Face ? DissolveMode::Faces : element == Element::Edge ? DissolveMode::Edges :
+                                                                                                                                                              DissolveMode::Vertices});
+            else if (key(ImGuiKey_X) || key(ImGuiKey_Delete) || key(ImGuiKey_Backspace)) OpenPopup("##MeshDelete");
+            else if (key(ImGuiKey_E)) action::Emit(mesh::Extrude{element == Element::Edge ? mesh::ExtrudeMode::Edges : mesh::ExtrudeMode::Region}, action::Phase::Stage);
+            else if (key(ImGuiMod_Shift | ImGuiKey_D)) action::Emit(mesh::Duplicate{}, action::Phase::Stage);
+            else if (key(ImGuiKey_H)) action::Emit(mesh::Hide{});
+            else if (key(ImGuiMod_Shift | ImGuiKey_H)) action::Emit(mesh::Hide{true});
+            else if (key(ImGuiMod_Alt | ImGuiKey_H)) action::Emit(mesh::Reveal{});
+            else if (key(ImGuiKey_Y)) action::Emit(mesh::Split{});
+            else if (key(ImGuiKey_P)) action::Emit(mesh::Separate{});
+            else if (key(ImGuiKey_M)) OpenPopup("##MeshMerge");
+            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_T)) action::Emit(mesh::Triangulate{});
+            else if (key(ImGuiMod_Alt | ImGuiKey_J)) action::Emit(mesh::TrisToQuads{});
+            else if (key(ImGuiKey_F)) action::Emit(mesh::Fill{});
+            else if (key(ImGuiKey_V)) action::Emit(mesh::Rip{}, action::Phase::Stage);
+            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_V)) OpenPopup("##MeshVertex");
+            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_E)) OpenPopup("##MeshEdge");
+            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_F)) OpenPopup("##MeshFace");
             else if (!IsWindowHovered()) {
-            } else if (Shortcut(ImGuiKey_I, VKey)) BeginMeshDrag(r, viewport, frame, Op::Inset);
-            else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_B, VKey)) BeginMeshDrag(r, viewport, frame, Op::BevelVertices);
-            else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_B, VKey)) BeginMeshDrag(r, viewport, frame, Op::BevelEdges);
-            else if (Shortcut(ImGuiKey_K, VKey)) BeginMeshDrag(r, viewport, frame, Op::Knife);
+            } else if (key(ImGuiKey_I)) BeginMeshDrag(r, viewport, frame, Op::Inset);
+            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_B)) BeginMeshDrag(r, viewport, frame, Op::BevelVertices);
+            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_B)) BeginMeshDrag(r, viewport, frame, Op::BevelEdges);
+            else if (key(ImGuiKey_K)) BeginMeshDrag(r, viewport, frame, Op::Knife);
         }
         if (bone_edit) {
-            if (Shortcut(ImGuiMod_Shift | ImGuiKey_A, VKey)) {
+            if (key(ImGuiMod_Shift | ImGuiKey_A)) {
                 action::Emit(action::bone::Add{});
-            } else if (Shortcut(ImGuiKey_E, VKey)) {
+            } else if (key(ImGuiKey_E)) {
                 action::Emit(action::bone::Extrude{}, action::Phase::Stage);
-            } else if (Shortcut(ImGuiKey_X, VKey) || Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey)) {
+            } else if (key(ImGuiKey_X) || key(ImGuiKey_Delete) || key(ImGuiKey_Backspace)) {
                 Delete(r, viewport);
-            } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) {
+            } else if (key(ImGuiMod_Shift | ImGuiKey_D)) {
                 Duplicate(r, viewport);
             }
         }
-        if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_E, VKey)) {
+        if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_E)) {
             action::Emit(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
-        } else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_A, VKey)) {
+        } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_A)) {
             action::Emit(action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
-        } else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_C, VKey)) {
+        } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_C)) {
             action::Emit(action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
-        } else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_L, VKey)) {
+        } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_L)) {
             action::Emit(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
         }
         if (!r.view<const Selected>().empty()) {
-            if (!bone_edit && !mesh_edit && Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) Duplicate(r, viewport);
-            else if (!bone_edit && !mesh_edit && Shortcut(ImGuiMod_Alt | ImGuiKey_D, VKey)) action::Emit(action::object::DuplicateLinked{}, action::Phase::Stage);
-            else if (!bone_edit && !mesh_edit && CanDelete(r, viewport) && (Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey))) Delete(r, viewport);
-            else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_G, VKey)) action::Emit(action::bone::ClearSelectedTransforms{.Position = true});
-            else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_R, VKey)) action::Emit(action::bone::ClearSelectedTransforms{.Rotation = true});
-            else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_S, VKey)) action::Emit(action::bone::ClearSelectedTransforms{.Scale = true});
-            else if (Shortcut(ImGuiKey_G, VKey) && flags.Transformable) {
+            if (!bone_edit && !mesh_edit && key(ImGuiMod_Shift | ImGuiKey_D)) Duplicate(r, viewport);
+            else if (!bone_edit && !mesh_edit && key(ImGuiMod_Alt | ImGuiKey_D)) action::Emit(action::object::DuplicateLinked{}, action::Phase::Stage);
+            else if (!bone_edit && !mesh_edit && CanDelete(r, viewport) && (key(ImGuiKey_Delete) || key(ImGuiKey_Backspace))) Delete(r, viewport);
+            else if (interaction_mode == InteractionMode::Pose && key(ImGuiMod_Alt | ImGuiKey_G)) action::Emit(action::bone::ClearSelectedTransforms{.Position = true});
+            else if (interaction_mode == InteractionMode::Pose && key(ImGuiMod_Alt | ImGuiKey_R)) action::Emit(action::bone::ClearSelectedTransforms{.Rotation = true});
+            else if (interaction_mode == InteractionMode::Pose && key(ImGuiMod_Alt | ImGuiKey_S)) action::Emit(action::bone::ClearSelectedTransforms{.Scale = true});
+            else if (key(ImGuiKey_G) && flags.Transformable) {
                 // Start transform gizmo in both Object and Edit modes.
                 // In Edit mode, shader applies transform to selected vertices.
                 // In Object mode, shader applies transform to selected instances.
                 action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
-            } else if (Shortcut(ImGuiKey_R, VKey) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
-            else if (Shortcut(ImGuiKey_S, VKey) && flags.Scalable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
-            else if (Shortcut(ImGuiKey_H, VKey)) action::Emit(action::object::ToggleHidden{});
-            else if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_P, VKey)) action::Emit(action::object::ParentToActive{});
-            else if (Shortcut(ImGuiMod_Alt | ImGuiKey_P, VKey)) action::Emit(action::object::ClearParent{});
+            } else if (key(ImGuiKey_R) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
+            else if (key(ImGuiKey_S) && flags.Scalable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
+            else if (key(ImGuiKey_H)) action::Emit(action::object::ToggleHidden{});
+            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_P)) action::Emit(action::object::ParentToActive{});
+            else if (key(ImGuiMod_Alt | ImGuiKey_P)) action::Emit(action::object::ClearParent{});
         }
     }
 
@@ -681,7 +686,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
         }
         return;
     }
-    if (interaction_mode == InteractionMode::Edit && !active_is_armature && CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_R, VKey)) {
+    if (interaction_mode == InteractionMode::Edit && !active_is_armature && ctrl_key(ImGuiMod_Ctrl | ImGuiKey_R)) {
         // The pick takes the edge under the cursor, and the cut follows once the pick resolves.
         if (edit_mode != Element::Edge) action::Emit(action::view::SetEditMode{.Mode = Element::Edge});
         action::EmitSystem(action::selection::ApplyEditElementClick{.Mouse = mouse, .Toggle = false, .View = std::make_unique<RenderView>(selection_view)});

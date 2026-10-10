@@ -30,6 +30,8 @@ struct FrameState {
     vec2 DisplayFramebufferScale{1, 1};
     vec2 AccumulatedWrapMouseDelta{0, 0};
     vec2 PreciseWheelDelta{0, 0};
+    bool PreciseScrolling{false}; // The wheel delta is a trackpad's scroll
+    float Magnification{0}; // The trackpad pinch's summed magnification
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
     bool BoxSelectAdditive{false}; // Shift was held at the box's click.
     std::optional<std::pair<std::pair<vec2, vec2>, RenderView>> BoxSelectEmitted; // The box and view the drag last staged.

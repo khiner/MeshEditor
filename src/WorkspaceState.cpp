@@ -77,6 +77,7 @@ State Capture(const state::Scene &r, state::Entity viewport, const WindowsState 
         .ViewCamera = GetViewCameraState(r, viewport),
         .ViewportExtent = r.Context.get<const ViewportExtent>().Value,
         .Windows = GetWindowVisibility(windows),
+        .NodesCanvas = windows.Nodes.Canvas,
         .ImGuiIni = ini ? std::string{ini, ini_size} : windows.PendingIni,
         .Tabs = CaptureTabs(windows),
         .WindowStates = CaptureWindows(windows),
@@ -87,6 +88,7 @@ void Apply(state::Scene &r, state::Entity viewport, WindowsState &windows, const
     r.Context.get<ViewportExtent>().Value = state.ViewportExtent;
     SetViewCameraState(r, viewport, state.ViewCamera);
     SetWindowVisibility(windows, state.Windows);
+    windows.Nodes.Canvas = state.NodesCanvas;
     windows.PendingIni = state.ImGuiIni;
     if (!windows.PendingIni.empty()) windows.LayoutLoaded = true;
     ApplyPendingIni(windows);
@@ -134,7 +136,7 @@ std::vector<std::byte> Serialize(const State &state) {
     const bool has_saved_view = state.ViewCamera.LookThroughSaved.has_value();
     if (zpp::bits::failure(archive(state.ViewCamera.Active, has_saved_view)) ||
         (has_saved_view && zpp::bits::failure(archive(*state.ViewCamera.LookThroughSaved))) ||
-        zpp::bits::failure(archive(state.ViewportExtent, state.Windows, state.ImGuiIni, state.Tabs, state.WindowStates))) {
+        zpp::bits::failure(archive(state.ViewportExtent, state.Windows, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.WindowStates))) {
         return {};
     }
     bytes.resize(archive.position());
@@ -152,7 +154,7 @@ std::optional<State> Deserialize(std::span<const std::byte> bytes) {
         state.ViewCamera.LookThroughSaved.emplace(vec3{0, 0, 1}, vec3{0}, CameraLens{});
         if (zpp::bits::failure(archive(*state.ViewCamera.LookThroughSaved))) return std::nullopt;
     }
-    if (zpp::bits::failure(archive(state.ViewportExtent, state.Windows, state.ImGuiIni, state.Tabs, state.WindowStates))) {
+    if (zpp::bits::failure(archive(state.ViewportExtent, state.Windows, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.WindowStates))) {
         return std::nullopt;
     }
     return state;

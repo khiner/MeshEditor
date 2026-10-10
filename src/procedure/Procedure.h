@@ -98,10 +98,10 @@ struct InstanceOnPoints {
 };
 // Emits one copy of the instance geometry per instance, moved by the instance's transform.
 struct RealizeInstances {};
-// Emits the mesh entity's drawn record in its local space, which the cook reads in place.
-// A procedure reads neither its own mesh entity nor a mesh entity a procedure owns.
+// Emits the drawn record of the object's mesh in its local space, which the cook reads in place.
+// An object without a mesh, or whose mesh the procedure is on, emits nothing.
 struct ObjectInfo {
-    state::Entity MeshEntity{state::Null};
+    state::Entity Object{state::Null};
 };
 
 // A node's kind is the index of its parameter component here.
@@ -132,33 +132,33 @@ struct Socket {
     SocketDirection Direction;
     uint8_t Types{}; // The attribute types a non-geometry socket carries, one TypeBit each
     bool Reads{}; // A geometry input the node only reads, where every other geometry input edits its record
+    const char *Name{}; // The editor's label, or the type's name when null
 };
 
 namespace detail {
 using enum SocketType;
 using enum SocketDirection;
 inline constexpr uint8_t Bool = TypeBit(AttributeType::Bool), Float = TypeBit(AttributeType::Float), Vec3 = TypeBit(AttributeType::Vec3);
-inline constexpr Socket ReadGeometry{Geometry, In, 0u, true};
 // A source or generator emits geometry from no input.
 inline constexpr Socket SourceSockets[]{{Geometry, Out}};
 inline constexpr Socket OutputSockets[]{{Geometry, In}};
 // A join appends the geometry it reads to the geometry it edits.
-inline constexpr Socket JoinSockets[]{{Geometry, In}, ReadGeometry, {Geometry, Out}};
-inline constexpr Socket BooleanSockets[]{ReadGeometry, ReadGeometry, {Geometry, Out}};
+inline constexpr Socket JoinSockets[]{{Geometry, In}, {Geometry, In, 0u, true}, {Geometry, Out}};
+inline constexpr Socket BooleanSockets[]{{Geometry, In, 0u, true, "Mesh 1"}, {Geometry, In, 0u, true, "Mesh 2"}, {Geometry, Out}};
 // An operator edits its geometry input where its selection input selects.
 inline constexpr Socket OperatorSockets[]{{Geometry, In}, {Selection, In, Bool}, {Geometry, Out}};
 inline constexpr Socket PositionSockets[]{{Attribute, Out, Vec3}};
 inline constexpr Socket IndexSockets[]{{Attribute, Out, TypeBit(AttributeType::Int)}};
 inline constexpr Socket NamedAttributeSockets[]{{Attribute, Out, AnyType}};
-inline constexpr Socket VectorMathSockets[]{{Attribute, In, Vec3}, {Attribute, In, Vec3 | Float}, {Attribute, Out, Vec3 | Float}};
-inline constexpr Socket FloatMathSockets[]{{Attribute, In, Float}, {Attribute, In, Float}, {Attribute, Out, Float}};
-inline constexpr Socket CompareSockets[]{{Attribute, In, Float | Vec3}, {Attribute, In, Float | Vec3}, {Attribute, Out, Bool}};
-inline constexpr Socket BooleanMathSockets[]{{Attribute, In, Bool}, {Attribute, In, Bool}, {Attribute, Out, Bool}};
-inline constexpr Socket StoreSockets[]{{Geometry, In}, {Attribute, In, AnyType}, {Geometry, Out}};
-inline constexpr Socket SetPositionSockets[]{{Geometry, In}, {Attribute, In, Vec3}, {Selection, In, Bool}, {Geometry, Out}};
-inline constexpr Socket PointsSockets[]{{Geometry, In}, {Geometry, Out}};
+inline constexpr Socket VectorMathSockets[]{{Attribute, In, Vec3, false, "A"}, {Attribute, In, Vec3 | Float, false, "B"}, {Attribute, Out, Vec3 | Float, false, "Result"}};
+inline constexpr Socket FloatMathSockets[]{{Attribute, In, Float, false, "A"}, {Attribute, In, Float, false, "B"}, {Attribute, Out, Float, false, "Result"}};
+inline constexpr Socket CompareSockets[]{{Attribute, In, Float | Vec3, false, "A"}, {Attribute, In, Float | Vec3, false, "B"}, {Attribute, Out, Bool, false, "Result"}};
+inline constexpr Socket BooleanMathSockets[]{{Attribute, In, Bool, false, "A"}, {Attribute, In, Bool, false, "B"}, {Attribute, Out, Bool, false, "Result"}};
+inline constexpr Socket StoreSockets[]{{Geometry, In}, {Attribute, In, AnyType, false, "Value"}, {Geometry, Out}};
+inline constexpr Socket SetPositionSockets[]{{Geometry, In}, {Attribute, In, Vec3, false, "Position"}, {Selection, In, Bool}, {Geometry, Out}};
+inline constexpr Socket PointsSockets[]{{Geometry, In}, {Geometry, Out, 0u, false, "Points"}};
 // Instancing edits its points and reads its instance geometry.
-inline constexpr Socket InstanceSockets[]{{Geometry, In}, ReadGeometry, {Instances, Out}};
+inline constexpr Socket InstanceSockets[]{{Geometry, In, 0u, false, "Points"}, {Geometry, In, 0u, true, "Instance"}, {Instances, Out}};
 inline constexpr Socket RealizeSockets[]{{Instances, In, 0u, true}, {Geometry, Out}};
 template<typename K> constexpr std::span<const Socket> SocketsOf() {
     if constexpr (std::same_as<K, Source> || std::same_as<K, ObjectInfo> || Generator<K>) return SourceSockets;
@@ -219,6 +219,14 @@ template<typename K> inline constexpr uint16_t KindOf = []<typename... Ks>(actio
     return found;
 }(NodeKinds{});
 
+// Whether an output socket links into an input socket of a node of `to_kind`: the same type sharing an attribute type, or a bool attribute into a selection.
+// An Output node's geometry input also takes instances, which its mesh entity publishes.
+constexpr bool Links(Socket from, Socket to, uint16_t to_kind) {
+    if (from.Type == SocketType::Instances) return to.Type == SocketType::Instances || to_kind == KindOf<Output>;
+    const bool typed = from.Type == to.Type || (from.Type == SocketType::Attribute && to.Type == SocketType::Selection);
+    return typed && (from.Type == SocketType::Geometry || (from.Types & to.Types));
+}
+
 // Invokes `f.template operator()<K>()` for the kind's parameter component.
 template<typename F> void VisitKind(uint16_t kind, F &&f) {
     [&]<typename... Ks>(action::TypeList<Ks...>) {
@@ -245,6 +253,7 @@ struct GeometryProcedure {
     std::vector<NodeRecord> Nodes; // In authoring order
     std::vector<SocketLink> Inputs; // Each node's input sockets, in node order
     uint32_t OutputNode{NoNode}; // The Output node whose input holds the result
+    uint32_t ActiveNode{NoNode}; // The node the editor's parameter panel edits
 };
 // The node's first input in Inputs.
 inline uint32_t InputFirst(const GeometryProcedure &procedure, uint32_t node) {
@@ -274,6 +283,24 @@ std::vector<bool> Upstream(const GeometryProcedure &procedure, std::span<const u
     }
     return marked;
 }
+// The kind's first geometry socket in the direction, through which a node inserted on a link links, or none.
+inline std::optional<uint16_t> MainSocket(uint16_t kind, SocketDirection direction) {
+    const auto sockets = KindSockets(kind);
+    for (uint16_t s = 0u; s < sockets.size(); ++s)
+        if (sockets[s].Type == SocketType::Geometry && sockets[s].Direction == direction) return s;
+    return {};
+}
+// Whether the node inserts on the link between two other nodes that enters the input: its main output links into the input, the link's source links into its main input, and neither link closes a cycle.
+inline bool Inserts(const GeometryProcedure &procedure, std::span<const uint32_t> input_first, uint32_t node, uint32_t to_node, uint16_t to_socket) {
+    const auto link = procedure.Inputs[input_first[to_node] + to_socket];
+    const auto kind = procedure.Nodes[node].Kind, to_kind = procedure.Nodes[to_node].Kind;
+    const auto input = MainSocket(kind, SocketDirection::In), output = MainSocket(kind, SocketDirection::Out);
+    if (link.FromNode == NoNode || link.FromNode == node || to_node == node || !input || !output) return false;
+    const auto from_kind = procedure.Nodes[link.FromNode].Kind;
+    if (!Links(KindSockets(kind)[*output], KindSockets(to_kind)[to_socket], to_kind) || !Links(KindSockets(from_kind)[link.FromSocket], KindSockets(kind)[*input], kind)) return false;
+    const auto all = [](uint32_t) { return true; };
+    return !Upstream(procedure, input_first, node, all)[to_node] && !Upstream(procedure, input_first, link.FromNode, all)[node];
+}
 // Persistent on a mesh entity whose procedure results in instances: the instance entities it publishes, one per point under each object instancing the mesh, object by object.
 // Each entity is an Instance of the instanced mesh whose Transform is its point's instance transform.
 struct ProcedureInstances {
@@ -296,8 +323,23 @@ struct InlineSelection {
 };
 // Persistent on a node a viewport operator appended, whose edit selects the elements it emits in its output record the way the operator does.
 struct PublishSelection {};
-// Derived on a node whose input is missing or whose operation changed nothing, which forwards its input.
-struct NodeError {};
+// Persistent on a node the editor has selected, within its procedure's own selection.
+struct NodeSelected {};
+// Why a node could not run, which forwards its input instead.
+// An operation that runs and changes nothing forwards its input without a fault.
+enum class NodeFault : uint8_t {
+    Unlinked, // A geometry input is not connected
+    Selection, // The selection does not fit the operation
+    Parameter, // A parameter is invalid
+    Attribute, // An attribute input is missing or has the wrong type or domain
+    NotClosed, // A boolean input is not a closed surface
+    Empty, // A boolean produced no geometry
+    NoMesh, // An Object Info node names no mesh it can read
+};
+// Derived on a node that could not run.
+struct NodeError {
+    NodeFault Fault;
+};
 // Derived on the mesh entity, rebuilt with its procedure.
 struct CookPlan {
     std::vector<uint32_t> Order; // Every node after the nodes it reads

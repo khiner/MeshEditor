@@ -309,7 +309,8 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
     }
     Unindent();
     const bool is_bone_edit = r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && active_bone_entity != state::Null && r.all_of<BoneDisplayScale>(active_bone_entity);
-    if (CollapsingHeader("Transform")) {
+    // A non-object active entity, like a procedure node, has no transform.
+    if ((is_bone_edit || r.all_of<Transform>(active_entity)) && CollapsingHeader("Transform")) {
         if (is_bone_edit) {
             const auto &wt = *WorldTransformOf(r, active_bone_entity);
             const float bone_length = r.get<BoneDisplayScale>(active_bone_entity).Value;

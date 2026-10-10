@@ -15,6 +15,8 @@ struct Events {
     bool Quit{false};
     float ScrollX{0};
     float ScrollY{0};
+    bool PreciseScrolling{false}; // The scroll came from a trackpad, at a tenth of its points
+    float Magnification{0}; // The pinch's summed magnification
     std::vector<std::filesystem::path> DroppedFiles;
 };
 

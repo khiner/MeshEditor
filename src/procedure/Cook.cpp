@@ -27,6 +27,7 @@
 #include "viewport/ViewportEvents.h"
 
 #include <cstring>
+#include <expected>
 #include <format>
 #include <numbers>
 #include <optional>
@@ -61,6 +62,8 @@ struct SocketValue {
 };
 static_assert(sizeof(SocketValue) == 24u);
 constexpr std::array<uint32_t, 3> EveryElement{InvalidOffset, InvalidOffset, InvalidOffset};
+// A node's output record, which is its input when the operation changed nothing, or why it could not run.
+using Outcome = std::expected<uint32_t, NodeFault>;
 
 // Copies of the records without render records, since a cook output builds them anew, and their block pairs from the records when `pairs` holds one list per record.
 std::vector<uint32_t> Clones(state::Scene &r, std::span<const uint32_t> ids, std::span<MeshStore::BlockPairs> pairs) {
@@ -134,14 +137,14 @@ MeshTopologyTask Task(uint32_t id, MeshTopologyOp op, const Masks &masks, float 
     return task;
 }
 // The record a task leaves, or none when it changed nothing.
-std::optional<uint32_t> Execute(state::Scene &r, std::optional<MeshTopologyTask> task, const Masks &masks) {
-    if (!task) return {};
+Outcome Execute(state::Scene &r, std::optional<MeshTopologyTask> task, const Masks &masks) {
+    if (!task) return std::unexpected(NodeFault::Selection);
     if (masks.Publish) PublishStoreSelection(r.Context.get<const MeshStore>(), *task);
     const auto result = ExecuteGeometryTopology(r, std::span{&*task, 1u}).front();
-    return result.Changed ? std::optional{result.GeometryId} : std::nullopt;
+    return result.Changed ? result.GeometryId : task->SourceId;
 }
 // A planned primitive list takes the handles it was planned from as its selection.
-std::optional<uint32_t> ExecutePlanned(state::Scene &r, std::optional<MeshTopologyTask> task, const GeometrySelection &selection, const Masks &masks) {
+Outcome ExecutePlanned(state::Scene &r, std::optional<MeshTopologyTask> task, const GeometrySelection &selection, const Masks &masks) {
     if (task && task->Op == MeshTopologyOp::AddPrimitives) task->Selection = selection;
     return Execute(r, std::move(task), masks);
 }
@@ -153,18 +156,18 @@ void ToPoints(state::Scene &r, uint32_t id) {
 void Empty(state::Scene &r, uint32_t id) {
     if (Mesh{r.Context.get<const MeshStore>(), id}.VertexCount()) Execute(r, Task(id, MeshTopologyOp(uint32_t(DeleteMode::Vertices)), {}), {});
 }
-std::optional<uint32_t> ExecuteStages(state::Scene &r, std::vector<MeshTopologyTask> tasks, const Masks &masks) {
+Outcome ExecuteStages(state::Scene &r, std::vector<MeshTopologyTask> tasks, const Masks &masks) {
     if (masks.Publish)
         for (auto &task : tasks) PublishStoreSelection(r.Context.get<const MeshStore>(), task);
     const auto results = ExecuteGeometryTopologyStages(r, tasks);
-    if (std::ranges::none_of(results, &GeometryTopologyResult::Changed)) return {};
+    if (std::ranges::none_of(results, &GeometryTopologyResult::Changed)) return tasks.front().SourceId;
     return results.back().GeometryId;
 }
 // A publishing position edit keeps every element, so its record selects the edit's selection.
-std::optional<uint32_t> Reposition(state::Scene &r, uint32_t id, const Masks &masks, PositionEditOp op, float factor, uint32_t repeat, const PositionOperationOptions &options = {}, const Transform &world = {}) {
+Outcome Reposition(state::Scene &r, uint32_t id, const Masks &masks, PositionEditOp op, float factor, uint32_t repeat, const PositionOperationOptions &options = {}, const Transform &world = {}) {
     auto &meshes = r.Context.get<MeshStore>();
     const PositionOperationTarget target{.StoreId = id, .Selection = masks.In ? SelectionSource{*masks.In} : SelectionSource{AllHandles(Mesh{meshes, id})}, .World = world};
-    if (ExecuteGeometryPositions(r, std::span{&target, 1u}, op, factor, repeat, options).empty()) return {};
+    if (ExecuteGeometryPositions(r, std::span{&target, 1u}, op, factor, repeat, options).empty()) return id;
     if (masks.Publish && masks.In) {
         mtl::ComputeChain chain{meshes.BufferContext()};
         meshes.SelectMasks(r, chain, id, *masks.In);
@@ -175,8 +178,8 @@ std::optional<uint32_t> Reposition(state::Scene &r, uint32_t id, const Masks &ma
 uint32_t Axes(bool x, bool y, bool z) { return uint32_t(x) | uint32_t(y) << 1u | uint32_t(z) << 2u; }
 
 // Each operator edits record `id` where `masks` select, or every element without masks.
-std::optional<uint32_t> Run(state::Scene &r, const Delete &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp(uint32_t(p.Mode)), m), m); }
-std::optional<uint32_t> Run(state::Scene &r, const Merge &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const Delete &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp(uint32_t(p.Mode)), m), m); }
+Outcome Run(state::Scene &r, const Merge &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
     const auto &vertices = selection.Vertices;
@@ -184,16 +187,16 @@ std::optional<uint32_t> Run(state::Scene &r, const Merge &p, uint32_t id, const 
                                                                                           vertices.front();
     return ExecutePlanned(r, MergeTask(meshes, Mesh{meshes, id}, selection, p.Mode, std::max(p.Distance, 0.f), reference), selection, m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const Extrude &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const Extrude &p, uint32_t id, const Masks &m) {
     const auto op = p.Mode == ExtrudeMode::Vertices ? MeshTopologyOp::ExtrudeVertices : p.Mode == ExtrudeMode::Edges ? MeshTopologyOp::ExtrudeEdges :
         p.Mode == ExtrudeMode::FacesIndividual                                                                       ? MeshTopologyOp::ExtrudeFacesIndividual :
                                                                                                                        MeshTopologyOp::ExtrudeRegion;
     return Execute(r, Task(id, op, m), m);
 }
-std::optional<uint32_t> Run(state::Scene &r, Duplicate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::DuplicateGeometry, m), m); }
-std::optional<uint32_t> Run(state::Scene &r, Split, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::SplitGeometry, m), m); }
+Outcome Run(state::Scene &r, Duplicate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::DuplicateGeometry, m), m); }
+Outcome Run(state::Scene &r, Split, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::SplitGeometry, m), m); }
 // A limited dissolve reads every selected domain, since a node has no face edit mode to protect unselected faces by.
-std::optional<uint32_t> Run(state::Scene &r, const Dissolve &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const Dissolve &p, uint32_t id, const Masks &m) {
     switch (p.Mode) {
         case DissolveMode::Vertices: return Execute(r, Task(id, MeshTopologyOp::DissolveVertices, m), m);
         case DissolveMode::Edges: return Execute(r, Task(id, MeshTopologyOp::DissolveEdges, m, 0.f, 0.f, p.KeepVertices ? TopologyFlagKeepVertices : 0u), m);
@@ -206,103 +209,104 @@ std::optional<uint32_t> Run(state::Scene &r, const Dissolve &p, uint32_t id, con
     }
     std::unreachable();
 }
-std::optional<uint32_t> Run(state::Scene &r, const Subdivide &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Subdivide, m, float(std::max(p.Cuts, 1u))), m); }
-std::optional<uint32_t> Run(state::Scene &r, Triangulate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Triangulate, m), m); }
-std::optional<uint32_t> Run(state::Scene &r, TrisToQuads, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::TrisToQuads, m), m); }
-std::optional<uint32_t> Run(state::Scene &r, const Poke &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Poke, m, p.Offset), m); }
-std::optional<uint32_t> Run(state::Scene &r, FlipNormals, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::FlipNormals, m), m); }
-std::optional<uint32_t> Run(state::Scene &r, EdgeSplit, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m), m); }
-std::optional<uint32_t> Run(state::Scene &r, Rip, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m, 0.f, 0.f, TopologyFlagRipSelectCopies), m); }
-std::optional<uint32_t> Run(state::Scene &r, const Inset &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const Subdivide &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Subdivide, m, float(std::max(p.Cuts, 1u))), m); }
+Outcome Run(state::Scene &r, Triangulate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Triangulate, m), m); }
+Outcome Run(state::Scene &r, TrisToQuads, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::TrisToQuads, m), m); }
+Outcome Run(state::Scene &r, const Poke &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Poke, m, p.Offset), m); }
+Outcome Run(state::Scene &r, FlipNormals, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::FlipNormals, m), m); }
+Outcome Run(state::Scene &r, EdgeSplit, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m), m); }
+Outcome Run(state::Scene &r, Rip, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m, 0.f, 0.f, TopologyFlagRipSelectCopies), m); }
+Outcome Run(state::Scene &r, const Inset &p, uint32_t id, const Masks &m) {
     return Execute(r, Task(id, p.Individual ? MeshTopologyOp::InsetIndividual : MeshTopologyOp::InsetRegion, m, std::max(p.Thickness, 0.f), p.Depth, p.Even ? TopologyFlagEvenOffset : 0u), m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const Solidify &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Solidify, m, p.Thickness), m); }
-std::optional<uint32_t> Run(state::Scene &r, const Wireframe &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const Solidify &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Solidify, m, p.Thickness), m); }
+Outcome Run(state::Scene &r, const Wireframe &p, uint32_t id, const Masks &m) {
     const auto flags = (p.Even ? TopologyFlagEvenOffset : 0u) | (p.Boundary ? TopologyFlagWireBoundary : 0u) | (p.Relative ? TopologyFlagWireRelative : 0u) | (p.Replace ? TopologyFlagWireReplace : 0u);
     return Execute(r, Task(id, MeshTopologyOp::Wireframe, m, std::max(p.Thickness, 0.f), std::clamp(p.Offset, -1.f, 1.f), flags), m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const Bevel &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const Bevel &p, uint32_t id, const Masks &m) {
     auto task = Task(id, p.Vertices ? MeshTopologyOp::BevelVertices : MeshTopologyOp::BevelEdges, m, std::max(p.Width, 0.f));
     task.Steps = std::max(p.Segments, 1u);
     return Execute(r, task, m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const SmoothVertices &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const SmoothVertices &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::Smooth, p.Factor, std::clamp(p.Repeat, 1u, 1000u), {.Axes = Axes(p.X, p.Y, p.Z)});
 }
 // Offsets follow vertex normals, since a node has no face edit mode to follow selected face normals by.
-std::optional<uint32_t> Run(state::Scene &r, const ShrinkFatten &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const ShrinkFatten &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::ShrinkFatten, p.Distance, 1u, {.Flags = p.Even ? PositionEditEvenOffset : 0u});
 }
-std::optional<uint32_t> Run(state::Scene &r, const Randomize &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const Randomize &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::Randomize, p.Amount, 1u, {.Randomize = PositionRandomize{p.Uniform, p.Normal, p.Seed}});
 }
-std::optional<uint32_t> Run(state::Scene &r, const Spin &p, uint32_t id, const Masks &m) {
-    if (Dot(p.Axis, p.Axis) <= 0.f) return {};
+Outcome Run(state::Scene &r, const Spin &p, uint32_t id, const Masks &m) {
+    if (Dot(p.Axis, p.Axis) <= 0.f) return std::unexpected(NodeFault::Parameter);
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
     const auto axis = Normalize(p.Axis);
     const auto steps = float(std::max(p.Steps, 1u));
     return ExecutePlanned(r, ExtrudeStepsTask(Mesh{meshes, id}, selection, Element::None, p.Steps, ToMat3(AngleAxis(p.Angle / steps, axis)), axis * (p.Offset / steps), p.Center), selection, m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const ExtrudeRepeat &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const ExtrudeRepeat &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
     return ExecutePlanned(r, ExtrudeStepsTask(Mesh{meshes, id}, selection, Element::None, p.Steps, mat3{1.f}, p.Offset, vec3{0.f}), selection, m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const Bisect &p, uint32_t id, const Masks &m) {
-    if (Dot(p.Normal, p.Normal) <= 0.f) return {};
+Outcome Run(state::Scene &r, const Bisect &p, uint32_t id, const Masks &m) {
+    if (Dot(p.Normal, p.Normal) <= 0.f) return std::unexpected(NodeFault::Parameter);
     return ExecuteStages(r, BisectTasks(Mesh{r.Context.get<const MeshStore>(), id}, p.Point, p.Normal, p.ClearInner, p.ClearOuter), m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const Symmetrize &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const Symmetrize &p, uint32_t id, const Masks &m) {
     return ExecuteStages(r, SymmetrizeTasks(Mesh{r.Context.get<const MeshStore>(), id}, uint8_t(p.Axis), p.Negative), m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const FillHoles &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const FillHoles &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     return Execute(r, FillHolesTask(meshes, Mesh{meshes, id}, p.Sides), m);
 }
-std::optional<uint32_t> Run(state::Scene &r, ConvexHull, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, ConvexHull, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
     return ExecutePlanned(r, ConvexHullTask(meshes, Mesh{meshes, id}, selection), selection, m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const Decimate &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const Decimate &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
     return ExecutePlanned(r, DecimateTask(meshes, Mesh{meshes, id}, selection, p.Ratio), selection, m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const RecalculateNormals &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const RecalculateNormals &p, uint32_t id, const Masks &m) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto selection = Handles(meshes, id, m);
     auto faces = std::move(RecalculateFaceFlips(meshes, GetMeshPipelines(r), std::array{id}, std::span{&selection, 1u}, p.Inside).front());
-    if (faces.empty()) return {};
+    if (faces.empty()) return id;
     faces.insert(faces.begin(), uint32_t(faces.size()));
     return Execute(r, MeshTopologyTask{.SourceId = id, .Op = MeshTopologyOp::FlipNormals, .List = std::move(faces), .Selection = selection}, m);
 }
-std::optional<uint32_t> Run(state::Scene &r, const TransformElements &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const TransformElements &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{p.Delta, p.Pivot}}, p.Frame);
 }
-std::optional<uint32_t> Run(state::Scene &r, MeshToPoints, uint32_t id, const Masks &) {
+Outcome Run(state::Scene &r, MeshToPoints, uint32_t id, const Masks &) {
     ToPoints(r, id);
     return id;
 }
-std::optional<uint32_t> Run(state::Scene &r, const SetPosition &p, uint32_t id, uint32_t attribute, const Masks &m) {
+Outcome Run(state::Scene &r, const SetPosition &p, uint32_t id, uint32_t attribute, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
-    if (attribute == InvalidOffset || meshes.GetAttribute(attribute).Type != AttributeType::Vec3 || meshes.GetAttribute(attribute).Domain != AttributeDomain::Vertex) return {};
+    if (attribute == InvalidOffset || meshes.GetAttribute(attribute).Type != AttributeType::Vec3 || meshes.GetAttribute(attribute).Domain != AttributeDomain::Vertex) return std::unexpected(NodeFault::Attribute);
     return Reposition(r, id, m, PositionEditOp::Attribute, 1.f, 1u, {.Flags = p.Offset ? PositionEditAttributeOffset : 0u, .Attribute = meshes.AttributeRef(attribute)});
 }
 
 std::string_view NameOf(const AttributeName &name) { return {name.data(), strnlen(name.data(), name.size())}; }
 
 // Stores the attribute under the name, renaming one of the evaluation's temporaries and copying any other attribute.
-std::optional<uint32_t> Store(MeshStore &meshes, const StoreNamedAttribute &p, uint32_t id, uint32_t attribute, std::vector<uint32_t> &temporaries) {
+Outcome Store(MeshStore &meshes, const StoreNamedAttribute &p, uint32_t id, uint32_t attribute, std::vector<uint32_t> &temporaries) {
     const auto name = NameOf(p.Name);
-    if (attribute == InvalidOffset || name.empty()) return {};
+    if (attribute == InvalidOffset) return std::unexpected(NodeFault::Attribute);
+    if (name.empty()) return std::unexpected(NodeFault::Parameter);
     if (meshes.GetAttribute(attribute).NameView() == name) return id;
     if (const auto existing = meshes.FindAttribute(id, name); existing != InvalidOffset) meshes.ReleaseAttribute(existing);
     const auto temporary = std::ranges::find(temporaries, attribute);
-    if (temporary == temporaries.end()) return meshes.CopyAttribute(attribute, name) ? std::optional{id} : std::nullopt;
+    if (temporary == temporaries.end()) return meshes.CopyAttribute(attribute, name) ? Outcome{id} : std::unexpected(NodeFault::Attribute);
     temporaries.erase(temporary);
-    return meshes.RenameAttribute(attribute, name) ? std::optional{id} : std::nullopt;
+    return meshes.RenameAttribute(attribute, name) ? Outcome{id} : std::unexpected(NodeFault::Attribute);
 }
 
 // Writes a node's inline selection into the cook's arena over its input record's blocks, and returns each domain's first mask block.
@@ -445,7 +449,7 @@ Evaluation EvaluateInputs(state::Scene &r, const GeometryProcedure &procedure, c
             const auto &p = r.get<const NamedAttribute>(entity);
             const auto found = meshes.FindAttribute(id, NameOf(p.Name));
             output.Attribute = found != InvalidOffset && meshes.GetAttribute(found).Type == p.Type ? found : InvalidOffset;
-            if (output.Attribute == InvalidOffset) r.emplace_or_replace<NodeError>(entity);
+            if (output.Attribute == InvalidOffset) r.emplace_or_replace<NodeError>(entity, NodeFault::Attribute);
             continue;
         }
         std::optional<AttributeJob> job;
@@ -453,7 +457,7 @@ Evaluation EvaluateInputs(state::Scene &r, const GeometryProcedure &procedure, c
             if constexpr (Prepared<K>) job = Prepare(meshes, r.get<const K>(entity), in);
         });
         if (!job) {
-            r.emplace_or_replace<NodeError>(entity);
+            r.emplace_or_replace<NodeError>(entity, NodeFault::Attribute);
             continue;
         }
         const auto added = meshes.AddAttribute(id, job->Domain, job->Type, TemporaryName(n, InputCount[kind])).value();
@@ -509,7 +513,7 @@ Evaluation EvaluateInputs(state::Scene &r, const GeometryProcedure &procedure, c
 
 // Runs a geometry node on record `id` after evaluating its inputs on it, releasing the temporaries it does not store.
 // Operators release them first, so the edit carries none of them to its output.
-std::optional<uint32_t> RunNode(state::Scene &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena) {
+Outcome RunNode(state::Scene &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto [entity, kind] = procedure.Nodes[node];
     auto evaluation = EvaluateInputs(r, procedure, plan, values, node, id, arena);
@@ -519,7 +523,7 @@ std::optional<uint32_t> RunNode(state::Scene &r, const GeometryProcedure &proced
     };
     if (evaluation.Failed) {
         release();
-        return {};
+        return std::unexpected(NodeFault::Attribute);
     }
     const auto sockets = KindSockets(kind);
     const auto first = plan.SocketFirst[node];
@@ -532,7 +536,7 @@ std::optional<uint32_t> RunNode(state::Scene &r, const GeometryProcedure &proced
         if (const auto &f = selection.MaskFirst; f != EveryElement) masks.In = GeometryMasks{{&*arena, f[0]}, {&*arena, f[1]}, {&*arena, f[2]}};
     }
     masks.Publish = r.all_of<PublishSelection>(entity);
-    std::optional<uint32_t> edited;
+    Outcome edited = id;
     VisitKind(kind, [&]<typename K> {
         if constexpr (std::same_as<K, StoreNamedAttribute>) {
             edited = Store(meshes, r.get<const K>(entity), id, LinkedAttribute(procedure, plan, values, node, 1u), evaluation.Temporaries);
@@ -559,12 +563,11 @@ void InstancePoints(state::Scene &r, const InstanceOnPoints &p, uint32_t id) {
     }
 }
 
-// The mesh entity an Object Info node reads: a mesh entity other than the procedure's own and other than one a procedure owns, or null.
+// The mesh entity an Object Info node reads: its object's mesh when the object has one other than the procedure's own, or null.
+// A procedure-owned mesh has no object, so no node reads one.
 state::Entity ReadMesh(const state::Scene &r, state::Entity mesh_entity, const ObjectInfo &p) {
-    if (!r.valid(p.MeshEntity) || !HasMesh(r, p.MeshEntity) || p.MeshEntity == mesh_entity) return state::Null;
-    for (const auto [_, owned] : r.view<const ProcedureOwnedMesh>().each())
-        if (owned.MeshEntity == p.MeshEntity) return state::Null;
-    return p.MeshEntity;
+    const auto read = r.valid(p.Object) ? GetMeshEntity(r, p.Object) : state::Null;
+    return read != mesh_entity ? read : state::Null;
 }
 
 // Each point's instance transform, in vertex order.
@@ -666,7 +669,7 @@ state::Entity OwnMesh(state::Scene &r, state::Entity mesh_entity, uint32_t recor
 // The Source node emits the previous output restored to the source when the source kept its blocks, so the output record persists across cooks.
 // An Object Info node emits another mesh entity's drawn record, which the cook borrows.
 // An input owns the record it reads once its producer has no other consumer left, and otherwise reads a clone.
-// A node without an input record, or whose operation changes nothing, is marked and forwards its input.
+// A node that cannot run is marked with its fault and forwards its input, as does an operation that changes nothing.
 // A boolean emits a new record, and its inputs release with the cook's other records.
 // A missing result is the source's copy, and every other record the cook made releases.
 // A result reading instances empties its record and publishes the instances as entities.
@@ -678,7 +681,16 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
     auto evaluated = r.all_of<EvaluatedMesh>(mesh_entity) ? r.get<const EvaluatedMesh>(mesh_entity) : EvaluatedMesh{.StoreId = InvalidOffset};
     std::optional<ResyncState> resync;
     if (const auto *state = r.try_get<const ResyncState>(mesh_entity)) resync = *state;
-    const auto read = [&](uint32_t node) { return plan.Consumers[plan.SocketFirst[node]] > 0u; };
+    // The nodes the result reads through any input, which are the ones the cook evaluates and marks.
+    // A node outside them is inert, and the inputs it would read count as unread.
+    const auto reached = procedure.OutputNode != NoNode ? Upstream(procedure, plan.InputFirst, procedure.OutputNode, [](uint32_t) { return true; }) : std::vector<bool>(procedure.Nodes.size());
+    auto remaining = plan.Consumers;
+    for (uint32_t node = 0u; node < procedure.Nodes.size(); ++node) {
+        if (reached[node]) continue;
+        for (uint32_t i = 0u; i < InputCount[procedure.Nodes[node].Kind]; ++i)
+            if (const auto link = procedure.Inputs[plan.InputFirst[node] + i]; link.FromNode != NoNode) --remaining[plan.SocketFirst[link.FromNode] + link.FromSocket];
+    }
+    const auto read = [&](uint32_t node) { return remaining[plan.SocketFirst[node]] > 0u; };
     const bool unlinked = procedure.OutputNode == NoNode || procedure.Inputs[plan.InputFirst[procedure.OutputNode]].FromNode == NoNode;
     const bool sourced = unlinked || std::ranges::any_of(plan.Order, [&](uint32_t node) { return procedure.Nodes[node].Kind == KindOf<Source> && read(node); });
     // The records the cook made, which release at its end apart from the result.
@@ -703,7 +715,6 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         node = InputCount[procedure.Nodes[node].Kind] ? procedure.Inputs[plan.InputFirst[node]].FromNode : NoNode;
     }
     std::vector<SocketValue> values(plan.SocketFirst.back());
-    auto remaining = plan.Consumers;
     const auto slot_of = [&](uint32_t node, uint32_t input) {
         const auto link = procedure.Inputs[plan.InputFirst[node] + input];
         return plan.SocketFirst[link.FromNode] + link.FromSocket;
@@ -749,7 +760,7 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         const auto [entity, kind] = procedure.Nodes[node];
         const auto first = plan.SocketFirst[node];
         r.remove<NodeError>(entity);
-        if (IsAttributeKind(kind)) continue;
+        if (!reached[node] || IsAttributeKind(kind)) continue;
         if (kind == KindOf<Source>) {
             if (!read(node)) continue;
             values[first].Record = std::exchange(copied, true) ? created.emplace_back(Clone(r, source, {})) : evaluated.StoreId;
@@ -758,7 +769,7 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         if (kind == KindOf<ObjectInfo>) {
             const auto read_mesh = ReadMesh(r, mesh_entity, r.get<const ObjectInfo>(entity));
             if (read_mesh != state::Null) values[first] = {.MeshEntity = read_mesh, .Record = *DrawnStoreId(r, read_mesh)};
-            else r.emplace<NodeError>(entity);
+            else r.emplace<NodeError>(entity, NodeFault::NoMesh);
             continue;
         }
         bool generated = false;
@@ -772,8 +783,9 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         const auto in = take(node, 0u);
         const auto input = in.Record;
         if (kind == KindOf<Output>) {
-            if (input == InvalidOffset) r.emplace<NodeError>(entity);
+            // Only the result's Output node needs an input.
             if (node == procedure.OutputNode) {
+                if (input == InvalidOffset) r.emplace<NodeError>(entity, NodeFault::Unlinked);
                 result = input;
                 if (in.Type == SocketType::Instances) published = in;
             }
@@ -781,7 +793,7 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         }
         if (kind == KindOf<Join>) {
             const auto second = take(node, 1u);
-            if (input == InvalidOffset || second.Record == InvalidOffset) r.emplace<NodeError>(entity);
+            if (input == InvalidOffset || second.Record == InvalidOffset) r.emplace<NodeError>(entity, NodeFault::Unlinked);
             if (input != InvalidOffset && second.Record != InvalidOffset) {
                 meshes.Join(r, input, second.Record);
                 consume(second);
@@ -798,7 +810,8 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
                 created.push_back(*combined);
                 values[first + 2u].Record = *combined;
             } else {
-                r.emplace<NodeError>(entity);
+                r.emplace<NodeError>(entity, !linked ? NodeFault::Unlinked : !task ? NodeFault::NotClosed :
+                                                                                     NodeFault::Empty);
                 values[first + 2u] = in;
             }
             continue;
@@ -814,12 +827,12 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
                 output.Instance = instance.Record;
                 continue;
             }
-            r.emplace<NodeError>(entity);
+            r.emplace<NodeError>(entity, NodeFault::Unlinked);
             if (input != InvalidOffset) Empty(r, input);
             continue;
         }
         if (kind == KindOf<RealizeInstances>) {
-            if (input == InvalidOffset) r.emplace<NodeError>(entity);
+            if (input == InvalidOffset) r.emplace<NodeError>(entity, NodeFault::Unlinked);
             const auto realized = input != InvalidOffset && in.Instance != InvalidOffset ? Realize(r, input, in.Instance) : std::nullopt;
             if (realized) {
                 consume(in);
@@ -830,9 +843,8 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
             values[first + 1u].Record = realized.value_or(input);
             continue;
         }
-        if (input == InvalidOffset) r.emplace<NodeError>(entity);
-        const auto edited = input != InvalidOffset ? RunNode(r, procedure, plan, values, node, input, arena) : std::nullopt;
-        if (input != InvalidOffset && !edited) r.emplace<NodeError>(entity);
+        const auto edited = input != InvalidOffset ? RunNode(r, procedure, plan, values, node, input, arena) : Outcome{std::unexpected(NodeFault::Unlinked)};
+        if (!edited) r.emplace<NodeError>(entity, edited.error());
         values[first + InputCount[kind]].Record = edited.value_or(input);
     }
     // The result's points place instances of a mesh entity's drawn record, or of an instance record the procedure's owned mesh entity takes from the cook.
@@ -906,8 +918,10 @@ void EraseNode(GeometryProcedure &procedure, uint32_t node) {
         if (link.FromNode == node) link = {};
         else if (link.FromNode != NoNode && link.FromNode > node) --link.FromNode;
     }
-    if (procedure.OutputNode == node) procedure.OutputNode = NoNode;
-    else if (procedure.OutputNode != NoNode && procedure.OutputNode > node) --procedure.OutputNode;
+    for (auto *index : {&procedure.OutputNode, &procedure.ActiveNode}) {
+        if (*index == node) *index = NoNode;
+        else if (*index != NoNode && *index > node) --*index;
+    }
 }
 
 // A destroyed node leaves its procedure, and the inputs reading it unlink.
@@ -985,7 +999,7 @@ void SettleProcedures(state::Scene &r, bool cook) {
         const auto *published = r.try_get<const ProcedureInstances>(e);
         if (std::ranges::any_of(procedure.Nodes, input, &NodeRecord::Entity) || (published && std::ranges::any_of(published->Entities, input))) cooked.push_back(e);
         for (const auto &node : procedure.Nodes)
-            if (node.Kind == KindOf<ObjectInfo>) reads.emplace_back(e, r.get<const ObjectInfo>(node.Entity).MeshEntity);
+            if (node.Kind == KindOf<ObjectInfo>) reads.emplace_back(e, ReadMesh(r, e, r.get<const ObjectInfo>(node.Entity)));
     }
     for (const auto e : inputs)
         if (const auto *instance = r.try_get<const Instance>(e); instance && r.all_of<ProcedureInstances>(instance->Entity)) cooked.push_back(instance->Entity);

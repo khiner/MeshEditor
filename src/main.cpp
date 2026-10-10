@@ -45,6 +45,7 @@
 #include "object/ObjectOps.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
+#include "procedure/ProcedureUi.h"
 #include "project/HistoryUi.h"
 #include "project/Project.h"
 #include "project/Sessions.h"
@@ -438,6 +439,8 @@ void BuildDefaultDockLayout(const WindowsState &windows, ImGuiID dockspace_id) {
     DockBuilderDockWindow(windows.ImPlotDemo.Name, extra_node_id);
     DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
     DockBuilderDockWindow(windows.Animation.Name, animation_node_id);
+    DockBuilderDockWindow(windows.Nodes.Name, animation_node_id);
+    DockBuilderGetNode(animation_node_id)->SelectedTabId = ImHashStr(windows.Animation.Name);
     DockBuilderDockWindow(windows.Viewport.Name, dockspace_id);
 }
 
@@ -532,6 +535,7 @@ EditorWindowsFrame BeginEditorWindows(
         End();
         PopStyleVar();
     }
+    procedure::DrawNodesWindow(r, viewport, windows.Nodes, interactive);
     if (interactive) r.Context.get<FrameState>().Scrubbing = scrubbing;
 
     EditorWindowsFrame frame;
@@ -1448,7 +1452,10 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         const profile::CpuScope frame_scope{"Frame"};
         r.Context.get<ViewportConsumerFence>().Value = last_frame.get();
         auto events = window.PollEvents();
-        r.Context.get<FrameState>().PreciseWheelDelta = vec2{events.ScrollX, events.ScrollY};
+        auto &frame_state = r.Context.get<FrameState>();
+        frame_state.PreciseWheelDelta = vec2{events.ScrollX, events.ScrollY};
+        frame_state.PreciseScrolling = events.PreciseScrolling;
+        frame_state.Magnification = events.Magnification;
         for (const auto &path : events.DroppedFiles) OpenFile(r, viewport, path);
         done = events.Quit;
         if (driver.DurationElapsed(r, viewport)) done = true;
@@ -1589,6 +1596,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             }
             if (BeginMenu("Windows")) {
                 MenuItem(windows.History.Name, nullptr, &windows.History.Visible);
+                MenuItem(windows.Nodes.Name, nullptr, &windows.Nodes.Visible);
                 MenuItem(windows.Debug.Name, nullptr, &windows.Debug.Visible);
                 MenuItem(windows.ImGuiDemo.Name, nullptr, &windows.ImGuiDemo.Visible);
                 MenuItem(windows.ImSpinnerDemo.Name, nullptr, &windows.ImSpinnerDemo.Visible);

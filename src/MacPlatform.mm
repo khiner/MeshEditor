@@ -36,6 +36,11 @@ using MacPlatform::Window;
     const double scale = event.hasPreciseScrollingDeltas ? 0.1 : 1.0;
     self.owner->PendingEvents.ScrollX += float(event.scrollingDeltaX * scale);
     self.owner->PendingEvents.ScrollY += float(event.scrollingDeltaY * scale);
+    self.owner->PendingEvents.PreciseScrolling = event.hasPreciseScrollingDeltas;
+}
+
+- (void)magnifyWithEvent:(NSEvent *)event {
+    self.owner->PendingEvents.Magnification += float(event.magnification);
 }
 
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {

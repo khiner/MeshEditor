@@ -115,6 +115,13 @@ struct UpdateTraits<PosedLocal> : ComponentUpdateTraits<PosedLocal> {
     }
 };
 
+// A node layout edit addresses the edited procedure's active node and fans out to its selected nodes.
+template<>
+struct UpdateTraits<procedure::NodeLayout> : ComponentUpdateTraits<procedure::NodeLayout> {
+    static state::Entity Active(const state::Scene &);
+    static void ForEachSelected(state::Scene &, state::Entity viewport, const std::function<void(state::Entity)> &);
+};
+
 // PrimitiveShape lives on the mesh entity behind an instance.
 // Fields address the current shape alternative, the selection covers meshes sharing the active shape, and the settle pass rebuilds each written mesh.
 template<>

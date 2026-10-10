@@ -47,7 +47,7 @@ using boost::ut::expect, boost::ut::fatal;
 namespace {
 using namespace procedure;
 using action::UpdateOf;
-using action::nodes::AddNode, action::nodes::AddProcedure, action::nodes::ApplyProcedure, action::nodes::Link, action::nodes::SetAttributeName, action::nodes::SetInlineSelection;
+using action::nodes::AddNode, action::nodes::AddProcedure, action::nodes::ApplyProcedure, action::nodes::DeleteNodes, action::nodes::DuplicateNodes, action::nodes::InsertNode, action::nodes::Link, action::nodes::SelectNodes, action::nodes::SetAttributeName, action::nodes::SetInlineSelection;
 using ::test::Op, ::test::Patchwork, ::test::PlanCase, ::test::Region, ::test::TopologyCases;
 
 // One engine whose tests each begin a new project in a scratch directory of their own, which clears after the engine closes.
@@ -146,6 +146,12 @@ struct Fixture : TestDir, Engine {
     }
     MeshStore &Store() { return R.Context.get<MeshStore>(); }
     uint32_t Source(state::Entity mesh_entity) const { return R.get<const MeshHandle>(mesh_entity).StoreId; }
+    // The first object instancing the mesh entity.
+    state::Entity Object(state::Entity mesh_entity) const {
+        for (const auto [e, instance] : R.view<const Instance>().each())
+            if (instance.Entity == mesh_entity) return e;
+        return state::Null;
+    }
     // The record the mesh entity draws: its procedure's evaluated record, or its source.
     uint32_t Output(state::Entity mesh_entity) const { return *DrawnStoreId(R, mesh_entity); }
     uint64_t Cooks() const { return R.Context.get<const CookCount>().Value; }
@@ -1248,7 +1254,7 @@ void TestInstances(Fixture &f) {
                 const auto to_points = f.Add(mesh, KindOf<MeshToPoints>).first;
                 const auto [instancer, instancer_entity] = f.Add(mesh, KindOf<InstanceOnPoints>);
                 const auto [instance, instance_entity] = f.Add(mesh, instance_kind);
-                if (borrowed) f.Do(UpdateOf<&ObjectInfo::MeshEntity>(instance_entity, cube_mesh));
+                if (borrowed) f.Do(UpdateOf<&ObjectInfo::Object>(instance_entity, f.Object(cube_mesh)));
                 f.Route(mesh, {0u, to_points, instancer});
                 f.Do(Link{mesh, instance, 0u, instancer, 1u});
                 const auto cube_record = f.Source(cube_mesh);
@@ -1388,7 +1394,7 @@ void TestObjectInfo(Fixture &f) {
     const auto &meshes = f.Store();
     f.Do(AddProcedure{mesh});
     const auto [info, info_entity] = f.Add(mesh, KindOf<ObjectInfo>);
-    f.Do(UpdateOf<&ObjectInfo::MeshEntity>(info_entity, mesh));
+    f.Do(UpdateOf<&ObjectInfo::Object>(info_entity, f.Object(mesh)));
     const auto [join, join_entity] = f.Add(mesh, KindOf<Join>);
     f.Do(Link{mesh, 0u, 0u, join, 0u});
     f.Do(Link{mesh, info, 0u, join, 1u});
@@ -1400,7 +1406,7 @@ void TestObjectInfo(Fixture &f) {
     f.Do(AddProcedure{cube});
     const auto [box, box_entity] = f.Add(cube, KindOf<primitive::Cuboid>);
     f.Do(Link{cube, box, 0u, 1u, 0u});
-    f.Do(UpdateOf<&ObjectInfo::MeshEntity>(info_entity, cube));
+    f.Do(UpdateOf<&ObjectInfo::Object>(info_entity, f.Object(cube)));
     expect(!r.any_of<NodeError>(info_entity) && !r.any_of<NodeError>(join_entity));
     f.ValidateReplay();
     // The join holds the plane and the cube's output, which the cube's procedure cooked.
@@ -1427,7 +1433,164 @@ void TestObjectInfo(Fixture &f) {
     f.Audit();
 }
 
-// A bevel that selects nothing marks its node and forwards its input, a restore clears the mark, and the next cook marks the node again.
+// Node selection is the procedure's own: it tags node entities, names the active node, follows a node's removal and leaves the object selection alone.
+void TestSelectNodes(Fixture &f) {
+    f.Reset("select-nodes");
+    auto &r = f.R;
+    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    f.Do(AddProcedure{mesh});
+    const auto [subdivide, subdivide_entity] = f.Add(mesh, KindOf<action::mesh::Subdivide>);
+    const auto [triangulate, triangulate_entity] = f.Add(mesh, KindOf<action::mesh::Triangulate>);
+    expect(r.get<const GeometryProcedure>(mesh).ActiveNode == triangulate && !r.all_of<NodeSelected>(subdivide_entity) && r.all_of<NodeSelected>(triangulate_entity));
+    const auto selected_objects = r.view<const Selected>().size();
+    const auto active_object = FindActiveEntity(r);
+    f.Do(SelectNodes{mesh, {subdivide, triangulate}, triangulate});
+    expect(r.all_of<NodeSelected>(subdivide_entity) && r.all_of<NodeSelected>(triangulate_entity));
+    expect(r.get<const GeometryProcedure>(mesh).ActiveNode == triangulate);
+    expect(r.view<const Selected>().size() == selected_objects);
+    expect(FindActiveEntity(r) == active_object);
+    f.Do(SelectNodes{mesh, {triangulate}, triangulate});
+    expect(!r.all_of<NodeSelected>(subdivide_entity));
+    // Removing the node before the active one shifts the active index down with the table.
+    f.Do(action::DestroyEntity{subdivide_entity});
+    expect(r.get<const GeometryProcedure>(mesh).ActiveNode == triangulate - 1u);
+    expect(r.all_of<NodeSelected>(triangulate_entity));
+    f.P->Undo();
+    expect(r.get<const GeometryProcedure>(mesh).ActiveNode == triangulate);
+    f.P->Redo();
+    f.Do(action::DestroyEntity{triangulate_entity});
+    expect(r.get<const GeometryProcedure>(mesh).ActiveNode == NoNode);
+    f.ValidateReplay();
+    f.Audit();
+}
+
+// Duplicating nodes appends moved copies that keep only the links among them, and the copies take the selection.
+void TestDuplicateNodes(Fixture &f) {
+    f.Reset("duplicate-nodes");
+    auto &r = f.R;
+    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    f.Do(AddProcedure{mesh});
+    const auto [subdivide, subdivide_entity] = f.Add(mesh, KindOf<action::mesh::Subdivide>);
+    const auto [triangulate, triangulate_entity] = f.Add(mesh, KindOf<action::mesh::Triangulate>);
+    f.Route(mesh, {0u, subdivide, triangulate});
+    f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(subdivide_entity, 3u));
+    f.Do(SelectNodes{mesh, {subdivide, triangulate}, subdivide});
+    f.Do(DuplicateNodes{mesh, {subdivide, triangulate}, {20.f, 20.f}});
+    const auto &procedure = r.get<const GeometryProcedure>(mesh);
+    expect(procedure.Nodes.size() == 6u);
+    const auto [copy_subdivide, copy_triangulate] = std::pair{procedure.Nodes[4], procedure.Nodes[5]};
+    expect(copy_subdivide.Kind == KindOf<action::mesh::Subdivide> && copy_triangulate.Kind == KindOf<action::mesh::Triangulate>);
+    expect(r.get<const action::mesh::Subdivide>(copy_subdivide.Entity).Cuts == 3u);
+    expect(r.get<const NodeLayout>(copy_subdivide.Entity).Position == r.get<const NodeLayout>(subdivide_entity).Position + vec2{20.f, 20.f});
+    // The source link into the copied subdivide is dropped, and the link between the copies is kept.
+    expect(procedure.Inputs[InputFirst(procedure, 4u)].FromNode == NoNode);
+    expect(procedure.Inputs[InputFirst(procedure, 5u)].FromNode == 4u);
+    expect(!r.all_of<NodeSelected>(subdivide_entity) && r.all_of<NodeSelected>(copy_subdivide.Entity) && r.all_of<NodeSelected>(copy_triangulate.Entity));
+    expect(procedure.ActiveNode == 4u);
+    f.P->Undo();
+    expect(r.get<const GeometryProcedure>(mesh).Nodes.size() == 4u && r.all_of<NodeSelected>(subdivide_entity));
+    f.P->Redo();
+    f.ValidateReplay();
+    f.Audit();
+}
+
+// Deleting nodes heals each chain through them, and a reader of a deleted node without one linked source of its output's type unlinks.
+// Each row deletes nodes and names inputs with the node they then read, or null, and the output it then cooks, and undo restores every node and link.
+void TestDeleteNodes(Fixture &f) {
+    f.Reset("delete-nodes");
+    auto &r = f.R;
+    const auto &meshes = f.Store();
+    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    f.Do(AddProcedure{mesh});
+    const auto subdivide = f.Add(mesh, KindOf<action::mesh::Subdivide>).first;
+    const auto [triangulate, triangulate_entity] = f.Add(mesh, KindOf<action::mesh::Triangulate>);
+    const auto loose = f.Add(mesh, KindOf<action::mesh::Subdivide>).first;
+    const auto [boolean, boolean_entity] = f.Add(mesh, KindOf<procedure::Boolean>);
+    const auto [reader, reader_entity] = f.Add(mesh, KindOf<action::mesh::Triangulate>);
+    f.Route(mesh, {0u, subdivide, triangulate, 1u});
+    f.Route(mesh, {loose, boolean, reader});
+    f.Do(Link{mesh, 0u, 0u, boolean, 1u});
+    const auto source = f.Node(mesh, 0u), output = f.Node(mesh, 1u);
+    const auto reads = [&](state::Entity node, uint16_t input) {
+        const auto &procedure = r.get<const GeometryProcedure>(mesh);
+        const auto index = uint32_t(std::ranges::find(procedure.Nodes, node, &NodeRecord::Entity) - procedure.Nodes.begin());
+        const auto from = procedure.Inputs[InputFirst(procedure, index) + input].FromNode;
+        return from == NoNode ? state::Null : procedure.Nodes[from].Entity;
+    };
+    const auto links = [&] {
+        std::vector<std::pair<uint32_t, uint16_t>> all;
+        for (const auto link : r.get<const GeometryProcedure>(mesh).Inputs) all.emplace_back(link.FromNode, link.FromSocket);
+        return all;
+    };
+    const auto nodes = f.NodeEntities(mesh);
+    const auto linked = links();
+    const auto cooked = Describe(meshes, f.Output(mesh));
+    const auto triangulated = SelectAllReference(f, f.Source(mesh), {Op(MeshTopologyOp::Triangulate)});
+    const auto unchanged = Describe(meshes, f.Source(mesh));
+    struct Row {
+        std::vector<uint32_t> Deleted;
+        std::vector<std::tuple<state::Entity, uint16_t, state::Entity>> Reads;
+        const Shape &Output;
+    };
+    const Row rows[]{
+        {{subdivide}, {{triangulate_entity, 0u, source}, {output, 0u, triangulate_entity}}, triangulated},
+        {{subdivide, triangulate}, {{output, 0u, source}}, unchanged},
+        {{boolean}, {{reader_entity, 0u, state::Null}}, cooked},
+        {{loose}, {{boolean_entity, 0u, state::Null}, {boolean_entity, 1u, source}}, cooked},
+        {{loose, boolean}, {{reader_entity, 0u, source}}, cooked},
+    };
+    for (const auto &row : rows) {
+        f.Do(DeleteNodes{mesh, row.Deleted});
+        for (const auto &[node, input, from] : row.Reads) expect(reads(node, input) == from);
+        expect(Describe(meshes, f.Output(mesh)) == row.Output);
+        f.ValidateReplay();
+        f.Audit();
+        f.P->Undo();
+        expect(f.NodeEntities(mesh) == nodes && links() == linked);
+        expect(Describe(meshes, f.Output(mesh)) == cooked);
+    }
+}
+
+// A node a move holds inserts on a link through its first geometry sockets as the move's last step, and the link's reader moves right by the shift.
+// A node without a geometry input, an unlinked input and a link whose source reads the node insert nothing.
+void TestInsertNode(Fixture &f) {
+    f.Reset("insert-node");
+    auto &r = f.R;
+    const auto &meshes = f.Store();
+    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    f.Do(AddProcedure{mesh});
+    const auto subdivide = f.Add(mesh, KindOf<action::mesh::Subdivide>).first;
+    const auto triangulate = f.Add(mesh, KindOf<action::mesh::Triangulate>).first;
+    const auto position = f.Add(mesh, KindOf<procedure::Position>).first;
+    const auto output = f.Node(mesh, 1u);
+    const auto subdivided = SelectAllReference(f, f.Source(mesh), {Op(MeshTopologyOp::Subdivide, 1.f)});
+    const auto reads = [&](uint32_t node) { return r.get<const GeometryProcedure>(mesh).Inputs[InputFirst(r.get<const GeometryProcedure>(mesh), node)].FromNode; };
+    const auto fails = [&](InsertNode insert) {
+        f.P->Do(action::MakeAction(insert));
+        expect(!r.Context.get<action::Errors>().Messages.empty());
+        r.Context.get<action::Errors>().Messages.clear();
+    };
+    fails({mesh, position, 1u, 0u, 0.f});
+    fails({mesh, subdivide, triangulate, 0u, 0.f});
+    const auto x = r.get<const NodeLayout>(output).Position.x;
+    f.Do(SelectNodes{mesh, {subdivide}, subdivide});
+    f.Stage(UpdateOf<&NodeLayout::Position>(action::OnSelectedDelta{}, vec2{100.f, 0.f}));
+    f.Stage(InsertNode{mesh, subdivide, 1u, 0u, 40.f});
+    f.CommitGesture();
+    expect(reads(1u) == subdivide && reads(subdivide) == 0u && r.get<const NodeLayout>(f.Node(mesh, subdivide)).Position == vec2{100.f, 0.f});
+    expect(r.get<const NodeLayout>(output).Position.x == x + 40.f && r.get<const NodeLayout>(f.Node(mesh, 0u)).Position.x == 0.f);
+    expect(Describe(meshes, f.Output(mesh)) == subdivided);
+    f.ValidateReplay();
+    f.Audit();
+    f.P->Undo();
+    expect(reads(1u) == 0u && reads(subdivide) == NoNode && r.get<const NodeLayout>(output).Position.x == x);
+    f.P->Redo();
+    f.Do(Link{mesh, triangulate, 2u, subdivide, 0u});
+    fails({mesh, triangulate, 1u, 0u, 0.f});
+}
+
+// A bevel that selects nothing forwards its input without a fault, and a boolean missing its second mesh is marked with one.
+// A restore clears the mark, and the next cook marks the node again.
 void TestNodeError(Fixture &f) {
     f.Reset("node-error");
     auto &r = f.R;
@@ -1440,17 +1603,25 @@ void TestNodeError(Fixture &f) {
     expect(!r.any_of<NodeError>(bevel_entity));
     expect(Describe(meshes, f.Output(mesh)) != source);
     f.Do(SetInlineSelection{bevel_entity, std::vector<SelectionBlock>(3u), 1u, 1u});
-    expect(r.any_of<NodeError>(bevel_entity));
+    expect(!r.any_of<NodeError>(bevel_entity));
+    expect(Describe(meshes, f.Output(mesh)) == source);
+    // A node the result does not read is inert rather than erring.
+    const auto [_, loose_entity] = f.Add(mesh, KindOf<action::mesh::Subdivide>);
+    expect(!r.any_of<NodeError>(loose_entity));
+    const auto [boolean, boolean_entity] = f.Add(mesh, KindOf<procedure::Boolean>);
+    f.Route(mesh, {bevel, boolean, 1u});
+    const auto fault = [&] { return r.all_of<NodeError>(boolean_entity) ? std::optional{r.get<const NodeError>(boolean_entity).Fault} : std::nullopt; };
+    expect(fault() == NodeFault::Unlinked);
     expect(Describe(meshes, f.Output(mesh)) == source);
     f.ValidateReplay();
     f.Do(UpdateOf<&action::mesh::Bevel::Width>(bevel_entity, .2f));
-    expect(r.any_of<NodeError>(bevel_entity));
+    expect(fault() == NodeFault::Unlinked);
     f.P->Undo();
-    expect(!r.any_of<NodeError>(bevel_entity));
+    expect(!fault());
     f.P->Redo();
-    expect(!r.any_of<NodeError>(bevel_entity));
+    expect(!fault());
     f.Do(UpdateOf<&action::mesh::Bevel::Width>(bevel_entity, .3f));
-    expect(r.any_of<NodeError>(bevel_entity));
+    expect(fault() == NodeFault::Unlinked);
     f.ValidateReplay();
     f.Audit();
 }
@@ -1467,5 +1638,9 @@ void TestProcedures() {
     boost::ut::test("instances publish or realize") = [&] { TestInstances(f); };
     boost::ut::test("every plain graph survives history") = [&] { Survives(f, PlainGraphs); };
     boost::ut::test("object info") = [&] { TestObjectInfo(f); };
+    boost::ut::test("select nodes") = [&] { TestSelectNodes(f); };
+    boost::ut::test("duplicate nodes") = [&] { TestDuplicateNodes(f); };
+    boost::ut::test("delete nodes") = [&] { TestDeleteNodes(f); };
+    boost::ut::test("insert node") = [&] { TestInsertNode(f); };
     boost::ut::test("node error") = [&] { TestNodeError(f); };
 }

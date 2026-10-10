@@ -18,7 +18,7 @@ void RegisterMesh(Tables &tables) {
         MeshMaterialSlotSelection, PrimitiveShape, ShadeSmoothAngle, TetBuffers, ResyncState>(tables);
     Derived<MeshGeometryDirty, MeshPositionsChanged, AuthoredCornerNormals>(tables);
     // A procedure's output record restores with the store and its resync state, and its published instances and owned mesh with their entities, so only its plan and node errors derive.
-    Persistent<procedure::GeometryProcedure, procedure::ProcedureInstances, procedure::ProcedureOwnedMesh, procedure::NodeLayout, procedure::InlineSelection, procedure::PublishSelection>(tables);
+    Persistent<procedure::GeometryProcedure, procedure::ProcedureInstances, procedure::ProcedureOwnedMesh, procedure::NodeLayout, procedure::NodeSelected, procedure::InlineSelection, procedure::PublishSelection>(tables);
     [&]<typename... Ks>(action::TypeList<Ks...>) { Persistent<Ks...>(tables); }(procedure::NodeKinds{});
     Derived<procedure::CookPlan, procedure::NodeError>(tables);
 }

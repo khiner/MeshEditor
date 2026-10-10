@@ -1,5 +1,6 @@
 #include "action/Nodes.h"
 #include "Variant.h"
+#include "action/Dispatch.h"
 #include "action/Errors.h"
 #include "action/Mesh.h"
 #include "mesh/Mesh.h"
@@ -7,6 +8,7 @@
 #include "mesh/MeshStore.h"
 #include "object/PendingSync.h"
 #include "procedure/Procedure.h"
+#include "scene/Entity.h"
 #include "state/Scene.h"
 
 namespace action::nodes {
@@ -20,11 +22,32 @@ state::Entity CreateNode(state::Scene &r, uint16_t kind, vec2 position) {
     return entity;
 }
 
-// An Output node's geometry input also takes instances, which its mesh entity publishes.
-constexpr bool Links(Socket from, Socket to, uint16_t to_kind) {
-    if (from.Type == SocketType::Instances) return to.Type == SocketType::Instances || to_kind == KindOf<Output>;
-    const bool typed = from.Type == to.Type || (from.Type == SocketType::Attribute && to.Type == SocketType::Selection);
-    return typed && (from.Type == SocketType::Geometry || (from.Types & to.Types));
+// A new node entity holding copies of the node's parameters, layout, inline selection and publish tag.
+state::Entity CopyNode(state::Scene &r, state::Entity node, uint16_t kind) {
+    const auto copy = r.create();
+    VisitKind(kind, [&]<typename K> {
+        const auto parameters = r.get<const K>(node);
+        r.emplace<K>(copy, parameters);
+    });
+    const auto layout = r.get<const NodeLayout>(node);
+    r.emplace<NodeLayout>(copy, layout);
+    if (const auto *selection = r.try_get<const InlineSelection>(node)) {
+        auto copied = *selection;
+        r.emplace<InlineSelection>(copy, std::move(copied));
+    }
+    if (r.all_of<PublishSelection>(node)) r.emplace<PublishSelection>(copy);
+    return copy;
+}
+
+// Whether the list names distinct nodes of the procedure in ascending order.
+bool ListsNodes(const GeometryProcedure &procedure, const std::vector<uint32_t> &nodes) {
+    return std::ranges::is_sorted(nodes) && std::ranges::adjacent_find(nodes) == nodes.end() && (nodes.empty() || nodes.back() < procedure.Nodes.size());
+}
+
+// Clears the procedure's node selection.
+void DeselectNodes(state::Scene &r, const GeometryProcedure &procedure) {
+    for (const auto &node : procedure.Nodes)
+        if (r.all_of<NodeSelected>(node.Entity)) r.remove<NodeSelected>(node.Entity);
 }
 
 // The kind of the node's parameter component, or KindCount for an entity without one.
@@ -34,22 +57,6 @@ uint16_t KindOfNode(const state::Scene &r, state::Entity node) {
         if (r.all_of<K>(node)) kind = KindOf<K>;
     });
     return kind;
-}
-
-// The record's selection masks at each block it owns, vertices then edges then faces.
-SetInlineSelection SelectionOf(const MeshStore &meshes, uint32_t id, state::Entity node) {
-    SetInlineSelection selection{.Node = node};
-    using D = MeshStore::ElementDomain;
-    for (const auto [domain, element] : {std::pair{D::Vertex, Element::Vertex}, std::pair{D::Edge, Element::Edge}, std::pair{D::Face, Element::Face}}) {
-        const auto bits = meshes.GetSelectedElements(id, element).Bits;
-        for (const auto block : meshes.GetBlockList(id, domain).Blocks) {
-            auto &words = selection.Blocks.emplace_back();
-            std::ranges::copy(bits.subspan(block * MeshElementBlockWords, MeshElementBlockWords), words.begin());
-        }
-        if (domain == D::Vertex) selection.Vertices = uint32_t(selection.Blocks.size());
-        if (domain == D::Edge) selection.Edges = uint32_t(selection.Blocks.size()) - selection.Vertices;
-    }
-    return selection;
 }
 
 // Writes the name into the node's NamedAttribute or StoreNamedAttribute parameters.
@@ -81,10 +88,14 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 r.emplace<GeometryProcedure>(a.MeshEntity, std::vector<NodeRecord>{{source, KindOf<Source>}, {output, KindOf<Output>}}, std::vector<SocketLink>{{0u, 0u}}, 1u);
             },
             [&](const AddNode &a) {
-                if (!procedure_of(a.MeshEntity)) return;
+                const auto *procedure = procedure_of(a.MeshEntity);
+                if (!procedure) return;
                 if (a.Kind >= KindCount) return Fail(r, "Unknown node kind");
                 const auto node = CreateNode(r, a.Kind, a.Position);
+                DeselectNodes(r, *procedure);
+                r.emplace<NodeSelected>(node);
                 r.patch<GeometryProcedure>(a.MeshEntity, [&](GeometryProcedure &procedure) {
+                    procedure.ActiveNode = uint32_t(procedure.Nodes.size());
                     procedure.Nodes.push_back({node, a.Kind});
                     procedure.Inputs.resize(procedure.Inputs.size() + InputCount[a.Kind]);
                 });
@@ -135,29 +146,150 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 if (r.all_of<ProcedureOwnedMesh>(a.MeshEntity)) r.replace<ProcedureOwnedMesh>(a.MeshEntity, state::Null);
                 r.remove<GeometryProcedure, ProcedureInstances, ProcedureOwnedMesh, EvaluatedMesh, ResyncState, CookPlan, PrimitiveShape>(a.MeshEntity);
             },
+            [&](const DuplicateNodes &a) {
+                const auto *procedure = procedure_of(a.MeshEntity);
+                if (!procedure) return;
+                if (a.Nodes.empty() || !ListsNodes(*procedure, a.Nodes)) return Fail(r, "A duplicate lists distinct nodes of the procedure in ascending order");
+                const auto first = uint32_t(procedure->Nodes.size());
+                // The copy of each listed node, or NoNode.
+                std::vector<uint32_t> copy_of(first, NoNode);
+                for (uint32_t i = 0u; i < a.Nodes.size(); ++i) copy_of[a.Nodes[i]] = first + i;
+                std::vector<NodeRecord> copies;
+                std::vector<SocketLink> inputs;
+                for (const auto n : a.Nodes) {
+                    const auto [entity, kind] = procedure->Nodes[n];
+                    const auto copy = CopyNode(r, entity, kind);
+                    r.patch<NodeLayout>(copy, [&](NodeLayout &layout) { layout.Position += a.Offset; });
+                    copies.push_back({copy, kind});
+                    const auto slot = InputFirst(*procedure, n);
+                    for (uint32_t i = 0u; i < InputCount[kind]; ++i) {
+                        const auto link = procedure->Inputs[slot + i];
+                        inputs.push_back(link.FromNode != NoNode && copy_of[link.FromNode] != NoNode ? SocketLink{copy_of[link.FromNode], link.FromSocket} : SocketLink{});
+                    }
+                }
+                const auto active = procedure->ActiveNode != NoNode && copy_of[procedure->ActiveNode] != NoNode ? copy_of[procedure->ActiveNode] : first + uint32_t(a.Nodes.size()) - 1u;
+                DeselectNodes(r, *procedure);
+                for (const auto &copy : copies) r.emplace<NodeSelected>(copy.Entity);
+                r.patch<GeometryProcedure>(a.MeshEntity, [&](GeometryProcedure &edited) {
+                    edited.Nodes.append_range(copies);
+                    edited.Inputs.append_range(inputs);
+                    edited.ActiveNode = active;
+                });
+            },
+            [&](const DeleteNodes &a) {
+                const auto *procedure = procedure_of(a.MeshEntity);
+                if (!procedure) return;
+                if (a.Nodes.empty() || !ListsNodes(*procedure, a.Nodes)) return Fail(r, "A delete lists distinct nodes of the procedure in ascending order");
+                const auto input_first = InputFirsts(*procedure);
+                const auto removed = [&](uint32_t n) { return std::ranges::binary_search(a.Nodes, n); };
+                // The remaining output a link reads through the removed nodes, or no link.
+                const auto through = [&](this const auto &self, SocketLink link) -> SocketLink {
+                    if (link.FromNode == NoNode || !removed(link.FromNode)) return link;
+                    const auto kind = procedure->Nodes[link.FromNode].Kind;
+                    const auto sockets = KindSockets(kind);
+                    SocketLink source{};
+                    uint32_t sources = 0u;
+                    for (uint16_t i = 0u; i < InputCount[kind]; ++i) {
+                        const auto read = sockets[i].Type == sockets[link.FromSocket].Type ? self(procedure->Inputs[input_first[link.FromNode] + i]) : SocketLink{};
+                        if (read.FromNode == NoNode) continue;
+                        source = read;
+                        ++sources;
+                    }
+                    return sources == 1u ? source : SocketLink{};
+                };
+                std::vector<std::pair<uint32_t, SocketLink>> relinks;
+                for (uint32_t n = 0u; n < procedure->Nodes.size(); ++n) {
+                    const auto kind = procedure->Nodes[n].Kind;
+                    for (uint32_t i = 0u, slot = input_first[n]; i < InputCount[kind]; ++i, ++slot) {
+                        const auto link = procedure->Inputs[slot];
+                        if (removed(n) || link.FromNode == NoNode || !removed(link.FromNode)) continue;
+                        if (const auto source = through(link); source.FromNode != NoNode && Links(KindSockets(procedure->Nodes[source.FromNode].Kind)[source.FromSocket], KindSockets(kind)[i], kind)) relinks.emplace_back(slot, source);
+                    }
+                }
+                std::vector<state::Entity> entities;
+                for (const auto n : a.Nodes) entities.push_back(procedure->Nodes[n].Entity);
+                if (!relinks.empty()) r.patch<GeometryProcedure>(a.MeshEntity, [&](GeometryProcedure &edited) {
+                    for (const auto &[slot, source] : relinks) edited.Inputs[slot] = source;
+                });
+                // Each destroy removes its node from the procedure and unlinks the inputs still reading it.
+                for (const auto entity : entities) r.destroy(entity);
+            },
+            [&](const InsertNode &a) {
+                const auto *procedure = procedure_of(a.MeshEntity);
+                if (!procedure) return;
+                const auto count = uint32_t(procedure->Nodes.size());
+                if (a.Node >= count || a.ToNode >= count || a.ToSocket >= InputCount[procedure->Nodes[a.ToNode].Kind]) return Fail(r, "An insert names a missing node or input");
+                const auto input_first = InputFirsts(*procedure);
+                if (!Inserts(*procedure, input_first, a.Node, a.ToNode, a.ToSocket)) return Fail(r, "A node inserts on a link through geometry sockets that link with its ends, without closing a cycle");
+                // The input's node and the nodes reading it, transitively.
+                std::vector<bool> moved(count);
+                const auto reads_moved = [&](uint32_t n) {
+                    return std::ranges::any_of(procedure->Inputs.begin() + input_first[n], procedure->Inputs.begin() + input_first[n + 1u], [&](SocketLink link) { return link.FromNode != NoNode && moved[link.FromNode]; });
+                };
+                moved[a.ToNode] = a.Shift != 0.f;
+                for (bool grew = moved[a.ToNode]; grew;) {
+                    grew = false;
+                    for (uint32_t n = 0u; n < count; ++n)
+                        if (!moved[n] && reads_moved(n)) moved[n] = grew = true;
+                }
+                for (uint32_t n = 0u; n < count; ++n)
+                    if (moved[n]) r.patch<NodeLayout>(procedure->Nodes[n].Entity, [&](NodeLayout &layout) { layout.Position.x += a.Shift; });
+                const auto kind = procedure->Nodes[a.Node].Kind;
+                const auto input = input_first[a.Node] + *MainSocket(kind, SocketDirection::In), to_input = input_first[a.ToNode] + a.ToSocket;
+                r.patch<GeometryProcedure>(a.MeshEntity, [&](GeometryProcedure &edited) {
+                    if (edited.Inputs[input].FromNode == NoNode) edited.Inputs[input] = edited.Inputs[to_input];
+                    edited.Inputs[to_input] = {a.Node, *MainSocket(kind, SocketDirection::Out)};
+                });
+            },
+            [&](const SelectNodes &a) {
+                const auto *procedure = procedure_of(a.MeshEntity);
+                if (!procedure) return;
+                if (!ListsNodes(*procedure, a.Nodes)) return Fail(r, "A node selection lists distinct nodes of the procedure in ascending order");
+                if (a.Active != NoNode && !std::ranges::binary_search(a.Nodes, a.Active)) return Fail(r, "The active node must be selected");
+                for (uint32_t n = 0u; n < procedure->Nodes.size(); ++n) {
+                    const auto entity = procedure->Nodes[n].Entity;
+                    const bool selected = std::ranges::binary_search(a.Nodes, n);
+                    if (selected && !r.all_of<NodeSelected>(entity)) r.emplace<NodeSelected>(entity);
+                    else if (!selected && r.all_of<NodeSelected>(entity)) r.remove<NodeSelected>(entity);
+                }
+                if (procedure->ActiveNode != a.Active) r.patch<GeometryProcedure>(a.MeshEntity, [&](GeometryProcedure &edited) { edited.ActiveNode = a.Active; });
+            },
         },
         action
     );
 }
 
+SetInlineSelection CaptureSelection(const state::Scene &r, state::Entity mesh_entity, state::Entity node) {
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto id = *DrawnStoreId(r, mesh_entity);
+    SetInlineSelection selection{.Node = node};
+    using D = MeshStore::ElementDomain;
+    for (const auto [domain, element] : {std::pair{D::Vertex, Element::Vertex}, std::pair{D::Edge, Element::Edge}, std::pair{D::Face, Element::Face}}) {
+        const auto bits = meshes.GetSelectedElements(id, element).Bits;
+        for (const auto block : meshes.GetBlockList(id, domain).Blocks) {
+            auto &words = selection.Blocks.emplace_back();
+            std::ranges::copy(bits.subspan(block * MeshElementBlockWords, MeshElementBlockWords), words.begin());
+        }
+        if (domain == D::Vertex) selection.Vertices = uint32_t(selection.Blocks.size());
+        if (domain == D::Edge) selection.Edges = uint32_t(selection.Blocks.size()) - selection.Vertices;
+    }
+    return selection;
+}
+
 void CopyProcedure(state::Scene &r, state::Entity from, state::Entity to) {
     auto procedure = r.get<const GeometryProcedure>(from);
     for (auto &[entity, kind] : procedure.Nodes) {
-        const auto copy = r.create();
-        VisitKind(kind, [&]<typename K> {
-            const auto parameters = r.get<const K>(entity);
-            r.emplace<K>(copy, parameters);
-        });
-        const auto layout = r.get<const NodeLayout>(entity);
-        r.emplace<NodeLayout>(copy, layout);
-        if (const auto *selection = r.try_get<const InlineSelection>(entity)) {
-            auto copied = *selection;
-            r.emplace<InlineSelection>(copy, std::move(copied));
-        }
-        if (r.all_of<PublishSelection>(entity)) r.emplace<PublishSelection>(copy);
+        const auto copy = CopyNode(r, entity, kind);
+        if (r.all_of<NodeSelected>(entity)) r.emplace<NodeSelected>(copy);
         entity = copy;
     }
     r.emplace<GeometryProcedure>(to, std::move(procedure));
+}
+
+state::Entity EditedMesh(const state::Scene &r) {
+    const auto active = FindActiveEntity(r);
+    if (active == state::Null) return state::Null;
+    return HasMesh(r, active) ? active : GetMeshEntity(r, active);
 }
 
 state::Entity AppendNode(state::Scene &r, state::Entity viewport, state::Entity mesh_entity, uint16_t kind) {
@@ -174,7 +306,7 @@ state::Entity AppendNode(state::Scene &r, state::Entity viewport, state::Entity 
     r.patch<NodeLayout>(procedure.Nodes[output].Entity, [](NodeLayout &layout) { layout.Position.x += 240.f; });
     Apply(r, viewport, AddNode{mesh_entity, kind, position});
     const auto entity = r.get<const GeometryProcedure>(mesh_entity).Nodes.back().Entity;
-    Apply(r, viewport, SelectionOf(r.Context.get<const MeshStore>(), *DrawnStoreId(r, mesh_entity), entity));
+    Apply(r, viewport, CaptureSelection(r, mesh_entity, entity));
     if (read.FromNode != NoNode) Apply(r, viewport, Link{mesh_entity, read.FromNode, read.FromSocket, node, 0u});
     Apply(r, viewport, Link{mesh_entity, node, InputCount[kind], output, 0u});
     r.emplace<PublishSelection>(entity);
@@ -189,3 +321,17 @@ void ForEachResultNode(const state::Scene &r, state::Entity viewport, const std:
     }
 }
 } // namespace action::nodes
+
+namespace action {
+// The edited procedure's active node, and its selected nodes.
+state::Entity UpdateTraits<procedure::NodeLayout>::Active(const state::Scene &r) {
+    const auto *procedure = r.try_get<const procedure::GeometryProcedure>(nodes::EditedMesh(r));
+    return procedure && procedure->ActiveNode != procedure::NoNode ? procedure->Nodes[procedure->ActiveNode].Entity : state::Null;
+}
+void UpdateTraits<procedure::NodeLayout>::ForEachSelected(state::Scene &r, state::Entity, const std::function<void(state::Entity)> &fn) {
+    const auto *procedure = r.try_get<const procedure::GeometryProcedure>(nodes::EditedMesh(r));
+    if (!procedure) return;
+    for (const auto &node : procedure->Nodes)
+        if (r.all_of<procedure::NodeSelected>(node.Entity)) fn(node.Entity);
+}
+} // namespace action

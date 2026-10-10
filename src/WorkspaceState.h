@@ -23,6 +23,7 @@ struct State {
     ViewCameraState ViewCamera;
     uvec2 ViewportExtent{};
     WindowVisibility Windows;
+    NodeCanvas NodesCanvas;
     std::string ImGuiIni;
     std::vector<TabSelection> Tabs;
     std::vector<WindowState> WindowStates;
