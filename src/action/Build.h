@@ -20,6 +20,12 @@ Update<detail::last_field<Ms...>> UpdateOf(Target target, detail::last_field<Ms.
 template<auto... Ms>
 Update<detail::last_field<Ms...>> UpdateActive(detail::last_field<Ms...> v) { return UpdateOf<Ms...>(OnActive{}, std::move(v)); }
 
+// The update of one field of the alternative a mesh entity's PrimitiveShape holds, addressed within that alternative.
+template<typename C, typename F> Update<F> UpdateOfShape(Target target, F C::*member, F value) {
+    static_assert(std::is_trivially_copyable_v<F>, "Update<T> is for trivially-copyable fields only");
+    return {std::move(target), state::Key<PrimitiveShape>(), uint16_t(detail::MemPtrOffset(member)), std::move(value)};
+}
+
 // Offsets for several fields within one nested component value.
 template<auto... Prefix, typename C, typename F, size_t N>
 auto PatchFieldsOf(std::array<F C::*, N> members, std::array<F, N> values) {

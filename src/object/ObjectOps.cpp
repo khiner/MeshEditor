@@ -161,6 +161,9 @@ void ProcessObjectRemovals(state::Scene &r, state::Entity viewport) {
     auto &dependents = pending->Dependents;
     std::erase_if(dependents, [&](state::Entity e) { return !r.valid(e); });
     SortUnique(dependents);
+    // A dependent mesh entity's instance range frees with it.
+    for (const auto e : dependents)
+        if (const auto *models = r.try_get<const ModelsBuffer>(e)) pending->InstanceRanges.push_back(models->InstanceRange);
     if (!dependents.empty()) r.destroy(dependents);
     auto &meshes = r.Context.get<MeshStore>();
     auto &buffers = r.Context.get<GpuBuffers>();

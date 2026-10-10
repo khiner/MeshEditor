@@ -93,7 +93,9 @@ state::Entity DuplicateOne(state::Scene &r, state::Entity e, uint32_t clone) {
     const auto instance = [&] {
         if (const auto clone_mesh = MeshEntityOf(r, clone); clone_mesh != state::Null) return ::AddMeshInstance(r, clone_mesh, info);
         const auto [clone_mesh, clone_instance] = ::AddMesh(r, clone, info);
-        if (const auto *prim_shape = r.try_get<const PrimitiveShape>(r.get<const Instance>(e).Entity)) r.emplace<PrimitiveShape>(clone_mesh, *prim_shape);
+        const auto mesh_entity = r.get<const Instance>(e).Entity;
+        if (const auto *prim_shape = r.try_get<const PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(clone_mesh, *prim_shape);
+        if (r.all_of<procedure::GeometryProcedure>(mesh_entity)) action::nodes::CopyProcedure(r, mesh_entity, clone_mesh);
         return clone_instance;
     }();
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(instance, *armature_modifier);

@@ -26,6 +26,7 @@
 #include "metal/Dispatch.h"
 #include "numeric/Serialize.h"
 #include "procedure/Cook.h"
+#include "procedure/Procedure.h"
 #include "project/Assets.h"
 #include "project/store/Pages.h"
 #include "render/ClusterLod.h"
@@ -763,6 +764,8 @@ void Project::AfterRestore() {
         manifest_changed |= type == state::Type<MaterializedTextures>();
     }
     if (names_changed) RebuildEntityNames(R);
+    // Node errors mark what the last cook found, and the next cook marks the restored procedures' errors anew.
+    R.clear<procedure::NodeError>();
     // Restored sources can hold other pixels at a manifest's slots, so every texture and the IBL decode again.
     // A manifest restored over unchanged sources keeps each texture it still lists, and the settle pass uploads the rest.
     if (sources_changed) {

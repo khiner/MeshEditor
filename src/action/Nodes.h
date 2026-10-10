@@ -71,6 +71,9 @@ using Action = std::variant<AddProcedure, AddNode, Link, Unlink, SetOutput, SetA
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 
+// Gives `to` a copy of the procedure of `from` over new node entities holding copies of its nodes' components.
+// The next settle cooks the copy.
+void CopyProcedure(state::Scene &, state::Entity from, state::Entity to);
 // Appends a node of the kind with its default parameters to the mesh's procedure, between its result and the node its result read.
 // It selects what the mesh's drawn record selects and publishes the selection its edit emits, and the append applies as AddNode, SetInlineSelection and two Links.
 // Returns the node's entity, or null after failing the action.

@@ -86,6 +86,24 @@ struct TransformElements {
     Transform Frame{};
 };
 
+// An instances value is a face-less record whose vertices are its points, each placing one instance of its instance geometry.
+// The point is the instance's position, and these vertex attributes hold its rotation as a quaternion and its scale.
+inline constexpr std::string_view InstanceRotation = ".instance.rotation", InstanceScale = ".instance.scale";
+// Emits its geometry's vertices as points.
+struct MeshToPoints {};
+// Places an instance of its second geometry input at each vertex of its first, rotated by Rotation and scaled by Scale.
+struct InstanceOnPoints {
+    vec3 Scale{1, 1, 1};
+    quat Rotation{1, 0, 0, 0};
+};
+// Emits one copy of the instance geometry per instance, moved by the instance's transform.
+struct RealizeInstances {};
+// Emits the mesh entity's drawn record in its local space, which the cook reads in place.
+// A procedure reads neither its own mesh entity nor a mesh entity a procedure owns.
+struct ObjectInfo {
+    state::Entity MeshEntity{state::Null};
+};
+
 // A node's kind is the index of its parameter component here.
 using NodeKinds = action::TypeList<
     Source, Output, Join, Boolean,
@@ -95,13 +113,16 @@ using NodeKinds = action::TypeList<
     action::mesh::Inset, action::mesh::Solidify, action::mesh::Wireframe, action::mesh::Bevel, action::mesh::SmoothVertices, action::mesh::ShrinkFatten,
     action::mesh::Randomize, action::mesh::Spin, action::mesh::ExtrudeRepeat, action::mesh::Bisect, action::mesh::Symmetrize, action::mesh::FillHoles,
     action::mesh::ConvexHull, action::mesh::Decimate, action::mesh::RecalculateNormals, action::mesh::Rip, TransformElements,
-    Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, SetPosition>;
+    Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, SetPosition,
+    MeshToPoints, InstanceOnPoints, RealizeInstances, ObjectInfo>;
 
 // An attribute socket carries an attribute of the record at its consumer's geometry input.
 // A selection socket takes a bool attribute, and its node's inline selection while unlinked.
+// An instances socket carries points that each place an instance, which an Output node's geometry input also takes.
 enum class SocketType : uint8_t { Geometry,
                                   Selection,
-                                  Attribute };
+                                  Attribute,
+                                  Instances };
 enum class SocketDirection : uint8_t { In,
                                        Out };
 constexpr uint8_t TypeBit(AttributeType type) { return uint8_t(1u << uint32_t(type)); }
@@ -110,17 +131,20 @@ struct Socket {
     SocketType Type;
     SocketDirection Direction;
     uint8_t Types{}; // The attribute types a non-geometry socket carries, one TypeBit each
+    bool Reads{}; // A geometry input the node only reads, where every other geometry input edits its record
 };
 
 namespace detail {
 using enum SocketType;
 using enum SocketDirection;
 inline constexpr uint8_t Bool = TypeBit(AttributeType::Bool), Float = TypeBit(AttributeType::Float), Vec3 = TypeBit(AttributeType::Vec3);
+inline constexpr Socket ReadGeometry{Geometry, In, 0u, true};
 // A source or generator emits geometry from no input.
 inline constexpr Socket SourceSockets[]{{Geometry, Out}};
 inline constexpr Socket OutputSockets[]{{Geometry, In}};
-// A combining node reads two geometry inputs.
-inline constexpr Socket CombineSockets[]{{Geometry, In}, {Geometry, In}, {Geometry, Out}};
+// A join appends the geometry it reads to the geometry it edits.
+inline constexpr Socket JoinSockets[]{{Geometry, In}, ReadGeometry, {Geometry, Out}};
+inline constexpr Socket BooleanSockets[]{ReadGeometry, ReadGeometry, {Geometry, Out}};
 // An operator edits its geometry input where its selection input selects.
 inline constexpr Socket OperatorSockets[]{{Geometry, In}, {Selection, In, Bool}, {Geometry, Out}};
 inline constexpr Socket PositionSockets[]{{Attribute, Out, Vec3}};
@@ -132,10 +156,15 @@ inline constexpr Socket CompareSockets[]{{Attribute, In, Float | Vec3}, {Attribu
 inline constexpr Socket BooleanMathSockets[]{{Attribute, In, Bool}, {Attribute, In, Bool}, {Attribute, Out, Bool}};
 inline constexpr Socket StoreSockets[]{{Geometry, In}, {Attribute, In, AnyType}, {Geometry, Out}};
 inline constexpr Socket SetPositionSockets[]{{Geometry, In}, {Attribute, In, Vec3}, {Selection, In, Bool}, {Geometry, Out}};
+inline constexpr Socket PointsSockets[]{{Geometry, In}, {Geometry, Out}};
+// Instancing edits its points and reads its instance geometry.
+inline constexpr Socket InstanceSockets[]{{Geometry, In}, ReadGeometry, {Instances, Out}};
+inline constexpr Socket RealizeSockets[]{{Instances, In, 0u, true}, {Geometry, Out}};
 template<typename K> constexpr std::span<const Socket> SocketsOf() {
-    if constexpr (std::same_as<K, Source> || Generator<K>) return SourceSockets;
+    if constexpr (std::same_as<K, Source> || std::same_as<K, ObjectInfo> || Generator<K>) return SourceSockets;
     else if constexpr (std::same_as<K, Output>) return OutputSockets;
-    else if constexpr (std::same_as<K, Join> || std::same_as<K, Boolean>) return CombineSockets;
+    else if constexpr (std::same_as<K, Join>) return JoinSockets;
+    else if constexpr (std::same_as<K, Boolean>) return BooleanSockets;
     else if constexpr (std::same_as<K, Position> || std::same_as<K, Normal>) return PositionSockets;
     else if constexpr (std::same_as<K, Index>) return IndexSockets;
     else if constexpr (std::same_as<K, NamedAttribute>) return NamedAttributeSockets;
@@ -145,6 +174,9 @@ template<typename K> constexpr std::span<const Socket> SocketsOf() {
     else if constexpr (std::same_as<K, BooleanMath>) return BooleanMathSockets;
     else if constexpr (std::same_as<K, StoreNamedAttribute>) return StoreSockets;
     else if constexpr (std::same_as<K, SetPosition>) return SetPositionSockets;
+    else if constexpr (std::same_as<K, MeshToPoints>) return PointsSockets;
+    else if constexpr (std::same_as<K, InstanceOnPoints>) return InstanceSockets;
+    else if constexpr (std::same_as<K, RealizeInstances>) return RealizeSockets;
     else return OperatorSockets;
 }
 template<typename... Ks> constexpr auto PerKind(action::TypeList<Ks...>, auto &&value) {
@@ -242,6 +274,16 @@ std::vector<bool> Upstream(const GeometryProcedure &procedure, std::span<const u
     }
     return marked;
 }
+// Persistent on a mesh entity whose procedure results in instances: the instance entities it publishes, one per point under each object instancing the mesh, object by object.
+// Each entity is an Instance of the instanced mesh whose Transform is its point's instance transform.
+struct ProcedureInstances {
+    std::vector<state::Entity> Entities;
+};
+// Persistent on a mesh entity whose procedure results in instances of geometry the procedure made: the mesh entity holding that geometry, which the published instances instance.
+// The owned mesh entity has no object, transform or name of its own, and it destroys once the result stops instancing it and with the procedure.
+struct ProcedureOwnedMesh {
+    state::Entity MeshEntity;
+};
 
 // Persistent on a node, for the node editor.
 struct NodeLayout {

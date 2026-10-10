@@ -20,7 +20,9 @@ state::Entity CreateNode(state::Scene &r, uint16_t kind, vec2 position) {
     return entity;
 }
 
-constexpr bool Links(Socket from, Socket to) {
+// An Output node's geometry input also takes instances, which its mesh entity publishes.
+constexpr bool Links(Socket from, Socket to, uint16_t to_kind) {
+    if (from.Type == SocketType::Instances) return to.Type == SocketType::Instances || to_kind == KindOf<Output>;
     const bool typed = from.Type == to.Type || (from.Type == SocketType::Attribute && to.Type == SocketType::Selection);
     return typed && (from.Type == SocketType::Geometry || (from.Types & to.Types));
 }
@@ -94,7 +96,7 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 const auto from = KindSockets(procedure->Nodes[a.FromNode].Kind), to = KindSockets(procedure->Nodes[a.ToNode].Kind);
                 if (a.FromSocket >= from.size() || from[a.FromSocket].Direction != SocketDirection::Out ||
                     a.ToSocket >= to.size() || to[a.ToSocket].Direction != SocketDirection::In) return Fail(r, "A link joins an output socket to an input socket");
-                if (!Links(from[a.FromSocket], to[a.ToSocket])) return Fail(r, "Linked sockets differ in type");
+                if (!Links(from[a.FromSocket], to[a.ToSocket], procedure->Nodes[a.ToNode].Kind)) return Fail(r, "Linked sockets differ in type");
                 if (Upstream(*procedure, InputFirsts(*procedure), a.FromNode, [](uint32_t) { return true; })[a.ToNode]) return Fail(r, "A link cannot close a cycle");
                 set_input(a.MeshEntity, InputFirst(*procedure, a.ToNode) + a.ToSocket, {a.FromNode, a.FromSocket});
             },
@@ -128,11 +130,34 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 // The output record becomes the source, so the evaluated mesh leaving after it keeps the record.
                 r.remove<MeshHandle>(a.MeshEntity);
                 r.emplace<MeshHandle>(a.MeshEntity, output);
-                r.remove<GeometryProcedure, EvaluatedMesh, ResyncState, CookPlan, PrimitiveShape>(a.MeshEntity);
+                // The published instances stay as plain objects with the mesh entity they instance, so their lists empty before they leave.
+                if (r.all_of<ProcedureInstances>(a.MeshEntity)) r.replace<ProcedureInstances>(a.MeshEntity);
+                if (r.all_of<ProcedureOwnedMesh>(a.MeshEntity)) r.replace<ProcedureOwnedMesh>(a.MeshEntity, state::Null);
+                r.remove<GeometryProcedure, ProcedureInstances, ProcedureOwnedMesh, EvaluatedMesh, ResyncState, CookPlan, PrimitiveShape>(a.MeshEntity);
             },
         },
         action
     );
+}
+
+void CopyProcedure(state::Scene &r, state::Entity from, state::Entity to) {
+    auto procedure = r.get<const GeometryProcedure>(from);
+    for (auto &[entity, kind] : procedure.Nodes) {
+        const auto copy = r.create();
+        VisitKind(kind, [&]<typename K> {
+            const auto parameters = r.get<const K>(entity);
+            r.emplace<K>(copy, parameters);
+        });
+        const auto layout = r.get<const NodeLayout>(entity);
+        r.emplace<NodeLayout>(copy, layout);
+        if (const auto *selection = r.try_get<const InlineSelection>(entity)) {
+            auto copied = *selection;
+            r.emplace<InlineSelection>(copy, std::move(copied));
+        }
+        if (r.all_of<PublishSelection>(entity)) r.emplace<PublishSelection>(copy);
+        entity = copy;
+    }
+    r.emplace<GeometryProcedure>(to, std::move(procedure));
 }
 
 state::Entity AppendNode(state::Scene &r, state::Entity viewport, state::Entity mesh_entity, uint16_t kind) {

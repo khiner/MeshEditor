@@ -174,6 +174,8 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     }
     // Procedures cook from the regenerated sources, and a restore, which restores their outputs, only replans them.
     SettleProcedures(r, pass == EventPass::Frame || pass == EventPass::Settle);
+    // The entities and records the cooks dropped leave in the pass that dropped them.
+    ProcessObjectRemovals(r, viewport);
 
     // Resize render resources before the pick handlers below resolve against the rendered scene.
     const bool resized = SyncViewportRenderResources(r, viewport);

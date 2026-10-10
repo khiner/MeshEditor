@@ -8,6 +8,7 @@
 #include "Variant.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
+#include "action/Build.h"
 #include "action/Object.h"
 #include "action/Selection.h"
 #include "action/View.h"
@@ -95,9 +96,8 @@ void PrimitiveEditor(const PrimitiveShape &shape) {
     using primitive::MaxSize, primitive::MinSize;
     static constexpr float SizeSpeed = 0.01f;
 
-    // The member pointer addresses the field within the shape alternative.
     const auto field = [&]<typename C, typename F>(bool changed, F C::*member, F value) {
-        ui::Gesture(changed, [=] { return action::Update<F>{ui::TargetFromAlt(true), state::Key<PrimitiveShape>(), uint16_t(action::detail::MemPtrOffset(member)), value}; });
+        ui::Gesture(changed, [=] { return action::UpdateOfShape(ui::TargetFromAlt(true), member, value); });
     };
     std::visit([&](const auto &s) {
         using T = std::decay_t<decltype(s)>;

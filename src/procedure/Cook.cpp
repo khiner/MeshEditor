@@ -16,8 +16,13 @@
 #include "numeric/MatrixMath.h"
 #include "numeric/QuaternionMath.h"
 #include "numeric/VectorMath.h"
+#include "object/ObjectOps.h"
 #include "object/PendingSync.h"
+#include "render/Instance.h"
 #include "render/MeshletBuildGpu.h"
+#include "scene/Entity.h"
+#include "scene/SceneGraph.h"
+#include "scene/SceneGraphOps.h"
 #include "state/Scene.h"
 #include "viewport/ViewportEvents.h"
 
@@ -39,36 +44,38 @@ struct Masks {
     bool Publish{};
 };
 
-// A socket's value during a cook: a record for geometry, each domain's first mask block in the cook's arena for a selection, or an attribute of the record its consumer reads.
+// A socket's value during a cook: a record for geometry, points and the record they place for instances, each domain's first mask block in the cook's arena for a selection, or an attribute of the record its consumer reads.
 // A selection without mask blocks selects every element, and an absent attribute is InvalidOffset.
 struct SocketValue {
     SocketType Type{SocketType::Geometry};
+    // The mesh entity whose drawn record the value borrows: a geometry value's record, or an instances value's instance record.
+    // The cook reads a borrowed record in place and never edits or releases it, and it owns the records of a value without a mesh entity.
+    state::Entity MeshEntity{state::Null};
+    uint32_t Instance{InvalidOffset}; // The record an instances value's points each place, or InvalidOffset for points placing nothing
     union {
         uint32_t Record{InvalidOffset};
         std::array<uint32_t, 3> MaskFirst;
         uint32_t Attribute;
     };
+    bool Borrowed() const { return Type == SocketType::Geometry && MeshEntity != state::Null; }
 };
-static_assert(sizeof(SocketValue) == 16u);
+static_assert(sizeof(SocketValue) == 24u);
 constexpr std::array<uint32_t, 3> EveryElement{InvalidOffset, InvalidOffset, InvalidOffset};
 
-// Records the copies and runs them.
-void Submit(state::Scene &r, CloneCopies &copies) {
-    mtl::ComputeChain chain{r.Context.get<MeshStore>().BufferContext()};
-    copies.Encode(chain, GetMeshPipelines(r));
-    chain.Submit();
-}
-// A copy of the record without render records, since a cook output builds them anew, and its block pairs from the record when `pairs` holds one list.
-uint32_t Clone(state::Scene &r, uint32_t id, std::span<MeshStore::BlockPairs> pairs) {
+// Copies of the records without render records, since a cook output builds them anew, and their block pairs from the records when `pairs` holds one list per record.
+std::vector<uint32_t> Clones(state::Scene &r, std::span<const uint32_t> ids, std::span<MeshStore::BlockPairs> pairs) {
     auto &meshes = r.Context.get<MeshStore>();
-    meshes.PlanClone(Mesh{meshes, id});
+    for (const auto id : ids) meshes.PlanClone(Mesh{meshes, id});
     meshes.CommitReserves();
     CloneCopies copies;
-    const auto clone = meshes.CloneMeshes(copies, std::array{id}, false, pairs).front();
-    Submit(r, copies);
-    meshes.RebuildSelectionIndex(std::array{clone});
-    return clone;
+    auto clones = meshes.CloneMeshes(copies, ids, false, pairs);
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    copies.Encode(chain, GetMeshPipelines(r));
+    chain.Submit();
+    meshes.RebuildSelectionIndex(clones);
+    return clones;
 }
+uint32_t Clone(state::Scene &r, uint32_t id, std::span<MeshStore::BlockPairs> pairs) { return Clones(r, std::array{id}, pairs).front(); }
 
 // The source's copy that the Source node emits, which `evaluated` and `resync` then describe.
 // With resync state, the previous output restores to the source at the blocks either wrote since its last cook.
@@ -137,6 +144,14 @@ std::optional<uint32_t> Execute(state::Scene &r, std::optional<MeshTopologyTask>
 std::optional<uint32_t> ExecutePlanned(state::Scene &r, std::optional<MeshTopologyTask> task, const GeometrySelection &selection, const Masks &masks) {
     if (task && task->Op == MeshTopologyOp::AddPrimitives) task->Selection = selection;
     return Execute(r, std::move(task), masks);
+}
+// Deletes the record's edges and faces in place, leaving its vertices as points.
+void ToPoints(state::Scene &r, uint32_t id) {
+    if (Mesh{r.Context.get<const MeshStore>(), id}.EdgeCount()) Execute(r, Task(id, MeshTopologyOp(uint32_t(DeleteMode::OnlyEdgesAndFaces)), {}), {});
+}
+// Deletes every element of the record in place.
+void Empty(state::Scene &r, uint32_t id) {
+    if (Mesh{r.Context.get<const MeshStore>(), id}.VertexCount()) Execute(r, Task(id, MeshTopologyOp(uint32_t(DeleteMode::Vertices)), {}), {});
 }
 std::optional<uint32_t> ExecuteStages(state::Scene &r, std::vector<MeshTopologyTask> tasks, const Masks &masks) {
     if (masks.Publish)
@@ -266,6 +281,10 @@ std::optional<uint32_t> Run(state::Scene &r, const RecalculateNormals &p, uint32
 std::optional<uint32_t> Run(state::Scene &r, const TransformElements &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{p.Delta, p.Pivot}}, p.Frame);
 }
+std::optional<uint32_t> Run(state::Scene &r, MeshToPoints, uint32_t id, const Masks &) {
+    ToPoints(r, id);
+    return id;
+}
 std::optional<uint32_t> Run(state::Scene &r, const SetPosition &p, uint32_t id, uint32_t attribute, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     if (attribute == InvalidOffset || meshes.GetAttribute(attribute).Type != AttributeType::Vec3 || meshes.GetAttribute(attribute).Domain != AttributeDomain::Vertex) return {};
@@ -320,11 +339,13 @@ struct AttributeJob {
 AttributeInput NamedInput(const MeshStore &meshes, uint32_t attribute) {
     return {.Source = AttributeSource::Named, .Type = meshes.GetAttribute(attribute).Type, .Attribute = meshes.AttributeRef(attribute)};
 }
-AttributeInput ConstantInput(AttributeType type, auto value) {
-    std::array<uint32_t, 4> words{};
+// The value's bits as attribute words, zero beyond its size.
+AttributeValue Words(auto value) {
+    AttributeValue words{};
     std::memcpy(words.data(), &value, sizeof(value));
-    return {.Source = AttributeSource::Constant, .Type = type, .Value = words};
+    return words;
 }
+AttributeInput ConstantInput(AttributeType type, auto value) { return {.Source = AttributeSource::Constant, .Type = type, .Value = Words(value)}; }
 // The second operand, or the constant when it is absent.
 AttributeInput OperandB(const MeshStore &meshes, Operands in, AttributeInput constant) { return in.B != InvalidOffset ? NamedInput(meshes, in.B) : constant; }
 // The domain of A, when A is present, each present operand has one of its socket's types, and B shares A's domain.
@@ -528,12 +549,127 @@ std::optional<uint32_t> RunNode(state::Scene &r, const GeometryProcedure &proced
 
 uint32_t Generate(state::Scene &r, const Generator auto &shape) { return CreateMesh(r, {.Data = primitive::CreateMesh(shape), .FlatShaded = true}).StoreId; }
 
+// Turns record `id` into points, each placing an instance rotated and scaled by the node's parameters.
+void InstancePoints(state::Scene &r, const InstanceOnPoints &p, uint32_t id) {
+    auto &meshes = r.Context.get<MeshStore>();
+    ToPoints(r, id);
+    for (const auto &[name, type, value] : {std::tuple{InstanceRotation, AttributeType::Vec4, Words(p.Rotation)}, std::tuple{InstanceScale, AttributeType::Vec3, Words(p.Scale)}}) {
+        if (const auto existing = meshes.FindAttribute(id, name); existing != InvalidOffset) meshes.ReleaseAttribute(existing);
+        meshes.AddAttribute(id, AttributeDomain::Vertex, type, name, value);
+    }
+}
+
+// The mesh entity an Object Info node reads: a mesh entity other than the procedure's own and other than one a procedure owns, or null.
+state::Entity ReadMesh(const state::Scene &r, state::Entity mesh_entity, const ObjectInfo &p) {
+    if (!r.valid(p.MeshEntity) || !HasMesh(r, p.MeshEntity) || p.MeshEntity == mesh_entity) return state::Null;
+    for (const auto [_, owned] : r.view<const ProcedureOwnedMesh>().each())
+        if (owned.MeshEntity == p.MeshEntity) return state::Null;
+    return p.MeshEntity;
+}
+
+// Each point's instance transform, in vertex order.
+std::vector<Transform> InstanceTransforms(const MeshStore &meshes, uint32_t points) {
+    const Mesh mesh{meshes, points};
+    const auto rotations = meshes.AttributeView<vec4>(meshes.FindAttribute(points, InstanceRotation));
+    const auto scales = meshes.AttributeView<vec3>(meshes.FindAttribute(points, InstanceScale));
+    std::vector<Transform> transforms;
+    transforms.reserve(mesh.VertexCount());
+    for (const auto v : mesh.vertices()) transforms.push_back({mesh.GetPosition(v), quat{rotations[*v]}, scales[*v]});
+    return transforms;
+}
+
+// Clones the instance record once per point, moves each clone by its point's instance transform, and joins the clones into the first.
+// Returns none for points placing no instance.
+std::optional<uint32_t> Realize(state::Scene &r, uint32_t points, uint32_t instance) {
+    auto &meshes = r.Context.get<MeshStore>();
+    const auto transforms = InstanceTransforms(meshes, points);
+    if (transforms.empty()) return {};
+    const auto clones = Clones(r, std::vector(transforms.size(), instance), {});
+    for (size_t i = 0u; i < clones.size(); ++i) {
+        const PositionOperationTarget target{.StoreId = clones[i], .Selection = AllHandles(Mesh{meshes, clones[i]})};
+        ExecuteGeometryPositions(r, std::span{&target, 1u}, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{.Delta = transforms[i]}});
+    }
+    for (size_t i = 1u; i < clones.size(); ++i) meshes.Join(r, clones.front(), clones[i]);
+    meshes.Release(std::span{clones}.subspan(1u));
+    return clones.front();
+}
+
+// Publishes one unnamed instance entity of `instanced` per transform under each object instancing the mesh, as children holding the transforms.
+// Each object keeps its published entities in list order, extras are destroyed and missing ones are created, so an unchanged count keeps every entity.
+void PublishInstances(state::Scene &r, state::Entity mesh_entity, state::Entity instanced, std::span<const Transform> transforms) {
+    const auto *current = r.try_get<const ProcedureInstances>(mesh_entity);
+    if (!current && transforms.empty()) return;
+    const auto previous = current ? current->Entities : std::vector<state::Entity>{};
+    std::vector<state::Entity> objects;
+    if (!transforms.empty())
+        for (const auto [e, instance] : std::as_const(r).view<const Instance>().each())
+            if (instance.Entity == mesh_entity) objects.push_back(e);
+    std::ranges::sort(objects);
+    const auto count = uint32_t(transforms.size());
+    std::vector<state::Entity> published(objects.size() * count, state::Null), extras;
+    std::vector<uint32_t> kept(objects.size(), 0u);
+    for (const auto e : previous) {
+        if (!r.valid(e)) continue;
+        const auto parent = ParentOrNull(r, e);
+        const auto object = std::ranges::lower_bound(objects, parent);
+        const auto o = uint32_t(object - objects.begin());
+        if (object != objects.end() && *object == parent && kept[o] < count) published[o * count + kept[o]++] = e;
+        else extras.push_back(e);
+    }
+    ClearParents(r, extras);
+    r.destroy(extras);
+    for (uint32_t o = 0u; o < objects.size(); ++o) {
+        for (uint32_t i = 0u; i < count; ++i) {
+            auto &e = published[o * count + i];
+            if (e == state::Null) {
+                e = r.create();
+                r.emplace<Instance>(e, instanced);
+                r.emplace<ObjectKind>(e, ObjectType::Mesh);
+                r.emplace<Transform>(e, transforms[i]);
+                SetParent(r, e, objects[o]);
+                ApplyVisibility(r, e);
+                continue;
+            }
+            if (r.get<const Instance>(e).Entity != instanced) r.replace<Instance>(e, instanced);
+            if (r.get<const Transform>(e) != transforms[i]) r.replace<Transform>(e, transforms[i]);
+        }
+    }
+    if (published.empty()) r.remove<ProcedureInstances>(mesh_entity);
+    else if (previous != published) r.emplace_or_replace<ProcedureInstances>(mesh_entity, std::move(published));
+}
+
+// Holds the instance record in the procedure's owned mesh entity, created on first need, releasing the record it held.
+// Without a record, the owned mesh entity leaves with its record.
+// Returns the owned mesh entity, or null.
+state::Entity OwnMesh(state::Scene &r, state::Entity mesh_entity, uint32_t record) {
+    const auto *owned = r.try_get<const ProcedureOwnedMesh>(mesh_entity);
+    if (record == InvalidOffset) {
+        r.remove<ProcedureOwnedMesh>(mesh_entity);
+        return state::Null;
+    }
+    // The owned mesh entity is gone when its published instances were deleted by hand.
+    const bool kept = owned && r.valid(owned->MeshEntity);
+    const auto e = kept ? owned->MeshEntity : r.create();
+    if (!kept) {
+        r.emplace<MeshHandle>(e, record);
+        r.emplace_or_replace<ProcedureOwnedMesh>(mesh_entity, e);
+    } else if (const auto held = r.get<const MeshHandle>(e).StoreId; held != record) {
+        r.Context.get<MeshStore>().Release(held);
+        r.replace<MeshHandle>(e, record);
+    }
+    RefreshMeshBinding(r, record);
+    r.emplace_or_replace<MeshGeometryDirty>(e);
+    return e;
+}
+
 // Evaluates the plan's nodes in order, each on one record, and publishes the result as the mesh's evaluated record.
 // The Source node emits the previous output restored to the source when the source kept its blocks, so the output record persists across cooks.
+// An Object Info node emits another mesh entity's drawn record, which the cook borrows.
 // An input owns the record it reads once its producer has no other consumer left, and otherwise reads a clone.
 // A node without an input record, or whose operation changes nothing, is marked and forwards its input.
 // A boolean emits a new record, and its inputs release with the cook's other records.
 // A missing result is the source's copy, and every other record the cook made releases.
+// A result reading instances empties its record and publishes the instances as entities.
 void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena, const MeshStore::Writes &between) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto &procedure = r.get<const GeometryProcedure>(mesh_entity);
@@ -568,20 +704,47 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
     }
     std::vector<SocketValue> values(plan.SocketFirst.back());
     auto remaining = plan.Consumers;
-    // A reader the record's later readers follow takes a clone, apart from a reader on the result's path, which takes the record and leaves its producer a clone.
-    const auto take = [&](uint32_t node, uint32_t input) {
+    const auto slot_of = [&](uint32_t node, uint32_t input) {
         const auto link = procedure.Inputs[plan.InputFirst[node] + input];
-        if (link.FromNode == NoNode) return InvalidOffset;
-        const auto slot = plan.SocketFirst[link.FromNode] + link.FromSocket;
-        const auto record = values[slot].Record;
-        if (--remaining[slot] == 0u || record == InvalidOffset) return record;
-        const auto clone = created.emplace_back(Clone(r, record, {}));
-        if (!on_path[node] || input) return clone;
+        return plan.SocketFirst[link.FromNode] + link.FromSocket;
+    };
+    // Takes the value linked into the node's input, which the input's socket then holds.
+    // A borrowed record reaches a reading input as is and an editing input as a clone.
+    // A record the cook owns reaches its last reader as is.
+    // A reader the record's later readers follow takes a clone, apart from a reader on the result's path, which takes the record and leaves its producer a clone.
+    const auto take = [&](uint32_t node, uint32_t input) -> SocketValue {
+        auto &taken = values[plan.SocketFirst[node] + input];
+        if (procedure.Inputs[plan.InputFirst[node] + input].FromNode == NoNode) return taken;
+        const auto slot = slot_of(node, input);
+        taken = values[slot];
+        const bool last = --remaining[slot] == 0u;
+        if (taken.Record == InvalidOffset || (taken.Borrowed() ? KindSockets(procedure.Nodes[node].Kind)[input].Reads : last)) return taken;
+        const auto clone = created.emplace_back(Clone(r, taken.Record, {}));
+        if (taken.Borrowed() || !on_path[node] || input) {
+            taken.MeshEntity = state::Null;
+            taken.Record = clone;
+            return taken;
+        }
         values[slot].Record = clone;
-        return record;
+        return taken;
+    };
+    // Takes a record out of the cook's ownership, so a source copy leaving it leaves the output to a new record.
+    const auto disown = [&](uint32_t record) {
+        std::erase(created, record);
+        if (record == evaluated.StoreId) {
+            evaluated = {.StoreId = InvalidOffset};
+            resync.reset();
+        }
+    };
+    // Releases a record a node consumed, apart from a borrowed record, which stays with its mesh entity.
+    const auto consume = [&](const SocketValue &value) {
+        if (value.Borrowed()) return;
+        meshes.Release(value.Record);
+        disown(value.Record);
     };
     bool copied = false;
     uint32_t result = InvalidOffset;
+    std::optional<SocketValue> published; // The instances the result reads
     for (const auto node : plan.Order) {
         const auto [entity, kind] = procedure.Nodes[node];
         const auto first = plan.SocketFirst[node];
@@ -592,6 +755,12 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
             values[first].Record = std::exchange(copied, true) ? created.emplace_back(Clone(r, source, {})) : evaluated.StoreId;
             continue;
         }
+        if (kind == KindOf<ObjectInfo>) {
+            const auto read_mesh = ReadMesh(r, mesh_entity, r.get<const ObjectInfo>(entity));
+            if (read_mesh != state::Null) values[first] = {.MeshEntity = read_mesh, .Record = *DrawnStoreId(r, read_mesh)};
+            else r.emplace<NodeError>(entity);
+            continue;
+        }
         bool generated = false;
         VisitKind(kind, [&]<typename K> {
             if constexpr (Generator<K>) {
@@ -600,37 +769,65 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
             }
         });
         if (generated) continue;
-        const auto input = take(node, 0u);
-        values[first].Record = input;
+        const auto in = take(node, 0u);
+        const auto input = in.Record;
         if (kind == KindOf<Output>) {
             if (input == InvalidOffset) r.emplace<NodeError>(entity);
-            if (node == procedure.OutputNode) result = input;
+            if (node == procedure.OutputNode) {
+                result = input;
+                if (in.Type == SocketType::Instances) published = in;
+            }
             continue;
         }
         if (kind == KindOf<Join>) {
             const auto second = take(node, 1u);
-            values[first + 1u].Record = second;
-            if (input == InvalidOffset || second == InvalidOffset) r.emplace<NodeError>(entity);
-            if (input != InvalidOffset && second != InvalidOffset) {
-                meshes.Join(r, input, second);
-                meshes.Release(second);
-                std::erase(created, second);
-                if (second == evaluated.StoreId) {
-                    evaluated = {.StoreId = InvalidOffset};
-                    resync.reset();
-                }
+            if (input == InvalidOffset || second.Record == InvalidOffset) r.emplace<NodeError>(entity);
+            if (input != InvalidOffset && second.Record != InvalidOffset) {
+                meshes.Join(r, input, second.Record);
+                consume(second);
             }
-            values[first + 2u].Record = input != InvalidOffset ? input : second;
+            values[first + 2u] = input != InvalidOffset ? in : second;
             continue;
         }
         if (kind == KindOf<Boolean>) {
             const auto second = take(node, 1u);
-            values[first + 1u].Record = second;
-            const auto task = input != InvalidOffset && second != InvalidOffset ? BooleanTask(Mesh{meshes, input}, Mesh{meshes, second}, r.get<const Boolean>(entity).Operation, mat3{1.f}, vec3{0.f}) : std::nullopt;
+            const bool linked = input != InvalidOffset && second.Record != InvalidOffset;
+            const auto task = linked ? BooleanTask(Mesh{meshes, input}, Mesh{meshes, second.Record}, r.get<const Boolean>(entity).Operation, mat3{1.f}, vec3{0.f}) : std::nullopt;
             const auto combined = task ? ExecuteGeometryBoolean(r, *task) : std::nullopt;
-            if (combined) created.push_back(*combined);
-            else r.emplace<NodeError>(entity);
-            values[first + 2u].Record = combined.value_or(input);
+            if (combined) {
+                created.push_back(*combined);
+                values[first + 2u].Record = *combined;
+            } else {
+                r.emplace<NodeError>(entity);
+                values[first + 2u] = in;
+            }
+            continue;
+        }
+        if (kind == KindOf<InstanceOnPoints>) {
+            const auto instance = take(node, 1u);
+            auto &output = values[first + 2u];
+            output.Type = SocketType::Instances;
+            output.Record = input;
+            if (input != InvalidOffset && instance.Record != InvalidOffset) {
+                InstancePoints(r, r.get<const InstanceOnPoints>(entity), input);
+                output.MeshEntity = instance.MeshEntity;
+                output.Instance = instance.Record;
+                continue;
+            }
+            r.emplace<NodeError>(entity);
+            if (input != InvalidOffset) Empty(r, input);
+            continue;
+        }
+        if (kind == KindOf<RealizeInstances>) {
+            if (input == InvalidOffset) r.emplace<NodeError>(entity);
+            const auto realized = input != InvalidOffset && in.Instance != InvalidOffset ? Realize(r, input, in.Instance) : std::nullopt;
+            if (realized) {
+                consume(in);
+                // The instance record releases with the last reader of the instances carrying it.
+                if (remaining[slot_of(node, 0u)] == 0u) consume({.MeshEntity = in.MeshEntity, .Record = in.Instance});
+                created.push_back(*realized);
+            }
+            values[first + 1u].Record = realized.value_or(input);
             continue;
         }
         if (input == InvalidOffset) r.emplace<NodeError>(entity);
@@ -638,6 +835,14 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         if (input != InvalidOffset && !edited) r.emplace<NodeError>(entity);
         values[first + InputCount[kind]].Record = edited.value_or(input);
     }
+    // The result's points place instances of a mesh entity's drawn record, or of an instance record the procedure's owned mesh entity takes from the cook.
+    std::vector<Transform> transforms;
+    if (published && result != InvalidOffset) {
+        transforms = InstanceTransforms(meshes, result);
+        Empty(r, result);
+    }
+    const bool owns = !transforms.empty() && published->MeshEntity == state::Null;
+    if (owns) disown(published->Instance);
     auto writes = meshes.TakeWrites();
     if (result == InvalidOffset) result = sourced && !copied ? evaluated.StoreId : created.emplace_back(Clone(r, source, {}));
     if (result == evaluated.StoreId) {
@@ -651,6 +856,10 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
     std::erase(created, result);
     meshes.Release(created);
     r.emplace_or_replace<EvaluatedMesh>(mesh_entity, evaluated);
+    const auto owned = OwnMesh(r, mesh_entity, owns ? published->Instance : InvalidOffset);
+    PublishInstances(r, mesh_entity, owns ? owned : published ? published->MeshEntity :
+                                                                state::Null,
+                     transforms);
     RefreshMeshBinding(r, result);
     // The editor derives the record's selection anew from its edit domain, which also refreshes its summary.
     r.get_or_emplace<MeshGeometryDirty>(mesh_entity, EditSelectionAfter::Derive).RenderReady = false;
@@ -719,6 +928,16 @@ void QueueNodeRemovals(state::Scene &r, state::Entity mesh_entity) {
     auto &dependents = r.Context.emplace<PendingObjectRemovals>().Dependents;
     for (const auto &node : r.get<const GeometryProcedure>(mesh_entity).Nodes) dependents.push_back(node.Entity);
 }
+// A dropped instance list's entities destroy with the settle's object removals.
+void QueueInstanceRemovals(state::Scene &r, state::Entity mesh_entity) {
+    if (r.Restoring) return;
+    r.Context.emplace<PendingObjectRemovals>().Dependents.append_range(r.get<const ProcedureInstances>(mesh_entity).Entities);
+}
+// A dropped owned mesh entity destroys with the settle's object removals, which release its record.
+void QueueOwnedMeshRemoval(state::Scene &r, state::Entity mesh_entity) {
+    if (r.Restoring) return;
+    r.Context.emplace<PendingObjectRemovals>().Dependents.push_back(r.get<const ProcedureOwnedMesh>(mesh_entity).MeshEntity);
+}
 } // namespace
 } // namespace procedure
 
@@ -727,9 +946,13 @@ void RegisterProcedureHandlers(state::Scene &r) {
     r.Context.emplace<CookCount>();
     reactive(r, Change::Procedure).on<GeometryProcedure>(On::Create | On::Update);
     r.on_destroy<GeometryProcedure, &QueueNodeRemovals>();
+    r.on_destroy<ProcedureInstances, &QueueInstanceRemovals>();
+    r.on_destroy<ProcedureOwnedMesh, &QueueOwnedMeshRemoval>();
     auto &inputs = reactive(r, Change::ProcedureInputs);
     inputs.on<MeshHandle>(On::Create | On::Update).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     inputs.on<InlineSelection>(On::Create | On::Update | On::Destroy);
+    // A new object of a publishing mesh takes its instances, and a published instance leaving its object returns to it.
+    inputs.on<Instance>(On::Create).on<SceneParent>(On::Destroy);
     ForEachKind([&]<typename K> {
         inputs.on<K>(On::Update);
         r.on_destroy<K, &RemoveNode>();
@@ -744,20 +967,49 @@ void SettleProcedures(state::Scene &r, bool cook) {
     // The writes since the last settle name the blocks each resync restores, and a restore pass restores outputs with their sources.
     const auto writes = r.Context.get<MeshStore>().TakeWrites();
     if (!cook) return;
-    std::vector<state::Entity> cooked, nodes;
+    // The procedures whose graph or source changed, and the other entities whose change a procedure reads.
+    std::vector<state::Entity> cooked, inputs;
     for (const auto e : changed)
         if (r.all_of<GeometryProcedure, MeshHandle>(e)) cooked.push_back(e);
     for (const auto e : reactive(r, Change::ProcedureInputs)) {
         if (r.all_of<GeometryProcedure, MeshHandle>(e)) cooked.push_back(e);
-        else nodes.push_back(e);
+        else inputs.push_back(e);
     }
-    if (!nodes.empty()) {
-        SortUnique(nodes);
-        for (const auto [e, procedure] : std::as_const(r).view<const GeometryProcedure>().each())
-            if (r.all_of<MeshHandle>(e) && std::ranges::any_of(procedure.Nodes, [&](const NodeRecord &node) { return std::ranges::binary_search(nodes, node.Entity); })) cooked.push_back(e);
+    if (cooked.empty() && inputs.empty()) return;
+    SortUnique(inputs);
+    const auto input = [&](state::Entity e) { return std::ranges::binary_search(inputs, e); };
+    // Each procedure beside each mesh entity its Object Info nodes read.
+    std::vector<std::pair<state::Entity, state::Entity>> reads;
+    for (const auto [e, procedure] : std::as_const(r).view<const GeometryProcedure>().each()) {
+        if (!r.all_of<MeshHandle>(e)) continue;
+        const auto *published = r.try_get<const ProcedureInstances>(e);
+        if (std::ranges::any_of(procedure.Nodes, input, &NodeRecord::Entity) || (published && std::ranges::any_of(published->Entities, input))) cooked.push_back(e);
+        for (const auto &node : procedure.Nodes)
+            if (node.Kind == KindOf<ObjectInfo>) reads.emplace_back(e, r.get<const ObjectInfo>(node.Entity).MeshEntity);
     }
+    for (const auto e : inputs)
+        if (const auto *instance = r.try_get<const Instance>(e); instance && r.all_of<ProcedureInstances>(instance->Entity)) cooked.push_back(instance->Entity);
     SortUnique(cooked);
+    // A procedure reading a changed or cooking mesh cooks after it.
+    const auto cooking = [&](state::Entity e) { return std::ranges::binary_search(cooked, e); };
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (const auto [e, read] : reads) {
+            if (cooking(e) || (!cooking(read) && !input(read))) continue;
+            cooked.insert(std::ranges::lower_bound(cooked, e), e);
+            grew = true;
+        }
+    }
+    std::vector<state::Entity> order, seen;
+    const auto visit = [&](this const auto &self, state::Entity e) -> void {
+        if (std::ranges::contains(seen, e)) return;
+        seen.push_back(e);
+        for (const auto [reader, read] : reads)
+            if (reader == e && cooking(read)) self(read);
+        order.push_back(e);
+    };
+    for (const auto e : cooked) visit(e);
     std::optional<BufferArena<SelectionBlock>> arena;
-    for (const auto e : cooked) Cook(r, e, arena, writes);
-    r.Context.get<CookCount>().Value += cooked.size();
+    for (const auto e : order) Cook(r, e, arena, writes);
+    r.Context.get<CookCount>().Value += order.size();
 }
