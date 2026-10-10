@@ -54,10 +54,15 @@ struct BufferContext {
 
     const Context &Ctx;
     BindlessSet &Slots;
+    // A workspace and the bytes written to it, which are the ones a reuse clears.
+    struct UsedWorkspace {
+        NS::SharedPtr<MTL::Buffer> Buffer;
+        uint64_t Used{};
+    };
     struct RetiredBuffer {
         std::shared_ptr<SparseBuffer> Storage;
         TypedSlot Binding{SlotType::Buffer, InvalidSlot};
-        NS::SharedPtr<MTL::Buffer> Workspace;
+        UsedWorkspace Workspace;
     };
     std::vector<RetiredBuffer> Retired;
     struct RetirementBatch {
@@ -67,9 +72,9 @@ struct BufferContext {
     std::deque<RetirementBatch> Retirements;
 
 private:
-    void RecycleWorkspace(NS::SharedPtr<MTL::Buffer>);
+    void RecycleWorkspace(UsedWorkspace);
     void Release(std::span<RetiredBuffer>);
-    std::array<std::vector<NS::SharedPtr<MTL::Buffer>>, 64> WorkspaceCache;
+    std::array<std::vector<UsedWorkspace>, 64> WorkspaceCache;
     uint64_t CachedWorkspaceBytes{};
 };
 
@@ -154,7 +159,7 @@ private:
     friend std::vector<Buffer> CloneFootprints(BufferContext &, std::span<const BufferFootprint>);
     std::shared_ptr<SparseBuffer> Storage;
     NS::SharedPtr<MTL::Buffer> Workspace;
-    std::vector<NS::SharedPtr<MTL::Buffer>> PreviousWorkspaces;
+    std::vector<BufferContext::UsedWorkspace> PreviousWorkspaces;
     BufferLifetime Lifetime{BufferLifetime::Canonical};
     std::unique_ptr<store::Pages> Tracked;
     void Retire();

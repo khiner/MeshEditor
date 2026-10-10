@@ -25,6 +25,7 @@ enum class VectorMathOp : uint32_t;
 enum class FloatMathOp : uint32_t;
 enum class CompareOp : uint32_t;
 enum class BooleanMathOp : uint32_t;
+enum class BooleanOperation : uint32_t;
 enum class GeometryMergeMode : uint8_t;
 namespace action::mesh {
 enum class DeleteMode : uint32_t;
@@ -122,7 +123,7 @@ using Core = std::variant<
     Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
     Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>,
     Update<mesh::DeleteMode>, Update<GeometryMergeMode>, Update<mesh::ExtrudeMode>, Update<mesh::DissolveMode>, Update<mesh::SymmetrizeAxis>,
-    Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>,
+    Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>,
     DestroyEntity>;
 
 void Apply(state::Scene &, state::Entity viewport, const Core &);

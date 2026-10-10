@@ -325,10 +325,15 @@ struct RotateColors {
     bool CounterClockwise{false};
 };
 struct ReverseColors {};
+// Combines the active object's mesh with the one other selected object's mesh, in the active object's space, into the active mesh's new geometry.
+// The other object stays as it is.
+struct Boolean {
+    BooleanOperation Operation{BooleanOperation::Difference};
+};
 
 using Action = std::variant<
     Delete, Merge, Extrude, Duplicate, Split, Separate, Dissolve, Subdivide, Triangulate, TrisToQuads, Poke, FlipNormals, EdgeSplit, Inset, Fill, LoopCut,
-    Spin, ExtrudeRepeat, Bisect, Symmetrize, Solidify, ConnectVertices, Knife, BridgeEdgeLoops, GridFill, FillHoles, ConvexHull, EdgeRotate, Rip, Bevel, SmoothVertices, SpaceEvenly, RelaxEdgeLoops, CurveBetweenSelected, Circularize, MakePlanarFaces, Flatten, Wireframe, SplitNonplanarFaces, SplitConcaveFaces, RotateUVs, ReverseUVs, RotateColors, ReverseColors, ShrinkFatten, ToSphere, PushPull, RecalculateNormals, BeautifyFaces, Shear, Warp, Bend, Randomize, VertexSlide, EdgeSlide, Unsubdivide, SnapSymmetry, Hide, Reveal, Decimate>;
+    Spin, ExtrudeRepeat, Bisect, Symmetrize, Solidify, ConnectVertices, Knife, BridgeEdgeLoops, GridFill, FillHoles, ConvexHull, EdgeRotate, Rip, Bevel, SmoothVertices, SpaceEvenly, RelaxEdgeLoops, CurveBetweenSelected, Circularize, MakePlanarFaces, Flatten, Wireframe, SplitNonplanarFaces, SplitConcaveFaces, RotateUVs, ReverseUVs, RotateColors, ReverseColors, ShrinkFatten, ToSphere, PushPull, RecalculateNormals, BeautifyFaces, Shear, Warp, Bend, Randomize, VertexSlide, EdgeSlide, Unsubdivide, SnapSymmetry, Hide, Reveal, Decimate, Boolean>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 // The edit-mode meshes with a selection in the viewport's edit element domain, which the operators edit.

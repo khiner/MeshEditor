@@ -1,5 +1,6 @@
 #include "Paths.h"
 #include "RunSuites.h"
+#include "TestMeshOrdinals.h"
 #include "TopologyCases.h"
 #include "mesh/BeautifyFaces.h"
 #include "mesh/Decimate.h"
@@ -9,6 +10,7 @@
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshTopology.h"
+#include "mesh/Primitives.h"
 #include "mesh/SharpnessOperations.h"
 #include "mesh/SpatialFaceWork.h"
 #include "mesh/TopologyOperations.h"
@@ -17,7 +19,9 @@
 #include "metal/MetalCpp.h"
 #include "metal/Shader.h"
 #include "state/Scene.h"
+#include <chrono>
 #include <cmath>
+#include <numbers>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -137,10 +141,9 @@ template<AttributeScalar T> void Fill(MeshStore &meshes, uint32_t id, std::strin
     meshes.SetAttribute<T>(meshes.FindAttribute(id, name), handles.Offset, std::span<const T>{values.get(), handles.Count});
 }
 
-// The patchwork with a morph target, skin, UVs, colors, a primitive per face and every third face and edge sharp, and the named attributes over them.
+// The shape with a morph target, skin, UVs, colors, a primitive per face and every third face and edge sharp, and the named attributes over them.
 // Returns the mesh and its edge integers.
-std::pair<uint32_t, std::set<int32_t>> CreateAttributed(GeometryFixture &f) {
-    auto data = Patchwork();
+std::pair<uint32_t, std::set<int32_t>> CreateAttributed(GeometryFixture &f, MeshData data) {
     const auto vertex_count = uint32_t(data.Positions.size()), face_count = data.FaceCount();
     MeshSource source{.Data = std::move(data)};
     ArmatureDeformData deform;
@@ -261,6 +264,33 @@ void CheckAttributed(const MeshStore &meshes, uint32_t id, const std::set<int32_
         expect(cb[h] == (ci[h] >= 1000));
     });
 }
+// A primitive shape's mesh moved by the offset.
+uint32_t Place(GeometryFixture &f, const auto &shape, vec3 offset) {
+    auto data = primitive::CreateMesh(shape);
+    for (auto &p : data.Positions) p += offset;
+    return f.Create(std::move(data));
+}
+// A box of the half extents centered at the point.
+uint32_t Box(GeometryFixture &f, vec3 center, vec3 half = vec3{1.f}) { return Place(f, primitive::Cuboid{.HalfExtents = half}, center); }
+// The boolean of the meshes' surfaces, or none when either is open.
+std::optional<uint32_t> RunBoolean(GeometryFixture &f, uint32_t first, uint32_t second, BooleanOperation operation) {
+    const auto task = BooleanTask(f.Get(first), f.Get(second), operation, mat3{1.f}, vec3{0.f});
+    return task ? ExecuteGeometryBoolean(f.Scene, *task) : std::nullopt;
+}
+// Whether every halfedge of the mesh's faces pairs with a halfedge of another face that pairs back.
+bool ClosedManifold(const Mesh &mesh) {
+    if (!mesh.HasClosedSurface()) return false;
+    const auto &c = mesh.GetConnectivity();
+    for (const auto face : mesh.faces())
+        for (const auto h : mesh.fh_range(face)) {
+            const auto opposite = c.Opposites[*h];
+            if (!opposite || c.Opposites[*opposite] != h || !c.FaceOf(opposite) || c.FaceOf(opposite) == face) return false;
+        }
+    return true;
+}
+int64_t EulerCharacteristic(const Mesh &mesh) { return int64_t(mesh.VertexCount()) - int64_t(mesh.EdgeCount()) + int64_t(mesh.FaceCount()); }
+// Whether the mesh is a closed manifold enclosing the volume.
+bool Solid(const Mesh &mesh, double volume) { return ClosedManifold(mesh) && std::abs(::test::EnclosedVolume(mesh).value_or(-1.0) - volume) < 1e-4; }
 } // namespace
 
 void RegisterGeometryOperationsTests() {
@@ -522,18 +552,25 @@ void RegisterGeometryOperationsTests() {
             {"KeepSelectedFaces", Op(KeepSelectedFaces, 0.f, 0u, 1u, Element::Face)},
         }};
         GeometryFixture f;
-        for (const auto &c : cases) {
-            boost::ut::test(std::string{c.Name}) = [&] {
-                const auto [id, edge_values] = CreateAttributed(f);
+        // Runs the task planned over the attributed shape and checks every element before and after against the channels.
+        const auto carry = [&](std::string_view name, MeshData shape, auto &&plan) {
+            boost::ut::test(std::string{name}) = [&] {
+                const auto [id, edge_values] = CreateAttributed(f, std::move(shape));
                 const auto face_count = f.Get(id).FaceCount();
                 CheckAttributed(f.Store(), id, edge_values, face_count, false);
-                const auto task = PlanCase(c, f.Store(), f.Get(id));
+                const auto task = plan(id);
                 expect(fatal(task.has_value()));
                 const auto result = f.Run(*task);
                 expect(result.Changed);
                 CheckAttributed(f.Store(), result.GeometryId, edge_values, face_count, result.GeometryId != id);
             };
-        }
+        };
+        for (const auto &c : cases) carry(c.Name, Patchwork(), [&](uint32_t id) { return PlanCase(c, f.Store(), f.Get(id)); });
+        // The union keeps the attributed box's elements with their channels, and the plain box's elements take the defaults matching its absent channels.
+        carry("Boolean", primitive::CreateMesh(primitive::Cuboid{}), [&](uint32_t id) {
+            const auto second = Box(f, vec3{1.f});
+            return BooleanTask(f.Get(id), f.Get(second), BooleanOperation::Union, mat3{1.f}, vec3{0.f});
+        });
     };
     "named attributes clone independently and release their payloads"_test = [] {
         GeometryFixture f;
@@ -670,5 +707,129 @@ void RegisterGeometryOperationsTests() {
                 expect(std::ranges::equal(sharpness(listed_id), sharpness(masked_id)));
             };
         }
+    };
+    "booleans of boxes and a sphere yield the expected solids and keep their inputs"_test = [] {
+        // A boolean of two inputs and what its result holds, with each count and the volume left none where the row does not fix them.
+        // A row without an Euler characteristic expects no task, since an open input plans nothing, and every planned task yields a mesh.
+        struct BooleanCase {
+            std::string_view Name;
+            uint32_t (*First)(GeometryFixture &), (*Second)(GeometryFixture &);
+            BooleanOperation Operation;
+            std::optional<uint32_t> Vertices{}, Faces{};
+            std::optional<double> Volume{};
+            std::optional<int64_t> Euler{};
+            // The share of the second input's measured volume added to the expected volume.
+            double SecondShare{0.0};
+        };
+        const auto cube = [](GeometryFixture &f) { return Box(f, vec3{0.f}); };
+        const auto overlapping = [](GeometryFixture &f) { return Box(f, vec3{1.f}); };
+        // A sphere centered on the cube's +x face, whose plane halves it.
+        const auto sphere = [](GeometryFixture &f) { return Place(f, primitive::UVSphere{.Radius = .75f}, vec3{1.f, 0.f, 0.f}); };
+        // Boxes flush with the cube's +x face share the whole face or part of it, where naive booleans fail since faces coincide.
+        const auto flush = [](GeometryFixture &f) { return Box(f, vec3{2.f, 0.f, 0.f}); };
+        const auto offset = [](GeometryFixture &f) { return Box(f, vec3{2.f, .5f, .5f}); };
+        const auto far = [](GeometryFixture &f) { return Box(f, vec3{5.f, 0.f, 0.f}); };
+        const auto inner = [](GeometryFixture &f) { return Box(f, vec3{0.f}, vec3{.5f}); };
+        const auto quad = [](GeometryFixture &f) { return f.Create(Quad()); };
+        using enum BooleanOperation;
+        const std::array<BooleanCase, 23> cases{{
+            {"overlapping union", cube, overlapping, Union, 20u, 36u, 15.0, 2},
+            {"overlapping difference", cube, overlapping, Difference, 14u, 24u, 7.0, 2},
+            {"overlapping intersection", cube, overlapping, Intersection, 8u, 12u, 1.0, 2},
+            {"sphere union", cube, sphere, Union, {}, {}, 8.0, 2, .5},
+            {"sphere difference", cube, sphere, Difference, {}, {}, 8.0, 2, -.5},
+            {"sphere intersection", cube, sphere, Intersection, {}, {}, 0.0, 2, .5},
+            {"flush union", cube, flush, Union, 12u, 20u, 16.0, 2},
+            {"flush difference", cube, flush, Difference, 8u, 12u, 8.0, 2},
+            // Solids that only touch share no volume.
+            {"flush intersection", cube, flush, Intersection, 0u, 0u, {}, 0},
+            {"offset union", cube, offset, Union, {}, {}, 16.0, 2},
+            {"offset difference", cube, offset, Difference, {}, {}, 8.0, 2},
+            {"offset intersection", cube, offset, Intersection, 0u, 0u, {}, 0},
+            {"disjoint union", cube, far, Union, 16u, 24u, 16.0, 4},
+            {"disjoint difference", cube, far, Difference, 8u, 12u, 8.0, 2},
+            {"disjoint intersection", cube, far, Intersection, 0u, 0u, {}, 0},
+            {"nested union", cube, inner, Union, 8u, 12u, 8.0, 2},
+            // A box with a box-shaped cavity, two shells facing apart.
+            {"nested difference", cube, inner, Difference, 16u, 24u, 7.0, 4},
+            {"nested intersection", cube, inner, Intersection, 8u, 12u, 1.0, 2},
+            {"inner minus outer", inner, cube, Difference, 0u, 0u, {}, 0},
+            {"open second", cube, quad, Union},
+            {"open first", quad, cube, Union},
+            {"open difference", cube, quad, Difference},
+            {"open intersection", quad, cube, Intersection},
+        }};
+        GeometryFixture f;
+        for (const auto &c : cases) {
+            boost::ut::test(std::string{c.Name}) = [&] {
+                const auto first = c.First(f), second = c.Second(f);
+                const auto first_vertices = f.Get(first).VertexCount(), second_vertices = f.Get(second).VertexCount();
+                const auto task = BooleanTask(f.Get(first), f.Get(second), c.Operation, mat3{1.f}, vec3{0.f});
+                expect(task.has_value() == c.Euler.has_value());
+                const auto id = task ? ExecuteGeometryBoolean(f.Scene, *task) : std::nullopt;
+                expect(id.has_value() == task.has_value());
+                // The inputs stay as they were.
+                expect(f.Get(first).VertexCount() == first_vertices);
+                expect(f.Get(second).VertexCount() == second_vertices);
+                if (!id || !c.Euler) return;
+                const auto mesh = f.Get(*id);
+                if (c.Vertices) expect(mesh.VertexCount() == *c.Vertices);
+                if (c.Faces) expect(mesh.FaceCount() == *c.Faces);
+                if (c.Volume) expect(Solid(mesh, *c.Volume + c.SecondShare * ::test::EnclosedVolume(f.Get(second)).value_or(-1.0)));
+                expect(EulerCharacteristic(mesh) == *c.Euler);
+            };
+        }
+        "named attribute"_test = [&] {
+            const auto a = cube(f), b = overlapping(f);
+            auto &meshes = f.Store();
+            const auto weight = meshes.AddAttribute(a, AttributeDomain::Face, AttributeType::Float, "weight", AttributeValue{std::bit_cast<uint32_t>(-1.f), 0u, 0u, 0u}).value();
+            for (const auto face : f.Get(a).faces()) {
+                const float value = 5.f;
+                meshes.SetAttribute<float>(weight, *face, std::span{&value, 1u});
+            }
+            const auto id = RunBoolean(f, a, b, Union).value();
+            const auto output = meshes.FindAttribute(id, "weight");
+            expect(output != InvalidOffset);
+            // Each box keeps all of its surface but the three unit squares inside the other, the first's faces holding its value and the second's the default.
+            const auto mesh = f.Get(id);
+            const auto view = meshes.AttributeView<float>(output);
+            std::array<double, 2> areas{};
+            for (const auto face : mesh.faces()) {
+                std::vector<vec3> corners;
+                for (const auto v : mesh.fv_range(face)) corners.push_back(mesh.GetPosition(v));
+                const float area = .5f * Length(Cross(corners[1] - corners[0], corners[2] - corners[0]));
+                expect(view[*face] == 5.f || view[*face] == -1.f);
+                areas[view[*face] == 5.f ? 0u : 1u] += area;
+            }
+            expect(std::abs(areas[0] - 21.0) < 1e-4);
+            expect(std::abs(areas[1] - 21.0) < 1e-4);
+        };
+    };
+    "degenerate dissolve merges a run of coincident vertices in one pass"_test = [] {
+        GeometryFixture f;
+        // Vertices 0, 1 and 2 coincide, joined only through 2, so 1 reaches 0 through 2 alone.
+        const auto id = f.Create(MeshData{{{0.f, 0.f, 0.f}, {0.f, 0.f, 0.f}, {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}}, {{0u, 2u, 3u}, {1u, 2u, 4u}}});
+        f.Run({.SourceId = id, .Op = MeshTopologyOp::DissolveDegenerate, .Param0 = 1e-6f, .Flags = TopologyFlagSelectAll});
+        expect(f.Get(id).VertexCount() == 3u);
+        expect(f.Get(id).FaceCount() == 0u);
+    };
+    "boolean of two 100k triangle spheres"_test = [] {
+        GeometryFixture f;
+        const primitive::UVSphere sphere{.Radius = 1.f, .Slices = 320u, .Stacks = 160u};
+        const auto a = Place(f, sphere, vec3{0.f}), b = Place(f, sphere, vec3{.5f, .3f, .2f});
+        expect(f.Get(a).DerivedTriangles().size() > 100000u);
+        // A first run compiles the pipelines.
+        RunBoolean(f, a, b, BooleanOperation::Union);
+        const auto start = std::chrono::steady_clock::now();
+        const auto id = RunBoolean(f, a, b, BooleanOperation::Union).value();
+        const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        std::printf("union of two %u-triangle spheres: %.1f ms\n", uint32_t(f.Get(a).DerivedTriangles().size()), 1e3 * elapsed);
+        expect(elapsed < 1.0);
+        const auto mesh = f.Get(id);
+        expect(ClosedManifold(mesh));
+        expect(EulerCharacteristic(mesh) == 2);
+        // Two unit spheres whose centers are d apart overlap in a lens of volume pi (4 + d)(2 - d)^2 / 12.
+        const double d = std::sqrt(.5 * .5 + .3 * .3 + .2 * .2), lens = std::numbers::pi * (4.0 + d) * (2.0 - d) * (2.0 - d) / 12.0;
+        expect(std::abs(::test::EnclosedVolume(mesh).value_or(-1.0) - (2.0 * ::test::EnclosedVolume(f.Get(a)).value_or(-1.0) - lens)) < 2e-2);
     };
 }

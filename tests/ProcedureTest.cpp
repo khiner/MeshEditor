@@ -1131,6 +1131,55 @@ void TestViewportOperators(Fixture &f) {
     }
 }
 
+// A boolean node errs and forwards its first input while its second is unlinked, then intersects the source cube with a generated bar, and re-cooks when the bar's size changes.
+Graph BooleanIntersection(Fixture &f) {
+    const auto &meshes = f.Store();
+    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    f.Do(AddProcedure{mesh});
+    const auto [box, box_entity] = f.Add(mesh, KindOf<primitive::Cuboid>);
+    f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(box_entity, vec3{2.f, .5f, .5f}));
+    const auto [boolean, boolean_entity] = f.Add(mesh, KindOf<procedure::Boolean>);
+    f.Do(UpdateOf<&procedure::Boolean::Operation>(boolean_entity, BooleanOperation::Intersection));
+    f.Route(mesh, {0u, boolean, 1u});
+    expect(f.R.all_of<NodeError>(boolean_entity));
+    expect(Describe(meshes, f.Output(mesh)) == Describe(meshes, f.Source(mesh)));
+    f.Do(Link{mesh, box, 0u, boolean, 1u});
+    expect(!f.R.any_of<NodeError>(boolean_entity));
+    // The cube keeps the bar's middle: 2 x 1 x 1.
+    expect(std::abs(test::EnclosedVolume(Mesh{meshes, f.Output(mesh)}).value_or(-1.0) - 2.0) < 1e-4);
+    f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(box_entity, vec3{2.f, .25f, .75f}));
+    return {
+        mesh,
+        [mesh, boolean_entity](Fixture &f) {
+            expect(!f.R.any_of<NodeError>(boolean_entity));
+            expect(std::abs(test::EnclosedVolume(Mesh{f.Store(), f.Output(mesh)}).value_or(-1.0) - 1.5) < 1e-4);
+        },
+    };
+}
+constexpr std::array<GraphRow, 1> BooleanGraphs{{{"BooleanIntersection", BooleanIntersection}}};
+
+// The boolean action makes the active object's mesh the active cube minus the other selected cube, in the active object's space, and undo restores it.
+void TestBooleanAction(Fixture &f) {
+    f.Reset("boolean-action");
+    auto &r = f.R;
+    const auto target = f.AddMesh(primitive::Cuboid{});
+    const auto active = FindActiveEntity(r);
+    // The cutter joins the selection, and the target stays active.
+    f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = {.P = {1.f, 1.f, 1.f}}, .Select = MeshInstanceCreateInfo::SelectBehavior::Additive})});
+    expect(FindActiveEntity(r) == active);
+    const auto source = f.Source(target);
+    f.Do(action::mesh::Boolean{BooleanOperation::Difference});
+    expect(f.Source(target) != source);
+    expect(std::abs(test::EnclosedVolume(Mesh{f.Store(), f.Source(target)}).value_or(-1.0) - 7.0) < 1e-4);
+    for (const auto e : r.view<const Instance>())
+        if (e != active) expect(Mesh{f.Store(), f.Source(r.get<const Instance>(e).Entity)}.VertexCount() == 8u);
+    f.ValidateReplay();
+    f.Audit();
+    f.P->Undo();
+    expect(f.Source(target) == source);
+    f.Audit();
+}
+
 // A bevel that selects nothing marks its node and forwards its input, a restore clears the mark, and the next cook marks the node again.
 void TestNodeError(Fixture &f) {
     f.Reset("node-error");
@@ -1167,5 +1216,7 @@ void TestProcedures() {
     boost::ut::test("every attribute graph survives history") = [&] { Survives(f, AttributeGraphs); };
     boost::ut::test("join primitive tables") = [&] { TestJoinPrimitiveTables(f); };
     boost::ut::test("viewport operators append nodes") = [&] { TestViewportOperators(f); };
+    boost::ut::test("every boolean graph survives history") = [&] { Survives(f, BooleanGraphs); };
+    boost::ut::test("boolean action") = [&] { TestBooleanAction(f); };
     boost::ut::test("node error") = [&] { TestNodeError(f); };
 }

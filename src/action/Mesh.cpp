@@ -40,6 +40,7 @@
 #include "render/ElementWorkOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
+#include "render/Instance.h"
 #include "render/MeshTopologyRepair.h"
 #include "render/MeshletBuildGpu.h"
 #include "render/SceneUpdates.h"
@@ -315,6 +316,36 @@ void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entit
         mtl::ComputeChain chain{r.Context.get<const MeshStore>().BufferContext()};
         UpdateAuthoredMorphShading(r, chain, created);
         chain.Submit();
+        return true;
+    });
+}
+
+// Combines the active object's mesh with the other selected object's mesh, each without a geometry procedure, and fails for any other selection.
+void CombineSelected(state::Scene &r, const action::mesh::Boolean &boolean) {
+    const auto active = FindActiveEntity(r);
+    std::vector<state::Entity> others;
+    for (const auto e : r.view<const Selected>())
+        if (e != active) others.push_back(e);
+    if (active == state::Null || others.size() != 1u || !r.all_of<Instance>(active) || !r.all_of<Instance>(others.front())) {
+        return action::Fail(r, "A boolean combines the active object with one other selected object");
+    }
+    const auto first = r.get<const Instance>(active).Entity, second = r.get<const Instance>(others.front()).Entity;
+    if (!HasMesh(r, first) || !HasMesh(r, second) || first == second) return action::Fail(r, "A boolean combines two different mesh objects");
+    if (r.all_of<procedure::GeometryProcedure>(first) || r.all_of<procedure::GeometryProcedure>(second)) return action::Fail(r, "A boolean combines meshes without geometry procedures");
+    const auto to_first = Inverse(ToMatrix(*WorldTransformOf(r, active))) * ToMatrix(*WorldTransformOf(r, others.front()));
+    const auto rotation = ToMat3(to_first);
+    if (!(Determinant(rotation) > 0.f)) return action::Fail(r, "A boolean cannot combine an object mirrored relative to the active one");
+    const auto task = BooleanTask(GetMesh(r, first), GetMesh(r, second), boolean.Operation, rotation, vec3(to_first[3]));
+    if (!task) return action::Fail(r, "A boolean combines closed surfaces");
+    RunTopologyAction(r, std::array{first}, [&] {
+        const auto output = ExecuteGeometryBoolean(r, *task);
+        if (!output) return false;
+        // Erasing the handle queues the old record's release.
+        r.remove<MeshHandle>(first);
+        r.emplace<MeshHandle>(first, *output);
+        r.remove<PrimitiveShape>(first);
+        r.emplace_or_replace<MeshGeometryDirty>(first);
+        RequestRender(r, RenderRequest::Rebuild);
         return true;
     });
 }
@@ -701,6 +732,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 RunOperator(r, targets, MeshTopologyOp::Wireframe, std::max(a.Thickness, 0.f), std::clamp(a.Offset, -1.f, 1.f), (a.Even ? TopologyFlagEvenOffset : 0u) | (a.Boundary ? TopologyFlagWireBoundary : 0u) | (a.Relative ? TopologyFlagWireRelative : 0u) | (a.Replace ? TopologyFlagWireReplace : 0u));
             },
             [&](ConnectVertices) { RunOperator(r, targets, MeshTopologyOp::ConnectVertices); },
+            // A boolean combines whole objects rather than an edit selection.
+            [&](const Boolean &a) { CombineSelected(r, a); },
             [&](const Knife &a) { KnifeSelected(r, targets, r.get<const EditPrimaries>(viewport).All, a.Start, a.End, *a.View); },
             [&](BridgeEdgeLoops) { selected([&](const Mesh &mesh, const GeometrySelection &selection) { return BridgeEdgeLoopsTask(meshes, mesh, selection); }); },
             [&](const GridFill &a) { selected([&](const Mesh &mesh, const GeometrySelection &selection) { return GridFillTask(meshes, mesh, selection, a.Span); }); },

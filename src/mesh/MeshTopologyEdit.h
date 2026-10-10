@@ -23,6 +23,7 @@ inline constexpr uint32_t TopologyScratchWords = 64u << 10;
 // Sparse topology emission and incidence repair, recorded into a chain the edits of one action share.
 // Every workspace an edit holds is a range of the chain's scratch, and the in-place edits read one clone of their sources' pages, so a batch of edits takes a fixed number of bindless slots.
 // Construction gathers every edit's source closure in one submit and runs every operator through its output counts in a second.
+// A boolean's intersection passes take submits of their own between the two.
 // Iterating operators converge together first, one submit per doubling of their label rounds.
 // Publication inserts the outputs, emits them and repairs incidence, edges, fans and corner classes through one submit.
 // New edges and fan items are inserted for host bounds and trimmed to the counts that submit reports.
@@ -31,7 +32,7 @@ inline constexpr uint32_t TopologyScratchWords = 64u << 10;
 // The owning document transaction restores canonical storage on cancellation.
 struct MeshTopologyEdit {
     // Constructs the edits of `tasks` on `chain`, which is the only way to obtain an edit.
-    // A KeepSelectedFaces task copies its faces into a new mesh, and every other task edits its source in place.
+    // A KeepSelectedFaces task copies its faces into a new mesh, a Boolean task combines two meshes into a new one, and every other task edits its source in place.
     // An edit whose task selects no source or produces no change has no Output.
     // An inset edit captures its staged basis into a range of `inset_basis` when one is given.
     static std::vector<MeshTopologyEdit> Construct(state::Scene &, mtl::ComputeChain &, std::span<const MeshTopologyTask>, BufferArena<uint32_t> *inset_basis = nullptr);
@@ -50,6 +51,7 @@ struct MeshTopologyEdit {
 
     mtl::ComputeChain &Chain;
     uint32_t SourceId;
+    uint32_t SecondSourceId; // A boolean's second source, and InvalidOffset otherwise.
     uint32_t StoreId; // The destination owner, and equals SourceId for in-place edits.
     MeshTopologyOp Op;
     uint32_t OriginalClassMode{};

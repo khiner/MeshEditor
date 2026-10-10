@@ -304,7 +304,8 @@ struct MeshStore {
         uint32_t Vertices, Halfedges, Faces;
     };
     // Acquires an output record with `source`'s metadata, its ranges allocated at the counts and captured for the GPU writes that fill them.
-    uint32_t BeginTopologyOutput(uint32_t source, std::span<const uint32_t> materials);
+    // A `second` source adds its element layers and the named attributes `source` has no attribute of the name for, as a join does.
+    uint32_t BeginTopologyOutput(uint32_t source, uint32_t second, std::span<const uint32_t> materials);
 
     // Adds live elements to a mesh domain for a topology emitter to fill, and returns their handles.
     // Without a list the handles form one run, and otherwise a list of nonconsecutive handles goes to a range of `list`, which needs a bindless slot.

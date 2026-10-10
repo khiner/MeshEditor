@@ -239,6 +239,7 @@ inline constexpr std::string_view SchemaNames[] = {
     "mtl::BindlessSet",
     "mtl::Context",
     "mtl::LibraryCache",
+    "procedure::Boolean",
     "procedure::BooleanMath",
     "procedure::Compare",
     "procedure::CookPlan",

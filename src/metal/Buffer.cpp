@@ -28,7 +28,7 @@ BufferContext::~BufferContext() {
     const AutoreleaseScope pool;
     ReclaimRetiredBuffers(true);
     for (const auto &bin : WorkspaceCache)
-        for (const auto &buffer : bin) Ctx.RemoveResident(buffer.get());
+        for (const auto &workspace : bin) Ctx.RemoveResident(workspace.Buffer.get());
     AutoreleaseScope::Release(WorkspaceCache, Retirements, Retired);
 }
 
@@ -37,38 +37,37 @@ NS::SharedPtr<MTL::Buffer> BufferContext::AcquireWorkspace(uint64_t bytes, std::
     const auto capacity = std::bit_ceil(std::max(bytes, uint64_t{16u << 10}));
     if (!capacity || capacity > Ctx.Device->maxBufferLength()) throw std::length_error("Metal workspace address space exhausted.");
     auto &bin = WorkspaceCache[std::countr_zero(capacity)];
-    const bool recycled = !bin.empty();
-    NS::SharedPtr<MTL::Buffer> result;
-    if (recycled) {
-        result = std::move(bin.back());
+    UsedWorkspace workspace;
+    if (!bin.empty()) {
+        workspace = std::move(bin.back());
         bin.pop_back();
         CachedWorkspaceBytes -= capacity;
     } else {
         // A new Metal buffer starts zeroed.
-        result = NewBuffer(Ctx, capacity);
-        Ctx.AddResident(result.get());
+        workspace.Buffer = NewBuffer(Ctx, capacity);
+        Ctx.AddResident(workspace.Buffer.get());
     }
-    auto *contents = static_cast<std::byte *>(result->contents());
+    auto *contents = static_cast<std::byte *>(workspace.Buffer->contents());
     CopyBytes(contents, prefix.data(), prefix.size());
-    // A recycled workspace has no pending GPU users, so the host clears the bytes after the prefix.
-    if (recycled) CopyBytes(contents + prefix.size(), nullptr, capacity - prefix.size());
-    return result;
+    // A recycled workspace has no pending GPU users, so the host clears the bytes its last use wrote after the prefix.
+    if (workspace.Used > prefix.size()) CopyBytes(contents + prefix.size(), nullptr, workspace.Used - prefix.size());
+    return std::move(workspace.Buffer);
 }
 
-void BufferContext::RecycleWorkspace(NS::SharedPtr<MTL::Buffer> buffer) {
-    constexpr uint64_t cache_limit = 32u << 20;
-    const auto bytes = uint64_t(buffer->length());
+void BufferContext::RecycleWorkspace(UsedWorkspace workspace) {
+    constexpr uint64_t cache_limit = 128u << 20;
+    const auto bytes = uint64_t(workspace.Buffer->length());
     if (bytes > cache_limit - CachedWorkspaceBytes) {
-        Ctx.RemoveResident(buffer.get());
+        Ctx.RemoveResident(workspace.Buffer.get());
         return;
     }
-    WorkspaceCache[std::countr_zero(bytes)].push_back(std::move(buffer));
+    WorkspaceCache[std::countr_zero(bytes)].push_back(std::move(workspace));
     CachedWorkspaceBytes += bytes;
 }
 void BufferContext::Release(std::span<RetiredBuffer> buffers) {
     for (auto &buffer : buffers) {
         if (buffer.Binding.Slot != InvalidSlot) Slots.Release(buffer.Binding);
-        if (buffer.Workspace) RecycleWorkspace(std::move(buffer.Workspace));
+        if (buffer.Workspace.Buffer) RecycleWorkspace(std::move(buffer.Workspace));
     }
 }
 
@@ -197,7 +196,7 @@ void Buffer::RetirePreviousWorkspaces() {
 void Buffer::Retire() {
     RetirePreviousWorkspaces();
     if (Workspace) {
-        Ctx.Retired.push_back({.Binding = {Type, Slot}, .Workspace = std::move(Workspace)});
+        Ctx.Retired.push_back({.Binding = {Type, Slot}, .Workspace = {std::move(Workspace), UsedSize}});
         Slot = InvalidSlot;
     }
     if (Storage) {
@@ -242,7 +241,7 @@ void Buffer::Reserve(uint64_t required_size) {
         auto next = Ctx.AcquireWorkspace(required_size, Contents().first(UsedSize));
         // An encoder may retain a direct binding made before this growth.
         // Keep old allocations owned until the workspace's consumers retire.
-        if (Workspace) PreviousWorkspaces.push_back(std::move(Workspace));
+        if (Workspace) PreviousWorkspaces.push_back({std::move(Workspace), UsedSize});
         Workspace = std::move(next);
         UpdateSlot();
         return;

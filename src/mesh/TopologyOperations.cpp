@@ -663,3 +663,20 @@ std::optional<MeshTopologyTask> MergeTask(const MeshStore &meshes, const Mesh &m
     }
     return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::MergeAtTarget, .TargetVertex = target, .TargetPosition = position, .SelectionElement = Element::Vertex, .Selection = selection};
 }
+
+std::optional<MeshTopologyTask> BooleanTask(const Mesh &first, const Mesh &second, BooleanOperation operation, const mat3 &rotation, vec3 translation) {
+    if (uint32_t(operation) > uint32_t(BooleanOperation::Intersection) || !FiniteMatrix(rotation, 3u) || !Finite(translation) || !(Determinant(rotation) > 0.f)) {
+        throw std::invalid_argument("Invalid boolean operation, or a transform that mirrors or collapses the second mesh.");
+    }
+    if (first.GetStoreId() == second.GetStoreId()) throw std::invalid_argument("A boolean combines two different meshes.");
+    if (!first.HasClosedSurface() || !second.HasClosedSurface()) return {};
+    return MeshTopologyTask{
+        .SourceId = first.GetStoreId(),
+        .Op = MeshTopologyOp::Boolean,
+        .SecondSourceId = second.GetStoreId(),
+        .Param0 = float(uint32_t(operation)),
+        .Flags = TopologyFlagSelectAll,
+        .CopyRotation = rotation,
+        .CopyTranslation = translation,
+    };
+}

@@ -124,6 +124,7 @@ mesheditor_library(MeshEditorMesh HOT
     src/mesh/GeometryRefresh.cpp
     src/mesh/MeshTopologyLayout.cpp
     src/mesh/SpatialFaceWork.cpp
+    src/mesh/BooleanWork.cpp
     src/mesh/Primitives.cpp
     src/mesh/VertexWeldGpu.cpp
 )

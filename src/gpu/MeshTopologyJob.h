@@ -37,6 +37,15 @@ struct MeshTopologyJob {
     uint32_t SrcEdgeCount DEFAULT();
     // Compact work indices resolve to canonical arena handles without staging geometry.
     ElementWork SrcVertexWork DEFAULT(), SrcHalfedgeWork DEFAULT(), SrcFaceWork DEFAULT(), SrcEdgeWork DEFAULT();
+    // A second source mesh's vertices, halfedges, faces and edges, whose compact elements follow the first's in each source domain.
+    // Only a boolean has one.
+    GpuArray<uint32_t, 4> Src2Counts DEFAULT();
+    GpuArray<ElementWork, 4> Src2Elements DEFAULT();
+    // Per source: its corner layers, with its vertex layers above bit 16.
+    // CornerAttributes and VertexAttributes are the output's.
+    GpuArray<uint32_t, 2> SourceLayers DEFAULT();
+    uint32_t SecondPrimitiveBase DEFAULT(); // The output primitive of the second source's primitive zero
+    SlotOffset Boolean DEFAULT(); // A boolean's BooleanJob record
     Element SelectionElement DEFAULT();
     ElementWork VertexSelection DEFAULT(), EdgeSelection DEFAULT(), FaceSelection DEFAULT();
     uint32_t SelectionOffset DEFAULT(); // Explicit selection classified once over the compact source domains
@@ -112,4 +121,4 @@ struct MeshTopologyJob {
     SlotOffset Attributes DEFAULT();
     GpuArray<uint32_t, 4> AttributeEnds DEFAULT();
 };
-static_assert(sizeof(MeshTopologyJob) == 704, "MeshTopologyJob size");
+static_assert(sizeof(MeshTopologyJob) == 804, "MeshTopologyJob size");

@@ -31,3 +31,6 @@ std::vector<MeshTopologyTask> SymmetrizeTasks(const Mesh &, uint8_t axis, bool n
 MeshTopologyTask KnifeTask(const Mesh &, const GeometrySelection &, const mat4 &mesh_to_clip, vec2 extent, vec2 start, vec2 end);
 // Reference chooses the survivor and is authoritative for First/Last and Center.
 std::optional<MeshTopologyTask> MergeTask(const MeshStore &, const Mesh &, const GeometrySelection &, GeometryMergeMode, float distance, uint32_t reference);
+// Combines the closed surfaces of two different meshes, `second`'s positions taken into `first`'s space by an orientation-preserving transform, for ExecuteGeometryBoolean.
+// Either surface open, or without faces, plans no task.
+std::optional<MeshTopologyTask> BooleanTask(const Mesh &first, const Mesh &second, BooleanOperation, const mat3 &rotation, vec3 translation);

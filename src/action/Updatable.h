@@ -63,6 +63,7 @@ struct RecalculateNormals;
 struct Rip;
 } // namespace action::mesh
 namespace procedure {
+struct Boolean;
 struct Position;
 struct Normal;
 struct Index;
@@ -91,7 +92,7 @@ using UpdatableComponents = TypeList<
     mesh::Delete, mesh::Merge, mesh::Extrude, mesh::Duplicate, mesh::Split, mesh::Dissolve, mesh::Subdivide, mesh::Triangulate, mesh::TrisToQuads,
     mesh::Poke, mesh::FlipNormals, mesh::EdgeSplit, mesh::Inset, mesh::Solidify, mesh::Wireframe, mesh::Bevel, mesh::SmoothVertices, mesh::ShrinkFatten,
     mesh::Randomize, mesh::Spin, mesh::ExtrudeRepeat, mesh::Bisect, mesh::Symmetrize, mesh::FillHoles, mesh::ConvexHull, mesh::Decimate, mesh::RecalculateNormals,
-    mesh::Rip, procedure::TransformElements,
+    mesh::Rip, procedure::TransformElements, procedure::Boolean,
     procedure::Position, procedure::Normal, procedure::Index, procedure::NamedAttribute, procedure::VectorMath, procedure::FloatMath, procedure::Compare,
     procedure::BooleanMath, procedure::StoreNamedAttribute, procedure::SetPosition,
     primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;

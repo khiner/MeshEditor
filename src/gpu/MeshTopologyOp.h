@@ -72,6 +72,14 @@ enum class MeshTopologyOp : uint32_t {
     Decimate = 39,
     // Copy each selected vertex and join it to its original with a loose edge.
     ExtrudeVertices = 40,
+    // Combine the closed surfaces of the source and a second source by the BooleanOperation in Param0 into a new mesh.
+    Boolean = 41,
+};
+// How a boolean combines its two solids.
+enum class BooleanOperation : uint32_t {
+    Union,
+    Difference,
+    Intersection,
 };
 
 // Primitive list: new vertex count, grid boundary length, grid span, attribute source,
@@ -134,8 +142,10 @@ inline bool TopologyIterates(MeshTopologyOp op) {
 }
 // Whether the gather adds a displacement to output vertices.
 inline bool TopologyDisplaces(MeshTopologyOp op, uint32_t flags) {
-    return op == MeshTopologyOp::InsetRegion || op == MeshTopologyOp::InsetIndividual || op == MeshTopologyOp::Poke || op == MeshTopologyOp::Solidify || op == MeshTopologyOp::Wireframe || op == MeshTopologyOp::AddPrimitives || op == MeshTopologyOp::Decimate || TopologyIsBevel(op) || (flags & TopologyFlagTransformCopies) != 0u;
+    return op == MeshTopologyOp::Boolean || op == MeshTopologyOp::InsetRegion || op == MeshTopologyOp::InsetIndividual || op == MeshTopologyOp::Poke || op == MeshTopologyOp::Solidify || op == MeshTopologyOp::Wireframe || op == MeshTopologyOp::AddPrimitives || op == MeshTopologyOp::Decimate || TopologyIsBevel(op) || (flags & TopologyFlagTransformCopies) != 0u;
 }
+// Operators that emit into a new mesh rather than editing their source in place.
+inline bool TopologyCreatesRecord(MeshTopologyOp op) { return op == MeshTopologyOp::KeepSelectedFaces || op == MeshTopologyOp::Boolean; }
 // The operator whose marks an operator reuses: an extrude for an inset, a duplicate for a solidify, and itself otherwise.
 inline MeshTopologyOp TopologyBaseOp(MeshTopologyOp op) {
     switch (op) {

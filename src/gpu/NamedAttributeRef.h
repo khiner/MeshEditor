@@ -42,10 +42,11 @@ struct NamedAttributeRef {
 static_assert(sizeof(NamedAttributeRef) == 16);
 
 // One named attribute a topology job carries from its source elements to its output elements, in its domain's run of the job's records.
-// Default holds the value bits of output elements without a source.
+// Each source's attribute reads that source's elements, and a source without the attribute has no values slot.
+// Default holds the value bits of output elements without a source value.
 struct TopologyAttribute {
     AttributeType Type DEFAULT();
-    NamedAttributeRef Source DEFAULT(), Destination DEFAULT();
+    NamedAttributeRef Source DEFAULT(), SecondSource DEFAULT(), Destination DEFAULT();
     GpuArray<uint32_t, 4> Default DEFAULT();
 };
-static_assert(sizeof(TopologyAttribute) == 52);
+static_assert(sizeof(TopologyAttribute) == 68);

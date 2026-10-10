@@ -1685,11 +1685,12 @@ void MeshStore::CreateMesh(uint32_t id, const MeshData &data, const MeshVertexAt
     std::ranges::fill(Buffers.EdgeSharpness.GetMutable(Buffers.EdgeHalfedges.Dense(record.EdgeData)), uint8_t{0});
 }
 
-uint32_t MeshStore::BeginTopologyOutput(uint32_t source, std::span<const uint32_t> materials) {
+uint32_t MeshStore::BeginTopologyOutput(uint32_t source, uint32_t second, std::span<const uint32_t> materials) {
     const auto &src = Records.at(source);
+    const auto *other = second != InvalidOffset ? &Records.at(second) : nullptr;
     Record record{
-        .CornerAttributes = src.CornerAttributes,
-        .VertexAttributes = src.VertexAttributes,
+        .CornerAttributes = src.CornerAttributes | (other ? other->CornerAttributes : 0u),
+        .VertexAttributes = src.VertexAttributes | (other ? other->VertexAttributes : 0u),
         .PrimitiveMaterials = Buffers.PrimitiveMaterials.Allocate(uint32_t(materials.size())),
         .FacePrimitivesReady = true,
         .SelectionSummary = Buffers.SelectionSummary.Allocate(1),
@@ -1697,14 +1698,16 @@ uint32_t MeshStore::BeginTopologyOutput(uint32_t source, std::span<const uint32_
         .SkinBlocksReady = src.SkinBlocksReady,
         .MorphBlocksReady = src.MorphBlocksReady,
         .MorphTargetCount = src.MorphTargetCount,
-        .HasAuthoredNormals = src.HasAuthoredNormals,
+        .HasAuthoredNormals = src.HasAuthoredNormals || (other && other->HasAuthoredNormals),
         .DefaultMorphWeights = src.DefaultMorphWeights,
         .Alive = true,
     };
     std::ranges::copy(materials, Buffers.PrimitiveMaterials.GetMutable(record.PrimitiveMaterials).begin());
     Buffers.SelectionSummary.GetMutable(record.SelectionSummary)[0] = {};
     std::vector<NamedAttribute> attributes;
-    ForEachNamedAttribute(source, [&](uint32_t, const NamedAttribute &entry) { attributes.push_back({.Domain = entry.Domain, .Type = entry.Type, .Name = entry.Name, .Default = entry.Default}); });
+    const auto add = [&](uint32_t, const NamedAttribute &entry) { attributes.push_back({.Domain = entry.Domain, .Type = entry.Type, .Name = entry.Name, .Default = entry.Default}); };
+    ForEachNamedAttribute(source, add);
+    if (other) ForEachNamedAttribute(second, [&](uint32_t attribute, const NamedAttribute &entry) { if (FindAttribute(source, entry.NameView()) == InvalidOffset) add(attribute, entry); });
     const auto id = AcquireId(std::move(record));
     CaptureSelectionSummary(id);
     // The output's attributes take payloads as its elements insert.

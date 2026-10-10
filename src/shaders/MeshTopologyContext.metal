@@ -37,19 +37,31 @@ constant uint TopoCountWireCorners = 3u;
 constant uint TopoVertexMapWords = 6u;
 constant uint TopoCornerMapWords = 8u;
 
+// A source domain's compact elements: the first source's, then a second source's from Split on.
+struct TopoSourceDomain {
+    ElementWorkDomain First, Second;
+    uint Split;
+    uint Handle(uint index) const { return index < Split ? First.Handle(index) : Second.Handle(index - Split); }
+    uint Index(uint handle) const {
+        const uint first = First.Index(handle);
+        if (first != InvalidOffset) return first;
+        const uint second = Second.Index(handle);
+        return second == InvalidOffset ? second : Split + second;
+    }
+};
 template<typename T> struct TopoSourceValues {
     device const T *Values;
-    ElementWorkDomain Domain;
+    TopoSourceDomain Domain;
     T operator[](uint index) const { return Values[Domain.Handle(index)]; }
 };
 struct TopoCornerVertices {
     device const uint *Handles;
-    ElementWorkDomain Vertices;
+    TopoSourceDomain Vertices;
     uint operator[](uint halfedge) const { return Vertices.Index(Handles[halfedge]); }
 };
 struct TopoHalfedgeScratch {
     device uint *Values;
-    ElementWorkDomain Halfedges;
+    TopoSourceDomain Halfedges;
     device uint &operator[](uint handle) const { return Values[Halfedges.Index(handle)]; }
 };
 
@@ -99,10 +111,16 @@ struct TopoContext {
         else atomic_fetch_and_explicit(word, ~mask, memory_order_relaxed);
     }
 
-    ElementWorkDomain SrcVertexDomain(MeshTopologyJob job) const { return {B, job.SrcVertexWork, 0u}; }
-    ElementWorkDomain SrcHalfedgeDomain(MeshTopologyJob job) const { return {B, job.SrcHalfedgeWork, 0u}; }
-    ElementWorkDomain SrcFaceDomain(MeshTopologyJob job) const { return {B, job.SrcFaceWork, 0u}; }
-    ElementWorkDomain SrcEdgeDomain(MeshTopologyJob job) const { return {B, job.SrcEdgeWork, 0u}; }
+    TopoSourceDomain SrcVertexDomain(MeshTopologyJob job) const { return {{B, job.SrcVertexWork, 0u}, {B, job.Src2Elements[0], 0u}, job.SrcVertexCount}; }
+    TopoSourceDomain SrcHalfedgeDomain(MeshTopologyJob job) const { return {{B, job.SrcHalfedgeWork, 0u}, {B, job.Src2Elements[1], 0u}, job.SrcHalfedgeCount}; }
+    TopoSourceDomain SrcFaceDomain(MeshTopologyJob job) const { return {{B, job.SrcFaceWork, 0u}, {B, job.Src2Elements[2], 0u}, job.SrcFaceCount}; }
+    TopoSourceDomain SrcEdgeDomain(MeshTopologyJob job) const { return {{B, job.SrcEdgeWork, 0u}, {B, job.Src2Elements[3], 0u}, job.SrcEdgeCount}; }
+    // Whether a compact source vertex, face or edge is the second source's.
+    bool SecondVertex(MeshTopologyJob job, uint v) const { return v - job.SrcVertexCount < job.Src2Counts[0]; }
+    bool SecondFace(MeshTopologyJob job, uint f) const { return f - job.SrcFaceCount < job.Src2Counts[2]; }
+    bool SecondEdge(MeshTopologyJob job, uint e) const { return e - job.SrcEdgeCount < job.Src2Counts[3]; }
+    // Whether a canonical source corner is the second source's.
+    bool SecondCorner(MeshTopologyJob job, uint h) const { return job.Src2Counts[1] && SrcHalfedgeDomain(job).Index(h) >= job.SrcHalfedgeCount; }
     TopoCornerVertices SrcCorners(MeshTopologyJob job) const { return {BindlessBuffer(uint,B.IndexBuffer, Pc.Source.CornerSlot), SrcVertexDomain(job)}; }
     TopoOutputDomain DstVertexDomain(MeshTopologyJob job) const { return {B, job.DstVertexHandles}; }
     TopoOutputDomain DstFaceDomain(MeshTopologyJob job) const { return {B, job.DstFaceHandles}; }
@@ -272,20 +290,21 @@ inline uint2 TopoAttributeRun(MeshTopologyJob job, AttributeDomain domain) {
     const uint d = uint(domain);
     return uint2(d ? job.AttributeEnds[d - 1u] : 0u, job.AttributeEnds[d]);
 }
-// The attribute's source value at a handle, and its default without a source.
-inline uint4 TopoReadAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle) {
-    if (handle == InvalidOffset) return uint4(attribute.Default[0], attribute.Default[1], attribute.Default[2], attribute.Default[3]);
-    return ReadNamedAttribute(ctx.B, attribute.Source, attribute.Type, handle);
+// The attribute's value at a handle of the first or `second` source, and its default without a source value.
+inline uint4 TopoReadAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle, bool second) {
+    const NamedAttributeRef source = second ? attribute.SecondSource : attribute.Source;
+    if (handle == InvalidOffset || source.ValuesSlot == InvalidSlot) return uint4(attribute.Default[0], attribute.Default[1], attribute.Default[2], attribute.Default[3]);
+    return ReadNamedAttribute(ctx.B, source, attribute.Type, handle);
 }
 inline void TopoWriteAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle, uint4 value) {
     WriteNamedAttribute(ctx.B, attribute.Destination, attribute.Type, handle, value);
 }
 // Writes each attribute of the domain at a handle from its value at a source handle.
-inline void TopoCopyAttributes(TopoContext ctx, MeshTopologyJob job, AttributeDomain domain, uint handle, uint source) {
+inline void TopoCopyAttributes(TopoContext ctx, MeshTopologyJob job, AttributeDomain domain, uint handle, uint source, bool second) {
     const uint2 run = TopoAttributeRun(job, domain);
     for (uint i = run.x; i < run.y; ++i) {
         const TopologyAttribute attribute = TopoAttribute(ctx, job, i);
-        TopoWriteAttribute(ctx, attribute, handle, TopoReadAttribute(ctx, attribute, source));
+        TopoWriteAttribute(ctx, attribute, handle, TopoReadAttribute(ctx, attribute, source, second));
     }
 }
 // Floats interpolate bilinearly, and ints and bools take the source of the dominant weight.
@@ -527,7 +546,7 @@ inline void TopoEmitFace(TopoContext ctx, MeshTopologyJob job, uint fd, uint bas
         ctx.DstHalfedgeFaces(job)[h] = ctx.DstFaceDomain(job).Handle(fd);
         if (job.CornerAttributes & MeshAttributeBit_Normal) ctx.CornerProvenance(job)[h].y = fd;
     }
-    const bool hidden=source<job.SrcFaceCount && (!selected || job.Op==MeshTopologyOp::KeepSelectedFaces) && ctx.Selected({ctx.Pc.Source.FaceHiddenSlot,0u},ctx.SrcFaceDomain(job).Handle(source));
+    const bool hidden=source<job.SrcFaceCount+job.Src2Counts[2] && (!selected || job.Op==MeshTopologyOp::KeepSelectedFaces) && ctx.Selected({ctx.Pc.Source.FaceHiddenSlot,0u},ctx.SrcFaceDomain(job).Handle(source));
     ctx.Select({ctx.Pc.Destination.FaceHiddenSlot,0u},ctx.DstFaceDomain(job).Handle(fd),hidden);
     ctx.SelectDstFace(job, fd, selected && !hidden);
 }

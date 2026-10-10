@@ -24,6 +24,10 @@ struct Source {};
 struct Output {};
 // Appends its second geometry input's elements to its first's.
 struct Join {};
+// Combines its first geometry input's closed surface with its second's into a new mesh.
+struct Boolean {
+    BooleanOperation Operation{BooleanOperation::Difference};
+};
 // A primitive shape's parameters make a generator, which emits a new mesh of that shape.
 using Generators = action::TypeList<primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
 template<typename K>
@@ -84,7 +88,7 @@ struct TransformElements {
 
 // A node's kind is the index of its parameter component here.
 using NodeKinds = action::TypeList<
-    Source, Output, Join,
+    Source, Output, Join, Boolean,
     primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone,
     action::mesh::Delete, action::mesh::Merge, action::mesh::Extrude, action::mesh::Duplicate, action::mesh::Split, action::mesh::Dissolve,
     action::mesh::Subdivide, action::mesh::Triangulate, action::mesh::TrisToQuads, action::mesh::Poke, action::mesh::FlipNormals, action::mesh::EdgeSplit,
@@ -115,7 +119,8 @@ inline constexpr uint8_t Bool = TypeBit(AttributeType::Bool), Float = TypeBit(At
 // A source or generator emits geometry from no input.
 inline constexpr Socket SourceSockets[]{{Geometry, Out}};
 inline constexpr Socket OutputSockets[]{{Geometry, In}};
-inline constexpr Socket JoinSockets[]{{Geometry, In}, {Geometry, In}, {Geometry, Out}};
+// A combining node reads two geometry inputs.
+inline constexpr Socket CombineSockets[]{{Geometry, In}, {Geometry, In}, {Geometry, Out}};
 // An operator edits its geometry input where its selection input selects.
 inline constexpr Socket OperatorSockets[]{{Geometry, In}, {Selection, In, Bool}, {Geometry, Out}};
 inline constexpr Socket PositionSockets[]{{Attribute, Out, Vec3}};
@@ -130,7 +135,7 @@ inline constexpr Socket SetPositionSockets[]{{Geometry, In}, {Attribute, In, Vec
 template<typename K> constexpr std::span<const Socket> SocketsOf() {
     if constexpr (std::same_as<K, Source> || Generator<K>) return SourceSockets;
     else if constexpr (std::same_as<K, Output>) return OutputSockets;
-    else if constexpr (std::same_as<K, Join>) return JoinSockets;
+    else if constexpr (std::same_as<K, Join> || std::same_as<K, Boolean>) return CombineSockets;
     else if constexpr (std::same_as<K, Position> || std::same_as<K, Normal>) return PositionSockets;
     else if constexpr (std::same_as<K, Index>) return IndexSockets;
     else if constexpr (std::same_as<K, NamedAttribute>) return NamedAttributeSockets;

@@ -532,6 +532,7 @@ uint32_t Generate(state::Scene &r, const Generator auto &shape) { return CreateM
 // The Source node emits the previous output restored to the source when the source kept its blocks, so the output record persists across cooks.
 // An input owns the record it reads once its producer has no other consumer left, and otherwise reads a clone.
 // A node without an input record, or whose operation changes nothing, is marked and forwards its input.
+// A boolean emits a new record, and its inputs release with the cook's other records.
 // A missing result is the source's copy, and every other record the cook made releases.
 void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena, const MeshStore::Writes &between) {
     auto &meshes = r.Context.get<MeshStore>();
@@ -620,6 +621,16 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
                 }
             }
             values[first + 2u].Record = input != InvalidOffset ? input : second;
+            continue;
+        }
+        if (kind == KindOf<Boolean>) {
+            const auto second = take(node, 1u);
+            values[first + 1u].Record = second;
+            const auto task = input != InvalidOffset && second != InvalidOffset ? BooleanTask(Mesh{meshes, input}, Mesh{meshes, second}, r.get<const Boolean>(entity).Operation, mat3{1.f}, vec3{0.f}) : std::nullopt;
+            const auto combined = task ? ExecuteGeometryBoolean(r, *task) : std::nullopt;
+            if (combined) created.push_back(*combined);
+            else r.emplace<NodeError>(entity);
+            values[first + 2u].Record = combined.value_or(input);
             continue;
         }
         if (input == InvalidOffset) r.emplace<NodeError>(entity);

@@ -11,13 +11,15 @@
 struct MeshTopologyTask {
     uint32_t SourceId;
     MeshTopologyOp Op;
+    // A boolean's second source, combined with SourceId into a new mesh.
+    uint32_t SecondSourceId{InvalidOffset};
     float Param0{}, Param1{};
     uint32_t Flags{};
     uint32_t Steps{1};
     // The canonical source vertex a merge keeps and its output position.
     uint32_t TargetVertex{InvalidOffset};
     vec3 TargetPosition{};
-    // The transform applied to copies, and the plane a plane-mode operator cuts or deletes by.
+    // The transform applied to copies or to a boolean's second source, and the plane a plane-mode operator cuts or deletes by.
     mat3 CopyRotation{};
     vec3 CopyTranslation{};
     vec3 PlaneNormal{};
@@ -80,3 +82,7 @@ std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Scene &, std:
 // Execute dependent tasks in order; each task reads the preceding task's completed geometry.
 // Returns one result per stage, including no-op stages; later stages may retire earlier handles.
 std::vector<GeometryTopologyResult> ExecuteGeometryTopologyStages(state::Scene &, std::span<const MeshTopologyTask>);
+
+// Executes a boolean task into a new mesh, then collapses the zero-length edges that crossings at coincident points leave.
+// Returns the new mesh, or none when the task changed nothing.
+std::optional<uint32_t> ExecuteGeometryBoolean(state::Scene &, const MeshTopologyTask &);
