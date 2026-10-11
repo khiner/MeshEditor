@@ -199,7 +199,8 @@ struct Planner {
         std::ranges::for_each(selection.Vertices, [&](uint32_t handle) {
             Vertices[AddVertex(handle)].Selected = true;
             const auto fan = connectivity.VertexCorners[handle];
-            for (uint32_t i = 0u; i < fan.y; ++i) faces.insert(connectivity.FanItems[fan.x + i].y);
+            for (uint32_t i = 0u; i < fan.y; ++i)
+                if (const auto face = connectivity.FanItems[fan.x + i].y; face != InvalidOffset) faces.insert(face);
         });
         for (const auto face : faces) {
             Face f{.Handle = face};
