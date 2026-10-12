@@ -142,8 +142,8 @@ inline constexpr uint8_t Bool = TypeBit(AttributeType::Bool), Float = TypeBit(At
 // A source or generator emits geometry from no input.
 inline constexpr Socket SourceSockets[]{{Geometry, Out}};
 inline constexpr Socket OutputSockets[]{{Geometry, In}};
-// A join appends the geometry it reads to the geometry it edits.
-inline constexpr Socket JoinSockets[]{{Geometry, In}, {Geometry, In, 0u, true}, {Geometry, Out}};
+// A join moves the elements of its second input into the geometry it edits.
+inline constexpr Socket JoinSockets[]{{Geometry, In}, {Geometry, In}, {Geometry, Out}};
 inline constexpr Socket BooleanSockets[]{{Geometry, In, 0u, true, "Mesh 1"}, {Geometry, In, 0u, true, "Mesh 2"}, {Geometry, Out}};
 // An operator edits its geometry input where its selection input selects.
 inline constexpr Socket OperatorSockets[]{{Geometry, In}, {Selection, In, Bool}, {Geometry, Out}};

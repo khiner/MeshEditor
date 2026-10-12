@@ -65,67 +65,65 @@ constexpr std::array<uint32_t, 3> EveryElement{InvalidOffset, InvalidOffset, Inv
 // A node's output record, which is its input when the operation changed nothing, or why it could not run.
 using Outcome = std::expected<uint32_t, NodeFault>;
 
-// Copies of the records without render records, since a cook output builds them anew, and their block pairs from the records when `pairs` holds one list per record.
-std::vector<uint32_t> Clones(state::Scene &r, std::span<const uint32_t> ids, std::span<MeshStore::BlockPairs> pairs) {
+// Copies of the records without render records, since a cook output builds them anew.
+std::vector<uint32_t> Clones(state::Scene &r, std::span<const uint32_t> ids) {
     auto &meshes = r.Context.get<MeshStore>();
     for (const auto id : ids) meshes.PlanClone(Mesh{meshes, id});
     meshes.CommitReserves();
     CloneCopies copies;
-    auto clones = meshes.CloneMeshes(copies, ids, false, pairs);
+    auto clones = meshes.CloneMeshes(copies, ids, false);
     mtl::ComputeChain chain{meshes.BufferContext()};
     copies.Encode(chain, GetMeshPipelines(r));
     chain.Submit();
     meshes.RebuildSelectionIndex(clones);
     return clones;
 }
-uint32_t Clone(state::Scene &r, uint32_t id, std::span<MeshStore::BlockPairs> pairs) { return Clones(r, std::array{id}, pairs).front(); }
+uint32_t Clone(state::Scene &r, uint32_t id) { return Clones(r, std::array{id}).front(); }
+
+// The record's local blocks among the ascending arena blocks of a domain, skipping the blocks it does not own, ascending.
+std::vector<uint32_t> LocalBlocks(const MeshStore &meshes, uint32_t id, MeshStore::ElementDomain domain, std::span<const uint32_t> blocks) {
+    std::vector<uint32_t> locals;
+    WithDomain(meshes.Arenas(), domain, [&](const auto &arena) {
+        const auto owner = DomainSet(meshes.Get(id), domain).Index;
+        const auto members = arena.Blocks.Buffer.template GetSpan<MeshElementBlock>();
+        for (const auto block : blocks)
+            if (owner != InvalidOffset && block < members.size() && members[block].Owner == owner) locals.push_back(members[block].Local);
+    });
+    std::ranges::sort(locals);
+    return locals;
+}
 
 // The source's copy that the Source node emits, which `evaluated` and `resync` then describe.
-// With resync state, the previous output restores to the source at the blocks either wrote since its last cook.
-// Otherwise, or when the source gained or lost blocks, the previous output releases for a new copy.
+// With resync state, the previous output restores to the source at the local blocks either wrote since its last cook and wherever their tables differ in shape.
 uint32_t SourceCopy(state::Scene &r, uint32_t source, EvaluatedMesh &evaluated, std::optional<ResyncState> &resync, const MeshStore::Writes &between) {
     auto &meshes = r.Context.get<MeshStore>();
     if (resync && evaluated.Source == source && meshes.TryGet(evaluated.StoreId)) {
         auto written = resync->Written;
-        for (uint32_t d = 0u; d < written.size(); ++d) {
-            written[d].append_range(between.Blocks[d]);
+        for (const auto domain : MeshStore::ElementDomains) {
+            const auto d = uint32_t(domain);
+            written[d].append_range(LocalBlocks(meshes, source, domain, between.Blocks[d]));
             SortUnique(written[d]);
         }
         CloneCopies copies;
-        if (const auto change = meshes.Resync(copies, evaluated.StoreId, source, resync->Blocks, written, between.Attributes, resync->Attributes)) {
-            mtl::ComputeChain chain{meshes.BufferContext()};
-            copies.Encode(chain, GetMeshPipelines(r));
-            chain.Submit();
-            meshes.ReconcileSelection(r, chain, std::span{&*change, 1u});
-            chain.Submit();
-            ++resync->Resyncs;
-            return evaluated.StoreId;
-        }
+        const auto change = meshes.Resync(copies, evaluated.StoreId, source, written, between.Attributes, resync->Attributes);
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        copies.Encode(chain, GetMeshPipelines(r));
+        chain.Submit();
+        meshes.ReconcileSelection(r, chain, std::span{&change, 1u});
+        chain.Submit();
+        ++resync->Resyncs;
+        return evaluated.StoreId;
     }
     meshes.Release(evaluated.StoreId);
     resync.emplace();
-    evaluated = {.StoreId = Clone(r, source, std::span{&resync->Blocks, 1u}), .Source = source};
+    evaluated = {.StoreId = Clone(r, source), .Source = source};
     meshes.ForEachNamedAttribute(evaluated.StoreId, [&](uint32_t attribute, const auto &) { resync->Attributes.push_back(attribute); });
     return evaluated.StoreId;
 }
 
-// Keeps the written blocks the record still holds or pairs with its source.
-void KeepWritten(const MeshStore &meshes, uint32_t id, ResyncState &resync, MeshStore::DomainBlocks written) {
-    const auto &record = meshes.Get(id);
-    for (const auto domain : MeshStore::ElementDomains) {
-        const auto d = uint32_t(domain);
-        const auto &pairs = resync.Blocks[d];
-        const auto owner = DomainSet(record, domain).Index;
-        WithDomain(meshes.Arenas(), domain, [&](const auto &arena) {
-            const auto members = arena.Blocks.Buffer.template GetSpan<MeshElementBlock>();
-            std::erase_if(written[d], [&](uint32_t block) {
-                const auto paired = std::ranges::lower_bound(pairs, block, {}, &uvec2::y);
-                const bool owned = owner != InvalidOffset && block < members.size() && members[block].Owner == owner;
-                return !owned && (paired == pairs.end() || paired->y != block);
-            });
-        });
-        resync.Written[d] = std::move(written[d]);
-    }
+// Keeps the record's local blocks among the arena blocks the cook wrote.
+void KeepWritten(const MeshStore &meshes, uint32_t id, ResyncState &resync, const MeshStore::DomainBlocks &written) {
+    for (const auto domain : MeshStore::ElementDomains) resync.Written[uint32_t(domain)] = LocalBlocks(meshes, id, domain, written[uint32_t(domain)]);
 }
 
 GeometrySelection Handles(const MeshStore &meshes, uint32_t id, const Masks &masks) { return masks.In ? ReadMasks(meshes, id, *masks.In) : AllHandles(Mesh{meshes, id}); }
@@ -495,7 +493,8 @@ Evaluation EvaluateInputs(state::Scene &r, const GeometryProcedure &procedure, c
             mask_ranges[d] = arena->Allocate(owned.empty() ? 1u : owned.back() + 1u);
             const bool scattered = ElementDomainOf(attribute->Domain) == domains[d];
             if (scattered) from = elements[d];
-            scatters.push_back({.Attribute = ref, .TableCount = scattered ? attribute->Table.Count : 0u, .Masks = MaskBinding({&*arena, mask_ranges[d].Offset}), .Words = mask_ranges[d].Count * MeshElementBlockWords});
+            const auto [membership, owner] = WithDomain(meshes.Arenas(), domains[d], [&](const auto &elements) { return std::pair{elements.Blocks.Buffer.Slot, DomainSet(meshes.Get(id), domains[d]).Index}; });
+            scatters.push_back({.Attribute = scattered ? ref : NamedAttributeRef{}, .MembershipSlot = membership, .Owner = owner, .Masks = MaskBinding({&*arena, mask_ranges[d].Offset}), .Words = mask_ranges[d].Count * MeshElementBlockWords});
         }
         evaluation.MaskFirst = {mask_ranges[0].Offset, mask_ranges[1].Offset, mask_ranges[2].Offset};
     }
@@ -587,7 +586,7 @@ std::optional<uint32_t> Realize(state::Scene &r, uint32_t points, uint32_t insta
     auto &meshes = r.Context.get<MeshStore>();
     const auto transforms = InstanceTransforms(meshes, points);
     if (transforms.empty()) return {};
-    const auto clones = Clones(r, std::vector(transforms.size(), instance), {});
+    const auto clones = Clones(r, std::vector(transforms.size(), instance));
     for (size_t i = 0u; i < clones.size(); ++i) {
         const PositionOperationTarget target{.StoreId = clones[i], .Selection = AllHandles(Mesh{meshes, clones[i]})};
         ExecuteGeometryPositions(r, std::span{&target, 1u}, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{.Delta = transforms[i]}});
@@ -699,7 +698,7 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         created.push_back(SourceCopy(r, source, evaluated, resync, between));
         // The copy selects nothing and hides what the source hides whether it resynced or cloned anew, so the result selects only what its publishing nodes select.
         mtl::ComputeChain chain{meshes.BufferContext()};
-        meshes.ResetEditState(r, chain, evaluated.StoreId, resync->Blocks);
+        meshes.ResetEditState(r, chain, evaluated.StoreId, source);
         chain.Submit();
     } else {
         meshes.Release(evaluated.StoreId);
@@ -730,7 +729,7 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         taken = values[slot];
         const bool last = --remaining[slot] == 0u;
         if (taken.Record == InvalidOffset || (taken.Borrowed() ? KindSockets(procedure.Nodes[node].Kind)[input].Reads : last)) return taken;
-        const auto clone = created.emplace_back(Clone(r, taken.Record, {}));
+        const auto clone = created.emplace_back(Clone(r, taken.Record));
         if (taken.Borrowed() || !on_path[node] || input) {
             taken.MeshEntity = state::Null;
             taken.Record = clone;
@@ -763,7 +762,7 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         if (!reached[node] || IsAttributeKind(kind)) continue;
         if (kind == KindOf<Source>) {
             if (!read(node)) continue;
-            values[first].Record = std::exchange(copied, true) ? created.emplace_back(Clone(r, source, {})) : evaluated.StoreId;
+            values[first].Record = std::exchange(copied, true) ? created.emplace_back(Clone(r, source)) : evaluated.StoreId;
             continue;
         }
         if (kind == KindOf<ObjectInfo>) {
@@ -856,9 +855,9 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
     const bool owns = !transforms.empty() && published->MeshEntity == state::Null;
     if (owns) disown(published->Instance);
     auto writes = meshes.TakeWrites();
-    if (result == InvalidOffset) result = sourced && !copied ? evaluated.StoreId : created.emplace_back(Clone(r, source, {}));
+    if (result == InvalidOffset) result = sourced && !copied ? evaluated.StoreId : created.emplace_back(Clone(r, source));
     if (result == evaluated.StoreId) {
-        KeepWritten(meshes, result, *resync, std::move(writes.Blocks));
+        KeepWritten(meshes, result, *resync, writes.Blocks);
         std::erase_if(resync->Attributes, [&](uint32_t attribute) { return std::ranges::binary_search(writes.Attributes, attribute); });
         r.emplace_or_replace<ResyncState>(mesh_entity, std::move(*resync));
     } else {

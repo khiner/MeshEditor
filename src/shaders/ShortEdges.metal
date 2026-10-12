@@ -8,11 +8,12 @@ kernel void FlagShortEdges(
     constant ShortEdgesPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     if (i >= pc.HalfedgeCount) return;
-    const uint h = pc.HalfedgeFirst + i;
+    const uint h = i;
     const ConnectivityView view{b, pc.Connectivity, pc.FaceCount};
     if (view.Edge(h) == InvalidOffset || !view.EdgeFirst(h)) return;
     device const uint *corners = BindlessBuffer(uint, b.IndexBuffer, pc.CornerSlot);
     device const Vertex *vertices = BindlessBuffer(Vertex, b.VertexBuffer, pc.VertexSlot);
-    if (distance(float3(vertices[corners[h]].Position), float3(vertices[corners[view.Previous(h)]].Position)) >= pc.Distance) return;
+    const auto position = [&](uint corner) { return float3(vertices[view.VertexAddress(corners[view.HalfedgeAddress(corner)])].Position); };
+    if (distance(position(h), position(view.Previous(h))) >= pc.Distance) return;
     BindlessBufferMutable(uint, b.Buffer, pc.Flag.Slot)[pc.Flag.Offset] = 1u;
 }

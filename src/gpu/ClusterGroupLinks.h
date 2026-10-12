@@ -2,7 +2,7 @@
 #include "gpu/Types.h"
 
 // Edit-only inverse edges for GroupIndex and RefinedGroup, respectively.
-// Both packed runs live in the shared group-cluster ID arena.
+// Both runs are offsets in the owner's group cluster range.
 struct ClusterGroupLinks {
     uint32_t MemberOffset DEFAULT(), MemberCount DEFAULT();
     uint32_t ProxyOffset DEFAULT(), ProxyCount DEFAULT();

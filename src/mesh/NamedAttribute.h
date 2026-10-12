@@ -47,20 +47,17 @@ struct NamedAttribute {
     AttributeDomain Domain{};
     AttributeType Type{};
     AttributeName Name{};
-    Range Table{}; // One table word per element block from FirstBlock
-    uint32_t FirstBlock{};
+    Range Values{}; // The value blocks of the record's local blocks in its domain, in their order
     AttributeValue Default{};
     std::string_view NameView() const { return {Name.data(), strnlen(Name.data(), Name.size())}; }
 };
 
-// An attribute's values by canonical handle, for handles in its record's domain.
+// An attribute's values at its record's handles in its domain, a block per local block.
 template<AttributeScalar T>
 struct NamedAttributeView {
-    std::span<const uint32_t> Table;
-    uint32_t FirstBlock{};
     std::span<const AttributeBlock<T>> Values;
     T operator[](uint32_t handle) const {
-        const auto &block = Values[Table[handle / MeshElementBlockSize - FirstBlock] - 1u];
+        const auto &block = Values[handle / MeshElementBlockSize];
         const auto slot = handle % MeshElementBlockSize;
         if constexpr (std::same_as<T, bool>) return (block[slot / 32u] >> (slot % 32u)) & 1u;
         else return block[slot];

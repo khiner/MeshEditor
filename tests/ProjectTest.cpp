@@ -30,7 +30,6 @@
 #include <array>
 #include <cstdio>
 #include <fstream>
-#include <map>
 
 using boost::ut::expect;
 
@@ -54,13 +53,14 @@ struct Fixture : Engine {
     }
     template<typename A> auto Do(A a) {
         const auto node = P->Do(action::MakeAction(std::move(a)));
-        expect(R.Context.get<action::Errors>().Messages.empty());
+        Audit();
         return node.value();
     }
     // Settles direct scene writes and commits them as one history node.
     void Commit(std::string label) {
         P->Settle();
         P->History.Commit(std::move(label), {});
+        Audit();
     }
     // Does an action that adds an object and returns the object, selected and active.
     template<typename A> state::Entity Add(A a) {
@@ -371,9 +371,7 @@ void TestInstanceLifecycleRendersBack() {
     undone(other, action::object::Delete{});
 }
 
-// An unlinked duplicate copies its source's render records onto its own geometry.
-// The copy's finest clusters name its own triangles, edges or points, whose owner entries name those clusters.
-// Each copied vertex fan holds its source fan's corner and face pairs, remapped into the copy's arenas.
+// An unlinked duplicate copies its source's canonical values and render records onto storage of its own, so it hashes equal to its source.
 // With its source's vertices turned in edit mode, which keeps their bounds, and the source hidden, the copy draws the image its source drew.
 void TestDuplicateDrawsAsItsSource() {
     const TestDir dir{"/tmp/mesheditor-scratch/project-duplicate-records"};
@@ -383,86 +381,20 @@ void TestDuplicateDrawsAsItsSource() {
     const auto render_owner = [&](state::Entity e) -> const MeshStore::Record & {
         return meshes.Get(r.get<const MeshHandle>(r.get<const Instance>(e).Entity).StoreId);
     };
-    // Duplicates the selected source and returns the copy, checking that its render records are its own.
+    // Duplicates the selected source and returns the copy.
     const auto duplicate = [&](state::Entity source) {
         f.Do(action::selection::Select{source});
         const auto copy = f.Add(action::object::Duplicate{});
         expect(copy != source);
-        const auto &copied = render_owner(copy);
-        expect(meshes.MeshletCount(copied) == meshes.MeshletCount(render_owner(source)));
-        expect(meshes.ClusterGroupCount(copied) == meshes.ClusterGroupCount(render_owner(source)));
-        const auto &record = meshes.Get(copied.StoreId);
-        const auto &a = meshes.Arenas();
-        bool owned = true;
-        meshes.Render().ActiveMeshlets.ForEach(copied.MeshletRoot, [&](uint32_t id) {
-            const auto &meshlet = meshes.Render().Meshlets.Get({id, 1u})[0];
-            if (meshlet.RefinedGroup != InvalidOffset) return;
-            const auto topology = meshlet.Topology;
-            const auto origin = topology == 0u ? 0u : copied.ElementMeshletOrigins[topology];
-            for (const auto element : meshes.Render().MeshletTriangleIds.Get({meshlet.TriangleOffset, meshlet.TriangleCount})) {
-                const auto handle = origin + element;
-                const auto &blocks = (topology == 0u ? a.Triangles.Blocks : topology == 1u ? a.EdgeHalfedges.Blocks :
-                                                                                             a.Vertices.Blocks);
-                const auto &block = blocks.Get({handle / MeshElementBlockSize, 1u})[0];
-                owned &= (block.Live[(handle % MeshElementBlockSize) / 32u] & (1u << (handle % 32u))) && meshes.Render().ElementMeshlets[topology].Get(handle) == id;
-            }
-        });
-        expect(owned);
-        const auto &source_record = meshes.Get(render_owner(source).StoreId);
-        const auto remapping = [&](const auto &arena, ElementSetRef from, ElementSetRef to) {
-            std::vector<uint32_t> target;
-            arena.ForEach(to, [&](uint32_t h, uint32_t) { target.push_back(h); });
-            std::map<uint32_t, uint32_t> result{{InvalidOffset, InvalidOffset}};
-            arena.ForEach(from, [&](uint32_t h, uint32_t ordinal) { result[h] = target.at(ordinal); });
-            return result;
-        };
-        const auto vertices = remapping(a.Vertices, source_record.Vertices, record.Vertices);
-        const auto corners = remapping(a.FaceCorners, source_record.FaceCorners, record.FaceCorners);
-        const auto faces = remapping(a.FaceTriangles, source_record.FaceData, record.FaceData);
-        const auto edges = remapping(a.EdgeHalfedges, source_record.EdgeData, record.EdgeData);
-        const auto triangles = remapping(a.Triangles, source_record.TriangleData, record.TriangleData);
-        const auto items = a.VertexFans.Items.Buffer.GetSpan<uvec2>();
-        bool fans_copied = true;
-        for (const auto [from, to] : vertices) {
-            if (from == InvalidOffset) continue;
-            const auto source_fan = a.VertexCorners.Get({from, 1u})[0], fan = a.VertexCorners.Get({to, 1u})[0];
-            fans_copied &= fan.y == source_fan.y;
-            for (uint32_t i = 0u; fans_copied && i < fan.y; ++i) {
-                const auto item = items[source_fan.x + i];
-                fans_copied &= items[fan.x + i] == uvec2{corners.at(item.x), faces.at(item.y)};
-            }
-            expect(a.Vertices.Get({from, 1u})[0].Position == a.Vertices.Get({to, 1u})[0].Position);
-        }
-        expect(fans_copied);
-        for (const auto [from, to] : corners) {
-            if (from == InvalidOffset) continue;
-            expect(a.FaceCorners.Get({to, 1u})[0] == vertices.at(a.FaceCorners.Get({from, 1u})[0]));
-            expect(a.OppositeHalfedges.Get({to, 1u})[0] == corners.at(a.OppositeHalfedges.Get({from, 1u})[0]));
-            expect(a.HalfedgeEdges.Get({to, 1u})[0] == edges.at(a.HalfedgeEdges.Get({from, 1u})[0]));
-            for (uint32_t uv = 0u; uv < 4u; ++uv)
-                if (source_record.CornerAttributes & (MeshAttributeBit_TexCoord0 << uv))
-                    expect(a.CornerUvs[uv].Get(to) == a.CornerUvs[uv].Get(from));
-            if (source_record.CornerAttributes & MeshAttributeBit_Normal) expect(a.CustomNormals.Get(to).Offset == a.CustomNormals.Get(from).Offset);
-            if (source_record.CornerAttributes & MeshAttributeBit_Color0) expect(a.CornerColors.Get(to) == a.CornerColors.Get(from));
-        }
-        for (const auto [from, to] : faces) {
-            if (from == InvalidOffset) continue;
-            const auto before = a.FaceRanges.Get({from, 1u})[0], after = a.FaceRanges.Get({to, 1u})[0];
-            expect(after.x == corners.at(before.x));
-            expect(after.y - after.x == before.y - before.x);
-            expect(a.FaceTriangles.Get({to, 1u})[0] == triangles.at(a.FaceTriangles.Get({from, 1u})[0]));
-        }
-        for (const auto [from, to] : triangles) {
-            if (from == InvalidOffset) continue;
-            const auto before = a.Triangles.Get({from, 1u})[0], after = a.Triangles.Get({to, 1u})[0];
-            expect(after == uvec3{corners.at(before.x), corners.at(before.y), corners.at(before.z)});
-        }
+        expect(render_owner(copy).StoreId != render_owner(source).StoreId);
+        expect(meshes.CanonicalHash(render_owner(copy).StoreId) == meshes.CanonicalHash(render_owner(source).StoreId));
         return copy;
     };
     const auto add_source = [&](MeshSource source) {
         const auto id = CreateMesh(r, std::move(source)).StoreId;
         const auto instance = ::AddMesh(r, id, MeshInstanceCreateInfo{}).second;
         f.P->Settle();
+        f.Audit();
         return instance;
     };
     const auto fragment = [&](state::Entity instance, std::span<const uint32_t> selected) {

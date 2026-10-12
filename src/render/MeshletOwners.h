@@ -11,12 +11,13 @@ namespace state {
 struct Scene;
 }
 
-// Publishes the finest cluster of every element the clusters' payloads name in the given topology.
-// Blocks names the canonical element blocks those elements occupy, which the host attaches owner payloads to.
+// Publishes the finest cluster of every element the clusters' payloads name in the given topology, as runs of the owner's meshlet handles.
+// Blocks names the record's local element blocks those elements occupy, which the owner range covers.
 // The chain writes the owner values.
 void PublishMeshletOwners(state::Scene &, mtl::ComputeChain &, MeshStore::Record &owner, uint32_t topology, std::span<const Range> clusters, std::span<const uint32_t> blocks);
 
-// Clears the owner entries that name one of the clusters among the elements their payloads name, then releases the blocks left without an owner.
+// Clears the owner entries that name one of the clusters among the elements their payloads name, and releases the owner range once no block holds an owner.
+// Retired lists the handles of erased elements the clusters name, whose blocks may have left the record's table.
 // The clusters' records and payloads stay allocated until retirement returns.
 // Retire before publishing replacement owners.
-void RetireMeshletOwners(state::Scene &, MeshStore::Record &owner, std::span<const uint32_t> clusters);
+void RetireMeshletOwners(state::Scene &, MeshStore::Record &owner, std::span<const uint32_t> clusters, std::span<const uint32_t> retired);

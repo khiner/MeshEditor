@@ -160,7 +160,7 @@ EdgeChainPlan PlanCurveBetweenSelected(const Mesh &mesh, const GeometrySelection
                     ++out.Counts[wire(e)];
                 }
             std::ranges::sort(out.Edges);
-            const auto fan = connectivity.VertexCorners[v];
+            const auto fan = connectivity.Incoming(he::VH{v});
             for (uint32_t i = 0u; i < fan.y; ++i) {
                 const he::HH h{connectivity.FanItems[fan.x + i].x};
                 const auto face = mesh.GetFace(h);

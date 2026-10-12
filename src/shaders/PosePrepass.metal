@@ -1,7 +1,7 @@
 #ifndef POSEPREPASS_MSL
 #define POSEPREPASS_MSL
 
-// Writes canonical posed positions and reduces their vertex-block bounds.
+// Writes posed positions at vertex arena addresses and reduces their vertex-block bounds.
 #include "Bindless.metal"
 #include "MorphDeform.metal"
 #include "ArmatureDeform.metal"
@@ -29,14 +29,14 @@ kernel void PosePrepassKernel(
     const uint vertex_id = tile.y*256u+local_id;
     float3 lo=AabbEmptyMin, hi=AabbEmptyMax;
     if (BoundsVertexLive(bindless,entry,tile.y,local_id)) {
-        const uint i=vertex_id-draw.VertexOffset;
+        const uint i=BindlessBuffer(MeshElementBlock,bindless.Buffer,entry.VertexBlocksSlot)[tile.y].Local*MeshElementBlockSize+local_id;
         float3 pos = float3(scene.Vertices(draw.VertexSlot)[vertex_id].Position);
         float3 normal = float3(0);
         float3 morph_normal_delta = float3(0);
         ApplyMorphDeform(scene, draw, pos, morph_normal_delta, i);
         pos = ApplyArmatureDeform(scene, draw, pos, i, normal);
         if (view.IsTransforming != 0u && draw.HasPendingVertexTransform != 0u &&
-            EditSelectionBit(scene, draw.Selection.VertexBits, i)) {
+            EditSelectionBit(scene, draw.Selection.VertexBits, vertex_id)) {
             const Transform primary = scene.Models(draw.ModelSlot)[draw.PrimaryEditInstanceIndex];
             pos = trs_inverse_transform_point(primary, apply_pending_transform_world(scene, trs_transform_point(primary, pos)));
         }

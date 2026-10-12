@@ -49,15 +49,19 @@ struct TopoSourceDomain {
         return second == InvalidOffset ? second : Split + second;
     }
 };
+// A source domain's values at its compact elements, through the source's table entries.
 template<typename T> struct TopoSourceValues {
     device const T *Values;
+    device const uint *Table;
     TopoSourceDomain Domain;
-    T operator[](uint index) const { return Values[Domain.Handle(index)]; }
+    T operator[](uint index) const { return Values[Resolve<MeshElementBlockSize>(Table, Domain.Handle(index))]; }
 };
+// The compact source vertex of each source corner handle.
 struct TopoCornerVertices {
     device const uint *Handles;
+    device const uint *Table;
     TopoSourceDomain Vertices;
-    uint operator[](uint halfedge) const { return Vertices.Index(Handles[halfedge]); }
+    uint operator[](uint halfedge) const { return Vertices.Index(Handles[Resolve<MeshElementBlockSize>(Table, halfedge)]); }
 };
 struct TopoHalfedgeScratch {
     device uint *Values;
@@ -74,10 +78,19 @@ struct TopoOutputDomain {
         return BindlessBuffer(uint, B.Buffer, Handles.Slot)[Handles.Offset + index];
     }
 };
+// An output domain's values at its compact elements, through the output's table entries.
 template<typename T> struct TopoOutputValues {
     device T *Values;
+    device const uint *Table;
     TopoOutputDomain Domain;
-    device T &operator[](uint index) const { return Values[Domain.Handle(index)]; }
+    device T &operator[](uint index) const { return Values[Resolve<MeshElementBlockSize>(Table, Domain.Handle(index))]; }
+};
+// An output domain's values at the handles of a run from First.
+template<typename T> struct TopoOutputRun {
+    device T *Values;
+    device const uint *Table;
+    uint First;
+    device T &operator[](uint index) const { return Values[Resolve<MeshElementBlockSize>(Table, First + index)]; }
 };
 
 // Writes a map entry's four sources and its bilinear weights.
@@ -111,65 +124,64 @@ struct TopoContext {
         else atomic_fetch_and_explicit(word, ~mask, memory_order_relaxed);
     }
 
-    TopoSourceDomain SrcVertexDomain(MeshTopologyJob job) const { return {{B, job.SrcVertexWork, 0u}, {B, job.Src2Elements[0], 0u}, job.SrcVertexCount}; }
-    TopoSourceDomain SrcHalfedgeDomain(MeshTopologyJob job) const { return {{B, job.SrcHalfedgeWork, 0u}, {B, job.Src2Elements[1], 0u}, job.SrcHalfedgeCount}; }
-    TopoSourceDomain SrcFaceDomain(MeshTopologyJob job) const { return {{B, job.SrcFaceWork, 0u}, {B, job.Src2Elements[2], 0u}, job.SrcFaceCount}; }
-    TopoSourceDomain SrcEdgeDomain(MeshTopologyJob job) const { return {{B, job.SrcEdgeWork, 0u}, {B, job.Src2Elements[3], 0u}, job.SrcEdgeCount}; }
-    // Whether a compact source vertex, face or edge is the second source's.
+    // The table entries of an element domain of the source's or the output's tables.
+    device const uint *Table(ElementTables t, uint domain) const {
+        const SlotOffset table = domain == 0u ? t.Vertices : domain == 1u ? t.Halfedges : domain == 2u ? t.Faces : domain == 3u ? t.Edges : t.Triangles;
+        return BindlessBuffer(uint, B.Buffer, table.Slot) + table.Offset;
+    }
+    device const uint *SrcTable(MeshTopologyJob job, uint domain) const { return Table(job.SrcConnectivity.Tables, domain); }
+    device const uint *DstTable(MeshTopologyJob job, uint domain) const { return Table(job.DstConnectivity.Tables, domain); }
+    // Arena addresses of source and output handles of the domains vertex, halfedge, face, edge and triangle.
+    uint SrcAddress(MeshTopologyJob job, uint domain, uint handle) const { return Resolve<MeshElementBlockSize>(SrcTable(job, domain), handle); }
+    uint DstAddress(MeshTopologyJob job, uint domain, uint handle) const { return Resolve<MeshElementBlockSize>(DstTable(job, domain), handle); }
+
+    TopoSourceDomain SrcVertexDomain(MeshTopologyJob job) const { return {{B, job.SrcVertexWork}, {B, job.Src2Elements[0]}, job.SrcVertexCount}; }
+    TopoSourceDomain SrcHalfedgeDomain(MeshTopologyJob job) const { return {{B, job.SrcHalfedgeWork}, {B, job.Src2Elements[1]}, job.SrcHalfedgeCount}; }
+    TopoSourceDomain SrcFaceDomain(MeshTopologyJob job) const { return {{B, job.SrcFaceWork}, {B, job.Src2Elements[2]}, job.SrcFaceCount}; }
+    TopoSourceDomain SrcEdgeDomain(MeshTopologyJob job) const { return {{B, job.SrcEdgeWork}, {B, job.Src2Elements[3]}, job.SrcEdgeCount}; }
+    // Whether a compact source vertex or face is the second side's.
     bool SecondVertex(MeshTopologyJob job, uint v) const { return v - job.SrcVertexCount < job.Src2Counts[0]; }
     bool SecondFace(MeshTopologyJob job, uint f) const { return f - job.SrcFaceCount < job.Src2Counts[2]; }
-    bool SecondEdge(MeshTopologyJob job, uint e) const { return e - job.SrcEdgeCount < job.Src2Counts[3]; }
-    // Whether a canonical source corner is the second source's.
-    bool SecondCorner(MeshTopologyJob job, uint h) const { return job.Src2Counts[1] && SrcHalfedgeDomain(job).Index(h) >= job.SrcHalfedgeCount; }
-    TopoCornerVertices SrcCorners(MeshTopologyJob job) const { return {BindlessBuffer(uint,B.IndexBuffer, Pc.Source.CornerSlot), SrcVertexDomain(job)}; }
+    TopoCornerVertices SrcCorners(MeshTopologyJob job) const { return {BindlessBuffer(uint,B.IndexBuffer, Pc.Source.CornerSlot), SrcTable(job, 1u), SrcVertexDomain(job)}; }
     TopoOutputDomain DstVertexDomain(MeshTopologyJob job) const { return {B, job.DstVertexHandles}; }
     TopoOutputDomain DstFaceDomain(MeshTopologyJob job) const { return {B, job.DstFaceHandles}; }
-    void SelectDstVertex(MeshTopologyJob job, uint v, bool selected = true) const { Select(job.DstVertexBits, DstVertexDomain(job).Handle(v), selected); }
-    void SelectDstFace(MeshTopologyJob job, uint f, bool selected) const { Select(job.DstFaceBits, DstFaceDomain(job).Handle(f), selected); }
-    void SelectDstEdge(MeshTopologyJob job, uint e, bool selected) const { Select(job.DstEdgeBits, e, selected); }
-    device uint *DstCorners(MeshTopologyJob job) const { return BindlessBufferMutable(uint, B.IndexBuffer, Pc.Destination.CornerSlot) + job.DstCornerOffset; }
+    void SelectDstVertex(MeshTopologyJob job, uint v, bool selected = true) const { Select(job.DstVertexBits, DstAddress(job, 0u, DstVertexDomain(job).Handle(v)), selected); }
+    void SelectDstFace(MeshTopologyJob job, uint f, bool selected) const { Select(job.DstFaceBits, DstAddress(job, 2u, DstFaceDomain(job).Handle(f)), selected); }
+    void SelectDstEdge(MeshTopologyJob job, uint e, bool selected) const { Select(job.DstEdgeBits, DstAddress(job, 3u, e), selected); }
+    TopoOutputRun<uint> DstCorners(MeshTopologyJob job) const { return {BindlessBufferMutable(uint, B.IndexBuffer, Pc.Destination.CornerSlot), DstTable(job, 1u), job.DstCornerOffset}; }
     ConnectivityView Src(MeshTopologyJob job) const {
         return {B, job.SrcConnectivity, job.SrcFaceCount};
     }
     ConnectivityView Dst(MeshTopologyJob job) const { return {B, job.DstConnectivity, job.DstFaceCount}; }
-    TopoSourceValues<Vertex> SrcVertices(MeshTopologyJob job) const { return {BindlessBuffer(Vertex,B.VertexBuffer, Pc.Source.VertexSlot), SrcVertexDomain(job)}; }
-    TopoOutputValues<Vertex> DstVertices(MeshTopologyJob job) const { return {BindlessBufferMutable(Vertex, B.VertexBuffer, Pc.Destination.VertexSlot), DstVertexDomain(job)}; }
-    TopoOutputValues<uint> DstFaceTriangles(MeshTopologyJob job) const { return {BindlessBufferMutable(uint, B.ObjectIdBuffer, Pc.Destination.FaceTriangleStartSlot), DstFaceDomain(job)}; }
-    device packed_uint3 *DstTriangles(MeshTopologyJob job) const { return BindlessBufferMutable(packed_uint3, B.Buffer, Pc.Destination.TriangleSlot) + job.DstTriangleOffset; }
-    TopoSourceValues<uchar> SrcEdgeSharpness(MeshTopologyJob job) const { return {BindlessBuffer(uchar,B.Buffer, Pc.Source.EdgeSharpnessSlot), SrcEdgeDomain(job)}; }
-    device uchar *DstEdgeSharpness(MeshTopologyJob job) const { return BindlessBufferMutable(uchar, B.Buffer, Pc.Destination.EdgeSharpnessSlot); }
-    TopoSourceValues<uchar> SrcFaceSharpness(MeshTopologyJob job) const { return {BindlessBuffer(uchar,B.Buffer, Pc.Source.FaceSharpnessSlot), SrcFaceDomain(job)}; }
-    TopoOutputValues<uchar> DstFaceSharpness(MeshTopologyJob job) const { return {BindlessBufferMutable(uchar, B.Buffer, Pc.Destination.FaceSharpnessSlot), DstFaceDomain(job)}; }
-    uint SrcElementPrimitive(MeshTopologyJob job, uint f) const { return BindlessBuffer(uint,B.ElementPrimitiveBuffer, Pc.Source.FacePrimitives.ValuesSlot)[ElementAttributeIndex(B, Pc.Source.FacePrimitives, SrcFaceDomain(job).Handle(f))]; }
-    void SetDstElementPrimitive(MeshTopologyJob job, uint f, uint value) const { BindlessBufferMutable(uint, B.ElementPrimitiveBuffer, Pc.Destination.FacePrimitives.ValuesSlot)[ElementAttributeIndex(B, Pc.Destination.FacePrimitives, DstFaceDomain(job).Handle(f))] = value; }
-    BoneDeformVertex SrcBoneDeform(MeshTopologyJob job, uint v) const {
-        const uint handle=SrcVertexDomain(job).Handle(v);
-        return BindlessBuffer(BoneDeformVertex,B.BoneDeformBuffer,Pc.Source.Skin.ValuesSlot)
-            [ElementAttributeIndex(B,Pc.Source.Skin,handle)];
+    TopoSourceValues<Vertex> SrcVertices(MeshTopologyJob job) const { return {BindlessBuffer(Vertex,B.VertexBuffer, Pc.Source.VertexSlot), SrcTable(job, 0u), SrcVertexDomain(job)}; }
+    TopoOutputValues<Vertex> DstVertices(MeshTopologyJob job) const { return {BindlessBufferMutable(Vertex, B.VertexBuffer, Pc.Destination.VertexSlot), DstTable(job, 0u), DstVertexDomain(job)}; }
+    TopoOutputValues<uint> DstFaceTriangles(MeshTopologyJob job) const { return {BindlessBufferMutable(uint, B.ObjectIdBuffer, Pc.Destination.FaceTriangleStartSlot), DstTable(job, 2u), DstFaceDomain(job)}; }
+    TopoOutputRun<packed_uint3> DstTriangles(MeshTopologyJob job) const { return {BindlessBufferMutable(packed_uint3, B.Buffer, Pc.Destination.TriangleSlot), DstTable(job, 4u), job.DstTriangleOffset}; }
+    TopoSourceValues<uchar> SrcEdgeSharpness(MeshTopologyJob job) const { return {BindlessBuffer(uchar,B.Buffer, Pc.Source.EdgeSharpnessSlot), SrcTable(job, 3u), SrcEdgeDomain(job)}; }
+    ElementValues<uchar> DstEdgeSharpness(MeshTopologyJob job) const { return {BindlessBufferMutable(uchar, B.Buffer, Pc.Destination.EdgeSharpnessSlot), DstTable(job, 3u)}; }
+    TopoSourceValues<uchar> SrcFaceSharpness(MeshTopologyJob job) const { return {BindlessBuffer(uchar,B.Buffer, Pc.Source.FaceSharpnessSlot), SrcTable(job, 2u), SrcFaceDomain(job)}; }
+    TopoOutputValues<uchar> DstFaceSharpness(MeshTopologyJob job) const { return {BindlessBufferMutable(uchar, B.Buffer, Pc.Destination.FaceSharpnessSlot), DstTable(job, 2u), DstFaceDomain(job)}; }
+    // Layer values of source handles, and of output handles of the job's runs.
+    uint SrcElementPrimitive(MeshTopologyJob job, uint f) const { return BindlessBuffer(uint, B.ElementPrimitiveBuffer, Pc.Source.Layers.FacePrimitives.Slot)[Pc.Source.Layers.FacePrimitives.Offset + SrcFaceDomain(job).Handle(f)]; }
+    void SetDstElementPrimitive(MeshTopologyJob job, uint f, uint value) const { BindlessBufferMutable(uint, B.ElementPrimitiveBuffer, Pc.Destination.Layers.FacePrimitives.Slot)[Pc.Destination.Layers.FacePrimitives.Offset + DstFaceDomain(job).Handle(f)] = value; }
+    BoneDeformVertex SrcBoneDeform(MeshTopologyJob job, uint v) const { return BindlessBuffer(BoneDeformVertex, B.BoneDeformBuffer, Pc.Source.Layers.Skin.Slot)[Pc.Source.Layers.Skin.Offset + SrcVertexDomain(job).Handle(v)]; }
+    void SetDstSkin(MeshTopologyJob job, uint v, BoneDeformVertex value) const { BindlessBufferMutable(BoneDeformVertex, B.BoneDeformBuffer, Pc.Destination.Layers.Skin.Slot)[Pc.Destination.Layers.Skin.Offset + DstVertexDomain(job).Handle(v)] = value; }
+    MorphTargetVertex SrcMorphTarget(MeshTopologyJob job, uint v, uint target) const {
+        return BindlessBuffer(MorphTargetVertex, B.MorphTargetBuffer, Pc.Source.Layers.Morph.Slot)[MorphTargetIndex(Pc.Source.Layers.Morph, SrcVertexDomain(job).Handle(v), target, job.MorphTargetCount)];
     }
-    void SetDstSkin(MeshTopologyJob job,uint v,BoneDeformVertex value) const {
-        const uint handle=DstVertexDomain(job).Handle(v);
-        BindlessBufferMutable(BoneDeformVertex,B.BoneDeformBuffer,Pc.Destination.Skin.ValuesSlot)
-            [ElementAttributeIndex(B,Pc.Destination.Skin,handle)]=value;
+    void SetDstMorphTarget(MeshTopologyJob job, uint v, uint target, MorphTargetVertex value) const {
+        BindlessBufferMutable(MorphTargetVertex, B.MorphTargetBuffer, Pc.Destination.Layers.Morph.Slot)[MorphTargetIndex(Pc.Destination.Layers.Morph, DstVertexDomain(job).Handle(v), target, job.MorphTargetCount)] = value;
     }
-    MorphTargetVertex SrcMorphTarget(MeshTopologyJob job,uint v,uint target) const {
-        const uint handle=SrcVertexDomain(job).Handle(v);
-        return BindlessBuffer(MorphTargetVertex,B.MorphTargetBuffer,Pc.Source.Morph.ValuesSlot)[ElementAttributeIndex(B,Pc.Source.Morph,handle,target)];
-    }
-    void SetDstMorphTarget(MeshTopologyJob job,uint v,uint target,MorphTargetVertex value) const {
-        const uint handle=DstVertexDomain(job).Handle(v);
-        BindlessBufferMutable(MorphTargetVertex,B.MorphTargetBuffer,Pc.Destination.Morph.ValuesSlot)[ElementAttributeIndex(B,Pc.Destination.Morph,handle,target)]=value;
-    }
-    float4 SrcCornerTangent(MeshTopologyJob job, uint h) const { return float4(BindlessBuffer(packed_float4,B.CornerTangentBuffer, Pc.Source.CornerTangent.ValuesSlot)[ElementAttributeIndex(B, Pc.Source.CornerTangent, h)]); }
-    void SetDstCornerTangent(MeshTopologyJob job, uint h, float4 value) const { BindlessBufferMutable(packed_float4, B.CornerTangentBuffer, Pc.Destination.CornerTangent.ValuesSlot)[ElementAttributeIndex(B, Pc.Destination.CornerTangent, job.DstCornerOffset + h)] = value; }
-    float4 SrcCornerColor(MeshTopologyJob job, uint h) const { return float4(BindlessBuffer(packed_float4,B.CornerColorBuffer, Pc.Source.CornerColor.ValuesSlot)[ElementAttributeIndex(B, Pc.Source.CornerColor, h)]); }
-    void SetDstCornerColor(MeshTopologyJob job, uint h, float4 value) const { BindlessBufferMutable(packed_float4, B.CornerColorBuffer, Pc.Destination.CornerColor.ValuesSlot)[ElementAttributeIndex(B, Pc.Destination.CornerColor, job.DstCornerOffset + h)] = value; }
-    float2 SrcCornerUv(MeshTopologyJob job, uint set, uint h) const { return float2(BindlessBuffer(packed_float2,B.CornerUvBuffer, Pc.Source.CornerUvs[set].ValuesSlot)[ElementAttributeIndex(B, Pc.Source.CornerUvs[set], h)]); }
-    void SetDstCornerUv(MeshTopologyJob job, uint set, uint h, float2 value) const { BindlessBufferMutable(packed_float2, B.CornerUvBuffer, Pc.Destination.CornerUvs[set].ValuesSlot)[ElementAttributeIndex(B, Pc.Destination.CornerUvs[set], job.DstCornerOffset + h)] = value; }
-    float4 SrcVertexColor(MeshTopologyJob job, uint v) const { return float4(BindlessBuffer(packed_float4,B.CornerColorBuffer, Pc.Source.VertexColor.ValuesSlot)[ElementAttributeIndex(B, Pc.Source.VertexColor, SrcVertexDomain(job).Handle(v))]); }
-    void SetDstVertexColor(MeshTopologyJob job, uint v, float4 value) const { BindlessBufferMutable(packed_float4, B.CornerColorBuffer, Pc.Destination.VertexColor.ValuesSlot)[ElementAttributeIndex(B, Pc.Destination.VertexColor, DstVertexDomain(job).Handle(v))] = value; }
-    TopoSourceValues<packed_float3> SrcVertexNormals(MeshTopologyJob job) const { return {BindlessBuffer(packed_float3,B.Buffer, Pc.Source.BaseVertexNormalSlot), SrcVertexDomain(job)}; }
-    TopoSourceValues<packed_float3> SrcFaceNormals(MeshTopologyJob job) const { return {BindlessBuffer(packed_float3,B.Buffer, Pc.Source.BaseFaceNormalSlot), SrcFaceDomain(job)}; }
+    float4 SrcCornerTangent(MeshTopologyJob job, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerTangentBuffer, Pc.Source.Layers.CornerTangent.Slot)[Pc.Source.Layers.CornerTangent.Offset + h]); }
+    void SetDstCornerTangent(MeshTopologyJob job, uint h, float4 value) const { BindlessBufferMutable(packed_float4, B.CornerTangentBuffer, Pc.Destination.Layers.CornerTangent.Slot)[Pc.Destination.Layers.CornerTangent.Offset + job.DstCornerOffset + h] = value; }
+    float4 SrcCornerColor(MeshTopologyJob job, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerColorBuffer, Pc.Source.Layers.CornerColor.Slot)[Pc.Source.Layers.CornerColor.Offset + h]); }
+    void SetDstCornerColor(MeshTopologyJob job, uint h, float4 value) const { BindlessBufferMutable(packed_float4, B.CornerColorBuffer, Pc.Destination.Layers.CornerColor.Slot)[Pc.Destination.Layers.CornerColor.Offset + job.DstCornerOffset + h] = value; }
+    float2 SrcCornerUv(MeshTopologyJob job, uint set, uint h) const { return float2(BindlessBuffer(packed_float2, B.CornerUvBuffer, Pc.Source.Layers.CornerUvs[set].Slot)[Pc.Source.Layers.CornerUvs[set].Offset + h]); }
+    void SetDstCornerUv(MeshTopologyJob job, uint set, uint h, float2 value) const { BindlessBufferMutable(packed_float2, B.CornerUvBuffer, Pc.Destination.Layers.CornerUvs[set].Slot)[Pc.Destination.Layers.CornerUvs[set].Offset + job.DstCornerOffset + h] = value; }
+    float4 SrcVertexColor(MeshTopologyJob job, uint v) const { return float4(BindlessBuffer(packed_float4, B.CornerColorBuffer, Pc.Source.Layers.VertexColor.Slot)[Pc.Source.Layers.VertexColor.Offset + SrcVertexDomain(job).Handle(v)]); }
+    void SetDstVertexColor(MeshTopologyJob job, uint v, float4 value) const { BindlessBufferMutable(packed_float4, B.CornerColorBuffer, Pc.Destination.Layers.VertexColor.Slot)[Pc.Destination.Layers.VertexColor.Offset + DstVertexDomain(job).Handle(v)] = value; }
+    TopoSourceValues<packed_float3> SrcVertexNormals(MeshTopologyJob job) const { return {BindlessBuffer(packed_float3,B.Buffer, Pc.Source.BaseVertexNormalSlot), SrcTable(job, 0u), SrcVertexDomain(job)}; }
+    TopoSourceValues<packed_float3> SrcFaceNormals(MeshTopologyJob job) const { return {BindlessBuffer(packed_float3,B.Buffer, Pc.Source.BaseFaceNormalSlot), SrcTable(job, 2u), SrcFaceDomain(job)}; }
     device const uint *Lists(MeshTopologyJob job) const { return BindlessBuffer(uint, B.Buffer, Pc.ListSlot) + job.ListOffset; }
     float3 SrcPosition(MeshTopologyJob job, uint v) const { return float3(SrcVertices(job)[v].Position); }
     uint2 SrcFan(MeshTopologyJob job, uint v) const { const auto src = Src(job); return src.Incoming(SrcVertexDomain(job).Handle(v)); }
@@ -255,8 +267,9 @@ struct TopoContext {
     device packed_uint2 *CornerProvenance(MeshTopologyJob job) const { return reinterpret_cast<device packed_uint2 *>(Scratch() + job.CornerProvenanceOffset); }
 
     // Output topology.
-    TopoOutputValues<packed_uint2> DstFaceRanges(MeshTopologyJob job) const { return {BindlessBufferMutable(packed_uint2, B.Buffer, job.DstConnectivity.FaceRanges.Slot), DstFaceDomain(job)}; }
-    device uint *DstHalfedgeFaces(MeshTopologyJob job) const { return BindlessBufferMutable(uint, B.Buffer, job.DstConnectivity.HalfedgeFaces.Slot) + job.DstCornerOffset; }
+    TopoOutputValues<packed_uint2> DstFaceRanges(MeshTopologyJob job) const { return {BindlessBufferMutable(packed_uint2, B.Buffer, job.DstConnectivity.FaceRangesSlot), DstTable(job, 2u), DstFaceDomain(job)}; }
+    TopoOutputRun<uint> DstHalfedgeFaces(MeshTopologyJob job) const { return {BindlessBufferMutable(uint, B.Buffer, job.DstConnectivity.HalfedgeFacesSlot), DstTable(job, 1u), job.DstCornerOffset}; }
+    TopoOutputRun<uint> DstOpposites(MeshTopologyJob job) const { return {BindlessBufferMutable(uint, B.Buffer, job.DstConnectivity.OppositesSlot), DstTable(job, 1u), job.DstCornerOffset}; }
     uint2 DstFaceRange(MeshTopologyJob job, uint f) const { return Dst(job).FaceHalfedges(DstFaceDomain(job).Handle(f)) - job.DstCornerOffset; }
     // An output element interpolates four sources bilinearly: lerp(lerp(a, b, s), lerp(d, c, s), t).
     void WriteVertexMap4(MeshTopologyJob job, uint d, uint4 sources, float s, float t) const { TopoWriteMap(VertexMap(job) + TopoVertexMapWords * d, sources, s, t); }
@@ -290,21 +303,21 @@ inline uint2 TopoAttributeRun(MeshTopologyJob job, AttributeDomain domain) {
     const uint d = uint(domain);
     return uint2(d ? job.AttributeEnds[d - 1u] : 0u, job.AttributeEnds[d]);
 }
-// The attribute's value at a handle of the first or `second` source, and its default without a source value.
-inline uint4 TopoReadAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle, bool second) {
-    const NamedAttributeRef source = second ? attribute.SecondSource : attribute.Source;
-    if (handle == InvalidOffset || source.ValuesSlot == InvalidSlot) return uint4(attribute.Default[0], attribute.Default[1], attribute.Default[2], attribute.Default[3]);
-    return ReadNamedAttribute(ctx.B, source, attribute.Type, handle);
+// The attribute's value at a source handle of its domain, and its default without a source value.
+inline uint4 TopoReadAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle) {
+    if (handle == InvalidOffset || attribute.Source.ValuesSlot == InvalidSlot) return uint4(attribute.Default[0], attribute.Default[1], attribute.Default[2], attribute.Default[3]);
+    return ReadNamedAttribute(ctx.B, attribute.Source, attribute.Type, handle);
 }
+// Writes the attribute at an output handle of its domain.
 inline void TopoWriteAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle, uint4 value) {
     WriteNamedAttribute(ctx.B, attribute.Destination, attribute.Type, handle, value);
 }
-// Writes each attribute of the domain at a handle from its value at a source handle.
-inline void TopoCopyAttributes(TopoContext ctx, MeshTopologyJob job, AttributeDomain domain, uint handle, uint source, bool second) {
+// Writes each attribute of the domain at an output handle from its value at a source handle.
+inline void TopoCopyAttributes(TopoContext ctx, MeshTopologyJob job, AttributeDomain domain, uint handle, uint source) {
     const uint2 run = TopoAttributeRun(job, domain);
     for (uint i = run.x; i < run.y; ++i) {
         const TopologyAttribute attribute = TopoAttribute(ctx, job, i);
-        TopoWriteAttribute(ctx, attribute, handle, TopoReadAttribute(ctx, attribute, source, second));
+        TopoWriteAttribute(ctx, attribute, handle, TopoReadAttribute(ctx, attribute, source));
     }
 }
 // Floats interpolate bilinearly, and ints and bools take the source of the dominant weight.
@@ -546,8 +559,8 @@ inline void TopoEmitFace(TopoContext ctx, MeshTopologyJob job, uint fd, uint bas
         ctx.DstHalfedgeFaces(job)[h] = ctx.DstFaceDomain(job).Handle(fd);
         if (job.CornerAttributes & MeshAttributeBit_Normal) ctx.CornerProvenance(job)[h].y = fd;
     }
-    const bool hidden=source<job.SrcFaceCount+job.Src2Counts[2] && (!selected || job.Op==MeshTopologyOp::KeepSelectedFaces) && ctx.Selected({ctx.Pc.Source.FaceHiddenSlot,0u},ctx.SrcFaceDomain(job).Handle(source));
-    ctx.Select({ctx.Pc.Destination.FaceHiddenSlot,0u},ctx.DstFaceDomain(job).Handle(fd),hidden);
+    const bool hidden=source<job.SrcFaceCount+job.Src2Counts[2] && (!selected || job.Op==MeshTopologyOp::KeepSelectedFaces) && ctx.Selected({ctx.Pc.Source.FaceHiddenSlot,0u},ctx.SrcAddress(job,2u,ctx.SrcFaceDomain(job).Handle(source)));
+    ctx.Select({ctx.Pc.Destination.FaceHiddenSlot,0u},ctx.DstAddress(job,2u,ctx.DstFaceDomain(job).Handle(fd)),hidden);
     ctx.SelectDstFace(job, fd, selected && !hidden);
 }
 

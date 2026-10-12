@@ -75,6 +75,15 @@ struct BufferArena {
     // The journal contains allocator metadata only.
     auto BeginAllocation() { return RangeAllocator::Transaction{Allocator}; }
 
+    // Grows the range in place by `count` when the storage after it is free, and returns whether it grew.
+    bool Extend(Range &range, uint32_t count) {
+        auto transaction = BeginAllocation();
+        if (!Allocator.Reserve({range.Offset + range.Count, count})) return false;
+        range.Count += count;
+        Buffer.SetUsedSize(std::max(Buffer.UsedSize, uint64_t(range.Offset + range.Count) * sizeof(T)));
+        transaction.Commit();
+        return true;
+    }
     void Release(Range range) { Allocator.Free(range); }
     // Releases every range, freeing each run of adjacent ranges at once.
     void Release(std::vector<Range> ranges) {

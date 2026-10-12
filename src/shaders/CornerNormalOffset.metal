@@ -3,11 +3,9 @@
 
 #include "Bindless.metal"
 
-// A negative polar angle or a missing block uses the derived normal.
-inline float2 CustomNormalOffset(device const BindlessSet &b, ElementAttributeRef attribute, uint h) {
-    if (attribute.ValuesSlot == InvalidSlot) return float2(-1.f, 0.f);
-    const uint block = BindlessBuffer(uint, b.Buffer, attribute.BlocksSlot)[h / MeshElementBlockSize];
-    return block ? float2(BindlessBuffer(packed_float2, b.Buffer, attribute.ValuesSlot)[(block - 1u) * MeshElementBlockSize + h % MeshElementBlockSize]) : float2(-1.f, 0.f);
+// The custom normal offset of a corner handle, where a negative polar angle or a record without the layer uses the derived normal.
+inline float2 CustomNormalOffset(device const BindlessSet &b, SlotOffset normals, uint h) {
+    return normals.Slot != InvalidSlot ? float2(BindlessBuffer(packed_float2, b.Buffer, normals.Slot)[normals.Offset + h]) : float2(-1.f, 0.f);
 }
 
 struct CornerNormalFrame {

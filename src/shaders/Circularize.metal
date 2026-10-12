@@ -18,7 +18,7 @@ kernel void Circularize(
     const auto normals=BindlessBuffer(packed_float3,b.Buffer,pc.VertexNormalSlot);
     const float3 origin=float3(positions[inputs[0]]);
     float3 center=0.f,normal_sum=0.f;
-    for (uint k=0u;k<n;++k) { center+=float3(positions[inputs[k]])-origin; normal_sum+=float3(normals[handles[inputs[k]]]); }
+    for (uint k=0u;k<n;++k) { center+=float3(positions[inputs[k]])-origin; normal_sum+=float3(normals[HandleAddress<MeshElementBlockSize>(b,pc.Connectivity.Tables.Vertices,handles[inputs[k]])]); }
     center=origin+center/float(n);
     float3 normal=0.f,previous=float3(positions[inputs[n-1u]])-center;
     for (uint k=0u;k<n;++k) {

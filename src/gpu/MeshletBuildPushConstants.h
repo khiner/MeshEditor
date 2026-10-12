@@ -1,6 +1,5 @@
 #pragma once
 
-#include "gpu/ElementAttributeRef.h"
 #include "gpu/Types.h"
 
 struct MeshletBuildPushConstants {
@@ -16,7 +15,6 @@ struct MeshletBuildPushConstants {
     uint32_t NodesSlot DEFAULT();
     uint32_t PrimitiveRoutesSlot DEFAULT();
     uint32_t LodLeavesSlot DEFAULT(), LodParentsSlot DEFAULT();
-    ElementAttributeRef CornerSectors DEFAULT();
     uint32_t FaceSharpnessSlot DEFAULT();
 };
-static_assert(sizeof(MeshletBuildPushConstants) == 68);
+static_assert(sizeof(MeshletBuildPushConstants) == 60);

@@ -9,8 +9,8 @@ struct NormalSectorTraversal {
     ConnectivityView Conn;
     device const uchar *FaceSharpness;
     device const uchar *EdgeSharpness;
-    bool Flat(uint h) const { return FaceSharpness[Conn.HalfedgeFace(h)] != 0u; }
-    bool Sharp(uint h) const { return EdgeSharpness[Conn.Edge(h)] != 0u; }
+    bool Flat(uint h) const { return FaceSharpness[Conn.FaceAddress(Conn.HalfedgeFace(h))] != 0u; }
+    bool Sharp(uint h) const { return EdgeSharpness[Conn.EdgeAddress(Conn.Edge(h))] != 0u; }
 
     template<typename Visit>
     void VisitOthers(uint root, uint limit, Visit visit) const {

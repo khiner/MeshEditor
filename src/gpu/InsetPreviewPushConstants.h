@@ -2,10 +2,12 @@
 
 #include "gpu/SlotOffset.h"
 
+// Each basis names an output vertex handle, which VertexTable resolves.
 struct InsetPreviewPushConstants {
     SlotOffset Basis DEFAULT();
+    SlotOffset VertexTable DEFAULT();
     uint32_t VertexSlot DEFAULT(InvalidSlot);
     uint32_t Count DEFAULT();
     float Thickness DEFAULT(), Depth DEFAULT();
 };
-static_assert(sizeof(InsetPreviewPushConstants) == 24, "InsetPreviewPushConstants size");
+static_assert(sizeof(InsetPreviewPushConstants) == 32, "InsetPreviewPushConstants size");

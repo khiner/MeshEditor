@@ -8,7 +8,7 @@
 // Seeds and marks also address the halfedge domain.
 GPU_CONSTANT uint32_t SelectionHalfedgeDomain = 3u;
 
-// A changed mask word: its elements' blocks and their incident blocks become dirty.
+// A changed mask word at an arena word: its elements' blocks and their incident blocks become dirty.
 struct SelectionSeed {
     uint32_t Domain DEFAULT(), Word DEFAULT(), Bits DEFAULT();
 };
@@ -31,10 +31,10 @@ struct SelectionMeshUpdate {
     uint32_t Source DEFAULT(InvalidOffset);
     uint32_t Root DEFAULT();
 };
-static_assert(sizeof(SelectionMeshUpdate) == 84, "SelectionMeshUpdate size");
+static_assert(sizeof(SelectionMeshUpdate) == 96, "SelectionMeshUpdate size");
 
-// The canonical streams and the batch's records, which are word offsets into the work slot.
-// Mask word Masks[d].Offset + h / 32 holds handle h's bit, and InvalidSlot Leaves and Hidden leave aggregates unwritten and nothing hidden.
+// The arena streams and the batch's records, which are word offsets into the work slot.
+// Mask word Masks[d].Offset + a / 32 holds the bit of the element at arena address a, and InvalidSlot Leaves and Hidden leave aggregates unwritten and nothing hidden.
 // A sparse dirty-block hash table occupies the first DirtyMask+1 words.
 // Seeds holds SeedCount seeds, and SeedUpdates the index of each seed's mesh update.
 // The dirty list starts with its entry count and the other two indirect dispatch dimensions, followed by (domain << 30 | block, update) pairs.
@@ -51,10 +51,11 @@ struct SelectionUpdatePushConstants {
 };
 static_assert(sizeof(SelectionUpdatePushConstants) == 108, "SelectionUpdatePushConstants size");
 
-// Scatters the selected handles of listed (block, first output index) word pairs in ascending handle order.
+// Scatters the selected elements' handles of listed (arena block, first output index) word pairs, which list blocks in ascending local order.
+// BlocksSlot holds the domain's block metadata.
 struct SelectionGatherPushConstants {
     SlotOffset Blocks DEFAULT();
     SlotOffset Output DEFAULT();
-    uint32_t MaskSlot DEFAULT(InvalidSlot), Count DEFAULT();
+    uint32_t MaskSlot DEFAULT(InvalidSlot), BlocksSlot DEFAULT(InvalidSlot), Count DEFAULT();
 };
-static_assert(sizeof(SelectionGatherPushConstants) == 24, "SelectionGatherPushConstants size");
+static_assert(sizeof(SelectionGatherPushConstants) == 28, "SelectionGatherPushConstants size");

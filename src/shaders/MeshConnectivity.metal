@@ -26,26 +26,25 @@ struct ConnContext {
     device const uint2 *Tiles() const { return reinterpret_cast<device const uint2 *>(Storage() + Pc.TileMapOffset); }
     device uint *Scratch() const { return Storage() + Pc.ScratchOffset; }
     device atomic_uint *AtomicScratch() const { return reinterpret_cast<device atomic_uint *>(Scratch()); }
-    device const uint *Corners(MeshConnectivityJob job) const { return BindlessBuffer(uint, B.IndexBuffer, job.Corners.Slot); }
+    device const uint *Table(SlotOffset table) const { return BindlessBuffer(uint, B.Buffer, table.Slot) + table.Offset; }
+    ElementValues<const uint> Corners(MeshConnectivityJob job) const { return {BindlessBuffer(uint, B.IndexBuffer, job.CornersSlot), Table(job.Connectivity.Tables.Halfedges)}; }
     device uint *Words(SlotOffset at) const { return BindlessBufferMutable(uint, B.Buffer, at.Slot); }
-    device uint *Outgoing(MeshConnectivityJob job) const { return Words(job.Connectivity.Outgoing); }
-    device atomic_uint *AtomicOutgoing(MeshConnectivityJob job) const {
-        return BindlessBufferMutable(atomic_uint, B.Buffer, job.Connectivity.Outgoing.Slot);
-    }
-    device uint *Opposites(MeshConnectivityJob job) const { return Words(job.Connectivity.Opposites); }
-    device uint *HalfedgeToEdge(MeshConnectivityJob job) const { return Words(job.Connectivity.HalfedgeEdges); }
-    device uint *Owners(MeshConnectivityJob job) const { return Words(job.Connectivity.HalfedgeFaces); }
-    device uint *Ranges(MeshConnectivityJob job) const { return BindlessBufferMutable(uint, B.Buffer, job.Connectivity.FaceRanges.Slot); }
-    device uint *Edges(MeshConnectivityJob job) const { return Words(job.Connectivity.Edges); }
+    ElementValues<uint> Outgoing(MeshConnectivityJob job) const { return WriteElements<uint>(B, job.Connectivity.OutgoingSlot, job.Connectivity.Tables.Vertices); }
+    ElementValues<atomic_uint> AtomicOutgoing(MeshConnectivityJob job) const { return WriteElements<atomic_uint>(B, job.Connectivity.OutgoingSlot, job.Connectivity.Tables.Vertices); }
+    ElementValues<uint> Opposites(MeshConnectivityJob job) const { return WriteElements<uint>(B, job.Connectivity.OppositesSlot, job.Connectivity.Tables.Halfedges); }
+    ElementValues<uint> HalfedgeToEdge(MeshConnectivityJob job) const { return WriteElements<uint>(B, job.Connectivity.HalfedgeEdgesSlot, job.Connectivity.Tables.Halfedges); }
+    ElementValues<uint> Owners(MeshConnectivityJob job) const { return WriteElements<uint>(B, job.Connectivity.HalfedgeFacesSlot, job.Connectivity.Tables.Halfedges); }
+    ElementValues<packed_uint2> Ranges(MeshConnectivityJob job) const { return WriteElements<packed_uint2>(B, job.Connectivity.FaceRangesSlot, job.Connectivity.Tables.Faces); }
+    ElementValues<uint> Edges(MeshConnectivityJob job) const { return WriteElements<uint>(B, job.Connectivity.EdgesSlot, job.Connectivity.Tables.Edges); }
     device uint *EdgeFirstBits(MeshConnectivityJob job) const { return Scratch() + job.BitsOffset; }
     device uint *EdgeFirstRanks(MeshConnectivityJob job) const { return Scratch() + job.RanksOffset; }
     device uint *Rep(MeshConnectivityJob job) const { return Scratch() + job.RepOffset; }
     device uint *Partner(MeshConnectivityJob job) const { return Scratch() + job.PartnerOffset; }
     device atomic_uint *AtomicPartner(MeshConnectivityJob job) const { return AtomicScratch() + job.PartnerOffset; }
-    ElementWorkDomain Vertices(MeshConnectivityJob job) const { return {B, job.Vertices, job.Vertices.Storage.Slot == InvalidSlot ? job.Connectivity.Outgoing.Offset : 0u}; }
-    ElementWorkDomain Halfedges(MeshConnectivityJob job) const { return {B, job.Halfedges, job.Halfedges.Storage.Slot == InvalidSlot ? job.Corners.Offset : 0u}; }
-    ElementWorkDomain Faces(MeshConnectivityJob job) const { return {B, job.Faces, job.Faces.Storage.Slot == InvalidSlot ? job.Connectivity.FaceRanges.Offset : 0u}; }
-    ElementWorkDomain SourceEdges(MeshConnectivityJob job) const { return {B, job.SourceEdges, job.SourceEdges.Storage.Slot == InvalidSlot ? job.SourceConnectivity.Edges.Offset : 0u}; }
+    ElementWorkDomain Vertices(MeshConnectivityJob job) const { return {B, job.Vertices}; }
+    ElementWorkDomain Halfedges(MeshConnectivityJob job) const { return {B, job.Halfedges}; }
+    ElementWorkDomain Faces(MeshConnectivityJob job) const { return {B, job.Faces}; }
+    ElementWorkDomain SourceEdges(MeshConnectivityJob job) const { return {B, job.SourceEdges}; }
     uint RetainedEdge(MeshConnectivityJob job, uint representative_index) const {
         return job.RetainedEdgesOffset == InvalidOffset ? InvalidOffset : Scratch()[job.RetainedEdgesOffset + representative_index];
     }
@@ -56,18 +55,18 @@ struct ConnContext {
     uint Prev(MeshConnectivityJob job, uint h) const {
         const uint f = Owners(job)[h];
         if (f == InvalidOffset) return Opposites(job)[h];
-        device const uint *range = Ranges(job) + 2u * f;
-        return h == range[0] ? range[1] - 1u : h - 1u;
+        const uint2 range = uint2(Ranges(job)[f]);
+        return h == range.x ? range.y - 1u : h - 1u;
     }
 
     uint2 Tile(uint group_id) const { return Tiles()[Pc.FirstTile + group_id]; }
 };
 
-inline uint2 ConnEndpoints(ConnContext ctx, MeshConnectivityJob job, device const uint *corners, uint h) { return uint2(corners[ctx.Prev(job, h)], corners[h]); }
+inline uint2 ConnEndpoints(ConnContext ctx, MeshConnectivityJob job, ElementValues<const uint> corners, uint h) { return uint2(corners[ctx.Prev(job, h)], corners[h]); }
 
 // Faces share endpoint keys; explicit wire pairs remain distinct, including coincident lines.
 inline uint3 ConnEdgeKey(uint2 ends, uint wire_pair = 0u) { return uint3(min(ends.x, ends.y), max(ends.x, ends.y), wire_pair); }
-inline uint3 ConnKey(ConnContext ctx, MeshConnectivityJob job, device const uint *corners, uint h) {
+inline uint3 ConnKey(ConnContext ctx, MeshConnectivityJob job, ElementValues<const uint> corners, uint h) {
     const uint pair = ctx.Owners(job)[h] == InvalidOffset ? min(h, ctx.Opposites(job)[h]) + 1u : 0u;
     return ConnEdgeKey(ConnEndpoints(ctx, job, corners, h), pair);
 }
@@ -85,7 +84,7 @@ inline uint ConnEdgeHash(uint3 key) {
     return hash;
 }
 
-// Face loops own their canonical corners independently of face allocation order.
+// Face loops own their corners independently of face allocation order.
 // Only packed triangle import needs implicit ranges.
 // Emitters supply explicit ranges.
 kernel void MeshConnectivityFaces(
@@ -99,12 +98,9 @@ kernel void MeshConnectivityFaces(
     const uint i = tile.y * ScanTileSize + lane;
     if (i >= job.FaceCount) return;
     const uint f = ctx.Faces(job).Handle(i);
-    device uint *range = ctx.Ranges(job) + 2u * f;
-    if (job.FaceStarts == 0u) {
-        range[0] = job.Corners.Offset + 3u * i;
-        range[1] = range[0] + 3u;
-    }
-    for (uint h = range[0]; h < range[1]; ++h)
+    device packed_uint2 &range = ctx.Ranges(job)[f];
+    if (job.FaceStarts == 0u) range = packed_uint2(3u * i, 3u * i + 3u);
+    for (uint h = range.x; h < range.y; ++h)
         if (ctx.Halfedges(job).Index(h) != InvalidOffset) ctx.Owners(job)[h] = f;
 }
 
@@ -145,7 +141,7 @@ kernel void MeshConnectivityInsert(
     const uint i = tile.y * ScanTileSize + lane;
     if (i >= job.HalfedgeCount) return;
     const uint h = ctx.Halfedges(job).Handle(i);
-    device const uint *corners = ctx.Corners(job);
+    const auto corners = ctx.Corners(job);
     const uint2 ends = ConnEndpoints(ctx, job, corners, h);
     const uint3 key = ConnKey(ctx, job, corners, h);
     // A closure may include corners belonging to vertices outside the writable
@@ -183,16 +179,16 @@ kernel void MeshConnectivityMatchEdges(
     uint match=InvalidOffset;
     if (i < job.SourceEdgeCount) {
         const uint e = ctx.SourceEdges(job).Handle(i);
-        const uint h = BindlessBuffer(uint,bindless.Buffer,job.SourceConnectivity.Edges.Slot)[e];
-        const uint f = BindlessBuffer(uint,bindless.Buffer,job.SourceConnectivity.HalfedgeFaces.Slot)[h];
+        const ConnectivityView source{bindless, job.SourceConnectivity, 0u};
+        const uint h = source.EdgeHalfedge(e);
+        const uint f = source.HalfedgeFace(h);
         uint previous;
-        if (f == InvalidOffset) previous = BindlessBuffer(uint, bindless.Buffer, job.SourceConnectivity.Opposites.Slot)[h];
+        if (f == InvalidOffset) previous = source.Opposite(h);
         else {
-            const auto ranges = BindlessBuffer(packed_uint2,bindless.Buffer,job.SourceConnectivity.FaceRanges.Slot);
-            const uint2 loop = uint2(ranges[f]);
+            const uint2 loop = source.FaceHalfedges(f);
             previous = h == loop.x ? loop.y - 1u : h - 1u;
         }
-        const auto corners = BindlessBuffer(uint,bindless.IndexBuffer,job.SourceCornerSlot);
+        const ElementValues<const uint> corners{BindlessBuffer(uint,bindless.IndexBuffer,job.SourceCornerSlot), ctx.Table(job.SourceConnectivity.Tables.Halfedges)};
         const uint converted=job.ConvertedEdges.Storage.Slot!=InvalidSlot ? WorkRank(bindless,job.ConvertedEdges,e) : InvalidOffset;
         uint pair=f==InvalidOffset ? min(h,previous)+1u : 0u;
         if (converted!=InvalidOffset) pair=job.ConvertedWirePairs.Slot!=InvalidSlot ? ctx.Words(job.ConvertedWirePairs)[job.ConvertedWirePairs.Offset+converted] : 0u;
@@ -252,7 +248,7 @@ kernel void MeshConnectivityResolve(
     device uint *rep = ctx.Rep(job);
     const uint representative = ctx.Scratch()[job.TableOffset + rep[i]];
     rep[i] = representative;
-    device const uint *corners = ctx.Corners(job);
+    const auto corners = ctx.Corners(job);
     const bool wire = ctx.Owners(job)[h] == InvalidOffset;
     const bool reverse = wire ? h > ctx.Opposites(job)[h] : ConnReverse(ConnEndpoints(ctx, job, corners, h));
     // The partner is the lowest halfedge running against the representative.

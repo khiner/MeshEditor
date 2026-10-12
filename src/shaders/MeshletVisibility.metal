@@ -20,9 +20,7 @@ fragment uint MeshletVisibilityPrimitiveFragment(
         .InstanceSlot = draw_pc.InstanceSlot,
         .InstanceMapSlot = draw_pc.InstanceMapSlot,
         .MeshletSlot = draw_pc.MeshletSlot,
-        .MeshletTriangleSlot = draw_pc.MeshletTriangleSlot,
-        .MeshletLocalTriangleSlot = draw_pc.MeshletLocalTriangleSlot,
-        .MeshletVertexSlot = draw_pc.MeshletVertexSlot,
+        .Payloads = draw_pc.Payloads,
         .VisibleMeshletSlot = draw_pc.VisibleMeshletSlot,
     };
     const Scene scene{bindless, view, theme, workspace};

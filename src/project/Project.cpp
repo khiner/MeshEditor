@@ -742,7 +742,7 @@ bool Project::Audit(std::string &why) {
         why = "Mesh store " + std::to_string(handle.StoreId) + " does not map to its entity.";
         return false;
     }
-    return History.Audit(why);
+    return R.Context.get<const MeshStore>().Audit(why) && History.Audit(why);
 }
 
 void Project::AfterRestore() {
@@ -778,7 +778,6 @@ void Project::AfterRestore() {
     }
     if (sources_changed || manifest_changed) reactive(R, Change::MaterializedTextures).emplace(Viewport);
     auto &meshes = R.Context.get<MeshStore>();
-    auto &render = meshes.Render();
     const auto changes = meshes.TakeChanges();
     // The restored selection and positions refresh in one submit.
     mtl::ComputeChain chain{meshes.BufferContext()};
@@ -802,8 +801,8 @@ void Project::AfterRestore() {
         const auto *owner = meshes.TryGet(id);
         if (!owner || owner->RenderTopologies == 0u) continue;
         repointed.push_back(entity);
-        if (render.ActiveMeshlets.Count(owner->PositionDirtyRoot)) scene.PositionDirty.insert(entity);
-        if (render.ActiveMeshlets.Count(owner->DirtyGroupRoot)) scene.LodDirty.insert(entity);
+        if (meshes.HasDirtyPositions(*owner)) scene.PositionDirty.insert(entity);
+        if (meshes.HasDirtyGroups(*owner)) scene.LodDirty.insert(entity);
         if (!meshes.ClusterGroupCount(*owner) && ClusterLodApplies(Mesh{meshes, id}.FaceCount() > 0u, meshes.MeshletCount(*owner))) scene.LodDemand.insert(entity);
     }
     // The restored render records change the meshlet and LOD node counts that size each instance's cull.

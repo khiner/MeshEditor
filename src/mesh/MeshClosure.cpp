@@ -20,44 +20,33 @@ uint32_t IncidenceWord(mtl::ComputeChain &chain) {
 
 // Fan corners are the corners at a vertex, so every corner belongs to exactly one fan.
 struct HostIncidence {
-    const MeshStore &Meshes;
-    const MeshArenas &A;
+    MeshConnectivity C;
+    std::span<const uint32_t> CornerVertices; // By corner address
     uint32_t Corners;
-    uint32_t Fan(uint32_t v) const {
-        const auto fans = A.VertexCorners.Buffer.GetSpan<uvec2>();
-        return v < fans.size() ? fans[v].y : 0u;
-    }
+    HostIncidence(const MeshStore &meshes, uint32_t id) : C{meshes.GetConnectivity(id)}, CornerVertices{meshes.Arenas().FaceCorners.Buffer.GetSpan<uint32_t>()}, Corners{C.HalfedgeCount} {}
+    uint32_t CornerVertex(he::HH h) const { return CornerVertices[C.HalfedgeAddress(*h).Value()]; }
+    uint32_t Fan(uint32_t v) const { return C.HasVertexBlock(v) ? C.Incoming(he::VH{v}).y : 0u; }
     // Adds both endpoints of an edge, whose first halfedge starts at its previous corner in a face or at its pair on a line.
     void AddEndpoints(uint32_t e, std::vector<uint32_t> &vertices) const {
-        const auto h = A.EdgeHalfedges.Buffer.GetSpan<uint32_t>()[e];
-        if (h == InvalidOffset) return;
-        const auto face = A.HalfedgeFaces.Buffer.GetSpan<uint32_t>()[h];
-        const auto ranges = A.FaceRanges.Buffer.GetSpan<uvec2>();
-        const auto corners = A.FaceCorners.Buffer.GetSpan<uint32_t>();
-        const auto previous = face == InvalidOffset ? A.OppositeHalfedges.Buffer.GetSpan<uint32_t>()[h] :
-            h == ranges[face].x                     ? ranges[face].y - 1u :
-                                                      h - 1u;
-        vertices.push_back(corners[h]);
-        vertices.push_back(corners[previous]);
+        const auto h = C.EdgeHalfedge(e);
+        if (!h) return;
+        vertices.push_back(CornerVertex(h));
+        vertices.push_back(CornerVertex(C.Previous(h)));
     }
     void AddLoopVertices(uint32_t f, std::vector<uint32_t> &vertices) const {
-        const auto range = A.FaceRanges.Buffer.GetSpan<uvec2>()[f];
-        const auto corners = A.FaceCorners.Buffer.GetSpan<uint32_t>();
-        for (auto h = range.x; h < range.y; ++h) vertices.push_back(corners[h]);
+        const auto range = C.FaceRange(f);
+        for (auto h = range.x; h < range.y; ++h) vertices.push_back(CornerVertex(he::HH{h}));
     }
     // Adds the faces or edges of the vertex's fan corners.
     void AddFan(Element element, uint32_t v, std::vector<uint32_t> &handles) const {
-        const auto fans = A.VertexCorners.Buffer.GetSpan<uvec2>();
-        if (v >= fans.size()) return;
-        const auto owners = (element == Element::Face ? A.HalfedgeFaces : A.HalfedgeEdges).Buffer.GetSpan<uint32_t>();
-        for (const auto item : A.VertexFans.Items.Get({fans[v].x, fans[v].y})) {
-            if (owners[item.x] != InvalidOffset) handles.push_back(owners[item.x]);
+        if (!C.HasVertexBlock(v)) return;
+        const auto run = C.Incoming(he::VH{v});
+        for (const auto item : C.FanItems.subspan(run.x, run.y)) {
+            const he::HH h{item.x};
+            const auto owner = element == Element::Face ? *C.FaceOf(h) : *C.Edge(h);
+            if (owner != InvalidOffset) handles.push_back(owner);
             // The GPU vertex closure includes both edges incident to each face corner.
-            if (element == Element::Edge && item.y != InvalidOffset) {
-                const auto range = A.FaceRanges.Buffer.GetSpan<uvec2>()[item.y];
-                const auto next = item.x + 1u == range.y ? range.x : item.x + 1u;
-                handles.push_back(owners[next]);
-            }
+            if (element == Element::Edge && item.y != InvalidOffset) handles.push_back(*C.Edge(C.Next(h)));
         }
     }
     // The fan corners of the vertices, counted once per listing.
@@ -90,11 +79,8 @@ uint32_t DomainBlocks(const MeshArenas &a, const MeshStore::Record &record, uint
         d == 2u                                                    ? blocks(a.FaceTriangles, record.FaceData) :
                                                                      blocks(a.EdgeHalfedges, record.EdgeData);
 }
-uint32_t DomainCapacity(const MeshArenas &a, uint32_t d) {
-    return d == 0u ? a.Vertices.Capacity() : d == 1u ? a.FaceCorners.Capacity() :
-        d == 2u                                      ? a.FaceTriangles.Capacity() :
-                                                       a.EdgeHalfedges.Capacity();
-}
+// The bound of the record's handles in a closure domain.
+uint32_t DomainBound(const MeshArenas &a, const MeshStore::Record &record, uint32_t d) { return DomainBlocks(a, record, d) * MeshElementBlockSize; }
 
 MeshClosurePushConstants ClosureConstants(const MeshStore &meshes, uint32_t id) {
     const auto &a = meshes.Arenas();
@@ -118,7 +104,7 @@ MeshClosure EncodeClosure(state::Scene &r, mtl::ComputeChain &chain, uint32_t id
     std::vector<ElementWork> sorted;
     for (uint32_t d = 0u; d < 4u; ++d) {
         if (d == domain) continue;
-        closure.Elements[d] = pc.Work[d] = AllocateElementWork(chain.Scratch, DomainCapacity(a, d), std::min(bounds[d], DomainBlocks(a, record, d)));
+        closure.Elements[d] = pc.Work[d] = AllocateElementWork(chain.Scratch, DomainBound(a, record, d), std::min(bounds[d], DomainBlocks(a, record, d)));
         sorted.push_back(pc.Work[d]);
     }
     pc.Input = input.Work;
@@ -197,7 +183,7 @@ ClosureSeed EncodeEdgeVertices(state::Scene &r, mtl::ComputeChain &chain, uint32
     const auto &record = meshes.Get(id);
     const auto count = uint32_t(std::min<uint64_t>(2ull * edges.Count, a.Vertices.Count(record.Vertices)));
     auto pc = ClosureConstants(meshes, id);
-    pc.Work[0] = AllocateElementWork(chain.Scratch, a.Vertices.Capacity(), std::min(count, DomainBlocks(a, record, 0u)));
+    pc.Work[0] = AllocateElementWork(chain.Scratch, DomainBound(a, record, 0u), std::min(count, DomainBlocks(a, record, 0u)));
     if (!edges.Count) return {pc.Work[0]};
     pc.Input = edges.Work;
     pc.InputDomain = 3u;
@@ -237,16 +223,16 @@ ClosureSeed ListSeed(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, Ele
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
-    const HostIncidence incidence{meshes, a, a.FaceCorners.Count(record.FaceCorners)};
+    const HostIncidence incidence{meshes, id};
     ClosureSeed seed;
     uint64_t sum = 0u;
     for (const auto handle : handles) {
-        if (!meshes.IsLiveElement(id, element, handle)) throw std::invalid_argument("Topology handle list contains a foreign or retired element.");
+        if (!meshes.IsLiveElement(id, element, ElementHandle{handle})) throw std::invalid_argument("Topology handle list contains a foreign or retired element.");
         sum += incidence.Add(element, handle, seed.Vertices);
     }
     const auto d = element == Element::Vertex ? 0u : element == Element::Face ? 2u :
                                                                                 3u;
-    seed.Work = SeedElementWorkHandles(chain.Scratch, DomainCapacity(a, d), handles, DomainBlocks(a, record, d));
+    seed.Work = SeedElementWorkHandles(chain.Scratch, DomainBound(a, record, d), handles, DomainBlocks(a, record, d));
     seed.Count = ElementWorkCount(chain.Scratch, seed.Work);
     seed.Incidence = uint32_t(std::min<uint64_t>(sum, incidence.Corners));
     const auto fans = incidence.Fans(seed.Vertices);
@@ -258,7 +244,7 @@ ClosureSeed FaceSeed(const state::Scene &r, uint32_t id, const BufferArena<uint3
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
-    const HostIncidence incidence{meshes, a, a.FaceCorners.Count(record.FaceCorners)};
+    const HostIncidence incidence{meshes, id};
     ClosureSeed seed{.Work = faces, .Count = ElementWorkCount(storage, faces)};
     // Every face of a mesh holds each of its corners once.
     if (seed.Count == a.FaceTriangles.Count(record.FaceData)) {
@@ -277,7 +263,7 @@ ClosureSeed AroundVertices(const state::Scene &r, uint32_t id, Element element, 
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
-    const HostIncidence incidence{meshes, a, a.FaceCorners.Count(record.FaceCorners)};
+    const HostIncidence incidence{meshes, id};
     ClosureSeed seed{.Work = work, .All = vertices.All};
     if (vertices.All) {
         seed.Count = element == Element::Face ? a.FaceTriangles.Count(record.FaceData) : a.EdgeHalfedges.Count(record.EdgeData);
@@ -304,13 +290,14 @@ FaceTriangles EncodeFaceTriangles(state::Scene &r, mtl::ComputeChain &chain, uin
     result.TotalWord = IncidenceWord(chain);
     // A face with n loop corners derives n - 2 triangles.
     const auto bound = faces.Incidence;
-    result.Triangles = AllocateElementWork(chain.Scratch, a.Triangles.Capacity(), std::min(bound, record.TriangleData ? a.Triangles.Set(record.TriangleData).BlockCount : 0u));
+    result.Triangles = AllocateElementWork(chain.Scratch, a.Triangles.HandleBound(record.TriangleData), std::min(bound, record.TriangleData ? a.Triangles.Set(record.TriangleData).BlockCount : 0u));
     if (!faces.Count) return result;
     const FaceTrianglePushConstants pc{
         .Faces = faces.Work,
         .Triangles = result.Triangles,
         .Error = {chain.Scratch.Buffer.Slot, 0u},
         .Total = {chain.Scratch.Buffer.Slot, result.TotalWord},
+        .Tables = meshes.GetElementTables(id),
         .FaceBound = faces.Count,
         .FaceOwner = record.FaceData.Index,
         .TriangleOwner = record.TriangleData.Index,
@@ -319,9 +306,9 @@ FaceTriangles EncodeFaceTriangles(state::Scene &r, mtl::ComputeChain &chain, uin
         .FaceRangesSlot = a.FaceRanges.Buffer.Slot,
         .FaceTrianglesSlot = a.FaceTriangles.Buffer.Slot,
         .TrianglesSlot = a.Triangles.Buffer.Slot,
-        .FaceCapacity = std::min({a.FaceTriangles.Capacity(), a.FaceTriangles.Buffer.Count<uint32_t>(), a.FaceRanges.Buffer.Count<uvec2>()}),
-        .TriangleCapacity = std::min(a.Triangles.Capacity(), a.Triangles.Buffer.Count<uvec3>()),
-        .CornerCapacity = a.FaceCorners.Capacity(),
+        .FaceHandles = a.FaceTriangles.HandleBound(record.FaceData),
+        .TriangleHandles = a.Triangles.HandleBound(record.TriangleData),
+        .CornerHandles = a.FaceCorners.HandleBound(record.FaceCorners),
     };
     chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureTriangles], pc, faces.Count, 32u);
     EncodeSortElementWork(r, chain, std::span{&result.Triangles, 1u});

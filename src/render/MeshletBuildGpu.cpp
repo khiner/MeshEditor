@@ -20,6 +20,7 @@
 #include <bit>
 #include <format>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -96,7 +97,6 @@ MeshletBuildPushConstants PushConstants(const MeshStore &meshes) {
         .PrimitiveRoutesSlot = b.PrimitiveRoutes.Buffer.Slot,
         .LodLeavesSlot = b.MeshletLodLeaves.Buffer.Slot,
         .LodParentsSlot = b.LodParents.Buffer.Slot,
-        .CornerSectors = meshes.Slots().CornerSector,
         .FaceSharpnessSlot = meshes.Slots().FaceSharpness,
     };
 }
@@ -150,21 +150,21 @@ void ValidateSources(const MeshStore &meshes, std::span<const MeshletBuildSource
         const bool elements = (source.Topology == 1u || source.Topology == 2u) && source.Elements.Storage.Slot != InvalidSlot && source.Group == InvalidOffset;
         if ((!triangles && !elements) ||
             owner.ExtrasFaces.Count || owner.StoreId != source.Destination->StoreId ||
-            !render.ActiveMeshlets.Contains(owner.PrimitiveRoot, source.Primitive))
+            !render.Primitives.Contains(owner.PrimitiveData, ElementHandle{source.Primitive}))
             throw std::invalid_argument("Meshlet fragment requires owned canonical element work and primitive.");
         if (destinations.contains(source.Owner)) throw std::invalid_argument("Meshlet fragment owner cannot also be a build destination.");
-        const auto &primitive = render.Primitives.Get({source.Primitive, 1u})[0];
+        const auto &primitive = render.Primitives.Get({render.Primitives.Address(owner.PrimitiveData, ElementHandle{source.Primitive}).Value(), 1u})[0];
         if (primitive.Topology != source.Topology || meshes.PrimitiveRoute(owner, primitive.PrimitiveIndex, source.Topology) != source.Primitive)
             throw std::invalid_argument("Meshlet fragment primitive has no matching source route.");
         if (source.Group != InvalidOffset) {
-            if (!render.ActiveMeshlets.Contains(owner.GroupRoot, source.Group)) throw std::invalid_argument("Meshlet fragment group belongs to another owner.");
-            const auto links = render.GroupLinks.Get({source.Group, 1u})[0];
-            if (!links.MemberCount || uint64_t(links.MemberOffset) + links.MemberCount > render.GroupClusterIds.Buffer.Count<uint32_t>()) {
+            if (!render.ClusterGroups.Contains(owner.GroupData, ElementHandle{source.Group})) throw std::invalid_argument("Meshlet fragment group belongs to another owner.");
+            const auto links = render.GroupLinks.Get({render.ClusterGroups.Address(owner.GroupData, ElementHandle{source.Group}).Value(), 1u})[0];
+            if (!links.MemberCount || uint64_t(links.MemberOffset) + links.MemberCount > owner.GroupClusters.Values.Count) {
                 throw std::invalid_argument("Meshlet fragment group has invalid membership.");
             }
-            const auto first = render.GroupClusterIds.Get({links.MemberOffset, 1u})[0];
-            if (!render.ActiveMeshlets.Contains(owner.MeshletRoot, first)) throw std::invalid_argument("Meshlet fragment group references a foreign meshlet.");
-            const auto &member = render.Meshlets.Get({first, 1u})[0];
+            const auto first = render.GroupClusterIds.Get(owner.GroupClusters.Values)[links.MemberOffset];
+            if (!render.Meshlets.Contains(owner.MeshletData, ElementHandle{first})) throw std::invalid_argument("Meshlet fragment group references a foreign meshlet.");
+            const auto &member = render.Meshlets.Get({render.Meshlets.Address(owner.MeshletData, ElementHandle{first}).Value(), 1u})[0];
             if (member.GroupIndex != source.Group || member.Primitive != source.Primitive) {
                 throw std::invalid_argument("Meshlet fragment group disagrees with its primitive.");
             }
@@ -218,7 +218,7 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
             elements = seed.Work;
         }
         const auto materials = source.Owner ?
-            SeedElementWorkHandles(membership, work.MaterialBound, std::array{render.Primitives.Get({source.Primitive, 1u})[0].PrimitiveIndex}) :
+            SeedElementWorkHandles(membership, work.MaterialBound, std::array{render.Primitives.Get({render.Primitives.Address(source.Owner->PrimitiveData, ElementHandle{source.Primitive}).Value(), 1u})[0].PrimitiveIndex}) :
             AllocateElementWork(membership, work.MaterialBound, work.MaterialBlocks);
         if (!source.Owner) gathered_work.push_back(materials);
         if (uint64_t(n) * work.Endpoints > UINT32_MAX) throw std::length_error("Meshlet output exceeds arena address space.");
@@ -303,34 +303,56 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
     uint64_t triangle_ids = 0u, local_triangles = 0u;
     for (const auto &job : jobs) {
         triangle_ids += job.ElementCount;
-        if (job.Topology == 0u) local_triangles += uint64_t(job.ElementCount) * 3u;
+        if (job.Topology == 0u) local_triangles += job.ElementCount;
     }
     render.MeshletTriangleIds.ReserveAdditional(triangle_ids);
     render.MeshletLocalTriangles.ReserveAdditional(local_triangles);
-    for (const auto group : destinations) {
+    // A fragment's payload runs append to the ranges of its render owner, and a canonical destination's fill fresh ranges of exactly their size.
+    const auto payload_owner = [&](Range group) -> MeshStore::Record & { return sources[group.Offset].Owner ? *sources[group.Offset].Owner : *sources[group.Offset].Destination; };
+    // Each destination's payload runs, as offsets in its payload owner's ranges.
+    struct PayloadRuns {
+        Range Triangles, LocalTriangles, Vertices;
+    };
+    std::vector<PayloadRuns> payload_runs(destinations.size());
+    // Gives each job the pool positions of its payload runs and captures them for their GPU writes, once the batch appended every run, since growth moves a range.
+    const auto place_payloads = [&] {
+        for (uint32_t d = 0u; d < destinations.size(); ++d) {
+            const auto &owner = payload_owner(destinations[d]);
+            for (uint32_t i = destinations[d].Offset; i < destinations[d].Offset + destinations[d].Count; ++i) {
+                jobs[i].TriangleAddress = owner.MeshletTriangles.Values.Offset + jobs[i].TriangleOffset;
+                jobs[i].LocalTriangleAddress = owner.MeshletLocalTriangles.Values.Offset + jobs[i].LocalTriangleOffset;
+                jobs[i].VertexAddress = owner.MeshletVertices.Values.Offset + jobs[i].VertexOffset;
+            }
+            const auto &runs = payload_runs[d];
+            for (const auto [payload, run] : {std::pair{RenderPayload::TriangleIds, runs.Triangles}, std::pair{RenderPayload::LocalTriangles, runs.LocalTriangles}, std::pair{RenderPayload::VertexCorners, runs.Vertices}})
+                WithPayload(render, owner, payload, [&](const auto &pool, const PayloadRange &range) { pool.CaptureWrite({range.Values.Offset + run.Offset, run.Count}); });
+        }
+    };
+    for (uint32_t d = 0u; d < destinations.size(); ++d) {
+        const auto group = destinations[d];
         auto &mb = *sources[group.Offset].Destination;
         ++mb.MeshletRevision;
         uint64_t elements = 0u, local = 0u;
         for (uint32_t i = group.Offset; i < group.Offset + group.Count; ++i) {
             elements += jobs[i].ElementCount;
-            if (jobs[i].Topology == 0u) local += uint64_t(jobs[i].ElementCount) * 3u;
+            if (jobs[i].Topology == 0u) local += jobs[i].ElementCount;
             if (!sources[i].Owner && jobs[i].ElementCount) mb.RenderTopologies |= 1u << jobs[i].Topology;
         }
         // An empty published mesh still has a completed render binding.
         if (!sources[group.Offset].Owner && !mb.RenderTopologies) mb.RenderTopologies = 1u << sources[group.Offset].Topology;
-        mb.MeshletTriangles = render.MeshletTriangleIds.Allocate(OutputCount(elements));
-        mb.MeshletLocalTriangles = render.MeshletLocalTriangles.Allocate(OutputCount(local));
-        render.MeshletTriangleIds.CaptureWrite(mb.MeshletTriangles);
-        render.MeshletLocalTriangles.CaptureWrite(mb.MeshletLocalTriangles);
-        uint32_t element = mb.MeshletTriangles.Offset, triangle = mb.MeshletLocalTriangles.Offset;
+        auto &runs = payload_runs[d];
+        runs.Triangles = {meshes.AppendPayload(payload_owner(group), RenderPayload::TriangleIds, OutputCount(elements)), OutputCount(elements)};
+        runs.LocalTriangles = {meshes.AppendPayload(payload_owner(group), RenderPayload::LocalTriangles, OutputCount(local)), OutputCount(local)};
+        uint32_t element = runs.Triangles.Offset, triangle = runs.LocalTriangles.Offset;
         for (uint32_t i = group.Offset; i < group.Offset + group.Count; ++i) {
             auto &job = jobs[i];
             job.TriangleOffset = element;
             job.LocalTriangleOffset = triangle;
             element += job.ElementCount;
-            if (job.Topology == 0u) triangle += job.ElementCount * 3u;
+            if (job.Topology == 0u) triangle += job.ElementCount;
         }
     }
+    place_payloads();
     tiles.clear();
     domain(InputDomain, [](const auto &job) { return job.BlockCount; });
     domain(InitDomain, [](const auto &job) { return Tiles(std::max(16u, job.PrimitiveCount)); });
@@ -396,7 +418,10 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
     render.Primitives.ReserveAdditional(primitives);
     render.LodNodes.ReserveAdditional(primitives);
     render.LodParents.ReserveAdditional(primitives);
-    for (const auto group : destinations) {
+    const auto capture = [](const mtl::Buffer &buffer, uint64_t stride, RenderRun run) { buffer.CaptureWrite(uint64_t(run.Address.Value()) * stride, uint64_t(run.Count) * stride); };
+    std::vector<RenderRun> node_runs(destinations.size());
+    for (uint32_t d = 0u; d < destinations.size(); ++d) {
+        const auto group = destinations[d];
         auto &mb = *sources[group.Offset].Destination;
         const bool canonical = !sources[group.Offset].Owner;
         uint64_t clusters = 0u, corners = 0u, primitive_count = 0u;
@@ -409,41 +434,43 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
                 ForEachWorkElement(membership, jobs[i].Materials, [&](uint32_t key) { routes = std::max(routes, key + 1u); });
             }
         }
-        mb.Meshlets = render.AllocateMeshlets(OutputCount(clusters));
+        // A fragment's clusters join its owner's meshlet set, and a canonical destination takes fresh dense sets.
+        auto &meshlet_set = canonical ? mb.MeshletData : sources[group.Offset].Owner->MeshletData;
+        const auto meshlet_run = render.Insert(RenderSet::Meshlets, meshlet_set, OutputCount(clusters));
+        mb.Meshlets = {meshlet_run.Handle.Value, meshlet_run.Count};
         mb.Level0Count = mb.Meshlets.Count;
-        mb.MeshletVertices = render.MeshletVertexCorners.Allocate(OutputCount(corners));
+        auto &runs = payload_runs[d];
+        runs.Vertices = {meshes.AppendPayload(payload_owner(group), RenderPayload::VertexCorners, OutputCount(corners)), OutputCount(corners)};
+        RenderRun primitive_run{}, node_run{};
         if (canonical) {
-            mb.Primitives = render.Primitives.Allocate(OutputCount(primitive_count));
-            mb.LodNodes = render.LodNodes.Allocate(OutputCount(primitive_count));
+            primitive_run = render.Insert(RenderSet::Primitives, mb.PrimitiveData, OutputCount(primitive_count));
+            node_run = render.Insert(RenderSet::Nodes, mb.NodeData, OutputCount(primitive_count));
             render.MeshRecords.GetMutable({mb.StoreId, 1u})[0] = jobs[group.Offset].Mesh;
             meshes.ReservePrimitiveRoutes(mb, routes);
         }
-        render.LodParents.Mirror(mb.LodNodes);
-        uint32_t cluster = mb.Meshlets.Offset, vertex = mb.MeshletVertices.Offset;
-        uint32_t primitive = mb.Primitives.Offset, node = mb.LodNodes.Offset;
+        node_runs[d] = node_run;
+        uint32_t cluster = 0u, vertex = runs.Vertices.Offset, primitive = 0u;
         for (uint32_t i = group.Offset; i < group.Offset + group.Count; ++i) {
             auto &job = jobs[i];
-            job.MeshletOffset = cluster;
+            job.MeshletAddress = (meshlet_run.Address + cluster).Value();
+            job.MeshletHandle = meshlet_run.Handle.Value + cluster;
             job.VertexOffset = vertex;
-            job.PrimitiveOffset = primitive;
-            job.NodeOffset = node;
+            job.PrimitiveAddress = (primitive_run.Address + primitive).Value();
+            job.PrimitiveHandle = primitive_run.Handle.Value + primitive;
+            job.NodeAddress = (node_run.Address + primitive).Value();
+            job.NodeHandle = node_run.Handle.Value + primitive;
             job.PrimitiveRoutes = mb.PrimitiveRoutes.Offset;
             cluster += counts[i].x;
             vertex += counts[i].y;
-            if (canonical) {
-                primitive += job.PrimitiveCount;
-                node += job.PrimitiveCount;
-            }
+            if (canonical) primitive += job.PrimitiveCount;
         }
-        render.Meshlets.CaptureWrite(mb.Meshlets);
-        render.MeshletTriangleIds.CaptureWrite(mb.MeshletTriangles);
-        render.MeshletVertexCorners.CaptureWrite(mb.MeshletVertices);
-        render.MeshletLocalTriangles.CaptureWrite(mb.MeshletLocalTriangles);
-        render.Primitives.CaptureWrite(mb.Primitives);
-        render.LodNodes.CaptureWrite(mb.LodNodes);
-        render.MeshletLodLeaves.CaptureWrite(mb.Meshlets);
-        render.LodParents.CaptureWrite(mb.LodNodes);
+        capture(render.Meshlets.Buffer, sizeof(MeshletRecord), meshlet_run);
+        capture(render.Primitives.Buffer, sizeof(PrimitiveRecord), primitive_run);
+        capture(render.LodNodes.Buffer, sizeof(LodNode), node_run);
+        capture(render.MeshletLodLeaves.Buffer, sizeof(uint32_t), meshlet_run);
+        capture(render.LodParents.Buffer, sizeof(uint32_t), node_run);
     }
+    place_payloads();
     job_buffer.Update(as_bytes(jobs));
     {
         const profile::CpuScope phase{"MeshletPublish"};
@@ -461,45 +488,31 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
             const auto &source = sources[i];
             if (source.Owner || source.Destination->ExtrasFaces.Count) continue;
             std::vector<uint32_t> blocks;
-            ForEachWorkBlock(membership, jobs[i].Elements, [&](uint32_t block, auto) { blocks.push_back(block); });
+            ForEachWorkBlock(membership, jobs[i].Elements, [&](uint32_t local, auto) { blocks.push_back(local); });
             std::ranges::sort(blocks);
-            PublishMeshletOwners(r, chain, *source.Destination, source.Topology, std::array{Range{jobs[i].MeshletOffset, counts[i].x}}, blocks);
+            PublishMeshletOwners(r, chain, *source.Destination, source.Topology, std::array{Range{jobs[i].MeshletHandle, counts[i].x}}, blocks);
         }
     });
     chain.Submit();
     const profile::CpuScope membership_scope{"MeshletMembership"};
-    // A new owner publishes its clusters, primitives and nodes, and each populated traversal leaf its cluster run.
-    // Edit fragments remain provisional ranges until their canonical owner adopts them.
-    std::vector<MeshletIndexEdit> ownership;
-    std::vector<uint32_t> owned_sources, leaves;
-    for (const auto group : destinations) {
-        const auto i = group.Offset;
-        const auto &source = sources[i];
-        if (source.Owner) continue;
-        owned_sources.push_back(i);
-        ownership.push_back({.Insert = source.Destination->Meshlets});
-        ownership.push_back({.Insert = source.Destination->Primitives});
-        ownership.push_back({.Insert = source.Destination->LodNodes});
-    }
-    for (const auto i : owned_sources) {
-        const auto nodes = sources[i].Destination->LodNodes;
-        for (uint32_t n = 0u; n < nodes.Count; ++n) {
-            const auto &node = render.LodNodes.Get({nodes.Offset + n, 1u})[0];
-            if (node.ChildCount || !node.MeshletCount) continue;
-            if (node.MeshletRoot != InvalidOffset) throw std::logic_error("LOD leaf already owns meshlet membership.");
-            leaves.push_back(nodes.Offset + n);
-            ownership.push_back({.Insert = {node.FirstMeshlet, node.MeshletCount}});
-        }
-    }
-    if (!ownership.empty()) render.ActiveMeshlets.Update(ownership);
-    for (uint32_t j = 0u; j < leaves.size(); ++j) render.LodNodes.GetMutable({leaves[j], 1u})[0].MeshletRoot = ownership[owned_sources.size() * 3u + j].Root;
+    // Each populated traversal leaf of a new owner lists its cluster run.
+    // Edit fragments join their owner's traversal leaves when the owner adopts them.
     std::vector<MeshStore::Record *> spatial;
-    for (uint32_t j = 0u; j < owned_sources.size(); ++j) {
-        const auto i = owned_sources[j];
-        sources[i].Destination->MeshletRoot = ownership[j * 3u].Root;
-        sources[i].Destination->PrimitiveRoot = ownership[j * 3u + 1u].Root;
-        sources[i].Destination->NodeRoot = ownership[j * 3u + 2u].Root;
-        if (!sources[i].Destination->ExtrasFaces.Count && (sources[i].Destination->RenderTopologies & 1u)) spatial.push_back(sources[i].Destination);
+    for (uint32_t d = 0u; d < destinations.size(); ++d) {
+        const auto &source = sources[destinations[d].Offset];
+        if (source.Owner) continue;
+        auto &mb = *source.Destination;
+        const auto nodes = node_runs[d];
+        for (uint32_t n = 0u; n < nodes.Count; ++n) {
+            auto node = render.LodNodes.Get({(nodes.Address + n).Value(), 1u})[0];
+            if (node.ChildCount || !node.MeshletCount) continue;
+            if (node.Members != InvalidOffset) throw std::logic_error("LOD leaf already owns meshlet membership.");
+            std::vector<uint32_t> members(node.MeshletCount);
+            std::iota(members.begin(), members.end(), node.FirstMeshlet);
+            node.Members = render.ListMembers(mb.MemberData, members);
+            render.LodNodes.GetMutable({(nodes.Address + n).Value(), 1u})[0] = node;
+        }
+        if (!mb.ExtrasFaces.Count && (mb.RenderTopologies & 1u)) spatial.push_back(&mb);
     }
     BuildMeshletSpatial(r, spatial);
     buffers.Ctx.ReclaimRetiredBuffers();
@@ -543,32 +556,22 @@ uint32_t EnsureMeshletPrimitive(state::Scene &r, MeshStore::Record &owner, uint3
     if (owner.ExtrasFaces.Count || topology > 2u) throw std::invalid_argument("Primitive route requires a canonical render owner and topology.");
     if (source_primitive >= std::max(owner.PrimitiveMaterials.Count, 1u)) throw std::out_of_range("Primitive route exceeds the mesh material domain.");
     if (const auto existing = meshes.PrimitiveRoute(owner, source_primitive, topology); existing != InvalidOffset) {
-        if (!render.ActiveMeshlets.Contains(owner.PrimitiveRoot, existing)) throw std::logic_error("Primitive route names a foreign render primitive.");
+        if (!render.Primitives.Contains(owner.PrimitiveData, ElementHandle{existing})) throw std::logic_error("Primitive route names a foreign render primitive.");
         return existing;
     }
-    const auto primitive = render.Primitives.Allocate(1u);
-    const auto node = render.LodNodes.Allocate(1u);
-    render.LodParents.Mirror(node);
-    render.Primitives.GetMutable(primitive)[0] = {
+    const auto primitive = render.Insert(RenderSet::Primitives, owner.PrimitiveData, 1u);
+    const auto node = render.Insert(RenderSet::Nodes, owner.NodeData, 1u);
+    render.Primitives.GetMutable({primitive.Address.Value(), 1u})[0] = {
         .PrimitiveIndex = source_primitive,
         .Topology = topology,
         .PrimitiveMaterialOffset = OffsetOrInvalid(owner.PrimitiveMaterials),
-        .LodRootNode = node.Offset,
-        .LodFinestNode = node.Offset,
+        .LodRootNode = node.Handle.Value,
+        .LodFinestNode = node.Handle.Value,
     };
-    render.LodNodes.GetMutable(node)[0] = {.Error = std::numeric_limits<float>::infinity(), .MeshletRoot = InvalidOffset};
-    render.LodParents.GetMutable(node)[0] = InvalidOffset;
-    std::array edits{
-        MeshletIndexEdit{.Root = owner.PrimitiveRoot, .Insert = primitive},
-        MeshletIndexEdit{.Root = owner.NodeRoot, .Insert = node},
-    };
-    render.ActiveMeshlets.Update(edits);
-    owner.PrimitiveRoot = edits[0].Root;
-    owner.NodeRoot = edits[1].Root;
+    render.LodNodes.GetMutable({node.Address.Value(), 1u})[0] = {.Error = std::numeric_limits<float>::infinity(), .Members = InvalidOffset};
+    render.LodParents.GetMutable({node.Address.Value(), 1u})[0] = InvalidOffset;
     meshes.ReservePrimitiveRoutes(owner, std::max(owner.PrimitiveMaterials.Count, 1u));
-    render.PrimitiveRoutes.GetMutable({owner.PrimitiveRoutes.Offset + 3u * source_primitive + topology, 1u})[0] = primitive.Offset;
-    if (!owner.Primitives.Count) owner.Primitives = primitive;
-    if (!owner.LodNodes.Count) owner.LodNodes = node;
+    render.PrimitiveRoutes.GetMutable({owner.PrimitiveRoutes.Offset + 3u * source_primitive + topology, 1u})[0] = primitive.Handle.Value;
     ++owner.MeshletRevision;
-    return primitive.Offset;
+    return primitive.Handle.Value;
 }

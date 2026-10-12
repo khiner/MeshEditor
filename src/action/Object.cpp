@@ -187,7 +187,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         }
         // The clones' store records and render records copy together, in one submit after their entities exist.
         CloneCopies copies;
-        const auto clones = meshes.CloneMeshes(copies, sources, true, {});
+        const auto clones = meshes.CloneMeshes(copies, sources, true);
         for (uint32_t i = 0u; i < entities.size(); ++i) {
             const auto src = entities[i];
             const auto dup = linked ? DuplicateLinkedOne(r, src) : DuplicateOne(r, src, source_of[i] == InvalidOffset ? InvalidOffset : clones[source_of[i]]);
@@ -209,8 +209,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 const auto &record = meshes.Get(id);
                 const auto entity = MeshEntityOf(r, id);
                 if (entity == state::Null || record.RenderTopologies == 0u) continue;
-                if (record.PositionDirtyRoot != InvalidOffset) scene.PositionDirty.insert(entity);
-                if (record.DirtyGroupRoot != InvalidOffset) scene.LodDirty.insert(entity);
+                if (meshes.HasDirtyPositions(record)) scene.PositionDirty.insert(entity);
+                if (meshes.HasDirtyGroups(record)) scene.LodDirty.insert(entity);
                 if (!meshes.ClusterGroupCount(record)) scene.LodDemand.insert(entity);
             }
             r.Context.get<GpuBuffers>().PreludeStale = true;

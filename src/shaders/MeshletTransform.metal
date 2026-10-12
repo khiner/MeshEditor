@@ -39,18 +39,14 @@ inline uint MeshletVisibilityId(uint visible_index, uint triangle) {
     if (thread_index >= work.Meshlet.TriangleCount * (triangles_topology ? 3u : 6u)) return;
     MeshletVertexVaryings out;
     if (triangles_topology) {
-        device const uint *triangle_ids = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot);
-        device const uchar *triangles = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot);
         const bool coarse = MeshletCoarse(work.Meshlet);
         const uint local_triangle = thread_index / 3u;
         // Coarse triangles have no source-triangle identity.
-        const uint triangle = coarse ? 0u : triangle_ids[work.Meshlet.TriangleOffset + local_triangle];
-        const MeshletTriangleCorners corners = ResolveMeshletCorners(
-            scene, work.Draw, pc.MeshletVertexSlot, pc.MeshletLocalTriangleSlot, work.Meshlet, triangle, local_triangle
-        );
+        const uint triangle = coarse ? 0u : work.Payloads.TriangleIds[work.Meshlet.TriangleOffset + local_triangle];
+        const MeshletTriangleCorners corners = ResolveMeshletCorners(scene, work.Draw, work.Payloads, work.Meshlet, triangle, local_triangle);
         const uint vertex_index = corners.CornerIds[thread_index % 3u];
         const uint vertex_id = corners.VertexIds[thread_index % 3u];
-        const bool flat_face = (triangles[MeshletLocalTriangleOffset(work.Meshlet) + local_triangle * 3u] & uint(MeshletGeometryEncoding::FlatTriangleBit)) != 0u;
+        const bool flat_face = (work.Payloads.LocalTriangles[work.Meshlet.LocalTriangleOffset + local_triangle][0] & uint(MeshletGeometryEncoding::FlatTriangleBit)) != 0u;
         out = ToMeshletVertexVaryings(TransformVertex(scene, work.Draw, vertex_index, vertex_index, vertex_id, false, !flat_face, coarse, corners.CoarseNormal));
         const Transform world = MeshletWorld(scene, work.Draw);
         const auto face = coarse ? MeshletCoarseFace(scene, work.Primitive, work.Instance, work.Draw, world) :
@@ -64,24 +60,19 @@ inline uint MeshletVisibilityId(uint visible_index, uint triangle) {
         out.Topology = topology;
         out.PointCoord = float2(0.0f);
     } else {
-        device const uint *element_ids = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot);
         const uint element_index = thread_index / 6u;
         const uint corner = line_quad_corner(thread_index);
-        const uint element = element_ids[work.Meshlet.TriangleOffset + element_index];
-        const uint vertex_id = NonTriangleVertexId(
-            bindless, pc.MeshletVertexSlot, work.Meshlet, topology, element_index, corner
-        );
+        const uint element = work.Payloads.TriangleIds[work.Meshlet.TriangleOffset + element_index];
+        const uint vertex_id = NonTriangleVertexId(work.Payloads, work.Meshlet, topology, element_index, corner);
         out = ToMeshletVertexVaryings(TransformVertex(scene, work.Draw, vertex_id, vertex_id, vertex_id, false, true));
-        out.Position = NonTrianglePosition(
-            scene, bindless, pc.MeshletVertexSlot, work.Draw, work.Meshlet, topology, element_index, corner
-        );
+        out.Position = NonTrianglePosition(scene, work.Payloads, work.Draw, work.Meshlet, topology, element_index, corner);
         out.FlatWorldNormal = float3(0.0f);
         out.FaceOverlayFlags = 0u;
         out.MaterialIndex = MeshletPrimitiveMaterialIndex(scene, work.Primitive);
         const float3 scale = float3(MeshletWorld(scene, work.Draw).S);
         out.WorldScale = (scale.x + scale.y + scale.z) / 3.0f;
         out.ObjectId = work.Instance.ObjectId;
-        out.ElementId = work.Draw.ElementIdOffset + element + 1u;
+        out.ElementId = scene.ElementPickId(work.Draw, topology == uint(MeshPrimitiveTopology::Line), element);
         out.Topology = topology;
         out.PointCoord = PointQuadCorners[corner] * 0.5f + 0.5f;
         // Alpha zero marks an unselected instance for fill recoloring during shading.
@@ -111,15 +102,13 @@ inline uint MeshletVisibilityId(uint visible_index, uint triangle) {
     }
     const uint topology = MeshletPrimitiveTopology(work.Meshlet);
     if (topology == uint(MeshPrimitiveTopology::Triangle) && thread_index < work.Meshlet.VertexCount) {
-        const uint source_vertex = MeshletSourceVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, thread_index);
+        const uint source_vertex = MeshletSourceVertex(work.Payloads, work.Meshlet, thread_index);
         const uint vertex_id = MeshletVertexId(scene, work.Draw, topology, source_vertex);
         output.set_vertex(thread_index, MeshletPositionVaryings{MeshletPosition(scene, work.Draw, MeshletWorld(scene, work.Draw), vertex_id)});
     } else if (topology != uint(MeshPrimitiveTopology::Triangle) && thread_index < work.Meshlet.TriangleCount * 4u) {
         const uint element = thread_index / 4u;
         const uint corner = thread_index & 3u;
-        output.set_vertex(thread_index, MeshletPositionVaryings{NonTrianglePosition(
-            scene, bindless, pc.MeshletVertexSlot, work.Draw, work.Meshlet, topology, element, corner
-        )});
+        output.set_vertex(thread_index, MeshletPositionVaryings{NonTrianglePosition(scene, work.Payloads, work.Draw, work.Meshlet, topology, element, corner)});
     }
     const bool triangles_topology = topology == uint(MeshPrimitiveTopology::Triangle);
     const uint primitive_count = work.Meshlet.TriangleCount * (triangles_topology ? 1u : 2u);
@@ -129,10 +118,8 @@ inline uint MeshletVisibilityId(uint visible_index, uint triangle) {
         for (uint corner = 0u; corner < 3u; ++corner) {
             uint index = 0u;
             if (!hidden) {
-                if (triangles_topology) {
-                    device const uchar *triangles = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot);
-                    index = triangles[MeshletLocalTriangleOffset(work.Meshlet) + thread_index * 3u + corner] & uint(MeshletGeometryEncoding::LocalIndexMask);
-                } else index = element * 4u + LineQuadCornerLut[(thread_index & 1u) * 3u + corner];
+                if (triangles_topology) index = work.Payloads.LocalTriangles[work.Meshlet.LocalTriangleOffset + thread_index][corner] & uint(MeshletGeometryEncoding::LocalIndexMask);
+                else index = element * 4u + LineQuadCornerLut[(thread_index & 1u) * 3u + corner];
             }
             output.set_index(thread_index * 3u + corner, index);
         }

@@ -6,31 +6,31 @@
 #include "gpu/MeshRecord.h"
 
 // Shared render-vertex equivalence for finest construction and local LOD
-// simplification. Callers supply canonical corner handles, including corners
+// simplification. Callers supply corner handles of the mesh, including corners
 // retained from different source faces in a coarse triangle.
 struct CornerRenderKey {
     device const BindlessSet &B;
     MeshRecord Mesh;
-    ElementAttributeRef CornerSectors;
     uint FaceSharpnessSlot;
+    uint Address(uint corner) const { return HandleAddress<MeshElementBlockSize>(B, Mesh.Connectivity.Tables.Halfedges, corner); }
     uint VertexIndex(uint corner) const {
-        return BindlessBuffer(uint,B.IndexBuffer,Mesh.IndexSlotOffset.Slot)[corner]-Mesh.VertexOffset;
+        return BindlessBuffer(uint,B.IndexBuffer,Mesh.IndexSlotOffset.Slot)[Address(corner)];
     }
     uint Face(uint corner) const {
-        return BindlessBuffer(uint,B.Buffer,Mesh.Connectivity.HalfedgeFaces.Slot)[corner];
+        return BindlessBuffer(uint,B.Buffer,Mesh.Connectivity.HalfedgeFacesSlot)[Address(corner)];
     }
     uint Class(uint c) const {
         if (Mesh.CornerClassMode == uint(CornerClassMode::UniformVertex)) return uint(CornerClass::Vertex);
         if (Mesh.CornerClassMode == uint(CornerClassMode::UniformFace)) return uint(CornerClass::Face);
-        if (BindlessBuffer(uchar, B.Buffer, FaceSharpnessSlot)[Face(c)] != 0u) return uint(CornerClass::Face);
-        return uint(CornerSectorRoot(B, CornerSectors, c) == InvalidOffset ? CornerClass::Vertex : CornerClass::Seam);
+        if (BindlessBuffer(uchar, B.Buffer, FaceSharpnessSlot)[HandleAddress<MeshElementBlockSize>(B, Mesh.Connectivity.Tables.Faces, Face(c))] != 0u) return uint(CornerClass::Face);
+        return uint(CornerSectorRoot(B, Mesh.Layers.CornerSectors, c) == InvalidOffset ? CornerClass::Vertex : CornerClass::Seam);
     }
     uint ClassIdentity(uint c, uint kind, bool flat) const {
-        if (kind == uint(CornerClass::Seam)) return CornerSectorRoot(B, CornerSectors, c);
+        if (kind == uint(CornerClass::Seam)) return CornerSectorRoot(B, Mesh.Layers.CornerSectors, c);
         return !flat && kind == uint(CornerClass::Face) ? Face(c) : InvalidOffset;
     }
     bool Custom(uint c) const {
-        return CustomNormalOffset(B, Mesh.CustomNormals, c).x >= 0.f;
+        return CustomNormalOffset(B, Mesh.Layers.CustomNormals, c).x >= 0.f;
     }
     bool Flat(uint3 corners) const {
         if (Mesh.MorphShadingAuthored != 0u) return false;
@@ -41,22 +41,23 @@ struct CornerRenderKey {
         return true;
     }
     uint AttributeWord(uint c, uint word) const {
-        const uint h = c;
+        const ElementLayers layers = Mesh.Layers;
         uint at = 0u;
         for (uint set = 0u; set < 4u; ++set) {
-            if (Mesh.CornerUvs[set].ValuesSlot == InvalidSlot) continue;
-            if (word < at + 2u) return as_type<uint>(BindlessBuffer(packed_float2, B.CornerUvBuffer, Mesh.CornerUvs[set].ValuesSlot)[ElementAttributeIndex(B, Mesh.CornerUvs[set], h)][word - at]);
+            if (layers.CornerUvs[set].Slot == InvalidSlot) continue;
+            if (word < at + 2u) return as_type<uint>(BindlessBuffer(packed_float2, B.CornerUvBuffer, layers.CornerUvs[set].Slot)[layers.CornerUvs[set].Offset + c][word - at]);
             at += 2u;
         }
-        if (Mesh.CornerTangent.ValuesSlot != InvalidSlot) {
-            if (word < at + 4u) return as_type<uint>(BindlessBuffer(packed_float4, B.CornerTangentBuffer, Mesh.CornerTangent.ValuesSlot)[ElementAttributeIndex(B, Mesh.CornerTangent, h)][word - at]);
+        if (layers.CornerTangent.Slot != InvalidSlot) {
+            if (word < at + 4u) return as_type<uint>(BindlessBuffer(packed_float4, B.CornerTangentBuffer, layers.CornerTangent.Slot)[layers.CornerTangent.Offset + c][word - at]);
             at += 4u;
         }
-        return as_type<uint>(BindlessBuffer(packed_float4, B.CornerColorBuffer, Mesh.CornerColor.ValuesSlot)[ElementAttributeIndex(B, Mesh.CornerColor, h)][word - at]);
+        return as_type<uint>(BindlessBuffer(packed_float4, B.CornerColorBuffer, layers.CornerColor.Slot)[layers.CornerColor.Offset + c][word - at]);
     }
     uint AttributeWords() const {
-        uint n = (Mesh.CornerTangent.ValuesSlot == InvalidSlot ? 0u : 4u) + (Mesh.CornerColor.ValuesSlot == InvalidSlot ? 0u : 4u);
-        for (uint set = 0u; set < 4u; ++set) if (Mesh.CornerUvs[set].ValuesSlot != InvalidSlot) n += 2u;
+        const ElementLayers layers = Mesh.Layers;
+        uint n = (layers.CornerTangent.Slot == InvalidSlot ? 0u : 4u) + (layers.CornerColor.Slot == InvalidSlot ? 0u : 4u);
+        for (uint set = 0u; set < 4u; ++set) if (layers.CornerUvs[set].Slot != InvalidSlot) n += 2u;
         return n;
     }
     uint Hash(uint c, bool flat) const {

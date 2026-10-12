@@ -55,24 +55,24 @@ std::vector<FaceAttributeOperationChange> EncodeFaceAttributeOperation(MeshStore
         const Mesh mesh{meshes, id};
         const auto &record = meshes.Get(id);
         if (!(record.CornerAttributes & (colors ? MeshAttributeBit_Color0 : MeshAttributeBit_TexCoord0 << uv_set))) continue;
-        const bool clear_tangents = !colors && (record.CornerAttributes & MeshAttributeBit_Tangent);
+        const auto tangents = colors ? Range{} : record.CornerTangents;
         const auto &faces = handles.Selected[target_index]->Faces;
         uint32_t incidence = 0u;
         for (const auto f : faces) {
-            const auto range = a.FaceRanges.Get({f, 1u})[0];
-            const Range handles{range.x, range.y - range.x};
-            if (colors) a.CornerColors.CaptureHandles(handles);
-            else a.CornerUvs[uv_set].CaptureHandles(handles);
-            if (clear_tangents) a.CornerTangents.CaptureHandles(handles);
-            incidence += handles.Count;
+            const auto range = a.FaceRanges.Get({a.FaceTriangles.Address(record.FaceData, ElementHandle{f}).Value(), 1u})[0];
+            const Range corners{range.x, range.y - range.x};
+            if (colors) a.CornerColors.Capture(record.CornerColors, corners);
+            else a.CornerUvs[uv_set].Capture(record.CornerUvs[uv_set], corners);
+            if (tangents.Count) a.CornerTangents.Capture(tangents, corners);
+            incidence += corners.Count;
         }
         if (faces.empty()) continue;
-        const auto &seed = changes.emplace_back(FaceAttributeOperationChange{target_index, {.Work = SeedElementWorkHandles(chain.Scratch, a.FaceTriangles.Capacity(), faces), .Count = uint32_t(faces.size()), .Incidence = incidence}}).Faces;
+        const auto &seed = changes.emplace_back(FaceAttributeOperationChange{target_index, {.Work = SeedElementWorkHandles(chain.Scratch, a.FaceTriangles.HandleBound(record.FaceData), faces), .Count = uint32_t(faces.size()), .Incidence = incidence}}).Faces;
         jobs.push_back({
             .Connectivity = meshes.GetConnectivityRef(id),
             .Faces = seed.Work,
-            .Attribute = colors ? a.CornerColors.Ref() : a.CornerUvs[uv_set].Ref(),
-            .Tangents = a.CornerTangents.Ref(clear_tangents),
+            .Attribute = colors ? a.CornerColors.Ref(record.CornerColors) : a.CornerUvs[uv_set].Ref(record.CornerUvs[uv_set]),
+            .Tangents = a.CornerTangents.Ref(tangents),
             .FaceCount = mesh.FaceCount(),
             .Count = seed.Count,
             .Operation = operation,
@@ -202,7 +202,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             .Operation = operation,
         };
         if (!planar && operation == PositionEditOp::ShrinkFatten)
-            pc.Faces = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().FaceTriangles.Capacity(), selection.Faces);
+            pc.Faces = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().FaceTriangles.HandleBound(meshes.Get(id).FaceData), selection.Faces);
         PositionBatch batch{.Index = uint32_t(jobs.size())};
         const auto world = transformed ? target.World : Transform{};
         const auto inverse = Conjugate(world.R);
@@ -277,7 +277,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             if (faces.empty()) continue;
             // The existing face seed gathers only connectivity handles on the host.
             // Its vertex list also gives history the exact pages to capture.
-            ClosureSeed seed{.Work = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().FaceTriangles.Capacity(), faces), .Count = uint32_t(faces.size())};
+            ClosureSeed seed{.Work = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().FaceTriangles.HandleBound(meshes.Get(id).FaceData), faces), .Count = uint32_t(faces.size())};
             for (const auto f : faces)
                 for (const auto v : mesh.fv_range(he::FH{f})) seed.Vertices.push_back(*v);
             SortUnique(seed.Vertices);
@@ -335,7 +335,9 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             partial_offset += 2u * ((pc.Count + 255u) / 256u);
         }
         pc.Positions = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(3u * pc.Count).Offset};
-        meshes.Arenas().Vertices.Buffer.CaptureWriteRanges(runs, sizeof(Vertex));
+        const auto &arena = meshes.Arenas().Vertices;
+        const auto set = meshes.Get(id).Vertices;
+        for (const auto run : runs) arena.ForEachAddressRun(set, ElementHandle{run.Offset}, run.Count, [&](Range addresses) { arena.Buffer.CaptureWrite(uint64_t(addresses.Offset) * sizeof(Vertex), uint64_t(addresses.Count) * sizeof(Vertex)); });
         changes.push_back({target_index, std::move(vertices), std::move(runs)});
         jobs.push_back(pc);
         if (!batch.Batches.empty()) batches.push_back(std::move(batch));

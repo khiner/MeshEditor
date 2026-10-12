@@ -10,8 +10,11 @@ struct NormalRecalcContext {
     device packed_float4 *PartialCenters() const { return reinterpret_cast<device packed_float4 *>(BindlessBufferMutable(uint,B.Buffer,Pc.PartialCenters.Slot)+Pc.PartialCenters.Offset); }
     device packed_float3 *Centers() const { return reinterpret_cast<device packed_float3 *>(BindlessBufferMutable(uint,B.Buffer,Pc.Centers.Slot)+Pc.Centers.Offset); }
     device NormalOrientationCandidate *Candidates() const { return reinterpret_cast<device NormalOrientationCandidate *>(BindlessBufferMutable(uint,B.Buffer,Pc.Candidates.Slot)+Pc.Candidates.Offset); }
-    float3 Position(uint h) const { return float3(BindlessBuffer(Vertex,B.VertexBuffer,Pc.VertexSlot)[BindlessBuffer(uint,B.IndexBuffer,Pc.CornerSlot)[h]].Position); }
     ConnectivityView Topology() const { return {B,Pc.Connectivity,Pc.FaceCount}; }
+    float3 Position(uint h) const {
+        const auto topology=Topology();
+        return float3(BindlessBuffer(Vertex,B.VertexBuffer,Pc.VertexSlot)[topology.VertexAddress(BindlessBuffer(uint,B.IndexBuffer,Pc.CornerSlot)[topology.HalfedgeAddress(h)])].Position);
+    }
 };
 
 inline float4 NormalCenterSum(float4 value,uint lane,threadgroup float4 *sums) {
@@ -90,7 +93,7 @@ kernel void RecalculateNormalCandidates(uint lane [[thread_index_in_threadgroup]
         const uint2 face=uint2(ctx.Faces()[item.y+lane]);
         const uint2 loop=ctx.Topology().FaceHalfedges(face.x);
         const float3 center=float3(ctx.Centers()[item.x]);
-        const float3 normal=float3(BindlessBuffer(packed_float3,b.Buffer,pc.NormalSlot)[face.x]);
+        const float3 normal=float3(BindlessBuffer(packed_float3,b.Buffer,pc.NormalSlot)[ctx.Topology().FaceAddress(face.x)]);
         for (uint h=loop.x;h<loop.y;++h) {
             const float3 p=ctx.Position(h),delta=p-center;
             const float dist=dot(delta,delta);

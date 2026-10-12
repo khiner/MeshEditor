@@ -48,7 +48,6 @@ enum class MeshPass : uint8_t {
     CornerClassificationCount,
     CornerClassificationPlan,
     CornerClassificationWrite,
-    CornerClassificationBlocks,
     MeshClosureCount,
     MeshClosureExpand,
     MeshClosureEdgeVertices,
@@ -181,9 +180,7 @@ enum class MeshPass : uint8_t {
     MeshletBuildEmit,
     MeshletBuildPrimitives,
     CloneCopyByteRuns,
-    CloneGatherByRank,
-    CloneRebaseByBlock,
-    CloneRebaseByRank,
+    CloneOffsetHandles,
     Count,
 };
 

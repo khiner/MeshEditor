@@ -3,7 +3,7 @@
 #include "gpu/MeshletRecord.h"
 
 // Writes the owner entry of each element a published cluster's payload names.
-// The host attached the payload block of every such element.
+// The record's owner range covers every element handle.
 kernel void MeshletOwners(
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
     constant MeshletOwnersPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
@@ -11,13 +11,12 @@ kernel void MeshletOwners(
 ) {
     if (group >= pc.Count) return;
     const uint cluster = pc.First+group;
-    const auto record = BindlessBuffer(MeshletRecord,b.Buffer,pc.MeshletSlot)[cluster];
+    const auto record = BindlessBuffer(MeshletRecord,b.Buffer,pc.MeshletSlot)[Resolve<RenderBlockSize>(SetTable(b,pc.Meshlets,pc.MeshletSet),cluster)];
     if (lane >= record.TriangleCount) return;
-    const uint element = pc.ElementOrigin+BindlessBuffer(uint,b.Buffer,pc.TriangleIdsSlot)[record.TriangleOffset+lane];
-    const uint payload = element/256u < pc.BlockCount ? BindlessBuffer(uint,b.Buffer,pc.Owners.BlocksSlot)[element/256u] : 0u;
-    if (record.Topology != pc.Topology || record.RefinedGroup != InvalidOffset || !payload) {
+    const uint element = BindlessBuffer(uint,b.Buffer,pc.TriangleIdsSlot)[pc.TriangleIdBase+record.TriangleOffset+lane];
+    if (record.Topology != pc.Topology || record.RefinedGroup != InvalidOffset || element >= pc.HandleBound) {
         atomic_store_explicit(BindlessBufferMutable(atomic_uint,b.Buffer,pc.ErrorSlot),1u,memory_order_relaxed);
         return;
     }
-    BindlessBufferMutable(uint,b.Buffer,pc.Owners.ValuesSlot)[(payload-1u)*256u+element%256u] = cluster;
+    BindlessBufferMutable(uint,b.Buffer,pc.Owners.Slot)[pc.Owners.Offset+element] = cluster;
 }

@@ -15,13 +15,11 @@
 
 static_assert(MaxWeldUvSets == MeshStore::MaxUvSets);
 
-struct RenderArenas;
-
 // Borrows stable arena spans until the batch commits.
 struct MeshletBuildInputs {
     TriangleVertexView Indices;
     std::span<const Vertex> Vertices;
-    uint32_t VertexFirst{};
+    std::span<const uint32_t> VertexTable;
     Range DenseVertices{};
     CornerNormalView Normals;
     // The corner attributes the render-vertex weld keys on, shared with the cluster LOD build.
@@ -37,7 +35,7 @@ ClusterLodBuild BuildMeshletClusterLod(const MeshStore &, const MeshStore::Recor
 // Places each owner's finished DAG, retaining finest identities and allocating only new coarse records.
 void CommitClusterLods(state::Scene &, std::span<MeshStore::Record *const>, std::span<const ClusterLodBuild>);
 
-// Allocates coarse records and their geometry, then publishes each group's
+// Adds the coarse clusters and groups to the owner's sets with their geometry, then publishes each group's
 // member/proxy run and proxy IDs directly in UMA. Callers fill member IDs in
 // their established order and retain the returned coarse cluster run.
-Range PublishClusterLodStorage(RenderArenas &, const ClusterLodBuild &, std::span<const uint32_t> primitive_ids, Range &groups, Range &vertices, Range &local_triangles);
+RenderRun PublishClusterLodStorage(MeshStore &, MeshStore::Record &owner, const ClusterLodBuild &, std::span<const uint32_t> primitive_ids, RenderRun &groups);

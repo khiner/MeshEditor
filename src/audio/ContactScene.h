@@ -41,7 +41,7 @@ inline std::optional<double> SurfaceCurvature(const state::Scene &r, state::Enti
     const auto &wt = *WorldTransformOf(r, node);
     const auto mesh = GetMesh(r, inst->Entity);
     const auto &meshes = r.Context.get<const MeshStore>();
-    const auto hit = ClosestMeshletPoint(meshes.Render(), *owner, meshes.Arenas().Vertices.Buffer.GetSpan<Vertex>(), mesh.TriangleVertices(), InverseTransformPoint(wt, world_point));
+    const auto hit = ClosestMeshletPoint(meshes.Render(), *owner, mesh.VertexValues(), mesh.TriangleVertices(), InverseTransformPoint(wt, world_point));
     // Interpolate the triangle's per-vertex curvature at the contact's barycentric weights.
     double local = 0;
     const auto sharpness = meshes.Arenas().EdgeSharpness.Buffer.GetSpan<uint8_t>();

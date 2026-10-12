@@ -17,7 +17,7 @@ struct MeshElementSelection {};
 
 struct ElementRange {
     state::Entity MeshEntity;
-    uint32_t Offset, Count;
+    uint32_t Count;
 };
 
 // The selection an additive box drag started from, recorded by the drag's first update and removed when its gesture ends.

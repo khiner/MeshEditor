@@ -25,13 +25,12 @@ inline void CountWorkBlocks(device const BindlessSet &b, constant CommitPosedGeo
     atomic_fetch_add_explicit(count, total, memory_order_relaxed);
 }
 
-inline void MarkOwnedMeshlet(device const BindlessSet &b, constant CommitPosedGeometryPushConstants &pc, uint topology, uint element) {
+// Marks the arena address of the cluster owning the element at a handle of the topology's domain, through the meshlet set's table run.
+inline void MarkOwnedMeshlet(device const BindlessSet &b, constant CommitPosedGeometryPushConstants &pc, device const uint *meshlets, uint topology, uint handle) {
     const auto map=pc.ElementMeshlets[topology];
-    if (map.ValuesSlot == InvalidSlot) return;
-    const uint block = BindlessBuffer(uint,b.Buffer,map.BlocksSlot)[element/256u];
-    if (!block) return;
-    const uint owner = BindlessBuffer(uint,b.Buffer,map.ValuesSlot)[(block-1u)*256u+element%256u];
-    if (owner != InvalidOffset) MarkWork(b,pc.Meshlets,owner);
+    if (map.Slot == InvalidSlot) return;
+    const uint owner = BindlessBuffer(uint,b.Buffer,map.Slot)[map.Offset+handle];
+    if (owner != InvalidOffset) MarkWork(b,pc.MeshletAddresses,Resolve<RenderBlockSize>(meshlets,owner));
 }
 
 kernel void CommitPosedGeometryKernel(
@@ -43,17 +42,18 @@ kernel void CommitPosedGeometryKernel(
         const uint i = WorkElement(bindless, pc.Candidates, invocation);
         if (i == InvalidOffset) return;
         if (pc.Mode != GeometryEditMode::Refresh) {
-            device Vertex *vertices = BindlessBufferMutable(Vertex, bindless.VertexBuffer, pc.Vertices.Slot);
+            device Vertex *vertices = BindlessBufferMutable(Vertex, bindless.VertexBuffer, pc.VerticesSlot);
+            const uint address = HandleAddress<MeshElementBlockSize>(bindless, pc.Entry.Connectivity.Tables.Vertices, i);
             const bool selected = pc.SelectionSlot != InvalidSlot &&
-                (BindlessBuffer(uint, bindless.Buffer, pc.SelectionSlot)[i / 32u] & (1u << (i % 32u))) != 0u;
+                (BindlessBuffer(uint, bindless.Buffer, pc.SelectionSlot)[address / 32u] & (1u << (address % 32u))) != 0u;
             if (pc.Mode == GeometryEditMode::Commit && !selected) return;
-            const float3 base = float3(vertices[i].Position);
+            const float3 base = float3(vertices[address].Position);
             const float3 posed = pc.ApplyTransform != 0u && selected ? apply_geometry_edit_transform(base, pc.Primary, pc.Pivot, pc.Delta) : base;
             if (pc.Mode == GeometryEditMode::Commit) {
                 if (all(base == posed)) return;
-                vertices[i].Position = packed_float3(posed);
+                vertices[address].Position = packed_float3(posed);
             } else {
-                const uint destination = PoseAttributeIndex(bindless, pc.PositionNodesSlot, pc.Entry.PositionNamespace, i);
+                const uint destination = PoseAttributeIndex(bindless, pc.PositionNodesSlot, pc.Entry.PositionNamespace, address);
                 device packed_float3 *output = BindlessBufferMutable(packed_float3, bindless.Buffer, pc.PositionSlot);
                 if (all(float3(output[destination]) == posed)) return;
                 output[destination] = packed_float3(posed);
@@ -75,10 +75,12 @@ kernel void CommitPosedGeometryKernel(
             CountWorkBlocks(bindless, pc, 2u, fan.Count ? wires : 1u);
             return;
         }
-        MarkWork(bindless, pc.BoundsTiles, i / 256u);
-        if (!fan.Count) MarkOwnedMeshlet(bindless,pc,2u,i);
+        const uint address = conn.VertexAddress(i);
+        MarkWork(bindless, pc.BoundsTiles, address / 256u);
+        device const uint *meshlets = SetTable(bindless, pc.MeshletSets, pc.MeshletSet);
+        if (!fan.Count) MarkOwnedMeshlet(bindless,pc,meshlets,2u,i);
         for (const auto item : fan) {
-            if (item.y==InvalidOffset) MarkOwnedMeshlet(bindless,pc,1u,conn.Edge(item.x));
+            if (item.y==InvalidOffset) MarkOwnedMeshlet(bindless,pc,meshlets,1u,conn.Edge(item.x));
             else MarkWork(bindless, pc.Faces, item.y);
         }
     } else {
@@ -92,10 +94,11 @@ kernel void CommitPosedGeometryKernel(
             CountWorkBlocks(bindless, pc, 2u, loop.y - loop.x - 2u);
             return;
         }
-        const uint first = triangles[f], end = first + loop.y - loop.x - 2u;
-        device const uint *corners = BindlessBuffer(uint, bindless.IndexBuffer, pc.Entry.Corners.Slot);
-        for (uint t = first; t < end; ++t) MarkOwnedMeshlet(bindless,pc,0u,t);
-        for (uint h = loop.x; h < loop.y; ++h) MarkWork(bindless, pc.Normals, corners[h]);
+        const uint first = triangles[conn.FaceAddress(f)], end = first + loop.y - loop.x - 2u;
+        device const uint *corners = BindlessBuffer(uint, bindless.IndexBuffer, pc.Entry.CornersSlot);
+        device const uint *meshlets = SetTable(bindless, pc.MeshletSets, pc.MeshletSet);
+        for (uint t = first; t < end; ++t) MarkOwnedMeshlet(bindless,pc,meshlets,0u,t);
+        for (uint h = loop.x; h < loop.y; ++h) MarkWork(bindless, pc.Normals, corners[conn.HalfedgeAddress(h)]);
     }
 }
 

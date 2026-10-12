@@ -26,7 +26,7 @@ std::vector<uint32_t> EdgeRing(const Mesh &mesh, uint32_t edge) {
     std::unordered_set<uint32_t> visited{edge};
     const auto &c = mesh.GetConnectivity();
     const auto start = mesh.GetHalfedge(he::EH{edge}, 0);
-    for (const auto side : {start, c.Opposites[*start]}) {
+    for (const auto side : {start, c.Opposite(start)}) {
         auto h = side;
         while (h) {
             const auto face = c.FaceOf(h);
@@ -35,7 +35,7 @@ std::vector<uint32_t> EdgeRing(const Mesh &mesh, uint32_t edge) {
             const auto e = mesh.GetEdge(across);
             if (!visited.insert(*e).second) break;
             ring.push_back(*e);
-            h = c.Opposites[*across];
+            h = c.Opposite(across);
         }
     }
     return ring;
@@ -51,11 +51,11 @@ std::vector<std::vector<uint32_t>> BoundaryLoops(const MeshStore &meshes, const 
     std::vector<uint32_t> starts;
     for (const auto edge : edges) {
         const auto h = mesh.GetHalfedge(he::EH{edge}, 0);
-        if (!c.Opposites[*h]) starts.push_back(*h);
+        if (!c.Opposite(h)) starts.push_back(*h);
     }
     std::ranges::sort(starts);
     const auto candidate = [&](uint32_t h) {
-        return h != InvalidOffset && !c.Opposites[h] && std::ranges::binary_search(edges, *mesh.GetEdge(Mesh::HH{h}));
+        return h != InvalidOffset && !c.Opposite(Mesh::HH{h}) && std::ranges::binary_search(edges, *mesh.GetEdge(Mesh::HH{h}));
     };
     std::unordered_map<uint32_t, uint32_t> selected_outgoing;
     if (selected_only)
@@ -71,11 +71,11 @@ std::vector<std::vector<uint32_t>> BoundaryLoops(const MeshStore &meshes, const 
         auto next = c.Next(Mesh::HH{h});
         const auto across = [&](Mesh::HH at) -> Mesh::HH {
             if (!at) return {};
-            const auto opposite = c.Opposites[*at];
+            const auto opposite = c.Opposite(at);
             return opposite ? c.Next(opposite) : Mesh::HH{};
         };
         auto fast = next;
-        while (next && c.Opposites[*next]) {
+        while (next && c.Opposite(next)) {
             next = across(next);
             fast = across(across(fast));
             if (fast && next == fast) return InvalidOffset;
@@ -115,7 +115,7 @@ std::vector<std::vector<uint32_t>> BoundaryLoops(const MeshStore &meshes, const 
 }
 
 MeshTopologyTask PrimitiveListTask(const MeshStore &meshes, const Mesh &mesh, std::span<const std::vector<uint32_t>> loops, const std::unordered_map<uint64_t, uint32_t> &edge_sources = {}, std::span<const uint32_t> grid_loop = {}, uint32_t grid_span = 0u) {
-    const auto appended_base = meshes.Arenas().Vertices.Capacity();
+    const auto appended_base = meshes.Arenas().Vertices.HandleBound(meshes.Get(mesh.GetStoreId()).Vertices);
     const uint64_t vertices = grid_loop.empty() ? 0u : uint64_t(grid_span - 1u) * (grid_loop.size() / 2u - grid_span - 1u);
     if (uint64_t(appended_base) + vertices > UINT32_MAX) throw std::length_error("Face list exceeds the vertex handle address space.");
     MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::AddPrimitives, .AppendedBase = appended_base};
@@ -217,9 +217,10 @@ std::vector<MeshTopologyTask> SeparateGeometryTasks(const MeshStore &meshes, con
         element = Element::Face;
         const auto &a = meshes.Arenas();
         const auto palette = a.PrimitiveMaterials.Get(meshes.Get(id).PrimitiveMaterials);
+        const auto primitives = a.FacePrimitives.View(meshes.Get(id).FacePrimitives);
         std::unordered_map<uint32_t, uint32_t> materials;
         for (const auto face : mesh.faces()) {
-            const auto material = palette[a.FacePrimitives.Get(*face)];
+            const auto material = palette[primitives[*face]];
             const auto [entry, inserted] = materials.try_emplace(material, uint32_t(groups.size()));
             if (inserted) groups.emplace_back();
             groups[entry->second].push_back(*face);
@@ -314,7 +315,7 @@ std::optional<MeshTopologyTask> GridFillTask(const MeshStore &meshes, const Mesh
     auto &loop = chains[0].Vertices;
     if (chains[0].Winding < 0) std::reverse(loop.begin() + 1u, loop.end());
     const auto length = uint32_t(loop.size());
-    const auto appended_base = meshes.Arenas().Vertices.Capacity();
+    const auto appended_base = meshes.Arenas().Vertices.HandleBound(meshes.Get(mesh.GetStoreId()).Vertices);
     const uint32_t s = std::clamp(span == 0 ? std::max(length / 4, 1u) : span, 1u, length / 2 - 1), t = length / 2 - s;
     const uint64_t interior = uint64_t(s - 1u) * (t - 1u), cells = uint64_t(s) * t;
     if (uint64_t(appended_base) + interior > UINT32_MAX || 5ull + length + 9u * cells > UINT32_MAX) {
@@ -497,7 +498,7 @@ std::optional<MeshTopologyTask> RotateEdgesTask(const Mesh &mesh, const Geometry
     MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::RotateEdges, .Flags = TopologyFlagListSelects, .List = {0}, .SelectionElement = Element::Edge, .Selection = selection};
     std::ranges::for_each(selection.Edges, [&](uint32_t edge) {
         const auto h = mesh.GetHalfedge(he::EH{edge}, 0);
-        const auto opposite = c.Opposites[*h];
+        const auto opposite = c.Opposite(h);
         if (!opposite) return;
         task.List.push_back(*mesh.GetToVertex(c.Next(h)));
         task.List.push_back(*mesh.GetToVertex(c.Next(opposite)));
@@ -573,7 +574,7 @@ std::optional<MeshTopologyTask> FillTask(const MeshStore &meshes, const Mesh &me
     }
     std::erase_if(loops, [&](const auto &loop) {
         const std::unordered_set<uint32_t> members(loop.begin(), loop.end());
-        const auto fan = c.VertexCorners[loop.front()];
+        const auto fan = c.Incoming(he::VH{loop.front()});
         for (uint32_t i = 0u; i < fan.y; ++i) {
             const auto face = c.FaceOf(he::HH{c.FanItems[fan.x + i].x});
             if (face && mesh.GetValence(face) == loop.size() &&
@@ -653,7 +654,7 @@ std::optional<MeshTopologyTask> MergeTask(const MeshStore &meshes, const Mesh &m
     if (mode == Mode::Collapse || mode == Mode::ByDistance)
         return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = mode == Mode::Collapse ? MeshTopologyOp::MergeCollapse : MeshTopologyOp::MergeByDistance, .Param0 = std::max(distance, 0.f), .SelectionElement = Element::Vertex, .Selection = selection};
     if (selection.Vertices.size() < 2u) return {};
-    if (!meshes.IsLiveElement(mesh.GetStoreId(), Element::Vertex, reference) || !std::ranges::binary_search(selection.Vertices, reference)) throw std::invalid_argument("Merge reference must belong to the selection.");
+    if (!meshes.IsLiveElement(mesh.GetStoreId(), Element::Vertex, ElementHandle{reference}) || !std::ranges::binary_search(selection.Vertices, reference)) throw std::invalid_argument("Merge reference must belong to the selection.");
     const auto target = reference;
     vec3 position = mesh.GetPosition(he::VH{target});
     if (mode == Mode::Center) {

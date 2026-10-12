@@ -10,7 +10,7 @@ inline bool SameTransform(Transform a, Transform b) {
 }
 
 inline float3 ShutterPosition(const thread Scene &scene, DrawData draw, uint vertex_id) {
-    float3 position = float3(scene.Vertices(draw.VertexSlot)[draw.VertexOffset + vertex_id].Position);
+    float3 position = float3(scene.Vertices(draw.VertexSlot)[scene.VertexAddress(draw, vertex_id)].Position);
     ApplyMorphDeform(scene, draw, position, vertex_id, scene.View.MorphWeightsSlot);
     float3 normal = float3(0.0f);
     position = ApplyArmatureDeform(scene, draw, position, vertex_id, normal);
@@ -50,16 +50,15 @@ inline float4 VisibilityMotion(
         } else {
             const uint topology = MeshletPrimitiveTopology(resolved.Meshlet);
             const bool triangle = topology == uint(MeshPrimitiveTopology::Triangle);
-            const uint3 corners = MeshletCornerIds(scene.B, pc.Visibility.MeshletVertexSlot, pc.Visibility.MeshletLocalTriangleSlot,
-                resolved.Meshlet, resolved.Draw, resolved.Triangle, resolved.LocalTriangle);
+            const uint3 corners = MeshletCornerIds(scene.B, resolved.Payloads, resolved.Meshlet, resolved.Draw, resolved.Triangle, resolved.LocalTriangle);
             float4 clip[3];
             float3 prev_position[3], next_position[3];
             for (uint i = 0; i < 3; ++i) {
                 const uint quad_corner = line_quad_corner((resolved.LocalTriangle & 1u) * 3u + i);
-                const uint vertex_id = triangle ? scene.CornerVertexOrdinal(draw, corners[i]) :
-                    NonTriangleVertexId(scene.B, pc.Visibility.MeshletVertexSlot, resolved.Meshlet, topology, resolved.LocalTriangle / 2u, quad_corner);
+                const uint vertex_id = triangle ? scene.CornerVertex(draw, corners[i]) :
+                    NonTriangleVertexId(resolved.Payloads, resolved.Meshlet, topology, resolved.LocalTriangle / 2u, quad_corner);
                 clip[i] = triangle ? MeshletPosition(scene, draw, current, vertex_id) :
-                    NonTrianglePosition(scene, scene.B, pc.Visibility.MeshletVertexSlot, draw, resolved.Meshlet, topology, resolved.LocalTriangle / 2u, quad_corner);
+                    NonTrianglePosition(scene, resolved.Payloads, draw, resolved.Meshlet, topology, resolved.LocalTriangle / 2u, quad_corner);
                 prev_position[i] = ShutterPosition(previous, draw, vertex_id);
                 next_position[i] = ShutterPosition(next, draw, vertex_id);
             }

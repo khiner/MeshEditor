@@ -33,7 +33,7 @@ using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(M
         return;
     }
     MeshletEditEdgeGeometry geometry;
-    const auto present = ResolveMeshletEditEdgeCandidate(scene, work, bindless, pc, thread_index, pc.EditEdgeCorner, geometry);
+    const auto present = ResolveMeshletEditEdgeCandidate(scene, work, bindless, thread_index, pc.EditEdgeCorner, geometry);
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, MeshletEditSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y * 2u);
     if (!present) return;
@@ -46,7 +46,7 @@ using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(M
     EditEdgeOverlay edge{
         geometry.Clip0, geometry.Clip1, color(geometry.Vertex0), color(geometry.Vertex1),
         pc.EdgeSharpnessSlot != InvalidSlot &&
-            uint(scene.Bytes(pc.EdgeSharpnessSlot)[work.Draw.EditEdgeSharpnessOffset + geometry.Edge]) != 0u,
+            uint(scene.Bytes(pc.EdgeSharpnessSlot)[scene.EdgeAddress(work.Draw, geometry.Edge)]) != 0u,
     };
     edge.Clip0.z -= NdcOffsetFactor(scene);
     edge.Clip1.z -= NdcOffsetFactor(scene);
@@ -75,11 +75,11 @@ using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(M
         return;
     }
     MeshletEditEdgeGeometry edge;
-    const auto present = ResolveMeshletEditEdgeCandidate(scene, work, bindless, pc, thread_index, pc.EditEdgeCorner, edge);
+    const auto present = ResolveMeshletEditEdgeCandidate(scene, work, bindless, thread_index, pc.EditEdgeCorner, edge);
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, MeshletEditSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y);
     if (!present) return;
-    ElementIdFragmentVaryings out{.Position = edge.Clip0, .ElementId = work.Draw.ElementIdOffset + edge.Edge + 1u};
+    ElementIdFragmentVaryings out{.Position = edge.Clip0, .ElementId = scene.ElementPickId(work.Draw, true, edge.Edge)};
     output.set_vertex(compact.x * 2u, out);
     out.Position = edge.Clip1;
     output.set_vertex(compact.x * 2u + 1u, out);
@@ -104,11 +104,11 @@ using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(M
         return;
     }
     MeshletEditEdgeGeometry edge;
-    const auto present = ResolveMeshletEditEdgeCandidate(scene, work, bindless, pc, thread_index, pc.EditEdgeCorner, edge);
+    const auto present = ResolveMeshletEditEdgeCandidate(scene, work, bindless, thread_index, pc.EditEdgeCorner, edge);
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, MeshletEditSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y * 2u);
     if (!present) return;
-    ElementIdVaryings out{.Position = edge.Clip0, .PointSize = 2.0f, .ElementId = work.Draw.ElementIdOffset + edge.Edge + 1u};
+    ElementIdVaryings out{.Position = edge.Clip0, .PointSize = 2.0f, .ElementId = scene.ElementPickId(work.Draw, true, edge.Edge)};
     output.set_vertex(compact.x * 2u, out);
     output.set_index(compact.x * 2u, compact.x * 2u);
     out.Position = edge.Clip1;
@@ -133,11 +133,8 @@ using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(M
     }
     if (thread_index == 0u) output.set_primitive_count(work.Meshlet.TriangleCount * 3u);
     if (thread_index >= work.Meshlet.TriangleCount) return;
-    const uint source_triangle = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot)[work.Meshlet.TriangleOffset + thread_index];
-    const MeshletTriangleCorners corners = ResolveMeshletCorners(
-        scene, work.Draw, pc.MeshletVertexSlot, pc.MeshletLocalTriangleSlot,
-        work.Meshlet, source_triangle, thread_index
-    );
+    const uint source_triangle = work.Payloads.TriangleIds[work.Meshlet.TriangleOffset + thread_index];
+    const MeshletTriangleCorners corners = ResolveMeshletCorners(scene, work.Draw, work.Payloads, work.Meshlet, source_triangle, thread_index);
     const uint face_id = scene.TriangleFace(work.Draw, source_triangle);
     const Transform world = MeshletWorld(scene, work.Draw);
     for (uint corner = 0u; corner < 3u; ++corner) {

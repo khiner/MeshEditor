@@ -81,15 +81,14 @@ void BuildConnectivityNow(state::Scene &r, std::span<const uint32_t> store_ids) 
         for (const auto id : chunk) {
             meshes.CaptureConnectivityWrite(id);
             const auto &record = meshes.Get(id);
-            const auto corners = arenas.FaceCorners.Slotted(record.FaceCorners);
-            const auto blocks = RunBlocks(arenas.Vertices.First(record.Vertices), arenas.Vertices.Count(record.Vertices));
+            const auto blocks = RunBlocks(arenas.Vertices.Entries(record.Vertices), 0u, arenas.Vertices.Count(record.Vertices));
             vertex_blocks.insert(vertex_blocks.end(), blocks.begin(), blocks.end());
             AddConnectivityJob(batch, MeshConnectivityJob{
-                                          .Corners = {corners.Slot, corners.Offset},
+                                          .CornersSlot = arenas.FaceCorners.Buffer.Slot,
                                           .Connectivity = meshes.GetConnectivityRef(id),
-                                          .EdgeHandles = {.First = arenas.EdgeHalfedges.First(record.EdgeData)},
+                                          .EdgeHandles = {.First = 0u},
                                           .VertexCount = arenas.Vertices.Count(record.Vertices),
-                                          .HalfedgeCount = corners.Count,
+                                          .HalfedgeCount = arenas.FaceCorners.Count(record.FaceCorners),
                                           .FaceCount = arenas.FaceTriangles.Count(record.FaceData),
                                           .FaceStarts = record.ConnectivityFaceStarts ? 1u : 0u,
                                       });

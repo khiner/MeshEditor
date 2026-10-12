@@ -35,16 +35,14 @@ struct MeshTopologyJob {
     uint32_t SrcHalfedgeCount DEFAULT();
     uint32_t SrcFaceCount DEFAULT();
     uint32_t SrcEdgeCount DEFAULT();
-    // Compact work indices resolve to canonical arena handles without staging geometry.
+    // Compact work indices resolve to the source's handles without staging geometry.
     ElementWork SrcVertexWork DEFAULT(), SrcHalfedgeWork DEFAULT(), SrcFaceWork DEFAULT(), SrcEdgeWork DEFAULT();
-    // A second source mesh's vertices, halfedges, faces and edges, whose compact elements follow the first's in each source domain.
-    // Only a boolean has one.
+    // A boolean's second side: the source's vertices, halfedges, faces and edges joined from its second mesh, whose compact elements follow the first side's in each source domain.
     GpuArray<uint32_t, 4> Src2Counts DEFAULT();
     GpuArray<ElementWork, 4> Src2Elements DEFAULT();
-    // Per source: its corner layers, with its vertex layers above bit 16.
+    // The source's corner layers, with its vertex layers above bit 16.
     // CornerAttributes and VertexAttributes are the output's.
-    GpuArray<uint32_t, 2> SourceLayers DEFAULT();
-    uint32_t SecondPrimitiveBase DEFAULT(); // The output primitive of the second source's primitive zero
+    uint32_t SourceLayers DEFAULT();
     SlotOffset Boolean DEFAULT(); // A boolean's BooleanJob record
     Element SelectionElement DEFAULT();
     ElementWork VertexSelection DEFAULT(), EdgeSelection DEFAULT(), FaceSelection DEFAULT();
@@ -65,10 +63,10 @@ struct MeshTopologyJob {
     uint32_t DstVertexCount DEFAULT();
     uint32_t DstHalfedgeCount DEFAULT();
     uint32_t DstFaceCount DEFAULT();
-    // Compact-index -> canonical-handle maps. Corners and triangles
-    // are emitted into independently reserved contiguous runs.
+    // Compact-index -> handle maps. Corners and triangles
+    // are emitted into independently reserved handle runs.
     SlotOffset DstVertexHandles DEFAULT(), DstFaceHandles DEFAULT();
-    // Output selection mask words by canonical handle, or none.
+    // Output selection mask words by arena address, or none.
     SlotOffset DstVertexBits DEFAULT();
     SlotOffset DstEdgeBits DEFAULT();
     SlotOffset DstFaceBits DEFAULT();
@@ -121,4 +119,4 @@ struct MeshTopologyJob {
     SlotOffset Attributes DEFAULT();
     GpuArray<uint32_t, 4> AttributeEnds DEFAULT();
 };
-static_assert(sizeof(MeshTopologyJob) == 804, "MeshTopologyJob size");
+static_assert(sizeof(MeshTopologyJob) == 820, "MeshTopologyJob size");

@@ -42,6 +42,7 @@ MeshletPatch PlanMeshletPatch(state::Scene &, MeshStore::Record &, const BufferA
 // One fragment's clusters and the primitive, group and traversal leaf they join.
 struct MeshletPatchAdoptJob {
     uint32_t First{}, Count{};
+    uint32_t ElementCount{}; // The elements the fragment's clusters draw
     uint32_t Group{InvalidOffset}, Primitive{InvalidOffset};
     uint32_t Leaf{InvalidOffset};
 };

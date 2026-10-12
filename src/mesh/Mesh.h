@@ -66,13 +66,14 @@ using HH = Handle<tag::Halfedge>;
 using EH = Handle<tag::Edge>;
 using FH = Handle<tag::Face>;
 
-// Enumerates live canonical handles in membership order, borrowing the GPU metadata.
+// Enumerates a record's live handles in one domain in ascending order, borrowing its table entries and the arena's block metadata.
 template<typename H>
 struct HandleRange {
     struct Iterator {
+        std::span<const uint32_t> Table;
         std::span<const MeshElementBlock> Blocks;
-        uint32_t Block{null}, Word{}, Bits{};
-        H operator*() const { return {Block * MeshElementBlockSize + Word * 32u + uint32_t(std::countr_zero(Bits))}; }
+        uint32_t Local{null}, Word{}, Bits{};
+        H operator*() const { return {Local * MeshElementBlockSize + Word * 32u + uint32_t(std::countr_zero(Bits))}; }
         Iterator &operator++() {
             Bits &= Bits - 1u;
             if (!Bits) {
@@ -82,27 +83,28 @@ struct HandleRange {
             return *this;
         }
         bool operator==(const Iterator &other) const {
-            return Block == other.Block && (Block == null || (Word == other.Word && Bits == other.Bits));
+            return Local == other.Local && (Local == null || (Word == other.Word && Bits == other.Bits));
         }
         void Seek() {
-            while (Block != null) {
-                for (; Word < MeshElementBlockWords; ++Word) {
-                    Bits = Blocks[Block].Live[Word];
-                    if (Bits) return;
-                }
-                Block = Blocks[Block].Next;
+            while (Local != null) {
+                if (Table[Local] != null)
+                    for (; Word < MeshElementBlockWords; ++Word) {
+                        Bits = Blocks[Table[Local]].Live[Word];
+                        if (Bits) return;
+                    }
                 Word = 0;
+                if (++Local == Table.size()) Local = null;
             }
         }
     };
+    std::span<const uint32_t> Table;
     std::span<const MeshElementBlock> Blocks;
-    uint32_t FirstBlock{null};
     Iterator begin() const {
-        Iterator it{Blocks, FirstBlock};
+        Iterator it{Table, Blocks, Table.empty() ? null : 0u};
         it.Seek();
         return it;
     }
-    Iterator end() const { return {Blocks}; }
+    Iterator end() const { return {Table, Blocks}; }
 };
 } // namespace he
 
@@ -111,52 +113,50 @@ static constexpr uint32_t InvalidStoreId{~0u};
 struct MeshStore;
 struct GeometrySelection;
 
+// A record's connectivity: each domain's table entries, which resolve its handles to arena addresses, and the arenas' values at those addresses.
+// Every argument and stored reference is a record-relative handle.
 struct MeshConnectivity {
-    struct Face {
-        he::HH Halfedge;
-        uint32_t End;
-    };
-
+    std::span<const uint32_t> VertexTable, HalfedgeTable, EdgeTable, FaceTable;
     std::span<const MeshElementBlock> VertexBlocks, HalfedgeBlocks, EdgeBlocks, FaceBlocks;
-    uint32_t VertexFirst{}, VertexCount{0};
-    uint32_t HalfedgeFirst{}, HalfedgeCount{}, EdgeFirst{}, FaceFirst{};
-    std::span<const he::HH> OutgoingHalfedges;
-    std::span<const he::HH> Opposites;
+    uint32_t VertexCount{}, HalfedgeCount{}, EdgeCount{}, FaceCount{};
+    std::span<const uint32_t> OutgoingValues, OppositeValues, HalfedgeEdgeValues, HalfedgeFaceValues, EdgeHalfedgeValues;
+    std::span<const uvec2> FaceRangeValues, VertexCornerValues;
+    std::span<const uvec2> FanItems; // (corner, face) in fan runs, indexed by a vertex's incoming run
+
+    ElementAddress VertexAddress(uint32_t v) const { return Resolve<MeshElementBlockSize>(VertexTable, ElementHandle{v}); }
+    ElementAddress HalfedgeAddress(uint32_t h) const { return Resolve<MeshElementBlockSize>(HalfedgeTable, ElementHandle{h}); }
+    ElementAddress EdgeAddress(uint32_t e) const { return Resolve<MeshElementBlockSize>(EdgeTable, ElementHandle{e}); }
+    ElementAddress FaceAddress(uint32_t f) const { return Resolve<MeshElementBlockSize>(FaceTable, ElementHandle{f}); }
+    // Whether the vertex handle names a block of the record.
+    bool HasVertexBlock(uint32_t v) const { return v / MeshElementBlockSize < VertexTable.size() && VertexTable[v / MeshElementBlockSize] != he::null; }
+
+    he::HH Outgoing(he::VH v) const { return {OutgoingValues[VertexAddress(*v).Value()]}; }
+    he::HH Opposite(he::HH hh) const { return {OppositeValues[HalfedgeAddress(*hh).Value()]}; }
     // Edges number by ascending first halfedge.
-    std::span<const he::EH> HalfedgeToEdge;
-    std::span<const he::FH> HalfedgeToFace;
-    uint32_t EdgeCount{0};
-    std::span<const he::HH> Edges;
-    uint32_t FaceCount{0};
-    // Each face owns its loop range independently of neighboring faces.
-    std::span<const Face> Faces;
-    std::span<const uvec2> VertexCorners;
-    std::span<const uvec2> FanItems;
-
-    he::HH FaceHalfedge(uint32_t face) const { return Faces[face].Halfedge; }
-    uint32_t FaceEnd(uint32_t face) const { return Faces[face].End; }
-
-    he::HH EdgeHalfedge(uint32_t edge) const { return Edges[edge]; }
-    he::EH Edge(he::HH hh) const { return HalfedgeToEdge[*hh]; }
+    he::EH Edge(he::HH hh) const { return {HalfedgeEdgeValues[HalfedgeAddress(*hh).Value()]}; }
+    he::HH EdgeHalfedge(uint32_t edge) const { return {EdgeHalfedgeValues[EdgeAddress(edge).Value()]}; }
+    // Each face owns its loop range [first, end) independently of neighboring faces.
+    uvec2 FaceRange(uint32_t face) const { return FaceRangeValues[FaceAddress(face).Value()]; }
+    he::HH FaceHalfedge(uint32_t face) const { return {FaceRange(face).x}; }
+    uint32_t FaceEnd(uint32_t face) const { return FaceRange(face).y; }
+    // The vertex's run of fan items: the first and the count.
+    uvec2 Incoming(he::VH v) const { return VertexCornerValues[VertexAddress(*v).Value()]; }
 
     // Returns the halfedge's face owner, or empty for a wire corner.
-    he::FH FaceOf(he::HH hh) const {
-        return HalfedgeToFace[*hh];
-    }
+    he::FH FaceOf(he::HH hh) const { return {HalfedgeFaceValues[HalfedgeAddress(*hh).Value()]}; }
 
     he::HH Next(he::HH hh) const {
         const auto face = FaceOf(hh);
         if (!face) return {};
-        const auto first = *FaceHalfedge(*face);
-        const auto last = FaceEnd(*face);
-        return he::HH(*hh + 1 < last ? *hh + 1 : first);
+        const auto range = FaceRange(*face);
+        return he::HH(*hh + 1 < range.y ? *hh + 1 : range.x);
     }
 
     he::HH Previous(he::HH hh) const {
         const auto face = FaceOf(hh);
-        if (!face) return Opposites[*hh];
-        const auto first = *FaceHalfedge(*face);
-        return he::HH(*hh == first ? FaceEnd(*face) - 1u : *hh - 1u);
+        if (!face) return Opposite(hh);
+        const auto range = FaceRange(*face);
+        return he::HH(*hh == range.x ? range.y - 1u : *hh - 1u);
     }
 };
 
@@ -177,7 +177,10 @@ struct VertexEdgeIncidence {
         Iterator begin() const { return ++Iterator{C, First, Count}; }
         Iterator end() const { return {C}; }
     };
-    Range Incident(uint32_t v) const { return {&C, C.VertexCorners[v].x, C.VertexCorners[v].y}; }
+    Range Incident(uint32_t v) const {
+        const auto run = C.Incoming(he::VH{v});
+        return {&C, run.x, run.y};
+    }
 };
 
 // Borrows connectivity and vertex data from MeshStore.
@@ -194,13 +197,9 @@ struct Mesh {
     std::span<const uint32_t> CornerVertices() const;
 
     uint32_t VertexCount() const { return C.VertexCount; }
-    uint32_t VertexFirst() const { return C.VertexFirst; }
     VH VertexAt(uint32_t ordinal) const;
     uint32_t VertexOrdinal(VH vertex) const;
     uint32_t EdgeCount() const { return C.EdgeCount; }
-    uint32_t EdgeFirst() const { return C.EdgeFirst; }
-    uint32_t FaceFirst() const { return C.FaceFirst; }
-    uint32_t HalfedgeFirst() const { return C.HalfedgeFirst; }
     EH EdgeAt(uint32_t ordinal) const;
     FH FaceAt(uint32_t ordinal) const;
     uint32_t FaceOrdinal(FH f) const;
@@ -222,6 +221,8 @@ struct Mesh {
     const MeshConnectivity &GetConnectivity() const { return C; }
     ElementView<uvec3> DerivedTriangles() const;
     TriangleVertexView TriangleVertices() const;
+    // The vertices at the mesh's vertex handles.
+    HandleValues<Vertex> VertexValues() const;
     uint32_t TriangleIndexCount() const;
 
     // Incident edges derived from the canonical incoming-corner lists.
@@ -229,20 +230,20 @@ struct Mesh {
 
     HH GetHalfedge(EH eh, uint32_t i) const {
         const auto h0 = C.EdgeHalfedge(*eh);
-        return i == 0 ? h0 : (i == 1 && h0 ? C.Opposites[*h0] : HH{});
+        return i == 0 ? h0 : (i == 1 && h0 ? C.Opposite(h0) : HH{});
     }
-    HH GetOppositeHalfedge(HH hh) const { return C.Opposites[*hh]; }
+    HH GetOppositeHalfedge(HH hh) const { return C.Opposite(hh); }
     EH GetEdge(HH hh) const { return C.Edge(hh); }
     FH GetFace(HH hh) const { return C.FaceOf(hh); }
     VH GetFromVertex(HH) const;
-    VH GetToVertex(HH hh) const { return VH(Corners[*hh]); }
+    VH GetToVertex(HH hh) const { return VH(Corners[C.HalfedgeAddress(*hh).Value()]); }
 
     uint32_t GetValence(FH) const;
 
     vec3 CalcFaceCentroid(FH) const;
     // Discrete mean curvature (1/length) averaged over the one-ring normal curvatures.
     // 1/R on a sphere of radius R, zero on a flat or boundary vertex.
-    // `edge_sharpness` is indexed by canonical edge handle, 1 where shading is discontinuous.
+    // `edge_sharpness` is indexed by edge address, 1 where shading is discontinuous.
     // A sharp edge is where the surface turns rather than curves, so it has no curvature.
     float CalcMeanCurvature(VH, std::span<const uint8_t> edge_sharpness) const;
     VH FindNearestVertex(vec3) const;
@@ -252,9 +253,9 @@ struct Mesh {
     std::vector<uint32_t> CreateTriangleIndices() const;
     void WriteTriangleIndices(std::span<uint32_t> dest) const;
 
-    he::HandleRange<VH> vertices() const { return {C.VertexBlocks, VertexCount() ? VertexFirst() / MeshElementBlockSize : he::null}; }
-    he::HandleRange<EH> edges() const { return {C.EdgeBlocks, EdgeCount() ? EdgeFirst() / MeshElementBlockSize : he::null}; }
-    he::HandleRange<FH> faces() const { return {C.FaceBlocks, FaceCount() ? FaceFirst() / MeshElementBlockSize : he::null}; }
+    he::HandleRange<VH> vertices() const { return {C.VertexTable, C.VertexBlocks}; }
+    he::HandleRange<EH> edges() const { return {C.EdgeTable, C.EdgeBlocks}; }
+    he::HandleRange<FH> faces() const { return {C.FaceTable, C.FaceBlocks}; }
     uint32_t ElementCount(Element element) const {
         return element == Element::Vertex ? VertexCount() : element == Element::Edge ? EdgeCount() :
             element == Element::Face                                                 ? FaceCount() :
@@ -307,7 +308,7 @@ struct Mesh {
 
         HH operator*() const { return CurrentHalfedge; }
         HH advance() const {
-            const auto opp = M->C.Opposites[*CurrentHalfedge];
+            const auto opp = M->C.Opposite(CurrentHalfedge);
             return opp ? M->C.Next(opp) : HH{};
         }
     };
@@ -318,7 +319,7 @@ struct Mesh {
         VertexOutgoingHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; }
     };
     VertexOutgoingHalfedgeRange voh_range(VH vh) const {
-        return {this, vh && *vh >= C.VertexFirst && *vh - C.VertexFirst < C.VertexCount ? C.OutgoingHalfedges[*vh] : HH{}};
+        return {this, vh && C.HasVertexBlock(*vh) ? C.Outgoing(vh) : HH{}};
     }
 
     struct FaceHalfedgeIterator : CirculatorBase {

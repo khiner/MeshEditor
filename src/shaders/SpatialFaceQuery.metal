@@ -5,15 +5,16 @@
 
 inline bool SpatialFaceAffected(device const BindlessSet &b, const SpatialFaceQueryPushConstants pc,
                                 uint face, device atomic_uint *result) {
-    if (face >= pc.FaceRangeCapacity) {
+    if (face >= pc.FaceBound) {
         atomic_store_explicit(result + 1u, 1u, memory_order_relaxed);
         return false;
     }
     device const uint *ranges = BindlessBuffer(uint, b.Buffer, pc.FaceRangeSlot);
-    device const uint *corners = BindlessBuffer(uint, b.IndexBuffer, pc.CornerSlot);
-    device const Vertex *vertices = BindlessBuffer(Vertex, b.VertexBuffer, pc.VertexSlot);
-    const uint first = ranges[2u * face], last = ranges[2u * face + 1u];
-    if (first >= last || last > pc.CornerCapacity) {
+    const ElementValues<const uint> corners{BindlessBuffer(uint, b.IndexBuffer, pc.CornerSlot), BindlessBuffer(uint, b.Buffer, pc.Tables.Halfedges.Slot) + pc.Tables.Halfedges.Offset};
+    const ElementValues<const Vertex> vertices{BindlessBuffer(Vertex, b.VertexBuffer, pc.VertexSlot), BindlessBuffer(uint, b.Buffer, pc.Tables.Vertices.Slot) + pc.Tables.Vertices.Offset};
+    const uint address = HandleAddress<MeshElementBlockSize>(b, pc.Tables.Faces, face);
+    const uint first = ranges[2u * address], last = ranges[2u * address + 1u];
+    if (first >= last || last > pc.CornerBound) {
         atomic_store_explicit(result + 1u, 1u, memory_order_relaxed);
         return false;
     }
@@ -22,7 +23,7 @@ inline bool SpatialFaceAffected(device const BindlessSet &b, const SpatialFaceQu
         bool negative = false, positive = false;
         for (uint h = first; h < last; ++h) {
             const uint handle = corners[h];
-            if (handle >= pc.VertexCapacity) {
+            if (handle >= pc.VertexBound) {
                 atomic_store_explicit(result + 1u, 1u, memory_order_relaxed);
                 return false;
             }
@@ -39,7 +40,7 @@ inline bool SpatialFaceAffected(device const BindlessSet &b, const SpatialFaceQu
     const float4x4 to_clip = pc.ScreenTransform.Unpack();
     for (uint h = first; h < last; ++h) {
         const uint from = corners[h == first ? last - 1u : h - 1u], to = corners[h];
-        if (from >= pc.VertexCapacity || to >= pc.VertexCapacity) {
+        if (from >= pc.VertexBound || to >= pc.VertexBound) {
             atomic_store_explicit(result + 1u, 1u, memory_order_relaxed);
             return false;
         }
@@ -60,7 +61,7 @@ inline bool SpatialFaceAffected(device const BindlessSet &b, const SpatialFaceQu
     return false;
 }
 
-// Evaluate canonical candidate faces directly, without render ownership.
+// Evaluate candidate faces directly, without render ownership.
 kernel void SpatialFaceQueryExpand(device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
     constant SpatialFaceQueryPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
     uint index [[thread_position_in_grid]]) {

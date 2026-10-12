@@ -43,8 +43,22 @@ struct GeometryFixture {
     }
     MeshStore &Store() { return Scene.Context.get<MeshStore>(); }
     Mesh Get(uint32_t id) { return Mesh{Store(), id}; }
-    uint32_t Create(MeshData data) { return CreateMesh(Scene, {.Data = std::move(data)}).StoreId; }
-    GeometryTopologyResult Run(MeshTopologyTask task) { return ExecuteGeometryTopology(Scene, std::span{&task, 1u}).front(); }
+    void Audit() {
+        std::string why;
+        const bool valid = Store().Audit(why);
+        if (!valid) std::printf("audit: %s\n", why.c_str());
+        expect(valid);
+    }
+    uint32_t Create(MeshData data) {
+        const auto id = CreateMesh(Scene, {.Data = std::move(data)}).StoreId;
+        Audit();
+        return id;
+    }
+    GeometryTopologyResult Run(MeshTopologyTask task) {
+        auto result = ExecuteGeometryTopology(Scene, std::span{&task, 1u}).front();
+        Audit();
+        return result;
+    }
 };
 
 MeshData Quad() {
@@ -62,9 +76,16 @@ struct MaskWriter {
         for (const auto h : handles) blocks[h / MeshElementBlockSize][(h % MeshElementBlockSize) / 32u] |= 1u << (h % 32u);
         return {&Blocks, range.Offset};
     }
-    GeometryMasks Write(const MeshStore &meshes, const GeometrySelection &selection) {
+    // Masks mirror arena blocks, so each handle of record `id` sets the bit at its arena address.
+    GeometryMasks Write(const MeshStore &meshes, uint32_t id, const GeometrySelection &selection) {
         const auto &a = meshes.Arenas();
-        return {Write(selection.Vertices, a.Vertices.Capacity()), Write(selection.Edges, a.EdgeHalfedges.Capacity()), Write(selection.Faces, a.FaceTriangles.Capacity())};
+        const auto addresses = [&](MeshStore::ElementDomain domain, std::span<const uint32_t> handles) {
+            std::vector<uint32_t> result;
+            for (const auto h : handles) result.push_back(meshes.HandleAddress(id, domain, ElementHandle{h}).Value());
+            return result;
+        };
+        using Domain = MeshStore::ElementDomain;
+        return {Write(addresses(Domain::Vertex, selection.Vertices), a.Vertices.Capacity()), Write(addresses(Domain::Edge, selection.Edges), a.EdgeHalfedges.Capacity()), Write(addresses(Domain::Face, selection.Faces), a.FaceTriangles.Capacity())};
     }
 };
 
@@ -134,11 +155,11 @@ float FaceFloat(int32_t p) { return 1.5f * float(p) + .25f; }
 vec3 EdgeVector(int32_t v) { return {float(v), -float(v), .5f * float(v)}; }
 float EdgeFloat(int32_t v) { return .5f * float(v); }
 
-// Writes an attribute over a dense record domain from the value of each handle.
-template<AttributeScalar T> void Fill(MeshStore &meshes, uint32_t id, std::string_view name, Range handles, auto &&value) {
-    const auto values = std::make_unique<T[]>(handles.Count);
-    for (uint32_t i = 0u; i < handles.Count; ++i) values[i] = value(handles.Offset + i);
-    meshes.SetAttribute<T>(meshes.FindAttribute(id, name), handles.Offset, std::span<const T>{values.get(), handles.Count});
+// Writes an attribute over the `count` handles of a dense record domain from the value of each handle.
+template<AttributeScalar T> void Fill(MeshStore &meshes, uint32_t id, std::string_view name, uint32_t count, auto &&value) {
+    const auto values = std::make_unique<T[]>(count);
+    for (uint32_t i = 0u; i < count; ++i) values[i] = value(i);
+    meshes.SetAttribute<T>(meshes.FindAttribute(id, name), 0u, std::span<const T>{values.get(), count});
 }
 
 // The shape with a morph target, skin, UVs, colors, a primitive per face and every third face and edge sharp, and the named attributes over them.
@@ -179,6 +200,7 @@ std::pair<uint32_t, std::set<int32_t>> CreateAttributed(GeometryFixture &f, Mesh
         ExecuteGeometrySharpness(f.Scene, chain, std::span{&sharp_faces, 1u}, EditSharpnessOperation::SetSelectedFaces, true);
         ExecuteGeometrySharpness(f.Scene, chain, std::span{&sharp_edges, 1u}, EditSharpnessOperation::SetSelectedEdges, true);
     }
+    f.Audit();
     const std::array<std::array<AttributeValue, 4>, 4> defaults{{
         {},
         {Bits(EdgeFloat(-1)), Bits(EdgeVector(-1)), Bits(int32_t{-1}), {}},
@@ -189,27 +211,30 @@ std::pair<uint32_t, std::set<int32_t>> CreateAttributed(GeometryFixture &f, Mesh
         for (uint32_t k = 0u; k < 4u; ++k) expect(fatal(meshes.AddAttribute(id, AttributeDomains[d], AttributeKinds[k], AttributeNames[d][k], defaults[d][k]).has_value()));
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
+    // A dense domain's addresses run from its range's offset while its handles run from zero.
     const auto vertices = a.Vertices.Dense(record.Vertices), edges = a.EdgeHalfedges.Dense(record.EdgeData), faces = a.FaceTriangles.Dense(record.FaceData), corners = a.FaceCorners.Dense(record.FaceCorners);
-    Fill<float>(meshes, id, "vertex_float", vertices, [&](uint32_t v) { return a.Morph.Get(v, 0u).NormalDelta.x; });
-    Fill<vec3>(meshes, id, "vertex_vec3", vertices, [&](uint32_t v) { return a.Morph.Get(v, 0u).PositionDelta; });
-    Fill<int32_t>(meshes, id, "vertex_int", vertices, [&](uint32_t v) { return int32_t(a.Skin.Get(v).Joints.x); });
-    Fill<bool>(meshes, id, "vertex_bool", vertices, [&](uint32_t v) { return a.Skin.Get(v).Joints.y != 0u; });
-    const auto edge_value = [&](uint32_t e) { return int32_t(e - edges.Offset) + (a.EdgeSharpness.Get({e, 1u})[0] ? 1000 : 0); };
+    Fill<float>(meshes, id, "vertex_float", vertices.Count, [&](uint32_t v) { return a.Morph.Get(record.Morph, v).NormalDelta.x; });
+    Fill<vec3>(meshes, id, "vertex_vec3", vertices.Count, [&](uint32_t v) { return a.Morph.Get(record.Morph, v).PositionDelta; });
+    Fill<int32_t>(meshes, id, "vertex_int", vertices.Count, [&](uint32_t v) { return int32_t(a.Skin.Get(record.Skin, v).Joints.x); });
+    Fill<bool>(meshes, id, "vertex_bool", vertices.Count, [&](uint32_t v) { return a.Skin.Get(record.Skin, v).Joints.y != 0u; });
+    const auto edge_value = [&](uint32_t e) { return int32_t(e) + (a.EdgeSharpness.Get({edges.Offset + e, 1u})[0] ? 1000 : 0); };
     std::set<int32_t> edge_values;
-    for (uint32_t e = edges.Offset; e < edges.Offset + edges.Count; ++e) edge_values.insert(edge_value(e));
-    Fill<float>(meshes, id, "edge_float", edges, [&](uint32_t e) { return EdgeFloat(edge_value(e)); });
-    Fill<vec3>(meshes, id, "edge_vec3", edges, [&](uint32_t e) { return EdgeVector(edge_value(e)); });
-    Fill<int32_t>(meshes, id, "edge_int", edges, edge_value);
-    Fill<bool>(meshes, id, "edge_bool", edges, [&](uint32_t e) { return a.EdgeSharpness.Get({e, 1u})[0] != 0u; });
-    const auto primitive = [&](uint32_t face) { return int32_t(a.FacePrimitives.Get(face)); };
-    Fill<float>(meshes, id, "face_float", faces, [&](uint32_t face) { return FaceFloat(primitive(face)); });
-    Fill<vec3>(meshes, id, "face_vec3", faces, [&](uint32_t face) { return FaceVector(primitive(face)); });
-    Fill<int32_t>(meshes, id, "face_int", faces, primitive);
-    Fill<bool>(meshes, id, "face_bool", faces, [&](uint32_t face) { return a.FaceSharpness.Get({face, 1u})[0] != 0u; });
-    Fill<float>(meshes, id, "corner_float", corners, [&](uint32_t h) { return a.CornerColors.Get(h).y; });
-    Fill<vec3>(meshes, id, "corner_vec3", corners, [&](uint32_t h) { return vec3{a.CornerUvs[0].Get(h).x, a.CornerUvs[0].Get(h).y, a.CornerColors.Get(h).x}; });
-    Fill<int32_t>(meshes, id, "corner_int", corners, [&](uint32_t h) { return int32_t(a.CornerColors.Get(h).z); });
-    Fill<bool>(meshes, id, "corner_bool", corners, [&](uint32_t h) { return a.CornerColors.Get(h).z >= 1000.f; });
+    for (uint32_t e = 0u; e < edges.Count; ++e) edge_values.insert(edge_value(e));
+    Fill<float>(meshes, id, "edge_float", edges.Count, [&](uint32_t e) { return EdgeFloat(edge_value(e)); });
+    Fill<vec3>(meshes, id, "edge_vec3", edges.Count, [&](uint32_t e) { return EdgeVector(edge_value(e)); });
+    Fill<int32_t>(meshes, id, "edge_int", edges.Count, edge_value);
+    Fill<bool>(meshes, id, "edge_bool", edges.Count, [&](uint32_t e) { return a.EdgeSharpness.Get({edges.Offset + e, 1u})[0] != 0u; });
+    const auto primitive = [&](uint32_t face) { return int32_t(a.FacePrimitives.Get(record.FacePrimitives, face)); };
+    Fill<float>(meshes, id, "face_float", faces.Count, [&](uint32_t face) { return FaceFloat(primitive(face)); });
+    Fill<vec3>(meshes, id, "face_vec3", faces.Count, [&](uint32_t face) { return FaceVector(primitive(face)); });
+    Fill<int32_t>(meshes, id, "face_int", faces.Count, primitive);
+    Fill<bool>(meshes, id, "face_bool", faces.Count, [&](uint32_t face) { return a.FaceSharpness.Get({faces.Offset + face, 1u})[0] != 0u; });
+    const auto uv = [&](uint32_t h) { return a.CornerUvs[0].Get(record.CornerUvs[0], h); };
+    const auto color = [&](uint32_t h) { return a.CornerColors.Get(record.CornerColors, h); };
+    Fill<float>(meshes, id, "corner_float", corners.Count, [&](uint32_t h) { return color(h).y; });
+    Fill<vec3>(meshes, id, "corner_vec3", corners.Count, [&](uint32_t h) { return vec3{uv(h).x, uv(h).y, color(h).x}; });
+    Fill<int32_t>(meshes, id, "corner_int", corners.Count, [&](uint32_t h) { return int32_t(color(h).z); });
+    Fill<bool>(meshes, id, "corner_bool", corners.Count, [&](uint32_t h) { return color(h).z >= 1000.f; });
     return {id, std::move(edge_values)};
 }
 
@@ -224,18 +249,20 @@ void CheckAttributed(const MeshStore &meshes, uint32_t id, const std::set<int32_
         return std::tuple{meshes.AttributeView<float>(find(0u)), meshes.AttributeView<vec3>(find(1u)), meshes.AttributeView<int32_t>(find(2u)), meshes.AttributeView<bool>(find(3u))};
     };
     const auto [vf, vv, vi, vb] = views(0u);
-    a.Vertices.ForEach(record.Vertices, [&](uint32_t v, uint32_t) {
-        const auto morph = a.Morph.Get(v, 0u);
-        const auto skin = a.Skin.Get(v);
+    a.Vertices.ForEach(record.Vertices, [&](ElementHandle handle, ElementAddress) {
+        const auto v = handle.Value;
+        const auto morph = a.Morph.Get(record.Morph, v, 0u, record.MorphTargetCount);
+        const auto skin = a.Skin.Get(record.Skin, v);
         expect(vf[v] == morph.NormalDelta.x);
         expect(vv[v] == morph.PositionDelta);
         expect(vi[v] == int32_t(skin.Joints.x));
         expect(vb[v] == (skin.Joints.y != 0u));
     });
     const auto [ef, ev, ei, eb] = views(1u);
-    a.EdgeHalfedges.ForEach(record.EdgeData, [&](uint32_t e, uint32_t) {
+    a.EdgeHalfedges.ForEach(record.EdgeData, [&](ElementHandle handle, ElementAddress address) {
+        const auto e = handle.Value;
         const auto value = ei[e];
-        const bool sharp = a.EdgeSharpness.Get({e, 1u})[0] != 0u;
+        const bool sharp = a.EdgeSharpness.Get({address.Value(), 1u})[0] != 0u;
         expect(edge_values.contains(value) || value == -1) << "edge" << e << "holds" << value;
         expect((value >= 1000) == sharp);
         expect(eb[e] == sharp);
@@ -243,19 +270,21 @@ void CheckAttributed(const MeshStore &meshes, uint32_t id, const std::set<int32_
         expect(ev[e] == EdgeVector(value));
     });
     const auto [ff, fv, fi, fb] = views(2u);
-    a.FaceTriangles.ForEach(record.FaceData, [&](uint32_t face, uint32_t) {
+    a.FaceTriangles.ForEach(record.FaceData, [&](ElementHandle handle, ElementAddress address) {
+        const auto face = handle.Value;
         const auto value = fi[face];
         if (copied) expect(value >= 0 && uint32_t(value) < face_count);
-        else expect(value == int32_t(a.FacePrimitives.Get(face)));
+        else expect(value == int32_t(a.FacePrimitives.Get(record.FacePrimitives, face)));
         expect(ff[face] == FaceFloat(value));
         expect(fv[face] == FaceVector(value));
-        expect(fb[face] == (a.FaceSharpness.Get({face, 1u})[0] != 0u));
+        expect(fb[face] == (a.FaceSharpness.Get({address.Value(), 1u})[0] != 0u));
     });
     const auto [cf, cv, ci, cb] = views(3u);
     const auto blue = [](float value) { return std::ranges::contains(Blues, value); };
-    a.FaceCorners.ForEach(record.FaceCorners, [&](uint32_t h, uint32_t) {
-        const auto uv = a.CornerUvs[0].Get(h);
-        const auto color = a.CornerColors.Get(h);
+    a.FaceCorners.ForEach(record.FaceCorners, [&](ElementHandle handle, ElementAddress) {
+        const auto h = handle.Value;
+        const auto uv = a.CornerUvs[0].Get(record.CornerUvs[0], h);
+        const auto color = a.CornerColors.Get(record.CornerColors, h);
         expect(cf[h] == color.y);
         expect(cv[h] == vec3{uv.x, uv.y, color.x});
         // Blue mixes where corner sources differ, and the integer takes the dominant source.
@@ -275,7 +304,9 @@ uint32_t Box(GeometryFixture &f, vec3 center, vec3 half = vec3{1.f}) { return Pl
 // The boolean of the meshes' surfaces, or none when either is open.
 std::optional<uint32_t> RunBoolean(GeometryFixture &f, uint32_t first, uint32_t second, BooleanOperation operation) {
     const auto task = BooleanTask(f.Get(first), f.Get(second), operation, mat3{1.f}, vec3{0.f});
-    return task ? ExecuteGeometryBoolean(f.Scene, *task) : std::nullopt;
+    const auto id = task ? ExecuteGeometryBoolean(f.Scene, *task) : std::nullopt;
+    f.Audit();
+    return id;
 }
 // Whether every halfedge of the mesh's faces pairs with a halfedge of another face that pairs back.
 bool ClosedManifold(const Mesh &mesh) {
@@ -283,8 +314,8 @@ bool ClosedManifold(const Mesh &mesh) {
     const auto &c = mesh.GetConnectivity();
     for (const auto face : mesh.faces())
         for (const auto h : mesh.fh_range(face)) {
-            const auto opposite = c.Opposites[*h];
-            if (!opposite || c.Opposites[*opposite] != h || !c.FaceOf(opposite) || c.FaceOf(opposite) == face) return false;
+            const auto opposite = c.Opposite(h);
+            if (!opposite || c.Opposite(opposite) != h || !c.FaceOf(opposite) || c.FaceOf(opposite) == face) return false;
         }
     return true;
 }
@@ -298,7 +329,7 @@ void RegisterGeometryOperationsTests() {
         GeometryFixture f;
         const auto id = f.Create(Quad());
         const auto selected = AllHandles(f.Get(id));
-        expect(f.Store().Get(id).MeshletRoot == InvalidOffset);
+        expect(!f.Store().Get(id).MeshletData);
         for (const auto op : {MeshTopologyOp::DuplicateGeometry, MeshTopologyOp::ExtrudeRegion, MeshTopologyOp::DeleteLoose}) {
             const auto empty = f.Run({.SourceId = id, .Op = op});
             expect(!empty.Changed);
@@ -317,7 +348,7 @@ void RegisterGeometryOperationsTests() {
         expect(bounds.Max.x == 5.f);
         expect(f.Store().GetBoundaryEdges(id).Count() == 8u);
         expect(f.Store().GetSelectedElements(id, Element::Vertex).Count() == 0u);
-        expect(f.Store().Get(id).MeshletRoot == InvalidOffset);
+        expect(!f.Store().Get(id).MeshletData);
         const auto extrude_id = f.Create(Quad());
         const auto extruded = f.Run({.SourceId = extrude_id, .Op = MeshTopologyOp::ExtrudeRegion, .Selection = AllHandles(f.Get(extrude_id))});
         expect(extruded.Changed);
@@ -338,7 +369,7 @@ void RegisterGeometryOperationsTests() {
         data.Edges.push_back({0u, 1u});
         const auto id = f.Create(std::move(data));
         const auto selected = AllHandles(f.Get(id));
-        const std::array blocks{selected.Vertices.front() / MeshElementBlockSize};
+        const std::array blocks{f.Store().Arenas().Vertices.Entries(f.Store().Get(id).Vertices)[selected.Vertices.front() / MeshElementBlockSize]};
         f.Store().EditHiddenBlocks(Element::Vertex, blocks, [](uint32_t, auto &words) { std::ranges::fill(words, ~0u); });
         const auto removed = f.Run({.SourceId = id, .Op = MeshTopologyOp::DeleteLoose, .Selection = selected});
         expect(removed.Changed);
@@ -358,10 +389,10 @@ void RegisterGeometryOperationsTests() {
         const auto selection = extracted.Created;
         expect(extracted.Changed);
         expect(output_id != source);
-        expect(selection.Vertices.front() != **f.Get(source).vertices().begin());
         const auto original = f.Get(source).GetPosition(*f.Get(source).vertices().begin());
         const PositionOperationTarget target{.StoreId = output_id, .Selection = selection};
         const auto changes = ExecuteGeometryPositions(f.Scene, std::span{&target, 1u}, PositionEditOp::PushPull, .25f, 1u, {.Center = {0.f, 0.f, 2.f}});
+        f.Audit();
         expect(changes.size() == 1u);
         expect(f.Get(source).GetPosition(*f.Get(source).vertices().begin()) == original);
         expect(f.Get(output_id).GetPosition(*f.Get(output_id).vertices().begin()).z > 0.f);
@@ -372,9 +403,9 @@ void RegisterGeometryOperationsTests() {
             chain.Submit();
         }
         for (const auto corner : f.Get(source).fh_range(f.Get(source).FaceAt(0u)))
-            expect(f.Store().Arenas().CornerUvs[0].Get(*corner) == texcoords[f.Get(source).VertexOrdinal(f.Get(source).GetToVertex(corner))]);
+            expect(f.Store().Arenas().CornerUvs[0].Get(f.Store().Get(f.Get(source).GetStoreId()).CornerUvs[0], *corner) == texcoords[f.Get(source).VertexOrdinal(f.Get(source).GetToVertex(corner))]);
         for (const auto corner : f.Get(output_id).fh_range(f.Get(output_id).FaceAt(0u)))
-            expect(f.Store().Arenas().CornerUvs[0].Get(*corner) == texcoords[(f.Get(output_id).VertexOrdinal(f.Get(output_id).GetToVertex(corner)) + 3u) % 4u]);
+            expect(f.Store().Arenas().CornerUvs[0].Get(f.Store().Get(f.Get(output_id).GetStoreId()).CornerUvs[0], *corner) == texcoords[(f.Get(output_id).VertexOrdinal(f.Get(output_id).GetToVertex(corner)) + 3u) % 4u]);
         const auto triangulated = f.Run({.SourceId = output_id, .Op = MeshTopologyOp::Triangulate, .SelectionElement = Element::Face, .Selection = selection});
         expect(triangulated.Changed);
         expect(triangulated.Created.Faces.size() == 1u);
@@ -383,10 +414,10 @@ void RegisterGeometryOperationsTests() {
         expect(f.Get(source).FaceCount() == 1u);
         for (const auto face : f.Get(output_id).faces())
             for (const auto corner : f.Get(output_id).fh_range(face)) {
-                expect(f.Store().Arenas().CornerUvs[0].Get(*corner) == texcoords[(f.Get(output_id).VertexOrdinal(f.Get(output_id).GetToVertex(corner)) + 3u) % 4u]);
-                expect(f.Store().Arenas().CornerColors.Get(*corner) == vec4{.1f, .3f, .5f, 1.f});
+                expect(f.Store().Arenas().CornerUvs[0].Get(f.Store().Get(f.Get(output_id).GetStoreId()).CornerUvs[0], *corner) == texcoords[(f.Get(output_id).VertexOrdinal(f.Get(output_id).GetToVertex(corner)) + 3u) % 4u]);
+                expect(f.Store().Arenas().CornerColors.Get(f.Store().Get(f.Get(output_id).GetStoreId()).CornerColors, *corner) == vec4{.1f, .3f, .5f, 1.f});
             }
-        expect(f.Store().Get(output_id).MeshletRoot == InvalidOffset);
+        expect(!f.Store().Get(output_id).MeshletData);
         expect(f.Scene.Living.size() == 0u);
     };
     "headless affine transforms share editor frame math"_test = [] {
@@ -399,6 +430,7 @@ void RegisterGeometryOperationsTests() {
         const PositionOperationTarget target{.StoreId = id, .Selection = GeometrySelection{.Vertices = {first}}, .World = {.P = {10.f, 20.f, 3.f}, .R = quarter_turn, .S = {2.f, 3.f, 4.f}}};
         const PositionOperationOptions options{.Transform = PositionTransform{.Delta = {.P = {1.f, 2.f, 3.f}, .R = quarter_turn, .S = {2.f, .5f, 1.f}}, .Pivot = {10.f, 20.f, 3.f}}};
         const auto changed = ExecuteGeometryPositions(f.Scene, std::span{&target, 1u}, PositionEditOp::Transform, 1.f, 1u, options);
+        f.Audit();
         expect(changed.size() == 1u);
         const auto position = f.Get(id).GetPosition(he::VH{first});
         expect(std::abs(position.x - 4.f) < 1e-5f);
@@ -409,13 +441,15 @@ void RegisterGeometryOperationsTests() {
         const auto triangulated = f.Run({.SourceId = id, .Op = MeshTopologyOp::Triangulate, .SelectionElement = Element::Face, .Selection = selection});
         expect(triangulated.Changed);
         expect(f.Get(id).FaceCount() == 2u);
-        expect(f.Store().Get(id).MeshletRoot == InvalidOffset);
+        expect(!f.Store().Get(id).MeshletData);
     };
     "geometry planners reject foreign masks and invalid planes before reading topology"_test = [] {
         GeometryFixture f;
-        const auto id = f.Create(Quad()), other = f.Create(Quad());
+        const auto id = f.Create(Quad());
         const auto mesh = f.Get(id);
-        const auto selected = AllHandles(mesh), foreign = AllHandles(f.Get(other));
+        // Handles in a local block the mesh does not hold name no element of it.
+        const auto selected = AllHandles(mesh);
+        const GeometrySelection foreign{.Vertices = {MeshElementBlockSize}, .Edges = {MeshElementBlockSize}, .Faces = {MeshElementBlockSize}};
         const auto rejects = [](auto &&plan) {
             try {
                 plan();
@@ -440,29 +474,31 @@ void RegisterGeometryOperationsTests() {
         mtl::ComputeChain chain{f.Store().BufferContext()};
         const auto apply = [&](EditSharpnessOperation operation, GeometrySelection selection = {}, bool value = true) {
             const SharpnessOperationTarget target{id, std::move(selection)};
-            return ExecuteGeometrySharpness(f.Scene, chain, std::span{&target, 1u}, operation, value, .1f);
+            auto changes = ExecuteGeometrySharpness(f.Scene, chain, std::span{&target, 1u}, operation, value, .1f);
+            f.Audit();
+            return changes;
         };
         expect(apply(EditSharpnessOperation::SetSelectedFaces).empty());
         expect(apply(EditSharpnessOperation::SetSelectedFaces, {.Faces = all.Faces}).size() == 1u);
-        expect(f.Store().Arenas().FaceSharpness.Get({all.Faces.front(), 1u})[0] == 1u);
+        expect(f.Store().Arenas().FaceSharpness.Get({test::Address(f.Get(id), he::FH{all.Faces.front()}), 1u})[0] == 1u);
         // A local sharpness edit may retain mixed classification without scanning the mesh.
         expect(f.Store().GetCornerClassMode(id) != uint32_t(CornerClassMode::UniformVertex));
         expect((f.Store().GetSelectionRoot(id, Element::Face).Flags & SelectionLiveSharp) != 0u);
         apply(EditSharpnessOperation::SmoothAll);
         apply(EditSharpnessOperation::SetSelectedEdges, {.Edges = {all.Edges.front()}});
-        expect(f.Store().Arenas().EdgeSharpness.Get({all.Edges.front(), 1u})[0] == 1u);
+        expect(f.Store().Arenas().EdgeSharpness.Get({test::Address(f.Get(id), he::EH{all.Edges.front()}), 1u})[0] == 1u);
         apply(EditSharpnessOperation::SmoothAll);
         apply(EditSharpnessOperation::SetVertexEdges, {.Vertices = {all.Vertices[0], all.Vertices[1]}});
         uint32_t sharp = 0u;
-        for (const auto edge : all.Edges) sharp += f.Store().Arenas().EdgeSharpness.Get({edge, 1u})[0] != 0u;
+        for (const auto edge : all.Edges) sharp += f.Store().Arenas().EdgeSharpness.Get({test::Address(f.Get(id), he::EH{edge}), 1u})[0] != 0u;
         expect(sharp == 3u);
         apply(EditSharpnessOperation::SetAllFaces);
-        expect(f.Store().Arenas().FaceSharpness.Get({all.Faces.front(), 1u})[0] == 1u);
+        expect(f.Store().Arenas().FaceSharpness.Get({test::Address(f.Get(id), he::FH{all.Faces.front()}), 1u})[0] == 1u);
         apply(EditSharpnessOperation::SmoothByAngle);
-        for (const auto edge : all.Edges) expect(f.Store().Arenas().EdgeSharpness.Get({edge, 1u})[0] == 0u);
+        for (const auto edge : all.Edges) expect(f.Store().Arenas().EdgeSharpness.Get({test::Address(f.Get(id), he::EH{edge}), 1u})[0] == 0u);
         expect(f.Get(id).GetNormal(he::FH{all.Faces.front()}).z > .99f);
         expect(f.Store().GetSelectedElements(id, Element::Vertex).Count() == 0u);
-        expect(f.Store().Get(id).MeshletRoot == InvalidOffset);
+        expect(!f.Store().Get(id).MeshletData);
         expect(f.Scene.Living.empty());
     };
     "headless knife restricts canonical candidates without render caches"_test = [] {
@@ -474,7 +510,7 @@ void RegisterGeometryOperationsTests() {
         expect(f.Get(id).VertexCount() == 6u);
         expect(f.Get(id).FaceCount() == 2u);
         expect(cut.Created.Vertices.size() == 2u);
-        expect(f.Store().Get(id).MeshletRoot == InvalidOffset);
+        expect(!f.Store().Get(id).MeshletData);
         MeshData separated;
         for (uint32_t face = 0u; face < 512u; ++face) {
             const auto first = uint32_t(separated.Positions.size());
@@ -498,6 +534,7 @@ void RegisterGeometryOperationsTests() {
         moved.Vertices.resize(1024u);
         const PositionOperationTarget moving{.StoreId = separated_id, .Selection = GeometrySelection{.Vertices = moved.Vertices}};
         ExecuteGeometryPositions(f.Scene, std::span{&moving, 1u}, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{.Delta = {.P = {200.f, 0.f, 0.f}}}});
+        f.Audit();
         const MeshTopologyTask query{.SourceId = separated_id, .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts | TopologyFlagSelectAll, .PlaneNormal = {1.f, 0.f, 0.f}};
         mtl::ComputeChain chain{f.Buffers};
         SpatialFaceWork moved_work{f.Scene, chain, query};
@@ -510,6 +547,7 @@ void RegisterGeometryOperationsTests() {
             expect(throws<std::invalid_argument>([&] { ExecuteGeometryTopology(f.Scene, stages); }));
             expect(f.Get(input).FaceCount() == before);
             const auto staged = ExecuteGeometryTopologyStages(f.Scene, stages);
+            f.Audit();
             expect(staged.size() == stages.size());
             expect(staged.back().Changed);
             expect(f.Get(input).FaceCount() == 1u);
@@ -532,7 +570,7 @@ void RegisterGeometryOperationsTests() {
                 const auto listed = PlanCase(c, f.Store(), f.Get(listed_id));
                 auto masked = PlanCase(c, f.Store(), f.Get(masked_id));
                 expect(fatal(listed.has_value() && masked.has_value()));
-                masked->Selection = masks.Write(f.Store(), std::get<GeometrySelection>(masked->Selection));
+                masked->Selection = masks.Write(f.Store(), masked_id, std::get<GeometrySelection>(masked->Selection));
                 const auto by_list = Describe(f.Store(), listed_id, f.Run(*listed));
                 const auto by_masks = Describe(f.Store(), masked_id, f.Run(*masked));
                 expect(by_list.Changed);
@@ -581,35 +619,33 @@ void RegisterGeometryOperationsTests() {
         const auto weight = meshes.AddAttribute(id, AttributeDomain::Vertex, AttributeType::Float, "weight");
         expect(fatal(weight.has_value()));
         expect(meshes.AddAttribute(id, AttributeDomain::Face, AttributeType::Int, "weight") == std::unexpected{MeshStore::AttributeError::Duplicate});
-        const auto vertices = meshes.Arenas().Vertices.Dense(meshes.Get(id).Vertices);
         const std::array values{1.f, 2.f, 3.f, 4.f};
-        meshes.SetAttribute<float>(*weight, vertices.Offset, values);
+        meshes.SetAttribute<float>(*weight, 0u, values);
         CloneCopies copies;
-        const auto clone = meshes.CloneMeshes(copies, std::array{id}, true, {}).front();
+        const auto clone = meshes.CloneMeshes(copies, std::array{id}, true).front();
         {
             mtl::ComputeChain chain{meshes.BufferContext()};
             copies.Encode(chain, GetMeshPipelines(f.Scene));
             chain.Submit();
         }
+        f.Audit();
         const auto copy = meshes.FindAttribute(clone, "weight");
         expect(fatal(copy != InvalidOffset && copy != *weight));
-        const auto clone_vertices = meshes.Arenas().Vertices.Dense(meshes.Get(clone).Vertices);
-        for (uint32_t i = 0u; i < 4u; ++i) expect(meshes.AttributeView<float>(copy)[clone_vertices.Offset + i] == values[i]);
+        for (uint32_t i = 0u; i < 4u; ++i) expect(meshes.AttributeView<float>(copy)[i] == values[i]);
         const std::array changed{9.f, 9.f, 9.f, 9.f};
-        meshes.SetAttribute<float>(copy, clone_vertices.Offset, changed);
+        meshes.SetAttribute<float>(copy, 0u, changed);
         for (uint32_t i = 0u; i < 4u; ++i) {
-            expect(meshes.AttributeView<float>(*weight)[vertices.Offset + i] == values[i]);
-            expect(meshes.AttributeView<float>(copy)[clone_vertices.Offset + i] == 9.f);
+            expect(meshes.AttributeView<float>(*weight)[i] == values[i]);
+            expect(meshes.AttributeView<float>(copy)[i] == 9.f);
         }
-        // Released payloads are free, so the next attribute takes them.
-        const std::array clone_blocks{clone_vertices.Offset / MeshElementBlockSize};
-        const auto payloads = meshes.AttributePayloadBlocks(copy, clone_blocks);
-        expect(payloads.size() == 1u);
+        // A released range is free, so the next attribute takes it.
+        const auto released = meshes.GetAttribute(copy).Values;
+        expect(released.Count == 1u);
         meshes.Release(clone);
+        f.Audit();
         const auto again = meshes.AddAttribute(id, AttributeDomain::Vertex, AttributeType::Float, "again");
         expect(fatal(again.has_value()));
-        const std::array blocks{vertices.Offset / MeshElementBlockSize};
-        expect(meshes.AttributePayloadBlocks(*again, blocks) == payloads);
+        expect(meshes.GetAttribute(*again).Values.Offset == released.Offset);
         meshes.ReleaseAttribute(*again);
         expect(meshes.FindAttribute(id, "again") == InvalidOffset);
         expect(meshes.FindAttribute(id, "weight") == *weight);
@@ -618,7 +654,7 @@ void RegisterGeometryOperationsTests() {
         GeometryFixture f;
         MaskWriter masks{f.Buffers};
         const auto id = f.Create(Quad());
-        const auto output = masks.Write(f.Store(), {});
+        const auto output = masks.Write(f.Store(), id, {});
         const auto duplicated = f.Run({.SourceId = id, .Op = MeshTopologyOp::DuplicateGeometry, .Flags = TopologyFlagTransformCopies, .CopyRotation = mat3{1.f}, .CopyTranslation = {4.f, 0.f, 0.f}, .Selection = AllHandles(f.Get(id)), .SelectionOutput = output});
         expect(duplicated.Changed);
         for (const auto element : {Element::Vertex, Element::Edge, Element::Face})
@@ -656,10 +692,11 @@ void RegisterGeometryOperationsTests() {
                 const auto listed_id = f.Create(Patchwork()), masked_id = f.Create(Patchwork());
                 const auto listed_selection = Region(f.Get(listed_id)), masked_selection = Region(f.Get(masked_id));
                 const PositionOperationTarget listed{.StoreId = listed_id, .Selection = listed_selection, .Excluded = excluded(f.Get(listed_id)), .Reference = listed_selection.Vertices[4]};
-                const PositionOperationTarget masked{.StoreId = masked_id, .Selection = masks.Write(f.Store(), masked_selection), .Excluded = masks.Write(f.Store(), excluded(f.Get(masked_id))), .Reference = masked_selection.Vertices[4]};
+                const PositionOperationTarget masked{.StoreId = masked_id, .Selection = masks.Write(f.Store(), masked_id, masked_selection), .Excluded = masks.Write(f.Store(), masked_id, excluded(f.Get(masked_id))), .Reference = masked_selection.Vertices[4]};
                 const auto before = Points(f.Get(listed_id));
                 const auto listed_changes = ExecuteGeometryPositions(f.Scene, std::span{&listed, 1u}, c.Op, c.Factor, 1u, c.Options);
                 const auto masked_changes = ExecuteGeometryPositions(f.Scene, std::span{&masked, 1u}, c.Op, c.Factor, 1u, c.Options);
+                f.Audit();
                 expect(listed_changes.size() == masked_changes.size());
                 expect(!std::ranges::equal(Points(f.Get(listed_id)), before));
                 expect(std::ranges::equal(Points(f.Get(listed_id)), Points(f.Get(masked_id))));
@@ -675,15 +712,16 @@ void RegisterGeometryOperationsTests() {
             };
             const auto listed_id = CreateMesh(f.Scene, {.Data = Patchwork(), .Attrs = uvs()}).StoreId, masked_id = CreateMesh(f.Scene, {.Data = Patchwork(), .Attrs = uvs()}).StoreId;
             const PositionOperationTarget listed{.StoreId = listed_id, .Selection = Region(f.Get(listed_id))};
-            const PositionOperationTarget masked{.StoreId = masked_id, .Selection = masks.Write(f.Store(), Region(f.Get(masked_id)))};
+            const PositionOperationTarget masked{.StoreId = masked_id, .Selection = masks.Write(f.Store(), masked_id, Region(f.Get(masked_id)))};
             mtl::ComputeChain chain{f.Store().BufferContext()};
             expect(EncodeFaceAttributeOperation(f.Store(), GetMeshPipelines(f.Scene), chain, std::span{&listed, 1u}, false, 0u, 1u).size() == 1u);
             expect(EncodeFaceAttributeOperation(f.Store(), GetMeshPipelines(f.Scene), chain, std::span{&masked, 1u}, false, 0u, 1u).size() == 1u);
             chain.Submit();
+            f.Audit();
             const auto corner_uvs = [&](uint32_t id) {
                 std::vector<vec2> result;
                 for (const auto face : f.Get(id).faces())
-                    for (const auto corner : f.Get(id).fh_range(face)) result.push_back(f.Store().Arenas().CornerUvs[0].Get(*corner));
+                    for (const auto corner : f.Get(id).fh_range(face)) result.push_back(f.Store().Arenas().CornerUvs[0].Get(f.Store().Get(f.Get(id).GetStoreId()).CornerUvs[0], *corner));
                 return result;
             };
             expect(std::ranges::equal(corner_uvs(listed_id), corner_uvs(masked_id)));
@@ -692,16 +730,17 @@ void RegisterGeometryOperationsTests() {
             boost::ut::test("sharpness " + std::to_string(uint32_t(operation))) = [&] {
                 const auto listed_id = f.Create(Patchwork()), masked_id = f.Create(Patchwork());
                 const SharpnessOperationTarget listed{listed_id, Region(f.Get(listed_id))};
-                const SharpnessOperationTarget masked{masked_id, masks.Write(f.Store(), Region(f.Get(masked_id)))};
+                const SharpnessOperationTarget masked{masked_id, masks.Write(f.Store(), masked_id, Region(f.Get(masked_id)))};
                 mtl::ComputeChain chain{f.Store().BufferContext()};
                 const auto listed_changes = ExecuteGeometrySharpness(f.Scene, chain, std::span{&listed, 1u}, operation, true, .1f);
                 const auto masked_changes = ExecuteGeometrySharpness(f.Scene, chain, std::span{&masked, 1u}, operation, true, .1f);
+                f.Audit();
                 expect(listed_changes.size() == 1u);
                 expect(masked_changes.size() == 1u);
                 const auto sharpness = [&](uint32_t id) {
                     std::vector<uint8_t> result;
-                    for (const auto face : f.Get(id).faces()) result.push_back(f.Store().Arenas().FaceSharpness.Get({*face, 1u})[0]);
-                    for (const auto edge : f.Get(id).edges()) result.push_back(f.Store().Arenas().EdgeSharpness.Get({*edge, 1u})[0]);
+                    for (const auto face : f.Get(id).faces()) result.push_back(f.Store().Arenas().FaceSharpness.Get({test::Address(f.Get(id), face), 1u})[0]);
+                    for (const auto edge : f.Get(id).edges()) result.push_back(f.Store().Arenas().EdgeSharpness.Get({test::Address(f.Get(id), edge), 1u})[0]);
                     return result;
                 };
                 expect(std::ranges::equal(sharpness(listed_id), sharpness(masked_id)));
@@ -767,6 +806,7 @@ void RegisterGeometryOperationsTests() {
                 const auto task = BooleanTask(f.Get(first), f.Get(second), c.Operation, mat3{1.f}, vec3{0.f});
                 expect(task.has_value() == c.Euler.has_value());
                 const auto id = task ? ExecuteGeometryBoolean(f.Scene, *task) : std::nullopt;
+                f.Audit();
                 expect(id.has_value() == task.has_value());
                 // The inputs stay as they were.
                 expect(f.Get(first).VertexCount() == first_vertices);

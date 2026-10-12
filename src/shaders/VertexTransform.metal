@@ -17,10 +17,7 @@
 inline float3 ApplyNormalOffset(const thread Scene &scene, DrawData draw, uint vertex_id, float3 normal, float2 offset) {
     const uint h = vertex_id;
     const ConnectivityView conn{scene.B, draw.Connectivity, draw.FaceCount};
-    const auto position = [&](uint corner) {
-        const uint v = scene.Indices(draw.IndexSlotOffset.Slot)[corner] - draw.VertexOffset;
-        return scene.GetLocalPosition(draw, v);
-    };
+    const auto position = [&](uint corner) { return scene.GetLocalPosition(draw, scene.CornerVertex(draw, corner)); };
     return DecodeNormalOffset(offset, ComputeCornerFrame(normal, position(h), position(conn.Next(h)), position(conn.Previous(h))));
 }
 
@@ -32,37 +29,36 @@ inline float3 CornerNormal(
     const bool mixed = draw.CornerClassMode == uint(CornerClassMode::Mixed);
     const uint source_face = mixed ? scene.CornerFace(draw, vertex_id) : InvalidOffset;
     const bool flat = draw.CornerClassMode == uint(CornerClassMode::UniformFace) ||
-        (mixed && BindlessBuffer(uchar, scene.B.Buffer, scene.View.FaceSharpnessSlot)[source_face] != 0u);
-    const uint root = mixed && !flat ? CornerSectorRoot(scene.B, scene.View.CornerSectors, vertex_id) : InvalidOffset;
+        (mixed && BindlessBuffer(uchar, scene.B.Buffer, scene.View.FaceSharpnessSlot)[scene.FaceAddress(draw, source_face)] != 0u);
+    const uint root = mixed && !flat ? CornerSectorRoot(scene.B, draw.CornerSectors, vertex_id) : InvalidOffset;
     float3 normal;
     if (flat) {
         normal = coarse ? coarse_normal : scene.GetFaceNormal(draw, face_id);
     } else if (root == InvalidOffset) {
         normal = scene.GetVertexNormal(draw, idx);
     } else {
-        const uint record = ElementAttributeIndex(scene.B, scene.View.NormalSectors, root);
-        const uint posed = PoseAttributeIndex(scene.B, scene.View.PosedSectorNodesSlot, draw.SectorNamespace, record);
+        const uint posed = PoseAttributeIndex(scene.B, scene.View.PosedSectorNodesSlot, draw.SectorNamespace, scene.CornerAddress(draw, root));
         normal = posed != InvalidOffset ?
             float3(BindlessBuffer(packed_float3, scene.B.Buffer, scene.View.PosedSectorValuesSlot)[posed]) :
-            float3(BindlessBuffer(NormalSector, scene.B.Buffer, scene.View.NormalSectors.ValuesSlot)[record].Normal);
+            float3(BindlessBuffer(NormalSector, scene.B.Buffer, draw.NormalSectors.Slot)[draw.NormalSectors.Offset + root].Normal);
     }
-    if (draw.CustomNormals.ValuesSlot != InvalidSlot) {
+    if (draw.CustomNormals.Slot != InvalidSlot) {
         const float2 offset = CustomNormalOffset(scene.B, draw.CustomNormals, vertex_id);
         if (offset.x >= 0.f) normal = ApplyNormalOffset(scene, draw, vertex_id, normal, offset);
     }
     // glTF morphed normal: normalize(N0 + sum(w_t * NormalDelta_t)).
     if (draw.MorphShadingAuthored != 0u) {
-        normal = NormalizeOrZero(normal + float3(scene.PosedMorphNormalDeltas(scene.View.PosedMorphNormalDeltaSlot)[PoseAttributeIndex(scene.B, scene.View.PosedMorphNormalNodesSlot, draw.MorphNormalNamespace, draw.VertexOffset + idx)]));
+        normal = NormalizeOrZero(normal + float3(scene.PosedMorphNormalDeltas(scene.View.PosedMorphNormalDeltaSlot)[PoseAttributeIndex(scene.B, scene.View.PosedMorphNormalNodesSlot, draw.MorphNormalNamespace, scene.VertexAddress(draw, idx))]));
     }
     return normal;
 }
 
+// `vertex_id` and `vertex_index` name a face draw's corner and another draw's vertex, and `idx` the vertex.
 inline MeshVaryings TransformVertex(
     const thread Scene &scene, DrawData draw, uint vertex_id, uint vertex_index, uint idx,
     bool face_attributes = true, bool shading_normal = true,
     bool coarse = false, float3 coarse_normal = float3(0.0f)
 ) {
-    const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
     // Motion-blur steps use captured transforms without modifying DrawData.
     const uint model_slot = scene.View.ModelSlotOverride != InvalidSlot ? scene.View.ModelSlotOverride : draw.ModelSlot;
     const Transform world = scene.Models(model_slot)[draw.FirstInstance];
@@ -83,9 +79,7 @@ inline MeshVaryings TransformVertex(
     }
     const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, local_pos));
 
-    bool has_attributes = draw.CornerTangent.ValuesSlot != InvalidSlot || draw.CornerColor.ValuesSlot != InvalidSlot;
-    for (uint set = 0u; set < 4u; ++set) has_attributes |= draw.CornerUvs[set].ValuesSlot != InvalidSlot;
-    const uint attribute_handle = !has_attributes ? 0u : is_face_draw ? vertex_index : draw.VertexOffset + idx;
+    const uint attribute_handle = is_face_draw ? vertex_index : idx;
 
     constant ViewportThemeColors &colors = scene.Theme.Colors;
     const bool is_edit_mode = scene.View.InteractionMode == InteractionMode::Edit;
@@ -106,9 +100,8 @@ inline MeshVaryings TransformVertex(
             float4(float3(colors.EdgeSelectedIncidental), 1.0f);
     }
 
-    if (face_attributes && draw.ElementPrimitives.ValuesSlot != InvalidSlot && draw.PrimitiveMaterialOffset != InvalidOffset && (!is_face_draw || face_id != InvalidOffset)) {
-        const uint element = is_face_draw ? face_id : draw.VertexOffset + idx;
-        const uint primitive_index = scene.ElementPrimitive(draw.ElementPrimitives, element);
+    if (face_attributes && draw.ElementPrimitives.Slot != InvalidSlot && draw.PrimitiveMaterialOffset != InvalidOffset && (!is_face_draw || face_id != InvalidOffset)) {
+        const uint primitive_index = scene.ElementPrimitive(draw.ElementPrimitives, is_face_draw ? face_id : idx);
         material_index = scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[draw.PrimitiveMaterialOffset + primitive_index];
     }
     float4 color = base_color;
@@ -124,7 +117,7 @@ inline MeshVaryings TransformVertex(
     }
     float4 world_tangent = float4(0, 0, 0, 1);
     {
-        const float4 vertex_tangent = draw.CornerTangent.ValuesSlot != InvalidSlot ?
+        const float4 vertex_tangent = draw.CornerTangent.Slot != InvalidSlot ?
             scene.CornerTangent(draw.CornerTangent, attribute_handle) :
             float4(0, 0, 0, 1);
         float3 tangent = vertex_tangent.xyz;
@@ -144,12 +137,12 @@ inline MeshVaryings TransformVertex(
         .WorldPosition = world_pos,
         .Color = color,
         .FaceOverlayFlags = face_overlay_flags,
-        .TexCoord0 = draw.CornerUvs[0].ValuesSlot != InvalidSlot ? scene.CornerUv(draw.CornerUvs[0], attribute_handle) : float2(0),
-        .TexCoord1 = draw.CornerUvs[1].ValuesSlot != InvalidSlot ? scene.CornerUv(draw.CornerUvs[1], attribute_handle) : float2(0),
-        .TexCoord2 = draw.CornerUvs[2].ValuesSlot != InvalidSlot ? scene.CornerUv(draw.CornerUvs[2], attribute_handle) : float2(0),
-        .TexCoord3 = draw.CornerUvs[3].ValuesSlot != InvalidSlot ? scene.CornerUv(draw.CornerUvs[3], attribute_handle) : float2(0),
+        .TexCoord0 = draw.CornerUvs[0].Slot != InvalidSlot ? scene.CornerUv(draw.CornerUvs[0], attribute_handle) : float2(0),
+        .TexCoord1 = draw.CornerUvs[1].Slot != InvalidSlot ? scene.CornerUv(draw.CornerUvs[1], attribute_handle) : float2(0),
+        .TexCoord2 = draw.CornerUvs[2].Slot != InvalidSlot ? scene.CornerUv(draw.CornerUvs[2], attribute_handle) : float2(0),
+        .TexCoord3 = draw.CornerUvs[3].Slot != InvalidSlot ? scene.CornerUv(draw.CornerUvs[3], attribute_handle) : float2(0),
         .MaterialIndex = material_index,
-        .VertexColor = draw.CornerColor.ValuesSlot != InvalidSlot ?
+        .VertexColor = draw.CornerColor.Slot != InvalidSlot ?
             scene.CornerColor(draw.CornerColor, attribute_handle) :
             float4(1.0f),
         .WorldTangent = world_tangent,

@@ -31,12 +31,14 @@ struct MeshletBuildJob {
     uint32_t TileCountsOffset DEFAULT();
     uint32_t RecordScratchOffset DEFAULT();
     uint32_t VertexScratchOffset DEFAULT();
-    uint32_t TriangleOffset DEFAULT();
-    uint32_t LocalTriangleOffset DEFAULT();
-    uint32_t VertexOffset DEFAULT();
-    uint32_t MeshletOffset DEFAULT();
-    uint32_t PrimitiveOffset DEFAULT();
-    uint32_t NodeOffset DEFAULT();
+    // The pool positions the job's payload runs fill, and their offsets in the payload ranges its records name them by.
+    uint32_t TriangleAddress DEFAULT(), TriangleOffset DEFAULT();
+    uint32_t LocalTriangleAddress DEFAULT(), LocalTriangleOffset DEFAULT();
+    uint32_t VertexAddress DEFAULT(), VertexOffset DEFAULT();
+    // The arena addresses and record-relative handles of the job's first cluster, primitive and traversal node.
+    uint32_t MeshletAddress DEFAULT(), MeshletHandle DEFAULT();
+    uint32_t PrimitiveAddress DEFAULT(), PrimitiveHandle DEFAULT();
+    uint32_t NodeAddress DEFAULT(), NodeHandle DEFAULT();
     uint32_t PrimitiveRoutes DEFAULT(); // The destination's first route, indexed by source material * 3 + topology.
     // Canonical membership to gather; absent when Elements is supplied by a local edit.
     SlotOffset ElementBlockIds DEFAULT();
@@ -44,4 +46,4 @@ struct MeshletBuildJob {
     ElementWork Elements DEFAULT(), Materials DEFAULT();
     uint32_t ExistingPrimitive DEFAULT(InvalidOffset), ExistingGroup DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(MeshletBuildJob) == 484);
+static_assert(sizeof(MeshletBuildJob) == 572);

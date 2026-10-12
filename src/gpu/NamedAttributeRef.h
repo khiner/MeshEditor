@@ -1,7 +1,7 @@
 #pragma once
 #include "gpu/Types.h"
 
-// Value types of named attributes, each stored in its own payload arena.
+// Value types of named attributes, each stored in its own value arena.
 enum class AttributeType : uint32_t {
     Float,
     Vec2,
@@ -31,22 +31,19 @@ enum class AttributeDomain : uint32_t {
     Corner,
 };
 
-// A named attribute's payload blocks, found through its run of the shared table arena.
-// Table word TableOffset + b - FirstBlock holds element block b's payload block plus one, and zero when the block has none.
+// A named attribute's values at its record's handles in its domain: its value arena's slot and the index of handle 0, a bit index for a bool.
 struct NamedAttributeRef {
-    uint32_t TablesSlot DEFAULT(InvalidSlot);
     uint32_t ValuesSlot DEFAULT(InvalidSlot);
-    uint32_t TableOffset DEFAULT();
-    uint32_t FirstBlock DEFAULT();
+    uint32_t Offset DEFAULT();
 };
-static_assert(sizeof(NamedAttributeRef) == 16);
+static_assert(sizeof(NamedAttributeRef) == 8);
 
 // One named attribute a topology job carries from its source elements to its output elements, in its domain's run of the job's records.
-// Each source's attribute reads that source's elements, and a source without the attribute has no values slot.
+// A source without the attribute has no values slot.
 // Default holds the value bits of output elements without a source value.
 struct TopologyAttribute {
     AttributeType Type DEFAULT();
-    NamedAttributeRef Source DEFAULT(), SecondSource DEFAULT(), Destination DEFAULT();
+    NamedAttributeRef Source DEFAULT(), Destination DEFAULT();
     GpuArray<uint32_t, 4> Default DEFAULT();
 };
-static_assert(sizeof(TopologyAttribute) == 68);
+static_assert(sizeof(TopologyAttribute) == 36);

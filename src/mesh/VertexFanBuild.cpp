@@ -51,15 +51,15 @@ void EncodeVertexFans(state::Scene &r, mtl::ComputeChain &chain, std::span<const
     batch->Begin();
     for (const auto &source : sources) {
         if (!source.VertexCount) continue;
-        VertexFanBuildJob job{.Vertices = source.Vertices, .Halfedges = source.Halfedges, .Corners = source.Corners, .Roots = source.Connectivity.VertexCorners, .ItemsSlot = fans.Items.Buffer.Slot, .FaceOwnersSlot = source.Connectivity.HalfedgeFaces.Slot, .FaceCount = source.FaceCount, .VertexCount = source.VertexCount, .HalfedgeCount = source.HalfedgeCount, .Fresh = fresh ? 1u : 0u};
+        VertexFanBuildJob job{.Vertices = source.Vertices, .Halfedges = source.Halfedges, .Tables = source.Connectivity.Tables, .CornersSlot = source.CornersSlot, .RootsSlot = source.Connectivity.VertexCornersSlot, .ItemsSlot = fans.Items.Buffer.Slot, .FaceOwnersSlot = source.Connectivity.HalfedgeFacesSlot, .FaceCount = source.FaceCount, .VertexCount = source.VertexCount, .HalfedgeCount = source.HalfedgeCount, .Fresh = fresh ? 1u : 0u};
         if (job.Vertices.Storage.Slot == InvalidSlot) job.Vertices.Count = job.VertexCount;
         if (job.Halfedges.Storage.Slot == InvalidSlot) job.Halfedges.Count = job.HalfedgeCount;
         // Truncating InvalidOffset to this many radix bits still leaves it
         // above every valid vertex rank, including power-of-two domains.
         job.VertexKeyPasses = std::max(1u, (std::bit_width(job.VertexCount) + 3u) / 4u);
         const uint64_t h = job.HalfedgeCount, v = job.VertexCount, blocks = (h + 255u) / 256u;
-        if (fresh && (job.Vertices.Storage.Slot != InvalidSlot || job.Halfedges.Storage.Slot != InvalidSlot || job.Roots.Offset % 256u)) {
-            throw std::invalid_argument("Fresh vertex fans require aligned dense vertices and corners.");
+        if (fresh && (job.Vertices.Storage.Slot != InvalidSlot || job.Halfedges.Storage.Slot != InvalidSlot)) {
+            throw std::invalid_argument("Fresh vertex fans require dense vertices and corners.");
         }
         job.Metadata = batch->AllocateScratch(uint32_t(scratch_words(source)));
         job.Keys = job.Metadata + uint32_t((fresh ? 1u : 4u) * v);
@@ -80,7 +80,7 @@ void EncodeVertexFans(state::Scene &r, mtl::ComputeChain &chain, std::span<const
     roots.Add(meshes.Arenas().VertexCorners.Buffer, vertex_blocks, BlockBytes<uvec2>);
     roots.CaptureWrites();
     std::vector<TiledPass> passes{{MeshPass::VertexFanInit, 0u}, {MeshPass::VertexFanKeys, 1u}, {MeshPass::VertexFanTileScan, 0u}, {MeshPass::VertexFanTilePrefix, PerJob}};
-    // Dense runs and finished sparse work both enumerate corners in canonical
+    // Dense runs and finished sparse work both enumerate corners in handle
     // order. A stable vertex-rank sort preserves that order inside each fan.
     const uint32_t key_passes = std::ranges::max(batch->Jobs, {}, &VertexFanBuildJob::VertexKeyPasses).VertexKeyPasses;
     for (uint32_t pass = 0u; pass < key_passes; ++pass) {

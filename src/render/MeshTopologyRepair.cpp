@@ -79,7 +79,7 @@ std::vector<FragmentBuild> BuildFragments(state::Scene &r, mtl::ComputeChain &ch
         for (uint32_t o = 0u; o < owners.size(); ++o) {
             auto &owner = *owners[o].Owner;
             const auto topology = owners[o].Topology;
-            const auto domain = meshes.WithRenderDomain(owner, topology, [](const auto &arena, ElementSetRef) { return arena.Capacity(); });
+            const auto domain = meshes.WithRenderDomain(owner, topology, [](const auto &arena, ElementSetRef set) { return arena.HandleBound(set); });
             auto &owner_blocks = blocks[o];
             for (const auto &partition : owners[o].Partitions) {
                 const auto first = owner_blocks.size();
@@ -101,7 +101,7 @@ std::vector<FragmentBuild> BuildFragments(state::Scene &r, mtl::ComputeChain &ch
         for (uint32_t o = 0u, first = 0u; o < owners.size(); ++o) {
             auto &owner = *owners[o].Owner;
             const auto owner_partitions = owners[o].Partitions;
-            RetireMeshletOwners(r, owner, owners[o].Retired);
+            RetireMeshletOwners(r, owner, owners[o].Retired, {});
             std::vector<MeshletPatchAdoptJob> jobs;
             jobs.reserve(owner_partitions.size());
             auto &result = results[o];
@@ -109,7 +109,7 @@ std::vector<FragmentBuild> BuildFragments(state::Scene &r, mtl::ComputeChain &ch
             for (uint32_t i = 0u; i < owner_partitions.size(); ++i) {
                 const auto &partition = owner_partitions[i];
                 const auto range = fragments[first + i].Meshlets;
-                jobs.push_back({.First = range.Offset, .Count = range.Count, .Group = partition.Group, .Primitive = partition.Primitive, .Leaf = partition.Leaf});
+                jobs.push_back({.First = range.Offset, .Count = range.Count, .ElementCount = uint32_t(partition.Elements.size()), .Group = partition.Group, .Primitive = partition.Primitive, .Leaf = partition.Leaf});
                 result.Runs.push_back({range.Offset, range.Count, partition.Primitive, true});
             }
             result.Added = AdoptMeshletFragments(r, chain, owner, owners[o].Topology, std::span{fragments}.subspan(first, owner_partitions.size()), jobs, blocks[o]);
@@ -124,7 +124,7 @@ std::vector<FragmentBuild> BuildFragments(state::Scene &r, mtl::ComputeChain &ch
     }
 }
 
-// Removes the sorted elements from the point or line clusters that draw them, on the host, and returns the refit of the owner's nodes above them.
+// Removes the elements at the sorted handles from the point or line clusters that draw them, on the host, and returns the refit of the owner's nodes above them.
 LodNodeRefit RepairElementMeshletDeletion(state::Scene &r, mtl::ComputeChain &chain, MeshStore::Record &owner, uint32_t topology, std::span<const uint32_t> elements) {
     const profile::CpuScope scope{"ElementMeshletDeletion"};
     auto &buffers = r.Context.get<GpuBuffers>();
@@ -132,61 +132,69 @@ LodNodeRefit RepairElementMeshletDeletion(state::Scene &r, mtl::ComputeChain &ch
     auto &render = meshes.Render();
     const auto endpoints = topology == 1u ? 2u : 1u;
     if ((topology != 1u && topology != 2u) || !owner.ElementMeshletBlockCounts[topology]) throw std::invalid_argument("Element deletion requires canonical point or line meshlet ownership.");
-    const auto origin = owner.ElementMeshletOrigins[topology];
-    const auto owners = render.ElementMeshlets[topology].View();
+    const auto entries = meshes.WithRenderDomain(owner, topology, [](const auto &arena, ElementSetRef set) { return arena.Entries(set); });
+    const auto owners = render.ElementMeshlets[topology].View(owner.ElementMeshlets[topology]);
     std::vector<uint32_t> clusters;
     for (const auto element : elements) {
         const auto cluster = owners.GetOr(element, InvalidOffset);
-        if (cluster >= render.Meshlets.Buffer.Count<MeshletRecord>() || !render.ActiveMeshlets.Contains(owner.MeshletRoot, cluster)) {
-            throw std::invalid_argument("Deleted elements have no owned meshlets.");
-        }
+        if (!render.Meshlets.Contains(owner.MeshletData, ElementHandle{cluster})) throw std::invalid_argument("Deleted elements have no owned meshlets.");
         clusters.push_back(cluster);
     }
     SortUnique(clusters);
+    const auto address = [&](uint32_t cluster) { return render.Meshlets.Address(owner.MeshletData, ElementHandle{cluster}).Value(); };
     for (const auto cluster : clusters) {
-        const auto &record = render.Meshlets.Get({cluster, 1u})[0];
+        const auto &record = render.Meshlets.Get({address(cluster), 1u})[0];
         if (record.Topology != topology || record.RefinedGroup != InvalidOffset || !record.TriangleCount || record.TriangleCount > 16u ||
-            record.VertexCount != record.TriangleCount * endpoints || !render.ActiveMeshlets.Contains(owner.PrimitiveRoot, record.Primitive))
+            record.VertexCount != record.TriangleCount * endpoints || !render.Primitives.Contains(owner.PrimitiveData, ElementHandle{record.Primitive}))
             throw std::invalid_argument("Element deletion touches a foreign meshlet or primitive.");
     }
-    RetireMeshletOwners(r, owner, clusters);
-    std::vector<uint32_t> kept, empty, kept_blocks;
+    std::vector<uint32_t> addresses;
+    for (const auto cluster : clusters) addresses.push_back(address(cluster));
+    std::ranges::sort(addresses);
+    RetireMeshletOwners(r, owner, clusters, elements);
+    std::vector<uint32_t> kept, kept_addresses, empty, kept_blocks;
+    std::vector<Range> id_tails, corner_tails;
     for (const auto cluster : clusters) {
-        auto record = render.Meshlets.Get({cluster, 1u})[0];
-        const auto ids = render.MeshletTriangleIds.GetMutable({record.TriangleOffset, record.TriangleCount});
-        const auto references = render.MeshletVertexCorners.GetMutable({record.VertexOffset, record.VertexCount});
+        auto record = render.Meshlets.Get({address(cluster), 1u})[0];
+        const auto ids = render.MeshletTriangleIds.GetMutable({owner.MeshletTriangles.Values.Offset + record.TriangleOffset, record.TriangleCount});
+        const auto references = render.MeshletVertexCorners.GetMutable({owner.MeshletVertices.Values.Offset + record.VertexOffset, record.VertexCount});
         uint32_t count = 0u;
         for (uint32_t n = 0u; n < record.TriangleCount; ++n) {
-            const auto id = ids[n];
-            if (std::ranges::binary_search(elements, origin + id)) continue;
+            // An id whose block left the record's table names an erased element.
+            const auto id = ids[n], local = id / MeshElementBlockSize;
+            if (local >= entries.size() || entries[local] == InvalidOffset || std::ranges::binary_search(elements, id)) continue;
             ids[count] = id;
             for (uint32_t c = 0u; c < endpoints; ++c) references[count * endpoints + c] = references[n * endpoints + c];
-            kept_blocks.push_back((origin + id) / MeshElementBlockSize);
+            kept_blocks.push_back(local);
             ++count;
         }
-        render.Primitives.GetMutable({record.Primitive, 1u})[0].TriangleCount -= record.TriangleCount - count;
+        render.Primitives.GetMutable({render.Primitives.Address(owner.PrimitiveData, ElementHandle{record.Primitive}).Value(), 1u})[0].TriangleCount -= record.TriangleCount - count;
         // Storage retirement releases an emptied cluster's whole payload.
         if (!count) {
             empty.push_back(cluster);
             continue;
         }
-        render.MeshletTriangleIds.Release({record.TriangleOffset + count, record.TriangleCount - count});
-        render.MeshletVertexCorners.Release({record.VertexOffset + count * endpoints, (record.TriangleCount - count) * endpoints});
+        id_tails.push_back({record.TriangleOffset + count, record.TriangleCount - count});
+        corner_tails.push_back({record.VertexOffset + count * endpoints, (record.TriangleCount - count) * endpoints});
         record.TriangleCount = count;
         record.VertexCount = count * endpoints;
-        render.Meshlets.GetMutable({cluster, 1u})[0] = record;
+        render.Meshlets.GetMutable({address(cluster), 1u})[0] = record;
         kept.push_back(cluster);
+        kept_addresses.push_back(address(cluster));
     }
+    meshes.ReleasePayloadRuns(owner, RenderPayload::TriangleIds, std::move(id_tails));
+    meshes.ReleasePayloadRuns(owner, RenderPayload::VertexCorners, std::move(corner_tails));
     SortUnique(kept_blocks);
+    std::ranges::sort(kept_addresses);
     PublishMeshletOwners(r, chain, owner, topology, HandleRuns(kept), kept_blocks);
     if (!kept.empty()) {
-        const MeshletBoundsRefitJob job{&owner, &chain.Scratch, SeedElementWorkHandles(chain.Scratch, render.Meshlets.Buffer.Count<MeshletRecord>(), kept)};
+        const MeshletBoundsRefitJob job{&owner, &chain.Scratch, SeedElementWorkHandles(chain.Scratch, render.Meshlets.Capacity(), kept_addresses)};
         RefitCanonicalMeshletBounds(r, chain, std::span{&job, 1u});
     }
     auto refit = EditLodNodes(r, chain, owner, empty, {}, kept);
     RetireMeshletStorage(r, owner, empty);
     if (empty.empty()) ++owner.MeshletRevision;
-    UpdatePosedMeshletBlocks(r, owner, clusters);
+    UpdatePosedMeshletBlocks(r, owner, addresses);
     buffers.PreludeStale = true;
     return refit;
 }
@@ -206,22 +214,20 @@ void RepairElementMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<
         if (topology != 1u && topology != 2u) throw std::invalid_argument("Element repair requires line or point topology.");
         const bool lines = topology == 1u;
         const auto &record = meshes.Get(store_id);
-        const auto owners = render.ElementMeshlets[topology].View();
-        const auto blocks = (lines ? a.EdgeHalfedges.Blocks : a.Vertices.Blocks).Buffer.GetSpan<MeshElementBlock>();
-        const auto set = lines ? record.EdgeData.Index : record.Vertices.Index;
-        const auto capacity = lines ? a.EdgeHalfedges.Capacity() : a.Vertices.Capacity();
+        const auto owners = render.ElementMeshlets[topology].View(record.ElementMeshlets[topology]);
+        const auto domain = lines ? MeshStore::ElementDomain::Edge : MeshStore::ElementDomain::Vertex;
+        const auto halfedge = [&](uint32_t h) { return meshes.HandleAddress(store_id, MeshStore::ElementDomain::Halfedge, ElementHandle{h}).Value(); };
         const auto records = render.Meshlets.Buffer.GetSpan<MeshletRecord>();
         // Only loose edges and isolated vertices draw through these owner maps.
         // A live element can stop drawing here when it gains face or edge incidence.
         std::vector<uint32_t> added, removed;
         for (const auto element : repairs[i].Elements) {
-            if (element >= capacity || element / MeshElementBlockSize >= blocks.size()) throw std::invalid_argument("Element repair names a handle outside its domain.");
-            const auto &block = blocks[element / MeshElementBlockSize];
-            const bool live = block.Owner == set && (block.Live[(element % MeshElementBlockSize) / 32u] & (1u << (element % 32u)));
+            const bool live = meshes.IsLiveElement(store_id, lines ? Element::Edge : Element::Vertex, ElementHandle{element});
             const auto cluster = owners.GetOr(element, InvalidOffset);
-            if (cluster != InvalidOffset && (cluster >= records.size() || !render.ActiveMeshlets.Contains(owner.MeshletRoot, cluster) || records[cluster].Topology != topology))
+            if (cluster != InvalidOffset && (!render.Meshlets.Contains(owner.MeshletData, ElementHandle{cluster}) || records[render.Meshlets.Address(owner.MeshletData, ElementHandle{cluster}).Value()].Topology != topology))
                 throw std::invalid_argument("Element owner names a foreign meshlet.");
-            const bool draws = live && (lines ? a.HalfedgeFaces.Get({a.EdgeHalfedges.Get({element, 1u})[0], 1u})[0] == InvalidOffset : a.VertexCorners.Get({element, 1u})[0].y == 0u);
+            const auto address = live ? meshes.HandleAddress(store_id, domain, ElementHandle{element}).Value() : InvalidOffset;
+            const bool draws = live && (lines ? a.HalfedgeFaces.Get({halfedge(a.EdgeHalfedges.Get({address, 1u})[0]), 1u})[0] == InvalidOffset : a.VertexCorners.Get({address, 1u})[0].y == 0u);
             if (draws && cluster == InvalidOffset) added.push_back(element);
             else if (!draws && cluster != InvalidOffset) removed.push_back(element);
         }
@@ -229,17 +235,19 @@ void RepairElementMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<
         if (!removed.empty()) refits.push_back(RepairElementMeshletDeletion(r, chain, owner, topology, removed));
         if (added.empty()) continue;
         // A line draws with the primitive of its first endpoint, where its first halfedge starts.
+        const auto primitives = a.VertexPrimitives.View(record.VertexPrimitives);
         const auto material_of = [&](uint32_t element) {
-            const auto vertex = lines ? a.FaceCorners.Get({a.OppositeHalfedges.Get({a.EdgeHalfedges.Get({element, 1u})[0], 1u})[0], 1u})[0] : element;
-            return record.VertexPrimitivesReady ? a.VertexPrimitives.Get(vertex) : 0u;
+            const auto vertex = lines ? a.FaceCorners.Get({halfedge(a.OppositeHalfedges.Get({halfedge(a.EdgeHalfedges.Get({meshes.HandleAddress(store_id, domain, ElementHandle{element}).Value(), 1u})[0]), 1u})[0]), 1u})[0] : element;
+            return primitives.GetOr(vertex);
         };
         std::map<uint32_t, std::vector<uint32_t>> by_material;
         for (const auto element : added) by_material[material_of(element)].push_back(element);
         auto &owner_partitions = partitions[i];
         owner_partitions.reserve(by_material.size());
         for (auto &[material, members] : by_material) {
+            std::ranges::sort(members);
             const auto primitive = EnsureMeshletPrimitive(r, owner, material, topology);
-            owner_partitions.push_back({.Primitive = primitive, .Leaf = render.Primitives.Get({primitive, 1u})[0].LodFinestNode, .Elements = std::move(members)});
+            owner_partitions.push_back({.Primitive = primitive, .Leaf = render.Primitives.Get({render.Primitives.Address(owner.PrimitiveData, ElementHandle{primitive}).Value(), 1u})[0].LodFinestNode, .Elements = std::move(members)});
         }
         additions.push_back({&owner, owner_partitions, {}, topology});
     }
@@ -295,7 +303,7 @@ void RepairTriangleRender(state::Scene &r, mtl::ComputeChain &chain, std::span<c
     chain.Submit();
     for (uint32_t i = 0u; i < patches.size(); ++i) {
         auto &owner = *owners[i].Owner;
-        ReplaceGroupClusters(meshes.Render(), patches[i].Clusters, built[i].Added);
+        ReplaceGroupClusters(meshes, owner, patches[i].Clusters, built[i].Added);
         ReplaceMeshletSpatial(r, owner, patches[i].Clusters, built[i].Added);
         RetireMeshletStorage(r, owner, patches[i].Clusters);
     }
@@ -337,7 +345,7 @@ void RepairFaceRender(state::Scene &r, mtl::ComputeChain &chain, std::span<const
     for (const auto &[entity, changed] : changes) {
         if (!changed.Count) continue;
         const auto &owner = RecordOf(r, entity);
-        if (owner.ExtrasFaces.Count || owner.PrimitiveRoot == InvalidOffset) throw std::invalid_argument("Local face repair requires published render ownership.");
+        if (owner.ExtrasFaces.Count || !owner.PrimitiveData) throw std::invalid_argument("Local face repair requires published render ownership.");
         // The descriptor's canonical values reflect the changed face data.
         RefreshMeshBinding(r, owner.StoreId);
         repairs.push_back({entity, {.Changed = changed.Triangles}});

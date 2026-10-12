@@ -8,10 +8,10 @@
 #include <stdexcept>
 #include <utility>
 
-// Borrow a canonical domain without packing its payload for CPU consumers.
-// Iteration follows live bits.
+// Borrow a domain's live values without packing them for CPU consumers, in ascending handle order.
 // A packed soup or a dense set resolves an ordinal by offset.
-// A sparse set resolves an ordinal through its ascending block list and inclusive live-count prefix.
+// A sparse set resolves an ordinal through its blocks in local order and the inclusive live-count prefix over them.
+// Values hold the arena, and an element's address indexes them.
 template<typename T> struct ElementView {
     std::span<const T> Values;
     std::span<const MeshElementBlock> Blocks;
@@ -24,9 +24,9 @@ template<typename T> struct ElementView {
         : Values(values), Blocks(blocks), Order(order), Prefix(prefix), Count(count) {}
     uint32_t size() const { return Count; }
     bool empty() const { return !Count; }
-    uint32_t Handle(uint32_t ordinal) const {
+    // The block list position and slot of a sparse ordinal.
+    std::pair<uint32_t, uint32_t> Locate(uint32_t ordinal) const {
         assert(ordinal < Count);
-        if (Order.empty()) return Base + ordinal;
         const auto at = uint32_t(std::ranges::upper_bound(Prefix, ordinal) - Prefix.begin());
         if (at >= Order.size()) throw std::logic_error("Live element count disagrees with membership.");
         ordinal -= at ? Prefix[at - 1u] : 0u;
@@ -39,11 +39,21 @@ template<typename T> struct ElementView {
                 continue;
             }
             while (ordinal--) bits &= bits - 1u;
-            return Order[at] * MeshElementBlockSize + w * 32u + uint32_t(std::countr_zero(bits));
+            return {at, w * 32u + uint32_t(std::countr_zero(bits))};
         }
         throw std::logic_error("Live element count disagrees with membership.");
     }
-    const T &operator[](uint32_t ordinal) const { return Values[Handle(ordinal)]; }
+    // The handle of the element at an ordinal.
+    uint32_t Handle(uint32_t ordinal) const {
+        if (Order.empty()) return ordinal;
+        const auto [at, slot] = Locate(ordinal);
+        return Blocks[Order[at]].Local * MeshElementBlockSize + slot;
+    }
+    const T &operator[](uint32_t ordinal) const {
+        if (Order.empty()) return Values[Base + ordinal];
+        const auto [at, slot] = Locate(ordinal);
+        return Values[Order[at] * MeshElementBlockSize + slot];
+    }
     struct Iterator {
         const ElementView *View;
         uint32_t At{}, Word{}, Bits{}, Ordinal{};
@@ -59,12 +69,12 @@ template<typename T> struct ElementView {
                 if (At < View->Order.size()) Bits = View->Blocks[View->Order[At]].Live[Word++];
             }
         }
-        uint32_t Handle() const {
+        uint32_t Address() const {
             return View->Order.empty() ? View->Base + Ordinal :
                                          View->Order[At] * MeshElementBlockSize + (Word - 1u) * 32u + uint32_t(std::countr_zero(Bits));
         }
         const T &operator*() const {
-            return View->Values[Handle()];
+            return View->Values[Address()];
         }
         Iterator &operator++() {
             ++Ordinal;
@@ -87,4 +97,11 @@ template<typename T> struct ElementView {
         return i;
     }
     Iterator end() const { return {this, 0u, 0u, 0u, Count}; }
+};
+
+// An element domain's arena values read at one record's handles through its table entries.
+template<typename T> struct HandleValues {
+    std::span<const T> Values;
+    std::span<const uint32_t> Table;
+    const T &operator[](uint32_t handle) const { return Values[Resolve<MeshElementBlockSize>(Table, ElementHandle{handle}).Value()]; }
 };

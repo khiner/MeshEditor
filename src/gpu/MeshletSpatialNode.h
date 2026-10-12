@@ -1,8 +1,8 @@
 #pragma once
 #include "gpu/AABB.h"
 
-// A finest meshlet owns the node at its canonical meshlet handle. Subtree
-// bounds and parent links support GPU queries and local deterministic edits.
+// A finest meshlet owns the node at its arena address, and the node links name meshlet handles.
+// Subtree bounds and parent links support GPU queries and local deterministic edits.
 struct MeshletSpatialNode {
     AABB Box DEFAULT();
     uint32_t Parent DEFAULT(InvalidOffset);

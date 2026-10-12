@@ -122,6 +122,10 @@ Bounds MergeSpanBounds(std::span<const Bounds> members) {
     return result;
 }
 
+// The index of a source vertex handle into the mesh's per-vertex values.
+uint32_t SourceVertexIndex(const ClusterLodMesh &mesh, uint32_t vertex) { return mesh.VertexTable.empty() ? vertex : Resolve<MeshElementBlockSize>(mesh.VertexTable, ElementHandle{vertex}).Value(); }
+const float *SourcePosition(const ClusterLodMesh &mesh, uint32_t vertex) { return mesh.Positions + (mesh.PositionStride / sizeof(float)) * SourceVertexIndex(mesh, vertex); }
+
 // The whole-primitive render-vertex weld, which is the domain every simplification runs in.
 struct PrimitiveWeld {
     std::vector<uint32_t> CornerVertices; // weld vertex per primitive corner
@@ -163,7 +167,7 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
         const uint32_t render_vertex = uint32_t(weld.Representative.size());
         weld.CornerVertices[corner] = render_vertex;
         weld.Representative.push_back(corner);
-        const float *position = mesh.Positions + (mesh.PositionStride / sizeof(float)) * (source_vertex - mesh.VertexFirst);
+        const float *position = SourcePosition(mesh, source_vertex);
         weld.Positions.push_back({position[0], position[1], position[2]});
         return render_vertex;
     };
@@ -249,7 +253,7 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
                     const uint32_t source = weld.CornerVertices[corner];
                     if (weld.SourceVertices[source - weld.VertexFirst] != corner) continue;
                     weld.Representative[render_vertex] = corner;
-                    const float *position = mesh.Positions + (mesh.PositionStride / sizeof(float)) * (source - mesh.VertexFirst);
+                    const float *position = SourcePosition(mesh, source);
                     weld.Positions[render_vertex] = {position[0], position[1], position[2]};
                     ++render_vertex;
                 }
@@ -322,7 +326,7 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
         float *attribute = &weld.Attributes[size_t(v) * weld.AttributeCount];
         // Flat-face curvature uses the shared vertex normal at geometric error scale.
         const auto normal = key.FlatFaceTriangle(weld.Representative[v] / 3u) ?
-            mesh.Normals.VertexNormals[mesh.CornerVertices[first_index + weld.Representative[v]]] / ShadingAttributeScale :
+            mesh.Normals.VertexNormals[SourceVertexIndex(mesh, mesh.CornerVertices[first_index + weld.Representative[v]])] / ShadingAttributeScale :
             mesh.Normals[handle];
         *attribute++ = normal.x;
         *attribute++ = normal.y;
@@ -979,15 +983,16 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
             cluster.LocalTriangles.resize(size_t(source.TriangleCount) * 3u);
             cluster.PhysicalBoundaries.resize(cluster.LocalTriangles.size());
             for (uint32_t c = 0; c < source.TriangleCount * 3u; ++c) {
-                const uint8_t local = mesh.SourceLocalTriangles[source.FirstLocalTriangle + c] & uint8_t(MeshletGeometryEncoding::LocalIndexMask);
-                if (local >= source.VertexCount) throw std::runtime_error(std::format("LOD input has invalid local vertex: primitive {}, cluster {}, corner {}, byte {}, local {}, vertex count {}, first vertex {}, first triangle byte {}, triangle count {}.", primitive, i, c, uint32_t(mesh.SourceLocalTriangles[source.FirstLocalTriangle + c]), uint32_t(local), source.VertexCount, source.FirstVertex, source.FirstLocalTriangle, source.TriangleCount));
+                const auto &triangle = mesh.SourceLocalTriangles[source.FirstLocalTriangle + c / 3u];
+                const uint8_t local = triangle[c % 3u] & uint8_t(MeshletGeometryEncoding::LocalIndexMask);
+                if (local >= source.VertexCount) throw std::runtime_error(std::format("LOD input has invalid local vertex: primitive {}, cluster {}, corner {}, byte {}, local {}, vertex count {}, first vertex {}, first local triangle {}, triangle count {}.", primitive, i, c, uint32_t(triangle[c % 3u]), uint32_t(local), source.VertexCount, source.FirstVertex, source.FirstLocalTriangle, source.TriangleCount));
                 cluster.LocalTriangles[c] = local;
-                cluster.PhysicalBoundaries[c] = (mesh.SourceLocalTriangles[source.FirstLocalTriangle + c] & uint8_t(MeshletGeometryEncoding::PhysicalBoundaryBit)) != 0u;
-                flat_vertices[local] = (mesh.SourceLocalTriangles[source.FirstLocalTriangle + c / 3u * 3u] & uint8_t(MeshletGeometryEncoding::FlatTriangleBit)) != 0u;
+                cluster.PhysicalBoundaries[c] = (triangle[c % 3u] & uint8_t(MeshletGeometryEncoding::PhysicalBoundaryBit)) != 0u;
+                flat_vertices[local] = (triangle[0] & uint8_t(MeshletGeometryEncoding::FlatTriangleBit)) != 0u;
             }
             for (uint32_t v = 0; v < source.VertexCount; ++v) {
                 const uint32_t corner = cluster.Corners[v];
-                const uint32_t vertex = mesh.CornerVertices.Vertices[corner];
+                const uint32_t vertex = mesh.CornerVertices.Vertices[key.Address(corner)];
                 if (!weld.SourceVertices.empty()) {
                     cluster.Vertices[v] = weld.SourceVertices[vertex - weld.VertexFirst];
                 } else {
@@ -1067,7 +1072,7 @@ ClusterLodBuild RebuildClusterLod(const ClusterLodMesh &mesh, std::span<const ui
                     cluster.Corners.push_back(weld.CanonicalCorner(corner));
                 }
                 cluster.LocalTriangles[c] = slots[slot];
-                cluster.PhysicalBoundaries[c] = (mesh.SourceLocalTriangles[source.FirstLocalTriangle + c] & uint8_t(MeshletGeometryEncoding::PhysicalBoundaryBit)) != 0u;
+                cluster.PhysicalBoundaries[c] = (mesh.SourceLocalTriangles[source.FirstLocalTriangle + c / 3u][c % 3u] & uint8_t(MeshletGeometryEncoding::PhysicalBoundaryBit)) != 0u;
             }
             cluster.Sphere = {.Center = source.Center, .Radius = source.Radius, .Error = source.Error};
             // Inputs are existing records, so the loop emits none of them.

@@ -103,17 +103,13 @@ inline void FinishWork(device const BindlessSet &bindless, ElementWork work, uin
     if (tid == 0u) { data[2] = data[0]; data[3] = data[4] = data[6] = data[7] = 1u; }
 }
 
-// Source work contains indices and membership only. Polygon traversal keeps
-// canonical halfedges so a loop can cross independently enumerated work blocks.
+// Source work contains handles and membership only. Polygon traversal keeps
+// halfedge handles so a loop can cross independently enumerated work blocks.
 struct ElementWorkDomain {
     device const BindlessSet &B;
     ElementWork Work;
-    uint Origin;
-    uint Handle(uint index) const {
-        const uint local = WorkGroupElement(B, Work, index);
-        return local == InvalidOffset ? local : Origin + local;
-    }
-    uint Index(uint handle) const { return handle < Origin || handle == InvalidOffset ? InvalidOffset : WorkRank(B, Work, handle - Origin); }
+    uint Handle(uint index) const { return WorkGroupElement(B, Work, index); }
+    uint Index(uint handle) const { return handle == InvalidOffset ? InvalidOffset : WorkRank(B, Work, handle); }
 };
 
 #endif

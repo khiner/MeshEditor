@@ -198,7 +198,7 @@ struct Planner {
         std::set<uint32_t> faces;
         std::ranges::for_each(selection.Vertices, [&](uint32_t handle) {
             Vertices[AddVertex(handle)].Selected = true;
-            const auto fan = connectivity.VertexCorners[handle];
+            const auto fan = connectivity.Incoming(he::VH{handle});
             for (uint32_t i = 0u; i < fan.y; ++i)
                 if (const auto face = connectivity.FanItems[fan.x + i].y; face != InvalidOffset) faces.insert(face);
         });
@@ -230,17 +230,17 @@ struct Planner {
         for (const auto &[edge, sides] : edges) {
             const auto [v, w] = edge;
             bool locked = sides.size() > 2u;
-            for (const auto side : sides) locked |= a.EdgeSharpness.Get({*M.GetEdge(connectivity.Next(he::HH{side.Corner})), 1u})[0] != 0u;
+            for (const auto side : sides) locked |= a.EdgeSharpness.Get({connectivity.EdgeAddress(*M.GetEdge(connectivity.Next(he::HH{side.Corner}))).Value(), 1u})[0] != 0u;
             if (sides.size() == 2u) {
                 const auto &f = Faces[sides[0].Face], &g = Faces[sides[1].Face];
-                locked |= a.FacePrimitives.Get(f.Handle) != a.FacePrimitives.Get(g.Handle);
+                const auto primitives = a.FacePrimitives.View(record.FacePrimitives);
+                locked |= primitives.GetOr(f.Handle) != primitives.GetOr(g.Handle);
                 for (const auto vertex : {v, w}) {
                     const auto corner = [&](Side side) { const he::HH h{side.Corner}; return *M.GetToVertex(h) == Vertices[vertex].Handle ? *h : *connectivity.Next(h); };
                     const auto h = corner(sides[0]), k = corner(sides[1]);
-                    for (uint32_t uv = 0u; uv < 4u; ++uv)
-                        if (record.CornerAttributes & (MeshAttributeBit_TexCoord0 << uv)) locked |= a.CornerUvs[uv].Get(h) != a.CornerUvs[uv].Get(k);
-                    if (record.CornerAttributes & MeshAttributeBit_Color0) locked |= a.CornerColors.Get(h) != a.CornerColors.Get(k);
-                    if (record.CornerAttributes & MeshAttributeBit_Tangent) locked |= a.CornerTangents.Get(h) != a.CornerTangents.Get(k);
+                    const auto differs = [&](const auto &layer, Range range) { return range.Count && layer.Get(range, h) != layer.Get(range, k); };
+                    for (uint32_t uv = 0u; uv < 4u; ++uv) locked |= differs(a.CornerUvs[uv], record.CornerUvs[uv]);
+                    locked |= differs(a.CornerColors, record.CornerColors) || differs(a.CornerTangents, record.CornerTangents);
                 }
             }
             if (sides.size() == 1u) {
@@ -267,7 +267,7 @@ std::optional<MeshTopologyTask> DecimateTask(const MeshStore &store, const Mesh 
     const profile::CpuScope scope{"PlanDecimate"};
     if (!std::ranges::is_sorted(locked_faces) || std::ranges::adjacent_find(locked_faces) != locked_faces.end()) throw std::invalid_argument("Decimate locked faces must be sorted and unique.");
     for (const auto face : locked_faces)
-        if (!store.IsLiveElement(mesh.GetStoreId(), Element::Face, face)) throw std::invalid_argument("Decimate locked face is not owned by its mesh.");
+        if (!store.IsLiveElement(mesh.GetStoreId(), Element::Face, ElementHandle{face})) throw std::invalid_argument("Decimate locked face is not owned by its mesh.");
     if (!std::isfinite(ratio) || ratio >= 1.f || !mesh.FaceCount()) return {};
     Planner plan{mesh, store};
     plan.Gather(selection, locked_faces);

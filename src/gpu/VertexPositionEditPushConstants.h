@@ -60,7 +60,7 @@ struct VertexPositionEditPushConstants {
     uint32_t ChainCount DEFAULT();
     PositionEditOp Operation DEFAULT(PositionEditOp::Copy);
 };
-static_assert(sizeof(VertexPositionEditPushConstants) == 208);
+static_assert(sizeof(VertexPositionEditPushConstants) == 220);
 
 struct EdgeChain {
     uint32_t InputOffset, OutputOffset, Count, Closed;

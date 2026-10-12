@@ -4,19 +4,18 @@
 #include "gpu/ElementWork.h"
 #include "gpu/SlotOffset.h"
 #include "gpu/Types.h"
-// Defines a connectivity rebuild's canonical work and scratch layout.
+// Defines a connectivity rebuild's work and scratch layout.
 // Work ordinals index scratch.
-// Every persistent reference is a canonical handle.
+// Every persistent reference is a record-relative handle.
 // The caller reserves enough edge handles, then publishes the resulting count.
 struct MeshConnectivityJob {
-    SlotOffset Corners DEFAULT();
+    uint32_t CornersSlot DEFAULT(InvalidSlot);
     ConnectivityRef Connectivity DEFAULT();
-    // Sparse work contains canonical handles. An implicit range begins at the
-    // corresponding connectivity offset (or Corners.Offset for halfedges).
+    // Sparse work contains handles, and an implicit range is the first handles of its domain.
     ElementWork Vertices DEFAULT(), Halfedges DEFAULT(), Faces DEFAULT();
-    ElementHandleRange EdgeHandles DEFAULT(); // New-edge ordinal -> canonical handle, from a run or a list.
-    // The old affected edges read source clones when canonical data is
-    // overwritten. Matching face endpoint pairs or explicit wire pairs keep their canonical handles.
+    ElementHandleRange EdgeHandles DEFAULT(); // New-edge ordinal -> handle, from a run or a list.
+    // The old affected edges read source clones when current data is overwritten.
+    // Matching face endpoint pairs or explicit wire pairs keep their handles.
     ConnectivityRef SourceConnectivity DEFAULT();
     uint32_t SourceCornerSlot DEFAULT(InvalidSlot);
     ElementWork SourceEdges DEFAULT();
@@ -46,9 +45,9 @@ struct MeshConnectivityJob {
     uint32_t BitsOffset DEFAULT();
     uint32_t RanksOffset DEFAULT();
     uint32_t RetainedEdgesOffset DEFAULT(InvalidOffset); // Per compact destination representative, an old edge or InvalidOffset.
-    uint32_t RetiredEdgesOffset DEFAULT(); // Dense canonical retirement handles, in source-work order.
+    uint32_t RetiredEdgesOffset DEFAULT(); // Dense retirement handles, in source-work order.
     // Two counts: newly required edges and retired source edges.
     uint32_t StateOffset DEFAULT();
-    ElementWork RetiredEdgeWork DEFAULT(); // Optional canonical retirement set, emitted with the dense scratch list.
+    ElementWork RetiredEdgeWork DEFAULT(); // Optional retirement set, emitted with the dense scratch list.
 };
-static_assert(sizeof(MeshConnectivityJob) == 332, "MeshConnectivityJob size");
+static_assert(sizeof(MeshConnectivityJob) == 352, "MeshConnectivityJob size");

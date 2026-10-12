@@ -179,7 +179,7 @@ std::vector<EdgeSlideDirections> PlanEdgeSlide(const Mesh &mesh, const GeometryS
                     if (side == -1 && (old.Rails[0].Face || old.Rails[1].Face)) {
                         // Walk the face sector around this vertex to the previous selected edge.
                         auto edge = to_current ? c.Next(current_corner) : current_corner;
-                        for (uint32_t n = 0u; n < c.VertexCorners[*nodes[curr.Index].Vertex].y; ++n) {
+                        for (uint32_t n = 0u; n < c.Incoming(nodes[curr.Index].Vertex).y; ++n) {
                             const auto opposite = mesh.GetOppositeHalfedge(edge);
                             if (!opposite || mesh.GetFace(opposite) == face) break;
                             const auto other_face = mesh.GetFace(opposite);

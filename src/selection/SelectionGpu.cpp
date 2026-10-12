@@ -54,12 +54,12 @@ namespace {
 struct SelectionRequest {
     state::Entity MeshEntity;
     EditSelectionOperation Operation;
-    std::span<const uint32_t> List{}; // Source elements relative to the domain's first block, for FillList.
+    std::span<const uint32_t> List{}; // Source element handles, for FillList.
 };
 
 // Writes the source-domain words in place, then derives the other domains and the aggregates on the GPU.
-// `picked` is a canonical handle, and `query` merges the pending box query.
-void ApplySelection(state::Scene &, std::span<const SelectionRequest>, Element, uint32_t picked = InvalidOffset, bool query = false);
+// `picked` is an arena address, and `query` merges the pending box query.
+void ApplySelection(state::Scene &, std::span<const SelectionRequest>, Element, std::optional<ElementAddress> picked = {}, bool query = false);
 std::vector<SelectionRequest> SelectionRequests(std::span<const ElementRange> ranges, EditSelectionOperation operation) {
     std::vector<SelectionRequest> requests;
     requests.reserve(ranges.size());
@@ -283,15 +283,14 @@ std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RenderElementSelectionPass(r, chain, viewport, ranges, element, false, {}, {}, ElementPickTarget{mouse_px, ElementPickRadiusSq(element)});
     });
-    const auto picked = ReadNearestPickedElement(buffers, UINT32_MAX);
+    const auto id = ReadNearestPickedElement(buffers, UINT32_MAX);
+    const auto picked = id ? std::optional{ElementAddress::Stored(*id)} : std::nullopt;
     const auto requests = SelectionRequests(ranges, toggle ? EditSelectionOperation::PickToggle : EditSelectionOperation::PickReplace);
-    ApplySelection(r, requests, element, picked.value_or(InvalidOffset));
+    ApplySelection(r, requests, element, picked);
     if (!picked) return {};
     const auto &meshes = r.Context.get<const MeshStore>();
-    for (const auto &range : ranges) {
-        const auto id = *DrawnStoreId(r, range.MeshEntity);
-        if (meshes.IsLiveElement(id, element, *picked)) return std::pair{range.MeshEntity, *picked - meshes.GetSelectionBitOffset(id, element)};
-    }
+    for (const auto &range : ranges)
+        if (const auto handle = meshes.LiveHandleAt(*DrawnStoreId(r, range.MeshEntity), element, *picked)) return std::pair{range.MeshEntity, handle->Value};
     return {};
 }
 
@@ -406,7 +405,7 @@ void RunBoxSelectElements(state::Scene &r, state::Entity viewport, std::span<con
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RenderElementSelectionPass(r, chain, viewport, ranges, element, true, box_min, box_max, {});
     });
-    ApplySelection(r, SelectionRequests(ranges, operation), element, InvalidOffset, true);
+    ApplySelection(r, SelectionRequests(ranges, operation), element, {}, true);
     if (baseline) baseline->ElementSelectionCaptured = true;
 }
 
@@ -424,9 +423,9 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(state::Scene &r, state::Entit
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RenderSelectionPickPass(r, chain, std::nullopt, false, instance_entity, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex)});
     });
-    // Pick ids are handles relative to the mesh's first vertex, which on a sparse set reach past the vertex count.
+    // Sound point pick ids are the mesh's vertex handles, which on a sparse set reach past the vertex count.
     const auto &meshes = r.Context.get<const MeshStore>();
-    return ReadNearestPickedElement(buffers, meshes.Arenas().Vertices.Capacity() - meshes.GetSelectionBitOffset(mesh.GetStoreId(), Element::Vertex));
+    return ReadNearestPickedElement(buffers, meshes.Arenas().Vertices.HandleBound(meshes.Get(mesh.GetStoreId()).Vertices));
 }
 
 namespace {
@@ -549,7 +548,7 @@ namespace {
 constexpr std::array SelectionElements{Element::Vertex, Element::Edge, Element::Face};
 constexpr std::array SelectionDomains{MeshStore::ElementDomain::Vertex, MeshStore::ElementDomain::Edge, MeshStore::ElementDomain::Face};
 
-void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests, Element element, uint32_t picked, bool query) {
+void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests, Element element, std::optional<ElementAddress> picked, bool query) {
     if (requests.empty() || element == Element::None) return;
     const profile::CpuScope scope{"ApplySelection"};
     auto &meshes = r.Context.get<MeshStore>();
@@ -577,14 +576,14 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
         const auto &request = requests[i];
         const auto id = ids[i];
         const auto operation = request.Operation;
-        const auto origin = meshes.GetSelectionBitOffset(id, element);
         const auto &record = meshes.Get(id);
         const std::array owners{record.Vertices, record.EdgeData, record.FaceData};
         const auto summary = meshes.GetSelectionSummary(id);
         const bool rederive = operation == EditSelectionOperation::Derive || operation == EditSelectionOperation::ClearActive || summary.Mode != element;
         const bool replace = operation == EditSelectionOperation::Clear || operation == EditSelectionOperation::FillList ||
             operation == EditSelectionOperation::PickReplace || operation == EditSelectionOperation::RestoreBaseline;
-        const auto picked_local = picked != InvalidOffset && meshes.IsLiveElement(id, element, picked) ? picked - origin : InvalidOffset;
+        const auto picked_handle = picked ? meshes.LiveHandleAt(id, element, *picked) : std::nullopt;
+        const auto picked_local = picked_handle ? picked_handle->Value : InvalidOffset;
         const auto bits = meshes.GetSelectedElements(id, element).Bits;
         const auto hidden = meshes.GetHiddenElements(id, element).Bits;
         auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = id, .Source = element});
@@ -592,7 +591,12 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
         std::array<std::vector<uint32_t>, 3> selected;
         if (replace || rederive || operation == EditSelectionOperation::CaptureBaseline) {
             for (uint32_t d = 0u; d < 3u; ++d) {
-                meshes.GetSelectedElements(id, SelectionElements[d]).ForEachBlock([&](uint32_t block, uint32_t) { selected[d].push_back(block); });
+                // Block order does not matter here, so the visit takes the index's order.
+                const auto view = meshes.GetSelectedElements(id, SelectionElements[d]);
+                if (view.Count()) view.Tree.Visit(view.Kind, false, [&](uint32_t block) {
+                    selected[d].push_back(block);
+                    return true;
+                });
             }
         }
         if (operation == EditSelectionOperation::CaptureBaseline) {
@@ -606,10 +610,13 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
         if (replace || rederive) update.Blocks = selected;
         // Words gain these bits after replacement clears the old source blocks.
         std::vector<std::pair<uint32_t, uint32_t>> additions;
-        const auto add = [&](uint32_t handle) { additions.emplace_back(handle / 32u, 1u << (handle % 32u)); };
-        for (const auto local : request.List)
-            if (meshes.IsLiveElement(id, element, origin + local)) add(origin + local);
-        if (operation == EditSelectionOperation::PickReplace && picked_local != InvalidOffset) add(picked);
+        const auto add = [&](ElementAddress address) { additions.emplace_back(address.Value() / 32u, 1u << (address.Value() % 32u)); };
+        WithDomain(meshes.Arenas(), SelectionDomains[source], [&](const auto &arena) {
+            const auto entries = arena.Entries(owners[source]);
+            for (const auto handle : request.List)
+                if (const ElementHandle element{handle}; arena.Contains(entries, element)) add(Resolve<MeshElementBlockSize>(entries, element));
+        });
+        if (operation == EditSelectionOperation::PickReplace && picked_handle) add(*picked);
         if (operation == EditSelectionOperation::RestoreBaseline) {
             for (const auto &[block, words] : meshes.GetDerived(id).SelectionBaseline)
                 for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
@@ -617,8 +624,8 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
         }
         for (const auto &[word, value] : query_words)
             if (owners[source] && memberships[source][word / MeshElementBlockWords].Owner == owners[source].Index) additions.emplace_back(word, value);
-        const bool toggle = operation == EditSelectionOperation::PickToggle && picked_local != InvalidOffset;
-        if (toggle) additions.emplace_back(picked / 32u, 0u);
+        const bool toggle = operation == EditSelectionOperation::PickToggle && picked_handle;
+        if (toggle) additions.emplace_back(picked->Value() / 32u, 0u);
         std::ranges::sort(additions);
         std::vector<uint32_t> blocks = replace ? selected[source] : std::vector<uint32_t>{};
         for (const auto &[word, value] : additions) blocks.push_back(word / MeshElementBlockWords);
@@ -640,8 +647,8 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
                     const auto word = block * MeshElementBlockWords + w, before = words[w];
                     auto after = replace ? 0u : before;
                     for (; next != additions.end() && next->first == word; ++next) after |= next->second;
-                    if (toggle && word == picked / 32u) {
-                        const auto bit = 1u << (picked % 32u);
+                    if (toggle && word == picked->Value() / 32u) {
+                        const auto bit = 1u << (picked->Value() % 32u);
                         after = summary.ActiveHandle == picked_local ? after & ~bit : after | bit;
                     }
                     after &= ~hidden[word];
@@ -722,7 +729,7 @@ void ConvertElementSelections(state::Scene &r, std::span<const state::Entity> me
         const Mesh mesh{meshes, id};
         // A mesh with every element selected keeps its bits in every domain.
         if (std::ranges::all_of(SelectionElements, [&](Element element) { return meshes.GetSelectedElements(id, element).Count() == mesh.ElementCount(element); })) all_selected.push_back(mesh_entity);
-        else if (const auto count = mesh.ElementCount(mode); count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, mode), count);
+        else if (const auto count = mesh.ElementCount(mode); count > 0) ranges.emplace_back(mesh_entity, count);
     }
     if (!ranges.empty()) ApplyEditSelectionCommand(r, ranges, mode, EditSelectionOperation::ClearActive);
     if (!all_selected.empty()) RefreshElementSelectionSummaries(r, all_selected, mode);
@@ -764,7 +771,7 @@ void ApplyEditSharpness(state::Scene &r, state::Entity, std::span<const state::E
         if (meshes.Get(id).SelectionSummary.Count) summaries.push_back(id);
         const auto *owner = TryRecordOf(r, entity);
         // A procedure mesh's drawn record takes the source's shading when the geometry change cooks it.
-        if (owner && owner->PrimitiveRoot != InvalidOffset && !r.all_of<procedure::GeometryProcedure>(entity)) repairs.emplace_back(entity, change.Triangles);
+        if (owner && owner->PrimitiveData && !r.all_of<procedure::GeometryProcedure>(entity)) repairs.emplace_back(entity, change.Triangles);
         else r.emplace_or_replace<MeshGeometryDirty>(entity, EditSelectionAfter::Keep, false);
     }
     chain.AfterSubmit([&meshes, summaries = std::move(summaries)] {

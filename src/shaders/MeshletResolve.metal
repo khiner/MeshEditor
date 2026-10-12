@@ -15,7 +15,8 @@ struct MeshletWork {
     MeshletRecord Meshlet;
     PrimitiveRecord Primitive;
     DrawData Draw;
-    uint VisibleIndex, MeshletIndex;
+    MeshletPayloads Payloads;
+    uint VisibleIndex, MeshletAddress;
     bool Valid;
 };
 
@@ -31,17 +32,18 @@ inline MeshletWork ResolveMeshletWork(
     const MeshRecord mesh = scene.MeshRecords(scene.View.MeshRecordSlot)[work.Mesh];
     const uint flags = InstanceFlags(mesh.Display.Flags, mesh.Display.PrimaryEditInstanceIndex, instance_slot, uint(scene.InstanceStates(scene.View.InstanceStateSlot)[instance_slot]));
     if ((flags & pc.RequiredInstanceFlags) != pc.RequiredInstanceFlags) {
-        return {.Instance = instance, .VisibleIndex = visible_index, .MeshletIndex = work.Meshlet};
+        return {.Instance = instance, .VisibleIndex = visible_index, .MeshletAddress = work.MeshletAddress};
     }
-    const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[work.Meshlet];
-    const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
+    const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[work.MeshletAddress];
+    const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[work.PrimitiveAddress];
     return {
         .Instance = instance,
         .Meshlet = meshlet,
         .Primitive = primitive,
         .Draw = ComposeDraw(mesh, instance, instance_slot, meshlet.Topology),
+        .Payloads = ReadMeshletPayloads(bindless, pc.Payloads, mesh.Display.Payloads),
         .VisibleIndex = visible_index,
-        .MeshletIndex = work.Meshlet,
+        .MeshletAddress = work.MeshletAddress,
         .Valid = true,
     };
 }
@@ -60,32 +62,21 @@ inline bool MeshletCoarse(MeshletRecord meshlet) { return meshlet.RefinedGroup !
 inline bool MeshletElementHidden(const thread Scene &scene,const thread MeshletWork &work,
     constant MeshletDrawPushConstants &pc,uint element) {
     if (scene.View.InteractionMode!=InteractionMode::Edit || MeshletCoarse(work.Meshlet)) return false;
-    const uint handle=BindlessBuffer(uint,scene.B.Buffer,pc.MeshletTriangleSlot)[work.Meshlet.TriangleOffset+element];
+    const uint handle=work.Payloads.TriangleIds[work.Meshlet.TriangleOffset+element];
     const uint topology=MeshletPrimitiveTopology(work.Meshlet);
     if (topology==uint(MeshPrimitiveTopology::Triangle)) return EditElementHidden(scene,work.Draw,Element::Face,scene.TriangleFace(work.Draw,handle));
-    const bool line=topology==uint(MeshPrimitiveTopology::Line);
-    return EditElementHidden(scene,work.Draw,line ? Element::Edge : Element::Vertex,
-        handle+(line ? work.Draw.Connectivity.Edges.Offset : work.Draw.VertexOffset));
+    return EditElementHidden(scene,work.Draw,topology==uint(MeshPrimitiveTopology::Line) ? Element::Edge : Element::Vertex,handle);
 }
 
-// Returns attribute corners from the cluster vertex list or original source triangle.
+// Returns corner handles from the cluster vertex list or the source triangle handle.
 inline uint3 MeshletCornerIds(
-    device const BindlessSet &bindless, uint vertex_slot, uint local_triangle_slot,
+    device const BindlessSet &bindless, MeshletPayloads payloads,
     MeshletRecord meshlet, DrawData draw, uint triangle, uint local_triangle
 ) {
-    if (!MeshletCoarse(meshlet)) {
-        if (draw.TriangleSlot != InvalidSlot) return uint3(BindlessBuffer(packed_uint3, bindless.Buffer, draw.TriangleSlot)[triangle]);
-        const uint base = draw.IndexSlotOffset.Offset + triangle * 3u;
-        return uint3(base, base + 1u, base + 2u);
-    }
-    device const uchar *triangles = BindlessBuffer(uchar, bindless.Buffer, local_triangle_slot);
-    device const uint *vertices = BindlessBuffer(uint, bindless.Buffer, vertex_slot);
-    const uint offset = MeshletLocalTriangleOffset(meshlet) + local_triangle * 3u;
+    if (!MeshletCoarse(meshlet)) return uint3(BindlessBuffer(packed_uint3, bindless.Buffer, draw.TriangleSlot)[HandleAddress<MeshElementBlockSize>(bindless, draw.Connectivity.Tables.Triangles, triangle)]);
+    const MeshletTriangle local = payloads.LocalTriangles[meshlet.LocalTriangleOffset + local_triangle];
     uint3 corners;
-    for (uint c = 0u; c < 3u; ++c) {
-        const uint local = uint(triangles[offset + c] & uint(MeshletGeometryEncoding::LocalIndexMask));
-        corners[c] = vertices[meshlet.VertexOffset + local];
-    }
+    for (uint c = 0u; c < 3u; ++c) corners[c] = MeshletSourceVertex(payloads, meshlet, uint(local[c] & uint(MeshletGeometryEncoding::LocalIndexMask)));
     return corners;
 }
 
@@ -104,16 +95,14 @@ struct MeshletTriangleCorners {
 };
 
 inline MeshletTriangleCorners ResolveMeshletCorners(
-    const thread Scene &scene, DrawData draw, uint vertex_slot, uint local_triangle_slot,
+    const thread Scene &scene, DrawData draw, MeshletPayloads payloads,
     MeshletRecord meshlet, uint triangle, uint local_triangle
 ) {
-    const uint3 corner_ids = MeshletCornerIds(
-        scene.B, vertex_slot, local_triangle_slot, meshlet, draw, triangle, local_triangle
-    );
+    const uint3 corner_ids = MeshletCornerIds(scene.B, payloads, meshlet, draw, triangle, local_triangle);
     const uint3 vertex_ids{
-        scene.CornerVertexOrdinal(draw, corner_ids.x),
-        scene.CornerVertexOrdinal(draw, corner_ids.y),
-        scene.CornerVertexOrdinal(draw, corner_ids.z),
+        scene.CornerVertex(draw, corner_ids.x),
+        scene.CornerVertex(draw, corner_ids.y),
+        scene.CornerVertex(draw, corner_ids.z),
     };
     return {.CornerIds = corner_ids, .VertexIds = vertex_ids, .CoarseNormal = MeshletCoarse(meshlet) ? MeshletCoarseNormal(scene, draw, vertex_ids) : float3(0.0f)};
 }
@@ -129,14 +118,14 @@ inline MeshletFaceValues MeshletCoarseFace(
         MeshletPrimitiveMaterialIndex(scene, primitive),
         (scale.x + scale.y + scale.z) / 3.0f,
         instance.ObjectId,
-        draw.ElementIdOffset,
+        0u,
     };
 }
 
 inline uint MeshletFaceMaterialIndex(
     const thread Scene &scene, DrawData draw, uint face_id
 ) {
-    if (draw.ElementPrimitives.ValuesSlot == InvalidSlot || draw.PrimitiveMaterialOffset == InvalidOffset || face_id == InvalidOffset) return 0u;
+    if (draw.ElementPrimitives.Slot == InvalidSlot || draw.PrimitiveMaterialOffset == InvalidOffset || face_id == InvalidOffset) return 0u;
     const uint primitive_index = scene.ElementPrimitive(draw.ElementPrimitives, face_id);
     return scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[draw.PrimitiveMaterialOffset + primitive_index];
 }

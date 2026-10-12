@@ -11,7 +11,7 @@ struct PrimitiveRecord {
     uint32_t Topology DEFAULT(); // Triangle, line or point; one material can have all three.
     // The mesh's primitive-material offset, kept here so the cull resolves a material without the mesh record.
     uint32_t PrimitiveMaterialOffset DEFAULT(InvalidOffset);
-    // Construction slice in the canonical triangle-ID render arena.
+    // Construction slice of the owner's triangle id range.
     uint32_t TriangleOffset DEFAULT(), TriangleCount DEFAULT();
     uint32_t MeshletCount DEFAULT();
     // Pinned instances enumerate the finest node's canonical membership.

@@ -71,31 +71,21 @@ std::vector<uint32_t> EditorHiddenFaces(const MeshStore &meshes, uint32_t id) {
     return faces;
 }
 
-void UpdatePoseMembership(state::Scene &r, const MeshTopologyEdit &edit) {
+// The arena blocks of a published in-place edit's repaired and retired vertices and faces, and the normal payloads of its repaired corners.
+// Gathering precedes the erasure that releases emptied blocks from the record's tables.
+struct EditedBlocks {
+    std::vector<uint32_t> Vertices, Faces, Corners;
+};
+
+void UpdatePoseMembership(state::Scene &r, const MeshTopologyEdit &edit, EditedBlocks edited) {
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(edit.StoreId);
-    std::vector<uint32_t> vertices, faces, normal_payloads = edit.OldNormalPayloadBlocks;
-    const auto &storage = edit.Chain.Scratch;
-    const auto gather = [&](std::vector<uint32_t> &blocks, ElementWork work) {
-        ForEachWorkBlock(storage, work, [&](uint32_t block, auto) { blocks.push_back(block); });
-    };
-    if (edit.Repair) {
-        gather(vertices, edit.Repair->Elements[0]);
-        gather(faces, edit.Repair->Elements[2]);
-        ForEachWorkBlock(storage, edit.Repair->Elements[1], [&](uint32_t block, auto) {
-            const auto payload = a.NormalSectors.PayloadBlock(block);
-            if (payload) normal_payloads.push_back(payload - 1u);
-        });
-    }
-    if (edit.Output) {
-        gather(vertices, edit.Output->Retired[0]);
-        gather(faces, edit.Output->Retired[1]);
-    }
+    auto &[vertices, faces, corners] = edited;
     SortUnique(vertices);
     SortUnique(faces);
-    SortUnique(normal_payloads);
+    SortUnique(corners);
     const auto update = [&](const auto &arena, ElementSetRef set, const auto &blocks, auto &...stores) {
         const auto members = arena.Blocks.Buffer.template GetSpan<MeshElementBlock>();
         const auto present = [&](uint32_t block) {
@@ -106,14 +96,12 @@ void UpdatePoseMembership(state::Scene &r, const MeshTopologyEdit &edit) {
     };
     update(a.Vertices, record.Vertices, vertices, buffers.VertexBounds, buffers.PosedPositions, buffers.PosedMorphNormalDeltas, buffers.PosedVertexNormals);
     update(a.FaceTriangles, record.FaceData, faces, buffers.PosedFaceNormals);
-    const auto normal_owners = a.NormalSectors.Owners.Buffer.GetSpan<uint32_t>();
-    const auto has_normal = [&](uint32_t payload) {
-        if (payload >= normal_owners.size() || !normal_owners[payload]) return false;
-        const auto block = normal_owners[payload] - 1u;
-        return a.FaceCorners.Blocks.Get({block, 1u})[0].Owner == record.FaceCorners.Index &&
-            a.NormalSectors.PayloadBlock(block) == payload + 1u;
+    // Posed sector normals key the corner blocks of a record with sector roots.
+    const auto corner_members = a.FaceCorners.Blocks.Buffer.GetSpan<MeshElementBlock>();
+    const auto has_sectors = [&](uint32_t block) {
+        return record.NormalSectors.Count && block < corner_members.size() && corner_members[block].Owner == record.FaceCorners.Index && corner_members[block].Count;
     };
-    buffers.PosedSectors.UpdateBlocks(edit.StoreId, meshes.GetDerived(edit.StoreId).NormalRevision, normal_payloads, has_normal);
+    buffers.PosedSectors.UpdateBlocks(edit.StoreId, meshes.GetDerived(edit.StoreId).NormalRevision, corners, has_sectors);
 }
 
 // A published owner repairs its old triangles and any new faces, including its first or last faces.
@@ -125,23 +113,10 @@ bool RepairsTriangleRender(const state::Scene &r, state::Entity entity, const Me
 
 // Publishes a finished in-place edit's render, pose and selection summary state.
 // A record without a render owner is a newly created canonical mesh.
-// Affected vertices and edges join the point and wire repairs, including elements
-// that gain or lose incidence while remaining live.
-void FinishTopologyEdit(state::Scene &r, state::Entity entity, const MeshTopologyTask &task, MeshTopologyEdit &edit, std::vector<ElementMeshletRepair> &element_repairs) {
-    auto &meshes = r.Context.get<MeshStore>();
+void FinishTopologyEdit(state::Scene &r, state::Entity entity, const MeshTopologyTask &task, MeshTopologyEdit &edit, EditedBlocks edited) {
     const auto *render_owner = TryRecordOf(r, entity);
     const bool ready = render_owner && render_owner->StoreId == task.SourceId && render_owner->RenderTopologies != 0u;
-    UpdatePoseMembership(r, edit);
-    if (ready && edit.Repair) {
-        const auto &storage = edit.Chain.Scratch;
-        auto &points = element_repairs.emplace_back(ElementMeshletRepair{.StoreId = task.SourceId, .Topology = 2u}).Elements;
-        ForEachWorkElement(storage, edit.Repair->Elements[0], [&](uint32_t v) { points.push_back(v); });
-        ForEachWorkElement(storage, edit.Output->Retired[0], [&](uint32_t v) { points.push_back(v); });
-        auto &wires = element_repairs.emplace_back(ElementMeshletRepair{.StoreId = task.SourceId, .Topology = 1u}).Elements;
-        const auto edges = meshes.Arenas().HalfedgeEdges.Buffer.GetSpan<uint32_t>();
-        ForEachWorkElement(storage, edit.RetiredEdges, [&](uint32_t e) { wires.push_back(e); });
-        ForEachWorkElement(storage, edit.Repair->Elements[1], [&](uint32_t h) { wires.push_back(edges[h]); });
-    }
+    UpdatePoseMembership(r, edit, std::move(edited));
     if (ready && edit.InsetBasis.Count) {
         // The staged edit captured its basis into the session's preview cache.
         auto &session = project::Session(r);
@@ -221,12 +196,40 @@ std::vector<std::optional<uint32_t>> EditTopology(state::Scene &r, std::span<con
         else if (RepairsTriangleRender(r, mesh_entities[i], edit)) repairs.emplace_back(mesh_entities[i], &edit);
     }
     RepairTopologyRender(r, chain, repairs, copies);
+    // Each in-place edit's edited blocks resolve to arena addresses before its erasure retires elements and releases emptied blocks.
+    // Affected vertices and edges join the repairs, including elements that gain or lose incidence while remaining live.
+    std::vector<ElementMeshletRepair> element_repairs;
+    std::vector<EditedBlocks> edited(edits.size());
+    for (uint32_t i = 0u; i < edits.size(); ++i) {
+        const auto &edit = edits[i];
+        if (outputs[i] != edit.SourceId) continue;
+        using Domain = MeshStore::ElementDomain;
+        const auto &storage = edit.Chain.Scratch;
+        const auto *render_owner = TryRecordOf(r, mesh_entities[i]);
+        if (render_owner && render_owner->StoreId == edit.SourceId && render_owner->RenderTopologies && edit.Repair) {
+            auto &points = element_repairs.emplace_back(ElementMeshletRepair{.StoreId = edit.SourceId, .Topology = 2u}).Elements;
+            ForEachWorkElement(storage, edit.Repair->Elements[0], [&](uint32_t v) { points.push_back(v); });
+            ForEachWorkElement(storage, edit.Output->Retired[0], [&](uint32_t v) { points.push_back(v); });
+            auto &wires = element_repairs.emplace_back(ElementMeshletRepair{.StoreId = edit.SourceId, .Topology = 1u}).Elements;
+            const auto edges = meshes.Arenas().HalfedgeEdges.Buffer.GetSpan<uint32_t>();
+            ForEachWorkElement(storage, edit.RetiredEdges, [&](uint32_t e) { wires.push_back(e); });
+            ForEachWorkElement(storage, edit.Repair->Elements[1], [&](uint32_t h) { wires.push_back(edges[meshes.HandleAddress(edit.SourceId, Domain::Halfedge, ElementHandle{h}).Value()]); });
+        }
+        auto &blocks = edited[i];
+        blocks.Corners = edit.OldCornerBlocks;
+        if (edit.Repair) {
+            blocks.Vertices.append_range(meshes.ArenaBlocks(edit.StoreId, Domain::Vertex, storage, edit.Repair->Elements[0]));
+            blocks.Faces.append_range(meshes.ArenaBlocks(edit.StoreId, Domain::Face, storage, edit.Repair->Elements[2]));
+            if (meshes.Get(edit.StoreId).NormalSectors.Count) blocks.Corners.append_range(meshes.ArenaBlocks(edit.StoreId, Domain::Halfedge, storage, edit.Repair->Elements[1]));
+        }
+        blocks.Vertices.append_range(meshes.ArenaBlocks(edit.StoreId, Domain::Vertex, storage, edit.Output->Retired[0]));
+        blocks.Faces.append_range(meshes.ArenaBlocks(edit.StoreId, Domain::Face, storage, edit.Output->Retired[1]));
+    }
     MeshTopologyEdit::FinishAll(r, finished);
     std::vector<state::Entity> in_place;
-    std::vector<ElementMeshletRepair> element_repairs;
     for (uint32_t i = 0u; i < edits.size(); ++i) {
         if (outputs[i] != edits[i].SourceId) continue;
-        FinishTopologyEdit(r, mesh_entities[i], tasks[i], edits[i], element_repairs);
+        FinishTopologyEdit(r, mesh_entities[i], tasks[i], edits[i], std::move(edited[i]));
         in_place.push_back(mesh_entities[i]);
     }
     RepairElementMeshlets(r, chain, element_repairs);
@@ -354,7 +357,7 @@ std::optional<uint32_t> ActiveOrFirstSelectedEdge(const state::Scene &r, state::
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selected = meshes.GetSelectedElements(mesh.GetStoreId(), Element::Edge);
     if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity);
-        active && meshes.IsLiveElement(mesh.GetStoreId(), Element::Edge, active->Handle) && selected.Contains(active->Handle))
+        active && meshes.IsLiveElement(mesh.GetStoreId(), Element::Edge, ElementHandle{active->Handle}) && selected.Contains(active->Handle))
         return active->Handle;
     if (const auto first = selected.First()) return *first;
     return {};
@@ -413,7 +416,8 @@ void EditSelectedFaceAttributes(state::Scene &r, std::span<const state::Entity> 
     for (const auto &change : changes) {
         const auto &record = meshes.Get(inputs[change.TargetIndex].StoreId);
         const auto bound = std::min(change.Faces.Incidence, a.Triangles.Set(record.TriangleData).BlockCount);
-        triangle_words += 1u + ElementWorkWords(a.Triangles.Capacity(), bound) + SortElementWorkWords(WorkCapacity(a.Triangles.Capacity(), bound));
+        const auto handles = a.Triangles.HandleBound(record.TriangleData);
+        triangle_words += 1u + ElementWorkWords(handles, bound) + SortElementWorkWords(WorkCapacity(handles, bound));
     }
     chain.Scratch.ReserveAdditional(triangle_words);
     std::vector<std::pair<state::Entity, FaceTriangles>> repairs;
@@ -500,8 +504,11 @@ bool UpdateInsetPreview(state::Scene &r, state::Entity viewport, const Inset &in
     }
     {
         const profile::CpuScope capture{"InsetCaptureVertices"};
-        for (const auto &entry : cache.Entries)
-            meshes.Arenas().Vertices.Buffer.CaptureWriteRanges(entry.Ranges, sizeof(Vertex));
+        const auto &arena = meshes.Arenas().Vertices;
+        for (const auto &entry : cache.Entries) {
+            const auto set = meshes.Get(entry.StoreId).Vertices;
+            for (const auto run : entry.Ranges) arena.ForEachAddressRun(set, ElementHandle{run.Offset}, run.Count, [&](Range addresses) { arena.Buffer.CaptureWrite(uint64_t(addresses.Offset) * sizeof(Vertex), uint64_t(addresses.Count) * sizeof(Vertex)); });
+        }
     }
     // Keep the position update and its dependent geometry work on one chain.
     mtl::ComputeChain chain{meshes.BufferContext()};
@@ -512,7 +519,7 @@ bool UpdateInsetPreview(state::Scene &r, state::Entity viewport, const Inset &in
         chain.Concurrent([&] {
             for (const auto &entry : cache.Entries) {
                 const InsetPreviewPushConstants pc{
-                    .Basis = {cache.Basis.Buffer.Slot, entry.Basis.Offset}, .VertexSlot = meshes.Slots().Vertices, .Count = uint32_t(uint64_t(entry.Basis.Count) * sizeof(uint32_t) / sizeof(InsetVertexBasis)), .Thickness = std::max(inset.Thickness, 0.f), .Depth = inset.Depth
+                    .Basis = {cache.Basis.Buffer.Slot, entry.Basis.Offset}, .VertexTable = meshes.Arenas().Vertices.TableRef(meshes.Get(entry.StoreId).Vertices), .VertexSlot = meshes.Slots().Vertices, .Count = uint32_t(uint64_t(entry.Basis.Count) * sizeof(uint32_t) / sizeof(InsetVertexBasis)), .Thickness = std::max(inset.Thickness, 0.f), .Depth = inset.Depth
                 };
                 chain.Groups(pipeline, pc, (pc.Count + 255u) / 256u);
             }

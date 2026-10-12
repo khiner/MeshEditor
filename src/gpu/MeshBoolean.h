@@ -3,18 +3,18 @@
 #include "gpu/ElementWork.h"
 #include "gpu/MeshTopologyOp.h"
 
-// One boolean of a first record P and a second record Q, as word offsets of runs in the chain's scratch.
+// One boolean of a first mesh P and a second mesh Q, which one source record holds, as word offsets of runs in the chain's scratch.
 // Vertices, faces, triangles and triangle halfedges number P's before Q's, and the halfedge of triangle t's corner i is 3t + i.
-// An intersection is a halfedge of one record crossing a triangle of the other, and P's halfedges' intersections precede Q's.
+// An intersection is a halfedge of one mesh crossing a triangle of the other, and P's halfedges' intersections precede Q's.
 struct BooleanJob {
     BooleanOperation Operation DEFAULT();
     GpuArray<ElementWork, 2> VertexWork DEFAULT(), FaceWork DEFAULT();
-    // Per record: its vertices, faces and derived triangles.
+    // Per mesh: its vertices, faces and derived triangles.
     GpuArray<uint32_t, 2> Vertices DEFAULT(), Faces DEFAULT(), Triangles DEFAULT();
     uint32_t VertexSlot DEFAULT(InvalidSlot), CornerSlot DEFAULT(InvalidSlot), TriangleSlot DEFAULT(InvalidSlot);
     uint32_t FaceTriangleStartSlot DEFAULT(InvalidSlot), VertexNormalSlot DEFAULT(InvalidSlot);
-    ConnectivityRef Connectivity DEFAULT(); // Its streams address both records' handles.
-    // The transform taking Q's positions into P's space.
+    ConnectivityRef Connectivity DEFAULT(); // The source's, which holds both meshes' elements
+    // The transform taking the second mesh's positions into the first's space.
     mat3 Rotation DEFAULT();
     vec3 Translation DEFAULT();
     uint32_t Intersections DEFAULT(), FirstIntersections DEFAULT();
@@ -22,7 +22,7 @@ struct BooleanJob {
     uint32_t PolygonHalfedges DEFAULT(), PartialEntries DEFAULT(), GroupEntries DEFAULT();
     // Per vertex: position and perturbation normal, in P's space.
     uint32_t Positions DEFAULT(), Normals DEFAULT();
-    // Per record: the ordered bits of its positions' minimum then maximum on each axis.
+    // Per mesh: the ordered bits of its positions' minimum then maximum on each axis.
     uint32_t Bounds DEFAULT();
     // Per face then a terminator: its first triangle.
     uint32_t FaceTriangleFirst DEFAULT();
@@ -30,7 +30,7 @@ struct BooleanJob {
     uint32_t TriangleVertices DEFAULT(), TriangleCorners DEFAULT(), TriangleFaces DEFAULT(), TriangleNormals DEFAULT(), PolygonTriangleCounts DEFAULT();
     // Per halfedge: its pair, and the canonical halfedge of its side when the side is a face edge.
     uint32_t Pairs DEFAULT(), EdgeSources DEFAULT();
-    // Per record: Morton keys, sort order and its temporaries, then the radix tree's node boxes, parents, children and refit counters.
+    // Per mesh: Morton keys, sort order and its temporaries, then the radix tree's node boxes, parents, children and refit counters.
     GpuArray<uint32_t, 2> Keys DEFAULT(), Order DEFAULT(), Temporary DEFAULT(), Histogram DEFAULT(), Totals DEFAULT();
     GpuArray<uint32_t, 2> NodeBoxes DEFAULT(), NodeParents DEFAULT(), Children DEFAULT(), Counters DEFAULT();
     // Per halfedge then a terminator: its first intersection, and per intersection: halfedge, triangle, signed crossing, position.

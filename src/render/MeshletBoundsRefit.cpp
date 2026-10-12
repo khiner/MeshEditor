@@ -4,7 +4,6 @@
 #include "gpu/MeshletBoundsRefitPushConstants.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
-#include "mesh/MeshletIndex.h"
 #include "metal/Dispatch.h"
 #include "render/ClusterLodRepair.h"
 #include "render/ElementWorkOps.h"
@@ -25,16 +24,18 @@ void RefitCanonicalMeshletBounds(state::Scene &r, mtl::ComputeChain &chain, std:
         if (!job.Storage || ElementWorkEmpty(*job.Storage, job.Meshlets)) continue;
         if (!job.Owner) throw std::invalid_argument("Meshlet bounds refit requires a render owner.");
         CheckElementWork(*job.Storage, job.Meshlets);
-        std::vector<uint32_t> ids;
-        ForEachWorkElement(*job.Storage, job.Meshlets, [&](uint32_t id) { ids.push_back(id); });
-        render.Meshlets.Buffer.CaptureWriteElements(ids, sizeof(MeshletRecord));
-        dispatches.push_back({.Work = job.Meshlets, .Count = uint32_t(ids.size()), .MeshletSlot = render.Meshlets.Buffer.Slot, .MeshletVertexSlot = render.MeshletVertexCorners.Buffer.Slot, .LocalTrianglesSlot = render.MeshletLocalTriangles.Buffer.Slot, .CornerSlot = meshes.Arenas().FaceCorners.Buffer.Slot, .VertexSlot = meshes.Slots().Vertices, .VertexOffset = meshes.Arenas().Vertices.First(job.Owner->Vertices)});
+        std::vector<uint32_t> addresses;
+        ForEachWorkElement(*job.Storage, job.Meshlets, [&](uint32_t address) { addresses.push_back(address); });
+        render.Meshlets.Buffer.CaptureWriteElements(addresses, sizeof(MeshletRecord));
+        dispatches.push_back({.MeshletAddresses = job.Meshlets, .Count = uint32_t(addresses.size()), .MeshletSlot = render.Meshlets.Buffer.Slot, .MeshletVertexSlot = render.MeshletVertexCorners.Buffer.Slot, .LocalTrianglesSlot = render.MeshletLocalTriangles.Buffer.Slot, .CornerSlot = meshes.Arenas().FaceCorners.Buffer.Slot, .VertexSlot = meshes.Slots().Vertices, .VertexBase = job.Owner->MeshletVertices.Values.Offset, .LocalTriangleBase = job.Owner->MeshletLocalTriangles.Values.Offset, .VertexTable = meshes.Arenas().Vertices.TableRef(job.Owner->Vertices), .CornerTable = meshes.Arenas().FaceCorners.TableRef(job.Owner->FaceCorners)});
+        // The spatial tree refits the finest triangle clusters at their handles.
         if (job.Owner->SpatialRoot != InvalidOffset) {
-            std::erase_if(ids, [&](uint32_t id) {
-                const auto &cluster = render.Meshlets.Get({id, 1u})[0];
-                return cluster.Topology != 0u || cluster.RefinedGroup != InvalidOffset;
-            });
-            if (!ids.empty()) refitted.emplace_back(job.Owner->StoreId, std::move(ids));
+            std::vector<uint32_t> handles;
+            for (const auto address : addresses) {
+                const auto &cluster = render.Meshlets.Get({address, 1u})[0];
+                if (cluster.Topology == 0u && cluster.RefinedGroup == InvalidOffset) handles.push_back(render.Meshlets.Handle(ElementAddress::Stored(address)).Value);
+            }
+            if (!handles.empty()) refitted.emplace_back(job.Owner->StoreId, std::move(handles));
         }
     }
     if (dispatches.empty()) return;
@@ -59,19 +60,29 @@ void StageDirtyPositionMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::
     std::vector<std::vector<uint32_t>> moved;
     for (const auto entity : entities) {
         auto &owner = EditRecordOf(r, entity);
-        const auto root = owner.PositionDirtyRoot;
-        if (root == InvalidOffset) continue;
-        if (render.ActiveMeshlets.Count(root) && meshes.ClusterGroupCount(owner)) {
-            auto &groups = seeds.emplace_back(ClusterGroupSeeds{.Entity = entity}).Groups;
-            auto &owner_moved = moved.emplace_back();
-            render.ActiveMeshlets.ForEach(root, [&](uint32_t meshlet) {
-                if (!render.ActiveMeshlets.Contains(owner.MeshletRoot, meshlet)) return;
-                owner_moved.push_back(meshlet);
-                if (const auto group = render.Meshlets.Get({meshlet, 1u})[0].GroupIndex; group != InvalidOffset) groups.push_back(group);
-            });
+        if (!meshes.HasDirtyPositions(owner)) continue;
+        // The owner's dirty clusters clear, and with coarse geometry their groups seed its stale closure.
+        const bool coarse = meshes.ClusterGroupCount(owner) != 0u;
+        auto &groups = seeds.emplace_back(ClusterGroupSeeds{.Entity = entity}).Groups;
+        auto &owner_moved = moved.emplace_back();
+        const auto entries = render.Meshlets.Entries(owner.MeshletData);
+        for (const auto block : entries) {
+            if (block == InvalidOffset) continue;
+            const auto &members = render.Meshlets.Blocks.Get({block, 1u})[0];
+            const auto dirty = render.PositionDirty.Get({block, 1u})[0] & members.Live[0];
+            if (!dirty) continue;
+            render.PositionDirty.GetMutable({block, 1u})[0] = 0u;
+            if (!coarse) continue;
+            for (auto bits = dirty; bits; bits &= bits - 1u) {
+                const auto slot = uint32_t(std::countr_zero(bits));
+                owner_moved.push_back(members.Local * RenderBlockSize + slot);
+                if (const auto group = render.Meshlets.Get({block * RenderBlockSize + slot, 1u})[0].GroupIndex; group != InvalidOffset) groups.push_back(group);
+            }
         }
-        render.ActiveMeshlets.Release(root);
-        owner.PositionDirtyRoot = InvalidOffset;
+        if (!coarse) {
+            seeds.pop_back();
+            moved.pop_back();
+        }
         buffers.PreludeStale = true;
     }
     auto touched = InvalidateClusterGroups(r, seeds);

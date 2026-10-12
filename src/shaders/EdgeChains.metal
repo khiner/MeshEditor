@@ -76,7 +76,7 @@ kernel void SpaceEvenlyGather(
     const uint n=chain.Count,segments=n-uint(!chain.Closed);
     const auto handles=storage+chain.InputOffset;
     const auto vertices=BindlessBuffer(Vertex,b.VertexBuffer,pc.VertexSlot);
-    const auto position=[&](uint k) { return float3(vertices[handles[k]].Position); };
+    const auto position=[&](uint k) { return float3(vertices[HandleAddress<MeshElementBlockSize>(b,pc.Connectivity.Tables.Vertices,handles[k])].Position); };
     auto knots=reinterpret_cast<device float *>(storage+chain.WorkOffset);
     auto upper=knots+n+1u;
     auto solution=reinterpret_cast<device packed_float4 *>(upper+n);
@@ -125,7 +125,7 @@ kernel void RelaxEdgeLoopsGather(
     auto upper=targets+n;
     auto solution=reinterpret_cast<device packed_float4 *>(upper+n);
     const auto vertices=BindlessBuffer(Vertex,b.VertexBuffer,pc.VertexSlot);
-    for (uint k=0u;k<n;++k) state[k]=vertices[storage[chain.InputOffset+k]].Position;
+    for (uint k=0u;k<n;++k) state[k]=vertices[HandleAddress<MeshElementBlockSize>(b,pc.Connectivity.Tables.Vertices,storage[chain.InputOffset+k])].Position;
     auto output=reinterpret_cast<device packed_float3 *>(BindlessBufferMutable(uint,b.Buffer,pc.Positions.Slot)+pc.Positions.Offset)+chain.OutputOffset;
     for (uint k=first;k<end;++k) output[k-first]=state[k];
     uint cursor=chain.PhaseOffset;
@@ -206,7 +206,7 @@ kernel void CurveBetweenSelected(
         float3 after=SampleEdgeCurve(count,segment,target,cubic,knots,solution,anchor_position);
         const float3 delta=after-before;
         if (surface[k] && dot(delta,delta)>1e-16f) {
-            const float elevation=dot(delta,float3(normals[handles[inputs[point]]]));
+            const float elevation=dot(delta,float3(normals[HandleAddress<MeshElementBlockSize>(b,pc.Connectivity.Tables.Vertices,handles[inputs[point]])]));
             if ((pc.Flags & PositionEditCurveRaise) && elevation < -1e-8f) continue;
             if ((pc.Flags & PositionEditCurveLower) && elevation > 1e-8f) continue;
         }

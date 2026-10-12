@@ -37,11 +37,10 @@ struct MeshletBuilder {
     device MeshletRecord *Records() const { return reinterpret_cast<device MeshletRecord *>(S() + J.RecordScratchOffset); }
     ConnectivityView Conn() const { return {B, J.Mesh.Connectivity, J.Mesh.FaceCount}; }
     uint Element(uint e) const {
-        return J.Elements.Storage.Slot != InvalidSlot ? WorkGroupElement(B,J.Elements,e) :
-            J.Topology == 0u && J.Mesh.TriangleSlot != InvalidSlot ? J.Mesh.TriangleOffset+e : e;
+        return J.Elements.Storage.Slot != InvalidSlot ? WorkGroupElement(B,J.Elements,e) : e;
     }
     uint TriangleCorner(uint t, uint c) const {
-        return J.Mesh.TriangleSlot != InvalidSlot ? TriangleCornerHandle(B,J.Mesh.TriangleSlot,c,t) : J.Mesh.IndexSlotOffset.Offset+t*3u+c;
+        return J.Mesh.TriangleSlot != InvalidSlot ? TriangleCornerHandle(B,J.Mesh.TriangleSlot,J.Mesh.Connectivity,t,c) : J.Mesh.IndexSlotOffset.Offset+t*3u+c;
     }
     bool PhysicalBoundary(uint t,uint c) const {
         if (J.Mesh.TriangleSlot==InvalidSlot) return false;
@@ -49,16 +48,17 @@ struct MeshletBuilder {
         return Conn().Next(a)==d && Conn().Opposite(d)==InvalidOffset;
     }
     uint TriangleVertex(uint t, uint c) const {
-        return BindlessBuffer(uint,B.IndexBuffer,J.Mesh.IndexSlotOffset.Slot)[TriangleCorner(t,c)]-J.Mesh.VertexOffset;
+        const uint corner = TriangleCorner(t,c);
+        return J.Mesh.TriangleSlot != InvalidSlot ? Conn().CornerVertex(J.Mesh.IndexSlotOffset.Slot,corner) : BindlessBuffer(uint,B.IndexBuffer,J.Mesh.IndexSlotOffset.Slot)[corner];
     }
     uint VertexIndex(uint corner) const {
-        if (J.Topology == 2u) return (J.Elements.Storage.Slot != InvalidSlot ? Element(corner) - J.Mesh.VertexOffset : corner);
+        if (J.Topology == 2u) return Element(corner);
         if (J.Topology == 0u) return TriangleVertex(Element(corner/3u),corner%3u);
         // A line element's first endpoint starts its first halfedge, and its second ends it.
         const uint h = Conn().EdgeHalfedge(Element(corner/2u));
-        return BindlessBuffer(uint,B.IndexBuffer,J.Mesh.IndexSlotOffset.Slot)[corner%2u == 0u ? Conn().Opposite(h) : h]-J.Mesh.VertexOffset;
+        return Conn().CornerVertex(J.Mesh.IndexSlotOffset.Slot,corner%2u == 0u ? Conn().Opposite(h) : h);
     }
-    float3 Position(uint v) const { return float3(BindlessBuffer(Vertex, B.VertexBuffer, J.Mesh.VertexSlot)[J.Mesh.VertexOffset + v].Position); }
+    float3 Position(uint v) const { return float3(BindlessBuffer(Vertex, B.VertexBuffer, J.Mesh.VertexSlot)[Conn().VertexAddress(v)].Position); }
     uint CornersPerElement() const { return J.Topology == 0u ? 3u : J.Topology == 1u ? 2u : 1u; }
     float3 Center(uint e) const {
         float3 p = float3(0);
@@ -67,20 +67,19 @@ struct MeshletBuilder {
         return p / float(count);
     }
     uint SourcePrimitive(uint e) const {
-        const auto attributes = J.Topology == 0u ? J.Mesh.FacePrimitives : J.Mesh.VertexPrimitives;
-        if (attributes.ValuesSlot == InvalidSlot) return 0u;
-        const uint owner = J.Topology == 0u ? TriangleFaceHandle(B,J.Mesh.Connectivity,J.Mesh.TriangleSlot,Element(e)) :
-            J.Mesh.VertexOffset + VertexIndex(e * CornersPerElement());
-        return BindlessBuffer(uint,B.ElementPrimitiveBuffer,attributes.ValuesSlot)[ElementAttributeIndex(B,attributes,owner)];
+        const auto primitives = J.Topology == 0u ? J.Mesh.Layers.FacePrimitives : J.Mesh.Layers.VertexPrimitives;
+        if (primitives.Slot == InvalidSlot) return 0u;
+        const uint owner = J.Topology == 0u ? TriangleFaceHandle(B,J.Mesh.Connectivity,J.Mesh.TriangleSlot,Element(e)) : VertexIndex(e * CornersPerElement());
+        return BindlessBuffer(uint,B.ElementPrimitiveBuffer,primitives.Slot)[primitives.Offset+owner];
     }
     uint Primitive(uint e) const { return WorkRank(B,J.Materials,SourcePrimitive(e)); }
-    CornerRenderKey Keys() const { return {B,J.Mesh,Pc.CornerSectors,Pc.FaceSharpnessSlot}; }
+    CornerRenderKey Keys() const { return {B,J.Mesh,Pc.FaceSharpnessSlot}; }
     bool Flat(uint t) const {
         const uint element=Element(t);
         return Keys().Flat(uint3(TriangleCorner(element,0u),TriangleCorner(element,1u),TriangleCorner(element,2u)));
     }
     uint AttributeHandle(uint corner) const {
-        if (J.Topology != 0u) return J.Mesh.VertexOffset + VertexIndex(corner);
+        if (J.Topology != 0u) return VertexIndex(corner);
         return TriangleCorner(Element(corner/3u),corner%3u);
     }
     uint Hash(uint c, bool flat) const { return Keys().Hash(AttributeHandle(c),flat); }
@@ -312,13 +311,13 @@ kernel void MeshletBuildClusters(uint lane [[thread_index_in_threadgroup]], uint
     const uint primitive = tile[0], first = tile[1], count = tile[2];
     const uint vertex_base = first * b.CornersPerElement();
     device uint *refs = b.S() + j.VertexScratchOffset + vertex_base;
-    device uint *triangles = BindlessBufferMutable(uint, bindless.Buffer, pc.TriangleIdsSlot) + j.TriangleOffset + first;
-    device uchar *local = BindlessBufferMutable(uchar, bindless.Buffer, pc.LocalTrianglesSlot) + j.LocalTriangleOffset + first * 3u;
+    device uint *triangles = BindlessBufferMutable(uint, bindless.Buffer, pc.TriangleIdsSlot) + j.TriangleAddress + first;
+    device uchar *local = BindlessBufferMutable(uchar, bindless.Buffer, pc.LocalTrianglesSlot) + (j.LocalTriangleAddress + first) * 3u;
     if (j.Topology != 0u) {
         const uint endpoints = b.CornersPerElement();
         for (uint i = lane; i < count; i += BuildClusterThreads) {
             const uint e = b.ElementAt(first + i);
-            triangles[i] = j.Topology == 2u ? b.VertexIndex(e) : b.Element(e) - j.Mesh.Connectivity.Edges.Offset;
+            triangles[i] = b.Element(e);
             for (uint c = 0u; c < endpoints; ++c) refs[i * endpoints + c] = b.VertexIndex(e * endpoints + c);
         }
         BuildClusterBarrier(simd_size,mem_flags::mem_device);
@@ -326,7 +325,7 @@ kernel void MeshletBuildClusters(uint lane [[thread_index_in_threadgroup]], uint
             const uint records = (count + 15u) / 16u;
             for (uint m = 0u; m < records; ++m) {
                 const uint n = min(16u, count - m * 16u);
-                MeshletRecord record{.TriangleOffset = first + m * 16u, .TriangleCount = n, .VertexOffset = vertex_base + m * 16u * endpoints, .VertexCount = n * endpoints, .LocalTriangleOffset = 0u, .Primitive = primitive, .GroupIndex = InvalidOffset, .RefinedGroup = InvalidOffset, .Topology = j.Topology};
+                MeshletRecord record{.TriangleOffset = first + m * 16u, .TriangleCount = n, .VertexOffset = vertex_base + m * 16u * endpoints, .VertexCount = n * endpoints, .LocalTriangleOffset = InvalidOffset, .Primitive = primitive, .GroupIndex = InvalidOffset, .RefinedGroup = InvalidOffset, .Topology = j.Topology};
                 device const uint *vertices = b.S() + j.VertexScratchOffset + record.VertexOffset;
                 FitClusterBounds(record, local, [&](uint i) { return BuildVertexPosition(b, vertices[i]); });
                 b.Records()[tile[3] + m] = record;
@@ -459,7 +458,7 @@ kernel void MeshletBuildClusters(uint lane [[thread_index_in_threadgroup]], uint
             bound_positions[v] = BuildVertexPosition(b, refs[total_vertices + v]);
         BuildClusterBarrier(simd_size,mem_flags::mem_threadgroup);
         if (lane == 0u) {
-            MeshletRecord record{.TriangleOffset = first + total_triangles, .TriangleCount = triangle_count, .VertexOffset = vertex_base + total_vertices, .VertexCount = vertex_count, .LocalTriangleOffset = (first + total_triangles) * 3u, .Primitive = primitive, .GroupIndex = InvalidOffset, .RefinedGroup = InvalidOffset};
+            MeshletRecord record{.TriangleOffset = first + total_triangles, .TriangleCount = triangle_count, .VertexOffset = vertex_base + total_vertices, .VertexCount = vertex_count, .LocalTriangleOffset = first + total_triangles, .Primitive = primitive, .GroupIndex = InvalidOffset, .RefinedGroup = InvalidOffset};
             FitClusterBounds(record, local + total_triangles * 3u, [&](uint i) { return bound_positions[i]; });
             b.Records()[tile[3] + record_count++] = record;
             total_vertices += vertex_count; total_triangles += triangle_count;
@@ -495,20 +494,20 @@ kernel void MeshletBuildEmit(uint lane [[thread_index_in_threadgroup]], BUILD_AR
     device uint *vertices = BindlessBufferMutable(uint, bindless.Buffer, pc.VertexRefsSlot);
     for (uint v = lane; v < counts[1]; v += 256u) {
         const uint source = b.S()[j.VertexScratchOffset + vertex_base + v];
-        vertices[j.VertexOffset + counts[3] + v] = j.Topology == 0u ?
+        vertices[j.VertexAddress + counts[3] + v] = j.Topology == 0u ?
             (j.Mesh.TriangleSlot != InvalidSlot ? b.AttributeHandle(source) : j.Mesh.IndexSlotOffset.Offset + source) : source;
     }
     for (uint m = lane; m < counts[0]; m += 256u) {
         auto record = b.Records()[tile[3] + m];
         record.VertexOffset = j.VertexOffset + counts[3] + record.VertexOffset - vertex_base;
         record.TriangleOffset += j.TriangleOffset;
-        record.LocalTriangleOffset += j.LocalTriangleOffset;
+        if (j.Topology == 0u) record.LocalTriangleOffset += j.LocalTriangleOffset;
         record.Topology = j.Topology;
         // A fragment's adopter names its traversal leaf.
-        if (j.ExistingPrimitive == InvalidOffset) BindlessBufferMutable(uint,bindless.Buffer,pc.LodLeavesSlot)[j.MeshletOffset+counts[2]+m] = j.NodeOffset+record.Primitive;
-        record.Primitive = j.ExistingPrimitive == InvalidOffset ? record.Primitive+j.PrimitiveOffset : j.ExistingPrimitive;
+        if (j.ExistingPrimitive == InvalidOffset) BindlessBufferMutable(uint,bindless.Buffer,pc.LodLeavesSlot)[j.MeshletAddress+counts[2]+m] = j.NodeHandle+record.Primitive;
+        record.Primitive = j.ExistingPrimitive == InvalidOffset ? record.Primitive+j.PrimitiveHandle : j.ExistingPrimitive;
         record.GroupIndex = j.ExistingGroup;
-        BindlessBufferMutable(MeshletRecord, bindless.Buffer, pc.MeshletsSlot)[j.MeshletOffset + counts[2] + m] = record;
+        BindlessBufferMutable(MeshletRecord, bindless.Buffer, pc.MeshletsSlot)[j.MeshletAddress + counts[2] + m] = record;
 
     }
 }
@@ -518,17 +517,17 @@ kernel void MeshletBuildPrimitives(uint lane [[thread_index_in_threadgroup]], BU
     const uint p=tile_entry.y*256u+lane;
     if (p >= j.PrimitiveCount || j.ExistingPrimitive != InvalidOffset) return;
     device const uint *prim = b.Prim(p);
-    const uint node = prim[7] ? j.NodeOffset + p : InvalidOffset;
-    BindlessBufferMutable(uint,bindless.Buffer,pc.LodParentsSlot)[j.NodeOffset+p] = InvalidOffset;
+    const uint node = prim[7] ? j.NodeHandle + p : InvalidOffset;
+    BindlessBufferMutable(uint,bindless.Buffer,pc.LodParentsSlot)[j.NodeAddress+p] = InvalidOffset;
     const uint source_primitive = WorkGroupElement(bindless,j.Materials,p);
-    BindlessBufferMutable(uint,bindless.Buffer,pc.PrimitiveRoutesSlot)[j.PrimitiveRoutes + 3u*source_primitive + j.Topology] = j.PrimitiveOffset+p;
-    BindlessBufferMutable(PrimitiveRecord, bindless.Buffer, pc.PrimitivesSlot)[j.PrimitiveOffset + p] = {
+    BindlessBufferMutable(uint,bindless.Buffer,pc.PrimitiveRoutesSlot)[j.PrimitiveRoutes + 3u*source_primitive + j.Topology] = j.PrimitiveHandle+p;
+    BindlessBufferMutable(PrimitiveRecord, bindless.Buffer, pc.PrimitivesSlot)[j.PrimitiveAddress + p] = {
         .AuxIndices = j.AuxIndices, .PrimitiveIndex = source_primitive, .Topology = j.Topology, .PrimitiveMaterialOffset = j.Mesh.PrimitiveMaterialOffset,
         .TriangleOffset = j.TriangleOffset + prim[1], .TriangleCount = prim[0],
         .MeshletCount = prim[7], .Level0Count = prim[7], .LodRootNode = node, .LodFinestNode = node,
         .LodAttributes = ~0u,
     };
-    BindlessBufferMutable(LodNode, bindless.Buffer, pc.NodesSlot)[j.NodeOffset + p] = {.Error = INFINITY, .FirstMeshlet = j.MeshletOffset + prim[6], .MeshletCount = prim[7], .MeshletRoot = InvalidOffset};
+    BindlessBufferMutable(LodNode, bindless.Buffer, pc.NodesSlot)[j.NodeAddress + p] = {.Error = INFINITY, .FirstMeshlet = j.MeshletHandle + prim[6], .MeshletCount = prim[7], .Members = InvalidOffset};
 }
 
 #endif

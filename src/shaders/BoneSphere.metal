@@ -11,8 +11,8 @@
 inline BoneSphereVaryings BoneSphereMeshVertexAt(
     const thread Scene &scene, DrawData draw, uint object_id, uint vertex_id
 ) {
-    const uint idx = scene.CornerVertexOrdinal(draw, draw.IndexSlotOffset.Offset + vertex_id);
-    const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
+    const uint idx = scene.ExtrasVertex(draw, vertex_id);
+    const Vertex vert = scene.Vertices(draw.VertexSlot)[scene.VertexAddress(draw, idx)];
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
 
     const bool is_object_mode = scene.View.InteractionMode == InteractionMode::Object;

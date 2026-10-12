@@ -22,8 +22,11 @@ std::vector<FaceTriangles> RetessellateMeshes(state::Scene &r, mtl::ComputeChain
     uint64_t words = 0u;
     for (uint32_t i = 0u; i < inputs.size(); ++i) {
         const auto &input = inputs[i];
-        const auto tangents = a.CornerTangents.Ref(!input.Preview && (meshes.Get(input.StoreId).CornerAttributes & MeshAttributeBit_Tangent));
+        const auto &record = meshes.Get(input.StoreId);
+        const auto tangents = a.CornerTangents.Ref(input.Preview ? Range{} : record.CornerTangents);
         Job job{.Index = i, .Pc = input.Parameters};
+        const auto face_table = a.FaceTriangles.Entries(record.FaceData);
+        job.Pc.Tables = meshes.GetElementTables(input.StoreId);
         job.Pc.Tangents = tangents;
         job.Pc.VertexSlot = meshes.Slots().Vertices;
         job.Pc.CornerSlot = a.FaceCorners.Buffer.Slot;
@@ -32,24 +35,25 @@ std::vector<FaceTriangles> RetessellateMeshes(state::Scene &r, mtl::ComputeChain
         job.Pc.TriangleSlot = a.Triangles.Buffer.Slot;
         std::vector<Range> triangle_ranges;
         ForEachWorkElement(*input.Work, input.Faces, [&](uint32_t face) {
-            const auto loop = a.FaceRanges.Get({face, 1u})[0];
+            const auto address = Resolve<MeshElementBlockSize>(face_table, ElementHandle{face}).Value();
+            const auto loop = a.FaceRanges.Get({address, 1u})[0];
             const uint32_t n = loop.y - loop.x;
-            if (n <= 3u && tangents.ValuesSlot == InvalidSlot) return;
+            if (n <= 3u && tangents.Slot == InvalidSlot) return;
             if (uint64_t(job.Corners) + n > UINT32_MAX / 4u) throw std::length_error("Polygon tessellation scratch exceeds its address space.");
-            if (tangents.ValuesSlot != InvalidSlot) a.CornerTangents.CaptureHandles({loop.x, n});
+            if (tangents.Slot != InvalidSlot) a.CornerTangents.Capture(record.CornerTangents, {loop.x, n});
             job.Faces.push_back({face, job.Corners});
-            const uint32_t first = a.FaceTriangles.Get({face, 1u})[0];
+            const uint32_t first = a.FaceTriangles.Get({address, 1u})[0];
             if (n > 3u) {
                 job.Corners += n;
-                triangle_ranges.push_back({first, n - 2u});
+                a.Triangles.ForEachAddressRun(record.TriangleData, ElementHandle{first}, n - 2u, [&](Range run) { triangle_ranges.push_back(run); });
             }
             job.TriangleBlocks += (uint64_t(first % MeshElementBlockSize) + n - 2u + MeshElementBlockSize - 1u) / MeshElementBlockSize;
         });
         if (job.Faces.empty()) continue;
         a.Triangles.Buffer.CaptureWriteRanges(triangle_ranges, sizeof(uvec3));
         job.Pc.Count = uint32_t(job.Faces.size());
-        const auto capacity = WorkCapacity(a.Triangles.Capacity(), job.TriangleBlocks);
-        words += 4ull * job.Corners + 2ull * job.Faces.size() + ElementWorkWords(a.Triangles.Capacity(), job.TriangleBlocks) + SortElementWorkWords(capacity);
+        const auto bound = a.Triangles.HandleBound(record.TriangleData);
+        words += 4ull * job.Corners + 2ull * job.Faces.size() + ElementWorkWords(bound, job.TriangleBlocks) + SortElementWorkWords(WorkCapacity(bound, job.TriangleBlocks));
         jobs.push_back(std::move(job));
     }
     std::vector<FaceTriangles> results(inputs.size());
@@ -61,7 +65,7 @@ std::vector<FaceTriangles> RetessellateMeshes(state::Scene &r, mtl::ComputeChain
     for (auto &job : jobs) {
         job.Pc.Faces = chain.Upload(as_bytes(job.Faces));
         job.Pc.Scratch = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(4u * job.Corners).Offset};
-        job.Pc.ChangedTriangles = AllocateElementWork(chain.Scratch, a.Triangles.Capacity(), job.TriangleBlocks);
+        job.Pc.ChangedTriangles = AllocateElementWork(chain.Scratch, a.Triangles.HandleBound(meshes.Get(inputs[job.Index].StoreId).TriangleData), job.TriangleBlocks);
         changed.push_back(job.Pc.ChangedTriangles);
         faces += job.Pc.Count;
         corners += job.Corners;
@@ -97,8 +101,7 @@ std::vector<PositionOperationChange> ExecuteGeometryPositions(state::Scene &r, s
         const auto incident = EncodeVertexClosure(r, chain, id, vertices);
         const auto faces = AroundVertices(r, id, Element::Face, incident.Elements[2], vertices);
         neighborhoods.push_back(EncodePrimitiveClosure(r, chain, id, faces, {}, vertices));
-        auto &blocks = bounds.emplace_back(MeshStore::SelectionUpdate{.StoreId = id}).Blocks[0];
-        ForEachWorkBlock(chain.Scratch, vertices.Work, [&](uint32_t block, auto) { blocks.push_back(block); });
+        bounds.emplace_back(MeshStore::SelectionUpdate{.StoreId = id}).Blocks[0] = meshes.ArenaBlocks(id, MeshStore::ElementDomain::Vertex, chain.Scratch, vertices.Work);
         tessellations.push_back({.StoreId = id, .Work = &chain.Scratch, .Faces = neighborhoods.back().Elements[2], .Parameters = {.ChangedVertices = vertices.Work}});
     }
     chain.Submit();
@@ -107,7 +110,7 @@ std::vector<PositionOperationChange> ExecuteGeometryPositions(state::Scene &r, s
         const auto id = targets[changes[i].TargetIndex].StoreId;
         auto &neighborhood = neighborhoods[i];
         neighborhood.Finish(chain);
-        ForEachWorkBlock(chain.Scratch, neighborhood.Elements[2], [&](uint32_t block, auto) { bounds[i].Blocks[2].push_back(block); });
+        bounds[i].Blocks[2] = meshes.ArenaBlocks(id, MeshStore::ElementDomain::Face, chain.Scratch, neighborhood.Elements[2]);
         normals.push_back({id, neighborhood.Elements[0], neighborhood.Counts[0], neighborhood.Elements[2], neighborhood.Counts[2]});
     }
     RetessellateMeshes(r, chain, tessellations);

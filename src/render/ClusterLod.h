@@ -3,6 +3,7 @@
 #include "Range.h"
 #include "gpu/LodNode.h"
 #include "gpu/MeshletLimit.h"
+#include "gpu/MeshletPayloads.h"
 #include "mesh/CornerNormalView.h"
 #include "mesh/ElementAttributeView.h"
 #include "numeric/vec3.h"
@@ -40,6 +41,7 @@ struct ClusterLodPrimitive {
 };
 
 // Describes one input cluster with the bounding sphere and error its group merges.
+// Its first vertex and local triangle index the mesh's source payloads.
 // A coarse cluster carries the sphere and error of the group it was simplified from.
 struct ClusterLodSourceCluster {
     uint32_t FirstVertex{}, VertexCount{};
@@ -57,8 +59,9 @@ struct ClusterLodMesh {
     // Vertex positions, float3 in the first twelve bytes of each vertex.
     const float *Positions{};
     size_t PositionStride{};
-    uint32_t VertexFirst{}; // Arena handle of the first position in the borrowed span.
-    Range DenseVertices{}; // Existing dense owner span, and sparse owners derive primitive bounds.
+    // Resolves vertex handles to their positions' indices, and an empty table indexes positions by handle.
+    std::span<const uint32_t> VertexTable;
+    Range DenseVertices{}; // The vertex handles of a dense owner, and sparse owners derive primitive bounds.
     CornerNormalView Normals;
 
     CornerWeldSource Weld;
@@ -68,7 +71,7 @@ struct ClusterLodMesh {
     // Canonical corner handles (absolute index slots for external triangle soups).
     // Only local triangle bytes carry render flags.
     std::span<const uint32_t> SourceVertexCorners;
-    std::span<const uint8_t> SourceLocalTriangles;
+    std::span<const MeshletTriangle> SourceLocalTriangles;
 };
 
 // Contains build-local offsets that integration rebases into mesh arenas.

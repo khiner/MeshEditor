@@ -14,7 +14,7 @@
 
 namespace {
 void CheckSpatialState(const mtl::ComputeChain &chain, Range state) {
-    if (chain.Scratch.Get({state.Offset + 1u, 1u})[0]) throw std::runtime_error("Spatial face query found invalid canonical topology.");
+    if (chain.Scratch.Get({state.Offset + 1u, 1u})[0]) throw std::runtime_error("Spatial face query found invalid topology.");
 }
 // Conservative AABB predicates; the GPU retains the exact face/edge test.
 bool Overlaps(const MeshTopologyTask &task, const AABB &bounds) {
@@ -77,7 +77,7 @@ SpatialFaceWork::SpatialFaceWork(state::Scene &r, mtl::ComputeChain &chain, cons
         VisitedNodes = a.SelectionTree.VisitBounds(3u * task.SourceId + 2u, a.FaceAggregates.Buffer.GetSpan<SelectionAggregate>(), [&](const AABB &bounds) { return Overlaps(task, bounds); }, [&](uint32_t block) { blocks.push_back(block); CandidateCount += a.FaceTriangles.Blocks.Get({block, 1u})[0].Count; });
         if (!VisitedNodes) throw std::logic_error("Spatial face query requires canonical face aggregates.");
         CandidateBlocks = uint32_t(blocks.size());
-        candidates = AllocateElementWork(chain.Scratch, a.FaceTriangles.Capacity(), blocks.size());
+        candidates = AllocateElementWork(chain.Scratch, a.FaceTriangles.HandleBound(record.FaceData), blocks.size());
         const auto seed = PrepareBlockMembershipWork(chain.Scratch, a.FaceTriangles, record.FaceData, blocks, candidates);
         EncodeElementMembershipWork(r, chain, std::span{&seed, 1u});
         EncodeSortElementWork(r, chain, std::span{&candidates, 1u});
@@ -88,17 +88,18 @@ SpatialFaceWork::SpatialFaceWork(state::Scene &r, mtl::ComputeChain &chain, cons
     auto &storage = chain.Scratch;
     State = storage.Allocate(2u);
     std::ranges::fill(storage.GetMutable(State), 0u);
-    Faces = AllocateElementWork(storage, a.FaceTriangles.Capacity(), std::min(CandidateCount, record.FaceData ? a.FaceTriangles.Set(record.FaceData).BlockCount : 0u));
+    Faces = AllocateElementWork(storage, a.FaceTriangles.HandleBound(record.FaceData), std::min(CandidateCount, record.FaceData ? a.FaceTriangles.Set(record.FaceData).BlockCount : 0u));
     Pc = {
         .Candidates = candidates,
         .Faces = Faces,
+        .Tables = meshes.GetElementTables(task.SourceId),
         .CandidateCount = CandidateCount,
         .FaceRangeSlot = a.FaceRanges.Buffer.Slot,
         .CornerSlot = a.FaceCorners.Buffer.Slot,
         .VertexSlot = a.Vertices.Buffer.Slot,
-        .FaceRangeCapacity = a.FaceRanges.Buffer.Count<uvec2>(),
-        .CornerCapacity = a.FaceCorners.Capacity(),
-        .VertexCapacity = a.Vertices.Capacity(),
+        .FaceBound = a.FaceTriangles.HandleBound(record.FaceData),
+        .CornerBound = a.FaceCorners.HandleBound(record.FaceCorners),
+        .VertexBound = a.Vertices.HandleBound(record.Vertices),
         .ResultSlot = storage.Buffer.Slot,
         .ResultOffset = State.Offset,
         .Mode = mode,

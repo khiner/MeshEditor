@@ -29,7 +29,7 @@ kernel void BoundsReduceKernel(
     float3 lo = AabbEmptyMin;
     float3 hi = AabbEmptyMax;
     if (BoundsVertexLive(bindless,entry,tile.y,tid)) {
-        const float3 pos = scene.GetLocalPosition(draw,vertex_id-draw.VertexOffset);
+        const float3 pos = scene.LocalPositionAt(draw,vertex_id);
         lo = pos;
         hi = pos;
     }

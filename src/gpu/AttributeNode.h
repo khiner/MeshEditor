@@ -44,7 +44,7 @@ enum class AttributeSource : uint32_t {
     Constant, // Value at every element
     Named, // Attribute's value at the element
     Positions, // Vertex position in the vertex arena at Slot
-    Vectors, // Packed float3 at the element's handle in the buffer at Slot
+    Vectors, // Packed float3 at the element's arena address in the buffer at Slot
     Ordinal, // Element's rank among the record's live elements of the domain
 };
 struct AttributeInput {
@@ -54,7 +54,7 @@ struct AttributeInput {
     uint32_t Slot DEFAULT(InvalidSlot);
     GpuArray<uint32_t, 4> Value DEFAULT(); // The constant's component words
 };
-static_assert(sizeof(AttributeInput) == 44);
+static_assert(sizeof(AttributeInput) == 36);
 
 // One attribute node evaluated at every live element of a record's domain, one thread per element slot of its blocks.
 struct AttributeNodePushConstants {
@@ -66,14 +66,14 @@ struct AttributeNodePushConstants {
     uint32_t Operation, Component;
     float Epsilon;
 };
-static_assert(sizeof(AttributeNodePushConstants) == 136);
+static_assert(sizeof(AttributeNodePushConstants) == 112);
 
-// Copies a bool attribute's payload words to the mask block of each element block, and zero to mask blocks without a payload.
-// Mask block b, starting at word Masks.Offset + 8b, holds element block b.
+// Copies a bool attribute's words at each element block of its record to the block's mask block, and zero to the mask blocks of other blocks.
+// Mask block b, starting at word Masks.Offset + 8b, holds element block b, and an attribute without a slot names a domain it is not on.
 struct AttributeMaskPushConstants {
     NamedAttributeRef Attribute;
-    uint32_t TableCount; // Zero for a domain the attribute is not on
+    uint32_t MembershipSlot, Owner; // The domain's block metadata and the record's set in it
     SlotOffset Masks;
     uint32_t Words;
 };
-static_assert(sizeof(AttributeMaskPushConstants) == 32);
+static_assert(sizeof(AttributeMaskPushConstants) == 28);

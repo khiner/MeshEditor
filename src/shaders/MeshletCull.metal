@@ -1,4 +1,3 @@
-#include "MeshletIndexShared.metal"
 #include "gpu/AABB.h"
 #include "TransformUtils.metal"
 #include "Bindless.metal"
@@ -12,6 +11,7 @@
 #include "gpu/LodFrontierState.h"
 #include "gpu/LodNode.h"
 #include "gpu/MeshDispatchArgs.h"
+#include "gpu/MeshletClassification.h"
 #include "gpu/MeshletCullBlockState.h"
 #include "gpu/MeshletCullPushConstants.h"
 #include "gpu/MeshletRoute.h"
@@ -45,7 +45,7 @@ inline MeshletRoute OpaqueVisibilityRoute(PBRMaterial material, Transform world)
 
 // The draw state the cull reads from an instance's record and its mesh's.
 struct CullInstance {
-    uint Flags, PrimitiveRoot, PrimitiveCount, MeshletBoundsNamespace;
+    uint Mesh, Flags, PrimitiveCount, MeshletBoundsNamespace;
     bool Deformed;
 };
 
@@ -53,13 +53,13 @@ struct CullInstance {
 inline CullInstance ResolveCullInstance(const thread Scene &scene, MeshletCullPushConstants pc, uint instance_slot) {
     const InstanceRecord record = BindlessBuffer(InstanceRecord, scene.B.Buffer, pc.InstanceSlot)[instance_slot];
     const uint state = uint(scene.InstanceStates(scene.View.InstanceStateSlot)[instance_slot]);
-    if (record.Mesh == InvalidOffset || (state & STATE_HIDDEN) != 0u) return {0u, InvalidOffset, 0u, InvalidOffset, false};
+    if (record.Mesh == InvalidOffset || (state & STATE_HIDDEN) != 0u) return {InvalidOffset, 0u, 0u, InvalidOffset, false};
     device const MeshDisplay &display = scene.MeshRecords(scene.View.MeshRecordSlot)[record.Mesh].Display;
     const bool deformed = record.ArmatureDeformOffset != InvalidOffset || display.MorphDeformOffset != InvalidOffset ||
         PoseNamespace(record.PositionNamespace, display.PositionNamespace) != InvalidOffset || display.HasPendingVertexTransform != 0u;
     return {
+        record.Mesh,
         InstanceFlags(display.Flags, display.PrimaryEditInstanceIndex, instance_slot, state),
-        display.PrimitiveRoot,
         display.PrimitiveCount,
         PoseNamespace(record.MeshletBoundsNamespace, display.MeshletBoundsNamespace),
         deformed,
@@ -95,14 +95,15 @@ inline float LodGroupErrorPixels(const thread Scene &scene, ClusterGroup group, 
 
 // Selects the cluster when its group exceeds the error threshold and its refining group does not.
 inline bool LodClusterVisible(
-    const thread Scene &scene, MeshletCullPushConstants pc, MeshletRecord meshlet, Transform world, bool finest_only
+    const thread Scene &scene, MeshletCullPushConstants pc, MeshletRecord meshlet, Transform world, bool finest_only, uint group_table
 ) {
     if (meshlet.GroupIndex == InvalidOffset) return true;
     if (finest_only) return meshlet.RefinedGroup == InvalidOffset;
     device const ClusterGroup *groups = BindlessBuffer(ClusterGroup, scene.B.Buffer, pc.ClusterGroupSlot);
-    if (LodGroupErrorPixels(scene, groups[meshlet.GroupIndex], world) <= scene.View.LodErrorPixels) return false;
+    device const uint *table = BindlessBuffer(uint, scene.B.Buffer, pc.Groups.Table) + group_table;
+    if (LodGroupErrorPixels(scene, groups[Resolve<RenderBlockSize>(table, meshlet.GroupIndex)], world) <= scene.View.LodErrorPixels) return false;
     return meshlet.RefinedGroup == InvalidOffset ||
-        LodGroupErrorPixels(scene, groups[meshlet.RefinedGroup], world) <= scene.View.LodErrorPixels;
+        LodGroupErrorPixels(scene, groups[Resolve<RenderBlockSize>(table, meshlet.RefinedGroup)], world) <= scene.View.LodErrorPixels;
 }
 
 inline bool MeshletConeVisible(
@@ -139,7 +140,7 @@ inline OrientedBounds DeformedMeshletBounds(
     CullInstance instance, Transform world
 ) {
     if (instance.MeshletBoundsNamespace == InvalidOffset || pc.PosedMeshletBoundsSlot == InvalidSlot) return {};
-    const uint index = PoseAttributeIndex(scene.B,pc.PosedMeshletBoundsNodesSlot,instance.MeshletBoundsNamespace,candidate.Meshlet);
+    const uint index = PoseAttributeIndex(scene.B,pc.PosedMeshletBoundsNodesSlot,instance.MeshletBoundsNamespace,candidate.MeshletAddress);
     if (index == InvalidOffset) return {};
     const AABB bounds = BindlessBuffer(AABB,scene.B.Buffer,pc.PosedMeshletBoundsSlot)[index];
     return TransformBounds(bounds, world);
@@ -223,19 +224,19 @@ inline uint ClassifyInstanceRange(
 }
 
 inline RoutedMeshlet ClassifyMeshlet(
-    const thread Scene &scene, MeshletCullPushConstants pc, VisibleMeshlet candidate,
+    const thread Scene &scene, MeshletCullPushConstants pc, VisibleMeshlet candidate, uint group_table,
     uint instance_slot, CullInstance instance
 ) {
     RoutedMeshlet result{0u, false};
-    const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, scene.B.Buffer, pc.MeshletSlot)[candidate.Meshlet];
+    const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, scene.B.Buffer, pc.MeshletSlot)[candidate.MeshletAddress];
     const Transform world = scene.Models(pc.ModelSlot)[instance_slot];
-    if (!LodClusterVisible(scene, pc, meshlet, world, InstanceFinestOnly(scene, pc, instance))) return result;
+    if (!LodClusterVisible(scene, pc, meshlet, world, InstanceFinestOnly(scene, pc, instance), group_table)) return result;
     result.Coarse = meshlet.RefinedGroup != InvalidOffset;
     const MeshletBounds bounds = ResolveMeshletBounds(scene, pc, candidate, instance_slot, instance, meshlet, world);
     if (bounds.Valid && !MeshletBoundsInFrustum(scene, bounds)) return result;
     const float3 world_center = bounds.Valid ? bounds.Center : float3(world.P);
 
-    const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, scene.B.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
+    const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, scene.B.Buffer, pc.PrimitiveSlot)[candidate.PrimitiveAddress];
     const bool triangle_topology = MeshletPrimitiveTopology(meshlet) == uint(MeshPrimitiveTopology::Triangle);
     // A one-meshlet instance already passed the conservative instance query.
     const bool can_occlude = bounds.Valid && !(instance.PrimitiveCount == 1u && primitive.MeshletCount == 1u);
@@ -288,11 +289,18 @@ inline RoutedMeshlet ClassifyMeshlet(
     return result;
 }
 
-inline VisibleMeshlet ResolveMeshlet(
+// A cull entry's cluster, with its record's group table run when traversal produced it.
+struct CullCandidate {
+    VisibleMeshlet Entry;
+    uint GroupTable;
+};
+
+// The range's table runs resolve the work entry's member, cluster and primitive handles.
+inline CullCandidate ResolveMeshlet(
     device const BindlessSet &bindless, MeshletCullPushConstants pc, uint block_id, uint work_index
 ) {
     device const MeshletWorkState *state = BindlessBuffer(MeshletWorkState, bindless.Buffer, pc.WorkStateSlot);
-    if (work_index >= state->MeshletCount) return {InvalidOffset, InvalidOffset, InvalidOffset};
+    if (work_index >= state->MeshletCount) return {{InvalidOffset, InvalidOffset, InvalidOffset, InvalidOffset}, InvalidOffset};
     device const uint *work_blocks = BindlessBuffer(uint, bindless.Buffer, pc.WorkBlockSlot);
     device const MeshletWorkRange *ranges = BindlessBuffer(MeshletWorkRange, bindless.Buffer, pc.WorkRangeSlot);
     uint lo = work_blocks[block_id];
@@ -303,14 +311,12 @@ inline VisibleMeshlet ResolveMeshlet(
         else hi = mid;
     }
     const MeshletWorkRange range = ranges[lo];
-    return {range.Instance, MeshletIndexSelect(bindless,{pc.MeshletIndexNodesSlot,pc.MeshletIndexLeavesSlot,range.MeshletRoot},work_index-range.WorkOffset), InvalidOffset};
-}
-
-// The mesh record of a candidate's instance, or InvalidOffset for an unmapped instance.
-inline uint CandidateMesh(device const BindlessSet &bindless, MeshletCullPushConstants pc, VisibleMeshlet candidate) {
-    if (candidate.Instance == InvalidOffset) return InvalidOffset;
-    const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[candidate.Instance];
-    return instance_slot == InvalidOffset ? InvalidOffset : BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot].Mesh;
+    device const uint *member_table = BindlessBuffer(uint, bindless.Buffer, pc.Members.Table) + range.Tables.Members;
+    const uint cluster = BindlessBuffer(uint, bindless.Buffer, pc.MemberSlot)[Resolve<RenderBlockSize>(member_table, range.Members + work_index - range.WorkOffset)];
+    const uint meshlet = Resolve<RenderBlockSize>(BindlessBuffer(uint, bindless.Buffer, pc.Meshlets.Table) + range.Tables.Meshlets, cluster);
+    const uint primitive = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[meshlet].Primitive;
+    device const uint *primitive_table = BindlessBuffer(uint, bindless.Buffer, pc.Primitives.Table) + range.Tables.Primitives;
+    return {{range.Instance, meshlet, InvalidOffset, Resolve<RenderBlockSize>(primitive_table, primitive)}, range.Tables.Groups};
 }
 
 // The routes that draw surfaces.
@@ -329,10 +335,15 @@ inline uint SourceSurfaceRoute(device const BindlessSet &bindless, MeshletCullPu
 }
 
 // A cull filtering a source cull reads the source's surface entries in place of traversal work.
-inline VisibleMeshlet ResolveCullEntry(device const BindlessSet &bindless, MeshletCullPushConstants pc, uint block_id, uint i) {
+inline CullCandidate ResolveCullEntry(device const BindlessSet &bindless, MeshletCullPushConstants pc, uint block_id, uint i) {
     if (pc.SourceVisibleSlot == InvalidSlot) return ResolveMeshlet(bindless, pc, block_id, i);
-    if (SourceSurfaceRoute(bindless, pc, i) == CullRouteCount) return {InvalidOffset, InvalidOffset, InvalidOffset};
-    return BindlessBuffer(VisibleMeshlet, bindless.Buffer, pc.SourceVisibleSlot)[i];
+    if (SourceSurfaceRoute(bindless, pc, i) == CullRouteCount) return {{InvalidOffset, InvalidOffset, InvalidOffset, InvalidOffset}, InvalidOffset};
+    return {BindlessBuffer(VisibleMeshlet, bindless.Buffer, pc.SourceVisibleSlot)[i], InvalidOffset};
+}
+// Whether entry `i` of the cull holds a candidate, which classification resolved.
+inline bool CullEntryValid(device const BindlessSet &bindless, MeshletCullPushConstants pc, uint i) {
+    if (pc.SourceVisibleSlot == InvalidSlot) return i < BindlessBuffer(MeshletWorkState, bindless.Buffer, pc.WorkStateSlot)->MeshletCount;
+    return SourceSurfaceRoute(bindless, pc, i) != CullRouteCount;
 }
 
 // Keeps an outlined surface entry in its route.
@@ -343,7 +354,7 @@ inline uint SilhouetteRoutes(
     if ((instance.Flags & uint(MeshletInstanceFlag::Silhouette)) == 0u) return 0u;
     const uint route = SourceSurfaceRoute(scene.B, pc, i);
     if (route == uint(MeshletRoute::Blend) || route == uint(MeshletRoute::Transmission)) return 1u << route;
-    const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, scene.B.Buffer, pc.MeshletSlot)[entry.Meshlet];
+    const MeshletRecord meshlet = BindlessBuffer(MeshletRecord, scene.B.Buffer, pc.MeshletSlot)[entry.MeshletAddress];
     const MeshletBounds bounds = ResolveMeshletBounds(scene, pc, entry, instance_slot, instance, meshlet, scene.Models(pc.ModelSlot)[instance_slot]);
     const bool hidden = !bounds.Valid ||
         !BoxPastPyramid(scene, pc.PyramidSamplerSlot, bounds.Center, bounds.Ax, bounds.Ay, bounds.Az, 0.0f, 0.0f, true);
@@ -365,6 +376,17 @@ kernel void SilhouetteCullSize(
     BindlessBufferMutable(MeshDispatchArgs, bindless.Buffer, pc.WorkDispatchArgsSlot)[0] = {blocks, 1u, 1u};
 }
 
+// The table run of the arena's set at index `set`, or InvalidOffset for an absent set.
+inline uint SetTableOffset(const thread Scene &scene, SetArenaSlots arena, uint set) {
+    return set == InvalidOffset ? InvalidOffset : BindlessBuffer(MeshElementSet, scene.B.Buffer, arena.Sets)[set].First;
+}
+
+// The mesh display the work instance draws with.
+inline device const MeshDisplay &WorkDisplay(const thread Scene &scene, MeshletCullPushConstants pc, uint instance) {
+    const uint instance_slot = BindlessBuffer(uint, scene.B.Buffer, pc.InstanceMapSlot)[instance];
+    return scene.MeshRecords(scene.View.MeshRecordSlot)[BindlessBuffer(InstanceRecord, scene.B.Buffer, pc.InstanceSlot)[instance_slot].Mesh].Display;
+}
+
 // Node error and bounds conservatively cover every record in the span, so pruning preserves classification results.
 inline bool LodNodeVisible(const thread Scene &scene, LodNode node, Transform world) {
     // Infinite error disables span pruning because the associated bounds are undefined.
@@ -376,10 +398,9 @@ inline bool LodNodeVisible(const thread Scene &scene, LodNode node, Transform wo
     return sphere_in_frustum(scene.ViewProj(), trs_transform_point(world, float3(node.Center)), radius);
 }
 
-// Stores one entry's child nodes and final-level record range.
+// Stores one entry's child nodes and final-level record range, with the frontier entry that produced them.
 struct LodWork {
-    uint Instance;
-    uint Node;
+    LodFrontierEntry Entry;
     uint ChildCount;
     uint MeshletCount;
 };
@@ -394,7 +415,7 @@ inline LodWork ResolveLodSeed(const thread Scene &scene, MeshletCullPushConstant
     if (visibility == 0u) return {};
     // Membership contains only primitives with finest geometry. Each emits
     // one root, so seeding needs no primitive traversal or record loads.
-    return {id, InvalidOffset, instance.PrimitiveCount, 0u};
+    return {{id, InvalidOffset}, instance.PrimitiveCount, 0u};
 }
 
 // Expands one frontier node into child nodes or its final-level record range.
@@ -403,17 +424,16 @@ inline LodWork ResolveLodNode(const thread Scene &scene, MeshletCullPushConstant
     if (index >= states[pc.LodFrontierIndex].NodeCount) return {};
     const LodFrontierEntry entry = BindlessBuffer(LodFrontierEntry, scene.B.Buffer, pc.LodFrontierSlot)[index];
     const uint instance_slot = BindlessBuffer(uint, scene.B.Buffer, pc.InstanceMapSlot)[entry.Instance];
-    if (instance_slot == InvalidOffset) return {};
-    const LodNode node = BindlessBuffer(LodNode, scene.B.Buffer, pc.LodNodeSlot)[entry.Node];
+    if (instance_slot == InvalidOffset || entry.NodeAddress == InvalidOffset) return {};
+    const LodNode node = BindlessBuffer(LodNode, scene.B.Buffer, pc.LodNodeSlot)[entry.NodeAddress];
     if (!LodNodeVisible(scene, node, scene.Models(pc.ModelSlot)[instance_slot])) return {};
     // The final level emits the complete range of nodes deeper than the recorded depth.
     if (pc.LodFinalLevel != 0u) {
-        const uint count = node.MeshletRoot == InvalidOffset ? 0u :
-            BindlessBuffer(MeshletIndexNode,scene.B.Buffer,pc.MeshletIndexNodesSlot)[node.MeshletRoot].Count;
-        return {entry.Instance,entry.Node,count ? 1u : 0u,count};
+        const uint count = node.Members == InvalidOffset ? 0u : node.MeshletCount;
+        return {entry, count ? 1u : 0u, count};
     }
     // Repeat leaves through later levels to preserve frontier order.
-    return {entry.Instance, entry.Node, max(node.ChildCount, 1u), 0u};
+    return {entry, max(node.ChildCount, 1u), 0u};
 }
 
 inline LodWork ResolveLodWork(const thread Scene &scene, MeshletCullPushConstants pc, uint index) {
@@ -525,10 +545,8 @@ kernel void LodFrontierEmit(
     if (pc.LodFinalLevel != 0u) {
         meshlet_rank += group_prefixes[PrefixStride + simd_group];
         const uint work_offset = block.MeshletCount + meshlet_rank;
-        const LodNode node = BindlessBuffer(LodNode, bindless.Buffer, pc.LodNodeSlot)[work.Node];
-        BindlessBufferMutable(MeshletWorkRange, bindless.Buffer, pc.WorkRangeSlot)[output] = {
-            work.Instance, node.MeshletRoot, work.MeshletCount, work_offset
-        };
+        const LodNode node = BindlessBuffer(LodNode, bindless.Buffer, pc.LodNodeSlot)[work.Entry.NodeAddress];
+        BindlessBufferMutable(MeshletWorkRange, bindless.Buffer, pc.WorkRangeSlot)[output] = {work.Entry.Instance, node.Members, work.MeshletCount, work_offset, work.Entry.Tables};
         device uint *work_blocks = BindlessBufferMutable(uint, bindless.Buffer, pc.WorkBlockSlot);
         const uint first_block = (work_offset + CullBlockSize - 1u) / CullBlockSize;
         const uint last_block = (work_offset + work.MeshletCount - 1u) / CullBlockSize;
@@ -538,22 +556,45 @@ kernel void LodFrontierEmit(
 
     device LodFrontierEntry *next = BindlessBufferMutable(LodFrontierEntry, bindless.Buffer, pc.LodFrontierAltSlot);
     if (pc.LodSeedLevel != 0u) {
-        const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[work.Instance];
+        const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[work.Entry.Instance];
         const CullInstance instance = ResolveCullInstance(scene, pc, instance_slot);
         const bool finest_only = InstanceFinestOnly(scene, pc, instance);
-        for (uint p = 0u; p < instance.PrimitiveCount; ++p) {
-            const PrimitiveRecord primitive = primitives[MeshletIndexSelect(scene.B,{pc.MeshletIndexNodesSlot,pc.MeshletIndexLeavesSlot,instance.PrimitiveRoot},p)];
-            next[output++] = {work.Instance, finest_only ? primitive.LodFinestNode : primitive.LodRootNode};
+        // The seed resolves the record's set headers once for every entry its traversal emits.
+        device const MeshDisplay &display = WorkDisplay(scene, pc, work.Entry.Instance);
+        const MeshElementSet header = BindlessBuffer(MeshElementSet, bindless.Buffer, pc.Primitives.Sets)[display.PrimitiveSet];
+        LodFrontierEntry seed{
+            work.Entry.Instance, InvalidOffset, SetTableOffset(scene, pc.Nodes, display.NodeSet),
+            {SetTableOffset(scene, pc.Members, display.MemberSet), SetTableOffset(scene, pc.Meshlets, display.MeshletSet), header.First, SetTableOffset(scene, pc.Groups, display.GroupSet)},
+        };
+        // Each live primitive of the record's set seeds its root, in handle order, up to the count the seed level reserved.
+        const uint end = output + instance.PrimitiveCount;
+        device const uint *node_table = BindlessBuffer(uint, bindless.Buffer, pc.Nodes.Table) + seed.NodeTable;
+        device const uint *table = BindlessBuffer(uint, bindless.Buffer, pc.Primitives.Table) + header.First;
+        device const MeshElementBlock *blocks = BindlessBuffer(MeshElementBlock, bindless.Buffer, pc.Primitives.Blocks);
+        for (uint local = 0u; local < header.BlockCount && output < end; ++local) {
+            const uint block = table[local];
+            if (block == InvalidOffset) continue;
+            for (uint bits = blocks[block].Live[0]; bits && output < end; bits &= bits - 1u) {
+                const PrimitiveRecord primitive = primitives[block * RenderBlockSize + ctz(bits)];
+                const uint root = finest_only ? primitive.LodFinestNode : primitive.LodRootNode;
+                seed.NodeAddress = root == InvalidOffset ? InvalidOffset : Resolve<RenderBlockSize>(node_table, root);
+                next[output++] = seed;
+            }
         }
         return;
     }
-    const LodNode node = BindlessBuffer(LodNode, bindless.Buffer, pc.LodNodeSlot)[work.Node];
+    const LodNode node = BindlessBuffer(LodNode, bindless.Buffer, pc.LodNodeSlot)[work.Entry.NodeAddress];
     // Repeat shallow leaves until the final level.
     if (node.ChildCount == 0u) {
-        next[output] = {work.Instance, work.Node};
+        next[output] = work.Entry;
         return;
     }
-    for (uint c = 0u; c < node.ChildCount; ++c) next[output + c] = {work.Instance, node.ChildOffset + c};
+    device const uint *node_table = BindlessBuffer(uint, bindless.Buffer, pc.Nodes.Table) + work.Entry.NodeTable;
+    LodFrontierEntry child = work.Entry;
+    for (uint c = 0u; c < node.ChildCount; ++c) {
+        child.NodeAddress = Resolve<RenderBlockSize>(node_table, node.ChildOffset + c);
+        next[output + c] = child;
+    }
 }
 
 kernel void MeshletCullBlockCount(
@@ -568,14 +609,16 @@ kernel void MeshletCullBlockCount(
 ) {
     device MeshletCullBlockState *blocks = BindlessBufferMutable(MeshletCullBlockState, bindless.Buffer, pc.BlockStateSlot);
     const uint i = block_id * CullBlockSize + lane;
-    const VisibleMeshlet work = ResolveCullEntry(bindless, pc, block_id, i);
-    uint routes = 0u, coarse = 0u;
+    const CullCandidate candidate = ResolveCullEntry(bindless, pc, block_id, i);
+    const VisibleMeshlet work = candidate.Entry;
+    uint routes = 0u, coarse = 0u, mesh = InvalidOffset;
     if (work.Instance != InvalidOffset) {
         const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[work.Instance];
         if (instance_slot != InvalidOffset) {
             const Scene scene{bindless, view, theme, workspace};
             const CullInstance instance = ResolveCullInstance(scene, pc, instance_slot);
-            const RoutedMeshlet routed = pc.SourceVisibleSlot == InvalidSlot ? ClassifyMeshlet(scene, pc, work, instance_slot, instance) :
+            mesh = instance.Mesh;
+            const RoutedMeshlet routed = pc.SourceVisibleSlot == InvalidSlot ? ClassifyMeshlet(scene, pc, work, candidate.GroupTable, instance_slot, instance) :
                                                                               RoutedMeshlet{SilhouetteRoutes(scene, pc, work, instance_slot, instance, i), false};
             routes = routed.Routes;
             coarse = routed.Routes != 0u && routed.Coarse ? 1u : 0u;
@@ -605,7 +648,7 @@ kernel void MeshletCullBlockCount(
     }
 
     if (work.Instance != InvalidOffset) {
-        BindlessBufferMutable(uint, bindless.Buffer, pc.ClassificationSlot)[i] = routes;
+        BindlessBufferMutable(MeshletClassification, bindless.Buffer, pc.ClassificationSlot)[i] = {routes, {work.Instance, work.MeshletAddress, mesh, work.PrimitiveAddress}};
     }
 }
 
@@ -650,11 +693,9 @@ kernel void MeshletCullEmit(
     threadgroup uint *group_prefixes [[threadgroup(0)]]
 ) {
     const uint i = block_id * CullBlockSize + lane;
-    const VisibleMeshlet work = ResolveCullEntry(bindless, pc, block_id, i);
-    const bool valid = work.Instance != InvalidOffset;
-    const uint mesh = CandidateMesh(bindless, pc, work);
-    const uint classification = valid ? BindlessBuffer(uint, bindless.Buffer, pc.ClassificationSlot)[i] : 0u;
-    const uint routes = classification & ((1u << CullRouteCount) - 1u);
+    const bool valid = CullEntryValid(bindless, pc, i);
+    const MeshletClassification classification = valid ? BindlessBuffer(MeshletClassification, bindless.Buffer, pc.ClassificationSlot)[i] : MeshletClassification{0u, {}};
+    const uint routes = classification.Routes & ((1u << CullRouteCount) - 1u);
 
     uint present[CullRouteCount], rank[CullRouteCount];
     for (uint route = 0u; route < CullRouteCount; ++route) {
@@ -683,6 +724,6 @@ kernel void MeshletCullEmit(
         if (present[route] == 0u) continue;
         rank[route] += group_prefixes[route * PrefixStride + simd_group];
         uint output = state->Offsets[route] + blocks[block_id].Routes[route] + rank[route];
-        visible[output] = {work.Instance, work.Meshlet, mesh};
+        visible[output] = classification.Entry;
     }
 }

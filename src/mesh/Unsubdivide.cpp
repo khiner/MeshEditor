@@ -22,7 +22,7 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const Geometry
     std::vector<Node> nodes;
     std::unordered_map<uint32_t, uint32_t> index;
     std::ranges::for_each(selection.Vertices, [&](uint32_t v) {
-        const auto fan = c.VertexCorners[v];
+        const auto fan = c.Incoming(he::VH{v});
         if (fan.y > 4u) return;
         Node node{.Vertex = v};
         uint32_t boundary = 0u, manifold = 0u;
@@ -86,7 +86,7 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const Geometry
         return vertices;
     };
     const auto exists = [&](const std::vector<uint32_t> &vertices, const std::set<uint32_t> &excluded) {
-        const auto fan = c.VertexCorners[vertices.front()];
+        const auto fan = c.Incoming(he::VH{vertices.front()});
         for (uint32_t i = 0u; i < fan.y; ++i) {
             const auto f = c.FanItems[fan.x + i].y;
             if (excluded.contains(f) || mesh.GetValence(he::FH{f}) != vertices.size()) continue;

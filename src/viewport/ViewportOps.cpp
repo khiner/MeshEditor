@@ -42,7 +42,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
         for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
             const auto mesh = GetDrawnMesh(r, mesh_entity);
             const auto count = mesh.ElementCount(element);
-            if (count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), element), count);
+            if (count > 0) ranges.emplace_back(mesh_entity, count);
         }
         return ranges;
     };
@@ -88,7 +88,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
                 const auto mesh = GetDrawnMesh(r, mesh_entity);
                 r.emplace<MeshElementSelection>(mesh_entity);
                 initialize_selection.emplace_back(
-                    mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), edit_element), mesh.ElementCount(edit_element)
+                    mesh_entity, mesh.ElementCount(edit_element)
                 );
             }
         }

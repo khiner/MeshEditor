@@ -14,13 +14,13 @@ struct Fixture {
     std::vector<vec3> Positions;
     std::vector<vec3> VertexNormals;
     std::vector<vec2> CornerUvs;
-    std::vector<uint32_t> AttributeBlocks, HalfedgeFaces;
+    std::vector<uint32_t> HalfedgeFaces;
     std::vector<uvec3> Triangles;
     std::vector<uint32_t> CornerVertices;
     std::vector<ClusterLodPrimitive> Primitives;
     std::vector<ClusterLodSourceCluster> Clusters;
     std::vector<uint32_t> ClusterVertices;
-    std::vector<uint8_t> ClusterLocalTriangles;
+    std::vector<MeshletTriangle> ClusterLocalTriangles;
 
     uint32_t TriangleCount() const { return uint32_t(CornerVertices.size() / 3u); }
 };
@@ -103,11 +103,10 @@ void AppendLevel0Clusters(Fixture &fixture, uint32_t first_triangle, uint32_t tr
             fixture.ClusterVertices.push_back(first_triangle * 3u + representative[vertex]);
         }
         const uint32_t first_local_triangle = uint32_t(fixture.ClusterLocalTriangles.size());
-        fixture.ClusterLocalTriangles.insert(
-            fixture.ClusterLocalTriangles.end(),
-            local_triangles.begin() + meshlet.triangle_offset,
-            local_triangles.begin() + meshlet.triangle_offset + size_t(meshlet.triangle_count) * 3u
-        );
+        for (uint32_t t = 0; t < meshlet.triangle_count; ++t) {
+            const auto *local = &local_triangles[meshlet.triangle_offset + t * 3u];
+            fixture.ClusterLocalTriangles.push_back({local[0], local[1], local[2]});
+        }
         const auto bounds = meshopt_computeMeshletBounds(
             &local_vertices[meshlet.vertex_offset], &local_triangles[meshlet.triangle_offset], meshlet.triangle_count,
             &fixture.Positions.front().x, fixture.Positions.size(), sizeof(vec3)
@@ -130,8 +129,6 @@ void CloseTrianglePrimitive(Fixture &fixture, uint32_t first_triangle) {
         fixture.Triangles.push_back({face * 3u, face * 3u + 1u, face * 3u + 2u});
         fixture.HalfedgeFaces.insert(fixture.HalfedgeFaces.end(), 3u, face);
     }
-    while (fixture.AttributeBlocks.size() * MeshElementBlockSize < fixture.CornerVertices.size())
-        fixture.AttributeBlocks.push_back(uint32_t(fixture.AttributeBlocks.size()) + 1u);
     const uint32_t triangle_count = fixture.TriangleCount() - first_triangle;
     const uint32_t first_cluster = uint32_t(fixture.Clusters.size());
     AppendLevel0Clusters(fixture, first_triangle, triangle_count);
@@ -166,7 +163,7 @@ ClusterLodMesh MeshOf(const Fixture &fixture) {
         .PositionStride = sizeof(vec3),
         .DenseVertices = {0u, uint32_t(fixture.Positions.size())},
         .Normals = {.CornerVertices = fixture.CornerVertices, .VertexNormals = fixture.VertexNormals},
-        .Weld = {.CornerClassMode = uint32_t(CornerClassMode::UniformVertex), .TriangleFaces = {TriangleRefs(fixture.Triangles), fixture.HalfedgeFaces}, .CornerUvs = {CornerAttributeView<vec2>{{fixture.AttributeBlocks, fixture.CornerUvs}, TriangleRefs(fixture.Triangles)}}},
+        .Weld = {.CornerClassMode = uint32_t(CornerClassMode::UniformVertex), .TriangleFaces = {TriangleRefs(fixture.Triangles), fixture.HalfedgeFaces}, .CornerUvs = {CornerAttributeView<vec2>{{fixture.CornerUvs}, TriangleRefs(fixture.Triangles)}}},
         .Primitives = fixture.Primitives,
         .Clusters = fixture.Clusters,
         .SourceVertexCorners = fixture.ClusterVertices,
@@ -188,7 +185,7 @@ std::vector<uint32_t> LodWords(const ClusterLodBuild &build) {
     list(build.GroupClusters);
     list(build.Level0Groups);
     put(uint32_t(build.Nodes.size()));
-    for (const auto &n : build.Nodes) put(n.Center.x, n.Center.y, n.Center.z, n.Radius, n.Error, n.FirstMeshlet, n.MeshletCount, n.ChildOffset, n.ChildCount, n.MeshletRoot);
+    for (const auto &n : build.Nodes) put(n.Center.x, n.Center.y, n.Center.z, n.Radius, n.Error, n.FirstMeshlet, n.MeshletCount, n.ChildOffset, n.ChildCount, n.Members);
     put(uint32_t(build.PrimitiveRanges.size()));
     for (const auto &p : build.PrimitiveRanges) put(p.FirstCluster, p.ClusterCount, p.FirstGroup, p.GroupCount, p.RootNode, p.FinestNode, p.SimplifyScale);
     return words;
@@ -216,7 +213,7 @@ int main() {
             levels.push_back((i % 3u) * 2u);
             for (uint32_t t = 0u; t < c.TriangleCount; ++t) {
                 uvec3 triangle;
-                for (uint32_t k = 0u; k < 3u; ++k) triangle[k] = fixture.ClusterVertices[c.FirstVertex + fixture.ClusterLocalTriangles[c.FirstLocalTriangle + 3u * t + k]];
+                for (uint32_t k = 0u; k < 3u; ++k) triangle[k] = fixture.ClusterVertices[c.FirstVertex + fixture.ClusterLocalTriangles[c.FirstLocalTriangle + t][k]];
                 triangles.push_back(triangle);
             }
         }

@@ -117,7 +117,7 @@ void UpdateSilhouetteWork(state::Scene &r, state::Entity viewport) {
         if (render_instance.BufferIndex == UINT32_MAX || !IsSilhouetteEligible(r, instance.Entity)) continue;
         if (const auto primary = primaries.find(instance.Entity); primary != primaries.end() && primary->second == entity) continue;
         const auto &mb = RecordOf(r, instance.Entity);
-        work.Nodes += meshes.Render().ActiveMeshlets.Count(mb.NodeRoot);
+        work.Nodes += meshes.LodNodeCount(mb);
         work.Meshlets += meshes.MeshletCount(mb);
     }
     buffers.FlagWork(uint32_t(MeshletInstanceFlag::Silhouette)) = work;
@@ -916,11 +916,10 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             if (!resets(mesh_entity)) continue;
             const auto selection_after = r.get<const MeshGeometryDirty>(mesh_entity).Selection;
             const auto mesh = GetDrawnMesh(r, mesh_entity);
-            const auto id = mesh.GetStoreId();
             const uint32_t count = mesh.ElementCount(edit_mode);
             if (count == 0) continue;
             auto &ranges = selection_after == EditSelectionAfter::Reset ? reset_ranges : carried_ranges;
-            ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, edit_mode), count);
+            ranges.emplace_back(mesh_entity, count);
         }
         if (!reset_ranges.empty()) ApplyEditSelectionCommand(r, reset_ranges, edit_mode, EditSelectionOperation::Clear);
         if (!carried_ranges.empty()) ApplyEditSelectionCommand(r, carried_ranges, edit_mode, EditSelectionOperation::Derive);
@@ -1319,14 +1318,10 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             .LodErrorPixels = settings.LodErrorPixels,
             .EdgeSharpnessSlot = mesh_slots.EdgeSharpness,
             .FaceSharpnessSlot = mesh_slots.FaceSharpness,
-            .CornerSectors = mesh_slots.CornerSector,
-            .NormalSectors = mesh_slots.NormalSector,
             .BaseVertexNormalSlot = mesh_slots.BaseVertexNormal,
             .BaseFaceNormalSlot = mesh_slots.BaseFaceNormal,
             .FaceTriangleStartSlot = mesh_slots.FaceTriangleStart,
-            .Skin = mesh_slots.Skin,
             .ArmatureDeformSlot = buffers.ArmatureDeformBuffer.Buffer.Slot,
-            .Morph = mesh_slots.Morph,
             .MorphWeightsSlot = buffers.MorphWeightBuffer.Buffer.Slot,
             .PosedPositionSlot = buffers.PosedPositions.Values.Buffer.Slot,
             .PosedPositionNodesSlot = buffers.PosedPositions.Nodes.Buffer.Slot,

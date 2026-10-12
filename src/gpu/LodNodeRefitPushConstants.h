@@ -1,12 +1,13 @@
 #pragma once
-#include "gpu/MeshletIndex.h"
+#include "gpu/MeshElementSet.h"
 #include "gpu/SlotOffset.h"
 
+// Jobs name node handles of the record whose node, meshlet, group and member sets resolve its handles.
 struct LodNodeRefitPushConstants {
-    SlotOffset Jobs DEFAULT(); // Node IDs
+    SlotOffset Jobs DEFAULT();
     uint32_t Count DEFAULT();
-    MeshletIndexRef Nodes DEFAULT(), Meshlets DEFAULT(), Groups DEFAULT();
-    uint32_t NodeSlot DEFAULT(), ParentSlot DEFAULT(), MeshletSlot DEFAULT(), GroupSlot DEFAULT(), ErrorSlot DEFAULT();
-    uint32_t NodeCapacity DEFAULT(), MeshletCapacity DEFAULT(), GroupCapacity DEFAULT(), IndexNodeCapacity DEFAULT();
+    SetArenaSlots Nodes DEFAULT(), Meshlets DEFAULT(), Groups DEFAULT(), Members DEFAULT();
+    uint32_t NodeSet DEFAULT(InvalidOffset), MeshletSet DEFAULT(InvalidOffset), GroupSet DEFAULT(InvalidOffset), MemberSet DEFAULT(InvalidOffset);
+    uint32_t NodeSlot DEFAULT(), ParentSlot DEFAULT(), MeshletSlot DEFAULT(), GroupSlot DEFAULT(), MemberSlot DEFAULT(), ErrorSlot DEFAULT();
 };
-static_assert(sizeof(LodNodeRefitPushConstants) == 84);
+static_assert(sizeof(LodNodeRefitPushConstants) == 100);

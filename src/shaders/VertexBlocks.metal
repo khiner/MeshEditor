@@ -20,7 +20,7 @@ struct VertexBlockLane {
     InstanceRecord Instance;
     DrawData Draw;
     uint ActiveVertex; // The mesh's active vertex in Excite mode.
-    // The lane's live vertex relative to the draw's vertex origin, InvalidOffset for a dead slot or a culled block.
+    // The lane's live vertex handle, InvalidOffset for a dead slot or a culled block.
     uint VertexId;
 };
 
@@ -60,10 +60,11 @@ inline VertexBlockLane ResolveVertexBlockLane(
     if (simd_is_first()) visible = VertexBlockVisible(scene, pc, block, MeshletWorld(scene, draw), margin, depth_pull) ? 1u : 0u;
     visible = simd_broadcast_first(visible);
     const uint slot = (group % VertexBlockGroups) * VertexBlockLanes + lane;
-    const uint live = BindlessBuffer(MeshElementBlock, scene.B.Buffer, pc.MembershipSlot)[block].Live[slot / 32u];
-    const bool present = visible != 0u && (live & (1u << (slot % 32u))) != 0u &&
-        !EditElementHidden(scene,draw,Element::Vertex,block*MeshElementBlockSize+slot);
-    return {instance, draw, mesh.Display.ActiveVertex, present ? block * MeshElementBlockSize + slot - draw.VertexOffset : InvalidOffset};
+    const MeshElementBlock members = BindlessBuffer(MeshElementBlock, scene.B.Buffer, pc.MembershipSlot)[block];
+    const uint handle = members.Local * MeshElementBlockSize + slot;
+    const bool present = visible != 0u && (members.Live[slot / 32u] & (1u << (slot % 32u))) != 0u &&
+        !EditElementHidden(scene,draw,Element::Vertex,handle);
+    return {instance, draw, mesh.Display.ActiveVertex, present ? handle : InvalidOffset};
 }
 
 #endif

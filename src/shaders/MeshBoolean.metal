@@ -285,9 +285,10 @@ kernel void BooleanVertices(
     const BooleanJob job = ctx.Job();
     if (v >= BoolVertexCount(job)) return;
     const uint side = v < job.Vertices[0] ? 0u : 1u;
-    const uint handle = ElementWorkDomain{b, job.VertexWork[side], 0u}.Handle(side ? v - job.Vertices[0] : v);
-    float3 p = float3(BindlessBuffer(Vertex, b.VertexBuffer, job.VertexSlot)[handle].Position);
-    float3 n = float3(BindlessBuffer(packed_float3, b.Buffer, job.VertexNormalSlot)[handle]);
+    const uint handle = ElementWorkDomain{b, job.VertexWork[side]}.Handle(side ? v - job.Vertices[0] : v);
+    const uint address = ConnectivityView{b, job.Connectivity, 0u}.VertexAddress(handle);
+    float3 p = float3(BindlessBuffer(Vertex, b.VertexBuffer, job.VertexSlot)[address].Position);
+    float3 n = float3(BindlessBuffer(packed_float3, b.Buffer, job.VertexNormalSlot)[address]);
     if (side) {
         const float3x3 m = job.Rotation.Unpack();
         p = m * p + float3(job.Translation);
@@ -319,7 +320,7 @@ kernel void BooleanFaceCounts(
         return;
     }
     const uint side = f < job.Faces[0] ? 0u : 1u;
-    const uint handle = ElementWorkDomain{b, job.FaceWork[side], 0u}.Handle(side ? f - job.Faces[0] : f);
+    const uint handle = ElementWorkDomain{b, job.FaceWork[side]}.Handle(side ? f - job.Faces[0] : f);
     const uint2 range = ConnectivityView{b, job.Connectivity, 0u}.FaceHalfedges(handle);
     first[f] = range.y - range.x - 2u;
 }
@@ -356,7 +357,7 @@ kernel void BooleanScanOffsets(
     ScanBlockOffsets(storage + pc.ScanValues, pc.ScanCount, group_id, storage + pc.ScanBlocks, storage + pc.ScanValues, lane, simd_lane, simd_group, sums);
 }
 
-// Each face's derived triangles: their combined vertices, canonical corners, face and normal.
+// Each face's derived triangles: their combined vertices, corner handles, face and normal.
 kernel void BooleanTriangles(
     uint f [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -366,20 +367,20 @@ kernel void BooleanTriangles(
     const BooleanJob job = ctx.Job();
     if (f >= BoolFaceCount(job)) return;
     const uint side = f < job.Faces[0] ? 0u : 1u;
-    const uint handle = ElementWorkDomain{b, job.FaceWork[side], 0u}.Handle(side ? f - job.Faces[0] : f);
-    const ElementWorkDomain vertices{b, job.VertexWork[side], 0u};
+    const uint handle = ElementWorkDomain{b, job.FaceWork[side]}.Handle(side ? f - job.Faces[0] : f);
+    const ElementWorkDomain vertices{b, job.VertexWork[side]};
     const uint vertex_base = side ? job.Vertices[0] : 0u;
-    const uint2 range = ConnectivityView{b, job.Connectivity, 0u}.FaceHalfedges(handle);
-    const uint first = BindlessBuffer(uint, b.ObjectIdBuffer, job.FaceTriangleStartSlot)[handle];
-    device const packed_uint3 *triangles = BindlessBuffer(packed_uint3, b.Buffer, job.TriangleSlot);
-    device const uint *corner_vertices = BindlessBuffer(uint, b.IndexBuffer, job.CornerSlot);
+    const ConnectivityView connectivity{b, job.Connectivity, 0u};
+    const uint2 range = connectivity.FaceHalfedges(handle);
+    const uint first = BindlessBuffer(uint, b.ObjectIdBuffer, job.FaceTriangleStartSlot)[connectivity.FaceAddress(handle)];
+    const auto triangles = ReadElements<packed_uint3>(b, job.TriangleSlot, job.Connectivity.Tables.Triangles);
     device const packed_float3 *positions = ctx.Run<packed_float3>(job.Positions);
     const uint base = ctx.Run<uint>(job.FaceTriangleFirst)[f];
     for (uint k = 0u; k + 2u < range.y - range.x; ++k) {
         const uint t = base + k;
         const uint3 corners = uint3(triangles[first + k]);
         uint3 combined;
-        for (uint i = 0u; i < 3u; ++i) combined[i] = vertex_base + vertices.Index(corner_vertices[corners[i]]);
+        for (uint i = 0u; i < 3u; ++i) combined[i] = vertex_base + vertices.Index(connectivity.CornerVertex(job.CornerSlot, corners[i]));
         const float3 p0 = float3(positions[combined.x]), p1 = float3(positions[combined.y]), p2 = float3(positions[combined.z]);
         const float3 normal = cross(p1 - p0, p2 - p0);
         const float length2 = dot(normal, normal);
@@ -423,7 +424,7 @@ kernel void BooleanPairs(
         const uint opposite = connectivity.Opposite(to);
         if (opposite != InvalidOffset) {
             const uint side = t < job.Triangles[0] ? 0u : 1u;
-            const uint face = ElementWorkDomain{b, job.FaceWork[side], 0u}.Index(connectivity.HalfedgeFace(opposite));
+            const uint face = ElementWorkDomain{b, job.FaceWork[side]}.Index(connectivity.HalfedgeFace(opposite));
             if (face != InvalidOffset) pair = BoolFindSide(ctx, job, (side ? job.Faces[0] : 0u) + face, connectivity.Previous(opposite), opposite);
         }
     } else pair = BoolFindSide(ctx, job, ctx.Run<uint>(job.TriangleFaces)[t], to, from);

@@ -7,7 +7,7 @@
 #include "render/ElementWorkOps.h"
 #include "state/Scene.h"
 
-TopologyOutputHandles::TopologyOutputHandles(state::Scene &r, mtl::ComputeChain &chain, const MeshTopologyJob &job, MeshStore::TopologyCounts bounds, SlotOffset scratch, const MeshTopologyArenas &source, TopologyIdentityPolicy policy) {
+TopologyOutputHandles::TopologyOutputHandles(state::Scene &r, mtl::ComputeChain &chain, uint32_t source_id, const MeshTopologyJob &job, MeshStore::TopologyCounts bounds, SlotOffset scratch, const MeshTopologyArenas &source, TopologyIdentityPolicy policy) {
     const profile::CpuScope scope{"TopologyOutputHandles"};
     const bool preserve = policy == TopologyIdentityPolicy::Preserve;
     if (preserve && job.SrcFaceCount && source.FaceTriangleStartSlot == InvalidSlot) {
@@ -23,11 +23,13 @@ TopologyOutputHandles::TopologyOutputHandles(state::Scene &r, mtl::ComputeChain 
     pc.Topology.Source = source;
     for (uint32_t d = 0u; d < 2u; ++d) pc.NewElements[d] = New[d] = AllocateElementWork(chain.Scratch, output[d], WorkDomainBlocks(output[d]));
     if (preserve) {
-        const auto &a = r.Context.get<MeshStore>().Arenas();
-        pc.RetiredElements[0] = Retired[0] = AllocateElementWork(chain.Scratch, a.Vertices.Capacity(), job.SrcVertexCount);
-        pc.RetiredElements[1] = Retired[1] = AllocateElementWork(chain.Scratch, a.FaceTriangles.Capacity(), job.SrcFaceCount);
-        pc.ReplacedElements[0] = Replaced[0] = AllocateElementWork(chain.Scratch, a.FaceCorners.Capacity(), job.SrcHalfedgeCount);
-        pc.ReplacedElements[1] = Replaced[1] = AllocateElementWork(chain.Scratch, a.Triangles.Capacity(), job.SrcHalfedgeCount);
+        const auto &meshes = r.Context.get<MeshStore>();
+        const auto &a = meshes.Arenas();
+        const auto &record = meshes.Get(source_id);
+        pc.RetiredElements[0] = Retired[0] = AllocateElementWork(chain.Scratch, a.Vertices.HandleBound(record.Vertices), job.SrcVertexCount);
+        pc.RetiredElements[1] = Retired[1] = AllocateElementWork(chain.Scratch, a.FaceTriangles.HandleBound(record.FaceData), job.SrcFaceCount);
+        pc.ReplacedElements[0] = Replaced[0] = AllocateElementWork(chain.Scratch, a.FaceCorners.HandleBound(record.FaceCorners), job.SrcHalfedgeCount);
+        pc.ReplacedElements[1] = Replaced[1] = AllocateElementWork(chain.Scratch, a.Triangles.HandleBound(record.TriangleData), job.SrcHalfedgeCount);
     }
     const auto &pipelines = GetMeshPipelines(r);
     const auto groups = [](uint64_t count) { return uint32_t((count + 255u) / 256u); };

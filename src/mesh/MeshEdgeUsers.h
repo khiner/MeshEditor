@@ -3,7 +3,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-// Sparse canonical face incidence, including same-direction and nonmanifold users.
+// Sparse face incidence, including same-direction and nonmanifold users.
 // Each lower endpoint's fan is inspected once; no positions are copied.
 class MeshEdgeUsers {
 public:
@@ -18,7 +18,7 @@ public:
     // either a compact incidence summary or full radial users without copying geometry.
     void ForEachAtVertex(uint32_t v, auto &&visit) const {
         const auto &c = M.GetConnectivity();
-        const auto fan = c.VertexCorners[v];
+        const auto fan = c.Incoming(he::VH{v});
         for (uint32_t i = 0u; i < fan.y; ++i) {
             const he::HH corner{c.FanItems[fan.x + i].x};
             if (!c.FaceOf(corner)) continue;

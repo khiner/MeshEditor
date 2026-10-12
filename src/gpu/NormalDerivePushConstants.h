@@ -1,6 +1,5 @@
 #pragma once
 
-#include "gpu/ElementAttributeRef.h"
 #include "gpu/ElementWork.h"
 #include "gpu/Types.h"
 
@@ -11,7 +10,6 @@ struct NormalDerivePushConstants {
     ElementWork Work DEFAULT();
     uint32_t EntryIndex DEFAULT();
     uint32_t EntriesSlot DEFAULT();
-    ElementAttributeRef CornerSectors DEFAULT();
     uint32_t EdgeSharpnessSlot DEFAULT();
     uint32_t FaceSharpnessSlot DEFAULT();
     uint32_t TileMapSlot DEFAULT();
@@ -21,11 +19,10 @@ struct NormalDerivePushConstants {
     uint32_t PositionNodesSlot DEFAULT();
     uint32_t VertexNormalSlot DEFAULT();
     uint32_t VertexNormalNodesSlot DEFAULT();
-    ElementAttributeRef NormalSectors DEFAULT();
     uint32_t PosedSectorNodesSlot DEFAULT();
     uint32_t PosedSectorValuesSlot DEFAULT();
     uint32_t FaceNormalSlot DEFAULT();
     uint32_t FaceNormalNodesSlot DEFAULT();
     uint32_t BaseFaceNormalSlot DEFAULT();
 };
-static_assert(sizeof(NormalDerivePushConstants) == 96, "NormalDerivePushConstants size");
+static_assert(sizeof(NormalDerivePushConstants) == 80, "NormalDerivePushConstants size");

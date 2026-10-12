@@ -11,17 +11,18 @@ kernel void RetessellateFaces(
 ) {
     if (i>=pc.Count) return;
     const uint2 entry=uint2(reinterpret_cast<device const packed_uint2 *>(BindlessBuffer(uint,b.Buffer,pc.Faces.Slot)+pc.Faces.Offset)[i]);
-    const uint2 loop=uint2(BindlessBuffer(packed_uint2,b.Buffer,pc.FaceRangesSlot)[entry.x]);
+    const uint face=HandleAddress<MeshElementBlockSize>(b,pc.Tables.Faces,entry.x);
+    const uint2 loop=uint2(BindlessBuffer(packed_uint2,b.Buffer,pc.FaceRangesSlot)[face]);
     const uint n=loop.y-loop.x;
-    const uint first=BindlessBuffer(uint,b.ObjectIdBuffer,pc.FaceTrianglesSlot)[entry.x];
-    const auto corners=BindlessBuffer(uint,b.IndexBuffer,pc.CornerSlot);
-    if (pc.Tangents.ValuesSlot!=InvalidSlot) {
+    const uint first=BindlessBuffer(uint,b.ObjectIdBuffer,pc.FaceTrianglesSlot)[face];
+    const ElementValues<const uint> corners{BindlessBuffer(uint,b.IndexBuffer,pc.CornerSlot),BindlessBuffer(uint,b.Buffer,pc.Tables.Halfedges.Slot)+pc.Tables.Halfedges.Offset};
+    if (pc.Tangents.Slot!=InvalidSlot) {
         bool moved=false,changed=false;
         for (uint h=loop.x;h<loop.y;++h) moved|=WorkRank(b,pc.ChangedVertices,corners[h])!=InvalidOffset;
         if (moved) {
-            auto tangents=BindlessBufferMutable(packed_float4,b.CornerTangentBuffer,pc.Tangents.ValuesSlot);
+            auto tangents=BindlessBufferMutable(packed_float4,b.CornerTangentBuffer,pc.Tangents.Slot);
             for (uint h=loop.x;h<loop.y;++h) {
-                const uint at=ElementAttributeIndex(b,pc.Tangents,h);
+                const uint at=pc.Tangents.Offset+h;
                 if (all(float4(tangents[at])==0.f)) continue;
                 tangents[at]=packed_float4(0.f);
                 changed=true;
@@ -34,9 +35,9 @@ kernel void RetessellateFaces(
     device uint *next=scratch,*previous=scratch+n;
     device vec2 *points=reinterpret_cast<device vec2 *>(scratch+2u*n);
     const auto vertices=BindlessBuffer(Vertex,b.VertexBuffer,pc.VertexSlot);
-    device packed_uint3 *triangles=BindlessBufferMutable(packed_uint3,b.Buffer,pc.TriangleSlot);
+    const ElementValues<packed_uint3> triangles{BindlessBufferMutable(packed_uint3,b.Buffer,pc.TriangleSlot),BindlessBuffer(uint,b.Buffer,pc.Tables.Triangles.Slot)+pc.Tables.Triangles.Offset};
     TriangulatePolygon(n,[&](uint corner) {
-        const uint v=corners[loop.x+corner];
+        const uint v=HandleAddress<MeshElementBlockSize>(b,pc.Tables.Vertices,corners[loop.x+corner]);
         const float3 base=float3(vertices[v].Position);
         const bool selected=pc.ApplyTransform && pc.SelectionSlot!=InvalidSlot &&
             (BindlessBuffer(uint,b.Buffer,pc.SelectionSlot)[v/32u]&(1u<<(v%32u)));

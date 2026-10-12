@@ -26,17 +26,19 @@ uvec2 VolumeBits(double value) {
 double UnpackVolume(uvec2 words) { return std::bit_cast<double>(uint64_t(words.y) << 32u | words.x); }
 
 struct VolumeSource {
-    std::span<const Vertex> Vertices;
+    HandleValues<Vertex> Vertices;
     TriangleVertexView Triangles;
+    std::span<const uint32_t> TriangleIds; // The owner's triangle id range
 };
 VolumeSource Source(const state::Scene &r, const MeshStore::Record &owner) {
     const auto &meshes = r.Context.get<const MeshStore>();
-    return {meshes.Arenas().Vertices.Buffer.GetSpan<Vertex>(), Mesh{meshes, owner.StoreId}.TriangleVertices()};
+    const Mesh mesh{meshes, owner.StoreId};
+    return {mesh.VertexValues(), mesh.TriangleVertices(), meshes.Render().MeshletTriangleIds.Get(owner.MeshletTriangles.Values)};
 }
-double MeshletVolume(const RenderArenas &gpu, const VolumeSource &source, uint32_t id) {
-    const auto meshlet = gpu.Meshlets.Get({id, 1u})[0];
+double MeshletVolume(const RenderArenas &gpu, const VolumeSource &source, ElementAddress address) {
+    const auto meshlet = gpu.Meshlets.Get({address.Value(), 1u})[0];
     double sum = 0.0;
-    for (const auto triangle : gpu.MeshletTriangleIds.Get({meshlet.TriangleOffset, meshlet.TriangleCount})) {
+    for (const auto triangle : source.TriangleIds.subspan(meshlet.TriangleOffset, meshlet.TriangleCount)) {
         const auto corners = source.Triangles.TriangleAtHandle(triangle);
         const dvec3 a{source.Vertices[corners[0]].Position}, b{source.Vertices[corners[1]].Position}, c{source.Vertices[corners[2]].Position};
         sum += Dot(a, Cross(b, c)) / 6.0;
@@ -77,31 +79,35 @@ uint64_t Key(const Node &node) { return uint64_t(node.Key.y) << 32u | node.Key.x
 uvec2 KeyWords(uint64_t key) { return {uint32_t(key), uint32_t(key >> 32u)}; }
 bool Before(uint64_t a, uint32_t ai, uint64_t b, uint32_t bi) { return a == b ? ai < bi : a < b; }
 
+// Nodes and their links name meshlet handles of the owner, whose table resolves them.
 // The root is a local copy, which the caller records only when the edit moved it.
 struct Tree {
     RenderArenas &Gpu;
+    std::span<const uint32_t> Entries;
     uint32_t Root;
     VolumeSource Source;
     std::unordered_map<uint32_t, Node> Pending;
+    ElementAddress Address(uint32_t id) const { return Resolve<RenderBlockSize>(Entries, ElementHandle{id}); }
+    const MeshletRecord &Meshlet(uint32_t id) const { return Gpu.Meshlets.Get({Address(id).Value(), 1u})[0]; }
     Node Read(uint32_t id) const {
         if (const auto it = Pending.find(id); it != Pending.end()) return it->second;
-        return Gpu.MeshletSpatialNodes.Get({id, 1u})[0];
+        return Gpu.MeshletSpatialNodes.Get({Address(id).Value(), 1u})[0];
     }
     void Write(uint32_t id, Node node) { Pending.insert_or_assign(id, node); }
     void Flush() {
         if (Pending.empty()) return;
         auto &buffer = Gpu.MeshletSpatialNodes.Buffer;
-        std::vector<uint32_t> ids;
-        ids.reserve(Pending.size());
-        for (const auto &[id, node] : Pending) ids.push_back(id);
-        buffer.CaptureWriteElements(ids, sizeof(Node));
-        buffer.GetMutableSpan<Node>({ids.front(), 1u}); // Wait for the batched page copy before changing live bytes.
+        std::vector<uint32_t> addresses;
+        addresses.reserve(Pending.size());
+        for (const auto &[id, node] : Pending) addresses.push_back(Address(id).Value());
+        buffer.CaptureWriteElements(addresses, sizeof(Node));
+        buffer.GetMutableSpan<Node>({addresses.front(), 1u}); // Wait for the batched page copy before changing live bytes.
         auto *nodes = reinterpret_cast<Node *>(buffer.Contents().data());
-        for (const auto &[id, node] : Pending) nodes[id] = node;
+        for (const auto &[id, node] : Pending) nodes[Address(id).Value()] = node;
     }
     void Fix(uint32_t id) {
         auto node = Read(id);
-        auto box = Bounds(Gpu.Meshlets.Get({id, 1u})[0]);
+        auto box = Bounds(Meshlet(id));
         double volume = UnpackVolume(node.LocalVolume);
         if (node.Left != InvalidOffset) {
             const auto child = Read(node.Left);
@@ -171,10 +177,10 @@ struct Tree {
         Fix(left);
     }
     void Insert(uint32_t id) {
-        const auto record = Gpu.Meshlets.Get({id, 1u})[0];
+        const auto record = Meshlet(id);
         if (record.RefinedGroup != InvalidOffset || record.Topology != 0u) throw std::invalid_argument("Spatial index only accepts finest triangle meshlets.");
         const auto key = Key(record.Center);
-        const auto volume = VolumeBits(MeshletVolume(Gpu, Source, id));
+        const auto volume = VolumeBits(MeshletVolume(Gpu, Source, Address(id)));
         Write(id, {.Box = Bounds(record), .Key = KeyWords(key), .Meshlet = id, .LocalVolume = volume, .SubtreeVolume = volume});
         if (Root == InvalidOffset) {
             Root = id;
@@ -204,7 +210,7 @@ struct Tree {
         FixUp(id);
     }
     void Remove(uint32_t id) {
-        if (id >= Gpu.MeshletSpatialNodes.Buffer.Count<Node>() || Read(id).Meshlet != id) throw std::logic_error("Spatial meshlet is not indexed.");
+        if (id / RenderBlockSize >= Entries.size() || Entries[id / RenderBlockSize] == InvalidOffset || Read(id).Meshlet != id) throw std::logic_error("Spatial meshlet is not indexed.");
         for (;;) {
             const auto node = Read(id);
             if (node.Left == InvalidOffset && node.Right == InvalidOffset) break;
@@ -227,30 +233,35 @@ void BuildMeshletSpatial(state::Scene &r, std::span<MeshStore::Record *const> ow
     for (uint32_t i = 0u; i < owners.size(); ++i) {
         const auto &owner = *owners[i];
         if (owner.SpatialRoot != InvalidOffset) throw std::logic_error("Spatial tree already exists.");
-        if (owner.ExtrasFaces.Count) continue;
+        if (owner.ExtrasFaces.Count || !owner.MeshletData) continue;
         auto &ids = finest[i];
         ids.reserve(owner.Level0Count);
-        gpu.ActiveMeshlets.ForEach(owner.MeshletRoot, [&](uint32_t id) {
-            const auto record = gpu.Meshlets.Get({id, 1u})[0];
-            if (record.RefinedGroup == InvalidOffset && record.Topology == 0u) ids.push_back(id);
+        const auto entries = gpu.Meshlets.Entries(owner.MeshletData);
+        gpu.Meshlets.ForEach(owner.MeshletData, [&](ElementHandle id, ElementAddress address) {
+            const auto record = gpu.Meshlets.Get({address.Value(), 1u})[0];
+            if (record.RefinedGroup == InvalidOffset && record.Topology == 0u) ids.push_back(id.Value);
         });
-        if (!ids.empty()) gpu.MeshletSpatialNodes.Buffer.CaptureWrite(uint64_t(owner.Meshlets.Offset) * sizeof(Node), uint64_t(owner.Meshlets.Count) * sizeof(Node));
+        if (ids.empty()) continue;
+        for (const auto block : entries)
+            if (block != InvalidOffset) gpu.MeshletSpatialNodes.Buffer.CaptureWrite(uint64_t(block) * RenderBlockSize * sizeof(Node), uint64_t(RenderBlockSize) * sizeof(Node));
     }
-    // Each owner writes only its own node range, so the trees build concurrently after the serial history capture.
+    // Each owner writes only its own blocks, so the trees build concurrently after the serial history capture.
     auto *all = reinterpret_cast<Node *>(gpu.MeshletSpatialNodes.Buffer.Contents().data());
     ParallelFor(uint32_t(owners.size()), [&](uint32_t i) {
         auto &ids = finest[i];
         if (ids.empty()) return;
         auto &owner = *owners[i];
         const auto source = Source(r, owner);
-        const std::span nodes{all + owner.Meshlets.Offset, owner.Meshlets.Count};
-        std::ranges::fill(nodes, Node{});
+        const auto entries = gpu.Meshlets.Entries(owner.MeshletData);
+        for (const auto block : entries)
+            if (block != InvalidOffset) std::fill_n(all + uint64_t(block) * RenderBlockSize, RenderBlockSize, Node{});
+        const auto read = [&](uint32_t id) -> Node & { return all[Resolve<RenderBlockSize>(entries, ElementHandle{id}).Value()]; };
         for (const auto id : ids) {
-            const auto record = gpu.Meshlets.Get({id, 1u})[0];
-            const auto volume = VolumeBits(MeshletVolume(gpu, source, id));
-            nodes[id - owner.Meshlets.Offset] = {.Box = Bounds(record), .Key = KeyWords(Key(record.Center)), .Meshlet = id, .LocalVolume = volume, .SubtreeVolume = volume};
+            const auto address = Resolve<RenderBlockSize>(entries, ElementHandle{id});
+            const auto record = gpu.Meshlets.Get({address.Value(), 1u})[0];
+            const auto volume = VolumeBits(MeshletVolume(gpu, source, address));
+            read(id) = {.Box = Bounds(record), .Key = KeyWords(Key(record.Center)), .Meshlet = id, .LocalVolume = volume, .SubtreeVolume = volume};
         }
-        const auto read = [&](uint32_t id) -> Node & { return nodes[id - owner.Meshlets.Offset]; };
         std::ranges::sort(ids, [&](uint32_t a, uint32_t b) { return Before(Key(read(a)), a, Key(read(b)), b); });
         std::vector<uint32_t> stack;
         stack.reserve(ids.size());
@@ -283,7 +294,7 @@ void BuildMeshletSpatial(state::Scene &r, std::span<MeshStore::Record *const> ow
         }
         for (auto it = postorder.rbegin(); it != postorder.rend(); ++it) {
             auto &node = read(*it);
-            auto box = Bounds(gpu.Meshlets.Get({*it, 1u})[0]);
+            auto box = Bounds(gpu.Meshlets.Get({Resolve<RenderBlockSize>(entries, ElementHandle{*it}).Value(), 1u})[0]);
             double volume = UnpackVolume(node.LocalVolume);
             if (node.Left != InvalidOffset) {
                 const auto &child = read(node.Left);
@@ -305,7 +316,7 @@ namespace {
 // Runs `edit` over the owner's tree and records the root only when the edit moved it.
 void EditTree(state::Scene &r, const MeshStore::Record &owner, auto &&edit) {
     auto &meshes = r.Context.get<MeshStore>();
-    Tree tree{meshes.Render(), owner.SpatialRoot, Source(r, owner)};
+    Tree tree{meshes.Render(), meshes.Render().Meshlets.Entries(owner.MeshletData), owner.SpatialRoot, Source(r, owner)};
     edit(tree);
     tree.Flush();
     if (tree.Root != owner.SpatialRoot) meshes.WriteRecord(owner.StoreId).SpatialRoot = tree.Root;
@@ -329,9 +340,10 @@ void RefitMeshletSpatial(state::Scene &r, const MeshStore::Record &owner, std::s
     });
 }
 
-SpatialSurfacePoint ClosestMeshletPoint(const RenderArenas &gpu, const MeshStore::Record &owner, std::span<const Vertex> vertices, TriangleVertexView triangles, vec3 point) {
+SpatialSurfacePoint ClosestMeshletPoint(const RenderArenas &gpu, const MeshStore::Record &owner, HandleValues<Vertex> vertices, TriangleVertexView triangles, vec3 point) {
     SpatialSurfacePoint best;
     if (owner.SpatialRoot == InvalidOffset) return best;
+    const auto entries = gpu.Meshlets.Entries(owner.MeshletData);
     float best_distance2 = std::numeric_limits<float>::max();
     uint32_t best_triangle = InvalidOffset;
     const auto distance2 = [point](AABB box) {
@@ -340,11 +352,11 @@ SpatialSurfacePoint ClosestMeshletPoint(const RenderArenas &gpu, const MeshStore
     };
     const auto child_distance = [&](uint32_t id) {
         return id == InvalidOffset ? std::numeric_limits<float>::max() :
-                                     distance2(gpu.MeshletSpatialNodes.Get({id, 1u})[0].Box);
+                                     distance2(gpu.MeshletSpatialNodes.Get({Resolve<RenderBlockSize>(entries, ElementHandle{id}).Value(), 1u})[0].Box);
     };
     uint32_t current = owner.SpatialRoot, previous = InvalidOffset;
     while (current != InvalidOffset) {
-        const auto node = gpu.MeshletSpatialNodes.Get({current, 1u})[0];
+        const auto node = gpu.MeshletSpatialNodes.Get({Resolve<RenderBlockSize>(entries, ElementHandle{current}).Value(), 1u})[0];
         if (previous == node.Parent && distance2(node.Box) > best_distance2) {
             previous = current;
             current = node.Parent;
@@ -355,8 +367,8 @@ SpatialSurfacePoint ClosestMeshletPoint(const RenderArenas &gpu, const MeshStore
         const auto far = left_first ? node.Right : node.Left;
         auto next = node.Parent;
         if (previous == node.Parent) {
-            const auto meshlet = gpu.Meshlets.Get({current, 1u})[0];
-            for (const auto triangle : gpu.MeshletTriangleIds.Get({meshlet.TriangleOffset, meshlet.TriangleCount})) {
+            const auto meshlet = gpu.Meshlets.Get({Resolve<RenderBlockSize>(entries, ElementHandle{current}).Value(), 1u})[0];
+            for (const auto triangle : gpu.MeshletTriangleIds.Get(owner.MeshletTriangles.Values).subspan(meshlet.TriangleOffset, meshlet.TriangleCount)) {
                 const auto ids = triangles.TriangleAtHandle(triangle);
                 const auto hit = ClosestPointOnTriangle(point, vertices[ids[0]].Position, vertices[ids[1]].Position, vertices[ids[2]].Position);
                 const vec3 delta = hit.Position - point;
@@ -377,5 +389,5 @@ SpatialSurfacePoint ClosestMeshletPoint(const RenderArenas &gpu, const MeshStore
 
 std::optional<double> MeshletEnclosedVolume(const RenderArenas &gpu, const MeshStore::Record &owner, const Mesh &mesh) {
     if (owner.SpatialRoot == InvalidOffset || !mesh.HasClosedSurface()) return std::nullopt;
-    return std::abs(UnpackVolume(gpu.MeshletSpatialNodes.Get({owner.SpatialRoot, 1u})[0].SubtreeVolume));
+    return std::abs(UnpackVolume(gpu.MeshletSpatialNodes.Get({gpu.Meshlets.Address(owner.MeshletData, ElementHandle{owner.SpatialRoot}).Value(), 1u})[0].SubtreeVolume));
 }

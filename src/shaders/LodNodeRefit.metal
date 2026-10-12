@@ -1,4 +1,4 @@
-#include "MeshletIndexShared.metal"
+#include "Bindless.metal"
 #include "EnclosingSphere.metal"
 #include "gpu/BindlessBindings.h"
 #include "gpu/ClusterGroup.h"
@@ -9,37 +9,57 @@
 inline void RefitError(device const BindlessSet &b,constant LodNodeRefitPushConstants &pc) {
     atomic_store_explicit(BindlessBufferMutable(atomic_uint,b.Buffer,pc.ErrorSlot),1u,memory_order_relaxed);
 }
-inline EnclosingSphereSample ReadRefitSample(device const BindlessSet &b,constant LodNodeRefitPushConstants &pc,
-                                   uint id, LodNode node, uint i) {
-    if (node.ChildCount) {
-        const uint child=node.ChildOffset+i;
-        if (MeshletIndexRank(b,pc.Nodes,child)==InvalidOffset ||
-            BindlessBuffer(uint,b.Buffer,pc.ParentSlot)[child]!=id) {
-            RefitError(b,pc); return {float4(0.f),0.f};
-        }
-        const auto value=BindlessBuffer(LodNode,b.Buffer,pc.NodeSlot)[child];
-        if (!value.MeshletCount) return {float4(0.f,0.f,0.f,-1.f),0.f};
-        return {float4(float3(value.Center),value.Radius),value.Error};
+
+// A render set's table run and blocks, with its header read once.
+struct RefitSet {
+    device const uint *Table;
+    device const MeshElementBlock *Blocks;
+    uint Set, BlockCount;
+    // The arena address of a live member, or InvalidOffset when the handle names none.
+    uint Address(uint handle) const {
+        if (handle==InvalidOffset || handle/RenderBlockSize>=BlockCount) return InvalidOffset;
+        const uint block=Table[handle/RenderBlockSize], slot=handle%RenderBlockSize;
+        return block!=InvalidOffset && Blocks[block].Owner==Set && (Blocks[block].Live[0]>>slot&1u) ? block*RenderBlockSize+slot : InvalidOffset;
     }
-    const uint cluster=MeshletIndexSelect(b,{pc.Meshlets.NodesSlot,pc.Meshlets.LeavesSlot,node.MeshletRoot},i/2u);
-    if (cluster>=pc.MeshletCapacity || MeshletIndexRank(b,pc.Meshlets,cluster)==InvalidOffset) {
-        RefitError(b,pc); return {float4(0.f),0.f};
-    }
-    const auto record=BindlessBuffer(MeshletRecord,b.Buffer,pc.MeshletSlot)[cluster];
-    if (record.GroupIndex==InvalidOffset) return {float4(float3(record.Center),record.Radius),INFINITY};
-    if (record.GroupIndex>=pc.GroupCapacity || MeshletIndexRank(b,pc.Groups,record.GroupIndex)==InvalidOffset) {
-        RefitError(b,pc); return {float4(0.f),0.f};
-    }
-    const auto group=BindlessBuffer(ClusterGroup,b.Buffer,pc.GroupSlot)[record.GroupIndex];
-    return {i&1u ? float4(float3(group.Center),group.Radius) : float4(float3(record.Center),record.Radius),group.Error};
+};
+
+inline RefitSet ReadRefitSet(device const BindlessSet &b, SetArenaSlots arena, uint set) {
+    const MeshElementSet header=set==InvalidOffset ? MeshElementSet{} : BindlessBuffer(MeshElementSet,b.Buffer,arena.Sets)[set];
+    return {BindlessBuffer(uint,b.Buffer,arena.Table)+header.First,BindlessBuffer(MeshElementBlock,b.Buffer,arena.Blocks),set,header.BlockCount};
 }
 
+// Reads one node's refit samples, with the record's node, member, meshlet and group sets read once per thread.
 struct LodRefitReader {
     device const BindlessSet &B;
     constant LodNodeRefitPushConstants &Pc;
     uint Id;
     LodNode Node;
-    EnclosingSphereSample Read(uint i) const { return ReadRefitSample(B,Pc,Id,Node,i); }
+    RefitSet Nodes, Members, Meshlets, Groups;
+
+    EnclosingSphereSample Read(uint i) const {
+        if (Node.ChildCount) {
+            const uint address=Nodes.Address(Node.ChildOffset+i);
+            if (address==InvalidOffset || BindlessBuffer(uint,B.Buffer,Pc.ParentSlot)[address]!=Id) {
+                RefitError(B,Pc); return {float4(0.f),0.f};
+            }
+            const auto value=BindlessBuffer(LodNode,B.Buffer,Pc.NodeSlot)[address];
+            if (!value.MeshletCount) return {float4(0.f,0.f,0.f,-1.f),0.f};
+            return {float4(float3(value.Center),value.Radius),value.Error};
+        }
+        const uint member=Members.Address(Node.Members+i/2u);
+        const uint cluster=member==InvalidOffset ? InvalidOffset : Meshlets.Address(BindlessBuffer(uint,B.Buffer,Pc.MemberSlot)[member]);
+        if (cluster==InvalidOffset) {
+            RefitError(B,Pc); return {float4(0.f),0.f};
+        }
+        const auto record=BindlessBuffer(MeshletRecord,B.Buffer,Pc.MeshletSlot)[cluster];
+        if (record.GroupIndex==InvalidOffset) return {float4(float3(record.Center),record.Radius),INFINITY};
+        const uint group_address=Groups.Address(record.GroupIndex);
+        if (group_address==InvalidOffset) {
+            RefitError(B,Pc); return {float4(0.f),0.f};
+        }
+        const auto group=BindlessBuffer(ClusterGroup,B.Buffer,Pc.GroupSlot)[group_address];
+        return {i&1u ? float4(float3(group.Center),group.Radius) : float4(float3(record.Center),record.Radius),group.Error};
+    }
 };
 
 // The same seven-axis extrema and ordered Ritter expansion as meshoptimizer's computeSphereBounds, then ClusterLod's conservative containment pass.
@@ -50,23 +70,24 @@ kernel void LodNodeRefit(device const BindlessSet &b [[buffer(BufferIndex_Bindle
     uint lane [[thread_index_in_simdgroup]],uint simd [[simdgroup_index_in_threadgroup]]) {
     if (job_id>=pc.Count) return;
     const uint id=BindlessBuffer(uint,b.Buffer,pc.Jobs.Slot)[pc.Jobs.Offset+job_id];
-    if (id>=pc.NodeCapacity || MeshletIndexRank(b,pc.Nodes,id)==InvalidOffset) {
+    const RefitSet nodes=ReadRefitSet(b,pc.Nodes,pc.NodeSet);
+    const uint address=nodes.Address(id);
+    if (address==InvalidOffset) {
         if (!tid) RefitError(b,pc);
         return;
     }
-    device LodNode &output=BindlessBufferMutable(LodNode,b.Buffer,pc.NodeSlot)[id];
+    device LodNode &output=BindlessBufferMutable(LodNode,b.Buffer,pc.NodeSlot)[address];
     const LodNode node=output;
     threadgroup_barrier(mem_flags::mem_device);
-    if (ulong(node.ChildOffset)+node.ChildCount>pc.NodeCapacity || (node.ChildCount && node.MeshletRoot!=InvalidOffset) ||
-        (!node.ChildCount && (node.MeshletRoot==InvalidOffset || node.MeshletRoot>=pc.IndexNodeCapacity))) {
+    if ((node.ChildCount && node.Members!=InvalidOffset) || (!node.ChildCount && node.Members==InvalidOffset)) {
         if (!tid) RefitError(b,pc);
         return;
     }
-    const uint members=node.ChildCount ? 0u : BindlessBuffer(MeshletIndexNode,b.Buffer,pc.Meshlets.NodesSlot)[node.MeshletRoot].Count;
+    const uint members=node.ChildCount ? 0u : node.MeshletCount;
     const uint count=node.ChildCount ? node.ChildCount : members*2u;
     if (!count || members>UINT_MAX/2u) { if (!tid) RefitError(b,pc); return; }
     threadgroup EnclosingSphereScratch scratch;
-    const LodRefitReader reader{b,pc,id,node};
+    const LodRefitReader reader{b,pc,id,node,nodes,ReadRefitSet(b,pc.Members,pc.MemberSet),ReadRefitSet(b,pc.Meshlets,pc.MeshletSet),ReadRefitSet(b,pc.Groups,pc.GroupSet)};
     const auto result=EncloseSpheres(reader,count,tid,lane,simd,scratch);
     if (!tid) {
         output.Center=result.Sphere.xyz;

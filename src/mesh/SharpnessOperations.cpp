@@ -47,7 +47,7 @@ std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Scene &r, 
         const auto &record = meshes.Get(id);
         auto &pc = edits.emplace_back(Edit{.TargetIndex = i, .Id = id}).Pc;
         pc = {
-            .VertexSelection = source == Element::Vertex ? SeedElementWorkHandles(chain.Scratch, arenas.Vertices.Capacity(), selection.Vertices) : ElementWork{},
+            .VertexSelection = source == Element::Vertex ? SeedElementWorkHandles(chain.Scratch, arenas.Vertices.HandleBound(record.Vertices), selection.Vertices) : ElementWork{},
             .CornersSlot = arenas.FaceCorners.Buffer.Slot,
             .FaceSharpnessSlot = arenas.FaceSharpness.Buffer.Slot,
             .EdgeSharpnessSlot = arenas.EdgeSharpness.Buffer.Slot,
@@ -130,11 +130,10 @@ std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Scene &r, 
     std::vector<SharpnessOperationChange> changes;
     std::vector<MeshStore::SelectionUpdate> updates;
     for (const auto &edit : edits) {
-        meshes.FinishCornerClassification(chain, edit.Classes);
         changes.push_back({edit.TargetIndex, edit.Triangles});
         auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = edit.Id});
-        for (const auto [d, domain] : {std::pair{0u, 0u}, std::pair{1u, 3u}, std::pair{2u, 2u}})
-            ForEachWorkBlock(chain.Scratch, edit.Neighborhood.Elements[domain], [&](uint32_t block, auto) { update.Blocks[d].push_back(block); });
+        for (const auto [d, domain, work] : {std::tuple{0u, MeshStore::ElementDomain::Vertex, 0u}, std::tuple{1u, MeshStore::ElementDomain::Edge, 3u}, std::tuple{2u, MeshStore::ElementDomain::Face, 2u}})
+            update.Blocks[d] = meshes.ArenaBlocks(edit.Id, domain, chain.Scratch, edit.Neighborhood.Elements[work]);
     }
     meshes.UpdateSelection(r, chain, updates);
     chain.Submit();

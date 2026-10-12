@@ -1,30 +1,26 @@
 #include "mesh/PageFootprint.h"
 
-std::vector<uint32_t> RunBlocks(uint32_t first, uint32_t count) {
+std::vector<uint32_t> TableBlocks(std::span<const uint32_t> table, std::span<const uint32_t> locals) {
     std::vector<uint32_t> blocks;
-    if (!count) return blocks;
+    blocks.reserve(locals.size());
+    for (const auto local : locals)
+        if (local < table.size() && table[local] != InvalidOffset) blocks.push_back(table[local]);
+    return blocks;
+}
+
+std::vector<uint32_t> RunBlocks(std::span<const uint32_t> table, uint32_t first, uint32_t count) {
+    std::vector<uint32_t> locals;
+    if (!count) return locals;
     const auto last = uint32_t((uint64_t(first) + count - 1u) / MeshElementBlockSize);
-    for (auto block = first / MeshElementBlockSize; block <= last; ++block) blocks.push_back(block);
-    return blocks;
+    for (auto block = first / MeshElementBlockSize; block <= last; ++block) locals.push_back(block);
+    return TableBlocks(table, locals);
 }
 
-std::vector<uint32_t> WorkBlocks(const BufferArena<uint32_t> &arena, ElementWork work, uint32_t count, uint32_t origin) {
-    if (work.Storage.Slot == InvalidSlot) return RunBlocks(origin, count);
-    std::vector<uint32_t> blocks;
-    ForEachWorkBlock(arena, work, [&](uint32_t block, auto) { blocks.push_back(block); });
-    return blocks;
-}
-
-std::vector<uint32_t> PayloadBlocks(const BufferArena<uint32_t> &table, std::span<const uint32_t> blocks, bool required) {
-    const auto entries = table.Buffer.GetSpan<uint32_t>();
-    std::vector<uint32_t> payloads;
-    payloads.reserve(blocks.size());
-    for (const auto block : blocks) {
-        const auto entry = block < entries.size() ? entries[block] : 0u;
-        if (entry) payloads.push_back(entry - 1u);
-        else if (required) throw std::out_of_range("A canonical write targets an absent attribute payload.");
-    }
-    return payloads;
+std::vector<uint32_t> WorkBlocks(const BufferArena<uint32_t> &arena, ElementWork work, uint32_t count, std::span<const uint32_t> table) {
+    if (work.Storage.Slot == InvalidSlot) return RunBlocks(table, 0u, count);
+    std::vector<uint32_t> locals;
+    ForEachWorkBlock(arena, work, [&](uint32_t block, auto) { locals.push_back(block); });
+    return TableBlocks(table, locals);
 }
 
 void PageFootprint::Add(const mtl::Buffer &buffer, std::span<const uint32_t> blocks, uint64_t block_bytes) {

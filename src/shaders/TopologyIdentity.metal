@@ -68,7 +68,7 @@ kernel void TopologyIdentityReplaced(
     if (range.y < range.x || range.y-range.x < 3u || h < range.x || h >= range.y) { fail(); return; }
     MarkWork(b,pc.ReplacedElements[0],h);
     if (h-range.x < range.y-range.x-2u) {
-        const uint first = BindlessBuffer(uint,b.ObjectIdBuffer,pc.Topology.Source.FaceTriangleStartSlot)[ctx.SrcFaceDomain(job).Handle(face)];
+        const uint first = BindlessBuffer(uint,b.ObjectIdBuffer,pc.Topology.Source.FaceTriangleStartSlot)[ctx.SrcAddress(job,2u,ctx.SrcFaceDomain(job).Handle(face))];
         const ulong triangle = ulong(first)+h-range.x;
         if (triangle >= pc.ReplacedElements[1].Count) { fail(); return; }
         MarkWork(b,pc.ReplacedElements[1],uint(triangle));

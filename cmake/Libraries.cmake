@@ -116,7 +116,6 @@ mesheditor_library(MeshEditorMesh HOT
     src/mesh/MeshPipelines.cpp
     src/mesh/MeshStore.cpp
     src/mesh/MeshStores.cpp
-    src/mesh/MeshletIndex.cpp
     src/mesh/MeshTopology.cpp
     src/mesh/TopologyOperations.cpp
     src/mesh/PositionOperations.cpp

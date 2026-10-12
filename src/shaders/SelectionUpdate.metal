@@ -3,39 +3,47 @@
 #include "gpu/SelectionAggregate.h"
 #include "gpu/SelectionUpdatePushConstants.h"
 
-// Every handle is a canonical arena handle.
+// Masks, blocks, seeds and the dirty list address arena elements, and connectivity reads the mesh's record-relative handles.
 // Derivation reads only the source domain's words, so blocks of other domains update independently.
-// One mesh update of the batch, which reads its record from the work slot.
+// One mesh update of the batch, with its record and connectivity read once per thread from the work slot, whose dirty marks it writes.
 struct SelectionContext {
     device const BindlessSet &B;
     constant SelectionUpdatePushConstants &Pc;
     uint Update;
+    SelectionMeshUpdate Mesh;
+    ConnectivityView Conn;
+
+    SelectionContext(device const BindlessSet &b, constant SelectionUpdatePushConstants &pc, uint update)
+        : B(b), Pc(pc), Update(update), Mesh(reinterpret_cast<device const SelectionMeshUpdate *>(BindlessBuffer(uint, b.Buffer, pc.WorkSlot) + pc.Updates)[update]),
+          Conn(b, Mesh.Connectivity, Mesh.FaceCount) {}
 
     device uint *Work() const { return BindlessBufferMutable(uint, B.Buffer, Pc.WorkSlot); }
-    device const SelectionMeshUpdate &Mesh() const { return reinterpret_cast<device const SelectionMeshUpdate *>(Work() + Pc.Updates)[Update]; }
-    ConnectivityView Connectivity() const { return {B, Mesh().Connectivity, Mesh().FaceCount}; }
-    uint Corner(uint h) const { return BindlessBuffer(uint, B.IndexBuffer, Pc.CornersSlot)[h]; }
-    bool Live(uint domain, uint handle) const {
-        const uint word = BindlessBuffer(MeshElementBlock, B.Buffer, Pc.Blocks[domain])[handle / MeshElementBlockSize].Live[(handle % MeshElementBlockSize) / 32u];
-        return (word & (1u << (handle % 32u))) != 0u;
+    // The arena address of a handle of the vertex, edge, face or halfedge domain.
+    uint Address(uint domain, uint handle) const {
+        return domain == 0u ? Conn.VertexAddress(handle) : domain == 1u ? Conn.EdgeAddress(handle) : domain == 2u ? Conn.FaceAddress(handle) : Conn.HalfedgeAddress(handle);
     }
-    bool Hidden(uint domain,uint handle) const {
-        return handle!=InvalidOffset && Pc.Hidden[domain]!=InvalidSlot && (BindlessBuffer(uint,B.Buffer,Pc.Hidden[domain])[handle/32u] & (1u<<(handle%32u)))!=0u;
+    // The block holding an arena address of a domain.
+    device const MeshElementBlock &Block(uint domain, uint address) const { return BindlessBuffer(MeshElementBlock, B.Buffer, Pc.Blocks[domain])[address / MeshElementBlockSize]; }
+    uint Corner(uint h) const { return Conn.CornerVertex(Pc.CornersSlot, h); }
+    bool HiddenAt(uint domain, uint address) const {
+        return Pc.Hidden[domain]!=InvalidSlot && (BindlessBuffer(uint,B.Buffer,Pc.Hidden[domain])[address/32u] & (1u<<(address%32u)))!=0u;
     }
-    bool Selected(uint domain, uint handle) const {
-        return handle != InvalidOffset && (BindlessBuffer(uint, B.Buffer, Pc.Masks[domain].Slot)[Pc.Masks[domain].Offset + handle / 32u] & (1u << (handle % 32u))) != 0u;
+    bool SelectedAt(uint domain, uint address) const {
+        return (BindlessBuffer(uint, B.Buffer, Pc.Masks[domain].Slot)[Pc.Masks[domain].Offset + address / 32u] & (1u << (address % 32u))) != 0u;
     }
+    bool Selected(uint domain, uint handle) const { return handle != InvalidOffset && SelectedAt(domain, Address(domain, handle)); }
     // Both endpoints, with an invalid second endpoint for an unpaired face-less halfedge.
     uint2 EdgeVertices(uint edge) const {
-        const auto conn = Connectivity();
+        const auto conn = Conn;
         const uint h = conn.EdgeHalfedge(edge), opposite = conn.Opposite(h);
-        const uint from = opposite != InvalidOffset ? opposite : Mesh().FaceCount ? conn.Previous(h) : InvalidOffset;
+        const uint from = opposite != InvalidOffset ? opposite : Mesh.FaceCount ? conn.Previous(h) : InvalidOffset;
         return uint2(Corner(h), from == InvalidOffset ? InvalidOffset : Corner(from));
     }
-    bool Derived(uint domain, uint handle) const {
-        if (Hidden(domain,handle)) return false;
-        const auto conn = Connectivity();
-        const uint source = Mesh().Source;
+    // Whether the source domain's words select the element at the handle and its arena address.
+    bool Derived(uint domain, uint handle, uint address) const {
+        if (HiddenAt(domain, address)) return false;
+        const auto conn = Conn;
+        const uint source = Mesh.Source;
         if (domain == 0u) {
             bool selected = false;
             if (source == 2u) {
@@ -58,9 +66,8 @@ struct SelectionContext {
     }
 
     // The first mark of a block appends it to the dirty list with this update.
-    void Mark(uint domain, uint handle) const {
-        if (handle == InvalidOffset) return;
-        const uint block = handle / MeshElementBlockSize;
+    void MarkAddress(uint domain, uint address) const {
+        const uint block = address / MeshElementBlockSize;
         const uint key = ((domain << 30u) | block) + 1u;
         auto at = SelectionDirtyHash(key, Pc.DirtyMask);
         device atomic_uint *table = reinterpret_cast<device atomic_uint *>(Work());
@@ -75,6 +82,9 @@ struct SelectionContext {
         list[3u + 2u * output] = (domain << 30u) | block;
         list[4u + 2u * output] = Update;
     }
+    void Mark(uint domain, uint handle) const {
+        if (handle != InvalidOffset) MarkAddress(domain, Address(domain, handle));
+    }
 };
 
 // One thread per seed bit marks the seed's own block and the blocks of its incident elements.
@@ -88,10 +98,13 @@ kernel void MarkSelectionNeighbors(
     const SelectionContext ctx{b, pc, work[pc.SeedUpdates + i / 32u]};
     device const uint *words = work + pc.Seeds + 3u * (i / 32u);
     const SelectionSeed seed{words[0], words[1], words[2]};
-    const uint handle = seed.Word * 32u + i % 32u;
-    if (i % 32u == 0u && seed.Domain != SelectionHalfedgeDomain) ctx.Mark(seed.Domain, handle);
-    if (!(seed.Bits & (1u << (i % 32u))) || !ctx.Live(seed.Domain, handle)) return;
-    const auto conn = ctx.Connectivity();
+    const uint address = seed.Word * 32u + i % 32u, slot = address % MeshElementBlockSize;
+    if (i % 32u == 0u && seed.Domain != SelectionHalfedgeDomain) ctx.MarkAddress(seed.Domain, address);
+    if (!(seed.Bits & (1u << (i % 32u)))) return;
+    device const MeshElementBlock &block = ctx.Block(seed.Domain, address);
+    if (!(block.Live[slot / 32u] & (1u << (slot % 32u)))) return;
+    const uint handle = block.Local * MeshElementBlockSize + slot;
+    const auto conn = ctx.Conn;
     if (seed.Domain == 0u) {
         for (const auto item : conn.Fan(handle)) ctx.Mark(2u, item.y);
         conn.ForEachIncidentEdge(handle, [&](uint edge) { ctx.Mark(1u, edge); });
@@ -163,13 +176,14 @@ kernel void UpdateSelectionBlocks(
     const SelectionContext ctx{b, pc, pair[1]};
     const uint entry = pair[0];
     const uint domain = entry >> 30u, block = entry & ((1u << 30u) - 1u);
-    const uint source = ctx.Mesh().Source;
-    if (BindlessBuffer(MeshElementBlock, b.Buffer, pc.Blocks[domain])[block].Owner != ctx.Mesh().Owners[domain]) return;
-    const uint handle = block * MeshElementBlockSize + lane;
-    const bool live = ctx.Live(domain, handle);
-    bool selected = ctx.Selected(domain, handle);
+    const uint source = ctx.Mesh.Source, address = block * MeshElementBlockSize + lane;
+    device const MeshElementBlock &members = ctx.Block(domain, address);
+    if (members.Owner != ctx.Mesh.Owners[domain]) return;
+    const uint handle = members.Local * MeshElementBlockSize + lane;
+    const bool live = (members.Live[lane / 32u] & (1u << (lane % 32u))) != 0u;
+    bool selected = ctx.SelectedAt(domain, address);
     if (source != InvalidOffset && domain != source) {
-        selected = live && ctx.Derived(domain, handle);
+        selected = live && ctx.Derived(domain, handle, address);
         const uint word = uint((simd_vote::vote_t)simd_ballot(selected));
         if (simd_lane == 0u) BindlessBufferMutable(uint, b.Buffer, pc.Masks[domain].Slot)[pc.Masks[domain].Offset + block * MeshElementBlockWords + simd_group] = word;
     }
@@ -177,37 +191,38 @@ kernel void UpdateSelectionBlocks(
     float3 sum = 0.0f, low = FLT_MAX, high = -FLT_MAX;
     uint flags = 0u;
     if (live && domain == 0u) {
-        const float3 position = float3(BindlessBuffer(Vertex, b.VertexBuffer, pc.VerticesSlot)[handle].Position);
+        const float3 position = float3(BindlessBuffer(Vertex, b.VertexBuffer, pc.VerticesSlot)[address].Position);
         low = position;
         high = position;
         if (selected) {
             sum = position;
             device const uchar *sharpness = BindlessBuffer(uchar, b.Buffer, pc.EdgeSharpnessSlot);
-            ctx.Connectivity().ForEachIncidentEdge(handle, [&](uint edge) { flags |= sharpness[edge] ? SelectionSelectedSharp : SelectionSelectedSmooth; });
+            const auto conn = ctx.Conn;
+            conn.ForEachIncidentEdge(handle, [&](uint edge) { flags |= sharpness[conn.EdgeAddress(edge)] ? SelectionSelectedSharp : SelectionSelectedSmooth; });
         }
     } else if (live) {
-        const bool sharp = BindlessBuffer(uchar, b.Buffer, domain == 1u ? pc.EdgeSharpnessSlot : pc.FaceSharpnessSlot)[handle] != 0u;
+        const bool sharp = BindlessBuffer(uchar, b.Buffer, domain == 1u ? pc.EdgeSharpnessSlot : pc.FaceSharpnessSlot)[address] != 0u;
         flags = (sharp ? SelectionLiveSharp : SelectionLiveSmooth) | (selected ? (sharp ? SelectionSelectedSharp : SelectionSelectedSmooth) : 0u);
         if (domain == 1u) {
-            const auto conn = ctx.Connectivity();
+            const auto conn = ctx.Conn;
             const uint h = conn.EdgeHalfedge(handle);
             if (h != InvalidOffset && conn.Opposite(h) == InvalidOffset) flags |= SelectionBoundary;
         }
         else {
-            const uint2 loop = ctx.Connectivity().FaceHalfedges(handle);
+            const uint2 loop = ctx.Conn.FaceHalfedges(handle);
             device const Vertex *vertices = BindlessBuffer(Vertex, b.VertexBuffer, pc.VerticesSlot);
             for (uint h = loop.x; h < loop.y; ++h) {
-                const float3 position = float3(vertices[ctx.Corner(h)].Position);
+                const float3 position = float3(vertices[ctx.Conn.VertexAddress(ctx.Corner(h))].Position);
                 low = min(low, position);
                 high = max(high, position);
             }
         }
     }
-    const auto aggregate = ReduceSelectionAggregate(scratch, lane, simd_group, sum, low, high, uint(selected && live), uint(live), flags, uint(live && ctx.Hidden(domain,handle)));
+    const auto aggregate = ReduceSelectionAggregate(scratch, lane, simd_group, sum, low, high, uint(selected && live), uint(live), flags, uint(live && ctx.HiddenAt(domain,address)));
     if (lane == 0u) BindlessBufferMutable(SelectionAggregate, b.Buffer, pc.Leaves[domain])[block] = aggregate;
 }
 
-// One 256-lane group per listed block writes its selected handles after the block's first output index.
+// One 256-lane group per listed block writes its selected elements' handles after the block's first output index.
 kernel void GatherSelectedElements(
     uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -221,5 +236,5 @@ kernel void GatherSelectedElements(
     if (!(words[word] & bit)) return;
     uint rank = popcount(words[word] & (bit - 1u));
     for (uint w = 0u; w < word; ++w) rank += popcount(words[w]);
-    BindlessBufferMutable(uint, b.Buffer, pc.Output.Slot)[pc.Output.Offset + entry.y + rank] = entry.x * MeshElementBlockSize + lane;
+    BindlessBufferMutable(uint, b.Buffer, pc.Output.Slot)[pc.Output.Offset + entry.y + rank] = BindlessBuffer(MeshElementBlock, b.Buffer, pc.BlocksSlot)[entry.x].Local * MeshElementBlockSize + lane;
 }

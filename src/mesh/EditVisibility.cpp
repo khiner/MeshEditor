@@ -7,6 +7,7 @@
 
 bool EditVisibility(state::Scene &r, std::span<const uint32_t> ids, Element element, EditVisibilityOperation operation) {
     constexpr std::array elements{Element::Vertex, Element::Edge, Element::Face};
+    constexpr std::array domains{MeshStore::ElementDomain::Vertex, MeshStore::ElementDomain::Edge, MeshStore::ElementDomain::Face};
     const auto source = uint32_t(std::ranges::find(elements, element) - elements.begin());
     if (source >= 3u || ids.empty()) return false;
     const profile::CpuScope scope{"EditVisibility"};
@@ -35,7 +36,7 @@ bool EditVisibility(state::Scene &r, std::span<const uint32_t> ids, Element elem
                 for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) {
                     const auto word = block * MeshElementBlockWords + w;
                     for (auto bits = membership[block].Live[w] & ~(selection.Bits[word] | hidden[d].Bits[word]); bits; bits &= bits - 1u)
-                        visit(word * 32u + uint32_t(std::countr_zero(bits)));
+                        visit(membership[block].Local * MeshElementBlockSize + w * 32u + uint32_t(std::countr_zero(bits)));
                 }
                 return true;
             });
@@ -45,8 +46,8 @@ bool EditVisibility(state::Scene &r, std::span<const uint32_t> ids, Element elem
             const auto h = mesh.GetHalfedge(he::EH{edge}, 0u);
             if (!c.FaceOf(h)) return;
             auto a = *mesh.GetFromVertex(h), b = *mesh.GetToVertex(h);
-            if (c.VertexCorners[a].y > c.VertexCorners[b].y) std::swap(a, b);
-            const auto fan = c.VertexCorners[a];
+            if (c.Incoming(he::VH{a}).y > c.Incoming(he::VH{b}).y) std::swap(a, b);
+            const auto fan = c.Incoming(he::VH{a});
             for (uint32_t i = 0u; i < fan.y; ++i) {
                 const auto item = c.FanItems[fan.x + i];
                 if (item.y == InvalidOffset) continue;
@@ -63,7 +64,7 @@ bool EditVisibility(state::Scene &r, std::span<const uint32_t> ids, Element elem
             if (source == 0u) {
                 for (const auto v : changes[0]) {
                     for (const auto e : incidence.Incident(v)) hide(1u, e);
-                    const auto fan = c.VertexCorners[v];
+                    const auto fan = c.Incoming(he::VH{v});
                     for (uint32_t i = 0u; i < fan.y; ++i)
                         if (const auto face = c.FanItems[fan.x + i].y; face != InvalidOffset) hide(2u, face);
                 }
@@ -101,10 +102,15 @@ bool EditVisibility(state::Scene &r, std::span<const uint32_t> ids, Element elem
         auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = id, .Source = element});
         for (uint32_t d = 0u; d < 3u; ++d) {
             changed += changes[d].size();
+            // Masks mirror arena blocks, so the changed handles write at their addresses.
+            std::vector<uint32_t> addresses;
+            addresses.reserve(changes[d].size());
+            for (const auto h : changes[d]) addresses.push_back(meshes.HandleAddress(id, domains[d], ElementHandle{h}).Value());
+            std::ranges::sort(addresses);
             std::vector<std::pair<uint32_t, uint32_t>> words;
-            for (const auto h : changes[d]) {
-                if (words.empty() || words.back().first != h / 32u) words.emplace_back(h / 32u, 0u);
-                words.back().second |= 1u << (h % 32u);
+            for (const auto address : addresses) {
+                if (words.empty() || words.back().first != address / 32u) words.emplace_back(address / 32u, 0u);
+                words.back().second |= 1u << (address % 32u);
             }
             std::vector<uint32_t> blocks;
             for (const auto [word, bits] : words) {

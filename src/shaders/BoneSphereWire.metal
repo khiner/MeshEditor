@@ -8,8 +8,8 @@
 #include "LineQuad.metal"
 
 inline float4 BoneSphereWirePosition(const thread Scene &scene, DrawData draw, uint vertex_id) {
-    const uint idx = scene.CornerVertexOrdinal(draw, draw.IndexSlotOffset.Offset + vertex_id);
-    const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
+    const uint idx = scene.ExtrasVertex(draw, vertex_id);
+    const Vertex vert = scene.Vertices(draw.VertexSlot)[scene.VertexAddress(draw, idx)];
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
 
     const BoneBillboard bb = bone_sphere_billboard(scene, world, float3(vert.Position));

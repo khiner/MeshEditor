@@ -15,6 +15,7 @@ target_compile_definitions(MeshEditorTests PRIVATE
 
 mesheditor_test(MeshEditorActionSerializeTest ActionSerializeTest.cpp MeshEditorEditor)
 mesheditor_test(MeshEditorMetalBufferTest MetalBufferTest.cpp MeshEditorMetal)
+mesheditor_test(MeshEditorElementArenaTest ElementArenaTest.cpp MeshEditorMetal)
 mesheditor_test(MeshEditorModalSolveIntegrationTest ModalSolveIntegrationTest.cpp MeshEditorAudio FastFEM::FastFEM)
 mesheditor_test(MeshEditorCompressTest CompressTest.cpp mesheditor_support)
 mesheditor_test(MeshEditorAudioFileTest AudioFileTest.cpp MeshEditorAudio)

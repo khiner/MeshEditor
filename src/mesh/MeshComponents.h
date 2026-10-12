@@ -35,12 +35,11 @@ struct EvaluatedMesh {
 };
 // Persistent on a mesh entity whose evaluated record copies its source, so the next cook restores only the blocks either record wrote.
 // It restores with the record it describes, so a cook after a restore takes the path a replay of the same actions takes.
-// Each element domain's pairs of source block and evaluated block ascend by the evaluated block.
+// The evaluated record and its source share local block indices, so a written local block names both records' blocks.
 struct ResyncState {
-    std::array<std::vector<uvec2>, 6> Blocks{};
-    std::array<std::vector<uint32_t>, 6> Written{}; // The evaluated blocks the last cook wrote
+    std::array<std::vector<uint32_t>, 6> Written{}; // The evaluated record's local blocks the last cook wrote
     std::vector<uint32_t> Attributes{}; // The evaluated record's attributes holding their source attribute's copy
-    uint32_t Resyncs{}; // The cooks that restored the record since the pairs were made
+    uint32_t Resyncs{}; // The cooks that restored the record since it was copied
 };
 
 // A new mesh's authored normals in polygon-corner order, held until its base normals derive and the custom corner-normal layer encodes them.

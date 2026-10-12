@@ -62,7 +62,7 @@ struct Fixture : TestDir, Engine {
     }
     template<typename A> uint32_t Do(A a) {
         const auto node = P->Do(action::MakeAction(std::move(a)));
-        expect(R.Context.get<action::Errors>().Messages.empty());
+        Audit();
         if (Observe) Observe(true);
         return node.value();
     }
@@ -123,6 +123,7 @@ struct Fixture : TestDir, Engine {
     void Commit(std::string label) {
         P->Settle();
         P->History.Commit(std::move(label), {});
+        Audit();
         if (Observe) Observe(false);
     }
     void Audit() {
@@ -172,11 +173,12 @@ struct Fixture : TestDir, Engine {
         meshes.PlanClone(Mesh{meshes, id});
         meshes.CommitReserves();
         CloneCopies copies;
-        const auto clone = meshes.CloneMeshes(copies, std::array{id}, true, {}).front();
+        const auto clone = meshes.CloneMeshes(copies, std::array{id}, true).front();
         mtl::ComputeChain chain{meshes.BufferContext()};
         copies.Encode(chain, GetMeshPipelines(R));
         chain.Submit();
         meshes.RebuildSelectionIndex(std::array{clone});
+        Audit();
         return clone;
     }
     // Runs the tasks as dependent stages on the record, each of which changes it.
@@ -896,7 +898,7 @@ Graph JoinGenerated(Fixture &f) {
             expect(materials == 2u * meshes.Get(source).PrimitiveMaterials.Count);
             std::array<uint32_t, 2> primitives{};
             for (const auto face : joined.faces()) {
-                const auto primitive = meshes.Arenas().FacePrimitives.Get(*face);
+                const auto primitive = meshes.Arenas().FacePrimitives.Get(meshes.Get(joined.GetStoreId()).FacePrimitives, *face);
                 expect(primitive < materials);
                 ++primitives[primitive < materials / 2u ? 0u : 1u];
             }
@@ -919,7 +921,7 @@ Graph JoinGenerated(Fixture &f) {
 std::map<uint32_t, float> Heat(const MeshStore &meshes, uint32_t id) {
     std::map<uint32_t, float> heat;
     const auto view = meshes.AttributeView<float>(meshes.FindAttribute(id, "heat"));
-    meshes.Arenas().Vertices.ForEach(meshes.Get(id).Vertices, [&](uint32_t v, uint32_t) { heat.emplace(v, view[v]); });
+    meshes.Arenas().Vertices.ForEach(meshes.Get(id).Vertices, [&](ElementHandle v, ElementAddress) { heat.emplace(v.Value, view[v.Value]); });
     return heat;
 }
 // A named attribute's values travel through an edit-mode subdivision of a plain cube.
@@ -932,7 +934,7 @@ Graph HeatSubdivide(Fixture &f) {
     const auto vertices = meshes.Arenas().Vertices.Dense(meshes.Get(id).Vertices);
     std::vector<float> values(vertices.Count);
     for (uint32_t i = 0u; i < vertices.Count; ++i) values[i] = float(i * i);
-    meshes.SetAttribute<float>(heat, vertices.Offset, values);
+    meshes.SetAttribute<float>(heat, 0u, values);
     f.Commit("Heat cube");
     const auto original = Heat(meshes, id);
     f.EnterEdit(Element::Vertex);
@@ -988,28 +990,31 @@ void TestJoinPrimitiveTables(Fixture &f) {
     const auto points = [&] { return create({.Data = MeshData{{{0.f, 0.f, 1.f}, {1.f, 0.f, 1.f}, {0.f, 1.f, 1.f}}}, .Primitives = {.ElementPrimitiveIndices = {0u, 0u, 0u}, .MaterialIndices = {7u}}}); };
     expect(meshes.Get(wire()).PrimitiveMaterials.Count == 0u);
     // Each element's material through its primitive layer, sorted.
-    const auto resolve = [&](uint32_t id, const auto &layer, auto &&elements) {
+    const auto resolve = [&](uint32_t id, const auto &layer, Range values, auto &&elements) {
         const auto table = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(id).PrimitiveMaterials);
         std::vector<uint32_t> resolved;
         for (const auto element : elements) {
-            const auto primitive = layer.Get(*element);
+            const auto primitive = layer.Get(values, *element);
             expect(primitive < table.size());
             resolved.push_back(primitive < table.size() ? table[primitive] : InvalidOffset);
         }
         std::ranges::sort(resolved);
         return resolved;
     };
-    const auto materials = [&](uint32_t id) { return resolve(id, meshes.Arenas().FacePrimitives, Mesh{meshes, id}.faces()); };
+    const auto materials = [&](uint32_t id) { return resolve(id, meshes.Arenas().FacePrimitives, meshes.Get(id).FacePrimitives, Mesh{meshes, id}.faces()); };
     const std::vector<uint32_t> both{0u, 0u, 0u, 0u, 0u, 0u, 3u, 3u, 3u, 5u, 5u, 5u}, authored{3u, 3u, 3u, 5u, 5u, 5u};
     for (const auto &[first, second, expected] : {std::tuple{palette(), plain(), both}, std::tuple{plain(), palette(), both}, std::tuple{wire(), palette(), authored}, std::tuple{palette(), wire(), authored}}) {
         meshes.Join(f.R, first, second);
+        f.Audit();
         expect(materials(first) == expected);
         meshes.Release(std::array{first, second});
+        f.Audit();
     }
     // The wire square's vertices read the default material of their own table entry, and the points keep theirs.
     const auto lines = wire(), dots = points();
     meshes.Join(f.R, lines, dots);
-    expect(resolve(lines, meshes.Arenas().VertexPrimitives, Mesh{meshes, lines}.vertices()) == std::vector<uint32_t>{0u, 0u, 0u, 0u, 7u, 7u, 7u});
+    f.Audit();
+    expect(resolve(lines, meshes.Arenas().VertexPrimitives, meshes.Get(lines).VertexPrimitives, Mesh{meshes, lines}.vertices()) == std::vector<uint32_t>{0u, 0u, 0u, 0u, 7u, 7u, 7u});
     meshes.Release(std::array{lines, dots});
     f.Commit("Release joins");
     f.Audit();
@@ -1097,7 +1102,7 @@ void TestViewportOperators(Fixture &f) {
             f.Observe = {};
             GeometrySelection ordinals;
             for (const auto [domain, element, list] : domains(ordinals))
-                meshes.GetSelectedElements(f.Output(mesh), element).ForEach([&](uint32_t handle) { list->push_back(meshes.LiveElementOrdinal(f.Output(mesh), domain, handle)); });
+                meshes.GetSelectedElements(f.Output(mesh), element).ForEach([&](uint32_t handle) { list->push_back(meshes.LiveElementOrdinal(f.Output(mesh), domain, ElementHandle{handle})); });
             expect(ordinals.Get(row.Domain).size() == row.Clicks);
             const auto source = Describe(meshes, f.Source(mesh));
             const auto start = PresentStep(f, mesh);
@@ -1149,7 +1154,7 @@ void TestViewportOperators(Fixture &f) {
             const auto kernel = Reference(f, f.Source(mesh), [&](uint32_t clone) {
                 GeometrySelection clicked;
                 for (const auto [domain, element, list] : domains(clicked)) {
-                    for (const auto ordinal : ordinals.Get(element)) list->push_back(meshes.LiveElementAt(clone, domain, ordinal));
+                    for (const auto ordinal : ordinals.Get(element)) list->push_back(meshes.LiveElementAt(clone, domain, ordinal).Value);
                     std::ranges::sort(*list);
                 }
                 return row.Kernel(f, clone, clicked, row.Values.back());

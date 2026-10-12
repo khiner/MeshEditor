@@ -1,11 +1,12 @@
 #pragma once
 
 #include "gpu/ConnectivityRef.h"
+#include "gpu/ElementTables.h"
 #include "gpu/ElementWork.h"
 #include "gpu/SlotOffset.h"
 #include "gpu/Types.h"
 
-// Closure passes over one mesh's canonical connectivity, reading finished input work by ordinal below InputBound.
+// Closure passes over one mesh's connectivity, reading finished input work by ordinal below InputBound.
 // Vertex input (domain 0) marks its fans, face input (domain 2) marks its loops, and edge input (domain 3) marks its endpoints.
 struct MeshClosurePushConstants {
     ConnectivityRef Connectivity DEFAULT();
@@ -16,15 +17,17 @@ struct MeshClosurePushConstants {
     uint32_t RetainIsolatedOnly DEFAULT(); // Filter retained vertex seeds to vertices without incident edges.
     SlotOffset Incidence DEFAULT(); // The word counting the input's fan corners, loop corners, or endpoint fan corners
 };
-static_assert(sizeof(MeshClosurePushConstants) == 188, "MeshClosurePushConstants size");
+static_assert(sizeof(MeshClosurePushConstants) == 200, "MeshClosurePushConstants size");
 
 // The derived triangles of finished faces, checked against the mesh's face and triangle ownership.
+// Its handles resolve through Tables, each below its domain's handle bound.
 struct FaceTrianglePushConstants {
     ElementWork Faces DEFAULT(), Triangles DEFAULT();
     SlotOffset Error DEFAULT(), Total DEFAULT();
+    ElementTables Tables DEFAULT();
     uint32_t FaceBound DEFAULT(), FaceOwner DEFAULT(), TriangleOwner DEFAULT();
     uint32_t FaceBlocksSlot DEFAULT(), TriangleBlocksSlot DEFAULT();
     uint32_t FaceRangesSlot DEFAULT(), FaceTrianglesSlot DEFAULT(), TrianglesSlot DEFAULT();
-    uint32_t FaceCapacity DEFAULT(), TriangleCapacity DEFAULT(), CornerCapacity DEFAULT();
+    uint32_t FaceHandles DEFAULT(), TriangleHandles DEFAULT(), CornerHandles DEFAULT();
 };
-static_assert(sizeof(FaceTrianglePushConstants) == 92, "FaceTrianglePushConstants size");
+static_assert(sizeof(FaceTrianglePushConstants) == 132, "FaceTrianglePushConstants size");

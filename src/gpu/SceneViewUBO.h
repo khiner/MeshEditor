@@ -2,7 +2,6 @@
 
 #include "gpu/DebugChannel.h"
 #include "gpu/Element.h"
-#include "gpu/ElementAttributeRef.h"
 #include "gpu/IblSamplers.h"
 #include "gpu/InteractionMode.h"
 #include "gpu/Types.h"
@@ -35,15 +34,11 @@ struct SceneViewUBO {
     float LodErrorPixels DEFAULT();
     uint32_t EdgeSharpnessSlot DEFAULT();
     uint32_t FaceSharpnessSlot DEFAULT();
-    ElementAttributeRef CornerSectors DEFAULT();
-    ElementAttributeRef NormalSectors DEFAULT();
     // Derived base normals indexed by draw vertex and face offsets.
     uint32_t BaseVertexNormalSlot DEFAULT();
     uint32_t BaseFaceNormalSlot DEFAULT();
     uint32_t FaceTriangleStartSlot DEFAULT();
-    ElementAttributeRef Skin DEFAULT();
     uint32_t ArmatureDeformSlot DEFAULT();
-    ElementAttributeRef Morph DEFAULT();
     uint32_t MorphWeightsSlot DEFAULT();
     uint32_t PosedPositionSlot DEFAULT();
     uint32_t PosedPositionNodesSlot DEFAULT();
@@ -82,4 +77,4 @@ struct SceneViewUBO {
     uint32_t UseRealTransmission DEFAULT();
     DebugChannel DebugChannel DEFAULT();
 };
-static_assert(sizeof(SceneViewUBO) == 476, "SceneViewUBO size");
+static_assert(sizeof(SceneViewUBO) == 444, "SceneViewUBO size");

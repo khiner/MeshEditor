@@ -1,7 +1,6 @@
 #include "NormalSectorTraversal.metal"
 #include "ElementWorkShared.metal"
 #include "gpu/CornerClassificationPushConstants.h"
-#include "gpu/MeshElementBlock.h"
 
 struct CornerClassificationContext {
     device const BindlessSet &B;
@@ -13,17 +12,10 @@ struct CornerClassificationContext {
     }
     bool Flat(uint h) const { return Sectors().Flat(h); }
     bool Sharp(uint h) const { return Sectors().Sharp(h); }
-    uint Payload(uint h) const {
-        const uint block = BindlessBuffer(uint,B.Buffer,Pc.CornerSectors.BlocksSlot)[h/MeshElementBlockSize];
-        return block ? (block-1u)*MeshElementBlockSize+h%MeshElementBlockSize : InvalidOffset;
-    }
-    uint Root(uint h) const {
-        const uint at = Payload(h);
-        return at == InvalidOffset ? InvalidOffset : BindlessBuffer(uint,B.Buffer,Pc.CornerSectors.ValuesSlot)[at];
-    }
+    bool HasRoots() const { return Pc.CornerSectors.Slot != InvalidSlot; }
+    uint Root(uint h) const { return HasRoots() ? BindlessBuffer(uint,B.Buffer,Pc.CornerSectors.Slot)[Pc.CornerSectors.Offset+h] : InvalidOffset; }
     void Write(uint h, uint root) const {
-        const uint at = Payload(h);
-        if (at != InvalidOffset) BindlessBufferMutable(uint,B.Buffer,Pc.CornerSectors.ValuesSlot)[at] = root;
+        if (HasRoots()) BindlessBufferMutable(uint,B.Buffer,Pc.CornerSectors.Slot)[Pc.CornerSectors.Offset+h] = root;
     }
     uint Flags(uint2 fan) const {
         uint flags = 0u;
@@ -67,10 +59,10 @@ kernel void CornerClassificationPlan(
     const bool touched = (ctx.Flags(fan)&5u) != 0u;
     for (uint n = 0u; n < fan.y; ++n) {
         const uint h = ctx.Conn.FanCorner(fan.x+n);
-        const uint block = h/256u;
+        const uint block = ctx.Conn.HalfedgeAddress(h)/256u;
         const bool needed = touched && ctx.Conn.HalfedgeFace(h)!=InvalidOffset && !ctx.Flat(h);
         if (needed) MarkWork(b,pc.NeededBlocks,block);
-        if (needed || ctx.Payload(h) != InvalidOffset) MarkWork(b,pc.DirtyBlocks,block);
+        if (needed || ctx.HasRoots()) MarkWork(b,pc.DirtyBlocks,block);
     }
 }
 
@@ -91,21 +83,4 @@ kernel void CornerClassificationWrite(
         const uint h = ctx.Conn.FanCorner(fan.x+n);
         if (ctx.Conn.HalfedgeFace(h)!=InvalidOffset && !ctx.Flat(h) && ctx.Root(h) == InvalidOffset) ctx.Sector(h,fan.y);
     }
-}
-
-kernel void CornerClassificationBlocks(
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant CornerClassificationPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]
-) {
-    const uint id = WorkGroupElement(b,pc.DirtyBlocks,group), h = id*256u+lane;
-    const auto block = BindlessBuffer(MeshElementBlock,b.Buffer,pc.CornerBlocksSlot)[id];
-    const CornerClassificationContext ctx{b,pc,{b,pc.Connectivity,pc.FaceCount}};
-    uint flags = 0u;
-    if (block.Owner == pc.CornerOwner && (block.Live[lane/32u] & (1u<<(lane%32u)))) {
-        const uint root = ctx.Root(h);
-        flags = uint(root != InvalidOffset) | (uint(root == h)<<1u);
-    }
-    flags = simd_or(flags);
-    if (lane%32u == 0u) atomic_fetch_or_explicit(ctx.State()+pc.StatusOffset+group,flags,memory_order_relaxed);
 }

@@ -44,7 +44,6 @@ constexpr std::array<std::pair<const char *, const char *>, size_t(MeshPass::Cou
     {"CornerClassification.metal", "CornerClassificationCount"},
     {"CornerClassification.metal", "CornerClassificationPlan"},
     {"CornerClassification.metal", "CornerClassificationWrite"},
-    {"CornerClassification.metal", "CornerClassificationBlocks"},
     {"MeshClosure.metal", "MeshClosureCount"},
     {"MeshClosure.metal", "MeshClosureExpand"},
     {"MeshClosure.metal", "MeshClosureEdgeVertices"},
@@ -177,9 +176,7 @@ constexpr std::array<std::pair<const char *, const char *>, size_t(MeshPass::Cou
     {"MeshletBuild.metal", "MeshletBuildEmit"},
     {"MeshletBuild.metal", "MeshletBuildPrimitives"},
     {"MeshClone.metal", "CopyByteRuns"},
-    {"MeshClone.metal", "GatherByRank"},
-    {"MeshClone.metal", "RebaseByBlock"},
-    {"MeshClone.metal", "RebaseByRank"},
+    {"MeshClone.metal", "OffsetHandles"},
 }};
 
 } // namespace

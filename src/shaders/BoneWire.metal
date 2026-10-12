@@ -27,18 +27,17 @@ inline BoneLineVertex BoneWireMeshVertexAt(const thread Scene &scene, DrawData d
     const uint edge_index = vertex_id / 2u;
     const uint vert_in_edge = vertex_id % 2u;
 
-    device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
-    const uint adj_base = draw.IndexSlotOffset.Offset + edge_index * 4u;
-    const uint i0 = indices[adj_base + 0u] - draw.VertexOffset;
-    const uint i1 = indices[adj_base + 1u] - draw.VertexOffset;
-    const uint i2 = indices[adj_base + 2u] - draw.VertexOffset;
-    const uint i3 = indices[adj_base + 3u] - draw.VertexOffset;
+    const uint adj_base = edge_index * 4u;
+    const uint i0 = scene.ExtrasVertex(draw, adj_base + 0u);
+    const uint i1 = scene.ExtrasVertex(draw, adj_base + 1u);
+    const uint i2 = scene.ExtrasVertex(draw, adj_base + 2u);
+    const uint i3 = scene.ExtrasVertex(draw, adj_base + 3u);
 
     device const Vertex *vertices = scene.Vertices(draw.VertexSlot);
-    const float3 p0 = float3(vertices[i0 + draw.VertexOffset].Position);
-    const float3 p1 = float3(vertices[i1 + draw.VertexOffset].Position);
-    const float3 p2 = float3(vertices[i2 + draw.VertexOffset].Position);
-    const float3 p3 = float3(vertices[i3 + draw.VertexOffset].Position);
+    const float3 p0 = float3(vertices[scene.VertexAddress(draw, i0)].Position);
+    const float3 p1 = float3(vertices[scene.VertexAddress(draw, i1)].Position);
+    const float3 p2 = float3(vertices[scene.VertexAddress(draw, i2)].Position);
+    const float3 p3 = float3(vertices[scene.VertexAddress(draw, i3)].Position);
 
     const float3 vs0 = (MV * float4(p0, 1.0f)).xyz;
     const float3 vs1 = (MV * float4(p1, 1.0f)).xyz;

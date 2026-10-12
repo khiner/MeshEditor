@@ -21,12 +21,12 @@ inline float MeanIncidentEdgeLength(const thread Scene &scene, DrawData draw, ui
     float total = 0.0f;
     uint count = 0u;
     const auto add = [&](uint corner) {
-        total += length(scene.GetLocalPosition(draw, scene.CornerVertexOrdinal(draw, corner)) - position);
+        total += length(scene.GetLocalPosition(draw, scene.CornerVertex(draw, corner)) - position);
         ++count;
     };
     // Each fan corner ends at the vertex, so its incoming edge starts at its opposite's corner, or at its previous corner on a boundary.
     // A boundary edge leaving the vertex ends at the next corner.
-    for (const auto item : conn.Fan(draw.VertexOffset + vertex_id)) {
+    for (const auto item : conn.Fan(vertex_id)) {
         const uint h = item.x;
         if (conn.IncomingEdge(h) != InvalidOffset) {
             const uint opposite = conn.Opposite(h);
@@ -49,14 +49,14 @@ inline void FaceNormalSegment(const thread Scene &scene, DrawData draw, uint ele
     const ConnectivityView conn{scene.B, draw.Connectivity, draw.FaceCount};
     const uint2 loop = conn.FaceHalfedges(element);
     float3 sum = float3(0);
-    for (uint h = loop.x; h < loop.y; ++h) sum += scene.GetLocalPosition(draw, scene.CornerVertexOrdinal(draw, h));
+    for (uint h = loop.x; h < loop.y; ++h) sum += scene.GetLocalPosition(draw, scene.CornerVertex(draw, h));
     float area = 0.f;
-    const uint first = scene.FaceTriangles(scene.View.FaceTriangleStartSlot)[element];
+    const uint first = scene.FaceTriangles(scene.View.FaceTriangleStartSlot)[scene.FaceAddress(draw, element)];
     for (uint i = 0u; i < loop.y - loop.x - 2u; ++i) {
-        const uint3 h = uint3(BindlessBuffer(packed_uint3, scene.B.Buffer, draw.TriangleSlot)[first + i]);
-        const float3 a = scene.GetLocalPosition(draw, scene.CornerVertexOrdinal(draw, h.x));
-        const float3 b = scene.GetLocalPosition(draw, scene.CornerVertexOrdinal(draw, h.y));
-        const float3 c = scene.GetLocalPosition(draw, scene.CornerVertexOrdinal(draw, h.z));
+        const uint3 h = uint3(BindlessBuffer(packed_uint3, scene.B.Buffer, draw.TriangleSlot)[HandleAddress<MeshElementBlockSize>(scene.B, draw.Connectivity.Tables.Triangles, first + i)]);
+        const float3 a = scene.GetLocalPosition(draw, scene.CornerVertex(draw, h.x));
+        const float3 b = scene.GetLocalPosition(draw, scene.CornerVertex(draw, h.y));
+        const float3 c = scene.GetLocalPosition(draw, scene.CornerVertex(draw, h.z));
         area += 0.5f * length(cross(b - a, c - a));
     }
     start = sum / float(loop.y - loop.x);
@@ -68,7 +68,7 @@ inline void EmitNormalIndicator(
     thread NormalIndicatorOutput output, uint thread_index, uint lane, threadgroup uint *simd_counts,
     const thread Scene &scene, DrawData draw, uint element, bool faces
 ) {
-    const uint present = element != InvalidOffset && !EditElementHidden(scene,draw,faces ? Element::Face : Element::Vertex,faces ? element : draw.VertexOffset+element) ? 1u : 0u;
+    const uint present = element != InvalidOffset && !EditElementHidden(scene,draw,faces ? Element::Face : Element::Vertex,element) ? 1u : 0u;
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, NormalIndicatorSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y * 2u);
     if (present == 0u) return;
@@ -110,9 +110,9 @@ inline void EmitNormalIndicator(
     }
     uint element = InvalidOffset;
     if (!MeshletCoarse(work.Meshlet) && thread_index < work.Meshlet.TriangleCount) {
-        const uint triangle = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot)[work.Meshlet.TriangleOffset + thread_index];
+        const uint triangle = work.Payloads.TriangleIds[work.Meshlet.TriangleOffset + thread_index];
         const uint face = scene.TriangleFace(work.Draw, triangle);
-        if (face != InvalidOffset && triangle == scene.FaceTriangles(scene.View.FaceTriangleStartSlot)[face]) element = face;
+        if (face != InvalidOffset && triangle == scene.FaceTriangles(scene.View.FaceTriangleStartSlot)[scene.FaceAddress(work.Draw, face)]) element = face;
     }
     EmitNormalIndicator(output, thread_index, lane, simd_counts, scene, work.Draw, element, true);
 }

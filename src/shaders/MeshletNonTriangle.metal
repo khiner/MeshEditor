@@ -14,24 +14,21 @@ inline float4 PointQuadPosition(const thread Scene &scene, float4 clip, uint cor
     return clip;
 }
 
-inline uint NonTriangleVertexId(
-    device const BindlessSet &bindless, uint meshlet_vertex_slot, MeshletRecord meshlet,
-    uint topology, uint element, uint corner
-) {
+inline uint NonTriangleVertexId(MeshletPayloads payloads, MeshletRecord meshlet, uint topology, uint element, uint corner) {
     const uint endpoint = topology == uint(MeshPrimitiveTopology::Line) ? line_quad_endpoint(corner) : 0u;
     const uint stride = topology == uint(MeshPrimitiveTopology::Line) ? 2u : 1u;
-    return MeshletSourceVertex(bindless, meshlet_vertex_slot, meshlet, element * stride + endpoint);
+    return MeshletSourceVertex(payloads, meshlet, element * stride + endpoint);
 }
 
 inline float4 NonTrianglePosition(
-    const thread Scene &scene, device const BindlessSet &bindless, uint meshlet_vertex_slot,
+    const thread Scene &scene, MeshletPayloads payloads,
     DrawData draw, MeshletRecord meshlet, uint topology, uint element, uint corner
 ) {
     const Transform world = MeshletWorld(scene, draw);
-    const uint source_vertex = NonTriangleVertexId(bindless, meshlet_vertex_slot, meshlet, topology, element, corner);
+    const uint source_vertex = NonTriangleVertexId(payloads, meshlet, topology, element, corner);
     const float4 clip = MeshletPosition(scene, draw, world, source_vertex);
     if (topology == uint(MeshPrimitiveTopology::Point)) return PointQuadPosition(scene, clip, corner);
-    const uint other = NonTriangleVertexId(bindless, meshlet_vertex_slot, meshlet, topology, element, corner ^ 2u);
+    const uint other = NonTriangleVertexId(payloads, meshlet, topology, element, corner ^ 2u);
     const float4 other_clip = MeshletPosition(scene, draw, world, other);
     const bool first = line_quad_endpoint(corner) == 0u;
     return line_quad_position(

@@ -157,7 +157,7 @@ inline uint TopoLineCorners(TopoContext ctx, MeshTopologyJob job, uint h) {
 // Writes an output line from output vertex `from` to `to`, whose corners take their attributes from the source corners at its ends.
 inline void TopoEmitLine(TopoContext ctx, MeshTopologyJob job, uint d, uint from, uint to, uint from_corner, uint to_corner, uint edge_source, bool selected) {
     ctx.DstHalfedgeFaces(job)[d]=ctx.DstHalfedgeFaces(job)[d+1u]=InvalidOffset;
-    device uint *opposites=BindlessBufferMutable(uint,ctx.B.Buffer,job.DstConnectivity.Opposites.Slot)+job.DstCornerOffset;
+    const auto opposites=ctx.DstOpposites(job);
     opposites[d]=job.DstCornerOffset+d+1u; opposites[d+1u]=job.DstCornerOffset+d;
     ctx.WriteCorner(job, d, to, to_corner, to_corner, 0.f, edge_source, selected);
     ctx.WriteCorner(job, d + 1u, from, from_corner, from_corner, 0.f, edge_source, selected);

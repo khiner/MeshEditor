@@ -9,16 +9,16 @@ kernel void MeshletBoundsRefit(
     constant MeshletBoundsRefitPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     if (i >= pc.Count) return;
-    const uint id = WorkGroupElement(b,pc.Work,i);
-    if (id == InvalidOffset) return;
+    const uint address = WorkGroupElement(b,pc.MeshletAddresses,i);
+    if (address == InvalidOffset) return;
     device MeshletRecord *records = BindlessBufferMutable(MeshletRecord,b.Buffer,pc.MeshletSlot);
-    MeshletRecord record = records[id];
+    MeshletRecord record = records[address];
     if (!record.VertexCount) return;
-    device const uint *vertices = BindlessBuffer(uint,b.Buffer,pc.MeshletVertexSlot)+record.VertexOffset;
-    device const uchar *local = BindlessBuffer(uchar,b.Buffer,pc.LocalTrianglesSlot)+record.LocalTriangleOffset;
+    device const uint *vertices = BindlessBuffer(uint,b.Buffer,pc.MeshletVertexSlot)+pc.VertexBase+record.VertexOffset;
+    device const uchar *local = BindlessBuffer(uchar,b.Buffer,pc.LocalTrianglesSlot)+(pc.LocalTriangleBase+record.LocalTriangleOffset)*3u;
     FitClusterBounds(record,local,[&](uint v) {
-        const uint vertex_id = record.Topology == 0u ? BindlessBuffer(uint,b.IndexBuffer,pc.CornerSlot)[vertices[v]] : pc.VertexOffset+vertices[v];
-        return float3(BindlessBuffer(Vertex,b.VertexBuffer,pc.VertexSlot)[vertex_id].Position);
+        const uint handle = record.Topology == 0u ? BindlessBuffer(uint,b.IndexBuffer,pc.CornerSlot)[HandleAddress<MeshElementBlockSize>(b,pc.CornerTable,vertices[v])] : vertices[v];
+        return float3(BindlessBuffer(Vertex,b.VertexBuffer,pc.VertexSlot)[HandleAddress<MeshElementBlockSize>(b,pc.VertexTable,handle)].Position);
     });
-    records[id] = record;
+    records[address] = record;
 }

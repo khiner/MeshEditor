@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gpu/MeshElementSet.h"
 #include "gpu/Types.h"
 
 struct MeshletCullPushConstants {
@@ -29,7 +30,9 @@ struct MeshletCullPushConstants {
     uint32_t InstanceSlot DEFAULT();
     uint32_t PrimitiveSlot DEFAULT();
     uint32_t MeshletSlot DEFAULT();
-    uint32_t MeshletIndexNodesSlot DEFAULT(), MeshletIndexLeavesSlot DEFAULT();
+    uint32_t MemberSlot DEFAULT();
+    // The render collections whose set indices the mesh records hold.
+    SetArenaSlots Primitives DEFAULT(), Nodes DEFAULT(), Groups DEFAULT(), Meshlets DEFAULT(), Members DEFAULT();
     uint32_t ClusterGroupSlot DEFAULT(InvalidSlot);
     uint32_t BoundsSlot DEFAULT();
     uint32_t ModelSlot DEFAULT();
@@ -51,4 +54,4 @@ struct MeshletCullPushConstants {
     uint32_t SourceVisibleSlot DEFAULT(InvalidSlot);
     uint32_t SourceRouteStateSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(MeshletCullPushConstants) == 172, "MeshletCullPushConstants size");
+static_assert(sizeof(MeshletCullPushConstants) == 228, "MeshletCullPushConstants size");

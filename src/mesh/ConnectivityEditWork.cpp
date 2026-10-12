@@ -10,16 +10,18 @@
 #include "render/ElementWorkOps.h"
 #include "state/Scene.h"
 
-ConnectivityEditWork::ConnectivityEditWork(state::Scene &r, mtl::ComputeChain &chain, const MeshClosure &before, const std::array<ElementWork, 2> &replaced, const std::array<ElementHandleRange, 3> &emitted) {
+ConnectivityEditWork::ConnectivityEditWork(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, const MeshClosure &before, const std::array<ElementWork, 2> &replaced, const std::array<ElementHandleRange, 3> &emitted) {
     const profile::CpuScope scope{"ConnectivityEditWork"};
-    const auto &a = r.Context.get<MeshStore>().Arenas();
-    const std::array capacities{a.Vertices.Capacity(), a.FaceCorners.Capacity(), a.FaceTriangles.Capacity()};
+    const auto &meshes = r.Context.get<MeshStore>();
+    const auto &a = meshes.Arenas();
+    const auto &record = meshes.Get(id);
+    const std::array capacities{a.Vertices.HandleBound(record.Vertices), a.FaceCorners.HandleBound(record.FaceCorners), a.FaceTriangles.HandleBound(record.FaceData)};
     uint32_t count = 0u;
     for (uint32_t d = 0u; d < 3u; ++d) {
         const uint64_t bound = uint64_t(before.Counts[d]) + emitted[d].Count;
         if (bound > UINT32_MAX) throw std::length_error("Connectivity edit work exceeds its dispatch address space.");
         if (emitted[d].Count && emitted[d].Handles.Slot == InvalidSlot && uint64_t(emitted[d].First) + emitted[d].Count > capacities[d]) {
-            throw std::out_of_range("Emitted connectivity run exceeds its canonical arena.");
+            throw std::out_of_range("Emitted connectivity run exceeds its record's handles.");
         }
         if (emitted[d].Handles.Slot != InvalidSlot && uint64_t(emitted[d].Handles.Offset) + emitted[d].Count > UINT32_MAX) {
             throw std::length_error("Emitted connectivity handle list exceeds its address space.");

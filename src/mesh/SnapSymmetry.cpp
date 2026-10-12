@@ -51,7 +51,7 @@ std::vector<SymmetrySnapVertex> PlanSymmetrySnap(const MeshStore &meshes, const 
                 const auto &block = membership[child];
                 for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
                     for (auto bits = block.Live[w]; bits; bits &= bits - 1u) {
-                        const uint32_t other = child * MeshElementBlockSize + w * 32u + uint32_t(std::countr_zero(bits));
+                        const uint32_t other = block.Local * MeshElementBlockSize + w * 32u + uint32_t(std::countr_zero(bits));
                         ++visited_vertices;
                         const auto delta = mesh.GetPosition(he::VH{other}) - mirrored;
                         const float squared = Dot(delta, delta);

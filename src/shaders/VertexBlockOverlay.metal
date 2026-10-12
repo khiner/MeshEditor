@@ -57,7 +57,7 @@ using VertexBlockSelectOutput = metal::mesh<ElementIdVaryings, void, VertexBlock
     const Scene scene{bindless, view, theme, workspace};
     const VertexBlockLane work = ResolveVertexBlockLane(scene, pc, group.x, thread_index);
     const bool present = work.VertexId != InvalidOffset &&
-        (pc.SoundPoints == 0u || EditSelectionBit(scene, work.Draw.Selection.VertexBits, work.VertexId));
+        (pc.SoundPoints == 0u || EditSelectionBit(scene, work.Draw.Selection.VertexBits, scene.VertexAddress(work.Draw, work.VertexId)));
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, VertexBlockSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y);
     if (!present) return;
@@ -65,7 +65,7 @@ using VertexBlockSelectOutput = metal::mesh<ElementIdVaryings, void, VertexBlock
     ElementIdVaryings out{
         .Position = MeshletPosition(scene, work.Draw, MeshletWorld(scene, work.Draw), work.VertexId),
         .PointSize = PointSize,
-        .ElementId = (pc.SoundPoints != 0u ? 0u : work.Draw.ElementIdOffset) + work.VertexId + 1u,
+        .ElementId = pc.SoundPoints != 0u ? work.VertexId + 1u : scene.ElementPickId(work.Draw, false, work.VertexId),
     };
     output.set_vertex(compact.x, out);
     output.set_index(compact.x, compact.x);

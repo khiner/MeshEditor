@@ -26,6 +26,7 @@ struct CornerWeldSource {
     uint32_t CornerClassMode{InvalidOffset};
     CornerAttributeView<uint32_t> CornerSectors;
     std::span<const uint8_t> FaceSharpness;
+    std::span<const uint32_t> FaceTable; // Resolves face handles to FaceSharpness addresses, and an empty table indexes it by handle.
     TriangleFaceView TriangleFaces;
     CornerAttributeView<CustomNormal> CustomNormals;
     std::array<CornerAttributeView<vec2>, MaxWeldUvSets> CornerUvs;
@@ -57,6 +58,12 @@ struct CornerWeldKey {
         return true;
     }
 
+    // The arena address of a corner handle, which indexes the corners' faces, while the corner layers index the handle.
+    uint32_t Address(uint32_t handle) const {
+        const auto &table = Source.TriangleFaces.Corners.CornerTable;
+        return table.empty() ? handle : Resolve<MeshElementBlockSize>(table, ElementHandle{handle}).Value();
+    }
+
     uint32_t Handle(uint32_t corner) const {
         const auto global = FirstCorner + corner;
         return Source.TriangleFaces.Corners.Values.empty() ? global : Source.TriangleFaces.Corners[global];
@@ -79,7 +86,7 @@ struct CornerWeldKey {
         words[2] = InvalidOffset;
         // Face identity must retain all 32 bits independently of the class tag.
         if (!flat_face && corner_class == uint32_t(CornerClass::Face)) {
-            words[2] = Source.TriangleFaces.HalfedgeFaces[handle];
+            words[2] = Source.TriangleFaces.HalfedgeFaces[Address(handle)];
         }
         if (corner_class == uint32_t(CornerClass::Seam)) words[2] = Source.CornerSectors.Attribute.GetOr(handle, InvalidOffset);
         words[1] = corner_class;
@@ -116,7 +123,8 @@ private:
     uint32_t ClassHandle(uint32_t handle) const {
         if (Source.CornerClassMode == uint32_t(CornerClassMode::UniformFace)) return uint32_t(CornerClass::Face);
         if (Source.CornerClassMode == uint32_t(CornerClassMode::UniformVertex)) return uint32_t(CornerClass::Vertex);
-        if (Source.FaceSharpness[Source.TriangleFaces.HalfedgeFaces[handle]]) return uint32_t(CornerClass::Face);
+        const auto face = Source.TriangleFaces.HalfedgeFaces[Address(handle)];
+        if (Source.FaceSharpness[Source.FaceTable.empty() ? face : Resolve<MeshElementBlockSize>(Source.FaceTable, ElementHandle{face}).Value()]) return uint32_t(CornerClass::Face);
         return uint32_t(Source.CornerSectors.Attribute.GetOr(handle, InvalidOffset) == InvalidOffset ? CornerClass::Vertex : CornerClass::Seam);
     }
 

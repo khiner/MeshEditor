@@ -1,6 +1,7 @@
 #include "render/GpuBufferOps.h"
 #include "Profile.h"
 
+#include "gpu/MeshletClassification.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "render/GpuBuffers.h"
@@ -15,12 +16,17 @@ TriangleVertexView GetFaceIndices(const state::Scene &, const Mesh &mesh) { retu
 
 mtl::BufferContext &GetBufferContext(state::Scene &r) { return r.Context.get<GpuBuffers>().Ctx; }
 
-void UpdatePosedMeshletBlocks(state::Scene &r, const MeshStore::Record &owner, std::span<const uint32_t> ids) {
-    const auto &index = r.Context.get<const MeshStore>().Render().ActiveMeshlets;
+void UpdatePosedMeshletBlocks(state::Scene &r, const MeshStore::Record &owner, std::span<const uint32_t> addresses) {
+    const auto &meshlets = r.Context.get<const MeshStore>().Render().Meshlets;
+    // Posed bounds attach in blocks of MeshElementBlockSize addresses, each spanning several meshlet blocks.
+    constexpr auto Span = MeshElementBlockSize / RenderBlockSize;
     std::vector<uint32_t> blocks;
-    for (const auto id : ids)
-        if (blocks.empty() || blocks.back() != id / 256u) blocks.push_back(id / 256u);
-    r.Context.get<GpuBuffers>().PosedMeshletBounds.UpdateBlocks(owner.StoreId, owner.MeshletRevision, blocks, [&](uint32_t block) { return index.HasBlock(owner.MeshletRoot, block); }, owner.RenderTopologies);
+    for (const auto address : addresses)
+        if (blocks.empty() || blocks.back() != address / MeshElementBlockSize) blocks.push_back(address / MeshElementBlockSize);
+    const auto members = meshlets.Blocks.Buffer.GetSpan<MeshElementBlock>();
+    r.Context.get<GpuBuffers>().PosedMeshletBounds.UpdateBlocks(owner.StoreId, owner.MeshletRevision, blocks, [&](uint32_t block) {
+        const auto first = std::min<size_t>(members.size(), size_t(block) * Span);
+        return owner.MeshletData && std::ranges::any_of(members.subspan(first, std::min<size_t>(Span, members.size() - first)), [&](const MeshElementBlock &value) { return value.Owner == owner.MeshletData.Index && value.Count != 0u; }); }, owner.RenderTopologies);
 }
 
 void FreeInstanceRange(state::Scene &r, Range range) { r.Context.get<GpuBuffers>().Instances.Free(range); }
@@ -166,7 +172,7 @@ void GpuBuffers::EnsureMeshletVisibilityCapacity(
     MeshletWorkBlocks.SetCount<uint32_t>(block_count);
     for (auto &frontier : LodFrontiers) frontier.SetCount<LodFrontierEntry>(frontier_count);
     LodFrontierBlockStates.SetCount<LodFrontierBlockState>(frontier_block_count);
-    MeshletClassifications.SetCount<uint32_t>(visible_count);
+    MeshletClassifications.SetCount<MeshletClassification>(visible_count);
     MeshletCullBlocks.SetCount<MeshletCullBlockState>(block_count);
     output.ChunkCount = static_cast<uint32_t>((work_meshlet_count + MeshletDispatchChunkSize - 1) / MeshletDispatchChunkSize);
     output.DispatchArgs.SetCount<MeshDispatchArgs>(MeshletRouteCount * output.ChunkCount);

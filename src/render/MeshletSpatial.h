@@ -22,5 +22,5 @@ struct SpatialSurfacePoint {
     std::array<uint32_t, 3> Vertices{}; // Canonical vertex handles.
     vec3 Weights{0};
 };
-SpatialSurfacePoint ClosestMeshletPoint(const RenderArenas &, const MeshStore::Record &, std::span<const Vertex>, TriangleVertexView, vec3 point);
+SpatialSurfacePoint ClosestMeshletPoint(const RenderArenas &, const MeshStore::Record &, HandleValues<Vertex>, TriangleVertexView, vec3 point);
 std::optional<double> MeshletEnclosedVolume(const RenderArenas &, const MeshStore::Record &, const Mesh &);

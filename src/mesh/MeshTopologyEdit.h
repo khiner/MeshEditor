@@ -32,7 +32,7 @@ inline constexpr uint32_t TopologyScratchWords = 64u << 10;
 // The owning document transaction restores canonical storage on cancellation.
 struct MeshTopologyEdit {
     // Constructs the edits of `tasks` on `chain`, which is the only way to obtain an edit.
-    // A KeepSelectedFaces task copies its faces into a new mesh, a Boolean task combines two meshes into a new one, and every other task edits its source in place.
+    // A KeepSelectedFaces task copies its faces into a new mesh, a Boolean task combines its source's two meshes into a new one, and every other task edits its source in place.
     // An edit whose task selects no source or produces no change has no Output.
     // An inset edit captures its staged basis into a range of `inset_basis` when one is given.
     static std::vector<MeshTopologyEdit> Construct(state::Scene &, mtl::ComputeChain &, std::span<const MeshTopologyTask>, BufferArena<uint32_t> *inset_basis = nullptr);
@@ -51,8 +51,8 @@ struct MeshTopologyEdit {
 
     mtl::ComputeChain &Chain;
     uint32_t SourceId;
-    uint32_t SecondSourceId; // A boolean's second source, and InvalidOffset otherwise.
     uint32_t StoreId; // The destination owner, and equals SourceId for in-place edits.
+    bool OwnsSource{}; // A boolean's source is a combined copy of its meshes, which finishing releases.
     MeshTopologyOp Op;
     uint32_t OriginalClassMode{};
     std::unique_ptr<TopologyOutputHandles> Output;
@@ -60,9 +60,8 @@ struct MeshTopologyEdit {
     // Old triangles in the entire affected shading neighborhood, including
     // unselected faces whose corner equivalence/normals can change.
     FaceTriangles ChangedTriangles;
-    // Payloads that a local corner repair may retire before pose caches can
-    // observe the new canonical membership.
-    std::vector<uint32_t> OldNormalPayloadBlocks;
+    // The corner blocks of a record with sector roots that a local corner repair may retire before pose caches observe the new canonical membership.
+    std::vector<uint32_t> OldCornerBlocks;
     ElementWork AddedTriangles{};
     ElementWork RetiredEdges{};
     uint32_t AddedTriangleCount{};

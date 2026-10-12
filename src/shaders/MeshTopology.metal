@@ -1553,32 +1553,31 @@ kernel void TopologyFaceTables(
     const uint2 range = ctx.DstFaceRange(job, fd);
     const uint first = range.x - 2u * fd;
     ctx.DstFaceTriangles(job)[fd] = job.DstTriangleOffset + first;
-    device packed_uint3 *triangles = ctx.DstTriangles(job);
+    const auto triangles = ctx.DstTriangles(job);
     const uint corner = job.DstCornerOffset + range.x;
     const uint source = ctx.FaceMap(job)[fd];
     uint source_triangle = InvalidOffset;
     device uint *triangle_sources = job.DstTriangleSources.Slot != InvalidSlot ?
         BindlessBufferMutable(uint,bindless.Buffer,job.DstTriangleSources.Slot) + job.DstTriangleSources.Offset : nullptr;
     if (triangle_sources && source != InvalidOffset) {
-        source_triangle = BindlessBuffer(uint,bindless.ObjectIdBuffer,pc.Source.FaceTriangleStartSlot)[ctx.SrcFaceDomain(job).Handle(source)];
+        source_triangle = BindlessBuffer(uint,bindless.ObjectIdBuffer,pc.Source.FaceTriangleStartSlot)[ctx.SrcAddress(job,2u,ctx.SrcFaceDomain(job).Handle(source))];
     }
     // Vertex gathering has finished; its provenance scratch now holds tessellation work.
     device uint *scratch=ctx.VertexMap(job);
     device uint *next=scratch+range.x,*previous=scratch+job.DstHalfedgeCount+range.x;
     device vec2 *points=reinterpret_cast<device vec2 *>(scratch+2u*job.DstHalfedgeCount)+range.x;
     const auto vertices=BindlessBuffer(Vertex,bindless.VertexBuffer,pc.Destination.VertexSlot);
-    TriangulatePolygon(range.y-range.x,[&](uint i) { return vec3(vertices[ctx.DstCorners(job)[range.x+i]].Position); },
+    TriangulatePolygon(range.y-range.x,[&](uint i) { return vec3(vertices[ctx.DstAddress(job,0u,ctx.DstCorners(job)[range.x+i])].Position); },
         points,next,previous,[&](uvec3 triangle,uint t) {
             triangles[first+t]=packed_uint3(uint3(triangle)+corner);
             if (triangle_sources) triangle_sources[first+t]=source_triangle;
         });
     const bool listed = job.Op == MeshTopologyOp::AddPrimitives && fd >= job.SrcFaceCount;
-    const bool second = ctx.SecondFace(job, source);
-    const uint primitive = source != InvalidOffset ? ctx.SrcElementPrimitive(job, source) + (second ? job.SecondPrimitiveBase : 0u) : 0u;
+    const uint primitive = source != InvalidOffset ? ctx.SrcElementPrimitive(job, source) : 0u;
     ctx.SetDstElementPrimitive(job, fd, job.PrimitiveWork.Storage.Slot != InvalidSlot ? WorkRank(bindless, job.PrimitiveWork, primitive) : primitive);
     ctx.DstFaceSharpness(job)[fd] = !listed && source != InvalidOffset ? ctx.SrcFaceSharpness(job)[source] : uchar(0);
     const uint source_face = !listed && source != InvalidOffset ? ctx.SrcFaceDomain(job).Handle(source) : InvalidOffset;
-    TopoCopyAttributes(ctx, job, AttributeDomain::Face, ctx.DstFaceDomain(job).Handle(fd), source_face, second);
+    TopoCopyAttributes(ctx, job, AttributeDomain::Face, ctx.DstFaceDomain(job).Handle(fd), source_face);
 }
 
 // Copy transforms carry authored normal directions through each generated layer.
@@ -1612,13 +1611,13 @@ kernel void TopologyGatherVertices(
     const uint4 v = uint4(map[0], map[1], map[2], map[3]);
     const float s = as_type<float>(map[4]), t = as_type<float>(map[5]);
     const float4 weights=float4((1.f-s)*(1.f-t),s*(1.f-t),s*t,(1.f-s)*t);
-    // A vertex map's sources are all one source's vertices, or all appended vertices.
+    // A vertex map's sources are all one side's vertices, or all appended vertices.
     const bool second = ctx.SecondVertex(job, v.x);
-    const uint source_count = job.SrcVertexCount + job.Src2Counts[0], layers = job.SourceLayers[second ? 1u : 0u] >> 16u;
+    const uint source_count = job.SrcVertexCount + job.Src2Counts[0], layers = job.SourceLayers >> 16u;
     bool hidden=true;
     for (uint k=0u;k<4u;++k) if (weights[k]!=0.f)
-        hidden=hidden && v[k]<source_count && ctx.Selected({pc.Source.VertexHiddenSlot,0u},ctx.SrcVertexDomain(job).Handle(v[k]));
-    ctx.Select({pc.Destination.VertexHiddenSlot,0u},ctx.DstVertexDomain(job).Handle(d),hidden);
+        hidden=hidden && v[k]<source_count && ctx.Selected({pc.Source.VertexHiddenSlot,0u},ctx.SrcAddress(job,0u,ctx.SrcVertexDomain(job).Handle(v[k])));
+    ctx.Select({pc.Destination.VertexHiddenSlot,0u},ctx.DstAddress(job,0u,ctx.DstVertexDomain(job).Handle(d)),hidden);
     if (hidden) ctx.SelectDstVertex(job,d,false);
     if (job.Op != MeshTopologyOp::MergeCollapse || !ctx.SrcSelectedVertex(job, v.x)) {
         const auto src = ctx.SrcVertices(job);
@@ -1655,7 +1654,7 @@ kernel void TopologyGatherVertices(
         float3 normal = TopoBilinear(float3(src[v.x]), float3(src[v.y]), float3(src[v.z]), float3(src[v.w]), s, t);
         if (s != 0.f || t != 0.f) normal = NormalizeOrZero(normal);
         normal = TopoCopyNormal(ctx, job, v.x, d, normal);
-        BindlessBufferMutable(packed_float3, bindless.Buffer, pc.Destination.BaseVertexNormalSlot)[ctx.DstVertexDomain(job).Handle(d)] = packed_float3(normal);
+        BindlessBufferMutable(packed_float3, bindless.Buffer, pc.Destination.BaseVertexNormalSlot)[ctx.DstAddress(job,0u,ctx.DstVertexDomain(job).Handle(d))] = packed_float3(normal);
     }
     // A layer its source lacks holds its default, as a join gives it.
     if (job.VertexAttributes & MeshAttributeBit_Color0) {
@@ -1664,9 +1663,9 @@ kernel void TopologyGatherVertices(
     // Skin weights and point/line material indices take the nearest source.
     const uint nearest = t < 0.5f ? (s < 0.5f ? v.x : v.y) : (s < 0.5f ? v.w : v.z);
     if (job.HasVertexPrimitives&2u) {
-        const auto from=pc.Source.VertexPrimitives,to=pc.Destination.VertexPrimitives;
-        const uint primitive=(job.HasVertexPrimitives&1u) ? BindlessBuffer(uint,bindless.ElementPrimitiveBuffer,from.ValuesSlot)[ElementAttributeIndex(bindless,from,ctx.SrcVertexDomain(job).Handle(nearest))] : 0u;
-        BindlessBufferMutable(uint,bindless.ElementPrimitiveBuffer,to.ValuesSlot)[ElementAttributeIndex(bindless,to,ctx.DstVertexDomain(job).Handle(d))]=
+        const auto from=pc.Source.Layers.VertexPrimitives,to=pc.Destination.Layers.VertexPrimitives;
+        const uint primitive=(job.HasVertexPrimitives&1u) ? BindlessBuffer(uint,bindless.ElementPrimitiveBuffer,from.Slot)[from.Offset+ctx.SrcVertexDomain(job).Handle(nearest)] : 0u;
+        BindlessBufferMutable(uint,bindless.ElementPrimitiveBuffer,to.Slot)[to.Offset+ctx.DstVertexDomain(job).Handle(d)]=
             job.PrimitiveWork.Storage.Slot!=InvalidSlot ? WorkRank(bindless,job.PrimitiveWork,primitive) : primitive;
     }
     // Deform channels follow the first source.
@@ -1694,7 +1693,7 @@ kernel void TopologyGatherVertices(
     for (uint i = vertices.x; i < vertices.y; ++i) {
         const TopologyAttribute attribute = TopoAttribute(ctx, job, i);
         uint4 values[4];
-        for (uint k = 0u; k < 4u; ++k) values[k] = TopoReadAttribute(ctx, attribute, v[k] < source_count ? ctx.SrcVertexDomain(job).Handle(v[k]) : InvalidOffset, second);
+        for (uint k = 0u; k < 4u; ++k) values[k] = TopoReadAttribute(ctx, attribute, v[k] < source_count ? ctx.SrcVertexDomain(job).Handle(v[k]) : InvalidOffset);
         TopoWriteAttribute(ctx, attribute, ctx.DstVertexDomain(job).Handle(d), TopoInterpolateAttribute(attribute, values[0], values[1], values[2], values[3], s, t));
     }
 }
@@ -1717,7 +1716,7 @@ kernel void TopologyGatherCorners(
         if (job.CornerAttributes & MeshAttributeBit_Color0) ctx.SetDstCornerColor(job,h,float4(1));
         for (uint set=0u;set<4u;++set)
             if (job.CornerAttributes & (MeshAttributeBit_TexCoord0 << set)) ctx.SetDstCornerUv(job,set,h,float2(0));
-        TopoCopyAttributes(ctx, job, AttributeDomain::Corner, job.DstCornerOffset + h, InvalidOffset, false);
+        TopoCopyAttributes(ctx, job, AttributeDomain::Corner, job.DstCornerOffset + h, InvalidOffset);
         return;
     }
     device const uint *map = ctx.CornerMap(job) + TopoCornerMapWords * h;
@@ -1732,9 +1731,8 @@ kernel void TopologyGatherCorners(
         }
     }
     const float s = as_type<float>(map[4]), t = as_type<float>(map[5]);
-    // A corner map's sources are all one source's corners, and a layer that source lacks holds its default.
-    const bool second = ctx.SecondCorner(job, a);
-    const uint layers = job.SourceLayers[second ? 1u : 0u];
+    // A layer the source lacks holds its default.
+    const uint layers = job.SourceLayers;
     if (job.CornerAttributes & MeshAttributeBit_Tangent) {
         ctx.SetDstCornerTangent(job, h, layers & MeshAttributeBit_Tangent ? TopoBilinear(ctx.SrcCornerTangent(job, a), ctx.SrcCornerTangent(job, b), ctx.SrcCornerTangent(job, c), ctx.SrcCornerTangent(job, d), s, t) : float4(0.f));
     }
@@ -1747,30 +1745,29 @@ kernel void TopologyGatherCorners(
         }
     for (uint i = corners.x; i < corners.y; ++i) {
         const TopologyAttribute attribute = TopoAttribute(ctx, job, i);
-        const uint4 value = TopoInterpolateAttribute(attribute, TopoReadAttribute(ctx, attribute, a, second), TopoReadAttribute(ctx, attribute, b, second), TopoReadAttribute(ctx, attribute, c, second), TopoReadAttribute(ctx, attribute, d, second), s, t);
+        const auto read = [&](uint corner) { return TopoReadAttribute(ctx, attribute, corner); };
+        const uint4 value = TopoInterpolateAttribute(attribute, read(a), read(b), read(c), read(d), s, t);
         TopoWriteAttribute(ctx, attribute, job.DstCornerOffset + h, value);
     }
 }
 
-// Transfer directions between canonical polygon frames after output derivation.
+// Transfer directions between polygon frames after output derivation.
 // A new corner interpolates actual normals, never polar/azimuth angles.
 inline float3 TopoDerivedCornerNormal(TopoContext ctx, constant MeshTopologyArenas &arenas, ConnectivityView conn, uint h) {
-    const uint face = conn.HalfedgeFace(h);
+    const uint face = conn.FaceAddress(conn.HalfedgeFace(h));
     if (BindlessBuffer(uchar,ctx.B.Buffer, arenas.FaceSharpnessSlot)[face] != 0u) {
         return float3(BindlessBuffer(packed_float3,ctx.B.Buffer, arenas.BaseFaceNormalSlot)[face]);
     }
-    const uint root = CornerSectorRoot(ctx.B, arenas.CornerSectors, h);
-    if (root != InvalidOffset) {
-        return float3(BindlessBuffer(NormalSector,ctx.B.Buffer, arenas.NormalSectors.ValuesSlot)[ElementAttributeIndex(ctx.B, arenas.NormalSectors, root)].Normal);
-    }
-    const uint v = BindlessBuffer(uint,ctx.B.IndexBuffer, arenas.CornerSlot)[h];
-    return float3(BindlessBuffer(packed_float3,ctx.B.Buffer, arenas.BaseVertexNormalSlot)[v]);
+    const uint root = CornerSectorRoot(ctx.B, arenas.Layers.CornerSectors, h);
+    if (root != InvalidOffset) return float3(BindlessBuffer(NormalSector,ctx.B.Buffer, arenas.Layers.NormalSectors.Slot)[arenas.Layers.NormalSectors.Offset + root].Normal);
+    const uint v = BindlessBuffer(uint,ctx.B.IndexBuffer, arenas.CornerSlot)[conn.HalfedgeAddress(h)];
+    return float3(BindlessBuffer(packed_float3,ctx.B.Buffer, arenas.BaseVertexNormalSlot)[conn.VertexAddress(v)]);
 }
 
 inline CornerNormalFrame TopoCornerFrame(TopoContext ctx, constant MeshTopologyArenas &arenas, ConnectivityView conn, uint h, float3 normal) {
     const auto position = [&](uint corner) {
-        const uint v = BindlessBuffer(uint,ctx.B.IndexBuffer, arenas.CornerSlot)[corner];
-        return float3(BindlessBuffer(Vertex,ctx.B.VertexBuffer, arenas.VertexSlot)[v].Position);
+        const uint v = BindlessBuffer(uint,ctx.B.IndexBuffer, arenas.CornerSlot)[conn.HalfedgeAddress(corner)];
+        return float3(BindlessBuffer(Vertex,ctx.B.VertexBuffer, arenas.VertexSlot)[conn.VertexAddress(v)].Position);
     };
     return ComputeCornerFrame(normal, position(h), position(conn.Next(h)), position(conn.Previous(h)));
 }
@@ -1788,20 +1785,20 @@ kernel void TopologyCustomNormals(
     if (d < job.RetainedNormalCornerCount) {
         const uint h = WorkGroupElement(bindless,job.RetainedNormalCorners,d);
         if (ctx.Src(job).HalfedgeFace(h) != InvalidOffset && WorkRank(bindless,job.SrcHalfedgeWork,h) == InvalidOffset) {
-            const float2 offset = CustomNormalOffset(bindless,pc.Source.CustomNormals,h);
+            const float2 offset = CustomNormalOffset(bindless,pc.Source.Layers.CustomNormals,h);
             if (offset.x >= 0.f) {
                 const float3 before = TopoDerivedCornerNormal(ctx,pc.Source,ctx.Src(job),h);
                 const float3 normal = DecodeNormalOffset(offset,TopoCornerFrame(ctx,pc.Source,ctx.Src(job),h,before));
                 const float3 after = TopoDerivedCornerNormal(ctx,pc.Destination,ctx.Dst(job),h);
                 const float2 result = EncodeNormalOffset(normal,TopoCornerFrame(ctx,pc.Destination,ctx.Dst(job),h,after));
-                BindlessBufferMutable(packed_float2,bindless.Buffer,pc.Destination.CustomNormals.ValuesSlot)[ElementAttributeIndex(bindless,pc.Destination.CustomNormals,h)] = result;
+                BindlessBufferMutable(packed_float2,bindless.Buffer,pc.Destination.Layers.CustomNormals.Slot)[pc.Destination.Layers.CustomNormals.Offset+h] = result;
             }
         }
     }
     if (d >= job.DstHalfedgeCount) return;
     if (ctx.DstHalfedgeFaces(job)[d] == InvalidOffset) {
         const uint h=job.DstCornerOffset+d;
-        BindlessBufferMutable(packed_float2,bindless.Buffer,pc.Destination.CustomNormals.ValuesSlot)[ElementAttributeIndex(bindless,pc.Destination.CustomNormals,h)] = float2(-1.f,0.f);
+        BindlessBufferMutable(packed_float2,bindless.Buffer,pc.Destination.Layers.CustomNormals.Slot)[pc.Destination.Layers.CustomNormals.Offset+h] = float2(-1.f,0.f);
         return;
     }
     device const uint *map = ctx.CornerMap(job) + TopoCornerMapWords * d;
@@ -1812,12 +1809,12 @@ kernel void TopologyCustomNormals(
     float3 normal = float3(0);
     bool authored = false;
     // A source without authored normals reads its derived ones.
-    const bool authored_source = (job.SourceLayers[ctx.SecondCorner(job, map[0]) ? 1u : 0u] & MeshAttributeBit_Normal) != 0u;
+    const bool authored_source = (job.SourceLayers & MeshAttributeBit_Normal) != 0u;
     for (uint k = 0u; k < 4u; ++k) {
         if (weights[k] == 0.f) continue;
         const uint h = map[k];
         if (h==InvalidOffset || src.HalfedgeFace(h)==InvalidOffset) continue;
-        const float2 offset = authored_source ? CustomNormalOffset(bindless, pc.Source.CustomNormals, h) : float2(-1.f, 0.f);
+        const float2 offset = authored_source ? CustomNormalOffset(bindless, pc.Source.Layers.CustomNormals, h) : float2(-1.f, 0.f);
         float3 n = TopoDerivedCornerNormal(ctx, pc.Source, src, h);
         if (offset.x >= 0.f) {
             authored = true;
@@ -1850,7 +1847,7 @@ kernel void TopologyCustomNormals(
             result = EncodeNormalOffset(normal, TopoCornerFrame(ctx, pc.Destination, dst, hd, TopoDerivedCornerNormal(ctx, pc.Destination, dst, hd)));
         }
     }
-    BindlessBufferMutable(packed_float2, bindless.Buffer, pc.Destination.CustomNormals.ValuesSlot)[ElementAttributeIndex(bindless, pc.Destination.CustomNormals, hd)] = result;
+    BindlessBufferMutable(packed_float2, bindless.Buffer, pc.Destination.Layers.CustomNormals.Slot)[pc.Destination.Layers.CustomNormals.Offset + hd] = result;
 }
 
 
@@ -1872,9 +1869,9 @@ kernel void TopologyEdgeAttributes(
     ctx.DstEdgeSharpness(job)[e] = source != InvalidOffset ? ctx.SrcEdgeSharpness(job)[ctx.SrcEdge(job, source)] : uchar(0);
     const uint source_index = source != InvalidOffset ? ctx.SrcEdge(job, source) : InvalidOffset;
     const uint source_edge = source != InvalidOffset ? ctx.SrcEdgeDomain(job).Handle(source_index) : InvalidOffset;
-    TopoCopyAttributes(ctx, job, AttributeDomain::Edge, e, source_edge, ctx.SecondEdge(job, source_index));
-    const bool hidden=source!=InvalidOffset && ctx.Selected({pc.Source.EdgeHiddenSlot,0u},ctx.SrcEdgeDomain(job).Handle(ctx.SrcEdge(job,source)));
-    ctx.Select({pc.Destination.EdgeHiddenSlot,0u},e,hidden);
+    TopoCopyAttributes(ctx, job, AttributeDomain::Edge, e, source_edge);
+    const bool hidden=source!=InvalidOffset && ctx.Selected({pc.Source.EdgeHiddenSlot,0u},ctx.SrcAddress(job,3u,ctx.SrcEdgeDomain(job).Handle(ctx.SrcEdge(job,source))));
+    ctx.Select({pc.Destination.EdgeHiddenSlot,0u},ctx.DstAddress(job,3u,e),hidden);
     ctx.SelectDstEdge(job, e, !hidden && ctx.CornerSelected(job, hd));
 }
 

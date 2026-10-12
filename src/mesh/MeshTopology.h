@@ -16,7 +16,7 @@ struct MeshTopologyTask {
     float Param0{}, Param1{};
     uint32_t Flags{};
     uint32_t Steps{1};
-    // The canonical source vertex a merge keeps and its output position.
+    // The source vertex a merge keeps and its output position.
     uint32_t TargetVertex{InvalidOffset};
     vec3 TargetPosition{};
     // The transform applied to copies or to a boolean's second source, and the plane a plane-mode operator cuts or deletes by.
@@ -35,7 +35,7 @@ struct MeshTopologyTask {
     // Existing handles are below AppendedBase.
     uint32_t AppendedBase{};
     // A cut list: a count then edge and parameter pairs.
-    // A selection list: a count then canonical element handles.
+    // A selection list: a count then element handles.
     // FlipNormals may narrow the selected faces to this explicit face list.
     // ReplaceFaces: removed count and vertices, source face count and record offsets;
     // each record is (source face, polygon count, then corner count and corner/edge pairs per polygon).

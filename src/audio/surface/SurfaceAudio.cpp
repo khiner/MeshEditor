@@ -68,7 +68,7 @@ vec3 SampleNormal(const DecodedImage &image, float x, float y) {
 // Surface length per unit UV distance: the square root of the mesh area over its area in `uv_set`.
 float UvLengthScale(const MeshStore &meshes, const Mesh &mesh, uint32_t uv_set) {
     if (uv_set >= MeshStore::MaxUvSets || !(meshes.Get(mesh.GetStoreId()).CornerAttributes & (MeshAttributeBit_TexCoord0 << uv_set))) return 0.f;
-    const auto uvs = meshes.Arenas().CornerUvs[uv_set].View();
+    const auto uvs = meshes.Arenas().CornerUvs[uv_set].View(meshes.Get(mesh.GetStoreId()).CornerUvs[uv_set]);
     const auto &connectivity = mesh.GetConnectivity();
     double area = 0.0, uv_area = 0.0;
     for (const auto face : mesh.faces()) {

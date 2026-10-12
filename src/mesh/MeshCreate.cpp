@@ -119,7 +119,7 @@ void CreateCustomAttributes(MeshStore &meshes, uint32_t id, std::span<const Cust
             std::vector<uint8_t> seen(vertices.Count, 0u);
             const auto corner_vertices = a.FaceCorners.Get(corners);
             for (uint32_t c = 0u; c < corners.Count && uniform; ++c) {
-                const auto v = corner_vertices[c] - vertices.Offset;
+                const auto v = corner_vertices[c];
                 const auto value = std::span{custom.Words}.subspan(size_t(c) * n, n);
                 const auto stored = std::span{vertex_words}.subspan(size_t(v) * n, n);
                 if (!seen[v]) std::ranges::copy(value, stored.begin());
@@ -137,7 +137,7 @@ void CreateCustomAttributes(MeshStore &meshes, uint32_t id, std::span<const Cust
                 if constexpr (std::same_as<T, bool>) values[i] = words[i] != 0u;
                 else std::memcpy(&values[i], &words[size_t(i) * n], sizeof(T));
             }
-            meshes.SetAttribute<T>(attribute, handles.Offset, std::span<const T>{values.get(), handles.Count});
+            meshes.SetAttribute<T>(attribute, 0u, std::span<const T>{values.get(), handles.Count});
         });
     }
 }
@@ -166,10 +166,10 @@ void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &da
     for (uint32_t fi = 0; fi < mesh.FaceCount(); ++fi) {
         const auto face = corners.subspan(data.FaceStart(fi), data.FaceSize(fi));
         const auto corner_count = uint32_t(face.size());
-        const auto p0 = vertices[face[0] - meshes.Arenas().Vertices.First(record.Vertices)].Position;
+        const auto p0 = vertices[face[0]].Position;
         vec3 cross{};
         for (uint32_t k = 1u; k + 1u < face.size(); ++k)
-            cross += Cross(vertices[face[k] - meshes.Arenas().Vertices.First(record.Vertices)].Position - p0, vertices[face[k + 1u] - meshes.Arenas().Vertices.First(record.Vertices)].Position - p0);
+            cross += Cross(vertices[face[k]].Position - p0, vertices[face[k + 1u]].Position - p0);
         const auto cross_len = Length(cross);
         bool flat = cross_len > 0.f;
         if (flat) {
@@ -212,7 +212,7 @@ void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &da
     for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
         const auto hh = mesh.GetHalfedge(mesh.EdgeAt(ei), 0);
         const auto face = mesh.GetFace(hh);
-        const auto opposite = c.Opposites[*hh];
+        const auto opposite = c.Opposite(hh);
         const auto opposite_face = opposite ? c.FaceOf(opposite) : Mesh::FH{};
         if (!face || !opposite_face) continue;
         if (discontinuous(face, opposite_face, mesh.GetFromVertex(hh)) || discontinuous(face, opposite_face, mesh.GetToVertex(hh))) {
@@ -293,15 +293,14 @@ void EncodeAuthoredCornerNormals(MeshStore &meshes, const Mesh &mesh, std::span<
     if (authored.empty() || record.TriangleCount == 0) return;
     // Source normals stay in polygon-corner order, independently of tessellation.
     const auto derived = meshes.GetCornerNormalView(id);
-    const auto first = mesh.HalfedgeFirst();
     std::vector<CustomNormal> offsets(mesh.HalfEdgeCount());
     bool any = false;
     for (const auto face : mesh.faces())
         for (const auto corner : mesh.fh_range(face)) {
-            const uint32_t h = *corner, i = h - first;
-            const auto authored_normal = authored[i], normal = derived[h];
+            const uint32_t h = *corner;
+            const auto authored_normal = authored[h], normal = derived[h];
             if (NormalsMatch(authored_normal, normal).value_or(true)) continue;
-            offsets[i].Offset = EncodeNormalOffset(authored_normal / Length(authored_normal), ComputeCornerFrame(normal, mesh, h));
+            offsets[h].Offset = EncodeNormalOffset(authored_normal / Length(authored_normal), ComputeCornerFrame(normal, mesh, h));
             any = true;
         }
     if (any) meshes.SetCustomCornerNormals(id, offsets);
@@ -315,9 +314,9 @@ void UpdateMorphShadingAuthored(MeshStore &meshes, const Mesh &mesh, std::span<c
     if (!record.HasAuthoredNormals || record.TriangleCount == 0 || record.MorphTargetCount == 0) return;
     // A target authoring normal deltas states the morphed shading normals directly.
     bool has_authored_delta = false;
-    arenas.Vertices.ForEach(record.Vertices, [&](uint32_t vertex, uint32_t) {
+    arenas.Vertices.ForEach(record.Vertices, [&](ElementHandle handle, ElementAddress) {
         for (uint32_t target = 0; target < record.MorphTargetCount && !has_authored_delta; ++target)
-            has_authored_delta = arenas.Morph.Get(vertex, target).NormalDelta != vec3{0};
+            has_authored_delta = arenas.Morph.Get(record.Morph, handle.Value, target, record.MorphTargetCount).NormalDelta != vec3{0};
     });
     if (has_authored_delta) {
         meshes.SetMorphShadingAuthored(id, true);
@@ -327,10 +326,10 @@ void UpdateMorphShadingAuthored(MeshStore &meshes, const Mesh &mesh, std::span<c
     // Position-only targets pin the authored normals in place.
     // Authorship matters when any listed full-weight pose derives a corner normal away from the rest normal it would pin.
     const auto vertices = mesh.TriangleVertices();
-    const CornerAttributeView<uint32_t> classes{arenas.CornerSectors.View(record.SectorBlockCount != 0u), meshes.GetTriangleCorners(id)};
+    const CornerAttributeView<uint32_t> classes{arenas.CornerSectors.View(record.CornerSectors), meshes.GetTriangleCorners(id)};
     const TriangleFaceView face_ids{meshes.GetTriangleCorners(id), arenas.HalfedgeFaces.Buffer.GetSpan<uint32_t>()};
     const auto compose = [&](const CornerNormalSources &normals, uint32_t ci) {
-        return ComposeCornerNormal(classes, arenas.NormalSectors.View(), arenas.FaceSharpness.Buffer.GetSpan<uint8_t>(), record.Classification, ci, vertices, face_ids, normals);
+        return ComposeCornerNormal(mesh.GetConnectivity(), classes, arenas.NormalSectors.View(record.NormalSectors), arenas.FaceSharpness.Buffer.GetSpan<uint8_t>(), record.Classification, ci, vertices, face_ids, normals);
     };
     const CornerNormalSources rest{.VertexNormals = arenas.BaseVertexNormals.Buffer.GetSpan<vec3>(), .FaceNormals = arenas.BaseFaceNormals.Buffer.GetSpan<vec3>()};
     for (uint32_t ci = 0; ci < vertices.size(); ++ci) {

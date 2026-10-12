@@ -1,14 +1,15 @@
 #pragma once
 
 #include "gpu/EditSelectionStorage.h"
-#include "gpu/Types.h"
+#include "gpu/MeshletPayloads.h"
 
 // The state of one mesh's draws that the scene's display, selection and pose set, apart from its arena locations.
 // Every instance of the mesh draws with it.
 // The cull reads the leading fields, which share one cache line.
 struct MeshDisplay {
     uint32_t Flags DEFAULT(); // MeshletInstanceFlag bits, without the per-instance Silhouette bit.
-    uint32_t PrimitiveRoot DEFAULT(InvalidOffset);
+    // The record's render sets, whose table runs resolve its render handles, and its primitive count.
+    uint32_t PrimitiveSet DEFAULT(InvalidOffset), NodeSet DEFAULT(InvalidOffset), GroupSet DEFAULT(InvalidOffset), MeshletSet DEFAULT(InvalidOffset), MemberSet DEFAULT(InvalidOffset);
     uint32_t PrimitiveCount DEFAULT();
     // The slot of the instance that draws the mesh's element selection, in Edit mode only.
     // Without one, every instance draws the selection the record holds.
@@ -24,9 +25,8 @@ struct MeshDisplay {
     uint32_t FaceNormalNamespace DEFAULT(InvalidOffset);
     uint32_t BoneDeformOffset DEFAULT(InvalidOffset);
     uint32_t MorphTargetCount DEFAULT();
-    uint32_t ElementIdOffset DEFAULT();
-    uint32_t EditEdgeSharpnessOffset DEFAULT(InvalidOffset);
     EditSelectionStorage Selection DEFAULT();
     uint32_t ActiveVertex DEFAULT(InvalidOffset); // The excited mesh's active vertex, in Excite mode.
+    MeshletPayloadBases Payloads DEFAULT();
 };
-static_assert(sizeof(MeshDisplay) == 112, "MeshDisplay size");
+static_assert(sizeof(MeshDisplay) == 132, "MeshDisplay size");

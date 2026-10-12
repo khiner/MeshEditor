@@ -221,6 +221,7 @@ Range MeshStore::GatherSelectedElements(state::Scene &r, mtl::ComputeChain &chai
         .Blocks = {chain.Scratch.Buffer.Slot, range.Offset},
         .Output = {output.Buffer.Slot, handles.Offset},
         .MaskSlot = GetSelectionSlot(element),
+        .BlocksSlot = WithDomain(Buffers, Domains[std::ranges::find(Elements, element) - Elements.begin()], [](const auto &arena) { return arena.Blocks.Buffer.Slot; }),
         .Count = uint32_t(blocks.size() / 2u),
     };
     chain.Groups(GetMeshPipelines(r)[MeshPass::GatherSelectedElements], pc, pc.Count);

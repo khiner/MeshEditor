@@ -17,7 +17,7 @@ struct Scene;
 struct MeshletBoundsRefitJob {
     const MeshStore::Record *Owner;
     const BufferArena<uint32_t> *Storage;
-    ElementWork Meshlets;
+    ElementWork Meshlets; // The meshlets to refit, at their arena addresses
 };
 
 // Records the refit of only the finest meshlets affected by canonical vertex-position writes.

@@ -1,7 +1,7 @@
 #include "selection/Selection.h"
 
 #include "armature/ArmatureComponents.h"
-#include "mesh/MeshStore.h"
+#include "mesh/Mesh.h"
 #include "render/Instance.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
@@ -76,13 +76,12 @@ bool CanDelete(const state::Scene &r, state::Entity viewport) { return CanDuplic
 
 std::vector<ElementRange> GetElementRangesForSelected(const state::Scene &r, state::Entity viewport) {
     const auto element = r.get<const EditMode>(viewport).Value;
-    const auto &meshes = r.Context.get<const MeshStore>();
     std::vector<ElementRange> ranges;
     for (const auto mesh_entity : r.get<const SelectionFlags>(viewport).Meshes) {
         if (!r.all_of<MeshElementSelection>(mesh_entity)) continue;
         const auto mesh = GetDrawnMesh(r, mesh_entity);
         if (const auto count = mesh.ElementCount(element); count > 0) {
-            ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), element), count);
+            ranges.emplace_back(mesh_entity, count);
         }
     }
     return ranges;

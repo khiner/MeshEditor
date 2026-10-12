@@ -72,7 +72,7 @@ kernel void FlattenGroups(
                 const float3 current=float3(positions[corners[j]])-center;
                 area+=cross(previous,current); previous=current;
             }
-            sum+=float3(normals[face[0]])*length(area);
+            sum+=float3(normals[HandleAddress<MeshElementBlockSize>(b,pc.Connectivity.Tables.Faces,face[0])])*length(area);
         }
         const float3 total=FlattenSum(float4(sum,0.f),lane,work).xyz;
         if (!lane) normal=dot(total,total)>0.f ? normalize(total) : float3(0,0,1);

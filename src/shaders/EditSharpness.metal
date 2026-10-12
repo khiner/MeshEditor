@@ -15,14 +15,14 @@ struct EditSharpnessContext {
         return WorkRank(B, Pc.VertexSelection, vertex_id) != InvalidOffset;
     }
     uint Selected(SlotOffset at, uint i) const { return BindlessBuffer(uint, B.Buffer, at.Slot)[at.Offset + i]; }
-    void WriteFace(uint face, uint value) const { BindlessBufferMutable(uchar, B.Buffer, Pc.FaceSharpnessSlot)[face] = uchar(value); }
-    void WriteEdge(uint edge, uint value) const { BindlessBufferMutable(uchar, B.Buffer, Pc.EdgeSharpnessSlot)[edge] = uchar(value); }
+    void WriteFace(uint face, uint value) const { BindlessBufferMutable(uchar, B.Buffer, Pc.FaceSharpnessSlot)[Connectivity().FaceAddress(face)] = uchar(value); }
+    void WriteEdge(uint edge, uint value) const { BindlessBufferMutable(uchar, B.Buffer, Pc.EdgeSharpnessSlot)[Connectivity().EdgeAddress(edge)] = uchar(value); }
     void WriteVertexEdge(uint vertex_id, uint edge) const {
         if (edge == InvalidOffset) return;
         const auto conn = Connectivity();
         const uint h = conn.EdgeHalfedge(edge);
         device const uint *corners = BindlessBuffer(uint, B.IndexBuffer, Pc.CornersSlot);
-        const uint a = corners[h], b = corners[conn.Previous(h)];
+        const uint a = corners[conn.HalfedgeAddress(h)], b = corners[conn.HalfedgeAddress(conn.Previous(h))];
         const uint other = a == vertex_id ? b : a;
         // Adjacent selected vertices share an edge.
         // Its lower selected endpoint owns the byte write.
@@ -60,7 +60,7 @@ kernel void EditSharpnessKernel(
         const uint h = conn.EdgeHalfedge(edge), opposite = conn.Opposite(h);
         if (opposite != InvalidOffset) {
             device const packed_float3 *normals = BindlessBuffer(packed_float3, bindless.Buffer, pc.FaceNormalsSlot);
-            value = dot(float3(normals[conn.HalfedgeFace(h)]), float3(normals[conn.HalfedgeFace(opposite)])) < pc.CosAngle ? 1u : 0u;
+            value = dot(float3(normals[conn.FaceAddress(conn.HalfedgeFace(h))]), float3(normals[conn.FaceAddress(conn.HalfedgeFace(opposite))])) < pc.CosAngle ? 1u : 0u;
         }
     }
     ctx.WriteEdge(edge, value);

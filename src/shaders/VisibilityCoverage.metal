@@ -9,12 +9,9 @@
 
 inline float4 VisibilitySampleTexture(
     const thread Scene &scene, const thread ResolvedVisibility &resolved,
-    const thread VisibilityCoverageValues &coverage, TextureInfo texture,
-    VisibilityShadingPushConstants pc
+    const thread VisibilityCoverageValues &coverage, TextureInfo texture
 ) {
-    const VisibilityTextureCoordinates coordinates = DecodeVisibilityTextureCoordinates(
-        scene, resolved, coverage, texture.TexCoord, pc
-    );
+    const VisibilityTextureCoordinates coordinates = DecodeVisibilityTextureCoordinates(scene, resolved, coverage, texture.TexCoord);
     const float2 scale = float2(texture.UvScale);
     return scene.SampleTexGrad(
         texture.Slot, ApplyUvTransform(coordinates.Value, float2(texture.UvOffset), scale, texture.UvRotation),
@@ -47,11 +44,9 @@ inline uint CoveredMeshletObject(
     if (!MeshletCoarse(resolved.Meshlet)) {
         const uint logical_element = topology == uint(MeshPrimitiveTopology::Triangle) ?
             resolved.LocalTriangle : resolved.LocalTriangle / 2u;
-        resolved.Triangle = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot)[
-            resolved.Meshlet.TriangleOffset + logical_element
-        ];
+        resolved.Triangle = resolved.Payloads.TriangleIds[resolved.Meshlet.TriangleOffset + logical_element];
     }
-    const VisibilityCoverageValues coverage = DecodeVisibilityCoverage(scene, resolved, pixel, view, pc);
+    const VisibilityCoverageValues coverage = DecodeVisibilityCoverage(scene, resolved, pixel, view);
     if (topology != uint(MeshPrimitiveTopology::Triangle) && material.DoubleSided == 0u &&
         !IsFrontFacing(scene, coverage.WorldNormal, coverage.WorldPosition)) discard_fragment();
     if (topology == uint(MeshPrimitiveTopology::Point) &&
@@ -59,14 +54,14 @@ inline uint CoveredMeshletObject(
     if (alpha_mask) {
         float4 base_color = float4(material.BaseColorFactor) * coverage.VertexColor;
         if (material.BaseColorTexture.Slot != InvalidSlot) {
-            base_color *= VisibilitySampleTexture(scene, resolved, coverage, material.BaseColorTexture, pc);
+            base_color *= VisibilitySampleTexture(scene, resolved, coverage, material.BaseColorTexture);
         }
         if (base_color.a < material.AlphaCutoff) discard_fragment();
     }
     if (transmission_mask) {
         float transmission = material.Transmission.Factor;
         if (material.Transmission.Texture.Slot != InvalidSlot) {
-            transmission *= VisibilitySampleTexture(scene, resolved, coverage, material.Transmission.Texture, pc).r;
+            transmission *= VisibilitySampleTexture(scene, resolved, coverage, material.Transmission.Texture).r;
         }
         if (transmission > 0.0f) discard_fragment();
     }

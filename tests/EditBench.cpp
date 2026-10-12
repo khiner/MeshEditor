@@ -455,7 +455,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 p.Do(action::MakeAction(action::mesh::Extrude{action::mesh::ExtrudeMode::Vertices}));
                 const auto copy = meshes.GetSelectedElements(original.GetStoreId(), Element::Vertex).First();
                 if (!copy) return std::unexpected{"loose-delete setup did not extrude a vertex"};
-                selected_elements.push_back(*copy - original.VertexFirst());
+                selected_elements.push_back(*copy);
                 select(selected_elements, Element::Vertex);
             }
             const auto selected_count = meshes.GetSelectionSummary(original.GetStoreId()).SelectedCount;
@@ -560,8 +560,8 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 const auto vertices_data = arena.Buffer.GetSpan<Vertex>();
                 const auto set = meshes.Get(original.GetStoreId()).Vertices;
                 float lo = INFINITY, hi = -INFINITY;
-                arena.ForEach(set, [&](uint32_t vertex, uint32_t) {
-                    const float coordinate = Dot(normal, vertices_data[vertex].Position);
+                arena.ForEach(set, [&](ElementHandle, ElementAddress address) {
+                    const float coordinate = Dot(normal, vertices_data[address.Value()].Position);
                     lo = std::min(lo, coordinate);
                     hi = std::max(hi, coordinate);
                 });
@@ -652,7 +652,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 return Length(original.GetPosition(original.GetToVertex(selected_face_halfedge)) - original.GetPosition(original.GetFromVertex(selected_face_halfedge))) + 1e-4f;
             };
             const auto toggle_sharp = [&] {
-                p.Do(action::MakeAction(action::object::SetSelectedSharp{.Element = Element::Face, .Sharp = !bool(meshes.Arenas().FaceSharpness.Get({*face, 1u})[0])}));
+                p.Do(action::MakeAction(action::object::SetSelectedSharp{.Element = Element::Face, .Sharp = !bool(meshes.Arenas().FaceSharpness.Get({test::Address(original, face), 1u})[0])}));
             };
             const auto edit_ms = Milliseconds([&] {
                 if (join) p.Do(action::MakeAction(action::mesh::TrisToQuads{}));
@@ -909,8 +909,8 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         }
         const auto exit_ms = Milliseconds([&] { p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Object})); });
         if (staged && !r.Context.get<const GpuSceneState>().EditWork.empty()) return std::unexpected{"Edit mode exit retained geometry work"};
-        if (r.Context.get<const MeshStore>().Get(original.GetStoreId()).DirtyGroupRoot != InvalidOffset) return std::unexpected{"edit mode exit left stale LOD groups"};
-        if (position && (r.Context.get<const MeshStore>().Get(original.GetStoreId()).PositionDirtyRoot != InvalidOffset)) return std::unexpected{"position edit exit retained coarse dirt"};
+        if (meshes.HasDirtyGroups(meshes.Get(original.GetStoreId()))) return std::unexpected{"edit mode exit left stale LOD groups"};
+        if (position && meshes.HasDirtyPositions(meshes.Get(original.GetStoreId()))) return std::unexpected{"position edit exit retained coarse dirt"};
         if (auto result = render_step("render_exit_mode"); !result) return result;
         if (staged && render) {
             if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE_EXIT"); !result) return result;

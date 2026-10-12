@@ -42,7 +42,7 @@ constexpr uint32_t TangentWords{sizeof(vec3) / sizeof(uint32_t)};
 uint32_t TableSize(uint32_t count) { return std::bit_ceil(count + count / 2u + 1u); }
 
 struct WeldChannels {
-    ElementAttributeRef Skin{}, Morph{};
+    SlotOffset Skin{}, Morph{};
     bool HasSkin{};
     uint32_t TargetCount{};
     uint32_t TangentWordsPerVertex{};
@@ -53,8 +53,8 @@ WeldChannels Channels(const MeshStore &meshes, const WeldTarget &target) {
     const auto &record = meshes.Get(target.StoreId);
     const uint32_t target_count = record.MorphTargetCount;
     WeldChannels c{
-        .Skin = meshes.Arenas().Skin.Ref(record.SkinBlocksReady),
-        .Morph = record.MorphBlocksReady ? meshes.Arenas().Morph.Ref() : ElementAttributeRef{},
+        .Skin = meshes.Arenas().Skin.Ref(record.Skin),
+        .Morph = meshes.Arenas().Morph.Ref(record.Morph),
         .HasSkin = record.SkinBlocksReady,
         .TargetCount = target_count,
         .TangentWordsPerVertex = target.MorphTangentDeltas->empty() ? 0u : target_count * TangentWords,

@@ -7,7 +7,7 @@ namespace state {
 struct Scene;
 }
 
-// Releases the payload ranges the retired clusters' host records name, then their identities.
+// Releases the payload runs the retired clusters' records name, then their identities.
 // Live draw memberships and other consumers must stop using retired IDs first.
 // Every later arena writer must capture reused pages.
 // Reject foreign or already-retired IDs before mutation.

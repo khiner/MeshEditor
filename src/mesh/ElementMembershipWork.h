@@ -10,7 +10,7 @@ namespace mtl {
 struct ComputeChain;
 }
 
-// Lists the blocks whose live elements seed `work`, masked by a selection when one is named.
+// Lists the blocks whose live elements seed `work` with their handles, masked by a selection when one is named.
 // Only block IDs are uploaded, and live and selected membership stays on the GPU.
 template<typename T>
 ElementWorkSeedJob PrepareBlockMembershipWork(BufferArena<uint32_t> &storage, const ElementArena<T> &arena, ElementSetRef set, std::span<const uint32_t> blocks, ElementWork work, uint32_t mask_slot = InvalidSlot) {
@@ -23,7 +23,7 @@ template<typename T>
 ElementWorkSeedJob PrepareElementMembershipWork(BufferArena<uint32_t> &storage, const ElementArena<T> &arena, ElementSetRef set) {
     std::vector<uint32_t> blocks;
     arena.ForEachBlock(set, [&](uint32_t b, const auto &) { blocks.push_back(b); });
-    return PrepareBlockMembershipWork(storage, arena, set, blocks, AllocateElementWork(storage, arena.Capacity(), blocks.size()));
+    return PrepareBlockMembershipWork(storage, arena, set, blocks, AllocateElementWork(storage, arena.HandleBound(set), blocks.size()));
 }
 
 // Records membership gathering before the shared compact work sorter.

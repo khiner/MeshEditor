@@ -12,8 +12,10 @@ struct FanBuildContext {
     device uint *Scratch() const { return Storage()+Pc.ScratchOffset; }
     uint2 Tile(uint group) const { return reinterpret_cast<device const uint2 *>(Storage()+Pc.TileMapOffset)[Pc.FirstTile+group]; }
     VertexFanBuildJob Job(uint index) const { return reinterpret_cast<device const VertexFanBuildJob *>(Storage()+Pc.JobsOffset)[index]; }
-    ElementWorkDomain Vertices(VertexFanBuildJob job) const { return {B,job.Vertices,job.Vertices.Storage.Slot == InvalidSlot ? job.Roots.Offset : 0u}; }
-    ElementWorkDomain Halfedges(VertexFanBuildJob job) const { return {B,job.Halfedges,job.Halfedges.Storage.Slot == InvalidSlot ? job.Corners.Offset : 0u}; }
+    ElementWorkDomain Vertices(VertexFanBuildJob job) const { return {B,job.Vertices}; }
+    ElementWorkDomain Halfedges(VertexFanBuildJob job) const { return {B,job.Halfedges}; }
+    uint VertexAddress(VertexFanBuildJob job, uint v) const { return HandleAddress<MeshElementBlockSize>(B,job.Tables.Vertices,v); }
+    uint CornerAddress(VertexFanBuildJob job, uint h) const { return HandleAddress<MeshElementBlockSize>(B,job.Tables.Halfedges,h); }
     uint CountWord(VertexFanBuildJob job, uint i) const { return job.Metadata+(job.Fresh ? i : 4u*i+1u); }
     RadixSortView Sort(VertexFanBuildJob job) const {
         device uint *s = Scratch();
@@ -33,7 +35,7 @@ kernel void VertexFanInit(device const BindlessSet &b [[buffer(BufferIndex_Bindl
         if (job.Fresh) metadata[i] = 0u;
         else {
             const uint v = ctx.Vertices(job).Handle(i);
-            const uint2 root = uint2(BindlessBuffer(packed_uint2,b.Buffer,job.Roots.Slot)[v]);
+            const uint2 root = uint2(BindlessBuffer(packed_uint2,b.Buffer,job.RootsSlot)[ctx.VertexAddress(job,v)]);
             metadata[4u*i] = v;
             metadata[4u*i+1u] = 0u;
             metadata[4u*i+2u] = root.x;
@@ -49,7 +51,7 @@ kernel void VertexFanKeys(device const BindlessSet &b [[buffer(BufferIndex_Bindl
     const uint i = tile.y*256u+lane;
     if (i >= job.HalfedgeCount) return;
     const uint h = ctx.Halfedges(job).Handle(i);
-    const uint v = BindlessBuffer(uint,b.IndexBuffer,job.Corners.Slot)[h];
+    const uint v = BindlessBuffer(uint,b.IndexBuffer,job.CornersSlot)[ctx.CornerAddress(job,h)];
     const uint at = ctx.Vertices(job).Index(v);
     if (job.Fresh) ctx.Scratch()[job.Keys+i]=at;
     else { ctx.Scratch()[job.Keys+2u*i]=h; ctx.Scratch()[job.Keys+2u*i+1u]=at; }
@@ -121,8 +123,8 @@ kernel void VertexFanEmit(device const BindlessSet &b [[buffer(BufferIndex_Bindl
         const uint source=scratch[(job.VertexKeyPasses & 1u ? job.Temporary : job.Order)+i];
         const uint v=job.Fresh ? scratch[job.Keys+source] : scratch[job.Keys+2u*source+1u];
         if (v!=InvalidOffset) {
-            const uint h=job.Fresh ? job.Corners.Offset+source : scratch[job.Keys+2u*source];
-            const uint face=job.FaceCount ? BindlessBuffer(uint,b.Buffer,job.FaceOwnersSlot)[h] : InvalidOffset;
+            const uint h=job.Fresh ? source : scratch[job.Keys+2u*source];
+            const uint face=job.FaceCount ? BindlessBuffer(uint,b.Buffer,job.FaceOwnersSlot)[ctx.CornerAddress(job,h)] : InvalidOffset;
             BindlessBufferMutable(packed_uint2,b.Buffer,job.ItemsSlot)[job.FirstItem+i]=packed_uint2(h,face);
         }
     }
@@ -132,8 +134,8 @@ kernel void VertexFanEmit(device const BindlessSet &b [[buffer(BufferIndex_Bindl
         const uint local=ThreadgroupExclusiveScan(count,lane,sl,sg,sums);
         if (i<job.VertexCount) {
             const uint offset=count ? job.FirstItem+scratch[job.TileData+tile.y]+local : InvalidOffset;
-            const uint root=job.Fresh ? job.Roots.Offset+i : scratch[job.Metadata+4u*i];
-            BindlessBufferMutable(packed_uint2,b.Buffer,job.Roots.Slot)[root]=packed_uint2(offset,count);
+            const uint root=ctx.VertexAddress(job,job.Fresh ? i : scratch[job.Metadata+4u*i]);
+            BindlessBufferMutable(packed_uint2,b.Buffer,job.RootsSlot)[root]=packed_uint2(offset,count);
         }
     }
 }

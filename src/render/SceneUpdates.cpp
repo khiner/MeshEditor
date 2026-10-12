@@ -53,7 +53,7 @@ void RetallyMesh(state::Scene &r, state::Entity mesh_entity) {
     buffers.Retally(*id, {
                              .Flags = mb->RenderTopologies != 0u ? render.MeshRecords.Get({*id, 1u})[0].Display.Flags : 0u,
                              .Instances = uint32_t(std::ranges::count_if(states, [](uint8_t state) { return (state & InstanceStateHidden) == 0u; })),
-                             .Nodes = render.ActiveMeshlets.Count(mb->NodeRoot),
+                             .Nodes = meshes.LodNodeCount(*mb),
                              .Meshlets = meshes.MeshletCount(*mb),
                              .Depth = mb->LodDepth,
                          });
@@ -136,23 +136,23 @@ void RefreshClusterLodAttributes(state::Scene &r, mtl::ComputeChain &chain, std:
         const bool authored_tangents = (owner->CornerAttributes & MeshAttributeBit_Tangent) != 0u;
         const bool coarse = meshes.ClusterGroupCount(*owner) != 0u;
         changed.clear();
-        meshes.ForEachPrimitive(*owner, [&](uint32_t id, const PrimitiveRecord &primitive) {
+        meshes.ForEachPrimitive(*owner, [&](ElementHandle id, const PrimitiveRecord &primitive) {
             if (primitive.Topology != 0u) return;
             const uint32_t material = primitive.PrimitiveIndex < assignments.size() ? assignments[primitive.PrimitiveIndex] : 0u;
             const uint32_t required = MaterialLodAttributes(materials[material], debug, authored_tangents);
             if (required == primitive.LodAttributes) return;
-            if (coarse) changed.push_back(id);
-            render.Primitives.GetMutable({id, 1u})[0].LodAttributes = required;
+            if (coarse) changed.push_back(id.Value);
+            render.Primitives.GetMutable({render.Primitives.Address(owner->PrimitiveData, id).Value(), 1u})[0].LodAttributes = required;
         });
         if (changed.empty()) continue;
         std::ranges::sort(changed);
         auto &groups = seeds.emplace_back(ClusterGroupSeeds{.Entity = entity}).Groups;
-        render.ActiveMeshlets.ForEach(owner->GroupRoot, [&](uint32_t group) {
-            const auto &links = render.GroupLinks.Get({group, 1u})[0];
+        render.ClusterGroups.ForEach(owner->GroupData, [&](ElementHandle group, ElementAddress address) {
+            const auto &links = render.GroupLinks.Get({address.Value(), 1u})[0];
             if (!links.MemberCount) return;
-            const auto member = render.GroupClusterIds.Get({links.MemberOffset, 1u})[0];
-            const auto primitive = render.Meshlets.Get({member, 1u})[0].Primitive;
-            if (std::ranges::binary_search(changed, primitive)) groups.push_back(group);
+            const auto member = render.GroupClusterIds.Get(owner->GroupClusters.Values)[links.MemberOffset];
+            const auto primitive = render.Meshlets.Get({render.Meshlets.Address(owner->MeshletData, ElementHandle{member}).Value(), 1u})[0].Primitive;
+            if (std::ranges::binary_search(changed, primitive)) groups.push_back(group.Value);
         });
     }
     auto touched = InvalidateClusterGroups(r, seeds);
@@ -241,20 +241,22 @@ bool BuildDemandedClusterLods(state::Scene &r, state::Entity viewport) {
         if (mb.MeshletRevision > 1u || mb.RenderTopologies != 1u) {
             auto &triangles = live_triangles[i];
             auto &primitive_counts = live_primitive_counts[i];
-            meshes.ForEachPrimitive(mb, [&](uint32_t, const PrimitiveRecord &primitive) {
+            meshes.ForEachPrimitive(mb, [&](ElementHandle, const PrimitiveRecord &primitive) {
                 if (primitive.Topology != 0u) return;
-                const auto root = primitive.LodFinestNode == InvalidOffset ? InvalidOffset :
-                                                                             render.LodNodes.Get({primitive.LodFinestNode, 1u})[0].MeshletRoot;
                 const auto start = triangles.size();
-                render.ActiveMeshlets.ForEach(root, [&](uint32_t cluster) {
-                    const auto &record = render.Meshlets.Get({cluster, 1u})[0];
-                    const auto ids = render.MeshletTriangleIds.Get({record.TriangleOffset, record.TriangleCount});
-                    triangles.insert(triangles.end(), ids.begin(), ids.end());
-                });
+                if (primitive.LodFinestNode != InvalidOffset)
+                    meshes.ForEachLodMember(mb, render.LodNodes.Get({render.LodNodes.Address(mb.NodeData, ElementHandle{primitive.LodFinestNode}).Value(), 1u})[0], [&](uint32_t cluster) {
+                        const auto &record = render.Meshlets.Get({render.Meshlets.Address(mb.MeshletData, ElementHandle{cluster}).Value(), 1u})[0];
+                        const auto ids = render.MeshletTriangleIds.Get(mb.MeshletTriangles.Values).subspan(record.TriangleOffset, record.TriangleCount);
+                        triangles.insert(triangles.end(), ids.begin(), ids.end());
+                    });
                 primitive_counts.push_back(uint32_t(triangles.size() - start));
             });
-            inputs.push_back(CaptureMeshletInputs(mesh, meshes, {meshes.Arenas().Triangles.Buffer.GetSpan<uvec3>(), triangles}));
-        } else inputs.push_back(CaptureMeshletInputs(mesh, meshes, {meshes.Arenas().Triangles.Buffer.GetSpan<uvec3>(), render.MeshletTriangleIds.Get(mb.MeshletTriangles)}));
+        }
+        // The triangles the build covers name their corners through the record's tables.
+        auto corners = meshes.GetTriangleCorners(mesh.GetStoreId());
+        corners.Handles = mb.MeshletRevision > 1u || mb.RenderTopologies != 1u ? std::span<const uint32_t>{live_triangles[i]} : render.MeshletTriangleIds.Get(mb.MeshletTriangles.Values);
+        inputs.push_back(CaptureMeshletInputs(mesh, meshes, corners));
     }
     std::vector<ClusterLodBuild> lods(count);
     ParallelFor(count, [&](uint32_t i) { lods[i] = BuildMeshletClusterLod(meshes, RecordOf(r, demanded[i]), inputs[i], live_primitive_counts[i]); });

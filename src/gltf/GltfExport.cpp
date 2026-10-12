@@ -859,10 +859,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             out.emplace_back(fastgltf::Attribute{"NORMAL", AddDataAccessor(std::span<const vec3>{normals}, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
         if (record.VertexAttributes & MeshAttributeBit_Color0) {
-            const auto source = arenas.VertexColors.View();
+            const auto source = arenas.VertexColors.View(record.VertexColors);
             std::vector<vec4> colors;
             colors.reserve(arenas.Vertices.Count(record.Vertices));
-            for (const auto v : Mesh{meshes, store_id}.vertices()) colors.push_back(source[*v]);
+            const Mesh mesh{meshes, store_id};
+            for (const auto v : mesh.vertices()) colors.push_back(source[*v]);
             out.emplace_back(fastgltf::Attribute{"COLOR_0", AddDataAccessor(std::span<const vec4>{colors}, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
         for (const auto attribute : ExportedAttributes(meshes, store_id, false))
@@ -884,14 +885,17 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const auto store_id = mesh.GetStoreId();
             const auto &record = meshes.Get(store_id);
             const auto total_vcount = mesh.VertexCount();
-            std::vector<uint32_t> vertex_handles(total_vcount);
-            arenas.Vertices.ForEach(record.Vertices, [&](uint32_t handle, uint32_t ordinal) { vertex_handles[ordinal] = handle; });
+            std::vector<uint32_t> vertex_handles, vertex_addresses;
+            arenas.Vertices.ForEach(record.Vertices, [&](ElementHandle handle, ElementAddress address) {
+                vertex_handles.push_back(handle.Value);
+                vertex_addresses.push_back(address.Value());
+            });
             const auto primitive_materials = arenas.PrimitiveMaterials.Get(record.PrimitiveMaterials);
             const auto corner_normals = meshes.GetCornerNormals(mesh);
             const auto triangle_corners = meshes.GetTriangleCorners(store_id);
-            const CornerAttributeView<vec4> corner_tangents{arenas.CornerTangents.View(record.CornerAttributes & MeshAttributeBit_Tangent), triangle_corners};
-            const CornerAttributeView<vec4> corner_colors{arenas.CornerColors.View(record.CornerAttributes & MeshAttributeBit_Color0), triangle_corners};
-            const std::array corner_uv_sets{CornerAttributeView<vec2>{arenas.CornerUvs[0].View(record.CornerAttributes & (MeshAttributeBit_TexCoord0 << 0)), triangle_corners}, CornerAttributeView<vec2>{arenas.CornerUvs[1].View(record.CornerAttributes & (MeshAttributeBit_TexCoord0 << 1)), triangle_corners}, CornerAttributeView<vec2>{arenas.CornerUvs[2].View(record.CornerAttributes & (MeshAttributeBit_TexCoord0 << 2)), triangle_corners}, CornerAttributeView<vec2>{arenas.CornerUvs[3].View(record.CornerAttributes & (MeshAttributeBit_TexCoord0 << 3)), triangle_corners}};
+            const CornerAttributeView<vec4> corner_tangents{arenas.CornerTangents.View(record.CornerTangents), triangle_corners};
+            const CornerAttributeView<vec4> corner_colors{arenas.CornerColors.View(record.CornerColors), triangle_corners};
+            const std::array corner_uv_sets{CornerAttributeView<vec2>{arenas.CornerUvs[0].View(record.CornerUvs[0]), triangle_corners}, CornerAttributeView<vec2>{arenas.CornerUvs[1].View(record.CornerUvs[1]), triangle_corners}, CornerAttributeView<vec2>{arenas.CornerUvs[2].View(record.CornerUvs[2]), triangle_corners}, CornerAttributeView<vec2>{arenas.CornerUvs[3].View(record.CornerUvs[3]), triangle_corners}};
             // Derive one primitive layout for runtime-created meshes.
             const auto *layout_ptr = r.try_get<const MeshSourceLayout>(entity);
             const MeshSourceLayout synthesized_layout = layout_ptr ? MeshSourceLayout{} : [&] {
@@ -917,18 +921,21 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 return AttributeFloats(meshes, attribute, meshes.GetAttribute(attribute).Domain == AttributeDomain::Vertex ? vertex_handles[ref.Vertex] : triangle_corners[ref.Corner]);
             };
             const bool dense_triangles = (arenas.Triangles.Set(record.TriangleData).Flags & 1u) != 0u;
+            const auto triangle_table = arenas.Triangles.Entries(record.TriangleData);
             std::vector<uint32_t> triangle_block_first;
             if (!dense_triangles) {
-                triangle_block_first.resize(arenas.Triangles.Capacity() / MeshElementBlockSize, InvalidOffset);
-                arenas.Triangles.ForEach(record.TriangleData, [&](uint32_t handle, uint32_t ordinal) {
-                    auto &first = triangle_block_first[handle / MeshElementBlockSize];
+                triangle_block_first.resize(triangle_table.size(), InvalidOffset);
+                uint32_t ordinal = 0u;
+                arenas.Triangles.ForEach(record.TriangleData, [&](ElementHandle handle, ElementAddress) {
+                    auto &first = triangle_block_first[handle.Value / MeshElementBlockSize];
                     if (first == InvalidOffset) first = ordinal;
+                    ++ordinal;
                 });
             }
             const auto triangle_ordinal = [&](uint32_t handle) {
-                if (dense_triangles) return handle - arenas.Triangles.First(record.TriangleData);
+                if (dense_triangles) return handle;
                 const uint32_t block = handle / MeshElementBlockSize, offset = handle % MeshElementBlockSize;
-                const auto &bits = arenas.Triangles.Blocks.Get({block, 1u})[0].Live;
+                const auto &bits = arenas.Triangles.Blocks.Get({triangle_table[block], 1u})[0].Live;
                 uint32_t ordinal = triangle_block_first.at(block);
                 if (ordinal == InvalidOffset || !(bits[offset / 32u] & (1u << (offset % 32u)))) throw std::out_of_range("Face triangle is outside its mesh.");
                 for (uint32_t w = 0u; w < offset / 32u; ++w) ordinal += std::popcount(bits[w]);
@@ -936,10 +943,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             };
             std::vector<std::vector<CornerRef>> corners_per_prim(prim_count);
             for (const auto fh : mesh.faces()) {
-                const uint32_t p = arenas.FacePrimitives.Get(*fh);
+                const auto face = mesh.GetConnectivity().FaceAddress(*fh).Value();
+                const uint32_t p = arenas.FacePrimitives.Get(record.FacePrimitives, *fh);
                 if (p < prim_count) {
                     auto &out = corners_per_prim[p];
-                    const auto first = triangle_ordinal(arenas.FaceTriangles.Get({*fh, 1u})[0]) * 3u;
+                    const auto first = triangle_ordinal(arenas.FaceTriangles.Get({face, 1u})[0]) * 3u;
                     const auto count = (mesh.GetValence(fh) - 2u) * 3u;
                     for (uint32_t k = 0; k < count; ++k) {
                         const auto h = Mesh::HH{triangle_corners[first + k]};
@@ -954,7 +962,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             bool has_normal_deltas = false;
             for (uint32_t t = 0; t < target_count && !has_normal_deltas; ++t)
                 for (uint32_t i = 0; i < total_vcount && !has_normal_deltas; ++i)
-                    has_normal_deltas = arenas.Morph.Get(vertex_handles[i], t).NormalDelta != vec3{0};
+                    has_normal_deltas = arenas.Morph.Get(record.Morph, vertex_handles[i], t, target_count).NormalDelta != vec3{0};
             const bool has_tangent_deltas = !layout.MorphTangentDeltas.empty();
 
             // Emit channels present in at least one primitive.
@@ -1024,7 +1032,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
                 std::vector<vec3> positions(export_count);
                 for (uint32_t i = 0; i < export_count; ++i)
-                    positions[i] = arenas.Vertices.Get({vertex_handles[export_refs[i].Vertex], 1u})[0].Position;
+                    positions[i] = arenas.Vertices.Get({vertex_addresses[export_refs[i].Vertex], 1u})[0].Position;
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> prim_attrs;
                 prim_attrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(positions, true, fastgltf::BufferTarget::ArrayBuffer)});
 
@@ -1054,7 +1062,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     bin.resize(j_off + export_count * 4 * sizeof(uint16_t));
                     auto *jp = reinterpret_cast<uint16_t *>(bin.data() + j_off);
                     for (uint32_t i = 0; i < export_count; ++i) {
-                        const auto &j = arenas.Skin.Get(vertex_handles[export_refs[i].Vertex]).Joints;
+                        const auto &j = arenas.Skin.Get(record.Skin, vertex_handles[export_refs[i].Vertex]).Joints;
                         jp[i * 4 + 0] = uint16_t(j.x);
                         jp[i * 4 + 1] = uint16_t(j.y);
                         jp[i * 4 + 2] = uint16_t(j.z);
@@ -1064,7 +1072,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     const uint32_t j_bv = AddBufferView(j_off, export_count * 4 * sizeof(uint16_t), {}, fastgltf::BufferTarget::ArrayBuffer);
                     prim_attrs.emplace_back(fastgltf::Attribute{"JOINTS_0", AddAccessor(j_bv, export_count, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::UnsignedShort)});
                     std::vector<vec4> weights(export_count);
-                    for (uint32_t i = 0; i < export_count; ++i) weights[i] = arenas.Skin.Get(vertex_handles[export_refs[i].Vertex]).Weights;
+                    for (uint32_t i = 0; i < export_count; ++i) weights[i] = arenas.Skin.Get(record.Skin, vertex_handles[export_refs[i].Vertex]).Weights;
                     prim_attrs.emplace_back(fastgltf::Attribute{"WEIGHTS_0", AddDataAccessor(std::span<const vec4>(weights), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
                 }
 
@@ -1075,10 +1083,10 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     for (uint32_t t = 0; t < target_count; ++t) {
                         fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> tattrs;
                         const auto target_base = t * total_vcount;
-                        for (uint32_t i = 0; i < export_count; ++i) deltas[i] = arenas.Morph.Get(vertex_handles[export_refs[i].Vertex], t).PositionDelta;
+                        for (uint32_t i = 0; i < export_count; ++i) deltas[i] = arenas.Morph.Get(record.Morph, vertex_handles[export_refs[i].Vertex], t, target_count).PositionDelta;
                         tattrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(deltas, false, fastgltf::BufferTarget::ArrayBuffer)});
                         if (has_normal_deltas) {
-                            for (uint32_t i = 0; i < export_count; ++i) deltas[i] = arenas.Morph.Get(vertex_handles[export_refs[i].Vertex], t).NormalDelta;
+                            for (uint32_t i = 0; i < export_count; ++i) deltas[i] = arenas.Morph.Get(record.Morph, vertex_handles[export_refs[i].Vertex], t, target_count).NormalDelta;
                             tattrs.emplace_back(fastgltf::Attribute{"NORMAL", AddVec3Accessor(deltas, false, fastgltf::BufferTarget::ArrayBuffer)});
                         }
                         if (has_tangent_deltas) {
@@ -1128,7 +1136,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             std::vector<Vertex> out;
             out.reserve(mesh.VertexCount());
             const auto all = meshes.Arenas().Vertices.Buffer.GetSpan<Vertex>();
-            for (const auto vertex : mesh.vertices()) out.push_back(all[*vertex]);
+            for (const auto vertex : mesh.vertices()) out.push_back(all[mesh.GetConnectivity().VertexAddress(*vertex).Value()]);
             return out;
         };
         for (const auto entity : group.Lines) {

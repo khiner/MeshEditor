@@ -12,6 +12,7 @@
 #include "gpu/InstanceRecord.h"
 #include "gpu/MeshRecord.h"
 #include "gpu/MeshElementBlock.h"
+#include "gpu/MeshElementSet.h"
 #include "gpu/MeshletInstanceFlag.h"
 #include "gpu/LightRecord.h"
 #include "gpu/MorphTargetVertex.h"
@@ -28,7 +29,29 @@ constant uint STATE_ACTIVE = 1u << 1;
 // A hidden instance keeps its slot, and every draw, pick and overlay pass skips it.
 constant uint STATE_HIDDEN = 1u << 2;
 
-// Select a live canonical handle by its ordinal within one element block.
+// The arena address of a record-relative handle of a domain with `BlockSize`-slot blocks, through the record's table run.
+template<uint BlockSize, typename SetT> inline uint HandleAddress(device const SetT &b, SlotOffset table, uint handle) {
+    return Resolve<BlockSize>(BindlessBuffer(uint, b.Buffer, table.Slot) + table.Offset, handle);
+}
+// The first table entry of the arena's set at index `set`, through which the set's handles resolve, or null for an absent set.
+template<typename SetT> inline device const uint *SetTable(device const SetT &b, SetArenaSlots arena, uint set) {
+    return set == InvalidOffset ? nullptr : BindlessBuffer(uint, b.Buffer, arena.Table) + BindlessBuffer(MeshElementSet, b.Buffer, arena.Sets)[set].First;
+}
+// An element domain's arena values at a record's handles, which its table run resolves to arena addresses.
+template<typename T> struct ElementValues {
+    device T *Values;
+    device const uint *Table;
+    uint Address(uint handle) const { return Resolve<MeshElementBlockSize>(Table, handle); }
+    device T &operator[](uint handle) const { return Values[Address(handle)]; }
+};
+template<typename T> inline ElementValues<const T> ReadElements(device const BindlessSet &b, uint values_slot, SlotOffset table) {
+    return {BindlessBuffer(T, b.Buffer, values_slot), BindlessBuffer(uint, b.Buffer, table.Slot) + table.Offset};
+}
+template<typename T> inline ElementValues<T> WriteElements(device const BindlessSet &b, uint values_slot, SlotOffset table) {
+    return {BindlessBufferMutable(T, b.Buffer, values_slot), BindlessBuffer(uint, b.Buffer, table.Slot) + table.Offset};
+}
+
+// Select a live element by its ordinal within one element block, as the block's key times the block size plus its slot.
 inline uint SelectLiveElement(device const uint *live, uint block, uint rank) {
     for (uint word = 0u; word < MeshElementBlockWords; ++word) {
         uint bits = live[word];
@@ -40,20 +63,13 @@ inline uint SelectLiveElement(device const uint *live, uint block, uint rank) {
     return InvalidOffset;
 }
 
-// The value index of entry `entry` of `handle`, whose element block owns consecutive payload blocks named by `blocks`.
-inline uint ElementAttributeIndex(device const uint *blocks, uint handle, uint entry = 0u) {
-    return (blocks[handle / MeshElementBlockSize] - 1u + entry) * MeshElementBlockSize + handle % MeshElementBlockSize;
+// The value index of a morph target's delta at a vertex handle, where each vertex block's targets are consecutive blocks of the record's range.
+inline uint MorphTargetIndex(SlotOffset morph, uint handle, uint target, uint targets) {
+    return morph.Offset + (handle / MeshElementBlockSize * targets + target) * MeshElementBlockSize + handle % MeshElementBlockSize;
 }
-inline uint ElementAttributeIndex(device const BindlessSet &b, ElementAttributeRef attribute, uint handle, uint entry = 0u) {
-    return ElementAttributeIndex(BindlessBuffer(uint, b.Buffer, attribute.BlocksSlot), handle, entry);
-}
-// A named attribute's table run starts at its first element block.
-inline uint ElementAttributeIndex(device const BindlessSet &b, NamedAttributeRef attribute, uint handle) {
-    return ElementAttributeIndex(BindlessBuffer(uint, b.Buffer, attribute.TablesSlot) + attribute.TableOffset, handle - attribute.FirstBlock * MeshElementBlockSize);
-}
-// A named attribute's value at a handle, as the words of its components.
+// A named attribute's value at a handle of its record, as the words of its components.
 inline uint4 ReadNamedAttribute(device const BindlessSet &b, NamedAttributeRef attribute, AttributeType type, uint handle) {
-    const uint index = ElementAttributeIndex(b, attribute, handle);
+    const uint index = attribute.Offset + handle;
     device const uint *words = BindlessBuffer(uint, b.Buffer, attribute.ValuesSlot);
     if (type == AttributeType::Bool) return uint4((words[index >> 5u] >> (index & 31u)) & 1u, 0u, 0u, 0u);
     const uint n = AttributeComponents(type);
@@ -63,7 +79,7 @@ inline uint4 ReadNamedAttribute(device const BindlessSet &b, NamedAttributeRef a
 }
 // Bools share mask words with neighboring elements, so their bits write atomically.
 inline void WriteNamedAttribute(device const BindlessSet &b, NamedAttributeRef attribute, AttributeType type, uint handle, uint4 value) {
-    const uint index = ElementAttributeIndex(b, attribute, handle);
+    const uint index = attribute.Offset + handle;
     device uint *words = BindlessBufferMutable(uint, b.Buffer, attribute.ValuesSlot);
     if (type == AttributeType::Bool) {
         device atomic_uint *word = reinterpret_cast<device atomic_uint *>(words) + (index >> 5u);
@@ -76,7 +92,7 @@ inline void WriteNamedAttribute(device const BindlessSet &b, NamedAttributeRef a
     for (uint c = 0u; c < n; ++c) words[index * n + c] = value[c];
 }
 
-// Each pose maps canonical record keys into shared typed value blocks.
+// Each pose maps arena addresses into shared typed value blocks.
 inline uint PoseAttributeIndex(device const BindlessSet &b, uint nodes_slot, uint root, uint record) {
     if (root == InvalidOffset) return InvalidOffset;
     device const PoseAttributeNode *nodes = BindlessBuffer(PoseAttributeNode,b.Buffer,nodes_slot);
@@ -86,17 +102,18 @@ inline uint PoseAttributeIndex(device const BindlessSet &b, uint nodes_slot, uin
     return value ? (value-1u)*256u+(record&255u) : InvalidOffset;
 }
 
-inline uint CornerSectorRoot(device const BindlessSet &b, ElementAttributeRef attribute, uint handle) {
-    const uint block = BindlessBuffer(uint, b.Buffer, attribute.BlocksSlot)[handle / MeshElementBlockSize];
-    return block ? BindlessBuffer(uint, b.Buffer, attribute.ValuesSlot)[(block - 1u) * MeshElementBlockSize + handle % MeshElementBlockSize] : InvalidOffset;
+// The sector root handle of a corner handle, or InvalidOffset for a corner without one or a record without sector roots.
+inline uint CornerSectorRoot(device const BindlessSet &b, SlotOffset sectors, uint h) {
+    return sectors.Slot != InvalidSlot ? BindlessBuffer(uint, b.Buffer, sectors.Slot)[sectors.Offset + h] : InvalidOffset;
 }
 
-inline uint TriangleCornerHandle(device const BindlessSet &b, uint slot, uint corner, uint triangle_base) {
-    return BindlessBuffer(packed_uint3, b.Buffer, slot)[triangle_base + corner / 3u][corner % 3u];
+// The corner handle at corner `corner` of the triangle handles from `first`, through the record's tables.
+inline uint TriangleCornerHandle(device const BindlessSet &b, uint slot, ConnectivityRef connectivity, uint first, uint corner) {
+    return BindlessBuffer(packed_uint3, b.Buffer, slot)[HandleAddress<MeshElementBlockSize>(b, connectivity.Tables.Triangles, first + corner / 3u)][corner % 3u];
 }
 inline uint TriangleFaceHandle(device const BindlessSet &b, ConnectivityRef connectivity, uint slot, uint triangle) {
-    const uint h = BindlessBuffer(packed_uint3, b.Buffer, slot)[triangle].x;
-    return BindlessBuffer(uint, b.Buffer, connectivity.HalfedgeFaces.Slot)[h];
+    const uint h = BindlessBuffer(packed_uint3, b.Buffer, slot)[HandleAddress<MeshElementBlockSize>(b, connectivity.Tables.Triangles, triangle)].x;
+    return BindlessBuffer(uint, b.Buffer, connectivity.HalfedgeFacesSlot)[HandleAddress<MeshElementBlockSize>(b, connectivity.Tables.Halfedges, h)];
 }
 
 // The pose namespace an instance draws with: its own under per-instance deformation, else its mesh's shared one.
@@ -116,13 +133,14 @@ inline uint InstanceFlags(uint mesh_flags, uint primary_edit_instance, uint inst
 // Storage that holds no element selection, since a zero slot names a live buffer.
 constant EditSelectionStorage NoEditSelection{{InvalidSlot, 0u}, {InvalidSlot, 0u}, {InvalidSlot, 0u}, {InvalidSlot, 0u}, InvalidSlot, InvalidSlot, InvalidSlot};
 
-// Compose mesh and instance state without rebasing canonical references.
+// Compose mesh and instance state, whose stored references resolve through the mesh's tables.
 // The mesh's primary edit instance draws its element selection, and every instance does when it has none.
 inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint instance_slot, uint topology = 0u) {
     const MeshDisplay display = mesh.Display;
     const bool selection = display.PrimaryEditInstanceIndex == InvalidOffset || display.PrimaryEditInstanceIndex == instance_slot;
     const bool faces = topology == 0u && mesh.TriangleSlot != InvalidSlot;
-    const ElementAttributeRef absent{InvalidSlot, InvalidSlot};
+    const ElementLayers layers = mesh.Layers;
+    const SlotOffset absent{InvalidSlot, 0u};
     return DrawData{
         .VertexSlot = mesh.VertexSlot,
         .IndexSlotOffset = mesh.IndexSlotOffset,
@@ -130,20 +148,17 @@ inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint insta
         .FirstInstance = instance_slot,
         .TriangleSlot = faces ? mesh.TriangleSlot : InvalidSlot,
         .CornerClassMode = mesh.CornerClassMode,
-        .CustomNormals = faces ? mesh.CustomNormals : absent,
-        .CornerTangent = faces ? mesh.CornerTangent : absent,
-        .CornerColor = faces ? mesh.CornerColor : mesh.VertexColor,
-        .CornerUvs = faces ? mesh.CornerUvs : GpuArray<ElementAttributeRef, 4>{absent, absent, absent, absent},
+        .CustomNormals = faces ? layers.CustomNormals : absent,
+        .CornerTangent = faces ? layers.CornerTangent : absent,
+        .CornerColor = faces ? layers.CornerColor : layers.VertexColor,
+        .CornerUvs = faces ? layers.CornerUvs : GpuArray<SlotOffset, 4>{absent, absent, absent, absent},
         .Connectivity = mesh.Connectivity,
         .HalfedgeCount = mesh.HalfedgeCount,
         .FaceCount = mesh.FaceCount,
         .VertexCountOrHeadImageSlot = mesh.VertexCountOrHeadImageSlot,
-        .ElementIdOffset = selection ? display.ElementIdOffset : 0u,
-        .EditEdgeSharpnessOffset = selection ? display.EditEdgeSharpnessOffset : InvalidOffset,
         .Selection = selection ? display.Selection : NoEditSelection,
         .HasPendingVertexTransform = display.HasPendingVertexTransform,
         .PrimaryEditInstanceIndex = display.PrimaryEditInstanceIndex,
-        .VertexOffset = mesh.VertexOffset,
         .BoneDeformOffset = display.BoneDeformOffset,
         .ArmatureDeformOffset = instance.ArmatureDeformOffset,
         .MorphDeformOffset = display.MorphDeformOffset,
@@ -156,7 +171,11 @@ inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint insta
         .SectorNamespace = PoseNamespace(instance.SectorNamespace, display.SectorNamespace),
         .FaceNormalNamespace = PoseNamespace(instance.FaceNormalNamespace, display.FaceNormalNamespace),
         .PrimitiveMaterialOffset = mesh.PrimitiveMaterialOffset,
-        .ElementPrimitives = faces ? mesh.FacePrimitives : mesh.VertexPrimitives,
+        .ElementPrimitives = faces ? layers.FacePrimitives : layers.VertexPrimitives,
+        .Skin = layers.Skin,
+        .Morph = layers.Morph,
+        .CornerSectors = layers.CornerSectors,
+        .NormalSectors = layers.NormalSectors,
     };
 }
 
@@ -188,21 +207,30 @@ struct SceneT {
     device const LightRecord *Lights(uint slot) const { return BindlessBuffer(LightRecord, B.LightBuffer, slot); }
     device const PBRMaterial *Materials(uint slot) const { return BindlessBuffer(PBRMaterial, B.MaterialBuffer, slot); }
     device const uint *PrimitiveMaterials(uint slot) const { return BindlessBuffer(uint, B.PrimitiveMaterialBuffer, slot); }
-    uint ElementPrimitive(ElementAttributeRef attribute, uint handle) const {
-        return BindlessBuffer(uint, B.ElementPrimitiveBuffer, attribute.ValuesSlot)[ElementAttributeIndex(B, attribute, handle)];
+    // Arena addresses of the draw's record-relative handles.
+    uint VertexAddress(DrawData draw, uint v) const { return HandleAddress<MeshElementBlockSize>(B, draw.Connectivity.Tables.Vertices, v); }
+    uint CornerAddress(DrawData draw, uint h) const { return HandleAddress<MeshElementBlockSize>(B, draw.Connectivity.Tables.Halfedges, h); }
+    uint EdgeAddress(DrawData draw, uint e) const { return HandleAddress<MeshElementBlockSize>(B, draw.Connectivity.Tables.Edges, e); }
+    uint FaceAddress(DrawData draw, uint f) const { return HandleAddress<MeshElementBlockSize>(B, draw.Connectivity.Tables.Faces, f); }
+    uint ElementPrimitive(SlotOffset primitives, uint handle) const { return BindlessBuffer(uint, B.ElementPrimitiveBuffer, primitives.Slot)[primitives.Offset + handle]; }
+    // A corner's vertex handle.
+    uint CornerVertex(DrawData draw, uint corner) const {
+        return Indices(draw.IndexSlotOffset.Slot)[CornerAddress(draw, corner)];
     }
-    uint CornerVertexOrdinal(DrawData draw, uint handle) const {
-        return Indices(draw.IndexSlotOffset.Slot)[handle] - draw.VertexOffset;
+    // The vertex handle at an index of an extras record's run.
+    uint ExtrasVertex(DrawData draw, uint index) const {
+        return Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + index];
     }
-    uint CornerFace(DrawData draw, uint handle) const {
-        return BindlessBuffer(uint, B.Buffer, draw.Connectivity.HalfedgeFaces.Slot)[handle];
+    uint CornerFace(DrawData draw, uint corner) const {
+        return BindlessBuffer(uint, B.Buffer, draw.Connectivity.HalfedgeFacesSlot)[CornerAddress(draw, corner)];
     }
     uint TriangleFace(DrawData draw, uint triangle) const {
         return TriangleFaceHandle(B, draw.Connectivity, draw.TriangleSlot, triangle);
     }
-    float4 CornerTangent(ElementAttributeRef at, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerTangentBuffer, at.ValuesSlot)[ElementAttributeIndex(B, at, h)]); }
-    float4 CornerColor(ElementAttributeRef at, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerColorBuffer, at.ValuesSlot)[ElementAttributeIndex(B, at, h)]); }
-    float2 CornerUv(ElementAttributeRef at, uint h) const { return float2(BindlessBuffer(packed_float2, B.CornerUvBuffer, at.ValuesSlot)[ElementAttributeIndex(B, at, h)]); }
+    // Corner layers at a corner's handle, or a point or line draw's color at a vertex handle.
+    float4 CornerTangent(SlotOffset at, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerTangentBuffer, at.Slot)[at.Offset + h]); }
+    float4 CornerColor(SlotOffset at, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerColorBuffer, at.Slot)[at.Offset + h]); }
+    float2 CornerUv(SlotOffset at, uint h) const { return float2(BindlessBuffer(packed_float2, B.CornerUvBuffer, at.Slot)[at.Offset + h]); }
 
     device const packed_float3 *BaseVertexNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
     device const packed_float3 *BaseFaceNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
@@ -234,34 +262,34 @@ struct SceneT {
         return draw;
     }
 
-    // Mesh-local vertex position: the pose pre-pass's current-pose position when the draw has one.
-    float3 GetLocalPosition(DrawData draw, uint idx) const {
-        const uint vertex_id = draw.VertexOffset + idx;
-        const uint posed = PoseAttributeIndex(B, View.PosedPositionNodesSlot, draw.PositionNamespace, vertex_id);
+    // Mesh-local position at a vertex's arena address: the pose pre-pass's current-pose position when the draw has one.
+    float3 LocalPositionAt(DrawData draw, uint address) const {
+        const uint posed = PoseAttributeIndex(B, View.PosedPositionNodesSlot, draw.PositionNamespace, address);
         return posed != InvalidOffset ? float3(PosedPositions(View.PosedPositionSlot)[posed]) :
-            float3(Vertices(draw.VertexSlot)[vertex_id].Position);
+            float3(Vertices(draw.VertexSlot)[address].Position);
     }
+    float3 GetLocalPosition(DrawData draw, uint v) const { return LocalPositionAt(draw, VertexAddress(draw, v)); }
 
-    // Per-vertex normal: the posed normal when the draw has one, else the base normal at the vertex-arena slot.
-    float3 GetVertexNormal(DrawData draw, uint idx) const {
-        const uint handle = draw.VertexOffset + idx;
-        const uint posed = PoseAttributeIndex(B, View.PosedVertexNormalNodesSlot, draw.VertexNormalNamespace, handle);
+    // Normal of a vertex handle: the posed normal when the draw has one, else the base normal.
+    float3 GetVertexNormal(DrawData draw, uint v) const {
+        const uint address = VertexAddress(draw, v);
+        const uint posed = PoseAttributeIndex(B, View.PosedVertexNormalNodesSlot, draw.VertexNormalNamespace, address);
         return posed != InvalidOffset ? float3(PosedVertexNormals(View.PosedVertexNormalSlot)[posed]) :
-            float3(BaseVertexNormals(View.BaseVertexNormalSlot)[handle]);
+            float3(BaseVertexNormals(View.BaseVertexNormalSlot)[address]);
     }
 
-    // Canonical face handle, with a sparse pose override when present.
+    // Normal of a face handle, with a sparse pose override when present.
     float3 GetFaceNormal(DrawData draw, uint face) const {
-        const uint posed = PoseAttributeIndex(B, View.PosedFaceNormalNodesSlot, draw.FaceNormalNamespace, face);
+        const uint address = FaceAddress(draw, face);
+        const uint posed = PoseAttributeIndex(B, View.PosedFaceNormalNodesSlot, draw.FaceNormalNamespace, address);
         return posed != InvalidOffset ? float3(PosedFaceNormals(View.PosedFaceNormalSlot)[posed]) :
-            float3(BaseFaceNormals(View.BaseFaceNormalSlot)[face]);
+            float3(BaseFaceNormals(View.BaseFaceNormalSlot)[address]);
     }
 
-    // Picking still addresses packed selection masks.
-    // Zero is its no-hit value.
-    uint FacePickId(DrawData draw, uint face) const {
-        return draw.ElementIdOffset + (face == InvalidOffset ? 0u : face - draw.Connectivity.FaceRanges.Offset + 1u);
-    }
+    // Picking names an element by its arena address plus one, which no other record's element shares, and zero is its no-hit value.
+    uint FacePickId(DrawData draw, uint face) const { return face == InvalidOffset ? 0u : FaceAddress(draw, face) + 1u; }
+    // The pick ID of a line topology's edge or a point topology's vertex.
+    uint ElementPickId(DrawData draw, bool lines, uint element) const { return (lines ? EdgeAddress(draw, element) : VertexAddress(draw, element)) + 1u; }
 
     uint InstanceState(DrawData draw) const {
         return uint(InstanceStates(View.InstanceStateSlot)[draw.FirstInstance]);

@@ -1,25 +1,25 @@
 #pragma once
+#include "mesh/MeshStore.h"
 #include "state/Entity.h"
 #include <cstdint>
 #include <span>
 #include <vector>
 
-struct RenderArenas;
 namespace mtl {
 struct ComputeChain;
 }
 
-// Returns the seed groups and every group their proxies feed, transitively, in ascending order.
-std::vector<uint32_t> ClusterGroupClosure(const RenderArenas &, std::span<const uint32_t> seeds);
-// Rewrites the member and proxy runs of every group a removed or added cluster names.
+// Returns the owner's seed groups and every group their proxies feed, transitively, in ascending order.
+std::vector<uint32_t> ClusterGroupClosure(const RenderArenas &, const MeshStore::Record &owner, std::span<const uint32_t> seeds);
+// Rewrites the member and proxy runs of every group of the owner a removed or added cluster names.
 // Removed records still carry the group fields they were linked under.
-void ReplaceGroupClusters(RenderArenas &, std::span<const uint32_t> removed, std::span<const uint32_t> added);
+void ReplaceGroupClusters(MeshStore &, MeshStore::Record &owner, std::span<const uint32_t> removed, std::span<const uint32_t> added);
 // One render owner's seed groups.
 struct ClusterGroupSeeds {
     state::Entity Entity;
     std::vector<uint32_t> Groups;
 };
-// Marks the closure of each entity's seed groups stale on its render owner until the next repair, with one index update for every owner.
+// Marks the closure of each entity's seed groups stale on its render owner until the next repair.
 // A stale group's error is infinite, so the cut refines through it to current geometry.
 // Returns each entity's members of its stale groups in ascending order, whose traversal leaves carry those errors.
 std::vector<std::vector<uint32_t>> InvalidateClusterGroups(state::Scene &, std::span<const ClusterGroupSeeds>);

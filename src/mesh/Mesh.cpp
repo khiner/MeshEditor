@@ -60,11 +60,11 @@ TrianglePoint ClosestPointOnTriangle(vec3 p, vec3 a, vec3 b, vec3 c) {
 Mesh::Mesh(const MeshStore &store, uint32_t store_id)
     : Store(&store), StoreId(store_id), C(store.GetConnectivity(store_id)), Corners(store.Arenas().FaceCorners.Buffer.GetSpan<uint32_t>()) {}
 
-Mesh::VH Mesh::VertexAt(uint32_t ordinal) const { return VH{Store->LiveElementAt(StoreId, MeshStore::ElementDomain::Vertex, ordinal)}; }
-uint32_t Mesh::VertexOrdinal(VH vertex) const { return Store->LiveElementOrdinal(StoreId, MeshStore::ElementDomain::Vertex, *vertex); }
-Mesh::EH Mesh::EdgeAt(uint32_t ordinal) const { return EH{Store->LiveElementAt(StoreId, MeshStore::ElementDomain::Edge, ordinal)}; }
-Mesh::FH Mesh::FaceAt(uint32_t ordinal) const { return FH{Store->LiveElementAt(StoreId, MeshStore::ElementDomain::Face, ordinal)}; }
-uint32_t Mesh::FaceOrdinal(FH face) const { return Store->LiveElementOrdinal(StoreId, MeshStore::ElementDomain::Face, *face); }
+Mesh::VH Mesh::VertexAt(uint32_t ordinal) const { return VH{Store->LiveElementAt(StoreId, MeshStore::ElementDomain::Vertex, ordinal).Value}; }
+uint32_t Mesh::VertexOrdinal(VH vertex) const { return Store->LiveElementOrdinal(StoreId, MeshStore::ElementDomain::Vertex, ElementHandle{*vertex}); }
+Mesh::EH Mesh::EdgeAt(uint32_t ordinal) const { return EH{Store->LiveElementAt(StoreId, MeshStore::ElementDomain::Edge, ordinal).Value}; }
+Mesh::FH Mesh::FaceAt(uint32_t ordinal) const { return FH{Store->LiveElementAt(StoreId, MeshStore::ElementDomain::Face, ordinal).Value}; }
+uint32_t Mesh::FaceOrdinal(FH face) const { return Store->LiveElementOrdinal(StoreId, MeshStore::ElementDomain::Face, ElementHandle{*face}); }
 
 std::span<const uint32_t> Mesh::CornerVertices() const { return Store->Arenas().FaceCorners.Get(Store->Get(StoreId).FaceCorners); }
 
@@ -85,11 +85,10 @@ std::optional<uint32_t> DrawnStoreId(const state::Scene &r, state::Entity e) {
 }
 
 he::VH Mesh::GetFromVertex(HH hh) const {
-    assert(*hh < C.Opposites.size());
-    if (const auto opp = C.Opposites[*hh]) return VH(Corners[*opp]);
+    if (const auto opp = C.Opposite(hh)) return GetToVertex(opp);
     // A boundary halfedge has no opposite, so its from-vertex comes from the previous halfedge in the face loop.
     const auto prev = C.Previous(hh);
-    return prev ? VH(Corners[*prev]) : VH{};
+    return prev ? GetToVertex(prev) : VH{};
 }
 
 uint32_t Mesh::GetValence(FH fh) const { return distance(fh_range(fh)); }
@@ -107,8 +106,8 @@ vec3 Mesh::CalcFaceCentroid(FH fh) const {
 
 float Mesh::CalcMeanCurvature(VH vh, std::span<const uint8_t> edge_sharpness) const {
     for (const auto he : voh_range(vh)) {
-        const auto eh = GetEdge(he);
-        if (*eh < edge_sharpness.size() && edge_sharpness[*eh] != 0) return 0.f;
+        const auto address = C.EdgeAddress(*GetEdge(he)).Value();
+        if (address < edge_sharpness.size() && edge_sharpness[address] != 0) return 0.f;
     }
 
     const vec3 xi = GetPosition(vh);
@@ -139,12 +138,14 @@ he::VH Mesh::FindNearestVertex(vec3 p) const {
     return closest_vertex;
 }
 
-const vec3 &Mesh::GetPosition(VH vh) const { return Store->Arenas().Vertices.Get({*vh, 1})[0].Position; }
-const vec3 &Mesh::GetNormal(VH vh) const { return Store->Arenas().BaseVertexNormals.Get({*vh, 1})[0]; }
-vec3 Mesh::GetNormal(FH fh) const { return Store->Arenas().BaseFaceNormals.Get({*fh, 1})[0]; }
+const vec3 &Mesh::GetPosition(VH vh) const { return Store->Arenas().Vertices.Get({C.VertexAddress(*vh).Value(), 1})[0].Position; }
+const vec3 &Mesh::GetNormal(VH vh) const { return Store->Arenas().BaseVertexNormals.Get({C.VertexAddress(*vh).Value(), 1})[0]; }
+vec3 Mesh::GetNormal(FH fh) const { return Store->Arenas().BaseFaceNormals.Get({C.FaceAddress(*fh).Value(), 1})[0]; }
 VertexEdgeIncidence Mesh::GetVertexEdgeIncidence() const { return Store->GetVertexEdgeIncidence(StoreId); }
 
 ElementView<uvec3> Mesh::DerivedTriangles() const { return Store->TriangleView(StoreId); }
+
+HandleValues<Vertex> Mesh::VertexValues() const { return {Store->Arenas().Vertices.Buffer.GetSpan<Vertex>(), C.VertexTable}; }
 
 TriangleVertexView Mesh::TriangleVertices() const {
     if (!TriangleIndexCount()) return {};
@@ -175,7 +176,7 @@ VertexEdgeIncidence::Iterator &VertexEdgeIncidence::Iterator::operator++() {
         if (Side++ == 0) {
             const auto e = C->Edge(h);
             const auto first = C->EdgeHalfedge(*e);
-            if (h == first || h == C->Opposites[*first]) {
+            if (h == first || h == C->Opposite(first)) {
                 Edge = *e;
                 return *this;
             }
@@ -184,7 +185,7 @@ VertexEdgeIncidence::Iterator &VertexEdgeIncidence::Iterator::operator++() {
             ++Item;
             --Remaining;
             Side = 0;
-            if (next && !C->Opposites[*next] && C->EdgeHalfedge(*C->Edge(next)) == next) {
+            if (next && !C->Opposite(next) && C->EdgeHalfedge(*C->Edge(next)) == next) {
                 Edge = *C->Edge(next);
                 return *this;
             }
@@ -206,7 +207,7 @@ void ValidateGeometrySelection(const MeshStore &meshes, uint32_t id, const Geome
         if (!std::ranges::is_sorted(handles) || std::ranges::adjacent_find(handles) != handles.end())
             throw std::invalid_argument("Geometry selections require sorted unique handles.");
         for (const auto handle : handles)
-            if (!meshes.IsLiveElement(id, element, handle))
+            if (!meshes.IsLiveElement(id, element, ElementHandle{handle}))
                 throw std::invalid_argument("Geometry selection handle is not owned by its mesh.");
     }
 }
@@ -230,13 +231,12 @@ std::vector<uint32_t> ReadMasks(const MeshStore &meshes, uint32_t id, Element el
         arena.ForEachBlock(set, [&](uint32_t b, const auto &block) {
             const auto mask = words.subspan(uint64_t(masks.First + b) * MeshElementBlockWords, MeshElementBlockWords);
             for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
-                for (auto bits = block.Live[w] & mask[w]; bits; bits &= bits - 1u) handles.push_back(b * MeshElementBlockSize + w * 32u + uint32_t(std::countr_zero(bits)));
+                for (auto bits = block.Live[w] & mask[w]; bits; bits &= bits - 1u) handles.push_back(block.Local * MeshElementBlockSize + w * 32u + uint32_t(std::countr_zero(bits)));
         });
     };
     if (element == Element::Vertex) read(a.Vertices, record.Vertices);
     else if (element == Element::Edge) read(a.EdgeHalfedges, record.EdgeData);
     else read(a.FaceTriangles, record.FaceData);
-    if (!std::ranges::is_sorted(handles)) std::ranges::sort(handles);
     return handles;
 }
 

@@ -19,9 +19,9 @@ struct MeshletBuildSource {
     MeshStore::Record *Destination;
     uint32_t Topology, ElementCount; // Exact for supplied Elements, otherwise the canonical domain count before GPU filtering.
     ElementWork Elements{}; // Optional finished triangle, wire edge or isolated point membership.
-    // A local fragment owns only its new meshlets and payloads. Existing
-    // primitive/group records are borrowed until the caller adopts the fragment.
-    const MeshStore::Record *Owner{};
+    // A local fragment owns only its new meshlets, which join the owner's meshlet set, and their payloads.
+    // Existing primitive/group records are borrowed until the caller adopts the fragment.
+    MeshStore::Record *Owner{};
     uint32_t Primitive{InvalidOffset}, Group{InvalidOffset};
 };
 

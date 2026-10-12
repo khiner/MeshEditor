@@ -18,15 +18,32 @@ struct ConnectivityFan {
     Iterator end() const { return {Items,First+Count}; }
 };
 
-// All arguments and stored references are canonical arena handles.
+// All arguments and stored references are record-relative handles, which the record's tables resolve to arena addresses.
+// The view resolves its table runs and streams once, so each address costs one table read.
 struct ConnectivityView {
     device const BindlessSet &B;
     ConnectivityRef At;
     uint FaceCount;
-    uint EdgeOrdinal(uint e) const { return e == InvalidOffset ? e : e - At.Edges.Offset; }
-    uint FaceOrdinal(uint f) const { return f == InvalidOffset ? f : f - At.FaceRanges.Offset; }
+    device const uint *VertexTable, *HalfedgeTable, *EdgeTable, *FaceTable;
+    device const uint *Opposites, *HalfedgeEdges, *HalfedgeFaces, *EdgeHalfedges;
+    device const packed_uint2 *FaceRanges;
 
-    uint2 Incoming(uint v) const { if (At.VertexCorners.Slot == InvalidSlot) return uint2(InvalidOffset, 0u); return uint2(BindlessBuffer(packed_uint2,B.Buffer,At.VertexCorners.Slot)[v]); }
+    ConnectivityView(device const BindlessSet &b, ConnectivityRef at, uint face_count)
+        : B(b), At(at), FaceCount(face_count), VertexTable(TableRun(b, at.Tables.Vertices)), HalfedgeTable(TableRun(b, at.Tables.Halfedges)),
+          EdgeTable(TableRun(b, at.Tables.Edges)), FaceTable(TableRun(b, at.Tables.Faces)), Opposites(Stream<uint>(b, at.OppositesSlot)),
+          HalfedgeEdges(Stream<uint>(b, at.HalfedgeEdgesSlot)), HalfedgeFaces(Stream<uint>(b, at.HalfedgeFacesSlot)), EdgeHalfedges(Stream<uint>(b, at.EdgesSlot)),
+          FaceRanges(Stream<packed_uint2>(b, at.FaceRangesSlot)) {}
+    static device const uint *TableRun(device const BindlessSet &b, SlotOffset table) { return table.Slot == InvalidSlot ? nullptr : BindlessBuffer(uint, b.Buffer, table.Slot) + table.Offset; }
+    template<typename T> static device const T *Stream(device const BindlessSet &b, uint slot) { return slot == InvalidSlot ? nullptr : BindlessBuffer(T, b.Buffer, slot); }
+
+    uint VertexAddress(uint v) const { return Resolve<MeshElementBlockSize>(VertexTable, v); }
+    uint HalfedgeAddress(uint h) const { return Resolve<MeshElementBlockSize>(HalfedgeTable, h); }
+    uint EdgeAddress(uint e) const { return Resolve<MeshElementBlockSize>(EdgeTable, e); }
+    uint FaceAddress(uint f) const { return Resolve<MeshElementBlockSize>(FaceTable, f); }
+    // A corner's vertex handle, from the corner vertices at `corner_slot` of the index buffers.
+    uint CornerVertex(uint corner_slot, uint h) const { return BindlessBuffer(uint, B.IndexBuffer, corner_slot)[HalfedgeAddress(h)]; }
+
+    uint2 Incoming(uint v) const { if (At.VertexCornersSlot == InvalidSlot) return uint2(InvalidOffset, 0u); return uint2(BindlessBuffer(packed_uint2,B.Buffer,At.VertexCornersSlot)[VertexAddress(v)]); }
     uint2 FanItem(uint index) const { return uint2(BindlessBuffer(packed_uint2,B.Buffer,At.FanItemsSlot)[index]); }
     uint FanCorner(uint index) const { return FanItem(index).x; }
     ConnectivityFan Fan(uint v) const {
@@ -62,20 +79,15 @@ struct ConnectivityView {
         }
     }
 
-    device const uint *Words(SlotOffset at) const { return BindlessBuffer(uint,B.Buffer,at.Slot); }
-    device const uint *Outgoing() const { return Words(At.Outgoing); }
-    device const uint *Opposites() const { return Words(At.Opposites); }
-    device const uint *HalfedgeToEdge() const { return Words(At.HalfedgeEdges); }
-    device const uint *HalfedgeToFace() const { return Words(At.HalfedgeFaces); }
-    device const packed_uint2 *Ranges() const { return BindlessBuffer(packed_uint2,B.Buffer,At.FaceRanges.Slot); }
-    device const uint *Edges() const { return Words(At.Edges); }
+    device const uint *Words(uint slot) const { return BindlessBuffer(uint,B.Buffer,slot); }
 
-    uint Opposite(uint h) const { return Opposites()[h]; }
-    uint Edge(uint h) const { return HalfedgeToEdge()[h]; }
-    uint EdgeHalfedge(uint e) const { return Edges()[e]; }
+    uint Outgoing(uint v) const { return Words(At.OutgoingSlot)[VertexAddress(v)]; }
+    uint Opposite(uint h) const { return Opposites[HalfedgeAddress(h)]; }
+    uint Edge(uint h) const { return HalfedgeEdges[HalfedgeAddress(h)]; }
+    uint EdgeHalfedge(uint e) const { return EdgeHalfedges[EdgeAddress(e)]; }
     bool EdgeFirst(uint h) const { return EdgeHalfedge(Edge(h)) == h; }
-    uint2 FaceHalfedges(uint f) const { return uint2(Ranges()[f]); }
-    uint HalfedgeFace(uint h) const { return HalfedgeToFace()[h]; }
+    uint2 FaceHalfedges(uint f) const { return uint2(FaceRanges[FaceAddress(f)]); }
+    uint HalfedgeFace(uint h) const { return HalfedgeFaces[HalfedgeAddress(h)]; }
     // A line corner's previous corner is its pair, the corner at the line's other end.
     uint Previous(uint h) const {
         const uint face = HalfedgeFace(h);
