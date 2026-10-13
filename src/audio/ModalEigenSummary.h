@@ -19,7 +19,7 @@ struct ModalEigenSummary : fastfem::ModalEigenSummary {
 namespace zpp::bits {
 template<std::size_t>
 struct members;
-}
+} // namespace zpp::bits
 
 auto serialize(const ModalEigenSummary &) -> zpp::bits::members<6>;
 

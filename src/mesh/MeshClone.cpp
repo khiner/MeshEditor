@@ -21,7 +21,7 @@ void EncodeRuns(mtl::ComputeChain &chain, const mtl::ComputePipeline &pipeline, 
         for (const auto &job : buffer_jobs) {
             const auto index = uint32_t(jobs.size());
             jobs.push_back(job);
-            for (uint32_t t = 0u, count = tiles_of(job); t < count; ++t) tiles.push_back({index, t});
+            for (uint32_t t = 0u, count = tiles_of(job); t < count; ++t) tiles.emplace_back(index, t);
         }
     }
     first_tiles.push_back(uint32_t(tiles.size()));

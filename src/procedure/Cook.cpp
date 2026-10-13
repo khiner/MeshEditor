@@ -86,8 +86,9 @@ std::vector<uint32_t> LocalBlocks(const MeshStore &meshes, uint32_t id, MeshStor
     WithDomain(meshes.Arenas(), domain, [&](const auto &arena) {
         const auto owner = DomainSet(meshes.Get(id), domain).Index;
         const auto members = arena.Blocks.Buffer.template GetSpan<MeshElementBlock>();
-        for (const auto block : blocks)
+        for (const auto block : blocks) {
             if (owner != InvalidOffset && block < members.size() && members[block].Owner == owner) locals.push_back(members[block].Local);
+        }
     });
     std::ranges::sort(locals);
     return locals;
@@ -148,15 +149,22 @@ Outcome ExecutePlanned(state::Scene &r, std::optional<MeshTopologyTask> task, co
 }
 // Deletes the record's edges and faces in place, leaving its vertices as points.
 void ToPoints(state::Scene &r, uint32_t id) {
-    if (Mesh{r.Context.get<const MeshStore>(), id}.EdgeCount()) Execute(r, Task(id, MeshTopologyOp(uint32_t(DeleteMode::OnlyEdgesAndFaces)), {}), {});
+    if (Mesh{r.Context.get<const MeshStore>(), id}.EdgeCount()) {
+        const auto task = Task(id, MeshTopologyOp(uint32_t(DeleteMode::OnlyEdgesAndFaces)), {});
+        ExecuteGeometryTopology(r, std::span{&task, 1u});
+    }
 }
 // Deletes every element of the record in place.
 void Empty(state::Scene &r, uint32_t id) {
-    if (Mesh{r.Context.get<const MeshStore>(), id}.VertexCount()) Execute(r, Task(id, MeshTopologyOp(uint32_t(DeleteMode::Vertices)), {}), {});
+    if (Mesh{r.Context.get<const MeshStore>(), id}.VertexCount()) {
+        const auto task = Task(id, MeshTopologyOp(uint32_t(DeleteMode::Vertices)), {});
+        ExecuteGeometryTopology(r, std::span{&task, 1u});
+    }
 }
 Outcome ExecuteStages(state::Scene &r, std::vector<MeshTopologyTask> tasks, const Masks &masks) {
-    if (masks.Publish)
+    if (masks.Publish) {
         for (auto &task : tasks) PublishStoreSelection(r.Context.get<const MeshStore>(), task);
+    }
     const auto results = ExecuteGeometryTopologyStages(r, tasks);
     if (std::ranges::none_of(results, &GeometryTopologyResult::Changed)) return tasks.front().SourceId;
     return results.back().GeometryId;
@@ -319,7 +327,7 @@ std::array<uint32_t, 3> UploadSelection(MeshStore &meshes, std::optional<BufferA
         const auto owned = meshes.GetBlockList(id, domains[d].first).Blocks;
         const auto &blocks = *domains[d].second;
         const auto range = arena->Allocate(owned.empty() ? 1u : owned.back() + 1u);
-        auto masks = arena->GetMutable(range);
+        const auto masks = arena->GetMutable(range);
         std::ranges::fill(masks, SelectionBlock{});
         for (size_t i = 0u; i < std::min(owned.size(), blocks.size()); ++i) masks[owned[i]] = blocks[i];
         first[d] = range.Offset;
@@ -558,7 +566,7 @@ void InstancePoints(state::Scene &r, const InstanceOnPoints &p, uint32_t id) {
     ToPoints(r, id);
     for (const auto &[name, type, value] : {std::tuple{InstanceRotation, AttributeType::Vec4, Words(p.Rotation)}, std::tuple{InstanceScale, AttributeType::Vec3, Words(p.Scale)}}) {
         if (const auto existing = meshes.FindAttribute(id, name); existing != InvalidOffset) meshes.ReleaseAttribute(existing);
-        meshes.AddAttribute(id, AttributeDomain::Vertex, type, name, value);
+        (void)meshes.AddAttribute(id, AttributeDomain::Vertex, type, name, value);
     }
 }
 
@@ -603,9 +611,11 @@ void PublishInstances(state::Scene &r, state::Entity mesh_entity, state::Entity 
     if (!current && transforms.empty()) return;
     const auto previous = current ? current->Entities : std::vector<state::Entity>{};
     std::vector<state::Entity> objects;
-    if (!transforms.empty())
-        for (const auto [e, instance] : std::as_const(r).view<const Instance>().each())
+    if (!transforms.empty()) {
+        for (const auto [e, instance] : std::as_const(r).view<const Instance>().each()) {
             if (instance.Entity == mesh_entity) objects.push_back(e);
+        }
+    }
     std::ranges::sort(objects);
     const auto count = uint32_t(transforms.size());
     std::vector<state::Entity> published(objects.size() * count, state::Null), extras;
@@ -686,8 +696,9 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
     auto remaining = plan.Consumers;
     for (uint32_t node = 0u; node < procedure.Nodes.size(); ++node) {
         if (reached[node]) continue;
-        for (uint32_t i = 0u; i < InputCount[procedure.Nodes[node].Kind]; ++i)
+        for (uint32_t i = 0u; i < InputCount[procedure.Nodes[node].Kind]; ++i) {
             if (const auto link = procedure.Inputs[plan.InputFirst[node] + i]; link.FromNode != NoNode) --remaining[plan.SocketFirst[link.FromNode] + link.FromSocket];
+        }
     }
     const auto read = [&](uint32_t node) { return remaining[plan.SocketFirst[node]] > 0u; };
     const bool unlinked = procedure.OutputNode == NoNode || procedure.Inputs[plan.InputFirst[procedure.OutputNode]].FromNode == NoNode;
@@ -886,9 +897,11 @@ CookPlan Plan(const GeometryProcedure &procedure) {
     // Each node's unread inputs, and its consumers as runs of one flat list.
     std::vector<uint32_t> pending(count, 0u), consumer_first(count + 1u, 0u);
     const auto for_each_link = [&](auto &&fn) {
-        for (uint32_t n = 0u; n < count; ++n)
-            for (uint32_t i = plan.InputFirst[n]; i < plan.InputFirst[n + 1u]; ++i)
+        for (uint32_t n = 0u; n < count; ++n) {
+            for (uint32_t i = plan.InputFirst[n]; i < plan.InputFirst[n + 1u]; ++i) {
                 if (const auto link = procedure.Inputs[i]; link.FromNode != NoNode) fn(n, link);
+            }
+        }
     };
     for_each_link([&](uint32_t n, SocketLink link) {
         ++plan.Consumers[plan.SocketFirst[link.FromNode] + link.FromSocket];
@@ -899,12 +912,14 @@ CookPlan Plan(const GeometryProcedure &procedure) {
     std::vector<uint32_t> consumers(consumer_first.back());
     auto fill = consumer_first;
     for_each_link([&](uint32_t n, SocketLink link) { consumers[fill[link.FromNode]++] = n; });
-    for (uint32_t n = 0u; n < count; ++n)
+    for (uint32_t n = 0u; n < count; ++n) {
         if (!pending[n]) plan.Order.push_back(n);
+    }
     for (size_t i = 0u; i < plan.Order.size(); ++i) {
         const auto n = plan.Order[i];
-        for (uint32_t c = consumer_first[n]; c < consumer_first[n + 1u]; ++c)
+        for (uint32_t c = consumer_first[n]; c < consumer_first[n + 1u]; ++c) {
             if (!--pending[consumers[c]]) plan.Order.push_back(consumers[c]);
+        }
     }
     return plan;
 }
@@ -975,15 +990,17 @@ void RegisterProcedureHandlers(state::Scene &r) {
 void SettleProcedures(state::Scene &r, bool cook) {
     using namespace procedure;
     const auto &changed = reactive(r, Change::Procedure);
-    for (const auto e : changed)
+    for (const auto e : changed) {
         if (const auto *procedure = r.try_get<const GeometryProcedure>(e)) r.emplace_or_replace<CookPlan>(e, Plan(*procedure));
+    }
     // The writes since the last settle name the blocks each resync restores, and a restore pass restores outputs with their sources.
     const auto writes = r.Context.get<MeshStore>().TakeWrites();
     if (!cook) return;
     // The procedures whose graph or source changed, and the other entities whose change a procedure reads.
     std::vector<state::Entity> cooked, inputs;
-    for (const auto e : changed)
+    for (const auto e : changed) {
         if (r.all_of<GeometryProcedure, MeshHandle>(e)) cooked.push_back(e);
+    }
     for (const auto e : reactive(r, Change::ProcedureInputs)) {
         if (r.all_of<GeometryProcedure, MeshHandle>(e)) cooked.push_back(e);
         else inputs.push_back(e);
@@ -997,11 +1014,13 @@ void SettleProcedures(state::Scene &r, bool cook) {
         if (!r.all_of<MeshHandle>(e)) continue;
         const auto *published = r.try_get<const ProcedureInstances>(e);
         if (std::ranges::any_of(procedure.Nodes, input, &NodeRecord::Entity) || (published && std::ranges::any_of(published->Entities, input))) cooked.push_back(e);
-        for (const auto &node : procedure.Nodes)
+        for (const auto &node : procedure.Nodes) {
             if (node.Kind == KindOf<ObjectInfo>) reads.emplace_back(e, ReadMesh(r, e, r.get<const ObjectInfo>(node.Entity)));
+        }
     }
-    for (const auto e : inputs)
+    for (const auto e : inputs) {
         if (const auto *instance = r.try_get<const Instance>(e); instance && r.all_of<ProcedureInstances>(instance->Entity)) cooked.push_back(instance->Entity);
+    }
     SortUnique(cooked);
     // A procedure reading a changed or cooking mesh cooks after it.
     const auto cooking = [&](state::Entity e) { return std::ranges::binary_search(cooked, e); };
@@ -1017,8 +1036,9 @@ void SettleProcedures(state::Scene &r, bool cook) {
     const auto visit = [&](this const auto &self, state::Entity e) -> void {
         if (std::ranges::contains(seen, e)) return;
         seen.push_back(e);
-        for (const auto [reader, read] : reads)
+        for (const auto [reader, read] : reads) {
             if (reader == e && cooking(read)) self(read);
+        }
         order.push_back(e);
     };
     for (const auto e : cooked) visit(e);

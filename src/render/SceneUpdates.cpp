@@ -45,7 +45,7 @@ void RetallyMesh(state::Scene &r, state::Entity mesh_entity) {
     const auto id = DrawnStoreId(r, mesh_entity);
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &meshes = r.Context.get<const MeshStore>();
-    auto &render = meshes.Render();
+    const auto &render = meshes.Render();
     const auto *mb = id ? meshes.TryGet(*id) : nullptr;
     if (!mb) return;
     const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
@@ -61,7 +61,7 @@ void RetallyMesh(state::Scene &r, state::Entity mesh_entity) {
 
 // Assign placed primitives to the affected meshes' instance ranges.
 void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &buffers = r.Context.get<GpuBuffers>();
     auto &scene = r.Context.get<GpuSceneState>();
     for (const auto mesh_entity : mesh_entities) {
         scene.DisplayDirty.insert(mesh_entity);
@@ -69,7 +69,7 @@ void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_e
         if (!models || !models->InstanceCount) continue;
         const auto first = models->InstanceRange.Offset;
         const auto ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>({first, models->InstanceCount});
-        auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({first, models->InstanceCount});
+        const auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({first, models->InstanceCount});
         const auto &mesh_buffers = RecordOf(r, mesh_entity);
         for (uint32_t i = 0u; i < ids.size(); ++i) {
             if (!ids[i]) continue;
@@ -84,7 +84,7 @@ void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_e
 }
 
 bool RepointChangedMeshes(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &buffers = r.Context.get<GpuBuffers>();
     auto &scene = r.Context.get<GpuSceneState>();
     RepointMeshInstances(r, mesh_entities);
     bool changed = false;
@@ -103,8 +103,9 @@ namespace {
 // The debug channel material-shaded viewports show, which the LOD attributes preserve.
 DebugChannel LodDebugChannel(const state::Scene &r) {
     DebugChannel debug = DebugChannel::None;
-    for (const auto [_, display] : r.view<const ViewportDisplay>().each())
+    for (const auto [_, display] : r.view<const ViewportDisplay>().each()) {
         if (!WorkbenchShading(display.ViewportShading)) debug = display.DebugChannel;
+    }
     return debug;
 }
 } // namespace
@@ -166,7 +167,7 @@ void RefreshClusterLodAttributes(state::Scene &r, mtl::ComputeChain &chain, std:
 
 void BuildMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities, std::span<const state::Entity> bone_entities) {
     if (mesh_entities.empty() && bone_entities.empty()) return;
-    for (auto e : mesh_entities) ReleaseMeshEditWork(r, e);
+    for (const auto e : mesh_entities) ReleaseMeshEditWork(r, e);
     const profile::CpuScope scope{"BuildMeshlets"};
     auto &buffers = r.Context.get<GpuBuffers>();
     buffers.PreludeStale = true;
@@ -244,12 +245,13 @@ bool BuildDemandedClusterLods(state::Scene &r, state::Entity viewport) {
             meshes.ForEachPrimitive(mb, [&](ElementHandle, const PrimitiveRecord &primitive) {
                 if (primitive.Topology != 0u) return;
                 const auto start = triangles.size();
-                if (primitive.LodFinestNode != InvalidOffset)
+                if (primitive.LodFinestNode != InvalidOffset) {
                     meshes.ForEachLodMember(mb, render.LodNodes.Get({render.LodNodes.Address(mb.NodeData, ElementHandle{primitive.LodFinestNode}).Value(), 1u})[0], [&](uint32_t cluster) {
                         const auto &record = render.Meshlets.Get({render.Meshlets.Address(mb.MeshletData, ElementHandle{cluster}).Value(), 1u})[0];
                         const auto ids = render.MeshletTriangleIds.Get(mb.MeshletTriangles.Values).subspan(record.TriangleOffset, record.TriangleCount);
                         triangles.insert(triangles.end(), ids.begin(), ids.end());
                     });
+                }
                 primitive_counts.push_back(uint32_t(triangles.size() - start));
             });
         }
@@ -271,7 +273,7 @@ bool BuildDemandedClusterLods(state::Scene &r, state::Entity viewport) {
 }
 
 bool DeriveRenderInstances(state::Scene &r) {
-    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &buffers = r.Context.get<GpuBuffers>();
     std::span<uint8_t> states;
     std::vector<state::Entity> retallied;
     for (const auto e : reactive(r, state::Change::InstanceVisibility).Entities) {
@@ -381,7 +383,7 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
         std::erase_if(removals, [&](const auto &removal) {
             return !r.valid(removal.Owner) || std::ranges::binary_search(retired, removal.Owner) || !r.all_of<ModelsBuffer>(removal.Owner);
         });
-        auto by_owner = removals | std::views::chunk_by([](const auto &a, const auto &b) { return a.Owner == b.Owner; });
+        auto by_owner = removals | std::views::chunk_by([](const auto &a, const auto &b) { return a.Owner == b.Owner; }); // NOLINT(misc-const-correctness)
         // A survivor past an owner's first erased slot moves down by the slots erased before it.
         // Every entry is found before any buffer compacts, while each slot still holds its ID.
         struct SlotMove {
@@ -434,7 +436,7 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
         if (const auto *ri = r.try_get<const RenderInstance>(entity); ri && ri->BufferIndex == UINT32_MAX) placements.emplace_back(ri->Entity, entity);
     }
     std::ranges::sort(placements);
-    auto groups = placements | std::views::chunk_by([](const auto &a, const auto &b) { return a.first == b.first; });
+    auto groups = placements | std::views::chunk_by([](const auto &a, const auto &b) { return a.first == b.first; }); // NOLINT(misc-const-correctness)
     // Each buffer without a range or without room takes a new range, every one carved from a single allocation in buffer order.
     const auto new_capacity = [&](state::Entity buffer_entity, uint32_t n) {
         const auto *models = r.try_get<const ModelsBuffer>(buffer_entity);

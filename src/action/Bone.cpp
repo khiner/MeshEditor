@@ -27,8 +27,9 @@ void RebuildBoneStructure(state::Scene &r, state::Entity viewport, state::Entity
 
     for (const auto [_, arm_obj] : r.view<const ArmatureObject>().each()) {
         if (arm_obj.Entity != arm_data_entity) continue;
-        for (const auto b : arm_obj.BoneEntities)
+        for (const auto b : arm_obj.BoneEntities) {
             if (!r.all_of<BoneDelta>(b)) r.emplace<BoneDelta>(b);
+        }
     }
     if (auto *ps = r.try_edit<ArmaturePoseState>(arm_data_entity)) {
         ps->BoneUserOffset.assign(armature.Bones.size(), Transform{});
@@ -124,7 +125,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 auto &armature = r.edit<Armature>(r.get<ArmatureObject>(arm_obj_entity).Entity);
                 std::unordered_set<std::string> names;
                 for (const auto &bone : armature.Bones) names.insert(bone.Name);
-                auto unique_name = [&](std::string_view base) {
+                const auto unique_name = [&](std::string_view base) {
                     for (uint32_t i = 1;; ++i) {
                         if (auto c = std::format("{}.{:03d}", base, i); names.insert(c).second) return c;
                     }
@@ -142,7 +143,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 // Remap: if both a bone and its parent were duplicated, point duplicate child to duplicate parent.
                 for (const auto &dup : duplicated) {
                     auto &nb = armature.Bones[*armature.FindBoneIndex(dup.second)];
-                    if (auto it = orig_to_new.find(nb.ParentBoneId); it != orig_to_new.end()) nb.ParentBoneId = it->second;
+                    if (const auto it = orig_to_new.find(nb.ParentBoneId); it != orig_to_new.end()) nb.ParentBoneId = it->second;
                 }
                 if (duplicated.empty()) return;
 

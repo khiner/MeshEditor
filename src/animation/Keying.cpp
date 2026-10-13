@@ -42,9 +42,11 @@ void SetKey(AnimationChannel &channel, float seconds, std::span<const float> val
 
 // Returns each emptied channel's field to rest, drops empty channels and clips, publishes the update, and removes the component when no clip remains.
 void PublishClips(state::Scene &r, state::Entity entity) {
-    for (const auto &clip : r.get<const AnimationClips>(entity).Clips)
-        for (const auto &channel : clip.Channels)
+    for (const auto &clip : r.get<const AnimationClips>(entity).Clips) {
+        for (const auto &channel : clip.Channels) {
             if (channel.Times.empty()) WriteField(r, entity, channel.Target, channel.Rest);
+        }
+    }
     r.patch<AnimationClips>(entity, [](auto &clips) {
         for (auto &clip : clips.Clips) std::erase_if(clip.Channels, [](const auto &channel) { return channel.Times.empty(); });
         std::erase_if(clips.Clips, [](const auto &clip) { return clip.Channels.empty(); });
@@ -66,8 +68,9 @@ void ForEachChanged(const state::Scene &r, state::Entity viewport, float seconds
     for (const auto [entity, clips] : r.view<const AnimationClips>().each()) {
         const auto *clip = ActiveClip(r, viewport, clips);
         if (!clip) continue;
-        for (const auto &channel : clip->Channels)
+        for (const auto &channel : clip->Channels) {
             if (FieldChanged(r, entity, channel, seconds) && fn(KeyTarget{entity, channel.Target})) return;
+        }
     }
 }
 } // namespace
@@ -138,8 +141,9 @@ void RestoreRest(state::Scene &r, uint32_t from, uint32_t to) {
         const auto *leaving = clips.Find(from);
         if (!leaving) continue;
         const auto *entering = clips.Find(to);
-        for (const auto &channel : leaving->Channels)
+        for (const auto &channel : leaving->Channels) {
             if (!entering || !FindChannel(*entering, channel.Target)) WriteField(r, entity, channel.Target, channel.Rest);
+        }
     }
 }
 

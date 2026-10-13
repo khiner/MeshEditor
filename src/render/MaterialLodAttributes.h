@@ -31,8 +31,9 @@ inline uint32_t MaterialLodAttributes(const PBRMaterial &material, DebugChannel 
         &material.Iridescence.Texture,
         &material.Iridescence.ThicknessTexture,
     };
-    for (const auto *texture : textures)
+    for (const auto *texture : textures) {
         if (texture->Slot != InvalidSlot) attributes |= uv_bit(texture->TexCoord);
+    }
     const bool basis = material.NormalTexture.Slot != InvalidSlot || material.Clearcoat.NormalTexture.Slot != InvalidSlot ||
         material.Anisotropy.Strength > 0.f || debug == DebugChannel::Tangent || debug == DebugChannel::Bitangent;
     if (basis) {

@@ -53,10 +53,10 @@
 
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 namespace state {
 struct Scene;
-}
+} // namespace state
 struct CloneCopies;
 
 struct ArmatureDeformData {
@@ -549,8 +549,9 @@ struct MeshStore {
     const NamedAttribute &GetAttribute(uint32_t attribute) const { return NamedAttributes.at(attribute); }
     // Visits the record's attributes in slot order, a scan of every attribute that authoring, cloning, release and topology setup make.
     void ForEachNamedAttribute(uint32_t id, auto &&visit) const {
-        for (uint32_t a = 0u; a < NamedAttributes.size(); ++a)
+        for (uint32_t a = 0u; a < NamedAttributes.size(); ++a) {
             if (NamedAttributes[a].Record == id) visit(a, NamedAttributes[a]);
+        }
     }
     template<AttributeScalar T> NamedAttributeView<T> AttributeView(uint32_t attribute) const {
         return {ValuesOf<T>(Buffers.Named).Get(TypedAttribute<T>(attribute).Values)};
@@ -560,7 +561,7 @@ struct MeshStore {
         if (values.empty()) return;
         const auto range = TypedAttribute<T>(attribute).Values;
         const auto local = first / MeshElementBlockSize, end = (first + uint32_t(values.size()) - 1u) / MeshElementBlockSize + 1u;
-        auto blocks = ValuesOf<T>(Buffers.Named).GetMutable({range.Offset + local, end - local});
+        const auto blocks = ValuesOf<T>(Buffers.Named).GetMutable({range.Offset + local, end - local});
         for (uint32_t i = 0u; i < values.size(); ++i) {
             const auto handle = first + i - local * MeshElementBlockSize;
             auto &block = blocks[handle / MeshElementBlockSize];
@@ -569,7 +570,9 @@ struct MeshStore {
                 const auto bit = 1u << (slot % 32u);
                 auto &mask = block[slot / 32u];
                 mask = values[i] ? mask | bit : mask & ~bit;
-            } else block[slot] = values[i];
+            } else {
+                block[slot] = values[i];
+            }
         }
     }
     NamedAttributeRef AttributeRef(uint32_t attribute) const;
@@ -595,7 +598,7 @@ struct MeshStore {
                                                                                                     Buffers.FaceHidden;
         bits.Buffer.CaptureWriteElements(blocks, sizeof(SelectionBlock));
         ForEachIndexRun(blocks, [&](size_t first, size_t count) {
-            auto words = bits.GetMutable({blocks[first], uint32_t(count)});
+            const auto words = bits.GetMutable({blocks[first], uint32_t(count)});
             for (size_t j = 0u; j < count; ++j) write(blocks[first + j], words[j]);
         });
     }
@@ -610,7 +613,7 @@ struct MeshStore {
                                                                                                        Buffers.FaceSelection;
         bits.Buffer.CaptureWriteElements(blocks, sizeof(SelectionBlock));
         ForEachIndexRun(blocks, [&](size_t first, size_t count) {
-            auto words = bits.GetMutable({blocks[first], uint32_t(count)});
+            const auto words = bits.GetMutable({blocks[first], uint32_t(count)});
             for (size_t j = 0u; j < count; ++j) write(blocks[first + j], words[j]);
         });
     }

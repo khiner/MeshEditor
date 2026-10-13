@@ -22,10 +22,12 @@ constexpr auto SerializeVector(auto &archive, V &v) {
     else return archive(v.x, v.y, v.z, v.w);
 }
 
+// NOLINTBEGIN(bugprone-macro-parentheses)
 #define NUMERIC_SERIALIZE_VECTOR(Type, Count)                                                \
     auto serialize(const Type &) -> zpp::bits::members<Count>;                               \
     constexpr auto serialize(auto &archive, Type &v) { return SerializeVector(archive, v); } \
     constexpr auto serialize(auto &archive, const Type &v) { return SerializeVector(archive, v); }
+// NOLINTEND(bugprone-macro-parentheses)
 NUMERIC_SERIALIZE_VECTOR(vec2, 2)
 NUMERIC_SERIALIZE_VECTOR(vec3, 3)
 NUMERIC_SERIALIZE_VECTOR(vec4, 4)

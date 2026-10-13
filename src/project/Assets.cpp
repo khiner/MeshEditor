@@ -29,9 +29,9 @@ fs::path Assets::Reference(const fs::path &path) const {
     return ec || Paths::Repo().empty() || relative.empty() || *relative.begin() == ".." ? path : relative;
 }
 
-std::expected<fs::path, std::string> Assets::Store(std::string_view name, std::span<const std::byte> bytes) {
+std::expected<fs::path, std::string> Assets::Store(std::string_view name, std::span<const std::byte> bytes) { // NOLINT(readability-make-member-function-const)
     const auto hash = store::HashBytes(bytes);
-    const auto reference = fs::path{"asset:"} / std::format("{:016x}{:016x}", hash.A, hash.B) / fs::path{name}.filename();
+    auto reference = fs::path{"asset:"} / std::format("{:016x}{:016x}", hash.A, hash.B) / fs::path{name}.filename();
     const auto path = Resolve(reference);
     std::error_code ec;
     if (fs::is_regular_file(path, ec)) return reference;

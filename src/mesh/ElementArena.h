@@ -95,23 +95,26 @@ struct ElementArena {
     void ForEachBlock(ElementSetRef set, auto &&visit) const {
         if (!set) return;
         const auto blocks = Blocks.Buffer.template GetSpan<MeshElementBlock>();
-        for (const auto b : Entries(set))
+        for (const auto b : Entries(set)) {
             if (b != InvalidOffset) visit(b, blocks[b]);
+        }
     }
     // Visits the live slots of one block in ascending order.
     void ForEachSlot(uint32_t block, auto &&visit) const {
         const auto &members = Blocks.Get({block, 1})[0];
-        for (uint32_t w = 0u; w < BlockWords; ++w)
+        for (uint32_t w = 0u; w < BlockWords; ++w) {
             for (auto bits = members.Live[w]; bits; bits &= bits - 1u) visit(w * 32u + uint32_t(std::countr_zero(bits)));
+        }
     }
     // Visits the set's live handles in ascending order with their addresses.
     void ForEach(ElementSetRef set, auto &&visit) const {
         ForEachBlock(set, [&](uint32_t b, const auto &block) {
-            for (uint32_t w = 0u; w < BlockWords; ++w)
+            for (uint32_t w = 0u; w < BlockWords; ++w) {
                 for (auto bits = block.Live[w]; bits; bits &= bits - 1u) {
                     const auto slot = w * 32u + uint32_t(std::countr_zero(bits));
                     visit(ElementHandle{block.Local * BlockSize + slot}, ElementAddress::InBlock<BlockSize>(b, slot));
                 }
+            }
         });
     }
 
@@ -130,8 +133,8 @@ struct ElementArena {
         const auto blocks = AllocateBlocks(std::max(1u, BlockCount(count)));
         const ElementSetRef set{Sets.Allocate(1).Offset};
         const auto run = Table.Allocate(blocks.Count);
-        auto entries = Table.GetMutable(run);
-        auto members = Blocks.GetMutable(blocks);
+        const auto entries = Table.GetMutable(run);
+        const auto members = Blocks.GetMutable(blocks);
         for (uint32_t i = 0; i < blocks.Count; ++i) {
             const auto live = std::min(BlockSize, count > i * BlockSize ? count - i * BlockSize : 0u);
             members[i] = {.Owner = set.Index, .Local = i, .Count = live, .Live = Prefix(live)};
@@ -173,12 +176,13 @@ struct ElementArena {
                     handles.push_back(base + first);
                     remaining = 0u;
                 } else {
-                    for (uint32_t w = 0; w < BlockWords && remaining; ++w)
+                    for (uint32_t w = 0; w < BlockWords && remaining; ++w) {
                         for (auto free = ~block.Live[w] & Prefix(BlockSize)[w]; free && remaining; free &= free - 1u, --remaining) {
                             const auto bit = uint32_t(std::countr_zero(free));
                             gain.Added[w] |= 1u << bit;
                             handles.push_back(base + w * 32u + bit);
                         }
+                    }
                 }
                 for (uint32_t w = 0; w < BlockWords; ++w) block.Live[w] |= gain.Added[w];
                 block.Count = LiveCount(block.Live);
@@ -189,13 +193,14 @@ struct ElementArena {
             auto allocation = Blocks.BeginAllocation();
             const auto fresh = AllocateBlocks(BlockCount(remaining));
             const auto local = Fill(header, fresh);
-            auto members = Blocks.GetMutable(fresh);
+            const auto members = Blocks.GetMutable(fresh);
             for (uint32_t i = 0; i < fresh.Count; ++i) {
                 const auto live = std::min(remaining, BlockSize);
                 members[i] = {.Owner = set.Index, .Local = local + i, .Count = live, .Live = Prefix(live)};
                 result.Blocks.push_back({fresh.Offset + i, members[i].Live});
-                if (count <= BlockSize)
+                if (count <= BlockSize) {
                     for (uint32_t s = 0; s < live; ++s) handles.push_back((local + i) * BlockSize + s);
+                }
                 remaining -= live;
             }
             if (count > BlockSize) handles.push_back(local * BlockSize);
@@ -385,8 +390,8 @@ struct ElementArena {
         auto allocation = Blocks.BeginAllocation();
         const auto fresh = AllocateBlocks(uint32_t(locals.size()));
         if (locals.back() >= header.BlockCount) Append(header, {InvalidOffset, locals.back() + 1u - header.BlockCount});
-        auto entries = Table.GetMutable({header.First, header.BlockCount});
-        auto members = Blocks.GetMutable(fresh);
+        const auto entries = Table.GetMutable({header.First, header.BlockCount});
+        const auto members = Blocks.GetMutable(fresh);
         for (uint32_t i = 0u; i < fresh.Count; ++i) {
             if (entries[locals[i]] != InvalidOffset) throw std::logic_error("A placed block replaces a held one.");
             entries[locals[i]] = fresh.Offset + i;
@@ -572,7 +577,7 @@ private:
             header.Capacity = run.Count;
             allocation.Commit();
         }
-        auto entries = Table.GetMutable({header.First + local, blocks.Count});
+        const auto entries = Table.GetMutable({header.First + local, blocks.Count});
         for (uint32_t i = 0u; i < blocks.Count; ++i) entries[i] = blocks.Offset == InvalidOffset ? InvalidOffset : blocks.Offset + i;
         header.BlockCount += blocks.Count;
         return local;
@@ -583,7 +588,7 @@ private:
         const auto hole = std::ranges::search_n(entries, blocks.Count, InvalidOffset);
         if (hole.empty()) return Append(header, blocks);
         const auto local = uint32_t(hole.begin() - entries.begin());
-        auto filled = Table.GetMutable({header.First + local, blocks.Count});
+        const auto filled = Table.GetMutable({header.First + local, blocks.Count});
         for (uint32_t i = 0u; i < blocks.Count; ++i) filled[i] = blocks.Offset + i;
         return local;
     }

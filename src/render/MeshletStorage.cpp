@@ -6,7 +6,7 @@ void RetireMeshletStorage(state::Scene &r, MeshStore::Record &owner, std::span<c
     if (clusters.empty()) return;
     if (!owner.MeshletData) throw std::invalid_argument("Meshlet retirement requires owned canonical membership.");
     auto &meshes = r.Context.get<MeshStore>();
-    auto &render = meshes.Render();
+    const auto &render = meshes.Render();
     uint32_t finest = 0u;
     for (const auto id : clusters) {
         if (!render.Meshlets.Contains(owner.MeshletData, ElementHandle{id})) throw std::invalid_argument("Meshlet retirement references foreign or invalid storage.");
@@ -16,8 +16,9 @@ void RetireMeshletStorage(state::Scene &r, MeshStore::Record &owner, std::span<c
             record.TriangleCount > (record.Topology ? 16u : 48u) ||
             (!refined && uint64_t(record.TriangleOffset) + record.TriangleCount > owner.MeshletTriangles.Values.Count) ||
             uint64_t(record.VertexOffset) + record.VertexCount > owner.MeshletVertices.Values.Count ||
-            (!record.Topology && uint64_t(record.LocalTriangleOffset) + record.TriangleCount > owner.MeshletLocalTriangles.Values.Count))
+            (!record.Topology && uint64_t(record.LocalTriangleOffset) + record.TriangleCount > owner.MeshletLocalTriangles.Values.Count)) {
             throw std::invalid_argument("Meshlet retirement references foreign or invalid storage.");
+        }
         finest += !refined;
     }
     if (finest > owner.Level0Count) throw std::logic_error("Meshlet retirement exceeds finest membership.");

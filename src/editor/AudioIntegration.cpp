@@ -45,7 +45,7 @@ using std::views::transform;
 
 void AssignVertexSample(
     state::Scene &r, state::Entity e,
-    std::span<const uint32_t> mesh_vertices, fs::path path, std::vector<float> &&frames
+    std::span<const uint32_t> mesh_vertices, const fs::path &path, std::vector<float> &&frames
 ) {
     if (mesh_vertices.empty() || path.empty()) return;
     auto &vs = r.get_or_emplace<VertexSamples>(e);
@@ -181,7 +181,7 @@ void RebuildModalBank(state::Scene &r) {
     auto &m = r.Context.get<ModalAudio>();
 
     ModalBank next{.SampleRate = float(DeviceSampleRate(r))};
-    for (auto e : r.view<const ModalModes, const SoundVertices>()) {
+    for (const auto e : r.view<const ModalModes, const SoundVertices>()) {
         const auto &modes = r.get<const ModalModes>(e);
         if (modes.Freqs.empty()) continue;
         const auto slot = AddModalObject(next, e, modes);
@@ -313,7 +313,7 @@ namespace {
 
 // The cancelled job thread exits at its next checkpoint, and its result is discarded on arrival.
 void CancelModalSolves(state::Scene &r, state::Entity e) {
-    for (auto &job : r.Context.get<ModalSolveJobs>().Jobs) {
+    for (const auto &job : r.Context.get<ModalSolveJobs>().Jobs) {
         if (job->Entity == e) job->Work.RequestCancel();
     }
 }
@@ -583,8 +583,8 @@ void LaunchModalSolve(state::Scene &r, state::Entity viewport, state::Entity e, 
 bool HasPendingModalSolves(const state::Scene &r) { return !r.Context.get<const ModalSolveJobs>().Jobs.empty(); }
 
 void CancelModalSolves(state::Scene &r) {
-    if (auto *jobs = r.Context.find<ModalSolveJobs>()) {
-        for (auto &job : jobs->Jobs) job->Work.RequestCancel();
+    if (const auto *jobs = r.Context.find<ModalSolveJobs>()) {
+        for (const auto &job : jobs->Jobs) job->Work.RequestCancel();
     }
 }
 
@@ -654,7 +654,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         it = solve_jobs.erase(it);
     }
     if (pass != EventPass::Restore) {
-        for (auto e : reactive(r, Change::ModelRescaleEdit)) {
+        for (const auto e : reactive(r, Change::ModelRescaleEdit)) {
             if (!r.valid(e) || !r.all_of<ModalEigenSummary, ::ModalModes>(e)) continue;
             RescaleModalObject(r, e);
         }
@@ -683,7 +683,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
     }
     // Rebuild SoundVertices from VertexSamples/ModalModes, selected by SoundVerticesModel.
     // Runs before any handler that reads SoundVertices.
-    for (auto e : reactive(r, Change::SoundVerticesDerivation)) {
+    for (const auto e : reactive(r, Change::SoundVerticesDerivation)) {
         const auto *model = r.try_get<const SoundVerticesModel>(e);
         std::vector<uint32_t> new_vertices;
         if (model) {
@@ -700,7 +700,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
             continue;
         }
         auto &meshes = r.Context.get<MeshStore>();
-        if (auto *sv = r.try_get<SoundVertices>(e)) {
+        if (const auto *sv = r.try_get<SoundVertices>(e)) {
             if (!std::ranges::equal(meshes.Arenas().SoundVertices.Get(sv->Vertices), new_vertices)) {
                 meshes.ReleaseSoundVertices({sv->Vertices});
                 r.replace<SoundVertices>(e, SoundVertices{meshes.AllocateSoundVertices(new_vertices)});
@@ -727,15 +727,16 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
             if (!r.valid(e)) return;
             if (const auto body = owning_body(e); body != state::Null) bodies.push_back(body);
             // A body's subtree leaves or joins the body enclosing it.
-            if (r.all_of<PhysicsBodyHandle>(e))
+            if (r.all_of<PhysicsBodyHandle>(e)) {
                 if (const auto outer = owning_body(ParentOrNull(r, e)); outer != state::Null) bodies.push_back(outer);
+            }
         };
         for (const auto e : reactive(r, Change::ContactReportingDerivation)) add_owners(e);
         for (const auto e : reactive(r, Change::SoundVerticesDerivation)) add_owners(e);
         SortUnique(bodies);
         const auto sounds = [&r](this auto &self, state::Entity node) -> bool {
             if (IsModalSounding(r, node)) return true;
-            for (auto child : Children{&r, node}) {
+            for (const auto child : Children{&r, node}) {
                 if (!r.all_of<PhysicsBodyHandle>(child) && self(child)) return true;
             }
             return false;
@@ -746,9 +747,9 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         }
     }
     // Refresh contact dynamics before the strike loop below reads them.
-    for (auto e : reactive(r, Change::ContactDynamicsDerivation)) UpdateContactDynamics(r, e);
+    for (const auto e : reactive(r, Change::ContactDynamicsDerivation)) UpdateContactDynamics(r, e);
     // A created or replaced VertexForce is a strike. Contact pulses are one-shot.
-    for (auto e : reactive(r, Change::AudioVertexForce)) {
+    for (const auto e : reactive(r, Change::AudioVertexForce)) {
         if (!r.all_of<SoundVerticesModel>(e)) continue;
         const auto *vf = r.try_get<::VertexForce>(e);
         if (!vf || vf->Force <= 0) continue;
@@ -764,31 +765,31 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         }
     }
     // Start a new recording with an impact at the active vertex.
-    for (auto e : reactive(r, Change::RecordingStart)) {
+    for (const auto e : reactive(r, Change::RecordingStart)) {
         if (!r.all_of<ModalModes, SoundVertices, Recording>(e)) continue;
         if (r.get<const Recording>(e).Frame == 0) TriggerModalStrike(r, e, GetActiveVertexIndex(r, e), 1.f, 1.f);
     }
     // Reconcile the live output device: a config change re-inits (and may change the negotiated rate), a mix change just applies level/on-off.
     bool device_rate_changed = false;
     if (auto *res = r.Context.find<AudioDeviceResource>()) {
-        if (auto &config_tracker = reactive(r, Change::AudioConfig); !config_tracker.empty()) {
+        if (const auto &config_tracker = reactive(r, Change::AudioConfig); !config_tracker.empty()) {
             const uint32_t prev_rate = res->SampleRate;
-            for (auto e : config_tracker) {
+            for (const auto e : config_tracker) {
                 if (r.all_of<AudioOutputConfig, AudioOutputMix>(e)) ReconcileAudioDevice(*res, r.get<const AudioOutputConfig>(e), r.get<const AudioOutputMix>(e));
             }
             device_rate_changed = res->SampleRate != prev_rate;
             // A reopened device publishes a new scheduling group, which the render threads have to be re-placed into.
             r.Context.get<ModalAudio>().RenderPool.SetWorkgroup(res->RenderWorkgroup);
         }
-        for (auto e : reactive(r, Change::AudioMix)) {
+        for (const auto e : reactive(r, Change::AudioMix)) {
             if (r.all_of<AudioOutputMix>(e)) ApplyAudioMix(*res, r.get<const AudioOutputMix>(e));
         }
     }
 
-    auto &modal_tracker = r.Context.get<AudioTrackers>().Modes;
+    const auto &modal_tracker = r.Context.get<AudioTrackers>().Modes;
     if (!modal_tracker.empty() || device_rate_changed) {
         // Ensure every modal object has tuning, gain, solve settings, and acoustic material.
-        for (auto e : modal_tracker) {
+        for (const auto e : modal_tracker) {
             const auto *modes = r.try_get<const ::ModalModes>(e);
             if (!modes) continue;
             if (!r.all_of<ModalTuning>(e)) r.emplace<ModalTuning>(e, modes->Freqs.empty() ? 0.f : modes->Freqs.front(), 1.f);
@@ -802,7 +803,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         // Rebuild the bank for structural layout changes.
         auto &m = r.Context.get<ModalAudio>();
         bool rebuild = false;
-        for (auto e : modal_tracker) {
+        for (const auto e : modal_tracker) {
             if (rebuild) break;
             const auto *modes = r.valid(e) ? r.try_get<const ::ModalModes>(e) : nullptr;
             const bool active = modes && !modes->Freqs.empty() && r.all_of<SoundVertices>(e);
@@ -822,13 +823,13 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
     {
         auto &m = r.Context.get<ModalAudio>();
         auto &bank = LiveBank(m);
-        for (auto e : reactive(r, Change::ModalGain)) {
+        for (const auto e : reactive(r, Change::ModalGain)) {
             if (auto slot = FindModalObject(bank, e)) SetModalOutGain(r, bank, *slot, e);
         }
-        for (auto e : reactive(r, Change::ModalTuning)) {
+        for (const auto e : reactive(r, Change::ModalTuning)) {
             if (auto slot = FindModalObject(bank, e)) RetuneModalObject(r, bank, *slot, e);
         }
-        for (auto e : reactive(r, Change::ModalSoundControls)) {
+        for (const auto e : reactive(r, Change::ModalSoundControls)) {
             const auto &controls = r.get<const ModalSoundControls>(e);
             m.ClickGain.store(controls.ClickGain, std::memory_order_relaxed);
             m.MaxImpacts.store(controls.MaxImpacts, std::memory_order_relaxed);

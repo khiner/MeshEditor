@@ -30,8 +30,9 @@ std::vector<state::Entity> TargetEntities(const state::Scene &r, state::Entity v
             if (pose) {
                 for (const auto e : r.view<const BoneSelection>()) fn(e);
             } else {
-                for (const auto e : r.view<const Selected>())
+                for (const auto e : r.view<const Selected>()) {
                     if (r.all_of<Transform>(e)) fn(e);
+                }
             }
         },
         [&](state::Entity e) { entities.emplace_back(e); }
@@ -43,8 +44,9 @@ std::vector<KeyTarget> Targets(const state::Scene &r, state::Entity viewport, co
     std::vector<KeyTarget> targets;
     for (const auto e : TargetEntities(r, viewport, keys.Target)) {
         if (keys.Channel) targets.emplace_back(e, *keys.Channel);
-        else
+        else {
             for (const auto &target : ::animation::TransformTargets(r, e)) targets.emplace_back(e, target);
+        }
     }
     return targets;
 }

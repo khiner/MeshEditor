@@ -295,8 +295,11 @@ void UpdateMeshDrag(state::Scene &r, state::Entity viewport, FrameState &frame) 
         if (changed) return action::Emit(action::UpdateOf<&Bevel::Segments>(nodes, drag.Segments), action::Phase::Stage);
         if (drag.Value == Op::Inset) action::Emit(action::UpdateOf<&Inset::Thickness>(nodes, value), action::Phase::Stage);
         else action::Emit(action::UpdateOf<&Bevel::Width>(nodes, value), action::Phase::Stage);
-    } else if (drag.Value == Op::Inset) action::Emit(action::mesh::Inset{.Thickness = value, .Depth = 0.f, .Individual = drag.Individual, .Even = true}, action::Phase::Stage);
-    else action::Emit(action::mesh::Bevel{.Width = value, .Segments = drag.Segments, .Vertices = drag.Value == Op::BevelVertices}, action::Phase::Stage);
+    } else if (drag.Value == Op::Inset) {
+        action::Emit(action::mesh::Inset{.Thickness = value, .Depth = 0.f, .Individual = drag.Individual, .Even = true}, action::Phase::Stage);
+    } else {
+        action::Emit(action::mesh::Bevel{.Width = value, .Segments = drag.Segments, .Vertices = drag.Value == Op::BevelVertices}, action::Phase::Stage);
+    }
     drag.Staged = value;
 }
 
@@ -551,29 +554,51 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
             using mesh::DissolveMode;
             const auto element = r.get<const EditMode>(viewport).Value;
             // Placement drags join the gesture, so an extrude, duplicate, or rip and its move commit as one node.
-            if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_X)) action::Emit(mesh::Dissolve{element == Element::Face ? DissolveMode::Faces : element == Element::Edge ? DissolveMode::Edges :
-                                                                                                                                                              DissolveMode::Vertices});
-            else if (key(ImGuiKey_X) || key(ImGuiKey_Delete) || key(ImGuiKey_Backspace)) OpenPopup("##MeshDelete");
-            else if (key(ImGuiKey_E)) action::Emit(mesh::Extrude{element == Element::Edge ? mesh::ExtrudeMode::Edges : mesh::ExtrudeMode::Region}, action::Phase::Stage);
-            else if (key(ImGuiMod_Shift | ImGuiKey_D)) action::Emit(mesh::Duplicate{}, action::Phase::Stage);
-            else if (key(ImGuiKey_H)) action::Emit(mesh::Hide{});
-            else if (key(ImGuiMod_Shift | ImGuiKey_H)) action::Emit(mesh::Hide{true});
-            else if (key(ImGuiMod_Alt | ImGuiKey_H)) action::Emit(mesh::Reveal{});
-            else if (key(ImGuiKey_Y)) action::Emit(mesh::Split{});
-            else if (key(ImGuiKey_P)) action::Emit(mesh::Separate{});
-            else if (key(ImGuiKey_M)) OpenPopup("##MeshMerge");
-            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_T)) action::Emit(mesh::Triangulate{});
-            else if (key(ImGuiMod_Alt | ImGuiKey_J)) action::Emit(mesh::TrisToQuads{});
-            else if (key(ImGuiKey_F)) action::Emit(mesh::Fill{});
-            else if (key(ImGuiKey_V)) action::Emit(mesh::Rip{}, action::Phase::Stage);
-            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_V)) OpenPopup("##MeshVertex");
-            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_E)) OpenPopup("##MeshEdge");
-            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_F)) OpenPopup("##MeshFace");
-            else if (!IsWindowHovered()) {
-            } else if (key(ImGuiKey_I)) BeginMeshDrag(r, viewport, frame, Op::Inset);
-            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_B)) BeginMeshDrag(r, viewport, frame, Op::BevelVertices);
-            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_B)) BeginMeshDrag(r, viewport, frame, Op::BevelEdges);
-            else if (key(ImGuiKey_K)) BeginMeshDrag(r, viewport, frame, Op::Knife);
+            if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_X)) {
+                action::Emit(mesh::Dissolve{element == Element::Face ? DissolveMode::Faces : element == Element::Edge ? DissolveMode::Edges :
+                                                                                                                        DissolveMode::Vertices});
+            } else if (key(ImGuiKey_X) || key(ImGuiKey_Delete) || key(ImGuiKey_Backspace)) {
+                OpenPopup("##MeshDelete");
+            } else if (key(ImGuiKey_E)) {
+                action::Emit(mesh::Extrude{element == Element::Edge ? mesh::ExtrudeMode::Edges : mesh::ExtrudeMode::Region}, action::Phase::Stage);
+            } else if (key(ImGuiMod_Shift | ImGuiKey_D)) {
+                action::Emit(mesh::Duplicate{}, action::Phase::Stage);
+            } else if (key(ImGuiKey_H)) {
+                action::Emit(mesh::Hide{});
+            } else if (key(ImGuiMod_Shift | ImGuiKey_H)) {
+                action::Emit(mesh::Hide{true});
+            } else if (key(ImGuiMod_Alt | ImGuiKey_H)) {
+                action::Emit(mesh::Reveal{});
+            } else if (key(ImGuiKey_Y)) {
+                action::Emit(mesh::Split{});
+            } else if (key(ImGuiKey_P)) {
+                action::Emit(mesh::Separate{});
+            } else if (key(ImGuiKey_M)) {
+                OpenPopup("##MeshMerge");
+            } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_T)) {
+                action::Emit(mesh::Triangulate{});
+            } else if (key(ImGuiMod_Alt | ImGuiKey_J)) {
+                action::Emit(mesh::TrisToQuads{});
+            } else if (key(ImGuiKey_F)) {
+                action::Emit(mesh::Fill{});
+            } else if (key(ImGuiKey_V)) {
+                action::Emit(mesh::Rip{}, action::Phase::Stage);
+            } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_V)) {
+                OpenPopup("##MeshVertex");
+            } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_E)) {
+                OpenPopup("##MeshEdge");
+            } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_F)) {
+                OpenPopup("##MeshFace");
+            } else if (!IsWindowHovered()) {
+            } else if (key(ImGuiKey_I)) {
+                BeginMeshDrag(r, viewport, frame, Op::Inset);
+            } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_B)) {
+                BeginMeshDrag(r, viewport, frame, Op::BevelVertices);
+            } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_B)) {
+                BeginMeshDrag(r, viewport, frame, Op::BevelEdges);
+            } else if (key(ImGuiKey_K)) {
+                BeginMeshDrag(r, viewport, frame, Op::Knife);
+            }
         }
         if (bone_edit) {
             if (key(ImGuiMod_Shift | ImGuiKey_A)) {
@@ -607,11 +632,17 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
                 // In Edit mode, shader applies transform to selected vertices.
                 // In Object mode, shader applies transform to selected instances.
                 action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
-            } else if (key(ImGuiKey_R) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
-            else if (key(ImGuiKey_S) && flags.Scalable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
-            else if (key(ImGuiKey_H)) action::Emit(action::object::ToggleHidden{});
-            else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_P)) action::Emit(action::object::ParentToActive{});
-            else if (key(ImGuiMod_Alt | ImGuiKey_P)) action::Emit(action::object::ClearParent{});
+            } else if (key(ImGuiKey_R) && flags.Transformable) {
+                action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
+            } else if (key(ImGuiKey_S) && flags.Scalable) {
+                action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
+            } else if (key(ImGuiKey_H)) {
+                action::Emit(action::object::ToggleHidden{});
+            } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_P)) {
+                action::Emit(action::object::ParentToActive{});
+            } else if (key(ImGuiMod_Alt | ImGuiKey_P)) {
+                action::Emit(action::object::ClearParent{});
+            }
         }
     }
 
@@ -757,7 +788,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
         }
     }
 
-    auto &settings = r.get<ViewportDisplay>(viewport);
+    const auto &settings = r.get<ViewportDisplay>(viewport);
 
     const auto shading_arrow_w = shading_button_style.ButtonSize.y * 0.55f;
     const float shading_button_w = shading_button_style.ButtonSize.x;
@@ -1134,7 +1165,7 @@ void DrawOverlay(state::Scene &r, state::Entity viewport, FrameState &frame) {
             // Dim the area outside the camera's view.
             auto &dl = *GetWindowDrawList();
             static constexpr auto dim = IM_COL32(0, 0, 0, 100);
-            auto iv = [](vec2 v) { return std::bit_cast<ImVec2>(v); };
+            const auto iv = [](vec2 v) { return std::bit_cast<ImVec2>(v); };
             dl.AddRectFilled(iv(vmin), iv({vmax.x, fmin.y}), dim);
             dl.AddRectFilled(iv({vmin.x, fmax.y}), iv(vmax), dim);
             dl.AddRectFilled(iv({vmin.x, fmin.y}), iv({fmin.x, fmax.y}), dim);

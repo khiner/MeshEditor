@@ -94,8 +94,9 @@ std::vector<FragmentBuild> BuildFragments(state::Scene &r, mtl::ComputeChain &ch
         }
         sources.insert(sources.end(), fresh.begin(), fresh.end());
         chain.Scratch.ReserveAdditional(seed_words + MeshletBuildScratchWords(meshes, sources));
-        for (uint32_t i = 0u; i < fragment_count; ++i)
+        for (uint32_t i = 0u; i < fragment_count; ++i) {
             sources[i].Elements = SeedElementWorkHandles(chain.Scratch, seeds[i].Domain, seeds[i].Partition->Elements, seeds[i].Blocks);
+        }
         BuildGpuMeshlets(r, chain, sources);
         std::vector<FragmentBuild> results(owners.size());
         for (uint32_t o = 0u, first = 0u; o < owners.size(); ++o) {
@@ -118,6 +119,7 @@ std::vector<FragmentBuild> BuildFragments(state::Scene &r, mtl::ComputeChain &ch
         return results;
     } catch (...) {
         std::vector<MeshStore::Record *> released;
+        released.reserve(fragments.size());
         for (auto &fragment : fragments) released.push_back(&fragment);
         meshes.ReleaseRender(released);
         throw;
@@ -145,10 +147,12 @@ LodNodeRefit RepairElementMeshletDeletion(state::Scene &r, mtl::ComputeChain &ch
     for (const auto cluster : clusters) {
         const auto &record = render.Meshlets.Get({address(cluster), 1u})[0];
         if (record.Topology != topology || record.RefinedGroup != InvalidOffset || !record.TriangleCount || record.TriangleCount > 16u ||
-            record.VertexCount != record.TriangleCount * endpoints || !render.Primitives.Contains(owner.PrimitiveData, ElementHandle{record.Primitive}))
+            record.VertexCount != record.TriangleCount * endpoints || !render.Primitives.Contains(owner.PrimitiveData, ElementHandle{record.Primitive})) {
             throw std::invalid_argument("Element deletion touches a foreign meshlet or primitive.");
+        }
     }
     std::vector<uint32_t> addresses;
+    addresses.reserve(clusters.size());
     for (const auto cluster : clusters) addresses.push_back(address(cluster));
     std::ranges::sort(addresses);
     RetireMeshletOwners(r, owner, clusters, elements);
@@ -224,8 +228,9 @@ void RepairElementMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<
         for (const auto element : repairs[i].Elements) {
             const bool live = meshes.IsLiveElement(store_id, lines ? Element::Edge : Element::Vertex, ElementHandle{element});
             const auto cluster = owners.GetOr(element, InvalidOffset);
-            if (cluster != InvalidOffset && (!render.Meshlets.Contains(owner.MeshletData, ElementHandle{cluster}) || records[render.Meshlets.Address(owner.MeshletData, ElementHandle{cluster}).Value()].Topology != topology))
+            if (cluster != InvalidOffset && (!render.Meshlets.Contains(owner.MeshletData, ElementHandle{cluster}) || records[render.Meshlets.Address(owner.MeshletData, ElementHandle{cluster}).Value()].Topology != topology)) {
                 throw std::invalid_argument("Element owner names a foreign meshlet.");
+            }
             const auto address = live ? meshes.HandleAddress(store_id, domain, ElementHandle{element}).Value() : InvalidOffset;
             const bool draws = live && (lines ? a.HalfedgeFaces.Get({halfedge(a.EdgeHalfedges.Get({address, 1u})[0]), 1u})[0] == InvalidOffset : a.VertexCorners.Get({address, 1u})[0].y == 0u);
             if (draws && cluster == InvalidOffset) added.push_back(element);

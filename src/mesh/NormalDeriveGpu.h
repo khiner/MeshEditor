@@ -9,7 +9,7 @@
 struct MeshStore;
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 
 // Captures the base normal pages the work of record `id`'s entry writes.
 // These are its vertex and face normals and the sector normals around its vertices.

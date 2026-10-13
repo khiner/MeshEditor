@@ -203,10 +203,11 @@ std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamp
             all_samples[i] = {std::move(key), std::move(frames)};
         }
         // Normalize audio to [-1, 1]
-        if (max_sample > 0)
+        if (max_sample > 0) {
             for (auto &[_, samples] : all_samples) {
                 for (float &sample : samples) sample /= max_sample;
             }
+        }
         return all_samples;
     } catch (const std::exception &error) {
         return std::unexpected(std::format("Failed to read RealImpact audio file {}: {}", file.string(), error.what()));

@@ -28,8 +28,6 @@
 
 using numeric::Radians;
 
-using std::ranges::to;
-
 namespace action::io {
 namespace {
 // Load a glTF/glb and apply its camera/animation side effects.

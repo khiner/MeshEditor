@@ -64,8 +64,9 @@ Name &EmplaceUniqueName(state::Scene &r, state::Entity e, std::string_view prefi
     const auto &names = r.Context.get<const EntityNameCounts>();
     if (!names.Counts.contains(prefix)) return r.emplace<Name>(e, std::string{prefix});
     const auto it = names.MaxSuffix.find(prefix);
-    for (auto suffix = (it != names.MaxSuffix.end() ? it->second : 0u) + 1u;; ++suffix)
+    for (auto suffix = (it != names.MaxSuffix.end() ? it->second : 0u) + 1u;; ++suffix) {
         if (auto candidate = std::format("{}_{}", prefix, suffix); !names.Counts.contains(candidate)) return r.emplace<Name>(e, std::move(candidate));
+    }
 }
 
 std::string_view NameStem(std::string_view name) {
@@ -86,7 +87,7 @@ std::string GetName(const state::Scene &r, state::Entity e) {
 }
 
 state::Entity FindActiveEntity(const state::Scene &registry) {
-    auto all_active = registry.view<Active>();
+    const auto all_active = registry.view<Active>();
     assert(all_active.size() <= 1);
     return all_active.empty() ? state::Null : *all_active.begin();
 }

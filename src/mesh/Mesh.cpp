@@ -8,16 +8,15 @@
 
 #include "state/Scene.h"
 
-using numeric::dvec3;
-
 using std::ranges::distance;
 
 namespace {
 // Consume the stored tessellation.
 // Polygon-loop order does not define triangles.
 void ForEachFaceTriangle(const Mesh &mesh, auto &&fn) {
-    for (const auto corners : mesh.DerivedTriangles())
+    for (const auto corners : mesh.DerivedTriangles()) {
         fn(*mesh.GetToVertex(Mesh::HH{corners.x}), *mesh.GetToVertex(Mesh::HH{corners.y}), *mesh.GetToVertex(Mesh::HH{corners.z}));
+    }
 }
 } // namespace
 
@@ -97,7 +96,7 @@ vec3 Mesh::CalcFaceCentroid(FH fh) const {
     assert(FaceOrdinal(fh) < C.FaceCount);
     vec3 centroid{0};
     uint32_t count{0};
-    for (auto vh : fv_range(fh)) {
+    for (const auto vh : fv_range(fh)) {
         centroid += GetPosition(vh);
         count++;
     }
@@ -204,11 +203,14 @@ void ValidateGeometrySelection(const MeshStore &meshes, uint32_t id, const Geome
     if (!meshes.TryGet(id)) throw std::invalid_argument("Geometry selection requires a live mesh.");
     for (const auto element : he::Elements) {
         const auto &handles = selection.Get(element);
-        if (!std::ranges::is_sorted(handles) || std::ranges::adjacent_find(handles) != handles.end())
+        if (!std::ranges::is_sorted(handles) || std::ranges::adjacent_find(handles) != handles.end()) {
             throw std::invalid_argument("Geometry selections require sorted unique handles.");
-        for (const auto handle : handles)
-            if (!meshes.IsLiveElement(id, element, ElementHandle{handle}))
+        }
+        for (const auto handle : handles) {
+            if (!meshes.IsLiveElement(id, element, ElementHandle{handle})) {
                 throw std::invalid_argument("Geometry selection handle is not owned by its mesh.");
+            }
+        }
     }
 }
 
@@ -230,8 +232,9 @@ std::vector<uint32_t> ReadMasks(const MeshStore &meshes, uint32_t id, Element el
     const auto read = [&](const auto &arena, ElementSetRef set) {
         arena.ForEachBlock(set, [&](uint32_t b, const auto &block) {
             const auto mask = words.subspan(uint64_t(masks.First + b) * MeshElementBlockWords, MeshElementBlockWords);
-            for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
+            for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) {
                 for (auto bits = block.Live[w] & mask[w]; bits; bits &= bits - 1u) handles.push_back(block.Local * MeshElementBlockSize + w * 32u + uint32_t(std::countr_zero(bits)));
+            }
         });
     };
     if (element == Element::Vertex) read(a.Vertices, record.Vertices);

@@ -8,10 +8,10 @@
 
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 namespace state {
 struct Scene;
-}
+} // namespace state
 template<typename T> struct BufferArena;
 
 // Canonical vertices, faces or edges a closure level reads, as work of at most Count elements.

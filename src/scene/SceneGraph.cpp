@@ -74,8 +74,9 @@ state::Entity ParentOrNull(const state::Scene &r, state::Entity e) {
 void ClearParents(state::Scene &r, std::span<const state::Entity> children) {
     // Each detached child beside its parent, grouped by parent and ordered by child index within a group.
     std::vector<std::pair<state::Entity, state::Entity>> detached;
-    for (const auto child : children)
+    for (const auto child : children) {
         if (const auto *parent = r.try_get<const SceneParent>(child)) detached.emplace_back(parent->Parent, child);
+    }
     if (detached.empty()) return;
     std::ranges::sort(detached, {}, [](const auto &link) { return std::pair{state::Index(link.first), state::Index(link.second)}; });
     detached.erase(std::unique(detached.begin(), detached.end()), detached.end());
@@ -170,8 +171,9 @@ void RecomputeWorldTransforms(state::Scene &r, std::span<const state::Entity> ro
             if (ContainsInIndexOrder(held, e) || FirstChildOf(r, e) == state::Null) continue;
             matrices.push_back(ToMatrix(world));
             const auto matrix = uint32_t(matrices.size() - 1);
-            for (const auto child : Children{&r, e})
+            for (const auto child : Children{&r, e}) {
                 if (!ContainsInIndexOrder(owned, child)) pending.push_back({child, matrix});
+            }
         }
     }
 }

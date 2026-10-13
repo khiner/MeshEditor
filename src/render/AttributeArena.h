@@ -74,11 +74,12 @@ protected:
     void Release(uint32_t &root) {
         if (root == InvalidOffset) return;
         const auto visit = [&](auto &&self, uint32_t id, uint32_t level) -> void {
-            for (const auto child : Nodes.Get({id, 1u})[0].Children)
+            for (const auto child : Nodes.Get({id, 1u})[0].Children) {
                 if (child) {
                     if (level) self(self, child - 1u, level - 1u);
                     else Values.Release({child - 1u, 1u});
                 }
+            }
             Nodes.Release({id, 1u});
         };
         visit(visit, root, Levels - 1u);

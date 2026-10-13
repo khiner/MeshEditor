@@ -63,7 +63,7 @@ void GeneratePositionRemap(std::vector<uint32_t> &remap, const std::vector<std::
     for_each_position([&](uint32_t i) {
         size_t bucket = PositionHash(positions[i]) & mask;
         for (size_t probe = 0; probe <= mask; ++probe) {
-            std::atomic_ref entry{table[bucket]};
+            const std::atomic_ref entry{table[bucket]};
             uint32_t occupant = entry.load(std::memory_order_relaxed);
             if (occupant == ClusterLodInvalid) {
                 if (entry.compare_exchange_strong(occupant, i, std::memory_order_relaxed)) break;
@@ -223,7 +223,7 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
                     for (uint32_t k = 0u; k < 3u; ++k) {
                         const uint32_t corner = triangle * 3u + k, source = vertices[k];
                         weld.CornerVertices[corner] = source;
-                        std::atomic_ref entry{weld.SourceVertices[source - weld.VertexFirst]};
+                        const std::atomic_ref entry{weld.SourceVertices[source - weld.VertexFirst]};
                         uint32_t prior = entry.load(std::memory_order_relaxed);
                         while (corner < prior && !entry.compare_exchange_weak(prior, corner, std::memory_order_relaxed)) {}
                     }
@@ -269,8 +269,9 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
                 }
             });
             for_each_triangle_block([&](uint32_t, uint32_t first, uint32_t last) {
-                for (uint32_t corner = first * 3u; corner < last * 3u; ++corner)
+                for (uint32_t corner = first * 3u; corner < last * 3u; ++corner) {
                     weld.CornerVertices[corner] = weld.SourceVertices[weld.CornerVertices[corner] - weld.VertexFirst];
+                }
             });
         } else {
             weld.Representative.reserve(corner_count);
@@ -315,15 +316,16 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
 
     const uint32_t weld_count = weld.VertexCount();
     std::array<bool, MaxWeldUvSets> active_uvs{};
-    for (uint32_t uv = 0; uv < MaxWeldUvSets; ++uv)
+    for (uint32_t uv = 0; uv < MaxWeldUvSets; ++uv) {
         active_uvs[uv] = (primitive.Attributes & (MeshAttributeBit_TexCoord0 << uv)) && !mesh.Weld.CornerUvs[uv].empty();
+    }
     const bool active_tangents = (primitive.Attributes & MeshAttributeBit_Tangent) && !mesh.Weld.CornerTangents.empty();
     weld.AttributeCount = 3u + 2u * uint32_t(std::ranges::count(active_uvs, true)) +
         (active_tangents ? 4u : 0u) + (mesh.Weld.CornerColors.empty() ? 0u : 4u);
     weld.Attributes.resize(size_t(weld_count) * weld.AttributeCount);
     for (uint32_t v = 0; v < weld_count; ++v) {
         const uint32_t handle = key.Handle(weld.Representative[v]);
-        float *attribute = &weld.Attributes[size_t(v) * weld.AttributeCount];
+        float *attribute = &weld.Attributes[size_t(v) * weld.AttributeCount]; // NOLINT(misc-const-correctness)
         // Flat-face curvature uses the shared vertex normal at geometric error scale.
         const auto normal = key.FlatFaceTriangle(weld.Representative[v] / 3u) ?
             mesh.Normals.VertexNormals[SourceVertexIndex(mesh, mesh.CornerVertices[first_index + weld.Representative[v]])] / ShadingAttributeScale :
@@ -462,16 +464,18 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, const std::
         else run(0u);
     };
     const auto for_each_vertex = [&](size_t group, auto &&function) {
-        for (const auto member : groups[group])
+        for (const auto member : groups[group]) {
             for (const auto vertex : clusters[member].Vertices) function(vertex);
+        }
     };
     // Only this level's vertices participate. Other levels may reference most
     // of the repair pool, so resetting that whole pool here repeats unrelated work.
     const auto lock_of = [&](uint32_t vertex) { return std::atomic_ref<uint8_t>{weld.Locks[vertex]}; };
     const auto owner_of = [&](uint32_t vertex) { return std::atomic_ref<uint32_t>{weld.Owners[vertex]}; };
     uint64_t level_vertices = 0u;
-    for (const auto &group : groups)
+    for (const auto &group : groups) {
         for (const auto member : group) level_vertices += clusters[member].Vertices.size();
+    }
     profile::RecordCounter("LodBoundaryVertices", level_vertices);
     profile::RecordCounter("LodBoundaryPoolVertices", weld.VertexCount());
     for (size_t group = 0u; group < groups.size(); ++group) {
@@ -634,8 +638,9 @@ void EmitCluster(auto &&sink, const PrimitiveWeld &weld, const WorkCluster &clus
     });
     assert(cluster.Corners.size() == vertex_count);
     sink.VertexCorners.insert(sink.VertexCorners.end(), cluster.Corners.begin(), cluster.Corners.end());
-    for (uint32_t c = 0u; c < cluster.LocalTriangles.size(); ++c)
+    for (uint32_t c = 0u; c < cluster.LocalTriangles.size(); ++c) {
         sink.LocalTriangles.push_back(cluster.LocalTriangles[c] | (cluster.PhysicalBoundaries[c] ? uint8_t(MeshletGeometryEncoding::PhysicalBoundaryBit) : 0u));
+    }
 }
 
 // Preserve physical-boundary provenance in the CPU reference builder too.
@@ -653,11 +658,12 @@ void ClassifyOutputBoundaries(const PrimitiveWeld &weld, const std::vector<uint6
     size_t output_count = 0u;
     for (const auto &cluster : output) output_count += cluster.LocalTriangles.size();
     edges.Reset(output_count);
-    for (const auto &cluster : output)
+    for (const auto &cluster : output) {
         for (uint32_t c = 0u; c < cluster.LocalTriangles.size(); ++c) {
             const auto [a, d] = edge(cluster, c);
             edges.AddOutput(key(a, d));
         }
+    }
     for (auto &cluster : output) {
         cluster.PhysicalBoundaries.resize(cluster.LocalTriangles.size());
         for (uint32_t c = 0u; c < cluster.LocalTriangles.size(); ++c) {
@@ -703,7 +709,8 @@ void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, const std::vecto
     // Reuse merged member bounds to preserve monotonic containment across levels.
     scratch.Sphere = MergeBounds(member_bounds);
 
-    const size_t target_size = size_t(float(merged.size() / 3u) * SimplifyRatio) * 3u;
+    const auto triangle_count = merged.size() / 3u;
+    const size_t target_size = size_t(float(triangle_count) * SimplifyRatio) * 3u;
     float error = 0.f;
     // Preserve single-triangle groups to keep every coarser level complete.
     const auto simplified = target_size == 0 ? merged : SimplifyGroup(weld, merged, target_size, &error);
@@ -1018,7 +1025,7 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
                     const uint32_t last = std::min((block + 1u) * ClustersPerBlock, range.ClusterCount);
                     for (uint32_t i = block * ClustersPerBlock; i < last; ++i) initialize_cluster(i);
                 } catch (...) {
-                    std::lock_guard lock{failure_mutex};
+                    const std::lock_guard lock{failure_mutex};
                     if (!failure) failure = std::current_exception();
                 }
             });

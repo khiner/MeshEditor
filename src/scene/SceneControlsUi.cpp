@@ -265,7 +265,7 @@ void MetaTable(const char *id, std::initializer_list<const char *> cols, size_t 
 } // namespace
 
 static void RenderEntityControls(state::Scene &r, state::Entity viewport, state::Entity active_entity) {
-    auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Context.get<MeshStore>();
     if (active_entity == state::Null) {
         TextUnformatted("Active object: None");
         return;
@@ -409,8 +409,9 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                 const auto &c = constraints->Stack[i];
                 const auto targets = [&] {
                     std::vector<state::Entity> objects{state::Null};
-                    for (const auto te : r.view<const ObjectKind, const Name>())
+                    for (const auto te : r.view<const ObjectKind, const Name>()) {
                         if (!r.any_of<BoneIndex, BoneSubPartOf, BoneJoint, SubElementOf>(te)) objects.push_back(te);
+                    }
                     return objects;
                 };
                 const auto target_name = [&](state::Entity e) {
@@ -420,14 +421,17 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                 };
                 ui::ChoiceCombo("Target", c.TargetEntity, targets, target_name, [&](state::Entity te) { action::Emit(action::bone::SetConstraintTarget{i, te}); });
                 if (std::holds_alternative<ChildOfData>(c.Data)) {
-                    if (Button("Set Inverse") && c.TargetEntity != state::Null && r.valid(c.TargetEntity))
+                    if (Button("Set Inverse") && c.TargetEntity != state::Null && r.valid(c.TargetEntity)) {
                         action::Emit(action::bone::BakeConstraintChildOfInverse{i});
+                    }
                     SameLine();
-                    if (Button("Clear Inverse"))
+                    if (Button("Clear Inverse")) {
                         action::Emit(action::bone::ClearConstraintChildOfInverse{i});
+                    }
                 }
-                if (float influence = c.Influence; SliderFloat("Influence", &influence, 0.f, 1.f))
+                if (float influence = c.Influence; SliderFloat("Influence", &influence, 0.f, 1.f)) {
                     action::Emit(action::bone::SetConstraintInfluence{i, influence});
+                }
             }
         );
         if (deleted) action::Emit(action::bone::DeleteConstraint{*deleted});
@@ -438,7 +442,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
     }
     if (is_mesh_instance) {
         const auto active_mesh_entity = active_instance->Entity;
-        if (auto *prim_shape = r.try_get<PrimitiveShape>(active_mesh_entity)) {
+        if (const auto *prim_shape = r.try_get<PrimitiveShape>(active_mesh_entity)) {
             const bool frozen = selection::HasScaleLockedInstance(r, active_mesh_entity);
             if (frozen) BeginDisabled();
             if (const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
@@ -775,7 +779,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                     TextUnformatted("Edit mode:");
                     auto type_interaction_mode = int(edit_mode);
                     for (const auto element : Elements) {
-                        auto name = Capitalize(label(element));
+                        const auto name = Capitalize(label(element));
                         SameLine();
                         if (RadioButton(name.c_str(), &type_interaction_mode, int(element))) action::Emit(action::view::SetEditMode{.Mode = element});
                     }
@@ -848,7 +852,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 SameLine();
                 if (Button("Light")) action::Emit(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
             }
-            if (auto *mv = r.try_get<MaterialVariants>(viewport); mv && !mv->Names.empty() && CollapsingHeader("Material variants")) {
+            if (const auto *mv = r.try_get<MaterialVariants>(viewport); mv && !mv->Names.empty() && CollapsingHeader("Material variants")) {
                 std::vector<std::optional<uint32_t>> variants{std::nullopt};
                 for (uint32_t i = 0; i < mv->Names.size(); ++i) variants.emplace_back(i);
                 ui::ChoiceCombo(
@@ -986,10 +990,12 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 a.Color<&AC::Y>("Axis Y");
                 a.Color<&AC::Z>("Axis Z");
                 // UI edits full width and storage is half-width.
-                if (float full_width = theme.EdgeWidth * 2.f; SliderFloat("Edge width", &full_width, 0.5f, 4.f))
+                if (float full_width = theme.EdgeWidth * 2.f; SliderFloat("Edge width", &full_width, 0.5f, 4.f)) {
                     f.Set<&ViewportTheme::EdgeWidth>(full_width / 2.f);
-                if (uint32_t v = theme.SilhouetteEdgeWidth; SliderUInt("Silhouette edge width", &v, 1, 4))
+                }
+                if (uint32_t v = theme.SilhouetteEdgeWidth; SliderUInt("Silhouette edge width", &v, 1, 4)) {
                     f.Set<&ViewportTheme::SilhouetteEdgeWidth>(v);
+                }
             }
             EndTabItem();
         }
@@ -1169,7 +1175,7 @@ static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
     };
 
     const int total_selected = r.view<const Selected>().size() + r.view<const BoneSelection>().size();
-    auto *ms_begin = BeginMultiSelect(ImGuiMultiSelectFlags_None, total_selected, -1);
+    const auto *ms_begin = BeginMultiSelect(ImGuiMultiSelectFlags_None, total_selected, -1);
     std::vector<ImGuiSelectionRequest> begin_requests;
     begin_requests.reserve(ms_begin->Requests.Size);
     for (const auto &request : ms_begin->Requests) begin_requests.emplace_back(request);
@@ -1223,7 +1229,7 @@ static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
     // BeginMultiSelect and EndMultiSelect can produce the same selection update.
     action::selection::ApplyTreeSelection tree_selection;
     resolve_into(tree_selection, begin_requests, begin_nav_item);
-    auto *ms_end = EndMultiSelect();
+    const auto *ms_end = EndMultiSelect();
     resolve_into(tree_selection, {ms_end->Requests.Data, size_t(ms_end->Requests.Size)}, ms_end->NavIdItem);
     if (!tree_selection.Entities.empty() ||
         tree_selection.Clear != Clear::None || tree_selection.NavToActive != state::Null) {
@@ -1231,8 +1237,9 @@ static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
     }
     if (!toggled.empty()) {
         auto &edited = r.edit<OutlinerRows>(viewport);
-        for (const auto e : toggled)
+        for (const auto e : toggled) {
             if (!edited.Open.erase(e)) edited.Open.insert(e);
+        }
         BuildOutlinerRows(r, edited);
     }
 

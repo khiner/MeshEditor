@@ -63,8 +63,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 }
             },
             [&](const SetSurfacePreset &a) {
-                for (const auto &preset : surfaces::acoustic::All)
+                for (const auto &preset : surfaces::acoustic::All) {
                     if (a.Name == preset.Name) Patch<ContactSurface>(r, FindActiveEntity(r), [&](auto &s) { s = WithPreset(std::move(s), preset); });
+                }
             },
             [&]<typename C, typename F, size_t N>(const PatchFields<C, F, N> &a) {
                 Patch<C>(r, FindActiveEntity(r), [&](C &c) {

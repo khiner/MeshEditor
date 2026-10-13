@@ -97,8 +97,8 @@ std::vector<PhysicalPageRef> PhysicalPagePool::Allocate(uint32_t count, bool zer
         // All arenas share these slabs.
         // Reserve enough physical pages to amortize small arena growth and history captures across one heap.
         // Sizing a slab to each request degenerates into one heap per 64 KiB.
-        auto slab = Available ? Available->shared_from_this() :
-                                std::make_shared<PhysicalPageSlab>(shared_from_this());
+        const auto slab = Available ? Available->shared_from_this() :
+                                      std::make_shared<PhysicalPageSlab>(shared_from_this());
         if (!Available) AddAvailable(*slab);
         if (slab->CacheIndex != UINT32_MAX) {
             const auto at = slab->CacheIndex;

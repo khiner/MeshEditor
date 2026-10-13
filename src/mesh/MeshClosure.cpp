@@ -166,8 +166,9 @@ void MeshClosure::Finish(const mtl::ComputeChain &chain) {
         Counts[d] = ElementWorkCount(chain.Scratch, Elements[d]);
         if (Counts[d] > Bounds[d]) throw std::logic_error("Mesh closure exceeds its host bound.");
     }
-    for (uint32_t i = 0u; i < 2u; ++i)
+    for (uint32_t i = 0u; i < 2u; ++i) {
         if (IncidenceWords[i] != InvalidOffset) Incidences[i] = chain.Scratch.Get({IncidenceWords[i], 1u})[0];
+    }
 }
 
 ClosureSeed MeshClosure::Seed(Element element) const {

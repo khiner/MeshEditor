@@ -17,6 +17,7 @@ constexpr uint32_t MaxLeafRecords{2u * ClusterLodSpanLeafRecords}, MaxNodeChildr
 std::vector<Range> EvenRuns(uint32_t count, uint32_t width) {
     const uint64_t run_count = (count + width - 1u) / width;
     std::vector<Range> runs;
+    runs.reserve(run_count);
     for (uint64_t i = 0u; i < run_count; ++i) runs.push_back({uint32_t(count * i / run_count), uint32_t(count * (i + 1u) / run_count - count * i / run_count)});
     return runs;
 }
@@ -64,8 +65,9 @@ struct OwnerNodes {
         const auto entries = members.Entries(Owner.MemberData);
         const auto values = members.Buffer.GetSpan<uint32_t>();
         uint32_t headroom = 0u;
-        for (ElementHandle h{leaf.Members + leaf.MeshletCount}; headroom < limit; ++h.Value, ++headroom)
+        for (ElementHandle h{leaf.Members + leaf.MeshletCount}; headroom < limit; ++h.Value, ++headroom) {
             if (!members.Contains(entries, h) || values[Resolve<RenderBlockSize>(entries, h).Value()] != InvalidOffset) break;
+        }
         return headroom;
     }
     // Releases the leaf's run and its headroom.
@@ -99,10 +101,11 @@ struct SpanPlacement {
             const auto &[value, former] = entries[i];
             buffers.LodNodes.GetMutable({(run.Address + i).Value(), 1u})[0] = value;
             buffers.LodParents.GetMutable({(run.Address + i).Value(), 1u})[0] = parent;
-            if (value.ChildCount)
+            if (value.ChildCount) {
                 for (uint32_t c = 0u; c < value.ChildCount; ++c) Nodes.SetParent(value.ChildOffset + c, id);
-            else
+            } else {
                 for (const auto cluster : Nodes.Members(value)) Leaves.emplace_back(cluster, id);
+            }
             Placed.push_back(id);
             if (former != InvalidOffset) Formers.push_back(former);
         }
@@ -147,6 +150,7 @@ struct SpanPlacement {
         auto &buffers = Nodes.Buffers;
         const auto meshlets = buffers.Meshlets.Entries(Nodes.Owner.MeshletData);
         std::vector<uint32_t> addresses;
+        addresses.reserve(Leaves.size());
         for (const auto &[cluster, leaf] : Leaves) addresses.push_back(Resolve<RenderBlockSize>(meshlets, ElementHandle{cluster}).Value());
         buffers.MeshletLodLeaves.Buffer.CaptureWriteElements(addresses, sizeof(uint32_t));
         auto *leaves = reinterpret_cast<uint32_t *>(buffers.MeshletLodLeaves.Buffer.Contents().data());
@@ -198,8 +202,9 @@ void RestructureLeaves(OwnerNodes &nodes, const std::map<uint32_t, std::vector<u
                     continue;
                 }
                 entries.push_back({.Value = nodes.Get(child), .Former = child});
-                if (found != children.end())
+                if (found != children.end()) {
                     for (const auto &sibling : *found->second) entries.push_back({.Value = sibling});
+                }
             }
             const auto parent = nodes.Parent(node);
             if (entries.empty() && parent != InvalidOffset) next[parent][node];
@@ -277,8 +282,9 @@ LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshStore::
         visit(cluster, side, edited, record.Primitive, record.RefinedGroup == InvalidOffset);
     };
     for (const auto cluster : removed) visit_recorded(cluster, 1u, true);
-    for (const auto &run : added)
+    for (const auto &run : added) {
         for (uint32_t i = 0u; i < run.Count; ++i) visit(run.First + i, 0u, true, run.Primitive, run.Finest);
+    }
     for (const auto cluster : touched) visit_recorded(cluster, 0u, false);
 
     std::map<uint32_t, std::vector<uint32_t>> overfull;
@@ -313,7 +319,7 @@ LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshStore::
             for (uint32_t i = first; i < end;) {
                 const auto handle = value.Members + i;
                 const auto run = std::min(end - i, RenderBlockSize - handle % RenderBlockSize);
-                auto values = buffers.LodMembers.GetMutable({Resolve<RenderBlockSize>(entries, ElementHandle{handle}).Value(), run});
+                const auto values = buffers.LodMembers.GetMutable({Resolve<RenderBlockSize>(entries, ElementHandle{handle}).Value(), run});
                 for (uint32_t j = 0u; j < run; ++j) values[j] = i + j < count ? tail[i + j - first] : InvalidOffset;
                 i += run;
             }
@@ -349,9 +355,11 @@ LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshStore::
         for (const auto id : level) {
             auto node = nodes.Get(id);
             uint64_t count = 0u;
-            if (node.ChildCount)
+            if (node.ChildCount) {
                 for (uint32_t c = 0u; c < node.ChildCount; ++c) count += nodes.Get(node.ChildOffset + c).MeshletCount;
-            else count = node.MeshletCount;
+            } else {
+                count = node.MeshletCount;
+            }
             if (count > UINT32_MAX) throw std::length_error("LOD node membership exceeds its count.");
             node.MeshletCount = uint32_t(count);
             // A pinned finest node keeps every finest member at an infinite error, and an empty node encloses nothing.
@@ -392,12 +400,13 @@ LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshStore::
 
 void RecordLodNodeRefits(state::Scene &r, mtl::ComputeChain &chain, std::span<const LodNodeRefit> refits) {
     uint32_t deepest = 0u;
-    for (const auto &refit : refits)
+    for (const auto &refit : refits) {
         for (const auto &[depth, batch] : refit.Depths) deepest = std::max(deepest, depth);
+    }
     const auto &pipeline = GetMeshPipelines(r)[MeshPass::LodNodeRefit];
     for (uint32_t depth = deepest + 1u; depth--;) {
         chain.Concurrent([&] {
-            for (const auto &refit : refits)
+            for (const auto &refit : refits) {
                 for (const auto &[at, batch] : refit.Depths) {
                     if (at != depth) continue;
                     auto pc = refit.Pc;
@@ -405,6 +414,7 @@ void RecordLodNodeRefits(state::Scene &r, mtl::ComputeChain &chain, std::span<co
                     pc.Count = batch.Count;
                     chain.Groups(pipeline, pc, pc.Count, 128u);
                 }
+            }
         });
     }
 }

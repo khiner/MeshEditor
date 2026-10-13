@@ -14,8 +14,9 @@ void PublishMeshletOwners(state::Scene &r, mtl::ComputeChain &chain, MeshStore::
     auto &layer = owner.ElementMeshlets[topology];
     const auto bound = meshes.WithRenderDomain(owner, topology, [&](const auto &arena, ElementSetRef set) {
         const auto entries = arena.Entries(set);
-        for (const auto local : blocks)
+        for (const auto local : blocks) {
             if (local >= entries.size() || entries[local] == InvalidOffset) throw std::out_of_range("Meshlet owner block is outside its element domain.");
+        }
         return uint32_t(entries.size());
     });
     // The record's first owners start every element without one, and a block gains its first owner unless an entry there already names a cluster.
@@ -90,8 +91,9 @@ void RetireMeshletOwners(state::Scene &r, MeshStore::Record &owner, std::span<co
             const auto values = owners.Edit(range, {block * MeshElementBlockSize, MeshElementBlockSize});
             const auto owned = [&] { return std::ranges::any_of(values, [](uint32_t value) { return value != InvalidOffset; }); };
             const bool held = owned();
-            for (; i < end; ++i)
+            for (; i < end; ++i) {
                 if (auto &value = values[handles[i] % MeshElementBlockSize]; std::ranges::binary_search(sorted, value)) value = InvalidOffset;
+            }
             if (!held || owned()) continue;
             if (!blocks) throw std::logic_error("Meshlet owner block count underflow.");
             --blocks;

@@ -17,8 +17,9 @@ EntityStore::EntityStore(state::Scene &r, store::History &history, const snapsho
     history.Track(r.AllocationState().Free.P, "entity.free", 0);
     // Track pools in name order so the persisted track layout is independent of schema slot numbers.
     std::vector<state::TypeId> tracked;
-    for (state::TypeId type = 0; type < components.size(); ++type)
+    for (state::TypeId type = 0; type < components.size(); ++type) {
         if (components[type].Emplace && components[type].History) tracked.push_back(type);
+    }
     std::ranges::sort(tracked, {}, [&](state::TypeId type) { return components[type].Name; });
     for (const auto type : tracked) {
         auto pool = std::make_unique<ComponentPool>(*this, type, components[type]);
@@ -66,8 +67,9 @@ void EntityStore::FinishRestore(std::span<const state::Entity> removed) {
         if (after != state::Null) R.Living.insert(after);
     });
     R.RestoringEvents = true;
-    for (const auto &[type, e, event] : Changes)
+    for (const auto &[type, e, event] : Changes) {
         if (event != state::Event::Destroy) state::Notify(R, type, event, e);
+    }
     R.RestoringEvents = false;
     R.Restoring = false;
 }

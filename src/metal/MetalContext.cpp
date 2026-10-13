@@ -132,8 +132,9 @@ void Context::CollectCompletedWork() const {
     const AutoreleaseScope pool;
     // A dead alias cannot read its old physical pages. Recycle those pages as
     // soon as readers finish, independently of the virtual cleanup backlog.
-    while (!PageRetirements.empty() && PageRetirements.front()->Readers->status() == MTL::CommandBufferStatusCompleted)
+    while (!PageRetirements.empty() && PageRetirements.front()->Readers->status() == MTL::CommandBufferStatusCompleted) {
         PageRetirements.pop_front();
+    }
     const auto completed = MappingEvent->signaledValue();
     // Native resource teardown must not overlap mapping work.
     // Reap as a batch only at an idle point on the mapping timeline.
@@ -160,10 +161,12 @@ void Context::PublishRetirements() const {
     for (auto &retirement : MappingRetirements) {
         if (retirement->Serial) continue;
         if (retirement->Readers->status() != MTL::CommandBufferStatusCompleted) break;
-        for (const auto &range : retirement->Ranges)
+        for (const auto &range : retirement->Ranges) {
             retirement->Unmaps.push_back({MTL::SparseTextureMappingModeUnmap, NS::Range{range.First, range.Count}, 0u});
-        for (size_t i = 0u; i < retirement->Ranges.size(); ++i)
+        }
+        for (size_t i = 0u; i < retirement->Ranges.size(); ++i) {
             MappingQueue->updateBufferMappings(retirement->Ranges[i].Destination.get(), nullptr, &retirement->Unmaps[i], 1u);
+        }
         if (!retirement->Unmaps.empty()) MappingQueue->signalEvent(RetirementEvent.get(), ++RetirementSerial);
         retirement->Serial = RetirementSerial;
     }
@@ -174,12 +177,12 @@ void Context::CommitResidency() const {
     CollectCompletedWork();
     if (Residency && std::exchange(ResidencyDirty, false)) Residency->commit();
     if (!PendingMappings.empty()) {
-        auto submission = std::make_shared<MappingSubmission>();
+        const auto submission = std::make_shared<MappingSubmission>();
         // Collect each buffer's consecutive heap runs into one native update with multiple mapping operations.
         auto &commands = submission->Commands;
         std::unordered_map<MTL::Buffer *, size_t> last_batch;
         for (const auto &mapping : PendingMappings) {
-            const auto destination = mapping.Destination.get();
+            auto *const destination = mapping.Destination.get();
             auto entry = last_batch.find(destination);
             if (entry == last_batch.end() || commands[entry->second].Heap != mapping.Heap.get()) {
                 last_batch[destination] = commands.size();
@@ -215,8 +218,9 @@ void Context::CommitResidency() const {
         before->encodeSignalEvent(ExecutionEvent.get(), ++ExecutionSerial);
         Commit(before);
         MappingQueue->wait(ExecutionEvent.get(), ExecutionSerial);
-        for (const auto &operation : submission->Commands)
+        for (const auto &operation : submission->Commands) {
             MappingQueue->updateBufferMappings(operation.Destination, operation.Heap, operation.Updates.data(), operation.Updates.size());
+        }
         MappingQueue->signalEvent(MappingEvent.get(), MappingSerial);
         auto *barrier = Queue->commandBuffer();
         uint64_t mapped = 0u;
@@ -232,9 +236,11 @@ void Context::CommitResidency() const {
         auto pages = std::make_unique<PageRetirement>();
         pages->Pages = std::move(PendingPageRetirements);
         std::unordered_set<MTL::Heap *> heaps;
-        for (const auto &batch : pages->Pages)
-            for (const auto &page : batch)
+        for (const auto &batch : pages->Pages) {
+            for (const auto &page : batch) {
                 if (heaps.insert(page->Heap()).second) retirement->Heaps.push_back(NS::RetainPtr(page->Heap()));
+            }
+        }
         retirement->Readers = NS::RetainPtr(Queue->commandBuffer());
         retirement->Readers->encodeSignalEvent(ExecutionEvent.get(), ++ExecutionSerial);
         Commit(retirement->Readers.get());
@@ -256,7 +262,7 @@ bool Context::DrainMappings() const {
         if (fence->status() == MTL::CommandBufferStatusError) return false;
     }
     while (!PageRetirements.empty()) {
-        auto &retirement = *PageRetirements.front();
+        const auto &retirement = *PageRetirements.front();
         retirement.Readers->waitUntilCompleted();
         if (retirement.Readers->status() == MTL::CommandBufferStatusError) return false;
         CollectCompletedWork();

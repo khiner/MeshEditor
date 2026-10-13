@@ -47,8 +47,6 @@
 #include <cmath>
 #include <memory>
 
-using state::Change;
-
 namespace {
 // One mesh's change to its selection in the transaction's source domain.
 struct SelectionRequest {
@@ -91,7 +89,7 @@ void SubmitSelectionPasses(state::Scene &r, auto &&record) {
     const auto &ctx = r.Context.get<const mtl::Context>();
     auto *command_buffer = ctx.Queue->commandBuffer();
     { // End the final pass before submission.
-        struct RecordingScope {
+        const struct RecordingScope {
             RecordingScope() { profile::BeginRecording(); }
             ~RecordingScope() { profile::EndRecording(); }
         } recording;
@@ -251,11 +249,12 @@ void RenderElementSelectionPass(
             encoder->setFragmentBytes(&element_pc, sizeof(element_pc), BufferIndex_PushConstants);
             if (element == Element::Edge) draw_edges();
             else if (element == Element::Face) DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection), 160u);
-            else
+            else {
                 for (const auto &range : ranges) {
                     const auto primary = primaries.find(range.MeshEntity);
                     if (primary != primaries.end()) DrawVertexBlocks(encoder, r, range.MeshEntity, r.get<const RenderInstance>(primary->second).BufferIndex);
                 }
+            }
             if (degenerate_point_pass) {
                 const auto &point_pipeline = element == Element::Face ?
                     selection.MeshletFaceXRayPointsBitsetBox :
@@ -289,11 +288,13 @@ std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(
     ApplySelection(r, requests, element, picked);
     if (!picked) return {};
     const auto &meshes = r.Context.get<const MeshStore>();
-    for (const auto &range : ranges)
+    for (const auto &range : ranges) {
         if (const auto handle = meshes.LiveHandleAt(*DrawnStoreId(r, range.MeshEntity), element, *picked)) return std::pair{range.MeshEntity, handle->Value};
+    }
     return {};
 }
 
+namespace {
 // The pixels a query covers, or empty when the box or radius picks nothing.
 std::optional<PixelRect> ObjectQueryRect(const ObjectSelectQuery &query, mtl::Extent2D target) {
     if (query.BoxResultSlot != InvalidSlot) return BoxRect(query.Box, target);
@@ -306,7 +307,7 @@ void RecordVisibilityObjectSelection(
 ) {
     const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
-    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &buffers = r.Context.get<GpuBuffers>();
 
     const auto rect = ObjectQueryRect(query, r.Context.get<const RenderTargets>().Resources->VisibilityImage.Extent);
     if (!rect) return;
@@ -335,7 +336,9 @@ void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::option
         if (raster_all) {
             // Click cycling and X-ray boxes need every covered surface, including occluded objects.
             RecordMeshletCull(chain, r.Context.get<const mtl::BindlessSet>(), pipelines, buffers, {.Mode = MeshletRouteMode::Selection});
-        } else RecordVisibilityObjectSelection(r, chain, *object);
+        } else {
+            RecordVisibilityObjectSelection(r, chain, *object);
+        }
         RecordOverlayJobCull(chain, r.Context.get<const mtl::BindlessSet>(), pipelines, buffers, true);
     }
     const bool sound = sound_instance != state::Null;
@@ -381,6 +384,7 @@ void RenderSelectionPickPass(state::Scene &r, mtl::PassChain &chain, std::option
         }
     });
 }
+} // namespace
 
 void RunBoxSelectElements(state::Scene &r, state::Entity viewport, std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px, bool is_additive) {
     if (ranges.empty()) return;
@@ -393,7 +397,7 @@ void RunBoxSelectElements(state::Scene &r, state::Entity viewport, std::span<con
     // A query abandoned by a rejected transaction still holds its words.
     const auto &query = r.Context.get<const MeshStore>().Arenas().Query;
     if (const auto count = query.WordCount()) {
-        auto masks = query.Masks.GetMutableSpan<uint32_t>();
+        const auto masks = query.Masks.GetMutableSpan<uint32_t>();
         for (const auto word : query.Words.GetSpan<uint32_t>({0, count})) masks[word] = 0u;
         query.Count.GetMutableSpan<uint32_t>()[0] = 0u;
     }
@@ -523,7 +527,7 @@ std::vector<state::Entity> RunBoxSelect(state::Scene &r, state::Entity viewport,
     if (box_min.x > box_max.x || box_min.y > box_max.y) return {};
     const uint32_t max_object_id = PrepareObjectQuery(r);
     if (max_object_id == 0) return {};
-    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &buffers = r.Context.get<GpuBuffers>();
     const profile::CpuScope scope{"RunBoxSelect"};
     const auto &sel_slots = r.Context.get<const SelectionSlots>();
     std::ranges::fill(buffers.ObjectBoxBitset.GetMutableSpan<uint32_t>({0, (max_object_id + 31) / 32}), 0u);
@@ -560,7 +564,7 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
     if (query) {
         const auto &pending = arenas.Query;
         const auto count = pending.WordCount();
-        auto masks = pending.Masks.GetMutableSpan<uint32_t>();
+        const auto masks = pending.Masks.GetMutableSpan<uint32_t>();
         for (const auto word : pending.Words.GetSpan<uint32_t>({0, count})) {
             if (masks[word]) query_words.emplace_back(word, masks[word]);
             masks[word] = 0u;
@@ -593,10 +597,12 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
             for (uint32_t d = 0u; d < 3u; ++d) {
                 // Block order does not matter here, so the visit takes the index's order.
                 const auto view = meshes.GetSelectedElements(id, SelectionElements[d]);
-                if (view.Count()) view.Tree.Visit(view.Kind, false, [&](uint32_t block) {
-                    selected[d].push_back(block);
-                    return true;
-                });
+                if (view.Count()) {
+                    view.Tree.Visit(view.Kind, false, [&](uint32_t block) {
+                        selected[d].push_back(block);
+                        return true;
+                    });
+                }
             }
         }
         if (operation == EditSelectionOperation::CaptureBaseline) {
@@ -613,17 +619,21 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
         const auto add = [&](ElementAddress address) { additions.emplace_back(address.Value() / 32u, 1u << (address.Value() % 32u)); };
         WithDomain(meshes.Arenas(), SelectionDomains[source], [&](const auto &arena) {
             const auto entries = arena.Entries(owners[source]);
-            for (const auto handle : request.List)
+            for (const auto handle : request.List) {
                 if (const ElementHandle element{handle}; arena.Contains(entries, element)) add(Resolve<MeshElementBlockSize>(entries, element));
+            }
         });
         if (operation == EditSelectionOperation::PickReplace && picked_handle) add(*picked);
         if (operation == EditSelectionOperation::RestoreBaseline) {
-            for (const auto &[block, words] : meshes.GetDerived(id).SelectionBaseline)
-                for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
+            for (const auto &[block, words] : meshes.GetDerived(id).SelectionBaseline) {
+                for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) {
                     if (words[w]) additions.emplace_back(block * MeshElementBlockWords + w, words[w]);
+                }
+            }
         }
-        for (const auto &[word, value] : query_words)
+        for (const auto &[word, value] : query_words) {
             if (owners[source] && memberships[source][word / MeshElementBlockWords].Owner == owners[source].Index) additions.emplace_back(word, value);
+        }
         const bool toggle = operation == EditSelectionOperation::PickToggle && picked_handle;
         if (toggle) additions.emplace_back(picked->Value() / 32u, 0u);
         std::ranges::sort(additions);
@@ -658,9 +668,11 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
             });
         }
         if (rederive && operation != EditSelectionOperation::Fill) {
-            for (const auto block : selected[source])
-                for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
+            for (const auto block : selected[source]) {
+                for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) {
                     if (const auto word = bits[block * MeshElementBlockWords + w]) update.Seeds.push_back({source, block * MeshElementBlockWords + w, word});
+                }
+            }
         }
         auto &written = meshes.WriteSelectionSummary(id);
         written.Mode = element;
@@ -690,8 +702,9 @@ void ApplyEditSelectionLists(
 ) {
     std::vector<SelectionRequest> requests;
     requests.reserve(lists.size());
-    for (const auto &[mesh_entity, list] : lists)
+    for (const auto &[mesh_entity, list] : lists) {
         if (HasMesh(r, mesh_entity)) requests.push_back({mesh_entity, EditSelectionOperation::FillList, list});
+    }
     ApplySelection(r, requests, element);
 }
 

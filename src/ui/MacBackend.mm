@@ -17,8 +17,9 @@ void ReleaseInputs() {
 } // namespace
 
 MacBackend::MacBackend(MacPlatform::Window &window) : Window(window) {
-    if (!(Initialized = ImGui_ImplOSX_Init((__bridge NSView *)Window.NativeView())))
+    if (!(Initialized = ImGui_ImplOSX_Init((__bridge NSView *)Window.NativeView()))) {
         throw std::runtime_error("Could not initialize ImGui's macOS backend.");
+    }
     auto &io = ImGui::GetIO();
     io.BackendFlags |= ImGuiBackendFlags_HasSetMousePos;
     io.ConfigDebugIgnoreFocusLoss = true; // Release inputs in NewFrame on deactivation instead.

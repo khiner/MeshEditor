@@ -68,7 +68,7 @@ void InitDefaultMaterial(state::Scene &r) {
 void DeinitTextureStores(state::Scene &r) {
     auto &slots = r.Context.get<mtl::BindlessSet>();
     auto &textures = r.Context.get<TextureStore>();
-    auto &environments = r.Context.get<EnvironmentStore>();
+    const auto &environments = r.Context.get<EnvironmentStore>();
     ReleaseEnvironmentSamplerSlots(slots, environments);
     ReleaseTextureSlots(slots, textures.Textures);
     r.Context.erase<EnvironmentStore>();

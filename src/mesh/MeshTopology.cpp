@@ -158,10 +158,12 @@ constexpr auto CollapseOutputPasses = [] {
         passes[next++] = {MeshPass::TopologyCollapsePrefix, CollapseDigits, shift};
         passes[next++] = {MeshPass::TopologyCollapseScatter, Collapse0, shift};
     }
-    for (uint32_t level = 0u; level < 4u; ++level)
+    for (uint32_t level = 0u; level < 4u; ++level) {
         passes[next++] = {MeshPass::TopologyCollapseReduce, Collapse0 + level, level};
-    for (uint32_t level = 3u; level--;)
+    }
+    for (uint32_t level = 3u; level--;) {
         passes[next++] = {MeshPass::TopologyCollapseCarry, Collapse0 + level, level};
+    }
     for (const auto pass : OutputPasses) passes[next++] = pass;
     passes[next] = {MeshPass::TopologyCollapseCenters, Collapse0};
     return passes;
@@ -299,8 +301,9 @@ void EncodeTopologyCounts(state::Scene &r, mtl::ComputeChain &chain, Batch &batc
         if (limited) passes.push_back({MeshPass::TopologyJump, SrcVertices, 2u, true});
         passes.push_back({MeshPass::TopologyConverge, Once, (uint32_t(batch.Jobs.size()) << 8) | DomainCount});
     }
-    if (std::ranges::any_of(batch.Jobs, [](const auto &job) { return TopologyIsMerge(job.Op); }))
+    if (std::ranges::any_of(batch.Jobs, [](const auto &job) { return TopologyIsMerge(job.Op); })) {
         passes.insert(passes.end(), WeldPasses.begin(), WeldPasses.end());
+    }
     if (limited) passes.push_back({MeshPass::TopologyFinalizeVertices, SrcVertices, 1u});
     passes.insert(passes.end(), CountPasses.begin(), CountPasses.end());
     batch.Encode(chain, GetMeshPipelines(r), pc, passes);
@@ -348,8 +351,9 @@ Range PrepareTopologyList(const MeshTopologyTask &task, const PrimitiveListRefer
             else handle = core.Counts[0] + handle - task.AppendedBase;
         }
     } else if (op == MeshTopologyOp::Decimate) {
-        for (uint32_t i = 0u; i < list[0]; ++i)
+        for (uint32_t i = 0u; i < list[0]; ++i) {
             for (uint32_t k = 1u; k <= 2u; ++k) list[5u * i + k] = rank(0u, list[5u * i + k]);
+        }
     } else {
         for (uint32_t i = 1u; i <= list[0]; ++i) list[i] = rank(0u, list[i]);
         const auto offset = 2u + list[0], count = list[offset - 1u];
@@ -560,7 +564,7 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
     auto &chain = Chain;
     // Every topology operator enters through this transaction's affected source closure.
     const bool fresh = TopologyCreatesRecord(task.Op);
-    auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Context.get<MeshStore>();
     if (!HasTopologySource(meshes, task)) return std::nullopt;
     const SelectedHandles handles{meshes, StoreId, task.Selection};
     if (!(task.Flags & TopologyFlagSelectAll) && task.Op != MeshTopologyOp::AddPrimitives &&
@@ -574,8 +578,9 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
     if (task.Op == MeshTopologyOp::AddPrimitives) {
         // Every existing vertex handle is below the append base.
         if (task.AppendedBase < meshes.Arenas().Vertices.HandleBound(original.Vertices) ||
-            task.AppendedBase % MeshElementBlockSize)
+            task.AppendedBase % MeshElementBlockSize) {
             throw std::invalid_argument("Topology face list has an invalid vertex append base.");
+        }
         if (!face_list->PrimitiveCount) return std::nullopt;
     }
     const bool select_all = (task.Flags & TopologyFlagSelectAll) != 0u;
@@ -595,8 +600,9 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
             around = EncodeVertexClosure(r, chain, StoreId, seed);
             if (lines && task.Op != MeshTopologyOp::AddPrimitives) edges = AroundVertices(r, StoreId, Element::Edge, around->Elements[3], seed);
             else faces = AroundVertices(r, StoreId, Element::Face, around->Elements[2], seed);
-            if ((fresh || TopologyIsMerge(task.Op) || TopologyIsDissolve(task.Op) || TopologyDeletesEdges(task.Op) || task.Op == MeshTopologyOp::DeleteVertices || task.Op == MeshTopologyOp::ExtrudeEdges || task.Op == MeshTopologyOp::Subdivide) && !lines)
+            if ((fresh || TopologyIsMerge(task.Op) || TopologyIsDissolve(task.Op) || TopologyDeletesEdges(task.Op) || task.Op == MeshTopologyOp::DeleteVertices || task.Op == MeshTopologyOp::ExtrudeEdges || task.Op == MeshTopologyOp::Subdivide) && !lines) {
                 edges = AroundVertices(r, StoreId, Element::Edge, around->Elements[3], seed);
+            }
         }
         if (task.Op == MeshTopologyOp::MergeCollapse) {
             collapse_count = seed.Count;
@@ -635,8 +641,9 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
         if (!edges.Count && !retained.Count) return std::nullopt;
     } else if (task.Op == MeshTopologyOp::ExtrudeVertices) {
         // The rule only adds vertices and edges. Incident primitives belong to the repair neighborhood.
-        if (task.SelectionElement != Element::None && task.SelectionElement != Element::Vertex)
+        if (task.SelectionElement != Element::None && task.SelectionElement != Element::Vertex) {
             throw std::invalid_argument("Extrude Vertices requires a vertex selection.");
+        }
         retained = selected(Element::Vertex);
         if (!retained.Count) return std::nullopt;
     } else if (spatial_faces) {
@@ -670,8 +677,9 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
             const auto stride = (task.Flags & TopologyFlagListCuts) ? 2u : 1u;
             if ((task.Flags & (TopologyFlagListSelects | TopologyFlagListCuts)) ==
                     (TopologyFlagListSelects | TopologyFlagListCuts) ||
-                task.List.empty() || 1ull + uint64_t(task.List.front()) * stride != task.List.size())
+                task.List.empty() || 1ull + uint64_t(task.List.front()) * stride != task.List.size()) {
                 throw std::invalid_argument("Subdivide has an invalid edge list.");
+            }
             std::vector<uint32_t> handles;
             handles.reserve(task.List.front());
             for (uint32_t i = 0u; i < task.List.front(); ++i) handles.push_back(task.List[1u + i * stride]);
@@ -679,8 +687,11 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
         } else if (listed_vertices) {
             if (task.List.empty() || task.List.front() != task.List.size() - 1u) throw std::invalid_argument("Topology vertex selection list is invalid.");
             seed = ListSeed(r, chain, StoreId, Element::Vertex, std::span<const uint32_t>{task.List}.subspan(1u));
-        } else if (policy->Seed == Element::Vertex) seed = selected(Element::Vertex);
-        else seed = EncodeEdgeVertices(r, chain, StoreId, selected(Element::Edge));
+        } else if (policy->Seed == Element::Vertex) {
+            seed = selected(Element::Vertex);
+        } else {
+            seed = EncodeEdgeVertices(r, chain, StoreId, selected(Element::Edge));
+        }
         if (!seed.Count) {
             if (listed) throw std::invalid_argument("Topology element list contains no live source elements.");
             return std::nullopt;
@@ -699,9 +710,11 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
         TopologyOutputBounds(task, {});
         const auto offset = 2u + task.List[0], count = task.List[offset - 1u];
         std::vector<uint32_t> handles;
+        handles.reserve(count);
         for (uint32_t i = 0u; i < count; ++i) handles.push_back(task.List[task.List[offset + i]]);
-        if (!std::ranges::is_sorted(handles) || std::adjacent_find(handles.begin(), handles.end()) != handles.end())
+        if (!std::ranges::is_sorted(handles) || std::adjacent_find(handles.begin(), handles.end()) != handles.end()) {
             throw std::invalid_argument("Face replacement face handles must be sorted and unique.");
+        }
         faces = ListSeed(r, chain, StoreId, Element::Face, handles);
     } else if (task.Op == MeshTopologyOp::FlipNormals && !task.List.empty()) {
         if (task.List.front() != task.List.size() - 1u) throw std::invalid_argument("Flip Normals has an invalid face list.");
@@ -717,17 +730,21 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
         std::array<ElementWorkSeedJob, 2> jobs;
         for (uint32_t side = 0u; side < 2u; ++side) {
             std::vector<uint32_t> blocks;
-            for (auto local = side ? split : 0u; local < (side ? uint32_t(entries.size()) : split); ++local)
+            for (auto local = side ? split : 0u; local < (side ? uint32_t(entries.size()) : split); ++local) {
                 if (entries[local] != InvalidOffset) blocks.push_back(entries[local]);
+            }
             jobs[side] = PrepareBlockMembershipWork(chain.Scratch, a.FaceTriangles, original.FaceData, blocks, AllocateElementWork(chain.Scratch, a.FaceTriangles.HandleBound(original.FaceData), uint32_t(blocks.size())));
             (side ? second_faces : faces) = {.Work = jobs[side].Work, .Count = counts[side], .Incidence = corners[side], .LoopFans = corners[side]};
         }
         EncodeElementMembershipWork(r, chain, jobs);
         EncodeSortElementWork(r, chain, std::array{faces.Work, second_faces.Work});
-    } else faces = selected(Element::Face);
+    } else {
+        faces = selected(Element::Face);
+    }
     // Edge extrusion deselects original vertices, including selected points outside the edge closure.
-    if (task.Op == MeshTopologyOp::ExtrudeEdges && task.SelectionElement == Element::None && (faces.Count || edges.Count))
+    if (task.Op == MeshTopologyOp::ExtrudeEdges && task.SelectionElement == Element::None && (faces.Count || edges.Count)) {
         retained = selected(Element::Vertex);
+    }
     // A line vertex reads whether it keeps a line from its fan, so a line core needs no widening.
     auto core = EncodePrimitiveClosure(r, chain, StoreId, faces, edges, retained, task.Op == MeshTopologyOp::DeleteLoose);
     if (faces.Count && !lines && (task.Op == MeshTopologyOp::DissolveFaces || task.Op == MeshTopologyOp::DissolveVertices || (task.Op == MeshTopologyOp::DissolveLimited && task.SelectionElement == Element::Face) || task.Op == MeshTopologyOp::Wireframe) && (!select_all || TopologyIsDissolve(task.Op))) {
@@ -758,7 +775,7 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
     return Closures{.FaceList = std::move(face_list), .Around = std::move(around), .Core = core, .Neighborhood = neighborhood, .Listed = listed, .CollapseCount = collapse_count, .CollapseVertices = collapse_vertices, .Selection = selection, .Second = std::move(second)};
 }
 
-bool MeshTopologyEdit::FinishClosures(const MeshTopologyTask &task, Closures &closures) {
+bool MeshTopologyEdit::FinishClosures(const MeshTopologyTask &task, Closures &closures) { // NOLINT(readability-make-member-function-const)
     auto &[face_list, around, core, neighborhood, listed, collapse_count, collapse_vertices, selection, second, boolean] = closures;
     if (around) {
         around->Finish(Chain);
@@ -773,14 +790,15 @@ bool MeshTopologyEdit::FinishClosures(const MeshTopologyTask &task, Closures &cl
     if (task.Op == MeshTopologyOp::DeleteLoose && !core.Counts[0]) return false;
     if (!TopologyCreatesRecord(task.Op)) neighborhood.Finish(Chain);
     if (task.Op == MeshTopologyOp::RotateEdges &&
-        ((task.Flags & TopologyFlagListSelects) == 0u || task.List.empty() || task.List.front() != task.List.size() - 1u))
+        ((task.Flags & TopologyFlagListSelects) == 0u || task.List.empty() || task.List.front() != task.List.size() - 1u)) {
         throw std::invalid_argument("Rotate Edges has an invalid vertex selection list.");
+    }
     return core.Counts[1] || RetainsSeedVertices(task.Op);
 }
 
 void MeshTopologyEdit::PrepareCounts(state::Scene &r, const MeshTopologyTask &task, Closures &closures, const std::shared_ptr<const TopologyReadView> &view) {
     auto &chain = Chain;
-    auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Context.get<MeshStore>();
     const bool fresh = TopologyCreatesRecord(task.Op);
     const auto identity = fresh ? TopologyIdentityPolicy::Fresh : TopologyIdentityPolicy::Preserve;
     auto &[face_list, around, core, neighborhood, listed, collapse_count, collapse_vertices, selection, second, boolean] = closures;
@@ -881,8 +899,9 @@ void MeshTopologyEdit::ReadCounts(BufferArena<uint32_t> *inset_basis) {
     }
     const auto retirement = TopologyPolicy(Op)->Retirement;
     if ((Output->RetiredCounts[0] && !(retirement & RetireVertices)) ||
-        (Output->RetiredCounts[1] && !(retirement & RetireFaces)))
+        (Output->RetiredCounts[1] && !(retirement & RetireFaces))) {
         throw std::logic_error("Local topology retired unsupported source identities: vertices=" + std::to_string(Output->RetiredCounts[0]) + ", faces=" + std::to_string(Output->RetiredCounts[1]));
+    }
 }
 
 std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshTopologyTask> requested, BufferArena<uint32_t> *inset_basis) {
@@ -914,21 +933,24 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Scene &r, mtl::
     std::vector<std::optional<SpatialFaceWork>> spatial(tasks.size());
     {
         const profile::CpuScope stage{"TopologySourceState"};
-        auto &meshes = r.Context.get<MeshStore>();
+        const auto &meshes = r.Context.get<MeshStore>();
         for (uint32_t i = 0u; i < tasks.size(); ++i) {
             const auto &task = tasks[i];
             if (const auto *handles = std::get_if<GeometrySelection>(&task.Selection)) ValidateGeometrySelection(meshes, task.SourceId, *handles);
             if (!HasTopologySource(meshes, task)) continue;
             if (task.Op == MeshTopologyOp::AddPrimitives) {
                 face_lists[i] = ParsePrimitiveListReferences(task);
-            } else if (SelectsSpatialFaces(task)) spatial[i].emplace(r, chain, task);
+            } else if (SelectsSpatialFaces(task)) {
+                spatial[i].emplace(r, chain, task);
+            }
         }
         chain.Submit();
     }
     // Every spatial query gathers its faces in one more submit.
     if (std::ranges::any_of(spatial, [](const auto &work) { return work.has_value(); })) {
-        for (auto &work : spatial)
+        for (auto &work : spatial) {
             if (work) work->RecordFaces(r, chain);
+        }
         chain.Submit();
     }
     for (uint32_t i = 0u; i < tasks.size(); ++i) {
@@ -945,14 +967,16 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Scene &r, mtl::
     }
     view->Clone(r);
     // Each boolean's intersection passes size its count entries and output in submits of their own.
-    for (uint32_t i = 0u; i < edits.size(); ++i)
+    for (uint32_t i = 0u; i < edits.size(); ++i) {
         if (closures[i] && tasks[i].Op == MeshTopologyOp::Boolean) closures[i]->Boolean.emplace(r, chain, tasks[i], closures[i]->Core, *closures[i]->Second);
+    }
     std::vector<MeshTopologyEdit *> counted;
-    for (uint32_t i = 0u; i < edits.size(); ++i)
+    for (uint32_t i = 0u; i < edits.size(); ++i) {
         if (closures[i]) {
             edits[i].PrepareCounts(r, tasks[i], *closures[i], view);
             counted.push_back(&edits[i]);
         }
+    }
     // Every edit records its counts beside the others, and the iterating ones submit together to check convergence.
     // The edits whose label rounds have not converged record again from their prepare passes with twice the rounds.
     auto pending = counted;
@@ -973,11 +997,13 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Scene &r, mtl::
     }
     // Identity planning reads the scanned counts on the GPU, so the host reads both after one submit.
     chain.Submit();
-    for (auto &edit : edits)
+    for (auto &edit : edits) {
         if (edit.Output) edit.ReadCounts(inset_basis);
+    }
     // An owned source without output has no recorded reader left.
-    for (auto &edit : edits)
+    for (auto &edit : edits) {
         if (!edit.Output && std::exchange(edit.OwnsSource, false)) r.Context.get<MeshStore>().Release(edit.SourceId);
+    }
     return edits;
 }
 
@@ -1216,8 +1242,9 @@ GeometryTopologyResult MeshTopologyEdit::Result(const MeshStore &meshes) const {
     const auto &job = Plan->Jobs.Jobs[0];
     const auto edges = meshes.Arenas().HalfedgeEdges.Buffer.GetSpan<uint32_t>();
     std::vector<uint32_t> emitted_edges;
-    for (uint32_t h = job.DstCornerOffset; h < job.DstCornerOffset + job.DstHalfedgeCount; ++h)
+    for (uint32_t h = job.DstCornerOffset; h < job.DstCornerOffset + job.DstHalfedgeCount; ++h) {
         if (const auto edge = edges[meshes.HandleAddress(StoreId, MeshStore::ElementDomain::Halfedge, ElementHandle{h}).Value()]; edge != InvalidOffset) emitted_edges.push_back(edge);
+    }
     retained(std::move(emitted_edges), result.Created.Edges, result.Retained.Edges);
     return result;
 }
@@ -1227,11 +1254,12 @@ std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Scene &r, std
     // before its one mutation overwrites that source's canonical values.
     std::set<uint32_t> mutated;
     for (const auto &task : tasks) {
-        if (mutated.contains(task.SourceId))
+        if (mutated.contains(task.SourceId)) {
             throw std::invalid_argument("Dependent topology tasks require ExecuteGeometryTopologyStages.");
+        }
         if (!TopologyCreatesRecord(task.Op)) mutated.insert(task.SourceId);
     }
-    auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Context.get<MeshStore>();
     mtl::ComputeChain chain{meshes.BufferContext(), TopologyScratchWords};
     auto edits = MeshTopologyEdit::Construct(r, chain, tasks);
     MeshTopologyEdit::PublishAll(r, edits);
@@ -1253,9 +1281,10 @@ std::vector<GeometryTopologyResult> ExecuteGeometryTopologyStages(state::Scene &
     return results;
 }
 
+namespace {
 // Whether any edge of the record is shorter than the distance.
 bool HasShortEdge(state::Scene &r, uint32_t id, float distance) {
-    auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Context.get<MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
     mtl::ComputeChain chain{meshes.BufferContext()};
@@ -1273,6 +1302,7 @@ bool HasShortEdge(state::Scene &r, uint32_t id, float distance) {
     chain.Submit();
     return chain.Scratch.Get({flag.Offset, 1u})[0] != 0u;
 }
+} // namespace
 
 std::optional<uint32_t> ExecuteGeometryBoolean(state::Scene &r, const MeshTopologyTask &task) {
     const auto result = ExecuteGeometryTopology(r, std::span{&task, 1u}).front();

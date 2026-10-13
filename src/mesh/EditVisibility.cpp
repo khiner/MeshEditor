@@ -35,8 +35,9 @@ bool EditVisibility(state::Scene &r, std::span<const uint32_t> ids, Element elem
             selection.Tree.Visit(SelectionIndexMask::Unselected, false, [&](uint32_t block) {
                 for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) {
                     const auto word = block * MeshElementBlockWords + w;
-                    for (auto bits = membership[block].Live[w] & ~(selection.Bits[word] | hidden[d].Bits[word]); bits; bits &= bits - 1u)
+                    for (auto bits = membership[block].Live[w] & ~(selection.Bits[word] | hidden[d].Bits[word]); bits; bits &= bits - 1u) {
                         visit(membership[block].Local * MeshElementBlockSize + w * 32u + uint32_t(std::countr_zero(bits)));
+                    }
                 }
                 return true;
             });
@@ -65,8 +66,9 @@ bool EditVisibility(state::Scene &r, std::span<const uint32_t> ids, Element elem
                 for (const auto v : changes[0]) {
                     for (const auto e : incidence.Incident(v)) hide(1u, e);
                     const auto fan = c.Incoming(he::VH{v});
-                    for (uint32_t i = 0u; i < fan.y; ++i)
+                    for (uint32_t i = 0u; i < fan.y; ++i) {
                         if (const auto face = c.FanItems[fan.x + i].y; face != InvalidOffset) hide(2u, face);
+                    }
                 }
             } else if (source == 1u) {
                 for (const auto e : changes[1]) {
@@ -76,11 +78,12 @@ bool EditVisibility(state::Scene &r, std::span<const uint32_t> ids, Element elem
                     vertices.insert(*mesh.GetToVertex(h));
                 }
             } else {
-                for (const auto f : changes[2])
+                for (const auto f : changes[2]) {
                     for (const auto h : mesh.fh_range(he::FH{f})) {
                         vertices.insert(*mesh.GetToVertex(h));
                         edges.insert(*mesh.GetEdge(h));
                     }
+                }
                 for (const auto e : edges) {
                     bool visible = false;
                     edge_faces(e, [&](uint32_t f) { visible |= !is_hidden(2u, f); });
@@ -88,8 +91,9 @@ bool EditVisibility(state::Scene &r, std::span<const uint32_t> ids, Element elem
                 }
             }
             const auto hide_isolated = [&](uint32_t v) {
-                for (const auto e : incidence.Incident(v))
+                for (const auto e : incidence.Incident(v)) {
                     if (!is_hidden(1u, e)) return;
+                }
                 hide(0u, v);
             };
             for (const auto v : vertices) hide_isolated(v);

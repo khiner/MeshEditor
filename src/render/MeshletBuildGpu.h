@@ -9,7 +9,7 @@
 struct GpuBuffers;
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 
 // A mesh or procedural mesh uses the same GPU builder. Primitive membership,
 // positions, topology and attributes are read from canonical GPU arenas.

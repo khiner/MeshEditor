@@ -72,7 +72,7 @@ MeshData CreateMesh(const IcoSphere &p) {
     // clang-format on
 
     std::unordered_map<uint32_t, uint32_t> cache;
-    auto AddMidVertex = [&](uint32_t p1, uint32_t p2) -> uint32_t {
+    const auto AddMidVertex = [&](uint32_t p1, uint32_t p2) -> uint32_t {
         const uint32_t key = (std::min(p1, p2) << 16) + std::max(p1, p2);
         if (const auto found = cache.find(key); found != cache.end()) return found->second;
 

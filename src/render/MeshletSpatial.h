@@ -10,7 +10,7 @@
 struct Mesh;
 namespace state {
 struct Scene;
-}
+} // namespace state
 
 // The initial build visits each owner's mesh once, and the owners build concurrently.
 // Thereafter these operations touch only changed finest meshlets and their spatial ancestors.

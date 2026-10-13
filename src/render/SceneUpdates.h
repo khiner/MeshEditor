@@ -9,7 +9,7 @@ struct GpuBuffers;
 struct GpuSceneState;
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 
 struct SyncResult {
     std::vector<state::Entity> NewlyInserted;

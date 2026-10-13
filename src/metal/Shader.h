@@ -131,12 +131,12 @@ struct RenderPipeline {
 };
 
 RenderPipeline MakeRenderPipeline(
-    LibraryCache &, FunctionRef vertex, std::optional<FunctionRef> fragment, PassFormats,
-    std::vector<BlendState> blends = {}, std::optional<DepthState> depth = {}
+    LibraryCache &, FunctionRef vertex, std::optional<FunctionRef> fragment, const PassFormats &,
+    const std::vector<BlendState> &blends = {}, std::optional<DepthState> depth = {}
 );
 RenderPipeline MakeMeshPipeline(
-    LibraryCache &, FunctionRef mesh, std::optional<FunctionRef> fragment, PassFormats,
-    std::vector<BlendState> blends = {}, std::optional<DepthState> depth = {}
+    LibraryCache &, FunctionRef mesh, std::optional<FunctionRef> fragment, const PassFormats &,
+    const std::vector<BlendState> &blends = {}, std::optional<DepthState> depth = {}
 );
 
 struct ComputePipeline {

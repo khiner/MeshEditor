@@ -8,7 +8,7 @@
 
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 
 // Lists the blocks whose live elements seed `work` with their handles, masked by a selection when one is named.
 // Only block IDs are uploaded, and live and selected membership stays on the GPU.

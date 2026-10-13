@@ -144,8 +144,9 @@ void UpdateTraits<PrimitiveShape>::ForEachSelected(state::Scene &r, state::Entit
     const auto active = Active(r);
     if (active == state::Null) return;
     const auto kind = r.get<const PrimitiveShape>(active).index();
-    for (const auto e : r.get<const SelectionFlags>(viewport).Meshes)
+    for (const auto e : r.get<const SelectionFlags>(viewport).Meshes) {
         if (Has(r, e) && r.get<const PrimitiveShape>(e).index() == kind) fn(e);
+    }
 }
 void UpdateTraits<PrimitiveShape>::Read(const state::Scene &r, state::Entity e, uint16_t offset, void *dst, size_t size) {
     std::visit([&](const auto &alt) { std::memcpy(dst, reinterpret_cast<const std::byte *>(&alt) + offset, size); }, r.get<const PrimitiveShape>(e));
@@ -322,8 +323,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     a.Target, viewport,
                     [&] { const auto e = FindActiveEntity(r); return HasLens(r, e) ? e : state::Null; },
                     [&](auto &&fn) {
-                        for (const auto e : r.view<Selected>())
+                        for (const auto e : r.view<Selected>()) {
                             if (HasLens(r, e)) fn(e);
+                        }
                     },
                     [&](state::Entity e) {
                         const float distance = std::max(Length(WorldTransformOf(r, e)->P), 1.f);

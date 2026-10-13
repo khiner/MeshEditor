@@ -27,8 +27,9 @@ BufferContext::BufferContext(const Context &ctx, BindlessSet &slots) : Ctx(ctx),
 BufferContext::~BufferContext() {
     const AutoreleaseScope pool;
     ReclaimRetiredBuffers(true);
-    for (const auto &bin : WorkspaceCache)
+    for (const auto &bin : WorkspaceCache) {
         for (const auto &workspace : bin) Ctx.RemoveResident(workspace.Buffer.get());
+    }
     AutoreleaseScope::Release(WorkspaceCache, Retirements, Retired);
 }
 
@@ -283,10 +284,11 @@ void Buffer::LogWrite(uint64_t begin, uint64_t end) const {
 
 void Buffer::CaptureWritePages(std::span<const uint32_t> pages) const {
     if (pages.empty()) return;
-    for (size_t i = 0u; i < pages.size(); ++i)
+    for (size_t i = 0u; i < pages.size(); ++i) {
         if (uint64_t(pages[i]) >= Contents().size() / HistoryPageBytes || (i && pages[i] <= pages[i - 1u])) {
             throw std::out_of_range("Write pages must be ordered, unique, and resident.");
         }
+    }
     if (!Tracked) return;
     const profile::CpuScope scope{"HistoryCapturePages"};
     // Each run of consecutive pages captures in one trie descent.
@@ -297,8 +299,9 @@ void Buffer::CaptureWritePages(std::span<const uint32_t> pages) const {
 
 void Buffer::CaptureWriteElements(std::span<const uint32_t> elements, uint32_t stride) const {
     if (elements.empty() || !stride) return;
-    if (Writes)
+    if (Writes) {
         for (const auto element : elements) LogWrite(uint64_t(element) * stride, uint64_t(element + 1u) * stride);
+    }
     if (!Tracked) return;
     std::vector<uint32_t> sorted;
     if (!std::ranges::is_sorted(elements)) {
@@ -313,17 +316,20 @@ void Buffer::CaptureWriteElements(std::span<const uint32_t> elements, uint32_t s
         if (i && element == elements[i - 1u]) continue;
         const auto first = uint64_t(element) * stride, end = first + stride;
         if (!Storage || end > Storage->ResidentBytes) throw std::out_of_range("Write elements must be resident.");
-        for (auto page = first / HistoryPageBytes; page <= (end - 1u) / HistoryPageBytes; ++page)
+        for (auto page = first / HistoryPageBytes; page <= (end - 1u) / HistoryPageBytes; ++page) {
             if (pages.empty() || pages.back() != page) pages.push_back(uint32_t(page));
+        }
     }
     CaptureWritePages(pages);
 }
 
 void Buffer::CaptureWriteRanges(std::span<const Range> ranges, uint32_t stride) const {
     if (ranges.empty() || !stride) return;
-    if (Writes)
-        for (const auto range : ranges)
+    if (Writes) {
+        for (const auto range : ranges) {
             if (range.Count) LogWrite(uint64_t(range.Offset) * stride, (uint64_t(range.Offset) + range.Count) * stride);
+        }
+    }
     if (!Tracked) return;
     std::vector<uint32_t> pages;
     for (const auto range : ranges) {
@@ -331,8 +337,9 @@ void Buffer::CaptureWriteRanges(std::span<const Range> ranges, uint32_t stride) 
         const auto first = uint64_t(range.Offset) * stride;
         const auto end = (uint64_t(range.Offset) + range.Count) * stride;
         if (!Storage || end > Storage->ResidentBytes) throw std::out_of_range("Write ranges must be resident.");
-        for (auto page = first / HistoryPageBytes; page <= (end - 1u) / HistoryPageBytes; ++page)
+        for (auto page = first / HistoryPageBytes; page <= (end - 1u) / HistoryPageBytes; ++page) {
             if (pages.empty() || pages.back() != page) pages.push_back(uint32_t(page));
+        }
     }
     if (!std::ranges::is_sorted(pages)) std::ranges::sort(pages);
     pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
@@ -379,10 +386,12 @@ std::vector<Buffer> CloneFootprints(BufferContext &ctx, std::span<const BufferFo
         if (!source->Storage || source->Lifetime != BufferLifetime::Canonical) throw std::logic_error("Only canonical storage has page clones.");
         const auto resident = source->Storage->ResidentBytes / HistoryPageBytes;
         if (pages.empty()) throw std::invalid_argument("A page clone needs a footprint.");
-        for (size_t i = 0u; i < pages.size(); ++i)
+        for (size_t i = 0u; i < pages.size(); ++i) {
             if (pages[i] >= resident || (i && pages[i] <= pages[i - 1u])) throw std::invalid_argument("Clone pages must be increasing, unique, and resident.");
-        for (const auto page : pages)
+        }
+        for (const auto page : pages) {
             if (const auto at = uint32_t(page / HistoryPagesPerPhysical); physical[f].empty() || physical[f].back() != at) physical[f].push_back(at);
+        }
         count += physical[f].size();
     }
     if (!count) return clones;

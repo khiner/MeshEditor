@@ -99,7 +99,7 @@ BooleanWork::BooleanWork(state::Scene &r, mtl::ComputeChain &chain, const MeshTo
         allocate([&](uint64_t words) { scratch.PlanAdditional(uint32_t(words)); return 0u; });
         scratch.CommitPlanned();
         allocate(take);
-        auto bounds = scratch.GetMutable({job.Bounds, 12u});
+        const auto bounds = scratch.GetMutable({job.Bounds, 12u});
         for (uint32_t side = 0u; side < 2u; ++side) {
             std::ranges::fill(bounds.subspan(6u * side, 3u), ~0u);
             std::ranges::fill(bounds.subspan(6u * side + 3u, 3u), 0u);
@@ -138,7 +138,7 @@ BooleanWork::BooleanWork(state::Scene &r, mtl::ComputeChain &chain, const MeshTo
         chain.Threads(pipelines[MeshPass::BooleanLabelInit], pc, Vertices);
         const uint64_t arguments_bytes = uint64_t(job.LabelArguments) * sizeof(uint32_t);
         for (uint32_t rounds = LabelRounds;; rounds *= 2u) {
-            auto arguments = scratch.GetMutable({job.LabelArguments, 7u});
+            const auto arguments = scratch.GetMutable({job.LabelArguments, 7u});
             const std::array<uint32_t, 7> armed{TileCount(halfedges, TileElements), 1u, 1u, TileCount(Vertices, TileElements), 1u, 1u, 0u};
             std::ranges::copy(armed, arguments.begin());
             for (uint32_t round = 0u; round < rounds; ++round) {

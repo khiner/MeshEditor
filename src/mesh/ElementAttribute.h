@@ -68,9 +68,10 @@ struct ElementAttribute {
         Cover(range, blocks, entries);
         Clear(range, {0u, blocks}, entries);
         if (source.empty()) return;
-        auto values = Values.Buffer.template GetMutableSpan<T>({range.Offset * MeshElementBlockSize, blocks * entries * MeshElementBlockSize});
-        for (uint32_t e = 0u; e < entries; ++e)
+        const auto values = Values.Buffer.template GetMutableSpan<T>({range.Offset * MeshElementBlockSize, blocks * entries * MeshElementBlockSize});
+        for (uint32_t e = 0u; e < entries; ++e) {
             for (uint32_t h = 0u; h < count; h += MeshElementBlockSize) std::copy_n(source.begin() + uint64_t(e) * count + h, std::min(MeshElementBlockSize, count - h), values.begin() + Index({0u, 0u}, h, e, entries));
+        }
     }
     void Release(Range &range) {
         if (range.Count) Values.Release(range);

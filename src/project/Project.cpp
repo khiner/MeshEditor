@@ -149,7 +149,9 @@ std::string Label(const action::Action &a) {
                 for (size_t i = 0; i < N; ++i) label += (i ? ", " : "") + action::FieldAt<C>(patch.Offsets[i]).Path;
                 return label;
             }(leaf);
-        } else return std::string{state::LeafName<A>()};
+        } else {
+            return std::string{state::LeafName<A>()};
+        }
     });
 }
 
@@ -251,7 +253,9 @@ bool Project::Begin(const std::filesystem::path &dir) {
         SavedPath.clear();
         RestoredWorkspace.clear();
         ++Revision;
-    } else directory = previous;
+    } else {
+        directory = previous;
+    }
     return begun;
 }
 bool Project::New(const std::filesystem::path &dir, bool empty) {
@@ -271,7 +275,7 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
     else Record(action::MakeAction(action::io::LoadDefaultScene{}), EventPass::Settle);
     const bool begun = Begin(dir);
     if (!begun) {
-        History.Restore(previous);
+        (void)History.Restore(previous);
         SetViewCameraState(R, Viewport, camera);
         Settle(EventPass::Settle);
     }
@@ -386,7 +390,7 @@ bool Project::SaveAs(const std::filesystem::path &directory, std::span<const std
         }
         return false;
     }
-    auto previous_lock = std::move(DirectoryLock);
+    const auto previous_lock = std::move(DirectoryLock);
     DirectoryLock = std::move(lock);
     R.Context.get<Assets>().Directory = History.Dir;
     SavedPath = directory / "Saved.project";
@@ -503,9 +507,11 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
         }
         if (!updated_inset) {
             InsetPreview.reset();
-            History.Restore(*GestureBase);
+            (void)History.Restore(*GestureBase);
         }
-    } else InsetPreview.reset();
+    } else {
+        InsetPreview.reset();
+    }
     const auto &frame = R.Context.get<const FrameState>();
     RecordedAction recorded_action{
         {frame.DeltaTime, R.get<const PlaybackFrame>(Viewport).Value, R.get<const TimelinePlayback>(Viewport).CurrentFrame, frame.FixedFrameStep, pass, staged},
@@ -522,7 +528,9 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
     if (same_kind && (preview || R.Context.get<const CookCount>().Value == cooks)) {
         RecordedActions.resize(*StageFirst + (updated_inset ? 1u : 0u));
         if (updated_inset) RecordedActions[*StageFirst].Inputs.PreviewSeed = true;
-    } else if (staged) StageFirst = RecordedActions.size();
+    } else if (staged) {
+        StageFirst = RecordedActions.size();
+    }
     RecordedActions.push_back(std::move(recorded_action));
     return true;
 }
@@ -629,7 +637,7 @@ void Project::ClearDocument() {
 void Project::CancelGesture() {
     if (!GestureBase) return;
     RecordedActions.clear();
-    History.Restore(*GestureBase);
+    (void)History.Restore(*GestureBase);
     ReleaseGesture();
     // A cancelled edit returns to the node it was replacing.
     if (const auto node = std::exchange(Editing, std::nullopt)) History.Navigate(*node);
@@ -747,7 +755,7 @@ bool Project::Audit(std::string &why) {
 
 void Project::AfterRestore() {
     const profile::CpuScope scope{"AfterRestore"};
-    struct ReadOnly {
+    const struct ReadOnly {
         state::Scene &R;
         explicit ReadOnly(state::Scene &r) : R(r) { R.DocumentReadOnly = true; }
         ~ReadOnly() { R.DocumentReadOnly = false; }

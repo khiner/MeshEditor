@@ -12,7 +12,7 @@
 
 namespace action::mesh {
 struct InsetPreviewCache;
-}
+} // namespace action::mesh
 
 namespace project {
 // An action's name, and for a field write the component and field it names.

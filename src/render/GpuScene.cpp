@@ -5,7 +5,6 @@
 
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
-#include "state/Scene.h"
 
 #include <utility>
 
@@ -176,8 +175,9 @@ RenderRun PublishClusterLodStorage(MeshStore &meshes, MeshStore::Record &owner, 
     }
     const auto links = buffers.GroupLinks.GetMutable({groups.Address.Value(), groups.Count});
     std::ranges::fill(links, ClusterGroupLinks{});
-    for (const auto &cluster : build.Clusters)
+    for (const auto &cluster : build.Clusters) {
         if (cluster.RefinedGroup != ClusterLodInvalid) ++links[cluster.RefinedGroup].ProxyCount;
+    }
     uint64_t count = build.GroupClusters.size();
     for (const auto &link : links) count += link.ProxyCount;
     if (count > UINT32_MAX) throw std::length_error("Cluster group links exceed the canonical address domain.");
@@ -262,8 +262,9 @@ void CommitClusterLods(state::Scene &r, std::span<MeshStore::Record *const> owne
         }
         const auto meshlets = buffers.Meshlets.Entries(mb.MeshletData);
         std::vector<uint32_t> all_fine;
-        for (const auto &ids : fine_ids)
+        for (const auto &ids : fine_ids) {
             for (const auto id : ids) all_fine.push_back(Resolve<RenderBlockSize>(meshlets, ElementHandle{id}).Value());
+        }
         // The finest records and their leaf entries are captured once and written in place.
         buffers.Meshlets.Buffer.CaptureWriteElements(all_fine, sizeof(MeshletRecord));
         buffers.MeshletLodLeaves.Buffer.CaptureWriteElements(all_fine, sizeof(uint32_t));

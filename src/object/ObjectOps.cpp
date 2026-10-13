@@ -54,14 +54,14 @@ void DestroyArmatureData(state::Scene &r, state::Entity arm_obj_entity) {
     auto &meshes = r.Context.get<MeshStore>();
     auto &arm = r.edit<ArmatureObject>(arm_obj_entity);
     if (arm.JointEntity != state::Null) {
-        if (auto *ref = r.try_get<VertexStoreId>(arm.JointEntity)) meshes.Release(ref->StoreId);
-        if (auto *models = r.try_get<ModelsBuffer>(arm.JointEntity)) FreeInstanceRange(r, models->InstanceRange);
+        if (const auto *ref = r.try_get<VertexStoreId>(arm.JointEntity)) meshes.Release(ref->StoreId);
+        if (const auto *models = r.try_get<ModelsBuffer>(arm.JointEntity)) FreeInstanceRange(r, models->InstanceRange);
         r.remove<VertexStoreId, ModelsBuffer>(arm.JointEntity);
         r.destroy(arm.JointEntity);
         arm.JointEntity = state::Null;
     }
-    if (auto *ref = r.try_get<VertexStoreId>(arm_obj_entity)) meshes.Release(ref->StoreId);
-    if (auto *models = r.try_get<ModelsBuffer>(arm_obj_entity)) FreeInstanceRange(r, models->InstanceRange);
+    if (const auto *ref = r.try_get<VertexStoreId>(arm_obj_entity)) meshes.Release(ref->StoreId);
+    if (const auto *models = r.try_get<ModelsBuffer>(arm_obj_entity)) FreeInstanceRange(r, models->InstanceRange);
     r.remove<VertexStoreId, ModelsBuffer>(arm_obj_entity);
 }
 
@@ -83,7 +83,7 @@ void Destroy(state::Scene &r, state::Entity viewport, std::span<const state::Ent
         if (const auto *instance = r.try_get<Instance>(e)) {
             if (HasMesh(r, instance->Entity) || r.all_of<ObjectExtrasTag>(instance->Entity)) pending.Buffers.emplace(instance->Entity);
         }
-        auto try_add_armature_data = [&](state::Entity data_entity) {
+        const auto try_add_armature_data = [&](state::Entity data_entity) {
             if (r.valid(data_entity)) pending.Armatures.emplace(data_entity);
         };
         if (const auto *armature = r.try_get<ArmatureObject>(e)) try_add_armature_data(armature->Entity);
@@ -106,7 +106,7 @@ void Destroy(state::Scene &r, state::Entity viewport, std::span<const state::Ent
                 destroyed.push_back(arm.JointEntity);
             }
             for (const auto bone_entity : arm.BoneEntities) {
-                if (auto *joints = r.try_get<BoneJointEntities>(bone_entity)) {
+                if (const auto *joints = r.try_get<BoneJointEntities>(bone_entity)) {
                     if (joints->Head != state::Null) destroyed.push_back(joints->Head);
                     if (joints->Tail != state::Null) destroyed.push_back(joints->Tail);
                 }
@@ -137,8 +137,9 @@ void ProcessObjectRemovals(state::Scene &r, state::Entity viewport) {
                 const auto slots = models ? object_ids.subspan(models->InstanceRange.Offset, models->InstanceCount) : std::span<const uint32_t>{};
                 if (std::ranges::any_of(slots, [&](uint32_t id) { const auto *instance = r.try_get<const Instance>(r.EntityAt(ObjectIndex(id))); return instance && instance->Entity == data_entity; })) survivors.push_back(data_entity);
             }
-            for (const auto e : reactive(r, state::Change::InstanceVisibility))
+            for (const auto e : reactive(r, state::Change::InstanceVisibility)) {
                 if (const auto *instance = r.try_get<const Instance>(e)) survivors.push_back(instance->Entity);
+            }
             for (const auto data_entity : survivors) buffer_entities.remove(data_entity);
         }
         if (!armature_data_entities.empty()) {
@@ -162,8 +163,9 @@ void ProcessObjectRemovals(state::Scene &r, state::Entity viewport) {
     std::erase_if(dependents, [&](state::Entity e) { return !r.valid(e); });
     SortUnique(dependents);
     // A dependent mesh entity's instance range frees with it.
-    for (const auto e : dependents)
+    for (const auto e : dependents) {
         if (const auto *models = r.try_get<const ModelsBuffer>(e)) pending->InstanceRanges.push_back(models->InstanceRange);
+    }
     if (!dependents.empty()) r.destroy(dependents);
     auto &meshes = r.Context.get<MeshStore>();
     auto &buffers = r.Context.get<GpuBuffers>();

@@ -232,7 +232,7 @@ MeshDataWithMaterials ReadPly(const std::filesystem::path &path) {
     MeshDataWithMaterials result{};
     auto &data = result.Mesh;
     data.Positions.reserve(vertices->count);
-    auto AddVertices = [&](const auto *raw) {
+    const auto AddVertices = [&](const auto *raw) {
         for (size_t i = 0; i < vertices->count; ++i) {
             data.Positions.emplace_back(raw[i * 3], raw[i * 3 + 1], raw[i * 3 + 2]);
         }

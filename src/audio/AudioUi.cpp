@@ -111,7 +111,7 @@ std::optional<size_t> PlotModeData(
         ImPlot::SetupAxes(x_label.data(), y_label.data());
         ImPlot::SetupAxesLimits(-0.5f, data.size() - 0.5f, 0, max_value, ImPlotCond_Always);
         if (ImPlot::IsPlotHovered()) {
-            if (auto i = std::lround(ImPlot::GetPlotMousePos().x); i >= 0 && i < std::ssize(data)) hovered_index = i;
+            if (const auto i = std::lround(ImPlot::GetPlotMousePos().x); i >= 0 && i < std::ssize(data)) hovered_index = i;
         }
         if (!highlight_index) {
             ImPlot::PlotBars("", data.data(), data.size(), BarSize);
@@ -220,7 +220,7 @@ void DrawModalModelSettings(
         fs.Enum<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::Refinement>();
         MeshEditor::HelpMarker("None: basic tetrahedralization and repair. Quality: improve element shapes. Quality + resolution: also refine to the target resolution.");
         fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::SurfaceSimplificationRatio>([](float &ratio) {
-            constexpr auto &limits = field::SpecOf<&SurfaceSolveConfig::SurfaceSimplificationRatio>;
+            constexpr const auto &limits = field::SpecOf<&SurfaceSolveConfig::SurfaceSimplificationRatio>;
             float percent = ratio * 100;
             if (!SliderFloat("Surface detail", &percent, float(limits.Min * 100), float(limits.Max * 100), "%.1f%%", ImGuiSliderFlags_AlwaysClamp)) return false;
             ratio = percent / 100;
@@ -283,8 +283,9 @@ void DrawModalModelSettings(
     const uint32_t min_vertices = 1, max_vertices = num_vertices;
     // Reuse shows the actual count of existing excitation vertices, else the editable target count.
     if (uint32_t v = reuse ? r.get<const SoundVertices>(e).Vertices.Count : std::clamp(settings.NumVertices, 1u, num_vertices);
-        SliderScalar("Count", ImGuiDataType_U32, &v, &min_vertices, &max_vertices))
+        SliderScalar("Count", ImGuiDataType_U32, &v, &min_vertices, &max_vertices)) {
         fs.Set<&ModalSolveSettings::NumVertices>(v);
+    }
     if (reuse) EndDisabled();
 }
 
@@ -385,8 +386,9 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
         SameLine();
         if (BeginCombo("Vertex", std::to_string(active_vertex).c_str())) {
             for (uint32_t vi = 0; vi < excitable_vertices.size(); ++vi) {
-                if (const auto vertex = excitable_vertices[vi]; Selectable(std::to_string(vertex).c_str(), vi == active_vi))
+                if (const auto vertex = excitable_vertices[vi]; Selectable(std::to_string(vertex).c_str(), vi == active_vi)) {
                     action::Emit(action::audio::SetExciteVertex{vi, vertex});
+                }
             }
             EndCombo();
         }
@@ -456,15 +458,15 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
 
     if (CollapsingHeader("Modal data charts")) {
         std::optional<size_t> new_hovered_index;
-        if (auto hovered = PlotModeData(modes.Freqs, "Mode frequencies", "", "Frequency (Hz)", hovered_mode_index)) new_hovered_index = hovered;
-        if (auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
+        if (const auto hovered = PlotModeData(modes.Freqs, "Mode frequencies", "", "Frequency (Hz)", hovered_mode_index)) new_hovered_index = hovered;
+        if (const auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
         const auto active_gains = [&]() -> std::vector<float> {
             if (active_vi >= modes.Shapes.size()) return {};
             const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), r.Context.get<const MeshStore>().Arenas().SoundVertices.Get(excitable->Vertices)[active_vi]), ImpulseAngle);
             return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(Dot(s, j)); }) | to<std::vector<float>>();
         }();
         if (!active_gains.empty()) {
-            if (auto hovered = PlotModeData(active_gains, "Mode gains", "Mode index", "Gain", hovered_mode_index)) new_hovered_index = hovered;
+            if (const auto hovered = PlotModeData(active_gains, "Mode gains", "Mode index", "Gain", hovered_mode_index)) new_hovered_index = hovered;
         }
         if (hovered_mode_index = new_hovered_index; hovered_mode_index && *hovered_mode_index < modes.Freqs.size()) {
             const auto index = *hovered_mode_index;
@@ -570,6 +572,7 @@ void DrawAudioDebug(const state::Scene &r) {
     DrawSurfaceContactDebug(r);
 }
 
+namespace {
 std::string_view SolveStageLabel(fastfem::SolveStage stage) {
     using enum fastfem::SolveStage;
     switch (stage) {
@@ -586,6 +589,7 @@ std::string_view SolveStageLabel(fastfem::SolveStage stage) {
         case Complete: return "Complete";
     }
 }
+} // namespace
 
 void DrawModalJobsOverlay(state::Scene &r) {
     const auto &jobs = r.Context.get<const ModalSolveJobs>().Jobs;
@@ -608,7 +612,7 @@ void DrawModalJobsOverlay(state::Scene &r) {
         // Keep the overlay above the focused viewport window.
         BringWindowToDisplayFront(GetCurrentWindow());
         for (const auto &job : jobs) {
-            auto &monitor = *job->Work.Monitor;
+            const auto &monitor = *job->Work.Monitor;
             PushID(job.get());
             BeginGroup();
             AlignTextToFramePadding();

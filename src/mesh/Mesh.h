@@ -87,11 +87,12 @@ struct HandleRange {
         }
         void Seek() {
             while (Local != null) {
-                if (Table[Local] != null)
+                if (Table[Local] != null) {
                     for (; Word < MeshElementBlockWords; ++Word) {
                         Bits = Blocks[Table[Local]].Live[Word];
                         if (Bits) return;
                     }
+                }
                 Word = 0;
                 if (++Local == Table.size()) Local = null;
             }

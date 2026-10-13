@@ -39,11 +39,14 @@ void VisitEdgeChains(EdgeGraph &graph, const std::function<void(const std::vecto
         visit(chain, closed);
     };
     // Endpoints and junctions delimit open chains. Remaining edges form cycles.
-    for (const auto v : vertices)
-        if (graph.at(v).size() != 2u)
+    for (const auto v : vertices) {
+        if (graph.at(v).size() != 2u) {
             for (const auto next : graph.at(v)) walk(v, next);
-    for (const auto v : vertices)
+        }
+    }
+    for (const auto v : vertices) {
         for (const auto next : graph.at(v)) walk(v, next);
+    }
 }
 
 namespace {
@@ -58,9 +61,9 @@ void ScheduleEdgeChains(EdgeChainPlan &plan, bool move_all) {
     for (const auto chain : plan.Chains) {
         auto vertices = std::span{plan.Inputs}.subspan(chain.InputOffset, chain.Count);
         const auto writes = [&](auto &&visit) {
-            if (move_all)
+            if (move_all) {
                 for (const auto v : vertices) visit(v);
-            else {
+            } else {
                 const auto phase = std::span{plan.Phases}.subspan(chain.PhaseOffset);
                 for (const auto i : phase.subspan(2u + phase[0], phase[1])) visit(vertices[i]);
             }
@@ -107,8 +110,9 @@ void AppendRelaxPhases(EdgeChainPlan &plan, EdgeChain &chain) {
                 order.push_back(head);
             }
             for (uint32_t i = first; i < order.size(); i += 2u) knots.push_back(order[i]);
-            for (uint32_t i = first + 1u; i < order.size(); i += 2u)
+            for (uint32_t i = first + 1u; i < order.size(); i += 2u) {
                 if (points.empty() || order[i] != points.front()) points.push_back(order[i]);
+            }
             if (knots.front() != knots.back()) knots.push_back(knots.front());
         }
         plan.Phases.push_back(uint32_t(knots.size()));
@@ -154,11 +158,12 @@ EdgeChainPlan PlanCurveBetweenSelected(const Mesh &mesh, const GeometrySelection
         const auto [entry, inserted] = nodes.try_emplace(v);
         if (inserted) {
             auto &out = entry->second;
-            for (const auto e : incidence.Incident(v))
+            for (const auto e : incidence.Incident(v)) {
                 if (!std::ranges::binary_search(excluded.Edges, e)) {
                     out.Edges.push_back(e);
                     ++out.Counts[wire(e)];
                 }
+            }
             std::ranges::sort(out.Edges);
             const auto fan = connectivity.Incoming(he::VH{v});
             for (uint32_t i = 0u; i < fan.y; ++i) {
@@ -194,11 +199,12 @@ EdgeChainPlan PlanCurveBetweenSelected(const Mesh &mesh, const GeometrySelection
             const auto count = adjacent.Counts[is_wire];
             if (is_wire ? count != 2u : count < 3u || count > 4u) break;
             uint32_t next = InvalidOffset;
-            for (const auto e : adjacent.Edges)
+            for (const auto e : adjacent.Edges) {
                 if (wire(e) == is_wire && e != edge && !visited.contains(e) && !adjacent.QuadPairs.contains(MeshEdgeUsers::Key(edge, e))) {
                     next = e;
                     break;
                 }
+            }
             if (next == InvalidOffset) break;
             edge = next;
             visited.insert(edge);
@@ -225,10 +231,14 @@ EdgeChainPlan PlanCurveBetweenSelected(const Mesh &mesh, const GeometrySelection
             if (path.Vertices.size() < 3u) continue;
             const auto count = size_t(std::ranges::count_if(path.Vertices, [&](uint32_t x) { return std::ranges::binary_search(selection.Vertices, x); }));
             if (count == path.Vertices.size()) {
-                for (const auto x : path.Vertices)
-                    for (const auto other : node(x).Edges)
+                for (const auto x : path.Vertices) {
+                    for (const auto other : node(x).Edges) {
                         if (!visited.contains(other)) paths.push_back(build(other));
-            } else if (count) paths.push_back(std::move(path));
+                    }
+                }
+            } else if (count) {
+                paths.push_back(std::move(path));
+            }
         }
     });
     EdgeChainPlan plan;
@@ -237,8 +247,9 @@ EdgeChainPlan PlanCurveBetweenSelected(const Mesh &mesh, const GeometrySelection
         const auto n = uint32_t(vertices.size());
         if (n < 3u) continue;
         std::vector<uint32_t> selected;
-        for (uint32_t i = 0u; i < n; ++i)
+        for (uint32_t i = 0u; i < n; ++i) {
             if (std::ranges::binary_search(selection.Vertices, vertices[i])) selected.push_back(i);
+        }
         if (selected.empty()) continue;
         if (path.Closed) {
             uint32_t gap = 0u, gap_start = 0u;
@@ -257,7 +268,9 @@ EdgeChainPlan PlanCurveBetweenSelected(const Mesh &mesh, const GeometrySelection
                 std::rotate(vertices.begin(), vertices.begin() + first, vertices.end());
                 vertices.resize((last + n - first) % n + 1u);
                 path.Closed = false;
-            } else std::rotate(vertices.begin(), vertices.begin() + selected.front(), vertices.end());
+            } else {
+                std::rotate(vertices.begin(), vertices.begin() + selected.front(), vertices.end());
+            }
         }
         if (!extend) {
             const auto is_selected = [&](uint32_t v) { return std::ranges::binary_search(selection.Vertices, v); };
@@ -271,7 +284,7 @@ EdgeChainPlan PlanCurveBetweenSelected(const Mesh &mesh, const GeometrySelection
             else points.push_back(i);
         }
         if (points.empty()) continue;
-        EdgeChain chain{.InputOffset = uint32_t(plan.Inputs.size()), .Count = uint32_t(vertices.size()), .Closed = uint32_t(path.Closed), .PhaseOffset = uint32_t(plan.Phases.size())};
+        const EdgeChain chain{.InputOffset = uint32_t(plan.Inputs.size()), .Count = uint32_t(vertices.size()), .Closed = uint32_t(path.Closed), .PhaseOffset = uint32_t(plan.Phases.size())};
         plan.Phases.push_back(uint32_t(knots.size()));
         plan.Phases.push_back(uint32_t(points.size()));
         plan.Phases.insert(plan.Phases.end(), knots.begin(), knots.end());
@@ -287,8 +300,9 @@ EdgeChainPlan PlanCurveBetweenSelected(const Mesh &mesh, const GeometrySelection
 EdgeChainPlan PlanCircularize(const Mesh &mesh, const GeometrySelection &selection, const GeometrySelection &excluded) {
     std::unordered_map<uint32_t, uint32_t> selected_faces;
     std::ranges::for_each(selection.Faces, [&](uint32_t f) {
-        if (!std::ranges::binary_search(excluded.Faces, f))
+        if (!std::ranges::binary_search(excluded.Faces, f)) {
             for (const auto h : mesh.fh_range(he::FH{f})) ++selected_faces[*mesh.GetEdge(h)];
+        }
     });
     std::array<EdgeGraph, 2> graphs;
     std::unordered_set<uint32_t> surface_vertices;

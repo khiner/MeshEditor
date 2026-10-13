@@ -65,7 +65,7 @@ uint32_t TopologyScratchBound(const MeshStore &, const MeshTopologyTask &);
 
 namespace state {
 struct Scene;
-}
+} // namespace state
 struct GeometryTopologyResult {
     uint32_t GeometryId{};
     bool Changed{};

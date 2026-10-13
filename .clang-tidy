@@ -63,6 +63,7 @@ Checks: >
   bugprone-virtual-near-miss,
   bugprone-unused-return-value,
   readability-misleading-indentation,
+  readability-braces-around-statements,
   readability-reference-to-constructed-temporary,
   readability-duplicate-include,
   readability-redundant-control-flow,
@@ -106,3 +107,10 @@ CheckOptions:
   # Keep the `x ? true : false` style simplifications, but not the DeMorgan rewrites
   # (they often force negated/renamed forms that read worse than the original).
   readability-simplify-boolean-expr.SimplifyDeMorgan: false
+  # The check spans from the condition to `else` or the body's end.
+  # A threshold of 2 keeps if/else chains with one-line branches unbraced.
+  readability-braces-around-statements.ShortStatementLines: 2
+  # Parameter analysis breaks callback signatures and marks scene mutators const.
+  misc-const-correctness.AnalyzeParameters: false
+  # A `(void)` cast marks a deliberately discarded result.
+  bugprone-unused-return-value.AllowCastToVoid: true

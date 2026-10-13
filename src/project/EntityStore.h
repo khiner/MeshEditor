@@ -8,7 +8,7 @@
 
 namespace store {
 struct History;
-}
+} // namespace store
 namespace state {
 enum class Event : uint8_t;
 struct PageMask;

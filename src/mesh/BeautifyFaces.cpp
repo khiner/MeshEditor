@@ -118,8 +118,9 @@ struct Planner {
         std::array<uint32_t, 6> old_edges;
         for (uint32_t i = 0u; i < 6u; ++i) {
             old_edges[i] = Nodes[nodes[i]].Edge;
-            for (auto &user : Edges[old_edges[i]].Nodes)
+            for (auto &user : Edges[old_edges[i]].Nodes) {
                 if (user == nodes[i]) user = InvalidOffset;
+            }
         }
         Current.erase(Key(h));
         Current.emplace(new_key, edge);
@@ -138,8 +139,9 @@ struct Planner {
         }
         e.States.insert(State(edge, false));
         ++Rotations;
-        for (const auto other : old_edges)
+        for (const auto other : old_edges) {
             if (other != edge) Update(other);
+        }
     }
 };
 } // namespace
@@ -186,8 +188,9 @@ std::optional<MeshTopologyTask> BeautifyFaceTask(const Mesh &mesh, const Geometr
     for (uint32_t f = 0u; f < p.Faces.size(); ++f) {
         task.List[2u + f] = uint32_t(task.List.size());
         task.List.insert(task.List.end(), {p.Faces[f], 1u, 3u});
-        for (uint32_t i = 0u; i < 3u; ++i)
+        for (uint32_t i = 0u; i < 3u; ++i) {
             task.List.insert(task.List.end(), {p.Nodes[3u * f + i].Source, p.Edges[p.Nodes[Prev(3u * f + i)].Edge].Source});
+        }
     }
     return task;
 }

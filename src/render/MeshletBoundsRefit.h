@@ -9,10 +9,10 @@
 template<typename T> struct BufferArena;
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 namespace state {
 struct Scene;
-}
+} // namespace state
 
 struct MeshletBoundsRefitJob {
     const MeshStore::Record *Owner;

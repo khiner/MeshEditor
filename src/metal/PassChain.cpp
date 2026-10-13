@@ -60,7 +60,7 @@ MTL::ComputeCommandEncoder *PassChain::BeginCompute(std::string_view name, MTL::
 }
 
 MTL::BlitCommandEncoder *PassChain::BeginBlit(std::string_view name, MTL::Stages after) {
-    auto *descriptor = MTL::BlitPassDescriptor::blitPassDescriptor();
+    const auto *descriptor = MTL::BlitPassDescriptor::blitPassDescriptor();
     SampleInto(descriptor->sampleBufferAttachments()->object(0), name);
     ClosePass();
     auto *encoder = CommandBuffer->blitCommandEncoder(descriptor);

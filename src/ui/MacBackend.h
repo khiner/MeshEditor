@@ -1,7 +1,7 @@
 #pragma once
 namespace MacPlatform {
 class Window;
-}
+} // namespace MacPlatform
 namespace ui {
 class MacBackend {
 public:

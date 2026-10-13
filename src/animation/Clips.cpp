@@ -61,8 +61,9 @@ float LastKeySeconds(const state::Scene &r, std::optional<uint32_t> animation) {
     for (const auto [_, clips] : r.view<const AnimationClips>().each()) {
         for (const auto &clip : clips.Clips) {
             if (animation && clip.Animation != *animation) continue;
-            for (const auto &channel : clip.Channels)
+            for (const auto &channel : clip.Channels) {
                 if (!channel.Times.empty()) end = std::max(end, channel.Times.back());
+            }
         }
     }
     return end;

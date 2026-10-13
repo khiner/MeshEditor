@@ -17,7 +17,7 @@ struct SoundVertices {
 };
 
 inline std::optional<uint32_t> FindSoundVertexIndex(std::span<const uint32_t> vertices, uint32_t vertex) {
-    if (auto it = std::ranges::find(vertices, vertex); it != vertices.end()) {
+    if (const auto it = std::ranges::find(vertices, vertex); it != vertices.end()) {
         return uint32_t(std::ranges::distance(vertices.begin(), it));
     }
     return {};

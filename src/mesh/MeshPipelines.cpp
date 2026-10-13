@@ -185,17 +185,17 @@ MeshPipelines::MeshPipelines(mtl::LibraryCache &libraries) : Libraries(libraries
 
 void MeshPipelines::PrewarmAsync() {
     if (PrewarmWorker.joinable() || !Libraries.PipelineCompiler()) return;
-    PrewarmWorker = std::jthread([this](std::stop_token stop) {
+    PrewarmWorker = std::jthread([this](const std::stop_token &stop) {
         try {
             auto cache = Libraries.PrewarmCache();
             for (size_t i = 0u; i < PassFunctions.size() && !stop.stop_requested(); ++i) {
                 {
-                    std::lock_guard lock{Mutex};
+                    const std::lock_guard lock{Mutex};
                     if (Pipelines[i]) continue;
                 }
                 try {
                     mtl::ComputePipeline pipeline{*cache, {PassFunctions[i].first, PassFunctions[i].second}};
-                    std::lock_guard lock{Mutex};
+                    const std::lock_guard lock{Mutex};
                     if (!Pipelines[i]) Pipelines[i].emplace(std::move(pipeline));
                 } catch (...) {
                     // Foreground use retains the normal error path for a shader
@@ -210,7 +210,7 @@ void MeshPipelines::PrewarmAsync() {
 
 const mtl::ComputePipeline &MeshPipelines::operator[](MeshPass pass) const {
     const auto index = size_t(pass);
-    std::lock_guard lock{Mutex};
+    const std::lock_guard lock{Mutex};
     auto &pipeline = Pipelines.at(index);
     if (!pipeline) {
         const profile::CpuScope scope{"MeshPipelineCreate"};

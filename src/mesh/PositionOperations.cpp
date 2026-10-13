@@ -45,7 +45,7 @@ struct TargetHandles {
 std::vector<FaceAttributeOperationChange> EncodeFaceAttributeOperation(MeshStore &meshes, MeshPipelines &pipelines, mtl::ComputeChain &chain, std::span<const PositionOperationTarget> targets, bool colors, uint32_t uv_set, uint32_t operation) {
     if (uv_set >= MeshStore::MaxUvSets || operation > 2u) return {};
     const TargetHandles handles{meshes, targets};
-    auto &a = meshes.Arenas();
+    const auto &a = meshes.Arenas();
     std::vector<FaceAttributeEditPushConstants> jobs;
     std::vector<FaceAttributeOperationChange> changes;
     uint64_t corners = 0u, face_count = 0u;
@@ -101,18 +101,20 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
     if (warp && (!ValidPlane(warp->Orientation, warp->Center, warp->OffsetAngle) || (!warp->AutoRange && (!std::isfinite(warp->Min) || !std::isfinite(warp->Max) || warp->Min == warp->Max)))) return {};
     if (bend && (!ValidPlane(bend->Orientation, bend->Center, bend->OffsetAngle) || !std::isfinite(bend->Radius) || bend->Radius == 0.f)) return {};
     if (randomize && (!std::isfinite(randomize->Uniform) || !std::isfinite(randomize->Normal))) return {};
-    for (const auto &parameters : {slide, edge_slide})
+    for (const auto &parameters : {slide, edge_slide}) {
         if (parameters && (!(Length(parameters->Direction) > 0.f) || !std::isfinite(Length(parameters->Direction)))) return {};
+    }
     if (circle && (!std::isfinite(circle->Radius) || !std::isfinite(circle->Angle))) return {};
     if (symmetry && (!std::has_single_bit(axes) || !std::isfinite(symmetry->Threshold) || symmetry->Threshold <= 0.f)) return {};
     if (transform && (!Finite(transform->Delta.P) || !Finite(transform->Delta.S) || !Finite(transform->Pivot) || !ValidPlane(transform->Delta.R, {}, 0.f))) return {};
     const TargetHandles handles{meshes, targets};
     if (warp) flags = (flags & ~PositionEditWarpAutoRange) | (warp->AutoRange ? PositionEditWarpAutoRange : 0u);
-    for (const auto &parameters : {slide, edge_slide})
+    for (const auto &parameters : {slide, edge_slide}) {
         if (parameters) {
             flags = (flags & ~(PositionEditSlideEven | PositionEditSlideFlipped)) |
                 (parameters->Even ? PositionEditSlideEven : 0u) | (parameters->Flipped ? PositionEditSlideFlipped : 0u);
         }
+    }
     const bool zero_moves = symmetry || warp || (slide && slide->Even && slide->Flipped) || (edge_slide && edge_slide->Even);
     if (targets.empty() || !axes || (!zero_moves && factor == 0.f) || !std::isfinite(factor)) return {};
     const bool planar = operation == PositionEditOp::Planar;
@@ -132,12 +134,16 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
     if (!zero_moves && factor == 0.f) return {};
     vec3 plane_x{}, plane_y{}, plane_center{};
     float bend_pivot = 0.f;
-    if (transformed)
-        for (const auto &target : targets)
+    if (transformed) {
+        for (const auto &target : targets) {
             if (!Finite(target.World.P) || !Finite(target.World.S) || !ValidPlane(target.World.R, {}, 0.f)) return {};
-    if (transform)
-        for (const auto &target : targets)
+        }
+    }
+    if (transform) {
+        for (const auto &target : targets) {
             if (target.World.S.x == 0.f || target.World.S.y == 0.f || target.World.S.z == 0.f) return {};
+        }
+    }
     if (warp || bend) {
         const auto rotation = Normalize(warp ? warp->Orientation : bend->Orientation);
         const auto right = rotation * vec3{1, 0, 0}, up = rotation * vec3{0, 1, 0};
@@ -201,8 +207,9 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             .Flags = flags,
             .Operation = operation,
         };
-        if (!planar && operation == PositionEditOp::ShrinkFatten)
+        if (!planar && operation == PositionEditOp::ShrinkFatten) {
             pc.Faces = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().FaceTriangles.HandleBound(meshes.Get(id).FaceData), selection.Faces);
+        }
         PositionBatch batch{.Index = uint32_t(jobs.size())};
         const auto world = transformed ? target.World : Transform{};
         const auto inverse = Conjugate(world.R);
@@ -272,14 +279,16 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             vertices = std::move(plan.Vertices);
         } else if (planar) {
             std::vector<uint32_t> faces;
-            for (const auto f : selection.Faces)
+            for (const auto f : selection.Faces) {
                 if (mesh.GetValence(he::FH{f}) > 3u) faces.push_back(f);
+            }
             if (faces.empty()) continue;
             // The existing face seed gathers only connectivity handles on the host.
             // Its vertex list also gives history the exact pages to capture.
             ClosureSeed seed{.Work = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().FaceTriangles.HandleBound(meshes.Get(id).FaceData), faces), .Count = uint32_t(faces.size())};
-            for (const auto f : faces)
+            for (const auto f : faces) {
                 for (const auto v : mesh.fv_range(he::FH{f})) seed.Vertices.push_back(*v);
+            }
             SortUnique(seed.Vertices);
             pc.Faces = seed.Work;
             pc.PlaneCount = seed.Count;
@@ -351,11 +360,12 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
     profile::RecordCounter("PositionEditVertices", vertex_count);
     profile::RecordCounter("PositionEditPlanes", plane_count);
     uint64_t curve_chain_count = 0u, curve_batch_count = 0u;
-    if (ordered_chains)
+    if (ordered_chains) {
         for (const auto &job : batches) {
             curve_chain_count += jobs[job.Index].ChainCount;
             curve_batch_count += job.Batches.size();
         }
+    }
     profile::RecordCounter("CurveEditChains", curve_chain_count);
     profile::RecordCounter("CurveEditBatches", curve_batch_count);
     if (statistics) {
@@ -380,37 +390,45 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
         if (sphere) {
             const auto result = reduce({chain.Scratch.Buffer.Slot, partials.Offset}, reduction_blocks);
             for (auto &pc : jobs) pc.ReductionResult = result;
-        } else
+        } else {
             for (auto &pc : jobs) pc.ReductionResult = reduce(pc.ReductionBlocks, (pc.Count + 255u) / 256u);
+        }
         profile::RecordCounter(sphere ? "PositionRadiusBlocks" : "PositionWarpBoundsBlocks", reduction_blocks);
     }
-    if (planar) chain.Concurrent([&] {
-        for (const auto &pc : jobs) chain.Threads(pipelines[MeshPass::PlanarFacePlanes], pc, pc.PlaneCount);
-    });
-    if (slide && slide->Even) chain.Concurrent([&] {
-        for (const auto &pc : jobs) chain.Threads(pipelines[MeshPass::VertexSlideReference], pc, 1u);
-    });
+    if (planar) {
+        chain.Concurrent([&] {
+            for (const auto &pc : jobs) chain.Threads(pipelines[MeshPass::PlanarFacePlanes], pc, pc.PlaneCount);
+        });
+    }
+    if (slide && slide->Even) {
+        chain.Concurrent([&] {
+            for (const auto &pc : jobs) chain.Threads(pipelines[MeshPass::VertexSlideReference], pc, 1u);
+        });
+    }
     for (uint32_t step = 0u; step < repeat; ++step) {
         chain.Concurrent([&] {
             for (const auto &pc : jobs) chain.Threads(pipelines[gather], pc, edge_chains ? pc.ChainCount : pc.Count);
         });
         uint32_t depths = 0u;
         for (const auto &job : batches) depths = std::max(depths, uint32_t(job.Batches.size()));
-        for (uint32_t depth = 0u; depth < depths; ++depth) chain.Concurrent([&] {
-            for (const auto &job : batches)
-                if (depth < job.Batches.size()) {
-                    const auto batch = job.Batches[depth];
-                    auto pc = jobs[job.Index];
-                    if (flatten) {
-                        pc.Planes.Offset += batch.Offset;
-                        chain.Groups(pipelines[MeshPass::FlattenGroups], pc, batch.Count);
-                    } else {
-                        pc.Parameters.Offset += batch.Offset * uint32_t(sizeof(EdgeChain) / sizeof(uint32_t));
-                        pc.ChainCount = batch.Count;
-                        chain.Threads(pipelines[circle ? MeshPass::Circularize : MeshPass::CurveBetweenSelected], pc, pc.ChainCount);
+        for (uint32_t depth = 0u; depth < depths; ++depth) {
+            chain.Concurrent([&] {
+                for (const auto &job : batches) {
+                    if (depth < job.Batches.size()) {
+                        const auto batch = job.Batches[depth];
+                        auto pc = jobs[job.Index];
+                        if (flatten) {
+                            pc.Planes.Offset += batch.Offset;
+                            chain.Groups(pipelines[MeshPass::FlattenGroups], pc, batch.Count);
+                        } else {
+                            pc.Parameters.Offset += batch.Offset * uint32_t(sizeof(EdgeChain) / sizeof(uint32_t));
+                            pc.ChainCount = batch.Count;
+                            chain.Threads(pipelines[circle ? MeshPass::Circularize : MeshPass::CurveBetweenSelected], pc, pc.ChainCount);
+                        }
                     }
                 }
-        });
+            });
+        }
         chain.Concurrent([&] {
             for (const auto &pc : jobs) chain.Threads(pipelines[MeshPass::WriteEditedPositions], pc, pc.Count);
         });

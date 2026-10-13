@@ -69,7 +69,9 @@ void SelectionIndex::Update(uint32_t root, std::span<const uint32_t> blocks, uin
             if (!node.Active && node.Parent != InvalidOffset) {
                 Nodes[node.Parent].Children[node.Slot] = InvalidOffset;
                 Aggregates.Release({id, 1u});
-            } else Aggregates.GetMutable({id, 1u})[0] = sum;
+            } else {
+                Aggregates.GetMutable({id, 1u})[0] = sum;
+            }
         }
     }
     profile::RecordCounter("SelectionIndexNodes", updated);

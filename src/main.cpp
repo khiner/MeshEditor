@@ -99,18 +99,18 @@ using std::ranges::any_of, std::ranges::all_of;
 
 namespace fs = std::filesystem;
 
+namespace {
 bool LogEnabled{true};
 using SteadyClock = std::chrono::steady_clock;
 double ElapsedMs(SteadyClock::time_point begin) { return std::chrono::duration<double, std::milli>(SteadyClock::now() - begin).count(); }
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
-namespace {
 // Skip a frame when every drawable is in flight.
 NS::SharedPtr<MTL::CommandBuffer> RenderAndPresentFrame(const mtl::Context &ctx, CA::MetalLayer *layer, ImDrawData *draw_data) {
     const mtl::AutoreleaseScope native_scope;
     const profile::CpuScope scope{"ImGuiRenderSubmit"};
-    auto *drawable = layer->nextDrawable();
+    const auto *drawable = layer->nextDrawable();
     if (!drawable) return {};
 
     const std::array colors{mtl::ClearColor(drawable->texture(), {0.45, 0.55, 0.60, 1.0})};
@@ -357,7 +357,7 @@ bool OpenProjectDir(state::Scene &r, state::Entity viewport, const fs::path &wor
     auto &session = Session(r);
     if (session.History.Present && (!SaveWorkspace(r, viewport) || !session.Save())) return false;
     WaitForRender(r);
-    const auto old_dir = Paths::Project();
+    const auto old_dir = Paths::Project(); // NOLINT(performance-unnecessary-copy-initialization) SetProject replaces the referenced path.
     Paths::SetProject(working_dir);
     if (!session.Open(working_dir, saved)) {
         Paths::SetProject(old_dir);
@@ -430,8 +430,8 @@ void RevertSavedProject(state::Scene &r, state::Entity viewport) {
 
 void BuildDefaultDockLayout(const WindowsState &windows, ImGuiID dockspace_id) {
     auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.3f, nullptr, &dockspace_id);
-    auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
-    auto animation_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
+    const auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
+    const auto animation_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
     DockBuilderDockWindow(windows.History.Name, extra_node_id);
     DockBuilderDockWindow(windows.Debug.Name, extra_node_id);
     DockBuilderDockWindow(windows.ImGuiDemo.Name, extra_node_id);
@@ -632,7 +632,7 @@ struct ValidationUi {
         const auto font_scale = LiveImGui ? GetIO().FontGlobalScale : 1.f;
         Gui = ImGui::CreateContext(fonts);
         ImGui::SetCurrentContext(Gui);
-        Plot = ImPlot::CreateContext();
+        Plot = ImPlot::CreateContext(); // NOLINT(cppcoreguidelines-prefer-member-initializer) Created under the current ImGui context.
         ImPlot::SetCurrentContext(Plot);
         auto &io = GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
@@ -708,7 +708,7 @@ struct ValidationInputs {
 ImDrawData *RenderValidationApp(
     state::Scene &r, state::Entity viewport, const ValidationInputs &inputs
 ) {
-    auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &ctx = r.Context.get<const mtl::Context>();
     auto &io = GetIO();
     auto &windows = r.Context.get<WindowsState>();
     io.MousePos = {-FLT_MAX, -FLT_MAX};
@@ -726,7 +726,7 @@ ImDrawData *RenderValidationApp(
             GImGui->NavHighlightItemUnderNav = inputs.NavHighlightItemUnderNav;
         }
 
-        auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
+        const auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
         if (!windows.LayoutLoaded) {
             BuildDefaultDockLayout(windows, dockspace_id);
             windows.LayoutLoaded = true;
@@ -1451,7 +1451,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         }
         const profile::CpuScope frame_scope{"Frame"};
         r.Context.get<ViewportConsumerFence>().Value = last_frame.get();
-        auto events = window.PollEvents();
+        const auto events = window.PollEvents();
         auto &frame_state = r.Context.get<FrameState>();
         frame_state.PreciseWheelDelta = vec2{events.ScrollX, events.ScrollY};
         frame_state.PreciseScrolling = events.PreciseScrolling;
@@ -1473,7 +1473,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         const auto *ui_focus = GImGui->NavWindow;
         NewFrame();
 
-        auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
+        const auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
         if (!windows.LayoutLoaded) {
             BuildDefaultDockLayout(windows, dockspace_id);
             windows.LayoutLoaded = true;
@@ -1588,7 +1588,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 EndMenu();
             }
             if (BeginMenu("Edit")) {
-                auto &history = Session(r).History;
+                const auto &history = Session(r).History;
                 const auto undo_target = history.UndoTarget(), redo_target = history.RedoTarget();
                 if (MenuItem("Undo", "Cmd+Z", false, undo_target.has_value())) Session(r).RequestNavigate(*undo_target);
                 if (MenuItem("Redo", "Cmd+Shift+Z", false, redo_target.has_value())) Session(r).RequestNavigate(*redo_target);
@@ -1653,7 +1653,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
 #ifdef DEBUG_BUILD
             const auto scene_revision = std::pair{Session(r).Revision, RestoreGeneration};
-            bool validate = windows.History.ValidateRequested;
+            const bool validate = windows.History.ValidateRequested;
 #ifdef VALIDATE_ACTIONS
             validate |= scene_revision != validated_revision;
 #endif
@@ -1856,7 +1856,7 @@ SceneStatus FinishHeadlessScene(state::Scene &r, state::Entity viewport, SceneSt
     QuiesceScene(r, viewport);
     r.remove<VideoRecording>(viewport);
     EndAudioCapture(r);
-    const auto working = Paths::Project();
+    const auto working = Paths::Project(); // NOLINT(performance-unnecessary-copy-initialization) SetProject replaces the referenced path.
     const bool closed = Session(r).Close();
     const auto errors = ReportActionErrors(r);
     Paths::SetProject({});
@@ -1904,15 +1904,23 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
         else if (a == "--play") {
             capture.Play = true;
             if (std::next(it) != args.end() && looks_numeric(*std::next(it))) capture.PlayDuration = std::atof((++it)->c_str());
-        } else if (a == "--record" && std::next(it) != args.end()) capture.RecordPath = *++it;
-        else if (a == "--record-audio") capture.RecordAudio = true;
-        else if (a == "--screenshot" && std::next(it) != args.end()) capture.ScreenshotPath = *++it;
-        else if (a == "--render" && std::next(it) != args.end()) capture.RenderBasename = *++it;
-        else if (a == "--render-queue" && std::next(it) != args.end()) render_queue = *++it;
-        else if (a == "--empty") empty = true;
-        else if (a == "--headless") headless = true;
-        else if (a == "--overlays") capture.Overlays = true;
-        else if (a == "--edit" && std::next(it) != args.end()) {
+        } else if (a == "--record" && std::next(it) != args.end()) {
+            capture.RecordPath = *++it;
+        } else if (a == "--record-audio") {
+            capture.RecordAudio = true;
+        } else if (a == "--screenshot" && std::next(it) != args.end()) {
+            capture.ScreenshotPath = *++it;
+        } else if (a == "--render" && std::next(it) != args.end()) {
+            capture.RenderBasename = *++it;
+        } else if (a == "--render-queue" && std::next(it) != args.end()) {
+            render_queue = *++it;
+        } else if (a == "--empty") {
+            empty = true;
+        } else if (a == "--headless") {
+            headless = true;
+        } else if (a == "--overlays") {
+            capture.Overlays = true;
+        } else if (a == "--edit" && std::next(it) != args.end()) {
             const std::string_view mode{*++it};
             if (mode == "vertex") capture.EditMode = Element::Vertex;
             else if (mode == "edge") capture.EditMode = Element::Edge;
@@ -1923,9 +1931,11 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
             }
         } else if (a == "--lod-error" && std::next(it) != args.end()) {
             capture.LodErrorPixels = std::stof(std::string{*++it});
-        } else if (a == "--xray") capture.XRay = true;
-        else if (a == "--select-all") capture.SelectAll = true;
-        else if (a == "--display" && std::next(it) != args.end()) {
+        } else if (a == "--xray") {
+            capture.XRay = true;
+        } else if (a == "--select-all") {
+            capture.SelectAll = true;
+        } else if (a == "--display" && std::next(it) != args.end()) {
             const std::string_view names{*++it};
             for (size_t start = 0; start <= names.size();) {
                 const auto end = std::min(names.find(',', start), names.size());
@@ -1940,13 +1950,16 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
                     return std::unexpected(1);
                 }
             }
-        } else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi((++it)->c_str());
-        else if (a == "--timeline-end" && std::next(it) != args.end()) capture.TimelineEnd = std::atof((++it)->c_str());
-        else if (a == "--motion-blur" && std::next(it) != args.end()) {
+        } else if (a == "--fps" && std::next(it) != args.end()) {
+            capture.Fps = std::atoi((++it)->c_str());
+        } else if (a == "--timeline-end" && std::next(it) != args.end()) {
+            capture.TimelineEnd = std::atof((++it)->c_str());
+        } else if (a == "--motion-blur" && std::next(it) != args.end()) {
             const std::string_view method = *++it;
             capture.Blur = method == "fast" ? MotionBlur{} : MotionBlur{.Steps = uint8_t(std::clamp(std::atoi(method.data()), 1, 64)), .Method = MotionBlurMethod::FullSampling};
-        } else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi((++it)->c_str());
-        else if (a == "--bench-action" && std::next(it) != args.end()) {
+        } else if (a == "--frames" && std::next(it) != args.end()) {
+            capture.BenchFrames = std::atoi((++it)->c_str());
+        } else if (a == "--bench-action" && std::next(it) != args.end()) {
             const std::string_view action{*++it};
             if (action == "steady") capture.BenchAction = CaptureRequest::BenchmarkAction::Steady;
             else if (action == "orbit") capture.BenchAction = CaptureRequest::BenchmarkAction::Orbit;
@@ -1961,21 +1974,25 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
             }
         } else if (a == "--bench-action-count" && std::next(it) != args.end()) {
             capture.BenchActionCount = uint32_t(std::max(1, std::atoi((++it)->c_str())));
-        } else if (a == "--camera" && std::next(it) != args.end()) capture.CameraName = *++it;
-        else if (a == "--shading" && std::next(it) != args.end()) {
+        } else if (a == "--camera" && std::next(it) != args.end()) {
+            capture.CameraName = *++it;
+        } else if (a == "--shading" && std::next(it) != args.end()) {
             const std::string_view mode{*++it};
             capture.Shading = mode == "wireframe" ? ViewportShadingMode::Wireframe :
                 mode == "solid"                   ? ViewportShadingMode::Solid :
                 mode == "preview"                 ? ViewportShadingMode::MaterialPreview :
                                                     ViewportShadingMode::Rendered;
-        } else if (a == "--profile") profile::Enabled = true;
-        else if (a == "--profile-json" && std::next(it) != args.end()) {
+        } else if (a == "--profile") {
+            profile::Enabled = true;
+        } else if (a == "--profile-json" && std::next(it) != args.end()) {
             profile::Enabled = true;
             profile::JsonPath = *++it;
         } else if (a.starts_with('-')) {
             std::println(stderr, "Unknown option '{}'. Run with --help for the option list.", a);
             return std::unexpected(1);
-        } else if (initial_file.empty()) initial_file = *it;
+        } else if (initial_file.empty()) {
+            initial_file = *it;
+        }
     }
     if (capture.Fps <= 0) capture.Fps = 60;
     // Enable audio capture for WAV output.
@@ -2069,7 +2086,7 @@ int main(int argc, char **argv) {
 
     std::set_terminate([]() {
         try {
-            if (auto eptr = std::current_exception()) std::rethrow_exception(eptr);
+            if (const auto eptr = std::current_exception()) std::rethrow_exception(eptr);
         } catch (const std::exception &e) {
             std::println(stderr, "{}", e.what());
         } catch (...) {

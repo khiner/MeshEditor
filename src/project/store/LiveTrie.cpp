@@ -176,8 +176,9 @@ void DirtyManifest(LiveTrie &trie, uint32_t level, uint64_t index) {
 
 void RehashSlot(LiveTrie &trie, uint64_t slot, Hash128 incoming, bool incoming_default) {
     auto &e = SlotHashAt(trie, slot);
-    if (incoming_default ? e.State == LiveTrie::SlotState::Value : e.State != LiveTrie::SlotState::Value || e.H != incoming)
+    if (incoming_default ? e.State == LiveTrie::SlotState::Value : e.State != LiveTrie::SlotState::Value || e.H != incoming) {
         DirtyManifest(trie, 0, slot / Fanout);
+    }
     if (e.State == LiveTrie::SlotState::Value) {
         const Term t{slot, e.H};
         trie.Lane0 -= t.L0;
@@ -234,7 +235,7 @@ Node *CommitRec(LiveTrie &trie, Node *p, Node *t, uint32_t level, uint64_t base,
     if (level == 0) {
         assert(p->Kind == NodeKind::Aliased);
         if (t->Kind == NodeKind::Aliased) return t; // Both alias live data.
-        auto &c = plan.Changes[next++];
+        const auto &c = plan.Changes[next++];
         assert(c.Slot == base && "plan applied out of order");
         const auto slot = base;
         NodeKind old_kind;
@@ -330,8 +331,9 @@ bool CheckRec(Node *n, uint32_t level, std::string &why) {
                 why = "interior at level 0";
                 return false;
             }
-            for (uint32_t i = 0; i < Fanout; ++i)
+            for (uint32_t i = 0; i < Fanout; ++i) {
                 if (!CheckRec(n->Children[i], level - 1, why)) return false;
+            }
             return true;
     }
     return false;
@@ -339,8 +341,9 @@ bool CheckRec(Node *n, uint32_t level, std::string &why) {
 
 void CollectAliased(Node *n, std::unordered_set<const Node *> &out) {
     if (n->Kind == NodeKind::Aliased) out.insert(n);
-    else if (n->Kind == NodeKind::Interior)
+    else if (n->Kind == NodeKind::Interior) {
         for (uint32_t i = 0; i < Fanout; ++i) CollectAliased(n->Children[i], out);
+    }
 }
 
 bool CheckVersionRec(Node *n, const std::unordered_set<const Node *> &present_aliased, std::string &why) {
@@ -351,9 +354,11 @@ bool CheckVersionRec(Node *n, const std::unordered_set<const Node *> &present_al
         }
         return true;
     }
-    if (n->Kind == NodeKind::Interior)
-        for (uint32_t i = 0; i < Fanout; ++i)
+    if (n->Kind == NodeKind::Interior) {
+        for (uint32_t i = 0; i < Fanout; ++i) {
             if (!CheckVersionRec(n->Children[i], present_aliased, why)) return false;
+        }
+    }
     return true;
 }
 } // namespace
@@ -517,8 +522,9 @@ ManifestChildren LiveTrie::ChildrenAt(uint32_t level, uint64_t index, uint64_t l
     for (uint64_t digit = 0; digit < Fanout; ++digit) {
         const auto child = index * Fanout + digit;
         if (level == 0) {
-            if (child < limit && child < SlotHashes.size() && SlotHashes[child].State == SlotState::Value)
+            if (child < limit && child < SlotHashes.size() && SlotHashes[child].State == SlotState::Value) {
                 children[digit] = SlotHashes[child].H;
+            }
         } else if (child < Manifest[level - 1].Nodes.size()) {
             children[digit] = Manifest[level - 1].Nodes[child].Hash;
         }
@@ -576,8 +582,9 @@ bool LiveTrie::Check(std::string &why, const std::vector<Version> &all_versions)
     if (!CheckRec(Root, Levels, why)) return false;
     std::unordered_set<const Node *> aliased;
     CollectAliased(Root, aliased);
-    for (const auto &v : all_versions)
+    for (const auto &v : all_versions) {
         if (v.Root && !CheckVersionRec(v.Root, aliased, why)) return false;
+    }
     return true;
 }
 } // namespace store

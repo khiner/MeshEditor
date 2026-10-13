@@ -8,10 +8,10 @@
 
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 namespace state {
 struct Scene;
-}
+} // namespace state
 
 // Clusters [First, First + Count) that join the owner under one primitive.
 // A finest run also joins the primitive's pinned finest node.

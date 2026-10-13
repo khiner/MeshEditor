@@ -49,7 +49,7 @@ std::vector<SymmetrySnapVertex> PlanSymmetrySnap(const MeshStore &meshes, const 
                     continue;
                 }
                 const auto &block = membership[child];
-                for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
+                for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) {
                     for (auto bits = block.Live[w]; bits; bits &= bits - 1u) {
                         const uint32_t other = block.Local * MeshElementBlockSize + w * 32u + uint32_t(std::countr_zero(bits));
                         ++visited_vertices;
@@ -60,6 +60,7 @@ std::vector<SymmetrySnapVertex> PlanSymmetrySnap(const MeshStore &meshes, const 
                             partner = other;
                         }
                     }
+                }
             }
         };
         walk(walk, tree.Root, SelectionIndexLevels - 1u);

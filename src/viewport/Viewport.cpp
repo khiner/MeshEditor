@@ -55,8 +55,6 @@
 
 #include <cassert>
 
-using std::ranges::find, std::ranges::to;
-
 namespace {
 RenderRequest TakeRenderRequest(state::Scene &r) {
     return std::exchange(r.Context.get<PendingRenderRequest>().Value, RenderRequest::None);
@@ -131,7 +129,7 @@ void RenderMotionBlurredFrame(state::Scene &r, state::Entity viewport) {
             auto current_view = *reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data());
             const auto &previous_view = *reinterpret_cast<const SceneViewUBO *>(buffers.SceneViewUBO.Contents().data() + buffers.SceneViewUboOffset(sample_weights.size()));
             previous.ApplyTo(current_view);
-            if (std::memcmp(&previous_view, &current_view, sizeof(current_view)) == 0 &&
+            if (std::memcmp(&previous_view, &current_view, sizeof(current_view)) == 0 && // NOLINT(bugprone-suspicious-memory-comparison)
                 same_buffer(previous.Transforms, buffers.Instances.TransformBuffer) &&
                 same_buffer(previous.ArmatureDeform, buffers.ArmatureDeformBuffer.Buffer) &&
                 same_buffer(previous.MorphWeights, buffers.MorphWeightBuffer.Buffer) &&
@@ -205,7 +203,7 @@ state::Entity InitEngine(state::Scene &r) {
     const auto viewport = r.create();
     auto &meshes = r.Context.emplace<MeshStore>(InitRenderStores(r));
     r.Context.get<GpuBuffers>().Render = &meshes.Render();
-    auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &buffers = r.Context.get<GpuBuffers>();
     r.Context.emplace<action::Errors>();
     InitDefaultMaterial(r);
     // These engine resources outlive documents.

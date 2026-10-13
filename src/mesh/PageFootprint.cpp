@@ -3,8 +3,9 @@
 std::vector<uint32_t> TableBlocks(std::span<const uint32_t> table, std::span<const uint32_t> locals) {
     std::vector<uint32_t> blocks;
     blocks.reserve(locals.size());
-    for (const auto local : locals)
+    for (const auto local : locals) {
         if (local < table.size() && table[local] != InvalidOffset) blocks.push_back(table[local]);
+    }
     return blocks;
 }
 
@@ -25,14 +26,15 @@ std::vector<uint32_t> WorkBlocks(const BufferArena<uint32_t> &arena, ElementWork
 
 void PageFootprint::Add(const mtl::Buffer &buffer, std::span<const uint32_t> blocks, uint64_t block_bytes) {
     if (blocks.empty()) return;
-    auto found = std::ranges::find(Entries, &buffer, &Entry::Buffer);
+    const auto found = std::ranges::find(Entries, &buffer, &Entry::Buffer);
     auto &entry = found == Entries.end() ? Entries.emplace_back(&buffer) : *found;
     auto &pages = entry.Pages;
     for (const auto block : blocks) {
         const auto first = uint64_t(block) * block_bytes;
         if (buffer.Writes) entry.Extents.emplace_back(first, first + block_bytes);
-        for (auto page = uint32_t(first / mtl::HistoryPageBytes); page <= (first + block_bytes - 1u) / mtl::HistoryPageBytes; ++page)
+        for (auto page = uint32_t(first / mtl::HistoryPageBytes); page <= (first + block_bytes - 1u) / mtl::HistoryPageBytes; ++page) {
             if (pages.empty() || pages.back() != page) pages.push_back(page);
+        }
     }
 }
 

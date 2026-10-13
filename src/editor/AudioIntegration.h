@@ -37,7 +37,7 @@ void SetVertexSamples(
 // The sample store deduplicates by path.
 void AssignVertexSample(
     state::Scene &, state::Entity sound_entity,
-    std::span<const uint32_t> mesh_vertices, std::filesystem::path, std::vector<float> &&frames
+    std::span<const uint32_t> mesh_vertices, const std::filesystem::path &, std::vector<float> &&frames
 );
 
 // Remove samples from every mesh vertex in `mesh_vertices`.

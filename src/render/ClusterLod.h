@@ -22,7 +22,7 @@ inline constexpr uint32_t ClusterLodMinTriangles{16};
 // A mesh at or below this count has no coarser level.
 inline constexpr uint32_t ClusterLodPartitionSize{16};
 // A face mesh with more level-zero clusters than one partition carries a coarser level.
-inline constexpr bool ClusterLodApplies(bool face_topology, uint32_t level0_count) { return face_topology && level0_count > ClusterLodPartitionSize; }
+constexpr bool ClusterLodApplies(bool face_topology, uint32_t level0_count) { return face_topology && level0_count > ClusterLodPartitionSize; }
 // Render records one span-tree leaf covers.
 inline constexpr uint32_t ClusterLodSpanLeafRecords{64};
 // Children one span-tree node covers.

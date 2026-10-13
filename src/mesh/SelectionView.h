@@ -49,18 +49,22 @@ struct SelectionView {
     void ForEach(auto &&visit) const {
         ForEachBlock([&](uint32_t block, uint32_t) {
             const auto base = Membership[block].Local * MeshElementBlockSize;
-            for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
-                for (auto bits = Bits[block * MeshElementBlockWords + w]; bits; bits &= bits - 1u)
+            for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) {
+                for (auto bits = Bits[block * MeshElementBlockWords + w]; bits; bits &= bits - 1u) {
                     visit(base + w * 32u + uint32_t(std::countr_zero(bits)));
+                }
+            }
         });
     }
     // Visits the arena address of each marked element, in ascending block order.
     void ForEachAddress(auto &&visit) const {
         if (!Selected) return;
         Tree.Visit(Kind, false, [&](uint32_t block) {
-            for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
-                for (auto bits = Bits[block * MeshElementBlockWords + w]; bits; bits &= bits - 1u)
+            for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) {
+                for (auto bits = Bits[block * MeshElementBlockWords + w]; bits; bits &= bits - 1u) {
                     visit(ElementAddress::InBlock<MeshElementBlockSize>(block, w * 32u + uint32_t(std::countr_zero(bits))));
+                }
+            }
             return true;
         });
     }
@@ -71,8 +75,9 @@ struct SelectionView {
         const auto block = last ? blocks.back() : blocks.front();
         for (uint32_t i = 0u; i < MeshElementBlockWords; ++i) {
             const auto w = last ? MeshElementBlockWords - 1u - i : i;
-            if (const auto bits = Bits[block * MeshElementBlockWords + w])
+            if (const auto bits = Bits[block * MeshElementBlockWords + w]) {
                 return Membership[block].Local * MeshElementBlockSize + w * 32u + (last ? 31u - uint32_t(std::countl_zero(bits)) : uint32_t(std::countr_zero(bits)));
+            }
         }
         return {};
     }
@@ -99,12 +104,14 @@ struct BoundaryEdgeView {
         return (Membership[address.Value() / MeshElementBlockSize].Live[slot / 32u] >> (slot % 32u) & 1u) && Boundary(address);
     }
     void ForEach(auto &&visit) const {
-        for (const auto block : MarkedBlocks(Tree, SelectionIndexMask::Boundary, Membership))
-            for (uint32_t w = 0u; w < MeshElementBlockWords; ++w)
+        for (const auto block : MarkedBlocks(Tree, SelectionIndexMask::Boundary, Membership)) {
+            for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) {
                 for (auto bits = Membership[block].Live[w]; bits; bits &= bits - 1u) {
                     const auto slot = w * 32u + uint32_t(std::countr_zero(bits));
                     if (Boundary(ElementAddress::InBlock<MeshElementBlockSize>(block, slot))) visit(Membership[block].Local * MeshElementBlockSize + slot);
                 }
+            }
+        }
     }
     uint32_t Count() const {
         uint32_t count = 0u;

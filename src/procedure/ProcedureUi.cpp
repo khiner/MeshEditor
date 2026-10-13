@@ -130,9 +130,11 @@ Wire WireOf(ImVec2 from, ImVec2 to) {
 // Visits each linked input as `f(wire, link, node, input)`.
 template<typename F> void ForEachWire(const Graph &graph, F &&f) {
     const auto &procedure = graph.Procedure;
-    for (uint32_t n = 0u, slot = 0u; n < procedure.Nodes.size(); ++n)
-        for (uint16_t i = 0u; i < InputCount[procedure.Nodes[n].Kind]; ++i, ++slot)
+    for (uint32_t n = 0u, slot = 0u; n < procedure.Nodes.size(); ++n) {
+        for (uint16_t i = 0u; i < InputCount[procedure.Nodes[n].Kind]; ++i, ++slot) {
             if (const auto link = procedure.Inputs[slot]; link.FromNode != NoNode) f(WireOf(graph.SocketAt(link.FromNode, link.FromSocket), graph.SocketAt(n, i)), link, n, i);
+        }
+    }
 }
 ImVec2 PointOn(const Wire &w, float t) {
     const float u = 1.f - t;
@@ -165,9 +167,11 @@ struct Hit {
 Hit HitTest(const Graph &graph, ImVec2 mouse) {
     const auto count = uint32_t(graph.Rects.size());
     const float reach = std::max(SocketRadius * graph.View.Zoom, 4.f) + 3.f;
-    for (auto n = count; n-- > 0u;)
-        for (uint16_t s = 0u; s < SocketCount[graph.Procedure.Nodes[n].Kind]; ++s)
+    for (auto n = count; n-- > 0u;) {
+        for (uint16_t s = 0u; s < SocketCount[graph.Procedure.Nodes[n].Kind]; ++s) {
             if (LengthSquared(graph.SocketAt(n, s) - mouse) <= reach * reach) return {HitType::Socket, n, s};
+        }
+    }
     for (auto n = count; n-- > 0u;) {
         const auto &[min, max] = graph.Rects[n];
         if (mouse.x >= min.x && mouse.y >= min.y && mouse.x < max.x && mouse.y < max.y) return {HitType::Node, n, 0u};
@@ -191,8 +195,9 @@ bool Accepts(const GeometryProcedure &procedure, uint32_t held_node, uint16_t he
 }
 // The first socket of a node of the kind that a wire held at a socket of the held kind links with, or none.
 std::optional<uint16_t> LinkingSocket(uint16_t held_kind, uint16_t held_socket, uint16_t kind) {
-    for (uint16_t s = 0u; s < SocketCount[kind]; ++s)
+    for (uint16_t s = 0u; s < SocketCount[kind]; ++s) {
         if (Joins(held_kind, held_socket, kind, s)) return s;
+    }
     return {};
 }
 
@@ -231,8 +236,9 @@ void ContinueMakeLink(NodesWindow &window) {
 // The procedure's selected nodes, ascending.
 std::vector<uint32_t> SelectedNodes(const state::Scene &r, const GeometryProcedure &procedure) {
     std::vector<uint32_t> selected;
-    for (uint32_t n = 0u; n < procedure.Nodes.size(); ++n)
+    for (uint32_t n = 0u; n < procedure.Nodes.size(); ++n) {
         if (r.all_of<NodeSelected>(procedure.Nodes[n].Entity)) selected.push_back(n);
+    }
     return selected;
 }
 
@@ -253,8 +259,9 @@ std::vector<action::nodes::Link> MakeLinks(const state::Scene &r, state::Entity 
             for (uint16_t input = 0u; input < InputCount[to_kind]; ++input) {
                 const auto current = procedure.Inputs[input_first[to] + input];
                 if ((current.FromNode != NoNode) != linked) continue;
-                for (uint16_t output = InputCount[from_kind]; output < SocketCount[from_kind]; ++output)
+                for (uint16_t output = InputCount[from_kind]; output < SocketCount[from_kind]; ++output) {
                     if (Links(KindSockets(from_kind)[output], KindSockets(to_kind)[input], to_kind) && (current.FromNode != from || current.FromSocket != output)) return action::nodes::Link{mesh_entity, from, output, to, input};
+                }
             }
             return {};
         };
@@ -472,8 +479,9 @@ void DrawAddMenu(NodesWindow &window, state::Entity mesh_entity, const GeometryP
     const auto &nodes = procedure.Nodes;
     const bool linking = window.Linking && window.DragNode < nodes.size();
     std::vector<uint16_t> kinds;
-    for (uint16_t kind = 0u; kind < KindCount; ++kind)
+    for (uint16_t kind = 0u; kind < KindCount; ++kind) {
         if (!linking || LinkingSocket(nodes[window.DragNode].Kind, window.DragSocket, kind)) kinds.push_back(kind);
+    }
     const auto add = [&](uint16_t kind) {
         if (!interactive) return;
         if (!linking) {
@@ -496,10 +504,11 @@ void DrawAddMenu(NodesWindow &window, state::Entity mesh_entity, const GeometryP
     const bool enter = InputTextWithHint("##Search", "Search", window.Search.data(), window.Search.size(), ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory, MoveHighlight, &window.SearchHighlight);
     if (IsItemEdited()) window.SearchHighlight = 0;
     if (const std::string_view text{window.Search.data()}; text.empty()) {
-        for (uint8_t group = 0u; group < std::size(GroupNames); ++group) {
+        for (uint8_t group = 0u; group < uint8_t(std::size(GroupNames)); ++group) {
             if (!std::ranges::contains(kinds, KindGroup(group), [](uint16_t kind) { return KindGroups[kind]; }) || !BeginMenu(GroupNames[group])) continue;
-            for (const auto kind : kinds)
+            for (const auto kind : kinds) {
                 if (KindGroups[kind] == KindGroup(group) && MenuItem(KindTitles[kind])) add(kind);
+            }
             EndMenu();
         }
     } else {
@@ -599,7 +608,7 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, s
                                                                                IM_COL32(15, 15, 15, 255);
         draw.AddRect(min, max, border, rounding, ImDrawFlags_None, erring || active || selected ? 2.f : 1.f);
         if (erring && (active || selected)) draw.AddRect(min + ImVec2{3.f, 3.f}, max - ImVec2{3.f, 3.f}, Error, rounding, ImDrawFlags_None, 1.f);
-        for (uint16_t s = 0u; s < sockets.size(); ++s) {
+        for (uint16_t s = 0u; s < uint16_t(sockets.size()); ++s) {
             const auto at = graph.SocketAt(n, s);
             const bool held = wiring && window.DragNode == n && window.DragSocket == s;
             const bool dimmed = wiring && !held && !Accepts(procedure, window.DragNode, window.DragSocket, n, s);
@@ -632,8 +641,9 @@ bool ObjectChoice(const state::Scene &r, const char *label, state::Entity &value
     const auto current = r.valid(value) ? value : state::Null;
     const auto objects = [&] {
         std::vector<state::Entity> choices{state::Null};
-        for (const auto [e, instance] : r.view<const Instance>().each())
+        for (const auto [e, instance] : r.view<const Instance>().each()) {
             if (HasMesh(r, instance.Entity)) choices.push_back(e);
+        }
         return choices;
     };
     const auto name = [&](state::Entity e) { return e == state::Null ? std::string{"None"} : GetName(r, e); };
@@ -694,8 +704,9 @@ void DrawFields(state::Scene &r, NodesWindow &window, state::Entity node, const 
 
 uint32_t SelectedCount(const std::vector<SelectionBlock> &blocks) {
     uint32_t count = 0u;
-    for (const auto &block : blocks)
+    for (const auto &block : blocks) {
         for (const auto word : block) count += uint32_t(std::popcount(word));
+    }
     return count;
 }
 

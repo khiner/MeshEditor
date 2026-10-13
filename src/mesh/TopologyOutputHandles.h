@@ -9,7 +9,7 @@
 
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 
 // Plan output identities from the operator's scanned counts, recorded after its count passes.
 // Geometry stays in the arenas. Maps and allocation counts are the only produced data, ranges of the chain's scratch read once the chain submits.

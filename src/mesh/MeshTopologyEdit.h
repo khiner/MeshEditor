@@ -11,7 +11,7 @@
 
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 struct PrimitiveListReferences;
 struct SpatialFaceWork;
 struct TopologyReadView;

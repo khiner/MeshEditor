@@ -31,7 +31,7 @@ namespace {
 template<typename T>
 concept Optional = requires(T t) { t.has_value(); t.emplace(); };
 template<typename T>
-concept Variant = requires { std::variant_size<T>::value; };
+concept Variant = requires { std::variant_size<T>::value; }; // NOLINT(modernize-type-traits)
 template<typename T>
 concept Vector = requires(T t) { t.emplace_back(); t.pop_back(); };
 template<typename T>
@@ -234,7 +234,7 @@ void DrawNodeEditor(Project &session, uint32_t node, bool interactive) {
 
 void HandleHistoryShortcuts(Project &session) {
     if (GetIO().WantTextInput) return;
-    auto &history = session.History;
+    const auto &history = session.History;
     const auto undo_target = history.UndoTarget();
     const auto redo_target = history.RedoTarget();
     if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat) && undo_target) session.RequestNavigate(*undo_target);
@@ -317,8 +317,9 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
         }
         const auto active_mask = [&](size_t row, bool below) {
             auto mask = uint32_t{0};
-            for (const auto &rail : active_rails)
+            for (const auto &rail : active_rails) {
                 if (below ? rail.First <= row && row < rail.Last : rail.First < row && row <= rail.Last) mask |= rail.Bit;
+            }
             return mask;
         };
         // An open edit highlights its node while the present node is its parent.

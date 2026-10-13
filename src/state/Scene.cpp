@@ -41,8 +41,9 @@ void RemoveComponentPages(Scene &r, std::span<const PageMask> pages) {
         for (const auto [page, mask] : affected) {
             const auto removed = table.mask(page) & mask;
             if (!removed) continue;
-            for (auto bits = removed; bits; bits &= bits - 1u)
+            for (auto bits = removed; bits; bits &= bits - 1u) {
                 Notify(r, type, Event::Destroy, table.entity(page, std::countr_zero(bits)));
+            }
             table.erase(page, removed);
         }
     }
@@ -98,16 +99,19 @@ void Table::erase(uint32_t p, uint32_t mask) {
 }
 void Table::Release(uint32_t p) {
     auto &page = *Pages[p];
-    if (Destroy)
-        for (uint32_t i = 0; i < PageCount; ++i)
+    if (Destroy) {
+        for (uint32_t i = 0; i < PageCount; ++i) {
             if (page.Mask & (1u << i)) Destroy(Bytes(page) + ValueOffset + i * Size);
+        }
+    }
     ::operator delete(&page, std::align_val_t(Align));
     Pages[p] = nullptr;
     Occupied[p / 64] &= ~(uint64_t{1} << p % 64);
 }
 void Table::clear() {
-    for (uint32_t p = 0; p < Pages.size(); ++p)
+    for (uint32_t p = 0; p < Pages.size(); ++p) {
         if (Pages[p]) Release(p);
+    }
     Pages.clear();
     Occupied.clear();
     Count = 0;
@@ -117,8 +121,9 @@ Scene::Scene() : AllocationStorage(std::make_unique<Allocation>()) {
 }
 Scene::~Scene() { Context.Clear(); }
 DirtySet::~DirtySet() {
-    if (Owner)
+    if (Owner) {
         for (auto [type, event] : Bindings) std::erase(Owner->Dirty[type][size_t(event)], this);
+    }
 }
 void DirtySet::Track(TypeId type, Event event) {
     assert(Owner);
@@ -174,7 +179,7 @@ void Scene::destroy(std::span<const Entity> entities) {
     ForEachIndexRun(pages, [&](size_t first, size_t count) {
         const auto start = pages[first].Page * Table::PageCount;
         const auto end = std::min<uint64_t>(generations.size(), (pages[first].Page + count) * Table::PageCount);
-        auto values = std::span{reinterpret_cast<uint32_t *>(generations.P.Mutable(uint64_t(start) * sizeof(uint32_t), (end - start) * sizeof(uint32_t)).data()), size_t(end - start)};
+         const auto  values = std::span{reinterpret_cast<uint32_t *>(generations.P.Mutable(uint64_t(start) * sizeof(uint32_t), (end - start) * sizeof(uint32_t)).data()), size_t(end - start)};
         for (size_t j = first; j < first + count; ++j) {
             for (auto bits = pages[j].Mask; bits; bits &= bits - 1u) {
                 const auto index = pages[j].Page * Table::PageCount + uint32_t(std::countr_zero(bits));
@@ -215,9 +220,11 @@ void Scene::clear(TypeId type) {
 }
 void Scene::ResetEntities() {
     ++Epoch;
-    for (auto &type : Dirty)
-        for (auto &event : type)
+    for (const auto &type : Dirty) {
+        for (const auto &event : type) {
             for (auto *set : event) set->clear();
+        }
+    }
     AllocationStorage->Generations.Clear();
     AllocationStorage->Free.Clear();
     Living.clear();

@@ -5,7 +5,7 @@
 
 namespace state {
 struct Scene;
-}
+} // namespace state
 
 // Derived: the entity holding each store record's mesh handle or evaluated mesh.
 struct MeshEntities {

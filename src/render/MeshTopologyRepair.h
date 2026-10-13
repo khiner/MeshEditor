@@ -9,7 +9,7 @@ struct FaceTriangles;
 struct MeshletBuildSource;
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 
 // Publish each entity's in-place topology edit through finest payload, simplification
 // dependencies and traversal bounds before retiring its source identities.

@@ -9,7 +9,7 @@ namespace action {
 void SerializeAction(const Action &, std::ostream &);
 namespace detail {
 bool ReadAction(std::istream &, Action &, std::vector<std::byte> &);
-}
+} // namespace detail
 
 // Streams actions with bounded memory and stops at a truncated or corrupt record.
 void StreamActions(std::istream &in, auto &&on_action, uint64_t count = std::numeric_limits<uint64_t>::max()) {

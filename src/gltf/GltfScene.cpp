@@ -250,7 +250,9 @@ std::expected<void, std::string> AppendCustomAttributes(const fastgltf::Asset &a
         if (custom == attrs.Custom.end()) {
             custom = attrs.Custom.insert(attrs.Custom.end(), {.Type = type, .Words = std::vector<uint32_t>(size_t(base_vertex) * AttributeComponents(type), 0u)});
             std::ranges::copy(name, custom->Name.begin());
-        } else if (custom->Type != type) return std::unexpected{std::format("glTF attribute {} changes type between primitives of a mesh.", name)};
+        } else if (custom->Type != type) {
+            return std::unexpected{std::format("glTF attribute {} changes type between primitives of a mesh.", name)};
+        }
         const auto n = AttributeComponents(type);
         custom->Words.resize((size_t(base_vertex) + count) * n, 0u);
         auto *words = custom->Words.data() + size_t(base_vertex) * n;
@@ -1600,11 +1602,11 @@ ImportedObjects ImportObjects(state::Scene &r, const fastgltf::Asset &asset, con
         // EXT_mesh_gpu_instancing emits one root object per instance with its world transform baked in.
         const auto instance_transforms = mesh_index ? ReadInstanceTransforms(asset, source_node) : std::vector<Transform>{};
         instanced[node_index] = !instance_transforms.empty();
-        auto base_name = MakeNodeName(asset, node_index, mesh_index);
+        const auto base_name = MakeNodeName(asset, node_index, mesh_index);
         const std::string_view raw_name{source_node.name};
         const uint32_t count = instanced[node_index] ? uint32_t(instance_transforms.size()) : 1u;
         for (uint32_t i = 0; i < count; ++i) {
-            auto name = instanced[node_index] ? std::format("{}.{}", base_name, i) : std::move(base_name);
+            auto name = instanced[node_index] ? std::format("{}.{}", base_name, i) : base_name;
             const auto transform = instanced[node_index] ? ToTransform(plan.WorldTransforms[node_index] * ToMatrix(instance_transforms[i])) : plan.LocalTransforms[node_index];
             auto node = SourceGltfNode(plan, node_index);
             state::Entity e = state::Null;
@@ -2250,8 +2252,9 @@ bool ImportAnimations(state::Scene &r, const fastgltf::Asset &asset, state::Enti
             case gltf::PointerSpace::Camera:
             case gltf::PointerSpace::Light: {
                 const auto &objects_by_index = row->Space == gltf::PointerSpace::Camera ? objects_by_camera : objects_by_light;
-                if (const auto it = objects_by_index.find(index); it != objects_by_index.end())
+                if (const auto it = objects_by_index.find(index); it != objects_by_index.end()) {
                     for (const auto e : it->second) targets.emplace_back(e, row->Target);
+                }
                 break;
             }
         }
@@ -2423,8 +2426,9 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
         const auto active_scene = ActiveSceneEntity(r);
         std::vector<NodeEntity> selected;
         selected.reserve(objects.Entities.size() + armatures.Objects.size());
-        for (const auto &[node_index, e] : objects.Entities)
+        for (const auto &[node_index, e] : objects.Entities) {
             if (EntityInActiveScene(r, active_scene, e)) selected.emplace_back(node_index, e);
+        }
         for (const auto e : armatures.Objects) selected.emplace_back(std::numeric_limits<uint32_t>::max(), e);
         SelectObjects(r, std::move(selected));
     }

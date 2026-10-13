@@ -24,8 +24,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     a.Target, viewport,
                     [&] { return FindActiveEntity(r); },
                     [&](auto &&fn) {
-                        for (const auto e : r.view<Selected>())
+                        for (const auto e : r.view<Selected>()) {
                             if (r.any_of<ColliderShape, PhysicsMotion>(e)) fn(e);
+                        }
                     },
                     [&](state::Entity e) {
                         const bool want_motion = a.Value == Type::Kinematic || a.Value == Type::Dynamic;
@@ -82,7 +83,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     auto &vec = a.Which == ToggleFilterEntity::List::Systems ? f.Systems : f.CollideSystems;
                     if (a.Add) {
                         if (std::find(vec.begin(), vec.end(), a.SystemEntity) == vec.end()) vec.emplace_back(a.SystemEntity);
-                    } else std::erase(vec, a.SystemEntity);
+                    } else {
+                        std::erase(vec, a.SystemEntity);
+                    }
                 });
             },
             [&]<typename T>(const SetJointVecItem<T> &a) {

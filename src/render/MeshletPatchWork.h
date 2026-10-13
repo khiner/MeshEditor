@@ -9,7 +9,7 @@
 
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 
 // A triangle edit's canonical membership, as finished work in one storage arena.
 struct MeshletPatchInput {

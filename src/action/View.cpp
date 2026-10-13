@@ -155,11 +155,14 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 }
 
                 // Snapshot starts before patching so later patches don't perturb the snapshot, then apply.
-                for (const auto &[e, _] : locals)
+                for (const auto &[e, _] : locals) {
                     if (!r.all_of<StartTransform>(e)) r.emplace<StartTransform>(e, *WorldTransformOf(r, e), ToTransform(GetParentDelta(r, e)));
-                for (const auto &[e, _] : bone_scales)
-                    if (!r.all_of<StartBoneLength>(e))
+                }
+                for (const auto &[e, _] : bone_scales) {
+                    if (!r.all_of<StartBoneLength>(e)) {
                         if (const auto *ds = r.try_get<BoneDisplayScale>(e)) r.emplace<StartBoneLength>(e, ds->Value);
+                    }
+                }
                 for (const auto &[e, local] : locals) PatchEditedLocal(r, e, [&](auto &t) { t = local; });
                 for (const auto &[e, length] : bone_scales) r.emplace_or_replace<BoneDisplayScale>(e, length);
             },

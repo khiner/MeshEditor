@@ -106,7 +106,7 @@ state::Entity CreateBoneEntity(state::Scene &r, state::Entity arm_obj_entity, co
 }
 
 void CreateBoneJoints(state::Scene &r, state::Entity arm_obj_entity, state::Entity bone_entity, state::Entity joint_entity) {
-    auto make = [&](bool is_tail) {
+    const auto make = [&](bool is_tail) {
         const auto e = r.create();
         r.emplace<SubElementOf>(e, arm_obj_entity);
         r.emplace<Instance>(e, joint_entity);

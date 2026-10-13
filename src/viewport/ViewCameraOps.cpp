@@ -3,7 +3,7 @@
 #include "state/Scene.h"
 
 state::Entity LookThroughCameraEntity(const state::Scene &r) {
-    auto view = r.view<LookingThrough>();
+    const auto view = r.view<LookingThrough>();
     return view.empty() ? state::Null : *view.begin();
 }
 

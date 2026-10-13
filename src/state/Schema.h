@@ -8,7 +8,7 @@
 namespace state {
 using TypeId = uint32_t;
 template<typename T> consteval std::string_view TypeName() {
-    std::string_view text = __PRETTY_FUNCTION__;
+    const std::string_view text = __PRETTY_FUNCTION__;
     const auto begin = text.find("T = ") + 4;
     return text.substr(begin, text.rfind(']') - begin);
 }
@@ -307,8 +307,9 @@ constexpr bool SameName(std::string_view a, std::string_view b) {
 }
 template<typename T> inline constexpr TypeId TypeIndex = [] {
     constexpr auto name = TypeName<T>();
-    for (TypeId i = 0; i < SchemaSize; ++i)
+    for (TypeId i = 0; i < SchemaSize; ++i) {
         if (SameName(name, SchemaNames[i])) return i;
+    }
     return TypeId(SchemaSize);
 }();
 template<typename T> consteval TypeId Type() {
@@ -320,7 +321,7 @@ template<typename T> consteval TypeId Type() {
 // Serialized records identify a type by a hash of its schema name, so slot numbers can change without invalidating them.
 enum class TypeKey : uint32_t {};
 constexpr uint32_t HashName(std::string_view name) {
-    uint32_t hash = 2166136261u;
+    uint32_t hash{2166136261u};
     for (const char c : name) hash = (hash ^ uint8_t(c)) * 16777619u;
     return hash;
 }
@@ -334,7 +335,7 @@ inline constexpr auto KeyTable = [] {
 static_assert(std::ranges::adjacent_find(KeyTable, {}, [](const auto &entry) { return entry.first; }) == KeyTable.end(), "Schema name hashes collide");
 // The slot for a serialized key, or SchemaSize for a key absent from the schema.
 constexpr TypeId Slot(TypeKey key) {
-    const auto it = std::ranges::lower_bound(KeyTable, uint32_t(key), {}, [](const auto &entry) { return entry.first; });
+    const auto *const it = std::ranges::lower_bound(KeyTable, uint32_t(key), {}, [](const auto &entry) { return entry.first; });
     return it != KeyTable.end() && it->first == uint32_t(key) ? it->second : TypeId(SchemaSize);
 }
 } // namespace state

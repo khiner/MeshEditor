@@ -35,7 +35,7 @@ template<typename T>
 T GetProperty(AudioObjectID object, const AudioObjectPropertyAddress &address, std::string_view operation) {
     T value{};
     UInt32 size = sizeof(value);
-    Check(AudioObjectGetPropertyData(object, &address, 0, nullptr, &size, &value), operation);
+    Check(AudioObjectGetPropertyData(object, &address, 0, nullptr, &size, static_cast<void *>(&value)), operation);
     return value;
 }
 
@@ -74,7 +74,7 @@ bool HasOutput(AudioDeviceID device) {
 AudioDeviceID RefreshDevices(std::vector<std::string> &names, std::string_view requested_name) {
     names.clear();
     AudioDeviceID selected = kAudioObjectUnknown;
-    for (AudioDeviceID device : GetPropertyVector<AudioDeviceID>(kAudioObjectSystemObject, DevicesAddress, "enumerating devices")) {
+    for (const AudioDeviceID device : GetPropertyVector<AudioDeviceID>(kAudioObjectSystemObject, DevicesAddress, "enumerating devices")) {
         if (!HasOutput(device)) continue;
         auto name = DeviceName(device);
         if (name == requested_name) selected = device;
@@ -155,7 +155,7 @@ OSStatus DataCallback(
 
 void CloseDevice(AudioDeviceResource &res) {
     if (res.OutputUnit) {
-        auto unit = static_cast<AudioUnit>(res.OutputUnit);
+        auto *unit = static_cast<AudioUnit>(res.OutputUnit);
         if (res.Started) AudioOutputUnitStop(unit);
         AudioUnitUninitialize(unit);
         AudioComponentInstanceDispose(unit);
@@ -170,7 +170,7 @@ void CloseDevice(AudioDeviceResource &res) {
 
 AudioUnit OpenDevice(AudioDeviceResource &res, AudioDeviceID device, uint32_t sample_rate) {
     const AudioComponentDescription description{kAudioUnitType_Output, kAudioUnitSubType_HALOutput, kAudioUnitManufacturer_Apple, 0, 0};
-    const AudioComponent component = AudioComponentFindNext(nullptr, &description);
+    auto *const component = AudioComponentFindNext(nullptr, &description);
     if (!component) throw std::runtime_error("CoreAudio HAL output component is unavailable");
 
     AudioUnit unit{nullptr};
@@ -229,7 +229,7 @@ void ApplyAudioMix(AudioDeviceResource &res, const AudioOutputMix &mix) {
     if (!res.Initialized) return;
     const float target_gain = mix.Muted ? 0.f : mix.Volume;
     res.TargetGain.store(target_gain, std::memory_order_relaxed);
-    auto unit = static_cast<AudioUnit>(res.OutputUnit);
+    auto *unit = static_cast<AudioUnit>(res.OutputUnit);
     if (mix.On && !res.Started) {
         res.RenderGain = target_gain;
         Check(AudioOutputUnitStart(unit), "starting the output device");

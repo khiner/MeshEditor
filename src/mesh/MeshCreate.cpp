@@ -73,11 +73,12 @@ PreparedMesh PrepareMeshSources(MeshData &data, MeshVertexAttributes &attrs, Mes
             if (!src) return;
             out.reserve(wires ? data.HalfedgeCount() : data.FaceCorners.size());
             for (const auto v : data.FaceCorners) out.emplace_back((*src)[v]);
-            if (wires)
+            if (wires) {
                 for (const auto &edge : data.Edges) {
                     out.emplace_back((*src)[edge[1]]);
                     out.emplace_back((*src)[edge[0]]);
                 }
+            }
             src.reset();
         };
         gather_corners(attrs.Tangents, prepared.Layers.Tangents);
@@ -147,9 +148,10 @@ void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &da
     const auto id = mesh.GetStoreId();
     if (mesh.FaceCount() == 0) return;
     const auto sharp_faces = meshes.EditFaceSharpness(id);
-    if (flat_shaded) std::ranges::fill(sharp_faces, uint8_t{1});
-    // Faces of primitives that ship no normals shade flat, like a fully normal-less mesh.
-    else if (!primitives.AttributeFlags.empty()) {
+    if (flat_shaded) {
+        std::ranges::fill(sharp_faces, uint8_t{1});
+        // Faces of primitives that ship no normals shade flat, like a fully normal-less mesh.
+    } else if (!primitives.AttributeFlags.empty()) {
         for (uint32_t fi = 0; fi < sharp_faces.size(); ++fi) {
             const auto pi = fi < primitives.ElementPrimitiveIndices.size() ? primitives.ElementPrimitiveIndices[fi] : 0u;
             if (pi < primitives.AttributeFlags.size() && !(primitives.AttributeFlags[pi] & MeshAttributeBit_Normal)) sharp_faces[fi] = 1;
@@ -168,8 +170,9 @@ void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &da
         const auto corner_count = uint32_t(face.size());
         const auto p0 = vertices[face[0]].Position;
         vec3 cross{};
-        for (uint32_t k = 1u; k + 1u < face.size(); ++k)
+        for (uint32_t k = 1u; k + 1u < face.size(); ++k) {
             cross += Cross(vertices[face[k]].Position - p0, vertices[face[k + 1u]].Position - p0);
+        }
         const auto cross_len = Length(cross);
         bool flat = cross_len > 0.f;
         if (flat) {
@@ -295,7 +298,7 @@ void EncodeAuthoredCornerNormals(MeshStore &meshes, const Mesh &mesh, std::span<
     const auto derived = meshes.GetCornerNormalView(id);
     std::vector<CustomNormal> offsets(mesh.HalfEdgeCount());
     bool any = false;
-    for (const auto face : mesh.faces())
+    for (const auto face : mesh.faces()) {
         for (const auto corner : mesh.fh_range(face)) {
             const uint32_t h = *corner;
             const auto authored_normal = authored[h], normal = derived[h];
@@ -303,6 +306,7 @@ void EncodeAuthoredCornerNormals(MeshStore &meshes, const Mesh &mesh, std::span<
             offsets[h].Offset = EncodeNormalOffset(authored_normal / Length(authored_normal), ComputeCornerFrame(normal, mesh, h));
             any = true;
         }
+    }
     if (any) meshes.SetCustomCornerNormals(id, offsets);
 }
 
@@ -315,8 +319,9 @@ void UpdateMorphShadingAuthored(MeshStore &meshes, const Mesh &mesh, std::span<c
     // A target authoring normal deltas states the morphed shading normals directly.
     bool has_authored_delta = false;
     arenas.Vertices.ForEach(record.Vertices, [&](ElementHandle handle, ElementAddress) {
-        for (uint32_t target = 0; target < record.MorphTargetCount && !has_authored_delta; ++target)
+        for (uint32_t target = 0; target < record.MorphTargetCount && !has_authored_delta; ++target) {
             has_authored_delta = arenas.Morph.Get(record.Morph, handle.Value, target, record.MorphTargetCount).NormalDelta != vec3{0};
+        }
     });
     if (has_authored_delta) {
         meshes.SetMorphShadingAuthored(id, true);

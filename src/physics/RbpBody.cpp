@@ -14,7 +14,7 @@ void CheckNonnegative(float value) {
 }
 
 rbp::float4 Rotation(quat q) {
-    auto value = ToRbp(q);
+    const auto value = ToRbp(q);
     const float length = simd::length(value);
     if (!std::isfinite(length) || length < 1e-8f) throw std::invalid_argument("Physics orientation must be a finite nonzero quaternion.");
     return value / length;

@@ -5,7 +5,7 @@
 
 namespace state {
 struct Scene;
-}
+} // namespace state
 namespace action {
 // Stores action-handler failures for the application to drain each frame.
 struct Errors {

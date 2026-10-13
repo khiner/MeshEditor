@@ -4,12 +4,12 @@
 
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 
 struct MeshConnectivityJob;
 namespace state {
 struct Scene;
-}
+} // namespace state
 
 // Records the rebuild of the packed fans of connectivity jobs' writable vertices into `chain`.
 // Each job's fans fill one run of its supplied incidence count, allocated before recording, and a device scan places each fan inside it.

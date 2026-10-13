@@ -52,8 +52,9 @@ MeshStore::TopologyCounts TopologyOutputBounds(const MeshTopologyTask &task, Mes
         case MeshTopologyOp::AddPrimitives: {
             if (task.List.size() <= TopologyPrimitiveHeaderWords) throw std::invalid_argument("Topology primitive list has no header.");
             const uint64_t vertices = task.List[0], boundary = task.List[1], span = task.List[2];
-            if (boundary ? boundary < 4u || boundary % 2u || !span || span >= boundary / 2u || vertices != (span - 1u) * (boundary / 2u - span - 1u) : vertices || span)
+            if (boundary ? boundary < 4u || boundary % 2u || !span || span >= boundary / 2u || vertices != (span - 1u) * (boundary / 2u - span - 1u) : vertices || span) {
                 throw std::invalid_argument("Topology primitive list has an invalid grid.");
+            }
             const uint64_t first_face = TopologyPrimitiveHeaderWords + boundary;
             if (first_face >= task.List.size()) throw std::invalid_argument("Topology primitive list has an incomplete boundary.");
             const uint64_t primitives = task.List[first_face];

@@ -11,7 +11,7 @@
 
 namespace NS {
 class String;
-}
+} // namespace NS
 namespace MTL {
 class Allocation;
 class Device;
@@ -25,7 +25,7 @@ class SharedEvent;
 
 namespace MTL4 {
 class CommandQueue;
-}
+} // namespace MTL4
 
 namespace mtl {
 struct PhysicalPagePool;

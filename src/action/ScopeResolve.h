@@ -28,8 +28,9 @@ template<typename T> state::Entity ActiveWith(const state::Scene &r) {
     return e != state::Null && r.all_of<T>(e) ? e : state::Null;
 }
 template<typename T, typename F> void ForEachSelectedWith(const state::Scene &r, F &&fn) {
-    for (const auto e : r.view<Selected>())
+    for (const auto e : r.view<Selected>()) {
         if (r.all_of<T>(e)) fn(e);
+    }
 }
 template<typename T, typename F>
 void ForEachComponentTarget(state::Scene &r, const Target &target, state::Entity viewport, F &&fn) {

@@ -87,8 +87,9 @@ struct RangeAllocator {
         auto first = range.Offset, end = first + range.Count;
         const auto before = Predecessor(first), after = Successor(first);
         if ((before != Null && Nodes[before].First + Nodes[before].Count > first) ||
-            (after != Null && Nodes[after].First < end))
+            (after != Null && Nodes[after].First < end)) {
             throw std::logic_error("Arena range freed twice or overlaps free storage.");
+        }
         Transaction transaction{*this};
         if (before != Null && Nodes[before].First + Nodes[before].Count == first) {
             first = Nodes[before].First;

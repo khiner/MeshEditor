@@ -127,7 +127,7 @@ void FinishTopologyEdit(state::Scene &r, state::Entity entity, const MeshTopolog
         ForEachIndexRun(handles, [&](size_t first, size_t count) { ranges.push_back({handles[first], uint32_t(count)}); });
         session.InsetPreview->Entries.push_back({entity, task.SourceId, task.Op, task.Flags, edit.InsetBasis, std::move(ranges)});
         if (session.Previewing) {
-            auto &pipelines = GetMeshPipelines(r);
+            const auto &pipelines = GetMeshPipelines(r);
             (void)pipelines[MeshPass::InsetPreviewPositions].State();
             (void)pipelines[MeshPass::MeshletBoundsRefit].State();
         }
@@ -148,7 +148,7 @@ void RunTopologyAction(state::Scene &r, std::span<const state::Entity> mesh_enti
         for (const auto entity : mesh_entities) ReleaseMeshEditWork(r, entity);
         changed = run();
     } catch (...) {
-        history.Restore(before);
+        (void)history.Restore(before);
         history.Release(before);
         throw;
     }
@@ -239,8 +239,9 @@ std::vector<std::optional<uint32_t>> EditTopology(state::Scene &r, std::span<con
         auto &owner = EditRecordOf(r, entity);
         if (!owner.RenderTopologies) continue;
         uint32_t mask = 0u;
-        for (uint32_t t = 0u; t < 3u; ++t)
+        for (uint32_t t = 0u; t < 3u; ++t) {
             if (owner.ElementMeshletBlockCounts[t]) mask |= 1u << t;
+        }
         owner.RenderTopologies = mask ? mask : 4u;
     }
     RefreshElementSelectionSummaries(r, in_place);
@@ -327,8 +328,9 @@ void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entit
 void CombineSelected(state::Scene &r, const action::mesh::Boolean &boolean) {
     const auto active = FindActiveEntity(r);
     std::vector<state::Entity> others;
-    for (const auto e : r.view<const Selected>())
+    for (const auto e : r.view<const Selected>()) {
         if (e != active) others.push_back(e);
+    }
     if (active == state::Null || others.size() != 1u || !r.all_of<Instance>(active) || !r.all_of<Instance>(others.front())) {
         return action::Fail(r, "A boolean combines the active object with one other selected object");
     }
@@ -357,8 +359,9 @@ std::optional<uint32_t> ActiveOrFirstSelectedEdge(const state::Scene &r, state::
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selected = meshes.GetSelectedElements(mesh.GetStoreId(), Element::Edge);
     if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity);
-        active && meshes.IsLiveElement(mesh.GetStoreId(), Element::Edge, ElementHandle{active->Handle}) && selected.Contains(active->Handle))
+        active && meshes.IsLiveElement(mesh.GetStoreId(), Element::Edge, ElementHandle{active->Handle}) && selected.Contains(active->Handle)) {
         return active->Handle;
+    }
     if (const auto first = selected.First()) return *first;
     return {};
 }
@@ -421,8 +424,10 @@ void EditSelectedFaceAttributes(state::Scene &r, std::span<const state::Entity> 
     }
     chain.Scratch.ReserveAdditional(triangle_words);
     std::vector<std::pair<state::Entity, FaceTriangles>> repairs;
-    for (const auto &change : changes)
+    repairs.reserve(changes.size());
+    for (const auto &change : changes) {
         repairs.emplace_back(targets[change.TargetIndex], EncodeFaceTriangles(r, chain, inputs[change.TargetIndex].StoreId, change.Faces));
+    }
     chain.Submit();
     for (auto &[entity, triangles] : repairs) triangles.Finish(chain);
     RepairFaceRender(r, chain, repairs);
@@ -563,8 +568,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     };
     const auto visibility = [&](EditVisibilityOperation operation) {
         std::vector<uint32_t> ids;
-        for (const auto &[entity, instance] : r.get<const EditPrimaries>(viewport).All)
+        for (const auto &[entity, instance] : r.get<const EditPrimaries>(viewport).All) {
             if (HasMesh(r, entity)) ids.push_back(*DrawnStoreId(r, entity));
+        }
         if (EditVisibility(r, ids, r.get<const EditMode>(viewport).Value, operation)) {
             r.Context.get<GpuSceneState>().EditSelectionDirty = true;
             for (const auto &[entity, instance] : r.get<const EditPrimaries>(viewport).All) r.remove<MeshActiveElement>(entity);
@@ -583,6 +589,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 RunOperator(r, targets, MeshTopologyOp(uint32_t(a.Mode)));
                 if (a.Mode == DeleteMode::Loose) {
                     std::vector<std::pair<state::Entity, std::span<const uint32_t>>> empty;
+                    empty.reserve(targets.size());
                     for (const auto entity : targets) empty.emplace_back(entity, std::span<const uint32_t>{});
                     ApplyEditSelectionLists(r, empty, r.get<const EditMode>(viewport).Value);
                 }
@@ -611,8 +618,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](const Separate &a) {
                 const auto &primaries = r.get<const EditPrimaries>(viewport).All;
                 std::vector<state::Entity> sources;
-                for (const auto &[entity, instance] : primaries)
+                for (const auto &[entity, instance] : primaries) {
                     if (HasMesh(r, entity)) sources.push_back(entity);
+                }
                 SeparateSelected(r, sources, primaries, a.Mode);
             },
             [&](const Subdivide &a) { RunOperator(r, targets, MeshTopologyOp::Subdivide, float(std::max(a.Cuts, 1u))); },
@@ -707,8 +715,10 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](FlipNormals) { RunOperator(r, targets, MeshTopologyOp::FlipNormals); },
             [&](const RecalculateNormals &a) {
                 std::vector<uint32_t> ids;
+                ids.reserve(targets.size());
                 for (const auto entity : targets) ids.push_back(*DrawnStoreId(r, entity));
                 std::vector<GeometrySelection> selections;
+                selections.reserve(ids.size());
                 for (const auto id : ids) selections.push_back(EditorGeometrySelection(r.Context.get<const MeshStore>(), id));
                 auto faces = RecalculateFaceFlips(r.Context.get<MeshStore>(), GetMeshPipelines(r), ids, selections, a.Inside);
                 uint32_t i = 0u;

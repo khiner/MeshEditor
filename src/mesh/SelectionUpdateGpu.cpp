@@ -23,11 +23,12 @@ uint64_t MarkBound(const MeshStore &meshes, const MeshStore::SelectionUpdate &up
         const auto live = seed.Bits & members[seed.Domain][block].Live[seed.Word % MeshElementBlockWords];
         if (seed.Domain == 1u || seed.Domain == SelectionHalfedgeDomain) {
             bound += uint64_t(std::popcount(live)) * (seed.Domain == 1u ? 4u : 3u);
-        } else
+        } else {
             for (auto bits = live; bits; bits &= bits - 1u) {
                 const auto handle = seed.Word * 32u + uint32_t(std::countr_zero(bits));
                 bound += seed.Domain == 0u ? 3ull * fans[handle].y : 2ull * (faces[handle].y - faces[handle].x);
             }
+        }
     }
     return bound;
 }
@@ -59,13 +60,14 @@ void MeshStore::UpdateSelection(state::Scene &r, mtl::ComputeChain &chain, std::
     }
     const auto dirty_words = std::bit_ceil(std::max(2ull, 2ull * entry_bound));
     constexpr uint32_t MeshWords = sizeof(SelectionMeshUpdate) / sizeof(uint32_t);
-    if (dirty_words + meshes.size() * MeshWords + seed_count * 4u + 3u + 2u * entry_bound >= InvalidOffset)
+    if (dirty_words + meshes.size() * MeshWords + seed_count * 4u + 3u + 2u * entry_bound >= InvalidOffset) {
         throw std::length_error("Selection update workspace exceeds canonical addressing.");
+    }
     const Range mesh_range{uint32_t(dirty_words), uint32_t(meshes.size() * MeshWords)};
     const Range seed_range{mesh_range.Offset + mesh_range.Count, uint32_t(seed_count * 3u)};
     const Range seed_updates{seed_range.Offset + seed_range.Count, uint32_t(seed_count)};
     const Range list_range{seed_updates.Offset + seed_updates.Count, uint32_t(3u + 2u * entry_bound)};
-    auto work = std::make_shared<mtl::Buffer>(BufferContext(), uint64_t(list_range.Offset + list_range.Count) * sizeof(uint32_t), SlotType::Buffer, mtl::BufferLifetime::Workspace);
+    const auto work = std::make_shared<mtl::Buffer>(BufferContext(), uint64_t(list_range.Offset + list_range.Count) * sizeof(uint32_t), SlotType::Buffer, mtl::BufferLifetime::Workspace);
     profile::RecordCounter("SelectionWorkspaceBytes", uint64_t(list_range.Offset + list_range.Count) * sizeof(uint32_t));
     {
         const auto words = work->SetCount<uint32_t>(list_range.Offset + list_range.Count);
@@ -79,7 +81,7 @@ void MeshStore::UpdateSelection(state::Scene &r, mtl::ComputeChain &chain, std::
             const auto &update = updates[u];
             seeds = std::ranges::copy(std::as_bytes(std::span{update.Seeds}), seeds).out;
             owners = std::fill_n(owners, update.Seeds.size(), u);
-            for (uint32_t d = 0u; d < 3u; ++d)
+            for (uint32_t d = 0u; d < 3u; ++d) {
                 for (const auto block : update.Blocks[d]) {
                     const auto key = ((d << 30u) | block) + 1u;
                     auto slot = SelectionDirtyHash(key, uint32_t(dirty_words - 1u));
@@ -89,6 +91,7 @@ void MeshStore::UpdateSelection(state::Scene &r, mtl::ComputeChain &chain, std::
                     list[3u + 2u * count] = (d << 30u) | block;
                     list[4u + 2u * count++] = u;
                 }
+            }
         }
         std::ranges::copy(std::array{count, 1u, 1u}, list.begin());
     }
@@ -137,9 +140,11 @@ void MeshStore::UpdateSelection(state::Scene &r, mtl::ComputeChain &chain, std::
         }
         const std::array members{Buffers.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>(), Buffers.EdgeHalfedges.Blocks.Buffer.GetSpan<MeshElementBlock>(), Buffers.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>()};
         const std::array leaves{Buffers.VertexAggregates.Buffer.GetSpan<SelectionAggregate>(), Buffers.EdgeAggregates.Buffer.GetSpan<SelectionAggregate>(), Buffers.FaceAggregates.Buffer.GetSpan<SelectionAggregate>()};
-        for (uint32_t i = 0u; i < meshes.size(); ++i)
-            for (uint32_t d = 0u; d < 3u; ++d)
+        for (uint32_t i = 0u; i < meshes.size(); ++i) {
+            for (uint32_t d = 0u; d < 3u; ++d) {
                 Buffers.SelectionTree.Update(meshes[i].Root + d, blocks[i][d], meshes[i].Owners[d], members[d], leaves[d]);
+            }
+        }
     });
 }
 
@@ -154,9 +159,11 @@ void MeshStore::DeriveSelectionMasks(state::Scene &r, mtl::ComputeChain &chain, 
     };
     // The dirty list's count and indirect dimensions, then each derived block with the one update.
     std::vector<uint32_t> list{0u, 1u, 1u};
-    for (uint32_t d = 0u; d < 3u; ++d)
-        if (d != source_index)
+    for (uint32_t d = 0u; d < 3u; ++d) {
+        if (d != source_index) {
             for (const auto block : GetBlockList(id, Domains[d]).Blocks) list.insert(list.end(), {(d << 30u) | block, 0u});
+        }
+    }
     const auto count = uint32_t(list.size() - 3u) / 2u;
     if (!count) return;
     list[0] = count;
@@ -189,9 +196,11 @@ void MeshStore::ReconcileSelection(state::Scene &r, mtl::ComputeChain &chain, st
         auto &update = updates.emplace_back(SelectionUpdate{.StoreId = id});
         std::ranges::copy(std::span{change.Blocks}.first(3u), update.Blocks.begin());
         // Position writes reach incident face bounds; edge sharpness and halfedge links reach neighboring flags.
-        for (const auto d : {0u, 1u, SelectionHalfedgeDomain})
-            for (const auto block : change.Blocks[d])
+        for (const auto d : {0u, 1u, SelectionHalfedgeDomain}) {
+            for (const auto block : change.Blocks[d]) {
                 for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) update.Seeds.push_back({d, block * MeshElementBlockWords + w, ~0u});
+            }
+        }
     }
     UpdateSelection(r, chain, updates);
 }
@@ -199,12 +208,13 @@ void MeshStore::ReconcileSelection(state::Scene &r, mtl::ComputeChain &chain, st
 void MeshStore::RebuildSelectionIndex(std::span<const uint32_t> ids) {
     const std::array members{Buffers.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>(), Buffers.EdgeHalfedges.Blocks.Buffer.GetSpan<MeshElementBlock>(), Buffers.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>()};
     const std::array leaves{Buffers.VertexAggregates.Buffer.GetSpan<SelectionAggregate>(), Buffers.EdgeAggregates.Buffer.GetSpan<SelectionAggregate>(), Buffers.FaceAggregates.Buffer.GetSpan<SelectionAggregate>()};
-    for (const auto id : ids)
+    for (const auto id : ids) {
         for (uint32_t d = 0u; d < 3u; ++d) {
             const auto owner = DomainSet(Records.at(id), Domains[d]).Index;
             Buffers.SelectionTree.Release(3u * id + d);
             Buffers.SelectionTree.Update(3u * id + d, GetBlockList(id, Domains[d]).Blocks, owner, members[d], leaves[d]);
         }
+    }
 }
 
 Range MeshStore::GatherSelectedElements(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, Element element, BufferArena<uint32_t> &output) const {

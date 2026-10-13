@@ -48,10 +48,10 @@ FunctionRef MeshletVisibilityVertex() {
 }
 
 RenderPipeline CreateMeshPipeline(
-    mtl::LibraryCache &libraries, std::optional<FunctionRef> fragment, PassFormats formats,
-    std::vector<BlendState> blends = {}, std::optional<DepthState> depth = {}, FunctionRef mesh = MeshletVertex()
+    mtl::LibraryCache &libraries, std::optional<FunctionRef> fragment, const PassFormats &formats,
+    const std::vector<BlendState> &blends = {}, std::optional<DepthState> depth = {}, FunctionRef mesh = MeshletVertex()
 ) {
-    return mtl::MakeMeshPipeline(libraries, std::move(mesh), std::move(fragment), std::move(formats), std::move(blends), depth);
+    return mtl::MakeMeshPipeline(libraries, std::move(mesh), std::move(fragment), formats, blends, depth);
 }
 
 FunctionRef PbrFragment(PbrFeatureMask mask, bool prepass, const char *fragment, bool non_triangle_topology) {
@@ -74,14 +74,14 @@ RenderPipeline StrokePipeline(mtl::LibraryCache &libraries, FunctionRef mesh, bo
 }
 
 // `transmission_prepass` skips exposure, which the main pass applies after sampling.
-RenderPipeline CreateBackgroundPipeline(mtl::LibraryCache &libraries, PassFormats formats, std::vector<mtl::BlendState> blends, bool transmission_prepass) {
+RenderPipeline CreateBackgroundPipeline(mtl::LibraryCache &libraries, const PassFormats &formats, const std::vector<mtl::BlendState> &blends, bool transmission_prepass) {
     return mtl::MakeRenderPipeline(
-        libraries, {"Background.metal", "BackgroundVertex"}, FunctionRef{"Background.metal", "BackgroundFragment", {BoolConstant(BackgroundConstant::TransmissionPrepass, transmission_prepass)}}, std::move(formats), std::move(blends), DepthOff
+        libraries, {"Background.metal", "BackgroundVertex"}, FunctionRef{"Background.metal", "BackgroundFragment", {BoolConstant(BackgroundConstant::TransmissionPrepass, transmission_prepass)}}, formats, blends, DepthOff
     );
 }
 
-RenderPipeline CreateQuadPipeline(mtl::LibraryCache &libraries, PassFormats formats, const char *fragment_file, const char *fragment_name, mtl::BlendState blend) {
-    return mtl::MakeRenderPipeline(libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{fragment_file, fragment_name}, std::move(formats), {blend}, DepthOff);
+RenderPipeline CreateQuadPipeline(mtl::LibraryCache &libraries, const PassFormats &formats, const char *fragment_file, const char *fragment_name, mtl::BlendState blend) {
+    return mtl::MakeRenderPipeline(libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{fragment_file, fragment_name}, formats, {blend}, DepthOff);
 }
 
 // The element rasters share these formats: depth only, and no color, since ids reach the fragment stage as a varying.

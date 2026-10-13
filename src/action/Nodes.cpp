@@ -46,16 +46,19 @@ bool ListsNodes(const GeometryProcedure &procedure, const std::vector<uint32_t> 
 
 // Clears the procedure's node selection.
 void DeselectNodes(state::Scene &r, const GeometryProcedure &procedure) {
-    for (const auto &node : procedure.Nodes)
+    for (const auto &node : procedure.Nodes) {
         if (r.all_of<NodeSelected>(node.Entity)) r.remove<NodeSelected>(node.Entity);
+    }
 }
 
 // The kind of the node's parameter component, or KindCount for an entity without one.
 uint16_t KindOfNode(const state::Scene &r, state::Entity node) {
     uint16_t kind = KindCount;
-    if (r.valid(node)) ForEachKind([&]<typename K> {
-        if (r.all_of<K>(node)) kind = KindOf<K>;
-    });
+    if (r.valid(node)) {
+        ForEachKind([&]<typename K> {
+            if (r.all_of<K>(node)) kind = KindOf<K>;
+        });
+    }
     return kind;
 }
 
@@ -207,10 +210,13 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                     }
                 }
                 std::vector<state::Entity> entities;
+                entities.reserve(a.Nodes.size());
                 for (const auto n : a.Nodes) entities.push_back(procedure->Nodes[n].Entity);
-                if (!relinks.empty()) r.patch<GeometryProcedure>(a.MeshEntity, [&](GeometryProcedure &edited) {
-                    for (const auto &[slot, source] : relinks) edited.Inputs[slot] = source;
-                });
+                if (!relinks.empty()) {
+                    r.patch<GeometryProcedure>(a.MeshEntity, [&](GeometryProcedure &edited) {
+                        for (const auto &[slot, source] : relinks) edited.Inputs[slot] = source;
+                    });
+                }
                 // Each destroy removes its node from the procedure and unlinks the inputs still reading it.
                 for (const auto entity : entities) r.destroy(entity);
             },
@@ -229,11 +235,13 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 moved[a.ToNode] = a.Shift != 0.f;
                 for (bool grew = moved[a.ToNode]; grew;) {
                     grew = false;
-                    for (uint32_t n = 0u; n < count; ++n)
+                    for (uint32_t n = 0u; n < count; ++n) {
                         if (!moved[n] && reads_moved(n)) moved[n] = grew = true;
+                    }
                 }
-                for (uint32_t n = 0u; n < count; ++n)
+                for (uint32_t n = 0u; n < count; ++n) {
                     if (moved[n]) r.patch<NodeLayout>(procedure->Nodes[n].Entity, [&](NodeLayout &layout) { layout.Position.x += a.Shift; });
+                }
                 const auto kind = procedure->Nodes[a.Node].Kind;
                 const auto input = input_first[a.Node] + *MainSocket(kind, SocketDirection::In), to_input = input_first[a.ToNode] + a.ToSocket;
                 r.patch<GeometryProcedure>(a.MeshEntity, [&](GeometryProcedure &edited) {
@@ -331,7 +339,8 @@ state::Entity UpdateTraits<procedure::NodeLayout>::Active(const state::Scene &r)
 void UpdateTraits<procedure::NodeLayout>::ForEachSelected(state::Scene &r, state::Entity, const std::function<void(state::Entity)> &fn) {
     const auto *procedure = r.try_get<const procedure::GeometryProcedure>(nodes::EditedMesh(r));
     if (!procedure) return;
-    for (const auto &node : procedure->Nodes)
+    for (const auto &node : procedure->Nodes) {
         if (r.all_of<procedure::NodeSelected>(node.Entity)) fn(node.Entity);
+    }
 }
 } // namespace action

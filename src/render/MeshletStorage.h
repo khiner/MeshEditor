@@ -5,7 +5,7 @@
 
 namespace state {
 struct Scene;
-}
+} // namespace state
 
 // Releases the payload runs the retired clusters' records name, then their identities.
 // Live draw memberships and other consumers must stop using retired IDs first.

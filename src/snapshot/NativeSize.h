@@ -24,8 +24,11 @@ template<typename T> struct NativeAllocation {
         else if constexpr (requires(AllocationCounter &counter) { serialize(counter, v); }) {
             AllocationCounter counter;
             return serialize(counter, v);
-        } else if constexpr (std::is_aggregate_v<T>) return zpp::bits::visit_members(v, [](const auto &...members) { return (uint64_t{} + ... + NativeExtra(members)); });
-        else static_assert(std::is_trivially_copyable_v<T>, "Describe this persistent type's native allocations");
+        } else if constexpr (std::is_aggregate_v<T>) {
+            return zpp::bits::visit_members(v, [](const auto &...members) { return (uint64_t{} + ... + NativeExtra(members)); });
+        } else {
+            static_assert(std::is_trivially_copyable_v<T>, "Describe this persistent type's native allocations");
+        }
     }
 };
 template<typename T> uint64_t NativeExtra(const T &v) { return NativeAllocation<T>::Extra(v); }
@@ -34,10 +37,9 @@ template<typename C, typename Traits, typename A> struct NativeAllocation<std::b
 };
 template<typename T, typename A> struct NativeAllocation<std::vector<T, A>> {
     static uint64_t Extra(const auto &v) {
-        uint64_t bytes = v.capacity() * sizeof(T);
-        if constexpr (!std::is_trivially_copyable_v<T>)
-            for (const auto &item : v) bytes += NativeExtra(item);
-        return bytes;
+        const uint64_t bytes = v.capacity() * sizeof(T);
+        if constexpr (std::is_trivially_copyable_v<T>) return bytes;
+        else return std::ranges::fold_left(v, bytes, [](uint64_t sum, const auto &item) { return sum + NativeExtra(item); });
     }
 };
 template<typename K, typename V, typename Compare, typename A> struct NativeAllocation<std::map<K, V, Compare, A>> {

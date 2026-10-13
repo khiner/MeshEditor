@@ -38,13 +38,13 @@ FlattenPlan PlanFlatten(const Mesh &mesh, const GeometrySelection &selection) {
                     parent[std::max(a, b)] = std::min(a, b);
                 }
             };
-            if (domain == Element::Face)
+            if (domain == Element::Face) {
                 for (const auto h : mesh.fh_range(he::FH{handle})) {
                     const auto edge = *mesh.GetEdge(h);
                     covered_edges.insert(edge);
                     join(edge);
                 }
-            else {
+            } else {
                 const auto h = mesh.GetHalfedge(he::EH{handle}, 0u);
                 join(*mesh.GetFromVertex(h));
                 join(*mesh.GetToVertex(h));

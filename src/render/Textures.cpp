@@ -350,16 +350,16 @@ EnvironmentPrefiltered CreateIblFromHdri(
     constexpr auto rgba32f = MTL::PixelFormatRGBA32Float;
     const uint32_t eq_w = decoded->Width, eq_h = decoded->Height;
 
-    auto equirect = mtl::CreateTexture2D(ctx, rgba32f, {eq_w, eq_h}, MTL::TextureUsageShaderRead);
+    const auto equirect = mtl::CreateTexture2D(ctx, rgba32f, {eq_w, eq_h}, MTL::TextureUsageShaderRead);
     mtl::Upload(equirect, 0, std::span<const std::byte>{reinterpret_cast<const std::byte *>(decoded->Pixels.data()), decoded->Pixels.size() * sizeof(float)}, eq_w * 4u * sizeof(float));
 
     const uint32_t raw_size = 512, raw_mips = mtl::MipLevelCount(raw_size, raw_size);
-    auto raw_cube = mtl::CreateTextureCube(ctx, rgba32f, raw_size, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite, raw_mips);
-    auto raw_cube_write = mtl::CreateCubeMipView(raw_cube, 0);
+    const auto raw_cube = mtl::CreateTextureCube(ctx, rgba32f, raw_size, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite, raw_mips);
+    const auto raw_cube_write = mtl::CreateCubeMipView(raw_cube, 0);
 
     const uint32_t diff_size = 32;
     auto diff_cube = mtl::CreateTextureCube(ctx, rgba32f, diff_size, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
-    auto diff_write = mtl::CreateCubeMipView(diff_cube, 0);
+    const auto diff_write = mtl::CreateCubeMipView(diff_cube, 0);
 
     const uint32_t spec_size = 256, spec_mips = mtl::MipLevelCount(spec_size, spec_size);
     auto spec_cube = mtl::CreateTextureCube(ctx, rgba32f, spec_size, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite, spec_mips);
@@ -369,8 +369,8 @@ EnvironmentPrefiltered CreateIblFromHdri(
         spec_writes.emplace_back(mtl::CreateCubeMipView(spec_cube, mip));
     }
 
-    auto equirect_sampler = MakeLinearSampler(ctx, MTL::SamplerAddressModeRepeat);
-    auto raw_cube_sampler = MakeLinearSampler(ctx, MTL::SamplerAddressModeClampToEdge);
+    const auto equirect_sampler = MakeLinearSampler(ctx, MTL::SamplerAddressModeRepeat);
+    const auto raw_cube_sampler = MakeLinearSampler(ctx, MTL::SamplerAddressModeClampToEdge);
 
     const auto prefilter_faces = [](
                                      MTL::ComputeCommandEncoder *compute, const mtl::ComputePipeline &pipeline,
@@ -602,8 +602,9 @@ void ReleaseUnlistedTextures(state::Scene &r, std::span<const MaterializedTextur
                    return item.SamplerSlot == t.SamplerSlot && item.SourceImageIndex == t.SourceImageIndex && item.Params == t.Params;
                });
     };
-    for (const auto &t : textures.Textures)
+    for (const auto &t : textures.Textures) {
         if (unlisted(t)) ReleaseTextureSlots(slots, std::span{&t, 1u});
+    }
     std::erase_if(textures.Textures, unlisted);
 }
 

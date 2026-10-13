@@ -54,8 +54,9 @@ template<typename C> const std::vector<FieldRange> &Fields() {
 inline const FieldRange NoField{};
 template<typename C> const FieldRange &FieldAt(uint16_t offset) {
     const FieldRange *found = &NoField;
-    for (const auto &range : Fields<C>())
+    for (const auto &range : Fields<C>()) {
         if (offset >= range.Offset && offset < range.Offset + range.Size) found = &range;
+    }
     return *found;
 }
 struct ComponentField {
@@ -100,8 +101,9 @@ struct UpdateTraits<BoneDelta> : ComponentUpdateTraits<BoneDelta> {
         return e != state::Null && Has(r, e) ? e : state::Null;
     }
     static void ForEachSelected(state::Scene &r, state::Entity, const std::function<void(state::Entity)> &fn) {
-        for (const auto e : r.view<BoneSelection>())
+        for (const auto e : r.view<BoneSelection>()) {
             if (Has(r, e)) fn(e);
+        }
     }
 };
 

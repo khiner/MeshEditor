@@ -92,7 +92,9 @@ template<typename T> struct PaddingFreeTrait {
             return zpp::bits::access::visit_members_types<T>([]<typename... M>() {
                 return std::bool_constant<(... && PaddingFreeTrait<std::remove_cvref_t<M>>::Value) && (size_t{} + ... + sizeof(M)) == sizeof(T)>{};
             })();
-        } else return false;
+        } else {
+            return false;
+        }
     }();
 };
 template<typename T, size_t N> struct PaddingFreeTrait<std::array<T, N>> {
@@ -141,7 +143,9 @@ snapshot::SnapshotEntry MakeEntry() {
     else if constexpr (EncodesAsBytes<C>) {
         assert(BytesMatchSerialization<C>() && "a byte-encoded component must serialize as its object representation");
         return {Encoding::Bytes, &SerializeBytes<C>, &EmplaceBytes<C>, sizeof(C)};
-    } else return {Encoding::Serialized, &SerializeThunk<C>, &EmplaceSerialized<C>};
+    } else {
+        return {Encoding::Serialized, &SerializeThunk<C>, &EmplaceSerialized<C>};
+    }
 }
 
 template<typename C, bool Persistent>
@@ -165,7 +169,7 @@ void Add(Tables &tables) {
             auto bytes = uint64_t(sizeof(ComponentPage<C>));
             for (auto bits = table.mask(page); bits; bits &= bits - 1u) {
                 const auto slot = uint32_t(std::countr_zero(bits));
-                auto &copy = *std::construct_at(&value->Values[slot].Value, CopyNative(*table.at<C>(table.entity(page, slot))));
+                const auto &copy = *std::construct_at(&value->Values[slot].Value, CopyNative(*table.at<C>(table.entity(page, slot))));
                 value->Mask |= 1u << slot;
                 bytes += NativeExtra(copy);
             }

@@ -17,7 +17,7 @@ inline uint32_t WorkCapacity(uint32_t count, uint64_t blocks) {
 // The storage words AllocateElementWork takes for `count` elements in at most `blocks` blocks.
 inline uint32_t ElementWorkWords(uint32_t count, uint64_t blocks) { return WorkHeaderWords + WorkCapacity(count, blocks) * (WorkBlockWords + 2u); }
 inline void FinishElementWork(std::span<uint32_t> data, uint32_t capacity) {
-    auto slots = data.subspan(WorkHeaderWords + capacity * WorkBlockWords, data[0]);
+    const auto slots = data.subspan(WorkHeaderWords + capacity * WorkBlockWords, data[0]);
     const auto key = [&](uint32_t slot) { return data[WorkHeaderWords + slot * WorkBlockWords]; };
     if (!std::ranges::is_sorted(slots, {}, key)) std::ranges::sort(slots, {}, key);
     uint32_t elements = 0;
@@ -34,7 +34,7 @@ inline ElementWork AllocateElementWork(BufferArena<uint32_t> &arena, uint32_t co
     assert(arena.Buffer.Slot != InvalidSlot);
     const auto capacity = WorkCapacity(count, blocks);
     const auto range = arena.Allocate(ElementWorkWords(count, blocks));
-    auto data = arena.GetMutable(range);
+    const auto data = arena.GetMutable(range);
     std::ranges::fill(data, 0u);
     FinishElementWork(data, capacity);
     return {{arena.Buffer.Slot, range.Offset}, count, capacity};
@@ -72,7 +72,7 @@ inline void ReserveElementWork(BufferArena<uint32_t> &arena, ElementWork &work, 
     auto allocation = arena.BeginAllocation();
     const auto replacement = AllocateElementWork(arena, work.Count, blocks);
     const auto source = arena.Get(WorkStorageRange(work));
-    auto target = arena.GetMutable(WorkStorageRange(replacement));
+    const auto target = arena.GetMutable(WorkStorageRange(replacement));
     for (uint32_t i = 0; i < source[0]; ++i) {
         const auto block = source.subspan(WorkHeaderWords + source[WorkHeaderWords + work.Capacity * WorkBlockWords + i] * WorkBlockWords, WorkBlockWords);
         auto slot = WorkHash(block[0] - 1u, replacement.Capacity);
@@ -86,7 +86,7 @@ inline void ReserveElementWork(BufferArena<uint32_t> &arena, ElementWork &work, 
     work = replacement;
 }
 inline void ClearElementWork(BufferArena<uint32_t> &arena, ElementWork work) {
-    auto data = arena.GetMutable(WorkStorageRange(work));
+    const auto data = arena.GetMutable(WorkStorageRange(work));
     for (uint32_t i = 0; i < data[0]; ++i) {
         const auto slot = data[WorkHeaderWords + work.Capacity * WorkBlockWords + i];
         std::ranges::fill(data.subspan(WorkHeaderWords + slot * WorkBlockWords, WorkBlockWords), 0u);
@@ -99,7 +99,7 @@ inline void MarkElementWorkWord(std::span<uint32_t> data, ElementWork work, uint
     const auto key = word / 8u + 1u;
     auto slot = WorkHash(key - 1u, work.Capacity);
     for (uint32_t probe = 0; probe < work.Capacity; ++probe, slot = (slot + 1u) & (work.Capacity - 1u)) {
-        auto block = data.subspan(WorkHeaderWords + slot * WorkBlockWords, WorkBlockWords);
+        const auto block = data.subspan(WorkHeaderWords + slot * WorkBlockWords, WorkBlockWords);
         if (!block[0]) {
             block[0] = key;
             data[WorkHeaderWords + work.Capacity * WorkBlockWords + data[0]++] = slot;
@@ -113,7 +113,7 @@ inline void MarkElementWorkWord(std::span<uint32_t> data, ElementWork work, uint
 
 inline ElementWork SeedElementWorkHandles(BufferArena<uint32_t> &arena, uint32_t domain_count, std::span<const uint32_t> handles, uint64_t block_bound = UINT64_MAX) {
     auto work = AllocateElementWork(arena, domain_count, std::min<uint64_t>(handles.size(), block_bound));
-    auto data = arena.GetMutable(WorkStorageRange(work));
+    const auto data = arena.GetMutable(WorkStorageRange(work));
     for (const auto handle : handles) {
         if (handle >= domain_count) throw std::out_of_range("Element work handle exceeds its domain.");
         MarkElementWorkWord(data, work, handle / 32u, 1u << (handle % 32u));
@@ -129,7 +129,7 @@ inline void SeedElementWorkRanges(BufferArena<uint32_t> &arena, ElementWork &wor
     uint64_t bound = WorkBlockCount(arena, work);
     for (const auto range : ranges) bound += (uint64_t(range.Count) + 510u) / 256u;
     ReserveElementWork(arena, work, bound);
-    auto data = arena.GetMutable(WorkStorageRange(work));
+    const auto data = arena.GetMutable(WorkStorageRange(work));
     for (const auto range : ranges) {
         const auto start = std::max(uint64_t(range.Offset), uint64_t(origin));
         const auto stop = std::min(uint64_t(range.Offset) + range.Count, uint64_t(origin) + work.Count);
@@ -154,8 +154,9 @@ inline void ForEachWorkBlock(const BufferArena<uint32_t> &arena, ElementWork wor
 }
 inline void ForEachWorkElement(const BufferArena<uint32_t> &arena, ElementWork work, auto &&fn) {
     ForEachWorkBlock(arena, work, [&](uint32_t block, auto masks) {
-        for (uint32_t word = 0; word < 8u; ++word)
+        for (uint32_t word = 0; word < 8u; ++word) {
             for (uint32_t bits = masks[word]; bits; bits &= bits - 1u) fn(block * 256u + word * 32u + std::countr_zero(bits));
+        }
     });
 }
 inline bool ElementWorkEmpty(const BufferArena<uint32_t> &arena, ElementWork work) { return WorkBlockCount(arena, work) == 0u; }

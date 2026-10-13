@@ -47,9 +47,11 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const Geometry
             node.Chain = degree == 2u && manifold == 2u;
             if (!node.Chain && !((degree == 3u || degree == 4u) && manifold == degree) && !(degree == 3u && boundary == 2u && manifold == 1u)) return;
             node.Corners = c.FanItems.subspan(fan.x, fan.y);
-            if (node.Chain)
-                for (const auto corner : node.Corners)
+            if (node.Chain) {
+                for (const auto corner : node.Corners) {
                     if (mesh.GetValence(he::FH{corner.y}) <= 3u) return;
+                }
+            }
         }
         index.emplace(v, uint32_t(nodes.size()));
         nodes.push_back(std::move(node));
@@ -64,11 +66,12 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const Geometry
         queue.push_back(seed);
         for (uint32_t at = 0u; at < queue.size(); ++at) {
             const auto current = queue[at];
-            for (const auto v : nodes[current].Neighbors)
+            for (const auto v : nodes[current].Neighbors) {
                 if (const auto found = index.find(v); found != index.end() && !nodes[found->second].Tag) {
                     nodes[found->second].Tag = -nodes[current].Tag;
                     queue.push_back(found->second);
                 }
+            }
         }
     }
     struct Corner {
@@ -122,12 +125,13 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const Geometry
         if (!valid || ears.empty()) continue;
         uint32_t start = ears.begin()->first;
         bool boundary = false;
-        for (const auto &[from, ear] : ears)
+        for (const auto &[from, ear] : ears) {
             if (!incoming.contains(from)) {
                 start = from;
                 boundary = true;
                 break;
             }
+        }
         Polygon polygon;
         uint32_t at = start;
         do {
@@ -141,8 +145,9 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const Geometry
         if (boundary) {
             if (users.Get(MeshEdgeUsers::Key(start, at)).Count) continue;
             uint32_t source = InvalidOffset;
-            for (const auto corner : node.Corners)
+            for (const auto corner : node.Corners) {
                 if (const auto next = *c.Next(he::HH{corner.x}); vertex(next) == start) source = next;
+            }
             polygon.push_back({source, source});
         }
         if (polygon.size() < 3u || polygon.size() > 4u) continue;
@@ -152,8 +157,9 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const Geometry
         std::set<std::vector<uint32_t>> residuals{vertices};
         for (const auto item : node.Corners) {
             Polygon residual;
-            for (const auto corner : mesh.fh_range(he::FH{item.y}))
+            for (const auto corner : mesh.fh_range(he::FH{item.y})) {
                 if (vertex(*corner) != node.Vertex) residual.push_back({*corner, *corner});
+            }
             if (residual.size() < 3u) continue;
             const auto residual_key = key(residual);
             if (!residuals.insert(residual_key).second || exists(residual_key, incident_faces)) {
@@ -172,12 +178,14 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const Geometry
         task.Selection = selection;
         return task;
     }
-    for (const auto v : removed)
+    for (const auto v : removed) {
         for (const auto corner : nodes[index.at(v)].Corners) output.try_emplace(corner.y);
+    }
     for (auto &[face, polygons] : output) {
         Polygon residual;
-        for (const auto h : mesh.fh_range(he::FH{face}))
+        for (const auto h : mesh.fh_range(he::FH{face})) {
             if (!removed.contains(vertex(*h))) residual.push_back({*h, *h});
+        }
         if (residual.size() >= 3u) polygons.push_back(std::move(residual));
     }
     for (auto &[v, polygon] : fans) {
@@ -186,9 +194,11 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const Geometry
         output.at(owner).push_back(std::move(polygon));
     }
     std::set<std::vector<uint32_t>> unique;
-    for (const auto &[face, polygons] : output)
-        for (const auto &polygon : polygons)
+    for (const auto &[face, polygons] : output) {
+        for (const auto &polygon : polygons) {
             if (!unique.insert(key(polygon)).second) return {};
+        }
+    }
     MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::ReplaceFaces, .List = {uint32_t(removed.size())}};
     task.List.insert(task.List.end(), removed.begin(), removed.end());
     task.List.push_back(uint32_t(output.size()));

@@ -16,9 +16,11 @@ namespace {
 bool Finite(vec2 value) { return std::isfinite(value.x) && std::isfinite(value.y); }
 bool Finite(vec3 value) { return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z); }
 bool FiniteMatrix(const auto &value, uint32_t size) {
-    for (uint32_t column = 0u; column < size; ++column)
-        for (uint32_t row = 0u; row < size; ++row)
+    for (uint32_t column = 0u; column < size; ++column) {
+        for (uint32_t row = 0u; row < size; ++row) {
             if (!std::isfinite(value[column][row])) return false;
+        }
+    }
     return true;
 }
 std::vector<uint32_t> EdgeRing(const Mesh &mesh, uint32_t edge) {
@@ -58,12 +60,13 @@ std::vector<std::vector<uint32_t>> BoundaryLoops(const MeshStore &meshes, const 
         return h != InvalidOffset && !c.Opposite(Mesh::HH{h}) && std::ranges::binary_search(edges, *mesh.GetEdge(Mesh::HH{h}));
     };
     std::unordered_map<uint32_t, uint32_t> selected_outgoing;
-    if (selected_only)
+    if (selected_only) {
         for (const auto h : starts) {
             const auto vertex = *mesh.GetFromVertex(Mesh::HH{h});
             const auto [it, unique] = selected_outgoing.emplace(vertex, h);
             if (!unique) it->second = InvalidOffset;
         }
+    }
     // Follow the face fan at the current boundary halfedge's destination to
     // find the next boundary halfedge on the same surface sheet. Vertex-based
     // pairing loses loops when distinct boundaries share a vertex.
@@ -104,7 +107,9 @@ std::vector<std::vector<uint32_t>> BoundaryLoops(const MeshStore &meshes, const 
                 // vertex. Follow its sole selected outgoing edge there.
                 const auto it = selected_outgoing.find(*mesh.GetToVertex(Mesh::HH{h}));
                 h = it == selected_outgoing.end() ? InvalidOffset : it->second;
-            } else h = next;
+            } else {
+                h = next;
+            }
         }
         if (closed && length >= 3u && (!max_sides || length <= max_sides)) {
             std::ranges::reverse(loop);
@@ -120,9 +125,11 @@ MeshTopologyTask PrimitiveListTask(const MeshStore &meshes, const Mesh &mesh, st
     if (uint64_t(appended_base) + vertices > UINT32_MAX) throw std::length_error("Face list exceeds the vertex handle address space.");
     MeshTopologyTask task{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::AddPrimitives, .AppendedBase = appended_base};
     uint32_t attribute_source = InvalidOffset;
-    for (const auto &loop : loops)
-        for (const auto vertex : loop)
+    for (const auto &loop : loops) {
+        for (const auto vertex : loop) {
             if (vertex < appended_base && attribute_source == InvalidOffset) attribute_source = vertex;
+        }
+    }
     if (attribute_source == InvalidOffset) throw std::invalid_argument("Face creation needs a source vertex for attributes.");
     task.List = {uint32_t(vertices), uint32_t(grid_loop.size()), grid_span, attribute_source};
     task.List.insert(task.List.end(), grid_loop.begin(), grid_loop.end());
@@ -171,8 +178,9 @@ std::vector<SelectedChain> SelectedChains(const Mesh &mesh, std::span<const uint
         neighbors[a].push_back(b);
         neighbors[b].push_back(a);
     }
-    for (const auto &[v, adjacent] : neighbors)
+    for (const auto &[v, adjacent] : neighbors) {
         if (adjacent.size() > 2u) return {};
+    }
     std::vector<SelectedChain> chains;
     VisitEdgeChains(neighbors, [&](const auto &vertices, bool closed) {
         auto &chain = chains.emplace_back(SelectedChain{vertices, closed});
@@ -204,12 +212,13 @@ std::vector<MeshTopologyTask> SeparateGeometryTasks(const MeshStore &meshes, con
         for (const auto v : mesh.vertices()) {
             if (!visited.insert(*v).second) continue;
             auto &group = groups.emplace_back(1u, *v);
-            for (size_t at = 0u; at < group.size(); ++at)
+            for (size_t at = 0u; at < group.size(); ++at) {
                 for (const auto edge : incidence.Incident(group[at])) {
                     const auto h = mesh.GetHalfedge(he::EH{edge}, 0u);
                     const auto a = *mesh.GetFromVertex(h), b = *mesh.GetToVertex(h), other = a == group[at] ? b : a;
                     if (visited.insert(other).second) group.push_back(other);
                 }
+            }
         }
         // Blender keeps the first connected component in the original object.
         if (!groups.empty()) groups.erase(groups.begin());
@@ -288,11 +297,12 @@ std::optional<MeshTopologyTask> BridgeEdgeLoopsTask(const MeshStore &meshes, con
         }
         uint32_t start = 0u;
         float best = std::numeric_limits<float>::max();
-        for (uint32_t j = 0u; j < b.size(); ++j)
+        for (uint32_t j = 0u; j < b.size(); ++j) {
             if (const auto distance = Distance2(position(a[0]), position(b[j])); distance < best) {
                 best = distance;
                 start = j;
             }
+        }
         std::rotate(b.begin(), b.begin() + start, b.end());
     }
     const auto na = uint32_t(a.size()) - uint32_t(!closed), nb = uint32_t(b.size()) - uint32_t(!closed);
@@ -352,11 +362,12 @@ std::optional<MeshTopologyTask> ConvexHullTask(const MeshStore &meshes, const Me
     std::array<uint32_t, 4> seed{points[0], points[0], points[0], points[0]};
     const auto farthest = [&](uint32_t &vertex, auto &&distance) {
         float best = 0.f;
-        for (const auto v : points)
+        for (const auto v : points) {
             if (const auto d = distance(v); d > best) {
                 best = d;
                 vertex = v;
             }
+        }
         return best;
     };
     const float extent = std::sqrt(farthest(seed[1], [&](uint32_t v) { return Distance2(at(v), at(seed[0])); }));
@@ -405,8 +416,9 @@ std::optional<MeshTopologyTask> ConvexHullTask(const MeshStore &meshes, const Me
     };
     std::vector<uint32_t> pending;
     const auto enqueue = [&](uint32_t first) {
-        for (uint32_t i = first; i < faces.size(); ++i)
+        for (uint32_t i = first; i < faces.size(); ++i) {
             if (!faces[i].Outside.empty()) pending.push_back(i);
+        }
     };
     faces.push_back(make(outward({seed[0], seed[1], seed[2]}, seed[3])));
     faces.push_back(make(outward({seed[0], seed[1], seed[3]}, seed[2])));
@@ -420,8 +432,9 @@ std::optional<MeshTopologyTask> ConvexHullTask(const MeshStore &meshes, const Me
             }
         }
     }
-    for (const auto v : points)
+    for (const auto v : points) {
         if (std::ranges::find(seed, v) == seed.end()) assign(v, 0);
+    }
     enqueue(0);
 
     struct HorizonEdge {
@@ -479,15 +492,17 @@ std::optional<MeshTopologyTask> ConvexHullTask(const MeshStore &meshes, const Me
         for (const auto f : visible) {
             auto &face = faces[f];
             face.Alive = false;
-            for (const auto v : face.Outside)
+            for (const auto v : face.Outside) {
                 if (v != p) assign(v, first_new);
+            }
             face.Outside.clear();
         }
         enqueue(first_new);
     }
     std::vector<std::vector<uint32_t>> hull;
-    for (const auto &face : faces)
+    for (const auto &face : faces) {
         if (face.Alive) hull.push_back({face.V[0], face.V[1], face.V[2]});
+    }
     if (hull.empty()) return {};
     return PrimitiveListTask(meshes, mesh, hull);
 }
@@ -536,11 +551,13 @@ std::optional<MeshTopologyTask> FillTask(const MeshStore &meshes, const Mesh &me
             VisitEdgeChains(neighbors, [&](const auto &chain, bool) { chains.push_back(chain); });
             // Complete an open chain through the single free selected point.
             if (chains.size() == 1u && neighbors.size() + 1u == vertices.size()) {
-                for (const auto v : vertices)
+                for (const auto v : vertices) {
                     if (!neighbors.contains(v)) chains[0].push_back(v);
+                }
             }
-            for (auto &chain : chains)
+            for (auto &chain : chains) {
                 if (chain.size() >= 3u) loops.push_back(std::move(chain));
+            }
         }
         if (loops.empty()) {
             // Blender's vertex-cloud fallback orders points radially in their plane.
@@ -588,8 +605,9 @@ std::optional<MeshTopologyTask> FillTask(const MeshStore &meshes, const Mesh &me
         for (uint32_t i = 0u; i < loop.size(); ++i) {
             const auto a = loop[(i + loop.size() - 1u) % loop.size()], b = loop[i];
             const auto found = sources.find(MeshEdgeUsers::Key(a, b));
-            if (found != sources.end() && c.FaceOf(he::HH{found->second}))
+            if (found != sources.end() && c.FaceOf(he::HH{found->second})) {
                 winding += *mesh.GetFromVertex(he::HH{found->second}) == a ? 1 : -1;
+            }
         }
         if (winding > 0) std::ranges::reverse(loop);
     }
@@ -651,8 +669,9 @@ std::optional<MeshTopologyTask> MergeTask(const MeshStore &meshes, const Mesh &m
     mesh.ValidateSelection(selection);
     using Mode = GeometryMergeMode;
     if (uint32_t(mode) > uint32_t(Mode::ByDistance) || !std::isfinite(distance)) throw std::invalid_argument("Invalid merge mode or distance.");
-    if (mode == Mode::Collapse || mode == Mode::ByDistance)
+    if (mode == Mode::Collapse || mode == Mode::ByDistance) {
         return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = mode == Mode::Collapse ? MeshTopologyOp::MergeCollapse : MeshTopologyOp::MergeByDistance, .Param0 = std::max(distance, 0.f), .SelectionElement = Element::Vertex, .Selection = selection};
+    }
     if (selection.Vertices.size() < 2u) return {};
     if (!meshes.IsLiveElement(mesh.GetStoreId(), Element::Vertex, ElementHandle{reference}) || !std::ranges::binary_search(selection.Vertices, reference)) throw std::invalid_argument("Merge reference must belong to the selection.");
     const auto target = reference;

@@ -11,7 +11,7 @@
 
 namespace project {
 struct Assets;
-}
+} // namespace project
 
 // Stores modal solve results in write-once, content-addressed files for deterministic replay.
 struct ModalModelData {

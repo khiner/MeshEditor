@@ -22,8 +22,7 @@ template<typename T> std::expected<T, std::string> ReadInto(const std::filesyste
 }
 } // namespace
 
-DirectoryLock::DirectoryLock(const std::filesystem::path &path) {
-    Fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+DirectoryLock::DirectoryLock(const std::filesystem::path &path) : Fd(::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC)) {
     if (Fd >= 0 && ::flock(Fd, LOCK_EX | LOCK_NB) != 0) ::close(std::exchange(Fd, -1));
 }
 DirectoryLock::DirectoryLock(DirectoryLock &&other) noexcept : Fd(std::exchange(other.Fd, -1)) {}
@@ -55,7 +54,7 @@ std::expected<void, std::string> WriteAtomic(const std::filesystem::path &path, 
     const int fd = ::mkstemp(temporary.data());
     if (fd < 0) return std::unexpected{std::format("Failed to create temporary file for '{}'.", path.string())};
     ::close(fd);
-    struct Cleanup {
+    const struct Cleanup {
         const std::string &Path;
         ~Cleanup() {
             std::error_code ec;

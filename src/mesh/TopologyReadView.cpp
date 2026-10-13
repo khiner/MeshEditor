@@ -73,8 +73,9 @@ void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neig
     Pages.Layer(a.Skin.Values, record.Skin, vertex_members, vertices);
     Pages.Layer(a.Morph.Values, record.Morph, vertex_members, vertices, record.MorphTargetCount);
     Pages.Add(a.FaceCorners.Buffer, corners, BlockBytes<uint32_t>);
-    for (const auto *buffer : {&a.OppositeHalfedges.Buffer, &a.HalfedgeEdges.Buffer, &a.HalfedgeFaces.Buffer})
+    for (const auto *buffer : {&a.OppositeHalfedges.Buffer, &a.HalfedgeEdges.Buffer, &a.HalfedgeFaces.Buffer}) {
         Pages.Add(*buffer, halfedges, BlockBytes<uint32_t>);
+    }
     Pages.Layer(a.CornerTangents.Values, record.CornerTangents, corner_members, halfedges);
     Pages.Layer(a.CornerColors.Values, record.CornerColors, corner_members, halfedges);
     for (uint32_t uv = 0u; uv < 4u; ++uv) Pages.Layer(a.CornerUvs[uv].Values, record.CornerUvs[uv], corner_members, halfedges);
@@ -101,7 +102,7 @@ void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neig
 
 void TopologyReadView::Clone(state::Scene &r) {
     const profile::CpuScope scope{"TopologyReadViewClone"};
-    auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Context.get<MeshStore>();
     const auto &a = meshes.Arenas();
     // Each binding reads its clone at the source offsets.
     std::vector<std::pair<const mtl::Buffer *, uint32_t *>> bindings{

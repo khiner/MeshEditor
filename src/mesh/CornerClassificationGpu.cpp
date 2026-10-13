@@ -39,13 +39,15 @@ MeshStore::CornerClassUpdate MeshStore::EncodeCornerClassification(state::Scene 
         // The live masks of the mesh's vertex blocks seed the work on the host.
         const auto blocks = GetBlockList(id, ElementDomain::Vertex).Blocks;
         pc.Vertices = AllocateElementWork(chain.Scratch, Buffers.Vertices.HandleBound(record.Vertices), blocks.size());
-        auto data = chain.Scratch.GetMutable(WorkStorageRange(pc.Vertices));
+        const auto data = chain.Scratch.GetMutable(WorkStorageRange(pc.Vertices));
         for (const auto block : blocks) {
             const auto &members = Buffers.Vertices.Blocks.Get({block, 1u})[0];
             for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) MarkElementWorkWord(data, pc.Vertices, members.Local * MeshElementBlockWords + w, members.Live[w]);
         }
         FinishElementWork(data, pc.Vertices.Capacity);
-    } else pc.Vertices = vertices;
+    } else {
+        pc.Vertices = vertices;
+    }
     // Dirty and needed blocks are the arena blocks of the mesh's corner set.
     const auto corner_blocks = Buffers.FaceCorners.Capacity() / MeshElementBlockSize;
     const auto block_bound = std::min(incoming, Buffers.FaceCorners.Set(record.FaceCorners).BlockCount);

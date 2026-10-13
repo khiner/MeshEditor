@@ -12,7 +12,7 @@
 
 namespace state {
 struct Table;
-}
+} // namespace state
 
 namespace snapshot {
 struct NativePage {

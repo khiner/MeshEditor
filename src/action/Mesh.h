@@ -8,6 +8,7 @@
 #include "viewport/RenderView.h"
 
 #include <memory>
+#include <numbers>
 #include <variant>
 
 // Edit-mode topology operators over the selected meshes' element selections.
@@ -344,7 +345,7 @@ bool UpdateInsetPreview(state::Scene &, state::Entity viewport, const Inset &, I
 } // namespace action::mesh
 
 template<> inline constexpr FieldSpec Spec<action::mesh::Merge, "Distance">{.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4};
-template<> inline constexpr FieldSpec Spec<action::mesh::Dissolve, "Angle">{.Min = 0, .Max = 3.14159265f, .Digits = 1, .Unit = FieldUnit::Radians};
+template<> inline constexpr FieldSpec Spec<action::mesh::Dissolve, "Angle">{.Min = 0, .Max = std::numbers::pi_v<float>, .Digits = 1, .Unit = FieldUnit::Radians};
 template<> inline constexpr FieldSpec Spec<action::mesh::Dissolve, "Distance">{.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4};
 template<> inline constexpr FieldSpec Spec<action::mesh::Subdivide, "Cuts">{.Min = 1};
 template<> inline constexpr FieldSpec Spec<action::mesh::SpaceEvenly, "Factor">{.Min = 0, .Max = 1};
@@ -389,7 +390,7 @@ template<> inline constexpr FieldSpec Spec<action::mesh::Bend, "OffsetAngle">{.D
 template<> inline constexpr FieldSpec Spec<action::mesh::Randomize, "Uniform">{.Min = 0, .Max = 1, .Speed = .01f};
 template<> inline constexpr FieldSpec Spec<action::mesh::Randomize, "Amount">{.Speed = .01f};
 template<> inline constexpr FieldSpec Spec<action::mesh::Randomize, "Normal">{.Min = 0, .Max = 1, .Speed = .01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::SplitNonplanarFaces, "Angle">{.Min = 0, .Max = 3.14159265f, .Digits = 1, .Unit = FieldUnit::Radians};
+template<> inline constexpr FieldSpec Spec<action::mesh::SplitNonplanarFaces, "Angle">{.Min = 0, .Max = std::numbers::pi_v<float>, .Digits = 1, .Unit = FieldUnit::Radians};
 
 template<> inline constexpr FieldSpec Spec<action::mesh::CurveBetweenSelected, "Factor">{.Min = 0, .Max = 1};
 

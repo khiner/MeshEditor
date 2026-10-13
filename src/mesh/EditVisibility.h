@@ -4,7 +4,7 @@
 #include <span>
 namespace state {
 struct Scene;
-}
+} // namespace state
 enum class EditVisibilityOperation { HideSelected,
                                      HideUnselected,
                                      Reveal,

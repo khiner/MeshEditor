@@ -19,7 +19,7 @@ struct ModalModes : fastfem::ModalModes {
 namespace zpp::bits {
 template<std::size_t>
 struct members;
-}
+} // namespace zpp::bits
 
 auto serialize(const ModalModes &) -> zpp::bits::members<8>;
 

@@ -39,7 +39,7 @@ struct Services {
     template<typename T, typename... A> T &emplace(A &&...args) {
         auto &s = Slots[Type<T>()];
         if (!s.Value) {
-            s.Value = new T(std::forward<A>(args)...);
+            s.Value = static_cast<void *>(new T(std::forward<A>(args)...));
             s.Destroy = [](void *p) { delete static_cast<T *>(p); };
         }
         return *static_cast<T *>(s.Value);
@@ -93,7 +93,7 @@ struct Table {
     }
     void *value(Entity e) const { return slot(e, Size); }
     template<typename C> C *at(Entity e) const {
-        auto *p = slot(e, sizeof(C));
+        auto *p = slot(e, sizeof(C)); // NOLINT(misc-const-correctness)
         return p ? std::launder(reinterpret_cast<C *>(p)) : nullptr;
     }
     size_t size() const { return Count; }
@@ -154,13 +154,14 @@ struct DirtySet {
         return true;
     }
     void clear() {
-        for (auto e : Entities) Positions[Index(e)] = UINT32_MAX;
+        for (const auto e : Entities) Positions[Index(e)] = UINT32_MAX;
         Entities.clear();
     }
     void bind(Scene &r) { Owner = &r; }
     template<typename C> DirtySet &on(On events) {
-        for (auto event : {Event::Create, Event::Update, Event::Destroy})
+        for (const auto event : {Event::Create, Event::Update, Event::Destroy}) {
             if (uint8_t(events) & (1u << uint8_t(event))) Track(Type<C>(), event);
+        }
         return *this;
     }
 };
@@ -186,7 +187,7 @@ struct Scene {
     std::array<std::array<std::vector<Handler>, 3>, SchemaSize> Handlers;
     // The generation table and ordered free list are the only allocation authority.
     std::unique_ptr<Allocation> AllocationStorage;
-    Allocation &AllocationState() { return *AllocationStorage; }
+    Allocation &AllocationState() { return *AllocationStorage; } // NOLINT(readability-make-member-function-const)
     const Allocation &AllocationState() const { return *AllocationStorage; }
     Table Living;
     void (*Capture)(Scene &, TypeId, std::span<const PageMask>){};
@@ -344,9 +345,7 @@ struct View<R, ExcludeList<X...>, C...> : std::ranges::view_interface<View<R, Ex
     uint32_t pages() const { return std::min({table<C>().pages()...}); }
     uint64_t occupied(uint32_t word) const { return (table<C>().occupied(word) & ...); }
     uint32_t mask(uint32_t page) const {
-        auto m = (table<C>().mask(page) & ...);
-        ((m &= ~table<X>().mask(page)), ...);
-        return m;
+        return (table<C>().mask(page) & ...) & ~(0u | ... | table<X>().mask(page));
     }
     Entity entity(uint32_t page, uint32_t slot) const { return table<Driver>().entity(page, slot); }
     bool contains(Entity e) const {

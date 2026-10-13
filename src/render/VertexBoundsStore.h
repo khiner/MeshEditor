@@ -65,8 +65,9 @@ public:
             ByStore[store].insert(entity);
         }
         const auto blocks = get_blocks();
-        for (const auto block : blocks)
+        for (const auto block : blocks) {
             if (block >= (1u << 24u)) throw std::out_of_range("Vertex bounds block exceeds canonical address space.");
+        }
         const std::unordered_set<uint32_t> membership(blocks.begin(), blocks.end());
         bool changed = group.Store != store || group.Roots.size() != count;
         while (group.Roots.size() > count) {
@@ -101,8 +102,9 @@ public:
         if (found == ByStore.end()) return;
         for (const auto entity : found->second) {
             auto &group = Groups.at(entity);
-            for (const auto block : blocks)
+            for (const auto block : blocks) {
                 if (SetBlock(group, block, present(block))) ++group.LayoutRevision;
+            }
             group.Revision = revision;
         }
     }
@@ -156,7 +158,7 @@ private:
                 if (++group.Children[level][block] != 1u) break;
                 AddKey(group, level, block, changed_masks);
             } else {
-                auto it = group.Children[level].find(block);
+                const auto it = group.Children[level].find(block);
                 if (it == group.Children[level].end() || !it->second) throw std::logic_error("Vertex bounds parent count is missing.");
                 if (--it->second) break;
                 group.Children[level].erase(it);

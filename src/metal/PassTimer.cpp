@@ -6,7 +6,7 @@
 namespace mtl {
 namespace {
 MTL::CounterSet *TimestampCounterSet(const Context &ctx) {
-    auto *sets = ctx.Device->counterSets();
+    const auto *sets = ctx.Device->counterSets();
     for (NS::UInteger i = 0; sets && i < sets->count(); ++i) {
         auto *set = static_cast<MTL::CounterSet *>(sets->object(i));
         if (set->name()->isEqualToString(MTL::CommonCounterSetTimestamp)) return set;
@@ -20,7 +20,7 @@ PassTimer::~PassTimer() { AutoreleaseScope::Release(SampleBuffer); }
 std::unique_ptr<PassTimer> PassTimer::Create(const Context &ctx, uint32_t max_passes) {
     const AutoreleaseScope pool;
     if (!ctx.Device->supportsCounterSampling(MTL::CounterSamplingPointAtStageBoundary)) return nullptr;
-    auto *counter_set = TimestampCounterSet(ctx);
+    const auto *counter_set = TimestampCounterSet(ctx);
     if (!counter_set) return nullptr;
 
     const auto descriptor = NS::TransferPtr(MTL::CounterSampleBufferDescriptor::alloc()->init());
@@ -44,7 +44,7 @@ std::vector<PassTimer::Pass> PassTimer::Resolve() {
     std::vector<Pass> passes;
     if (Names.empty()) return passes;
 
-    auto *data = SampleBuffer->resolveCounterRange(NS::Range::Make(0, Names.size() * 2));
+    const auto *data = SampleBuffer->resolveCounterRange(NS::Range::Make(0, Names.size() * 2));
     if (!data) return passes;
     const auto *timestamps = static_cast<const MTL::CounterResultTimestamp *>(data->bytes());
     if (!timestamps || data->length() < Names.size() * 2 * sizeof(MTL::CounterResultTimestamp)) return passes;

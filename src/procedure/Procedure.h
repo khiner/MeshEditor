@@ -197,14 +197,16 @@ inline constexpr auto SocketFirst = [] {
 }();
 inline constexpr auto Sockets = []<typename... Ks>(action::TypeList<Ks...>) {
     std::array<Socket, SocketFirst.back()> all{};
-    auto it = all.begin();
+    auto *it = all.begin();
     ((it = std::ranges::copy(detail::SocketsOf<Ks>(), it).out), ...);
     return all;
 }(NodeKinds{});
 static_assert([] {
-    for (uint16_t k = 0u; k < KindCount; ++k)
-        for (uint16_t s = 0u; s < SocketCount[k]; ++s)
+    for (uint16_t k = 0u; k < KindCount; ++k) {
+        for (uint16_t s = 0u; s < SocketCount[k]; ++s) {
             if ((s < InputCount[k]) != (Sockets[SocketFirst[k] + s].Direction == SocketDirection::In)) return false;
+        }
+    }
     return true;
 }(),
               "A kind's inputs precede its outputs");
@@ -275,19 +277,21 @@ std::vector<bool> Upstream(const GeometryProcedure &procedure, std::span<const u
     for (std::vector<uint32_t> stack{node}; !stack.empty();) {
         const auto n = stack.back();
         stack.pop_back();
-        for (uint32_t i = input_first[n]; i < input_first[n + 1u]; ++i)
+        for (uint32_t i = input_first[n]; i < input_first[n + 1u]; ++i) {
             if (const auto from = procedure.Inputs[i].FromNode; from != NoNode && !marked[from] && follows(from)) {
                 marked[from] = true;
                 stack.push_back(from);
             }
+        }
     }
     return marked;
 }
 // The kind's first geometry socket in the direction, through which a node inserted on a link links, or none.
 inline std::optional<uint16_t> MainSocket(uint16_t kind, SocketDirection direction) {
     const auto sockets = KindSockets(kind);
-    for (uint16_t s = 0u; s < sockets.size(); ++s)
+    for (uint16_t s = 0u; s < uint16_t(sockets.size()); ++s) {
         if (sockets[s].Type == SocketType::Geometry && sockets[s].Direction == direction) return s;
+    }
     return {};
 }
 // Whether the node inserts on the link between two other nodes that enters the input: its main output links into the input, the link's source links into its main input, and neither link closes a cycle.

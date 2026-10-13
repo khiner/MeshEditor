@@ -34,10 +34,10 @@ std::vector<std::vector<uint32_t>> RecalculateFaceFlips(MeshStore &meshes, const
         std::ranges::for_each(selection, [&](uint32_t start) {
             if (!visited.insert(start).second) return;
             const uint32_t first = uint32_t(job.Faces.size()), group = uint32_t(groups.size());
-            job.Faces.push_back({start, 0u});
+            job.Faces.emplace_back(start, 0u);
             for (uint32_t at = first; at < job.Faces.size(); ++at) {
                 const auto entry = job.Faces[at];
-                if (std::ranges::binary_search(selection, entry.x)) job.Selected.push_back({at, group});
+                if (std::ranges::binary_search(selection, entry.x)) job.Selected.emplace_back(at, group);
                 for (const auto h : mesh.fh_range(he::FH{entry.x})) {
                     ++source_corners;
                     const auto users = edges.Get(h);
@@ -46,12 +46,12 @@ std::vector<std::vector<uint32_t>> RecalculateFaceFlips(MeshStore &meshes, const
                     const auto face = *mesh.GetFace(other);
                     if (!visited.insert(face).second) continue;
                     const uint32_t parity = entry.y ^ uint32_t(mesh.GetToVertex(h) == mesh.GetToVertex(other));
-                    job.Faces.push_back({face, parity});
+                    job.Faces.emplace_back(face, parity);
                 }
             }
             const uint32_t count = uint32_t(job.Faces.size()) - first, tile = uint32_t(tiles.size());
-            for (uint32_t i = 0u; i < count; i += 256u) tiles.push_back({group, first + i});
-            groups.push_back({first, count, tile, uint32_t(tiles.size()) - tile});
+            for (uint32_t i = 0u; i < count; i += 256u) tiles.emplace_back(group, first + i);
+            groups.emplace_back(first, count, tile, uint32_t(tiles.size()) - tile);
         });
         source_faces += job.Faces.size();
         const auto allocate = [&](uint32_t words) { return SlotOffset{chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(words).Offset}; };
@@ -61,10 +61,11 @@ std::vector<std::vector<uint32_t>> RecalculateFaceFlips(MeshStore &meshes, const
         jobs.push_back(std::move(job));
     }
     if (!source_faces) return std::vector<std::vector<uint32_t>>(ids.size());
-    for (const auto pass : {MeshPass::RecalculateNormalFaceCenters, MeshPass::RecalculateNormalCenters, MeshPass::RecalculateNormalCandidates, MeshPass::RecalculateNormalOrientation})
+    for (const auto pass : {MeshPass::RecalculateNormalFaceCenters, MeshPass::RecalculateNormalCenters, MeshPass::RecalculateNormalCandidates, MeshPass::RecalculateNormalOrientation}) {
         chain.Concurrent([&] {
             for (const auto &job : jobs) chain.Groups(pipelines[pass], job.Pc, pass == MeshPass::RecalculateNormalFaceCenters || pass == MeshPass::RecalculateNormalCandidates ? job.Tiles : job.Groups);
         });
+    }
     chain.Submit();
     std::vector<std::vector<uint32_t>> result;
     for (const auto &job : jobs) {

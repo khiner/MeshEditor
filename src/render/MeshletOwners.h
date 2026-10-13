@@ -6,10 +6,10 @@
 
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 namespace state {
 struct Scene;
-}
+} // namespace state
 
 // Publishes the finest cluster of every element the clusters' payloads name in the given topology, as runs of the owner's meshlet handles.
 // Blocks names the record's local element blocks those elements occupy, which the owner range covers.

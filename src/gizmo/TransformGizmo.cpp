@@ -344,7 +344,7 @@ std::string ValueLabel(Interaction i, vec3 v, TransformGizmo::Mode mode, const N
     switch (i.Type) {
         case Translate: {
             const float dist = Length(v);
-            auto d = [&](float val) { return std::format("D: {} ({:.4f}){}", NumericDisplayStr(num, val, "{:.4f}"), dist, con); };
+            const auto d = [&](float val) { return std::format("D: {} ({:.4f}){}", NumericDisplayStr(num, val, "{:.4f}"), dist, con); };
             switch (i.Op) {
                 case AxisX:
                 case AxisY:
@@ -356,7 +356,7 @@ std::string ValueLabel(Interaction i, vec3 v, TransformGizmo::Mode mode, const N
             }
         }
         case Scale: {
-            auto s = [&](float val) { return std::format("Scale: {}{}", NumericDisplayStr(num, val, "{:.4f}"), con); };
+            const auto s = [&](float val) { return std::format("Scale: {}{}", NumericDisplayStr(num, val, "{:.4f}"), con); };
             switch (i.Op) {
                 case AxisX:
                 case AxisY:

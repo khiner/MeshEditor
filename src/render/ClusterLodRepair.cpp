@@ -93,11 +93,12 @@ void ReplaceGroupClusters(MeshStore &meshes, MeshStore::Record &owner, std::span
     for (uint32_t i = 0; i < groups.size(); ++i) {
         const auto links = buffers.GroupLinks.Get({addresses[i], 1u})[0];
         const std::array before{Range{links.MemberOffset, links.MemberCount}, Range{links.ProxyOffset, links.ProxyCount}};
-        for (uint32_t side = 0; side < 2u; ++side)
+        for (uint32_t side = 0; side < 2u; ++side) {
             if (runs[i].Changed[side]) {
                 total += runs[i].Ids[side].size();
                 replaced.push_back(before[side]);
             }
+        }
     }
     if (total > UINT32_MAX) throw std::length_error("Cluster group links exceed the canonical address domain.");
     meshes.ReleasePayloadRuns(owner, RenderPayload::GroupClusters, std::move(replaced));
@@ -276,8 +277,9 @@ void CommitPool(MeshStore &meshes, MeshStore::Record &owner, const PoolBuild &po
     for (uint32_t g = 0u; g < build.Groups.size(); ++g) {
         const auto &group = build.Groups[g];
         auto &link = links[g];
-        for (const auto id : std::span{build.GroupClusters}.subspan(group.FirstCluster, group.ClusterCount))
+        for (const auto id : std::span{build.GroupClusters}.subspan(group.FirstCluster, group.ClusterCount)) {
             ids[link.MemberOffset + link.MemberCount++] = record_of(id);
+        }
     }
     for (uint32_t i = 0; i < allocation.Count; ++i) added.push_back(allocation.Handle.Value + i);
     for (uint32_t i = 0; i < groups.Count; ++i) new_groups.push_back(groups.Handle.Value + i);
@@ -294,8 +296,9 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
         std::map<uint32_t, PoolBuild> Pools;
     };
     std::vector<OwnerRepair> repairs;
-    for (const auto entity : entities)
+    for (const auto entity : entities) {
         if (meshes.HasDirtyGroups(RecordOf(r, entity))) repairs.push_back({.Entity = entity});
+    }
     if (repairs.empty()) return;
     const profile::CpuScope scope{"ClusterLodRepair"};
     {
@@ -357,8 +360,9 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
     {
         const profile::CpuScope stage{"LodRepairSimplify"};
         std::vector<PoolBuild *> work;
-        for (auto &repair : repairs)
+        for (auto &repair : repairs) {
             for (auto &[primitive, pool] : repair.Pools) work.push_back(&pool);
+        }
         ParallelFor(uint32_t(work.size()), [&](uint32_t i) {
             auto &pool = *work[i];
             pool.Build = RebuildClusterLod(ClusterLodMesh{

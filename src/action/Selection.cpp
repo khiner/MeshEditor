@@ -87,8 +87,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const ApplyTreeSelection &a) {
                 using Clear = ApplyTreeSelection::ClearKind;
-                for (const auto e : a.ToSelect())
+                for (const auto e : a.ToSelect()) {
                     if (!r.all_of<BoneIndex>(e) && !object(e)) return;
+                }
                 if (a.Clear == Clear::BonesOnly) r.clear<BoneSelection>();
                 else if (a.Clear == Clear::All) r.clear<Selected, BoneSelection>();
                 for (const auto e : a.ToSelect()) {
@@ -98,7 +99,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 for (const auto e : a.ToDeselect()) {
                     if (r.all_of<BoneIndex>(e)) {
                         if (r.all_of<BoneSelection>(e)) r.remove<BoneSelection>(e);
-                    } else if (r.all_of<Selected>(e)) r.remove<Selected>(e);
+                    } else if (r.all_of<Selected>(e)) {
+                        r.remove<Selected>(e);
+                    }
                 }
                 if (a.NavToActive != state::Null) {
                     const bool is_bone = r.all_of<BoneIndex>(a.NavToActive);

@@ -49,7 +49,7 @@ inline version_t read_magic(std::istream &istream) {
 }
 
 inline std::string read_header(std::istream &istream) {
-    version_t version = read_magic(istream);
+    const version_t version = read_magic(istream);
     uint32_t header_length = 0;
     if (version == version_t{1, 0}) {
         std::array<uint8_t, 2> header_len_le16{};
@@ -79,15 +79,15 @@ inline std::string read_header(std::istream &istream) {
 constexpr std::string_view trim(std::string_view str) {
     constexpr std::string_view whitespace = " \t";
 
-    auto begin = str.find_first_not_of(whitespace);
+    const auto begin = str.find_first_not_of(whitespace);
     if (begin == std::string_view::npos) return "";
 
-    auto end = str.find_last_not_of(whitespace);
+    const auto end = str.find_last_not_of(whitespace);
     return str.substr(begin, end - begin + 1);
 }
 
 constexpr std::string_view get_value_from_map(std::string_view mapstr) {
-    size_t sep_pos = mapstr.find_first_of(":");
+    const size_t sep_pos = mapstr.find_first_of(':');
     if (sep_pos == std::string::npos) return "";
 
     return trim(mapstr.substr(sep_pos + 1));
@@ -95,7 +95,7 @@ constexpr std::string_view get_value_from_map(std::string_view mapstr) {
 
 // Parse a Python dictionary with known keys that do not occur in its values.
 std::unordered_map<std::string_view, std::string_view> parse_dict(std::string_view in, const std::vector<std::string_view> &keys) {
-    if (keys.size() == 0) return {};
+    if (keys.empty()) return {};
 
     in = trim(in);
     if (in.front() != '{' || in.back() != '}') throw std::runtime_error("Not a Python dictionary.");
@@ -113,11 +113,12 @@ std::unordered_map<std::string_view, std::string_view> parse_dict(std::string_vi
     std::ranges::sort(positions);
     std::unordered_map<std::string_view, std::string_view> map;
     for (size_t i = 0; i < positions.size(); ++i) {
-        size_t begin{positions[i].first}, end{std::string_view::npos};
+        const size_t begin{positions[i].first};
+        size_t end{std::string_view::npos};
         auto key = positions[i].second;
         if (i + 1 < positions.size()) end = positions[i + 1].first;
 
-        auto raw_value = trim(in.substr(begin, end - begin));
+        const auto raw_value = trim(in.substr(begin, end - begin));
         map.emplace(key, get_value_from_map(raw_value.back() == ',' ? raw_value.substr(0, raw_value.length() - 1) : raw_value));
     }
 
@@ -203,10 +204,10 @@ struct header_t {
 constexpr header_t parse_header(std::string_view header) {
     static const std::vector<std::string_view> keys{"descr", "fortran_order", "shape"};
     auto dict_map = parse_dict(header.back() == '\n' ? header.substr(0, header.length() - 1) : header, keys);
-    if (dict_map.size() == 0) throw std::runtime_error("Invalid dictionary in header");
+    if (dict_map.empty()) throw std::runtime_error("Invalid dictionary in header");
 
     shape_t shape;
-    for (auto item : parse_tuple(dict_map["shape"])) shape.emplace_back(ndarray_len_t(std::stoul(item)));
+    for (const auto &item : parse_tuple(dict_map["shape"])) shape.emplace_back(ndarray_len_t(std::stoul(item)));
 
     return {parse_descr(parse_str(dict_map["descr"])), shape, parse_bool(dict_map["fortran_order"])};
 }
@@ -237,10 +238,10 @@ template<typename Scalar> inline header_t read_header(std::istream &in) {
 // Read data after advancing from the current input position and leave in after the data.
 template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, const header_t &header, size_t advance = 0, size_t size = 0) {
     const auto &shape = header.shape;
-    size_t total_size = std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies());
-    size_t read_size = size == 0 || size > total_size - advance ? total_size - advance : size;
+    const size_t total_size = std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies());
+    const size_t read_size = size == 0 || size > total_size - advance ? total_size - advance : size;
     npy_data<Scalar> data{shape, header.fortran_order, std::vector<Scalar>(read_size)};
-    in.seekg(std::streamoff(sizeof(Scalar) * advance), std::ios_base::cur);
+    in.seekg(std::streamoff(sizeof(Scalar)) * std::streamoff(advance), std::ios_base::cur);
     in.read(reinterpret_cast<char *>(data.data.data()), sizeof(Scalar) * read_size);
     return data;
 }
@@ -248,7 +249,7 @@ template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, siz
     return read_npy<Scalar>(in, read_header<Scalar>(in), advance, size);
 }
 
-template<typename Scalar> inline npy_data<Scalar> read_npy(std::filesystem::path path, size_t offset = 0, size_t size = 0) {
+template<typename Scalar> inline npy_data<Scalar> read_npy(const std::filesystem::path &path, size_t offset = 0, size_t size = 0) {
     std::ifstream in{path, std::ifstream::binary};
     if (!in) throw std::runtime_error(std::format("IO error: failed to open file: {}", path.string()));
 

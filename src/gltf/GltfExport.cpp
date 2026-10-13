@@ -195,9 +195,11 @@ fastgltf::Camera ConvertCameraToFg(const CameraLens &cam, std::string_view name)
 void OverlayRest(const state::Scene &r, state::Entity e, state::TypeKey component, uint16_t index, std::span<std::byte> record) {
     const auto *clips = r.try_get<const AnimationClips>(e);
     if (!clips) return;
-    for (const auto &clip : clips->Clips)
-        for (const auto &channel : clip.Channels)
+    for (const auto &clip : clips->Clips) {
+        for (const auto &channel : clip.Channels) {
             if (channel.Target.Component == component && channel.Target.Index == index) std::memcpy(record.data() + channel.Target.Offset, channel.Rest.data(), channel.Rest.size() * sizeof(float));
+        }
+    }
 }
 
 fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name) {
@@ -242,9 +244,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     const auto &buffers = r.Context.get<const GpuBuffers>();
 
     // Entities of `view` in the source order `index_of` reads, with runtime-added ones after the source range in view order.
-    const auto ordered_by_source = [&](auto view, auto &&index_of) {
-        std::vector<state::Entity> ordered;
-        for (const auto e : view) ordered.emplace_back(e);
+    const auto ordered_by_source = [&](const auto &view, auto &&index_of) {
+        auto ordered = std::ranges::to<std::vector<state::Entity>>(view);
         std::ranges::stable_sort(ordered, {}, [&](state::Entity e) { return index_of(e).value_or(std::numeric_limits<uint32_t>::max()); });
         return ordered;
     };
@@ -438,7 +439,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Emit source-aligned physics resources directly into the asset.
     std::unordered_map<state::Entity, uint32_t> physics_material_to_index, physics_jointdef_to_index, collision_filter_to_index;
     {
-        auto mat_view = r.view<const PhysicsMaterial>();
+        const auto mat_view = r.view<const PhysicsMaterial>();
         for (const auto e : ordered_by_source(mat_view, source_index)) {
             const auto &pm = r.get<const PhysicsMaterial>(e);
             physics_material_to_index[e] = asset.physicsMaterials.size();
@@ -450,7 +451,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .restitutionCombine = FromCombineMode(pm.RestitutionCombine),
             });
         }
-        auto jd_view = r.view<const ::PhysicsJointDef>();
+        const auto jd_view = r.view<const ::PhysicsJointDef>();
         for (const auto e : ordered_by_source(jd_view, source_index)) {
             const auto &jd = r.get<const ::PhysicsJointDef>(e);
             fastgltf::pmr::MaybeSmallVector<fastgltf::JointLimit> limits;
@@ -494,7 +495,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
             return out;
         };
-        auto cf_view = r.view<const CollisionFilter>();
+        const auto cf_view = r.view<const CollisionFilter>();
         for (const auto e : ordered_by_source(cf_view, source_index)) {
             const auto &f = r.get<const CollisionFilter>(e);
             collision_filter_to_index[e] = asset.collisionFilters.size();
@@ -741,8 +742,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .alphaCutoff = pbr.AlphaCutoff,
             .name = ToFgStr(name),
         };
-        for (const auto &scalar : MaterialScalarExtensions)
+        for (const auto &scalar : MaterialScalarExtensions) {
             if (bits & scalar.Bit || pbr.*scalar.Ours != scalar.Default) out.*scalar.Theirs = fastgltf::Optional<fastgltf::num>{pbr.*scalar.Ours};
+        }
         ForEachMaterialExtension([&](const auto &extension) {
             if (!(bits & extension.Bit)) return;
             auto theirs = std::make_unique<typename std::remove_cvref_t<decltype(out.*extension.Theirs)>::element_type>();
@@ -866,8 +868,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             for (const auto v : mesh.vertices()) colors.push_back(source[*v]);
             out.emplace_back(fastgltf::Attribute{"COLOR_0", AddDataAccessor(std::span<const vec4>{colors}, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
-        for (const auto attribute : ExportedAttributes(meshes, store_id, false))
+        for (const auto attribute : ExportedAttributes(meshes, store_id, false)) {
             EmitCustom(out, attribute, Mesh{meshes, store_id}.vertices(), [&](Mesh::VH v) { return AttributeFloats(meshes, attribute, *v); });
+        }
     };
     for (uint32_t mi = 0; mi < mesh_groups.size(); ++mi) {
         const auto &group = mesh_groups[mi];
@@ -960,9 +963,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const uint32_t target_count = record.MorphBlocksReady && total_vcount > 0 ? record.MorphTargetCount : 0u;
             // CreateMesh writes 0 when source lacked normal deltas, so any non-zero means source had them.
             bool has_normal_deltas = false;
-            for (uint32_t t = 0; t < target_count && !has_normal_deltas; ++t)
-                for (uint32_t i = 0; i < total_vcount && !has_normal_deltas; ++i)
+            for (uint32_t t = 0; t < target_count && !has_normal_deltas; ++t) {
+                for (uint32_t i = 0; i < total_vcount && !has_normal_deltas; ++i) {
                     has_normal_deltas = arenas.Morph.Get(record.Morph, vertex_handles[i], t, target_count).NormalDelta != vec3{0};
+                }
+            }
             const bool has_tangent_deltas = !layout.MorphTangentDeltas.empty();
 
             // Emit channels present in at least one primitive.
@@ -1031,8 +1036,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 };
 
                 std::vector<vec3> positions(export_count);
-                for (uint32_t i = 0; i < export_count; ++i)
+                for (uint32_t i = 0; i < export_count; ++i) {
                     positions[i] = arenas.Vertices.Get({vertex_addresses[export_refs[i].Vertex], 1u})[0].Position;
+                }
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> prim_attrs;
                 prim_attrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(positions, true, fastgltf::BufferTarget::ArrayBuffer)});
 
@@ -1265,7 +1271,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     std::map<ShapeKey, size_t> shape_index_by_key;
     const auto emit_shape_index = [&](const fastgltf::Shape &s) -> size_t {
         const auto key = shape_key(s);
-        if (auto it = shape_index_by_key.find(key); it != shape_index_by_key.end()) return it->second;
+        if (const auto it = shape_index_by_key.find(key); it != shape_index_by_key.end()) return it->second;
         asset.shapes.emplace_back(s);
         const auto idx = asset.shapes.size() - 1;
         shape_index_by_key[key] = idx;
@@ -1691,8 +1697,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     if (!asset.imageBasedLights.empty()) asset.extensionsUsed.emplace_back("EXT_lights_image_based");
     const auto any_material = [&](auto pred) { return std::ranges::any_of(asset.materials, pred); };
     if (any_material([](const auto &m) { return m.unlit; })) asset.extensionsUsed.emplace_back("KHR_materials_unlit");
-    for (const auto &scalar : MaterialScalarExtensions)
+    for (const auto &scalar : MaterialScalarExtensions) {
         if (any_material([&](const auto &m) { return (m.*scalar.Theirs).has_value(); })) asset.extensionsUsed.emplace_back(scalar.Name);
+    }
     ForEachMaterialExtension([&](const auto &extension) {
         if (any_material([&](const auto &m) { return m.*extension.Theirs != nullptr; })) asset.extensionsUsed.emplace_back(extension.Name);
     });

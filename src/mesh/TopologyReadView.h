@@ -8,7 +8,7 @@
 
 namespace state {
 struct Scene;
-}
+} // namespace state
 struct MeshClosure;
 struct MeshStore;
 

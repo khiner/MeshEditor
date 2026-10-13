@@ -48,8 +48,9 @@ rbp::Index BuildRbpShape(rbp::World &world, const PhysicsShape &source, const Me
             return world.AddShape({.Radius = sphere.Radius * stretch.x, .Kind = rbp::ShapeSphere, .Local = local});
         },
         [&](const Capsule &capsule) {
-            if (capsule.RadiusTop != capsule.RadiusBottom || stretch.x != stretch.y || stretch.y != stretch.z)
+            if (capsule.RadiusTop != capsule.RadiusBottom || stretch.x != stretch.y || stretch.y != stretch.z) {
                 return round(capsule.Height * 0.5f, capsule.RadiusTop, capsule.RadiusBottom);
+            }
             return world.AddShape({.HalfExtents = {0, capsule.Height * stretch.y * 0.5f, 0}, .Radius = capsule.RadiusTop * stretch.x, .Kind = rbp::ShapeCapsule, .Local = local});
         },
         [&](const Cylinder &cylinder) {
@@ -73,12 +74,13 @@ rbp::Index BuildRbpShape(rbp::World &world, const PhysicsShape &source, const Me
             if (!mesh) throw std::runtime_error("A mesh collider has no mesh geometry.");
             std::vector<rbp::float3> points;
             points.reserve(mesh->VertexCount());
-            for (auto vertex : mesh->vertices()) points.push_back(ToRbp(mesh->GetPosition(vertex) * scale));
+            for (const auto vertex : mesh->vertices()) points.push_back(ToRbp(mesh->GetPosition(vertex) * scale));
             if constexpr (std::is_same_v<std::decay_t<decltype(kind)>, ConvexHull>) return world.AddHull(points, nullptr, local);
             else {
                 auto indices = mesh->CreateTriangleIndices();
-                if (scale.x * scale.y * scale.z < 0)
+                if (scale.x * scale.y * scale.z < 0) {
                     for (size_t i = 0; i + 2 < indices.size(); i += 3) std::swap(indices[i + 1], indices[i + 2]);
+                }
                 const auto mesh_shape = world.AddMesh(points, indices, local);
                 if (mesh_shape != rbp::NoIndex) world.Shapes[mesh_shape].DoubleSided = true;
                 return mesh_shape;

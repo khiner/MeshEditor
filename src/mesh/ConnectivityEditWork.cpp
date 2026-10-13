@@ -36,8 +36,9 @@ ConnectivityEditWork::ConnectivityEditWork(state::Scene &r, mtl::ComputeChain &c
         .Emitted = emitted,
         .ErrorSlot = chain.Scratch.Buffer.Slot,
     };
-    for (uint32_t d = 0u; d < 3u; ++d)
+    for (uint32_t d = 0u; d < 3u; ++d) {
         pc.After[d] = Elements[d] = AllocateElementWork(chain.Scratch, capacities[d], uint64_t(before.Counts[d]) + emitted[d].Count);
+    }
     chain.Groups(GetMeshPipelines(r)[MeshPass::ConnectivityEditWork], pc, (count + 255u) / 256u, 256u, 3u);
     EncodeSortElementWork(r, chain, Elements);
 }

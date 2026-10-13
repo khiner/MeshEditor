@@ -71,8 +71,9 @@ std::vector<PointerRow> BuildRows() {
         {"/extensions/EXT_lights_image_based/lights/{}/rotation", ImageLight, Target<&ImageLight::Rotation>()},
         {"/extensions/EXT_lights_image_based/lights/{}/intensity", ImageLight, Target<&ImageLight::Intensity>()},
     };
-    for (const auto &scalar : detail::MaterialScalarExtensions)
+    for (const auto &scalar : detail::MaterialScalarExtensions) {
         rows.emplace_back(std::format("/materials/{{}}/extensions/{}/{}", scalar.Name, scalar.Key), Material, MaterialTarget<float>(action::detail::MemPtrOffset(scalar.Ours)));
+    }
     detail::ForEachMaterialExtension([&](const auto &extension) {
         const auto prefix = std::format("/materials/{{}}/extensions/{}/", extension.Name);
         const auto offset = action::detail::MemPtrOffset(extension.Ours);
@@ -158,8 +159,9 @@ void ConvertBoneChannel(AnimationChannel &channel, const Transform &rest, bool t
 }
 
 const PointerRow *RowOf(const ChannelTarget &target) {
-    for (const auto &row : PointerRows())
+    for (const auto &row : PointerRows()) {
         if (SameField(row.Target, target)) return &row;
+    }
     return nullptr;
 }
 } // namespace gltf

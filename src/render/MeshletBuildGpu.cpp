@@ -136,8 +136,9 @@ void ValidateSources(const MeshStore &meshes, std::span<const MeshletBuildSource
         if (!source.Destination || source.Topology > 2u) throw std::invalid_argument("Meshlet build requires a destination and triangle, line or point topology.");
         auto &mask = destinations[source.Destination];
         const uint32_t topology = 1u << source.Topology;
-        if ((mask & topology) || (mask && (source.Owner || source.Destination->ExtrasFaces.Count)) || (mask & 8u))
+        if ((mask & topology) || (mask && (source.Owner || source.Destination->ExtrasFaces.Count)) || (mask & 8u)) {
             throw std::invalid_argument("Meshlet build requires distinct topologies per canonical owner and distinct fragment destinations.");
+        }
         mask |= topology | (source.Owner ? 8u : 0u);
     }
     for (const auto &source : sources) {
@@ -150,12 +151,14 @@ void ValidateSources(const MeshStore &meshes, std::span<const MeshletBuildSource
         const bool elements = (source.Topology == 1u || source.Topology == 2u) && source.Elements.Storage.Slot != InvalidSlot && source.Group == InvalidOffset;
         if ((!triangles && !elements) ||
             owner.ExtrasFaces.Count || owner.StoreId != source.Destination->StoreId ||
-            !render.Primitives.Contains(owner.PrimitiveData, ElementHandle{source.Primitive}))
+            !render.Primitives.Contains(owner.PrimitiveData, ElementHandle{source.Primitive})) {
             throw std::invalid_argument("Meshlet fragment requires owned canonical element work and primitive.");
+        }
         if (destinations.contains(source.Owner)) throw std::invalid_argument("Meshlet fragment owner cannot also be a build destination.");
         const auto &primitive = render.Primitives.Get({render.Primitives.Address(owner.PrimitiveData, ElementHandle{source.Primitive}).Value(), 1u})[0];
-        if (primitive.Topology != source.Topology || meshes.PrimitiveRoute(owner, primitive.PrimitiveIndex, source.Topology) != source.Primitive)
+        if (primitive.Topology != source.Topology || meshes.PrimitiveRoute(owner, primitive.PrimitiveIndex, source.Topology) != source.Primitive) {
             throw std::invalid_argument("Meshlet fragment primitive has no matching source route.");
+        }
         if (source.Group != InvalidOffset) {
             if (!render.ClusterGroups.Contains(owner.GroupData, ElementHandle{source.Group})) throw std::invalid_argument("Meshlet fragment group belongs to another owner.");
             const auto links = render.GroupLinks.Get({render.ClusterGroups.Address(owner.GroupData, ElementHandle{source.Group}).Value(), 1u})[0];
@@ -205,8 +208,8 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
         for (const auto group : destinations) released.push_back(sources[group.Offset].Destination);
         meshes.ReleaseRender(released);
     }
-    for (auto &source : sources) {
-        auto &mb = *source.Destination;
+    for (const auto &source : sources) {
+        const auto &mb = *source.Destination;
         const auto n = source.ElementCount;
         auto elements = source.Elements;
         const auto work = WorkOf(source);
@@ -222,7 +225,7 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
             AllocateElementWork(membership, work.MaterialBound, work.MaterialBlocks);
         if (!source.Owner) gathered_work.push_back(materials);
         if (uint64_t(n) * work.Endpoints > UINT32_MAX) throw std::length_error("Meshlet output exceeds arena address space.");
-        MeshletBuildJob job{
+        const MeshletBuildJob job{
             .Mesh = BuildMeshRecord(buffers, meshes, mb.StoreId),
             .AuxIndices = mb.ExtrasEdges.Count ? SlotOffset{render.ExtrasEdges.Buffer.Slot, mb.ExtrasEdges.Offset} : SlotOffset{},
             .Topology = source.Topology,
@@ -324,8 +327,9 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
                 jobs[i].VertexAddress = owner.MeshletVertices.Values.Offset + jobs[i].VertexOffset;
             }
             const auto &runs = payload_runs[d];
-            for (const auto [payload, run] : {std::pair{RenderPayload::TriangleIds, runs.Triangles}, std::pair{RenderPayload::LocalTriangles, runs.LocalTriangles}, std::pair{RenderPayload::VertexCorners, runs.Vertices}})
+            for (const auto [payload, run] : {std::pair{RenderPayload::TriangleIds, runs.Triangles}, std::pair{RenderPayload::LocalTriangles, runs.LocalTriangles}, std::pair{RenderPayload::VertexCorners, runs.Vertices}}) {
                 WithPayload(render, owner, payload, [&](const auto &pool, const PayloadRange &range) { pool.CaptureWrite({range.Values.Offset + run.Offset, run.Count}); });
+            }
         }
     };
     for (uint32_t d = 0u; d < destinations.size(); ++d) {
@@ -544,8 +548,9 @@ void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<Meshl
     std::vector<MeshletBuildSource> chunk_sources;
     for (const auto chunk : split.Chunks) {
         chunk_sources.clear();
-        for (uint32_t i = chunk.Offset; i < chunk.Offset + chunk.Count; ++i)
+        for (uint32_t i = chunk.Offset; i < chunk.Offset + chunk.Count; ++i) {
             chunk_sources.insert(chunk_sources.end(), groups[i].Sources.begin(), groups[i].Sources.end());
+        }
         BuildChunk(r, chain, chunk_sources);
     }
 }

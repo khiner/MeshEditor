@@ -5,7 +5,7 @@
 
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 
 // Records sorting occupied block keys and publishing compact prefixes, with temporaries in the chain's scratch.
 void EncodeSortElementWork(state::Scene &, mtl::ComputeChain &, std::span<const ElementWork>);

@@ -45,8 +45,9 @@ inline std::optional<double> SurfaceCurvature(const state::Scene &r, state::Enti
     // Interpolate the triangle's per-vertex curvature at the contact's barycentric weights.
     double local = 0;
     const auto sharpness = meshes.Arenas().EdgeSharpness.Buffer.GetSpan<uint8_t>();
-    for (uint32_t i = 0; i < 3; ++i)
+    for (uint32_t i = 0; i < 3; ++i) {
         local += double(hit.Weights[i]) * mesh.CalcMeanCurvature(Mesh::VH{hit.Vertices[i]}, sharpness);
+    }
     // Curvature is an inverse length, so the node's world scale converts the mesh's own units to meters.
     const float scale = MeanScale(wt.S);
     return scale > 0 ? local / scale : 0.0;

@@ -18,8 +18,9 @@ struct Quadric {
     std::array<double, 10> Q{};
     void Add(vec3 n, double d, double weight = 1.) {
         const std::array<double, 4> p{n.x, n.y, n.z, d};
-        for (uint32_t i = 0u, k = 0u; i < 4u; ++i)
+        for (uint32_t i = 0u, k = 0u; i < 4u; ++i) {
             for (uint32_t j = i; j < 4u; ++j) Q[k++] += weight * p[i] * p[j];
+        }
     }
     Quadric operator+(const Quadric &b) const {
         Quadric q = *this;
@@ -32,23 +33,26 @@ struct Quadric {
     }
     vec3 Minimum(vec3 a, vec3 b) const {
         vec3 best = a;
-        for (const auto p : {b, (a + b) * .5f})
+        for (const auto p : {b, (a + b) * .5f}) {
             if (Cost(p) < Cost(best)) best = p;
+        }
         double m[3][4] = {{Q[0], Q[1], Q[2], -Q[3]}, {Q[1], Q[4], Q[5], -Q[6]}, {Q[2], Q[5], Q[7], -Q[8]}};
         const double scale = std::max({std::abs(Q[0]), std::abs(Q[4]), std::abs(Q[7])});
         for (uint32_t i = 0u; i < 3u; ++i) {
             uint32_t pivot = i;
-            for (uint32_t j = i + 1u; j < 3u; ++j)
+            for (uint32_t j = i + 1u; j < 3u; ++j) {
                 if (std::abs(m[j][i]) > std::abs(m[pivot][i])) pivot = j;
+            }
             if (std::abs(m[pivot][i]) <= 1e-10 * scale) return best;
             for (uint32_t k = i; k < 4u; ++k) std::swap(m[pivot][k], m[i][k]);
             const double divisor = m[i][i];
             for (uint32_t k = i; k < 4u; ++k) m[i][k] /= divisor;
-            for (uint32_t j = 0u; j < 3u; ++j)
+            for (uint32_t j = 0u; j < 3u; ++j) {
                 if (i != j) {
                     const double factor = m[j][i];
                     for (uint32_t k = i; k < 4u; ++k) m[j][k] -= factor * m[i][k];
                 }
+            }
         }
         const vec3 p{float(m[0][3]), float(m[1][3]), float(m[2][3])};
         if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) && Cost(p) < Cost(best)) best = p;
@@ -96,11 +100,12 @@ struct Planner {
         std::set<uint32_t> result;
         for (const auto f : Vertices[v].Faces) {
             const auto &loop = Faces[f].Vertices;
-            for (uint32_t i = 0u; i < loop.size(); ++i)
+            for (uint32_t i = 0u; i < loop.size(); ++i) {
                 if (loop[i] == v) {
                     result.insert(loop[(i + 1u) % loop.size()]);
                     result.insert(loop[(i + loop.size() - 1u) % loop.size()]);
                 }
+            }
         }
         return result;
     }
@@ -132,15 +137,19 @@ struct Planner {
         std::set<uint32_t> common, opposites;
         std::set_intersection(an.begin(), an.end(), bn.begin(), bn.end(), std::inserter(common, common.end()));
         uint32_t users = 0u;
-        for (const auto f : Vertices[a].Faces)
+        for (const auto f : Vertices[a].Faces) {
             if (Vertices[b].Faces.contains(f)) {
                 const auto &loop = Faces[f].Vertices;
-                for (uint32_t i = 0u; i < loop.size(); ++i)
+                for (uint32_t i = 0u; i < loop.size(); ++i) {
                     if ((loop[i] == a && loop[(i + 1u) % loop.size()] == b) || (loop[i] == b && loop[(i + 1u) % loop.size()] == a)) ++users;
-                if (loop.size() == 3u)
-                    for (const auto v : loop)
+                }
+                if (loop.size() == 3u) {
+                    for (const auto v : loop) {
                         if (v != a && v != b) opposites.insert(v);
+                    }
+                }
             }
+        }
         if (users < 1u || users > 2u || common != opposites) return false;
         // Boundary vertices only collapse along the boundary itself.
         if (Vertices[a].Boundary != Vertices[b].Boundary || (Vertices[a].Boundary && users != 1u)) return false;
@@ -186,9 +195,11 @@ struct Planner {
         ++Collapses;
         for (const auto v : changed) ++Vertices[v].Version;
         std::set<std::pair<uint32_t, uint32_t>> edges;
-        for (const auto v : changed)
-            if (Root(v) == v)
+        for (const auto v : changed) {
+            if (Root(v) == v) {
                 for (const auto other : Neighbors(v)) edges.emplace(std::min(v, other), std::max(v, other));
+            }
+        }
         for (const auto [a, b] : edges) Propose(a, b);
     }
     void Gather(const GeometrySelection &selection, std::span<const uint32_t> locked_faces) {
@@ -199,8 +210,9 @@ struct Planner {
         std::ranges::for_each(selection.Vertices, [&](uint32_t handle) {
             Vertices[AddVertex(handle)].Selected = true;
             const auto fan = connectivity.Incoming(he::VH{handle});
-            for (uint32_t i = 0u; i < fan.y; ++i)
+            for (uint32_t i = 0u; i < fan.y; ++i) {
                 if (const auto face = connectivity.FanItems[fan.x + i].y; face != InvalidOffset) faces.insert(face);
+            }
         });
         for (const auto face : faces) {
             Face f{.Handle = face};
@@ -266,8 +278,9 @@ std::optional<MeshTopologyTask> DecimateTask(const MeshStore &store, const Mesh 
     mesh.ValidateSelection(selection);
     const profile::CpuScope scope{"PlanDecimate"};
     if (!std::ranges::is_sorted(locked_faces) || std::ranges::adjacent_find(locked_faces) != locked_faces.end()) throw std::invalid_argument("Decimate locked faces must be sorted and unique.");
-    for (const auto face : locked_faces)
+    for (const auto face : locked_faces) {
         if (!store.IsLiveElement(mesh.GetStoreId(), Element::Face, ElementHandle{face})) throw std::invalid_argument("Decimate locked face is not owned by its mesh.");
+    }
     if (!std::isfinite(ratio) || ratio >= 1.f || !mesh.FaceCount()) return {};
     Planner plan{mesh, store};
     plan.Gather(selection, locked_faces);

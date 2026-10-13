@@ -63,7 +63,7 @@ struct BufferArena {
             return;
         }
         auto transaction = BeginAllocation();
-        auto new_range = Allocator.Allocate(values.size());
+        const auto new_range = Allocator.Allocate(values.size());
         WriteRange(new_range.Offset, values);
         Allocator.Free(range);
         range = new_range;

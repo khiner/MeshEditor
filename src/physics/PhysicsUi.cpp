@@ -88,7 +88,7 @@ void RenderSystemMultiSelect(const state::Scene &r, const char *label, const std
     else preview = std::format("{} selected", selection.size());
 
     if (BeginCombo(label, preview.c_str())) {
-        for (auto se : view) {
+        for (const auto se : view) {
             bool member = std::find(selection.begin(), selection.end(), se) != selection.end();
             if (Checkbox(SystemDisplayName(r, se).c_str(), &member)) action::Emit(on_toggle(se, member));
         }
@@ -266,7 +266,7 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
             SeparatorText("Collision Matrix");
 
             const auto n = filter_entities.size();
-            auto filter_label = [&](size_t i) {
+            const auto filter_label = [&](size_t i) {
                 const auto fe = filter_entities[i];
                 return DisplayName(r.get<const CollisionFilter>(fe).Name, "{:x}", uint32_t(fe));
             };
@@ -320,10 +320,12 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
                     SameLine();
                     for (uint8_t a = 0; a < 3; ++a) {
                         bool active = std::find(limit.LinearAxes.begin(), limit.LinearAxes.end(), a) != limit.LinearAxes.end();
-                        if (Checkbox(axis_names[a], &active)) action::Emit(edit_limit([&](auto &e) {
-                            if (active) e.LinearAxes.push_back(a);
-                            else std::erase(e.LinearAxes, a);
-                        }));
+                        if (Checkbox(axis_names[a], &active)) {
+                            action::Emit(edit_limit([&](auto &e) {
+                                if (active) e.LinearAxes.push_back(a);
+                                else std::erase(e.LinearAxes, a);
+                            }));
+                        }
                         if (a < 2) SameLine();
                     }
                     TextUnformatted("Angular axes:");
@@ -331,10 +333,12 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
                     for (uint8_t a = 0; a < 3; ++a) {
                         PushID(a + 3);
                         bool active = std::find(limit.AngularAxes.begin(), limit.AngularAxes.end(), a) != limit.AngularAxes.end();
-                        if (Checkbox(axis_names[a], &active)) action::Emit(edit_limit([&](auto &e) {
-                            if (active) e.AngularAxes.push_back(a);
-                            else std::erase(e.AngularAxes, a);
-                        }));
+                        if (Checkbox(axis_names[a], &active)) {
+                            action::Emit(edit_limit([&](auto &e) {
+                                if (active) e.AngularAxes.push_back(a);
+                                else std::erase(e.AngularAxes, a);
+                            }));
+                        }
                         if (a < 2) SameLine();
                         PopID();
                     }
@@ -517,8 +521,9 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
             "Connected node", cn != state::Null && r.valid(cn) ? cn : state::Null,
             [&] {
                 std::vector<state::Entity> nodes{state::Null};
-                for (const auto ne : r.view<const SceneChildren>())
+                for (const auto ne : r.view<const SceneChildren>()) {
                     if (ne != entity) nodes.push_back(ne);
+                }
                 return nodes;
             },
             [&](state::Entity e) { return e == state::Null ? std::string{"None"} : GetName(r, e); },
@@ -545,7 +550,9 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
             } else {
                 if (Button("Convert to Trigger")) action::Emit(action::physics::SetTrigger{true});
             }
-        } else if (Button("Add Trigger")) action::Emit(action::physics::AddTrigger{});
+        } else if (Button("Add Trigger")) {
+            action::Emit(action::physics::AddTrigger{});
+        }
     }
 
     PopID();

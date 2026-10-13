@@ -34,8 +34,9 @@ void Records::Settle() {
 std::vector<uint32_t> Records::Changed() const {
     std::vector<uint32_t> changed;
     const auto length = std::max(Length(), ChangedLength);
-    for (const auto page : Trie.ChangedSlots)
+    for (const auto page : Trie.ChangedSlots) {
         for (uint64_t i = page * RecordsPerPage, end = std::min(length, (page + 1) * RecordsPerPage); i < end; ++i) changed.push_back(uint32_t(i));
+    }
     return changed;
 }
 

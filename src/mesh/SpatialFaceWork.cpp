@@ -18,8 +18,9 @@ void CheckSpatialState(const mtl::ComputeChain &chain, Range state) {
 }
 // Conservative AABB predicates; the GPU retains the exact face/edge test.
 bool Overlaps(const MeshTopologyTask &task, const AABB &bounds) {
-    for (uint32_t axis = 0u; axis < 3u; ++axis)
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
         if (!(bounds.Min[axis] <= bounds.Max[axis])) throw std::logic_error("Canonical face bounds are missing.");
+    }
     if (!(task.Flags & TopologyFlagScreenCuts)) {
         const auto center = (bounds.Min + bounds.Max) * .5f;
         const auto extent = (bounds.Max - bounds.Min) * .5f;

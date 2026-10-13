@@ -496,6 +496,7 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "Usage: %s [--no-render]\n", argv[0]);
         return 1;
     }
+
     if (!Render) std::puts("Skipping rendered-image comparisons (--no-render).");
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
     TestSavedProject();

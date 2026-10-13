@@ -63,7 +63,7 @@ struct InstanceArena {
     std::span<AABB> GetMutableBounds(Range range) const { return BoundsBuffer.GetMutableSpan<AABB>(range); }
     std::span<uint8_t> GetMutableStates() const { return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), StateBuffer.UsedSize}; }
     std::span<Transform> GetMutableTransforms() const {
-        auto mapped = TransformBuffer.GetMutableRange(0, TransformBuffer.UsedSize);
+        const auto mapped = TransformBuffer.GetMutableRange(0, TransformBuffer.UsedSize);
         return {reinterpret_cast<Transform *>(mapped.data()), mapped.size() / sizeof(Transform)};
     }
 
@@ -73,7 +73,7 @@ struct InstanceArena {
     mtl::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer, BoundsBuffer, RecordBuffer;
 
 private:
-    void ClearStates(Range range) { std::ranges::fill(StateBuffer.GetMutableSpan<uint8_t>(range), uint8_t{0}); }
+    void ClearStates(Range range) { std::ranges::fill(StateBuffer.GetMutableSpan<uint8_t>(range), uint8_t{0}); } // NOLINT(readability-make-member-function-const)
     void ForEachBuffer(auto &&fn) {
         fn(TransformBuffer, sizeof(Transform));
         fn(ObjectIdBuffer, sizeof(uint32_t));

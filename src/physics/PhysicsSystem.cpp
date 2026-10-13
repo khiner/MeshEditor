@@ -128,8 +128,9 @@ void UpdateMasks(PhysicsState &s, const state::Scene &r) {
     }
     const auto mask = [&](const auto &systems) {
         uint32_t result = 0;
-        for (auto e : systems)
-            if (auto it = bits.find(e); it != bits.end()) result |= it->second;
+        for (const auto e : systems) {
+            if (const auto it = bits.find(e); it != bits.end()) result |= it->second;
+        }
         return result;
     };
     s.Masks.clear();
@@ -145,7 +146,9 @@ Transform ComposeAuthored(const Transform &parent, Transform result) {
     if (parent.S.x == parent.S.y && parent.S.y == parent.S.z) {
         result.P *= parent.S;
         result.S *= parent.S;
-    } else result = ToTransform(ToMatrix(Transform{.S = parent.S}) * ToMatrix(result));
+    } else {
+        result = ToTransform(ToMatrix(Transform{.S = parent.S}) * ToMatrix(result));
+    }
     result.P = parent.P + Rotate(parent.R, result.P);
     result.R = Normalize(parent.R * result.R);
     return result;
@@ -392,7 +395,7 @@ void BuildJoint(PhysicsState &s, state::Scene &r, state::Entity entity) {
         const bool linear = !limit.LinearAxes.empty();
         const auto &axes = linear ? limit.LinearAxes : limit.AngularAxes;
         uint32_t mask = 0;
-        for (auto axis : axes) {
+        for (const auto axis : axes) {
             if (axis > 2) throw std::invalid_argument("A physics joint axis must be X, Y or Z.");
             mask |= 1u << axis;
         }
@@ -405,7 +408,9 @@ void BuildJoint(PhysicsState &s, state::Scene &r, state::Entity entity) {
                 modes[axis] = rbp::AxisPositioned;
                 (linear ? desc.LinearMotorTarget : desc.MotorTarget)[axis] = low;
                 (linear ? desc.LinearMotorMaxForce : desc.MotorMaxTorque)[axis] = INFINITY;
-            } else modes[axis] = rbp::AxisLimited;
+            } else {
+                modes[axis] = rbp::AxisLimited;
+            }
             (linear ? desc.LinearLimitLow : desc.LimitLow)[axis] = low;
             (linear ? desc.LinearLimitHigh : desc.LimitHigh)[axis] = high;
             (linear ? desc.LinearStiffness : desc.AngularStiffness)[axis] = limit.Stiffness.value_or(INFINITY);
@@ -415,9 +420,11 @@ void BuildJoint(PhysicsState &s, state::Scene &r, state::Entity entity) {
             const auto axis = uint32_t(std::countr_zero(mask));
             configure(axis, true);
             (linear ? desc.LinearLimitAxes : desc.AngularLimitAxes)[axis] = mask;
-        } else
-            for (uint32_t axis = 0; axis < 3; ++axis)
+        } else {
+            for (uint32_t axis = 0; axis < 3; ++axis) {
                 if (mask & (1u << axis)) configure(axis, false);
+            }
+        }
     }
     for (const auto &drive : def.Drives) {
         if (drive.Axis > 2) throw std::invalid_argument("A physics joint drive axis must be X, Y or Z.");
@@ -426,7 +433,7 @@ void BuildJoint(PhysicsState &s, state::Scene &r, state::Entity entity) {
         if (drive.Mode == PhysicsDriveMode::Acceleration) {
             const auto axis = rbp::Rotate(b.Orientation, rbp::float3{drive.Axis == 0 ? 1.f : 0, drive.Axis == 1 ? 1.f : 0, drive.Axis == 2 ? 1.f : 0});
             float inverse = 0;
-            for (auto body : {desc.BodyA, desc.BodyB}) {
+            for (const auto body : {desc.BodyA, desc.BodyB}) {
                 if (linear) inverse += world.Masses[body].InvMass;
                 else {
                     const auto local = rbp::Rotate(rbp::QuatConjugate(world.Poses[body].Orientation), axis);
@@ -487,7 +494,7 @@ void Restart(PhysicsState &s, state::Scene &r) {
         if (auto *cache = r.try_edit<BodyPoseCache>(entity)) cache->Frames = {physics::RbpNodePose(body.InitialPose, body.Frame)};
     }
     s.World->ResetDynamics();
-    for (auto entity : s.JointUpdates) BuildJoint(s, r, entity);
+    for (const auto entity : s.JointUpdates) BuildJoint(s, r, entity);
     s.JointUpdates.clear();
     s.SensorFollowers.clear();
     for (const auto &[entity, record] : s.Bodies) {
@@ -562,19 +569,21 @@ void CollectSubstep(PhysicsState &s, state::Scene &r, std::map<ContactKey, Conta
             const float magnitude = simd::length(vector);
             if (magnitude <= 1e-6f) continue;
             const float speed = excess * (c.SideA.InvMass + c.SideB.InvMass) / (1 + c.Restitution);
-            for (bool side_a : {true, false}) impacts.push_back({
-                .Entity = side_a ? a : b,
-                .ColliderEntity = Collider(side_a ? c.SideA.UserData : c.SideB.UserData),
-                .Other = side_a ? b : a,
-                .OtherColliderEntity = Collider(side_a ? c.SideB.UserData : c.SideA.UserData),
-                .Point = FromRbp(WorldPoint(c.SideA)),
-                .ResultantPoint = FromRbp(resultant),
-                .Direction = FromRbp(vector * ((side_a ? 1.f : -1.f) / magnitude)),
-                .Impulse = magnitude,
-                .Speed = speed,
-                .OtherInvMass = side_a ? c.SideB.InvMass : c.SideA.InvMass,
-                .NominalArea = c.NominalArea,
-            });
+            for (const bool side_a : {true, false}) {
+                impacts.push_back({
+                    .Entity = side_a ? a : b,
+                    .ColliderEntity = Collider(side_a ? c.SideA.UserData : c.SideB.UserData),
+                    .Other = side_a ? b : a,
+                    .OtherColliderEntity = Collider(side_a ? c.SideB.UserData : c.SideA.UserData),
+                    .Point = FromRbp(WorldPoint(c.SideA)),
+                    .ResultantPoint = FromRbp(resultant),
+                    .Direction = FromRbp(vector * ((side_a ? 1.f : -1.f) / magnitude)),
+                    .Impulse = magnitude,
+                    .Speed = speed,
+                    .OtherInvMass = side_a ? c.SideB.InvMass : c.SideA.InvMass,
+                    .NominalArea = c.NominalArea,
+                });
+            }
         }
     }
     std::erase_if(s.Contacts, [&](const auto &entry) { return entry.second.Seen != s.Substep; });
@@ -601,7 +610,7 @@ void StepSimulation(PhysicsState &s, state::Scene &r, float sim_dt, uint32_t sub
     }
     profile::RecordCounter("RbpContactRefusals", double(completed.ContactRefusals));
     for (const auto &[key, sum] : contacts) {
-        auto it = s.Contacts.find(key);
+        const auto it = s.Contacts.find(key);
         if (it == s.Contacts.end() || sum.NormalImpulse <= 0) continue;
         auto &tracked = it->second;
         const auto &c = sum.Last;
@@ -663,8 +672,9 @@ void CountDefinitionUses(state::Scene &r) {
     for (const auto [_, trigger] : r.view<const TriggerNodes>().each()) use(trigger.CollisionFilterEntity);
     for (const auto [_, filter] : r.view<const CollisionFilter>().each()) {
         for (const auto system : filter.Systems) use(system);
-        for (const auto system : filter.CollideSystems)
+        for (const auto system : filter.CollideSystems) {
             if (std::ranges::find(filter.Systems, system) == filter.Systems.end()) use(system);
+        }
     }
     for (const auto [_, joint] : r.view<const PhysicsJoint>().each()) use(joint.JointDefEntity);
 }
@@ -707,11 +717,13 @@ void ProcessChanges(state::Scene &r) {
     for (const auto e : moved) touch_subtree(e);
     for (const auto e : destroyed) touch(e);
     const auto &mesh_colliders = r.Context.get<const MeshColliders>();
-    for (const auto mesh_entity : geometry)
+    for (const auto mesh_entity : geometry) {
         for (const auto collider : mesh_colliders.Of(mesh_entity)) touch(collider);
+    }
     // A definition reaches every leaf that names one.
-    if (definitions)
+    if (definitions) {
         for (const auto e : r.view<const ColliderMaterial>()) touch(e);
+    }
     SortUnique(candidates);
 
     // Each candidate leaves the world, joins it, or compares its inputs with the ones it was cooked from.

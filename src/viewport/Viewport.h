@@ -2,7 +2,7 @@
 
 namespace MTL {
 class CommandBuffer;
-}
+} // namespace MTL
 
 namespace mtl {
 struct Context;

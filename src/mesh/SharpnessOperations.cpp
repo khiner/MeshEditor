@@ -70,6 +70,7 @@ std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Scene &r, 
     }
     if (edits.empty()) return {};
     std::vector<ElementWork> seeded;
+    seeded.reserve(seeds.size());
     for (const auto &seed : seeds) seeded.push_back(seed.Work);
     EncodeElementMembershipWork(r, chain, seeds);
     EncodeSortElementWork(r, chain, seeded);
@@ -132,8 +133,9 @@ std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Scene &r, 
     for (const auto &edit : edits) {
         changes.push_back({edit.TargetIndex, edit.Triangles});
         auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = edit.Id});
-        for (const auto [d, domain, work] : {std::tuple{0u, MeshStore::ElementDomain::Vertex, 0u}, std::tuple{1u, MeshStore::ElementDomain::Edge, 3u}, std::tuple{2u, MeshStore::ElementDomain::Face, 2u}})
+        for (const auto [d, domain, work] : {std::tuple{0u, MeshStore::ElementDomain::Vertex, 0u}, std::tuple{1u, MeshStore::ElementDomain::Edge, 3u}, std::tuple{2u, MeshStore::ElementDomain::Face, 2u}}) {
             update.Blocks[d] = meshes.ArenaBlocks(edit.Id, domain, chain.Scratch, edit.Neighborhood.Elements[work]);
+        }
     }
     meshes.UpdateSelection(r, chain, updates);
     chain.Submit();

@@ -10,8 +10,9 @@ namespace animation {
 void Evaluate(state::Scene &r, state::Entity viewport, float seconds, bool persistent) {
     // Drop the pose of a node the active animation no longer poses.
     std::vector<state::Entity> stale;
-    for (const auto entity : r.view<const PosedLocal, const Transform>())
+    for (const auto entity : r.view<const PosedLocal, const Transform>()) {
         if (!PosedTransformComponents(r, viewport, entity)) stale.emplace_back(entity);
+    }
     for (const auto entity : stale) r.remove<PosedLocal>(entity);
 
     std::vector<float> value;

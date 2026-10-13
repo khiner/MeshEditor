@@ -7,7 +7,7 @@
 
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 
 // Returns the owner's seed groups and every group their proxies feed, transitively, in ascending order.
 std::vector<uint32_t> ClusterGroupClosure(const RenderArenas &, const MeshStore::Record &owner, std::span<const uint32_t> seeds);

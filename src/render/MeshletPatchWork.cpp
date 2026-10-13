@@ -16,7 +16,7 @@ MeshletPatch PlanMeshletPatch(state::Scene &r, MeshStore::Record &owner, const B
         throw std::invalid_argument("Meshlet patch provenance must cover the emitted triangle run.");
     }
     const auto &meshes = r.Context.get<const MeshStore>();
-    auto &render = meshes.Render();
+    const auto &render = meshes.Render();
     const auto owners = render.ElementMeshlets[0].View(owner.ElementMeshlets[0]);
     const auto records = render.Meshlets.Buffer.GetSpan<MeshletRecord>();
     // The owner's cluster at a meshlet handle.
@@ -36,27 +36,32 @@ MeshletPatch PlanMeshletPatch(state::Scene &r, MeshStore::Record &owner, const B
         if (!render.Meshlets.Contains(owner.MeshletData, ElementHandle{cluster})) throw std::invalid_argument("Meshlet patch triangle has no live render owner.");
         const auto &record = record_of(cluster);
         if (record.Topology || record.RefinedGroup != InvalidOffset || record.TriangleCount > 48u ||
-            !std::ranges::contains(triangle_ids.subspan(record.TriangleOffset, record.TriangleCount), triangle))
+            !std::ranges::contains(triangle_ids.subspan(record.TriangleOffset, record.TriangleCount), triangle)) {
             throw std::invalid_argument("Meshlet patch triangle disagrees with its render owner.");
+        }
         return cluster;
     };
     MeshletPatch patch;
-    if (input.Changed.Storage.Slot != InvalidSlot) ForEachWorkElement(storage, input.Changed, [&](uint32_t triangle) {
-        const auto cluster = cluster_of(triangle);
-        const auto &record = record_of(cluster);
-        const auto corners = render.MeshletVertexCorners.Get(owner.MeshletVertices.Values).subspan(record.VertexOffset, record.VertexCount);
-        if (!input.StableKeys || contains(input.Removed, triangle) ||
-            std::ranges::any_of(corners, [&](uint32_t corner) { return contains(input.ReplacedCorners, corner); }))
-            patch.Clusters.push_back(cluster);
-    });
+    if (input.Changed.Storage.Slot != InvalidSlot) {
+        ForEachWorkElement(storage, input.Changed, [&](uint32_t triangle) {
+            const auto cluster = cluster_of(triangle);
+            const auto &record = record_of(cluster);
+            const auto corners = render.MeshletVertexCorners.Get(owner.MeshletVertices.Values).subspan(record.VertexOffset, record.VertexCount);
+            if (!input.StableKeys || contains(input.Removed, triangle) ||
+                std::ranges::any_of(corners, [&](uint32_t corner) { return contains(input.ReplacedCorners, corner); })) {
+                patch.Clusters.push_back(cluster);
+            }
+        });
+    }
     SortUnique(patch.Clusters);
     // Grouped partitions precede ungrouped ones, each in ascending order.
     std::map<std::pair<bool, uint32_t>, MeshletPatchPartition> partitions;
     for (const auto cluster : patch.Clusters) {
         const auto &record = record_of(cluster);
         if (!render.Primitives.Contains(owner.PrimitiveData, ElementHandle{record.Primitive}) ||
-            (record.GroupIndex != InvalidOffset && !render.ClusterGroups.Contains(owner.GroupData, ElementHandle{record.GroupIndex})))
+            (record.GroupIndex != InvalidOffset && !render.ClusterGroups.Contains(owner.GroupData, ElementHandle{record.GroupIndex}))) {
             throw std::invalid_argument("Meshlet patch cluster names a foreign primitive or group.");
+        }
         const bool grouped = record.GroupIndex != InvalidOffset;
         partitions[{!grouped, grouped ? record.GroupIndex : record.Primitive}] = {.Group = record.GroupIndex, .Primitive = record.Primitive};
     }
@@ -99,8 +104,9 @@ MeshletPatch PlanMeshletPatch(state::Scene &r, MeshStore::Record &owner, const B
     };
     for (const auto cluster : patch.Clusters) {
         const auto &record = record_of(cluster);
-        for (const auto triangle : triangle_ids.subspan(record.TriangleOffset, record.TriangleCount))
+        for (const auto triangle : triangle_ids.subspan(record.TriangleOffset, record.TriangleCount)) {
             if (!contains(input.Removed, triangle)) place(triangle, triangle);
+        }
     }
     for (uint32_t i = 0u; i < input.Added.Count; ++i) place(input.Added.Offset + i, input.Sources[i]);
     for (auto &[key, partition] : partitions) {
@@ -131,8 +137,9 @@ std::vector<uint32_t> AdoptMeshletFragments(state::Scene &r, mtl::ComputeChain &
             !render.Primitives.Contains(owner.PrimitiveData, ElementHandle{job.Primitive}) ||
             render.Primitives.Get({render.Primitives.Address(owner.PrimitiveData, ElementHandle{job.Primitive}).Value(), 1u})[0].Topology != topology ||
             (job.Group != InvalidOffset && !render.ClusterGroups.Contains(owner.GroupData, ElementHandle{job.Group})) ||
-            (job.Count && (!render.LodNodes.Contains(owner.NodeData, ElementHandle{job.Leaf}) || render.LodNodes.Get({render.LodNodes.Address(owner.NodeData, ElementHandle{job.Leaf}).Value(), 1u})[0].ChildCount)))
+            (job.Count && (!render.LodNodes.Contains(owner.NodeData, ElementHandle{job.Leaf}) || render.LodNodes.Get({render.LodNodes.Address(owner.NodeData, ElementHandle{job.Leaf}).Value(), 1u})[0].ChildCount))) {
             throw std::invalid_argument("Meshlet adoption requires independently owned, unpublished fragments.");
+        }
         for (uint32_t i = 0u; i < job.Count; ++i) {
             if (!render.Meshlets.Contains(owner.MeshletData, ElementHandle{job.First + i})) throw std::invalid_argument("Meshlet adoption names a cluster outside its owner.");
             added.push_back(job.First + i);
@@ -141,8 +148,9 @@ std::vector<uint32_t> AdoptMeshletFragments(state::Scene &r, mtl::ComputeChain &
         if (topology != 0u) element_counts[job.Primitive] += job.ElementCount;
     }
     if (added.size() > UINT32_MAX - owner.Level0Count) throw std::length_error("Meshlet adoption exceeds canonical cluster capacity.");
-    for (const auto &[primitive, count] : element_counts)
+    for (const auto &[primitive, count] : element_counts) {
         if (count > UINT32_MAX - primitive_of(primitive).TriangleCount) throw std::length_error("Element adoption exceeds primitive element capacity.");
+    }
     std::ranges::sort(added);
     if (added.empty()) return added;
     if (std::ranges::adjacent_find(added) != added.end()) throw std::invalid_argument("Meshlet adoption repeats an owned cluster.");

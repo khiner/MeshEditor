@@ -15,7 +15,7 @@ using numeric::I3;
 
 static constexpr float CircleRad = .095f, HoverCircleRad = .5f;
 
-inline constexpr vec3 SignedAxis(const mat3 &m, uint32_t i) { return i < 3 ? m[i] : -m[i - 3]; }
+constexpr vec3 SignedAxis(const mat3 &m, uint32_t i) { return i < 3 ? m[i] : -m[i - 3]; }
 
 struct Context {
     std::optional<vec2> MouseDownPos;
@@ -114,7 +114,7 @@ void Render(const colors::AxesArray &Axes) {
         dl.AddCircleFilled(std::bit_cast<ImVec2>(center), size * HoverCircleRad, IM_COL32(120, 120, 120, 130));
     }
 
-    for (auto i : Ctx.SortedIndices) {
+    for (const auto i : Ctx.SortedIndices) {
         const auto t = 1.f - 0.5f * (Ctx.AxisCam[i].z + 1); // [0, 1], 0 faces camera
         const bool positive = i < 3;
         const bool aligned = Ctx.Aligned[i];
@@ -132,7 +132,7 @@ void Render(const colors::AxesArray &Axes) {
         if (const bool hovered = Ctx.HoveredAxis && *Ctx.HoveredAxis == i;
             positive || hovered || aligned) {
             static constexpr std::string_view AxisLabels[]{"X", "Y", "Z", "-X", "-Y", "-Z"};
-            auto *const label = AxisLabels[i].data();
+            const auto *const label = AxisLabels[i].data();
             auto *const font = ImGui::GetFont();
             const float font_size = r * 1.5f;
             const auto text_size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label);

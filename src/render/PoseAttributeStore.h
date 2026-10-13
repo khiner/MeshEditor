@@ -46,17 +46,20 @@ public:
             Unregister(group.Store, entity);
             ByStore[store].insert(entity);
         }
-        for (const auto block : blocks)
+        for (const auto block : blocks) {
             if (block >= (1u << 24u)) throw std::length_error("Pose attribute block exceeds canonical address space.");
+        }
         while (group.Roots.size() > count) {
             Release(group.Roots.back());
             group.Roots.pop_back();
         }
         for (auto &root : group.Roots) {
-            for (const auto old : group.Blocks)
+            for (const auto old : group.Blocks) {
                 if (!membership.contains(old)) Detach(root, old);
-            for (const auto block : blocks)
+            }
+            for (const auto block : blocks) {
                 if (!group.Blocks.contains(block)) Attach(root, block);
+            }
         }
         while (group.Roots.size() < count) {
             group.Roots.push_back(InvalidOffset);

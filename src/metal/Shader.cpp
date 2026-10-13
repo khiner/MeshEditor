@@ -60,7 +60,9 @@ void PrunePipelineArchives(const std::filesystem::path &base) {
         if (deltas == 0u || (deltas < MaxDeltaArchives && bytes + size <= MaxArchiveBytes)) {
             ++deltas;
             bytes += size;
-        } else std::filesystem::remove(path, ec);
+        } else {
+            std::filesystem::remove(path, ec);
+        }
     }
 }
 
@@ -124,7 +126,7 @@ NS::SharedPtr<MTL::Function> MakeFunction(LibraryCache &cache, const FunctionRef
 }
 
 NS::SharedPtr<MTL4::FunctionDescriptor> MakeFunctionDescriptor(LibraryCache &cache, const FunctionRef &ref) {
-    auto *library = cache.Get(ref.Path, ref.Defines);
+    const auto *library = cache.Get(ref.Path, ref.Defines);
     auto function = NS::TransferPtr(MTL4::LibraryFunctionDescriptor::alloc()->init());
     function->setName(Str(ref.Name).get());
     function->setLibrary(library);
@@ -178,8 +180,9 @@ LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir
 
 std::unique_ptr<LibraryCache> LibraryCache::PrewarmCache() const {
     if ((BuiltinArchivePath.empty() || PipelineArchives(BuiltinArchivePath).empty()) &&
-        (ArchivePath.empty() || PipelineArchives(ArchivePath).empty()))
+        (ArchivePath.empty() || PipelineArchives(ArchivePath).empty())) {
         throw std::runtime_error("Offline pipeline archive is unavailable.");
+    }
     return std::make_unique<LibraryCache>(Ctx, ShadersDir, ArchivePath, BuiltinArchivePath, false, true);
 }
 
@@ -279,8 +282,8 @@ MTL::Library *LibraryCache::Get(const std::filesystem::path &relative_path, cons
 }
 
 RenderPipeline MakeRenderPipeline(
-    LibraryCache &cache, FunctionRef vertex, std::optional<FunctionRef> fragment, PassFormats formats,
-    std::vector<BlendState> blends, std::optional<DepthState> depth
+    LibraryCache &cache, FunctionRef vertex, std::optional<FunctionRef> fragment, const PassFormats &formats,
+    const std::vector<BlendState> &blends, std::optional<DepthState> depth
 ) {
     const AutoreleaseScope pool;
     if (!cache.PipelineCompiler()) {
@@ -322,8 +325,8 @@ RenderPipeline MakeRenderPipeline(
 }
 
 RenderPipeline MakeMeshPipeline(
-    LibraryCache &cache, FunctionRef mesh, std::optional<FunctionRef> fragment, PassFormats formats,
-    std::vector<BlendState> blends, std::optional<DepthState> depth
+    LibraryCache &cache, FunctionRef mesh, std::optional<FunctionRef> fragment, const PassFormats &formats,
+    const std::vector<BlendState> &blends, std::optional<DepthState> depth
 ) {
     const AutoreleaseScope pool;
     if (!cache.PipelineCompiler()) {

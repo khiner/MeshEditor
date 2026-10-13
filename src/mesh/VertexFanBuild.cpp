@@ -20,7 +20,7 @@ void ReleaseFormerFans(MeshStore &meshes, const FanBatch &batch) {
     for (const auto &job : batch.Jobs) {
         const auto used = scratch[job.TileData + (job.VertexCount + 255u) / 256u];
         if (used > job.HalfedgeCount) throw std::logic_error("Vertex fan counts exceed supplied incidence.");
-        if (used < job.HalfedgeCount) released.push_back({job.FirstItem + used, job.HalfedgeCount - used});
+        if (used < job.HalfedgeCount) released.emplace_back(job.FirstItem + used, job.HalfedgeCount - used);
         if (job.Fresh) continue;
         // Only a vertex that owned a run before the rebuild contributes one to free.
         for (uint32_t i = 0u; i < job.VertexCount; ++i) {
@@ -40,8 +40,9 @@ void EncodeVertexFans(state::Scene &r, mtl::ComputeChain &chain, std::span<const
         return (fresh ? 1u : 4u) * v + (fresh ? 3u : 4u) * h + 16u * ((h + 255u) / 256u) + 17u + (v + 255u) / 256u;
     };
     uint64_t total_words = 0u;
-    for (const auto &source : sources)
+    for (const auto &source : sources) {
         if (source.VertexCount) total_words += scratch_words(source);
+    }
     if (!total_words) return;
     if (total_words > UINT32_MAX) throw std::length_error("Vertex fan scratch exceeds its address space.");
     const auto batch = std::make_shared<FanBatch>(chain.Scratch, uint32_t(total_words));

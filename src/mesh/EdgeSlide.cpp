@@ -121,8 +121,9 @@ std::vector<EdgeSlideDirections> PlanEdgeSlide(const Mesh &mesh, const GeometryS
     std::vector<EdgeSlideDirections> output(nodes.size());
     const auto position = [&](uint32_t i) { return mesh.GetPosition(nodes[i].Vertex); };
     const auto next_link = [&](uint32_t i, uint32_t previous) {
-        for (const auto link : nodes[i].Links)
+        for (const auto link : nodes[i].Links) {
             if (link.Vertex != InvalidOffset && link.Vertex != previous) return link;
+        }
         return Link{};
     };
     const auto boundary_rail = [&](he::VH v, he::VH destination) {
@@ -171,11 +172,12 @@ std::vector<EdgeSlideDirections> PlanEdgeSlide(const Mesh &mesh, const GeometryS
                     const auto next_edge = to_current ? mesh.GetEdge(next_corner) : mesh.GetEdge(c.Next(next_corner));
                     bool intersect = false;
                     int side = -1;
-                    for (int s = 0; s < 2; ++s)
+                    for (int s = 0; s < 2; ++s) {
                         if (face == old.Rails[s].Face || target == old.Rails[s].Vertex) {
                             side = s;
                             break;
                         }
+                    }
                     if (side == -1 && (old.Rails[0].Face || old.Rails[1].Face)) {
                         // Walk the face sector around this vertex to the previous selected edge.
                         auto edge = to_current ? c.Next(current_corner) : current_corner;
@@ -183,12 +185,13 @@ std::vector<EdgeSlideDirections> PlanEdgeSlide(const Mesh &mesh, const GeometryS
                             const auto opposite = mesh.GetOppositeHalfedge(edge);
                             if (!opposite || mesh.GetFace(opposite) == face) break;
                             const auto other_face = mesh.GetFace(opposite);
-                            for (int s = 0; s < 2; ++s)
+                            for (int s = 0; s < 2; ++s) {
                                 if (other_face == old.Rails[s].Face) {
                                     side = s;
                                     intersect = true;
                                     break;
                                 }
+                            }
                             if (side != -1) break;
                             edge = mesh.GetToVertex(opposite) == nodes[curr.Index].Vertex ? c.Next(opposite) : c.Previous(opposite);
                         }
@@ -216,11 +219,13 @@ std::vector<EdgeSlideDirections> PlanEdgeSlide(const Mesh &mesh, const GeometryS
             curr = next;
         }
         uint32_t reference_index = chain.front();
-        for (const auto i : chain)
+        for (const auto i : chain) {
             if (*nodes[i].Vertex == reference) reference_index = i;
+        }
         const auto &ref = output[reference_index];
-        if (Dot(Unit(ref.Positive * scale), direction) < Dot(Unit(ref.Negative * scale), direction))
+        if (Dot(Unit(ref.Positive * scale), direction) < Dot(Unit(ref.Negative * scale), direction)) {
             for (const auto i : chain) std::swap(output[i].Positive, output[i].Negative);
+        }
     }
     return output;
 }

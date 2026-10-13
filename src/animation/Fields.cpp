@@ -142,8 +142,9 @@ bool SameValue(const ChannelTarget &target, std::span<const float> a, std::span<
     // Opposite quaternions rotate the same.
     float sign = 1.f;
     if (target.Kind == ValueKind::Quaternion && a.size() == 4 && a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3] < 0.f) sign = -1.f;
-    for (size_t i = 0; i < a.size(); ++i)
+    for (size_t i = 0; i < a.size(); ++i) {
         if (!NearlyEqual(a[i], sign * b[i])) return false;
+    }
     return true;
 }
 } // namespace animation

@@ -43,10 +43,10 @@ inline VisibilityShadingPushConstants VisibilityDecodePc(const GpuBuffers &buffe
 
 inline void BindScene(MTL::RenderCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers, uint32_t view_offset = 0) {
     slots.UseResources(encoder);
-    auto *table = slots.Table();
-    auto *view = *buffers.SceneViewUBO;
-    auto *theme = *buffers.ViewportThemeUBO;
-    auto *workspace = *buffers.WorkspaceLightsUBO;
+    const auto *table = slots.Table();
+    const auto *view = *buffers.SceneViewUBO;
+    const auto *theme = *buffers.ViewportThemeUBO;
+    const auto *workspace = *buffers.WorkspaceLightsUBO;
     encoder->setVertexBuffer(table, 0, BufferIndex_Bindless);
     encoder->setVertexBuffer(view, view_offset, BufferIndex_SceneView);
     encoder->setVertexBuffer(theme, 0, BufferIndex_ViewportTheme);

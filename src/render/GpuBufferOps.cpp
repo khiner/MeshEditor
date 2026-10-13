@@ -21,8 +21,9 @@ void UpdatePosedMeshletBlocks(state::Scene &r, const MeshStore::Record &owner, s
     // Posed bounds attach in blocks of MeshElementBlockSize addresses, each spanning several meshlet blocks.
     constexpr auto Span = MeshElementBlockSize / RenderBlockSize;
     std::vector<uint32_t> blocks;
-    for (const auto address : addresses)
+    for (const auto address : addresses) {
         if (blocks.empty() || blocks.back() != address / MeshElementBlockSize) blocks.push_back(address / MeshElementBlockSize);
+    }
     const auto members = meshlets.Blocks.Buffer.GetSpan<MeshElementBlock>();
     r.Context.get<GpuBuffers>().PosedMeshletBounds.UpdateBlocks(owner.StoreId, owner.MeshletRevision, blocks, [&](uint32_t block) {
         const auto first = std::min<size_t>(members.size(), size_t(block) * Span);

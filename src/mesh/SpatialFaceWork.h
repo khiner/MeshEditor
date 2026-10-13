@@ -7,10 +7,10 @@
 struct MeshTopologyTask;
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 namespace state {
 struct Scene;
-}
+} // namespace state
 
 // Exact GPU face predicates over canonical candidate membership in UMA.
 // Geometry and attributes stay in the canonical arenas, independent of render caches.

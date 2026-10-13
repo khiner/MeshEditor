@@ -97,5 +97,7 @@ inline void TriangulatePolygon(uint32_t n, Position position, Points points, Nex
     for (uint32_t i = 0u; i < n; ++i) convex = convex && sign * PolygonCross2(points[(i + n - 1u) % n], points[i], points[(i + 1u) % n]) >= 0.f;
     if (convex) {
         for (uint32_t i = 1u; i + 1u < n; ++i) emit(uvec3{0u, i, i + 1u}, i - 1u);
-    } else PolygonEarClip(points, next, previous, n, emit);
+    } else {
+        PolygonEarClip(points, next, previous, n, emit);
+    }
 }

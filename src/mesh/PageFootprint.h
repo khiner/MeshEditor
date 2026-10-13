@@ -23,8 +23,9 @@ std::vector<uint32_t> WorkBlocks(const BufferArena<uint32_t> &, ElementWork, uin
 // Visits the ascending handles of sparse work, or the `count` handles from `origin` when the work has no storage.
 void ForEachWorkHandle(const BufferArena<uint32_t> &arena, ElementWork work, uint32_t count, uint32_t origin, auto &&visit) {
     if (work.Storage.Slot != InvalidSlot) ForEachWorkElement(arena, work, visit);
-    else
+    else {
         for (uint32_t i = 0u; i < count; ++i) visit(origin + i);
+    }
 }
 
 // Sorted unique history pages of each canonical buffer an edit reads or writes.
@@ -37,8 +38,9 @@ public:
         if (!range.Count) return;
         std::vector<uint32_t> layer;
         layer.reserve(blocks.size() * entries);
-        for (const auto block : blocks)
+        for (const auto block : blocks) {
             for (uint32_t entry = 0u; entry < entries; ++entry) layer.push_back(range.Offset + members[block].Local * entries + entry);
+        }
         Add(values.Buffer, layer, sizeof(Block));
     }
 

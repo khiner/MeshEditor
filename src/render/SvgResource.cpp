@@ -26,7 +26,7 @@ lunasvg::Bitmap RenderDocumentToBitmap(const lunasvg::Document &doc, float scale
 struct SvgResource::Impl {
     Impl(const mtl::Context &ctx, const std::filesystem::path &path) {
         if ((Document = lunasvg::Document::loadFromFile(path))) {
-            if (auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
+            if (const auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
                 const uint32_t width = bitmap.width(), height = bitmap.height();
                 Image = mtl::CreateTexture2D(ctx, mtl::Format::Color, {width, height}, MTL::TextureUsageShaderRead);
                 mtl::Upload(Image, 0, {reinterpret_cast<const std::byte *>(bitmap.data()), width * height * 4u}, width * 4u);

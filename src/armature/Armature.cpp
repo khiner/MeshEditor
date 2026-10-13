@@ -83,7 +83,7 @@ void Armature::RebuildCaches() {
         auto &joint_map = JointOrderToBoneIndex[s];
         joint_map.resize(joints.size(), InvalidBoneIndex);
         for (uint32_t j = 0; j < joints.size(); ++j) {
-            if (auto it = joint_to_bone.find(joints[j]); it != joint_to_bone.end()) {
+            if (const auto it = joint_to_bone.find(joints[j]); it != joint_to_bone.end()) {
                 joint_map[j] = it->second;
             }
         }

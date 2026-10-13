@@ -17,7 +17,7 @@
 void RefitCanonicalMeshletBounds(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshletBoundsRefitJob> jobs) {
     if (jobs.empty()) return;
     const auto &meshes = r.Context.get<const MeshStore>();
-    auto &render = meshes.Render();
+    const auto &render = meshes.Render();
     std::vector<MeshletBoundsRefitPushConstants> dispatches;
     std::vector<std::pair<uint32_t, std::vector<uint32_t>>> refitted;
     for (const auto &job : jobs) {
@@ -44,9 +44,10 @@ void RefitCanonicalMeshletBounds(state::Scene &r, mtl::ComputeChain &chain, std:
     chain.Concurrent([&] { for (const auto &pc:dispatches) chain.Groups(pipeline,pc,(pc.Count+31u)/32u,32u); });
     if (refitted.empty()) return;
     chain.AfterSubmit([&r, refitted = std::move(refitted)] {
-        auto &meshes = r.Context.get<MeshStore>();
-        for (const auto &[store_id, ids] : refitted)
+        const auto &meshes = r.Context.get<MeshStore>();
+        for (const auto &[store_id, ids] : refitted) {
             if (const auto *owner = meshes.TryGet(store_id); owner && owner->SpatialRoot != InvalidOffset) RefitMeshletSpatial(r, *owner, ids);
+        }
     });
 }
 
@@ -59,7 +60,7 @@ void StageDirtyPositionMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::
     std::vector<ClusterGroupSeeds> seeds;
     std::vector<std::vector<uint32_t>> moved;
     for (const auto entity : entities) {
-        auto &owner = EditRecordOf(r, entity);
+        const auto &owner = EditRecordOf(r, entity);
         if (!meshes.HasDirtyPositions(owner)) continue;
         // The owner's dirty clusters clear, and with coarse geometry their groups seed its stale closure.
         const bool coarse = meshes.ClusterGroupCount(owner) != 0u;

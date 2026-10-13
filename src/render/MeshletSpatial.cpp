@@ -69,10 +69,11 @@ uint64_t Key(vec3 center) {
     };
     const auto x = ordered(center.x), y = ordered(center.y), z = ordered(center.z);
     uint64_t key = 0u;
-    for (uint32_t bit = 0u; bit < 21u; ++bit)
+    for (uint32_t bit = 0u; bit < 21u; ++bit) {
         key |= uint64_t((x >> bit) & 1u) << (bit * 3u) |
             uint64_t((y >> bit) & 1u) << (bit * 3u + 1u) |
             uint64_t((z >> bit) & 1u) << (bit * 3u + 2u);
+    }
     return key;
 }
 uint64_t Key(const Node &node) { return uint64_t(node.Key.y) << 32u | node.Key.x; }
@@ -96,7 +97,7 @@ struct Tree {
     void Write(uint32_t id, Node node) { Pending.insert_or_assign(id, node); }
     void Flush() {
         if (Pending.empty()) return;
-        auto &buffer = Gpu.MeshletSpatialNodes.Buffer;
+        const auto &buffer = Gpu.MeshletSpatialNodes.Buffer;
         std::vector<uint32_t> addresses;
         addresses.reserve(Pending.size());
         for (const auto &[id, node] : Pending) addresses.push_back(Address(id).Value());
@@ -242,8 +243,9 @@ void BuildMeshletSpatial(state::Scene &r, std::span<MeshStore::Record *const> ow
             if (record.RefinedGroup == InvalidOffset && record.Topology == 0u) ids.push_back(id.Value);
         });
         if (ids.empty()) continue;
-        for (const auto block : entries)
+        for (const auto block : entries) {
             if (block != InvalidOffset) gpu.MeshletSpatialNodes.Buffer.CaptureWrite(uint64_t(block) * RenderBlockSize * sizeof(Node), uint64_t(RenderBlockSize) * sizeof(Node));
+        }
     }
     // Each owner writes only its own blocks, so the trees build concurrently after the serial history capture.
     auto *all = reinterpret_cast<Node *>(gpu.MeshletSpatialNodes.Buffer.Contents().data());
@@ -253,8 +255,9 @@ void BuildMeshletSpatial(state::Scene &r, std::span<MeshStore::Record *const> ow
         auto &owner = *owners[i];
         const auto source = Source(r, owner);
         const auto entries = gpu.Meshlets.Entries(owner.MeshletData);
-        for (const auto block : entries)
+        for (const auto block : entries) {
             if (block != InvalidOffset) std::fill_n(all + uint64_t(block) * RenderBlockSize, RenderBlockSize, Node{});
+        }
         const auto read = [&](uint32_t id) -> Node & { return all[Resolve<RenderBlockSize>(entries, ElementHandle{id}).Value()]; };
         for (const auto id : ids) {
             const auto address = Resolve<RenderBlockSize>(entries, ElementHandle{id});
@@ -380,7 +383,9 @@ SpatialSurfacePoint ClosestMeshletPoint(const RenderArenas &gpu, const MeshStore
                 }
             }
             next = near != InvalidOffset ? near : far;
-        } else if (previous == near) next = far;
+        } else if (previous == near) {
+            next = far;
+        }
         previous = current;
         current = next;
     }

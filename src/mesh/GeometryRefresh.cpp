@@ -9,7 +9,7 @@
 #include "state/Scene.h"
 
 std::vector<FaceTriangles> RetessellateMeshes(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshRetessellation> inputs) {
-    auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Context.get<MeshStore>();
     const auto &a = meshes.Arenas();
     struct Job {
         uint32_t Index;
@@ -41,7 +41,7 @@ std::vector<FaceTriangles> RetessellateMeshes(state::Scene &r, mtl::ComputeChain
             if (n <= 3u && tangents.Slot == InvalidSlot) return;
             if (uint64_t(job.Corners) + n > UINT32_MAX / 4u) throw std::length_error("Polygon tessellation scratch exceeds its address space.");
             if (tangents.Slot != InvalidSlot) a.CornerTangents.Capture(record.CornerTangents, {loop.x, n});
-            job.Faces.push_back({face, job.Corners});
+            job.Faces.emplace_back(face, job.Corners);
             const uint32_t first = a.FaceTriangles.Get({address, 1u})[0];
             if (n > 3u) {
                 job.Corners += n;

@@ -6,7 +6,7 @@
 
 namespace mtl {
 struct ComputeChain;
-}
+} // namespace mtl
 struct MeshClosure;
 
 // Assembles the incidence for local repair: the old neighborhood minus the replaced core halfedges and faces, plus the emitted handles.

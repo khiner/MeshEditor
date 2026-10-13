@@ -143,9 +143,11 @@ void ComputeKeyframes(const state::Scene &r, state::Entity viewport, SelectedKey
         const auto *clips = r.try_get<const AnimationClips>(e);
         const auto *clip = clips ? animation::ActiveClip(r, viewport, *clips) : nullptr;
         if (!clip) return;
-        for (const auto &channel : clip->Channels)
-            if (include(channel))
+        for (const auto &channel : clip->Channels) {
+            if (include(channel)) {
                 for (const float t : channel.Times) frames.emplace_back(1.f + t * fps);
+            }
+        }
     };
     const auto all = [](const AnimationChannel &) { return true; };
     if (!r.view<const AnimationClips>().empty()) {

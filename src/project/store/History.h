@@ -15,7 +15,7 @@
 
 namespace project {
 struct ComponentPool;
-}
+} // namespace project
 
 // Branching history over registered tracks with opaque action bytes.
 namespace store {
