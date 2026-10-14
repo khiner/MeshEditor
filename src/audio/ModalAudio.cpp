@@ -54,7 +54,7 @@ void SilenceObject(ModalAudio &m, ModalBank &b, uint32_t o) {
     b.Ringing[o] = 0;
     // Restore the full tuned-mode prefix for the next impact.
     b.LiveModeCount[o] = b.TunedModeCount[o];
-    for (uint32_t i = uint32_t(b.Impacts.size()); i-- > 0;) {
+    for (auto i = uint32_t(b.Impacts.size()); i-- > 0;) {
         if (b.Impacts[i].Object == o) RemoveImpact(b, i);
     }
     SurfaceSilenceObject(m, o);
@@ -544,7 +544,7 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
         for (uint32_t s = 0; s < frame_count; ++s) out[s] += renderer.Out[s];
     }
 
-    for (uint32_t i = uint32_t(b.Impacts.size()); i-- > 0;) {
+    for (auto i = uint32_t(b.Impacts.size()); i-- > 0;) {
         // A finished pulse keeps its impact until the click's filter drains, so the click ends without a step.
         const auto &im = b.Impacts[i];
         if (im.SamplesLeft == 0 && std::abs(im.ClickZ1) + std::abs(im.ClickZ2) < 1e-12f) RemoveImpact(b, i);

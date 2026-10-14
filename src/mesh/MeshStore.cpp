@@ -1944,7 +1944,7 @@ MeshStore::Change MeshStore::Resync(CloneCopies &copies, uint32_t id, uint32_t s
             if (!DomainSet(Records[id], domain)) {
                 DomainSet(WriteRecord(id), domain) = arena.Create();
                 locals.resize(from.size());
-                std::iota(locals.begin(), locals.end(), 0u);
+                std::ranges::iota(locals, 0u);
             } else {
                 const auto to = arena.Entries(DomainSet(Records[id], domain));
                 const auto end = uint32_t(std::max(from.size(), to.size()));
@@ -2827,7 +2827,7 @@ void MeshStore::ReleaseRender(std::span<Record *const> records) {
         // A fragment's meshlets and their payload runs leave its render owner.
         if (!b.MeshletData && b.Meshlets.Count) {
             std::vector<uint32_t> handles(b.Meshlets.Count);
-            std::iota(handles.begin(), handles.end(), b.Meshlets.Offset);
+            std::ranges::iota(handles, b.Meshlets.Offset);
             ReleaseMeshletStorage(WriteRecord(b.StoreId), handles);
         }
         for (const auto payload : RenderPayloads) WithPayload(render, b, payload, [&](const auto &, const PayloadRange &range) { AppendRange(payloads[uint32_t(payload)], {range.Values.Offset, range.Capacity}); });

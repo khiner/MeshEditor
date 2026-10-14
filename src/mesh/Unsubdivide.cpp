@@ -152,7 +152,7 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const Geometry
         }
         if (polygon.size() < 3u || polygon.size() > 4u) continue;
         const auto vertices = key(polygon);
-        if (std::adjacent_find(vertices.begin(), vertices.end()) != vertices.end() || exists(vertices, incident_faces)) continue;
+        if (std::ranges::adjacent_find(vertices) != vertices.end() || exists(vertices, incident_faces)) continue;
         bool duplicate = false;
         std::set<std::vector<uint32_t>> residuals{vertices};
         for (const auto item : node.Corners) {

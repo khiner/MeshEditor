@@ -39,7 +39,7 @@ std::vector<std::filesystem::path> PipelineArchives(const std::filesystem::path 
         const auto name = it->path().filename().string();
         if (name == base.filename().string() || (name.starts_with(prefix) && name.ends_with(extension))) paths.push_back(it->path());
     }
-    std::sort(paths.begin(), paths.end(), [](const auto &a, const auto &b) {
+    std::ranges::sort(paths, [](const auto &a, const auto &b) {
         std::error_code left_error, right_error;
         return std::filesystem::last_write_time(a, left_error) > std::filesystem::last_write_time(b, right_error);
     });
@@ -315,7 +315,7 @@ RenderPipeline MakeRenderPipeline(
 
     NS::Error *error = nullptr;
     auto state = cache.FindRenderPipeline(descriptor.get());
-    const bool archive_hit = bool(state);
+    const auto archive_hit = bool(state);
     if (!state) state = NS::TransferPtr(cache.PipelineCompiler()->newRenderPipelineState(descriptor.get(), nullptr, &error));
     if (!state) {
         throw std::runtime_error(std::format("Failed to create the render pipeline for '{}':\n{}", vertex.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
@@ -364,7 +364,7 @@ RenderPipeline MakeMeshPipeline(
 
     NS::Error *error = nullptr;
     auto state = cache.FindRenderPipeline(descriptor.get());
-    const bool archive_hit = bool(state);
+    const auto archive_hit = bool(state);
     if (!state) state = NS::TransferPtr(cache.PipelineCompiler()->newRenderPipelineState(descriptor.get(), nullptr, &error));
     if (!state) {
         throw std::runtime_error(std::format("Failed to create the mesh render pipeline for '{}':\n{}", mesh.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
@@ -390,7 +390,7 @@ ComputePipeline::ComputePipeline(LibraryCache &cache, FunctionRef fn) {
     descriptor->setComputeFunctionDescriptor(function.get());
     NS::Error *error = nullptr;
     PipelineState = cache.FindComputePipeline(descriptor.get());
-    const bool archive_hit = bool(PipelineState);
+    const auto archive_hit = bool(PipelineState);
     if (!PipelineState && cache.ArchiveOnly()) throw std::runtime_error(std::format("Offline compute pipeline is absent: '{}'", fn.Name));
     if (!PipelineState) PipelineState = NS::TransferPtr(cache.PipelineCompiler()->newComputePipelineState(descriptor.get(), nullptr, &error));
     if (!PipelineState) {

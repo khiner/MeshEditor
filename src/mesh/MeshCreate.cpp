@@ -43,8 +43,8 @@ PreparedMesh PrepareMeshSources(MeshData &data, MeshVertexAttributes &attrs, Mes
     auto &indices = primitives.ElementPrimitiveIndices;
     if (indices.size() == face_count && !std::ranges::is_sorted(indices)) {
         std::vector<uint32_t> perm(face_count);
-        std::iota(perm.begin(), perm.end(), 0u);
-        std::stable_sort(perm.begin(), perm.end(), [&](uint32_t a, uint32_t b) { return indices[a] < indices[b]; });
+        std::ranges::iota(perm, 0u);
+        std::ranges::stable_sort(perm, [&](uint32_t a, uint32_t b) { return indices[a] < indices[b]; });
         // A triangle mesh keeps arithmetic offsets, so only its corners permute.
         const bool spelled_offsets = !data.FaceOffsets.empty();
         std::vector<uint32_t> sorted_offsets, sorted_corners, sorted_indices;

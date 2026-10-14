@@ -401,7 +401,7 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
             if (procedure.ActiveNode != NoNode && r.all_of<NodeSelected>(nodes[procedure.ActiveNode].Entity)) Grab(window, uint32_t(nodes.size()) - 1u);
         } else if (Shortcut(ImGuiKey_A, Key)) {
             std::vector<uint32_t> all(nodes.size());
-            std::iota(all.begin(), all.end(), 0u);
+            std::ranges::iota(all, 0u);
             if (SelectedNodes(r, procedure) != all) select(std::move(all), procedure.ActiveNode);
         } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_A, Key)) {
             if (!SelectedNodes(r, procedure).empty() || procedure.ActiveNode != NoNode) select({}, NoNode);

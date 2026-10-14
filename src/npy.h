@@ -170,7 +170,7 @@ constexpr dtype_t parse_descr(std::string_view typestring) {
     const auto itemsize_s = typestring.substr(2);
     if (!std::ranges::contains(endian_chars, byteorder_c)) throw std::runtime_error("Invalid typestring (byteorder)");
     if (!std::ranges::contains(numtype_chars, kind_c)) throw std::runtime_error("Invalid typestring (kind)");
-    if (!std::all_of(itemsize_s.begin(), itemsize_s.end(), ::isdigit)) throw std::runtime_error("Invalid typestring (itemsize)");
+    if (!std::ranges::all_of(itemsize_s, ::isdigit)) throw std::runtime_error("Invalid typestring (itemsize)");
 
     return {byteorder_c, kind_c, uint32_t(std::stoul(std::string{itemsize_s}))};
 }

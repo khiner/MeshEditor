@@ -50,7 +50,7 @@ std::vector<T> GetPropertyVector(AudioObjectID object, const AudioObjectProperty
 }
 
 std::string DeviceName(AudioDeviceID device) {
-    CFStringRef name = GetProperty<CFStringRef>(device, DeviceNameAddress, "reading the device name");
+    const auto *name = GetProperty<CFStringRef>(device, DeviceNameAddress, "reading the device name");
     const auto capacity = CFStringGetMaximumSizeForEncoding(CFStringGetLength(name), kCFStringEncodingUTF8) + 1;
     std::string result(size_t(capacity), '\0');
     if (!CFStringGetCString(name, result.data(), capacity, kCFStringEncodingUTF8)) result.clear();

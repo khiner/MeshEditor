@@ -6,8 +6,8 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cstdio>
 #include <cstring>
+#include <print>
 
 namespace store {
 namespace {
@@ -605,7 +605,7 @@ std::expected<void, std::string> ApplyLoad(History &history, uint32_t node, cons
     for (size_t i = 0; i < history.Tracks.size(); ++i) {
         if (CurrentStamp(history, i) == n.Stamps[i]) continue;
         AddIntegrityError(history, history.Tracks[i].Name + ": cold load verification failed");
-        std::fprintf(stderr, "[history] %s: cold load verification failed\n", history.Tracks[i].Name.c_str());
+        std::println(stderr, "[history] {}: cold load verification failed", history.Tracks[i].Name);
         assert(false && "cold load verification failed: loaded state does not hash to the recorded stamp");
     }
     return {};
@@ -755,7 +755,7 @@ std::expected<void, std::string> History::Restore(const Snapshot &s) {
     const auto restored = RunPipeline(*this, [&](size_t i) {
         if (!RestoreTrack(*this, i, s.Versions[i])) {
             AddIntegrityError(*this, Tracks[i].Name + ": restored state hash mismatch");
-            std::fprintf(stderr, "[history] %s: restored state hash mismatch\n", Tracks[i].Name.c_str());
+            std::println(stderr, "[history] {}: restored state hash mismatch", Tracks[i].Name);
             assert(false && "restored state hash does not match pinned hash");
         }
     });
@@ -930,14 +930,14 @@ void History::Evict(uint64_t cap) {
     std::vector<uint32_t> victims;
     for (auto i = uint32_t{0}; i < Nodes.size(); ++i) {
         if (!Nodes[i].Hot) continue;
-        if (std::find(protected_nodes.begin(), protected_nodes.end(), i) != protected_nodes.end()) continue;
+        if (std::ranges::find(protected_nodes, i) != protected_nodes.end()) continue;
         victims.push_back(i);
     }
     if (victims.empty() || !CheckIO(*this, Flush(*this))) return;
     std::vector<uint32_t> distance(Nodes.size());
     for (const auto v : victims) distance[v] = TreeDistance(*this, v, *Present);
     // Evict farthest nodes first, breaking ties by least recent visit.
-    std::sort(victims.begin(), victims.end(), [&](auto a, auto b) {
+    std::ranges::sort(victims, [&](auto a, auto b) {
         if (distance[a] != distance[b]) return distance[a] > distance[b];
         return Nodes[a].LastVisited < Nodes[b].LastVisited;
     });

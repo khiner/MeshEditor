@@ -65,7 +65,7 @@ bool CompressToStream(const fs::path &src, std::span<const std::string_view> ent
         std::ifstream in{it->path(), std::ios::binary};
         if (!in) return false;
 
-        const uint32_t path_len = uint32_t(rel.size());
+        const auto path_len = uint32_t(rel.size());
         if (!Feed(cctx.get(), out, out_buf, {&path_len, sizeof path_len, 0}, ZSTD_e_continue) ||
             !Feed(cctx.get(), out, out_buf, {rel.data(), rel.size(), 0}, ZSTD_e_continue) ||
             !Feed(cctx.get(), out, out_buf, {&data_len, sizeof data_len, 0}, ZSTD_e_continue)) return false;
@@ -89,7 +89,7 @@ bool Compress(const fs::path &src, const fs::path &dst, std::span<const std::byt
     if (const auto parent = dst.parent_path(); !parent.empty()) fs::create_directories(parent, ec);
     if (metadata.size() > UINT32_MAX) return false;
     return !ec && bool(File::WriteAtomic(dst, [&](auto &out) {
-        const uint32_t size = uint32_t(metadata.size());
+        const auto size = uint32_t(metadata.size());
         out.write(reinterpret_cast<const char *>(&MetadataMagic), sizeof(MetadataMagic));
         out.write(reinterpret_cast<const char *>(&size), sizeof(size));
         out.write(reinterpret_cast<const char *>(metadata.data()), size);

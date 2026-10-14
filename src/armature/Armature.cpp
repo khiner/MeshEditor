@@ -110,11 +110,11 @@ void Armature::FinalizeStructure() {
 }
 
 void Armature::RecomputeRestWorld() {
-    for (uint32_t i = 0; i < Bones.size(); ++i) {
-        const auto local = ToMatrix(Bones[i].RestLocal);
-        const auto parent = Bones[i].ParentIndex;
-        Bones[i].RestWorld = parent == InvalidBoneIndex ? local : Bones[parent].RestWorld * local;
-        Bones[i].InvRestWorld = Inverse(Bones[i].RestWorld);
+    for (auto &bone : Bones) {
+        const auto local = ToMatrix(bone.RestLocal);
+        const auto parent = bone.ParentIndex;
+        bone.RestWorld = parent == InvalidBoneIndex ? local : Bones[parent].RestWorld * local;
+        bone.InvRestWorld = Inverse(bone.RestWorld);
     }
 }
 
@@ -236,6 +236,6 @@ std::vector<uint32_t> CollectBonesForDeletion(const state::Scene &r, state::Enti
     for (const auto e : r.view<const BoneSelection, const BoneIndex>()) {
         if (r.get<const SubElementOf>(e).Parent == arm_obj_entity) to_delete.emplace_back(r.get<const BoneIndex>(e).Index);
     }
-    std::sort(to_delete.rbegin(), to_delete.rend());
+    std::ranges::sort(to_delete, std::greater{});
     return to_delete;
 }

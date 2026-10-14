@@ -342,7 +342,7 @@ void Buffer::CaptureWriteRanges(std::span<const Range> ranges, uint32_t stride) 
         }
     }
     if (!std::ranges::is_sorted(pages)) std::ranges::sort(pages);
-    pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+    pages.erase(std::ranges::unique(pages).begin(), pages.end());
     CaptureWritePages(pages);
 }
 

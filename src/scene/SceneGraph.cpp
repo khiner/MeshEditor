@@ -1,4 +1,5 @@
 #include "scene/SceneGraph.h"
+
 #include "TransformMath.h"
 #include "animation/Clips.h"
 #include "mesh/MeshComponents.h"
@@ -79,7 +80,7 @@ void ClearParents(state::Scene &r, std::span<const state::Entity> children) {
     }
     if (detached.empty()) return;
     std::ranges::sort(detached, {}, [](const auto &link) { return std::pair{state::Index(link.first), state::Index(link.second)}; });
-    detached.erase(std::unique(detached.begin(), detached.end()), detached.end());
+    detached.erase(std::ranges::unique(detached).begin(), detached.end());
     for (auto group = detached.begin(); group != detached.end();) {
         const auto parent = group->first;
         const auto group_end = std::find_if(group, detached.end(), [parent](const auto &link) { return link.first != parent; });

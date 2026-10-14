@@ -28,15 +28,15 @@ bool VdspRealLength(uint32_t n) {
 
 std::mutex SetupMutex;
 vDSP_DFT_Setup MakeComplexSetup(uint32_t n, vDSP_DFT_Direction direction) {
-    const std::lock_guard lock{SetupMutex};
+    const std::scoped_lock lock{SetupMutex};
     return vDSP_DFT_zop_CreateSetup(nullptr, n, direction);
 }
 vDSP_DFT_Setup MakeRealSetup(uint32_t n, vDSP_DFT_Direction direction) {
-    const std::lock_guard lock{SetupMutex};
+    const std::scoped_lock lock{SetupMutex};
     return vDSP_DFT_zrop_CreateSetup(nullptr, n, direction);
 }
 void DestroySetup(vDSP_DFT_Setup setup) {
-    const std::lock_guard lock{SetupMutex};
+    const std::scoped_lock lock{SetupMutex};
     vDSP_DFT_DestroySetup(setup);
 }
 

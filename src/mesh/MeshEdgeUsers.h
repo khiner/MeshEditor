@@ -29,7 +29,7 @@ public:
         }
     }
     Users Get(uint64_t edge) {
-        const uint32_t v = uint32_t(edge >> 32u);
+        const auto v = uint32_t(edge >> 32u);
         if (Scanned.insert(v).second) {
             ForEachAtVertex(v, [&](uint64_t key, he::HH side) {
                 auto &users = Edges[key];

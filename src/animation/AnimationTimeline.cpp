@@ -225,8 +225,8 @@ std::optional<action::Action> RenderAnimationTimeline(const TimelineRange &range
     const bool show_minor = major_step >= 2 && major_px >= 32.0f;
 
     const float half_width_frames = (area.x * 0.5f) / view.PixelsPerFrame;
-    const int vis_start = int(std::floor(view.ViewCenterFrame - half_width_frames));
-    const int vis_end = int(std::ceil(view.ViewCenterFrame + half_width_frames));
+    const auto vis_start = int(std::floor(view.ViewCenterFrame - half_width_frames));
+    const auto vis_end = int(std::ceil(view.ViewCenterFrame + half_width_frames));
     const int first_major = (vis_start / major_step - 1) * major_step;
     for (int f = first_major; f <= vis_end + major_step; f += major_step) {
         if (const float fx = frame_to_x(f); fx >= p0.x && fx <= p1.x) {
@@ -274,7 +274,7 @@ std::optional<action::Action> RenderAnimationTimeline(const TimelineRange &range
         // Preserve scrubbing until pointer release.
         scrubbing = timeline_active && io.MouseClickedPos[0].y < p0.y + HeaderHeight;
         if ((in_header && IsMouseClicked(ImGuiMouseButton_Left)) || (scrubbing && IsMouseDragging(ImGuiMouseButton_Left))) {
-            if (const int frame = int(std::round(x_to_frame(io.MousePos.x))); frame != playback.CurrentFrame) {
+            if (const auto frame = int(std::round(x_to_frame(io.MousePos.x))); frame != playback.CurrentFrame) {
                 emit(action::timeline::SetFrame{frame});
             }
         }

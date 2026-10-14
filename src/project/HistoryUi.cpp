@@ -113,7 +113,7 @@ template<typename T> void DrawValue(const state::Scene &r, const char *label, T 
     } else if constexpr (Variant<T>) {
         constexpr size_t N = std::variant_size_v<T>;
         static auto names = []<size_t... Is>(std::index_sequence<Is...>) { return std::array{LeafName<std::variant_alternative_t<Is, T>>()...}; }(std::make_index_sequence<N>{});
-        int index = int(v.index());
+        auto index = int(v.index());
         PushID(label);
         if (Combo(label, &index, [](void *data, int i) { return static_cast<const std::string *>(data)[i].c_str(); }, names.data(), int(N))) {
             [&]<size_t... Is>(std::index_sequence<Is...>) { (..., (Is == size_t(index) ? void(v.template emplace<Is>()) : void())); }(std::make_index_sequence<N>{});
@@ -264,7 +264,7 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
             Text("Shared node pool: %.2f MiB", double(stats.SharedNodeBytes) / (1 << 20));
             Text("Copied data: %.2f MiB", double(stats.OwnedBytes) / (1 << 20));
             Text("%zu states cached, %zu require disk reads", stats.HotNodes, stats.ColdNodes);
-            int cap = int(session.MemoryCap >> 20);
+            auto cap = int(session.MemoryCap >> 20);
             if (DragInt("Copied data budget (MiB)", &cap, 1.f, 0, 4096) && interactive) {
                 session.MemoryCap = uint64_t(std::max(0, cap)) << 20;
                 history.Evict(session.MemoryCap);

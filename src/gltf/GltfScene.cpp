@@ -279,7 +279,7 @@ std::vector<uint32_t> ReadIndices(const fastgltf::Asset &asset, const fastgltf::
         fastgltf::copyFromAccessor<uint32_t>(asset, index_accessor, indices.data());
     } else {
         indices.resize(vertex_count);
-        std::iota(indices.begin(), indices.end(), 0u);
+        std::ranges::iota(indices, 0u);
     }
     return indices;
 }
@@ -490,7 +490,7 @@ std::expected<void, std::string> AppendPrimitive(
                     for (auto &corner : corners) corner += base_vertex;
                 }
             } else {
-                std::iota(corners.begin(), corners.end(), base_vertex);
+                std::ranges::iota(corners, base_vertex);
             }
             return {};
         }
@@ -775,7 +775,7 @@ std::optional<uint32_t> ComputeCommonAncestor(const std::vector<uint32_t> &nodes
             node_index = *parents[node_index];
             path.emplace_back(node_index);
         }
-        std::reverse(path.begin(), path.end());
+        std::ranges::reverse(path);
         return path;
     };
 

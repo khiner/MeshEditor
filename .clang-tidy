@@ -34,6 +34,12 @@ Checks: >
   modernize-use-nullptr,
   modernize-use-override,
   modernize-use-emplace,
+  modernize-use-auto,
+  modernize-use-ranges,
+  modernize-loop-convert,
+  modernize-use-std-print,
+  modernize-use-scoped-lock,
+  modernize-raw-string-literal,
   modernize-use-default-member-init,
   modernize-use-std-numbers,
   modernize-min-max-use-initializer-list,
@@ -114,3 +120,5 @@ CheckOptions:
   misc-const-correctness.AnalyzeParameters: false
   # A `(void)` cast marks a deliberately discarded result.
   bugprone-unused-return-value.AllowCastToVoid: true
+  # Short type names like `int` also take `auto` when the initializer names the type.
+  modernize-use-auto.MinTypeNameLength: 0

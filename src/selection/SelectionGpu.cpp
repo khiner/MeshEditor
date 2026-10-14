@@ -120,7 +120,7 @@ std::optional<PixelRect> BoxRect(uvec4 box, mtl::Extent2D target) {
 
 // The pixels within the pick radius of `px`, or empty when none lie in the target.
 std::optional<PixelRect> RadiusRect(uvec2 px, uint32_t radius_sq, mtl::Extent2D target) {
-    const uint32_t radius = uint32_t(std::ceil(std::sqrt(float(radius_sq))));
+    const auto radius = uint32_t(std::ceil(std::sqrt(float(radius_sq))));
     return ClampedRect(
         {px.x > radius ? px.x - radius : 0u, px.y > radius ? px.y - radius : 0u},
         {uint32_t(std::min<uint64_t>(uint64_t{px.x} + radius + 1u, target.Width)), uint32_t(std::min<uint64_t>(uint64_t{px.y} + radius + 1u, target.Height))}, target

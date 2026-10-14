@@ -28,7 +28,7 @@ auto *FindChannel(auto &clip, const ChannelTarget &target) {
 
 // Writes `value` as the key at `seconds`, replacing a key within KeyEpsilon.
 void SetKey(AnimationChannel &channel, float seconds, std::span<const float> value) {
-    const uint32_t n = uint32_t(value.size());
+    const auto n = uint32_t(value.size());
     const auto [i, replace] = FindKey(channel.Times, seconds);
     const bool cubic = channel.Interp == AnimationInterpolation::CubicSpline;
     const uint32_t stride = cubic ? 3 * n : n;

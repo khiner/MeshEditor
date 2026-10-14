@@ -9,7 +9,7 @@
 namespace {
 std::string SampleRateName(const AudioDeviceResource &res, uint32_t sample_rate) {
     const auto &rates = res.NativeSampleRates;
-    const bool is_native = std::find(rates.begin(), rates.end(), sample_rate) != rates.end();
+    const bool is_native = std::ranges::find(rates, sample_rate) != rates.end();
     return std::format("{}{}", sample_rate, is_native ? "*" : "");
 }
 } // namespace

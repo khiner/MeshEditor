@@ -33,7 +33,7 @@ std::vector<std::vector<uint32_t>> RecalculateFaceFlips(MeshStore &meshes, const
         const auto &selection = selections[input].Faces;
         std::ranges::for_each(selection, [&](uint32_t start) {
             if (!visited.insert(start).second) return;
-            const uint32_t first = uint32_t(job.Faces.size()), group = uint32_t(groups.size());
+            const auto first = uint32_t(job.Faces.size()), group = uint32_t(groups.size());
             job.Faces.emplace_back(start, 0u);
             for (uint32_t at = first; at < job.Faces.size(); ++at) {
                 const auto entry = job.Faces[at];

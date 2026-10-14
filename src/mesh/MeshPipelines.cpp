@@ -190,12 +190,12 @@ void MeshPipelines::PrewarmAsync() {
             auto cache = Libraries.PrewarmCache();
             for (size_t i = 0u; i < PassFunctions.size() && !stop.stop_requested(); ++i) {
                 {
-                    const std::lock_guard lock{Mutex};
+                    const std::scoped_lock lock{Mutex};
                     if (Pipelines[i]) continue;
                 }
                 try {
                     mtl::ComputePipeline pipeline{*cache, {PassFunctions[i].first, PassFunctions[i].second}};
-                    const std::lock_guard lock{Mutex};
+                    const std::scoped_lock lock{Mutex};
                     if (!Pipelines[i]) Pipelines[i].emplace(std::move(pipeline));
                 } catch (...) {
                     // Foreground use retains the normal error path for a shader
@@ -210,7 +210,7 @@ void MeshPipelines::PrewarmAsync() {
 
 const mtl::ComputePipeline &MeshPipelines::operator[](MeshPass pass) const {
     const auto index = size_t(pass);
-    const std::lock_guard lock{Mutex};
+    const std::scoped_lock lock{Mutex};
     auto &pipeline = Pipelines.at(index);
     if (!pipeline) {
         const profile::CpuScope scope{"MeshPipelineCreate"};

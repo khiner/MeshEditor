@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <ranges>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -261,20 +262,20 @@ EdgeChainPlan PlanCurveBetweenSelected(const Mesh &mesh, const GeometrySelection
                 }
             }
             if (!extend) {
-                if (gap) std::rotate(vertices.begin(), vertices.begin() + (gap_start + gap) % n, vertices.end());
+                if (gap) std::ranges::rotate(vertices, vertices.begin() + (gap_start + gap) % n);
                 path.Closed = false;
             } else if (gap > 2u * (n / 4u)) {
                 const auto first = (gap_start + gap + n - n / 4u) % n, last = (gap_start + n - 1u + n / 4u) % n;
-                std::rotate(vertices.begin(), vertices.begin() + first, vertices.end());
+                std::ranges::rotate(vertices, vertices.begin() + first);
                 vertices.resize((last + n - first) % n + 1u);
                 path.Closed = false;
             } else {
-                std::rotate(vertices.begin(), vertices.begin() + selected.front(), vertices.end());
+                std::ranges::rotate(vertices, vertices.begin() + selected.front());
             }
         }
         if (!extend) {
             const auto is_selected = [&](uint32_t v) { return std::ranges::binary_search(selection.Vertices, v); };
-            const auto first = std::ranges::find_if(vertices, is_selected), last = std::find_if(vertices.rbegin(), vertices.rend(), is_selected).base();
+            const auto first = std::ranges::find_if(vertices, is_selected), last = std::ranges::find_if(std::views::reverse(vertices), is_selected).base();
             vertices = std::vector<uint32_t>(first, last);
         }
         if (vertices.size() < 3u) continue;

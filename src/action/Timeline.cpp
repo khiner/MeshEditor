@@ -100,9 +100,9 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                         if (const auto it = std::ranges::find_if(keys, in_range); it != keys.end()) target = frame_of(*it);
                     }
                 } else {
-                    for (auto it = keys.rbegin(); it != keys.rend(); ++it) {
-                        if (in_range(*it) && frame_of(*it) < current) {
-                            target = frame_of(*it);
+                    for (const auto key : std::views::reverse(keys)) {
+                        if (in_range(key) && frame_of(key) < current) {
+                            target = frame_of(key);
                             break;
                         }
                     }

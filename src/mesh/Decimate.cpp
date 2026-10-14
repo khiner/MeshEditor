@@ -135,7 +135,7 @@ struct Planner {
         const auto an = Neighbors(a), bn = Neighbors(b);
         if (!an.contains(b)) return false;
         std::set<uint32_t> common, opposites;
-        std::set_intersection(an.begin(), an.end(), bn.begin(), bn.end(), std::inserter(common, common.end()));
+        std::ranges::set_intersection(an, bn, std::inserter(common, common.end()));
         uint32_t users = 0u;
         for (const auto f : Vertices[a].Faces) {
             if (Vertices[b].Faces.contains(f)) {
@@ -160,7 +160,7 @@ struct Planner {
             const auto before = Normal(Faces[f].Vertices), after = Normal(loop, a, position);
             if (!(Dot(before, after) > 1e-6f * Length(before) * Length(after)) || !(Length(after) > 1e-8f * Length(before))) return false;
             std::ranges::sort(loop);
-            if (std::adjacent_find(loop.begin(), loop.end()) != loop.end() || !unique.insert(std::move(loop)).second) return false;
+            if (std::ranges::adjacent_find(loop) != loop.end() || !unique.insert(std::move(loop)).second) return false;
         }
         return !unique.empty();
     }

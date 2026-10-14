@@ -636,7 +636,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
         const auto &light = r.get<const PunctualLight>(active_entity);
         ui::Edit fields{r};
         const char *const type_names[]{"Directional", "Point", "Spot"};
-        if (int type_i = int(light.Type); Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
+        if (auto type_i = int(light.Type); Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
             action::Emit(action::object::SetLightType{PunctualLightType(type_i), ui::TargetFromAlt()});
         }
         fields.Color<&PunctualLight::Color>();
@@ -924,7 +924,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                 }
                 if (settings.MotionBlur) {
                     auto mb = *settings.MotionBlur;
-                    int method = int(mb.Method);
+                    auto method = int(mb.Method);
                     bool changed = Combo("Method", &method, "Velocity (fast)\0Full sampling\0");
                     MeshEditor::HelpMarker("Velocity (fast) blurs one rendered image using motion vectors. It is inexpensive, but approximates changing visibility, reflections, and lighting.\n\nFull sampling renders multiple times across the shutter to capture those changes. More samples reduce stepping at higher rendering cost.");
                     mb.Method = MotionBlurMethod(method);

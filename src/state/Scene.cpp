@@ -140,7 +140,7 @@ void Notify(Scene &r, TypeId type, Event event, Entity e) {
     if (r.Restoring && !r.RestoringEvents && event != Event::Destroy) return;
     for (auto *dirty : r.Dirty[type][size_t(event)]) dirty->emplace(e);
     const auto &handlers = r.Handlers[type][size_t(event)];
-    for (auto it = handlers.rbegin(); it != handlers.rend(); ++it) (*it)(r, e);
+    for (const auto &handler : std::views::reverse(handlers)) handler(r, e);
 }
 bool Scene::valid(Entity e) const { return e != Null && Index(e) < AllocationStorage->Generations.size() && AllocationStorage->Generations[Index(e)] == (Alive | Generation(e)); }
 uint32_t Scene::EntityCapacity() const { return uint32_t(AllocationStorage->Generations.size()); }

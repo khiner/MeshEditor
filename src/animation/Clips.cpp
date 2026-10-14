@@ -14,7 +14,7 @@ namespace {
 uint32_t FindKeyframe(const std::vector<float> &times, float t) {
     if (times.size() <= 1 || t <= times.front()) return 0;
     if (t >= times.back()) return times.size() - 2;
-    return std::distance(times.begin(), std::upper_bound(times.begin(), times.end(), t)) - 1;
+    return std::distance(times.begin(), std::ranges::upper_bound(times, t)) - 1;
 }
 } // namespace
 

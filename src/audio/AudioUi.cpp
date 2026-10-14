@@ -107,7 +107,7 @@ std::optional<size_t> PlotModeData(
     std::optional<size_t> hovered_index;
     if (ImPlot::BeginPlot(label.data(), ChartSize)) {
         static constexpr double BarSize = 0.9;
-        const float max_value = max_value_opt.value_or(*std::max_element(data.begin(), data.end()));
+        const float max_value = max_value_opt.value_or(*std::ranges::max_element(data));
         ImPlot::SetupAxes(x_label.data(), y_label.data());
         ImPlot::SetupAxesLimits(-0.5f, data.size() - 0.5f, 0, max_value, ImPlotCond_Always);
         if (ImPlot::IsPlotHovered()) {
@@ -209,7 +209,7 @@ void DrawModalModelSettings(
     }
 
     SeparatorText("Discretization");
-    int discretization = int(settings.Discretization);
+    auto discretization = int(settings.Discretization);
     bool discretization_changed = RadioButton("Tet10", &discretization, int(fastfem::Discretization::Tet10));
     SameLine();
     discretization_changed |= RadioButton("Finite cell", &discretization, int(fastfem::Discretization::FiniteCell));

@@ -893,7 +893,7 @@ void SamplePosesAtFrame(state::Scene &r, float frame) {
     auto &s = r.Context.get<PhysicsState>();
     if (s.Bodies.empty() || !s.Baked) return;
     const float clamped = std::clamp(frame, float(s.CacheStartFrame), float(*s.Baked));
-    const uint32_t lo = uint32_t(std::floor(clamped));
+    const auto lo = uint32_t(std::floor(clamped));
     const uint32_t hi = std::min(lo + 1, *s.Baked);
     const float t = clamped - float(lo);
     const auto lo_idx = lo - s.CacheStartFrame, hi_idx = hi - s.CacheStartFrame;

@@ -295,9 +295,9 @@ void BuildMeshletSpatial(state::Scene &r, std::span<MeshStore::Record *const> ow
             if (node.Left != InvalidOffset) order.push_back(node.Left);
             if (node.Right != InvalidOffset) order.push_back(node.Right);
         }
-        for (auto it = postorder.rbegin(); it != postorder.rend(); ++it) {
-            auto &node = read(*it);
-            auto box = Bounds(gpu.Meshlets.Get({Resolve<RenderBlockSize>(entries, ElementHandle{*it}).Value(), 1u})[0]);
+        for (const auto handle : std::views::reverse(postorder)) {
+            auto &node = read(handle);
+            auto box = Bounds(gpu.Meshlets.Get({Resolve<RenderBlockSize>(entries, ElementHandle{handle}).Value(), 1u})[0]);
             double volume = UnpackVolume(node.LocalVolume);
             if (node.Left != InvalidOffset) {
                 const auto &child = read(node.Left);

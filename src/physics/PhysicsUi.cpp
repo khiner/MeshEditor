@@ -89,7 +89,7 @@ void RenderSystemMultiSelect(const state::Scene &r, const char *label, const std
 
     if (BeginCombo(label, preview.c_str())) {
         for (const auto se : view) {
-            bool member = std::find(selection.begin(), selection.end(), se) != selection.end();
+            bool member = std::ranges::find(selection, se) != selection.end();
             if (Checkbox(SystemDisplayName(r, se).c_str(), &member)) action::Emit(on_toggle(se, member));
         }
         EndCombo();
@@ -103,7 +103,7 @@ void RenderCollisionFilterBody(state::Scene &r, state::Entity filter_e) {
         return action::physics::ToggleFilterEntity{filter_e, action::physics::ToggleFilterEntity::List::Systems, se, add};
     });
 
-    int mode = int(filter.Mode);
+    auto mode = int(filter.Mode);
     TextUnformatted("Collide with:");
     SameLine();
     bool mode_changed = RadioButton("All", &mode, int(CollideMode::All));
@@ -368,9 +368,9 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
                 Spacing();
 
                 RenderJointVecList<PhysicsJointDrive>(jd_entity, jd.Drives, "Drive", "Add drive", [&](const auto &drive, auto &&edit_drive) {
-                    if (int type = int(drive.Type); Combo("Type", &type, "Linear\0Angular\0")) action::Emit(edit_drive([&](auto &e) { e.Type = PhysicsDriveType(type); }));
+                    if (auto type = int(drive.Type); Combo("Type", &type, "Linear\0Angular\0")) action::Emit(edit_drive([&](auto &e) { e.Type = PhysicsDriveType(type); }));
                     if (int axis = drive.Axis; Combo("Axis", &axis, "X\0Y\0Z\0")) action::Emit(edit_drive([&](auto &e) { e.Axis = uint8_t(axis); }));
-                    if (int mode = int(drive.Mode); Combo("Mode", &mode, "Force\0Acceleration\0")) action::Emit(edit_drive([&](auto &e) { e.Mode = PhysicsDriveMode(mode); }));
+                    if (auto mode = int(drive.Mode); Combo("Mode", &mode, "Force\0Acceleration\0")) action::Emit(edit_drive([&](auto &e) { e.Mode = PhysicsDriveMode(mode); }));
                     float max_force = drive.MaxForce, pos_target = drive.PositionTarget, vel_target = drive.VelocityTarget;
                     float stiffness = drive.Stiffness, damping = drive.Damping;
                     ui::Gesture(ui::DragFloat("Max force", &max_force, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.MaxForce = max_force; }); });

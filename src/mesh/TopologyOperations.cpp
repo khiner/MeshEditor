@@ -303,7 +303,7 @@ std::optional<MeshTopologyTask> BridgeEdgeLoopsTask(const MeshStore &meshes, con
                 start = j;
             }
         }
-        std::rotate(b.begin(), b.begin() + start, b.end());
+        std::ranges::rotate(b, b.begin() + start);
     }
     const auto na = uint32_t(a.size()) - uint32_t(!closed), nb = uint32_t(b.size()) - uint32_t(!closed);
     std::vector<std::vector<uint32_t>> faces;
@@ -471,7 +471,7 @@ std::optional<MeshTopologyTask> ConvexHullTask(const MeshStore &meshes, const Me
         }
         for (auto &edge : horizon) edge.NeighborEdge = edge_slot(faces[edge.Neighbor], edge.To, edge.From);
         // Each horizon edge fans to the point, and consecutive fans meet along the point's spokes.
-        const uint32_t first_new = uint32_t(faces.size());
+        const auto first_new = uint32_t(faces.size());
         std::unordered_map<uint32_t, uint32_t> fan_from, fan_to;
         for (uint32_t i = 0; i < horizon.size(); ++i) {
             const auto &edge = horizon[i];

@@ -308,8 +308,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             const auto phases = chain.Scratch.Allocate(std::span<const uint32_t>{plan.Phases});
             const auto work = chain.Scratch.Allocate(stride * uint32_t(plan.Inputs.size()) + extra * uint32_t(plan.Chains.size()));
             uint32_t work_offset = work.Offset;
-            for (uint32_t i = 0u; i < plan.Chains.size(); ++i) {
-                auto &descriptor = plan.Chains[i];
+            for (auto &descriptor : plan.Chains) {
                 descriptor.WorkOffset = work_offset;
                 work_offset += stride * descriptor.Count + extra;
                 descriptor.InputOffset += inputs.Offset;

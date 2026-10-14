@@ -766,7 +766,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const auto &times = channel.Times;
             const uint32_t t_offset = AppendAligned<float>(bin, std::span<const float>{times});
             const uint32_t t_bv = AddBufferView(t_offset, times.size() * sizeof(float));
-            const auto [t_min, t_max] = std::minmax_element(times.begin(), times.end());
+            const auto [t_min, t_max] = std::ranges::minmax_element(times);
             const uint32_t t_acc = AddAccessor(t_bv, times.size(), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float, MakeBounds({double(*t_min)}), MakeBounds({double(*t_max)}));
             // Weights channels pack every target into scalar elements, and bool channels are unsigned bytes.
             const uint32_t components = channel.Target.Count;
@@ -872,8 +872,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             EmitCustom(out, attribute, Mesh{meshes, store_id}.vertices(), [&](Mesh::VH v) { return AttributeFloats(meshes, attribute, *v); });
         }
     };
-    for (uint32_t mi = 0; mi < mesh_groups.size(); ++mi) {
-        const auto &group = mesh_groups[mi];
+    for (const auto &group : mesh_groups) {
         fastgltf::pmr::MaybeSmallVector<fastgltf::Primitive, 2> primitives;
         fastgltf::pmr::MaybeSmallVector<fastgltf::num> default_weights;
         // Non-triangle primitives omit targets, materials, and mappings.

@@ -230,7 +230,7 @@ bool BuildDemandedClusterLods(state::Scene &r, state::Entity viewport) {
         RefreshClusterLodAttributes(r, chain, demanded);
         chain.Submit();
     }
-    const uint32_t count = uint32_t(demanded.size());
+    const auto count = uint32_t(demanded.size());
     std::vector<MeshletBuildInputs> inputs;
     inputs.reserve(count);
     std::vector<std::vector<uint32_t>> live_triangles(count), live_primitive_counts(count);

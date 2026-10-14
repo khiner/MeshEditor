@@ -40,7 +40,7 @@ void PageFootprint::Add(const mtl::Buffer &buffer, std::span<const uint32_t> blo
 
 std::span<const uint32_t> PageFootprint::Sort(Entry &entry) {
     std::ranges::sort(entry.Pages);
-    entry.Pages.erase(std::unique(entry.Pages.begin(), entry.Pages.end()), entry.Pages.end());
+    entry.Pages.erase(std::ranges::unique(entry.Pages).begin(), entry.Pages.end());
     return entry.Pages;
 }
 

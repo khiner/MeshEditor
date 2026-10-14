@@ -444,7 +444,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
                 pf += playback.Reverse ? -step : step;
                 if (pf > float(range.EndFrame)) pf = float(range.StartFrame);
                 else if (pf < float(range.StartFrame)) pf = float(range.EndFrame);
-                const int new_frame = int(std::floor(pf));
+                const auto new_frame = int(std::floor(pf));
                 if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = new_frame; });
             } else if (!playback.Playing) {
                 pf = float(playback.CurrentFrame);

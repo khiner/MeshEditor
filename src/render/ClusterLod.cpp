@@ -48,7 +48,7 @@ bool SamePosition(const std::array<float, 3> &a, const std::array<float, 3> &b) 
 
 void GeneratePositionRemap(std::vector<uint32_t> &remap, const std::vector<std::array<float, 3>> &positions) {
     constexpr uint32_t BlockSize{16u * 1024u};
-    const uint32_t count = uint32_t(positions.size());
+    const auto count = uint32_t(positions.size());
     const size_t table_size = std::bit_ceil(size_t(count) + count / 4u);
     const size_t mask = table_size - 1u;
     std::vector<uint32_t> table(table_size, ClusterLodInvalid);
@@ -164,7 +164,7 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
     weld.Representative.clear();
     weld.Positions.clear();
     const auto append_render_vertex = [&](uint32_t corner, uint32_t source_vertex) {
-        const uint32_t render_vertex = uint32_t(weld.Representative.size());
+        const auto render_vertex = uint32_t(weld.Representative.size());
         weld.CornerVertices[corner] = render_vertex;
         weld.Representative.push_back(corner);
         const float *position = SourcePosition(mesh, source_vertex);
@@ -508,7 +508,7 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, const std::
         for (const auto slot : edges.Occupied) {
             const auto &entry = edges.Table[slot];
             if (entry.Count == 1u && !entry.Physical) {
-                const uint32_t a = uint32_t(entry.Key >> 32u), d = uint32_t(entry.Key);
+                const auto a = uint32_t(entry.Key >> 32u), d = uint32_t(entry.Key);
                 // A unique undirected edge has one directed input occurrence.
                 // Self-edges have a matching reverse and were never artificial.
                 if (a != d) artificial.push_back(entry.Reversed ? (uint64_t(d) << 32u | a) : entry.Key);
@@ -616,7 +616,7 @@ struct GroupScratch {
 
 // Appends one cluster with indices local to `sink`.
 void EmitCluster(auto &&sink, const PrimitiveWeld &weld, const WorkCluster &cluster, uint32_t primitive, uint32_t group) {
-    const uint32_t vertex_count = uint32_t(cluster.Vertices.size());
+    const auto vertex_count = uint32_t(cluster.Vertices.size());
     const uint32_t triangle_count = cluster.TriangleCount();
     assert(vertex_count <= ClusterLodMaxVertices && triangle_count <= ClusterLodMaxTriangles);
 
@@ -670,7 +670,7 @@ void ClassifyOutputBoundaries(const PrimitiveWeld &weld, const std::vector<uint6
             const auto [a, d] = edge(cluster, c);
             const auto *forward = edges.Find(key(a, d)), *reverse = edges.Find(key(d, a));
             cluster.PhysicalBoundaries[c] = forward->OutputCount == 1u && (!reverse || !reverse->OutputCount) &&
-                !std::binary_search(artificial.begin(), artificial.end(), key(a, d));
+                !std::ranges::binary_search(artificial, key(a, d));
         }
     }
 }
@@ -748,7 +748,7 @@ void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, const std::vecto
 uint32_t BuildLevels(ClusterLodBuild &build, PrimitiveWeld &weld, std::vector<WorkCluster> &clusters, std::vector<uint32_t> &pending, std::span<const std::vector<uint32_t>> joining, uint32_t primitive, bool serial) {
     const auto terminal = [&] {
         const auto &cluster = clusters[pending.front()];
-        const uint32_t group = uint32_t(build.Groups.size());
+        const auto group = uint32_t(build.Groups.size());
         build.Groups.push_back(ClusterLodGroup{
             .Center = cluster.Sphere.Center,
             .Radius = cluster.Sphere.Radius,
@@ -784,7 +784,7 @@ uint32_t BuildLevels(ClusterLodBuild &build, PrimitiveWeld &weld, std::vector<Wo
             return LockBoundary(weld, clusters, groups, serial);
         }();
 
-        const uint32_t group_base = uint32_t(build.Groups.size());
+        const auto group_base = uint32_t(build.Groups.size());
         scratch.assign(groups.size(), GroupScratch{});
         const auto run = [&](uint32_t i) { RunGroup(scratch[i], weld, clusters, groups[i], artificial_edges[i], primitive, group_base + i); };
         {
@@ -802,8 +802,8 @@ uint32_t BuildLevels(ClusterLodBuild &build, PrimitiveWeld &weld, std::vector<Wo
         for (uint32_t i = 0; i < groups.size(); ++i) {
             auto &group_scratch = scratch[i];
             const uint32_t cluster_base = build.Level0Count() + uint32_t(build.Clusters.size());
-            const uint32_t vertex_base = uint32_t(build.VertexCorners.size());
-            const uint32_t local_triangle_base = uint32_t(build.LocalTriangles.size());
+            const auto vertex_base = uint32_t(build.VertexCorners.size());
+            const auto local_triangle_base = uint32_t(build.LocalTriangles.size());
             for (auto &cluster : group_scratch.Clusters) {
                 cluster.VertexOffset += vertex_base;
                 cluster.LocalTriangleOffset += local_triangle_base;
@@ -1025,7 +1025,7 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
                     const uint32_t last = std::min((block + 1u) * ClustersPerBlock, range.ClusterCount);
                     for (uint32_t i = block * ClustersPerBlock; i < last; ++i) initialize_cluster(i);
                 } catch (...) {
-                    const std::lock_guard lock{failure_mutex};
+                    const std::scoped_lock lock{failure_mutex};
                     if (!failure) failure = std::current_exception();
                 }
             });

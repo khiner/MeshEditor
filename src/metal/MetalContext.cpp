@@ -7,6 +7,7 @@
 #include <atomic>
 #include <bit>
 #include <format>
+#include <print>
 #include <unordered_set>
 #include <utility>
 
@@ -20,7 +21,7 @@ void ObserveCommand(MTL::CommandBuffer *command, std::string_view label, MTL::Sh
         const AutoreleaseScope pool;
         const auto [mapping_event, execution_event] = std::pair{std::move(mapping), std::move(execution)};
         if (const auto *error = completed->error()) {
-            std::fprintf(stderr, "Metal command %s failed (mapping %llu, execution %llu): %s\n", completed->label()->utf8String(), (unsigned long long)mapping_event->signaledValue(), (unsigned long long)execution_event->signaledValue(), error->description()->utf8String());
+            std::println(stderr, "Metal command {} failed (mapping {}, execution {}): {}", completed->label()->utf8String(), mapping_event->signaledValue(), execution_event->signaledValue(), error->description()->utf8String());
         }
     });
 }

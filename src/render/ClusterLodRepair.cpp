@@ -23,7 +23,7 @@
 std::vector<uint32_t> ClusterGroupClosure(const RenderArenas &buffers, const MeshStore::Record &owner, std::span<const uint32_t> seeds) {
     std::vector<uint32_t> closure(seeds.begin(), seeds.end());
     std::ranges::sort(closure);
-    closure.erase(std::unique(closure.begin(), closure.end()), closure.end());
+    closure.erase(std::ranges::unique(closure).begin(), closure.end());
     std::unordered_set<uint32_t> visited(closure.begin(), closure.end());
     const auto groups = buffers.ClusterGroups.Entries(owner.GroupData), meshlets = buffers.Meshlets.Entries(owner.MeshletData);
     const auto links = buffers.GroupLinks.Buffer.GetSpan<ClusterGroupLinks>();
@@ -54,7 +54,7 @@ void ReplaceGroupClusters(MeshStore &meshes, MeshStore::Record &owner, std::span
     }
     if (groups.empty()) return;
     std::ranges::sort(groups);
-    groups.erase(std::unique(groups.begin(), groups.end()), groups.end());
+    groups.erase(std::ranges::unique(groups).begin(), groups.end());
     const std::unordered_set<uint32_t> removed_ids(removed.begin(), removed.end());
     // Runs hold members first and proxies second, matching the two record fields.
     struct Runs {

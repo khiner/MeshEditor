@@ -712,7 +712,7 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
         std::vector<uint32_t> handles;
         handles.reserve(count);
         for (uint32_t i = 0u; i < count; ++i) handles.push_back(task.List[task.List[offset + i]]);
-        if (!std::ranges::is_sorted(handles) || std::adjacent_find(handles.begin(), handles.end()) != handles.end()) {
+        if (!std::ranges::is_sorted(handles) || std::ranges::adjacent_find(handles) != handles.end()) {
             throw std::invalid_argument("Face replacement face handles must be sorted and unique.");
         }
         faces = ListSeed(r, chain, StoreId, Element::Face, handles);
@@ -1220,7 +1220,7 @@ GeometryTopologyResult MeshTopologyEdit::Result(const MeshStore &meshes) const {
     const auto handles = [&](ElementHandleRange range, std::vector<uint32_t> &out) {
         if (range.Handles.Slot == InvalidSlot) {
             out.resize(range.Count);
-            std::iota(out.begin(), out.end(), range.First);
+            std::ranges::iota(out, range.First);
         } else {
             const auto listed = Chain.Scratch.Get({range.Handles.Offset, range.Count});
             out.assign(listed.begin(), listed.end());

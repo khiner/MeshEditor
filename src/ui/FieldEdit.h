@@ -211,7 +211,7 @@ bool DrawField(const char *label, F &v, const FieldSpec &spec) {
             v = F(underlying);
             return true;
         } else {
-            int i = int(std::ranges::find(values, v) - values.begin());
+            auto i = int(std::ranges::find(values, v) - values.begin());
             if (!ImGui::Combo(label, &i, names.data(), int(names.size()))) return false;
             v = values[size_t(i)];
             return true;
@@ -276,7 +276,7 @@ struct FieldWidgets {
             if constexpr (std::same_as<F, float> && spec.Unit == FieldUnit::Radians) {
                 return ImGui::SliderAngle(detail::InDegrees(LabelOr<Ms...>(label)).c_str(), &v, Degrees(float(spec.Min)), Degrees(float(spec.Max)), format, flags);
             } else {
-                const C lo = C(spec.Min), hi = C(spec.Max);
+                const auto lo = C(spec.Min), hi = C(spec.Max);
                 return ImGui::SliderScalarN(LabelOr<Ms...>(label), ImGuiDt<C>(), &v, action::Components<F>, &lo, &hi, format, flags);
             }
         },

@@ -1,4 +1,5 @@
 #include "action/Physics.h"
+
 #include "Variant.h"
 #include "action/ScopeResolve.h"
 #include "scene/Entity.h"
@@ -82,7 +83,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 r.patch<CollisionFilter>(a.FilterEntity, [&](CollisionFilter &f) {
                     auto &vec = a.Which == ToggleFilterEntity::List::Systems ? f.Systems : f.CollideSystems;
                     if (a.Add) {
-                        if (std::find(vec.begin(), vec.end(), a.SystemEntity) == vec.end()) vec.emplace_back(a.SystemEntity);
+                        if (std::ranges::find(vec, a.SystemEntity) == vec.end()) vec.emplace_back(a.SystemEntity);
                     } else {
                         std::erase(vec, a.SystemEntity);
                     }

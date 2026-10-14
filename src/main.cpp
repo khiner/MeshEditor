@@ -1494,12 +1494,12 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 if (MenuItem("Revert to Saved", nullptr, false, !Session(r).SavedPath.empty())) RevertSavedProject(r, viewport);
                 if (BeginMenu("Restore")) {
                     const auto sessions = project::ListRestoreSessions();
-                    for (size_t i = 0; i < sessions.size(); ++i) {
-                        const std::time_t t = sessions[i].UnixSeconds;
+                    for (const auto &session : sessions) {
+                        const std::time_t t = session.UnixSeconds;
                         char date[32];
                         std::strftime(date, sizeof date, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
-                        const auto label = std::format("{} ({})", date, sessions[i].Path.filename().string());
-                        if (MenuItem(label.c_str())) OpenProjectDir(r, viewport, sessions[i].Path);
+                        const auto label = std::format("{} ({})", date, session.Path.filename().string());
+                        if (MenuItem(label.c_str())) OpenProjectDir(r, viewport, session.Path);
                     }
                     EndMenu();
                 }
@@ -2068,7 +2068,7 @@ bool RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
             std::fflush(stderr);
             ::dup2(launcher_out, STDOUT_FILENO);
             ::dup2(launcher_err, STDERR_FILENO);
-            std::println("{{\"job\":{},\"status\":\"{}\",\"seconds\":{:.2f}}}", job->Index, std::array{"ok", "unsupported", "failed"}[size_t(status)], ElapsedMs(begin) / 1000.0);
+            std::println(R"({{"job":{},"status":"{}","seconds":{:.2f}}})", job->Index, std::array{"ok", "unsupported", "failed"}[size_t(status)], ElapsedMs(begin) / 1000.0);
             std::fflush(stdout);
         }
         ::close(launcher_out);

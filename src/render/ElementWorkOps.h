@@ -135,7 +135,7 @@ inline void SeedElementWorkRanges(BufferArena<uint32_t> &arena, ElementWork &wor
         const auto stop = std::min(uint64_t(range.Offset) + range.Count, uint64_t(origin) + work.Count);
         if (start >= stop) continue;
         const auto end = uint32_t(stop - origin);
-        for (uint32_t first = uint32_t(start - origin); first < end;) {
+        for (auto first = uint32_t(start - origin); first < end;) {
             const auto last = uint32_t(std::min(uint64_t(end), (uint64_t(first) / 32u + 1u) * 32u));
             MarkElementWorkWord(data, work, first / 32u, (~0u >> (32u - (last - first))) << (first % 32u));
             first = last;

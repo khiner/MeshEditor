@@ -74,7 +74,7 @@ struct OwnerNodes {
     void Unlist(const LodNode &leaf) {
         if (leaf.Members == InvalidOffset) return;
         std::vector<uint32_t> handles(leaf.MeshletCount + Headroom(leaf));
-        std::iota(handles.begin(), handles.end(), leaf.Members);
+        std::ranges::iota(handles, leaf.Members);
         Buffers.LodMembers.Erase(Owner.MemberData, handles);
     }
 };
@@ -300,7 +300,7 @@ LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshStore::
         std::erase_if(tail, [&](uint32_t cluster) { return std::ranges::binary_search(losses, cluster); });
         const auto kept = std::ssize(tail);
         tail.insert(tail.end(), gains.begin(), gains.end());
-        std::inplace_merge(tail.begin(), tail.begin() + kept, tail.end());
+        std::ranges::inplace_merge(tail, tail.begin() + kept);
         if (std::ranges::adjacent_find(tail) != tail.end() || first + tail.size() + losses.size() != value.MeshletCount + gains.size()) throw std::logic_error("LOD membership edit repeats cluster identities.");
         const auto count = first + uint32_t(tail.size());
         // An overfull leaf takes its final members directly as even runs.

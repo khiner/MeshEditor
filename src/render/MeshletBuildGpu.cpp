@@ -512,7 +512,7 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
             if (node.ChildCount || !node.MeshletCount) continue;
             if (node.Members != InvalidOffset) throw std::logic_error("LOD leaf already owns meshlet membership.");
             std::vector<uint32_t> members(node.MeshletCount);
-            std::iota(members.begin(), members.end(), node.FirstMeshlet);
+            std::ranges::iota(members, node.FirstMeshlet);
             node.Members = render.ListMembers(mb.MemberData, members);
             render.LodNodes.GetMutable({(nodes.Address + n).Value(), 1u})[0] = node;
         }

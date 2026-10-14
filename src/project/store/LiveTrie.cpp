@@ -140,7 +140,7 @@ Node *WriteRec(LiveTrie &trie, Node *n, uint32_t level, uint64_t base, uint64_t 
             ++n->Children[i]->Refs;
         }
     }
-    const uint32_t lo = uint32_t((std::max(first, base) - base) / span);
+    const auto lo = uint32_t((std::max(first, base) - base) / span);
     const uint32_t hi = uint32_t((std::min(last, base + SlotSpan(level) - 1) - base) / span);
     for (uint32_t i = lo; i <= hi; ++i) {
         auto *child = n->Children[i];
@@ -424,7 +424,7 @@ void LiveTrie::SettleFlat(std::span<const std::byte> contents) {
     };
     std::vector<Result> results(DirtySlots.size());
     constexpr uint32_t PagesPerChunk{16};
-    const uint32_t chunks = uint32_t((results.size() + PagesPerChunk - 1u) / PagesPerChunk);
+    const auto chunks = uint32_t((results.size() + PagesPerChunk - 1u) / PagesPerChunk);
     ParallelFor(chunks, [&](uint32_t chunk) {
         const auto end = std::min<size_t>((size_t(chunk) + 1u) * PagesPerChunk, results.size());
         for (size_t i = size_t(chunk) * PagesPerChunk; i < end; ++i) {
